@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project One Roofing — Estimate Builder</title>
+  <link rel="stylesheet" href="/static/style.css?v=5">
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────── -->
+<header id="app-header">
+  <div class="header-left">
+    <img src="/static/logo.png" alt="Project One Roofing" class="header-logo">
+    <div id="estimate-number" class="estimate-number">New Estimate</div>
+  </div>
+  <div class="header-right">
+    <span id="save-indicator" class="save-indicator"></span>
+    <button onclick="newEstimateAction()">New</button>
+    <button onclick="openEstimate()">Open</button>
+    <button id="save-btn" onclick="saveEstimate()">Save</button>
+    <button onclick="openPriceBook()" class="btn-pricebook">📋 Price Book</button>
+    <button id="share-btn" onclick="shareEstimate()" class="btn-share">Send / Sign</button>
+    <button onclick="doPrint()" class="btn-print">Print / PDF</button>
+  </div>
+</header>
+
+<!-- ── App layout ──────────────────────────────────────────────────── -->
+<div id="app-layout">
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+
+    <section class="sidebar-section" id="section-customer">
+      <h3>Customer</h3>
+      <div class="crm-search-wrap">
+        <input type="text" id="crm-search" placeholder="Search CRM by name / phone…" autocomplete="off">
+        <div id="crm-dropdown" class="crm-dropdown hidden"></div>
+      </div>
+      <div class="field-group">
+        <label>Name</label>
+        <input type="text" id="cust-name">
+      </div>
+      <div class="field-group">
+        <label>Phone</label>
+        <input type="text" id="cust-phone">
+      </div>
+      <div class="field-group">
+        <label>Email</label>
+        <input type="email" id="cust-email">
+      </div>
+      <div class="field-group">
+        <label>Street</label>
+        <input type="text" id="cust-street">
+      </div>
+      <div class="field-row">
+        <div class="field-group" style="flex:2">
+          <label>City</label>
+          <input type="text" id="cust-city">
+        </div>
+        <div class="field-group" style="flex:1">
+          <label>ST</label>
+          <input type="text" id="cust-state" maxlength="2">
+        </div>
+        <div class="field-group" style="flex:1">
+          <label>Zip</label>
+          <input type="text" id="cust-zip" maxlength="10">
+        </div>
+      </div>
+    </section>
+
+    <section class="sidebar-section" id="section-details">
+      <h3>Estimate Details</h3>
+      <div class="field-group">
+        <label>Project Address (if different)</label>
+        <input type="text" id="project-address" placeholder="Leave blank to use customer address">
+      </div>
+      <div class="field-group">
+        <label>Estimate Date</label>
+        <input type="date" id="estimate-date">
+      </div>
+      <div class="field-group">
+        <label>Valid Until</label>
+        <input type="date" id="valid-until">
+      </div>
+      <div class="field-group">
+        <label>Salesperson</label>
+        <select id="salesperson">
+          <option value="">Select…</option>
+        </select>
+      </div>
+      <div class="field-group">
+        <label>Status</label>
+        <select id="est-status">
+          <option value="draft">Draft</option>
+          <option value="sent">Sent</option>
+          <option value="accepted">Accepted</option>
+          <option value="declined">Declined</option>
+        </select>
+      </div>
+      <div class="field-group">
+        <label>Estimate Type</label>
+        <div class="toggle-row">
+          <button class="toggle-btn" id="type-retail" onclick="setEstimateType('retail')">🏠 Retail</button>
+          <button class="toggle-btn" id="type-insurance" onclick="setEstimateType('insurance')">🏛 Insurance</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="sidebar-section" id="section-pricing">
+      <h3>Pricing</h3>
+      <div class="toggle-row">
+        <button class="toggle-btn" id="mode-margin" onclick="setPricingMode('margin')">Margin %</button>
+        <button class="toggle-btn" id="mode-markup" onclick="setPricingMode('markup')">Markup %</button>
+      </div>
+      <div class="field-group">
+        <label>Global Rate: <span id="global-rate-display">35%</span></label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="range" id="global-rate-slider" min="0" max="70" step="0.5" style="flex:1">
+          <input type="number" id="global-rate-input" min="0" max="70" step="0.5" style="width:56px">
+        </div>
+      </div>
+      <div id="trade-overrides"></div>
+    </section>
+
+    <section class="sidebar-section" id="section-tier">
+      <h3>Active Package</h3>
+      <div class="tier-selector">
+        <button class="tier-btn" data-tier="good"   onclick="setTier('good')">Good</button>
+        <button class="tier-btn" data-tier="better" onclick="setTier('better')">Better</button>
+        <button class="tier-btn" data-tier="best"   onclick="setTier('best')">Best</button>
+      </div>
+      <div class="totals-block">
+        <div class="total-row" id="tr-good">
+          <span>Good</span><strong id="total-good">$0.00</strong>
+        </div>
+        <div class="total-row" id="tr-better">
+          <span>Better</span><strong id="total-better">$0.00</strong>
+        </div>
+        <div class="total-row" id="tr-best">
+          <span>Best</span><strong id="total-best">$0.00</strong>
+        </div>
+        <div class="total-row" id="tr-insurance" style="display:none;border-top:1px solid var(--border);margin-top:6px;padding-top:6px">
+          <span style="color:#0284c7">Insurance</span><strong id="total-insurance" style="color:#0284c7">$0.00</strong>
+        </div>
+      </div>
+    </section>
+
+  </aside>
+
+  <!-- Main content -->
+  <main id="main-content">
+
+    <!-- Page navigation -->
+    <nav id="page-nav">
+      <button class="page-btn" data-page="cover"    onclick="switchPage('cover')">
+        <span class="pg-num">1</span>Cover
+      </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="intro"    onclick="switchPage('intro')">
+        <span class="pg-num">2</span>Intro
+      </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="photos"   onclick="switchPage('photos')">
+        <span class="pg-num">3</span>Photos
+      </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="scope"    onclick="switchPage('scope')">
+        <span class="pg-num">4</span>Scope
+      </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="options"  onclick="switchPage('options')">
+        <span class="pg-num">5</span>Options
+      </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="pricing"  onclick="switchPage('pricing')">
+        <span class="pg-num">6</span>Pricing
+      </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="contract" onclick="switchPage('contract')">
+        <span class="pg-num">7</span>Contract
+      </button>
+    </nav>
+    <div id="print-pages-bar"></div>
+
+    <!-- ── Page 1: Cover ──────────────────────────────────────────── -->
+    <div id="page-cover" class="page"></div>
+
+    <!-- ── Page 2: Introduction letter ───────────────────────────── -->
+    <div id="page-intro" class="page" style="display:none"></div>
+
+    <!-- ── Page 3: Photo Report ───────────────────────────────────── -->
+    <div id="page-photos" class="page" style="display:none">
+      <div class="photos-page-wrap">
+        <div class="photos-page-header">
+          <h2>Photo Report</h2>
+          <p class="photos-page-sub">Upload job-site photos, then annotate with circles, arrows, and text to document issues.</p>
+        </div>
+        <div id="photo-drop-zone" class="photo-drop-zone">
+          <span>📷 Drag &amp; drop photos here, or <u>click to browse</u></span>
+          <input type="file" id="photo-input" accept="image/*" multiple style="display:none">
+        </div>
+        <div id="photo-grid" class="photo-grid photo-grid-report"></div>
+      </div>
+    </div>
+
+    <!-- ── Page 4: Scope / Measurements ──────────────────────────── -->
+    <div id="page-scope" class="page" style="display:none"></div>
+
+    <!-- ── Page 3: Options (G/B/B comparison) ────────────────────── -->
+    <div id="page-options" class="page" style="display:none"></div>
+
+    <!-- ── Page 4: Pricing (per-trade line items) ────────────────── -->
+    <div id="page-pricing" class="page" style="display:none">
+      <div id="trade-tabs">
+        <div class="tab-bar" id="tab-bar"></div>
+        <div id="trade-content"></div>
+      </div>
+    </div>
+
+    <!-- ── Page 7: Contract ───────────────────────────────────────── -->
+    <div id="page-contract" class="page" style="display:none">
+      <div id="notes-section" class="panel">
+        <div class="panel-header"><h3>Notes</h3></div>
+        <div class="notes-grid">
+          <div class="field-group">
+            <label>Internal Notes <span class="note-tag">not printed</span></label>
+            <textarea id="notes-internal" rows="4" placeholder="Observations, objections, follow-up info…"></textarea>
+          </div>
+          <div class="field-group">
+            <label>Customer-Facing Notes <span class="note-tag print">printed on estimate</span></label>
+            <textarea id="notes-customer" rows="4" placeholder="Warranty info, payment terms, scope clarifications…"></textarea>
+          </div>
+        </div>
+      </div>
+      <div id="contract-section" class="panel"></div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ── Share / Sign modal ────────────────────────────────────────────── -->
+<div id="share-modal" class="modal hidden" onclick="maybeCloseShareModal(event)">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>Send Estimate to Customer</h2>
+      <button onclick="closeShareModal()" class="modal-close">×</button>
+    </div>
+    <div id="share-modal-body" style="padding:20px;display:flex;flex-direction:column;gap:14px"></div>
+  </div>
+</div>
+
+<!-- ── Open modal ───────────────────────────────────────────────────── -->
+<div id="open-modal" class="modal hidden" onclick="maybeCloseModal(event)">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>Open Estimate</h2>
+      <button onclick="closeModal()" class="modal-close">×</button>
+    </div>
+    <div id="estimates-list" class="estimates-list"></div>
+  </div>
+</div>
+
+<!-- ── Annotation modal ──────────────────────────────────────────────── -->
+<div id="annotation-modal" class="modal hidden" onclick="maybeCloseAnnModal(event)">
+  <div class="modal-box ann-modal-box">
+    <div class="modal-header">
+      <h2>Annotate Photo</h2>
+      <button onclick="closeAnnotationModal()" class="modal-close">×</button>
+    </div>
+    <div class="ann-toolbar">
+      <div class="ann-tool-group">
+        <button class="ann-tool-btn active" id="ann-tool-oval"   onclick="setAnnTool('oval')"  title="Oval / Circle">⬭ Oval</button>
+        <button class="ann-tool-btn"        id="ann-tool-arrow"  onclick="setAnnTool('arrow')" title="Arrow">↗ Arrow</button>
+        <button class="ann-tool-btn"        id="ann-tool-text"   onclick="setAnnTool('text')"  title="Text label">T Text</button>
+      </div>
+      <div class="ann-color-group">
+        <button class="ann-color-btn active" data-color="#ef4444" onclick="setAnnColor('#ef4444')" style="background:#ef4444" title="Red"></button>
+        <button class="ann-color-btn"        data-color="#f97316" onclick="setAnnColor('#f97316')" style="background:#f97316" title="Orange"></button>
+        <button class="ann-color-btn"        data-color="#eab308" onclick="setAnnColor('#eab308')" style="background:#eab308" title="Yellow"></button>
+        <button class="ann-color-btn"        data-color="#3b82f6" onclick="setAnnColor('#3b82f6')" style="background:#3b82f6" title="Blue"></button>
+        <button class="ann-color-btn"        data-color="#ffffff" onclick="setAnnColor('#ffffff')" style="background:#fff;border:1px solid #ccc" title="White"></button>
+      </div>
+      <div class="ann-sw-group">
+        <button class="ann-sw-btn" onclick="setAnnSw(2)" title="Thin">─</button>
+        <button class="ann-sw-btn active" onclick="setAnnSw(3)" title="Medium">━</button>
+        <button class="ann-sw-btn" onclick="setAnnSw(5)" title="Thick">▬</button>
+      </div>
+      <div class="ann-action-group">
+        <button class="btn-secondary" onclick="undoAnnotation()" title="Undo last">↩ Undo</button>
+        <button class="btn-danger"    onclick="clearAnnotations()" title="Clear all">🗑 Clear</button>
+      </div>
+    </div>
+    <div class="ann-canvas-wrap" id="ann-canvas-wrap">
+      <canvas id="ann-canvas-edit"></canvas>
+      <div id="ann-text-input-wrap" style="display:none;position:absolute">
+        <input id="ann-text-input" type="text" class="ann-text-field" placeholder="Type label, press Enter">
+      </div>
+    </div>
+    <div class="ann-modal-footer">
+      <button class="btn-secondary" onclick="closeAnnotationModal()">Cancel</button>
+      <button class="btn-primary"   onclick="saveAnnotations()">✓ Save Annotations</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Price Book modal ──────────────────────────────────────────────── -->
+<div id="pricebook-modal" class="modal hidden" onclick="maybePBModalClose(event)">
+  <div class="modal-box pb-modal-box">
+    <div class="modal-header">
+      <h2>📋 Price Book</h2>
+      <button onclick="closePriceBook()" class="modal-close">×</button>
+    </div>
+    <div id="pb-modal-body" style="overflow:auto;flex:1"></div>
+  </div>
+</div>
+
+<!-- ── Print-only content ────────────────────────────────────────────── -->
+<div id="print-content"></div>
+
+<!-- hidden input for direct cover-photo upload -->
+<input type="file" id="cover-photo-input" accept="image/*" style="display:none">
+
+<script src="/static/app.js?v=5"></script>
+</body>
+</html>

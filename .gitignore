@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Estimator — user data (stays local or on Railway volume, not in git)
+estimator/estimates/
+estimator/uploads/
+estimator/config.json
+
+# CRM helper / reporting scripts (contain API tokens, not needed on Railway)
+weekly_report.py
+sheets_report.py
+CO_Weekly_Report.xlsx
+*.xlsx
+*.csv
+
+# Claude Code config (contains tokens and local settings)
+.claude/
+CLAUDE.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
