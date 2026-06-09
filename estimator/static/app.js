@@ -2063,7 +2063,10 @@ function showShareModal(fullUrl, relUrl) {
           <div class="share-signed-name">Signed by <strong>${esc(sig.name)}</strong></div>
           <div class="share-signed-meta">${fmt} · IP ${esc(sig.ip_address||'')}</div>
         </div>
-      </div>`;
+      </div>
+      <a class="btn-download-signed" href="/api/estimates/${S.estimate_id}/signed" target="_blank">
+        📄 Download Signed Contract
+      </a>`;
   }
 
   const localhostWarning = isLocalhost ? `
@@ -2197,11 +2200,15 @@ function showOpenModal(list) {
   const el=document.getElementById('estimates-list');
   el.innerHTML=list.length
     ? list.sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''))
-        .map(e=>`<div class="eli" onclick="doLoadEstimate('${e.estimate_id}')">
-          <div class="eli-name">${esc(e.customer_name||'(unnamed)')}</div>
-          <div class="eli-meta">${esc(e.estimate_date||'')} · ${esc((e.status||'draft').toUpperCase())} · ${esc(TIER_LABELS[e.selected_tier]||'')}</div>
-          <button class="eli-delete" onclick="doDeleteEstimate(event,'${e.estimate_id}')">Delete</button>
-        </div>`).join('')
+        .map(e=>{
+          const signed = e.status === 'accepted';
+          return `<div class="eli ${signed?'eli-signed':''}" onclick="doLoadEstimate('${e.estimate_id}')">
+            <div class="eli-name">${esc(e.customer_name||'(unnamed)')}${signed?' <span class="eli-signed-tag">✓ Signed</span>':''}</div>
+            <div class="eli-meta">${esc(e.estimate_date||'')} · ${esc((e.status||'draft').toUpperCase())} · ${esc(TIER_LABELS[e.selected_tier]||'')}</div>
+            ${signed ? `<a class="eli-dl-btn" href="/api/estimates/${e.estimate_id}/signed" target="_blank" onclick="event.stopPropagation()">📄 Download</a>` : ''}
+            <button class="eli-delete" onclick="doDeleteEstimate(event,'${e.estimate_id}')">Delete</button>
+          </div>`;
+        }).join('')
     : '<p class="empty-msg">No saved estimates yet.</p>';
   document.getElementById('open-modal').classList.remove('hidden');
 }

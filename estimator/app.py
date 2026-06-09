@@ -5,9 +5,12 @@ import shutil
 import socket
 import secrets
 import hashlib
+import smtplib
 import html as _html
 from datetime import datetime
-from flask import Flask, request, jsonify, send_from_directory
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from flask import Flask, request, jsonify, send_from_directory, Response
 
 try:
     import requests as http
@@ -928,6 +931,124 @@ def create_share_link(est_id):
     return jsonify({'token': token, 'url': f'/sign/{token}', 'full_url': f'{base}/sign/{token}'})
 
 
+def send_signature_notification(est):
+    """Email the salesperson when a customer signs. Requires SMTP_HOST env var."""
+    smtp_host = os.environ.get('SMTP_HOST', '').strip()
+    if not smtp_host:
+        return  # SMTP not configured — silent skip
+
+    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+    smtp_user = os.environ.get('SMTP_USER', '').strip()
+    smtp_pass = os.environ.get('SMTP_PASS', '').strip()
+    smtp_from = os.environ.get('SMTP_FROM', smtp_user).strip() or smtp_user
+    notify_cc = os.environ.get('NOTIFY_CC', '').strip()  # optional extra CC
+
+    sp = (est.get('salesperson') or '').strip()
+    if not sp:
+        print('[notify] No salesperson on estimate — skipping notification')
+        return
+    to_addr = f'{sp}@projectoneroofing.com'
+
+    sig      = est.get('signature', {}) or {}
+    c        = est.get('customer', {})
+    a        = c.get('address', {})
+    addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'), a.get('state'), a.get('zip')]))
+    eid      = est.get('estimate_id', '')
+    enum     = 'EST-' + eid.split('-')[0].upper() if eid else 'DRAFT'
+    tier     = est.get('selected_tier', 'better')
+    tlbl     = dict(good='Good', better='Better', best='Best').get(tier, tier.title())
+
+    if est.get('estimate_type') == 'insurance':
+        tlbl   = 'Insurance Claim'
+        ins_td = est.get('trades', {}).get('insurance', {})
+        total  = sum(float(i.get('acv') or 0) + float(i.get('rcv') or 0)
+                     for i in ins_td.get('line_items', []))
+    else:
+        total = calc_tier_total(est, tier)
+
+    sname = sig.get('name', 'Unknown')
+    semail = sig.get('email', '')
+    stime = sig.get('signed_at', '')
+    try:
+        dt = datetime.fromisoformat(stime.replace('Z', '+00:00'))
+        stime_fmt = dt.strftime('%b %d, %Y at %I:%M %p UTC')
+    except Exception:
+        stime_fmt = stime
+
+    base     = PUBLIC_URL or 'http://localhost:5000'
+    view_url = f'{base}/api/estimates/{eid}/signed'
+
+    subject  = f'✅ {enum} Signed — {c.get("name", "Customer")}'
+
+    email_row = (f'<tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Customer Email</td>'
+                 f'<td style="padding:5px 0;font-size:13px">{he(semail)}</td></tr>') if semail else ''
+
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#16a34a;padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:22px;font-weight:800">✅ Estimate Signed!</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">{he(c.get("name",""))} just accepted their estimate.</p>
+  </div>
+  <div style="padding:22px 26px">
+    <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Estimate #</td><td style="padding:5px 0;font-size:13px;font-weight:700">{he(enum)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Customer</td><td style="padding:5px 0;font-size:13px">{he(c.get("name","—"))}</td></tr>
+      {email_row}
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Address</td><td style="padding:5px 0;font-size:13px">{he(addr_str or "—")}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Package</td><td style="padding:5px 0;font-size:13px">{he(tlbl)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Total</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#16a34a">{fc(total)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Signed By</td><td style="padding:5px 0;font-size:13px">{he(sname)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Signed At</td><td style="padding:5px 0;font-size:13px">{he(stime_fmt)}</td></tr>
+    </table>
+    <a href="{he(view_url)}" style="display:block;text-align:center;background:#1a3a5c;color:#fff;text-decoration:none;padding:13px 24px;border-radius:6px;font-weight:700;font-size:14px;margin-bottom:18px">
+      \U0001f4c4 View &amp; Download Signed Contract →
+    </a>
+    <p style="font-size:11px;color:#9ca3af;text-align:center;margin:0">
+      Sent to {he(to_addr)} &mdash; you are the assigned salesperson on this estimate.
+    </p>
+  </div>
+</div>
+</body></html>'''
+
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From']    = smtp_from
+    msg['To']      = to_addr
+    recipients     = [to_addr]
+    if notify_cc:
+        msg['Cc'] = notify_cc
+        recipients += [a.strip() for a in notify_cc.split(',') if a.strip()]
+    msg.attach(MIMEText(html_body, 'html'))
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as srv:
+            srv.ehlo()
+            srv.starttls()
+            if smtp_user and smtp_pass:
+                srv.login(smtp_user, smtp_pass)
+            srv.sendmail(smtp_from, recipients, msg.as_string())
+        print(f'[notify] Signature notification sent to {to_addr}')
+    except Exception as exc:
+        print(f'[notify] Failed to send signature notification: {exc}')
+
+
+@app.route('/api/estimates/<est_id>/signed', methods=['GET'])
+def view_signed_estimate(est_id):
+    """Return the signed confirmation page (printable HTML for PDF download)."""
+    path = os.path.join(ESTIMATES_DIR, f'{est_id}.json')
+    if not os.path.exists(path):
+        return '<h2 style="font-family:sans-serif;padding:40px">Estimate not found.</h2>', 404
+    with open(path, 'r', encoding='utf-8') as f:
+        est = json.load(f)
+    if not est.get('signature'):
+        return ('<h2 style="font-family:sans-serif;padding:40px">'
+                'This estimate has not been signed yet.</h2>'), 404
+    html = build_signed_confirmation(est)
+    return Response(html, mimetype='text/html')
+
+
 @app.route('/sign/<token>', methods=['GET', 'POST'])
 def customer_sign(token):
     result = find_by_token(token)
@@ -962,6 +1083,7 @@ def customer_sign(token):
         est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(est, f, indent=2)
+        send_signature_notification(est)
         return build_signed_confirmation(est)
 
     # Already signed — show the confirmation instead of the form
