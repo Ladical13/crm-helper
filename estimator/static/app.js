@@ -159,11 +159,11 @@ function blankEstimate() {
     cover_photo_id: null,
     share_token: null, signature: null,
     trades: {
-      roofing: { enabled:true,  line_items:[], colors:{} },
-      siding:  { enabled:false, line_items:[], colors:{} },
-      windows: { enabled:false, line_items:[], colors:{} },
-      gutters: { enabled:false, line_items:[], colors:{} },
-      other:     { enabled:false, line_items:[], colors:{} },
+      roofing: { enabled:true,  line_items:[], colors:{}, mode:'gbb' },
+      siding:  { enabled:false, line_items:[], colors:{}, mode:'gbb' },
+      windows: { enabled:false, line_items:[], colors:{}, mode:'gbb' },
+      gutters: { enabled:false, line_items:[], colors:{}, mode:'simple' },
+      other:     { enabled:false, line_items:[], colors:{}, mode:'gbb' },
       insurance: { enabled:false, line_items:[], scope_notes:'', claim_number:'', carrier:'', colors:{} },
     },
     photos: [],
@@ -207,8 +207,13 @@ function tradeTotal(trade, tier) {
   if (trade === 'insurance') return 0; // insurance uses insuranceTotal()
   const td = S.trades[trade];
   if (!td || !td.enabled) return 0;
+  const effectiveMode = td.mode || (trade === 'gutters' ? 'simple' : 'gbb');
+  if (effectiveMode === 'simple') {
+    return (td.line_items || []).reduce((sum, item) =>
+      sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0), 0);
+  }
   return td.line_items.reduce((sum, item) => {
-    const t = item.tiers[tier] || {};
+    const t = (item.tiers && item.tiers[tier]) || {};
     return sum + lineTotal(item.quantity, t.material_unit_cost, t.labor_unit_cost, trade);
   }, 0);
 }
@@ -1019,8 +1024,16 @@ function switchTrade(trade) {
 function renderTradeContent() {
   const td    = S.trades[activeTrade];
   const trade = activeTrade;
-  const isOther     = trade === 'other';
   const isInsurance = trade === 'insurance';
+  const isGutters   = trade === 'gutters';
+  // Gutters is always simple; insurance has its own model
+  const effectiveMode = isInsurance ? 'insurance'
+    : isGutters ? 'simple'
+    : (td.mode || 'gbb');
+  const showModeToggle   = !isInsurance && !isGutters && td.enabled;
+  const showLoadDefaults = td.enabled && !isInsurance && trade !== 'other';
+  const showColors       = td.enabled && !isInsurance && effectiveMode === 'gbb' && trade !== 'other';
+
   document.getElementById('trade-content').innerHTML =
     `<div class="trade-header">
       <h2>${TRADE_LABELS[trade]}${isInsurance?' <span class="ins-badge">Insurance Claim</span>':''}</h2>
@@ -1029,14 +1042,24 @@ function renderTradeContent() {
           <input type="checkbox" ${td.enabled?'checked':''}
             onchange="toggleTrade('${trade}',this.checked)"> Include in estimate
         </label>
-        ${td.enabled && !isOther && !isInsurance ? `
+        ${showModeToggle ? `
+          <div class="mode-toggle">
+            <button class="mode-btn${effectiveMode==='gbb'?' mode-btn-active':''}"
+              onclick="setTradeMode('${trade}','gbb')">Good / Better / Best</button>
+            <button class="mode-btn${effectiveMode==='simple'?' mode-btn-active':''}"
+              onclick="setTradeMode('${trade}','simple')">Simple</button>
+          </div>` : ''}
+        ${showLoadDefaults ? `
           <button class="btn-secondary" onclick="loadDefaults('${trade}')">Load Defaults</button>` : ''}
         ${td.enabled ? `<button class="btn-danger" onclick="clearTrade('${trade}')">Clear All</button>` : ''}
       </div>
     </div>
-    ${td.enabled && !isOther && !isInsurance ? renderColorSection(trade) : ''}
+    ${showColors ? renderColorSection(trade) : ''}
     ${td.enabled
-      ? (isInsurance ? renderInsuranceFreeform() : isOther ? renderOtherFreeform() : renderGBBGrid(trade))
+      ? (isInsurance ? renderInsuranceFreeform()
+         : effectiveMode === 'simple' ? renderSimpleFreeform(trade)
+         : trade === 'other' ? renderOtherFreeform()
+         : renderGBBGrid(trade))
       : `<div class="trade-disabled">${isInsurance
           ? 'Enable to enter insurance claim line items and scope of work.'
           : 'Enable this trade to add line items.'}</div>`}`;
@@ -1124,6 +1147,116 @@ function otherSetUnitCost(id, cost) {
     item.tiers[tier].labor_unit_cost    = 0;
   });
   setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
+
+/* ── Simple freeform tab (gutters + toggled trades) ─────────────────── */
+
+function renderSimpleFreeform(trade) {
+  const td    = S.trades[trade];
+  const items = td.line_items || [];
+  const UNITS = ['SQ','LF','EA','HR','LS','SF','BD'];
+
+  const rows = items.map(item => {
+    const qty   = parseFloat(item.quantity)  || 0;
+    const price = parseFloat(item.unit_price) || 0;
+    const total = qty * price;
+    return `<tr>
+      <td class="ins-name-cell">
+        <input class="other-name-input" type="text" value="${esc(item.name||'')}" placeholder="Item name"
+          onchange="simpleSetField('${trade}','${item.id}','name',this.value)">
+      </td>
+      <td class="ins-desc-cell">
+        <input class="ins-desc-input" type="text" value="${esc(item.description||'')}" placeholder="Description"
+          onchange="simpleSetField('${trade}','${item.id}','description',this.value)">
+      </td>
+      <td class="other-qty-cell">
+        <input class="other-qty-input" type="number" min="0" step="0.5" value="${qty||''}"
+          placeholder="0"
+          onchange="simpleSetField('${trade}','${item.id}','quantity',parseFloat(this.value)||0);simpleUpdateTotals('${trade}')">
+      </td>
+      <td>
+        <select class="other-unit-select"
+          onchange="simpleSetField('${trade}','${item.id}','unit',this.value)">
+          ${UNITS.map(u=>`<option ${(item.unit||'SQ')===u?'selected':''}>${u}</option>`).join('')}
+        </select>
+      </td>
+      <td class="other-price-cell">
+        <input class="other-price-input" type="number" min="0" step="0.01"
+          value="${price||''}" placeholder="0.00"
+          onchange="simpleSetField('${trade}','${item.id}','unit_price',parseFloat(this.value)||0);simpleUpdateTotals('${trade}')">
+      </td>
+      <td class="other-total-cell simple-line-total" data-strade="${trade}" data-sid="${item.id}">${fmtCur(total)}</td>
+      <td><button class="li-del" onclick="simpleDeleteItem('${trade}','${item.id}')" title="Remove">×</button></td>
+    </tr>`;
+  }).join('');
+
+  const grandTot = tradeTotal(trade, S.selected_tier);
+
+  return `
+    ${items.length ? `
+      <div class="other-table-wrap">
+        <table class="other-table ins-table">
+          <thead><tr>
+            <th class="ins-th-name">Item Name</th>
+            <th class="ins-th-desc">Description</th>
+            <th class="other-th-num">Qty</th>
+            <th class="other-th-num">Unit</th>
+            <th class="other-th-price">Price</th>
+            <th class="other-th-price">Total</th>
+            <th style="width:32px"></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr>
+            <td colspan="5" style="text-align:right;padding-right:12px;font-weight:600">${TRADE_LABELS[trade]} Subtotal</td>
+            <td class="other-total-cell" id="simple-grand-${trade}" style="font-weight:700;font-size:14px">${fmtCur(grandTot)}</td>
+            <td></td>
+          </tr></tfoot>
+        </table>
+      </div>` : `<div class="scope-empty"><p>No items yet. Click <strong>+ Add Item</strong> below.</p></div>`}
+    <div class="add-row-bar">
+      <button class="btn-add" onclick="simpleAddItem('${trade}')">+ Add Item</button>
+    </div>`;
+}
+
+function setTradeMode(trade, mode) {
+  if ((S.trades[trade].mode || 'gbb') === mode) return;
+  if (S.trades[trade].line_items.length > 0) {
+    if (!confirm(`Switching to ${mode === 'gbb' ? 'Good/Better/Best' : 'Simple'} mode will clear existing ${TRADE_LABELS[trade]} line items. Continue?`)) return;
+  }
+  S.trades[trade].mode = mode;
+  S.trades[trade].line_items = [];
+  setDirty(); renderTabBar(); renderTradeContent();
+}
+
+function simpleSetField(trade, id, field, val) {
+  const item = (S.trades[trade].line_items || []).find(it => it.id === id);
+  if (!item) return;
+  item[field] = val;
+  setDirty();
+}
+function simpleUpdateTotals(trade) {
+  (S.trades[trade].line_items || []).forEach(item => {
+    const total = (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
+    const cell  = document.querySelector(`.simple-line-total[data-strade="${trade}"][data-sid="${item.id}"]`);
+    if (cell) cell.textContent = fmtCur(total);
+  });
+  const gt = document.getElementById(`simple-grand-${trade}`);
+  if (gt) gt.textContent = fmtCur(tradeTotal(trade, S.selected_tier));
+  renderTotals();
+}
+function simpleAddItem(trade) {
+  if (!S.trades[trade].line_items) S.trades[trade].line_items = [];
+  S.trades[trade].line_items.push({
+    id: uid(), name:'', description:'', unit:'LF', quantity:0, unit_price:0,
+    customer_visible: true
+  });
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function simpleDeleteItem(trade, id) {
+  S.trades[trade].line_items = (S.trades[trade].line_items || []).filter(it => it.id !== id);
+  setDirty();
   if (activePage === 'pricing') renderTradeContent();
 }
 
@@ -1753,19 +1886,28 @@ async function loadDefaults(trade) {
     catch{alert('Failed to load templates');return;}
   }
   S.trades[trade].enabled=true;
-  S.trades[trade].line_items=(templates[trade]||[]).map(t=>{
-    // Use single cost field; server merges price book costs into templates
-    const cost = t.cost !== undefined ? parseFloat(t.cost)||0 : 0;
-    return {
-      id:uid(), name:t.name, unit:t.unit, quantity:0, scope_note:'',
+  const effectiveMode = S.trades[trade].mode || (trade === 'gutters' ? 'simple' : 'gbb');
+  if (effectiveMode === 'simple') {
+    // Simple mode: load names and units only; user fills in prices
+    S.trades[trade].line_items=(templates[trade]||[]).map(t=>({
+      id:uid(), name:t.name, description:'', unit:t.unit, quantity:0, unit_price:0,
       customer_visible: t.customer_visible !== false,
-      tiers:{
-        good:  {material_unit_cost:cost, labor_unit_cost:0, description:t.desc_good||'',  notes:t.notes_good||''},
-        better:{material_unit_cost:cost, labor_unit_cost:0, description:t.desc_better||'',notes:t.notes_better||''},
-        best:  {material_unit_cost:cost, labor_unit_cost:0, description:t.desc_best||'',  notes:t.notes_best||''},
-      }
-    };
-  });
+    }));
+  } else {
+    // GBB mode: load with tier cost structure
+    S.trades[trade].line_items=(templates[trade]||[]).map(t=>{
+      const cost = t.cost !== undefined ? parseFloat(t.cost)||0 : 0;
+      return {
+        id:uid(), name:t.name, unit:t.unit, quantity:0, scope_note:'',
+        customer_visible: t.customer_visible !== false,
+        tiers:{
+          good:  {material_unit_cost:cost, labor_unit_cost:0, description:t.desc_good||'',  notes:t.notes_good||''},
+          better:{material_unit_cost:cost, labor_unit_cost:0, description:t.desc_better||'',notes:t.notes_better||''},
+          best:  {material_unit_cost:cost, labor_unit_cost:0, description:t.desc_best||'',  notes:t.notes_best||''},
+        }
+      };
+    });
+  }
   setDirty(); rerender();
   if(activePage==='scope'){renderScopePage();}
   if(activePage==='pricing'){renderTabBar();renderTradeContent();}

@@ -545,6 +545,18 @@ input#cover-file-input { display: none; }
 .trade-header h2 { font-size: 17px; font-weight: 700; }
 .trade-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .checkbox-label { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; cursor: pointer; }
+
+/* Mode toggle (GBB ↔ Simple) */
+.mode-toggle {
+  display: flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden;
+}
+.mode-btn {
+  padding: 5px 12px; font-size: 11px; font-weight: 600; border: none; cursor: pointer;
+  background: var(--bg); color: var(--text-light); transition: background .12s, color .12s;
+  white-space: nowrap;
+}
+.mode-btn:hover { background: var(--border-light); color: var(--text); }
+.mode-btn-active { background: var(--primary) !important; color: #fff !important; }
 .checkbox-label input { width: auto; margin: 0; cursor: pointer; }
 .trade-disabled {
   padding: 40px; text-align: center; color: var(--text-light);

@@ -297,12 +297,17 @@ def calc_tier_total(est, tier):
         td = trades.get(tk, {})
         if not td.get('enabled'):
             continue
+        trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
         r = rate(tk)
         for item in td.get('line_items', []):
-            t    = (item.get('tiers') or {}).get(tier, {})
-            cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
-            qty  = float(item.get('quantity') or 0)
-            total += sell(cost, r) * qty
+            qty = float(item.get('quantity') or 0)
+            if trade_mode == 'simple':
+                sp = float(item.get('unit_price') or 0)
+            else:
+                t    = (item.get('tiers') or {}).get(tier, {})
+                cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
+                sp   = sell(cost, r)
+            total += sp * qty
     return total
 
 
@@ -331,22 +336,27 @@ def render_line_items(est, tier=None):
         td = trades.get(tk, {})
         if not td.get('enabled') or not td.get('line_items'):
             continue
+        # Determine trade mode: gutters always simple; others default gbb
+        trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
         r    = rate(tk)
         rows = []
         sub  = 0.0
         hidden_count = 0
         for item in td['line_items']:
-            t     = (item.get('tiers') or {}).get(tier, {})
-            cost  = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
-            sp    = sell(cost, r)
-            qty   = float(item.get('quantity') or 0)
+            qty  = float(item.get('quantity') or 0)
+            if trade_mode == 'simple':
+                sp   = float(item.get('unit_price') or 0)
+                desc = (item.get('description') or '').strip()
+            else:
+                t    = (item.get('tiers') or {}).get(tier, {})
+                cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
+                sp   = sell(cost, r)
+                desc = t.get('description', '')
             line  = sp * qty
-            sub  += line   # always include all items in subtotal
-            # Only render the row if customer_visible (default True)
+            sub  += line
             if not item.get('customer_visible', True):
                 hidden_count += 1
                 continue
-            desc  = t.get('description', '')
             rows.append(f'''<tr>
               <td class="cvn">{he(item.get("name",""))}
                 {'<div class="cvd">'+he(desc)+'</div>' if desc else ''}</td>
