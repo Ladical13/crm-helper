@@ -410,6 +410,7 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cvn{font-weight:500}
 .cvd{font-size:10px;color:#6b7280;font-style:italic;margin-top:2px}
 .cvc{text-align:center;color:#6b7280}
+.cvc-desc{font-weight:400;color:#6b7280;font-style:italic}
 .cvr{text-align:right;font-weight:600}
 .cvt tfoot td{background:#f9fafb;font-weight:700;padding:8px 10px;border-top:2px solid #e5e7eb;font-size:12px}
 .cvsub-l{text-align:right;color:#6b7280;font-size:11px;padding-right:12px}
@@ -495,18 +496,22 @@ def _build_insurance_cv(est, token):
     claim_num   = (ins_td.get('claim_number') or '').strip()
     scope_notes = (ins_td.get('scope_notes') or '').strip()
 
-    ins_total = sum(float(i.get('unit_price') or 0) * float(i.get('qty') or 0) for i in items)
+    ins_total = sum(
+        float(i.get('acv') or 0) + float(i.get('rcv') or 0) for i in items
+    )
 
     ins_rows = ''
     for item in items:
-        qty   = float(item.get('qty') or 0)
-        price = float(item.get('unit_price') or 0)
+        acv   = float(item.get('acv') or 0)
+        rcv   = float(item.get('rcv') or 0)
+        total = acv + rcv
+        desc  = (item.get('description') or '').strip()
         ins_rows += f'''<tr>
           <td class="cvn">{he(item.get("name",""))}</td>
-          <td class="cvc">{qty:g}</td>
-          <td class="cvc">{he(item.get("unit",""))}</td>
-          <td class="cvr">{fc(price)}</td>
-          <td class="cvr">{fc(qty*price)}</td></tr>'''
+          <td class="cvn cvc-desc">{he(desc)}</td>
+          <td class="cvr">{fc(acv)}</td>
+          <td class="cvr">{fc(rcv)}</td>
+          <td class="cvr">{fc(total)}</td></tr>'''
 
     notes_html   = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
     ctext_html   = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
@@ -521,11 +526,12 @@ def _build_insurance_cv(est, token):
         ins_table = f'''<div class="cvtrade">
           <div class="cvtrade-hd">Insurance Estimate Items</div>
           <table class="cvt"><thead><tr>
-            <th>Description</th><th class="cvth-c">Qty</th>
-            <th class="cvth-c">Unit</th><th class="cvth-r">Unit Price</th>
+            <th>Item Name</th><th>Description</th>
+            <th class="cvth-r">ACV</th>
+            <th class="cvth-r">RCV</th>
             <th class="cvth-r">Total</th></tr></thead>
           <tbody>{ins_rows}</tbody>
-          <tfoot><tr><td colspan="4" class="cvsub-l">Insurance Total</td>
+          <tfoot><tr><td colspan="4" class="cvsub-l">Insurance Claim Total</td>
             <td class="cvr cvsub">{fc(ins_total)}</td></tr></tfoot>
           </table></div>
         <div class="cvgrand">

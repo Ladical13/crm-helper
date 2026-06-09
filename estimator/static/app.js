@@ -219,7 +219,7 @@ function insuranceTotal() {
   const td = S.trades.insurance;
   if (!td || !td.enabled) return 0;
   return (td.line_items || []).reduce((s, item) =>
-    s + (parseFloat(item.qty)||0) * (parseFloat(item.unit_price)||0), 0);
+    s + (parseFloat(item.acv)||0) + (parseFloat(item.rcv)||0), 0);
 }
 
 /* ── Dirty tracking ────────────────────────────────────────────────── */
@@ -334,8 +334,11 @@ function renderEstimateTypeUI() {
 function setEstimateType(type) {
   S.estimate_type = type;
   if (type === 'insurance') {
+    // Disable all retail trades — insurance estimates only use the insurance section
+    ['roofing','siding','windows','gutters','other'].forEach(t => {
+      S.trades[t].enabled = false;
+    });
     S.trades.insurance.enabled = true;
-    // Jump to the Insurance pricing tab so the user immediately sees the right place to work
     activeTrade = 'insurance';
     switchPage('pricing');
   } else {
@@ -1129,30 +1132,29 @@ function otherSetUnitCost(id, cost) {
 function renderInsuranceFreeform() {
   const td    = S.trades.insurance;
   const items = td.line_items || [];
-  const UNITS = ['SQ','LF','EA','HR','LS','SF','BD'];
 
   const rows = items.map(item => {
-    const qty   = parseFloat(item.qty)        || 0;
-    const price = parseFloat(item.unit_price) || 0;
-    const total = qty * price;
+    const acv   = parseFloat(item.acv) || 0;
+    const rcv   = parseFloat(item.rcv) || 0;
+    const total = acv + rcv;
     return `<tr>
-      <td class="other-name-cell">
-        <input class="other-name-input" type="text" value="${esc(item.name||'')}" placeholder="Item / description"
+      <td class="ins-name-cell">
+        <input class="other-name-input" type="text" value="${esc(item.name||'')}" placeholder="Item name"
           onchange="insSetField('${item.id}','name',this.value)">
       </td>
-      <td class="other-qty-cell">
-        <input class="other-qty-input" type="number" min="0" step="0.5" value="${qty||''}"
-          placeholder="0" onchange="insSetField('${item.id}','qty',parseFloat(this.value)||0);insUpdateTotals()">
+      <td class="ins-desc-cell">
+        <input class="ins-desc-input" type="text" value="${esc(item.description||'')}" placeholder="Description"
+          onchange="insSetField('${item.id}','description',this.value)">
       </td>
-      <td>
-        <select class="other-unit-select" onchange="insSetField('${item.id}','unit',this.value)">
-          ${UNITS.map(u=>`<option ${(item.unit||'SQ')===u?'selected':''}>${u}</option>`).join('')}
-        </select>
+      <td class="ins-acv-cell">
+        <input class="ins-price-input" type="number" min="0" step="0.01"
+          value="${acv||''}" placeholder="0.00"
+          onchange="insSetField('${item.id}','acv',parseFloat(this.value)||0);insUpdateTotals()">
       </td>
-      <td class="other-price-cell">
-        <input class="other-price-input" type="number" min="0" step="0.01"
-          value="${price||''}" placeholder="0.00"
-          onchange="insSetField('${item.id}','unit_price',parseFloat(this.value)||0);insUpdateTotals()">
+      <td class="ins-acv-cell">
+        <input class="ins-price-input" type="number" min="0" step="0.01"
+          value="${rcv||''}" placeholder="0.00"
+          onchange="insSetField('${item.id}','rcv',parseFloat(this.value)||0);insUpdateTotals()">
       </td>
       <td class="other-total-cell ins-line-total" data-ins-id="${item.id}">${fmtCur(total)}</td>
       <td><button class="li-del" onclick="insDeleteItem('${item.id}')" title="Remove">×</button></td>
@@ -1177,17 +1179,17 @@ function renderInsuranceFreeform() {
       </div>
     </div>
     <div class="other-desc">
-      Enter the insurance-approved line items below. Prices are the insurance amounts — no margin is applied.
+      Enter the insurance-approved line items below. ACV and RCV amounts are added together for each line total.
     </div>
     ${items.length ? `
       <div class="other-table-wrap">
-        <table class="other-table">
+        <table class="other-table ins-table">
           <thead><tr>
-            <th>Item / Description</th>
-            <th class="other-th-num">Qty</th>
-            <th class="other-th-num">Unit</th>
-            <th class="other-th-price">Insurance Price</th>
-            <th class="other-th-price">Total</th>
+            <th class="ins-th-name">Item Name</th>
+            <th class="ins-th-desc">Description</th>
+            <th class="other-th-price">ACV</th>
+            <th class="other-th-price">RCV</th>
+            <th class="other-th-price">Insurance Price Total</th>
             <th style="width:32px"></th>
           </tr></thead>
           <tbody>${rows}</tbody>
@@ -1221,7 +1223,7 @@ function insSetField(id, field, val) {
 }
 function insUpdateTotals() {
   (S.trades.insurance.line_items || []).forEach(item => {
-    const total = (parseFloat(item.qty)||0) * (parseFloat(item.unit_price)||0);
+    const total = (parseFloat(item.acv)||0) + (parseFloat(item.rcv)||0);
     const cell  = document.querySelector(`.ins-line-total[data-ins-id="${item.id}"]`);
     if (cell) cell.textContent = fmtCur(total);
   });
@@ -1232,7 +1234,7 @@ function insUpdateTotals() {
 function insAddItem() {
   if (!S.trades.insurance.line_items) S.trades.insurance.line_items = [];
   S.trades.insurance.line_items.push({
-    id: 'li_' + Date.now().toString(36), name:'', qty:0, unit:'SQ', unit_price:0
+    id: 'li_' + Date.now().toString(36), name:'', description:'', acv:0, rcv:0
   });
   setDirty();
   if (activePage === 'pricing') renderTradeContent();
