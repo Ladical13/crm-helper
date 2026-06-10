@@ -813,7 +813,7 @@ def build_signed_confirmation(est):
     notes  = (est.get('notes_customer') or '').strip()
     ctext  = (est.get('contract_text') or '').strip()
     notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
-    ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Terms &amp; Conditions</summary>
+    ctext_html = f'''<details class="cvcontract" open><summary>&#128203; Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     email_row  = f'<tr><td>Email</td><td>{he(semail)}</td></tr>' if semail else ''
     hash_disp  = (dhash[:32] + '&hellip;') if len(dhash) > 32 else he(dhash)
