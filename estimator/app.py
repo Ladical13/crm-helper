@@ -331,11 +331,14 @@ def logout():
 @app.route('/api/me')
 def me():
     user = session.get('user', '')
+    rec  = load_users().get(user) or {}
     return jsonify({
         'username': user,
         'display_name': _display_name(user) if user else '',
         'email': f'{user}@projectoneroofing.com' if user else '',
-        'is_admin': _is_admin(user),
+        'is_admin': bool(rec.get('is_admin')),
+        # True when an admin set a temporary password the user must replace.
+        'must_change': bool(rec.get('must_change')),
     })
 
 
@@ -348,22 +351,65 @@ def list_users():
     return jsonify([
         {'username': u, 'display_name': _display_name(u),
          'enrolled': bool((users.get(u) or {}).get('pw_hash')),
+         'must_change': bool((users.get(u) or {}).get('must_change')),
          'is_admin': bool((users.get(u) or {}).get('is_admin'))}
         for u in TEAM_MEMBERS
     ])
 
 
+@app.route('/api/users/<username>/set-password', methods=['POST'])
+def set_user_password(username):
+    """Admin-only: set a one-time password for a team member. They are forced to
+    choose their own password the next time they sign in (must_change)."""
+    if not _is_admin(session.get('user', '')):
+        return jsonify({'error': 'admin only'}), 403
+    username = (username or '').strip().lower()
+    if username not in TEAM_MEMBERS:
+        return jsonify({'error': 'unknown team member'}), 400
+    password = (request.get_json(force=True) or {}).get('password') or ''
+    if len(password) < 6:
+        return jsonify({'error': 'Password must be at least 6 characters.'}), 400
+    users = load_users()
+    rec = users.get(username) or {}
+    rec['pw_hash']     = generate_password_hash(password)
+    rec['must_change'] = True
+    rec.setdefault('is_admin', username == 'luke')
+    users[username] = rec
+    save_users(users)
+    return jsonify({'ok': True, 'username': username})
+
+
 @app.route('/api/users/<username>/reset', methods=['POST'])
 def reset_user(username):
-    """Admin-only: clear a user's password so they re-enroll with the setup code."""
+    """Admin-only: clear a user's password so a fresh one can be set."""
     if not _is_admin(session.get('user', '')):
         return jsonify({'error': 'admin only'}), 403
     username = (username or '').strip().lower()
     users = load_users()
     if username in users:
         users[username].pop('pw_hash', None)
+        users[username].pop('must_change', None)
         save_users(users)
     return jsonify({'ok': True, 'reset': username})
+
+
+@app.route('/api/account/password', methods=['POST'])
+def change_own_password():
+    """Any signed-in user sets/replaces their own password."""
+    user = session.get('user', '')
+    if not user:
+        return jsonify({'error': 'authentication required'}), 401
+    password = (request.get_json(force=True) or {}).get('password') or ''
+    if len(password) < 8:
+        return jsonify({'error': 'Choose a password of at least 8 characters.'}), 400
+    users = load_users()
+    rec = users.get(user) or {}
+    rec['pw_hash'] = generate_password_hash(password)
+    rec['must_change'] = False
+    rec.setdefault('is_admin', user == 'luke')
+    users[user] = rec
+    save_users(users)
+    return jsonify({'ok': True})
 
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):

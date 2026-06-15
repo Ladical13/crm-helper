@@ -3745,6 +3745,8 @@ document.addEventListener('click', e=>{
 });
 
 let _loggedInUser = '';
+let _meInfo = null;
+let _loginsForced = false;
 
 document.addEventListener('DOMContentLoaded', async ()=>{
   populateSalespersonDropdown();
@@ -3770,6 +3772,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     const me = await meRes.json();
     if (me.username) {
       _loggedInUser = me.username;
+      _meInfo = me;
       const badge = document.getElementById('user-badge');
       const nameEl = document.getElementById('user-display-name');
       if (badge) badge.style.display = 'flex';
@@ -3779,6 +3782,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         S.salesperson = me.username;
         setVal('salesperson', me.username);
       }
+      // Admin set a temporary password — force them to choose their own now.
+      if (me.must_change) openLoginsModal(true);
     }
   } catch {}
   // Apply any saved defaults to the initial blank estimate
@@ -3807,3 +3812,116 @@ document.addEventListener('click', function(e) {
     menu.classList.remove('open');
   }
 });
+
+/* ── Passwords & team logins ───────────────────────────────────────── */
+function openLoginsModal(forced) {
+  _loginsForced = forced === true;
+  const m       = document.getElementById('logins-modal');
+  const banner  = document.getElementById('logins-forced-banner');
+  const closeBtn= document.getElementById('logins-close');
+  const title   = document.getElementById('logins-title');
+  const teamSec = document.getElementById('team-logins-section');
+  banner.style.display   = _loginsForced ? 'block' : 'none';
+  closeBtn.style.display = _loginsForced ? 'none' : '';
+  title.textContent      = _loginsForced ? '🔑 Set Your Password' : '🔑 Passwords & Logins';
+  // Team management is admin-only and hidden while a forced change is pending.
+  if (_meInfo && _meInfo.is_admin && !_loginsForced) { teamSec.style.display = ''; renderTeamLogins(); }
+  else teamSec.style.display = 'none';
+  document.getElementById('my-pw-msg').textContent = '';
+  document.getElementById('my-new-pw').value = '';
+  document.getElementById('my-new-pw2').value = '';
+  m.classList.remove('hidden');
+  closeMoreMenu();
+}
+function closeLoginsModal() {
+  if (_loginsForced) return;   // must set a password before continuing
+  document.getElementById('logins-modal').classList.add('hidden');
+}
+function maybeCloseLogins(e) { if (e.target.id === 'logins-modal') closeLoginsModal(); }
+
+async function submitMyPassword() {
+  const a   = document.getElementById('my-new-pw').value;
+  const b   = document.getElementById('my-new-pw2').value;
+  const msg = document.getElementById('my-pw-msg');
+  if (a.length < 8) { msg.className = 'logins-msg err'; msg.textContent = 'Choose at least 8 characters.'; return; }
+  if (a !== b)      { msg.className = 'logins-msg err'; msg.textContent = 'Passwords do not match.'; return; }
+  const r = await fetch('/api/account/password', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ password: a }),
+  });
+  if (r.ok) {
+    msg.className = 'logins-msg ok'; msg.textContent = '✓ Password saved.';
+    document.getElementById('my-new-pw').value = '';
+    document.getElementById('my-new-pw2').value = '';
+    if (_meInfo) _meInfo.must_change = false;
+    _loginsForced = false;
+    document.getElementById('logins-forced-banner').style.display = 'none';
+    document.getElementById('logins-close').style.display = '';
+    setTimeout(closeLoginsModal, 700);
+  } else {
+    const e = await r.json().catch(() => ({}));
+    msg.className = 'logins-msg err'; msg.textContent = e.error || 'Could not save password.';
+  }
+}
+
+async function renderTeamLogins() {
+  const wrap = document.getElementById('team-logins-list');
+  wrap.innerHTML = '<div class="tl-loading">Loading…</div>';
+  let users;
+  try {
+    const r = await fetch('/api/users');
+    if (!r.ok) { wrap.innerHTML = '<div class="tl-err">Admin access required.</div>'; return; }
+    users = await r.json();
+  } catch { wrap.innerHTML = '<div class="tl-err">Could not load team.</div>'; return; }
+  wrap.innerHTML = users.map(u => {
+    const status = u.enrolled ? (u.must_change ? 'Temp set — not changed yet' : 'Active') : 'No login yet';
+    const stcls  = u.enrolled ? (u.must_change ? 'tl-temp' : 'tl-active') : 'tl-none';
+    return `<div class="tl-row">
+      <div class="tl-info">
+        <span class="tl-name">${esc(u.display_name)}${u.is_admin ? ' <span class="tl-admin">admin</span>' : ''}</span>
+        <span class="tl-status ${stcls}" id="tlst-${u.username}">${status}</span>
+      </div>
+      <div class="tl-actions">
+        <input type="text" class="tl-pw" id="tlpw-${u.username}" placeholder="Temp password" autocomplete="off">
+        <button class="tl-gen" onclick="tlGen('${u.username}')" title="Generate a password">🎲</button>
+        <button class="tl-set btn-primary" onclick="adminSetPassword('${u.username}')">Set</button>
+        ${u.enrolled ? `<button class="tl-reset" onclick="adminResetUser('${u.username}')">Clear</button>` : ''}
+      </div>
+      <div class="tl-msg" id="tlmsg-${u.username}"></div>
+    </div>`;
+  }).join('');
+}
+
+function tlGen(u) {
+  const words = ['roof','hail','shingle','gutter','ridge','eave','storm','peak','nail','flash'];
+  const word  = words[Math.floor(Math.random() * words.length)];
+  const num   = Math.floor(1000 + Math.random() * 9000);
+  const el = document.getElementById('tlpw-' + u);
+  if (el) el.value = `${word}-${num}`;
+}
+
+async function adminSetPassword(u) {
+  const el  = document.getElementById('tlpw-' + u);
+  const msg = document.getElementById('tlmsg-' + u);
+  const pw  = (el && el.value || '').trim();
+  if (pw.length < 6) { if (msg) { msg.className = 'tl-msg err'; msg.textContent = 'At least 6 characters.'; } return; }
+  const r = await fetch(`/api/users/${u}/set-password`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ password: pw }),
+  });
+  if (r.ok) {
+    if (msg) { msg.className = 'tl-msg ok'; msg.textContent = `✓ Temp password: ${pw} — text it to them. They'll set their own on first sign-in.`; }
+    if (el) el.value = '';
+    const st = document.getElementById('tlst-' + u);
+    if (st) { st.textContent = 'Temp set — not changed yet'; st.className = 'tl-status tl-temp'; }
+  } else {
+    const e = await r.json().catch(() => ({}));
+    if (msg) { msg.className = 'tl-msg err'; msg.textContent = e.error || 'Could not set password.'; }
+  }
+}
+
+async function adminResetUser(u) {
+  if (!confirm('Clear this login? They will need a new temporary password before they can sign in.')) return;
+  const r = await fetch(`/api/users/${u}/reset`, { method: 'POST' });
+  if (r.ok) renderTeamLogins();
+}

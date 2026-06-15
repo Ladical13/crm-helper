@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Project One Roofing — Estimate Builder</title>
-  <link rel="stylesheet" href="/static/style.css?v=22">
+  <link rel="stylesheet" href="/static/style.css?v=23">
 </head>
 <body>
 
@@ -30,6 +30,7 @@
     <button id="more-menu-btn" class="more-menu-btn" onclick="toggleMoreMenu()">⋮</button>
     <div class="user-badge" id="user-badge" style="display:none">
       <span id="user-display-name" class="user-name"></span>
+      <button class="btn-logins" onclick="openLoginsModal()" title="Passwords & team logins">🔑</button>
       <a href="/logout" class="btn-signout">Sign Out</a>
     </div>
   </div>
@@ -41,6 +42,7 @@
     <button onclick="shareEstimate();closeMoreMenu()">Send / Sign</button>
     <button onclick="doPrint();closeMoreMenu()">Print / PDF</button>
     <button onclick="openSettings();closeMoreMenu()">⚙ Settings</button>
+    <button onclick="openLoginsModal();closeMoreMenu()">🔑 Passwords &amp; Logins</button>
     <a href="/logout" class="overflow-signout">Sign Out</a>
   </div>
 </header>
@@ -276,6 +278,44 @@
   </div>
 </div>
 
+<!-- ── Passwords & Team Logins modal ────────────────────────────────── -->
+<div id="logins-modal" class="modal hidden" onclick="maybeCloseLogins(event)">
+  <div class="modal-box logins-modal-box">
+    <div class="modal-header">
+      <h2 id="logins-title">🔑 Passwords &amp; Logins</h2>
+      <button id="logins-close" onclick="closeLoginsModal()" class="modal-close">×</button>
+    </div>
+    <div class="logins-body">
+      <div id="logins-forced-banner" class="logins-forced-banner" style="display:none">
+        Your password was set by an admin. Choose your own password to continue.
+      </div>
+
+      <!-- Change my own password -->
+      <section class="logins-section">
+        <h3>My Password</h3>
+        <div class="field-group">
+          <label>New password <span class="note-tag">8+ characters</span></label>
+          <input type="password" id="my-new-pw" autocomplete="new-password" placeholder="New password">
+        </div>
+        <div class="field-group">
+          <label>Confirm new password</label>
+          <input type="password" id="my-new-pw2" autocomplete="new-password" placeholder="Re-enter password">
+        </div>
+        <div id="my-pw-msg" class="logins-msg"></div>
+        <button class="btn-primary" onclick="submitMyPassword()">✓ Save My Password</button>
+      </section>
+
+      <!-- Admin: team logins -->
+      <section class="logins-section" id="team-logins-section" style="display:none">
+        <h3>Team Logins <span class="note-tag">admin only</span></h3>
+        <p class="logins-hint">Set a one-time password for a team member, then text it to them.
+          They'll be asked to choose their own password the first time they sign in.</p>
+        <div id="team-logins-list" class="team-logins-list"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
 <!-- ── Settings modal ───────────────────────────────────────────────── -->
 <div id="settings-modal" class="modal hidden" onclick="maybeCloseSettings(event)">
   <div class="modal-box settings-modal-box">
@@ -382,6 +422,6 @@
 <!-- hidden input for direct cover-photo upload -->
 <input type="file" id="cover-photo-input" accept="image/*" style="display:none">
 
-<script src="/static/app.js?v=22"></script>
+<script src="/static/app.js?v=23"></script>
 </body>
 </html>
