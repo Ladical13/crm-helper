@@ -502,6 +502,8 @@ function switchPage(page) {
   const target = document.getElementById('page-' + page);
   if (target) target.style.display = 'flex';
   updatePageNav();
+  const activeBtn = document.querySelector('.page-btn.active');
+  if (activeBtn) activeBtn.scrollIntoView({block:'nearest',inline:'center',behavior:'smooth'});
   if (page === 'pricing') { renderTabBar(); renderTradeContent(); }
   if (page === 'intro')   renderIntroPage();
   if (page === 'scope')   renderScopePage();
@@ -3771,4 +3773,25 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   applyTierDefaults(S);
   renderAll();
   switchPage('cover');
+});
+
+/* ── Mobile navigation ─────────────────────────────────────────────── */
+function toggleSidebar() {
+  document.getElementById('app-layout').classList.toggle('sidebar-open');
+}
+function closeSidebar() {
+  document.getElementById('app-layout').classList.remove('sidebar-open');
+}
+function toggleMoreMenu() {
+  document.getElementById('header-overflow-menu').classList.toggle('open');
+}
+function closeMoreMenu() {
+  document.getElementById('header-overflow-menu').classList.remove('open');
+}
+document.addEventListener('click', function(e) {
+  const menu = document.getElementById('header-overflow-menu');
+  const btn  = document.getElementById('more-menu-btn');
+  if (menu && menu.classList.contains('open') && !menu.contains(e.target) && e.target !== btn) {
+    menu.classList.remove('open');
+  }
 });

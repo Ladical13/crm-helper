@@ -4,35 +4,50 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Project One Roofing — Estimate Builder</title>
-  <link rel="stylesheet" href="/static/style.css?v=15">
+  <link rel="stylesheet" href="/static/style.css?v=21">
 </head>
 <body>
 
 <!-- ── Header ──────────────────────────────────────────────────────── -->
 <header id="app-header">
   <div class="header-left">
+    <button id="nav-toggle" class="nav-toggle-btn" onclick="toggleSidebar()">☰</button>
     <img src="/static/logo.png" alt="Project One Roofing" class="header-logo">
     <div id="estimate-number" class="estimate-number">New Estimate</div>
   </div>
   <div class="header-right">
     <span id="save-indicator" class="save-indicator"></span>
-    <button onclick="openDashboard()" class="btn-dashboard">📊 Dashboard</button>
-    <button onclick="newEstimateAction()">New</button>
-    <button onclick="openEstimate()">Open</button>
+    <div class="header-desktop-btns">
+      <button onclick="openDashboard()" class="btn-dashboard">📊 Dashboard</button>
+      <button onclick="newEstimateAction()">New</button>
+      <button onclick="openEstimate()">Open</button>
+      <button onclick="openPriceBook()" class="btn-pricebook">📋 Price Book</button>
+      <button id="share-btn" onclick="shareEstimate()" class="btn-share">Send / Sign</button>
+      <button onclick="doPrint()" class="btn-print">Print / PDF</button>
+      <button onclick="openSettings()" class="btn-settings" title="Settings">⚙</button>
+    </div>
     <button id="save-btn" onclick="saveEstimate()">Save</button>
-    <button onclick="openPriceBook()" class="btn-pricebook">📋 Price Book</button>
-    <button id="share-btn" onclick="shareEstimate()" class="btn-share">Send / Sign</button>
-    <button onclick="doPrint()" class="btn-print">Print / PDF</button>
-    <button onclick="openSettings()" class="btn-settings" title="Settings">⚙</button>
+    <button id="more-menu-btn" class="more-menu-btn" onclick="toggleMoreMenu()">⋮</button>
     <div class="user-badge" id="user-badge" style="display:none">
       <span id="user-display-name" class="user-name"></span>
       <a href="/logout" class="btn-signout">Sign Out</a>
     </div>
   </div>
+  <div id="header-overflow-menu" class="header-overflow-menu">
+    <button onclick="openDashboard();closeMoreMenu()">📊 Dashboard</button>
+    <button onclick="newEstimateAction();closeMoreMenu()">New Estimate</button>
+    <button onclick="openEstimate();closeMoreMenu()">Open</button>
+    <button onclick="openPriceBook();closeMoreMenu()">📋 Price Book</button>
+    <button onclick="shareEstimate();closeMoreMenu()">Send / Sign</button>
+    <button onclick="doPrint();closeMoreMenu()">Print / PDF</button>
+    <button onclick="openSettings();closeMoreMenu()">⚙ Settings</button>
+  </div>
 </header>
 
 <!-- ── App layout ──────────────────────────────────────────────────── -->
 <div id="app-layout">
+
+  <div id="sidebar-backdrop" onclick="closeSidebar()"></div>
 
   <!-- Sidebar -->
   <aside id="sidebar">
@@ -366,6 +381,6 @@
 <!-- hidden input for direct cover-photo upload -->
 <input type="file" id="cover-photo-input" accept="image/*" style="display:none">
 
-<script src="/static/app.js?v=20"></script>
+<script src="/static/app.js?v=21"></script>
 </body>
 </html>
