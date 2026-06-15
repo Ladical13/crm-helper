@@ -1683,9 +1683,14 @@ input#cover-file-input { display: none; }
   text-align: left; border-bottom: 1px solid rgba(255,255,255,.1);
   cursor: pointer; transition: background .12s;
 }
-.header-overflow-menu button:last-child { border-bottom: none; }
 .header-overflow-menu button:hover { background: rgba(255,255,255,.12); }
 .header-overflow-menu button:first-child { border-radius: 0; }
+.overflow-signout {
+  padding: 13px 18px; color: #fca5a5; font-size: 14px; font-weight: 600;
+  text-decoration: none; border-top: 1px solid rgba(255,255,255,.2);
+  background: rgba(0,0,0,.15); transition: background .12s;
+}
+.overflow-signout:hover { background: rgba(255,255,255,.12); color: #fecaca; }
 
 /* Sidebar backdrop */
 #sidebar-backdrop {
@@ -1707,6 +1712,8 @@ input#cover-file-input { display: none; }
   #app-header { padding: 0 10px; }
   .header-logo { height: 30px; }
   .estimate-number { display: none; }
+  .save-indicator { display: none; }
+  .user-badge { display: none !important; }
 
   /* Sidebar: fixed overlay drawer */
   #sidebar {

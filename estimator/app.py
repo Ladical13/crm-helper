@@ -720,7 +720,7 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cv-tier-check{font-size:11px;font-weight:700;color:#6b7280;border:1px solid #d1d5db;border-radius:20px;
   padding:3px 9px;display:inline-block;margin-top:2px;transition:all .15s}
 .cv-tier-selected .cv-tier-check{background:#6b7280;color:#fff}
-@media(max-width:400px){.cvgrid{grid-template-columns:1fr}.cvpkg-total{font-size:26px}.cv-tier-cards{grid-template-columns:1fr}}
+@media(max-width:600px){.cvgrid{grid-template-columns:1fr}.cvpkg-total{font-size:26px}.cv-tier-cards{grid-template-columns:1fr}}
 @media print{.cv-print-btn{display:none}body{background:#fff}.cert{border-width:1.5pt;page-break-inside:avoid}}
 """
 
