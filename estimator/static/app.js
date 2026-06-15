@@ -1,3 +1,15 @@
+/* ── Auth: bounce to login on session expiry ───────────────────────── */
+// Every API call goes through fetch; if the session has expired the server
+// returns 401, so redirect to the login page instead of failing to parse JSON.
+(function () {
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const res = await _origFetch(...args);
+    if (res.status === 401) { window.location = '/login'; }
+    return res;
+  };
+})();
+
 /* ── Constants ─────────────────────────────────────────────────────── */
 
 const TRADES = ['roofing','siding','windows','gutters','other','insurance'];

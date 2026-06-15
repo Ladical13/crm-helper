@@ -11,12 +11,13 @@ import smtplib
 import zipfile
 import threading
 import html as _html
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory, send_file, Response, session, redirect
+from werkzeug.security import generate_password_hash, check_password_hash
 
 try:
     import requests as http
@@ -30,6 +31,18 @@ except ImportError:
 
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.environ.get('SESSION_SECRET', secrets.token_hex(32))
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    # Secure cookies over HTTPS in production (Railway). Allow plain HTTP for
+    # local dev so the login flow works on http://localhost / the LAN IP.
+    SESSION_COOKIE_SECURE=bool(os.environ.get('DATA_DIR')),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=14),
+)
+
+# Shared setup code for first-time password enrollment. Set SIGNUP_CODE in the
+# environment; blank it out once everyone has enrolled to disable new sign-ups.
+SIGNUP_CODE = os.environ.get('SIGNUP_CODE', '').strip()
 
 TEAM_MEMBERS = [
     'aaron','avery','bryan','casey','chris','chris.rollins','clint','cole','dalton',
@@ -40,18 +53,60 @@ TEAM_MEMBERS = [
 def _display_name(username):
     return ' '.join(p.capitalize() for p in username.replace('.', ' ').split())
 
-def require_auth(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        if not session.get('user'):
-            return redirect('/login')
-        return f(*args, **kwargs)
-    return wrapper
+# ── User accounts (per-user passwords) ──────────────────────────────────────
+# Stored as JSON in DATA_DIR alongside estimates/settings:
+#   { "luke": {"pw_hash": "...", "is_admin": true}, ... }
+# A user with no pw_hash has not enrolled yet; first login sets it (gated by
+# SIGNUP_CODE). 'luke' is seeded as the admin who can reset other users.
+# Path resolved lazily because DATA_DIR is defined further down this module.
+def _users_file():
+    return os.path.join(DATA_DIR, 'users.json')
+
+def load_users():
+    path = _users_file()
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_users(users):
+    with open(_users_file(), 'w', encoding='utf-8') as f:
+        json.dump(users, f, indent=2)
+
+def _is_admin(username):
+    return bool((load_users().get(username) or {}).get('is_admin'))
+
+# ── Default-deny auth guard ─────────────────────────────────────────────────
+# Every request requires a logged-in session EXCEPT the explicit allowlist below.
+# This is the opposite of decorating each protected route (which is what let the
+# data APIs leak — a route added without the decorator was silently public).
+PUBLIC_ENDPOINTS = {
+    'login',          # the login page / form
+    'logout',         # clears the session
+    'customer_sign',  # /sign/<token> — public, protected by the 192-bit token
+    'serve_upload',   # /uploads/<file> — cover photos shown on the customer view
+    'static',         # JS/CSS for the login + app shell (non-sensitive client code)
+}
+
+@app.before_request
+def _require_login():
+    if request.endpoint in PUBLIC_ENDPOINTS or session.get('user'):
+        return
+    # Unauthenticated: JSON 401 for API calls (the SPA redirects), else to login.
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'authentication required'}), 401
+    return redirect('/login')
 
 BASE_URL = "https://base44.app/api/apps/69320ef0c647fee442697971"
-# Base44 API token — set BASE44_TOKEN env var to rotate without a code change.
-# NOTE: tokens expire (check the JWT exp claim). 401s from CRM = expired token.
-TOKEN = os.environ.get('BASE44_TOKEN') or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsdWtlQHByb2plY3RvbmVyb29maW5nLmNvbSIsImV4cCI6MTc4MTIwNzk5OSwiaWF0IjoxNzczNDMxOTk5fQ.ExSmR97vp50U-VaNgTRF3FawGffSjpsoznXcyfvRS2I"
+# Base44 API token — MUST be supplied via the BASE44_TOKEN env var (never commit
+# a token to source). NOTE: tokens expire (check the JWT exp claim). 401s from the
+# CRM = expired or missing token; rotate in Base44 and update BASE44_TOKEN.
+TOKEN = os.environ.get('BASE44_TOKEN', '').strip()
+if not TOKEN:
+    print('[CRM] WARNING: BASE44_TOKEN is not set — CRM lookups will fail until it is configured.')
 CO_LOCATION_ID = "6984bb86d86d9c92d6827a17"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -162,7 +217,6 @@ def fetch_all_projects():
 # ── Static ─────────────────────────────────────────────────────────────────
 
 @app.route('/')
-@require_auth
 def index():
     return send_from_directory(app.static_folder, 'index.html')
 
@@ -171,12 +225,41 @@ def index():
 def login():
     error = ''
     if request.method == 'POST':
-        username = (request.form.get('username') or '').strip()
-        if username in TEAM_MEMBERS:
-            session.permanent = True
-            session['user'] = username
-            return redirect('/')
-        error = 'Please select your name from the list.'
+        username  = (request.form.get('username') or '').strip().lower()
+        password  = request.form.get('password') or ''
+        code      = (request.form.get('signup_code') or '').strip()
+
+        if username not in TEAM_MEMBERS:
+            error = 'Please select your name from the list.'
+        else:
+            users = load_users()
+            rec   = users.get(username) or {}
+            if rec.get('pw_hash'):
+                # Enrolled — verify password.
+                if check_password_hash(rec['pw_hash'], password):
+                    session.permanent = True
+                    session['user'] = username
+                    return redirect('/')
+                error = 'Incorrect password. Try again.'
+            else:
+                # First time — enroll with the shared setup code + a new password.
+                if not password and not code:
+                    error = 'First time signing in? Enter the team setup code and choose a password.'
+                elif not SIGNUP_CODE:
+                    error = 'Sign-up is disabled. Ask Luke to set you up.'
+                elif code != SIGNUP_CODE:
+                    error = 'Incorrect setup code.'
+                elif len(password) < 8:
+                    error = 'Choose a password of at least 8 characters.'
+                else:
+                    users[username] = {
+                        'pw_hash':  generate_password_hash(password),
+                        'is_admin': username == 'luke',
+                    }
+                    save_users(users)
+                    session.permanent = True
+                    session['user'] = username
+                    return redirect('/')
 
     options = ''.join(
         f'<option value="{u}">{_display_name(u)}</option>'
@@ -203,15 +286,23 @@ select{{width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:6px;
   appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right 12px center}}
 select:focus{{outline:none;border-color:#1a3a5c;box-shadow:0 0 0 3px rgba(26,58,92,.12)}}
+input{{width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:6px;
+  font-size:14px;background:#fff;margin-bottom:14px}}
+input:focus{{outline:none;border-color:#1a3a5c;box-shadow:0 0 0 3px rgba(26,58,92,.12)}}
 button{{width:100%;padding:12px;background:#1a3a5c;color:#fff;border:none;
   border-radius:6px;font-size:14px;font-weight:700;cursor:pointer}}
 button:hover{{background:#0e2440}}
 .login-error{{color:#dc2626;font-size:13px;margin-bottom:12px}}
+.login-hint{{font-size:11px;color:#9ca3af;margin:-6px 0 14px;line-height:1.45;text-align:left}}
+.setup-row{{border-top:1px solid #eef0f3;margin-top:6px;padding-top:14px}}
+.setup-row summary{{font-size:12px;color:#1a3a5c;cursor:pointer;margin-bottom:12px;
+  font-weight:600;list-style:none}}
+.setup-row summary::-webkit-details-marker{{display:none}}
 </style></head><body>
 <div class="card">
   <img src="/static/logo.png" alt="Project One Roofing">
   <h1>Estimate Builder</h1>
-  <p class="sub">Select your name to continue</p>
+  <p class="sub">Sign in to continue</p>
   <div class="stripe"></div>
   {error_html}
   <form method="POST">
@@ -219,6 +310,12 @@ button:hover{{background:#0e2440}}
       <option value="">Select your name…</option>
       {options}
     </select>
+    <input type="password" name="password" placeholder="Password" autocomplete="current-password" required>
+    <details class="setup-row">
+      <summary>First time signing in?</summary>
+      <p class="login-hint">Enter the team setup code (ask Luke) and choose a password above — it'll be saved as your login.</p>
+      <input type="text" name="signup_code" placeholder="Team setup code" autocomplete="off">
+    </details>
     <button type="submit">Sign In →</button>
   </form>
 </div>
@@ -238,7 +335,35 @@ def me():
         'username': user,
         'display_name': _display_name(user) if user else '',
         'email': f'{user}@projectoneroofing.com' if user else '',
+        'is_admin': _is_admin(user),
     })
+
+
+@app.route('/api/users', methods=['GET'])
+def list_users():
+    """Admin-only: enrollment status for every team member."""
+    if not _is_admin(session.get('user', '')):
+        return jsonify({'error': 'admin only'}), 403
+    users = load_users()
+    return jsonify([
+        {'username': u, 'display_name': _display_name(u),
+         'enrolled': bool((users.get(u) or {}).get('pw_hash')),
+         'is_admin': bool((users.get(u) or {}).get('is_admin'))}
+        for u in TEAM_MEMBERS
+    ])
+
+
+@app.route('/api/users/<username>/reset', methods=['POST'])
+def reset_user(username):
+    """Admin-only: clear a user's password so they re-enroll with the setup code."""
+    if not _is_admin(session.get('user', '')):
+        return jsonify({'error': 'admin only'}), 403
+    username = (username or '').strip().lower()
+    users = load_users()
+    if username in users:
+        users[username].pop('pw_hash', None)
+        save_users(users)
+    return jsonify({'ok': True, 'reset': username})
 
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):
@@ -1485,7 +1610,10 @@ def send_signature_notification(est):
         stime_fmt = stime
 
     base     = PUBLIC_URL or 'http://localhost:5000'
-    view_url = f'{base}/api/estimates/{eid}/signed'
+    # Link to the public token-gated signed page so the rep can open it straight
+    # from the email without an app session (the est_id route now requires login).
+    _tok     = est.get('share_token')
+    view_url = f'{base}/sign/{_tok}' if _tok else f'{base}/api/estimates/{eid}/signed'
 
     subject  = f'✅ {enum} Signed — {c.get("name", "Customer")}'
 
@@ -1892,7 +2020,8 @@ def push_contract_to_crm(est_id):
         # Fallback: link the CRM doc to our hosted signed page
         if not file_url:
             base = PUBLIC_URL or f'http://{LAN_IP}:5000'
-            file_url  = f'{base}/api/estimates/{est_id}/signed'
+            _tok = est.get('share_token')
+            file_url  = f'{base}/sign/{_tok}' if _tok else f'{base}/api/estimates/{est_id}/signed'
             file_type = 'text/html'
             print('[crm-push] using hosted signed-page link as file_url fallback')
 
@@ -2534,7 +2663,6 @@ def _build_backup_zip(include_uploads=True):
 
 
 @app.route('/api/backup')
-@require_auth
 def download_backup():
     """Full on-demand backup: estimates + photos + config."""
     data = _build_backup_zip(include_uploads=True)
