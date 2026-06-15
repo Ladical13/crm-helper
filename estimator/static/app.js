@@ -4,7 +4,7 @@ const TRADES = ['roofing','siding','windows','gutters','other','insurance'];
 const TRADE_LABELS = { roofing:'Roofing', siding:'Siding', windows:'Windows', gutters:'Gutters', other:'Other', insurance:'Insurance' };
 const TIERS = ['good','better','best'];
 const TIER_LABELS = { good:'Good', better:'Better', best:'Best' };
-const TEAM = ['aaron','bryan','casey','chris','chris.rollins','clint','cole','dalton',
+const TEAM = ['aaron','avery','bryan','casey','chris','chris.rollins','clint','cole','dalton',
               'derik','eric','gabriel','jacob','jeremy','jonathan','kyle','logan',
               'luke','richard','ryan','shiloh','ted'];
 const TRADE_COLOR_FIELDS = {
@@ -51,6 +51,223 @@ Homeowner has the right to cancel this contract without penalty within 3 busines
 
 DISPUTE RESOLUTION
 Any dispute arising from this agreement shall first be subject to good-faith mediation. If unsuccessful, disputes shall be resolved by binding arbitration in the county where the project is located.`;
+
+const DEFAULT_INSURANCE_CONTRACT = `TERMS AND CONDITIONS — PROJECT ONE ROOFING (INSURANCE CLAIM)
+
+ASSIGNMENT OF BENEFITS / AUTHORIZATION
+Homeowner authorizes Project One Roofing to communicate directly with the insurance carrier on the homeowner's behalf to ensure full and fair recovery under the applicable policy. Homeowner may assign insurance benefits directly to Contractor as permitted by applicable law.
+
+SCOPE OF WORK
+Contractor agrees to perform all work as approved and covered by the homeowner's insurance carrier. Work will be completed to restore the property to pre-loss condition using materials that meet or exceed insurance replacement standards. Any supplemental work required beyond the initially approved scope will be submitted to the insurance carrier for additional approval before proceeding.
+
+PAYMENT TERMS
+Homeowner's out-of-pocket responsibility is limited to the policy deductible, plus the cost of any non-covered upgrades elected by the Homeowner. Final payment is due upon completion of work. Accepted: check, ACH bank transfer, or major credit card (3% processing fee applies). Homeowner shall endorse and deliver all insurance proceeds to Contractor promptly upon receipt.
+
+DEDUCTIBLE
+Homeowner acknowledges that the deductible is their financial responsibility and is not covered by the insurance carrier. As required by law, Contractor cannot waive, absorb, rebate, or otherwise pay the deductible on behalf of the Homeowner.
+
+SUPPLEMENTS
+Construction costs, materials, and code-required upgrades not initially included in the carrier's estimate may result in supplemental claims. Contractor will file reasonable supplements on Homeowner's behalf. Homeowner authorizes Contractor to negotiate directly with the carrier on supplemental items.
+
+MATERIALS
+All materials remain the property of Project One Roofing until paid in full. Contractor reserves the right to substitute materials of equal or greater quality if specified materials are unavailable, with prior notification to Homeowner.
+
+WARRANTY
+Project One Roofing warrants all workmanship against defects for 5 years from the date of project completion. Manufacturer warranties will be registered in the homeowner's name upon receipt of final payment.
+
+INSURANCE & LICENSING
+Project One Roofing carries general liability insurance ($1,000,000 per occurrence / $2,000,000 aggregate) and maintains workers' compensation coverage for all employees and subcontractors. Certificates of insurance available upon request.
+
+PROPERTY CONDITIONS
+Homeowner grants Contractor reasonable access to the property. Contractor will take reasonable precautions to protect landscaping and surrounding improvements. Contractor is not responsible for pre-existing damage, hairline drywall cracks from normal roofing vibration, or damage to unmarked underground utilities.
+
+CLEANUP
+Contractor will remove all project-related debris and perform a magnetic sweep of driveway and lawn areas within 1 business day of project completion.
+
+PERMITS & INSPECTIONS
+Where required, Contractor will obtain all necessary building permits and schedule required inspections. Permit fees are included in the insurance-approved scope unless otherwise noted.
+
+RIGHT TO CANCEL
+Homeowner has the right to cancel this contract without penalty within 3 business days of signing, provided no materials have been delivered and no work has commenced. Cancellation must be submitted in writing.
+
+DISPUTE RESOLUTION
+Any dispute arising from this agreement shall first be subject to good-faith mediation. If unsuccessful, disputes shall be resolved by binding arbitration in the county where the project is located.`;
+
+// Common architectural shingle colors across major manufacturers
+const DEFAULT_SHINGLE_COLORS = [
+  'Charcoal','Weathered Wood','Driftwood','Barkwood','Pewter Gray','Estate Gray',
+  'Slate','Shakewood','Hickory','Williamsburg Gray','Hunter Green','Mission Brown',
+  'Black Walnut','Aged Copper','Birchwood','Oyster Gray',
+];
+
+// Default statements the customer must initial — seeded by estimate type, fully editable
+const DEFAULT_INITIALS_RETAIL = [
+  'I authorize Project One Roofing to perform the work described in this estimate.',
+  'I understand a deposit may be required at signing per the payment terms.',
+  'I understand I have the right to cancel within 3 business days of signing.',
+];
+const DEFAULT_INITIALS_INSURANCE = [
+  'I understand my insurance deductible is my responsibility and cannot be waived.',
+  'I authorize Project One Roofing to communicate with my insurance carrier on my behalf.',
+  'I understand supplemental items may be submitted to my carrier as the scope requires.',
+];
+function defaultInitials(type) {
+  const src = type === 'insurance' ? DEFAULT_INITIALS_INSURANCE : DEFAULT_INITIALS_RETAIL;
+  return src.map(text => ({ id:'ini_'+uid(), text }));
+}
+
+/* ── Measurements engine ─────────────────────────────────────────────
+   Raw measurements live on S.measurements. Line items may carry a
+   `measure` key; their quantity then derives automatically. */
+const MEASURE_FIELDS = [
+  { group:'Roof', fields:[
+    {key:'roof_squares',  label:'Roof Area',      unit:'SQ'},
+    {key:'waste_pct',     label:'Waste',          unit:'%'},
+    {key:'ridge_hip_lf',  label:'Ridge + Hip',    unit:'LF'},
+    {key:'valley_lf',     label:'Valley',         unit:'LF'},
+    {key:'eave_lf',       label:'Eaves',          unit:'LF'},
+    {key:'rake_lf',       label:'Rakes',          unit:'LF'},
+    {key:'step_flash_lf', label:'Step Flashing',  unit:'LF'},
+    {key:'pipe_boots',    label:'Pipe Boots',     unit:'EA'},
+    {key:'skylights',     label:'Skylights',      unit:'EA'},
+    {key:'turtle_vents',  label:'Turtle Vents',   unit:'EA'},
+    {key:'broan_4in',     label:'4" Broan Vent',  unit:'EA'},
+    {key:'broan_8in',     label:'8" Broan Vent',  unit:'EA'},
+  ]},
+  { group:'Gutters', fields:[
+    {key:'gutter_lf',     label:'Gutter',         unit:'LF'},
+    {key:'downspout_lf',  label:'Downspouts',     unit:'LF'},
+  ]},
+  { group:'Siding / Windows', fields:[
+    {key:'siding_squares', label:'Siding Area',   unit:'SQ'},
+    {key:'windows_count',  label:'Windows',       unit:'EA'},
+  ]},
+];
+const MEASURE_DEFS = {
+  squares:              { label:'Roof SQ',            calc:m => mnum(m.roof_squares) },
+  squares_waste:        { label:'Roof SQ + Waste',    calc:m => mnum(m.roof_squares) * (1 + mnum(m.waste_pct, 10)/100) },
+  ridge_hip:            { label:'Ridge + Hip LF',     calc:m => mnum(m.ridge_hip_lf) },
+  valley:               { label:'Valley LF',          calc:m => mnum(m.valley_lf) },
+  eave:                 { label:'Eave LF',            calc:m => mnum(m.eave_lf) },
+  rake:                 { label:'Rake LF',            calc:m => mnum(m.rake_lf) },
+  eave_rake:            { label:'Eave + Rake LF',     calc:m => mnum(m.eave_lf) + mnum(m.rake_lf) },
+  eave_valley:          { label:'Eave + Valley LF',   calc:m => mnum(m.eave_lf) + mnum(m.valley_lf) },
+  step:                 { label:'Step Flashing LF',   calc:m => mnum(m.step_flash_lf) },
+  pipe_boots:           { label:'# Pipe Boots',       calc:m => mnum(m.pipe_boots) },
+  skylights:            { label:'# Skylights',        calc:m => mnum(m.skylights) },
+  turtle_vents:         { label:'# Turtle Vents',     calc:m => mnum(m.turtle_vents) },
+  broan_4in:            { label:'# 4" Broan Vents',   calc:m => mnum(m.broan_4in) },
+  broan_8in:            { label:'# 8" Broan Vents',   calc:m => mnum(m.broan_8in) },
+  gutter:               { label:'Gutter LF',          calc:m => mnum(m.gutter_lf) },
+  downspout:            { label:'Downspout LF',       calc:m => mnum(m.downspout_lf) },
+  siding_squares:       { label:'Siding SQ',          calc:m => mnum(m.siding_squares) },
+  siding_squares_waste: { label:'Siding SQ + Waste',  calc:m => mnum(m.siding_squares) * (1 + mnum(m.waste_pct, 10)/100) },
+  windows:              { label:'# Windows',          calc:m => mnum(m.windows_count) },
+};
+function mnum(v, dflt) {
+  const n = parseFloat(v);
+  return isNaN(n) ? (dflt || 0) : n;
+}
+
+/* ── Global app settings (loaded from /api/settings at boot) ────────── */
+let appSettings = {};
+function _globalShingleColors() {
+  const list = (appSettings.shingle_colors || []).filter(c => String(c).trim());
+  return (list.length ? list : DEFAULT_SHINGLE_COLORS).slice();
+}
+function _globalWastePct() {
+  const w = parseFloat(appSettings.default_waste_pct);
+  return isNaN(w) ? 10 : w;
+}
+function evalFormula(formula, m) {
+  // Replace known measurement variable names with their numeric values, then eval.
+  let expr = (formula || '').replace(/[a-z][a-z0-9_]*/gi, name => {
+    const v = parseFloat((m || {})[name]);
+    return isNaN(v) ? '0' : String(v);
+  });
+  try { return Function('"use strict"; return (' + expr + ')')(); }
+  catch { return 0; }
+}
+function measuredQty(item) {
+  const m = S.measurements || {};
+  let raw;
+  if (item.formula) {
+    raw = evalFormula(item.formula, m);
+  } else {
+    const def = MEASURE_DEFS[item.measure];
+    if (!def) return null;
+    raw = def.calc(m);
+  }
+  if (!raw) return 0;
+  // Squares keep one decimal (rounded up); linear feet and counts round up whole.
+  // The 1e-9 guards against float noise (28 × 1.1 = 30.800000000000004).
+  return (item.unit === 'SQ') ? Math.ceil(raw * 10 - 1e-9) / 10 : Math.ceil(raw - 1e-9);
+}
+function applyMeasurements() {
+  // Measurements only auto-fill roofing items (other trades are manual).
+  const td = S.trades.roofing;
+  (td && td.line_items || []).forEach(item => {
+    const q = measuredQty(item);
+    if (q !== null) item.quantity = q;
+  });
+  setDirty();
+  renderTotals();
+}
+function setMeasurement(key, v) {
+  if (!S.measurements) S.measurements = {};
+  S.measurements[key] = parseFloat(v) || 0;
+  // If roofing is enabled but has no items yet, auto-build it now so entering a
+  // measurement instantly produces a priced estimate (no separate Load step).
+  const rd = S.trades.roofing;
+  let built = false;
+  if (rd && rd.enabled && templates && (!rd.line_items || rd.line_items.length === 0)) {
+    rd.line_items = buildTradeDefaults('roofing');
+    built = true;
+  }
+  applyMeasurements();
+  if (built) {
+    // New rows were created — re-render so they appear (fired on blur, focus loss ok)
+    if (activePage === 'scope') renderScopePage();
+    rerender();
+    return;
+  }
+  // Refresh visible qty cells without rebuilding the whole page (keeps focus)
+  document.querySelectorAll('.scope-qty-input[data-measured="1"]').forEach(inp => {
+    const item = findItem(inp.dataset.trade, inp.dataset.id);
+    if (item) inp.value = item.quantity || '';
+  });
+}
+function setItemFormula(trade, id, formula) {
+  const item = findItem(trade, id);
+  if (!item) return;
+  item.formula = formula || undefined;
+  item.measure = undefined;
+  const q = measuredQty(item);
+  if (q !== null) item.quantity = q;
+  setDirty();
+  renderTotals();
+}
+function handleMeasureSelect(trade, id, value) {
+  if (value === '__formula__') {
+    setItemFormula(trade, id, '');
+    renderScopePage();
+  } else {
+    setItemMeasure(trade, id, value);
+  }
+}
+function setItemMeasure(trade, id, key) {
+  const item = findItem(trade, id);
+  if (!item) return;
+  item.formula = undefined;
+  item.measure = key || undefined;
+  if (key) {
+    const q = measuredQty(item);
+    if (q !== null) item.quantity = q;
+  }
+  setDirty();
+  renderScopePage();
+  renderTotals();
+}
 
 const INTRO_TEMPLATES = [
   { id:'general', label:'General', text:
@@ -134,6 +351,7 @@ let templates    = null;
 let priceBook    = null;   // { intros: [...], materials: {...} }
 let tierDefaults = { good:[], better:[], best:[] }; // global admin-set defaults for new estimates
 let pbActiveTrade = 'roofing';
+let pbActiveTab = 'master';  // price book sub-view: master | good | better | best
 let pbItems = {};       // working copy of price book materials while modal is open
 
 function blankEstimate() {
@@ -142,7 +360,8 @@ function blankEstimate() {
   return {
     estimate_id: null, version: 1,
     created_at: null, updated_at: null, status: 'draft',
-    customer: { crm_contact_id:null, name:'', phone:'', email:'',
+    customer: { crm_contact_id:null, crm_project_id:null, crm_job_number:'',
+                name:'', phone:'', email:'',
                 address:{ street:'', city:'', state:'', zip:'' } },
     project_address: '',
     estimate_date: fmtDate(today), valid_until: fmtDate(exp),
@@ -154,17 +373,21 @@ function blankEstimate() {
     tier_features:     { good:[], better:[], best:[] },
     estimate_type: 'retail',
     print_contract: true, contract_text: DEFAULT_CONTRACT,
+    contract_initials: defaultInitials('retail'),
+    shingle_selection: { enabled: true, options: _globalShingleColors(), chosen: '' },
+    measurements: { waste_pct: _globalWastePct() },
     intro_text: '',
     page_visibility: { intro: false, options: true },
     cover_photo_id: null,
     share_token: null, signature: null,
+    attachments: [],
     trades: {
       roofing: { enabled:true,  line_items:[], colors:{}, mode:'gbb' },
       siding:  { enabled:false, line_items:[], colors:{}, mode:'gbb' },
       windows: { enabled:false, line_items:[], colors:{}, mode:'gbb' },
       gutters: { enabled:false, line_items:[], colors:{}, mode:'simple' },
       other:     { enabled:false, line_items:[], colors:{}, mode:'gbb' },
-      insurance: { enabled:false, line_items:[], scope_notes:'', claim_number:'', carrier:'', colors:{} },
+      insurance: { enabled:false, sections:[{id:'sec_'+uid(), name:'', items:[]}], scope_notes:'', claim_number:'', carrier:'', colors:{} },
     },
     photos: [],
   };
@@ -214,6 +437,7 @@ function tradeTotal(trade, tier) {
   }
   return td.line_items.reduce((sum, item) => {
     const t = (item.tiers && item.tiers[tier]) || {};
+    if (t.included === false) return sum;  // excluded from this package tier
     return sum + lineTotal(item.quantity, t.material_unit_cost, t.labor_unit_cost, trade);
   }, 0);
 }
@@ -223,8 +447,10 @@ function grandTotal(tier) {
 function insuranceTotal() {
   const td = S.trades.insurance;
   if (!td || !td.enabled) return 0;
-  return (td.line_items || []).reduce((s, item) =>
-    s + (parseFloat(item.acv)||0) + (parseFloat(item.rcv)||0), 0);
+  const sections = td.sections || (td.line_items ? [{items: td.line_items}] : []);
+  return sections.reduce((s, sec) =>
+    s + (sec.items||[]).reduce((ss, item) =>
+      ss + (parseFloat(item.acv)||0) + (parseFloat(item.depreciation)||0), 0), 0);
 }
 
 /* ── Dirty tracking ────────────────────────────────────────────────── */
@@ -278,6 +504,8 @@ function switchPage(page) {
   updatePageNav();
   if (page === 'pricing') { renderTabBar(); renderTradeContent(); }
   if (page === 'intro')   renderIntroPage();
+  if (page === 'scope')   renderScopePage();
+  if (page === 'options') renderOptionsPage();
 }
 
 function updatePageNav() {
@@ -309,6 +537,7 @@ function renderSidebar() {
   renderTierButtons();
   renderTradeOverrides();
   renderEstNum();
+  renderCrmLinkBadge();
 }
 function setVal(id, v) {
   const el = document.getElementById(id);
@@ -336,23 +565,45 @@ function renderEstimateTypeUI() {
   if (rBtn) rBtn.classList.toggle('active', t === 'retail');
   if (iBtn) iBtn.classList.toggle('active', t === 'insurance');
 }
+// True when the current initials still match an untouched default set
+function initialsMatchDefault(type) {
+  const cur = (S.contract_initials || []).map(i => i.text).join('\n');
+  const def = (type === 'insurance' ? DEFAULT_INITIALS_INSURANCE : DEFAULT_INITIALS_RETAIL).join('\n');
+  return cur === def;
+}
 function setEstimateType(type) {
   S.estimate_type = type;
   if (type === 'insurance') {
-    // Disable all retail trades — insurance estimates only use the insurance section
     ['roofing','siding','windows','gutters','other'].forEach(t => {
       S.trades[t].enabled = false;
     });
     S.trades.insurance.enabled = true;
     activeTrade = 'insurance';
+    // Auto-load insurance contract if still on retail default or blank
+    if (!S.contract_text || S.contract_text === DEFAULT_CONTRACT) {
+      S.contract_text = DEFAULT_INSURANCE_CONTRACT;
+      const ta = document.getElementById('contract-textarea');
+      if (ta) ta.value = DEFAULT_INSURANCE_CONTRACT;
+    }
+    // Swap initials to insurance defaults if still on the retail defaults
+    if (!S.contract_initials || !S.contract_initials.length || initialsMatchDefault('retail'))
+      S.contract_initials = defaultInitials('insurance');
     switchPage('pricing');
   } else {
-    // Switching back to retail — re-render whatever is currently visible
+    // Auto-restore retail contract if still on insurance default or blank
+    if (!S.contract_text || S.contract_text === DEFAULT_INSURANCE_CONTRACT) {
+      S.contract_text = DEFAULT_CONTRACT;
+      const ta = document.getElementById('contract-textarea');
+      if (ta) ta.value = DEFAULT_CONTRACT;
+    }
+    if (!S.contract_initials || !S.contract_initials.length || initialsMatchDefault('insurance'))
+      S.contract_initials = defaultInitials('retail');
     if (activePage === 'options') renderOptionsPage();
     else if (activePage === 'pricing') { renderTabBar(); renderTradeContent(); }
   }
   setDirty();
   renderEstimateTypeUI();
+  if (activePage === 'contract') renderContractPage();
 }
 function renderTierButtons() {
   document.querySelectorAll('.tier-btn').forEach(b =>
@@ -384,6 +635,129 @@ function renderTotals() {
   const insRow = document.getElementById('tr-insurance');
   if (insEl)  insEl.textContent = fmtCur(insuranceTotal());
   if (insRow) insRow.style.display = S.trades.insurance?.enabled ? '' : 'none';
+  renderInternalMargin();
+  renderCostProfitPanel();
+}
+
+/* ── Internal cost / profit (rep-only — never shown to the customer) ────
+   GBB trades track material + labor cost, so profit is computed from them.
+   Simple-mode trades (e.g. gutters) store a sell price with no cost split,
+   so they're reported separately rather than counted as pure profit. */
+function tierProfit(tier) {
+  let material = 0, labor = 0, gbbSell = 0, simpleSell = 0;
+  const perTrade = [];
+  ['roofing','siding','windows','gutters','other'].forEach(trade => {
+    const td = S.trades[trade];
+    if (!td || !td.enabled) return;
+    const mode = td.mode || (trade === 'gutters' ? 'simple' : 'gbb');
+    if (mode === 'simple') {
+      let s = 0;
+      (td.line_items||[]).forEach(item => {
+        const qty = parseFloat(item.quantity)||0; if (qty <= 0) return;
+        s += qty * (parseFloat(item.unit_price)||0);
+      });
+      if (s > 0) { simpleSell += s; perTrade.push({trade, mode, sell:s}); }
+      return;
+    }
+    let m = 0, l = 0;
+    (td.line_items||[]).forEach(item => {
+      const qty = parseFloat(item.quantity)||0; if (qty <= 0) return;
+      const t = (item.tiers||{})[tier] || {};
+      if (t.included === false) return;
+      m += (parseFloat(t.material_unit_cost)||0) * qty;
+      l += (parseFloat(t.labor_unit_cost)||0) * qty;
+    });
+    const sell = tradeTotal(trade, tier);
+    if (m === 0 && l === 0 && sell === 0) return;
+    material += m; labor += l; gbbSell += sell;
+    perTrade.push({trade, mode, material:m, labor:l, cost:m+l, sell, profit:sell-(m+l)});
+  });
+  const cost = material + labor;
+  const profit = gbbSell - cost;
+  return {material, labor, cost, sell:gbbSell, profit,
+          margin: gbbSell > 0 ? (profit/gbbSell*100) : 0,
+          simpleSell, perTrade};
+}
+
+function _pct(n){ return (Math.round(n*10)/10).toFixed(1) + '%'; }
+
+// Compact sidebar summary for the selected package (rep-only).
+function renderInternalMargin() {
+  const el = document.getElementById('internal-margin');
+  if (!el) return;
+  const tier = S.selected_tier;
+  const p = tierProfit(tier);
+  if (p.sell === 0 && p.cost === 0) { el.innerHTML = ''; el.style.display = 'none'; return; }
+  el.style.display = '';
+  const profClass = p.profit >= 0 ? 'im-pos' : 'im-neg';
+  el.innerHTML = `
+    <div class="im-head">🔒 Internal · ${TIER_LABELS[tier]}</div>
+    <div class="im-row"><span>Material</span><strong>${fmtCur(p.material)}</strong></div>
+    <div class="im-row"><span>Labor</span><strong>${fmtCur(p.labor)}</strong></div>
+    <div class="im-row im-cost"><span>Total Cost</span><strong>${fmtCur(p.cost)}</strong></div>
+    <div class="im-row ${profClass}"><span>Profit</span><strong>${fmtCur(p.profit)}</strong></div>
+    <div class="im-row im-margin"><span>Margin</span><strong>${_pct(p.margin)}</strong></div>
+    ${p.simpleSell>0?`<div class="im-note">+${fmtCur(p.simpleSell)} simple-priced (cost not tracked)</div>`:''}`;
+}
+
+// Full all-tiers breakdown panel on the Pricing page (rep-only).
+function renderCostProfitPanel() {
+  const el = document.getElementById('cost-profit-panel');
+  if (!el) return;
+  const data = {good:tierProfit('good'), better:tierProfit('better'), best:tierProfit('best')};
+  const anything = TIERS.some(t => data[t].sell !== 0 || data[t].cost !== 0);
+  if (!anything) { el.innerHTML = ''; return; }
+  const selTier = S.selected_tier;
+  const row = (label, fn, cls='') => `<tr class="${cls}"><td>${label}</td>${
+    TIERS.map(t=>`<td>${fn(data[t])}</td>`).join('')}</tr>`;
+  const moneyRow = (label, key, cls='') => row(label, d=>fmtCur(d[key]), cls);
+  const pt = data[selTier].perTrade.filter(x=>x.mode!=='simple');
+  const simpleRows = data[selTier].perTrade.filter(x=>x.mode==='simple');
+
+  el.innerHTML = `
+    <div class="cost-profit-panel">
+      <div class="cpp-head">
+        <span class="cpp-badge">🔒 Internal</span>
+        <h3>Cost &amp; Profit</h3>
+        <span class="cpp-note">Never shown to the customer</span>
+      </div>
+      <table class="cpp-table">
+        <thead><tr><th></th>${TIERS.map(t=>`<th class="${t===selTier?'cpp-sel':''}">${TIER_LABELS[t]}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${moneyRow('Material','material')}
+          ${moneyRow('Labor','labor')}
+          ${moneyRow('Total Cost','cost','cpp-cost')}
+          ${moneyRow('Sell Price','sell','cpp-sell')}
+          ${row('Profit', d=>`<span class="${d.profit>=0?'cpp-pos':'cpp-neg'}">${fmtCur(d.profit)}</span>`,'cpp-profit')}
+          ${row('Margin %', d=>_pct(d.margin),'cpp-margin')}
+        </tbody>
+      </table>
+      ${data[selTier].simpleSell>0?`<div class="cpp-simple-note">Simple-priced trades (e.g. Gutters): ${fmtCur(data[selTier].simpleSell)} sell — cost not tracked, excluded from profit above.</div>`:''}
+      ${pt.length?`
+      <details class="cpp-bytrade">
+        <summary>Per-trade breakdown — ${TIER_LABELS[selTier]}</summary>
+        <div class="cpp-trade-wrap"><table class="cpp-table cpp-table-trade">
+          <thead><tr><th>Trade</th><th>Material</th><th>Labor</th><th>Cost</th><th>Sell</th><th>Profit</th><th>Margin</th></tr></thead>
+          <tbody>
+            ${pt.map(x=>`<tr>
+              <td>${TRADE_LABELS[x.trade]}</td>
+              <td>${fmtCur(x.material)}</td>
+              <td>${fmtCur(x.labor)}</td>
+              <td>${fmtCur(x.cost)}</td>
+              <td>${fmtCur(x.sell)}</td>
+              <td class="${x.profit>=0?'cpp-pos':'cpp-neg'}">${fmtCur(x.profit)}</td>
+              <td>${x.sell>0?_pct((x.profit/x.sell)*100):'—'}</td>
+            </tr>`).join('')}
+            ${simpleRows.map(x=>`<tr class="cpp-trade-simple">
+              <td>${TRADE_LABELS[x.trade]}</td>
+              <td colspan="3">simple pricing — cost not tracked</td>
+              <td>${fmtCur(x.sell)}</td>
+              <td>—</td><td>—</td>
+            </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </details>`:''}
+    </div>`;
 }
 
 /* ── Page 1: Cover ─────────────────────────────────────────────────── */
@@ -595,14 +969,21 @@ async function deleteIntroTemplate(id) {
 const PB_TRADES = TRADES.filter(t => t !== 'insurance');
 
 function openPriceBook() {
-  // Deep-copy price book materials (merge with hardcoded defaults for any missing trade)
+  // Seed the editor from /api/templates: when a price book is saved it is the
+  // authoritative list, and the server backfills rich descriptions, notes, and
+  // measure keys from the hardcoded defaults — so the editor shows the exact
+  // items (and Auto-Qty links) that get loaded into estimates.
   pbItems = {};
   PB_TRADES.forEach(trade => {
+    const fromTemplates = templates?.[trade];
     const stored = priceBook?.materials?.[trade];
-    const defaults = (stored && stored.length) ? stored : (templates?.[trade] || []);
+    const defaults = (fromTemplates && fromTemplates.length) ? fromTemplates
+                   : (stored && stored.length) ? stored
+                   : [];
     pbItems[trade] = defaults.map(t => Object.assign({}, t));
   });
   pbActiveTrade = 'roofing';
+  pbActiveTab = 'master';
   renderPBModal();
   document.getElementById('pricebook-modal').classList.remove('hidden');
 }
@@ -614,67 +995,147 @@ function maybePBModalClose(e) {
   if (e.target === document.getElementById('pricebook-modal')) closePriceBook();
 }
 
-function renderPBModal() {
-  const items = pbItems[pbActiveTrade] || [];
+const PB_SUBTABS = [['master','Master Catalog'],['good','Good'],['better','Better'],['best','Best']];
 
+function renderPBModal() {
   document.getElementById('pb-modal-body').innerHTML = `
     <div class="pb-trade-bar">
       ${PB_TRADES.map(t => `
         <button class="pb-trade-btn ${t===pbActiveTrade?'active':''}"
-          onclick="pbReadTable();pbActiveTrade='${t}';renderPBModal()">
+          onclick="pbActiveTrade='${t}';renderPBModal()">
           ${TRADE_LABELS[t]}
         </button>`).join('')}
     </div>
     <div class="pb-content">
       <div class="pb-toolbar">
-        <h3>${TRADE_LABELS[pbActiveTrade]} — Default Items &amp; Pricing</h3>
+        <h3>${TRADE_LABELS[pbActiveTrade]} Price Book</h3>
         <button class="btn-secondary" onclick="pbImportFromEstimate()" title="Copy current estimate items into this trade">↑ Import from Estimate</button>
         <button class="btn-secondary" onclick="pbApplyToEstimate()" title="Replace estimate items with price book">↓ Load into Estimate</button>
       </div>
-      <table class="pb-table">
-        <thead>
-          <tr>
-            <th class="pb-th-name">Item Name</th>
-            <th>Unit</th>
-            <th class="pb-th-cost">Cost / Unit</th>
-            <th class="pb-th-vis">Show on Estimate</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${items.map((item, i) => {
-            const cost = item.cost !== undefined ? item.cost : ((parseFloat(item.mat_better)||0)+(parseFloat(item.lab_better)||0));
-            return `<tr>
-              <td><input class="pb-input-name" type="text" value="${esc(item.name||'')}" oninput="pbItems['${pbActiveTrade}'][${i}].name=this.value" placeholder="Item name"></td>
-              <td><input class="pb-input-unit" type="text" value="${esc(item.unit||'')}" oninput="pbItems['${pbActiveTrade}'][${i}].unit=this.value" placeholder="Unit"></td>
-              <td style="text-align:right">
-                <input class="pb-cost-single" type="number" min="0" step="0.01"
-                  value="${cost||0}"
-                  oninput="pbItems['${pbActiveTrade}'][${i}].cost=parseFloat(this.value)||0"
-                  placeholder="0.00">
-              </td>
-              <td style="text-align:center">
-                <input type="checkbox" title="Include this item in customer-facing estimate"
-                  ${item.customer_visible!==false?'checked':''}
-                  onchange="pbItems['${pbActiveTrade}'][${i}].customer_visible=this.checked">
-              </td>
-              <td style="text-align:center"><button class="pb-del-btn" onclick="pbDeleteItem(${i})">✕</button></td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-      <div style="margin-top:10px">
-        <button class="btn-secondary" onclick="pbAddItem()">+ Add Item</button>
+      <div class="pb-subtab-bar">
+        ${PB_SUBTABS.map(([k,label]) => `
+          <button class="pb-subtab ${k===pbActiveTab?'active':''} ${k!=='master'?'pb-subtab-'+k:''}"
+            onclick="pbActiveTab='${k}';renderPBModal()">
+            ${label}${k!=='master'?` <span class="pb-subtab-count">${pbTierCount(k)}</span>`:''}
+          </button>`).join('')}
       </div>
+      ${pbActiveTab==='master' ? pbRenderMaster() : pbRenderTier(pbActiveTab)}
     </div>
     <div class="pb-footer">
-      <span class="pb-footer-note">One cost per unit — labor is its own line item. ✓ = visible on customer estimate.</span>
+      <span class="pb-footer-note">${pbActiveTab==='master'
+        ? 'Master catalog — every product for this trade. Tick which packages each belongs to; set the base cost here.'
+        : `Products in your <strong>${TIER_LABELS[pbActiveTab]}</strong> package. The cost here overrides the master base price for this tier only.`}</span>
       <button class="btn-secondary" onclick="pbResetTrade()" style="color:var(--danger)">Reset to Defaults</button>
       <button class="btn-primary" onclick="pbSave()">💾 Save Price Book</button>
     </div>`;
 }
 
-function pbReadTable() { /* inputs use oninput — pbItems stays live */ }
+function pbTierCount(tier) {
+  return (pbItems[pbActiveTrade]||[]).filter(it => it['in_'+tier] !== false).length;
+}
+
+// Master tab: full product catalog for the trade + which packages each is in.
+function pbRenderMaster() {
+  const items = pbItems[pbActiveTrade] || [];
+  return `
+    <div class="pb-table-wrap">
+    <table class="pb-table">
+      <thead><tr>
+        <th class="pb-th-name">Product Name</th>
+        <th>Unit</th>
+        <th class="pb-th-auto">Auto Qty From</th>
+        <th class="pb-th-basecost">Base Cost</th>
+        <th class="pb-th-mem">In Packages</th>
+        <th class="pb-th-vis">Show</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+        ${items.length ? items.map((item, i) => {
+          const base = item.cost !== undefined ? parseFloat(item.cost)||0 : ((parseFloat(item.mat_better)||0)+(parseFloat(item.lab_better)||0));
+          return `<tr class="pb-item-row">
+            <td><input class="pb-input-name" type="text" value="${esc(item.name||'')}" oninput="pbItems['${pbActiveTrade}'][${i}].name=this.value" placeholder="Product name"></td>
+            <td><input class="pb-input-unit" type="text" value="${esc(item.unit||'')}" oninput="pbItems['${pbActiveTrade}'][${i}].unit=this.value" placeholder="Unit"></td>
+            <td class="pb-auto-cell">${pbMeasureCell(item, i)}</td>
+            <td><input class="pb-cost-input" type="number" min="0" step="0.01" value="${base}" placeholder="0.00"
+              oninput="pbItems['${pbActiveTrade}'][${i}].cost=parseFloat(this.value)||0"></td>
+            <td class="pb-mem-cell">
+              ${['good','better','best'].map(tier=>{
+                const on = item['in_'+tier] !== false;
+                return `<label class="pb-mem-chip pb-mem-${tier} ${on?'on':''}" title="In ${TIER_LABELS[tier]}">
+                  <input type="checkbox" ${on?'checked':''}
+                    onchange="pbItems['${pbActiveTrade}'][${i}].in_${tier}=this.checked;renderPBModal()">${TIER_LABELS[tier][0]}</label>`;
+              }).join('')}
+            </td>
+            <td style="text-align:center">
+              <input type="checkbox" title="Visible on the customer estimate" ${item.customer_visible!==false?'checked':''}
+                onchange="pbItems['${pbActiveTrade}'][${i}].customer_visible=this.checked">
+            </td>
+            <td style="text-align:center"><button class="pb-del-btn" title="Delete product" onclick="pbDeleteItem(${i})">✕</button></td>
+          </tr>`;
+        }).join('') : `<tr><td colspan="7" class="pb-empty">No products yet — add your first one below.</td></tr>`}
+      </tbody>
+    </table>
+    </div>
+    <div style="margin-top:10px"><button class="btn-secondary" onclick="pbAddItem()">+ Add Product</button></div>`;
+}
+
+// Good / Better / Best tab: the products that make up one package.
+function pbRenderTier(tier) {
+  const items = pbItems[pbActiveTrade] || [];
+  const members    = items.map((it,i)=>({it,i})).filter(x => x.it['in_'+tier] !== false);
+  const nonMembers = items.map((it,i)=>({it,i})).filter(x => x.it['in_'+tier] === false && (x.it.name||'').trim());
+  return `
+    <div class="pb-table-wrap">
+    <table class="pb-table">
+      <thead><tr>
+        <th class="pb-th-name">Product</th>
+        <th>Unit</th>
+        <th>Customer Label <span class="pb-th-hint">(optional)</span></th>
+        <th class="pb-th-cost">${TIER_LABELS[tier]} Cost</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+        ${members.length ? members.map(({it,i}) => {
+          const base = it.cost !== undefined ? parseFloat(it.cost)||0 : 0;
+          const hasOverride = it['cost_'+tier] !== undefined;
+          const tc = hasOverride ? parseFloat(it['cost_'+tier])||0 : base;
+          const overridden = hasOverride && tc !== base;
+          return `<tr class="pb-item-row">
+            <td class="pb-tier-prod">${esc(it.name||'(unnamed)')}</td>
+            <td class="pb-tier-unit">${esc(it.unit||'')}</td>
+            <td><input class="pb-product-input pb-label-input" type="text" value="${esc(it['product_'+tier]||'')}" placeholder="${esc(it.name||'')}"
+              oninput="pbItems['${pbActiveTrade}'][${i}].product_${tier}=this.value"></td>
+            <td><input class="pb-cost-input ${overridden?'pb-cost-override':''}" type="number" min="0" step="0.01" value="${tc}" placeholder="${base}"
+              title="${overridden?'Overrides master base ('+fmtCur(base)+')':'Matches master base price'}"
+              oninput="pbItems['${pbActiveTrade}'][${i}].cost_${tier}=parseFloat(this.value)||0"></td>
+            <td style="text-align:center"><button class="pb-del-btn" title="Remove from ${TIER_LABELS[tier]}"
+              onclick="pbRemoveFromTier(${i},'${tier}')">✕</button></td>
+          </tr>`;
+        }).join('') : `<tr><td colspan="5" class="pb-empty">No products in the ${TIER_LABELS[tier]} package yet — add some below.</td></tr>`}
+      </tbody>
+    </table>
+    </div>
+    <div class="pb-add-tier">
+      ${nonMembers.length ? `
+        <select class="pb-add-select" onchange="if(this.value!==''){pbAddToTier(parseInt(this.value),'${tier}')}">
+          <option value="">+ Add a product to ${TIER_LABELS[tier]}…</option>
+          ${nonMembers.map(({it,i})=>`<option value="${i}">${esc(it.name)} — ${fmtCur(it.cost!==undefined?parseFloat(it.cost)||0:0)}</option>`).join('')}
+        </select>`
+        : `<span class="pb-add-hint">Every product is already in this package. Add new products on the <a onclick="pbActiveTab='master';renderPBModal()">Master Catalog</a> tab.</span>`}
+    </div>`;
+}
+
+function pbAddToTier(i, tier) {
+  const it = pbItems[pbActiveTrade][i]; if (!it) return;
+  it['in_'+tier] = true;
+  if (it['cost_'+tier] === undefined) it['cost_'+tier] = it.cost !== undefined ? parseFloat(it.cost)||0 : 0;
+  renderPBModal();
+}
+function pbRemoveFromTier(i, tier) {
+  const it = pbItems[pbActiveTrade][i]; if (!it) return;
+  it['in_'+tier] = false;
+  renderPBModal();
+}
 
 function pbAddItem() {
   pbItems[pbActiveTrade] = pbItems[pbActiveTrade] || [];
@@ -684,6 +1145,33 @@ function pbAddItem() {
 
 function pbDeleteItem(i) {
   pbItems[pbActiveTrade].splice(i, 1);
+  renderPBModal();
+}
+
+// Renders the per-item "Auto Qty From" picker in the price book (measurement
+// key or a custom formula). What you set here becomes the quantity source the
+// moment the item is loaded into an estimate.
+function pbMeasureCell(item, i) {
+  const isFormula = !!item.formula;
+  const cur = isFormula ? '__formula__' : (item.measure || '');
+  const formulaInput = isFormula ? `
+    <input class="pb-formula-input" type="text" value="${esc(item.formula||'')}"
+      placeholder="eave_lf + valley_lf"
+      title="Variables: roof_squares, waste_pct, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in"
+      oninput="pbItems['${pbActiveTrade}'][${i}].formula=this.value;pbItems['${pbActiveTrade}'][${i}].measure=undefined">` : '';
+  return `
+    <select class="pb-measure-select" onchange="pbSetMeasure(${i}, this.value)">
+      <option value="">Manual</option>
+      ${Object.entries(MEASURE_DEFS).map(([k,d])=>`<option value="${k}" ${cur===k?'selected':''}>${d.label}</option>`).join('')}
+      <option value="__formula__" ${isFormula?'selected':''}>Custom formula…</option>
+    </select>
+    ${formulaInput}`;
+}
+function pbSetMeasure(i, val) {
+  const it = pbItems[pbActiveTrade][i];
+  if (!it) return;
+  if (val === '__formula__') { it.formula = it.formula || ''; it.measure = undefined; }
+  else { it.measure = val || undefined; it.formula = undefined; }
   renderPBModal();
 }
 
@@ -699,18 +1187,26 @@ function pbImportFromEstimate() {
   if (!confirm(`Import ${td.line_items.length} items from the current estimate into the ${TRADE_LABELS[pbActiveTrade]} price book?`)) return;
   const tier = S.selected_tier || 'better';
   pbItems[pbActiveTrade] = td.line_items.map(item => {
+    const gt = item.tiers?.good   || {};
     const bt = item.tiers?.better || {};
+    const xt = item.tiers?.best   || {};
     return {
       name: item.name, unit: item.unit,
+      measure: item.measure || undefined,
       cost: (parseFloat(bt.material_unit_cost)||0) + (parseFloat(bt.labor_unit_cost)||0),
+      cost_good:   parseFloat(gt.material_unit_cost)||0,
+      cost_better: parseFloat(bt.material_unit_cost)||0,
+      cost_best:   parseFloat(xt.material_unit_cost)||0,
+      in_good:   gt.included !== false,
+      in_better: bt.included !== false,
+      in_best:   xt.included !== false,
       customer_visible: item.customer_visible !== false,
-      // preserve tier descriptions so they round-trip through the price book
-      desc_good:    item.tiers?.good?.description   || '',
-      desc_better:  item.tiers?.better?.description || '',
-      desc_best:    item.tiers?.best?.description   || '',
-      notes_good:   item.tiers?.good?.notes   || '',
-      notes_better: item.tiers?.better?.notes || '',
-      notes_best:   item.tiers?.best?.notes   || '',
+      product_good:    gt.description || '',
+      product_better:  bt.description || '',
+      product_best:    xt.description || '',
+      notes_good:   gt.notes || '',
+      notes_better: bt.notes || '',
+      notes_best:   xt.notes || '',
     };
   });
   renderPBModal();
@@ -723,20 +1219,27 @@ function pbApplyToEstimate() {
       !confirm(`Replace current estimate ${TRADE_LABELS[pbActiveTrade]} items with price book?`)) return;
   S.trades[pbActiveTrade].enabled = true;
   S.trades[pbActiveTrade].line_items = items.map(t => {
-    // Support both new single-cost format and old mat_better/lab_better format
-    const cost = t.cost !== undefined
-      ? parseFloat(t.cost) || 0
-      : (parseFloat(t.mat_better)||0) + (parseFloat(t.lab_better)||0);
+    const baseCost = t.cost !== undefined ? parseFloat(t.cost)||0 : (parseFloat(t.mat_better)||0)+(parseFloat(t.lab_better)||0);
+    const costGood   = t.cost_good   !== undefined ? parseFloat(t.cost_good)||0   : baseCost;
+    const costBetter = t.cost_better !== undefined ? parseFloat(t.cost_better)||0 : baseCost;
+    const costBest   = t.cost_best   !== undefined ? parseFloat(t.cost_best)||0   : baseCost;
+    const descGood   = t.product_good   || t.desc_good   || '';
+    const descBetter = t.product_better || t.desc_better || '';
+    const descBest   = t.product_best   || t.desc_best   || '';
     return {
       id: uid(), name: t.name, unit: t.unit, quantity: 0, scope_note: '',
       customer_visible: t.customer_visible !== false,
+      measure: t.measure || undefined,
+      formula: t.formula || undefined,
       tiers: {
-        good:  { material_unit_cost: cost, labor_unit_cost: 0, description: t.desc_good||'',   notes: t.notes_good||'' },
-        better:{ material_unit_cost: cost, labor_unit_cost: 0, description: t.desc_better||'', notes: t.notes_better||'' },
-        best:  { material_unit_cost: cost, labor_unit_cost: 0, description: t.desc_best||'',   notes: t.notes_best||'' },
+        good:  { material_unit_cost: costGood,   labor_unit_cost: 0, description: descGood,   notes: t.notes_good||'',   included: t.in_good   !== false },
+        better:{ material_unit_cost: costBetter, labor_unit_cost: 0, description: descBetter, notes: t.notes_better||'', included: t.in_better !== false },
+        best:  { material_unit_cost: costBest,   labor_unit_cost: 0, description: descBest,   notes: t.notes_best||'',   included: t.in_best   !== false },
       }
     };
   });
+  // Apply any measurements already entered so quantities fill in immediately
+  applyMeasurements();
   setDirty(); rerender();
   alert(`✓ ${TRADE_LABELS[pbActiveTrade]} loaded into estimate.`);
 }
@@ -794,25 +1297,101 @@ function togglePagePrint(page) {
 /* ── Page 3: Scope / Measurements ──────────────────────────────────── */
 
 function renderScopePage() {
+  // Insurance mode: measurements/GBB scope doesn't apply — show a notice
+  if ((S.estimate_type || 'retail') === 'insurance') {
+    document.getElementById('page-scope').innerHTML = `
+      <div class="scope-header">
+        <div>
+          <h2>Scope of Work — Measurements</h2>
+          <p>Switched to Insurance mode — measurements are not used for this estimate</p>
+        </div>
+      </div>
+      <div class="ins-mode-notice">
+        <div class="ins-mode-icon">🏛</div>
+        <div class="ins-mode-title">Insurance Estimate Active</div>
+        <div class="ins-mode-body">Insurance estimates use sections with ACV + Depreciation = RCV line items instead of measured quantities. Enter your sections, items, and scope of work in the Pricing tab.</div>
+        <button class="btn-primary ins-mode-btn" onclick="activeTrade='insurance';switchPage('pricing')">Go to Insurance Pricing →</button>
+        <div class="ins-mode-switch">Wrong mode? <a href="#" onclick="setEstimateType('retail');return false">Switch back to Retail</a></div>
+      </div>`;
+    return;
+  }
+
+  const RETAIL_TRADES = TRADES.filter(t => t !== 'insurance');
   const allItems = [];
-  TRADES.forEach(trade => {
+  RETAIL_TRADES.forEach(trade => {
     const td = S.trades[trade];
-    if (td.line_items.length) {
+    const items = (td && td.line_items) || [];
+    if (items.length) {
       allItems.push({ type:'group', trade });
-      td.line_items.forEach(item => allItems.push({ type:'item', trade, item }));
+      items.forEach(item => allItems.push({ type:'item', trade, item }));
     }
   });
 
   const hasAny = allItems.some(r => r.type === 'item');
+  const m = S.measurements || {};
+
+  // Measurements drive the Roofing estimate only — show just the Roof group.
+  const measurePanel = `
+    <div class="measure-panel">
+      <div class="measure-panel-head">
+        <h3>📐 Roof Measurements</h3>
+        <span class="measure-hint">Enter once — the Roofing estimate auto-builds with quantities &amp; Good / Better / Best pricing</span>
+      </div>
+      <div class="measure-groups">
+        ${MEASURE_FIELDS.filter(g => g.group === 'Roof').map(g => `
+          <div class="measure-group">
+            <div class="measure-group-title">${g.group}</div>
+            <div class="measure-fields">
+              ${g.fields.map(f => `
+                <div class="measure-field">
+                  <label>${f.label}</label>
+                  <div class="measure-input-wrap">
+                    <input type="number" min="0" step="${f.unit==='SQ'?'0.1':f.unit==='%'?'1':'1'}"
+                      value="${m[f.key] !== undefined && m[f.key] !== 0 ? m[f.key] : (f.key==='waste_pct' ? (m.waste_pct ?? 10) : '')}"
+                      placeholder="0"
+                      onchange="setMeasurement('${f.key}', this.value)">
+                    <span class="measure-unit">${f.unit}</span>
+                  </div>
+                </div>`).join('')}
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+
+  const measureOptions = (item) => {
+    const isFormula = !!item.formula;
+    const cur = isFormula ? '__formula__' : (item.measure || '');
+    const isAuto = !!MEASURE_DEFS[item.measure];
+    const formulaInput = isFormula ? `
+      <div class="scope-formula-wrap">
+        <input class="scope-formula-input" type="text"
+          value="${esc(item.formula||'')}"
+          placeholder="e.g. eave_lf + valley_lf"
+          title="Available variables: roof_squares, waste_pct, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in"
+          onchange="setItemFormula('${item._trade}','${item.id}',this.value)">
+        <span class="scope-formula-hint">eave_lf + valley_lf</span>
+      </div>` : '';
+    return `<div class="scope-measure-cell-inner">
+      <select class="scope-measure-select ${(isAuto||isFormula)?'is-auto':''}"
+        onchange="handleMeasureSelect('${item._trade}','${item.id}',this.value)"
+        title="Auto-fill quantity from a measurement">
+        <option value="">Manual</option>
+        ${Object.entries(MEASURE_DEFS).map(([k, d]) =>
+          `<option value="${k}" ${cur===k?'selected':''}>${d.label}</option>`).join('')}
+        <option value="__formula__" ${isFormula?'selected':''}>Custom formula…</option>
+      </select>
+      ${formulaInput}
+    </div>`;
+  };
 
   document.getElementById('page-scope').innerHTML = `
     <div class="scope-header">
       <div>
         <h2>Scope of Work — Measurements</h2>
-        <p>Enter quantities once. Good, Better, and Best packages will price automatically.</p>
+        <p>Enter measurements once. Linked items auto-fill, and Good / Better / Best price automatically.</p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        ${TRADES.map(trade => `
+        ${RETAIL_TRADES.map(trade => `
           <label class="scope-trade-toggle ${S.trades[trade].enabled?'enabled':''}">
             <input type="checkbox" ${S.trades[trade].enabled?'checked':''}
               onchange="toggleTrade('${trade}',this.checked)">
@@ -821,12 +1400,15 @@ function renderScopePage() {
       </div>
     </div>
 
+    ${measurePanel}
+
     ${hasAny ? `
       <div class="scope-table-wrap">
         <table class="scope-table">
           <thead>
             <tr>
               <th>Item</th>
+              <th class="th-auto">Auto Qty From</th>
               <th class="th-qty">Quantity</th>
               <th class="th-unit">Unit</th>
               <th class="th-note">Measurement Notes</th>
@@ -837,18 +1419,23 @@ function renderScopePage() {
             ${allItems.map(row => {
               if (row.type === 'group') {
                 return `<tr class="scope-trade-group">
-                  <td colspan="5">${TRADE_LABELS[row.trade]}
+                  <td colspan="6">${TRADE_LABELS[row.trade]}
                     <button class="scope-defaults-btn" style="margin-left:10px"
                       onclick="loadDefaults('${row.trade}')">Load Defaults</button>
                   </td>
                 </tr>`;
               }
               const { trade, item } = row;
+              item._trade = trade;
+              const isAuto = !!MEASURE_DEFS[item.measure] || !!item.formula;
               return `<tr>
                 <td class="scope-name-cell">${esc(item.name)}</td>
+                <td class="scope-measure-cell">${measureOptions(item)}</td>
                 <td style="text-align:center">
-                  <input class="scope-qty-input" type="number" min="0" step="0.5"
+                  <input class="scope-qty-input ${isAuto?'qty-auto':''}" type="number" min="0" step="0.5"
                     value="${item.quantity||''}" placeholder="0"
+                    data-trade="${trade}" data-id="${item.id}" data-measured="${isAuto?1:0}"
+                    ${isAuto?'readonly title="Auto-calculated — switch to Manual to edit"':''}
                     onchange="liSetQty('${trade}','${item.id}',this.value)">
                 </td>
                 <td class="scope-unit-cell">${esc(item.unit)}</td>
@@ -869,7 +1456,7 @@ function renderScopePage() {
     ` : `
       <div class="scope-empty">
         <p>No items yet. Enable a trade above and click <strong>Load Defaults</strong> to get started.</p>
-        ${TRADES.filter(t=>S.trades[t].enabled).map(t =>
+        ${RETAIL_TRADES.filter(t=>S.trades[t].enabled).map(t =>
           `<button class="scope-defaults-btn" style="margin:6px 4px"
             onclick="loadDefaults('${t}')">Load ${TRADE_LABELS[t]} Defaults</button>`
         ).join('')}
@@ -960,8 +1547,14 @@ function genPkgFeatures(tier) {
   TRADES.forEach(trade => {
     const td = S.trades[trade];
     if (!td || !td.enabled || trade === 'insurance') return;
-    td.line_items.forEach(item => {
-      const ti = item.tiers[tier] || {};
+    const tradeMode = td.mode || (trade === 'gutters' ? 'simple' : 'gbb');
+    (td.line_items || []).forEach(item => {
+      if (tradeMode === 'simple') {
+        if (parseFloat(item.quantity) > 0 || parseFloat(item.unit_price) > 0)
+          features.push(item.description ? `${item.name} — ${item.description}` : item.name);
+        return;
+      }
+      const ti = (item.tiers || {})[tier] || {};
       const cost = (parseFloat(ti.material_unit_cost)||0) + (parseFloat(ti.labor_unit_cost)||0);
       if (cost > 0 || parseFloat(item.quantity) > 0)
         features.push(ti.description ? `${item.name} — ${ti.description}` : item.name);
@@ -1163,8 +1756,9 @@ function renderSimpleFreeform(trade) {
     const total = qty * price;
     return `<tr>
       <td class="ins-name-cell">
-        <input class="other-name-input" type="text" value="${esc(item.name||'')}" placeholder="Item name"
-          onchange="simpleSetField('${trade}','${item.id}','name',this.value)">
+        <input class="other-name-input" type="text" value="${esc(item.name||'')}" list="pb-list-${trade}"
+          placeholder="Type to search price book…"
+          onchange="liSetNameSmart('${trade}','${item.id}',this.value)">
       </td>
       <td class="ins-desc-cell">
         <input class="ins-desc-input" type="text" value="${esc(item.description||'')}" placeholder="Description"
@@ -1214,19 +1808,58 @@ function renderSimpleFreeform(trade) {
           </tr></tfoot>
         </table>
       </div>` : `<div class="scope-empty"><p>No items yet. Click <strong>+ Add Item</strong> below.</p></div>`}
+    ${pbDatalist(trade)}
     <div class="add-row-bar">
       <button class="btn-add" onclick="simpleAddItem('${trade}')">+ Add Item</button>
+      <span class="add-row-hint">Tip: type in the item name to pull from your price book, or free-type anything</span>
     </div>`;
 }
 
 function setTradeMode(trade, mode) {
   if ((S.trades[trade].mode || 'gbb') === mode) return;
-  if (S.trades[trade].line_items.length > 0) {
-    if (!confirm(`Switching to ${mode === 'gbb' ? 'Good/Better/Best' : 'Simple'} mode will clear existing ${TRADE_LABELS[trade]} line items. Continue?`)) return;
+  const td = S.trades[trade];
+  const items = td.line_items || [];
+
+  if (mode === 'simple') {
+    // GBB → Simple: keep items, quantities & measurement links.
+    // Price becomes the current selling price of the selected tier.
+    const pricing = S.pricing || {};
+    const ov   = (pricing.per_trade_overrides || {})[trade];
+    const rate = ov !== null && ov !== undefined ? parseFloat(ov) : parseFloat(pricing.global_rate || 35);
+    const tier = S.selected_tier || 'better';
+    td.line_items = items.map(it => {
+      const t    = (it.tiers || {})[tier] || {};
+      const cost = (parseFloat(t.material_unit_cost)||0) + (parseFloat(t.labor_unit_cost)||0);
+      const sell = pricing.mode === 'markup' ? cost * (1 + rate/100)
+                 : (rate < 100 ? cost / (1 - rate/100) : 0);
+      return {
+        id: it.id, name: it.name, unit: it.unit,
+        quantity: it.quantity || 0,
+        measure: it.measure || undefined,
+        scope_note: it.scope_note || '',
+        description: t.description || it.description || '',
+        unit_price: Math.round(sell * 100) / 100,
+        customer_visible: it.customer_visible !== false,
+      };
+    });
+  } else {
+    // Simple → GBB: keep items, quantities & measurement links.
+    // Tier costs start blank — you price each tier.
+    td.line_items = items.map(it => ({
+      id: it.id, name: it.name, unit: it.unit,
+      quantity: it.quantity || 0,
+      measure: it.measure || undefined,
+      scope_note: it.scope_note || '',
+      customer_visible: it.customer_visible !== false,
+      tiers: {
+        good:  { material_unit_cost:0, labor_unit_cost:0, description:it.description||'', notes:'' },
+        better:{ material_unit_cost:0, labor_unit_cost:0, description:it.description||'', notes:'' },
+        best:  { material_unit_cost:0, labor_unit_cost:0, description:it.description||'', notes:'' },
+      },
+    }));
   }
-  S.trades[trade].mode = mode;
-  S.trades[trade].line_items = [];
-  setDirty(); renderTabBar(); renderTradeContent();
+  td.mode = mode;
+  setDirty(); renderTabBar(); renderTradeContent(); renderTotals();
 }
 
 function simpleSetField(trade, id, field, val) {
@@ -1262,39 +1895,83 @@ function simpleDeleteItem(trade, id) {
 
 /* ── Insurance freeform tab ─────────────────────────────────────────── */
 
-function renderInsuranceFreeform() {
-  const td    = S.trades.insurance;
-  const items = td.line_items || [];
+function _insSection(sec, sections) {
+  const items = sec.items || [];
+  // RCV (price) = ACV + Depreciation. Section subtotal is the sum of RCV.
+  const secTotal = items.reduce((s, it) => s + (parseFloat(it.acv)||0) + (parseFloat(it.depreciation)||0), 0);
+  const canDelete = sections.length > 1;
 
   const rows = items.map(item => {
-    const acv   = parseFloat(item.acv) || 0;
-    const rcv   = parseFloat(item.rcv) || 0;
-    const total = acv + rcv;
+    const acv = parseFloat(item.acv) || 0;
+    const dep = parseFloat(item.depreciation) || 0;
     return `<tr>
       <td class="ins-name-cell">
         <input class="other-name-input" type="text" value="${esc(item.name||'')}" placeholder="Item name"
-          onchange="insSetField('${item.id}','name',this.value)">
+          onchange="insSetField('${sec.id}','${item.id}','name',this.value)">
       </td>
       <td class="ins-desc-cell">
         <input class="ins-desc-input" type="text" value="${esc(item.description||'')}" placeholder="Description"
-          onchange="insSetField('${item.id}','description',this.value)">
+          onchange="insSetField('${sec.id}','${item.id}','description',this.value)">
       </td>
       <td class="ins-acv-cell">
         <input class="ins-price-input" type="number" min="0" step="0.01"
           value="${acv||''}" placeholder="0.00"
-          onchange="insSetField('${item.id}','acv',parseFloat(this.value)||0);insUpdateTotals()">
+          onchange="insSetField('${sec.id}','${item.id}','acv',parseFloat(this.value)||0);insUpdateTotals()">
       </td>
       <td class="ins-acv-cell">
         <input class="ins-price-input" type="number" min="0" step="0.01"
-          value="${rcv||''}" placeholder="0.00"
-          onchange="insSetField('${item.id}','rcv',parseFloat(this.value)||0);insUpdateTotals()">
+          value="${dep||''}" placeholder="0.00"
+          onchange="insSetField('${sec.id}','${item.id}','depreciation',parseFloat(this.value)||0);insUpdateTotals()">
       </td>
-      <td class="other-total-cell ins-line-total" data-ins-id="${item.id}">${fmtCur(total)}</td>
-      <td><button class="li-del" onclick="insDeleteItem('${item.id}')" title="Remove">×</button></td>
+      <td class="other-total-cell ins-line-total" data-ins-id="${item.id}">${fmtCur(acv+dep)}</td>
+      <td><button class="li-del" onclick="insDeleteItem('${sec.id}','${item.id}')" title="Remove">×</button></td>
     </tr>`;
   }).join('');
 
+  return `<div class="ins-section" data-sec-id="${sec.id}">
+    <div class="ins-section-header">
+      <input class="ins-section-name" type="text" value="${esc(sec.name||'')}"
+        placeholder="Section name (e.g. Roof, Gutters, Interior…)"
+        onchange="insRenameSection('${sec.id}',this.value)">
+      ${canDelete ? `<button class="ins-del-section" onclick="insDeleteSection('${sec.id}')">Delete Section</button>` : ''}
+    </div>
+    ${items.length ? `
+      <div class="other-table-wrap ins-section-table">
+        <table class="other-table ins-table">
+          <thead><tr>
+            <th class="ins-th-name">Item Name</th>
+            <th class="ins-th-desc">Description</th>
+            <th class="other-th-price">ACV</th>
+            <th class="other-th-price">Depreciation</th>
+            <th class="other-th-price">RCV</th>
+            <th style="width:32px"></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr>
+            <td colspan="4" style="text-align:right;padding-right:12px;font-weight:600">
+              ${sec.name ? esc(sec.name)+' Subtotal' : 'Subtotal'}
+            </td>
+            <td class="other-total-cell ins-sec-total" data-sec-id="${sec.id}" style="font-weight:700">${fmtCur(secTotal)}</td>
+            <td></td>
+          </tr></tfoot>
+        </table>
+      </div>` : `<div class="ins-section-empty">No items yet.</div>`}
+    <div class="ins-section-add-row">
+      <button class="btn-add" onclick="insAddItem('${sec.id}')">+ Add Item</button>
+    </div>
+  </div>`;
+}
+
+function renderInsuranceFreeform() {
+  const td = S.trades.insurance;
+  // Migrate old flat line_items to single section on first render
+  if (!td.sections) {
+    td.sections = [{id:'sec_'+uid(), name:'', items: td.line_items || []}];
+    delete td.line_items;
+  }
+  const sections = td.sections;
   const grandTot = insuranceTotal();
+  const hasItems = sections.some(s => (s.items||[]).length > 0);
 
   return `
     <div class="ins-meta-bar">
@@ -1311,30 +1988,16 @@ function renderInsuranceFreeform() {
           oninput="S.trades.insurance.claim_number=this.value;setDirty()">
       </div>
     </div>
-    <div class="other-desc">
-      Enter the insurance-approved line items below. ACV and RCV amounts are added together for each line total.
+    <div class="other-desc" style="margin-bottom:14px">
+      Add sections to match your Xactimate breakdown (e.g. Roof, Gutters, Interior). Each section has its own subtotal — ACV + Depreciation = RCV.
     </div>
-    ${items.length ? `
-      <div class="other-table-wrap">
-        <table class="other-table ins-table">
-          <thead><tr>
-            <th class="ins-th-name">Item Name</th>
-            <th class="ins-th-desc">Description</th>
-            <th class="other-th-price">ACV</th>
-            <th class="other-th-price">RCV</th>
-            <th class="other-th-price">Insurance Price Total</th>
-            <th style="width:32px"></th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-          <tfoot><tr>
-            <td colspan="4" style="text-align:right;padding-right:12px;font-weight:600">Insurance Total</td>
-            <td class="other-total-cell" id="ins-grand-total" style="font-weight:700;font-size:14px">${fmtCur(grandTot)}</td>
-            <td></td>
-          </tr></tfoot>
-        </table>
-      </div>` : `<div class="scope-empty"><p>No items yet. Click <strong>+ Add Item</strong> below.</p></div>`}
-    <div class="add-row-bar">
-      <button class="btn-add" onclick="insAddItem()">+ Add Item</button>
+    ${sections.map(sec => _insSection(sec, sections)).join('')}
+    <div class="ins-section-actions">
+      <button class="btn-secondary" onclick="insAddSection()">+ Add Section</button>
+      ${hasItems ? `<div class="ins-grand-bar">
+        <span>Insurance Claim Total</span>
+        <strong id="ins-grand-total">${fmtCur(grandTot)}</strong>
+      </div>` : ''}
     </div>
     <div class="ins-scope-wrap">
       <div class="panel-header" style="margin-top:18px">
@@ -1343,40 +2006,74 @@ function renderInsuranceFreeform() {
       <p class="ins-scope-hint">Describe what work will be performed per the claim — this text prints on the estimate and appears on the customer sign page.</p>
       <textarea class="ins-scope-textarea"
         oninput="S.trades.insurance.scope_notes=this.value;setDirty()"
-        placeholder="E.g. Complete tear-off and replacement of existing roofing system per insurance claim. Includes removal of existing shingles, new synthetic underlayment, ice &amp; water shield at all eaves, architectural shingles to match existing, new drip edge, step flashing, and all associated trim work per Xactimate line items..."
+        placeholder="E.g. Complete tear-off and replacement of existing roofing system per insurance claim…"
       >${esc(td.scope_notes||'')}</textarea>
     </div>`;
 }
 
-function insSetField(id, field, val) {
-  const item = (S.trades.insurance.line_items || []).find(it => it.id === id);
+function insSetField(secId, itemId, field, val) {
+  const sec = (S.trades.insurance.sections || []).find(s => s.id === secId);
+  if (!sec) return;
+  const item = (sec.items || []).find(it => it.id === itemId);
   if (!item) return;
   item[field] = val;
   setDirty();
 }
 function insUpdateTotals() {
-  (S.trades.insurance.line_items || []).forEach(item => {
-    const total = (parseFloat(item.acv)||0) + (parseFloat(item.rcv)||0);
-    const cell  = document.querySelector(`.ins-line-total[data-ins-id="${item.id}"]`);
-    if (cell) cell.textContent = fmtCur(total);
+  (S.trades.insurance.sections || []).forEach(sec => {
+    let secTotal = 0;
+    (sec.items || []).forEach(item => {
+      const total = (parseFloat(item.acv)||0) + (parseFloat(item.depreciation)||0);
+      secTotal += total;
+      const cell = document.querySelector(`.ins-line-total[data-ins-id="${item.id}"]`);
+      if (cell) cell.textContent = fmtCur(total);
+    });
+    const secCell = document.querySelector(`.ins-sec-total[data-sec-id="${sec.id}"]`);
+    if (secCell) secCell.textContent = fmtCur(secTotal);
   });
   const gt = document.getElementById('ins-grand-total');
   if (gt) gt.textContent = fmtCur(insuranceTotal());
   renderTotals();
 }
-function insAddItem() {
-  if (!S.trades.insurance.line_items) S.trades.insurance.line_items = [];
-  S.trades.insurance.line_items.push({
-    id: 'li_' + Date.now().toString(36), name:'', description:'', acv:0, rcv:0
-  });
+function insAddItem(secId) {
+  const sec = (S.trades.insurance.sections || []).find(s => s.id === secId);
+  if (!sec) return;
+  if (!sec.items) sec.items = [];
+  sec.items.push({id:'li_'+uid(), name:'', description:'', acv:0, depreciation:0});
   setDirty();
   if (activePage === 'pricing') renderTradeContent();
 }
-function insDeleteItem(id) {
-  S.trades.insurance.line_items =
-    (S.trades.insurance.line_items || []).filter(it => it.id !== id);
+function insDeleteItem(secId, itemId) {
+  const sec = (S.trades.insurance.sections || []).find(s => s.id === secId);
+  if (!sec) return;
+  sec.items = (sec.items || []).filter(it => it.id !== itemId);
   setDirty();
   if (activePage === 'pricing') renderTradeContent();
+}
+function insAddSection() {
+  if (!S.trades.insurance.sections) S.trades.insurance.sections = [];
+  S.trades.insurance.sections.push({id:'sec_'+uid(), name:'', items:[]});
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+  setTimeout(() => {
+    const secs = document.querySelectorAll('.ins-section');
+    if (secs.length) secs[secs.length-1].scrollIntoView({behavior:'smooth', block:'center'});
+  }, 60);
+}
+function insDeleteSection(secId) {
+  const sections = S.trades.insurance.sections || [];
+  const sec = sections.find(s => s.id === secId);
+  if (!sec) return;
+  if ((sec.items||[]).length > 0 && !confirm(`Delete section "${sec.name||'Untitled'}" and all its items?`)) return;
+  S.trades.insurance.sections = sections.filter(s => s.id !== secId);
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function insRenameSection(secId, name) {
+  const sec = (S.trades.insurance.sections || []).find(s => s.id === secId);
+  if (!sec) return;
+  sec.name = name;
+  setDirty();
 }
 
 function renderColorSection(trade) {
@@ -1398,6 +2095,48 @@ function setTradeColor(trade, key, v) {
   S.trades[trade].colors[key] = v; setDirty();
 }
 
+/* Price-book lookup: datalist of known items for a trade + smart fill */
+function pbDatalist(trade) {
+  const items = (templates && templates[trade]) || [];
+  if (!items.length) return '';
+  return `<datalist id="pb-list-${trade}">
+    ${items.map(t => `<option value="${esc(t.name)}">`).join('')}
+  </datalist>`;
+}
+function pbFind(trade, name) {
+  const items = (templates && templates[trade]) || [];
+  const n = (name || '').trim().toLowerCase();
+  return items.find(t => (t.name || '').trim().toLowerCase() === n) || null;
+}
+function liSetNameSmart(trade, id, v) {
+  const item = findItem(trade, id);
+  if (!item) return;
+  item.name = v;
+  const t = pbFind(trade, v);
+  if (t) {
+    // Pulled from price book — fill unit, measurement link, costs & descriptions
+    item.unit = t.unit || item.unit;
+    if (!item.measure && t.measure) item.measure = t.measure;
+    const cost = t.cost !== undefined ? parseFloat(t.cost) || 0 : 0;
+    if (item.tiers) {
+      ['good','better','best'].forEach(tier => {
+        if (!item.tiers[tier]) item.tiers[tier] = {material_unit_cost:0, labor_unit_cost:0, description:'', notes:''};
+        const tt = item.tiers[tier];
+        if (!parseFloat(tt.material_unit_cost) && !parseFloat(tt.labor_unit_cost)) tt.material_unit_cost = cost;
+        if (!tt.description) tt.description = t['desc_'+tier] || '';
+        if (!tt.notes)       tt.notes       = t['notes_'+tier] || '';
+      });
+    } else if (item.description === '' && t.desc_better) {
+      item.description = t.desc_better;
+    }
+    const q = measuredQty(item);
+    if (q !== null) item.quantity = q;
+  }
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+  renderTotals();
+}
+
 function renderGBBGrid(trade) {
   const items = S.trades[trade].line_items;
   const tier  = S.selected_tier;
@@ -1413,8 +2152,10 @@ function renderGBBGrid(trade) {
     </div>`).join('');
   return `
     <div class="gbb-grid">${grid}</div>
+    ${pbDatalist(trade)}
     <div class="add-row-bar">
       <button class="btn-add" onclick="addLineItem('${trade}')">+ Add Line Item</button>
+      <span class="add-row-hint">Tip: type in the item name to pull from your price book, or free-type anything</span>
     </div>
     <div class="subtotal-bar">
       ${TIERS.map(t=>`<div class="tier-subtotal ${t===tier?'sel-'+t:''}">
@@ -1429,11 +2170,19 @@ function renderLiCard(trade, tier, item, idx) {
   const isB = tier === 'better';
   const UNITS = ['SQ','LF','EA','HR','LS','SF','BD'];
   const isVisible = item.customer_visible !== false;
-  return `<div class="li-card${!isVisible?' li-card-hidden':''}">
+  const included  = t.included !== false;
+  return `<div class="li-card${!isVisible?' li-card-hidden':''}${!included?' li-card-excluded':''}">
+    <div class="li-tier-include-row">
+      <label class="li-tier-include${included?'':' off'}" title="Include this item in the ${esc(TIER_LABELS[tier])} package">
+        <input type="checkbox" ${included?'checked':''}
+          onchange="liSetIncluded('${trade}','${item.id}','${tier}',this.checked)">
+        ${included?`In ${esc(TIER_LABELS[tier])}`:`Excluded from ${esc(TIER_LABELS[tier])}`}
+      </label>
+    </div>
     <div class="li-row li-name-row">
       ${isB
-        ? `<input class="li-name-input" type="text" value="${esc(item.name)}"
-             onchange="liSetName('${trade}','${item.id}',this.value)" placeholder="Item name">`
+        ? `<input class="li-name-input" type="text" value="${esc(item.name)}" list="pb-list-${trade}"
+             onchange="liSetNameSmart('${trade}','${item.id}',this.value)" placeholder="Type to search price book…">`
         : `<span class="li-name-static">${esc(item.name)}</span>
            ${!isVisible?'<span class="li-hidden-badge">Hidden</span>':''}`}
       ${isB?`<button class="li-del" onclick="liDelete('${trade}','${item.id}')" title="Remove">×</button>`:''}
@@ -1476,7 +2225,7 @@ function renderLiCard(trade, tier, item, idx) {
         onchange="liSetTier('${trade}','${item.id}','${tier}','notes',this.value)">${esc(t.notes||'')}</textarea>
     </div>
     <div class="li-row li-total-row">
-      <span class="li-total-value">${fmtCur(tot)}</span>
+      <span class="li-total-value">${included?fmtCur(tot):'<span class="li-excluded-note">Not in this package</span>'}</span>
     </div>
   </div>`;
 }
@@ -1504,7 +2253,94 @@ function renderContractPage() {
       </label>
     </div>
     <textarea id="contract-textarea" rows="14"
-      onchange="S.contract_text=this.value;setDirty()">${esc(S.contract_text||DEFAULT_CONTRACT)}</textarea>`;
+      onchange="S.contract_text=this.value;setDirty()">${esc(S.contract_text||(S.estimate_type==='insurance'?DEFAULT_INSURANCE_CONTRACT:DEFAULT_CONTRACT))}</textarea>
+    ${renderSigningRequirements()}`;
+}
+
+function renderSigningRequirements() {
+  const ss = S.shingle_selection || {enabled:true, options:DEFAULT_SHINGLE_COLORS.slice(), chosen:''};
+  const initials = S.contract_initials || [];
+  const optionsText = (ss.options || []).join(', ');
+
+  const initialRows = initials.map((it, idx) => `
+    <div class="sr-initial-row">
+      <span class="sr-initial-num">${idx + 1}</span>
+      <input type="text" class="sr-initial-input" value="${esc(it.text)}"
+        placeholder="Statement the customer must initial…"
+        onchange="setInitialText('${it.id}', this.value)">
+      <button class="sr-initial-del" onclick="deleteInitial('${it.id}')" title="Remove">×</button>
+    </div>`).join('');
+
+  return `
+  <div class="signing-req">
+    <div class="panel-header" style="margin-top:22px">
+      <h3>✍️ Signing Requirements <span class="note-tag print">what the customer does at signing</span></h3>
+    </div>
+
+    <div class="sr-block">
+      <label class="sr-toggle">
+        <input type="checkbox" ${ss.enabled !== false ? 'checked' : ''}
+          onchange="setShingleEnabled(this.checked)">
+        <span>Ask the customer to confirm a <strong>shingle color</strong> at signing</span>
+      </label>
+      <div class="sr-shingle-body" style="${ss.enabled !== false ? '' : 'display:none'}">
+        <div class="field-group">
+          <label>Color already chosen? <span class="sr-hint">leave blank to let the customer pick</span></label>
+          <input type="text" list="shingle-color-list" class="sr-chosen-input"
+            value="${esc(ss.chosen || '')}" placeholder="e.g. Weathered Wood — or leave blank"
+            onchange="setShingleChosen(this.value)">
+          <datalist id="shingle-color-list">
+            ${(ss.options || []).map(o => `<option value="${esc(o)}">`).join('')}
+          </datalist>
+        </div>
+        <div class="field-group">
+          <label>Color options offered to the customer <span class="sr-hint">comma-separated</span></label>
+          <textarea class="sr-options-input" rows="2"
+            onchange="setShingleOptions(this.value)"
+            placeholder="Charcoal, Weathered Wood, Driftwood…">${esc(optionsText)}</textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="sr-block">
+      <div class="sr-block-title">Items the customer must <strong>initial</strong></div>
+      <p class="sr-hint" style="margin:0 0 8px">Each line gets its own initial box on the sign page, on top of the full signature.</p>
+      <div class="sr-initials">${initialRows || '<div class="sr-empty">No initial items — the customer will just sign &amp; agree.</div>'}</div>
+      <button class="btn-add" onclick="addInitial()">+ Add initial item</button>
+    </div>
+  </div>`;
+}
+
+function setShingleEnabled(v) {
+  if (!S.shingle_selection) S.shingle_selection = {options:DEFAULT_SHINGLE_COLORS.slice(), chosen:''};
+  S.shingle_selection.enabled = v; setDirty();
+  renderContractPage();
+}
+function setShingleChosen(v) {
+  if (!S.shingle_selection) S.shingle_selection = {enabled:true, options:DEFAULT_SHINGLE_COLORS.slice()};
+  S.shingle_selection.chosen = v.trim();
+  // Keep roofing's color field in sync so it shows on prints
+  if (S.trades.roofing) { S.trades.roofing.colors = S.trades.roofing.colors || {}; S.trades.roofing.colors.shingle_color = v.trim(); }
+  setDirty();
+}
+function setShingleOptions(v) {
+  if (!S.shingle_selection) S.shingle_selection = {enabled:true, chosen:''};
+  const opts = v.split(',').map(s => s.trim()).filter(Boolean);
+  S.shingle_selection.options = opts.length ? opts : DEFAULT_SHINGLE_COLORS.slice();
+  setDirty();
+}
+function addInitial() {
+  if (!Array.isArray(S.contract_initials)) S.contract_initials = [];
+  S.contract_initials.push({ id:'ini_'+uid(), text:'' });
+  setDirty(); renderContractPage();
+}
+function setInitialText(id, v) {
+  const it = (S.contract_initials || []).find(x => x.id === id);
+  if (it) { it.text = v; setDirty(); }
+}
+function deleteInitial(id) {
+  S.contract_initials = (S.contract_initials || []).filter(x => x.id !== id);
+  setDirty(); renderContractPage();
 }
 
 function renderPhotosPage() {
@@ -1545,6 +2381,8 @@ function renderPhotosPage() {
       if (canvas) drawAnnotatedPhoto(canvas, '/uploads/' + p.filename, p.annotations);
     }
   });
+
+  renderAttachments();
 }
 
 /* legacy alias so any other callers still work */
@@ -1858,9 +2696,19 @@ function liSetVisible(trade, id, val) {
   setDirty();
   if (activePage === 'pricing') renderTradeContent();
 }
+// Include/exclude a line item from a single package tier. Quantity stays shared;
+// only this tier's pricing, totals, customer view and PDF drop the item.
+function liSetIncluded(trade, id, tier, on) {
+  const item = findItem(trade, id);
+  if (!item || !item.tiers || !item.tiers[tier]) return;
+  item.tiers[tier].included = on;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+  renderTotals();
+}
 function addLineItem(trade) {
   S.trades[trade].line_items.push({
-    id:uid(), name:'New Item', unit:'EA', quantity:0, scope_note:'',
+    id:uid(), name:'', unit:'EA', quantity:0, scope_note:'',
     customer_visible: true,
     tiers:{
       good:  {material_unit_cost:0,labor_unit_cost:0,description:'',notes:''},
@@ -1873,9 +2721,57 @@ function addLineItem(trade) {
 }
 function toggleTrade(trade, enabled) {
   S.trades[trade].enabled=enabled;
+  // Auto-build priced defaults when enabling an empty trade, so measurements
+  // flow straight through to a priced estimate with no extra clicks.
+  if (enabled && templates && (!S.trades[trade].line_items || S.trades[trade].line_items.length === 0)) {
+    S.trades[trade].line_items = buildTradeDefaults(trade);
+    applyMeasurements();
+  }
   setDirty(); rerender();
   if(activePage==='pricing'){renderTabBar();renderTradeContent();}
   if(activePage==='scope'){renderScopePage();}
+}
+// Build a trade's line items from the price book / templates (synchronous —
+// relies on the global `templates` cache that loads at boot). Pulls per-tier
+// products + costs (GBB) or the price (Simple) so the estimate is priced the
+// moment items are created.
+function buildTradeDefaults(trade) {
+  const tpl = (templates && templates[trade]) || [];
+  const effectiveMode = S.trades[trade].mode || (trade === 'gutters' ? 'simple' : 'gbb');
+  if (effectiveMode === 'simple') {
+    return tpl.map(t => {
+      const baseCost = t.cost !== undefined ? parseFloat(t.cost)||0 : 0;
+      const price = t.cost_better !== undefined ? parseFloat(t.cost_better)||0 : baseCost;
+      return {
+        id:uid(), name:t.name, unit:t.unit, quantity:0,
+        description:(t.product_better || t.desc_better || ''),
+        unit_price:price,
+        measure: t.measure || undefined,
+        formula: t.formula || undefined,
+        customer_visible: t.customer_visible !== false,
+      };
+    });
+  }
+  return tpl.map(t => {
+    const baseCost = t.cost !== undefined ? parseFloat(t.cost)||0 : 0;
+    const costGood   = t.cost_good   !== undefined ? parseFloat(t.cost_good)||0   : baseCost;
+    const costBetter = t.cost_better !== undefined ? parseFloat(t.cost_better)||0 : baseCost;
+    const costBest   = t.cost_best   !== undefined ? parseFloat(t.cost_best)||0   : baseCost;
+    const descGood   = t.product_good   ? t.product_good   : (t.desc_good   || '');
+    const descBetter = t.product_better ? t.product_better : (t.desc_better || '');
+    const descBest   = t.product_best   ? t.product_best   : (t.desc_best   || '');
+    return {
+      id:uid(), name:t.name, unit:t.unit, quantity:0, scope_note:'',
+      measure: t.measure || undefined,
+      formula: t.formula || undefined,
+      customer_visible: t.customer_visible !== false,
+      tiers:{
+        good:  {material_unit_cost:costGood,   labor_unit_cost:0, description:descGood,   notes:t.notes_good||'',   included: t.in_good   !== false},
+        better:{material_unit_cost:costBetter, labor_unit_cost:0, description:descBetter, notes:t.notes_better||'', included: t.in_better !== false},
+        best:  {material_unit_cost:costBest,   labor_unit_cost:0, description:descBest,   notes:t.notes_best||'',   included: t.in_best   !== false},
+      }
+    };
+  });
 }
 async function loadDefaults(trade) {
   if(S.trades[trade].line_items.length>0){
@@ -1886,28 +2782,9 @@ async function loadDefaults(trade) {
     catch{alert('Failed to load templates');return;}
   }
   S.trades[trade].enabled=true;
-  const effectiveMode = S.trades[trade].mode || (trade === 'gutters' ? 'simple' : 'gbb');
-  if (effectiveMode === 'simple') {
-    // Simple mode: load names and units only; user fills in prices
-    S.trades[trade].line_items=(templates[trade]||[]).map(t=>({
-      id:uid(), name:t.name, description:'', unit:t.unit, quantity:0, unit_price:0,
-      customer_visible: t.customer_visible !== false,
-    }));
-  } else {
-    // GBB mode: load with tier cost structure
-    S.trades[trade].line_items=(templates[trade]||[]).map(t=>{
-      const cost = t.cost !== undefined ? parseFloat(t.cost)||0 : 0;
-      return {
-        id:uid(), name:t.name, unit:t.unit, quantity:0, scope_note:'',
-        customer_visible: t.customer_visible !== false,
-        tiers:{
-          good:  {material_unit_cost:cost, labor_unit_cost:0, description:t.desc_good||'',  notes:t.notes_good||''},
-          better:{material_unit_cost:cost, labor_unit_cost:0, description:t.desc_better||'',notes:t.notes_better||''},
-          best:  {material_unit_cost:cost, labor_unit_cost:0, description:t.desc_best||'',  notes:t.notes_best||''},
-        }
-      };
-    });
-  }
+  S.trades[trade].line_items = buildTradeDefaults(trade);
+  // Fill quantities from any measurements already entered
+  applyMeasurements();
   setDirty(); rerender();
   if(activePage==='scope'){renderScopePage();}
   if(activePage==='pricing'){renderTabBar();renderTradeContent();}
@@ -1972,29 +2849,65 @@ function setTradeOverride(trade,v) { S.pricing.per_trade_overrides[trade]=v===''
 
 async function crmSearch(q) {
   if(!q||q.length<2){closeCrm();return;}
-  try{ const r=await fetch(`/api/crm/contacts?q=${encodeURIComponent(q)}`); showCrmResults(await r.json()); }
+  try{ const r=await fetch(`/api/crm/jobs?q=${encodeURIComponent(q)}`); showCrmResults(await r.json()); }
   catch{ closeCrm(); }
 }
 function showCrmResults(list) {
   const dd=document.getElementById('crm-dropdown');
   dd.innerHTML=list.length
-    ? list.map(c=>`<div class="crm-result" data-id="${esc(c.id)}">
-        <strong>${esc(c.name)}</strong>
-        <small>${[c.phone,c.email].filter(Boolean).join(' · ')}</small>
+    ? list.map(p=>`<div class="crm-result" data-id="${esc(p.id)}">
+        <strong>${esc(p.client_name||p.name)}</strong>
+        <small>${[p.job_number,p.address].filter(Boolean).join(' · ')}</small>
       </div>`).join('')
-    : '<div class="crm-no-results">No contacts found</div>';
+    : '<div class="crm-no-results">No jobs found</div>';
   dd.querySelectorAll('.crm-result').forEach(el=>
-    el.addEventListener('click',()=>selectContact(list.find(c=>c.id===el.dataset.id))));
+    el.addEventListener('click',()=>selectJob(list.find(p=>p.id===el.dataset.id))));
   dd.classList.remove('hidden');
 }
-function selectContact(c) {
-  if(!c)return;
-  S.customer={crm_contact_id:c.id,name:c.name||'',phone:c.phone||'',email:c.email||'',
-    address:{street:c.street_address||'',city:c.city||'',state:c.state||'',zip:c.zip_code||''}};
+function parseCrmAddress(addr) {
+  // CRM job addresses look like "2905 Roanoke Ln, Tyler, TX, 75701"
+  const out={street:'',city:'',state:'',zip:''};
+  if(!addr)return out;
+  const parts=addr.split(',').map(s=>s.trim()).filter(Boolean);
+  if(parts.length>=1)out.street=parts[0];
+  if(parts.length>=2)out.city=parts[1];
+  if(parts.length>=3){
+    const m=parts[2].match(/^([A-Za-z]{2})\s*(\d{5}(-\d{4})?)?$/);
+    if(m){out.state=m[1].toUpperCase();if(m[2])out.zip=m[2];}
+    else out.state=parts[2];
+  }
+  if(parts.length>=4&&!out.zip){
+    const z=parts[3].match(/\d{5}(-\d{4})?/);if(z)out.zip=z[0];
+  }
+  return out;
+}
+function selectJob(p) {
+  if(!p)return;
+  const a=parseCrmAddress(p.address);
+  S.customer={crm_contact_id:null,crm_project_id:p.id,crm_job_number:p.job_number||'',
+    name:p.client_name||p.name||'',phone:p.client_phone||'',email:p.client_email||'',
+    address:a};
   if(!S.project_address)
-    S.project_address=[c.street_address,c.city,c.state,c.zip_code].filter(Boolean).join(', ');
+    S.project_address=[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ');
+  // Prefer the job's assigned salesperson when it's a known team member
+  if(p.assigned_salesperson){
+    const u=p.assigned_salesperson.split('@')[0].toLowerCase();
+    if(TEAM.includes(u)){S.salesperson=u;setVal('salesperson',u);}
+  }
   document.getElementById('crm-search').value='';
-  closeCrm(); setDirty(); renderSidebar(); renderCoverPage();
+  closeCrm(); setDirty(); renderSidebar(); renderCoverPage(); renderCrmLinkBadge();
+}
+function renderCrmLinkBadge() {
+  const el=document.getElementById('crm-link-badge');
+  if(!el)return;
+  const c=S.customer||{};
+  if(c.crm_project_id){
+    el.innerHTML=`🔗 Linked to CRM job <strong>${esc(c.crm_job_number||'')}</strong> — signed contract will upload automatically`;
+    el.style.display='block';
+  }else{
+    el.innerHTML='⚠ Not linked to a CRM job — search above to link so the signed contract uploads to the CRM';
+    el.style.display='block';
+  }
 }
 function closeCrm() { document.getElementById('crm-dropdown').classList.add('hidden'); }
 
@@ -2004,17 +2917,53 @@ async function uploadPhotos(files) {
   if(!files.length)return;
   if(!S.estimate_id)await saveEstimate();
   for(const file of files){
+    const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
     const fd=new FormData(); fd.append('file',file);
     try{
       const r=await fetch(`/api/uploads/${S.estimate_id}`,{method:'POST',body:fd});
       if(!r.ok){const e=await r.json();throw new Error(e.error||'Upload failed');}
       const res=await r.json();
-      S.photos.push({id:uid(),filename:res.filename,original_name:file.name,caption:'',show_in_estimate:true});
-      setDirty(); renderPhotos(); renderCoverPage();
+      if(isPdf){
+        if(!Array.isArray(S.attachments)) S.attachments=[];
+        S.attachments.push({id:uid(),filename:res.filename,original_name:file.name,
+          label:file.name.replace(/\.pdf$/i,''),show_in_estimate:true});
+        setDirty(); renderPhotos();
+      }else{
+        S.photos.push({id:uid(),filename:res.filename,original_name:file.name,caption:'',show_in_estimate:true});
+        setDirty(); renderPhotos(); renderCoverPage();
+      }
     }catch(e){alert(`Could not upload ${file.name}: ${e.message}`);}
   }
   document.getElementById('photo-input').value='';
   warmPrintPhotos();
+}
+function renderAttachments() {
+  const wrap=document.getElementById('attachments-list'); if(!wrap)return;
+  const atts=S.attachments||[];
+  if(!atts.length){wrap.innerHTML='';return;}
+  wrap.innerHTML=`<div class="att-header">📄 PDF Documents <span class="att-hint">shown to the customer as a link on their estimate</span></div>`+
+    atts.map(att=>`
+    <div class="att-row">
+      <span class="att-icon">📄</span>
+      <input type="text" class="att-label" value="${esc(att.label||att.original_name||'Document')}"
+        onchange="attSetLabel('${att.id}',this.value)" placeholder="Document name shown to customer">
+      <label class="att-show" title="Show this document to the customer">
+        <input type="checkbox" ${att.show_in_estimate!==false?'checked':''}
+          onchange="attToggle('${att.id}',this.checked)"> Show
+      </label>
+      <a class="att-view" href="/uploads/${esc(att.filename)}" target="_blank" rel="noopener">View</a>
+      <button class="att-del" onclick="attDelete('${att.id}')" title="Remove">×</button>
+    </div>`).join('');
+}
+function attSetLabel(id,v){const a=(S.attachments||[]).find(x=>x.id===id);if(a){a.label=v;setDirty();}}
+function attToggle(id,v){const a=(S.attachments||[]).find(x=>x.id===id);if(a){a.show_in_estimate=v;setDirty();}}
+async function attDelete(id){
+  const a=(S.attachments||[]).find(x=>x.id===id); if(!a)return;
+  if(!confirm('Remove this PDF?'))return;
+  const parts=a.filename.split('/');
+  try{await fetch(`/api/uploads/${parts[0]}/${parts[1]}`,{method:'DELETE'});}catch{}
+  S.attachments=(S.attachments||[]).filter(x=>x.id!==id);
+  setDirty(); renderPhotos();
 }
 function photoCaption(id,v){ const p=S.photos.find(x=>x.id===id);if(p){p.caption=v;setDirty();} }
 function photoToggle(id,v){ const p=S.photos.find(x=>x.id===id);if(p){p.show_in_estimate=v;setDirty();warmPrintPhotos();} }
@@ -2026,6 +2975,171 @@ async function photoDelete(id) {
   try{await fetch(`/api/uploads/${parts[0]}/${parts[1]}`,{method:'DELETE'});}catch{}
   S.photos=S.photos.filter(x=>x.id!==id);
   setDirty(); renderPhotos(); renderCoverPage();
+}
+
+/* ── Dashboard ──────────────────────────────────────────────────────── */
+
+let _dashData = [];
+let _dashRep  = null; // null until first open; then '' = all reps
+
+function daysAgoLabel(iso) {
+  if (!iso) return '';
+  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (d <= 0) return 'today';
+  if (d === 1) return '1 day ago';
+  return `${d} days ago`;
+}
+function estStatusOf(e) {
+  if (e.signed) return 'signed';
+  if (e.first_viewed_at) return 'viewed';
+  if (e.sent) return 'sent';
+  return 'draft';
+}
+
+async function openDashboard() {
+  try {
+    const r = await fetch('/api/estimates');
+    _dashData = await r.json();
+  } catch { _dashData = []; }
+  if (_dashRep === null) _dashRep = _loggedInUser || '';
+  renderDashboard();
+  document.getElementById('dashboard-modal').classList.remove('hidden');
+}
+function closeDashboard() { document.getElementById('dashboard-modal').classList.add('hidden'); }
+function maybeCloseDashboard(e) { if (e.target.id === 'dashboard-modal') closeDashboard(); }
+function dashSetRep(v) { _dashRep = v; renderDashboard(); }
+
+function dashRow(e) {
+  const st    = estStatusOf(e);
+  const enum_ = e.estimate_id ? 'EST-' + e.estimate_id.split('-')[0].toUpperCase() : '';
+  const chips = {
+    signed: '<span class="dash-chip dash-chip-signed">✓ Signed</span>',
+    viewed: '<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
+    sent:   '<span class="dash-chip dash-chip-sent">📤 Sent</span>',
+    draft:  '<span class="dash-chip dash-chip-draft">Draft</span>',
+  };
+  let activity = '';
+  if (st === 'signed')      activity = `Signed ${daysAgoLabel(e.signed_at)}`;
+  else if (st === 'viewed') activity = `Viewed ${daysAgoLabel(e.last_viewed_at)}${e.view_count > 1 ? ` (${e.view_count}×)` : ''}`;
+  else if (st === 'sent')   activity = `Sent ${daysAgoLabel(e.sent_at)} — not opened yet`;
+  else                      activity = `Updated ${daysAgoLabel(e.updated_at)}`;
+  const typeLbl = e.estimate_type === 'insurance' ? '🏛 Insurance'
+    : (e.selected_tier ? e.selected_tier[0].toUpperCase() + e.selected_tier.slice(1) : 'Retail');
+  return `<div class="dash-row" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
+    <div class="dash-row-main">
+      <strong>${esc(e.customer_name || '(no customer)')}</strong>
+      <small>${esc(enum_)}${e.city ? ' · ' + esc(e.city) : ''} · ${esc(typeLbl)}${e.salesperson ? ' · ' + esc(cap(e.salesperson)) : ''}</small>
+    </div>
+    <div class="dash-row-side">
+      <span class="dash-total">${fmtCur(e.total || 0)}</span>
+      ${chips[st]}
+      <small class="dash-activity">${esc(activity)}</small>
+    </div>
+  </div>`;
+}
+
+function renderDashboard() {
+  const body = document.getElementById('dashboard-body');
+  if (!body) return;
+  let list = _dashData;
+  if (_dashRep) list = list.filter(e => (e.salesperson || '') === _dashRep);
+
+  const viewed  = list.filter(e => estStatusOf(e) === 'viewed')
+                      .sort((a, b) => (b.last_viewed_at || '').localeCompare(a.last_viewed_at || ''));
+  const sent    = list.filter(e => estStatusOf(e) === 'sent')
+                      .sort((a, b) => (a.sent_at || '').localeCompare(b.sent_at || ''));
+  const drafts  = list.filter(e => estStatusOf(e) === 'draft')
+                      .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+  const signed  = list.filter(e => estStatusOf(e) === 'signed')
+                      .sort((a, b) => (b.signed_at || '').localeCompare(a.signed_at || ''));
+
+  const outstanding   = [...viewed, ...sent];
+  const outstandingSum = outstanding.reduce((s, e) => s + (e.total || 0), 0);
+  const cutoff30   = Date.now() - 30 * 86400000;
+  const signed30   = signed.filter(e => e.signed_at && new Date(e.signed_at).getTime() >= cutoff30);
+  const signed30Sum = signed30.reduce((s, e) => s + (e.total || 0), 0);
+
+  const repOpts = ['<option value="">All reps</option>']
+    .concat(TEAM.map(m => `<option value="${m}" ${m === _dashRep ? 'selected' : ''}>${cap(m)}</option>`))
+    .join('');
+
+  const section = (title, arr, cls) => arr.length
+    ? `<div class="dash-section"><h4 class="${cls || ''}">${title} <span class="dash-count">${arr.length}</span></h4>
+       ${arr.map(dashRow).join('')}</div>`
+    : '';
+
+  body.innerHTML = `
+    <div class="dash-toolbar">
+      <a href="/api/backup" class="dash-backup-link" title="Download a zip of all estimates, photos, and settings">💾 Download full backup</a>
+      <select onchange="dashSetRep(this.value)" class="dash-rep-select">${repOpts}</select>
+    </div>
+    <div class="dash-cards">
+      <div class="dash-card">
+        <div class="dash-card-num">${outstanding.length}</div>
+        <div class="dash-card-lbl">Outstanding</div>
+        <div class="dash-card-sub">${fmtCur(outstandingSum)}</div>
+      </div>
+      <div class="dash-card dash-card-hot">
+        <div class="dash-card-num">${viewed.length}</div>
+        <div class="dash-card-lbl">Viewed — not signed</div>
+        <div class="dash-card-sub">follow up now</div>
+      </div>
+      <div class="dash-card">
+        <div class="dash-card-num">${sent.length}</div>
+        <div class="dash-card-lbl">Sent — never opened</div>
+        <div class="dash-card-sub">re-send or call</div>
+      </div>
+      <div class="dash-card dash-card-won">
+        <div class="dash-card-num">${signed30.length}</div>
+        <div class="dash-card-lbl">Signed (30 days)</div>
+        <div class="dash-card-sub">${fmtCur(signed30Sum)}</div>
+      </div>
+    </div>
+    ${section('🔥 Viewed — awaiting signature', viewed, 'dash-h-hot')}
+    ${section('📤 Sent — not yet opened', sent)}
+    ${section('📝 Drafts', drafts)}
+    ${section('✅ Recently signed', signed.slice(0, 15), 'dash-h-won')}
+    ${!list.length ? '<div class="dash-empty">No estimates yet for this rep.</div>' : ''}`;
+}
+
+/* ── Settings ───────────────────────────────────────────────────────── */
+
+async function openSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    appSettings = await r.json() || {};
+  } catch { appSettings = appSettings || {}; }
+  document.getElementById('settings-colors').value = _globalShingleColors().join('\n');
+  document.getElementById('settings-waste').value  = _globalWastePct();
+  document.getElementById('settings-modal').classList.remove('hidden');
+}
+function closeSettings() { document.getElementById('settings-modal').classList.add('hidden'); }
+function maybeCloseSettings(e) { if (e.target.id === 'settings-modal') closeSettings(); }
+
+async function saveSettings() {
+  const colors = document.getElementById('settings-colors').value
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  const waste = parseFloat(document.getElementById('settings-waste').value);
+  appSettings = {
+    ...appSettings,
+    shingle_colors: colors,
+    default_waste_pct: isNaN(waste) ? 10 : waste,
+  };
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(appSettings),
+    });
+    if (!r.ok) throw new Error('Save failed');
+    // Refresh the current estimate's color options if untouched from defaults
+    if (S.shingle_selection && !S.signature) {
+      S.shingle_selection.options = _globalShingleColors();
+      setDirty();
+      if (activePage === 'contract') renderContractPage();
+    }
+    closeSettings();
+    alert('✓ Settings saved! New estimates will use these colors.');
+  } catch (e) { alert('Could not save settings: ' + e.message); }
 }
 
 /* ── Share / E-Signature ────────────────────────────────────────────── */
@@ -2042,6 +3156,8 @@ async function shareEstimate() {
     if (!r.ok) throw new Error('Could not generate share link');
     const data = await r.json();
     S.share_token = data.token;
+    if (!S.sent_at) S.sent_at = new Date().toISOString();
+    if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); }
     showShareModal(data.full_url || (window.location.origin + data.url), data.url);
   } catch(e) {
     alert('Error: ' + e.message);
@@ -2219,20 +3335,43 @@ async function doLoadEstimate(id) {
     S=await r.json();
     if(!S.tier_descriptions) S.tier_descriptions={good:'',better:'',best:''};
     if(S.print_contract===undefined) S.print_contract=true;
-    if(!S.contract_text) S.contract_text=DEFAULT_CONTRACT;
+    if(!S.contract_text) S.contract_text=(S.estimate_type==='insurance'?DEFAULT_INSURANCE_CONTRACT:DEFAULT_CONTRACT);
     if(!S.cover_photo_id) S.cover_photo_id=null;
     if(S.intro_text===undefined) S.intro_text='';
     if(!S.page_visibility) S.page_visibility={intro:false,options:true};
     if(S.share_token===undefined) S.share_token=null;
     if(S.signature===undefined) S.signature=null;
-    if(!S.trades.insurance) S.trades.insurance={enabled:false,line_items:[],scope_notes:'',claim_number:'',carrier:'',colors:{}};
+    if(!S.trades.insurance) {
+      S.trades.insurance={enabled:false,sections:[{id:'sec_'+uid(),name:'',items:[]}],scope_notes:'',claim_number:'',carrier:'',colors:{}};
+    } else if(S.trades.insurance.line_items && !S.trades.insurance.sections) {
+      S.trades.insurance.sections=[{id:'sec_'+uid(),name:'',items:S.trades.insurance.line_items}];
+      delete S.trades.insurance.line_items;
+    } else if(!S.trades.insurance.sections) {
+      S.trades.insurance.sections=[{id:'sec_'+uid(),name:'',items:[]}];
+    }
     TRADES.forEach(t=>{if(!S.trades[t])S.trades[t]={enabled:false,line_items:[],colors:{}};if(!S.trades[t].colors)S.trades[t].colors={};});
     if(!S.tier_features) S.tier_features={good:[],better:[],best:[]};
     if(!S.estimate_type) S.estimate_type='retail';
+    if(!Array.isArray(S.contract_initials)) S.contract_initials=defaultInitials(S.estimate_type);
+    if(!S.shingle_selection||typeof S.shingle_selection!=='object')
+      S.shingle_selection={enabled:true,options:DEFAULT_SHINGLE_COLORS.slice(),chosen:''};
+    if(!Array.isArray(S.shingle_selection.options)||!S.shingle_selection.options.length)
+      S.shingle_selection.options=DEFAULT_SHINGLE_COLORS.slice();
+    if(!Array.isArray(S.attachments)) S.attachments=[];
+    if(!S.measurements||typeof S.measurements!=='object') S.measurements={waste_pct:_globalWastePct()};
+    if(S.measurements.waste_pct===undefined) S.measurements.waste_pct=_globalWastePct();
+    // Migrate old separate ridge_lf / hip_lf into combined ridge_hip_lf
+    if(S.measurements.ridge_lf !== undefined || S.measurements.hip_lf !== undefined) {
+      S.measurements.ridge_hip_lf = (parseFloat(S.measurements.ridge_lf)||0) + (parseFloat(S.measurements.hip_lf)||0);
+      delete S.measurements.ridge_lf;
+      delete S.measurements.hip_lf;
+    }
     S.trades && Object.values(S.trades).forEach(td=>{
       if(td.line_items) td.line_items.forEach(i=>{
         if(i.scope_note===undefined) i.scope_note='';
         if(i.customer_visible===undefined) i.customer_visible=true;
+        // Migrate old 'ridge' or 'hip' measure keys to combined ridge_hip
+        if(i.measure === 'ridge' || i.measure === 'hip') i.measure = 'ridge_hip';
       });
     });
     activeTrade='roofing'; closeModal(); setClean(); renderAll(); switchPage('cover');
@@ -2333,7 +3472,7 @@ function buildPrintContent() {
   const pHeader = `<div class="p-header">
     <div class="p-header-brand">
       <img src="/static/logo.png" class="p-header-logo" alt="Project One Roofing">
-      <div class="p-company-sub">115 E 5th St · Loveland, CO 80537 · 970-775-0945 · projectoneroofingcolorado.com</div>
+      <div class="p-company-sub">115 E 5th St · Loveland, CO 80537 · 970-776-0945 · projectoneroofingcolorado.com</div>
     </div>
     <div class="p-est-badge"><span class="p-badge-num">${esc(estNum)}</span>${esc(S.estimate_date||'')}</div>
   </div>`;
@@ -2358,7 +3497,7 @@ function buildPrintContent() {
         <div><span>Valid Until</span>${esc(S.valid_until||'—')}</div>
         ${S.salesperson?`<div><span>Sales Rep</span>${esc(cap(S.salesperson))}</div>`:''}
       </div>
-      <div class="p-cover-company">115 E 5th St · Loveland, CO 80537 · 970-775-0945 · projectoneroofingcolorado.com</div>
+      <div class="p-cover-company">115 E 5th St · Loveland, CO 80537 · 970-776-0945 · projectoneroofingcolorado.com</div>
     </div>
   </div>`;
 
@@ -2413,12 +3552,20 @@ function buildPrintContent() {
   const tierItems={};
   TIERS.forEach(t=>{tierItems[t]=[];});
   TRADES.forEach(trade=>{
-    const td=S.trades[trade]; if(!td.enabled||trade==='insurance')return;
-    td.line_items.forEach(item=>{
+    const td=S.trades[trade]; if(!td||!td.enabled||trade==='insurance')return;
+    const tradeMode=td.mode||(trade==='gutters'?'simple':'gbb');
+    (td.line_items||[]).forEach(item=>{
+      if(tradeMode==='simple'){
+        if(parseFloat(item.quantity)>0){
+          const lbl=item.description?`${item.name} — ${item.description}`:item.name;
+          TIERS.forEach(t=>tierItems[t].push(lbl));
+        }
+        return;
+      }
       TIERS.forEach(t=>{
-        const ti=item.tiers[t]||{};
-        const cost=(ti.material_unit_cost||0)+(ti.labor_unit_cost||0);
-        if(cost>0||parseFloat(item.quantity)>0)
+        const ti=(item.tiers||{})[t]||{};
+        if(ti.included===false)return;  // excluded from this package tier
+        if((parseFloat(item.quantity)||0)>0)
           tierItems[t].push(ti.description?`${item.name} — ${ti.description}`:item.name);
       });
     });
@@ -2459,6 +3606,10 @@ function buildPrintContent() {
     TRADES.filter(t=>t!=='insurance').forEach(trade=>{
       const td=S.trades[trade];
       if(!td.enabled||!td.line_items.length)return;
+      // Skip the whole trade if nothing will print (all zero-qty / excluded items)
+      const _shown=td.line_items.filter(item =>
+        (item.tiers?.[tier]?.included)!==false && (parseFloat(item.quantity)||0)>0);
+      if(!_shown.length)return;
       const rate=tradeRate(trade);
       const subtot=tradeTotal(trade,tier);
       const colors=td.colors||{};
@@ -2472,8 +3623,10 @@ function buildPrintContent() {
           <th class="p-right">Unit Price</th><th class="p-right">Total</th>
         </tr></thead><tbody>
           ${(()=>{
-            const visibleItems = td.line_items.filter(item => item.customer_visible !== false);
-            const hiddenCount  = td.line_items.length - visibleItems.length;
+            const inTier       = td.line_items.filter(item =>
+              (item.tiers?.[tier]?.included) !== false && (parseFloat(item.quantity)||0) > 0);
+            const visibleItems = inTier.filter(item => item.customer_visible !== false);
+            const hiddenCount  = inTier.length - visibleItems.length;
             return visibleItems.map(item=>{
               const t=item.tiers[tier]||{};
               const cost=(parseFloat(t.material_unit_cost)||0)+(parseFloat(t.labor_unit_cost)||0);
@@ -2505,29 +3658,35 @@ function buildPrintContent() {
     const insCarrier=insTd?.carrier?` — ${esc(insTd.carrier)}`:'';
     const insClaimNum=insTd?.claim_number?` &nbsp;·&nbsp; Claim #: ${esc(insTd.claim_number)}`:'';
     html+=`<div class="p-package-banner">Insurance Estimate${insCarrier}${insClaimNum}</div>`;
-    if(insTd?.enabled && insTd.line_items?.length){
-      html+=`<div class="p-trade">
-        <table class="p-table"><thead><tr>
-          <th>Description</th><th class="p-right">Qty</th><th>Unit</th>
-          <th class="p-right">Insurance Price</th><th class="p-right">Total</th>
+    if(insTd?.enabled){
+      const sections=insTd.sections||(insTd.line_items?[{name:'',items:insTd.line_items}]:[]);
+      const activeSections=sections.filter(s=>(s.items||[]).length>0);
+      activeSections.forEach(sec=>{
+        const secTotal=(sec.items||[]).reduce((s,it)=>s+(parseFloat(it.acv)||0)+(parseFloat(it.depreciation)||0),0);
+        html+=`<div class="p-trade">`;
+        if(sec.name) html+=`<div class="p-trade-title">${esc(sec.name)}</div>`;
+        html+=`<table class="p-table"><thead><tr>
+          <th>Item Name</th><th>Description</th>
+          <th class="p-right">ACV</th><th class="p-right">Depreciation</th><th class="p-right">RCV</th>
         </tr></thead><tbody>
-          ${insTd.line_items.map(item=>{
-            const qty=parseFloat(item.qty)||0;
-            const price=parseFloat(item.unit_price)||0;
+          ${(sec.items||[]).map(item=>{
+            const acv=parseFloat(item.acv)||0;
+            const dep=parseFloat(item.depreciation)||0;
             return `<tr>
-              <td>${esc(item.name)}</td>
-              <td class="p-right">${qty%1===0?qty:qty.toFixed(2)}</td>
-              <td>${esc(item.unit||'')}</td>
-              <td class="p-right">${fmtCur(price)}</td>
-              <td class="p-right">${fmtCur(qty*price)}</td>
+              <td>${esc(item.name||'')}</td>
+              <td>${esc(item.description||'')}</td>
+              <td class="p-right">${fmtCur(acv)}</td>
+              <td class="p-right">${fmtCur(dep)}</td>
+              <td class="p-right">${fmtCur(acv+dep)}</td>
             </tr>`;
           }).join('')}
         </tbody><tfoot><tr>
-          <td colspan="4">Insurance Total</td>
-          <td class="p-right">${fmtCur(insuranceTotal())}</td>
-        </tr></tfoot></table>
-      </div>`;
-      html+=`<div class="p-grand-total"><span>Insurance Claim Total</span><span>${fmtCur(insuranceTotal())}</span></div>`;
+          <td colspan="4">${sec.name?esc(sec.name)+' Subtotal':'Subtotal'}</td>
+          <td class="p-right">${fmtCur(secTotal)}</td>
+        </tr></tfoot></table></div>`;
+      });
+      if(activeSections.length)
+        html+=`<div class="p-grand-total"><span>Insurance Claim Total</span><span>${fmtCur(insuranceTotal())}</span></div>`;
     }
     if(insTd?.scope_notes?.trim())
       html+=`<div class="p-notes" style="margin-top:8pt"><h3>Scope of Work</h3><p>${esc(insTd.scope_notes)}</p></div>`;
@@ -2571,20 +3730,42 @@ document.addEventListener('click', e=>{
   if(!e.target.closest('.crm-search-wrap'))closeCrm();
 });
 
+let _loggedInUser = '';
+
 document.addEventListener('DOMContentLoaded', async ()=>{
   populateSalespersonDropdown();
   bindSidebarEvents();
   try {
-    const [tRes, pbRes, tdRes, siRes] = await Promise.all([
+    const [tRes, pbRes, tdRes, siRes, meRes, setRes] = await Promise.all([
       fetch('/api/templates'), fetch('/api/pricebook'),
-      fetch('/api/tier-defaults'), fetch('/api/server-info')
+      fetch('/api/tier-defaults'), fetch('/api/server-info'),
+      fetch('/api/me'), fetch('/api/settings')
     ]);
     templates    = await tRes.json();
     priceBook    = await pbRes.json();
     tierDefaults = await tdRes.json();
+    try { appSettings = await setRes.json() || {}; } catch { appSettings = {}; }
+    // Apply global settings to the fresh blank estimate
+    if (!S.estimate_id) {
+      if (S.shingle_selection) S.shingle_selection.options = _globalShingleColors();
+      if (S.measurements) S.measurements.waste_pct = _globalWastePct();
+    }
     const si = await siRes.json();
     window._serverPublicUrl = si.public_url || '';
     window._serverBaseUrl   = si.base_url   || '';
+    const me = await meRes.json();
+    if (me.username) {
+      _loggedInUser = me.username;
+      const badge = document.getElementById('user-badge');
+      const nameEl = document.getElementById('user-display-name');
+      if (badge) badge.style.display = 'flex';
+      if (nameEl) nameEl.textContent = me.display_name;
+      // Auto-set salesperson on blank (new) estimate
+      if (!S.salesperson) {
+        S.salesperson = me.username;
+        setVal('salesperson', me.username);
+      }
+    }
   } catch {}
   // Apply any saved defaults to the initial blank estimate
   applyTierDefaults(S);

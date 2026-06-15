@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Project One Roofing — Estimate Builder</title>
-  <link rel="stylesheet" href="/static/style.css?v=5">
+  <link rel="stylesheet" href="/static/style.css?v=15">
 </head>
 <body>
 
@@ -16,12 +16,18 @@
   </div>
   <div class="header-right">
     <span id="save-indicator" class="save-indicator"></span>
+    <button onclick="openDashboard()" class="btn-dashboard">📊 Dashboard</button>
     <button onclick="newEstimateAction()">New</button>
     <button onclick="openEstimate()">Open</button>
     <button id="save-btn" onclick="saveEstimate()">Save</button>
     <button onclick="openPriceBook()" class="btn-pricebook">📋 Price Book</button>
     <button id="share-btn" onclick="shareEstimate()" class="btn-share">Send / Sign</button>
     <button onclick="doPrint()" class="btn-print">Print / PDF</button>
+    <button onclick="openSettings()" class="btn-settings" title="Settings">⚙</button>
+    <div class="user-badge" id="user-badge" style="display:none">
+      <span id="user-display-name" class="user-name"></span>
+      <a href="/logout" class="btn-signout">Sign Out</a>
+    </div>
   </div>
 </header>
 
@@ -34,9 +40,10 @@
     <section class="sidebar-section" id="section-customer">
       <h3>Customer</h3>
       <div class="crm-search-wrap">
-        <input type="text" id="crm-search" placeholder="Search CRM by name / phone…" autocomplete="off">
+        <input type="text" id="crm-search" placeholder="Search CRM jobs — name / job # / address…" autocomplete="off">
         <div id="crm-dropdown" class="crm-dropdown hidden"></div>
       </div>
+      <div id="crm-link-badge" class="crm-link-badge" style="display:none"></div>
       <div class="field-group">
         <label>Name</label>
         <input type="text" id="cust-name">
@@ -144,6 +151,7 @@
           <span style="color:#0284c7">Insurance</span><strong id="total-insurance" style="color:#0284c7">$0.00</strong>
         </div>
       </div>
+      <div id="internal-margin" class="internal-margin" style="display:none"></div>
     </section>
 
   </aside>
@@ -197,9 +205,10 @@
           <p class="photos-page-sub">Upload job-site photos, then annotate with circles, arrows, and text to document issues.</p>
         </div>
         <div id="photo-drop-zone" class="photo-drop-zone">
-          <span>📷 Drag &amp; drop photos here, or <u>click to browse</u></span>
-          <input type="file" id="photo-input" accept="image/*" multiple style="display:none">
+          <span>📷 Drag &amp; drop photos or a <strong>PDF</strong> here, or <u>click to browse</u></span>
+          <input type="file" id="photo-input" accept="image/*,application/pdf,.pdf" multiple style="display:none">
         </div>
+        <div id="attachments-list" class="attachments-list"></div>
         <div id="photo-grid" class="photo-grid photo-grid-report"></div>
       </div>
     </div>
@@ -216,6 +225,7 @@
         <div class="tab-bar" id="tab-bar"></div>
         <div id="trade-content"></div>
       </div>
+      <div id="cost-profit-panel"></div>
     </div>
 
     <!-- ── Page 7: Contract ───────────────────────────────────────── -->
@@ -247,6 +257,41 @@
       <button onclick="closeShareModal()" class="modal-close">×</button>
     </div>
     <div id="share-modal-body" style="padding:20px;display:flex;flex-direction:column;gap:14px"></div>
+  </div>
+</div>
+
+<!-- ── Settings modal ───────────────────────────────────────────────── -->
+<div id="settings-modal" class="modal hidden" onclick="maybeCloseSettings(event)">
+  <div class="modal-box settings-modal-box">
+    <div class="modal-header">
+      <h2>⚙ Settings</h2>
+      <button onclick="closeSettings()" class="modal-close">×</button>
+    </div>
+    <div class="settings-body">
+      <div class="field-group">
+        <label>Shingle Color Options <span class="note-tag">one per line — shown to customers at signing</span></label>
+        <textarea id="settings-colors" rows="12" spellcheck="false"></textarea>
+      </div>
+      <div class="field-group" style="max-width:220px">
+        <label>Default Waste % <span class="note-tag">applied to new estimates</span></label>
+        <input type="number" id="settings-waste" min="0" max="50" step="1">
+      </div>
+      <div class="settings-footer">
+        <button class="btn-secondary" onclick="closeSettings()">Cancel</button>
+        <button class="btn-primary" onclick="saveSettings()">✓ Save Settings</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Dashboard modal ──────────────────────────────────────────────── -->
+<div id="dashboard-modal" class="modal hidden" onclick="maybeCloseDashboard(event)">
+  <div class="modal-box dash-modal-box">
+    <div class="modal-header">
+      <h2>📊 Estimate Dashboard</h2>
+      <button onclick="closeDashboard()" class="modal-close">×</button>
+    </div>
+    <div id="dashboard-body" class="dashboard-body"></div>
   </div>
 </div>
 
@@ -321,6 +366,6 @@
 <!-- hidden input for direct cover-photo upload -->
 <input type="file" id="cover-photo-input" accept="image/*" style="display:none">
 
-<script src="/static/app.js?v=5"></script>
+<script src="/static/app.js?v=20"></script>
 </body>
 </html>

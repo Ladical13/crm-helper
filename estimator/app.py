@@ -1,26 +1,57 @@
+import io
 import os
 import json
+import time
 import uuid
 import shutil
 import socket
 import secrets
 import hashlib
 import smtplib
+import zipfile
+import threading
 import html as _html
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from flask import Flask, request, jsonify, send_from_directory, Response
+from email.mime.application import MIMEApplication
+from functools import wraps
+from flask import Flask, request, jsonify, send_from_directory, send_file, Response, session, redirect
 
 try:
     import requests as http
 except ImportError:
     http = None
 
+try:
+    from fpdf import FPDF
+except ImportError:
+    FPDF = None
+
 app = Flask(__name__, static_folder='static')
+app.secret_key = os.environ.get('SESSION_SECRET', secrets.token_hex(32))
+
+TEAM_MEMBERS = [
+    'aaron','avery','bryan','casey','chris','chris.rollins','clint','cole','dalton',
+    'derik','eric','gabriel','jacob','jeremy','jonathan','kyle','logan',
+    'luke','richard','ryan','shiloh','ted',
+]
+
+def _display_name(username):
+    return ' '.join(p.capitalize() for p in username.replace('.', ' ').split())
+
+def require_auth(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not session.get('user'):
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return wrapper
 
 BASE_URL = "https://base44.app/api/apps/69320ef0c647fee442697971"
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsdWtlQHByb2plY3RvbmVyb29maW5nLmNvbSIsImV4cCI6MTc4MTIwNzk5OSwiaWF0IjoxNzczNDMxOTk5fQ.ExSmR97vp50U-VaNgTRF3FawGffSjpsoznXcyfvRS2I"
+# Base44 API token — set BASE44_TOKEN env var to rotate without a code change.
+# NOTE: tokens expire (check the JWT exp claim). 401s from CRM = expired token.
+TOKEN = os.environ.get('BASE44_TOKEN') or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsdWtlQHByb2plY3RvbmVyb29maW5nLmNvbSIsImV4cCI6MTc4MTIwNzk5OSwiaWF0IjoxNzczNDMxOTk5fQ.ExSmR97vp50U-VaNgTRF3FawGffSjpsoznXcyfvRS2I"
 CO_LOCATION_ID = "6984bb86d86d9c92d6827a17"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -31,7 +62,7 @@ DATA_DIR = os.environ.get('DATA_DIR', BASE_DIR)
 
 ESTIMATES_DIR = os.path.join(DATA_DIR, 'estimates')
 UPLOADS_DIR   = os.path.join(DATA_DIR, 'uploads')
-ALLOWED_EXT   = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif'}
+ALLOWED_EXT   = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'}
 
 PRICE_BOOK_FILE    = os.path.join(DATA_DIR, 'price_book.json')
 TIER_DEFAULTS_FILE = os.path.join(DATA_DIR, 'tier_defaults.json')
@@ -106,11 +137,108 @@ def fetch_all_contacts():
     return _contact_cache
 
 
+# Projects (Jobs) — refreshed every 5 minutes since new jobs are created daily
+_project_cache = {'data': None, 'fetched_at': 0}
+PROJECT_CACHE_TTL = 300
+
+def fetch_all_projects():
+    now = time.time()
+    if _project_cache['data'] is not None and now - _project_cache['fetched_at'] < PROJECT_CACHE_TTL:
+        return _project_cache['data']
+    if http is None:
+        return _project_cache['data'] or []
+    try:
+        r = http.get(f"{BASE_URL}/entities/Project", headers=crm_headers(), timeout=20)
+        r.raise_for_status()
+        _project_cache['data'] = r.json()
+        _project_cache['fetched_at'] = now
+    except Exception as e:
+        print(f"[CRM] project fetch failed: {e}")
+        if _project_cache['data'] is None:
+            _project_cache['data'] = []
+    return _project_cache['data']
+
+
 # ── Static ─────────────────────────────────────────────────────────────────
 
 @app.route('/')
+@require_auth
 def index():
     return send_from_directory(app.static_folder, 'index.html')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = ''
+    if request.method == 'POST':
+        username = (request.form.get('username') or '').strip()
+        if username in TEAM_MEMBERS:
+            session.permanent = True
+            session['user'] = username
+            return redirect('/')
+        error = 'Please select your name from the list.'
+
+    options = ''.join(
+        f'<option value="{u}">{_display_name(u)}</option>'
+        for u in TEAM_MEMBERS
+    )
+    error_html = f'<p class="login-error">{error}</p>' if error else ''
+
+    return f'''<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign In — Project One Roofing Estimator</title>
+<style>
+*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:#f3f4f6;
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}}
+.card{{background:#fff;border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,.12);
+  padding:40px;width:100%;max-width:360px;text-align:center}}
+.card img{{height:64px;margin-bottom:22px}}
+h1{{font-size:19px;font-weight:800;color:#1a3a5c;margin-bottom:4px}}
+.sub{{font-size:13px;color:#6b7280;margin-bottom:24px}}
+.stripe{{height:4px;border-radius:2px;margin-bottom:28px;
+  background:linear-gradient(90deg,#22c7da 0 33%,#ffd400 33% 66%,#ee3d42 66% 100%)}}
+select{{width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:6px;
+  font-size:14px;background:#fff;margin-bottom:14px;
+  appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 12px center}}
+select:focus{{outline:none;border-color:#1a3a5c;box-shadow:0 0 0 3px rgba(26,58,92,.12)}}
+button{{width:100%;padding:12px;background:#1a3a5c;color:#fff;border:none;
+  border-radius:6px;font-size:14px;font-weight:700;cursor:pointer}}
+button:hover{{background:#0e2440}}
+.login-error{{color:#dc2626;font-size:13px;margin-bottom:12px}}
+</style></head><body>
+<div class="card">
+  <img src="/static/logo.png" alt="Project One Roofing">
+  <h1>Estimate Builder</h1>
+  <p class="sub">Select your name to continue</p>
+  <div class="stripe"></div>
+  {error_html}
+  <form method="POST">
+    <select name="username" required>
+      <option value="">Select your name…</option>
+      {options}
+    </select>
+    <button type="submit">Sign In →</button>
+  </form>
+</div>
+</body></html>'''
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/login')
+
+
+@app.route('/api/me')
+def me():
+    user = session.get('user', '')
+    return jsonify({
+        'username': user,
+        'display_name': _display_name(user) if user else '',
+        'email': f'{user}@projectoneroofing.com' if user else '',
+    })
 
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):
@@ -118,6 +246,18 @@ def serve_upload(filename):
 
 
 # ── Estimates CRUD ─────────────────────────────────────────────────────────
+
+def _estimate_total(est):
+    """Grand total for any estimate type (insurance sections-aware)."""
+    if est.get('estimate_type') == 'insurance':
+        ins_td   = est.get('trades', {}).get('insurance', {})
+        sections = ins_td.get('sections') or (
+            [{'items': ins_td.get('line_items', [])}] if ins_td.get('line_items') else [])
+        # RCV (price) = ACV + Depreciation
+        return sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
+                   for sec in sections for i in sec.get('items', []))
+    return calc_tier_total(est, est.get('selected_tier', 'better'))
+
 
 @app.route('/api/estimates', methods=['GET'])
 def list_estimates():
@@ -133,13 +273,27 @@ def list_estimates():
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 d = json.load(f)
+            c = d.get('customer', {})
+            a = c.get('address', {})
+            sig = d.get('signature') or {}
             result.append({
-                'estimate_id':   d.get('estimate_id', ''),
-                'customer_name': d.get('customer', {}).get('name', ''),
-                'estimate_date': d.get('estimate_date', ''),
-                'status':        d.get('status', 'draft'),
-                'selected_tier': d.get('selected_tier', 'better'),
-                'updated_at':    d.get('updated_at', ''),
+                'estimate_id':     d.get('estimate_id', ''),
+                'customer_name':   c.get('name', ''),
+                'city':            a.get('city', ''),
+                'estimate_date':   d.get('estimate_date', ''),
+                'status':          d.get('status', 'draft'),
+                'estimate_type':   d.get('estimate_type', 'retail'),
+                'selected_tier':   d.get('selected_tier', 'better'),
+                'salesperson':     d.get('salesperson', ''),
+                'total':           round(_estimate_total(d), 2),
+                'sent':            bool(d.get('share_token')),
+                'sent_at':         d.get('sent_at', ''),
+                'first_viewed_at': d.get('first_viewed_at', ''),
+                'last_viewed_at':  d.get('last_viewed_at', ''),
+                'view_count':      int(d.get('view_count') or 0),
+                'signed':          bool(d.get('signature')),
+                'signed_at':       sig.get('signed_at', ''),
+                'updated_at':      d.get('updated_at', ''),
             })
         except Exception:
             pass
@@ -169,12 +323,32 @@ def get_estimate(est_id):
         return jsonify(json.load(f))
 
 
+# Fields written by the server (sign page, share link, CRM push) that a stale
+# client save must never wipe. If incoming value is missing/falsy but the file
+# has one, keep the file's value.
+SERVER_MANAGED_FIELDS = [
+    'share_token', 'sent_at', 'first_viewed_at', 'last_viewed_at',
+    'view_count', 'signature', 'crm_document_id', 'crm_pushed_at',
+]
+
 @app.route('/api/estimates/<est_id>', methods=['PUT'])
 def save_estimate(est_id):
     data = request.get_json(force=True)
     data['estimate_id'] = est_id
     data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+            for field in SERVER_MANAGED_FIELDS:
+                if not data.get(field) and existing.get(field):
+                    data[field] = existing[field]
+            # A signed estimate stays accepted even if a stale tab says draft
+            if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
+                data['status'] = existing.get('status', 'accepted')
+        except Exception:
+            pass
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
     return jsonify({'estimate_id': est_id})
@@ -250,6 +424,33 @@ def get_contact(contact_id):
     return jsonify({'error': 'Not found'}), 404
 
 
+@app.route('/api/crm/jobs')
+def search_jobs():
+    q = request.args.get('q', '').lower().strip()
+    projects = fetch_all_projects()
+    if q:
+        projects = [p for p in projects if
+                    q in (p.get('name') or '').lower() or
+                    q in (p.get('client_name') or '').lower() or
+                    q in (p.get('client_phone') or '').lower() or
+                    q in (p.get('client_email') or '').lower() or
+                    q in (p.get('job_number') or '').lower() or
+                    q in (p.get('address') or '').lower()]
+    projects = sorted(projects, key=lambda p: p.get('created_date') or '', reverse=True)
+    slim = [{
+        'id':                   p.get('id'),
+        'name':                 p.get('name', ''),
+        'job_number':           p.get('job_number', ''),
+        'client_name':          p.get('client_name', ''),
+        'client_phone':         p.get('client_phone', ''),
+        'client_email':         p.get('client_email', ''),
+        'address':              p.get('address', ''),
+        'status':               p.get('status', ''),
+        'assigned_salesperson': p.get('assigned_salesperson', ''),
+    } for p in projects[:25]]
+    return jsonify(slim)
+
+
 # ── E-Signature helpers ────────────────────────────────────────────────────
 
 def he(s):
@@ -308,6 +509,8 @@ def calc_tier_total(est, tier):
                 sp = float(item.get('unit_price') or 0)
             else:
                 t    = (item.get('tiers') or {}).get(tier, {})
+                if t.get('included') is False:
+                    continue  # item excluded from this package tier
                 cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
                 sp   = sell(cost, r)
             total += sp * qty
@@ -347,11 +550,15 @@ def render_line_items(est, tier=None):
         hidden_count = 0
         for item in td['line_items']:
             qty  = float(item.get('quantity') or 0)
+            if qty <= 0:
+                continue  # zero-quantity items are hidden from the customer
             if trade_mode == 'simple':
                 sp   = float(item.get('unit_price') or 0)
                 desc = (item.get('description') or '').strip()
             else:
                 t    = (item.get('tiers') or {}).get(tier, {})
+                if t.get('included') is False:
+                    continue  # item excluded from this package tier
                 cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
                 sp   = sell(cost, r)
                 desc = t.get('description', '')
@@ -369,6 +576,8 @@ def render_line_items(est, tier=None):
               <td class="cvr">{fc(line)}</td></tr>''')
         if hidden_count:
             rows.append(f'<tr><td colspan="5" class="cvhidden-note">Additional materials &amp; supplies included in total</td></tr>')
+        if not rows:
+            continue  # nothing priced to show the customer for this trade
         gtotal += sub
         lbl = labels.get(tk, tk.title())
         parts.append(f'''<div class="cvtrade">
@@ -400,6 +609,13 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cvhero h1{font-size:22px;font-weight:800;margin-bottom:5px}
 .cvhero p{font-size:13px;opacity:.85}
 .cvhero.ok{background:linear-gradient(135deg,#16a34a,#14532d)}
+.cvcover{position:relative;overflow:hidden;background:#0e2440}
+.cvcover img{width:100%;height:min(500px,62vh);object-fit:contain;display:block}
+.cvcover-shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,25,41,.08) 0%,rgba(10,25,41,.12) 45%,rgba(10,25,41,.82) 100%)}
+.cvcover-text{position:absolute;left:0;right:0;bottom:0;padding:30px 20px 34px;text-align:center;color:#fff}
+.cvcover-text h1{font-size:27px;font-weight:800;margin-bottom:7px;text-shadow:0 2px 10px rgba(0,0,0,.5)}
+.cvcover-text p{font-size:14px;opacity:.95;text-shadow:0 1px 5px rgba(0,0,0,.55)}
+@media(max-width:520px){.cvcover img{height:320px}.cvcover-text h1{font-size:20px}}
 .cv-check{font-size:52px;line-height:1;margin-bottom:8px}
 .cv-print-btn{margin-top:14px;background:rgba(255,255,255,.2);border:2px solid rgba(255,255,255,.5);
   color:#fff;padding:10px 22px;border-radius:6px;font-size:14px;font-weight:700;cursor:pointer}
@@ -455,6 +671,24 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
   font-size:16px;font-weight:700;cursor:pointer;margin-bottom:10px;transition:background .15s}
 .cvbtn:hover{background:#0e2440}
 .cvlegal{font-size:10px;color:#9ca3af;text-align:center;line-height:1.5}
+.cv-shingle{background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:13px 14px;margin-bottom:14px}
+.cv-shingle-label{font-size:12px;font-weight:800;color:#0c4a6e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.cv-shingle-locked{font-size:17px;font-weight:700;color:#1a3a5c}
+.cv-shingle-select{margin-bottom:0;background:#fff}
+.cv-initials{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:13px 14px;margin-bottom:14px}
+.cv-initials-title{font-size:12px;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
+.cv-initial-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid #fef3c7}
+.cv-initial-row:first-of-type{border-top:none}
+.cv-initial-text{flex:1;font-size:13px;color:#374151;line-height:1.45}
+.cv-initial-box{width:78px;flex-shrink:0;border:2px solid #1a3a5c;border-radius:6px;padding:10px 8px;
+  font-size:15px;font-weight:700;text-align:center;text-transform:uppercase;outline:none;color:#1a3a5c;background:#fff}
+.cv-initial-box:focus{box-shadow:0 0 0 3px rgba(26,58,92,.15)}
+.cv-att-list{display:flex;flex-direction:column;gap:8px}
+.cv-att{display:inline-flex;align-items:center;gap:8px;background:#f8fafc;border:1px solid #e2e8f0;
+  border-radius:6px;padding:11px 14px;font-size:14px;font-weight:600;color:#1a3a5c;text-decoration:none}
+.cv-att:hover{background:#eef2f7;border-color:#94a3b8}
+.cvinit-tbl td:first-child{width:auto;text-transform:none;letter-spacing:0;font-size:12px;color:#374151;font-weight:500}
+.cvinit-val{font-weight:800!important;color:#1a3a5c!important;text-transform:uppercase;width:70px!important;text-align:right}
 .cert{margin:14px;background:#fff;border:2px solid #1a3a5c;border-radius:8px;padding:18px}
 .cert-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:#1a3a5c;
   margin-bottom:13px;padding-bottom:10px;border-bottom:2px solid #1a3a5c}
@@ -491,6 +725,125 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 """
 
 
+def _cover_photo_url(est):
+    """Public URL of the estimate's assigned cover photo, or ''."""
+    pid = est.get('cover_photo_id')
+    if not pid:
+        return ''
+    for p in est.get('photos', []):
+        if p.get('id') == pid and p.get('filename'):
+            return f"/uploads/{p['filename']}"
+    return ''
+
+
+def _cv_hero(est, title, subtitle):
+    """Hero block for customer views — full-bleed cover photo when assigned,
+    plain branded banner otherwise."""
+    cover = _cover_photo_url(est)
+    c     = est.get('customer', {})
+    a     = c.get('address', {})
+    addr  = ', '.join(filter(None, [a.get('street'), a.get('city'), a.get('state')]))
+    if cover:
+        who = he(c.get('name', ''))
+        where = f' &mdash; {he(addr)}' if addr else ''
+        sub = f'Prepared exclusively for {who}{where}' if who else he(subtitle)
+        return f'''<div class="cvcover">
+  <img src="{he(cover)}" alt="Property photo">
+  <div class="cvcover-shade"></div>
+  <div class="cvcover-text">
+    <div class="cvhero-brand">Project One Roofing</div>
+    <h1>{he(title)}</h1>
+    <p>{sub}</p>
+  </div>
+</div>'''
+    return f'''<div class="cvhero">
+  <div class="cvhero-brand">Project One Roofing</div>
+  <h1>{he(title)}</h1>
+  <p>{he(subtitle)}</p>
+</div>'''
+
+
+def _visible_initials(est):
+    """Initial statements with non-empty text, in order."""
+    return [i for i in (est.get('contract_initials') or []) if (i.get('text') or '').strip()]
+
+
+def _cv_shingle_block(est):
+    """Shingle-color step for the sign form. Locked display if the rep already
+    chose a color; otherwise a required dropdown for the customer."""
+    ss = est.get('shingle_selection') or {}
+    if not ss.get('enabled', False):
+        return ''
+    chosen  = (ss.get('chosen') or '').strip()
+    options = [o for o in (ss.get('options') or []) if str(o).strip()]
+    if chosen:
+        return f'''<div class="cv-shingle">
+      <div class="cv-shingle-label">&#127912; Your Shingle Color</div>
+      <div class="cv-shingle-locked">{he(chosen)}</div>
+      <input type="hidden" name="shingle_color" value="{he(chosen)}">
+    </div>'''
+    opts = ''.join(f'<option value="{he(o)}">{he(o)}</option>' for o in options)
+    return f'''<div class="cv-shingle">
+      <div class="cv-shingle-label">&#127912; Choose Your Shingle Color *</div>
+      <select class="cvinput cv-shingle-select" name="shingle_color" required>
+        <option value="">Select a color&hellip;</option>
+        {opts}
+      </select>
+    </div>'''
+
+
+def _cv_initials_block(est):
+    """Per-clause initial boxes for the sign form."""
+    inits = _visible_initials(est)
+    if not inits:
+        return ''
+    rows = ''
+    for idx, it in enumerate(inits):
+        rows += f'''<label class="cv-initial-row">
+          <span class="cv-initial-text">{he(it["text"])}</span>
+          <input class="cv-initial-box" name="initial_{idx}" maxlength="6"
+            placeholder="Initials" required autocomplete="off" inputmode="text">
+        </label>'''
+    return f'''<div class="cv-initials">
+      <div class="cv-initials-title">Please initial each item below:</div>
+      {rows}
+    </div>'''
+
+
+def _cv_attachments_block(est):
+    """Customer-visible PDF documents as view links."""
+    atts = [a for a in (est.get('attachments') or [])
+            if a.get('show_in_estimate', True) and a.get('filename')]
+    if not atts:
+        return ''
+    links = ''
+    for a in atts:
+        label = (a.get('label') or a.get('original_name') or 'Document').strip()
+        links += (f'<a class="cv-att" href="/uploads/{he(a["filename"])}" '
+                  f'target="_blank" rel="noopener">&#128196; {he(label)}</a>')
+    return f'<div class="cvnotes"><h3>Documents &amp; Reports</h3><div class="cv-att-list">{links}</div></div>'
+
+
+def _signed_extras_html(est):
+    """Chosen shingle color + captured initials, for the signed confirmation page."""
+    sig = est.get('signature', {}) or {}
+    out = ''
+    color = (sig.get('shingle_color') or '').strip()
+    if color:
+        out += (f'<div class="cvc-card"><div class="cvgrid">'
+                f'<div class="cvgi"><label>Shingle Color</label><strong>{he(color)}</strong></div>'
+                f'</div></div>')
+    inits = sig.get('initials') or []
+    inits = [i for i in inits if (i.get('value') or '').strip()]
+    if inits:
+        rows = ''.join(
+            f'<tr><td>{he(i["text"])}</td><td class="cvinit-val">{he(i["value"])}</td></tr>'
+            for i in inits)
+        out += (f'<div class="cert"><div class="cert-title">&#9999;&#65039; Initialed Acknowledgements</div>'
+                f'<table class="cert-tbl cvinit-tbl">{rows}</table></div>')
+    return out
+
+
 def _build_insurance_cv(est, token):
     """Customer-facing page for insurance-mode estimates (no GBB tier selection)."""
     c         = est.get('customer', {})
@@ -504,50 +857,59 @@ def _build_insurance_cv(est, token):
     sp        = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
 
     ins_td      = est.get('trades', {}).get('insurance', {})
-    items       = ins_td.get('line_items', [])
+    sections    = ins_td.get('sections', [])
+    # Migrate old flat line_items format
+    if not sections and ins_td.get('line_items'):
+        sections = [{'id': '_legacy', 'name': '', 'items': ins_td.get('line_items', [])}]
     carrier     = (ins_td.get('carrier') or '').strip()
     claim_num   = (ins_td.get('claim_number') or '').strip()
     scope_notes = (ins_td.get('scope_notes') or '').strip()
 
     ins_total = sum(
-        float(i.get('acv') or 0) + float(i.get('rcv') or 0) for i in items
+        float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
+        for sec in sections for i in sec.get('items', [])
     )
 
-    ins_rows = ''
-    for item in items:
-        acv   = float(item.get('acv') or 0)
-        rcv   = float(item.get('rcv') or 0)
-        total = acv + rcv
-        desc  = (item.get('description') or '').strip()
-        ins_rows += f'''<tr>
-          <td class="cvn">{he(item.get("name",""))}</td>
-          <td class="cvn cvc-desc">{he(desc)}</td>
-          <td class="cvr">{fc(acv)}</td>
-          <td class="cvr">{fc(rcv)}</td>
-          <td class="cvr">{fc(total)}</td></tr>'''
-
-    notes_html   = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
-    ctext_html   = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
+    notes_html  = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    ctext_html  = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
-    sp_html      = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
-    carrier_row  = f'<div class="cvgi"><label>Insurance Carrier</label><strong>{he(carrier)}</strong></div>' if carrier else ''
-    claim_row    = f'<div class="cvgi"><label>Claim #</label><strong>{he(claim_num)}</strong></div>' if claim_num else ''
-    scope_html   = f'<div class="cvnotes"><h3>Scope of Work</h3><p>{he(scope_notes)}</p></div>' if scope_notes else ''
+    sp_html     = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
+    carrier_row = f'<div class="cvgi"><label>Insurance Carrier</label><strong>{he(carrier)}</strong></div>' if carrier else ''
+    claim_row   = f'<div class="cvgi"><label>Claim #</label><strong>{he(claim_num)}</strong></div>' if claim_num else ''
+    scope_html  = f'<div class="cvnotes"><h3>Scope of Work</h3><p>{he(scope_notes)}</p></div>' if scope_notes else ''
 
-    ins_table = ''
-    if items:
-        ins_table = f'''<div class="cvtrade">
-          <div class="cvtrade-hd">Insurance Estimate Items</div>
+    # Build per-section tables
+    active_sections = [s for s in sections if s.get('items')]
+    sections_html = ''
+    for sec in active_sections:
+        sec_name  = (sec.get('name') or '').strip()
+        sec_items = sec.get('items', [])
+        sec_total = sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0) for i in sec_items)
+        rows = ''
+        for item in sec_items:
+            acv   = float(item.get('acv') or 0)
+            dep   = float(item.get('depreciation') or 0)
+            desc  = (item.get('description') or '').strip()
+            rows += f'''<tr>
+              <td class="cvn">{he(item.get("name",""))}</td>
+              <td class="cvn cvc-desc">{he(desc)}</td>
+              <td class="cvr">{fc(acv)}</td>
+              <td class="cvr">{fc(dep)}</td>
+              <td class="cvr">{fc(acv+dep)}</td></tr>'''
+        hd = he(sec_name) if sec_name else 'Insurance Estimate Items'
+        sections_html += f'''<div class="cvtrade">
+          <div class="cvtrade-hd">{hd}</div>
           <table class="cvt"><thead><tr>
             <th>Item Name</th><th>Description</th>
-            <th class="cvth-r">ACV</th>
-            <th class="cvth-r">RCV</th>
-            <th class="cvth-r">Total</th></tr></thead>
-          <tbody>{ins_rows}</tbody>
-          <tfoot><tr><td colspan="4" class="cvsub-l">Insurance Claim Total</td>
-            <td class="cvr cvsub">{fc(ins_total)}</td></tr></tfoot>
-          </table></div>
-        <div class="cvgrand">
+            <th class="cvth-r">ACV</th><th class="cvth-r">Depreciation</th>
+            <th class="cvth-r">RCV</th></tr></thead>
+          <tbody>{rows}</tbody>
+          <tfoot><tr><td colspan="4" class="cvsub-l">{(he(sec_name)+' Subtotal') if sec_name else 'Subtotal'}</td>
+            <td class="cvr cvsub">{fc(sec_total)}</td></tr></tfoot>
+          </table></div>'''
+
+    if active_sections:
+        ins_table = sections_html + f'''<div class="cvgrand">
           <span class="cvgrand-lbl">Insurance Claim Total</span>
           <span class="cvgrand-amt">{fc(ins_total)}</span>
         </div>'''
@@ -562,17 +924,13 @@ def _build_insurance_cv(est, token):
 <header class="cvhdr">
   <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
   <div class="cvhdr-contact">
-    <a href="tel:9707750945">970-775-0945</a>
+    <a href="tel:9707760945">970-776-0945</a>
     <span>projectoneroofingcolorado.com</span>
   </div>
 </header>
 <div class="cvbrand-stripe"></div>
 
-<div class="cvhero">
-  <div class="cvhero-brand">Project One Roofing</div>
-  <h1>Your Insurance Estimate is Ready</h1>
-  <p>Review your scope below, then sign at the bottom to accept</p>
-</div>
+{_cv_hero(est, 'Your Insurance Estimate is Ready', 'Review your scope below, then sign at the bottom to accept')}
 
 <div class="cvc-card">
   <div class="cvgrid">
@@ -590,6 +948,7 @@ def _build_insurance_cv(est, token):
 {ins_table}
 {scope_html}
 {notes_html}
+{_cv_attachments_block(est)}
 {ctext_html}
 
 <div class="cvsig">
@@ -597,6 +956,8 @@ def _build_insurance_cv(est, token):
   <p class="sub">Your electronic signature confirms you have reviewed and agreed to the insurance estimate above and all terms &amp; conditions.</p>
   <form method="POST" action="/sign/{he(token)}">
     <input type="hidden" name="selected_tier" value="insurance">
+    {_cv_shingle_block(est)}
+    {_cv_initials_block(est)}
     <input class="cvinput" name="sig_name" placeholder="Your full legal name *" required autocomplete="name">
     <input class="cvinput" name="sig_email" placeholder="Email address (optional)" type="email" autocomplete="email">
     <label class="cvagree">
@@ -612,7 +973,7 @@ def _build_insurance_cv(est, token):
 <div class="cvftr">
   <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
   <strong>Project One Roofing</strong>
-  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-775-0945 &middot; projectoneroofingcolorado.com</div>
+  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-776-0945 &middot; projectoneroofingcolorado.com</div>
 </div>
 </body></html>'''
 
@@ -688,17 +1049,13 @@ def build_customer_view(est, token):
 <header class="cvhdr">
   <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
   <div class="cvhdr-contact">
-    <a href="tel:9707750945">970-775-0945</a>
+    <a href="tel:9707760945">970-776-0945</a>
     <span>projectoneroofingcolorado.com</span>
   </div>
 </header>
 <div class="cvbrand-stripe"></div>
 
-<div class="cvhero">
-  <div class="cvhero-brand">Project One Roofing</div>
-  <h1>Your Estimate is Ready to Review</h1>
-  <p>Choose your package below, then sign at the bottom to accept</p>
-</div>
+{_cv_hero(est, 'Your Estimate is Ready to Review', 'Choose your package below, then sign at the bottom to accept')}
 
 <div class="cvc-card">
   <div class="cvgrid">
@@ -726,6 +1083,7 @@ def build_customer_view(est, token):
 </div>
 
 {notes_html}
+{_cv_attachments_block(est)}
 {ctext_html}
 
 <div class="cvsig">
@@ -734,6 +1092,8 @@ def build_customer_view(est, token):
     <strong id="cv-sig-tier">{he(default_lbl)}</strong> Package and all terms above.</p>
   <form method="POST" action="/sign/{he(token)}">
     <input type="hidden" name="selected_tier" id="cv-tier-input" value="{he(default_tier)}">
+    {_cv_shingle_block(est)}
+    {_cv_initials_block(est)}
     <input class="cvinput" name="sig_name" placeholder="Your full legal name *" required autocomplete="name">
     <input class="cvinput" name="sig_email" placeholder="Email address (optional)" type="email" autocomplete="email">
     <label class="cvagree">
@@ -749,7 +1109,7 @@ def build_customer_view(est, token):
 <div class="cvftr">
   <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
   <strong>Project One Roofing</strong>
-  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-775-0945 &middot; projectoneroofingcolorado.com</div>
+  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-776-0945 &middot; projectoneroofingcolorado.com</div>
 </div>
 
 <script>
@@ -826,7 +1186,7 @@ def build_signed_confirmation(est):
 <header class="cvhdr">
   <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
   <div class="cvhdr-contact">
-    <a href="tel:9707750945">970-775-0945</a>
+    <a href="tel:9707760945">970-776-0945</a>
     <span>projectoneroofingcolorado.com</span>
   </div>
 </header>
@@ -867,6 +1227,8 @@ def build_signed_confirmation(est):
   </div>
 </div>
 
+{_signed_extras_html(est)}
+
 {li_html}
 
 <div class="cvgrand" style="margin-top:14px">
@@ -880,7 +1242,7 @@ def build_signed_confirmation(est):
 <div class="cvftr">
   <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
   <strong>Project One Roofing</strong>
-  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-775-0945 &middot; projectoneroofingcolorado.com</div>
+  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-776-0945 &middot; projectoneroofingcolorado.com</div>
   <div class="cvftr-sub">Signed: {he(stime_fmt)} &middot; IP: {he(ip)}</div>
 </div>
 </body></html>'''
@@ -923,6 +1285,10 @@ def create_share_link(est_id):
         est = json.load(f)
     token = est.get('share_token') or secrets.token_urlsafe(24)
     est['share_token'] = token
+    if not est.get('sent_at'):
+        est['sent_at'] = datetime.utcnow().isoformat() + 'Z'
+    if est.get('status') in (None, '', 'draft'):
+        est['status'] = 'sent'
     est['updated_at']  = datetime.utcnow().isoformat() + 'Z'
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(est, f, indent=2)
@@ -931,16 +1297,163 @@ def create_share_link(est_id):
     return jsonify({'token': token, 'url': f'/sign/{token}', 'full_url': f'{base}/sign/{token}'})
 
 
+def _send_email(subject, html_body, to_addr, cc=None, attachments=None):
+    """Send an HTML email. Prefers the SendGrid HTTP API (HTTPS/443), which works
+    on hosts that block outbound SMTP ports like Railway; falls back to SMTP when
+    no API key is available. Logs errors, never raises.
+    attachments: list of (filename, bytes) tuples."""
+    if not to_addr:
+        return False
+
+    # Prefer the SendGrid Web API when we have a key. SendGrid's SMTP login uses
+    # the literal username "apikey" and the API key as the password, so we can
+    # reuse SMTP_PASS as the API key when SENDGRID_API_KEY isn't set explicitly.
+    api_key = os.environ.get('SENDGRID_API_KEY', '').strip()
+    if not api_key and os.environ.get('SMTP_USER', '').strip() == 'apikey':
+        api_key = os.environ.get('SMTP_PASS', '').strip()
+    if api_key and http is not None:
+        if _send_via_sendgrid_api(api_key, subject, html_body, to_addr, cc, attachments):
+            return True
+        # API failed — try SMTP as a last resort (may also be blocked)
+    return _send_via_smtp(subject, html_body, to_addr, cc, attachments)
+
+
+def _send_via_sendgrid_api(api_key, subject, html_body, to_addr, cc=None, attachments=None):
+    """Send through SendGrid's v3 HTTP API over HTTPS. Returns True on success."""
+    from email.utils import parseaddr
+    smtp_from = (os.environ.get('SMTP_FROM') or os.environ.get('SMTP_USER') or '').strip()
+    from_name, from_email = parseaddr(smtp_from)
+    if not from_email:
+        from_email = smtp_from
+
+    personalization = {'to': [{'email': to_addr}]}
+    if cc:
+        cc_list = [{'email': x.strip()} for x in cc.split(',') if x.strip()]
+        if cc_list:
+            personalization['cc'] = cc_list
+
+    payload = {
+        'personalizations': [personalization],
+        'from': {'email': from_email, 'name': from_name or 'Project One Roofing'},
+        'subject': subject,
+        'content': [{'type': 'text/html', 'value': html_body}],
+    }
+    if attachments:
+        import base64
+        payload['attachments'] = [{
+            'content':     base64.b64encode(data).decode('ascii'),
+            'filename':    fname,
+            'type':        'application/pdf',
+            'disposition': 'attachment',
+        } for fname, data in attachments]
+
+    try:
+        resp = http.post('https://api.sendgrid.com/v3/mail/send',
+                         json=payload,
+                         headers={'Authorization': f'Bearer {api_key}',
+                                  'Content-Type': 'application/json'},
+                         timeout=15)
+        if resp.status_code in (200, 201, 202):
+            print(f'[email] Sent "{subject}" to {to_addr} via SendGrid API')
+            return True
+        print(f'[email] SendGrid API rejected "{subject}" to {to_addr}: '
+              f'{resp.status_code} {resp.text[:300]}')
+        return False
+    except Exception as exc:
+        print(f'[email] SendGrid API error for "{subject}" to {to_addr}: {exc}')
+        return False
+
+
+def _send_via_smtp(subject, html_body, to_addr, cc=None, attachments=None):
+    """Send an HTML email via configured SMTP. Logs errors, never raises."""
+    smtp_host = os.environ.get('SMTP_HOST', '').strip()
+    if not smtp_host or not to_addr:
+        return False
+    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+    smtp_user = os.environ.get('SMTP_USER', '').strip()
+    smtp_pass = os.environ.get('SMTP_PASS', '').strip()
+    smtp_from = os.environ.get('SMTP_FROM', smtp_user).strip() or smtp_user
+
+    msg = MIMEMultipart('mixed' if attachments else 'alternative')
+    msg['Subject'] = subject
+    msg['From']    = smtp_from
+    msg['To']      = to_addr
+    recipients     = [to_addr]
+    if cc:
+        msg['Cc'] = cc
+        recipients += [x.strip() for x in cc.split(',') if x.strip()]
+    msg.attach(MIMEText(html_body, 'html'))
+    for fname, data in (attachments or []):
+        part = MIMEApplication(data, Name=fname)
+        part['Content-Disposition'] = f'attachment; filename="{fname}"'
+        msg.attach(part)
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as srv:
+            srv.ehlo()
+            srv.starttls()
+            if smtp_user and smtp_pass:
+                srv.login(smtp_user, smtp_pass)
+            srv.sendmail(smtp_from, recipients, msg.as_string())
+        print(f'[email] Sent "{subject}" to {to_addr} via SMTP')
+        return True
+    except Exception as exc:
+        print(f'[email] Failed to send "{subject}" to {to_addr} via SMTP: {exc}')
+        return False
+
+
+def _est_number(est):
+    eid = est.get('estimate_id', '')
+    return 'EST-' + eid.split('-')[0].upper() if eid else 'DRAFT'
+
+
+def _salesperson_email(est):
+    sp = (est.get('salesperson') or '').strip()
+    return f'{sp}@projectoneroofing.com' if sp else ''
+
+
+def send_view_notification(est):
+    """Email the rep the first time a customer opens their estimate link."""
+    to_addr = _salesperson_email(est)
+    if not to_addr:
+        print('[notify] No salesperson on estimate — skipping view notification')
+        return
+    c        = est.get('customer', {})
+    enum     = _est_number(est)
+    total    = _estimate_total(est)
+    cname    = c.get('name', 'Your customer')
+    base     = PUBLIC_URL or 'http://localhost:5000'
+    sign_url = f"{base}/sign/{est.get('share_token','')}"
+
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#0284c7;padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:22px;font-weight:800">&#128064; Estimate Viewed</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">{he(cname)} just opened estimate {he(enum)} for the first time.</p>
+  </div>
+  <div style="padding:22px 26px">
+    <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Customer</td><td style="padding:5px 0;font-size:13px;font-weight:700">{he(cname)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Estimate</td><td style="padding:5px 0;font-size:13px">{he(enum)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Value</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#0284c7">{fc(total)}</td></tr>
+    </table>
+    <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">
+      They're looking at it right now — this is the best moment to call and answer questions.</p>
+    <a href="{he(sign_url)}" style="display:block;text-align:center;background:#1a3a5c;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:700;font-size:14px">
+      See What They're Seeing →</a>
+  </div>
+</div>
+</body></html>'''
+    _send_email(f'👀 {cname} just viewed estimate {enum}', html_body, to_addr)
+
+
 def send_signature_notification(est):
     """Email the salesperson when a customer signs. Requires SMTP_HOST env var."""
     smtp_host = os.environ.get('SMTP_HOST', '').strip()
     if not smtp_host:
         return  # SMTP not configured — silent skip
 
-    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
-    smtp_user = os.environ.get('SMTP_USER', '').strip()
-    smtp_pass = os.environ.get('SMTP_PASS', '').strip()
-    smtp_from = os.environ.get('SMTP_FROM', smtp_user).strip() or smtp_user
     notify_cc = os.environ.get('NOTIFY_CC', '').strip()  # optional extra CC
 
     sp = (est.get('salesperson') or '').strip()
@@ -959,12 +1472,8 @@ def send_signature_notification(est):
     tlbl     = dict(good='Good', better='Better', best='Best').get(tier, tier.title())
 
     if est.get('estimate_type') == 'insurance':
-        tlbl   = 'Insurance Claim'
-        ins_td = est.get('trades', {}).get('insurance', {})
-        total  = sum(float(i.get('acv') or 0) + float(i.get('rcv') or 0)
-                     for i in ins_td.get('line_items', []))
-    else:
-        total = calc_tier_total(est, tier)
+        tlbl = 'Insurance Claim'
+    total = _estimate_total(est)
 
     sname = sig.get('name', 'Unknown')
     semail = sig.get('email', '')
@@ -1012,26 +1521,415 @@ def send_signature_notification(est):
 </div>
 </body></html>'''
 
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From']    = smtp_from
-    msg['To']      = to_addr
-    recipients     = [to_addr]
-    if notify_cc:
-        msg['Cc'] = notify_cc
-        recipients += [a.strip() for a in notify_cc.split(',') if a.strip()]
-    msg.attach(MIMEText(html_body, 'html'))
+    _send_email(subject, html_body, to_addr, cc=notify_cc or None)
 
+
+# ── Signed-contract PDF + CRM push ──────────────────────────────────────────
+
+def _pdf_safe(s):
+    """fpdf2 core fonts are latin-1 only; swap common unicode for ASCII."""
+    if s is None:
+        return ''
+    s = str(s)
+    for k, v in {'—': '-', '–': '-', '‘': "'", '’': "'",
+                 '“': '"', '”': '"', '•': '*', '·': '-',
+                 '✓': '[x]', '×': 'x', '…': '...',
+                 '→': '->', ' ': ' '}.items():
+        s = s.replace(k, v)
+    return s.encode('latin-1', 'replace').decode('latin-1')
+
+
+def build_signed_pdf(est):
+    """Render the signed contract as a PDF (bytes) for CRM upload."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+
+    c    = est.get('customer', {})
+    a    = c.get('address', {})
+    sig  = est.get('signature', {}) or {}
+    enum = _est_number(est)
+    is_ins = est.get('estimate_type') == 'insurance'
+    tier = est.get('selected_tier', 'better')
+
+    pdf = FPDF(orientation='P', unit='mm', format='Letter')
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.set_margins(14, 14, 14)
+    pdf.add_page()
+    W = pdf.w - 28  # content width
+
+    # Header: logo + company info
+    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
+    if os.path.exists(logo):
+        try:
+            pdf.image(logo, x=14, y=12, h=16)
+        except Exception:
+            pass
+    pdf.set_xy(14, 12)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_font('Helvetica', '', 8)
+    pdf.cell(W, 4, '970-776-0945  -  projectoneroofingcolorado.com', align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_y(32)
+
+    # Title bar
+    pdf.set_fill_color(26, 58, 92)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font('Helvetica', 'B', 13)
+    title = 'SIGNED CONTRACT  -  INSURANCE CLAIM' if is_ins else 'SIGNED CONTRACT'
+    pdf.cell(W, 10, f'  {title}', fill=True, new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(4)
+
+    # Info block
+    addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'),
+                                       a.get('state'), a.get('zip')]))
+    sp = (est.get('salesperson') or '').replace('.', ' ').title()
+    signed_at = sig.get('signed_at', '')
     try:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as srv:
-            srv.ehlo()
-            srv.starttls()
-            if smtp_user and smtp_pass:
-                srv.login(smtp_user, smtp_pass)
-            srv.sendmail(smtp_from, recipients, msg.as_string())
-        print(f'[notify] Signature notification sent to {to_addr}')
+        dt = datetime.fromisoformat(signed_at.replace('Z', '+00:00'))
+        signed_fmt = dt.strftime('%B %d, %Y at %I:%M %p UTC')
+    except Exception:
+        signed_fmt = signed_at
+
+    info_rows = [
+        ('Estimate #', enum),
+        ('Customer', c.get('name', '')),
+        ('Phone', c.get('phone', '')),
+        ('Email', c.get('email', '')),
+        ('Address', addr_str),
+        ('Estimate Date', est.get('estimate_date', '')),
+        ('Salesperson', sp),
+    ]
+    job_num = c.get('crm_job_number') or ''
+    if job_num:
+        info_rows.append(('Job #', job_num))
+    if is_ins:
+        ins_td = est.get('trades', {}).get('insurance', {})
+        if ins_td.get('carrier'):
+            info_rows.append(('Insurance Carrier', ins_td['carrier']))
+        if ins_td.get('claim_number'):
+            info_rows.append(('Claim #', ins_td['claim_number']))
+    else:
+        info_rows.append(('Package', dict(good='Good', better='Better',
+                                          best='Best').get(tier, tier.title())))
+    shingle_color = (sig.get('shingle_color') or '').strip()
+    if shingle_color:
+        info_rows.append(('Shingle Color', shingle_color))
+
+    pdf.set_font('Helvetica', '', 9)
+    for label, val in info_rows:
+        if not val:
+            continue
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(40, 5.5, _pdf_safe(label))
+        pdf.set_font('Helvetica', '', 9)
+        pdf.cell(0, 5.5, _pdf_safe(val), new_x='LMARGIN', new_y='NEXT')
+    pdf.ln(4)
+
+    def table_header(cols):
+        pdf.set_fill_color(234, 239, 245)
+        pdf.set_font('Helvetica', 'B', 8)
+        for txt, w, align in cols:
+            pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
+        pdf.ln()
+
+    def trade_title(txt):
+        pdf.set_font('Helvetica', 'B', 10.5)
+        pdf.set_text_color(26, 58, 92)
+        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(0, 0, 0)
+
+    def trunc(s, n):
+        s = _pdf_safe(s)
+        return s if len(s) <= n else s[:n - 1] + '...'
+
+    grand = 0.0
+    if is_ins:
+        ins_td   = est.get('trades', {}).get('insurance', {})
+        sections = ins_td.get('sections') or (
+            [{'name': '', 'items': ins_td.get('line_items', [])}]
+            if ins_td.get('line_items') else [])
+        cols = [('Item', 48, 'L'), ('Description', 60, 'L'),
+                ('ACV', 22, 'R'), ('Depreciation', 28, 'R'), ('RCV', 24, 'R')]
+        for sec in sections:
+            items = sec.get('items', [])
+            if not items:
+                continue
+            trade_title(sec.get('name') or 'Insurance Estimate Items')
+            table_header(cols)
+            pdf.set_font('Helvetica', '', 8)
+            sub = 0.0
+            for it in items:
+                acv = float(it.get('acv') or 0)
+                dep = float(it.get('depreciation') or 0)
+                tot = acv + dep  # RCV
+                sub += tot
+                pdf.cell(48, 6, trunc(it.get('name', ''), 32), border=1)
+                pdf.cell(60, 6, trunc(it.get('description', ''), 42), border=1)
+                pdf.cell(22, 6, fc(acv), border=1, align='R')
+                pdf.cell(28, 6, fc(dep), border=1, align='R')
+                pdf.cell(24, 6, fc(tot), border=1, align='R')
+                pdf.ln()
+            grand += sub
+            pdf.set_font('Helvetica', 'B', 8.5)
+            pdf.cell(158, 6.5, _pdf_safe((sec.get('name') or 'Section') + ' Subtotal  '),
+                     border=1, align='R')
+            pdf.cell(24, 6.5, fc(sub), border=1, align='R')
+            pdf.ln(10)
+        total_label = 'INSURANCE CLAIM TOTAL'
+    else:
+        pricing = est.get('pricing', {})
+        mode    = pricing.get('mode', 'margin')
+        grate   = float(pricing.get('global_rate') or 35)
+        ovr     = pricing.get('per_trade_overrides', {})
+        labels  = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                       gutters='Gutters', other='Other / Misc')
+        cols = [('Description', 92, 'L'), ('Qty', 16, 'R'), ('Unit', 16, 'C'),
+                ('Unit Price', 29, 'R'), ('Total', 29, 'R')]
+        for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
+            td = est.get('trades', {}).get(tk, {})
+            if not td.get('enabled') or not td.get('line_items'):
+                continue
+            trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+            ov = ovr.get(tk)
+            r  = float(ov) if ov is not None else grate
+            # Skip the whole trade if nothing will print (all zero-qty / excluded)
+            if not any(
+                    float(it.get('quantity') or 0) > 0 and
+                    (trade_mode == 'simple'
+                     or (it.get('tiers') or {}).get(tier, {}).get('included') is not False)
+                    for it in td['line_items']):
+                continue
+            trade_title(labels.get(tk, tk.title()))
+            table_header(cols)
+            pdf.set_font('Helvetica', '', 8)
+            sub = 0.0
+            hidden = 0
+            for it in td['line_items']:
+                qty = float(it.get('quantity') or 0)
+                if qty <= 0:
+                    continue  # zero-quantity items are hidden from the customer
+                if trade_mode == 'simple':
+                    sp_  = float(it.get('unit_price') or 0)
+                    desc = (it.get('description') or '').strip()
+                else:
+                    t    = (it.get('tiers') or {}).get(tier, {})
+                    if t.get('included') is False:
+                        continue  # item excluded from this package tier
+                    cost = (float(t.get('material_unit_cost') or 0)
+                            + float(t.get('labor_unit_cost') or 0))
+                    sp_  = (cost / (1 - r / 100) if mode == 'margin' and r < 100
+                            else cost * (1 + r / 100))
+                    desc = t.get('description', '')
+                line = sp_ * qty
+                sub += line
+                if not it.get('customer_visible', True):
+                    hidden += 1
+                    continue
+                name = it.get('name', '')
+                if desc:
+                    name = f'{name} - {desc}'
+                pdf.cell(92, 6, trunc(name, 62), border=1)
+                pdf.cell(16, 6, f'{qty:g}', border=1, align='R')
+                pdf.cell(16, 6, trunc(it.get('unit', ''), 8), border=1, align='C')
+                pdf.cell(29, 6, fc(sp_), border=1, align='R')
+                pdf.cell(29, 6, fc(line), border=1, align='R')
+                pdf.ln()
+            if hidden:
+                pdf.set_font('Helvetica', 'I', 7.5)
+                pdf.cell(182, 5.5, 'Additional materials & supplies included in total',
+                         border=1, align='C')
+                pdf.ln()
+                pdf.set_font('Helvetica', '', 8)
+            grand += sub
+            pdf.set_font('Helvetica', 'B', 8.5)
+            pdf.cell(153, 6.5, _pdf_safe(labels.get(tk, tk.title()) + ' Subtotal  '),
+                     border=1, align='R')
+            pdf.cell(29, 6.5, fc(sub), border=1, align='R')
+            pdf.ln(10)
+        total_label = f'TOTAL - {tier.upper()} PACKAGE'
+
+    # Grand total bar
+    pdf.set_fill_color(26, 58, 92)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(W - 40, 9, f'  {_pdf_safe(total_label)}', fill=True)
+    pdf.cell(40, 9, fc(grand) + '  ', fill=True, align='R')
+    pdf.ln(14)
+    pdf.set_text_color(0, 0, 0)
+
+    # Scope of work / notes
+    if is_ins:
+        scope = (est.get('trades', {}).get('insurance', {}).get('scope_notes') or '').strip()
+        if scope:
+            pdf.set_font('Helvetica', 'B', 10)
+            pdf.cell(0, 6, 'Scope of Work', new_x='LMARGIN', new_y='NEXT')
+            pdf.set_font('Helvetica', '', 8.5)
+            pdf.multi_cell(W, 4.6, _pdf_safe(scope))
+            pdf.ln(4)
+    notes = (est.get('notes_customer') or '').strip()
+    if notes:
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(0, 6, 'Notes', new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font('Helvetica', '', 8.5)
+        pdf.multi_cell(W, 4.6, _pdf_safe(notes))
+        pdf.ln(4)
+
+    # Terms & conditions
+    ctext = (est.get('contract_text') or '').strip()
+    if ctext:
+        pdf.add_page()
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.cell(0, 7, 'Terms & Conditions', new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(1)
+        pdf.set_font('Helvetica', '', 7.5)
+        pdf.multi_cell(W, 4.0, _pdf_safe(ctext))
+        pdf.ln(6)
+
+    # Initialed acknowledgements
+    inits = [i for i in (sig.get('initials') or []) if (i.get('value') or '').strip()]
+    if inits:
+        if pdf.get_y() > pdf.h - 40:
+            pdf.add_page()
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(0, 6, 'Initialed Acknowledgements', new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(1)
+        for it in inits:
+            pdf.set_font('Helvetica', 'B', 8.5)
+            pdf.cell(16, 5.4, _pdf_safe(it['value'].upper()), border=0)
+            pdf.set_font('Helvetica', '', 8.5)
+            pdf.multi_cell(W - 16, 5.4, _pdf_safe(it['text']),
+                           new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(4)
+
+    # Signature block
+    if pdf.get_y() > pdf.h - 75:
+        pdf.add_page()
+    pdf.set_draw_color(22, 163, 74)
+    pdf.set_fill_color(240, 253, 244)
+    y0 = pdf.get_y()
+    pdf.rect(14, y0, W, 52, style='DF')
+    pdf.set_xy(18, y0 + 4)
+    pdf.set_text_color(22, 101, 52)
+    pdf.set_font('Helvetica', 'B', 10)
+    pdf.cell(0, 6, 'ELECTRONICALLY SIGNED', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_x(18)
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font('Helvetica', 'I', 17)
+    pdf.cell(0, 10, _pdf_safe(sig.get('name', '')), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_x(18)
+    pdf.set_font('Helvetica', '', 8)
+    sig_lines = [
+        f"Signed by: {sig.get('name', '')}"
+        + (f"  ({sig.get('email')})" if sig.get('email') else ''),
+        f"Date: {signed_fmt}",
+        f"IP Address: {sig.get('ip_address', '')}",
+        f"Document SHA-256: {sig.get('document_hash', '')[:32]}...",
+    ]
+    for line in sig_lines:
+        pdf.cell(0, 4.6, _pdf_safe(line), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_x(18)
+    pdf.set_draw_color(0, 0, 0)
+
+    return bytes(pdf.output())
+
+
+def push_contract_to_crm(est_id):
+    """Upload the signed contract PDF to Base44 and create a Document record
+    tagged 'contract' on the linked CRM job. Runs in a background thread —
+    logs everything, never raises."""
+    try:
+        path = os.path.join(ESTIMATES_DIR, f'{est_id}.json')
+        if not os.path.exists(path):
+            print(f'[crm-push] estimate {est_id} not found')
+            return
+        with open(path, 'r', encoding='utf-8') as f:
+            est = json.load(f)
+
+        proj_id = (est.get('customer', {}).get('crm_project_id')
+                   or est.get('crm_project_id'))
+        if not proj_id:
+            print(f'[crm-push] {est_id}: not linked to a CRM job — skipping push')
+            return
+        if http is None:
+            print('[crm-push] requests not installed — cannot push')
+            return
+
+        c     = est.get('customer', {})
+        sig   = est.get('signature', {}) or {}
+        enum  = _est_number(est)
+        cname = (c.get('name') or 'Customer').strip()
+        safe_name = ''.join(ch if ch.isalnum() or ch in ' -_' else '' for ch in cname).strip().replace(' ', '_')
+        fname = f'Signed_Contract_{enum}_{safe_name}.pdf'
+
+        # 1) Build the PDF
+        pdf_bytes = None
+        try:
+            pdf_bytes = build_signed_pdf(est)
+            print(f'[crm-push] built PDF ({len(pdf_bytes)} bytes)')
+        except Exception as exc:
+            print(f'[crm-push] PDF build failed: {exc}')
+
+        # 2) Upload the file to Base44 storage
+        file_url  = None
+        file_type = 'application/pdf'
+        file_size = None
+        if pdf_bytes:
+            try:
+                r = http.post(f'{BASE_URL}/integrations/Core/UploadFile',
+                              headers=crm_headers(),
+                              files={'file': (fname, pdf_bytes, 'application/pdf')},
+                              timeout=60)
+                print(f'[crm-push] upload status {r.status_code}: {r.text[:300]}')
+                r.raise_for_status()
+                resp = r.json()
+                file_url  = (resp.get('file_url') or resp.get('url')
+                             or resp.get('file_uri') or resp.get('uri'))
+                file_size = len(pdf_bytes)
+            except Exception as exc:
+                print(f'[crm-push] file upload failed: {exc}')
+
+        # Fallback: link the CRM doc to our hosted signed page
+        if not file_url:
+            base = PUBLIC_URL or f'http://{LAN_IP}:5000'
+            file_url  = f'{base}/api/estimates/{est_id}/signed'
+            file_type = 'text/html'
+            print('[crm-push] using hosted signed-page link as file_url fallback')
+
+        # 3) Create the Document record on the job
+        signed_at = sig.get('signed_at', '')[:10]
+        doc = {
+            'name':              f'Signed Contract - {cname} ({enum})',
+            'type':              'contract',
+            'project_id':        proj_id,
+            'file_url':          file_url,
+            'file_type':         file_type,
+            'description':       (f'Signed electronically by {sig.get("name", "")} on '
+                                  f'{signed_at}. Uploaded automatically by Estimate Builder.'),
+            'share_with_client': False,
+        }
+        if file_size:
+            doc['file_size'] = file_size
+        r2 = http.post(f'{BASE_URL}/entities/Document',
+                       headers={**crm_headers(), 'Content-Type': 'application/json'},
+                       json=doc, timeout=30)
+        print(f'[crm-push] document create status {r2.status_code}: {r2.text[:300]}')
+        r2.raise_for_status()
+        doc_id = (r2.json() or {}).get('id', '')
+
+        # 4) Record the push on the estimate
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                est = json.load(f)
+            est['crm_document_id'] = doc_id
+            est['crm_pushed_at']   = datetime.utcnow().isoformat() + 'Z'
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(est, f, indent=2)
+        except Exception:
+            pass
+        print(f'[crm-push] SUCCESS — contract for {cname} pushed to CRM job {proj_id} (doc {doc_id})')
     except Exception as exc:
-        print(f'[notify] Failed to send signature notification: {exc}')
+        print(f'[crm-push] unexpected failure for {est_id}: {exc}')
 
 
 @app.route('/api/estimates/<est_id>/signed', methods=['GET'])
@@ -1060,11 +1958,35 @@ def customer_sign(token):
         sig_name      = (request.form.get('sig_name') or '').strip()
         sig_email     = (request.form.get('sig_email') or '').strip()
         selected_tier = (request.form.get('selected_tier') or '').strip()
+        shingle_color = (request.form.get('shingle_color') or '').strip()
         if not sig_name:
             return 'Full name is required.', 400
+
+        # Capture per-clause initials in the same order the form rendered them
+        init_defs = _visible_initials(est)
+        initials_captured = []
+        for idx, it in enumerate(init_defs):
+            val = (request.form.get(f'initial_{idx}') or '').strip()
+            initials_captured.append({'text': it['text'], 'value': val})
+        if any(not i['value'] for i in initials_captured):
+            return 'Please initial every required item before signing.', 400
+
+        # Require a shingle color when the customer was asked to choose one
+        ss = est.get('shingle_selection') or {}
+        if ss.get('enabled') and not (ss.get('chosen') or '').strip() and not shingle_color:
+            return 'Please choose a shingle color before signing.', 400
+
         # Save the customer-chosen tier back to the estimate
         if selected_tier in ('good', 'better', 'best'):
             est['selected_tier'] = selected_tier
+
+        # Persist the chosen shingle color into the document (part of what is hashed)
+        if shingle_color:
+            est.setdefault('shingle_selection', {})['chosen'] = shingle_color
+            roof = est.get('trades', {}).get('roofing')
+            if isinstance(roof, dict):
+                roof.setdefault('colors', {})['shingle_color'] = shingle_color
+
         # Hash the document BEFORE adding signature so hash represents what was signed
         content   = json.dumps(est, sort_keys=True, separators=(',', ':')).encode('utf-8')
         doc_hash  = hashlib.sha256(content).hexdigest()
@@ -1078,17 +2000,41 @@ def customer_sign(token):
             'document_hash': doc_hash,
             'token':         token,
             'selected_tier': est.get('selected_tier', 'better'),
+            'shingle_color': shingle_color or (ss.get('chosen') or '').strip(),
+            'initials':      initials_captured,
         }
         est['status']     = 'accepted'
         est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(est, f, indent=2)
-        send_signature_notification(est)
+        # Signature is saved above — everything below is best-effort. Run the rep
+        # notification AND the CRM push in background threads so a slow or
+        # unreachable SMTP/CRM endpoint can never block (or 500) the customer's
+        # signing request. The customer always gets their confirmation instantly.
+        threading.Thread(target=send_signature_notification,
+                         args=(est,), daemon=True).start()
+        threading.Thread(target=push_contract_to_crm,
+                         args=(est.get('estimate_id'),), daemon=True).start()
         return build_signed_confirmation(est)
 
     # Already signed — show the confirmation instead of the form
     if est.get('signature'):
         return build_signed_confirmation(est)
+
+    # Record the customer view; notify the rep on the first one
+    try:
+        now_iso    = datetime.utcnow().isoformat() + 'Z'
+        first_view = not est.get('first_viewed_at')
+        if first_view:
+            est['first_viewed_at'] = now_iso
+        est['last_viewed_at'] = now_iso
+        est['view_count']     = int(est.get('view_count') or 0) + 1
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(est, f, indent=2)
+        if first_view:
+            threading.Thread(target=send_view_notification, args=(est,), daemon=True).start()
+    except Exception as exc:
+        print(f'[view-track] failed: {exc}')
 
     return build_customer_view(est, token)
 
@@ -1097,21 +2043,21 @@ def customer_sign(token):
 
 TEMPLATES = {
     "roofing": [
-        {"name": "Shingles", "unit": "SQ",
+        {"name": "Shingles", "unit": "SQ", "measure": "squares_waste",
          "desc_good":   "3-Tab",
          "desc_better": "Architectural",
          "desc_best":   "Designer / Premium",
          "notes_good":   "3-Tab asphalt shingles provide reliable, code-compliant leak protection at a competitive price point. Clean, classic look with a 25-year manufacturer limited warranty.",
          "notes_better": "Architectural laminate shingles add dimensional shadow lines and a high-end appearance. Enhanced wind resistance rated up to 130 mph. Lifetime limited warranty — the most popular choice for long-term value.",
          "notes_best":   "Premium designer shingles replicate the look of natural slate or cedar shake with superior impact resistance. Class 4 impact rating may qualify your homeowner for an insurance premium discount. Lifetime limited warranty."},
-        {"name": "Synthetic Underlayment", "unit": "SQ",
+        {"name": "Synthetic Underlayment", "unit": "SQ", "measure": "squares_waste",
          "desc_good":   "Standard Felt",
          "desc_better": "Synthetic",
          "desc_best":   "Premium Synthetic",
          "notes_good":   "Standard 15# felt paper provides a reliable moisture barrier during installation.",
          "notes_better": "Synthetic underlayment is 4× stronger than felt with superior tear resistance and moisture protection. Rated for 6-month UV exposure if left exposed — built for Colorado's unpredictable weather.",
          "notes_best":   "Premium synthetic underlayment with integrated self-sealing nail strips for maximum protection. Virtually eliminates fastener-driven moisture intrusion."},
-        {"name": "Ice & Water Shield", "unit": "SQ",
+        {"name": "Ice & Water Shield", "unit": "SQ", "measure": "eave_valley",
          "desc_good":   "Eaves & Valleys",
          "desc_better": "Eaves, Valleys & Penetrations",
          "desc_best":   "Full Deck Coverage",
@@ -1125,56 +2071,56 @@ TEMPLATES = {
          "notes_good":   "7/16\" OSB panels replaced only where structurally compromised.",
          "notes_better": "7/16\" OSB structural sheathing replaced in all deteriorated sections discovered during tear-off. Full deck inspection ensures a solid nailing base for all roofing components.",
          "notes_best":   "Comprehensive deck inspection with replacement of all questionable panels. Nail protrusion check performed before installation to maximize shingle performance and warranty validity."},
-        {"name": "Drip Edge", "unit": "LF",
+        {"name": "Drip Edge", "unit": "LF", "measure": "eave_rake",
          "desc_good":   "Galvanized Steel",
          "desc_better": "Pre-finished Galvanized Steel",
          "desc_best":   "Heavy-Gauge Aluminum",
          "notes_good":   "Standard galvanized steel drip edge installed at eaves and rakes.",
          "notes_better": "Pre-finished galvanized steel drip edge installed at all eaves and rakes per manufacturer specs — directs water cleanly away from fascia and prevents wood rot.",
          "notes_best":   "Heavy-gauge pre-painted aluminum drip edge color-matched to your shingles for a sharp, finished appearance with maximum longevity."},
-        {"name": "Ridge Cap", "unit": "LF",
+        {"name": "Ridge Cap", "unit": "LF", "measure": "ridge_hip",
          "desc_good":   "Cut-Shingle Ridge",
          "desc_better": "Pre-formed Hip & Ridge Cap",
          "desc_best":   "High-Definition Ridge Cap",
          "notes_good":   "Cut-shingle ridge cap provides a watertight seal at all peaks.",
          "notes_better": "Pre-formed hip and ridge cap shingles installed at all peaks and hips — a finished, professional look with superior wind resistance.",
          "notes_best":   "High-definition ridge cap with 4-layer construction delivers a bold architectural profile and enhanced ventilation at the ridge — the crown jewel of a premium installation."},
-        {"name": "Starter Strip", "unit": "LF",
+        {"name": "Starter Strip", "unit": "LF", "measure": "eave_rake",
          "desc_good":   "Standard Starter Strip",
          "desc_better": "Self-Sealing Starter Strip",
          "desc_best":   "Extended Self-Sealing Starter",
          "notes_good":   "Starter strip installed along eaves to seal the first course of shingles.",
          "notes_better": "Self-sealing starter strip installed at all eaves and rakes — seals the shingle edge and is a critical defense against wind uplift and blow-off.",
          "notes_best":   "Extended-width self-sealing starter strip with reinforced sealant bead provides maximum wind resistance — recommended for Colorado's high-wind regions."},
-        {"name": "Pipe Boots", "unit": "EA",
+        {"name": "Pipe Boots", "unit": "EA", "measure": "pipe_boots",
          "desc_good":   "Standard Rubber Boots",
          "desc_better": "Rubber Boots + Aluminum Flashing",
          "desc_best":   "Premium Metal Boots",
          "notes_good":   "Standard rubber pipe boots seal all plumbing penetrations.",
          "notes_better": "Flexible rubber pipe boots with galvanized aluminum sleeves installed at every plumbing penetration — one of the most common leak points on any roof, done right.",
          "notes_best":   "Premium lead-flashed or heavy-gauge metal pipe boots — maximum lifespan and a weather-tight seal guaranteed at every penetration."},
-        {"name": "Skylight Flashing", "unit": "EA",
+        {"name": "Skylight Flashing", "unit": "EA", "measure": "skylights",
          "desc_good":   "Step & Counter Flashing",
          "desc_better": "Full Flashing Kit",
          "desc_best":   "Custom Fabricated Flashing",
          "notes_good":   "Step flashing and counter flashing installed at all skylights.",
          "notes_better": "Complete step, counter, and saddle flashing kit at all skylights — properly integrated with the roofing system to prevent leaks at this critical junction.",
          "notes_best":   "Custom-fabricated copper or heavy-gauge aluminum flashing at all skylights — the premium solution engineered for decades of leak-free performance."},
-        {"name": "Step / Wall Flashing", "unit": "LF",
+        {"name": "Step / Wall Flashing", "unit": "LF", "measure": "step",
          "desc_good":   "Aluminum Step Flashing",
          "desc_better": "Step + Counter Flashing",
          "desc_best":   "Copper / Stainless Flashing",
          "notes_good":   "Aluminum step flashing at all wall-to-roof junctions.",
          "notes_better": "Step flashing and counter flashing at all vertical wall transitions — properly integrated with housewrap and siding to manage water at every joint.",
          "notes_best":   "Copper or stainless step and counter flashing — the highest-performing solution for permanent, maintenance-free water management at all wall transitions."},
-        {"name": "Tear-Off Labor", "unit": "SQ",
+        {"name": "Tear-Off Labor", "unit": "SQ", "measure": "squares",
          "desc_good":   "Single Layer Tear-Off",
          "desc_better": "Full Tear-Off & Deck Inspection",
          "desc_best":   "Full Tear-Off + Nail Check",
          "notes_good":   "Removal and disposal of one layer of existing roofing materials.",
          "notes_better": "Complete removal and disposal of all existing roofing layers. Full deck inspection performed before installation begins — we find problems before they become your problem.",
          "notes_best":   "Full tear-off with detailed deck inspection, nail protrusion check across entire deck, and documentation of all replaced materials for your records."},
-        {"name": "Install Labor", "unit": "SQ",
+        {"name": "Install Labor", "unit": "SQ", "measure": "squares",
          "desc_good":   "Certified Crew Installation",
          "desc_better": "Factory-Certified Installation",
          "desc_best":   "Master Installer — Certified",
@@ -1197,12 +2143,12 @@ TEMPLATES = {
          "notes_best":   "Complete permit management — permit pulled, inspection scheduled and passed, full documentation package provided to homeowner for personal records and future property disclosure."},
     ],
     "siding": [
-        {"name": "Vinyl Siding", "unit": "SQ",
+        {"name": "Vinyl Siding", "unit": "SQ", "measure": "siding_squares_waste",
          "desc_good": "Economy Vinyl", "desc_better": "Premium Vinyl", "desc_best": "Engineered Wood / Fiber Cement",
          "notes_good": "Economy-grade vinyl siding provides durable, low-maintenance protection at an accessible price point.",
          "notes_better": "Premium vinyl siding with thicker wall construction, deeper shadow lines, and a wider color palette. Resists fading and impact for decades with zero maintenance.",
          "notes_best": "Engineered wood or fiber cement siding offers the natural look of real wood with dramatically superior durability and fire resistance. The premium choice for lasting curb appeal."},
-        {"name": "House Wrap", "unit": "SQ",
+        {"name": "House Wrap", "unit": "SQ", "measure": "siding_squares_waste",
          "desc_good": "Standard WRB", "desc_better": "Premium WRB", "desc_best": "Fully Adhered WRB",
          "notes_good": "Standard weather-resistant barrier installed under siding.",
          "notes_better": "Premium weather-resistant barrier with enhanced moisture management and air sealing properties — keeps your home dry and energy-efficient.",
@@ -1217,9 +2163,9 @@ TEMPLATES = {
          "notes_good": "Vinyl fascia cover over existing wood.", "notes_better": "PVC fascia board — fully rot-proof replacement that provides a clean, finished edge and a solid gutter attachment point.", "notes_best": "Aluminum or composite fascia for maximum longevity and the cleanest appearance."},
         {"name": "Corner Posts", "unit": "EA", "desc_good": "Standard Posts", "desc_better": "Premium Posts", "desc_best": "Premium Posts",
          "notes_good": "Standard vinyl corner posts.", "notes_better": "Premium vinyl corner posts with built-in J-channel for a seamless, finished appearance.", "notes_best": "Heavy-gauge corner posts for maximum durability and a sharp architectural corner."},
-        {"name": "Tear-Off Labor", "unit": "SQ", "desc_good": "Remove Old Siding", "desc_better": "Remove + Inspect Sheathing", "desc_best": "Remove + Full Inspection",
+        {"name": "Tear-Off Labor", "unit": "SQ", "measure": "siding_squares", "desc_good": "Remove Old Siding", "desc_better": "Remove + Inspect Sheathing", "desc_best": "Remove + Full Inspection",
          "notes_good": "Removal and disposal of existing siding.", "notes_better": "Complete removal of existing siding with sheathing inspection for rot and damage before new installation.", "notes_best": "Full removal with comprehensive sheathing inspection and documentation. All problem areas identified and reported before new materials are installed."},
-        {"name": "Install Labor", "unit": "SQ", "desc_good": "Professional Installation", "desc_better": "Certified Installation", "desc_best": "Master Installer",
+        {"name": "Install Labor", "unit": "SQ", "measure": "siding_squares", "desc_good": "Professional Installation", "desc_better": "Certified Installation", "desc_best": "Master Installer",
          "notes_good": "Professional siding installation by our experienced crew.", "notes_better": "Factory-trained siding installers following manufacturer best practices for maximum warranty coverage.", "notes_best": "Master installer-led team delivering precise, detail-oriented workmanship documented with completion photos."},
         {"name": "Dumpster", "unit": "LS", "desc_good": "Dumpster Service", "desc_better": "Full Cleanup", "desc_best": "Premium Cleanup",
          "notes_good": "Dumpster for debris removal.", "notes_better": "Full-service cleanup with debris hauled off-site and site broom-swept upon completion.", "notes_best": "Premium cleanup package — complete debris removal and a homeowner walkthrough before we leave the property."},
@@ -1227,18 +2173,18 @@ TEMPLATES = {
          "notes_good": "Required building permit.", "notes_better": "All required permits pulled and final inspection scheduled.", "notes_best": "Complete permit management with all documentation provided to homeowner."},
     ],
     "windows": [
-        {"name": "Window Unit", "unit": "EA",
+        {"name": "Window Unit", "unit": "EA", "measure": "windows",
          "desc_good": "Double-Pane Vinyl", "desc_better": "Double-Pane Low-E", "desc_best": "Triple-Pane Low-E",
          "notes_good": "Double-pane vinyl window — reliable energy performance and low maintenance.",
          "notes_better": "Double-pane Low-E coated window with argon gas fill — significantly reduces heat transfer, UV fading, and outside noise. Energy Star certified.",
          "notes_best": "Triple-pane Low-E window with krypton gas fill — the highest energy performance available. Superior sound reduction and maximum insulation value for Colorado's climate extremes."},
-        {"name": "Window Trim Kit", "unit": "EA",
+        {"name": "Window Trim Kit", "unit": "EA", "measure": "windows",
          "desc_good": "Standard Trim", "desc_better": "PVC Trim Kit", "desc_best": "Premium Composite Trim",
          "notes_good": "Standard exterior trim kit for a finished appearance.", "notes_better": "PVC exterior trim kit — rot-proof, clean finish that protects the window rough opening for decades.", "notes_best": "Premium composite trim kit for the most refined exterior appearance and maximum longevity."},
         {"name": "Exterior Casing", "unit": "LF",
          "desc_good": "Standard Casing", "desc_better": "PVC Casing", "desc_best": "Premium Composite",
          "notes_good": "Exterior window casing and flashing.", "notes_better": "PVC exterior casing with proper flashing integration — rot-proof and maintenance-free.", "notes_best": "Premium composite casing with full flashing tape system for the ultimate weather protection."},
-        {"name": "Install Labor", "unit": "EA",
+        {"name": "Install Labor", "unit": "EA", "measure": "windows",
          "desc_good": "Standard Install", "desc_better": "Certified Install", "desc_best": "Master Install",
          "notes_good": "Professional window installation by our trained crew.", "notes_better": "Certified window installation with proper flashing, insulation, and air sealing per manufacturer specs.", "notes_best": "Master installer ensures each window is perfectly level, plumb, and square with full foam insulation and documented completion."},
         {"name": "Permit", "unit": "LS",
@@ -1246,20 +2192,20 @@ TEMPLATES = {
          "notes_good": "Required building permit.", "notes_better": "All required permits pulled and inspection coordinated.", "notes_best": "Complete permit management with documentation provided to homeowner."},
     ],
     "gutters": [
-        {"name": '5" K-Style Gutter', "unit": "LF",
+        {"name": '5" K-Style Gutter', "unit": "LF", "measure": "gutter",
          "desc_good": '5" Aluminum', "desc_better": '5" Heavy-Gauge Aluminum', "desc_best": '5" Copper / Steel',
          "notes_good": 'Standard 5" K-style aluminum gutter — the most common residential gutter size, handles typical rainfall volume.',
          "notes_better": 'Heavy-gauge 5" K-style aluminum gutter — thicker walls resist denting, maintain shape, and last significantly longer than standard-gauge gutters.',
          "notes_best": 'Premium copper or galvanized steel 5" K-style gutter — the most durable and visually striking option, engineered for a lifetime of performance.'},
-        {"name": '6" K-Style Gutter', "unit": "LF",
+        {"name": '6" K-Style Gutter', "unit": "LF", "measure": "gutter",
          "desc_good": '6" Aluminum', "desc_better": '6" Heavy-Gauge Aluminum', "desc_best": '6" Copper / Steel',
          "notes_good": '6" K-style aluminum gutter — larger capacity for steep-pitch roofs or high-rainfall areas.',
          "notes_better": '6" heavy-gauge aluminum gutter — maximum capacity with superior durability. Recommended for complex rooflines and higher-elevation homes.',
          "notes_best": '6" copper or galvanized steel gutter — the premium choice for maximum capacity and lasting beauty.'},
-        {"name": "Downspout", "unit": "LF",
+        {"name": "Downspout", "unit": "LF", "measure": "downspout",
          "desc_good": "Standard", "desc_better": "Heavy-Gauge", "desc_best": "Copper / Steel",
          "notes_good": "Standard aluminum downspout directs water away from the foundation.", "notes_better": "Heavy-gauge aluminum downspout — resists denting and damage from ladders and yard equipment.", "notes_best": "Copper or galvanized steel downspout — maximum durability and visual impact."},
-        {"name": "Gutter Guard / Screen", "unit": "LF",
+        {"name": "Gutter Guard / Screen", "unit": "LF", "measure": "gutter",
          "desc_good": "Mesh Screen", "desc_better": "Micro-Mesh Guard", "desc_best": "Premium Micro-Mesh",
          "notes_good": "Aluminum mesh screens keep large debris out of gutters and reduce cleaning frequency.", "notes_better": "Micro-mesh gutter guards block even small debris like pine needles and shingle grit while allowing full water flow. Dramatically reduces maintenance.", "notes_best": "Premium micro-mesh guards with stainless steel mesh — the most effective debris protection available, backed by a no-clog guarantee."},
         {"name": "End Caps", "unit": "EA",
@@ -1268,10 +2214,10 @@ TEMPLATES = {
         {"name": "Drop Outlets", "unit": "EA",
          "desc_good": "Standard", "desc_better": "Standard", "desc_best": "Heavy-Gauge",
          "notes_good": "Drop outlets connecting gutters to downspouts.", "notes_better": "Properly positioned drop outlets for optimized water flow and drainage.", "notes_best": "Heavy-gauge drop outlets with sealed connections for maximum longevity."},
-        {"name": "Remove Old Gutters", "unit": "LF",
+        {"name": "Remove Old Gutters", "unit": "LF", "measure": "gutter",
          "desc_good": "Remove & Haul", "desc_better": "Remove & Haul", "desc_best": "Remove & Haul",
          "notes_good": "Removal and disposal of existing gutter system.", "notes_better": "Complete removal of old gutters with inspection of fascia board condition before new installation.", "notes_best": "Full removal with fascia board inspection and documentation of any rot or damage discovered."},
-        {"name": "Install Labor", "unit": "LF",
+        {"name": "Install Labor", "unit": "LF", "measure": "gutter",
          "desc_good": "Professional Install", "desc_better": "Certified Install", "desc_best": "Master Install",
          "notes_good": "Professional gutter installation by our experienced crew.", "notes_better": "Certified installation with proper slope (1/16\" per foot) and secure hanger spacing for optimal performance.", "notes_best": "Master installer-led installation with precision slope calibration, hidden hanger system, and completion documentation."},
         {"name": "Permit", "unit": "LS",
@@ -1304,50 +2250,52 @@ def _save_price_book(pb):
 
 @app.route('/api/templates')
 def get_templates():
-    """Merge price book costs/visibility into template items so Load Defaults
-    returns rich descriptions (from TEMPLATES) + user costs (from price book)."""
+    """Return the default item list per trade used by Load Defaults / auto-build.
+
+    The saved price book is AUTHORITATIVE when present for a trade: the items it
+    contains (with per-tier products/costs, measure/formula, visibility) are the
+    full list — so adding or removing an item there changes what gets loaded.
+    Rich marketing descriptions/notes from the hardcoded TEMPLATES are backfilled
+    by name for any field the price book left blank. When a trade has no saved
+    price book yet, the hardcoded TEMPLATES seed it."""
     pb = _load_price_book()
     pb_mats = pb.get('materials') or {}
     result = {}
 
+    # Fields to backfill from hardcoded templates when the price book item omits them
+    RICH = ('desc_good', 'desc_better', 'desc_best',
+            'notes_good', 'notes_better', 'notes_best', 'measure')
+
     for trade, items in TEMPLATES.items():
+        hardcoded_by_name = {it.get('name', ''): it for it in items}
         pb_items = pb_mats.get(trade, [])
-        # Build cost/visibility lookup keyed by item name
-        pb_by_name = {}
-        for it in pb_items:
-            name = it.get('name', '')
-            if 'cost' in it:
-                cost = float(it.get('cost') or 0)
-            else:
-                # Backward compat: old mat_better + lab_better format
-                cost = float(it.get('mat_better') or 0) + float(it.get('lab_better') or 0)
-            pb_by_name[name] = {
-                'cost': cost,
-                'customer_visible': it.get('customer_visible', True),
-            }
 
-        merged = []
-        template_names = set()
-        for item in items:
-            name = item.get('name', '')
-            template_names.add(name)
-            merged_item = dict(item)
-            if name in pb_by_name:
-                merged_item['cost'] = pb_by_name[name]['cost']
-                merged_item['customer_visible'] = pb_by_name[name]['customer_visible']
-            else:
-                merged_item.setdefault('cost', 0)
-                merged_item.setdefault('customer_visible', True)
-            merged.append(merged_item)
+        if pb_items:
+            # Price book is the authoritative list for this trade
+            merged = []
+            for it in pb_items:
+                m = dict(it)
+                if 'cost' not in m:
+                    # Backward compat: old mat_better + lab_better format
+                    m['cost'] = float(m.get('mat_better') or 0) + float(m.get('lab_better') or 0)
+                m.setdefault('customer_visible', True)
+                base = hardcoded_by_name.get(m.get('name', ''), {})
+                for f in RICH:
+                    if not m.get(f) and base.get(f):
+                        m[f] = base[f]
+                merged.append(m)
+            result[trade] = merged
+        else:
+            # No price book yet — seed from hardcoded templates
+            seeded = []
+            for item in items:
+                m = dict(item)
+                m.setdefault('cost', 0)
+                m.setdefault('customer_visible', True)
+                seeded.append(m)
+            result[trade] = seeded
 
-        # Append price-book-only items (user-added, not in hardcoded TEMPLATES)
-        for pb_item in pb_items:
-            if pb_item.get('name') not in template_names:
-                merged.append(pb_item)
-
-        result[trade] = merged
-
-    # Include any trades in price book that aren't in hardcoded TEMPLATES
+    # Trades that exist only in the price book (not in hardcoded TEMPLATES)
     for trade, pb_items in pb_mats.items():
         if trade not in result:
             result[trade] = pb_items
@@ -1415,6 +2363,261 @@ def put_tier_defaults():
     with open(TIER_DEFAULTS_FILE, 'w') as f:
         json.dump(data, f, indent=2)
     return jsonify({'ok': True})
+
+
+# ── App settings (global, editable in the ⚙ Settings modal) ────────────────
+
+APP_SETTINGS_FILE = os.path.join(DATA_DIR, 'app_settings.json')
+
+@app.route('/api/settings', methods=['GET'])
+def get_app_settings():
+    if os.path.exists(APP_SETTINGS_FILE):
+        try:
+            with open(APP_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                return jsonify(json.load(f))
+        except Exception:
+            pass
+    return jsonify({})
+
+@app.route('/api/settings', methods=['PUT'])
+def put_app_settings():
+    data = request.get_json(force=True)
+    with open(APP_SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+    return jsonify({'ok': True})
+
+
+# ── Follow-up reminders ─────────────────────────────────────────────────────
+# Emails the rep when a sent estimate sits unsigned. Runs hourly in a daemon
+# thread. Gunicorn runs multiple workers, so an atomic lock file per
+# (estimate, reminder-day) on the shared volume prevents duplicate emails.
+
+REMINDER_DAYS      = [3, 7]
+REMINDER_LOCKS_DIR = os.path.join(DATA_DIR, 'reminder_locks')
+os.makedirs(REMINDER_LOCKS_DIR, exist_ok=True)
+
+
+def send_followup_reminder(est, days_out):
+    to_addr = _salesperson_email(est)
+    if not to_addr:
+        return
+    c     = est.get('customer', {})
+    cname = c.get('name', 'Customer')
+    enum  = _est_number(est)
+    total = _estimate_total(est)
+    base  = PUBLIC_URL or 'http://localhost:5000'
+    sign_url = f"{base}/sign/{est.get('share_token','')}"
+
+    views = int(est.get('view_count') or 0)
+    if views:
+        last = est.get('last_viewed_at', '')
+        try:
+            dt = datetime.fromisoformat(last.replace('Z', '+00:00'))
+            last_fmt = dt.strftime('%b %d')
+            view_line = f'Opened {views} time{"s" if views != 1 else ""} — last on {last_fmt}.'
+        except Exception:
+            view_line = f'Opened {views} time{"s" if views != 1 else ""}.'
+        hint = 'They’ve looked but haven’t signed — a quick call could close this.'
+    else:
+        view_line = 'Never opened.'
+        hint = 'They haven’t even opened it yet — worth re-sending the link or following up by phone.'
+
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#d97706;padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:22px;font-weight:800">&#9200; Estimate Still Unsigned</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">{he(cname)}&rsquo;s estimate has been out for {days_out} days.</p>
+  </div>
+  <div style="padding:22px 26px">
+    <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Customer</td><td style="padding:5px 0;font-size:13px;font-weight:700">{he(cname)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Estimate</td><td style="padding:5px 0;font-size:13px">{he(enum)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Value</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#d97706">{fc(total)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Activity</td><td style="padding:5px 0;font-size:13px">{he(view_line)}</td></tr>
+    </table>
+    <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">{he(hint)}</p>
+    <a href="{he(sign_url)}" style="display:block;text-align:center;background:#1a3a5c;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:700;font-size:14px">
+      View Customer Estimate →</a>
+  </div>
+</div>
+</body></html>'''
+    _send_email(f'⏰ {cname}’s estimate unsigned for {days_out} days ({enum})',
+                html_body, to_addr)
+
+
+def _check_reminders():
+    if not os.environ.get('SMTP_HOST', '').strip():
+        return
+    now = datetime.utcnow()
+    try:
+        files = os.listdir(ESTIMATES_DIR)
+    except OSError:
+        return
+    for fname in files:
+        if not fname.endswith('.json'):
+            continue
+        path = os.path.join(ESTIMATES_DIR, fname)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                est = json.load(f)
+        except Exception:
+            continue
+        if est.get('signature') or not est.get('share_token'):
+            continue
+        if est.get('status') == 'declined':
+            continue
+        sent_at = est.get('sent_at')
+        if not sent_at:
+            # Shared before this feature existed — start its clock now, no email
+            est['sent_at'] = now.isoformat() + 'Z'
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(est, f, indent=2)
+            except Exception:
+                pass
+            continue
+        try:
+            sent_dt = datetime.fromisoformat(sent_at.replace('Z', ''))
+        except Exception:
+            continue
+        days = (now - sent_dt).days
+        for d in REMINDER_DAYS:
+            if days < d:
+                continue
+            lock = os.path.join(REMINDER_LOCKS_DIR, f"{est.get('estimate_id','x')}_{d}.lock")
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+            except FileExistsError:
+                continue
+            except OSError:
+                continue
+            try:
+                send_followup_reminder(est, days)
+            except Exception as exc:
+                print(f'[reminders] send failed for {fname}: {exc}')
+
+
+# ── Backups ─────────────────────────────────────────────────────────────────
+# Two layers: a nightly email with all estimate JSONs (the irreplaceable data),
+# and an on-demand full-archive download (everything incl. photos).
+
+BACKUP_EMAIL = os.environ.get('BACKUP_EMAIL', 'luke@projectoneroofing.com').strip()
+
+
+def _build_backup_zip(include_uploads=True):
+    """Zip the data directory into memory. Returns bytes."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for root_name, root_dir in [('estimates', ESTIMATES_DIR),
+                                    ('uploads', UPLOADS_DIR)]:
+            if root_name == 'uploads' and not include_uploads:
+                continue
+            for dirpath, _dirs, files in os.walk(root_dir):
+                for fn in files:
+                    full = os.path.join(dirpath, fn)
+                    rel  = os.path.join(root_name, os.path.relpath(full, root_dir))
+                    try:
+                        zf.write(full, rel)
+                    except OSError:
+                        pass
+        for cfg in ('price_book.json', 'tier_defaults.json', 'config.json'):
+            full = os.path.join(DATA_DIR, cfg)
+            if os.path.exists(full):
+                try:
+                    zf.write(full, cfg)
+                except OSError:
+                    pass
+    return buf.getvalue()
+
+
+@app.route('/api/backup')
+@require_auth
+def download_backup():
+    """Full on-demand backup: estimates + photos + config."""
+    data = _build_backup_zip(include_uploads=True)
+    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    return send_file(io.BytesIO(data), mimetype='application/zip',
+                     as_attachment=True,
+                     download_name=f'p1_estimator_full_backup_{stamp}.zip')
+
+
+def _send_nightly_backup():
+    """Email the estimates-only backup zip (small, no photos)."""
+    if not BACKUP_EMAIL:
+        return
+    data  = _build_backup_zip(include_uploads=False)
+    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    n_est = len([f for f in os.listdir(ESTIMATES_DIR) if f.endswith('.json')])
+    size_mb = len(data) / 1048576
+
+    base = PUBLIC_URL or 'http://localhost:5000'
+    if size_mb > 20:
+        attachments = None
+        body_extra = (f'<p style="font-size:13px;color:#b45309">The backup zip is '
+                      f'{size_mb:.1f} MB — too large to attach. '
+                      f'<a href="{he(base)}/api/backup">Download the full backup here</a> '
+                      f'(sign-in required).</p>')
+    else:
+        attachments = [(f'p1_estimates_backup_{stamp}.zip', data)]
+        body_extra = ''
+
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#1a3a5c;padding:20px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:6px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:19px;font-weight:800">&#128190; Nightly Estimate Backup</h1>
+  </div>
+  <div style="padding:20px 26px">
+    <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 12px">
+      Attached is tonight&rsquo;s backup of all <strong>{n_est}</strong> estimates
+      ({size_mb:.1f} MB zipped), including signatures and contract data.
+      Photos are not included &mdash; grab a
+      <a href="{he(base)}/api/backup">full backup with photos</a> anytime from the app.</p>
+    {body_extra}
+    <p style="font-size:11px;color:#9ca3af;margin:14px 0 0">
+      Keep a few of these emails around — any one of them can fully restore your estimate data.</p>
+  </div>
+</div>
+</body></html>'''
+    _send_email(f'💾 Estimator nightly backup — {stamp} ({n_est} estimates)',
+                html_body, BACKUP_EMAIL, attachments=attachments)
+
+
+def _check_daily_backup():
+    if not os.environ.get('SMTP_HOST', '').strip():
+        return
+    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    lock  = os.path.join(REMINDER_LOCKS_DIR, f'backup_{stamp}.lock')
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except (FileExistsError, OSError):
+        return
+    try:
+        _send_nightly_backup()
+    except Exception as exc:
+        print(f'[backup] nightly backup failed: {exc}')
+
+
+def _reminder_loop():
+    time.sleep(30)  # let the app finish booting
+    while True:
+        try:
+            _check_reminders()
+        except Exception as exc:
+            print(f'[reminders] check failed: {exc}')
+        try:
+            _check_daily_backup()
+        except Exception as exc:
+            print(f'[backup] check failed: {exc}')
+        time.sleep(3600)
+
+
+threading.Thread(target=_reminder_loop, daemon=True).start()
 
 
 # ── Launch ─────────────────────────────────────────────────────────────────
