@@ -3463,10 +3463,12 @@ async function _waitForPrintImages() {
   ));
 }
 
-async function doPrint() {
-  await preparePrintPhotos();   // bake all photos to data URLs first
+function doPrint() {
+  // Synchronous so mobile browsers (iOS Safari) don't lose the gesture context.
+  // warmPrintPhotos() is called proactively on every photo change + estimate load,
+  // so _printPhotoCache is already populated by the time the user clicks Print.
+  // Any uncached photos fall back to /uploads/ URLs (still accessible; no broken PDF).
   buildPrintContent();
-  await _waitForPrintImages();  // belt-and-suspenders for any fallback URLs / logo
   window.print();
 }
 window.addEventListener('beforeprint', () => { buildPrintContent(); });

@@ -918,7 +918,8 @@ input#cover-file-input { display: none; }
 
 @media print {
   body > #app-header,
-  body > #app-layout { display: none !important; }
+  body > #app-layout,
+  body > .modal { display: none !important; }
   #print-content { display: block !important; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10pt; color: #111; }
   @page { margin: 1.8cm 1.5cm; }
   @page :first { margin: 0; }
