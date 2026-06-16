@@ -1149,10 +1149,112 @@ def _build_insurance_cv(est, token):
 </body></html>'''
 
 
+def _all_trades_simple(est):
+    """Return True when every enabled non-insurance trade is in simple mode."""
+    trades = est.get('trades', {})
+    for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
+        td = trades.get(tk, {})
+        if not td.get('enabled') or not td.get('line_items'):
+            continue
+        trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+        if trade_mode != 'simple':
+            return False
+    return True
+
+
+def _build_simple_retail_cv(est, token):
+    """Customer view when all enabled trades are simple mode — no GBB tier selection."""
+    c     = est.get('customer', {})
+    a     = c.get('address', {})
+    cs    = ', '.join(filter(None, [a.get('city'), a.get('state')]))
+    addr  = ', '.join(filter(None, [a.get('street'), cs]))
+    eid   = est.get('estimate_id', '')
+    enum  = 'EST-' + eid.split('-')[0].upper() if eid else 'DRAFT'
+    notes = (est.get('notes_customer') or '').strip()
+    ctext = (est.get('contract_text') or '').strip()
+    sp    = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
+    tier  = est.get('selected_tier', 'better')  # passed through for POST; irrelevant for pricing
+
+    notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
+      <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
+    sp_html    = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
+
+    li_html, grand_total = render_line_items(est, tier=tier)
+
+    return f'''<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Your Estimate — Project One Roofing</title>
+<style>{_CV_CSS}</style></head><body>
+
+<header class="cvhdr">
+  <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
+  <div class="cvhdr-contact">
+    <a href="tel:9707760945">970-776-0945</a>
+    <span>projectoneroofingcolorado.com</span>
+  </div>
+</header>
+<div class="cvbrand-stripe"></div>
+
+{_cv_hero(est, 'Your Estimate is Ready to Review', 'Review your estimate below, then sign at the bottom to accept')}
+
+<div class="cvc-card">
+  <div class="cvgrid">
+    <div class="cvgi"><label>Prepared For</label><strong>{he(c.get("name","—"))}</strong></div>
+    <div class="cvgi"><label>Estimate #</label><strong>{he(enum)}</strong></div>
+    <div class="cvgi"><label>Address</label><strong>{he(addr or "—")}</strong></div>
+    <div class="cvgi"><label>Date</label><strong>{he(est.get("estimate_date","—"))}</strong></div>
+    {sp_html}
+    <div class="cvgi"><label>Valid Until</label><strong>{he(est.get("valid_until","—"))}</strong></div>
+  </div>
+</div>
+
+{li_html}
+
+<div class="cvgrand" style="margin-top:14px">
+  <span class="cvgrand-lbl">Total</span>
+  <span class="cvgrand-amt">{fc(grand_total)}</span>
+</div>
+
+{notes_html}
+{_cv_attachments_block(est)}
+{ctext_html}
+
+<div class="cvsig">
+  <h2>Sign to Accept</h2>
+  <p class="sub">Your electronic signature confirms you have reviewed and agreed to the estimate above and all terms &amp; conditions.</p>
+  <form method="POST" action="/sign/{he(token)}">
+    <input type="hidden" name="selected_tier" value="{he(tier)}">
+    {_cv_shingle_block(est)}
+    {_cv_initials_block(est)}
+    <input class="cvinput" name="sig_name" placeholder="Your full legal name *" required autocomplete="name">
+    <input class="cvinput" name="sig_email" placeholder="Email address (optional)" type="email" autocomplete="email">
+    <label class="cvagree">
+      <input type="checkbox" name="agree" required>
+      I have read this estimate and I agree to all terms &amp; conditions.
+    </label>
+    <button type="submit" class="cvbtn">&#10003; Accept &mdash; Sign Electronically</button>
+    <p class="cvlegal">By clicking Accept, you are electronically signing this contract. This signature is legally
+    binding under the federal E-SIGN Act (15 U.S.C. &sect;&nbsp;7001) and the Uniform Electronic Transactions Act.</p>
+  </form>
+</div>
+
+<div class="cvftr">
+  <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
+  <strong>Project One Roofing</strong>
+  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-776-0945 &middot; projectoneroofingcolorado.com</div>
+</div>
+</body></html>'''
+
+
 def build_customer_view(est, token):
     # Branch: insurance estimates get a simpler, no-tier-selection view
     if est.get('estimate_type') == 'insurance':
         return _build_insurance_cv(est, token)
+
+    # Branch: all enabled trades are simple mode — skip tier selection
+    if _all_trades_simple(est):
+        return _build_simple_retail_cv(est, token)
 
     c    = est.get('customer', {})
     a    = c.get('address', {})
