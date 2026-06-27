@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>P1 Canvasser</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ── Login Screen ── -->
+<div id="login-screen" class="screen">
+  <div class="login-box">
+    <div class="login-logo">P1</div>
+    <div class="login-title">Project One Canvasser</div>
+    <div id="login-form">
+      <input type="text"     id="login-username" placeholder="Username" autocomplete="username" autocapitalize="none">
+      <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+      <button class="btn-primary" id="login-btn">Sign In</button>
+      <div id="login-error" class="error-msg"></div>
+      <div class="divider">First time?</div>
+      <input type="text"     id="signup-code"     placeholder="Signup Code">
+      <input type="password" id="signup-password" placeholder="Choose a Password (6+ chars)">
+      <button class="btn-secondary" id="signup-btn">Create Account</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Main App ── -->
+<div id="app" class="screen hidden">
+
+  <!-- Header -->
+  <div id="header">
+    <button id="menu-btn" class="icon-btn">☰</button>
+    <span id="header-title">P1 Canvasser</span>
+    <button id="locate-btn" class="icon-btn" title="Go to my location">⊕</button>
+  </div>
+
+  <!-- Map -->
+  <div id="map"></div>
+
+  <!-- Bottom bar -->
+  <div id="bottom-bar">
+    <div id="rep-badge"><span id="rep-name-badge"></span></div>
+    <div id="quick-btns"></div>
+  </div>
+
+  <!-- ── Side Menu ── -->
+  <div id="side-menu" class="overlay-panel hidden">
+    <div class="panel-header">
+      <span>Menu</span>
+      <button class="icon-btn close-overlay" data-target="side-menu">✕</button>
+    </div>
+    <div class="panel-body">
+      <button class="menu-item" id="show-leaderboard-btn">🏆 Leaderboard</button>
+      <button class="menu-item" id="show-my-pins-btn">📍 My Pins</button>
+      <button class="menu-item" id="hail-overlay-btn">🌩️ Hail Overlay</button>
+      <div class="menu-section-title">Filter by Rep</div>
+      <div id="rep-filter-list"></div>
+      <button class="menu-item danger-item" id="logout-btn">Sign Out</button>
+    </div>
+  </div>
+
+  <!-- ── Leaderboard Panel ── -->
+  <div id="leaderboard-panel" class="overlay-panel hidden">
+    <div class="panel-header">
+      <span>🏆 Leaderboard</span>
+      <button class="icon-btn close-overlay" data-target="leaderboard-panel">✕</button>
+    </div>
+    <div class="panel-body" id="leaderboard-body">
+      <div class="loading-msg">Loading...</div>
+    </div>
+  </div>
+
+  <!-- ── My Pins Panel ── -->
+  <div id="my-pins-panel" class="overlay-panel hidden">
+    <div class="panel-header">
+      <span>📍 My Pins</span>
+      <button class="icon-btn close-overlay" data-target="my-pins-panel">✕</button>
+    </div>
+    <div class="panel-body" id="my-pins-body">
+      <div class="loading-msg">Loading...</div>
+    </div>
+  </div>
+
+  <!-- ── Pin Detail Panel (bottom sheet) ── -->
+  <div id="pin-detail" class="bottom-sheet hidden">
+    <div class="bottom-sheet-handle"></div>
+    <div class="panel-header">
+      <span id="pin-detail-title">Pin</span>
+      <button class="icon-btn" id="close-pin-detail">✕</button>
+    </div>
+    <div class="panel-body" id="pin-detail-body"></div>
+  </div>
+
+  <!-- ── Drop Pin Modal ── -->
+  <div id="drop-pin-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span>Drop Pin</span>
+        <button class="icon-btn" id="close-drop-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field-group">
+          <label>Type</label>
+          <div id="type-selector" class="type-grid"></div>
+        </div>
+        <div class="field-group">
+          <label>Address <span class="optional">(optional)</span></label>
+          <input type="text" id="pin-address" placeholder="Street address">
+        </div>
+        <div id="contact-fields">
+          <div class="field-group">
+            <label>Homeowner Name</label>
+            <input type="text" id="pin-contact-name" placeholder="Full name" autocapitalize="words">
+          </div>
+          <div class="field-group">
+            <label>Phone</label>
+            <input type="tel" id="pin-contact-phone" placeholder="555-000-0000">
+          </div>
+          <div class="field-group">
+            <label>Email <span class="optional">(optional)</span></label>
+            <input type="email" id="pin-contact-email" placeholder="email@example.com">
+          </div>
+        </div>
+        <div class="field-group">
+          <label>Notes <span class="optional">(optional)</span></label>
+          <textarea id="pin-notes" placeholder="Any notes..." rows="2"></textarea>
+        </div>
+        <button class="btn-primary" id="save-pin-btn">Save Pin</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Hail Date Modal ── -->
+  <div id="hail-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span>🌩️ Hail Overlay</span>
+        <button class="icon-btn" id="close-hail-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint">Load NOAA hail reports for a storm date to see where hail has hit.</p>
+        <div class="field-group">
+          <label>Storm Date</label>
+          <input type="date" id="hail-date">
+        </div>
+        <div class="btn-row">
+          <button class="btn-primary" id="load-hail-btn">Load Hail Reports</button>
+          <button class="btn-secondary" id="clear-hail-btn">Clear Overlay</button>
+        </div>
+        <div id="hail-status" class="status-msg"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Edit Pin Modal ── -->
+  <div id="edit-pin-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span>Edit Pin</span>
+        <button class="icon-btn" id="close-edit-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field-group">
+          <label>Type</label>
+          <div id="edit-type-selector" class="type-grid"></div>
+        </div>
+        <div class="field-group">
+          <label>Address</label>
+          <input type="text" id="edit-address">
+        </div>
+        <div class="field-group">
+          <label>Homeowner Name</label>
+          <input type="text" id="edit-contact-name" autocapitalize="words">
+        </div>
+        <div class="field-group">
+          <label>Phone</label>
+          <input type="tel" id="edit-contact-phone">
+        </div>
+        <div class="field-group">
+          <label>Email</label>
+          <input type="email" id="edit-contact-email">
+        </div>
+        <div class="field-group">
+          <label>Notes</label>
+          <textarea id="edit-notes" rows="2"></textarea>
+        </div>
+        <button class="btn-primary" id="update-pin-btn">Update Pin</button>
+        <button class="btn-danger" id="delete-pin-btn">Delete Pin</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
