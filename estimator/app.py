@@ -44,6 +44,7 @@ app.config.update(
     # local dev so the login flow works on http://localhost / the LAN IP.
     SESSION_COOKIE_SECURE=bool(os.environ.get('DATA_DIR')),
     PERMANENT_SESSION_LIFETIME=timedelta(days=14),
+    MAX_CONTENT_LENGTH=30 * 1024 * 1024,  # cap uploads at 30 MB
 )
 
 # Shared setup code for first-time password enrollment. Set SIGNUP_CODE in the
@@ -117,6 +118,28 @@ def _get_role(username):
 
 def _is_admin(username):
     return _get_role(username) == 'admin'
+
+def _current_user():
+    return session.get('user', '')
+
+def _is_manager_up(username=None):
+    """Managers and admins can see/touch everything; reps only their own."""
+    return _get_role(username if username is not None else _current_user()) in ('admin', 'manager')
+
+def _can_touch_estimate(est):
+    """Ownership check for estimate reads/writes. Reps may act on their own
+    (or still-unassigned) estimates; managers and admins on any."""
+    if _is_manager_up():
+        return True
+    sp = (est.get('salesperson') or '').strip()
+    return not sp or sp == _current_user()
+
+def _forbid():
+    return jsonify({'error': 'access denied'}), 403
+
+def _safe_path_id(s):
+    """Guard ids/filenames that end up in filesystem paths."""
+    return bool(s) and bool(re.fullmatch(r'[A-Za-z0-9._-]+', s)) and '..' not in s
 
 # ── Default-deny auth guard ─────────────────────────────────────────────────
 # Every request requires a logged-in session EXCEPT the explicit allowlist below.
@@ -194,6 +217,14 @@ def _get_lan_ip():
 PUBLIC_URL = _load_public_url()
 LAN_IP     = _get_lan_ip()
 
+def get_public_url():
+    """Re-read config on every call so a public URL saved through the UI takes
+    effect in every gunicorn worker — not just the one that handled the save."""
+    return _load_public_url()
+
+def _base_url():
+    return get_public_url() or f'http://{LAN_IP}:5000'
+
 os.makedirs(ESTIMATES_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
@@ -210,7 +241,10 @@ def _seed_data_dir():
 
 _seed_data_dir()
 
-_contact_cache = None
+# Contacts — refreshed every 5 minutes (was cached forever, so new CRM
+# contacts never showed up in search until a server restart)
+_contact_cache = {'data': None, 'fetched_at': 0}
+CONTACT_CACHE_TTL = 300
 
 
 def crm_headers():
@@ -218,21 +252,22 @@ def crm_headers():
 
 
 def fetch_all_contacts():
-    global _contact_cache
-    if _contact_cache is not None:
-        return _contact_cache
+    now = time.time()
+    if _contact_cache['data'] is not None and now - _contact_cache['fetched_at'] < CONTACT_CACHE_TTL:
+        return _contact_cache['data']
     if http is None:
-        _contact_cache = []
-        return _contact_cache
+        return _contact_cache['data'] or []
     try:
         r = http.get(f"{BASE_URL}/entities/Contact", headers=crm_headers(), timeout=15)
         r.raise_for_status()
         all_contacts = r.json()
-        _contact_cache = [c for c in all_contacts if c.get('location_id') == CO_LOCATION_ID]
+        _contact_cache['data'] = [c for c in all_contacts if c.get('location_id') == CO_LOCATION_ID]
+        _contact_cache['fetched_at'] = now
     except Exception as e:
         print(f"[CRM] fetch failed: {e}")
-        _contact_cache = []
-    return _contact_cache
+        if _contact_cache['data'] is None:
+            _contact_cache['data'] = []
+    return _contact_cache['data']
 
 
 # Projects (Jobs) — refreshed every 5 minutes since new jobs are created daily
@@ -558,6 +593,10 @@ def _estimate_total(est):
 @app.route('/api/estimates', methods=['GET'])
 def list_estimates():
     result = []
+    # Reps only see their own (or unassigned) estimates — the list carries live
+    # share tokens and totals, so server-side filtering matters, not just the UI.
+    only_own = not _is_manager_up()
+    user     = _current_user()
     try:
         files = sorted(os.listdir(ESTIMATES_DIR), reverse=True)
     except OSError:
@@ -569,6 +608,8 @@ def list_estimates():
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 d = json.load(f)
+            if only_own and (d.get('salesperson') or '').strip() not in ('', user):
+                continue
             c = d.get('customer', {})
             a = c.get('address', {})
             sig = d.get('signature') or {}
@@ -619,9 +660,8 @@ def get_estimate(est_id):
         return jsonify({'error': 'Not found'}), 404
     with open(path, 'r', encoding='utf-8') as f:
         d = json.load(f)
-    user = session.get('user', '')
-    if _get_role(user) == 'rep' and d.get('salesperson') != user:
-        return jsonify({'error': 'access denied'}), 403
+    if not _can_touch_estimate(d):
+        return _forbid()
     return jsonify(d)
 
 
@@ -635,22 +675,28 @@ SERVER_MANAGED_FIELDS = [
 
 @app.route('/api/estimates/<est_id>', methods=['PUT'])
 def save_estimate(est_id):
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
     data = request.get_json(force=True)
     data['estimate_id'] = est_id
     data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
     if os.path.exists(path):
+        existing = None
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 existing = json.load(f)
+        except Exception:
+            pass
+        if existing:
+            if not _can_touch_estimate(existing):
+                return _forbid()
             for field in SERVER_MANAGED_FIELDS:
                 if not data.get(field) and existing.get(field):
                     data[field] = existing[field]
             # A signed estimate stays accepted even if a stale tab says draft
             if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
                 data['status'] = existing.get('status', 'accepted')
-        except Exception:
-            pass
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
     return jsonify({'estimate_id': est_id})
@@ -663,6 +709,8 @@ def duplicate_estimate(est_id):
         return jsonify({'error': 'Not found'}), 404
     with open(src, 'r', encoding='utf-8') as f:
         est = json.load(f)
+    if not _can_touch_estimate(est):
+        return _forbid()
     new_id = str(uuid.uuid4())
     est['estimate_id'] = new_id
     est['status'] = 'draft'
@@ -688,8 +736,19 @@ def duplicate_estimate(est_id):
 
 @app.route('/api/estimates/<est_id>', methods=['DELETE'])
 def delete_estimate(est_id):
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
     path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
     if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                est = json.load(f)
+        except Exception:
+            est = None
+        # Unreadable file: only managers/admins may force-delete it
+        if (est is not None and not _can_touch_estimate(est)) or \
+           (est is None and not _is_manager_up()):
+            return _forbid()
         os.remove(path)
     upload_dir = os.path.join(UPLOADS_DIR, est_id)
     if os.path.exists(upload_dir):
@@ -736,6 +795,8 @@ def update_estimate_label(est_id):
         return jsonify({'error': 'Not found'}), 404
     with open(path, 'r', encoding='utf-8') as f:
         est = json.load(f)
+    if not _can_touch_estimate(est):
+        return _forbid()
     est['estimate_label'] = label
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     with open(path, 'w', encoding='utf-8') as f:
@@ -754,6 +815,8 @@ def update_estimate_status(est_id):
         return jsonify({'error': 'Not found'}), 404
     with open(path, 'r', encoding='utf-8') as f:
         est = json.load(f)
+    if not _can_touch_estimate(est):
+        return _forbid()
     est['status'] = status
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     with open(path, 'w', encoding='utf-8') as f:
@@ -765,6 +828,16 @@ def update_estimate_status(est_id):
 
 @app.route('/api/uploads/<est_id>', methods=['POST'])
 def upload_photo(est_id):
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    est_path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
+    if os.path.exists(est_path):
+        try:
+            with open(est_path, 'r', encoding='utf-8') as fh:
+                if not _can_touch_estimate(json.load(fh)):
+                    return _forbid()
+        except Exception:
+            pass
     if 'file' not in request.files:
         return jsonify({'error': 'No file field'}), 400
     f = request.files['file']
@@ -782,6 +855,16 @@ def upload_photo(est_id):
 
 @app.route('/api/uploads/<est_id>/<filename>', methods=['DELETE'])
 def delete_photo(est_id, filename):
+    if not _safe_path_id(est_id) or not _safe_path_id(filename):
+        return jsonify({'error': 'invalid path'}), 400
+    est_path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
+    if os.path.exists(est_path):
+        try:
+            with open(est_path, 'r', encoding='utf-8') as fh:
+                if not _can_touch_estimate(json.load(fh)):
+                    return _forbid()
+        except Exception:
+            pass
     path = os.path.join(UPLOADS_DIR, est_id, filename)
     if os.path.exists(path):
         os.remove(path)
@@ -954,39 +1037,75 @@ def find_by_token(token):
             pass
     return None
 
+# ── Shared pricing math — MUST mirror app.js (tierRate / lineTotalEffective) ─
+# The frontend prices with per-tier rates (pricing.tier_rates) and honors
+# per-line price_override. Everything server-rendered (customer sign page,
+# signed PDF, list totals, emails, analytics) must price identically or the
+# customer sees different numbers than the rep quoted.
+
+def _tier_rate(pricing, trade, tier):
+    """Effective margin/markup %: per-trade override → tier rate → global rate."""
+    ovr = pricing.get('per_trade_overrides') or {}
+    v = ovr.get(trade)
+    if v is not None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    tv = (pricing.get('tier_rates') or {}).get(tier)
+    if tv is not None:
+        try:
+            return float(tv)
+        except (TypeError, ValueError):
+            pass
+    try:
+        return float(pricing.get('global_rate') or 35)
+    except (TypeError, ValueError):
+        return 35.0
+
+
+def _sell_price(cost, rate, mode):
+    """Unit sell price from unit cost. Margin ≥100% is invalid → 0 (matches app.js)."""
+    if mode == 'margin':
+        return cost / (1 - rate / 100) if rate < 100 else 0.0
+    return cost * (1 + rate / 100)
+
+
+def _line_sell_total(item, tier, rate, mode):
+    """GBB line sell total, honoring a locked price_override (a line total)."""
+    t = (item.get('tiers') or {}).get(tier) or {}
+    po = t.get('price_override')
+    if po is not None and po != '':
+        try:
+            return float(po)
+        except (TypeError, ValueError):
+            pass
+    cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
+    qty  = float(item.get('quantity') or 0)
+    return _sell_price(cost, rate, mode) * qty
+
+
 def calc_tier_total(est, tier):
     """Compute grand sell total for a given tier (excludes insurance)."""
     pricing = est.get('pricing', {})
     mode    = pricing.get('mode', 'margin')
-    grate   = float(pricing.get('global_rate') or 35)
-    ovr     = pricing.get('per_trade_overrides', {})
     trades  = est.get('trades', {})
     total   = 0.0
-
-    def rate(tk):
-        v = ovr.get(tk)
-        return float(v) if v is not None else grate
-
-    def sell(cost, r):
-        return cost / (1 - r / 100) if mode == 'margin' and r < 100 else cost * (1 + r / 100)
 
     for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
         td = trades.get(tk, {})
         if not td.get('enabled'):
             continue
         trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
-        r = rate(tk)
+        r = _tier_rate(pricing, tk, tier)
         for item in td.get('line_items', []):
-            qty = float(item.get('quantity') or 0)
             if trade_mode == 'simple':
-                sp = float(item.get('unit_price') or 0)
+                total += float(item.get('unit_price') or 0) * float(item.get('quantity') or 0)
             else:
-                t    = (item.get('tiers') or {}).get(tier, {})
+                t = (item.get('tiers') or {}).get(tier, {})
                 if t.get('included') is False:
                     continue  # item excluded from this package tier
-                cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
-                sp   = sell(cost, r)
-            total += sp * qty
+                total += _line_sell_total(item, tier, r, mode)
     return total
 
 
@@ -1015,22 +1134,6 @@ def get_analytics():
     all_dtc      = []   # company-wide days-to-close list
     now_dt       = datetime.utcnow()
     ytd_cutoff   = now_dt.replace(month=1, day=1, hour=0, minute=0, second=0)
-
-    def _rate(pricing, tk, tier):
-        ovr = pricing.get('per_trade_overrides', {})
-        v   = ovr.get(tk)
-        if v is not None:
-            return float(v)
-        tr = pricing.get('tier_rates', {})
-        tv = tr.get(tier) if tr else None
-        if tv is not None:
-            return float(tv)
-        return float(pricing.get('global_rate') or 35)
-
-    def _sell(cost, r, mode):
-        if mode == 'margin':
-            return cost / (1 - r / 100) if r < 100 else 0
-        return cost * (1 + r / 100)
 
     try:
         fnames = sorted(os.listdir(ESTIMATES_DIR))
@@ -1137,7 +1240,7 @@ def get_analytics():
             if not td.get('enabled') or not td.get('line_items'):
                 continue
             tmode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
-            r     = _rate(pricing, tk, tier)
+            r     = _tier_rate(pricing, tk, tier)
             tsell = 0.0
             tcost = 0.0
 
@@ -1153,7 +1256,7 @@ def get_analytics():
                     if t.get('included') is False:
                         continue
                     cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
-                    tsell += _sell(cost, r, mode) * qty
+                    tsell += _line_sell_total(item, tier, r, mode)
                     tcost += cost * qty
 
             if tk not in by_trade:
@@ -1226,15 +1329,6 @@ def render_line_items(est, tier=None):
         tier = est.get('selected_tier', 'better')
     pricing  = est.get('pricing', {})
     mode     = pricing.get('mode', 'margin')
-    grate    = float(pricing.get('global_rate') or 35)
-    ovr      = pricing.get('per_trade_overrides', {})
-
-    def rate(trade):
-        v = ovr.get(trade)
-        return float(v) if v is not None else grate
-
-    def sell(cost, r):
-        return cost / (1 - r / 100) if mode == 'margin' and r < 100 else cost * (1 + r / 100)
 
     labels  = dict(roofing='Roofing', siding='Siding', windows='Windows', gutters='Gutters', other='Other / Misc')
     trades  = est.get('trades', {})
@@ -1247,7 +1341,7 @@ def render_line_items(est, tier=None):
             continue
         # Determine trade mode: gutters always simple; others default gbb
         trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
-        r    = rate(tk)
+        r    = _tier_rate(pricing, tk, tier)
         rows = []
         sub  = 0.0
         hidden_count = 0
@@ -1256,16 +1350,14 @@ def render_line_items(est, tier=None):
             if qty <= 0:
                 continue  # zero-quantity items are hidden from the customer
             if trade_mode == 'simple':
-                sp   = float(item.get('unit_price') or 0)
+                line = float(item.get('unit_price') or 0) * qty
                 desc = (item.get('description') or '').strip()
             else:
                 t    = (item.get('tiers') or {}).get(tier, {})
                 if t.get('included') is False:
                     continue  # item excluded from this package tier
-                cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
-                sp   = sell(cost, r)
+                line = _line_sell_total(item, tier, r, mode)
                 desc = t.get('description', '')
-            line  = sp * qty
             sub  += line
             if not item.get('customer_visible', True):
                 hidden_count += 1
@@ -1417,6 +1509,11 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cv-tier-name{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;margin-bottom:3px}
 .cv-tier-price{font-size:22px;font-weight:900;margin-bottom:5px}
 .cv-tier-desc{font-size:10px;color:#6b7280;font-style:italic;margin-bottom:6px;line-height:1.4}
+.cv-tier-feats{list-style:none;margin:7px 0 5px;padding:0;text-align:left;font-size:10.5px;color:#374151;line-height:1.5}
+.cv-tier-feats li{position:relative;padding:1.5px 0 1.5px 15px}
+.cv-tier-feats li::before{content:'✓';position:absolute;left:0;font-weight:700;color:#16a34a}
+.cv-tier-feats .cv-tier-more{color:#9ca3af;font-style:italic}
+.cv-tier-feats .cv-tier-more::before{content:''}
 .cv-tier-check{font-size:11px;font-weight:700;color:#6b7280;border:1px solid #d1d5db;border-radius:20px;
   padding:3px 9px;display:inline-block;margin-top:2px;transition:all .15s}
 .cv-tier-selected .cv-tier-check{background:#6b7280;color:#fff}
@@ -1544,41 +1641,24 @@ def _signed_extras_html(est):
     return out
 
 
-def _build_insurance_cv(est, token):
-    """Customer-facing page for insurance-mode estimates (no GBB tier selection)."""
-    c         = est.get('customer', {})
-    a         = c.get('address', {})
-    cs        = ', '.join(filter(None, [a.get('city'), a.get('state')]))
-    addr      = ', '.join(filter(None, [a.get('street'), cs]))
-    eid       = est.get('estimate_id', '')
-    enum      = 'EST-' + eid.split('-')[0].upper() if eid else 'DRAFT'
-    notes     = (est.get('notes_customer') or '').strip()
-    ctext     = (est.get('contract_text') or '').strip()
-    sp        = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
-
-    ins_td      = est.get('trades', {}).get('insurance', {})
-    sections    = ins_td.get('sections', [])
-    # Migrate old flat line_items format
+def _insurance_sections(est):
+    """Normalized insurance sections list (migrates old flat line_items)."""
+    ins_td   = est.get('trades', {}).get('insurance', {})
+    sections = ins_td.get('sections', [])
     if not sections and ins_td.get('line_items'):
         sections = [{'id': '_legacy', 'name': '', 'items': ins_td.get('line_items', [])}]
-    carrier     = (ins_td.get('carrier') or '').strip()
-    claim_num   = (ins_td.get('claim_number') or '').strip()
-    scope_notes = (ins_td.get('scope_notes') or '').strip()
+    return sections
 
+
+def _insurance_cv_table(est):
+    """Insurance sections rendered as customer-view tables. Returns (html, total).
+    Shared by the sign page and the signed-confirmation page."""
+    sections  = _insurance_sections(est)
     ins_total = sum(
         float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
         for sec in sections for i in sec.get('items', [])
     )
 
-    notes_html  = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
-    ctext_html  = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
-      <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
-    sp_html     = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
-    carrier_row = f'<div class="cvgi"><label>Insurance Carrier</label><strong>{he(carrier)}</strong></div>' if carrier else ''
-    claim_row   = f'<div class="cvgi"><label>Claim #</label><strong>{he(claim_num)}</strong></div>' if claim_num else ''
-    scope_html  = f'<div class="cvnotes"><h3>Scope of Work</h3><p>{he(scope_notes)}</p></div>' if scope_notes else ''
-
-    # Build per-section tables
     active_sections = [s for s in sections if s.get('items')]
     sections_html = ''
     for sec in active_sections:
@@ -1609,12 +1689,41 @@ def _build_insurance_cv(est, token):
           </table></div>'''
 
     if active_sections:
-        ins_table = sections_html + f'''<div class="cvgrand">
+        html = sections_html + f'''<div class="cvgrand">
           <span class="cvgrand-lbl">Insurance Claim Total</span>
           <span class="cvgrand-amt">{fc(ins_total)}</span>
         </div>'''
     else:
-        ins_table = '<div class="cvnotes" style="text-align:center;color:#9ca3af">No insurance line items entered yet.</div>'
+        html = '<div class="cvnotes" style="text-align:center;color:#9ca3af">No insurance line items entered yet.</div>'
+    return html, ins_total
+
+
+def _build_insurance_cv(est, token):
+    """Customer-facing page for insurance-mode estimates (no GBB tier selection)."""
+    c         = est.get('customer', {})
+    a         = c.get('address', {})
+    cs        = ', '.join(filter(None, [a.get('city'), a.get('state')]))
+    addr      = ', '.join(filter(None, [a.get('street'), cs]))
+    eid       = est.get('estimate_id', '')
+    enum      = 'EST-' + eid.split('-')[0].upper() if eid else 'DRAFT'
+    notes     = (est.get('notes_customer') or '').strip()
+    ctext     = (est.get('contract_text') or '').strip()
+    sp        = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
+
+    ins_td      = est.get('trades', {}).get('insurance', {})
+    carrier     = (ins_td.get('carrier') or '').strip()
+    claim_num   = (ins_td.get('claim_number') or '').strip()
+    scope_notes = (ins_td.get('scope_notes') or '').strip()
+
+    ins_table, ins_total = _insurance_cv_table(est)
+
+    notes_html  = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    ctext_html  = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
+      <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
+    sp_html     = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
+    carrier_row = f'<div class="cvgi"><label>Insurance Carrier</label><strong>{he(carrier)}</strong></div>' if carrier else ''
+    claim_row   = f'<div class="cvgi"><label>Claim #</label><strong>{he(claim_num)}</strong></div>' if claim_num else ''
+    scope_html  = f'<div class="cvnotes"><h3>Scope of Work</h3><p>{he(scope_notes)}</p></div>' if scope_notes else ''
 
     return f'''<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
@@ -1802,6 +1911,7 @@ def build_customer_view(est, token):
     ctext  = (est.get('contract_text') or '').strip()
     sp     = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
     tdesc  = est.get('tier_descriptions') or {}
+    tfeat  = est.get('tier_features') or {}
 
     notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
     ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
@@ -1829,6 +1939,15 @@ def build_customer_view(est, token):
         is_sel = t == default_tier
         popular_badge = '<div class="cv-tier-popular">Most Popular</div>' if t == 'better' else ''
         desc_el = f'<div class="cv-tier-desc">{he(desc)}</div>' if desc else ''
+        # "What's Included" bullets the rep curates on the Options page — shown
+        # to the customer making the Good/Better/Best decision.
+        feats = [str(f).strip() for f in (tfeat.get(t) or []) if str(f).strip()]
+        feats_el = ''
+        if feats:
+            feats_el = ('<ul class="cv-tier-feats">'
+                        + ''.join(f'<li>{he(f)}</li>' for f in feats[:8])
+                        + (f'<li class="cv-tier-more">+ {len(feats) - 8} more included</li>' if len(feats) > 8 else '')
+                        + '</ul>')
         cards_html += f'''<div class="cv-tier-card {'cv-tier-selected' if is_sel else ''}"
           data-tier="{t}" data-total="{total:.2f}"
           style="border-color:{clr};{'background:'+bg if is_sel else ''}"
@@ -1837,6 +1956,7 @@ def build_customer_view(est, token):
           <div class="cv-tier-name" style="color:{clr}">{lbl}</div>
           <div class="cv-tier-price" style="color:{clr}">{fc(total)}</div>
           {desc_el}
+          {feats_el}
           <div class="cv-tier-check" id="cv-check-{t}">{'&#10003; Selected' if is_sel else 'Select'}</div>
         </div>'''
 
@@ -1973,10 +2093,30 @@ def build_signed_confirmation(est):
     cs   = ', '.join(filter(None, [a.get('city'), a.get('state')]))
     addr = ', '.join(filter(None, [a.get('street'), cs]))
     tier = est.get('selected_tier', 'better')
-    tlbl = dict(good='Good', better='Better', best='Best').get(tier, tier.title())
     eid  = est.get('estimate_id', '')
     enum = 'EST-' + eid.split('-')[0].upper() if eid else 'DRAFT'
-    li_html, gtotal = render_line_items(est)
+
+    # Line items + totals must match what the customer signed: insurance shows
+    # the RCV sections table (with its own total bar), simple retail shows a
+    # plain total, GBB retail shows the chosen package.
+    is_ins = (est.get('estimate_type') == 'insurance'
+              or bool((est.get('trades', {}).get('insurance') or {}).get('enabled')))
+    if is_ins:
+        tlbl = 'Insurance Claim'
+        li_html, gtotal = _insurance_cv_table(est)
+        total_bar = ''  # the insurance table already ends with its own total bar
+    else:
+        li_html, gtotal = render_line_items(est)
+        if _all_trades_simple(est):
+            tlbl      = 'Estimate'
+            total_lbl = 'Total'
+        else:
+            tlbl      = dict(good='Good', better='Better', best='Best').get(tier, tier.title())
+            total_lbl = f'Total &mdash; {he(tlbl)} Package'
+        total_bar = f'''<div class="cvgrand" style="margin-top:14px">
+  <span class="cvgrand-lbl">{total_lbl}</span>
+  <span class="cvgrand-amt">{fc(gtotal)}</span>
+</div>'''
 
     notes  = (est.get('notes_customer') or '').strip()
     ctext  = (est.get('contract_text') or '').strip()
@@ -2031,7 +2171,7 @@ def build_signed_confirmation(est):
     <div class="cvgi"><label>Customer</label><strong>{he(c.get("name","—"))}</strong></div>
     <div class="cvgi"><label>Estimate #</label><strong>{he(enum)}</strong></div>
     <div class="cvgi"><label>Address</label><strong>{he(addr or "—")}</strong></div>
-    <div class="cvgi"><label>Package</label><strong>{he(tlbl)}</strong></div>
+    {f'<div class="cvgi"><label>Package</label><strong>{he(tlbl)}</strong></div>' if tlbl != 'Estimate' else ''}
   </div>
 </div>
 
@@ -2039,10 +2179,7 @@ def build_signed_confirmation(est):
 
 {li_html}
 
-<div class="cvgrand" style="margin-top:14px">
-  <span class="cvgrand-lbl">Total &mdash; {he(tlbl)} Package</span>
-  <span class="cvgrand-amt">{fc(gtotal)}</span>
-</div>
+{total_bar}
 
 {notes_html}
 {ctext_html}
@@ -2061,13 +2198,15 @@ def build_signed_confirmation(est):
 @app.route('/api/server-info', methods=['GET'])
 def server_info():
     """Return network info so the frontend can build share URLs correctly."""
-    base = PUBLIC_URL or f'http://{LAN_IP}:5000'
-    return jsonify({'base_url': base, 'lan_ip': LAN_IP, 'public_url': PUBLIC_URL})
+    return jsonify({'base_url': _base_url(), 'lan_ip': LAN_IP, 'public_url': get_public_url()})
 
 
 @app.route('/api/server-info', methods=['PUT'])
 def save_server_info():
-    """Persist a custom public_url to config.json."""
+    """Admin-only: persist a custom public_url to config.json — it changes the
+    share links every rep generates."""
+    if not _is_admin(_current_user()):
+        return _forbid()
     data = request.get_json(force=True)
     new_url = (data.get('public_url') or '').strip().rstrip('/')
     cfg = os.path.join(DATA_DIR, 'config.json')
@@ -2080,8 +2219,21 @@ def save_server_info():
         json.dump(cfg_data, f, indent=2)
     global PUBLIC_URL
     PUBLIC_URL = new_url
-    base = PUBLIC_URL or f'http://{LAN_IP}:5000'
-    return jsonify({'ok': True, 'base_url': base})
+    return jsonify({'ok': True, 'base_url': _base_url()})
+
+
+def _ensure_share_token(est, path):
+    """Mark an estimate sent and give it a share token if it lacks one."""
+    token = est.get('share_token') or secrets.token_urlsafe(24)
+    est['share_token'] = token
+    if not est.get('sent_at'):
+        est['sent_at'] = datetime.utcnow().isoformat() + 'Z'
+    if est.get('status') in (None, '', 'draft'):
+        est['status'] = 'sent'
+    est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(est, f, indent=2)
+    return token
 
 
 @app.route('/api/estimates/<est_id>/share', methods=['POST'])
@@ -2091,18 +2243,67 @@ def create_share_link(est_id):
         return jsonify({'error': 'Not found'}), 404
     with open(path, 'r', encoding='utf-8') as f:
         est = json.load(f)
-    token = est.get('share_token') or secrets.token_urlsafe(24)
-    est['share_token'] = token
-    if not est.get('sent_at'):
-        est['sent_at'] = datetime.utcnow().isoformat() + 'Z'
-    if est.get('status') in (None, '', 'draft'):
-        est['status'] = 'sent'
-    est['updated_at']  = datetime.utcnow().isoformat() + 'Z'
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(est, f, indent=2)
-    # Use PUBLIC_URL if set, otherwise fall back to the LAN IP so customers can reach the link
-    base = PUBLIC_URL or f'http://{LAN_IP}:5000'
+    if not _can_touch_estimate(est):
+        return _forbid()
+    token = _ensure_share_token(est, path)
+    base = _base_url()
     return jsonify({'token': token, 'url': f'/sign/{token}', 'full_url': f'{base}/sign/{token}'})
+
+
+@app.route('/api/estimates/<est_id>/send-email', methods=['POST'])
+def email_estimate_link(est_id):
+    """Email the customer their signing link directly from the app (SendGrid),
+    so reps don't have to copy/paste on a phone."""
+    path = os.path.join(ESTIMATES_DIR, f'{est_id}.json')
+    if not os.path.exists(path):
+        return jsonify({'error': 'Not found'}), 404
+    with open(path, 'r', encoding='utf-8') as f:
+        est = json.load(f)
+    if not _can_touch_estimate(est):
+        return _forbid()
+
+    body    = request.get_json(silent=True) or {}
+    to_addr = (body.get('email') or est.get('customer', {}).get('email') or '').strip()
+    if not to_addr or '@' not in to_addr:
+        return jsonify({'error': 'No customer email address on this estimate.'}), 400
+
+    token    = _ensure_share_token(est, path)
+    base     = get_public_url()
+    if not base:
+        return jsonify({'error': 'No public URL configured — the emailed link would not '
+                                 'be reachable. Use Copy Link instead.'}), 400
+    sign_url = f'{base}/sign/{token}'
+    c        = est.get('customer', {})
+    first    = (c.get('name') or 'there').split(' ')[0]
+    enum     = _est_number(est)
+    rep      = _display_name(est.get('salesperson')) if est.get('salesperson') else 'Project One Roofing'
+
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#1a3a5c;padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:22px;font-weight:800">Your Estimate is Ready</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">Hi {he(first)} — your estimate {he(enum)} is ready to review and sign online.</p>
+  </div>
+  <div style="padding:22px 26px">
+    <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">
+      Open the link below on any phone or computer to review your estimate,
+      choose your options, and sign electronically. No app or account needed.</p>
+    <a href="{he(sign_url)}" style="display:block;text-align:center;background:#1a3a5c;color:#fff;text-decoration:none;padding:14px 24px;border-radius:6px;font-weight:700;font-size:15px;margin-bottom:18px">
+      View &amp; Sign Your Estimate →</a>
+    <p style="font-size:12px;color:#6b7280;line-height:1.6;margin:0">
+      Questions? Just reply to this email or call us at 970-776-0945.<br>
+      — {he(rep)}, Project One Roofing</p>
+  </div>
+</div>
+</body></html>'''
+
+    ok = _send_email(f'Your roofing estimate from Project One Roofing ({enum})',
+                     html_body, to_addr, cc=_salesperson_email(est) or None)
+    if not ok:
+        return jsonify({'error': 'Email could not be sent — check the email settings.'}), 502
+    return jsonify({'ok': True, 'sent_to': to_addr, 'full_url': sign_url})
 
 
 def _send_email(subject, html_body, to_addr, cc=None, attachments=None):
@@ -2231,7 +2432,7 @@ def send_view_notification(est):
     enum     = _est_number(est)
     total    = _estimate_total(est)
     cname    = c.get('name', 'Your customer')
-    base     = PUBLIC_URL or 'http://localhost:5000'
+    base     = _base_url()
     sign_url = f"{base}/sign/{est.get('share_token','')}"
 
     html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
@@ -2297,7 +2498,7 @@ def send_signature_notification(est):
     except Exception:
         stime_fmt = stime
 
-    base     = PUBLIC_URL or 'http://localhost:5000'
+    base     = _base_url()
     # Link to the public token-gated signed page so the rep can open it straight
     # from the email without an app session (the est_id route now requires login).
     _tok     = est.get('share_token')
@@ -2496,8 +2697,6 @@ def build_signed_pdf(est):
     else:
         pricing = est.get('pricing', {})
         mode    = pricing.get('mode', 'margin')
-        grate   = float(pricing.get('global_rate') or 35)
-        ovr     = pricing.get('per_trade_overrides', {})
         labels  = dict(roofing='Roofing', siding='Siding', windows='Windows',
                        gutters='Gutters', other='Other / Misc')
         cols = [('Description', 92, 'L'), ('Qty', 16, 'R'), ('Unit', 16, 'C'),
@@ -2507,8 +2706,7 @@ def build_signed_pdf(est):
             if not td.get('enabled') or not td.get('line_items'):
                 continue
             trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
-            ov = ovr.get(tk)
-            r  = float(ov) if ov is not None else grate
+            r = _tier_rate(pricing, tk, tier)
             # Skip the whole trade if nothing will print (all zero-qty / excluded)
             if not any(
                     float(it.get('quantity') or 0) > 0 and
@@ -2527,17 +2725,15 @@ def build_signed_pdf(est):
                     continue  # zero-quantity items are hidden from the customer
                 if trade_mode == 'simple':
                     sp_  = float(it.get('unit_price') or 0)
+                    line = sp_ * qty
                     desc = (it.get('description') or '').strip()
                 else:
                     t    = (it.get('tiers') or {}).get(tier, {})
                     if t.get('included') is False:
                         continue  # item excluded from this package tier
-                    cost = (float(t.get('material_unit_cost') or 0)
-                            + float(t.get('labor_unit_cost') or 0))
-                    sp_  = (cost / (1 - r / 100) if mode == 'margin' and r < 100
-                            else cost * (1 + r / 100))
+                    line = _line_sell_total(it, tier, r, mode)
+                    sp_  = line / qty
                     desc = t.get('description', '')
-                line = sp_ * qty
                 sub += line
                 if not it.get('customer_visible', True):
                     hidden += 1
@@ -2707,7 +2903,7 @@ def push_contract_to_crm(est_id):
 
         # Fallback: link the CRM doc to our hosted signed page
         if not file_url:
-            base = PUBLIC_URL or f'http://{LAN_IP}:5000'
+            base = _base_url()
             _tok = est.get('share_token')
             file_url  = f'{base}/sign/{_tok}' if _tok else f'{base}/api/estimates/{est_id}/signed'
             file_type = 'text/html'
@@ -3131,6 +3327,8 @@ def get_pricebook():
 
 @app.route('/api/pricebook', methods=['PUT'])
 def put_pricebook():
+    if not _is_manager_up():
+        return _forbid()
     _save_price_book(request.get_json(force=True))
     return jsonify({'ok': True})
 
@@ -3177,6 +3375,8 @@ def get_tier_defaults():
 
 @app.route('/api/tier-defaults', methods=['PUT'])
 def put_tier_defaults():
+    if not _is_manager_up():
+        return _forbid()
     data = request.get_json(force=True)
     with open(TIER_DEFAULTS_FILE, 'w') as f:
         json.dump(data, f, indent=2)
@@ -3199,6 +3399,8 @@ def get_app_settings():
 
 @app.route('/api/settings', methods=['PUT'])
 def put_app_settings():
+    if not _is_manager_up():
+        return _forbid()
     data = request.get_json(force=True)
     with open(APP_SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
@@ -3223,7 +3425,7 @@ def send_followup_reminder(est, days_out):
     cname = c.get('name', 'Customer')
     enum  = _est_number(est)
     total = _estimate_total(est)
-    base  = PUBLIC_URL or 'http://localhost:5000'
+    base  = _base_url()
     sign_url = f"{base}/sign/{est.get('share_token','')}"
 
     views = int(est.get('view_count') or 0)
@@ -3265,8 +3467,17 @@ def send_followup_reminder(est, days_out):
                 html_body, to_addr)
 
 
+def _email_configured():
+    """True when any email path is configured — SendGrid API or SMTP.
+    (Delivery prefers the SendGrid HTTP API; SMTP_HOST alone is not required.)"""
+    return bool(os.environ.get('SENDGRID_API_KEY', '').strip()
+                or os.environ.get('SMTP_HOST', '').strip()
+                or (os.environ.get('SMTP_USER', '').strip() == 'apikey'
+                    and os.environ.get('SMTP_PASS', '').strip()))
+
+
 def _check_reminders():
-    if not os.environ.get('SMTP_HOST', '').strip():
+    if not _email_configured():
         return
     now = datetime.utcnow()
     try:
@@ -3301,6 +3512,10 @@ def _check_reminders():
         except Exception:
             continue
         days = (now - sent_dt).days
+        # Claim locks for every crossed threshold, but send at most ONE email —
+        # an estimate crossing 3d and 7d in the same check (e.g. shared before
+        # this feature deployed) shouldn't get two identical reminders.
+        newly_claimed = False
         for d in REMINDER_DAYS:
             if days < d:
                 continue
@@ -3308,10 +3523,10 @@ def _check_reminders():
             try:
                 fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.close(fd)
-            except FileExistsError:
+                newly_claimed = True
+            except (FileExistsError, OSError):
                 continue
-            except OSError:
-                continue
+        if newly_claimed:
             try:
                 send_followup_reminder(est, days)
             except Exception as exc:
@@ -3370,6 +3585,8 @@ def test_notification():
 @app.route('/api/find-estimate')
 def find_estimate():
     """Admin: find estimates by approximate total — helps recover data after accidental overwrites."""
+    if not _is_admin(_current_user()):
+        return _forbid()
     near = float(request.args.get('total', 688))
     tolerance = float(request.args.get('tol', 50))
     result = []
@@ -3409,6 +3626,8 @@ def find_estimate():
 @app.route('/api/signed-estimates')
 def list_signed_estimates():
     """Admin: list all signed estimates so phantom ones can be identified and deleted."""
+    if not _is_admin(_current_user()):
+        return _forbid()
     result = []
     try:
         for fname in sorted(os.listdir(ESTIMATES_DIR)):
@@ -3437,7 +3656,9 @@ def list_signed_estimates():
 
 @app.route('/api/backup')
 def download_backup():
-    """Full on-demand backup: estimates + photos + config."""
+    """Admin-only: full on-demand backup — estimates + photos + config."""
+    if not _is_admin(_current_user()):
+        return _forbid()
     data = _build_backup_zip(include_uploads=True)
     stamp = datetime.utcnow().strftime('%Y-%m-%d')
     return send_file(io.BytesIO(data), mimetype='application/zip',
@@ -3454,7 +3675,7 @@ def _send_nightly_backup():
     n_est = len([f for f in os.listdir(ESTIMATES_DIR) if f.endswith('.json')])
     size_mb = len(data) / 1048576
 
-    base = PUBLIC_URL or 'http://localhost:5000'
+    base = _base_url()
     if size_mb > 20:
         attachments = None
         body_extra = (f'<p style="font-size:13px;color:#b45309">The backup zip is '
@@ -3489,7 +3710,7 @@ def _send_nightly_backup():
 
 
 def _check_daily_backup():
-    if not os.environ.get('SMTP_HOST', '').strip():
+    if not _email_configured():
         return
     stamp = datetime.utcnow().strftime('%Y-%m-%d')
     lock  = os.path.join(REMINDER_LOCKS_DIR, f'backup_{stamp}.lock')

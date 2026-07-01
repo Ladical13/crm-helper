@@ -456,7 +456,8 @@ function uid() {
 function fmtDate(d) { return d.toISOString().split('T')[0]; }
 function fmtCur(n) {
   if (!isFinite(n)) return '$0.00';
-  return '$' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const sign = n < 0 ? '−' : '';  // keep the sign — a negative profit must look negative
+  return sign + '$' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 function esc(s) {
   if (s == null) return '';
@@ -569,6 +570,9 @@ function rerender() {
 /* ── Page navigation ───────────────────────────────────────────────── */
 
 function switchPage(page) {
+  // Save-on-navigate: switching pages is a natural checkpoint, so unsaved work
+  // survives a closed tab / dead battery without waiting for the 60s autosave.
+  if (dirty && S.estimate_id && page !== activePage) saveEstimate();
   activePage = page;
   document.querySelectorAll('.page').forEach(el => el.style.display = 'none');
   const target = document.getElementById('page-' + page);
@@ -593,8 +597,8 @@ function pageComplete(page) {
     case 'intro':    return !!(S.intro_text && S.intro_text.trim());
     case 'photos':   return (S.photos||[]).length > 0;
     case 'scope':    return ['roofing','siding','windows','gutters','other'].some(hasItems);
-    case 'options':  return grandTotal(S.selected_tier) > 0;
-    case 'pricing':  return grandTotal(S.selected_tier) > 0;
+    case 'options':  return grandTotal(S.selected_tier) > 0 || insuranceTotal() > 0;
+    case 'pricing':  return grandTotal(S.selected_tier) > 0 || insuranceTotal() > 0;
     case 'contract': return !!(S.contract_text && S.contract_text.trim());
     case 'report':   return !!(S.roof_health?.condition);
     default: return false;
@@ -959,7 +963,7 @@ async function uploadAsCoverPhoto(files) {
   if (!file.type.startsWith('image/')) { alert('Please select an image file.'); return; }
   if (!S.estimate_id) await saveEstimate();
   const fd = new FormData();
-  fd.append('file', file);
+  fd.append('file', await compressImage(file));
   try {
     const r = await fetch(`/api/uploads/${S.estimate_id}`, { method: 'POST', body: fd });
     if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.error || `Upload failed (${r.status})`); }
@@ -1973,7 +1977,7 @@ function renderOptionsPage() {
         <h2>Your Options</h2>
         <p>Edit what appears on each package card — these bullet points are what the customer sees when they open the estimate</p>
       </div>
-      <button class="btn-save-defaults" onclick="saveTierDefaults()">💾 Save as Global Defaults</button>
+      ${_meCanViewAll() ? '<button class="btn-save-defaults" onclick="saveTierDefaults()">💾 Save as Global Defaults</button>' : ''}
     </div>
     <div class="pkg-cards">
       ${TIERS.map(tier => {
@@ -4013,12 +4017,34 @@ function closeCrm() { document.getElementById('crm-dropdown').classList.add('hid
 
 /* ── Photos ────────────────────────────────────────────────────────── */
 
+/* Downscale big photos client-side before upload — phone photos run 4–8 MB
+   each and go straight to the server volume (and every backup). Falls back to
+   the original file if the browser can't decode it (e.g. HEIC). */
+async function compressImage(file) {
+  if (!file.type || !file.type.startsWith('image/') || file.type === 'image/gif') return file;
+  if (file.size < 800 * 1024) return file;  // already small
+  try {
+    const bmp  = await createImageBitmap(file);
+    const maxW = 1800;
+    const k = bmp.width > maxW ? maxW / bmp.width : 1;
+    const W = Math.max(1, Math.round(bmp.width * k));
+    const H = Math.max(1, Math.round(bmp.height * k));
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    cv.getContext('2d').drawImage(bmp, 0, 0, W, H);
+    const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.85));
+    if (!blob || blob.size >= file.size) return file;
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+  } catch { return file; }
+}
+
 async function uploadPhotos(files) {
   if(!files.length)return;
   if(!S.estimate_id)await saveEstimate();
   for(const file of files){
     const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
-    const fd=new FormData(); fd.append('file',file);
+    const upFile = isPdf ? file : await compressImage(file);
+    const fd=new FormData(); fd.append('file',upFile);
     try{
       const r=await fetch(`/api/uploads/${S.estimate_id}`,{method:'POST',body:fd});
       if(!r.ok){const e=await r.json();throw new Error(e.error||'Upload failed');}
@@ -4264,8 +4290,8 @@ function renderDashboard() {
         <button class="dash-view-tab ${_dashView==='analytics'?'active':''}" onclick="dashSetView('analytics')">📊 Sales Analytics</button>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
-        <a href="/api/backup" class="dash-backup-link" title="Download a zip of all estimates, photos, and settings">💾 Backup</a>
-        <select onchange="dashSetRep(this.value)" class="dash-rep-select">${repOpts}</select>
+        ${_meIsAdmin() ? `<a href="/api/backup" class="dash-backup-link" title="Download a zip of all estimates, photos, and settings">💾 Backup</a>` : ''}
+        ${_meCanViewAll() ? `<select onchange="dashSetRep(this.value)" class="dash-rep-select">${repOpts}</select>` : ''}
       </div>
     </div>
     ${_dashView === 'analytics' ? renderDashboardAnalytics(list, _dashData) : `
@@ -5023,9 +5049,15 @@ function showShareModal(fullUrl, relUrl) {
       </div>
     </div>` : '';
 
+  const custEmail = (S.customer && S.customer.email || '').trim();
   document.getElementById('share-modal-body').innerHTML = `
     ${sigBlock}
     ${localhostWarning}
+    ${!sig && custEmail ? `
+    <button class="btn-primary" id="share-email-btn" style="width:100%;padding:13px;font-size:14px"
+      onclick="emailEstimateLink()">
+      ✉️ Email link to ${esc(custEmail)}
+    </button>` : ''}
     ${navigator.share ? `
     <button class="share-native-btn" onclick="doNativeShare('${esc(fullUrl)}','${esc((S.customer&&S.customer.name)||'')}')">
       📤 Send Link — Text, Email, AirDrop…
@@ -5048,6 +5080,7 @@ function showShareModal(fullUrl, relUrl) {
       <span>Waiting for customer signature</span>
       <button class="btn-secondary" style="margin-left:auto" onclick="checkSignatureStatus()">Check Status</button>
     </div>` : ''}
+    ${_meIsAdmin() ? `
     <div class="share-puburl-section">
       <div class="share-puburl-label">Public / ngrok URL override <span style="font-weight:400;opacity:.7">(optional — changes all future share links)</span></div>
       <div class="share-url-row">
@@ -5056,12 +5089,32 @@ function showShareModal(fullUrl, relUrl) {
           value="${esc(window._serverPublicUrl||'')}">
         <button class="share-copy-btn" style="background:#1a3a5c" onclick="savePublicUrl()">Save</button>
       </div>
-    </div>
+    </div>` : ''}
     <div style="text-align:center">
       <a href="${esc(relUrl||fullUrl)}" target="_blank" class="share-preview-link">Preview customer view ↗</a>
     </div>`;
 
   document.getElementById('share-modal').classList.remove('hidden');
+}
+
+async function emailEstimateLink() {
+  const btn = document.getElementById('share-email-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    if (dirty) await saveEstimate();
+    const r = await fetch(`/api/estimates/${S.estimate_id}/send-email`, { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.error || `Send failed (${r.status})`);
+    if (d.full_url && !S.share_token) {
+      // Server just generated the token as part of sending
+      S.share_token = d.full_url.split('/sign/')[1] || S.share_token;
+    }
+    if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); }
+    if (btn) { btn.textContent = `✓ Sent to ${d.sent_to}`; btn.style.background = '#16a34a'; }
+  } catch (e) {
+    alert('Could not send email: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '✉️ Email link to customer'; }
+  }
 }
 
 async function savePublicUrl() {
@@ -5587,7 +5640,10 @@ function buildPrintContent() {
     let costImmediate=0,costSoon=0,costMonitor=0;
     enabledSections.forEach(s=>{
       (pc.sections[s.key].recommendations||[]).forEach(r=>{
-        const lo=parseFloat((r.cost_range||'').replace(/[^0-9.]/g,''))||0;
+        // Parse only the FIRST number of a range: "$500–$1,500" → 500
+        // (stripping all non-digits would read it as 5,001,500)
+        const loMatch=(r.cost_range||'').match(/[\d,]+(\.\d+)?/);
+        const lo=loMatch?parseFloat(loMatch[0].replace(/,/g,''))||0:0;
         if(r.priority==='immediate') costImmediate+=lo;
         else if(r.priority==='soon')  costSoon+=lo;
         else                          costMonitor+=lo;

@@ -1,5 +1,5 @@
-const CACHE = 'po-v86';
-const SHELL = ['/', '/static/style.css?v=86', '/static/app.js?v=86', '/static/logo.png'];
+const CACHE = 'po-v87';
+const SHELL = ['/', '/static/style.css?v=87', '/static/app.js?v=87', '/static/logo.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL).catch(() => {})));
@@ -33,25 +33,29 @@ self.addEventListener('fetch', e => {
           const clone = r.clone();
           caches.open(CACHE).then(c => c.put(e.request, clone));
           return r;
-        });
+        }).catch(() => hit);  // offline: fall back to cache if we had one
         return hit || net;
       })
     );
     return;
   }
 
-  // Navigation (HTML pages): network-first, app-shell fallback when offline
+  // Navigation (HTML pages): network-first, app-shell fallback when offline.
+  // NOTE: caches.match() returns a Promise (always truthy), so the fallback
+  // must live inside .then() — `caches.match('/') || response` never falls back.
   e.respondWith(
     fetch(e.request).catch(() =>
-      caches.match('/') ||
-      new Response(
-        '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
-        '<body style="font-family:system-ui,-apple-system,sans-serif;padding:48px 24px;text-align:center;background:#f1f4f8">' +
-        '<img src="/static/logo.png" style="height:64px;margin-bottom:24px"><br>' +
-        '<h2 style="color:#1a3a5c;margin-bottom:8px">You\'re offline</h2>' +
-        '<p style="color:#6b7280">Open the app when you have a connection.</p>' +
-        '</body></html>',
-        { headers: { 'Content-Type': 'text/html' } }
+      caches.match('/').then(hit =>
+        hit ||
+        new Response(
+          '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
+          '<body style="font-family:system-ui,-apple-system,sans-serif;padding:48px 24px;text-align:center;background:#f1f4f8">' +
+          '<img src="/static/logo.png" style="height:64px;margin-bottom:24px"><br>' +
+          '<h2 style="color:#1a3a5c;margin-bottom:8px">You\'re offline</h2>' +
+          '<p style="color:#6b7280">Open the app when you have a connection.</p>' +
+          '</body></html>',
+          { headers: { 'Content-Type': 'text/html' } }
+        )
       )
     )
   );
