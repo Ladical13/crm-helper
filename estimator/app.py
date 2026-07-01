@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import json
 import time
 import uuid
@@ -29,6 +30,11 @@ try:
 except ImportError:
     FPDF = None
 
+try:
+    import pypdf as _pypdf
+except ImportError:
+    _pypdf = None
+
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.environ.get('SESSION_SECRET', secrets.token_hex(32))
 app.config.update(
@@ -45,12 +51,21 @@ app.config.update(
 SIGNUP_CODE = os.environ.get('SIGNUP_CODE', '').strip()
 
 TEAM_MEMBERS = [
-    'aaron','avery','bryan','casey','chris','chris.rollins','clint','cole','dalton',
-    'derik','eric','gabriel','jacob','jeremy','jonathan','kyle','logan',
-    'luke','richard','ryan','shiloh','ted',
+    'avery', 'bryan', 'derik', 'luke', 'phil',
 ]
 
+# Full display names — username → "First Last"
+TEAM_DISPLAY_NAMES = {
+    'avery': 'Avery Schroeder',
+    'bryan': 'Bryan Samsel',
+    'derik': 'Derik Lints',
+    'luke':  'Luke Durnbaugh',
+    'phil':  'Phil Hunt',
+}
+
 def _display_name(username):
+    if username in TEAM_DISPLAY_NAMES:
+        return TEAM_DISPLAY_NAMES[username]
     return ' '.join(p.capitalize() for p in username.replace('.', ' ').split())
 
 # ── User accounts (per-user passwords) ──────────────────────────────────────
@@ -76,8 +91,32 @@ def save_users(users):
     with open(_users_file(), 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=2)
 
+def load_team():
+    """Return [{username, display_name}] from team.json, seeding from hardcoded list on first run."""
+    if os.path.exists(TEAM_CONFIG_FILE):
+        try:
+            with open(TEAM_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return [{'username': u, 'display_name': TEAM_DISPLAY_NAMES.get(u, '')} for u in TEAM_MEMBERS]
+
+def save_team(team):
+    with open(TEAM_CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(team, f, indent=2)
+
+def _get_role(username):
+    """Return 'admin', 'manager', or 'rep' for the given username."""
+    rec = load_users().get(username) or {}
+    role = rec.get('role')
+    if role in ('admin', 'manager', 'rep'):
+        return role
+    if rec.get('is_admin') or username == 'luke':
+        return 'admin'
+    return 'rep'
+
 def _is_admin(username):
-    return bool((load_users().get(username) or {}).get('is_admin'))
+    return _get_role(username) == 'admin'
 
 # ── Default-deny auth guard ─────────────────────────────────────────────────
 # Every request requires a logged-in session EXCEPT the explicit allowlist below.
@@ -89,6 +128,8 @@ PUBLIC_ENDPOINTS = {
     'customer_sign',  # /sign/<token> — public, protected by the 192-bit token
     'serve_upload',   # /uploads/<file> — cover photos shown on the customer view
     'static',         # JS/CSS for the login + app shell (non-sensitive client code)
+    'pwa_manifest',   # /manifest.json — needed for PWA install before login
+    'service_worker', # /sw.js — service worker scope must be public
 }
 
 @app.before_request
@@ -119,8 +160,10 @@ ESTIMATES_DIR = os.path.join(DATA_DIR, 'estimates')
 UPLOADS_DIR   = os.path.join(DATA_DIR, 'uploads')
 ALLOWED_EXT   = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'}
 
-PRICE_BOOK_FILE    = os.path.join(DATA_DIR, 'price_book.json')
-TIER_DEFAULTS_FILE = os.path.join(DATA_DIR, 'tier_defaults.json')
+PRICE_BOOK_FILE      = os.path.join(DATA_DIR, 'price_book.json')
+TIER_DEFAULTS_FILE   = os.path.join(DATA_DIR, 'tier_defaults.json')
+CUSTOMER_NOTES_FILE  = os.path.join(DATA_DIR, 'customer_notes.json')
+TEAM_CONFIG_FILE     = os.path.join(DATA_DIR, 'team.json')
 
 # Optional override for the public-facing base URL (e.g. ngrok or a real domain).
 # Set PUBLIC_URL in environment or in estimator/config.json as {"public_url": "https://..."}
@@ -337,6 +380,7 @@ def me():
         'display_name': _display_name(user) if user else '',
         'email': f'{user}@projectoneroofing.com' if user else '',
         'is_admin': bool(rec.get('is_admin')),
+        'role': _get_role(user) if user else 'rep',
         # True when an admin set a temporary password the user must replace.
         'must_change': bool(rec.get('must_change')),
     })
@@ -348,12 +392,15 @@ def list_users():
     if not _is_admin(session.get('user', '')):
         return jsonify({'error': 'admin only'}), 403
     users = load_users()
+    team  = load_team()
     return jsonify([
-        {'username': u, 'display_name': _display_name(u),
-         'enrolled': bool((users.get(u) or {}).get('pw_hash')),
-         'must_change': bool((users.get(u) or {}).get('must_change')),
-         'is_admin': bool((users.get(u) or {}).get('is_admin'))}
-        for u in TEAM_MEMBERS
+        {'username': m['username'],
+         'display_name': m.get('display_name') or _display_name(m['username']),
+         'enrolled':     bool((users.get(m['username']) or {}).get('pw_hash')),
+         'must_change':  bool((users.get(m['username']) or {}).get('must_change')),
+         'is_admin':     _get_role(m['username']) == 'admin',
+         'role':         _get_role(m['username'])}
+        for m in team
     ])
 
 
@@ -364,7 +411,7 @@ def set_user_password(username):
     if not _is_admin(session.get('user', '')):
         return jsonify({'error': 'admin only'}), 403
     username = (username or '').strip().lower()
-    if username not in TEAM_MEMBERS:
+    if not any(m['username'] == username for m in load_team()):
         return jsonify({'error': 'unknown team member'}), 400
     password = (request.get_json(force=True) or {}).get('password') or ''
     if len(password) < 6:
@@ -393,6 +440,67 @@ def reset_user(username):
     return jsonify({'ok': True, 'reset': username})
 
 
+@app.route('/api/users/<username>/set-role', methods=['POST'])
+def set_user_role(username):
+    """Admin-only: assign a role (admin, manager, rep) to a team member."""
+    if not _is_admin(session.get('user', '')):
+        return jsonify({'error': 'admin only'}), 403
+    username = (username or '').strip().lower()
+    role = (request.get_json(force=True) or {}).get('role', '')
+    if role not in ('admin', 'manager', 'rep'):
+        return jsonify({'error': 'role must be admin, manager, or rep'}), 400
+    users = load_users()
+    rec = users.get(username) or {}
+    rec['role']     = role
+    rec['is_admin'] = (role == 'admin')
+    users[username] = rec
+    save_users(users)
+    return jsonify({'ok': True, 'username': username, 'role': role})
+
+
+@app.route('/api/team', methods=['POST'])
+def add_team_member():
+    """Admin-only: add a new team member."""
+    if not _is_admin(session.get('user', '')):
+        return jsonify({'error': 'admin only'}), 403
+    data         = request.get_json(force=True) or {}
+    username     = (data.get('username') or '').strip().lower().replace(' ', '_')
+    display_name = (data.get('display_name') or '').strip()
+    role         = data.get('role', 'rep')
+    if not username:
+        return jsonify({'error': 'username required'}), 400
+    if role not in ('admin', 'manager', 'rep'):
+        role = 'rep'
+    team = load_team()
+    if any(m['username'] == username for m in team):
+        return jsonify({'error': 'user already exists'}), 409
+    team.append({'username': username, 'display_name': display_name or _display_name(username)})
+    save_team(team)
+    users = load_users()
+    rec = users.get(username) or {}
+    rec['role']     = role
+    rec['is_admin'] = (role == 'admin')
+    users[username] = rec
+    save_users(users)
+    return jsonify({'ok': True, 'username': username}), 201
+
+
+@app.route('/api/team/<username>', methods=['DELETE'])
+def remove_team_member(username):
+    """Admin-only: remove a team member (cannot remove yourself)."""
+    if not _is_admin(session.get('user', '')):
+        return jsonify({'error': 'admin only'}), 403
+    username = (username or '').strip().lower()
+    if username == session.get('user'):
+        return jsonify({'error': 'cannot remove yourself'}), 400
+    team = [m for m in load_team() if m['username'] != username]
+    save_team(team)
+    users = load_users()
+    users.pop(username, None)
+    save_users(users)
+    return jsonify({'ok': True, 'removed': username})
+
+
 @app.route('/api/account/password', methods=['POST'])
 def change_own_password():
     """Any signed-in user sets/replaces their own password."""
@@ -414,6 +522,23 @@ def change_own_password():
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):
     return send_from_directory(UPLOADS_DIR, filename)
+
+
+@app.route('/manifest.json')
+def pwa_manifest():
+    resp = send_from_directory(app.static_folder, 'manifest.json')
+    resp.headers['Content-Type'] = 'application/manifest+json'
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp
+
+
+@app.route('/sw.js')
+def service_worker():
+    resp = send_from_directory(app.static_folder, 'sw.js')
+    resp.headers['Content-Type'] = 'application/javascript'
+    resp.headers['Service-Worker-Allowed'] = '/'
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp
 
 
 # ── Estimates CRUD ─────────────────────────────────────────────────────────
@@ -457,6 +582,7 @@ def list_estimates():
                 'selected_tier':   d.get('selected_tier', 'better'),
                 'salesperson':     d.get('salesperson', ''),
                 'total':           round(_estimate_total(d), 2),
+                'share_token':     d.get('share_token') or '',
                 'sent':            bool(d.get('share_token')),
                 'sent_at':         d.get('sent_at', ''),
                 'first_viewed_at': d.get('first_viewed_at', ''),
@@ -465,6 +591,7 @@ def list_estimates():
                 'signed':          bool(d.get('signature')),
                 'signed_at':       sig.get('signed_at', ''),
                 'updated_at':      d.get('updated_at', ''),
+                'estimate_label':  d.get('estimate_label', ''),
             })
         except Exception:
             pass
@@ -491,7 +618,11 @@ def get_estimate(est_id):
     if not os.path.exists(path):
         return jsonify({'error': 'Not found'}), 404
     with open(path, 'r', encoding='utf-8') as f:
-        return jsonify(json.load(f))
+        d = json.load(f)
+    user = session.get('user', '')
+    if _get_role(user) == 'rep' and d.get('salesperson') != user:
+        return jsonify({'error': 'access denied'}), 403
+    return jsonify(d)
 
 
 # Fields written by the server (sign page, share link, CRM push) that a stale
@@ -525,6 +656,36 @@ def save_estimate(est_id):
     return jsonify({'estimate_id': est_id})
 
 
+@app.route('/api/estimates/<est_id>/duplicate', methods=['POST'])
+def duplicate_estimate(est_id):
+    src = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
+    if not os.path.exists(src):
+        return jsonify({'error': 'Not found'}), 404
+    with open(src, 'r', encoding='utf-8') as f:
+        est = json.load(f)
+    new_id = str(uuid.uuid4())
+    est['estimate_id'] = new_id
+    est['status'] = 'draft'
+    est['share_token'] = None
+    est['signature'] = None
+    est['sent_at'] = None
+    est['first_viewed_at'] = None
+    est['last_viewed_at'] = None
+    est['view_count'] = 0
+    est['created_at'] = datetime.utcnow().isoformat() + 'Z'
+    est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+    c = est.get('customer', {})
+    if c.get('name') and not c['name'].startswith('Copy of '):
+        c['name'] = 'Copy of ' + c['name']
+    dest = os.path.join(ESTIMATES_DIR, f"{new_id}.json")
+    with open(dest, 'w', encoding='utf-8') as f:
+        json.dump(est, f, indent=2)
+    src_dir = os.path.join(UPLOADS_DIR, est_id)
+    if os.path.exists(src_dir):
+        shutil.copytree(src_dir, os.path.join(UPLOADS_DIR, new_id))
+    return jsonify({'estimate_id': new_id})
+
+
 @app.route('/api/estimates/<est_id>', methods=['DELETE'])
 def delete_estimate(est_id):
     path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
@@ -534,6 +695,70 @@ def delete_estimate(est_id):
     if os.path.exists(upload_dir):
         shutil.rmtree(upload_dir)
     return jsonify({'ok': True})
+
+
+@app.route('/api/customer-notes/<path:name>', methods=['GET'])
+def get_customer_notes(name):
+    """Return the customer-level notes string for a given customer name."""
+    try:
+        if os.path.exists(CUSTOMER_NOTES_FILE):
+            with open(CUSTOMER_NOTES_FILE, 'r', encoding='utf-8') as f:
+                notes = json.load(f)
+            return jsonify({'notes': notes.get(name.lower().strip(), '')})
+    except Exception:
+        pass
+    return jsonify({'notes': ''})
+
+
+@app.route('/api/customer-notes/<path:name>', methods=['PUT'])
+def set_customer_notes(name):
+    """Persist customer-level notes for a given customer name."""
+    text = (request.get_json(force=True) or {}).get('notes', '')
+    notes = {}
+    try:
+        if os.path.exists(CUSTOMER_NOTES_FILE):
+            with open(CUSTOMER_NOTES_FILE, 'r', encoding='utf-8') as f:
+                notes = json.load(f)
+    except Exception:
+        pass
+    notes[name.lower().strip()] = text
+    with open(CUSTOMER_NOTES_FILE, 'w', encoding='utf-8') as f:
+        json.dump(notes, f, indent=2)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/estimates/<est_id>/label', methods=['PATCH'])
+def update_estimate_label(est_id):
+    """Quick-patch just the estimate_label field without a full save."""
+    label = (request.get_json(force=True) or {}).get('label', '')
+    path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
+    if not os.path.exists(path):
+        return jsonify({'error': 'Not found'}), 404
+    with open(path, 'r', encoding='utf-8') as f:
+        est = json.load(f)
+    est['estimate_label'] = label
+    est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(est, f, indent=2)
+    return jsonify({'ok': True, 'label': label})
+
+
+@app.route('/api/estimates/<est_id>/status', methods=['PATCH'])
+def update_estimate_status(est_id):
+    VALID = {'draft', 'sent', 'accepted', 'declined'}
+    status = (request.json or {}).get('status')
+    if status not in VALID:
+        return jsonify({'error': 'Invalid status'}), 400
+    path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
+    if not os.path.exists(path):
+        return jsonify({'error': 'Not found'}), 404
+    with open(path, 'r', encoding='utf-8') as f:
+        est = json.load(f)
+    est['status'] = status
+    est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(est, f, indent=2)
+    return jsonify({'ok': True, 'status': status})
 
 
 # ── Photo uploads ──────────────────────────────────────────────────────────
@@ -561,6 +786,83 @@ def delete_photo(est_id, filename):
     if os.path.exists(path):
         os.remove(path)
     return jsonify({'ok': True})
+
+
+# ── RoofR PDF import ───────────────────────────────────────────────────────
+
+def _parse_roofr_lf(s):
+    """Convert RoofR linear-foot string ('358ft 4in') to decimal feet."""
+    m = re.match(r'(\d+)ft\s+(\d+)in', s.strip())
+    if m:
+        return round(int(m.group(1)) + int(m.group(2)) / 12, 2)
+    m = re.match(r'(\d[\d,]*)ft', s.replace(',', ''))
+    return float(m.group(1)) if m else 0.0
+
+def _parse_roofr_pdf(file_bytes):
+    if _pypdf is None:
+        raise RuntimeError('pypdf not installed')
+    reader = _pypdf.PdfReader(io.BytesIO(file_bytes))
+    full_text = '\n'.join(p.extract_text() or '' for p in reader.pages)
+
+    def find_lf(label):
+        # [\s:]+ handles both "Label 358ft 4in" and "Label: 358ft 4in" formats
+        m = re.search(rf'{re.escape(label)}[\s:]+(\d+ft\s+\d+in)', full_text)
+        return _parse_roofr_lf(m.group(1)) if m else None
+
+    sq = re.search(r'Squares[\s:]+([\d.]+)', full_text)
+    squares = float(sq.group(1)) if sq else None
+
+    # "Hips + ridges" is the precomputed combined value in the Report Summary
+    ridge_hip_m = re.search(r'Hips\s*\+\s*ridges[\s:]+(\d+ft\s+\d+in)', full_text)
+    ridge_hip = _parse_roofr_lf(ridge_hip_m.group(1)) if ridge_hip_m else None
+    if ridge_hip is None:
+        h = find_lf('Total hips') or 0
+        r = find_lf('Total ridges') or 0
+        ridge_hip = round(h + r, 2) or None
+
+    eave   = find_lf('Total eaves')
+    valley = find_lf('Total valleys')
+    rake   = find_lf('Total rakes')
+    step   = find_lf('Total step flashing')
+
+    addr_m = re.search(
+        r'(\d+\s+[^\n,]+),\s+([A-Za-z][A-Za-z\s]+),\s+([A-Z]{2})\s+(\d{5})',
+        full_text)
+
+    meas = {k: v for k, v in {
+        'roof_squares':  squares,
+        'waste_pct':     10,
+        'ridge_hip_lf':  ridge_hip,
+        'eave_lf':       eave,
+        'valley_lf':     valley,
+        'rake_lf':       rake,
+        'step_flash_lf': step,
+        'gutter_lf':     eave,
+    }.items() if v is not None}
+
+    addr = {}
+    if addr_m:
+        addr = {
+            'street': addr_m.group(1).strip(),
+            'city':   addr_m.group(2).strip(),
+            'state':  addr_m.group(3),
+            'zip':    addr_m.group(4),
+        }
+
+    return {'measurements': meas, 'address': addr}
+
+@app.route('/api/parse-roofr', methods=['POST'])
+def parse_roofr():
+    f = request.files.get('file')
+    if not f or not f.filename.lower().endswith('.pdf'):
+        return jsonify({'error': 'Please upload a PDF file.'}), 400
+    try:
+        data = _parse_roofr_pdf(f.read())
+    except Exception as e:
+        return jsonify({'error': f'Could not read PDF: {e}'}), 400
+    if not data['measurements'].get('roof_squares'):
+        return jsonify({'error': "Couldn’t find RoofR measurements in this PDF. Make sure it’s a RoofR report."}), 422
+    return jsonify(data)
 
 
 # ── CRM proxy ──────────────────────────────────────────────────────────────
@@ -688,6 +990,236 @@ def calc_tier_total(est, tier):
     return total
 
 
+@app.route('/api/analytics')
+def get_analytics():
+    """Per-trade and per-rep revenue, cost, and margin across all estimates."""
+    TRADE_NAMES = ['roofing', 'siding', 'windows', 'gutters', 'other']
+    by_trade = {}
+    by_rep   = {}
+    monthly  = {}  # 'YYYY-MM' → cumulative signed revenue
+
+    # ── New aggregations ──────────────────────────────────────────────
+    funnel = {'total': 0, 'sent': 0, 'viewed': 0, 'signed': 0, 'declined': 0}
+    pipeline_aging = {
+        'fresh':  {'count': 0, 'value': 0.0},   # 0–3 days
+        'active': {'count': 0, 'value': 0.0},   # 4–14 days
+        'stale':  {'count': 0, 'value': 0.0},   # 15–30 days
+        'cold':   {'count': 0, 'value': 0.0},   # 30+ days
+    }
+    by_type = {
+        'retail':    {'revenue': 0.0, 'count': 0, 'pipeline': 0.0},
+        'insurance': {'revenue': 0.0, 'count': 0, 'pipeline': 0.0},
+    }
+    top_cities   = {}   # city → signed revenue
+    ytd_revenue  = 0.0
+    all_dtc      = []   # company-wide days-to-close list
+    now_dt       = datetime.utcnow()
+    ytd_cutoff   = now_dt.replace(month=1, day=1, hour=0, minute=0, second=0)
+
+    def _rate(pricing, tk, tier):
+        ovr = pricing.get('per_trade_overrides', {})
+        v   = ovr.get(tk)
+        if v is not None:
+            return float(v)
+        tr = pricing.get('tier_rates', {})
+        tv = tr.get(tier) if tr else None
+        if tv is not None:
+            return float(tv)
+        return float(pricing.get('global_rate') or 35)
+
+    def _sell(cost, r, mode):
+        if mode == 'margin':
+            return cost / (1 - r / 100) if r < 100 else 0
+        return cost * (1 + r / 100)
+
+    try:
+        fnames = sorted(os.listdir(ESTIMATES_DIR))
+    except OSError:
+        return jsonify({'by_trade': {}, 'by_rep': {}})
+
+    for fname in fnames:
+        if not fname.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(ESTIMATES_DIR, fname), 'r', encoding='utf-8') as f:
+                est = json.load(f)
+        except Exception:
+            continue
+
+        is_signed  = bool(est.get('signature'))
+        is_sent    = bool(est.get('share_token'))
+        sp         = (est.get('salesperson') or '').strip()
+        if not sp:
+            continue  # skip unassigned estimates
+
+        # ── Funnel counting ───────────────────────────────────────────
+        funnel['total'] += 1
+        if is_sent:   funnel['sent']    += 1
+        if est.get('first_viewed_at'): funnel['viewed'] += 1
+        if is_signed: funnel['signed']  += 1
+        if est.get('status') == 'declined': funnel['declined'] += 1
+
+        # ── Pipeline aging (open, sent estimates only) ────────────────
+        if is_sent and not is_signed and est.get('status') != 'declined':
+            sent_dt_str = est.get('sent_at') or ''
+            est_total   = _estimate_total(est)
+            try:
+                sent_dt = datetime.fromisoformat(sent_dt_str.replace('Z','').replace('+00:00',''))
+                age_days = (now_dt - sent_dt).days
+                bucket = 'cold' if age_days > 30 else 'stale' if age_days > 14 else 'active' if age_days > 3 else 'fresh'
+                pipeline_aging[bucket]['count'] += 1
+                pipeline_aging[bucket]['value'] += est_total
+            except Exception:
+                pass
+
+        # ── Revenue by type ───────────────────────────────────────────
+        est_type = est.get('estimate_type', 'retail') or 'retail'
+        if est_type not in by_type:
+            by_type[est_type] = {'revenue': 0.0, 'count': 0, 'pipeline': 0.0}
+        est_total = _estimate_total(est)
+        if is_signed:
+            by_type[est_type]['revenue'] += est_total
+            by_type[est_type]['count']   += 1
+        elif is_sent:
+            by_type[est_type]['pipeline'] += est_total
+
+        # ── YTD & city ───────────────────────────────────────────────
+        if is_signed:
+            signed_dt_str = (est.get('signature') or {}).get('signed_at') or ''
+            try:
+                signed_dt = datetime.fromisoformat(signed_dt_str.replace('Z','').replace('+00:00',''))
+                if signed_dt >= ytd_cutoff:
+                    ytd_revenue += est_total
+            except Exception:
+                pass
+            city = (est.get('customer') or {}).get('address', {}).get('city', '').strip()
+            if city:
+                top_cities[city] = top_cities.get(city, 0.0) + est_total
+
+        tier       = est.get('selected_tier', 'better')
+        pricing    = est.get('pricing', {})
+        mode       = pricing.get('mode', 'margin')
+
+        if sp not in by_rep:
+            by_rep[sp] = {
+                'sent': 0, 'signed': 0, 'revenue': 0, 'cost': 0,
+                'pipeline': 0, 'pipeline_count': 0,
+                'days_to_close': [],  # list of floats for averaging
+                'stale': 0,           # sent 3+ days, not signed
+                'deals': [],          # individual deal totals for distribution
+            }
+        if is_sent:
+            by_rep[sp]['sent'] += 1
+            # Stale = sent 3+ days and not signed
+            sent_at = est.get('sent_at') or ''
+            if sent_at and not is_signed:
+                try:
+                    days_sent = (datetime.utcnow() - datetime.fromisoformat(sent_at.replace('Z','+00:00').replace('+00:00',''))).days
+                    if days_sent >= 3:
+                        by_rep[sp]['stale'] += 1
+                except Exception:
+                    pass
+        if is_signed:
+            by_rep[sp]['signed'] += 1
+            # Days to close
+            sent_at   = est.get('sent_at') or ''
+            signed_at = (est.get('signature') or {}).get('signed_at') or ''
+            if sent_at and signed_at:
+                try:
+                    d1 = datetime.fromisoformat(sent_at.replace('Z','').replace('+00:00',''))
+                    d2 = datetime.fromisoformat(signed_at.replace('Z','').replace('+00:00',''))
+                    by_rep[sp]['days_to_close'].append(max(0, (d2 - d1).days))
+                except Exception:
+                    pass
+
+        for tk in TRADE_NAMES:
+            td = est.get('trades', {}).get(tk, {})
+            if not td.get('enabled') or not td.get('line_items'):
+                continue
+            tmode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+            r     = _rate(pricing, tk, tier)
+            tsell = 0.0
+            tcost = 0.0
+
+            for item in td['line_items']:
+                qty = float(item.get('quantity') or 0)
+                if qty <= 0:
+                    continue
+                if tmode == 'simple':
+                    tsell += float(item.get('unit_price') or 0) * qty
+                    tcost += float(item.get('unit_cost')  or 0) * qty
+                else:
+                    t    = (item.get('tiers') or {}).get(tier, {})
+                    if t.get('included') is False:
+                        continue
+                    cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
+                    tsell += _sell(cost, r, mode) * qty
+                    tcost += cost * qty
+
+            if tk not in by_trade:
+                by_trade[tk] = {'revenue':0,'cost':0,'pipeline':0,'job_count':0,'pipeline_count':0}
+
+            if is_signed:
+                by_trade[tk]['revenue']   += tsell
+                by_trade[tk]['cost']      += tcost
+                by_trade[tk]['job_count'] += 1
+                by_rep[sp]['revenue']     += tsell
+                by_rep[sp]['cost']        += tcost
+                # Monthly revenue bucketing
+                signed_at = (est.get('signature') or {}).get('signed_at') or ''
+                if signed_at:
+                    try:
+                        month_key = signed_at[:7]  # 'YYYY-MM'
+                        monthly[month_key] = monthly.get(month_key, 0.0) + tsell
+                    except Exception:
+                        pass
+                by_rep[sp]['deals'].append(tsell)
+                all_dtc.extend(by_rep[sp].get('days_to_close', [])[-1:])  # company wide
+            elif is_sent:
+                by_trade[tk]['pipeline']       += tsell
+                by_trade[tk]['pipeline_count'] += 1
+                by_rep[sp]['pipeline']         += tsell
+                by_rep[sp]['pipeline_count']   += 1
+
+    def _margin(rev, cost):
+        return round((rev - cost) / rev * 100, 1) if rev > 0 and cost > 0 else None
+
+    for d in by_trade.values():
+        d['margin_pct'] = _margin(d['revenue'], d['cost'])
+    for d in by_rep.values():
+        dtc = d.pop('days_to_close')
+        deals = d.pop('deals')
+        d['margin_pct']       = _margin(d['revenue'], d['cost'])
+        d['close_rate']       = round(d['signed'] / d['sent'] * 100) if d['sent'] > 0 else 0
+        d['avg_days_to_close'] = round(sum(dtc) / len(dtc), 1) if dtc else None
+        d['avg_deal']          = round(d['revenue'] / d['signed'], 0) if d['signed'] > 0 else 0
+
+    sorted_months = sorted(monthly.items())[-12:]
+    top_cities_list = sorted(top_cities.items(), key=lambda x: -x[1])[:8]
+
+    # Re-collect all days-to-close across all reps
+    all_dtc_flat = []
+    for d in by_rep.values():
+        pass  # already done per-rep; collect from finalized data
+
+    avg_dtc_all = None
+    dtc_all = [d['avg_days_to_close'] for d in by_rep.values() if d.get('avg_days_to_close') is not None]
+    if dtc_all:
+        avg_dtc_all = round(sum(dtc_all) / len(dtc_all), 1)
+
+    return jsonify({
+        'by_trade':       by_trade,
+        'by_rep':         by_rep,
+        'monthly':        sorted_months,
+        'funnel':         funnel,
+        'pipeline_aging': pipeline_aging,
+        'by_type':        by_type,
+        'top_cities':     top_cities_list,
+        'ytd_revenue':    round(ytd_revenue, 2),
+        'avg_days_to_close': avg_dtc_all,
+    })
+
+
 def render_line_items(est, tier=None):
     """Build trade line-item tables for customer view. Returns (html, grand_total)."""
     if tier is None:
@@ -742,11 +1274,9 @@ def render_line_items(est, tier=None):
               <td class="cvn">{he(item.get("name",""))}
                 {'<div class="cvd">'+he(desc)+'</div>' if desc else ''}</td>
               <td class="cvc">{qty:g}</td>
-              <td class="cvc">{he(item.get("unit",""))}</td>
-              <td class="cvr">{fc(sp)}</td>
-              <td class="cvr">{fc(line)}</td></tr>''')
+              <td class="cvc">{he(item.get("unit",""))}</td></tr>''')
         if hidden_count:
-            rows.append(f'<tr><td colspan="5" class="cvhidden-note">Additional materials &amp; supplies included in total</td></tr>')
+            rows.append(f'<tr><td colspan="3" class="cvhidden-note">Additional materials &amp; supplies included in total</td></tr>')
         if not rows:
             continue  # nothing priced to show the customer for this trade
         gtotal += sub
@@ -755,10 +1285,9 @@ def render_line_items(est, tier=None):
           <div class="cvtrade-hd">{lbl}</div>
           <table class="cvt"><thead><tr>
             <th>Description</th><th class="cvth-c">Qty</th>
-            <th class="cvth-c">Unit</th><th class="cvth-r">Unit Price</th>
-            <th class="cvth-r">Total</th></tr></thead>
+            <th class="cvth-c">Unit</th></tr></thead>
           <tbody>{''.join(rows)}</tbody>
-          <tfoot><tr><td colspan="4" class="cvsub-l">{lbl} Subtotal</td>
+          <tfoot><tr><td colspan="2" class="cvsub-l">{lbl} Subtotal</td>
             <td class="cvr cvsub">{fc(sub)}</td></tr></tfoot>
           </table></div>''')
 
@@ -891,7 +1420,7 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cv-tier-check{font-size:11px;font-weight:700;color:#6b7280;border:1px solid #d1d5db;border-radius:20px;
   padding:3px 9px;display:inline-block;margin-top:2px;transition:all .15s}
 .cv-tier-selected .cv-tier-check{background:#6b7280;color:#fff}
-@media(max-width:600px){.cvgrid{grid-template-columns:1fr}.cvpkg-total{font-size:26px}.cv-tier-cards{grid-template-columns:1fr}}
+@media(max-width:600px){.cvgrid{grid-template-columns:1fr}.cvpkg-total{font-size:26px}.cv-tier-cards{grid-template-columns:1fr}.cvinput{font-size:16px}.cvinput:focus{font-size:16px}}
 @media print{.cv-print-btn{display:none}body{background:#fff}.cert{border-width:1.5pt;page-break-inside:avoid}}
 """
 
@@ -1150,16 +1679,20 @@ def _build_insurance_cv(est, token):
 
 
 def _all_trades_simple(est):
-    """Return True when every enabled non-insurance trade is in simple mode."""
+    """Return True when every enabled non-insurance trade is in simple mode.
+    Requires at least one enabled trade — pure insurance estimates have no
+    retail trades and must not accidentally match this check."""
     trades = est.get('trades', {})
+    found_any = False
     for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
         td = trades.get(tk, {})
         if not td.get('enabled') or not td.get('line_items'):
             continue
+        found_any = True
         trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
         if trade_mode != 'simple':
             return False
-    return True
+    return found_any
 
 
 def _build_simple_retail_cv(est, token):
@@ -1248,8 +1781,10 @@ def _build_simple_retail_cv(est, token):
 
 
 def build_customer_view(est, token):
-    # Branch: insurance estimates get a simpler, no-tier-selection view
-    if est.get('estimate_type') == 'insurance':
+    # Branch: insurance estimates — explicit type OR insurance trade is enabled
+    ins_td = est.get('trades', {}).get('insurance', {})
+    is_insurance = (est.get('estimate_type') == 'insurance') or ins_td.get('enabled', False)
+    if is_insurance:
         return _build_insurance_cv(est, token)
 
     # Branch: all enabled trades are simple mode — skip tier selection
@@ -1597,7 +2132,9 @@ def _send_via_sendgrid_api(api_key, subject, html_body, to_addr, cc=None, attach
     smtp_from = (os.environ.get('SMTP_FROM') or os.environ.get('SMTP_USER') or '').strip()
     from_name, from_email = parseaddr(smtp_from)
     if not from_email:
-        from_email = smtp_from
+        # Fallback so SendGrid doesn't reject the request due to missing sender
+        from_email = 'noreply@projectoneroofing.com'
+        from_name  = 'Project One Roofing'
 
     personalization = {'to': [{'email': to_addr}]}
     if cc:
@@ -1722,11 +2259,7 @@ def send_view_notification(est):
 
 
 def send_signature_notification(est):
-    """Email the salesperson when a customer signs. Requires SMTP_HOST env var."""
-    smtp_host = os.environ.get('SMTP_HOST', '').strip()
-    if not smtp_host:
-        return  # SMTP not configured — silent skip
-
+    """Email the salesperson when a customer signs."""
     notify_cc = os.environ.get('NOTIFY_CC', '').strip()  # optional extra CC
 
     sp = (est.get('salesperson') or '').strip()
@@ -1734,6 +2267,13 @@ def send_signature_notification(est):
         print('[notify] No salesperson on estimate — skipping notification')
         return
     to_addr = f'{sp}@projectoneroofing.com'
+
+    # Diagnostic: log what credentials are available so failures are visible in Railway logs
+    _api_key = os.environ.get('SENDGRID_API_KEY', '').strip()
+    if not _api_key and os.environ.get('SMTP_USER', '').strip() == 'apikey':
+        _api_key = os.environ.get('SMTP_PASS', '').strip()
+    _from = os.environ.get('SMTP_FROM', '').strip()
+    print(f'[notify] Sending signature email to {to_addr} | api_key_set={bool(_api_key)} | from={_from!r}')
 
     sig      = est.get('signature', {}) or {}
     c        = est.get('customer', {})
@@ -2585,6 +3125,7 @@ def get_pricebook():
     pb = _load_price_book()
     pb.setdefault('intros', [])
     pb.setdefault('materials', {})
+    pb.setdefault('presets', {})   # brand preset bundles, keyed by trade
     return jsonify(pb)
 
 
@@ -2808,6 +3349,90 @@ def _build_backup_zip(include_uploads=True):
                 except OSError:
                     pass
     return buf.getvalue()
+
+
+@app.route('/api/test-notification', methods=['POST'])
+def test_notification():
+    """Send a test email to the currently logged-in rep to verify notification delivery."""
+    user = session.get('user', '')
+    if not user:
+        return jsonify({'error': 'not logged in'}), 401
+    to_addr = f'{user}@projectoneroofing.com'
+    ok = _send_email(
+        f'🔔 Test notification — Project One Estimator',
+        f'<p style="font-family:system-ui,sans-serif;padding:24px">This is a test notification sent to <strong>{to_addr}</strong>. '
+        f'If you received this, signature notifications are working correctly.</p>',
+        to_addr
+    )
+    return jsonify({'ok': bool(ok), 'sent_to': to_addr})
+
+
+@app.route('/api/find-estimate')
+def find_estimate():
+    """Admin: find estimates by approximate total — helps recover data after accidental overwrites."""
+    near = float(request.args.get('total', 688))
+    tolerance = float(request.args.get('tol', 50))
+    result = []
+    try:
+        for fname in sorted(os.listdir(ESTIMATES_DIR)):
+            if not fname.endswith('.json'): continue
+            try:
+                with open(os.path.join(ESTIMATES_DIR, fname), 'r', encoding='utf-8') as f:
+                    d = json.load(f)
+                t = _estimate_total(d)
+                if abs(t - near) <= tolerance:
+                    c = d.get('customer', {})
+                    a = c.get('address', {})
+                    result.append({
+                        'estimate_id':  d.get('estimate_id', ''),
+                        'customer':     c.get('name', ''),
+                        'phone':        c.get('phone', ''),
+                        'email':        c.get('email', ''),
+                        'street':       a.get('street', ''),
+                        'city':         a.get('city', ''),
+                        'state':        a.get('state', ''),
+                        'salesperson':  d.get('salesperson', ''),
+                        'total':        round(t, 2),
+                        'date':         d.get('estimate_date', ''),
+                        'status':       d.get('status', ''),
+                        'updated_at':   d.get('updated_at', ''),
+                        'notes_internal': (d.get('notes_internal') or '')[:200],
+                    })
+            except Exception:
+                pass
+    except OSError:
+        pass
+    result.sort(key=lambda x: abs(x['total'] - near))
+    return jsonify(result)
+
+
+@app.route('/api/signed-estimates')
+def list_signed_estimates():
+    """Admin: list all signed estimates so phantom ones can be identified and deleted."""
+    result = []
+    try:
+        for fname in sorted(os.listdir(ESTIMATES_DIR)):
+            if not fname.endswith('.json'):
+                continue
+            try:
+                with open(os.path.join(ESTIMATES_DIR, fname), 'r', encoding='utf-8') as f:
+                    d = json.load(f)
+                if d.get('signature'):
+                    sig = d.get('signature', {})
+                    c   = d.get('customer', {})
+                    result.append({
+                        'estimate_id': d.get('estimate_id', ''),
+                        'customer':    c.get('name', '(no name)'),
+                        'salesperson': d.get('salesperson', ''),
+                        'total':       round(_estimate_total(d), 2),
+                        'signed_at':   sig.get('signed_at', ''),
+                        'status':      d.get('status', ''),
+                    })
+            except Exception:
+                pass
+    except OSError:
+        pass
+    return jsonify(result)
 
 
 @app.route('/api/backup')

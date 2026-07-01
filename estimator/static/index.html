@@ -2,9 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Project One Roofing — Estimate Builder</title>
-  <link rel="stylesheet" href="/static/style.css?v=24">
+  <!-- PWA / iPhone home screen support -->
+  <meta name="theme-color" content="#1a3a5c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Project One">
+  <link rel="apple-touch-icon" href="/static/logo.png">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="/static/style.css?v=86">
 </head>
 <body>
 
@@ -18,6 +25,7 @@
   <div class="header-right">
     <span id="save-indicator" class="save-indicator"></span>
     <div class="header-desktop-btns">
+      <button onclick="switchPage('home')" class="btn-home" title="Home">🏠</button>
       <button onclick="openDashboard()" class="btn-dashboard">📊 Dashboard</button>
       <button onclick="newEstimateAction()">New</button>
       <button onclick="openEstimate()">Open</button>
@@ -35,14 +43,18 @@
     </div>
   </div>
   <div id="header-overflow-menu" class="header-overflow-menu">
+    <button onclick="switchPage('home');closeMoreMenu()">🏠 Home</button>
     <button onclick="openDashboard();closeMoreMenu()">📊 Dashboard</button>
+    <button onclick="switchPage('home');closeMoreMenu();setTimeout(()=>document.getElementById('home-cust-search')?.focus(),200)">📁 Customer Search</button>
     <button onclick="newEstimateAction();closeMoreMenu()">New Estimate</button>
     <button onclick="openEstimate();closeMoreMenu()">Open</button>
-    <button onclick="openPriceBook();closeMoreMenu()">📋 Price Book</button>
+    <button id="mm-pricebook" onclick="openPriceBook();closeMoreMenu()">📋 Price Book</button>
     <button onclick="shareEstimate();closeMoreMenu()">Send / Sign</button>
     <button onclick="doPrint();closeMoreMenu()">Print / PDF</button>
-    <button onclick="openSettings();closeMoreMenu()">⚙ Settings</button>
+    <button id="mm-settings" onclick="openSettings();closeMoreMenu()">⚙ Settings</button>
     <button onclick="openLoginsModal();closeMoreMenu()">🔑 Passwords &amp; Logins</button>
+    <button onclick="document.getElementById('roofr-pdf-input').click();closeMoreMenu()">📐 RoofR Import</button>
+    <button onclick="openOrderSheet();closeMoreMenu()">📋 Order Sheet</button>
     <a href="/logout" class="overflow-signout">Sign Out</a>
   </div>
 </header>
@@ -56,7 +68,12 @@
   <aside id="sidebar">
 
     <section class="sidebar-section" id="section-customer">
-      <h3>Customer</h3>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <h3 style="margin:0">Customer</h3>
+        <button class="cf-open-btn" id="cf-open-btn" style="display:none"
+          onclick="openCustomerFile(S.customer.name)" title="View customer file">📁 Customer File</button>
+      </div>
+      <div id="sent-lock-banner" class="sent-lock-banner" style="display:none"></div>
       <div class="crm-search-wrap">
         <input type="text" id="crm-search" placeholder="Search CRM jobs — name / job # / address…" autocomplete="off">
         <div id="crm-dropdown" class="crm-dropdown hidden"></div>
@@ -138,14 +155,11 @@
         <button class="toggle-btn" id="mode-margin" onclick="setPricingMode('margin')">Margin %</button>
         <button class="toggle-btn" id="mode-markup" onclick="setPricingMode('markup')">Markup %</button>
       </div>
-      <div class="field-group">
-        <label>Global Rate: <span id="global-rate-display">35%</span></label>
-        <div style="display:flex;gap:6px;align-items:center">
-          <input type="range" id="global-rate-slider" min="0" max="70" step="0.5" style="flex:1">
-          <input type="number" id="global-rate-input" min="0" max="70" step="0.5" style="width:56px">
-        </div>
-      </div>
-      <div id="trade-overrides"></div>
+      <div id="tier-rates" class="tier-rates"></div>
+      <details class="trade-ov-details">
+        <summary>Per-trade override (advanced)</summary>
+        <div id="trade-overrides"></div>
+      </details>
     </section>
 
     <section class="sidebar-section" id="section-tier">
@@ -206,8 +220,17 @@
       <button class="page-btn" data-page="contract" onclick="switchPage('contract')">
         <span class="pg-num">7</span>Contract
       </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="report" onclick="switchPage('report')">
+        <span class="pg-num">8</span>Condition
+      </button>
     </nav>
     <div id="print-pages-bar"></div>
+
+    <!-- ── Home screen ───────────────────────────────────────────── -->
+    <div id="page-home" class="page page-home" style="display:none">
+      <div id="home-content"></div>
+    </div>
 
     <!-- ── Page 1: Cover ──────────────────────────────────────────── -->
     <div id="page-cover" class="page"></div>
@@ -239,6 +262,12 @@
 
     <!-- ── Page 4: Pricing (per-trade line items) ────────────────── -->
     <div id="page-pricing" class="page" style="display:none">
+      <div id="pricing-margin-strip" class="pricing-margin-strip">
+        <span id="pricing-margin-mode-lbl" class="pricing-margin-lbl">Margin</span>
+        <input type="range" id="pricing-margin-slider" min="0" max="70" step="0.5" value="35">
+        <span id="pricing-margin-display" class="pricing-margin-val">35%</span>
+        <input type="number" id="pricing-margin-input" min="0" max="99" step="0.5" value="35">
+      </div>
       <div id="trade-tabs">
         <div class="tab-bar" id="tab-bar"></div>
         <div id="trade-content"></div>
@@ -262,6 +291,11 @@
         </div>
       </div>
       <div id="contract-section" class="panel"></div>
+    </div>
+
+    <!-- ── Page 8: Roof Health Report ───────────────────────────────── -->
+    <div id="page-report" class="page" style="display:none">
+      <div id="roof-health-content"></div>
     </div>
 
   </main>
@@ -332,10 +366,11 @@
         <label>Default Waste % <span class="note-tag">applied to new estimates</span></label>
         <input type="number" id="settings-waste" min="0" max="50" step="1">
       </div>
-      <div class="settings-footer">
-        <button class="btn-secondary" onclick="closeSettings()">Cancel</button>
-        <button class="btn-primary" onclick="saveSettings()">✓ Save Settings</button>
-      </div>
+    </div>
+    <div class="settings-footer">
+      <button id="test-notif-btn" class="btn-secondary" onclick="testSignatureNotification()" style="margin-right:auto">📧 Test Email Notification</button>
+      <button class="btn-secondary" onclick="closeSettings()">Cancel</button>
+      <button class="btn-primary" onclick="saveSettings()">✓ Save Settings</button>
     </div>
   </div>
 </div>
@@ -416,12 +451,51 @@
   </div>
 </div>
 
+<!-- ── Order Sheet modal ─────────────────────────────────────────────── -->
+<div id="order-sheet-modal" class="modal hidden" onclick="maybeCloseOrderSheet(event)">
+  <div class="modal-box order-sheet-modal-box">
+    <div class="modal-header">
+      <h2>📋 Order Sheet</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn-secondary" onclick="printOrderSheet()">🖨 Print</button>
+        <button onclick="closeOrderSheet()" class="modal-close">×</button>
+      </div>
+    </div>
+    <div id="order-sheet-body" style="padding:18px 22px;overflow:auto;flex:1"></div>
+  </div>
+</div>
+
+<!-- ── Customer File modal ───────────────────────────────────────────── -->
+<div id="customer-file-modal" class="modal hidden" onclick="maybeCloseCustomerFile(event)">
+  <div class="modal-box cf-modal-box">
+    <div class="modal-header">
+      <h2>📁 Customer File</h2>
+      <button onclick="closeCustomerFile()" class="modal-close">×</button>
+    </div>
+    <div id="customer-file-body" class="cf-body"></div>
+  </div>
+</div>
+
 <!-- ── Print-only content ────────────────────────────────────────────── -->
 <div id="print-content"></div>
 
 <!-- hidden input for direct cover-photo upload -->
 <input type="file" id="cover-photo-input" accept="image/*" style="display:none">
 
-<script src="/static/app.js?v=24"></script>
+<!-- hidden input for RoofR PDF import -->
+<input type="file" id="roofr-pdf-input" accept=".pdf" style="display:none" onchange="importRoofrPdf(this)">
+
+<!-- ── RoofR Import preview modal ────────────────────────────────────── -->
+<div id="roofr-modal" class="modal hidden" onclick="maybeCloseRoofrModal(event)">
+  <div class="modal-box roofr-modal-box">
+    <div class="modal-header">
+      <h2>📐 RoofR Measurements</h2>
+      <button onclick="closeRoofrModal()" class="modal-close">×</button>
+    </div>
+    <div id="roofr-modal-body" class="roofr-modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/app.js?v=86"></script>
 </body>
 </html>
