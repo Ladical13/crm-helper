@@ -29,8 +29,13 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 /* Remove iOS gray tap flash on every touch */
 * { -webkit-tap-highlight-color: rgba(0,0,0,0); }
-/* Let our own styles control inputs — prevents iOS rounding/padding overrides */
-button, input, select, textarea { -webkit-appearance: none; appearance: none; }
+/* Let our own styles control inputs — prevents iOS rounding/padding overrides.
+   Checkboxes/radios are excluded: appearance:none on them removes the native
+   box with no replacement drawn in, making every plain checkbox in the app
+   invisible (still clickable, just blank) — see .checkbox-label, .sr-toggle,
+   role checkboxes, etc. which don't build a custom box of their own. */
+button, input:not([type="checkbox"]):not([type="radio"]), select, textarea { -webkit-appearance: none; appearance: none; }
+input[type="checkbox"], input[type="radio"] { width: 15px; height: 15px; cursor: pointer; flex-shrink: 0; }
 body {
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-size: 13px; color: var(--text);
