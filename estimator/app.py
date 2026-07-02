@@ -360,12 +360,12 @@ h1{{font-size:19px;font-weight:800;color:#1a3a5c;margin-bottom:4px}}
 .stripe{{height:4px;border-radius:2px;margin-bottom:28px;
   background:linear-gradient(90deg,#22c7da 0 33%,#ffd400 33% 66%,#ee3d42 66% 100%)}}
 select{{width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:6px;
-  font-size:14px;background:#fff;margin-bottom:14px;
+  font-size:16px;background:#fff;margin-bottom:14px;
   appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right 12px center}}
 select:focus{{outline:none;border-color:#1a3a5c;box-shadow:0 0 0 3px rgba(26,58,92,.12)}}
 input{{width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:6px;
-  font-size:14px;background:#fff;margin-bottom:14px}}
+  font-size:16px;background:#fff;margin-bottom:14px}}
 input:focus{{outline:none;border-color:#1a3a5c;box-shadow:0 0 0 3px rgba(26,58,92,.12)}}
 button{{width:100%;padding:12px;background:#1a3a5c;color:#fff;border:none;
   border-radius:6px;font-size:14px;font-weight:700;cursor:pointer}}
@@ -1473,7 +1473,7 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cv-initial-row:first-of-type{border-top:none}
 .cv-initial-text{flex:1;font-size:13px;color:#374151;line-height:1.45}
 .cv-initial-box{width:78px;flex-shrink:0;border:2px solid #1a3a5c;border-radius:6px;padding:10px 8px;
-  font-size:15px;font-weight:700;text-align:center;text-transform:uppercase;outline:none;color:#1a3a5c;background:#fff}
+  font-size:16px;font-weight:700;text-align:center;text-transform:uppercase;outline:none;color:#1a3a5c;background:#fff}
 .cv-initial-box:focus{box-shadow:0 0 0 3px rgba(26,58,92,.15)}
 .cv-att-list{display:flex;flex-direction:column;gap:8px}
 .cv-att{display:inline-flex;align-items:center;gap:8px;background:#f8fafc;border:1px solid #e2e8f0;
@@ -1517,7 +1517,10 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cv-tier-check{font-size:11px;font-weight:700;color:#6b7280;border:1px solid #d1d5db;border-radius:20px;
   padding:3px 9px;display:inline-block;margin-top:2px;transition:all .15s}
 .cv-tier-selected .cv-tier-check{background:#6b7280;color:#fff}
-@media(max-width:600px){.cvgrid{grid-template-columns:1fr}.cvpkg-total{font-size:26px}.cv-tier-cards{grid-template-columns:1fr}.cvinput{font-size:16px}.cvinput:focus{font-size:16px}}
+@media(max-width:600px){.cvgrid{grid-template-columns:1fr}.cvpkg-total{font-size:26px}.cv-tier-cards{grid-template-columns:1fr}.cvinput{font-size:16px}.cvinput:focus{font-size:16px}
+.cvhdr{padding:12px 14px}.cvhdr img{height:42px}.cvhdr-contact a{font-size:14px}
+.cvtrade{overflow-x:auto;-webkit-overflow-scrolling:touch}.cvt-ins{min-width:520px}
+.cvgrand-amt{font-size:19px}}
 @media print{.cv-print-btn{display:none}body{background:#fff}.cert{border-width:1.5pt;page-break-inside:avoid}}
 """
 
@@ -1679,7 +1682,7 @@ def _insurance_cv_table(est):
         hd = he(sec_name) if sec_name else 'Insurance Estimate Items'
         sections_html += f'''<div class="cvtrade">
           <div class="cvtrade-hd">{hd}</div>
-          <table class="cvt"><thead><tr>
+          <table class="cvt cvt-ins"><thead><tr>
             <th>Item Name</th><th>Description</th>
             <th class="cvth-r">ACV</th><th class="cvth-r">Depreciation</th>
             <th class="cvth-r">RCV</th></tr></thead>
@@ -1726,7 +1729,7 @@ def _build_insurance_cv(est, token):
     scope_html  = f'<div class="cvnotes"><h3>Scope of Work</h3><p>{he(scope_notes)}</p></div>' if scope_notes else ''
 
     return f'''<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Your Insurance Estimate &mdash; Project One Roofing</title>
 <style>{_CV_CSS}</style></head><body>
 
@@ -1825,7 +1828,7 @@ def _build_simple_retail_cv(est, token):
     li_html, grand_total = render_line_items(est, tier=tier)
 
     return f'''<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Your Estimate — Project One Roofing</title>
 <style>{_CV_CSS}</style></head><body>
 
@@ -1970,7 +1973,7 @@ def build_customer_view(est, token):
     default_lbl   = tier_lbls[default_tier]
 
     return f'''<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Your Estimate — Project One Roofing</title>
 <style>{_CV_CSS}</style></head><body>
 

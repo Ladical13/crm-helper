@@ -1785,6 +1785,11 @@ body.is-home #nav-toggle       { display: none; }
 }
 .dash-row:hover .dash-delete-btn { opacity: 1; }
 .dash-delete-btn:hover { background: #fecaca; }
+/* Touch devices have no hover — reveal-on-hover buttons would be invisible
+   but still tappable (an invisible delete button). Always show them. */
+@media (hover: none) {
+  .dash-send-btn, .dash-dup-btn, .dash-delete-btn { opacity: 1; }
+}
 @media (max-width: 700px) {
   .dash-cards { grid-template-columns: repeat(3, 1fr); }
   .dash-activity { display: none; }
@@ -2441,6 +2446,7 @@ body.is-home #nav-toggle       { display: none; }
     left: calc(-1 * var(--sidebar-w) - 4px);
     top: var(--header-h);
     height: calc(100vh - var(--header-h));
+    height: calc(100dvh - var(--header-h)); /* iOS: don't hide the bottom (package totals) behind the Safari toolbar */
     z-index: 300;
     transition: left .25s ease;
     box-shadow: none;
@@ -2540,10 +2546,12 @@ body.is-home #nav-toggle       { display: none; }
   .ins-th-desc  { min-width: 140px; }
   .ins-desc-cell { min-width: 120px; }
 
-  /* Modals: nearly full-screen */
-  .modal-box        { width: 96vw !important; max-height: 92vh; }
+  /* Modals: nearly full-screen, top-aligned so the phone keyboard doesn't
+     cover the inputs of a vertically-centered box */
+  .modal            { align-items: flex-start; padding-top: max(10px, env(safe-area-inset-top, 10px)); }
+  .modal-box        { width: 96vw !important; max-height: 92vh; max-height: 90dvh; }
   .pb-modal-box     { width: 98vw !important; }
-  .dash-modal-box   { max-height: 92vh; }
+  .dash-modal-box   { max-height: 92vh; max-height: 90dvh; }
   .ann-modal-box    { width: 98vw !important; }
   .roofr-modal-box  { width: 96vw !important; }
 
@@ -2586,13 +2594,6 @@ body.is-home #nav-toggle       { display: none; }
   .cf-est-row       { min-height: 44px; padding: 12px 14px; }
   .cf-body          { padding: 12px 14px 20px; }
   .cf-create-body   { padding: 12px; }
-
-  /* ── Sidebar customer file button: critical fix (was 19px tall) ── */
-  .cf-open-btn {
-    min-height: 36px;
-    display: flex; align-items: center;
-    padding: 6px 9px; font-size: 12px;
-  }
 
   /* ── Analytics cards: tighter padding on small screens ──────── */
   .a-card    { padding: 10px 11px; }

@@ -4987,14 +4987,19 @@ async function saveSettings() {
 /* ── Share / E-Signature ────────────────────────────────────────────── */
 
 async function shareEstimate() {
-  // Pre-send validation
+  // Pre-send validation — insurance estimates are priced by sections, not
+  // retail trades, so check the right side or every insurance send warns.
   const issues = [];
   if (!S.customer.name) issues.push('No customer name entered');
   if (!S.customer.email) issues.push('No customer email address');
-  const hasItems = ['roofing','siding','windows','gutters','other']
-    .some(t => S.trades[t].enabled && (S.trades[t].line_items||[]).length > 0);
-  if (!hasItems) issues.push('No line items in any trade');
-  if (grandTotal(S.selected_tier) === 0) issues.push('Estimate total is $0');
+  const isIns = (S.estimate_type || 'retail') === 'insurance';
+  const hasItems = isIns
+    ? (S.trades.insurance.sections || []).some(sec => (sec.items || []).length > 0)
+    : ['roofing','siding','windows','gutters','other']
+        .some(t => S.trades[t].enabled && (S.trades[t].line_items||[]).length > 0);
+  if (!hasItems) issues.push('No line items entered yet');
+  const sendTotal = isIns ? insuranceTotal() : grandTotal(S.selected_tier);
+  if (sendTotal === 0) issues.push('Estimate total is $0');
   if (issues.length) {
     const go = confirm(`⚠ Heads up before sending:\n\n• ${issues.join('\n• ')}\n\nSend anyway?`);
     if (!go) return;
