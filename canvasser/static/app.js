@@ -2,6 +2,8 @@
 
 const PIN_TYPES = {};  // populated from /api/config
 let map, currentUser, markers = {}, hailLayer = null;
+let teamMarkers = {}, teamTimer = null, locationTimer = null, teamEnabled = true;
+let hailResultLayer = null;
 let pendingLatLng = null;   // where the next pin will land
 let selectedPinType = 'not_home';
 let editingPinId = null;
@@ -70,6 +72,7 @@ function showApp() {
   buildRepFilters();
   initMap();
   loadPins();
+  startTeamTracking();
 }
 
 function buildQuickBtns() {
@@ -171,6 +174,70 @@ function addPinMarker(pin) {
   });
   markers[pin.id] = marker;
 }
+
+// ── Live team tracking ─────────────────────────────────────────────────────
+
+function startTeamTracking() {
+  stopTeamTracking();
+  // Push my location every 30s (silently — only if permission already granted)
+  const pushLocation = async () => {
+    try {
+      const pos = await getGPS();
+      await api('/api/location', 'POST', {
+        lat: pos.coords.latitude, lng: pos.coords.longitude,
+        accuracy: pos.coords.accuracy || 0, heading: pos.coords.heading ?? -1,
+      });
+    } catch(e) { /* no GPS permission or offline — skip this ping */ }
+  };
+  pushLocation();
+  locationTimer = setInterval(pushLocation, 30000);
+
+  // Pull teammates every 30s
+  const pullTeam = async () => {
+    if (!teamEnabled) return;
+    try {
+      const team = await api('/api/team-locations');
+      renderTeamMarkers(team);
+    } catch(e) {}
+  };
+  pullTeam();
+  teamTimer = setInterval(pullTeam, 30000);
+}
+
+function stopTeamTracking() {
+  if (teamTimer)     { clearInterval(teamTimer);     teamTimer = null; }
+  if (locationTimer) { clearInterval(locationTimer); locationTimer = null; }
+  clearTeamMarkers();
+}
+
+function clearTeamMarkers() {
+  Object.values(teamMarkers).forEach(m => map.removeLayer(m));
+  teamMarkers = {};
+}
+
+function renderTeamMarkers(team) {
+  clearTeamMarkers();
+  team.forEach(t => {
+    const isMe = t.username === currentUser.username;
+    const initials = t.username.substring(0, 2).toUpperCase();
+    const icon = L.divIcon({
+      className: '',
+      html: `<div class="team-marker ${isMe ? 'me' : ''}" title="${displayName(t.username)} — ${timeAgo(t.updated_at)}">
+               <div class="team-pulse"></div><span>${initials}</span>
+             </div>`,
+      iconSize: [34, 34], iconAnchor: [17, 17],
+    });
+    teamMarkers[t.username] = L.marker([t.lat, t.lng], { icon, zIndexOffset: 900 })
+      .bindPopup(`<b>${displayName(t.username)}</b><br>Active ${timeAgo(t.updated_at)}`)
+      .addTo(map);
+  });
+}
+
+$('team-toggle-btn').addEventListener('click', () => {
+  teamEnabled = !teamEnabled;
+  $('team-toggle-state').textContent = teamEnabled ? 'On' : 'Off';
+  if (!teamEnabled) clearTeamMarkers();
+});
 
 // ── Drop pin modal ─────────────────────────────────────────────────────────
 
@@ -506,14 +573,17 @@ $('hail-overlay-btn').addEventListener('click', () => {
 $('close-hail-modal').addEventListener('click', () => hide('hail-modal'));
 
 $('load-hail-btn').addEventListener('click', async () => {
-  const dateVal = $v('hail-date');
-  let dateParam = 'today';
-  if (dateVal) {
-    dateParam = dateVal.replace(/-/g, '');  // YYYYMMDD
+  const startVal = $v('hail-date');
+  const endVal   = $v('hail-date-end');
+  let url;
+  if (endVal && endVal !== startVal) {
+    url = `/api/hail/range?start=${startVal.replace(/-/g,'')}&end=${endVal.replace(/-/g,'')}`;
+  } else {
+    url = `/api/hail?date=${startVal ? startVal.replace(/-/g,'') : 'today'}`;
   }
   $('hail-status').textContent = 'Loading NOAA hail data...';
   try {
-    const data = await api(`/api/hail?date=${dateParam}`);
+    const data = await api(url);
     clearHailLayer();
     if (!data.features || data.features.length === 0) {
       $('hail-status').textContent = 'No hail reports found for this date.';
@@ -534,7 +604,8 @@ $('load-hail-btn').addEventListener('click', async () => {
       `).addTo(hailLayer);
     });
     hailLayer.addTo(map);
-    $('hail-status').textContent = `✓ ${data.features.length} hail reports loaded.`;
+    const extra = data.days_with_hail != null ? ` across ${data.days_with_hail} storm days` : '';
+    $('hail-status').textContent = `✓ ${data.features.length} hail reports loaded${extra}.`;
   } catch(e) {
     $('hail-status').textContent = 'Failed to load: ' + e.message;
   }
@@ -557,6 +628,89 @@ function hailColor(sizeInches) {
   return '#65A30D';                           // small
 }
 
+// ── Hail by Address ────────────────────────────────────────────────────────
+
+$('hail-address-btn').addEventListener('click', () => {
+  hide('side-menu');
+  $('hail-address-status').textContent = '';
+  $('hail-address-results').innerHTML = '';
+  show('hail-address-modal');
+});
+$('close-hail-address-modal').addEventListener('click', () => hide('hail-address-modal'));
+
+$('hail-address-search-btn').addEventListener('click', async () => {
+  const q = $v('hail-address-input');
+  if (!q) { $('hail-address-status').textContent = 'Enter an address first.'; return; }
+  const days   = $v('hail-address-days');
+  const radius = $v('hail-address-radius');
+  $('hail-address-status').textContent = 'Searching NOAA hail history... (first search on a new area can take ~30s)';
+  $('hail-address-results').innerHTML = '';
+  try {
+    const data = await api(`/api/hail/address?q=${encodeURIComponent(q)}&days=${days}&radius=${radius}`);
+    renderHailAddressResults(data);
+  } catch(e) {
+    $('hail-address-status').textContent = 'Search failed: ' + e.message;
+  }
+});
+
+function renderHailAddressResults(data) {
+  const st = $('hail-address-status');
+  if (!data.report_count) {
+    st.textContent = `No hail reports within ${data.radius_miles} mi in the last ${data.lookback_days} days.`;
+    return;
+  }
+  st.textContent = '';
+  // Group by date
+  const byDate = {};
+  data.reports.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r); });
+  const dates = Object.keys(byDate).sort().reverse();
+
+  $('hail-address-results').innerHTML = `
+    <div class="hail-summary">
+      <div class="hail-summary-big">${data.report_count} report${data.report_count>1?'s':''} · max ${data.max_size}"</div>
+      <div class="hail-summary-sub">${dates.length} storm day${dates.length>1?'s':''} within ${data.radius_miles} mi of<br>${data.resolved || data.query}</div>
+    </div>
+    ${dates.map(d => {
+      const rows = byDate[d].sort((a,b) => a.distance_miles - b.distance_miles);
+      const max = Math.max(...rows.map(r => r.size));
+      return `
+        <div class="hail-day">
+          <div class="hail-day-header">
+            <span>${d}</span>
+            <span class="hail-day-max" style="color:${hailColorHex(max)}">${max}" max</span>
+          </div>
+          ${rows.slice(0,5).map(r => `
+            <div class="hail-report-row">
+              <span class="hail-size-chip" style="background:${hailColorHex(r.size)}">${r.size}"</span>
+              <span class="hail-report-loc">${r.location}, ${r.state}</span>
+              <span class="hail-report-dist">${r.distance_miles} mi</span>
+            </div>`).join('')}
+        </div>`;
+    }).join('')}
+    <button class="btn-secondary" id="hail-show-on-map-btn">Show on Map</button>
+  `;
+
+  $('hail-show-on-map-btn').addEventListener('click', () => {
+    hide('hail-address-modal');
+    if (hailResultLayer) map.removeLayer(hailResultLayer);
+    hailResultLayer = L.layerGroup();
+    // Target address marker
+    L.marker([data.lat, data.lng]).bindPopup(`<b>${data.query}</b>`).addTo(hailResultLayer);
+    data.reports.forEach(r => {
+      L.circle([r.lat, r.lng], {
+        radius: Math.max(400, r.size * 800),
+        color: hailColorHex(r.size), fillColor: hailColorHex(r.size),
+        fillOpacity: .3, weight: 1,
+      }).bindPopup(`<b>${r.size}" hail</b><br>${r.date}<br>${r.location}, ${r.state} (${r.distance_miles} mi away)`)
+        .addTo(hailResultLayer);
+    });
+    hailResultLayer.addTo(map);
+    map.setView([data.lat, data.lng], 12);
+  });
+}
+
+function hailColorHex(size) { return hailColor(size); }
+
 // ── Menu & overlays ────────────────────────────────────────────────────────
 
 $('menu-btn').addEventListener('click', () => {
@@ -566,6 +720,7 @@ $('menu-btn').addEventListener('click', () => {
 });
 
 $('logout-btn').addEventListener('click', async () => {
+  stopTeamTracking();
   await api('/api/logout', 'POST', {});
   currentUser = null;
   allPins = [];

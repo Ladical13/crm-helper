@@ -364,6 +364,55 @@ html, body {
   width: 34px; height: 34px; font-size: 13px;
 }
 
+/* ── Live team markers ── */
+.team-marker {
+  position: relative;
+  width: 34px; height: 34px; border-radius: 50%;
+  background: #0EA5E9;
+  border: 3px solid #fff;
+  box-shadow: 0 2px 10px rgba(0,0,0,.6);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 800; color: #fff;
+}
+.team-marker.me { background: #10B981; }
+.team-pulse {
+  position: absolute; inset: -6px; border-radius: 50%;
+  border: 2px solid currentColor; opacity: 0;
+  animation: teamPulse 2s ease-out infinite;
+  color: #0EA5E9; pointer-events: none;
+}
+.team-marker.me .team-pulse { color: #10B981; }
+@keyframes teamPulse {
+  0%   { transform: scale(.7); opacity: .8; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+/* ── Hail address results ── */
+.hail-summary {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px; margin: 14px 0;
+  text-align: center;
+}
+.hail-summary-big { font-size: 19px; font-weight: 800; color: #F59E0B; }
+.hail-summary-sub { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+.hail-day { margin-bottom: 12px; }
+.hail-day-header {
+  display: flex; justify-content: space-between; align-items: center;
+  font-weight: 700; font-size: 14px; padding: 8px 0 4px;
+  border-bottom: 1px solid var(--border);
+}
+.hail-day-max { font-size: 13px; }
+.hail-report-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; font-size: 13px;
+}
+.hail-size-chip {
+  padding: 2px 8px; border-radius: 10px; color: #fff;
+  font-size: 12px; font-weight: 700; flex-shrink: 0;
+}
+.hail-report-loc { flex: 1; color: var(--text); }
+.hail-report-dist { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+
 /* ── Hail circle legend ── */
 .hail-legend {
   position: absolute; bottom: calc(var(--bottom-h) + 10px); right: 10px;

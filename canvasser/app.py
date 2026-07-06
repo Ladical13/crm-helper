@@ -78,6 +78,19 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS pins_rep_idx ON pins(rep);
             CREATE INDEX IF NOT EXISTS pins_type_idx ON pins(pin_type);
+            CREATE TABLE IF NOT EXISTS hail_cache (
+                date TEXT PRIMARY KEY,
+                features_json TEXT NOT NULL,
+                fetched_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS rep_locations (
+                username   TEXT PRIMARY KEY,
+                lat        REAL NOT NULL,
+                lng        REAL NOT NULL,
+                accuracy   REAL DEFAULT 0,
+                heading    REAL DEFAULT -1,
+                updated_at TEXT NOT NULL
+            );
         ''')
 
 init_db()
@@ -331,7 +344,107 @@ def leaderboard():
         ''').fetchall()
     return jsonify([dict(r) for r in rows])
 
+# ── Live team locations ───────────────────────────────────────────────────────
+
+@app.route('/api/location', methods=['POST'])
+@login_required
+def update_location():
+    data = request.get_json(force=True)
+    lat, lng = data.get('lat'), data.get('lng')
+    if lat is None or lng is None:
+        return jsonify({'error': 'lat/lng required'}), 400
+    with get_db() as db:
+        db.execute('''INSERT INTO rep_locations (username, lat, lng, accuracy, heading, updated_at)
+                      VALUES (?,?,?,?,?,?)
+                      ON CONFLICT(username) DO UPDATE SET
+                        lat=excluded.lat, lng=excluded.lng, accuracy=excluded.accuracy,
+                        heading=excluded.heading, updated_at=excluded.updated_at''',
+                   (session['username'], float(lat), float(lng),
+                    float(data.get('accuracy') or 0), float(data.get('heading') or -1), _now()))
+    return jsonify({'ok': True})
+
+@app.route('/api/team-locations')
+@login_required
+def team_locations():
+    # Only locations updated in the last 15 minutes count as "live"
+    cutoff = (datetime.utcnow() - timedelta(minutes=15)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    with get_db() as db:
+        rows = db.execute(
+            'SELECT * FROM rep_locations WHERE updated_at > ? ORDER BY username', (cutoff,)
+        ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
 # ── Hail data (NOAA SPC proxy) ────────────────────────────────────────────────
+
+def _fetch_hail_csv(date_param):
+    """Fetch one day of NOAA SPC filtered hail reports, return list of feature dicts."""
+    if date_param == 'today':
+        url = 'https://www.spc.noaa.gov/climo/reports/today_filtered_hail.csv'
+    else:
+        d = datetime.strptime(date_param, '%Y%m%d')  # raises ValueError on bad input
+        url = f"https://www.spc.noaa.gov/climo/reports/{d.strftime('%y%m%d')}_rpts_filtered_hail.csv"
+    resp = http.get(url, timeout=15, headers={'User-Agent': 'P1Canvasser/1.0'})
+    resp.raise_for_status()
+    features = []
+    reader = csv.DictReader(io.StringIO(resp.text))
+    for row in reader:
+        try:
+            lat = float(row.get('Lat', row.get('lat', 0)))
+            lon = float(row.get('Lon', row.get('lon', 0)))
+            if lat == 0 and lon == 0:
+                continue
+            try:
+                size_f = float(row.get('Size', row.get('size', '0'))) / 100.0
+            except Exception:
+                size_f = 0.0
+            # SPC reports size in hundredths of an inch (e.g. 175 = 1.75")
+            if size_f > 10:  # already divided but still huge → bad row
+                continue
+            features.append({
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [lon, lat]},
+                'properties': {
+                    'date':     date_param,
+                    'time':     row.get('Time', ''),
+                    'size':     size_f,
+                    'location': row.get('Location', ''),
+                    'county':   row.get('County', ''),
+                    'state':    row.get('State', ''),
+                    'comments': row.get('Comments', ''),
+                }
+            })
+        except Exception:
+            continue
+    return features
+
+def _fetch_hail_cached(date_str):
+    """Cached daily hail fetch. Past days are immutable so cache forever;
+    'today'/current-day results are never cached."""
+    today_str = datetime.utcnow().strftime('%Y%m%d')
+    cacheable = date_str != 'today' and date_str < today_str
+    if cacheable:
+        with get_db() as db:
+            row = db.execute('SELECT features_json FROM hail_cache WHERE date=?',
+                             (date_str,)).fetchone()
+        if row:
+            return json.loads(row['features_json'])
+    features = _fetch_hail_csv(date_str)
+    if cacheable:
+        with get_db() as db:
+            db.execute('INSERT OR REPLACE INTO hail_cache (date, features_json, fetched_at) VALUES (?,?,?)',
+                       (date_str, json.dumps(features), _now()))
+    return features
+
+def _fetch_hail_days(date_strs):
+    """Fetch many days in parallel, returning {date_str: [features]}. Missing days → []."""
+    from concurrent.futures import ThreadPoolExecutor
+    def one(ds):
+        try:
+            return ds, _fetch_hail_cached(ds)
+        except Exception:
+            return ds, []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        return dict(ex.map(one, date_strs))
 
 @app.route('/api/hail')
 @login_required
@@ -339,58 +452,134 @@ def hail_data():
     date_param = request.args.get('date', 'today')  # 'today' or 'YYYYMMDD'
     if not http:
         return jsonify({'error': 'requests library not available'}), 500
-
-    if date_param == 'today':
-        url = 'https://www.spc.noaa.gov/climo/reports/today_filtered_hail.csv'
-    else:
-        # Convert YYYYMMDD → YYMMDD for NOAA SPC
-        try:
-            d = datetime.strptime(date_param, '%Y%m%d')
-            ymd = d.strftime('%y%m%d')
-        except ValueError:
-            return jsonify({'error': 'Invalid date format, use YYYYMMDD'}), 400
-        url = f'https://www.spc.noaa.gov/climo/reports/{ymd}_rpts_filtered_hail.csv'
-
     try:
-        resp = http.get(url, timeout=15, headers={'User-Agent': 'P1Canvasser/1.0'})
-        resp.raise_for_status()
+        features = _fetch_hail_csv(date_param)
+    except ValueError:
+        return jsonify({'error': 'Invalid date format, use YYYYMMDD'}), 400
     except Exception as e:
         return jsonify({'error': str(e), 'features': []}), 200
+    return jsonify({'type': 'FeatureCollection', 'features': features, 'count': len(features)})
 
-    # Parse CSV → GeoJSON FeatureCollection
-    features = []
+@app.route('/api/hail/range')
+@login_required
+def hail_range():
+    """Hail reports across a date range (max 31 days), merged into one collection."""
+    if not http:
+        return jsonify({'error': 'requests library not available'}), 500
     try:
-        reader = csv.DictReader(io.StringIO(resp.text))
-        for row in reader:
-            try:
-                lat = float(row.get('Lat', row.get('lat', 0)))
-                lon = float(row.get('Lon', row.get('lon', 0)))
-                size = row.get('Size', row.get('size', '0'))
-                try:
-                    size_f = float(size)
-                except Exception:
-                    size_f = 0.0
-                if lat == 0 and lon == 0:
-                    continue
-                features.append({
-                    'type': 'Feature',
-                    'geometry': {'type': 'Point', 'coordinates': [lon, lat]},
-                    'properties': {
-                        'time':     row.get('Time', ''),
-                        'size':     size_f,
-                        'location': row.get('Location', ''),
-                        'county':   row.get('County', ''),
-                        'state':    row.get('State', ''),
-                        'comments': row.get('Comments', ''),
-                    }
-                })
-            except Exception:
-                continue
-    except Exception:
-        pass
-
+        start = datetime.strptime(request.args.get('start', ''), '%Y%m%d')
+        end   = datetime.strptime(request.args.get('end', ''), '%Y%m%d')
+    except ValueError:
+        return jsonify({'error': 'start and end required as YYYYMMDD'}), 400
+    if end < start:
+        start, end = end, start
+    if (end - start).days > 31:
+        return jsonify({'error': 'Range too large (max 31 days)'}), 400
+    date_strs = [(start + timedelta(days=i)).strftime('%Y%m%d')
+                 for i in range((end - start).days + 1)]
+    results = _fetch_hail_days(date_strs)
+    features = [f for feats in results.values() for f in feats]
+    days_with_hail = sum(1 for feats in results.values() if feats)
     return jsonify({'type': 'FeatureCollection', 'features': features,
-                    'source_url': url, 'count': len(features)})
+                    'count': len(features), 'days_with_hail': days_with_hail})
+
+def _haversine_miles(lat1, lon1, lat2, lon2):
+    import math
+    R = 3958.8
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+    return 2 * R * math.asin(math.sqrt(a))
+
+@app.route('/api/geocode')
+@login_required
+def geocode():
+    """Free geocoding via OpenStreetMap Nominatim."""
+    q = (request.args.get('q') or '').strip()
+    if not q:
+        return jsonify({'error': 'q required'}), 400
+    if not http:
+        return jsonify({'error': 'requests library not available'}), 500
+    try:
+        r = http.get('https://nominatim.openstreetmap.org/search',
+                     params={'q': q, 'format': 'json', 'limit': 3, 'countrycodes': 'us'},
+                     headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofing.com)'},
+                     timeout=10)
+        r.raise_for_status()
+        results = [{'display_name': x['display_name'],
+                    'lat': float(x['lat']), 'lng': float(x['lon'])} for x in r.json()]
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 502
+
+@app.route('/api/hail/address')
+@login_required
+def hail_at_address():
+    """Hail history near an address (or lat/lng) over a lookback window.
+
+    Params: q=<address> OR lat=&lng=, days=<lookback, default 365, max 730>,
+            radius=<miles, default 10>
+    Scans NOAA SPC daily CSVs; to keep it fast we only fetch days, so we cap
+    the scan by sampling: full scan for <=90 days, else the monthly summaries.
+    """
+    if not http:
+        return jsonify({'error': 'requests library not available'}), 500
+    q = (request.args.get('q') or '').strip()
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+    resolved_name = ''
+    if lat is None or lng is None:
+        if not q:
+            return jsonify({'error': 'q (address) or lat/lng required'}), 400
+        try:
+            r = http.get('https://nominatim.openstreetmap.org/search',
+                         params={'q': q, 'format': 'json', 'limit': 1, 'countrycodes': 'us'},
+                         headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofing.com)'},
+                         timeout=10)
+            r.raise_for_status()
+            hits = r.json()
+        except Exception as e:
+            return jsonify({'error': f'Geocoding failed: {e}'}), 502
+        if not hits:
+            return jsonify({'error': 'Address not found'}), 404
+        lat, lng = float(hits[0]['lat']), float(hits[0]['lon'])
+        resolved_name = hits[0]['display_name']
+
+    radius = min(float(request.args.get('radius', 10)), 50)
+    days   = min(int(request.args.get('days', 365)), 730)
+
+    # Severe-weather season heuristic: scan Mar–Oct days plus the last 45 days
+    # fully; deep-winter hail in CO/TX is rare enough to skip. NOAA has no free
+    # point-history API, so we scan daily CSVs (cached + parallel).
+    now = datetime.utcnow()
+    date_strs = []
+    for i in range(1, days + 1):
+        d = now - timedelta(days=i)
+        if d.month in (3, 4, 5, 6, 7, 8, 9, 10) or i <= 45:
+            date_strs.append(d.strftime('%Y%m%d'))
+    results = _fetch_hail_days(date_strs)
+    reports, scanned = [], len(date_strs)
+    for ds, feats in results.items():
+        for f in feats:
+            flat, flon = f['geometry']['coordinates'][1], f['geometry']['coordinates'][0]
+            dist = _haversine_miles(lat, lng, flat, flon)
+            if dist <= radius:
+                p = f['properties']
+                reports.append({
+                    'date': f'{ds[:4]}-{ds[4:6]}-{ds[6:]}', 'time': p['time'],
+                    'size': p['size'], 'distance_miles': round(dist, 1),
+                    'location': p['location'], 'county': p['county'],
+                    'state': p['state'], 'lat': flat, 'lng': flon,
+                })
+
+    reports.sort(key=lambda r: (r['date'], -r['size']), reverse=True)
+    max_size = max((r['size'] for r in reports), default=0)
+    return jsonify({
+        'query': q, 'resolved': resolved_name, 'lat': lat, 'lng': lng,
+        'radius_miles': radius, 'lookback_days': days, 'days_scanned': scanned,
+        'report_count': len(reports), 'max_size': max_size,
+        'reports': reports[:100],
+    })
 
 # ── CRM Sync ──────────────────────────────────────────────────────────────────
 

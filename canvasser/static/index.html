@@ -58,6 +58,8 @@
       <button class="menu-item" id="show-leaderboard-btn">🏆 Leaderboard</button>
       <button class="menu-item" id="show-my-pins-btn">📍 My Pins</button>
       <button class="menu-item" id="hail-overlay-btn">🌩️ Hail Overlay</button>
+      <button class="menu-item" id="hail-address-btn">🔍 Hail by Address</button>
+      <button class="menu-item" id="team-toggle-btn">👥 Team Locations: <span id="team-toggle-state">On</span></button>
       <div class="menu-section-title">Filter by Rep</div>
       <div id="rep-filter-list"></div>
       <button class="menu-item danger-item" id="logout-btn">Sign Out</button>
@@ -143,16 +145,59 @@
         <button class="icon-btn" id="close-hail-modal">✕</button>
       </div>
       <div class="modal-body">
-        <p class="modal-hint">Load NOAA hail reports for a storm date to see where hail has hit.</p>
+        <p class="modal-hint">Load NOAA hail reports for a single storm date or a date range to see where hail has hit.</p>
         <div class="field-group">
-          <label>Storm Date</label>
+          <label>From</label>
           <input type="date" id="hail-date">
+        </div>
+        <div class="field-group">
+          <label>To <span class="optional">(leave same for one day, max 31 days)</span></label>
+          <input type="date" id="hail-date-end">
         </div>
         <div class="btn-row">
           <button class="btn-primary" id="load-hail-btn">Load Hail Reports</button>
           <button class="btn-secondary" id="clear-hail-btn">Clear Overlay</button>
         </div>
         <div id="hail-status" class="status-msg"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Hail by Address Modal ── -->
+  <div id="hail-address-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span>🔍 Hail by Address</span>
+        <button class="icon-btn" id="close-hail-address-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint">Look up hail history near any address — great for showing a homeowner proof their roof got hit.</p>
+        <div class="field-group">
+          <label>Address</label>
+          <input type="text" id="hail-address-input" placeholder="123 Oak St, Fort Collins CO">
+        </div>
+        <div class="btn-row">
+          <div class="field-group" style="flex:1">
+            <label>Lookback</label>
+            <select id="hail-address-days">
+              <option value="90">90 days</option>
+              <option value="180">6 months</option>
+              <option value="365" selected>1 year</option>
+              <option value="730">2 years</option>
+            </select>
+          </div>
+          <div class="field-group" style="flex:1">
+            <label>Radius</label>
+            <select id="hail-address-radius">
+              <option value="5">5 miles</option>
+              <option value="10" selected>10 miles</option>
+              <option value="25">25 miles</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn-primary" id="hail-address-search-btn">Search Hail History</button>
+        <div id="hail-address-status" class="status-msg"></div>
+        <div id="hail-address-results"></div>
       </div>
     </div>
   </div>
