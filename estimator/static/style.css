@@ -934,16 +934,27 @@ input#cover-file-input { display: none; }
 .cpp-trade-simple td { color: #94a3b8; font-style: italic; }
 @media print { .internal-margin, .cost-profit-panel { display: none !important; } }
 
-/* ── Color selection ───────────────────────────────────────────────── */
-.color-section {
-  background: var(--bg); border: 1px solid var(--border-light);
-  border-radius: 5px; padding: 10px 12px; margin-bottom: 12px;
-  display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+/* ── Product Selection page ──────────────────────────────────────────
+   Brand/model/color per trade, in one place — shingle color, drip edge,
+   ridge cap, gutter color, siding/trim color, window frame color, etc. */
+.products-header { margin-bottom: 4px; }
+.products-header h2 { font-size: 18px; font-weight: 700; }
+.products-header p  { font-size: 12px; color: var(--text-light); margin-top: 3px; }
+.products-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
 }
-.color-section-label { font-size: 11px; font-weight: 700; color: var(--text-light); text-transform: uppercase; letter-spacing: .5px; white-space: nowrap; padding-top: 6px; }
-.color-fields { display: flex; gap: 8px; flex-wrap: wrap; flex: 1; }
-.color-field { display: flex; flex-direction: column; gap: 3px; min-width: 130px; }
-.color-field label { font-size: 10px; color: var(--text-light); font-weight: 500; }
+.product-card {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: #fff; box-shadow: var(--shadow); overflow: hidden;
+}
+.product-card-hd {
+  background: var(--primary); color: #fff; padding: 8px 14px;
+  font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+}
+.product-card-fields {
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+}
 
 /* ── Panels ────────────────────────────────────────────────────────── */
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow); }
@@ -1129,6 +1140,17 @@ input#cover-file-input { display: none; }
   .p-meta-table td { padding: 3pt 0; }
   .p-meta-table td:first-child { color: #666; width: 100pt; }
   .p-meta-table td:last-child { font-weight: 600; }
+
+  /* Product Selection — brand/model/color per trade */
+  .p-products { margin-bottom: 20pt; page-break-inside: avoid; }
+  .p-products h2 { font-size: 12pt; font-weight: 700; color: #1a3a5c; margin-bottom: 8pt; }
+  .p-products-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
+  .p-products-table tr { border-bottom: .5pt solid #e5e7eb; }
+  .p-products-table tr:last-child { border-bottom: none; }
+  .p-products-table td { padding: 5pt 8pt; vertical-align: top; }
+  .p-products-trade { width: 90pt; font-weight: 700; color: #1a3a5c; text-transform: uppercase; font-size: 8pt; letter-spacing: .4pt; }
+  .p-products-label { width: 130pt; color: #666; }
+  .p-products-value { font-weight: 600; color: #111; }
 
   /* Package comparison */
   .p-pkg-comparison { margin-bottom: 20pt; }
@@ -2538,6 +2560,9 @@ body.is-home #nav-toggle       { display: none; }
 
   /* Options page cards: single column */
   .pkg-cards { grid-template-columns: 1fr; }
+
+  /* Product Selection cards: single column */
+  .products-grid { grid-template-columns: 1fr; }
 
   /* Customer sign tier cards: single column */
   .cv-tier-cards { grid-template-columns: 1fr !important; }

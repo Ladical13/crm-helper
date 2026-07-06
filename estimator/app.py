@@ -1323,6 +1323,51 @@ def get_analytics():
     })
 
 
+# Mirrors TRADE_COLOR_FIELDS in static/app.js — keep keys/labels in sync so the
+# rep-facing Product Selection page and this customer-facing summary agree.
+TRADE_COLOR_FIELDS = {
+    'roofing': [('shingle_color', 'Shingle Color'), ('manufacturer', 'Manufacturer'), ('product_line', 'Product Line'),
+                ('drip_edge_color', 'Drip Edge Color'), ('ridge_cap_color', 'Ridge Cap Color')],
+    'siding':  [('siding_color', 'Siding Color'), ('trim_color', 'Trim Color'), ('manufacturer', 'Manufacturer')],
+    'windows': [('frame_color', 'Frame Color'), ('glass_package', 'Glass Package')],
+    'gutters': [('gutter_color', 'Gutter Color'), ('material', 'Material')],
+    'other':   [('color', 'Color / Finish')],
+}
+_PRODUCT_TRADE_LABELS = dict(roofing='Roofing', siding='Siding', windows='Windows', gutters='Gutters', other='Other')
+
+
+def _cv_products_block(est):
+    """Brand/model/color choices per trade (shingle color, drip edge, ridge
+    cap, gutter color, etc.) for the customer-facing view — mirrors the
+    rep-facing Product Selection page. Returns '' when nothing is filled in.
+    Note: page_visibility.products only gates the printed/PDF estimate (see
+    buildPrintContent in app.js) — the interactive online link always shows
+    whatever is filled in, same as notes/attachments/contract text."""
+    trades = est.get('trades', {})
+    rows = []
+    for trade, fields in TRADE_COLOR_FIELDS.items():
+        td = trades.get(trade) or {}
+        if not td.get('enabled'):
+            continue
+        colors = td.get('colors') or {}
+        for key, label in fields:
+            v = (colors.get(key) or '').strip()
+            if v:
+                rows.append((trade, label, v))
+    if not rows:
+        return ''
+    trs = ''.join(
+        f'<tr><td class="cvprod-trade">{he(_PRODUCT_TRADE_LABELS.get(trade, trade.title()))}</td>'
+        f'<td class="cvprod-label">{he(label)}</td>'
+        f'<td class="cvprod-value">{he(value)}</td></tr>'
+        for trade, label, value in rows
+    )
+    return f'''<div class="cvproducts">
+      <h3>Product Selection</h3>
+      <table class="cvprod-tbl"><tbody>{trs}</tbody></table>
+    </div>'''
+
+
 def render_line_items(est, tier=None):
     """Build trade line-item tables for customer view. Returns (html, grand_total)."""
     if tier is None:
@@ -1443,6 +1488,16 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cvnotes{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:14px}
 .cvnotes h3{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin-bottom:6px}
 .cvnotes p{font-size:13px;line-height:1.6;color:#374151;white-space:pre-wrap}
+.cvproducts{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:14px 16px;overflow:hidden}
+.cvproducts h3{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin-bottom:8px}
+.cvprod-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.cvprod-tbl tr{border-bottom:1px solid #f3f4f6}
+.cvprod-tbl tr:last-child{border-bottom:none}
+.cvprod-tbl td{padding:6px 6px}
+.cvprod-trade{color:#1a3a5c;font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.4px;width:80px;white-space:nowrap}
+.cvprod-label{color:#6b7280;width:130px}
+.cvprod-value{font-weight:600;color:#111}
+@media(max-width:480px){.cvprod-trade,.cvprod-label{width:auto}.cvprod-tbl td{padding:4px 4px;font-size:12px}}
 .cvcontract{margin:14px;background:#fff;border-radius:8px;border:1px solid #e5e7eb;overflow:hidden}
 .cvcontract summary{padding:13px 16px;cursor:pointer;font-weight:600;font-size:13px;color:#1a3a5c;list-style:none}
 .cvcontract summary::-webkit-details-marker{display:none}
@@ -1757,6 +1812,8 @@ def _build_insurance_cv(est, token):
   </div>
 </div>
 
+{_cv_products_block(est)}
+
 {ins_table}
 {scope_html}
 {notes_html}
@@ -1853,6 +1910,8 @@ def _build_simple_retail_cv(est, token):
     <div class="cvgi"><label>Valid Until</label><strong>{he(est.get("valid_until","—"))}</strong></div>
   </div>
 </div>
+
+{_cv_products_block(est)}
 
 {li_html}
 
@@ -1998,6 +2057,8 @@ def build_customer_view(est, token):
     <div class="cvgi"><label>Valid Until</label><strong>{he(est.get("valid_until","—"))}</strong></div>
   </div>
 </div>
+
+{_cv_products_block(est)}
 
 <div class="cv-tier-section">
   <div class="cv-tier-heading">Step 1 &mdash; Choose Your Package</div>
@@ -2179,6 +2240,8 @@ def build_signed_confirmation(est):
 </div>
 
 {_signed_extras_html(est)}
+
+{_cv_products_block(est)}
 
 {li_html}
 

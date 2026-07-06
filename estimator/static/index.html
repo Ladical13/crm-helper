@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Project One">
   <link rel="apple-touch-icon" href="/static/icon-180.png">
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/static/style.css?v=90">
+  <link rel="stylesheet" href="/static/style.css?v=92">
 </head>
 <body>
 
@@ -213,16 +213,20 @@
         <span class="pg-num">5</span>Options
       </button>
       <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="products" onclick="switchPage('products')">
+        <span class="pg-num">6</span>Products
+      </button>
+      <span class="pg-sep">›</span>
       <button class="page-btn" data-page="pricing"  onclick="switchPage('pricing')">
-        <span class="pg-num">6</span>Pricing
+        <span class="pg-num">7</span>Pricing
       </button>
       <span class="pg-sep">›</span>
       <button class="page-btn" data-page="contract" onclick="switchPage('contract')">
-        <span class="pg-num">7</span>Contract
+        <span class="pg-num">8</span>Contract
       </button>
       <span class="pg-sep">›</span>
       <button class="page-btn" data-page="report" onclick="switchPage('report')">
-        <span class="pg-num">8</span>Condition
+        <span class="pg-num">9</span>Condition
       </button>
     </nav>
     <div id="print-pages-bar"></div>
@@ -259,6 +263,9 @@
 
     <!-- ── Page 3: Options (G/B/B comparison) ────────────────────── -->
     <div id="page-options" class="page" style="display:none"></div>
+
+    <!-- ── Page: Product Selection (brand/model/color per trade) ──── -->
+    <div id="page-products" class="page" style="display:none"></div>
 
     <!-- ── Page 4: Pricing (per-trade line items) ────────────────── -->
     <div id="page-pricing" class="page" style="display:none">
@@ -496,6 +503,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=90"></script>
+<script src="/static/app.js?v=92"></script>
 </body>
 </html>

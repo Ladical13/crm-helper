@@ -18,7 +18,8 @@ const TIERS = ['good','better','best'];
 const TIER_LABELS = { good:'Good', better:'Better', best:'Best' };
 const TEAM = ['avery','bryan','derik','luke','phil'];
 const TRADE_COLOR_FIELDS = {
-  roofing: [{key:'shingle_color',label:'Shingle Color'},{key:'manufacturer',label:'Manufacturer'},{key:'product_line',label:'Product Line'}],
+  roofing: [{key:'shingle_color',label:'Shingle Color'},{key:'manufacturer',label:'Manufacturer'},{key:'product_line',label:'Product Line'},
+            {key:'drip_edge_color',label:'Drip Edge Color'},{key:'ridge_cap_color',label:'Ridge Cap Color'}],
   siding:  [{key:'siding_color',label:'Siding Color'},{key:'trim_color',label:'Trim Color'},{key:'manufacturer',label:'Manufacturer'}],
   windows: [{key:'frame_color',label:'Frame Color'},{key:'glass_package',label:'Glass Package'}],
   gutters: [{key:'gutter_color',label:'Gutter Color'},{key:'material',label:'Material'}],
@@ -422,7 +423,7 @@ function blankEstimate() {
     shingle_selection: { enabled: true, options: _globalShingleColors(), chosen: '' },
     measurements: { waste_pct: _globalWastePct() },
     intro_text: '',
-    page_visibility: { intro: false, options: true, pricing: true, report: true },
+    page_visibility: { intro: false, options: true, products: true, pricing: true, report: true },
     roof_health: {
       condition: '', age_years: '', inspection_date: fmtDate(today),
       material_type: '', pitch: '', summary: '',
@@ -548,6 +549,7 @@ function renderAll() {
   renderPhotosPage();
   renderScopePage();
   renderOptionsPage();
+  renderProductsPage();
   renderPricingPage();
   renderContractPage();
   renderTotals();
@@ -562,6 +564,7 @@ function rerender() {
   if (activePage === 'photos')  renderPhotosPage();
   renderScopePage();
   renderOptionsPage();
+  renderProductsPage();
   if (activePage === 'pricing') { syncPricingMarginStrip(); renderTabBar(); renderTradeContent(); }
   updatePageNav();
   renderPrintPagesBar();
@@ -585,9 +588,10 @@ function switchPage(page) {
   if (page === 'home')    { renderHomePage(); return; }
   if (page === 'pricing') { renderTabBar(); renderTradeContent(); }
   if (page === 'intro')   renderIntroPage();
-  if (page === 'scope')   renderScopePage();
-  if (page === 'options') renderOptionsPage();
-  if (page === 'report')  renderConditionPage();
+  if (page === 'scope')    renderScopePage();
+  if (page === 'options')  renderOptionsPage();
+  if (page === 'products') renderProductsPage();
+  if (page === 'report')   renderConditionPage();
 }
 
 function pageComplete(page) {
@@ -598,6 +602,8 @@ function pageComplete(page) {
     case 'photos':   return (S.photos||[]).length > 0;
     case 'scope':    return ['roofing','siding','windows','gutters','other'].some(hasItems);
     case 'options':  return grandTotal(S.selected_tier) > 0 || insuranceTotal() > 0;
+    case 'products': return ['roofing','siding','windows','gutters','other'].some(t =>
+                        S.trades[t].enabled && Object.values(S.trades[t].colors||{}).some(v => String(v||'').trim()));
     case 'pricing':  return grandTotal(S.selected_tier) > 0 || insuranceTotal() > 0;
     case 'contract': return !!(S.contract_text && S.contract_text.trim());
     case 'report':   return !!(S.roof_health?.condition);
@@ -1730,6 +1736,7 @@ function renderPrintPagesBar() {
   const pages = [
     { id:'cover',    label:'Cover',        on: true,                           always: true },
     { id:'intro',    label:'Introduction', on: pv.intro   !== false,           always: false },
+    { id:'products', label:'Products',     on: pv.products !== false,          always: false },
     { id:'pricing',    label:'Pricing',      on: pv.pricing    !== false,        always: false },
     { id:'linePrices', label:'Line Prices', on: pv.linePrices === true,         always: false },
     { id:'options',    label:'Options',     on: pv.options    !== false,        always: false },
@@ -2137,7 +2144,6 @@ function renderTradeContent() {
     : (td.mode || 'gbb');
   const showModeToggle   = !isInsurance && !isGutters && td.enabled;
   const showLoadDefaults = td.enabled && !isInsurance && trade !== 'other';
-  const showColors       = td.enabled && !isInsurance && effectiveMode === 'gbb' && trade !== 'other';
 
   document.getElementById('trade-content').innerHTML =
     `<div class="trade-header">
@@ -2159,7 +2165,6 @@ function renderTradeContent() {
         ${td.enabled ? `<button class="btn-danger" onclick="clearTrade('${trade}')">Clear All</button>` : ''}
       </div>
     </div>
-    ${showColors ? renderColorSection(trade) : ''}
     ${td.enabled && effectiveMode === 'simple' && !isInsurance ? renderBrandPresetBar(trade) : ''}
     ${td.enabled
       ? (isInsurance ? renderInsuranceFreeform()
@@ -2638,23 +2643,59 @@ function insRenameSection(secId, name) {
   setDirty();
 }
 
-function renderColorSection(trade) {
-  const fields = TRADE_COLOR_FIELDS[trade] || []; if (!fields.length) return '';
-  const colors = S.trades[trade].colors || {};
-  return `<div class="color-section">
-    <span class="color-section-label">Color / Product</span>
-    <div class="color-fields">
-      ${fields.map(f => `<div class="color-field">
-        <label>${f.label}</label>
-        <input type="text" value="${esc(colors[f.key]||'')}" placeholder="${f.label}…"
-          onchange="setTradeColor('${trade}','${f.key}',this.value)">
-      </div>`).join('')}
-    </div>
+/* ── Page: Product Selection ─────────────────────────────────────────
+   One place to pick/write in brand, model, and color for every enabled
+   trade — shingle brand & color, drip edge & ridge cap color, gutter
+   color, siding/trim color, window frame color, etc. Shown to the
+   customer online and printed on the estimate so everyone agrees on
+   exactly what's being installed, not just the price. */
+function renderProductsPage() {
+  const RETAIL_TRADES = TRADES.filter(t => t !== 'insurance');
+  const active = RETAIL_TRADES.filter(t => S.trades[t].enabled && (TRADE_COLOR_FIELDS[t]||[]).length);
+
+  const header = `<div class="products-header">
+    <h2>Product Selection</h2>
+    <p>Brand, model, and color choices for this job — shown to the customer and printed on the estimate.</p>
   </div>`;
+
+  if (!active.length) {
+    document.getElementById('page-products').innerHTML = header + `
+      <div class="scope-empty">
+        <p>No trades enabled yet. Enable a trade on the <strong>Scope</strong> page, then come back here to specify products &amp; colors.</p>
+      </div>`;
+    return;
+  }
+
+  document.getElementById('page-products').innerHTML = header + `
+    <div class="products-grid">
+      ${active.map(trade => {
+        const colors = S.trades[trade].colors || {};
+        return `<div class="product-card">
+          <div class="product-card-hd">${TRADE_LABELS[trade]}</div>
+          <div class="product-card-fields">
+            ${TRADE_COLOR_FIELDS[trade].map(f => `
+              <div class="field-group">
+                <label>${esc(f.label)}</label>
+                <input type="text" value="${esc(colors[f.key]||'')}" placeholder="${esc(f.label)}…"
+                  onchange="setTradeColor('${trade}','${f.key}',this.value)">
+              </div>`).join('')}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
 }
 function setTradeColor(trade, key, v) {
   if (!S.trades[trade].colors) S.trades[trade].colors = {};
-  S.trades[trade].colors[key] = v; setDirty();
+  S.trades[trade].colors[key] = v;
+  // Shingle color has its own signing-requirement flow (locked-by-rep vs.
+  // customer-chooses-at-signing, under Contract > Signing Requirements).
+  // Keep them in sync so setting it here also locks it for the customer —
+  // otherwise the sign page would still prompt for a color already specified.
+  if (trade === 'roofing' && key === 'shingle_color') {
+    if (!S.shingle_selection) S.shingle_selection = { enabled: true, options: _globalShingleColors() };
+    S.shingle_selection.chosen = (v || '').trim();
+  }
+  setDirty();
 }
 
 /* Price-book lookup: datalist of known items for a trade + smart fill */
@@ -5230,7 +5271,7 @@ async function doLoadEstimate(id) {
     if(!S.contract_text) S.contract_text=(S.estimate_type==='insurance'?DEFAULT_INSURANCE_CONTRACT:DEFAULT_CONTRACT);
     if(!S.cover_photo_id) S.cover_photo_id=null;
     if(S.intro_text===undefined) S.intro_text='';
-    if(!S.page_visibility) S.page_visibility={intro:false,options:true,pricing:true,report:true};
+    if(!S.page_visibility) S.page_visibility={intro:false,options:true,products:true,pricing:true,report:true};
     if(S.share_token===undefined) S.share_token=null;
     if(S.signature===undefined) S.signature=null;
     if(!S.trades.insurance) {
@@ -5455,6 +5496,33 @@ function buildPrintContent() {
       </table>
     </div>
   </div>`;
+
+  // Product Selection — brand/model/color choices per trade (shingle color,
+  // drip edge, gutter color, etc.) — only prints when the toggle is on AND
+  // at least one field is actually filled in.
+  if (pv.products !== false) {
+    const prodRows = [];
+    TRADES.filter(t => t !== 'insurance').forEach(trade => {
+      const td = S.trades[trade];
+      if (!td || !td.enabled) return;
+      (TRADE_COLOR_FIELDS[trade]||[]).forEach(f => {
+        const v = ((td.colors||{})[f.key] || '').toString().trim();
+        if (v) prodRows.push({ trade, label: f.label, value: v });
+      });
+    });
+    if (prodRows.length) {
+      ph += `<div class="p-products">
+        <h2>Product Selection</h2>
+        <table class="p-products-table"><tbody>
+          ${prodRows.map(r => `<tr>
+            <td class="p-products-trade">${esc(TRADE_LABELS[r.trade])}</td>
+            <td class="p-products-label">${esc(r.label)}</td>
+            <td class="p-products-value">${esc(r.value)}</td>
+          </tr>`).join('')}
+        </tbody></table>
+      </div>`;
+    }
+  }
 
   // Build auto-detected item lists (used as fallback when no custom tier_features set)
   const tierItems={};
