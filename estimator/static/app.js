@@ -5618,6 +5618,21 @@ function buildPrintContent() {
   }
   if(S.notes_customer?.trim())
     ph+=`<div class="p-notes"><h3>Notes</h3><p>${esc(S.notes_customer)}</p></div>`;
+
+  // Per-clause initial lines — same statements the online sign form collects,
+  // printed with a blank line so a paper copy works for in-person signing too.
+  const printInitials = (S.contract_initials||[]).filter(i => (i.text||'').trim());
+  if (printInitials.length) {
+    ph+=`<div class="p-initials">
+      <h3>Please Initial Each Item Below</h3>
+      ${printInitials.map((it,idx)=>`<div class="p-initial-row">
+        <span class="p-initial-num">${idx+1}</span>
+        <span class="p-initial-text">${esc(it.text)}</span>
+        <div class="p-initial-sig"><div class="p-initial-line"></div><span class="p-initial-cap">Initials</span></div>
+      </div>`).join('')}
+    </div>`;
+  }
+
   ph+=`<div class="p-signatures">
     <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Homeowner Signature</div>
       <div class="p-sig-date"><div><div class="p-sig-date-line"></div><span>Date</span></div></div></div>

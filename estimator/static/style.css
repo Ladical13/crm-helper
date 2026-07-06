@@ -1182,6 +1182,24 @@ input#cover-file-input { display: none; }
   .p-photo-fig { break-inside: avoid; }
   .p-photo-fig img { width: 100%; border-radius: 4pt; border: .5pt solid #d1d5db; display: block; }
   .p-photo-fig figcaption { font-size: 9pt; color: #444; margin-top: 4pt; text-align: center; font-weight: 500; }
+
+  /* Per-clause initial lines — printed so a paper copy works for in-person signing */
+  .p-initials { margin-top: 20pt; page-break-inside: avoid; }
+  .p-initials h3 {
+    font-size: 10pt; font-weight: 700; color: #1a3a5c; text-transform: uppercase;
+    letter-spacing: .5pt; margin-bottom: 10pt; padding-bottom: 4pt; border-bottom: 1pt solid #d1d5db;
+  }
+  .p-initial-row { display: flex; align-items: flex-start; gap: 10pt; margin-bottom: 11pt; page-break-inside: avoid; }
+  .p-initial-num {
+    flex-shrink: 0; width: 15pt; height: 15pt; margin-top: 1pt; border-radius: 50%;
+    background: #1a3a5c; color: #fff; font-size: 8pt; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .p-initial-text { flex: 1; font-size: 9.5pt; color: #222; line-height: 1.4; }
+  .p-initial-sig { flex-shrink: 0; width: 74pt; display: flex; flex-direction: column; align-items: center; gap: 2pt; }
+  .p-initial-line { width: 100%; border-bottom: 1pt solid #333; height: 15pt; }
+  .p-initial-cap { font-size: 6.5pt; color: #888; text-transform: uppercase; letter-spacing: .4pt; }
+
   .p-signatures { margin-top: 28pt; display: grid; grid-template-columns: 1fr 1fr; gap: 24pt; page-break-inside: avoid; }
   .p-sig-block { display: flex; flex-direction: column; gap: 3pt; }
   .p-sig-line { border-bottom: 1pt solid #333; height: 28pt; }
