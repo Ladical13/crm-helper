@@ -7,9 +7,11 @@ import sqlite3
 import io
 from datetime import datetime, timedelta
 from functools import wraps
+from urllib.parse import quote
 
 from flask import Flask, request, jsonify, send_from_directory, session
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 try:
     import requests as http
@@ -18,6 +20,11 @@ except ImportError:
 
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.environ.get('SESSION_SECRET', secrets.token_hex(32))
+# Railway (and most PaaS) terminate TLS at the edge and forward plain HTTP to
+# the container, only setting X-Forwarded-Proto/Host. Without ProxyFix, Flask
+# thinks every request is http:// — which corrupts any absolute URL we build
+# (e.g. invite links) even when the visitor is on https://.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
@@ -203,20 +210,26 @@ def signup():
 
 # ── Invites (admin) ───────────────────────────────────────────────────────────
 
+def _build_invite_link(code, username):
+    link = request.host_url.rstrip('/') + '/?invite=' + quote(code, safe='')
+    if username:
+        link += '&u=' + quote(username, safe='')
+    return link
+
 @app.route('/api/invites', methods=['POST'])
 @admin_required
 def create_invite():
     data = request.get_json(force=True)
     username = (data.get('username') or '').strip().lower()
+    if any(c.isspace() for c in username):
+        return jsonify({'error': 'Rep name should be their login username (no spaces), e.g. "bryan" — leave blank for an open invite'}), 400
     days = min(int(data.get('expires_days') or 7), 30)
     code = secrets.token_urlsafe(8)
     expires = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
     with get_db() as db:
         db.execute('INSERT INTO invites (code, username, created_by, created_at, expires_at) VALUES (?,?,?,?,?)',
                    (code, username, session['username'], _now(), expires))
-    link = request.host_url.rstrip('/') + '/?invite=' + code
-    if username:
-        link += '&u=' + username
+    link = _build_invite_link(code, username)
     return jsonify({'code': code, 'username': username, 'expires_at': expires, 'link': link}), 201
 
 @app.route('/api/invites')
@@ -229,8 +242,7 @@ def list_invites():
         d = dict(r)
         d['status'] = ('used' if d['used_by'] else
                        'expired' if d['expires_at'] <= _now() else 'active')
-        d['link'] = request.host_url.rstrip('/') + '/?invite=' + d['code'] + \
-                    ('&u=' + d['username'] if d['username'] else '')
+        d['link'] = _build_invite_link(d['code'], d['username'])
         out.append(d)
     return jsonify(out)
 
