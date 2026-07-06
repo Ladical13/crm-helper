@@ -364,6 +364,36 @@ html, body {
   width: 34px; height: 34px; font-size: 13px;
 }
 
+/* ── Manage Team ── */
+.team-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.team-row-info { flex: 1; min-width: 0; }
+.team-row-name { font-weight: 700; font-size: 14px; }
+.team-row-sub  { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.admin-tag {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  background: #10B981; color: #fff; padding: 2px 6px; border-radius: 8px;
+  vertical-align: middle;
+}
+.mini-btn {
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface2); color: var(--text);
+  font-size: 12px; font-weight: 600; cursor: pointer; flex-shrink: 0;
+}
+.mini-btn.danger { color: #f85149; border-color: #f8514966; }
+.mini-btn:active { opacity: .7; }
+.team-empty { font-size: 13px; color: var(--muted); padding: 10px 0; }
+.invite-link-box {
+  background: var(--bg); border: 1px solid #10B981; border-radius: 8px;
+  padding: 12px; margin-top: 12px;
+}
+#invite-link-text {
+  font-family: ui-monospace, monospace; font-size: 12px;
+  word-break: break-all; color: #10B981; margin-bottom: 10px;
+}
+
 /* ── Live team markers ── */
 .team-marker {
   position: relative;

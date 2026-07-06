@@ -78,6 +78,15 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS pins_rep_idx ON pins(rep);
             CREATE INDEX IF NOT EXISTS pins_type_idx ON pins(pin_type);
+            CREATE TABLE IF NOT EXISTS invites (
+                code       TEXT PRIMARY KEY,
+                username   TEXT DEFAULT '',
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used_by    TEXT DEFAULT '',
+                used_at    TEXT DEFAULT ''
+            );
             CREATE TABLE IF NOT EXISTS hail_cache (
                 date TEXT PRIMARY KEY,
                 features_json TEXT NOT NULL,
@@ -153,16 +162,26 @@ def logout():
 
 @app.route('/api/signup', methods=['POST'])
 def signup():
-    if not SIGNUP_CODE:
-        return jsonify({'error': 'Signups are closed'}), 403
     data = request.get_json(force=True)
     code     = (data.get('signup_code') or '').strip()
     username = (data.get('username') or '').strip().lower()
     password = data.get('password') or ''
-    if code != SIGNUP_CODE:
-        return jsonify({'error': 'Invalid signup code'}), 403
     if not username or not password or len(password) < 6:
         return jsonify({'error': 'Username and password (min 6 chars) required'}), 400
+
+    # Accept either a personal invite code or the legacy shared signup code
+    invite = None
+    with get_db() as db:
+        invite = db.execute(
+            "SELECT * FROM invites WHERE code=? AND used_by='' AND expires_at > ?",
+            (code, _now())).fetchone()
+    if invite:
+        # Invite may be locked to a specific username
+        if invite['username'] and invite['username'] != username:
+            return jsonify({'error': f"This invite is for '{invite['username']}'"}), 403
+    elif not (SIGNUP_CODE and code == SIGNUP_CODE):
+        return jsonify({'error': 'Invalid or expired invite code'}), 403
+
     with get_db() as db:
         existing = db.execute('SELECT username FROM users WHERE username=?', (username,)).fetchone()
         if existing:
@@ -174,10 +193,53 @@ def signup():
             'INSERT INTO users (username, pw_hash, is_admin, created_at) VALUES (?,?,?,?)',
             (username, generate_password_hash(password), is_admin, _now())
         )
+        if invite:
+            db.execute('UPDATE invites SET used_by=?, used_at=? WHERE code=?',
+                       (username, _now(), invite['code']))
     session.permanent = True
     session['username'] = username
     session['is_admin'] = bool(is_admin)
     return jsonify({'username': username, 'is_admin': bool(is_admin)}), 201
+
+# ── Invites (admin) ───────────────────────────────────────────────────────────
+
+@app.route('/api/invites', methods=['POST'])
+@admin_required
+def create_invite():
+    data = request.get_json(force=True)
+    username = (data.get('username') or '').strip().lower()
+    days = min(int(data.get('expires_days') or 7), 30)
+    code = secrets.token_urlsafe(8)
+    expires = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    with get_db() as db:
+        db.execute('INSERT INTO invites (code, username, created_by, created_at, expires_at) VALUES (?,?,?,?,?)',
+                   (code, username, session['username'], _now(), expires))
+    link = request.host_url.rstrip('/') + '/?invite=' + code
+    if username:
+        link += '&u=' + username
+    return jsonify({'code': code, 'username': username, 'expires_at': expires, 'link': link}), 201
+
+@app.route('/api/invites')
+@admin_required
+def list_invites():
+    with get_db() as db:
+        rows = db.execute('SELECT * FROM invites ORDER BY created_at DESC LIMIT 50').fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['status'] = ('used' if d['used_by'] else
+                       'expired' if d['expires_at'] <= _now() else 'active')
+        d['link'] = request.host_url.rstrip('/') + '/?invite=' + d['code'] + \
+                    ('&u=' + d['username'] if d['username'] else '')
+        out.append(d)
+    return jsonify(out)
+
+@app.route('/api/invites/<code>', methods=['DELETE'])
+@admin_required
+def revoke_invite(code):
+    with get_db() as db:
+        db.execute('DELETE FROM invites WHERE code=?', (code,))
+    return jsonify({'ok': True})
 
 @app.route('/api/me')
 def me():
@@ -203,6 +265,28 @@ def reset_user(username):
     with get_db() as db:
         db.execute('UPDATE users SET pw_hash=? WHERE username=?',
                    (generate_password_hash(new_pw), username))
+    return jsonify({'ok': True})
+
+@app.route('/api/users/<username>/admin', methods=['POST'])
+@admin_required
+def set_admin(username):
+    if username == session['username']:
+        return jsonify({'error': "You can't change your own admin status"}), 400
+    data = request.get_json(force=True)
+    with get_db() as db:
+        db.execute('UPDATE users SET is_admin=? WHERE username=?',
+                   (1 if data.get('is_admin') else 0, username))
+    return jsonify({'ok': True})
+
+@app.route('/api/users/<username>', methods=['DELETE'])
+@admin_required
+def delete_user(username):
+    if username == session['username']:
+        return jsonify({'error': "You can't delete yourself"}), 400
+    with get_db() as db:
+        db.execute('DELETE FROM users WHERE username=?', (username,))
+        db.execute('DELETE FROM rep_locations WHERE username=?', (username,))
+        # Pins are kept — historical knock data stays on the leaderboard/map
     return jsonify({'ok': True})
 
 # ── Pin endpoints ─────────────────────────────────────────────────────────────

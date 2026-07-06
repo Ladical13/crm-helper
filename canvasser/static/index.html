@@ -60,6 +60,7 @@
       <button class="menu-item" id="hail-overlay-btn">🌩️ Hail Overlay</button>
       <button class="menu-item" id="hail-address-btn">🔍 Hail by Address</button>
       <button class="menu-item" id="team-toggle-btn">👥 Team Locations: <span id="team-toggle-state">On</span></button>
+      <button class="menu-item hidden" id="team-admin-btn">🔑 Manage Team</button>
       <div class="menu-section-title">Filter by Rep</div>
       <div id="rep-filter-list"></div>
       <button class="menu-item danger-item" id="logout-btn">Sign Out</button>
@@ -161,6 +162,33 @@
         </div>
         <div id="hail-status" class="status-msg"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- ── Manage Team Panel (admin) ── -->
+  <div id="team-admin-panel" class="overlay-panel hidden">
+    <div class="panel-header">
+      <span>🔑 Manage Team</span>
+      <button class="icon-btn close-overlay" data-target="team-admin-panel">✕</button>
+    </div>
+    <div class="panel-body">
+      <div class="menu-section-title" style="padding-left:0">Invite a Rep</div>
+      <div class="field-group">
+        <label>Rep name <span class="optional">(optional — locks the invite to this username)</span></label>
+        <input type="text" id="invite-username" placeholder="e.g. bryan" autocapitalize="none">
+      </div>
+      <button class="btn-primary" id="create-invite-btn">Create Invite Link</button>
+      <div id="invite-result" class="hidden">
+        <div class="invite-link-box">
+          <div id="invite-link-text"></div>
+          <button class="btn-secondary" id="copy-invite-btn">📋 Copy Link</button>
+        </div>
+        <p class="modal-hint">Text this link to the rep — it expires in 7 days. They'll pick their own password.</p>
+      </div>
+      <div class="menu-section-title" style="padding-left:0;margin-top:10px">Pending Invites</div>
+      <div id="invite-list"><div class="loading-msg">Loading...</div></div>
+      <div class="menu-section-title" style="padding-left:0;margin-top:10px">Team Members</div>
+      <div id="team-user-list"><div class="loading-msg">Loading...</div></div>
     </div>
   </div>
 

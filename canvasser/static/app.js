@@ -32,6 +32,14 @@ async function boot() {
 
 function showLogin() {
   show('login-screen'); hide('app');
+  // Invite link support: /?invite=CODE&u=username prefills the signup form
+  const params = new URLSearchParams(window.location.search);
+  const invite = params.get('invite');
+  if (invite) {
+    $('signup-code').value = invite;
+    if (params.get('u')) $('login-username').value = params.get('u');
+    $('signup-password').focus();
+  }
 }
 
 $('login-btn').addEventListener('click', async () => {
@@ -73,6 +81,9 @@ function showApp() {
   initMap();
   loadPins();
   startTeamTracking();
+  if (currentUser.is_admin) show('team-admin-btn');
+  // Clean invite params off the URL after login
+  if (window.location.search) history.replaceState(null, '', window.location.pathname);
 }
 
 function buildQuickBtns() {
@@ -752,6 +763,116 @@ function renderHailAddressResults(data) {
 
 function hailColorHex(size) { return hailColor(size); }
 
+// ── Manage Team (admin) ────────────────────────────────────────────────────
+
+$('team-admin-btn').addEventListener('click', () => {
+  hide('side-menu');
+  hide('invite-result');
+  $('invite-username').value = '';
+  show('team-admin-panel');
+  refreshInvites();
+  refreshTeamUsers();
+});
+
+$('create-invite-btn').addEventListener('click', async () => {
+  try {
+    const inv = await api('/api/invites', 'POST', { username: $v('invite-username') });
+    $('invite-link-text').textContent = inv.link;
+    show('invite-result');
+    refreshInvites();
+  } catch(e) {
+    alert('Failed to create invite: ' + e.message);
+  }
+});
+
+$('copy-invite-btn').addEventListener('click', async () => {
+  const link = $('invite-link-text').textContent;
+  try {
+    await navigator.clipboard.writeText(link);
+    $('copy-invite-btn').textContent = '✓ Copied!';
+  } catch(e) {
+    // Clipboard API unavailable (http / old browser) — fall back to select
+    prompt('Copy this link:', link);
+  }
+  setTimeout(() => { $('copy-invite-btn').textContent = '📋 Copy Link'; }, 2000);
+});
+
+async function refreshInvites() {
+  try {
+    const invites = await api('/api/invites');
+    const pending = invites.filter(i => i.status === 'active');
+    $('invite-list').innerHTML = pending.length ? pending.map(i => `
+      <div class="team-row">
+        <div class="team-row-info">
+          <div class="team-row-name">${i.username ? displayName(i.username) : 'Open invite'}</div>
+          <div class="team-row-sub">expires ${i.expires_at.split('T')[0]}</div>
+        </div>
+        <button class="mini-btn" onclick="copyInviteLink('${i.link}')">Copy</button>
+        <button class="mini-btn danger" onclick="revokeInvite('${i.code}')">Revoke</button>
+      </div>`).join('')
+      : '<div class="team-empty">No pending invites.</div>';
+  } catch(e) {
+    $('invite-list').innerHTML = '<div class="team-empty">Failed to load.</div>';
+  }
+}
+
+async function copyInviteLink(link) {
+  try { await navigator.clipboard.writeText(link); alert('Link copied!'); }
+  catch(e) { prompt('Copy this link:', link); }
+}
+
+async function revokeInvite(code) {
+  if (!confirm('Revoke this invite?')) return;
+  await api(`/api/invites/${code}`, 'DELETE', null);
+  refreshInvites();
+}
+
+async function refreshTeamUsers() {
+  try {
+    const users = await api('/api/users');
+    $('team-user-list').innerHTML = users.map(u => {
+      const isMe = u.username === currentUser.username;
+      return `
+      <div class="team-row">
+        <div class="team-row-info">
+          <div class="team-row-name">${displayName(u.username)}${u.is_admin ? ' <span class="admin-tag">admin</span>' : ''}${isMe ? ' (you)' : ''}</div>
+          <div class="team-row-sub">joined ${(u.created_at || '').split('T')[0]}</div>
+        </div>
+        ${isMe ? '' : `
+          <button class="mini-btn" onclick="resetUserPw('${u.username}')">Reset PW</button>
+          <button class="mini-btn" onclick="toggleAdmin('${u.username}', ${u.is_admin ? 'false' : 'true'})">${u.is_admin ? 'Demote' : 'Admin'}</button>
+          <button class="mini-btn danger" onclick="removeUser('${u.username}')">✕</button>`}
+      </div>`;
+    }).join('');
+  } catch(e) {
+    $('team-user-list').innerHTML = '<div class="team-empty">Failed to load.</div>';
+  }
+}
+
+async function resetUserPw(username) {
+  const pw = prompt(`New password for ${displayName(username)} (6+ chars):`);
+  if (!pw) return;
+  try {
+    await api(`/api/users/${username}/reset`, 'POST', { password: pw });
+    alert('Password reset.');
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+async function toggleAdmin(username, makeAdmin) {
+  try {
+    await api(`/api/users/${username}/admin`, 'POST', { is_admin: makeAdmin });
+    refreshTeamUsers();
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+async function removeUser(username) {
+  if (!confirm(`Remove ${displayName(username)}? Their pins stay on the map.`)) return;
+  try {
+    await api(`/api/users/${username}`, 'DELETE', null);
+    refreshTeamUsers();
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
 // ── Menu & overlays ────────────────────────────────────────────────────────
 
 $('menu-btn').addEventListener('click', () => {
@@ -850,8 +971,13 @@ function timeAgo(isoStr) {
 
 // ── Start ──────────────────────────────────────────────────────────────────
 
-window.openEditPin = openEditPin;
-window.syncToCRM   = syncToCRM;
-window.jumpToPin   = jumpToPin;
+window.openEditPin    = openEditPin;
+window.syncToCRM      = syncToCRM;
+window.jumpToPin      = jumpToPin;
+window.copyInviteLink = copyInviteLink;
+window.revokeInvite   = revokeInvite;
+window.resetUserPw    = resetUserPw;
+window.toggleAdmin    = toggleAdmin;
+window.removeUser     = removeUser;
 
 boot();
