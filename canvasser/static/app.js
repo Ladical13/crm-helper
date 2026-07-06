@@ -258,6 +258,16 @@ function openDropPinModal(latlng, defaultType) {
   });
 
   show('drop-pin-modal');
+
+  // Auto-fill the address from the tapped location (best-effort)
+  if (latlng) {
+    api(`/api/geocode/reverse?lat=${latlng.lat}&lng=${latlng.lng}`)
+      .then(a => {
+        const parts = [a.street, a.city, a.state].filter(Boolean).join(', ');
+        if (parts && !$('pin-address').value) $('pin-address').value = parts;
+      })
+      .catch(() => {});
+  }
 }
 
 function updateContactFieldsVisibility() {
@@ -266,6 +276,37 @@ function updateContactFieldsVisibility() {
 }
 
 $('close-drop-modal').addEventListener('click', () => hide('drop-pin-modal'));
+
+// Hail lookup for the tapped structure — uses the exact tap coordinates
+$('hail-here-btn').addEventListener('click', async () => {
+  let lat, lng;
+  if (pendingLatLng) {
+    lat = pendingLatLng.lat; lng = pendingLatLng.lng;
+  } else {
+    try {
+      const pos = await getGPS();
+      lat = pos.coords.latitude; lng = pos.coords.longitude;
+    } catch(e) {
+      const c = map.getCenter(); lat = c.lat; lng = c.lng;
+    }
+  }
+  hide('drop-pin-modal');
+  $('hail-address-input').value = $('pin-address').value || '';
+  $('hail-address-results').innerHTML = '';
+  $('hail-address-status').textContent = 'Checking hail history at this spot... (first search on a new area can take ~30s)';
+  show('hail-address-modal');
+  try {
+    const days   = $v('hail-address-days')   || 365;
+    const radius = $v('hail-address-radius') || 10;
+    const data = await api(`/api/hail/address?lat=${lat}&lng=${lng}&days=${days}&radius=${radius}`);
+    // Show the tapped address (or coords) as the result label
+    if (!data.resolved) data.resolved = $('pin-address').value || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    if (!data.query)    data.query    = data.resolved;
+    renderHailAddressResults(data);
+  } catch(e) {
+    $('hail-address-status').textContent = 'Lookup failed: ' + e.message;
+  }
+});
 
 $('save-pin-btn').addEventListener('click', async () => {
   let lat, lng;

@@ -512,6 +512,35 @@ def geocode():
     except Exception as e:
         return jsonify({'error': str(e)}), 502
 
+@app.route('/api/geocode/reverse')
+@login_required
+def reverse_geocode():
+    """lat/lng → street address via Nominatim."""
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+    if lat is None or lng is None:
+        return jsonify({'error': 'lat/lng required'}), 400
+    if not http:
+        return jsonify({'error': 'requests library not available'}), 500
+    try:
+        r = http.get('https://nominatim.openstreetmap.org/reverse',
+                     params={'lat': lat, 'lon': lng, 'format': 'json', 'zoom': 18},
+                     headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofing.com)'},
+                     timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        addr = data.get('address', {})
+        street = ' '.join(x for x in [addr.get('house_number'), addr.get('road')] if x)
+        return jsonify({
+            'display_name': data.get('display_name', ''),
+            'street': street,
+            'city': addr.get('city') or addr.get('town') or addr.get('village') or '',
+            'state': addr.get('state', ''),
+            'zip': addr.get('postcode', ''),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 502
+
 @app.route('/api/hail/address')
 @login_required
 def hail_at_address():
