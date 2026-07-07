@@ -592,7 +592,7 @@ function switchPage(page) {
   if (page === 'options')  renderOptionsPage();
   if (page === 'products') renderProductsPage();
   if (page === 'report')   renderConditionPage();
-  if (page === 'permits')  renderPermitsPage();
+  if (page === 'documents') renderDocumentsPage();
 }
 
 function pageComplete(page) {
@@ -608,6 +608,7 @@ function pageComplete(page) {
     case 'pricing':  return grandTotal(S.selected_tier) > 0 || insuranceTotal() > 0;
     case 'contract': return !!(S.contract_text && S.contract_text.trim());
     case 'report':   return !!(S.roof_health?.condition);
+    case 'documents': return (S.attachments||[]).length > 0;
     default: return false;
   }
 }
@@ -4132,6 +4133,7 @@ async function attDelete(id){
   try{await fetch(`/api/uploads/${parts[0]}/${parts[1]}`,{method:'DELETE'});}catch{}
   S.attachments=(S.attachments||[]).filter(x=>x.id!==id);
   setDirty(); renderPhotos();
+  if (activePage === 'documents') renderDocumentsPage();
 }
 function photoCaption(id,v){ const p=S.photos.find(x=>x.id===id);if(p){p.caption=v;setDirty();} }
 function photoToggle(id,v){ const p=S.photos.find(x=>x.id===id);if(p){p.show_in_estimate=v;setDirty();warmPrintPhotos();} }
@@ -5885,7 +5887,6 @@ async function renderHomePage() {
     ${stale.length ? `<div class="home-followup-alert" onclick="openDashboard()">
       ⚠ ${stale.length} estimate${stale.length!==1?'s':''} need${stale.length===1?'s':''} follow-up</div>` : ''}
     <button class="home-new-btn" onclick="newEstimateAction()">📝 New Estimate</button>
-    <button class="home-permit-btn" onclick="switchPage('permits')">📋 Loveland Permit</button>
     <div class="home-search-wrap">
       <input type="text" class="home-search-input" id="home-cust-search"
         placeholder="🔍 Search customer by name or address…"
@@ -6321,12 +6322,106 @@ async function applyRoofrImport() {
   closeRoofrModal();
 }
 
-/* ── Permits page (City of Loveland permit & affidavit filler) ─────────
+/* ── Documents page (per-job document hub) ─────────────────────────────
+   Each job's PDF documents in one place: uploads (S.attachments — the
+   same list the customer estimate links to) plus generated documents.
+   Generators live behind "Create a document" cards so job-specific
+   paperwork (like the Loveland permit) only appears when you ask for
+   it. Work orders and material order sheets slot in here later as new
+   cards — add a card + a form renderer, nothing else changes. */
+
+let _docGenerator = null;   // which generator form is open: 'permit' | null
+
+function renderDocumentsPage() {
+  const el = document.getElementById('documents-content');
+  if (!el) return;
+  const atts = S.attachments || [];
+  el.innerHTML = `
+  <div class="pm-wrap">
+    <div class="panel">
+      <div class="panel-header"><h3>📁 Documents — ${esc((S.customer||{}).name || 'this job')}</h3>
+        <button class="doc-upload-btn" onclick="document.getElementById('doc-pdf-input').click()">📎 Upload PDF</button>
+        <input type="file" id="doc-pdf-input" accept="application/pdf,.pdf" multiple style="display:none"
+          onchange="docUploadPdf(this.files)">
+      </div>
+      ${atts.length ? atts.map(att => `
+      <div class="att-row">
+        <span class="att-icon">📄</span>
+        <input type="text" class="att-label" value="${esc(att.label||att.original_name||'Document')}"
+          onchange="attSetLabel('${att.id}',this.value)" placeholder="Document name">
+        <label class="att-show" title="Show this document to the customer on their estimate">
+          <input type="checkbox" ${att.show_in_estimate!==false?'checked':''}
+            onchange="attToggle('${att.id}',this.checked)"> Customer
+        </label>
+        <a class="att-view" href="/uploads/${esc(att.filename)}" target="_blank" rel="noopener">View</a>
+        <button class="att-del" onclick="attDelete('${att.id}')" title="Remove">×</button>
+      </div>`).join('')
+      : '<p class="pm-hint">No documents yet — upload a PDF or create one below.</p>'}
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><h3>➕ Create a document</h3></div>
+      <div class="doc-cards">
+        <button class="doc-card ${_docGenerator==='permit'?'doc-card-active':''}" onclick="docToggleGenerator('permit')">
+          <span class="doc-card-icon">🏛</span>
+          <span class="doc-card-name">Loveland Permit &amp; Affidavit</span>
+          <span class="doc-card-sub">City reroof packet, auto-filled from this job</span>
+        </button>
+        <div class="doc-card doc-card-soon" title="Coming soon">
+          <span class="doc-card-icon">🛠</span>
+          <span class="doc-card-name">Work Order</span>
+          <span class="doc-card-sub">Coming soon</span>
+        </div>
+        <div class="doc-card doc-card-soon" title="Coming soon">
+          <span class="doc-card-icon">📦</span>
+          <span class="doc-card-name">Material Order Sheet</span>
+          <span class="doc-card-sub">Coming soon</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="permit-form-container"></div>
+  </div>`;
+  if (_docGenerator === 'permit') renderPermitForm();
+}
+
+function docToggleGenerator(which) {
+  _docGenerator = (_docGenerator === which) ? null : which;
+  if (_docGenerator === 'permit') {
+    // Fresh open on a job: prefill from the estimate once per estimate
+    if (!PermitState || PermitState.linked_estimate !== (S.estimate_id || '__none__')) {
+      PermitState = null;  // rebuild with current defaults, then prefill below
+    }
+  }
+  renderDocumentsPage();
+}
+
+async function docUploadPdf(files) {
+  if (!files || !files.length) return;
+  if (!S.estimate_id) await saveEstimate();
+  for (const file of Array.from(files)) {
+    const fd = new FormData(); fd.append('file', file);
+    try {
+      const r = await fetch(`/api/uploads/${S.estimate_id}`, {method:'POST', body: fd});
+      if (!r.ok) throw new Error((await r.json()).error || 'Upload failed');
+      const res = await r.json();
+      if (!Array.isArray(S.attachments)) S.attachments = [];
+      S.attachments.push({id: uid(), filename: res.filename, original_name: file.name,
+        label: file.name.replace(/\.pdf$/i,''), show_in_estimate: false});
+      setDirty();
+    } catch(e) { alert(`Could not upload ${file.name}: ${e.message}`); }
+  }
+  const inp = document.getElementById('doc-pdf-input'); if (inp) inp.value = '';
+  renderDocumentsPage();
+}
+
+/* ── Loveland permit & affidavit generator ─────────────────────────────
    Fills the city's flat 2-page reroof packet server-side (POST
-   /api/permits/loveland/generate) and downloads the finished PDF. The
-   template is pre-signed, so no signature capture is needed — only the
-   job-specific blanks. Roofing-spec fields load sticky company defaults
-   from /api/permit-defaults (manager-editable via "Save as defaults"). */
+   /api/permits/loveland/generate), downloads the finished PDF, and
+   files it into this job's Documents. The template is pre-signed, so
+   no signature capture is needed — only the job-specific blanks.
+   Roofing-spec fields load sticky company defaults from
+   /api/permit-defaults (manager-editable via "Save as defaults"). */
 
 let PermitState = null;
 let _permitDefaults = null;
@@ -6363,7 +6458,7 @@ function _newPermitState() {
 function permitSet(key, val) {
   if (!PermitState) return;
   PermitState[key] = val;
-  if (key === 'owner_same_address') renderPermitsPage();
+  if (key === 'owner_same_address') renderPermitForm();
 }
 
 function permitPrefillFromEstimate() {
@@ -6386,8 +6481,8 @@ function permitPrefillFromEstimate() {
   const colors = ((S.trades || {}).roofing || {}).colors || {};
   const parts = [colors.brand, colors.model].filter(v => String(v||'').trim());
   if (parts.length) PermitState.roof_covering_type = 'Asphalt Composition Shingle - ' + parts.join(' ');
-  PermitState.linked_estimate = S.estimate_id || null;
-  renderPermitsPage();
+  PermitState.linked_estimate = S.estimate_id || '__none__';
+  renderPermitForm();
 }
 
 let _permitSearchTimer = null;
@@ -6419,20 +6514,23 @@ function permitPickContact(jsonStr) {
   PermitState.job_city    = c.city  || 'Loveland';
   PermitState.job_state   = c.state || 'CO';
   PermitState.job_zip     = c.zip_code || '';
-  PermitState.linked_estimate = null;
-  renderPermitsPage();
+  renderPermitForm();
 }
 
-async function renderPermitsPage() {
-  const el = document.getElementById('permits-content');
+async function renderPermitForm() {
+  const el = document.getElementById('permit-form-container');
   if (!el) return;
   if (!_permitDefaults) {
     try { _permitDefaults = await (await fetch('/api/permit-defaults')).json(); }
     catch { _permitDefaults = {}; }
   }
-  if (!PermitState) PermitState = _newPermitState();
+  if (!PermitState) {
+    PermitState = _newPermitState();
+    // Opening on a job with a customer: fill from the estimate automatically
+    if (S && S.customer && S.customer.name) { permitPrefillFromEstimate(); return; }
+    PermitState.linked_estimate = S.estimate_id || '__none__';
+  }
   const P = PermitState;
-  const hasEstimate = !!(S && S.customer && S.customer.name);
   const inp = (key, ph, extra='') =>
     `<input type="text" value="${esc(String(P[key] ?? ''))}" placeholder="${ph}"
        oninput="permitSet('${key}', this.value)" ${extra}>`;
@@ -6440,16 +6538,15 @@ async function renderPermitsPage() {
     `<input type="checkbox" ${P[key] ? 'checked' : ''} onchange="permitSet('${key}', this.checked)">`;
 
   el.innerHTML = `
-  <div class="pm-wrap">
+  <div class="pm-form">
     <div class="panel">
-      <div class="panel-header"><h3>📋 City of Loveland — Reroof Permit &amp; Affidavit</h3></div>
-      <p class="pm-hint">Fills the city's official 2-page packet (pre-signed template). Generate, then e-mail
-        the PDF to <b>eplan-buildingfasttrack@cityofloveland.org</b>.</p>
+      <div class="panel-header"><h3>🏛 City of Loveland — Reroof Permit &amp; Affidavit</h3></div>
+      <p class="pm-hint">Auto-filled from this job. Generate, then e-mail the PDF to
+        <b>eplan-buildingfasttrack@cityofloveland.org</b> — a copy is also filed under Documents.</p>
       <div class="pm-lookup">
-        <input type="text" id="pm-crm-q" placeholder="🔍 Look up homeowner in CRM (name, phone, or email)…"
+        <input type="text" id="pm-crm-q" placeholder="🔍 Different homeowner? Look up in CRM (name, phone, or email)…"
           oninput="permitCrmSearch(this.value)" autocomplete="off">
         <div id="pm-crm-results" class="pm-crm-results hidden"></div>
-        ${hasEstimate ? `<button class="pm-use-est" onclick="permitPrefillFromEstimate()">⤵ Use this estimate (${esc(S.customer.name)})</button>` : ''}
       </div>
     </div>
 
@@ -6507,9 +6604,9 @@ async function renderPermitsPage() {
       <div class="pm-row">
         <span class="pm-lbl">Roofing information:</span>
         <label class="pm-check"><input type="radio" name="pm-astm" ${P.astm_type==='asphalt'?'checked':''}
-          onchange="permitSet('astm_type','asphalt');renderPermitsPage()"> Asphalt shingles (ASTM D 3161 F / D 7158 H)</label>
+          onchange="permitSet('astm_type','asphalt');renderPermitForm()"> Asphalt shingles (ASTM D 3161 F / D 7158 H)</label>
         <label class="pm-check"><input type="radio" name="pm-astm" ${P.astm_type==='other'?'checked':''}
-          onchange="permitSet('astm_type','other');renderPermitsPage()"> Other</label>
+          onchange="permitSet('astm_type','other');renderPermitForm()"> Other</label>
         ${P.astm_type==='other' ? inp('astm_other_text','ASTM # or UL #','class="pm-inline"') : ''}
       </div>
       <div class="pm-grid">
@@ -6526,7 +6623,7 @@ async function renderPermitsPage() {
 
     <div class="pm-actions">
       <button class="pm-generate" onclick="permitGenerate(this)">📄 Generate Permit PDF</button>
-      <span class="pm-note">Downloads the filled 2-page packet, ready to e-mail to the city.</span>
+      <span class="pm-note">Downloads the filled packet and files a copy under this job's Documents.</span>
     </div>
   </div>`;
 }
@@ -6588,11 +6685,28 @@ async function permitGenerate(btn) {
     });
     if (!r.ok) throw new Error((await r.json()).error || r.statusText);
     const blob = await r.blob();
+    const fname = `Loveland_Permit_${(P.owner_name||'Permit').replace(/[^A-Za-z0-9 ]+/g,'').trim().replace(/ +/g,'_')}.pdf`;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `Loveland_Permit_${(P.owner_name||'Permit').replace(/[^A-Za-z0-9 ]+/g,'').trim().replace(/ +/g,'_')}.pdf`;
+    a.download = fname;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+    // File a copy into this job's Documents (internal — not customer-facing)
+    try {
+      if (!S.estimate_id) await saveEstimate();
+      const fd = new FormData();
+      fd.append('file', new File([blob], fname, {type: 'application/pdf'}));
+      const ur = await fetch(`/api/uploads/${S.estimate_id}`, {method: 'POST', body: fd});
+      if (ur.ok) {
+        const ures = await ur.json();
+        if (!Array.isArray(S.attachments)) S.attachments = [];
+        S.attachments.push({id: uid(), filename: ures.filename, original_name: fname,
+          label: `Loveland Permit — ${P.date || _permitToday()}`, show_in_estimate: false});
+        setDirty(); await saveEstimate();
+        _docGenerator = null;          // collapse the form; show the filed doc
+        renderDocumentsPage();
+      }
+    } catch(e) { console.warn('Could not file permit into Documents:', e); }
   } catch (e) {
     alert('Permit generation failed: ' + e.message);
   } finally {

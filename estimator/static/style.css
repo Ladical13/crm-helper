@@ -2914,13 +2914,28 @@ body.is-home #nav-toggle       { display: none; }
 .pm-generate:hover { background: #1e4976; }
 .pm-generate:disabled { opacity: .6; cursor: wait; }
 .pm-note { font-size: 12px; color: var(--text-light); }
-.home-permit-btn {
-  width: 100%; padding: 12px; background: #fff; color: #1a3a5c;
-  border: 2px solid #1a3a5c; border-radius: 10px; font-size: 15px; font-weight: 800;
-  cursor: pointer; transition: background .15s; margin-top: 8px;
-}
-.home-permit-btn:hover { background: #eef4fb; }
 @media (max-width: 640px) {
   .pm-grid { grid-template-columns: 1fr 1fr; }
   .pm-grid .pm-span2 { grid-column: span 2; }
 }
+
+/* ── Documents page ─────────────────────────────────────────────────── */
+.pm-form { display: flex; flex-direction: column; gap: 14px; }
+.doc-upload-btn {
+  padding: 7px 12px; font-size: 12px; font-weight: 700; cursor: pointer;
+  background: #eef4fb; color: #1a3a5c; border: 1px solid #c6d8ec; border-radius: 8px;
+}
+.doc-upload-btn:hover { background: #e0ecf9; }
+.doc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.doc-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  padding: 14px; background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  cursor: pointer; text-align: left; font-family: inherit; transition: border-color .12s, box-shadow .12s;
+}
+.doc-card:hover { border-color: #1a3a5c; box-shadow: 0 3px 10px rgba(26,58,92,.12); }
+.doc-card-active { border-color: #1a3a5c; box-shadow: 0 3px 10px rgba(26,58,92,.18); background: #f5f9fd; }
+.doc-card-icon { font-size: 22px; }
+.doc-card-name { font-size: 13px; font-weight: 800; color: var(--text); }
+.doc-card-sub { font-size: 11px; color: var(--text-light); }
+.doc-card-soon { opacity: .5; cursor: default; }
+.doc-card-soon:hover { border-color: var(--border); box-shadow: none; }
