@@ -582,6 +582,10 @@ function switchPage(page) {
   if (target) target.style.display = 'flex';
   // Home page hides sidebar/nav; all other pages restore them
   document.body.classList.toggle('is-home', page === 'home');
+  // Customer hub & Documents are "client mode": no estimate tab strip or
+  // sidebar — the hub itself carries the customer fields and the two doors
+  // (Estimate / Documents). The tab strip belongs to the estimate flow only.
+  document.body.classList.toggle('is-client', page === 'client' || page === 'documents');
   updatePageNav();
   const activeBtn = document.querySelector('.page-btn.active');
   if (activeBtn) activeBtn.scrollIntoView({block:'nearest',inline:'center',behavior:'smooth'});
@@ -593,6 +597,7 @@ function switchPage(page) {
   if (page === 'products') renderProductsPage();
   if (page === 'report')   renderConditionPage();
   if (page === 'documents') renderDocumentsPage();
+  if (page === 'client')   renderClientPage();
 }
 
 function pageComplete(page) {
@@ -609,6 +614,7 @@ function pageComplete(page) {
     case 'contract': return !!(S.contract_text && S.contract_text.trim());
     case 'report':   return !!(S.roof_health?.condition);
     case 'documents': return (S.attachments||[]).length > 0;
+    case 'client':   return !!(S.customer && S.customer.name);
     default: return false;
   }
 }
@@ -5240,7 +5246,7 @@ async function newEstimateAction() {
   activeTrade='roofing'; dirty=false;
   document.getElementById('save-indicator').textContent='';
   document.getElementById('save-indicator').className='save-indicator';
-  renderAll(); switchPage('cover');
+  renderAll(); switchPage('client');
 }
 
 async function openEstimate() {
@@ -5318,7 +5324,7 @@ async function doLoadEstimate(id) {
         if(i.measure === 'ridge' || i.measure === 'hip') i.measure = 'ridge_hip';
       });
     });
-    activeTrade='roofing'; closeModal(); setClean(); renderAll(); switchPage('cover');
+    activeTrade='roofing'; closeModal(); setClean(); renderAll(); switchPage('client');
     warmPrintPhotos();
   }catch(e){alert('Could not load estimate: '+e.message);}
 }
@@ -6322,6 +6328,113 @@ async function applyRoofrImport() {
   closeRoofrModal();
 }
 
+/* ── Customer hub (per-client landing page) ────────────────────────────
+   The first stop for every job: pick or type the customer, then choose
+   a door — 📝 Estimate (opens the estimate tab flow) or 📁 Documents
+   (permits, uploads, and future work orders / material orders). The
+   estimate tab strip and pricing sidebar stay hidden until the user
+   walks through the Estimate door (body.is-client CSS). */
+
+function clientSet(field, v) {
+  if (field === 'name') {
+    // Mirror the sidebar's rename guard for sent/signed estimates
+    if (S.share_token && S.customer.name && S.customer.name.trim() !== v.trim()) {
+      const action = S.signature ? 'SIGNED' : 'SENT';
+      if (!confirm(
+        `⚠ This estimate has already been ${action} to "${S.customer.name}".\n\n` +
+        `Changing the name to "${v}" will affect what the customer sees at their link.\n\n` +
+        `Use New Estimate to start a fresh estimate for a different customer.`
+      )) { renderClientPage(); return; }
+    }
+    S.customer.name = v;
+  }
+  else if (field === 'phone')  S.customer.phone = v;
+  else if (field === 'email')  S.customer.email = v;
+  else S.customer.address[field] = v;
+  setDirty(); renderSidebar(); renderCoverPage();
+  const hd = document.getElementById('client-hub-name');
+  if (hd) hd.textContent = S.customer.name || 'New Customer';
+}
+
+let _clientSearchTimer = null;
+function clientCrmSearch(q) {
+  clearTimeout(_clientSearchTimer);
+  const dd = document.getElementById('client-crm-dd');
+  if (!q || q.trim().length < 2) { if (dd) dd.classList.add('hidden'); return; }
+  _clientSearchTimer = setTimeout(async () => {
+    try {
+      const r = await fetch(`/api/crm/jobs?q=${encodeURIComponent(q.trim())}`);
+      const list = await r.json();
+      if (!dd) return;
+      dd.innerHTML = list.length ? list.map(p => `
+        <div class="crm-result" data-id="${esc(p.id)}">
+          <strong>${esc(p.client_name || p.name)}</strong>
+          <small>${esc([p.job_number, p.address].filter(Boolean).join(' · '))}</small>
+        </div>`).join('')
+        : '<div class="crm-no-results">No jobs found</div>';
+      dd.querySelectorAll('.crm-result').forEach(el =>
+        el.addEventListener('click', () => {
+          selectJob(list.find(p => p.id === el.dataset.id));
+          renderClientPage();
+        }));
+      dd.classList.remove('hidden');
+    } catch { if (dd) dd.classList.add('hidden'); }
+  }, 300);
+}
+
+function renderClientPage() {
+  const el = document.getElementById('client-content');
+  if (!el) return;
+  const c = S.customer || {name:'',phone:'',email:'',address:{}};
+  const a = c.address || {};
+  const inp = (field, val, ph, extra='') =>
+    `<input type="text" value="${esc(val || '')}" placeholder="${ph}"
+       onchange="clientSet('${field}', this.value)" ${extra}>`;
+  const started = !!(S.estimate_id || grandTotal(S.selected_tier) > 0 || insuranceTotal() > 0);
+  const docCount = (S.attachments || []).length;
+  el.innerHTML = `
+  <div class="client-hub">
+    <div class="client-hub-head">
+      <div class="client-hub-avatar">👤</div>
+      <div>
+        <div class="client-hub-name" id="client-hub-name">${esc(c.name || 'New Customer')}</div>
+        <div class="client-hub-sub">${S.estimate_id ? esc('EST-' + S.estimate_id.slice(0,4).toUpperCase() + ' · ' + (S.status || 'draft').toUpperCase()) : 'Not saved yet'}</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="pm-lookup">
+        <input type="text" id="client-crm-q" placeholder="🔍 Search CRM jobs — name / job # / address…"
+          oninput="clientCrmSearch(this.value)" autocomplete="off">
+        <div id="client-crm-dd" class="pm-crm-results hidden"></div>
+      </div>
+      <div class="pm-grid client-grid">
+        <div class="field-group pm-span2"><label>Name</label>${inp('name', c.name, 'Customer name')}</div>
+        <div class="field-group"><label>Phone</label>${inp('phone', c.phone, '970-555-1234')}</div>
+        <div class="field-group pm-span2"><label>Email</label>${inp('email', c.email, 'name@email.com')}</div>
+        <div class="field-group"></div>
+        <div class="field-group pm-span2"><label>Street</label>${inp('street', a.street, '123 Main St')}</div>
+        <div class="field-group"><label>City</label>${inp('city', a.city, 'Loveland')}</div>
+        <div class="field-group pm-state"><label>State</label>${inp('state', a.state, 'CO', 'maxlength="2"')}</div>
+        <div class="field-group"><label>Zip</label>${inp('zip', a.zip, '80537', 'maxlength="10"')}</div>
+      </div>
+    </div>
+
+    <div class="client-doors">
+      <button class="client-door" onclick="switchPage('cover')">
+        <span class="client-door-icon">📝</span>
+        <span class="client-door-name">${started ? 'Open Estimate' : 'Create Estimate'}</span>
+        <span class="client-door-sub">${started ? 'Continue where you left off' : 'Scope, pricing, contract & signing'}</span>
+      </button>
+      <button class="client-door" onclick="switchPage('documents')">
+        <span class="client-door-icon">📁</span>
+        <span class="client-door-name">Documents</span>
+        <span class="client-door-sub">${docCount ? docCount + ' document' + (docCount!==1?'s':'') + ' on file' : 'Permits, uploads & order sheets'}</span>
+      </button>
+    </div>
+  </div>`;
+}
+
 /* ── Documents page (per-job document hub) ─────────────────────────────
    Each job's PDF documents in one place: uploads (S.attachments — the
    same list the customer estimate links to) plus generated documents.
@@ -6338,6 +6451,7 @@ function renderDocumentsPage() {
   const atts = S.attachments || [];
   el.innerHTML = `
   <div class="pm-wrap">
+    <button class="doc-back" onclick="switchPage('client')">← ${esc((S.customer||{}).name || 'Customer')}</button>
     <div class="panel">
       <div class="panel-header"><h3>📁 Documents — ${esc((S.customer||{}).name || 'this job')}</h3>
         <button class="doc-upload-btn" onclick="document.getElementById('doc-pdf-input').click()">📎 Upload PDF</button>

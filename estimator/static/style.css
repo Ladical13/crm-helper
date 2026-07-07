@@ -2939,3 +2939,39 @@ body.is-home #nav-toggle       { display: none; }
 .doc-card-sub { font-size: 11px; color: var(--text-light); }
 .doc-card-soon { opacity: .5; cursor: default; }
 .doc-card-soon:hover { border-color: var(--border); box-shadow: none; }
+
+/* ── Customer hub (client-first landing) ────────────────────────────── */
+body.is-client #sidebar         { display: none !important; }
+body.is-client #app-layout      { grid-template-columns: 1fr; }
+body.is-client #main-content    { width: 100%; }
+body.is-client #page-nav        { display: none; }
+body.is-client #print-pages-bar { display: none; }
+body.is-client #nav-toggle      { display: none; }
+.client-hub { display: flex; flex-direction: column; gap: 14px; max-width: 760px; width: 100%; margin: 0 auto; padding-top: 10px; }
+.client-hub-head { display: flex; align-items: center; gap: 14px; }
+.client-hub-avatar {
+  width: 54px; height: 54px; border-radius: 50%; background: #eef4fb;
+  display: flex; align-items: center; justify-content: center; font-size: 26px;
+  border: 1px solid #c6d8ec;
+}
+.client-hub-name { font-size: 22px; font-weight: 800; color: var(--text); }
+.client-hub-sub { font-size: 12px; color: var(--text-light); }
+.client-grid { margin-top: 12px; }
+.client-doors { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding-bottom: 30px; }
+.client-door {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  padding: 22px; background: #fff; border: 2px solid var(--border); border-radius: 14px;
+  cursor: pointer; text-align: left; font-family: inherit;
+  transition: border-color .12s, box-shadow .12s, transform .08s;
+}
+.client-door:hover { border-color: #1a3a5c; box-shadow: 0 6px 18px rgba(26,58,92,.15); transform: translateY(-1px); }
+.client-door-icon { font-size: 30px; }
+.client-door-name { font-size: 17px; font-weight: 800; color: #1a3a5c; }
+.client-door-sub { font-size: 12px; color: var(--text-light); }
+.page-btn-client { font-weight: 700; }
+.doc-back {
+  align-self: flex-start; padding: 6px 12px; font-size: 13px; font-weight: 700;
+  background: none; border: none; color: #1a3a5c; cursor: pointer;
+}
+.doc-back:hover { text-decoration: underline; }
+@media (max-width: 640px) { .client-doors { grid-template-columns: 1fr; } }

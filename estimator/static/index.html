@@ -193,6 +193,10 @@
 
     <!-- Page navigation -->
     <nav id="page-nav">
+      <button class="page-btn page-btn-client" data-page="client" onclick="switchPage('client')">
+        👤 Customer
+      </button>
+      <span class="pg-sep">›</span>
       <button class="page-btn" data-page="cover"    onclick="switchPage('cover')">
         <span class="pg-num">1</span>Cover
       </button>
@@ -228,16 +232,17 @@
       <button class="page-btn" data-page="report" onclick="switchPage('report')">
         <span class="pg-num">9</span>Condition
       </button>
-      <span class="pg-sep">›</span>
-      <button class="page-btn" data-page="documents" onclick="switchPage('documents')">
-        <span class="pg-num">10</span>Documents
-      </button>
     </nav>
     <div id="print-pages-bar"></div>
 
     <!-- ── Home screen ───────────────────────────────────────────── -->
     <div id="page-home" class="page page-home" style="display:none">
       <div id="home-content"></div>
+    </div>
+
+    <!-- ── Customer hub (per-client landing: estimate or documents) ── -->
+    <div id="page-client" class="page" style="display:none">
+      <div id="client-content"></div>
     </div>
 
     <!-- ── Page 1: Cover ──────────────────────────────────────────── -->
