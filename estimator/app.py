@@ -3012,6 +3012,107 @@ def push_contract_to_crm(est_id):
         print(f'[crm-push] unexpected failure for {est_id}: {exc}')
 
 
+@app.route('/api/estimates/<est_id>/push-document', methods=['POST'])
+def push_document_to_crm(est_id):
+    """Upload one of the estimate's Document-tab PDFs to the Base44 CRM and
+    create a labeled Document record on the linked job (same pipeline the
+    signed-contract push uses). Synchronous — the Documents tab shows the
+    result immediately. Skips quietly when the estimate isn't CRM-linked."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'bad id'}), 400
+    path = os.path.join(ESTIMATES_DIR, f'{est_id}.json')
+    if not os.path.exists(path):
+        return jsonify({'error': 'Estimate not found'}), 404
+    with open(path, 'r', encoding='utf-8') as f:
+        est = json.load(f)
+    if not _can_touch_estimate(est):
+        return _forbid()
+
+    d = request.get_json(force=True)
+    filename = d.get('filename') or ''
+    label    = (d.get('label') or 'Document').strip()
+    doc_type = (d.get('doc_type') or 'other').strip()
+
+    proj_id = (est.get('customer', {}).get('crm_project_id')
+               or est.get('crm_project_id'))
+    if not proj_id:
+        return jsonify({'skipped': 'not_linked'})
+    if http is None:
+        return jsonify({'error': 'requests not installed on server'}), 500
+
+    # The filename must be one of this estimate's own attachments
+    att = next((a for a in est.get('attachments', []) if a.get('filename') == filename), None)
+    parts = filename.split('/')
+    if not att or len(parts) != 2 or parts[0] != est_id or not _safe_path_id(parts[1]):
+        return jsonify({'error': 'unknown document'}), 404
+    fpath = os.path.join(UPLOADS_DIR, parts[0], parts[1])
+    if not os.path.exists(fpath):
+        return jsonify({'error': 'file missing on server'}), 404
+
+    with open(fpath, 'rb') as f:
+        pdf_bytes = f.read()
+    cname = (est.get('customer', {}).get('name') or 'Customer').strip()
+    safe_label = ''.join(ch if ch.isalnum() or ch in ' -_' else '' for ch in label).strip().replace(' ', '_')
+    fname = f'{safe_label or "Document"}.pdf'
+
+    try:
+        r = http.post(f'{BASE_URL}/integrations/Core/UploadFile',
+                      headers=crm_headers(),
+                      files={'file': (fname, pdf_bytes, 'application/pdf')},
+                      timeout=60)
+        print(f'[crm-push-doc] upload status {r.status_code}: {r.text[:200]}')
+        r.raise_for_status()
+        resp = r.json()
+        file_url = (resp.get('file_url') or resp.get('url')
+                    or resp.get('file_uri') or resp.get('uri'))
+        if not file_url:
+            raise RuntimeError('no file_url in upload response')
+    except Exception as exc:
+        print(f'[crm-push-doc] file upload failed: {exc}')
+        return jsonify({'error': f'CRM file upload failed: {exc}'}), 502
+
+    doc = {
+        'name':              f'{label} - {cname}',
+        'type':              doc_type,
+        'project_id':        proj_id,
+        'file_url':          file_url,
+        'file_type':         'application/pdf',
+        'file_size':         len(pdf_bytes),
+        'description':       f'Uploaded from the Estimate Builder Documents tab by {_current_user()}.',
+        'share_with_client': False,
+    }
+    r2 = http.post(f'{BASE_URL}/entities/Document',
+                   headers={**crm_headers(), 'Content-Type': 'application/json'},
+                   json=doc, timeout=30)
+    if r2.status_code >= 400 and doc_type != 'other':
+        # Unknown Document.type values are the likely 4xx cause — retry generic
+        print(f'[crm-push-doc] create failed with type={doc_type!r} '
+              f'({r2.status_code}: {r2.text[:200]}) — retrying as "other"')
+        doc['type'] = 'other'
+        r2 = http.post(f'{BASE_URL}/entities/Document',
+                       headers={**crm_headers(), 'Content-Type': 'application/json'},
+                       json=doc, timeout=30)
+    print(f'[crm-push-doc] document create status {r2.status_code}: {r2.text[:200]}')
+    if r2.status_code >= 400:
+        return jsonify({'error': f'CRM document create failed ({r2.status_code})'}), 502
+    doc_id = (r2.json() or {}).get('id', '')
+
+    # Persist the link on the attachment server-side so it survives even if
+    # the client never saves again (client mirrors it into S as well).
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            est2 = json.load(f)
+        for a in est2.get('attachments', []):
+            if a.get('filename') == filename:
+                a['crm_document_id'] = doc_id
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(est2, f, indent=2)
+    except Exception:
+        pass
+    print(f'[crm-push-doc] SUCCESS — "{label}" pushed to CRM job {proj_id} (doc {doc_id})')
+    return jsonify({'crm_document_id': doc_id})
+
+
 @app.route('/api/estimates/<est_id>/signed', methods=['GET'])
 def view_signed_estimate(est_id):
     """Return the signed confirmation page (printable HTML for PDF download)."""

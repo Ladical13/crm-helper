@@ -6463,6 +6463,10 @@ function renderDocumentsPage() {
         <span class="att-icon">📄</span>
         <input type="text" class="att-label" value="${esc(att.label||att.original_name||'Document')}"
           onchange="attSetLabel('${att.id}',this.value)" placeholder="Document name">
+        ${att.crm_document_id
+          ? '<span class="doc-crm-chip" title="Filed in the CRM under this job">✓ CRM</span>'
+          : `<button class="doc-crm-push" onclick="pushDocToCrm('${att.id}')"
+               title="File this PDF in the CRM under the linked job">↗ CRM</button>`}
         <label class="att-show" title="Show this document to the customer on their estimate">
           <input type="checkbox" ${att.show_in_estimate!==false?'checked':''}
             onchange="attToggle('${att.id}',this.checked)"> Customer
@@ -6471,6 +6475,8 @@ function renderDocumentsPage() {
         <button class="att-del" onclick="attDelete('${att.id}')" title="Remove">×</button>
       </div>`).join('')
       : '<p class="pm-hint">No documents yet — upload a PDF or create one below.</p>'}
+      ${!((S.customer||{}).crm_project_id) && atts.length
+        ? '<p class="pm-hint">⚠ Not linked to a CRM job — documents stay local only. Link via the customer search to file them in the CRM.</p>' : ''}
     </div>
 
     <div class="panel">
@@ -6520,13 +6526,42 @@ async function docUploadPdf(files) {
       if (!r.ok) throw new Error((await r.json()).error || 'Upload failed');
       const res = await r.json();
       if (!Array.isArray(S.attachments)) S.attachments = [];
-      S.attachments.push({id: uid(), filename: res.filename, original_name: file.name,
-        label: file.name.replace(/\.pdf$/i,''), show_in_estimate: false});
+      const att = {id: uid(), filename: res.filename, original_name: file.name,
+        label: file.name.replace(/\.pdf$/i,''), show_in_estimate: false};
+      S.attachments.push(att);
       setDirty();
+      pushDocToCrm(att.id, {silent: true});   // auto-file in the CRM when job-linked
     } catch(e) { alert(`Could not upload ${file.name}: ${e.message}`); }
   }
   const inp = document.getElementById('doc-pdf-input'); if (inp) inp.value = '';
   renderDocumentsPage();
+}
+
+/* File a Documents-tab PDF in the Base44 CRM as a labeled Document record
+   on the linked job. Auto-runs on upload/generation (silent — skips when
+   the estimate isn't CRM-linked); the ↗ CRM button retries manually. */
+async function pushDocToCrm(attId, opts = {}) {
+  const att = (S.attachments || []).find(a => a.id === attId);
+  if (!att || att.crm_document_id || !S.estimate_id) return;
+  const docType = att.doc_type || (/permit/i.test(att.label || '') ? 'permit' : 'other');
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/push-document`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({filename: att.filename, label: att.label || att.original_name, doc_type: docType}),
+    });
+    const res = await r.json();
+    if (!r.ok) throw new Error(res.error || r.statusText);
+    if (res.skipped) {
+      if (!opts.silent) alert('This estimate isn\'t linked to a CRM job yet — use the customer search to link it, then try again.');
+      return;
+    }
+    att.crm_document_id = res.crm_document_id;
+    setDirty();
+    if (activePage === 'documents') renderDocumentsPage();
+  } catch(e) {
+    if (!opts.silent) alert('Could not file in CRM: ' + e.message);
+    else console.warn('CRM doc push skipped/failed:', e.message);
+  }
 }
 
 /* ── Loveland permit & affidavit generator ─────────────────────────────
@@ -6814,11 +6849,14 @@ async function permitGenerate(btn) {
       if (ur.ok) {
         const ures = await ur.json();
         if (!Array.isArray(S.attachments)) S.attachments = [];
-        S.attachments.push({id: uid(), filename: ures.filename, original_name: fname,
-          label: `Loveland Permit — ${P.date || _permitToday()}`, show_in_estimate: false});
+        const att = {id: uid(), filename: ures.filename, original_name: fname,
+          label: `Loveland Permit — ${P.date || _permitToday()}`,
+          doc_type: 'permit', show_in_estimate: false};
+        S.attachments.push(att);
         setDirty(); await saveEstimate();
         _docGenerator = null;          // collapse the form; show the filed doc
         renderDocumentsPage();
+        pushDocToCrm(att.id, {silent: true});   // auto-file in the CRM when job-linked
       }
     } catch(e) { console.warn('Could not file permit into Documents:', e); }
   } catch (e) {
