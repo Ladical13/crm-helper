@@ -228,6 +228,10 @@
       <button class="page-btn" data-page="report" onclick="switchPage('report')">
         <span class="pg-num">9</span>Condition
       </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="permits" onclick="switchPage('permits')">
+        <span class="pg-num">10</span>Permits
+      </button>
     </nav>
     <div id="print-pages-bar"></div>
 
@@ -303,6 +307,11 @@
     <!-- ── Page 8: Roof Health Report ───────────────────────────────── -->
     <div id="page-report" class="page" style="display:none">
       <div id="roof-health-content"></div>
+    </div>
+
+    <!-- ── Page 10: Permits (Loveland permit & affidavit filler) ──── -->
+    <div id="page-permits" class="page" style="display:none">
+      <div id="permits-content"></div>
     </div>
 
   </main>

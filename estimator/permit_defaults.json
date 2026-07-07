@@ -1,0 +1,12 @@
+{
+  "roof_covering_type_default": "Asphalt Composition Shingle",
+  "roof_covering_class_default": "Class 4",
+  "replacing_sheathing_default": "no",
+  "metal_noncombustible_default": false,
+  "astm_type_default": "asphalt",
+  "fastener_staples_default": "",
+  "fastener_nails_default": "",
+  "fastener_other_default": "",
+  "underlayment_self_adhering_default": true,
+  "underlayment_ice_barrier_default": true
+}

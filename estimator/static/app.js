@@ -592,6 +592,7 @@ function switchPage(page) {
   if (page === 'options')  renderOptionsPage();
   if (page === 'products') renderProductsPage();
   if (page === 'report')   renderConditionPage();
+  if (page === 'permits')  renderPermitsPage();
 }
 
 function pageComplete(page) {
@@ -5884,6 +5885,7 @@ async function renderHomePage() {
     ${stale.length ? `<div class="home-followup-alert" onclick="openDashboard()">
       ⚠ ${stale.length} estimate${stale.length!==1?'s':''} need${stale.length===1?'s':''} follow-up</div>` : ''}
     <button class="home-new-btn" onclick="newEstimateAction()">📝 New Estimate</button>
+    <button class="home-permit-btn" onclick="switchPage('permits')">📋 Loveland Permit</button>
     <div class="home-search-wrap">
       <input type="text" class="home-search-input" id="home-cust-search"
         placeholder="🔍 Search customer by name or address…"
@@ -6317,6 +6319,285 @@ async function applyRoofrImport() {
   }
 
   closeRoofrModal();
+}
+
+/* ── Permits page (City of Loveland permit & affidavit filler) ─────────
+   Fills the city's flat 2-page reroof packet server-side (POST
+   /api/permits/loveland/generate) and downloads the finished PDF. The
+   template is pre-signed, so no signature capture is needed — only the
+   job-specific blanks. Roofing-spec fields load sticky company defaults
+   from /api/permit-defaults (manager-editable via "Save as defaults"). */
+
+let PermitState = null;
+let _permitDefaults = null;
+
+function _permitToday() {
+  const d = new Date();
+  return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()+0).padStart(2,'0')}/${d.getFullYear()}`;
+}
+
+function _newPermitState() {
+  const pd = _permitDefaults || {};
+  return {
+    owner_name: '', owner_phone: '',
+    job_street: '', job_city: 'Loveland', job_state: 'CO', job_zip: '',
+    owner_same_address: true,
+    owner_street: '', owner_city: '', owner_state: 'CO', owner_zip: '',
+    valuation: '', num_squares: '', work_description: '',
+    roof_covering_type:  pd.roof_covering_type_default  || 'Asphalt Composition Shingle',
+    roof_covering_class: pd.roof_covering_class_default || 'Class 4',
+    replacing_sheathing: pd.replacing_sheathing_default || 'no',
+    metal_noncombustible: !!pd.metal_noncombustible_default,
+    astm_type: pd.astm_type_default || 'asphalt',
+    astm_other_text: '',
+    fastener_staples: pd.fastener_staples_default || '',
+    fastener_nails:   pd.fastener_nails_default   || '',
+    fastener_other:   pd.fastener_other_default   || '',
+    underlayment_self_adhering: pd.underlayment_self_adhering_default !== false,
+    underlayment_ice_barrier:   pd.underlayment_ice_barrier_default   !== false,
+    date: _permitToday(),
+    linked_estimate: null,
+  };
+}
+
+function permitSet(key, val) {
+  if (!PermitState) return;
+  PermitState[key] = val;
+  if (key === 'owner_same_address') renderPermitsPage();
+}
+
+function permitPrefillFromEstimate() {
+  if (!PermitState) return;
+  const c = S.customer || {};
+  const a = c.address || {};
+  PermitState.owner_name  = c.name  || '';
+  PermitState.owner_phone = c.phone || '';
+  PermitState.job_street  = a.street || '';
+  PermitState.job_city    = a.city   || 'Loveland';
+  PermitState.job_state   = a.state  || 'CO';
+  PermitState.job_zip     = a.zip    || '';
+  const sq = parseFloat((S.measurements || {}).roof_squares);
+  if (sq > 0) PermitState.num_squares = String(sq);
+  const total = (typeof grandTotal === 'function' && grandTotal(S.selected_tier)) ||
+                (typeof insuranceTotal === 'function' && insuranceTotal()) || 0;
+  if (total > 0 && !PermitState.valuation)
+    PermitState.valuation = total.toLocaleString('en-US', {minimumFractionDigits: 2});
+  // Shingle brand/model from Product Selection, if chosen
+  const colors = ((S.trades || {}).roofing || {}).colors || {};
+  const parts = [colors.brand, colors.model].filter(v => String(v||'').trim());
+  if (parts.length) PermitState.roof_covering_type = 'Asphalt Composition Shingle - ' + parts.join(' ');
+  PermitState.linked_estimate = S.estimate_id || null;
+  renderPermitsPage();
+}
+
+let _permitSearchTimer = null;
+function permitCrmSearch(q) {
+  clearTimeout(_permitSearchTimer);
+  const box = document.getElementById('pm-crm-results');
+  if (!q || q.trim().length < 2) { if (box) box.classList.add('hidden'); return; }
+  _permitSearchTimer = setTimeout(async () => {
+    try {
+      const r = await fetch('/api/crm/contacts?q=' + encodeURIComponent(q.trim()));
+      const list = await r.json();
+      if (!box) return;
+      box.innerHTML = list.length ? list.map(c => `
+        <div class="pm-crm-hit" onclick='permitPickContact(${JSON.stringify(JSON.stringify(c))})'>
+          <div class="pm-crm-name">${esc(c.name || '(no name)')}</div>
+          <div class="pm-crm-sub">${esc([c.street_address, c.city].filter(Boolean).join(', ') || c.phone || '')}</div>
+        </div>`).join('')
+        : '<div class="pm-crm-hit pm-crm-empty">No CRM matches</div>';
+      box.classList.remove('hidden');
+    } catch { if (box) box.classList.add('hidden'); }
+  }, 250);
+}
+
+function permitPickContact(jsonStr) {
+  const c = JSON.parse(jsonStr);
+  PermitState.owner_name  = c.name  || '';
+  PermitState.owner_phone = c.phone || '';
+  PermitState.job_street  = c.street_address || '';
+  PermitState.job_city    = c.city  || 'Loveland';
+  PermitState.job_state   = c.state || 'CO';
+  PermitState.job_zip     = c.zip_code || '';
+  PermitState.linked_estimate = null;
+  renderPermitsPage();
+}
+
+async function renderPermitsPage() {
+  const el = document.getElementById('permits-content');
+  if (!el) return;
+  if (!_permitDefaults) {
+    try { _permitDefaults = await (await fetch('/api/permit-defaults')).json(); }
+    catch { _permitDefaults = {}; }
+  }
+  if (!PermitState) PermitState = _newPermitState();
+  const P = PermitState;
+  const hasEstimate = !!(S && S.customer && S.customer.name);
+  const inp = (key, ph, extra='') =>
+    `<input type="text" value="${esc(String(P[key] ?? ''))}" placeholder="${ph}"
+       oninput="permitSet('${key}', this.value)" ${extra}>`;
+  const chk = key =>
+    `<input type="checkbox" ${P[key] ? 'checked' : ''} onchange="permitSet('${key}', this.checked)">`;
+
+  el.innerHTML = `
+  <div class="pm-wrap">
+    <div class="panel">
+      <div class="panel-header"><h3>📋 City of Loveland — Reroof Permit &amp; Affidavit</h3></div>
+      <p class="pm-hint">Fills the city's official 2-page packet (pre-signed template). Generate, then e-mail
+        the PDF to <b>eplan-buildingfasttrack@cityofloveland.org</b>.</p>
+      <div class="pm-lookup">
+        <input type="text" id="pm-crm-q" placeholder="🔍 Look up homeowner in CRM (name, phone, or email)…"
+          oninput="permitCrmSearch(this.value)" autocomplete="off">
+        <div id="pm-crm-results" class="pm-crm-results hidden"></div>
+        ${hasEstimate ? `<button class="pm-use-est" onclick="permitPrefillFromEstimate()">⤵ Use this estimate (${esc(S.customer.name)})</button>` : ''}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><h3>Homeowner &amp; Job Site</h3></div>
+      <div class="pm-grid">
+        <div class="field-group pm-span2"><label>Owner Name</label>${inp('owner_name','Owner full name')}</div>
+        <div class="field-group"><label>Owner Phone</label>${inp('owner_phone','970-555-1234')}</div>
+        <div class="field-group pm-span2"><label>Job Site Street Address</label>${inp('job_street','123 Main St')}</div>
+        <div class="field-group"><label>City</label>${inp('job_city','Loveland')}</div>
+        <div class="field-group pm-state"><label>State</label>${inp('job_state','CO')}</div>
+        <div class="field-group"><label>Zip</label>${inp('job_zip','80537')}</div>
+      </div>
+      <label class="pm-check pm-same"><input type="checkbox" ${P.owner_same_address ? 'checked' : ''}
+        onchange="permitSet('owner_same_address', this.checked)"> Owner mailing address is the same as the job site</label>
+      ${P.owner_same_address ? '' : `
+      <div class="pm-grid">
+        <div class="field-group pm-span2"><label>Owner Mailing Street</label>${inp('owner_street','')}</div>
+        <div class="field-group"><label>City</label>${inp('owner_city','')}</div>
+        <div class="field-group pm-state"><label>State</label>${inp('owner_state','CO')}</div>
+        <div class="field-group"><label>Zip</label>${inp('owner_zip','')}</div>
+      </div>`}
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><h3>Job Details</h3></div>
+      <div class="pm-grid">
+        <div class="field-group"><label>Valuation ($)</label>${inp('valuation','18,450.00')}</div>
+        <div class="field-group"><label>Number of Squares</label>${inp('num_squares','28.5')}</div>
+        <div class="field-group"><label>Date</label>${inp('date','MM/DD/YYYY')}</div>
+      </div>
+      <div class="field-group pm-desc">
+        <label>Work Description <span class="pm-sub">(note if electrical meets minimum code — press Enter for a new line)</span></label>
+        <textarea rows="5" placeholder="Full tear-off and replacement of asphalt shingle roof…"
+          oninput="permitSet('work_description', this.value)">${esc(P.work_description)}</textarea>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><h3>Roofing Affidavit Specs</h3>
+        <button class="pm-save-defaults" onclick="permitSaveDefaults()" title="Save these specs as the company-wide defaults (managers only)">💾 Save as defaults</button>
+      </div>
+      <div class="pm-grid">
+        <div class="field-group pm-span2"><label>Type of Roof Covering</label>${inp('roof_covering_type','Asphalt Composition Shingle')}</div>
+        <div class="field-group"><label>Class of Roof Covering</label>${inp('roof_covering_class','Class 4')}</div>
+      </div>
+      <div class="pm-row">
+        <span class="pm-lbl">Replacing sheathing?</span>
+        <label class="pm-check"><input type="radio" name="pm-sheath" ${P.replacing_sheathing==='yes'?'checked':''}
+          onchange="permitSet('replacing_sheathing','yes')"> Yes</label>
+        <label class="pm-check"><input type="radio" name="pm-sheath" ${P.replacing_sheathing==='no'?'checked':''}
+          onchange="permitSet('replacing_sheathing','no')"> No</label>
+        <label class="pm-check pm-gap">${chk('metal_noncombustible')} Metal / noncombustible roofing</label>
+      </div>
+      <div class="pm-row">
+        <span class="pm-lbl">Roofing information:</span>
+        <label class="pm-check"><input type="radio" name="pm-astm" ${P.astm_type==='asphalt'?'checked':''}
+          onchange="permitSet('astm_type','asphalt');renderPermitsPage()"> Asphalt shingles (ASTM D 3161 F / D 7158 H)</label>
+        <label class="pm-check"><input type="radio" name="pm-astm" ${P.astm_type==='other'?'checked':''}
+          onchange="permitSet('astm_type','other');renderPermitsPage()"> Other</label>
+        ${P.astm_type==='other' ? inp('astm_other_text','ASTM # or UL #','class="pm-inline"') : ''}
+      </div>
+      <div class="pm-grid">
+        <div class="field-group"><label>Staples (size / type / number)</label>${inp('fastener_staples','')}</div>
+        <div class="field-group"><label>Nails (size / type / number)</label>${inp('fastener_nails','1-1/4" coil nails, 6 per shingle')}</div>
+        <div class="field-group"><label>Other fasteners</label>${inp('fastener_other','')}</div>
+      </div>
+      <div class="pm-row">
+        <span class="pm-lbl">Underlayment used:</span>
+        <label class="pm-check">${chk('underlayment_self_adhering')} Self-adhering polymer-modified bitumen sheet</label>
+        <label class="pm-check">${chk('underlayment_ice_barrier')} Ice barrier (two cemented layers)</label>
+      </div>
+    </div>
+
+    <div class="pm-actions">
+      <button class="pm-generate" onclick="permitGenerate(this)">📄 Generate Permit PDF</button>
+      <span class="pm-note">Downloads the filled 2-page packet, ready to e-mail to the city.</span>
+    </div>
+  </div>`;
+}
+
+async function permitSaveDefaults() {
+  const P = PermitState;
+  const body = {
+    roof_covering_type_default:  P.roof_covering_type,
+    roof_covering_class_default: P.roof_covering_class,
+    replacing_sheathing_default: P.replacing_sheathing,
+    metal_noncombustible_default: P.metal_noncombustible,
+    astm_type_default: P.astm_type,
+    fastener_staples_default: P.fastener_staples,
+    fastener_nails_default:   P.fastener_nails,
+    fastener_other_default:   P.fastener_other,
+    underlayment_self_adhering_default: P.underlayment_self_adhering,
+    underlayment_ice_barrier_default:   P.underlayment_ice_barrier,
+  };
+  const r = await fetch('/api/permit-defaults', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (r.ok) { _permitDefaults = body; alert('Saved — these specs are now the defaults for every permit.'); }
+  else alert('Could not save defaults (managers only).');
+}
+
+async function permitGenerate(btn) {
+  const P = PermitState;
+  if (!P.owner_name.trim() || !P.job_street.trim()) {
+    alert('Owner name and job site address are required.');
+    return;
+  }
+  const jobAddr = [P.job_street.trim(),
+                   P.job_city.trim(),
+                   [P.job_state.trim(), P.job_zip.trim()].filter(Boolean).join(' ')]
+                  .filter(Boolean).join(', ');
+  const same = P.owner_same_address;
+  const payload = {
+    job_site_address: jobAddr,
+    valuation: P.valuation, owner_name: P.owner_name, owner_phone: P.owner_phone,
+    owner_address: same ? P.job_street : P.owner_street,
+    owner_city:    same ? P.job_city   : P.owner_city,
+    owner_state:   same ? P.job_state  : P.owner_state,
+    owner_zip:     same ? P.job_zip    : P.owner_zip,
+    num_squares: P.num_squares, work_description: P.work_description,
+    date: P.date,
+    roof_covering_type: P.roof_covering_type, roof_covering_class: P.roof_covering_class,
+    replacing_sheathing: P.replacing_sheathing, metal_noncombustible: P.metal_noncombustible,
+    astm_type: P.astm_type, astm_other_text: P.astm_other_text,
+    fastener_staples: P.fastener_staples, fastener_nails: P.fastener_nails,
+    fastener_other: P.fastener_other,
+    underlayment_self_adhering: P.underlayment_self_adhering,
+    underlayment_ice_barrier: P.underlayment_ice_barrier,
+  };
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Generating…';
+  try {
+    const r = await fetch('/api/permits/loveland/generate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `Loveland_Permit_${(P.owner_name||'Permit').replace(/[^A-Za-z0-9 ]+/g,'').trim().replace(/ +/g,'_')}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  } catch (e) {
+    alert('Permit generation failed: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = old;
+  }
 }
 
 // ── Service Worker registration (Android PWA install + offline support) ──

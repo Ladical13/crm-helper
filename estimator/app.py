@@ -185,6 +185,7 @@ ALLOWED_EXT   = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.p
 
 PRICE_BOOK_FILE      = os.path.join(DATA_DIR, 'price_book.json')
 TIER_DEFAULTS_FILE   = os.path.join(DATA_DIR, 'tier_defaults.json')
+PERMIT_DEFAULTS_FILE = os.path.join(DATA_DIR, 'permit_defaults.json')
 CUSTOMER_NOTES_FILE  = os.path.join(DATA_DIR, 'customer_notes.json')
 TEAM_CONFIG_FILE     = os.path.join(DATA_DIR, 'team.json')
 
@@ -233,7 +234,7 @@ def _seed_data_dir():
     copy seed files from the app directory so defaults are available."""
     if DATA_DIR == BASE_DIR:
         return  # local dev — nothing to seed
-    for fname in ('price_book.json', 'tier_defaults.json'):
+    for fname in ('price_book.json', 'tier_defaults.json', 'permit_defaults.json'):
         src = os.path.join(BASE_DIR, fname)
         dst = os.path.join(DATA_DIR, fname)
         if os.path.exists(src) and not os.path.exists(dst):
@@ -3471,6 +3472,163 @@ def put_app_settings():
     with open(APP_SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
     return jsonify({'ok': True})
+
+
+# ── Loveland permit PDF filler ──────────────────────────────────────────────
+# The City of Loveland reroof packet is a flat 2-page PDF (no form fields)
+# that the city won't let us edit. We keep a pre-signed copy as a template
+# (static/permit_templates/) and draw only the job-specific values onto it:
+# an fpdf2 overlay page merged onto each template page with pypdf. Field
+# positions live in permit_coords.py; sticky roofing-spec defaults in
+# permit_defaults.json (same convention as tier_defaults.json).
+
+import permit_coords as _permit_coords
+
+PERMIT_TEMPLATE_PATH = os.path.join(BASE_DIR, 'static', 'permit_templates',
+                                    'loveland_permit_affidavit.pdf')
+
+_PERMIT_DEFAULTS_FALLBACK = {
+    'roof_covering_type_default': 'Asphalt Composition Shingle',
+    'roof_covering_class_default': 'Class 4',
+    'replacing_sheathing_default': 'no',
+    'metal_noncombustible_default': False,
+    'astm_type_default': 'asphalt',
+    'fastener_staples_default': '',
+    'fastener_nails_default': '',
+    'fastener_other_default': '',
+    'underlayment_self_adhering_default': True,
+    'underlayment_ice_barrier_default': True,
+}
+
+def _load_permit_defaults():
+    if os.path.exists(PERMIT_DEFAULTS_FILE):
+        try:
+            with open(PERMIT_DEFAULTS_FILE, encoding='utf-8') as f:
+                return {**_PERMIT_DEFAULTS_FALLBACK, **json.load(f)}
+        except Exception:
+            pass
+    return dict(_PERMIT_DEFAULTS_FALLBACK)
+
+@app.route('/api/permit-defaults', methods=['GET'])
+def get_permit_defaults():
+    return jsonify(_load_permit_defaults())
+
+@app.route('/api/permit-defaults', methods=['PUT'])
+def put_permit_defaults():
+    if not _is_manager_up():
+        return _forbid()
+    data = request.get_json(force=True)
+    with open(PERMIT_DEFAULTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+    return jsonify({'ok': True})
+
+
+def _permit_wrap(text, pdf, max_width, max_lines):
+    """Split user text on hard newlines, then word-wrap each line to
+    max_width points (measured with the overlay PDF's current font)."""
+    lines = []
+    for raw in (text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        words, cur = raw.split(), ''
+        if not words:
+            lines.append('')
+            continue
+        for w in words:
+            trial = (cur + ' ' + w).strip()
+            if pdf.get_string_width(trial) <= max_width or not cur:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = w
+        lines.append(cur)
+    return lines[:max_lines]
+
+
+@app.route('/api/permits/loveland/generate', methods=['POST'])
+def generate_loveland_permit():
+    if FPDF is None or _pypdf is None:
+        return jsonify({'error': 'PDF libraries not available on server'}), 500
+    d = request.get_json(force=True)
+
+    pw, ph = _permit_coords.PAGE_SIZE
+    overlay = FPDF(unit='pt', format=(pw, ph))
+    overlay.set_auto_page_break(False)
+    overlay.set_margins(0, 0, 0)
+
+    # Values keyed by permit_coords.FIELDS names. Checkbox fields draw an "X"
+    # when truthy; everything else is drawn as text when non-empty.
+    addr = d.get('job_site_address', '') or ''
+    vals = {
+        'job_site_address': addr,
+        'valuation':        d.get('valuation', ''),
+        'owner_name':       d.get('owner_name', ''),
+        'owner_phone':      d.get('owner_phone', ''),
+        'owner_address':    d.get('owner_address', ''),
+        'owner_city':       d.get('owner_city', ''),
+        'owner_state':      d.get('owner_state', ''),
+        'owner_zip':        d.get('owner_zip', ''),
+        'num_squares':      d.get('num_squares', ''),
+        'work_description': d.get('work_description', ''),
+        'date_p1':          d.get('date', ''),
+        'affidavit_job_address':   d.get('affidavit_job_address', '') or addr,
+        'roof_covering_type':      d.get('roof_covering_type', ''),
+        'roof_covering_class':     d.get('roof_covering_class', ''),
+        'replacing_sheathing_yes': d.get('replacing_sheathing') == 'yes',
+        'replacing_sheathing_no':  d.get('replacing_sheathing') == 'no',
+        'metal_noncombustible':    bool(d.get('metal_noncombustible')),
+        'astm_asphalt':            d.get('astm_type', 'asphalt') == 'asphalt',
+        'astm_other':              d.get('astm_type') == 'other',
+        'astm_other_text':         d.get('astm_other_text', ''),
+        'fastener_staples':        d.get('fastener_staples', ''),
+        'fastener_nails':          d.get('fastener_nails', ''),
+        'fastener_other':          d.get('fastener_other', ''),
+        'underlayment_self_adhering': bool(d.get('underlayment_self_adhering')),
+        'underlayment_ice_barrier':   bool(d.get('underlayment_ice_barrier')),
+        'date_p2':                 d.get('date', ''),
+    }
+
+    for page_idx in (0, 1):
+        overlay.add_page()
+        for name, spec in _permit_coords.FIELDS.items():
+            if spec['page'] != page_idx:
+                continue
+            val = vals.get(name)
+            overlay.set_font('Helvetica', size=spec['size'])
+            y_top = ph - spec['y']  # coords file is bottom-left origin
+            if spec.get('mark'):
+                if val:
+                    overlay.text(spec['x'], y_top, 'X')
+                continue
+            txt = str(val or '').strip()
+            if not txt:
+                continue
+            if 'max_width' in spec:
+                for i, line in enumerate(_permit_wrap(txt, overlay,
+                                                      spec['max_width'],
+                                                      spec.get('max_lines', 4))):
+                    if line:
+                        overlay.text(spec['x'], y_top + i * spec['line_height'], line)
+            else:
+                overlay.text(spec['x'], y_top, txt)
+
+    try:
+        overlay_reader = _pypdf.PdfReader(io.BytesIO(bytes(overlay.output())))
+        base_reader = _pypdf.PdfReader(PERMIT_TEMPLATE_PATH)
+        writer = _pypdf.PdfWriter()
+        for i, base_page in enumerate(base_reader.pages):
+            if i < len(overlay_reader.pages):
+                base_page.merge_page(overlay_reader.pages[i])
+            writer.add_page(base_page)
+        buf = io.BytesIO()
+        writer.write(buf)
+        buf.seek(0)
+    except Exception as e:
+        print(f'[permit] generation failed: {e}')
+        return jsonify({'error': f'PDF generation failed: {e}'}), 500
+
+    owner = re.sub(r'[^A-Za-z0-9 ]+', '', d.get('owner_name', '')).strip().replace(' ', '_') or 'Permit'
+    fname = f'Loveland_Permit_{owner}_{d.get("date", "")}.pdf'
+    return send_file(buf, mimetype='application/pdf',
+                     as_attachment=True, download_name=fname)
 
 
 # ── Follow-up reminders ─────────────────────────────────────────────────────
