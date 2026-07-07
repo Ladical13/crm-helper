@@ -3055,21 +3055,24 @@ def push_document_to_crm(est_id):
     safe_label = ''.join(ch if ch.isalnum() or ch in ' -_' else '' for ch in label).strip().replace(' ', '_')
     fname = f'{safe_label or "Document"}.pdf'
 
+    file_url = None
     try:
         r = http.post(f'{BASE_URL}/integrations/Core/UploadFile',
                       headers=crm_headers(),
                       files={'file': (fname, pdf_bytes, 'application/pdf')},
                       timeout=60)
-        print(f'[crm-push-doc] upload status {r.status_code}: {r.text[:200]}')
         r.raise_for_status()
         resp = r.json()
         file_url = (resp.get('file_url') or resp.get('url')
                     or resp.get('file_uri') or resp.get('uri'))
-        if not file_url:
-            raise RuntimeError('no file_url in upload response')
     except Exception as exc:
-        print(f'[crm-push-doc] file upload failed: {exc}')
-        return jsonify({'error': f'CRM file upload failed: {exc}'}), 502
+        # Base44's external API doesn't expose the UploadFile integration to
+        # our token (blanket 405 as of 2026-07) — fall back to linking the
+        # PDF hosted on this app, exactly like the signed-contract push does.
+        # /uploads/ is public and the UUID filename is unguessable.
+        print(f'[crm-push-doc] Base44 upload unavailable ({exc}) — using hosted link')
+    if not file_url:
+        file_url = f'{_base_url()}/uploads/{filename}'
 
     doc = {
         'name':              f'{label} - {cname}',
@@ -3624,6 +3627,20 @@ def put_permit_defaults():
     return jsonify({'ok': True})
 
 
+_PERMIT_CHAR_MAP = str.maketrans({
+    '—': '-', '–': '-', '‘': "'", '’': "'",
+    '“': '"', '”': '"', '…': '...', ' ': ' ',
+    '•': '-', '′': "'", '″': '"',
+})
+
+def _permit_text(s):
+    """fpdf2's core Helvetica is latin-1 only. Swap the smart punctuation
+    phones auto-insert (em-dashes, curly quotes) for ASCII and drop anything
+    else it can't encode, so a stray character never 500s the permit."""
+    s = str(s or '').translate(_PERMIT_CHAR_MAP)
+    return s.encode('latin-1', 'replace').decode('latin-1')
+
+
 def _permit_wrap(text, pdf, max_width, max_lines):
     """Split user text on hard newlines, then word-wrap each line to
     max_width points (measured with the overlay PDF's current font)."""
@@ -3699,7 +3716,7 @@ def generate_loveland_permit():
                 if val:
                     overlay.text(spec['x'], y_top, 'X')
                 continue
-            txt = str(val or '').strip()
+            txt = _permit_text(val).strip()
             if not txt:
                 continue
             if 'max_width' in spec:
