@@ -1,7 +1,7 @@
 /* P1 Canvasser — main app logic */
 
 const PIN_TYPES = {};  // populated from /api/config
-let map, currentUser, markers = {}, hailLayer = null;
+let map, currentUser, markers = {}, hailLayer = null, pinLayer = null;
 let teamMarkers = {}, teamTimer = null, locationTimer = null, teamEnabled = true;
 let hailResultLayer = null;
 let pendingLatLng = null;   // where the next pin will land
@@ -105,19 +105,40 @@ function buildQuickBtns() {
 // ── Map ────────────────────────────────────────────────────────────────────
 
 function initMap() {
+  if (map) return;  // logout → login reuses the same map container
   // Default to Fort Collins, CO (northern CO market)
-  map = L.map('map', { zoomControl: false, attributionControl: false }).setView([40.5853, -105.0844], 14);
-
-  // Satellite tile layer (ESRI World Imagery — free, no API key)
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  map = L.map('map', {
+    zoomControl: false, attributionControl: false,
+    preferCanvas: true,   // hail circles render on canvas instead of SVG DOM nodes
     maxZoom: 20,
+  }).setView([40.5853, -105.0844], 14);
+
+  // Satellite tile layer (ESRI World Imagery — free, no API key).
+  // On retina phones fetch one zoom level deeper and render at 2x density;
+  // past Esri's native imagery depth, upscale instead of showing gray tiles.
+  const retina = window.devicePixelRatio > 1;
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxNativeZoom: retina ? 18 : 19, maxZoom: 20,
+    detectRetina: retina,
+    keepBuffer: 4, updateWhenZooming: false,
     attribution: 'Tiles &copy; Esri'
   }).addTo(map);
 
-  // Labels overlay (roads/addresses)
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 20, opacity: 0.8
+  // Road/place labels — CARTO's retina-aware label tiles are far sharper than
+  // Esri's dated Boundaries_and_Places raster layer
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd', maxNativeZoom: 19, maxZoom: 20,
+    keepBuffer: 4, updateWhenZooming: false, opacity: .95,
   }).addTo(map);
+
+  // Pin layer: clustered when zoomed out, individual pins at street level
+  pinLayer = (L.markerClusterGroup ? L.markerClusterGroup({
+    maxClusterRadius: 46,
+    disableClusteringAtZoom: 17,
+    spiderfyOnMaxZoom: false,
+    showCoverageOnHover: false,
+    iconCreateFunction: makeClusterIcon,
+  }) : L.layerGroup()).addTo(map);
 
   // Tap on empty map → drop pin
   map.on('click', (e) => {
@@ -156,34 +177,56 @@ async function loadPins() {
 }
 
 function renderPins() {
-  // Clear existing markers
-  Object.values(markers).forEach(m => map.removeLayer(m));
+  pinLayer.clearLayers();
   markers = {};
 
   const filtered = activeFilters.size > 0
     ? allPins.filter(p => activeFilters.has(p.rep))
     : allPins;
 
-  filtered.forEach(pin => addPinMarker(pin));
+  const batch = filtered.map(pin => buildPinMarker(pin));
+  // markercluster's addLayers is a fast bulk insert; layerGroup fallback loops
+  if (pinLayer.addLayers) pinLayer.addLayers(batch);
+  else batch.forEach(m => pinLayer.addLayer(m));
 }
 
-function addPinMarker(pin) {
+function buildPinMarker(pin, animate = false) {
   const meta  = PIN_TYPES[pin.pin_type] || { label: pin.pin_type, color: '#6B7280' };
   const initials = (pin.rep || '?').substring(0, 2).toUpperCase();
 
   const icon = L.divIcon({
     className: '',
-    html: `<div class="pin-marker" style="background:${meta.color}" title="${meta.label} — ${displayName(pin.rep)}">${initials}</div>`,
-    iconSize:   [28, 28],
-    iconAnchor: [14, 14],
+    html: `<div class="pin-marker${animate ? ' drop' : ''}" title="${meta.label} — ${displayName(pin.rep)}">
+      <svg viewBox="0 0 30 40" width="30" height="40">
+        <path d="M15 39C15 39 27 22.5 27 13.5 27 6.6 21.6 1.5 15 1.5 8.4 1.5 3 6.6 3 13.5 3 22.5 15 39 15 39Z"
+              fill="${meta.color}" stroke="rgba(255,255,255,.95)" stroke-width="1.8"/>
+      </svg>
+      <span class="pin-initials">${initials}</span>
+    </div>`,
+    iconSize:   [30, 40],
+    iconAnchor: [15, 38],
   });
 
-  const marker = L.marker([pin.lat, pin.lng], { icon }).addTo(map);
+  const marker = L.marker([pin.lat, pin.lng], { icon });
   marker.on('click', (e) => {
     e.originalEvent._markerClick = true;
     showPinDetail(pin);
   });
   markers[pin.id] = marker;
+  return marker;
+}
+
+function addPinMarker(pin, animate = false) {
+  pinLayer.addLayer(buildPinMarker(pin, animate));
+}
+
+function makeClusterIcon(cluster) {
+  const n = cluster.getChildCount();
+  const size = n < 10 ? 34 : n < 50 ? 40 : 46;
+  return L.divIcon({
+    html: `<div class="cluster-bubble" style="width:${size}px;height:${size}px">${n}</div>`,
+    className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+  });
 }
 
 // ── Live team tracking ─────────────────────────────────────────────────────
@@ -352,7 +395,7 @@ $('save-pin-btn').addEventListener('click', async () => {
     const pin = await api('/api/pins', 'POST', payload);
     hide('drop-pin-modal');
     allPins.unshift(pin);
-    addPinMarker(pin);
+    addPinMarker(pin, true);
     // Flash the map to the pin
     map.panTo([pin.lat, pin.lng]);
   } catch(e) {
@@ -484,7 +527,7 @@ $('update-pin-btn').addEventListener('click', async () => {
     const idx = allPins.findIndex(p => p.id === editingPinId);
     if (idx >= 0) allPins[idx] = updated;
     // Re-render
-    if (markers[editingPinId]) map.removeLayer(markers[editingPinId]);
+    if (markers[editingPinId]) pinLayer.removeLayer(markers[editingPinId]);
     delete markers[editingPinId];
     addPinMarker(updated);
     hide('edit-pin-modal');
@@ -497,7 +540,7 @@ $('delete-pin-btn').addEventListener('click', async () => {
   if (!confirm('Delete this pin?')) return;
   try {
     await api(`/api/pins/${editingPinId}`, 'DELETE', null);
-    if (markers[editingPinId]) map.removeLayer(markers[editingPinId]);
+    if (markers[editingPinId]) pinLayer.removeLayer(markers[editingPinId]);
     delete markers[editingPinId];
     allPins = allPins.filter(p => p.id !== editingPinId);
     hide('edit-pin-modal');
@@ -886,7 +929,7 @@ $('logout-btn').addEventListener('click', async () => {
   await api('/api/logout', 'POST', {});
   currentUser = null;
   allPins = [];
-  Object.values(markers).forEach(m => map.removeLayer(m));
+  pinLayer.clearLayers();
   markers = {};
   showLogin();
 });
@@ -905,6 +948,13 @@ document.querySelectorAll('.modal').forEach(modal => {
 
 // ── Type selector builder ──────────────────────────────────────────────────
 
+// Very dark pin colors (e.g. No Soliciting) are unreadable as text on the dark UI
+function uiColor(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const lum = (n >> 16 & 255) * .299 + (n >> 8 & 255) * .587 + (n & 255) * .114;
+  return lum < 60 ? '#94A3B8' : hex;
+}
+
 function buildTypeSelector(containerId, onSelect) {
   const container = $(containerId);
   container.innerHTML = '';
@@ -912,7 +962,7 @@ function buildTypeSelector(containerId, onSelect) {
     const btn = document.createElement('button');
     btn.className = 'type-btn';
     btn.dataset.type = type;
-    btn.style.color = meta.color;
+    btn.style.color = uiColor(meta.color);
     btn.innerHTML = `<span class="type-dot" style="background:${meta.color}"></span>${meta.label}`;
     btn.addEventListener('click', () => {
       container.querySelectorAll('.type-btn').forEach(b => b.classList.remove('selected'));
