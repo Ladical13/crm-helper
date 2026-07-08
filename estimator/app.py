@@ -188,6 +188,7 @@ TIER_DEFAULTS_FILE   = os.path.join(DATA_DIR, 'tier_defaults.json')
 PERMIT_DEFAULTS_FILE = os.path.join(DATA_DIR, 'permit_defaults.json')
 CUSTOMER_NOTES_FILE  = os.path.join(DATA_DIR, 'customer_notes.json')
 TEAM_CONFIG_FILE     = os.path.join(DATA_DIR, 'team.json')
+COMPANY_CONTENT_FILE = os.path.join(DATA_DIR, 'company_content.json')
 
 # Optional override for the public-facing base URL (e.g. ngrok or a real domain).
 # Set PUBLIC_URL in environment or in estimator/config.json as {"public_url": "https://..."}
@@ -1545,6 +1546,16 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cvftr-c{font-size:12px}
 .cvftr-sub{font-size:10px;margin-top:8px;opacity:.7}
 .cvhidden-note{font-size:10px;color:#9ca3af;font-style:italic;padding:5px 10px;text-align:left}
+.cvtrust-body p{font-size:13px;line-height:1.6;color:#374151;margin-bottom:8px}
+.cvtrust-body p:last-child{margin-bottom:0}
+.cvtrust-certs{list-style:none;margin:0;padding:0}
+.cvtrust-certs li{position:relative;padding:4px 0 4px 22px;font-size:13px;color:#374151;line-height:1.5}
+.cvtrust-certs li::before{content:'✓';position:absolute;left:2px;font-weight:800;color:#16a34a}
+.cvtrust-revs{display:grid;gap:10px}
+.cvtrust-rev{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px}
+.cvtrust-rev-stars{color:#f59e0b;font-size:14px;letter-spacing:2px;margin-bottom:5px}
+.cvtrust-rev-text{font-size:13px;line-height:1.6;color:#374151;font-style:italic}
+.cvtrust-rev-name{font-size:12px;font-weight:700;color:#1a3a5c;margin-top:6px}
 .cv-tier-section{margin:0 14px}
 .cv-tier-heading{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#1a3a5c;padding:16px 0 10px}
 .cv-tier-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:4px}
@@ -1671,6 +1682,87 @@ def _cv_attachments_block(est):
         links += (f'<a class="cv-att" href="/uploads/{he(a["filename"])}" '
                   f'target="_blank" rel="noopener">&#128196; {he(label)}</a>')
     return f'<div class="cvnotes"><h3>Documents &amp; Reports</h3><div class="cv-att-list">{links}</div></div>'
+
+
+def _load_company_content():
+    """Global trust-page content (About Us / Warranty / Certifications /
+    Reviews) shown on customer proposals. Read fresh on every render so an
+    admin edit takes effect in every gunicorn worker immediately."""
+    try:
+        if os.path.exists(COMPANY_CONTENT_FILE):
+            with open(COMPANY_CONTENT_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _cv_trust_blocks(est):
+    """Company trust content rendered into every customer proposal, between
+    the estimate body and the terms. Global content is admin-edited in
+    Settings; each estimate can hide individual blocks via
+    page_visibility.trust_* (default visible). Marketing content only —
+    deliberately excluded from the signed document hash and the signed PDF."""
+    cc = _load_company_content()
+    pv = est.get('page_visibility') or {}
+
+    def _blk(key):
+        blk = cc.get(key) or {}
+        if not blk.get('enabled', True) or pv.get(f'trust_{key}') is False:
+            return None
+        return blk
+
+    out = ''
+    for key, dflt_title, icon in (('about', 'About Us', '&#127968;'),
+                                  ('warranty', 'Our Warranty', '&#128737;&#65039;')):
+        blk = _blk(key)
+        body = (blk.get('body') or '').strip() if blk else ''
+        if not body:
+            continue
+        paras = ''.join(f'<p>{he(p.strip())}</p>'
+                        for p in body.split('\n\n') if p.strip())
+        title = (blk.get('title') or '').strip() or dflt_title
+        out += f'''<div class="cvnotes cvtrust">
+      <h3>{icon} {he(title)}</h3>
+      <div class="cvtrust-body">{paras}</div>
+    </div>'''
+
+    blk = _blk('certifications')
+    if blk:
+        items = [str(i).strip() for i in (blk.get('items') or []) if str(i).strip()]
+        if items:
+            title = (blk.get('title') or '').strip() or 'Licenses & Certifications'
+            lis = ''.join(f'<li>{he(i)}</li>' for i in items)
+            out += f'''<div class="cvnotes cvtrust">
+      <h3>&#127942; {he(title)}</h3>
+      <ul class="cvtrust-certs">{lis}</ul>
+    </div>'''
+
+    blk = _blk('reviews')
+    if blk:
+        revs = [r for r in (blk.get('items') or [])
+                if isinstance(r, dict) and (r.get('text') or '').strip()]
+        if revs:
+            title = (blk.get('title') or '').strip() or 'What Homeowners Say'
+            cards = ''
+            for r in revs[:6]:  # cap so a long review list can't swamp the page
+                try:
+                    n = max(1, min(5, int(r.get('stars') or 5)))
+                except (TypeError, ValueError):
+                    n = 5
+                name = (r.get('name') or '').strip()
+                who = f'<div class="cvtrust-rev-name">&mdash; {he(name)}</div>' if name else ''
+                cards += f'''<div class="cvtrust-rev">
+          <div class="cvtrust-rev-stars">{'&#9733;' * n}</div>
+          <div class="cvtrust-rev-text">&ldquo;{he(r['text'].strip())}&rdquo;</div>
+          {who}
+        </div>'''
+            out += f'''<div class="cvnotes cvtrust">
+      <h3>&#11088; {he(title)}</h3>
+      <div class="cvtrust-revs">{cards}</div>
+    </div>'''
+
+    return out
 
 
 def _signed_extras_html(est):
@@ -1812,6 +1904,7 @@ def _build_insurance_cv(est, token):
 {scope_html}
 {notes_html}
 {_cv_attachments_block(est)}
+{_cv_trust_blocks(est)}
 {ctext_html}
 
 <div class="cvsig">
@@ -1916,6 +2009,7 @@ def _build_simple_retail_cv(est, token):
 
 {notes_html}
 {_cv_attachments_block(est)}
+{_cv_trust_blocks(est)}
 {ctext_html}
 
 <div class="cvsig">
@@ -2070,6 +2164,7 @@ def build_customer_view(est, token):
 
 {notes_html}
 {_cv_attachments_block(est)}
+{_cv_trust_blocks(est)}
 {ctext_html}
 
 <div class="cvsig">
@@ -3552,6 +3647,27 @@ def put_app_settings():
     data = request.get_json(force=True)
     with open(APP_SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
+    return jsonify({'ok': True})
+
+
+# ── Company trust content (About Us / Warranty / Certifications / Reviews) ──
+# Rendered onto every customer proposal by _cv_trust_blocks(). Admin-edited.
+
+@app.route('/api/company-content', methods=['GET'])
+def get_company_content():
+    return jsonify(_load_company_content())
+
+
+@app.route('/api/company-content', methods=['PUT'])
+def put_company_content():
+    if not _is_admin(_current_user()):
+        return _forbid()
+    data = request.get_json(force=True) or {}
+    # Keep only the known blocks so a bad client can't grow the file unbounded
+    clean = {k: data[k] for k in ('about', 'warranty', 'certifications', 'reviews')
+             if isinstance(data.get(k), dict)}
+    with open(COMPANY_CONTENT_FILE, 'w', encoding='utf-8') as f:
+        json.dump(clean, f, indent=2)
     return jsonify({'ok': True})
 
 

@@ -1751,6 +1751,14 @@ function renderPrintPagesBar() {
     { id:'contract', label:'Contract',     on: S.print_contract !== false,     always: false },
     { id:'report',   label:'Roof Health',  on: pv.report  !== false,           always: false },
   ];
+  // Trust blocks live on the ONLINE signing link (content set in ⚙ Settings),
+  // unlike the print chips above which only gate the printed estimate.
+  const trust = [
+    { id:'trust_about',          label:'About Us' },
+    { id:'trust_warranty',       label:'Warranty' },
+    { id:'trust_certifications', label:'Certs'    },
+    { id:'trust_reviews',        label:'Reviews'  },
+  ];
   const el = document.getElementById('print-pages-bar');
   if (!el) return;
   el.innerHTML =
@@ -1759,6 +1767,13 @@ function renderPrintPagesBar() {
       <button class="ppb-btn ${p.on ? 'on' : 'off'} ${p.always ? 'ppb-always' : ''}"
         onclick="togglePagePrint('${p.id}')"
         title="${p.always ? 'Always included' : (p.on ? 'Click to exclude from print' : 'Click to include in print')}">
+        <span class="ppb-dot"></span>${esc(p.label)}
+      </button>`).join('') +
+    `<span class="ppb-label" title="Company sections on the customer's online signing page — edit the content in ⚙ Settings">Online:</span>` +
+    trust.map(p => `
+      <button class="ppb-btn ${pv[p.id] !== false ? 'on' : 'off'}"
+        onclick="togglePagePrint('${p.id}')"
+        title="${pv[p.id] !== false ? 'Shown on the customer signing page — click to hide for this estimate' : 'Hidden from the customer signing page — click to show'}">
         <span class="ppb-dot"></span>${esc(p.label)}
       </button>`).join('');
 }
@@ -4987,7 +5002,65 @@ async function openSettings() {
   } catch { appSettings = appSettings || {}; }
   document.getElementById('settings-colors').value = _globalShingleColors().join('\n');
   document.getElementById('settings-waste').value  = _globalWastePct();
+  if (_meIsAdmin()) {
+    document.getElementById('settings-company').classList.remove('hidden');
+    try {
+      const r = await fetch('/api/company-content');
+      _fillCompanyContent(await r.json() || {});
+    } catch { _fillCompanyContent({}); }
+  }
   document.getElementById('settings-modal').classList.remove('hidden');
+}
+
+/* Company trust content (About/Warranty/Certs/Reviews on the customer link) */
+function _fillCompanyContent(cc) {
+  const g = id => document.getElementById(id);
+  const about = cc.about || {}, warranty = cc.warranty || {},
+        certs = cc.certifications || {}, reviews = cc.reviews || {};
+  g('cc-about-on').checked    = about.enabled !== false;
+  g('cc-about-title').value   = about.title || '';
+  g('cc-about-body').value    = about.body || '';
+  g('cc-warranty-on').checked  = warranty.enabled !== false;
+  g('cc-warranty-title').value = warranty.title || '';
+  g('cc-warranty-body').value  = warranty.body || '';
+  g('cc-certs-on').checked    = certs.enabled !== false;
+  g('cc-certs-title').value   = certs.title || '';
+  g('cc-certs-items').value   = (certs.items || []).join('\n');
+  g('cc-reviews-on').checked  = reviews.enabled !== false;
+  g('cc-reviews-title').value = reviews.title || '';
+  g('cc-reviews-items').value = (reviews.items || [])
+    .map(r => `${r.stars || 5} | ${r.name || ''} | ${r.text || ''}`).join('\n');
+}
+
+function _collectCompanyContent() {
+  const g = id => document.getElementById(id);
+  const reviews = g('cc-reviews-items').value.split('\n')
+    .map(line => line.trim()).filter(Boolean)
+    .map(line => {
+      const parts = line.split('|');
+      if (parts.length >= 3) {
+        const stars = parseInt(parts[0], 10);
+        return { stars: isNaN(stars) ? 5 : Math.max(1, Math.min(5, stars)),
+                 name: parts[1].trim(), text: parts.slice(2).join('|').trim() };
+      }
+      return { stars: 5, name: '', text: line };
+    })
+    .filter(r => r.text);
+  return {
+    about: { enabled: g('cc-about-on').checked,
+             title: g('cc-about-title').value.trim(),
+             body:  g('cc-about-body').value.trim() },
+    warranty: { enabled: g('cc-warranty-on').checked,
+                title: g('cc-warranty-title').value.trim(),
+                body:  g('cc-warranty-body').value.trim() },
+    certifications: { enabled: g('cc-certs-on').checked,
+                      title: g('cc-certs-title').value.trim(),
+                      items: g('cc-certs-items').value.split('\n')
+                        .map(s => s.trim()).filter(Boolean) },
+    reviews: { enabled: g('cc-reviews-on').checked,
+               title: g('cc-reviews-title').value.trim(),
+               items: reviews },
+  };
 }
 function closeSettings() { document.getElementById('settings-modal').classList.add('hidden'); }
 function maybeCloseSettings(e) { if (e.target.id === 'settings-modal') closeSettings(); }
@@ -5023,6 +5096,14 @@ async function saveSettings() {
       body: JSON.stringify(appSettings),
     });
     if (!r.ok) throw new Error('Save failed');
+    // Admin: save the customer-proposal company content alongside
+    if (_meIsAdmin()) {
+      const r2 = await fetch('/api/company-content', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(_collectCompanyContent()),
+      });
+      if (!r2.ok) throw new Error('Company content save failed');
+    }
     // Refresh the current estimate's color options if untouched from defaults
     if (S.shingle_selection && !S.signature) {
       S.shingle_selection.options = _globalShingleColors();

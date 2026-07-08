@@ -387,6 +387,29 @@
         <label>Default Waste % <span class="note-tag">applied to new estimates</span></label>
         <input type="number" id="settings-waste" min="0" max="50" step="1">
       </div>
+      <div id="settings-company" class="field-group hidden">
+        <label>Customer Proposal — Company Content <span class="note-tag">admin only — shown on every customer signing page</span></label>
+        <div class="cc-block">
+          <label class="cc-toggle"><input type="checkbox" id="cc-about-on"> 🏠 About Us</label>
+          <input type="text" id="cc-about-title" class="cc-title" placeholder="Section title (default: About Us)">
+          <textarea id="cc-about-body" rows="4" spellcheck="true" placeholder="Who you are, how long you've been roofing, what makes you different… (leave blank to hide)"></textarea>
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle"><input type="checkbox" id="cc-warranty-on"> 🛡 Warranty</label>
+          <input type="text" id="cc-warranty-title" class="cc-title" placeholder="Section title (default: Our Warranty)">
+          <textarea id="cc-warranty-body" rows="4" spellcheck="true" placeholder="Workmanship warranty, manufacturer warranty details… (leave blank to hide)"></textarea>
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle"><input type="checkbox" id="cc-certs-on"> 🏆 Licenses &amp; Certifications</label>
+          <input type="text" id="cc-certs-title" class="cc-title" placeholder="Section title (default: Licenses & Certifications)">
+          <textarea id="cc-certs-items" rows="4" spellcheck="false" placeholder="One per line, e.g.:&#10;GAF Certified Installer&#10;Licensed &amp; insured — Colorado &amp; Texas"></textarea>
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle"><input type="checkbox" id="cc-reviews-on"> ⭐ Reviews</label>
+          <input type="text" id="cc-reviews-title" class="cc-title" placeholder="Section title (default: What Homeowners Say)">
+          <textarea id="cc-reviews-items" rows="5" spellcheck="true" placeholder="One review per line:  stars | name | review text&#10;5 | Sarah M. | Fast, clean, and the roof looks amazing."></textarea>
+        </div>
+      </div>
     </div>
     <div class="settings-footer">
       <button id="test-notif-btn" class="btn-secondary" onclick="testSignatureNotification()" style="margin-right:auto">📧 Test Email Notification</button>
