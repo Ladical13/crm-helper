@@ -242,6 +242,75 @@ def _seed_data_dir():
 
 _seed_data_dir()
 
+# ── Estimate storage layer ──────────────────────────────────────────────────
+# ALL estimate persistence goes through these helpers — never open an estimate
+# file directly. This is the single seam where the backend can be swapped
+# (e.g. Postgres) without touching route code.
+
+def _est_path(est_id):
+    return os.path.join(ESTIMATES_DIR, f"{est_id}.json")
+
+
+def est_load(est_id):
+    """Return the estimate doc, or None when missing/unreadable."""
+    try:
+        with open(_est_path(est_id), 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def est_save(doc):
+    """Persist an estimate doc keyed by doc['estimate_id']."""
+    est_id = doc.get('estimate_id')
+    if not est_id:
+        raise ValueError('estimate doc missing estimate_id')
+    with open(_est_path(est_id), 'w', encoding='utf-8') as f:
+        json.dump(doc, f, indent=2)
+
+
+def est_exists(est_id):
+    return os.path.exists(_est_path(est_id))
+
+
+def est_delete(est_id):
+    try:
+        os.remove(_est_path(est_id))
+    except OSError:
+        pass
+
+
+def est_ids():
+    """All estimate ids, ascending."""
+    try:
+        return sorted(f[:-5] for f in os.listdir(ESTIMATES_DIR)
+                      if f.endswith('.json'))
+    except OSError:
+        return []
+
+
+def est_count():
+    return len(est_ids())
+
+
+def est_iter(reverse=False):
+    """Yield every readable estimate doc; unreadable files are skipped."""
+    for est_id in sorted(est_ids(), reverse=reverse):
+        doc = est_load(est_id)
+        if doc is not None:
+            yield doc
+
+
+def est_find_by_token(token):
+    """Return the estimate doc matching share_token, or None."""
+    if not token:
+        return None
+    for doc in est_iter():
+        if doc.get('share_token') == token:
+            return doc
+    return None
+
+
 # Contacts — refreshed every 5 minutes (was cached forever, so new CRM
 # contacts never showed up in search until a server restart)
 _contact_cache = {'data': None, 'fetched_at': 0}
@@ -598,17 +667,8 @@ def list_estimates():
     # share tokens and totals, so server-side filtering matters, not just the UI.
     only_own = not _is_manager_up()
     user     = _current_user()
-    try:
-        files = sorted(os.listdir(ESTIMATES_DIR), reverse=True)
-    except OSError:
-        return jsonify([])
-    for fname in files:
-        if not fname.endswith('.json'):
-            continue
-        path = os.path.join(ESTIMATES_DIR, fname)
+    for d in est_iter(reverse=True):
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                d = json.load(f)
             if only_own and (d.get('salesperson') or '').strip() not in ('', user):
                 continue
             c = d.get('customer', {})
@@ -648,19 +708,15 @@ def create_estimate():
     now = datetime.utcnow().isoformat() + 'Z'
     data.setdefault('created_at', now)
     data['updated_at'] = now
-    path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
+    est_save(data)
     return jsonify({'estimate_id': est_id}), 201
 
 
 @app.route('/api/estimates/<est_id>', methods=['GET'])
 def get_estimate(est_id):
-    path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
-    if not os.path.exists(path):
+    d = est_load(est_id)
+    if d is None:
         return jsonify({'error': 'Not found'}), 404
-    with open(path, 'r', encoding='utf-8') as f:
-        d = json.load(f)
     if not _can_touch_estimate(d):
         return _forbid()
     return jsonify(d)
@@ -681,35 +737,25 @@ def save_estimate(est_id):
     data = request.get_json(force=True)
     data['estimate_id'] = est_id
     data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-    path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
-    if os.path.exists(path):
-        existing = None
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                existing = json.load(f)
-        except Exception:
-            pass
-        if existing:
-            if not _can_touch_estimate(existing):
-                return _forbid()
-            for field in SERVER_MANAGED_FIELDS:
-                if not data.get(field) and existing.get(field):
-                    data[field] = existing[field]
-            # A signed estimate stays accepted even if a stale tab says draft
-            if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
-                data['status'] = existing.get('status', 'accepted')
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
+    existing = est_load(est_id)
+    if existing:
+        if not _can_touch_estimate(existing):
+            return _forbid()
+        for field in SERVER_MANAGED_FIELDS:
+            if not data.get(field) and existing.get(field):
+                data[field] = existing[field]
+        # A signed estimate stays accepted even if a stale tab says draft
+        if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
+            data['status'] = existing.get('status', 'accepted')
+    est_save(data)
     return jsonify({'estimate_id': est_id})
 
 
 @app.route('/api/estimates/<est_id>/duplicate', methods=['POST'])
 def duplicate_estimate(est_id):
-    src = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
-    if not os.path.exists(src):
+    est = est_load(est_id)
+    if est is None:
         return jsonify({'error': 'Not found'}), 404
-    with open(src, 'r', encoding='utf-8') as f:
-        est = json.load(f)
     if not _can_touch_estimate(est):
         return _forbid()
     new_id = str(uuid.uuid4())
@@ -726,9 +772,7 @@ def duplicate_estimate(est_id):
     c = est.get('customer', {})
     if c.get('name') and not c['name'].startswith('Copy of '):
         c['name'] = 'Copy of ' + c['name']
-    dest = os.path.join(ESTIMATES_DIR, f"{new_id}.json")
-    with open(dest, 'w', encoding='utf-8') as f:
-        json.dump(est, f, indent=2)
+    est_save(est)
     src_dir = os.path.join(UPLOADS_DIR, est_id)
     if os.path.exists(src_dir):
         shutil.copytree(src_dir, os.path.join(UPLOADS_DIR, new_id))
@@ -739,18 +783,13 @@ def duplicate_estimate(est_id):
 def delete_estimate(est_id):
     if not _safe_path_id(est_id):
         return jsonify({'error': 'invalid estimate id'}), 400
-    path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                est = json.load(f)
-        except Exception:
-            est = None
+    if est_exists(est_id):
+        est = est_load(est_id)
         # Unreadable file: only managers/admins may force-delete it
         if (est is not None and not _can_touch_estimate(est)) or \
            (est is None and not _is_manager_up()):
             return _forbid()
-        os.remove(path)
+        est_delete(est_id)
     upload_dir = os.path.join(UPLOADS_DIR, est_id)
     if os.path.exists(upload_dir):
         shutil.rmtree(upload_dir)
@@ -791,17 +830,14 @@ def set_customer_notes(name):
 def update_estimate_label(est_id):
     """Quick-patch just the estimate_label field without a full save."""
     label = (request.get_json(force=True) or {}).get('label', '')
-    path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
-    if not os.path.exists(path):
+    est = est_load(est_id)
+    if est is None:
         return jsonify({'error': 'Not found'}), 404
-    with open(path, 'r', encoding='utf-8') as f:
-        est = json.load(f)
     if not _can_touch_estimate(est):
         return _forbid()
     est['estimate_label'] = label
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(est, f, indent=2)
+    est_save(est)
     return jsonify({'ok': True, 'label': label})
 
 
@@ -811,17 +847,14 @@ def update_estimate_status(est_id):
     status = (request.json or {}).get('status')
     if status not in VALID:
         return jsonify({'error': 'Invalid status'}), 400
-    path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
-    if not os.path.exists(path):
+    est = est_load(est_id)
+    if est is None:
         return jsonify({'error': 'Not found'}), 404
-    with open(path, 'r', encoding='utf-8') as f:
-        est = json.load(f)
     if not _can_touch_estimate(est):
         return _forbid()
     est['status'] = status
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(est, f, indent=2)
+    est_save(est)
     return jsonify({'ok': True, 'status': status})
 
 
@@ -831,14 +864,9 @@ def update_estimate_status(est_id):
 def upload_photo(est_id):
     if not _safe_path_id(est_id):
         return jsonify({'error': 'invalid estimate id'}), 400
-    est_path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
-    if os.path.exists(est_path):
-        try:
-            with open(est_path, 'r', encoding='utf-8') as fh:
-                if not _can_touch_estimate(json.load(fh)):
-                    return _forbid()
-        except Exception:
-            pass
+    est = est_load(est_id)
+    if est is not None and not _can_touch_estimate(est):
+        return _forbid()
     if 'file' not in request.files:
         return jsonify({'error': 'No file field'}), 400
     f = request.files['file']
@@ -858,14 +886,9 @@ def upload_photo(est_id):
 def delete_photo(est_id, filename):
     if not _safe_path_id(est_id) or not _safe_path_id(filename):
         return jsonify({'error': 'invalid path'}), 400
-    est_path = os.path.join(ESTIMATES_DIR, f"{est_id}.json")
-    if os.path.exists(est_path):
-        try:
-            with open(est_path, 'r', encoding='utf-8') as fh:
-                if not _can_touch_estimate(json.load(fh)):
-                    return _forbid()
-        except Exception:
-            pass
+    est = est_load(est_id)
+    if est is not None and not _can_touch_estimate(est):
+        return _forbid()
     path = os.path.join(UPLOADS_DIR, est_id, filename)
     if os.path.exists(path):
         os.remove(path)
@@ -1021,23 +1044,6 @@ def fc(n):
     except Exception:
         return '$0.00'
 
-def find_by_token(token):
-    """Return (est_dict, filepath) for the estimate matching share_token, or None."""
-    if not token:
-        return None
-    for fname in os.listdir(ESTIMATES_DIR):
-        if not fname.endswith('.json'):
-            continue
-        path = os.path.join(ESTIMATES_DIR, fname)
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                est = json.load(f)
-            if est.get('share_token') == token:
-                return est, path
-        except Exception:
-            pass
-    return None
-
 # ── Shared pricing math — MUST mirror app.js (tierRate / lineTotalEffective) ─
 # The frontend prices with per-tier rates (pricing.tier_rates) and honors
 # per-line price_override. Everything server-rendered (customer sign page,
@@ -1136,20 +1142,7 @@ def get_analytics():
     now_dt       = datetime.utcnow()
     ytd_cutoff   = now_dt.replace(month=1, day=1, hour=0, minute=0, second=0)
 
-    try:
-        fnames = sorted(os.listdir(ESTIMATES_DIR))
-    except OSError:
-        return jsonify({'by_trade': {}, 'by_rep': {}})
-
-    for fname in fnames:
-        if not fname.endswith('.json'):
-            continue
-        try:
-            with open(os.path.join(ESTIMATES_DIR, fname), 'r', encoding='utf-8') as f:
-                est = json.load(f)
-        except Exception:
-            continue
-
+    for est in est_iter():
         is_signed  = bool(est.get('signature'))
         is_sent    = bool(est.get('share_token'))
         sp         = (est.get('salesperson') or '').strip()
@@ -2289,7 +2282,7 @@ def save_server_info():
     return jsonify({'ok': True, 'base_url': _base_url()})
 
 
-def _ensure_share_token(est, path):
+def _ensure_share_token(est):
     """Mark an estimate sent and give it a share token if it lacks one."""
     token = est.get('share_token') or secrets.token_urlsafe(24)
     est['share_token'] = token
@@ -2298,21 +2291,18 @@ def _ensure_share_token(est, path):
     if est.get('status') in (None, '', 'draft'):
         est['status'] = 'sent'
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(est, f, indent=2)
+    est_save(est)
     return token
 
 
 @app.route('/api/estimates/<est_id>/share', methods=['POST'])
 def create_share_link(est_id):
-    path = os.path.join(ESTIMATES_DIR, f'{est_id}.json')
-    if not os.path.exists(path):
+    est = est_load(est_id)
+    if est is None:
         return jsonify({'error': 'Not found'}), 404
-    with open(path, 'r', encoding='utf-8') as f:
-        est = json.load(f)
     if not _can_touch_estimate(est):
         return _forbid()
-    token = _ensure_share_token(est, path)
+    token = _ensure_share_token(est)
     base = _base_url()
     return jsonify({'token': token, 'url': f'/sign/{token}', 'full_url': f'{base}/sign/{token}'})
 
@@ -2321,11 +2311,9 @@ def create_share_link(est_id):
 def email_estimate_link(est_id):
     """Email the customer their signing link directly from the app (SendGrid),
     so reps don't have to copy/paste on a phone."""
-    path = os.path.join(ESTIMATES_DIR, f'{est_id}.json')
-    if not os.path.exists(path):
+    est = est_load(est_id)
+    if est is None:
         return jsonify({'error': 'Not found'}), 404
-    with open(path, 'r', encoding='utf-8') as f:
-        est = json.load(f)
     if not _can_touch_estimate(est):
         return _forbid()
 
@@ -2334,7 +2322,7 @@ def email_estimate_link(est_id):
     if not to_addr or '@' not in to_addr:
         return jsonify({'error': 'No customer email address on this estimate.'}), 400
 
-    token    = _ensure_share_token(est, path)
+    token    = _ensure_share_token(est)
     base     = get_public_url()
     if not base:
         return jsonify({'error': 'No public URL configured — the emailed link would not '
@@ -2918,12 +2906,10 @@ def push_contract_to_crm(est_id):
     tagged 'contract' on the linked CRM job. Runs in a background thread —
     logs everything, never raises."""
     try:
-        path = os.path.join(ESTIMATES_DIR, f'{est_id}.json')
-        if not os.path.exists(path):
+        est = est_load(est_id)
+        if est is None:
             print(f'[crm-push] estimate {est_id} not found')
             return
-        with open(path, 'r', encoding='utf-8') as f:
-            est = json.load(f)
 
         proj_id = (est.get('customer', {}).get('crm_project_id')
                    or est.get('crm_project_id'))
@@ -2999,12 +2985,11 @@ def push_contract_to_crm(est_id):
 
         # 4) Record the push on the estimate
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                est = json.load(f)
-            est['crm_document_id'] = doc_id
-            est['crm_pushed_at']   = datetime.utcnow().isoformat() + 'Z'
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(est, f, indent=2)
+            est = est_load(est_id)
+            if est is not None:
+                est['crm_document_id'] = doc_id
+                est['crm_pushed_at']   = datetime.utcnow().isoformat() + 'Z'
+                est_save(est)
         except Exception:
             pass
         print(f'[crm-push] SUCCESS — contract for {cname} pushed to CRM job {proj_id} (doc {doc_id})')
@@ -3020,11 +3005,9 @@ def push_document_to_crm(est_id):
     result immediately. Skips quietly when the estimate isn't CRM-linked."""
     if not _safe_path_id(est_id):
         return jsonify({'error': 'bad id'}), 400
-    path = os.path.join(ESTIMATES_DIR, f'{est_id}.json')
-    if not os.path.exists(path):
+    est = est_load(est_id)
+    if est is None:
         return jsonify({'error': 'Estimate not found'}), 404
-    with open(path, 'r', encoding='utf-8') as f:
-        est = json.load(f)
     if not _can_touch_estimate(est):
         return _forbid()
 
@@ -3103,13 +3086,12 @@ def push_document_to_crm(est_id):
     # Persist the link on the attachment server-side so it survives even if
     # the client never saves again (client mirrors it into S as well).
     try:
-        with open(path, 'r', encoding='utf-8') as f:
-            est2 = json.load(f)
-        for a in est2.get('attachments', []):
-            if a.get('filename') == filename:
-                a['crm_document_id'] = doc_id
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(est2, f, indent=2)
+        est2 = est_load(est_id)
+        if est2 is not None:
+            for a in est2.get('attachments', []):
+                if a.get('filename') == filename:
+                    a['crm_document_id'] = doc_id
+            est_save(est2)
     except Exception:
         pass
     print(f'[crm-push-doc] SUCCESS — "{label}" pushed to CRM job {proj_id} (doc {doc_id})')
@@ -3119,11 +3101,9 @@ def push_document_to_crm(est_id):
 @app.route('/api/estimates/<est_id>/signed', methods=['GET'])
 def view_signed_estimate(est_id):
     """Return the signed confirmation page (printable HTML for PDF download)."""
-    path = os.path.join(ESTIMATES_DIR, f'{est_id}.json')
-    if not os.path.exists(path):
+    est = est_load(est_id)
+    if est is None:
         return '<h2 style="font-family:sans-serif;padding:40px">Estimate not found.</h2>', 404
-    with open(path, 'r', encoding='utf-8') as f:
-        est = json.load(f)
     if not est.get('signature'):
         return ('<h2 style="font-family:sans-serif;padding:40px">'
                 'This estimate has not been signed yet.</h2>'), 404
@@ -3133,10 +3113,9 @@ def view_signed_estimate(est_id):
 
 @app.route('/sign/<token>', methods=['GET', 'POST'])
 def customer_sign(token):
-    result = find_by_token(token)
-    if not result:
+    est = est_find_by_token(token)
+    if est is None:
         return '<h2 style="font-family:sans-serif;padding:40px">Link not found or expired.</h2>', 404
-    est, path = result
 
     if request.method == 'POST':
         sig_name      = (request.form.get('sig_name') or '').strip()
@@ -3189,8 +3168,7 @@ def customer_sign(token):
         }
         est['status']     = 'accepted'
         est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(est, f, indent=2)
+        est_save(est)
         # Signature is saved above — everything below is best-effort. Run the rep
         # notification AND the CRM push in background threads so a slow or
         # unreachable SMTP/CRM endpoint can never block (or 500) the customer's
@@ -3213,8 +3191,7 @@ def customer_sign(token):
             est['first_viewed_at'] = now_iso
         est['last_viewed_at'] = now_iso
         est['view_count']     = int(est.get('view_count') or 0) + 1
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(est, f, indent=2)
+        est_save(est)
         if first_view:
             threading.Thread(target=send_view_notification, args=(est,), daemon=True).start()
     except Exception as exc:
@@ -3822,19 +3799,7 @@ def _check_reminders():
     if not _email_configured():
         return
     now = datetime.utcnow()
-    try:
-        files = os.listdir(ESTIMATES_DIR)
-    except OSError:
-        return
-    for fname in files:
-        if not fname.endswith('.json'):
-            continue
-        path = os.path.join(ESTIMATES_DIR, fname)
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                est = json.load(f)
-        except Exception:
-            continue
+    for est in est_iter():
         if est.get('signature') or not est.get('share_token'):
             continue
         if est.get('status') == 'declined':
@@ -3844,8 +3809,7 @@ def _check_reminders():
             # Shared before this feature existed — start its clock now, no email
             est['sent_at'] = now.isoformat() + 'Z'
             try:
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(est, f, indent=2)
+                est_save(est)
             except Exception:
                 pass
             continue
@@ -3872,7 +3836,7 @@ def _check_reminders():
             try:
                 send_followup_reminder(est, days)
             except Exception as exc:
-                print(f'[reminders] send failed for {fname}: {exc}')
+                print(f"[reminders] send failed for {est.get('estimate_id','?')}: {exc}")
 
 
 # ── Backups ─────────────────────────────────────────────────────────────────
@@ -3886,14 +3850,19 @@ def _build_backup_zip(include_uploads=True):
     """Zip the data directory into memory. Returns bytes."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for root_name, root_dir in [('estimates', ESTIMATES_DIR),
-                                    ('uploads', UPLOADS_DIR)]:
-            if root_name == 'uploads' and not include_uploads:
-                continue
-            for dirpath, _dirs, files in os.walk(root_dir):
+        # Estimates come from the storage layer (not a directory walk) so the
+        # backup keeps working when the backend moves off flat files.
+        for doc in est_iter():
+            est_id = doc.get('estimate_id') or 'unknown'
+            try:
+                zf.writestr(f'estimates/{est_id}.json', json.dumps(doc, indent=2))
+            except Exception:
+                pass
+        if include_uploads:
+            for dirpath, _dirs, files in os.walk(UPLOADS_DIR):
                 for fn in files:
                     full = os.path.join(dirpath, fn)
-                    rel  = os.path.join(root_name, os.path.relpath(full, root_dir))
+                    rel  = os.path.join('uploads', os.path.relpath(full, UPLOADS_DIR))
                     try:
                         zf.write(full, rel)
                     except OSError:
@@ -3933,11 +3902,8 @@ def find_estimate():
     tolerance = float(request.args.get('tol', 50))
     result = []
     try:
-        for fname in sorted(os.listdir(ESTIMATES_DIR)):
-            if not fname.endswith('.json'): continue
+        for d in est_iter():
             try:
-                with open(os.path.join(ESTIMATES_DIR, fname), 'r', encoding='utf-8') as f:
-                    d = json.load(f)
                 t = _estimate_total(d)
                 if abs(t - near) <= tolerance:
                     c = d.get('customer', {})
@@ -3972,12 +3938,8 @@ def list_signed_estimates():
         return _forbid()
     result = []
     try:
-        for fname in sorted(os.listdir(ESTIMATES_DIR)):
-            if not fname.endswith('.json'):
-                continue
+        for d in est_iter():
             try:
-                with open(os.path.join(ESTIMATES_DIR, fname), 'r', encoding='utf-8') as f:
-                    d = json.load(f)
                 if d.get('signature'):
                     sig = d.get('signature', {})
                     c   = d.get('customer', {})
@@ -4014,7 +3976,7 @@ def _send_nightly_backup():
         return
     data  = _build_backup_zip(include_uploads=False)
     stamp = datetime.utcnow().strftime('%Y-%m-%d')
-    n_est = len([f for f in os.listdir(ESTIMATES_DIR) if f.endswith('.json')])
+    n_est = est_count()
     size_mb = len(data) / 1048576
 
     base = _base_url()
