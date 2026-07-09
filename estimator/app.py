@@ -246,8 +246,65 @@ _seed_data_dir()
 
 # ── Estimate storage layer ──────────────────────────────────────────────────
 # ALL estimate persistence goes through these helpers — never open an estimate
-# file directly. This is the single seam where the backend can be swapped
-# (e.g. Postgres) without touching route code.
+# file directly. Two backends behind the same functions:
+#   * Postgres (jsonb doc store) when DATABASE_URL is set — production on
+#     Railway. Survives redeploys/volume loss and serializes the 2 gunicorn
+#     workers properly (est_update runs SELECT ... FOR UPDATE).
+#   * Flat JSON files in ESTIMATES_DIR otherwise — local dev, unchanged.
+# On first boot with an empty table, existing estimates/*.json are migrated
+# in (files are left in place as a cold backup — never deleted or renamed).
+
+DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
+if DATABASE_URL.startswith('postgres://'):        # Railway sometimes emits the
+    DATABASE_URL = 'postgresql://' + DATABASE_URL[len('postgres://'):]  # old scheme
+
+if DATABASE_URL:
+    import psycopg
+    from psycopg.types.json import Json as _PgJson
+
+    def _db_conn():
+        return psycopg.connect(DATABASE_URL)
+
+    def _db_init():
+        """Create schema; one-time migrate estimates/*.json into an empty
+        table. The advisory lock serializes the gunicorn workers so only
+        one runs the migration; inserts are idempotent regardless."""
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT pg_advisory_lock(727100001)')
+            try:
+                cur.execute('CREATE TABLE IF NOT EXISTS estimates ('
+                            'id text PRIMARY KEY, doc jsonb NOT NULL, '
+                            'updated_at timestamptz NOT NULL DEFAULT now())')
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_est_share_token "
+                            "ON estimates ((doc->>'share_token'))")
+                cur.execute('SELECT count(*) FROM estimates')
+                if cur.fetchone()[0] == 0:
+                    n = 0
+                    try:
+                        fnames = [f for f in os.listdir(ESTIMATES_DIR)
+                                  if f.endswith('.json')]
+                    except OSError:
+                        fnames = []
+                    for fname in sorted(fnames):
+                        try:
+                            with open(os.path.join(ESTIMATES_DIR, fname), 'r',
+                                      encoding='utf-8') as f:
+                                doc = json.load(f)
+                            est_id = doc.get('estimate_id') or fname[:-5]
+                            cur.execute('INSERT INTO estimates (id, doc) VALUES (%s, %s) '
+                                        'ON CONFLICT (id) DO NOTHING', (est_id, _PgJson(doc)))
+                            n += 1
+                        except Exception as exc:
+                            print(f'[db] skipped {fname} during migration: {exc}')
+                    if n:
+                        print(f'[db] migrated {n} estimates from {ESTIMATES_DIR} '
+                              f'(JSON files left in place as cold backup)')
+            finally:
+                cur.execute('SELECT pg_advisory_unlock(727100001)')
+        print('[db] Postgres estimate storage active')
+
+    _db_init()
+
 
 def _est_path(est_id):
     return os.path.join(ESTIMATES_DIR, f"{est_id}.json")
@@ -255,6 +312,11 @@ def _est_path(est_id):
 
 def est_load(est_id):
     """Return the estimate doc, or None when missing/unreadable."""
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT doc FROM estimates WHERE id = %s', (str(est_id),))
+            row = cur.fetchone()
+            return row[0] if row else None
     try:
         with open(_est_path(est_id), 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -267,15 +329,29 @@ def est_save(doc):
     est_id = doc.get('estimate_id')
     if not est_id:
         raise ValueError('estimate doc missing estimate_id')
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute('INSERT INTO estimates (id, doc) VALUES (%s, %s) '
+                        'ON CONFLICT (id) DO UPDATE SET doc = EXCLUDED.doc, '
+                        'updated_at = now()', (str(est_id), _PgJson(doc)))
+        return
     with open(_est_path(est_id), 'w', encoding='utf-8') as f:
         json.dump(doc, f, indent=2)
 
 
 def est_exists(est_id):
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT 1 FROM estimates WHERE id = %s', (str(est_id),))
+            return cur.fetchone() is not None
     return os.path.exists(_est_path(est_id))
 
 
 def est_delete(est_id):
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute('DELETE FROM estimates WHERE id = %s', (str(est_id),))
+        return
     try:
         os.remove(_est_path(est_id))
     except OSError:
@@ -284,6 +360,10 @@ def est_delete(est_id):
 
 def est_ids():
     """All estimate ids, ascending."""
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT id FROM estimates ORDER BY id')
+            return [r[0] for r in cur.fetchall()]
     try:
         return sorted(f[:-5] for f in os.listdir(ESTIMATES_DIR)
                       if f.endswith('.json'))
@@ -292,11 +372,21 @@ def est_ids():
 
 
 def est_count():
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT count(*) FROM estimates')
+            return cur.fetchone()[0]
     return len(est_ids())
 
 
 def est_iter(reverse=False):
     """Yield every readable estimate doc; unreadable files are skipped."""
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT doc FROM estimates ORDER BY id {'DESC' if reverse else 'ASC'}")
+            for row in cur.fetchall():
+                yield row[0]
+        return
     for est_id in sorted(est_ids(), reverse=reverse):
         doc = est_load(est_id)
         if doc is not None:
@@ -307,10 +397,43 @@ def est_find_by_token(token):
     """Return the estimate doc matching share_token, or None."""
     if not token:
         return None
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT doc FROM estimates WHERE doc->>'share_token' = %s "
+                        'LIMIT 1', (str(token),))
+            row = cur.fetchone()
+            return row[0] if row else None
     for doc in est_iter():
         if doc.get('share_token') == token:
             return doc
     return None
+
+
+def est_update(est_id, mutator):
+    """Atomic read-modify-write. `mutator(doc_or_None)` returns the doc to
+    store, or None to abort without writing. Returns the stored doc (or None).
+
+    DB mode runs inside a SELECT ... FOR UPDATE transaction, so concurrent
+    writers (2 gunicorn workers: sign POST vs rep save vs CRM write-back)
+    serialize instead of losing updates. File mode is plain load-mutate-save —
+    fine for single-user local dev."""
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT doc FROM estimates WHERE id = %s FOR UPDATE',
+                        (str(est_id),))
+            row = cur.fetchone()
+            doc = mutator(row[0] if row else None)
+            if doc is None:
+                return None
+            cur.execute('INSERT INTO estimates (id, doc) VALUES (%s, %s) '
+                        'ON CONFLICT (id) DO UPDATE SET doc = EXCLUDED.doc, '
+                        'updated_at = now()', (str(est_id), _PgJson(doc)))
+            return doc
+    doc = mutator(est_load(est_id))
+    if doc is None:
+        return None
+    est_save(doc)
+    return doc
 
 
 # Contacts — refreshed every 5 minutes (was cached forever, so new CRM
@@ -743,29 +866,34 @@ def save_estimate(est_id):
     data = request.get_json(force=True)
     data['estimate_id'] = est_id
     data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-    existing = est_load(est_id)
-    if existing:
-        if not _can_touch_estimate(existing):
-            return _forbid()
-        for field in SERVER_MANAGED_FIELDS:
-            if not data.get(field) and existing.get(field):
-                data[field] = existing[field]
-        # A signed estimate stays accepted even if a stale tab says draft
-        if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
-            data['status'] = existing.get('status', 'accepted')
-        # Server-generated attachments (production packet) must survive a save
-        # from a tab opened before they existed. The UI offers no delete for
-        # them — regenerate replaces instead — so resurrecting is always right.
-        incoming_ids = {x.get('id') for x in (data.get('attachments') or [])}
-        for x in (existing.get('attachments') or []):
-            if x.get('server_generated') and x.get('id') not in incoming_ids:
-                data.setdefault('attachments', []).append(x)
-    # Change orders are server-authoritative (signed legal documents managed
-    # through their own endpoints) — a full-doc save can never alter them.
-    data.pop('change_orders', None)
-    if existing and existing.get('change_orders'):
-        data['change_orders'] = existing['change_orders']
-    est_save(data)
+    # Permission check outside the write lock (cheap read; verdict can't change)
+    existing_pre = est_load(est_id)
+    if existing_pre and not _can_touch_estimate(existing_pre):
+        return _forbid()
+
+    def _merge(existing):
+        if existing:
+            for field in SERVER_MANAGED_FIELDS:
+                if not data.get(field) and existing.get(field):
+                    data[field] = existing[field]
+            # A signed estimate stays accepted even if a stale tab says draft
+            if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
+                data['status'] = existing.get('status', 'accepted')
+            # Server-generated attachments (production packet) must survive a
+            # save from a tab opened before they existed. The UI offers no
+            # delete for them — regenerate replaces — so resurrecting is right.
+            incoming_ids = {x.get('id') for x in (data.get('attachments') or [])}
+            for x in (existing.get('attachments') or []):
+                if x.get('server_generated') and x.get('id') not in incoming_ids:
+                    data.setdefault('attachments', []).append(x)
+        # Change orders are server-authoritative (signed legal documents managed
+        # through their own endpoints) — a full-doc save can never alter them.
+        data.pop('change_orders', None)
+        if existing and existing.get('change_orders'):
+            data['change_orders'] = existing['change_orders']
+        return data
+
+    est_update(est_id, _merge)
     return jsonify({'estimate_id': est_id})
 
 
@@ -2396,16 +2524,24 @@ def save_server_info():
 
 
 def _ensure_share_token(est):
-    """Mark an estimate sent and give it a share token if it lacks one."""
-    token = est.get('share_token') or secrets.token_urlsafe(24)
-    est['share_token'] = token
-    if not est.get('sent_at'):
-        est['sent_at'] = datetime.utcnow().isoformat() + 'Z'
-    if est.get('status') in (None, '', 'draft'):
-        est['status'] = 'sent'
-    est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-    est_save(est)
-    return token
+    """Mark an estimate sent and give it a share token if it lacks one.
+    Atomic — a concurrent share/send can't mint two different tokens."""
+    fresh_token = secrets.token_urlsafe(24)
+
+    def _mark(doc):
+        if doc is None:
+            doc = est
+        doc['share_token'] = doc.get('share_token') or fresh_token
+        if not doc.get('sent_at'):
+            doc['sent_at'] = datetime.utcnow().isoformat() + 'Z'
+        if doc.get('status') in (None, '', 'draft'):
+            doc['status'] = 'sent'
+        doc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        return doc
+
+    stored = est_update(est.get('estimate_id'), _mark)
+    est.update(stored or {})
+    return est['share_token']
 
 
 @app.route('/api/estimates/<est_id>/share', methods=['POST'])
@@ -3386,11 +3522,13 @@ def push_contract_to_crm(est_id):
 
         # 4) Record the push on the estimate
         try:
-            est = est_load(est_id)
-            if est is not None:
-                est['crm_document_id'] = doc_id
-                est['crm_pushed_at']   = datetime.utcnow().isoformat() + 'Z'
-                est_save(est)
+            def _mark(doc):
+                if doc is None:
+                    return None
+                doc['crm_document_id'] = doc_id
+                doc['crm_pushed_at']   = datetime.utcnow().isoformat() + 'Z'
+                return doc
+            est_update(est_id, _mark)
         except Exception:
             pass
         print(f'[crm-push] SUCCESS — contract for {cname} pushed to CRM job {proj_id} (doc {doc_id})')
@@ -3508,12 +3646,14 @@ def push_document_to_crm(est_id):
     # Persist the link on the attachment server-side so it survives even if
     # the client never saves again (client mirrors it into S as well).
     try:
-        est2 = est_load(est_id)
-        if est2 is not None:
-            for a in est2.get('attachments', []):
+        def _mark(doc):
+            if doc is None:
+                return None
+            for a in doc.get('attachments', []):
                 if a.get('filename') == filename:
                     a['crm_document_id'] = doc_id
-            est_save(est2)
+            return doc
+        est_update(est_id, _mark)
     except Exception:
         pass
     print(f'[crm-push-doc] SUCCESS — "{label}" pushed to CRM job {proj_id} (doc {doc_id})')
@@ -3556,16 +3696,22 @@ def generate_production_packet(est_id):
     # rows — other server-generated docs (signed change orders) stay put.
     def _is_packet(x):
         return x.get('server_generated') and x.get('doc_type') == 'work_order'
-    atts = est.get('attachments') or []
-    for old in filter(_is_packet, atts):
-        parts = (old.get('filename') or '').split('/')
-        if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
-            try:
-                os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
-            except OSError:
-                pass
-    est['attachments'] = [x for x in atts if not _is_packet(x)] + [att]
-    est_save(est)
+
+    def _swap_packet(doc):
+        if doc is None:
+            return None
+        for old in filter(_is_packet, doc.get('attachments') or []):
+            parts = (old.get('filename') or '').split('/')
+            if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+                try:
+                    os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+                except OSError:
+                    pass
+        doc['attachments'] = [x for x in doc.get('attachments') or []
+                              if not _is_packet(x)] + [att]
+        return doc
+
+    est = est_update(est_id, _swap_packet) or est
 
     # File it on the CRM job — best-effort, packet exists locally regardless
     c     = est.get('customer', {})
@@ -3577,12 +3723,14 @@ def generate_production_packet(est_id):
         doc_name=f'Production Packet - {cname} ({enum})', doc_type='work_order',
         description='Work order + material list generated automatically from the signed contract.')
     if doc_id:
-        est = est_load(est_id)
-        if est is not None:
-            for x in est.get('attachments', []):
+        def _mark_pushed(doc):
+            if doc is None:
+                return None
+            for x in doc.get('attachments', []):
                 if x.get('id') == att['id']:
                     x['crm_document_id'] = doc_id
-            est_save(est)
+            return doc
+        est_update(est_id, _mark_pushed)
         att['crm_document_id'] = doc_id
     elif err and err != 'not_linked':
         print(f'[packet] CRM push failed for {est_id}: {err}')
@@ -3793,13 +3941,22 @@ def change_order_share(est_id, co_id):
         return jsonify({'error': 'Already signed.'}), 400
     if not co.get('line_items'):
         return jsonify({'error': 'Add at least one line item before sending.'}), 400
-    if not co.get('share_token'):
-        co['share_token'] = secrets.token_urlsafe(24)
-    co['status'] = 'sent'
-    if not co.get('sent_at'):
-        co['sent_at'] = datetime.utcnow().isoformat() + 'Z'
-    est_save(est)
-    tok = co['share_token']
+    fresh_token = secrets.token_urlsafe(24)
+
+    def _mark_sent(doc):
+        co2 = _find_co(doc, co_id) if doc else None
+        if co2 is None or co2.get('status') == 'accepted':
+            return None  # signed concurrently — don't disturb it
+        co2['share_token'] = co2.get('share_token') or fresh_token
+        co2['status'] = 'sent'
+        if not co2.get('sent_at'):
+            co2['sent_at'] = datetime.utcnow().isoformat() + 'Z'
+        return doc
+
+    stored = est_update(est_id, _mark_sent)
+    if stored is None:
+        return jsonify({'error': 'Already signed.'}), 400
+    tok = _find_co(stored, co_id)['share_token']
     return jsonify({'token': tok, 'url': f'/sign-co/{tok}',
                     'full_url': f'{_base_url()}/sign-co/{tok}'})
 
@@ -3819,12 +3976,21 @@ def change_order_status(est_id, co_id):
         return jsonify({'error': 'Invalid status'}), 400
     if co.get('status') == 'accepted':
         return jsonify({'error': 'A signed change order cannot change status.'}), 400
-    co['status'] = status
-    if status == 'draft':
-        co['share_token'] = None
-    est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-    est_save(est)
-    return jsonify(_co_view(co))
+
+    def _set_status(doc):
+        co2 = _find_co(doc, co_id) if doc else None
+        if co2 is None or co2.get('status') == 'accepted':
+            return None  # signed while this request was in flight
+        co2['status'] = status
+        if status == 'draft':
+            co2['share_token'] = None   # kill the customer's old link
+        doc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        return doc
+
+    stored = est_update(est_id, _set_status)
+    if stored is None:
+        return jsonify({'error': 'A signed change order cannot change status.'}), 400
+    return jsonify(_co_view(_find_co(stored, co_id)))
 
 
 @app.route('/api/estimates/<est_id>/change-orders/<co_id>/send-email', methods=['POST'])
@@ -4068,6 +4234,8 @@ def sign_change_order(token):
         return '<h2 style="font-family:sans-serif;padding:40px">Link not found or expired.</h2>', 404
     est, co = found
 
+    co_id = co.get('id')
+
     if request.method == 'POST':
         if co.get('signature'):
             return build_co_sign_page(est, co, token)
@@ -4075,33 +4243,64 @@ def sign_change_order(token):
         sig_email = (request.form.get('sig_email') or '').strip()
         if not sig_name:
             return 'Full name is required.', 400
-        # Hash the CO (tied to its parent) BEFORE attaching the signature, so
-        # the hash represents exactly what was approved — mirrors customer_sign.
-        content = json.dumps({'estimate_id': est.get('estimate_id'), 'change_order': co},
-                             sort_keys=True, separators=(',', ':')).encode('utf-8')
-        co['signature'] = {
-            'name':          sig_name,
-            'email':         sig_email,
-            'signed_at':     datetime.utcnow().isoformat() + 'Z',
-            'ip_address':    request.remote_addr,
-            'user_agent':    request.headers.get('User-Agent', ''),
-            'document_hash': hashlib.sha256(content).hexdigest(),
-            'token':         token,
-        }
-        co['status'] = 'accepted'
-        est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-        est_save(est)
+        client_ip = request.remote_addr
+        client_ua = request.headers.get('User-Agent', '')
+
+        def _apply_co_signature(doc):
+            if doc is None:
+                return None
+            co2 = _find_co(doc, co_id)
+            # Vanished, already signed, or the rep pulled the link back — abort
+            if co2 is None or co2.get('signature') or co2.get('share_token') != token:
+                return None
+            # Hash the CO (tied to its parent) BEFORE attaching the signature —
+            # mirrors customer_sign: the hash covers exactly what was approved.
+            content = json.dumps({'estimate_id': doc.get('estimate_id'), 'change_order': co2},
+                                 sort_keys=True, separators=(',', ':')).encode('utf-8')
+            co2['signature'] = {
+                'name':          sig_name,
+                'email':         sig_email,
+                'signed_at':     datetime.utcnow().isoformat() + 'Z',
+                'ip_address':    client_ip,
+                'user_agent':    client_ua,
+                'document_hash': hashlib.sha256(content).hexdigest(),
+                'token':         token,
+            }
+            co2['status'] = 'accepted'
+            doc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            return doc
+
+        stored = est_update(est.get('estimate_id'), _apply_co_signature)
+        if stored is None:
+            found = find_by_co_token(token)
+            if not found:
+                return ('<h2 style="font-family:sans-serif;padding:40px">This change order '
+                        'is no longer available for signing.</h2>', 409)
+            est, co = found
+            return build_co_sign_page(est, co, token)
+        est, co = stored, _find_co(stored, co_id)
         threading.Thread(target=_post_co_sign_pipeline,
-                         args=(est.get('estimate_id'), co.get('id')), daemon=True).start()
+                         args=(est.get('estimate_id'), co_id), daemon=True).start()
         return build_co_sign_page(est, co, token)
 
     if not co.get('signature'):
         try:
             now_iso = datetime.utcnow().isoformat() + 'Z'
-            if not co.get('viewed_at'):
-                co['viewed_at'] = now_iso
-            co['view_count'] = int(co.get('view_count') or 0) + 1
-            est_save(est)
+
+            def _track_co_view(doc):
+                if doc is None:
+                    return None
+                co2 = _find_co(doc, co_id)
+                if co2 is None:
+                    return None
+                if not co2.get('viewed_at'):
+                    co2['viewed_at'] = now_iso
+                co2['view_count'] = int(co2.get('view_count') or 0) + 1
+                return doc
+
+            stored = est_update(est.get('estimate_id'), _track_co_view)
+            if stored is not None:
+                est, co = stored, _find_co(stored, co_id) or co
         except Exception as exc:
             print(f'[co-view-track] failed: {exc}')
     return build_co_sign_page(est, co, token)
@@ -4334,9 +4533,14 @@ def push_co_to_crm(est_id, co_id):
         'generated_at':     datetime.utcnow().isoformat() + 'Z',
         'change_order_id':  co_id,
     }
-    est['attachments'] = [x for x in est.get('attachments') or []
-                          if x.get('change_order_id') != co_id] + [att]
-    est_save(est)
+    def _attach(doc):
+        if doc is None:
+            return None
+        doc['attachments'] = [x for x in doc.get('attachments') or []
+                              if x.get('change_order_id') != co_id] + [att]
+        return doc
+
+    est = est_update(est_id, _attach) or est
 
     cname = (est.get('customer', {}).get('name') or 'Customer').strip()
     doc_id, err = _crm_file_document(
@@ -4348,16 +4552,18 @@ def push_co_to_crm(est_id, co_id):
                     f"{(co.get('signature') or {}).get('name', '')}. "
                     f"Filed automatically by Estimate Builder.")
     if doc_id:
-        est = est_load(est_id)
-        if est is not None:
-            co2 = _find_co(est, co_id)
+        def _mark_pushed(doc):
+            if doc is None:
+                return None
+            co2 = _find_co(doc, co_id)
             if co2 is not None:
                 co2['crm_document_id'] = doc_id
                 co2['crm_pushed_at']   = datetime.utcnow().isoformat() + 'Z'
-            for x in est.get('attachments', []):
+            for x in doc.get('attachments', []):
                 if x.get('id') == att['id']:
                     x['crm_document_id'] = doc_id
-            est_save(est)
+            return doc
+        est_update(est_id, _mark_pushed)
         print(f'[co-crm] SUCCESS — {co.get("number")} filed on CRM job (doc {doc_id})')
     elif err and err != 'not_linked':
         print(f'[co-crm] push failed for {est_id}/{co_id}: {err}')
@@ -4419,36 +4625,48 @@ def customer_sign(token):
         if ss.get('enabled') and not (ss.get('chosen') or '').strip() and not shingle_color:
             return 'Please choose a shingle color before signing.', 400
 
-        # Save the customer-chosen tier back to the estimate
-        if selected_tier in ('good', 'better', 'best'):
-            est['selected_tier'] = selected_tier
+        # Apply + sign atomically against the FRESH doc (a rep may have saved
+        # since this page loaded; the hash must cover exactly what's stored).
+        client_ip = request.remote_addr
+        client_ua = request.headers.get('User-Agent', '')
 
-        # Persist the chosen shingle color into the document (part of what is hashed)
-        if shingle_color:
-            est.setdefault('shingle_selection', {})['chosen'] = shingle_color
-            roof = est.get('trades', {}).get('roofing')
-            if isinstance(roof, dict):
-                roof.setdefault('colors', {})['shingle_color'] = shingle_color
+        def _apply_signature(doc):
+            if doc is None or doc.get('signature'):
+                return None  # deleted, or a concurrent sign won — keep theirs
+            if selected_tier in ('good', 'better', 'best'):
+                doc['selected_tier'] = selected_tier
+            # Chosen shingle color becomes part of the hashed document
+            if shingle_color:
+                doc.setdefault('shingle_selection', {})['chosen'] = shingle_color
+                roof = doc.get('trades', {}).get('roofing')
+                if isinstance(roof, dict):
+                    roof.setdefault('colors', {})['shingle_color'] = shingle_color
+            # Hash BEFORE adding the signature so it represents what was signed
+            content  = json.dumps(doc, sort_keys=True, separators=(',', ':')).encode('utf-8')
+            doc['signature'] = {
+                'name':          sig_name,
+                'email':         sig_email,
+                'signed_at':     datetime.utcnow().isoformat() + 'Z',
+                'ip_address':    client_ip,
+                'user_agent':    client_ua,
+                'document_hash': hashlib.sha256(content).hexdigest(),
+                'token':         token,
+                'selected_tier': doc.get('selected_tier', 'better'),
+                'shingle_color': shingle_color or (ss.get('chosen') or '').strip(),
+                'initials':      initials_captured,
+            }
+            doc['status']     = 'accepted'
+            doc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            return doc
 
-        # Hash the document BEFORE adding signature so hash represents what was signed
-        content   = json.dumps(est, sort_keys=True, separators=(',', ':')).encode('utf-8')
-        doc_hash  = hashlib.sha256(content).hexdigest()
-        signed_at = datetime.utcnow()
-        est['signature'] = {
-            'name':          sig_name,
-            'email':         sig_email,
-            'signed_at':     signed_at.isoformat() + 'Z',
-            'ip_address':    request.remote_addr,
-            'user_agent':    request.headers.get('User-Agent', ''),
-            'document_hash': doc_hash,
-            'token':         token,
-            'selected_tier': est.get('selected_tier', 'better'),
-            'shingle_color': shingle_color or (ss.get('chosen') or '').strip(),
-            'initials':      initials_captured,
-        }
-        est['status']     = 'accepted'
-        est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-        est_save(est)
+        stored = est_update(est.get('estimate_id'), _apply_signature)
+        if stored is None:
+            # Someone signed (or deleted) it in the meantime — show current state
+            est = est_load(est.get('estimate_id')) or est
+            return build_signed_confirmation(est) if est.get('signature') else \
+                ('<h2 style="font-family:sans-serif;padding:40px">This estimate is no '
+                 'longer available for signing.</h2>', 409)
+        est = stored
         # Signature is saved above — everything below is best-effort. Run the rep
         # notification and the CRM/packet pipeline in background threads so a slow
         # or unreachable SMTP/CRM endpoint can never block (or 500) the customer's
@@ -4468,13 +4686,20 @@ def customer_sign(token):
     # Record the customer view; notify the rep on the first one
     try:
         now_iso    = datetime.utcnow().isoformat() + 'Z'
-        first_view = not est.get('first_viewed_at')
-        if first_view:
-            est['first_viewed_at'] = now_iso
-        est['last_viewed_at'] = now_iso
-        est['view_count']     = int(est.get('view_count') or 0) + 1
-        est_save(est)
-        if first_view:
+        first_view = [False]
+
+        def _track(doc):
+            if doc is None:
+                return None
+            first_view[0] = not doc.get('first_viewed_at')
+            if first_view[0]:
+                doc['first_viewed_at'] = now_iso
+            doc['last_viewed_at'] = now_iso
+            doc['view_count']     = int(doc.get('view_count') or 0) + 1
+            return doc
+
+        est = est_update(est.get('estimate_id'), _track) or est
+        if first_view[0]:
             threading.Thread(target=send_view_notification, args=(est,), daemon=True).start()
     except Exception as exc:
         print(f'[view-track] failed: {exc}')
