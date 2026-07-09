@@ -146,13 +146,14 @@ def _safe_path_id(s):
 # This is the opposite of decorating each protected route (which is what let the
 # data APIs leak — a route added without the decorator was silently public).
 PUBLIC_ENDPOINTS = {
-    'login',          # the login page / form
-    'logout',         # clears the session
-    'customer_sign',  # /sign/<token> — public, protected by the 192-bit token
-    'serve_upload',   # /uploads/<file> — cover photos shown on the customer view
-    'static',         # JS/CSS for the login + app shell (non-sensitive client code)
-    'pwa_manifest',   # /manifest.json — needed for PWA install before login
-    'service_worker', # /sw.js — service worker scope must be public
+    'login',             # the login page / form
+    'logout',            # clears the session
+    'customer_sign',     # /sign/<token> — public, protected by the 192-bit token
+    'sign_change_order', # /sign-co/<token> — same token protection as /sign
+    'serve_upload',      # /uploads/<file> — cover photos shown on the customer view
+    'static',            # JS/CSS for the login + app shell (non-sensitive client code)
+    'pwa_manifest',      # /manifest.json — needed for PWA install before login
+    'service_worker',    # /sw.js — service worker scope must be public
 }
 
 @app.before_request
@@ -695,6 +696,10 @@ def list_estimates():
                 'signed_at':       sig.get('signed_at', ''),
                 'updated_at':      d.get('updated_at', ''),
                 'estimate_label':  d.get('estimate_label', ''),
+                'co_count':        len(d.get('change_orders') or []),
+                'co_pending':      sum(1 for x in d.get('change_orders') or []
+                                       if x.get('status') in ('draft', 'sent')),
+                'co_total':        round(_accepted_co_total(d), 2),
             })
         except Exception:
             pass
@@ -755,6 +760,11 @@ def save_estimate(est_id):
         for x in (existing.get('attachments') or []):
             if x.get('server_generated') and x.get('id') not in incoming_ids:
                 data.setdefault('attachments', []).append(x)
+    # Change orders are server-authoritative (signed legal documents managed
+    # through their own endpoints) — a full-doc save can never alter them.
+    data.pop('change_orders', None)
+    if existing and existing.get('change_orders'):
+        data['change_orders'] = existing['change_orders']
     est_save(data)
     return jsonify({'estimate_id': est_id})
 
@@ -775,6 +785,7 @@ def duplicate_estimate(est_id):
     est['first_viewed_at'] = None
     est['last_viewed_at'] = None
     est['view_count'] = 0
+    est.pop('change_orders', None)   # signed legal docs — never copied
     est['created_at'] = datetime.utcnow().isoformat() + 'Z'
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     c = est.get('customer', {})
@@ -3541,16 +3552,19 @@ def generate_production_packet(est_id):
         'generated_at':     datetime.utcnow().isoformat() + 'Z',
     }
 
-    # Replace any previous packet (and clean up its file)
+    # Replace any previous packet (and clean up its file). Only work_order
+    # rows — other server-generated docs (signed change orders) stay put.
+    def _is_packet(x):
+        return x.get('server_generated') and x.get('doc_type') == 'work_order'
     atts = est.get('attachments') or []
-    for old in [x for x in atts if x.get('server_generated')]:
+    for old in filter(_is_packet, atts):
         parts = (old.get('filename') or '').split('/')
         if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
             try:
                 os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
             except OSError:
                 pass
-    est['attachments'] = [x for x in atts if not x.get('server_generated')] + [att]
+    est['attachments'] = [x for x in atts if not _is_packet(x)] + [att]
     est_save(est)
 
     # File it on the CRM job — best-effort, packet exists locally regardless
@@ -3605,6 +3619,763 @@ def regenerate_production_packet(est_id):
         print(f'[packet] manual generation failed for {est_id}: {exc}')
         return jsonify({'error': f'Packet generation failed: {exc}'}), 500
     return jsonify({'attachment': att})
+
+
+# ── Change orders ────────────────────────────────────────────────────────────
+# Signed addendums on an accepted estimate. Stored inside the estimate doc but
+# SERVER-AUTHORITATIVE: the full-doc PUT strips them, every mutation goes
+# through the endpoints below. Totals are computed server-side only with the
+# same _sell_price math the GBB engine uses; the rep editor in app.js mirrors
+# the formula for its live preview (parity rule, same as app.py:1041).
+
+def _f(v, default=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _co_line_total(item, pricing):
+    """CO line sell total — price_override wins, else cost through margin/markup.
+    Negatives are legal everywhere (credit change orders)."""
+    po = item.get('price_override')
+    if po is not None and po != '':
+        try:
+            return float(po)
+        except (TypeError, ValueError):
+            pass
+    cost = _f(item.get('material_unit_cost')) + _f(item.get('labor_unit_cost'))
+    return _sell_price(cost, _f(pricing.get('rate')), pricing.get('mode', 'margin')) \
+        * _f(item.get('quantity'))
+
+
+def _co_total(co):
+    pricing = co.get('pricing') or {}
+    return sum(_co_line_total(it, pricing) for it in co.get('line_items') or [])
+
+
+def _accepted_co_total(est):
+    return sum(_co_total(co) for co in est.get('change_orders') or []
+               if co.get('status') == 'accepted')
+
+
+def _co_view(co):
+    """CO as returned to the rep UI — with computed totals attached."""
+    out = dict(co)
+    pricing = co.get('pricing') or {}
+    out['line_totals'] = [round(_co_line_total(it, pricing), 2)
+                          for it in co.get('line_items') or []]
+    out['total'] = round(_co_total(co), 2)
+    return out
+
+
+def _find_co(est, co_id):
+    return next((co for co in est.get('change_orders') or []
+                 if co.get('id') == co_id), None)
+
+
+def _clean_co_items(items):
+    clean = []
+    for it in (items or [])[:50]:
+        if not isinstance(it, dict):
+            continue
+        po = it.get('price_override')
+        row = {
+            'name':               str(it.get('name') or '').strip()[:200],
+            'description':        str(it.get('description') or '').strip()[:500],
+            'quantity':           _f(it.get('quantity')),
+            'unit':               str(it.get('unit') or '').strip()[:12],
+            'material_unit_cost': _f(it.get('material_unit_cost')),
+            'labor_unit_cost':    _f(it.get('labor_unit_cost')),
+            'price_override':     None if po in (None, '') else _f(po),
+        }
+        if row['name']:
+            clean.append(row)
+    return clean
+
+
+def _co_request_guard(est_id):
+    """Shared auth/lookup for CO endpoints → (est, error_response_or_None)."""
+    if not _safe_path_id(est_id):
+        return None, (jsonify({'error': 'invalid estimate id'}), 400)
+    est = est_load(est_id)
+    if est is None:
+        return None, (jsonify({'error': 'Not found'}), 404)
+    if not _can_touch_estimate(est):
+        return None, _forbid()
+    return est, None
+
+
+@app.route('/api/estimates/<est_id>/change-orders', methods=['GET', 'POST'])
+def change_orders_collection(est_id):
+    est, err = _co_request_guard(est_id)
+    if err:
+        return err
+    if request.method == 'GET':
+        return jsonify([_co_view(co) for co in est.get('change_orders') or []])
+
+    if not est.get('signature'):
+        return jsonify({'error': 'Change orders can only be added to a signed estimate.'}), 400
+    d   = request.get_json(force=True) or {}
+    cos = est.setdefault('change_orders', [])
+    nums = [int(str(x.get('number', '')).split('-')[-1]) for x in cos
+            if str(x.get('number', '')).split('-')[-1].isdigit()]
+    # Default rate: what the signed tier actually carried for roofing
+    parent_pricing = est.get('pricing') or {}
+    tier = (est.get('signature') or {}).get('selected_tier') or est.get('selected_tier', 'better')
+    d_pricing = d.get('pricing') if isinstance(d.get('pricing'), dict) else {}
+    now = datetime.utcnow().isoformat() + 'Z'
+    co = {
+        'id':          uuid.uuid4().hex[:12],
+        'number':      f'CO-{(max(nums) + 1) if nums else 1}',
+        'title':       str(d.get('title') or '').strip()[:200],
+        'description': str(d.get('description') or '').strip()[:4000],
+        'line_items':  _clean_co_items(d.get('line_items')),
+        'pricing': {'mode': parent_pricing.get('mode', 'margin'),
+                    'rate': _f(d_pricing.get('rate'),
+                               _tier_rate(parent_pricing, 'roofing', tier))},
+        'status':      'draft',
+        'share_token': None,
+        'created_at':  now,
+        'created_by':  _current_user(),
+        'sent_at':     None,
+        'viewed_at':   None,
+        'view_count':  0,
+        'signature':   None,
+    }
+    cos.append(co)
+    est['updated_at'] = now
+    est_save(est)
+    return jsonify(_co_view(co)), 201
+
+
+@app.route('/api/estimates/<est_id>/change-orders/<co_id>', methods=['PUT', 'DELETE'])
+def change_order_item(est_id, co_id):
+    est, err = _co_request_guard(est_id)
+    if err:
+        return err
+    co = _find_co(est, co_id)
+    if co is None:
+        return jsonify({'error': 'Change order not found'}), 404
+
+    if request.method == 'DELETE':
+        if co.get('status') == 'accepted':
+            return jsonify({'error': 'A signed change order cannot be deleted.'}), 400
+        est['change_orders'] = [x for x in est['change_orders'] if x.get('id') != co_id]
+        est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        est_save(est)
+        return jsonify({'ok': True})
+
+    if co.get('status') != 'draft':
+        return jsonify({'error': 'Only draft change orders can be edited — '
+                                 'move it back to draft first.'}), 400
+    d = request.get_json(force=True) or {}
+    co['title']       = str(d.get('title') or '').strip()[:200]
+    co['description'] = str(d.get('description') or '').strip()[:4000]
+    co['line_items']  = _clean_co_items(d.get('line_items'))
+    if isinstance(d.get('pricing'), dict):
+        co['pricing']['rate'] = _f(d['pricing'].get('rate'), co['pricing'].get('rate'))
+    co['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+    est['updated_at'] = co['updated_at']
+    est_save(est)
+    return jsonify(_co_view(co))
+
+
+@app.route('/api/estimates/<est_id>/change-orders/<co_id>/share', methods=['POST'])
+def change_order_share(est_id, co_id):
+    est, err = _co_request_guard(est_id)
+    if err:
+        return err
+    co = _find_co(est, co_id)
+    if co is None:
+        return jsonify({'error': 'Change order not found'}), 404
+    if co.get('status') == 'accepted':
+        return jsonify({'error': 'Already signed.'}), 400
+    if not co.get('line_items'):
+        return jsonify({'error': 'Add at least one line item before sending.'}), 400
+    if not co.get('share_token'):
+        co['share_token'] = secrets.token_urlsafe(24)
+    co['status'] = 'sent'
+    if not co.get('sent_at'):
+        co['sent_at'] = datetime.utcnow().isoformat() + 'Z'
+    est_save(est)
+    tok = co['share_token']
+    return jsonify({'token': tok, 'url': f'/sign-co/{tok}',
+                    'full_url': f'{_base_url()}/sign-co/{tok}'})
+
+
+@app.route('/api/estimates/<est_id>/change-orders/<co_id>/status', methods=['POST'])
+def change_order_status(est_id, co_id):
+    """Rep marks a CO declined, or reverts sent/declined back to draft for
+    editing. Reverting rotates the token so the customer's old link dies."""
+    est, err = _co_request_guard(est_id)
+    if err:
+        return err
+    co = _find_co(est, co_id)
+    if co is None:
+        return jsonify({'error': 'Change order not found'}), 404
+    status = (request.get_json(force=True) or {}).get('status')
+    if status not in ('draft', 'declined'):
+        return jsonify({'error': 'Invalid status'}), 400
+    if co.get('status') == 'accepted':
+        return jsonify({'error': 'A signed change order cannot change status.'}), 400
+    co['status'] = status
+    if status == 'draft':
+        co['share_token'] = None
+    est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+    est_save(est)
+    return jsonify(_co_view(co))
+
+
+@app.route('/api/estimates/<est_id>/change-orders/<co_id>/send-email', methods=['POST'])
+def change_order_email(est_id, co_id):
+    est, err = _co_request_guard(est_id)
+    if err:
+        return err
+    co = _find_co(est, co_id)
+    if co is None:
+        return jsonify({'error': 'Change order not found'}), 404
+    if co.get('status') == 'accepted':
+        return jsonify({'error': 'Already signed.'}), 400
+    if not co.get('line_items'):
+        return jsonify({'error': 'Add at least one line item before sending.'}), 400
+
+    body    = request.get_json(silent=True) or {}
+    to_addr = (body.get('email') or est.get('customer', {}).get('email') or '').strip()
+    if not to_addr or '@' not in to_addr:
+        return jsonify({'error': 'No customer email address on this estimate.'}), 400
+    base = get_public_url()
+    if not base:
+        return jsonify({'error': 'No public URL configured — the emailed link would not '
+                                 'be reachable. Use Copy Link instead.'}), 400
+
+    if not co.get('share_token'):
+        co['share_token'] = secrets.token_urlsafe(24)
+    co['status'] = 'sent'
+    if not co.get('sent_at'):
+        co['sent_at'] = datetime.utcnow().isoformat() + 'Z'
+    est_save(est)
+
+    c        = est.get('customer', {})
+    first    = (c.get('name') or 'there').split(' ')[0]
+    enum     = _est_number(est)
+    rep      = _display_name(est.get('salesperson')) if est.get('salesperson') else 'Project One Roofing'
+    sign_url = f"{base}/sign-co/{co['share_token']}"
+    total    = _co_total(co)
+    kind     = 'credit to' if total < 0 else 'change to'
+
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#1a3a5c;padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:22px;font-weight:800">Change Order {he(co.get('number', ''))} is Ready</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">Hi {he(first)} — a {kind} your project ({he(enum)}) is ready to review and sign online.</p>
+  </div>
+  <div style="padding:22px 26px">
+    <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">
+      Open the link below to review the change order details and sign electronically.
+      Your original contract stays in effect — this only covers the changes described.</p>
+    <a href="{he(sign_url)}" style="display:block;text-align:center;background:#1a3a5c;color:#fff;text-decoration:none;padding:14px 24px;border-radius:6px;font-weight:700;font-size:15px;margin-bottom:18px">
+      Review &amp; Sign Change Order →</a>
+    <p style="font-size:12px;color:#6b7280;line-height:1.6;margin:0">
+      Questions? Just reply to this email or call us at 970-776-0945.<br>
+      — {he(rep)}, Project One Roofing</p>
+  </div>
+</div>
+</body></html>'''
+    ok = _send_email(f'Change order {co.get("number", "")} for your project — Project One Roofing',
+                     html_body, to_addr, cc=_salesperson_email(est) or None)
+    if not ok:
+        return jsonify({'error': 'Email could not be sent — check the email settings.'}), 502
+    return jsonify({'ok': True, 'sent_to': to_addr, 'full_url': sign_url})
+
+
+@app.route('/api/estimates/<est_id>/change-orders/<co_id>/pdf', methods=['GET'])
+def change_order_pdf(est_id, co_id):
+    est, err = _co_request_guard(est_id)
+    if err:
+        return err
+    co = _find_co(est, co_id)
+    if co is None:
+        return jsonify({'error': 'Change order not found'}), 404
+    data = build_co_pdf(est, co)
+    return send_file(io.BytesIO(data), mimetype='application/pdf',
+                     download_name=f"{co.get('number', 'CO')}_{_est_number(est)}.pdf")
+
+
+def find_by_co_token(token):
+    """Return (est, co) for the change order matching share_token, or None.
+    Full scan like est_find_by_token — fine at this dataset size."""
+    if not token:
+        return None
+    for est in est_iter():
+        for co in est.get('change_orders') or []:
+            if co.get('share_token') == token:
+                return est, co
+    return None
+
+
+def _fcs(n):
+    """Currency with an explicit leading minus for credits: -$1,200.00."""
+    return ('-' if n < 0 else '') + fc(abs(n))
+
+
+def build_co_sign_page(est, co, token):
+    """Customer-facing change-order page — unsigned: review + sign form;
+    signed: confirmation with the audit trail. Inline CSS (style.css does
+    not apply to public pages), same shell as the estimate sign page."""
+    c     = est.get('customer', {})
+    a     = c.get('address', {})
+    addr  = ', '.join(filter(None, [a.get('street'), a.get('city'), a.get('state')]))
+    enum  = _est_number(est)
+    sig   = co.get('signature')
+    total = _co_total(co)
+    pricing = co.get('pricing') or {}
+    parent_total   = _estimate_total(est)
+    prior_co_total = sum(_co_total(x) for x in est.get('change_orders') or []
+                         if x.get('status') == 'accepted' and x.get('id') != co.get('id'))
+    new_total = parent_total + prior_co_total + total
+
+    rows = ''
+    for it in co.get('line_items') or []:
+        line = _co_line_total(it, pricing)
+        qty  = _f(it.get('quantity'))
+        desc = (it.get('description') or '').strip()
+        rows += f'''<tr>
+          <td class="cvn">{he(it.get('name', ''))}
+            {'<div class="cvd">' + he(desc) + '</div>' if desc else ''}</td>
+          <td class="cvc">{qty:g}</td>
+          <td class="cvc">{he(it.get('unit', ''))}</td>
+          <td class="cvr" style="{'color:#b91c1c' if line < 0 else ''}">{_fcs(line)}</td></tr>'''
+
+    desc_html = ''
+    if (co.get('description') or '').strip():
+        paras = ''.join(f'<p>{he(p.strip())}</p>'
+                        for p in co['description'].split('\n\n') if p.strip())
+        desc_html = f'<div class="cvnotes"><h3>What&rsquo;s Changing</h3>{paras}</div>'
+
+    is_credit = total < 0
+    total_lbl = 'Change Order Credit' if is_credit else 'Change Order Total'
+    grand_style = 'background:#b91c1c' if is_credit else ''
+
+    if sig:
+        signed_fmt = sig.get('signed_at', '')
+        try:
+            signed_fmt = datetime.fromisoformat(signed_fmt.replace('Z', '+00:00')) \
+                .strftime('%B %d, %Y at %I:%M %p UTC')
+        except Exception:
+            pass
+        action_html = f'''<div class="cert">
+      <div class="cert-title">&#9989; Change Order Signed</div>
+      <table class="cert-tbl">
+        <tr><td>Signed By</td><td>{he(sig.get('name', ''))}</td></tr>
+        <tr><td>Signed At</td><td>{he(signed_fmt)}</td></tr>
+        <tr><td>IP Address</td><td>{he(sig.get('ip_address', ''))}</td></tr>
+        <tr><td>SHA-256</td><td class="mono">{he((sig.get('document_hash') or '')[:32])}&hellip;</td></tr>
+      </table>
+      <div class="cert-legal">This change order was signed electronically and is legally binding under
+      the federal E-SIGN Act (15 U.S.C. &sect; 7001) and the Uniform Electronic Transactions Act.
+      All terms &amp; conditions of the original contract remain in effect.</div>
+    </div>'''
+    else:
+        action_html = f'''<div class="cvsig">
+      <h2>Sign to Approve</h2>
+      <p class="sub">Your electronic signature approves this change order as an addendum to your
+        original contract ({he(enum)}). All original terms &amp; conditions remain in effect.</p>
+      <form method="POST" action="/sign-co/{he(token)}">
+        <input class="cvinput" name="sig_name" placeholder="Your full legal name *" required autocomplete="name">
+        <input class="cvinput" name="sig_email" placeholder="Email address (optional)" type="email" autocomplete="email">
+        <label class="cvagree">
+          <input type="checkbox" name="agree" required>
+          I have reviewed this change order and approve the changes and pricing above.
+        </label>
+        <button type="submit" class="cvbtn">&#10003; Approve &mdash; Sign Electronically</button>
+        <p class="cvlegal">By clicking Approve, you are electronically signing this change order. This signature
+        is legally binding under the federal E-SIGN Act (15 U.S.C. &sect;&nbsp;7001) and the Uniform Electronic
+        Transactions Act.</p>
+      </form>
+    </div>'''
+
+    return f'''<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Change Order {he(co.get('number', ''))} &mdash; Project One Roofing</title>
+<style>{_CV_CSS}</style></head><body>
+
+<header class="cvhdr">
+  <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
+  <div class="cvhdr-contact">
+    <a href="tel:9707760945">970-776-0945</a>
+    <span>projectoneroofingcolorado.com</span>
+  </div>
+</header>
+<div class="cvbrand-stripe"></div>
+
+<div class="cvhero{' ok' if sig else ''}">
+  <div class="cvhero-brand">Project One Roofing</div>
+  <h1>{'Change Order Approved' if sig else f'Change Order {he(co.get("number", ""))}'}</h1>
+  <p>{'Thank you — a copy has been added to your project records.' if sig
+      else 'Review the changes below, then sign at the bottom to approve'}</p>
+</div>
+
+<div class="cvc-card">
+  <div class="cvgrid">
+    <div class="cvgi"><label>Customer</label><strong>{he(c.get('name', '—'))}</strong></div>
+    <div class="cvgi"><label>Change Order</label><strong>{he(co.get('number', ''))}{(' — ' + he(co.get('title', ''))) if co.get('title') else ''}</strong></div>
+    <div class="cvgi"><label>Original Contract</label><strong>{he(enum)}</strong></div>
+    <div class="cvgi"><label>Address</label><strong>{he(addr or '—')}</strong></div>
+  </div>
+</div>
+
+{desc_html}
+
+<div class="cvtrade">
+  <div class="cvtrade-hd">Change Order Items</div>
+  <table class="cvt"><thead><tr>
+    <th>Description</th><th class="cvth-c">Qty</th>
+    <th class="cvth-c">Unit</th><th class="cvth-r">Total</th></tr></thead>
+  <tbody>{rows}</tbody></table>
+</div>
+
+<div class="cvgrand" style="margin-top:14px;{grand_style}">
+  <span class="cvgrand-lbl">{total_lbl}</span>
+  <span class="cvgrand-amt">{_fcs(total)}</span>
+</div>
+
+<div class="cvc-card">
+  <div class="cvgrid">
+    <div class="cvgi"><label>Original Contract</label><strong>{fc(parent_total)}</strong></div>
+    <div class="cvgi"><label>Prior Change Orders</label><strong>{_fcs(prior_co_total)}</strong></div>
+    <div class="cvgi"><label>This Change Order</label><strong>{_fcs(total)}</strong></div>
+    <div class="cvgi"><label>New Contract Total</label><strong style="color:#16a34a">{fc(new_total)}</strong></div>
+  </div>
+</div>
+
+{action_html}
+
+<div class="cvftr">
+  <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
+  <strong>Project One Roofing</strong>
+  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-776-0945 &middot; projectoneroofingcolorado.com</div>
+</div>
+</body></html>'''
+
+
+@app.route('/sign-co/<token>', methods=['GET', 'POST'])
+def sign_change_order(token):
+    found = find_by_co_token(token)
+    if not found:
+        return '<h2 style="font-family:sans-serif;padding:40px">Link not found or expired.</h2>', 404
+    est, co = found
+
+    if request.method == 'POST':
+        if co.get('signature'):
+            return build_co_sign_page(est, co, token)
+        sig_name  = (request.form.get('sig_name') or '').strip()
+        sig_email = (request.form.get('sig_email') or '').strip()
+        if not sig_name:
+            return 'Full name is required.', 400
+        # Hash the CO (tied to its parent) BEFORE attaching the signature, so
+        # the hash represents exactly what was approved — mirrors customer_sign.
+        content = json.dumps({'estimate_id': est.get('estimate_id'), 'change_order': co},
+                             sort_keys=True, separators=(',', ':')).encode('utf-8')
+        co['signature'] = {
+            'name':          sig_name,
+            'email':         sig_email,
+            'signed_at':     datetime.utcnow().isoformat() + 'Z',
+            'ip_address':    request.remote_addr,
+            'user_agent':    request.headers.get('User-Agent', ''),
+            'document_hash': hashlib.sha256(content).hexdigest(),
+            'token':         token,
+        }
+        co['status'] = 'accepted'
+        est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        est_save(est)
+        threading.Thread(target=_post_co_sign_pipeline,
+                         args=(est.get('estimate_id'), co.get('id')), daemon=True).start()
+        return build_co_sign_page(est, co, token)
+
+    if not co.get('signature'):
+        try:
+            now_iso = datetime.utcnow().isoformat() + 'Z'
+            if not co.get('viewed_at'):
+                co['viewed_at'] = now_iso
+            co['view_count'] = int(co.get('view_count') or 0) + 1
+            est_save(est)
+        except Exception as exc:
+            print(f'[co-view-track] failed: {exc}')
+    return build_co_sign_page(est, co, token)
+
+
+def build_co_pdf(est, co):
+    """Signed change-order PDF (bytes) — priced lines, contract summary, and
+    the signature block. Same visual language as build_signed_pdf."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+    c    = est.get('customer', {})
+    a    = c.get('address', {})
+    sig  = co.get('signature') or {}
+    enum = _est_number(est)
+    pricing = co.get('pricing') or {}
+    total   = _co_total(co)
+
+    pdf = FPDF(orientation='P', unit='mm', format='Letter')
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.set_margins(14, 14, 14)
+    pdf.add_page()
+    W = pdf.w - 28
+
+    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
+    if os.path.exists(logo):
+        try:
+            pdf.image(logo, x=14, y=12, h=16)
+        except Exception:
+            pass
+    pdf.set_xy(14, 12)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_font('Helvetica', '', 8)
+    pdf.cell(W, 4, '970-776-0945  -  projectoneroofingcolorado.com', align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_y(32)
+
+    pdf.set_fill_color(26, 58, 92)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font('Helvetica', 'B', 13)
+    title = f"CHANGE ORDER {co.get('number', '')}" + ('  -  SIGNED' if sig else '  -  DRAFT')
+    pdf.cell(W, 10, f'  {_pdf_safe(title)}', fill=True, new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(4)
+
+    addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'),
+                                       a.get('state'), a.get('zip')]))
+    info_rows = [
+        ('Customer',          c.get('name', '')),
+        ('Address',           addr_str),
+        ('Original Contract', enum),
+        ('Job #',             c.get('crm_job_number') or ''),
+        ('Change Order',      co.get('number', '')),
+        ('Title',             co.get('title', '')),
+        ('Created',           (co.get('created_at') or '')[:10]),
+    ]
+    pdf.set_font('Helvetica', '', 9)
+    for label, val in info_rows:
+        if not val:
+            continue
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(40, 5.5, _pdf_safe(label))
+        pdf.set_font('Helvetica', '', 9)
+        pdf.cell(0, 5.5, _pdf_safe(val), new_x='LMARGIN', new_y='NEXT')
+    pdf.ln(3)
+
+    desc = (co.get('description') or '').strip()
+    if desc:
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(0, 6, "What's Changing", new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font('Helvetica', '', 8.5)
+        pdf.multi_cell(W, 4.6, _pdf_safe(desc))
+        pdf.ln(3)
+
+    def trunc(s, n):
+        s = _pdf_safe(s)
+        return s if len(s) <= n else s[:n - 1] + '...'
+
+    pdf.set_fill_color(234, 239, 245)
+    pdf.set_font('Helvetica', 'B', 8)
+    for txt, w, align in [('Description', 98, 'L'), ('Qty', 16, 'R'), ('Unit', 16, 'C'),
+                          ('Unit Price', 26, 'R'), ('Total', 26, 'R')]:
+        pdf.cell(w, 6.5, txt, border=1, fill=True, align=align)
+    pdf.ln()
+    pdf.set_font('Helvetica', '', 8)
+    for it in co.get('line_items') or []:
+        line = _co_line_total(it, pricing)
+        qty  = _f(it.get('quantity'))
+        unit_price = line / qty if qty else line
+        name = it.get('name', '')
+        d2 = (it.get('description') or '').strip()
+        if d2:
+            name = f'{name} - {d2}'
+        pdf.cell(98, 6, trunc(name, 66), border=1)
+        pdf.cell(16, 6, f'{qty:g}', border=1, align='R')
+        pdf.cell(16, 6, trunc(it.get('unit', ''), 8), border=1, align='C')
+        pdf.cell(26, 6, _fcs(unit_price), border=1, align='R')
+        pdf.cell(26, 6, _fcs(line), border=1, align='R')
+        pdf.ln()
+    pdf.ln(4)
+
+    if total < 0:
+        pdf.set_fill_color(185, 28, 28)
+    else:
+        pdf.set_fill_color(26, 58, 92)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font('Helvetica', 'B', 11)
+    lbl = 'CHANGE ORDER CREDIT' if total < 0 else 'CHANGE ORDER TOTAL'
+    pdf.cell(W - 40, 9, f'  {lbl}', fill=True)
+    pdf.cell(40, 9, _fcs(total) + '  ', fill=True, align='R')
+    pdf.ln(13)
+    pdf.set_text_color(0, 0, 0)
+
+    parent_total   = _estimate_total(est)
+    prior_co_total = sum(_co_total(x) for x in est.get('change_orders') or []
+                         if x.get('status') == 'accepted' and x.get('id') != co.get('id'))
+    pdf.set_font('Helvetica', '', 9)
+    for label, val in [('Original Contract', fc(parent_total)),
+                       ('Prior Change Orders', _fcs(prior_co_total)),
+                       ('This Change Order', _fcs(total)),
+                       ('New Contract Total', fc(parent_total + prior_co_total + total))]:
+        pdf.set_font('Helvetica', 'B' if label.startswith('New') else '', 9)
+        pdf.cell(50, 5.5, _pdf_safe(label))
+        pdf.cell(0, 5.5, val, new_x='LMARGIN', new_y='NEXT')
+    pdf.ln(4)
+
+    pdf.set_font('Helvetica', 'I', 7.5)
+    pdf.multi_cell(W, 4, _pdf_safe('This change order is an addendum to the original signed '
+                                   'contract referenced above. All terms & conditions of the '
+                                   'original contract remain in full effect.'))
+    pdf.ln(4)
+
+    if sig:
+        if pdf.get_y() > pdf.h - 75:
+            pdf.add_page()
+        signed_fmt = sig.get('signed_at', '')
+        try:
+            signed_fmt = datetime.fromisoformat(signed_fmt.replace('Z', '+00:00')) \
+                .strftime('%B %d, %Y at %I:%M %p UTC')
+        except Exception:
+            pass
+        pdf.set_draw_color(22, 163, 74)
+        pdf.set_fill_color(240, 253, 244)
+        y0 = pdf.get_y()
+        pdf.rect(14, y0, W, 52, style='DF')
+        pdf.set_xy(18, y0 + 4)
+        pdf.set_text_color(22, 101, 52)
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(0, 6, 'ELECTRONICALLY SIGNED', new_x='LMARGIN', new_y='NEXT')
+        pdf.set_x(18)
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font('Helvetica', 'I', 17)
+        pdf.cell(0, 10, _pdf_safe(sig.get('name', '')), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_x(18)
+        pdf.set_font('Helvetica', '', 8)
+        for line in [
+            f"Signed by: {sig.get('name', '')}"
+            + (f"  ({sig.get('email')})" if sig.get('email') else ''),
+            f"Date: {signed_fmt}",
+            f"IP Address: {sig.get('ip_address', '')}",
+            f"Document SHA-256: {(sig.get('document_hash') or '')[:32]}...",
+        ]:
+            pdf.cell(0, 4.6, _pdf_safe(line), new_x='LMARGIN', new_y='NEXT')
+            pdf.set_x(18)
+        pdf.set_draw_color(0, 0, 0)
+
+    return bytes(pdf.output())
+
+
+def send_co_signature_notification(est, co):
+    """Email the rep when a customer signs a change order."""
+    to_addr = _salesperson_email(est)
+    if not to_addr:
+        print('[co-notify] No salesperson on estimate — skipping notification')
+        return
+    c     = est.get('customer', {})
+    cname = c.get('name', 'Customer')
+    sig   = co.get('signature') or {}
+    total = _co_total(co)
+    new_total = _estimate_total(est) + _accepted_co_total(est)
+    view_url  = f"{_base_url()}/sign-co/{co.get('share_token', '')}"
+    clr = '#b91c1c' if total < 0 else '#16a34a'
+
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#16a34a;padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:22px;font-weight:800">&#9989; Change Order Signed!</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">{he(cname)} just approved {he(co.get('number', ''))}.</p>
+  </div>
+  <div style="padding:22px 26px">
+    <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Change Order</td><td style="padding:5px 0;font-size:13px;font-weight:700">{he(co.get('number', ''))}{(' — ' + he(co.get('title', ''))) if co.get('title') else ''}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Customer</td><td style="padding:5px 0;font-size:13px">{he(cname)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">CO Amount</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:{clr}">{_fcs(total)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">New Contract Total</td><td style="padding:5px 0;font-size:13px;font-weight:700">{fc(new_total)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Signed By</td><td style="padding:5px 0;font-size:13px">{he(sig.get('name', ''))}</td></tr>
+    </table>
+    <a href="{he(view_url)}" style="display:block;text-align:center;background:#1a3a5c;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:700;font-size:14px">
+      View Signed Change Order →</a>
+  </div>
+</div>
+</body></html>'''
+    _send_email(f"✅ {co.get('number', 'CO')} signed — {cname} ({_fcs(total)})",
+                html_body, to_addr)
+
+
+def push_co_to_crm(est_id, co_id):
+    """Build the signed CO PDF, store it as a server-generated attachment
+    (visible in Documents), and file it on the Base44 job."""
+    est = est_load(est_id)
+    co  = _find_co(est, co_id) if est else None
+    if co is None:
+        print(f'[co-crm] {est_id}/{co_id} not found')
+        return
+    pdf_bytes = build_co_pdf(est, co)
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'co_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            f"Signed {co.get('number', 'CO')}"
+                            + (f" - {co.get('title', '')}" if co.get('title') else ''),
+        'doc_type':         'change_order',
+        'show_in_estimate': False,
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+        'change_order_id':  co_id,
+    }
+    est['attachments'] = [x for x in est.get('attachments') or []
+                          if x.get('change_order_id') != co_id] + [att]
+    est_save(est)
+
+    cname = (est.get('customer', {}).get('name') or 'Customer').strip()
+    doc_id, err = _crm_file_document(
+        est, pdf_bytes, upload_name=f"Signed_{co.get('number', 'CO')}_{_est_number(est)}.pdf",
+        hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
+        doc_name=f"Signed Change Order {co.get('number', '')} - {cname}",
+        doc_type='change_order',
+        description=f"Change order signed electronically by "
+                    f"{(co.get('signature') or {}).get('name', '')}. "
+                    f"Filed automatically by Estimate Builder.")
+    if doc_id:
+        est = est_load(est_id)
+        if est is not None:
+            co2 = _find_co(est, co_id)
+            if co2 is not None:
+                co2['crm_document_id'] = doc_id
+                co2['crm_pushed_at']   = datetime.utcnow().isoformat() + 'Z'
+            for x in est.get('attachments', []):
+                if x.get('id') == att['id']:
+                    x['crm_document_id'] = doc_id
+            est_save(est)
+        print(f'[co-crm] SUCCESS — {co.get("number")} filed on CRM job (doc {doc_id})')
+    elif err and err != 'not_linked':
+        print(f'[co-crm] push failed for {est_id}/{co_id}: {err}')
+
+
+def _post_co_sign_pipeline(est_id, co_id):
+    """Post-CO-signature background work — one thread, sequential writers."""
+    try:
+        est = est_load(est_id)
+        co  = _find_co(est, co_id) if est else None
+        if co is not None:
+            send_co_signature_notification(est, co)
+    except Exception as exc:
+        print(f'[co-notify] failed for {est_id}/{co_id}: {exc}')
+    try:
+        push_co_to_crm(est_id, co_id)
+    except Exception as exc:
+        print(f'[co-crm] failed for {est_id}/{co_id}: {exc}')
 
 
 @app.route('/api/estimates/<est_id>/signed', methods=['GET'])

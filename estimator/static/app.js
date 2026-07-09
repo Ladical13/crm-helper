@@ -4290,7 +4290,8 @@ function dashRow(e) {
       <small>${esc(enum_)}${e.city ? ' · ' + esc(e.city) : ''} · ${esc(typeLbl)}${e.salesperson ? ' · ' + esc(cap(e.salesperson)) : ''}</small>
     </div>
     <div class="dash-row-side">
-      <span class="dash-total">${fmtCur(e.total || 0)}</span>
+      <span class="dash-total">${fmtCur((e.total || 0) + (e.co_total || 0))}</span>
+      ${e.co_count ? `<span class="dash-chip dash-chip-co" title="${e.co_count} change order${e.co_count!==1?'s':''}${e.co_pending ? ` (${e.co_pending} awaiting signature)` : ''}${e.co_total ? ` — ${fmtCur(e.co_total)} signed` : ''}">±${e.co_count} CO${e.co_pending ? ' ⏳' : ''}</span>` : ''}
       ${statusSelect}
       <small class="dash-activity">${esc(activity)}</small>
       ${e.share_token ? `<button class="dash-send-btn" title="Resend customer link"
@@ -4322,7 +4323,7 @@ function renderDashboard() {
   const outstandingSum = outstanding.reduce((s, e) => s + (e.total || 0), 0);
   const cutoff30   = Date.now() - 30 * 86400000;
   const signed30   = signed.filter(e => e.signed_at && new Date(e.signed_at).getTime() >= cutoff30);
-  const signed30Sum = signed30.reduce((s, e) => s + (e.total || 0), 0);
+  const signed30Sum = signed30.reduce((s, e) => s + (e.total || 0) + (e.co_total || 0), 0);
 
   const repOpts = ['<option value="">All reps</option>']
     .concat(TEAM.map(m => `<option value="${m}" ${m === _dashRep ? 'selected' : ''}>${cap(m)}</option>`))
@@ -6586,9 +6587,245 @@ function renderDocumentsPage() {
       </div>
     </div>
 
+    <div id="co-panel"></div>
+
     <div id="permit-form-container"></div>
   </div>`;
   if (_docGenerator === 'permit') renderPermitForm();
+  if (S.signature && S.estimate_id) loadChangeOrders();
+}
+
+/* ── Change orders (signed addendums on an accepted estimate) ─────────
+   Server-authoritative: the estimate's change_orders array can only be
+   changed through /api/estimates/<id>/change-orders endpoints — never
+   via the full-doc save. COList mirrors the server response. */
+
+let COList = null;      // last-fetched change orders for the open estimate
+let _coDraft = null;    // editor state: {id?, title, description, line_items, pricing}
+
+async function loadChangeOrders() {
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/change-orders`);
+    COList = r.ok ? await r.json() : [];
+  } catch { COList = []; }
+  renderCOPanel();
+}
+
+// MUST mirror _co_line_total in app.py — pricing parity rule (see app.py
+// "Shared pricing math" note): the customer-facing CO page is priced
+// server-side; this preview must show the rep the same number.
+function _coLineTotal(it, pricing) {
+  const po = it.price_override;
+  if (po !== null && po !== undefined && po !== '' && !isNaN(parseFloat(po))) return parseFloat(po);
+  const cost = (parseFloat(it.material_unit_cost) || 0) + (parseFloat(it.labor_unit_cost) || 0);
+  const rate = parseFloat(pricing.rate) || 0;
+  const unitSell = (pricing.mode || 'margin') === 'margin'
+    ? (rate < 100 ? cost / (1 - rate / 100) : 0)
+    : cost * (1 + rate / 100);
+  return unitSell * (parseFloat(it.quantity) || 0);
+}
+
+function _coTotalOf(co) {
+  return (co.line_items || []).reduce((s, it) => s + _coLineTotal(it, co.pricing || {}), 0);
+}
+
+function _fmtSigned(n) { return (n < 0 ? '-' : '') + fmtCur(Math.abs(n)); }
+
+function renderCOPanel() {
+  const el = document.getElementById('co-panel');
+  if (!el) return;
+  if (!S.signature) { el.innerHTML = ''; return; }
+  const list = COList || [];
+  const chip = st => ({
+    draft:    '<span class="dash-chip dash-chip-draft">Draft</span>',
+    sent:     '<span class="dash-chip dash-chip-sent">📤 Sent</span>',
+    accepted: '<span class="dash-chip dash-chip-signed">✓ Signed</span>',
+    declined: '<span class="dash-chip dash-chip-declined">✗ Declined</span>',
+  }[st] || '');
+  const rows = list.map(co => {
+    const total = co.total != null ? co.total : _coTotalOf(co);
+    const acts = [];
+    if (co.status === 'draft') {
+      acts.push(`<button class="doc-crm-push" onclick="coEdit('${co.id}')">✎ Edit</button>`);
+      acts.push(`<button class="doc-crm-push" onclick="coShareLink('${co.id}')" title="Create the signing link and share it">📤 Send</button>`);
+      acts.push(`<button class="att-del" onclick="coDelete('${co.id}')" title="Delete draft">×</button>`);
+    } else if (co.status === 'sent') {
+      acts.push(`<button class="doc-crm-push" onclick="coShareLink('${co.id}')" title="Share the signing link again">📤 Resend</button>`);
+      acts.push(`<button class="doc-crm-push" onclick="coSetStatus('${co.id}','draft')" title="Pull it back for edits — the customer's link stops working">↩ Revert</button>`);
+      acts.push(`<button class="doc-crm-push" onclick="coSetStatus('${co.id}','declined')">✗ Declined</button>`);
+    } else if (co.status === 'declined') {
+      acts.push(`<button class="doc-crm-push" onclick="coSetStatus('${co.id}','draft')">↩ Reopen</button>`);
+      acts.push(`<button class="att-del" onclick="coDelete('${co.id}')" title="Delete">×</button>`);
+    }
+    acts.push(`<a class="att-view" href="/api/estimates/${S.estimate_id}/change-orders/${co.id}/pdf" target="_blank" rel="noopener">PDF</a>`);
+    return `<div class="att-row">
+      <span class="att-icon">±</span>
+      <div class="co-row-main">
+        <strong>${esc(co.number || 'CO')}${co.title ? ' — ' + esc(co.title) : ''}</strong>
+        <small>${co.status === 'sent' && co.view_count ? `Viewed ${co.view_count}× · ` : ''}${co.signature ? 'Signed by ' + esc(co.signature.name || '') : ''}</small>
+      </div>
+      <span class="dash-total" style="${total < 0 ? 'color:#b91c1c' : ''}">${_fmtSigned(total)}</span>
+      ${chip(co.status)} ${acts.join('')}
+    </div>`;
+  }).join('');
+  const signedSum = list.filter(c2 => c2.status === 'accepted')
+                        .reduce((s, c2) => s + (c2.total || 0), 0);
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-header"><h3>± Change Orders</h3>
+        <button class="doc-upload-btn" onclick="coNew()">＋ New Change Order</button>
+      </div>
+      ${rows || '<p class="pm-hint">No change orders yet — use one any time the scope changes after signing (extra work or a credit). The customer signs it online, just like the estimate.</p>'}
+      ${signedSum ? `<p class="pm-hint" style="text-align:right"><strong>${_fmtSigned(signedSum)} in signed change orders → job total ${fmtCur(((S.estimate_type === 'insurance') ? insuranceTotal() : grandTotal((S.signature && S.signature.selected_tier) || S.selected_tier || 'better')) + signedSum)}</strong></p>` : ''}
+      <div id="co-editor"></div>
+    </div>`;
+  renderCOEditor();
+}
+
+function coNew() {
+  const tier = (S.signature && S.signature.selected_tier) || S.selected_tier || 'better';
+  _coDraft = {
+    id: null, title: '', description: '',
+    line_items: [{ name: '', description: '', quantity: 1, unit: 'EA',
+                   material_unit_cost: 0, labor_unit_cost: 0, price_override: '' }],
+    pricing: { mode: (S.pricing || {}).mode || 'margin',
+               rate: tierRate('roofing', tier) },
+  };
+  renderCOPanel();
+}
+
+function coEdit(id) {
+  const co = (COList || []).find(c2 => c2.id === id);
+  if (!co) return;
+  _coDraft = JSON.parse(JSON.stringify(
+    { id: co.id, title: co.title || '', description: co.description || '',
+      line_items: co.line_items || [], pricing: co.pricing || { mode: 'margin', rate: 35 } }));
+  if (!_coDraft.line_items.length) coAddRow(false);
+  renderCOPanel();
+}
+
+function renderCOEditor() {
+  const el = document.getElementById('co-editor');
+  if (!el) return;
+  if (!_coDraft) { el.innerHTML = ''; return; }
+  const d = _coDraft, p = d.pricing || {};
+  const rows = (d.line_items || []).map((it, i) => `
+    <div class="co-li-row">
+      <input type="text" class="co-li-name" placeholder="Item — e.g. Skylight flashing kit" value="${esc(it.name || '')}"
+        oninput="coSetItem(${i},'name',this.value)">
+      <input type="number" class="co-li-num" placeholder="Qty" step="any" value="${it.quantity ?? ''}"
+        oninput="coSetItem(${i},'quantity',this.value)">
+      <input type="text" class="co-li-unit" placeholder="Unit" value="${esc(it.unit || '')}"
+        oninput="coSetItem(${i},'unit',this.value)">
+      <input type="number" class="co-li-num" placeholder="Mat \$" step="any" value="${it.material_unit_cost || ''}"
+        oninput="coSetItem(${i},'material_unit_cost',this.value)" title="Material cost per unit">
+      <input type="number" class="co-li-num" placeholder="Lab \$" step="any" value="${it.labor_unit_cost || ''}"
+        oninput="coSetItem(${i},'labor_unit_cost',this.value)" title="Labor cost per unit">
+      <input type="number" class="co-li-num" placeholder="Lock \$" step="any" value="${it.price_override ?? ''}"
+        oninput="coSetItem(${i},'price_override',this.value)"
+        title="Locked line total — overrides the margin math; negative = credit">
+      <span class="co-li-total" id="co-li-total-${i}">${_fmtSigned(_coLineTotal(it, p))}</span>
+      <button class="att-del" onclick="coRemoveRow(${i})" title="Remove line">×</button>
+    </div>`).join('');
+  const total = _coTotalOf(d);
+  el.innerHTML = `
+    <div class="co-editor-box">
+      <div class="field-group"><label>Title</label>
+        <input type="text" value="${esc(d.title)}" placeholder="e.g. Skylight flashing"
+          oninput="_coDraft.title=this.value"></div>
+      <div class="field-group"><label>What's changing (shown to the customer)</label>
+        <textarea rows="3" oninput="_coDraft.description=this.value"
+          placeholder="Two skylights discovered during tear-off need new flashing kits…">${esc(d.description)}</textarea></div>
+      <div class="co-li-hdr"><span>Line items</span>
+        <label class="co-rate">Margin %
+          <input type="number" step="any" value="${p.rate ?? 35}"
+            oninput="_coDraft.pricing.rate=this.value;renderCOEditor()"></label></div>
+      ${rows}
+      <button class="btn-secondary co-add-row" onclick="coAddRow()">＋ Add line</button>
+      <div class="co-editor-total ${total < 0 ? 'co-credit' : ''}">
+        ${total < 0 ? 'Credit to customer' : 'Change order total'}: <strong>${_fmtSigned(total)}</strong></div>
+      <div class="co-editor-actions">
+        <button class="btn-secondary" onclick="_coDraft=null;renderCOPanel()">Cancel</button>
+        <button class="btn-primary" onclick="coSave()">✓ Save ${d.id ? 'Changes' : 'Change Order'}</button>
+      </div>
+    </div>`;
+}
+
+function coSetItem(i, key, val) {
+  if (!_coDraft || !_coDraft.line_items[i]) return;
+  _coDraft.line_items[i][key] = val;
+  const cell = document.getElementById(`co-li-total-${i}`);
+  if (cell) cell.textContent = _fmtSigned(_coLineTotal(_coDraft.line_items[i], _coDraft.pricing || {}));
+  const tot = document.querySelector('.co-editor-total');
+  if (tot) {
+    const t = _coTotalOf(_coDraft);
+    tot.classList.toggle('co-credit', t < 0);
+    tot.innerHTML = `${t < 0 ? 'Credit to customer' : 'Change order total'}: <strong>${_fmtSigned(t)}</strong>`;
+  }
+}
+
+function coAddRow(rerender = true) {
+  if (!_coDraft) return;
+  _coDraft.line_items.push({ name: '', description: '', quantity: 1, unit: 'EA',
+                             material_unit_cost: 0, labor_unit_cost: 0, price_override: '' });
+  if (rerender) renderCOEditor();
+}
+
+function coRemoveRow(i) {
+  if (!_coDraft) return;
+  _coDraft.line_items.splice(i, 1);
+  renderCOEditor();
+}
+
+async function coSave() {
+  if (!_coDraft) return;
+  const body = JSON.stringify(_coDraft);
+  const url  = `/api/estimates/${S.estimate_id}/change-orders` + (_coDraft.id ? `/${_coDraft.id}` : '');
+  try {
+    const r = await fetch(url, { method: _coDraft.id ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' }, body });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    _coDraft = null;
+    await loadChangeOrders();
+  } catch (e) { alert('Could not save the change order: ' + e.message); }
+}
+
+async function coDelete(id) {
+  if (!confirm('Delete this change order?')) return;
+  const r = await fetch(`/api/estimates/${S.estimate_id}/change-orders/${id}`, { method: 'DELETE' });
+  if (!r.ok) { alert((await r.json()).error || 'Could not delete.'); return; }
+  loadChangeOrders();
+}
+
+async function coSetStatus(id, status) {
+  const r = await fetch(`/api/estimates/${S.estimate_id}/change-orders/${id}/status`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }) });
+  if (!r.ok) { alert((await r.json()).error || 'Could not update.'); return; }
+  loadChangeOrders();
+}
+
+async function coShareLink(id) {
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/change-orders/${id}/share`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not create the link');
+    const url = d.full_url || (window.location.origin + d.url);
+    const email = (S.customer || {}).email;
+    if (email && confirm(`Email the signing link to ${email}?\n(Cancel to copy/share the link instead.)`)) {
+      const r2 = await fetch(`/api/estimates/${S.estimate_id}/change-orders/${id}/send-email`, { method: 'POST' });
+      const d2 = await r2.json();
+      if (!r2.ok) throw new Error(d2.error || 'Email failed');
+      alert(`✓ Sent to ${d2.sent_to}`);
+    } else if (navigator.share) {
+      await doNativeShare(url, (S.customer || {}).name || '');
+    } else {
+      await navigator.clipboard.writeText(url).catch(() => {});
+      alert('Signing link copied!');
+    }
+    loadChangeOrders();
+  } catch (e) { alert(e.message); }
 }
 
 async function generateProductionPacket(btn) {
@@ -6600,9 +6837,10 @@ async function generateProductionPacket(btn) {
     const r = await fetch(`/api/estimates/${S.estimate_id}/production-packet`, { method: 'POST' });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Generation failed');
-    // Server replaced any previous packet — mirror that in S
+    // Server replaced any previous packet — mirror that in S (packet only;
+    // other server-generated docs like signed change orders stay)
     if (!Array.isArray(S.attachments)) S.attachments = [];
-    S.attachments = S.attachments.filter(a => !a.server_generated);
+    S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'work_order'));
     S.attachments.push(d.attachment);
   } catch (e) {
     alert('Could not generate the production packet: ' + e.message);
