@@ -748,6 +748,13 @@ def save_estimate(est_id):
         # A signed estimate stays accepted even if a stale tab says draft
         if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
             data['status'] = existing.get('status', 'accepted')
+        # Server-generated attachments (production packet) must survive a save
+        # from a tab opened before they existed. The UI offers no delete for
+        # them — regenerate replaces instead — so resurrecting is always right.
+        incoming_ids = {x.get('id') for x in (data.get('attachments') or [])}
+        for x in (existing.get('attachments') or []):
+            if x.get('server_generated') and x.get('id') not in incoming_ids:
+                data.setdefault('attachments', []).append(x)
     est_save(data)
     return jsonify({'estimate_id': est_id})
 
@@ -2996,6 +3003,294 @@ def build_signed_pdf(est):
     return bytes(pdf.output())
 
 
+# Mirrors MEASURE_FIELDS in app.js (Scope page) — keep the two in sync.
+MEASURE_LABELS = [
+    ('Roof', [('roof_squares', 'Roof Area', 'SQ'), ('waste_pct', 'Waste', '%'),
+              ('ridge_hip_lf', 'Ridge + Hip', 'LF'), ('valley_lf', 'Valley', 'LF'),
+              ('eave_lf', 'Eaves', 'LF'), ('rake_lf', 'Rakes', 'LF'),
+              ('step_flash_lf', 'Step Flashing', 'LF'), ('pipe_boots', 'Pipe Boots', 'EA'),
+              ('turtle_vents', 'Turtle Vents', 'EA'), ('broan_4in', '4" Broan Vent', 'EA'),
+              ('broan_8in', '8" Broan Vent', 'EA')]),
+    ('Gutters', [('gutter_lf', 'Gutter', 'LF'), ('downspout_lf', 'Downspouts', 'LF')]),
+    ('Siding', [('siding_squares', 'Siding Area', 'SQ'), ('siding_waste_pct', 'Waste', '%'),
+                ('siding_outside_corners_lf', 'Outside Corners', 'LF'),
+                ('siding_inside_corners_lf', 'Inside Corners', 'LF'),
+                ('siding_j_channel_lf', 'J-Channel / Trim', 'LF'),
+                ('siding_starter_lf', 'Starter Strip', 'LF'),
+                ('siding_soffit_lf', 'Soffit', 'LF')]),
+    ('Windows', [('windows_count', 'Windows', 'EA'), ('doors_count', 'Doors', 'EA')]),
+]
+
+
+def build_production_packet_pdf(est):
+    """Work order + material order for the SIGNED package, for the crew and
+    supplier. Deliberately contains NO pricing anywhere — it leaves the
+    office. v1 reflects the signed contract only (change orders excluded)."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+
+    c      = est.get('customer', {})
+    a      = c.get('address', {})
+    sig    = est.get('signature', {}) or {}
+    enum   = _est_number(est)
+    is_ins = est.get('estimate_type') == 'insurance'
+    tier   = sig.get('selected_tier') or est.get('selected_tier', 'better')
+    trades = est.get('trades', {})
+    labels = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                  gutters='Gutters', other='Other / Misc')
+
+    pdf = FPDF(orientation='P', unit='mm', format='Letter')
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.set_margins(14, 14, 14)
+    pdf.add_page()
+    W = pdf.w - 28
+
+    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
+    if os.path.exists(logo):
+        try:
+            pdf.image(logo, x=14, y=12, h=16)
+        except Exception:
+            pass
+    pdf.set_xy(14, 12)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_font('Helvetica', '', 8)
+    pdf.cell(W, 4, '970-776-0945  -  projectoneroofingcolorado.com', align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_y(32)
+
+    def title_bar(txt):
+        pdf.set_fill_color(26, 58, 92)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font('Helvetica', 'B', 13)
+        pdf.cell(W, 10, f'  {txt}', fill=True, new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(4)
+
+    def section_title(txt):
+        pdf.set_font('Helvetica', 'B', 10.5)
+        pdf.set_text_color(26, 58, 92)
+        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(0, 0, 0)
+
+    def table_header(cols):
+        pdf.set_fill_color(234, 239, 245)
+        pdf.set_font('Helvetica', 'B', 8)
+        for txt, w, align in cols:
+            pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
+        pdf.ln()
+
+    def trunc(s, n):
+        s = _pdf_safe(s)
+        return s if len(s) <= n else s[:n - 1] + '...'
+
+    # ── Page 1: Work Order ──
+    title_bar('PRODUCTION PACKET  -  WORK ORDER')
+
+    signed_at = sig.get('signed_at', '')
+    try:
+        signed_fmt = datetime.fromisoformat(signed_at.replace('Z', '+00:00')).strftime('%B %d, %Y')
+    except Exception:
+        signed_fmt = signed_at
+    addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'),
+                                       a.get('state'), a.get('zip')]))
+    info_rows = [
+        ('Customer',    c.get('name', '')),
+        ('Phone',       c.get('phone', '')),
+        ('Job Address', addr_str),
+        ('Job #',       c.get('crm_job_number') or ''),
+        ('Estimate #',  enum),
+        ('Salesperson', (est.get('salesperson') or '').replace('.', ' ').title()),
+        ('Signed',      signed_fmt),
+    ]
+    if not is_ins:
+        info_rows.append(('Package', dict(good='Good', better='Better',
+                                          best='Best').get(tier, tier.title())))
+    shingle_color = (sig.get('shingle_color') or '').strip()
+    if shingle_color:
+        info_rows.append(('Shingle Color', shingle_color))
+    for label, val in info_rows:
+        if not val:
+            continue
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(40, 5.5, _pdf_safe(label))
+        pdf.set_font('Helvetica', '', 9)
+        pdf.cell(0, 5.5, _pdf_safe(val), new_x='LMARGIN', new_y='NEXT')
+    pdf.ln(3)
+
+    # Product selections (brand/model/color per trade)
+    prod_rows = []
+    for trade, fields in TRADE_COLOR_FIELDS.items():
+        td = trades.get(trade) or {}
+        if not td.get('enabled'):
+            continue
+        colors = td.get('colors') or {}
+        for key, label in fields:
+            v = (colors.get(key) or '').strip()
+            if v:
+                prod_rows.append((_PRODUCT_TRADE_LABELS.get(trade, trade.title()), label, v))
+    if prod_rows:
+        section_title('Product Selection')
+        table_header([('Trade', 30, 'L'), ('Item', 60, 'L'), ('Selection', 92, 'L')])
+        pdf.set_font('Helvetica', '', 8)
+        for trade, label, v in prod_rows:
+            pdf.cell(30, 6, trunc(trade, 18), border=1)
+            pdf.cell(60, 6, trunc(label, 40), border=1)
+            pdf.cell(92, 6, trunc(v, 62), border=1)
+            pdf.ln()
+        pdf.ln(4)
+
+    # Scope of work — every line on the signed package (including items the
+    # customer view hides), no prices. The crew works from this list.
+    def _tier_items(td, trade_mode):
+        for it in td.get('line_items', []):
+            qty = float(it.get('quantity') or 0)
+            if qty <= 0:
+                continue
+            if trade_mode != 'simple':
+                t = (it.get('tiers') or {}).get(tier, {})
+                if t.get('included') is False:
+                    continue
+                yield it, qty, t
+            else:
+                yield it, qty, {}
+
+    section_title('Scope of Work')
+    if is_ins:
+        table_header([('Item', 70, 'L'), ('Description', 112, 'L')])
+        pdf.set_font('Helvetica', '', 8)
+        for sec in _insurance_sections(est):
+            for it in sec.get('items', []):
+                pdf.cell(70, 6, trunc(it.get('name', ''), 46), border=1)
+                pdf.cell(112, 6, trunc(it.get('description', ''), 76), border=1)
+                pdf.ln()
+        scope = (trades.get('insurance', {}).get('scope_notes') or '').strip()
+        if scope:
+            pdf.ln(2)
+            pdf.set_font('Helvetica', '', 8.5)
+            pdf.multi_cell(W, 4.6, _pdf_safe(scope))
+        pdf.ln(4)
+    else:
+        for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
+            td = trades.get(tk, {})
+            if not td.get('enabled') or not td.get('line_items'):
+                continue
+            trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+            rows = list(_tier_items(td, trade_mode))
+            if not rows:
+                continue
+            section_title(labels.get(tk, tk.title()))
+            table_header([('Work Item', 138, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
+            pdf.set_font('Helvetica', '', 8)
+            for it, qty, t in rows:
+                name = it.get('name', '')
+                desc = (t.get('description') or it.get('description') or '').strip()
+                if desc:
+                    name = f'{name} - {desc}'
+                pdf.cell(138, 6, trunc(name, 92), border=1)
+                pdf.cell(20, 6, f'{qty:g}', border=1, align='R')
+                pdf.cell(24, 6, trunc(it.get('unit', ''), 10), border=1, align='C')
+                pdf.ln()
+            pdf.ln(4)
+
+    notes = (est.get('notes_customer') or '').strip()
+    if notes:
+        section_title('Customer Notes')
+        pdf.set_font('Helvetica', '', 8.5)
+        pdf.multi_cell(W, 4.6, _pdf_safe(notes))
+        pdf.ln(3)
+    crew = (est.get('notes_internal') or '').strip()
+    if crew:
+        section_title('Crew Notes (internal)')
+        pdf.set_font('Helvetica', '', 8.5)
+        pdf.multi_cell(W, 4.6, _pdf_safe(crew))
+        pdf.ln(3)
+
+    # ── Page 2: Material Order ──
+    pdf.add_page()
+    title_bar('MATERIAL ORDER')
+
+    m = est.get('measurements') or {}
+
+    def _mnum(key):
+        try:
+            return float(m.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    meas_rows = []
+    for group, fields in MEASURE_LABELS:
+        for key, label, unit in fields:
+            v = _mnum(key)
+            if v:
+                meas_rows.append((group, label, v, unit))
+    if meas_rows:
+        section_title('Measurements')
+        table_header([('Area', 30, 'L'), ('Measurement', 92, 'L'), ('Value', 36, 'R'), ('Unit', 24, 'C')])
+        pdf.set_font('Helvetica', '', 8)
+        for group, label, v, unit in meas_rows:
+            pdf.cell(30, 6, trunc(group, 18), border=1)
+            pdf.cell(92, 6, trunc(label, 62), border=1)
+            pdf.cell(36, 6, f'{v:g}', border=1, align='R')
+            pdf.cell(24, 6, _pdf_safe(unit), border=1, align='C')
+            pdf.ln()
+        waste = _mnum('waste_pct')
+        if waste:
+            pdf.set_font('Helvetica', 'I', 8)
+            pdf.cell(0, 6, _pdf_safe(f'Roof quantities below already include {waste:g}% waste.'),
+                     new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(4)
+
+    if not is_ins:
+        # Materials: signed-tier lines with a material cost (or simple-mode lines)
+        mat_rows, lab_rows = [], []
+        for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
+            td = trades.get(tk, {})
+            if not td.get('enabled') or not td.get('line_items'):
+                continue
+            trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+            for it, qty, t in _tier_items(td, trade_mode):
+                name = it.get('name', '')
+                desc = (t.get('description') or it.get('description') or '').strip()
+                unit = it.get('unit', '')
+                trade_lbl = labels.get(tk, tk.title())
+                if trade_mode == 'simple' or float(t.get('material_unit_cost') or 0) > 0:
+                    mat_rows.append((trade_lbl, name, desc, qty, unit))
+                if float(t.get('labor_unit_cost') or 0) > 0:
+                    lab_rows.append((trade_lbl, name, qty, unit))
+        if mat_rows:
+            section_title('Materials')
+            table_header([('Trade', 26, 'L'), ('Material', 112, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
+            pdf.set_font('Helvetica', '', 8)
+            for trade_lbl, name, desc, qty, unit in mat_rows:
+                nm = f'{name} - {desc}' if desc else name
+                pdf.cell(26, 6, trunc(trade_lbl, 15), border=1)
+                pdf.cell(112, 6, trunc(nm, 74), border=1)
+                pdf.cell(20, 6, f'{qty:g}', border=1, align='R')
+                pdf.cell(24, 6, trunc(unit, 10), border=1, align='C')
+                pdf.ln()
+            pdf.ln(4)
+        if lab_rows:
+            section_title('Labor Summary')
+            table_header([('Trade', 26, 'L'), ('Work Item', 112, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
+            pdf.set_font('Helvetica', '', 8)
+            for trade_lbl, name, qty, unit in lab_rows:
+                pdf.cell(26, 6, trunc(trade_lbl, 15), border=1)
+                pdf.cell(112, 6, trunc(name, 74), border=1)
+                pdf.cell(20, 6, f'{qty:g}', border=1, align='R')
+                pdf.cell(24, 6, trunc(unit, 10), border=1, align='C')
+                pdf.ln()
+            pdf.ln(4)
+
+    pdf.set_font('Helvetica', 'I', 7.5)
+    pdf.set_text_color(120, 120, 120)
+    pdf.cell(0, 5, _pdf_safe('Generated from the signed contract. Excludes change orders. '
+                             'Internal document - no pricing included.'),
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+
+    return bytes(pdf.output())
+
+
 def push_contract_to_crm(est_id):
     """Upload the signed contract PDF to Base44 and create a Document record
     tagged 'contract' on the linked CRM job. Runs in a background thread —
@@ -3092,6 +3387,64 @@ def push_contract_to_crm(est_id):
         print(f'[crm-push] unexpected failure for {est_id}: {exc}')
 
 
+def _crm_file_document(est, pdf_bytes, upload_name, hosted_url, doc_name,
+                       doc_type, description):
+    """Upload a PDF to Base44 storage and create a Document record on the
+    estimate's linked CRM job. Returns (doc_id, error) — exactly one is set.
+
+    Base44's external API doesn't expose the UploadFile integration to our
+    token (blanket 405 as of 2026-07), so on upload failure the Document
+    links to the PDF hosted on this app instead (/uploads/ is public and the
+    UUID filename is unguessable). Unknown Document.type values 4xx — retry
+    once as 'other'."""
+    proj_id = (est.get('customer', {}).get('crm_project_id')
+               or est.get('crm_project_id'))
+    if not proj_id:
+        return None, 'not_linked'
+    if http is None:
+        return None, 'requests not installed on server'
+
+    file_url = None
+    try:
+        r = http.post(f'{BASE_URL}/integrations/Core/UploadFile',
+                      headers=crm_headers(),
+                      files={'file': (upload_name, pdf_bytes, 'application/pdf')},
+                      timeout=60)
+        r.raise_for_status()
+        resp = r.json()
+        file_url = (resp.get('file_url') or resp.get('url')
+                    or resp.get('file_uri') or resp.get('uri'))
+    except Exception as exc:
+        print(f'[crm-doc] Base44 upload unavailable ({exc}) — using hosted link')
+    if not file_url:
+        file_url = hosted_url
+
+    doc = {
+        'name':              doc_name,
+        'type':              doc_type,
+        'project_id':        proj_id,
+        'file_url':          file_url,
+        'file_type':         'application/pdf',
+        'file_size':         len(pdf_bytes),
+        'description':       description,
+        'share_with_client': False,
+    }
+    r2 = http.post(f'{BASE_URL}/entities/Document',
+                   headers={**crm_headers(), 'Content-Type': 'application/json'},
+                   json=doc, timeout=30)
+    if r2.status_code >= 400 and doc_type != 'other':
+        print(f'[crm-doc] create failed with type={doc_type!r} '
+              f'({r2.status_code}: {r2.text[:200]}) — retrying as "other"')
+        doc['type'] = 'other'
+        r2 = http.post(f'{BASE_URL}/entities/Document',
+                       headers={**crm_headers(), 'Content-Type': 'application/json'},
+                       json=doc, timeout=30)
+    print(f'[crm-doc] document create status {r2.status_code}: {r2.text[:200]}')
+    if r2.status_code >= 400:
+        return None, f'CRM document create failed ({r2.status_code})'
+    return (r2.json() or {}).get('id', ''), None
+
+
 @app.route('/api/estimates/<est_id>/push-document', methods=['POST'])
 def push_document_to_crm(est_id):
     """Upload one of the estimate's Document-tab PDFs to the Base44 CRM and
@@ -3133,50 +3486,13 @@ def push_document_to_crm(est_id):
     safe_label = ''.join(ch if ch.isalnum() or ch in ' -_' else '' for ch in label).strip().replace(' ', '_')
     fname = f'{safe_label or "Document"}.pdf'
 
-    file_url = None
-    try:
-        r = http.post(f'{BASE_URL}/integrations/Core/UploadFile',
-                      headers=crm_headers(),
-                      files={'file': (fname, pdf_bytes, 'application/pdf')},
-                      timeout=60)
-        r.raise_for_status()
-        resp = r.json()
-        file_url = (resp.get('file_url') or resp.get('url')
-                    or resp.get('file_uri') or resp.get('uri'))
-    except Exception as exc:
-        # Base44's external API doesn't expose the UploadFile integration to
-        # our token (blanket 405 as of 2026-07) — fall back to linking the
-        # PDF hosted on this app, exactly like the signed-contract push does.
-        # /uploads/ is public and the UUID filename is unguessable.
-        print(f'[crm-push-doc] Base44 upload unavailable ({exc}) — using hosted link')
-    if not file_url:
-        file_url = f'{_base_url()}/uploads/{filename}'
-
-    doc = {
-        'name':              f'{label} - {cname}',
-        'type':              doc_type,
-        'project_id':        proj_id,
-        'file_url':          file_url,
-        'file_type':         'application/pdf',
-        'file_size':         len(pdf_bytes),
-        'description':       f'Uploaded from the Estimate Builder Documents tab by {_current_user()}.',
-        'share_with_client': False,
-    }
-    r2 = http.post(f'{BASE_URL}/entities/Document',
-                   headers={**crm_headers(), 'Content-Type': 'application/json'},
-                   json=doc, timeout=30)
-    if r2.status_code >= 400 and doc_type != 'other':
-        # Unknown Document.type values are the likely 4xx cause — retry generic
-        print(f'[crm-push-doc] create failed with type={doc_type!r} '
-              f'({r2.status_code}: {r2.text[:200]}) — retrying as "other"')
-        doc['type'] = 'other'
-        r2 = http.post(f'{BASE_URL}/entities/Document',
-                       headers={**crm_headers(), 'Content-Type': 'application/json'},
-                       json=doc, timeout=30)
-    print(f'[crm-push-doc] document create status {r2.status_code}: {r2.text[:200]}')
-    if r2.status_code >= 400:
-        return jsonify({'error': f'CRM document create failed ({r2.status_code})'}), 502
-    doc_id = (r2.json() or {}).get('id', '')
+    doc_id, err = _crm_file_document(
+        est, pdf_bytes, upload_name=fname,
+        hosted_url=f'{_base_url()}/uploads/{filename}',
+        doc_name=f'{label} - {cname}', doc_type=doc_type,
+        description=f'Uploaded from the Estimate Builder Documents tab by {_current_user()}.')
+    if err:
+        return jsonify({'error': err}), 502
 
     # Persist the link on the attachment server-side so it survives even if
     # the client never saves again (client mirrors it into S as well).
@@ -3191,6 +3507,104 @@ def push_document_to_crm(est_id):
         pass
     print(f'[crm-push-doc] SUCCESS — "{label}" pushed to CRM job {proj_id} (doc {doc_id})')
     return jsonify({'crm_document_id': doc_id})
+
+
+def generate_production_packet(est_id):
+    """Build the production-packet PDF for a signed estimate, store it as a
+    server-generated attachment (replacing any previous packet), and file it
+    on the linked CRM job. Returns the attachment dict. Raises on failure —
+    callers decide whether that's fatal (endpoint) or logged (pipeline)."""
+    est = est_load(est_id)
+    if est is None:
+        raise ValueError('estimate not found')
+    if not est.get('signature'):
+        raise ValueError('estimate is not signed')
+
+    pdf_bytes = build_production_packet_pdf(est)
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'packet_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+
+    sig  = est.get('signature') or {}
+    tier = sig.get('selected_tier') or est.get('selected_tier', 'better')
+    label = ('Production Packet' if est.get('estimate_type') == 'insurance'
+             else f'Production Packet - {tier.title()}')
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            label,
+        'doc_type':         'work_order',
+        'show_in_estimate': False,   # internal — never on the customer page
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+    }
+
+    # Replace any previous packet (and clean up its file)
+    atts = est.get('attachments') or []
+    for old in [x for x in atts if x.get('server_generated')]:
+        parts = (old.get('filename') or '').split('/')
+        if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+            try:
+                os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+            except OSError:
+                pass
+    est['attachments'] = [x for x in atts if not x.get('server_generated')] + [att]
+    est_save(est)
+
+    # File it on the CRM job — best-effort, packet exists locally regardless
+    c     = est.get('customer', {})
+    cname = (c.get('name') or 'Customer').strip()
+    enum  = _est_number(est)
+    doc_id, err = _crm_file_document(
+        est, pdf_bytes, upload_name=f'Production_Packet_{enum}.pdf',
+        hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
+        doc_name=f'Production Packet - {cname} ({enum})', doc_type='work_order',
+        description='Work order + material list generated automatically from the signed contract.')
+    if doc_id:
+        est = est_load(est_id)
+        if est is not None:
+            for x in est.get('attachments', []):
+                if x.get('id') == att['id']:
+                    x['crm_document_id'] = doc_id
+            est_save(est)
+        att['crm_document_id'] = doc_id
+    elif err and err != 'not_linked':
+        print(f'[packet] CRM push failed for {est_id}: {err}')
+    return att
+
+
+def _post_sign_pipeline(est_id):
+    """Post-signature background work, run sequentially in ONE thread so two
+    writers never read-modify-write the same estimate concurrently."""
+    push_contract_to_crm(est_id)
+    try:
+        att = generate_production_packet(est_id)
+        print(f"[packet] generated {att['filename']} for {est_id}")
+    except Exception as exc:
+        print(f'[packet] generation failed for {est_id}: {exc}')
+
+
+@app.route('/api/estimates/<est_id>/production-packet', methods=['POST'])
+def regenerate_production_packet(est_id):
+    """Manual (re)generate from the Documents tab. Signed estimates only."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    if not est.get('signature'):
+        return jsonify({'error': 'The production packet is generated from the signed '
+                                 'contract — this estimate has not been signed yet.'}), 400
+    try:
+        att = generate_production_packet(est_id)
+    except Exception as exc:
+        print(f'[packet] manual generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Packet generation failed: {exc}'}), 500
+    return jsonify({'attachment': att})
 
 
 @app.route('/api/estimates/<est_id>/signed', methods=['GET'])
@@ -3265,12 +3679,14 @@ def customer_sign(token):
         est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
         est_save(est)
         # Signature is saved above — everything below is best-effort. Run the rep
-        # notification AND the CRM push in background threads so a slow or
-        # unreachable SMTP/CRM endpoint can never block (or 500) the customer's
+        # notification and the CRM/packet pipeline in background threads so a slow
+        # or unreachable SMTP/CRM endpoint can never block (or 500) the customer's
         # signing request. The customer always gets their confirmation instantly.
+        # (Contract push + packet generation share ONE thread — both write the
+        # estimate doc, and sequencing them avoids a lost-update race.)
         threading.Thread(target=send_signature_notification,
                          args=(est,), daemon=True).start()
-        threading.Thread(target=push_contract_to_crm,
+        threading.Thread(target=_post_sign_pipeline,
                          args=(est.get('estimate_id'),), daemon=True).start()
         return build_signed_confirmation(est)
 

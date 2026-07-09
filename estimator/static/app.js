@@ -6541,7 +6541,7 @@ function renderDocumentsPage() {
       </div>
       ${atts.length ? atts.map(att => `
       <div class="att-row">
-        <span class="att-icon">📄</span>
+        <span class="att-icon">${att.server_generated ? '🛠' : '📄'}</span>
         <input type="text" class="att-label" value="${esc(att.label||att.original_name||'Document')}"
           onchange="attSetLabel('${att.id}',this.value)" placeholder="Document name">
         ${att.crm_document_id
@@ -6553,7 +6553,9 @@ function renderDocumentsPage() {
             onchange="attToggle('${att.id}',this.checked)"> Customer
         </label>
         <a class="att-view" href="/uploads/${esc(att.filename)}" target="_blank" rel="noopener">View</a>
-        <button class="att-del" onclick="attDelete('${att.id}')" title="Remove">×</button>
+        ${att.server_generated
+          ? '<span class="doc-crm-chip" title="Auto-generated from the signed contract — use the Production Packet card below to regenerate">auto</span>'
+          : `<button class="att-del" onclick="attDelete('${att.id}')" title="Remove">×</button>`}
       </div>`).join('')
       : '<p class="pm-hint">No documents yet — upload a PDF or create one below.</p>'}
       ${!((S.customer||{}).crm_project_id) && atts.length
@@ -6568,22 +6570,44 @@ function renderDocumentsPage() {
           <span class="doc-card-name">Loveland Permit &amp; Affidavit</span>
           <span class="doc-card-sub">City reroof packet, auto-filled from this job</span>
         </button>
-        <div class="doc-card doc-card-soon" title="Coming soon">
+        ${S.signature ? `
+        <button class="doc-card" onclick="generateProductionPacket(this)">
           <span class="doc-card-icon">🛠</span>
-          <span class="doc-card-name">Work Order</span>
-          <span class="doc-card-sub">Coming soon</span>
-        </div>
-        <div class="doc-card doc-card-soon" title="Coming soon">
-          <span class="doc-card-icon">📦</span>
-          <span class="doc-card-name">Material Order Sheet</span>
-          <span class="doc-card-sub">Coming soon</span>
-        </div>
+          <span class="doc-card-name">Production Packet</span>
+          <span class="doc-card-sub">${atts.some(a => a.server_generated)
+            ? 'Regenerate the work order + material list'
+            : 'Work order + material list from the signed contract'}</span>
+        </button>` : `
+        <div class="doc-card doc-card-soon" title="Generated from the signed contract once the customer signs">
+          <span class="doc-card-icon">🛠</span>
+          <span class="doc-card-name">Production Packet</span>
+          <span class="doc-card-sub">Available after signing</span>
+        </div>`}
       </div>
     </div>
 
     <div id="permit-form-container"></div>
   </div>`;
   if (_docGenerator === 'permit') renderPermitForm();
+}
+
+async function generateProductionPacket(btn) {
+  if (!S.estimate_id) return;
+  const sub = btn.querySelector('.doc-card-sub');
+  if (sub) sub.textContent = 'Generating…';
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/production-packet`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Generation failed');
+    // Server replaced any previous packet — mirror that in S
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(a => !a.server_generated);
+    S.attachments.push(d.attachment);
+  } catch (e) {
+    alert('Could not generate the production packet: ' + e.message);
+  }
+  renderDocumentsPage();
 }
 
 function docToggleGenerator(which) {
