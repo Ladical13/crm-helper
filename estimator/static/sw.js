@@ -1,5 +1,5 @@
-const CACHE = 'po-v93';
-const SHELL = ['/', '/static/style.css?v=93', '/static/app.js?v=93', '/static/logo.png', '/static/icon-192.png'];
+const CACHE = 'po-v94';
+const SHELL = ['/', '/static/style.css?v=94', '/static/app.js?v=94', '/static/logo.png', '/static/icon-192.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL).catch(() => {})));
@@ -20,6 +20,7 @@ self.addEventListener('fetch', e => {
   // API calls, signing links, uploads: always hit the network — never serve stale
   if (url.pathname.startsWith('/api/') ||
       url.pathname.startsWith('/sign/') ||
+      url.pathname.startsWith('/sign-co/') ||
       url.pathname.startsWith('/uploads/')) {
     e.respondWith(fetch(e.request));
     return;

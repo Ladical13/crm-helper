@@ -1253,6 +1253,11 @@ def calc_tier_total(est, tier):
         trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
         r = _tier_rate(pricing, tk, tier)
         for item in td.get('line_items', []):
+            # Zero-qty items are "not in scope" — never priced, even when a
+            # price_override is set (the customer view and signed PDF already
+            # hide them; the total must agree). MUST mirror tradeTotal (app.js).
+            if float(item.get('quantity') or 0) <= 0:
+                continue
             if trade_mode == 'simple':
                 total += float(item.get('unit_price') or 0) * float(item.get('quantity') or 0)
             else:

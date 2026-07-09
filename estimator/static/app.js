@@ -510,6 +510,10 @@ function tradeTotal(trade, tier) {
       sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0), 0);
   }
   return td.line_items.reduce((sum, item) => {
+    // Zero-qty items are "not in scope" (the grid parks them in a chip row and
+    // the customer page hides them) — they must not price, even with a locked
+    // price_override. MUST mirror calc_tier_total in app.py.
+    if ((parseFloat(item.quantity) || 0) <= 0) return sum;
     const t = (item.tiers && item.tiers[tier]) || {};
     if (t.included === false) return sum;  // excluded from this package tier
     return sum + lineTotalEffective(item, tier, trade);
@@ -565,7 +569,7 @@ function rerender() {
   renderScopePage();
   renderOptionsPage();
   renderProductsPage();
-  if (activePage === 'pricing') { syncPricingMarginStrip(); renderTabBar(); renderTradeContent(); }
+  if (activePage === 'pricing') { renderTabBar(); renderTradeContent(); }
   updatePageNav();
   renderPrintPagesBar();
 }
@@ -842,8 +846,11 @@ function renderCostProfitPanel() {
   const row = (label, fn, cls='') => `<tr class="${cls}"><td>${label}</td>${
     TIERS.map(t=>`<td>${fn(data[t])}</td>`).join('')}</tr>`;
   const moneyRow = (label, key, cls='') => row(label, d=>fmtCur(d[key]), cls);
-  const pt = data[selTier].perTrade.filter(x=>x.mode!=='simple');
-  const simpleRows = data[selTier].perTrade.filter(x=>x.mode==='simple');
+  // Split by whether cost is actually tracked, not by mode — a Simple-mode
+  // trade with unit costs entered IS in the profit math and belongs in the
+  // per-trade table, not the "cost not tracked" bucket.
+  const pt = data[selTier].perTrade.filter(x => x.cost !== undefined);
+  const simpleRows = data[selTier].perTrade.filter(x => x.cost === undefined);
 
   el.innerHTML = `
     <div class="cost-profit-panel">
@@ -2109,38 +2116,12 @@ async function saveTierDefaults() {
 /* ── Page 4: Pricing (trade tabs + GBB) ────────────────────────────── */
 
 function renderPricingPage() {
-  syncPricingMarginStrip();
   renderTabBar();
   renderTradeContent();
 }
-
-function syncPricingMarginStrip() {
-  const slider  = document.getElementById('pricing-margin-slider');
-  const numInp  = document.getElementById('pricing-margin-input');
-  const display = document.getElementById('pricing-margin-display');
-  const lbl     = document.getElementById('pricing-margin-mode-lbl');
-  if (!slider) return;
-  const rate = (S.pricing.tier_rates||{}).good ?? S.pricing.global_rate ?? 35;
-  slider.value  = rate;
-  numInp.value  = rate;
-  display.textContent = rate + '%';
-  if (lbl) lbl.textContent = S.pricing.mode === 'markup' ? 'Markup' : 'Margin';
-}
-
-function syncAllTierRates(v) {
-  const rate = parseFloat(v) || 0;
-  const display = document.getElementById('pricing-margin-display');
-  if (display) display.textContent = rate + '%';
-  if (!S.pricing.tier_rates) S.pricing.tier_rates = { good:35, better:35, best:35 };
-  S.pricing.tier_rates.good   = rate;
-  S.pricing.tier_rates.better = rate;
-  S.pricing.tier_rates.best   = rate;
-  S.pricing.global_rate = rate;
-  recalcSimpleItems();
-  setDirty();
-  renderTotals();
-  if (activePage === 'pricing') renderTradeContent();
-}
+// NOTE: the old global margin strip (one slider that overwrote good/better/
+// AND best's rates in one move) is gone — per-tier margins are edited right
+// next to each package's price in the GBB grid, and in the sidebar.
 
 function renderTabBar() {
   document.getElementById('tab-bar').innerHTML =
@@ -2250,11 +2231,13 @@ function renderOtherFreeform() {
     </tr>`;
   }).join('');
 
-  const rate    = tradeRate(trade);
+  // Show the rate the rows are actually priced with (the selected tier's) —
+  // tradeRate() is the Good/simple rate and could disagree with the row math.
+  const rate    = tierRate(trade, tier);
   const subtot  = tradeTotal(trade, tier);
   const modeHint = S.pricing.mode === 'margin'
-    ? `${rate}% margin applied`
-    : `${rate}% markup applied`;
+    ? `${rate}% margin applied (${TIER_LABELS[tier]} package)`
+    : `${rate}% markup applied (${TIER_LABELS[tier]} package)`;
 
   return `
     <div class="other-desc">
@@ -2339,10 +2322,15 @@ function renderSimpleFreeform(trade) {
           onchange="simpleSetCost('${trade}','${item.id}',parseFloat(this.value)||0)">
       </td>
       <td class="other-price-cell">
-        <input class="other-price-input" type="number" min="0" step="0.01"
-          value="${price||''}" placeholder="0.00"
-          title="${cost ? 'Auto-calculated from cost + margin. Edit to override.' : 'Enter sell price directly'}"
-          onchange="simpleSetField('${trade}','${item.id}','unit_price',parseFloat(this.value)||0);simpleUpdateTotals('${trade}')">
+        <div class="simple-price-wrap${item.price_locked ? ' has-override' : ''}">
+          <input class="other-price-input" type="number" min="0" step="0.01"
+            value="${price||''}" placeholder="0.00"
+            title="${item.price_locked ? 'Locked sell price — margin changes won’t touch it. ↺ resets to cost + margin.'
+                     : cost ? 'Auto-calculated from cost + margin. Edit to lock a specific price.' : 'Enter sell price directly'}"
+            onchange="simpleSetPrice('${trade}','${item.id}',this.value)">
+          ${item.price_locked ? `<button class="li-override-reset" title="Unlock — go back to cost + margin pricing"
+            onclick="simpleUnlockPrice('${trade}','${item.id}')">↺</button>` : ''}
+        </div>
       </td>
       <td class="other-total-cell simple-line-total" data-strade="${trade}" data-sid="${item.id}">${fmtCur(total)}</td>
       <td><button class="li-del" onclick="simpleDeleteItem('${trade}','${item.id}')" title="Remove">×</button></td>
@@ -2393,16 +2381,22 @@ function setTradeMode(trade, mode) {
     td.line_items = items.map(it => {
       const t    = (it.tiers || {})[tier] || {};
       const cost = (parseFloat(t.material_unit_cost)||0) + (parseFloat(t.labor_unit_cost)||0);
-      const sell = pricing.mode === 'markup' ? cost * (1 + rate/100)
-                 : (rate < 100 ? cost / (1 - rate/100) : 0);
+      const qty  = parseFloat(it.quantity) || 0;
+      // A locked line total in GBB carries over as a locked unit price
+      const po   = (t.price_override !== undefined && t.price_override !== null && t.price_override !== '')
+        ? parseFloat(t.price_override) : null;
+      const sell = (po !== null && qty > 0) ? po / qty
+        : pricing.mode === 'markup' ? cost * (1 + rate/100)
+        : (rate < 100 ? cost / (1 - rate/100) : 0);
       return {
         id: it.id, name: it.name, unit: it.unit,
-        quantity: it.quantity || 0,
+        quantity: qty,
         measure: it.measure || undefined,
         scope_note: it.scope_note || '',
         description: t.description || it.description || '',
         unit_cost: Math.round(cost * 100) / 100,
         unit_price: Math.round(sell * 100) / 100,
+        ...(po !== null && qty > 0 ? { price_locked: true } : {}),
         customer_visible: it.customer_visible !== false,
         // Preserve the per-tier pricing so a switch back to GBB restores it.
         _gbb_tiers: it.tiers || undefined,
@@ -2441,6 +2435,7 @@ function simpleSetField(trade, id, field, val) {
   setDirty();
 }
 function simpleApplyMargin(trade, item) {
+  if (item.price_locked) return;  // rep typed a sell price — never clobber it
   const cost = parseFloat(item.unit_cost) || 0;
   if (!cost) return;
   const r = tradeRate(trade);
@@ -2448,11 +2443,32 @@ function simpleApplyMargin(trade, item) {
     ? Math.round(cost * (1 + r / 100) * 100) / 100
     : (r >= 100 ? 0 : Math.round(cost / (1 - r / 100) * 100) / 100);
 }
+// Rep typed the sell price directly — store it and LOCK it so margin/mode
+// changes (recalcSimpleItems) don't silently overwrite the number they chose.
+function simpleSetPrice(trade, id, v) {
+  const item = (S.trades[trade].line_items || []).find(it => it.id === id);
+  if (!item) return;
+  item.unit_price = parseFloat(v) || 0;
+  item.price_locked = true;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+  renderTotals();
+}
+function simpleUnlockPrice(trade, id) {
+  const item = (S.trades[trade].line_items || []).find(it => it.id === id);
+  if (!item) return;
+  delete item.price_locked;
+  simpleApplyMargin(trade, item);
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+  renderTotals();
+}
 function simpleSetCost(trade, id, cost) {
   const item = (S.trades[trade].line_items || []).find(it => it.id === id);
   if (!item) return;
   item.unit_cost = cost;
-  delete item._gbb_tiers;  // cost changed in Simple — don't restore stale GBB tiers
+  delete item._gbb_tiers;    // cost changed in Simple — don't restore stale GBB tiers
+  delete item.price_locked;  // re-entering cost means "price me from margin again"
   simpleApplyMargin(trade, item);
   setDirty();
   if (activePage === 'pricing') renderTradeContent();
@@ -2767,6 +2783,9 @@ function renderGBBGrid(trade) {
   const items = S.trades[trade].line_items;
   const tier  = S.selected_tier;
   const qtyOf = item => parseFloat(item.quantity) || 0;
+  const rateLbl = S.pricing.mode === 'markup' ? 'Markup' : 'Margin';
+  const ovr = (S.pricing.per_trade_overrides || {})[trade];
+  const hasOvr = ovr !== null && ovr !== undefined;
   const grid  = TIERS.map(t => {
     const inc      = item => item.tiers?.[t]?.included !== false;
     const visible  = items.filter(item => inc(item) && (qtyOf(item) > 0 || item._showZero));
@@ -2776,6 +2795,14 @@ function renderGBBGrid(trade) {
     <div class="tier-column col-${t} ${t===tier?'selected-tier':''}">
       <div class="tier-col-header">
         ${TIER_LABELS[t]} <span class="tier-col-total">${fmtCur(tradeTotal(trade,t))}</span>
+      </div>
+      <div class="tier-col-rate" title="${rateLbl} for the ${TIER_LABELS[t]} package — applies to every trade">
+        <span class="tier-col-rate-lbl">${rateLbl}</span>
+        <input type="number" min="0" max="99" step="0.5"
+          value="${(S.pricing.tier_rates||{})[t] ?? S.pricing.global_rate ?? 35}"
+          ${hasOvr ? 'disabled' : ''} onchange="setTierRate('${t}', this.value)">
+        <span class="tier-col-rate-pct">%</span>
+        ${hasOvr ? `<span class="tier-col-rate-ovr" title="This trade has a per-trade override (sidebar → advanced) — the package ${rateLbl.toLowerCase()} is ignored here">override ${ovr}%</span>` : ''}
       </div>
       <div class="tier-items">
         ${visible.length ? visible.map(item => renderLiRow(trade,t,item)).join('')
@@ -2861,7 +2888,7 @@ function renderLiRow(trade, tier, item) {
       <div class="li-row-cost-wrap">
         <input class="li-row-cost-input" type="number" min="0" step="0.01"
           value="${mat||''}" placeholder="Cost"
-          title="Material cost per ${displayUnit(item)} for ${TIER_LABELS[tier]}"
+          title="Material cost per ${displayUnit(item)} for ${TIER_LABELS[tier]}${lab ? ` — plus ${fmtCur(lab)}/${displayUnit(item)} labor below` : ''}"
           onchange="liSetTier('${trade}','${item.id}','${tier}','material_unit_cost',parseFloat(this.value)||0)">
       </div>
       ${included
@@ -2875,6 +2902,9 @@ function renderLiRow(trade, tier, item) {
            </div>`
         : '<span class="li-row-total">—</span>'}
     </div>
+    ${lab ? `<div class="li-row-labor-note" title="This item carries a labor cost per unit — it's part of the sell price above">
+      🔧 + ${fmtCur(lab)}/${displayUnit(item)} labor cost in this price
+    </div>` : ''}
     <label class="li-row-include${included?'':' off'}">
       <input type="checkbox" ${included?'checked':''}
         onchange="liSetIncluded('${trade}','${item.id}','${tier}',this.checked)">
@@ -3912,16 +3942,6 @@ function bindSidebarEvents() {
   bind('est-status',      v=>S.status=v);
   bind('notes-internal',  v=>S.notes_internal=v, 'input');
   bind('notes-customer',  v=>S.notes_customer=v, 'input');
-  // Pricing-tab margin slider
-  const pmSlider = document.getElementById('pricing-margin-slider');
-  const pmInput  = document.getElementById('pricing-margin-input');
-  if (pmSlider) {
-    pmSlider.addEventListener('input',  e => { pmInput.value = e.target.value; syncAllTierRates(e.target.value); });
-    pmSlider.addEventListener('change', e => syncAllTierRates(e.target.value));
-  }
-  if (pmInput) {
-    pmInput.addEventListener('change', e => { pmSlider.value = e.target.value; syncAllTierRates(e.target.value); });
-  }
   document.getElementById('crm-search').addEventListener('input',
     debounce(e=>crmSearch(e.target.value.trim()),300));
   const dz=document.getElementById('photo-drop-zone');
@@ -3960,7 +3980,9 @@ function setTierRate(tier, v) {
   if (!S.pricing.tier_rates) S.pricing.tier_rates = { good:35, better:35, best:35 };
   S.pricing.tier_rates[tier] = parseFloat(v) || 0;
   recalcSimpleItems();
-  setDirty(); rerender();
+  setDirty();
+  renderTierRates();   // keep the sidebar inputs in sync with the grid inputs
+  rerender();
   if (activePage === 'pricing') renderTradeContent();
 }
 // Simple-mode items store an explicit sell price derived from cost + margin;
@@ -5390,6 +5412,11 @@ async function doLoadEstimate(id) {
     if(!Array.isArray(S.shingle_selection.options)||!S.shingle_selection.options.length)
       S.shingle_selection.options=DEFAULT_SHINGLE_COLORS.slice();
     if(!Array.isArray(S.attachments)) S.attachments=[];
+    // Estimates created outside the UI (API, scripts) may lack these — a
+    // missing photos array used to crash renderCoverPage and abort the load.
+    if(!Array.isArray(S.photos)) S.photos=[];
+    if(!S.customer||typeof S.customer!=='object') S.customer={name:'',phone:'',email:'',address:{}};
+    if(!S.customer.address||typeof S.customer.address!=='object') S.customer.address={};
     if(!S.measurements||typeof S.measurements!=='object') S.measurements={waste_pct:_globalWastePct()};
     if(S.measurements.waste_pct===undefined) S.measurements.waste_pct=_globalWastePct();
     // Migrate old separate ridge_lf / hip_lf into combined ridge_hip_lf
