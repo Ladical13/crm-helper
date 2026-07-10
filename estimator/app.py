@@ -1053,13 +1053,35 @@ def _parse_roofr_lf(s):
     return float(m.group(1)) if m else 0.0
 
 def _parse_roofr_pitches(full_text):
-    """Extract (rise, area_sqft) pairs from the RoofR 'Areas per pitch' table.
+    """Extract (rise, area_sqft) pairs from RoofR's pitch table.
 
-    Pitches are printed as N/12; area follows as sq-ft (with or without a unit)
-    or as a % of roof (resolved against the total roof area). Scans only the
-    text after the pitch-table heading so strays like 'Predominant pitch 6/12'
-    in the summary don't pollute the numbers. Returns [] when the report has
-    no pitch breakdown."""
+    Real RoofR exports print a columnar block, not a row per pitch:
+        Pitch 0/12 2/12 4/12
+        Area (sqft) 514 106 4,675
+        Squares 5.2 1.1 46.8
+    Multi-structure properties (garage, shed, addition) repeat this block once
+    per structure, then once more for the whole-property 'Report summary' —
+    the LAST such block in the document is that total, so it wins. Flat
+    facets are already folded into the low-rise buckets here (0/12 area plus
+    2/12 area lines up with the report's separately-stated flat-area total,
+    within rounding) — nothing needs adding back on top.
+
+    Falls back to an older row-per-pitch layout ('4/12  1,551.7 ft²  79.6%')
+    if the columnar table isn't found, in case some export differs."""
+    table_re = re.compile(
+        r'^\s*Pitch\b\s+((?:\d{1,2}\s*/\s*12\s*)+)$\s*'
+        r'^\s*Area\s*\(\s*sqft\s*\)\s*([\d,.\s]+?)\s*$',
+        re.I | re.M)
+    matches = list(table_re.finditer(full_text))
+    if matches:
+        m     = matches[-1]
+        rises = [int(r) for r in re.findall(r'(\d{1,2})\s*/\s*12', m.group(1))]
+        areas = [float(a.replace(',', '')) for a in re.findall(r'[\d,]+(?:\.\d+)?', m.group(2))]
+        if rises and len(rises) == len(areas):
+            return list(zip(rises, areas))
+
+    # Fallback: older assumed row-per-pitch layout (unverified against a real
+    # export, kept in case some report template differs from the above).
     head = re.search(r'areas?\s*(?:per|by)\s*pitch|pitch\s*breakdown', full_text, re.I)
     if not head:
         return []
@@ -1071,26 +1093,32 @@ def _parse_roofr_pitches(full_text):
     # Row format: "4/12  1,551.7 ft²  79.6%" — pitch, then the first number,
     # then optionally a unit or %. A % means the row is percentage-only and the
     # area resolves against the roof total. First value per pitch wins (the
-    # same pitch can echo later in the window).
+    # same pitch can echo later in the window). RoofR sometimes labels a
+    # dead-flat section as the word "Flat" instead of "0/12" — treated as
+    # pitch 0 so it still counts toward low-slope/rolled roofing.
+    def _row_area(raw, unit):
+        num = float(raw.replace(',', ''))
+        if unit == '%':
+            return (total_sqft * num / 100) if total_sqft else None
+        # Guard against pitch-diagram label runs ('6/12 8/12 4/12'): a bare
+        # small integer with no unit is the next facet's rise, not an area.
+        if not unit and num <= 12 and '.' not in raw and ',' not in raw:
+            return None
+        return num
+
     pitches = {}
     for m in re.finditer(
             r'(\d{1,2})\s*/\s*12\s*[:\-]?\s*([\d,]+(?:\.\d+)?)\s*(%|sq\.?\s*ft|sqft|ft2|ft²|sf)?',
             window, re.I):
-        rise = int(m.group(1))
-        raw  = m.group(2)
-        unit = (m.group(3) or '').strip().lower()
-        num  = float(raw.replace(',', ''))
-        if unit == '%':
-            if not total_sqft:
-                continue
-            area = total_sqft * num / 100
-        else:
-            # Guard against pitch-diagram label runs ('6/12 8/12 4/12'): a bare
-            # small integer with no unit is the next facet's rise, not an area.
-            if not unit and num <= 12 and '.' not in raw and ',' not in raw:
-                continue
-            area = num
-        pitches.setdefault(rise, area)
+        area = _row_area(m.group(2), (m.group(3) or '').strip().lower())
+        if area is not None:
+            pitches.setdefault(int(m.group(1)), area)
+    for m in re.finditer(
+            r'\bflat\b\s*[:\-]?\s*([\d,]+(?:\.\d+)?)\s*(%|sq\.?\s*ft|sqft|ft2|ft²|sf)?',
+            window, re.I):
+        area = _row_area(m.group(1), (m.group(2) or '').strip().lower())
+        if area is not None:
+            pitches.setdefault(0, area)
     return list(pitches.items())
 
 
@@ -1100,16 +1128,36 @@ def _parse_roofr_pdf(file_bytes):
     reader = _pypdf.PdfReader(io.BytesIO(file_bytes))
     full_text = '\n'.join(p.extract_text() or '' for p in reader.pages)
 
+    # Multi-structure properties (garage, shed, addition) repeat every
+    # "Total X" measurement once per structure, THEN once more under a final
+    # "Report summary" with the whole-property totals. A plain re.search
+    # (first match) would silently grab Structure #1's subset instead of the
+    # total — verified against a real 3-structure RoofR export where that
+    # gave eaves 273'9" instead of the correct 421'0". Scoping every
+    # measurement regex below to text from the first "Report summary" onward
+    # fixes this; falls back to the full document when there's no such
+    # section (a single-structure report may go straight to one summary).
+    rs_matches  = list(re.finditer(r'report\s+summary', full_text, re.I))
+    search_text = full_text[rs_matches[0].start():] if rs_matches else full_text
+
     def find_lf(label):
         # [\s:]+ handles both "Label 358ft 4in" and "Label: 358ft 4in" formats
-        m = re.search(rf'{re.escape(label)}[\s:]+(\d+ft\s+\d+in)', full_text)
+        m = re.search(rf'{re.escape(label)}[\s:]+(\d+ft\s+\d+in)', search_text)
         return _parse_roofr_lf(m.group(1)) if m else None
 
-    sq = re.search(r'Squares[\s:]+([\d.]+)', full_text)
-    squares = float(sq.group(1)) if sq else None
+    # Prefer the whole-property "Total roof area <N> sqft" over a bare
+    # "Squares X" label — the latter can match a per-pitch breakdown row
+    # ("Squares 5.2 1.1 46.8") and grab only the first bucket instead of the
+    # total (also verified against the same real multi-structure export).
+    area_m = re.search(r'total\s+roof\s+area\D{0,10}([\d,]+(?:\.\d+)?)', search_text, re.I)
+    if area_m:
+        squares = round(float(area_m.group(1).replace(',', '')) / 100, 1)
+    else:
+        sq = re.search(r'Squares[\s:]+([\d.]+)', search_text)
+        squares = float(sq.group(1)) if sq else None
 
     # "Hips + ridges" is the precomputed combined value in the Report Summary
-    ridge_hip_m = re.search(r'Hips\s*\+\s*ridges[\s:]+(\d+ft\s+\d+in)', full_text)
+    ridge_hip_m = re.search(r'Hips\s*\+\s*ridges[\s:]+(\d+ft\s+\d+in)', search_text)
     ridge_hip = _parse_roofr_lf(ridge_hip_m.group(1)) if ridge_hip_m else None
     if ridge_hip is None:
         h = find_lf('Total hips') or 0
@@ -1126,14 +1174,19 @@ def _parse_roofr_pdf(file_bytes):
     # report has a pitch table so a re-import clears stale values; omitted
     # entirely when it doesn't, leaving manual entries alone.
     low_slope_sq = steep_sq = None
-    pitch_rows = _parse_roofr_pitches(full_text)
+    pitch_rows = _parse_roofr_pitches(search_text)
     if pitch_rows:
         low_slope_sq = round(sum(a for p, a in pitch_rows if p <= 2) / 100, 1)
         steep_sq     = round(sum(a for p, a in pitch_rows if p >= 7) / 100, 1)
 
+    # RoofR's cover page places "Predominant pitch N/12" directly adjacent to
+    # the address with no separator in the extracted text (e.g. "...pitch
+    # 4/125416 South Timberline Road..."), which glues the pitch digits onto
+    # the street number. Strip it before matching so the address starts clean.
+    addr_search_text = re.sub(r'predominant\s+pitch\s*\d{1,2}\s*/\s*12', '', full_text, flags=re.I)
     addr_m = re.search(
         r'(\d+\s+[^\n,]+),\s+([A-Za-z][A-Za-z\s]+),\s+([A-Z]{2})\s+(\d{5})',
-        full_text)
+        addr_search_text)
 
     meas = {k: v for k, v in {
         'roof_squares':  squares,
