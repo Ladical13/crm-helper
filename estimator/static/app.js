@@ -134,6 +134,8 @@ const MEASURE_FIELDS = [
   { group:'Roof', fields:[
     {key:'roof_squares',  label:'Roof Area',      unit:'SQ'},
     {key:'waste_pct',     label:'Waste',          unit:'%'},
+    {key:'low_slope_squares', label:'Low Slope ≤2/12', unit:'SQ'},
+    {key:'steep_squares',     label:'Steep 7/12+',     unit:'SQ'},
     {key:'ridge_hip_lf',  label:'Ridge + Hip',    unit:'LF'},
     {key:'valley_lf',     label:'Valley',         unit:'LF'},
     {key:'eave_lf',       label:'Eaves',          unit:'LF'},
@@ -164,13 +166,21 @@ const MEASURE_FIELDS = [
 ];
 const MEASURE_DEFS = {
   squares:              { label:'Roof SQ',            calc:m => mnum(m.roof_squares) },
-  squares_waste:        { label:'Roof SQ + Waste',    calc:m => mnum(m.roof_squares) * (1 + mnum(m.waste_pct, 10)/100) },
+  // Low-slope area is covered by rolled roofing, not shingles — the shingle/
+  // underlayment quantity excludes it so the two lines never double-count.
+  squares_waste:        { label:'Roof SQ + Waste (excl. low-slope)', calc:m => Math.max(mnum(m.roof_squares) - mnum(m.low_slope_squares), 0) * (1 + mnum(m.waste_pct, 10)/100) },
+  low_slope:            { label:'Low Slope SQ (≤2/12)',   calc:m => mnum(m.low_slope_squares) },
+  low_slope_waste:      { label:'Low Slope SQ + Waste',   calc:m => mnum(m.low_slope_squares) * (1 + mnum(m.waste_pct, 10)/100) },
+  steep:                { label:'Steep SQ (7/12+)',       calc:m => mnum(m.steep_squares) },
+  steep_waste:          { label:'Steep SQ + Waste',       calc:m => mnum(m.steep_squares) * (1 + mnum(m.waste_pct, 10)/100) },
   ridge_hip:            { label:'Ridge + Hip LF',     calc:m => mnum(m.ridge_hip_lf) },
   valley:               { label:'Valley LF',          calc:m => mnum(m.valley_lf) },
   eave:                 { label:'Eave LF',            calc:m => mnum(m.eave_lf) },
   rake:                 { label:'Rake LF',            calc:m => mnum(m.rake_lf) },
   eave_rake:            { label:'Eave + Rake LF',     calc:m => mnum(m.eave_lf) + mnum(m.rake_lf) },
-  eave_valley:          { label:'Eave + Valley LF',   calc:m => mnum(m.eave_lf) + mnum(m.valley_lf) },
+  // iw_second_row (0/1) doubles the eave run — a 2nd course of ice & water
+  // barrier at the eaves where code requires it. Valleys are unaffected.
+  eave_valley:          { label:'Eave + Valley LF',   calc:m => mnum(m.eave_lf) * (mnum(m.iw_second_row) ? 2 : 1) + mnum(m.valley_lf) },
   step:                 { label:'Step Flashing LF',   calc:m => mnum(m.step_flash_lf) },
   pipe_boots:           { label:'# Pipe Boots',       calc:m => mnum(m.pipe_boots) },
   skylights:            { label:'# Skylights',        calc:m => mnum(m.skylights) },
@@ -278,6 +288,13 @@ function setMeasurement(key, v) {
     const item = findItem(inp.dataset.trade, inp.dataset.id);
     if (item) inp.value = item.quantity || '';
   });
+}
+function setIwSecondRow(on) {
+  // Stored as 0/1 in measurements so it survives save/load and is available
+  // as a variable in custom formulas (evalFormula reads S.measurements).
+  setMeasurement('iw_second_row', on ? 1 : 0);
+  // Re-render so the toggle's highlight state follows the checkbox.
+  if (activePage === 'scope') renderScopePage();
 }
 function setItemFormula(trade, id, formula) {
   const item = findItem(trade, id);
@@ -1600,7 +1617,7 @@ function pbMeasureCell(item, i) {
   const formulaInput = isFormula ? `
     <input class="pb-formula-input" type="text" value="${esc(item.formula||'')}"
       placeholder="eave_lf + valley_lf"
-      title="Variables: roof_squares, waste_pct, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in"
+      title="Variables: roof_squares, waste_pct, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1)"
       oninput="pbItems['${pbActiveTrade}'][${i}].formula=this.value;pbItems['${pbActiveTrade}'][${i}].measure=undefined">` : '';
   const bundleInput = `
     <div class="pb-bundle-wrap">
@@ -1863,6 +1880,12 @@ function renderScopePage() {
       <div class="measure-groups">
         ${renderMeasureGroup(MEASURE_FIELDS.filter(g => g.group === 'Roof'))}
       </div>
+      <label class="iw-second-row-toggle ${mnum(m.iw_second_row) ? 'enabled' : ''}"
+        title="Code sometimes requires ice &amp; water barrier to extend 24&quot; past the interior wall line — a second course at the eaves. Doubles the eave footage in the Eave + Valley auto-quantity (Ice &amp; Water Shield).">
+        <input type="checkbox" ${mnum(m.iw_second_row) ? 'checked' : ''}
+          onchange="setIwSecondRow(this.checked)">
+        ❄️ 2nd row of Ice &amp; Water at eaves <span class="iw-toggle-hint">(code) — doubles eave LF on the Ice &amp; Water line</span>
+      </label>
     </div>`;
 
   const sidingMeasurePanel = S.trades.siding.enabled ? `
@@ -1885,7 +1908,7 @@ function renderScopePage() {
         <input class="scope-formula-input" type="text"
           value="${esc(item.formula||'')}"
           placeholder="e.g. eave_lf + valley_lf"
-          title="Roof: roof_squares, waste_pct, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in — Siding: siding_squares, siding_waste_pct, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_starter_lf, siding_soffit_lf, windows_count, doors_count"
+          title="Roof: roof_squares, waste_pct, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1) — Siding: siding_squares, siding_waste_pct, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_starter_lf, siding_soffit_lf, windows_count, doors_count"
           onchange="setItemFormula('${item._trade}','${item.id}',this.value)">
         <span class="scope-formula-hint">eave_lf + valley_lf</span>
       </div>` : '';
@@ -1952,7 +1975,7 @@ function renderScopePage() {
                 <td class="scope-name-cell">${esc(item.name)}</td>
                 <td class="scope-measure-cell">${measureOptions(item)}</td>
                 <td style="text-align:center">
-                  <input class="scope-qty-input ${isAuto?'qty-auto':''}" type="number" min="0" step="0.5"
+                  <input class="scope-qty-input ${isAuto?'qty-auto':''}" type="number" inputmode="decimal" min="0" step="0.5"
                     value="${item.quantity||''}" placeholder="0"
                     data-trade="${trade}" data-id="${item.id}" data-measured="${isAuto?1:0}"
                     ${isAuto?'readonly title="Auto-calculated — switch to Manual to edit"':''}
@@ -2213,7 +2236,7 @@ function renderOtherFreeform() {
           onchange="liSetTier('${trade}','${item.id}','${tier}','notes',this.value)">
       </td>
       <td class="other-qty-cell">
-        <input class="other-qty-input" type="number" min="0" step="0.5" value="${item.quantity||''}"
+        <input class="other-qty-input" type="number" inputmode="decimal" min="0" step="0.5" value="${item.quantity||''}"
           placeholder="1" onchange="liSetQty('${trade}','${item.id}',this.value)">
       </td>
       <td>
@@ -2305,7 +2328,7 @@ function renderSimpleFreeform(trade) {
           >${esc(item.description||'')}</textarea>
       </td>
       <td class="other-qty-cell">
-        <input class="other-qty-input" type="number" min="0" step="0.5" value="${qty||''}"
+        <input class="other-qty-input" type="number" inputmode="decimal" min="0" step="0.5" value="${qty||''}"
           placeholder="0"
           onchange="simpleSetField('${trade}','${item.id}','quantity',parseFloat(this.value)||0);simpleUpdateTotals('${trade}')">
       </td>
@@ -2877,7 +2900,7 @@ function renderLiRow(trade, tier, item) {
     </div>
     <div class="li-row-numbers">
       ${isB
-        ? `<input class="li-row-qty-input" type="number" min="0" step="0.5"
+        ? `<input class="li-row-qty-input" type="number" inputmode="decimal" min="0" step="0.5"
              value="${item.quantity||''}" placeholder="Qty" title="Qty — shared across all tiers"
              onchange="liSetQty('${trade}','${item.id}',this.value)">
            <select class="li-row-unit-select" onchange="liSetUnit('${trade}','${item.id}',this.value)">
@@ -6346,6 +6369,12 @@ function openRoofrModal(data) {
       <span class="roofr-preview-value">${fmt(m.roof_squares, 'SQ')}</span>
       <span class="roofr-preview-label">Waste %</span>
       <span class="roofr-preview-value">${fmt(m.waste_pct, '%')}</span>
+      ${m.low_slope_squares !== undefined ? `
+      <span class="roofr-preview-label">Low Slope ≤2/12 (rolled)</span>
+      <span class="roofr-preview-value">${fmt(m.low_slope_squares, 'SQ')}</span>` : ''}
+      ${m.steep_squares !== undefined ? `
+      <span class="roofr-preview-label">Steep 7/12+</span>
+      <span class="roofr-preview-value">${fmt(m.steep_squares, 'SQ')}</span>` : ''}
       <span class="roofr-preview-label">Ridge + Hip</span>
       <span class="roofr-preview-value">${fmt(m.ridge_hip_lf, 'LF')}</span>
       <span class="roofr-preview-label">Eaves</span>

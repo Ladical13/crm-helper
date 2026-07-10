@@ -1052,6 +1052,48 @@ def _parse_roofr_lf(s):
     m = re.match(r'(\d[\d,]*)ft', s.replace(',', ''))
     return float(m.group(1)) if m else 0.0
 
+def _parse_roofr_pitches(full_text):
+    """Extract (rise, area_sqft) pairs from the RoofR 'Areas per pitch' table.
+
+    Pitches are printed as N/12; area follows as sq-ft (with or without a unit)
+    or as a % of roof (resolved against the total roof area). Scans only the
+    text after the pitch-table heading so strays like 'Predominant pitch 6/12'
+    in the summary don't pollute the numbers. Returns [] when the report has
+    no pitch breakdown."""
+    head = re.search(r'areas?\s*(?:per|by)\s*pitch|pitch\s*breakdown', full_text, re.I)
+    if not head:
+        return []
+    window = full_text[head.end():head.end() + 2500]
+
+    total_m = re.search(r'total\s+roof\s+area\D{0,10}([\d,]+(?:\.\d+)?)', full_text, re.I)
+    total_sqft = float(total_m.group(1).replace(',', '')) if total_m else 0.0
+
+    # Row format: "4/12  1,551.7 ft²  79.6%" — pitch, then the first number,
+    # then optionally a unit or %. A % means the row is percentage-only and the
+    # area resolves against the roof total. First value per pitch wins (the
+    # same pitch can echo later in the window).
+    pitches = {}
+    for m in re.finditer(
+            r'(\d{1,2})\s*/\s*12\s*[:\-]?\s*([\d,]+(?:\.\d+)?)\s*(%|sq\.?\s*ft|sqft|ft2|ft²|sf)?',
+            window, re.I):
+        rise = int(m.group(1))
+        raw  = m.group(2)
+        unit = (m.group(3) or '').strip().lower()
+        num  = float(raw.replace(',', ''))
+        if unit == '%':
+            if not total_sqft:
+                continue
+            area = total_sqft * num / 100
+        else:
+            # Guard against pitch-diagram label runs ('6/12 8/12 4/12'): a bare
+            # small integer with no unit is the next facet's rise, not an area.
+            if not unit and num <= 12 and '.' not in raw and ',' not in raw:
+                continue
+            area = num
+        pitches.setdefault(rise, area)
+    return list(pitches.items())
+
+
 def _parse_roofr_pdf(file_bytes):
     if _pypdf is None:
         raise RuntimeError('pypdf not installed')
@@ -1079,6 +1121,16 @@ def _parse_roofr_pdf(file_bytes):
     rake   = find_lf('Total rakes')
     step   = find_lf('Total step flashing')
 
+    # Pitch breakdown → low-slope (≤2/12, rolled roofing) and steep (≥7/12,
+    # steep charge) areas in squares. Set explicitly (even 0) whenever the
+    # report has a pitch table so a re-import clears stale values; omitted
+    # entirely when it doesn't, leaving manual entries alone.
+    low_slope_sq = steep_sq = None
+    pitch_rows = _parse_roofr_pitches(full_text)
+    if pitch_rows:
+        low_slope_sq = round(sum(a for p, a in pitch_rows if p <= 2) / 100, 1)
+        steep_sq     = round(sum(a for p, a in pitch_rows if p >= 7) / 100, 1)
+
     addr_m = re.search(
         r'(\d+\s+[^\n,]+),\s+([A-Za-z][A-Za-z\s]+),\s+([A-Z]{2})\s+(\d{5})',
         full_text)
@@ -1092,6 +1144,8 @@ def _parse_roofr_pdf(file_bytes):
         'rake_lf':       rake,
         'step_flash_lf': step,
         'gutter_lf':     eave,
+        'low_slope_squares': low_slope_sq,
+        'steep_squares':     steep_sq,
     }.items() if v is not None}
 
     addr = {}
@@ -1520,6 +1574,10 @@ def render_line_items(est, tier=None):
         tier = est.get('selected_tier', 'better')
     pricing  = est.get('pricing', {})
     mode     = pricing.get('mode', 'margin')
+    # Mirror the PDF's "Line Prices" chip: unit price + line total columns
+    # appear online exactly when they appear in print.
+    show_lp  = (est.get('page_visibility') or {}).get('linePrices') is True
+    ncols    = 5 if show_lp else 3
 
     labels  = dict(roofing='Roofing', siding='Siding', windows='Windows', gutters='Gutters', other='Other / Misc')
     trades  = est.get('trades', {})
@@ -1553,24 +1611,29 @@ def render_line_items(est, tier=None):
             if not item.get('customer_visible', True):
                 hidden_count += 1
                 continue
+            lp_cells = ''
+            if show_lp:
+                unit_sell = (line / qty) if qty else 0.0
+                lp_cells = f'<td class="cvr">{fc(unit_sell)}</td><td class="cvr">{fc(line)}</td>'
             rows.append(f'''<tr>
               <td class="cvn">{he(item.get("name",""))}
                 {'<div class="cvd">'+he(desc)+'</div>' if desc else ''}</td>
               <td class="cvc">{qty:g}</td>
-              <td class="cvc">{he(item.get("unit",""))}</td></tr>''')
+              <td class="cvc">{he(item.get("unit",""))}</td>{lp_cells}</tr>''')
         if hidden_count:
-            rows.append(f'<tr><td colspan="3" class="cvhidden-note">Additional materials &amp; supplies included in total</td></tr>')
+            rows.append(f'<tr><td colspan="{ncols}" class="cvhidden-note">Additional materials &amp; supplies included in total</td></tr>')
         if not rows:
             continue  # nothing priced to show the customer for this trade
         gtotal += sub
         lbl = labels.get(tk, tk.title())
+        lp_ths = '<th class="cvth-r">Unit Price</th><th class="cvth-r">Total</th>' if show_lp else ''
         parts.append(f'''<div class="cvtrade">
           <div class="cvtrade-hd">{lbl}</div>
           <table class="cvt"><thead><tr>
             <th>Description</th><th class="cvth-c">Qty</th>
-            <th class="cvth-c">Unit</th></tr></thead>
+            <th class="cvth-c">Unit</th>{lp_ths}</tr></thead>
           <tbody>{''.join(rows)}</tbody>
-          <tfoot><tr><td colspan="2" class="cvsub-l">{lbl} Subtotal</td>
+          <tfoot><tr><td colspan="{ncols - 1}" class="cvsub-l">{lbl} Subtotal</td>
             <td class="cvr cvsub">{fc(sub)}</td></tr></tfoot>
           </table></div>''')
 
@@ -1733,6 +1796,40 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cvtrade{overflow-x:auto;-webkit-overflow-scrolling:touch}.cvt-ins{min-width:520px}
 .cvgrand-amt{font-size:19px}}
 @media print{.cv-print-btn{display:none}body{background:#fff}.cert{border-width:1.5pt;page-break-inside:avoid}}
+.cvintro{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:18px 20px}
+.cvintro-logo{height:38px;width:auto;display:block;margin-bottom:12px}
+.cvintro p{font-size:13.5px;line-height:1.75;color:#374151;white-space:pre-wrap}
+.cvphotos{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:16px}
+.cvphotos h3{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin-bottom:10px}
+.cvph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+.cvph-fig{margin:0}
+.cvph-wrap{position:relative;border-radius:6px;overflow:hidden;background:#f3f4f6}
+.cvph-wrap img{width:100%;display:block}
+.cvph-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.cvph-fig figcaption{font-size:11.5px;color:#6b7280;padding:6px 2px 0;line-height:1.4}
+@media(max-width:520px){.cvph-grid{grid-template-columns:1fr 1fr}}
+.cvcond{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:16px}
+.cvcond>h3{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin-bottom:10px}
+.cvcond-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;margin-bottom:12px}
+.cvcond-cell{text-align:center;border:1px solid #e5e7eb;border-radius:8px;padding:10px 4px}
+.cvcond-cell-lbl{font-size:10px;font-weight:700;color:#374151;margin-bottom:6px;line-height:1.3}
+.cvcond-letter{font-size:22px;font-weight:900;width:42px;height:42px;line-height:42px;border-radius:50%;margin:0 auto 4px}
+.cvcond-word{font-size:10px;font-weight:700}
+.cvcond-exec{font-size:12.5px;line-height:1.6;color:#374151;background:#f8fafc;border-left:3px solid #1a3a5c;padding:9px 11px;border-radius:0 6px 6px 0;margin-bottom:10px}
+.cvcond-sec{margin-top:14px;border-top:1px solid #e5e7eb;padding-top:12px}
+.cvcond-sec-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.cvcond-sec-hd h4{font-size:13.5px;color:#1a3a5c;margin:0}
+.cvcond-badge{font-size:11px;font-weight:800;border-radius:20px;padding:3px 10px;white-space:nowrap}
+.cvcond-meta{font-size:11.5px;color:#6b7280;margin-bottom:6px}
+.cvcond-summary{font-size:12.5px;line-height:1.6;color:#374151;margin-bottom:8px}
+.cvcond-sh{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#1a3a5c;margin:8px 0 4px}
+.cvcond-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
+.cvcond-tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:#6b7280;background:#f9fafb;padding:5px 8px;border-bottom:1px solid #e5e7eb}
+.cvcond-tbl td{padding:6px 8px;border-bottom:1px solid #f3f4f6;vertical-align:top;line-height:1.45}
+.cvcond-tbl tr:last-child td{border-bottom:none}
+.cvcond-cost-total td{font-weight:800;border-top:2px solid #e5e7eb;background:#f9fafb}
+.cvcond-foot{font-size:10px;color:#9ca3af;line-height:1.5;margin-top:12px;border-top:1px solid #f3f4f6;padding-top:8px}
+.cvcond .cvph-grid{margin-top:10px}
 """
 
 
@@ -1772,6 +1869,248 @@ def _cv_hero(est, title, subtitle):
   <h1>{he(title)}</h1>
   <p>{he(subtitle)}</p>
 </div>'''
+
+
+# ── Customer-view parity blocks (mirror the printed estimate / PDF) ────────
+# The sign page shows the same sections the printed estimate does: intro
+# letter, photo report, and property condition report. Content and gating
+# mirror buildPrintContent in app.js.
+
+# Annotation renderer for customer-view photos — a direct port of drawAnn in
+# app.js (oval / arrow / text, % coordinates, sw scaled by width/300). Included
+# once per page via the window._cvAnnInit guard.
+_CV_ANN_JS = """<script>
+if(!window._cvAnnInit){window._cvAnnInit=1;
+function _cvDrawAnn(ctx,a,W,H,s){var c=a.color||'#ef4444';var sw=(a.sw||3)*s;
+ctx.save();ctx.strokeStyle=c;ctx.fillStyle=c;ctx.lineWidth=sw;ctx.lineCap='round';ctx.lineJoin='round';
+if(a.type==='oval'){var x1=a.x1/100*W,y1=a.y1/100*H,x2=a.x2/100*W,y2=a.y2/100*H;
+ctx.beginPath();ctx.ellipse((x1+x2)/2,(y1+y2)/2,Math.abs(x2-x1)/2||1,Math.abs(y2-y1)/2||1,0,0,Math.PI*2);ctx.stroke();}
+else if(a.type==='arrow'){var x1=a.x1/100*W,y1=a.y1/100*H,x2=a.x2/100*W,y2=a.y2/100*H;
+var ang=Math.atan2(y2-y1,x2-x1),hl=sw*6;
+ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+ctx.beginPath();ctx.moveTo(x2,y2);
+ctx.lineTo(x2-hl*Math.cos(ang-0.45),y2-hl*Math.sin(ang-0.45));
+ctx.lineTo(x2-hl*Math.cos(ang+0.45),y2-hl*Math.sin(ang+0.45));
+ctx.closePath();ctx.fill();}
+else if(a.type==='text'){var x=a.x/100*W,y=a.y/100*H,fs=Math.max(13,(a.sw||3)*5)*s;
+ctx.font='bold '+fs+"px 'Segoe UI',sans-serif";ctx.textBaseline='top';
+ctx.strokeStyle=(c==='#ffffff')?'#222':'#fff';ctx.lineWidth=Math.max(1,(a.sw||3))*2*s;
+ctx.strokeText(a.text||'',x,y);ctx.fillStyle=c;ctx.fillText(a.text||'',x,y);}
+ctx.restore();}
+function _cvAnnPaint(cv){var img=cv.parentElement.querySelector('img');if(!img)return;
+function paint(){var W=img.clientWidth,H=img.clientHeight;if(!W||!H)return;
+cv.width=W;cv.height=H;var ctx=cv.getContext('2d');var anns=[];
+try{anns=JSON.parse(cv.dataset.ann||'[]');}catch(e){}
+anns.forEach(function(a){_cvDrawAnn(ctx,a,W,H,W/300);});}
+if(img.complete&&img.naturalWidth)paint();else img.addEventListener('load',paint);
+window.addEventListener('resize',paint);}
+function _cvAnnAll(){document.querySelectorAll('canvas.cvph-canvas').forEach(_cvAnnPaint);}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',_cvAnnAll);
+else _cvAnnAll();
+}</script>"""
+
+
+def _cv_intro_block(est):
+    """Intro letter — same letter page the printed estimate opens with."""
+    pv  = est.get('page_visibility') or {}
+    txt = (est.get('intro_text') or '').strip()
+    if not txt or pv.get('intro') is False:
+        return ''
+    return f'''<div class="cvintro">
+  <img src="/static/logo.png" class="cvintro-logo" alt="Project One Roofing">
+  <p>{he(txt)}</p>
+</div>'''
+
+
+def _cv_photo_fig(photo):
+    """One photo figure with an annotation-overlay canvas when annotated."""
+    anns = photo.get('annotations') or []
+    canvas = (f'<canvas class="cvph-canvas" data-ann="{he(json.dumps(anns))}"></canvas>'
+              if anns else '')
+    cap = (photo.get('caption') or '').strip()
+    cap_el = f'<figcaption>{he(cap)}</figcaption>' if cap else ''
+    return f'''<figure class="cvph-fig">
+  <div class="cvph-wrap"><img src="/uploads/{he(photo["filename"])}" alt="{he(cap or "Project photo")}" loading="lazy">{canvas}</div>
+  {cap_el}
+</figure>'''
+
+
+def _cv_photos_block(est):
+    """Photo Report — the same show-in-estimate photos the PDF prints, with
+    annotations drawn client-side (same math as the app's print bake)."""
+    photos = [p for p in (est.get('photos') or [])
+              if p.get('show_in_estimate') and p.get('filename')
+              and p.get('id') != est.get('cover_photo_id')]
+    if not photos:
+        return ''
+    figs = ''.join(_cv_photo_fig(p) for p in photos)
+    return f'''<div class="cvphotos">
+  <h3>Photo Report</h3>
+  <div class="cvph-grid">{figs}</div>
+</div>{_CV_ANN_JS}'''
+
+
+# Property Condition Report constants — mirror PC_SECTIONS / PC_GRADES /
+# RH_SEVERITIES / RH_PRIORITIES in app.js. Keep in sync.
+_PC_SECTIONS = [('roof', 'Roofing', '🏠'), ('siding', 'Siding', '🏗'),
+                ('windows', 'Windows', '🪟'), ('gutters', 'Gutters', '🌧'),
+                ('other', 'Exterior / Other', '📋')]
+_PC_GRADES = {'A': ('Excellent', '#16a34a', '#dcfce7'), 'B': ('Good', '#2563eb', '#dbeafe'),
+              'C': ('Fair', '#d97706', '#fef3c7'),      'D': ('Poor', '#dc2626', '#fee2e2'),
+              'F': ('Critical', '#7c3aed', '#ede9fe')}
+_RH_SEV = {'low': ('Low', '#2563eb'), 'medium': ('Medium', '#d97706'), 'high': ('High', '#dc2626')}
+_RH_PRI = {'immediate': 'Immediate', 'soon': '1–2 Years', 'monitor': 'Monitor'}
+
+
+def _cv_condition_pc(est):
+    """property_condition dict, migrating legacy roof_health data into a
+    roof-only section when needed (mirrors pcGet in app.js)."""
+    pc = est.get('property_condition')
+    if pc:
+        return pc
+    rh = est.get('roof_health') or {}
+    if not (rh.get('condition') or rh.get('findings') or rh.get('recommendations')):
+        return None
+    grade_map = dict(excellent='A', good='B', fair='C', poor='D', critical='F')
+    return {
+        'inspection_date':  rh.get('inspection_date', ''),
+        'executive_notes':  '',
+        'report_photo_ids': rh.get('report_photo_ids') or [],
+        'sections': {'roof': {
+            'enabled': True, 'grade': grade_map.get(rh.get('condition'), ''),
+            'summary': rh.get('summary', ''), 'material_type': rh.get('material_type', ''),
+            'age_years': rh.get('age_years', ''), 'pitch': rh.get('pitch', ''),
+            'findings': rh.get('findings') or [],
+            'recommendations': rh.get('recommendations') or [],
+        }},
+    }
+
+
+def _pc_cost_lo(rec):
+    """Low end of a recommendation's cost range — first number only, so
+    '$500–$1,500' reads 500 (mirrors the print view's parse)."""
+    m = re.search(r'[\d,]+(?:\.\d+)?', rec.get('cost_range') or '')
+    return float(m.group(0).replace(',', '')) if m else 0.0
+
+
+def _cv_condition_block(est):
+    """Property Condition Report — same grades, findings, recommendations and
+    cost outlook the printed report shows. Gated by the Roof Health print chip
+    (page_visibility.report), same as the PDF."""
+    pv = est.get('page_visibility') or {}
+    if pv.get('report') is False:
+        return ''
+    pc = _cv_condition_pc(est)
+    if not pc:
+        return ''
+    sections = pc.get('sections') or {}
+    enabled = [(k, lbl, icon, sections.get(k)) for k, lbl, icon in _PC_SECTIONS
+               if (sections.get(k) or {}).get('enabled') and (sections.get(k) or {}).get('grade')]
+    if not enabled:
+        return ''
+
+    # Condition snapshot grid
+    cells = ''
+    for _k, lbl, icon, sec in enabled:
+        word, clr, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
+        cells += f'''<div class="cvcond-cell">
+  <div class="cvcond-cell-lbl">{icon} {he(lbl)}</div>
+  <div class="cvcond-letter" style="color:{clr};background:{bg}">{he(sec.get("grade"))}</div>
+  <div class="cvcond-word" style="color:{clr}">{word}</div>
+</div>'''
+
+    exec_html = (f'<div class="cvcond-exec"><strong>Overall Assessment:</strong> {he(pc.get("executive_notes"))}</div>'
+                 if (pc.get('executive_notes') or '').strip() else '')
+
+    # Estimated repair investment (low-end totals per priority)
+    cost_imm = cost_soon = cost_mon = 0.0
+    for _k, _lbl, _icon, sec in enabled:
+        for rec in (sec.get('recommendations') or []):
+            lo = _pc_cost_lo(rec)
+            pri = rec.get('priority')
+            if pri == 'immediate':
+                cost_imm += lo
+            elif pri == 'soon':
+                cost_soon += lo
+            else:
+                cost_mon += lo
+    cost_total = cost_imm + cost_soon + cost_mon
+    cost_html = ''
+    if cost_total > 0:
+        rows = [(lbl, v) for lbl, v in [('Immediate repairs (D/F)', cost_imm),
+                                        ('Short-term (C grades)', cost_soon),
+                                        ('Maintenance (B grades)', cost_mon)] if v > 0]
+        trs = ''.join(f'<tr><td>{lbl}</td><td class="cvr">{fc(v)}+</td></tr>' for lbl, v in rows)
+        cost_html = f'''<div class="cvcond-sh">Estimated Repair Investment</div>
+<table class="cvcond-tbl">{trs}
+<tr class="cvcond-cost-total"><td>Estimated Total</td><td class="cvr">{fc(cost_total)}+</td></tr></table>'''
+
+    # Per-section detail
+    sec_html = ''
+    for key, lbl, icon, sec in enabled:
+        word, clr, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
+        meta_bits = []
+        if key == 'roof':
+            if sec.get('material_type'):
+                meta_bits.append(f'Material: <strong>{he(sec["material_type"])}</strong>')
+            if sec.get('age_years'):
+                meta_bits.append(f'Est. Age: <strong>{he(sec["age_years"])} years</strong>')
+            if sec.get('pitch'):
+                meta_bits.append(f'Pitch: <strong>{he(sec["pitch"])}</strong>')
+        meta_html = f'<div class="cvcond-meta">{" &middot; ".join(meta_bits)}</div>' if meta_bits else ''
+        summary_html = (f'<div class="cvcond-summary">{he(sec.get("summary"))}</div>'
+                        if (sec.get('summary') or '').strip() else '')
+
+        find_rows = ''
+        for f_ in (sec.get('findings') or []):
+            if not (f_.get('description') or f_.get('area')):
+                continue
+            sev_lbl, sev_c = _RH_SEV.get(f_.get('severity'), (f_.get('severity') or '', '#666'))
+            find_rows += (f'<tr><td style="font-weight:600">{he(f_.get("area") or "—")}</td>'
+                          f'<td><span style="color:{sev_c};font-weight:700">{he(sev_lbl)}</span></td>'
+                          f'<td>{he(f_.get("description") or "")}</td></tr>')
+        find_html = (f'''<div class="cvcond-sh">Findings</div>
+<table class="cvcond-tbl"><thead><tr><th>Area</th><th>Severity</th><th>Description</th></tr></thead>
+<tbody>{find_rows}</tbody></table>''' if find_rows else '')
+
+        rec_rows = ''
+        for rec in (sec.get('recommendations') or []):
+            if not rec.get('description'):
+                continue
+            rec_rows += (f'<tr><td style="white-space:nowrap"><strong>{he(_RH_PRI.get(rec.get("priority"), rec.get("priority") or ""))}</strong></td>'
+                         f'<td>{he(rec.get("description") or "")}</td>'
+                         f'<td style="white-space:nowrap">{he(rec.get("cost_range") or "—")}</td></tr>')
+        rec_html = (f'''<div class="cvcond-sh">Recommendations</div>
+<table class="cvcond-tbl"><thead><tr><th>Priority</th><th>Description</th><th>Est. Cost</th></tr></thead>
+<tbody>{rec_rows}</tbody></table>''' if rec_rows else '')
+
+        sec_html += f'''<div class="cvcond-sec">
+  <div class="cvcond-sec-hd">
+    <h4>{icon} {he(lbl)}</h4>
+    <span class="cvcond-badge" style="color:{clr};background:{bg}">Grade {he(sec.get("grade"))} &mdash; {word}</span>
+  </div>
+  {meta_html}{summary_html}{find_html}{rec_html}
+</div>'''
+
+    # Report photos (annotated) — shown once at the end of the report
+    photos_by_id = {p.get('id'): p for p in (est.get('photos') or []) if p.get('filename')}
+    rh_photos = [photos_by_id[pid] for pid in (pc.get('report_photo_ids') or []) if pid in photos_by_id]
+    photos_html = (f'<div class="cvcond-sh">Inspection Photos</div><div class="cvph-grid">'
+                   + ''.join(_cv_photo_fig(p) for p in rh_photos) + '</div>') if rh_photos else ''
+
+    insp_date = (pc.get('inspection_date') or '').strip()
+    insp_html = f'<div class="cvcond-meta">Inspection Date: <strong>{he(insp_date)}</strong></div>' if insp_date else ''
+
+    return f'''<div class="cvcond">
+  <h3>Property Condition Report</h3>
+  {insp_html}
+  <div class="cvcond-grid">{cells}</div>
+  {exec_html}
+  {cost_html}
+  {sec_html}
+  {photos_html}
+  <div class="cvcond-foot">This Property Condition Report is a visual inspection summary prepared by Project One Roofing. Cost estimates are approximate ranges and do not constitute a formal bid. Contact us for a full assessment.</div>
+</div>{_CV_ANN_JS if rh_photos else ''}'''
 
 
 def _visible_initials(est):
@@ -2049,11 +2388,16 @@ def _build_insurance_cv(est, token):
   </div>
 </div>
 
+{_cv_intro_block(est)}
+
+{_cv_photos_block(est)}
+
 {_cv_products_block(est)}
 
 {ins_table}
 {scope_html}
 {notes_html}
+{_cv_condition_block(est)}
 {_cv_attachments_block(est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
@@ -2149,6 +2493,10 @@ def _build_simple_retail_cv(est, token):
   </div>
 </div>
 
+{_cv_intro_block(est)}
+
+{_cv_photos_block(est)}
+
 {_cv_products_block(est)}
 
 {li_html}
@@ -2159,6 +2507,7 @@ def _build_simple_retail_cv(est, token):
 </div>
 
 {notes_html}
+{_cv_condition_block(est)}
 {_cv_attachments_block(est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
@@ -2297,6 +2646,10 @@ def build_customer_view(est, token):
   </div>
 </div>
 
+{_cv_intro_block(est)}
+
+{_cv_photos_block(est)}
+
 {_cv_products_block(est)}
 
 <div class="cv-tier-section">
@@ -2314,6 +2667,7 @@ def build_customer_view(est, token):
 </div>
 
 {notes_html}
+{_cv_condition_block(est)}
 {_cv_attachments_block(est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
@@ -3158,6 +3512,8 @@ def build_signed_pdf(est):
 # Mirrors MEASURE_FIELDS in app.js (Scope page) — keep the two in sync.
 MEASURE_LABELS = [
     ('Roof', [('roof_squares', 'Roof Area', 'SQ'), ('waste_pct', 'Waste', '%'),
+              ('low_slope_squares', 'Low Slope Area (2/12 or less) - rolled roofing', 'SQ'),
+              ('steep_squares', 'Steep Area (7/12 and up)', 'SQ'),
               ('ridge_hip_lf', 'Ridge + Hip', 'LF'), ('valley_lf', 'Valley', 'LF'),
               ('eave_lf', 'Eaves', 'LF'), ('rake_lf', 'Rakes', 'LF'),
               ('step_flash_lf', 'Step Flashing', 'LF'), ('pipe_boots', 'Pipe Boots', 'EA'),
@@ -3375,6 +3731,11 @@ def build_production_packet_pdf(est):
             v = _mnum(key)
             if v:
                 meas_rows.append((group, label, v, unit))
+    # iw_second_row is a 0/1 toggle, not a MEASURE_LABELS field: a 2nd course of
+    # ice & water at the eaves (code). The I&W line qty already includes it —
+    # this row tells the crew WHY the footage is doubled.
+    if _mnum('iw_second_row'):
+        meas_rows.append(('Roof', 'Ice & Water: 2ND ROW at eaves (code) - eave LF doubled', 2, 'ROWS'))
     if meas_rows:
         section_title('Measurements')
         table_header([('Area', 30, 'L'), ('Measurement', 92, 'L'), ('Value', 36, 'R'), ('Unit', 24, 'C')])
@@ -4737,6 +5098,20 @@ TEMPLATES = {
          "notes_good":   "Self-adhering waterproof membrane installed at eaves and valleys — the minimum protection required for Colorado's freeze-thaw climate.",
          "notes_better": "Ice & water barrier installed at all eaves, rakes, valleys, and pipe penetrations. Protects the areas most vulnerable to ice damming and wind-driven rain infiltration.",
          "notes_best":   "Full-coverage ice & water barrier across the entire roof deck — the gold standard for hail country. Provides maximum protection regardless of weather severity."},
+        {"name": "Rolled Roofing (Low Slope)", "unit": "SQ", "measure": "low_slope_waste",
+         "desc_good":   "Mineral-Surfaced Rolled Roofing",
+         "desc_better": "Self-Adhered Modified Bitumen",
+         "desc_best":   "2-Layer Modified Bitumen System",
+         "notes_good":   "Mineral-surfaced rolled roofing installed on all low-slope sections (2/12 pitch or less) where shingles cannot be warranted.",
+         "notes_better": "Self-adhered modified bitumen membrane on all low-slope sections — a fully bonded, watertight system engineered for pitches too shallow for shingles.",
+         "notes_best":   "Two-layer modified bitumen system (base + granulated cap sheet) on all low-slope sections for maximum durability and a finished look that complements your shingle roof."},
+        {"name": "Steep Pitch Charge (7/12+)", "unit": "SQ", "measure": "steep",
+         "desc_good":   "Steep-Slope Labor",
+         "desc_better": "Steep-Slope Labor & Safety Equipment",
+         "desc_best":   "Steep-Slope Labor & Safety Equipment",
+         "notes_good":   "Additional labor for roof sections at 7/12 pitch or steeper.",
+         "notes_better": "Additional labor and fall-protection equipment for roof sections at 7/12 pitch or steeper — steep roofs require slower, safer installation practices.",
+         "notes_best":   "Additional labor and fall-protection equipment for roof sections at 7/12 pitch or steeper — steep roofs require slower, safer installation practices."},
         {"name": 'Decking (OSB 7/16")', "unit": "SQ",
          "desc_good":   "Replace Damaged Only",
          "desc_better": "Replace Damaged + Inspection",
@@ -4956,6 +5331,16 @@ def get_templates():
                 for f in RICH:
                     if not m.get(f) and base.get(f):
                         m[f] = base[f]
+                # Pitch-driven auto-link by name: an existing price book item
+                # like "Rolled Roofing" or "Steep Charge" picks up the RoofR
+                # pitch measurements with zero setup. Only fires when the item
+                # has no measure/formula of its own — an explicit choice wins.
+                if trade == 'roofing' and not m.get('measure') and not m.get('formula'):
+                    n = (m.get('name') or '').lower()
+                    if re.search(r'\broll(?:ed)?\b|low[\s-]?slope|mod(?:ified)?[\s-]?bit', n):
+                        m['measure'] = 'low_slope_waste'
+                    elif 'steep' in n:
+                        m['measure'] = 'steep'
                 merged.append(m)
             result[trade] = merged
         else:

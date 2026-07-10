@@ -1530,6 +1530,15 @@ body.is-home #nav-toggle       { display: none; }
 }
 .measure-input-wrap input:focus { border-color: #0284c7; box-shadow: 0 0 0 3px rgba(2,132,199,.15); }
 .measure-unit { font-size: 11px; font-weight: 700; color: #0369a1; width: 22px; }
+.iw-second-row-toggle {
+  display: inline-flex; align-items: center; gap: 7px; margin-top: 12px;
+  padding: 7px 12px; border-radius: 20px; cursor: pointer;
+  border: 1px solid #7dd3fc; background: #fff;
+  font-size: 12px; font-weight: 700; color: #075985; transition: all .12s;
+}
+.iw-second-row-toggle.enabled { border-color: #0284c7; background: #e0f2fe; box-shadow: 0 0 0 3px rgba(2,132,199,.12); }
+.iw-second-row-toggle input { accent-color: #0284c7; width: 15px; height: 15px; margin: 0; }
+.iw-toggle-hint { font-weight: 500; color: #0369a1; font-size: 11px; }
 
 /* Auto-qty linkage in scope table */
 .th-auto { width: 190px; }
@@ -2660,6 +2669,34 @@ body.is-home #nav-toggle       { display: none; }
   /* ── Home screen: tighten gap on smallest phones ───────────── */
   #home-content { gap: 12px; }
   .home-est-row { padding: 10px 14px; }
+
+  /* ── Quantity editing: real touch targets ────────────────────
+     The 16px iOS font is forced into desktop-sized boxes (50–80px wide,
+     ~30px tall) — widen + heighten every qty input and its unit select,
+     and drop the number spinners to give the digits the whole box. */
+  /* input.* prefix: the global `input[type=…] { width:100% }` rule at the top
+     of this file outranks a bare class, and 100% of a squeezed table cell is
+     what made these tiny in the first place. */
+  input.scope-qty-input,
+  input.li-row-qty-input,
+  input.li-qty-input,
+  input.other-qty-input {
+    width: 84px; min-height: 44px; padding: 8px 4px;
+    text-align: center; font-weight: 700;
+  }
+  .scope-table thead th.th-qty { width: 92px; }
+  .li-row-unit-select, .li-unit-select { width: 72px; min-height: 44px; flex-shrink: 0; }
+  /* GBB line rows: wrap instead of crushing the qty/unit/cost inputs */
+  .li-row-numbers { flex-wrap: wrap; row-gap: 8px; }
+  .other-unit-select  { width: 72px; min-height: 44px; }
+  input.other-price-input { width: 104px; min-height: 44px; padding: 8px 6px; }
+  .measure-input-wrap input { width: 84px; min-height: 44px; }
+  .scope-qty-input::-webkit-outer-spin-button,
+  .scope-qty-input::-webkit-inner-spin-button,
+  .li-row-qty-input::-webkit-outer-spin-button,
+  .li-row-qty-input::-webkit-inner-spin-button,
+  .other-qty-input::-webkit-outer-spin-button,
+  .other-qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
   /* ── Touch target fixes: elements below 44px minimum ────────── */
   .li-row-del {
