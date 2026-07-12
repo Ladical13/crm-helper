@@ -1700,6 +1700,14 @@ def _cv_products_block(est):
     </div>'''
 
 
+def _with_section(item, name):
+    """Append the item's estimate-section (structure / roof area) to its name
+    for flat PDF lists (signed contract, production packet) that have no
+    grouped headers: 'Shingles [Detached Garage]'."""
+    s = (item.get('section') or '').strip()
+    return f'{name} [{s}]' if s else name
+
+
 def render_line_items(est, tier=None):
     """Build trade line-item tables for customer view. Returns (html, grand_total)."""
     if tier is None:
@@ -1723,9 +1731,10 @@ def render_line_items(est, tier=None):
         # Determine trade mode: gutters always simple; others default gbb
         trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
         r    = _tier_rate(pricing, tk, tier)
-        rows = []
-        sub  = 0.0
-        hidden_count = 0
+
+        # Priced entries first (item, qty, line_total, desc) — then grouped by
+        # section (structures / roof areas; mirrors groupedTradeItems in app.js)
+        priced = []
         for item in td['line_items']:
             qty  = float(item.get('quantity') or 0)
             if qty <= 0:
@@ -1739,19 +1748,46 @@ def render_line_items(est, tier=None):
                     continue  # item excluded from this package tier
                 line = _line_sell_total(item, tier, r, mode)
                 desc = t.get('description', '')
-            sub  += line
-            if not item.get('customer_visible', True):
-                hidden_count += 1
+            priced.append((item, qty, line, desc))
+
+        sub = sum(line for _i, _q, line, _d in priced)
+        sections = [s for s in (td.get('sections') or []) if s]
+        known = set(sections)
+
+        def _sec_of(item):
+            s = (item.get('section') or '').strip()
+            return s if s in known else ''
+        groups = [('', [e for e in priced if _sec_of(e[0]) == ''])]
+        groups += [(name, [e for e in priced if _sec_of(e[0]) == name]) for name in sections]
+
+        rows = []
+        hidden_count = 0
+        for gname, entries in groups:
+            if not entries:
                 continue
-            lp_cells = ''
-            if show_lp:
-                unit_sell = (line / qty) if qty else 0.0
-                lp_cells = f'<td class="cvr">{fc(unit_sell)}</td><td class="cvr">{fc(line)}</td>'
-            rows.append(f'''<tr>
+            grows = []
+            for item, qty, line, desc in entries:
+                if not item.get('customer_visible', True):
+                    hidden_count += 1
+                    continue
+                lp_cells = ''
+                if show_lp:
+                    unit_sell = (line / qty) if qty else 0.0
+                    lp_cells = f'<td class="cvr">{fc(unit_sell)}</td><td class="cvr">{fc(line)}</td>'
+                grows.append(f'''<tr>
               <td class="cvn">{he(item.get("name",""))}
                 {'<div class="cvd">'+he(desc)+'</div>' if desc else ''}</td>
               <td class="cvc">{qty:g}</td>
               <td class="cvc">{he(item.get("unit",""))}</td>{lp_cells}</tr>''')
+            if sections:
+                rows.append(f'<tr class="cv-section-row"><td colspan="{ncols}">{he(gname or "General")}</td></tr>')
+            rows.extend(grows)
+            if sections:
+                # Section subtotal includes customer-hidden items so the
+                # section subtotals always sum to the trade subtotal.
+                sec_tot = sum(line for _i, _q, line, _d in entries)
+                rows.append(f'<tr class="cv-section-sub"><td colspan="{ncols - 1}">{he(gname or "General")} Subtotal</td>'
+                            f'<td class="cvr">{fc(sec_tot)}</td></tr>')
         if hidden_count:
             rows.append(f'<tr><td colspan="{ncols}" class="cvhidden-note">Additional materials &amp; supplies included in total</td></tr>')
         if not rows:
@@ -1895,6 +1931,11 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cvftr-c{font-size:12px}
 .cvftr-sub{font-size:10px;margin-top:8px;opacity:.7}
 .cvhidden-note{font-size:10px;color:#9ca3af;font-style:italic;padding:5px 10px;text-align:left}
+.cv-section-row td{background:#eef4fb!important;color:#1a3a5c;font-weight:800;font-size:10px;
+  text-transform:uppercase;letter-spacing:.5px;padding:6px 10px!important}
+.cv-section-sub td{background:#f8fafc;font-weight:700;font-size:11px;color:#1a3a5c;
+  border-bottom:1px solid #e5e7eb;padding:6px 10px}
+.cv-section-sub td:first-child{text-align:right}
 .cvtrust-body p{font-size:13px;line-height:1.6;color:#374151;margin-bottom:8px}
 .cvtrust-body p:last-child{margin-bottom:0}
 .cvtrust-certs{list-style:none;margin:0;padding:0}
@@ -3562,7 +3603,7 @@ def build_signed_pdf(est):
                 if not it.get('customer_visible', True):
                     hidden += 1
                     continue
-                name = it.get('name', '')
+                name = _with_section(it, it.get('name', ''))
                 if desc:
                     name = f'{name} - {desc}'
                 pdf.cell(92, 6, trunc(name, 62), border=1)
@@ -3851,7 +3892,7 @@ def build_production_packet_pdf(est):
             table_header([('Work Item', 138, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
             pdf.set_font('Helvetica', '', 8)
             for it, qty, t in rows:
-                name = it.get('name', '')
+                name = _with_section(it, it.get('name', ''))
                 desc = (t.get('description') or it.get('description') or '').strip()
                 if desc:
                     name = f'{name} - {desc}'
@@ -3923,7 +3964,7 @@ def build_production_packet_pdf(est):
                 continue
             trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
             for it, qty, t in _tier_items(td, trade_mode):
-                name = it.get('name', '')
+                name = _with_section(it, it.get('name', ''))
                 desc = (t.get('description') or it.get('description') or '').strip()
                 unit = it.get('unit', '')
                 trade_lbl = labels.get(tk, tk.title())

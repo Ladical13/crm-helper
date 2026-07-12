@@ -31,6 +31,89 @@ function toggleTierEnabled(t) {
   if (activePage === 'pricing') renderTradeContent();
   if (activePage === 'options') renderOptionsPage();
 }
+
+/* ── Estimate sections (structures / roof areas) ──────────────────────
+   A trade's items can be grouped under named sections ("Main House",
+   "Detached Garage", "South Slope") like insurance-mode sections. The data
+   stays a flat line_items array — items just carry a `section` name and the
+   trade keeps an ordered `sections` list — so every bit of pricing math
+   (client and server) is untouched. Display groups: General (unnamed)
+   first, then each section in order. */
+function tradeSections(trade) {
+  return (S.trades[trade].sections || []).filter(Boolean);
+}
+function itemSection(item) {
+  return (item.section || '').trim();
+}
+function groupedTradeItems(trade, items) {
+  const sections = tradeSections(trade);
+  const known = new Set(sections);
+  const groups = [{ name: '', items: items.filter(i => !known.has(itemSection(i))) }];
+  sections.forEach(name => groups.push({ name, items: items.filter(i => itemSection(i) === name) }));
+  return groups;
+}
+function addTradeSection(trade) {
+  const name = (prompt('Section name (e.g. Main House, Detached Garage, South Slope):') || '').trim();
+  if (!name) return;
+  const td = S.trades[trade];
+  td.sections = td.sections || [];
+  if (td.sections.includes(name)) { alert('That section already exists.'); return; }
+  td.sections.push(name);
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function renameTradeSection(trade, idx) {
+  const td = S.trades[trade];
+  const old = (td.sections || [])[idx];
+  if (old === undefined) return;
+  const name = (prompt('Rename section:', old) || '').trim();
+  if (!name || name === old) return;
+  if (td.sections.includes(name)) { alert('That section already exists.'); return; }
+  td.sections[idx] = name;
+  (td.line_items || []).forEach(i => { if (itemSection(i) === old) i.section = name; });
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function deleteTradeSection(trade, idx) {
+  const td = S.trades[trade];
+  const name = (td.sections || [])[idx];
+  if (name === undefined) return;
+  if (!confirm(`Remove the "${name}" section? Its items stay on the estimate under General.`)) return;
+  td.sections.splice(idx, 1);
+  (td.line_items || []).forEach(i => { if (itemSection(i) === name) delete i.section; });
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function liSetSection(trade, id, name) {
+  const item = findItem(trade, id);
+  if (!item) return;
+  if (name) item.section = name; else delete item.section;
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function liCanMove(trade, item, dir) {
+  const items = S.trades[trade].line_items;
+  const i = items.indexOf(item);
+  if (i < 0) return false;
+  const known = new Set(tradeSections(trade));
+  const groupOf = it => known.has(itemSection(it)) ? itemSection(it) : '';
+  let j = i + dir;
+  while (j >= 0 && j < items.length && groupOf(items[j]) !== groupOf(items[i])) j += dir;
+  return j >= 0 && j < items.length;
+}
+/* Section chips + add button, shown above GBB grids and simple tables. */
+function sectionManagerBar(trade) {
+  const sections = tradeSections(trade);
+  return `<div class="est-sections-bar">
+    <span class="est-sections-lbl" title="Group items by structure or roof area — sections show as headers with their own subtotals on the estimate">Sections:</span>
+    ${sections.map((name, i) => `<span class="est-section-chip">
+      ${esc(name)}
+      <button class="est-section-edit" onclick="renameTradeSection('${trade}',${i})" title="Rename section">✏</button>
+      <button class="est-section-del" onclick="deleteTradeSection('${trade}',${i})" title="Remove section (items stay)">×</button>
+    </span>`).join('')}
+    <button class="est-section-add" onclick="addTradeSection('${trade}')">+ Add Section</button>
+  </div>`;
+}
 const TEAM = ['avery','bryan','derik','luke','phil'];
 const TRADE_COLOR_FIELDS = {
   roofing: [{key:'shingle_color',label:'Shingle Color'},{key:'manufacturer',label:'Manufacturer'},{key:'product_line',label:'Product Line'},
@@ -1867,7 +1950,12 @@ function renderScopePage() {
     const items = (td && td.line_items) || [];
     if (items.length) {
       allItems.push({ type:'group', trade });
-      items.forEach(item => allItems.push({ type:'item', trade, item }));
+      const hasSections = tradeSections(trade).length > 0;
+      groupedTradeItems(trade, items).forEach(g => {
+        if (!g.items.length && !g.name) return;
+        if (hasSections) allItems.push({ type:'section', trade, name: g.name || 'General' });
+        g.items.forEach(item => allItems.push({ type:'item', trade, item }));
+      });
     }
   });
 
@@ -1993,17 +2081,18 @@ function renderScopePage() {
                   </td>
                 </tr>`;
               }
+              if (row.type === 'section') {
+                return `<tr class="scope-section-row"><td colspan="7">${esc(row.name)}</td></tr>`;
+              }
               const { trade, item } = row;
               item._trade = trade;
               const isAuto = !!MEASURE_DEFS[item.measure] || !!item.formula;
-              // Move arrows operate within the item's own trade list — the
-              // table interleaves trades, so per-row index would be wrong.
-              const tItems = S.trades[trade].line_items;
-              const tIdx   = tItems.indexOf(item);
+              // Move arrows operate within the item's own section of its own
+              // trade — the table interleaves trades and sections.
               return `<tr>
                 <td class="li-move-cell">
-                  <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${tIdx===0?'disabled':''} title="Move up">↑</button>
-                  <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${tIdx===tItems.length-1?'disabled':''} title="Move down">↓</button>
+                  <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liCanMove(trade,item,-1)?'':'disabled'} title="Move up">↑</button>
+                  <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${liCanMove(trade,item,1)?'':'disabled'} title="Move down">↓</button>
                 </td>
                 <td class="scope-name-cell">${esc(item.name)}</td>
                 <td class="scope-measure-cell">${measureOptions(item)}</td>
@@ -2344,16 +2433,23 @@ function renderSimpleFreeform(trade) {
   const items = td.line_items || [];
   const UNITS = ['SQ','LF','EA','HR','LS','SF','BD'];
 
-  const rows = items.map((item, idx) => {
+  const sections = tradeSections(trade);
+  const rowFor = item => {
     const qty   = parseFloat(item.quantity)   || 0;
     const cost  = parseFloat(item.unit_cost)  || 0;
     const price = parseFloat(item.unit_price) || 0;
     const total = qty * price;
     const descLines = (item.description||'').split('\n').length;
+    const sectionSel = sections.length ? `
+      <select class="li-section-select" title="Which section this item belongs to"
+        onchange="liSetSection('${trade}','${item.id}',this.value)">
+        <option value="">General</option>
+        ${sections.map(s=>`<option value="${esc(s)}" ${itemSection(item)===s?'selected':''}>${esc(s)}</option>`).join('')}
+      </select>` : '';
     return `<tr>
       <td class="li-move-cell">
-        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${idx===0?'disabled':''} title="Move up">↑</button>
-        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${idx===items.length-1?'disabled':''} title="Move down">↓</button>
+        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liCanMove(trade,item,-1)?'':'disabled'} title="Move up">↑</button>
+        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${liCanMove(trade,item,1)?'':'disabled'} title="Move down">↓</button>
       </td>
       <td class="ins-name-cell">
         <input class="other-name-input" type="text" value="${esc(item.name||'')}" list="pb-list-${trade}"
@@ -2363,6 +2459,7 @@ function renderSimpleFreeform(trade) {
           placeholder="Description (optional — prints on PDF, Enter for new line)"
           oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px';simpleSetField('${trade}','${item.id}','description',this.value)"
           >${esc(item.description||'')}</textarea>
+        ${sectionSel}
       </td>
       <td class="other-qty-cell">
         <input class="other-qty-input" type="number" inputmode="decimal" min="0" step="0.5" value="${qty||''}"
@@ -2395,12 +2492,20 @@ function renderSimpleFreeform(trade) {
       <td class="other-total-cell simple-line-total" data-strade="${trade}" data-sid="${item.id}">${fmtCur(total)}</td>
       <td><button class="li-del" onclick="simpleDeleteItem('${trade}','${item.id}')" title="Remove">×</button></td>
     </tr>`;
+  };
+
+  const rows = groupedTradeItems(trade, items).map(g => {
+    if (!g.items.length) return g.name ? `<tr class="est-section-row"><td colspan="8">${esc(g.name)} <span class="est-section-empty">empty — assign items below</span></td></tr>` : '';
+    const hd = g.name ? `<tr class="est-section-row"><td colspan="8">${esc(g.name)}</td></tr>`
+             : (sections.length ? `<tr class="est-section-row est-section-general"><td colspan="8">General</td></tr>` : '');
+    return hd + g.items.map(rowFor).join('');
   }).join('');
 
   const grandTot = tradeTotal(trade, S.selected_tier);
 
   return `
     ${items.length ? `
+      ${sectionManagerBar(trade)}
       <div class="other-table-wrap">
         <table class="other-table ins-table">
           <thead><tr>
@@ -2453,6 +2558,7 @@ function setTradeMode(trade, mode) {
         id: it.id, name: it.name, unit: it.unit,
         quantity: qty,
         measure: it.measure || undefined,
+        section: it.section || undefined,
         scope_note: it.scope_note || '',
         description: t.description || it.description || '',
         unit_cost: Math.round(cost * 100) / 100,
@@ -2472,6 +2578,7 @@ function setTradeMode(trade, mode) {
         id: it.id, name: it.name, unit: it.unit,
         quantity: it.quantity || 0,
         measure: it.measure || undefined,
+        section: it.section || undefined,
         scope_note: it.scope_note || '',
         customer_visible: it.customer_visible !== false,
       };
@@ -2888,7 +2995,12 @@ function renderGBBGrid(trade) {
         ${hasOvr ? `<span class="tier-col-rate-ovr" title="This trade has a per-trade override (sidebar → advanced) — the package ${rateLbl.toLowerCase()} is ignored here">override ${ovr}%</span>` : ''}
       </div>
       <div class="tier-items">
-        ${visible.length ? visible.map(item => renderLiRow(trade,t,item)).join('')
+        ${visible.length ? groupedTradeItems(trade, visible).map(g => {
+            if (!g.items.length) return g.name ? `<div class="tier-section-hd">${esc(g.name)}<span class="tier-section-empty">empty</span></div>` : '';
+            const hd = g.name ? `<div class="tier-section-hd">${esc(g.name)}</div>`
+                     : (tradeSections(trade).length ? `<div class="tier-section-hd tier-section-general">General</div>` : '');
+            return hd + g.items.map(item => renderLiRow(trade,t,item)).join('');
+          }).join('')
           : '<div class="empty-items">Load Defaults or add an item below</div>'}
       </div>
       ${(excluded.length || zeroQty.length) ? `
@@ -2918,6 +3030,7 @@ function renderGBBGrid(trade) {
         ${TIER_LABELS[t]}
       </label>`).join('')}
     </div>
+    ${sectionManagerBar(trade)}
     <div class="gbb-grid" style="grid-template-columns:repeat(${shown.length},1fr)">${grid}</div>
     <div class="gbb-swipe-hint">← swipe to see all packages →</div>
     ${pbDatalist(trade)}
@@ -2946,8 +3059,13 @@ function renderLiRow(trade, tier, item) {
   const tot  = override !== null ? override : calcTot;
   const isVisible = item.customer_visible !== false;
 
-  const liItems = S.trades[trade].line_items;
-  const liIdx   = liItems.indexOf(item);
+  const sections = tradeSections(trade);
+  const sectionSel = (isB && sections.length) ? `
+    <select class="li-section-select" title="Which section this item belongs to"
+      onchange="liSetSection('${trade}','${item.id}',this.value)">
+      <option value="">General</option>
+      ${sections.map(s=>`<option value="${esc(s)}" ${itemSection(item)===s?'selected':''}>${esc(s)}</option>`).join('')}
+    </select>` : '';
 
   return `<div class="li-row-card${!included?' li-row-excluded':''}${!isVisible?' li-row-hidden':''}">
     <div class="li-row-top">
@@ -2957,8 +3075,8 @@ function renderLiRow(trade, tier, item) {
              onchange="liSetNameSmart('${trade}','${item.id}',this.value)">`
         : `<span class="li-row-name-static">${esc(item.name)}</span>`}
       <div class="li-row-actions">
-        ${isB ? `<button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liIdx<=0?'disabled':''} title="Move up">↑</button>
-        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${liIdx===liItems.length-1?'disabled':''} title="Move down">↓</button>
+        ${isB ? `<button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liCanMove(trade,item,-1)?'':'disabled'} title="Move up">↑</button>
+        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${liCanMove(trade,item,1)?'':'disabled'} title="Move down">↓</button>
         <label class="li-vis-toggle${!isVisible?' vis-off':''}" title="${isVisible?'Shown on customer estimate':'Hidden from customer'}">
           <input type="checkbox" ${isVisible?'checked':''} onchange="liSetVisible('${trade}','${item.id}',this.checked)">
           ${isVisible?'👁':'🚫'}
@@ -2966,6 +3084,7 @@ function renderLiRow(trade, tier, item) {
         <button class="li-row-del" onclick="liDelete('${trade}','${item.id}')" title="Remove item">×</button>
       </div>
     </div>
+    ${sectionSel}
     <div class="li-row-desc-row">
       <input class="li-row-desc-input" type="text" value="${esc(t.description||'')}"
         placeholder="${tier==='good'?'e.g. 3-Tab':tier==='better'?'e.g. Architectural':'e.g. Designer'}"
@@ -3845,12 +3964,18 @@ function liDelete(trade, id) {
   if(activePage==='scope'){renderScopePage();}
 }
 // Reorder a line item within its trade — the order flows to the customer
-// view, the printed estimate, and the production packet as-is.
+// view, the printed estimate, and the production packet as-is. Moves stay
+// inside the item's own section: the swap partner is the nearest item in
+// the same display group, skipping items of other sections in the array.
 function liMove(trade, id, dir) {
   const items = S.trades[trade].line_items;
   const i = items.findIndex(x => x.id === id);
-  const j = i + dir;
-  if (i < 0 || j < 0 || j >= items.length) return;
+  if (i < 0) return;
+  const known = new Set(tradeSections(trade));
+  const groupOf = it => known.has(itemSection(it)) ? itemSection(it) : '';
+  let j = i + dir;
+  while (j >= 0 && j < items.length && groupOf(items[j]) !== groupOf(items[i])) j += dir;
+  if (j < 0 || j >= items.length) return;
   [items[i], items[j]] = [items[j], items[i]];
   setDirty(); renderTotals();
   if (activePage === 'pricing') renderTradeContent();
@@ -5947,20 +6072,17 @@ function buildPrintContent() {
               if(tradeMode==='simple') return true;
               return (item.tiers?.[tier]?.included)!==false;
             });
-            const visibleItems=inTier.filter(item=>item.customer_visible!==false);
-            const hiddenCount=inTier.length-visibleItems.length;
-            return visibleItems.map(item=>{
-              let sell, desc='', notes='';
-              if(tradeMode==='simple'){
-                sell=parseFloat(item.unit_price)||0;
-                desc=(item.description||'').trim();
-              } else {
-                const t=(item.tiers&&item.tiers[tier])||{};
-                const cost=(parseFloat(t.material_unit_cost)||0)+(parseFloat(t.labor_unit_cost)||0);
-                sell=S.pricing.mode==='margin'?(rate>=100?0:cost/(1-rate/100)):cost*(1+rate/100);
-                desc=(t.description||'').trim();
-                notes=(t.notes||'').trim();
-              }
+            const sellOf=item=>{
+              if(tradeMode==='simple') return parseFloat(item.unit_price)||0;
+              const t=(item.tiers&&item.tiers[tier])||{};
+              const cost=(parseFloat(t.material_unit_cost)||0)+(parseFloat(t.labor_unit_cost)||0);
+              return S.pricing.mode==='margin'?(rate>=100?0:cost/(1-rate/100)):cost*(1+rate/100);
+            };
+            const rowFor=item=>{
+              let desc='',notes='';
+              if(tradeMode==='simple'){ desc=(item.description||'').trim(); }
+              else { const t=(item.tiers&&item.tiers[tier])||{}; desc=(t.description||'').trim(); notes=(t.notes||'').trim(); }
+              const sell=sellOf(item);
               const tot=sell*(parseFloat(item.quantity)||0);
               return `<tr>
                 <td>${esc(item.name)}
@@ -5971,6 +6093,18 @@ function buildPrintContent() {
                 <td>${esc(displayUnit(item))}</td>
                 ${showLP?`<td class="p-right">${fmtCur(sell)}</td><td class="p-right">${fmtCur(tot)}</td>`:''}
               </tr>`;
+            };
+            const hasSections=tradeSections(trade).length>0;
+            const cols=showLP?5:3;
+            return groupedTradeItems(trade,inTier).map(g=>{
+              const rows=g.items.filter(i=>i.customer_visible!==false).map(rowFor).join('');
+              if(!g.items.length||( !rows && !hasSections)) return '';
+              const hd=hasSections?`<tr class="p-section-row"><td colspan="${cols}">${esc(g.name||'General')}</td></tr>`:'';
+              // Per-section subtotal (sections only) — includes customer-hidden
+              // items so section subtotals sum to the trade subtotal.
+              const secTot=g.items.reduce((s,i)=>s+sellOf(i)*(parseFloat(i.quantity)||0),0);
+              const sub=hasSections?`<tr class="p-section-sub"><td colspan="${cols-1}" class="p-right">${esc(g.name||'General')} Subtotal</td><td class="p-right">${fmtCur(secTot)}</td></tr>`:'';
+              return hd+rows+sub;
             }).join('');
           })()}
         </tbody><tfoot><tr>
