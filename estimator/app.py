@@ -5365,7 +5365,7 @@ def get_templates():
 
     # Fields to backfill from hardcoded templates when the price book item omits them
     RICH = ('desc_good', 'desc_better', 'desc_best',
-            'notes_good', 'notes_better', 'notes_best', 'measure')
+            'notes_good', 'notes_better', 'notes_best')
 
     for trade, items in TEMPLATES.items():
         hardcoded_by_name = {it.get('name', ''): it for it in items}
@@ -5384,11 +5384,18 @@ def get_templates():
                 for f in RICH:
                     if not m.get(f) and base.get(f):
                         m[f] = base[f]
+                # measure is deliberately NOT in RICH: an explicit '' means the
+                # user picked Manual in the price book, and that choice must
+                # stick. Only a fully ABSENT key ("never set") may inherit the
+                # template's measure or the pitch auto-link below.
+                if 'measure' not in m and base.get('measure'):
+                    m['measure'] = base['measure']
                 # Pitch-driven auto-link by name: an existing price book item
                 # like "Rolled Roofing" or "Steep Charge" picks up the RoofR
                 # pitch measurements with zero setup. Only fires when the item
-                # has no measure/formula of its own — an explicit choice wins.
-                if trade == 'roofing' and not m.get('measure') and not m.get('formula'):
+                # has never had a measure/formula set — an explicit choice
+                # (including explicit Manual '') wins.
+                if trade == 'roofing' and 'measure' not in m and not m.get('formula'):
                     n = (m.get('name') or '').lower()
                     if re.search(r'\broll(?:ed)?\b|low[\s-]?slope|mod(?:ified)?[\s-]?bit', n):
                         m['measure'] = 'low_slope_waste'

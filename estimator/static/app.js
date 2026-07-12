@@ -1326,7 +1326,7 @@ function pbRenderPresetEditor(p) {
 
 function pbPresetRow(pid, i, item, count) {
   const measSel = `
-    <select class="pb-measure-select" onchange="pbPresetSet('${pid}',${i},'measure',this.value||undefined)">
+    <select class="pb-measure-select" onchange="pbPresetSet('${pid}',${i},'measure',this.value)">
       <option value="">Manual</option>
       ${Object.entries(MEASURE_DEFS).map(([k,d])=>`<option value="${k}" ${item.measure===k?'selected':''}>${d.label}</option>`).join('')}
     </select>`;
@@ -1618,7 +1618,7 @@ function pbMeasureCell(item, i) {
     <input class="pb-formula-input" type="text" value="${esc(item.formula||'')}"
       placeholder="eave_lf + valley_lf"
       title="Variables: roof_squares, waste_pct, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1)"
-      oninput="pbItems['${pbActiveTrade}'][${i}].formula=this.value;pbItems['${pbActiveTrade}'][${i}].measure=undefined">` : '';
+      oninput="pbItems['${pbActiveTrade}'][${i}].formula=this.value;pbItems['${pbActiveTrade}'][${i}].measure=''">` : '';
   const bundleInput = `
     <div class="pb-bundle-wrap">
       <label class="pb-bundle-label">Coverage per unit (LF)</label>
@@ -1644,8 +1644,11 @@ function pbMeasureCell(item, i) {
 function pbSetMeasure(i, val) {
   const it = pbItems[pbActiveTrade][i];
   if (!it) return;
-  if (val === '__formula__') { it.formula = it.formula || ''; it.measure = undefined; }
-  else { it.measure = val || undefined; it.formula = undefined; }
+  // Manual is stored as an explicit '' (not undefined): an absent key means
+  // "never set" and lets the server backfill a measure from the templates —
+  // an explicit '' pins the item to Manual. See get_templates in app.py.
+  if (val === '__formula__') { it.formula = it.formula || ''; it.measure = ''; }
+  else { it.measure = val; it.formula = undefined; }
   renderPBModal();
 }
 
@@ -1672,7 +1675,7 @@ function pbImportFromEstimate() {
     const xt = item.tiers?.best   || {};
     return {
       name: item.name, unit: item.unit,
-      measure: item.measure || undefined,
+      measure: item.measure || '',  // '' = explicit Manual, blocks server backfill
       cost: (parseFloat(bt.material_unit_cost)||0) + (parseFloat(bt.labor_unit_cost)||0),
       cost_good:   parseFloat(gt.material_unit_cost)||0,
       cost_better: parseFloat(bt.material_unit_cost)||0,
@@ -2779,20 +2782,41 @@ function liSetNameSmart(trade, id, v) {
   item.name = v;
   const t = pbFind(trade, v);
   if (t) {
-    // Pulled from price book — fill unit, measurement link, costs & descriptions
+    // Pulled from price book — fill unit, measurement link, costs & descriptions.
+    // Field copy mirrors buildTradeDefaults so a single searched-in item prices
+    // identically to Load Defaults. Existing values are never clobbered.
     item.unit = t.unit || item.unit;
-    if (!item.measure && t.measure) item.measure = t.measure;
-    const cost = t.cost !== undefined ? parseFloat(t.cost) || 0 : 0;
+    if (!item.measure && !item.formula && t.measure) item.measure = t.measure;
+    if (!item.measure && !item.formula && t.formula) item.formula = t.formula;
+    if (item.bundle_lf === undefined && t.bundle_lf) {
+      item.bundle_lf   = t.bundle_lf;
+      item.bundle_unit = t.bundle_unit || undefined;
+    }
+    // Per-tier cost inherits UPWARD when unset: good→base, better→good, best→better.
+    const baseCost   = t.cost !== undefined ? parseFloat(t.cost)||0 : 0;
+    const costGood   = t.cost_good   !== undefined ? parseFloat(t.cost_good)||0   : baseCost;
+    const costBetter = t.cost_better !== undefined ? parseFloat(t.cost_better)||0 : costGood;
+    const costBest   = t.cost_best   !== undefined ? parseFloat(t.cost_best)||0   : costBetter;
+    const tierCost   = { good: costGood, better: costBetter, best: costBest };
     if (item.tiers) {
       ['good','better','best'].forEach(tier => {
         if (!item.tiers[tier]) item.tiers[tier] = {material_unit_cost:0, labor_unit_cost:0, description:'', notes:''};
         const tt = item.tiers[tier];
-        if (!parseFloat(tt.material_unit_cost) && !parseFloat(tt.labor_unit_cost)) tt.material_unit_cost = cost;
-        if (!tt.description) tt.description = t['desc_'+tier] || '';
+        if (!parseFloat(tt.material_unit_cost) && !parseFloat(tt.labor_unit_cost)) tt.material_unit_cost = tierCost[tier];
+        if (!tt.description) tt.description = t['product_'+tier] || t['desc_'+tier] || '';
         if (!tt.notes)       tt.notes       = t['notes_'+tier] || '';
       });
-    } else if (item.description === '' && t.desc_better) {
-      item.description = t.desc_better;
+    } else {
+      // Simple mode: pull the Good-tier cost and compute the sell price from
+      // the trade's margin/markup (was: description only, leaving the row $0).
+      if (!parseFloat(item.unit_cost) && !parseFloat(item.unit_price)) {
+        const r = tradeRate(trade);
+        item.unit_cost  = costGood;
+        item.unit_price = S.pricing.mode === 'markup'
+          ? Math.round(costGood * (1 + r / 100) * 100) / 100
+          : (r >= 100 ? 0 : Math.round(costGood / (1 - r / 100) * 100) / 100);
+      }
+      if (!item.description) item.description = t.product_good || t.desc_good || t.desc_better || '';
     }
     const q = measuredQty(item);
     if (q !== null) item.quantity = q;
