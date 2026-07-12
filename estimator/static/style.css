@@ -668,6 +668,11 @@ input#cover-file-input { display: none; }
 }
 
 /* ── GBB grid ──────────────────────────────────────────────────────── */
+.gbb-pkg-toggles { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.gbb-pkg-toggles-lbl {
+  font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--text-light); margin-right: 2px;
+}
 .gbb-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-bottom: 8px; }
 .tier-column {
   border: 2px solid var(--border); border-radius: var(--radius);

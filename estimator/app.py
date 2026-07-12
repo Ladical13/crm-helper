@@ -1926,7 +1926,7 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cv-tier-check{font-size:11px;font-weight:700;color:#6b7280;border:1px solid #d1d5db;border-radius:20px;
   padding:3px 9px;display:inline-block;margin-top:2px;transition:all .15s}
 .cv-tier-selected .cv-tier-check{background:#6b7280;color:#fff}
-@media(max-width:600px){.cvgrid{grid-template-columns:1fr}.cvpkg-total{font-size:26px}.cv-tier-cards{grid-template-columns:1fr}.cvinput{font-size:16px}.cvinput:focus{font-size:16px}
+@media(max-width:600px){.cvgrid{grid-template-columns:1fr}.cvpkg-total{font-size:26px}.cv-tier-cards{grid-template-columns:1fr !important}.cvinput{font-size:16px}.cvinput:focus{font-size:16px}
 .cvhdr{padding:12px 14px}.cvhdr img{height:42px}.cvhdr-contact a{font-size:14px}
 .cvtrade{overflow-x:auto;-webkit-overflow-scrolling:touch}.cvt-ins{min-width:520px}
 .cvgrand-amt{font-size:19px}}
@@ -2704,7 +2704,6 @@ def build_customer_view(est, token):
     a    = c.get('address', {})
     cs   = ', '.join(filter(None, [a.get('city'), a.get('state')]))
     addr = ', '.join(filter(None, [a.get('street'), cs]))
-    default_tier = est.get('selected_tier', 'better')
     eid  = est.get('estimate_id', '')
     enum = 'EST-' + eid.split('-')[0].upper() if eid else 'DRAFT'
     notes  = (est.get('notes_customer') or '').strip()
@@ -2713,14 +2712,25 @@ def build_customer_view(est, token):
     tdesc  = est.get('tier_descriptions') or {}
     tfeat  = est.get('tier_features') or {}
 
+    # Packages the rep chose to offer on this estimate (absent key = enabled,
+    # so every pre-existing estimate shows all three). Mirrors tierEnabled in
+    # app.js. The customer only ever sees the enabled subset.
+    te = est.get('tiers_enabled') or {}
+    enabled_tiers = [t for t in ('good', 'better', 'best') if te.get(t, True) is not False]
+    if not enabled_tiers:
+        enabled_tiers = ['good', 'better', 'best']
+    default_tier = est.get('selected_tier', 'better')
+    if default_tier not in enabled_tiers:
+        default_tier = enabled_tiers[0]
+
     notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
     ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     sp_html    = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
 
-    # Pre-render line items for all 3 tiers
+    # Pre-render line items for each offered tier
     tier_data = {}
-    for t in ['good', 'better', 'best']:
+    for t in enabled_tiers:
         li_html, total = render_line_items(est, tier=t)
         tier_data[t] = {'html': li_html, 'total': total}
 
@@ -2728,9 +2738,9 @@ def build_customer_view(est, token):
     tier_bgs  = dict(good='#dbeafe', better='#dcfce7', best='#fef3c7')
     tier_lbls = dict(good='Good',    better='Better',  best='Best')
 
-    # Build the 3 package selection cards
+    # Build the package selection cards (offered tiers only)
     cards_html = ''
-    for t in ['good', 'better', 'best']:
+    for t in enabled_tiers:
         total  = tier_data[t]['total']
         desc   = (tdesc.get(t) or '').strip()
         clr    = tier_clrs[t]
@@ -2760,9 +2770,9 @@ def build_customer_view(est, token):
           <div class="cv-tier-check" id="cv-check-{t}">{'&#10003; Selected' if is_sel else 'Select'}</div>
         </div>'''
 
-    # Build hidden/visible line item blocks for each tier
+    # Build hidden/visible line item blocks for each offered tier
     tier_blocks_html = ''
-    for t in ['good', 'better', 'best']:
+    for t in enabled_tiers:
         vis = '' if t == default_tier else 'display:none'
         tier_blocks_html += f'<div id="tier-items-{t}" style="{vis}">{tier_data[t]["html"]}</div>\n'
 
@@ -2804,7 +2814,7 @@ def build_customer_view(est, token):
 
 <div class="cv-tier-section">
   <div class="cv-tier-heading">Step 1 &mdash; Choose Your Package</div>
-  <div class="cv-tier-cards" id="tier-cards">
+  <div class="cv-tier-cards" id="tier-cards" style="grid-template-columns:repeat({len(enabled_tiers)},1fr)">
     {cards_html}
   </div>
 </div>
@@ -2849,7 +2859,8 @@ def build_customer_view(est, token):
 </div>
 
 <script>
-var _tier_totals = {{"good":{tier_data['good']['total']:.2f},"better":{tier_data['better']['total']:.2f},"best":{tier_data['best']['total']:.2f}}};
+var _cv_tiers    = {json.dumps(enabled_tiers)};
+var _tier_totals = {{{','.join(f'"{t}":{tier_data[t]["total"]:.2f}' for t in enabled_tiers)}}};
 var _tier_lbls   = {{good:'Good',better:'Better',best:'Best'}};
 var _tier_clrs   = {{good:'#2563eb',better:'#16a34a',best:'#b45309'}};
 var _tier_bgs    = {{good:'#dbeafe',better:'#dcfce7',best:'#fef3c7'}};
@@ -2857,7 +2868,7 @@ var _cur_tier    = '{he(default_tier)}';
 function _fmt(n){{return'$'+Math.abs(n).toFixed(2).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,',');}}
 function selectCvTier(tier){{
   _cur_tier=tier;
-  ['good','better','best'].forEach(function(t){{
+  _cv_tiers.forEach(function(t){{
     var card=document.querySelector('[data-tier="'+t+'"]');
     var chk=document.getElementById('cv-check-'+t);
     if(t===tier){{

@@ -16,6 +16,21 @@ const TRADES = ['roofing','siding','windows','gutters','other','insurance'];
 const TRADE_LABELS = { roofing:'Roofing', siding:'Siding', windows:'Windows', gutters:'Gutters', other:'Other', insurance:'Insurance' };
 const TIERS = ['good','better','best'];
 const TIER_LABELS = { good:'Good', better:'Better', best:'Best' };
+// Per-estimate package toggles: sell just Good/Better, Better/Best, etc.
+// Absent key = enabled (backward compatible with every existing estimate).
+function tierEnabled(t) { return (S.tiers_enabled || {})[t] !== false; }
+function enabledTiers() { return TIERS.filter(tierEnabled); }
+function toggleTierEnabled(t) {
+  const cur = Object.assign({good:true, better:true, best:true}, S.tiers_enabled || {});
+  if (cur[t] && enabledTiers().length <= 1) { alert('At least one package must stay on.'); return; }
+  cur[t] = !cur[t];
+  S.tiers_enabled = cur;
+  if (!tierEnabled(S.selected_tier)) S.selected_tier = enabledTiers()[0];
+  setDirty();
+  renderTierButtons(); renderTotals();
+  if (activePage === 'pricing') renderTradeContent();
+  if (activePage === 'options') renderOptionsPage();
+}
 const TEAM = ['avery','bryan','derik','luke','phil'];
 const TRADE_COLOR_FIELDS = {
   roofing: [{key:'shingle_color',label:'Shingle Color'},{key:'manufacturer',label:'Manufacturer'},{key:'product_line',label:'Product Line'},
@@ -741,11 +756,17 @@ function setEstimateType(type) {
   if (activePage === 'contract') renderContractPage();
 }
 function renderTierButtons() {
-  document.querySelectorAll('.tier-btn').forEach(b =>
-    b.classList.toggle('active', b.dataset.tier === S.selected_tier));
+  document.querySelectorAll('.tier-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tier === S.selected_tier);
+    if (TIERS.includes(b.dataset.tier))
+      b.style.display = tierEnabled(b.dataset.tier) ? '' : 'none';
+  });
   TIERS.forEach(t => {
     const row = document.getElementById('tr-' + t);
-    if (row) row.classList.toggle('is-selected', t === S.selected_tier);
+    if (row) {
+      row.classList.toggle('is-selected', t === S.selected_tier);
+      row.style.display = tierEnabled(t) ? '' : 'none';
+    }
   });
 }
 function renderTradeOverrides() {
@@ -2052,7 +2073,7 @@ function renderOptionsPage() {
       ${_meCanViewAll() ? '<button class="btn-save-defaults" onclick="saveTierDefaults()">💾 Save as Global Defaults</button>' : ''}
     </div>
     <div class="pkg-cards">
-      ${TIERS.map(tier => {
+      ${enabledTiers().map(tier => {
         const total    = grandTotal(tier);
         const desc     = (S.tier_descriptions||{})[tier] || '';
         const isSel    = tier === S.selected_tier;
@@ -2847,7 +2868,8 @@ function renderGBBGrid(trade) {
   const rateLbl = S.pricing.mode === 'markup' ? 'Markup' : 'Margin';
   const ovr = (S.pricing.per_trade_overrides || {})[trade];
   const hasOvr = ovr !== null && ovr !== undefined;
-  const grid  = TIERS.map(t => {
+  const shown = enabledTiers();
+  const grid  = shown.map(t => {
     const inc      = item => item.tiers?.[t]?.included !== false;
     const visible  = items.filter(item => inc(item) && (qtyOf(item) > 0 || item._showZero));
     const excluded = items.filter(item => !inc(item));
@@ -2888,20 +2910,29 @@ function renderGBBGrid(trade) {
     </div>`;
   }).join('');
   return `
-    <div class="gbb-grid">${grid}</div>
+    <div class="gbb-pkg-toggles">
+      <span class="gbb-pkg-toggles-lbl">Packages offered:</span>
+      ${TIERS.map(t=>`<label class="scope-trade-toggle ${tierEnabled(t)?'enabled':''}"
+        title="${tierEnabled(t)?`Offering ${TIER_LABELS[t]} — click to sell without it`:`${TIER_LABELS[t]} is off — click to offer it`}">
+        <input type="checkbox" ${tierEnabled(t)?'checked':''} onchange="toggleTierEnabled('${t}')">
+        ${TIER_LABELS[t]}
+      </label>`).join('')}
+    </div>
+    <div class="gbb-grid" style="grid-template-columns:repeat(${shown.length},1fr)">${grid}</div>
     <div class="gbb-swipe-hint">← swipe to see all packages →</div>
     ${pbDatalist(trade)}
     <div class="subtotal-bar">
-      ${TIERS.map(t=>`<div class="tier-subtotal ${t===tier?'sel-'+t:''}">
+      ${shown.map(t=>`<div class="tier-subtotal ${t===tier?'sel-'+t:''}">
         ${TIER_LABELS[t]}<strong>${fmtCur(tradeTotal(trade,t))}</strong>
       </div>`).join('')}
     </div>`;
 }
 
 // Compact per-tier line item row — all three tiers are fully editable.
-// The master name/qty/unit (shared fields) are editable in the Better column;
-// Good and Best show them as static labels. Per-tier fields (description, cost,
-// include/exclude) are editable in every column.
+// The master name is editable in the Better column (Good/Best show it as a
+// static label); qty + unit are SHARED fields editable from ANY column —
+// changing one updates the item everywhere. Per-tier fields (description,
+// cost, include/exclude) are editable in every column.
 function renderLiRow(trade, tier, item) {
   const t        = (item.tiers && item.tiers[tier]) || {material_unit_cost:0,labor_unit_cost:0,description:'',notes:'',included:true};
   const included = t.included !== false;
@@ -2942,14 +2973,13 @@ function renderLiRow(trade, tier, item) {
         onchange="liSetTier('${trade}','${item.id}','${tier}','description',this.value)">
     </div>
     <div class="li-row-numbers">
-      ${isB
-        ? `<input class="li-row-qty-input" type="number" inputmode="decimal" min="0" step="0.5"
-             value="${item.quantity||''}" placeholder="Qty" title="Qty — shared across all tiers"
-             onchange="liSetQty('${trade}','${item.id}',this.value)">
-           <select class="li-row-unit-select" onchange="liSetUnit('${trade}','${item.id}',this.value)">
-             ${UNITS.map(u=>`<option ${item.unit===u?'selected':''}>${u}</option>`).join('')}
-           </select>`
-        : `<span class="li-row-qty-static">${item.quantity||0} ${displayUnit(item)}</span>`}
+      <input class="li-row-qty-input" type="number" inputmode="decimal" min="0" step="0.5"
+        value="${item.quantity||''}" placeholder="Qty" title="Qty — shared across all tiers; edit from any column"
+        onchange="liSetQty('${trade}','${item.id}',this.value)">
+      <select class="li-row-unit-select" title="Unit — shared across all tiers"
+        onchange="liSetUnit('${trade}','${item.id}',this.value)">
+        ${UNITS.map(u=>`<option ${item.unit===u?'selected':''}>${u}</option>`).join('')}
+      </select>
       <span class="li-row-sep">×</span>
       <div class="li-row-cost-wrap">
         <input class="li-row-cost-input" type="number" min="0" step="0.01"
@@ -3795,7 +3825,12 @@ function liSetQty(trade, id, v) {
   i.quantity=parseFloat(v)||0;
   setDirty(); rerender();
 }
-function liSetUnit(trade, id, v) { const i=findItem(trade,id); if(!i)return; i.unit=v; setDirty(); }
+function liSetUnit(trade, id, v) {
+  const i=findItem(trade,id); if(!i)return;
+  i.unit=v; setDirty();
+  // unit is shared and now shown in every tier column — refresh the siblings
+  if(activePage==='pricing')renderTradeContent();
+}
 function liSetTier(trade, id, tier, field, v) {
   const i=findItem(trade,id); if(!i)return;
   if(!i.tiers[tier]) i.tiers[tier]={material_unit_cost:0,labor_unit_cost:0,description:'',notes:''};
@@ -5866,11 +5901,11 @@ function buildPrintContent() {
     if (pv.options !== false && !isAllSimple) ph+=`<div class="p-pkg-comparison">
       <h2>Your Options</h2>
       <table class="p-pkg-table"><thead><tr>
-        ${TIERS.map(t=>`<th class="col-${t} ${t===tier?'selected-col':''}">
+        ${enabledTiers().map(t=>`<th class="col-${t} ${t===tier?'selected-col':''}">
           ${TIER_LABELS[t]} ${t===tier?'<br><span class="p-selected-tag">SELECTED</span>':''}
         </th>`).join('')}
       </tr></thead><tbody><tr>
-        ${TIERS.map(t=>{
+        ${enabledTiers().map(t=>{
           const tot=grandTotal(t);
           const desc=(S.tier_descriptions||{})[t]||'';
           return `<td>
