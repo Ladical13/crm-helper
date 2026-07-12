@@ -467,6 +467,26 @@ input#cover-file-input { display: none; }
 .scope-trade-toggle.enabled { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
 .scope-trade-toggle input { display: none; }
 
+/* Reorder arrows — shared by scope rows, pricing rows, and photo cards */
+.th-move { width: 30px; }
+.li-move-cell { white-space: nowrap; padding: 4px 2px !important; text-align: center; }
+.li-move-btn {
+  border: 1px solid var(--border); background: #fff; color: var(--text-light);
+  border-radius: 5px; width: 24px; height: 22px; font-size: 12px; line-height: 1;
+  cursor: pointer; padding: 0;
+}
+.li-move-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+.li-move-btn:disabled { opacity: .3; cursor: default; }
+.li-move-cell .li-move-btn + .li-move-btn { margin-left: 2px; }
+
+/* Photos page: take-photo action row */
+.photo-actions-row { margin: 10px 0 0; }
+.btn-take-photo {
+  border: 1px solid var(--border); background: #fff; color: var(--primary);
+  border-radius: 8px; padding: 10px 18px; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.btn-take-photo:hover { border-color: var(--primary); background: #eff6ff; }
+
 .scope-table-wrap { overflow-x: auto; }
 .scope-table {
   width: 100%; border-collapse: collapse;
@@ -2716,6 +2736,10 @@ body.is-home #nav-toggle       { display: none; }
   .li-row-qty-input::-webkit-inner-spin-button,
   .other-qty-input::-webkit-outer-spin-button,
   .other-qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+  /* Reorder arrows + take-photo: proper touch targets */
+  .li-move-btn { width: 34px; height: 40px; font-size: 15px; }
+  .btn-take-photo { min-height: 44px; width: 100%; font-size: 15px; }
 
   /* ── Touch target fixes: elements below 44px minimum ────────── */
   .li-row-del {

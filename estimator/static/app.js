@@ -1953,6 +1953,7 @@ function renderScopePage() {
         <table class="scope-table">
           <thead>
             <tr>
+              <th class="th-move"></th>
               <th>Item</th>
               <th class="th-auto">Auto Qty From</th>
               <th class="th-qty">Quantity</th>
@@ -1965,7 +1966,7 @@ function renderScopePage() {
             ${allItems.map(row => {
               if (row.type === 'group') {
                 return `<tr class="scope-trade-group">
-                  <td colspan="6">${TRADE_LABELS[row.trade]}
+                  <td colspan="7">${TRADE_LABELS[row.trade]}
                     <button class="scope-defaults-btn" style="margin-left:10px"
                       onclick="loadDefaults('${row.trade}')">Load Defaults</button>
                   </td>
@@ -1974,7 +1975,15 @@ function renderScopePage() {
               const { trade, item } = row;
               item._trade = trade;
               const isAuto = !!MEASURE_DEFS[item.measure] || !!item.formula;
+              // Move arrows operate within the item's own trade list — the
+              // table interleaves trades, so per-row index would be wrong.
+              const tItems = S.trades[trade].line_items;
+              const tIdx   = tItems.indexOf(item);
               return `<tr>
+                <td class="li-move-cell">
+                  <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${tIdx===0?'disabled':''} title="Move up">↑</button>
+                  <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${tIdx===tItems.length-1?'disabled':''} title="Move down">↓</button>
+                </td>
                 <td class="scope-name-cell">${esc(item.name)}</td>
                 <td class="scope-measure-cell">${measureOptions(item)}</td>
                 <td style="text-align:center">
@@ -2314,13 +2323,17 @@ function renderSimpleFreeform(trade) {
   const items = td.line_items || [];
   const UNITS = ['SQ','LF','EA','HR','LS','SF','BD'];
 
-  const rows = items.map(item => {
+  const rows = items.map((item, idx) => {
     const qty   = parseFloat(item.quantity)   || 0;
     const cost  = parseFloat(item.unit_cost)  || 0;
     const price = parseFloat(item.unit_price) || 0;
     const total = qty * price;
     const descLines = (item.description||'').split('\n').length;
     return `<tr>
+      <td class="li-move-cell">
+        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${idx===0?'disabled':''} title="Move up">↑</button>
+        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${idx===items.length-1?'disabled':''} title="Move down">↓</button>
+      </td>
       <td class="ins-name-cell">
         <input class="other-name-input" type="text" value="${esc(item.name||'')}" list="pb-list-${trade}"
           placeholder="Type to search price book…"
@@ -2370,6 +2383,7 @@ function renderSimpleFreeform(trade) {
       <div class="other-table-wrap">
         <table class="other-table ins-table">
           <thead><tr>
+            <th class="th-move"></th>
             <th class="ins-th-name">Item Name</th>
             <th class="other-th-num">Qty</th>
             <th class="other-th-num">Unit</th>
@@ -2901,6 +2915,9 @@ function renderLiRow(trade, tier, item) {
   const tot  = override !== null ? override : calcTot;
   const isVisible = item.customer_visible !== false;
 
+  const liItems = S.trades[trade].line_items;
+  const liIdx   = liItems.indexOf(item);
+
   return `<div class="li-row-card${!included?' li-row-excluded':''}${!isVisible?' li-row-hidden':''}">
     <div class="li-row-top">
       ${isB
@@ -2909,7 +2926,9 @@ function renderLiRow(trade, tier, item) {
              onchange="liSetNameSmart('${trade}','${item.id}',this.value)">`
         : `<span class="li-row-name-static">${esc(item.name)}</span>`}
       <div class="li-row-actions">
-        ${isB ? `<label class="li-vis-toggle${!isVisible?' vis-off':''}" title="${isVisible?'Shown on customer estimate':'Hidden from customer'}">
+        ${isB ? `<button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liIdx<=0?'disabled':''} title="Move up">↑</button>
+        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${liIdx===liItems.length-1?'disabled':''} title="Move down">↓</button>
+        <label class="li-vis-toggle${!isVisible?' vis-off':''}" title="${isVisible?'Shown on customer estimate':'Hidden from customer'}">
           <input type="checkbox" ${isVisible?'checked':''} onchange="liSetVisible('${trade}','${item.id}',this.checked)">
           ${isVisible?'👁':'🚫'}
         </label>` : ''}
@@ -3447,7 +3466,7 @@ function deleteInitial(id) {
 
 function renderPhotosPage() {
   const grid = document.getElementById('photo-grid'); if (!grid) return;
-  grid.innerHTML = S.photos.map(p => {
+  grid.innerHTML = S.photos.map((p, idx) => {
     const hasAnns = p.annotations && p.annotations.length > 0;
     return `
     <div class="photo-thumb photo-report-thumb ${p.id===S.cover_photo_id?'is-cover':''}">
@@ -3460,6 +3479,8 @@ function renderPhotosPage() {
         <input class="photo-caption" type="text" value="${esc(p.caption)}"
           placeholder="Caption / note…" onchange="photoCaption('${p.id}',this.value)">
         <div class="photo-report-btns">
+          <button class="li-move-btn" onclick="photoMove('${p.id}',-1)" ${idx===0?'disabled':''} title="Move earlier in the report">↑</button>
+          <button class="li-move-btn" onclick="photoMove('${p.id}',1)" ${idx===S.photos.length-1?'disabled':''} title="Move later in the report">↓</button>
           <button class="btn-annotate ${hasAnns?'has-anns':''}" onclick="openAnnotationModal('${p.id}')" title="Add/edit annotations">
             ✏ ${hasAnns ? 'Edit Annotations' : 'Annotate'}
           </button>
@@ -3792,6 +3813,18 @@ function liDelete(trade, id) {
   if(activePage==='pricing'){renderTradeContent();}
   if(activePage==='scope'){renderScopePage();}
 }
+// Reorder a line item within its trade — the order flows to the customer
+// view, the printed estimate, and the production packet as-is.
+function liMove(trade, id, dir) {
+  const items = S.trades[trade].line_items;
+  const i = items.findIndex(x => x.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= items.length) return;
+  [items[i], items[j]] = [items[j], items[i]];
+  setDirty(); renderTotals();
+  if (activePage === 'pricing') renderTradeContent();
+  if (activePage === 'scope') renderScopePage();
+}
 function liSetVisible(trade, id, val) {
   const item = findItem(trade, id);
   if (!item) return;
@@ -3998,6 +4031,9 @@ function bindSidebarEvents() {
   dz.addEventListener('dragleave', ()=>dz.classList.remove('drag-over'));
   dz.addEventListener('drop', e=>{e.preventDefault();dz.classList.remove('drag-over');uploadPhotos(e.dataTransfer.files);});
   pi.addEventListener('change', ()=>uploadPhotos(pi.files));
+  // In-app camera capture (mobile opens the camera directly)
+  const cam = document.getElementById('photo-camera-input');
+  if (cam) cam.addEventListener('change', async () => { await uploadPhotos(cam.files); cam.value=''; });
   // Cover-photo direct upload
   const ci = document.getElementById('cover-photo-input');
   if (ci) ci.addEventListener('change', () => { uploadAsCoverPhoto(ci.files); });
@@ -4228,6 +4264,15 @@ async function attDelete(id){
 }
 function photoCaption(id,v){ const p=S.photos.find(x=>x.id===id);if(p){p.caption=v;setDirty();} }
 function photoToggle(id,v){ const p=S.photos.find(x=>x.id===id);if(p){p.show_in_estimate=v;setDirty();warmPrintPhotos();} }
+// Reorder photos — array order drives the printed Photo Report, the cover
+// strip, and the customer view.
+function photoMove(id, dir) {
+  const i = S.photos.findIndex(p => p.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= S.photos.length) return;
+  [S.photos[i], S.photos[j]] = [S.photos[j], S.photos[i]];
+  setDirty(); renderPhotosPage(); renderCoverPage(); warmPrintPhotos();
+}
 async function photoDelete(id) {
   const p=S.photos.find(x=>x.id===id); if(!p)return;
   if(!confirm('Delete this photo?'))return;

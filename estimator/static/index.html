@@ -262,6 +262,10 @@
           <span>📷 Drag &amp; drop photos or a <strong>PDF</strong> here, or <u>click to browse</u></span>
           <input type="file" id="photo-input" accept="image/*,application/pdf,.pdf" multiple style="display:none">
         </div>
+        <div class="photo-actions-row">
+          <button class="btn-take-photo" onclick="document.getElementById('photo-camera-input').click()">📸 Take Photo</button>
+        </div>
+        <input type="file" id="photo-camera-input" accept="image/*" capture="environment" style="display:none">
         <div id="attachments-list" class="attachments-list"></div>
         <div id="photo-grid" class="photo-grid photo-grid-report"></div>
       </div>
