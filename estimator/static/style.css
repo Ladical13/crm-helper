@@ -2833,6 +2833,14 @@ body.is-home #nav-toggle       { display: none; }
 .pc-grade-letter { font-size: 20px; font-weight: 900; color: var(--gc); }
 .pc-grade-label  { font-size: 10px; font-weight: 600; color: var(--gc); }
 .pc-header { margin-bottom: 16px; padding: 14px; background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; }
+.pc-audience-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.pc-audience-lbl { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px; color: var(--text-light); }
+.pc-audience-btn {
+  padding: 7px 14px; border-radius: 20px; border: 1px solid var(--border);
+  background: #fff; font-size: 12px; font-weight: 700; color: var(--text-light); cursor: pointer;
+}
+.pc-audience-btn.active { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+.pc-photos-hint { font-size: 12px; color: var(--text-light); margin: 12px 2px 0; line-height: 1.5; }
 
 /* Property Condition Report — print styles */
 .p-cond-cover    { }

@@ -1,5 +1,5 @@
-const CACHE = 'po-v95';
-const SHELL = ['/', '/static/style.css?v=95', '/static/app.js?v=95', '/static/logo.png', '/static/icon-192.png'];
+const CACHE = 'po-v96';
+const SHELL = ['/', '/static/style.css?v=96', '/static/app.js?v=96', '/static/logo.png', '/static/icon-192.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL).catch(() => {})));

@@ -3026,6 +3026,7 @@ function pcGet() {
     S.property_condition = {
       property_name:'', inspection_date: S.roof_health?.inspection_date || fmtDate(new Date()),
       executive_notes:'', report_photo_ids: S.roof_health?.report_photo_ids || [],
+      audience:'homeowner',   // 'homeowner' (default) | 'hoa' — flips report wording
       sections: {}
     };
     PC_SECTIONS.forEach(s => S.property_condition.sections[s.key] = pcBlankSection(s.key));
@@ -3056,7 +3057,6 @@ function pcSetFinding(key,id,field,val){ const f=pcGetSec(key).findings.find(x=>
 function pcAddRec(key)     { pcGetSec(key).recommendations.push({id:uid(),priority:'monitor',description:'',cost_range:''}); setDirty(); renderConditionPage(); }
 function pcDelRec(key,id)      { const s=pcGetSec(key); s.recommendations=s.recommendations.filter(r=>r.id!==id); setDirty(); renderConditionPage(); }
 function pcSetRec(key,id,field,val){ const r=pcGetSec(key).recommendations.find(x=>x.id===id); if(r){r[field]=val;setDirty();} }
-function pcTogglePhoto(pid){ const pc=pcGet(); const idx=pc.report_photo_ids.indexOf(pid); if(idx>=0)pc.report_photo_ids.splice(idx,1); else pc.report_photo_ids.push(pid); setDirty(); renderConditionPage(); }
 
 function renderConditionPage() {
   const el = document.getElementById('roof-health-content');
@@ -3148,27 +3148,23 @@ function renderConditionPage() {
           onchange="pcSecSet('roof','pitch',this.value)"></div>
     </div>` : '';
 
-  // Photo picker
-  const photoPicker = S.photos.length ? `
-    <div class="rh-section">
-      <h3>Report Photos</h3>
-      <div class="rh-photo-grid">
-        ${S.photos.map(p=>{
-          const sel=pc.report_photo_ids.includes(p.id);
-          return `<div class="rh-photo-item ${sel?'selected':''}" onclick="pcTogglePhoto('${p.id}')">
-            <img src="/uploads/${p.filename}" alt="${esc(p.caption||'')}">
-            <div class="rh-photo-check">${sel?'✓':''}</div>
-            ${p.caption?`<div class="rh-photo-cap">${esc(p.caption)}</div>`:''}
-          </div>`;
-        }).join('')}
-      </div>
-    </div>` : '';
+  // Audience-aware editor wording (report photos live on the Photos page —
+  // the printed report no longer embeds its own photo grid)
+  const isHoa = pc.audience === 'hoa';
 
   el.innerHTML = `
     <div class="pc-header">
+      <div class="pc-audience-row">
+        <span class="pc-audience-lbl">Report for:</span>
+        <button class="pc-audience-btn ${!isHoa?'active':''}"
+          onclick="pcSet('audience','homeowner');renderConditionPage()">🏠 Homeowner</button>
+        <button class="pc-audience-btn ${isHoa?'active':''}"
+          onclick="pcSet('audience','hoa');renderConditionPage()">🏢 HOA / Commercial</button>
+      </div>
       <div class="rh-meta-grid">
-        <div class="field-group"><label>Property Name / HOA</label>
-          <input type="text" value="${esc(pc.property_name||'')}" placeholder="e.g. Ridgeline HOA — Building C"
+        <div class="field-group"><label>${isHoa?'Property Name / HOA':'Homeowner / Property'}</label>
+          <input type="text" value="${esc(pc.property_name||'')}"
+            placeholder="${isHoa?'e.g. Ridgeline HOA — Building C':'leave blank to use the customer name'}"
             onchange="pcSet('property_name',this.value)"></div>
         <div class="field-group"><label>Inspection Date</label>
           <input type="date" value="${pc.inspection_date||''}" onchange="pcSet('inspection_date',this.value)"></div>
@@ -3196,12 +3192,12 @@ function renderConditionPage() {
       ` : `<div class="rh-empty" style="margin:20px 0">${secMeta?.label||''} not included. Check the box above to add it to the report.</div>`}
     </div>
     <div class="rh-section">
-      <div class="field-group"><label>Executive Summary <span class="note-tag print">shown on report cover</span></label>
-        <textarea rows="3" placeholder="Overall property assessment for the board or property manager…"
+      <div class="field-group"><label>${isHoa?'Executive Summary':'Overall Assessment'} <span class="note-tag print">shown on report cover</span></label>
+        <textarea rows="3" placeholder="${isHoa?'Overall property assessment for the board or property manager…':'Overall assessment of the home, written for the homeowner…'}"
           onchange="pcSet('executive_notes',this.value)">${esc(pc.executive_notes||'')}</textarea>
       </div>
     </div>
-    ${photoPicker}`;
+    <p class="pc-photos-hint">📷 Report photos now come from the <strong>Photos</strong> page — everything marked "Print" appears in the Photo Report, right before this condition report.</p>`;
 }
 
 function rhGet()   { if (!S.roof_health) S.roof_health={condition:'',age_years:'',inspection_date:'',material_type:'',pitch:'',summary:'',findings:[],recommendations:[],report_photo_ids:[]}; return S.roof_health; }
@@ -5561,8 +5557,6 @@ function _printNeededIds() {
   const needed = new Set();
   if (S.cover_photo_id) needed.add(S.cover_photo_id);
   (S.photos || []).forEach(p => { if (p.show_in_estimate) needed.add(p.id); });
-  // Also warm health-report photos (tracked separately from show_in_estimate)
-  (S.roof_health?.report_photo_ids || []).forEach(id => needed.add(id));
   return needed;
 }
 
@@ -5759,6 +5753,9 @@ function buildPrintContent() {
         </figure>`).join('')}
       </div>
     </div>`;
+
+  // ── Condition report — right after the photos it refers to ──────
+  html += _printConditionHTML(pHeader);
 
   // ── Attached documents (uploaded PDFs) — every page printed in full ──
   (S.attachments || [])
@@ -6016,130 +6013,137 @@ function buildPrintContent() {
     html+=`<div class="p-contract">${pHeader}<h2>Terms &amp; Conditions</h2>
       <div class="p-contract-body">${esc(S.contract_text)}</div></div>`;
 
-  // ── Property Condition Report ────────────────────────────────────────
+  document.getElementById('print-content').innerHTML=html;
+}
+
+/* ── Condition report print pages ─────────────────────────────────────
+   Rendered right after the Photo Report (which now carries ALL photos —
+   the report itself stays photo-free). Wording flips between the default
+   homeowner voice and HOA/commercial via pc.audience. */
+function _printConditionHTML(pHeader){
   const pv2=S.page_visibility||{};
   const pc=S.property_condition||(S.roof_health?.condition?pcGet():null);
   const enabledSections=pc?PC_SECTIONS.filter(s=>pc.sections?.[s.key]?.enabled&&pc.sections[s.key].grade):[];
-  if(pv2.report!==false && enabledSections.length>0){
-    const cu=S.customer;
-    const cityState=[cu.address.city,cu.address.state].filter(Boolean).join(', ');
-    const addr=[cu.address.street,cityState].filter(Boolean).join(', ');
-    const propName=pc.property_name||(cu.name?`${cu.name} — Property Report`:addr)||'Property Condition Report';
+  if(pv2.report===false || !enabledSections.length) return '';
 
-    // Cost totals per priority
-    let costImmediate=0,costSoon=0,costMonitor=0;
-    enabledSections.forEach(s=>{
-      (pc.sections[s.key].recommendations||[]).forEach(r=>{
-        // Parse only the FIRST number of a range: "$500–$1,500" → 500
-        // (stripping all non-digits would read it as 5,001,500)
-        const loMatch=(r.cost_range||'').match(/[\d,]+(\.\d+)?/);
-        const lo=loMatch?parseFloat(loMatch[0].replace(/,/g,''))||0:0;
-        if(r.priority==='immediate') costImmediate+=lo;
-        else if(r.priority==='soon')  costSoon+=lo;
-        else                          costMonitor+=lo;
-      });
+  const isHoa=pc.audience==='hoa';
+  const W={  // audience wording
+    title:      isHoa?'Property Condition Report':'Home Condition Report',
+    inspector:  isHoa?'Inspector':'Inspected By',
+    investment: isHoa?'Estimated Repair Investment':'Estimated Repair Costs',
+    signer:     isHoa?'Property Manager / HOA Representative':'Homeowner',
+  };
+
+  const cu=S.customer;
+  const cityState=[cu.address.city,cu.address.state].filter(Boolean).join(', ');
+  const addr=[cu.address.street,cityState].filter(Boolean).join(', ');
+  const propName=pc.property_name||(cu.name?(isHoa?`${cu.name} — Property Report`:cu.name):addr)||W.title;
+
+  // Cost totals per priority
+  let costImmediate=0,costSoon=0,costMonitor=0;
+  enabledSections.forEach(s=>{
+    (pc.sections[s.key].recommendations||[]).forEach(r=>{
+      // Parse only the FIRST number of a range: "$500–$1,500" → 500
+      // (stripping all non-digits would read it as 5,001,500)
+      const loMatch=(r.cost_range||'').match(/[\d,]+(\.\d+)?/);
+      const lo=loMatch?parseFloat(loMatch[0].replace(/,/g,''))||0:0;
+      if(r.priority==='immediate') costImmediate+=lo;
+      else if(r.priority==='soon')  costSoon+=lo;
+      else                          costMonitor+=lo;
     });
+  });
 
-    // Executive Summary page
-    const gradeGrid=enabledSections.map(s=>{
-      const sec=pc.sections[s.key]; const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
-      return `<div class="p-cond-grade-cell">
-        <div class="p-cond-grade-lbl">${s.icon} ${s.label}</div>
-        <div class="p-cond-grade-letter" style="color:${g.color};background:${g.bg}">${sec.grade}</div>
-        <div class="p-cond-grade-desc" style="color:${g.color}">${g.label}</div>
-      </div>`;
-    }).join('');
-
-    const costTotal=costImmediate+costSoon+costMonitor;
-    const costRows=[[`Immediate repairs (D/F)`,costImmediate],[`Short-term (C grades)`,costSoon],[`Maintenance (B grades)`,costMonitor],[`Estimated Total`,costTotal]];
-
-    html+=`<div class="p-roof-health p-cond-cover">
-      ${pHeader}
-      <div class="p-cond-title">
-        <h2>Property Condition Report</h2>
-        <div class="p-cond-prop">${esc(propName)}</div>
-      </div>
-      <div class="p-rh-meta">
-        <div><label>Address</label><span>${esc(addr||'—')}</span></div>
-        <div><label>Contact</label><span>${esc(cu.name||'—')}</span></div>
-        <div><label>Inspection Date</label><span>${esc(pc.inspection_date||'—')}</span></div>
-        ${S.salesperson?`<div><label>Inspector</label><span>${esc(cap(S.salesperson))}</span></div>`:''}
-      </div>
-      <h3 class="p-rh-sh" style="margin-top:14pt">Condition Snapshot</h3>
-      <div class="p-cond-grade-grid">${gradeGrid}</div>
-      ${pc.executive_notes?`<div class="p-rh-summary" style="margin-top:12pt"><strong>Overall Assessment:</strong> ${esc(pc.executive_notes)}</div>`:''}
-      ${costTotal>0?`<h3 class="p-rh-sh" style="margin-top:14pt">Estimated Repair Investment</h3>
-        <table class="p-rh-table p-cond-cost-table">
-          ${costRows.filter(([,v])=>v>0).map(([l,v],i)=>`<tr${i===costRows.filter(([,v])=>v>0).length-1?' class="p-cond-total-row"':''}>
-            <td>${l}</td><td style="text-align:right;font-weight:${i===costRows.filter(([,v])=>v>0).length-1?800:400}">${fmtCur(v)}+</td>
-          </tr>`).join('')}
-        </table>`:''}
-      <div class="p-rh-footer">This Property Condition Report is a visual inspection summary prepared by Project One Roofing. Cost estimates are approximate ranges and do not constitute a formal bid. Contact us for a full assessment.</div>
+  // Summary page
+  const gradeGrid=enabledSections.map(s=>{
+    const sec=pc.sections[s.key]; const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
+    return `<div class="p-cond-grade-cell">
+      <div class="p-cond-grade-lbl">${s.icon} ${s.label}</div>
+      <div class="p-cond-grade-letter" style="color:${g.color};background:${g.bg}">${sec.grade}</div>
+      <div class="p-cond-grade-desc" style="color:${g.color}">${g.label}</div>
     </div>`;
+  }).join('');
 
-    // Per-section detail pages
-    const rhPhotosAll=(pc.report_photo_ids||[]).map(id=>S.photos.find(p=>p.id===id)).filter(Boolean);
-    enabledSections.forEach(s=>{
-      const sec=pc.sections[s.key];
-      const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
-      const findRows=(sec.findings||[]).filter(f=>f.description||f.area).map(f=>{
-        const sev=RH_SEVERITIES.find(sv=>sv.v===f.severity)||{l:f.severity||'',c:'#666'};
-        return `<tr><td style="font-weight:600">${esc(f.area||'—')}</td>
-          <td><span style="color:${sev.c};font-weight:700">${sev.l}</span></td>
-          <td>${esc(f.description||'')}</td></tr>`;
-      }).join('');
-      const recRows=(sec.recommendations||[]).filter(r=>r.description).map(r=>{
-        const pri=RH_PRIORITIES.find(p=>p.v===r.priority)||{l:r.priority||''};
-        return `<tr><td><strong>${pri.l}</strong></td><td>${esc(r.description||'')}</td>
-          <td style="white-space:nowrap">${esc(r.cost_range||'—')}</td></tr>`;
-      }).join('');
-      const secPhotos=rhPhotosAll.filter((_,i)=>i<4);  // first 4 shared photos
-      const photoGrid=secPhotos.length?`<div class="p-rh-photos">${secPhotos.map(p=>`
-        <figure class="p-rh-photo"><img src="${printPhotoSrc(p)}" alt="${esc(p.caption||'')}">
-          ${p.caption?`<figcaption>${esc(p.caption)}</figcaption>`:''}
-        </figure>`).join('')}</div>`:'';
-      // Roof-specific meta
-      const roofMeta=s.key==='roof'&&(sec.material_type||sec.age_years)?`
-        <div class="p-rh-meta" style="margin-bottom:10pt">
-          ${sec.material_type?`<div><label>Material</label><span>${esc(sec.material_type)}</span></div>`:''}
-          ${sec.age_years?`<div><label>Est. Age</label><span>${sec.age_years} years</span></div>`:''}
-          ${sec.pitch?`<div><label>Pitch</label><span>${esc(sec.pitch)}</span></div>`:''}
-        </div>`:'';
-      html+=`<div class="p-roof-health">
-        ${pHeader}
-        <div class="p-rh-titlebar">
-          <h2>${s.icon} ${s.label}</h2>
-          <div class="p-rh-badge" style="color:${g.color};background:${g.bg}">Grade ${sec.grade} — ${g.label}</div>
-        </div>
-        ${roofMeta}
-        ${sec.summary?`<div class="p-rh-summary">${esc(sec.summary)}</div>`:''}
-        ${photoGrid}
-        ${findRows?`<h3 class="p-rh-sh">Findings</h3>
-          <table class="p-rh-table"><thead><tr><th>Area</th><th>Severity</th><th>Description</th></tr></thead>
-          <tbody>${findRows}</tbody></table>`:''}
-        ${recRows?`<h3 class="p-rh-sh">Repair Options &amp; Recommendations</h3>
-          <table class="p-rh-table"><thead><tr><th>Priority</th><th>Recommendation</th><th>Est. Cost</th></tr></thead>
-          <tbody>${recRows}</tbody></table>`:''}
-      </div>`;
-    });
+  const costTotal=costImmediate+costSoon+costMonitor;
+  const costRows=[[`Immediate repairs (D/F)`,costImmediate],[`Short-term (C grades)`,costSoon],[`Maintenance (B grades)`,costMonitor],[`Estimated Total`,costTotal]];
 
-    // Signature page
+  let html=`<div class="p-roof-health p-cond-cover">
+    ${pHeader}
+    <div class="p-cond-title">
+      <h2>${W.title}</h2>
+      <div class="p-cond-prop">${esc(propName)}</div>
+    </div>
+    <div class="p-rh-meta">
+      <div><label>Address</label><span>${esc(addr||'—')}</span></div>
+      <div><label>Contact</label><span>${esc(cu.name||'—')}</span></div>
+      <div><label>Inspection Date</label><span>${esc(pc.inspection_date||'—')}</span></div>
+      ${S.salesperson?`<div><label>${W.inspector}</label><span>${esc(cap(S.salesperson))}</span></div>`:''}
+    </div>
+    <h3 class="p-rh-sh" style="margin-top:14pt">Condition Snapshot</h3>
+    <div class="p-cond-grade-grid">${gradeGrid}</div>
+    ${pc.executive_notes?`<div class="p-rh-summary" style="margin-top:12pt"><strong>Overall Assessment:</strong> ${esc(pc.executive_notes)}</div>`:''}
+    ${costTotal>0?`<h3 class="p-rh-sh" style="margin-top:14pt">${W.investment}</h3>
+      <table class="p-rh-table p-cond-cost-table">
+        ${costRows.filter(([,v])=>v>0).map(([l,v],i)=>`<tr${i===costRows.filter(([,v])=>v>0).length-1?' class="p-cond-total-row"':''}>
+          <td>${l}</td><td style="text-align:right;font-weight:${i===costRows.filter(([,v])=>v>0).length-1?800:400}">${fmtCur(v)}+</td>
+        </tr>`).join('')}
+      </table>`:''}
+    <div class="p-rh-footer">This ${W.title} is a visual inspection summary prepared by Project One Roofing. Cost estimates are approximate ranges and do not constitute a formal bid. Contact us for a full assessment.</div>
+  </div>`;
+
+  // Per-section detail pages (photos live in the Photo Report, not here)
+  enabledSections.forEach(s=>{
+    const sec=pc.sections[s.key];
+    const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
+    const findRows=(sec.findings||[]).filter(f=>f.description||f.area).map(f=>{
+      const sev=RH_SEVERITIES.find(sv=>sv.v===f.severity)||{l:f.severity||'',c:'#666'};
+      return `<tr><td style="font-weight:600">${esc(f.area||'—')}</td>
+        <td><span style="color:${sev.c};font-weight:700">${sev.l}</span></td>
+        <td>${esc(f.description||'')}</td></tr>`;
+    }).join('');
+    const recRows=(sec.recommendations||[]).filter(r=>r.description).map(r=>{
+      const pri=RH_PRIORITIES.find(p=>p.v===r.priority)||{l:r.priority||''};
+      return `<tr><td><strong>${pri.l}</strong></td><td>${esc(r.description||'')}</td>
+        <td style="white-space:nowrap">${esc(r.cost_range||'—')}</td></tr>`;
+    }).join('');
+    // Roof-specific meta
+    const roofMeta=s.key==='roof'&&(sec.material_type||sec.age_years)?`
+      <div class="p-rh-meta" style="margin-bottom:10pt">
+        ${sec.material_type?`<div><label>Material</label><span>${esc(sec.material_type)}</span></div>`:''}
+        ${sec.age_years?`<div><label>Est. Age</label><span>${sec.age_years} years</span></div>`:''}
+        ${sec.pitch?`<div><label>Pitch</label><span>${esc(sec.pitch)}</span></div>`:''}
+      </div>`:'';
     html+=`<div class="p-roof-health">
       ${pHeader}
-      <h2>Sign-off &amp; Acknowledgment</h2>
-      <div class="p-rh-summary">This report summarizes the visual inspection of the property listed above. It is prepared for informational purposes and to assist in prioritizing maintenance and repair decisions.</div>
-      <div class="p-rh-sig" style="margin-top:40pt">
-        <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Property Manager / HOA Representative</div></div>
-        <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Project One Roofing Inspector</div></div>
+      <div class="p-rh-titlebar">
+        <h2>${s.icon} ${s.label}</h2>
+        <div class="p-rh-badge" style="color:${g.color};background:${g.bg}">Grade ${sec.grade} — ${g.label}</div>
       </div>
-      <div class="p-rh-sig">
-        <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div>
-        <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div>
-      </div>
+      ${roofMeta}
+      ${sec.summary?`<div class="p-rh-summary">${esc(sec.summary)}</div>`:''}
+      ${findRows?`<h3 class="p-rh-sh">Findings</h3>
+        <table class="p-rh-table"><thead><tr><th>Area</th><th>Severity</th><th>Description</th></tr></thead>
+        <tbody>${findRows}</tbody></table>`:''}
+      ${recRows?`<h3 class="p-rh-sh">Repair Options &amp; Recommendations</h3>
+        <table class="p-rh-table"><thead><tr><th>Priority</th><th>Recommendation</th><th>Est. Cost</th></tr></thead>
+        <tbody>${recRows}</tbody></table>`:''}
     </div>`;
-  }
+  });
 
-  document.getElementById('print-content').innerHTML=html;
+  // Signature page
+  html+=`<div class="p-roof-health">
+    ${pHeader}
+    <h2>Sign-off &amp; Acknowledgment</h2>
+    <div class="p-rh-summary">This report summarizes the visual inspection of the property listed above. It is prepared for informational purposes and to assist in prioritizing maintenance and repair decisions.</div>
+    <div class="p-rh-sig" style="margin-top:40pt">
+      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">${W.signer}</div></div>
+      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Project One Roofing Inspector</div></div>
+    </div>
+    <div class="p-rh-sig">
+      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div>
+      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div>
+    </div>
+  </div>`;
+  return html;
 }
 
 /* ── Helpers ───────────────────────────────────────────────────────── */

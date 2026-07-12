@@ -2129,9 +2129,12 @@ def _pc_cost_lo(rec):
 
 
 def _cv_condition_block(est):
-    """Property Condition Report — same grades, findings, recommendations and
-    cost outlook the printed report shows. Gated by the Roof Health print chip
-    (page_visibility.report), same as the PDF."""
+    """Condition report — same grades, findings, recommendations and cost
+    outlook the printed report shows. Gated by the Roof Health print chip
+    (page_visibility.report), same as the PDF. Photos are NOT repeated here —
+    they already appear in the Photo Report block above. Wording follows
+    pc.audience ('homeowner' default | 'hoa'), mirroring _printConditionHTML
+    in app.js."""
     pv = est.get('page_visibility') or {}
     if pv.get('report') is False:
         return ''
@@ -2143,6 +2146,10 @@ def _cv_condition_block(est):
                if (sections.get(k) or {}).get('enabled') and (sections.get(k) or {}).get('grade')]
     if not enabled:
         return ''
+
+    is_hoa       = pc.get('audience') == 'hoa'
+    w_title      = 'Property Condition Report' if is_hoa else 'Home Condition Report'
+    w_investment = 'Estimated Repair Investment' if is_hoa else 'Estimated Repair Costs'
 
     # Condition snapshot grid
     cells = ''
@@ -2176,7 +2183,7 @@ def _cv_condition_block(est):
                                         ('Short-term (C grades)', cost_soon),
                                         ('Maintenance (B grades)', cost_mon)] if v > 0]
         trs = ''.join(f'<tr><td>{lbl}</td><td class="cvr">{fc(v)}+</td></tr>' for lbl, v in rows)
-        cost_html = f'''<div class="cvcond-sh">Estimated Repair Investment</div>
+        cost_html = f'''<div class="cvcond-sh">{w_investment}</div>
 <table class="cvcond-tbl">{trs}
 <tr class="cvcond-cost-total"><td>Estimated Total</td><td class="cvr">{fc(cost_total)}+</td></tr></table>'''
 
@@ -2227,25 +2234,18 @@ def _cv_condition_block(est):
   {meta_html}{summary_html}{find_html}{rec_html}
 </div>'''
 
-    # Report photos (annotated) — shown once at the end of the report
-    photos_by_id = {p.get('id'): p for p in (est.get('photos') or []) if p.get('filename')}
-    rh_photos = [photos_by_id[pid] for pid in (pc.get('report_photo_ids') or []) if pid in photos_by_id]
-    photos_html = (f'<div class="cvcond-sh">Inspection Photos</div><div class="cvph-grid">'
-                   + ''.join(_cv_photo_fig(p) for p in rh_photos) + '</div>') if rh_photos else ''
-
     insp_date = (pc.get('inspection_date') or '').strip()
     insp_html = f'<div class="cvcond-meta">Inspection Date: <strong>{he(insp_date)}</strong></div>' if insp_date else ''
 
     return f'''<div class="cvcond">
-  <h3>Property Condition Report</h3>
+  <h3>{w_title}</h3>
   {insp_html}
   <div class="cvcond-grid">{cells}</div>
   {exec_html}
   {cost_html}
   {sec_html}
-  {photos_html}
-  <div class="cvcond-foot">This Property Condition Report is a visual inspection summary prepared by Project One Roofing. Cost estimates are approximate ranges and do not constitute a formal bid. Contact us for a full assessment.</div>
-</div>{_CV_ANN_JS if rh_photos else ''}'''
+  <div class="cvcond-foot">This {w_title} is a visual inspection summary prepared by Project One Roofing. Cost estimates are approximate ranges and do not constitute a formal bid. Contact us for a full assessment.</div>
+</div>'''
 
 
 def _visible_initials(est):
