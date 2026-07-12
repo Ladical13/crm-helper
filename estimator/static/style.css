@@ -1500,6 +1500,19 @@ body.is-home #nav-toggle       { display: none; }
 .att-del { width: 26px; height: 26px; flex-shrink: 0; border: none; background: #fee2e2; color: #dc2626; border-radius: 5px; font-size: 16px; cursor: pointer; line-height: 1; }
 .att-del:hover { background: #fecaca; }
 
+/* Toast — transient status pill (bottom-center, above everything) */
+#app-toast {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(12px);
+  background: #1a3a5c; color: #fff; padding: 11px 20px; border-radius: 24px;
+  font-size: 13.5px; font-weight: 600; box-shadow: 0 6px 24px rgba(0,0,0,.28);
+  opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s;
+  z-index: 9999; max-width: 90vw;
+}
+#app-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+@media (display-mode: standalone) {
+  #app-toast { bottom: calc(28px + env(safe-area-inset-bottom, 0px)); }
+}
+
 /* Measurements panel (Scope page) */
 .measure-panel {
   background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 10px;

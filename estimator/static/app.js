@@ -5509,14 +5509,30 @@ function _loadImage(src) {
   });
 }
 
-/* Build data URLs for the cover photo + every "show in estimate" photo,
-   baking in any annotations. Safe to call repeatedly (keeps cache warm). */
-async function preparePrintPhotos() {
+/* Photo ids the print view needs baked into the cache. */
+function _printNeededIds() {
   const needed = new Set();
   if (S.cover_photo_id) needed.add(S.cover_photo_id);
   (S.photos || []).forEach(p => { if (p.show_in_estimate) needed.add(p.id); });
   // Also warm health-report photos (tracked separately from show_in_estimate)
   (S.roof_health?.report_photo_ids || []).forEach(id => needed.add(id));
+  return needed;
+}
+
+/* True when every photo the print view will reference is already baked —
+   the print path can then stay fully synchronous (iOS gesture-safe). */
+function _printCacheReady() {
+  const byId = new Set((S.photos || []).map(p => p.id));
+  for (const id of _printNeededIds()) {
+    if (byId.has(id) && !_printPhotoCache[id]) return false;
+  }
+  return true;
+}
+
+/* Build data URLs for the cover photo + every "show in estimate" photo,
+   baking in any annotations. Safe to call repeatedly (keeps cache warm). */
+async function preparePrintPhotos() {
+  const needed = _printNeededIds();
 
   for (const p of (S.photos || [])) {
     if (!needed.has(p.id)) continue;
@@ -5539,8 +5555,13 @@ async function preparePrintPhotos() {
   }
 }
 
-/* Warm the cache opportunistically (fire-and-forget) so direct Ctrl+P works too */
-function warmPrintPhotos() { preparePrintPhotos().catch(()=>{}); }
+/* Warm the cache opportunistically (fire-and-forget) so direct Ctrl+P works too.
+   The in-flight promise is kept so doPrint can await it on a cold cache. */
+let _printWarmPromise = null;
+function warmPrintPhotos() {
+  _printWarmPromise = preparePrintPhotos().catch(()=>{});
+  return _printWarmPromise;
+}
 
 /* Source for a photo in print: baked data URL if ready, else raw upload URL */
 function printPhotoSrc(photo) {
@@ -5557,15 +5578,52 @@ async function _waitForPrintImages() {
   ));
 }
 
-function doPrint() {
-  // Synchronous so mobile browsers (iOS Safari) don't lose the gesture context.
-  // warmPrintPhotos() is called proactively on every photo change + estimate load,
-  // so _printPhotoCache is already populated by the time the user clicks Print.
-  // Any uncached photos fall back to /uploads/ URLs (still accessible; no broken PDF).
-  buildPrintContent();
-  window.print();
+/* Tiny toast — the app's only transient notification surface. */
+let _toastTimer = null;
+function toast(msg, ms = 3000) {
+  const el = document.getElementById('app-toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  if (ms > 0) _toastTimer = setTimeout(hideToast, ms);
 }
-window.addEventListener('beforeprint', () => { buildPrintContent(); });
+function hideToast() {
+  const el = document.getElementById('app-toast');
+  if (el) el.classList.remove('show');
+}
+
+let _printDialogOpened = false;
+async function doPrint() {
+  // Warm cache → fully synchronous path: iOS Safari only honors window.print()
+  // inside the click's gesture context, and warmPrintPhotos() runs proactively
+  // on estimate load + every photo change, so this is the common case.
+  if (_printCacheReady()) {
+    buildPrintContent();
+    window.print();
+    return;
+  }
+  // Cold cache (fresh load, photo just added/annotated, slow device): bake the
+  // photos and wait for every print <img> to decode BEFORE opening the dialog.
+  // Previously this path fell back to raw /uploads/ URLs that hadn't loaded
+  // when the dialog opened, printing blank photos until a close-and-retry.
+  toast('Preparing photos…', 15000);
+  try {
+    await (_printWarmPromise || warmPrintPhotos());
+    if (!_printCacheReady()) await warmPrintPhotos(); // stale promise from an older photo set
+  } catch (e) { /* fall through — fallback URLs still render after the wait */ }
+  buildPrintContent();
+  await _waitForPrintImages();
+  hideToast();
+  _printDialogOpened = false;
+  try { window.print(); } catch (e) { /* handled by the check below */ }
+  // If the deferred print() was ignored (iOS gesture expired), tell the user —
+  // the cache is warm now, so their next tap takes the synchronous path.
+  setTimeout(() => {
+    if (!_printDialogOpened) toast('Photos ready — tap Print / PDF again');
+  }, 600);
+}
+window.addEventListener('beforeprint', () => { _printDialogOpened = true; buildPrintContent(); });
 window.addEventListener('afterprint',  ()=>{document.getElementById('print-content').innerHTML='';});
 
 function buildPrintContent() {
