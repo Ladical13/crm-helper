@@ -4185,7 +4185,8 @@ async function uploadPhotos(files) {
       if(isPdf){
         if(!Array.isArray(S.attachments)) S.attachments=[];
         S.attachments.push({id:uid(),filename:res.filename,original_name:file.name,
-          label:file.name.replace(/\.pdf$/i,''),show_in_estimate:true});
+          label:file.name.replace(/\.pdf$/i,''),show_in_estimate:true,
+          pages:res.pages||undefined});
         setDirty(); renderPhotos();
       }else{
         S.photos.push({id:uid(),filename:res.filename,original_name:file.name,caption:'',show_in_estimate:true});
@@ -5482,6 +5483,7 @@ async function doLoadEstimate(id) {
     });
     activeTrade='roofing'; closeModal(); setClean(); renderAll(); switchPage('client');
     warmPrintPhotos();
+    backfillPdfPages();
   }catch(e){alert('Could not load estimate: '+e.message);}
 }
 async function doDeleteEstimate(e,id) {
@@ -5522,11 +5524,30 @@ function _printNeededIds() {
 /* True when every photo the print view will reference is already baked —
    the print path can then stay fully synchronous (iOS gesture-safe). */
 function _printCacheReady() {
+  // PDF attachment pages print as plain <img> URLs (never baked into the
+  // cache) — take the waiting path whenever any will be included.
+  if ((S.attachments || []).some(a => a.show_in_estimate !== false && (a.pages || []).length))
+    return false;
   const byId = new Set((S.photos || []).map(p => p.id));
   for (const id of _printNeededIds()) {
     if (byId.has(id) && !_printPhotoCache[id]) return false;
   }
   return true;
+}
+
+/* Fill in `pages` for PDF attachments uploaded before page rendering existed.
+   Fire-and-forget on estimate load — the server rasterizes (cached) on demand. */
+async function backfillPdfPages() {
+  for (const a of (S.attachments || [])) {
+    if (a.pages || !a.filename || !/\.pdf$/i.test(a.filename) || !a.filename.includes('/')) continue;
+    try {
+      const [estId, fname] = a.filename.split('/');
+      const r = await fetch(`/api/pdf-pages/${estId}/${fname}`);
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d.pages && d.pages.length) { a.pages = d.pages; setDirty(); }
+    } catch (e) { /* stays a link */ }
+  }
 }
 
 /* Build data URLs for the cover photo + every "show in estimate" photo,
@@ -5693,6 +5714,19 @@ function buildPrintContent() {
         </figure>`).join('')}
       </div>
     </div>`;
+
+  // ── Attached documents (uploaded PDFs) — every page printed in full ──
+  (S.attachments || [])
+    .filter(a => a.show_in_estimate !== false && (a.pages || []).length)
+    .forEach(a => {
+      const label = (a.label || a.original_name || 'Document').trim();
+      html += `<div class="p-att-doc">
+        ${pHeader}
+        <h2 class="p-photos-title">${esc(label)}</h2>
+        ${a.pages.map((pg, i) =>
+          `<img class="p-att-page" src="/uploads/${esc(pg)}" alt="${esc(label)} — page ${i + 1}">`).join('')}
+      </div>`;
+    });
 
   // ── Inner pages (Pricing) — skipped when "Pricing" toggle is off ─
   // Build into a local variable; only append if pricing is enabled.
@@ -6538,6 +6572,7 @@ async function applyRoofrImport() {
           S.attachments.push({
             id: uid(), filename: ures.filename, original_name: file.name,
             label: 'RoofR Measurement Report', show_in_estimate: true,
+            pages: ures.pages || undefined,
           });
           setDirty();
         }
@@ -7008,7 +7043,8 @@ async function docUploadPdf(files) {
       const res = await r.json();
       if (!Array.isArray(S.attachments)) S.attachments = [];
       const att = {id: uid(), filename: res.filename, original_name: file.name,
-        label: file.name.replace(/\.pdf$/i,''), show_in_estimate: false};
+        label: file.name.replace(/\.pdf$/i,''), show_in_estimate: false,
+        pages: res.pages || undefined};
       S.attachments.push(att);
       setDirty();
       pushDocToCrm(att.id, {silent: true});   // auto-file in the CRM when job-linked
@@ -7332,7 +7368,8 @@ async function permitGenerate(btn) {
         if (!Array.isArray(S.attachments)) S.attachments = [];
         const att = {id: uid(), filename: ures.filename, original_name: fname,
           label: `Loveland Permit — ${P.date || _permitToday()}`,
-          doc_type: 'permit', show_in_estimate: false};
+          doc_type: 'permit', show_in_estimate: false,
+          pages: ures.pages || undefined};
         S.attachments.push(att);
         setDirty(); await saveEstimate();
         _docGenerator = null;          // collapse the form; show the filed doc

@@ -1217,6 +1217,12 @@ input#cover-file-input { display: none; }
   .p-photo-fig { break-inside: avoid; }
   .p-photo-fig img { width: 100%; border-radius: 4pt; border: .5pt solid #d1d5db; display: block; }
   .p-photo-fig figcaption { font-size: 9pt; color: #444; margin-top: 4pt; text-align: center; font-weight: 500; }
+  /* Attached PDF documents printed page-by-page */
+  .p-att-doc { page-break-before: always; }
+  .p-att-page {
+    width: 100%; display: block; border: .5pt solid #d1d5db; border-radius: 3pt;
+    margin-bottom: 10pt; page-break-inside: avoid; max-height: 9.2in; object-fit: contain;
+  }
 
   /* Per-clause initial lines — printed so a paper copy works for in-person signing */
   .p-initials { margin-top: 20pt; page-break-inside: avoid; }

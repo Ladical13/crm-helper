@@ -1007,6 +1007,56 @@ def update_estimate_status(est_id):
 
 # ── Photo uploads ──────────────────────────────────────────────────────────
 
+_PDF_PAGE_CAP = 20  # defensive limit on rasterized pages per attachment
+
+
+def _rasterize_pdf_pages(est_id, filename):
+    """Render every page of an uploaded PDF to <stem>_pN.jpg alongside it and
+    return the page filenames ('<est_id>/<stem>_pN.jpg', page order). Cached:
+    if the page images already exist on disk they are reused. Returns [] on
+    any failure (missing/corrupt/encrypted PDF, pymupdf unavailable) — the
+    callers fall back to a plain link."""
+    if not _safe_path_id(est_id) or not _safe_path_id(filename):
+        return []
+    pdf_path = os.path.join(UPLOADS_DIR, est_id, filename)
+    if not os.path.exists(pdf_path) or not filename.lower().endswith('.pdf'):
+        return []
+    stem = os.path.splitext(filename)[0]
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+
+    # Disk cache: reuse existing page images, sorted by integer page number
+    # (lexicographic would put _p10 before _p2).
+    existing = [fn for fn in os.listdir(dest_dir)
+                if re.fullmatch(re.escape(stem) + r'_p(\d+)\.jpg', fn)]
+    if existing:
+        existing.sort(key=lambda fn: int(re.search(r'_p(\d+)\.jpg$', fn).group(1)))
+        return [f"{est_id}/{fn}" for fn in existing]
+
+    try:
+        import fitz  # pymupdf — lazy so the app still boots without it
+    except ImportError:
+        return []
+    pages = []
+    try:
+        doc = fitz.open(pdf_path)
+        for i, page in enumerate(doc):
+            if i >= _PDF_PAGE_CAP:
+                break
+            try:
+                zoom = min(4, max(1, 1200 / max(page.rect.width, 1)))
+                pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+                page_name = f"{stem}_p{i + 1}.jpg"
+                pix.save(os.path.join(dest_dir, page_name), jpg_quality=85)
+                pages.append(f"{est_id}/{page_name}")
+            except Exception as exc:
+                print(f'[pdf-pages] page {i + 1} of {filename} failed: {exc}')
+        doc.close()
+    except Exception as exc:
+        print(f'[pdf-pages] could not rasterize {filename}: {exc}')
+        return []
+    return pages
+
+
 @app.route('/api/uploads/<est_id>', methods=['POST'])
 def upload_photo(est_id):
     if not _safe_path_id(est_id):
@@ -1026,7 +1076,25 @@ def upload_photo(est_id):
     os.makedirs(dest_dir, exist_ok=True)
     safe_name = str(uuid.uuid4()) + ext
     f.save(os.path.join(dest_dir, safe_name))
-    return jsonify({'filename': f"{est_id}/{safe_name}", 'url': f"/uploads/{est_id}/{safe_name}"}), 201
+    resp = {'filename': f"{est_id}/{safe_name}", 'url': f"/uploads/{est_id}/{safe_name}"}
+    if ext == '.pdf':
+        # Page images let attachments render as full documents in the
+        # customer view and the printed estimate instead of a bare link.
+        resp['pages'] = _rasterize_pdf_pages(est_id, safe_name)
+    return jsonify(resp), 201
+
+
+@app.route('/api/pdf-pages/<est_id>/<filename>')
+def pdf_pages(est_id, filename):
+    """Page images for an already-uploaded PDF — rasterizes (and caches) on
+    first request. Lets estimates with attachments from before page rendering
+    existed backfill their `pages` list."""
+    if not _safe_path_id(est_id) or not _safe_path_id(filename):
+        return jsonify({'error': 'invalid path'}), 400
+    est = est_load(est_id)
+    if est is not None and not _can_touch_estimate(est):
+        return _forbid()
+    return jsonify({'pages': _rasterize_pdf_pages(est_id, filename)})
 
 
 @app.route('/api/uploads/<est_id>/<filename>', methods=['DELETE'])
@@ -1039,6 +1107,17 @@ def delete_photo(est_id, filename):
     path = os.path.join(UPLOADS_DIR, est_id, filename)
     if os.path.exists(path):
         os.remove(path)
+    # A deleted PDF also takes its rasterized page images with it
+    if filename.lower().endswith('.pdf'):
+        stem = os.path.splitext(filename)[0]
+        dest_dir = os.path.join(UPLOADS_DIR, est_id)
+        if os.path.isdir(dest_dir):
+            for fn in os.listdir(dest_dir):
+                if re.fullmatch(re.escape(stem) + r'_p\d+\.jpg', fn):
+                    try:
+                        os.remove(os.path.join(dest_dir, fn))
+                    except OSError:
+                        pass
     return jsonify({'ok': True})
 
 
@@ -1796,6 +1875,9 @@ body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;co
 .cv-att{display:inline-flex;align-items:center;gap:8px;background:#f8fafc;border:1px solid #e2e8f0;
   border-radius:6px;padding:11px 14px;font-size:14px;font-weight:600;color:#1a3a5c;text-decoration:none}
 .cv-att:hover{background:#eef2f7;border-color:#94a3b8}
+.cv-att-doc{display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
+.cv-att-doc-title{font-size:13px;font-weight:700;color:#1a3a5c}
+.cv-att-page{width:100%;display:block;border:1px solid #e2e8f0;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
 .cvinit-tbl td:first-child{width:auto;text-transform:none;letter-spacing:0;font-size:12px;color:#374151;font-weight:500}
 .cvinit-val{font-weight:800!important;color:#1a3a5c!important;text-transform:uppercase;width:70px!important;text-align:right}
 .cert{margin:14px;background:#fff;border:2px solid #1a3a5c;border-radius:8px;padding:18px}
@@ -2214,17 +2296,32 @@ def _cv_initials_block(est):
 
 
 def _cv_attachments_block(est):
-    """Customer-visible PDF documents as view links."""
+    """Customer-visible PDF documents, rendered as full-page images so the
+    customer reads the whole document inline (with an open-original link).
+    Falls back to a plain link when rasterization isn't available."""
     atts = [a for a in (est.get('attachments') or [])
             if a.get('show_in_estimate', True) and a.get('filename')]
     if not atts:
         return ''
-    links = ''
+    blocks = ''
     for a in atts:
         label = (a.get('label') or a.get('original_name') or 'Document').strip()
-        links += (f'<a class="cv-att" href="/uploads/{he(a["filename"])}" '
-                  f'target="_blank" rel="noopener">&#128196; {he(label)}</a>')
-    return f'<div class="cvnotes"><h3>Documents &amp; Reports</h3><div class="cv-att-list">{links}</div></div>'
+        fname = a['filename']
+        pages = a.get('pages')
+        if not pages and '/' in fname and fname.lower().endswith('.pdf'):
+            # Attachment predates page rendering — rasterize (cached) on the fly
+            pages = _rasterize_pdf_pages(*fname.split('/', 1))
+        link = (f'<a class="cv-att" href="/uploads/{he(fname)}" '
+                f'target="_blank" rel="noopener">&#128196; {he(label)}'
+                f'{" — open original PDF" if pages else ""}</a>')
+        if pages:
+            imgs = ''.join(
+                f'<img class="cv-att-page" src="/uploads/{he(p)}" alt="{he(label)} — page {i + 1}" loading="lazy">'
+                for i, p in enumerate(pages))
+            blocks += f'<div class="cv-att-doc"><div class="cv-att-doc-title">&#128196; {he(label)}</div>{imgs}{link}</div>'
+        else:
+            blocks += link
+    return f'<div class="cvnotes"><h3>Documents &amp; Reports</h3><div class="cv-att-list">{blocks}</div></div>'
 
 
 def _load_company_content():
