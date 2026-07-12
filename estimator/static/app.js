@@ -6047,7 +6047,6 @@ function buildPrintContent() {
       const td=S.trades[trade];
       if(!td.enabled||!td.line_items.length)return;
       const tradeMode=td.mode||(trade==='gutters'?'simple':'gbb');
-      const rate=tradeRate(trade);
       const _shown=td.line_items.filter(item=>{
         if((parseFloat(item.quantity)||0)<=0) return false;
         if(tradeMode==='simple') return true;
@@ -6072,11 +6071,14 @@ function buildPrintContent() {
               if(tradeMode==='simple') return true;
               return (item.tiers?.[tier]?.included)!==false;
             });
+            // Unit sell via lineTotalEffective so the printed prices honor
+            // per-tier margins AND locked price overrides — the raw
+            // cost/(1-rate) formula here previously priced every tier at the
+            // GOOD tier's rate, disagreeing with the printed subtotal.
             const sellOf=item=>{
               if(tradeMode==='simple') return parseFloat(item.unit_price)||0;
-              const t=(item.tiers&&item.tiers[tier])||{};
-              const cost=(parseFloat(t.material_unit_cost)||0)+(parseFloat(t.labor_unit_cost)||0);
-              return S.pricing.mode==='margin'?(rate>=100?0:cost/(1-rate/100)):cost*(1+rate/100);
+              const q=parseFloat(item.quantity)||0;
+              return q>0 ? lineTotalEffective(item,tier,trade)/q : 0;
             };
             const rowFor=item=>{
               let desc='',notes='';

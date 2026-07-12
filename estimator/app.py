@@ -5193,6 +5193,13 @@ def customer_sign(token):
         if ss.get('enabled') and not (ss.get('chosen') or '').strip() and not shingle_color:
             return 'Please choose a shingle color before signing.', 400
 
+        # A stale sign page can submit a package the rep has since toggled
+        # off — make the customer refresh and choose from what's offered now.
+        if (selected_tier in ('good', 'better', 'best')
+                and (est.get('tiers_enabled') or {}).get(selected_tier, True) is False):
+            return ('That package is no longer offered on this estimate — '
+                    'please refresh the page and choose again.'), 409
+
         # Apply + sign atomically against the FRESH doc (a rep may have saved
         # since this page loaded; the hash must cover exactly what's stored).
         client_ip = request.remote_addr
@@ -5201,7 +5208,10 @@ def customer_sign(token):
         def _apply_signature(doc):
             if doc is None or doc.get('signature'):
                 return None  # deleted, or a concurrent sign won — keep theirs
-            if selected_tier in ('good', 'better', 'best'):
+            # A stale sign page could submit a package the rep has since
+            # toggled off (tiers_enabled) — never record a disabled tier.
+            if (selected_tier in ('good', 'better', 'best')
+                    and (doc.get('tiers_enabled') or {}).get(selected_tier, True) is not False):
                 doc['selected_tier'] = selected_tier
             # Chosen shingle color becomes part of the hashed document
             if shingle_color:
