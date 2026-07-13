@@ -782,7 +782,7 @@ def _estimate_total(est):
         # RCV (price) = ACV + Depreciation
         return sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
                    for sec in sections for i in sec.get('items', []))
-    return calc_tier_total(est, est.get('selected_tier', 'better'))
+    return calc_selected_total(est)
 
 
 @app.route('/api/estimates', methods=['GET'])
@@ -1383,6 +1383,9 @@ def fc(n):
 # signed PDF, list totals, emails, analytics) must price identically or the
 # customer sees different numbers than the rep quoted.
 
+GBB_TRADES = ['roofing', 'siding', 'windows', 'gutters', 'other']
+
+
 def _tier_rate(pricing, trade, tier):
     """Effective margin/markup %: per-trade override → tier rate → global rate."""
     ovr = pricing.get('per_trade_overrides') or {}
@@ -1425,33 +1428,103 @@ def _line_sell_total(item, tier, rate, mode):
     return _sell_price(cost, rate, mode) * qty
 
 
-def calc_tier_total(est, tier):
-    """Compute grand sell total for a given tier (excludes insurance)."""
+def _trade_subtotal(est, trade, tier):
+    """Sell subtotal for one trade at one tier (simple trades ignore the tier)."""
     pricing = est.get('pricing', {})
     mode    = pricing.get('mode', 'margin')
-    trades  = est.get('trades', {})
-    total   = 0.0
+    td      = (est.get('trades') or {}).get(trade, {})
+    if not td.get('enabled'):
+        return 0.0
+    trade_mode = td.get('mode', 'simple' if trade == 'gutters' else 'gbb')
+    r     = _tier_rate(pricing, trade, tier)
+    total = 0.0
+    for item in td.get('line_items', []):
+        # Zero-qty items are "not in scope" — never priced, even when a
+        # price_override is set (the customer view and signed PDF already
+        # hide them; the total must agree). MUST mirror tradeTotal (app.js).
+        if float(item.get('quantity') or 0) <= 0:
+            continue
+        if trade_mode == 'simple':
+            total += float(item.get('unit_price') or 0) * float(item.get('quantity') or 0)
+        else:
+            t = (item.get('tiers') or {}).get(tier, {})
+            if t.get('included') is False:
+                continue  # item excluded from this package tier
+            total += _line_sell_total(item, tier, r, mode)
+    return total
 
-    for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
-        td = trades.get(tk, {})
+
+def calc_tier_total(est, tier):
+    """Compute grand sell total for a given tier (excludes insurance)."""
+    return sum(_trade_subtotal(est, tk, tier) for tk in GBB_TRADES)
+
+
+def _trade_tier(est, trade):
+    """The tier chosen for one trade: signature's per-trade pick → estimate's
+    per-trade pick → trade dict's own selected_tier → legacy estimate-level
+    selected_tier. Legacy docs (no per-trade data) resolve exactly as before."""
+    sig = est.get('signature') or {}
+    for src in (sig.get('selected_tiers'), est.get('selected_tiers')):
+        t = (src or {}).get(trade)
+        if t in ('good', 'better', 'best'):
+            return t
+    td = (est.get('trades') or {}).get(trade) or {}
+    t = td.get('selected_tier')
+    if t in ('good', 'better', 'best'):
+        return t
+    t = sig.get('selected_tier') or est.get('selected_tier')
+    return t if t in ('good', 'better', 'best') else 'better'
+
+
+def calc_selected_total(est):
+    """Grand sell total honoring each trade's own selected tier (mix-and-match).
+    MUST mirror selectedTotal in app.js."""
+    return sum(_trade_subtotal(est, tk, _trade_tier(est, tk)) for tk in GBB_TRADES)
+
+
+def _gbb_trade_keys(est):
+    """Enabled non-insurance trades offered as Good/Better/Best, in trade order."""
+    out = []
+    for tk in GBB_TRADES:
+        td = (est.get('trades') or {}).get(tk) or {}
         if not td.get('enabled'):
             continue
-        trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
-        r = _tier_rate(pricing, tk, tier)
-        for item in td.get('line_items', []):
-            # Zero-qty items are "not in scope" — never priced, even when a
-            # price_override is set (the customer view and signed PDF already
-            # hide them; the total must agree). MUST mirror tradeTotal (app.js).
-            if float(item.get('quantity') or 0) <= 0:
-                continue
-            if trade_mode == 'simple':
-                total += float(item.get('unit_price') or 0) * float(item.get('quantity') or 0)
-            else:
-                t = (item.get('tiers') or {}).get(tier, {})
-                if t.get('included') is False:
-                    continue  # item excluded from this package tier
-                total += _line_sell_total(item, tier, r, mode)
-    return total
+        if td.get('mode', 'simple' if tk == 'gutters' else 'gbb') != 'gbb':
+            continue
+        out.append(tk)
+    return out
+
+
+def _pick_summary_label(est):
+    """Human label for what was/is selected: 'Better Package' for a single
+    G/B/B product, 'Roofing: Better · Siding: Good' for a mix."""
+    tls  = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                gutters='Gutters', other='Other / Misc')
+    lbls = dict(good='Good', better='Better', best='Best')
+    tks  = [tk for tk in _gbb_trade_keys(est)
+            if ((est.get('trades') or {}).get(tk) or {}).get('line_items')]
+    if not tks:
+        return ''
+    if len(tks) == 1:
+        return lbls.get(_trade_tier(est, tks[0]), 'Better') + ' Package'
+    return ' · '.join(f'{tls[tk]}: {lbls.get(_trade_tier(est, tk), "Better")}' for tk in tks)
+
+
+def _trade_tier_content(est, trade):
+    """(features, descriptions) dicts for one trade's package cards. Legacy
+    estimates carried ONE estimate-level set — it belongs to the first GBB
+    trade so pre-existing shared estimates keep their copy."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    feats = td.get('tier_features')
+    descs = td.get('tier_descriptions')
+    if not isinstance(feats, dict):
+        first = (_gbb_trade_keys(est) or [None])[0]
+        feats = est.get('tier_features') if trade == first else {}
+        if not isinstance(descs, dict):
+            descs = est.get('tier_descriptions') if trade == first else {}
+    if not isinstance(descs, dict):
+        descs = {}
+    return (feats or {}), (descs or {})
 
 
 @app.route('/api/analytics')
@@ -1531,7 +1604,6 @@ def get_analytics():
             if city:
                 top_cities[city] = top_cities.get(city, 0.0) + est_total
 
-        tier       = est.get('selected_tier', 'better')
         pricing    = est.get('pricing', {})
         mode       = pricing.get('mode', 'margin')
 
@@ -1572,6 +1644,7 @@ def get_analytics():
             if not td.get('enabled') or not td.get('line_items'):
                 continue
             tmode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+            tier  = _trade_tier(est, tk)   # each trade prices at its own chosen tier
             r     = _tier_rate(pricing, tk, tier)
             tsell = 0.0
             tcost = 0.0
@@ -1708,10 +1781,10 @@ def _with_section(item, name):
     return f'{name} [{s}]' if s else name
 
 
-def render_line_items(est, tier=None):
-    """Build trade line-item tables for customer view. Returns (html, grand_total)."""
-    if tier is None:
-        tier = est.get('selected_tier', 'better')
+def render_line_items(est, tier=None, only_trades=None):
+    """Build trade line-item tables for customer view. Returns (html, grand_total).
+    tier=None prices each trade at its own selected tier (mix-and-match; legacy
+    docs resolve to the old single selected_tier). only_trades limits output."""
     pricing  = est.get('pricing', {})
     mode     = pricing.get('mode', 'margin')
     # Mirror the PDF's "Line Prices" chip: unit price + line total columns
@@ -1726,11 +1799,14 @@ def render_line_items(est, tier=None):
 
     for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
         td = trades.get(tk, {})
+        if only_trades is not None and tk not in only_trades:
+            continue
         if not td.get('enabled') or not td.get('line_items'):
             continue
         # Determine trade mode: gutters always simple; others default gbb
         trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
-        r    = _tier_rate(pricing, tk, tier)
+        t_tier = tier or _trade_tier(est, tk)
+        r    = _tier_rate(pricing, tk, t_tier)
 
         # Priced entries first (item, qty, line_total, desc) — then grouped by
         # section (structures / roof areas; mirrors groupedTradeItems in app.js)
@@ -1743,10 +1819,10 @@ def render_line_items(est, tier=None):
                 line = float(item.get('unit_price') or 0) * qty
                 desc = (item.get('description') or '').strip()
             else:
-                t    = (item.get('tiers') or {}).get(tier, {})
+                t    = (item.get('tiers') or {}).get(t_tier, {})
                 if t.get('included') is False:
                     continue  # item excluded from this package tier
-                line = _line_sell_total(item, tier, r, mode)
+                line = _line_sell_total(item, t_tier, r, mode)
                 desc = t.get('description', '')
             priced.append((item, qty, line, desc))
 
@@ -2294,11 +2370,16 @@ def _visible_initials(est):
     return [i for i in (est.get('contract_initials') or []) if (i.get('text') or '').strip()]
 
 
+def _roofing_enabled(est):
+    """Shingle color only makes sense when the roof is part of the job."""
+    return bool(((est.get('trades') or {}).get('roofing') or {}).get('enabled'))
+
+
 def _cv_shingle_block(est):
     """Shingle-color step for the sign form. Locked display if the rep already
     chose a color; otherwise a required dropdown for the customer."""
     ss = est.get('shingle_selection') or {}
-    if not ss.get('enabled', False):
+    if not ss.get('enabled', False) or not _roofing_enabled(est):
         return ''
     chosen  = (ss.get('chosen') or '').strip()
     options = [o for o in (ss.get('options') or []) if str(o).strip()]
@@ -2750,8 +2831,6 @@ def build_customer_view(est, token):
     notes  = (est.get('notes_customer') or '').strip()
     ctext  = (est.get('contract_text') or '').strip()
     sp     = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
-    tdesc  = est.get('tier_descriptions') or {}
-    tfeat  = est.get('tier_features') or {}
 
     # Packages the rep chose to offer on this estimate (absent key = enabled,
     # so every pre-existing estimate shows all three). Mirrors tierEnabled in
@@ -2760,65 +2839,94 @@ def build_customer_view(est, token):
     enabled_tiers = [t for t in ('good', 'better', 'best') if te.get(t, True) is not False]
     if not enabled_tiers:
         enabled_tiers = ['good', 'better', 'best']
-    default_tier = est.get('selected_tier', 'better')
-    if default_tier not in enabled_tiers:
-        default_tier = enabled_tiers[0]
 
     notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
     ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     sp_html    = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
 
-    # Pre-render line items for each offered tier
-    tier_data = {}
-    for t in enabled_tiers:
-        li_html, total = render_line_items(est, tier=t)
-        tier_data[t] = {'html': li_html, 'total': total}
-
     tier_clrs = dict(good='#2563eb', better='#16a34a', best='#b45309')
     tier_bgs  = dict(good='#dbeafe', better='#dcfce7', best='#fef3c7')
     tier_lbls = dict(good='Good',    better='Better',  best='Best')
 
-    # Build the package selection cards (offered tiers only)
-    cards_html = ''
-    for t in enabled_tiers:
-        total  = tier_data[t]['total']
-        desc   = (tdesc.get(t) or '').strip()
-        clr    = tier_clrs[t]
-        bg     = tier_bgs[t]
-        lbl    = tier_lbls[t]
-        is_sel = t == default_tier
-        popular_badge = '<div class="cv-tier-popular">Most Popular</div>' if t == 'better' else ''
-        desc_el = f'<div class="cv-tier-desc">{he(desc)}</div>' if desc else ''
-        # "What's Included" bullets the rep curates on the Options page — shown
-        # to the customer making the Good/Better/Best decision.
-        feats = [str(f).strip() for f in (tfeat.get(t) or []) if str(f).strip()]
-        feats_el = ''
-        if feats:
-            feats_el = ('<ul class="cv-tier-feats">'
-                        + ''.join(f'<li>{he(f)}</li>' for f in feats[:8])
-                        + (f'<li class="cv-tier-more">+ {len(feats) - 8} more included</li>' if len(feats) > 8 else '')
-                        + '</ul>')
-        cards_html += f'''<div class="cv-tier-card {'cv-tier-selected' if is_sel else ''}"
-          data-tier="{t}" data-total="{total:.2f}"
-          style="border-color:{clr};{'background:'+bg if is_sel else ''}"
-          onclick="selectCvTier('{t}')">
-          {popular_badge}
-          <div class="cv-tier-name" style="color:{clr}">{lbl}</div>
-          <div class="cv-tier-price" style="color:{clr}">{fc(total)}</div>
-          {desc_el}
-          {feats_el}
-          <div class="cv-tier-check" id="cv-check-{t}">{'&#10003; Selected' if is_sel else 'Select'}</div>
-        </div>'''
+    # Each G/B/B product gets its own package choice; simple-mode trades are
+    # priced as-is and always shown. Total = sum of the customer's picks.
+    gbb_tks    = [tk for tk in _gbb_trade_keys(est)
+                  if ((est.get('trades') or {}).get(tk) or {}).get('line_items')]
+    simple_tks = [tk for tk in GBB_TRADES if tk not in gbb_tks]
+    multi      = len(gbb_tks) > 1
 
-    # Build hidden/visible line item blocks for each offered tier
-    tier_blocks_html = ''
-    for t in enabled_tiers:
-        vis = '' if t == default_tier else 'display:none'
-        tier_blocks_html += f'<div id="tier-items-{t}" style="{vis}">{tier_data[t]["html"]}</div>\n'
+    trade_lbls = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                      gutters='Gutters', other='Other / Misc')
 
-    default_total = tier_data[default_tier]['total']
-    default_lbl   = tier_lbls[default_tier]
+    defaults = {}      # trade → default-selected tier
+    totals   = {}      # trade → {tier: subtotal}
+    sections_html = ''
+    for tk in gbb_tks:
+        tfeat, tdesc = _trade_tier_content(est, tk)
+        d_tier = _trade_tier(est, tk)
+        if d_tier not in enabled_tiers:
+            d_tier = enabled_tiers[0]
+        defaults[tk] = d_tier
+        totals[tk]   = {t: _trade_subtotal(est, tk, t) for t in enabled_tiers}
+
+        cards_html = ''
+        for t in enabled_tiers:
+            total  = totals[tk][t]
+            desc   = (tdesc.get(t) or '').strip()
+            clr    = tier_clrs[t]
+            bg     = tier_bgs[t]
+            lbl    = tier_lbls[t]
+            is_sel = t == d_tier
+            popular_badge = '<div class="cv-tier-popular">Most Popular</div>' if t == 'better' else ''
+            desc_el = f'<div class="cv-tier-desc">{he(desc)}</div>' if desc else ''
+            # "What's Included" bullets the rep curates on the Options page — shown
+            # to the customer making the Good/Better/Best decision.
+            feats = [str(f).strip() for f in (tfeat.get(t) or []) if str(f).strip()]
+            feats_el = ''
+            if feats:
+                feats_el = ('<ul class="cv-tier-feats">'
+                            + ''.join(f'<li>{he(f)}</li>' for f in feats[:8])
+                            + (f'<li class="cv-tier-more">+ {len(feats) - 8} more included</li>' if len(feats) > 8 else '')
+                            + '</ul>')
+            cards_html += f'''<div class="cv-tier-card {'cv-tier-selected' if is_sel else ''}"
+              data-trade="{tk}" data-tier="{t}"
+              style="border-color:{clr};{'background:'+bg if is_sel else ''}"
+              onclick="selectCvTier('{tk}','{t}')">
+              {popular_badge}
+              <div class="cv-tier-name" style="color:{clr}">{lbl}</div>
+              <div class="cv-tier-price" style="color:{clr}">{fc(total)}</div>
+              {desc_el}
+              {feats_el}
+              <div class="cv-tier-check" id="cv-check-{tk}-{t}">{'&#10003; Selected' if is_sel else 'Select'}</div>
+            </div>'''
+
+        heading = (f'{trade_lbls.get(tk, tk.title())} &mdash; Choose Your Package'
+                   if multi else 'Step 1 &mdash; Choose Your Package')
+        sections_html += f'''<div class="cv-tier-section">
+  <div class="cv-tier-heading">{heading}</div>
+  <div class="cv-tier-cards" style="grid-template-columns:repeat({len(enabled_tiers)},1fr)">
+    {cards_html}
+  </div>
+</div>\n'''
+        # This product's line items, one block per offered tier
+        for t in enabled_tiers:
+            li_html, _tot = render_line_items(est, tier=t, only_trades=[tk])
+            vis = '' if t == d_tier else 'display:none'
+            sections_html += f'<div id="tier-items-{tk}-{t}" style="{vis}">{li_html}</div>\n'
+
+    # Fixed-price (simple-mode) trades render once, after the package sections
+    simple_html, simple_total = render_line_items(est, only_trades=simple_tks)
+
+    def _pick_summary(picks):
+        return ' &middot; '.join(f'{trade_lbls.get(tk, tk.title())}: {tier_lbls[picks[tk]]}' for tk in gbb_tks)
+
+    default_total = simple_total + sum(totals[tk][defaults[tk]] for tk in gbb_tks)
+    default_lbl   = (_pick_summary(defaults) if multi
+                     else tier_lbls[defaults[gbb_tks[0]]] + ' Package' if gbb_tks
+                     else 'Your Selection')
+    # First product's pick doubles as the legacy selected_tier for old consumers
+    default_tier  = defaults[gbb_tks[0]] if gbb_tks else est.get('selected_tier', 'better')
 
     return f'''<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -2853,17 +2961,12 @@ def build_customer_view(est, token):
 
 {_cv_products_block(est)}
 
-<div class="cv-tier-section">
-  <div class="cv-tier-heading">Step 1 &mdash; Choose Your Package</div>
-  <div class="cv-tier-cards" id="tier-cards" style="grid-template-columns:repeat({len(enabled_tiers)},1fr)">
-    {cards_html}
-  </div>
-</div>
+{sections_html}
 
-{tier_blocks_html}
+{simple_html}
 
 <div class="cvgrand" style="margin-top:14px" id="cv-grand-bar">
-  <span class="cvgrand-lbl" id="cv-grand-lbl">Total &mdash; {he(default_lbl)} Package</span>
+  <span class="cvgrand-lbl" id="cv-grand-lbl">Total &mdash; {default_lbl}</span>
   <span class="cvgrand-amt" id="cv-grand-amt">{fc(default_total)}</span>
 </div>
 
@@ -2876,9 +2979,10 @@ def build_customer_view(est, token):
 <div class="cvsig">
   <h2>Step 2 &mdash; Sign to Accept</h2>
   <p class="sub" id="cv-sig-sub">Your electronic signature confirms you have reviewed and agreed to the
-    <strong id="cv-sig-tier">{he(default_lbl)}</strong> Package and all terms above.</p>
+    <strong id="cv-sig-tier">{default_lbl}</strong> and all terms above.</p>
   <form method="POST" action="/sign/{he(token)}">
     <input type="hidden" name="selected_tier" id="cv-tier-input" value="{he(default_tier)}">
+    {''.join(f'<input type="hidden" name="tier_{tk}" id="cv-tier-input-{tk}" value="{he(defaults[tk])}">' for tk in gbb_tks)}
     {_cv_shingle_block(est)}
     {_cv_initials_block(est)}
     <input class="cvinput" name="sig_name" placeholder="Your full legal name *" required autocomplete="name">
@@ -2901,34 +3005,60 @@ def build_customer_view(est, token):
 
 <script>
 var _cv_tiers    = {json.dumps(enabled_tiers)};
-var _tier_totals = {{{','.join(f'"{t}":{tier_data[t]["total"]:.2f}' for t in enabled_tiers)}}};
+var _cv_trades   = {json.dumps(gbb_tks)};
+var _cv_multi    = {json.dumps(multi)};
+var _cv_gbb      = {json.dumps({tk: {'cur': defaults[tk],
+                                     'totals': {t: round(totals[tk][t], 2) for t in enabled_tiers}}
+                                for tk in gbb_tks})};
+var _cv_simple_total = {simple_total:.2f};
+var _trade_lbls  = {json.dumps(trade_lbls)};
 var _tier_lbls   = {{good:'Good',better:'Better',best:'Best'}};
 var _tier_clrs   = {{good:'#2563eb',better:'#16a34a',best:'#b45309'}};
 var _tier_bgs    = {{good:'#dbeafe',better:'#dcfce7',best:'#fef3c7'}};
-var _cur_tier    = '{he(default_tier)}';
 function _fmt(n){{return'$'+Math.abs(n).toFixed(2).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,',');}}
-function selectCvTier(tier){{
-  _cur_tier=tier;
+function selectCvTier(trade,tier){{
+  var g=_cv_gbb[trade]; if(!g)return;
+  g.cur=tier;
   _cv_tiers.forEach(function(t){{
-    var card=document.querySelector('[data-tier="'+t+'"]');
-    var chk=document.getElementById('cv-check-'+t);
-    if(t===tier){{
-      card.classList.add('cv-tier-selected');
-      card.style.background=_tier_bgs[t];
-      chk.innerHTML='&#10003; Selected';
-    }}else{{
-      card.classList.remove('cv-tier-selected');
-      card.style.background='';
-      chk.innerHTML='Select';
+    var card=document.querySelector('[data-trade="'+trade+'"][data-tier="'+t+'"]');
+    var chk=document.getElementById('cv-check-'+trade+'-'+t);
+    if(card&&chk){{
+      if(t===tier){{
+        card.classList.add('cv-tier-selected');
+        card.style.background=_tier_bgs[t];
+        chk.innerHTML='&#10003; Selected';
+      }}else{{
+        card.classList.remove('cv-tier-selected');
+        card.style.background='';
+        chk.innerHTML='Select';
+      }}
     }}
-    document.getElementById('tier-items-'+t).style.display=(t===tier?'':'none');
+    var blk=document.getElementById('tier-items-'+trade+'-'+t);
+    if(blk)blk.style.display=(t===tier?'':'none');
   }});
-  document.getElementById('cv-grand-lbl').textContent='Total — '+_tier_lbls[tier]+' Package';
-  document.getElementById('cv-grand-amt').textContent=_fmt(_tier_totals[tier]);
-  document.getElementById('cv-grand-bar').style.borderLeftColor=_tier_clrs[tier];
-  document.getElementById('cv-tier-input').value=tier;
-  document.getElementById('cv-sig-tier').textContent=_tier_lbls[tier];
-  document.getElementById('cv-sign-btn').textContent='✓ Accept — '+_tier_lbls[tier]+' Package';
+  var inp=document.getElementById('cv-tier-input-'+trade);
+  if(inp)inp.value=tier;
+  _cvRefreshTotal();
+}}
+function _cvRefreshTotal(){{
+  var sum=_cv_simple_total, parts=[], first=null;
+  _cv_trades.forEach(function(tr){{
+    var g=_cv_gbb[tr];
+    sum+=(g.totals[g.cur]||0);
+    parts.push(_trade_lbls[tr]+': '+_tier_lbls[g.cur]);
+    if(first===null)first=g.cur;
+  }});
+  var lbl=_cv_multi?parts.join(' · '):(first?_tier_lbls[first]+' Package':'Your Selection');
+  document.getElementById('cv-grand-lbl').textContent='Total — '+lbl;
+  document.getElementById('cv-grand-amt').textContent=_fmt(sum);
+  document.getElementById('cv-sig-tier').textContent=lbl;
+  if(first){{
+    document.getElementById('cv-tier-input').value=first;
+    if(!_cv_multi){{
+      document.getElementById('cv-grand-bar').style.borderLeftColor=_tier_clrs[first];
+      document.getElementById('cv-sign-btn').textContent='✓ Accept — '+_tier_lbls[first]+' Package';
+    }}
+  }}
 }}
 </script>
 </body></html>'''
@@ -2971,8 +3101,9 @@ def build_signed_confirmation(est):
             tlbl      = 'Estimate'
             total_lbl = 'Total'
         else:
-            tlbl      = dict(good='Good', better='Better', best='Best').get(tier, tier.title())
-            total_lbl = f'Total &mdash; {he(tlbl)} Package'
+            tlbl      = _pick_summary_label(est) or \
+                dict(good='Good', better='Better', best='Best').get(tier, tier.title()) + ' Package'
+            total_lbl = f'Total &mdash; {he(tlbl)}'
         total_bar = f'''<div class="cvgrand" style="margin-top:14px">
   <span class="cvgrand-lbl">{total_lbl}</span>
   <span class="cvgrand-amt">{fc(gtotal)}</span>
@@ -3348,7 +3479,8 @@ def send_signature_notification(est):
     eid      = est.get('estimate_id', '')
     enum     = 'EST-' + eid.split('-')[0].upper() if eid else 'DRAFT'
     tier     = est.get('selected_tier', 'better')
-    tlbl     = dict(good='Good', better='Better', best='Best').get(tier, tier.title())
+    tlbl     = _pick_summary_label(est) or \
+        dict(good='Good', better='Better', best='Best').get(tier, tier.title())
 
     if est.get('estimate_type') == 'insurance':
         tlbl = 'Insurance Claim'
@@ -3492,8 +3624,9 @@ def build_signed_pdf(est):
         if ins_td.get('claim_number'):
             info_rows.append(('Claim #', ins_td['claim_number']))
     else:
-        info_rows.append(('Package', dict(good='Good', better='Better',
-                                          best='Best').get(tier, tier.title())))
+        info_rows.append(('Package', _pick_summary_label(est)
+                          or dict(good='Good', better='Better',
+                                  best='Best').get(tier, tier.title())))
     shingle_color = (sig.get('shingle_color') or '').strip()
     if shingle_color:
         info_rows.append(('Shingle Color', shingle_color))
@@ -3571,12 +3704,13 @@ def build_signed_pdf(est):
             if not td.get('enabled') or not td.get('line_items'):
                 continue
             trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
-            r = _tier_rate(pricing, tk, tier)
+            t_tier = _trade_tier(est, tk)   # each product at its signed package
+            r = _tier_rate(pricing, tk, t_tier)
             # Skip the whole trade if nothing will print (all zero-qty / excluded)
             if not any(
                     float(it.get('quantity') or 0) > 0 and
                     (trade_mode == 'simple'
-                     or (it.get('tiers') or {}).get(tier, {}).get('included') is not False)
+                     or (it.get('tiers') or {}).get(t_tier, {}).get('included') is not False)
                     for it in td['line_items']):
                 continue
             trade_title(labels.get(tk, tk.title()))
@@ -3593,10 +3727,10 @@ def build_signed_pdf(est):
                     line = sp_ * qty
                     desc = (it.get('description') or '').strip()
                 else:
-                    t    = (it.get('tiers') or {}).get(tier, {})
+                    t    = (it.get('tiers') or {}).get(t_tier, {})
                     if t.get('included') is False:
                         continue  # item excluded from this package tier
-                    line = _line_sell_total(it, tier, r, mode)
+                    line = _line_sell_total(it, t_tier, r, mode)
                     sp_  = line / qty
                     desc = t.get('description', '')
                 sub += line
@@ -3624,7 +3758,9 @@ def build_signed_pdf(est):
                      border=1, align='R')
             pdf.cell(29, 6.5, fc(sub), border=1, align='R')
             pdf.ln(10)
-        total_label = f'TOTAL - {tier.upper()} PACKAGE'
+        _sum = _pick_summary_label(est)
+        total_label = (f'TOTAL - {_sum.upper()}' if _sum
+                       else f'TOTAL - {tier.upper()} PACKAGE')
 
     # Grand total bar
     pdf.set_fill_color(26, 58, 92)
@@ -3813,8 +3949,9 @@ def build_production_packet_pdf(est):
         ('Signed',      signed_fmt),
     ]
     if not is_ins:
-        info_rows.append(('Package', dict(good='Good', better='Better',
-                                          best='Best').get(tier, tier.title())))
+        info_rows.append(('Package', _pick_summary_label(est)
+                          or dict(good='Good', better='Better',
+                                  best='Best').get(tier, tier.title())))
     shingle_color = (sig.get('shingle_color') or '').strip()
     if shingle_color:
         info_rows.append(('Shingle Color', shingle_color))
@@ -3851,13 +3988,13 @@ def build_production_packet_pdf(est):
 
     # Scope of work — every line on the signed package (including items the
     # customer view hides), no prices. The crew works from this list.
-    def _tier_items(td, trade_mode):
+    def _tier_items(td, trade_mode, t_tier):
         for it in td.get('line_items', []):
             qty = float(it.get('quantity') or 0)
             if qty <= 0:
                 continue
             if trade_mode != 'simple':
-                t = (it.get('tiers') or {}).get(tier, {})
+                t = (it.get('tiers') or {}).get(t_tier, {})
                 if t.get('included') is False:
                     continue
                 yield it, qty, t
@@ -3885,7 +4022,7 @@ def build_production_packet_pdf(est):
             if not td.get('enabled') or not td.get('line_items'):
                 continue
             trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
-            rows = list(_tier_items(td, trade_mode))
+            rows = list(_tier_items(td, trade_mode, _trade_tier(est, tk)))
             if not rows:
                 continue
             section_title(labels.get(tk, tk.title()))
@@ -3963,7 +4100,7 @@ def build_production_packet_pdf(est):
             if not td.get('enabled') or not td.get('line_items'):
                 continue
             trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
-            for it, qty, t in _tier_items(td, trade_mode):
+            for it, qty, t in _tier_items(td, trade_mode, _trade_tier(est, tk)):
                 name = _with_section(it, it.get('name', ''))
                 desc = (t.get('description') or it.get('description') or '').strip()
                 unit = it.get('unit', '')
@@ -4249,7 +4386,7 @@ def generate_production_packet(est_id):
     sig  = est.get('signature') or {}
     tier = sig.get('selected_tier') or est.get('selected_tier', 'better')
     label = ('Production Packet' if est.get('estimate_type') == 'insurance'
-             else f'Production Packet - {tier.title()}')
+             else f'Production Packet - {_pick_summary_label(est) or tier.title()}')
     att = {
         'id':               uuid.uuid4().hex[:12],
         'filename':         f'{est_id}/{fname}',
@@ -4438,7 +4575,7 @@ def change_orders_collection(est_id):
             if str(x.get('number', '')).split('-')[-1].isdigit()]
     # Default rate: what the signed tier actually carried for roofing
     parent_pricing = est.get('pricing') or {}
-    tier = (est.get('signature') or {}).get('selected_tier') or est.get('selected_tier', 'better')
+    tier = _trade_tier(est, 'roofing')   # CO default rate mirrors the signed roofing package
     d_pricing = d.get('pricing') if isinstance(d.get('pricing'), dict) else {}
     now = datetime.utcnow().isoformat() + 'Z'
     co = {
@@ -5189,14 +5326,29 @@ def customer_sign(token):
             return 'Please initial every required item before signing.', 400
 
         # Require a shingle color when the customer was asked to choose one
+        # (only when roofing is part of the job — the form hides it otherwise)
         ss = est.get('shingle_selection') or {}
-        if ss.get('enabled') and not (ss.get('chosen') or '').strip() and not shingle_color:
+        if (ss.get('enabled') and _roofing_enabled(est)
+                and not (ss.get('chosen') or '').strip() and not shingle_color):
             return 'Please choose a shingle color before signing.', 400
+
+        # Per-product package picks (tier_roofing, tier_siding, …). A page
+        # rendered before per-product packages submits only selected_tier —
+        # treat that as the pick for every G/B/B product (old semantics).
+        tier_picks = {}
+        for tk in _gbb_trade_keys(est):
+            v = (request.form.get(f'tier_{tk}') or '').strip()
+            if v not in ('good', 'better', 'best'):
+                v = selected_tier if selected_tier in ('good', 'better', 'best') else ''
+            if v:
+                tier_picks[tk] = v
 
         # A stale sign page can submit a package the rep has since toggled
         # off — make the customer refresh and choose from what's offered now.
-        if (selected_tier in ('good', 'better', 'best')
-                and (est.get('tiers_enabled') or {}).get(selected_tier, True) is False):
+        te_now = est.get('tiers_enabled') or {}
+        stale = [t for t in list(tier_picks.values()) + [selected_tier]
+                 if t in ('good', 'better', 'best') and te_now.get(t, True) is False]
+        if stale:
             return ('That package is no longer offered on this estimate — '
                     'please refresh the page and choose again.'), 409
 
@@ -5208,10 +5360,24 @@ def customer_sign(token):
         def _apply_signature(doc):
             if doc is None or doc.get('signature'):
                 return None  # deleted, or a concurrent sign won — keep theirs
-            # A stale sign page could submit a package the rep has since
-            # toggled off (tiers_enabled) — never record a disabled tier.
-            if (selected_tier in ('good', 'better', 'best')
-                    and (doc.get('tiers_enabled') or {}).get(selected_tier, True) is not False):
+            # Record each product's package pick. A stale sign page could
+            # submit a package the rep has since toggled off (tiers_enabled)
+            # — never record a disabled tier.
+            te_doc = doc.get('tiers_enabled') or {}
+            picks  = {}
+            for tk in _gbb_trade_keys(doc):
+                v = tier_picks.get(tk)
+                if v and te_doc.get(v, True) is not False:
+                    picks[tk] = v
+                    td = (doc.get('trades') or {}).get(tk)
+                    if isinstance(td, dict):
+                        td['selected_tier'] = v
+            if picks:
+                doc['selected_tiers'] = picks
+                # First product's pick doubles as the legacy single tier
+                doc['selected_tier'] = picks[next(iter(picks))]
+            elif (selected_tier in ('good', 'better', 'best')
+                    and te_doc.get(selected_tier, True) is not False):
                 doc['selected_tier'] = selected_tier
             # Chosen shingle color becomes part of the hashed document
             if shingle_color:
@@ -5230,6 +5396,7 @@ def customer_sign(token):
                 'document_hash': hashlib.sha256(content).hexdigest(),
                 'token':         token,
                 'selected_tier': doc.get('selected_tier', 'better'),
+                'selected_tiers': doc.get('selected_tiers') or {},
                 'shingle_color': shingle_color or (ss.get('chosen') or '').strip(),
                 'initials':      initials_captured,
             }
@@ -5260,6 +5427,16 @@ def customer_sign(token):
     # Already signed — show the confirmation instead of the form
     if est.get('signature'):
         return build_signed_confirmation(est)
+
+    # A logged-in team member opening the link is a preview, not a customer
+    # view — don't skew the viewed/not-viewed analytics or email the rep.
+    if session.get('user'):
+        html = build_customer_view(est, token)
+        ribbon = ('<div style="position:fixed;bottom:14px;left:50%;transform:translateX(-50%);'
+                  'background:#1e293b;color:#fff;padding:7px 16px;border-radius:999px;'
+                  'font:600 12px/1.4 sans-serif;box-shadow:0 4px 12px rgba(0,0,0,.35);'
+                  'z-index:9999;white-space:nowrap">&#128065; Team preview &mdash; views aren\'t counted</div>')
+        return html.replace('</body>', ribbon + '</body>', 1)
 
     # Record the customer view; notify the rep on the first one
     try:
@@ -5622,16 +5799,38 @@ def delete_intro(tid):
     return jsonify({'ok': True, 'intros': pb['intros']})
 
 
-# ── Tier defaults (global G/B/B package bullet points) ─────────────────────
+# ── Tier defaults (global G/B/B package content, keyed by trade) ───────────
+# Shape: { trade: { 'descriptions': {good/better/best: str},
+#                   'features':     {good/better/best: [str]} } }
+# Legacy files were a single flat {good:[], better:[], best:[]} of roofing
+# bullets — migrate those to the roofing key on read.
+
+def _blank_trade_defaults():
+    return {'descriptions': {'good': '', 'better': '', 'best': ''},
+            'features':     {'good': [], 'better': [], 'best': []}}
 
 def _load_tier_defaults():
+    data = None
     if os.path.exists(TIER_DEFAULTS_FILE):
         try:
             with open(TIER_DEFAULTS_FILE) as f:
-                return json.load(f)
+                data = json.load(f)
         except Exception:
             pass
-    return {'good': [], 'better': [], 'best': []}
+    if not isinstance(data, dict):
+        data = {}
+    if 'good' in data or 'better' in data or 'best' in data:
+        # Legacy flat shape — those bullets were always roofing copy
+        data = {'roofing': {'descriptions': {'good': '', 'better': '', 'best': ''},
+                            'features': {t: list(data.get(t) or []) for t in ('good', 'better', 'best')}}}
+    for tk in GBB_TRADES:
+        td = data.get(tk)
+        if not isinstance(td, dict):
+            data[tk] = _blank_trade_defaults()
+            continue
+        td.setdefault('descriptions', {'good': '', 'better': '', 'best': ''})
+        td.setdefault('features', {'good': [], 'better': [], 'best': []})
+    return data
 
 @app.route('/api/tier-defaults', methods=['GET'])
 def get_tier_defaults():

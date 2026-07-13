@@ -26,10 +26,56 @@ function toggleTierEnabled(t) {
   cur[t] = !cur[t];
   S.tiers_enabled = cur;
   if (!tierEnabled(S.selected_tier)) S.selected_tier = enabledTiers()[0];
+  gbbTrades().forEach(tr => {
+    if (!tierEnabled(tradeTier(tr))) S.trades[tr].selected_tier = enabledTiers()[0];
+  });
   setDirty();
   renderTierButtons(); renderTotals();
   if (activePage === 'pricing') renderTradeContent();
   if (activePage === 'options') renderOptionsPage();
+}
+
+/* ── Per-trade G/B/B — each product carries its own package content and
+   selection (td.tier_features / td.tier_descriptions / td.selected_tier).
+   Estimate-level tier_features/descriptions/selected_tier are legacy: kept
+   in sync (selected_tier = first GBB trade's pick) so old consumers and
+   old signed estimates keep working. ───────────────────────────────── */
+function tradeGbbMode(trade) {
+  const td = S.trades[trade];
+  return !!td && trade !== 'insurance' && td.enabled &&
+    (td.mode || (trade === 'gutters' ? 'simple' : 'gbb')) === 'gbb';
+}
+function gbbTrades() { return TRADES.filter(tradeGbbMode); }
+function tradeTier(trade) {
+  const t = (S.trades[trade] || {}).selected_tier;
+  return TIERS.includes(t) ? t : (TIERS.includes(S.selected_tier) ? S.selected_tier : 'better');
+}
+function setTradeTier(trade, tier) {
+  if (!S.trades[trade]) return;
+  S.trades[trade].selected_tier = tier;
+  _syncLegacyTier();
+  setDirty();
+}
+function _syncLegacyTier() {
+  const first = gbbTrades()[0];
+  if (first) S.selected_tier = tradeTier(first);
+}
+function tradeTierContent(trade) {
+  // Ensure + return this trade's package content, migrating estimate-level
+  // fields into the FIRST GBB trade so pre-existing estimates keep their copy.
+  const td = S.trades[trade]; if (!td) return { features:{}, descriptions:{} };
+  if (!td.tier_features) {
+    const isFirst = gbbTrades()[0] === trade;
+    const legacy  = isFirst && S.tier_features &&
+      TIERS.some(t => (S.tier_features[t] || []).length);
+    td.tier_features     = legacy ? JSON.parse(JSON.stringify(S.tier_features))
+                                  : { good:[], better:[], best:[] };
+    td.tier_descriptions = (legacy && S.tier_descriptions)
+      ? JSON.parse(JSON.stringify(S.tier_descriptions))
+      : { good:'', better:'', best:'' };
+  }
+  if (!td.tier_descriptions) td.tier_descriptions = { good:'', better:'', best:'' };
+  return { features: td.tier_features, descriptions: td.tier_descriptions };
 }
 
 /* ── Estimate sections (structures / roof areas) ──────────────────────
@@ -526,7 +572,7 @@ let activePage = 'cover';
 let activeTrade = 'roofing';
 let templates    = null;
 let priceBook    = null;   // { intros: [...], materials: {...} }
-let tierDefaults = { good:[], better:[], best:[] }; // global admin-set defaults for new estimates
+let tierDefaults = {}; // global admin-set G/B/B content, keyed by trade: {trade:{descriptions:{},features:{}}}
 let pbActiveTrade = 'roofing';
 let pbActiveTab = 'master';  // price book sub-view: master | good | better | best
 let pbItems = {};       // working copy of price book materials while modal is open
@@ -570,11 +616,16 @@ function blankEstimate() {
     share_token: null, signature: null,
     attachments: [],
     trades: {
-      roofing: { enabled:true,  line_items:[], colors:{}, mode:'gbb' },
-      siding:  { enabled:false, line_items:[], colors:{}, mode:'gbb' },
-      windows: { enabled:false, line_items:[], colors:{}, mode:'gbb' },
-      gutters: { enabled:false, line_items:[], colors:{}, mode:'simple' },
-      other:     { enabled:false, line_items:[], colors:{}, mode:'gbb' },
+      roofing: { enabled:true,  line_items:[], colors:{}, mode:'gbb', selected_tier:'better',
+                 tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
+      siding:  { enabled:false, line_items:[], colors:{}, mode:'gbb', selected_tier:'better',
+                 tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
+      windows: { enabled:false, line_items:[], colors:{}, mode:'gbb', selected_tier:'better',
+                 tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
+      gutters: { enabled:false, line_items:[], colors:{}, mode:'simple', selected_tier:'better',
+                 tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
+      other:     { enabled:false, line_items:[], colors:{}, mode:'gbb', selected_tier:'better',
+                   tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
       insurance: { enabled:false, sections:[{id:'sec_'+uid(), name:'', items:[]}], scope_notes:'', claim_number:'', carrier:'', colors:{} },
     },
     photos: [],
@@ -656,6 +707,12 @@ function tradeTotal(trade, tier) {
 }
 function grandTotal(tier) {
   return ['roofing','siding','windows','gutters','other'].reduce((s,tr)=>s+tradeTotal(tr,tier),0);
+}
+// Mix-and-match total: every trade priced at ITS OWN selected tier.
+// MUST mirror calc_selected_total in app.py.
+function selectedTotal() {
+  return ['roofing','siding','windows','gutters','other']
+    .reduce((s,tr)=>s+tradeTotal(tr, tradeTier(tr)),0);
 }
 function insuranceTotal() {
   const td = S.trades.insurance;
@@ -746,10 +803,10 @@ function pageComplete(page) {
     case 'intro':    return !!(S.intro_text && S.intro_text.trim());
     case 'photos':   return (S.photos||[]).length > 0;
     case 'scope':    return ['roofing','siding','windows','gutters','other'].some(hasItems);
-    case 'options':  return grandTotal(S.selected_tier) > 0 || insuranceTotal() > 0;
+    case 'options':  return selectedTotal() > 0 || insuranceTotal() > 0;
     case 'products': return ['roofing','siding','windows','gutters','other'].some(t =>
                         S.trades[t].enabled && Object.values(S.trades[t].colors||{}).some(v => String(v||'').trim()));
-    case 'pricing':  return grandTotal(S.selected_tier) > 0 || insuranceTotal() > 0;
+    case 'pricing':  return selectedTotal() > 0 || insuranceTotal() > 0;
     case 'contract': return !!(S.contract_text && S.contract_text.trim());
     case 'report':   return !!(S.roof_health?.condition);
     case 'documents': return (S.attachments||[]).length > 0;
@@ -2174,20 +2231,42 @@ function renderOptionsPage() {
     return;
   }
 
+  const trades = gbbTrades();
+  if (!trades.length) {
+    document.getElementById('page-options').innerHTML = `
+      <div class="options-header">
+        <h2>Your Options</h2>
+        <p>No products are in Good / Better / Best mode — switch a product to G/B/B on the Pricing tab to offer packages</p>
+      </div>`;
+    return;
+  }
+
   document.getElementById('page-options').innerHTML = `
     <div class="options-header options-header-flex">
       <div>
         <h2>Your Options</h2>
-        <p>Edit what appears on each package card — these bullet points are what the customer sees when they open the estimate</p>
+        <p>Edit what appears on each package card — these bullet points are what the customer sees when they open the estimate. Each product gets its own Good / Better / Best choice.</p>
       </div>
-      ${_meCanViewAll() ? '<button class="btn-save-defaults" onclick="saveTierDefaults()">💾 Save as Global Defaults</button>' : ''}
     </div>
-    <div class="pkg-cards">
+    ${trades.map(trade => renderTradeOptionCards(trade)).join('')}`;
+}
+
+function renderTradeOptionCards(trade) {
+  const content = tradeTierContent(trade);
+  const selTier = tradeTier(trade);
+  return `
+    <div class="options-trade-section">
+      <div class="options-trade-hdr">
+        <h3>${TRADE_LABELS[trade]}</h3>
+        ${_meCanViewAll() ? `<button class="btn-save-defaults" id="save-defaults-${trade}"
+          onclick="saveTierDefaults('${trade}')">💾 Save as ${TRADE_LABELS[trade]} Defaults</button>` : ''}
+      </div>
+      <div class="pkg-cards">
       ${enabledTiers().map(tier => {
-        const total    = grandTotal(tier);
-        const desc     = (S.tier_descriptions||{})[tier] || '';
-        const isSel    = tier === S.selected_tier;
-        const features = (S.tier_features||{})[tier] || [];
+        const total    = tradeTotal(trade, tier);
+        const desc     = content.descriptions[tier] || '';
+        const isSel    = tier === selTier;
+        const features = content.features[tier] || [];
         return `
           <div class="pkg-card pkg-${tier} ${isSel?'selected':''}">
             <div class="pkg-card-header">
@@ -2197,11 +2276,11 @@ function renderOptionsPage() {
             <div class="pkg-total">${fmtCur(total)}</div>
             <textarea class="pkg-description"
               placeholder="Short tagline for this package…"
-              onchange="setPkgDesc('${tier}',this.value)">${esc(desc)}</textarea>
+              onchange="setPkgDesc('${trade}','${tier}',this.value)">${esc(desc)}</textarea>
             <div class="pkg-features-wrap">
               <div class="pkg-features-hdr">
                 <span>What's Included</span>
-                <button class="pkg-autofill-btn" onclick="genPkgFeatures('${tier}')" title="Auto-fill from pricing tab">↻ Auto-fill</button>
+                <button class="pkg-autofill-btn" onclick="genPkgFeatures('${trade}','${tier}')" title="Auto-fill from pricing tab">↻ Auto-fill</button>
               </div>
               <textarea class="pkg-features-ta"
                 rows="6"
@@ -2209,30 +2288,35 @@ function renderOptionsPage() {
 e.g. 30-year architectural shingles
 5-year workmanship warranty
 Full tear-off included"
-                oninput="setPkgFeatures('${tier}',this.value)">${esc(features.join('\n'))}</textarea>
+                oninput="setPkgFeatures('${trade}','${tier}',this.value)">${esc(features.join('\n'))}</textarea>
             </div>
-            <button class="pkg-select-btn ${isSel?'selected':''}" onclick="setTier('${tier}')">
+            <button class="pkg-select-btn ${isSel?'selected':''}" onclick="setTradeTierAction('${trade}','${tier}')">
               ${isSel?'✓ Selected Package':`Select ${TIER_LABELS[tier]}`}
             </button>
           </div>`;
       }).join('')}
+      </div>
     </div>`;
 }
 
-function setPkgDesc(tier, v) {
-  if (!S.tier_descriptions) S.tier_descriptions = {};
-  S.tier_descriptions[tier] = v; setDirty();
+function setTradeTierAction(trade, tier) {
+  setTradeTier(trade, tier);
+  renderTierButtons(); rerender();
+  if (activePage === 'options') renderOptionsPage();
+  if (activePage === 'pricing') renderTradeContent();
 }
-function setPkgFeatures(tier, text) {
-  if (!S.tier_features) S.tier_features = { good:[], better:[], best:[] };
-  S.tier_features[tier] = text.split('\n').map(s => s.trim()).filter(Boolean);
+function setPkgDesc(trade, tier, v) {
+  tradeTierContent(trade).descriptions[tier] = v; setDirty();
+}
+function setPkgFeatures(trade, tier, text) {
+  tradeTierContent(trade).features[tier] =
+    text.split('\n').map(s => s.trim()).filter(Boolean);
   setDirty();
 }
-function genPkgFeatures(tier) {
+function genPkgFeatures(trade, tier) {
   const features = [];
-  TRADES.forEach(trade => {
-    const td = S.trades[trade];
-    if (!td || !td.enabled || trade === 'insurance') return;
+  const td = S.trades[trade];
+  if (td && td.enabled) {
     const tradeMode = td.mode || (trade === 'gutters' ? 'simple' : 'gbb');
     (td.line_items || []).forEach(item => {
       if (tradeMode === 'simple') {
@@ -2245,37 +2329,51 @@ function genPkgFeatures(tier) {
       if (cost > 0 || parseFloat(item.quantity) > 0)
         features.push(ti.description ? `${item.name} — ${ti.description}` : item.name);
     });
-  });
-  if (!S.tier_features) S.tier_features = { good:[], better:[], best:[] };
-  S.tier_features[tier] = features;
+  }
+  tradeTierContent(trade).features[tier] = features;
   setDirty();
   renderOptionsPage();
 }
 
-// Apply saved global defaults to an estimate's tier_features (only fills empty tiers)
-function applyTierDefaults(est) {
-  if (!tierDefaults) return;
-  if (!est.tier_features) est.tier_features = { good:[], better:[], best:[] };
-  ['good','better','best'].forEach(t => {
-    if (!est.tier_features[t] || est.tier_features[t].length === 0)
-      est.tier_features[t] = [...(tierDefaults[t] || [])];
+// Seed a trade's package content from the global per-trade defaults.
+// Only fills EMPTY tiers — never clobbers rep edits.
+function seedTradeFromDefaults(trade) {
+  const dflt = (tierDefaults || {})[trade];
+  if (!dflt) return;
+  const content = tradeTierContent(trade);
+  TIERS.forEach(t => {
+    if (!(content.features[t] || []).length)
+      content.features[t] = [...((dflt.features || {})[t] || [])];
+    if (!(content.descriptions[t] || '').trim())
+      content.descriptions[t] = (dflt.descriptions || {})[t] || '';
   });
 }
 
-// Save current estimate's tier_features as the global defaults for all new estimates
-async function saveTierDefaults() {
+// Apply saved global defaults to an estimate (every GBB trade, empty tiers only)
+function applyTierDefaults(est) {
+  if (!tierDefaults) return;
+  const saved = S; S = est;          // tradeTierContent/gbbTrades read S
+  try { gbbTrades().forEach(seedTradeFromDefaults); }
+  finally { S = saved; }
+}
+
+// Save one trade's current package content as the global defaults for new estimates
+async function saveTierDefaults(trade) {
   try {
-    const data = S.tier_features || { good:[], better:[], best:[] };
+    const content = tradeTierContent(trade);
+    const merged  = JSON.parse(JSON.stringify(tierDefaults || {}));
+    merged[trade] = { descriptions: { ...content.descriptions },
+                      features:     JSON.parse(JSON.stringify(content.features)) };
     const r = await fetch('/api/tier-defaults', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
+      body: JSON.stringify(merged)
     });
     if (!r.ok) throw new Error('Server error');
-    tierDefaults = JSON.parse(JSON.stringify(data));
+    tierDefaults = merged;
     // Brief visual confirmation
-    const btn = document.querySelector('.btn-save-defaults');
-    if (btn) { btn.textContent = '✓ Defaults Saved!'; setTimeout(()=>{ btn.textContent='💾 Save as Global Defaults'; }, 2200); }
+    const btn = document.getElementById('save-defaults-' + trade);
+    if (btn) { btn.textContent = '✓ Defaults Saved!'; setTimeout(()=>{ btn.textContent=`💾 Save as ${TRADE_LABELS[trade]} Defaults`; }, 2200); }
   } catch(e) { alert('Could not save defaults: ' + e.message); }
 }
 
@@ -2363,7 +2461,7 @@ function renderBrandPresetBar(trade) {
 function renderOtherFreeform() {
   const trade = 'other';
   const td    = S.trades[trade];
-  const tier  = S.selected_tier;
+  const tier  = tradeTier(trade);
   const items = td.line_items;
   const UNITS = ['EA','LS','SQ','LF','HR','SF','BD'];
 
@@ -2563,7 +2661,7 @@ function setTradeMode(trade, mode) {
     // GBB → Simple: keep items + quantities; price from the selected tier.
     // Stash the full tier data so toggling back to GBB restores it exactly.
     const pricing = S.pricing || {};
-    const tier = S.selected_tier || 'better';
+    const tier = tradeTier(trade);
     const rate = tierRate(trade, tier);
     td.line_items = items.map(it => {
       const t    = (it.tiers || {})[tier] || {};
@@ -2614,6 +2712,9 @@ function setTradeMode(trade, mode) {
     });
   }
   td.mode = mode;
+  // A product newly offered as G/B/B picks up its global package content
+  if (mode === 'gbb' && td.enabled) seedTradeFromDefaults(trade);
+  _syncLegacyTier();
   setDirty(); renderTabBar(); renderTradeContent(); renderTotals();
 }
 
@@ -2991,7 +3092,7 @@ function liSetNameSmart(trade, id, v) {
 
 function renderGBBGrid(trade) {
   const items = S.trades[trade].line_items;
-  const tier  = S.selected_tier;
+  const tier  = tradeTier(trade);   // highlight THIS product's chosen package
   const qtyOf = item => parseFloat(item.quantity) || 0;
   const rateLbl = S.pricing.mode === 'markup' ? 'Markup' : 'Margin';
   const ovr = (S.pricing.per_trade_overrides || {})[trade];
@@ -4103,12 +4204,19 @@ function addLineItem(trade) {
 }
 function toggleTrade(trade, enabled) {
   S.trades[trade].enabled=enabled;
+  // Shingle color is a roofing question — follow the roofing toggle so a
+  // siding/windows-only job never asks the customer for a shingle color.
+  // (The server hides/skips the step too whenever roofing is off.)
+  if (trade === 'roofing' && S.shingle_selection) S.shingle_selection.enabled = enabled;
   // Auto-build priced defaults when enabling an empty trade, so measurements
   // flow straight through to a priced estimate with no extra clicks.
   if (enabled && templates && (!S.trades[trade].line_items || S.trades[trade].line_items.length === 0)) {
     S.trades[trade].line_items = buildTradeDefaults(trade);
     applyMeasurements();
   }
+  // A product newly added in G/B/B mode picks up its global package content
+  if (enabled && tradeGbbMode(trade)) seedTradeFromDefaults(trade);
+  _syncLegacyTier();
   setDirty(); rerender();
   if(activePage==='pricing'){renderTabBar();renderTradeContent();}
   if(activePage==='scope'){renderScopePage();}
@@ -4283,7 +4391,15 @@ function setPricingMode(mode) {
   setDirty(); renderPricingModeUI(); renderTierRates(); rerender();
   if(activePage==='pricing')renderTradeContent();
 }
-function setTier(tier) { S.selected_tier=tier; setDirty(); renderTierButtons(); rerender(); if(activePage==='pricing')renderTradeContent(); }
+// Sidebar tier buttons act as a "set everything" switch: the global default
+// AND every G/B/B product follow. Per-product picks live on the Options tab.
+function setTier(tier) {
+  S.selected_tier=tier;
+  gbbTrades().forEach(tr => { S.trades[tr].selected_tier = tier; });
+  setDirty(); renderTierButtons(); rerender();
+  if(activePage==='pricing')renderTradeContent();
+  if(activePage==='options')renderOptionsPage();
+}
 function setTradeOverride(trade,v) { S.pricing.per_trade_overrides[trade]=v===''?null:parseFloat(v); setDirty(); rerender(); if(activePage==='pricing')renderTradeContent(); }
 
 /* ── CRM ───────────────────────────────────────────────────────────── */
@@ -5024,11 +5140,11 @@ function renderDashboardAnalytics(filteredList, allData) {
 /* ── Order Sheet ─────────────────────────────────────────────────────── */
 
 function openOrderSheet() {
-  const tier = S.selected_tier;
   const rows = [];
   ['roofing','siding','windows','gutters','other'].forEach(trade => {
     const td = S.trades[trade];
     if (!td || !td.enabled || !(td.line_items||[]).length) return;
+    const tier = tradeTier(trade);   // order materials for THIS product's chosen package
     const mode = td.mode || (trade === 'gutters' ? 'simple' : 'gbb');
     const tradeItems = (td.line_items||[]).filter(item => {
       if ((parseFloat(item.quantity)||0) <= 0) return false;
@@ -5317,6 +5433,15 @@ async function openSettings() {
   } catch { appSettings = appSettings || {}; }
   document.getElementById('settings-colors').value = _globalShingleColors().join('\n');
   document.getElementById('settings-waste').value  = _globalWastePct();
+  if (_meCanViewAll()) {
+    document.getElementById('settings-gbb').classList.remove('hidden');
+    try {
+      const r = await fetch('/api/tier-defaults');
+      tierDefaults = await r.json() || {};
+    } catch {}
+    _settingsGbb = JSON.parse(JSON.stringify(tierDefaults || {}));
+    _gbbSetTrade(_gbbActiveTrade);
+  }
   if (_meIsAdmin()) {
     document.getElementById('settings-company').classList.remove('hidden');
     try {
@@ -5333,6 +5458,47 @@ async function openSettings() {
     document.getElementById('set-initials-ins').value    = globalInitialTexts('insurance').join('\n');
   }
   document.getElementById('settings-modal').classList.remove('hidden');
+}
+
+/* Global G/B/B package content editor (⚙ Settings, manager+). Edits a working
+   copy (_settingsGbb) per trade; saveSettings PUTs it to /api/tier-defaults. */
+let _settingsGbb = {};
+let _gbbActiveTrade = 'roofing';
+const GBB_SET_TRADES = ['roofing','siding','windows','gutters','other'];
+
+function _gbbTradeDefaults(trade) {
+  if (!_settingsGbb[trade]) _settingsGbb[trade] = {
+    descriptions:{good:'',better:'',best:''}, features:{good:[],better:[],best:[]} };
+  const d = _settingsGbb[trade];
+  if (!d.descriptions) d.descriptions = {good:'',better:'',best:''};
+  if (!d.features)     d.features     = {good:[],better:[],best:[]};
+  return d;
+}
+function _gbbCollectActive() {
+  const d = _gbbTradeDefaults(_gbbActiveTrade);
+  TIERS.forEach(t => {
+    const desc = document.getElementById(`gbb-set-desc-${t}`);
+    const feat = document.getElementById(`gbb-set-feat-${t}`);
+    if (desc) d.descriptions[t] = desc.value.trim();
+    if (feat) d.features[t] = feat.value.split('\n').map(s=>s.trim()).filter(Boolean);
+  });
+}
+function _gbbSetTrade(trade) {
+  // Keep edits when hopping between product tabs
+  if (document.getElementById(`gbb-set-feat-good`)) _gbbCollectActive();
+  _gbbActiveTrade = trade;
+  const d = _gbbTradeDefaults(trade);
+  document.getElementById('gbb-set-tabs').innerHTML = GBB_SET_TRADES.map(t =>
+    `<button type="button" class="gbb-set-tab ${t===trade?'active':''}"
+       onclick="_gbbSetTrade('${t}')">${TRADE_LABELS[t]}</button>`).join('');
+  document.getElementById('gbb-set-body').innerHTML = TIERS.map(t => `
+    <div class="cc-block">
+      <label class="cc-toggle">${TIER_LABELS[t]}</label>
+      <input type="text" id="gbb-set-desc-${t}" class="cc-title"
+        placeholder="Short tagline for the ${TIER_LABELS[t]} package…" value="${esc(d.descriptions[t]||'')}">
+      <textarea id="gbb-set-feat-${t}" rows="5" spellcheck="false"
+        placeholder="One bullet per line — what's included in ${TIER_LABELS[t]}…">${esc((d.features[t]||[]).join('\n'))}</textarea>
+    </div>`).join('');
 }
 
 /* Company trust content (About/Warranty/Certs/Reviews on the customer link) */
@@ -5426,6 +5592,16 @@ async function saveSettings() {
       body: JSON.stringify(appSettings),
     });
     if (!r.ok) throw new Error('Save failed');
+    // Manager+: save the per-product G/B/B package content alongside
+    if (_meCanViewAll()) {
+      _gbbCollectActive();
+      const rg = await fetch('/api/tier-defaults', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(_settingsGbb),
+      });
+      if (!rg.ok) throw new Error('G/B/B package content save failed');
+      tierDefaults = JSON.parse(JSON.stringify(_settingsGbb));
+    }
     // Admin: save the customer-proposal company content alongside
     if (_meIsAdmin()) {
       const r2 = await fetch('/api/company-content', {
@@ -5459,7 +5635,7 @@ async function shareEstimate() {
     : ['roofing','siding','windows','gutters','other']
         .some(t => S.trades[t].enabled && (S.trades[t].line_items||[]).length > 0);
   if (!hasItems) issues.push('No line items entered yet');
-  const sendTotal = isIns ? insuranceTotal() : grandTotal(S.selected_tier);
+  const sendTotal = isIns ? insuranceTotal() : selectedTotal();
   if (sendTotal === 0) issues.push('Estimate total is $0');
   if (issues.length) {
     const go = confirm(`⚠ Heads up before sending:\n\n• ${issues.join('\n• ')}\n\nSend anyway?`);
@@ -5704,6 +5880,15 @@ async function doLoadEstimate(id) {
     }
     TRADES.forEach(t=>{if(!S.trades[t])S.trades[t]={enabled:false,line_items:[],colors:{}};if(!S.trades[t].colors)S.trades[t].colors={};});
     if(!S.tier_features) S.tier_features={good:[],better:[],best:[]};
+    // Per-trade G/B/B migration: older estimates carry one estimate-level set
+    // of package content + one selected_tier. tradeTierContent() moves the
+    // content into the first GBB trade; the selection seeds every GBB trade.
+    gbbTrades().forEach(t=>{
+      tradeTierContent(t);
+      if(!TIERS.includes(S.trades[t].selected_tier))
+        S.trades[t].selected_tier = TIERS.includes(S.selected_tier)?S.selected_tier:'better';
+    });
+    applyTierDefaults(S);   // fill any still-empty product content from globals
     // Migrate single global_rate → per-tier rates (all seeded from the old rate)
     if(!S.pricing) S.pricing={mode:'margin',global_rate:35,tier_rates:{good:35,better:35,best:35},per_trade_overrides:{}};
     if(!S.pricing.per_trade_overrides) S.pricing.per_trade_overrides={};
@@ -6041,34 +6226,31 @@ function buildPrintContent() {
     }
   }
 
-  // Build auto-detected item lists (used as fallback when no custom tier_features set)
-  const tierItems={};
-  TIERS.forEach(t=>{tierItems[t]=[];});
-  TRADES.forEach(trade=>{
-    const td=S.trades[trade]; if(!td||!td.enabled||trade==='insurance')return;
-    const tradeMode=td.mode||(trade==='gutters'?'simple':'gbb');
-    (td.line_items||[]).forEach(item=>{
-      if(tradeMode==='simple'){
-        if(parseFloat(item.quantity)>0){
-          const lbl=item.description?`${item.name} — ${item.description}`:item.name;
-          TIERS.forEach(t=>tierItems[t].push(lbl));
+  // Per-trade package bullets: the rep-curated features, falling back to an
+  // auto-detected list built from that trade's line items.
+  const tradeDisplayItems=trade=>{
+    const td=S.trades[trade];
+    const content=tradeTierContent(trade);
+    const out={};
+    TIERS.forEach(t=>{
+      const f=(content.features||{})[t];
+      if(f&&f.length){out[t]=f;return;}
+      const items=[];
+      const tradeMode=td.mode||(trade==='gutters'?'simple':'gbb');
+      (td.line_items||[]).forEach(item=>{
+        if((parseFloat(item.quantity)||0)<=0)return;
+        if(tradeMode==='simple'){
+          items.push(item.description?`${item.name} — ${item.description}`:item.name);
+          return;
         }
-        return;
-      }
-      TIERS.forEach(t=>{
         const ti=(item.tiers||{})[t]||{};
         if(ti.included===false)return;  // excluded from this package tier
-        if((parseFloat(item.quantity)||0)>0)
-          tierItems[t].push(ti.description?`${item.name} — ${ti.description}`:item.name);
+        items.push(ti.description?`${item.name} — ${ti.description}`:item.name);
       });
+      out[t]=items;
     });
-  });
-  // Use custom tier_features when set; fall back to auto-detected items
-  const tierDisplayItems={};
-  TIERS.forEach(t=>{
-    const f=(S.tier_features||{})[t];
-    tierDisplayItems[t]=(f&&f.length)?f:tierItems[t];
-  });
+    return out;
+  };
 
   const estType = S.estimate_type || 'retail';
 
@@ -6081,29 +6263,40 @@ function buildPrintContent() {
   });
 
   if (estType === 'retail') {
-    if (pv.options !== false && !isAllSimple) ph+=`<div class="p-pkg-comparison">
-      <h2>Your Options</h2>
+    if (pv.options !== false && !isAllSimple) gbbTrades().forEach(gt=>{
+      const gtTier=tradeTier(gt);
+      const disp=tradeDisplayItems(gt);
+      const content=tradeTierContent(gt);
+      const multi=gbbTrades().length>1;
+      ph+=`<div class="p-pkg-comparison">
+      <h2>${multi?esc(TRADE_LABELS[gt])+' — ':''}Your Options</h2>
       <table class="p-pkg-table"><thead><tr>
-        ${enabledTiers().map(t=>`<th class="col-${t} ${t===tier?'selected-col':''}">
-          ${TIER_LABELS[t]} ${t===tier?'<br><span class="p-selected-tag">SELECTED</span>':''}
+        ${enabledTiers().map(t=>`<th class="col-${t} ${t===gtTier?'selected-col':''}">
+          ${TIER_LABELS[t]} ${t===gtTier?'<br><span class="p-selected-tag">SELECTED</span>':''}
         </th>`).join('')}
       </tr></thead><tbody><tr>
         ${enabledTiers().map(t=>{
-          const tot=grandTotal(t);
-          const desc=(S.tier_descriptions||{})[t]||'';
+          const tot=tradeTotal(gt,t);
+          const desc=(content.descriptions||{})[t]||'';
           return `<td>
             <span class="p-pkg-price">${fmtCur(tot)}</span>
             ${desc?`<span class="p-pkg-desc">${esc(desc)}</span>`:''}
-            ${tierDisplayItems[t].slice(0,10).map(i=>`<span class="p-pkg-item">· ${esc(i)}</span>`).join('')}
-            ${tierDisplayItems[t].length>10?`<span class="p-pkg-item" style="color:#aaa">+ ${tierDisplayItems[t].length-10} more…</span>`:''}
+            ${disp[t].slice(0,10).map(i=>`<span class="p-pkg-item">· ${esc(i)}</span>`).join('')}
+            ${disp[t].length>10?`<span class="p-pkg-item" style="color:#aaa">+ ${disp[t].length-10} more…</span>`:''}
           </td>`;
         }).join('')}
       </tr></tbody></table>
     </div>`;
-    if (!isAllSimple) ph+=`<div class="p-package-banner">Package: ${TIER_LABELS[tier]}</div>`;
+    });
+    if (!isAllSimple) ph+=`<div class="p-package-banner">${
+      gbbTrades().length>1
+        ? 'Packages: '+gbbTrades().map(gt=>`${TRADE_LABELS[gt]} — ${TIER_LABELS[tradeTier(gt)]}`).join(' · ')
+        : 'Package: '+TIER_LABELS[gbbTrades().length?tradeTier(gbbTrades()[0]):tier]
+    }</div>`;
     TRADES.filter(t=>t!=='insurance').forEach(trade=>{
       const td=S.trades[trade];
       if(!td.enabled||!td.line_items.length)return;
+      const tier=tradeTier(trade);   // each product prints at ITS chosen package
       const tradeMode=td.mode||(trade==='gutters'?'simple':'gbb');
       const _shown=td.line_items.filter(item=>{
         if((parseFloat(item.quantity)||0)<=0) return false;
@@ -6173,7 +6366,7 @@ function buildPrintContent() {
         </tr></tfoot></table>
       </div>`;
     });
-    ph+=`<div class="p-grand-total"><span>Project Total</span><span>${fmtCur(grandTotal(tier))}</span></div>`;
+    ph+=`<div class="p-grand-total"><span>Project Total</span><span>${fmtCur(selectedTotal())}</span></div>`;
   } else {
     const insTd=S.trades.insurance;
     const insCarrier=insTd?.carrier?` — ${esc(insTd.carrier)}`:'';
@@ -6926,7 +7119,7 @@ function renderClientPage() {
   const inp = (field, val, ph, extra='') =>
     `<input type="text" value="${esc(val || '')}" placeholder="${ph}"
        onchange="clientSet('${field}', this.value)" ${extra}>`;
-  const started = !!(S.estimate_id || grandTotal(S.selected_tier) > 0 || insuranceTotal() > 0);
+  const started = !!(S.estimate_id || selectedTotal() > 0 || insuranceTotal() > 0);
   const docCount = (S.attachments || []).length;
   el.innerHTML = `
   <div class="client-hub">
@@ -7130,7 +7323,7 @@ function renderCOPanel() {
         <button class="doc-upload-btn" onclick="coNew()">＋ New Change Order</button>
       </div>
       ${rows || '<p class="pm-hint">No change orders yet — use one any time the scope changes after signing (extra work or a credit). The customer signs it online, just like the estimate.</p>'}
-      ${signedSum ? `<p class="pm-hint" style="text-align:right"><strong>${_fmtSigned(signedSum)} in signed change orders → job total ${fmtCur(((S.estimate_type === 'insurance') ? insuranceTotal() : grandTotal((S.signature && S.signature.selected_tier) || S.selected_tier || 'better')) + signedSum)}</strong></p>` : ''}
+      ${signedSum ? `<p class="pm-hint" style="text-align:right"><strong>${_fmtSigned(signedSum)} in signed change orders → job total ${fmtCur(((S.estimate_type === 'insurance') ? insuranceTotal() : selectedTotal()) + signedSum)}</strong></p>` : ''}
       <div id="co-editor"></div>
     </div>`;
   renderCOEditor();
@@ -7420,7 +7613,7 @@ function permitPrefillFromEstimate() {
   PermitState.job_zip     = a.zip    || '';
   const sq = parseFloat((S.measurements || {}).roof_squares);
   if (sq > 0) PermitState.num_squares = String(sq);
-  const total = (typeof grandTotal === 'function' && grandTotal(S.selected_tier)) ||
+  const total = (typeof selectedTotal === 'function' && selectedTotal()) ||
                 (typeof insuranceTotal === 'function' && insuranceTotal()) || 0;
   if (total > 0 && !PermitState.valuation)
     PermitState.valuation = total.toLocaleString('en-US', {minimumFractionDigits: 2});

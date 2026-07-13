@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Project One">
   <link rel="apple-touch-icon" href="/static/icon-180.png">
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/static/style.css?v=99">
+  <link rel="stylesheet" href="/static/style.css?v=100">
 </head>
 <body>
 
@@ -385,6 +385,11 @@
         <label>Default Waste % <span class="note-tag">applied to new estimates</span></label>
         <input type="number" id="settings-waste" min="0" max="50" step="1">
       </div>
+      <div id="settings-gbb" class="field-group hidden">
+        <label>📦 Good / Better / Best Package Content <span class="note-tag">per product — pre-fills the Options tab whenever a product is offered as G/B/B</span></label>
+        <div class="gbb-set-tabs" id="gbb-set-tabs"></div>
+        <div id="gbb-set-body"></div>
+      </div>
       <div id="settings-company" class="field-group hidden">
         <label>Customer Proposal — Company Content <span class="note-tag">admin only — shown on every customer signing page</span></label>
         <div class="cc-block">
@@ -559,6 +564,6 @@
 
 <div id="app-toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=99"></script>
+<script src="/static/app.js?v=100"></script>
 </body>
 </html>
