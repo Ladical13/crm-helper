@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Project One">
   <link rel="apple-touch-icon" href="/static/icon-180.png">
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/static/style.css?v=98">
+  <link rel="stylesheet" href="/static/style.css?v=99">
 </head>
 <body>
 
@@ -408,6 +408,25 @@
           <textarea id="cc-reviews-items" rows="5" spellcheck="true" placeholder="One review per line:  stars | name | review text&#10;5 | Sarah M. | Fast, clean, and the roof looks amazing."></textarea>
         </div>
       </div>
+      <div id="settings-contract" class="field-group hidden">
+        <label>Contract &amp; Customer Initials <span class="note-tag">admin only — applied to every NEW estimate anyone creates (existing estimates keep their own text)</span></label>
+        <div class="cc-block">
+          <label class="cc-toggle">📜 Retail Contract — Terms &amp; Conditions</label>
+          <textarea id="set-contract-retail" rows="10" spellcheck="true"></textarea>
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle">✍ Retail Customer Initials <span class="note-tag">one statement per line — customer initials each at signing</span></label>
+          <textarea id="set-initials-retail" rows="4" spellcheck="true"></textarea>
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle">🏛 Insurance Contract — Terms &amp; Conditions</label>
+          <textarea id="set-contract-ins" rows="10" spellcheck="true"></textarea>
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle">✍ Insurance Customer Initials <span class="note-tag">one statement per line</span></label>
+          <textarea id="set-initials-ins" rows="4" spellcheck="true"></textarea>
+        </div>
+      </div>
     </div>
     <div class="settings-footer">
       <button id="test-notif-btn" class="btn-secondary" onclick="testSignatureNotification()" style="margin-right:auto">📧 Test Email Notification</button>
@@ -540,6 +559,6 @@
 
 <div id="app-toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=98"></script>
+<script src="/static/app.js?v=99"></script>
 </body>
 </html>

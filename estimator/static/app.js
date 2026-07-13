@@ -221,8 +221,8 @@ const DEFAULT_INITIALS_INSURANCE = [
   'I understand supplemental items may be submitted to my carrier as the scope requires.',
 ];
 function defaultInitials(type) {
-  const src = type === 'insurance' ? DEFAULT_INITIALS_INSURANCE : DEFAULT_INITIALS_RETAIL;
-  return src.map(text => ({ id:'ini_'+uid(), text }));
+  // Company-wide defaults from ⚙ Settings win; hardcoded texts are fallback
+  return globalInitialTexts(type).map(text => ({ id:'ini_'+uid(), text }));
 }
 
 /* ── Measurements engine ─────────────────────────────────────────────
@@ -313,6 +313,26 @@ function _globalShingleColors() {
 function _globalWastePct() {
   const w = parseFloat(appSettings.default_waste_pct);
   return isNaN(w) ? 10 : w;
+}
+/* Company-wide contract + initials defaults (⚙ Settings, admin) — every NEW
+   estimate seeds from these; the hardcoded texts are only the fallback when
+   nothing has been saved yet. */
+function globalContract(type) {
+  const t = type === 'insurance' ? appSettings.contract_insurance : appSettings.contract_retail;
+  return (t || '').trim() ? t : (type === 'insurance' ? DEFAULT_INSURANCE_CONTRACT : DEFAULT_CONTRACT);
+}
+function globalInitialTexts(type) {
+  const list = type === 'insurance' ? appSettings.initials_insurance : appSettings.initials_retail;
+  const clean = (list || []).map(s => String(s).trim()).filter(Boolean);
+  return clean.length ? clean : (type === 'insurance' ? DEFAULT_INITIALS_INSURANCE : DEFAULT_INITIALS_RETAIL);
+}
+/* True when the text is one of the untouched stock contracts (hardcoded or
+   the saved global default) — used to decide whether a retail↔insurance
+   switch may safely swap the contract out. */
+function isStockContract(text) {
+  if (!(text || '').trim()) return true;
+  return [DEFAULT_CONTRACT, DEFAULT_INSURANCE_CONTRACT,
+          globalContract('retail'), globalContract('insurance')].includes(text);
 }
 function evalFormula(formula, m) {
   // Replace known measurement variable names with their numeric values, then eval.
@@ -533,7 +553,7 @@ function blankEstimate() {
     tier_descriptions: { good:'', better:'', best:'' },
     tier_features:     { good:[], better:[], best:[] },
     estimate_type: 'retail',
-    print_contract: true, contract_text: DEFAULT_CONTRACT,
+    print_contract: true, contract_text: globalContract('retail'),
     contract_initials: defaultInitials('retail'),
     shingle_selection: { enabled: true, options: _globalShingleColors(), chosen: '' },
     measurements: { waste_pct: _globalWastePct() },
@@ -799,10 +819,11 @@ function renderEstimateTypeUI() {
   if (iBtn) iBtn.classList.toggle('active', t === 'insurance');
 }
 // True when the current initials still match an untouched default set
+// (either the hardcoded texts or the saved company-wide defaults)
 function initialsMatchDefault(type) {
-  const cur = (S.contract_initials || []).map(i => i.text).join('\n');
-  const def = (type === 'insurance' ? DEFAULT_INITIALS_INSURANCE : DEFAULT_INITIALS_RETAIL).join('\n');
-  return cur === def;
+  const cur  = (S.contract_initials || []).map(i => i.text).join('\n');
+  const hard = (type === 'insurance' ? DEFAULT_INITIALS_INSURANCE : DEFAULT_INITIALS_RETAIL).join('\n');
+  return cur === hard || cur === globalInitialTexts(type).join('\n');
 }
 function setEstimateType(type) {
   S.estimate_type = type;
@@ -812,22 +833,22 @@ function setEstimateType(type) {
     });
     S.trades.insurance.enabled = true;
     activeTrade = 'insurance';
-    // Auto-load insurance contract if still on retail default or blank
-    if (!S.contract_text || S.contract_text === DEFAULT_CONTRACT) {
-      S.contract_text = DEFAULT_INSURANCE_CONTRACT;
+    // Auto-load insurance contract if still on an untouched default or blank
+    if (isStockContract(S.contract_text)) {
+      S.contract_text = globalContract('insurance');
       const ta = document.getElementById('contract-textarea');
-      if (ta) ta.value = DEFAULT_INSURANCE_CONTRACT;
+      if (ta) ta.value = S.contract_text;
     }
     // Swap initials to insurance defaults if still on the retail defaults
     if (!S.contract_initials || !S.contract_initials.length || initialsMatchDefault('retail'))
       S.contract_initials = defaultInitials('insurance');
     switchPage('pricing');
   } else {
-    // Auto-restore retail contract if still on insurance default or blank
-    if (!S.contract_text || S.contract_text === DEFAULT_INSURANCE_CONTRACT) {
-      S.contract_text = DEFAULT_CONTRACT;
+    // Auto-restore retail contract if still on an untouched default or blank
+    if (isStockContract(S.contract_text)) {
+      S.contract_text = globalContract('retail');
       const ta = document.getElementById('contract-textarea');
-      if (ta) ta.value = DEFAULT_CONTRACT;
+      if (ta) ta.value = S.contract_text;
     }
     if (!S.contract_initials || !S.contract_initials.length || initialsMatchDefault('insurance'))
       S.contract_initials = defaultInitials('retail');
@@ -3513,14 +3534,36 @@ function renderContractPage() {
   document.getElementById('contract-section').innerHTML =
     `<div class="panel-header">
       <h3>Contract Terms</h3>
-      <label class="checkbox-label" style="font-size:11px">
-        <input type="checkbox" ${S.print_contract!==false?'checked':''}
-          onchange="S.print_contract=this.checked;setDirty()"> Print with estimate
-      </label>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        ${_meIsAdmin() ? `<button class="btn-save-defaults" onclick="saveContractDefaults()"
+          title="Make this contract + initials the company default for every NEW ${S.estimate_type==='insurance'?'insurance':'retail'} estimate anyone creates (also editable in ⚙ Settings)">💾 Save as Company Default</button>` : ''}
+        <label class="checkbox-label" style="font-size:11px">
+          <input type="checkbox" ${S.print_contract!==false?'checked':''}
+            onchange="S.print_contract=this.checked;setDirty()"> Print with estimate
+        </label>
+      </div>
     </div>
     <textarea id="contract-textarea" rows="14"
-      onchange="S.contract_text=this.value;setDirty()">${esc(S.contract_text||(S.estimate_type==='insurance'?DEFAULT_INSURANCE_CONTRACT:DEFAULT_CONTRACT))}</textarea>
+      onchange="S.contract_text=this.value;setDirty()">${esc(S.contract_text||globalContract(S.estimate_type==='insurance'?'insurance':'retail'))}</textarea>
     ${renderSigningRequirements()}`;
+}
+
+/* Admin: push the CURRENT estimate's contract + initials up as the company
+   default for this estimate type — every new estimate seeds from it. */
+async function saveContractDefaults() {
+  if (!confirm(`Make this contract and its customer-initial statements the company default for every NEW ${S.estimate_type === 'insurance' ? 'insurance' : 'retail'} estimate?\n\nExisting estimates are not changed.`)) return;
+  const ins = S.estimate_type === 'insurance';
+  const texts = (S.contract_initials || []).map(i => (i.text || '').trim()).filter(Boolean);
+  appSettings[ins ? 'contract_insurance' : 'contract_retail'] = (S.contract_text || '').trim();
+  appSettings[ins ? 'initials_insurance' : 'initials_retail'] = texts;
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(appSettings),
+    });
+    if (!r.ok) throw new Error('Server error');
+    toast('✓ Saved — every new ' + (ins ? 'insurance' : 'retail') + ' estimate will use this contract');
+  } catch (e) { alert('Could not save the company default: ' + e.message); }
 }
 
 function renderSigningRequirements() {
@@ -5280,6 +5323,14 @@ async function openSettings() {
       const r = await fetch('/api/company-content');
       _fillCompanyContent(await r.json() || {});
     } catch { _fillCompanyContent({}); }
+    // Contract & initials defaults — prefill with the effective text (saved
+    // global default or, before one exists, the built-in stock text) so the
+    // admin edits from what new estimates actually get today.
+    document.getElementById('settings-contract').classList.remove('hidden');
+    document.getElementById('set-contract-retail').value = globalContract('retail');
+    document.getElementById('set-contract-ins').value    = globalContract('insurance');
+    document.getElementById('set-initials-retail').value = globalInitialTexts('retail').join('\n');
+    document.getElementById('set-initials-ins').value    = globalInitialTexts('insurance').join('\n');
   }
   document.getElementById('settings-modal').classList.remove('hidden');
 }
@@ -5362,6 +5413,13 @@ async function saveSettings() {
     shingle_colors: colors,
     default_waste_pct: isNaN(waste) ? 10 : waste,
   };
+  if (_meIsAdmin()) {
+    const lines = id => document.getElementById(id).value.split('\n').map(s => s.trim()).filter(Boolean);
+    appSettings.contract_retail    = document.getElementById('set-contract-retail').value.trim();
+    appSettings.contract_insurance = document.getElementById('set-contract-ins').value.trim();
+    appSettings.initials_retail    = lines('set-initials-retail');
+    appSettings.initials_insurance = lines('set-initials-ins');
+  }
   try {
     const r = await fetch('/api/settings', {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
@@ -5630,7 +5688,7 @@ async function doLoadEstimate(id) {
     S=await r.json();
     if(!S.tier_descriptions) S.tier_descriptions={good:'',better:'',best:''};
     if(S.print_contract===undefined) S.print_contract=true;
-    if(!S.contract_text) S.contract_text=(S.estimate_type==='insurance'?DEFAULT_INSURANCE_CONTRACT:DEFAULT_CONTRACT);
+    if(!S.contract_text) S.contract_text=globalContract(S.estimate_type==='insurance'?'insurance':'retail');
     if(!S.cover_photo_id) S.cover_photo_id=null;
     if(S.intro_text===undefined) S.intro_text='';
     if(!S.page_visibility) S.page_visibility={intro:false,options:true,products:true,pricing:true,report:true};
@@ -6433,10 +6491,13 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     priceBook    = await pbRes.json();
     tierDefaults = await tdRes.json();
     try { appSettings = await setRes.json() || {}; } catch { appSettings = {}; }
-    // Apply global settings to the fresh blank estimate
+    // Apply global settings to the fresh blank estimate (it was created
+    // before /api/settings resolved, so re-seed the settings-driven fields)
     if (!S.estimate_id) {
       if (S.shingle_selection) S.shingle_selection.options = _globalShingleColors();
       if (S.measurements) S.measurements.waste_pct = _globalWastePct();
+      S.contract_text     = globalContract('retail');
+      S.contract_initials = defaultInitials('retail');
     }
     const si = await siRes.json();
     window._serverPublicUrl = si.public_url || '';
