@@ -5584,7 +5584,23 @@ TEMPLATES = {
          "desc_good": "Economy Vinyl", "desc_better": "Premium Vinyl", "desc_best": "Engineered Wood / Fiber Cement",
          "notes_good": "Economy-grade vinyl siding provides durable, low-maintenance protection at an accessible price point.",
          "notes_better": "Premium vinyl siding with thicker wall construction, deeper shadow lines, and a wider color palette. Resists fading and impact for decades with zero maintenance.",
-         "notes_best": "Engineered wood or fiber cement siding offers the natural look of real wood with dramatically superior durability and fire resistance. The premium choice for lasting curb appeal."},
+         "notes_best": "Engineered wood or fiber cement siding offers the natural look of real wood with dramatically superior durability and fire resistance. The premium choice for lasting curb appeal.",
+         # Starter product/exposure menus per tier — the rep picks one on the estimate.
+         # Costs per SQ are placeholders; edit in Price Book → Siding.
+         "variants_good": [
+             {"label": "Vinyl · Dutch Lap 4\"",   "cost": 165},
+             {"label": "Vinyl · Clapboard 4½\"",  "cost": 170},
+             {"label": "Vinyl · Board & Batten",  "cost": 195},
+         ],
+         "variants_better": [
+             {"label": "LP SmartSide · Lap 8\"",              "cost": 240},
+             {"label": "LP SmartSide · Panel / Board & Batten", "cost": 265},
+         ],
+         "variants_best": [
+             {"label": "Hardie · Plank Lap 8¼\" (Cedarmill)", "cost": 320},
+             {"label": "Hardie · Plank Lap 7\" (Smooth)",     "cost": 315},
+             {"label": "Hardie · Shingle / Panel",           "cost": 360},
+         ]},
         {"name": "House Wrap", "unit": "SQ", "measure": "siding_squares_waste",
          "desc_good": "Standard WRB", "desc_better": "Premium WRB", "desc_best": "Fully Adhered WRB",
          "notes_good": "Standard weather-resistant barrier installed under siding.",
@@ -5701,7 +5717,8 @@ def get_templates():
 
     # Fields to backfill from hardcoded templates when the price book item omits them
     RICH = ('desc_good', 'desc_better', 'desc_best',
-            'notes_good', 'notes_better', 'notes_best')
+            'notes_good', 'notes_better', 'notes_best',
+            'variants_good', 'variants_better', 'variants_best')
 
     for trade, items in TEMPLATES.items():
         hardcoded_by_name = {it.get('name', ''): it for it in items}

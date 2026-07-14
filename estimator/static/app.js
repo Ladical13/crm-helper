@@ -1615,6 +1615,16 @@ function pbRenderMaster() {
           const eff = effCost(item);
           const base = (item.cost_good !== undefined && item.cost_good !== '') ? parseFloat(item.cost_good)||0
                      : (item.cost !== undefined ? parseFloat(item.cost)||0 : 0);
+          // Siding rows can define a menu of product/exposure options per tier that
+          // the rep picks from on the estimate. Editor is a collapsible extra row.
+          const variantsRow = pbActiveTrade === 'siding'
+            ? `<tr class="pb-variants-row"><td colspan="10">
+                 <details class="pb-variants" ${pbHasVariants(item)?'open':''}>
+                   <summary>Product options / exposures ${pbVariantSummary(item)}</summary>
+                   <div class="pb-variants-grid">${TIERS.map(tier => pbVariantEditor(item, i, tier)).join('')}</div>
+                 </details>
+               </td></tr>`
+            : '';
           return `<tr class="pb-item-row${isDefault ? '' : ' pb-row-nondefault'}">
             <td class="pb-order-cell">
               <button class="pb-order-btn" onclick="pbMoveItem(${i},-1)" ${i===0?'disabled':''} title="Move up">↑</button>
@@ -1635,12 +1645,58 @@ function pbRenderMaster() {
                 onchange="pbItems['${pbActiveTrade}'][${i}].is_default=this.checked;renderPBModal()">
             </td>
             <td style="text-align:center"><button class="pb-del-btn" title="Delete product" onclick="pbDeleteItem(${i})">✕</button></td>
-          </tr>`;
+          </tr>${variantsRow}`;
         }).join('') : `<tr><td colspan="10" class="pb-empty">No products yet — add your first one below.</td></tr>`}
       </tbody>
     </table>
     </div>
     <div style="margin-top:10px"><button class="btn-secondary" onclick="pbAddItem()">+ Add Product</button></div>`;
+}
+
+// ── Price-book product variants (siding) ────────────────────────────────
+// Per-tier menu of specific products/exposures a rep chooses from on the
+// estimate. Stored on the price-book row as variants_<tier> = [{label,cost,notes?}].
+function pbHasVariants(item) {
+  return TIERS.some(tier => Array.isArray(item['variants_'+tier]) && item['variants_'+tier].length);
+}
+function pbVariantSummary(item) {
+  const n = TIERS.reduce((s,tier)=> s + ((item['variants_'+tier]||[]).length), 0);
+  return n ? `<span class="pb-variant-count">${n}</span>` : '';
+}
+function pbVariantEditor(item, i, tier) {
+  const list = Array.isArray(item['variants_'+tier]) ? item['variants_'+tier] : [];
+  return `<div class="pb-variant-col pb-tier-${tier}">
+    <div class="pb-variant-hd">${TIER_LABELS[tier]}</div>
+    ${list.map((v, vi) => `
+      <div class="pb-variant-item">
+        <input class="pb-variant-label" type="text" value="${esc(v.label||'')}" placeholder="Product / exposure"
+          onchange="pbSetVariant(${i},'${tier}',${vi},'label',this.value)">
+        <span class="pb-variant-dollar">$</span>
+        <input class="pb-variant-cost" type="number" min="0" step="0.01"
+          value="${(v.cost!==undefined&&v.cost!=='')?v.cost:''}" placeholder="Cost"
+          onchange="pbSetVariant(${i},'${tier}',${vi},'cost',this.value)">
+        <button class="pb-variant-del" title="Remove option" onclick="pbRemoveVariant(${i},'${tier}',${vi})">✕</button>
+      </div>`).join('')}
+    <button class="pb-variant-add" onclick="pbAddVariant(${i},'${tier}')">+ Add option</button>
+  </div>`;
+}
+function pbAddVariant(i, tier) {
+  const it = pbItems[pbActiveTrade][i];
+  if (!Array.isArray(it['variants_'+tier])) it['variants_'+tier] = [];
+  it['variants_'+tier].push({ label:'', cost:'' });
+  renderPBModal();
+}
+function pbSetVariant(i, tier, vIdx, field, val) {
+  const list = pbItems[pbActiveTrade][i]['variants_'+tier];
+  if (!list || !list[vIdx]) return;
+  list[vIdx][field] = field==='cost' ? (val===''?'':(parseFloat(val)||0)) : val;
+}
+function pbRemoveVariant(i, tier, vIdx) {
+  const list = pbItems[pbActiveTrade][i]['variants_'+tier];
+  if (!list) return;
+  list.splice(vIdx, 1);
+  if (!list.length) delete pbItems[pbActiveTrade][i]['variants_'+tier];
+  renderPBModal();
 }
 
 // Good / Better / Best tab: the products that make up one package.
@@ -1892,17 +1948,19 @@ function pbApplyToEstimate() {
     const descGood   = t.product_good   || t.desc_good   || '';
     const descBetter = t.product_better || t.desc_better || '';
     const descBest   = t.product_best   || t.desc_best   || '';
+    const tiers = {
+      good:  { material_unit_cost: costGood,   labor_unit_cost: 0, description: descGood,   notes: t.notes_good||'',   included: t.in_good   !== false },
+      better:{ material_unit_cost: costBetter, labor_unit_cost: 0, description: descBetter, notes: t.notes_better||'', included: t.in_better !== false },
+      best:  { material_unit_cost: costBest,   labor_unit_cost: 0, description: descBest,   notes: t.notes_best||'',   included: t.in_best   !== false },
+    };
+    applyTierVariants(pbActiveTrade, t, tiers);
     return {
       id: uid(), name: t.name, unit: t.unit, quantity: 0, scope_note: '',
       customer_visible: t.customer_visible !== false,
       measure: t.measure || undefined,
       formula: t.formula || undefined,
       bundle_lf: t.bundle_lf || undefined, bundle_unit: t.bundle_unit || undefined,
-      tiers: {
-        good:  { material_unit_cost: costGood,   labor_unit_cost: 0, description: descGood,   notes: t.notes_good||'',   included: t.in_good   !== false },
-        better:{ material_unit_cost: costBetter, labor_unit_cost: 0, description: descBetter, notes: t.notes_better||'', included: t.in_better !== false },
-        best:  { material_unit_cost: costBest,   labor_unit_cost: 0, description: descBest,   notes: t.notes_best||'',   included: t.in_best   !== false },
-      }
+      tiers
     };
   });
   // Apply any measurements already entered so quantities fill in immediately
@@ -3069,6 +3127,17 @@ function liSetNameSmart(trade, id, v) {
         if (!parseFloat(tt.material_unit_cost) && !parseFloat(tt.labor_unit_cost)) tt.material_unit_cost = tierCost[tier];
         if (!tt.description) tt.description = t['product_'+tier] || t['desc_'+tier] || '';
         if (!tt.notes)       tt.notes       = t['notes_'+tier] || '';
+        // Siding: attach the product-variant menu if this row defines one and the
+        // item doesn't already carry variants. Match the existing label to a
+        // variant so the picker reflects it; otherwise it reads "Custom".
+        if (trade === 'siding' && !Array.isArray(tt.variants)) {
+          const menu = t['variants_'+tier];
+          if (Array.isArray(menu) && menu.length) {
+            tt.variants = menu.map(v => ({ label: v.label || '', cost: parseFloat(v.cost)||0, notes: v.notes || '' }));
+            const hit = tt.variants.findIndex(v => v.label && v.label === tt.description);
+            tt.selected_variant = hit >= 0 ? hit : -1;
+          }
+        }
       });
     } else {
       // Simple mode: pull the Good-tier cost and compute the sell price from
@@ -3189,6 +3258,20 @@ function renderLiRow(trade, tier, item) {
       ${sections.map(s=>`<option value="${esc(s)}" ${itemSection(item)===s?'selected':''}>${esc(s)}</option>`).join('')}
     </select>` : '';
 
+  // Product/exposure picker: when this tier carries a variant menu (siding only),
+  // let the rep choose which specific product is quoted. Selecting a variant fills
+  // this tier's cost + description; a manual edit of either flips it to "Custom".
+  const variants = (trade === 'siding' && Array.isArray(t.variants)) ? t.variants : [];
+  const selVar   = (t.selected_variant === undefined || t.selected_variant === null) ? -1 : t.selected_variant;
+  const variantSel = variants.length ? `
+    <div class="li-row-variant-row">
+      <select class="li-row-variant-select" title="Product / exposure quoted for the ${TIER_LABELS[tier]} package"
+        onchange="liSetVariant('${trade}','${item.id}','${tier}',this.value)">
+        ${variants.map((v,vi)=>`<option value="${vi}" ${vi===selVar?'selected':''}>${esc(v.label||('Option '+(vi+1)))}${(v.cost!==undefined&&v.cost!=='')?` — ${fmtCur(parseFloat(v.cost)||0)}`:''}</option>`).join('')}
+        <option value="-1" ${selVar===-1?'selected':''}>Custom…</option>
+      </select>
+    </div>` : '';
+
   return `<div class="li-row-card${!included?' li-row-excluded':''}${!isVisible?' li-row-hidden':''}">
     <div class="li-row-top">
       ${isB
@@ -3207,6 +3290,7 @@ function renderLiRow(trade, tier, item) {
       </div>
     </div>
     ${sectionSel}
+    ${variantSel}
     <div class="li-row-desc-row">
       <input class="li-row-desc-input" type="text" value="${esc(t.description||'')}"
         placeholder="${tier==='good'?'e.g. 3-Tab':tier==='better'?'e.g. Architectural':'e.g. Designer'}"
@@ -4098,8 +4182,37 @@ function liSetTier(trade, id, tier, field, v) {
   const i=findItem(trade,id); if(!i)return;
   if(!i.tiers[tier]) i.tiers[tier]={material_unit_cost:0,labor_unit_cost:0,description:'',notes:''};
   i.tiers[tier][field]=v;
+  // Hand-editing a variant-backed field (cost or label) means the rep is quoting a
+  // one-off, so drop the variant selection — the picker then reads "Custom…".
+  if ((field==='material_unit_cost' || field==='description') &&
+      Array.isArray(i.tiers[tier].variants) && i.tiers[tier].variants.length) {
+    i.tiers[tier].selected_variant = -1;
+  }
   setDirty(); rerender();
   if(activePage==='pricing'){renderTradeContent();}
+}
+// Pick a product/exposure variant for one tier of a siding item. Copies the
+// variant's cost + label (+ notes) into the tier so all pricing/render code —
+// which reads material_unit_cost/description — works unchanged. idx of -1 (or an
+// out-of-range value) means "Custom", leaving the current cost/label in place.
+function liSetVariant(trade, id, tier, idx) {
+  const item = findItem(trade, id);
+  if (!item || !item.tiers || !item.tiers[tier]) return;
+  const t  = item.tiers[tier];
+  const vi = parseInt(idx, 10);
+  if (isNaN(vi) || vi < 0 || !Array.isArray(t.variants) || !t.variants[vi]) {
+    t.selected_variant = -1;  // Custom — keep whatever cost/label is set now
+  } else {
+    const v = t.variants[vi];
+    t.selected_variant   = vi;
+    t.material_unit_cost = parseFloat(v.cost) || 0;
+    t.description        = v.label || '';
+    if (v.notes !== undefined) t.notes = v.notes;
+    delete t.price_override;  // re-price to the new product's cost
+  }
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+  renderTotals();
 }
 function liDelete(trade, id) {
   S.trades[trade].line_items=S.trades[trade].line_items.filter(i=>i.id!==id);
@@ -4262,6 +4375,12 @@ function buildTradeDefaults(trade) {
     const descGood   = t.product_good   ? t.product_good   : (t.desc_good   || '');
     const descBetter = t.product_better ? t.product_better : (t.desc_better || '');
     const descBest   = t.product_best   ? t.product_best   : (t.desc_best   || '');
+    const tiers = {
+      good:  {material_unit_cost:costGood,   labor_unit_cost:0, description:descGood,   notes:t.notes_good||'',   included: t.in_good   !== false},
+      better:{material_unit_cost:costBetter, labor_unit_cost:0, description:descBetter, notes:t.notes_better||'', included: t.in_better !== false},
+      best:  {material_unit_cost:costBest,   labor_unit_cost:0, description:descBest,   notes:t.notes_best||'',   included: t.in_best   !== false},
+    };
+    applyTierVariants(trade, t, tiers);
     return {
       id:uid(), name:t.name, unit:t.unit, quantity:0, scope_note:'',
       measure: t.measure || undefined,
@@ -4269,13 +4388,30 @@ function buildTradeDefaults(trade) {
       bundle_lf: t.bundle_lf || undefined,
       bundle_unit: t.bundle_unit || undefined,
       customer_visible: t.customer_visible !== false,
-      tiers:{
-        good:  {material_unit_cost:costGood,   labor_unit_cost:0, description:descGood,   notes:t.notes_good||'',   included: t.in_good   !== false},
-        better:{material_unit_cost:costBetter, labor_unit_cost:0, description:descBetter, notes:t.notes_better||'', included: t.in_better !== false},
-        best:  {material_unit_cost:costBest,   labor_unit_cost:0, description:descBest,   notes:t.notes_best||'',   included: t.in_best   !== false},
-      }
+      tiers
     };
   });
+}
+// Attach a siding tier's product-variant menu (from a price-book row's
+// variants_<tier>) onto a freshly built estimate tiers object, seeding
+// cost/description/notes from variant 0. No-op for non-siding trades and for
+// tiers with no menu, so all other pricing is untouched.
+function applyTierVariants(trade, t, tiers) {
+  if (trade !== 'siding' || !tiers) return tiers;
+  TIERS.forEach(tier => {
+    const menu = t['variants_' + tier];
+    if (!Array.isArray(menu) || !menu.length) return;
+    const variants = menu.map(v => ({
+      label: v.label || '', cost: parseFloat(v.cost)||0, notes: v.notes || ''
+    }));
+    const cell = tiers[tier] || (tiers[tier] = {material_unit_cost:0,labor_unit_cost:0,description:'',notes:'',included:true});
+    cell.variants         = variants;
+    cell.selected_variant = 0;
+    cell.material_unit_cost = variants[0].cost;
+    cell.description        = variants[0].label;
+    if (variants[0].notes) cell.notes = variants[0].notes;
+  });
+  return tiers;
 }
 async function loadDefaults(trade) {
   if(S.trades[trade].line_items.length>0){

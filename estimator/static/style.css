@@ -817,6 +817,15 @@ input#cover-file-input { display: none; }
 .li-row-desc-input:hover { border-color: var(--border); background: #fff; }
 .li-row-desc-input:focus { border-color: var(--primary-light); background: #fff; outline: none; color: var(--text); }
 
+/* Siding product/exposure picker on a GBB line-item tier cell */
+.li-row-variant-row { display: flex; margin-bottom: 3px; }
+.li-row-variant-select {
+  flex: 1; font-size: 11px; font-weight: 600; color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px;
+  background: #fff; cursor: pointer;
+}
+.li-row-variant-select:focus { border-color: var(--primary-light); outline: none; box-shadow: 0 0 0 2px rgba(2,132,199,.15); }
+
 .li-row-numbers { display: flex; align-items: center; gap: 5px; font-size: 11px; }
 .li-row-qty-static { color: var(--text-light); min-width: 40px; }
 .li-row-qty-input { width: 50px; font-size: 11px; }
@@ -2260,6 +2269,37 @@ body.is-home #nav-toggle       { display: none; }
 .pb-tier-cost::placeholder { color: #cbd5e1; }
 .pb-tier-cell.pb-tier-off { opacity: 0.5; }
 .pb-tier-cell.pb-tier-off .pb-tier-cost { background: #f1f5f9; }
+
+/* ── Price book: siding product-variant menus (per tier) ───────────────── */
+.pb-variants-row > td { padding: 0 8px 8px; background: #f8fafc; }
+.pb-variants > summary {
+  cursor: pointer; font-size: 11px; font-weight: 600; color: var(--text-light);
+  padding: 5px 2px; list-style: none; user-select: none;
+}
+.pb-variants > summary::-webkit-details-marker { display: none; }
+.pb-variants > summary::before { content: '▸ '; }
+.pb-variants[open] > summary::before { content: '▾ '; }
+.pb-variant-count {
+  display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 4px;
+  border-radius: 8px; background: var(--primary, #0284c7); color: #fff;
+  font-size: 10px; font-weight: 700; text-align: center;
+}
+.pb-variants-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 4px 2px 2px; }
+.pb-variant-col { border: 1px solid var(--border); border-radius: 6px; padding: 6px; background: #fff; }
+.pb-variant-col.pb-tier-good   { border-top: 3px solid var(--good); }
+.pb-variant-col.pb-tier-better { border-top: 3px solid var(--better); }
+.pb-variant-col.pb-tier-best   { border-top: 3px solid var(--best); }
+.pb-variant-hd { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px; color: var(--text-light); }
+.pb-variant-item { display: flex; align-items: center; gap: 3px; margin-bottom: 4px; }
+.pb-variant-label { flex: 1; min-width: 0; font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 3px 5px; }
+.pb-variant-label:focus, .pb-variant-cost:focus { outline: none; border-color: var(--primary-light); }
+.pb-variant-dollar { font-size: 11px; color: var(--text-light); }
+.pb-variant-cost { width: 58px; font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 3px 4px; text-align: right; }
+.pb-variant-del { border: none; background: none; color: var(--text-light); cursor: pointer; font-size: 12px; padding: 0 2px; }
+.pb-variant-del:hover { color: var(--danger); }
+.pb-variant-add { margin-top: 2px; border: 1px dashed var(--border); background: none; color: var(--primary, #0284c7); border-radius: 4px; font-size: 10px; padding: 3px 6px; cursor: pointer; width: 100%; }
+.pb-variant-add:hover { border-color: var(--primary-light); background: #f0f9ff; }
+@media (max-width: 640px) { .pb-variants-grid { grid-template-columns: 1fr; } }
 
 /* ── Price book: Catalog / Brand Presets view toggle ────────────────── */
 .pb-view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-right: auto; }
