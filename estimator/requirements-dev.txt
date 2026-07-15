@@ -1,0 +1,7 @@
+# Test-only dependencies. Not installed on Railway — keep runtime deps in
+# requirements.txt so the deploy image stays lean.
+#
+#   pip install -r requirements-dev.txt
+#   pytest
+-r requirements.txt
+pytest>=8.0

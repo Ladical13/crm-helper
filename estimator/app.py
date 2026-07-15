@@ -794,9 +794,24 @@ def list_estimates():
     only_own = not _is_manager_up()
     user     = _current_user()
     for d in est_iter(reverse=True):
+        # Ownership is decided BEFORE the summarize try/except: a doc that blows
+        # up mid-summary must not fall through into the error row below and leak
+        # its existence to a rep who isn't allowed to see it. The check itself
+        # fails closed — an unreadable salesperson means "not yours", never a
+        # raised exception that takes the whole dashboard down.
+        if not isinstance(d, dict):
+            print(f'[list] skipping non-object estimate document: {type(d).__name__}')
+            continue
+        sp = d.get('salesperson')
+        if sp is None:
+            owner = ''                      # unassigned — any rep may claim it
+        elif isinstance(sp, str):
+            owner = sp.strip()
+        else:
+            owner = None                    # unreadable — nobody owns it
+        if only_own and owner not in ('', user):
+            continue
         try:
-            if only_own and (d.get('salesperson') or '').strip() not in ('', user):
-                continue
             c = d.get('customer', {})
             a = c.get('address', {})
             sig = d.get('signature') or {}
@@ -825,8 +840,19 @@ def list_estimates():
                                        if x.get('status') in ('draft', 'sent')),
                 'co_total':        round(_accepted_co_total(d), 2),
             })
-        except Exception:
-            pass
+        except Exception as e:
+            # A malformed estimate must never silently vanish from a rep's
+            # dashboard — surface a minimal row they can still open, and say why.
+            eid = d.get('estimate_id', '')
+            print(f'[list] estimate {eid or "<unknown id>"} failed to summarize: {e!r}')
+            if eid:
+                result.append({
+                    'estimate_id':   eid,
+                    'customer_name': '⚠ Could not read this estimate',
+                    'status':        d.get('status', 'draft'),
+                    'total':         0,
+                    'load_error':    str(e),
+                })
     return jsonify(result)
 
 
@@ -1387,25 +1413,32 @@ def fc(n):
 GBB_TRADES = ['roofing', 'siding', 'windows', 'gutters', 'other']
 
 
-def _tier_rate(pricing, trade, tier):
-    """Effective margin/markup %: per-trade override → tier rate → global rate."""
-    ovr = pricing.get('per_trade_overrides') or {}
-    v = ovr.get(trade)
-    if v is not None:
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            pass
-    tv = (pricing.get('tier_rates') or {}).get(tier)
-    if tv is not None:
-        try:
-            return float(tv)
-        except (TypeError, ValueError):
-            pass
+DEFAULT_RATE = 35.0
+
+
+def _rate_value(v):
+    """A rate source counts as set only if it parses as a number. 0 counts — a
+    rep really can sell at cost — but None/''/junk do not. Returns None when the
+    source is unset so the caller falls through. MUST mirror _rateValue (app.js)."""
+    if v is None or v == '':
+        return None
     try:
-        return float(pricing.get('global_rate') or 35)
+        return float(v)
     except (TypeError, ValueError):
-        return 35.0
+        return None
+
+
+def _tier_rate(pricing, trade, tier):
+    """Effective margin/markup %: per-trade override → tier rate → global rate →
+    DEFAULT_RATE. Defaulting to 35 rather than 0 is deliberate: a 0% fallback
+    would silently sell at cost. MUST mirror tierRate (app.js)."""
+    for v in ((pricing.get('per_trade_overrides') or {}).get(trade),
+              (pricing.get('tier_rates') or {}).get(tier),
+              pricing.get('global_rate')):
+        r = _rate_value(v)
+        if r is not None:
+            return r
+    return DEFAULT_RATE
 
 
 def _sell_price(cost, rate, mode):

@@ -821,28 +821,49 @@ function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTi
 
 /* ── Calculations ──────────────────────────────────────────────────── */
 
+const DEFAULT_RATE = 35;
+// A rate source counts as set only if it parses as a number. 0 counts — a rep
+// really can sell at cost — but null/''/junk do not, so the caller falls
+// through. MUST mirror _rate_value (app.py).
+function _rateValue(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = parseFloat(v);
+  return isNaN(n) ? null : n;
+}
+// Resolve a rate from the first source that is actually set.
+// Defaulting to 35 rather than 0 is deliberate: a 0% fallback would silently
+// sell at cost. MUST mirror _tier_rate (app.py).
+function _resolveRate(sources) {
+  for (const v of sources) {
+    const n = _rateValue(v);
+    if (n !== null) return n;
+  }
+  return DEFAULT_RATE;
+}
 // Per-tier margin: each tier (good/better/best) has its own rate. A per-trade
 // override, when set, applies one rate to all tiers of that trade (escape hatch).
 function tierRate(trade, tier) {
-  const ov = S.pricing.per_trade_overrides[trade];
-  if (ov !== null && ov !== undefined) return parseFloat(ov) || 0;
-  const tr = S.pricing.tier_rates || {};
-  const r = tr[tier];
-  return (r !== undefined && r !== null) ? parseFloat(r) || 0 : (parseFloat(S.pricing.global_rate) || 0);
+  const p = S.pricing || {};
+  return _resolveRate([(p.per_trade_overrides || {})[trade],
+                       (p.tier_rates || {})[tier],
+                       p.global_rate]);
 }
 // Non-tier contexts (simple-mode trades) mirror the Good tier — Simple mode is
 // effectively the Good package — or a per-trade override if one is set.
 function tradeRate(trade) {
-  const ov = S.pricing.per_trade_overrides[trade];
-  if (ov !== null && ov !== undefined) return parseFloat(ov) || 0;
-  const tr = S.pricing.tier_rates || {};
-  return (tr.good !== undefined && tr.good !== null) ? parseFloat(tr.good) || 0 : (parseFloat(S.pricing.global_rate) || 0);
+  const p = S.pricing || {};
+  return _resolveRate([(p.per_trade_overrides || {})[trade],
+                       (p.tier_rates || {}).good,
+                       p.global_rate]);
 }
 function lineTotal(qty, mat, labor, trade, tier) {
   const cost = (parseFloat(mat)||0) + (parseFloat(labor)||0);
   const q = parseFloat(qty) || 0;
   const r = tier ? tierRate(trade, tier) : tradeRate(trade);
-  return S.pricing.mode === 'margin'
+  // Margin when mode is unset; any other value means markup. Mirrors app.py's
+  // pricing.get('mode', 'margin') followed by an exact 'margin' test.
+  const mode = (S.pricing || {}).mode ?? 'margin';
+  return mode === 'margin'
     ? (r >= 100 ? 0 : cost * q / (1 - r/100))
     : cost * q * (1 + r/100);
 }
