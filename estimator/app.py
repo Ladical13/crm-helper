@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import math
 import json
 import time
 import uuid
@@ -3850,6 +3851,7 @@ def build_signed_pdf(est):
 # Mirrors MEASURE_FIELDS in app.js (Scope page) — keep the two in sync.
 MEASURE_LABELS = [
     ('Roof', [('roof_squares', 'Roof Area', 'SQ'), ('waste_pct', 'Waste', '%'),
+              ('attic_sqft', 'Attic Area', 'SF'),
               ('low_slope_squares', 'Low Slope Area (2/12 or less) - rolled roofing', 'SQ'),
               ('steep_squares', 'Steep Area (7/12 and up)', 'SQ'),
               ('ridge_hip_lf', 'Ridge + Hip', 'LF'), ('valley_lf', 'Valley', 'LF'),
@@ -3866,6 +3868,46 @@ MEASURE_LABELS = [
                 ('siding_soffit_lf', 'Soffit', 'LF')]),
     ('Windows', [('windows_count', 'Windows', 'EA'), ('doors_count', 'Doors', 'EA')]),
 ]
+
+
+# Attic ventilation calculator — MUST mirror atticVentilation() in app.js.
+# 1/300 balanced rule: 1 sq ft of net free area (NFA) per 300 sq ft of attic,
+# split 50% exhaust / 50% intake. Provided for parity / future PDF use; pricing
+# does not depend on it (line-item quantities are stored by the frontend).
+NFA_TURTLE_SQIN    = 50    # net free area per turtle/box vent
+NFA_RIDGE_SQIN_LF  = 18    # net free area per LF of ridge vent
+NFA_INTAKE_SQIN_LF = 9     # net free area per LF of soffit/intake vent
+VENT_RULE_DIVISOR  = 300   # 1/300 balanced rule
+
+
+def _mnum(v, dflt=0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return dflt
+
+
+def attic_ventilation(m):
+    m = m or {}
+    attic = _mnum(m.get('attic_sqft')) or _mnum(m.get('roof_squares')) * 100
+    required_total   = (attic / VENT_RULE_DIVISOR) * 144 if attic > 0 else 0  # sq in
+    required_exhaust = required_total / 2
+    required_intake  = required_total / 2
+    provided_exhaust = _mnum(m.get('turtle_vents')) * NFA_TURTLE_SQIN
+    deficit_exhaust  = max(required_exhaust - provided_exhaust, 0)
+    needs_ridge  = deficit_exhaust > 0
+    needs_intake = needs_ridge
+    ridge_lf_required   = deficit_exhaust / NFA_RIDGE_SQIN_LF if needs_ridge else 0
+    ridge_sticks        = math.ceil(ridge_lf_required / 4)
+    intake_lf_suggested = math.ceil(required_intake / NFA_INTAKE_SQIN_LF) if needs_intake else 0
+    return {
+        'attic_sqft': attic, 'required_total': required_total,
+        'required_exhaust': required_exhaust, 'required_intake': required_intake,
+        'provided_exhaust': provided_exhaust, 'deficit_exhaust': deficit_exhaust,
+        'needs_ridge': needs_ridge, 'needs_intake': needs_intake,
+        'ridge_lf_required': ridge_lf_required, 'ridge_sticks': ridge_sticks,
+        'intake_lf_suggested': intake_lf_suggested,
+    }
 
 
 def build_production_packet_pdf(est):
@@ -5578,6 +5620,33 @@ TEMPLATES = {
          "notes_good":   "Required local building permit obtained by Project One Roofing.",
          "notes_better": "All required local building permits pulled by Project One Roofing. Final inspection scheduled and passed — fully documented before project closeout.",
          "notes_best":   "Complete permit management — permit pulled, inspection scheduled and passed, full documentation package provided to homeowner for personal records and future property disclosure."},
+        # Ventilation upgrades — added on demand from the Scope-page ventilation
+        # panel, never auto-built (is_default False). Ridge vent qty is code-driven
+        # (measure ridge_vent_code) and priced per 4-ft stick (bundle_lf 4).
+        {"name": "Ridge Vent", "unit": "LF", "measure": "ridge_vent_code",
+         "bundle_lf": 4, "bundle_unit": "sticks", "is_default": False,
+         "desc_good":   "Externally-Baffled Ridge Vent",
+         "desc_better": "High-Profile Ridge Vent",
+         "desc_best":   "Premium Shingle-Over Ridge Vent",
+         "notes_good":   "Continuous ridge vent installed at the peak to exhaust hot, moist attic air — sized to meet code net-free-area when balanced with intake at the eaves.",
+         "notes_better": "High-profile externally-baffled ridge vent resists wind-driven rain and snow infiltration while providing continuous, even exhaust across the entire ridge line.",
+         "notes_best":   "Premium shingle-over ridge vent with an external weather baffle and a finished, low-profile appearance — the best-performing balanced-exhaust solution for a long roof life."},
+        {"name": "Vent Plug", "unit": "EA", "measure": "turtle_vents",
+         "is_default": False,
+         "desc_good":   "Remove & Deck-Over Existing Box Vents",
+         "desc_better": "Remove & Deck-Over Existing Box Vents",
+         "desc_best":   "Remove & Deck-Over Existing Box Vents",
+         "notes_good":   "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
+         "notes_better": "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
+         "notes_best":   "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings."},
+        {"name": "Intake Vent", "unit": "LF", "measure": "eave",
+         "is_default": False,
+         "desc_good":   "Continuous Soffit Intake Vent",
+         "desc_better": "Vented Soffit + Baffles",
+         "desc_best":   "Continuous Intake w/ Insulation Baffles",
+         "notes_good":   "Continuous soffit intake vent installed along the eaves — the low-side intake that makes ridge exhaust actually work and keeps the attic balanced.",
+         "notes_better": "Vented soffit with insulation baffles keeps the intake path clear at every rafter bay so airflow isn't blocked by attic insulation.",
+         "notes_best":   "Continuous eave intake paired with insulation baffles at every bay for maximum, unobstructed intake — a fully balanced, code-compliant ventilation system."},
     ],
     "siding": [
         {"name": "Vinyl Siding", "unit": "SQ", "measure": "siding_squares_waste",

@@ -1662,6 +1662,38 @@ body.is-home #nav-toggle       { display: none; }
 .iw-second-row-toggle input { accent-color: #0284c7; width: 15px; height: 15px; margin: 0; }
 .iw-toggle-hint { font-weight: 500; color: #0369a1; font-size: 11px; }
 
+/* Attic ventilation panel */
+.measure-panel-vent { background: #fefce8; border-color: #fde047; }
+.measure-panel-vent .measure-panel-head h3 { color: #713f12; }
+.measure-panel-vent .measure-hint { color: #a16207; }
+.vent-rule-tag {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+  color: #a16207; background: #fef9c3; border: 1px solid #fde047;
+  padding: 1px 7px; border-radius: 10px; margin-left: 6px; vertical-align: middle;
+}
+.vent-status {
+  display: inline-block; font-size: 12.5px; font-weight: 800; border-radius: 8px;
+  padding: 6px 12px; margin-bottom: 10px;
+}
+.vent-status.ok    { color: #166534; background: #dcfce7; border: 1px solid #86efac; }
+.vent-status.below { color: #9a3412; background: #ffedd5; border: 1px solid #fdba74; }
+.vent-figures {
+  display: flex; flex-wrap: wrap; gap: 8px 22px; margin-bottom: 6px;
+}
+.vent-figures > div { display: flex; flex-direction: column; }
+.vf-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: #a16207; }
+.vf-val   { font-size: 13px; font-weight: 700; color: #422006; }
+.vf-sub   { font-weight: 500; font-size: 11px; color: #a16207; }
+.vent-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.measure-panel-vent .iw-second-row-toggle { border-color: #fbbf24; color: #713f12; margin-top: 8px; }
+.measure-panel-vent .iw-second-row-toggle.enabled { border-color: #d97706; background: #fef3c7; box-shadow: 0 0 0 3px rgba(217,119,6,.12); }
+.measure-panel-vent .iw-second-row-toggle input { accent-color: #d97706; }
+.measure-panel-vent .iw-toggle-hint { color: #a16207; }
+.vent-warn {
+  margin-top: 10px; font-size: 11.5px; font-weight: 600; color: #9a3412;
+  background: #fff7ed; border: 1px solid #fed7aa; border-radius: 6px; padding: 7px 10px;
+}
+
 /* Auto-qty linkage in scope table */
 .th-auto { width: 190px; }
 .scope-measure-cell { padding: 4px 6px !important; }

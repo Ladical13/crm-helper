@@ -278,6 +278,7 @@ const MEASURE_FIELDS = [
   { group:'Roof', fields:[
     {key:'roof_squares',  label:'Roof Area',      unit:'SQ'},
     {key:'waste_pct',     label:'Waste',          unit:'%'},
+    {key:'attic_sqft',    label:'Attic Area',     unit:'SF'},
     {key:'low_slope_squares', label:'Low Slope ≤2/12', unit:'SQ'},
     {key:'steep_squares',     label:'Steep 7/12+',     unit:'SQ'},
     {key:'ridge_hip_lf',  label:'Ridge + Hip',    unit:'LF'},
@@ -310,6 +311,11 @@ const MEASURE_FIELDS = [
 ];
 const MEASURE_DEFS = {
   squares:              { label:'Roof SQ',            calc:m => mnum(m.roof_squares) },
+  attic_sqft:           { label:'Attic Area SF',      calc:m => mnum(m.attic_sqft) || mnum(m.roof_squares)*100 },
+  // Ridge vent quantity is CODE-driven (the exhaust shortfall ÷ NFA per LF),
+  // NOT the physical ridge length. bundle_lf:4 on the item then rounds this raw
+  // LF up to whole 4-ft ridge-vent sticks. Returns 0 when venting already meets code.
+  ridge_vent_code:      { label:'Ridge Vent — code required', calc:m => { const v = atticVentilation(m); return v.needs_ridge ? v.ridge_lf_required : 0; } },
   // Low-slope area is covered by rolled roofing, not shingles — the shingle/
   // underlayment quantity excludes it so the two lines never double-count.
   squares_waste:        { label:'Roof SQ + Waste (excl. low-slope)', calc:m => Math.max(mnum(m.roof_squares) - mnum(m.low_slope_squares), 0) * (1 + mnum(m.waste_pct, 10)/100) },
@@ -348,6 +354,34 @@ const MEASURE_DEFS = {
 function mnum(v, dflt) {
   const n = parseFloat(v);
   return isNaN(n) ? (dflt || 0) : n;
+}
+
+/* ── Attic ventilation calculator ───────────────────────────────────────
+   Code rule: 1 sq ft of net free area (NFA) per 300 sq ft of attic (the
+   balanced 1/300 rule), split 50% exhaust / 50% intake. Turtle/box vents are
+   the exhaust the rep already counts; when they fall short the roof needs
+   ridge vent + intake. Net-free-area values per vent type are fixed defaults.
+   MUST mirror atticVentilation() in app.py. */
+const NFA_TURTLE_SQIN    = 50;   // net free area per turtle/box vent
+const NFA_RIDGE_SQIN_LF  = 18;   // net free area per LF of ridge vent
+const NFA_INTAKE_SQIN_LF = 9;    // net free area per LF of soffit/intake vent
+const VENT_RULE_DIVISOR  = 300;  // 1/300 balanced rule
+function atticVentilation(m) {
+  m = m || {};
+  const attic = mnum(m.attic_sqft) || mnum(m.roof_squares) * 100;
+  const required_total   = attic > 0 ? (attic / VENT_RULE_DIVISOR) * 144 : 0; // sq in
+  const required_exhaust = required_total / 2;
+  const required_intake  = required_total / 2;
+  const provided_exhaust = mnum(m.turtle_vents) * NFA_TURTLE_SQIN;
+  const deficit_exhaust  = Math.max(required_exhaust - provided_exhaust, 0);
+  const needs_ridge  = deficit_exhaust > 0;
+  const needs_intake = needs_ridge; // balanced rule: add intake whenever adding exhaust
+  const ridge_lf_required   = needs_ridge  ? deficit_exhaust / NFA_RIDGE_SQIN_LF : 0; // raw LF
+  const ridge_sticks        = Math.ceil(ridge_lf_required / 4);                        // 4-ft sticks
+  const intake_lf_suggested = needs_intake ? Math.ceil(required_intake / NFA_INTAKE_SQIN_LF) : 0;
+  return { attic_sqft:attic, required_total, required_exhaust, required_intake,
+           provided_exhaust, deficit_exhaust, needs_ridge, needs_intake,
+           ridge_lf_required, ridge_sticks, intake_lf_suggested };
 }
 
 /* ── Global app settings (loaded from /api/settings at boot) ────────── */
@@ -452,6 +486,11 @@ function setMeasurement(key, v) {
     const item = findItem(inp.dataset.trade, inp.dataset.id);
     if (item) inp.value = item.quantity || '';
   });
+  // Live-refresh the ventilation panel (status/figures/warnings) in place — its
+  // only inputs are checkboxes, so replacing it doesn't disturb the measurement
+  // field being typed into.
+  const vp = document.querySelector('.measure-panel-vent');
+  if (vp) { const html = ventPanelMarkup(); if (html) vp.outerHTML = html; else vp.remove(); }
 }
 function setIwSecondRow(on) {
   // Stored as 0/1 in measurements so it survives save/load and is available
@@ -459,6 +498,134 @@ function setIwSecondRow(on) {
   setMeasurement('iw_second_row', on ? 1 : 0);
   // Re-render so the toggle's highlight state follows the checkbox.
   if (activePage === 'scope') renderScopePage();
+}
+
+/* ── Ventilation panel: drive the vent line items ───────────────────────
+   The two checkboxes ARE their line items — checkbox state is inferred from
+   the presence of a tagged item (item.vent_role), so it persists with the
+   estimate for free and can't desync. Product NAMES match the roofing Price
+   Book (Ridge Vent / Vent Plug / Intake Vent). If a matching row already
+   exists in the estimate (e.g. loaded as a default) we ADOPT it instead of
+   adding a duplicate; otherwise we add one from the catalog. Either way we
+   FORCE the ventilation behavior (measure/bundle) so the quantity is correct
+   regardless of how the saved product is configured:
+     ridge  → qty = code-required LF (measure ridge_vent_code), 4-ft sticks
+     plugs  → qty = turtle vent count (measure turtle_vents)
+     intake → qty = eave LF (measure eave) */
+const VENT_SPECS = {
+  ridge:  { name:'Ridge Vent',  measure:'ridge_vent_code', bundle_lf:4, bundle_unit:'sticks' },
+  plugs:  { name:'Vent Plug',   measure:'turtle_vents' },
+  intake: { name:'Intake Vent', measure:'eave' },
+};
+function roofHasVentRole(role) {
+  return ((S.trades.roofing && S.trades.roofing.line_items) || []).some(i => i.vent_role === role);
+}
+// Full markup for the ventilation panel — used by renderScopePage and by the
+// live in-place refresh in setMeasurement (so the badge/figures update as the
+// rep types roof area / turtle vents without re-rendering the whole page).
+function ventPanelMarkup() {
+  if (!S.trades.roofing || !S.trades.roofing.enabled) return '';
+  const m = S.measurements || {};
+  const vent = atticVentilation(m);
+  const ventRound = n => Math.round(n).toLocaleString();
+  const turtleN = mnum(m.turtle_vents);
+  return `
+    <div class="measure-panel measure-panel-vent">
+      <div class="measure-panel-head">
+        <h3>🌬️ Attic Ventilation <span class="vent-rule-tag">1/300 Rule</span></h3>
+        <span class="measure-hint">Code-required net free area from attic size — flags short venting and adds ridge + intake to balance it</span>
+      </div>
+      ${vent.required_total > 0 ? `
+        <div class="vent-status ${vent.needs_ridge ? 'below' : 'ok'}">
+          ${vent.needs_ridge
+            ? `⚠️ Below code — short ${ventRound(vent.deficit_exhaust)} sq in of exhaust`
+            : `✅ Meets code`}
+        </div>
+        <div class="vent-figures">
+          <div><span class="vf-label">Required (total)</span><span class="vf-val">${ventRound(vent.required_total)} sq in</span></div>
+          <div><span class="vf-label">Exhaust needed</span><span class="vf-val">${ventRound(vent.required_exhaust)} sq in</span></div>
+          <div><span class="vf-label">Intake needed</span><span class="vf-val">${ventRound(vent.required_intake)} sq in</span></div>
+          <div><span class="vf-label">Exhaust provided</span><span class="vf-val">${ventRound(vent.provided_exhaust)} sq in <span class="vf-sub">(${turtleN} turtle × ${NFA_TURTLE_SQIN})</span></span></div>
+        </div>
+        <div class="vent-actions">
+          <label class="iw-second-row-toggle ${roofHasVentRole('ridge') ? 'enabled' : ''}">
+            <input type="checkbox" ${roofHasVentRole('ridge') ? 'checked' : ''}
+              onchange="setVentRole('ridge', this.checked)">
+            ✔️ Install Ridge Vent <span class="iw-toggle-hint">${vent.needs_ridge ? `— code needs ~${vent.ridge_sticks} stick(s); also plugs your ${turtleN} turtle vent(s)` : '— not required by code'}</span>
+          </label>
+          <label class="iw-second-row-toggle ${roofHasVentRole('intake') ? 'enabled' : ''}">
+            <input type="checkbox" ${roofHasVentRole('intake') ? 'checked' : ''}
+              onchange="setVentRole('intake', this.checked)">
+            ✔️ Install Intake Vent <span class="iw-toggle-hint">— continuous soffit intake along the eaves</span>
+          </label>
+        </div>
+        ${roofHasVentRole('ridge') && vent.ridge_lf_required > mnum(m.ridge_hip_lf) ? `
+          <div class="vent-warn">⚠️ Code needs ~${Math.ceil(vent.ridge_lf_required)} LF of ridge vent but only ${mnum(m.ridge_hip_lf)} LF of ridge exists — add box vents to cover the gap.</div>` : ''}
+        ${roofHasVentRole('intake') && mnum(m.eave_lf) === 0 ? `
+          <div class="vent-warn">⚠️ Intake Vent added but Eave LF is 0 — enter eave footage so it prices.</div>` : ''}
+      ` : `
+        <div class="measure-hint" style="padding:6px 0">Enter Roof Area above to calculate required ventilation.</div>`}
+    </div>`;
+}
+function _findRoofItemByName(name) {
+  const want = String(name || '').trim().toLowerCase();
+  return ((S.trades.roofing && S.trades.roofing.line_items) || [])
+    .find(i => !i.vent_role && String(i.name || '').trim().toLowerCase() === want);
+}
+function injectVentItem(role) {
+  const rd = S.trades.roofing;
+  if (!rd || !rd.enabled || !templates) return;
+  // Append to a real estimate — build the roofing defaults first if empty.
+  if (!rd.line_items || rd.line_items.length === 0) rd.line_items = buildTradeDefaults('roofing');
+  const add = (r) => {
+    if (roofHasVentRole(r)) return;
+    const spec = VENT_SPECS[r];
+    // Adopt an existing same-named row (e.g. a Price Book default) so we never
+    // add a duplicate; otherwise build a fresh one from the catalog.
+    let it = _findRoofItemByName(spec.name);
+    if (it) {
+      // Snapshot the product's own settings so a later un-check can restore them.
+      if (!it._vent_orig) it._vent_orig = { measure:it.measure, formula:it.formula, bundle_lf:it.bundle_lf, bundle_unit:it.bundle_unit };
+    } else {
+      const tpl = findTemplate('roofing', spec.name);
+      if (!tpl) { alert('Add "'+spec.name+'" to the roofing Price Book first.'); return; }
+      it = buildItemFromTemplate('roofing', tpl);
+      it._vent_injected = true;
+      rd.line_items.push(it);
+    }
+    // Force the ventilation quantity behavior regardless of the saved product.
+    it.vent_role = r;
+    it.measure = spec.measure;
+    it.formula = undefined;
+    it.bundle_lf = spec.bundle_lf || undefined;
+    it.bundle_unit = spec.bundle_unit || undefined;
+  };
+  add(role);
+  // Installing ridge vent means decking over the existing turtle vents so the
+  // ridge draws evenly — auto-add the plugs (qty auto-fills to turtle count).
+  if (role === 'ridge') add('plugs');
+}
+function removeVentRole(role) {
+  const rd = S.trades.roofing;
+  if (!rd || !rd.line_items) return;
+  const roles = role === 'ridge' ? ['ridge', 'plugs'] : [role];
+  rd.line_items = rd.line_items.filter(it => {
+    if (!roles.includes(it.vent_role)) return true;
+    if (it._vent_injected) return false;   // we created it → drop the row
+    // Adopted an existing product row → restore its original settings.
+    const o = it._vent_orig || {};
+    it.measure = o.measure; it.formula = o.formula;
+    it.bundle_lf = o.bundle_lf; it.bundle_unit = o.bundle_unit;
+    delete it._vent_orig; delete it.vent_role;
+    return true;
+  });
+}
+function setVentRole(role, on) {
+  if (on) injectVentItem(role); else removeVentRole(role);
+  applyMeasurements();      // fills the new items' quantities from their measure
+  setDirty();
+  if (activePage === 'scope') renderScopePage();
+  rerender();               // refresh pricing/options tabs
 }
 function setItemFormula(trade, id, formula) {
   const item = findItem(trade, id);
@@ -1855,7 +2022,7 @@ function pbMeasureCell(item, i) {
   const formulaInput = isFormula ? `
     <input class="pb-formula-input" type="text" value="${esc(item.formula||'')}"
       placeholder="eave_lf + valley_lf"
-      title="Variables: roof_squares, waste_pct, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1)"
+      title="Variables: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1)"
       oninput="pbItems['${pbActiveTrade}'][${i}].formula=this.value;pbItems['${pbActiveTrade}'][${i}].measure=''">` : '';
   const bundleInput = `
     <div class="pb-bundle-wrap">
@@ -2103,7 +2270,7 @@ function renderScopePage() {
       <div class="measure-group-title">${g.group}</div>
       <div class="measure-fields">
         ${g.fields.map(f => {
-          const dflt = f.key === 'waste_pct' ? (m.waste_pct ?? 10) : f.key === 'siding_waste_pct' ? (m.siding_waste_pct ?? 10) : '';
+          const dflt = f.key === 'waste_pct' ? (m.waste_pct ?? 10) : f.key === 'siding_waste_pct' ? (m.siding_waste_pct ?? 10) : f.key === 'attic_sqft' ? (mnum(m.roof_squares)*100 || '') : '';
           const val  = m[f.key] !== undefined && m[f.key] !== 0 ? m[f.key] : dflt;
           return `<div class="measure-field">
             <label>${f.label}</label>
@@ -2136,6 +2303,8 @@ function renderScopePage() {
       </label>
     </div>`;
 
+  const ventPanel = ventPanelMarkup();
+
   const sidingMeasurePanel = S.trades.siding.enabled ? `
     <div class="measure-panel measure-panel-siding">
       <div class="measure-panel-head">
@@ -2156,7 +2325,7 @@ function renderScopePage() {
         <input class="scope-formula-input" type="text"
           value="${esc(item.formula||'')}"
           placeholder="e.g. eave_lf + valley_lf"
-          title="Roof: roof_squares, waste_pct, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1) — Siding: siding_squares, siding_waste_pct, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_starter_lf, siding_soffit_lf, windows_count, doors_count"
+          title="Roof: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1) — Siding: siding_squares, siding_waste_pct, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_starter_lf, siding_soffit_lf, windows_count, doors_count"
           onchange="setItemFormula('${item._trade}','${item.id}',this.value)">
         <span class="scope-formula-hint">eave_lf + valley_lf</span>
       </div>` : '';
@@ -2190,6 +2359,8 @@ function renderScopePage() {
     </div>
 
     ${measurePanel}
+
+    ${ventPanel}
 
     ${sidingMeasurePanel}
 
@@ -4364,33 +4535,41 @@ function buildTradeDefaults(trade) {
       };
     });
   }
-  return tpl.map(t => {
-    const baseCost = t.cost !== undefined ? parseFloat(t.cost)||0 : 0;
-    // Per-tier cost inherits UPWARD when unset: good→base, better→good, best→better.
-    // This stops Better/Best from silently dropping to the base cost (lower than Good)
-    // when only the Good tier has an explicit override.
-    const costGood   = t.cost_good   !== undefined ? parseFloat(t.cost_good)||0   : baseCost;
-    const costBetter = t.cost_better !== undefined ? parseFloat(t.cost_better)||0 : costGood;
-    const costBest   = t.cost_best   !== undefined ? parseFloat(t.cost_best)||0   : costBetter;
-    const descGood   = t.product_good   ? t.product_good   : (t.desc_good   || '');
-    const descBetter = t.product_better ? t.product_better : (t.desc_better || '');
-    const descBest   = t.product_best   ? t.product_best   : (t.desc_best   || '');
-    const tiers = {
-      good:  {material_unit_cost:costGood,   labor_unit_cost:0, description:descGood,   notes:t.notes_good||'',   included: t.in_good   !== false},
-      better:{material_unit_cost:costBetter, labor_unit_cost:0, description:descBetter, notes:t.notes_better||'', included: t.in_better !== false},
-      best:  {material_unit_cost:costBest,   labor_unit_cost:0, description:descBest,   notes:t.notes_best||'',   included: t.in_best   !== false},
-    };
-    applyTierVariants(trade, t, tiers);
-    return {
-      id:uid(), name:t.name, unit:t.unit, quantity:0, scope_note:'',
-      measure: t.measure || undefined,
-      formula: t.formula || undefined,
-      bundle_lf: t.bundle_lf || undefined,
-      bundle_unit: t.bundle_unit || undefined,
-      customer_visible: t.customer_visible !== false,
-      tiers
-    };
-  });
+  return tpl.map(t => buildItemFromTemplate(trade, t));
+}
+// Build one GBB-tiered estimate line item from a price-book/template row.
+// Shared by buildTradeDefaults and the ventilation-panel injector so an
+// on-demand vent item is priced identically to a Load-Defaults item.
+function buildItemFromTemplate(trade, t) {
+  const baseCost = t.cost !== undefined ? parseFloat(t.cost)||0 : 0;
+  // Per-tier cost inherits UPWARD when unset: good→base, better→good, best→better.
+  // This stops Better/Best from silently dropping to the base cost (lower than Good)
+  // when only the Good tier has an explicit override.
+  const costGood   = t.cost_good   !== undefined ? parseFloat(t.cost_good)||0   : baseCost;
+  const costBetter = t.cost_better !== undefined ? parseFloat(t.cost_better)||0 : costGood;
+  const costBest   = t.cost_best   !== undefined ? parseFloat(t.cost_best)||0   : costBetter;
+  const descGood   = t.product_good   ? t.product_good   : (t.desc_good   || '');
+  const descBetter = t.product_better ? t.product_better : (t.desc_better || '');
+  const descBest   = t.product_best   ? t.product_best   : (t.desc_best   || '');
+  const tiers = {
+    good:  {material_unit_cost:costGood,   labor_unit_cost:0, description:descGood,   notes:t.notes_good||'',   included: t.in_good   !== false},
+    better:{material_unit_cost:costBetter, labor_unit_cost:0, description:descBetter, notes:t.notes_better||'', included: t.in_better !== false},
+    best:  {material_unit_cost:costBest,   labor_unit_cost:0, description:descBest,   notes:t.notes_best||'',   included: t.in_best   !== false},
+  };
+  applyTierVariants(trade, t, tiers);
+  return {
+    id:uid(), name:t.name, unit:t.unit, quantity:0, scope_note:'',
+    measure: t.measure || undefined,
+    formula: t.formula || undefined,
+    bundle_lf: t.bundle_lf || undefined,
+    bundle_unit: t.bundle_unit || undefined,
+    customer_visible: t.customer_visible !== false,
+    tiers
+  };
+}
+// Look up a served template row for a trade by exact product name.
+function findTemplate(trade, name) {
+  return ((templates && templates[trade]) || []).find(t => t.name === name);
 }
 // Attach a siding tier's product-variant menu (from a price-book row's
 // variants_<tier>) onto a freshly built estimate tiers object, seeding

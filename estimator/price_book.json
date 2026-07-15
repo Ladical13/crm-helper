@@ -169,6 +169,50 @@
         "notes_better": "All required local building permits pulled by Project One Roofing. Final inspection scheduled and passed \u2014 fully documented before project closeout.",
         "notes_good": "Required local building permit obtained by Project One Roofing.",
         "unit": "LS"
+      },
+      {
+        "cost": 34,
+        "customer_visible": true,
+        "is_default": false,
+        "measure": "ridge_vent_code",
+        "bundle_lf": 4,
+        "bundle_unit": "sticks",
+        "desc_best": "Premium Shingle-Over Ridge Vent",
+        "desc_better": "High-Profile Ridge Vent",
+        "desc_good": "Externally-Baffled Ridge Vent",
+        "name": "Ridge Vent",
+        "notes_best": "Premium shingle-over ridge vent with an external weather baffle and a finished, low-profile appearance — the best-performing balanced-exhaust solution for a long roof life.",
+        "notes_better": "High-profile externally-baffled ridge vent resists wind-driven rain and snow infiltration while providing continuous, even exhaust across the entire ridge line.",
+        "notes_good": "Continuous ridge vent installed at the peak to exhaust hot, moist attic air — sized to meet code net-free-area when balanced with intake at the eaves.",
+        "unit": "LF"
+      },
+      {
+        "cost": 25,
+        "customer_visible": true,
+        "is_default": false,
+        "measure": "turtle_vents",
+        "desc_best": "Remove & Deck-Over Existing Box Vents",
+        "desc_better": "Remove & Deck-Over Existing Box Vents",
+        "desc_good": "Remove & Deck-Over Existing Box Vents",
+        "name": "Vent Plug",
+        "notes_best": "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
+        "notes_better": "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
+        "notes_good": "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
+        "unit": "EA"
+      },
+      {
+        "cost": 4.5,
+        "customer_visible": true,
+        "is_default": false,
+        "measure": "eave",
+        "desc_best": "Continuous Intake w/ Insulation Baffles",
+        "desc_better": "Vented Soffit + Baffles",
+        "desc_good": "Continuous Soffit Intake Vent",
+        "name": "Intake Vent",
+        "notes_best": "Continuous eave intake paired with insulation baffles at every bay for maximum, unobstructed intake — a fully balanced, code-compliant ventilation system.",
+        "notes_better": "Vented soffit with insulation baffles keeps the intake path clear at every rafter bay so airflow isn't blocked by attic insulation.",
+        "notes_good": "Continuous soffit intake vent installed along the eaves — the low-side intake that makes ridge exhaust actually work and keeps the attic balanced.",
+        "unit": "LF"
       }
     ],
     "siding": [
