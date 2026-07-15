@@ -1150,7 +1150,7 @@ input#cover-file-input { display: none; }
 
 /* ── Price Book modal ───────────────────────────────────────────────── */
 .pb-modal-box {
-  width: min(98vw, 860px) !important; max-height: 88vh; display: flex; flex-direction: column;
+  width: min(98vw, 1240px) !important; max-height: 88vh; display: flex; flex-direction: column;
 }
 .pb-trade-bar {
   display: flex; gap: 6px; flex-wrap: wrap;
@@ -1179,7 +1179,7 @@ input#cover-file-input { display: none; }
 .pb-table td.pb-tier { background: #fafafa; }
 .pb-input-name { width: 100%; min-width: 120px; border: none; background: transparent; font-size: 12px; padding: 3px 4px; }
 .pb-input-name:focus { outline: 1px solid var(--primary-light); border-radius: 3px; background: #fff; }
-.pb-input-unit { width: 48px; border: none; background: transparent; font-size: 12px; text-align: center; padding: 2px; }
+.pb-input-unit { width: 68px; border: none; background: transparent; font-size: 13px; text-align: center; padding: 5px 4px; }
 .pb-input-unit:focus { outline: 1px solid var(--primary-light); border-radius: 3px; background: #fff; }
 .pb-cost-pair { display: flex; gap: 3px; }
 .pb-cost-pair input { width: 62px; border: 1px solid #e5e7eb; border-radius: 3px; font-size: 11px; padding: 3px 5px; text-align: right; }
@@ -2227,6 +2227,7 @@ body.is-home #nav-toggle       { display: none; }
 }
 .pb-table-wrap { overflow-x: auto; }
 .pb-th-cost { width: 130px; text-align: center !important; }
+.pb-th-unit { width: 76px; text-align: center !important; }
 .pb-th-vis  { width: 50px;  text-align: center !important; }
 .pb-th-dflt { width: 60px;  text-align: center !important; }
 .pb-row-nondefault { opacity: 0.55; }
@@ -2950,7 +2951,11 @@ body.is-home #nav-toggle       { display: none; }
 }
 .pb-order-btn:hover:not(:disabled) { background: #f0f9ff; color: var(--primary); border-color: #7dd3fc; }
 .pb-order-btn:disabled { opacity: 0.25; cursor: default; }
-.pb-bundle-wrap  { display:flex; align-items:center; gap:5px; margin-top:5px; }
+/* Two label/input pairs stacked as rows. Was a single flex row, but the labels
+   are nowrap and so refused to shrink — they squeezed the inputs to ~16px and
+   pushed the table's min-content past the modal width, forcing a sideways
+   scroll. A 2-col grid gives each pair its own row and the inputs a fixed 60px. */
+.pb-bundle-wrap  { display:grid; grid-template-columns:auto 60px; gap:4px 5px; align-items:center; margin-top:5px; }
 .pb-bundle-label { font-size:10px; color:var(--text-light); white-space:nowrap; }
 .pb-bundle-input { width:60px; padding:3px 6px; font-size:12px; border:1px solid var(--border); border-radius:4px; }
 

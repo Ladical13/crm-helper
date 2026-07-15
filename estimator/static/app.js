@@ -1675,7 +1675,7 @@ function pbRenderPresetEditor(p) {
       <thead><tr>
         <th style="width:42px"></th>
         <th class="pb-th-name">Product Name</th>
-        <th>Unit</th>
+        <th class="pb-th-unit">Unit</th>
         <th class="pb-th-auto">Auto Qty From</th>
         <th class="pb-th-lf">LF/unit</th>
         <th class="pb-th-basecost">Cost</th>
@@ -1788,7 +1788,7 @@ function pbRenderMaster() {
       <thead><tr>
         <th style="width:42px"></th>
         <th class="pb-th-name">Product Name</th>
-        <th>Unit</th>
+        <th class="pb-th-unit">Unit</th>
         <th class="pb-th-auto">Auto Qty From</th>
         <th class="pb-th-tier pb-th-good">Good</th>
         <th class="pb-th-tier pb-th-better">Better</th>
@@ -1941,7 +1941,7 @@ function pbRenderTier(tier) {
     <table class="pb-table">
       <thead><tr>
         <th class="pb-th-name">Product (${TIER_LABELS[tier]} tier)</th>
-        <th>Unit</th>
+        <th class="pb-th-unit">Unit</th>
         <th class="pb-th-auto" title="What drives the auto-quantity from measurements">Auto Qty From</th>
         <th>Brand / Label shown to customer</th>
         <th class="pb-th-cost">${TIER_LABELS[tier]} Cost <span class="pb-th-hint">per unit</span></th>
