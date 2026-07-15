@@ -2322,11 +2322,14 @@ body.is-home #nav-toggle       { display: none; }
 .pb-variant-col.pb-tier-better { border-top: 3px solid var(--better); }
 .pb-variant-col.pb-tier-best   { border-top: 3px solid var(--best); }
 .pb-variant-hd { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px; color: var(--text-light); }
-.pb-variant-item { display: flex; align-items: center; gap: 3px; margin-bottom: 4px; }
-.pb-variant-label { flex: 1; min-width: 0; font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 3px 5px; }
+.pb-variant-item { border: 1px solid var(--border); border-radius: 5px; padding: 5px 6px; margin-bottom: 5px; background: #fff; }
+.pb-variant-field-label { display: block; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--text-light); margin: 0 0 2px; }
+.pb-variant-field-label-price { margin-top: 4px; }
+.pb-variant-label { width: 100%; box-sizing: border-box; font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 3px 5px; }
 .pb-variant-label:focus, .pb-variant-cost:focus { outline: none; border-color: var(--primary-light); }
+.pb-variant-price-row { display: flex; align-items: center; gap: 4px; }
 .pb-variant-dollar { font-size: 11px; color: var(--text-light); }
-.pb-variant-cost { width: 58px; font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 3px 4px; text-align: right; }
+.pb-variant-cost { flex: 1; min-width: 0; font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 3px 4px; text-align: right; }
 .pb-variant-del { border: none; background: none; color: var(--text-light); cursor: pointer; font-size: 12px; padding: 0 2px; }
 .pb-variant-del:hover { color: var(--danger); }
 .pb-variant-add { margin-top: 2px; border: 1px dashed var(--border); background: none; color: var(--primary, #0284c7); border-radius: 4px; font-size: 10px; padding: 3px 6px; cursor: pointer; width: 100%; }

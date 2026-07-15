@@ -1857,13 +1857,17 @@ function pbVariantEditor(item, i, tier) {
     <div class="pb-variant-hd">${TIER_LABELS[tier]}</div>
     ${list.map((v, vi) => `
       <div class="pb-variant-item">
+        <label class="pb-variant-field-label">Description</label>
         <input class="pb-variant-label" type="text" value="${esc(v.label||'')}" placeholder="Product / exposure"
           onchange="pbSetVariant(${i},'${tier}',${vi},'label',this.value)">
-        <span class="pb-variant-dollar">$</span>
-        <input class="pb-variant-cost" type="number" min="0" step="0.01"
-          value="${(v.cost!==undefined&&v.cost!=='')?v.cost:''}" placeholder="Cost"
-          onchange="pbSetVariant(${i},'${tier}',${vi},'cost',this.value)">
-        <button class="pb-variant-del" title="Remove option" onclick="pbRemoveVariant(${i},'${tier}',${vi})">✕</button>
+        <label class="pb-variant-field-label pb-variant-field-label-price">Price</label>
+        <div class="pb-variant-price-row">
+          <span class="pb-variant-dollar">$</span>
+          <input class="pb-variant-cost" type="number" min="0" step="0.01"
+            value="${(v.cost!==undefined&&v.cost!=='')?v.cost:''}" placeholder="0.00"
+            onchange="pbSetVariant(${i},'${tier}',${vi},'cost',this.value)">
+          <button class="pb-variant-del" title="Remove option" onclick="pbRemoveVariant(${i},'${tier}',${vi})">✕</button>
+        </div>
       </div>`).join('')}
     <button class="pb-variant-add" onclick="pbAddVariant(${i},'${tier}')">+ Add option</button>
   </div>`;
