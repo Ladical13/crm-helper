@@ -2722,7 +2722,10 @@ function renderOtherFreeform() {
   const rows = items.map(item => {
     const t    = (item.tiers && item.tiers[tier]) || {material_unit_cost:0,labor_unit_cost:0,notes:''};
     const cost = (parseFloat(t.material_unit_cost)||0) + (parseFloat(t.labor_unit_cost)||0);
-    const tot  = lineTotal(item.quantity, t.material_unit_cost, t.labor_unit_cost, trade, tier);
+    const calcTot  = lineTotal(item.quantity, t.material_unit_cost, t.labor_unit_cost, trade, tier);
+    const override = (t.price_override !== undefined && t.price_override !== null && t.price_override !== '')
+      ? parseFloat(t.price_override) : null;
+    const tot = override !== null ? override : calcTot;
     return `<tr>
       <td class="other-name-cell">
         <input class="other-name-input" type="text" value="${esc(item.name)}" placeholder="Item description"
@@ -2744,7 +2747,17 @@ function renderOtherFreeform() {
           value="${cost||''}" placeholder="0.00"
           onchange="otherSetUnitCost('${item.id}',parseFloat(this.value)||0)">
       </td>
-      <td class="other-total-cell">${fmtCur(tot)}</td>
+      <td class="other-price-cell">
+        <div class="simple-price-wrap${override !== null ? ' has-override' : ''}">
+          <input class="other-price-input" type="number" min="0" step="0.01"
+            value="${tot.toFixed(2)}"
+            title="${override !== null ? 'Locked sell price — margin changes won’t touch it. ↺ resets to cost + margin.'
+                     : 'Auto-calculated from cost + margin. Edit to lock a specific price.'}"
+            onchange="liSetPriceOverride('${trade}','${item.id}','${tier}',this.value)">
+          ${override !== null ? `<button class="li-override-reset" title="Reset to margin-calculated price"
+            onclick="liClearPriceOverride('${trade}','${item.id}','${tier}')">↺</button>` : ''}
+        </div>
+      </td>
       <td><button class="li-del" onclick="liDelete('${trade}','${item.id}')" title="Remove">×</button></td>
     </tr>`;
   }).join('');
