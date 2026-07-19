@@ -157,9 +157,11 @@ PUBLIC_ENDPOINTS = {
     'service_worker',    # /sw.js — service worker scope must be public
 }
 
+DISABLE_AUTH = os.environ.get('DISABLE_AUTH', '').strip().lower() in ('1', 'true', 'yes')
+
 @app.before_request
 def _require_login():
-    if request.endpoint in PUBLIC_ENDPOINTS or session.get('user'):
+    if DISABLE_AUTH or request.endpoint in PUBLIC_ENDPOINTS or session.get('user'):
         return
     # Unauthenticated: JSON 401 for API calls (the SPA redirects), else to login.
     if request.path.startswith('/api/'):
