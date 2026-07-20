@@ -210,7 +210,7 @@ function renderMini(container, leads, emptyMsg){
   leads.forEach(l=>{
     const row=el('div','mini-lead');
     row.innerHTML=`<span class="temp-dot temp-${esc(l.temperature||'warm')}"></span>
-      <div class="nm">${esc(l.name)}</div>
+      <div class="nm">${l.service!=='roofing'?l.service_icon+' ':''}${esc(l.name)}</div>
       <div class="sub">${esc(l.stage_label)}${l.est_value?' · '+money(l.est_value):''}</div>`;
     row.onclick=()=>gotoLead(l.id, l.stage);
     container.appendChild(row);
@@ -221,10 +221,20 @@ function renderMini(container, leads, emptyMsg){
 let pipeSearch='';
 $('#pipeline-search').oninput=e=>{pipeSearch=e.target.value.trim().toLowerCase();renderPipeline();};
 $('#pipeline-rep').onchange=()=>renderPipeline();
+$('#pipeline-service').onchange=()=>renderPipeline();
+function buildServiceSelect(){
+  const sel=$('#pipeline-service');
+  if(sel&&!sel.options.length)
+    sel.innerHTML='<option value="">All services</option>'+
+      S.cfg.services.map(s=>`<option value="${s.key}">${s.icon} ${esc(s.label)}</option>`).join('');
+}
 async function renderPipeline(){
+  buildServiceSelect();
   const rep=S.me.is_manager ? $('#pipeline-rep').value : '';
+  const svc=$('#pipeline-service').value;
   let leads=await api('/leads'+(rep?'?rep='+encodeURIComponent(rep):''));
   S.leadCache=leads;
+  if(svc) leads=leads.filter(l=>l.service===svc);
   if(pipeSearch) leads=leads.filter(l=>(l.name+l.phone+l.address+l.company).toLowerCase().includes(pipeSearch));
   const board=$('#kanban'); board.innerHTML='';
   S.cfg.stages.forEach(st=>{
@@ -262,8 +272,9 @@ function kcard(l){
   if(l.overdue) nextChip=`<div class="chip next overdue">⏰ ${esc(dueLabel(l.next_action_at))}</div>`;
   else if(l.next_action_at) nextChip=`<div class="chip next">Next: ${esc(dueLabel(l.next_action_at))}</div>`;
   else if(l.stalled) nextChip=`<div class="chip stall">⚠ no next step</div>`;
+  const svcBadge=l.service!=='roofing'?`<span class="svc-badge" title="${esc(l.service_label)}">${l.service_icon}</span>`:'';
   c.innerHTML=`<div class="kcard-top"><span class="temp-dot temp-${esc(l.temperature||'warm')}"></span>
-    <span class="kcard-name">${esc(l.name)}</span></div>
+    <span class="kcard-name">${esc(l.name)}</span>${svcBadge}</div>
     <div class="kcard-sub"><span class="type-badge">${esc(typeMeta?typeMeta.label:l.lead_type)}</span>
     ${l.est_value?`<span class="kcard-val">${money(l.est_value)}</span>`:''}</div>${nextChip}`;
   attachDrag(c, l);
@@ -385,7 +396,8 @@ function renderDrawer(l){
   p.innerHTML=`
     <div class="dh"><button class="dh-close" data-x>✕</button>
       <div class="dh-name">${esc(l.name)}</div>
-      <div class="task-meta"><span class="type-badge">${esc(typeMeta?typeMeta.label:l.lead_type)}</span>
+      <div class="task-meta"><span class="type-badge">${l.service_icon} ${esc(l.service_label)}</span>
+      <span class="type-badge">${esc(typeMeta?typeMeta.label:l.lead_type)}</span>
       <span>${esc(repName(l.rep))}</span>${l.est_value?'<span>'+money(l.est_value)+'</span>':''}
       ${l.referred_by_name?'<span>via '+esc(l.referred_by_name)+'</span>':''}</div>
     </div>
@@ -416,6 +428,7 @@ function renderDrawer(l){
       <div class="drawer-btns">
         <button class="btn-brand" id="d-estimate">📄 Start estimate</button>
         <button class="btn-ghost" id="d-den">${l.crm_contact_id?'✓ In The Den — view job status':'⬆ Push to The Den'}</button>
+        ${l.service==='roofing'?'<button class="btn-ghost" id="d-pitch-wc">🪟 Pitch window cleaning</button>':''}
         <div class="est-status" id="d-est-status"></div>
       </div></div>
     <div class="dsec"><button class="btn-danger" id="d-delete">Delete lead</button></div>
@@ -430,7 +443,7 @@ function renderDrawer(l){
     refs.forEach(r=>{
       const row=el('div','mini-lead');
       row.innerHTML=`<span class="kcol-dot" style="background:${r.stage_color}"></span>
-        <div class="nm">${esc(r.name)}</div>
+        <div class="nm">${r.service!=='roofing'?r.service_icon+' ':''}${esc(r.name)}</div>
         <div class="sub">${esc(r.stage_label)}${r.est_value?' · '+money(r.est_value):''}</div>`;
       row.onclick=()=>openLead(r.id);
       box.appendChild(row);
@@ -484,6 +497,22 @@ function renderDrawer(l){
     try{ const r=await api('/leads/'+l.id+'/convert',{method:'POST'});
       if(r.ok){ toast('Pushed to The Den ✓'); const fresh=await api('/leads/'+l.id); renderDrawer(fresh); }
       else toast(r.error,true);
+    }catch(e){ toast(e.message,true); }
+  };
+  const pitchBtn=p.querySelector('#d-pitch-wc');
+  if(pitchBtn) pitchBtn.onclick=async()=>{
+    // Same customer, new deal on the window-cleaning line.
+    try{
+      const nw=await api('/leads',{method:'POST',body:{
+        first_name:l.first_name,last_name:l.last_name,company:l.company,
+        phone:l.phone,email:l.email,address:l.address,city:l.city,state:l.state,zip:l.zip,
+        lead_type:l.lead_type,service:'window_cleaning',source:'existing_customer',
+        temperature:'warm',referred_by:l.referred_by,rep:l.rep}});
+      await api('/leads/'+nw.id+'/activities',{method:'POST',
+        body:{kind:'system',body:`Window cleaning pitch — spun off from the ${l.service_label} deal`}});
+      toast('🪟 Window cleaning deal created');
+      if(S.view==='pipeline')renderPipeline();
+      openLead(nw.id);
     }catch(e){ toast(e.message,true); }
   };
   $('#d-delete').onclick=async()=>{
@@ -554,7 +583,9 @@ function renderFields(l){
     <div class="field-row"><div class="field"><label>City</label><input id="f-city" value="${esc(l.city)}"></div>
       <div class="field"><label>State</label><input id="f-state" value="${esc(l.state)}"></div>
       <div class="field"><label>Zip</label><input id="f-zip" value="${esc(l.zip)}"></div></div>
-    <div class="field-row"><div class="field"><label>Type</label><select id="f-type">${typeSel}</select></div>
+    <div class="field-row"><div class="field"><label>Service</label><select id="f-service">
+        ${cfg.services.map(s=>`<option value="${s.key}" ${s.key===l.service?'selected':''}>${s.icon} ${esc(s.label)}</option>`).join('')}</select></div>
+      <div class="field"><label>Type</label><select id="f-type">${typeSel}</select></div>
       <div class="field"><label>Temp</label><select id="f-temp">${tempSel}</select></div></div>
     <div class="field-row"><div class="field"><label>Source</label><select id="f-source">${srcSel}</select></div>
       <div class="field"><label>Est. value</label><input id="f-value" type="number" value="${l.est_value||''}"></div></div>
@@ -564,8 +595,8 @@ function renderFields(l){
     const body={first_name:$('#f-first').value,last_name:$('#f-last').value,company:$('#f-company').value,
       phone:$('#f-phone').value,email:$('#f-email').value,address:$('#f-address').value,
       city:$('#f-city').value,state:$('#f-state').value,zip:$('#f-zip').value,
-      lead_type:$('#f-type').value,temperature:$('#f-temp').value,source:$('#f-source').value,
-      est_value:$('#f-value').value,referred_by:$('#f-ref').value};
+      lead_type:$('#f-type').value,service:$('#f-service').value,temperature:$('#f-temp').value,
+      source:$('#f-source').value,est_value:$('#f-value').value,referred_by:$('#f-ref').value};
     try{ await api('/leads/'+l.id,{method:'PUT',body}); toast('Saved');
       const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
     }catch(e){ toast(e.message,true); }
@@ -623,6 +654,11 @@ async function renderDashboard(){
     ['New leads', d.new_leads, 'in '+d.days+'d'],
     ['Outreach', d.outreach_total, 'calls/texts/etc'],
   ].map(([l,n,s])=>`<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div>${s?`<div class="sub">${s}</div>`:''}</div>`).join('');
+  // service-line split
+  $('#dash-services').innerHTML=Object.values(d.by_service||{}).map(s=>
+    `<div class="kpi"><div class="n">${s.icon} ${money(s.open_value)}</div>
+      <div class="l">${esc(s.label)} pipeline</div>
+      <div class="sub">${s.open} open · ${s.won} won (${money(s.won_value)}) in ${d.days}d</div></div>`).join('');
   // funnel
   const maxC=Math.max(1,...d.stages.map(s=>d.stage_counts[s.key]||0));
   $('#dash-funnel').innerHTML=d.stages.map(s=>{
@@ -765,7 +801,9 @@ function newLeadModal(preset={}){
     <div class="field-row"><div class="field"><label>City</label><input id="nl-city"></div>
       <div class="field"><label>State</label><input id="nl-state" placeholder="CO/TX"></div>
       <div class="field"><label>Zip</label><input id="nl-zip"></div></div>
-    <div class="field-row"><div class="field"><label>Type</label><select id="nl-type">${typeSel}</select></div>
+    <div class="field-row"><div class="field"><label>Service</label><select id="nl-service">
+        ${cfg.services.map(s=>`<option value="${s.key}" ${s.key===(preset.service||'roofing')?'selected':''}>${s.icon} ${esc(s.label)}</option>`).join('')}</select></div>
+      <div class="field"><label>Type</label><select id="nl-type">${typeSel}</select></div>
       <div class="field"><label>Source</label><select id="nl-source">${srcSel}</select></div></div>
     <div class="field-row"><div class="field"><label>Est. value</label><input id="nl-value" type="number"></div>
       <div class="field"><label>Temp</label><select id="nl-temp">${cfg.temperature.map(t=>`<option>${t}</option>`).join('')}</select></div></div>
@@ -775,7 +813,8 @@ function newLeadModal(preset={}){
       if(!first&&!last&&!company){ toast('Enter a name or company',true); throw new Error('name'); }
       const body={first_name:first,last_name:last,company,phone:$('#nl-phone').value,email:$('#nl-email').value,
         address:$('#nl-address').value,city:$('#nl-city').value,state:$('#nl-state').value.toUpperCase(),zip:$('#nl-zip').value,
-        lead_type:$('#nl-type').value,source:$('#nl-source').value,est_value:$('#nl-value').value,temperature:$('#nl-temp').value};
+        lead_type:$('#nl-type').value,service:$('#nl-service').value,source:$('#nl-source').value,
+        est_value:$('#nl-value').value,temperature:$('#nl-temp').value};
       if(preset.referred_by) body.referred_by=preset.referred_by;
       if(S.me.is_manager&&$('#nl-rep')) body.rep=$('#nl-rep').value;
       const lead=await api('/leads',{method:'POST',body});

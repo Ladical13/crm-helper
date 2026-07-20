@@ -162,6 +162,7 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .chip.next.overdue{background:rgba(239,68,68,.15);border-color:var(--red);color:#fca5a5}
 .chip.stall{background:rgba(245,158,11,.15);border-color:var(--amber);color:#fcd34d;margin-top:8px}
 .type-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;background:rgba(59,130,246,.15);color:#93c5fd}
+.svc-badge{font-size:13px;flex:0 0 auto}
 
 /* ── Cards / lists ── */
 .card-list{display:flex;flex-direction:column;gap:10px}

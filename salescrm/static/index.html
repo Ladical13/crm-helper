@@ -9,7 +9,7 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <title>Project One — Pipeline</title>
-  <link rel="stylesheet" href="/static/style.css?v=6">
+  <link rel="stylesheet" href="/static/style.css?v=7">
 </head>
 <body>
 
@@ -85,6 +85,7 @@
     <!-- Pipeline -->
     <section class="view" id="view-pipeline">
       <div class="pipeline-toolbar">
+        <select id="pipeline-service" class="mini-select"></select>
         <select id="pipeline-rep" class="mini-select hidden"></select>
         <input id="pipeline-search" class="mini-search" placeholder="Search leads…">
       </div>
@@ -111,6 +112,8 @@
         <select id="dash-rep" class="mini-select hidden"></select>
       </div>
       <div class="stat-grid" id="dash-kpis"></div>
+      <h3 class="section-h">By service line</h3>
+      <div class="stat-grid" id="dash-services"></div>
       <h3 class="section-h">Funnel</h3>
       <div id="dash-funnel" class="funnel"></div>
       <div class="dash-cols">
@@ -181,6 +184,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

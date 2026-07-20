@@ -84,8 +84,18 @@ LEAD_TYPES = [
 LEAD_TYPE_KEYS = [t['key'] for t in LEAD_TYPES]
 PARTNER_TYPES  = [t['key'] for t in LEAD_TYPES if t['partner']]
 
-SOURCES     = ['referral', 'door_knock', 'phone_call', 'website', 'social_media', 'storm', 'other']
+SOURCES     = ['referral', 'door_knock', 'phone_call', 'website', 'social_media', 'storm',
+               'existing_customer', 'other']
 TEMPERATURE = ['hot', 'warm', 'cold']
+
+# Service lines. Every lead is a deal for ONE service; pitching a second service
+# to the same customer creates a second lead (see the clone flow in app.js).
+SERVICES = [
+    {'key': 'roofing',         'label': 'Roofing',         'icon': '🏠'},
+    {'key': 'window_cleaning', 'label': 'Window Cleaning', 'icon': '🪟'},
+]
+SERVICE_KEYS = [s['key'] for s in SERVICES]
+SERVICE_META = {s['key']: s for s in SERVICES}
 
 # Which local activity kinds count as "outreach" for scorecards.
 OUTREACH_KINDS = ('call', 'text', 'email', 'door', 'meeting')
@@ -122,6 +132,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS leads (
                 id             TEXT PRIMARY KEY,
                 lead_type      TEXT NOT NULL DEFAULT 'homeowner',
+                service        TEXT NOT NULL DEFAULT 'roofing',
                 first_name     TEXT DEFAULT '',
                 last_name      TEXT DEFAULT '',
                 company        TEXT DEFAULT '',
@@ -206,7 +217,15 @@ def init_db():
             );
         ''')
 
+def migrate_db():
+    """Additive column migrations for DBs created before a field existed."""
+    with get_db() as db:
+        cols = [r['name'] for r in db.execute('PRAGMA table_info(leads)')]
+        if 'service' not in cols:
+            db.execute("ALTER TABLE leads ADD COLUMN service TEXT DEFAULT 'roofing'")
+
 init_db()
+migrate_db()
 
 # ── JSON config (cadences, playbook) ──────────────────────────────────────────
 
@@ -478,6 +497,9 @@ def _lead_row(row):
     meta = STAGE_META.get(d['stage'], {'label': d['stage'], 'color': '#6B7280'})
     d['stage_label'] = meta['label']
     d['stage_color'] = meta['color']
+    smeta = SERVICE_META.get(d.get('service') or 'roofing', SERVICES[0])
+    d['service_label'] = smeta['label']
+    d['service_icon']  = smeta['icon']
     d['name'] = (f"{d['first_name']} {d['last_name']}").strip() or d['company'] or '(no name)'
     # Days since last activity (stall detector). Empty = never touched.
     d['stalled'] = _is_stalled(d)
@@ -522,11 +544,12 @@ def _refresh_next_action(db, lead_id):
 @app.route('/api/leads', methods=['GET'])
 @login_required
 def list_leads():
-    rep    = request.args.get('rep')
-    stage  = request.args.get('stage')
-    ltype  = request.args.get('type')
-    q      = (request.args.get('q') or '').strip().lower()
-    limit  = min(int(request.args.get('limit', 1000)), 5000)
+    rep     = request.args.get('rep')
+    stage   = request.args.get('stage')
+    ltype   = request.args.get('type')
+    service = request.args.get('service')
+    q       = (request.args.get('q') or '').strip().lower()
+    limit   = min(int(request.args.get('limit', 1000)), 5000)
 
     clauses, params = [], []
     if not is_manager():
@@ -537,6 +560,8 @@ def list_leads():
         clauses.append('stage=?'); params.append(stage)
     if ltype:
         clauses.append('lead_type=?'); params.append(ltype)
+    if service:
+        clauses.append('service=?'); params.append(service)
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
     with get_db() as db:
         rows = db.execute(f'SELECT * FROM leads {where} ORDER BY updated_at DESC LIMIT ?',
@@ -554,6 +579,9 @@ def create_lead():
     lead_type = data.get('lead_type', 'homeowner')
     if lead_type not in LEAD_TYPE_KEYS:
         return jsonify({'error': 'Invalid lead type'}), 400
+    service = data.get('service', 'roofing')
+    if service not in SERVICE_KEYS:
+        return jsonify({'error': 'Invalid service'}), 400
     stage = data.get('stage', 'new')
     if stage not in STAGE_KEYS:
         stage = 'new'
@@ -561,7 +589,7 @@ def create_lead():
     rep = data.get('rep') if is_manager() and data.get('rep') else current_rep()
     lid = str(uuid.uuid4())
     fields = {
-        'id': lid, 'lead_type': lead_type,
+        'id': lid, 'lead_type': lead_type, 'service': service,
         'first_name': data.get('first_name', ''), 'last_name': data.get('last_name', ''),
         'company': data.get('company', ''), 'phone': data.get('phone', ''),
         'email': data.get('email', ''), 'address': data.get('address', ''),
@@ -612,7 +640,7 @@ def get_lead(lead_id):
     return jsonify(d)
 
 # Fields a rep may PUT directly.
-LEAD_EDITABLE = ['lead_type', 'first_name', 'last_name', 'company', 'phone', 'email',
+LEAD_EDITABLE = ['lead_type', 'service', 'first_name', 'last_name', 'company', 'phone', 'email',
                  'address', 'city', 'state', 'zip', 'source', 'temperature',
                  'est_value', 'referred_by', 'lost_reason', 'estimate_id', 'rep']
 
@@ -631,6 +659,8 @@ def update_lead(lead_id):
                     continue                      # only managers reassign owner
                 if f == 'lead_type' and data[f] not in LEAD_TYPE_KEYS:
                     return jsonify({'error': 'Invalid lead type'}), 400
+                if f == 'service' and data[f] not in SERVICE_KEYS:
+                    return jsonify({'error': 'Invalid service'}), 400
                 if f == 'est_value':
                     sets.append('est_value=?'); params.append(float(data[f] or 0)); continue
                 sets.append(f'{f}=?'); params.append(data[f])
@@ -862,8 +892,9 @@ def _den_payloads(lead):
         'state': lead['state'], 'zip_code': lead['zip'],
         'source': lead['source'] or 'referral', 'assigned_to': assigned,
     }
+    service_label = SERVICE_META.get(lead.get('service') or 'roofing', SERVICES[0])['label']
     project = {
-        'name': f"Roofing - {name}", 'source': lead['source'] or 'referral',
+        'name': f"{service_label} - {name}", 'source': lead['source'] or 'referral',
         'assigned_to': assigned, 'status': 'lead',
     }
     return contact, project
@@ -1087,6 +1118,20 @@ def dashboard():
             f'SELECT source, COUNT(*) c FROM leads {lw} GROUP BY source', lead_params)}
         by_state = {(r['state'] or '??').upper(): r['c'] for r in db.execute(
             f'SELECT state, COUNT(*) c FROM leads {lw} GROUP BY state', lead_params)}
+        # Service-line split: open pipeline + won revenue per service.
+        by_service = {}
+        for s in SERVICES:
+            row = db.execute(
+                f'SELECT COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads '
+                f'WHERE {" AND ".join(lead_where + ["service=?", "stage IN (%s)" % ",".join("?"*len(OPEN_STAGES))])}',
+                lead_params + [s['key']] + OPEN_STAGES).fetchone()
+            wrow = db.execute(
+                f'SELECT COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads '
+                f'WHERE {" AND ".join(lead_where + ["service=?", "stage=?", "won_at >= ?"])}',
+                lead_params + [s['key'], 'won', since]).fetchone()
+            by_service[s['key']] = {'label': s['label'], 'icon': s['icon'],
+                                    'open': row['c'], 'open_value': row['v'],
+                                    'won': wrow['c'], 'won_value': wrow['v']}
 
     decided = won_count + lost_count
     win_rate = round(100 * won_count / decided, 1) if decided else 0.0
@@ -1102,7 +1147,7 @@ def dashboard():
         'lost_count': lost_count, 'win_rate': win_rate, 'avg_deal': avg_deal,
         'pipeline_count': pipe['c'], 'pipeline_value': pipe['v'],
         'activity': act_rows, 'outreach_total': outreach,
-        'by_source': by_source, 'by_state': by_state,
+        'by_source': by_source, 'by_state': by_state, 'by_service': by_service,
     })
 
 @app.route('/api/leaderboard')
@@ -1251,7 +1296,7 @@ def config():
     return jsonify({
         'stages': STAGES, 'lead_types': LEAD_TYPES, 'sources': SOURCES,
         'temperature': TEMPERATURE, 'partner_types': PARTNER_TYPES,
-        'stall_days': STALL_DAYS,
+        'services': SERVICES, 'stall_days': STALL_DAYS,
     })
 
 @app.route('/health')
