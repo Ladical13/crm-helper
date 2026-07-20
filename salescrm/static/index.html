@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <title>Project One — Pipeline</title>
+  <link rel="stylesheet" href="/static/style.css?v=6">
+</head>
+<body>
+
+<!-- ── Login ── -->
+<div id="login-screen" class="screen active">
+  <div class="login-box">
+    <div class="login-logo">P1</div>
+    <div class="login-title">The Pipeline</div>
+    <div class="login-sub">Project One Roofing · Sales CRM</div>
+    <div id="login-form">
+      <input type="text" id="login-username" placeholder="Username" autocomplete="username" autocapitalize="none">
+      <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+      <button class="btn-primary" id="login-btn">Sign In</button>
+      <div id="login-error" class="error-msg"></div>
+      <div class="divider" id="signup-toggle">First time? Set up your account →</div>
+    </div>
+    <div id="signup-form" class="hidden">
+      <input type="text" id="signup-code" placeholder="Invite / Signup Code">
+      <input type="text" id="signup-username" placeholder="Choose a username (no spaces)" autocapitalize="none">
+      <input type="text" id="signup-fullname" placeholder="Your full name">
+      <input type="password" id="signup-password" placeholder="Choose a password (6+ chars)">
+      <button class="btn-primary" id="signup-btn">Create Account</button>
+      <div id="signup-error" class="error-msg"></div>
+      <div class="divider" id="login-toggle">← Back to sign in</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── App ── -->
+<div id="app-screen" class="screen">
+<div class="app-shell">
+  <!-- Left sidebar (desktop) -->
+  <aside class="sidebar" id="sidebar">
+    <div class="side-brand">
+      <span class="side-logo">P1</span>
+      <div><div class="side-title">The Pipeline</div><div class="side-sub">Project One Roofing</div></div>
+    </div>
+    <nav class="side-nav">
+      <button class="side-item active" data-view="myday"><span class="side-ico">☀</span>My Day<span class="side-badge hidden" id="side-task-badge"></span></button>
+      <button class="side-item" data-view="pipeline"><span class="side-ico">▦</span>Pipeline</button>
+      <button class="side-item" data-view="partners"><span class="side-ico">🤝</span>Partners</button>
+      <button class="side-item mgr-only" data-view="dashboard"><span class="side-ico">📊</span>Numbers</button>
+      <button class="side-item mgr-only" data-view="coaching"><span class="side-ico">🎓</span>Coach</button>
+      <button class="side-item" data-view="playbook"><span class="side-ico">📕</span>Playbook</button>
+    </nav>
+    <div class="side-sec">Stages</div>
+    <div id="side-stages"></div>
+    <div class="side-foot" id="side-user"></div>
+  </aside>
+
+  <div class="app-main">
+  <header class="topbar">
+    <div class="topbar-title" id="view-title">My Day</div>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="add-lead-btn" title="Add lead">＋</button>
+      <button class="icon-btn" id="menu-btn" title="Menu">☰</button>
+    </div>
+  </header>
+
+  <main id="views">
+    <!-- My Day -->
+    <section class="view" id="view-myday">
+      <div class="myday-greeting" id="myday-greeting"></div>
+      <div class="stat-row" id="myday-stats"></div>
+      <h3 class="section-h">Today &amp; overdue <span class="count-badge" id="tasks-count">0</span></h3>
+      <div id="myday-tasks" class="task-list"></div>
+      <h3 class="section-h">🔥 Hot leads</h3>
+      <div id="myday-hot" class="mini-lead-list"></div>
+      <h3 class="section-h">⚠ Stalled — no touch in a while</h3>
+      <div id="myday-stalled" class="mini-lead-list"></div>
+    </section>
+
+    <!-- Pipeline -->
+    <section class="view" id="view-pipeline">
+      <div class="pipeline-toolbar">
+        <select id="pipeline-rep" class="mini-select hidden"></select>
+        <input id="pipeline-search" class="mini-search" placeholder="Search leads…">
+      </div>
+      <div id="kanban" class="kanban"></div>
+      <div id="pipeline-detail" class="inline-detail hidden"></div>
+    </section>
+
+    <!-- Partners -->
+    <section class="view" id="view-partners">
+      <p class="view-intro">Realtors, HOAs, insurance agents &amp; property managers — and the business they send you.</p>
+      <div id="partners-list" class="card-list"></div>
+      <div id="partners-detail" class="inline-detail hidden"></div>
+    </section>
+
+    <!-- Dashboard -->
+    <section class="view" id="view-dashboard">
+      <div class="dash-controls">
+        <select id="dash-days" class="mini-select">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="365">Last year</option>
+        </select>
+        <select id="dash-rep" class="mini-select hidden"></select>
+      </div>
+      <div class="stat-grid" id="dash-kpis"></div>
+      <h3 class="section-h">Funnel</h3>
+      <div id="dash-funnel" class="funnel"></div>
+      <div class="dash-cols">
+        <div><h3 class="section-h">Activity</h3><div id="dash-activity" class="bar-list"></div></div>
+        <div><h3 class="section-h">By source</h3><div id="dash-source" class="bar-list"></div></div>
+      </div>
+      <h3 class="section-h">🏆 Leaderboard</h3>
+      <div id="dash-leaderboard" class="leaderboard"></div>
+    </section>
+
+    <!-- Coaching -->
+    <section class="view" id="view-coaching">
+      <div class="dash-controls">
+        <select id="coach-rep" class="mini-select"></select>
+        <select id="coach-days" class="mini-select">
+          <option value="7">7 days</option>
+          <option value="30" selected>30 days</option>
+          <option value="90">90 days</option>
+        </select>
+      </div>
+      <div class="stat-grid" id="coach-scorecard"></div>
+      <h3 class="section-h">🎯 Goals</h3>
+      <div id="coach-goals"></div>
+      <button class="btn-ghost small" id="add-goal-btn">+ Add goal</button>
+      <h3 class="section-h">⚠ Stalled deals</h3>
+      <div id="coach-stalled" class="mini-lead-list"></div>
+      <h3 class="section-h">📝 1:1 Coaching notes</h3>
+      <textarea id="coach-note-input" class="note-input" placeholder="Add a coaching note for this rep…"></textarea>
+      <button class="btn-ghost small" id="add-note-btn">Save note</button>
+      <div id="coach-notes" class="note-list"></div>
+    </section>
+
+    <!-- Playbook -->
+    <section class="view" id="view-playbook">
+      <input id="playbook-search" class="mini-search full" placeholder="Search objections &amp; scripts…">
+      <div id="playbook-principles" class="principles"></div>
+      <h3 class="section-h">Objection handling</h3>
+      <div id="playbook-objections" class="card-list"></div>
+      <h3 class="section-h">Scripts &amp; talk tracks</h3>
+      <div id="playbook-scripts" class="card-list"></div>
+    </section>
+  </main>
+  </div><!-- /app-main -->
+</div><!-- /app-shell -->
+
+  <!-- Bottom tab bar (mobile) -->
+  <nav class="tabbar" id="tabbar">
+    <button class="tab active" data-view="myday"><span class="tab-ico">☀</span>My Day</button>
+    <button class="tab" data-view="pipeline"><span class="tab-ico">▦</span>Pipeline</button>
+    <button class="tab" data-view="partners"><span class="tab-ico">🤝</span>Partners</button>
+    <button class="tab mgr-only" data-view="dashboard"><span class="tab-ico">📊</span>Numbers</button>
+    <button class="tab mgr-only" data-view="coaching"><span class="tab-ico">🎓</span>Coach</button>
+    <button class="tab" data-view="playbook"><span class="tab-ico">📕</span>Playbook</button>
+  </nav>
+</div>
+
+<!-- ── Lead detail drawer ── -->
+<div id="lead-drawer" class="drawer">
+  <div class="drawer-scrim" data-close-drawer></div>
+  <div class="drawer-panel" id="lead-panel"></div>
+</div>
+
+<!-- ── Generic modal ── -->
+<div id="modal" class="modal">
+  <div class="modal-scrim" data-close-modal></div>
+  <div class="modal-box" id="modal-box"></div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="/static/app.js?v=6"></script>
+</body>
+</html>

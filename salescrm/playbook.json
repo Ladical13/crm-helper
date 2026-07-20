@@ -1,0 +1,78 @@
+{
+  "objections": [
+    {
+      "objection": "I need to think about it.",
+      "category": "stall",
+      "rebuttal": "Totally fair — this is a big decision. Usually when someone says that, it's one of three things: the price, the timing, or you're just not 100% sure we're the right company. Which one is it for you, so I can help?",
+      "coach_note": "Isolate the real objection. 'Think about it' is almost never the true reason — it's a polite exit. Pin it down before they leave."
+    },
+    {
+      "objection": "Your price is too high.",
+      "category": "price",
+      "rebuttal": "I hear you, and I'd never ask you to overpay. Can I ask — too high compared to what? Let's put the two side by side, because the cheapest bid usually leaves something out that costs you more later. What matters most: the number, or that it's done right once?",
+      "coach_note": "Never drop price to win. Reframe to value and total cost of ownership. Compare apples to apples — cheap bids cut corners (underlayment, ventilation, warranty)."
+    },
+    {
+      "objection": "I want to get a few other quotes.",
+      "category": "competition",
+      "rebuttal": "Smart — you should. Most of our customers did the same. As you compare, look at three things: the crew (in-house vs. subs), the warranty (workmanship, not just material), and whether they pull permits. Want me to leave you a checklist so you're comparing the right things?",
+      "coach_note": "Don't fight shopping — arm them to shop in your favor. The checklist frames competitors' weaknesses without you bad-mouthing anyone."
+    },
+    {
+      "objection": "I need to talk to my spouse.",
+      "category": "stall",
+      "rebuttal": "Of course — you should both be on board. When would be a good time for the three of us to talk for 10 minutes so I can answer their questions directly instead of you having to relay it? Would tonight or tomorrow work better?",
+      "coach_note": "Get the decision-maker(s) in the room. Book a specific time — don't leave it open-ended, or the deal dies in the relay."
+    },
+    {
+      "objection": "I'm going to wait / it's not leaking yet.",
+      "category": "timing",
+      "rebuttal": "Makes sense to not fix what isn't broken. The thing about roofs is the damage is happening whether it's leaking inside or not — by the time it shows on the ceiling, the deck's often rotted and the bill doubles. A quick inspection tells us if you've got months or years. Worst case, I give you peace of mind. Fair?",
+      "coach_note": "Create urgency with education, not scare tactics. Offer the low-commitment next step (inspection) to keep momentum."
+    },
+    {
+      "objection": "I'm just going to file with insurance myself.",
+      "category": "insurance",
+      "rebuttal": "You absolutely can. Where most homeowners get burned is the adjuster meeting — if no one's there representing your roof, they lowball it. We meet the adjuster on your behalf at no cost and make sure everything storm-related gets documented. Want me to walk your roof first so you know what you're actually claiming?",
+      "coach_note": "Position as the homeowner's advocate. Free inspection + adjuster meeting is the wedge. Never advise on coverage/claims specifics — not licensed for that."
+    },
+    {
+      "objection": "How do I know you'll still be here for the warranty?",
+      "category": "trust",
+      "rebuttal": "Best question you can ask. We're local — [years] in [market], [#] roofs, and here's our Google reviews and a few recent addresses you can drive by. The fly-by-night storm chasers are gone in a season; we're the company your neighbors call back.",
+      "coach_note": "Trust close. Lead with local proof, longevity, reviews, and referenceable jobs. Contrast with storm-chasers without naming them."
+    },
+    {
+      "objection": "Can you just email me the price?",
+      "category": "stall",
+      "rebuttal": "Happy to — I want you to have it in writing. Quick thing though: an email number without me walking you through what's included usually creates more questions than it answers. Give me 5 minutes on the phone with it and I'll make sure it actually fits what you need.",
+      "coach_note": "An emailed price with no conversation is a lost deal. Trade the email for a scheduled walkthrough."
+    }
+  ],
+  "scripts": [
+    {
+      "name": "Door approach (storm)",
+      "body": "Hi, I'm [name] with Project One Roofing — we're the ones putting on the new roofs you've probably seen around the neighborhood after the storm. We're doing free inspections for your neighbors this week to check for hail damage before it turns into leaks. I've got a ladder in the truck — mind if I take a quick look and let you know what I find? No cost, no obligation."
+    },
+    {
+      "name": "Inbound call — first 30 seconds",
+      "body": "Thanks for calling Project One, this is [name]. I can definitely help with that. So I can point you the right direction — is this a repair, a full replacement you're pricing, or storm/insurance related? ... Got it. And what's the address so I can see what we're working with? Great — let's get you on the schedule for a free inspection."
+    },
+    {
+      "name": "Setting the appointment (upfront contract)",
+      "body": "Here's how it'll work: I'll come out [day/time], walk the roof, take photos, and show you exactly what I find — good or bad. If it needs work, I'll give you options and a price on the spot. If it's fine, I'll tell you that too. All I ask is that if it makes sense, we can talk about next steps while I'm there. Does [time] or [time] work better?"
+    },
+    {
+      "name": "Asking for the referral",
+      "body": "Glad you're happy with how it turned out. Quick favor — who's the one neighbor, friend, or family member you'd want taken care of the way we took care of you? I'll reach out, mention you sent me, and treat them right. No pressure on them at all."
+    }
+  ],
+  "principles": [
+    "Activity you control, outcomes you don't — win the day on calls, doors, and appointments set.",
+    "Always schedule the next action before you hang up. A lead with no next step is a lead you're losing.",
+    "Feel / Felt / Found: 'I understand how you feel, others felt the same, here's what they found.'",
+    "The sale is made in the follow-up. Fortune favors the 5th touch, not the 1st.",
+    "Disqualify fast. A clear 'no' is worth more than a month of maybes.",
+    "Ask for the business. You miss 100% of the closes you don't ask for."
+  ]
+}

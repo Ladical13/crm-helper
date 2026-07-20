@@ -1,0 +1,48 @@
+[
+  {
+    "id": "new_lead_7touch",
+    "name": "New Lead — 7-Touch",
+    "description": "The fortune is in the follow-up. Most sales need 5+ touches; this keeps a fresh lead from going cold in the first two weeks.",
+    "steps": [
+      { "offset_days": 0,  "kind": "call",    "title": "Call #1 — intro + set expectations" },
+      { "offset_days": 0,  "kind": "text",    "title": "Text — 'Nice to connect, here's my info'" },
+      { "offset_days": 1,  "kind": "call",    "title": "Call #2 — no answer? try different time of day" },
+      { "offset_days": 3,  "kind": "email",   "title": "Email — company intro + reviews/proof" },
+      { "offset_days": 5,  "kind": "call",    "title": "Call #3 — value + book the inspection" },
+      { "offset_days": 9,  "kind": "text",    "title": "Text — soft check-in, easy yes/no" },
+      { "offset_days": 14, "kind": "call",    "title": "Call #4 — 'should I close your file?' (takeaway)" }
+    ]
+  },
+  {
+    "id": "estimate_followup",
+    "name": "Estimate Follow-up",
+    "description": "After the estimate is presented. Silence is not a no. Stay in front of them until you get a decision.",
+    "steps": [
+      { "offset_days": 0, "kind": "text",    "title": "Text — 'Sent your estimate, any questions?'" },
+      { "offset_days": 1, "kind": "call",    "title": "Call — walk through the estimate, handle objections" },
+      { "offset_days": 3, "kind": "call",    "title": "Call — address #1 concern, ask for the business" },
+      { "offset_days": 6, "kind": "email",   "title": "Email — recap value + financing/scheduling" },
+      { "offset_days": 10,"kind": "call",    "title": "Call — decision check, offer to hold their spot" }
+    ]
+  },
+  {
+    "id": "cold_revive",
+    "name": "Cold Revive",
+    "description": "Re-engage an old or stalled lead. Low pressure, give them a reason to re-open the conversation.",
+    "steps": [
+      { "offset_days": 0,  "kind": "text",  "title": "Text — 'Still thinking about the roof?'" },
+      { "offset_days": 4,  "kind": "call",  "title": "Call — new angle (season/storm/price change)" },
+      { "offset_days": 10, "kind": "email", "title": "Email — recent job nearby + offer a fresh look" }
+    ]
+  },
+  {
+    "id": "partner_nurture",
+    "name": "Referral Partner Nurture",
+    "description": "Keep realtors, HOAs, insurance agents, and property managers sending you business. Relationships need regular touches.",
+    "steps": [
+      { "offset_days": 0,  "kind": "call",    "title": "Call — check in, ask about their current listings/clients" },
+      { "offset_days": 14, "kind": "meeting", "title": "Coffee / lunch — stay top of mind" },
+      { "offset_days": 45, "kind": "email",   "title": "Email — recap referrals closed + thank you" }
+    ]
+  }
+]
