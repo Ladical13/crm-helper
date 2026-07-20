@@ -1885,11 +1885,12 @@ def render_line_items(est, tier=None, only_trades=None):
                 lp_cells = ''
                 if show_lp:
                     unit_sell = (line / qty) if qty else 0.0
-                    lp_cells = f'<td class="cvr">{fc(unit_sell)}</td><td class="cvr">{fc(line)}</td>'
+                    lp_cells = (f'<td class="cvr" data-l="Each">{fc(unit_sell)}</td>'
+                                f'<td class="cvr" data-l="Total">{fc(line)}</td>')
                 grows.append(f'''<tr>
               <td class="cvn">{he(item.get("name",""))}
                 {'<div class="cvd">'+he(desc)+'</div>' if desc else ''}</td>
-              <td class="cvc">{qty:g}</td>
+              <td class="cvc" data-l="Qty">{qty:g}</td>
               <td class="cvc">{he(item.get("unit",""))}</td>{lp_cells}</tr>''')
             if sections:
                 rows.append(f'<tr class="cv-section-row"><td colspan="{ncols}">{he(gname or "General")}</td></tr>')
@@ -1921,204 +1922,573 @@ def render_line_items(est, tier=None, only_trades=None):
 
 
 _CV_CSS = """
+:root{--navy:#1a3a5c;--navy2:#0e2440;--navy3:#2c5580;--ink:#101a2c;--mut:#5b6b81;--faint:#93a1b5;
+--line:#e3e9f1;--bg:#eef2f6;--cyan:#22c7da;--gold:#ffd400;--red:#ee3d42;--green:#16a34a;
+--r:16px;--sh:0 1px 2px rgba(15,23,42,.05),0 10px 30px -18px rgba(15,23,42,.22)}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;color:#1f2937;background:#f3f4f6}
-.cvhdr{background:#fff;padding:16px 22px;display:flex;align-items:center;justify-content:space-between;gap:14px;box-shadow:0 2px 10px rgba(0,0,0,.08)}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{font-family:'Plus Jakarta Sans',system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14.5px;
+color:var(--ink);background:linear-gradient(180deg,#f7f9fc 0%,var(--bg) 320px);min-height:100vh;
+-webkit-font-smoothing:antialiased}
+img{max-width:100%}
+body.cv-has-stick{padding-bottom:96px}
+
+/* ── header ── */
+.cvhdr{background:rgba(255,255,255,.94);position:relative;z-index:5;padding:12px clamp(14px,4vw,28px);
+display:flex;align-items:center;justify-content:space-between;gap:14px;border-bottom:1px solid var(--line)}
 .cvhdr-logo-wrap{display:inline-flex;align-items:center}
-.cvhdr img{height:56px;width:auto;display:block}
-.cvhdr-contact{text-align:right;line-height:1.45}
-.cvhdr-contact a{color:#1a3a5c;font-weight:800;font-size:16px;text-decoration:none;display:block}
-.cvhdr-contact span{color:#6b7280;font-size:11px}
-.cvbrand-stripe{height:6px;background:linear-gradient(90deg,#22c7da 0 33.3%,#ffd400 33.3% 66.6%,#ee3d42 66.6% 100%)}
-.cvhero{background:linear-gradient(135deg,#1a3a5c,#0e2440);color:#fff;padding:30px 20px;text-align:center;position:relative}
-.cvhero-brand{font-size:12px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:#22c7da;margin-bottom:9px}
-.cvhero h1{font-size:22px;font-weight:800;margin-bottom:5px}
-.cvhero p{font-size:13px;opacity:.85}
-.cvhero.ok{background:linear-gradient(135deg,#16a34a,#14532d)}
-.cvcover{position:relative;overflow:hidden;background:#0e2440}
-.cvcover img{width:100%;height:min(500px,62vh);object-fit:contain;display:block}
-.cvcover-shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,25,41,.08) 0%,rgba(10,25,41,.12) 45%,rgba(10,25,41,.82) 100%)}
-.cvcover-text{position:absolute;left:0;right:0;bottom:0;padding:30px 20px 34px;text-align:center;color:#fff}
-.cvcover-text h1{font-size:27px;font-weight:800;margin-bottom:7px;text-shadow:0 2px 10px rgba(0,0,0,.5)}
-.cvcover-text p{font-size:14px;opacity:.95;text-shadow:0 1px 5px rgba(0,0,0,.55)}
-@media(max-width:520px){.cvcover img{height:320px}.cvcover-text h1{font-size:20px}}
-.cv-check{font-size:52px;line-height:1;margin-bottom:8px}
-.cv-print-btn{margin-top:14px;background:rgba(255,255,255,.2);border:2px solid rgba(255,255,255,.5);
-  color:#fff;padding:10px 22px;border-radius:6px;font-size:14px;font-weight:700;cursor:pointer}
-.cv-print-btn:hover{background:rgba(255,255,255,.3)}
-.cvc-card{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:16px}
-.cvgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.cvgi label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;font-weight:700;display:block;margin-bottom:2px}
-.cvgi strong{font-size:13px;color:#111}
-.cvpkg{text-align:center;padding:18px;border-radius:8px}
-.cvpkg-lbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}
-.cvpkg-total{font-size:34px;font-weight:900;margin-bottom:5px}
-.cvpkg-desc{font-size:12px;color:#555;font-style:italic}
-.cvtrade{margin:14px 14px 0}
-.cvtrade-hd{background:#1a3a5c;color:#fff;padding:8px 14px;font-size:12px;font-weight:700;border-radius:6px 6px 0 0}
-.cvt{width:100%;border-collapse:collapse;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.1);border-radius:0 0 6px 6px;overflow:hidden}
-.cvt th{padding:7px 10px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.4px;background:#f9fafb;border-bottom:1px solid #e5e7eb;color:#6b7280}
-.cvth-c{width:48px;text-align:center !important}
-.cvth-r{width:82px;text-align:right !important}
-.cvt td{padding:7px 10px;border-bottom:1px solid #f3f4f6;font-size:12px}
-.cvt tr:last-child td{border-bottom:none}
-.cvn{font-weight:500}
-.cvd{font-size:10px;color:#6b7280;font-style:italic;margin-top:2px}
-.cvc{text-align:center;color:#6b7280}
-.cvc-desc{font-weight:400;color:#6b7280;font-style:italic}
-.cvr{text-align:right;font-weight:600}
-.cvt tfoot td{background:#f9fafb;font-weight:700;padding:8px 10px;border-top:2px solid #e5e7eb;font-size:12px}
-.cvsub-l{text-align:right;color:#6b7280;font-size:11px;padding-right:12px}
-.cvsub{color:#1a3a5c}
-.cvgrand{margin:14px 14px 0;background:#1a3a5c;color:#fff;padding:13px 16px;border-radius:6px;
-  display:flex;justify-content:space-between;align-items:center}
-.cvgrand-lbl{font-size:12px;font-weight:600;opacity:.8}
-.cvgrand-amt{font-size:22px;font-weight:800}
-.cvnotes{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:14px}
-.cvnotes h3{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin-bottom:6px}
-.cvnotes p{font-size:13px;line-height:1.6;color:#374151;white-space:pre-wrap}
-.cvproducts{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:14px 16px;overflow:hidden}
-.cvproducts h3{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin-bottom:8px}
-.cvprod-tbl{width:100%;border-collapse:collapse;font-size:13px}
-.cvprod-tbl tr{border-bottom:1px solid #f3f4f6}
+.cvhdr img{height:50px;width:auto;display:block}
+.cvhdr-contact{display:flex;flex-direction:column;align-items:flex-end;gap:4px;text-align:right}
+.cvhdr-contact a{display:inline-flex;align-items:center;gap:7px;background:var(--navy);color:#fff;
+font-weight:700;font-size:13.5px;text-decoration:none;padding:9px 16px;border-radius:999px;
+box-shadow:0 6px 14px -6px rgba(26,58,92,.55);transition:transform .15s}
+.cvhdr-contact a:active{transform:scale(.96)}
+.cvhdr-contact span{color:var(--faint);font-size:10.5px;letter-spacing:.3px}
+.cvbrand-stripe{height:4px;background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
+
+/* ── hero ── */
+.cvhero{position:relative;background:radial-gradient(130% 150% at 88% -30%,var(--navy3) 0%,var(--navy) 48%,var(--navy2) 100%);
+color:#fff;padding:46px 20px 42px;text-align:center;overflow:hidden}
+.cvhero::before{content:'';position:absolute;width:360px;height:360px;border-radius:50%;
+background:radial-gradient(circle,rgba(34,199,218,.16),transparent 65%);top:-150px;left:-110px}
+.cvhero-brand{position:relative;font-size:11px;font-weight:800;letter-spacing:3px;text-transform:uppercase;color:var(--cyan);margin-bottom:12px}
+.cvhero h1{position:relative;font-size:clamp(24px,5.5vw,34px);font-weight:800;letter-spacing:-.6px;margin-bottom:8px}
+.cvhero p{position:relative;font-size:14.5px;opacity:.85;max-width:540px;margin:0 auto;line-height:1.55}
+.cvhero.ok{background:radial-gradient(130% 150% at 88% -30%,#22a558 0%,#178a44 48%,#0d6630 100%)}
+.cvsteps{position:relative;display:flex;justify-content:center;gap:8px;margin-top:22px;flex-wrap:wrap}
+.cvstep{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.09);
+border:1px solid rgba(255,255,255,.22);border-radius:999px;padding:6px 14px 6px 7px;font-size:12px;font-weight:600;color:#fff}
+.cvstep b{display:inline-flex;width:21px;height:21px;border-radius:50%;background:var(--cyan);color:var(--navy2);
+font-size:11px;font-weight:800;align-items:center;justify-content:center}
+
+/* ── cover-photo hero ── */
+.cvcover{position:relative;overflow:hidden;background:var(--navy2)}
+.cvcover img{width:100%;height:min(500px,62vh);object-fit:cover;display:block}
+.cvcover-shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,25,41,.25) 0%,rgba(10,25,41,.05) 40%,rgba(10,25,41,.9) 100%)}
+.cvcover-text{position:absolute;left:0;right:0;bottom:0;padding:34px 20px 30px;text-align:center;color:#fff}
+.cvcover-text h1{font-size:clamp(24px,5.5vw,36px);font-weight:800;letter-spacing:-.6px;margin-bottom:8px;text-shadow:0 2px 14px rgba(0,0,0,.55)}
+.cvcover-text p{font-size:14.5px;opacity:.95;text-shadow:0 1px 6px rgba(0,0,0,.6)}
+@media(max-width:520px){.cvcover img{height:340px}}
+.cv-check{width:76px;height:76px;margin:0 auto 16px;border-radius:50%;background:rgba(255,255,255,.14);
+border:2.5px solid rgba(255,255,255,.9);display:flex;align-items:center;justify-content:center;
+font-size:38px;line-height:1;animation:cvpop .6s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes cvpop{from{transform:scale(.25);opacity:0}to{transform:scale(1);opacity:1}}
+.cv-print-btn{margin-top:18px;background:rgba(255,255,255,.16);border:1.5px solid rgba(255,255,255,.55);
+color:#fff;padding:11px 24px;border-radius:999px;font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;transition:background .15s}
+.cv-print-btn:hover{background:rgba(255,255,255,.28)}
+
+/* ── layout + cards ── */
+.cvmain{max-width:960px;margin:0 auto;padding:6px 0 46px}
+@media(min-width:720px){.cvmain{padding:14px 22px 60px}}
+.cvc-card,.cvnotes,.cvproducts,.cvintro,.cvphotos,.cvcond,.cvnext,.cvrep-card{background:#fff;border:1px solid var(--line);
+border-radius:var(--r);box-shadow:var(--sh);margin:16px 16px 0;padding:18px}
+.cvgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px 16px}
+.cvgi label{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--faint);font-weight:700;display:block;margin-bottom:3px}
+.cvgi strong{font-size:14px;font-weight:700;color:var(--ink);line-height:1.4}
+.cvnotes h3,.cvproducts h3,.cvphotos h3,.cvcond>h3,.cvnext h3,.cvrep-card h3{display:flex;align-items:center;gap:9px;
+font-size:11.5px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--navy);margin-bottom:12px}
+.cvnotes h3::before,.cvproducts h3::before,.cvphotos h3::before,.cvcond>h3::before,.cvnext h3::before,.cvrep-card h3::before{
+content:'';width:20px;height:3.5px;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--gold));flex-shrink:0}
+.cvnotes p{font-size:14px;line-height:1.7;color:#33415a;white-space:pre-wrap}
+.cvintro{padding:22px}
+.cvintro-logo{height:40px;width:auto;display:block;margin-bottom:14px}
+.cvintro p{font-size:14.5px;line-height:1.8;color:#33415a;white-space:pre-wrap}
+
+/* ── photos + lightbox ── */
+.cvph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.cvph-fig{margin:0}
+.cvph-wrap{position:relative;border-radius:12px;overflow:hidden;background:#f1f5f9;cursor:zoom-in;box-shadow:0 2px 8px -2px rgba(15,23,42,.15)}
+.cvph-wrap img{width:100%;display:block;transition:transform .35s ease}
+.cvph-wrap:hover img{transform:scale(1.04)}
+.cvph-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.cvph-fig figcaption{font-size:12px;color:var(--mut);padding:7px 3px 0;line-height:1.45}
+@media(max-width:520px){.cvph-grid{grid-template-columns:1fr 1fr;gap:10px}}
+.cvlb{position:fixed;inset:0;z-index:100;background:rgba(8,15,26,.93);display:none;flex-direction:column;
+align-items:center;justify-content:center;padding:20px;opacity:0;transition:opacity .2s}
+.cvlb.on{opacity:1}
+.cvlb-body{position:relative;max-width:min(1100px,94vw)}
+.cvlb-body img{max-width:94vw;max-height:80vh;width:auto;height:auto;border-radius:10px;display:block}
+.cvlb-cap{color:#cbd5e1;font-size:13.5px;margin-top:12px;text-align:center;max-width:640px}
+.cvlb-x{position:absolute;top:14px;right:14px;width:42px;height:42px;border-radius:50%;background:rgba(255,255,255,.14);
+color:#fff;border:none;font-size:24px;line-height:1;cursor:pointer;z-index:2;font-family:inherit}
+
+/* ── product selection ── */
+.cvprod-tbl{width:100%;border-collapse:collapse;font-size:13.5px}
+.cvprod-tbl tr{border-bottom:1px solid #f1f5f9}
 .cvprod-tbl tr:last-child{border-bottom:none}
-.cvprod-tbl td{padding:6px 6px}
-.cvprod-trade{color:#1a3a5c;font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.4px;width:80px;white-space:nowrap}
-.cvprod-label{color:#6b7280;width:130px}
-.cvprod-value{font-weight:600;color:#111}
-@media(max-width:480px){.cvprod-trade,.cvprod-label{width:auto}.cvprod-tbl td{padding:4px 4px;font-size:12px}}
-.cvcontract{margin:14px;background:#fff;border-radius:8px;border:1px solid #e5e7eb;overflow:hidden}
-.cvcontract summary{padding:13px 16px;cursor:pointer;font-weight:600;font-size:13px;color:#1a3a5c;list-style:none}
-.cvcontract summary::-webkit-details-marker{display:none}
-.cvcontract[open] summary{border-bottom:1px solid #e5e7eb}
-.cvcontract-body{padding:14px 16px;font-size:11px;line-height:1.7;color:#4b5563;white-space:pre-wrap;
-  max-height:280px;overflow-y:auto;background:#f9fafb}
-.cvsig{margin:14px;padding:20px;background:#fff;border-radius:8px;border:2px solid #1a3a5c;
-  box-shadow:0 4px 14px rgba(0,0,0,.1)}
-.cvsig h2{font-size:17px;font-weight:800;color:#1a3a5c;margin-bottom:4px}
-.cvsig .sub{font-size:12px;color:#6b7280;margin-bottom:16px}
-.cvinput{width:100%;border:1px solid #d1d5db;border-radius:6px;padding:11px 13px;font-size:14px;
-  margin-bottom:10px;font-family:inherit;outline:none;color:#111}
-.cvinput:focus{border-color:#1a3a5c;box-shadow:0 0 0 3px rgba(26,58,92,.12)}
-.cvagree{display:flex;align-items:flex-start;gap:10px;font-size:12px;color:#374151;
-  margin-bottom:16px;line-height:1.5;cursor:pointer}
-.cvagree input{margin-top:2px;flex-shrink:0;width:16px;height:16px;cursor:pointer}
-.cvbtn{width:100%;padding:15px;background:#1a3a5c;color:#fff;border:none;border-radius:8px;
-  font-size:16px;font-weight:700;cursor:pointer;margin-bottom:10px;transition:background .15s}
-.cvbtn:hover{background:#0e2440}
-.cvlegal{font-size:10px;color:#9ca3af;text-align:center;line-height:1.5}
-.cv-shingle{background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:13px 14px;margin-bottom:14px}
-.cv-shingle-label{font-size:12px;font-weight:800;color:#0c4a6e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
-.cv-shingle-locked{font-size:17px;font-weight:700;color:#1a3a5c}
-.cv-shingle-select{margin-bottom:0;background:#fff}
-.cv-initials{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:13px 14px;margin-bottom:14px}
-.cv-initials-title{font-size:12px;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
-.cv-initial-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid #fef3c7}
-.cv-initial-row:first-of-type{border-top:none}
-.cv-initial-text{flex:1;font-size:13px;color:#374151;line-height:1.45}
-.cv-initial-box{width:78px;flex-shrink:0;border:2px solid #1a3a5c;border-radius:6px;padding:10px 8px;
-  font-size:16px;font-weight:700;text-align:center;text-transform:uppercase;outline:none;color:#1a3a5c;background:#fff}
-.cv-initial-box:focus{box-shadow:0 0 0 3px rgba(26,58,92,.15)}
-.cv-att-list{display:flex;flex-direction:column;gap:8px}
-.cv-att{display:inline-flex;align-items:center;gap:8px;background:#f8fafc;border:1px solid #e2e8f0;
-  border-radius:6px;padding:11px 14px;font-size:14px;font-weight:600;color:#1a3a5c;text-decoration:none}
-.cv-att:hover{background:#eef2f7;border-color:#94a3b8}
-.cv-att-doc{display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
-.cv-att-doc-title{font-size:13px;font-weight:700;color:#1a3a5c}
-.cv-att-page{width:100%;display:block;border:1px solid #e2e8f0;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
-.cvinit-tbl td:first-child{width:auto;text-transform:none;letter-spacing:0;font-size:12px;color:#374151;font-weight:500}
-.cvinit-val{font-weight:800!important;color:#1a3a5c!important;text-transform:uppercase;width:70px!important;text-align:right}
-.cert{margin:14px;background:#fff;border:2px solid #1a3a5c;border-radius:8px;padding:18px}
-.cert-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:#1a3a5c;
-  margin-bottom:13px;padding-bottom:10px;border-bottom:2px solid #1a3a5c}
-.cert-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:10px}
-.cert-tbl td{padding:5px 0;vertical-align:top}
-.cert-tbl td:first-child{color:#6b7280;font-weight:600;width:110px;font-size:10px;text-transform:uppercase;letter-spacing:.4px}
-.cert-tbl td:last-child{font-weight:600;color:#111;word-break:break-all}
-.cert-legal{font-size:10px;color:#9ca3af;line-height:1.5;border-top:1px solid #f3f4f6;padding-top:10px}
-.mono{font-family:monospace;font-size:10px}
-.cvftr{text-align:center;padding:28px 16px 36px;background:#1a3a5c;color:rgba(255,255,255,.6);line-height:1.6;margin-top:20px}
-.cvftr-logo{height:42px;width:auto;background:#fff;padding:7px 15px;border-radius:8px;margin-bottom:13px}
-.cvftr strong{color:#fff;font-size:15px;display:block;margin-bottom:4px;letter-spacing:.3px}
-.cvftr-c{font-size:12px}
-.cvftr-sub{font-size:10px;margin-top:8px;opacity:.7}
-.cvhidden-note{font-size:10px;color:#9ca3af;font-style:italic;padding:5px 10px;text-align:left}
-.cv-section-row td{background:#eef4fb!important;color:#1a3a5c;font-weight:800;font-size:10px;
-  text-transform:uppercase;letter-spacing:.5px;padding:6px 10px!important}
-.cv-section-sub td{background:#f8fafc;font-weight:700;font-size:11px;color:#1a3a5c;
-  border-bottom:1px solid #e5e7eb;padding:6px 10px}
+.cvprod-tbl td{padding:8px 6px}
+.cvprod-trade{color:var(--navy);font-weight:800;font-size:10px;text-transform:uppercase;letter-spacing:.5px;width:84px;white-space:nowrap}
+.cvprod-label{color:var(--mut);width:150px}
+.cvprod-value{font-weight:700;color:var(--ink)}
+@media(max-width:480px){.cvprod-trade,.cvprod-label{width:auto}.cvprod-tbl td{padding:6px 4px;font-size:12.5px}}
+
+/* ── package (tier) cards ── */
+.cv-tier-section{margin:6px 16px 0}
+.cv-tier-heading{display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:800;text-transform:uppercase;
+letter-spacing:1px;color:var(--navy);padding:20px 0 12px}
+.cv-tier-heading::before{content:'';width:20px;height:3.5px;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--gold));flex-shrink:0}
+.cv-tier-cards{display:grid;gap:12px;margin-bottom:6px}
+.cv-tier-card{border:2px solid var(--line);border-radius:var(--r);padding:22px 14px 18px;text-align:center;cursor:pointer;
+transition:transform .18s,box-shadow .18s,background .18s;background:#fff;position:relative;
+-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;box-shadow:0 2px 10px -4px rgba(15,23,42,.12)}
+.cv-tier-card:hover{transform:translateY(-3px);box-shadow:0 14px 30px -14px rgba(15,23,42,.35)}
+.cv-tier-card.cv-tier-selected{transform:translateY(-3px);box-shadow:0 18px 36px -16px rgba(15,23,42,.4)}
+.cv-tier-popular{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1d8a4b,var(--green));
+color:#fff;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;padding:4px 12px;border-radius:999px;
+white-space:nowrap;box-shadow:0 4px 10px -3px rgba(22,163,74,.6)}
+.cv-tier-name{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px}
+.cv-tier-price{font-size:27px;font-weight:800;letter-spacing:-.5px;margin-bottom:6px;font-variant-numeric:tabular-nums}
+.cv-tier-desc{font-size:11.5px;color:var(--mut);margin-bottom:8px;line-height:1.5}
+.cv-tier-feats{list-style:none;margin:10px 0 6px;padding:10px 2px 0;border-top:1px dashed var(--line);text-align:left;
+font-size:11.5px;color:#33415a;line-height:1.55}
+.cv-tier-feats li{position:relative;padding:2px 0 2px 18px}
+.cv-tier-feats li::before{content:'✓';position:absolute;left:0;font-weight:800;color:var(--green)}
+.cv-tier-feats .cv-tier-more{color:var(--faint);font-style:italic}
+.cv-tier-feats .cv-tier-more::before{content:''}
+.cv-tier-check{font-size:12.5px;font-weight:700;color:var(--mut);border:1.5px solid var(--line);border-radius:999px;
+padding:7px 18px;display:inline-block;margin-top:8px;transition:all .15s;background:#fff}
+.cv-tier-selected .cv-tier-check{background:var(--navy);border-color:var(--navy);color:#fff}
+
+/* ── line-item tables ── */
+.cvtrade{margin:16px 16px 0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--sh);background:#fff}
+.cvtrade-hd{background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;padding:12px 18px;font-size:12px;
+font-weight:800;letter-spacing:1px;text-transform:uppercase}
+.cvt{width:100%;border-collapse:collapse;background:#fff}
+.cvt th{padding:9px 14px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.6px;background:#f8fafc;
+border-bottom:1px solid var(--line);color:var(--mut);font-weight:700}
+.cvth-c{width:52px;text-align:center !important}
+.cvth-r{width:92px;text-align:right !important}
+.cvt td{padding:9px 14px;border-bottom:1px solid #f4f7fa;font-size:13px;vertical-align:top}
+.cvt tbody tr:last-child td{border-bottom:none}
+.cvn{font-weight:600}
+.cvd{font-size:11px;color:var(--mut);font-weight:400;margin-top:2px;line-height:1.5}
+.cvc{text-align:center;color:var(--mut)}
+.cvc-desc{font-weight:400;color:var(--mut)}
+.cvr{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cvt tfoot td{background:#f8fafc;font-weight:800;padding:11px 14px;border-top:2px solid var(--line);font-size:13px}
+.cvsub-l{text-align:right;color:var(--mut);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding-right:12px}
+.cvsub{color:var(--navy);font-size:14px}
+.cvhidden-note{font-size:10.5px;color:var(--faint);font-style:italic;padding:6px 14px;text-align:left}
+.cv-section-row td{background:#eef4fb!important;color:var(--navy);font-weight:800;font-size:10px;
+text-transform:uppercase;letter-spacing:.6px;padding:7px 14px!important}
+.cv-section-sub td{background:#f8fafc;font-weight:700;font-size:11.5px;color:var(--navy);
+border-bottom:1px solid var(--line);padding:7px 14px}
 .cv-section-sub td:first-child{text-align:right}
-.cvtrust-body p{font-size:13px;line-height:1.6;color:#374151;margin-bottom:8px}
+
+/* ── grand total ── */
+.cvgrand{margin:16px 16px 0;background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);color:#fff;
+padding:18px 22px;border-radius:var(--r);display:flex;justify-content:space-between;align-items:center;gap:12px;
+box-shadow:0 14px 30px -14px rgba(14,36,64,.55);position:relative;overflow:hidden}
+.cvgrand::before{content:'';position:absolute;left:0;top:0;bottom:0;width:5px;
+background:linear-gradient(180deg,var(--cyan),var(--gold),var(--red))}
+.cvgrand-lbl{font-size:13px;font-weight:600;opacity:.85}
+.cvgrand-amt{font-size:clamp(22px,6vw,30px);font-weight:800;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+
+/* ── contract / terms ── */
+.cvcontract{margin:16px 16px 0;background:#fff;border-radius:var(--r);border:1px solid var(--line);overflow:hidden;box-shadow:var(--sh)}
+.cvcontract summary{padding:15px 18px;cursor:pointer;font-weight:700;font-size:13.5px;color:var(--navy);list-style:none;
+display:flex;align-items:center;justify-content:space-between;gap:10px}
+.cvcontract summary::-webkit-details-marker{display:none}
+.cvcontract summary::after{content:'▾';color:var(--faint);transition:transform .2s}
+.cvcontract[open] summary::after{transform:rotate(180deg)}
+.cvcontract[open] summary{border-bottom:1px solid var(--line)}
+.cvcontract-body{padding:16px 18px;font-size:11.5px;line-height:1.75;color:#4b5a72;white-space:pre-wrap;
+max-height:300px;overflow-y:auto;background:#fafbfd}
+
+/* ── signature area ── */
+.cvsig{margin:24px 16px 0;padding:26px 20px 20px;background:#fff;border-radius:var(--r);border:1px solid var(--line);
+box-shadow:0 18px 44px -20px rgba(14,36,64,.35);position:relative;overflow:hidden}
+.cvsig::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;
+background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
+.cvsig h2{font-size:20px;font-weight:800;color:var(--navy);letter-spacing:-.3px;margin-bottom:5px}
+.cvsig .sub{font-size:13px;color:var(--mut);margin-bottom:18px;line-height:1.6}
+.cvfield{display:block;margin-bottom:12px}
+.cvfield>span{display:block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);margin-bottom:6px}
+.cvfield em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--faint);font-weight:500}
+.cvinput{width:100%;border:1.5px solid #d7dfe9;border-radius:11px;padding:13px 15px;font-size:16px;font-family:inherit;
+outline:none;color:var(--ink);background:#fbfcfe;transition:border-color .15s,box-shadow .15s}
+.cvinput:focus{border-color:var(--navy);box-shadow:0 0 0 4px rgba(26,58,92,.1);background:#fff}
+.cv-sigpad{border:1.5px dashed #b9c7d8;border-radius:12px;background:#fbfcfe;padding:16px 16px 10px;text-align:center;margin:4px 0 16px}
+#cv-sig-script{font-family:'Great Vibes','Segoe Script',cursive;font-size:38px;line-height:1.25;color:var(--navy);
+min-height:48px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cv-sigpad-hint{font-size:10px;color:var(--faint);border-top:1.5px solid #dbe3ee;margin-top:6px;padding-top:8px;
+text-transform:uppercase;letter-spacing:.6px;font-weight:600}
+.cvagree{display:flex;align-items:flex-start;gap:11px;font-size:13px;color:#33415a;margin-bottom:16px;line-height:1.55;
+cursor:pointer;background:#f8fafc;border:1px solid var(--line);border-radius:11px;padding:13px 14px}
+.cvagree input{margin-top:1px;flex-shrink:0;width:19px;height:19px;cursor:pointer;accent-color:var(--navy)}
+.cvbtn{width:100%;padding:16px;background:linear-gradient(135deg,#1d8a4b,#16a34a);color:#fff;border:none;border-radius:12px;
+font-size:16.5px;font-weight:800;font-family:inherit;cursor:pointer;margin-bottom:12px;
+box-shadow:0 12px 26px -10px rgba(22,163,74,.55);transition:transform .15s,box-shadow .15s}
+.cvbtn:hover{transform:translateY(-1px);box-shadow:0 16px 30px -10px rgba(22,163,74,.6)}
+.cvbtn:active{transform:scale(.98)}
+.cvlegal{font-size:10.5px;color:var(--faint);text-align:center;line-height:1.6}
+.cv-shingle{background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:14px 15px;margin-bottom:14px}
+.cv-shingle-label{font-size:11px;font-weight:800;color:#0c4a6e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
+.cv-shingle-locked{font-size:17px;font-weight:800;color:var(--navy)}
+.cv-shingle-select{margin-bottom:0;background:#fff}
+.cv-initials{background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px 15px;margin-bottom:14px}
+.cv-initials-title{font-size:11px;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+.cv-initial-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid #fef3c7}
+.cv-initial-row:first-of-type{border-top:none}
+.cv-initial-text{flex:1;font-size:13px;color:#33415a;line-height:1.5}
+.cv-initial-box{width:82px;flex-shrink:0;border:2px solid var(--navy);border-radius:9px;padding:10px 8px;font-size:16px;
+font-weight:800;text-align:center;text-transform:uppercase;outline:none;color:var(--navy);background:#fff;font-family:inherit}
+.cv-initial-box:focus{box-shadow:0 0 0 4px rgba(26,58,92,.14)}
+
+/* ── what happens next ── */
+.cvnext-list{list-style:none;margin:2px 0 0;padding:0}
+.cvnext-it{position:relative;padding:0 0 18px 46px}
+.cvnext-it:last-child{padding-bottom:2px}
+.cvnext-it::after{content:'';position:absolute;left:15px;top:34px;bottom:4px;width:2px;background:var(--line)}
+.cvnext-it:last-child::after{display:none}
+.cvnext-n{position:absolute;left:0;top:0;width:31px;height:31px;border-radius:50%;
+background:linear-gradient(135deg,var(--navy3),var(--navy2));color:#fff;font-weight:800;font-size:13px;
+display:flex;align-items:center;justify-content:center;box-shadow:0 5px 12px -5px rgba(14,36,64,.6)}
+.cvnext-t{font-weight:800;font-size:14px;color:var(--ink);padding-top:5px;margin-bottom:3px}
+.cvnext-d{font-size:13px;color:var(--mut);line-height:1.6}
+
+/* ── your consultant ── */
+.cvrep{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.cvrep-av{width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,var(--navy3),var(--navy2));color:#fff;
+font-weight:800;font-size:19px;display:flex;align-items:center;justify-content:center;letter-spacing:1px;flex-shrink:0;
+box-shadow:0 6px 14px -6px rgba(14,36,64,.5)}
+.cvrep-info{min-width:130px}
+.cvrep-name{font-weight:800;font-size:15.5px;color:var(--ink)}
+.cvrep-role{font-size:12px;color:var(--mut);margin-top:1px}
+.cvrep-btns{display:flex;gap:8px;flex:1 1 100%;margin-top:6px}
+@media(min-width:560px){.cvrep-btns{flex:0 0 auto;margin-top:0;margin-left:auto}}
+.cvrep-btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:11px 16px;border-radius:11px;
+font-size:13.5px;font-weight:700;text-decoration:none;border:1.5px solid var(--line);color:var(--navy);background:#fff;
+white-space:nowrap;transition:transform .15s,background .15s}
+.cvrep-btn:active{transform:scale(.97)}
+.cvrep-btn.pri{background:var(--navy);border-color:var(--navy);color:#fff;box-shadow:0 8px 16px -8px rgba(26,58,92,.6)}
+
+/* ── sticky sign bar ── */
+.cvstick{position:fixed;left:0;right:0;bottom:0;z-index:60;padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+transform:translateY(130%);transition:transform .35s cubic-bezier(.22,.61,.36,1);pointer-events:none}
+.cvstick.on{transform:none;pointer-events:auto}
+.cvstick-in{max-width:660px;margin:0 auto;background:rgba(14,36,64,.97);backdrop-filter:blur(10px);
+border:1px solid rgba(255,255,255,.08);border-radius:16px;box-shadow:0 20px 44px -14px rgba(14,36,64,.65);
+display:flex;align-items:center;gap:14px;padding:12px 12px 12px 18px;color:#fff}
+.cvstick-t{display:flex;flex-direction:column;min-width:0}
+.cvstick-lbl{font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;opacity:.65;
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46vw}
+.cvstick-amt{font-size:20px;font-weight:800;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
+.cvstick-btn{margin-left:auto;background:linear-gradient(135deg,#1d8a4b,#16a34a);color:#fff;border:none;border-radius:12px;
+padding:13px 18px;font-size:14px;font-weight:800;font-family:inherit;cursor:pointer;white-space:nowrap;
+box-shadow:0 10px 20px -8px rgba(22,163,74,.7);transition:transform .15s}
+.cvstick-btn:active{transform:scale(.96)}
+
+/* ── attachments ── */
+.cv-att-list{display:flex;flex-direction:column;gap:10px}
+.cv-att{display:inline-flex;align-items:center;gap:9px;background:#f8fafc;border:1px solid var(--line);border-radius:11px;
+padding:13px 16px;font-size:14px;font-weight:700;color:var(--navy);text-decoration:none;transition:border-color .15s,background .15s}
+.cv-att:hover{background:#eef2f7;border-color:var(--faint)}
+.cv-att-doc{display:flex;flex-direction:column;gap:10px;margin-bottom:8px}
+.cv-att-doc-title{font-size:13.5px;font-weight:800;color:var(--navy)}
+.cv-att-page{width:100%;display:block;border:1px solid var(--line);border-radius:10px;box-shadow:0 2px 8px -3px rgba(15,23,42,.15)}
+
+/* ── signed certificate ── */
+.cvinit-tbl td:first-child{width:auto;text-transform:none;letter-spacing:0;font-size:12px;color:#33415a;font-weight:500}
+.cvinit-val{font-weight:800!important;color:var(--navy)!important;text-transform:uppercase;width:70px!important;text-align:right}
+.cert{margin:16px;background:#fff;border:1.5px solid var(--navy);border-radius:var(--r);padding:20px;box-shadow:var(--sh)}
+.cert-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:var(--navy);
+margin-bottom:13px;padding-bottom:10px;border-bottom:2px solid var(--navy)}
+.cert-tbl{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:10px}
+.cert-tbl td{padding:5px 0;vertical-align:top}
+.cert-tbl td:first-child{color:var(--mut);font-weight:700;width:110px;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.cert-tbl td:last-child{font-weight:600;color:var(--ink);word-break:break-all}
+.cert-legal{font-size:10px;color:var(--faint);line-height:1.6;border-top:1px solid #f1f5f9;padding-top:10px}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:10px}
+
+/* ── footer ── */
+.cvftr{position:relative;text-align:center;padding:36px 18px 44px;background:var(--navy2);color:rgba(255,255,255,.55);
+line-height:1.7;margin-top:28px}
+.cvftr::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;
+background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
+.cvftr-logo{height:44px;width:auto;background:#fff;padding:8px 16px;border-radius:12px;margin-bottom:14px}
+.cvftr strong{color:#fff;font-size:15.5px;display:block;margin-bottom:4px;letter-spacing:.3px}
+.cvftr-c{font-size:12.5px}
+.cvftr-c a{color:rgba(255,255,255,.78);text-decoration:none;font-weight:600}
+.cvftr-sub{font-size:10.5px;margin-top:10px;opacity:.7}
+
+/* ── condition report ── */
+.cvcond-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;margin-bottom:12px}
+.cvcond-cell{text-align:center;border:1px solid var(--line);border-radius:12px;padding:11px 4px;background:#fbfcfe}
+.cvcond-cell-lbl{font-size:10px;font-weight:700;color:#33415a;margin-bottom:6px;line-height:1.3}
+.cvcond-letter{font-size:22px;font-weight:800;width:44px;height:44px;line-height:44px;border-radius:50%;margin:0 auto 5px}
+.cvcond-word{font-size:10px;font-weight:800}
+.cvcond-exec{font-size:12.5px;line-height:1.65;color:#33415a;background:#f8fafc;border-left:3px solid var(--navy);
+padding:10px 12px;border-radius:0 10px 10px 0;margin-bottom:10px}
+.cvcond-sec{margin-top:14px;border-top:1px solid var(--line);padding-top:13px}
+.cvcond-sec-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.cvcond-sec-hd h4{font-size:13.5px;color:var(--navy);margin:0}
+.cvcond-badge{font-size:11px;font-weight:800;border-radius:999px;padding:4px 11px;white-space:nowrap}
+.cvcond-meta{font-size:11.5px;color:var(--mut);margin-bottom:6px}
+.cvcond-summary{font-size:12.5px;line-height:1.65;color:#33415a;margin-bottom:8px}
+.cvcond-sh{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--navy);margin:9px 0 5px}
+.cvcond-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
+.cvcond-tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);
+background:#f8fafc;padding:5px 8px;border-bottom:1px solid var(--line)}
+.cvcond-tbl td{padding:6px 8px;border-bottom:1px solid #f4f7fa;vertical-align:top;line-height:1.5}
+.cvcond-tbl tr:last-child td{border-bottom:none}
+.cvcond-cost-total td{font-weight:800;border-top:2px solid var(--line);background:#f8fafc}
+.cvcond-foot{font-size:10px;color:var(--faint);line-height:1.6;margin-top:12px;border-top:1px solid #f1f5f9;padding-top:9px}
+.cvcond .cvph-grid{margin-top:10px}
+
+/* ── trust blocks ── */
+.cvtrust-body p{font-size:13.5px;line-height:1.7;color:#33415a;margin-bottom:8px}
 .cvtrust-body p:last-child{margin-bottom:0}
 .cvtrust-certs{list-style:none;margin:0;padding:0}
-.cvtrust-certs li{position:relative;padding:4px 0 4px 22px;font-size:13px;color:#374151;line-height:1.5}
-.cvtrust-certs li::before{content:'✓';position:absolute;left:2px;font-weight:800;color:#16a34a}
+.cvtrust-certs li{position:relative;padding:5px 0 5px 24px;font-size:13.5px;color:#33415a;line-height:1.55}
+.cvtrust-certs li::before{content:'✓';position:absolute;left:2px;font-weight:800;color:var(--green)}
 .cvtrust-revs{display:grid;gap:10px}
-.cvtrust-rev{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px}
+@media(min-width:640px){.cvtrust-revs{grid-template-columns:1fr 1fr}}
+.cvtrust-rev{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
 .cvtrust-rev-stars{color:#f59e0b;font-size:14px;letter-spacing:2px;margin-bottom:5px}
-.cvtrust-rev-text{font-size:13px;line-height:1.6;color:#374151;font-style:italic}
-.cvtrust-rev-name{font-size:12px;font-weight:700;color:#1a3a5c;margin-top:6px}
-.cv-tier-section{margin:0 14px}
-.cv-tier-heading{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#1a3a5c;padding:16px 0 10px}
-.cv-tier-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:4px}
-.cv-tier-card{border:2.5px solid #d1d5db;border-radius:10px;padding:14px 10px;text-align:center;
-  cursor:pointer;transition:all .18s;background:#fff;position:relative;-webkit-user-select:none;user-select:none}
-.cv-tier-card:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(0,0,0,.12)}
-.cv-tier-card.cv-tier-selected{box-shadow:0 4px 16px rgba(0,0,0,.15);transform:translateY(-2px)}
-.cv-tier-popular{position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:#16a34a;
-  color:#fff;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;
-  padding:2px 8px;border-radius:20px;white-space:nowrap}
-.cv-tier-name{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;margin-bottom:3px}
-.cv-tier-price{font-size:22px;font-weight:900;margin-bottom:5px}
-.cv-tier-desc{font-size:10px;color:#6b7280;font-style:italic;margin-bottom:6px;line-height:1.4}
-.cv-tier-feats{list-style:none;margin:7px 0 5px;padding:0;text-align:left;font-size:10.5px;color:#374151;line-height:1.5}
-.cv-tier-feats li{position:relative;padding:1.5px 0 1.5px 15px}
-.cv-tier-feats li::before{content:'✓';position:absolute;left:0;font-weight:700;color:#16a34a}
-.cv-tier-feats .cv-tier-more{color:#9ca3af;font-style:italic}
-.cv-tier-feats .cv-tier-more::before{content:''}
-.cv-tier-check{font-size:11px;font-weight:700;color:#6b7280;border:1px solid #d1d5db;border-radius:20px;
-  padding:3px 9px;display:inline-block;margin-top:2px;transition:all .15s}
-.cv-tier-selected .cv-tier-check{background:#6b7280;color:#fff}
-@media(max-width:600px){.cvgrid{grid-template-columns:1fr}.cvpkg-total{font-size:26px}.cv-tier-cards{grid-template-columns:1fr !important}.cvinput{font-size:16px}.cvinput:focus{font-size:16px}
-.cvhdr{padding:12px 14px}.cvhdr img{height:42px}.cvhdr-contact a{font-size:14px}
-.cvtrade{overflow-x:auto;-webkit-overflow-scrolling:touch}.cvt-ins{min-width:520px}
-.cvgrand-amt{font-size:19px}}
-@media print{.cv-print-btn{display:none}body{background:#fff}.cert{border-width:1.5pt;page-break-inside:avoid}}
-.cvintro{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:18px 20px}
-.cvintro-logo{height:38px;width:auto;display:block;margin-bottom:12px}
-.cvintro p{font-size:13.5px;line-height:1.75;color:#374151;white-space:pre-wrap}
-.cvphotos{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:16px}
-.cvphotos h3{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin-bottom:10px}
-.cvph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
-.cvph-fig{margin:0}
-.cvph-wrap{position:relative;border-radius:6px;overflow:hidden;background:#f3f4f6}
-.cvph-wrap img{width:100%;display:block}
-.cvph-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-.cvph-fig figcaption{font-size:11.5px;color:#6b7280;padding:6px 2px 0;line-height:1.4}
-@media(max-width:520px){.cvph-grid{grid-template-columns:1fr 1fr}}
-.cvcond{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin:14px 14px 0;padding:16px}
-.cvcond>h3{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin-bottom:10px}
-.cvcond-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;margin-bottom:12px}
-.cvcond-cell{text-align:center;border:1px solid #e5e7eb;border-radius:8px;padding:10px 4px}
-.cvcond-cell-lbl{font-size:10px;font-weight:700;color:#374151;margin-bottom:6px;line-height:1.3}
-.cvcond-letter{font-size:22px;font-weight:900;width:42px;height:42px;line-height:42px;border-radius:50%;margin:0 auto 4px}
-.cvcond-word{font-size:10px;font-weight:700}
-.cvcond-exec{font-size:12.5px;line-height:1.6;color:#374151;background:#f8fafc;border-left:3px solid #1a3a5c;padding:9px 11px;border-radius:0 6px 6px 0;margin-bottom:10px}
-.cvcond-sec{margin-top:14px;border-top:1px solid #e5e7eb;padding-top:12px}
-.cvcond-sec-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap}
-.cvcond-sec-hd h4{font-size:13.5px;color:#1a3a5c;margin:0}
-.cvcond-badge{font-size:11px;font-weight:800;border-radius:20px;padding:3px 10px;white-space:nowrap}
-.cvcond-meta{font-size:11.5px;color:#6b7280;margin-bottom:6px}
-.cvcond-summary{font-size:12.5px;line-height:1.6;color:#374151;margin-bottom:8px}
-.cvcond-sh{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#1a3a5c;margin:8px 0 4px}
-.cvcond-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
-.cvcond-tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:#6b7280;background:#f9fafb;padding:5px 8px;border-bottom:1px solid #e5e7eb}
-.cvcond-tbl td{padding:6px 8px;border-bottom:1px solid #f3f4f6;vertical-align:top;line-height:1.45}
-.cvcond-tbl tr:last-child td{border-bottom:none}
-.cvcond-cost-total td{font-weight:800;border-top:2px solid #e5e7eb;background:#f9fafb}
-.cvcond-foot{font-size:10px;color:#9ca3af;line-height:1.5;margin-top:12px;border-top:1px solid #f3f4f6;padding-top:8px}
-.cvcond .cvph-grid{margin-top:10px}
+.cvtrust-rev-text{font-size:13px;line-height:1.65;color:#33415a;font-style:italic}
+.cvtrust-rev-name{font-size:12px;font-weight:800;color:var(--navy);margin-top:7px}
+
+/* ── scroll-reveal ── */
+@media(prefers-reduced-motion:no-preference){
+.cv-reveal{opacity:0;transform:translateY(18px);transition:opacity .6s cubic-bezier(.22,.61,.36,1),transform .6s cubic-bezier(.22,.61,.36,1)}
+.cv-reveal.cv-in{opacity:1;transform:none}}
+
+/* ── mobile ── */
+@media(max-width:640px){
+.cvgrid{grid-template-columns:1fr;gap:12px}
+.cv-tier-cards{grid-template-columns:1fr !important}
+.cvhdr img{height:40px}
+.cvhdr-contact a{font-size:12.5px;padding:8px 13px}
+.cvhdr-contact span{display:none}
+.cvgrand-amt{font-size:22px}
+.cvt thead{display:none}
+.cvt tr{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:12px;row-gap:2px;padding:11px 14px;border-bottom:1px solid #f1f5f9}
+.cvt tbody tr:last-child{border-bottom:none}
+.cvt td{display:inline-block;border:none !important;padding:0 !important;font-size:13px}
+.cvt td.cvn{flex:1 1 100%;padding-bottom:1px !important}
+.cvt td.cvc-desc{flex:1 1 100%}
+.cvt td[data-l]::before{content:attr(data-l);color:var(--faint);font-weight:700;font-size:9.5px;text-transform:uppercase;
+letter-spacing:.5px;margin-right:5px}
+.cvt td.cvr:last-child{margin-left:auto}
+.cvt tfoot tr{display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border-top:2px solid var(--line);padding:11px 14px}
+.cvt tfoot td{background:transparent;border-top:none !important;padding:0 !important}
+.cvt tr.cv-section-row{background:#eef4fb;padding:7px 14px}
+.cvt tr.cv-section-row td{background:transparent !important;padding:0 !important}
+.cvt tr.cv-section-sub{background:#f8fafc;justify-content:space-between;padding:7px 14px}
+.cvt tr.cv-section-sub td{background:transparent;border:none;padding:0 !important}
+}
+@media print{
+.cv-print-btn,.cvstick,.cvlb,.cvhdr-contact a,.cvrep-btns{display:none}
+body{background:#fff;padding-bottom:0 !important}
+.cvc-card,.cvnotes,.cvtrade,.cvsig,.cert,.cvnext,.cvrep-card{box-shadow:none;break-inside:avoid}
+.cvhero,.cvhero.ok{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.cert{border-width:1.5pt}}
 """
+
+# Shared client-side behavior for every public customer page: scroll-reveal,
+# the sticky review-&-sign bar, the live signature preview, and the photo
+# lightbox. Plain string (no f-string) so JS braces stay literal.
+_CV_SHARED_JS = """
+(function(){
+var rm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+/* scroll-reveal — tier line-item wrappers are excluded: they toggle
+   display:none and must never be left invisible by a missed observation */
+if(!rm&&'IntersectionObserver' in window){
+  var els=[].filter.call(document.querySelectorAll('.cvmain>*'),function(el){
+    return !(el.id&&el.id.indexOf('tier-items-')===0);});
+  var io=new IntersectionObserver(function(es){es.forEach(function(e){
+    if(e.isIntersecting){e.target.classList.add('cv-in');io.unobserve(e.target);}});},
+    {rootMargin:'0px 0px -8% 0px'});
+  els.forEach(function(el){el.classList.add('cv-reveal');io.observe(el);});
+  /* safety net: a signing page must never stay invisible if the observer
+     is starved (odd embedded webviews) — force-reveal everything shortly */
+  setTimeout(function(){els.forEach(function(el){el.classList.add('cv-in');});},1400);
+}
+/* sticky review-&-sign bar (plain rect math — no observer dependency) */
+var stick=document.getElementById('cvstick'),sigBox=document.querySelector('.cvsig');
+if(stick&&sigBox){
+  document.body.classList.add('cv-has-stick');
+  var hero=document.querySelector('.cvhero')||document.querySelector('.cvcover');
+  function onScroll(){
+    var past=window.scrollY>(hero?hero.offsetHeight*0.55:200);
+    var r=sigBox.getBoundingClientRect();
+    var sigVis=r.top<window.innerHeight-60&&r.bottom>0;
+    stick.classList.toggle('on',past&&!sigVis);
+  }
+  addEventListener('scroll',onScroll,{passive:true});
+  addEventListener('resize',onScroll);onScroll();
+  var sbtn=document.getElementById('cvstick-btn');
+  if(sbtn)sbtn.addEventListener('click',function(){
+    sigBox.scrollIntoView({behavior:rm?'auto':'smooth',block:'start'});});
+}
+/* live signature preview from the typed legal name */
+var si=document.querySelector('input[name="sig_name"]'),sp=document.getElementById('cv-sig-script');
+if(si&&sp){var syncSig=function(){sp.textContent=si.value.trim()||'\\u00a0';};
+  si.addEventListener('input',syncSig);syncSig();}
+/* photo lightbox (annotations re-painted via _cvAnnPaint when present) */
+var lb=null;
+function closeLb(){if(!lb)return;lb.classList.remove('on');document.body.style.overflow='';
+  setTimeout(function(){if(lb)lb.style.display='none';},200);}
+function openLb(wrap){
+  var img=wrap.querySelector('img');if(!img)return;
+  var cv=wrap.querySelector('canvas');
+  var fig=wrap.closest?wrap.closest('figure'):null;
+  var capEl=fig?fig.querySelector('figcaption'):null;
+  var cap=capEl?capEl.textContent:(img.getAttribute('alt')||'');
+  if(!lb){lb=document.createElement('div');lb.className='cvlb';
+    lb.innerHTML='<div class="cvlb-body"></div><div class="cvlb-cap"></div>'+
+      '<button class="cvlb-x" aria-label="Close photo">\\u00d7</button>';
+    document.body.appendChild(lb);
+    lb.addEventListener('click',function(e){
+      if(e.target===lb||e.target.className==='cvlb-x')closeLb();});
+    document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLb();});}
+  var body=lb.querySelector('.cvlb-body');
+  var nimg=document.createElement('img');nimg.src=img.getAttribute('src');nimg.alt=cap;
+  var w=document.createElement('div');w.style.position='relative';w.appendChild(nimg);
+  if(cv&&cv.dataset.ann){var ncv=document.createElement('canvas');ncv.className='cvph-canvas';
+    ncv.dataset.ann=cv.dataset.ann;w.appendChild(ncv);}
+  body.innerHTML='';body.appendChild(w);
+  lb.querySelector('.cvlb-cap').textContent=cap;
+  var pcv=body.querySelector('canvas');
+  if(pcv&&window._cvAnnPaint)try{_cvAnnPaint(pcv);}catch(e){}
+  document.body.style.overflow='hidden';
+  lb.style.display='flex';
+  requestAnimationFrame(function(){lb.classList.add('on');});
+}
+document.addEventListener('click',function(e){
+  var t=e.target;
+  while(t&&t!==document){if(t.classList&&t.classList.contains('cvph-wrap')){openLb(t);return;}t=t.parentNode;}
+});
+})();
+"""
+
+
+def _cv_head(title):
+    """Shared <head> + opening <body> for every public customer page."""
+    return f'''<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0e2440">
+<link rel="icon" href="/static/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Great+Vibes&display=swap" rel="stylesheet">
+<title>{title}</title>
+<style>{_CV_CSS}</style></head><body>'''
+
+
+def _cv_header():
+    """Shared top bar: logo left, tap-to-call pill right, brand stripe."""
+    return '''<header class="cvhdr">
+  <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
+  <div class="cvhdr-contact">
+    <a href="tel:9707760945">&#128222; 970-776-0945</a>
+    <span>projectoneroofingcolorado.com</span>
+  </div>
+</header>
+<div class="cvbrand-stripe"></div>'''
+
+
+def _cv_footer(extra=''):
+    """Shared footer + the shared behavior script. Closes the document."""
+    return f'''<div class="cvftr">
+  <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
+  <strong>Project One Roofing</strong>
+  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>
+    <a href="tel:9707760945">970-776-0945</a> &middot; projectoneroofingcolorado.com</div>
+  {extra}
+</div>
+<script>{_CV_SHARED_JS}</script>
+</body></html>'''
+
+
+def _cv_sticky_bar(label, amount):
+    """Floating total + jump-to-signature bar. The shared JS shows it once the
+    customer scrolls past the hero and hides it while the sign form is on
+    screen; the GBB page script live-updates the amount as packages change."""
+    return f'''<div class="cvstick" id="cvstick"><div class="cvstick-in">
+  <div class="cvstick-t"><span class="cvstick-lbl" id="cvstick-lbl">{label}</span>
+  <span class="cvstick-amt" id="cvstick-amt">{amount}</span></div>
+  <button type="button" class="cvstick-btn" id="cvstick-btn">Review &amp; Sign &darr;</button>
+</div></div>'''
+
+
+def _cv_next_steps(signed=False):
+    """'What happens next' timeline — sets expectations on the sign page and
+    reassures on the confirmation page."""
+    steps = []
+    if not signed:
+        steps.append(('Review &amp; sign below',
+                      'Look everything over, then sign electronically &mdash; it takes '
+                      'less than a minute, right from your phone.'))
+    steps += [
+        ('We reach out to welcome you',
+         'A member of our team will call within one business day to say hello and '
+         'confirm the details of your project.'),
+        ('Scheduling &amp; materials',
+         'We order your materials and lock in an installation date that works for your schedule.'),
+        ('Installation day',
+         'Our crew arrives on time, protects your landscaping and property, completes '
+         'the work, and leaves your home spotless.'),
+        ('Final walkthrough &amp; warranty',
+         'We walk the finished project with you, answer every question, and register '
+         'your workmanship warranty.'),
+    ]
+    items = ''.join(
+        f'''<li class="cvnext-it"><span class="cvnext-n">{i + 1}</span>
+      <div class="cvnext-t">{t}</div><div class="cvnext-d">{d}</div></li>'''
+        for i, (t, d) in enumerate(steps))
+    title = 'What Happens Next' if not signed else 'What Happens Next &mdash; You&rsquo;re All Set'
+    return f'<div class="cvnext"><h3>{title}</h3><ol class="cvnext-list">{items}</ol></div>'
+
+
+def _cv_contact_card(est):
+    """'Questions?' card with the assigned salesperson and one-tap call/text
+    (and email when the salesperson maps to a company address)."""
+    sp_raw = str(est.get('salesperson') or '').strip()
+    sp = sp_raw.replace('.', ' ').replace('_', ' ').title()
+    initials = ''.join(w[0] for w in sp.split()[:2]).upper() or 'P1'
+    name = sp or 'Project One Roofing'
+    role = 'Your Project Consultant' if sp else 'Loveland, Colorado'
+    email_btn = ''
+    if sp_raw and re.fullmatch(r'[A-Za-z0-9._-]+', sp_raw):
+        email_btn = (f'<a class="cvrep-btn" href="mailto:{he(sp_raw)}@projectoneroofing.com">'
+                     f'&#9993;&#65039; Email</a>')
+    return f'''<div class="cvrep-card"><h3>Questions? We&rsquo;re Here to Help</h3>
+  <div class="cvrep">
+    <div class="cvrep-av">{he(initials)}</div>
+    <div class="cvrep-info"><div class="cvrep-name">{he(name)}</div><div class="cvrep-role">{role}</div></div>
+    <div class="cvrep-btns">
+      <a class="cvrep-btn pri" href="tel:9707760945">&#128222; Call</a>
+      <a class="cvrep-btn" href="sms:9707760945">&#128172; Text</a>
+      {email_btn}
+    </div>
+  </div></div>'''
+
+
+def _cv_sig_form(action, hidden='', extra_blocks='', agree_text='',
+                 btn_text='&#10003; Accept &mdash; Sign Electronically', btn_id=''):
+    """Shared sign form: labeled fields, live script-font signature preview
+    (wired up by the shared JS), agreement checkbox, and the E-SIGN notice.
+    Field names are part of the POST contract — do not rename."""
+    bid = f' id="{btn_id}"' if btn_id else ''
+    return f'''<form method="POST" action="{action}">
+    {hidden}
+    {extra_blocks}
+    <label class="cvfield"><span>Full Legal Name *</span>
+      <input class="cvinput" name="sig_name" placeholder="Type your full name" required
+        autocomplete="name" autocapitalize="words"></label>
+    <label class="cvfield"><span>Email Address <em>&mdash; optional, for your records</em></span>
+      <input class="cvinput" name="sig_email" placeholder="you@example.com" type="email"
+        autocomplete="email" inputmode="email"></label>
+    <div class="cv-sigpad" aria-hidden="true"><div id="cv-sig-script">&nbsp;</div>
+      <div class="cv-sigpad-hint">Signature preview &mdash; generated from your typed name</div></div>
+    <label class="cvagree"><input type="checkbox" name="agree" required><span>{agree_text}</span></label>
+    <button type="submit" class="cvbtn"{bid}>{btn_text}</button>
+    <p class="cvlegal">&#128274; Secure e-signature &mdash; clicking the button above constitutes your legal
+    electronic signature on this document, binding under the federal E-SIGN Act
+    (15 U.S.C. &sect;&nbsp;7001) and the Uniform Electronic Transactions Act.</p>
+  </form>'''
 
 
 def _cover_photo_url(est):
@@ -2132,9 +2502,16 @@ def _cover_photo_url(est):
     return ''
 
 
-def _cv_hero(est, title, subtitle):
+def _cv_hero(est, title, subtitle, steps=None):
     """Hero block for customer views — full-bleed cover photo when assigned,
-    plain branded banner otherwise."""
+    branded gradient banner otherwise. Optional numbered step chips set
+    expectations for what the page asks of the customer."""
+    steps_html = ''
+    if steps:
+        steps_html = ('<div class="cvsteps">'
+                      + ''.join(f'<span class="cvstep"><b>{i + 1}</b>{s}</span>'
+                                for i, s in enumerate(steps))
+                      + '</div>')
     cover = _cover_photo_url(est)
     c     = est.get('customer', {})
     a     = c.get('address', {})
@@ -2150,12 +2527,14 @@ def _cv_hero(est, title, subtitle):
     <div class="cvhero-brand">Project One Roofing</div>
     <h1>{he(title)}</h1>
     <p>{sub}</p>
+    {steps_html}
   </div>
 </div>'''
     return f'''<div class="cvhero">
   <div class="cvhero-brand">Project One Roofing</div>
   <h1>{he(title)}</h1>
   <p>{he(subtitle)}</p>
+  {steps_html}
 </div>'''
 
 
@@ -2615,9 +2994,9 @@ def _insurance_cv_table(est):
             rows += f'''<tr>
               <td class="cvn">{he(item.get("name",""))}</td>
               <td class="cvn cvc-desc">{he(desc)}</td>
-              <td class="cvr">{fc(acv)}</td>
-              <td class="cvr">{fc(dep)}</td>
-              <td class="cvr">{fc(acv+dep)}</td></tr>'''
+              <td class="cvr" data-l="ACV">{fc(acv)}</td>
+              <td class="cvr" data-l="Depreciation">{fc(dep)}</td>
+              <td class="cvr" data-l="RCV">{fc(acv+dep)}</td></tr>'''
         hd = he(sec_name) if sec_name else 'Insurance Estimate Items'
         sections_html += f'''<div class="cvtrade">
           <div class="cvtrade-hd">{hd}</div>
@@ -2667,22 +3046,12 @@ def _build_insurance_cv(est, token):
     claim_row   = f'<div class="cvgi"><label>Claim #</label><strong>{he(claim_num)}</strong></div>' if claim_num else ''
     scope_html  = f'<div class="cvnotes"><h3>Scope of Work</h3><p>{he(scope_notes)}</p></div>' if scope_notes else ''
 
-    return f'''<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Your Insurance Estimate &mdash; Project One Roofing</title>
-<style>{_CV_CSS}</style></head><body>
+    return _cv_head('Your Insurance Estimate &mdash; Project One Roofing') + _cv_header() + f'''
+{_cv_hero(est, 'Your Insurance Estimate is Ready',
+          'Review your scope below, then sign at the bottom to accept',
+          steps=['Review Your Scope', 'Sign to Accept'])}
 
-<header class="cvhdr">
-  <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
-  <div class="cvhdr-contact">
-    <a href="tel:9707760945">970-776-0945</a>
-    <span>projectoneroofingcolorado.com</span>
-  </div>
-</header>
-<div class="cvbrand-stripe"></div>
-
-{_cv_hero(est, 'Your Insurance Estimate is Ready', 'Review your scope below, then sign at the bottom to accept')}
-
+<main class="cvmain">
 <div class="cvc-card">
   <div class="cvgrid">
     <div class="cvgi"><label>Prepared For</label><strong>{he(c.get("name","—"))}</strong></div>
@@ -2709,32 +3078,21 @@ def _build_insurance_cv(est, token):
 {_cv_attachments_block(est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
+{_cv_next_steps()}
+{_cv_contact_card(est)}
 
 <div class="cvsig">
   <h2>Sign to Accept</h2>
   <p class="sub">Your electronic signature confirms you have reviewed and agreed to the insurance estimate above and all terms &amp; conditions.</p>
-  <form method="POST" action="/sign/{he(token)}">
-    <input type="hidden" name="selected_tier" value="insurance">
-    {_cv_shingle_block(est)}
-    {_cv_initials_block(est)}
-    <input class="cvinput" name="sig_name" placeholder="Your full legal name *" required autocomplete="name">
-    <input class="cvinput" name="sig_email" placeholder="Email address (optional)" type="email" autocomplete="email">
-    <label class="cvagree">
-      <input type="checkbox" name="agree" required>
-      I have read this insurance estimate and I agree to all terms &amp; conditions.
-    </label>
-    <button type="submit" class="cvbtn">&#10003; Accept &mdash; Sign Electronically</button>
-    <p class="cvlegal">By clicking Accept, you are electronically signing this contract. This signature is legally
-    binding under the federal E-SIGN Act (15 U.S.C. &sect;&nbsp;7001) and the Uniform Electronic Transactions Act.</p>
-  </form>
+  {_cv_sig_form(f'/sign/{he(token)}',
+                hidden='<input type="hidden" name="selected_tier" value="insurance">',
+                extra_blocks=_cv_shingle_block(est) + _cv_initials_block(est),
+                agree_text='I have read this insurance estimate and I agree to all terms &amp; conditions.')}
 </div>
+</main>
 
-<div class="cvftr">
-  <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
-  <strong>Project One Roofing</strong>
-  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-776-0945 &middot; projectoneroofingcolorado.com</div>
-</div>
-</body></html>'''
+{_cv_sticky_bar('Insurance Claim Total', fc(ins_total))}
+''' + _cv_footer()
 
 
 def _all_trades_simple(est):
@@ -2774,22 +3132,12 @@ def _build_simple_retail_cv(est, token):
 
     li_html, grand_total = render_line_items(est, tier=tier)
 
-    return f'''<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Your Estimate — Project One Roofing</title>
-<style>{_CV_CSS}</style></head><body>
+    return _cv_head('Your Estimate — Project One Roofing') + _cv_header() + f'''
+{_cv_hero(est, 'Your Estimate is Ready to Review',
+          'Review your estimate below, then sign at the bottom to accept',
+          steps=['Review Your Estimate', 'Sign to Accept'])}
 
-<header class="cvhdr">
-  <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
-  <div class="cvhdr-contact">
-    <a href="tel:9707760945">970-776-0945</a>
-    <span>projectoneroofingcolorado.com</span>
-  </div>
-</header>
-<div class="cvbrand-stripe"></div>
-
-{_cv_hero(est, 'Your Estimate is Ready to Review', 'Review your estimate below, then sign at the bottom to accept')}
-
+<main class="cvmain">
 <div class="cvc-card">
   <div class="cvgrid">
     <div class="cvgi"><label>Prepared For</label><strong>{he(c.get("name","—"))}</strong></div>
@@ -2819,32 +3167,21 @@ def _build_simple_retail_cv(est, token):
 {_cv_attachments_block(est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
+{_cv_next_steps()}
+{_cv_contact_card(est)}
 
 <div class="cvsig">
   <h2>Sign to Accept</h2>
   <p class="sub">Your electronic signature confirms you have reviewed and agreed to the estimate above and all terms &amp; conditions.</p>
-  <form method="POST" action="/sign/{he(token)}">
-    <input type="hidden" name="selected_tier" value="{he(tier)}">
-    {_cv_shingle_block(est)}
-    {_cv_initials_block(est)}
-    <input class="cvinput" name="sig_name" placeholder="Your full legal name *" required autocomplete="name">
-    <input class="cvinput" name="sig_email" placeholder="Email address (optional)" type="email" autocomplete="email">
-    <label class="cvagree">
-      <input type="checkbox" name="agree" required>
-      I have read this estimate and I agree to all terms &amp; conditions.
-    </label>
-    <button type="submit" class="cvbtn">&#10003; Accept &mdash; Sign Electronically</button>
-    <p class="cvlegal">By clicking Accept, you are electronically signing this contract. This signature is legally
-    binding under the federal E-SIGN Act (15 U.S.C. &sect;&nbsp;7001) and the Uniform Electronic Transactions Act.</p>
-  </form>
+  {_cv_sig_form(f'/sign/{he(token)}',
+                hidden=f'<input type="hidden" name="selected_tier" value="{he(tier)}">',
+                extra_blocks=_cv_shingle_block(est) + _cv_initials_block(est),
+                agree_text='I have read this estimate and I agree to all terms &amp; conditions.')}
 </div>
+</main>
 
-<div class="cvftr">
-  <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
-  <strong>Project One Roofing</strong>
-  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-776-0945 &middot; projectoneroofingcolorado.com</div>
-</div>
-</body></html>'''
+{_cv_sticky_bar('Your Estimate Total', fc(grand_total))}
+''' + _cv_footer()
 
 
 def build_customer_view(est, token):
@@ -2938,7 +3275,7 @@ def build_customer_view(est, token):
             </div>'''
 
         heading = (f'{trade_lbls.get(tk, tk.title())} &mdash; Choose Your Package'
-                   if multi else 'Step 1 &mdash; Choose Your Package')
+                   if multi else 'Choose Your Package')
         sections_html += f'''<div class="cv-tier-section">
   <div class="cv-tier-heading">{heading}</div>
   <div class="cv-tier-cards" style="grid-template-columns:repeat({len(enabled_tiers)},1fr)">
@@ -2964,22 +3301,12 @@ def build_customer_view(est, token):
     # First product's pick doubles as the legacy selected_tier for old consumers
     default_tier  = defaults[gbb_tks[0]] if gbb_tks else est.get('selected_tier', 'better')
 
-    return f'''<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Your Estimate — Project One Roofing</title>
-<style>{_CV_CSS}</style></head><body>
+    return _cv_head('Your Estimate — Project One Roofing') + _cv_header() + f'''
+{_cv_hero(est, 'Your Estimate is Ready to Review',
+          'Choose your package below, then sign at the bottom to accept',
+          steps=['Review', 'Choose Your Package', 'Sign to Accept'])}
 
-<header class="cvhdr">
-  <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
-  <div class="cvhdr-contact">
-    <a href="tel:9707760945">970-776-0945</a>
-    <span>projectoneroofingcolorado.com</span>
-  </div>
-</header>
-<div class="cvbrand-stripe"></div>
-
-{_cv_hero(est, 'Your Estimate is Ready to Review', 'Choose your package below, then sign at the bottom to accept')}
-
+<main class="cvmain">
 <div class="cvc-card">
   <div class="cvgrid">
     <div class="cvgi"><label>Prepared For</label><strong>{he(c.get("name","—"))}</strong></div>
@@ -3011,33 +3338,24 @@ def build_customer_view(est, token):
 {_cv_attachments_block(est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
+{_cv_next_steps()}
+{_cv_contact_card(est)}
 
 <div class="cvsig">
-  <h2>Step 2 &mdash; Sign to Accept</h2>
+  <h2>Sign to Accept</h2>
   <p class="sub" id="cv-sig-sub">Your electronic signature confirms you have reviewed and agreed to the
     <strong id="cv-sig-tier">{default_lbl}</strong> and all terms above.</p>
-  <form method="POST" action="/sign/{he(token)}">
-    <input type="hidden" name="selected_tier" id="cv-tier-input" value="{he(default_tier)}">
-    {''.join(f'<input type="hidden" name="tier_{tk}" id="cv-tier-input-{tk}" value="{he(defaults[tk])}">' for tk in gbb_tks)}
-    {_cv_shingle_block(est)}
-    {_cv_initials_block(est)}
-    <input class="cvinput" name="sig_name" placeholder="Your full legal name *" required autocomplete="name">
-    <input class="cvinput" name="sig_email" placeholder="Email address (optional)" type="email" autocomplete="email">
-    <label class="cvagree">
-      <input type="checkbox" name="agree" required>
-      I have read this estimate, selected my package, and I agree to all terms &amp; conditions.
-    </label>
-    <button type="submit" class="cvbtn" id="cv-sign-btn">&#10003; Accept &mdash; Sign Electronically</button>
-    <p class="cvlegal">By clicking Accept, you are electronically signing this contract. This signature is legally
-    binding under the federal E-SIGN Act (15 U.S.C. &sect;&nbsp;7001) and the Uniform Electronic Transactions Act.</p>
-  </form>
+  {_cv_sig_form(f'/sign/{he(token)}',
+                hidden=(f'<input type="hidden" name="selected_tier" id="cv-tier-input" value="{he(default_tier)}">'
+                        + ''.join(f'<input type="hidden" name="tier_{tk}" id="cv-tier-input-{tk}" value="{he(defaults[tk])}">'
+                                  for tk in gbb_tks)),
+                extra_blocks=_cv_shingle_block(est) + _cv_initials_block(est),
+                agree_text='I have read this estimate, selected my package, and I agree to all terms &amp; conditions.',
+                btn_id='cv-sign-btn')}
 </div>
+</main>
 
-<div class="cvftr">
-  <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
-  <strong>Project One Roofing</strong>
-  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-776-0945 &middot; projectoneroofingcolorado.com</div>
-</div>
+{_cv_sticky_bar('Total &mdash; ' + default_lbl, fc(default_total))}
 
 <script>
 var _cv_tiers    = {json.dumps(enabled_tiers)};
@@ -3088,16 +3406,18 @@ function _cvRefreshTotal(){{
   document.getElementById('cv-grand-lbl').textContent='Total — '+lbl;
   document.getElementById('cv-grand-amt').textContent=_fmt(sum);
   document.getElementById('cv-sig-tier').textContent=lbl;
+  var sa=document.getElementById('cvstick-amt'),sl=document.getElementById('cvstick-lbl');
+  if(sa)sa.textContent=_fmt(sum);
+  if(sl)sl.textContent='Total — '+lbl;
   if(first){{
     document.getElementById('cv-tier-input').value=first;
     if(!_cv_multi){{
-      document.getElementById('cv-grand-bar').style.borderLeftColor=_tier_clrs[first];
       document.getElementById('cv-sign-btn').textContent='✓ Accept — '+_tier_lbls[first]+' Package';
     }}
   }}
 }}
 </script>
-</body></html>'''
+''' + _cv_footer()
 
 
 def build_signed_confirmation(est):
@@ -3153,27 +3473,19 @@ def build_signed_confirmation(est):
     email_row  = f'<tr><td>Email</td><td>{he(semail)}</td></tr>' if semail else ''
     hash_disp  = (dhash[:32] + '&hellip;') if len(dhash) > 32 else he(dhash)
 
-    return f'''<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Estimate Accepted &mdash; Project One Roofing</title>
-<style>{_CV_CSS}</style></head><body>
-
-<header class="cvhdr">
-  <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
-  <div class="cvhdr-contact">
-    <a href="tel:9707760945">970-776-0945</a>
-    <span>projectoneroofingcolorado.com</span>
-  </div>
-</header>
-<div class="cvbrand-stripe"></div>
-
+    fname = (sname.split() or [''])[0]
+    hero_h1 = f'You&rsquo;re All Set, {he(fname)}!' if fname else 'Estimate Accepted!'
+    return _cv_head('Estimate Accepted &mdash; Project One Roofing') + _cv_header() + f'''
 <div class="cvhero ok">
   <div class="cvhero-brand" style="color:#86efac">Project One Roofing</div>
   <div class="cv-check">&#10003;</div>
-  <h1>Estimate Accepted!</h1>
-  <p>Thank you, {he(sname)}. Project One Roofing will be in touch soon to schedule your project.</p>
+  <h1>{hero_h1}</h1>
+  <p>Thank you &mdash; your signed copy is below. Project One Roofing will be in touch soon to schedule your project.</p>
   <button class="cv-print-btn" onclick="window.print()">&#128424; Save / Print Signed Copy</button>
 </div>
+
+<main class="cvmain">
+{_cv_next_steps(signed=True)}
 
 <div class="cert">
   <div class="cert-title">&#128274; Electronic Signature Certificate</div>
@@ -3212,14 +3524,9 @@ def build_signed_confirmation(est):
 
 {notes_html}
 {ctext_html}
-
-<div class="cvftr">
-  <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
-  <strong>Project One Roofing</strong>
-  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-776-0945 &middot; projectoneroofingcolorado.com</div>
-  <div class="cvftr-sub">Signed: {he(stime_fmt)} &middot; IP: {he(ip)}</div>
-</div>
-</body></html>'''
+{_cv_contact_card(est)}
+</main>
+''' + _cv_footer(f'<div class="cvftr-sub">Signed: {he(stime_fmt)} &middot; IP: {he(ip)}</div>')
 
 
 # ── E-Signature routes ──────────────────────────────────────────────────────
@@ -4893,9 +5200,9 @@ def build_co_sign_page(est, co, token):
         rows += f'''<tr>
           <td class="cvn">{he(it.get('name', ''))}
             {'<div class="cvd">' + he(desc) + '</div>' if desc else ''}</td>
-          <td class="cvc">{qty:g}</td>
+          <td class="cvc" data-l="Qty">{qty:g}</td>
           <td class="cvc">{he(it.get('unit', ''))}</td>
-          <td class="cvr" style="{'color:#b91c1c' if line < 0 else ''}">{_fcs(line)}</td></tr>'''
+          <td class="cvr" data-l="Total" style="{'color:#b91c1c' if line < 0 else ''}">{_fcs(line)}</td></tr>'''
 
     desc_html = ''
     if (co.get('description') or '').strip():
@@ -4931,41 +5238,25 @@ def build_co_sign_page(est, co, token):
       <h2>Sign to Approve</h2>
       <p class="sub">Your electronic signature approves this change order as an addendum to your
         original contract ({he(enum)}). All original terms &amp; conditions remain in effect.</p>
-      <form method="POST" action="/sign-co/{he(token)}">
-        <input class="cvinput" name="sig_name" placeholder="Your full legal name *" required autocomplete="name">
-        <input class="cvinput" name="sig_email" placeholder="Email address (optional)" type="email" autocomplete="email">
-        <label class="cvagree">
-          <input type="checkbox" name="agree" required>
-          I have reviewed this change order and approve the changes and pricing above.
-        </label>
-        <button type="submit" class="cvbtn">&#10003; Approve &mdash; Sign Electronically</button>
-        <p class="cvlegal">By clicking Approve, you are electronically signing this change order. This signature
-        is legally binding under the federal E-SIGN Act (15 U.S.C. &sect;&nbsp;7001) and the Uniform Electronic
-        Transactions Act.</p>
-      </form>
+      {_cv_sig_form(f'/sign-co/{he(token)}',
+                    agree_text='I have reviewed this change order and approve the changes and pricing above.',
+                    btn_text='&#10003; Approve &mdash; Sign Electronically')}
     </div>'''
 
-    return f'''<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Change Order {he(co.get('number', ''))} &mdash; Project One Roofing</title>
-<style>{_CV_CSS}</style></head><body>
-
-<header class="cvhdr">
-  <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
-  <div class="cvhdr-contact">
-    <a href="tel:9707760945">970-776-0945</a>
-    <span>projectoneroofingcolorado.com</span>
-  </div>
-</header>
-<div class="cvbrand-stripe"></div>
-
+    steps_html = ('' if sig else
+                  '<div class="cvsteps"><span class="cvstep"><b>1</b>Review the Changes</span>'
+                  '<span class="cvstep"><b>2</b>Sign to Approve</span></div>')
+    return _cv_head(f'Change Order {he(co.get("number", ""))} &mdash; Project One Roofing') + _cv_header() + f'''
 <div class="cvhero{' ok' if sig else ''}">
-  <div class="cvhero-brand">Project One Roofing</div>
+  <div class="cvhero-brand"{' style="color:#86efac"' if sig else ''}>Project One Roofing</div>
+  {'<div class="cv-check">&#10003;</div>' if sig else ''}
   <h1>{'Change Order Approved' if sig else f'Change Order {he(co.get("number", ""))}'}</h1>
   <p>{'Thank you — a copy has been added to your project records.' if sig
       else 'Review the changes below, then sign at the bottom to approve'}</p>
+  {steps_html}
 </div>
 
+<main class="cvmain">
 <div class="cvc-card">
   <div class="cvgrid">
     <div class="cvgi"><label>Customer</label><strong>{he(c.get('name', '—'))}</strong></div>
@@ -5000,13 +5291,11 @@ def build_co_sign_page(est, co, token):
 </div>
 
 {action_html}
+{_cv_contact_card(est)}
+</main>
 
-<div class="cvftr">
-  <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
-  <strong>Project One Roofing</strong>
-  <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>970-776-0945 &middot; projectoneroofingcolorado.com</div>
-</div>
-</body></html>'''
+{'' if sig else _cv_sticky_bar(total_lbl, _fcs(total))}
+''' + _cv_footer()
 
 
 @app.route('/sign-co/<token>', methods=['GET', 'POST'])
