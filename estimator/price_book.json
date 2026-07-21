@@ -1,6 +1,130 @@
 {
   "intros": [],
   "materials": {
+    "gutters": [
+      {
+        "cost": 0,
+        "customer_visible": true,
+        "desc_best": "5\" Copper / Steel",
+        "desc_better": "5\" Heavy-Gauge Aluminum",
+        "desc_good": "5\" Aluminum",
+        "name": "5\" K-Style Gutter",
+        "notes_best": "Premium copper or galvanized steel 5\" K-style gutter \u2014 the most durable and visually striking option, engineered for a lifetime of performance.",
+        "notes_better": "Heavy-gauge 5\" K-style aluminum gutter \u2014 thicker walls resist denting, maintain shape, and last significantly longer than standard-gauge gutters.",
+        "notes_good": "Standard 5\" K-style aluminum gutter \u2014 the most common residential gutter size, handles typical rainfall volume.",
+        "unit": "LF"
+      },
+      {
+        "cost": 0,
+        "customer_visible": true,
+        "desc_best": "6\" Copper / Steel",
+        "desc_better": "6\" Heavy-Gauge Aluminum",
+        "desc_good": "6\" Aluminum",
+        "name": "6\" K-Style Gutter",
+        "notes_best": "6\" copper or galvanized steel gutter \u2014 the premium choice for maximum capacity and lasting beauty.",
+        "notes_better": "6\" heavy-gauge aluminum gutter \u2014 maximum capacity with superior durability. Recommended for complex rooflines and higher-elevation homes.",
+        "notes_good": "6\" K-style aluminum gutter \u2014 larger capacity for steep-pitch roofs or high-rainfall areas.",
+        "unit": "LF"
+      },
+      {
+        "cost": 0,
+        "customer_visible": true,
+        "desc_best": "Copper / Steel",
+        "desc_better": "Heavy-Gauge",
+        "desc_good": "Standard",
+        "name": "Downspout",
+        "notes_best": "Copper or galvanized steel downspout \u2014 maximum durability and visual impact.",
+        "notes_better": "Heavy-gauge aluminum downspout \u2014 resists denting and damage from ladders and yard equipment.",
+        "notes_good": "Standard aluminum downspout directs water away from the foundation.",
+        "unit": "LF"
+      },
+      {
+        "cost": 0,
+        "customer_visible": true,
+        "desc_best": "Premium Micro-Mesh",
+        "desc_better": "Micro-Mesh Guard",
+        "desc_good": "Mesh Screen",
+        "name": "Gutter Guard / Screen",
+        "notes_best": "Premium micro-mesh guards with stainless steel mesh \u2014 the most effective debris protection available, backed by a no-clog guarantee.",
+        "notes_better": "Micro-mesh gutter guards block even small debris like pine needles and shingle grit while allowing full water flow. Dramatically reduces maintenance.",
+        "notes_good": "Aluminum mesh screens keep large debris out of gutters and reduce cleaning frequency.",
+        "unit": "LF"
+      },
+      {
+        "cost": 0,
+        "customer_visible": true,
+        "desc_best": "Copper / Matching",
+        "desc_better": "Standard",
+        "desc_good": "Standard",
+        "name": "End Caps",
+        "notes_best": "Color-matched or copper end caps for a cohesive, finished appearance.",
+        "notes_better": "Sealed end caps at all gutter terminations.",
+        "notes_good": "End caps seal all gutter runs.",
+        "unit": "EA"
+      },
+      {
+        "cost": 0,
+        "customer_visible": true,
+        "desc_best": "Heavy-Gauge",
+        "desc_better": "Standard",
+        "desc_good": "Standard",
+        "name": "Drop Outlets",
+        "notes_best": "Heavy-gauge drop outlets with sealed connections for maximum longevity.",
+        "notes_better": "Properly positioned drop outlets for optimized water flow and drainage.",
+        "notes_good": "Drop outlets connecting gutters to downspouts.",
+        "unit": "EA"
+      },
+      {
+        "cost": 0,
+        "customer_visible": true,
+        "desc_best": "Remove & Haul",
+        "desc_better": "Remove & Haul",
+        "desc_good": "Remove & Haul",
+        "name": "Remove Old Gutters",
+        "notes_best": "Full removal with fascia board inspection and documentation of any rot or damage discovered.",
+        "notes_better": "Complete removal of old gutters with inspection of fascia board condition before new installation.",
+        "notes_good": "Removal and disposal of existing gutter system.",
+        "unit": "LF"
+      },
+      {
+        "cost": 0,
+        "customer_visible": true,
+        "desc_best": "Master Install",
+        "desc_better": "Certified Install",
+        "desc_good": "Professional Install",
+        "name": "Install Labor",
+        "notes_best": "Master installer-led installation with precision slope calibration, hidden hanger system, and completion documentation.",
+        "notes_better": "Certified installation with proper slope (1/16\" per foot) and secure hanger spacing for optimal performance.",
+        "notes_good": "Professional gutter installation by our experienced crew.",
+        "unit": "LF"
+      },
+      {
+        "cost": 0,
+        "customer_visible": true,
+        "desc_best": "Permit",
+        "desc_better": "Permit",
+        "desc_good": "Permit",
+        "name": "Permit",
+        "notes_best": "Full permit management.",
+        "notes_better": "Required building permit obtained and inspection coordinated.",
+        "notes_good": "Required building permit where applicable.",
+        "unit": "LS"
+      }
+    ],
+    "other": [
+      {
+        "cost": 0,
+        "customer_visible": true,
+        "desc_best": "",
+        "desc_better": "",
+        "desc_good": "",
+        "name": "Custom Item",
+        "notes_best": "",
+        "notes_better": "",
+        "notes_good": "",
+        "unit": "EA"
+      }
+    ],
     "roofing": [
       {
         "cost": 142,
@@ -12,7 +136,134 @@
         "notes_best": "Premium designer shingles replicate the look of natural slate or cedar shake with superior impact resistance. Class 4 impact rating may qualify your homeowner for an insurance premium discount. Lifetime limited warranty.",
         "notes_better": "Architectural laminate shingles add dimensional shadow lines and a high-end appearance. Enhanced wind resistance rated up to 130 mph. Lifetime limited warranty \u2014 the most popular choice for long-term value.",
         "notes_good": "3-Tab asphalt shingles provide reliable, code-compliant leak protection at a competitive price point. Clean, classic look with a 25-year manufacturer limited warranty.",
-        "unit": "SQ"
+        "unit": "SQ",
+        "variants_best": [
+          {
+            "label": "Designer / Premium",
+            "cost": 142,
+            "features": [
+              "Designer shingles",
+              "High-performance underlayment",
+              "Ice & water shield (full deck)",
+              "Lifetime workmanship warranty",
+              "Full tear-off & disposal",
+              "Magnetic nail sweep",
+              "New ridge vent"
+            ]
+          },
+          {
+            "label": "Standing Seam Metal (24ga)",
+            "cost": 400,
+            "notes": "24-gauge standing seam metal roof with concealed fasteners \u2014 the premium roofing system. 50+ year service life, Class 4 impact rating, and unmatched snow-shedding and wind performance.",
+            "features": [
+              "24-gauge standing seam panels",
+              "Concealed fastener (clip) system",
+              "High-temp synthetic underlayment",
+              "Full-deck ice & water shield",
+              "50+ year service life",
+              "Class 4 impact rating",
+              "Lifetime workmanship warranty",
+              "Full tear-off & disposal"
+            ]
+          },
+          {
+            "label": "EDCO Steel Shingles",
+            "cost": 300,
+            "notes": "EDCO steel shingles deliver the look of architectural shingles in Class 4 impact-rated steel \u2014 hail-country durability with a lifetime limited warranty and potential insurance premium discounts.",
+            "features": [
+              "EDCO steel shingle panels (Class 4 impact)",
+              "Concealed fastener system",
+              "High-performance underlayment",
+              "Ice & water shield (full deck)",
+              "Lifetime limited warranty",
+              "Full tear-off & disposal",
+              "Magnetic nail sweep"
+            ]
+          },
+          {
+            "label": "Stone-Coated Steel",
+            "cost": 330,
+            "notes": "Stone-coated steel panels combine the strength of Class 4 impact-rated steel with the texture of traditional shingles or shake. Wind-rated to 120+ mph with a lifetime limited warranty.",
+            "features": [
+              "Stone-coated steel panels (Class 4 impact)",
+              "Batten & clip mounting system",
+              "High-performance underlayment",
+              "Ice & water shield (full deck)",
+              "Wind-rated to 120+ mph",
+              "Lifetime limited warranty",
+              "Full tear-off & disposal"
+            ]
+          }
+        ],
+        "variants_better": [
+          {
+            "label": "Architectural",
+            "cost": 142,
+            "features": [
+              "30-year architectural shingles",
+              "Synthetic underlayment",
+              "Ice & water shield (eaves)",
+              "10-year workmanship warranty",
+              "Full tear-off & disposal",
+              "Magnetic nail sweep"
+            ]
+          },
+          {
+            "label": "EDCO Steel Shingles",
+            "cost": 300,
+            "notes": "EDCO steel shingles deliver the look of architectural shingles in Class 4 impact-rated steel \u2014 hail-country durability with a lifetime limited warranty and potential insurance premium discounts.",
+            "features": [
+              "EDCO steel shingle panels (Class 4 impact)",
+              "Concealed fastener system",
+              "Synthetic underlayment",
+              "Ice & water shield (eaves & valleys)",
+              "Lifetime limited warranty",
+              "Full tear-off & disposal",
+              "Magnetic nail sweep"
+            ]
+          },
+          {
+            "label": "Stone-Coated Steel",
+            "cost": 330,
+            "notes": "Stone-coated steel panels combine the strength of Class 4 impact-rated steel with the texture of traditional shingles or shake. Wind-rated to 120+ mph with a lifetime limited warranty.",
+            "features": [
+              "Stone-coated steel panels (Class 4 impact)",
+              "Batten & clip mounting system",
+              "Synthetic underlayment",
+              "Ice & water shield (eaves & valleys)",
+              "Wind-rated to 120+ mph",
+              "Lifetime limited warranty",
+              "Full tear-off & disposal"
+            ]
+          }
+        ],
+        "variants_good": [
+          {
+            "label": "3-Tab",
+            "cost": 142,
+            "features": [
+              "3-Tab shingles",
+              "Starter strip",
+              "15-year manufacturer warranty",
+              "5-year workmanship warranty",
+              "Full tear-off & disposal",
+              "Magnetic nail sweep"
+            ]
+          },
+          {
+            "label": "Architectural (Upgrade)",
+            "cost": 155,
+            "notes": "Architectural laminate shingles \u2014 a dimensional upgrade over 3-tab at an entry-level price.",
+            "features": [
+              "30-year architectural shingles",
+              "Starter strip",
+              "Synthetic underlayment",
+              "5-year workmanship warranty",
+              "Full tear-off & disposal",
+              "Magnetic nail sweep"
+            ]
+          }
+        ]
       },
       {
         "cost": 9.1,
@@ -171,29 +422,29 @@
         "unit": "LS"
       },
       {
-        "cost": 34,
-        "customer_visible": true,
-        "is_default": false,
-        "measure": "ridge_vent_code",
         "bundle_lf": 4,
         "bundle_unit": "sticks",
+        "cost": 34,
+        "customer_visible": true,
         "desc_best": "Premium Shingle-Over Ridge Vent",
         "desc_better": "High-Profile Ridge Vent",
         "desc_good": "Externally-Baffled Ridge Vent",
+        "is_default": false,
+        "measure": "ridge_vent_code",
         "name": "Ridge Vent",
-        "notes_best": "Premium shingle-over ridge vent with an external weather baffle and a finished, low-profile appearance — the best-performing balanced-exhaust solution for a long roof life.",
+        "notes_best": "Premium shingle-over ridge vent with an external weather baffle and a finished, low-profile appearance \u2014 the best-performing balanced-exhaust solution for a long roof life.",
         "notes_better": "High-profile externally-baffled ridge vent resists wind-driven rain and snow infiltration while providing continuous, even exhaust across the entire ridge line.",
-        "notes_good": "Continuous ridge vent installed at the peak to exhaust hot, moist attic air — sized to meet code net-free-area when balanced with intake at the eaves.",
+        "notes_good": "Continuous ridge vent installed at the peak to exhaust hot, moist attic air \u2014 sized to meet code net-free-area when balanced with intake at the eaves.",
         "unit": "LF"
       },
       {
         "cost": 25,
         "customer_visible": true,
-        "is_default": false,
-        "measure": "turtle_vents",
         "desc_best": "Remove & Deck-Over Existing Box Vents",
         "desc_better": "Remove & Deck-Over Existing Box Vents",
         "desc_good": "Remove & Deck-Over Existing Box Vents",
+        "is_default": false,
+        "measure": "turtle_vents",
         "name": "Vent Plug",
         "notes_best": "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
         "notes_better": "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
@@ -203,15 +454,15 @@
       {
         "cost": 4.5,
         "customer_visible": true,
-        "is_default": false,
-        "measure": "eave",
         "desc_best": "Continuous Intake w/ Insulation Baffles",
         "desc_better": "Vented Soffit + Baffles",
         "desc_good": "Continuous Soffit Intake Vent",
+        "is_default": false,
+        "measure": "eave",
         "name": "Intake Vent",
-        "notes_best": "Continuous eave intake paired with insulation baffles at every bay for maximum, unobstructed intake — a fully balanced, code-compliant ventilation system.",
+        "notes_best": "Continuous eave intake paired with insulation baffles at every bay for maximum, unobstructed intake \u2014 a fully balanced, code-compliant ventilation system.",
         "notes_better": "Vented soffit with insulation baffles keeps the intake path clear at every rafter bay so airflow isn't blocked by attic insulation.",
-        "notes_good": "Continuous soffit intake vent installed along the eaves — the low-side intake that makes ridge exhaust actually work and keeps the attic balanced.",
+        "notes_good": "Continuous soffit intake vent installed along the eaves \u2014 the low-side intake that makes ridge exhaust actually work and keeps the attic balanced.",
         "unit": "LF"
       }
     ],
@@ -410,130 +661,7 @@
         "notes_good": "Required building permit.",
         "unit": "LS"
       }
-    ],
-    "gutters": [
-      {
-        "cost": 0,
-        "customer_visible": true,
-        "desc_best": "5\" Copper / Steel",
-        "desc_better": "5\" Heavy-Gauge Aluminum",
-        "desc_good": "5\" Aluminum",
-        "name": "5\" K-Style Gutter",
-        "notes_best": "Premium copper or galvanized steel 5\" K-style gutter \u2014 the most durable and visually striking option, engineered for a lifetime of performance.",
-        "notes_better": "Heavy-gauge 5\" K-style aluminum gutter \u2014 thicker walls resist denting, maintain shape, and last significantly longer than standard-gauge gutters.",
-        "notes_good": "Standard 5\" K-style aluminum gutter \u2014 the most common residential gutter size, handles typical rainfall volume.",
-        "unit": "LF"
-      },
-      {
-        "cost": 0,
-        "customer_visible": true,
-        "desc_best": "6\" Copper / Steel",
-        "desc_better": "6\" Heavy-Gauge Aluminum",
-        "desc_good": "6\" Aluminum",
-        "name": "6\" K-Style Gutter",
-        "notes_best": "6\" copper or galvanized steel gutter \u2014 the premium choice for maximum capacity and lasting beauty.",
-        "notes_better": "6\" heavy-gauge aluminum gutter \u2014 maximum capacity with superior durability. Recommended for complex rooflines and higher-elevation homes.",
-        "notes_good": "6\" K-style aluminum gutter \u2014 larger capacity for steep-pitch roofs or high-rainfall areas.",
-        "unit": "LF"
-      },
-      {
-        "cost": 0,
-        "customer_visible": true,
-        "desc_best": "Copper / Steel",
-        "desc_better": "Heavy-Gauge",
-        "desc_good": "Standard",
-        "name": "Downspout",
-        "notes_best": "Copper or galvanized steel downspout \u2014 maximum durability and visual impact.",
-        "notes_better": "Heavy-gauge aluminum downspout \u2014 resists denting and damage from ladders and yard equipment.",
-        "notes_good": "Standard aluminum downspout directs water away from the foundation.",
-        "unit": "LF"
-      },
-      {
-        "cost": 0,
-        "customer_visible": true,
-        "desc_best": "Premium Micro-Mesh",
-        "desc_better": "Micro-Mesh Guard",
-        "desc_good": "Mesh Screen",
-        "name": "Gutter Guard / Screen",
-        "notes_best": "Premium micro-mesh guards with stainless steel mesh \u2014 the most effective debris protection available, backed by a no-clog guarantee.",
-        "notes_better": "Micro-mesh gutter guards block even small debris like pine needles and shingle grit while allowing full water flow. Dramatically reduces maintenance.",
-        "notes_good": "Aluminum mesh screens keep large debris out of gutters and reduce cleaning frequency.",
-        "unit": "LF"
-      },
-      {
-        "cost": 0,
-        "customer_visible": true,
-        "desc_best": "Copper / Matching",
-        "desc_better": "Standard",
-        "desc_good": "Standard",
-        "name": "End Caps",
-        "notes_best": "Color-matched or copper end caps for a cohesive, finished appearance.",
-        "notes_better": "Sealed end caps at all gutter terminations.",
-        "notes_good": "End caps seal all gutter runs.",
-        "unit": "EA"
-      },
-      {
-        "cost": 0,
-        "customer_visible": true,
-        "desc_best": "Heavy-Gauge",
-        "desc_better": "Standard",
-        "desc_good": "Standard",
-        "name": "Drop Outlets",
-        "notes_best": "Heavy-gauge drop outlets with sealed connections for maximum longevity.",
-        "notes_better": "Properly positioned drop outlets for optimized water flow and drainage.",
-        "notes_good": "Drop outlets connecting gutters to downspouts.",
-        "unit": "EA"
-      },
-      {
-        "cost": 0,
-        "customer_visible": true,
-        "desc_best": "Remove & Haul",
-        "desc_better": "Remove & Haul",
-        "desc_good": "Remove & Haul",
-        "name": "Remove Old Gutters",
-        "notes_best": "Full removal with fascia board inspection and documentation of any rot or damage discovered.",
-        "notes_better": "Complete removal of old gutters with inspection of fascia board condition before new installation.",
-        "notes_good": "Removal and disposal of existing gutter system.",
-        "unit": "LF"
-      },
-      {
-        "cost": 0,
-        "customer_visible": true,
-        "desc_best": "Master Install",
-        "desc_better": "Certified Install",
-        "desc_good": "Professional Install",
-        "name": "Install Labor",
-        "notes_best": "Master installer-led installation with precision slope calibration, hidden hanger system, and completion documentation.",
-        "notes_better": "Certified installation with proper slope (1/16\" per foot) and secure hanger spacing for optimal performance.",
-        "notes_good": "Professional gutter installation by our experienced crew.",
-        "unit": "LF"
-      },
-      {
-        "cost": 0,
-        "customer_visible": true,
-        "desc_best": "Permit",
-        "desc_better": "Permit",
-        "desc_good": "Permit",
-        "name": "Permit",
-        "notes_best": "Full permit management.",
-        "notes_better": "Required building permit obtained and inspection coordinated.",
-        "notes_good": "Required building permit where applicable.",
-        "unit": "LS"
-      }
-    ],
-    "other": [
-      {
-        "cost": 0,
-        "customer_visible": true,
-        "desc_best": "",
-        "desc_better": "",
-        "desc_good": "",
-        "name": "Custom Item",
-        "notes_best": "",
-        "notes_better": "",
-        "notes_good": "",
-        "unit": "EA"
-      }
     ]
-  }
+  },
+  "presets": {}
 }

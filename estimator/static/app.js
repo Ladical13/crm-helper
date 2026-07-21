@@ -1803,16 +1803,16 @@ function pbRenderMaster() {
           const eff = effCost(item);
           const base = (item.cost_good !== undefined && item.cost_good !== '') ? parseFloat(item.cost_good)||0
                      : (item.cost !== undefined ? parseFloat(item.cost)||0 : 0);
-          // Siding rows can define a menu of product/exposure options per tier that
-          // the rep picks from on the estimate. Editor is a collapsible extra row.
-          const variantsRow = pbActiveTrade === 'siding'
-            ? `<tr class="pb-variants-row"><td colspan="10">
+          // Any row can define a menu of product options per tier that the rep
+          // picks from on the estimate (e.g. roofing: architectural shingles vs
+          // standing seam vs stone-coated steel; siding: product/exposure).
+          // Editor is a collapsible extra row.
+          const variantsRow = `<tr class="pb-variants-row"><td colspan="10">
                  <details class="pb-variants" ${pbHasVariants(item)?'open':''}>
-                   <summary>Product options / exposures ${pbVariantSummary(item)}</summary>
+                   <summary>Product options ${pbVariantSummary(item)}</summary>
                    <div class="pb-variants-grid">${TIERS.map(tier => pbVariantEditor(item, i, tier)).join('')}</div>
                  </details>
-               </td></tr>`
-            : '';
+               </td></tr>`;
           return `<tr class="pb-item-row${isDefault ? '' : ' pb-row-nondefault'}">
             <td class="pb-order-cell">
               <button class="pb-order-btn" onclick="pbMoveItem(${i},-1)" ${i===0?'disabled':''} title="Move up">↑</button>
@@ -1841,9 +1841,10 @@ function pbRenderMaster() {
     <div style="margin-top:10px"><button class="btn-secondary" onclick="pbAddItem()">+ Add Product</button></div>`;
 }
 
-// ── Price-book product variants (siding) ────────────────────────────────
-// Per-tier menu of specific products/exposures a rep chooses from on the
-// estimate. Stored on the price-book row as variants_<tier> = [{label,cost,notes?}].
+// ── Price-book product variants (all trades) ────────────────────────────
+// Per-tier menu of specific products a rep chooses from on the estimate —
+// roofing material types, siding products/exposures, etc.
+// Stored on the price-book row as variants_<tier> = [{label,cost,notes?}].
 function pbHasVariants(item) {
   return TIERS.some(tier => Array.isArray(item['variants_'+tier]) && item['variants_'+tier].length);
 }
@@ -1868,6 +1869,10 @@ function pbVariantEditor(item, i, tier) {
             onchange="pbSetVariant(${i},'${tier}',${vi},'cost',this.value)">
           <button class="pb-variant-del" title="Remove option" onclick="pbRemoveVariant(${i},'${tier}',${vi})">✕</button>
         </div>
+        <label class="pb-variant-field-label pb-variant-field-label-price">Customer notes (optional)</label>
+        <textarea class="pb-variant-notes" rows="2"
+          placeholder="Shown on the customer estimate when this product is selected"
+          onchange="pbSetVariant(${i},'${tier}',${vi},'notes',this.value)">${esc(v.notes||'')}</textarea>
       </div>`).join('')}
     <button class="pb-variant-add" onclick="pbAddVariant(${i},'${tier}')">+ Add option</button>
   </div>`;
@@ -3336,13 +3341,13 @@ function liSetNameSmart(trade, id, v) {
         if (!parseFloat(tt.material_unit_cost) && !parseFloat(tt.labor_unit_cost)) tt.material_unit_cost = tierCost[tier];
         if (!tt.description) tt.description = t['product_'+tier] || t['desc_'+tier] || '';
         if (!tt.notes)       tt.notes       = t['notes_'+tier] || '';
-        // Siding: attach the product-variant menu if this row defines one and the
+        // Attach the product-variant menu if this row defines one and the
         // item doesn't already carry variants. Match the existing label to a
         // variant so the picker reflects it; otherwise it reads "Custom".
-        if (trade === 'siding' && !Array.isArray(tt.variants)) {
+        if (!Array.isArray(tt.variants)) {
           const menu = t['variants_'+tier];
           if (Array.isArray(menu) && menu.length) {
-            tt.variants = menu.map(v => ({ label: v.label || '', cost: parseFloat(v.cost)||0, notes: v.notes || '' }));
+            tt.variants = menu.map(v => ({ label: v.label || '', cost: parseFloat(v.cost)||0, notes: v.notes || '', features: Array.isArray(v.features) ? v.features.slice() : [] }));
             const hit = tt.variants.findIndex(v => v.label && v.label === tt.description);
             tt.selected_variant = hit >= 0 ? hit : -1;
           }
@@ -3467,10 +3472,11 @@ function renderLiRow(trade, tier, item) {
       ${sections.map(s=>`<option value="${esc(s)}" ${itemSection(item)===s?'selected':''}>${esc(s)}</option>`).join('')}
     </select>` : '';
 
-  // Product/exposure picker: when this tier carries a variant menu (siding only),
-  // let the rep choose which specific product is quoted. Selecting a variant fills
-  // this tier's cost + description; a manual edit of either flips it to "Custom".
-  const variants = (trade === 'siding' && Array.isArray(t.variants)) ? t.variants : [];
+  // Product picker: when this tier carries a variant menu (any trade — e.g.
+  // roofing material types, siding product/exposure), let the rep choose which
+  // specific product is quoted. Selecting a variant fills this tier's cost +
+  // description; a manual edit of either flips it to "Custom".
+  const variants = Array.isArray(t.variants) ? t.variants : [];
   const selVar   = (t.selected_variant === undefined || t.selected_variant === null) ? -1 : t.selected_variant;
   const variantSel = variants.length ? `
     <div class="li-row-variant-row">
@@ -4400,7 +4406,7 @@ function liSetTier(trade, id, tier, field, v) {
   setDirty(); rerender();
   if(activePage==='pricing'){renderTradeContent();}
 }
-// Pick a product/exposure variant for one tier of a siding item. Copies the
+// Pick a product variant for one tier of a line item (any trade). Copies the
 // variant's cost + label (+ notes) into the tier so all pricing/render code —
 // which reads material_unit_cost/description — works unchanged. idx of -1 (or an
 // out-of-range value) means "Custom", leaving the current cost/label in place.
@@ -4418,9 +4424,17 @@ function liSetVariant(trade, id, tier, idx) {
     t.description        = v.label || '';
     if (v.notes !== undefined) t.notes = v.notes;
     delete t.price_override;  // re-price to the new product's cost
+    // Pull the product's "what's included" list onto this tier's Options-tab
+    // package bullets — so choosing e.g. a metal system swaps the whole package
+    // story, not just the line cost. Only when the product defines features, so
+    // picking a product with none leaves the rep's existing bullets alone.
+    if (Array.isArray(v.features) && v.features.length) {
+      tradeTierContent(trade).features[tier] = v.features.slice();
+    }
   }
   setDirty(); rerender();
   if (activePage === 'pricing') renderTradeContent();
+  if (activePage === 'options') renderOptionsPage();
   renderTotals();
 }
 function liDelete(trade, id) {
@@ -4609,17 +4623,18 @@ function buildItemFromTemplate(trade, t) {
 function findTemplate(trade, name) {
   return ((templates && templates[trade]) || []).find(t => t.name === name);
 }
-// Attach a siding tier's product-variant menu (from a price-book row's
+// Attach a tier's product-variant menu (from a price-book row's
 // variants_<tier>) onto a freshly built estimate tiers object, seeding
-// cost/description/notes from variant 0. No-op for non-siding trades and for
-// tiers with no menu, so all other pricing is untouched.
+// cost/description/notes from variant 0. No-op for tiers with no menu,
+// so all other pricing is untouched.
 function applyTierVariants(trade, t, tiers) {
-  if (trade !== 'siding' || !tiers) return tiers;
+  if (!tiers) return tiers;
   TIERS.forEach(tier => {
     const menu = t['variants_' + tier];
     if (!Array.isArray(menu) || !menu.length) return;
     const variants = menu.map(v => ({
-      label: v.label || '', cost: parseFloat(v.cost)||0, notes: v.notes || ''
+      label: v.label || '', cost: parseFloat(v.cost)||0, notes: v.notes || '',
+      features: Array.isArray(v.features) ? v.features.slice() : []
     }));
     const cell = tiers[tier] || (tiers[tier] = {material_unit_cost:0,labor_unit_cost:0,description:'',notes:'',included:true});
     cell.variants         = variants;
@@ -5787,6 +5802,9 @@ async function openSettings() {
   document.getElementById('settings-colors').value = _globalShingleColors().join('\n');
   document.getElementById('settings-waste').value  = _globalWastePct();
   if (_meCanViewAll()) {
+    document.getElementById('settings-roof-products').classList.remove('hidden');
+    _loadRoofProducts();
+    _renderRoofProducts();
     document.getElementById('settings-gbb').classList.remove('hidden');
     try {
       const r = await fetch('/api/tier-defaults');
@@ -5811,6 +5829,116 @@ async function openSettings() {
     document.getElementById('set-initials-ins').value    = globalInitialTexts('insurance').join('\n');
   }
   document.getElementById('settings-modal').classList.remove('hidden');
+}
+
+/* ── Roofing Product Menu (⚙ Settings, manager+) ─────────────────────────
+   Friendly editor over the primary roofing price-book row's variants_<tier>.
+   Each product = {label, cost, notes, features[]}. On an estimate each tier
+   column shows a dropdown of that tier's products; picking one fills the line
+   cost/label/description and the Options-page "What's Included" bullets.
+   Working copy lives in _roofProducts; saveSettings writes it back into
+   priceBook and PUTs, then refreshes templates so new estimates pick it up. */
+let _roofProducts = { good:[], better:[], best:[] };
+
+// The roofing row that carries the product dropdowns: the first roofing
+// material row that already defines variants, else the first row (the main
+// shingle / roofing-material line).
+function _roofProductRow(pb) {
+  const rows = (pb && pb.materials && pb.materials.roofing) || [];
+  return rows.find(r => TIERS.some(t => Array.isArray(r['variants_'+t]) && r['variants_'+t].length))
+      || rows[0] || null;
+}
+function _loadRoofProducts() {
+  // Prefer the saved price book; fall back to the effective template row so a
+  // fresh install (no saved roofing rows yet) still shows the starter menu.
+  let row = _roofProductRow(priceBook);
+  if (!row || !TIERS.some(t => Array.isArray(row['variants_'+t]))) {
+    const tRoof = (templates && templates.roofing) || [];
+    row = tRoof.find(r => TIERS.some(t => Array.isArray(r['variants_'+t]) && r['variants_'+t].length)) || row;
+  }
+  const clean = arr => (Array.isArray(arr) ? arr : []).map(v => ({
+    label: v.label || '',
+    cost:  (v.cost === undefined || v.cost === '') ? '' : v.cost,
+    notes: v.notes || '',
+    features: Array.isArray(v.features) ? v.features.slice() : [],
+  }));
+  _roofProducts = {
+    good:   clean(row && row.variants_good),
+    better: clean(row && row.variants_better),
+    best:   clean(row && row.variants_best),
+  };
+}
+function _renderRoofProducts() {
+  const grid = document.getElementById('rp-grid');
+  if (!grid) return;
+  grid.innerHTML = TIERS.map(tier => `
+    <div class="rp-col rp-${tier}">
+      <div class="rp-col-hd">${TIER_LABELS[tier]}</div>
+      ${(_roofProducts[tier] || []).map((p, i) => `
+        <div class="rp-card">
+          <div class="rp-card-top">
+            <input class="rp-name" type="text" value="${esc(p.label || '')}"
+              placeholder="Product name (e.g. Standing Seam Metal)"
+              onchange="_rpSet('${tier}',${i},'label',this.value)">
+            <button class="rp-del" title="Remove product" onclick="_rpDel('${tier}',${i})">✕</button>
+          </div>
+          <div class="rp-cost-row">
+            <span class="rp-cost-lbl">$</span>
+            <input class="rp-cost" type="number" min="0" step="0.01" value="${p.cost !== '' ? p.cost : ''}"
+              placeholder="0.00" onchange="_rpSet('${tier}',${i},'cost',this.value)">
+            <span class="rp-cost-unit">per SQ cost</span>
+          </div>
+          <textarea class="rp-desc" rows="2"
+            placeholder="Customer description — shown on the estimate line"
+            onchange="_rpSet('${tier}',${i},'notes',this.value)">${esc(p.notes || '')}</textarea>
+          <label class="rp-feat-lbl">What's included with this product</label>
+          <textarea class="rp-feat" rows="4" spellcheck="false"
+            placeholder="One item per line, e.g.&#10;24-gauge standing seam panels&#10;Concealed fasteners&#10;Synthetic underlayment"
+            onchange="_rpSetFeatures('${tier}',${i},this.value)">${esc((p.features || []).join('\n'))}</textarea>
+        </div>`).join('')}
+      <button class="rp-add" onclick="_rpAdd('${tier}')">+ Add ${TIER_LABELS[tier]} product</button>
+    </div>`).join('');
+}
+function _rpSet(tier, i, field, val) {
+  const p = _roofProducts[tier] && _roofProducts[tier][i]; if (!p) return;
+  p[field] = field === 'cost' ? (val === '' ? '' : (parseFloat(val) || 0)) : val;
+}
+function _rpSetFeatures(tier, i, val) {
+  const p = _roofProducts[tier] && _roofProducts[tier][i]; if (!p) return;
+  p.features = val.split('\n').map(s => s.trim()).filter(Boolean);
+}
+function _rpAdd(tier) {
+  if (!_roofProducts[tier]) _roofProducts[tier] = [];
+  _roofProducts[tier].push({ label:'', cost:'', notes:'', features:[] });
+  _renderRoofProducts();
+}
+function _rpDel(tier, i) {
+  if (!_roofProducts[tier]) return;
+  _roofProducts[tier].splice(i, 1);
+  _renderRoofProducts();
+}
+// Write the working copy back onto the roofing product row of `pb` (mutates pb).
+// If the price book has no roofing rows yet, materialize the effective template
+// list first so there's an authoritative row to attach the menus to.
+function _collectRoofProducts(pb) {
+  pb.materials = pb.materials || {};
+  if (!Array.isArray(pb.materials.roofing) || !pb.materials.roofing.length) {
+    const tRoof = (templates && templates.roofing) || [];
+    pb.materials.roofing = JSON.parse(JSON.stringify(tRoof));
+  }
+  const row = _roofProductRow(pb);
+  if (!row) return;
+  const out = arr => (arr || []).map(p => {
+    const o = { label: (p.label || '').trim(), cost: p.cost === '' ? 0 : (parseFloat(p.cost) || 0) };
+    if (p.notes && p.notes.trim()) o.notes = p.notes.trim();
+    if (Array.isArray(p.features) && p.features.length) o.features = p.features.slice();
+    return o;
+  }).filter(p => p.label || p.cost);
+  TIERS.forEach(tier => {
+    const list = out(_roofProducts[tier]);
+    if (list.length) row['variants_' + tier] = list;
+    else delete row['variants_' + tier];
+  });
 }
 
 /* Global G/B/B package content editor (⚙ Settings, manager+). Edits a working
@@ -5954,6 +6082,15 @@ async function saveSettings() {
       });
       if (!rg.ok) throw new Error('G/B/B package content save failed');
       tierDefaults = JSON.parse(JSON.stringify(_settingsGbb));
+      // Save the roofing product menu into the price book, then refresh the
+      // templates cache so new estimates pick up the new dropdown options.
+      _collectRoofProducts(priceBook);
+      const rp = await fetch('/api/pricebook', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(priceBook),
+      });
+      if (!rp.ok) throw new Error('Roofing product menu save failed');
+      try { const tr = await fetch('/api/templates'); templates = await tr.json(); } catch {}
     }
     // Admin: save the customer-proposal company content alongside
     if (_meIsAdmin()) {

@@ -2329,6 +2329,9 @@ body.is-home #nav-toggle       { display: none; }
 .pb-variant-label { width: 100%; box-sizing: border-box; font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 3px 5px; }
 .pb-variant-label:focus, .pb-variant-cost:focus { outline: none; border-color: var(--primary-light); }
 .pb-variant-price-row { display: flex; align-items: center; gap: 4px; }
+.pb-variant-notes { width: 100%; box-sizing: border-box; font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 3px 5px; resize: vertical; font-family: inherit; margin-top: 1px; }
+.pb-variant-notes:focus { outline: none; border-color: var(--primary-light); }
+.pb-variant-field-label + .pb-variant-notes { margin-bottom: 2px; }
 .pb-variant-dollar { font-size: 11px; color: var(--text-light); }
 .pb-variant-cost { flex: 1; min-width: 0; font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 3px 4px; text-align: right; }
 .pb-variant-del { border: none; background: none; color: var(--text-light); cursor: pointer; font-size: 12px; padding: 0 2px; }
@@ -2336,6 +2339,31 @@ body.is-home #nav-toggle       { display: none; }
 .pb-variant-add { margin-top: 2px; border: 1px dashed var(--border); background: none; color: var(--primary, #0284c7); border-radius: 4px; font-size: 10px; padding: 3px 6px; cursor: pointer; width: 100%; }
 .pb-variant-add:hover { border-color: var(--primary-light); background: #f0f9ff; }
 @media (max-width: 640px) { .pb-variants-grid { grid-template-columns: 1fr; } }
+
+/* ── Settings: Roofing Product Menu ─────────────────────────────────── */
+.rp-help { font-size: 12px; color: var(--text-light); margin: 2px 0 10px; line-height: 1.5; }
+.rp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.rp-col { border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: #f8fafc; }
+.rp-col.rp-good   { border-top: 4px solid var(--good); }
+.rp-col.rp-better { border-top: 4px solid var(--better); }
+.rp-col.rp-best   { border-top: 4px solid var(--best); }
+.rp-col-hd { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; color: var(--text); }
+.rp-card { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 8px; background: #fff; }
+.rp-card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.rp-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; }
+.rp-del { border: none; background: none; color: var(--text-light); cursor: pointer; font-size: 14px; padding: 0 3px; line-height: 1; }
+.rp-del:hover { color: var(--danger); }
+.rp-cost-row { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; }
+.rp-cost-lbl { font-size: 13px; color: var(--text-light); }
+.rp-cost { width: 80px; font-size: 13px; border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; text-align: right; }
+.rp-cost-unit { font-size: 11px; color: var(--text-light); }
+.rp-desc { width: 100%; box-sizing: border-box; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; resize: vertical; font-family: inherit; margin-bottom: 6px; }
+.rp-feat-lbl { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--text-light); margin-bottom: 3px; }
+.rp-feat { width: 100%; box-sizing: border-box; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; resize: vertical; font-family: inherit; line-height: 1.4; }
+.rp-name:focus, .rp-cost:focus, .rp-desc:focus, .rp-feat:focus { outline: none; border-color: var(--primary-light); }
+.rp-add { width: 100%; border: 1px dashed var(--border); background: none; color: var(--primary, #0284c7); border-radius: 5px; font-size: 12px; font-weight: 600; padding: 6px; cursor: pointer; }
+.rp-add:hover { border-color: var(--primary-light); background: #f0f9ff; }
+@media (max-width: 720px) { .rp-grid { grid-template-columns: 1fr; } }
 
 /* ── Price book: Catalog / Brand Presets view toggle ────────────────── */
 .pb-view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-right: auto; }

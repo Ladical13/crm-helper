@@ -5838,7 +5838,53 @@ TEMPLATES = {
          "desc_best":   "Designer / Premium",
          "notes_good":   "3-Tab asphalt shingles provide reliable, code-compliant leak protection at a competitive price point. Clean, classic look with a 25-year manufacturer limited warranty.",
          "notes_better": "Architectural laminate shingles add dimensional shadow lines and a high-end appearance. Enhanced wind resistance rated up to 130 mph. Lifetime limited warranty — the most popular choice for long-term value.",
-         "notes_best":   "Premium designer shingles replicate the look of natural slate or cedar shake with superior impact resistance. Class 4 impact rating may qualify your homeowner for an insurance premium discount. Lifetime limited warranty."},
+         "notes_best":   "Premium designer shingles replicate the look of natural slate or cedar shake with superior impact resistance. Class 4 impact rating may qualify your homeowner for an insurance premium discount. Lifetime limited warranty.",
+         # Roofing product menu per tier — the rep picks the product quoted for
+         # each package on the estimate (Settings → Roofing Product Menu edits
+         # this). Option 0 mirrors the tier's default shingle (label + features
+         # match the tier_defaults package bullets) so nothing changes until a
+         # different product is chosen. Metal costs are placeholders — set real
+         # per-SQ costs in Settings. `features` = the "What's Included" bullets
+         # that fill the Options page when the product is picked.
+         "variants_good": [
+             {"label": "3-Tab", "cost": 142,
+              "features": ["3-Tab shingles", "Starter strip", "15-year manufacturer warranty",
+                           "5-year workmanship warranty", "Full tear-off & disposal", "Magnetic nail sweep"]},
+             {"label": "Architectural (Upgrade)", "cost": 155,
+              "notes": "Architectural laminate shingles — a dimensional upgrade over 3-tab at an entry-level price.",
+              "features": ["30-year architectural shingles", "Starter strip", "Synthetic underlayment",
+                           "5-year workmanship warranty", "Full tear-off & disposal", "Magnetic nail sweep"]},
+         ],
+         "variants_better": [
+             {"label": "Architectural", "cost": 142,
+              "features": ["30-year architectural shingles", "Synthetic underlayment", "Ice & water shield (eaves)",
+                           "10-year workmanship warranty", "Full tear-off & disposal", "Magnetic nail sweep"]},
+             {"label": "EDCO Steel Shingles", "cost": 300,
+              "notes": "EDCO steel shingles deliver the look of architectural shingles in Class 4 impact-rated steel — hail-country durability with a lifetime limited warranty and potential insurance premium discounts.",
+              "features": ["EDCO steel shingle panels (Class 4 impact)", "Concealed fastener system", "Synthetic underlayment",
+                           "Ice & water shield (eaves & valleys)", "Lifetime limited warranty", "Full tear-off & disposal", "Magnetic nail sweep"]},
+             {"label": "Stone-Coated Steel", "cost": 330,
+              "notes": "Stone-coated steel panels combine the strength of Class 4 impact-rated steel with the texture of traditional shingles or shake. Wind-rated to 120+ mph with a lifetime limited warranty.",
+              "features": ["Stone-coated steel panels (Class 4 impact)", "Batten & clip mounting system", "Synthetic underlayment",
+                           "Ice & water shield (eaves & valleys)", "Wind-rated to 120+ mph", "Lifetime limited warranty", "Full tear-off & disposal"]},
+         ],
+         "variants_best": [
+             {"label": "Designer / Premium", "cost": 142,
+              "features": ["Designer shingles", "High-performance underlayment", "Ice & water shield (full deck)",
+                           "Lifetime workmanship warranty", "Full tear-off & disposal", "Magnetic nail sweep", "New ridge vent"]},
+             {"label": "Standing Seam Metal (24ga)", "cost": 400,
+              "notes": "24-gauge standing seam metal roof with concealed fasteners — the premium roofing system. 50+ year service life, Class 4 impact rating, and unmatched snow-shedding and wind performance.",
+              "features": ["24-gauge standing seam panels", "Concealed fastener (clip) system", "High-temp synthetic underlayment",
+                           "Full-deck ice & water shield", "50+ year service life", "Class 4 impact rating", "Lifetime workmanship warranty", "Full tear-off & disposal"]},
+             {"label": "EDCO Steel Shingles", "cost": 300,
+              "notes": "EDCO steel shingles deliver the look of architectural shingles in Class 4 impact-rated steel — hail-country durability with a lifetime limited warranty and potential insurance premium discounts.",
+              "features": ["EDCO steel shingle panels (Class 4 impact)", "Concealed fastener system", "High-performance underlayment",
+                           "Ice & water shield (full deck)", "Lifetime limited warranty", "Full tear-off & disposal", "Magnetic nail sweep"]},
+             {"label": "Stone-Coated Steel", "cost": 330,
+              "notes": "Stone-coated steel panels combine the strength of Class 4 impact-rated steel with the texture of traditional shingles or shake. Wind-rated to 120+ mph with a lifetime limited warranty.",
+              "features": ["Stone-coated steel panels (Class 4 impact)", "Batten & clip mounting system", "High-performance underlayment",
+                           "Ice & water shield (full deck)", "Wind-rated to 120+ mph", "Lifetime limited warranty", "Full tear-off & disposal"]},
+         ]},
         {"name": "Synthetic Underlayment", "unit": "SQ", "measure": "squares_waste",
          "desc_good":   "Standard Felt",
          "desc_better": "Synthetic",
@@ -6148,6 +6194,19 @@ def get_templates():
                     elif 'steep' in n:
                         m['measure'] = 'steep'
                 merged.append(m)
+            # Roofing starter menu: if the price book's roofing rows carry no
+            # product variants at all (e.g. the main shingle row was renamed, so
+            # the by-name backfill above never matched), attach the hardcoded
+            # "Shingles" starter menu to the first roofing row so the Good/Better/
+            # Best product dropdowns work out of the box. Never overrides an
+            # existing menu — once the row is saved with variants this is a no-op.
+            if trade == 'roofing' and merged and not any(
+                    m.get(f) for m in merged
+                    for f in ('variants_good', 'variants_better', 'variants_best')):
+                shingle_tpl = hardcoded_by_name.get('Shingles', {})
+                for f in ('variants_good', 'variants_better', 'variants_best'):
+                    if shingle_tpl.get(f):
+                        merged[0][f] = shingle_tpl[f]
             result[trade] = merged
         else:
             # No price book yet — seed from hardcoded templates
