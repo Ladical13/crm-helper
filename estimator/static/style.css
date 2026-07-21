@@ -2340,30 +2340,32 @@ body.is-home #nav-toggle       { display: none; }
 .pb-variant-add:hover { border-color: var(--primary-light); background: #f0f9ff; }
 @media (max-width: 640px) { .pb-variants-grid { grid-template-columns: 1fr; } }
 
-/* ── Settings: Roofing Product Menu ─────────────────────────────────── */
-.rp-help { font-size: 12px; color: var(--text-light); margin: 2px 0 10px; line-height: 1.5; }
-.rp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.rp-col { border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: #f8fafc; }
-.rp-col.rp-good   { border-top: 4px solid var(--good); }
-.rp-col.rp-better { border-top: 4px solid var(--better); }
-.rp-col.rp-best   { border-top: 4px solid var(--best); }
-.rp-col-hd { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; color: var(--text); }
-.rp-card { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 8px; background: #fff; }
-.rp-card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.rp-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; }
-.rp-del { border: none; background: none; color: var(--text-light); cursor: pointer; font-size: 14px; padding: 0 3px; line-height: 1; }
-.rp-del:hover { color: var(--danger); }
-.rp-cost-row { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; }
-.rp-cost-lbl { font-size: 13px; color: var(--text-light); }
-.rp-cost { width: 80px; font-size: 13px; border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; text-align: right; }
-.rp-cost-unit { font-size: 11px; color: var(--text-light); }
-.rp-desc { width: 100%; box-sizing: border-box; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; resize: vertical; font-family: inherit; margin-bottom: 6px; }
-.rp-feat-lbl { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--text-light); margin-bottom: 3px; }
-.rp-feat { width: 100%; box-sizing: border-box; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; resize: vertical; font-family: inherit; line-height: 1.4; }
-.rp-name:focus, .rp-cost:focus, .rp-desc:focus, .rp-feat:focus { outline: none; border-color: var(--primary-light); }
-.rp-add { width: 100%; border: 1px dashed var(--border); background: none; color: var(--primary, #0284c7); border-radius: 5px; font-size: 12px; font-weight: 600; padding: 6px; cursor: pointer; }
-.rp-add:hover { border-color: var(--primary-light); background: #f0f9ff; }
-@media (max-width: 720px) { .rp-grid { grid-template-columns: 1fr; } }
+/* ── Roofing Price Book: catalog + bundles ──────────────────────────── */
+.pb-roof-intro { font-size: 12px; color: var(--text-light); margin: 4px 2px 12px; line-height: 1.5; }
+.pb-roof-defaults { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 14px; padding: 10px 12px; background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; }
+.pb-roof-def { display: flex; flex-direction: column; gap: 3px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--text-light); }
+.pb-roof-def select { font-size: 13px; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 5px 7px; min-width: 160px; }
+.pb-bundle-desc { width: 100%; box-sizing: border-box; font-size: 13px; border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; resize: vertical; font-family: inherit; margin: 8px 0 12px; }
+.pb-bundle-desc:focus { outline: none; border-color: var(--primary-light); }
+.pb-bundle-pick-hd { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--text); margin-bottom: 8px; }
+.pb-bundle-pick-hd small { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--text-light); margin-left: 6px; }
+.pb-bundle-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.pb-bundle-chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; background: #fff; cursor: pointer; transition: border-color .12s, background .12s; }
+.pb-bundle-chip:hover { border-color: var(--primary-light); }
+.pb-bundle-chip.on { border-color: var(--primary, #0284c7); background: #f0f9ff; }
+.pb-bundle-chip input { flex: none; }
+.pb-bundle-chip-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-bundle-chip-cost { flex: none; font-size: 12px; color: var(--text-light); font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) { .pb-bundle-picker { grid-template-columns: 1fr; } }
+
+/* ── Pricing tab: roofing tier hero dropdown + collapsible details ───── */
+.tier-hero { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px 4px; }
+.tier-hero-lbl { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-light); }
+.tier-hero-select { width: 100%; box-sizing: border-box; font-size: 15px; font-weight: 600; color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 9px 10px; background: #fff; }
+.tier-hero-select:focus { outline: none; border-color: var(--primary-light); }
+.tier-details-toggle { width: calc(100% - 20px); margin: 6px 10px 4px; border: none; background: none; color: var(--primary, #0284c7); font-size: 12px; font-weight: 600; text-align: left; padding: 4px 2px; cursor: pointer; }
+.tier-details-toggle:hover { text-decoration: underline; }
+.tier-items-collapsible { border-top: 1px dashed var(--border); }
 
 /* ── Price book: Catalog / Brand Presets view toggle ────────────────── */
 .pb-view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-right: auto; }

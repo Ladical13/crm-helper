@@ -5838,53 +5838,7 @@ TEMPLATES = {
          "desc_best":   "Designer / Premium",
          "notes_good":   "3-Tab asphalt shingles provide reliable, code-compliant leak protection at a competitive price point. Clean, classic look with a 25-year manufacturer limited warranty.",
          "notes_better": "Architectural laminate shingles add dimensional shadow lines and a high-end appearance. Enhanced wind resistance rated up to 130 mph. Lifetime limited warranty — the most popular choice for long-term value.",
-         "notes_best":   "Premium designer shingles replicate the look of natural slate or cedar shake with superior impact resistance. Class 4 impact rating may qualify your homeowner for an insurance premium discount. Lifetime limited warranty.",
-         # Roofing product menu per tier — the rep picks the product quoted for
-         # each package on the estimate (Settings → Roofing Product Menu edits
-         # this). Option 0 mirrors the tier's default shingle (label + features
-         # match the tier_defaults package bullets) so nothing changes until a
-         # different product is chosen. Metal costs are placeholders — set real
-         # per-SQ costs in Settings. `features` = the "What's Included" bullets
-         # that fill the Options page when the product is picked.
-         "variants_good": [
-             {"label": "3-Tab", "cost": 142,
-              "features": ["3-Tab shingles", "Starter strip", "15-year manufacturer warranty",
-                           "5-year workmanship warranty", "Full tear-off & disposal", "Magnetic nail sweep"]},
-             {"label": "Architectural (Upgrade)", "cost": 155,
-              "notes": "Architectural laminate shingles — a dimensional upgrade over 3-tab at an entry-level price.",
-              "features": ["30-year architectural shingles", "Starter strip", "Synthetic underlayment",
-                           "5-year workmanship warranty", "Full tear-off & disposal", "Magnetic nail sweep"]},
-         ],
-         "variants_better": [
-             {"label": "Architectural", "cost": 142,
-              "features": ["30-year architectural shingles", "Synthetic underlayment", "Ice & water shield (eaves)",
-                           "10-year workmanship warranty", "Full tear-off & disposal", "Magnetic nail sweep"]},
-             {"label": "EDCO Steel Shingles", "cost": 300,
-              "notes": "EDCO steel shingles deliver the look of architectural shingles in Class 4 impact-rated steel — hail-country durability with a lifetime limited warranty and potential insurance premium discounts.",
-              "features": ["EDCO steel shingle panels (Class 4 impact)", "Concealed fastener system", "Synthetic underlayment",
-                           "Ice & water shield (eaves & valleys)", "Lifetime limited warranty", "Full tear-off & disposal", "Magnetic nail sweep"]},
-             {"label": "Stone-Coated Steel", "cost": 330,
-              "notes": "Stone-coated steel panels combine the strength of Class 4 impact-rated steel with the texture of traditional shingles or shake. Wind-rated to 120+ mph with a lifetime limited warranty.",
-              "features": ["Stone-coated steel panels (Class 4 impact)", "Batten & clip mounting system", "Synthetic underlayment",
-                           "Ice & water shield (eaves & valleys)", "Wind-rated to 120+ mph", "Lifetime limited warranty", "Full tear-off & disposal"]},
-         ],
-         "variants_best": [
-             {"label": "Designer / Premium", "cost": 142,
-              "features": ["Designer shingles", "High-performance underlayment", "Ice & water shield (full deck)",
-                           "Lifetime workmanship warranty", "Full tear-off & disposal", "Magnetic nail sweep", "New ridge vent"]},
-             {"label": "Standing Seam Metal (24ga)", "cost": 400,
-              "notes": "24-gauge standing seam metal roof with concealed fasteners — the premium roofing system. 50+ year service life, Class 4 impact rating, and unmatched snow-shedding and wind performance.",
-              "features": ["24-gauge standing seam panels", "Concealed fastener (clip) system", "High-temp synthetic underlayment",
-                           "Full-deck ice & water shield", "50+ year service life", "Class 4 impact rating", "Lifetime workmanship warranty", "Full tear-off & disposal"]},
-             {"label": "EDCO Steel Shingles", "cost": 300,
-              "notes": "EDCO steel shingles deliver the look of architectural shingles in Class 4 impact-rated steel — hail-country durability with a lifetime limited warranty and potential insurance premium discounts.",
-              "features": ["EDCO steel shingle panels (Class 4 impact)", "Concealed fastener system", "High-performance underlayment",
-                           "Ice & water shield (full deck)", "Lifetime limited warranty", "Full tear-off & disposal", "Magnetic nail sweep"]},
-             {"label": "Stone-Coated Steel", "cost": 330,
-              "notes": "Stone-coated steel panels combine the strength of Class 4 impact-rated steel with the texture of traditional shingles or shake. Wind-rated to 120+ mph with a lifetime limited warranty.",
-              "features": ["Stone-coated steel panels (Class 4 impact)", "Batten & clip mounting system", "High-performance underlayment",
-                           "Ice & water shield (full deck)", "Wind-rated to 120+ mph", "Lifetime limited warranty", "Full tear-off & disposal"]},
-         ]},
+         "notes_best":   "Premium designer shingles replicate the look of natural slate or cedar shake with superior impact resistance. Class 4 impact rating may qualify your homeowner for an insurance premium discount. Lifetime limited warranty."},
         {"name": "Synthetic Underlayment", "unit": "SQ", "measure": "squares_waste",
          "desc_good":   "Standard Felt",
          "desc_better": "Synthetic",
@@ -6140,6 +6094,66 @@ def _save_price_book(pb):
         json.dump(pb, f, indent=2)
 
 
+# ── Roofing catalog + bundles (two-level model) ─────────────────────────────
+# Roofing uses a flat product catalog (one price each) + named "bundles" that
+# pull products from the catalog. Each Good/Better/Best tier dropdown offers the
+# bundles; picking one loads that bundle's items into the tier. Siding/windows/
+# gutters keep the older per-tier model. These SEED constants are injected into
+# the price book response only when a book has no roofing_catalog yet (fresh
+# install or the live volume book), so the feature works out of the box; once
+# the manager edits + saves in the Price Book, their version persists.
+ROOFING_CATALOG_SEED = [
+    {"id": "m_landmark", "name": "CertainTeed Landmark (Architectural Shingle)", "unit": "SQ", "cost": 142, "measure": "squares_waste"},
+    {"id": "m_northgate", "name": "CertainTeed Northgate (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste"},
+    {"id": "m_iko_nordic", "name": "IKO Nordic (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste"},
+    {"id": "m_edco", "name": "EDCO Steel Shingle", "unit": "SQ", "cost": 300, "measure": "squares_waste"},
+    {"id": "m_stone", "name": "Stone-Coated Steel", "unit": "SQ", "cost": 330, "measure": "squares_waste"},
+    {"id": "m_standing_seam", "name": "Standing Seam Metal (24ga)", "unit": "SQ", "cost": 400, "measure": "squares_waste"},
+    {"id": "m_euroshield", "name": "Euroshield (Rubber)", "unit": "SQ", "cost": 360, "measure": "squares_waste"},
+    {"id": "a_underlayment", "name": "Synthetic Underlayment", "unit": "SQ", "cost": 9.1, "measure": "squares_waste"},
+    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "SQ", "cost": 46.46, "measure": "eave_valley"},
+    {"id": "a_drip_edge", "name": "Drip Edge", "unit": "LF", "cost": 0, "measure": "eave_rake"},
+    {"id": "a_ridge_cap", "name": "Ridge Cap", "unit": "LF", "cost": 0, "measure": "ridge_hip"},
+    {"id": "a_starter", "name": "Starter Strip", "unit": "LF", "cost": 0, "measure": "eave_rake"},
+    {"id": "a_pipe_boots", "name": "Pipe Boots", "unit": "EA", "cost": 0, "measure": "pipe_boots"},
+    {"id": "a_step_flash", "name": "Step / Wall Flashing", "unit": "LF", "cost": 0, "measure": "step"},
+    {"id": "a_skylight", "name": "Skylight Flashing", "unit": "EA", "cost": 0, "measure": "skylights"},
+    {"id": "a_decking", "name": "Decking (OSB 7/16\")", "unit": "EA", "cost": 30},
+    {"id": "a_ridge_vent", "name": "Ridge Vent", "unit": "LF", "cost": 34, "measure": "ridge_vent_code", "bundle_lf": 4, "bundle_unit": "sticks"},
+    {"id": "a_intake_vent", "name": "Intake Vent", "unit": "LF", "cost": 4.5, "measure": "eave"},
+    {"id": "a_vent_plug", "name": "Vent Plug", "unit": "EA", "cost": 25, "measure": "turtle_vents"},
+    {"id": "l_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste"},
+    {"id": "l_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste"},
+    {"id": "x_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0},
+    {"id": "x_permit", "name": "Permit", "unit": "LS", "cost": 0},
+]
+_RS = ["a_underlayment", "a_ice_water", "a_drip_edge", "a_ridge_cap", "a_starter",
+       "a_pipe_boots", "a_step_flash", "a_decking", "l_tearoff", "l_install", "x_dumpster", "x_permit"]
+ROOFING_BUNDLES_SEED = [
+    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Architectural laminate shingle system — dimensional shadow lines, lifetime limited warranty."},
+    {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle — hail-country durability, may qualify for an insurance discount."},
+    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Class 4 impact-resistant shingle built for extreme cold and hail."},
+    {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "EDCO steel shingles — the look of architectural shingles in Class 4 impact-rated steel."},
+    {"id": "b_stone", "name": "Stone-Coated Steel", "product_ids": ["m_stone"] + _RS, "description": "Stone-coated steel panels — steel strength with a textured shake/shingle look, wind-rated 120+ mph."},
+    {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _RS, "description": "24ga standing seam metal with concealed fasteners — the premium 50+ year system."},
+    {"id": "b_euroshield", "name": "Euroshield", "product_ids": ["m_euroshield"] + _RS, "description": "Recycled-rubber roofing with the look of slate/shake — Class 4 impact, freeze-thaw resistant."},
+]
+ROOFING_TIER_DEFAULTS_SEED = {"good": "b_landmark", "better": "b_northgate", "best": "b_standing_seam"}
+
+
+def _ensure_roofing_catalog(pb):
+    """Inject the roofing catalog/bundles/defaults into a price book that has none.
+    Non-destructive (mutates the in-memory dict for the response only)."""
+    if not pb.get('roofing_catalog'):
+        pb['roofing_catalog'] = [dict(p) for p in ROOFING_CATALOG_SEED]
+        pb['roofing_bundles'] = [dict(b, product_ids=list(b['product_ids'])) for b in ROOFING_BUNDLES_SEED]
+        pb['roofing_tier_defaults'] = dict(ROOFING_TIER_DEFAULTS_SEED)
+    else:
+        pb.setdefault('roofing_bundles', [])
+        pb.setdefault('roofing_tier_defaults', dict(ROOFING_TIER_DEFAULTS_SEED))
+    return pb
+
+
 @app.route('/api/templates')
 def get_templates():
     """Return the default item list per trade used by Load Defaults / auto-build.
@@ -6194,19 +6208,6 @@ def get_templates():
                     elif 'steep' in n:
                         m['measure'] = 'steep'
                 merged.append(m)
-            # Roofing starter menu: if the price book's roofing rows carry no
-            # product variants at all (e.g. the main shingle row was renamed, so
-            # the by-name backfill above never matched), attach the hardcoded
-            # "Shingles" starter menu to the first roofing row so the Good/Better/
-            # Best product dropdowns work out of the box. Never overrides an
-            # existing menu — once the row is saved with variants this is a no-op.
-            if trade == 'roofing' and merged and not any(
-                    m.get(f) for m in merged
-                    for f in ('variants_good', 'variants_better', 'variants_best')):
-                shingle_tpl = hardcoded_by_name.get('Shingles', {})
-                for f in ('variants_good', 'variants_better', 'variants_best'):
-                    if shingle_tpl.get(f):
-                        merged[0][f] = shingle_tpl[f]
             result[trade] = merged
         else:
             # No price book yet — seed from hardcoded templates
@@ -6232,6 +6233,7 @@ def get_pricebook():
     pb.setdefault('intros', [])
     pb.setdefault('materials', {})
     pb.setdefault('presets', {})   # brand preset bundles, keyed by trade
+    _ensure_roofing_catalog(pb)    # roofing product catalog + bundles (seed if absent)
     return jsonify(pb)
 
 

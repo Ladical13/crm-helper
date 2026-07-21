@@ -136,134 +136,7 @@
         "notes_best": "Premium designer shingles replicate the look of natural slate or cedar shake with superior impact resistance. Class 4 impact rating may qualify your homeowner for an insurance premium discount. Lifetime limited warranty.",
         "notes_better": "Architectural laminate shingles add dimensional shadow lines and a high-end appearance. Enhanced wind resistance rated up to 130 mph. Lifetime limited warranty \u2014 the most popular choice for long-term value.",
         "notes_good": "3-Tab asphalt shingles provide reliable, code-compliant leak protection at a competitive price point. Clean, classic look with a 25-year manufacturer limited warranty.",
-        "unit": "SQ",
-        "variants_best": [
-          {
-            "label": "Designer / Premium",
-            "cost": 142,
-            "features": [
-              "Designer shingles",
-              "High-performance underlayment",
-              "Ice & water shield (full deck)",
-              "Lifetime workmanship warranty",
-              "Full tear-off & disposal",
-              "Magnetic nail sweep",
-              "New ridge vent"
-            ]
-          },
-          {
-            "label": "Standing Seam Metal (24ga)",
-            "cost": 400,
-            "notes": "24-gauge standing seam metal roof with concealed fasteners \u2014 the premium roofing system. 50+ year service life, Class 4 impact rating, and unmatched snow-shedding and wind performance.",
-            "features": [
-              "24-gauge standing seam panels",
-              "Concealed fastener (clip) system",
-              "High-temp synthetic underlayment",
-              "Full-deck ice & water shield",
-              "50+ year service life",
-              "Class 4 impact rating",
-              "Lifetime workmanship warranty",
-              "Full tear-off & disposal"
-            ]
-          },
-          {
-            "label": "EDCO Steel Shingles",
-            "cost": 300,
-            "notes": "EDCO steel shingles deliver the look of architectural shingles in Class 4 impact-rated steel \u2014 hail-country durability with a lifetime limited warranty and potential insurance premium discounts.",
-            "features": [
-              "EDCO steel shingle panels (Class 4 impact)",
-              "Concealed fastener system",
-              "High-performance underlayment",
-              "Ice & water shield (full deck)",
-              "Lifetime limited warranty",
-              "Full tear-off & disposal",
-              "Magnetic nail sweep"
-            ]
-          },
-          {
-            "label": "Stone-Coated Steel",
-            "cost": 330,
-            "notes": "Stone-coated steel panels combine the strength of Class 4 impact-rated steel with the texture of traditional shingles or shake. Wind-rated to 120+ mph with a lifetime limited warranty.",
-            "features": [
-              "Stone-coated steel panels (Class 4 impact)",
-              "Batten & clip mounting system",
-              "High-performance underlayment",
-              "Ice & water shield (full deck)",
-              "Wind-rated to 120+ mph",
-              "Lifetime limited warranty",
-              "Full tear-off & disposal"
-            ]
-          }
-        ],
-        "variants_better": [
-          {
-            "label": "Architectural",
-            "cost": 142,
-            "features": [
-              "30-year architectural shingles",
-              "Synthetic underlayment",
-              "Ice & water shield (eaves)",
-              "10-year workmanship warranty",
-              "Full tear-off & disposal",
-              "Magnetic nail sweep"
-            ]
-          },
-          {
-            "label": "EDCO Steel Shingles",
-            "cost": 300,
-            "notes": "EDCO steel shingles deliver the look of architectural shingles in Class 4 impact-rated steel \u2014 hail-country durability with a lifetime limited warranty and potential insurance premium discounts.",
-            "features": [
-              "EDCO steel shingle panels (Class 4 impact)",
-              "Concealed fastener system",
-              "Synthetic underlayment",
-              "Ice & water shield (eaves & valleys)",
-              "Lifetime limited warranty",
-              "Full tear-off & disposal",
-              "Magnetic nail sweep"
-            ]
-          },
-          {
-            "label": "Stone-Coated Steel",
-            "cost": 330,
-            "notes": "Stone-coated steel panels combine the strength of Class 4 impact-rated steel with the texture of traditional shingles or shake. Wind-rated to 120+ mph with a lifetime limited warranty.",
-            "features": [
-              "Stone-coated steel panels (Class 4 impact)",
-              "Batten & clip mounting system",
-              "Synthetic underlayment",
-              "Ice & water shield (eaves & valleys)",
-              "Wind-rated to 120+ mph",
-              "Lifetime limited warranty",
-              "Full tear-off & disposal"
-            ]
-          }
-        ],
-        "variants_good": [
-          {
-            "label": "3-Tab",
-            "cost": 142,
-            "features": [
-              "3-Tab shingles",
-              "Starter strip",
-              "15-year manufacturer warranty",
-              "5-year workmanship warranty",
-              "Full tear-off & disposal",
-              "Magnetic nail sweep"
-            ]
-          },
-          {
-            "label": "Architectural (Upgrade)",
-            "cost": 155,
-            "notes": "Architectural laminate shingles \u2014 a dimensional upgrade over 3-tab at an entry-level price.",
-            "features": [
-              "30-year architectural shingles",
-              "Starter strip",
-              "Synthetic underlayment",
-              "5-year workmanship warranty",
-              "Full tear-off & disposal",
-              "Magnetic nail sweep"
-            ]
-          }
-        ]
+        "unit": "SQ"
       },
       {
         "cost": 9.1,
@@ -663,5 +536,314 @@
       }
     ]
   },
-  "presets": {}
+  "presets": {},
+  "roofing_bundles": [
+    {
+      "id": "b_landmark",
+      "name": "CertainTeed Landmark",
+      "product_ids": [
+        "m_landmark",
+        "a_underlayment",
+        "a_ice_water",
+        "a_drip_edge",
+        "a_ridge_cap",
+        "a_starter",
+        "a_pipe_boots",
+        "a_step_flash",
+        "a_decking",
+        "l_tearoff",
+        "l_install",
+        "x_dumpster",
+        "x_permit"
+      ],
+      "description": "Architectural laminate shingle system \u2014 dimensional shadow lines, lifetime limited warranty."
+    },
+    {
+      "id": "b_northgate",
+      "name": "CertainTeed Northgate",
+      "product_ids": [
+        "m_northgate",
+        "a_underlayment",
+        "a_ice_water",
+        "a_drip_edge",
+        "a_ridge_cap",
+        "a_starter",
+        "a_pipe_boots",
+        "a_step_flash",
+        "a_decking",
+        "l_tearoff",
+        "l_install",
+        "x_dumpster",
+        "x_permit"
+      ],
+      "description": "Class 4 impact-resistant SBS shingle \u2014 hail-country durability, may qualify for an insurance discount."
+    },
+    {
+      "id": "b_iko_nordic",
+      "name": "IKO Nordic",
+      "product_ids": [
+        "m_iko_nordic",
+        "a_underlayment",
+        "a_ice_water",
+        "a_drip_edge",
+        "a_ridge_cap",
+        "a_starter",
+        "a_pipe_boots",
+        "a_step_flash",
+        "a_decking",
+        "l_tearoff",
+        "l_install",
+        "x_dumpster",
+        "x_permit"
+      ],
+      "description": "Class 4 impact-resistant shingle built for extreme cold and hail."
+    },
+    {
+      "id": "b_edco",
+      "name": "EDCO",
+      "product_ids": [
+        "m_edco",
+        "a_underlayment",
+        "a_ice_water",
+        "a_drip_edge",
+        "a_ridge_cap",
+        "a_starter",
+        "a_pipe_boots",
+        "a_step_flash",
+        "a_decking",
+        "l_tearoff",
+        "l_install",
+        "x_dumpster",
+        "x_permit"
+      ],
+      "description": "EDCO steel shingles \u2014 the look of architectural shingles in Class 4 impact-rated steel."
+    },
+    {
+      "id": "b_stone",
+      "name": "Stone-Coated Steel",
+      "product_ids": [
+        "m_stone",
+        "a_underlayment",
+        "a_ice_water",
+        "a_drip_edge",
+        "a_ridge_cap",
+        "a_starter",
+        "a_pipe_boots",
+        "a_step_flash",
+        "a_decking",
+        "l_tearoff",
+        "l_install",
+        "x_dumpster",
+        "x_permit"
+      ],
+      "description": "Stone-coated steel panels \u2014 steel strength with a textured shake/shingle look, wind-rated 120+ mph."
+    },
+    {
+      "id": "b_standing_seam",
+      "name": "Standing Seam",
+      "product_ids": [
+        "m_standing_seam",
+        "a_underlayment",
+        "a_ice_water",
+        "a_drip_edge",
+        "a_ridge_cap",
+        "a_starter",
+        "a_pipe_boots",
+        "a_step_flash",
+        "a_decking",
+        "l_tearoff",
+        "l_install",
+        "x_dumpster",
+        "x_permit"
+      ],
+      "description": "24ga standing seam metal with concealed fasteners \u2014 the premium 50+ year system."
+    },
+    {
+      "id": "b_euroshield",
+      "name": "Euroshield",
+      "product_ids": [
+        "m_euroshield",
+        "a_underlayment",
+        "a_ice_water",
+        "a_drip_edge",
+        "a_ridge_cap",
+        "a_starter",
+        "a_pipe_boots",
+        "a_step_flash",
+        "a_decking",
+        "l_tearoff",
+        "l_install",
+        "x_dumpster",
+        "x_permit"
+      ],
+      "description": "Recycled-rubber roofing with the look of slate/shake \u2014 Class 4 impact, freeze-thaw resistant."
+    }
+  ],
+  "roofing_catalog": [
+    {
+      "id": "m_landmark",
+      "name": "CertainTeed Landmark (Architectural Shingle)",
+      "unit": "SQ",
+      "cost": 142,
+      "measure": "squares_waste"
+    },
+    {
+      "id": "m_northgate",
+      "name": "CertainTeed Northgate (Impact-Resistant Shingle)",
+      "unit": "SQ",
+      "cost": 175,
+      "measure": "squares_waste"
+    },
+    {
+      "id": "m_iko_nordic",
+      "name": "IKO Nordic (Impact-Resistant Shingle)",
+      "unit": "SQ",
+      "cost": 175,
+      "measure": "squares_waste"
+    },
+    {
+      "id": "m_edco",
+      "name": "EDCO Steel Shingle",
+      "unit": "SQ",
+      "cost": 300,
+      "measure": "squares_waste"
+    },
+    {
+      "id": "m_stone",
+      "name": "Stone-Coated Steel",
+      "unit": "SQ",
+      "cost": 330,
+      "measure": "squares_waste"
+    },
+    {
+      "id": "m_standing_seam",
+      "name": "Standing Seam Metal (24ga)",
+      "unit": "SQ",
+      "cost": 400,
+      "measure": "squares_waste"
+    },
+    {
+      "id": "m_euroshield",
+      "name": "Euroshield (Rubber)",
+      "unit": "SQ",
+      "cost": 360,
+      "measure": "squares_waste"
+    },
+    {
+      "id": "a_underlayment",
+      "name": "Synthetic Underlayment",
+      "unit": "SQ",
+      "cost": 9.1,
+      "measure": "squares_waste"
+    },
+    {
+      "id": "a_ice_water",
+      "name": "Ice & Water Shield",
+      "unit": "SQ",
+      "cost": 46.46,
+      "measure": "eave_valley"
+    },
+    {
+      "id": "a_drip_edge",
+      "name": "Drip Edge",
+      "unit": "LF",
+      "cost": 0,
+      "measure": "eave_rake"
+    },
+    {
+      "id": "a_ridge_cap",
+      "name": "Ridge Cap",
+      "unit": "LF",
+      "cost": 0,
+      "measure": "ridge_hip"
+    },
+    {
+      "id": "a_starter",
+      "name": "Starter Strip",
+      "unit": "LF",
+      "cost": 0,
+      "measure": "eave_rake"
+    },
+    {
+      "id": "a_pipe_boots",
+      "name": "Pipe Boots",
+      "unit": "EA",
+      "cost": 0,
+      "measure": "pipe_boots"
+    },
+    {
+      "id": "a_step_flash",
+      "name": "Step / Wall Flashing",
+      "unit": "LF",
+      "cost": 0,
+      "measure": "step"
+    },
+    {
+      "id": "a_skylight",
+      "name": "Skylight Flashing",
+      "unit": "EA",
+      "cost": 0,
+      "measure": "skylights"
+    },
+    {
+      "id": "a_decking",
+      "name": "Decking (OSB 7/16\")",
+      "unit": "EA",
+      "cost": 30
+    },
+    {
+      "id": "a_ridge_vent",
+      "name": "Ridge Vent",
+      "unit": "LF",
+      "cost": 34,
+      "measure": "ridge_vent_code",
+      "bundle_lf": 4,
+      "bundle_unit": "sticks"
+    },
+    {
+      "id": "a_intake_vent",
+      "name": "Intake Vent",
+      "unit": "LF",
+      "cost": 4.5,
+      "measure": "eave"
+    },
+    {
+      "id": "a_vent_plug",
+      "name": "Vent Plug",
+      "unit": "EA",
+      "cost": 25,
+      "measure": "turtle_vents"
+    },
+    {
+      "id": "l_tearoff",
+      "name": "Tear-Off Labor",
+      "unit": "SQ",
+      "cost": 0,
+      "measure": "squares_waste"
+    },
+    {
+      "id": "l_install",
+      "name": "Install Labor",
+      "unit": "SQ",
+      "cost": 0,
+      "measure": "squares_waste"
+    },
+    {
+      "id": "x_dumpster",
+      "name": "Dumpster",
+      "unit": "LS",
+      "cost": 0
+    },
+    {
+      "id": "x_permit",
+      "name": "Permit",
+      "unit": "LS",
+      "cost": 0
+    }
+  ],
+  "roofing_tier_defaults": {
+    "good": "b_landmark",
+    "better": "b_northgate",
+    "best": "b_standing_seam"
+  }
 }

@@ -746,6 +746,13 @@ let pbItems = {};       // working copy of price book materials while modal is o
 let pbPresets = {};     // working copy of brand presets (keyed by trade) while modal is open
 let pbView = 'catalog'; // price book view: 'catalog' | 'presets'
 let pbEditPresetId = null; // preset currently open in the editor
+// Roofing uses a two-level model instead of the tier tabs: a flat product
+// catalog + named bundles (the Good/Better/Best dropdown options).
+let pbRoofCatalog = [];  // working copy of roofing_catalog while modal is open
+let pbRoofBundles = [];  // working copy of roofing_bundles
+let pbRoofDefaults = { good:'', better:'', best:'' }; // default bundle id per tier
+let pbRoofView = 'products'; // roofing sub-view: 'products' | 'bundles'
+let pbEditBundleId = null;    // bundle currently open in the editor
 
 function blankEstimate() {
   const today = new Date();
@@ -784,6 +791,7 @@ function blankEstimate() {
     attachments: [],
     trades: {
       roofing: { enabled:true,  line_items:[], colors:{}, mode:'gbb', selected_tier:'better',
+                 tier_bundles:{good:'',better:'',best:''},
                  tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
       siding:  { enabled:false, line_items:[], colors:{}, mode:'gbb', selected_tier:'better',
                  tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
@@ -1522,6 +1530,12 @@ function openPriceBook() {
     const stored = priceBook?.presets?.[trade];
     pbPresets[trade] = Array.isArray(stored) ? JSON.parse(JSON.stringify(stored)) : [];
   });
+  // Roofing catalog + bundles working copies (the server seeds these if absent)
+  pbRoofCatalog = JSON.parse(JSON.stringify(priceBook?.roofing_catalog || []));
+  pbRoofBundles = JSON.parse(JSON.stringify(priceBook?.roofing_bundles || []));
+  pbRoofDefaults = Object.assign({ good:'', better:'', best:'' }, priceBook?.roofing_tier_defaults || {});
+  pbRoofView = 'products';
+  pbEditBundleId = null;
   pbActiveTrade = 'roofing';
   pbActiveTab = 'master';
   pbView = 'catalog';
@@ -1540,6 +1554,7 @@ function maybePBModalClose(e) {
 const PB_SUBTABS = [['master','Master Catalog'],['good','Good'],['better','Better'],['best','Best']];
 
 function renderPBModal() {
+  const isRoof = pbActiveTrade === 'roofing';
   document.getElementById('pb-modal-body').innerHTML = `
     <div class="pb-trade-bar">
       ${PB_TRADES.map(t => `
@@ -1549,6 +1564,7 @@ function renderPBModal() {
         </button>`).join('')}
     </div>
     <div class="pb-content">
+      ${isRoof ? pbRenderRoofing() : `
       <div class="pb-toolbar">
         <h3>${TRADE_LABELS[pbActiveTrade]} Price Book</h3>
         <div class="pb-view-toggle">
@@ -1564,9 +1580,15 @@ function renderPBModal() {
       </div>
       ${pbView==='catalog' ? pbRenderMaster()
         : (pbView==='good'||pbView==='better'||pbView==='best') ? pbRenderTier(pbView)
-        : pbRenderPresets()}
+        : pbRenderPresets()}`}
     </div>
     <div class="pb-footer">
+      ${isRoof ? `
+      <span class="pb-footer-note">${pbRoofView==='products'
+        ? 'Products — your full material &amp; labor list, one price each. Bundles pull from this list.'
+        : 'Bundles — the Good / Better / Best dropdown options. Each pulls products from your catalog.'}</span>
+      <button class="btn-primary" onclick="pbSave()">💾 Save Price Book</button>`
+      : `
       <span class="pb-footer-note">${
         pbView==='catalog' ? 'Master catalog — set costs for each tier. Leave Better/Best blank to inherit from Good.'
         : pbView==='good'  ? 'Good package — set which products are included and the cost. Add from the dropdown below.'
@@ -1575,8 +1597,170 @@ function renderPBModal() {
         : 'Brand presets are one-click bundles reps load in Simple mode.'}</span>
       <button class="btn-secondary" onclick="pbIncludeAllTiers()" title="Mark every item as included in Good, Better, and Best">✓ Include All Tiers</button>
       <button class="btn-secondary" onclick="pbResetTrade()" style="color:var(--danger)">Reset to Defaults</button>
-      <button class="btn-primary" onclick="pbSave()">💾 Save Price Book</button>
+      <button class="btn-primary" onclick="pbSave()">💾 Save Price Book</button>`}
     </div>`;
+}
+
+/* ── Roofing Price Book: flat product catalog + named bundles ──────────────
+   Products = every roofing material/labor line with one price. Bundles = the
+   Good/Better/Best dropdown options, each pulling products from the catalog.
+   Working copies: pbRoofCatalog / pbRoofBundles / pbRoofDefaults. */
+function pbSetRoofView(v) { pbRoofView = v; pbEditBundleId = null; renderPBModal(); }
+
+function pbRenderRoofing() {
+  return `
+    <div class="pb-toolbar">
+      <h3>Roofing Price Book</h3>
+      <div class="pb-view-toggle">
+        <button class="pb-view-btn ${pbRoofView==='products'?'active':''}" onclick="pbSetRoofView('products')">Products</button>
+        <button class="pb-view-btn ${pbRoofView==='bundles'?'active':''}" onclick="pbSetRoofView('bundles')">Bundles (dropdowns)</button>
+      </div>
+    </div>
+    ${pbRoofView==='products' ? pbRenderRoofCatalog() : pbRenderRoofBundles()}`;
+}
+
+function pbRenderRoofCatalog() {
+  const items = pbRoofCatalog;
+  const measOpts = sel => `<option value="">Manual</option>` +
+    Object.entries(MEASURE_DEFS).map(([k,d])=>`<option value="${k}" ${sel===k?'selected':''}>${esc(d.label)}</option>`).join('');
+  return `
+    <div class="pb-roof-intro">Your full roofing material &amp; labor list — one price each. Add every product you use; bundles pull from this list.</div>
+    <div class="pb-table-wrap">
+    <table class="pb-table">
+      <thead><tr>
+        <th style="width:42px"></th>
+        <th class="pb-th-name">Product</th>
+        <th class="pb-th-unit">Unit</th>
+        <th class="pb-th-auto">Auto Qty From</th>
+        <th class="pb-th-basecost">Price</th>
+        <th class="pb-th-vis" title="Show on the customer estimate">Show</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+        ${items.length ? items.map((it,i)=>`
+          <tr class="pb-item-row">
+            <td class="pb-order-cell">
+              <button class="pb-order-btn" onclick="pbRoofCatMove(${i},-1)" ${i===0?'disabled':''} title="Move up">↑</button>
+              <button class="pb-order-btn" onclick="pbRoofCatMove(${i},1)" ${i===items.length-1?'disabled':''} title="Move down">↓</button>
+            </td>
+            <td><input class="pb-input-name" type="text" value="${esc(it.name||'')}" oninput="pbRoofCatSet(${i},'name',this.value)" placeholder="Product name"></td>
+            <td><input class="pb-input-unit" type="text" value="${esc(it.unit||'')}" oninput="pbRoofCatSet(${i},'unit',this.value)" placeholder="Unit"></td>
+            <td class="pb-auto-cell"><select class="pb-measure-select" onchange="pbRoofCatSet(${i},'measure',this.value)">${measOpts(it.measure||'')}</select></td>
+            <td><div class="pb-tier-cost-wrap"><span class="pb-tier-dollar">$</span>
+              <input class="pb-tier-cost" type="number" min="0" step="0.01" value="${it.cost!==undefined&&it.cost!==''?it.cost:''}" placeholder="0.00" onchange="pbRoofCatSet(${i},'cost',this.value)"></div></td>
+            <td style="text-align:center"><input type="checkbox" ${it.customer_visible!==false?'checked':''} onchange="pbRoofCatSet(${i},'customer_visible',this.checked)"></td>
+            <td style="text-align:center"><button class="pb-del-btn" onclick="pbRoofCatDel(${i})" title="Delete product">✕</button></td>
+          </tr>`).join('') : `<tr><td colspan="7" class="pb-empty">No products yet — add your first below.</td></tr>`}
+      </tbody>
+    </table>
+    </div>
+    <div style="margin-top:10px"><button class="btn-secondary" onclick="pbRoofCatAdd()">+ Add Product</button></div>`;
+}
+function pbRoofCatSet(i, field, val) {
+  const it = pbRoofCatalog[i]; if (!it) return;
+  if (field === 'cost') it.cost = val === '' ? 0 : (parseFloat(val)||0);
+  else if (field === 'customer_visible') it.customer_visible = val;
+  else if (field === 'measure') { if (val) it.measure = val; else delete it.measure; }
+  else it[field] = val;
+}
+function pbRoofCatAdd() {
+  pbRoofCatalog.push({ id: 'p_'+uid(), name:'', unit:'SQ', cost:0 });
+  renderPBModal();
+}
+function pbRoofCatDel(i) {
+  const it = pbRoofCatalog[i]; if (!it) return;
+  const used = pbRoofBundles.filter(b => (b.product_ids||[]).includes(it.id));
+  if (used.length && !confirm(`"${it.name||'This product'}" is used in ${used.length} bundle(s). Remove it from the catalog and those bundles?`)) return;
+  pbRoofCatalog.splice(i,1);
+  pbRoofBundles.forEach(b => b.product_ids = (b.product_ids||[]).filter(id => id !== it.id));
+  renderPBModal();
+}
+function pbRoofCatMove(i, dir) {
+  const j = i + dir; if (j < 0 || j >= pbRoofCatalog.length) return;
+  [pbRoofCatalog[i], pbRoofCatalog[j]] = [pbRoofCatalog[j], pbRoofCatalog[i]];
+  renderPBModal();
+}
+
+function pbRenderRoofBundles() {
+  if (pbEditBundleId) {
+    const b = pbRoofBundles.find(x => x.id === pbEditBundleId);
+    if (b) return pbRenderBundleEditor(b);
+    pbEditBundleId = null;
+  }
+  const defSel = tier => `
+    <label class="pb-roof-def">
+      <span>${TIER_LABELS[tier]} default</span>
+      <select onchange="pbRoofSetDefault('${tier}',this.value)">
+        <option value="">— none —</option>
+        ${pbRoofBundles.map(b=>`<option value="${b.id}" ${pbRoofDefaults[tier]===b.id?'selected':''}>${esc(b.name||'(unnamed)')}</option>`).join('')}
+      </select>
+    </label>`;
+  return `
+    <div class="pb-roof-intro">Bundles are the <strong>Good / Better / Best dropdown options</strong>. Each pulls products from your catalog; picking one on an estimate loads its items into that tier.</div>
+    <div class="pb-roof-defaults">${TIERS.map(defSel).join('')}</div>
+    <div class="pb-presets-list">
+      ${pbRoofBundles.length ? pbRoofBundles.map(b=>`
+        <div class="pb-preset-card">
+          <div class="pb-preset-card-main" onclick="pbOpenBundle('${b.id}')">
+            <strong>${esc(b.name||'(unnamed bundle)')}</strong>
+            <small>${(b.product_ids||[]).length} products</small>
+          </div>
+          <div class="pb-preset-card-actions">
+            <button class="btn-secondary" onclick="pbOpenBundle('${b.id}')">Edit</button>
+            <button class="pb-del-btn" onclick="pbDeleteBundle('${b.id}')" title="Delete bundle">✕</button>
+          </div>
+        </div>`).join('') : '<div class="pb-empty">No bundles yet — create one to give reps a dropdown option.</div>'}
+    </div>
+    <button class="btn-primary" onclick="pbAddBundle()" style="margin-top:12px">+ New Bundle</button>`;
+}
+function pbRenderBundleEditor(b) {
+  const inBundle = new Set(b.product_ids || []);
+  const total = (b.product_ids||[]).reduce((s,pid)=>{
+    const p = pbRoofCatalog.find(x=>x.id===pid); return s + (p ? (parseFloat(p.cost)||0) : 0);
+  }, 0);
+  return `
+    <div class="pb-preset-edit-head">
+      <button class="btn-secondary" onclick="pbCloseBundle()">← All Bundles</button>
+      <input class="pb-preset-name-input" type="text" value="${esc(b.name||'')}"
+        placeholder="Bundle name (e.g. IKO Nordic)" oninput="pbSetBundleField('${b.id}','name',this.value)">
+    </div>
+    <textarea class="pb-bundle-desc" rows="2" placeholder="Customer description (optional) — shown on the Options page when this bundle is picked"
+      onchange="pbSetBundleField('${b.id}','description',this.value)">${esc(b.description||'')}</textarea>
+    <div class="pb-bundle-pick-hd">Products in this bundle <small>tap to include — unit price shown</small></div>
+    <div class="pb-bundle-picker">
+      ${pbRoofCatalog.length ? pbRoofCatalog.map(p=>`
+        <label class="pb-bundle-chip ${inBundle.has(p.id)?'on':''}">
+          <input type="checkbox" ${inBundle.has(p.id)?'checked':''} onchange="pbBundleToggle('${b.id}','${p.id}',this.checked)">
+          <span class="pb-bundle-chip-name">${esc(p.name||'(unnamed)')}</span>
+          <span class="pb-bundle-chip-cost">${(p.cost!==undefined&&p.cost!=='')?fmtCur(parseFloat(p.cost)||0):'—'}${p.unit?'/'+esc(p.unit):''}</span>
+        </label>`).join('') : '<div class="pb-empty">Add products in the Products tab first.</div>'}
+    </div>`;
+}
+function pbRoofSetDefault(tier, val) { pbRoofDefaults[tier] = val; }
+function pbOpenBundle(id) { pbEditBundleId = id; renderPBModal(); }
+function pbCloseBundle() { pbEditBundleId = null; renderPBModal(); }
+function pbAddBundle() {
+  const id = 'b_'+uid();
+  pbRoofBundles.push({ id, name:'', product_ids:[] });
+  pbEditBundleId = id; renderPBModal();
+}
+function pbDeleteBundle(id) {
+  if (!confirm('Delete this bundle?')) return;
+  pbRoofBundles = pbRoofBundles.filter(b => b.id !== id);
+  TIERS.forEach(t => { if (pbRoofDefaults[t] === id) pbRoofDefaults[t] = ''; });
+  if (pbEditBundleId === id) pbEditBundleId = null;
+  renderPBModal();
+}
+function pbSetBundleField(id, field, val) {
+  const b = pbRoofBundles.find(x => x.id === id); if (b) b[field] = val;
+}
+function pbBundleToggle(id, pid, on) {
+  const b = pbRoofBundles.find(x => x.id === id); if (!b) return;
+  b.product_ids = b.product_ids || [];
+  if (on) { if (!b.product_ids.includes(pid)) b.product_ids.push(pid); }
+  else b.product_ids = b.product_ids.filter(x => x !== pid);
+  const chip = (typeof event !== 'undefined' && event.target) ? event.target.closest('.pb-bundle-chip') : null;
+  if (chip) chip.classList.toggle('on', on);
 }
 
 function pbTierCount(tier) {
@@ -2168,26 +2352,12 @@ function pbApplyToEstimate() {
 
 async function pbSave() {
   if (!priceBook) priceBook = { intros: [], materials: {} };
-  // Warn if roofing costs are not differentiated across tiers
-  if (pbActiveTrade === 'roofing') {
-    const roofItems = pbItems['roofing'] || [];
-    const hasDiff = roofItems.some(it =>
-      (it.cost_better !== undefined && it.cost_better !== '' &&
-       it.cost_better !== (it.cost_good ?? it.cost)) ||
-      (it.cost_best !== undefined && it.cost_best !== '' &&
-       it.cost_best !== (it.cost_better ?? it.cost_good ?? it.cost))
-    );
-    if (!hasDiff && roofItems.filter(it => it.in_good !== false).length > 0) {
-      const go = confirm(
-        '⚠ Good, Better, and Best all have the same material costs.\n\n' +
-        'Your three packages will be priced identically.\n\n' +
-        'Go to the Better and Best tabs to set different costs,\nor click OK to save anyway.'
-      );
-      if (!go) return;
-    }
-  }
   priceBook.materials = pbItems;
   priceBook.presets = pbPresets;
+  // Roofing two-level model: flat product catalog + named bundles.
+  priceBook.roofing_catalog = pbRoofCatalog;
+  priceBook.roofing_bundles = pbRoofBundles;
+  priceBook.roofing_tier_defaults = pbRoofDefaults;
   // Also refresh the templates cache so loadDefaults uses new prices
   try {
     await fetch('/api/pricebook', {
@@ -3373,6 +3543,102 @@ function liSetNameSmart(trade, id, v) {
   renderTotals();
 }
 
+// Roofing tier detail collapse state, keyed `${trade}:${tier}` (default collapsed).
+let _tierDetailsOpen = {};
+function toggleTierDetails(trade, tier) {
+  const k = trade + ':' + tier;
+  _tierDetailsOpen[k] = !_tierDetailsOpen[k];
+  if (activePage === 'pricing') renderTradeContent();
+}
+
+/* ── Roofing bundles → tier loader ────────────────────────────────────────
+   Roofing uses a flat catalog + named bundles (Price Book). Picking a bundle
+   for a tier loads that bundle's catalog products as the tier's included items.
+   All tiers' items live in one line_items list (union); per-tier `included`
+   decides what each package shows + prices — so pricing/customer/PDF are reused
+   unchanged. Independent tiers: Good can be one system, Best another. */
+function _roofCatalog() { return (priceBook && priceBook.roofing_catalog) || []; }
+function _roofBundle(id) { return ((priceBook && priceBook.roofing_bundles) || []).find(b => b.id === id) || null; }
+
+function applyBundleToTier(trade, tier, bundleId) {
+  if (trade !== 'roofing') return;
+  const td = S.trades[trade];
+  td.tier_bundles = td.tier_bundles || { good:'', better:'', best:'' };
+  td.line_items = td.line_items || [];
+
+  const bundle = _roofBundle(bundleId);
+  if (bundleId === '__custom__' || !bundle) {
+    // Custom: keep the tier's current items; just remember the choice.
+    td.tier_bundles[tier] = '__custom__';
+    setDirty();
+    if (activePage === 'pricing') renderTradeContent();
+    renderTotals();
+    return;
+  }
+  const catalog = _roofCatalog();
+  const wantIds = new Set(bundle.product_ids || []);
+
+  (bundle.product_ids || []).forEach(pid => {
+    const p = catalog.find(x => x.id === pid);
+    if (!p) return;
+    let item = td.line_items.find(li => li.catalog_id === pid);
+    if (!item) {
+      item = {
+        id: uid(), catalog_id: pid, name: p.name, unit: p.unit || 'EA',
+        quantity: 0, scope_note: '',
+        measure: p.measure || undefined,
+        bundle_lf: p.bundle_lf || undefined, bundle_unit: p.bundle_unit || undefined,
+        customer_visible: p.customer_visible !== false,
+        tiers: {
+          good:   { material_unit_cost:0, labor_unit_cost:0, description:'', notes:'', included:false },
+          better: { material_unit_cost:0, labor_unit_cost:0, description:'', notes:'', included:false },
+          best:   { material_unit_cost:0, labor_unit_cost:0, description:'', notes:'', included:false },
+        },
+      };
+      td.line_items.push(item);
+    }
+    const cell = item.tiers[tier] || (item.tiers[tier] = {material_unit_cost:0,labor_unit_cost:0,description:'',notes:'',included:false});
+    cell.included = true;
+    cell.material_unit_cost = parseFloat(p.cost) || 0;
+    if (!cell.description) cell.description = p.name || '';
+    delete cell.price_override;
+  });
+  // Exclude catalog-backed items NOT in this bundle from THIS tier (they stay
+  // for other tiers that include them). Hand-added items are left untouched.
+  td.line_items.forEach(item => {
+    if (!item.catalog_id) return;
+    if (!wantIds.has(item.catalog_id) && item.tiers && item.tiers[tier]) {
+      item.tiers[tier].included = false;
+    }
+  });
+  td.tier_bundles[tier] = bundleId;
+
+  // Optional Options-page package story from the bundle.
+  if (bundle.description || (bundle.features && bundle.features.length)) {
+    const content = tradeTierContent(trade);
+    if (bundle.description) content.descriptions[tier] = bundle.description;
+    if (bundle.features && bundle.features.length) content.features[tier] = bundle.features.slice();
+  }
+
+  applyMeasurements();
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+  renderTotals();
+}
+
+// Seed all three roofing tiers from their default bundles.
+function seedRoofingBundles(force) {
+  const td = S.trades.roofing; if (!td) return;
+  const defaults = (priceBook && priceBook.roofing_tier_defaults) || {};
+  td.tier_bundles = td.tier_bundles || { good:'', better:'', best:'' };
+  TIERS.forEach(tier => {
+    if (force || !td.tier_bundles[tier]) {
+      const bid = defaults[tier];
+      if (bid && _roofBundle(bid)) applyBundleToTier('roofing', tier, bid);
+    }
+  });
+}
+
 function renderGBBGrid(trade) {
   const items = S.trades[trade].line_items;
   const tier  = tradeTier(trade);   // highlight THIS product's chosen package
@@ -3386,28 +3652,43 @@ function renderGBBGrid(trade) {
     const visible  = items.filter(item => inc(item) && (qtyOf(item) > 0 || item._showZero));
     const excluded = items.filter(item => !inc(item));
     const zeroQty  = items.filter(item => inc(item) && qtyOf(item) === 0 && !item._showZero);
-    return `
-    <div class="tier-column col-${t} ${t===tier?'selected-tier':''}">
-      <div class="tier-col-header">
-        ${TIER_LABELS[t]} <span class="tier-col-total">${fmtCur(tradeTotal(trade,t))}</span>
-      </div>
-      <div class="tier-col-rate" title="${rateLbl} for the ${TIER_LABELS[t]} package — applies to every trade">
-        <span class="tier-col-rate-lbl">${rateLbl}</span>
-        <input type="number" min="0" max="99" step="0.5"
-          value="${(S.pricing.tier_rates||{})[t] ?? S.pricing.global_rate ?? 35}"
-          ${hasOvr ? 'disabled' : ''} onchange="setTierRate('${t}', this.value)">
-        <span class="tier-col-rate-pct">%</span>
-        ${hasOvr ? `<span class="tier-col-rate-ovr" title="This trade has a per-trade override (sidebar → advanced) — the package ${rateLbl.toLowerCase()} is ignored here">override ${ovr}%</span>` : ''}
-      </div>
-      <div class="tier-items">
-        ${visible.length ? groupedTradeItems(trade, visible).map(g => {
-            if (!g.items.length) return g.name ? `<div class="tier-section-hd">${esc(g.name)}<span class="tier-section-empty">empty</span></div>` : '';
-            const hd = g.name ? `<div class="tier-section-hd">${esc(g.name)}</div>`
-                     : (tradeSections(trade).length ? `<div class="tier-section-hd tier-section-general">General</div>` : '');
-            return hd + g.items.map(item => renderLiRow(trade,t,item)).join('');
-          }).join('')
-          : '<div class="empty-items">Load Defaults or add an item below</div>'}
-      </div>
+
+    // Roofing: a hero bundle dropdown drives each tier; the item breakdown
+    // collapses under a "Show details" toggle (default collapsed) so the tab
+    // stays clean. Other trades keep the full per-item layout + excluded chips.
+    const isRoof = trade === 'roofing';
+    const bundles = (priceBook && priceBook.roofing_bundles) || [];
+    const selBundle = ((S.trades[trade].tier_bundles) || {})[t] || '';
+    const isCustomBundle = selBundle === '__custom__' || (selBundle && !bundles.some(b => b.id === selBundle));
+    const detailsOpen = !!_tierDetailsOpen[trade + ':' + t];
+
+    const itemsInner = visible.length ? groupedTradeItems(trade, visible).map(g => {
+        if (!g.items.length) return g.name ? `<div class="tier-section-hd">${esc(g.name)}<span class="tier-section-empty">empty</span></div>` : '';
+        const hd = g.name ? `<div class="tier-section-hd">${esc(g.name)}</div>`
+                 : (tradeSections(trade).length ? `<div class="tier-section-hd tier-section-general">General</div>` : '');
+        return hd + g.items.map(item => renderLiRow(trade,t,item)).join('');
+      }).join('')
+      : `<div class="empty-items">${isRoof ? 'Pick a product above, or add an item' : 'Load Defaults or add an item below'}</div>`;
+
+    const heroSel = isRoof ? `
+      <div class="tier-hero">
+        <label class="tier-hero-lbl">Product</label>
+        <select class="tier-hero-select" onchange="applyBundleToTier('${trade}','${t}',this.value)">
+          ${bundles.map(b=>`<option value="${b.id}" ${b.id===selBundle?'selected':''}>${esc(b.name||'(unnamed)')}</option>`).join('')}
+          <option value="__custom__" ${isCustomBundle?'selected':''}>Custom…</option>
+        </select>
+      </div>` : '';
+
+    const bodyBlock = isRoof ? `
+      <button class="tier-details-toggle" onclick="toggleTierDetails('${trade}','${t}')">
+        ${detailsOpen ? '▾ Hide details' : `▸ Show ${visible.length} item${visible.length===1?'':'s'}`}
+      </button>
+      <div class="tier-items tier-items-collapsible" ${detailsOpen?'':'style="display:none"'}>
+        ${itemsInner}
+        <button class="li-tier-add" onclick="addLineItem('${trade}')">+ Add Item</button>
+      </div>`
+      : `
+      <div class="tier-items">${itemsInner}</div>
       ${(excluded.length || zeroQty.length) ? `
         <div class="tier-excluded">
           ${excluded.length ? `
@@ -3423,7 +3704,23 @@ function renderGBBGrid(trade) {
               <button class="tier-excluded-chip tier-zero-chip" title="Show to enter a quantity"
                 onclick="liRevealZero('${trade}','${item.id}')">+ ${esc(item.name||'(item)')}</button>`).join('')}` : ''}
         </div>` : ''}
-      <button class="li-tier-add" onclick="addLineItem('${trade}')">+ Add Item</button>
+      <button class="li-tier-add" onclick="addLineItem('${trade}')">+ Add Item</button>`;
+
+    return `
+    <div class="tier-column col-${t} ${t===tier?'selected-tier':''}">
+      <div class="tier-col-header">
+        ${TIER_LABELS[t]} <span class="tier-col-total">${fmtCur(tradeTotal(trade,t))}</span>
+      </div>
+      <div class="tier-col-rate" title="${rateLbl} for the ${TIER_LABELS[t]} package — applies to every trade">
+        <span class="tier-col-rate-lbl">${rateLbl}</span>
+        <input type="number" min="0" max="99" step="0.5"
+          value="${(S.pricing.tier_rates||{})[t] ?? S.pricing.global_rate ?? 35}"
+          ${hasOvr ? 'disabled' : ''} onchange="setTierRate('${t}', this.value)">
+        <span class="tier-col-rate-pct">%</span>
+        ${hasOvr ? `<span class="tier-col-rate-ovr" title="This trade has a per-trade override (sidebar → advanced) — the package ${rateLbl.toLowerCase()} is ignored here">override ${ovr}%</span>` : ''}
+      </div>
+      ${heroSel}
+      ${bodyBlock}
     </div>`;
   }).join('');
   return `
@@ -4649,14 +4946,21 @@ async function loadDefaults(trade) {
   if(S.trades[trade].line_items.length>0){
     if(!confirm(`Replace existing ${TRADE_LABELS[trade]} items with defaults?`))return;
   }
-  if(!templates){
-    try{const r=await fetch('/api/templates');templates=await r.json();}
-    catch{alert('Failed to load templates');return;}
-  }
   S.trades[trade].enabled=true;
-  S.trades[trade].line_items = buildTradeDefaults(trade);
-  // Fill quantities from any measurements already entered
-  applyMeasurements();
+  // Roofing builds from the default bundles (catalog+bundles model); other
+  // trades build the flat/tiered template item list.
+  if (trade === 'roofing') {
+    S.trades[trade].line_items = [];
+    S.trades[trade].tier_bundles = { good:'', better:'', best:'' };
+    seedRoofingBundles(true);
+  } else {
+    if(!templates){
+      try{const r=await fetch('/api/templates');templates=await r.json();}
+      catch{alert('Failed to load templates');return;}
+    }
+    S.trades[trade].line_items = buildTradeDefaults(trade);
+    applyMeasurements();
+  }
   setDirty(); rerender();
   if(activePage==='scope'){renderScopePage();}
   if(activePage==='pricing'){renderTabBar();renderTradeContent();}
@@ -5802,9 +6106,6 @@ async function openSettings() {
   document.getElementById('settings-colors').value = _globalShingleColors().join('\n');
   document.getElementById('settings-waste').value  = _globalWastePct();
   if (_meCanViewAll()) {
-    document.getElementById('settings-roof-products').classList.remove('hidden');
-    _loadRoofProducts();
-    _renderRoofProducts();
     document.getElementById('settings-gbb').classList.remove('hidden');
     try {
       const r = await fetch('/api/tier-defaults');
@@ -5829,116 +6130,6 @@ async function openSettings() {
     document.getElementById('set-initials-ins').value    = globalInitialTexts('insurance').join('\n');
   }
   document.getElementById('settings-modal').classList.remove('hidden');
-}
-
-/* ── Roofing Product Menu (⚙ Settings, manager+) ─────────────────────────
-   Friendly editor over the primary roofing price-book row's variants_<tier>.
-   Each product = {label, cost, notes, features[]}. On an estimate each tier
-   column shows a dropdown of that tier's products; picking one fills the line
-   cost/label/description and the Options-page "What's Included" bullets.
-   Working copy lives in _roofProducts; saveSettings writes it back into
-   priceBook and PUTs, then refreshes templates so new estimates pick it up. */
-let _roofProducts = { good:[], better:[], best:[] };
-
-// The roofing row that carries the product dropdowns: the first roofing
-// material row that already defines variants, else the first row (the main
-// shingle / roofing-material line).
-function _roofProductRow(pb) {
-  const rows = (pb && pb.materials && pb.materials.roofing) || [];
-  return rows.find(r => TIERS.some(t => Array.isArray(r['variants_'+t]) && r['variants_'+t].length))
-      || rows[0] || null;
-}
-function _loadRoofProducts() {
-  // Prefer the saved price book; fall back to the effective template row so a
-  // fresh install (no saved roofing rows yet) still shows the starter menu.
-  let row = _roofProductRow(priceBook);
-  if (!row || !TIERS.some(t => Array.isArray(row['variants_'+t]))) {
-    const tRoof = (templates && templates.roofing) || [];
-    row = tRoof.find(r => TIERS.some(t => Array.isArray(r['variants_'+t]) && r['variants_'+t].length)) || row;
-  }
-  const clean = arr => (Array.isArray(arr) ? arr : []).map(v => ({
-    label: v.label || '',
-    cost:  (v.cost === undefined || v.cost === '') ? '' : v.cost,
-    notes: v.notes || '',
-    features: Array.isArray(v.features) ? v.features.slice() : [],
-  }));
-  _roofProducts = {
-    good:   clean(row && row.variants_good),
-    better: clean(row && row.variants_better),
-    best:   clean(row && row.variants_best),
-  };
-}
-function _renderRoofProducts() {
-  const grid = document.getElementById('rp-grid');
-  if (!grid) return;
-  grid.innerHTML = TIERS.map(tier => `
-    <div class="rp-col rp-${tier}">
-      <div class="rp-col-hd">${TIER_LABELS[tier]}</div>
-      ${(_roofProducts[tier] || []).map((p, i) => `
-        <div class="rp-card">
-          <div class="rp-card-top">
-            <input class="rp-name" type="text" value="${esc(p.label || '')}"
-              placeholder="Product name (e.g. Standing Seam Metal)"
-              onchange="_rpSet('${tier}',${i},'label',this.value)">
-            <button class="rp-del" title="Remove product" onclick="_rpDel('${tier}',${i})">✕</button>
-          </div>
-          <div class="rp-cost-row">
-            <span class="rp-cost-lbl">$</span>
-            <input class="rp-cost" type="number" min="0" step="0.01" value="${p.cost !== '' ? p.cost : ''}"
-              placeholder="0.00" onchange="_rpSet('${tier}',${i},'cost',this.value)">
-            <span class="rp-cost-unit">per SQ cost</span>
-          </div>
-          <textarea class="rp-desc" rows="2"
-            placeholder="Customer description — shown on the estimate line"
-            onchange="_rpSet('${tier}',${i},'notes',this.value)">${esc(p.notes || '')}</textarea>
-          <label class="rp-feat-lbl">What's included with this product</label>
-          <textarea class="rp-feat" rows="4" spellcheck="false"
-            placeholder="One item per line, e.g.&#10;24-gauge standing seam panels&#10;Concealed fasteners&#10;Synthetic underlayment"
-            onchange="_rpSetFeatures('${tier}',${i},this.value)">${esc((p.features || []).join('\n'))}</textarea>
-        </div>`).join('')}
-      <button class="rp-add" onclick="_rpAdd('${tier}')">+ Add ${TIER_LABELS[tier]} product</button>
-    </div>`).join('');
-}
-function _rpSet(tier, i, field, val) {
-  const p = _roofProducts[tier] && _roofProducts[tier][i]; if (!p) return;
-  p[field] = field === 'cost' ? (val === '' ? '' : (parseFloat(val) || 0)) : val;
-}
-function _rpSetFeatures(tier, i, val) {
-  const p = _roofProducts[tier] && _roofProducts[tier][i]; if (!p) return;
-  p.features = val.split('\n').map(s => s.trim()).filter(Boolean);
-}
-function _rpAdd(tier) {
-  if (!_roofProducts[tier]) _roofProducts[tier] = [];
-  _roofProducts[tier].push({ label:'', cost:'', notes:'', features:[] });
-  _renderRoofProducts();
-}
-function _rpDel(tier, i) {
-  if (!_roofProducts[tier]) return;
-  _roofProducts[tier].splice(i, 1);
-  _renderRoofProducts();
-}
-// Write the working copy back onto the roofing product row of `pb` (mutates pb).
-// If the price book has no roofing rows yet, materialize the effective template
-// list first so there's an authoritative row to attach the menus to.
-function _collectRoofProducts(pb) {
-  pb.materials = pb.materials || {};
-  if (!Array.isArray(pb.materials.roofing) || !pb.materials.roofing.length) {
-    const tRoof = (templates && templates.roofing) || [];
-    pb.materials.roofing = JSON.parse(JSON.stringify(tRoof));
-  }
-  const row = _roofProductRow(pb);
-  if (!row) return;
-  const out = arr => (arr || []).map(p => {
-    const o = { label: (p.label || '').trim(), cost: p.cost === '' ? 0 : (parseFloat(p.cost) || 0) };
-    if (p.notes && p.notes.trim()) o.notes = p.notes.trim();
-    if (Array.isArray(p.features) && p.features.length) o.features = p.features.slice();
-    return o;
-  }).filter(p => p.label || p.cost);
-  TIERS.forEach(tier => {
-    const list = out(_roofProducts[tier]);
-    if (list.length) row['variants_' + tier] = list;
-    else delete row['variants_' + tier];
-  });
 }
 
 /* Global G/B/B package content editor (⚙ Settings, manager+). Edits a working
@@ -6082,15 +6273,6 @@ async function saveSettings() {
       });
       if (!rg.ok) throw new Error('G/B/B package content save failed');
       tierDefaults = JSON.parse(JSON.stringify(_settingsGbb));
-      // Save the roofing product menu into the price book, then refresh the
-      // templates cache so new estimates pick up the new dropdown options.
-      _collectRoofProducts(priceBook);
-      const rp = await fetch('/api/pricebook', {
-        method: 'PUT', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(priceBook),
-      });
-      if (!rp.ok) throw new Error('Roofing product menu save failed');
-      try { const tr = await fetch('/api/templates'); templates = await tr.json(); } catch {}
     }
     // Admin: save the customer-proposal company content alongside
     if (_meIsAdmin()) {
@@ -6320,6 +6502,7 @@ async function newEstimateAction() {
   if(dirty&&!confirm('You have unsaved changes. Start a new estimate anyway?'))return;
   S=blankEstimate();
   applyTierDefaults(S); // pre-fill from global admin defaults
+  seedRoofingBundles(false); // load the default roofing bundles into the tiers
   activeTrade='roofing'; dirty=false;
   document.getElementById('save-indicator').textContent='';
   document.getElementById('save-indicator').className='save-indicator';
@@ -7181,6 +7364,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       if (S.measurements) S.measurements.waste_pct = _globalWastePct();
       S.contract_text     = globalContract('retail');
       S.contract_initials = defaultInitials('retail');
+      seedRoofingBundles(false); // roofing tiers default to their bundles now that the price book is loaded
     }
     const si = await siRes.json();
     window._serverPublicUrl = si.public_url || '';
