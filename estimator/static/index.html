@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Project One">
   <link rel="apple-touch-icon" href="/static/icon-180.png">
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/static/style.css?v=109">
+  <link rel="stylesheet" href="/static/style.css?v=111">
 </head>
 <body>
 
@@ -506,6 +506,45 @@
   </div>
 </div>
 
+<!-- ── Ventilation cut-in map editor ─────────────────────────────────── -->
+<div id="vent-cutin-modal" class="modal hidden" onclick="maybeCloseVentCutin(event)">
+  <div class="modal-box ann-modal-box">
+    <div class="modal-header">
+      <h2>🖍️ Mark Ridge-Vent Cut-In</h2>
+      <button onclick="closeVentCutinEditor()" class="modal-close">×</button>
+    </div>
+    <p class="vent-cutin-help">Highlight the ridge segments the crew cuts open for ventilation, then stamp the linear footage. Ridge vent still runs the full ridge — this marks only what gets cut in.</p>
+    <div class="ann-toolbar">
+      <div class="ann-tool-group">
+        <button class="ann-tool-btn active" id="vent-tool-line"  onclick="setVentTool('line')"  title="Highlighter">🖍️ Highlight</button>
+        <button class="ann-tool-btn"        id="vent-tool-arrow" onclick="setVentTool('arrow')" title="Arrow">↗ Arrow</button>
+        <button class="ann-tool-btn"        id="vent-tool-text"  onclick="setVentTool('text')"  title="Text label">T Text</button>
+        <button class="ann-tool-btn"        onclick="ventCutinStampLF()" title="Stamp cut-in LF">🔢 Stamp LF</button>
+      </div>
+      <div class="ann-color-group">
+        <button class="ann-color-btn active" data-color="#dc2626" onclick="setVentColor('#dc2626')" style="background:#dc2626" title="Red"></button>
+        <button class="ann-color-btn"        data-color="#f97316" onclick="setVentColor('#f97316')" style="background:#f97316" title="Orange"></button>
+        <button class="ann-color-btn"        data-color="#eab308" onclick="setVentColor('#eab308')" style="background:#eab308" title="Yellow"></button>
+        <button class="ann-color-btn"        data-color="#2563eb" onclick="setVentColor('#2563eb')" style="background:#2563eb" title="Blue"></button>
+      </div>
+      <div class="ann-action-group">
+        <button class="btn-secondary" onclick="ventCutinPage(-1)" title="Previous page">‹ Prev</button>
+        <span id="vent-cutin-page-label" class="vent-cutin-page-label">Page 1 / 1</span>
+        <button class="btn-secondary" onclick="ventCutinPage(1)" title="Next page">Next ›</button>
+        <button class="btn-secondary" onclick="ventCutinUndo()" title="Undo last">↩ Undo</button>
+        <button class="btn-danger"    onclick="ventCutinClear()" title="Clear all">🗑 Clear</button>
+      </div>
+    </div>
+    <div class="ann-canvas-wrap" id="vent-cutin-canvas-wrap">
+      <canvas id="vent-cutin-canvas"></canvas>
+    </div>
+    <div class="ann-modal-footer">
+      <button class="btn-secondary" onclick="closeVentCutinEditor()">Cancel</button>
+      <button class="btn-primary"   onclick="saveVentCutin()">✓ Save Cut-In Map</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Price Book modal ──────────────────────────────────────────────── -->
 <div id="pricebook-modal" class="modal hidden" onclick="maybePBModalClose(event)">
   <div class="modal-box pb-modal-box">
@@ -564,6 +603,6 @@
 
 <div id="app-toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=109"></script>
+<script src="/static/app.js?v=111"></script>
 </body>
 </html>

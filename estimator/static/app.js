@@ -282,6 +282,7 @@ const MEASURE_FIELDS = [
     {key:'low_slope_squares', label:'Low Slope ≤2/12', unit:'SQ'},
     {key:'steep_squares',     label:'Steep 7/12+',     unit:'SQ'},
     {key:'ridge_hip_lf',  label:'Ridge + Hip',    unit:'LF'},
+    {key:'ridge_lf',      label:'Ridges',         unit:'LF'},
     {key:'valley_lf',     label:'Valley',         unit:'LF'},
     {key:'eave_lf',       label:'Eaves',          unit:'LF'},
     {key:'rake_lf',       label:'Rakes',          unit:'LF'},
@@ -324,6 +325,8 @@ const MEASURE_DEFS = {
   steep:                { label:'Steep SQ (7/12+)',       calc:m => mnum(m.steep_squares) },
   steep_waste:          { label:'Steep SQ + Waste',       calc:m => mnum(m.steep_squares) * (1 + mnum(m.waste_pct, 10)/100) },
   ridge_hip:            { label:'Ridge + Hip LF',     calc:m => mnum(m.ridge_hip_lf) },
+  // Ridges alone (excludes hips) — ridge vent orders the full ridge off this.
+  ridge_lf:             { label:'Ridge LF',           calc:m => mnum(m.ridge_lf) },
   valley:               { label:'Valley LF',          calc:m => mnum(m.valley_lf) },
   eave:                 { label:'Eave LF',            calc:m => mnum(m.eave_lf) },
   rake:                 { label:'Rake LF',            calc:m => mnum(m.rake_lf) },
@@ -509,11 +512,14 @@ function setIwSecondRow(on) {
    adding a duplicate; otherwise we add one from the catalog. Either way we
    FORCE the ventilation behavior (measure/bundle) so the quantity is correct
    regardless of how the saved product is configured:
-     ridge  → qty = code-required LF (measure ridge_vent_code), 4-ft sticks
+     ridge  → qty = FULL ridge length (measure ridge_lf), 4-ft sticks. The crew
+              runs ridge vent across the whole ridge for a uniform look; only the
+              code-required footage (ridge_vent_code / atticVentilation) is cut in
+              for ventilation, and that "cut-in" figure rides the work order.
      plugs  → qty = turtle vent count (measure turtle_vents)
      intake → qty = eave LF (measure eave) */
 const VENT_SPECS = {
-  ridge:  { name:'Ridge Vent',  measure:'ridge_vent_code', bundle_lf:4, bundle_unit:'sticks' },
+  ridge:  { name:'Ridge Vent',  measure:'ridge_lf', bundle_lf:4, bundle_unit:'sticks' },
   plugs:  { name:'Vent Plug',   measure:'turtle_vents' },
   intake: { name:'Intake Vent', measure:'eave' },
 };
@@ -528,7 +534,25 @@ function ventPanelMarkup() {
   const m = S.measurements || {};
   const vent = atticVentilation(m);
   const ventRound = n => Math.round(n).toLocaleString();
-  const turtleN = mnum(m.turtle_vents);
+  const turtleN  = mnum(m.turtle_vents);
+  const hasRidge = roofHasVentRole('ridge');
+  // Ordering vs cut-in: we run ridge vent the FULL ridge length (for looks) but
+  // only cut the deck open for the code-required footage.
+  const ridgeLF    = mnum(m.ridge_lf);
+  const fullSticks = Math.ceil(ridgeLF / 4);
+  const rawCutin   = Math.ceil(vent.ridge_lf_required);
+  const fullCut    = ridgeLF > 0 && rawCutin >= ridgeLF;   // deficit needs the whole ridge
+  const cutinLF    = ridgeLF > 0 ? Math.min(rawCutin, ridgeLF) : rawCutin;
+  // Three states: meets code / short & ridge added / short & no ridge (loud CTA).
+  const statusClass = !vent.needs_ridge ? 'ok' : (hasRidge ? 'ok' : 'below');
+  const statusHtml = !vent.needs_ridge
+    ? `✅ Meets code`
+    : (hasRidge
+        ? `✅ Ridge Vent added — covers the ${ventRound(vent.deficit_exhaust)} sq in exhaust shortfall`
+        : `⚠️ Below code — <strong>add Ridge Vent</strong> to bring this roof to code <span class="vent-status-sub">(short ${ventRound(vent.deficit_exhaust)} sq in of exhaust)</span>`);
+  const ridgeHint = ridgeLF > 0
+    ? `— orders <strong>${fullSticks} stick(s)</strong> for the full ridge (${ventRound(ridgeLF)} LF) · cuts in <strong>~${ventRound(cutinLF)} LF</strong> for code${fullCut ? ' (full ridge cut)' : ''}; also plugs your ${turtleN} turtle vent(s)`
+    : `— enter <strong>Ridges (LF)</strong> above so it can order; code needs ~${ventRound(rawCutin)} LF cut in`;
   return `
     <div class="measure-panel measure-panel-vent">
       <div class="measure-panel-head">
@@ -536,11 +560,7 @@ function ventPanelMarkup() {
         <span class="measure-hint">Code-required net free area from attic size — flags short venting and adds ridge + intake to balance it</span>
       </div>
       ${vent.required_total > 0 ? `
-        <div class="vent-status ${vent.needs_ridge ? 'below' : 'ok'}">
-          ${vent.needs_ridge
-            ? `⚠️ Below code — short ${ventRound(vent.deficit_exhaust)} sq in of exhaust`
-            : `✅ Meets code`}
-        </div>
+        <div class="vent-status ${statusClass}">${statusHtml}</div>
         <div class="vent-figures">
           <div><span class="vf-label">Required (total)</span><span class="vf-val">${ventRound(vent.required_total)} sq in</span></div>
           <div><span class="vf-label">Exhaust needed</span><span class="vf-val">${ventRound(vent.required_exhaust)} sq in</span></div>
@@ -548,10 +568,10 @@ function ventPanelMarkup() {
           <div><span class="vf-label">Exhaust provided</span><span class="vf-val">${ventRound(vent.provided_exhaust)} sq in <span class="vf-sub">(${turtleN} turtle × ${NFA_TURTLE_SQIN})</span></span></div>
         </div>
         <div class="vent-actions">
-          <label class="iw-second-row-toggle ${roofHasVentRole('ridge') ? 'enabled' : ''}">
-            <input type="checkbox" ${roofHasVentRole('ridge') ? 'checked' : ''}
+          <label class="iw-second-row-toggle ${hasRidge ? 'enabled' : ''}">
+            <input type="checkbox" ${hasRidge ? 'checked' : ''}
               onchange="setVentRole('ridge', this.checked)">
-            ✔️ Install Ridge Vent <span class="iw-toggle-hint">${vent.needs_ridge ? `— code needs ~${vent.ridge_sticks} stick(s); also plugs your ${turtleN} turtle vent(s)` : '— not required by code'}</span>
+            ✔️ Install Ridge Vent <span class="iw-toggle-hint">${ridgeHint}</span>
           </label>
           <label class="iw-second-row-toggle ${roofHasVentRole('intake') ? 'enabled' : ''}">
             <input type="checkbox" ${roofHasVentRole('intake') ? 'checked' : ''}
@@ -559,8 +579,12 @@ function ventPanelMarkup() {
             ✔️ Install Intake Vent <span class="iw-toggle-hint">— continuous soffit intake along the eaves</span>
           </label>
         </div>
-        ${roofHasVentRole('ridge') && vent.ridge_lf_required > mnum(m.ridge_hip_lf) ? `
-          <div class="vent-warn">⚠️ Code needs ~${Math.ceil(vent.ridge_lf_required)} LF of ridge vent but only ${mnum(m.ridge_hip_lf)} LF of ridge exists — add box vents to cover the gap.</div>` : ''}
+        ${hasRidge ? `
+          <button type="button" class="vent-cutin-btn" onclick="openVentCutinEditor()">🖍️ Mark cut-in on roof <span class="vent-cutin-sub">${(S.vent_cutin && S.vent_cutin.image_filename) ? 'edit map' : '~' + ventRound(cutinLF) + ' LF to cut'}</span></button>` : ''}
+        ${hasRidge && ridgeLF === 0 ? `
+          <div class="vent-warn">⚠️ Ridge Vent added but <strong>Ridges (LF)</strong> is 0 — enter ridge footage above so it orders.</div>` : ''}
+        ${hasRidge && fullCut && ridgeLF > 0 ? `
+          <div class="vent-warn">⚠️ Code needs ~${ventRound(rawCutin)} LF of exhaust but the ridge is only ${ventRound(ridgeLF)} LF — cutting the full ridge; add box vents to cover the gap.</div>` : ''}
         ${roofHasVentRole('intake') && mnum(m.eave_lf) === 0 ? `
           <div class="vent-warn">⚠️ Intake Vent added but Eave LF is 0 — enter eave footage so it prices.</div>` : ''}
       ` : `
@@ -4527,6 +4551,14 @@ function drawAnn(ctx, ann, W, H, scale=1) {
     ctx.lineTo(x2 - hl*Math.cos(angle+0.45), y2 - hl*Math.sin(angle+0.45));
     ctx.closePath(); ctx.fill();
 
+  } else if (ann.type === 'line') {
+    // Straight highlighter stroke — used to mark ridge segments to cut in.
+    const x1 = ann.x1/100*W, y1 = ann.y1/100*H;
+    const x2 = ann.x2/100*W, y2 = ann.y2/100*H;
+    ctx.globalAlpha = ann.hl === false ? 1 : 0.5;
+    ctx.lineWidth   = sw * (ann.hl === false ? 1 : 2.2);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+
   } else if (ann.type === 'text') {
     const x  = ann.x/100*W, y = ann.y/100*H;
     const fs = Math.max(13, (ann.sw || 3) * 5) * scale;
@@ -4669,6 +4701,217 @@ function getPhotoDataUrl(photo) {
   const canvas = document.getElementById('ann-ph-' + photo.id);
   if (canvas && canvas.width > 0) return canvas.toDataURL('image/jpeg', 0.9);
   return '/uploads/' + photo.filename;
+}
+
+/* ── Ventilation cut-in map editor ──────────────────────────────────────
+   Rep marks WHERE the ridge vent gets cut in for ventilation, on the RoofR
+   roof diagram (already uploaded + rasterized as attachment page images). We
+   run ridge vent the full ridge for looks, but only cut the code footage —
+   this map + the cut-in LF ride the crew's work order. Reuses the pure drawAnn
+   renderer; strokes persist on S.vent_cutin (re-editable) and a flattened JPG
+   is uploaded for the production packet. */
+const vc = {
+  pages: [], pageIdx: 0, img: null, canvas: null, ctx: null,
+  tool: 'line', color: '#dc2626', sw: 6,
+  annotations: [], drawing: false, sx: 0, sy: 0, preview: null, history: [],
+};
+// The RoofR report's rasterized page images, in page order (or [] if none).
+function _roofrPageImages() {
+  const atts = S.attachments || [];
+  const roofr = atts.find(a => /roofr/i.test(a.label || '') && (a.pages || []).length)
+             || atts.find(a => /\.pdf$/i.test(a.filename || '') && (a.pages || []).length);
+  return (roofr && roofr.pages) || [];
+}
+function _ventCutinLF() {
+  const m = S.measurements || {};
+  const vent = atticVentilation(m);
+  const ridgeLF = mnum(m.ridge_lf);
+  const raw = Math.ceil(vent.ridge_lf_required);
+  return ridgeLF > 0 ? Math.min(raw, ridgeLF) : raw;
+}
+function openVentCutinEditor() {
+  const pages = _roofrPageImages();
+  if (!pages.length) {
+    alert('Import the RoofR PDF first so there is a roof diagram to mark up.');
+    return;
+  }
+  vc.pages = pages;
+  const saved = S.vent_cutin || {};
+  vc.annotations = (saved.strokes || []).map(a => Object.assign({}, a));
+  vc.history = []; vc.drawing = false; vc.preview = null;
+  // Reopen on the saved page, else default to page 2 (the overview) when present.
+  let idx = saved.source_page ? pages.indexOf(saved.source_page) : -1;
+  if (idx < 0) idx = pages.length > 1 ? 1 : 0;
+  vc.pageIdx = idx;
+  setVentTool(vc.tool); setVentColor(vc.color);
+  document.getElementById('vent-cutin-modal').classList.remove('hidden');
+  _ventLoadPage();
+}
+function closeVentCutinEditor() {
+  document.getElementById('vent-cutin-modal').classList.add('hidden');
+}
+function maybeCloseVentCutin(e) {
+  if (e.target === document.getElementById('vent-cutin-modal')) closeVentCutinEditor();
+}
+function _ventLoadPage() {
+  const label = document.getElementById('vent-cutin-page-label');
+  if (label) label.textContent = `Page ${vc.pageIdx + 1} / ${vc.pages.length}`;
+  const canvas = document.getElementById('vent-cutin-canvas');
+  const img = new Image();
+  img.onload = () => {
+    vc.img = img;
+    const wrap  = document.getElementById('vent-cutin-canvas-wrap');
+    const maxW  = (wrap.clientWidth || 800) - 4;
+    const maxH  = window.innerHeight * 0.60;
+    const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
+    canvas.width  = Math.round(img.naturalWidth  * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    _ventBindCanvas(canvas);
+    _ventRedraw();
+  };
+  img.src = '/uploads/' + vc.pages[vc.pageIdx];
+}
+function ventCutinPage(delta) {
+  const next = vc.pageIdx + delta;
+  if (next < 0 || next >= vc.pages.length) return;
+  vc.pageIdx = next;
+  _ventLoadPage();
+}
+function setVentTool(t) {
+  vc.tool = t;
+  document.querySelectorAll('#vent-cutin-modal .ann-tool-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('vent-tool-' + t);
+  if (btn) btn.classList.add('active');
+  if (vc.canvas) vc.canvas.style.cursor = t === 'text' ? 'text' : 'crosshair';
+}
+function setVentColor(c) {
+  vc.color = c;
+  document.querySelectorAll('#vent-cutin-modal .ann-color-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.querySelector(`#vent-cutin-modal .ann-color-btn[data-color="${c}"]`);
+  if (btn) btn.classList.add('active');
+}
+function _ventRedraw() {
+  const { canvas, ctx, img, annotations, preview } = vc;
+  if (!canvas || !ctx || !img) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  annotations.forEach(a => drawAnn(ctx, a, canvas.width, canvas.height));
+  if (preview) drawAnn(ctx, preview, canvas.width, canvas.height);
+}
+function _ventBindCanvas(canvas) {
+  const fresh = canvas.cloneNode(true);
+  canvas.parentNode.replaceChild(fresh, canvas);
+  vc.canvas = fresh;
+  vc.ctx = fresh.getContext('2d');
+  canvas = fresh;
+  const pct = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const src = e.touches ? e.touches[0] : e;
+    return {
+      x: Math.max(0, Math.min(100, (src.clientX - r.left) / r.width  * 100)),
+      y: Math.max(0, Math.min(100, (src.clientY - r.top)  / r.height * 100)),
+    };
+  };
+  const onStart = (e) => {
+    if (vc.tool === 'text') {
+      const { x, y } = pct(e);
+      const txt = prompt('Label text:', `~${_ventCutinLF()} LF cut-in`);
+      if (txt && txt.trim()) {
+        vc.history.push(vc.annotations.map(a => Object.assign({}, a)));
+        vc.annotations.push({ id: 'vc_' + Date.now().toString(36), type: 'text',
+                              color: vc.color, sw: 4, x, y, text: txt.trim() });
+        _ventRedraw();
+      }
+      return;
+    }
+    e.preventDefault();
+    const { x, y } = pct(e);
+    vc.sx = x; vc.sy = y; vc.drawing = true;
+  };
+  const onMove = (e) => {
+    if (!vc.drawing) return;
+    e.preventDefault();
+    const { x, y } = pct(e);
+    vc.preview = { id: '__preview', type: vc.tool, color: vc.color, sw: vc.sw,
+                   hl: vc.tool === 'line', x1: vc.sx, y1: vc.sy, x2: x, y2: y };
+    _ventRedraw();
+  };
+  const onEnd = () => {
+    if (!vc.drawing) return;
+    vc.drawing = false;
+    const p = vc.preview;
+    if (p) {
+      const dist = Math.hypot((p.x2 - p.x1) / 100 * canvas.width,
+                              (p.y2 - p.y1) / 100 * canvas.height);
+      if (dist > 4) {
+        vc.history.push(vc.annotations.map(a => Object.assign({}, a)));
+        vc.annotations.push(Object.assign({}, p, { id: 'vc_' + Date.now().toString(36) }));
+      }
+    }
+    vc.preview = null;
+    _ventRedraw();
+  };
+  canvas.addEventListener('mousedown',  onStart);
+  canvas.addEventListener('mousemove',  onMove);
+  canvas.addEventListener('mouseup',    onEnd);
+  canvas.addEventListener('mouseleave', onEnd);
+  canvas.addEventListener('touchstart', onStart, { passive: false });
+  canvas.addEventListener('touchmove',  onMove,  { passive: false });
+  canvas.addEventListener('touchend',   onEnd);
+}
+function ventCutinUndo() {
+  if (!vc.history.length) return;
+  vc.annotations = vc.history.pop();
+  vc.preview = null;
+  _ventRedraw();
+}
+function ventCutinClear() {
+  if (!vc.annotations.length) return;
+  vc.history.push(vc.annotations.map(a => Object.assign({}, a)));
+  vc.annotations = [];
+  _ventRedraw();
+}
+function ventCutinStampLF() {
+  vc.history.push(vc.annotations.map(a => Object.assign({}, a)));
+  vc.annotations.push({ id: 'vc_' + Date.now().toString(36), type: 'text',
+                        color: vc.color, sw: 5, x: 4, y: 5,
+                        text: `Cut in ~${_ventCutinLF()} LF ridge vent` });
+  _ventRedraw();
+}
+async function saveVentCutin() {
+  if (!vc.canvas) { closeVentCutinEditor(); return; }
+  // Need a saved estimate to hang the upload + attachment on.
+  if (!S.estimate_id) { await saveEstimate(); }
+  if (!S.estimate_id) { alert('Save the estimate first, then mark the cut-in map.'); return; }
+  const prev = (S.vent_cutin || {}).image_filename;
+  const blob = await new Promise(res => vc.canvas.toBlob(res, 'image/jpeg', 0.9));
+  let image_filename = prev;
+  if (blob) {
+    const fd = new FormData();
+    fd.append('file', new File([blob], 'vent-cutin.jpg', { type: 'image/jpeg' }));
+    try {
+      const r = await fetch(`/api/uploads/${S.estimate_id}`, { method: 'POST', body: fd });
+      if (r.ok) {
+        image_filename = (await r.json()).filename;
+        // Clean up the superseded map image so uploads don't accumulate.
+        if (prev && prev !== image_filename) {
+          const parts = prev.split('/');
+          if (parts.length === 2) { try { await fetch(`/api/uploads/${parts[0]}/${parts[1]}`, { method: 'DELETE' }); } catch {} }
+        }
+      }
+    } catch { /* keep strokes even if the image upload fails */ }
+  }
+  S.vent_cutin = {
+    source_page: vc.pages[vc.pageIdx],
+    strokes: vc.annotations.map(a => Object.assign({}, a)),
+    cutin_lf: _ventCutinLF(),
+    notes: (S.vent_cutin || {}).notes || '',
+    image_filename,
+  };
+  setDirty();
+  await saveEstimate();
+  closeVentCutinEditor();
+  if (activePage === 'scope') renderScopePage();
 }
 
 function setTA(id, v) { const el = document.getElementById(id); if (el && el.value !== (v||'')) el.value = v||''; }
@@ -7641,6 +7884,9 @@ function openRoofrModal(data) {
       <span class="roofr-preview-value">${fmt(m.steep_squares, 'SQ')}</span>` : ''}
       <span class="roofr-preview-label">Ridge + Hip</span>
       <span class="roofr-preview-value">${fmt(m.ridge_hip_lf, 'LF')}</span>
+      ${m.ridge_lf !== undefined ? `
+      <span class="roofr-preview-label">Ridges (ridge vent)</span>
+      <span class="roofr-preview-value">${fmt(m.ridge_lf, 'LF')}</span>` : ''}
       <span class="roofr-preview-label">Eaves</span>
       <span class="roofr-preview-value">${fmt(m.eave_lf, 'LF')}</span>
       <span class="roofr-preview-label">Valleys</span>

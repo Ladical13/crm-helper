@@ -1272,6 +1272,11 @@ def _parse_roofr_pdf(file_bytes):
         r = find_lf('Total ridges') or 0
         ridge_hip = round(h + r, 2) or None
 
+    # Ridges ALONE (excludes hips) — ridge vent installs on horizontal ridges,
+    # so this is what we order the full-ridge stick count against. Separate from
+    # the combined ridge+hip above, which still drives the ridge+hip line item.
+    ridge_only = find_lf('Total ridges')
+
     eave   = find_lf('Total eaves')
     valley = find_lf('Total valleys')
     rake   = find_lf('Total rakes')
@@ -1300,6 +1305,7 @@ def _parse_roofr_pdf(file_bytes):
         'roof_squares':  squares,
         'waste_pct':     10,
         'ridge_hip_lf':  ridge_hip,
+        'ridge_lf':      ridge_only,
         'eave_lf':       eave,
         'valley_lf':     valley,
         'rake_lf':       rake,
@@ -4435,6 +4441,56 @@ def build_production_packet_pdf(est):
         pdf.set_font('Helvetica', '', 8.5)
         pdf.multi_cell(W, 4.6, _pdf_safe(crew))
         pdf.ln(3)
+
+    # ── Ventilation cut-in: how much ridge vent to actually cut open, and
+    # where. We run ridge vent the full ridge for looks but only cut the
+    # code-required footage — this tells the crew exactly what to cut.
+    m0 = est.get('measurements') or {}
+    roofing = trades.get('roofing', {})
+    has_ridge = any(it.get('vent_role') == 'ridge' for it in roofing.get('line_items', []))
+    vent_cutin = est.get('vent_cutin') or {}
+    if has_ridge or vent_cutin.get('image_filename'):
+        try:
+            ridge_lf = float(m0.get('ridge_lf') or 0)
+        except (TypeError, ValueError):
+            ridge_lf = 0.0
+        vinfo = attic_ventilation(m0)
+        raw_cut = math.ceil(vinfo['ridge_lf_required'])
+        cutin = min(raw_cut, int(ridge_lf)) if ridge_lf > 0 else raw_cut
+        full_sticks = math.ceil(ridge_lf / 4) if ridge_lf > 0 else 0
+        section_title('Ventilation - Ridge Vent Cut-In')
+        pdf.set_font('Helvetica', '', 8.5)
+        if ridge_lf > 0:
+            line1 = (f'Install ridge vent the FULL ridge ({ridge_lf:g} LF, '
+                     f'{full_sticks} stick(s)) for a uniform look.')
+        else:
+            line1 = 'Install ridge vent the full ridge for a uniform look.'
+        pdf.multi_cell(W, 4.6, _pdf_safe(line1))
+        pdf.set_font('Helvetica', 'B', 9)
+        if ridge_lf > 0 and cutin >= ridge_lf:
+            cut_msg = f'CUT IN the full ridge (~{cutin:g} LF) for code ventilation.'
+        else:
+            cut_msg = f'CUT IN only ~{cutin:g} LF for code-required ventilation - see map for locations.'
+        pdf.multi_cell(W, 4.8, _pdf_safe(cut_msg))
+        note = (vent_cutin.get('notes') or '').strip()
+        if note:
+            pdf.set_font('Helvetica', '', 8.5)
+            pdf.multi_cell(W, 4.6, _pdf_safe(note))
+        img_fn = vent_cutin.get('image_filename')
+        if img_fn:
+            img_path = os.path.join(UPLOADS_DIR, *str(img_fn).split('/'))
+            if os.path.exists(img_path):
+                try:
+                    pdf.ln(2)
+                    pdf.set_font('Helvetica', 'I', 7.5)
+                    pdf.set_text_color(120, 120, 120)
+                    pdf.cell(0, 5, _pdf_safe('Cut-In Map (highlighted = cut open for ventilation):'),
+                             new_x='LMARGIN', new_y='NEXT')
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.image(img_path, w=min(W, 150))
+                except Exception:
+                    pass
+        pdf.ln(4)
 
     # ── Page 2: Material Order ──
     pdf.add_page()
