@@ -398,7 +398,8 @@ function renderDrawer(l){
       <div class="dh-name">${esc(l.name)}</div>
       <div class="task-meta"><span class="type-badge">${l.service_icon} ${esc(l.service_label)}</span>
       <span class="type-badge">${esc(typeMeta?typeMeta.label:l.lead_type)}</span>
-      <span>${esc(repName(l.rep))}</span>${l.est_value?'<span>'+money(l.est_value)+'</span>':''}
+      ${l.plan_name?`<span class="type-badge plan">♻ ${esc(l.plan_name)}</span>`:''}
+      <span>${esc(repName(l.rep))}</span>${l.est_value?'<span>'+money(l.est_value)+esc(l.value_suffix)+'</span>':''}
       ${l.referred_by_name?'<span>via '+esc(l.referred_by_name)+'</span>':''}</div>
     </div>
     ${l.stalled?'<div class="stalled-banner">⚠ No activity in a while. Reach out or schedule a next step.</div>':''}
@@ -418,17 +419,21 @@ function renderDrawer(l){
       </div>
       <div id="d-log-form"></div>
     </div>
+    <div class="dsec"><h5>Maintenance plan</h5><div id="d-plan"></div></div>
     <div class="dsec"><h5>Follow-up cadence</h5>
       <div id="d-cadences"></div></div>
     <div class="dsec"><h5>Tasks</h5><div id="d-tasks"></div>
       <button class="btn-ghost small" id="d-add-task">+ Add task</button></div>
+    <div class="dsec dsec-wide"><h5>Documents</h5><div id="d-documents"></div>
+      <label class="btn-ghost small doc-upload">＋ Upload document
+        <input type="file" id="d-doc-file" hidden></label></div>
     <div class="dsec"><h5>Timeline</h5><div class="timeline" id="d-timeline"></div></div>
     <div class="dsec"><h5>Details</h5><div id="d-fields"></div></div>
-    <div class="dsec"><h5>Handoff</h5>
+    <div class="dsec"><h5>Handoff &amp; cross-sell</h5>
       <div class="drawer-btns">
         <button class="btn-brand" id="d-estimate">📄 Start estimate</button>
         <button class="btn-ghost" id="d-den">${l.crm_contact_id?'✓ In The Den — view job status':'⬆ Push to The Den'}</button>
-        ${l.service==='roofing'?'<button class="btn-ghost" id="d-pitch-wc">🪟 Pitch window cleaning</button>':''}
+        <div id="d-pitch-row"></div>
         <div class="est-status" id="d-est-status"></div>
       </div></div>
     <div class="dsec"><button class="btn-danger" id="d-delete">Delete lead</button></div>
@@ -499,22 +504,30 @@ function renderDrawer(l){
       else toast(r.error,true);
     }catch(e){ toast(e.message,true); }
   };
-  const pitchBtn=p.querySelector('#d-pitch-wc');
-  if(pitchBtn) pitchBtn.onclick=async()=>{
-    // Same customer, new deal on the window-cleaning line.
-    try{
-      const nw=await api('/leads',{method:'POST',body:{
-        first_name:l.first_name,last_name:l.last_name,company:l.company,
-        phone:l.phone,email:l.email,address:l.address,city:l.city,state:l.state,zip:l.zip,
-        lead_type:l.lead_type,service:'window_cleaning',source:'existing_customer',
-        temperature:'warm',referred_by:l.referred_by,rep:l.rep}});
-      await api('/leads/'+nw.id+'/activities',{method:'POST',
-        body:{kind:'system',body:`Window cleaning pitch — spun off from the ${l.service_label} deal`}});
-      toast('🪟 Window cleaning deal created');
-      if(S.view==='pipeline')renderPipeline();
-      openLead(nw.id);
-    }catch(e){ toast(e.message,true); }
-  };
+  // Cross-sell: one button per OTHER service line — spins off a new deal for the
+  // same customer, letting a roof lead become a window-cleaning or plan deal.
+  const pitchRow=p.querySelector('#d-pitch-row');
+  S.cfg.services.filter(s=>s.key!==l.service).forEach(s=>{
+    const b=el('button','btn-ghost'); b.innerHTML=`${s.icon} Pitch ${esc(s.label)}`;
+    b.onclick=async()=>{
+      try{
+        const body={first_name:l.first_name,last_name:l.last_name,company:l.company,
+          phone:l.phone,email:l.email,address:l.address,city:l.city,state:l.state,zip:l.zip,
+          lead_type:l.lead_type,service:s.key,source:'existing_customer',
+          temperature:'warm',referred_by:l.referred_by};
+        if(S.me.is_manager) body.rep=l.rep;
+        const nw=await api('/leads',{method:'POST',body});
+        await api('/leads/'+nw.id+'/activities',{method:'POST',
+          body:{kind:'system',body:`${s.label} pitch — spun off from the ${l.service_label} deal`}});
+        toast(`${s.icon} ${s.label} deal created`);
+        if(S.view==='pipeline')renderPipeline();
+        openLead(nw.id);
+      }catch(e){ toast(e.message,true); }
+    };
+    pitchRow.appendChild(b);
+  });
+  renderPlanSection(l);
+  renderDocuments(l);
   $('#d-delete').onclick=async()=>{
     if(!confirm('Delete this lead and its history?')) return;
     await api('/leads/'+l.id,{method:'DELETE'}); closeDetail(); toast('Deleted');
@@ -537,6 +550,85 @@ async function renderCadences(l){
     }catch(e){ toast(e.message,true); }
   });
 }
+// Maintenance plan: assign a catalog plan + billing to this deal. Selecting a
+// plan prefills the billing cadence, suggested price, and est_value.
+function renderPlanSection(l){
+  const box=$('#d-plan');
+  const plans=S.cfg.plans||[];
+  const billOpts=S.cfg.billing_options.map(b=>`<option value="${b.key}" ${b.key===(l.billing||'')?'selected':''}>${esc(b.label)}</option>`).join('');
+  const planOpts='<option value="">— No plan (one-time / custom) —</option>'+
+    plans.map(p=>`<option value="${p.id}" ${p.id===l.plan?'selected':''}>${esc(p.name)} · ${p.custom_pricing?'custom':'$'+p.suggested_price+'/mo'}</option>`).join('');
+  const cur=plans.find(p=>p.id===l.plan);
+  box.innerHTML=`
+    <div class="field"><label>Plan</label><select id="d-plan-sel">${planOpts}</select></div>
+    <div class="field-row">
+      <div class="field"><label>Billing</label><select id="d-bill-sel">${billOpts}</select></div>
+      <div class="field"><label>Price ${l.billing?money(0).slice(0,1):''}</label><input id="d-plan-price" type="number" value="${l.est_value||''}"></div>
+    </div>
+    ${cur?`<div class="plan-includes"><b>${esc(cur.name)}</b> includes:<ul>${cur.includes.map(i=>`<li>${esc(i)}</li>`).join('')}</ul>
+      <div class="plan-pitch">💬 ${esc(cur.pitch)}</div></div>`:''}
+    <button class="btn-brand small" id="d-plan-save">Save plan</button>`;
+  const sel=box.querySelector('#d-plan-sel');
+  sel.onchange=()=>{
+    const p=plans.find(x=>x.id===sel.value);
+    if(p){
+      box.querySelector('#d-bill-sel').value=p.billing||'monthly';
+      if(!p.custom_pricing) box.querySelector('#d-plan-price').value=p.suggested_price;
+    }
+  };
+  box.querySelector('#d-plan-save').onclick=async()=>{
+    try{
+      await api('/leads/'+l.id,{method:'PUT',body:{plan:sel.value,
+        billing:box.querySelector('#d-bill-sel').value,
+        est_value:box.querySelector('#d-plan-price').value}});
+      toast('Plan saved'); const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
+    }catch(e){ toast(e.message,true); }
+  };
+}
+
+// Documents: contracts, photos, proposals — stored on the persistent volume.
+async function renderDocuments(l){
+  const box=$('#d-documents');
+  box.innerHTML='<div class="empty">Loading…</div>';
+  let docs=[];
+  try{ docs=await api('/leads/'+l.id+'/documents'); }catch(e){}
+  box.innerHTML = docs.length?'' : '<div class="empty">No documents yet.</div>';
+  docs.forEach(d=>{
+    const row=el('div','doc-row');
+    row.innerHTML=`<span class="doc-ico">${docIcon(d.orig_name)}</span>
+      <a class="doc-name" href="${d.url}" target="_blank" rel="noopener">${esc(d.orig_name)}</a>
+      <span class="doc-meta">${fmtBytes(d.size)} · ${timeAgo(d.created_at)}</span>
+      <button class="doc-del" title="Delete">🗑</button>`;
+    row.querySelector('.doc-del').onclick=async(ev)=>{
+      ev.preventDefault();
+      if(!confirm('Delete '+d.orig_name+'?')) return;
+      await api('/documents/'+d.id,{method:'DELETE'}); toast('Deleted'); renderDocuments(l);
+    };
+    box.appendChild(row);
+  });
+  const input=$('#d-doc-file');
+  if(input) input.onchange=async()=>{
+    const f=input.files[0]; if(!f) return;
+    const fd=new FormData(); fd.append('file', f);
+    try{
+      const r=await fetch('/api/leads/'+l.id+'/documents',{method:'POST',body:fd});
+      const j=await r.json();
+      if(!r.ok) throw new Error(j.error||'Upload failed');
+      toast('Uploaded ✓'); renderDocuments(l);
+    }catch(e){ toast(e.message,true); }
+    input.value='';
+  };
+}
+function docIcon(name){
+  const e=(name.split('.').pop()||'').toLowerCase();
+  if(['pdf'].includes(e)) return '📄';
+  if(['png','jpg','jpeg','gif','heic','webp'].includes(e)) return '🖼';
+  if(['doc','docx'].includes(e)) return '📝';
+  if(['xls','xlsx','csv'].includes(e)) return '📊';
+  return '📎';
+}
+function fmtBytes(n){ if(!n) return '0 B'; const u=['B','KB','MB','GB']; let i=0; while(n>=1024&&i<3){n/=1024;i++;} return n.toFixed(i?1:0)+' '+u[i]; }
+
 function renderTasks(l){
   const box=$('#d-tasks');
   const tasks=(l.tasks||[]).filter(t=>!t.done);
@@ -647,6 +739,8 @@ async function renderDashboard(){
   const qs=`?days=${days}`+(rep?`&rep=${encodeURIComponent(rep)}`:'');
   const [d,lb]=await Promise.all([api('/dashboard'+qs), api('/leaderboard?days='+days)]);
   $('#dash-kpis').innerHTML=[
+    ['MRR', money(d.mrr), money(d.arr)+'/yr recurring'],
+    ['Active plans', d.active_plans, 'on maintenance'],
     ['Won', d.won_count, money(d.won_value)],
     ['Win rate', d.win_rate+'%', d.lost_count+' lost'],
     ['Pipeline', money(d.pipeline_value), d.pipeline_count+' open'],
@@ -659,6 +753,14 @@ async function renderDashboard(){
     `<div class="kpi"><div class="n">${s.icon} ${money(s.open_value)}</div>
       <div class="l">${esc(s.label)} pipeline</div>
       <div class="sub">${s.open} open · ${s.won} won (${money(s.won_value)}) in ${d.days}d</div></div>`).join('');
+  // plan mix (recurring book of business), rebuilt idempotently
+  document.getElementById('dash-planmix')?.remove();
+  const mix=Object.entries(d.plan_mix||{});
+  if(mix.length){
+    const wrap=el('div','bar-list'); wrap.id='dash-planmix'; wrap.style.marginTop='10px';
+    $('#dash-services').after(wrap);
+    barList(wrap, Object.fromEntries(mix));
+  }
   // funnel
   const maxC=Math.max(1,...d.stages.map(s=>d.stage_counts[s.key]||0));
   $('#dash-funnel').innerHTML=d.stages.map(s=>{
@@ -773,6 +875,14 @@ async function renderPlaybook(){
 function renderPlaybookLists(){
   const q=($('#playbook-search').value||'').toLowerCase();
   const match=s=>!q||s.toLowerCase().includes(q);
+  const plans=S.cfg.plans||[];
+  $('#playbook-plans').innerHTML=plans.filter(p=>match(p.name+p.pitch+p.includes.join(' '))).map(p=>{
+    const price=p.custom_pricing?'Custom pricing':money(p.suggested_price)+'/mo';
+    const aud=(S.cfg.lead_types.find(t=>t.key===p.audience)||{}).label||p.audience;
+    return `<div class="card"><h4>🏡 ${esc(p.name)} <span class="type-badge">${esc(aud)}</span> <span class="kcard-val">${price}</span></h4>
+      <div class="plan-pitch">💬 ${esc(p.pitch)}</div>
+      <ul class="plan-ul">${p.includes.map(i=>`<li>${esc(i)}</li>`).join('')}</ul></div>`;
+  }).join('')||'<div class="empty">No matching plans.</div>';
   $('#playbook-objections').innerHTML=(PB.objections||[]).filter(o=>match(o.objection+o.rebuttal+o.category)).map(o=>
     `<div class="card"><div class="cat">${esc(o.category)}</div><h4 class="q">“${esc(o.objection)}”</h4>
       <div class="a">${esc(o.rebuttal)}</div><div class="coach">🎯 ${esc(o.coach_note)}</div></div>`).join('')
@@ -805,6 +915,10 @@ function newLeadModal(preset={}){
         ${cfg.services.map(s=>`<option value="${s.key}" ${s.key===(preset.service||'roofing')?'selected':''}>${s.icon} ${esc(s.label)}</option>`).join('')}</select></div>
       <div class="field"><label>Type</label><select id="nl-type">${typeSel}</select></div>
       <div class="field"><label>Source</label><select id="nl-source">${srcSel}</select></div></div>
+    <div class="field-row"><div class="field"><label>Plan (optional)</label><select id="nl-plan">
+        <option value="">— None —</option>${(cfg.plans||[]).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Billing</label><select id="nl-billing">
+        ${cfg.billing_options.map(b=>`<option value="${b.key}">${esc(b.label)}</option>`).join('')}</select></div></div>
     <div class="field-row"><div class="field"><label>Est. value</label><input id="nl-value" type="number"></div>
       <div class="field"><label>Temp</label><select id="nl-temp">${cfg.temperature.map(t=>`<option>${t}</option>`).join('')}</select></div></div>
     ${repSel}`,
@@ -814,6 +928,7 @@ function newLeadModal(preset={}){
       const body={first_name:first,last_name:last,company,phone:$('#nl-phone').value,email:$('#nl-email').value,
         address:$('#nl-address').value,city:$('#nl-city').value,state:$('#nl-state').value.toUpperCase(),zip:$('#nl-zip').value,
         lead_type:$('#nl-type').value,service:$('#nl-service').value,source:$('#nl-source').value,
+        plan:$('#nl-plan').value,billing:$('#nl-billing').value,
         est_value:$('#nl-value').value,temperature:$('#nl-temp').value};
       if(preset.referred_by) body.referred_by=preset.referred_by;
       if(S.me.is_manager&&$('#nl-rep')) body.rep=$('#nl-rep').value;
@@ -823,6 +938,15 @@ function newLeadModal(preset={}){
       // From a partner: land back on the partner so the new project shows underneath.
       openLead(preset.returnTo||lead.id);
     }, {noAutoClose:true});
+  // Selecting a plan prefills service→exterior, billing, and suggested price.
+  const planSel=$('#nl-plan');
+  if(planSel) planSel.onchange=()=>{
+    const p=(cfg.plans||[]).find(x=>x.id===planSel.value);
+    if(!p) return;
+    $('#nl-service').value='exterior_maintenance';
+    $('#nl-billing').value=p.billing||'monthly';
+    if(!p.custom_pricing) $('#nl-value').value=p.suggested_price;
+  };
 }
 $('#add-lead-btn').onclick=()=>newLeadModal();
 

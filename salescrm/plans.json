@@ -1,0 +1,71 @@
+[
+  {
+    "id": "home_shield",
+    "name": "Home Shield",
+    "audience": "homeowner",
+    "billing": "monthly",
+    "suggested_price": 99,
+    "custom_pricing": false,
+    "pitch": "One flat monthly rate and your home's entire exterior is handled — you never climb a ladder again.",
+    "includes": [
+      "Exterior window cleaning every quarter",
+      "Gutter cleaning & downspout flush twice a year",
+      "Annual roof inspection with photo report",
+      "Exterior caulk & sealant check",
+      "10% off any repair work",
+      "Priority storm response — front of the line after hail"
+    ]
+  },
+  {
+    "id": "home_shield_plus",
+    "name": "Home Shield+",
+    "audience": "homeowner",
+    "billing": "monthly",
+    "suggested_price": 179,
+    "custom_pricing": false,
+    "pitch": "Everything in Home Shield, plus the big-ticket exterior work on a schedule — the house always looks brand new.",
+    "includes": [
+      "Everything in Home Shield",
+      "Soft-wash siding once a year",
+      "Pressure wash driveway, walks & patio once a year",
+      "Interior + exterior window cleaning quarterly",
+      "Holiday light hang & takedown at cost",
+      "15% off any repair work"
+    ]
+  },
+  {
+    "id": "hoa_complete",
+    "name": "HOA Complete",
+    "audience": "hoa",
+    "billing": "monthly",
+    "suggested_price": 0,
+    "custom_pricing": true,
+    "pitch": "One vendor, one invoice, board-ready reports. We keep the whole community's exteriors maintained on a published schedule.",
+    "includes": [
+      "Common-area window cleaning on schedule",
+      "Community-wide gutter cleaning program",
+      "Pressure washing of sidewalks & common areas",
+      "Annual roof condition report per building",
+      "Board-ready photo documentation after every visit",
+      "Dedicated account manager & priority storm response",
+      "Custom pricing per community — priced by door count"
+    ]
+  },
+  {
+    "id": "commercial_exterior",
+    "name": "Commercial Exterior Care",
+    "audience": "commercial",
+    "billing": "monthly",
+    "suggested_price": 0,
+    "custom_pricing": true,
+    "pitch": "Your building is your brand. Scheduled exterior maintenance keeps it spotless without a work order every time.",
+    "includes": [
+      "Storefront/window cleaning on schedule",
+      "Gutter & drainage maintenance",
+      "Pressure washing entries & walkways",
+      "Annual roof inspection & maintenance report",
+      "After-hours service windows",
+      "Custom pricing by property"
+    ]
+  }
+]

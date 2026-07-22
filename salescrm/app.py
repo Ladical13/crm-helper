@@ -91,11 +91,18 @@ TEMPERATURE = ['hot', 'warm', 'cold']
 # Service lines. Every lead is a deal for ONE service; pitching a second service
 # to the same customer creates a second lead (see the clone flow in app.js).
 SERVICES = [
-    {'key': 'roofing',         'label': 'Roofing',         'icon': '🏠'},
-    {'key': 'window_cleaning', 'label': 'Window Cleaning', 'icon': '🪟'},
+    {'key': 'roofing',              'label': 'Roofing',              'icon': '🏠'},
+    {'key': 'window_cleaning',      'label': 'Window Cleaning',      'icon': '🪟'},
+    {'key': 'exterior_maintenance', 'label': 'Exterior Maintenance', 'icon': '🏡'},
 ]
 SERVICE_KEYS = [s['key'] for s in SERVICES]
 SERVICE_META = {s['key']: s for s in SERVICES}
+
+# Recurring billing. '' = one-time job. months-per-period drives MRR normalization
+# (a won recurring deal is an ACTIVE PLAN — its monthly value counts toward MRR).
+BILLING_KEYS   = ['', 'monthly', 'quarterly', 'annual']
+BILLING_MONTHS = {'monthly': 1, 'quarterly': 3, 'annual': 12}
+BILLING_SUFFIX = {'monthly': '/mo', 'quarterly': '/qtr', 'annual': '/yr'}
 
 # Which local activity kinds count as "outreach" for scorecards.
 OUTREACH_KINDS = ('call', 'text', 'email', 'door', 'meeting')
@@ -133,6 +140,8 @@ def init_db():
                 id             TEXT PRIMARY KEY,
                 lead_type      TEXT NOT NULL DEFAULT 'homeowner',
                 service        TEXT NOT NULL DEFAULT 'roofing',
+                plan           TEXT DEFAULT '',
+                billing        TEXT DEFAULT '',
                 first_name     TEXT DEFAULT '',
                 last_name      TEXT DEFAULT '',
                 company        TEXT DEFAULT '',
@@ -223,6 +232,22 @@ def migrate_db():
         cols = [r['name'] for r in db.execute('PRAGMA table_info(leads)')]
         if 'service' not in cols:
             db.execute("ALTER TABLE leads ADD COLUMN service TEXT DEFAULT 'roofing'")
+        if 'plan' not in cols:
+            db.execute("ALTER TABLE leads ADD COLUMN plan TEXT DEFAULT ''")
+        if 'billing' not in cols:
+            db.execute("ALTER TABLE leads ADD COLUMN billing TEXT DEFAULT ''")
+        db.executescript('''
+            CREATE TABLE IF NOT EXISTS documents (
+                id          TEXT PRIMARY KEY,
+                lead_id     TEXT NOT NULL,
+                filename    TEXT NOT NULL,
+                orig_name   TEXT NOT NULL,
+                size        INTEGER DEFAULT 0,
+                uploaded_by TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS doc_lead_idx ON documents(lead_id);
+        ''')
 
 init_db()
 migrate_db()
@@ -239,7 +264,9 @@ def _load_json(name, default):
 
 CADENCES = _load_json('cadences.json', [])
 PLAYBOOK = _load_json('playbook.json', {'objections': [], 'scripts': [], 'principles': []})
+PLANS    = _load_json('plans.json', [])
 CADENCE_BY_ID = {c['id']: c for c in CADENCES}
+PLAN_BY_ID    = {p['id']: p for p in PLANS}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -500,6 +527,9 @@ def _lead_row(row):
     smeta = SERVICE_META.get(d.get('service') or 'roofing', SERVICES[0])
     d['service_label'] = smeta['label']
     d['service_icon']  = smeta['icon']
+    d['value_suffix']  = BILLING_SUFFIX.get(d.get('billing') or '', '')
+    plan = PLAN_BY_ID.get(d.get('plan') or '')
+    d['plan_name'] = plan['name'] if plan else ''
     d['name'] = (f"{d['first_name']} {d['last_name']}").strip() or d['company'] or '(no name)'
     # Days since last activity (stall detector). Empty = never touched.
     d['stalled'] = _is_stalled(d)
@@ -582,6 +612,9 @@ def create_lead():
     service = data.get('service', 'roofing')
     if service not in SERVICE_KEYS:
         return jsonify({'error': 'Invalid service'}), 400
+    billing = data.get('billing', '')
+    if billing not in BILLING_KEYS:
+        return jsonify({'error': 'Invalid billing'}), 400
     stage = data.get('stage', 'new')
     if stage not in STAGE_KEYS:
         stage = 'new'
@@ -590,6 +623,7 @@ def create_lead():
     lid = str(uuid.uuid4())
     fields = {
         'id': lid, 'lead_type': lead_type, 'service': service,
+        'plan': data.get('plan', ''), 'billing': billing,
         'first_name': data.get('first_name', ''), 'last_name': data.get('last_name', ''),
         'company': data.get('company', ''), 'phone': data.get('phone', ''),
         'email': data.get('email', ''), 'address': data.get('address', ''),
@@ -640,9 +674,9 @@ def get_lead(lead_id):
     return jsonify(d)
 
 # Fields a rep may PUT directly.
-LEAD_EDITABLE = ['lead_type', 'service', 'first_name', 'last_name', 'company', 'phone', 'email',
-                 'address', 'city', 'state', 'zip', 'source', 'temperature',
-                 'est_value', 'referred_by', 'lost_reason', 'estimate_id', 'rep']
+LEAD_EDITABLE = ['lead_type', 'service', 'plan', 'billing', 'first_name', 'last_name',
+                 'company', 'phone', 'email', 'address', 'city', 'state', 'zip', 'source',
+                 'temperature', 'est_value', 'referred_by', 'lost_reason', 'estimate_id', 'rep']
 
 @app.route('/api/leads/<lead_id>', methods=['PUT'])
 @login_required
@@ -661,6 +695,8 @@ def update_lead(lead_id):
                     return jsonify({'error': 'Invalid lead type'}), 400
                 if f == 'service' and data[f] not in SERVICE_KEYS:
                     return jsonify({'error': 'Invalid service'}), 400
+                if f == 'billing' and data[f] not in BILLING_KEYS:
+                    return jsonify({'error': 'Invalid billing'}), 400
                 if f == 'est_value':
                     sets.append('est_value=?'); params.append(float(data[f] or 0)); continue
                 sets.append(f'{f}=?'); params.append(data[f])
@@ -893,9 +929,20 @@ def _den_payloads(lead):
         'source': lead['source'] or 'referral', 'assigned_to': assigned,
     }
     service_label = SERVICE_META.get(lead.get('service') or 'roofing', SERVICES[0])['label']
+    # Recurring plans carry their plan name + billing cadence into the project name/notes
+    # so The Den/production can see it's a maintenance agreement, not a one-time job.
+    pname = f"{service_label} - {name}"
+    notes = ''
+    plan = PLAN_BY_ID.get(lead.get('plan') or '')
+    if plan:
+        pname = f"{plan['name']} ({service_label}) - {name}"
+        suffix = BILLING_SUFFIX.get(lead.get('billing') or '', '')
+        notes = f"Recurring maintenance plan: {plan['name']}"
+        if lead.get('est_value'):
+            notes += f" — {int(lead['est_value'])}{suffix}"
     project = {
-        'name': f"{service_label} - {name}", 'source': lead['source'] or 'referral',
-        'assigned_to': assigned, 'status': 'lead',
+        'name': pname, 'source': lead['source'] or 'referral',
+        'assigned_to': assigned, 'status': 'lead', 'notes': notes,
     }
     return contact, project
 
@@ -1133,6 +1180,22 @@ def dashboard():
                                     'open': row['c'], 'open_value': row['v'],
                                     'won': wrow['c'], 'won_value': wrow['v']}
 
+        # Recurring revenue: every WON deal with a billing cadence is an ACTIVE PLAN.
+        # MRR normalizes each to a monthly figure (a $300/qtr plan = $100 MRR).
+        # This is current-state (running book of business), not date-windowed.
+        mrr = 0.0
+        active_plans = 0
+        plan_mix = {}
+        recur_where = lead_where + ["stage='won'", "billing != ''"]
+        for r in db.execute(f'SELECT est_value, billing, plan FROM leads '
+                            f'WHERE {" AND ".join(recur_where)}', lead_params):
+            months = BILLING_MONTHS.get(r['billing'], 1)
+            mrr += (r['est_value'] or 0) / months
+            active_plans += 1
+            pname = (PLAN_BY_ID.get(r['plan']) or {}).get('name', 'Custom / no plan')
+            plan_mix[pname] = plan_mix.get(pname, 0) + 1
+        mrr = round(mrr, 0)
+
     decided = won_count + lost_count
     win_rate = round(100 * won_count / decided, 1) if decided else 0.0
     avg_deal = round(won_value / won_count, 0) if won_count else 0.0
@@ -1148,6 +1211,7 @@ def dashboard():
         'pipeline_count': pipe['c'], 'pipeline_value': pipe['v'],
         'activity': act_rows, 'outreach_total': outreach,
         'by_source': by_source, 'by_state': by_state, 'by_service': by_service,
+        'mrr': mrr, 'arr': round(mrr * 12, 0), 'active_plans': active_plans, 'plan_mix': plan_mix,
     })
 
 @app.route('/api/leaderboard')
@@ -1284,24 +1348,113 @@ def delete_goal(goal_id):
         db.execute('DELETE FROM goals WHERE id=?', (goal_id,))
     return jsonify({'ok': True})
 
-# ── Playbook / config / health ────────────────────────────────────────────────
+# ── Documents (per-lead files on the persistent volume) ───────────────────────
+
+# Absolute so send_from_directory resolves regardless of the process CWD.
+DOCS_DIR = os.path.abspath(os.path.join(DATA_DIR, 'documents'))
+ALLOWED_DOC_EXT = {'pdf', 'png', 'jpg', 'jpeg', 'gif', 'heic', 'webp', 'doc', 'docx',
+                   'xls', 'xlsx', 'csv', 'txt', 'zip'}
+MAX_DOC_BYTES = 25 * 1024 * 1024   # 25 MB per file
+
+def _doc_row(r):
+    d = dict(r)
+    d.pop('filename', None)                      # never expose the on-disk name
+    d['url'] = f"/api/documents/{d['id']}/download"
+    return d
+
+@app.route('/api/leads/<lead_id>/documents', methods=['GET', 'POST'])
+@login_required
+def lead_documents(lead_id):
+    with get_db() as db:
+        row = _lead_visible(db, lead_id)
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+    if request.method == 'POST':
+        f = request.files.get('file')
+        if not f or not f.filename:
+            return jsonify({'error': 'No file'}), 400
+        ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in f.filename else ''
+        if ext not in ALLOWED_DOC_EXT:
+            return jsonify({'error': f'File type .{ext} not allowed'}), 400
+        blob = f.read()
+        if len(blob) > MAX_DOC_BYTES:
+            return jsonify({'error': 'File too large (25 MB max)'}), 400
+        os.makedirs(DOCS_DIR, exist_ok=True)
+        did = str(uuid.uuid4())
+        stored = f'{did}.{ext}'
+        with open(os.path.join(DOCS_DIR, stored), 'wb') as out:
+            out.write(blob)
+        orig = os.path.basename(f.filename)
+        with get_db() as db:
+            db.execute('INSERT INTO documents (id, lead_id, filename, orig_name, size, '
+                       'uploaded_by, created_at) VALUES (?,?,?,?,?,?,?)',
+                       (did, lead_id, stored, orig, len(blob), current_rep(), _now()))
+            _log_activity(db, lead_id, 'system', body=f'📎 Uploaded document: {orig}')
+        return jsonify({'ok': True, 'id': did}), 201
+    with get_db() as db:
+        rows = db.execute('SELECT * FROM documents WHERE lead_id=? ORDER BY created_at DESC',
+                          (lead_id,)).fetchall()
+    return jsonify([_doc_row(r) for r in rows])
+
+@app.route('/api/documents/<doc_id>/download')
+@login_required
+def download_document(doc_id):
+    with get_db() as db:
+        doc = db.execute('SELECT * FROM documents WHERE id=?', (doc_id,)).fetchone()
+        if not doc:
+            return jsonify({'error': 'Not found'}), 404
+        if not _lead_visible(db, doc['lead_id']):     # inherit the lead's visibility
+            return jsonify({'error': 'Forbidden'}), 403
+    return send_from_directory(DOCS_DIR, doc['filename'], as_attachment=True,
+                               download_name=doc['orig_name'])
+
+@app.route('/api/documents/<doc_id>', methods=['DELETE'])
+@login_required
+def delete_document(doc_id):
+    with get_db() as db:
+        doc = db.execute('SELECT * FROM documents WHERE id=?', (doc_id,)).fetchone()
+        if not doc:
+            return jsonify({'error': 'Not found'}), 404
+        if not _lead_visible(db, doc['lead_id']):
+            return jsonify({'error': 'Forbidden'}), 403
+        db.execute('DELETE FROM documents WHERE id=?', (doc_id,))
+    try:
+        os.remove(os.path.join(DOCS_DIR, doc['filename']))
+    except OSError:
+        pass
+    return jsonify({'ok': True})
+
+# ── Playbook / plans / config / health ────────────────────────────────────────
 
 @app.route('/api/playbook')
 @login_required
 def playbook():
     return jsonify(PLAYBOOK)
 
+@app.route('/api/plans')
+@login_required
+def plans():
+    return jsonify(PLANS)
+
 @app.route('/api/config')
 def config():
     return jsonify({
         'stages': STAGES, 'lead_types': LEAD_TYPES, 'sources': SOURCES,
         'temperature': TEMPERATURE, 'partner_types': PARTNER_TYPES,
-        'services': SERVICES, 'stall_days': STALL_DAYS,
+        'services': SERVICES, 'plans': PLANS,
+        'billing_options': [
+            {'key': '',          'label': 'One-time'},
+            {'key': 'monthly',   'label': 'Monthly'},
+            {'key': 'quarterly', 'label': 'Quarterly'},
+            {'key': 'annual',    'label': 'Annual'},
+        ],
+        'stall_days': STALL_DAYS,
     })
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok', 'db': DB_PATH, 'den': bool(BASE44_TOKEN)})
+    return jsonify({'status': 'ok', 'db': DB_PATH, 'den': bool(BASE44_TOKEN),
+                    'plans': len(PLANS)})
 
 if __name__ == '__main__':
     app.run(debug=True, port=5002)

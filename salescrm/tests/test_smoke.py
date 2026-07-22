@@ -169,6 +169,63 @@ def test_service_lines(client):
     assert dry['project']['name'].startswith('Window Cleaning - ')
 
 
+def test_plans_and_mrr(client):
+    signup(client)
+    # a monthly homeowner plan and a quarterly HOA plan
+    hs = new_lead(client, first_name='Home', service='exterior_maintenance',
+                  plan='home_shield', billing='monthly', est_value=99)
+    hoa = new_lead(client, first_name='Oak', lead_type='hoa', service='exterior_maintenance',
+                   plan='hoa_complete', billing='quarterly', est_value=900)
+    assert hs['plan_name'] == 'Home Shield' and hs['value_suffix'] == '/mo'
+    client.patch(f"/api/leads/{hs['id']}/stage", json={'stage': 'won'})
+    client.patch(f"/api/leads/{hoa['id']}/stage", json={'stage': 'won'})
+    d = client.get('/api/dashboard').get_json()
+    assert d['active_plans'] == 2
+    assert d['mrr'] == 399         # 99/mo + 900/qtr(=300)
+    assert d['arr'] == 4788
+    assert d['plan_mix']['Home Shield'] == 1
+    # invalid billing rejected
+    assert client.post('/api/leads', json={'first_name': 'x', 'billing': 'weekly'}).status_code == 400
+    # plans catalog served
+    assert {p['id'] for p in client.get('/api/plans').get_json()} >= {'home_shield', 'hoa_complete'}
+
+
+def test_documents_crud(client):
+    import io
+    signup(client)
+    lid = new_lead(client)['id']
+    up = client.post(f'/api/leads/{lid}/documents',
+                     data={'file': (io.BytesIO(b'%PDF-1.4 hi'), 'contract.pdf')},
+                     content_type='multipart/form-data')
+    assert up.status_code == 201
+    docs = client.get(f'/api/leads/{lid}/documents').get_json()
+    assert len(docs) == 1 and docs[0]['orig_name'] == 'contract.pdf'
+    assert 'filename' not in docs[0]                       # on-disk name never exposed
+    did = docs[0]['id']
+    dl = client.get(f'/api/documents/{did}/download')
+    assert dl.status_code == 200 and dl.data.startswith(b'%PDF')
+    # disallowed extension rejected
+    bad = client.post(f'/api/leads/{lid}/documents',
+                      data={'file': (io.BytesIO(b'x'), 'evil.exe')},
+                      content_type='multipart/form-data')
+    assert bad.status_code == 400
+    assert client.delete(f'/api/documents/{did}').status_code == 200
+    assert client.get(f'/api/leads/{lid}/documents').get_json() == []
+
+
+def test_document_visibility_isolation(client):
+    import io
+    signup(client, 'luke')
+    lid = new_lead(client)['id']
+    did = client.post(f'/api/leads/{lid}/documents',
+                      data={'file': (io.BytesIO(b'x'), 'a.pdf')},
+                      content_type='multipart/form-data').get_json()['id']
+    client.post('/api/logout')
+    signup(client, 'bryan')                                # a different rep
+    assert client.get(f'/api/documents/{did}/download').status_code == 403
+    assert client.delete(f'/api/documents/{did}').status_code == 403
+
+
 def test_service_migration_adds_column(app, client):
     # simulate a pre-service DB: drop the column, rerun migrate
     with app.get_db() as db:

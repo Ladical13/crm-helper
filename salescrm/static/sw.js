@@ -1,9 +1,9 @@
 // Project One Pipeline — service worker. Bump CACHE on any shell asset change.
-const CACHE = 'p1pipeline-v7';
+const CACHE = 'p1pipeline-v8';
 const SHELL = [
   '/',
-  '/static/style.css?v=7',
-  '/static/app.js?v=7',
+  '/static/style.css?v=8',
+  '/static/app.js?v=8',
   '/static/manifest.json',
   '/static/icon-192.png',
   '/static/icon-512.png',

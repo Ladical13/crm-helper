@@ -163,6 +163,26 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .chip.stall{background:rgba(245,158,11,.15);border-color:var(--amber);color:#fcd34d;margin-top:8px}
 .type-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;background:rgba(59,130,246,.15);color:#93c5fd}
 .svc-badge{font-size:13px;flex:0 0 auto}
+.type-badge.plan{background:rgba(16,185,129,.15);color:#6ee7b7}
+
+/* ── Plans ── */
+.plan-includes{background:var(--bg);border:1px solid var(--line);border-radius:10px;
+  padding:10px 12px;margin:10px 0;font-size:13px}
+.plan-includes ul,.plan-ul{margin:6px 0 0;padding-left:18px;color:var(--txt2)}
+.plan-includes li,.plan-ul li{margin:3px 0}
+.plan-pitch{color:var(--brand2);font-size:13px;font-style:italic;margin-top:6px}
+
+/* ── Documents ── */
+.doc-upload{display:inline-flex;align-items:center;margin-top:8px;cursor:pointer}
+.doc-row{display:flex;align-items:center;gap:9px;padding:9px 10px;background:var(--bg);
+  border:1px solid var(--line);border-radius:10px;margin-bottom:7px}
+.doc-ico{font-size:17px;flex:0 0 auto}
+.doc-name{flex:1;min-width:0;color:var(--txt);text-decoration:none;font-weight:600;font-size:13.5px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.doc-name:hover{color:var(--brand2)}
+.doc-meta{font-size:11px;color:var(--txt3);flex:0 0 auto}
+.doc-del{background:none;border:none;font-size:15px;opacity:.6;flex:0 0 auto}
+.doc-del:hover{opacity:1}
 
 /* ── Cards / lists ── */
 .card-list{display:flex;flex-direction:column;gap:10px}
