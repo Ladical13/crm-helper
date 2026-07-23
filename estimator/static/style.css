@@ -1716,6 +1716,68 @@ body.is-home #nav-toggle       { display: none; }
   border-radius: 6px; padding: 8px 11px;
 }
 
+/* Permit jurisdiction & code panel (civic slate/indigo, sibling of ventilation) */
+.jx-panel { background: #f5f7fb; border-color: #c7d2e5; }
+.jx-panel .measure-panel-head h3 { color: #1e293b; }
+.jx-panel .measure-hint { color: #64748b; }
+.jx-loading { font-size: 12.5px; color: #64748b; margin: 6px 2px; }
+.jx-note { font-size: 12.5px; color: #475569; margin: 8px 2px; line-height: 1.5; }
+.jx-select {
+  width: 100%; max-width: 520px; margin: 4px 0 2px; padding: 9px 10px;
+  border: 1px solid #94a3b8; border-radius: 7px; background: #fff;
+  font-size: 13px; font-weight: 600; color: #1e293b; outline: none;
+}
+.jx-select:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,.14); }
+.jx-nudge {
+  margin: 8px 0 4px; font-size: 12px; font-weight: 600; color: #7c2d12;
+  background: #fff7ed; border: 1px solid #fdba74; border-left: 4px solid #f97316;
+  border-radius: 6px; padding: 8px 11px; line-height: 1.5;
+}
+.jx-card {
+  margin-top: 10px; background: #fff; border: 1px solid #d3dce9;
+  border-radius: 9px; padding: 12px 14px;
+}
+.jx-office {
+  font-size: 14px; font-weight: 800; color: #111827; display: flex;
+  align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.jx-kind {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+  color: #3730a3; background: #e0e7ff; border: 1px solid #c7d2fe;
+  padding: 1px 7px; border-radius: 10px;
+}
+.jx-pull { margin-top: 7px; font-size: 12.5px; color: #334155; line-height: 1.5; }
+.jx-contacts { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.jx-contact { font-size: 12px; font-weight: 600; color: #1d4ed8; text-decoration: none; word-break: break-all; }
+a.jx-contact:hover { text-decoration: underline; }
+.jx-permit-btn {
+  margin-top: 11px; display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 700; color: #0c4a6e; cursor: pointer;
+  background: #f0f9ff; border: 1px solid #7dd3fc; border-radius: 7px; padding: 8px 12px;
+}
+.jx-permit-btn:hover { background: #e0f2fe; border-color: #38bdf8; }
+.jx-code-title {
+  margin-top: 13px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .5px; color: #64748b;
+}
+.jx-code { margin: 6px 0 0; padding-left: 18px; }
+.jx-code li { font-size: 12.5px; color: #334155; line-height: 1.55; margin-bottom: 4px; }
+.jx-verify {
+  margin-top: 11px; font-size: 11.5px; font-weight: 600; color: #713f12;
+  background: #fefce8; border: 1px solid #fde047; border-left: 4px solid #eab308;
+  border-radius: 6px; padding: 8px 11px; line-height: 1.5;
+}
+
+/* Permit-jurisdiction editor (⚙ Settings) */
+.jxset-sub { display: block; margin: 10px 0 4px; font-size: 12.5px; font-weight: 700; color: #334155; }
+#jxset-search, #jxset-pick { width: 100%; margin-bottom: 6px; }
+.jxset-fields {
+  margin-top: 10px; padding: 12px; border: 1px solid var(--border);
+  border-radius: 8px; background: #f8fafc;
+}
+.jxset-fields .field-group { margin-bottom: 10px; }
+.jxset-fields .field-group:last-child { margin-bottom: 0; }
+
 /* Auto-qty linkage in scope table */
 .th-auto { width: 190px; }
 .scope-measure-cell { padding: 4px 6px !important; }

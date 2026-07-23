@@ -788,6 +788,10 @@ function blankEstimate() {
                 name:'', phone:'', email:'',
                 address:{ street:'', city:'', state:'', zip:'' } },
     project_address: '',
+    // Permit jurisdiction chosen for this job (Scope-page panel). auto_id is the
+    // address-matched default; selected_id + confirmed track a rep override
+    // (mailing city isn't always the permitting authority — see setJurisdiction).
+    permit_jurisdiction: { selected_id:null, auto_id:null, confirmed:false },
     estimate_date: fmtDate(today), valid_until: fmtDate(exp),
     salesperson: '', notes_internal: '', notes_customer: '',
     pricing: { mode:'margin', global_rate:35,
@@ -2448,6 +2452,142 @@ function togglePagePrint(page) {
   renderPrintPagesBar();
 }
 
+/* ── Permit jurisdiction & code (Scope-page panel) ─────────────────────
+   Statewide-Colorado reference served by /api/jurisdictions (all 64 counties +
+   273 municipalities + a shared colorado_baseline). We match the customer
+   address to candidate jurisdictions, but a mailing city is NOT always the
+   permitting authority — a "Fort Collins" parcel may sit in unincorporated
+   Larimer County — so the panel offers the matched city AND its county (and,
+   as a fallback, every CO jurisdiction) and the rep confirms which governs.
+   Display/reference only; nothing here touches pricing. */
+let _jurisdictions = null;          // {version, colorado_baseline, jurisdictions:[]}
+let _jurisdictionsLoading = false;
+function _ensureJurisdictions() {
+  if (_jurisdictions || _jurisdictionsLoading) return;
+  _jurisdictionsLoading = true;
+  fetch('/api/jurisdictions')
+    .then(r => r.json())
+    .then(d => { _jurisdictions = d || {}; })
+    .catch(() => { _jurisdictions = { colorado_baseline:{code_points:[],verify_note:''}, jurisdictions:[] }; })
+    .finally(() => { _jurisdictionsLoading = false; if (activePage === 'scope') renderScopePage(); });
+}
+const _normCity = s => String(s || '').trim().toLowerCase();
+function _jxById(id) {
+  return ((_jurisdictions && _jurisdictions.jurisdictions) || []).find(j => j.id === id) || null;
+}
+// Candidate jurisdictions for the current address. Returns {outOfState, list}.
+function jurisdictionCandidates() {
+  const data = _jurisdictions;
+  const all = (data && data.jurisdictions) || [];
+  const addr = (S.customer && S.customer.address) || {};
+  const state = String(addr.state || '').trim().toUpperCase();
+  const city = _normCity(addr.city);
+  const zip = String(addr.zip || '').trim().slice(0, 5);
+  if (state && state !== 'CO' && state !== 'COLORADO') return { outOfState:true, state, list:[] };
+  const list = [], seen = new Set();
+  const add = j => { if (j && !seen.has(j.id)) { seen.add(j.id); list.push(j); } };
+  if (zip) all.forEach(j => { if (((j.match && j.match.zips) || []).includes(zip)) add(j); });
+  if (city) all.forEach(j => { if (((j.match && j.match.cities) || []).some(c => _normCity(c) === city)) add(j); });
+  // Append the county catch-all(s) for every matched municipality.
+  const wantCounties = new Set();
+  list.filter(j => j.kind === 'city').forEach(j => (j.counties || [j.county]).forEach(c => c && wantCounties.add(c)));
+  all.forEach(j => { if (j.kind === 'county' && wantCounties.has(j.county)) add(j); });
+  return { outOfState:false, state, list, hasAddr: !!(city || zip) };
+}
+// baseline code points + any entry-specific extras
+function _jxCodePoints(j) {
+  const base = ((_jurisdictions && _jurisdictions.colorado_baseline && _jurisdictions.colorado_baseline.code_points) || []);
+  return base.concat((j && j.code_points) || []);
+}
+function setJurisdiction(id) {
+  if (!S.permit_jurisdiction) S.permit_jurisdiction = { selected_id:null, auto_id:null, confirmed:false };
+  S.permit_jurisdiction.selected_id = id || null;
+  S.permit_jurisdiction.confirmed = true;
+  setDirty();
+  if (activePage === 'scope') renderScopePage();
+}
+// Jump from the Scope panel straight into the Documents permit generator.
+function openPermitDoc() {
+  _docGenerator = null;            // ensure docToggleGenerator opens (doesn't toggle off)
+  switchPage('documents');
+  docToggleGenerator('permit');
+}
+function permitJurisdictionMarkup() {
+  _ensureJurisdictions();
+  if (!_jurisdictions) return `
+    <div class="measure-panel jx-panel">
+      <div class="measure-panel-head"><h3>🏛 Permit Jurisdiction &amp; Code</h3></div>
+      <p class="jx-loading">Looking up the permitting jurisdiction…</p>
+    </div>`;
+
+  const baseline = _jurisdictions.colorado_baseline || { code_points:[], verify_note:'' };
+  const cand = jurisdictionCandidates();
+  const head = `<div class="measure-panel-head"><h3>🏛 Permit Jurisdiction &amp; Code</h3>
+      <span class="measure-hint">Where you'd pull the permit for this address — and the roofing code that applies</span></div>`;
+
+  if (cand.outOfState) return `
+    <div class="measure-panel jx-panel">${head}
+      <p class="jx-note">Colorado jurisdictions only — this address is in
+        <b>${esc(cand.state)}</b>, so no permit/code data is loaded here.</p>
+    </div>`;
+
+  const all = (_jurisdictions.jurisdictions || []).slice()
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const pj = S.permit_jurisdiction || (S.permit_jurisdiction = { selected_id:null, auto_id:null, confirmed:false });
+
+  // Auto-match default: first city candidate, else first candidate. Stored as
+  // auto_id (no dirty churn); selected_id wins once the rep confirms.
+  const autoPick = (cand.list.find(j => j.kind === 'city') || cand.list[0] || null);
+  pj.auto_id = autoPick ? autoPick.id : null;
+  const effId = (pj.selected_id && _jxById(pj.selected_id)) ? pj.selected_id : pj.auto_id;
+  const sel = effId ? _jxById(effId) : null;
+
+  const opt = j => `<option value="${j.id}" ${j.id === effId ? 'selected' : ''}>${esc(j.name)}</option>`;
+  const candIds = new Set(cand.list.map(j => j.id));
+  const selector = `
+    <select class="jx-select" onchange="setJurisdiction(this.value)">
+      <option value="" ${!effId ? 'selected' : ''}>— select the governing jurisdiction —</option>
+      ${cand.list.length ? `<optgroup label="Likely for this address">${cand.list.map(opt).join('')}</optgroup>` : ''}
+      <optgroup label="All Colorado jurisdictions">${all.filter(j => !candIds.has(j.id)).map(opt).join('')}</optgroup>
+    </select>`;
+
+  // County-vs-city nudge whenever a matched city has a county sibling.
+  const countyNudge = (sel && cand.list.some(j => j.kind === 'county')) ? `
+    <p class="jx-nudge">⚠️ The mailing city isn't always the permitting authority — confirm whether this
+      parcel is <b>inside city limits</b> or in <b>unincorporated ${esc(sel.counties ? sel.counties[0] : sel.county)}${(sel.county||'').endsWith('County') ? '' : ' County'}</b>, and pick the one that governs.</p>` : '';
+
+  let card = '';
+  if (sel) {
+    const points = _jxCodePoints(sel);
+    const pull = sel.pull || (sel.kind === 'county'
+      ? 'Confirm the reroof permit submittal method (portal / in person) with the county building department.'
+      : 'Confirm the reroof permit submittal method (portal / in person) with the city building department.');
+    const contact = [
+      sel.phone ? `<span class="jx-contact">📞 ${esc(sel.phone)}</span>` : '',
+      sel.url ? `<a class="jx-contact" href="${esc(sel.url)}" target="_blank" rel="noopener">🔗 ${esc(sel.url.replace(/^https?:\/\//,''))}</a>` : '',
+    ].filter(Boolean).join('');
+    card = `
+      <div class="jx-card">
+        <div class="jx-office">${esc(sel.office || sel.name)}
+          <span class="jx-kind">${sel.kind === 'county' ? 'County AHJ' : 'Municipal AHJ'}</span></div>
+        <div class="jx-pull"><b>Pull the permit:</b> ${esc(pull)}</div>
+        ${contact ? `<div class="jx-contacts">${contact}</div>` : ''}
+        ${sel.permit_template === 'loveland' ? `
+          <button class="jx-permit-btn" onclick="openPermitDoc()">📄 Open reroof permit form →</button>` : ''}
+        <div class="jx-code-title">Roofing code requirements</div>
+        <ul class="jx-code">${points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>
+        ${baseline.verify_note ? `<div class="jx-verify">⚠️ ${esc(baseline.verify_note)}</div>` : ''}
+      </div>`;
+  } else if (cand.hasAddr) {
+    card = `<p class="jx-note">No exact match for this city — it may be an unincorporated area.
+      Choose the governing city or county above (the code baseline still applies).</p>`;
+  } else {
+    card = `<p class="jx-note">Enter the property <b>city</b> (and ZIP) in the sidebar to look up the permit jurisdiction.</p>`;
+  }
+
+  return `<div class="measure-panel jx-panel">${head}${selector}${countyNudge}${card}</div>`;
+}
+
 /* ── Page 3: Scope / Measurements ──────────────────────────────────── */
 
 function renderScopePage() {
@@ -2585,6 +2725,8 @@ function renderScopePage() {
     ${measurePanel}
 
     ${ventPanel}
+
+    ${permitJurisdictionMarkup()}
 
     ${sidingMeasurePanel}
 
@@ -6371,6 +6513,7 @@ async function openSettings() {
     } catch {}
     _settingsGbb = JSON.parse(JSON.stringify(tierDefaults || {}));
     _gbbSetTrade(_gbbActiveTrade);
+    await _jxOpen();
   }
   if (_meIsAdmin()) {
     document.getElementById('settings-company').classList.remove('hidden');
@@ -6395,6 +6538,62 @@ async function openSettings() {
 let _settingsGbb = {};
 let _gbbActiveTrade = 'roofing';
 const GBB_SET_TRADES = ['roofing','siding','windows','gutters','other'];
+
+/* Permit-jurisdiction editor (⚙ Settings, manager+). Edits a working copy
+   (_settingsJx) of the whole jurisdictions doc — the CO baseline plus per-entry
+   office/pull/phone/url/code_points overrides — and saveSettings PUTs it to
+   /api/jurisdictions. Curates existing entries (every CO city + county is
+   already seeded); no add/remove needed for normal use. */
+let _settingsJx = null;
+let _jxEditingId = null;
+async function _jxOpen() {
+  document.getElementById('settings-jurisdictions').classList.remove('hidden');
+  try {
+    _settingsJx = await (await fetch('/api/jurisdictions')).json();
+  } catch { _settingsJx = { colorado_baseline:{code_points:[],verify_note:''}, jurisdictions:[] }; }
+  if (!_settingsJx.colorado_baseline) _settingsJx.colorado_baseline = { code_points:[], verify_note:'' };
+  const b = _settingsJx.colorado_baseline;
+  document.getElementById('jxset-baseline-points').value = (b.code_points || []).join('\n');
+  document.getElementById('jxset-verify').value = b.verify_note || '';
+  _jxEditingId = null;
+  document.getElementById('jxset-fields').classList.add('hidden');
+  const s = document.getElementById('jxset-search'); if (s) s.value = '';
+  _jxFillPicker('');
+}
+function _jxFillPicker(q) {
+  const sel = document.getElementById('jxset-pick');
+  if (!sel || !_settingsJx) return;
+  q = String(q || '').trim().toLowerCase();
+  const list = (_settingsJx.jurisdictions || []).filter(j =>
+    !q || j.name.toLowerCase().includes(q) ||
+    ((j.match && j.match.cities) || []).some(c => c.toLowerCase().includes(q))).slice(0, 250);
+  sel.innerHTML = '<option value="">— pick a jurisdiction to curate —</option>' +
+    list.map(j => `<option value="${j.id}" ${j.id === _jxEditingId ? 'selected' : ''}>${esc(j.name)}</option>`).join('');
+}
+function _jxCollectCurrent() {
+  if (!_settingsJx || !_jxEditingId) return;
+  const j = (_settingsJx.jurisdictions || []).find(x => x.id === _jxEditingId);
+  if (!j) return;
+  const v = id => (document.getElementById(id).value || '').trim();
+  j.office = v('jxset-office');
+  j.pull   = v('jxset-pull');
+  j.phone  = v('jxset-phone');
+  j.url    = v('jxset-url');
+  j.code_points = document.getElementById('jxset-points').value.split('\n').map(s => s.trim()).filter(Boolean);
+}
+function _jxPickEdit(id) {
+  _jxCollectCurrent();              // persist edits to the previously picked entry
+  _jxEditingId = id || null;
+  const box = document.getElementById('jxset-fields');
+  const j = id ? (_settingsJx.jurisdictions || []).find(x => x.id === id) : null;
+  if (!j) { box.classList.add('hidden'); return; }
+  document.getElementById('jxset-office').value = j.office || '';
+  document.getElementById('jxset-pull').value   = j.pull || '';
+  document.getElementById('jxset-phone').value  = j.phone || '';
+  document.getElementById('jxset-url').value    = j.url || '';
+  document.getElementById('jxset-points').value = (j.code_points || []).join('\n');
+  box.classList.remove('hidden');
+}
 
 function _gbbTradeDefaults(trade) {
   if (!_settingsGbb[trade]) _settingsGbb[trade] = {
@@ -6531,6 +6730,19 @@ async function saveSettings() {
       });
       if (!rg.ok) throw new Error('G/B/B package content save failed');
       tierDefaults = JSON.parse(JSON.stringify(_settingsGbb));
+      // Permit jurisdictions + code (manager+)
+      if (_settingsJx) {
+        _jxCollectCurrent();
+        const b = _settingsJx.colorado_baseline || (_settingsJx.colorado_baseline = {});
+        b.code_points = document.getElementById('jxset-baseline-points').value.split('\n').map(s => s.trim()).filter(Boolean);
+        b.verify_note = (document.getElementById('jxset-verify').value || '').trim();
+        const rj = await fetch('/api/jurisdictions', {
+          method: 'PUT', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(_settingsJx),
+        });
+        if (!rj.ok) throw new Error('Jurisdiction save failed');
+        _jurisdictions = JSON.parse(JSON.stringify(_settingsJx));   // refresh Scope panel source
+      }
     }
     // Admin: save the customer-proposal company content alongside
     if (_meIsAdmin()) {

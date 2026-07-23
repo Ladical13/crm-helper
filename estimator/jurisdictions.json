@@ -1,0 +1,7014 @@
+{
+  "version": 1,
+  "generated_by": "scripts/build_jurisdictions.py",
+  "generated_on": "2026-07-23",
+  "source": "Wikipedia: List of municipalities in Colorado (raw wikitext)",
+  "colorado_baseline": {
+    "code_points": [
+      "Colorado has no statewide residential building code — the local city or county adopts and enforces its own. Confirm the adopted IRC year and any local amendments with this jurisdiction.",
+      "Ice barrier (self-adhering underlayment) typically required from the eave to at least 24\" inside the exterior warm-wall line.",
+      "Balanced attic ventilation to code — 1 sq ft net free area per 300 sq ft of attic (1/300 rule).",
+      "Drip edge required at eaves and rakes.",
+      "Class 4 impact-resistant shingles strongly recommended for CO hail (insurance-driven, not usually code-mandated).",
+      "Most CO jurisdictions require a permit and a final inspection for a full reroof."
+    ],
+    "verify_note": "Colorado is home-rule for building codes — always confirm the adopted code year, local amendments, and the reroof submittal method with this jurisdiction before pulling the permit."
+  },
+  "jurisdictions": [
+    {
+      "id": "adams-county",
+      "name": "Adams County",
+      "kind": "county",
+      "county": "Adams",
+      "counties": [
+        "Adams"
+      ],
+      "office": "Adams County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "alamosa-county",
+      "name": "Alamosa County",
+      "kind": "county",
+      "county": "Alamosa",
+      "counties": [
+        "Alamosa"
+      ],
+      "office": "Alamosa County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "arapahoe-county",
+      "name": "Arapahoe County",
+      "kind": "county",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe"
+      ],
+      "office": "Arapahoe County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "archuleta-county",
+      "name": "Archuleta County",
+      "kind": "county",
+      "county": "Archuleta",
+      "counties": [
+        "Archuleta"
+      ],
+      "office": "Archuleta County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "baca-county",
+      "name": "Baca County",
+      "kind": "county",
+      "county": "Baca",
+      "counties": [
+        "Baca"
+      ],
+      "office": "Baca County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "bent-county",
+      "name": "Bent County",
+      "kind": "county",
+      "county": "Bent",
+      "counties": [
+        "Bent"
+      ],
+      "office": "Bent County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "boulder-county",
+      "name": "Boulder County",
+      "kind": "county",
+      "county": "Boulder",
+      "counties": [
+        "Boulder"
+      ],
+      "office": "Boulder County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "broomfield-county",
+      "name": "Broomfield County",
+      "kind": "county",
+      "county": "Broomfield",
+      "counties": [
+        "Broomfield"
+      ],
+      "office": "Broomfield County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "chaffee-county",
+      "name": "Chaffee County",
+      "kind": "county",
+      "county": "Chaffee",
+      "counties": [
+        "Chaffee"
+      ],
+      "office": "Chaffee County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "cheyenne-county",
+      "name": "Cheyenne County",
+      "kind": "county",
+      "county": "Cheyenne",
+      "counties": [
+        "Cheyenne"
+      ],
+      "office": "Cheyenne County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "clear-creek-county",
+      "name": "Clear Creek County",
+      "kind": "county",
+      "county": "Clear Creek",
+      "counties": [
+        "Clear Creek"
+      ],
+      "office": "Clear Creek County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "conejos-county",
+      "name": "Conejos County",
+      "kind": "county",
+      "county": "Conejos",
+      "counties": [
+        "Conejos"
+      ],
+      "office": "Conejos County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "costilla-county",
+      "name": "Costilla County",
+      "kind": "county",
+      "county": "Costilla",
+      "counties": [
+        "Costilla"
+      ],
+      "office": "Costilla County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "crowley-county",
+      "name": "Crowley County",
+      "kind": "county",
+      "county": "Crowley",
+      "counties": [
+        "Crowley"
+      ],
+      "office": "Crowley County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "custer-county",
+      "name": "Custer County",
+      "kind": "county",
+      "county": "Custer",
+      "counties": [
+        "Custer"
+      ],
+      "office": "Custer County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "delta-county",
+      "name": "Delta County",
+      "kind": "county",
+      "county": "Delta",
+      "counties": [
+        "Delta"
+      ],
+      "office": "Delta County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "denver-county",
+      "name": "Denver County",
+      "kind": "county",
+      "county": "Denver",
+      "counties": [
+        "Denver"
+      ],
+      "office": "Denver County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "dolores-county",
+      "name": "Dolores County",
+      "kind": "county",
+      "county": "Dolores",
+      "counties": [
+        "Dolores"
+      ],
+      "office": "Dolores County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "douglas-county",
+      "name": "Douglas County",
+      "kind": "county",
+      "county": "Douglas",
+      "counties": [
+        "Douglas"
+      ],
+      "office": "Douglas County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "eagle-county",
+      "name": "Eagle County",
+      "kind": "county",
+      "county": "Eagle",
+      "counties": [
+        "Eagle"
+      ],
+      "office": "Eagle County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "el-paso-county",
+      "name": "El Paso County",
+      "kind": "county",
+      "county": "El Paso",
+      "counties": [
+        "El Paso"
+      ],
+      "office": "El Paso County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "elbert-county",
+      "name": "Elbert County",
+      "kind": "county",
+      "county": "Elbert",
+      "counties": [
+        "Elbert"
+      ],
+      "office": "Elbert County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "fremont-county",
+      "name": "Fremont County",
+      "kind": "county",
+      "county": "Fremont",
+      "counties": [
+        "Fremont"
+      ],
+      "office": "Fremont County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "garfield-county",
+      "name": "Garfield County",
+      "kind": "county",
+      "county": "Garfield",
+      "counties": [
+        "Garfield"
+      ],
+      "office": "Garfield County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "gilpin-county",
+      "name": "Gilpin County",
+      "kind": "county",
+      "county": "Gilpin",
+      "counties": [
+        "Gilpin"
+      ],
+      "office": "Gilpin County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "grand-county",
+      "name": "Grand County",
+      "kind": "county",
+      "county": "Grand",
+      "counties": [
+        "Grand"
+      ],
+      "office": "Grand County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "gunnison-county",
+      "name": "Gunnison County",
+      "kind": "county",
+      "county": "Gunnison",
+      "counties": [
+        "Gunnison"
+      ],
+      "office": "Gunnison County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "hinsdale-county",
+      "name": "Hinsdale County",
+      "kind": "county",
+      "county": "Hinsdale",
+      "counties": [
+        "Hinsdale"
+      ],
+      "office": "Hinsdale County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "huerfano-county",
+      "name": "Huerfano County",
+      "kind": "county",
+      "county": "Huerfano",
+      "counties": [
+        "Huerfano"
+      ],
+      "office": "Huerfano County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "jackson-county",
+      "name": "Jackson County",
+      "kind": "county",
+      "county": "Jackson",
+      "counties": [
+        "Jackson"
+      ],
+      "office": "Jackson County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "jefferson-county",
+      "name": "Jefferson County",
+      "kind": "county",
+      "county": "Jefferson",
+      "counties": [
+        "Jefferson"
+      ],
+      "office": "Jefferson County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "kiowa-county",
+      "name": "Kiowa County",
+      "kind": "county",
+      "county": "Kiowa",
+      "counties": [
+        "Kiowa"
+      ],
+      "office": "Kiowa County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "kit-carson-county",
+      "name": "Kit Carson County",
+      "kind": "county",
+      "county": "Kit Carson",
+      "counties": [
+        "Kit Carson"
+      ],
+      "office": "Kit Carson County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "la-plata-county",
+      "name": "La Plata County",
+      "kind": "county",
+      "county": "La Plata",
+      "counties": [
+        "La Plata"
+      ],
+      "office": "La Plata County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "lake-county",
+      "name": "Lake County",
+      "kind": "county",
+      "county": "Lake",
+      "counties": [
+        "Lake"
+      ],
+      "office": "Lake County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "larimer-county",
+      "name": "Larimer County",
+      "kind": "county",
+      "county": "Larimer",
+      "counties": [
+        "Larimer"
+      ],
+      "office": "Larimer County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "las-animas-county",
+      "name": "Las Animas County",
+      "kind": "county",
+      "county": "Las Animas",
+      "counties": [
+        "Las Animas"
+      ],
+      "office": "Las Animas County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "lincoln-county",
+      "name": "Lincoln County",
+      "kind": "county",
+      "county": "Lincoln",
+      "counties": [
+        "Lincoln"
+      ],
+      "office": "Lincoln County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "logan-county",
+      "name": "Logan County",
+      "kind": "county",
+      "county": "Logan",
+      "counties": [
+        "Logan"
+      ],
+      "office": "Logan County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "mesa-county",
+      "name": "Mesa County",
+      "kind": "county",
+      "county": "Mesa",
+      "counties": [
+        "Mesa"
+      ],
+      "office": "Mesa County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "mineral-county",
+      "name": "Mineral County",
+      "kind": "county",
+      "county": "Mineral",
+      "counties": [
+        "Mineral"
+      ],
+      "office": "Mineral County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "moffat-county",
+      "name": "Moffat County",
+      "kind": "county",
+      "county": "Moffat",
+      "counties": [
+        "Moffat"
+      ],
+      "office": "Moffat County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "montezuma-county",
+      "name": "Montezuma County",
+      "kind": "county",
+      "county": "Montezuma",
+      "counties": [
+        "Montezuma"
+      ],
+      "office": "Montezuma County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "montrose-county",
+      "name": "Montrose County",
+      "kind": "county",
+      "county": "Montrose",
+      "counties": [
+        "Montrose"
+      ],
+      "office": "Montrose County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "morgan-county",
+      "name": "Morgan County",
+      "kind": "county",
+      "county": "Morgan",
+      "counties": [
+        "Morgan"
+      ],
+      "office": "Morgan County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "otero-county",
+      "name": "Otero County",
+      "kind": "county",
+      "county": "Otero",
+      "counties": [
+        "Otero"
+      ],
+      "office": "Otero County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "ouray-county",
+      "name": "Ouray County",
+      "kind": "county",
+      "county": "Ouray",
+      "counties": [
+        "Ouray"
+      ],
+      "office": "Ouray County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "park-county",
+      "name": "Park County",
+      "kind": "county",
+      "county": "Park",
+      "counties": [
+        "Park"
+      ],
+      "office": "Park County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "phillips-county",
+      "name": "Phillips County",
+      "kind": "county",
+      "county": "Phillips",
+      "counties": [
+        "Phillips"
+      ],
+      "office": "Phillips County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "pitkin-county",
+      "name": "Pitkin County",
+      "kind": "county",
+      "county": "Pitkin",
+      "counties": [
+        "Pitkin"
+      ],
+      "office": "Pitkin County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "prowers-county",
+      "name": "Prowers County",
+      "kind": "county",
+      "county": "Prowers",
+      "counties": [
+        "Prowers"
+      ],
+      "office": "Prowers County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "pueblo-county",
+      "name": "Pueblo County",
+      "kind": "county",
+      "county": "Pueblo",
+      "counties": [
+        "Pueblo"
+      ],
+      "office": "Pueblo County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "rio-blanco-county",
+      "name": "Rio Blanco County",
+      "kind": "county",
+      "county": "Rio Blanco",
+      "counties": [
+        "Rio Blanco"
+      ],
+      "office": "Rio Blanco County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "rio-grande-county",
+      "name": "Rio Grande County",
+      "kind": "county",
+      "county": "Rio Grande",
+      "counties": [
+        "Rio Grande"
+      ],
+      "office": "Rio Grande County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "routt-county",
+      "name": "Routt County",
+      "kind": "county",
+      "county": "Routt",
+      "counties": [
+        "Routt"
+      ],
+      "office": "Routt County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "saguache-county",
+      "name": "Saguache County",
+      "kind": "county",
+      "county": "Saguache",
+      "counties": [
+        "Saguache"
+      ],
+      "office": "Saguache County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "san-juan-county",
+      "name": "San Juan County",
+      "kind": "county",
+      "county": "San Juan",
+      "counties": [
+        "San Juan"
+      ],
+      "office": "San Juan County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "san-miguel-county",
+      "name": "San Miguel County",
+      "kind": "county",
+      "county": "San Miguel",
+      "counties": [
+        "San Miguel"
+      ],
+      "office": "San Miguel County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "sedgwick-county",
+      "name": "Sedgwick County",
+      "kind": "county",
+      "county": "Sedgwick",
+      "counties": [
+        "Sedgwick"
+      ],
+      "office": "Sedgwick County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "summit-county",
+      "name": "Summit County",
+      "kind": "county",
+      "county": "Summit",
+      "counties": [
+        "Summit"
+      ],
+      "office": "Summit County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "teller-county",
+      "name": "Teller County",
+      "kind": "county",
+      "county": "Teller",
+      "counties": [
+        "Teller"
+      ],
+      "office": "Teller County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "washington-county",
+      "name": "Washington County",
+      "kind": "county",
+      "county": "Washington",
+      "counties": [
+        "Washington"
+      ],
+      "office": "Washington County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "weld-county",
+      "name": "Weld County",
+      "kind": "county",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Weld County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "yuma-county",
+      "name": "Yuma County",
+      "kind": "county",
+      "county": "Yuma",
+      "counties": [
+        "Yuma"
+      ],
+      "office": "Yuma County Building Department",
+      "pull": "",
+      "phone": "",
+      "url": "",
+      "permit_template": null,
+      "code_points": []
+    },
+    {
+      "id": "aguilar",
+      "name": "Town of Aguilar",
+      "kind": "city",
+      "gov": "town",
+      "county": "Las Animas",
+      "counties": [
+        "Las Animas"
+      ],
+      "office": "Town of Aguilar",
+      "pull": "",
+      "phone": "",
+      "url": "http://aguilarco.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Aguilar"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "akron",
+      "name": "Town of Akron",
+      "kind": "city",
+      "gov": "town",
+      "county": "Washington",
+      "counties": [
+        "Washington"
+      ],
+      "office": "Town of Akron",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofakron.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Akron"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "alamosa",
+      "name": "City of Alamosa",
+      "kind": "city",
+      "gov": "city",
+      "county": "Alamosa",
+      "counties": [
+        "Alamosa"
+      ],
+      "office": "City of Alamosa",
+      "pull": "",
+      "phone": "",
+      "url": "https://cityofalamosa.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Alamosa"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "alma",
+      "name": "Town of Alma",
+      "kind": "city",
+      "gov": "town",
+      "county": "Park",
+      "counties": [
+        "Park"
+      ],
+      "office": "Town of Alma",
+      "pull": "",
+      "phone": "",
+      "url": "http://townofalma.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Alma"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "antonito",
+      "name": "Town of Antonito",
+      "kind": "city",
+      "gov": "town",
+      "county": "Conejos",
+      "counties": [
+        "Conejos"
+      ],
+      "office": "Town of Antonito",
+      "pull": "",
+      "phone": "",
+      "url": "http://townofantonito.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Antonito"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "arriba",
+      "name": "Town of Arriba",
+      "kind": "city",
+      "gov": "town",
+      "county": "Lincoln",
+      "counties": [
+        "Lincoln"
+      ],
+      "office": "Town of Arriba",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofarriba.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Arriba"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "arvada",
+      "name": "City of Arvada",
+      "kind": "city",
+      "gov": "city",
+      "county": "Jefferson",
+      "counties": [
+        "Jefferson",
+        "Adams"
+      ],
+      "office": "City of Arvada",
+      "pull": "",
+      "phone": "",
+      "url": "https://arvada.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Arvada"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "aspen",
+      "name": "City of Aspen",
+      "kind": "city",
+      "gov": "city",
+      "county": "Pitkin",
+      "counties": [
+        "Pitkin"
+      ],
+      "office": "City of Aspen",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.cityofaspen.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Aspen"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "ault",
+      "name": "Town of Ault",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Ault",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofault.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Ault"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "aurora",
+      "name": "City of Aurora",
+      "kind": "city",
+      "gov": "city",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe",
+        "Adams",
+        "Douglas"
+      ],
+      "office": "City of Aurora",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.auroragov.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Aurora"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "avon",
+      "name": "Town of Avon",
+      "kind": "city",
+      "gov": "town",
+      "county": "Eagle",
+      "counties": [
+        "Eagle"
+      ],
+      "office": "Town of Avon",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.avon.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Avon"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "basalt",
+      "name": "Town of Basalt",
+      "kind": "city",
+      "gov": "town",
+      "county": "Eagle",
+      "counties": [
+        "Eagle",
+        "Pitkin"
+      ],
+      "office": "Town of Basalt",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.basalt.net/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Basalt"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "bayfield",
+      "name": "Town of Bayfield",
+      "kind": "city",
+      "gov": "town",
+      "county": "La Plata",
+      "counties": [
+        "La Plata"
+      ],
+      "office": "Town of Bayfield",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20200522064708/https://townofbayfield.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Bayfield"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "bennett",
+      "name": "Town of Bennett",
+      "kind": "city",
+      "gov": "town",
+      "county": "Adams",
+      "counties": [
+        "Adams",
+        "Arapahoe"
+      ],
+      "office": "Town of Bennett",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20200408034524/https://townofbennett.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Bennett"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "berthoud",
+      "name": "Town of Berthoud",
+      "kind": "city",
+      "gov": "town",
+      "county": "Larimer",
+      "counties": [
+        "Larimer",
+        "Weld"
+      ],
+      "office": "Town of Berthoud",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.berthoud.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Berthoud"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "bethune",
+      "name": "Town of Bethune",
+      "kind": "city",
+      "gov": "town",
+      "county": "Kit Carson",
+      "counties": [
+        "Kit Carson"
+      ],
+      "office": "Town of Bethune",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161203105629/https://dola.colorado.gov/dlg_portal/filings.jsf?id=32001",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Bethune"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "black-hawk",
+      "name": "City of Black Hawk",
+      "kind": "city",
+      "gov": "city",
+      "county": "Gilpin",
+      "counties": [
+        "Gilpin"
+      ],
+      "office": "City of Black Hawk",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.cityofblackhawk.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Black Hawk"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "blanca",
+      "name": "Town of Blanca",
+      "kind": "city",
+      "gov": "town",
+      "county": "Costilla",
+      "counties": [
+        "Costilla"
+      ],
+      "office": "Town of Blanca",
+      "pull": "",
+      "phone": "",
+      "url": "http://users.gojade.org/~blancaco/Government.htm",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Blanca"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "blue-river",
+      "name": "Town of Blue River",
+      "kind": "city",
+      "gov": "town",
+      "county": "Summit",
+      "counties": [
+        "Summit"
+      ],
+      "office": "Town of Blue River",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofblueriver.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Blue River"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "bonanza",
+      "name": "Town of Bonanza",
+      "kind": "city",
+      "gov": "town",
+      "county": "Saguache",
+      "counties": [
+        "Saguache"
+      ],
+      "office": "Town of Bonanza",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161203164229/https://dola.colorado.gov/dlg_portal/filings.jsf?id=55002",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Bonanza"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "boone",
+      "name": "Town of Boone",
+      "kind": "city",
+      "gov": "town",
+      "county": "Pueblo",
+      "counties": [
+        "Pueblo"
+      ],
+      "office": "Town of Boone",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161203164240/https://dola.colorado.gov/dlg_portal/filings.jsf?id=51005",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Boone"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "boulder",
+      "name": "City of Boulder",
+      "kind": "city",
+      "gov": "city",
+      "county": "Boulder",
+      "counties": [
+        "Boulder"
+      ],
+      "office": "City of Boulder",
+      "pull": "",
+      "phone": "",
+      "url": "https://bouldercolorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Boulder"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "bow-mar",
+      "name": "Town of Bow Mar",
+      "kind": "city",
+      "gov": "town",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe",
+        "Jefferson"
+      ],
+      "office": "Town of Bow Mar",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20200805191519/https://townofbowmar.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Bow Mar"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "branson",
+      "name": "Town of Branson",
+      "kind": "city",
+      "gov": "town",
+      "county": "Las Animas",
+      "counties": [
+        "Las Animas"
+      ],
+      "office": "Town of Branson",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.bransoncolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Branson"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "breckenridge",
+      "name": "Town of Breckenridge",
+      "kind": "city",
+      "gov": "town",
+      "county": "Summit",
+      "counties": [
+        "Summit"
+      ],
+      "office": "Town of Breckenridge",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofbreckenridge.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Breckenridge"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "brighton",
+      "name": "City of Brighton",
+      "kind": "city",
+      "gov": "city",
+      "county": "Adams",
+      "counties": [
+        "Adams",
+        "Weld"
+      ],
+      "office": "City of Brighton",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.brightonco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Brighton"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "brookside",
+      "name": "Town of Brookside",
+      "kind": "city",
+      "gov": "town",
+      "county": "Fremont",
+      "counties": [
+        "Fremont"
+      ],
+      "office": "Town of Brookside",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofbrookside.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Brookside"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "broomfield",
+      "name": "City and County of Broomfield",
+      "kind": "city",
+      "gov": "city",
+      "county": "Broomfield",
+      "counties": [
+        "Broomfield"
+      ],
+      "office": "City and County of Broomfield",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.broomfield.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Broomfield"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "brush",
+      "name": "City of Brush",
+      "kind": "city",
+      "gov": "city",
+      "county": "Morgan",
+      "counties": [
+        "Morgan"
+      ],
+      "office": "City of Brush",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.brushcolo.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Brush"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "buena-vista",
+      "name": "Town of Buena Vista",
+      "kind": "city",
+      "gov": "town",
+      "county": "Chaffee",
+      "counties": [
+        "Chaffee"
+      ],
+      "office": "Town of Buena Vista",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.buenavistaco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Buena Vista"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "burlington",
+      "name": "City of Burlington",
+      "kind": "city",
+      "gov": "city",
+      "county": "Kit Carson",
+      "counties": [
+        "Kit Carson"
+      ],
+      "office": "City of Burlington",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.burlingtoncolo.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Burlington"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "calhan",
+      "name": "Town of Calhan",
+      "kind": "city",
+      "gov": "town",
+      "county": "El Paso",
+      "counties": [
+        "El Paso"
+      ],
+      "office": "Town of Calhan",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.calhan.co/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Calhan"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "campo",
+      "name": "Town of Campo",
+      "kind": "city",
+      "gov": "town",
+      "county": "Baca",
+      "counties": [
+        "Baca"
+      ],
+      "office": "Town of Campo",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.bacacountyco.gov/towns/campo-colorado/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Campo"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "ca-on-city",
+      "name": "City of Cañon City",
+      "kind": "city",
+      "gov": "city",
+      "county": "Fremont",
+      "counties": [
+        "Fremont"
+      ],
+      "office": "City of Cañon City",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.canoncity.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Cañon City"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "carbonate",
+      "name": "Town of Carbonate",
+      "kind": "city",
+      "gov": "town",
+      "county": "Garfield",
+      "counties": [
+        "Garfield"
+      ],
+      "office": "Town of Carbonate",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.carbonatecolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Carbonate"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "carbondale",
+      "name": "Town of Carbondale",
+      "kind": "city",
+      "gov": "town",
+      "county": "Garfield",
+      "counties": [
+        "Garfield"
+      ],
+      "office": "Town of Carbondale",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.carbondalegov.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Carbondale"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "castle-pines",
+      "name": "City of Castle Pines",
+      "kind": "city",
+      "gov": "city",
+      "county": "Douglas",
+      "counties": [
+        "Douglas"
+      ],
+      "office": "City of Castle Pines",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.castlepinesco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Castle Pines"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "castle-rock",
+      "name": "Town of Castle Rock",
+      "kind": "city",
+      "gov": "town",
+      "county": "Douglas",
+      "counties": [
+        "Douglas"
+      ],
+      "office": "Town of Castle Rock",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.crgov.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Castle Rock"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "cedaredge",
+      "name": "Town of Cedaredge",
+      "kind": "city",
+      "gov": "town",
+      "county": "Delta",
+      "counties": [
+        "Delta"
+      ],
+      "office": "Town of Cedaredge",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.cedaredgecolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Cedaredge"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "centennial",
+      "name": "City of Centennial",
+      "kind": "city",
+      "gov": "city",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe"
+      ],
+      "office": "City of Centennial",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.centennialco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Centennial"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "center",
+      "name": "Town of Center",
+      "kind": "city",
+      "gov": "town",
+      "county": "Saguache",
+      "counties": [
+        "Saguache",
+        "Rio Grande"
+      ],
+      "office": "Town of Center",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofcenter.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Center"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "central-city",
+      "name": "City of Central",
+      "kind": "city",
+      "gov": "city",
+      "county": "Gilpin",
+      "counties": [
+        "Gilpin",
+        "Clear Creek"
+      ],
+      "office": "City of Central",
+      "pull": "",
+      "phone": "",
+      "url": "https://centralcity.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Central City"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "cheraw",
+      "name": "Town of Cheraw",
+      "kind": "city",
+      "gov": "town",
+      "county": "Otero",
+      "counties": [
+        "Otero"
+      ],
+      "office": "Town of Cheraw",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofcheraw.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Cheraw"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "cherry-hills-village",
+      "name": "City of Cherry Hills Village",
+      "kind": "city",
+      "gov": "city",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe"
+      ],
+      "office": "City of Cherry Hills Village",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.cherryhillsvillage.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Cherry Hills Village"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "cheyenne-wells",
+      "name": "Town of Cheyenne Wells",
+      "kind": "city",
+      "gov": "town",
+      "county": "Cheyenne",
+      "counties": [
+        "Cheyenne"
+      ],
+      "office": "Town of Cheyenne Wells",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofcheyennewells.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Cheyenne Wells"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "coal-creek",
+      "name": "Town of Coal Creek",
+      "kind": "city",
+      "gov": "town",
+      "county": "Fremont",
+      "counties": [
+        "Fremont"
+      ],
+      "office": "Town of Coal Creek",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20210128132036/https://townofcoalcreek.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Coal Creek"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "cokedale",
+      "name": "Town of Cokedale",
+      "kind": "city",
+      "gov": "town",
+      "county": "Las Animas",
+      "counties": [
+        "Las Animas"
+      ],
+      "office": "Town of Cokedale",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofcokedale.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Cokedale"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "collbran",
+      "name": "Town of Collbran",
+      "kind": "city",
+      "gov": "town",
+      "county": "Mesa",
+      "counties": [
+        "Mesa"
+      ],
+      "office": "Town of Collbran",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofcollbran.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Collbran"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "colorado-springs",
+      "name": "City of Colorado Springs",
+      "kind": "city",
+      "gov": "city",
+      "county": "El Paso",
+      "counties": [
+        "El Paso"
+      ],
+      "office": "City of Colorado Springs",
+      "pull": "",
+      "phone": "",
+      "url": "https://coloradosprings.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Colorado Springs"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "columbine-valley",
+      "name": "Town of Columbine Valley",
+      "kind": "city",
+      "gov": "town",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe"
+      ],
+      "office": "Town of Columbine Valley",
+      "pull": "",
+      "phone": "",
+      "url": "https://columbinevalley.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Columbine Valley"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "commerce-city",
+      "name": "City of Commerce City",
+      "kind": "city",
+      "gov": "city",
+      "county": "Adams",
+      "counties": [
+        "Adams"
+      ],
+      "office": "City of Commerce City",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.c3gov.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Commerce City"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "cortez",
+      "name": "City of Cortez",
+      "kind": "city",
+      "gov": "city",
+      "county": "Montezuma",
+      "counties": [
+        "Montezuma"
+      ],
+      "office": "City of Cortez",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.cityofcortez.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Cortez"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "craig",
+      "name": "City of Craig",
+      "kind": "city",
+      "gov": "city",
+      "county": "Moffat",
+      "counties": [
+        "Moffat"
+      ],
+      "office": "City of Craig",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.ci.craig.co.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Craig"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "crawford",
+      "name": "Town of Crawford",
+      "kind": "city",
+      "gov": "town",
+      "county": "Delta",
+      "counties": [
+        "Delta"
+      ],
+      "office": "Town of Crawford",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofcrawford.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Crawford"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "creede",
+      "name": "City of Creede",
+      "kind": "city",
+      "gov": "town",
+      "county": "Mineral",
+      "counties": [
+        "Mineral"
+      ],
+      "office": "City of Creede",
+      "pull": "",
+      "phone": "",
+      "url": "https://cityofcreede.gov",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Creede"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "crested-butte",
+      "name": "Town of Crested Butte",
+      "kind": "city",
+      "gov": "town",
+      "county": "Gunnison",
+      "counties": [
+        "Gunnison"
+      ],
+      "office": "Town of Crested Butte",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.crestedbutte-co.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Crested Butte"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "crestone",
+      "name": "Town of Crestone",
+      "kind": "city",
+      "gov": "town",
+      "county": "Saguache",
+      "counties": [
+        "Saguache"
+      ],
+      "office": "Town of Crestone",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofcrestone.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Crestone"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "cripple-creek",
+      "name": "City of Cripple Creek",
+      "kind": "city",
+      "gov": "city",
+      "county": "Teller",
+      "counties": [
+        "Teller"
+      ],
+      "office": "City of Cripple Creek",
+      "pull": "",
+      "phone": "",
+      "url": "https://cityofcripplecreek.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Cripple Creek"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "crook",
+      "name": "Town of Crook",
+      "kind": "city",
+      "gov": "town",
+      "county": "Logan",
+      "counties": [
+        "Logan"
+      ],
+      "office": "Town of Crook",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.facebook.com/TownofCrook/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Crook"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "crowley",
+      "name": "Town of Crowley",
+      "kind": "city",
+      "gov": "town",
+      "county": "Crowley",
+      "counties": [
+        "Crowley"
+      ],
+      "office": "Town of Crowley",
+      "pull": "",
+      "phone": "",
+      "url": "https://crowleycounty.colorado.gov/towns/crowley",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Crowley"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "dacono",
+      "name": "City of Dacono",
+      "kind": "city",
+      "gov": "city",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "City of Dacono",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.cityofdacono.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Dacono"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "de-beque",
+      "name": "Town of De Beque",
+      "kind": "city",
+      "gov": "town",
+      "county": "Mesa",
+      "counties": [
+        "Mesa"
+      ],
+      "office": "Town of De Beque",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofdebeque.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "De Beque"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "deer-trail",
+      "name": "Town of Deer Trail",
+      "kind": "city",
+      "gov": "town",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe"
+      ],
+      "office": "Town of Deer Trail",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofdeertrail.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Deer Trail"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "del-norte",
+      "name": "Town of Del Norte",
+      "kind": "city",
+      "gov": "town",
+      "county": "Rio Grande",
+      "counties": [
+        "Rio Grande"
+      ],
+      "office": "Town of Del Norte",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.delnortecolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Del Norte"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "delta",
+      "name": "City of Delta",
+      "kind": "city",
+      "gov": "city",
+      "county": "Delta",
+      "counties": [
+        "Delta"
+      ],
+      "office": "City of Delta",
+      "pull": "",
+      "phone": "",
+      "url": "https://cityofdelta.net/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Delta"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "denver",
+      "name": "City and County of Denver",
+      "kind": "city",
+      "gov": "city",
+      "county": "Denver",
+      "counties": [
+        "Denver"
+      ],
+      "office": "City and County of Denver",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.denvergov.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Denver"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "dillon",
+      "name": "Town of Dillon",
+      "kind": "city",
+      "gov": "town",
+      "county": "Summit",
+      "counties": [
+        "Summit"
+      ],
+      "office": "Town of Dillon",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofdillon.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Dillon"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "dinosaur",
+      "name": "Town of Dinosaur",
+      "kind": "city",
+      "gov": "town",
+      "county": "Moffat",
+      "counties": [
+        "Moffat"
+      ],
+      "office": "Town of Dinosaur",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofdinosaur.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Dinosaur"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "dolores",
+      "name": "Town of Dolores",
+      "kind": "city",
+      "gov": "town",
+      "county": "Montezuma",
+      "counties": [
+        "Montezuma"
+      ],
+      "office": "Town of Dolores",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofdolores.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Dolores"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "dove-creek",
+      "name": "Town of Dove Creek",
+      "kind": "city",
+      "gov": "town",
+      "county": "Dolores",
+      "counties": [
+        "Dolores"
+      ],
+      "office": "Town of Dove Creek",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofdovecreek.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Dove Creek"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "durango",
+      "name": "City of Durango",
+      "kind": "city",
+      "gov": "city",
+      "county": "La Plata",
+      "counties": [
+        "La Plata"
+      ],
+      "office": "City of Durango",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.durangogov.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Durango"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "eads",
+      "name": "Town of Eads",
+      "kind": "city",
+      "gov": "town",
+      "county": "Kiowa",
+      "counties": [
+        "Kiowa"
+      ],
+      "office": "Town of Eads",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.kcedfonline.org/eads.htm",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Eads"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "eagle",
+      "name": "Town of Eagle",
+      "kind": "city",
+      "gov": "town",
+      "county": "Eagle",
+      "counties": [
+        "Eagle"
+      ],
+      "office": "Town of Eagle",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofeagle.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Eagle"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "eaton",
+      "name": "Town of Eaton",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Eaton",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20200319163040/https://townofeaton.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Eaton"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "eckley",
+      "name": "Town of Eckley",
+      "kind": "city",
+      "gov": "town",
+      "county": "Yuma",
+      "counties": [
+        "Yuma"
+      ],
+      "office": "Town of Eckley",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofeckley.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Eckley"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "edgewater",
+      "name": "City of Edgewater",
+      "kind": "city",
+      "gov": "city",
+      "county": "Jefferson",
+      "counties": [
+        "Jefferson"
+      ],
+      "office": "City of Edgewater",
+      "pull": "",
+      "phone": "",
+      "url": "https://edgewaterco.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Edgewater"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "elizabeth",
+      "name": "Town of Elizabeth",
+      "kind": "city",
+      "gov": "town",
+      "county": "Elbert",
+      "counties": [
+        "Elbert"
+      ],
+      "office": "Town of Elizabeth",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofelizabeth.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Elizabeth"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "empire",
+      "name": "Town of Empire",
+      "kind": "city",
+      "gov": "town",
+      "county": "Clear Creek",
+      "counties": [
+        "Clear Creek"
+      ],
+      "office": "Town of Empire",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofempire.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Empire"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "englewood",
+      "name": "City of Englewood",
+      "kind": "city",
+      "gov": "city",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe"
+      ],
+      "office": "City of Englewood",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.englewoodco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Englewood"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "erie",
+      "name": "Town of Erie",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld",
+        "Boulder"
+      ],
+      "office": "Town of Erie",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.erieco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Erie"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "estes-park",
+      "name": "Town of Estes Park",
+      "kind": "city",
+      "gov": "town",
+      "county": "Larimer",
+      "counties": [
+        "Larimer"
+      ],
+      "office": "Town of Estes Park",
+      "pull": "",
+      "phone": "",
+      "url": "https://estespark.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Estes Park"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "evans",
+      "name": "City of Evans",
+      "kind": "city",
+      "gov": "city",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "City of Evans",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.evanscolorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Evans"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "fairplay",
+      "name": "Town of Fairplay",
+      "kind": "city",
+      "gov": "town",
+      "county": "Park",
+      "counties": [
+        "Park"
+      ],
+      "office": "Town of Fairplay",
+      "pull": "",
+      "phone": "",
+      "url": "http://fairplayco.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Fairplay"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "federal-heights",
+      "name": "City of Federal Heights",
+      "kind": "city",
+      "gov": "city",
+      "county": "Adams",
+      "counties": [
+        "Adams"
+      ],
+      "office": "City of Federal Heights",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.fedheights.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Federal Heights"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "firestone",
+      "name": "Town of Firestone",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Firestone",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.firestoneco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Firestone"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "flagler",
+      "name": "Town of Flagler",
+      "kind": "city",
+      "gov": "town",
+      "county": "Kit Carson",
+      "counties": [
+        "Kit Carson"
+      ],
+      "office": "Town of Flagler",
+      "pull": "",
+      "phone": "",
+      "url": "https://flaglercolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Flagler"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "fleming",
+      "name": "Town of Fleming",
+      "kind": "city",
+      "gov": "town",
+      "county": "Logan",
+      "counties": [
+        "Logan"
+      ],
+      "office": "Town of Fleming",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.flemingcolorado.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Fleming"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "florence",
+      "name": "City of Florence",
+      "kind": "city",
+      "gov": "city",
+      "county": "Fremont",
+      "counties": [
+        "Fremont"
+      ],
+      "office": "City of Florence",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20201024070212/https://cityofflorence.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Florence"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "fort-collins",
+      "name": "City of Fort Collins",
+      "kind": "city",
+      "gov": "city",
+      "county": "Larimer",
+      "counties": [
+        "Larimer"
+      ],
+      "office": "City of Fort Collins",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.fcgov.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Fort Collins"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "fort-lupton",
+      "name": "City of Fort Lupton",
+      "kind": "city",
+      "gov": "city",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "City of Fort Lupton",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.fortluptonco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Fort Lupton"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "fort-morgan",
+      "name": "City of Fort Morgan",
+      "kind": "city",
+      "gov": "city",
+      "county": "Morgan",
+      "counties": [
+        "Morgan"
+      ],
+      "office": "City of Fort Morgan",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.cityoffortmorgan.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Fort Morgan"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "fountain",
+      "name": "City of Fountain",
+      "kind": "city",
+      "gov": "city",
+      "county": "El Paso",
+      "counties": [
+        "El Paso"
+      ],
+      "office": "City of Fountain",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.fountaincolorado.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Fountain"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "fowler",
+      "name": "Town of Fowler",
+      "kind": "city",
+      "gov": "town",
+      "county": "Otero",
+      "counties": [
+        "Otero"
+      ],
+      "office": "Town of Fowler",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.fowlercolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Fowler"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "foxfield",
+      "name": "Town of Foxfield",
+      "kind": "city",
+      "gov": "town",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe"
+      ],
+      "office": "Town of Foxfield",
+      "pull": "",
+      "phone": "",
+      "url": "https://townoffoxfield.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Foxfield"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "fraser",
+      "name": "Town of Fraser",
+      "kind": "city",
+      "gov": "town",
+      "county": "Grand",
+      "counties": [
+        "Grand"
+      ],
+      "office": "Town of Fraser",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.frasercolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Fraser"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "frederick",
+      "name": "Town of Frederick",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Frederick",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.frederickco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Frederick"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "frisco",
+      "name": "Town of Frisco",
+      "kind": "city",
+      "gov": "town",
+      "county": "Summit",
+      "counties": [
+        "Summit"
+      ],
+      "office": "Town of Frisco",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townoffrisco.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Frisco"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "fruita",
+      "name": "City of Fruita",
+      "kind": "city",
+      "gov": "city",
+      "county": "Mesa",
+      "counties": [
+        "Mesa"
+      ],
+      "office": "City of Fruita",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.fruita.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Fruita"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "garden-city",
+      "name": "Town of Garden City",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Garden City",
+      "pull": "",
+      "phone": "",
+      "url": "http://townofgardencity.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Garden City"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "genoa",
+      "name": "Town of Genoa",
+      "kind": "city",
+      "gov": "town",
+      "county": "Lincoln",
+      "counties": [
+        "Lincoln"
+      ],
+      "office": "Town of Genoa",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofgenoa.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Genoa"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "georgetown",
+      "name": "Town of Georgetown",
+      "kind": "city",
+      "gov": "city",
+      "county": "Clear Creek",
+      "counties": [
+        "Clear Creek"
+      ],
+      "office": "Town of Georgetown",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.townofgeorgetown.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Georgetown"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "gilcrest",
+      "name": "Town of Gilcrest",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Gilcrest",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofgilcrest.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Gilcrest"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "glendale",
+      "name": "City of Glendale",
+      "kind": "city",
+      "gov": "city",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe"
+      ],
+      "office": "City of Glendale",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.glendale.co.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Glendale"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "glenwood-springs",
+      "name": "City of Glenwood Springs",
+      "kind": "city",
+      "gov": "city",
+      "county": "Garfield",
+      "counties": [
+        "Garfield"
+      ],
+      "office": "City of Glenwood Springs",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.ci.glenwood-springs.co.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Glenwood Springs"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "golden",
+      "name": "City of Golden",
+      "kind": "city",
+      "gov": "city",
+      "county": "Jefferson",
+      "counties": [
+        "Jefferson"
+      ],
+      "office": "City of Golden",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.cityofgolden.net/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Golden"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "granada",
+      "name": "Town of Granada",
+      "kind": "city",
+      "gov": "town",
+      "county": "Prowers",
+      "counties": [
+        "Prowers"
+      ],
+      "office": "Town of Granada",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.facebook.com/p/Town-Of-Granada-100067111577760/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Granada"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "granby",
+      "name": "Town of Granby",
+      "kind": "city",
+      "gov": "town",
+      "county": "Grand",
+      "counties": [
+        "Grand"
+      ],
+      "office": "Town of Granby",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofgranby.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Granby"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "grand-junction",
+      "name": "City of Grand Junction",
+      "kind": "city",
+      "gov": "city",
+      "county": "Mesa",
+      "counties": [
+        "Mesa"
+      ],
+      "office": "City of Grand Junction",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.gjcity.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Grand Junction"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "grand-lake",
+      "name": "Town of Grand Lake",
+      "kind": "city",
+      "gov": "town",
+      "county": "Grand",
+      "counties": [
+        "Grand"
+      ],
+      "office": "Town of Grand Lake",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.townofgrandlake.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Grand Lake"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "greeley",
+      "name": "City of Greeley",
+      "kind": "city",
+      "gov": "city",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "City of Greeley",
+      "pull": "",
+      "phone": "",
+      "url": "http://greeleygov.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Greeley"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "green-mountain-falls",
+      "name": "Town of Green Mountain Falls",
+      "kind": "city",
+      "gov": "town",
+      "county": "El Paso",
+      "counties": [
+        "El Paso",
+        "Teller"
+      ],
+      "office": "Town of Green Mountain Falls",
+      "pull": "",
+      "phone": "",
+      "url": "https://greenmountainfalls.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Green Mountain Falls"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "greenwood-village",
+      "name": "City of Greenwood Village",
+      "kind": "city",
+      "gov": "city",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe"
+      ],
+      "office": "City of Greenwood Village",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.greenwoodvillage.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Greenwood Village"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "grover",
+      "name": "Town of Grover",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Grover",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161212063500/https://dola.colorado.gov/dlg_portal/filings.jsf?id=62023",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Grover"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "gunnison",
+      "name": "City of Gunnison",
+      "kind": "city",
+      "gov": "city",
+      "county": "Gunnison",
+      "counties": [
+        "Gunnison"
+      ],
+      "office": "City of Gunnison",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.gunnisonco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Gunnison"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "gypsum",
+      "name": "Town of Gypsum",
+      "kind": "city",
+      "gov": "town",
+      "county": "Eagle",
+      "counties": [
+        "Eagle"
+      ],
+      "office": "Town of Gypsum",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofgypsum.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Gypsum"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "hartman",
+      "name": "Town of Hartman",
+      "kind": "city",
+      "gov": "town",
+      "county": "Prowers",
+      "counties": [
+        "Prowers"
+      ],
+      "office": "Town of Hartman",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161212063530/https://dola.colorado.gov/dlg_portal/filings.jsf?id=50008",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Hartman"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "haswell",
+      "name": "Town of Haswell",
+      "kind": "city",
+      "gov": "town",
+      "county": "Kiowa",
+      "counties": [
+        "Kiowa"
+      ],
+      "office": "Town of Haswell",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.kcedfonline.org/haswell.htm",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Haswell"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "haxtun",
+      "name": "Town of Haxtun",
+      "kind": "city",
+      "gov": "town",
+      "county": "Phillips",
+      "counties": [
+        "Phillips"
+      ],
+      "office": "Town of Haxtun",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofhaxtun.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Haxtun"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "hayden",
+      "name": "Town of Hayden",
+      "kind": "city",
+      "gov": "town",
+      "county": "Routt",
+      "counties": [
+        "Routt"
+      ],
+      "office": "Town of Hayden",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.haydencolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Hayden"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "hillrose",
+      "name": "Town of Hillrose",
+      "kind": "city",
+      "gov": "town",
+      "county": "Morgan",
+      "counties": [
+        "Morgan"
+      ],
+      "office": "Town of Hillrose",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.hillrosecolorado.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Hillrose"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "holly",
+      "name": "Town of Holly",
+      "kind": "city",
+      "gov": "town",
+      "county": "Prowers",
+      "counties": [
+        "Prowers"
+      ],
+      "office": "Town of Holly",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.townofholly.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Holly"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "holyoke",
+      "name": "City of Holyoke",
+      "kind": "city",
+      "gov": "city",
+      "county": "Phillips",
+      "counties": [
+        "Phillips"
+      ],
+      "office": "City of Holyoke",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.cityofholyoke-co.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Holyoke"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "hooper",
+      "name": "Town of Hooper",
+      "kind": "city",
+      "gov": "town",
+      "county": "Alamosa",
+      "counties": [
+        "Alamosa"
+      ],
+      "office": "Town of Hooper",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161212063703/https://dola.colorado.gov/dlg_portal/filings.jsf?id=02005",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Hooper"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "hot-sulphur-springs",
+      "name": "Town of Hot Sulphur Springs",
+      "kind": "city",
+      "gov": "town",
+      "county": "Grand",
+      "counties": [
+        "Grand"
+      ],
+      "office": "Town of Hot Sulphur Springs",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.hotsulphurspringsco.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Hot Sulphur Springs"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "hotchkiss",
+      "name": "Town of Hotchkiss",
+      "kind": "city",
+      "gov": "town",
+      "county": "Delta",
+      "counties": [
+        "Delta"
+      ],
+      "office": "Town of Hotchkiss",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofhotchkiss.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Hotchkiss"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "hudson",
+      "name": "Town of Hudson",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Hudson",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.hudsoncolorado.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Hudson"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "hugo",
+      "name": "Town of Hugo",
+      "kind": "city",
+      "gov": "town",
+      "county": "Lincoln",
+      "counties": [
+        "Lincoln"
+      ],
+      "office": "Town of Hugo",
+      "pull": "",
+      "phone": "",
+      "url": "http://townhugo.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Hugo"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "idaho-springs",
+      "name": "City of Idaho Springs",
+      "kind": "city",
+      "gov": "city",
+      "county": "Clear Creek",
+      "counties": [
+        "Clear Creek"
+      ],
+      "office": "City of Idaho Springs",
+      "pull": "",
+      "phone": "",
+      "url": "https://archive.today/20220320191109/https://cityofidahosprings.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Idaho Springs"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "ignacio",
+      "name": "Town of Ignacio",
+      "kind": "city",
+      "gov": "town",
+      "county": "La Plata",
+      "counties": [
+        "La Plata"
+      ],
+      "office": "Town of Ignacio",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofignacio.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Ignacio"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "iliff",
+      "name": "Town of Iliff",
+      "kind": "city",
+      "gov": "town",
+      "county": "Logan",
+      "counties": [
+        "Logan"
+      ],
+      "office": "Town of Iliff",
+      "pull": "",
+      "phone": "",
+      "url": "https://dola.colorado.gov/dlg_lgis_ui_efile/?id=38007",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Iliff"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "jamestown",
+      "name": "Town of Jamestown",
+      "kind": "city",
+      "gov": "town",
+      "county": "Boulder",
+      "counties": [
+        "Boulder"
+      ],
+      "office": "Town of Jamestown",
+      "pull": "",
+      "phone": "",
+      "url": "http://jamestownco.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Jamestown"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "johnstown",
+      "name": "Town of Johnstown",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld",
+        "Larimer"
+      ],
+      "office": "Town of Johnstown",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20201120224151/https://johnstown.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Johnstown"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "julesburg",
+      "name": "Town of Julesburg",
+      "kind": "city",
+      "gov": "town",
+      "county": "Sedgwick",
+      "counties": [
+        "Sedgwick"
+      ],
+      "office": "Town of Julesburg",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofjulesburg.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Julesburg"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "keenesburg",
+      "name": "Town of Keenesburg",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Keenesburg",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofkeenesburg.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Keenesburg"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "kersey",
+      "name": "Town of Kersey",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Kersey",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.kerseygov.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Kersey"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "keystone",
+      "name": "Town of Keystone",
+      "kind": "city",
+      "gov": "town",
+      "county": "Summit",
+      "counties": [
+        "Summit"
+      ],
+      "office": "Town of Keystone",
+      "pull": "",
+      "phone": "",
+      "url": "https://keystone.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Keystone"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "kim",
+      "name": "Town of Kim",
+      "kind": "city",
+      "gov": "town",
+      "county": "Las Animas",
+      "counties": [
+        "Las Animas"
+      ],
+      "office": "Town of Kim",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161212121541/https://dola.colorado.gov/dlg_portal/filings.jsf?id=36005",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Kim"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "kiowa",
+      "name": "Town of Kiowa",
+      "kind": "city",
+      "gov": "town",
+      "county": "Elbert",
+      "counties": [
+        "Elbert"
+      ],
+      "office": "Town of Kiowa",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofkiowa-co.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Kiowa"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "kit-carson",
+      "name": "Town of Kit Carson",
+      "kind": "city",
+      "gov": "town",
+      "county": "Cheyenne",
+      "counties": [
+        "Cheyenne"
+      ],
+      "office": "Town of Kit Carson",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofkitcarson.com",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Kit Carson"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "kremmling",
+      "name": "Town of Kremmling",
+      "kind": "city",
+      "gov": "town",
+      "county": "Grand",
+      "counties": [
+        "Grand"
+      ],
+      "office": "Town of Kremmling",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.townofkremmling.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Kremmling"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "la-jara",
+      "name": "Town of La Jara",
+      "kind": "city",
+      "gov": "town",
+      "county": "Conejos",
+      "counties": [
+        "Conejos"
+      ],
+      "office": "Town of La Jara",
+      "pull": "",
+      "phone": "",
+      "url": "https://townoflajara.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "La Jara"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "la-junta",
+      "name": "City of La Junta",
+      "kind": "city",
+      "gov": "city",
+      "county": "Otero",
+      "counties": [
+        "Otero"
+      ],
+      "office": "City of La Junta",
+      "pull": "",
+      "phone": "",
+      "url": "http://lajuntacolorado.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "La Junta"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "la-veta",
+      "name": "Town of La Veta",
+      "kind": "city",
+      "gov": "town",
+      "county": "Huerfano",
+      "counties": [
+        "Huerfano"
+      ],
+      "office": "Town of La Veta",
+      "pull": "",
+      "phone": "",
+      "url": "https://townoflaveta-co.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "La Veta"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "lafayette",
+      "name": "City of Lafayette",
+      "kind": "city",
+      "gov": "city",
+      "county": "Boulder",
+      "counties": [
+        "Boulder"
+      ],
+      "office": "City of Lafayette",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.lafayetteco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Lafayette"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "lake-city",
+      "name": "Town of Lake City",
+      "kind": "city",
+      "gov": "town",
+      "county": "Hinsdale",
+      "counties": [
+        "Hinsdale"
+      ],
+      "office": "Town of Lake City",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.townoflakecity.co/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Lake City"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "lakeside",
+      "name": "Town of Lakeside",
+      "kind": "city",
+      "gov": "town",
+      "county": "Jefferson",
+      "counties": [
+        "Jefferson"
+      ],
+      "office": "Town of Lakeside",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161212121643/https://dola.colorado.gov/dlg_portal/filings.jsf?id=30053",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Lakeside"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "lakewood",
+      "name": "City of Lakewood",
+      "kind": "city",
+      "gov": "city",
+      "county": "Jefferson",
+      "counties": [
+        "Jefferson"
+      ],
+      "office": "City of Lakewood",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.lakewood.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Lakewood"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "lamar",
+      "name": "City of Lamar",
+      "kind": "city",
+      "gov": "city",
+      "county": "Prowers",
+      "counties": [
+        "Prowers"
+      ],
+      "office": "City of Lamar",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.ci.lamar.co.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Lamar"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "larkspur",
+      "name": "Town of Larkspur",
+      "kind": "city",
+      "gov": "town",
+      "county": "Douglas",
+      "counties": [
+        "Douglas"
+      ],
+      "office": "Town of Larkspur",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townoflarkspur.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Larkspur"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "las-animas",
+      "name": "City of Las Animas",
+      "kind": "city",
+      "gov": "city",
+      "county": "Bent",
+      "counties": [
+        "Bent"
+      ],
+      "office": "City of Las Animas",
+      "pull": "",
+      "phone": "",
+      "url": "https://cityoflasanimasco.gov",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Las Animas"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "lasalle",
+      "name": "Town of LaSalle",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of LaSalle",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.lasalletown.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "LaSalle"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "leadville",
+      "name": "City of Leadville",
+      "kind": "city",
+      "gov": "city",
+      "county": "Lake",
+      "counties": [
+        "Lake"
+      ],
+      "office": "City of Leadville",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20210121024150/https://cityofleadville.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Leadville"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "limon",
+      "name": "Town of Limon",
+      "kind": "city",
+      "gov": "town",
+      "county": "Lincoln",
+      "counties": [
+        "Lincoln"
+      ],
+      "office": "Town of Limon",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townoflimon.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Limon"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "littleton",
+      "name": "City of Littleton",
+      "kind": "city",
+      "gov": "city",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe",
+        "Jefferson",
+        "Douglas"
+      ],
+      "office": "City of Littleton",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.littletongov.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Littleton"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "lochbuie",
+      "name": "Town of Lochbuie",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld",
+        "Adams"
+      ],
+      "office": "Town of Lochbuie",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.lochbuie.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Lochbuie"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "log-lane-village",
+      "name": "Town of Log Lane Village",
+      "kind": "city",
+      "gov": "town",
+      "county": "Morgan",
+      "counties": [
+        "Morgan"
+      ],
+      "office": "Town of Log Lane Village",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofllv.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Log Lane Village"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "lone-tree",
+      "name": "City of Lone Tree",
+      "kind": "city",
+      "gov": "city",
+      "county": "Douglas",
+      "counties": [
+        "Douglas"
+      ],
+      "office": "City of Lone Tree",
+      "pull": "",
+      "phone": "",
+      "url": "https://cityoflonetree.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Lone Tree"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "longmont",
+      "name": "City of Longmont",
+      "kind": "city",
+      "gov": "city",
+      "county": "Boulder",
+      "counties": [
+        "Boulder",
+        "Weld"
+      ],
+      "office": "City of Longmont",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.longmontcolorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Longmont"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "louisville",
+      "name": "City of Louisville",
+      "kind": "city",
+      "gov": "city",
+      "county": "Boulder",
+      "counties": [
+        "Boulder"
+      ],
+      "office": "City of Louisville",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.louisvilleco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Louisville"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "loveland",
+      "name": "City of Loveland",
+      "kind": "city",
+      "gov": "city",
+      "county": "Larimer",
+      "counties": [
+        "Larimer"
+      ],
+      "office": "City of Loveland Building Division",
+      "pull": "Reroof permit + roofing affidavit. Generate the packet in the estimator's Documents tab, then e-mail it to eplan-buildingfasttrack@cityofloveland.org (Fast Track). An online portal is also available.",
+      "phone": "",
+      "url": "https://www.lovgov.org/",
+      "permit_template": "loveland",
+      "code_points": [
+        "Roofing affidavit required with the reroof permit (roof covering type/class, fasteners, underlayment, sheathing).",
+        "Class 4 (impact-resistant) roof covering is the shop standard here."
+      ],
+      "match": {
+        "cities": [
+          "Loveland"
+        ],
+        "zips": [
+          "80537",
+          "80538",
+          "80539"
+        ]
+      }
+    },
+    {
+      "id": "lyons",
+      "name": "Town of Lyons",
+      "kind": "city",
+      "gov": "town",
+      "county": "Boulder",
+      "counties": [
+        "Boulder"
+      ],
+      "office": "Town of Lyons",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townoflyons.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Lyons"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "manassa",
+      "name": "Town of Manassa",
+      "kind": "city",
+      "gov": "town",
+      "county": "Conejos",
+      "counties": [
+        "Conejos"
+      ],
+      "office": "Town of Manassa",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofmanassa.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Manassa"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "mancos",
+      "name": "Town of Mancos",
+      "kind": "city",
+      "gov": "town",
+      "county": "Montezuma",
+      "counties": [
+        "Montezuma"
+      ],
+      "office": "Town of Mancos",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.mancoscolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Mancos"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "manitou-springs",
+      "name": "City of Manitou Springs",
+      "kind": "city",
+      "gov": "city",
+      "county": "El Paso",
+      "counties": [
+        "El Paso"
+      ],
+      "office": "City of Manitou Springs",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.manitouspringsgov.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Manitou Springs"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "manzanola",
+      "name": "Town of Manzanola",
+      "kind": "city",
+      "gov": "town",
+      "county": "Otero",
+      "counties": [
+        "Otero"
+      ],
+      "office": "Town of Manzanola",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161212172323/https://dola.colorado.gov/dlg_portal/filings.jsf?id=45009",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Manzanola"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "marble",
+      "name": "Town of Marble",
+      "kind": "city",
+      "gov": "town",
+      "county": "Gunnison",
+      "counties": [
+        "Gunnison"
+      ],
+      "office": "Town of Marble",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofmarble.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Marble"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "mead",
+      "name": "Town of Mead",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Mead",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofmead.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Mead"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "meeker",
+      "name": "Town of Meeker",
+      "kind": "city",
+      "gov": "town",
+      "county": "Rio Blanco",
+      "counties": [
+        "Rio Blanco"
+      ],
+      "office": "Town of Meeker",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofmeeker.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Meeker"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "merino",
+      "name": "Town of Merino",
+      "kind": "city",
+      "gov": "town",
+      "county": "Logan",
+      "counties": [
+        "Logan"
+      ],
+      "office": "Town of Merino",
+      "pull": "",
+      "phone": "",
+      "url": "https://town.merino.co.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Merino"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "milliken",
+      "name": "Town of Milliken",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Milliken",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.millikenco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Milliken"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "minturn",
+      "name": "Town of Minturn",
+      "kind": "city",
+      "gov": "town",
+      "county": "Eagle",
+      "counties": [
+        "Eagle"
+      ],
+      "office": "Town of Minturn",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.minturn.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Minturn"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "moffat",
+      "name": "Town of Moffat",
+      "kind": "city",
+      "gov": "town",
+      "county": "Saguache",
+      "counties": [
+        "Saguache"
+      ],
+      "office": "Town of Moffat",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofmoffat.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Moffat"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "monte-vista",
+      "name": "City of Monte Vista",
+      "kind": "city",
+      "gov": "city",
+      "county": "Rio Grande",
+      "counties": [
+        "Rio Grande"
+      ],
+      "office": "City of Monte Vista",
+      "pull": "",
+      "phone": "",
+      "url": "https://montevista.gov",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Monte Vista"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "montezuma",
+      "name": "Town of Montezuma",
+      "kind": "city",
+      "gov": "town",
+      "county": "Summit",
+      "counties": [
+        "Summit"
+      ],
+      "office": "Town of Montezuma",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofmontezuma.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Montezuma"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "montrose",
+      "name": "City of Montrose",
+      "kind": "city",
+      "gov": "city",
+      "county": "Montrose",
+      "counties": [
+        "Montrose"
+      ],
+      "office": "City of Montrose",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.cityofmontrose.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Montrose"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "monument",
+      "name": "Town of Monument",
+      "kind": "city",
+      "gov": "town",
+      "county": "El Paso",
+      "counties": [
+        "El Paso"
+      ],
+      "office": "Town of Monument",
+      "pull": "",
+      "phone": "",
+      "url": "http://townofmonument.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Monument"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "morrison",
+      "name": "Town of Morrison",
+      "kind": "city",
+      "gov": "town",
+      "county": "Jefferson",
+      "counties": [
+        "Jefferson"
+      ],
+      "office": "Town of Morrison",
+      "pull": "",
+      "phone": "",
+      "url": "http://town.morrison.co.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Morrison"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "mount-crested-butte",
+      "name": "Town of Mount Crested Butte",
+      "kind": "city",
+      "gov": "town",
+      "county": "Gunnison",
+      "counties": [
+        "Gunnison"
+      ],
+      "office": "Town of Mount Crested Butte",
+      "pull": "",
+      "phone": "",
+      "url": "https://mtcrestedbuttecolorado.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Mount Crested Butte"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "mountain-view",
+      "name": "Town of Mountain View",
+      "kind": "city",
+      "gov": "town",
+      "county": "Jefferson",
+      "counties": [
+        "Jefferson"
+      ],
+      "office": "Town of Mountain View",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.townofmountainviewcolorado.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Mountain View"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "mountain-village",
+      "name": "Town of Mountain Village",
+      "kind": "city",
+      "gov": "town",
+      "county": "San Miguel",
+      "counties": [
+        "San Miguel"
+      ],
+      "office": "Town of Mountain Village",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofmountainvillage.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Mountain Village"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "naturita",
+      "name": "Town of Naturita",
+      "kind": "city",
+      "gov": "town",
+      "county": "Montrose",
+      "counties": [
+        "Montrose"
+      ],
+      "office": "Town of Naturita",
+      "pull": "",
+      "phone": "",
+      "url": "http://townofnaturita.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Naturita"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "nederland",
+      "name": "Town of Nederland",
+      "kind": "city",
+      "gov": "town",
+      "county": "Boulder",
+      "counties": [
+        "Boulder"
+      ],
+      "office": "Town of Nederland",
+      "pull": "",
+      "phone": "",
+      "url": "https://nederlandco.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Nederland"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "new-castle",
+      "name": "Town of New Castle",
+      "kind": "city",
+      "gov": "town",
+      "county": "Garfield",
+      "counties": [
+        "Garfield"
+      ],
+      "office": "Town of New Castle",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.newcastlecolorado.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "New Castle"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "northglenn",
+      "name": "City of Northglenn",
+      "kind": "city",
+      "gov": "city",
+      "county": "Adams",
+      "counties": [
+        "Adams",
+        "Weld"
+      ],
+      "office": "City of Northglenn",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.northglenn.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Northglenn"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "norwood",
+      "name": "Town of Norwood",
+      "kind": "city",
+      "gov": "town",
+      "county": "San Miguel",
+      "counties": [
+        "San Miguel"
+      ],
+      "office": "Town of Norwood",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.norwoodtown.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Norwood"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "nucla",
+      "name": "Town of Nucla",
+      "kind": "city",
+      "gov": "town",
+      "county": "Montrose",
+      "counties": [
+        "Montrose"
+      ],
+      "office": "Town of Nucla",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofnucla.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Nucla"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "nunn",
+      "name": "Town of Nunn",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Nunn",
+      "pull": "",
+      "phone": "",
+      "url": "http://nunncolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Nunn"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "oak-creek",
+      "name": "Town of Oak Creek",
+      "kind": "city",
+      "gov": "town",
+      "county": "Routt",
+      "counties": [
+        "Routt"
+      ],
+      "office": "Town of Oak Creek",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofoakcreek.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Oak Creek"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "olathe",
+      "name": "Town of Olathe",
+      "kind": "city",
+      "gov": "town",
+      "county": "Montrose",
+      "counties": [
+        "Montrose"
+      ],
+      "office": "Town of Olathe",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.townofolathe.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Olathe"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "olney-springs",
+      "name": "Town of Olney Springs",
+      "kind": "city",
+      "gov": "town",
+      "county": "Crowley",
+      "counties": [
+        "Crowley"
+      ],
+      "office": "Town of Olney Springs",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofolneysprings.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Olney Springs"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "ophir",
+      "name": "Town of Ophir",
+      "kind": "city",
+      "gov": "town",
+      "county": "San Miguel",
+      "counties": [
+        "San Miguel"
+      ],
+      "office": "Town of Ophir",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofophir.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Ophir"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "orchard-city",
+      "name": "Town of Orchard City",
+      "kind": "city",
+      "gov": "town",
+      "county": "Delta",
+      "counties": [
+        "Delta"
+      ],
+      "office": "Town of Orchard City",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.orchardcityco.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Orchard City"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "ordway",
+      "name": "Town of Ordway",
+      "kind": "city",
+      "gov": "town",
+      "county": "Crowley",
+      "counties": [
+        "Crowley"
+      ],
+      "office": "Town of Ordway",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofordway.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Ordway"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "otis",
+      "name": "Town of Otis",
+      "kind": "city",
+      "gov": "town",
+      "county": "Washington",
+      "counties": [
+        "Washington"
+      ],
+      "office": "Town of Otis",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofotis.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Otis"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "ouray",
+      "name": "City of Ouray",
+      "kind": "city",
+      "gov": "city",
+      "county": "Ouray",
+      "counties": [
+        "Ouray"
+      ],
+      "office": "City of Ouray",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.ci.ouray.co.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Ouray"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "ovid",
+      "name": "Town of Ovid",
+      "kind": "city",
+      "gov": "town",
+      "county": "Sedgwick",
+      "counties": [
+        "Sedgwick"
+      ],
+      "office": "Town of Ovid",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161213080053/https://dola.colorado.gov/dlg_portal/filings.jsf?id=58007",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Ovid"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "pagosa-springs",
+      "name": "Town of Pagosa Springs",
+      "kind": "city",
+      "gov": "town",
+      "county": "Archuleta",
+      "counties": [
+        "Archuleta"
+      ],
+      "office": "Town of Pagosa Springs",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.pagosasprings.co.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Pagosa Springs"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "palisade",
+      "name": "Town of Palisade",
+      "kind": "city",
+      "gov": "town",
+      "county": "Mesa",
+      "counties": [
+        "Mesa"
+      ],
+      "office": "Town of Palisade",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.townofpalisade.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Palisade"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "palmer-lake",
+      "name": "Town of Palmer Lake",
+      "kind": "city",
+      "gov": "town",
+      "county": "El Paso",
+      "counties": [
+        "El Paso"
+      ],
+      "office": "Town of Palmer Lake",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofpalmerlake.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Palmer Lake"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "paoli",
+      "name": "Town of Paoli",
+      "kind": "city",
+      "gov": "town",
+      "county": "Phillips",
+      "counties": [
+        "Phillips"
+      ],
+      "office": "Town of Paoli",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161213080231/https://dola.colorado.gov/dlg_portal/filings.jsf?id=48006",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Paoli"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "paonia",
+      "name": "Town of Paonia",
+      "kind": "city",
+      "gov": "town",
+      "county": "Delta",
+      "counties": [
+        "Delta"
+      ],
+      "office": "Town of Paonia",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofpaonia.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Paonia"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "parachute",
+      "name": "Town of Parachute",
+      "kind": "city",
+      "gov": "town",
+      "county": "Garfield",
+      "counties": [
+        "Garfield"
+      ],
+      "office": "Town of Parachute",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20200806194759/https://townofparachute.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Parachute"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "parker",
+      "name": "Town of Parker",
+      "kind": "city",
+      "gov": "town",
+      "county": "Douglas",
+      "counties": [
+        "Douglas"
+      ],
+      "office": "Town of Parker",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.parkeronline.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Parker"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "peetz",
+      "name": "Town of Peetz",
+      "kind": "city",
+      "gov": "town",
+      "county": "Logan",
+      "counties": [
+        "Logan"
+      ],
+      "office": "Town of Peetz",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.sites.google.com/site/townofpeetz/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Peetz"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "pierce",
+      "name": "Town of Pierce",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Pierce",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofpierce.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Pierce"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "pitkin",
+      "name": "Town of Pitkin",
+      "kind": "city",
+      "gov": "town",
+      "county": "Gunnison",
+      "counties": [
+        "Gunnison"
+      ],
+      "office": "Town of Pitkin",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofpitkin.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Pitkin"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "platteville",
+      "name": "Town of Platteville",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Platteville",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.plattevillegov.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Platteville"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "poncha-springs",
+      "name": "Town of Poncha Springs",
+      "kind": "city",
+      "gov": "town",
+      "county": "Chaffee",
+      "counties": [
+        "Chaffee"
+      ],
+      "office": "Town of Poncha Springs",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.ponchaspringscolorado.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Poncha Springs"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "pritchett",
+      "name": "Town of Pritchett",
+      "kind": "city",
+      "gov": "town",
+      "county": "Baca",
+      "counties": [
+        "Baca"
+      ],
+      "office": "Town of Pritchett",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.bacacountyco.gov/towns/pritchett-colorado/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Pritchett"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "pueblo",
+      "name": "City of Pueblo",
+      "kind": "city",
+      "gov": "city",
+      "county": "Pueblo",
+      "counties": [
+        "Pueblo"
+      ],
+      "office": "City of Pueblo",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.pueblo.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Pueblo"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "ramah",
+      "name": "Town of Ramah",
+      "kind": "city",
+      "gov": "town",
+      "county": "El Paso",
+      "counties": [
+        "El Paso"
+      ],
+      "office": "Town of Ramah",
+      "pull": "",
+      "phone": "",
+      "url": "https://ramah.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Ramah"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "rangely",
+      "name": "Town of Rangely",
+      "kind": "city",
+      "gov": "town",
+      "county": "Rio Blanco",
+      "counties": [
+        "Rio Blanco"
+      ],
+      "office": "Town of Rangely",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofrangely.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Rangely"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "raymer",
+      "name": "Town of Raymer",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Raymer",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161213183848/https://dola.colorado.gov/dlg_portal/filings.jsf?id=62051",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Raymer"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "red-cliff",
+      "name": "Town of Red Cliff",
+      "kind": "city",
+      "gov": "town",
+      "county": "Eagle",
+      "counties": [
+        "Eagle"
+      ],
+      "office": "Town of Red Cliff",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofredcliff.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Red Cliff"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "rico",
+      "name": "Town of Rico",
+      "kind": "city",
+      "gov": "town",
+      "county": "Dolores",
+      "counties": [
+        "Dolores"
+      ],
+      "office": "Town of Rico",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofrico.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Rico"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "ridgway",
+      "name": "Town of Ridgway",
+      "kind": "city",
+      "gov": "town",
+      "county": "Ouray",
+      "counties": [
+        "Ouray"
+      ],
+      "office": "Town of Ridgway",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofridgway.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Ridgway"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "rifle",
+      "name": "City of Rifle",
+      "kind": "city",
+      "gov": "city",
+      "county": "Garfield",
+      "counties": [
+        "Garfield"
+      ],
+      "office": "City of Rifle",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.rifleco.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Rifle"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "rockvale",
+      "name": "Town of Rockvale",
+      "kind": "city",
+      "gov": "town",
+      "county": "Fremont",
+      "counties": [
+        "Fremont"
+      ],
+      "office": "Town of Rockvale",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofrockvale.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Rockvale"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "rocky-ford",
+      "name": "City of Rocky Ford",
+      "kind": "city",
+      "gov": "city",
+      "county": "Otero",
+      "counties": [
+        "Otero"
+      ],
+      "office": "City of Rocky Ford",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.cityofrockyfordco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Rocky Ford"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "romeo",
+      "name": "Town of Romeo",
+      "kind": "city",
+      "gov": "town",
+      "county": "Conejos",
+      "counties": [
+        "Conejos"
+      ],
+      "office": "Town of Romeo",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161213183936/https://dola.colorado.gov/dlg_portal/filings.jsf?id=11013",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Romeo"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "rye",
+      "name": "Town of Rye",
+      "kind": "city",
+      "gov": "town",
+      "county": "Pueblo",
+      "counties": [
+        "Pueblo"
+      ],
+      "office": "Town of Rye",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofrye.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Rye"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "saguache",
+      "name": "Town of Saguache",
+      "kind": "city",
+      "gov": "town",
+      "county": "Saguache",
+      "counties": [
+        "Saguache"
+      ],
+      "office": "Town of Saguache",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20181229031243/https://www.colorado.gov/saguache",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Saguache"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "salida",
+      "name": "City of Salida",
+      "kind": "city",
+      "gov": "city",
+      "county": "Chaffee",
+      "counties": [
+        "Chaffee"
+      ],
+      "office": "City of Salida",
+      "pull": "",
+      "phone": "",
+      "url": "https://cityofsalida.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Salida"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "san-luis",
+      "name": "Town of San Luis",
+      "kind": "city",
+      "gov": "town",
+      "county": "Costilla",
+      "counties": [
+        "Costilla"
+      ],
+      "office": "Town of San Luis",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.townofsanluisco.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "San Luis"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "sanford",
+      "name": "Town of Sanford",
+      "kind": "city",
+      "gov": "town",
+      "county": "Conejos",
+      "counties": [
+        "Conejos"
+      ],
+      "office": "Town of Sanford",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20201024125744/https://www.colorado.gov/townofsanford",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Sanford"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "sawpit",
+      "name": "Town of Sawpit",
+      "kind": "city",
+      "gov": "town",
+      "county": "San Miguel",
+      "counties": [
+        "San Miguel"
+      ],
+      "office": "Town of Sawpit",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161213184258/https://dola.colorado.gov/dlg_portal/filings.jsf?id=57017",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Sawpit"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "sedgwick",
+      "name": "Town of Sedgwick",
+      "kind": "city",
+      "gov": "town",
+      "county": "Sedgwick",
+      "counties": [
+        "Sedgwick"
+      ],
+      "office": "Town of Sedgwick",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.sedgwickcolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Sedgwick"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "seibert",
+      "name": "Town of Seibert",
+      "kind": "city",
+      "gov": "town",
+      "county": "Kit Carson",
+      "counties": [
+        "Kit Carson"
+      ],
+      "office": "Town of Seibert",
+      "pull": "",
+      "phone": "",
+      "url": "http://seibertco.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Seibert"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "severance",
+      "name": "Town of Severance",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld"
+      ],
+      "office": "Town of Severance",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofseverance.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Severance"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "sheridan",
+      "name": "City of Sheridan",
+      "kind": "city",
+      "gov": "city",
+      "county": "Arapahoe",
+      "counties": [
+        "Arapahoe"
+      ],
+      "office": "City of Sheridan",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.ci.sheridan.co.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Sheridan"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "sheridan-lake",
+      "name": "Town of Sheridan Lake",
+      "kind": "city",
+      "gov": "town",
+      "county": "Kiowa",
+      "counties": [
+        "Kiowa"
+      ],
+      "office": "Town of Sheridan Lake",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.kcedfonline.org/sheridanlake.htm",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Sheridan Lake"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "silt",
+      "name": "Town of Silt",
+      "kind": "city",
+      "gov": "town",
+      "county": "Garfield",
+      "counties": [
+        "Garfield"
+      ],
+      "office": "Town of Silt",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofsilt.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Silt"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "silver-cliff",
+      "name": "Town of Silver Cliff",
+      "kind": "city",
+      "gov": "town",
+      "county": "Custer",
+      "counties": [
+        "Custer"
+      ],
+      "office": "Town of Silver Cliff",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.silvercliffco.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Silver Cliff"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "silver-plume",
+      "name": "Town of Silver Plume",
+      "kind": "city",
+      "gov": "town",
+      "county": "Clear Creek",
+      "counties": [
+        "Clear Creek"
+      ],
+      "office": "Town of Silver Plume",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.silverplumeco.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Silver Plume"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "silverthorne",
+      "name": "Town of Silverthorne",
+      "kind": "city",
+      "gov": "town",
+      "county": "Summit",
+      "counties": [
+        "Summit"
+      ],
+      "office": "Town of Silverthorne",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.silverthorne.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Silverthorne"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "silverton",
+      "name": "Town of Silverton",
+      "kind": "city",
+      "gov": "town",
+      "county": "San Juan",
+      "counties": [
+        "San Juan"
+      ],
+      "office": "Town of Silverton",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofsilverton.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Silverton"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "simla",
+      "name": "Town of Simla",
+      "kind": "city",
+      "gov": "town",
+      "county": "Elbert",
+      "counties": [
+        "Elbert"
+      ],
+      "office": "Town of Simla",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofsimla.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Simla"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "snowmass-village",
+      "name": "Town of Snowmass Village",
+      "kind": "city",
+      "gov": "town",
+      "county": "Pitkin",
+      "counties": [
+        "Pitkin"
+      ],
+      "office": "Town of Snowmass Village",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.tosv.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Snowmass Village"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "south-fork",
+      "name": "Town of South Fork",
+      "kind": "city",
+      "gov": "town",
+      "county": "Rio Grande",
+      "counties": [
+        "Rio Grande"
+      ],
+      "office": "Town of South Fork",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofsouthfork.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "South Fork"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "springfield",
+      "name": "Town of Springfield",
+      "kind": "city",
+      "gov": "town",
+      "county": "Baca",
+      "counties": [
+        "Baca"
+      ],
+      "office": "Town of Springfield",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20200808041339/https://townofspringfield.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Springfield"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "starkville",
+      "name": "Town of Starkville",
+      "kind": "city",
+      "gov": "town",
+      "county": "Las Animas",
+      "counties": [
+        "Las Animas"
+      ],
+      "office": "Town of Starkville",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161213184543/https://dola.colorado.gov/dlg_portal/filings.jsf?id=36010",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Starkville"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "steamboat-springs",
+      "name": "City of Steamboat Springs",
+      "kind": "city",
+      "gov": "city",
+      "county": "Routt",
+      "counties": [
+        "Routt"
+      ],
+      "office": "City of Steamboat Springs",
+      "pull": "",
+      "phone": "",
+      "url": "http://steamboatsprings.net/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Steamboat Springs"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "sterling",
+      "name": "City of Sterling",
+      "kind": "city",
+      "gov": "city",
+      "county": "Logan",
+      "counties": [
+        "Logan"
+      ],
+      "office": "City of Sterling",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.sterlingcolo.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Sterling"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "stratton",
+      "name": "Town of Stratton",
+      "kind": "city",
+      "gov": "town",
+      "county": "Kit Carson",
+      "counties": [
+        "Kit Carson"
+      ],
+      "office": "Town of Stratton",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofstratton.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Stratton"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "sugar-city",
+      "name": "Town of Sugar City",
+      "kind": "city",
+      "gov": "town",
+      "county": "Crowley",
+      "counties": [
+        "Crowley"
+      ],
+      "office": "Town of Sugar City",
+      "pull": "",
+      "phone": "",
+      "url": "https://sugarcitycolorado.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Sugar City"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "superior",
+      "name": "Town of Superior",
+      "kind": "city",
+      "gov": "town",
+      "county": "Boulder",
+      "counties": [
+        "Boulder",
+        "Jefferson"
+      ],
+      "office": "Town of Superior",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.superiorcolorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Superior"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "swink",
+      "name": "Town of Swink",
+      "kind": "city",
+      "gov": "town",
+      "county": "Otero",
+      "counties": [
+        "Otero"
+      ],
+      "office": "Town of Swink",
+      "pull": "",
+      "phone": "",
+      "url": "http://townofswinkco.ourlocalview.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Swink"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "telluride",
+      "name": "Town of Telluride",
+      "kind": "city",
+      "gov": "town",
+      "county": "San Miguel",
+      "counties": [
+        "San Miguel"
+      ],
+      "office": "Town of Telluride",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.telluride-co.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Telluride"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "thornton",
+      "name": "City of Thornton",
+      "kind": "city",
+      "gov": "city",
+      "county": "Adams",
+      "counties": [
+        "Adams",
+        "Weld"
+      ],
+      "office": "City of Thornton",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.thorntonco.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Thornton"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "timnath",
+      "name": "Town of Timnath",
+      "kind": "city",
+      "gov": "town",
+      "county": "Larimer",
+      "counties": [
+        "Larimer"
+      ],
+      "office": "Town of Timnath",
+      "pull": "",
+      "phone": "",
+      "url": "https://timnath.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Timnath"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "trinidad",
+      "name": "City of Trinidad",
+      "kind": "city",
+      "gov": "city",
+      "county": "Las Animas",
+      "counties": [
+        "Las Animas"
+      ],
+      "office": "City of Trinidad",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.trinidad.co.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Trinidad"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "two-buttes",
+      "name": "Town of Two Buttes",
+      "kind": "city",
+      "gov": "town",
+      "county": "Baca",
+      "counties": [
+        "Baca"
+      ],
+      "office": "Town of Two Buttes",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.bacacountyco.gov/towns/two-buttes/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Two Buttes"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "vail",
+      "name": "Town of Vail",
+      "kind": "city",
+      "gov": "town",
+      "county": "Eagle",
+      "counties": [
+        "Eagle"
+      ],
+      "office": "Town of Vail",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.vailgov.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Vail"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "victor",
+      "name": "City of Victor",
+      "kind": "city",
+      "gov": "city",
+      "county": "Teller",
+      "counties": [
+        "Teller"
+      ],
+      "office": "City of Victor",
+      "pull": "",
+      "phone": "",
+      "url": "https://cityofvictor.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Victor"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "vilas",
+      "name": "Town of Vilas",
+      "kind": "city",
+      "gov": "town",
+      "county": "Baca",
+      "counties": [
+        "Baca"
+      ],
+      "office": "Town of Vilas",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.bacacountyco.gov/towns/vilas-colorado/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Vilas"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "vona",
+      "name": "Town of Vona",
+      "kind": "city",
+      "gov": "town",
+      "county": "Kit Carson",
+      "counties": [
+        "Kit Carson"
+      ],
+      "office": "Town of Vona",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20161213184750/https://dola.colorado.gov/dlg_portal/filings.jsf?id=32023",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Vona"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "walden",
+      "name": "Town of Walden",
+      "kind": "city",
+      "gov": "town",
+      "county": "Jackson",
+      "counties": [
+        "Jackson"
+      ],
+      "office": "Town of Walden",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20170717154035/https://www.colorado.gov/townofwalden",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Walden"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "walsenburg",
+      "name": "City of Walsenburg",
+      "kind": "city",
+      "gov": "city",
+      "county": "Huerfano",
+      "counties": [
+        "Huerfano"
+      ],
+      "office": "City of Walsenburg",
+      "pull": "",
+      "phone": "",
+      "url": "https://web.archive.org/web/20200617150906/https://cityofwalsenburg.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Walsenburg"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "walsh",
+      "name": "Town of Walsh",
+      "kind": "city",
+      "gov": "town",
+      "county": "Baca",
+      "counties": [
+        "Baca"
+      ],
+      "office": "Town of Walsh",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofwalsh.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Walsh"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "ward",
+      "name": "Town of Ward",
+      "kind": "city",
+      "gov": "town",
+      "county": "Boulder",
+      "counties": [
+        "Boulder"
+      ],
+      "office": "Town of Ward",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.ward-co.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Ward"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "wellington",
+      "name": "Town of Wellington",
+      "kind": "city",
+      "gov": "town",
+      "county": "Larimer",
+      "counties": [
+        "Larimer"
+      ],
+      "office": "Town of Wellington",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.wellingtoncolorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Wellington"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "westcliffe",
+      "name": "Town of Westcliffe",
+      "kind": "city",
+      "gov": "town",
+      "county": "Custer",
+      "counties": [
+        "Custer"
+      ],
+      "office": "Town of Westcliffe",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofwestcliffe.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Westcliffe"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "westminster",
+      "name": "City of Westminster",
+      "kind": "city",
+      "gov": "city",
+      "county": "Adams",
+      "counties": [
+        "Adams",
+        "Jefferson"
+      ],
+      "office": "City of Westminster",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.cityofwestminster.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Westminster"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "wheat-ridge",
+      "name": "City of Wheat Ridge",
+      "kind": "city",
+      "gov": "city",
+      "county": "Jefferson",
+      "counties": [
+        "Jefferson"
+      ],
+      "office": "City of Wheat Ridge",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.ci.wheatridge.co.us/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Wheat Ridge"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "wiggins",
+      "name": "Town of Wiggins",
+      "kind": "city",
+      "gov": "town",
+      "county": "Morgan",
+      "counties": [
+        "Morgan"
+      ],
+      "office": "Town of Wiggins",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.wigginsco.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Wiggins"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "wiley",
+      "name": "Town of Wiley",
+      "kind": "city",
+      "gov": "town",
+      "county": "Prowers",
+      "counties": [
+        "Prowers"
+      ],
+      "office": "Town of Wiley",
+      "pull": "",
+      "phone": "",
+      "url": "http://townofwiley.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Wiley"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "williamsburg",
+      "name": "Town of Williamsburg",
+      "kind": "city",
+      "gov": "town",
+      "county": "Fremont",
+      "counties": [
+        "Fremont"
+      ],
+      "office": "Town of Williamsburg",
+      "pull": "",
+      "phone": "",
+      "url": "https://townofwilliamsburg.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Williamsburg"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "windsor",
+      "name": "Town of Windsor",
+      "kind": "city",
+      "gov": "town",
+      "county": "Weld",
+      "counties": [
+        "Weld",
+        "Larimer"
+      ],
+      "office": "Town of Windsor",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.windsorgov.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Windsor"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "winter-park",
+      "name": "Town of Winter Park",
+      "kind": "city",
+      "gov": "town",
+      "county": "Grand",
+      "counties": [
+        "Grand"
+      ],
+      "office": "Town of Winter Park",
+      "pull": "",
+      "phone": "",
+      "url": "https://wpgov.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Winter Park"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "woodland-park",
+      "name": "City of Woodland Park",
+      "kind": "city",
+      "gov": "city",
+      "county": "Teller",
+      "counties": [
+        "Teller"
+      ],
+      "office": "City of Woodland Park",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.city-woodlandpark.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Woodland Park"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "wray",
+      "name": "City of Wray",
+      "kind": "city",
+      "gov": "city",
+      "county": "Yuma",
+      "counties": [
+        "Yuma"
+      ],
+      "office": "City of Wray",
+      "pull": "",
+      "phone": "",
+      "url": "http://www.cityofwray.org/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Wray"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "yampa",
+      "name": "Town of Yampa",
+      "kind": "city",
+      "gov": "town",
+      "county": "Routt",
+      "counties": [
+        "Routt"
+      ],
+      "office": "Town of Yampa",
+      "pull": "",
+      "phone": "",
+      "url": "https://www.townofyampa.com/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Yampa"
+        ],
+        "zips": []
+      }
+    },
+    {
+      "id": "yuma",
+      "name": "City of Yuma",
+      "kind": "city",
+      "gov": "city",
+      "county": "Yuma",
+      "counties": [
+        "Yuma"
+      ],
+      "office": "City of Yuma",
+      "pull": "",
+      "phone": "",
+      "url": "https://cityofyuma.colorado.gov/",
+      "permit_template": null,
+      "code_points": [],
+      "match": {
+        "cities": [
+          "Yuma"
+        ],
+        "zips": []
+      }
+    }
+  ]
+}

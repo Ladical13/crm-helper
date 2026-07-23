@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Project One">
   <link rel="apple-touch-icon" href="/static/icon-180.png">
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/static/style.css?v=112">
+  <link rel="stylesheet" href="/static/style.css?v=113">
 </head>
 <body>
 
@@ -390,6 +390,23 @@
         <div class="gbb-set-tabs" id="gbb-set-tabs"></div>
         <div id="gbb-set-body"></div>
       </div>
+      <div id="settings-jurisdictions" class="field-group hidden">
+        <label>🏛 Permit Jurisdictions &amp; Code <span class="note-tag">manager only — powers the Scope-page jurisdiction panel (statewide Colorado)</span></label>
+        <label class="jxset-sub">Colorado code baseline <span class="note-tag">shown for every jurisdiction — one code point per line</span></label>
+        <textarea id="jxset-baseline-points" rows="6" spellcheck="true"></textarea>
+        <label class="jxset-sub">Verify note <span class="note-tag">the always-shown "confirm with the AHJ" reminder</span></label>
+        <input type="text" id="jxset-verify" placeholder="Confirm adopted code &amp; submittal with the jurisdiction…">
+        <label class="jxset-sub" style="margin-top:12px">Curate a jurisdiction <span class="note-tag">office, submittal method, and code points specific to one city/county</span></label>
+        <input type="text" id="jxset-search" placeholder="🔍 Filter by city / county name…" oninput="_jxFillPicker(this.value)" autocomplete="off">
+        <select id="jxset-pick" onchange="_jxPickEdit(this.value)"></select>
+        <div id="jxset-fields" class="jxset-fields hidden">
+          <div class="field-group"><label>Office / building department</label><input type="text" id="jxset-office"></div>
+          <div class="field-group"><label>How to pull the permit</label><textarea id="jxset-pull" rows="3" spellcheck="true"></textarea></div>
+          <div class="field-group" style="max-width:240px"><label>Phone</label><input type="text" id="jxset-phone"></div>
+          <div class="field-group"><label>Website URL</label><input type="text" id="jxset-url"></div>
+          <div class="field-group"><label>Extra code points <span class="note-tag">added on top of the baseline — one per line</span></label><textarea id="jxset-points" rows="4" spellcheck="true"></textarea></div>
+        </div>
+      </div>
       <div id="settings-company" class="field-group hidden">
         <label>Customer Proposal — Company Content <span class="note-tag">admin only — shown on every customer signing page</span></label>
         <div class="cc-block">
@@ -603,6 +620,6 @@
 
 <div id="app-toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=112"></script>
+<script src="/static/app.js?v=113"></script>
 </body>
 </html>
