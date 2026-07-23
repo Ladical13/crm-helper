@@ -467,8 +467,8 @@ function setMeasurement(key, v) {
   // Auto-build trade defaults on first measurement entry when trade is enabled + empty.
   const rd = S.trades.roofing;
   let built = false;
-  if (rd && rd.enabled && templates && (!rd.line_items || rd.line_items.length === 0)) {
-    rd.line_items = buildTradeDefaults('roofing');
+  if (rd && rd.enabled && (!rd.line_items || rd.line_items.length === 0)) {
+    buildRoofingDefaults();   // roofing is bundle-driven now, not buildTradeDefaults
     built = true;
   }
   if (SIDING_MEAS_KEYS.has(key)) {
@@ -600,7 +600,7 @@ function injectVentItem(role) {
   const rd = S.trades.roofing;
   if (!rd || !rd.enabled || !templates) return;
   // Append to a real estimate — build the roofing defaults first if empty.
-  if (!rd.line_items || rd.line_items.length === 0) rd.line_items = buildTradeDefaults('roofing');
+  if (!rd.line_items || rd.line_items.length === 0) buildRoofingDefaults();
   const add = (r) => {
     if (roofHasVentRole(r)) return;
     const spec = VENT_SPECS[r];
@@ -3662,6 +3662,17 @@ function seedRoofingBundles(force) {
     }
   });
 }
+// Build (or rebuild) roofing items from the default bundles — the ONE way
+// roofing items are created now. Replaces buildTradeDefaults('roofing')
+// everywhere roofing was auto-built: mixing the two produced the legacy shingle
+// line + duplicated accessories alongside the bundle items. Clears first so a
+// rebuild never stacks on top of existing items.
+function buildRoofingDefaults() {
+  const td = S.trades.roofing; if (!td) return;
+  td.line_items = [];
+  td.tier_bundles = { good:'', better:'', best:'' };
+  seedRoofingBundles(true);
+}
 
 function renderGBBGrid(trade) {
   const items = S.trades[trade].line_items;
@@ -5086,9 +5097,13 @@ function toggleTrade(trade, enabled) {
   if (trade === 'roofing' && S.shingle_selection) S.shingle_selection.enabled = enabled;
   // Auto-build priced defaults when enabling an empty trade, so measurements
   // flow straight through to a priced estimate with no extra clicks.
-  if (enabled && templates && (!S.trades[trade].line_items || S.trades[trade].line_items.length === 0)) {
-    S.trades[trade].line_items = buildTradeDefaults(trade);
-    applyMeasurements();
+  if (enabled && (!S.trades[trade].line_items || S.trades[trade].line_items.length === 0)) {
+    if (trade === 'roofing') {
+      buildRoofingDefaults();   // bundle-driven
+    } else if (templates) {
+      S.trades[trade].line_items = buildTradeDefaults(trade);
+      applyMeasurements();
+    }
   }
   // A product newly added in G/B/B mode picks up its global package content
   if (enabled && tradeGbbMode(trade)) seedTradeFromDefaults(trade);
@@ -7937,11 +7952,11 @@ async function applyRoofrImport() {
   }
 
   S.trades.roofing.enabled = true;
-  // Always rebuild from price book on RoofR import — ensures tier costs are current.
-  // If items already exist, confirm before overwriting.
+  // Always rebuild from the roofing bundles on RoofR import — ensures tier
+  // products/prices are current. If items already exist, confirm before overwriting.
   const hasExisting = (S.trades.roofing.line_items||[]).length > 0;
-  if (!hasExisting || confirm('Rebuild roofing items from your price book? This updates all three tier prices from your current price book settings.')) {
-    S.trades.roofing.line_items = buildTradeDefaults('roofing');
+  if (!hasExisting || confirm('Rebuild roofing items from your price book? This reloads the Good/Better/Best bundles from your current price book settings.')) {
+    buildRoofingDefaults();
   }
 
   applyMeasurements();
