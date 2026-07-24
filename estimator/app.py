@@ -6392,23 +6392,10 @@ TEMPLATES = {
          "desc_good": "Economy Vinyl", "desc_better": "Premium Vinyl", "desc_best": "Engineered Wood / Fiber Cement",
          "notes_good": "Economy-grade vinyl siding provides durable, low-maintenance protection at an accessible price point.",
          "notes_better": "Premium vinyl siding with thicker wall construction, deeper shadow lines, and a wider color palette. Resists fading and impact for decades with zero maintenance.",
-         "notes_best": "Engineered wood or fiber cement siding offers the natural look of real wood with dramatically superior durability and fire resistance. The premium choice for lasting curb appeal.",
-         # Starter product/exposure menus per tier — the rep picks one on the estimate.
-         # Costs per SQ are placeholders; edit in Price Book → Siding.
-         "variants_good": [
-             {"label": "Vinyl · Dutch Lap 4\"",   "cost": 165},
-             {"label": "Vinyl · Clapboard 4½\"",  "cost": 170},
-             {"label": "Vinyl · Board & Batten",  "cost": 195},
-         ],
-         "variants_better": [
-             {"label": "LP SmartSide · Lap 8\"",              "cost": 240},
-             {"label": "LP SmartSide · Panel / Board & Batten", "cost": 265},
-         ],
-         "variants_best": [
-             {"label": "Hardie · Plank Lap 8¼\" (Cedarmill)", "cost": 320},
-             {"label": "Hardie · Plank Lap 7\" (Smooth)",     "cost": 315},
-             {"label": "Hardie · Shingle / Panel",           "cost": 360},
-         ]},
+         "notes_best": "Engineered wood or fiber cement siding offers the natural look of real wood with dramatically superior durability and fire resistance. The premium choice for lasting curb appeal."},
+         # The per-tier variant menus that used to live here moved into
+         # SIDING_CATALOG_SEED/SIDING_BUNDLES_SEED — siding is bundle-driven now,
+         # same as roofing. Windows/gutters/other still use variants_<tier>.
         {"name": "House Wrap", "unit": "SQ", "measure": "siding_squares_waste",
          "desc_good": "Standard WRB", "desc_better": "Premium WRB", "desc_best": "Fully Adhered WRB",
          "notes_good": "Standard weather-resistant barrier installed under siding.",
@@ -6509,14 +6496,15 @@ def _save_price_book(pb):
         json.dump(pb, f, indent=2)
 
 
-# ── Roofing catalog + bundles (two-level model) ─────────────────────────────
-# Roofing uses a flat product catalog (one price each) + named "bundles" that
-# pull products from the catalog. Each Good/Better/Best tier dropdown offers the
-# bundles; picking one loads that bundle's items into the tier. Siding/windows/
-# gutters keep the older per-tier model. These SEED constants are injected into
-# the price book response only when a book has no roofing_catalog yet (fresh
-# install or the live volume book), so the feature works out of the box; once
-# the manager edits + saves in the Price Book, their version persists.
+# ── Catalog + bundles (two-level model) ─────────────────────────────────────
+# Roofing and siding use a flat product catalog (one price each) + named
+# "bundles" that pull products from the catalog. Each Good/Better/Best tier
+# dropdown offers the bundles; picking one loads that bundle's items into the
+# tier. Windows/gutters/other keep the older per-tier model. These SEED
+# constants are injected into the price book response only when a book has no
+# <trade>_catalog yet (fresh install or the live volume book), so the feature
+# works out of the box; once the manager edits + saves in the Price Book, their
+# version persists.
 ROOFING_CATALOG_SEED = [
     {"id": "m_landmark", "name": "CertainTeed Landmark (Architectural Shingle)", "unit": "SQ", "cost": 142, "measure": "squares_waste"},
     {"id": "m_northgate", "name": "CertainTeed Northgate (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste"},
@@ -6555,17 +6543,74 @@ ROOFING_BUNDLES_SEED = [
 ]
 ROOFING_TIER_DEFAULTS_SEED = {"good": "b_landmark", "better": "b_northgate", "best": "b_standing_seam"}
 
+# Siding catalog: one price per product, accessories named to MATCH the old
+# siding template rows so an in-flight estimate's existing items get adopted by
+# name instead of duplicated when a rep picks a bundle. Material costs come from
+# the old per-tier variant menus; accessory/labor costs are PLACEHOLDERS (0) —
+# the manager sets real numbers in Price Book → Siding → Products.
+SIDING_CATALOG_SEED = [
+    {"id": "s_vinyl_dutch", "name": "Vinyl - Dutch Lap 4\"", "unit": "SQ", "cost": 165, "measure": "siding_sq_waste"},
+    {"id": "s_vinyl_clap", "name": "Vinyl - Clapboard 4.5\"", "unit": "SQ", "cost": 170, "measure": "siding_sq_waste"},
+    {"id": "s_vinyl_bb", "name": "Vinyl - Board & Batten", "unit": "SQ", "cost": 195, "measure": "siding_sq_waste"},
+    {"id": "s_lp_lap", "name": "LP SmartSide - Lap 8\"", "unit": "SQ", "cost": 240, "measure": "siding_sq_waste"},
+    {"id": "s_lp_panel", "name": "LP SmartSide - Panel / Board & Batten", "unit": "SQ", "cost": 265, "measure": "siding_sq_waste"},
+    {"id": "s_hardie_cedar", "name": "James Hardie - Plank Lap 8.25\" (Cedarmill)", "unit": "SQ", "cost": 320, "measure": "siding_sq_waste"},
+    {"id": "s_hardie_smooth", "name": "James Hardie - Plank Lap 7\" (Smooth)", "unit": "SQ", "cost": 315, "measure": "siding_sq_waste"},
+    {"id": "s_hardie_shingle", "name": "James Hardie - Shingle / Panel", "unit": "SQ", "cost": 360, "measure": "siding_sq_waste"},
+    {"id": "sa_house_wrap", "name": "House Wrap", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste"},
+    {"id": "sa_starter", "name": "Starter Strip", "unit": "LF", "cost": 0, "measure": "siding_starter"},
+    {"id": "sa_j_channel", "name": "J-Channel", "unit": "LF", "cost": 0, "measure": "j_channel"},
+    {"id": "sa_corner_out", "name": "Corner Posts", "unit": "LF", "cost": 0, "measure": "corners_out"},
+    {"id": "sa_corner_in", "name": "Inside Corners", "unit": "LF", "cost": 0, "measure": "corners_in"},
+    {"id": "sa_trim", "name": "Trim Board", "unit": "LF", "cost": 0},
+    {"id": "sa_soffit", "name": "Soffit", "unit": "LF", "cost": 0, "measure": "siding_soffit"},
+    {"id": "sa_fascia", "name": "Fascia", "unit": "LF", "cost": 0},
+    {"id": "sl_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "siding_squares"},
+    {"id": "sl_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "siding_squares"},
+    {"id": "sx_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0},
+    {"id": "sx_permit", "name": "Permit", "unit": "LS", "cost": 0},
+]
+_SS = ["sa_house_wrap", "sa_starter", "sa_j_channel", "sa_corner_out", "sa_corner_in",
+       "sa_trim", "sa_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"]
+SIDING_BUNDLES_SEED = [
+    {"id": "sb_vinyl_dutch", "name": "Vinyl - Dutch Lap", "product_ids": ["s_vinyl_dutch"] + _SS,
+     "description": "Insulated-ready vinyl siding in the classic Dutch lap profile - low maintenance, never needs paint, lifetime limited warranty."},
+    {"id": "sb_vinyl_clap", "name": "Vinyl - Clapboard", "product_ids": ["s_vinyl_clap"] + _SS,
+     "description": "Traditional clapboard vinyl siding - clean horizontal lines, fade-resistant color all the way through."},
+    {"id": "sb_vinyl_bb", "name": "Vinyl - Board & Batten", "product_ids": ["s_vinyl_bb"] + _SS,
+     "description": "Vertical board & batten vinyl - modern farmhouse curb appeal with zero-maintenance vinyl durability."},
+    {"id": "sb_lp_lap", "name": "LP SmartSide - Lap", "product_ids": ["s_lp_lap"] + _SS,
+     "description": "LP SmartSide engineered wood lap siding - the warmth and texture of real wood, treated to resist rot, hail, and termites. 50-year limited warranty."},
+    {"id": "sb_lp_panel", "name": "LP SmartSide - Board & Batten", "product_ids": ["s_lp_panel"] + _SS,
+     "description": "LP SmartSide engineered wood panel and batten system - bold vertical lines with impact-resistant engineered wood strength."},
+    {"id": "sb_hardie_cedar", "name": "James Hardie - Cedarmill Lap", "product_ids": ["s_hardie_cedar"] + _SS,
+     "description": "James Hardie fiber cement in the Cedarmill woodgrain texture - non-combustible, hail and pest proof, ColorPlus finish backed for 15 years."},
+    {"id": "sb_hardie_smooth", "name": "James Hardie - Smooth Lap", "product_ids": ["s_hardie_smooth"] + _SS,
+     "description": "James Hardie fiber cement lap siding with a clean smooth finish - the premium look, engineered for Colorado freeze-thaw and hail."},
+    {"id": "sb_hardie_shingle", "name": "James Hardie - Shingle / Panel", "product_ids": ["s_hardie_shingle"] + _SS,
+     "description": "James Hardie shingle and panel siding - shake-style character in fiber cement, ideal for gables and accent walls."},
+]
+SIDING_TIER_DEFAULTS_SEED = {"good": "sb_vinyl_dutch", "better": "sb_lp_lap", "best": "sb_hardie_cedar"}
 
-def _ensure_roofing_catalog(pb):
-    """Inject the roofing catalog/bundles/defaults into a price book that has none.
-    Non-destructive (mutates the in-memory dict for the response only)."""
-    if not pb.get('roofing_catalog'):
-        pb['roofing_catalog'] = [dict(p) for p in ROOFING_CATALOG_SEED]
-        pb['roofing_bundles'] = [dict(b, product_ids=list(b['product_ids'])) for b in ROOFING_BUNDLES_SEED]
-        pb['roofing_tier_defaults'] = dict(ROOFING_TIER_DEFAULTS_SEED)
-    else:
-        pb.setdefault('roofing_bundles', [])
-        pb.setdefault('roofing_tier_defaults', dict(ROOFING_TIER_DEFAULTS_SEED))
+# trade -> (catalog seed, bundle seed, tier-default seed). Mirrored client-side
+# by BUNDLE_TRADES in app.js — keep the two lists in sync.
+BUNDLE_SEEDS = {
+    'roofing': (ROOFING_CATALOG_SEED, ROOFING_BUNDLES_SEED, ROOFING_TIER_DEFAULTS_SEED),
+    'siding':  (SIDING_CATALOG_SEED,  SIDING_BUNDLES_SEED,  SIDING_TIER_DEFAULTS_SEED),
+}
+
+
+def _ensure_bundle_catalogs(pb):
+    """Inject each bundle trade's catalog/bundles/defaults into a price book that
+    has none. Non-destructive (mutates the in-memory dict for the response only)."""
+    for trade, (catalog, bundles, defaults) in BUNDLE_SEEDS.items():
+        if not pb.get(trade + '_catalog'):
+            pb[trade + '_catalog'] = [dict(p) for p in catalog]
+            pb[trade + '_bundles'] = [dict(b, product_ids=list(b['product_ids'])) for b in bundles]
+            pb[trade + '_tier_defaults'] = dict(defaults)
+        else:
+            pb.setdefault(trade + '_bundles', [])
+            pb.setdefault(trade + '_tier_defaults', dict(defaults))
     return pb
 
 
@@ -6648,7 +6693,7 @@ def get_pricebook():
     pb.setdefault('intros', [])
     pb.setdefault('materials', {})
     pb.setdefault('presets', {})   # brand preset bundles, keyed by trade
-    _ensure_roofing_catalog(pb)    # roofing product catalog + bundles (seed if absent)
+    _ensure_bundle_catalogs(pb)    # roofing/siding product catalogs + bundles (seed if absent)
     return jsonify(pb)
 
 

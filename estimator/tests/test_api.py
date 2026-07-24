@@ -167,3 +167,48 @@ def test_non_object_estimate_document_is_skipped(client):
         assert client.get('/api/estimates').status_code == 200
     finally:
         os.remove(p)
+
+
+# ── bundle catalogs (roofing + siding) ─────────────────────────────────
+# Both trades are built ONLY from their catalog + bundles, so a bundle that
+# references a missing product id, or a tier default pointing at a deleted
+# bundle, silently ships an empty tier to a rep. Guard the shipped seeds.
+
+@pytest.mark.parametrize('trade', ['roofing', 'siding'])
+def test_pricebook_serves_bundle_catalog(client, trade):
+    pb = client.get('/api/pricebook').get_json()
+    assert pb[f'{trade}_catalog'], f'{trade} catalog must be seeded'
+    assert pb[f'{trade}_bundles'], f'{trade} bundles must be seeded'
+    assert set(pb[f'{trade}_tier_defaults']) == {'good', 'better', 'best'}
+
+
+@pytest.mark.parametrize('trade', ['roofing', 'siding'])
+def test_bundles_reference_real_products(client, trade):
+    pb = client.get('/api/pricebook').get_json()
+    ids = {p['id'] for p in pb[f'{trade}_catalog']}
+    for b in pb[f'{trade}_bundles']:
+        missing = [pid for pid in b.get('product_ids', []) if pid not in ids]
+        assert not missing, f"{trade} bundle {b['name']} references unknown {missing}"
+        assert b.get('product_ids'), f"{trade} bundle {b['name']} has no products"
+
+
+@pytest.mark.parametrize('trade', ['roofing', 'siding'])
+def test_tier_defaults_point_at_real_bundles(client, trade):
+    pb = client.get('/api/pricebook').get_json()
+    ids = {b['id'] for b in pb[f'{trade}_bundles']}
+    for tier, bid in pb[f'{trade}_tier_defaults'].items():
+        assert bid in ids, f'{trade} {tier} default bundle {bid!r} does not exist'
+
+
+def test_seeded_bundle_measures_are_known_keys(A):
+    """A catalog product's Auto-Qty key must exist client-side (MEASURE_DEFS)."""
+    import re
+    js = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           'static', 'app.js'), encoding='utf-8').read()
+    block = js[js.index('const MEASURE_DEFS'):]
+    block = block[:block.index('\n};')]
+    known = set(re.findall(r'^\s{2}(\w+):', block, re.M))
+    for seed in (A.ROOFING_CATALOG_SEED, A.SIDING_CATALOG_SEED):
+        for p in seed:
+            if p.get('measure'):
+                assert p['measure'] in known, f"unknown measure {p['measure']} on {p['name']}"
