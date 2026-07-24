@@ -3791,7 +3791,7 @@ function toggleTierDetails(trade, tier) {
 function _roofCatalog() { return (priceBook && priceBook.roofing_catalog) || []; }
 function _roofBundle(id) { return ((priceBook && priceBook.roofing_bundles) || []).find(b => b.id === id) || null; }
 
-function applyBundleToTier(trade, tier, bundleId) {
+function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   if (trade !== 'roofing') return;
   const td = S.trades[trade];
   td.tier_bundles = td.tier_bundles || { good:'', better:'', best:'' };
@@ -3851,6 +3851,11 @@ function applyBundleToTier(trade, tier, bundleId) {
     if (bundle.features && bundle.features.length) content.features[tier] = bundle.features.slice();
   }
 
+  // When the rep explicitly picks a bundle, open this tier's details so the
+  // freshly-loaded items are visible immediately (otherwise they sit behind the
+  // collapsed "Show details" toggle). Bulk seeding leaves tiers collapsed.
+  if (autoOpen) _tierDetailsOpen[trade + ':' + tier] = true;
+
   applyMeasurements();
   setDirty();
   if (activePage === 'pricing') renderTradeContent();
@@ -3889,9 +3894,20 @@ function renderGBBGrid(trade) {
   const shown = enabledTiers();
   const grid  = shown.map(t => {
     const inc      = item => item.tiers?.[t]?.included !== false;
-    const visible  = items.filter(item => inc(item) && (qtyOf(item) > 0 || item._showZero));
+    let   visible  = items.filter(item => inc(item) && (qtyOf(item) > 0 || item._showZero));
     const excluded = items.filter(item => !inc(item));
     const zeroQty  = items.filter(item => inc(item) && qtyOf(item) === 0 && !item._showZero);
+    // Roofing has no zero-qty reveal (unlike other trades). Before measurements
+    // exist, a freshly-picked bundle loads all items at qty 0, so the qty>0 filter
+    // hides everything and the tier looks empty. When that happens, fall back to
+    // showing the bundle's included items (at 0 qty) with a measurement nudge, so
+    // the rep can see the bundle actually loaded. The clean measured view (0-qty
+    // accessories stay hidden) is unchanged once any quantity is present.
+    let needsMeasure = false;
+    if (trade === 'roofing' && visible.length === 0) {
+      const includedZero = items.filter(inc);
+      if (includedZero.length) { visible = includedZero; needsMeasure = true; }
+    }
     // Per-trade, per-tier margin: the value shown here overrides the sidebar
     // default for THIS trade only. Blank = inherit the default (shown as the
     // input placeholder). `dflt` is the effective rate with the trade override
@@ -3917,18 +3933,22 @@ function renderGBBGrid(trade) {
                  : (tradeSections(trade).length ? `<div class="tier-section-hd tier-section-general">General</div>` : '');
         return hd + g.items.map(item => renderLiRow(trade,t,item)).join('');
       }).join('')
-      : `<div class="empty-items">${isRoof ? 'Pick a product above, or add an item' : 'Load Defaults or add an item below'}</div>`;
+      : `<div class="empty-items">${isRoof ? 'Pick a Product above to load a system, or add an item' : 'Load Defaults or add an item below'}</div>`;
 
     const heroSel = isRoof ? `
       <div class="tier-hero">
         <label class="tier-hero-lbl">Product</label>
-        <select class="tier-hero-select" onchange="applyBundleToTier('${trade}','${t}',this.value)">
+        <select class="tier-hero-select" onchange="applyBundleToTier('${trade}','${t}',this.value,true)">
           ${bundles.map(b=>`<option value="${b.id}" ${b.id===selBundle?'selected':''}>${esc(b.name||'(unnamed)')}</option>`).join('')}
           <option value="__custom__" ${isCustomBundle?'selected':''}>Custom…</option>
         </select>
       </div>` : '';
 
+    const measureNudge = needsMeasure
+      ? `<div class="tier-measure-nudge">Bundle loaded — enter roof measurements on the Scope page to set quantities and price.</div>`
+      : '';
     const bodyBlock = isRoof ? `
+      ${measureNudge}
       <button class="tier-details-toggle" onclick="toggleTierDetails('${trade}','${t}')">
         ${detailsOpen ? '▾ Hide details' : `▸ Show ${visible.length} item${visible.length===1?'':'s'}`}
       </button>
