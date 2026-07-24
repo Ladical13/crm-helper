@@ -3045,9 +3045,15 @@ function renderTradeContent() {
          : effectiveMode === 'simple' ? renderSimpleFreeform(trade)
          : trade === 'other' ? renderOtherFreeform()
          : renderGBBGrid(trade))
-      : `<div class="trade-disabled">${isInsurance
-          ? 'Enable to enter insurance claim line items and scope of work.'
-          : 'Enable this trade to add line items.'}</div>`}`;
+      : (isInsurance
+          ? `<div class="trade-disabled ins-tab-empty">
+               <div class="ins-tab-empty-icon">🏛</div>
+               <p class="ins-tab-empty-title">Insurance Claim Estimate</p>
+               <p class="ins-tab-empty-body">Import the carrier's estimate PDF to load the line items automatically, or enable this trade to enter them by hand.</p>
+               <button class="btn-primary ins-tab-import-btn" onclick="document.getElementById('xact-pdf-input').click()">📥 Import Carrier Estimate PDF</button>
+               <p class="ins-tab-empty-hint">Importing turns on Insurance mode for you.</p>
+             </div>`
+          : `<div class="trade-disabled">Enable this trade to add line items.</div>`)}`;
 }
 
 function renderBrandPresetBar(trade) {

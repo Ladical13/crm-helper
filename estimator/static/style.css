@@ -2609,6 +2609,18 @@ a.jx-contact:hover { text-decoration: underline; }
 .ins-mode-btn    { padding: 11px 26px; font-size: 14px; font-weight: 700; border-radius: 6px; }
 .ins-mode-switch { margin-top: 14px; font-size: 11px; color: var(--text-light); }
 .ins-mode-switch a { color: var(--primary-light); text-decoration: none; }
+
+/* Insurance tab, before the trade is enabled — import call-to-action */
+.ins-tab-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 44px 40px; max-width: 560px; margin: 0 auto;
+  background: #fff; border-radius: 10px; border: 2px solid #e0f2fe; box-shadow: var(--shadow);
+}
+.ins-tab-empty-icon  { font-size: 46px; line-height: 1; margin-bottom: 12px; }
+.ins-tab-empty-title { font-size: 19px; font-weight: 800; color: var(--primary); margin-bottom: 8px; }
+.ins-tab-empty-body  { font-size: 13px; color: var(--text-light); line-height: 1.6; margin-bottom: 20px; }
+.ins-tab-import-btn  { padding: 11px 26px; font-size: 14px; font-weight: 700; border-radius: 6px; }
+.ins-tab-empty-hint  { margin-top: 12px; font-size: 11px; color: var(--text-light); }
 .ins-mode-switch a:hover { text-decoration: underline; }
 
 /* ── Passwords & team logins ───────────────────────────────────────── */
