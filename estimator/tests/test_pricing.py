@@ -21,6 +21,43 @@ def test_override_wins_over_tier_and_global(A):
     assert A._tier_rate(p, 'roofing', 'better') == 50.0
 
 
+# ── per-trade, per-tier margin (trade_rates) ───────────────────────────
+
+def test_trade_tier_rate_wins_over_everything(A):
+    """trade_rates[trade][tier] is the most specific source and beats the legacy
+    flat per-trade override, the global tier rate, and global rate."""
+    p = {'trade_rates': {'windows': {'better': 42}},
+         'per_trade_overrides': {'windows': 50}, 'tier_rates': {'better': 35}, 'global_rate': 20}
+    assert A._tier_rate(p, 'windows', 'better') == 42.0
+
+
+def test_trade_tier_rate_only_applies_to_its_own_trade_and_tier(A):
+    """A windows/better override must not leak into other trades or tiers."""
+    p = {'trade_rates': {'windows': {'better': 42}}, 'tier_rates': {'good': 30, 'better': 35}}
+    assert A._tier_rate(p, 'windows', 'good')   == 30.0   # other tier → default
+    assert A._tier_rate(p, 'siding', 'better')  == 35.0   # other trade → default
+
+
+def test_unset_trade_tier_rate_falls_through_to_defaults(A):
+    """A trade with a trade_rates entry but a blank slot inherits the default."""
+    p = {'trade_rates': {'siding': {'better': ''}}, 'tier_rates': {'better': 35}, 'global_rate': 20}
+    assert A._tier_rate(p, 'siding', 'better') == 35.0
+
+
+def test_trade_tier_zero_is_honored(A):
+    p = {'trade_rates': {'roofing': {'good': 0}}, 'tier_rates': {'good': 30}, 'global_rate': 35}
+    assert A._tier_rate(p, 'roofing', 'good') == 0.0
+
+
+def test_trade_tier_over_per_trade_override_partial(A):
+    """trade_rates covers one tier; the others fall to the flat per-trade override."""
+    p = {'trade_rates': {'roofing': {'better': 50}},
+         'per_trade_overrides': {'roofing': 10}, 'tier_rates': {'good': 30, 'better': 35, 'best': 40}}
+    assert A._tier_rate(p, 'roofing', 'better') == 50.0   # per-tier wins
+    assert A._tier_rate(p, 'roofing', 'good')   == 10.0   # falls to flat override
+    assert A._tier_rate(p, 'roofing', 'best')   == 10.0
+
+
 def test_tier_rate_wins_over_global(A):
     assert A._tier_rate({'global_rate': 20, 'tier_rates': {'better': 35}}, 'roofing', 'better') == 35.0
 

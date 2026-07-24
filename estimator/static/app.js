@@ -796,6 +796,10 @@ function blankEstimate() {
     salesperson: '', notes_internal: '', notes_customer: '',
     pricing: { mode:'margin', global_rate:35,
                tier_rates:{ good:35, better:35, best:35 },
+               // Per-trade, per-tier margin overrides. trade_rates[trade] =
+               // {good,better,best,simple}; a missing/'' value inherits the
+               // tier_rates default. Highest priority in the resolution chain.
+               trade_rates:{},
                per_trade_overrides:{ roofing:null,siding:null,windows:null,gutters:null,other:null,insurance:null } },
     selected_tier: 'better',
     tier_descriptions: { good:'', better:'', best:'' },
@@ -876,19 +880,26 @@ function _resolveRate(sources) {
   }
   return DEFAULT_RATE;
 }
-// Per-tier margin: each tier (good/better/best) has its own rate. A per-trade
-// override, when set, applies one rate to all tiers of that trade (escape hatch).
+// Per-tier margin resolution, most specific first:
+//   per-trade-per-tier (trade_rates[trade][tier]) → legacy flat per-trade
+//   override → global per-tier rate → global rate → 35 (house default).
+// trade_rates lets each trade carry its own Good/Better/Best margin, edited in
+// that trade's tab; a blank slot inherits the tier_rates default. MUST mirror
+// _tier_rate (app.py).
 function tierRate(trade, tier) {
   const p = S.pricing || {};
-  return _resolveRate([(p.per_trade_overrides || {})[trade],
+  return _resolveRate([((p.trade_rates || {})[trade] || {})[tier],
+                       (p.per_trade_overrides || {})[trade],
                        (p.tier_rates || {})[tier],
                        p.global_rate]);
 }
-// Non-tier contexts (simple-mode trades) mirror the Good tier — Simple mode is
-// effectively the Good package — or a per-trade override if one is set.
+// Non-tier contexts (simple-mode trades): a trade's own 'simple' margin, then
+// the same fallbacks. Simple mode is effectively the Good package when it has
+// no dedicated rate. MUST mirror the simple path in app.js recalcSimpleItems.
 function tradeRate(trade) {
   const p = S.pricing || {};
-  return _resolveRate([(p.per_trade_overrides || {})[trade],
+  return _resolveRate([((p.trade_rates || {})[trade] || {}).simple,
+                       (p.per_trade_overrides || {})[trade],
                        (p.tier_rates || {}).good,
                        p.global_rate]);
 }
@@ -3230,7 +3241,30 @@ function renderSimpleFreeform(trade) {
 
   const grandTot = tradeTotal(trade, S.selected_tier);
 
+  // Per-trade margin for this simple trade: bakes every item's Sell Price from
+  // its Unit Cost. Blank inherits the sidebar default (shown as placeholder).
+  // Items where the rep typed a sell price directly stay locked (untouched).
+  const rateLbl      = S.pricing.mode === 'markup' ? 'Markup' : 'Margin';
+  const simpleRate   = ((S.pricing.trade_rates || {})[trade] || {}).simple;
+  const hasSimpleR   = simpleRate !== null && simpleRate !== undefined && simpleRate !== '';
+  const simpleDflt   = _resolveRate([(S.pricing.per_trade_overrides || {})[trade],
+                                     (S.pricing.tier_rates || {}).good,
+                                     S.pricing.global_rate]);
+  const marginBar = `
+    <div class="simple-margin-bar">
+      <span class="simple-margin-lbl">${TRADE_LABELS[trade]} ${rateLbl}</span>
+      <span class="simple-margin-input-wrap${hasSimpleR ? ' has-custom' : ''}">
+        <input type="number" min="0" max="99" step="0.5"
+          value="${hasSimpleR ? simpleRate : ''}" placeholder="${simpleDflt}"
+          title="${rateLbl} applied to every item's Unit Cost in this trade. Blank uses the ${simpleDflt}% sidebar default. Prices you typed by hand stay locked."
+          onchange="setTradeTierRate('${trade}','simple', this.value)">
+        <span class="simple-margin-pct">%</span>
+      </span>
+      <span class="simple-margin-hint">${hasSimpleR ? 'custom for this trade' : `default ${simpleDflt}%`}</span>
+    </div>`;
+
   return `
+    ${marginBar}
     ${items.length ? `
       ${sectionManagerBar(trade)}
       <div class="other-table-wrap">
@@ -3852,14 +3886,21 @@ function renderGBBGrid(trade) {
   const tier  = tradeTier(trade);   // highlight THIS product's chosen package
   const qtyOf = item => parseFloat(item.quantity) || 0;
   const rateLbl = S.pricing.mode === 'markup' ? 'Markup' : 'Margin';
-  const ovr = (S.pricing.per_trade_overrides || {})[trade];
-  const hasOvr = ovr !== null && ovr !== undefined;
   const shown = enabledTiers();
   const grid  = shown.map(t => {
     const inc      = item => item.tiers?.[t]?.included !== false;
     const visible  = items.filter(item => inc(item) && (qtyOf(item) > 0 || item._showZero));
     const excluded = items.filter(item => !inc(item));
     const zeroQty  = items.filter(item => inc(item) && qtyOf(item) === 0 && !item._showZero);
+    // Per-trade, per-tier margin: the value shown here overrides the sidebar
+    // default for THIS trade only. Blank = inherit the default (shown as the
+    // input placeholder). `dflt` is the effective rate with the trade override
+    // removed, so the placeholder tells the truth for legacy per_trade_overrides.
+    const tradeRateVal = ((S.pricing.trade_rates || {})[trade] || {})[t];
+    const hasTradeRate = tradeRateVal !== null && tradeRateVal !== undefined && tradeRateVal !== '';
+    const dflt = _resolveRate([(S.pricing.per_trade_overrides || {})[trade],
+                               (S.pricing.tier_rates || {})[t],
+                               S.pricing.global_rate]);
 
     // Roofing: a hero bundle dropdown drives each tier; the item breakdown
     // collapses under a "Show details" toggle (default collapsed) so the tab
@@ -3919,13 +3960,13 @@ function renderGBBGrid(trade) {
       <div class="tier-col-header">
         ${TIER_LABELS[t]} <span class="tier-col-total">${fmtCur(tradeTotal(trade,t))}</span>
       </div>
-      <div class="tier-col-rate" title="${rateLbl} for the ${TIER_LABELS[t]} package — applies to every trade">
+      <div class="tier-col-rate" title="${rateLbl} for ${TRADE_LABELS[trade]} · ${TIER_LABELS[t]}. Blank uses the ${dflt}% default set in the sidebar.">
         <span class="tier-col-rate-lbl">${rateLbl}</span>
         <input type="number" min="0" max="99" step="0.5"
-          value="${(S.pricing.tier_rates||{})[t] ?? S.pricing.global_rate ?? 35}"
-          ${hasOvr ? 'disabled' : ''} onchange="setTierRate('${t}', this.value)">
+          value="${hasTradeRate ? tradeRateVal : ''}" placeholder="${dflt}"
+          onchange="setTradeTierRate('${trade}','${t}', this.value)">
         <span class="tier-col-rate-pct">%</span>
-        ${hasOvr ? `<span class="tier-col-rate-ovr" title="This trade has a per-trade override (sidebar → advanced) — the package ${rateLbl.toLowerCase()} is ignored here">override ${ovr}%</span>` : ''}
+        ${hasTradeRate ? `<span class="tier-col-rate-ovr" title="Custom ${rateLbl.toLowerCase()} for this trade — clear to fall back to the ${dflt}% default">custom</span>` : ''}
       </div>
       ${heroSel}
       ${bodyBlock}
@@ -5459,7 +5500,8 @@ function renderTierRates() {
   if (!S.pricing.tier_rates) S.pricing.tier_rates = { good:35, better:35, best:35 };
   const tr  = S.pricing.tier_rates;
   const lbl = S.pricing.mode === 'markup' ? 'Markup' : 'Margin';
-  el.innerHTML = TIERS.map(t => `
+  el.innerHTML = `<div class="tier-rates-hint">Default ${lbl.toLowerCase()} per package — each trade's tab can override it.</div>` +
+    TIERS.map(t => `
     <div class="tier-rate-row tier-rate-${t}">
       <label>${TIER_LABELS[t]} <span class="tier-rate-kind">${lbl}</span></label>
       <div class="tier-rate-input-wrap">
@@ -5504,6 +5546,19 @@ function setTier(tier) {
   if(activePage==='options')renderOptionsPage();
 }
 function setTradeOverride(trade,v) { S.pricing.per_trade_overrides[trade]=v===''?null:parseFloat(v); setDirty(); rerender(); if(activePage==='pricing')renderTradeContent(); }
+// Per-trade, per-tier margin. tier is 'good'|'better'|'best' (GBB tabs) or
+// 'simple' (a simple-mode trade's single margin). Blank clears the override so
+// the trade falls back to the sidebar default.
+function setTradeTierRate(trade, tier, v) {
+  if (!S.pricing.trade_rates) S.pricing.trade_rates = {};
+  if (!S.pricing.trade_rates[trade]) S.pricing.trade_rates[trade] = {};
+  const n = parseFloat(v);
+  S.pricing.trade_rates[trade][tier] = (v === '' || v === null || isNaN(n)) ? null : n;
+  if (tier === 'simple') recalcSimpleItems();  // re-bake simple sell prices
+  setDirty();
+  rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
 
 /* ── CRM ───────────────────────────────────────────────────────────── */
 
@@ -7066,6 +7121,7 @@ async function doLoadEstimate(id) {
     // Migrate single global_rate → per-tier rates (all seeded from the old rate)
     if(!S.pricing) S.pricing={mode:'margin',global_rate:35,tier_rates:{good:35,better:35,best:35},per_trade_overrides:{}};
     if(!S.pricing.per_trade_overrides) S.pricing.per_trade_overrides={};
+    if(!S.pricing.trade_rates) S.pricing.trade_rates={};
     if(!S.pricing.tier_rates){
       const base=parseFloat(S.pricing.global_rate); const r=isNaN(base)?35:base;
       S.pricing.tier_rates={good:r,better:r,best:r};

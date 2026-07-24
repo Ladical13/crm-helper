@@ -1782,10 +1782,14 @@ def _rate_value(v):
 
 
 def _tier_rate(pricing, trade, tier):
-    """Effective margin/markup %: per-trade override → tier rate → global rate →
-    DEFAULT_RATE. Defaulting to 35 rather than 0 is deliberate: a 0% fallback
-    would silently sell at cost. MUST mirror tierRate (app.js)."""
-    for v in ((pricing.get('per_trade_overrides') or {}).get(trade),
+    """Effective margin/markup %, most specific first: per-trade-per-tier
+    (trade_rates[trade][tier]) → legacy flat per-trade override → global per-tier
+    rate → global rate → DEFAULT_RATE. Defaulting to 35 rather than 0 is
+    deliberate: a 0% fallback would silently sell at cost. MUST mirror tierRate
+    (app.js)."""
+    trade_rates = (pricing.get('trade_rates') or {}).get(trade) or {}
+    for v in (trade_rates.get(tier),
+              (pricing.get('per_trade_overrides') or {}).get(trade),
               (pricing.get('tier_rates') or {}).get(tier),
               pricing.get('global_rate')):
         r = _rate_value(v)

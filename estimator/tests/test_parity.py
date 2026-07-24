@@ -57,6 +57,30 @@ FIXTURES = [
         'trades': {'roofing': {'enabled': True, 'mode': 'gbb',
         'line_items': [_gbb(10, {'good': (100, 0), 'better': (100, 0), 'best': (100, 0)})]}}}),
 
+    # per-trade, per-tier margins: each tier prices at its own rate
+    ('per-trade per-tier margins', {'pricing': dict(STD, trade_rates={'roofing': {'good': 20, 'better': 50, 'best': 60}}),
+        'trades': {'roofing': {'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(10, {'good': (100, 0), 'better': (100, 0), 'best': (100, 0)})]}}}),
+
+    # partial trade_rates: better overridden, good/best inherit tier_rates
+    ('trade_rates partial inherit', {'pricing': dict(STD, trade_rates={'roofing': {'better': 55}}),
+        'trades': {'roofing': {'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(10, {'good': (100, 0), 'better': (100, 0), 'best': (100, 0)})]}}}),
+
+    # per-tier trade rate outranks a legacy flat per-trade override; blank slots fall to it
+    ('trade_rates over flat override', {'pricing': dict(STD, trade_rates={'roofing': {'better': 50}},
+        per_trade_overrides={'roofing': 10}),
+        'trades': {'roofing': {'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(10, {'good': (100, 0), 'better': (100, 0), 'best': (100, 0)})]}}}),
+
+    # trade_rates are per-trade: a windows rate must not touch roofing
+    ('trade_rates scoped per trade', {'pricing': dict(STD, trade_rates={'windows': {'better': 10}}),
+        'trades': {
+        'roofing': {'enabled': True, 'mode': 'gbb',
+                    'line_items': [_gbb(10, {'good': (100, 0), 'better': (100, 0), 'best': (100, 0)})]},
+        'windows': {'enabled': True, 'mode': 'gbb', 'selected_tier': 'better',
+                    'line_items': [_gbb(10, {'good': (100, 0), 'better': (100, 0), 'best': (100, 0)})]}}}),
+
     ('zero qty with price_override', {'pricing': STD, 'trades': {'roofing': {
         'enabled': True, 'mode': 'gbb', 'line_items': [
             {'name': 'x', 'quantity': 0, 'tiers': {t: {'material_unit_cost': 100,
