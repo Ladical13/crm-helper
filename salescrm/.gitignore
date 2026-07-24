@@ -3,3 +3,7 @@ salescrm.db-journal
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Local dev data dir (SALESCRM_DATA_DIR) — holds real customer documents.
+# Never commit: uploads here are homeowner paperwork, not source.
+.localdata/
