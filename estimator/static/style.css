@@ -2623,6 +2623,7 @@ a.jx-contact:hover { text-decoration: underline; }
 .tl-status.tl-active { color: var(--better); }
 .tl-status.tl-temp   { color: var(--orange); }
 .tl-status.tl-none   { color: var(--text-light); }
+.tl-contact { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .tl-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .tl-pw { flex: 1; min-width: 120px; font-size: 12px; padding: 6px 8px; }
 .tl-gen { border: 1px solid var(--border); background: #fff; border-radius: 4px; padding: 5px 8px; font-size: 13px; }

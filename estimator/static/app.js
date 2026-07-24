@@ -7992,6 +7992,11 @@ async function renderTeamLogins() {
         <span class="tl-role-badge tl-role-${u.role||'rep'}">${ROLE_LABELS[u.role||'rep']}</span>
         <span class="tl-status ${stcls}" id="tlst-${u.username}">${status}</span>
       </div>
+      <div class="tl-contact">
+        <input type="text" class="tl-pw" id="tlphone-${u.username}" placeholder="Cell # shown on customer Call/Text buttons" value="${esc(u.phone||'')}" autocomplete="off">
+        <input type="email" class="tl-pw" id="tlemail-${u.username}" placeholder="Email override (blank = ${esc(u.username)}@projectoneroofing.com)" value="${esc(u.email||'')}" autocomplete="off">
+        <button class="tl-set btn-primary" onclick="adminSaveContact('${u.username}')">Save Contact</button>
+      </div>
       <div class="tl-actions">
         ${roleSel}
         <input type="text" class="tl-pw" id="tlpw-${u.username}" placeholder="Temp password" autocomplete="off">
@@ -8051,6 +8056,22 @@ async function adminAddMember() {
   } else {
     const e = await r.json().catch(() => ({}));
     msg.className = 'tl-msg err'; msg.textContent = e.error || 'Could not add member.';
+  }
+}
+
+async function adminSaveContact(username) {
+  const phone = (document.getElementById('tlphone-' + username).value || '').trim();
+  const email = (document.getElementById('tlemail-' + username).value || '').trim();
+  const msg   = document.getElementById('tlmsg-' + username);
+  const r = await fetch(`/api/team/${username}`, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ phone, email }),
+  });
+  if (r.ok) {
+    if (msg) { msg.className = 'tl-msg ok'; msg.textContent = '✓ Contact info saved — shown on their customers\' sign pages.'; }
+  } else {
+    const e = await r.json().catch(() => ({}));
+    if (msg) { msg.className = 'tl-msg err'; msg.textContent = e.error || 'Could not save contact info.'; }
   }
 }
 

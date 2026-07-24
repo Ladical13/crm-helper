@@ -56,6 +56,11 @@ TEAM_MEMBERS = [
     'avery', 'bryan', 'derik', 'luke', 'phil',
 ]
 
+# Fallback office number shown when a rep hasn't set their own cell/email
+# override in team.json (Team Logins panel).
+COMPANY_PHONE_DIGITS  = '9707760945'
+COMPANY_PHONE_DISPLAY = '970-776-0945'
+
 # Full display names — username → "First Last"
 TEAM_DISPLAY_NAMES = {
     'avery': 'Avery Schroeder',
@@ -631,6 +636,8 @@ def list_users():
     return jsonify([
         {'username': m['username'],
          'display_name': m.get('display_name') or _display_name(m['username']),
+         'phone':        m.get('phone', ''),
+         'email':        m.get('email', ''),
          'enrolled':     bool((users.get(m['username']) or {}).get('pw_hash')),
          'must_change':  bool((users.get(m['username']) or {}).get('must_change')),
          'is_admin':     _get_role(m['username']) == 'admin',
@@ -701,6 +708,8 @@ def add_team_member():
     data         = request.get_json(force=True) or {}
     username     = (data.get('username') or '').strip().lower().replace(' ', '_')
     display_name = (data.get('display_name') or '').strip()
+    phone        = (data.get('phone') or '').strip()
+    email        = (data.get('email') or '').strip()
     role         = data.get('role', 'rep')
     if not username:
         return jsonify({'error': 'username required'}), 400
@@ -709,7 +718,8 @@ def add_team_member():
     team = load_team()
     if any(m['username'] == username for m in team):
         return jsonify({'error': 'user already exists'}), 409
-    team.append({'username': username, 'display_name': display_name or _display_name(username)})
+    team.append({'username': username, 'display_name': display_name or _display_name(username),
+                 'phone': phone, 'email': email})
     save_team(team)
     users = load_users()
     rec = users.get(username) or {}
@@ -718,6 +728,28 @@ def add_team_member():
     users[username] = rec
     save_users(users)
     return jsonify({'ok': True, 'username': username}), 201
+
+
+@app.route('/api/team/<username>', methods=['PATCH'])
+def edit_team_member(username):
+    """Admin-only: edit a team member's display name or customer-facing
+    contact override (phone/email shown on the /sign page's contact card)."""
+    if not _is_admin(session.get('user', '')):
+        return jsonify({'error': 'admin only'}), 403
+    username = (username or '').strip().lower()
+    team = load_team()
+    m = next((t for t in team if t['username'] == username), None)
+    if m is None:
+        return jsonify({'error': 'unknown team member'}), 404
+    data = request.get_json(force=True) or {}
+    if 'display_name' in data:
+        m['display_name'] = (data.get('display_name') or '').strip() or _display_name(username)
+    if 'phone' in data:
+        m['phone'] = (data.get('phone') or '').strip()
+    if 'email' in data:
+        m['email'] = (data.get('email') or '').strip()
+    save_team(team)
+    return jsonify({'ok': True, 'username': username, 'member': m})
 
 
 @app.route('/api/team/<username>', methods=['DELETE'])
@@ -2698,10 +2730,10 @@ def _cv_head(title):
 
 def _cv_header():
     """Shared top bar: logo left, tap-to-call pill right, brand stripe."""
-    return '''<header class="cvhdr">
+    return f'''<header class="cvhdr">
   <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
   <div class="cvhdr-contact">
-    <a href="tel:9707760945">&#128222; 970-776-0945</a>
+    <a href="tel:{COMPANY_PHONE_DIGITS}">&#128222; {COMPANY_PHONE_DISPLAY}</a>
     <span>projectoneroofingcolorado.com</span>
   </div>
 </header>
@@ -2714,7 +2746,7 @@ def _cv_footer(extra=''):
   <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
   <strong>Project One Roofing</strong>
   <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>
-    <a href="tel:9707760945">970-776-0945</a> &middot; projectoneroofingcolorado.com</div>
+    <a href="tel:{COMPANY_PHONE_DIGITS}">{COMPANY_PHONE_DISPLAY}</a> &middot; projectoneroofingcolorado.com</div>
   {extra}
 </div>
 <script>{_CV_SHARED_JS}</script>
@@ -2762,24 +2794,34 @@ def _cv_next_steps(signed=False):
 
 
 def _cv_contact_card(est):
-    """'Questions?' card with the assigned salesperson and one-tap call/text
-    (and email when the salesperson maps to a company address)."""
+    """'Questions?' card with the assigned rep's own contact info. Pulled from
+    team.json (Settings → Team Logins → per-rep phone/email override); falls
+    back to the derived @projectoneroofing.com address and the company office
+    number when a rep hasn't set a personal override."""
     sp_raw = str(est.get('salesperson') or '').strip()
-    sp = sp_raw.replace('.', ' ').replace('_', ' ').title()
-    initials = ''.join(w[0] for w in sp.split()[:2]).upper() or 'P1'
-    name = sp or 'Project One Roofing'
-    role = 'Your Project Consultant' if sp else 'Loveland, Colorado'
-    email_btn = ''
-    if sp_raw and re.fullmatch(r'[A-Za-z0-9._-]+', sp_raw):
-        email_btn = (f'<a class="cvrep-btn" href="mailto:{he(sp_raw)}@projectoneroofing.com">'
-                     f'&#9993;&#65039; Email</a>')
+    team_rec = next((m for m in load_team() if m.get('username') == sp_raw), None) if sp_raw else None
+
+    name = ((team_rec or {}).get('display_name') or '').strip() \
+        or (_display_name(sp_raw) if sp_raw else '') or 'Project One Roofing'
+    role = 'Your Project Consultant' if sp_raw else 'Loveland, Colorado'
+    initials = ''.join(w[0] for w in name.split()[:2]).upper() or 'P1'
+
+    phone_override = ((team_rec or {}).get('phone') or '').strip()
+    phone_digits   = re.sub(r'\D', '', phone_override) or COMPANY_PHONE_DIGITS
+
+    email = ((team_rec or {}).get('email') or '').strip()
+    if not email and sp_raw and re.fullmatch(r'[A-Za-z0-9._-]+', sp_raw):
+        email = f'{sp_raw}@projectoneroofing.com'
+    email_btn = (f'<a class="cvrep-btn" href="mailto:{he(email)}">&#9993;&#65039; Email</a>'
+                 if email else '')
+
     return f'''<div class="cvrep-card"><h3>Questions? We&rsquo;re Here to Help</h3>
   <div class="cvrep">
     <div class="cvrep-av">{he(initials)}</div>
     <div class="cvrep-info"><div class="cvrep-name">{he(name)}</div><div class="cvrep-role">{role}</div></div>
     <div class="cvrep-btns">
-      <a class="cvrep-btn pri" href="tel:9707760945">&#128222; Call</a>
-      <a class="cvrep-btn" href="sms:9707760945">&#128172; Text</a>
+      <a class="cvrep-btn pri" href="tel:{phone_digits}">&#128222; Call</a>
+      <a class="cvrep-btn" href="sms:{phone_digits}">&#128172; Text</a>
       {email_btn}
     </div>
   </div></div>'''
