@@ -3233,6 +3233,58 @@ a.jx-contact:hover { text-decoration: underline; }
 }
 .roofr-modal-footer { display: flex; justify-content: flex-end; gap: 10px; }
 
+/* ── Insurance (Xactimate) carrier-estimate import modal ───────────── */
+.xact-modal-box { width: min(760px, 96vw); }
+.xact-modal-body { padding: 18px 22px 22px; display: flex; flex-direction: column; gap: 14px;
+  max-height: 76vh; overflow-y: auto; }
+.xact-meta-card {
+  display: grid; grid-template-columns: auto 1fr; gap: 4px 14px;
+  background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+}
+.xact-meta-label { font-size: 12px; color: var(--text-light); white-space: nowrap; }
+.xact-meta-value { font-size: 12px; font-weight: 700; color: #1a3a5c; }
+.xact-warn {
+  background: #fef3c7; border: 1px solid #f59e0b; color: #92400e;
+  border-radius: 8px; padding: 10px 12px; font-size: 12px;
+}
+.xact-hint { font-size: 13px; color: var(--text-light); margin: 0; }
+.xact-section-hd { display: flex; align-items: center; gap: 8px; margin: 6px 0 6px; }
+.xact-section-hd input[type="checkbox"] { width: 16px; height: 16px; flex: none; }
+.xact-section-name {
+  flex: 1; font-size: 14px; font-weight: 700; padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: 6px; background: #fff;
+}
+.xact-table th, .xact-table td { font-size: 12px; }
+.xact-check-cell { text-align: center; }
+.xact-check-cell input { width: 16px; height: 16px; }
+.xact-name-cell { min-width: 220px; }
+.xact-qty-cell { white-space: nowrap; color: var(--text-light); }
+.xact-num-cell { text-align: right; white-space: nowrap; }
+.xact-rcv-cell { font-weight: 700; }
+.xact-line-row.xact-excluded td { opacity: .42; text-decoration: line-through; }
+.xact-line-row.xact-excluded td.xact-check-cell { opacity: 1; text-decoration: none; }
+.xact-footer {
+  position: sticky; bottom: -22px; margin: 0 -22px -22px; padding: 12px 22px;
+  background: #fff; border-top: 2px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
+.xact-footer-totals { font-size: 13px; }
+.xact-footer-sub { color: var(--text-light); margin-left: 8px; font-size: 12px; }
+.xact-footer-btns { display: flex; gap: 10px; }
+.xact-claim-note { font-size: 11px; color: var(--text-light); font-style: italic; }
+
+/* Internal claim-details card on the insurance pricing tab */
+.ins-claim-card { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 14px; overflow: hidden; }
+.ins-claim-card-hd {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; background: #eef2f7; font-size: 13px; font-weight: 700;
+}
+.ins-claim-grid { border: none; border-radius: 0; grid-template-columns: auto 1fr auto 1fr; }
+@media (max-width: 640px) {
+  .ins-claim-grid { grid-template-columns: auto 1fr; }
+  .xact-modal-box { width: 96vw !important; }
+}
+
 /* ── Permits page (Loveland permit & affidavit filler) ─────────────── */
 .pm-wrap { display: flex; flex-direction: column; gap: 14px; max-width: 860px; width: 100%; margin: 0 auto; }
 .pm-hint { font-size: 12px; color: var(--text-light); margin-bottom: 10px; }

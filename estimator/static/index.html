@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Project One">
   <link rel="apple-touch-icon" href="/static/icon-180.png">
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/static/style.css?v=113">
+  <link rel="stylesheet" href="/static/style.css?v=115">
 </head>
 <body>
 
@@ -54,6 +54,7 @@
     <button id="mm-settings" onclick="openSettings();closeMoreMenu()">⚙ Settings</button>
     <button onclick="openLoginsModal();closeMoreMenu()">🔑 Passwords &amp; Logins</button>
     <button onclick="document.getElementById('roofr-pdf-input').click();closeMoreMenu()">📐 RoofR Import</button>
+    <button onclick="document.getElementById('xact-pdf-input').click();closeMoreMenu()">🏛 Insurance PDF Import</button>
     <button onclick="openOrderSheet();closeMoreMenu()">📋 Order Sheet</button>
     <a href="/logout" class="overflow-signout">Sign Out</a>
   </div>
@@ -618,8 +619,22 @@
   </div>
 </div>
 
+<!-- hidden input for insurance (Xactimate) PDF import -->
+<input type="file" id="xact-pdf-input" accept=".pdf" style="display:none" onchange="importXactPdf(this)">
+
+<!-- ── Insurance estimate import review modal ────────────────────────── -->
+<div id="xact-modal" class="modal hidden" onclick="maybeCloseXactModal(event)">
+  <div class="modal-box xact-modal-box">
+    <div class="modal-header">
+      <h2>🏛 Insurance Estimate Import</h2>
+      <button onclick="closeXactModal()" class="modal-close">×</button>
+    </div>
+    <div id="xact-modal-body" class="xact-modal-body"></div>
+  </div>
+</div>
+
 <div id="app-toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=113"></script>
+<script src="/static/app.js?v=115"></script>
 </body>
 </html>

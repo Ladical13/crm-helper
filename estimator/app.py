@@ -1342,6 +1342,317 @@ def parse_roofr():
     return jsonify(data)
 
 
+# ── Xactimate (insurance carrier estimate) PDF import ──────────────────────
+# Parses a carrier's Xactimate estimate export (e.g. Allstate) into sections
+# of line items carrying ACV/depreciation, plus claim metadata and the claim
+# summary (deductible, net claim, recoverable depreciation). Parse-only: the
+# endpoint persists nothing; the browser review modal decides what to apply.
+
+def _xact_num(s):
+    return float(str(s).replace(',', '').replace('$', ''))
+
+# Numeric tail of a line item:
+#   QTY UNIT PRICE RCV AGE/LIFE COND DEP%[ [M]] (DEPREC) ACV
+# Verified shapes: "28.74 SQ 75.56 2,171.59 23/30 yrs Avg. NA (0.00) 2,171.59",
+# "... 76.67% (7,397.88) ...", "... 90% [M] (97.65) ...", "0/NA Avg.",
+# "Abv. Avg.", and guide-style glued qty+unit ("685.47SF").
+_XACT_ITEM_RE = re.compile(
+    r'^(?P<no>\d{1,3})\.\s+(?P<desc>.+?)\s+'
+    r'(?P<qty>[\d,]+\.\d{2})\s*(?P<unit>[A-Z]{2,3})\s+'
+    r'(?P<price>[\d,]+\.\d{2})\s+(?P<rcv>[\d,]+\.\d{2})\s+'
+    r'(?P<age>\d+/(?:\d+|NA))\s*(?:yrs)?\s+'
+    r'(?P<cond>New|Avg\.|Abv\.\s*Avg\.|Bel\.\s*Avg\.)\s+'
+    r'(?P<dep_pct>NA|<?[\d.]+\s*%)\s*(?:\[[A-Z%]\])?\s*'
+    r'\((?P<deprec>[\d,]+\.\d{2})\)\s+(?P<acv>[\d,]+\.\d{2})\s*$')
+
+_XACT_ITEM_START_RE = re.compile(r'^\d{1,3}\.\s+\S')
+_XACT_HEADER_RE     = re.compile(r'^DESCRIPTION\s+QUANTITY\s+UNIT\s+RCV', re.I)
+_XACT_TOTALS_RE     = re.compile(
+    r'^Totals?:\s+(?P<name>.+?)\s+(?P<rcv>[\d,]+\.\d{2})\s+'
+    r'(?P<dep>[\d,]+\.\d{2})\s+(?P<acv>[\d,]+\.\d{2})\s*$')
+_XACT_GRAND_RE      = re.compile(
+    r'Line Item Totals:\s*\S+\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})')
+_XACT_NOISE_RES = [re.compile(p, re.I) for p in (
+    r'^Options?:', r'^Auto Calculated Waste', r'^This line item include',
+    r'^The above line item', r'^Bundle Rounding', r'^CONTINUED\s*-',
+    r'^Page:\s*\d+\s*$', r'Page:\s*\d+\s*$',
+    r'^\d+\s*$', r'^P\.?O\.? Box', r'^Fax:', r'^www\.', r'^Exposure\b',
+    r'^[A-Za-z .]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\s*$',  # carrier address line
+)]
+
+# Per-coverage summary labels, summed across every coverage block (AA-Dwelling
+# + BB-Other Structures + ... adds up to the whole-claim figure; verified the
+# sums match the "Recap by Category" totals on a real Allstate export).
+_XACT_SUMMARY_LABELS = {
+    'line_item_total':        r'^Line Item Total\s',
+    'material_sales_tax':     r'^Material Sales Tax\s',
+    'rcv_total':              r'^Replacement Cost Value\s',
+    'depreciation_total':     r'^Less Depreciation\s',
+    'acv_total':              r'^Actual Cash Value\s',
+    'deductible':             r'^Less Deductible\s',
+    'net_claim':              r'^Net Claim\s+\$?\(?[\d,]',
+    'recoverable_depreciation': r'^Total Recoverable Depreciation\s',
+    'net_claim_if_recovered': r'^Net Claim if Depreciation is Recovered\s',
+}
+
+
+def _xact_is_noise(line, extra_noise=()):
+    if line in extra_noise:
+        return True
+    return any(rx.search(line) for rx in _XACT_NOISE_RES)
+
+
+def _parse_xactimate_items(lines, extra_noise=()):
+    """State machine over the document's lines → flat [(line_no, section, item)]."""
+    out = []
+    current_section = None
+    recent = []          # raw non-item lines, for section-name lookback
+    pending = None       # buffered numbered line whose numeric tail wrapped
+    pending_count = 0
+    open_item = None     # last emitted item, may take ONE description continuation
+
+    def emit(m):
+        item = {
+            'line_no':     int(m.group('no')),
+            'description': re.sub(r'\s+', ' ', m.group('desc')).strip(),
+            'qty':         _xact_num(m.group('qty')),
+            'unit':        m.group('unit'),
+            'unit_price':  _xact_num(m.group('price')),
+            'rcv':         _xact_num(m.group('rcv')),
+            'age_life':    m.group('age'),
+            'dep_pct':     m.group('dep_pct').replace(' ', ''),
+            'depreciation': _xact_num(m.group('deprec')),
+            'acv':         _xact_num(m.group('acv')),
+        }
+        out.append([item['line_no'], current_section, item])
+
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+
+        cont = re.match(r'^CONTINUED\s*-\s*(.+?)(?:\s{2,}|$)', line, re.I)
+        if cont:
+            current_section = cont.group(1).strip()
+            open_item = pending = None
+            continue
+
+        if _XACT_HEADER_RE.search(line):
+            # Section name = nearest preceding line that isn't noise, isn't a
+            # measurement row ("270.38 Total Perimeter Length" starts with a
+            # digit), and isn't itself an item.
+            for prev in reversed(recent):
+                if (prev and not prev[0].isdigit()
+                        and not _xact_is_noise(prev, extra_noise)
+                        and not _XACT_ITEM_START_RE.match(prev)
+                        and not _XACT_TOTALS_RE.match(prev)):
+                    current_section = prev
+                    break
+            recent = []
+            open_item = pending = None
+            continue
+
+        tm = _XACT_TOTALS_RE.match(line)
+        if tm:
+            open_item = pending = None
+            recent.append(line)
+            continue
+
+        if _xact_is_noise(line, extra_noise):
+            open_item = pending = None
+            continue
+
+        m = _XACT_ITEM_RE.match(line)
+        if m:
+            emit(m)
+            open_item = out[-1][2]
+            pending = None
+            continue
+
+        if _XACT_ITEM_START_RE.match(line):
+            pending, pending_count, open_item = line, 1, None
+            continue
+
+        if pending is not None:
+            joined = pending + ' ' + line
+            m = _XACT_ITEM_RE.match(joined)
+            if m:
+                emit(m)
+                open_item = out[-1][2]
+                pending = None
+            else:
+                pending_count += 1
+                pending = joined if pending_count < 4 else None
+            continue
+
+        # One short free-text continuation extends the previous item's
+        # description ("shingle rfg. - w/ felt", '5"', "Metal"). Accept only
+        # when it reads like a fragment (starts lowercase/dash/digit) or the
+        # description visibly dangles (trailing '-'); this keeps Xactimate
+        # category labels like "Components" from gluing on.
+        if (open_item is not None and len(line) <= 45
+                and (not line[0].isupper()
+                     or open_item['description'].rstrip().endswith('-'))):
+            open_item['description'] = (open_item['description'] + ' ' + line).strip()
+            open_item = None
+            continue
+
+        open_item = None
+        recent.append(line)
+        if len(recent) > 8:
+            recent.pop(0)
+
+    return out
+
+
+def _parse_xactimate_pdf(file_bytes):
+    if _pypdf is None:
+        raise RuntimeError('pypdf not installed')
+    reader = _pypdf.PdfReader(io.BytesIO(file_bytes))
+    pages = [p.extract_text() or '' for p in reader.pages]
+
+    # Carrier exports interleave static instructional pages ("Your guide to
+    # reading your adjuster summary") full of FAKE example line items. Real
+    # Xactimate pages all carry a running "<estimate id> <date> Page: N"
+    # header — keep only those (fall back to everything if none match).
+    real_pages = [t for t in pages if re.search(r'Page:\s*\d+', t)]
+    if not real_pages:
+        real_pages = pages
+    text = '\n'.join(real_pages)
+    page1 = real_pages[0]
+
+    # ── metadata (page 1) ──
+    meta = {}
+    for ln in page1.split('\n'):
+        s = ln.strip()
+        if s and not s.isdigit():
+            meta['carrier'] = s
+            break
+    pairs = {
+        'claim_number':  r'Claim Number:\s*(\S+)',
+        'policy_number': r'Policy Number:\s*(\S+)',
+        'type_of_loss':  r'Type of Loss:\s*([^\n]+)',
+        'price_list':    r'Price List:\s*(\S+)',
+        'date_of_loss':  r'Date of Loss:\s*([\d/]+)',
+    }
+    for key, pat in pairs.items():
+        m = re.search(pat, page1)
+        if m:
+            meta[key] = m.group(1).strip()
+    m = re.search(r'Insured:\s*(.+?)(?:\s+(?:Home|Business|Cell(?:ular)?|E-mail|Phone):|$)',
+                  page1, re.M)
+    if m:
+        meta['insured'] = m.group(1).strip()
+
+    addr = {}
+    m = re.search(r'Property:\s*([^\n]+)\n\s*([A-Za-z .]+?),\s*([A-Z]{2})\s+(\d{5})(?:-\d{4})?',
+                  page1)
+    if m:
+        addr = {'street': m.group(1).strip(), 'city': m.group(2).strip().title(),
+                'state': m.group(3), 'zip': m.group(4)}
+
+    # ── line items ──
+    # One continuous stream across pages so a section whose items start after
+    # a page break still finds its name; the carrier's running header lines
+    # (name + address) are filtered as noise so they can't pose as sections.
+    warnings = []
+    extra_noise = {meta['carrier']} if meta.get('carrier') else set()
+    flat = _parse_xactimate_items(text.split('\n'), extra_noise)
+
+    # Split into runs of strictly-increasing line numbers, then pick the run
+    # whose RCV sum matches the document's "Line Item Totals" checksum. Any
+    # stray example items (guide pages that slipped the page filter, sample
+    # blocks) restart numbering and land in a losing run.
+    runs = []
+    for entry in flat:
+        if runs and entry[0] > runs[-1][-1][0]:
+            runs[-1].append(entry)
+        else:
+            runs.append([entry])
+    grand = None
+    gm = list(_XACT_GRAND_RE.finditer(text))
+    if gm:
+        grand = tuple(_xact_num(g) for g in gm[-1].groups())
+    chosen = None
+    if grand is not None:
+        for run in runs:
+            if abs(sum(e[2]['rcv'] for e in run) - grand[0]) <= 0.05:
+                chosen = run
+                break
+    if chosen is None and runs:
+        chosen = max(runs, key=len)
+        if grand is not None:
+            warnings.append('Line items did not match the document total — review carefully.')
+        elif len(runs) > 1:
+            warnings.append('Could not verify totals — review lines carefully.')
+
+    sections = []
+    by_name = {}
+    for _, sec_name, item in (chosen or []):
+        name = sec_name or 'Estimate'
+        if abs(item['rcv'] - (item['acv'] + item['depreciation'])) > 0.02:
+            warnings.append(
+                f"Line {item['line_no']}: RCV {item['rcv']:.2f} ≠ ACV + depreciation "
+                f"({item['acv'] + item['depreciation']:.2f}) — ACV/depreciation kept.")
+        if name not in by_name:
+            by_name[name] = {'name': name, 'items': [], 'totals': None}
+            sections.append(by_name[name])
+        by_name[name]['items'].append(item)
+
+    # Per-section "Totals: <name> RCV DEP ACV" checksums
+    for ln in text.split('\n'):
+        tm = _XACT_TOTALS_RE.match(ln.strip())
+        if tm and tm.group('name').strip() in by_name:
+            by_name[tm.group('name').strip()]['totals'] = {
+                'rcv': _xact_num(tm.group('rcv')),
+                'dep': _xact_num(tm.group('dep')),
+                'acv': _xact_num(tm.group('acv')),
+            }
+
+    # ── claim summary: sum each label across the per-coverage blocks ──
+    summary = {}
+    for key, pat in _XACT_SUMMARY_LABELS.items():
+        rx = re.compile(pat)
+        total = 0.0
+        found = False
+        for ln in text.split('\n'):
+            s = ln.strip()
+            if key == 'net_claim' and re.match(r'^Net Claim if', s):
+                continue
+            if rx.match(s):
+                # Per-coverage summary rows carry exactly one figure; the
+                # "Recap by Category" page repeats some labels with three
+                # (RCV/Dep/ACV) — skip those so coverages aren't double-counted.
+                nums = re.findall(r'[\d,]+\.\d{2}', s)
+                if len(nums) == 1:
+                    total += _xact_num(nums[0])
+                    found = True
+        if found:
+            summary[key] = round(total, 2)
+    if grand is not None:
+        summary['line_items_rcv'] = grand[0]
+        summary['line_items_depreciation'] = grand[1]
+        summary['line_items_acv'] = grand[2]
+
+    return {'meta': meta, 'address': addr, 'sections': sections,
+            'summary': summary, 'warnings': warnings}
+
+
+@app.route('/api/parse-xactimate', methods=['POST'])
+def parse_xactimate():
+    f = request.files.get('file')
+    if not f or not f.filename.lower().endswith('.pdf'):
+        return jsonify({'error': 'Please upload a PDF file.'}), 400
+    try:
+        data = _parse_xactimate_pdf(f.read())
+    except Exception as e:
+        return jsonify({'error': f'Could not read PDF: {e}'}), 400
+    if not any(s.get('items') for s in data['sections']):
+        return jsonify({'error': "Couldn’t find Xactimate line items in this PDF. "
+                                 "Make sure it’s the carrier’s estimate export."}), 422
+    return jsonify(data)
+
+
 # ── CRM proxy ──────────────────────────────────────────────────────────────
 
 @app.route('/api/crm/contacts')

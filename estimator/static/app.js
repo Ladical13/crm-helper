@@ -3491,9 +3491,13 @@ function renderInsuranceFreeform() {
           placeholder="e.g. CLM-2026-12345"
           oninput="S.trades.insurance.claim_number=this.value;setDirty()">
       </div>
+      <div class="field-group" style="align-self:flex-end">
+        <button class="btn-secondary" onclick="document.getElementById('xact-pdf-input').click()">📥 Import Carrier PDF</button>
+      </div>
     </div>
+    ${_insClaimCard()}
     <div class="other-desc" style="margin-bottom:14px">
-      Add sections to match your Xactimate breakdown (e.g. Roof, Gutters, Interior). Each section has its own subtotal — ACV + Depreciation = RCV.
+      Add sections to match your Xactimate breakdown (e.g. Roof, Gutters, Interior) — or use <strong>Import Carrier PDF</strong> to load them straight from the carrier's estimate. Each section has its own subtotal — ACV + Depreciation = RCV.
     </div>
     ${sections.map(sec => _insSection(sec, sections)).join('')}
     <div class="ins-section-actions">
@@ -3512,6 +3516,33 @@ function renderInsuranceFreeform() {
         oninput="S.trades.insurance.scope_notes=this.value;setDirty()"
         placeholder="E.g. Complete tear-off and replacement of existing roofing system per insurance claim…"
       >${esc(td.scope_notes||'')}</textarea>
+    </div>`;
+}
+
+// Read-only claim reference card (populated by the carrier PDF import).
+// Internal only — none of this renders on the customer sign page or PDF.
+function _insClaimCard() {
+  const c = S.insurance_claim;
+  if (!c) return '';
+  const row = (label, val, money) => val === undefined || val === '' ? '' :
+    `<span class="xact-meta-label">${label}</span><span class="xact-meta-value">${money ? fmtCur(val) : esc(String(val))}</span>`;
+  return `
+    <div class="ins-claim-card">
+      <div class="ins-claim-card-hd">
+        <span>📎 Claim Details <span class="note-tag">internal — imported from carrier PDF</span></span>
+        <button class="li-del" title="Remove claim details"
+          onclick="delete S.insurance_claim;setDirty();renderTradeContent()">×</button>
+      </div>
+      <div class="xact-meta-card ins-claim-grid">
+        ${row('Policy #', c.policy_number)}
+        ${row('Type of Loss', c.type_of_loss)}
+        ${row('Date of Loss', c.date_of_loss)}
+        ${row('Price List', c.price_list)}
+        ${row('Deductible', c.deductible, true)}
+        ${row('Net Claim (ACV)', c.net_claim, true)}
+        ${row('Recoverable Depreciation', c.recoverable_depreciation, true)}
+        ${row('Net Claim if Dep. Recovered', c.net_claim_if_recovered, true)}
+      </div>
     </div>`;
 }
 
@@ -8202,6 +8233,242 @@ async function applyRoofrImport() {
   }
 
   closeRoofrModal();
+}
+
+// ── Insurance (Xactimate) carrier-estimate PDF import ────────────────────
+// Parse the carrier's estimate server-side, review it in a modal where the
+// rep unchecks lines we won't perform, then load the included lines into the
+// existing insurance sections model — the contract renders from that as-is.
+
+let _xactData = null;
+let _xactFile = null;      // saved as an attachment on apply
+let _xactExcluded = new Set();   // "si:ii" keys of excluded lines
+
+async function importXactPdf(input) {
+  const file = input.files[0];
+  if (!file) return;
+  _xactFile = file;
+  input.value = '';
+  const fd = new FormData();
+  fd.append('file', file);
+  let data;
+  try {
+    const r = await fetch('/api/parse-xactimate', { method: 'POST', body: fd });
+    data = await r.json();
+    if (!r.ok) { alert(data.error || 'Could not parse PDF.'); return; }
+  } catch { alert('Network error — could not reach server.'); return; }
+  openXactModal(data);
+}
+
+function openXactModal(data) {
+  _xactData = data;
+  _xactExcluded = new Set();
+  const meta = data.meta || {};
+  const addr = data.address || {};
+  const sum  = data.summary || {};
+  const addrLine = addr.street ? `${addr.street}, ${addr.city}, ${addr.state} ${addr.zip}` : null;
+
+  const metaRow = (label, val) => val
+    ? `<span class="xact-meta-label">${label}</span><span class="xact-meta-value">${esc(val)}</span>` : '';
+
+  const sectionsHtml = (data.sections || []).map((sec, si) => {
+    const rows = sec.items.map((it, ii) => `
+      <tr class="xact-line-row" data-key="${si}:${ii}">
+        <td class="xact-check-cell"><input type="checkbox" checked
+          onchange="xactToggleLine(${si},${ii},this.checked)"></td>
+        <td class="xact-name-cell">${esc(it.description)}</td>
+        <td class="xact-qty-cell">${it.qty} ${esc(it.unit)} @ ${fmtCur(it.unit_price)}</td>
+        <td class="xact-num-cell">${fmtCur(it.acv)}</td>
+        <td class="xact-num-cell">${fmtCur(it.depreciation)}</td>
+        <td class="xact-num-cell xact-rcv-cell">${fmtCur(it.rcv)}</td>
+      </tr>`).join('');
+    return `
+      <div class="xact-section">
+        <div class="xact-section-hd">
+          <input type="checkbox" checked id="xact-sec-cb-${si}"
+            onchange="xactToggleSection(${si},this.checked)" title="Include / exclude entire section">
+          <input type="text" class="xact-section-name" value="${esc(sec.name || '')}"
+            onchange="_xactData.sections[${si}].name=this.value">
+        </div>
+        <div class="other-table-wrap">
+          <table class="other-table xact-table">
+            <thead><tr>
+              <th style="width:34px"></th><th>Line Item</th><th>Qty</th>
+              <th class="other-th-price">ACV</th><th class="other-th-price">Depreciation</th>
+              <th class="other-th-price">RCV</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }).join('');
+
+  document.getElementById('xact-modal-body').innerHTML = `
+    <div class="xact-meta-card">
+      ${metaRow('Carrier', meta.carrier)}
+      ${metaRow('Claim #', meta.claim_number)}
+      ${metaRow('Insured', meta.insured)}
+      ${metaRow('Property', addrLine)}
+      ${metaRow('Type of Loss', meta.type_of_loss)}
+      ${metaRow('Price List', meta.price_list)}
+    </div>
+    ${(data.warnings || []).length ? `<div class="xact-warn">⚠ ${data.warnings.map(esc).join('<br>')}</div>` : ''}
+    <p class="xact-hint">Uncheck any lines <strong>we will not be doing</strong> — they are dropped from the contract entirely.</p>
+    ${sectionsHtml}
+    <div class="xact-footer">
+      <div class="xact-footer-totals" id="xact-footer-totals"></div>
+      <div class="xact-footer-btns">
+        <button class="btn-secondary" onclick="closeXactModal()">Cancel</button>
+        <button class="btn-primary" onclick="applyXactImport()">✓ Load Into Estimate</button>
+      </div>
+    </div>
+    ${sum.deductible !== undefined || sum.net_claim !== undefined ? `
+    <div class="xact-claim-note">Claim summary: ${[
+      sum.deductible !== undefined ? `deductible ${fmtCur(sum.deductible)}` : '',
+      sum.net_claim !== undefined ? `net claim ${fmtCur(sum.net_claim)}` : '',
+      sum.recoverable_depreciation !== undefined ? `recoverable depreciation ${fmtCur(sum.recoverable_depreciation)}` : '',
+    ].filter(Boolean).join(' · ')} — saved to the estimate for internal reference.</div>` : ''}`;
+
+  xactUpdateTotals();
+  document.getElementById('xact-modal').classList.remove('hidden');
+}
+
+function xactToggleLine(si, ii, on) {
+  const key = `${si}:${ii}`;
+  if (on) _xactExcluded.delete(key); else _xactExcluded.add(key);
+  const row = document.querySelector(`.xact-line-row[data-key="${si}:${ii}"]`);
+  if (row) row.classList.toggle('xact-excluded', !on);
+  xactUpdateTotals();
+}
+
+function xactToggleSection(si, on) {
+  (_xactData.sections[si].items || []).forEach((_, ii) => {
+    const key = `${si}:${ii}`;
+    if (on) _xactExcluded.delete(key); else _xactExcluded.add(key);
+    const row = document.querySelector(`.xact-line-row[data-key="${si}:${ii}"]`);
+    if (row) {
+      row.classList.toggle('xact-excluded', !on);
+      const cb = row.querySelector('input[type="checkbox"]');
+      if (cb) cb.checked = on;
+    }
+  });
+  xactUpdateTotals();
+}
+
+function xactUpdateTotals() {
+  if (!_xactData) return;
+  let n = 0, total = 0, rcv = 0, acv = 0, dep = 0;
+  (_xactData.sections || []).forEach((sec, si) => (sec.items || []).forEach((it, ii) => {
+    total++;
+    if (_xactExcluded.has(`${si}:${ii}`)) return;
+    n++; rcv += it.rcv; acv += it.acv; dep += it.depreciation;
+  }));
+  const el = document.getElementById('xact-footer-totals');
+  if (el) el.innerHTML =
+    `<strong>${n} of ${total} lines</strong> — RCV ${fmtCur(rcv)}` +
+    `<span class="xact-footer-sub">(ACV ${fmtCur(acv)} + Depreciation ${fmtCur(dep)})</span>`;
+}
+
+function closeXactModal() {
+  document.getElementById('xact-modal').classList.add('hidden');
+  _xactData = null;
+}
+
+function maybeCloseXactModal(e) {
+  if (e.target === document.getElementById('xact-modal')) closeXactModal();
+}
+
+async function applyXactImport() {
+  if (!_xactData) return;
+  const data = _xactData;
+
+  const hasExisting = (S.trades.insurance.sections || []).some(s => (s.items || []).length);
+  if (hasExisting && !confirm('Replace the current insurance line items with the imported ones?')) return;
+
+  // Real estimate-type toggle: enables the insurance trade, swaps contract
+  // text + initials to the insurance defaults, switches to the Pricing page.
+  setEstimateType('insurance');
+
+  const newSections = [];
+  (data.sections || []).forEach((sec, si) => {
+    const items = (sec.items || [])
+      .filter((_, ii) => !_xactExcluded.has(`${si}:${ii}`))
+      .map(it => ({
+        id: 'li_' + uid(),
+        name: it.description,
+        description: `${it.qty} ${it.unit} @ ${fmtCur(it.unit_price)}`,
+        acv: it.acv,
+        depreciation: it.depreciation,
+      }));
+    if (items.length) newSections.push({ id: 'sec_' + uid(), name: sec.name || '', items });
+  });
+  S.trades.insurance.sections = newSections.length
+    ? newSections : [{ id: 'sec_' + uid(), name: '', items: [] }];
+
+  const meta = data.meta || {};
+  const td = S.trades.insurance;
+  if (!td.carrier && meta.carrier) td.carrier = meta.carrier;
+  if (!td.claim_number && meta.claim_number) td.claim_number = meta.claim_number;
+
+  if (!S.customer.name && meta.insured) {
+    S.customer.name = meta.insured;
+    setVal('cust-name', S.customer.name);
+  }
+  const a = S.customer.address;
+  if (!a.street && data.address?.street) {
+    Object.assign(a, data.address);
+    setVal('cust-street', a.street);
+    setVal('cust-city',   a.city);
+    setVal('cust-state',  a.state);
+    setVal('cust-zip',    a.zip);
+  }
+
+  // Claim metadata for the internal reference card — never customer-facing.
+  const sum = data.summary || {};
+  S.insurance_claim = Object.fromEntries(Object.entries({
+    policy_number: meta.policy_number,
+    type_of_loss:  meta.type_of_loss,
+    price_list:    meta.price_list,
+    date_of_loss:  meta.date_of_loss,
+    deductible:    sum.deductible,
+    net_claim:     sum.net_claim,
+    recoverable_depreciation: sum.recoverable_depreciation,
+    net_claim_if_recovered:   sum.net_claim_if_recovered,
+    rcv_total:     sum.rcv_total,
+    acv_total:     sum.acv_total,
+    source:        'xactimate_import',
+    imported_at:   new Date().toISOString(),
+  }).filter(([, v]) => v !== undefined));
+
+  renderAll();
+  setDirty();
+
+  // Save the carrier PDF as an attachment (hidden from the customer packet
+  // by default — flip it on per-estimate in Attachments if ever wanted).
+  if (_xactFile) {
+    const file = _xactFile;
+    _xactFile = null;
+    try {
+      await saveEstimate();
+      if (S.estimate_id) {
+        const ufd = new FormData();
+        ufd.append('file', file);
+        const ur = await fetch(`/api/uploads/${S.estimate_id}`, { method: 'POST', body: ufd });
+        if (ur.ok) {
+          const ures = await ur.json();
+          if (!Array.isArray(S.attachments)) S.attachments = [];
+          S.attachments.push({
+            id: uid(), filename: ures.filename, original_name: file.name,
+            label: 'Insurance Estimate (Carrier)', show_in_estimate: false,
+            pages: ures.pages || undefined,
+          });
+          setDirty();
+        }
+      }
+    } catch(e) { console.warn('Could not save carrier PDF attachment:', e); }
+  }
+
+  closeXactModal();
 }
 
 /* ── Customer hub (per-client landing page) ────────────────────────────
