@@ -7286,7 +7286,7 @@ function buildPrintContent() {
   let html=`<div class="p-cover">
     <div class="p-cover-top">
       <img src="/static/logo.png" class="p-cover-toplogo" alt="Project One Roofing">
-      <div class="p-cover-tagline">Your Roofing Estimate</div>
+      <div class="p-cover-tagline">Your Project Estimate</div>
     </div>
     <div class="p-cover-mid">
       ${coverPhoto
