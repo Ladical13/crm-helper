@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Project One</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<meta name="theme-color" content="#0d1117">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #0d1117; color: #e6edf3;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top, 0px) 0 0;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 18px 20px; border-bottom: 1px solid #21262d;
+  }
+  .mark {
+    width: 34px; height: 34px; border-radius: 10px; flex: 0 0 auto;
+    background: linear-gradient(135deg, #f97316, #00a8b5); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 13px; letter-spacing: .3px;
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; flex: 1 1 auto; }
+  header .who { color: #8b949e; font-size: 13px; }
+  header a.out {
+    color: #8b949e; font-size: 13px; text-decoration: none;
+    border: 1px solid #2d333b; border-radius: 8px; padding: 6px 11px;
+  }
+  header a.out:hover { color: #e6edf3; border-color: #3a434f; }
+
+  main { max-width: 780px; margin: 0 auto; padding: 28px 20px 48px; }
+  .lede { margin: 0 0 22px; color: #8b949e; font-size: 14px; }
+
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+  .card {
+    display: block; text-decoration: none; color: inherit;
+    background: #161b22; border: 1px solid #2d333b; border-left: 3px solid var(--accent);
+    border-radius: 14px; padding: 20px;
+    transition: transform .12s ease, border-color .12s ease, background .12s ease;
+  }
+  .card:hover { transform: translateY(-2px); background: #1a2029; border-color: #3a434f; border-left-color: var(--accent); }
+  .card .icon { font-size: 26px; line-height: 1; }
+  .card h2 { margin: 12px 0 4px; font-size: 17px; font-weight: 650; }
+  .card p { margin: 0; color: #8b949e; font-size: 13px; }
+
+  .admin { margin-top: 34px; border-top: 1px solid #21262d; padding-top: 20px; }
+  .admin h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase;
+              letter-spacing: .5px; color: #8b949e; font-weight: 600; }
+  .admin a { color: #58a6ff; font-size: 14px; text-decoration: none; margin-right: 18px; }
+  .admin a:hover { text-decoration: underline; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="mark">P1</div>
+    <h1>Project One</h1>
+    <span class="who" id="who"></span>
+    <a class="out" href="/logout">Sign out</a>
+  </header>
+
+  <main>
+    <p class="lede">Everything runs off this one login now — jump straight in, or use the bar at the top of any tool to switch.</p>
+    <div class="grid" id="grid"></div>
+
+    <div class="admin" id="admin" hidden>
+      <h3>Manager</h3>
+      <a href="/crm/#dashboard">Numbers</a>
+      <a href="/crm/#coaching">Coaching</a>
+      <a href="/account/password">Change my password</a>
+    </div>
+  </main>
+
+<script>
+fetch('/api/me', { credentials: 'same-origin' })
+  .then(function (r) { if (!r.ok) { window.location = '/login'; return null; } return r.json(); })
+  .then(function (me) {
+    if (!me) return;
+    document.getElementById('who').textContent = me.full_name || me.username;
+    document.getElementById('grid').innerHTML = me.apps.map(function (a) {
+      return '<a class="card" style="--accent:' + a.accent + '" href="' + a.prefix + '/">' +
+             '<div class="icon">' + a.icon + '</div>' +
+             '<h2>' + a.label + '</h2><p>' + a.blurb + '</p></a>';
+    }).join('');
+    document.getElementById('admin').hidden = !me.is_manager;
+  });
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(function () {});
+</script>
+</body>
+</html>

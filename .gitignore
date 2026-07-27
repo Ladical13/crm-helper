@@ -18,6 +18,11 @@ estimator/users.json
 estimator/company_content.json
 estimator/app_settings.json
 
+# Portal — the shared user store (password hashes; never in git)
+portal.db
+portal.db-journal
+.localdata/
+
 # CRM helper / reporting scripts (contain API tokens, not needed on Railway)
 weekly_report.py
 sheets_report.py

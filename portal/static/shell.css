@@ -1,0 +1,122 @@
+/* The app-switcher bar, injected into all three apps by shell.js.
+ *
+ * Deliberately self-contained: every rule is scoped under #p1-shell so it
+ * cannot leak into the host app's styles, and it uses its own --p1-* custom
+ * properties rather than any app's variables (the three apps use disjoint
+ * variable vocabularies — --text vs --txt, --border vs --line — so there is
+ * nothing shared to reuse).
+ *
+ * The host app is responsible for making room: each app's style.css offsets
+ * its own fixed header by var(--p1-shell-h). shell.js sets that variable on
+ * :root and adds the .p1-has-shell class so an app can scope the offset and
+ * still render standalone in tests.
+ */
+
+:root {
+  --p1-shell-h: 44px;
+  --p1-shell-bg: #11161d;
+  --p1-shell-line: #262d36;
+  --p1-shell-txt: #e6edf3;
+  --p1-shell-dim: #8b949e;
+}
+
+#p1-shell {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9000;
+  height: var(--p1-shell-h);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  padding-top: env(safe-area-inset-top, 0px);
+  box-sizing: content-box;
+  background: var(--p1-shell-bg);
+  border-bottom: 1px solid var(--p1-shell-line);
+  color: var(--p1-shell-txt);
+  font: 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#p1-shell .p1-home {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #f97316, #00a8b5);
+  color: #fff;
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: .3px;
+  text-decoration: none;
+}
+
+#p1-shell .p1-apps {
+  display: flex;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+#p1-shell .p1-apps::-webkit-scrollbar { display: none; }
+
+#p1-shell .p1-app {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 6px 11px;
+  border-radius: 999px;
+  color: var(--p1-shell-dim);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background .12s, color .12s;
+}
+#p1-shell .p1-app:hover { background: #1b222b; color: var(--p1-shell-txt); }
+#p1-shell .p1-app.active {
+  background: #1f2731;
+  color: var(--p1-shell-txt);
+  box-shadow: inset 0 0 0 1px var(--p1-shell-line);
+}
+/* Each app gets its own accent as a leading dot, so the active tool is
+ * identifiable at a glance even on a phone where labels are cramped. */
+#p1-shell .p1-app::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--p1-accent, transparent);
+  flex: 0 0 auto;
+}
+#p1-shell .p1-app:not(.active)::before { opacity: .45; }
+
+#p1-shell .p1-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  color: var(--p1-shell-dim);
+}
+#p1-shell .p1-who { white-space: nowrap; }
+#p1-shell .p1-out {
+  padding: 6px 10px;
+  border-radius: 7px;
+  color: var(--p1-shell-dim);
+  text-decoration: none;
+  border: 1px solid var(--p1-shell-line);
+}
+#p1-shell .p1-out:hover { color: var(--p1-shell-txt); border-color: #3a434f; }
+
+/* Phones: the label text goes, the emoji and accent dot stay. */
+@media (max-width: 560px) {
+  #p1-shell .p1-app .p1-label { display: none; }
+  #p1-shell .p1-who { display: none; }
+  #p1-shell .p1-app { padding: 6px 9px; }
+}
