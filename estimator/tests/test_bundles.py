@@ -10,7 +10,10 @@ What must hold, all of which has bitten before or would ship broken pricing:
   * switching bundles EXCLUDES the old products from that tier instead of
     leaving both materials priced into the package;
   * an item built before the trade moved to bundles is adopted by name rather
-    than duplicated beside its catalog twin.
+    than duplicated beside its catalog twin;
+  * the bundle owns the package's customer copy — picking one replaces BOTH the
+    Options-page tagline and the What's Included bullets, so a metal roof can
+    never go out described as an architectural shingle.
 """
 import json
 import os
@@ -33,9 +36,13 @@ PRICE_BOOK = {
     ],
     'siding_bundles': [
         {'id': 'b_vinyl', 'name': 'Vinyl', 'product_ids': ['s_vinyl', 'sa_wrap'],
-         'description': 'Low-maintenance vinyl.'},
+         'description': 'Low-maintenance vinyl.',
+         'features': ['Vinyl siding', 'Never needs paint']},
         {'id': 'b_hardie', 'name': 'Hardie', 'product_ids': ['s_hardie', 'sa_wrap'],
-         'description': 'Fiber cement.'},
+         'description': 'Fiber cement.',
+         'features': ['James Hardie fiber cement', 'Non-combustible', '30-year warranty']},
+        # A manager-made bundle with no copy typed in yet.
+        {'id': 'b_bare', 'name': 'Bare', 'product_ids': ['s_vinyl', 'sa_wrap']},
     ],
     'siding_tier_defaults': {'good': 'b_vinyl', 'better': 'b_vinyl', 'best': 'b_hardie'},
 }
@@ -94,6 +101,64 @@ def test_bundle_description_fills_the_options_page(tmp_path):
     td = _run(tmp_path, _estimate(), [
         {'op': 'applyBundle', 'trade': 'siding', 'tier': 'best', 'id': 'b_hardie'}])
     assert td['tier_descriptions']['best'] == 'Fiber cement.'
+
+
+def test_bundle_features_fill_the_options_page(tmp_path):
+    td = _run(tmp_path, _estimate(), [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'best', 'id': 'b_hardie'}])
+    assert td['tier_features']['best'] == [
+        'James Hardie fiber cement', 'Non-combustible', '30-year warranty']
+    assert td['tier_features']['good'] == []          # this tier only
+
+
+def test_swapping_bundles_replaces_the_whole_story(tmp_path):
+    """The new product wins — stale copy on a swapped tier is the bug this fixes."""
+    est = _estimate()
+    est['trades']['siding']['tier_descriptions'] = {'good': '', 'better': '', 'best': 'Fiber cement.'}
+    est['trades']['siding']['tier_features'] = {'good': [], 'better': [], 'best': ['James Hardie fiber cement']}
+    td = _run(tmp_path, est, [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'best', 'id': 'b_vinyl'}])
+    assert td['tier_descriptions']['best'] == 'Low-maintenance vinyl.'
+    assert td['tier_features']['best'] == ['Vinyl siding', 'Never needs paint']
+
+
+def test_swap_overwrites_hand_edited_copy(tmp_path):
+    """A rep's edits lose to the bundle: better a re-type than a wrong roof described."""
+    est = _estimate()
+    est['trades']['siding']['tier_descriptions'] = {'good': '', 'better': '', 'best': 'Rep wrote this.'}
+    est['trades']['siding']['tier_features'] = {'good': [], 'better': [], 'best': ['Rep bullet']}
+    td = _run(tmp_path, est, [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'best', 'id': 'b_hardie'}])
+    assert td['tier_descriptions']['best'] == 'Fiber cement.'
+    assert 'Rep bullet' not in td['tier_features']['best']
+
+
+def test_bundle_without_copy_leaves_existing_copy_alone(tmp_path):
+    """Nothing to replace it with — don't blank the card."""
+    est = _estimate()
+    est['trades']['siding']['tier_descriptions'] = {'good': 'Keep me.', 'better': '', 'best': ''}
+    est['trades']['siding']['tier_features'] = {'good': ['Keep this too'], 'better': [], 'best': []}
+    td = _run(tmp_path, est, [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': 'b_bare'}])
+    assert td['tier_descriptions']['good'] == 'Keep me.'
+    assert td['tier_features']['good'] == ['Keep this too']
+
+
+def test_build_defaults_seeds_copy_on_every_tier(tmp_path):
+    td = _run(tmp_path, _estimate(), [{'op': 'buildDefaults', 'trade': 'siding'}])
+    assert td['tier_features']['good'] == ['Vinyl siding', 'Never needs paint']
+    assert td['tier_features']['better'] == ['Vinyl siding', 'Never needs paint']
+    assert td['tier_features']['best'][0] == 'James Hardie fiber cement'
+    assert td['tier_descriptions']['best'] == 'Fiber cement.'
+
+
+def test_bundle_features_are_copied_not_shared(tmp_path):
+    """Two tiers on the same bundle must not end up aliasing one array."""
+    td = _run(tmp_path, _estimate(), [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': 'b_vinyl'},
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'better', 'id': 'b_vinyl'}])
+    assert td['tier_features']['good'] == td['tier_features']['better']
+    assert td['tier_features']['good'] is not td['tier_features']['better']
 
 
 def test_build_defaults_seeds_every_tier_from_the_price_book(tmp_path):

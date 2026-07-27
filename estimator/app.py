@@ -6532,14 +6532,32 @@ ROOFING_CATALOG_SEED = [
 ]
 _RS = ["a_underlayment", "a_ice_water", "a_drip_edge", "a_ridge_cap", "a_starter",
        "a_pipe_boots", "a_step_flash", "a_decking", "l_tearoff", "l_install", "x_dumpster", "x_permit"]
+# Every bundle carries its OWN customer story — the `description` tagline and the
+# `features` bullet list that fill the Good/Better/Best card. Swapping a bundle on
+# an estimate replaces both, so the copy can never describe last week's shingle.
+_RS_FEATURES = [
+    "Complete tear-off of existing roofing down to the deck",
+    "Synthetic underlayment over the full roof deck",
+    "Ice & water shield at eaves and valleys",
+    "New drip edge, starter strip, pipe boots, and flashing",
+    "Dumpster, permit, and full magnetic nail sweep",
+    "5-year Project One workmanship warranty",
+]
 ROOFING_BUNDLES_SEED = [
-    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Architectural laminate shingle system — dimensional shadow lines, lifetime limited warranty."},
-    {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle — hail-country durability, may qualify for an insurance discount."},
-    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Class 4 impact-resistant shingle built for extreme cold and hail."},
-    {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "EDCO steel shingles — the look of architectural shingles in Class 4 impact-rated steel."},
-    {"id": "b_stone", "name": "Stone-Coated Steel", "product_ids": ["m_stone"] + _RS, "description": "Stone-coated steel panels — steel strength with a textured shake/shingle look, wind-rated 120+ mph."},
-    {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _RS, "description": "24ga standing seam metal with concealed fasteners — the premium 50+ year system."},
-    {"id": "b_euroshield", "name": "Euroshield", "product_ids": ["m_euroshield"] + _RS, "description": "Recycled-rubber roofing with the look of slate/shake — Class 4 impact, freeze-thaw resistant."},
+    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Architectural laminate shingle system — dimensional shadow lines, lifetime limited warranty.",
+     "features": ["CertainTeed Landmark architectural laminate shingles", "Lifetime limited manufacturer warranty", "130 mph wind rating", "Dimensional shadow lines for depth and curb appeal"] + _RS_FEATURES},
+    {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle — hail-country durability, may qualify for an insurance discount.",
+     "features": ["CertainTeed Northgate SBS-modified impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "May qualify for a homeowners insurance premium discount", "Lifetime limited manufacturer warranty", "130 mph wind rating"] + _RS_FEATURES},
+    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Class 4 impact-resistant shingle built for extreme cold and hail.",
+     "features": ["IKO Nordic impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "Built for extreme cold and freeze-thaw cycles", "May qualify for a homeowners insurance premium discount", "Limited lifetime manufacturer warranty"] + _RS_FEATURES},
+    {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "EDCO steel shingles — the look of architectural shingles in Class 4 impact-rated steel.",
+     "features": ["EDCO steel shingles — architectural shingle look in real steel", "Class 4 impact rating, will not crack or lose granules to hail", "Limited lifetime warranty with hail damage coverage", "Baked-on finish that will not chip, peel, or fade"] + _RS_FEATURES},
+    {"id": "b_stone", "name": "Stone-Coated Steel", "product_ids": ["m_stone"] + _RS, "description": "Stone-coated steel panels — steel strength with a textured shake/shingle look, wind-rated 120+ mph.",
+     "features": ["Stone-coated steel panels with a textured shake/shingle profile", "Class 4 impact rating and 120+ mph wind rating", "Steel strength at a fraction of the weight of tile", "50-year limited manufacturer warranty"] + _RS_FEATURES},
+    {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _RS, "description": "24ga standing seam metal with concealed fasteners — the premium 50+ year system.",
+     "features": ["24ga standing seam metal panels with concealed fasteners", "No exposed screws to back out or leak over time", "50+ year service life — the last roof this house needs", "Class 4 impact rating and Kynar 500 finish warranty", "Clean modern lines in your choice of color"] + _RS_FEATURES},
+    {"id": "b_euroshield", "name": "Euroshield", "product_ids": ["m_euroshield"] + _RS, "description": "Recycled-rubber roofing with the look of slate/shake — Class 4 impact, freeze-thaw resistant.",
+     "features": ["Euroshield recycled-rubber roofing in a slate or shake profile", "Class 4 impact rating — rubber absorbs hail instead of cracking", "Engineered for Colorado freeze-thaw cycles", "50-year limited manufacturer warranty", "Made from recycled tires — a genuinely green roof"] + _RS_FEATURES},
 ]
 ROOFING_TIER_DEFAULTS_SEED = {"good": "b_landmark", "better": "b_northgate", "best": "b_standing_seam"}
 
@@ -6572,23 +6590,39 @@ SIDING_CATALOG_SEED = [
 ]
 _SS = ["sa_house_wrap", "sa_starter", "sa_j_channel", "sa_corner_out", "sa_corner_in",
        "sa_trim", "sa_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"]
+_SS_FEATURES = [
+    "Complete tear-off of existing siding",
+    "House wrap weather barrier over the full wall area",
+    "New starter strip, J-channel, corner posts, and trim",
+    "Soffit and fascia included",
+    "Dumpster, permit, and full site cleanup",
+    "5-year Project One workmanship warranty",
+]
 SIDING_BUNDLES_SEED = [
     {"id": "sb_vinyl_dutch", "name": "Vinyl - Dutch Lap", "product_ids": ["s_vinyl_dutch"] + _SS,
-     "description": "Insulated-ready vinyl siding in the classic Dutch lap profile - low maintenance, never needs paint, lifetime limited warranty."},
+     "description": "Insulated-ready vinyl siding in the classic Dutch lap profile - low maintenance, never needs paint, lifetime limited warranty.",
+     "features": ["Vinyl siding in the classic 4\" Dutch lap profile", "Never needs paint - wash it once a year and it is done", "Color runs all the way through, so scratches do not show", "Lifetime limited manufacturer warranty"] + _SS_FEATURES},
     {"id": "sb_vinyl_clap", "name": "Vinyl - Clapboard", "product_ids": ["s_vinyl_clap"] + _SS,
-     "description": "Traditional clapboard vinyl siding - clean horizontal lines, fade-resistant color all the way through."},
+     "description": "Traditional clapboard vinyl siding - clean horizontal lines, fade-resistant color all the way through.",
+     "features": ["Vinyl siding in a traditional 4.5\" clapboard profile", "Clean horizontal lines that suit almost any home style", "Fade-resistant color all the way through the panel", "Never needs paint", "Lifetime limited manufacturer warranty"] + _SS_FEATURES},
     {"id": "sb_vinyl_bb", "name": "Vinyl - Board & Batten", "product_ids": ["s_vinyl_bb"] + _SS,
-     "description": "Vertical board & batten vinyl - modern farmhouse curb appeal with zero-maintenance vinyl durability."},
+     "description": "Vertical board & batten vinyl - modern farmhouse curb appeal with zero-maintenance vinyl durability.",
+     "features": ["Vertical board & batten vinyl panels", "Modern farmhouse curb appeal", "Zero-maintenance vinyl durability - never needs paint", "Lifetime limited manufacturer warranty"] + _SS_FEATURES},
     {"id": "sb_lp_lap", "name": "LP SmartSide - Lap", "product_ids": ["s_lp_lap"] + _SS,
-     "description": "LP SmartSide engineered wood lap siding - the warmth and texture of real wood, treated to resist rot, hail, and termites. 50-year limited warranty."},
+     "description": "LP SmartSide engineered wood lap siding - the warmth and texture of real wood, treated to resist rot, hail, and termites. 50-year limited warranty.",
+     "features": ["LP SmartSide engineered wood lap siding, 8\" exposure", "The warmth and texture of real wood grain", "SmartGuard treated to resist rot, hail, and termites", "Holds paint far longer than natural wood", "50-year limited manufacturer warranty"] + _SS_FEATURES},
     {"id": "sb_lp_panel", "name": "LP SmartSide - Board & Batten", "product_ids": ["s_lp_panel"] + _SS,
-     "description": "LP SmartSide engineered wood panel and batten system - bold vertical lines with impact-resistant engineered wood strength."},
+     "description": "LP SmartSide engineered wood panel and batten system - bold vertical lines with impact-resistant engineered wood strength.",
+     "features": ["LP SmartSide engineered wood panel and batten system", "Bold vertical lines with real wood texture", "SmartGuard treated to resist rot, hail, and termites", "50-year limited manufacturer warranty"] + _SS_FEATURES},
     {"id": "sb_hardie_cedar", "name": "James Hardie - Cedarmill Lap", "product_ids": ["s_hardie_cedar"] + _SS,
-     "description": "James Hardie fiber cement in the Cedarmill woodgrain texture - non-combustible, hail and pest proof, ColorPlus finish backed for 15 years."},
+     "description": "James Hardie fiber cement in the Cedarmill woodgrain texture - non-combustible, hail and pest proof, ColorPlus finish backed for 15 years.",
+     "features": ["James Hardie fiber cement lap siding, Cedarmill woodgrain texture", "Non-combustible - will not feed a fire", "Hail, pest, and rot proof", "ColorPlus factory finish backed for 15 years", "30-year limited manufacturer warranty"] + _SS_FEATURES},
     {"id": "sb_hardie_smooth", "name": "James Hardie - Smooth Lap", "product_ids": ["s_hardie_smooth"] + _SS,
-     "description": "James Hardie fiber cement lap siding with a clean smooth finish - the premium look, engineered for Colorado freeze-thaw and hail."},
+     "description": "James Hardie fiber cement lap siding with a clean smooth finish - the premium look, engineered for Colorado freeze-thaw and hail.",
+     "features": ["James Hardie fiber cement lap siding with a clean smooth finish", "Engineered specifically for Colorado freeze-thaw and hail", "Non-combustible, hail, pest, and rot proof", "ColorPlus factory finish backed for 15 years", "30-year limited manufacturer warranty"] + _SS_FEATURES},
     {"id": "sb_hardie_shingle", "name": "James Hardie - Shingle / Panel", "product_ids": ["s_hardie_shingle"] + _SS,
-     "description": "James Hardie shingle and panel siding - shake-style character in fiber cement, ideal for gables and accent walls."},
+     "description": "James Hardie shingle and panel siding - shake-style character in fiber cement, ideal for gables and accent walls.",
+     "features": ["James Hardie shingle and panel siding", "Shake-style character without the maintenance of real cedar", "Ideal for gables, dormers, and accent walls", "Non-combustible, hail, pest, and rot proof", "30-year limited manufacturer warranty"] + _SS_FEATURES},
 ]
 SIDING_TIER_DEFAULTS_SEED = {"good": "sb_vinyl_dutch", "better": "sb_lp_lap", "best": "sb_hardie_cedar"}
 
@@ -6600,17 +6634,43 @@ BUNDLE_SEEDS = {
 }
 
 
+def _copy_seed_bundle(b):
+    """Deep-enough copy so an edited response can never mutate the seed constant."""
+    return dict(b, product_ids=list(b['product_ids']), features=list(b.get('features') or []))
+
+
+# Customer-facing copy the server may fill in on a bundle the manager already owns.
+_BUNDLE_COPY_FIELDS = ('description', 'features')
+
+
 def _ensure_bundle_catalogs(pb):
     """Inject each bundle trade's catalog/bundles/defaults into a price book that
     has none. Non-destructive (mutates the in-memory dict for the response only)."""
     for trade, (catalog, bundles, defaults) in BUNDLE_SEEDS.items():
         if not pb.get(trade + '_catalog'):
             pb[trade + '_catalog'] = [dict(p) for p in catalog]
-            pb[trade + '_bundles'] = [dict(b, product_ids=list(b['product_ids'])) for b in bundles]
+            pb[trade + '_bundles'] = [_copy_seed_bundle(b) for b in bundles]
             pb[trade + '_tier_defaults'] = dict(defaults)
         else:
             pb.setdefault(trade + '_bundles', [])
             pb.setdefault(trade + '_tier_defaults', dict(defaults))
+            # The live book predates a copy field (bundles shipped before
+            # `features` existed), so backfill the seed's copy onto seeded
+            # bundles that still lack it — otherwise new seed copy never
+            # reaches a book that already has a catalog.
+            #
+            # Key ABSENCE is the test, never falsiness: a manager who clears a
+            # bundle's bullets saves `features: []`, and the server must not
+            # fight that on every GET. Same contract as the manual-measure rule.
+            by_id = {b.get('id'): b for b in pb[trade + '_bundles'] if isinstance(b, dict)}
+            for seed in bundles:
+                live = by_id.get(seed['id'])
+                if live is None:
+                    continue        # manager deleted it — leave it deleted
+                for field in _BUNDLE_COPY_FIELDS:
+                    if field not in live and field in seed:
+                        val = seed[field]
+                        live[field] = list(val) if isinstance(val, list) else val
     return pb
 
 

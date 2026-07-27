@@ -2524,8 +2524,13 @@ a.jx-contact:hover { text-decoration: underline; }
 .pb-roof-defaults { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 14px; padding: 10px 12px; background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; }
 .pb-roof-def { display: flex; flex-direction: column; gap: 3px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--text-light); }
 .pb-roof-def select { font-size: 13px; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 5px 7px; min-width: 160px; }
-.pb-bundle-desc { width: 100%; box-sizing: border-box; font-size: 13px; border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; resize: vertical; font-family: inherit; margin: 8px 0 12px; }
-.pb-bundle-desc:focus { outline: none; border-color: var(--primary-light); }
+/* The bundle's own customer story — tagline + What's Included bullets. Picking
+   the bundle on an estimate copies both onto that G/B/B card. */
+.pb-bundle-copy { margin: 8px 0 14px; }
+.pb-bundle-desc, .pb-bundle-feats { width: 100%; box-sizing: border-box; font-size: 13px; border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; resize: vertical; font-family: inherit; margin: 0 0 10px; }
+.pb-bundle-desc:focus, .pb-bundle-feats:focus { outline: none; border-color: var(--primary-light); }
+.pb-bundle-feats { line-height: 1.5; }
+.pb-bundle-copy-hint { font-size: 11px; color: var(--text-light); line-height: 1.45; margin-top: -4px; }
 .pb-bundle-pick-hd { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--text); margin-bottom: 8px; }
 .pb-bundle-pick-hd small { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--text-light); margin-left: 6px; }
 /* Self-contained, always-scrollable list of EVERY catalog product, so the full
@@ -3537,6 +3542,12 @@ body.is-client #nav-toggle      { display: none; }
 }
 .cc-toggle input { width: 15px; height: 15px; cursor: pointer; }
 .cc-title { font-size: 13px; }
+/* Bundle trades take their G/B/B copy from the price book, not from here. */
+.gbb-set-hint {
+  font-size: 12px; line-height: 1.5; color: #6b5b1e;
+  background: #fdf6e3; border: 1px solid #f0e0b0; border-radius: 6px;
+  padding: 8px 10px; margin-top: 10px;
+}
 
 /* Change orders (Documents page panel + dashboard chip) */
 .dash-chip-co { background: #ede9fe; color: #6d28d9; white-space: nowrap; }

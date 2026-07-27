@@ -200,6 +200,63 @@ def test_tier_defaults_point_at_real_bundles(client, trade):
         assert bid in ids, f'{trade} {tier} default bundle {bid!r} does not exist'
 
 
+@pytest.mark.parametrize('trade', ['roofing', 'siding'])
+def test_every_seeded_bundle_ships_customer_copy(client, trade):
+    """A bundle with no copy silently leaves the PREVIOUS product's tagline and
+    bullets on the card when a rep swaps to it — how a metal roof goes out
+    described as a shingle. Every shipped bundle must carry both."""
+    pb = client.get('/api/pricebook').get_json()
+    for b in pb[f'{trade}_bundles']:
+        assert b.get('description', '').strip(), f"{trade} bundle {b['name']} has no tagline"
+        assert b.get('features'), f"{trade} bundle {b['name']} has no What's Included bullets"
+        assert all(str(f).strip() for f in b['features']), f"{trade} bundle {b['name']} has a blank bullet"
+
+
+def test_copy_backfills_onto_a_book_that_already_has_a_catalog(A):
+    """The live book predates `features`; without this, new seed copy never lands."""
+    seed = A.ROOFING_BUNDLES_SEED[0]
+    pb = A._ensure_bundle_catalogs({
+        'roofing_catalog': [{'id': 'm_x', 'name': 'X', 'unit': 'SQ', 'cost': 1}],
+        'roofing_bundles': [{'id': seed['id'], 'name': seed['name'], 'product_ids': ['m_x']}],
+    })
+    got = next(b for b in pb['roofing_bundles'] if b['id'] == seed['id'])
+    assert got['features'] == seed['features']
+    assert got['description'] == seed['description']
+    assert got['product_ids'] == ['m_x']          # the manager's product list, untouched
+
+
+def test_backfill_respects_deliberately_emptied_copy(A):
+    """Key ABSENCE means 'server may fill it in'; [] means the manager cleared it."""
+    seed = A.ROOFING_BUNDLES_SEED[0]
+    pb = A._ensure_bundle_catalogs({
+        'roofing_catalog': [{'id': 'm_x', 'name': 'X', 'unit': 'SQ', 'cost': 1}],
+        'roofing_bundles': [{'id': seed['id'], 'name': seed['name'], 'product_ids': ['m_x'],
+                             'features': [], 'description': ''}],
+    })
+    got = next(b for b in pb['roofing_bundles'] if b['id'] == seed['id'])
+    assert got['features'] == []
+    assert got['description'] == ''
+
+
+def test_backfill_leaves_manager_bundles_and_deletions_alone(A):
+    pb = A._ensure_bundle_catalogs({
+        'roofing_catalog': [{'id': 'm_x', 'name': 'X', 'unit': 'SQ', 'cost': 1}],
+        'roofing_bundles': [{'id': 'b_custom', 'name': 'Mine', 'product_ids': ['m_x']}],
+    })
+    assert [b['id'] for b in pb['roofing_bundles']] == ['b_custom']   # no seeds re-added
+    assert 'features' not in pb['roofing_bundles'][0]
+
+
+def test_backfill_never_mutates_the_seed_constants(A):
+    """The response dict is edited downstream; aliasing a seed list would poison
+    every later request in the process."""
+    before = json.dumps(A.ROOFING_BUNDLES_SEED, sort_keys=True)
+    pb = A._ensure_bundle_catalogs({})
+    pb['roofing_bundles'][0]['features'].append('injected')
+    pb['roofing_bundles'][0]['product_ids'].append('injected')
+    assert json.dumps(A.ROOFING_BUNDLES_SEED, sort_keys=True) == before
+
+
 def test_seeded_bundle_measures_are_known_keys(A):
     """A catalog product's Auto-Qty key must exist client-side (MEASURE_DEFS)."""
     import re

@@ -1784,8 +1784,19 @@ function pbRenderBundleEditor(b) {
       <input class="pb-preset-name-input" type="text" value="${esc(b.name||'')}"
         placeholder="Bundle name (e.g. ${pbActiveTrade==='siding'?'James Hardie - Cedarmill Lap':'IKO Nordic'})" oninput="pbSetBundleField('${b.id}','name',this.value)">
     </div>
-    <textarea class="pb-bundle-desc" rows="2" placeholder="Customer description (optional) — shown on the Options page when this bundle is picked"
-      onchange="pbSetBundleField('${b.id}','description',this.value)">${esc(b.description||'')}</textarea>
+    <div class="pb-bundle-copy">
+      <label class="pb-variant-field-label">Customer tagline</label>
+      <textarea class="pb-bundle-desc" rows="2" placeholder="One line under the price on the Good/Better/Best card…"
+        onchange="pbSetBundleField('${b.id}','description',this.value)">${esc(b.description||'')}</textarea>
+      <label class="pb-variant-field-label">What's Included</label>
+      <textarea class="pb-bundle-feats" rows="6"
+        placeholder="One item per line — shown as bullet points on the estimate…
+e.g. Class 4 impact-resistant shingles
+Lifetime limited manufacturer warranty
+Full tear-off included"
+        onchange="pbSetBundleFeatures('${b.id}',this.value)">${esc((b.features||[]).join('\n'))}</textarea>
+      <div class="pb-bundle-copy-hint">Picking this bundle on an estimate replaces that package's tagline and bullets with this copy.</div>
+    </div>
     <div class="pb-bundle-pick-hd">Products in this bundle <small>tap to include — unit price shown</small></div>
     <div class="pb-bundle-picker">
       ${catalog.length ? catalog.map(p=>`
@@ -1814,6 +1825,13 @@ function pbDeleteBundle(id) {
 }
 function pbSetBundleField(id, field, val) {
   const b = pbBundles().find(x => x.id === id); if (b) b[field] = val;
+}
+// Bullets are stored as an array (same shape the Options page uses). Always
+// ASSIGN — an emptied box saves [] rather than dropping the key, which is what
+// tells the server the manager meant it and to stop backfilling the seed copy.
+function pbSetBundleFeatures(id, text) {
+  const b = pbBundles().find(x => x.id === id); if (!b) return;
+  b.features = text.split('\n').map(s => s.trim()).filter(Boolean);
 }
 function pbBundleToggle(id, pid, on) {
   const b = pbBundles().find(x => x.id === id); if (!b) return;
@@ -4109,7 +4127,11 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   });
   td.tier_bundles[tier] = bundleId;
 
-  // Optional Options-page package story from the bundle.
+  // The bundle owns this tier's customer story, so picking one REPLACES the
+  // Options-page tagline and bullets — including a rep's hand-edits. That's the
+  // point: swapping Best from a laminate shingle to standing seam must not leave
+  // shingle copy on the card. Copy the bundle doesn't define is left alone,
+  // since there'd be nothing to replace it with.
   if (bundle.description || (bundle.features && bundle.features.length)) {
     const content = tradeTierContent(trade);
     if (bundle.description) content.descriptions[tier] = bundle.description;
@@ -7026,7 +7048,15 @@ function _gbbSetTrade(trade) {
   document.getElementById('gbb-set-tabs').innerHTML = GBB_SET_TRADES.map(t =>
     `<button type="button" class="gbb-set-tab ${t===trade?'active':''}"
        onclick="_gbbSetTrade('${t}')">${TRADE_LABELS[t]}</button>`).join('');
-  document.getElementById('gbb-set-body').innerHTML = TIERS.map(t => `
+  // Roofing/siding copy now rides on the bundle, which overwrites whatever is
+  // set here the moment a rep picks one — say so instead of letting a manager
+  // type into a box that gets clobbered.
+  const bundleHint = isBundleTrade(trade)
+    ? `<div class="gbb-set-hint">${TRADE_LABELS[trade]} packages get their tagline and bullets from the
+         <strong>bundle</strong> the rep picks — edit them in Price Book → ${esc(TRADE_LABELS[trade])} → Bundles.
+         What's below only shows until a bundle is chosen.</div>`
+    : '';
+  document.getElementById('gbb-set-body').innerHTML = bundleHint + TIERS.map(t => `
     <div class="cc-block">
       <label class="cc-toggle">${TIER_LABELS[t]}</label>
       <input type="text" id="gbb-set-desc-${t}" class="cc-title"
