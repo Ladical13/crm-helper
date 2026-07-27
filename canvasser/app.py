@@ -1,17 +1,25 @@
+"""P1 Canvasser — door-knocking map: pins, team GPS, hail overlays.
+
+Identity is not owned here. The portal (portal/app.py) handles login and the
+user table; this app only reads who the shared session says you are.
+"""
 import os
+import sys
 import json
 import csv
 import uuid
-import secrets
 import sqlite3
 import io
 from datetime import datetime, timedelta
 from functools import wraps
-from urllib.parse import quote
 
 from flask import Flask, request, jsonify, send_from_directory, session
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.middleware.proxy_fix import ProxyFix
+
+# The portal package lives one directory up. Put the repo root on the path so
+# this app works both mounted by portal/wsgi.py and run standalone.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import session as psession   # noqa: E402
+from portal import users as pusers       # noqa: E402
 
 try:
     import requests as http
@@ -19,22 +27,13 @@ except ImportError:
     http = None
 
 app = Flask(__name__, static_folder='static')
-app.secret_key = os.environ.get('SESSION_SECRET', secrets.token_hex(32))
-# Railway (and most PaaS) terminate TLS at the edge and forward plain HTTP to
-# the container, only setting X-Forwarded-Proto/Host. Without ProxyFix, Flask
-# thinks every request is http:// — which corrupts any absolute URL we build
-# (e.g. invite links) even when the visitor is on https://.
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
-app.config.update(
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax',
-    SESSION_COOKIE_SECURE=bool(os.environ.get('RAILWAY_ENVIRONMENT')),
-    PERMANENT_SESSION_LIFETIME=timedelta(days=14),
-)
+# Secret key, ProxyFix, and cookie settings identical to the other three apps.
+# ProxyFix matters here because Railway terminates TLS at the edge: without it
+# Flask thinks every request is http:// and marks the Secure cookie unsendable.
+psession.configure(app)
 
 HERE         = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR   = os.path.join(HERE, 'static')
-SIGNUP_CODE  = os.environ.get('CANVASSER_SIGNUP_CODE', '').strip()
 BASE44_TOKEN = os.environ.get('BASE44_TOKEN', '')
 BASE44_URL   = 'https://base44.app/api/apps/69320ef0c647fee442697971'
 # CANVASSER_DATA_DIR must be set explicitly under the portal: the DATA_DIR
@@ -131,10 +130,9 @@ def admin_required(f):
     def wrapper(*args, **kwargs):
         if 'username' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
-        with get_db() as db:
-            user = db.execute('SELECT is_admin FROM users WHERE username=?',
-                              (session['username'],)).fetchone()
-        if not user or not user['is_admin']:
+        # Re-read the store rather than trusting the cookie, so a demotion
+        # takes effect on the next request instead of at next sign-in.
+        if not pusers.is_manager_up(session['username']):
             return jsonify({'error': 'Forbidden'}), 403
         return f(*args, **kwargs)
     return wrapper
@@ -152,162 +150,35 @@ def index():
 def static_files(path):
     return send_from_directory(STATIC_DIR, path)
 
-# ── Auth endpoints ────────────────────────────────────────────────────────────
-
-@app.route('/api/login', methods=['POST'])
-def login():
-    data = request.get_json(force=True)
-    username = (data.get('username') or '').strip().lower()
-    password = data.get('password') or ''
-    if not username or not password:
-        return jsonify({'error': 'Username and password required'}), 400
-    with get_db() as db:
-        user = db.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
-    if not user or not check_password_hash(user['pw_hash'], password):
-        return jsonify({'error': 'Invalid credentials'}), 401
-    session.permanent = True
-    session['username'] = username
-    session['is_admin'] = bool(user['is_admin'])
-    return jsonify({'username': username, 'is_admin': bool(user['is_admin'])})
-
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    session.clear()
-    return jsonify({'ok': True})
-
-@app.route('/api/signup', methods=['POST'])
-def signup():
-    data = request.get_json(force=True)
-    code     = (data.get('signup_code') or '').strip()
-    username = (data.get('username') or '').strip().lower()
-    password = data.get('password') or ''
-    if not username or not password or len(password) < 6:
-        return jsonify({'error': 'Username and password (min 6 chars) required'}), 400
-
-    # Accept either a personal invite code or the legacy shared signup code
-    invite = None
-    with get_db() as db:
-        invite = db.execute(
-            "SELECT * FROM invites WHERE code=? AND used_by='' AND expires_at > ?",
-            (code, _now())).fetchone()
-    if invite:
-        # Invite may be locked to a specific username
-        if invite['username'] and invite['username'] != username:
-            return jsonify({'error': f"This invite is for '{invite['username']}'"}), 403
-    elif not (SIGNUP_CODE and code == SIGNUP_CODE):
-        return jsonify({'error': 'Invalid or expired invite code'}), 403
-
-    with get_db() as db:
-        existing = db.execute('SELECT username FROM users WHERE username=?', (username,)).fetchone()
-        if existing:
-            return jsonify({'error': 'Username taken'}), 409
-        # First user becomes admin
-        count = db.execute('SELECT COUNT(*) as c FROM users').fetchone()['c']
-        is_admin = 1 if count == 0 else 0
-        db.execute(
-            'INSERT INTO users (username, pw_hash, is_admin, created_at) VALUES (?,?,?,?)',
-            (username, generate_password_hash(password), is_admin, _now())
-        )
-        if invite:
-            db.execute('UPDATE invites SET used_by=?, used_at=? WHERE code=?',
-                       (username, _now(), invite['code']))
-    session.permanent = True
-    session['username'] = username
-    session['is_admin'] = bool(is_admin)
-    return jsonify({'username': username, 'is_admin': bool(is_admin)}), 201
-
-# ── Invites (admin) ───────────────────────────────────────────────────────────
-
-def _build_invite_link(code, username):
-    link = request.host_url.rstrip('/') + '/?invite=' + quote(code, safe='')
-    if username:
-        link += '&u=' + quote(username, safe='')
-    return link
-
-@app.route('/api/invites', methods=['POST'])
-@admin_required
-def create_invite():
-    data = request.get_json(force=True)
-    username = (data.get('username') or '').strip().lower()
-    if any(c.isspace() for c in username):
-        return jsonify({'error': 'Rep name should be their login username (no spaces), e.g. "bryan" — leave blank for an open invite'}), 400
-    days = min(int(data.get('expires_days') or 7), 30)
-    code = secrets.token_urlsafe(8)
-    expires = (datetime.utcnow() + timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    with get_db() as db:
-        db.execute('INSERT INTO invites (code, username, created_by, created_at, expires_at) VALUES (?,?,?,?,?)',
-                   (code, username, session['username'], _now(), expires))
-    link = _build_invite_link(code, username)
-    return jsonify({'code': code, 'username': username, 'expires_at': expires, 'link': link}), 201
-
-@app.route('/api/invites')
-@admin_required
-def list_invites():
-    with get_db() as db:
-        rows = db.execute('SELECT * FROM invites ORDER BY created_at DESC LIMIT 50').fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d['status'] = ('used' if d['used_by'] else
-                       'expired' if d['expires_at'] <= _now() else 'active')
-        d['link'] = _build_invite_link(d['code'], d['username'])
-        out.append(d)
-    return jsonify(out)
-
-@app.route('/api/invites/<code>', methods=['DELETE'])
-@admin_required
-def revoke_invite(code):
-    with get_db() as db:
-        db.execute('DELETE FROM invites WHERE code=?', (code,))
-    return jsonify({'ok': True})
+# ── Identity ────────────────────────────────────────────────────────────────
+# Login, logout, signup, invites and user administration moved to the portal
+# (portal/app.py) when the three tools merged onto one origin. What is left is
+# read-only: who the shared session says you are.
 
 @app.route('/api/me')
 def me():
     if 'username' not in session:
         return jsonify({'authenticated': False})
-    return jsonify({'authenticated': True, 'username': session['username'],
-                    'is_admin': session.get('is_admin', False)})
+    user = pusers.get(session['username'])
+    if not user:
+        # Row deleted out from under a live cookie.
+        session.clear()
+        return jsonify({'authenticated': False})
+    return jsonify({'authenticated': True,
+                    'username': user['username'],
+                    'full_name': user['full_name'],
+                    'is_admin': user['role'] in pusers.ELEVATED})
+
 
 @app.route('/api/users')
-@admin_required
+@login_required
 def list_users():
-    with get_db() as db:
-        users = db.execute('SELECT username, is_admin, created_at FROM users ORDER BY username').fetchall()
-    return jsonify([dict(u) for u in users])
+    """The roster, for the rep filter chips on the map and the leaderboard."""
+    return jsonify([{'username': u['username'], 'full_name': u['full_name'],
+                     'is_admin': u['role'] in pusers.ELEVATED,
+                     'created_at': u['created_at']}
+                    for u in pusers.all_users()])
 
-@app.route('/api/users/<username>/reset', methods=['POST'])
-@admin_required
-def reset_user(username):
-    data = request.get_json(force=True)
-    new_pw = data.get('password') or ''
-    if len(new_pw) < 6:
-        return jsonify({'error': 'Password too short'}), 400
-    with get_db() as db:
-        db.execute('UPDATE users SET pw_hash=? WHERE username=?',
-                   (generate_password_hash(new_pw), username))
-    return jsonify({'ok': True})
-
-@app.route('/api/users/<username>/admin', methods=['POST'])
-@admin_required
-def set_admin(username):
-    if username == session['username']:
-        return jsonify({'error': "You can't change your own admin status"}), 400
-    data = request.get_json(force=True)
-    with get_db() as db:
-        db.execute('UPDATE users SET is_admin=? WHERE username=?',
-                   (1 if data.get('is_admin') else 0, username))
-    return jsonify({'ok': True})
-
-@app.route('/api/users/<username>', methods=['DELETE'])
-@admin_required
-def delete_user(username):
-    if username == session['username']:
-        return jsonify({'error': "You can't delete yourself"}), 400
-    with get_db() as db:
-        db.execute('DELETE FROM users WHERE username=?', (username,))
-        db.execute('DELETE FROM rep_locations WHERE username=?', (username,))
-        # Pins are kept — historical knock data stays on the leaderboard/map
-    return jsonify({'ok': True})
 
 # ── Pin endpoints ─────────────────────────────────────────────────────────────
 

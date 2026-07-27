@@ -1,6 +1,6 @@
 """Smoke tests for the sales-CRM invariants that matter most:
 stage transitions, cadence/task advancement, and per-rep visibility."""
-from conftest import signup, new_lead
+from conftest import signup, login, logout, new_lead
 
 
 def test_first_user_is_admin(client):
@@ -11,15 +11,18 @@ def test_first_user_is_admin(client):
 
 def test_second_user_is_rep(client):
     signup(client, 'luke')
-    client.post('/api/logout')
+    logout(client)
     me = signup(client, 'bryan').get_json()
     assert me['is_admin'] is False
     assert me['role'] == 'rep'
 
 
-def test_bad_signup_code_rejected(client):
-    r = client.post('/api/signup', json={'signup_code': 'wrong', 'username': 'x', 'password': 'secret1'})
-    assert r.status_code == 403
+def test_this_app_does_not_do_auth(client):
+    """Login, signup and invites moved to the portal. Enforcing the signup code
+    is covered by portal/tests/test_auth.py; what matters here is that this app
+    no longer offers a second way in."""
+    paths = {str(r) for r in client.application.url_map.iter_rules()}
+    assert not paths & {'/api/login', '/api/logout', '/api/signup', '/api/invites'}
 
 
 def test_stage_change_logs_activity_and_won_closes_tasks(client):
@@ -77,7 +80,7 @@ def test_rep_visibility_isolation(client):
     # admin creates a lead owned by admin
     signup(client, 'luke')
     admin_lead = new_lead(client, first_name='Admin', last_name='Owned')
-    client.post('/api/logout')
+    logout(client)
     # a rep signs up and should NOT see the admin's lead
     signup(client, 'bryan')
     leads = client.get('/api/leads').get_json()
@@ -88,12 +91,12 @@ def test_rep_visibility_isolation(client):
 
 def test_manager_sees_all(client):
     signup(client, 'luke')  # admin/manager
-    client.post('/api/logout')
+    logout(client)
     signup(client, 'bryan')
     rep_lead = new_lead(client, first_name='Rep', last_name='Lead')
-    client.post('/api/logout')
+    logout(client)
     # log back in as admin
-    client.post('/api/login', json={'username': 'luke', 'password': 'secret1'})
+    login(client, 'luke')
     leads = client.get('/api/leads').get_json()
     assert any(l['id'] == rep_lead['id'] for l in leads)
 
@@ -220,7 +223,7 @@ def test_document_visibility_isolation(client):
     did = client.post(f'/api/leads/{lid}/documents',
                       data={'file': (io.BytesIO(b'x'), 'a.pdf')},
                       content_type='multipart/form-data').get_json()['id']
-    client.post('/api/logout')
+    logout(client)
     signup(client, 'bryan')                                # a different rep
     assert client.get(f'/api/documents/{did}/download').status_code == 403
     assert client.delete(f'/api/documents/{did}').status_code == 403

@@ -30,6 +30,22 @@ async function api(path, opts={}) {
   return data;
 }
 
+// Calls the PORTAL's API rather than this app's — note the missing BASE. Team
+// administration (invites, roles) moved there when the three tools merged onto
+// one user store, but the panel that drives it still lives here.
+async function portalApi(path, opts={}) {
+  const r = await fetch(path, {
+    method: opts.method||'GET',
+    headers: opts.body ? {'Content-Type':'application/json'} : {},
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (r.status === 401) { window.location = '/login'; throw new Error('Unauthorized'); }
+  let data = null;
+  try { data = await r.json(); } catch(e) {}
+  if (!r.ok) throw new Error((data && data.error) || ('HTTP '+r.status));
+  return data;
+}
+
 let toastT;
 function toast(msg, err=false) {
   const t=$('#toast'); t.textContent=msg; t.classList.toggle('err',err); t.classList.add('show');
@@ -58,20 +74,15 @@ const KIND_ICO={call:'📞',text:'💬',email:'✉️',door:'🚪',meeting:'🤝
   stage_change:'↔️',system:'⚙️'};
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
-function showLogin(){ $('#login-screen').classList.add('active'); $('#app-screen').classList.remove('active'); }
-function showApp(){ $('#login-screen').classList.remove('active'); $('#app-screen').classList.add('active'); }
+// There is no sign-in screen here any more: the portal owns login, and api()
+// bounces to /login on a 401. Reaching afterLogin() means the session is good.
+function showApp(){ $('#app-screen').classList.add('active'); }
 
 async function boot() {
-  try {
-    const me = await api('/me');
-    if (me.authenticated) { S.me=me; await afterLogin(); }
-    else showLogin();
-  } catch(e){ showLogin(); }
-  // prefill invite code from URL
-  const p=new URLSearchParams(location.search);
-  if(p.get('invite')){ $('#signup-code').value=p.get('invite');
-    if(p.get('u')) $('#signup-username').value=p.get('u');
-    $('#signup-toggle').click(); }
+  const me = await api('/me');
+  if (!me.authenticated) { window.location = '/login'; return; }
+  S.me = me;
+  await afterLogin();
 }
 
 async function afterLogin() {
@@ -93,25 +104,6 @@ async function afterLogin() {
   // origin whichever registered last would win and serve the other app's shell.
   if('serviceWorker' in navigator) navigator.serviceWorker.register(BASE+'/sw.js',{scope:BASE+'/'}).catch(()=>{});
 }
-
-$('#login-btn').onclick = async () => {
-  try {
-    S.me = await api('/login', {method:'POST', body:{
-      username:$('#login-username').value.trim(), password:$('#login-password').value}});
-    await afterLogin();
-  } catch(e){ $('#login-error').textContent=e.message; }
-};
-$('#login-password').addEventListener('keydown',e=>{if(e.key==='Enter')$('#login-btn').click();});
-$('#signup-btn').onclick = async () => {
-  try {
-    S.me = await api('/signup', {method:'POST', body:{
-      signup_code:$('#signup-code').value.trim(), username:$('#signup-username').value.trim(),
-      full_name:$('#signup-fullname').value.trim(), password:$('#signup-password').value}});
-    await afterLogin();
-  } catch(e){ $('#signup-error').textContent=e.message; }
-};
-$('#signup-toggle').onclick=()=>{$('#login-form').classList.add('hidden');$('#signup-form').classList.remove('hidden');};
-$('#login-toggle').onclick=()=>{$('#signup-form').classList.add('hidden');$('#login-form').classList.remove('hidden');};
 
 // ── Router ───────────────────────────────────────────────────────────────────
 const TITLES={myday:'My Day',pipeline:'Pipeline',partners:'Partners',
@@ -972,10 +964,11 @@ $('#menu-btn').onclick=async()=>{
     ${adminHtml}
     <button class="btn-ghost" id="mn-pw">Change my password</button>
     <button class="btn-danger" id="mn-logout">Log out</button></div>`, null, {hideOk:true});
-  $('#mn-logout').onclick=async()=>{await api('/logout',{method:'POST'});location.reload();};
-  $('#mn-pw').onclick=()=>openModal('Change password',
-    `<div class="field"><label>New password (6+)</label><input id="pw-new" type="password"></div>`,
-    async()=>{await api('/account/password',{method:'POST',body:{password:$('#pw-new').value}});toast('Password changed');});
+  // Both belong to the portal now. Changing a password there asks for the
+  // current one first, which this modal never did, so send them to the real
+  // form rather than reimplementing it.
+  $('#mn-logout').onclick=()=>{location='/logout';};
+  $('#mn-pw').onclick=()=>{location='/account/password?next='+encodeURIComponent(location.pathname);};
   if($('#mn-invite')) $('#mn-invite').onclick=inviteModal;
   if($('#mn-team')) $('#mn-team').onclick=teamModal;
 };
@@ -984,7 +977,7 @@ async function inviteModal(){
     `<div class="field"><label>Rep username (blank = open invite)</label><input id="iv-user" autocapitalize="none"></div>
      <div id="iv-result"></div>`,
     async()=>{
-      const r=await api('/invites',{method:'POST',body:{username:$('#iv-user').value.trim()}});
+      const r=await portalApi('/api/invites',{method:'POST',body:{username:$('#iv-user').value.trim()}});
       $('#iv-result').innerHTML=`<div class="field"><label>Share this link</label>
         <input value="${esc(r.link)}" readonly onclick="this.select()"></div>`;
     }, {okText:'Create link', noAutoClose:true});
@@ -997,7 +990,7 @@ async function teamModal(){
       ${['rep','manager','admin'].map(r=>`<option ${r===u.role?'selected':''}>${r}</option>`).join('')}
     </select></div>`).join(''), null, {hideOk:true});
   $$('#modal-box [data-role]').forEach(sel=>sel.onchange=async()=>{
-    try{ await api('/users/'+sel.dataset.role+'/role',{method:'POST',body:{role:sel.value}}); toast('Role updated');
+    try{ await portalApi('/api/users/'+sel.dataset.role+'/role',{method:'POST',body:{role:sel.value}}); toast('Role updated');
       S.users=await api('/users'); buildRepSelects();
     }catch(e){ toast(e.message,true); }
   });

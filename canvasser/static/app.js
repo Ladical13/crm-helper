@@ -25,62 +25,18 @@ async function boot() {
     Object.assign(PIN_TYPES, cfg.pin_types);
   } catch(e) { /* use defaults */ }
 
+  // No sign-in screen here any more — the portal owns login. api() bounces to
+  // /login on a 401, so reaching this point means the session is good.
   const me = await api('/api/me');
-  if (me.authenticated) {
-    currentUser = me;
-    showApp();
-  } else {
-    showLogin();
-  }
+  if (!me.authenticated) { window.location = '/login'; return; }
+  currentUser = me;
+  showApp();
 }
-
-// ── Login ──────────────────────────────────────────────────────────────────
-
-function showLogin() {
-  show('login-screen'); hide('app');
-  // Invite link support: /?invite=CODE&u=username prefills the signup form
-  const params = new URLSearchParams(window.location.search);
-  const invite = params.get('invite');
-  if (invite) {
-    $('signup-code').value = invite;
-    if (params.get('u')) $('login-username').value = params.get('u');
-    $('signup-password').focus();
-  }
-}
-
-$('login-btn').addEventListener('click', async () => {
-  const username = $v('login-username');
-  const password = $v('login-password');
-  $('login-error').textContent = '';
-  try {
-    currentUser = await api('/api/login', 'POST', { username, password });
-    showApp();
-  } catch(e) {
-    $('login-error').textContent = e.message || 'Login failed';
-  }
-});
-
-$('signup-btn').addEventListener('click', async () => {
-  const username  = $v('login-username');
-  const password  = $v('signup-password');
-  const signup_code = $v('signup-code');
-  $('login-error').textContent = '';
-  try {
-    currentUser = await api('/api/signup', 'POST', { username, password, signup_code });
-    showApp();
-  } catch(e) {
-    $('login-error').textContent = e.message || 'Signup failed';
-  }
-});
-
-['login-username','login-password','signup-password'].forEach(id => {
-  $(id).addEventListener('keydown', e => { if (e.key === 'Enter') $('login-btn').click(); });
-});
 
 // ── App init ───────────────────────────────────────────────────────────────
 
 function showApp() {
-  hide('login-screen'); show('app');
+  show('app');
   $('rep-name-badge').textContent = `Rep: ${displayName(currentUser.username)}`;
   buildQuickBtns();
   buildRepFilters();
@@ -88,8 +44,6 @@ function showApp() {
   loadPins();
   startTeamTracking();
   if (currentUser.is_admin) show('team-admin-btn');
-  // Clean invite params off the URL after login
-  if (window.location.search) history.replaceState(null, '', window.location.pathname);
 }
 
 function buildQuickBtns() {
@@ -825,7 +779,7 @@ $('team-admin-btn').addEventListener('click', () => {
 
 $('create-invite-btn').addEventListener('click', async () => {
   try {
-    const inv = await api('/api/invites', 'POST', { username: $v('invite-username') });
+    const inv = await portalApi('/api/invites', 'POST', { username: $v('invite-username') });
     $('invite-link-text').textContent = inv.link;
     show('invite-result');
     refreshInvites();
@@ -848,7 +802,7 @@ $('copy-invite-btn').addEventListener('click', async () => {
 
 async function refreshInvites() {
   try {
-    const invites = await api('/api/invites');
+    const invites = await portalApi('/api/invites');
     const pending = invites.filter(i => i.status === 'active');
     $('invite-list').innerHTML = pending.length ? pending.map(i => `
       <div class="team-row">
@@ -872,7 +826,7 @@ async function copyInviteLink(link) {
 
 async function revokeInvite(code) {
   if (!confirm('Revoke this invite?')) return;
-  await api(`/api/invites/${code}`, 'DELETE', null);
+  await portalApi(`/api/invites/${code}`, 'DELETE', null);
   refreshInvites();
 }
 
@@ -899,17 +853,17 @@ async function refreshTeamUsers() {
 }
 
 async function resetUserPw(username) {
-  const pw = prompt(`New password for ${displayName(username)} (6+ chars):`);
+  const pw = prompt(`New password for ${displayName(username)} (8+ chars):`);
   if (!pw) return;
   try {
-    await api(`/api/users/${username}/reset`, 'POST', { password: pw });
+    await portalApi(`/api/users/${username}/password`, 'POST', { password: pw });
     alert('Password reset.');
   } catch(e) { alert('Failed: ' + e.message); }
 }
 
 async function toggleAdmin(username, makeAdmin) {
   try {
-    await api(`/api/users/${username}/admin`, 'POST', { is_admin: makeAdmin });
+    await portalApi(`/api/users/${username}/role`, 'POST', { role: makeAdmin ? 'admin' : 'rep' });
     refreshTeamUsers();
   } catch(e) { alert('Failed: ' + e.message); }
 }
@@ -917,7 +871,7 @@ async function toggleAdmin(username, makeAdmin) {
 async function removeUser(username) {
   if (!confirm(`Remove ${displayName(username)}? Their pins stay on the map.`)) return;
   try {
-    await api(`/api/users/${username}`, 'DELETE', null);
+    await portalApi(`/api/users/${username}`, 'DELETE', null);
     refreshTeamUsers();
   } catch(e) { alert('Failed: ' + e.message); }
 }
@@ -1001,6 +955,23 @@ async function api(path, method='GET', body=null) {
   const res = await fetch(BASE + path, opts);
   // Session expired or never signed in: the portal owns login, so hand off
   // rather than trying to parse an HTML redirect as JSON.
+  if (res.status === 401) { window.location = '/login'; throw new Error('Unauthorized'); }
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+// Calls the PORTAL's API rather than this app's — note the missing BASE. Team
+// administration (passwords, roles, invites) moved there when the three tools
+// merged onto one user store, but the panel that drives it still lives here.
+async function portalApi(path, method='GET', body=null) {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+  };
+  if (body !== null) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
   if (res.status === 401) { window.location = '/login'; throw new Error('Unauthorized'); }
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);

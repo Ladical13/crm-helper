@@ -8,21 +8,28 @@ pipeline; managers coach off the numbers. Hands off downstream:
   • Estimator: the shared Base44 contact_id is the join key, so a lead that
     reaches a full estimate links up and its status reads back here.
 
-Mirrors the canvasser app: Flask + SQLite + session auth + PWA. Storage is a
-single SQLite file (DATA_DIR/salescrm.db). No pricing math lives here.
+Mirrors the canvasser app: Flask + SQLite + PWA. Storage is a single SQLite
+file (DATA_DIR/salescrm.db). No pricing math lives here. Identity is NOT here
+either — the portal owns login and the user table (see portal/users.py); this
+app only reads who the session says you are.
 """
 import os
+import sys
 import json
 import uuid
-import secrets
 import sqlite3
 from datetime import datetime, timedelta, date
 from functools import wraps
 from urllib.parse import quote
 
 from flask import Flask, request, jsonify, send_from_directory, session
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.middleware.proxy_fix import ProxyFix
+
+# The portal package lives one directory up. Put the repo root on the path so
+# this app works both mounted by portal/wsgi.py and run standalone (its test
+# suite imports app.py directly with the repo root nowhere in sight).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import session as psession   # noqa: E402
+from portal import users as pusers       # noqa: E402
 
 try:
     import requests as http
@@ -30,24 +37,21 @@ except ImportError:
     http = None
 
 app = Flask(__name__, static_folder='static')
-app.secret_key = os.environ.get('SESSION_SECRET', secrets.token_hex(32))
-# Railway terminates TLS at the edge; without ProxyFix Flask builds http:// URLs.
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
-app.config.update(
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax',
-    SESSION_COOKIE_SECURE=bool(os.environ.get('RAILWAY_ENVIRONMENT')),
-    PERMANENT_SESSION_LIFETIME=timedelta(days=14),
-)
+# Secret key, ProxyFix, and cookie settings identical to the other three apps.
+# They share one cookie and each re-saves it whenever it touches session, so a
+# mismatched flag here logs the rep out of all of them at random.
+psession.configure(app)
 
 HERE         = os.path.dirname(os.path.abspath(__file__))
-SIGNUP_CODE  = os.environ.get('SALESCRM_SIGNUP_CODE', '').strip()
 BASE44_TOKEN = os.environ.get('BASE44_TOKEN', '')
 BASE44_URL   = 'https://base44.app/api/apps/69320ef0c647fee442697971'
-# Deep-link target for "Start estimate". The estimator already searches Base44
-# contacts, so we just open it and let the rep pick the (now-synced) contact.
-ESTIMATOR_URL = os.environ.get('ESTIMATOR_URL', 'https://project-one-estimator.up.railway.app')
-EMAIL_DOMAIN  = 'projectoneroofing.com'
+# Deep-link target for "Start estimate". Same origin now that the estimator is
+# mounted at /estimate, so the rep keeps their session and their tab.
+ESTIMATOR_URL = os.environ.get('ESTIMATOR_URL', '/estimate')
+EMAIL_DOMAIN  = pusers.EMAIL_DOMAIN
+# SALESCRM_DATA_DIR must be set explicitly under the portal: the DATA_DIR
+# fallback is the estimator's volume, so leaving it unset drops salescrm.db
+# into the estimator's directory.
 DATA_DIR      = os.environ.get('SALESCRM_DATA_DIR', os.environ.get('DATA_DIR', HERE))
 DB_PATH       = os.path.join(DATA_DIR, 'salescrm.db')
 
@@ -294,17 +298,16 @@ def admin_required(f):
     def wrapper(*args, **kwargs):
         if 'username' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
-        with get_db() as db:
-            user = db.execute('SELECT is_admin FROM users WHERE username=?',
-                              (session['username'],)).fetchone()
-        if not user or not user['is_admin']:
+        # Re-read the store rather than trusting the cookie, so a demotion
+        # takes effect on the next request instead of at next sign-in.
+        if not pusers.is_manager_up(session['username']):
             return jsonify({'error': 'Forbidden'}), 403
         return f(*args, **kwargs)
     return wrapper
 
 def is_manager():
     """Admins/managers see every rep's pipeline and the coaching views."""
-    return bool(session.get('is_admin'))
+    return pusers.is_manager_up(session.get('username'))
 
 def current_rep():
     return session.get('username')
@@ -329,193 +332,48 @@ def manifest():
 def sw():
     return send_from_directory(STATIC_DIR, 'sw.js')
 
-# ── Auth endpoints (adapted from canvasser) ───────────────────────────────────
-
-@app.route('/api/login', methods=['POST'])
-def login():
-    data = request.get_json(force=True)
-    username = (data.get('username') or '').strip().lower()
-    password = data.get('password') or ''
-    if not username or not password:
-        return jsonify({'error': 'Username and password required'}), 400
-    with get_db() as db:
-        user = db.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
-    if not user or not check_password_hash(user['pw_hash'], password):
-        return jsonify({'error': 'Invalid credentials'}), 401
-    session.permanent = True
-    session['username'] = username
-    session['is_admin'] = bool(user['is_admin'])
-    return jsonify(_me_payload(user))
-
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    session.clear()
-    return jsonify({'ok': True})
-
-@app.route('/api/signup', methods=['POST'])
-def signup():
-    data = request.get_json(force=True)
-    code     = (data.get('signup_code') or '').strip()
-    username = (data.get('username') or '').strip().lower()
-    password = data.get('password') or ''
-    full_name = (data.get('full_name') or '').strip()
-    if not username or ' ' in username:
-        return jsonify({'error': 'Username required (no spaces), e.g. "bryan"'}), 400
-    if not password or len(password) < 6:
-        return jsonify({'error': 'Password (min 6 chars) required'}), 400
-
-    invite = None
-    with get_db() as db:
-        invite = db.execute(
-            "SELECT * FROM invites WHERE code=? AND used_by='' AND expires_at > ?",
-            (code, _now())).fetchone()
-    if invite:
-        if invite['username'] and invite['username'] != username:
-            return jsonify({'error': f"This invite is for '{invite['username']}'"}), 403
-    elif not (SIGNUP_CODE and code == SIGNUP_CODE):
-        return jsonify({'error': 'Invalid or expired invite code'}), 403
-
-    with get_db() as db:
-        if db.execute('SELECT username FROM users WHERE username=?', (username,)).fetchone():
-            return jsonify({'error': 'Username taken'}), 409
-        count = db.execute('SELECT COUNT(*) c FROM users').fetchone()['c']
-        is_admin = 1 if count == 0 else 0            # first user bootstraps as admin
-        role = 'admin' if is_admin else 'rep'
-        db.execute('INSERT INTO users (username, pw_hash, is_admin, role, full_name, created_at) '
-                   'VALUES (?,?,?,?,?,?)',
-                   (username, generate_password_hash(password), is_admin, role, full_name, _now()))
-        if invite:
-            db.execute('UPDATE invites SET used_by=?, used_at=? WHERE code=?',
-                       (username, _now(), invite['code']))
-        user = db.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
-    session.permanent = True
-    session['username'] = username
-    session['is_admin'] = bool(is_admin)
-    return jsonify(_me_payload(user)), 201
+# ── Identity ──────────────────────────────────────────────────────────────────
+# Login, logout, signup, invites, password resets and role changes all moved to
+# the portal (portal/app.py) when the three tools merged onto one origin. What
+# is left here is read-only: who the shared session says you are, and the
+# roster the pipeline UI needs to render names and assignment dropdowns.
 
 def _me_payload(user):
     return {
-        'username':  user['username'],
-        'is_admin':  bool(user['is_admin']),
-        'role':      user['role'] if 'role' in user.keys() else ('admin' if user['is_admin'] else 'rep'),
-        'full_name': user['full_name'] if 'full_name' in user.keys() else '',
-        'is_manager': bool(user['is_admin']),
+        'username':   user['username'],
+        # is_admin means manager-or-above here — it is what gates the Numbers
+        # and Coaching tabs, which managers are meant to see.
+        'is_admin':   user['role'] in pusers.ELEVATED,
+        'role':       user['role'],
+        'full_name':  user['full_name'],
+        'is_manager': user['role'] in pusers.ELEVATED,
     }
 
 @app.route('/api/me')
 def me():
     if 'username' not in session:
         return jsonify({'authenticated': False})
-    with get_db() as db:
-        user = db.execute('SELECT * FROM users WHERE username=?', (session['username'],)).fetchone()
+    user = pusers.get(session['username'])
     if not user:
+        # Row deleted out from under a live cookie.
         session.clear()
         return jsonify({'authenticated': False})
     payload = _me_payload(user)
     payload['authenticated'] = True
     return jsonify(payload)
 
-# ── Invites (admin) ───────────────────────────────────────────────────────────
-
-def _build_invite_link(code, username):
-    link = request.host_url.rstrip('/') + '/?invite=' + quote(code, safe='')
-    if username:
-        link += '&u=' + quote(username, safe='')
-    return link
-
-@app.route('/api/invites', methods=['POST'])
-@admin_required
-def create_invite():
-    data = request.get_json(force=True)
-    username = (data.get('username') or '').strip().lower()
-    if any(c.isspace() for c in username):
-        return jsonify({'error': 'Use the rep\'s login username (no spaces), or leave blank for an open invite'}), 400
-    days = min(int(data.get('expires_days') or 7), 30)
-    code = secrets.token_urlsafe(8)
-    expires = _iso(_now_dt() + timedelta(days=days))
-    with get_db() as db:
-        db.execute('INSERT INTO invites (code, username, created_by, created_at, expires_at) VALUES (?,?,?,?,?)',
-                   (code, username, session['username'], _now(), expires))
-    return jsonify({'code': code, 'username': username, 'expires_at': expires,
-                    'link': _build_invite_link(code, username)}), 201
-
-@app.route('/api/invites')
-@admin_required
-def list_invites():
-    with get_db() as db:
-        rows = db.execute('SELECT * FROM invites ORDER BY created_at DESC LIMIT 50').fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d['status'] = ('used' if d['used_by'] else
-                       'expired' if d['expires_at'] <= _now() else 'active')
-        d['link'] = _build_invite_link(d['code'], d['username'])
-        out.append(d)
-    return jsonify(out)
-
-@app.route('/api/invites/<code>', methods=['DELETE'])
-@admin_required
-def revoke_invite(code):
-    with get_db() as db:
-        db.execute('DELETE FROM invites WHERE code=?', (code,))
-    return jsonify({'ok': True})
-
-# ── Users (admin) ─────────────────────────────────────────────────────────────
-
 @app.route('/api/users')
 @login_required
 def list_users():
-    # Everyone can see the roster (needed to assign/reassign & render names);
-    # only admins get to mutate it below.
-    with get_db() as db:
-        users = db.execute('SELECT username, is_admin, role, full_name, created_at '
-                           'FROM users ORDER BY username').fetchall()
-    return jsonify([dict(u) for u in users])
+    """The roster, for assignment dropdowns and rendering names.
 
-@app.route('/api/users/<username>/reset', methods=['POST'])
-@admin_required
-def reset_user(username):
-    new_pw = (request.get_json(force=True).get('password') or '')
-    if len(new_pw) < 6:
-        return jsonify({'error': 'Password too short'}), 400
-    with get_db() as db:
-        db.execute('UPDATE users SET pw_hash=? WHERE username=?',
-                   (generate_password_hash(new_pw), username))
-    return jsonify({'ok': True})
-
-@app.route('/api/users/<username>/role', methods=['POST'])
-@admin_required
-def set_role(username):
-    role = (request.get_json(force=True).get('role') or 'rep').strip()
-    if role not in ('rep', 'manager', 'admin'):
-        return jsonify({'error': 'Invalid role'}), 400
-    if username == session['username'] and role == 'rep':
-        return jsonify({'error': "You can't demote yourself"}), 400
-    is_admin = 1 if role in ('manager', 'admin') else 0
-    with get_db() as db:
-        db.execute('UPDATE users SET role=?, is_admin=? WHERE username=?', (role, is_admin, username))
-    return jsonify({'ok': True})
-
-@app.route('/api/users/<username>', methods=['DELETE'])
-@admin_required
-def delete_user(username):
-    if username == session['username']:
-        return jsonify({'error': "You can't delete yourself"}), 400
-    with get_db() as db:
-        db.execute('DELETE FROM users WHERE username=?', (username,))
-    return jsonify({'ok': True})
-
-@app.route('/api/account/password', methods=['POST'])
-@login_required
-def change_password():
-    data = request.get_json(force=True)
-    new_pw = data.get('password') or ''
-    if len(new_pw) < 6:
-        return jsonify({'error': 'Password too short'}), 400
-    with get_db() as db:
-        db.execute('UPDATE users SET pw_hash=? WHERE username=?',
-                   (generate_password_hash(new_pw), session['username']))
-    return jsonify({'ok': True})
+    Deliberately login-only rather than admin-only: reps need the names. Only
+    the portal mutates the roster.
+    """
+    return jsonify([{'username': u['username'], 'is_admin': u['role'] in pusers.ELEVATED,
+                     'role': u['role'], 'full_name': u['full_name'],
+                     'created_at': u['created_at']}
+                    for u in pusers.all_users()])
 
 # ── Lead helpers ──────────────────────────────────────────────────────────────
 

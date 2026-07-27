@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import sys
 import math
 import json
 import time
@@ -18,8 +19,15 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 from functools import wraps
+from urllib.parse import quote
 from flask import Flask, request, jsonify, send_from_directory, send_file, Response, session, redirect
-from werkzeug.security import generate_password_hash, check_password_hash
+
+# The portal package lives one directory up. Put the repo root on the path so
+# this app works both mounted by portal/wsgi.py and run standalone (its test
+# suite imports app.py directly with the repo root nowhere in sight).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import session as psession   # noqa: E402
+from portal import users as pusers       # noqa: E402
 
 try:
     import requests as http
@@ -37,20 +45,12 @@ except ImportError:
     _pypdf = None
 
 app = Flask(__name__, static_folder='static')
-app.secret_key = os.environ.get('SESSION_SECRET', secrets.token_hex(32))
-app.config.update(
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax',
-    # Secure cookies over HTTPS in production (Railway). Allow plain HTTP for
-    # local dev so the login flow works on http://localhost / the LAN IP.
-    SESSION_COOKIE_SECURE=bool(os.environ.get('DATA_DIR')),
-    PERMANENT_SESSION_LIFETIME=timedelta(days=14),
-    MAX_CONTENT_LENGTH=30 * 1024 * 1024,  # cap uploads at 30 MB
-)
-
-# Shared setup code for first-time password enrollment. Set SIGNUP_CODE in the
-# environment; blank it out once everyone has enrolled to disable new sign-ups.
-SIGNUP_CODE = os.environ.get('SIGNUP_CODE', '').strip()
+# Secret key, ProxyFix, and cookie settings identical to the other three apps.
+# They share one cookie and each re-saves it whenever it touches session, so a
+# mismatched flag here logs the rep out of all of them at random. This app used
+# to derive SESSION_COOKIE_SECURE from DATA_DIR while the other two used
+# RAILWAY_ENVIRONMENT — exactly the kind of drift that breaks.
+psession.configure(app, max_content_length=30 * 1024 * 1024)  # cap uploads at 30 MB
 
 TEAM_MEMBERS = [
     'avery', 'bryan', 'derik', 'luke', 'phil',
@@ -75,28 +75,12 @@ def _display_name(username):
         return TEAM_DISPLAY_NAMES[username]
     return ' '.join(p.capitalize() for p in username.replace('.', ' ').split())
 
-# ── User accounts (per-user passwords) ──────────────────────────────────────
-# Stored as JSON in DATA_DIR alongside estimates/settings:
-#   { "luke": {"pw_hash": "...", "is_admin": true}, ... }
-# A user with no pw_hash has not enrolled yet; first login sets it (gated by
-# SIGNUP_CODE). 'luke' is seeded as the admin who can reset other users.
-# Path resolved lazily because DATA_DIR is defined further down this module.
-def _users_file():
-    return os.path.join(DATA_DIR, 'users.json')
-
-def load_users():
-    path = _users_file()
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-def save_users(users):
-    with open(_users_file(), 'w', encoding='utf-8') as f:
-        json.dump(users, f, indent=2)
+# ── User accounts ───────────────────────────────────────────────────────────
+# Accounts used to live in DATA_DIR/users.json. They now live in the portal's
+# shared store (portal/users.py) so one password works across the estimator,
+# the canvasser, and the sales CRM. portal/migrate_users.py moved the existing
+# records across, hashes intact. team.json below is a different thing and stays
+# here: it is estimator display-name/phone/email config, not authentication.
 
 def load_team():
     """Return [{username, display_name}] from team.json, seeding from hardcoded list on first run."""
@@ -114,16 +98,10 @@ def save_team(team):
 
 def _get_role(username):
     """Return 'admin', 'manager', or 'rep' for the given username."""
-    rec = load_users().get(username) or {}
-    role = rec.get('role')
-    if role in ('admin', 'manager', 'rep'):
-        return role
-    if rec.get('is_admin') or username == 'luke':
-        return 'admin'
-    return 'rep'
+    return pusers.role_of(username)
 
 def _is_admin(username):
-    return _get_role(username) == 'admin'
+    return pusers.is_admin(username)
 
 def _current_user():
     return session.get('user', '')
@@ -152,8 +130,6 @@ def _safe_path_id(s):
 # This is the opposite of decorating each protected route (which is what let the
 # data APIs leak — a route added without the decorator was silently public).
 PUBLIC_ENDPOINTS = {
-    'login',             # the login page / form
-    'logout',            # clears the session
     'customer_sign',     # /sign/<token> — public, protected by the 192-bit token
     'sign_change_order', # /sign-co/<token> — same token protection as /sign
     'serve_upload',      # /uploads/<file> — cover photos shown on the customer view
@@ -171,7 +147,10 @@ def _require_login():
     # Unauthenticated: JSON 401 for API calls (the SPA redirects), else to login.
     if request.path.startswith('/api/'):
         return jsonify({'error': 'authentication required'}), 401
-    return redirect('/login')
+    # '/login' is root-absolute on purpose: the portal owns it, and under the
+    # mount this app's own paths are all under /estimate. script_root is that
+    # prefix ('' standalone), so `next` sends the rep back where they were.
+    return redirect('/login?next=' + quote(request.script_root + request.path, safe='/'))
 
 BASE_URL = "https://base44.app/api/apps/69320ef0c647fee442697971"
 # Base44 API token — MUST be supplied via the BASE44_TOKEN env var (never commit
@@ -504,125 +483,28 @@ def index():
     return send_from_directory(app.static_folder, 'index.html')
 
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    error = ''
-    if request.method == 'POST':
-        username  = (request.form.get('username') or '').strip().lower()
-        password  = request.form.get('password') or ''
-        code      = (request.form.get('signup_code') or '').strip()
-
-        if username not in TEAM_MEMBERS:
-            error = 'Please select your name from the list.'
-        else:
-            users = load_users()
-            rec   = users.get(username) or {}
-            if rec.get('pw_hash'):
-                # Enrolled — verify password.
-                if check_password_hash(rec['pw_hash'], password):
-                    session.permanent = True
-                    session['user'] = username
-                    return redirect('/')
-                error = 'Incorrect password. Try again.'
-            else:
-                # First time — enroll with the shared setup code + a new password.
-                if not password and not code:
-                    error = 'First time signing in? Enter the team setup code and choose a password.'
-                elif not SIGNUP_CODE:
-                    error = 'Sign-up is disabled. Ask Luke to set you up.'
-                elif code != SIGNUP_CODE:
-                    error = 'Incorrect setup code.'
-                elif len(password) < 8:
-                    error = 'Choose a password of at least 8 characters.'
-                else:
-                    users[username] = {
-                        'pw_hash':  generate_password_hash(password),
-                        'is_admin': username == 'luke',
-                    }
-                    save_users(users)
-                    session.permanent = True
-                    session['user'] = username
-                    return redirect('/')
-
-    options = ''.join(
-        f'<option value="{u}">{_display_name(u)}</option>'
-        for u in TEAM_MEMBERS
-    )
-    error_html = f'<p class="login-error">{error}</p>' if error else ''
-
-    return f'''<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign In — Project One Roofing Estimator</title>
-<style>
-*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:#f3f4f6;
-  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}}
-.card{{background:#fff;border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,.12);
-  padding:40px;width:100%;max-width:360px;text-align:center}}
-.card img{{height:64px;margin-bottom:22px}}
-h1{{font-size:19px;font-weight:800;color:#1a3a5c;margin-bottom:4px}}
-.sub{{font-size:13px;color:#6b7280;margin-bottom:24px}}
-.stripe{{height:4px;border-radius:2px;margin-bottom:28px;
-  background:linear-gradient(90deg,#22c7da 0 33%,#ffd400 33% 66%,#ee3d42 66% 100%)}}
-select{{width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:6px;
-  font-size:16px;background:#fff;margin-bottom:14px;
-  appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-repeat:no-repeat;background-position:right 12px center}}
-select:focus{{outline:none;border-color:#1a3a5c;box-shadow:0 0 0 3px rgba(26,58,92,.12)}}
-input{{width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:6px;
-  font-size:16px;background:#fff;margin-bottom:14px}}
-input:focus{{outline:none;border-color:#1a3a5c;box-shadow:0 0 0 3px rgba(26,58,92,.12)}}
-button{{width:100%;padding:12px;background:#1a3a5c;color:#fff;border:none;
-  border-radius:6px;font-size:14px;font-weight:700;cursor:pointer}}
-button:hover{{background:#0e2440}}
-.login-error{{color:#dc2626;font-size:13px;margin-bottom:12px}}
-.login-hint{{font-size:11px;color:#9ca3af;margin:-6px 0 14px;line-height:1.45;text-align:left}}
-.setup-row{{border-top:1px solid #eef0f3;margin-top:6px;padding-top:14px}}
-.setup-row summary{{font-size:12px;color:#1a3a5c;cursor:pointer;margin-bottom:12px;
-  font-weight:600;list-style:none}}
-.setup-row summary::-webkit-details-marker{{display:none}}
-</style></head><body>
-<div class="card">
-  <img src="/static/logo.png" alt="Project One Roofing">
-  <h1>Estimate Builder</h1>
-  <p class="sub">Sign in to continue</p>
-  <div class="stripe"></div>
-  {error_html}
-  <form method="POST">
-    <select name="username" required>
-      <option value="">Select your name…</option>
-      {options}
-    </select>
-    <input type="password" name="password" placeholder="Password" autocomplete="current-password" required>
-    <details class="setup-row">
-      <summary>First time signing in?</summary>
-      <p class="login-hint">Enter the team setup code (ask Luke) and choose a password above — it'll be saved as your login.</p>
-      <input type="text" name="signup_code" placeholder="Team setup code" autocomplete="off">
-    </details>
-    <button type="submit">Sign In →</button>
-  </form>
-</div>
-</body></html>'''
-
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect('/login')
-
+# ── Identity ───────────────────────────────────────────────────────────
+# The login page and /logout moved to the portal (portal/app.py) when the three
+# tools merged onto one origin — the estimator no longer renders its own sign-in
+# form, and the TEAM_MEMBERS dropdown that gated it is gone with it (which also
+# fixes reps who had a password here but were missing from that hardcoded list).
+#
+# The Team Logins panel stays, because a manager still needs it. Its routes now
+# read and write portal.users instead of users.json, so there is exactly one
+# user store even though two apps expose an editor for it.
 
 @app.route('/api/me')
 def me():
     user = session.get('user', '')
-    rec  = load_users().get(user) or {}
+    rec  = pusers.get(user) if user else None
     return jsonify({
         'username': user,
         'display_name': _display_name(user) if user else '',
-        'email': f'{user}@projectoneroofing.com' if user else '',
-        'is_admin': bool(rec.get('is_admin')),
-        'role': _get_role(user) if user else 'rep',
+        'email': pusers.email_of(user) if user else '',
+        'is_admin': bool(rec and rec['role'] == 'admin'),
+        'role': rec['role'] if rec else 'rep',
         # True when an admin set a temporary password the user must replace.
-        'must_change': bool(rec.get('must_change')),
+        'must_change': bool(rec and rec['must_change']),
     })
 
 
@@ -631,18 +513,19 @@ def list_users():
     """Admin-only: enrollment status for every team member."""
     if not _is_admin(session.get('user', '')):
         return jsonify({'error': 'admin only'}), 403
-    users = load_users()
-    team  = load_team()
+    accounts = {u['username']: u for u in pusers.all_users()}
     return jsonify([
         {'username': m['username'],
          'display_name': m.get('display_name') or _display_name(m['username']),
          'phone':        m.get('phone', ''),
          'email':        m.get('email', ''),
-         'enrolled':     bool((users.get(m['username']) or {}).get('pw_hash')),
-         'must_change':  bool((users.get(m['username']) or {}).get('must_change')),
+         # An account in the portal store IS enrollment now; there is no
+         # "invited but no pw_hash" half-state any more.
+         'enrolled':     m['username'] in accounts,
+         'must_change':  bool(accounts.get(m['username'], {}).get('must_change')),
          'is_admin':     _get_role(m['username']) == 'admin',
          'role':         _get_role(m['username'])}
-        for m in team
+        for m in load_team()
     ])
 
 
@@ -658,27 +541,28 @@ def set_user_password(username):
     password = (request.get_json(force=True) or {}).get('password') or ''
     if len(password) < 6:
         return jsonify({'error': 'Password must be at least 6 characters.'}), 400
-    users = load_users()
-    rec = users.get(username) or {}
-    rec['pw_hash']     = generate_password_hash(password)
-    rec['must_change'] = True
-    rec.setdefault('is_admin', username == 'luke')
-    users[username] = rec
-    save_users(users)
+    if pusers.get(username):
+        pusers.set_password(username, password, must_change=True)
+    else:
+        pusers.create(username, password=password, must_change=True,
+                      full_name=_display_name(username))
     return jsonify({'ok': True, 'username': username})
 
 
 @app.route('/api/users/<username>/reset', methods=['POST'])
 def reset_user(username):
-    """Admin-only: clear a user's password so a fresh one can be set."""
+    """Admin-only: un-enroll a user so they can sign up fresh.
+
+    Previously this dropped pw_hash and left the record behind. The portal
+    store has no password-less state, so un-enrolling means removing the
+    account; the rep re-enrols through the portal with the signup code.
+    """
     if not _is_admin(session.get('user', '')):
         return jsonify({'error': 'admin only'}), 403
     username = (username or '').strip().lower()
-    users = load_users()
-    if username in users:
-        users[username].pop('pw_hash', None)
-        users[username].pop('must_change', None)
-        save_users(users)
+    if username == session.get('user', ''):
+        return jsonify({'error': "You can't reset your own login"}), 400
+    pusers.delete(username)
     return jsonify({'ok': True, 'reset': username})
 
 
@@ -689,14 +573,11 @@ def set_user_role(username):
         return jsonify({'error': 'admin only'}), 403
     username = (username or '').strip().lower()
     role = (request.get_json(force=True) or {}).get('role', '')
-    if role not in ('admin', 'manager', 'rep'):
+    if role not in pusers.ROLES:
         return jsonify({'error': 'role must be admin, manager, or rep'}), 400
-    users = load_users()
-    rec = users.get(username) or {}
-    rec['role']     = role
-    rec['is_admin'] = (role == 'admin')
-    users[username] = rec
-    save_users(users)
+    if not pusers.get(username):
+        return jsonify({'error': 'that user has not enrolled yet'}), 400
+    pusers.set_role(username, role)
     return jsonify({'ok': True, 'username': username, 'role': role})
 
 
@@ -721,12 +602,11 @@ def add_team_member():
     team.append({'username': username, 'display_name': display_name or _display_name(username),
                  'phone': phone, 'email': email})
     save_team(team)
-    users = load_users()
-    rec = users.get(username) or {}
-    rec['role']     = role
-    rec['is_admin'] = (role == 'admin')
-    users[username] = rec
-    save_users(users)
+    # Adding someone to the roster records their intended role, but does not
+    # create an account — they enrol themselves through the portal with an
+    # invite, or an admin sets a temporary password via Team Logins.
+    if pusers.get(username):
+        pusers.set_role(username, role)
     return jsonify({'ok': True, 'username': username}), 201
 
 
@@ -762,9 +642,9 @@ def remove_team_member(username):
         return jsonify({'error': 'cannot remove yourself'}), 400
     team = [m for m in load_team() if m['username'] != username]
     save_team(team)
-    users = load_users()
-    users.pop(username, None)
-    save_users(users)
+    # Removing them from the roster also removes their login, so they lose
+    # access to all three tools rather than just disappearing from this one.
+    pusers.delete(username)
     return jsonify({'ok': True, 'removed': username})
 
 
@@ -777,13 +657,9 @@ def change_own_password():
     password = (request.get_json(force=True) or {}).get('password') or ''
     if len(password) < 8:
         return jsonify({'error': 'Choose a password of at least 8 characters.'}), 400
-    users = load_users()
-    rec = users.get(user) or {}
-    rec['pw_hash'] = generate_password_hash(password)
-    rec['must_change'] = False
-    rec.setdefault('is_admin', user == 'luke')
-    users[user] = rec
-    save_users(users)
+    if not pusers.get(user):
+        return jsonify({'error': 'no account for this user'}), 400
+    pusers.set_password(user, password, must_change=False)
     return jsonify({'ok': True})
 
 @app.route('/uploads/<path:filename>')

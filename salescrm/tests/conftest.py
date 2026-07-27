@@ -4,8 +4,10 @@ import sys
 import tempfile
 
 # Must be set BEFORE importing app (DB_PATH is resolved at import time).
-os.environ.setdefault('SALESCRM_DATA_DIR', tempfile.mkdtemp(prefix='salescrm_test_'))
-os.environ.setdefault('SALESCRM_SIGNUP_CODE', 'TEST')
+_TMP = tempfile.mkdtemp(prefix='salescrm_test_')
+os.environ.setdefault('SALESCRM_DATA_DIR', _TMP)
+# Accounts live in the portal's shared store now, not salescrm.db.
+os.environ.setdefault('PORTAL_DATA_DIR', _TMP)
 os.environ.pop('BASE44_TOKEN', None)   # ensure Den calls degrade gracefully
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,14 +15,22 @@ import app as appmod  # noqa: E402
 
 import pytest  # noqa: E402
 
-TABLES = ['users', 'invites', 'leads', 'activities', 'tasks',
-          'cadence_enrollments', 'coaching_notes', 'goals']
+from portal import session as psession  # noqa: E402
+from portal import users as pusers      # noqa: E402
+
+TABLES = ['leads', 'activities', 'tasks', 'cadence_enrollments',
+          'coaching_notes', 'goals', 'documents']
 
 
 def _wipe():
     with appmod.get_db() as db:
         for t in TABLES:
             db.execute(f'DELETE FROM {t}')
+    # Identity lives in the portal store, so it has to be reset here too or
+    # the "first user bootstraps as admin" rule leaks across tests.
+    with pusers.get_db() as db:
+        db.execute('DELETE FROM users')
+        db.execute('DELETE FROM invites')
 
 
 @pytest.fixture
@@ -35,9 +45,28 @@ def client(app):
     return app.app.test_client()
 
 
+# ── Identity helpers ─────────────────────────────────────────────────────────
+# Signup and login moved to the portal when the three tools merged onto one
+# origin. These tests are about pipeline behaviour, not about how identity gets
+# established, so the helpers do directly what the portal's login does: create
+# the account, then write the shared session keys.
+
 def signup(client, username='luke', pw='secret1', code='TEST'):
-    return client.post('/api/signup', json={
-        'signup_code': code, 'username': username, 'password': pw, 'full_name': username.title()})
+    """Create an account and sign `client` in as it. Returns /api/me."""
+    role = 'admin' if pusers.count() == 0 else 'rep'   # first user bootstraps as admin
+    pusers.create(username, password=pw, role=role, full_name=username.title())
+    return login(client, username)
+
+
+def login(client, username='luke'):
+    with client.session_transaction() as s:
+        psession.sign_in(s, pusers.get(username))
+    return client.get('/api/me')
+
+
+def logout(client):
+    with client.session_transaction() as s:
+        s.clear()
 
 
 def new_lead(client, **kw):

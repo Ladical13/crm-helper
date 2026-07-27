@@ -15,30 +15,8 @@
 </head>
 <body>
 
-<!-- ── Login ── -->
-<div id="login-screen" class="screen active">
-  <div class="login-box">
-    <div class="login-logo">P1</div>
-    <div class="login-title">The Pipeline</div>
-    <div class="login-sub">Project One Roofing · Sales CRM</div>
-    <div id="login-form">
-      <input type="text" id="login-username" placeholder="Username" autocomplete="username" autocapitalize="none">
-      <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
-      <button class="btn-primary" id="login-btn">Sign In</button>
-      <div id="login-error" class="error-msg"></div>
-      <div class="divider" id="signup-toggle">First time? Set up your account →</div>
-    </div>
-    <div id="signup-form" class="hidden">
-      <input type="text" id="signup-code" placeholder="Invite / Signup Code">
-      <input type="text" id="signup-username" placeholder="Choose a username (no spaces)" autocapitalize="none">
-      <input type="text" id="signup-fullname" placeholder="Your full name">
-      <input type="password" id="signup-password" placeholder="Choose a password (6+ chars)">
-      <button class="btn-primary" id="signup-btn">Create Account</button>
-      <div id="signup-error" class="error-msg"></div>
-      <div class="divider" id="login-toggle">← Back to sign in</div>
-    </div>
-  </div>
-</div>
+<!-- No login screen: the portal owns sign-in (portal/app.py). Unauthenticated
+     requests are bounced to /login by api() in app.js. -->
 
 <!-- ── App ── -->
 <div id="app-screen" class="screen">

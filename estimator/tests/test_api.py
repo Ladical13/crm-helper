@@ -19,8 +19,17 @@ def test_pages_redirect_to_login(anon):
     assert '/login' in r.headers['Location']
 
 
-def test_login_page_is_public(anon):
-    assert anon.get('/login').status_code == 200
+def test_redirect_to_login_preserves_destination(anon):
+    """The portal sends the rep back where they were after signing in."""
+    r = anon.get('/?estimate=abc123')
+    assert r.status_code == 302
+    assert 'next=' in r.headers['Location']
+
+
+def test_estimator_no_longer_serves_a_login_page(anon):
+    """Login moved to the portal. This app must not answer /login itself —
+    two sign-in forms on one origin is how sessions get written twice."""
+    assert 'login' not in {r.endpoint for r in anon.application.url_map.iter_rules()}
 
 
 def test_logged_in_user_reaches_api(client):

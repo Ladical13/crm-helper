@@ -1,0 +1,8 @@
+# Test-only. Railway installs requirements.txt, never this.
+#
+#   pip install -r requirements-dev.txt
+#   cd estimator && pytest      # 220 — pricing parity, cache-buster, bundles
+#   cd salescrm  && pytest      #  18 — stages, cadences, per-rep visibility
+#   cd portal    && pytest      #  28 — one login across all three, migration
+-r requirements.txt
+pytest>=8.0

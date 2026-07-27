@@ -14,7 +14,9 @@ os.makedirs(os.path.join(TEST_DATA_DIR, 'uploads'), exist_ok=True)
 
 os.environ['DATA_DIR'] = TEST_DATA_DIR
 os.environ['SESSION_SECRET'] = 'test-only-secret'
-os.environ['SIGNUP_CODE'] = 'test-only-code'
+# Accounts live in the portal's shared store now, not DATA_DIR/users.json.
+os.environ['PORTAL_DATA_DIR'] = TEST_DATA_DIR
+os.environ['PORTAL_SIGNUP_CODE'] = 'test-only-code'
 
 ESTIMATOR_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ESTIMATOR_DIR)
@@ -29,6 +31,14 @@ for _f in ('price_book.json', 'tier_defaults.json', 'company_content.json'):
 
 import pytest
 import app as estimator_app
+from portal import users as portal_users
+
+# Roles come from the portal store, so the admin the tests act as has to exist
+# there. Seeded once at import: the store is a file in TEST_DATA_DIR and the
+# tests never mutate luke's role.
+if not portal_users.get('luke'):
+    portal_users.create('luke', password='test-only-password', role='admin',
+                        full_name='Luke Durnbaugh')
 
 
 @pytest.fixture
