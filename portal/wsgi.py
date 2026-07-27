@@ -65,3 +65,12 @@ def build():
 
 
 application = build()
+
+
+if __name__ == '__main__':
+    # Local dev: `python -m portal.wsgi`. `flask run` cannot serve this —
+    # DispatcherMiddleware is a plain WSGI callable, not a Flask app.
+    from werkzeug.serving import run_simple
+    port = int(os.environ.get('PORT', 5010))
+    run_simple('0.0.0.0', port, application,
+               use_reloader=False, use_debugger=True, threaded=True)

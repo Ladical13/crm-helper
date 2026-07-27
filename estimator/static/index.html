@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=123">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=124">
 </head>
 <body>
 
@@ -22,7 +22,7 @@
 <header id="app-header">
   <div class="header-left">
     <button id="nav-toggle" class="nav-toggle-btn" onclick="toggleSidebar()">☰</button>
-    <img src="/static/logo.png" alt="Project One Roofing" class="header-logo">
+    <img src="/estimate/static/logo.png" alt="Project One Roofing" class="header-logo">
     <div id="estimate-number" class="estimate-number">New Estimate</div>
   </div>
   <div class="header-right">
@@ -42,7 +42,8 @@
     <div class="user-badge" id="user-badge" style="display:none">
       <span id="user-display-name" class="user-name"></span>
       <button class="btn-logins" onclick="openLoginsModal()" title="Passwords & team logins">🔑</button>
-      <a href="/logout" class="btn-signout">Sign Out</a>
+      <!-- Sign Out lives in the portal's switcher bar now (portal/static/shell.js),
+           so it is not duplicated here. -->
     </div>
   </div>
   <div id="header-overflow-menu" class="header-overflow-menu">
@@ -59,7 +60,6 @@
     <button onclick="document.getElementById('roofr-pdf-input').click();closeMoreMenu()">📐 RoofR Import</button>
     <button onclick="document.getElementById('xact-pdf-input').click();closeMoreMenu()">🏛 Insurance PDF Import</button>
     <button onclick="openOrderSheet();closeMoreMenu()">📋 Order Sheet</button>
-    <a href="/logout" class="overflow-signout">Sign Out</a>
   </div>
 </header>
 
@@ -649,6 +649,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=123"></script>
+<script src="/estimate/static/app.js?v=124"></script>
 </body>
 </html>
