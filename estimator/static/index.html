@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Project One">
   <link rel="apple-touch-icon" href="/static/icon-180.png">
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/static/style.css?v=121">
+  <link rel="stylesheet" href="/static/style.css?v=122">
 </head>
 <body>
 
@@ -399,6 +399,13 @@
         <textarea id="jxset-baseline-points" rows="6" spellcheck="true"></textarea>
         <label class="jxset-sub">Verify note <span class="note-tag">the always-shown "confirm with the AHJ" reminder</span></label>
         <input type="text" id="jxset-verify" placeholder="Confirm adopted code &amp; submittal with the jurisdiction…">
+        <label class="jxset-sub" style="margin-top:12px">Scope-gap checklist <span class="note-tag">what the Insurance tab checks the carrier's estimate against — one item per line</span></label>
+        <div class="jxset-help">Format: <code>class | label | keywords | code basis | supplement note</code><br>
+          <code>class</code> is <b>code</b> (code-mandated), <b>common</b> (not code but owed on every reroof), or
+          <b>conditional</b> (only if the roof has the feature). <code>keywords</code> are comma-separated and matched
+          against the carrier's line descriptions.</div>
+        <textarea id="jxset-baseline-items" rows="10" spellcheck="false"
+          placeholder="code | Drip edge — eaves AND rakes | drip edge, d/edge | IRC R905.2.8.5 | Eave paid, rake omitted is the classic short-pay."></textarea>
         <label class="jxset-sub" style="margin-top:12px">Curate a jurisdiction <span class="note-tag">office, submittal method, and code points specific to one city/county</span></label>
         <input type="text" id="jxset-search" placeholder="🔍 Filter by city / county name…" oninput="_jxFillPicker(this.value)" autocomplete="off">
         <select id="jxset-pick" onchange="_jxPickEdit(this.value)"></select>
@@ -408,6 +415,7 @@
           <div class="field-group" style="max-width:240px"><label>Phone</label><input type="text" id="jxset-phone"></div>
           <div class="field-group"><label>Website URL</label><input type="text" id="jxset-url"></div>
           <div class="field-group"><label>Extra code points <span class="note-tag">added on top of the baseline — one per line</span></label><textarea id="jxset-points" rows="4" spellcheck="true"></textarea></div>
+          <div class="field-group"><label>Extra scope-gap items <span class="note-tag">same format as the baseline checklist — reusing a baseline label overrides it here</span></label><textarea id="jxset-items" rows="4" spellcheck="false"></textarea></div>
         </div>
       </div>
       <div id="settings-company" class="field-group hidden">
@@ -637,6 +645,6 @@
 
 <div id="app-toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=121"></script>
+<script src="/static/app.js?v=122"></script>
 </body>
 </html>

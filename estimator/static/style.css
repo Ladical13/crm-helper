@@ -1789,8 +1789,82 @@ a.jx-contact:hover { text-decoration: underline; }
   border-radius: 6px; padding: 8px 11px; line-height: 1.5;
 }
 
+/* Boundary-verification banner (Census TIGER city-limits check) */
+.jx-verify-bar {
+  margin: 2px 0 10px; padding: 9px 12px; border-radius: 8px;
+  font-size: 12.5px; line-height: 1.5; border: 1px solid transparent;
+}
+.jx-vb-idle { background: #f1f5f9; border-color: #cbd5e1; color: #475569; font-weight: 600; }
+.jx-vb-busy { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; font-weight: 600; }
+.jx-vb-fail {
+  background: #fff7ed; border-color: #fdba74; border-left: 4px solid #f97316;
+  color: #7c2d12; font-weight: 600;
+}
+.jx-vb-ok {
+  background: #f0fdf4; border-color: #86efac; border-left: 4px solid #22c55e; color: #14532d;
+}
+.jx-vb-line { font-weight: 700; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.jx-vb-line b { font-weight: 800; }
+.jx-vb-sub { margin-top: 3px; font-size: 11px; color: #3f6212; word-break: break-word; }
+.jx-vb-caveat { margin-top: 5px; font-size: 11px; color: #52525b; line-height: 1.45; }
+.jx-reverify {
+  margin-left: auto; font-size: 11px; font-weight: 700; cursor: pointer;
+  color: #334155; background: #fff; border: 1px solid #cbd5e1;
+  border-radius: 6px; padding: 3px 9px; white-space: nowrap;
+}
+.jx-reverify:hover { background: #f1f5f9; border-color: #94a3b8; }
+.jx-kind-ok { color: #14532d; background: #dcfce7; border-color: #86efac; }
+
+/* Insurance scope-gap check — carrier scope vs. what code requires */
+.gap-panel {
+  margin: 18px 0 4px; padding: 14px 16px; border-radius: 10px;
+  background: #fffbeb; border: 1px solid #fcd34d;
+}
+.gap-panel.gap-empty { background: #f8fafc; border-color: var(--border); }
+.gap-head h3 { margin: 0; font-size: 15px; font-weight: 800; color: #78350f; }
+.gap-panel.gap-empty .gap-head h3 { color: #334155; }
+.gap-head .measure-hint { display: block; margin-top: 3px; font-size: 11.5px; color: #92400e; line-height: 1.5; }
+.gap-panel.gap-empty .gap-head .measure-hint { color: #64748b; }
+.gap-clean {
+  margin-top: 10px; padding: 10px 12px; border-radius: 8px; font-size: 12.5px;
+  font-weight: 600; line-height: 1.5; color: #14532d;
+  background: #f0fdf4; border: 1px solid #86efac;
+}
+.gap-block { margin-top: 12px; background: #fff; border: 1px solid #e5e7eb; border-radius: 9px; padding: 10px 12px; }
+.gap-b-code   { border-left: 4px solid #dc2626; }
+.gap-b-common { border-left: 4px solid #f59e0b; }
+.gap-b-cond   { border-left: 4px solid #94a3b8; }
+.gap-block-hd { font-size: 12.5px; font-weight: 800; color: #1f2937; display: flex; align-items: center; gap: 8px; }
+.gap-count {
+  font-size: 10.5px; font-weight: 800; color: #fff; background: #64748b;
+  border-radius: 10px; padding: 1px 8px;
+}
+.gap-b-code .gap-count   { background: #dc2626; }
+.gap-b-common .gap-count { background: #f59e0b; }
+.gap-block-hint { margin-top: 3px; font-size: 11px; color: #6b7280; line-height: 1.45; }
+.gap-list { margin: 8px 0 0; padding: 0; list-style: none; }
+.gap-item { border-top: 1px solid #f1f5f9; }
+.gap-item:first-child { border-top: 0; }
+.gap-item-btn {
+  width: 100%; text-align: left; cursor: pointer; background: none; border: 0;
+  padding: 7px 2px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.gap-item-btn:hover { background: #f8fafc; }
+.gap-label { font-size: 13px; font-weight: 700; color: #111827; }
+.gap-basis { font-size: 11px; color: #6b7280; font-style: italic; }
+.gap-caret { margin-left: auto; font-size: 10px; color: #94a3b8; }
+/* There is no global .hidden utility in this stylesheet — every use is scoped. */
+.gap-note.hidden { display: none; }
+.gap-note {
+  font-size: 12px; color: #334155; line-height: 1.55; padding: 2px 2px 9px 2px;
+  border-left: 2px solid #e5e7eb; margin: 0 0 4px 4px; padding-left: 9px;
+}
+.gap-foot { margin-top: 11px; font-size: 11px; color: #92400e; line-height: 1.5; }
+
 /* Permit-jurisdiction editor (⚙ Settings) */
 .jxset-sub { display: block; margin: 10px 0 4px; font-size: 12.5px; font-weight: 700; color: #334155; }
+.jxset-help { font-size: 11.5px; color: #64748b; line-height: 1.6; margin-bottom: 6px; }
+.jxset-help code { background: #f1f5f9; border-radius: 4px; padding: 1px 5px; font-size: 11px; }
 #jxset-search, #jxset-pick { width: 100%; margin-bottom: 6px; }
 .jxset-fields {
   margin-top: 10px; padding: 12px; border: 1px solid var(--border);

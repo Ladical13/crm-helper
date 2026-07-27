@@ -12,7 +12,216 @@
       "Class 4 impact-resistant shingles strongly recommended for CO hail (insurance-driven, not usually code-mandated).",
       "Most CO jurisdictions require a permit and a final inspection for a full reroof."
     ],
-    "verify_note": "Colorado is home-rule for building codes — always confirm the adopted code year, local amendments, and the reroof submittal method with this jurisdiction before pulling the permit."
+    "verify_note": "Colorado is home-rule for building codes — always confirm the adopted code year, local amendments, and the reroof submittal method with this jurisdiction before pulling the permit.",
+    "code_items": [
+      {
+        "key": "permit",
+        "class": "code",
+        "label": "Permit and inspection fees",
+        "basis": "Required by the AHJ for a full reroof",
+        "match": [
+          "permit",
+          "plan review"
+        ],
+        "note": "Carriers often omit permit fees entirely — the AHJ's published fee schedule is the documentation."
+      },
+      {
+        "key": "drip_edge",
+        "class": "code",
+        "label": "Drip edge — eaves AND rakes",
+        "basis": "IRC R905.2.8.5",
+        "match": [
+          "drip edge",
+          "drip-edge",
+          "d/edge"
+        ],
+        "note": "The classic short-pay: eave footage paid, rake footage omitted. Check the LF against eave+rake, not eave alone."
+      },
+      {
+        "key": "ice_water",
+        "class": "code",
+        "label": "Ice barrier (ice & water shield)",
+        "basis": "IRC R905.1.2 — eave to 24\" inside the warm-wall line",
+        "match": [
+          "ice & water",
+          "ice and water",
+          "ice barrier",
+          "ice/water",
+          "i&w"
+        ],
+        "note": "Required throughout Colorado. Verify the LF covers valleys and the full 24\" past the warm wall, not a token amount."
+      },
+      {
+        "key": "underlayment",
+        "class": "code",
+        "label": "Underlayment (felt or synthetic)",
+        "basis": "IRC R905.1.1",
+        "match": [
+          "felt",
+          "underlayment",
+          "synthetic"
+        ],
+        "note": "Sometimes buried in the shingle line (\"w/ felt\") — confirm before supplementing."
+      },
+      {
+        "key": "starter",
+        "class": "code",
+        "label": "Starter course",
+        "basis": "IRC R905.2.7 + manufacturer installation instructions",
+        "match": [
+          "starter"
+        ],
+        "note": "Manufacturer-required for the wind warranty; cut-shingle starter is not an approved substitute."
+      },
+      {
+        "key": "ridge_cap",
+        "class": "code",
+        "label": "Hip / ridge cap shingles",
+        "basis": "Manufacturer installation instructions",
+        "match": [
+          "ridge cap",
+          "hip / ridge",
+          "hip and ridge",
+          "ridge / hip",
+          "ridge cap -"
+        ],
+        "note": "Must be a manufactured cap on a laminate system — check LF against hip+ridge."
+      },
+      {
+        "key": "ventilation",
+        "class": "code",
+        "label": "Attic ventilation (1/300 net free area)",
+        "basis": "IRC R806.2",
+        "match": [
+          "ridge vent",
+          "roof vent",
+          "attic vent",
+          "turtle vent",
+          "box vent",
+          "static vent",
+          "power attic",
+          "turbine",
+          "off ridge",
+          "ventilat"
+        ],
+        "note": "Run the estimator’s vent calculator — if existing NFA is below code, the shortfall is a code-upgrade supplement."
+      },
+      {
+        "key": "pipe_flashing",
+        "class": "code",
+        "label": "Pipe jack / vent flashings",
+        "basis": "IRC R905.2.8",
+        "match": [
+          "pipe jack",
+          "pipe flashing",
+          "flashing - pipe",
+          "lead jack",
+          "roof jack"
+        ],
+        "note": "Reusing old lead jacks is not code-compliant on a full replacement."
+      },
+      {
+        "key": "debris_haul",
+        "class": "common",
+        "label": "Debris haul / dumpster",
+        "basis": "Not code — but every tear-off generates it",
+        "match": [
+          "dumpster",
+          "haul debris",
+          "debris",
+          "disposal",
+          "haul off"
+        ],
+        "note": "Sometimes folded into the tear-off line — confirm before supplementing."
+      },
+      {
+        "key": "steep_charge",
+        "class": "common",
+        "label": "Steep-slope charge (7/12+)",
+        "basis": "Not code — pitch-driven labor",
+        "match": [
+          "steep"
+        ],
+        "note": "Pull the pitch off the measurement report; if any facet is 7/12 or greater this is owed."
+      },
+      {
+        "key": "high_roof",
+        "class": "common",
+        "label": "High-roof charge (2 stories+)",
+        "basis": "Not code — access-driven labor",
+        "match": [
+          "high roof",
+          "2 stories",
+          "two stor",
+          "two-stor"
+        ],
+        "note": "Owed on any roof two stories or greater regardless of pitch."
+      },
+      {
+        "key": "detach_reset",
+        "class": "common",
+        "label": "Detach & reset (gutters, solar, satellite, A/C)",
+        "basis": "Not code — required to complete the tear-off",
+        "match": [
+          "detach & reset",
+          "detach and reset",
+          "detach &",
+          "r&r gutter",
+          "d&r"
+        ],
+        "note": "Anything mounted on or against the roof that has to come off and go back."
+      },
+      {
+        "key": "overhead_profit",
+        "class": "common",
+        "label": "Overhead & profit",
+        "basis": "Not code — trade-complexity driven",
+        "match": [
+          "overhead",
+          "profit",
+          "o&p"
+        ],
+        "note": "Generally supportable when three or more trades are involved in the repair."
+      },
+      {
+        "key": "valley_metal",
+        "class": "conditional",
+        "label": "Valley metal",
+        "basis": "IRC R905.2.8.2 (open valleys)",
+        "match": [
+          "valley metal",
+          "valley -",
+          "w valley",
+          "open valley"
+        ],
+        "note": "Only if the roof has open valleys — check the measurement report before claiming it."
+      },
+      {
+        "key": "step_flashing",
+        "class": "conditional",
+        "label": "Step flashing (roof-to-wall)",
+        "basis": "IRC R905.2.8.3",
+        "match": [
+          "step flashing",
+          "flashing - step"
+        ],
+        "note": "Only where the roof meets a sidewall. New step flashing is required on a full replacement."
+      },
+      {
+        "key": "chimney_flashing",
+        "class": "conditional",
+        "label": "Chimney / counter flashing",
+        "basis": "IRC R905.2.8.3",
+        "match": [
+          "counterflashing",
+          "counter flashing",
+          "chimney flash",
+          "apron flashing",
+          "chimney -"
+        ],
+        "note": "Only if the roof has a chimney or a masonry penetration."
+      }
+    ]
   },
   "jurisdictions": [
     {

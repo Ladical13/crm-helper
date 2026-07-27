@@ -6907,6 +6907,132 @@ def put_jurisdictions():
     return jsonify({'ok': True})
 
 
+# ── Boundary verification: is this parcel inside city limits? ────────────────
+# The mailing city is NOT the AHJ — a "Fort Collins, CO" address routinely sits
+# in unincorporated Larimer County, and the city won't issue that permit. The
+# Census geocoder settles it against real TIGER polygons: it returns the
+# Incorporated Places geography containing the point, and returns NOTHING when
+# the parcel falls outside every municipal boundary. That absence IS the answer
+# — the county is the AHJ. Free, keyless, unmetered.
+#
+# Two caveats the panel surfaces rather than hides:
+#   * TIGER place boundaries lag recent annexations (up to ~a year), so a newly
+#     annexed parcel can still read as unincorporated.
+#   * "Inside city limits" != "the city issues the permit" — some CO towns
+#     contract building inspection out to the county.
+# So this auto-selects and labels itself verified, but the rep can still
+# override; never treat it as the final word.
+_CENSUS_GEO_BASE = 'https://geocoding.geo.census.gov/geocoder/geographies'
+_CENSUS_ARGS = {'benchmark': 'Public_AR_Current', 'vintage': 'Current_Current',
+                'layers': 'Incorporated Places,Counties', 'format': 'json'}
+_JX_PLACE_SUFFIX_RE  = re.compile(r'\s+(city and county|city|town|village|CDP|municipality)$', re.I)
+_JX_COUNTY_SUFFIX_RE = re.compile(r'\s+County$', re.I)
+
+
+def _jx_clean_place(name):
+    """'Fort Collins city' → 'Fort Collins' (matches jurisdictions.json names)."""
+    return _JX_PLACE_SUFFIX_RE.sub('', str(name or '').strip()).strip()
+
+
+def _jx_clean_county(name):
+    return _JX_COUNTY_SUFFIX_RE.sub('', str(name or '').strip()).strip()
+
+
+def _jx_geographies(geo):
+    """Census 'geographies' block → (place name or None, county name or None).
+    A missing/empty 'Incorporated Places' list means unincorporated."""
+    places   = geo.get('Incorporated Places') or []
+    counties = geo.get('Counties') or []
+    return ((places[0].get('NAME') if places else None),
+            (counties[0].get('NAME') if counties else None))
+
+
+def _jx_census_by_address(one_line):
+    r = http.get(_CENSUS_GEO_BASE + '/onelineaddress',
+                 params=dict(_CENSUS_ARGS, address=one_line), timeout=12)
+    r.raise_for_status()
+    matches = ((r.json().get('result') or {}).get('addressMatches') or [])
+    if not matches:
+        return None
+    m = matches[0]
+    place, county = _jx_geographies(m.get('geographies') or {})
+    coords = m.get('coordinates') or {}
+    return {'place': place, 'county': county, 'source': 'census-address',
+            'matched_address': m.get('matchedAddress') or '',
+            'lat': coords.get('y'), 'lon': coords.get('x')}
+
+
+def _jx_census_by_coords(lat, lon):
+    r = http.get(_CENSUS_GEO_BASE + '/coordinates',
+                 params=dict(_CENSUS_ARGS, x=lon, y=lat), timeout=12)
+    r.raise_for_status()
+    place, county = _jx_geographies((r.json().get('result') or {}).get('geographies') or {})
+    if not county:
+        return None
+    return {'place': place, 'county': county, 'source': 'osm+census-point',
+            'matched_address': '', 'lat': lat, 'lon': lon}
+
+
+def _jx_nominatim_point(one_line):
+    """Census can't match rural/new-construction addresses that OSM has. Same
+    free geocoder the canvasser uses — we only need a point to test."""
+    r = http.get('https://nominatim.openstreetmap.org/search',
+                 params={'q': one_line, 'format': 'json', 'limit': 1, 'countrycodes': 'us'},
+                 headers={'User-Agent': 'ProjectOneRoofing-Estimator/1.0'}, timeout=12)
+    r.raise_for_status()
+    hits = r.json() or []
+    if not hits:
+        return None
+    return float(hits[0]['lat']), float(hits[0]['lon'])
+
+
+@app.route('/api/jurisdictions/verify')
+def verify_jurisdiction():
+    """Address → {incorporated, place, county}. Always 200 — the panel falls
+    back to the manual picker on {ok:false} rather than showing an error."""
+    if http is None:
+        return jsonify({'ok': False, 'error': 'Address lookup is unavailable on this server.'})
+    street = (request.args.get('street') or '').strip()
+    city   = (request.args.get('city') or '').strip()
+    state  = (request.args.get('state') or '').strip()
+    zipc   = (request.args.get('zip') or '').strip()
+    if not street or not (city or zipc):
+        return jsonify({'ok': False, 'error': 'Need a street address plus a city or ZIP.'})
+    tail = ' '.join(p for p in (state, zipc) if p)
+    one_line = ', '.join(p for p in (street, city, tail) if p)
+
+    res = None
+    try:
+        res = _jx_census_by_address(one_line)
+    except Exception:
+        res = None
+    if res is None:
+        try:
+            pt = _jx_nominatim_point(one_line)
+            if pt:
+                res = _jx_census_by_coords(*pt)
+        except Exception:
+            res = None
+    if not res or not res.get('county'):
+        return jsonify({'ok': False, 'error':
+                        "Couldn't place this address on a jurisdiction boundary — "
+                        "pick the governing authority manually."})
+
+    return jsonify({
+        'ok':              True,
+        'incorporated':    bool(res.get('place')),
+        'place':           res.get('place') or '',
+        'place_clean':     _jx_clean_place(res.get('place')),
+        'county':          res.get('county') or '',
+        'county_clean':    _jx_clean_county(res.get('county')),
+        'matched_address': res.get('matched_address') or '',
+        'lat':             res.get('lat'),
+        'lon':             res.get('lon'),
+        'source':          res.get('source'),
+        'checked_at':      datetime.now().isoformat(timespec='seconds'),
+    })
+
+
 _PERMIT_CHAR_MAP = str.maketrans({
     '—': '-', '–': '-', '‘': "'", '’': "'",
     '“': '"', '”': '"', '…': '...', ' ': ' ',

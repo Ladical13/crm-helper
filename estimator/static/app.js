@@ -802,7 +802,9 @@ function blankEstimate() {
     // Permit jurisdiction chosen for this job (Scope-page panel). auto_id is the
     // address-matched default; selected_id + confirmed track a rep override
     // (mailing city isn't always the permitting authority — see setJurisdiction).
-    permit_jurisdiction: { selected_id:null, auto_id:null, confirmed:false },
+    // verified caches the /api/jurisdictions/verify boundary answer so it runs
+    // once per address, not on every render — see _jxMaybeVerify.
+    permit_jurisdiction: { selected_id:null, auto_id:null, confirmed:false, verified:null },
     estimate_date: fmtDate(today), valid_until: fmtDate(exp),
     salesperson: '', notes_internal: '', notes_customer: '',
     pricing: { mode:'margin', global_rate:35,
@@ -2502,7 +2504,7 @@ function _ensureJurisdictions() {
     .then(r => r.json())
     .then(d => { _jurisdictions = d || {}; })
     .catch(() => { _jurisdictions = { colorado_baseline:{code_points:[],verify_note:''}, jurisdictions:[] }; })
-    .finally(() => { _jurisdictionsLoading = false; if (activePage === 'scope') renderScopePage(); });
+    .finally(() => { _jurisdictionsLoading = false; rerenderJurisdictionPanels(); });
 }
 const _normCity = s => String(s || '').trim().toLowerCase();
 function _jxById(id) {
@@ -2532,12 +2534,106 @@ function _jxCodePoints(j) {
   const base = ((_jurisdictions && _jurisdictions.colorado_baseline && _jurisdictions.colorado_baseline.code_points) || []);
   return base.concat((j && j.code_points) || []);
 }
+function _pjState() {
+  if (!S.permit_jurisdiction) S.permit_jurisdiction = { selected_id:null, auto_id:null, confirmed:false, verified:null };
+  return S.permit_jurisdiction;
+}
 function setJurisdiction(id) {
-  if (!S.permit_jurisdiction) S.permit_jurisdiction = { selected_id:null, auto_id:null, confirmed:false };
-  S.permit_jurisdiction.selected_id = id || null;
-  S.permit_jurisdiction.confirmed = true;
+  _pjState().selected_id = id || null;
+  _pjState().confirmed = true;
   setDirty();
+  rerenderJurisdictionPanels();
+}
+// The panel lives on two pages now (Scope for retail, the Insurance tab for
+// claims), so anything that changes it has to refresh whichever is showing.
+function rerenderJurisdictionPanels() {
   if (activePage === 'scope') renderScopePage();
+  else if (activePage === 'pricing' && activeTrade === 'insurance') renderTradeContent();
+}
+
+/* ── Boundary verification (is this parcel inside city limits?) ─────────
+   /api/jurisdictions/verify asks the Census geocoder which Incorporated
+   Place polygon contains the address. No place returned = unincorporated =
+   the county is the AHJ. Runs ONCE per address and caches the answer on the
+   estimate; the ↻ button re-runs it. TIGER lags recent annexations and being
+   inside city limits doesn't always mean the city issues the permit, so this
+   auto-selects but never locks — the rep can still override. */
+let _jxVerifyBusy = false;
+function _jxAddrKey(a) {
+  a = a || {};
+  return [a.street, a.city, a.state, a.zip].map(s => _normCity(s)).join('|');
+}
+function _jxAddrReady(a) {
+  return !!(a && String(a.street || '').trim() && (String(a.city || '').trim() || String(a.zip || '').trim()));
+}
+// Verified result → the jurisdictions.json entry that actually governs.
+function _jxFromVerified(v) {
+  if (!v || !v.ok) return null;
+  const all = (_jurisdictions && _jurisdictions.jurisdictions) || [];
+  if (v.incorporated) {
+    // match.cities holds the bare name ('Fort Collins'); j.name is the formal
+    // one ('City of Fort Collins'), so the alias list is the reliable key.
+    const want = _normCity(v.place_clean);
+    const hit = all.find(j => j.kind === 'city' &&
+                  ((j.match && j.match.cities) || []).some(c => _normCity(c) === want)) ||
+                all.find(j => j.kind === 'city' && _normCity(j.name) === want);
+    if (hit) return hit;
+  }
+  const cty = _normCity(v.county_clean);
+  return all.find(j => j.kind === 'county' && _normCity(j.county) === cty) || null;
+}
+function _jxMaybeVerify(force) {
+  const pj = _pjState();
+  const addr = (S.customer && S.customer.address) || {};
+  const state = String(addr.state || '').trim().toUpperCase();
+  if (state && state !== 'CO' && state !== 'COLORADO') return;
+  if (!_jxAddrReady(addr) || _jxVerifyBusy) return;
+  const key = _jxAddrKey(addr);
+  if (!force && pj.verified && pj.verified.addr_key === key) return;   // cached
+  _jxVerifyBusy = true;
+  const qs = new URLSearchParams({ street:addr.street||'', city:addr.city||'',
+                                   state:addr.state||'', zip:addr.zip||'' });
+  fetch('/api/jurisdictions/verify?' + qs)
+    .then(r => r.json())
+    .then(v => {
+      v.addr_key = key;
+      pj.verified = v;
+      // Adopt the verified authority unless the rep already picked one.
+      const hit = _jxFromVerified(v);
+      if (hit && !pj.selected_id) { pj.auto_id = hit.id; }
+      setDirty();
+    })
+    .catch(() => { pj.verified = { ok:false, addr_key:key, error:'Lookup failed — pick the authority manually.' }; })
+    .finally(() => { _jxVerifyBusy = false; rerenderJurisdictionPanels(); });
+}
+function jxReverify() {
+  _pjState().verified = null;
+  rerenderJurisdictionPanels();
+  _jxMaybeVerify(true);
+}
+// Verification banner: the answer, its caveats, and a re-run.
+function _jxVerifyMarkup() {
+  const pj = _pjState();
+  const addr = (S.customer && S.customer.address) || {};
+  if (!_jxAddrReady(addr))
+    return `<div class="jx-verify-bar jx-vb-idle">🔎 Add the street address to auto-verify whether this parcel is inside city limits.</div>`;
+  if (_jxVerifyBusy && !pj.verified)
+    return `<div class="jx-verify-bar jx-vb-busy">🔎 Checking the jurisdiction boundary…</div>`;
+  const v = pj.verified;
+  if (!v) return `<div class="jx-verify-bar jx-vb-busy">🔎 Checking the jurisdiction boundary…</div>`;
+  const btn = `<button class="jx-reverify" onclick="jxReverify()" title="Run the boundary check again">↻ Re-verify</button>`;
+  if (!v.ok)
+    return `<div class="jx-verify-bar jx-vb-fail">⚠️ ${esc(v.error || 'Boundary check unavailable.')}${btn}</div>`;
+  const where = v.incorporated
+    ? `Verified <b>inside ${esc(v.place_clean)} city limits</b> — the city is the AHJ.`
+    : `Verified <b>unincorporated</b> — no city limits contain this parcel, so <b>${esc(v.county_clean)} County</b> is the AHJ.`;
+  return `
+    <div class="jx-verify-bar jx-vb-ok">
+      <div class="jx-vb-line">✅ ${where}${btn}</div>
+      <div class="jx-vb-sub">${esc(v.matched_address || `${addr.street}, ${addr.city} ${addr.state} ${addr.zip}`)}
+        · Census TIGER boundaries · ${esc(v.source || '')}</div>
+      <div class="jx-vb-caveat">Boundary data lags recent annexations, and some towns contract inspections to the county — confirm with the office before you file.</div>
+    </div>`;
 }
 // Jump from the Scope panel straight into the Documents permit generator.
 function openPermitDoc() {
@@ -2547,6 +2643,7 @@ function openPermitDoc() {
 }
 function permitJurisdictionMarkup() {
   _ensureJurisdictions();
+  if (_jurisdictions) _jxMaybeVerify(false);
   if (!_jurisdictions) return `
     <div class="measure-panel jx-panel">
       <div class="measure-panel-head"><h3>🏛 Permit Jurisdiction &amp; Code</h3></div>
@@ -2566,28 +2663,41 @@ function permitJurisdictionMarkup() {
 
   const all = (_jurisdictions.jurisdictions || []).slice()
     .sort((a, b) => a.name.localeCompare(b.name));
-  const pj = S.permit_jurisdiction || (S.permit_jurisdiction = { selected_id:null, auto_id:null, confirmed:false });
+  const pj = _pjState();
 
-  // Auto-match default: first city candidate, else first candidate. Stored as
-  // auto_id (no dirty churn); selected_id wins once the rep confirms.
-  const autoPick = (cand.list.find(j => j.kind === 'city') || cand.list[0] || null);
+  // Default authority, best source first: the verified boundary answer, then
+  // the name-matched city, then any candidate. Stored as auto_id (no dirty
+  // churn); selected_id wins once the rep overrides.
+  const verifiedPick = _jxFromVerified(pj.verified);
+  const autoPick = verifiedPick || cand.list.find(j => j.kind === 'city') || cand.list[0] || null;
   pj.auto_id = autoPick ? autoPick.id : null;
   const effId = (pj.selected_id && _jxById(pj.selected_id)) ? pj.selected_id : pj.auto_id;
   const sel = effId ? _jxById(effId) : null;
+  const isVerifiedPick = !!(verifiedPick && sel && verifiedPick.id === sel.id);
 
-  const opt = j => `<option value="${j.id}" ${j.id === effId ? 'selected' : ''}>${esc(j.name)}</option>`;
-  const candIds = new Set(cand.list.map(j => j.id));
+  // The verified authority always heads the shortlist, even when the mailing
+  // city never matched an entry (the unincorporated case).
+  const likely = verifiedPick && !cand.list.some(j => j.id === verifiedPick.id)
+    ? [verifiedPick].concat(cand.list) : cand.list;
+  const opt = j => `<option value="${j.id}" ${j.id === effId ? 'selected' : ''}>${esc(j.name)}${
+    verifiedPick && j.id === verifiedPick.id ? ' — verified' : ''}</option>`;
+  const candIds = new Set(likely.map(j => j.id));
   const selector = `
     <select class="jx-select" onchange="setJurisdiction(this.value)">
       <option value="" ${!effId ? 'selected' : ''}>— select the governing jurisdiction —</option>
-      ${cand.list.length ? `<optgroup label="Likely for this address">${cand.list.map(opt).join('')}</optgroup>` : ''}
+      ${likely.length ? `<optgroup label="Likely for this address">${likely.map(opt).join('')}</optgroup>` : ''}
       <optgroup label="All Colorado jurisdictions">${all.filter(j => !candIds.has(j.id)).map(opt).join('')}</optgroup>
     </select>`;
 
-  // County-vs-city nudge whenever a matched city has a county sibling.
-  const countyNudge = (sel && cand.list.some(j => j.kind === 'county')) ? `
+  // The old city-vs-county guess-work nudge, still shown when the boundary
+  // check couldn't answer. Once verified, the banner says it outright instead.
+  const countyNudge = (!verifiedPick && sel && cand.list.some(j => j.kind === 'county')) ? `
     <p class="jx-nudge">⚠️ The mailing city isn't always the permitting authority — confirm whether this
       parcel is <b>inside city limits</b> or in <b>unincorporated ${esc(sel.counties ? sel.counties[0] : sel.county)}${(sel.county||'').endsWith('County') ? '' : ' County'}</b>, and pick the one that governs.</p>` : '';
+  // Rep chose something the boundary check disagrees with — say so, don't override.
+  const overrideNote = (verifiedPick && sel && verifiedPick.id !== sel.id) ? `
+    <p class="jx-nudge">ℹ️ You've overridden the verified authority — the boundary check put this parcel under
+      <b>${esc(verifiedPick.name)}</b>.</p>` : '';
 
   let card = '';
   if (sel) {
@@ -2602,7 +2712,8 @@ function permitJurisdictionMarkup() {
     card = `
       <div class="jx-card">
         <div class="jx-office">${esc(sel.office || sel.name)}
-          <span class="jx-kind">${sel.kind === 'county' ? 'County AHJ' : 'Municipal AHJ'}</span></div>
+          <span class="jx-kind">${sel.kind === 'county' ? 'County AHJ' : 'Municipal AHJ'}</span>
+          ${isVerifiedPick ? '<span class="jx-kind jx-kind-ok">✅ boundary-verified</span>' : ''}</div>
         <div class="jx-pull"><b>Pull the permit:</b> ${esc(pull)}</div>
         ${contact ? `<div class="jx-contacts">${contact}</div>` : ''}
         ${sel.permit_template === 'loveland' ? `
@@ -2618,7 +2729,107 @@ function permitJurisdictionMarkup() {
     card = `<p class="jx-note">Enter the property <b>city</b> (and ZIP) in the sidebar to look up the permit jurisdiction.</p>`;
   }
 
-  return `<div class="measure-panel jx-panel">${head}${selector}${countyNudge}${card}</div>`;
+  return `<div class="measure-panel jx-panel">${head}${_jxVerifyMarkup()}${selector}${countyNudge}${overrideNote}${card}</div>`;
+}
+
+/* ── Insurance scope-gap check ──────────────────────────────────────────
+   Diffs the carrier's line items against the jurisdiction's machine-checkable
+   code_items (the CO baseline plus anything a manager added to this city or
+   county). Anything with no matching line is a supplement candidate, carrying
+   its code basis so the rep has the argument in hand. Display-only — it never
+   edits the estimate or touches money, so it deliberately lives only here in
+   app.js rather than being mirrored into app.py. */
+function _jxCodeItems(j) {
+  const base = ((_jurisdictions && _jurisdictions.colorado_baseline && _jurisdictions.colorado_baseline.code_items) || []);
+  const extra = (j && j.code_items) || [];
+  // Merged on LABEL, not key: the Settings editor re-slugs keys from the label
+  // on every save, so the label is the only stable identity. A jurisdiction
+  // item reusing a baseline label replaces it; anything else is appended.
+  const byLabel = new Map(base.map(it => [_normCity(it.label), it]));
+  extra.forEach(it => byLabel.set(_normCity(it.label), it));
+  return Array.from(byLabel.values());
+}
+// Every carrier line description on the estimate, lowercased for matching.
+function _insScopeText() {
+  const out = [];
+  ((S.trades.insurance && S.trades.insurance.sections) || []).forEach(sec => {
+    if (sec.name) out.push(String(sec.name));
+    (sec.items || []).forEach(it => {
+      if (it.name) out.push(String(it.name));
+      if (it.description) out.push(String(it.description));
+    });
+  });
+  if (S.trades.insurance && S.trades.insurance.scope_notes) out.push(String(S.trades.insurance.scope_notes));
+  return out.join(' \n ').toLowerCase();
+}
+function insCodeGaps() {
+  const pj = _pjState();
+  const j = _jxById(pj.selected_id) || _jxById(pj.auto_id);
+  const items = _jxCodeItems(j);
+  const hay = _insScopeText();
+  const found = [], missing = [];
+  items.forEach(it => {
+    const hit = (it.match || []).some(m => hay.includes(String(m).toLowerCase()));
+    (hit ? found : missing).push(it);
+  });
+  return { jurisdiction: j, found, missing,
+           code:        missing.filter(i => i.class === 'code'),
+           common:      missing.filter(i => i.class === 'common'),
+           conditional: missing.filter(i => i.class === 'conditional') };
+}
+function insToggleGapDetail(key) {
+  const el = document.getElementById('gap-note-' + key);
+  if (el) el.classList.toggle('hidden');
+}
+function insCodeGapMarkup() {
+  _ensureJurisdictions();
+  if (!_jurisdictions) return '';
+  const hasItems = ((S.trades.insurance && S.trades.insurance.sections) || [])
+    .some(s => (s.items || []).length);
+  if (!hasItems) return `
+    <div class="gap-panel gap-empty">
+      <div class="gap-head"><h3>🔍 Scope Gap Check</h3>
+        <span class="measure-hint">Compares the carrier's line items against what code requires here</span></div>
+      <p class="jx-note">Load the carrier estimate (or add line items) and this will list every
+        code-required item the carrier didn't pay for.</p>
+    </div>`;
+
+  const g = insCodeGaps();
+  const jName = g.jurisdiction ? g.jurisdiction.name : 'the Colorado baseline';
+  // Only the code-required bucket is shown for now. The 'common' and
+  // 'conditional' items stay in jurisdictions.json (and stay bucketed by
+  // insCodeGaps) so switching them back on is a display change only — but the
+  // counts below must ignore them, or the header lies about the checklist.
+  const codeFound = g.found.filter(i => i.class === 'code');
+  const codeTotal = codeFound.length + g.code.length;
+  const row = it => `
+    <li class="gap-item gap-${it.class}">
+      <button class="gap-item-btn" onclick="insToggleGapDetail('${esc(it.key)}')">
+        <span class="gap-label">${esc(it.label)}</span>
+        <span class="gap-basis">${esc(it.basis || '')}</span>
+        ${it.note ? '<span class="gap-caret">▾</span>' : ''}
+      </button>
+      ${it.note ? `<div class="gap-note hidden" id="gap-note-${esc(it.key)}">${esc(it.note)}</div>` : ''}
+    </li>`;
+  const block = (title, hint, list, cls) => list.length ? `
+    <div class="gap-block ${cls}">
+      <div class="gap-block-hd">${title} <span class="gap-count">${list.length}</span></div>
+      <div class="gap-block-hint">${hint}</div>
+      <ul class="gap-list">${list.map(row).join('')}</ul>
+    </div>` : '';
+
+  return `
+    <div class="gap-panel">
+      <div class="gap-head"><h3>🔍 Scope Gap Check <span class="note-tag">internal only</span></h3>
+        <span class="measure-hint">Carrier scope vs. what <b>${esc(jName)}</b> requires —
+          ${codeFound.length} of ${codeTotal} code-required items found in the estimate</span></div>
+      ${!g.code.length ? `<div class="gap-clean">✅ Every code-required item was found in the carrier scope.
+        Still spot-check the quantities — a paid line can still be short.</div>` : ''}
+      ${block('🔴 Code-required — not in the carrier scope',
+              'Strongest supplement position: the AHJ will not pass the roof without these.', g.code, 'gap-b-code')}
+      <div class="gap-foot">Tap any item for the supplement note. Matching is keyword-based on the carrier's
+        line descriptions — a paid-but-short line still reads as found, so check quantities too.</div>
+    </div>`;
 }
 
 /* ── Page 3: Scope / Measurements ──────────────────────────────────── */
@@ -2639,7 +2850,8 @@ function renderScopePage() {
         <div class="ins-mode-body">Insurance estimates use sections with ACV + Depreciation = RCV line items instead of measured quantities. Enter your sections, items, and scope of work in the Pricing tab.</div>
         <button class="btn-primary ins-mode-btn" onclick="activeTrade='insurance';switchPage('pricing')">Go to Insurance Pricing →</button>
         <div class="ins-mode-switch">Wrong mode? <a href="#" onclick="setEstimateType('retail');return false">Switch back to Retail</a></div>
-      </div>`;
+      </div>
+      ${permitJurisdictionMarkup()}`;
     return;
   }
 
@@ -3569,6 +3781,8 @@ function renderInsuranceFreeform() {
         <strong id="ins-grand-total">${fmtCur(grandTot)}</strong>
       </div>` : ''}
     </div>
+    <div id="ins-gap-wrap">${insCodeGapMarkup()}</div>
+    ${permitJurisdictionMarkup()}
     <div class="ins-scope-wrap">
       <div class="panel-header" style="margin-top:18px">
         <h3>Scope of Work <span class="note-tag print">shown to customer</span></h3>
@@ -3615,6 +3829,13 @@ function insSetField(secId, itemId, field, val) {
   if (!item) return;
   item[field] = val;
   setDirty();
+  // Descriptions are what the gap check matches on — re-run it in place
+  // (onchange, so this fires on blur, not per keystroke).
+  if (field === 'name' || field === 'description') refreshInsGaps();
+}
+function refreshInsGaps() {
+  const w = document.getElementById('ins-gap-wrap');
+  if (w) w.innerHTML = insCodeGapMarkup();
 }
 function insUpdateTotals() {
   (S.trades.insurance.sections || []).forEach(sec => {
@@ -6696,6 +6917,37 @@ const GBB_SET_TRADES = ['roofing','siding','windows','gutters','other'];
    already seeded); no add/remove needed for normal use. */
 let _settingsJx = null;
 let _jxEditingId = null;
+/* code_items are structured (the Insurance gap check matches on them), but
+   managers edit them as one pipe-delimited line each:
+     class | label | keyword,keyword | code basis | supplement note
+   The key is slugged from the label, which is also how a jurisdiction's item
+   overrides the baseline item of the same name. */
+const _JX_CLASSES = ['code', 'common', 'conditional'];
+function _jxSlug(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'item';
+}
+function _jxItemsToText(items) {
+  return (items || []).map(it => [
+    it.class || 'code', it.label || '', (it.match || []).join(', '), it.basis || '', it.note || '',
+  ].join(' | ')).join('\n');
+}
+function _jxParseItems(text) {
+  const out = [], seen = new Set();
+  String(text || '').split('\n').forEach(line => {
+    if (!line.trim()) return;
+    const p = line.split('|').map(s => s.trim());
+    const cls = _JX_CLASSES.includes((p[0] || '').toLowerCase()) ? p[0].toLowerCase() : 'code';
+    const label = p[1] || '';
+    if (!label) return;
+    let key = _jxSlug(label), n = 2;
+    while (seen.has(key)) key = _jxSlug(label) + '_' + n++;
+    seen.add(key);
+    out.push({ key, class: cls, label,
+               match: (p[2] || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+               basis: p[3] || '', note: p[4] || '' });
+  });
+  return out;
+}
 async function _jxOpen() {
   document.getElementById('settings-jurisdictions').classList.remove('hidden');
   try {
@@ -6705,6 +6957,7 @@ async function _jxOpen() {
   const b = _settingsJx.colorado_baseline;
   document.getElementById('jxset-baseline-points').value = (b.code_points || []).join('\n');
   document.getElementById('jxset-verify').value = b.verify_note || '';
+  document.getElementById('jxset-baseline-items').value = _jxItemsToText(b.code_items);
   _jxEditingId = null;
   document.getElementById('jxset-fields').classList.add('hidden');
   const s = document.getElementById('jxset-search'); if (s) s.value = '';
@@ -6730,6 +6983,8 @@ function _jxCollectCurrent() {
   j.phone  = v('jxset-phone');
   j.url    = v('jxset-url');
   j.code_points = document.getElementById('jxset-points').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const items = _jxParseItems(document.getElementById('jxset-items').value);
+  if (items.length) j.code_items = items; else delete j.code_items;
 }
 function _jxPickEdit(id) {
   _jxCollectCurrent();              // persist edits to the previously picked entry
@@ -6742,6 +6997,7 @@ function _jxPickEdit(id) {
   document.getElementById('jxset-phone').value  = j.phone || '';
   document.getElementById('jxset-url').value    = j.url || '';
   document.getElementById('jxset-points').value = (j.code_points || []).join('\n');
+  document.getElementById('jxset-items').value  = _jxItemsToText(j.code_items);
   box.classList.remove('hidden');
 }
 
@@ -6886,6 +7142,7 @@ async function saveSettings() {
         const b = _settingsJx.colorado_baseline || (_settingsJx.colorado_baseline = {});
         b.code_points = document.getElementById('jxset-baseline-points').value.split('\n').map(s => s.trim()).filter(Boolean);
         b.verify_note = (document.getElementById('jxset-verify').value || '').trim();
+        b.code_items  = _jxParseItems(document.getElementById('jxset-baseline-items').value);
         const rj = await fetch('/api/jurisdictions', {
           method: 'PUT', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(_settingsJx),
