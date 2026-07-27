@@ -1,5 +1,15 @@
+# Union of all three apps' requirements — the portal runs them in one process
+# (portal/wsgi.py), so Railway installs a single set.
 flask>=3.0
+werkzeug>=3.0
 requests>=2.31
 gunicorn>=21.2
+
+# Estimator: PDF generation (proposals, contracts) and parsing (RoofR
+# measurements, Xactimate carrier estimates).
 fpdf2>=2.7
 pypdf>=4.0
+pymupdf>=1.24
+
+# Estimator: Postgres backend for estimates when DATABASE_URL is set.
+psycopg[binary]>=3.1

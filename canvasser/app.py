@@ -32,11 +32,16 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(days=14),
 )
 
+HERE         = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR   = os.path.join(HERE, 'static')
 SIGNUP_CODE  = os.environ.get('CANVASSER_SIGNUP_CODE', '').strip()
 BASE44_TOKEN = os.environ.get('BASE44_TOKEN', '')
 BASE44_URL   = 'https://base44.app/api/apps/69320ef0c647fee442697971'
+# CANVASSER_DATA_DIR must be set explicitly under the portal: the DATA_DIR
+# fallback is the estimator's volume, so leaving it unset drops canvasser.db
+# into the estimator's directory.
 DATA_DIR     = os.environ.get('CANVASSER_DATA_DIR',
-               os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))))
+               os.environ.get('DATA_DIR', HERE))
 DB_PATH      = os.path.join(DATA_DIR, 'canvasser.db')
 
 PIN_TYPES = {
@@ -136,13 +141,16 @@ def admin_required(f):
 
 # ── Static ────────────────────────────────────────────────────────────────────
 
+# Absolute STATIC_DIR, not the relative 'static': these only resolved because
+# gunicorn ran with --chdir canvasser. Under the portal the working directory
+# is the repo root and a relative path would 404 every asset.
 @app.route('/')
 def index():
-    return send_from_directory('static', 'index.html')
+    return send_from_directory(STATIC_DIR, 'index.html')
 
 @app.route('/static/<path:path>')
 def static_files(path):
-    return send_from_directory('static', path)
+    return send_from_directory(STATIC_DIR, path)
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
 

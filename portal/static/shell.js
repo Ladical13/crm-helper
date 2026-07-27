@@ -17,6 +17,12 @@
 
   var SHELL_H = 44;
 
+  // Flagged immediately rather than after /api/me resolves: each app scopes
+  // its header offset to this class, and waiting would paint the app once at
+  // the wrong offset and then jump.
+  document.documentElement.style.setProperty('--p1-shell-h', SHELL_H + 'px');
+  document.documentElement.classList.add('p1-has-shell');
+
   // Fallback list, used if /api/me is unreachable (offline, expired session
   // mid-render). Must stay in sync with portal/mounts.py.
   var FALLBACK_APPS = [
@@ -74,10 +80,6 @@
     bar.appendChild(right);
 
     document.body.insertBefore(bar, document.body.firstChild);
-    document.documentElement.style.setProperty('--p1-shell-h', SHELL_H + 'px');
-    // Each app's stylesheet scopes its header offset to this class, so the app
-    // still lays out correctly when opened standalone without the shell.
-    document.documentElement.classList.add('p1-has-shell');
   }
 
   function mount() {

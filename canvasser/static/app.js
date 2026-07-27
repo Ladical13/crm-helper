@@ -1,5 +1,11 @@
 /* P1 Canvasser — main app logic */
 
+// Mount prefix: '/canvass' inside the portal (portal/mounts.py), '' when this
+// app is served standalone. Derived from the URL so one bundle works both ways.
+// Declared up here rather than beside api() because api() is called during
+// initial page setup, which would hit the const's temporal dead zone.
+const BASE = location.pathname.startsWith('/canvass') ? '/canvass' : '';
+
 const PIN_TYPES = {};  // populated from /api/config
 let map, currentUser, markers = {}, hailLayer = null, pinLayer = null;
 let teamMarkers = {}, teamTimer = null, locationTimer = null, teamEnabled = true;
@@ -992,7 +998,10 @@ async function api(path, method='GET', body=null) {
     credentials: 'same-origin',
   };
   if (body !== null) opts.body = JSON.stringify(body);
-  const res = await fetch(path, opts);
+  const res = await fetch(BASE + path, opts);
+  // Session expired or never signed in: the portal owns login, so hand off
+  // rather than trying to parse an HTML redirect as JSON.
+  if (res.status === 401) { window.location = '/login'; throw new Error('Unauthorized'); }
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
   return json;

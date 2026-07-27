@@ -11,12 +11,19 @@ const esc = s => (s==null?'':String(s)).replace(/[&<>"']/g, m => (
   {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const money = n => '$' + Math.round(n||0).toLocaleString();
 
+// Mount prefix: '/crm' inside the portal (portal/mounts.py), '' when this app
+// is served standalone. Derived from the URL so one bundle works both ways.
+const BASE = location.pathname.startsWith('/crm') ? '/crm' : '';
+
 async function api(path, opts={}) {
-  const r = await fetch('/api'+path, {
+  const r = await fetch(BASE+'/api'+path, {
     method: opts.method||'GET',
     headers: opts.body ? {'Content-Type':'application/json'} : {},
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
+  // Session expired or never signed in: the portal owns login, so hand off
+  // rather than rendering an empty pipeline.
+  if (r.status === 401) { window.location = '/login'; throw new Error('Unauthorized'); }
   let data = null;
   try { data = await r.json(); } catch(e) {}
   if (!r.ok) throw new Error((data && data.error) || ('HTTP '+r.status));
@@ -81,7 +88,10 @@ async function afterLogin() {
     foot.onclick=()=>$('#menu-btn').click();
   }
   go('myday');
-  if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+  // Scoped to the mount prefix. Before the merge this worker and the
+  // estimator's both claimed root scope with different cache names, so on one
+  // origin whichever registered last would win and serve the other app's shell.
+  if('serviceWorker' in navigator) navigator.serviceWorker.register(BASE+'/sw.js',{scope:BASE+'/'}).catch(()=>{});
 }
 
 $('#login-btn').onclick = async () => {
@@ -611,7 +621,7 @@ async function renderDocuments(l){
     const f=input.files[0]; if(!f) return;
     const fd=new FormData(); fd.append('file', f);
     try{
-      const r=await fetch('/api/leads/'+l.id+'/documents',{method:'POST',body:fd});
+      const r=await fetch(BASE+'/api/leads/'+l.id+'/documents',{method:'POST',body:fd});
       const j=await r.json();
       if(!r.ok) throw new Error(j.error||'Upload failed');
       toast('Uploaded ✓'); renderDocuments(l);

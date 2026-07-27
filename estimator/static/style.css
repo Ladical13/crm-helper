@@ -3582,3 +3582,22 @@ body.is-client #nav-toggle      { display: none; }
   .co-li-row { flex-wrap: wrap; }
   .co-li-name { min-width: 100%; }
 }
+
+/* ── Portal shell offset ───────────────────────────────────────────────
+ * The app-switcher bar (portal/static/shell.css) is fixed at the top of the
+ * viewport, so everything this app pins to the top has to drop by its height.
+ * shell.js puts .p1-has-shell on <html>, so these rules are inert when the
+ * estimator is served standalone — which is how the test suite runs it.
+ * Every offset below already keyed off --header-h; this only adds the bar. */
+.p1-has-shell #app-header { top: var(--p1-shell-h); }
+.p1-has-shell #app-layout { padding-top: calc(var(--header-h) + var(--p1-shell-h)); }
+.p1-has-shell .header-overflow-menu { top: calc(var(--header-h) + var(--p1-shell-h)); }
+
+/* Matches the drawer breakpoint above, where #sidebar becomes a fixed overlay. */
+@media (max-width: 767px) {
+  .p1-has-shell #sidebar {
+    top: calc(var(--header-h) + var(--p1-shell-h));
+    height: calc(100vh - var(--header-h) - var(--p1-shell-h));
+    height: calc(100dvh - var(--header-h) - var(--p1-shell-h));
+  }
+}

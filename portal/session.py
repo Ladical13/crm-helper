@@ -50,12 +50,21 @@ def _secure_cookies():
 
 
 def configure(app, max_content_length=None):
-    """Apply the shared secret, ProxyFix, and the one true cookie config."""
+    """Apply the shared secret, ProxyFix, and the one true cookie config.
+
+    Safe to call twice on the same app — portal/wsgi.py re-applies it to each
+    sub-app at mount time so all four agree on the merged origin, and canvasser
+    and salescrm already install their own ProxyFix. Double-wrapping ProxyFix
+    would consume two hops of X-Forwarded-For and hand Flask the proxy's
+    address as the client, so the wrap is guarded.
+    """
     app.secret_key = SECRET_KEY
     # Railway terminates TLS at the edge; without ProxyFix Flask builds http://
     # URLs and marks Secure cookies as unsendable. The estimator was missing
     # this and compensated with PUBLIC_URL.
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+    if not getattr(app, '_p1_proxyfix', False):
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+        app._p1_proxyfix = True
     app.config.update(
         SESSION_COOKIE_NAME=COOKIE_NAME,
         # Explicit '/' so the cookie is shared across the mount prefixes.

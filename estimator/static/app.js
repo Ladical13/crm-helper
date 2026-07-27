@@ -1,9 +1,23 @@
-/* ── Auth: bounce to login on session expiry ───────────────────────── */
-// Every API call goes through fetch; if the session has expired the server
-// returns 401, so redirect to the login page instead of failing to parse JSON.
+/* ── Mount prefix ───────────────────────────────────────────────────── */
+// The estimator runs under /estimate inside the portal (see portal/mounts.py)
+// and at the root when served standalone. Derived from the URL rather than
+// hardcoded so one bundle works both ways — the test suite and any standalone
+// run get '' and behave exactly as before the merge.
+const BASE = location.pathname.startsWith('/estimate') ? '/estimate' : '';
+
+/* ── Auth + mount prefix: everything goes through fetch ─────────────── */
+// Two jobs in one wrapper. Rewriting /api/ here is what keeps this a 3-line
+// change instead of 77 — every API call in this file is a root-absolute
+// string, so prefixing them centrally covers all of them. And if the session
+// has expired the server returns 401, so bounce to the portal login instead of
+// failing to parse JSON. Note /login stays root-absolute: it belongs to the
+// portal, not to this app.
 (function () {
   const _origFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
+    if (BASE && typeof args[0] === 'string' && args[0].startsWith('/api/')) {
+      args[0] = BASE + args[0];
+    }
     const res = await _origFetch(...args);
     if (res.status === 401) { window.location = '/login'; }
     return res;
@@ -1367,17 +1381,17 @@ function renderCoverPage() {
              ondrop="event.preventDefault();this.classList.remove('drag-over');uploadAsCoverPhoto(event.dataTransfer.files)"`
           : ''}>
         ${coverPhoto
-          ? `<img class="cover-photo-img" src="/uploads/${esc(coverPhoto.filename)}" alt="Property photo">`
+          ? `<img class="cover-photo-img" src="${BASE}/uploads/${esc(coverPhoto.filename)}" alt="Property photo">`
           : ''}
         <div class="cover-photo-overlay"></div>
         <div class="cover-logo-overlay">
           ${!coverPhoto ? `
-            <img src="/static/logo.png" class="cover-logo-img" alt="Project One Roofing">
+            <img src="${BASE}/static/logo.png" class="cover-logo-img" alt="Project One Roofing">
             <div class="cover-upload-hint">
               <div class="cover-upload-icon">📷</div>
               <strong>Click to add a cover photo</strong>
               <div>or drag &amp; drop an image here</div>
-            </div>` : `<img src="/static/logo.png" class="cover-logo-img" alt="Project One Roofing">`}
+            </div>` : `<img src="${BASE}/static/logo.png" class="cover-logo-img" alt="Project One Roofing">`}
         </div>
         ${coverPhoto ? `
           <div class="cover-photo-actions">
@@ -1410,7 +1424,7 @@ function renderCoverPage() {
             ${S.photos.map(p => `
               <div class="cover-strip-thumb ${p.id===S.cover_photo_id?'is-cover':''}"
                 onclick="setCoverPhoto('${p.id}')">
-                <img src="/uploads/${esc(p.filename)}" alt="">
+                <img src="${BASE}/uploads/${esc(p.filename)}" alt="">
                 ${p.id===S.cover_photo_id
                   ? '<div class="cover-strip-label">COVER</div>' : ''}
               </div>`).join('')}
@@ -4753,7 +4767,7 @@ function renderRoofHealthPage() {
         ${S.photos.map(p=>{
           const sel=rh.report_photo_ids.includes(p.id);
           return `<div class="rh-photo-thumb ${sel?'rh-photo-sel':''}" onclick="rhTogglePhoto('${p.id}')">
-            <img src="/uploads/${esc(p.filename)}" alt="${esc(p.caption||'')}">
+            <img src="${BASE}/uploads/${esc(p.filename)}" alt="${esc(p.caption||'')}">
             <div class="rh-photo-check">${sel?'✓':''}</div>
             ${p.caption?`<div class="rh-photo-cap">${esc(p.caption)}</div>`:''}
           </div>`;
@@ -4915,8 +4929,8 @@ function renderPhotosPage() {
     <div class="photo-thumb photo-report-thumb ${p.id===S.cover_photo_id?'is-cover':''}">
       <div class="photo-img-wrap">
         ${hasAnns
-          ? `<canvas class="photo-ann-canvas" id="ann-ph-${p.id}" data-src="/uploads/${esc(p.filename)}" data-id="${p.id}"></canvas>`
-          : `<img src="/uploads/${esc(p.filename)}" alt="${esc(p.caption)}">`}
+          ? `<canvas class="photo-ann-canvas" id="ann-ph-${p.id}" data-src="${BASE}/uploads/${esc(p.filename)}" data-id="${p.id}"></canvas>`
+          : `<img src="${BASE}/uploads/${esc(p.filename)}" alt="${esc(p.caption)}">`}
       </div>
       <div class="photo-report-controls">
         <input class="photo-caption" type="text" value="${esc(p.caption)}"
@@ -4944,7 +4958,7 @@ function renderPhotosPage() {
   S.photos.forEach(p => {
     if (p.annotations && p.annotations.length > 0) {
       const canvas = document.getElementById('ann-ph-' + p.id);
-      if (canvas) drawAnnotatedPhoto(canvas, '/uploads/' + p.filename, p.annotations);
+      if (canvas) drawAnnotatedPhoto(canvas, BASE + '/uploads/' + p.filename, p.annotations);
     }
   });
 
@@ -5013,7 +5027,7 @@ function openAnnotationModal(photoId) {
     annState.ctx    = annState.canvas.getContext('2d');
     redrawAnnotationCanvas();
   };
-  img.src = '/uploads/' + photo.filename;
+  img.src = BASE + '/uploads/' + photo.filename;
 }
 
 function closeAnnotationModal() {
@@ -5234,7 +5248,7 @@ function saveAnnotations() {
 function getPhotoDataUrl(photo) {
   const canvas = document.getElementById('ann-ph-' + photo.id);
   if (canvas && canvas.width > 0) return canvas.toDataURL('image/jpeg', 0.9);
-  return '/uploads/' + photo.filename;
+  return BASE + '/uploads/' + photo.filename;
 }
 
 /* ── Ventilation cut-in map editor ──────────────────────────────────────
@@ -5303,7 +5317,7 @@ function _ventLoadPage() {
     _ventBindCanvas(canvas);
     _ventRedraw();
   };
-  img.src = '/uploads/' + vc.pages[vc.pageIdx];
+  img.src = BASE + '/uploads/' + vc.pages[vc.pageIdx];
 }
 function ventCutinPage(delta) {
   const next = vc.pageIdx + delta;
@@ -6027,7 +6041,7 @@ function renderAttachments() {
         <input type="checkbox" ${att.show_in_estimate!==false?'checked':''}
           onchange="attToggle('${att.id}',this.checked)"> Show
       </label>
-      <a class="att-view" href="/uploads/${esc(att.filename)}" target="_blank" rel="noopener">View</a>
+      <a class="att-view" href="${BASE}/uploads/${esc(att.filename)}" target="_blank" rel="noopener">View</a>
       <button class="att-del" onclick="attDelete('${att.id}')" title="Remove">×</button>
     </div>`).join('');
 }
@@ -6858,7 +6872,7 @@ async function loadCustomerAttachments(estimates) {
       const atts = (full.attachments || []).filter(a => a.show_in_estimate !== false);
       if (!atts.length) continue;
       el.innerHTML = `<div class="cf-atts-list">${atts.map(a => `
-        <a class="cf-att-chip" href="/uploads/${esc(a.filename)}" target="_blank" onclick="event.stopPropagation()">
+        <a class="cf-att-chip" href="${BASE}/uploads/${esc(a.filename)}" target="_blank" onclick="event.stopPropagation()">
           📎 ${esc(a.label||a.original_name||'Attachment')}
         </a>`).join('')}</div>`;
     } catch {}
@@ -7581,7 +7595,7 @@ async function preparePrintPhotos() {
   for (const p of (S.photos || [])) {
     if (!needed.has(p.id)) continue;
     try {
-      const img = await _loadImage('/uploads/' + p.filename);
+      const img = await _loadImage(BASE + '/uploads/' + p.filename);
       const maxW = 1100; // cap resolution to keep PDF size reasonable
       const k = img.naturalWidth > maxW ? maxW / img.naturalWidth : 1;
       const W = Math.max(1, Math.round(img.naturalWidth  * k));
@@ -7609,7 +7623,7 @@ function warmPrintPhotos() {
 
 /* Source for a photo in print: baked data URL if ready, else raw upload URL */
 function printPhotoSrc(photo) {
-  return _printPhotoCache[photo.id] || ('/uploads/' + photo.filename);
+  return _printPhotoCache[photo.id] || (BASE + '/uploads/' + photo.filename);
 }
 
 /* Wait for any remaining <img> in print-content (fallback URLs) to finish */
@@ -7683,7 +7697,7 @@ function buildPrintContent() {
   // Reusable branded page header (logo + contact) used on every section
   const pHeader = `<div class="p-header">
     <div class="p-header-brand">
-      <img src="/static/logo.png" class="p-header-logo" alt="Project One Roofing">
+      <img src="${BASE}/static/logo.png" class="p-header-logo" alt="Project One Roofing">
       <div class="p-company-sub">115 E 5th St · Loveland, CO 80537 · 970-776-0945 · projectoneroofingcolorado.com</div>
     </div>
     <div class="p-est-badge"><span class="p-badge-num">${esc(estNum)}</span>${esc(S.estimate_date||'')}</div>
@@ -7692,7 +7706,7 @@ function buildPrintContent() {
   // ── Cover page: logo (top) · photo (center) · customer info (bottom) ──
   let html=`<div class="p-cover">
     <div class="p-cover-top">
-      <img src="/static/logo.png" class="p-cover-toplogo" alt="Project One Roofing">
+      <img src="${BASE}/static/logo.png" class="p-cover-toplogo" alt="Project One Roofing">
       <div class="p-cover-tagline">Your Project Estimate</div>
     </div>
     <div class="p-cover-mid">
@@ -7718,7 +7732,7 @@ function buildPrintContent() {
   if (S.intro_text?.trim()) {
     html += `<div class="p-intro">
       <div class="p-intro-letterhead">
-        <img src="/static/logo.png" class="p-intro-logo" alt="Project One Roofing">
+        <img src="${BASE}/static/logo.png" class="p-intro-logo" alt="Project One Roofing">
       </div>
       <div class="p-intro-body">${esc(S.intro_text)}</div>
     </div>`;
@@ -7750,7 +7764,7 @@ function buildPrintContent() {
         ${pHeader}
         <h2 class="p-photos-title">${esc(label)}</h2>
         ${a.pages.map((pg, i) =>
-          `<img class="p-att-page" src="/uploads/${esc(pg)}" alt="${esc(label)} — page ${i + 1}">`).join('')}
+          `<img class="p-att-page" src="${BASE}/uploads/${esc(pg)}" alt="${esc(label)} — page ${i + 1}">`).join('')}
       </div>`;
     });
 
@@ -8188,7 +8202,7 @@ async function renderHomePage() {
     draft:  '<span class="dash-chip dash-chip-draft">Draft</span>',
   };
   el.innerHTML = `
-    <img src="/static/logo.png" class="home-logo" alt="Project One Roofing">
+    <img src="${BASE}/static/logo.png" class="home-logo" alt="Project One Roofing">
     <div class="home-greeting">${esc(greeting)}</div>
     ${stale.length ? `<div class="home-followup-alert" onclick="openDashboard()">
       ⚠ ${stale.length} estimate${stale.length!==1?'s':''} need${stale.length===1?'s':''} follow-up</div>` : ''}
@@ -9042,7 +9056,7 @@ function renderDocumentsPage() {
           <input type="checkbox" ${att.show_in_estimate!==false?'checked':''}
             onchange="attToggle('${att.id}',this.checked)"> Customer
         </label>
-        <a class="att-view" href="/uploads/${esc(att.filename)}" target="_blank" rel="noopener">View</a>
+        <a class="att-view" href="${BASE}/uploads/${esc(att.filename)}" target="_blank" rel="noopener">View</a>
         ${att.server_generated
           ? '<span class="doc-crm-chip" title="Auto-generated from the signed contract — use the Production Packet card below to regenerate">auto</span>'
           : `<button class="att-del" onclick="attDelete('${att.id}')" title="Remove">×</button>`}
@@ -9701,9 +9715,14 @@ async function permitGenerate(btn) {
 }
 
 // ── Service Worker registration (Android PWA install + offline support) ──
+// Scoped to the mount prefix, not '/'. Before the merge this worker and the
+// CRM's both claimed root scope with different cache names, so on one origin
+// whichever registered last would win and silently serve the other app's
+// shell. A worker's scope cannot be broader than the path it is served from,
+// so /estimate/sw.js can only ever control /estimate/.
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js', { scope: '/' })
+    navigator.serviceWorker.register(BASE + '/sw.js', { scope: BASE + '/' })
       .catch(err => console.warn('[SW] registration failed:', err));
   });
 }

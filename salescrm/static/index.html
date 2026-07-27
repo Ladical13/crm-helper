@@ -6,10 +6,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#0d1117">
+  <!-- The portal's manifest, not this app's: installing from any of the three
+       tools should put ONE "Project One" icon on the home screen. -->
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <title>Project One — Pipeline</title>
-  <link rel="stylesheet" href="/static/style.css?v=8">
+  <link rel="stylesheet" href="/crm/static/style.css?v=9">
 </head>
 <body>
 
@@ -186,6 +188,7 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=8"></script>
+<script src="/shell.js"></script>
+<script src="/crm/static/app.js?v=9"></script>
 </body>
 </html>

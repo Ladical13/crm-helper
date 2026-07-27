@@ -550,3 +550,10 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ── Portal shell offset ───────────────────────────────────────────────
+ * The app-switcher bar (portal/static/shell.css) is fixed at the top of the
+ * viewport. This app is one full-viewport `.screen` with the header and map
+ * positioned absolutely inside it, so dropping the screen's top edge moves
+ * everything at once. Inert without .p1-has-shell, i.e. when served standalone. */
+.p1-has-shell .screen { top: var(--p1-shell-h); }

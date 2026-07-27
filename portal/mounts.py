@@ -17,7 +17,7 @@ MOUNTS = [
         'label':  'Canvass',
         'icon':   '📍',
         'blurb':  'Knock the door, drop the pin, check the hail.',
-        'module': 'canvasser.app',
+        'dir':    'canvasser',
         'accent': '#10B981',
     },
     {
@@ -26,7 +26,7 @@ MOUNTS = [
         'label':  'Pipeline',
         'icon':   '📋',
         'blurb':  'Work the lead — stages, tasks, follow-ups.',
-        'module': 'salescrm.app',
+        'dir':    'salescrm',
         'accent': '#F97316',
     },
     {
@@ -35,7 +35,7 @@ MOUNTS = [
         'label':  'Estimate',
         'icon':   '🏠',
         'blurb':  'Measure, price, present, sign.',
-        'module': 'estimator.app',
+        'dir':    'estimator',
         'accent': '#00A8B5',
     },
 ]

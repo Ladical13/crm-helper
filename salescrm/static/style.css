@@ -320,3 +320,17 @@ input,select,textarea{font-family:inherit;font-size:16px}
   font-size:14px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:80;box-shadow:var(--shadow)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.err{border-color:var(--red);color:#fca5a5}
+
+/* ── Portal shell offset ───────────────────────────────────────────────
+ * The app-switcher bar (portal/static/shell.css) is fixed at the top of the
+ * viewport. This app lays out in normal flow, so the body drops by the bar's
+ * height and the two sticky elements re-pin below it. The bottom tab bar is
+ * unaffected. Inert without .p1-has-shell, i.e. when served standalone. */
+.p1-has-shell body { padding-top: var(--p1-shell-h); }
+.p1-has-shell .topbar { top: var(--p1-shell-h); }
+@media(min-width:900px){
+  .p1-has-shell .sidebar {
+    top: var(--p1-shell-h);
+    height: calc(100dvh - var(--p1-shell-h));
+  }
+}
