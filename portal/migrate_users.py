@@ -203,7 +203,16 @@ def main(argv=None):
                     help='write to portal.db (default is a dry run)')
     ap.add_argument('--force', action='store_true',
                     help='overwrite users that already exist in portal.db')
+    ap.add_argument('--if-empty', action='store_true',
+                    help='do nothing when portal.db already has users (boot-time use)')
     args = ap.parse_args(argv)
+
+    # Boot-time guard. The start command runs this on every deploy and every
+    # restart, which without this flag would resurrect anyone an admin had
+    # deleted since the cutover — users.json is a snapshot, not a live source.
+    if args.if_empty and users.count():
+        print(f'Portal store already has {users.count()} users; nothing to migrate.')
+        return 0
 
     paths = {'estimator': estimator_path(), 'salescrm': salescrm_path(),
              'canvasser': canvasser_path()}
