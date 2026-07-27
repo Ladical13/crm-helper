@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=124">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=125">
 </head>
 <body>
 
@@ -483,6 +483,21 @@
   </div>
 </div>
 
+<!-- ── Sales goals modal (manager+, opened from the analytics tab) ───── -->
+<div id="goals-modal" class="modal hidden" onclick="maybeCloseGoals(event)">
+  <div class="modal-box goals-modal-box">
+    <div class="modal-header">
+      <h2>🎯 Monthly Sales Goals</h2>
+      <button onclick="closeGoalEditor()" class="modal-close">×</button>
+    </div>
+    <div id="goals-body" class="settings-body"></div>
+    <div class="settings-footer">
+      <button class="btn-secondary" onclick="closeGoalEditor()">Cancel</button>
+      <button class="btn-primary" onclick="saveGoals()">✓ Save Goals</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Open modal ───────────────────────────────────────────────────── -->
 <div id="open-modal" class="modal hidden" onclick="maybeCloseModal(event)">
   <div class="modal-box">
@@ -649,6 +664,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=124"></script>
+<script src="/estimate/static/app.js?v=125"></script>
 </body>
 </html>

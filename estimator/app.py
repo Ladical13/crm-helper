@@ -4,6 +4,7 @@ import re
 import sys
 import math
 import json
+import calendar
 import time
 import uuid
 import shutil
@@ -178,6 +179,7 @@ JURISDICTIONS_FILE   = os.path.join(DATA_DIR, 'jurisdictions.json')
 CUSTOMER_NOTES_FILE  = os.path.join(DATA_DIR, 'customer_notes.json')
 TEAM_CONFIG_FILE     = os.path.join(DATA_DIR, 'team.json')
 COMPANY_CONTENT_FILE = os.path.join(DATA_DIR, 'company_content.json')
+SALES_GOALS_FILE     = os.path.join(DATA_DIR, 'sales_goals.json')
 
 # Optional override for the public-facing base URL (e.g. ngrok or a real domain).
 # Set PUBLIC_URL in environment or in estimator/config.json as {"public_url": "https://..."}
@@ -1800,7 +1802,24 @@ def get_analytics():
     TRADE_NAMES = ['roofing', 'siding', 'windows', 'gutters', 'other']
     by_trade = {}
     by_rep   = {}
-    monthly  = {}  # 'YYYY-MM' → cumulative signed revenue
+
+    # 'YYYY-MM' → one month's full picture. Signed metrics bucket on the
+    # signature date; sent metrics bucket on the send date, so `sent`/`sent_won`
+    # read as a cohort ("of what we sent in June, how much has closed").
+    #
+    # `revenue` is the estimate total (what the customer actually signed, and
+    # what goals are measured against). `trade_revenue`/`trade_cost` are the
+    # per-trade priced figures and exist only to compute margin on a matching
+    # basis — never mix the two in one ratio.
+    monthly = {}
+
+    def _mo(key):
+        return monthly.setdefault(key, {
+            'revenue': 0.0, 'jobs': 0, 'retail': 0.0, 'insurance': 0.0,
+            'trade_revenue': 0.0, 'trade_cost': 0.0,
+            'sent': 0, 'sent_value': 0.0, 'sent_won': 0, 'sent_won_value': 0.0,
+            'by_rep': {},
+        })
 
     # ── New aggregations ──────────────────────────────────────────────
     funnel = {'total': 0, 'sent': 0, 'viewed': 0, 'signed': 0, 'declined': 0}
@@ -1858,7 +1877,17 @@ def get_analytics():
         elif is_sent:
             by_type[est_type]['pipeline'] += est_total
 
-        # ── YTD & city ───────────────────────────────────────────────
+        # ── Monthly: sent cohort ─────────────────────────────────────
+        sent_month = (est.get('sent_at') or '')[:7]
+        if is_sent and _GOAL_MONTH_RE.match(sent_month):
+            m = _mo(sent_month)
+            m['sent']       += 1
+            m['sent_value'] += est_total
+            if is_signed:
+                m['sent_won']       += 1
+                m['sent_won_value'] += est_total
+
+        # ── YTD, city & monthly signed revenue ───────────────────────
         if is_signed:
             signed_dt_str = (est.get('signature') or {}).get('signed_at') or ''
             try:
@@ -1867,6 +1896,13 @@ def get_analytics():
                     ytd_revenue += est_total
             except Exception:
                 pass
+            signed_month = signed_dt_str[:7]
+            if _GOAL_MONTH_RE.match(signed_month):
+                m = _mo(signed_month)
+                m['revenue'] += est_total
+                m['jobs']    += 1
+                m[est_type if est_type in ('retail', 'insurance') else 'retail'] += est_total
+                m['by_rep'][sp] = m['by_rep'].get(sp, 0.0) + est_total
             city = (est.get('customer') or {}).get('address', {}).get('city', '').strip()
             if city:
                 top_cities[city] = top_cities.get(city, 0.0) + est_total
@@ -1940,14 +1976,12 @@ def get_analytics():
                 by_trade[tk]['job_count'] += 1
                 by_rep[sp]['revenue']     += tsell
                 by_rep[sp]['cost']        += tcost
-                # Monthly revenue bucketing
-                signed_at = (est.get('signature') or {}).get('signed_at') or ''
-                if signed_at:
-                    try:
-                        month_key = signed_at[:7]  # 'YYYY-MM'
-                        monthly[month_key] = monthly.get(month_key, 0.0) + tsell
-                    except Exception:
-                        pass
+                # Monthly margin basis — sell and cost from the same trade math.
+                month_key = ((est.get('signature') or {}).get('signed_at') or '')[:7]
+                if _GOAL_MONTH_RE.match(month_key):
+                    m = _mo(month_key)
+                    m['trade_revenue'] += tsell
+                    m['trade_cost']    += tcost
                 by_rep[sp]['deals'].append(tsell)
                 all_dtc.extend(by_rep[sp].get('days_to_close', [])[-1:])  # company wide
             elif is_sent:
@@ -1969,13 +2003,126 @@ def get_analytics():
         d['avg_days_to_close'] = round(sum(dtc) / len(dtc), 1) if dtc else None
         d['avg_deal']          = round(d['revenue'] / d['signed'], 0) if d['signed'] > 0 else 0
 
-    sorted_months = sorted(monthly.items())[-12:]
     top_cities_list = sorted(top_cities.items(), key=lambda x: -x[1])[:8]
 
-    # Re-collect all days-to-close across all reps
-    all_dtc_flat = []
-    for d in by_rep.values():
-        pass  # already done per-rep; collect from finalized data
+    # ── Monthly series vs goals ───────────────────────────────────────────
+    goals     = _load_goals()
+    cur_month = now_dt.strftime('%Y-%m')
+
+    def _month_add(key, delta):
+        i = int(key[:4]) * 12 + int(key[5:7]) - 1 + delta
+        return '%04d-%02d' % (i // 12, i % 12 + 1)
+
+    # Contiguous keys so the chart has no holes — a month with zero signed work
+    # is a real data point, not a gap to skip. Capped at 24 months back.
+    have    = sorted(monthly)
+    first   = min(have[0], cur_month) if have else cur_month
+    last    = max(have[-1], cur_month) if have else cur_month
+    first   = max(first, _month_add(cur_month, -23))
+    series_keys, k = [], first
+    while k <= last and len(series_keys) < 36:
+        series_keys.append(k)
+        k = _month_add(k, 1)
+
+    rev_by_month = {mk: mv['revenue'] for mk, mv in monthly.items()}
+    blank = {'revenue': 0.0, 'jobs': 0, 'retail': 0.0, 'insurance': 0.0,
+             'trade_revenue': 0.0, 'trade_cost': 0.0, 'sent': 0, 'sent_value': 0.0,
+             'sent_won': 0, 'sent_won_value': 0.0, 'by_rep': {}}
+    months_out = []
+    for key in series_keys:
+        m    = monthly.get(key, blank)
+        g    = _goal_for(goals, key)
+        rev  = round(m['revenue'], 2)
+        prev = months_out[-1]['revenue'] if months_out else None
+        ly   = rev_by_month.get(_month_add(key, -12))
+        months_out.append({
+            'month':       key,
+            'revenue':     rev,
+            'jobs':        m['jobs'],
+            'avg_deal':    round(rev / m['jobs']) if m['jobs'] else 0,
+            'margin_pct':  _margin(m['trade_revenue'], m['trade_cost']),
+            'retail':      round(m['retail'], 2),
+            'insurance':   round(m['insurance'], 2),
+            'sent':        m['sent'],
+            'sent_value':  round(m['sent_value'], 2),
+            'sent_won':    m['sent_won'],
+            # Cohort close rate: of the estimates SENT this month, how many have
+            # closed. Not signed/sent within the month — those are different sets.
+            'close_rate':  round(m['sent_won'] / m['sent'] * 100) if m['sent'] else None,
+            'by_rep':      {r: round(v, 2) for r, v in
+                            sorted(m['by_rep'].items(), key=lambda x: -x[1])},
+            'goal':        g['revenue'],
+            'goal_jobs':   g['jobs'],
+            'pct_to_goal': round(rev / g['revenue'] * 100) if g['revenue'] > 0 else None,
+            'mom_pct':     round((rev - prev) / prev * 100) if prev else None,
+            'yoy_pct':     round((rev - ly) / ly * 100) if ly else None,
+        })
+
+    # Current-month pace. Straight-line: a month is "on pace" when today's run
+    # rate, extended to month end, clears the goal.
+    days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
+    days_elapsed  = now_dt.day
+    days_left     = max(0, days_in_month - days_elapsed)
+    cur_row       = next((r for r in months_out if r['month'] == cur_month), None)
+    cur_rev       = cur_row['revenue'] if cur_row else 0.0
+    cur_goal      = _goal_for(goals, cur_month)
+    projected     = round(cur_rev / days_elapsed * days_in_month, 2) if days_elapsed else 0.0
+    gap           = round(max(0.0, cur_goal['revenue'] - cur_rev), 2)
+    current_month = {
+        'month':            cur_month,
+        'revenue':          cur_rev,
+        'jobs':             cur_row['jobs'] if cur_row else 0,
+        'goal':             cur_goal['revenue'],
+        'goal_jobs':        cur_goal['jobs'],
+        'pct':              round(cur_rev / cur_goal['revenue'] * 100) if cur_goal['revenue'] > 0 else None,
+        'days_elapsed':     days_elapsed,
+        'days_in_month':    days_in_month,
+        'days_left':        days_left,
+        'expected_to_date': round(cur_goal['revenue'] * days_elapsed / days_in_month, 2),
+        'projected':        projected,
+        'gap':              gap,
+        'per_day_needed':   round(gap / days_left, 2) if days_left else gap,
+        'on_pace':          (projected >= cur_goal['revenue']) if cur_goal['revenue'] > 0 else None,
+    }
+
+    # Per-rep progress against this month's goal. Rep names are matched
+    # case-insensitively — goals are stored lowercase, but the salesperson field
+    # on an estimate is whatever was typed, and "Luke" must not become a second
+    # rep with its own goal.
+    cur_by_rep = {}
+    for r, v in (monthly.get(cur_month) or blank)['by_rep'].items():
+        cur_by_rep[r.strip().lower()] = cur_by_rep.get(r.strip().lower(), 0.0) + v
+    rep_month = []
+    for name in ({r.strip().lower() for r in by_rep} | set(cur_by_rep)
+                 | set(goals.get('reps') or {})):
+        g   = _goal_for(goals, cur_month, name)
+        rev = round(cur_by_rep.get(name, 0.0), 2)
+        if g['revenue'] <= 0 and rev <= 0:
+            continue
+        rep_month.append({
+            'rep':       name,
+            'revenue':   rev,
+            'goal':      g['revenue'],
+            'pct':       round(rev / g['revenue'] * 100) if g['revenue'] > 0 else None,
+            'projected': round(rev / days_elapsed * days_in_month, 2) if days_elapsed else 0.0,
+            'gap':       round(max(0.0, g['revenue'] - rev), 2),
+        })
+    rep_month.sort(key=lambda r: -r['revenue'])
+
+    # Trailing averages over COMPLETED months only — the current partial month
+    # would drag every average down and make next month's goal look easy.
+    closed = [r['revenue'] for r in months_out if r['month'] != cur_month]
+    def _avg(n):
+        w = closed[-n:]
+        return round(sum(w) / len(w), 2) if w else 0.0
+    best = max(months_out, key=lambda r: r['revenue'], default=None)
+    benchmarks = {
+        'avg_3':  _avg(3),
+        'avg_6':  _avg(6),
+        'avg_12': _avg(12),
+        'best_month': ({'month': best['month'], 'revenue': best['revenue']}
+                       if best and best['revenue'] > 0 else None),
+    }
 
     avg_dtc_all = None
     dtc_all = [d['avg_days_to_close'] for d in by_rep.values() if d.get('avg_days_to_close') is not None]
@@ -1985,7 +2132,11 @@ def get_analytics():
     return jsonify({
         'by_trade':       by_trade,
         'by_rep':         by_rep,
-        'monthly':        sorted_months,
+        'monthly':        months_out,
+        'current_month':  current_month,
+        'rep_month':      rep_month,
+        'benchmarks':     benchmarks,
+        'goals':          goals,
         'funnel':         funnel,
         'pipeline_aging': pipeline_aging,
         'by_type':        by_type,
@@ -6737,6 +6888,91 @@ def put_app_settings():
     return jsonify({'ok': True})
 
 
+# ── Sales goals (monthly targets the analytics tab measures against) ───────
+#
+# Shape on disk (sales_goals.json):
+#   {"company": {"default": {"revenue": 250000, "jobs": 10},
+#                "months":  {"2026-07": {"revenue": 300000, "jobs": 12}}},
+#    "reps":    {"luke":    {"default": {...}, "months": {...}}}}
+#
+# A month with no override falls back to the default; a default of 0 means "no
+# goal set", which the UI renders as a dash rather than as 0% attainment.
+
+_GOAL_MONTH_RE = re.compile(r'^\d{4}-(0[1-9]|1[0-2])$')
+
+
+def _empty_goals():
+    return {'company': {'default': {'revenue': 0, 'jobs': 0}, 'months': {}},
+            'reps': {}}
+
+
+def _clean_goal(d):
+    """One {'revenue','jobs'} pair, coerced to non-negative numbers."""
+    out = {}
+    for k in ('revenue', 'jobs'):
+        try:
+            v = float((d or {}).get(k) or 0)
+        except (TypeError, ValueError):
+            v = 0
+        out[k] = max(0, round(v, 2) if k == 'revenue' else int(v))
+    return out
+
+
+def _clean_goal_scope(d):
+    """One company/rep entry: a default plus month overrides."""
+    months = {}
+    for mk, mv in ((d or {}).get('months') or {}).items():
+        if _GOAL_MONTH_RE.match(str(mk)):
+            months[str(mk)] = _clean_goal(mv)
+    return {'default': _clean_goal((d or {}).get('default')), 'months': months}
+
+
+def _load_goals():
+    if os.path.exists(SALES_GOALS_FILE):
+        try:
+            with open(SALES_GOALS_FILE, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            goals = {'company': _clean_goal_scope(raw.get('company')), 'reps': {}}
+            for rep, rv in (raw.get('reps') or {}).items():
+                goals['reps'][str(rep).strip().lower()] = _clean_goal_scope(rv)
+            return goals
+        except Exception:
+            pass
+    return _empty_goals()
+
+
+def _goal_for(goals, month_key, rep=None):
+    """Effective {'revenue','jobs'} goal for a month. `rep=None` is company-wide.
+    Month override wins over the scope default; a missing scope is all zeros."""
+    scope = (goals.get('reps') or {}).get((rep or '').strip().lower()) \
+        if rep else goals.get('company')
+    if not scope:
+        return {'revenue': 0, 'jobs': 0}
+    return (scope.get('months') or {}).get(month_key) or scope.get('default') \
+        or {'revenue': 0, 'jobs': 0}
+
+
+@app.route('/api/goals', methods=['GET'])
+def get_sales_goals():
+    """Readable by every rep — they see their own target on the analytics tab."""
+    return jsonify(_load_goals())
+
+
+@app.route('/api/goals', methods=['PUT'])
+def put_sales_goals():
+    if not _is_manager_up():
+        return _forbid()
+    raw = request.get_json(force=True) or {}
+    clean = {'company': _clean_goal_scope(raw.get('company')), 'reps': {}}
+    for rep, rv in (raw.get('reps') or {}).items():
+        name = str(rep).strip().lower()
+        if name:
+            clean['reps'][name] = _clean_goal_scope(rv)
+    with open(SALES_GOALS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(clean, f, indent=2)
+    return jsonify({'ok': True, 'goals': clean})
+
+
 # ── Company trust content (About Us / Warranty / Certifications / Reviews) ──
 # Rendered onto every customer proposal by _cv_trust_blocks(). Admin-edited.
 
@@ -7232,7 +7468,8 @@ def _build_backup_zip(include_uploads=True):
                         zf.write(full, rel)
                     except OSError:
                         pass
-        for cfg in ('price_book.json', 'tier_defaults.json', 'config.json'):
+        for cfg in ('price_book.json', 'tier_defaults.json', 'config.json',
+                    'sales_goals.json'):
             full = os.path.join(DATA_DIR, cfg)
             if os.path.exists(full):
                 try:

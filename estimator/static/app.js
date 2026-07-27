@@ -6443,25 +6443,6 @@ function renderDashboardAnalytics(filteredList, allData) {
     </div>`;
   }).join('');
 
-  // ── Monthly trend ────────────────────────────────────────────────────
-  const monthly = (ad.monthly||[]).slice(-6);
-  const maxMon  = Math.max(1,...monthly.map(([,v])=>v));
-  const ML = {'01':'Jan','02':'Feb','03':'Mar','04':'Apr','05':'May','06':'Jun',
-               '07':'Jul','08':'Aug','09':'Sep','10':'Oct','11':'Nov','12':'Dec'};
-  const momData = monthly.map(([ym,v],i)=>{
-    const prev  = i>0 ? monthly[i-1][1] : null;
-    const growth= prev ? Math.round((v-prev)/prev*100) : null;
-    const [,mm] = ym.split('-');
-    return {label:ML[mm]||mm, val:v, pct:Math.round(v/maxMon*100), growth};
-  });
-  const monthBars = momData.map(m=>`
-    <div class="mon-bar-wrap">
-      <div class="mon-bar-track"><div class="mon-bar-fill" style="height:${m.pct}%"></div></div>
-      <div class="mon-bar-lbl">${m.label}</div>
-      <div class="mon-bar-val">${fmtCur(m.val/1000)}k</div>
-      ${m.growth!=null?`<div class="mon-bar-growth ${m.growth>=0?'pos':'neg'}">${m.growth>=0?'+':''}${m.growth}%</div>`:''}
-    </div>`).join('');
-
   // ── Top cities ───────────────────────────────────────────────────────
   const cities = ad.top_cities||[];
   const maxCity = Math.max(1,...cities.map(([,v])=>v));
@@ -6579,11 +6560,8 @@ function renderDashboardAnalytics(filteredList, allData) {
       </div>
     </div>
 
-    <!-- ── Monthly Trend ──────────────────────────────────── -->
-    ${monthBars ? `<div class="analytics-section a-card">
-      <h4 class="analytics-h">Monthly Revenue Trend</h4>
-      <div class="mon-bars mon-bars-lg">${monthBars}</div>
-    </div>` : ''}
+    <!-- ── Monthly Trends & Goals ─────────────────────────── -->
+    ${renderMonthlyTrends(ad)}
 
     <!-- ── Rep Leaderboard ────────────────────────────────── -->
     <div class="analytics-section a-card">
@@ -6614,6 +6592,365 @@ function renderDashboardAnalytics(filteredList, allData) {
       </table>
       </div>
     </div>`;
+}
+
+/* ── Monthly trends & sales goals ─────────────────────────────────────
+   The monthly panel is the "did we hit our number?" view: every month is
+   measured against the goal that was set for it, and the current month is
+   measured against pace so the gap is actionable while there's still time to
+   close it. All the math arrives from /api/analytics — this only formats. */
+
+let _monRange = 12;   // months of history shown: 6 | 12 | 24
+
+const _MON_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function _monLabel(ym, withYear) {
+  const [y, m] = String(ym || '').split('-');
+  return (_MON_ABBR[+m - 1] || ym) + (withYear ? ` '${(y || '').slice(2)}` : '');
+}
+/* Compact money for chart labels and KPI tiles — fmtCur's cents are noise at
+   six figures. Tables keep fmtCur so the numbers still reconcile. */
+function _fmtK(n) {
+  const a = Math.abs(n || 0), sign = n < 0 ? '−' : '';
+  if (a >= 1e6) return sign + '$' + (a / 1e6).toFixed(a >= 1e7 ? 0 : 1) + 'M';
+  if (a >= 1000) return sign + '$' + Math.round(a / 1000) + 'k';
+  return sign + '$' + Math.round(a);
+}
+/* Attainment banding, shared by the hero, the bars, and the table. */
+function _goalCls(pct) {
+  if (pct == null) return 'g-none';
+  return pct >= 100 ? 'g-hit' : pct >= 80 ? 'g-near' : 'g-miss';
+}
+function _monShift(ym, n) {
+  const i = +ym.slice(0, 4) * 12 + (+ym.slice(5, 7) - 1) + n;
+  return `${String(Math.floor(i / 12)).padStart(4, '0')}-${String(i % 12 + 1).padStart(2, '0')}`;
+}
+
+function renderMonthlyTrends(ad) {
+  const all  = ad.monthly || [];
+  const rows = all.slice(-_monRange);
+  const cm   = ad.current_month || {};
+  const bm   = ad.benchmarks || {};
+  const canEdit = _meCanViewAll();
+
+  const rangeBtns = [6, 12, 24].map(n =>
+    `<button class="analytics-sort-btn ${_monRange === n ? 'active' : ''}"
+      onclick="_monRange=${n};renderDashboard()">${n}m</button>`).join('');
+
+  // ── Current month vs goal ──────────────────────────────────────────
+  const hasGoal = (cm.goal || 0) > 0;
+  const pct     = hasGoal ? (cm.pct || 0) : null;
+  const heroCls = hasGoal ? (cm.on_pace ? 'g-hit' : _goalCls(pct)) : 'g-none';
+  // The pace marker is where the month SHOULD be today on a straight line.
+  const paceMark = hasGoal && cm.days_in_month
+    ? Math.min(100, Math.round(cm.days_elapsed / cm.days_in_month * 100)) : null;
+  const hero = `
+    <div class="goal-hero ${heroCls}">
+      <div class="goal-hero-main">
+        <div class="goal-hero-top">
+          <span class="goal-hero-month">${_monLabel(cm.month, true)}</span>
+          <span class="goal-hero-days">Day ${cm.days_elapsed || 0} of ${cm.days_in_month || 0}
+            · ${cm.days_left || 0} left</span>
+        </div>
+        <div class="goal-hero-nums">
+          <span class="goal-hero-val">${_fmtK(cm.revenue || 0)}</span>
+          ${hasGoal ? `<span class="goal-hero-of">of ${_fmtK(cm.goal)} goal</span>
+            <span class="goal-hero-pct">${pct}%</span>` :
+            `<span class="goal-hero-of">signed — no goal set for this month</span>`}
+        </div>
+        <div class="goal-track">
+          <div class="goal-track-fill" style="width:${Math.min(100, pct || 0)}%"></div>
+          ${paceMark != null ? `<div class="goal-track-pace" style="left:${paceMark}%"
+            title="Where you should be today to finish on goal"></div>` : ''}
+        </div>
+        <div class="goal-hero-sub">
+          ${cm.jobs || 0} job${cm.jobs === 1 ? '' : 's'} signed
+          ${cm.goal_jobs ? ` of ${cm.goal_jobs} target` : ''}
+          ${hasGoal ? ` · pace to date ${_fmtK(cm.expected_to_date)}` : ''}
+        </div>
+      </div>
+      ${hasGoal ? `
+      <div class="goal-hero-stats">
+        <div class="goal-stat">
+          <div class="goal-stat-val">${_fmtK(cm.projected || 0)}</div>
+          <div class="goal-stat-lbl">Projected finish</div>
+          <div class="goal-stat-sub ${cm.on_pace ? 'pos' : 'neg'}">
+            ${cm.on_pace ? '✓ on pace' : '▼ behind pace'}</div>
+        </div>
+        <div class="goal-stat">
+          <div class="goal-stat-val">${cm.gap > 0 ? _fmtK(cm.gap) : '✓'}</div>
+          <div class="goal-stat-lbl">${cm.gap > 0 ? 'Still to sell' : 'Goal met'}</div>
+          <div class="goal-stat-sub">${cm.gap > 0 ? `${_fmtK(cm.per_day_needed)}/day` : 'nice work'}</div>
+        </div>
+      </div>` : `
+      <div class="goal-hero-stats">
+        <div class="goal-stat">
+          <div class="goal-stat-val" style="font-size:15px">—</div>
+          <div class="goal-stat-lbl">No goal</div>
+          <div class="goal-stat-sub">${canEdit ? 'set one below' : 'ask your manager'}</div>
+        </div>
+      </div>`}
+    </div>`;
+
+  // ── Bars: revenue against that month's goal line ───────────────────
+  const scale = Math.max(1, ...rows.map(r => Math.max(r.revenue, r.goal || 0)));
+  const bars = rows.map((r, i) => {
+    const h    = Math.round(r.revenue / scale * 100);
+    const gh   = r.goal > 0 ? Math.min(100, Math.round(r.goal / scale * 100)) : null;
+    const cls  = _goalCls(r.pct_to_goal);
+    const isCur = r.month === cm.month;
+    return `<div class="mon-bar-wrap" title="${_monLabel(r.month, true)} — ${fmtCur(r.revenue)}${
+        r.goal > 0 ? ` of ${fmtCur(r.goal)} goal (${r.pct_to_goal}%)` : ''}">
+      <div class="mon-bar-track">
+        <div class="mon-bar-fill ${cls} ${isCur ? 'is-current' : ''}" style="height:${h}%"></div>
+        ${gh != null ? `<div class="mon-goal-line" style="bottom:${gh}%"></div>` : ''}
+      </div>
+      <!-- Year on the first bar and every January, so a 24-month view doesn't
+           show two unlabelled "Apr"s. -->
+      <div class="mon-bar-lbl ${isCur ? 'is-current' : ''}">${
+        _monLabel(r.month, i === 0 || r.month.endsWith('-01'))}</div>
+      <div class="mon-bar-val">${_fmtK(r.revenue)}</div>
+      ${r.pct_to_goal != null
+        ? `<div class="mon-bar-growth ${r.pct_to_goal >= 100 ? 'pos' : 'neg'}">${r.pct_to_goal}%</div>`
+        : r.mom_pct != null
+        ? `<div class="mon-bar-growth ${r.mom_pct >= 0 ? 'pos' : 'neg'}">${r.mom_pct >= 0 ? '+' : ''}${r.mom_pct}%</div>`
+        : '<div class="mon-bar-growth">&nbsp;</div>'}
+    </div>`;
+  }).join('');
+
+  // ── Detail table ───────────────────────────────────────────────────
+  const dlt = (v, suffix = '%') => v == null ? '<span class="mon-dim">—</span>'
+    : `<span class="${v >= 0 ? 'pos' : 'neg'}">${v >= 0 ? '+' : ''}${v}${suffix}</span>`;
+  const tableRows = [...rows].reverse().map(r => {
+    const vsGoal = r.goal > 0 ? r.revenue - r.goal : null;
+    return `<tr class="${r.month === cm.month ? 'mon-row-current' : ''}">
+      <td><strong>${_monLabel(r.month, true)}</strong>${r.month === cm.month
+        ? ' <span class="mon-tag">MTD</span>' : ''}</td>
+      <td class="analytics-num analytics-rev">${fmtCur(r.revenue)}</td>
+      <td class="analytics-num">${r.goal > 0 ? fmtCur(r.goal) : '<span class="mon-dim">—</span>'}</td>
+      <td class="analytics-num">${r.pct_to_goal != null
+        ? `<span class="a-rate-badge ${_goalCls(r.pct_to_goal)}">${r.pct_to_goal}%</span>`
+        : '<span class="mon-dim">—</span>'}</td>
+      <td class="analytics-num">${vsGoal == null ? '<span class="mon-dim">—</span>'
+        : `<span class="${vsGoal >= 0 ? 'pos' : 'neg'}">${vsGoal >= 0 ? '+' : '−'}${_fmtK(Math.abs(vsGoal))}</span>`}</td>
+      <td class="analytics-num">${r.jobs}${r.goal_jobs ? `<span class="mon-dim"> / ${r.goal_jobs}</span>` : ''}</td>
+      <td class="analytics-num">${r.avg_deal ? fmtCur(r.avg_deal) : '<span class="mon-dim">—</span>'}</td>
+      <td class="analytics-num">${r.margin_pct != null
+        ? `<span class="analytics-margin-badge">${r.margin_pct}%</span>` : '<span class="mon-dim">—</span>'}</td>
+      <td class="analytics-num">${r.sent}</td>
+      <td class="analytics-num">${r.close_rate != null
+        ? `<span class="a-rate-badge ${_clr(r.close_rate)}">${r.close_rate}%</span>`
+        : '<span class="mon-dim">—</span>'}</td>
+      <td class="analytics-num">${dlt(r.mom_pct)}</td>
+      <td class="analytics-num">${dlt(r.yoy_pct)}</td>
+    </tr>`;
+  }).join('');
+
+  // ── This month by rep ──────────────────────────────────────────────
+  const repRows = (ad.rep_month || []).map(r => {
+    const p = r.pct;
+    return `<div class="repgoal-row">
+      <span class="repgoal-name">${esc(cap(r.rep))}</span>
+      <div class="repgoal-track">
+        <div class="repgoal-fill ${_goalCls(p)}" style="width:${Math.min(100, p || 0)}%"></div>
+      </div>
+      <span class="repgoal-val">${_fmtK(r.revenue)}${r.goal > 0 ? `<span class="mon-dim"> / ${_fmtK(r.goal)}</span>` : ''}</span>
+      <span class="repgoal-pct ${_goalCls(p)}">${p != null ? p + '%' : '—'}</span>
+    </div>`;
+  }).join('');
+
+  const benchLine = `
+    <div class="mon-bench">
+      <span>3-mo avg <strong>${_fmtK(bm.avg_3 || 0)}</strong></span>
+      <span>6-mo avg <strong>${_fmtK(bm.avg_6 || 0)}</strong></span>
+      <span>12-mo avg <strong>${_fmtK(bm.avg_12 || 0)}</strong></span>
+      ${bm.best_month ? `<span>Best ever <strong>${_fmtK(bm.best_month.revenue)}</strong>
+        <span class="mon-dim">(${_monLabel(bm.best_month.month, true)})</span></span>` : ''}
+      <span class="mon-dim" style="margin-left:auto">closed months only — the current month is still running</span>
+    </div>`;
+
+  return `
+    <div class="analytics-section a-card">
+      <div class="analytics-sort-bar" style="margin-bottom:12px">
+        <h4 class="analytics-h" style="margin:0">📈 Monthly Trends &amp; Goals</h4>
+        <span class="analytics-sort-lbl" style="margin-left:auto">Show:</span>${rangeBtns}
+        ${canEdit ? `<button class="btn-goal-edit" onclick="openGoalEditor()">🎯 Set Goals</button>` : ''}
+      </div>
+      ${hero}
+      ${rows.length ? `<div class="mon-bars mon-bars-lg mon-bars-goal">${bars}</div>
+      <div class="mon-legend">
+        <span><i class="mon-key g-hit"></i>goal met</span>
+        <span><i class="mon-key g-near"></i>80–99%</span>
+        <span><i class="mon-key g-miss"></i>under 80%</span>
+        <span><i class="mon-key-line"></i>month's goal</span>
+      </div>` : '<p class="mon-dim" style="padding:8px 0">No signed estimates yet.</p>'}
+      ${benchLine}
+      <div class="analytics-table-wrap" style="margin-top:12px">
+        <table class="analytics-table mon-table">
+          <thead><tr>
+            <th>Month</th><th>Signed</th><th>Goal</th><th>% Goal</th><th>+/−</th>
+            <th>Jobs</th><th>Avg Deal</th><th>Margin</th>
+            <th title="Estimates sent that month">Sent</th>
+            <th title="Of the estimates sent that month, how many have closed">Close %</th>
+            <th title="vs the previous month">MoM</th>
+            <th title="vs the same month last year">YoY</th>
+          </tr></thead>
+          <tbody>${tableRows || '<tr><td colspan="12" style="text-align:center;color:#94a3b8;padding:16px">No data yet</td></tr>'}</tbody>
+        </table>
+      </div>
+      ${repRows ? `<h4 class="analytics-h" style="margin-top:16px">
+        ${_monLabel(cm.month, true)} by Rep</h4>${repRows}` : ''}
+    </div>`;
+}
+
+/* ── Goal editor (manager+) ───────────────────────────────────────────
+   Edits the whole goals doc at once: a company default, per-month overrides
+   (roofing is seasonal — a flat monthly number is wrong half the year), and a
+   per-rep default. Blank month inputs mean "use the default", so clearing a
+   field is how you remove an override. */
+
+function openGoalEditor() {
+  const ad    = _analyticsData || {};
+  const goals = ad.goals || { company: { default: {}, months: {} }, reps: {} };
+  const cd    = goals.company?.default || {};
+  const cmo   = goals.company?.months  || {};
+  const cur   = (ad.current_month || {}).month || new Date().toISOString().slice(0, 7);
+  const actual = {};
+  (ad.monthly || []).forEach(r => { actual[r.month] = r; });
+
+  // 12 months back through 6 forward: past months so history can be corrected,
+  // future months so next season's targets can be set now.
+  const months = [];
+  for (let i = -11; i <= 6; i++) months.push(_monShift(cur, i));
+
+  const monthRows = months.map(m => {
+    const g = cmo[m] || {};
+    const a = actual[m];
+    const isCur = m === cur;
+    return `<tr class="${isCur ? 'mon-row-current' : ''}${m > cur ? ' goal-row-future' : ''}">
+      <td><strong>${_monLabel(m, true)}</strong>${isCur ? ' <span class="mon-tag">now</span>' : ''}</td>
+      <td class="analytics-num mon-dim">${a && a.revenue ? fmtCur(a.revenue) : '—'}</td>
+      <td><input type="number" min="0" step="1000" class="goal-input"
+        data-goal-month="${m}" data-goal-field="revenue"
+        placeholder="default" value="${g.revenue ? g.revenue : ''}"></td>
+      <td><input type="number" min="0" step="1" class="goal-input goal-input-sm"
+        data-goal-month="${m}" data-goal-field="jobs"
+        placeholder="—" value="${g.jobs ? g.jobs : ''}"></td>
+    </tr>`;
+  }).join('');
+
+  const repNames = [...new Set([
+    ...Object.keys(ad.by_rep || {}).map(r => r.trim().toLowerCase()),
+    ...Object.keys(goals.reps || {}),
+  ])].filter(Boolean).sort();
+  const repRows = repNames.map(r => {
+    const g = goals.reps?.[r]?.default || {};
+    return `<tr>
+      <td><strong>${esc(cap(r))}</strong></td>
+      <td><input type="number" min="0" step="1000" class="goal-input"
+        data-goal-rep="${esc(r)}" data-goal-field="revenue"
+        placeholder="no goal" value="${g.revenue ? g.revenue : ''}"></td>
+      <td><input type="number" min="0" step="1" class="goal-input goal-input-sm"
+        data-goal-rep="${esc(r)}" data-goal-field="jobs"
+        placeholder="—" value="${g.jobs ? g.jobs : ''}"></td>
+    </tr>`;
+  }).join('');
+
+  const bm = ad.benchmarks || {};
+  document.getElementById('goals-body').innerHTML = `
+    <div class="goal-hint">
+      Goals drive the % and pace numbers on the analytics tab. For reference, your
+      trailing averages are <strong>${_fmtK(bm.avg_3 || 0)}</strong> (3&nbsp;mo),
+      <strong>${_fmtK(bm.avg_6 || 0)}</strong> (6&nbsp;mo) and
+      <strong>${_fmtK(bm.avg_12 || 0)}</strong> (12&nbsp;mo).
+    </div>
+    <div class="field-group">
+      <label>Company Default <span class="note-tag">used for any month without its own target</span></label>
+      <div class="goal-default-row">
+        <label class="goal-inline">Revenue / month
+          <input type="number" min="0" step="1000" id="goal-default-rev"
+            value="${cd.revenue ? cd.revenue : ''}" placeholder="0"></label>
+        <label class="goal-inline">Jobs / month
+          <input type="number" min="0" step="1" id="goal-default-jobs"
+            value="${cd.jobs ? cd.jobs : ''}" placeholder="0"></label>
+        <button class="btn-secondary btn-sm" onclick="_goalFillDefault()"
+          title="Copy the default into every month below">Apply to all months</button>
+      </div>
+    </div>
+    <div class="field-group">
+      <label>Monthly Targets <span class="note-tag">blank = use the default — set the storm months higher</span></label>
+      <div class="analytics-table-wrap goal-month-wrap">
+        <table class="analytics-table goal-table">
+          <thead><tr><th>Month</th><th>Actual</th><th>Revenue Goal</th><th>Jobs</th></tr></thead>
+          <tbody>${monthRows}</tbody>
+        </table>
+      </div>
+    </div>
+    ${repRows ? `<div class="field-group">
+      <label>Per-Rep Monthly Goal <span class="note-tag">each rep sees their own progress on the analytics tab</span></label>
+      <div class="analytics-table-wrap">
+        <table class="analytics-table goal-table">
+          <thead><tr><th>Rep</th><th>Revenue / month</th><th>Jobs</th></tr></thead>
+          <tbody>${repRows}</tbody>
+        </table>
+      </div>
+    </div>` : ''}`;
+  document.getElementById('goals-modal').classList.remove('hidden');
+}
+
+function _goalFillDefault() {
+  const rev  = document.getElementById('goal-default-rev').value;
+  const jobs = document.getElementById('goal-default-jobs').value;
+  document.querySelectorAll('#goals-body [data-goal-month]').forEach(el => {
+    el.value = el.dataset.goalField === 'revenue' ? rev : jobs;
+  });
+}
+
+function closeGoalEditor() { document.getElementById('goals-modal').classList.add('hidden'); }
+function maybeCloseGoals(e) { if (e.target === document.getElementById('goals-modal')) closeGoalEditor(); }
+
+async function saveGoals() {
+  const num = el => {
+    const v = parseFloat(el.value);
+    return isFinite(v) && v > 0 ? v : 0;
+  };
+  const doc = {
+    company: {
+      default: {
+        revenue: num(document.getElementById('goal-default-rev')),
+        jobs:    num(document.getElementById('goal-default-jobs')),
+      },
+      months: {},
+    },
+    reps: {},
+  };
+  document.querySelectorAll('#goals-body [data-goal-month]').forEach(el => {
+    const v = num(el);
+    if (!v) return;   // blank or 0 → no override for that month
+    const m = el.dataset.goalMonth;
+    (doc.company.months[m] = doc.company.months[m] || {})[el.dataset.goalField] = v;
+  });
+  document.querySelectorAll('#goals-body [data-goal-rep]').forEach(el => {
+    const v = num(el);
+    if (!v) return;
+    const r = el.dataset.goalRep;
+    doc.reps[r] = doc.reps[r] || { default: {}, months: {} };
+    doc.reps[r].default[el.dataset.goalField] = v;
+  });
+
+  try {
+    const r = await fetch('/api/goals', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(doc),
+    });
+    if (!r.ok) throw new Error(r.status === 403 ? 'Managers only' : 'Save failed');
+    closeGoalEditor();
+    _analyticsData = null;      // goals change every % on the panel — refetch
+    await dashSetView('analytics');
+    toast('🎯 Goals saved');
+  } catch (e) {
+    alert('Could not save goals: ' + e.message);
+  }
 }
 
 /* ── Order Sheet ─────────────────────────────────────────────────────── */
