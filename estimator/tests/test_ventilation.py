@@ -2,9 +2,14 @@
 and the work-order (production packet) cut-in section.
 
 Ridge vent now ORDERS the full ridge (ridge_lf) while the crew CUTS IN only the
-code-required footage (atticVentilation deficit). Stick-count math itself lives
-in app.js (measuredQty) and is covered by the parity suite + manual QA; here we
-guard the pieces that live in app.py.
+code-required footage (atticVentilation deficit). Here we guard the pieces that
+live in app.py.
+
+The JS<->PY agreement of atticVentilation itself is covered by
+test_fastening.py::test_attic_ventilation_js_and_py_agree — NOT by the pricing
+parity suite, which only extracts the rate/total functions. (This docstring used
+to claim otherwise, and nothing checked the two copies of the 1/300 math.)
+Stick-count rounding still lives in app.js measuredQty and is manual-QA only.
 """
 import os
 

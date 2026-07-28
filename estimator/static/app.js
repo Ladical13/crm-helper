@@ -26,15 +26,25 @@ const BASE = location.pathname.startsWith('/estimate') ? '/estimate' : '';
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
-const TRADES = ['roofing','siding','windows','gutters','other','insurance'];
-const TRADE_LABELS = { roofing:'Roofing', siding:'Siding', windows:'Windows', gutters:'Gutters', other:'Other', insurance:'Insurance' };
+const TRADES = ['roofing','siding','windows','gutters','commercial','other','insurance'];
+const TRADE_LABELS = { roofing:'Roofing', siding:'Siding', windows:'Windows', gutters:'Gutters', commercial:'Commercial', other:'Other', insurance:'Insurance' };
+// Retail trades (everything the G/B/B + simple pricing engine touches).
+// `insurance` has a different shape entirely and is always excluded.
+const RETAIL_TRADE_KEYS = ['roofing','siding','windows','gutters','commercial','other'];
 const TIERS = ['good','better','best'];
 const TIER_LABELS = { good:'Good', better:'Better', best:'Best' };
 // Trades built from a flat product catalog + named bundles (the tier dropdown)
 // instead of the per-tier template item list. Mirrored server-side by
 // BUNDLE_SEEDS in app.py — keep the two lists in sync.
-const BUNDLE_TRADES = ['roofing','siding'];
+const BUNDLE_TRADES = ['roofing','siding','commercial'];
 function isBundleTrade(t) { return BUNDLE_TRADES.includes(t); }
+// Trades that sell as one price rather than Good/Better/Best unless the rep
+// says otherwise. Mirrored by SIMPLE_MODE_TRADES in app.py — the two must
+// agree or the server prices a trade the browser didn't.
+const SIMPLE_MODE_TRADES = ['gutters','commercial'];
+function effectiveTradeMode(trade, td) {
+  return ((td && td.mode) || (SIMPLE_MODE_TRADES.includes(trade) ? 'simple' : 'gbb'));
+}
 // Per-estimate package toggles: sell just Good/Better, Better/Best, etc.
 // Absent key = enabled (backward compatible with every existing estimate).
 function tierEnabled(t) { return (S.tiers_enabled || {})[t] !== false; }
@@ -62,7 +72,7 @@ function toggleTierEnabled(t) {
 function tradeGbbMode(trade) {
   const td = S.trades[trade];
   return !!td && trade !== 'insurance' && td.enabled &&
-    (td.mode || (trade === 'gutters' ? 'simple' : 'gbb')) === 'gbb';
+    (effectiveTradeMode(trade, td)) === 'gbb';
 }
 function gbbTrades() { return TRADES.filter(tradeGbbMode); }
 function tradeTier(trade) {
@@ -186,6 +196,7 @@ const TRADE_COLOR_FIELDS = {
   siding:  [{key:'siding_color',label:'Siding Color'},{key:'trim_color',label:'Trim Color'},{key:'manufacturer',label:'Manufacturer'}],
   windows: [{key:'frame_color',label:'Frame Color'},{key:'glass_package',label:'Glass Package'}],
   gutters: [{key:'gutter_color',label:'Gutter Color'},{key:'material',label:'Material'}],
+  commercial: [{key:'membrane_color',label:'Membrane Color'},{key:'manufacturer',label:'Manufacturer'},{key:'system_type',label:'System'}],
   other:   [{key:'color',label:'Color / Finish'}],
 };
 const DEFAULT_CONTRACT = `TERMS AND CONDITIONS — PROJECT ONE ROOFING
@@ -328,6 +339,32 @@ const MEASURE_FIELDS = [
     {key:'windows_count', label:'Windows', unit:'EA'},
     {key:'doors_count',   label:'Doors',   unit:'EA'},
   ]},
+  // Commercial low-slope. Deliberately its own key namespace (comm_*) so a
+  // commercial roof never inherits a steep-slope number left on the estimate.
+  { group:'Commercial', fields:[
+    {key:'comm_squares',      label:'Roof Area',        unit:'SQ'},
+    {key:'comm_waste_pct',    label:'Waste',            unit:'%'},
+    {key:'comm_perimeter_lf', label:'Perimeter / Edge', unit:'LF'},
+    {key:'comm_parapet_lf',   label:'Parapet / Coping', unit:'LF'},
+    {key:'comm_penetrations', label:'Penetrations',     unit:'EA'},
+    {key:'comm_drains',       label:'Drains / Scuppers',unit:'EA'},
+    {key:'comm_curbs',        label:'HVAC Curbs',       unit:'EA'},
+    {key:'comm_skylights',    label:'Skylights/Hatches',unit:'EA'},
+    {key:'comm_pitch_pans',   label:'Pitch Pans',       unit:'EA'},
+    {key:'comm_walkway_pads', label:'Walkway Pads',     unit:'EA'},
+    {key:'comm_sections',     label:'Roof Levels',      unit:'EA'},
+    // panelOnly fields are real measurements (they persist, and MEASURE_DEFS
+    // and custom formulas can read them) but the fastening panel renders them
+    // itself — a bare number box for "Uplift" would hide that it is a menu.
+    {key:'comm_length_ft',      label:'Building Length',  unit:'LF', panelOnly:true},
+    {key:'comm_width_ft',       label:'Building Width',   unit:'LF', panelOnly:true},
+    {key:'comm_height_ft',      label:'Building Height',  unit:'LF', panelOnly:true},
+    {key:'comm_uplift',         label:'Uplift Rating',    unit:'psf', panelOnly:true},
+    {key:'comm_insul_layers',   label:'Fastened Layers',  unit:'EA', panelOnly:true},
+    {key:'comm_zone_field_sf',  label:'Zone: Field',      unit:'SF', panelOnly:true},
+    {key:'comm_zone_perim_sf',  label:'Zone: Perimeter',  unit:'SF', panelOnly:true},
+    {key:'comm_zone_corner_sf', label:'Zone: Corner',     unit:'SF', panelOnly:true},
+  ]},
 ];
 const MEASURE_DEFS = {
   squares:              { label:'Roof SQ',            calc:m => mnum(m.roof_squares) },
@@ -372,6 +409,24 @@ const MEASURE_DEFS = {
   siding_soffit:        { label:'Soffit LF',           calc:m => mnum(m.siding_soffit_lf) },
   windows:              { label:'# Windows',           calc:m => mnum(m.windows_count) },
   doors:                { label:'# Doors',             calc:m => mnum(m.doors_count) },
+  comm_sq:              { label:'Commercial SQ',            calc:m => mnum(m.comm_squares) },
+  comm_sq_waste:        { label:'Commercial SQ + Waste',    calc:m => mnum(m.comm_squares) * (1 + mnum(m.comm_waste_pct, 10)/100) },
+  comm_perimeter:       { label:'Perimeter LF',             calc:m => mnum(m.comm_perimeter_lf) },
+  comm_parapet:         { label:'Parapet / Coping LF',      calc:m => mnum(m.comm_parapet_lf) },
+  comm_penetrations:    { label:'# Penetrations',           calc:m => mnum(m.comm_penetrations) },
+  comm_drains:          { label:'# Drains / Scuppers',      calc:m => mnum(m.comm_drains) },
+  // Curbs and skylights/hatches both take the same curb-flashing detail.
+  comm_curbs:           { label:'# Curbs + Skylights',      calc:m => mnum(m.comm_curbs) + mnum(m.comm_skylights) },
+  comm_pitch_pans:      { label:'# Pitch Pans',             calc:m => mnum(m.comm_pitch_pans) },
+  comm_walkway_pads:    { label:'# Walkway Pads',           calc:m => mnum(m.comm_walkway_pads) },
+  // Both labor lines ship in every commercial bundle; comm_work_type (0/1)
+  // zeroes the one that doesn't apply, and zero-qty items never price.
+  comm_labor_reroof:    { label:'Labor SQ — Re-Roof',       calc:m => mnum(m.comm_work_type) ? 0 : mnum(m.comm_squares) },
+  comm_labor_new:       { label:'Labor SQ — New Const.',    calc:m => mnum(m.comm_work_type) ? mnum(m.comm_squares) : 0 },
+  // Zone-based fastener counts. Both return 0 (and the panel shouts) until the
+  // building dimensions and an uplift rating are entered — see commercialFastening.
+  comm_fast_insul:      { label:'# Insulation Fasteners',   calc:m => commercialFastening(m, _fastenTable).insul.total },
+  comm_fast_seam:       { label:'# Seam Fasteners',         calc:m => commercialFastening(m, _fastenTable).seam.total },
 };
 function mnum(v, dflt) {
   const n = parseFloat(v);
@@ -406,6 +461,346 @@ function atticVentilation(m) {
            ridge_lf_required, ridge_sticks, intake_lf_suggested };
 }
 
+/* ── Commercial fastener calculator ─────────────────────────────────────
+   Fastener density on a low-slope roof is set by WHERE on the roof you are
+   (ASCE 7 field / perimeter / corner), by how much uplift the roof must
+   resist, and by which layer is being fastened. A corner can take 2-3x the
+   field density, so one number per square either overbuys the whole roof or
+   under-fastens the corners.
+
+   MUST mirror commercial_fastening() in app.py — and unlike atticVentilation,
+   this pair IS parity-tested (tests/test_fastening.py runs both over the same
+   fixtures). The table is passed in rather than read from module state so the
+   function stays pure and both sides can be driven from identical JSON.
+
+   When it cannot know the answer it returns zeros with ok:false. It never
+   returns a plausible guess. */
+const FASTEN_ZONES = ['field','perimeter','corner'];
+function _asceZoneWidth(least, h, rule) {
+  // ASCE 7 zone width `a`: 10% of the least horizontal dimension or 40% of the
+  // mean roof height, whichever is SMALLER, floored at 4% of the least
+  // dimension and an absolute minimum (3 ft in ASCE, 4 ft in some FM
+  // approvals), capped at half the least dimension so zones cannot overlap.
+  rule = rule || {};
+  if (least <= 0 || h <= 0) return 0;
+  let a = Math.min(mnum(rule.a_pct_least, 0.10) * least,
+                   mnum(rule.a_pct_height, 0.40) * h);
+  a = Math.max(a, mnum(rule.a_min_pct_least, 0.04) * least, mnum(rule.a_min_ft, 3));
+  return Math.min(a, least / 2);
+}
+function commercialFastening(m, table) {
+  m = m || {};
+  const t = table || {};
+  const rule    = t.zone_rule || {};
+  const boardSf = mnum(t.board_sf, 32) || 32;
+  const waste   = mnum(t.waste_pct, 0);
+  const ratings = t.ratings || {};
+  const warnings = [];
+  const zeroLayer = () => {
+    const bz = {}; FASTEN_ZONES.forEach(z => { bz[z] = { count: 0 }; });
+    return { applies:false, by_zone:bz, raw:0, total:0 };
+  };
+  const bail = reason => {
+    const zs = {}; FASTEN_ZONES.forEach(z => { zs[z] = { sf:0, source:'none' }; });
+    return { ok:false, reason, a:0,
+             rating:null, rating_requested:mnum(m.comm_uplift), rating_label:'', rating_note:'',
+             zones:zs, zone_source:'none',
+             area_check:{ bbox_sf:0, measured_sf:0, delta_pct:0, warn:false },
+             layers:0, board_sf:boardSf, waste_pct:waste,
+             insul:zeroLayer(), seam:zeroLayer(), warnings };
+  };
+
+  if (!Object.keys(ratings).length) return bail('no_table');
+
+  // Uplift: exact match, else the smallest published row AT OR ABOVE what was
+  // asked for. Never round down — that under-fastens. Keys are JSON strings, so
+  // sort numerically ("105" sorts below "60" as text).
+  const requested = mnum(m.comm_uplift);
+  if (requested <= 0) return bail('no_uplift_rating');
+  const keys = Object.keys(ratings).filter(k => /^-?\d+$/.test(String(k)))
+    .map(Number).sort((x, y) => x - y);
+  if (!keys.length) return bail('no_table');
+  let chosen = keys.find(k => k >= requested);
+  let ratingNote = '';
+  if (chosen === undefined) {
+    chosen = keys[keys.length - 1];
+    ratingNote = `No published row at or above ${requested} psf — using the highest available (${chosen} psf). Verify against the system approval.`;
+    warnings.push(ratingNote);
+  }
+  const row = ratings[String(chosen)] || {};
+
+  // Zone areas: a manual override wins, else computed from the bounding box.
+  const L = mnum(m.comm_length_ft), W = mnum(m.comm_width_ft), H = mnum(m.comm_height_ft);
+  const ov = { field: mnum(m.comm_zone_field_sf), perimeter: mnum(m.comm_zone_perim_sf),
+               corner: mnum(m.comm_zone_corner_sf) };
+  const hasOv = FASTEN_ZONES.some(z => ov[z] > 0);
+
+  let a = 0;
+  const comp = { field:0, perimeter:0, corner:0 };
+  const bbox = L * W;
+  if (L > 0 && W > 0 && H > 0) {
+    a = _asceZoneWidth(Math.min(L, W), H, rule);
+    const band = bbox - Math.max(L - 2*a, 0) * Math.max(W - 2*a, 0);
+    // ASCE 7-10 corners are a square a x a (4a^2 total); ASCE 7-16 redrew them
+    // as an L (two 2a x a legs) = 3a^2 each, 12a^2 total. 3x in the zone that
+    // matters most, so it is a table setting, not a constant.
+    let corner = ((rule.corner_shape || 'L') === 'L' ? 12 : 4) * a * a;
+    corner = Math.min(corner, band);
+    comp.field     = Math.max(bbox - band, 0);
+    comp.perimeter = Math.max(band - corner, 0);
+    comp.corner    = corner;
+  } else if (!hasOv) {
+    return bail('missing_dimensions');
+  }
+
+  const zones = {}, sources = [];
+  FASTEN_ZONES.forEach(z => {
+    if (ov[z] > 0) { zones[z] = { sf: ov[z], source:'override' }; sources.push('override'); }
+    else           { zones[z] = { sf: comp[z], source:'computed' }; sources.push('computed'); }
+  });
+  const zoneSource = sources.every(s => s === sources[0]) ? sources[0] : 'mixed';
+  const totalZoneSf = FASTEN_ZONES.reduce((s, z) => s + zones[z].sf, 0);
+  if (totalZoneSf <= 0) return bail('missing_dimensions');
+
+  // The bounding box is an independent second area from the measured roof. On
+  // an L-shaped building it is bigger AND the real roof has more corners, so
+  // surface the gap rather than scaling anything.
+  const measuredSf = mnum(m.comm_squares) * 100;
+  const ref = bbox > 0 ? bbox : totalZoneSf;
+  let deltaPct = 0, areaWarn = false;
+  if (measuredSf > 0 && ref > 0) {
+    deltaPct = Math.abs(ref - measuredSf) / ref * 100;
+    if (deltaPct > 10) {
+      areaWarn = true;
+      warnings.push(`Bounding box (${Math.round(ref).toLocaleString()} SF) differs from the measured roof area (${Math.round(measuredSf).toLocaleString()} SF) by ${deltaPct.toFixed(0)}% — this roof is not a rectangle. Enter zone areas manually.`);
+    }
+  }
+  if (hasOv && ref > 0 && Math.abs(totalZoneSf - ref) / ref * 100 > 2) {
+    warnings.push(`Zone areas sum to ${Math.round(totalZoneSf).toLocaleString()} SF but the roof is ${Math.round(ref).toLocaleString()} SF — check the override values.`);
+  }
+  if (mnum(m.comm_sections) >= 2) {
+    warnings.push('Multiple roof levels — zones are computed for ONE rectangle. Enter zone areas manually for a stepped or multi-level roof.');
+  }
+
+  // A cleared field stores an explicit 0, which legitimately means "recover, no
+  // new insulation" — so MISSING means 1, but 0 means 0.
+  const layers = (m.comm_insul_layers === undefined || m.comm_insul_layers === null ||
+                  m.comm_insul_layers === '') ? 1 : mnum(m.comm_insul_layers);
+
+  // Attachment is resolved from the bundle's products and stored as a
+  // measurement (see _syncCommAttachment) so this stays pure. Absent = assume
+  // insulation applies, and FAIL CLOSED on seam: an adhered system has no seam
+  // fasteners, and guessing yes would put thousands of phantom screws on a bid.
+  const insulApplies = (m.comm_insul_attach === undefined || m.comm_insul_attach === null ||
+                        m.comm_insul_attach === '') || mnum(m.comm_insul_attach) > 0;
+  const seamApplies  = mnum(m.comm_seam_attach) > 0;
+
+  const perBoard = row.insul_per_board || {};
+  const seamSpec = row.seam || {};
+  const insul = { applies: !!(insulApplies && layers > 0), by_zone:{}, raw:0, total:0 };
+  const seam  = { applies: !!seamApplies, by_zone:{}, raw:0, total:0 };
+
+  FASTEN_ZONES.forEach(z => {
+    const sf = zones[z].sf;
+    const pb = mnum(perBoard[z]);
+    const boards = boardSf > 0 ? sf / boardSf : 0;
+    const cnt = insul.applies ? boards * pb * layers : 0;
+    insul.by_zone[z] = { boards, per_board: pb, count: cnt };
+    insul.raw += cnt;
+
+    const spec = seamSpec[z] || {};
+    const sw = mnum(spec.sheet_width_ft), sp = mnum(spec.spacing_in);
+    // Tributary area per fastener. A run of length L at spacing s truly has
+    // L/s + 1 fasteners; at roof scale the +1 is swamped by waste_pct.
+    const perFast = (sw > 0 && sp > 0) ? sw * (sp / 12) : 0;
+    const scnt = (seam.applies && perFast > 0) ? sf / perFast : 0;
+    seam.by_zone[z] = { sf_per_fastener: perFast, spacing_in: sp, sheet_width_ft: sw, count: scnt };
+    seam.raw += scnt;
+  });
+  [insul, seam].forEach(layer => {
+    layer.total = Math.ceil(layer.raw * (1 + waste / 100) - 1e-9);
+  });
+
+  return {
+    ok:true, reason:'', a,
+    rating: chosen, rating_requested: requested,
+    rating_label: row.label || (chosen + ' psf'), rating_note: ratingNote,
+    zones, zone_source: zoneSource,
+    area_check: { bbox_sf: bbox, measured_sf: measuredSf, delta_pct: deltaPct, warn: areaWarn },
+    layers, board_sf: boardSf, waste_pct: waste,
+    insul, seam, warnings,
+  };
+}
+
+/* The fastening table is DATA served by /api/commercial-fastening, not a
+   constant mirrored on both sides — that is what keeps app.js and app.py from
+   drifting the way the ventilation constants can. Lazy-loaded like
+   _jurisdictions; the .finally() re-derives quantities so the momentary
+   pre-fetch zero corrects itself within one round trip. */
+let _fastenTable = null;
+let _fastenTableLoading = false;
+function _ensureFastenTable() {
+  if (_fastenTable || _fastenTableLoading) return;
+  _fastenTableLoading = true;
+  fetch('/api/commercial-fastening')
+    .then(r => r.json())
+    .then(d => { _fastenTable = d || {}; })
+    .catch(() => { _fastenTable = { ratings:{}, zone_rule:{}, board_sf:32, waste_pct:0 }; })
+    .finally(() => {
+      _fastenTableLoading = false;
+      if (S && S.trades) { applyMeasurements(); }
+      if (activePage === 'scope') renderScopePage();
+    });
+}
+function commFastening() { return commercialFastening(S.measurements || {}, _fastenTable); }
+
+/* ── Fastening panel (Scope page, commercial only) ──────────────────────
+   Shows the zone geometry, the density row in force, and the resulting
+   counts — broken out per zone, because the corner spacing is what the crew
+   actually lays out by. When it cannot calculate it says so in red and shows
+   zero; it never fills the gap with a plausible number. */
+const _FASTEN_ZONE_LABELS = { field:'Field', perimeter:'Perimeter', corner:'Corner' };
+const _FASTEN_BAIL_TEXT = {
+  no_uplift_rating: 'Pick an uplift rating below — it decides every fastener count on this roof.',
+  missing_dimensions: 'Enter building length, width, and height below (or type the zone areas in directly).',
+  no_table: 'No fastening table is configured. A manager can set one in ⚙ Settings.',
+};
+function setCommUplift(v)          { setMeasurement('comm_uplift', v); if (activePage === 'scope') renderScopePage(); }
+function setCommFastenNum(key, v)  { setMeasurement(key, v); if (activePage === 'scope') renderScopePage(); }
+function fastenPanelMarkup() {
+  if (!S.trades.commercial || !S.trades.commercial.enabled) return '';
+  _ensureFastenTable();
+  const m = S.measurements || {};
+  if (_fastenTableLoading || !_fastenTable) {
+    return `<div class="measure-panel measure-panel-fasten">
+      <div class="measure-panel-head"><h3>🔩 Fastening Schedule</h3>
+        <span class="measure-hint">Loading the fastening table…</span></div></div>`;
+  }
+  const r = commFastening();
+  const t = _fastenTable;
+  const attach = _commAttachProfile('commercial');
+  const num = (k, lbl, unit, ph) => `
+    <div class="measure-field">
+      <label>${lbl}</label>
+      <div class="measure-input-wrap">
+        <input type="number" min="0" step="0.1" value="${m[k] || ''}" placeholder="${ph || '0'}"
+          onchange="setCommFastenNum('${k}', this.value)">
+        <span class="measure-unit">${unit}</span>
+      </div>
+    </div>`;
+
+  const ratingKeys = Object.keys(t.ratings || {}).filter(k => /^-?\d+$/.test(k))
+    .map(Number).sort((a, b) => a - b);
+  const cur = mnum(m.comm_uplift);
+  const upliftSel = `
+    <div class="measure-field">
+      <label>Uplift Rating <span class="fasten-req">required</span></label>
+      <select class="fasten-select ${cur ? '' : 'is-empty'}" onchange="setCommUplift(this.value)">
+        <option value="0" ${cur ? '' : 'selected'}>Choose…</option>
+        ${ratingKeys.map(k => `<option value="${k}" ${cur === k ? 'selected' : ''}>${esc((t.ratings[String(k)] || {}).label || (k + ' psf'))}</option>`).join('')}
+      </select>
+    </div>`;
+
+  const bail = !r.ok ? `
+    <div class="fasten-warn fasten-warn-hard">
+      <strong>Fastener quantities are 0 — not calculated.</strong>
+      ${esc(_FASTEN_BAIL_TEXT[r.reason] || 'Missing input.')}
+    </div>` : '';
+
+  const zoneRows = !r.ok ? '' : `
+    <table class="fasten-table">
+      <thead><tr>
+        <th>Zone</th><th class="fz-num">Area</th><th class="fz-num">Plates/board</th>
+        <th class="fz-num">Insulation</th><th class="fz-num">Seam spacing</th><th class="fz-num">Seam</th>
+      </tr></thead>
+      <tbody>
+        ${FASTEN_ZONES.map(z => {
+          const zi = r.zones[z], ins = r.insul.by_zone[z], se = r.seam.by_zone[z];
+          return `<tr>
+            <td>${_FASTEN_ZONE_LABELS[z]}
+              <span class="fz-src fz-src-${zi.source}">${zi.source === 'override' ? 'manual' : 'computed'}</span></td>
+            <td class="fz-num">${Math.round(zi.sf).toLocaleString()} SF</td>
+            <td class="fz-num">${r.insul.applies ? ins.per_board : '—'}</td>
+            <td class="fz-num">${r.insul.applies ? Math.ceil(ins.count).toLocaleString() : '—'}</td>
+            <td class="fz-num">${r.seam.applies ? se.spacing_in + '" o.c. / ' + se.sheet_width_ft + "' sheet" : '—'}</td>
+            <td class="fz-num">${r.seam.applies ? Math.ceil(se.count).toLocaleString() : '—'}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+      <tfoot><tr>
+        <td colspan="3">Total incl. ${r.waste_pct}% waste</td>
+        <td class="fz-num"><strong>${r.insul.applies ? r.insul.total.toLocaleString() : '0'}</strong></td>
+        <td></td>
+        <td class="fz-num"><strong>${r.seam.applies ? r.seam.total.toLocaleString() : '0'}</strong></td>
+      </tr></tfoot>
+    </table>`;
+
+  // Say WHY a layer is zero, rather than showing a confident 0.
+  const layerNotes = !r.ok ? '' : [
+    !r.seam.applies && attach.source === 'adhered'
+      ? 'Seam fasteners: not applicable — this is a fully adhered system.' : '',
+    !r.seam.applies && attach.source === 'coating'
+      ? 'Coating system — no insulation or membrane fasteners on a restoration recover.' : '',
+    !r.seam.applies && attach.source === 'unknown'
+      ? '⚠️ This system\'s membrane is not tagged mechanical or adhered, so seam fasteners are NOT counted. If it is mechanically attached, tag the membrane product in the Price Book.' : '',
+    !r.insul.applies && r.layers === 0
+      ? 'Insulation fasteners: 0 — no fastened layers entered (recover over the existing roof).' : '',
+    (S.trades.commercial.simple_bundle || '').indexOf('modbit') > -1
+      ? 'Mod-bit base sheet fastening is NOT calculated here — it runs at a different density. Add it by hand.' : '',
+  ].filter(Boolean).map(s => `<div class="fasten-note">${s}</div>`).join('');
+
+  const warnings = (r.warnings || []).map(w => `<div class="fasten-warn">${esc(w)}</div>`).join('');
+
+  const zoneStat = !r.ok ? '' : `
+    <div class="fasten-stat">
+      <span class="fs-label">Zone width <em>a</em></span>
+      <span class="fs-val">${r.a.toFixed(1)} ft</span>
+      <span class="fs-sub">${esc((t.zone_rule || {}).standard || '')}${(t.zone_rule || {}).corner_shape === 'L' ? ' · L-shaped corners' : ' · square corners'}</span>
+    </div>
+    <div class="fasten-stat">
+      <span class="fs-label">Density row</span>
+      <span class="fs-val">${esc(r.rating_label)}</span>
+      <span class="fs-sub">${r.rating_requested !== r.rating ? 'rounded up from ' + r.rating_requested + ' psf' : 'exact match'}</span>
+    </div>`;
+
+  return `
+    <div class="measure-panel measure-panel-fasten">
+      <div class="measure-panel-head">
+        <h3>🔩 Fastening Schedule</h3>
+        <span class="measure-hint">Fastener counts by roof zone — corners take 2–3× the field density</span>
+      </div>
+      ${bail}
+      <div class="measure-groups">
+        <div class="measure-group">
+          <div class="measure-group-title">Building &amp; Uplift</div>
+          <div class="measure-fields">
+            ${num('comm_length_ft', 'Length', 'LF')}
+            ${num('comm_width_ft', 'Width', 'LF')}
+            ${num('comm_height_ft', 'Height', 'LF')}
+            ${upliftSel}
+            ${num('comm_insul_layers', 'Fastened Layers', 'EA', '1')}
+          </div>
+        </div>
+        <div class="measure-group">
+          <div class="measure-group-title">Zone Areas — leave blank to calculate from the dimensions</div>
+          <div class="measure-fields">
+            ${num('comm_zone_field_sf', 'Field', 'SF', 'auto')}
+            ${num('comm_zone_perim_sf', 'Perimeter', 'SF', 'auto')}
+            ${num('comm_zone_corner_sf', 'Corner', 'SF', 'auto')}
+          </div>
+        </div>
+      </div>
+      <div class="fasten-stats">${zoneStat}</div>
+      ${zoneRows}
+      ${layerNotes}
+      ${warnings}
+      <div class="fasten-foot">
+        <span class="fasten-disclaimer">${esc(t.source_note || '')}</span>
+        ${_meCanViewAll && _meCanViewAll() ? `<button class="fasten-edit-link" onclick="openSettings()">⚙ Edit fastening table</button>` : ''}
+      </div>
+    </div>`;
+}
+
 /* ── Global app settings (loaded from /api/settings at boot) ────────── */
 let appSettings = {};
 function _globalShingleColors() {
@@ -419,22 +814,35 @@ function _globalWastePct() {
 /* Company-wide contract + initials defaults (⚙ Settings, admin) — every NEW
    estimate seeds from these; the hardcoded texts are only the fallback when
    nothing has been saved yet. */
+/* The estimate types that own their own contract + initials. Anything else
+   (including a missing type) is retail. Commercial has its own Settings slots
+   so a manager can paste real commercial T&Cs, but falls back to the retail
+   text until they do — there is no stock commercial contract to ship. */
+const CONTRACT_TYPES = ['insurance','commercial'];
+function _ctype(t) { return CONTRACT_TYPES.includes(t) ? t : 'retail'; }
 function globalContract(type) {
-  const t = type === 'insurance' ? appSettings.contract_insurance : appSettings.contract_retail;
+  const t = { insurance: appSettings.contract_insurance,
+              commercial: appSettings.contract_commercial }[_ctype(type)]
+            ?? appSettings.contract_retail;
   return (t || '').trim() ? t : (type === 'insurance' ? DEFAULT_INSURANCE_CONTRACT : DEFAULT_CONTRACT);
 }
 function globalInitialTexts(type) {
-  const list = type === 'insurance' ? appSettings.initials_insurance : appSettings.initials_retail;
+  const list = { insurance: appSettings.initials_insurance,
+                 commercial: appSettings.initials_commercial }[_ctype(type)]
+               ?? appSettings.initials_retail;
   const clean = (list || []).map(s => String(s).trim()).filter(Boolean);
   return clean.length ? clean : (type === 'insurance' ? DEFAULT_INITIALS_INSURANCE : DEFAULT_INITIALS_RETAIL);
 }
 /* True when the text is one of the untouched stock contracts (hardcoded or
-   the saved global default) — used to decide whether a retail↔insurance
-   switch may safely swap the contract out. */
+   the saved global default) — used to decide whether a type switch may safely
+   swap the contract out. EVERY type's default must be listed here: a type
+   missing from this list makes its own default look rep-edited, and the switch
+   away from it silently keeps the wrong contract. */
 function isStockContract(text) {
   if (!(text || '').trim()) return true;
   return [DEFAULT_CONTRACT, DEFAULT_INSURANCE_CONTRACT,
-          globalContract('retail'), globalContract('insurance')].includes(text);
+          globalContract('retail'), globalContract('insurance'),
+          globalContract('commercial')].includes(text);
 }
 function evalFormula(formula, m) {
   // Replace known measurement variable names with their numeric values, then eval.
@@ -473,12 +881,21 @@ function applyMeasurements() {
   });
   applyTrade(S.trades.roofing);
   applyTrade(S.trades.siding);
+  applyTrade(S.trades.commercial);
   setDirty();
   renderTotals();
 }
 const SIDING_MEAS_KEYS = new Set([
   'siding_squares','siding_waste_pct','siding_outside_corners_lf',
   'siding_inside_corners_lf','siding_j_channel_lf','siding_starter_lf','siding_soffit_lf',
+]);
+const COMMERCIAL_MEAS_KEYS = new Set([
+  'comm_squares','comm_waste_pct','comm_perimeter_lf','comm_parapet_lf',
+  'comm_penetrations','comm_drains','comm_curbs','comm_skylights',
+  'comm_pitch_pans','comm_walkway_pads','comm_sections','comm_work_type',
+  'comm_length_ft','comm_width_ft','comm_height_ft','comm_uplift',
+  'comm_insul_layers','comm_zone_field_sf','comm_zone_perim_sf','comm_zone_corner_sf',
+  'comm_seam_attach','comm_insul_attach',
 ]);
 function setMeasurement(key, v) {
   if (!S.measurements) S.measurements = {};
@@ -494,6 +911,13 @@ function setMeasurement(key, v) {
     const sd = S.trades.siding;
     if (sd && sd.enabled && (!sd.line_items || sd.line_items.length === 0)) {
       buildBundleDefaults('siding');   // siding is bundle-driven now, not buildTradeDefaults
+      built = true;
+    }
+  }
+  if (COMMERCIAL_MEAS_KEYS.has(key)) {
+    const cd = S.trades.commercial;
+    if (cd && cd.enabled && (!cd.line_items || cd.line_items.length === 0)) {
+      buildBundleDefaults('commercial');
       built = true;
     }
   }
@@ -513,6 +937,10 @@ function setMeasurement(key, v) {
   // field being typed into.
   const vp = document.querySelector('.measure-panel-vent');
   if (vp) { const html = ventPanelMarkup(); if (html) vp.outerHTML = html; else vp.remove(); }
+  // Same for the fastening panel — its counts change with almost every
+  // commercial measurement, so it has to keep up while the rep is typing.
+  const fp = document.querySelector('.measure-panel-fasten');
+  if (fp) { const html = fastenPanelMarkup(); if (html) fp.outerHTML = html; else fp.remove(); }
 }
 function setIwSecondRow(on) {
   // Stored as 0/1 in measurements so it survives save/load and is available
@@ -520,6 +948,59 @@ function setIwSecondRow(on) {
   setMeasurement('iw_second_row', on ? 1 : 0);
   // Re-render so the toggle's highlight state follows the checkbox.
   if (activePage === 'scope') renderScopePage();
+}
+
+/* ── Commercial: job type + complexity flags ────────────────────────────
+   comm_work_type lives in measurements (0 = re-roof, 1 = new construction) for
+   the same reason iw_second_row does: MEASURE_DEFS and custom formulas can only
+   see measurements. It drives which of the two labor lines carries quantity —
+   the other goes to 0 and a zero-qty line never prices and never prints. */
+function setCommWorkType(v) {
+  setMeasurement('comm_work_type', v ? 1 : 0);
+  if (activePage === 'scope') renderScopePage();
+}
+// Rep-facing only — these never touch price. They ride along to the production
+// packet so the crew and the scheduler see what makes the job hard.
+const COMM_FLAGS = [
+  { key:'penetrations_10plus', label:'10+ penetrations',        auto:m => mnum(m.comm_penetrations) >= 10 },
+  { key:'levels_3plus',        label:'3+ roof levels/sections', auto:m => mnum(m.comm_sections) >= 3 },
+  { key:'expansion_joints',    label:'Expansion joints' },
+  { key:'heavy_hvac',          label:'Heavy rooftop HVAC' },
+];
+function commState() {
+  if (!S.commercial || typeof S.commercial !== 'object') S.commercial = { flags:{}, notes:'' };
+  if (!S.commercial.flags || typeof S.commercial.flags !== 'object') S.commercial.flags = {};
+  return S.commercial;
+}
+function setCommFlag(key, on) {
+  commState().flags[key] = !!on;
+  setDirty();
+  if (activePage === 'scope') renderScopePage();
+}
+function setCommNotes(v) { commState().notes = v; setDirty(); }
+function commComplexityMarkup() {
+  const c = commState(), m = S.measurements || {};
+  return `
+    <div class="comm-complexity">
+      <div class="comm-complexity-head">
+        <strong>🔶 Job complexity</strong>
+        <span class="comm-complexity-hint">Internal only — never shown to the customer. Flag what may warrant a labor premium.</span>
+      </div>
+      <div class="comm-complexity-flags">
+        ${COMM_FLAGS.map(f => {
+          const on = !!c.flags[f.key];
+          // Suggest, never decide: the measurements say it looks complex, but
+          // whether that changes the price is the rep's call.
+          const suggest = !on && f.auto && f.auto(m);
+          return `<label class="comm-flag ${on?'enabled':''} ${suggest?'suggested':''}">
+            <input type="checkbox" ${on?'checked':''} onchange="setCommFlag('${f.key}',this.checked)">
+            ${f.label}${suggest?' <span class="comm-flag-suggest">← measurements suggest this</span>':''}
+          </label>`;
+        }).join('')}
+      </div>
+      <textarea class="comm-complexity-notes" rows="2" placeholder="Access, staging, crane, occupied building, night work…"
+        onchange="setCommNotes(this.value)">${esc(c.notes || '')}</textarea>
+    </div>`;
 }
 
 /* ── Ventilation panel: drive the vent line items ───────────────────────
@@ -827,7 +1308,7 @@ function blankEstimate() {
                // {good,better,best,simple}; a missing/'' value inherits the
                // tier_rates default. Highest priority in the resolution chain.
                trade_rates:{},
-               per_trade_overrides:{ roofing:null,siding:null,windows:null,gutters:null,other:null,insurance:null } },
+               per_trade_overrides:{ roofing:null,siding:null,windows:null,gutters:null,commercial:null,other:null,insurance:null } },
     selected_tier: 'better',
     tier_descriptions: { good:'', better:'', best:'' },
     tier_features:     { good:[], better:[], best:[] },
@@ -858,6 +1339,13 @@ function blankEstimate() {
       windows: { enabled:false, line_items:[], colors:{}, mode:'gbb', selected_tier:'better',
                  tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
       gutters: { enabled:false, line_items:[], colors:{}, mode:'simple', selected_tier:'better',
+                 tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
+      // Commercial low-slope. A bundle trade (pick a system, get the build-up)
+      // but defaulting to simple mode — a commercial bid is one system, one
+      // price. The rep can still flip it to G/B/B per estimate.
+      commercial: { enabled:false, line_items:[], colors:{}, mode:'simple', selected_tier:'better',
+                 simple_bundle:'',
+                 tier_bundles:{good:'',better:'',best:''},
                  tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
       other:     { enabled:false, line_items:[], colors:{}, mode:'gbb', selected_tier:'better',
                    tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
@@ -953,7 +1441,7 @@ function tradeTotal(trade, tier) {
   if (trade === 'insurance') return 0; // insurance uses insuranceTotal()
   const td = S.trades[trade];
   if (!td || !td.enabled) return 0;
-  const effectiveMode = td.mode || (trade === 'gutters' ? 'simple' : 'gbb');
+  const effectiveMode = effectiveTradeMode(trade, td);
   if (effectiveMode === 'simple') {
     return (td.line_items || []).reduce((sum, item) =>
       sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0), 0);
@@ -969,12 +1457,12 @@ function tradeTotal(trade, tier) {
   }, 0);
 }
 function grandTotal(tier) {
-  return ['roofing','siding','windows','gutters','other'].reduce((s,tr)=>s+tradeTotal(tr,tier),0);
+  return RETAIL_TRADE_KEYS.reduce((s,tr)=>s+tradeTotal(tr,tier),0);
 }
 // Mix-and-match total: every trade priced at ITS OWN selected tier.
 // MUST mirror calc_selected_total in app.py.
 function selectedTotal() {
-  return ['roofing','siding','windows','gutters','other']
+  return RETAIL_TRADE_KEYS
     .reduce((s,tr)=>s+tradeTotal(tr, tradeTier(tr)),0);
 }
 function insuranceTotal() {
@@ -1065,9 +1553,9 @@ function pageComplete(page) {
     case 'cover':    return !!(S.customer && S.customer.name);
     case 'intro':    return !!(S.intro_text && S.intro_text.trim());
     case 'photos':   return (S.photos||[]).length > 0;
-    case 'scope':    return ['roofing','siding','windows','gutters','other'].some(hasItems);
+    case 'scope':    return RETAIL_TRADE_KEYS.some(hasItems);
     case 'options':  return selectedTotal() > 0 || insuranceTotal() > 0;
-    case 'products': return ['roofing','siding','windows','gutters','other'].some(t =>
+    case 'products': return RETAIL_TRADE_KEYS.some(t =>
                         S.trades[t].enabled && Object.values(S.trades[t].colors||{}).some(v => String(v||'').trim()));
     case 'pricing':  return selectedTotal() > 0 || insuranceTotal() > 0;
     case 'contract': return !!(S.contract_text && S.contract_text.trim());
@@ -1131,12 +1619,13 @@ function renderPricingModeUI() {
   document.getElementById('mode-margin').classList.toggle('active', S.pricing.mode === 'margin');
   document.getElementById('mode-markup').classList.toggle('active', S.pricing.mode === 'markup');
 }
+const ESTIMATE_TYPES = ['retail','insurance','commercial'];
 function renderEstimateTypeUI() {
   const t = S.estimate_type || 'retail';
-  const rBtn = document.getElementById('type-retail');
-  const iBtn = document.getElementById('type-insurance');
-  if (rBtn) rBtn.classList.toggle('active', t === 'retail');
-  if (iBtn) iBtn.classList.toggle('active', t === 'insurance');
+  ESTIMATE_TYPES.forEach(k => {
+    const btn = document.getElementById('type-' + k);
+    if (btn) btn.classList.toggle('active', t === k);
+  });
 }
 // True when the current initials still match an untouched default set
 // (either the hardcoded texts or the saved company-wide defaults)
@@ -1145,38 +1634,70 @@ function initialsMatchDefault(type) {
   const hard = (type === 'insurance' ? DEFAULT_INITIALS_INSURANCE : DEFAULT_INITIALS_RETAIL).join('\n');
   return cur === hard || cur === globalInitialTexts(type).join('\n');
 }
+// True when the initials are still SOMEBODY's untouched defaults — i.e. the rep
+// hasn't written their own, so a type switch may replace them.
+function initialsAreStock() {
+  const cur = (S.contract_initials || []).map(i => i.text).join('\n');
+  if (!cur.trim()) return true;
+  return ESTIMATE_TYPES.some(t => initialsMatchDefault(t));
+}
+// Commercial bids target 29% gross margin (the rate the commercial-estimator
+// process has always used). Seeded once, per trade, and never forced back —
+// a rep who changes it on this estimate keeps their number.
+function seedCommercialRates() {
+  S.pricing.trade_rates = S.pricing.trade_rates || {};
+  if (!S.pricing.trade_rates.commercial)
+    S.pricing.trade_rates.commercial = { simple:29, good:29, better:29, best:29 };
+}
 function setEstimateType(type) {
+  if (!ESTIMATE_TYPES.includes(type)) type = 'retail';
   S.estimate_type = type;
+  const only = tk => TRADES.forEach(t => { if (S.trades[t]) S.trades[t].enabled = (t === tk); });
+
   if (type === 'insurance') {
-    ['roofing','siding','windows','gutters','other'].forEach(t => {
-      S.trades[t].enabled = false;
-    });
-    S.trades.insurance.enabled = true;
+    only('insurance');
     activeTrade = 'insurance';
-    // Auto-load insurance contract if still on an untouched default or blank
-    if (isStockContract(S.contract_text)) {
-      S.contract_text = globalContract('insurance');
-      const ta = document.getElementById('contract-textarea');
-      if (ta) ta.value = S.contract_text;
-    }
-    // Swap initials to insurance defaults if still on the retail defaults
-    if (!S.contract_initials || !S.contract_initials.length || initialsMatchDefault('retail'))
-      S.contract_initials = defaultInitials('insurance');
-    switchPage('pricing');
+  } else if (type === 'commercial') {
+    only('commercial');
+    activeTrade = 'commercial';
+    seedCommercialRates();
+    // A flat roof has no shingle to pick — leaving this on would ask the
+    // customer to choose a shingle color before they could sign.
+    if (S.shingle_selection) S.shingle_selection.enabled = false;
+    if (!(S.trades.commercial.line_items || []).length) buildBundleDefaults('commercial');
   } else {
-    // Auto-restore retail contract if still on an untouched default or blank
-    if (isStockContract(S.contract_text)) {
-      S.contract_text = globalContract('retail');
-      const ta = document.getElementById('contract-textarea');
-      if (ta) ta.value = S.contract_text;
-    }
-    if (!S.contract_initials || !S.contract_initials.length || initialsMatchDefault('insurance'))
-      S.contract_initials = defaultInitials('retail');
-    if (activePage === 'options') renderOptionsPage();
-    else if (activePage === 'pricing') { renderTabBar(); renderTradeContent(); }
+    // Back to retail: insurance/commercial each turned every other trade off,
+    // so restore roofing — otherwise the estimate lands on an empty tab with
+    // no enabled trade at all.
+    S.trades.insurance.enabled = false;
+    S.trades.commercial.enabled = false;
+    if (!RETAIL_TRADE_KEYS.some(t => S.trades[t].enabled && t !== 'commercial'))
+      S.trades.roofing.enabled = true;
+    if (S.shingle_selection && S.trades.roofing.enabled) S.shingle_selection.enabled = true;
+    activeTrade = 'roofing';
   }
+
+  // Swap the contract + initials only while they're still stock — a rep who
+  // edited either one keeps their version through a type switch.
+  if (isStockContract(S.contract_text)) {
+    S.contract_text = globalContract(type);
+    const ta = document.getElementById('contract-textarea');
+    if (ta) ta.value = S.contract_text;
+  }
+  if (initialsAreStock()) S.contract_initials = defaultInitials(type);
+
   setDirty();
   renderEstimateTypeUI();
+  // Commercial starts at measurements (the bid is driven by the EagleView
+  // numbers); insurance starts at pricing (its line items come from the carrier).
+  if (type === 'commercial') switchPage('scope');
+  else if (type === 'insurance') switchPage('pricing');
+  else {
+    if (activePage === 'options') renderOptionsPage();
+    else if (activePage === 'pricing') { renderTabBar(); renderTradeContent(); }
+    else if (activePage === 'scope') renderScopePage();
+  }
+  renderTotals();
   if (activePage === 'contract') renderContractPage();
 }
 function renderTierButtons() {
@@ -1226,10 +1747,10 @@ function renderTotals() {
 function tierProfit(tier) {
   let material = 0, labor = 0, gbbSell = 0, simpleSell = 0;
   const perTrade = [];
-  ['roofing','siding','windows','gutters','other'].forEach(trade => {
+  RETAIL_TRADE_KEYS.forEach(trade => {
     const td = S.trades[trade];
     if (!td || !td.enabled) return;
-    const mode = td.mode || (trade === 'gutters' ? 'simple' : 'gbb');
+    const mode = effectiveTradeMode(trade, td);
     if (mode === 'simple') {
       let s = 0, c = 0;
       (td.line_items||[]).forEach(item => {
@@ -1606,6 +2127,7 @@ function openPriceBook() {
   });
   pbRoofView = 'products';
   pbEditBundleId = null;
+  _pbBulletsOpen = {};
   pbActiveTrade = 'roofing';
   pbActiveTab = 'master';
   pbView = 'catalog';
@@ -1678,7 +2200,7 @@ function renderPBModal() {
 function pbSetRoofView(v) { pbRoofView = v; pbEditBundleId = null; renderPBModal(); }
 // Switching trades resets the bundle editor state so the Products/Bundles view
 // and any open bundle never carry over to a different trade's catalog.
-function pbSetTrade(t) { pbActiveTrade = t; pbRoofView = 'products'; pbEditBundleId = null; renderPBModal(); }
+function pbSetTrade(t) { pbActiveTrade = t; pbRoofView = 'products'; pbEditBundleId = null; _pbBulletsOpen = {}; renderPBModal(); }
 
 function pbRenderBundleTrade() {
   return `
@@ -1697,7 +2219,7 @@ function pbRenderRoofCatalog() {
   const measOpts = sel => `<option value="">Manual</option>` +
     Object.entries(MEASURE_DEFS).map(([k,d])=>`<option value="${k}" ${sel===k?'selected':''}>${esc(d.label)}</option>`).join('');
   return `
-    <div class="pb-roof-intro">Your full ${esc(TRADE_LABELS[pbActiveTrade].toLowerCase())} material &amp; labor list — one price each. Add every product you use; bundles pull from this list.</div>
+    <div class="pb-roof-intro">Your full ${esc(TRADE_LABELS[pbActiveTrade].toLowerCase())} material &amp; labor list — one price each. Add every product you use; bundles pull from this list. <strong>💬</strong> sets what each one says on the customer's Good/Better/Best card.</div>
     <div class="pb-table-wrap">
     <table class="pb-table">
       <thead><tr>
@@ -1722,12 +2244,40 @@ function pbRenderRoofCatalog() {
             <td><div class="pb-tier-cost-wrap"><span class="pb-tier-dollar">$</span>
               <input class="pb-tier-cost" type="number" min="0" step="0.01" value="${it.cost!==undefined&&it.cost!==''?it.cost:''}" placeholder="0.00" onchange="pbRoofCatSet(${i},'cost',this.value)"></div></td>
             <td style="text-align:center"><input type="checkbox" ${it.customer_visible!==false?'checked':''} onchange="pbRoofCatSet(${i},'customer_visible',this.checked)"></td>
-            <td style="text-align:center"><button class="pb-del-btn" onclick="pbRoofCatDel(${i})" title="Delete product">✕</button></td>
-          </tr>`).join('') : `<tr><td colspan="7" class="pb-empty">No products yet — add your first below.</td></tr>`}
+            <td class="pb-cat-actions">
+              <button class="pb-order-btn ${_pbBulletsOpen[it.id]?'on':''}" onclick="pbToggleBullets('${it.id}')"
+                title="What this product says on the Good/Better/Best card">💬</button>
+              <button class="pb-del-btn" onclick="pbRoofCatDel(${i})" title="Delete product">✕</button>
+            </td>
+          </tr>
+          ${_pbBulletsOpen[it.id] ? `
+          <tr class="pb-bullets-row"><td></td><td colspan="6">
+            <label class="pb-variant-field-label">Customer wording <small>one bullet per line</small></label>
+            <textarea class="pb-bullets-ta" rows="3"
+              placeholder="${esc(it.name||'Product name')}"
+              onchange="pbRoofCatSetBullets(${i},this.value)">${esc((it.bullets||[]).join('\n'))}</textarea>
+            <div class="pb-bundle-copy-hint">${Array.isArray(it.bullets)
+              ? (it.bullets.length ? 'Shown on every package that includes this product.'
+                 : 'Empty — this product is in the scope and priced, but says nothing on the card.')
+              : `Not set — the card falls back to the product name, “${esc(it.name||'')}”.`}</div>
+          </td></tr>` : ''}`).join('') : `<tr><td colspan="7" class="pb-empty">No products yet — add your first below.</td></tr>`}
       </tbody>
     </table>
     </div>
     <div style="margin-top:10px"><button class="btn-secondary" onclick="pbRoofCatAdd()">+ Add Product</button></div>`;
+}
+// Which products have their customer-wording editor expanded, by product id.
+let _pbBulletsOpen = {};
+function pbToggleBullets(pid) { _pbBulletsOpen[pid] = !_pbBulletsOpen[pid]; renderPBModal(); }
+/* Empty box DELETES the key rather than saving [] — absence means "fall back to
+   the product name", which is what a manager who never touched this wants. To
+   silence a product deliberately, untick Show. (An explicit [] in the seeds is
+   how the legacy fastener line and the misc/labor lines stay quiet.) */
+function pbRoofCatSetBullets(i, text) {
+  const it = pbCat()[i]; if (!it) return;
+  const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
+  if (lines.length) it.bullets = lines; else delete it.bullets;
+  renderPBModal();
 }
 function pbRoofCatSet(i, field, val) {
   const it = pbCat()[i]; if (!it) return;
@@ -1802,14 +2352,12 @@ function pbRenderBundleEditor(b) {
       <label class="pb-variant-field-label">Customer tagline</label>
       <textarea class="pb-bundle-desc" rows="2" placeholder="One line under the price on the Good/Better/Best card…"
         onchange="pbSetBundleField('${b.id}','description',this.value)">${esc(b.description||'')}</textarea>
-      <label class="pb-variant-field-label">What's Included</label>
-      <textarea class="pb-bundle-feats" rows="6"
-        placeholder="One item per line — shown as bullet points on the estimate…
-e.g. Class 4 impact-resistant shingles
-Lifetime limited manufacturer warranty
-Full tear-off included"
-        onchange="pbSetBundleFeatures('${b.id}',this.value)">${esc((b.features||[]).join('\n'))}</textarea>
-      <div class="pb-bundle-copy-hint">Picking this bundle on an estimate replaces that package's tagline and bullets with this copy.</div>
+      <label class="pb-variant-field-label">Closing bullets <small>things no product covers</small></label>
+      <textarea class="pb-bundle-feats" rows="2"
+        placeholder="One per line, added after the product bullets…
+e.g. 5-year Project One workmanship warranty"
+        onchange="pbSetBundleExtras('${b.id}',this.value)">${esc((b.extra_features||[]).join('\n'))}</textarea>
+      <div id="pb-bundle-feat-box">${pbRenderBundleFeaturePreview(b)}</div>
     </div>
     <div class="pb-bundle-pick-hd">Products in this bundle <small>tap to include — unit price shown</small></div>
     <div class="pb-bundle-picker">
@@ -1820,6 +2368,42 @@ Full tear-off included"
           <span class="pb-bundle-chip-cost">${(p.cost!==undefined&&p.cost!=='')?fmtCur(parseFloat(p.cost)||0):'—'}${p.unit?'/'+esc(p.unit):''}</span>
         </label>`).join('') : '<div class="pb-empty">Add products in the Products tab first.</div>'}
     </div>`;
+}
+/* The exact card the customer will see, built the same way an estimate builds
+   it. It reads off the WORKING copies (pbCat/pbBundles), so ticking a product
+   chip updates the preview — which is the whole point: the manager can see
+   that dropping soffit drops the soffit bullet. */
+function pbRenderBundleFeaturePreview(b) {
+  const feats = pbBundleFeatures(b);
+  const silent = (b.product_ids || []).filter(pid => {
+    const p = pbCat().find(x => x.id === pid);
+    return p && (p.customer_visible === false ||
+                 (Array.isArray(p.bullets) && !p.bullets.length));
+  }).length;
+  return `
+    <label class="pb-variant-field-label">What's Included <small>built from the products below</small></label>
+    ${feats.length ? `<ul class="pb-bundle-feat-preview">${feats.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`
+      : `<div class="pb-empty">No bullets yet — add products, or give them customer wording in the Products tab.</div>`}
+    <div class="pb-bundle-copy-hint">Edit this wording on each <strong>product</strong> (Products tab → 💬). Picking this
+      bundle on an estimate replaces that package's tagline and bullets with what you see here${
+      silent ? `; ${silent} product${silent===1?' is':'s are'} set to say nothing` : ''}.</div>`;
+}
+// Same rule as bundleFeatures(), against the Price Book's unsaved working copies.
+function pbBundleFeatures(b) {
+  const cat = pbCat();
+  const out = [], seen = new Set();
+  const push = s => {
+    const t = String(s == null ? '' : s).trim();
+    if (t && !seen.has(t)) { seen.add(t); out.push(t); }
+  };
+  (b.product_ids || []).forEach(pid => {
+    const p = cat.find(x => x.id === pid);
+    if (!p || p.customer_visible === false) return;
+    if (Array.isArray(p.bullets)) p.bullets.forEach(push);
+    else push(p.name);
+  });
+  (b.extra_features || []).forEach(push);
+  return out;
 }
 function pbRoofSetDefault(tier, val) { pbDefs()[tier] = val; }
 function pbOpenBundle(id) { pbEditBundleId = id; renderPBModal(); }
@@ -1843,9 +2427,17 @@ function pbSetBundleField(id, field, val) {
 // Bullets are stored as an array (same shape the Options page uses). Always
 // ASSIGN — an emptied box saves [] rather than dropping the key, which is what
 // tells the server the manager meant it and to stop backfilling the seed copy.
-function pbSetBundleFeatures(id, text) {
+function pbSetBundleExtras(id, text) {
   const b = pbBundles().find(x => x.id === id); if (!b) return;
-  b.features = text.split('\n').map(s => s.trim()).filter(Boolean);
+  b.extra_features = text.split('\n').map(s => s.trim()).filter(Boolean);
+  pbRefreshBundlePreview(b);
+}
+// Repaint just the What's Included preview. A full renderPBModal() would throw
+// away the manager's scroll position mid-edit, and toggling 20 product chips is
+// exactly when that hurts.
+function pbRefreshBundlePreview(b) {
+  const box = document.getElementById('pb-bundle-feat-box');
+  if (box && b) box.innerHTML = pbRenderBundleFeaturePreview(b);
 }
 function pbBundleToggle(id, pid, on) {
   const b = pbBundles().find(x => x.id === id); if (!b) return;
@@ -1854,6 +2446,7 @@ function pbBundleToggle(id, pid, on) {
   else b.product_ids = b.product_ids.filter(x => x !== pid);
   const chip = (typeof event !== 'undefined' && event.target) ? event.target.closest('.pb-bundle-chip') : null;
   if (chip) chip.classList.toggle('on', on);
+  pbRefreshBundlePreview(b);
 }
 
 function pbTierCount(tier) {
@@ -2887,7 +3480,11 @@ function renderScopePage() {
     return;
   }
 
-  const RETAIL_TRADES = TRADES.filter(t => t !== 'insurance');
+  const isCommercial = (S.estimate_type || 'retail') === 'commercial';
+  // The trade toggles offer the trades that belong to THIS kind of estimate —
+  // a house doesn't get a Commercial checkbox and a warehouse doesn't get Siding.
+  const RETAIL_TRADES = RETAIL_TRADE_KEYS.filter(t =>
+    isCommercial ? t === 'commercial' || t === 'other' : t !== 'commercial');
   const allItems = [];
   RETAIL_TRADES.forEach(trade => {
     const td = S.trades[trade];
@@ -2910,7 +3507,7 @@ function renderScopePage() {
     <div class="measure-group">
       <div class="measure-group-title">${g.group}</div>
       <div class="measure-fields">
-        ${g.fields.map(f => {
+        ${g.fields.filter(f => !f.panelOnly).map(f => {
           const dflt = f.key === 'waste_pct' ? (m.waste_pct ?? 10) : f.key === 'siding_waste_pct' ? (m.siding_waste_pct ?? 10) : f.key === 'attic_sqft' ? (mnum(m.roof_squares)*100 || '') : '';
           const val  = m[f.key] !== undefined && m[f.key] !== 0 ? m[f.key] : dflt;
           return `<div class="measure-field">
@@ -2945,6 +3542,35 @@ function renderScopePage() {
     </div>`;
 
   const ventPanel = ventPanelMarkup();
+
+  // Commercial low-slope. A flat roof has no attic to ventilate and no ridge or
+  // valley to measure, so in commercial mode the steep-slope roof panel and the
+  // ventilation calculator are hidden rather than shown full of blanks.
+  const commercialMeasurePanel = S.trades.commercial?.enabled ? `
+    <div class="measure-panel measure-panel-commercial">
+      <div class="measure-panel-head">
+        <h3>🏢 Commercial Roof Measurements</h3>
+        <span class="measure-hint">From the EagleView / Hover report — the system build-up auto-fills from these</span>
+      </div>
+      <div class="measure-groups">
+        ${renderMeasureGroup(MEASURE_FIELDS.filter(g => g.group === 'Commercial'))}
+      </div>
+      <div class="comm-worktype">
+        <span class="comm-worktype-label">Job type</span>
+        <label class="comm-worktype-opt ${!mnum(m.comm_work_type) ? 'enabled' : ''}">
+          <input type="radio" name="comm-work-type" ${!mnum(m.comm_work_type) ? 'checked' : ''}
+            onchange="setCommWorkType(0)">
+          Re-Roof <span class="comm-worktype-rate">tear-off &amp; disposal included</span>
+        </label>
+        <label class="comm-worktype-opt ${mnum(m.comm_work_type) ? 'enabled' : ''}">
+          <input type="radio" name="comm-work-type" ${mnum(m.comm_work_type) ? 'checked' : ''}
+            onchange="setCommWorkType(1)">
+          New Construction <span class="comm-worktype-rate">install only</span>
+        </label>
+        <span class="comm-worktype-hint">Switches which labor line prices — the other drops to zero.</span>
+      </div>
+      ${commComplexityMarkup()}
+    </div>` : '';
 
   const sidingMeasurePanel = S.trades.siding.enabled ? `
     <div class="measure-panel measure-panel-siding">
@@ -2999,13 +3625,17 @@ function renderScopePage() {
       </div>
     </div>
 
-    ${measurePanel}
+    ${isCommercial ? '' : measurePanel}
 
-    ${ventPanel}
+    ${isCommercial ? '' : ventPanel}
+
+    ${commercialMeasurePanel}
+
+    ${isCommercial ? fastenPanelMarkup() : ''}
 
     ${permitJurisdictionMarkup()}
 
-    ${sidingMeasurePanel}
+    ${isCommercial ? '' : sidingMeasurePanel}
 
     ${hasAny ? `
       <div class="scope-table-wrap">
@@ -3189,7 +3819,7 @@ function genPkgFeatures(trade, tier) {
   const features = [];
   const td = S.trades[trade];
   if (td && td.enabled) {
-    const tradeMode = td.mode || (trade === 'gutters' ? 'simple' : 'gbb');
+    const tradeMode = effectiveTradeMode(trade, td);
     (td.line_items || []).forEach(item => {
       if (tradeMode === 'simple') {
         if (parseFloat(item.quantity) > 0 || parseFloat(item.unit_price) > 0)
@@ -3305,7 +3935,9 @@ function renderTradeContent() {
         ${td.enabled ? `<button class="btn-danger" onclick="clearTrade('${trade}')">Clear All</button>` : ''}
       </div>
     </div>
-    ${td.enabled && effectiveMode === 'simple' && !isInsurance ? renderBrandPresetBar(trade) : ''}
+    ${td.enabled && effectiveMode === 'simple' && !isInsurance
+        ? (isBundleTrade(trade) ? renderSimpleBundleBar(trade) : renderBrandPresetBar(trade))
+        : ''}
     ${td.enabled
       ? (isInsurance ? renderInsuranceFreeform()
          : effectiveMode === 'simple' ? renderSimpleFreeform(trade)
@@ -3320,6 +3952,39 @@ function renderTradeContent() {
                <p class="ins-tab-empty-hint">Importing turns on Insurance mode for you.</p>
              </div>`
           : `<div class="trade-disabled">Enable this trade to add line items.</div>`)}`;
+}
+
+/* Single-price system picker for a bundle trade (commercial). The G/B/B grid
+   has a hero <select> per tier; in simple mode there is only one system, so one
+   picker sits above the table. Flags a bundle whose membrane still costs $0 —
+   a placeholder price book otherwise yields a bid that looks legitimate. */
+function renderSimpleBundleBar(trade) {
+  const td = S.trades[trade];
+  const bundles = _tradeBundles(trade);
+  if (!bundles.length) return '';
+  const cur = td.simple_bundle || '';
+  const items = td.line_items || [];
+  // Commercial ships with placeholder $0 material costs by design (they come
+  // off the supplier quote per job). Count the lines that are still unpriced
+  // but WILL be on the bid — a line at qty 0 isn't in scope, and checking
+  // "every line is $0" would never fire, since labor always carries a rate.
+  const unpriced = items.filter(i => i.catalog_id &&
+    (parseFloat(i.quantity) || 0) > 0 && (parseFloat(i.unit_cost) || 0) === 0);
+  const warn = unpriced.length ? `
+    <div class="simple-bundle-warn">⚠️ ${unpriced.length} line${unpriced.length===1?'':'s'} on this
+      bid still cost $0 — ${esc(unpriced.slice(0,3).map(i=>i.name).join(', '))}${unpriced.length>3?`, +${unpriced.length-3} more`:''}.
+      Set real costs in ⚙ Price Book → ${esc(TRADE_LABELS[trade] || trade)} → Products, or type them
+      into the Cost column below, before sending this bid.</div>` : '';
+  return `
+    <div class="brand-preset-bar simple-bundle-bar">
+      <span class="brand-preset-label">🏢 System:</span>
+      <select class="brand-preset-select" onchange="applyBundleToSimple('${trade}',this.value)">
+        <option value="">Choose a system…</option>
+        ${bundles.map(b => `<option value="${esc(b.id)}" ${cur===b.id?'selected':''}>${esc(b.name||'(unnamed)')}</option>`).join('')}
+      </select>
+      <span class="brand-preset-hint">Loads the full build-up — swapping replaces it</span>
+      ${warn}
+    </div>`;
 }
 
 function renderBrandPresetBar(trade) {
@@ -3566,8 +4231,22 @@ function renderSimpleFreeform(trade) {
     </div>`;
 }
 
+/* Fields that identify an item rather than price it. Both mode converters
+   rebuild items from an explicit whitelist, so anything not carried here is
+   silently lost on a Simple<->G/B/B round trip. Each one has teeth:
+     catalog_id  - the bundle link. Without it a system swap can't tell which
+                   rows it owns, so it STACKS the new system on the old one.
+     bundle_lf/_unit - ridge-vent stick rounding.
+     formula     - a custom auto-quantity expression.
+     vent_role   - the ventilation checkboxes infer their state from it. */
+function _carryItemIdentity(src, dst) {
+  ['catalog_id', 'bundle_lf', 'bundle_unit', 'formula', 'vent_role'].forEach(k => {
+    if (src[k] !== undefined) dst[k] = src[k];
+  });
+  return dst;
+}
 function setTradeMode(trade, mode) {
-  if ((S.trades[trade].mode || 'gbb') === mode) return;
+  if (effectiveTradeMode(trade, S.trades[trade]) === mode) return;
   const td = S.trades[trade];
   const items = td.line_items || [];
 
@@ -3587,7 +4266,7 @@ function setTradeMode(trade, mode) {
       const sell = (po !== null && qty > 0) ? po / qty
         : pricing.mode === 'markup' ? cost * (1 + rate/100)
         : (rate < 100 ? cost / (1 - rate/100) : 0);
-      return {
+      return _carryItemIdentity(it, {
         id: it.id, name: it.name, unit: it.unit,
         quantity: qty,
         measure: it.measure || undefined,
@@ -3600,21 +4279,21 @@ function setTradeMode(trade, mode) {
         customer_visible: it.customer_visible !== false,
         // Preserve the per-tier pricing so a switch back to GBB restores it.
         _gbb_tiers: it.tiers || undefined,
-      };
+      });
     });
   } else {
     // Simple → GBB: keep items + quantities. Restore the stashed per-tier pricing
     // if we came from GBB and the cost wasn't edited; otherwise seed every tier
     // from the single Simple cost so the pricing carries over (never blank/$0).
     td.line_items = items.map(it => {
-      const base = {
+      const base = _carryItemIdentity(it, {
         id: it.id, name: it.name, unit: it.unit,
         quantity: it.quantity || 0,
         measure: it.measure || undefined,
         section: it.section || undefined,
         scope_note: it.scope_note || '',
         customer_visible: it.customer_visible !== false,
-      };
+      });
       if (it._gbb_tiers) { base.tiers = it._gbb_tiers; return base; }
       const c = parseFloat(it.unit_cost) || 0;
       base.tiers = {
@@ -4073,6 +4752,44 @@ function _tradeCatalog(trade) { return (priceBook && priceBook[trade + '_catalog
 function _tradeBundles(trade) { return (priceBook && priceBook[trade + '_bundles']) || []; }
 function _tradeBundle(trade, id) { return _tradeBundles(trade).find(b => b.id === id) || null; }
 
+/* ── A package card describes the products actually in the bundle ─────────
+   The What's Included bullets are BUILT from the bundle's product_ids, not
+   stored as a blob on the bundle. The blob was one list per bundle, so every
+   siding bundle promised "Soffit and fascia included" whether or not soffit
+   was in it, and a manager-built bundle got whatever copy it was typed with —
+   the card and the line items could drift apart forever.
+
+   Each catalog product carries its own `bullets` (the material products carry
+   the sales bullets, accessories carry one line each). A product with no
+   `bullets` key falls back to its name — the honest answer for a manager's
+   own product, and it still tracks the bundle. Rules:
+     * `customer_visible: false`   -> contributes nothing (same field that
+       already hides the row on the customer estimate);
+     * `bullets: []` (explicit)    -> contributes nothing, so a manager can
+       silence a line without hiding its price;
+     * key ABSENT                  -> `[name]`. Absence vs empty is the test,
+       same contract as manual measures and bundle copy backfill.
+   `bundle.extra_features` closes the list with the bullets no product owns —
+   the workmanship warranty. Order follows product_ids so the material leads. */
+function bundleFeatures(trade, bundle) {
+  if (!bundle) return [];
+  const catalog = _tradeCatalog(trade);
+  const out = [];
+  const seen = new Set();
+  const push = s => {
+    const t = String(s == null ? '' : s).trim();
+    if (t && !seen.has(t)) { seen.add(t); out.push(t); }
+  };
+  (bundle.product_ids || []).forEach(pid => {
+    const p = catalog.find(x => x.id === pid);
+    if (!p || p.customer_visible === false) return;
+    if (Array.isArray(p.bullets)) p.bullets.forEach(push);
+    else push(p.name);
+  });
+  (bundle.extra_features || []).forEach(push);
+  return out;
+}
+
 function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   if (!isBundleTrade(trade)) return;
   const td = S.trades[trade];
@@ -4146,10 +4863,11 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   // point: swapping Best from a laminate shingle to standing seam must not leave
   // shingle copy on the card. Copy the bundle doesn't define is left alone,
   // since there'd be nothing to replace it with.
-  if (bundle.description || (bundle.features && bundle.features.length)) {
+  const feats = bundleFeatures(trade, bundle);
+  if (bundle.description || feats.length) {
     const content = tradeTierContent(trade);
     if (bundle.description) content.descriptions[tier] = bundle.description;
-    if (bundle.features && bundle.features.length) content.features[tier] = bundle.features.slice();
+    if (feats.length) content.features[tier] = feats;
   }
 
   // When the rep explicitly picks a bundle, open this tier's details so the
@@ -4157,6 +4875,7 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   // collapsed "Show details" toggle). Bulk seeding leaves tiers collapsed.
   if (autoOpen) _tierDetailsOpen[trade + ':' + tier] = true;
 
+  if (trade === 'commercial') _syncCommAttachment();   // after the rebuild
   applyMeasurements();
   setDirty();
   if (activePage === 'pricing') renderTradeContent();
@@ -4182,9 +4901,122 @@ function seedTradeBundles(trade, force) {
 // rebuild never stacks on top of existing items.
 function buildBundleDefaults(trade) {
   const td = S.trades[trade]; if (!td || !isBundleTrade(trade)) return;
+  // A bundle trade selling as ONE price (commercial by default) needs flat
+  // simple-mode items, not per-tier ones — the simple pricer reads unit_price
+  // and would total a tier-shaped item at $0.
+  if (effectiveTradeMode(trade, td) === 'simple') {
+    td.line_items = [];
+    const bid = td.simple_bundle || defaultSimpleBundle(trade);
+    if (bid && _tradeBundle(trade, bid)) applyBundleToSimple(trade, bid);
+    return;
+  }
   td.line_items = [];
   td.tier_bundles = { good:'', better:'', best:'' };
   seedTradeBundles(trade, true);
+  if (trade === 'commercial') _syncCommAttachment();   // after the rebuild
+}
+// The system a single-price bundle trade starts on. Falls back to the Better
+// tier default so a price book that predates <trade>_simple_default still works.
+function defaultSimpleBundle(trade) {
+  return (priceBook && priceBook[trade + '_simple_default'])
+      || (((priceBook && priceBook[trade + '_tier_defaults']) || {}).better)
+      || '';
+}
+/* Build the flat, single-price line items for a bundle. Deliberately does NOT
+   apply margin — the caller runs simpleApplyMargin — so this stays a plain
+   data transform that bundle_runner.js can exercise without the pricing chain.
+   Quantities, scope notes, and Manual-measure choices survive a system swap:
+   re-picking TPO → EPDM must not wipe the squares the rep already entered. */
+function buildSimpleItemsFromBundle(trade, bundleId) {
+  const bundle = _tradeBundle(trade, bundleId);
+  if (!bundle) return null;
+  const catalog = _tradeCatalog(trade);
+  const td = S.trades[trade] || {};
+  const prev = new Map();
+  (td.line_items || []).forEach(li => { if (li.catalog_id) prev.set(li.catalog_id, li); });
+
+  const items = [];
+  (bundle.product_ids || []).forEach(pid => {
+    const p = catalog.find(x => x.id === pid);
+    if (!p) return;
+    const old = prev.get(pid);
+    items.push({
+      id: old ? old.id : uid(),
+      catalog_id: pid,
+      name: p.name,
+      unit: p.unit || 'EA',
+      quantity: old ? old.quantity : 0,
+      scope_note: old ? (old.scope_note || '') : '',
+      description: (old && old.description) || p.name || '',
+      // An explicit '' (Manual) on the existing item is preserved — same
+      // manual-measure contract the GBB path honors.
+      measure: (old && old.measure !== undefined) ? old.measure : (p.measure || undefined),
+      bundle_lf: p.bundle_lf || undefined,
+      bundle_unit: p.bundle_unit || undefined,
+      customer_visible: p.customer_visible !== false,
+      unit_cost: parseFloat(p.cost) || 0,
+      unit_price: (old && old.price_locked) ? old.unit_price : 0,
+      price_locked: (old && old.price_locked) || undefined,
+    });
+  });
+  // Hand-added rows (no catalog_id) belong to the rep, not the bundle — they
+  // ride through a system swap untouched.
+  (td.line_items || []).forEach(li => { if (!li.catalog_id) items.push(li); });
+  return items;
+}
+function applyBundleToSimple(trade, bundleId) {
+  const td = S.trades[trade]; if (!td || !isBundleTrade(trade)) return;
+  const items = buildSimpleItemsFromBundle(trade, bundleId);
+  if (!items) return;
+  td.line_items = items;
+  td.simple_bundle = bundleId;
+  items.forEach(it => simpleApplyMargin(trade, it));
+  _syncCommAttachment();          // AFTER the rebuild — the new system decides
+  applyMeasurements();
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+  renderTotals();
+}
+
+/* ── Which layers does this system actually fasten? ─────────────────────
+   The PRODUCT carries the fact, because the product IS the fact ("TPO
+   Membrane 60-mil (Mechanically Attached)"). Reading it off the products
+   rather than the bundle means a manager can rename a bundle, or build their
+   own out of catalog products, and the answer still holds.
+
+   The result is stored as measurements (comm_seam_attach / comm_insul_attach)
+   for the same reason comm_work_type and iw_second_row are: MEASURE_DEFS and
+   custom formulas can only see measurements, it persists with the estimate,
+   and app.py then gets the same answer for the packet without loading the
+   price book. It also keeps commercialFastening(m, table) pure. */
+function _commAttachProfile(trade) {
+  const td = S.trades[trade] || {};
+  const bundleId = td.simple_bundle ||
+    (td.tier_bundles && td.tier_bundles[tradeTier(trade)]) || '';
+  const ov = ((_fastenTable && _fastenTable.bundle_overrides) || {})[bundleId];
+  if (ov && (ov.insulation !== undefined || ov.seam !== undefined)) {
+    return { insulation: ov.insulation !== false, seam: !!ov.seam, source: 'override' };
+  }
+  const bundle = _tradeBundle(trade, bundleId);
+  const catalog = _tradeCatalog(trade);
+  const ids = (bundle && bundle.product_ids) || [];
+  const kinds = ids.map(pid => (catalog.find(p => p.id === pid) || {}).attach).filter(Boolean);
+  if (kinds.includes('coating'))    return { insulation:false, seam:false, source:'coating' };
+  if (kinds.includes('mechanical')) return { insulation:true,  seam:true,  source:'mechanical' };
+  if (kinds.includes('adhered'))    return { insulation:true,  seam:false, source:'adhered' };
+  // Unknown system (a manager-built bundle with no tagged membrane): fail
+  // CLOSED on seam. An adhered roof has no seam fasteners, and guessing yes
+  // would put thousands of phantom screws on a bid. The panel says so out loud.
+  return { insulation:true, seam:false, source:'unknown' };
+}
+function _syncCommAttachment() {
+  const td = S.trades.commercial;
+  if (!td) return;
+  const p = _commAttachProfile('commercial');
+  if (!S.measurements) S.measurements = {};
+  S.measurements.comm_seam_attach  = p.seam ? 1 : 0;
+  S.measurements.comm_insul_attach = p.insulation ? 1 : 0;
+  return p;
 }
 
 function renderGBBGrid(trade) {
@@ -4805,7 +5637,7 @@ function renderContractPage() {
       <h3>Contract Terms</h3>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         ${_meIsAdmin() ? `<button class="btn-save-defaults" onclick="saveContractDefaults()"
-          title="Make this contract + initials the company default for every NEW ${S.estimate_type==='insurance'?'insurance':'retail'} estimate anyone creates (also editable in ⚙ Settings)">💾 Save as Company Default</button>` : ''}
+          title="Make this contract + initials the company default for every NEW ${_ctype(S.estimate_type)} estimate anyone creates (also editable in ⚙ Settings)">💾 Save as Company Default</button>` : ''}
         <label class="checkbox-label" style="font-size:11px">
           <input type="checkbox" ${S.print_contract!==false?'checked':''}
             onchange="S.print_contract=this.checked;setDirty()"> Print with estimate
@@ -4813,18 +5645,18 @@ function renderContractPage() {
       </div>
     </div>
     <textarea id="contract-textarea" rows="14"
-      onchange="S.contract_text=this.value;setDirty()">${esc(S.contract_text||globalContract(S.estimate_type==='insurance'?'insurance':'retail'))}</textarea>
+      onchange="S.contract_text=this.value;setDirty()">${esc(S.contract_text||globalContract(_ctype(S.estimate_type)))}</textarea>
     ${renderSigningRequirements()}`;
 }
 
 /* Admin: push the CURRENT estimate's contract + initials up as the company
    default for this estimate type — every new estimate seeds from it. */
 async function saveContractDefaults() {
-  if (!confirm(`Make this contract and its customer-initial statements the company default for every NEW ${S.estimate_type === 'insurance' ? 'insurance' : 'retail'} estimate?\n\nExisting estimates are not changed.`)) return;
-  const ins = S.estimate_type === 'insurance';
+  const ct = _ctype(S.estimate_type);
+  if (!confirm(`Make this contract and its customer-initial statements the company default for every NEW ${ct} estimate?\n\nExisting estimates are not changed.`)) return;
   const texts = (S.contract_initials || []).map(i => (i.text || '').trim()).filter(Boolean);
-  appSettings[ins ? 'contract_insurance' : 'contract_retail'] = (S.contract_text || '').trim();
-  appSettings[ins ? 'initials_insurance' : 'initials_retail'] = texts;
+  appSettings['contract_' + ct] = (S.contract_text || '').trim();
+  appSettings['initials_' + ct] = texts;
   try {
     const r = await fetch('/api/settings', {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
@@ -5655,7 +6487,7 @@ function toggleTrade(trade, enabled) {
 // moment items are created.
 function buildTradeDefaults(trade) {
   const tpl = ((templates && templates[trade]) || []).filter(t => t.is_default !== false);
-  const effectiveMode = S.trades[trade].mode || (trade === 'gutters' ? 'simple' : 'gbb');
+  const effectiveMode = effectiveTradeMode(trade, S.trades[trade]);
   if (effectiveMode === 'simple') {
     // Simple mode = the Good tier: pull Good's cost + product so it matches
     // GBB's Good package and the "default" catalog for one-click realtor jobs.
@@ -5844,10 +6676,10 @@ function setTierRate(tier, v) {
 // Simple-mode items store an explicit sell price derived from cost + margin;
 // re-derive it whenever the applicable rate changes.
 function recalcSimpleItems() {
-  ['roofing','siding','windows','gutters','other'].forEach(trade => {
+  RETAIL_TRADE_KEYS.forEach(trade => {
     const td = S.trades[trade];
     if (!td?.enabled) return;
-    if ((td.mode || (trade === 'gutters' ? 'simple' : 'gbb')) !== 'simple') return;
+    if ((effectiveTradeMode(trade, td)) !== 'simple') return;
     (td.line_items || []).forEach(item => simpleApplyMargin(trade, item));
   });
 }
@@ -6181,7 +7013,8 @@ function dashRow(e) {
   else if (st === 'viewed') activity = `Viewed ${daysAgoLabel(e.last_viewed_at)}${e.view_count > 1 ? ` (${e.view_count}×)` : ''}`;
   else if (st === 'sent')   activity = `Sent ${daysAgoLabel(e.sent_at)} — not opened yet`;
   else                      activity = `Updated ${daysAgoLabel(e.updated_at)}`;
-  const typeLbl = e.estimate_type === 'insurance' ? '🏛 Insurance'
+  const typeLbl = e.estimate_type === 'commercial' ? '🏢 Commercial'
+                : e.estimate_type === 'insurance' ? '🏛 Insurance'
     : (e.selected_tier ? e.selected_tier[0].toUpperCase() + e.selected_tier.slice(1) : 'Retail');
   const isSigned = st === 'signed';
   const statusSelect = isSigned ? chips[st] : `
@@ -6489,7 +7322,7 @@ function renderDashboardAnalytics(filteredList, allData) {
   }).join('');
 
   // ── Trade breakdown ──────────────────────────────────────────────────
-  const tl = {roofing:'🏠 Roofing',siding:'🏗 Siding',windows:'🪟 Windows',gutters:'🌧 Gutters',other:'📦 Other'};
+  const tl = {roofing:'🏠 Roofing',siding:'🏗 Siding',windows:'🪟 Windows',gutters:'🌧 Gutters',commercial:'🏢 Commercial',other:'📦 Other'};
   const maxTrade = Math.max(1,...Object.values(ad.by_trade).map(d=>d.revenue));
   const tradeRows = Object.entries(ad.by_trade).sort((a,b)=>b[1].revenue-a[1].revenue).map(([tk,d])=>{
     const m = d.margin_pct!=null?`<span class="analytics-margin-badge">${d.margin_pct}%</span>`:'—';
@@ -6957,11 +7790,11 @@ async function saveGoals() {
 
 function openOrderSheet() {
   const rows = [];
-  ['roofing','siding','windows','gutters','other'].forEach(trade => {
+  RETAIL_TRADE_KEYS.forEach(trade => {
     const td = S.trades[trade];
     if (!td || !td.enabled || !(td.line_items||[]).length) return;
     const tier = tradeTier(trade);   // order materials for THIS product's chosen package
-    const mode = td.mode || (trade === 'gutters' ? 'simple' : 'gbb');
+    const mode = effectiveTradeMode(trade, td);
     const tradeItems = (td.line_items||[]).filter(item => {
       if ((parseFloat(item.quantity)||0) <= 0) return false;
       if (mode === 'simple') return true;
@@ -7162,7 +7995,7 @@ function renderCustomerFile(name, estimates) {
       ${estimates.length ? estimates.map(e=>{
         const st=estStatusOf(e);
         const enum_=e.estimate_id?'EST-'+e.estimate_id.split('-')[0].toUpperCase():'';
-        const label=e.estimate_label||(e.estimate_type==='insurance'?'Insurance Estimate':'');
+        const label=e.estimate_label||(e.estimate_type==='insurance'?'Insurance Estimate':e.estimate_type==='commercial'?'Commercial Estimate':'');
         return `<div class="cf-est-row" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeCustomerFile()">
           <div class="cf-est-main">
             <div class="cf-est-label">${esc(label||'Untitled estimate')}${!label?` <span class="cf-label-hint">— click to add label</span>`:''}</div>
@@ -7258,6 +8091,7 @@ async function openSettings() {
     _settingsGbb = JSON.parse(JSON.stringify(tierDefaults || {}));
     _gbbSetTrade(_gbbActiveTrade);
     await _jxOpen();
+    await _fastenOpen();
   }
   if (_meIsAdmin()) {
     document.getElementById('settings-company').classList.remove('hidden');
@@ -7273,6 +8107,10 @@ async function openSettings() {
     document.getElementById('set-contract-ins').value    = globalContract('insurance');
     document.getElementById('set-initials-retail').value = globalInitialTexts('retail').join('\n');
     document.getElementById('set-initials-ins').value    = globalInitialTexts('insurance').join('\n');
+    // Commercial has no stock text of its own — show whatever is saved, and
+    // leave it blank when nothing is, so "blank = use retail" stays honest.
+    document.getElementById('set-contract-comm').value   = appSettings.contract_commercial || '';
+    document.getElementById('set-initials-comm').value   = (appSettings.initials_commercial || []).join('\n');
   }
   document.getElementById('settings-modal').classList.remove('hidden');
 }
@@ -7281,7 +8119,7 @@ async function openSettings() {
    copy (_settingsGbb) per trade; saveSettings PUTs it to /api/tier-defaults. */
 let _settingsGbb = {};
 let _gbbActiveTrade = 'roofing';
-const GBB_SET_TRADES = ['roofing','siding','windows','gutters','other'];
+const GBB_SET_TRADES = RETAIL_TRADE_KEYS;
 
 /* Permit-jurisdiction editor (⚙ Settings, manager+). Edits a working copy
    (_settingsJx) of the whole jurisdictions doc — the CO baseline plus per-entry
@@ -7321,6 +8159,81 @@ function _jxParseItems(text) {
   });
   return out;
 }
+/* ── Fastening table editor (⚙ Settings, manager+) ──────────────────────
+   Edits a working copy; saveSettings PUTs it to /api/commercial-fastening.
+   Density rows are one pipe-delimited line each, same shape as the
+   jurisdiction code_items editor:
+     psf | label | insul f,p,c | seam f_w,f_sp | p_w,p_sp | c_w,c_sp   */
+let _settingsFasten = null;
+function _fastenRowsToText(ratings) {
+  return Object.keys(ratings || {})
+    .filter(k => /^-?\d+$/.test(k)).map(Number).sort((a, b) => a - b)
+    .map(k => {
+      const r = ratings[String(k)] || {}, d = r.insul_per_board || {}, s = r.seam || {};
+      const pair = z => `${(s[z] || {}).sheet_width_ft || ''},${(s[z] || {}).spacing_in || ''}`;
+      return [k, r.label || '', `${d.field || ''},${d.perimeter || ''},${d.corner || ''}`,
+              pair('field'), pair('perimeter'), pair('corner')].join(' | ');
+    }).join('\n');
+}
+function _fastenParseRows(text) {
+  const out = {};
+  String(text || '').split('\n').forEach(line => {
+    if (!line.trim()) return;
+    const p = line.split('|').map(s => s.trim());
+    const psf = parseInt(p[0], 10);
+    if (!psf || psf <= 0) return;                       // unparseable row is dropped, not guessed
+    const trio = (p[2] || '').split(',').map(s => parseFloat(s) || 0);
+    const pair = i => {
+      const q = (p[i] || '').split(',').map(s => parseFloat(s) || 0);
+      return { sheet_width_ft: q[0] || 0, spacing_in: q[1] || 0 };
+    };
+    out[String(psf)] = {
+      label: p[1] || (psf + ' psf'),
+      insul_per_board: { field: trio[0] || 0, perimeter: trio[1] || 0, corner: trio[2] || 0 },
+      seam: { field: pair(3), perimeter: pair(4), corner: pair(5) },
+    };
+  });
+  return out;
+}
+async function _fastenOpen() {
+  document.getElementById('settings-fastening').classList.remove('hidden');
+  try {
+    _settingsFasten = await (await fetch('/api/commercial-fastening')).json();
+  } catch { _settingsFasten = { zone_rule:{}, ratings:{}, board_sf:32, waste_pct:5 }; }
+  const t = _settingsFasten, zr = t.zone_rule || (t.zone_rule = {});
+  document.getElementById('fastenset-note').textContent = t.source_note || '';
+  document.getElementById('fastenset-board').value  = t.board_sf ?? 32;
+  document.getElementById('fastenset-waste').value  = t.waste_pct ?? 0;
+  document.getElementById('fastenset-corner').value = zr.corner_shape || 'L';
+  document.getElementById('fastenset-apct').value   = zr.a_pct_least ?? 0.10;
+  document.getElementById('fastenset-ahgt').value   = zr.a_pct_height ?? 0.40;
+  document.getElementById('fastenset-amin').value   = zr.a_min_pct_least ?? 0.04;
+  document.getElementById('fastenset-aminft').value = zr.a_min_ft ?? 3;
+  document.getElementById('fastenset-rows').value   = _fastenRowsToText(t.ratings);
+}
+function _fastenCollect() {
+  if (!_settingsFasten) return null;
+  const num = (id, dflt) => {
+    const v = parseFloat(document.getElementById(id).value);
+    return isNaN(v) ? dflt : v;
+  };
+  const t = _settingsFasten;
+  t.board_sf  = num('fastenset-board', 32) || 32;
+  t.waste_pct = num('fastenset-waste', 0);
+  t.zone_rule = Object.assign({}, t.zone_rule, {
+    corner_shape:    document.getElementById('fastenset-corner').value === 'square' ? 'square' : 'L',
+    a_pct_least:     num('fastenset-apct', 0.10),
+    a_pct_height:    num('fastenset-ahgt', 0.40),
+    a_min_pct_least: num('fastenset-amin', 0.04),
+    a_min_ft:        num('fastenset-aminft', 3),
+  });
+  const rows = _fastenParseRows(document.getElementById('fastenset-rows').value);
+  // Refuse to save an empty table — it would silently zero every commercial
+  // estimate's fastener count.
+  if (Object.keys(rows).length) t.ratings = rows;
+  return t;
+}
+
 async function _jxOpen() {
   document.getElementById('settings-jurisdictions').classList.remove('hidden');
   try {
@@ -7501,6 +8414,8 @@ async function saveSettings() {
     appSettings.contract_insurance = document.getElementById('set-contract-ins').value.trim();
     appSettings.initials_retail    = lines('set-initials-retail');
     appSettings.initials_insurance = lines('set-initials-ins');
+    appSettings.contract_commercial = document.getElementById('set-contract-comm').value.trim();
+    appSettings.initials_commercial = lines('set-initials-comm');
   }
   try {
     const r = await fetch('/api/settings', {
@@ -7530,6 +8445,15 @@ async function saveSettings() {
         });
         if (!rj.ok) throw new Error('Jurisdiction save failed');
         _jurisdictions = JSON.parse(JSON.stringify(_settingsJx));   // refresh Scope panel source
+      }
+      const ft = _fastenCollect();
+      if (ft) {
+        const rf = await fetch('/api/commercial-fastening', {
+          method: 'PUT', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(ft),
+        });
+        if (!rf.ok) throw new Error('Fastening table save failed');
+        _fastenTable = JSON.parse(JSON.stringify(ft));   // Scope panel recalculates off this
       }
     }
     // Admin: save the customer-proposal company content alongside
@@ -7562,7 +8486,7 @@ async function shareEstimate() {
   const isIns = (S.estimate_type || 'retail') === 'insurance';
   const hasItems = isIns
     ? (S.trades.insurance.sections || []).some(sec => (sec.items || []).length > 0)
-    : ['roofing','siding','windows','gutters','other']
+    : RETAIL_TRADE_KEYS
         .some(t => S.trades[t].enabled && (S.trades[t].line_items||[]).length > 0);
   if (!hasItems) issues.push('No line items entered yet');
   const sendTotal = isIns ? insuranceTotal() : selectedTotal();
@@ -7795,7 +8719,7 @@ async function doLoadEstimate(id) {
     S=await r.json();
     if(!S.tier_descriptions) S.tier_descriptions={good:'',better:'',best:''};
     if(S.print_contract===undefined) S.print_contract=true;
-    if(!S.contract_text) S.contract_text=globalContract(S.estimate_type==='insurance'?'insurance':'retail');
+    if(!S.contract_text) S.contract_text=globalContract(_ctype(S.estimate_type));
     if(!S.cover_photo_id) S.cover_photo_id=null;
     if(S.intro_text===undefined) S.intro_text='';
     if(!S.page_visibility) S.page_visibility={intro:false,options:true,products:true,pricing:true,report:true};
@@ -7809,7 +8733,14 @@ async function doLoadEstimate(id) {
     } else if(!S.trades.insurance.sections) {
       S.trades.insurance.sections=[{id:'sec_'+uid(),name:'',items:[]}];
     }
-    TRADES.forEach(t=>{if(!S.trades[t])S.trades[t]={enabled:false,line_items:[],colors:{}};if(!S.trades[t].colors)S.trades[t].colors={};});
+    // Backfill trades added after this estimate was saved. Seeded from a blank
+    // estimate rather than a bare {} so a new trade arrives with its real
+    // defaults (commercial must land on mode:'simple', not the 'gbb' fallback).
+    const _blankTrades = blankEstimate().trades;
+    TRADES.forEach(t=>{
+      if(!S.trades[t]) S.trades[t] = _blankTrades[t] || {enabled:false,line_items:[],colors:{}};
+      if(!S.trades[t].colors) S.trades[t].colors={};
+    });
     if(!S.tier_features) S.tier_features={good:[],better:[],best:[]};
     // Per-trade G/B/B migration: older estimates carry one estimate-level set
     // of package content + one selected_tier. tradeTierContent() moves the
@@ -8168,7 +9099,7 @@ function buildPrintContent() {
       const f=(content.features||{})[t];
       if(f&&f.length){out[t]=f;return;}
       const items=[];
-      const tradeMode=td.mode||(trade==='gutters'?'simple':'gbb');
+      const tradeMode=effectiveTradeMode(trade, td);
       (td.line_items||[]).forEach(item=>{
         if((parseFloat(item.quantity)||0)<=0)return;
         if(tradeMode==='simple'){
@@ -8188,13 +9119,16 @@ function buildPrintContent() {
 
   // Detect whether all enabled trades with items are in simple mode.
   // If so, suppress the G/B/B options comparison and tier banner entirely.
-  const isAllSimple = ['roofing','siding','windows','gutters','other'].every(t => {
+  const isAllSimple = RETAIL_TRADE_KEYS.every(t => {
     const td = S.trades[t];
     if (!td || !td.enabled || !(td.line_items||[]).length) return true;
-    return (td.mode || (t==='gutters' ? 'simple' : 'gbb')) === 'simple';
+    return effectiveTradeMode(t, td) === 'simple';
   });
 
-  if (estType === 'retail') {
+  // Everything that isn't an insurance claim prints the same priced body.
+  // This MUST NOT be `=== 'retail'`: a new estimate type would silently print
+  // a blank PDF, which is exactly what happened to commercial before this.
+  if (estType !== 'insurance') {
     if (pv.options !== false && !isAllSimple) gbbTrades().forEach(gt=>{
       const gtTier=tradeTier(gt);
       const disp=tradeDisplayItems(gt);
@@ -8229,7 +9163,7 @@ function buildPrintContent() {
       const td=S.trades[trade];
       if(!td.enabled||!td.line_items.length)return;
       const tier=tradeTier(trade);   // each product prints at ITS chosen package
-      const tradeMode=td.mode||(trade==='gutters'?'simple':'gbb');
+      const tradeMode=effectiveTradeMode(trade, td);
       const _shown=td.line_items.filter(item=>{
         if((parseFloat(item.quantity)||0)<=0) return false;
         if(tradeMode==='simple') return true;

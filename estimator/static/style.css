@@ -197,6 +197,9 @@ input[type="range"] { padding: 0; border: none; background: none; height: 20px; 
   color: var(--text-light); transition: all .12s;
 }
 .toggle-btn.active { background: var(--primary); color: #fff; }
+/* Three-up (Retail / Insurance / Commercial) in the narrow sidebar — tighten
+   so the longest label still fits on one line. */
+.toggle-row-3 .toggle-btn { padding: 5px 2px; font-size: 10px; letter-spacing: -.1px; }
 
 /* ── Tier selector ─────────────────────────────────────────────────── */
 .tier-selector { display: flex; gap: 6px; }
@@ -1684,6 +1687,127 @@ body.is-home #nav-toggle       { display: none; }
 .iw-second-row-toggle input { accent-color: #0284c7; width: 15px; height: 15px; margin: 0; }
 .iw-toggle-hint { font-weight: 500; color: #0369a1; font-size: 11px; }
 
+/* Commercial low-slope measurements */
+.measure-panel-commercial { background: #eef2ff; border-color: #c7d2fe; }
+.measure-panel-commercial .measure-panel-head h3 { color: #312e81; }
+.measure-panel-commercial .measure-hint,
+.measure-panel-commercial .measure-group-title { color: #4338ca; }
+.measure-panel-commercial .measure-field label { color: #3730a3; }
+.measure-panel-commercial .measure-input-wrap input { border-color: #a5b4fc; color: #312e81; }
+.measure-panel-commercial .measure-input-wrap input:focus {
+  border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,.15);
+}
+.measure-panel-commercial .measure-unit { color: #4338ca; }
+
+.comm-worktype {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid #c7d2fe;
+}
+.comm-worktype-label {
+  font-size: 10.5px; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .8px; color: #4338ca;
+}
+.comm-worktype-opt {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 12px; border-radius: 20px; cursor: pointer;
+  border: 1px solid #a5b4fc; background: #fff;
+  font-size: 12px; font-weight: 700; color: #3730a3; transition: all .12s;
+}
+.comm-worktype-opt.enabled {
+  border-color: #4f46e5; background: #e0e7ff; box-shadow: 0 0 0 3px rgba(79,70,229,.12);
+}
+.comm-worktype-opt input { accent-color: #4f46e5; width: 15px; height: 15px; margin: 0; }
+.comm-worktype-rate { font-weight: 500; color: #4338ca; font-size: 11px; }
+.comm-worktype-hint { font-size: 11px; color: #4338ca; }
+
+.comm-complexity { margin-top: 12px; padding-top: 12px; border-top: 1px solid #c7d2fe; }
+.comm-complexity-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.comm-complexity-head strong { font-size: 12.5px; color: #312e81; }
+.comm-complexity-hint { font-size: 11px; color: #4338ca; }
+.comm-complexity-flags { display: flex; flex-wrap: wrap; gap: 8px; }
+.comm-flag {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 11px; border-radius: 20px; cursor: pointer;
+  border: 1px solid #a5b4fc; background: #fff;
+  font-size: 12px; font-weight: 600; color: #3730a3; transition: all .12s;
+}
+.comm-flag.enabled { border-color: #4f46e5; background: #e0e7ff; font-weight: 700; }
+.comm-flag.suggested { border-color: #f59e0b; background: #fffbeb; }
+.comm-flag input { accent-color: #4f46e5; width: 15px; height: 15px; margin: 0; }
+.comm-flag-suggest { font-weight: 600; color: #b45309; font-size: 11px; }
+.comm-complexity-notes {
+  width: 100%; margin-top: 10px; padding: 8px 10px;
+  border: 1px solid #a5b4fc; border-radius: 6px; background: #fff;
+  font: inherit; font-size: 12.5px; color: #312e81; resize: vertical;
+}
+.comm-complexity-notes:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,.15); }
+
+/* Commercial fastening schedule */
+.measure-panel-fasten { background: #f0fdfa; border-color: #5eead4; }
+.measure-panel-fasten .measure-panel-head h3 { color: #134e4a; }
+.measure-panel-fasten .measure-hint,
+.measure-panel-fasten .measure-group-title { color: #0f766e; }
+.measure-panel-fasten .measure-field label { color: #115e59; }
+.measure-panel-fasten .measure-input-wrap input { border-color: #5eead4; color: #134e4a; }
+.measure-panel-fasten .measure-input-wrap input:focus {
+  border-color: #0d9488; box-shadow: 0 0 0 3px rgba(13,148,136,.15);
+}
+.measure-panel-fasten .measure-unit { color: #0f766e; }
+.fasten-select {
+  padding: 6px 8px; border: 1px solid #5eead4; border-radius: 5px;
+  font-size: 13px; font-weight: 600; color: #134e4a; background: #fff; min-width: 120px;
+}
+/* An unpicked uplift rating drives every count to zero — make it look unfinished. */
+.fasten-select.is-empty { border-color: #dc2626; background: #fef2f2; color: #991b1b; }
+.fasten-req { font-size: 9.5px; font-weight: 800; color: #dc2626; text-transform: uppercase; letter-spacing: .5px; }
+
+.fasten-warn {
+  margin: 8px 0 0; padding: 8px 11px; border-radius: 6px;
+  background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #f59e0b;
+  font-size: 12px; line-height: 1.45; color: #92400e;
+}
+.fasten-warn-hard {
+  background: #fef2f2; border-color: #fecaca; border-left-color: #dc2626; color: #991b1b;
+  margin-bottom: 12px;
+}
+.fasten-warn-hard strong { display: block; margin-bottom: 2px; }
+.fasten-note {
+  margin-top: 6px; font-size: 11.5px; line-height: 1.45; color: #0f766e;
+  padding-left: 10px; border-left: 2px solid #5eead4;
+}
+
+.fasten-stats { display: flex; flex-wrap: wrap; gap: 22px; margin: 14px 0 10px; }
+.fasten-stat { display: flex; flex-direction: column; gap: 1px; }
+.fs-label { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .7px; color: #0f766e; }
+.fs-val { font-size: 17px; font-weight: 800; color: #134e4a; }
+.fs-sub { font-size: 10.5px; color: #0f766e; }
+
+.fasten-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+.fasten-table th {
+  text-align: left; font-size: 10px; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .5px; color: #0f766e; padding: 5px 8px; border-bottom: 1px solid #5eead4;
+}
+.fasten-table td { padding: 6px 8px; border-bottom: 1px solid #ccfbf1; color: #134e4a; }
+.fasten-table .fz-num { text-align: right; }
+.fasten-table tfoot td { border-top: 2px solid #5eead4; border-bottom: none; font-weight: 700; }
+.fz-src {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px;
+  font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+}
+.fz-src-computed { background: #ccfbf1; color: #0f766e; }
+.fz-src-override { background: #fef3c7; color: #92400e; }
+
+.fasten-foot {
+  display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid #5eead4;
+}
+.fasten-disclaimer { flex: 1; min-width: 240px; font-size: 10.5px; line-height: 1.45; color: #0f766e; }
+.fasten-edit-link {
+  border: 1px solid #5eead4; background: #fff; color: #0f766e; cursor: pointer;
+  padding: 5px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700;
+}
+.fasten-edit-link:hover { background: #ccfbf1; }
+
 /* Attic ventilation panel */
 .measure-panel-vent { background: #fefce8; border-color: #fde047; }
 .measure-panel-vent .measure-panel-head h3 { color: #713f12; }
@@ -2642,6 +2766,20 @@ a.jx-contact:hover { text-decoration: underline; }
 .pb-bundle-desc:focus, .pb-bundle-feats:focus { outline: none; border-color: var(--primary-light); }
 .pb-bundle-feats { line-height: 1.5; }
 .pb-bundle-copy-hint { font-size: 11px; color: var(--text-light); line-height: 1.45; margin-top: -4px; }
+.pb-variant-field-label small { font-weight: 500; text-transform: none; letter-spacing: 0; margin-left: 5px; }
+/* Read-only: the bullets are built from the bundle's products, so this shows
+   the finished card rather than offering a box to type a different story into. */
+.pb-bundle-feat-preview { margin: 0 0 8px; padding: 8px 10px 8px 26px; list-style: disc;
+  background: #f8fafc; border: 1px solid var(--border); border-radius: 6px;
+  max-height: 30vh; overflow-y: auto; }
+.pb-bundle-feat-preview li { font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.pb-cat-actions { text-align: center; white-space: nowrap; }
+.pb-cat-actions .pb-order-btn.on { background: #f0f9ff; border-color: #7dd3fc; }
+.pb-bullets-row > td { padding: 0 8px 10px; background: #f8fafc; }
+.pb-bullets-ta { width: 100%; box-sizing: border-box; font-size: 12.5px; line-height: 1.5;
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; resize: vertical;
+  font-family: inherit; margin: 0 0 6px; }
+.pb-bullets-ta:focus { outline: none; border-color: var(--primary-light); }
 .pb-bundle-pick-hd { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--text); margin-bottom: 8px; }
 .pb-bundle-pick-hd small { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--text-light); margin-left: 6px; }
 /* Self-contained, always-scrollable list of EVERY catalog product, so the full
@@ -2714,6 +2852,18 @@ a.jx-contact:hover { text-decoration: underline; }
   font-size: 13px; background: #fff; min-width: 200px; cursor: pointer;
 }
 .brand-preset-hint { font-size: 11px; color: #b45309; }
+
+/* Commercial single-price system picker — same bar, blue instead of amber so
+   it reads as "the system this bid is for", not "an optional shortcut". */
+.simple-bundle-bar { background: #eff6ff; border-color: #bfdbfe; }
+.simple-bundle-bar .brand-preset-label { color: #1e40af; }
+.simple-bundle-bar .brand-preset-select { border-color: #93c5fd; }
+.simple-bundle-bar .brand-preset-hint { color: #1d4ed8; }
+.simple-bundle-warn {
+  flex-basis: 100%; margin-top: 4px; padding: 8px 10px;
+  background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px;
+  font-size: 12px; line-height: 1.45; color: #991b1b;
+}
 
 /* ── Price book: Master + per-tier tabs ─────────────────────────────── */
 .pb-subtab-bar { display: flex; gap: 4px; margin: 12px 0 4px; border-bottom: 2px solid var(--border); }

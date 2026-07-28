@@ -56,13 +56,15 @@ function grabConst(name) {
   return m[0];
 }
 
-const CONSTS = ['DEFAULT_RATE'];
+const CONSTS = ['DEFAULT_RATE', 'RETAIL_TRADE_KEYS', 'SIMPLE_MODE_TRADES'];
 const NAMES = ['_rateValue', '_resolveRate', 'tierRate', 'tradeRate', 'lineTotal',
-               'lineTotalEffective', 'tradeTotal', 'grandTotal', 'selectedTotal', 'tradeTier'];
+               'lineTotalEffective', 'effectiveTradeMode', 'tradeTotal', 'grandTotal',
+               'selectedTotal', 'tradeTier'];
 
 // Globals the extracted functions close over in the real bundle.
+// RETAIL_TRADE_KEYS is lifted from app.js (see CONSTS) rather than redefined,
+// so a trade added there can never silently go unpriced in this runner.
 const TIERS = ['good', 'better', 'best'];
-const TRADES = ['roofing', 'siding', 'windows', 'gutters', 'other'];
 let S;
 
 eval(CONSTS.map(grabConst).join('\n') + '\n' + NAMES.map(grab).join('\n'));

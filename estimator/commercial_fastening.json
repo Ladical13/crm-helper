@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "source_note": "GENERIC INDUSTRY-TYPICAL DEFAULTS - not a manufacturer's approval and not tied to any manufacturer. Verify against the specified system's FM approval or wind-uplift design guide before ordering or installing.",
+  "zone_rule": {
+    "standard": "ASCE 7-16 low-slope (theta <= 7 deg)",
+    "a_pct_least": 0.10,
+    "a_pct_height": 0.40,
+    "a_min_pct_least": 0.04,
+    "a_min_ft": 3,
+    "corner_shape": "L"
+  },
+  "board_sf": 32,
+  "waste_pct": 5,
+  "ratings": {
+    "60": {
+      "label": "FM 1-60",
+      "insul_per_board": { "field": 4, "perimeter": 6, "corner": 8 },
+      "seam": {
+        "field":     { "sheet_width_ft": 10, "spacing_in": 12 },
+        "perimeter": { "sheet_width_ft": 6,  "spacing_in": 12 },
+        "corner":    { "sheet_width_ft": 5,  "spacing_in": 12 }
+      }
+    },
+    "75": {
+      "label": "FM 1-75",
+      "insul_per_board": { "field": 5, "perimeter": 8, "corner": 10 },
+      "seam": {
+        "field":     { "sheet_width_ft": 10, "spacing_in": 12 },
+        "perimeter": { "sheet_width_ft": 5,  "spacing_in": 12 },
+        "corner":    { "sheet_width_ft": 5,  "spacing_in": 9 }
+      }
+    },
+    "90": {
+      "label": "FM 1-90",
+      "insul_per_board": { "field": 5, "perimeter": 8, "corner": 12 },
+      "seam": {
+        "field":     { "sheet_width_ft": 8, "spacing_in": 12 },
+        "perimeter": { "sheet_width_ft": 5, "spacing_in": 12 },
+        "corner":    { "sheet_width_ft": 5, "spacing_in": 6 }
+      }
+    },
+    "105": {
+      "label": "FM 1-105",
+      "insul_per_board": { "field": 6, "perimeter": 10, "corner": 14 },
+      "seam": {
+        "field":     { "sheet_width_ft": 6, "spacing_in": 12 },
+        "perimeter": { "sheet_width_ft": 5, "spacing_in": 9 },
+        "corner":    { "sheet_width_ft": 5, "spacing_in": 6 }
+      }
+    }
+  },
+  "bundle_overrides": {}
+}

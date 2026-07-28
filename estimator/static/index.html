@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=125">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=129">
 </head>
 <body>
 
@@ -146,9 +146,10 @@
       </div>
       <div class="field-group">
         <label>Estimate Type</label>
-        <div class="toggle-row">
+        <div class="toggle-row toggle-row-3">
           <button class="toggle-btn" id="type-retail" onclick="setEstimateType('retail')">🏠 Retail</button>
           <button class="toggle-btn" id="type-insurance" onclick="setEstimateType('insurance')">🏛 Insurance</button>
+          <button class="toggle-btn" id="type-commercial" onclick="setEstimateType('commercial')">🏢 Commercial</button>
         </div>
       </div>
     </section>
@@ -421,6 +422,36 @@
           <div class="field-group"><label>Extra scope-gap items <span class="note-tag">same format as the baseline checklist — reusing a baseline label overrides it here</span></label><textarea id="jxset-items" rows="4" spellcheck="false"></textarea></div>
         </div>
       </div>
+      <div id="settings-fastening" class="field-group hidden">
+        <label>🔩 Commercial Fastening Table <span class="note-tag">manager only — drives the fastener counts on every commercial estimate</span></label>
+        <div class="jxset-help" id="fastenset-note"></div>
+        <div class="field-row">
+          <div class="field-group" style="max-width:150px"><label>Board area (SF)<span class="note-tag"> 4'×8' = 32</span></label><input type="number" id="fastenset-board" step="1" min="1"></div>
+          <div class="field-group" style="max-width:150px"><label>Waste %</label><input type="number" id="fastenset-waste" step="0.5" min="0"></div>
+          <div class="field-group" style="max-width:200px">
+            <label>Corner zone shape</label>
+            <select id="fastenset-corner">
+              <option value="L">L-shaped (ASCE 7-16)</option>
+              <option value="square">Square (ASCE 7-10)</option>
+            </select>
+          </div>
+        </div>
+        <div class="jxset-help">Corner shape is a <b>3× difference</b> in the highest-uplift zone: ASCE 7-10 drew the
+          corner as a square <code>a×a</code> (4a² total), ASCE 7-16 as an L (12a² total). Check which your AHJ has adopted.</div>
+        <label class="jxset-sub" style="margin-top:12px">Zone width rule <span class="note-tag">a = min(% of least dimension, % of height), floored</span></label>
+        <div class="field-row">
+          <div class="field-group" style="max-width:130px"><label>% of least dim</label><input type="number" id="fastenset-apct" step="0.01" min="0"></div>
+          <div class="field-group" style="max-width:130px"><label>% of height</label><input type="number" id="fastenset-ahgt" step="0.01" min="0"></div>
+          <div class="field-group" style="max-width:130px"><label>Floor % of least</label><input type="number" id="fastenset-amin" step="0.01" min="0"></div>
+          <div class="field-group" style="max-width:130px"><label>Min ft</label><input type="number" id="fastenset-aminft" step="0.5" min="0"></div>
+        </div>
+        <label class="jxset-sub" style="margin-top:12px">Density rows <span class="note-tag">one uplift rating per line</span></label>
+        <div class="jxset-help">Format: <code>psf | label | insul field,perim,corner | seam field w,spacing | perim w,spacing | corner w,spacing</code><br>
+          Insulation numbers are <b>plates per board</b>. Seam pairs are <b>sheet width in feet, fastener spacing in inches</b>.
+          Densities must not decrease toward the corner.</div>
+        <textarea id="fastenset-rows" rows="8" spellcheck="false"
+          placeholder="90 | FM 1-90 | 5,8,12 | 8,12 | 5,12 | 5,6"></textarea>
+      </div>
       <div id="settings-company" class="field-group hidden">
         <label>Customer Proposal — Company Content <span class="note-tag">admin only — shown on every customer signing page</span></label>
         <div class="cc-block">
@@ -461,6 +492,14 @@
         <div class="cc-block">
           <label class="cc-toggle">✍ Insurance Customer Initials <span class="note-tag">one statement per line</span></label>
           <textarea id="set-initials-ins" rows="4" spellcheck="true"></textarea>
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle">🏢 Commercial Contract — Terms &amp; Conditions <span class="note-tag">leave blank to use the retail terms</span></label>
+          <textarea id="set-contract-comm" rows="10" spellcheck="true"></textarea>
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle">✍ Commercial Customer Initials <span class="note-tag">one statement per line</span></label>
+          <textarea id="set-initials-comm" rows="4" spellcheck="true"></textarea>
         </div>
       </div>
     </div>
@@ -664,6 +703,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=125"></script>
+<script src="/estimate/static/app.js?v=129"></script>
 </body>
 </html>

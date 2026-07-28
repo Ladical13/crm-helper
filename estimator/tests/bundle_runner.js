@@ -55,9 +55,13 @@ function grabConst(name) {
   return m[0];
 }
 
-const CONSTS = ['TIERS', 'BUNDLE_TRADES'];
-const NAMES = ['isBundleTrade', '_tradeCatalog', '_tradeBundles', '_tradeBundle',
-               'applyBundleToTier', 'seedTradeBundles', 'buildBundleDefaults'];
+const CONSTS = ['TIERS', 'BUNDLE_TRADES', 'SIMPLE_MODE_TRADES', 'DEFAULT_RATE'];
+const NAMES = ['isBundleTrade', 'effectiveTradeMode', '_tradeCatalog', '_tradeBundles',
+               '_tradeBundle', 'bundleFeatures', '_rateValue', '_resolveRate', 'tradeRate', 'tierRate',
+               'tradeTier', 'simpleApplyMargin', 'applyBundleToTier', 'seedTradeBundles',
+               'defaultSimpleBundle', 'buildSimpleItemsFromBundle', 'applyBundleToSimple',
+               'buildBundleDefaults', '_carryItemIdentity', 'setTradeMode',
+               '_commAttachProfile', '_syncCommAttachment'];
 
 const scenario = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 
@@ -71,6 +75,14 @@ const harness = `
   function renderTradeContent() {}
   function renderTotals() {}
   function applyMeasurements() {}
+  // The fastening table is fetched at boot in the real app; these scenarios
+  // exercise bundle loading, not fastener math, so an empty table is enough
+  // for _commAttachProfile to fall through to the product attach tags.
+  // (No backticks in this harness string - it is itself a template literal.)
+  let _fastenTable = null;
+  function renderTabBar() {}
+  function seedTradeFromDefaults() {}
+  function _syncLegacyTier() {}
   function tradeTierContent(trade) {
     const td = S.trades[trade];
     td.tier_features = td.tier_features || {good:[],better:[],best:[]};
@@ -86,6 +98,8 @@ const body = `
   for (const o of ops) {
     if (o.op === 'applyBundle') applyBundleToTier(o.trade, o.tier, o.id, false);
     else if (o.op === 'buildDefaults') buildBundleDefaults(o.trade);
+    else if (o.op === 'applySimpleBundle') applyBundleToSimple(o.trade, o.id);
+    else if (o.op === 'setMode') setTradeMode(o.trade, o.mode);
     else throw new Error('unknown op: ' + o.op);
   }
   return S;

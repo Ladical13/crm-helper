@@ -180,6 +180,7 @@ CUSTOMER_NOTES_FILE  = os.path.join(DATA_DIR, 'customer_notes.json')
 TEAM_CONFIG_FILE     = os.path.join(DATA_DIR, 'team.json')
 COMPANY_CONTENT_FILE = os.path.join(DATA_DIR, 'company_content.json')
 SALES_GOALS_FILE     = os.path.join(DATA_DIR, 'sales_goals.json')
+COMM_FASTENING_FILE  = os.path.join(DATA_DIR, 'commercial_fastening.json')
 
 # Optional override for the public-facing base URL (e.g. ngrok or a real domain).
 # Set PUBLIC_URL in environment or in estimator/config.json as {"public_url": "https://..."}
@@ -227,7 +228,7 @@ def _seed_data_dir():
     if DATA_DIR == BASE_DIR:
         return  # local dev — nothing to seed
     for fname in ('price_book.json', 'tier_defaults.json', 'permit_defaults.json',
-                  'jurisdictions.json'):
+                  'jurisdictions.json', 'commercial_fastening.json'):
         src = os.path.join(BASE_DIR, fname)
         dst = os.path.join(DATA_DIR, fname)
         if os.path.exists(src) and not os.path.exists(dst):
@@ -1641,7 +1642,18 @@ def fc(n):
 # signed PDF, list totals, emails, analytics) must price identically or the
 # customer sees different numbers than the rep quoted.
 
-GBB_TRADES = ['roofing', 'siding', 'windows', 'gutters', 'other']
+GBB_TRADES = ['roofing', 'siding', 'windows', 'gutters', 'commercial', 'other']
+
+# Trades that sell as one price rather than Good/Better/Best unless the rep
+# says otherwise. MUST mirror SIMPLE_MODE_TRADES in app.js — if the two
+# disagree the server prices a trade differently than the browser showed.
+SIMPLE_MODE_TRADES = ('gutters', 'commercial')
+
+
+def _trade_mode(tk, td):
+    """Effective pricing mode for a trade. Mirrors effectiveTradeMode in app.js,
+    including treating an empty-string mode as unset."""
+    return (td or {}).get('mode') or ('simple' if tk in SIMPLE_MODE_TRADES else 'gbb')
 
 
 DEFAULT_RATE = 35.0
@@ -1704,7 +1716,7 @@ def _trade_subtotal(est, trade, tier):
     td      = (est.get('trades') or {}).get(trade, {})
     if not td.get('enabled'):
         return 0.0
-    trade_mode = td.get('mode', 'simple' if trade == 'gutters' else 'gbb')
+    trade_mode = _trade_mode(trade, td)
     r     = _tier_rate(pricing, trade, tier)
     total = 0.0
     for item in td.get('line_items', []):
@@ -1758,7 +1770,7 @@ def _gbb_trade_keys(est):
         td = (est.get('trades') or {}).get(tk) or {}
         if not td.get('enabled'):
             continue
-        if td.get('mode', 'simple' if tk == 'gutters' else 'gbb') != 'gbb':
+        if _trade_mode(tk, td) != 'gbb':
             continue
         out.append(tk)
     return out
@@ -1768,7 +1780,7 @@ def _pick_summary_label(est):
     """Human label for what was/is selected: 'Better Package' for a single
     G/B/B product, 'Roofing: Better · Siding: Good' for a mix."""
     tls  = dict(roofing='Roofing', siding='Siding', windows='Windows',
-                gutters='Gutters', other='Other / Misc')
+                gutters='Gutters', commercial='Commercial', other='Other / Misc')
     lbls = dict(good='Good', better='Better', best='Best')
     tks  = [tk for tk in _gbb_trade_keys(est)
             if ((est.get('trades') or {}).get(tk) or {}).get('line_items')]
@@ -1799,7 +1811,7 @@ def _trade_tier_content(est, trade):
 @app.route('/api/analytics')
 def get_analytics():
     """Per-trade and per-rep revenue, cost, and margin across all estimates."""
-    TRADE_NAMES = ['roofing', 'siding', 'windows', 'gutters', 'other']
+    TRADE_NAMES = list(GBB_TRADES)
     by_trade = {}
     by_rep   = {}
 
@@ -1815,7 +1827,7 @@ def get_analytics():
 
     def _mo(key):
         return monthly.setdefault(key, {
-            'revenue': 0.0, 'jobs': 0, 'retail': 0.0, 'insurance': 0.0,
+            'revenue': 0.0, 'jobs': 0, 'retail': 0.0, 'insurance': 0.0, 'commercial': 0.0,
             'trade_revenue': 0.0, 'trade_cost': 0.0,
             'sent': 0, 'sent_value': 0.0, 'sent_won': 0, 'sent_won_value': 0.0,
             'by_rep': {},
@@ -1830,8 +1842,9 @@ def get_analytics():
         'cold':   {'count': 0, 'value': 0.0},   # 30+ days
     }
     by_type = {
-        'retail':    {'revenue': 0.0, 'count': 0, 'pipeline': 0.0},
-        'insurance': {'revenue': 0.0, 'count': 0, 'pipeline': 0.0},
+        'retail':     {'revenue': 0.0, 'count': 0, 'pipeline': 0.0},
+        'insurance':  {'revenue': 0.0, 'count': 0, 'pipeline': 0.0},
+        'commercial': {'revenue': 0.0, 'count': 0, 'pipeline': 0.0},
     }
     top_cities   = {}   # city → signed revenue
     ytd_revenue  = 0.0
@@ -1901,7 +1914,7 @@ def get_analytics():
                 m = _mo(signed_month)
                 m['revenue'] += est_total
                 m['jobs']    += 1
-                m[est_type if est_type in ('retail', 'insurance') else 'retail'] += est_total
+                m[est_type if est_type in ('retail', 'insurance', 'commercial') else 'retail'] += est_total
                 m['by_rep'][sp] = m['by_rep'].get(sp, 0.0) + est_total
             city = (est.get('customer') or {}).get('address', {}).get('city', '').strip()
             if city:
@@ -1946,7 +1959,7 @@ def get_analytics():
             td = est.get('trades', {}).get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
                 continue
-            tmode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+            tmode = _trade_mode(tk, td)
             tier  = _trade_tier(est, tk)   # each trade prices at its own chosen tier
             r     = _tier_rate(pricing, tk, tier)
             tsell = 0.0
@@ -2025,7 +2038,7 @@ def get_analytics():
         k = _month_add(k, 1)
 
     rev_by_month = {mk: mv['revenue'] for mk, mv in monthly.items()}
-    blank = {'revenue': 0.0, 'jobs': 0, 'retail': 0.0, 'insurance': 0.0,
+    blank = {'revenue': 0.0, 'jobs': 0, 'retail': 0.0, 'insurance': 0.0, 'commercial': 0.0,
              'trade_revenue': 0.0, 'trade_cost': 0.0, 'sent': 0, 'sent_value': 0.0,
              'sent_won': 0, 'sent_won_value': 0.0, 'by_rep': {}}
     months_out = []
@@ -2043,6 +2056,7 @@ def get_analytics():
             'margin_pct':  _margin(m['trade_revenue'], m['trade_cost']),
             'retail':      round(m['retail'], 2),
             'insurance':   round(m['insurance'], 2),
+            'commercial':  round(m.get('commercial', 0.0), 2),
             'sent':        m['sent'],
             'sent_value':  round(m['sent_value'], 2),
             'sent_won':    m['sent_won'],
@@ -2154,9 +2168,11 @@ TRADE_COLOR_FIELDS = {
     'siding':  [('siding_color', 'Siding Color'), ('trim_color', 'Trim Color'), ('manufacturer', 'Manufacturer')],
     'windows': [('frame_color', 'Frame Color'), ('glass_package', 'Glass Package')],
     'gutters': [('gutter_color', 'Gutter Color'), ('material', 'Material')],
+    'commercial': [('membrane_color', 'Membrane Color'), ('manufacturer', 'Manufacturer'), ('system_type', 'System')],
     'other':   [('color', 'Color / Finish')],
 }
-_PRODUCT_TRADE_LABELS = dict(roofing='Roofing', siding='Siding', windows='Windows', gutters='Gutters', other='Other')
+_PRODUCT_TRADE_LABELS = dict(roofing='Roofing', siding='Siding', windows='Windows', gutters='Gutters',
+                             commercial='Commercial', other='Other')
 
 
 def _cv_products_block(est):
@@ -2210,19 +2226,20 @@ def render_line_items(est, tier=None, only_trades=None):
     show_lp  = (est.get('page_visibility') or {}).get('linePrices') is True
     ncols    = 5 if show_lp else 3
 
-    labels  = dict(roofing='Roofing', siding='Siding', windows='Windows', gutters='Gutters', other='Other / Misc')
+    labels  = dict(roofing='Roofing', siding='Siding', windows='Windows', gutters='Gutters',
+                   commercial='Commercial Roofing', other='Other / Misc')
     trades  = est.get('trades', {})
     parts   = []
     gtotal  = 0.0
 
-    for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
+    for tk in GBB_TRADES:
         td = trades.get(tk, {})
         if only_trades is not None and tk not in only_trades:
             continue
         if not td.get('enabled') or not td.get('line_items'):
             continue
         # Determine trade mode: gutters always simple; others default gbb
-        trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+        trade_mode = _trade_mode(tk, td)
         t_tier = tier or _trade_tier(est, tk)
         r    = _tier_rate(pricing, tk, t_tier)
 
@@ -3493,12 +3510,12 @@ def _all_trades_simple(est):
     retail trades and must not accidentally match this check."""
     trades = est.get('trades', {})
     found_any = False
-    for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
+    for tk in GBB_TRADES:
         td = trades.get(tk, {})
         if not td.get('enabled') or not td.get('line_items'):
             continue
         found_any = True
-        trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+        trade_mode = _trade_mode(tk, td)
         if trade_mode != 'simple':
             return False
     return found_any
@@ -4219,6 +4236,9 @@ def send_signature_notification(est):
 
     if est.get('estimate_type') == 'insurance':
         tlbl = 'Insurance Claim'
+    elif est.get('estimate_type') == 'commercial' and not tlbl:
+        # Single-price commercial has no G/B/B pick to name.
+        tlbl = 'Commercial Roofing'
     total = _estimate_total(est)
 
     sname = sig.get('name', 'Unknown')
@@ -4434,11 +4454,11 @@ def build_signed_pdf(est):
                        gutters='Gutters', other='Other / Misc')
         cols = [('Description', 92, 'L'), ('Qty', 16, 'R'), ('Unit', 16, 'C'),
                 ('Unit Price', 29, 'R'), ('Total', 29, 'R')]
-        for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
+        for tk in GBB_TRADES:
             td = est.get('trades', {}).get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
                 continue
-            trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+            trade_mode = _trade_mode(tk, td)
             t_tier = _trade_tier(est, tk)   # each product at its signed package
             r = _tier_rate(pricing, tk, t_tier)
             # Skip the whole trade if nothing will print (all zero-qty / excluded)
@@ -4588,7 +4608,12 @@ MEASURE_LABELS = [
               ('attic_sqft', 'Attic Area', 'SF'),
               ('low_slope_squares', 'Low Slope Area (2/12 or less) - rolled roofing', 'SQ'),
               ('steep_squares', 'Steep Area (7/12 and up)', 'SQ'),
-              ('ridge_hip_lf', 'Ridge + Hip', 'LF'), ('valley_lf', 'Valley', 'LF'),
+              ('ridge_hip_lf', 'Ridge + Hip', 'LF'),
+              # Ridges alone — ridge vent ORDERS the full ridge off this, so the
+              # crew needs it on the packet. It was enterable in the UI but
+              # missing here, so it never printed.
+              ('ridge_lf', 'Ridges', 'LF'),
+              ('valley_lf', 'Valley', 'LF'),
               ('eave_lf', 'Eaves', 'LF'), ('rake_lf', 'Rakes', 'LF'),
               ('step_flash_lf', 'Step Flashing', 'LF'), ('pipe_boots', 'Pipe Boots', 'EA'),
               ('turtle_vents', 'Turtle Vents', 'EA'), ('broan_4in', '4" Broan Vent', 'EA'),
@@ -4601,6 +4626,27 @@ MEASURE_LABELS = [
                 ('siding_starter_lf', 'Starter Strip', 'LF'),
                 ('siding_soffit_lf', 'Soffit', 'LF')]),
     ('Windows', [('windows_count', 'Windows', 'EA'), ('doors_count', 'Doors', 'EA')]),
+    ('Commercial', [('comm_squares', 'Roof Area', 'SQ'), ('comm_waste_pct', 'Waste', '%'),
+                    ('comm_perimeter_lf', 'Perimeter / Edge', 'LF'),
+                    ('comm_parapet_lf', 'Parapet / Coping', 'LF'),
+                    ('comm_penetrations', 'Penetrations', 'EA'),
+                    ('comm_drains', 'Drains / Scuppers', 'EA'),
+                    ('comm_curbs', 'HVAC Curbs', 'EA'),
+                    ('comm_skylights', 'Skylights / Hatches', 'EA'),
+                    ('comm_pitch_pans', 'Pitch Pans', 'EA'),
+                    ('comm_walkway_pads', 'Walkway Pads', 'EA'),
+                    ('comm_sections', 'Roof Levels / Sections', 'EA'),
+                    # Fastening inputs. Rendered by the Scope panel rather than
+                    # the plain number grid (panelOnly in MEASURE_FIELDS), but
+                    # they are ordinary measurements and print on the packet.
+                    ('comm_length_ft', 'Building Length', 'LF'),
+                    ('comm_width_ft', 'Building Width', 'LF'),
+                    ('comm_height_ft', 'Building Height', 'LF'),
+                    ('comm_uplift', 'Uplift Rating', 'psf'),
+                    ('comm_insul_layers', 'Fastened Layers', 'EA'),
+                    ('comm_zone_field_sf', 'Zone: Field', 'SF'),
+                    ('comm_zone_perim_sf', 'Zone: Perimeter', 'SF'),
+                    ('comm_zone_corner_sf', 'Zone: Corner', 'SF')]),
 ]
 
 
@@ -4641,6 +4687,194 @@ def attic_ventilation(m):
         'needs_ridge': needs_ridge, 'needs_intake': needs_intake,
         'ridge_lf_required': ridge_lf_required, 'ridge_sticks': ridge_sticks,
         'intake_lf_suggested': intake_lf_suggested,
+    }
+
+
+# ── Commercial fastener calculator ──────────────────────────────────────────
+# MUST mirror _asceZoneWidth / commercialFastening in app.js. Unlike
+# attic_ventilation, this pair IS parity-tested — tests/test_fastening.py runs
+# both over the same fixtures and fails on any disagreement.
+#
+# The table is passed in rather than loaded here so the function stays pure and
+# both implementations can be driven from identical fixture JSON.
+_FASTEN_ZONES = ('field', 'perimeter', 'corner')
+
+
+def _asce_zone_width(least, h, rule):
+    """ASCE 7 zone width `a`: 10% of the least horizontal dimension or 40% of the
+    mean roof height, whichever is SMALLER, floored at 4% of the least dimension
+    and an absolute minimum (3 ft in ASCE, 4 ft in some FM approvals), and capped
+    at half the least dimension so the zones cannot overlap."""
+    rule = rule or {}
+    if least <= 0 or h <= 0:
+        return 0.0
+    a = min(_mnum(rule.get('a_pct_least'), 0.10) * least,
+            _mnum(rule.get('a_pct_height'), 0.40) * h)
+    a = max(a, _mnum(rule.get('a_min_pct_least'), 0.04) * least,
+            _mnum(rule.get('a_min_ft'), 3))
+    return min(a, least / 2.0)
+
+
+def commercial_fastening(m, table):
+    """Fastener counts by roof zone and layer.
+
+    Returns counts of 0 with ok=False whenever it cannot know the answer —
+    never a plausible guess. `raw` is the un-rounded float (what parity
+    compares); `total` is the waste-adjusted whole count the line item uses."""
+    m = m or {}
+    t = table or {}
+    rule     = t.get('zone_rule') or {}
+    board_sf = _mnum(t.get('board_sf'), 32) or 32
+    waste    = _mnum(t.get('waste_pct'), 0)
+    ratings  = t.get('ratings') or {}
+
+    warnings = []
+    zero_layer = {'applies': False,
+                  'by_zone': {z: {'count': 0} for z in _FASTEN_ZONES},
+                  'raw': 0.0, 'total': 0}
+
+    def _bail(reason):
+        return {'ok': False, 'reason': reason, 'a': 0.0,
+                'rating': None, 'rating_requested': _mnum(m.get('comm_uplift')),
+                'rating_label': '', 'rating_note': '',
+                'zones': {z: {'sf': 0.0, 'source': 'none'} for z in _FASTEN_ZONES},
+                'zone_source': 'none',
+                'area_check': {'bbox_sf': 0.0, 'measured_sf': 0.0, 'delta_pct': 0.0, 'warn': False},
+                'layers': 0, 'board_sf': board_sf, 'waste_pct': waste,
+                'insul': dict(zero_layer), 'seam': dict(zero_layer),
+                'warnings': warnings}
+
+    if not ratings:
+        return _bail('no_table')
+
+    # ── uplift rating: exact match, else the smallest published row at or above
+    # what was asked for. NEVER round down — that under-fastens. Keys are JSON
+    # strings, so sort numerically ("105" sorts below "60" as text).
+    requested = _mnum(m.get('comm_uplift'))
+    if requested <= 0:
+        return _bail('no_uplift_rating')
+    keys = sorted(int(k) for k in ratings if str(k).lstrip('-').isdigit())
+    if not keys:
+        return _bail('no_table')
+    chosen = next((k for k in keys if k >= requested), None)
+    rating_note = ''
+    if chosen is None:
+        chosen = keys[-1]
+        rating_note = (f'No published row at or above {requested:g} psf - using the highest '
+                       f'available ({chosen:g} psf). Verify against the system approval.')
+        warnings.append(rating_note)
+    row = ratings.get(str(chosen)) or {}
+
+    # ── zone areas: manual override wins, else computed from the bounding box
+    L = _mnum(m.get('comm_length_ft'))
+    W = _mnum(m.get('comm_width_ft'))
+    H = _mnum(m.get('comm_height_ft'))
+    ov = {'field': _mnum(m.get('comm_zone_field_sf')),
+          'perimeter': _mnum(m.get('comm_zone_perim_sf')),
+          'corner': _mnum(m.get('comm_zone_corner_sf'))}
+    has_ov = any(v > 0 for v in ov.values())
+
+    a = 0.0
+    comp = {z: 0.0 for z in _FASTEN_ZONES}
+    bbox = L * W
+    if L > 0 and W > 0 and H > 0:
+        a = _asce_zone_width(min(L, W), H, rule)
+        band = bbox - max(L - 2 * a, 0) * max(W - 2 * a, 0)
+        corner = (12 if (rule.get('corner_shape') or 'L') == 'L' else 4) * a * a
+        corner = min(corner, band)
+        comp = {'field': max(bbox - band, 0.0),
+                'perimeter': max(band - corner, 0.0),
+                'corner': corner}
+    elif not has_ov:
+        return _bail('missing_dimensions')
+
+    zones, sources = {}, []
+    for z in _FASTEN_ZONES:
+        if ov[z] > 0:
+            zones[z] = {'sf': ov[z], 'source': 'override'}
+            sources.append('override')
+        else:
+            zones[z] = {'sf': comp[z], 'source': 'computed'}
+            sources.append('computed')
+    zone_source = sources[0] if len(set(sources)) == 1 else 'mixed'
+    total_zone_sf = sum(zones[z]['sf'] for z in _FASTEN_ZONES)
+    if total_zone_sf <= 0:
+        return _bail('missing_dimensions')
+
+    # ── reconciliation: the bounding box is an independent second area from the
+    # measured roof. On an L-shaped building it is bigger AND the real roof has
+    # more corners, so we surface the gap rather than scaling anything.
+    measured_sf = _mnum(m.get('comm_squares')) * 100
+    delta_pct = 0.0
+    area_warn = False
+    ref = bbox if bbox > 0 else total_zone_sf
+    if measured_sf > 0 and ref > 0:
+        delta_pct = abs(ref - measured_sf) / ref * 100
+        if delta_pct > 10:
+            area_warn = True
+            warnings.append(
+                f'Bounding box ({ref:,.0f} SF) differs from the measured roof area '
+                f'({measured_sf:,.0f} SF) by {delta_pct:.0f}% - this roof is not a '
+                f'rectangle. Enter zone areas manually.')
+    if has_ov and ref > 0 and abs(total_zone_sf - ref) / ref * 100 > 2:
+        warnings.append(
+            f'Zone areas sum to {total_zone_sf:,.0f} SF but the roof is {ref:,.0f} SF - '
+            f'check the override values.')
+    if _mnum(m.get('comm_sections')) >= 2:
+        warnings.append('Multiple roof levels - zones are computed for ONE rectangle. '
+                        'Enter zone areas manually for a stepped or multi-level roof.')
+
+    # ── layers. A cleared field stores an explicit 0, which legitimately means
+    # "recover, no new insulation" — so MISSING means 1, but 0 means 0.
+    raw_layers = m.get('comm_insul_layers')
+    layers = 1.0 if raw_layers in (None, '') else _mnum(raw_layers)
+
+    # Attachment: resolved client-side from the bundle's products and stored as
+    # measurements so this function stays pure and the packet gets the same
+    # answer without loading the price book. Absent = assume it applies for
+    # insulation, and FAIL CLOSED for seam (an adhered system has no seam
+    # fasteners; guessing yes would put thousands of phantom screws on a bid).
+    insul_applies = m.get('comm_insul_attach') in (None, '') or _mnum(m.get('comm_insul_attach')) > 0
+    seam_applies  = _mnum(m.get('comm_seam_attach')) > 0
+
+    per_board = row.get('insul_per_board') or {}
+    seam_spec = row.get('seam') or {}
+
+    insul = {'applies': bool(insul_applies and layers > 0), 'by_zone': {}, 'raw': 0.0, 'total': 0}
+    seam  = {'applies': bool(seam_applies), 'by_zone': {}, 'raw': 0.0, 'total': 0}
+
+    for z in _FASTEN_ZONES:
+        sf = zones[z]['sf']
+        pb = _mnum(per_board.get(z))
+        boards = sf / board_sf if board_sf > 0 else 0.0
+        cnt = boards * pb * layers if insul['applies'] else 0.0
+        insul['by_zone'][z] = {'boards': boards, 'per_board': pb, 'count': cnt}
+        insul['raw'] += cnt
+
+        spec = seam_spec.get(z) or {}
+        sw = _mnum(spec.get('sheet_width_ft'))
+        sp = _mnum(spec.get('spacing_in'))
+        # Tributary area per fastener. A run of length L at spacing s truly has
+        # L/s + 1 fasteners; at roof scale the +1 is swamped by waste_pct.
+        per_fast = sw * (sp / 12.0) if sw > 0 and sp > 0 else 0.0
+        scnt = (sf / per_fast) if (seam['applies'] and per_fast > 0) else 0.0
+        seam['by_zone'][z] = {'sf_per_fastener': per_fast, 'spacing_in': sp,
+                              'sheet_width_ft': sw, 'count': scnt}
+        seam['raw'] += scnt
+
+    for layer in (insul, seam):
+        layer['total'] = math.ceil(layer['raw'] * (1 + waste / 100.0) - 1e-9)
+
+    return {
+        'ok': True, 'reason': '', 'a': a,
+        'rating': chosen, 'rating_requested': requested,
+        'rating_label': row.get('label') or f'{chosen:g} psf', 'rating_note': rating_note,
+        'zones': zones, 'zone_source': zone_source,
+        'area_check': {'bbox_sf': bbox, 'measured_sf': measured_sf,
+                       'delta_pct': delta_pct, 'warn': area_warn},
+        'layers': layers, 'board_sf': board_sf, 'waste_pct': waste,
+        'insul': insul, 'seam': seam,
+        'warnings': warnings,
     }
 
 
@@ -4793,11 +5027,11 @@ def build_production_packet_pdf(est):
             pdf.multi_cell(W, 4.6, _pdf_safe(scope))
         pdf.ln(4)
     else:
-        for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
+        for tk in GBB_TRADES:
             td = trades.get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
                 continue
-            trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+            trade_mode = _trade_mode(tk, td)
             rows = list(_tier_items(td, trade_mode, _trade_tier(est, tk)))
             if not rows:
                 continue
@@ -4901,6 +5135,12 @@ def build_production_packet_pdf(est):
     # this row tells the crew WHY the footage is doubled.
     if _mnum('iw_second_row'):
         meas_rows.append(('Roof', 'Ice & Water: 2ND ROW at eaves (code) - eave LF doubled', 2, 'ROWS'))
+    # Same idea for commercial: comm_work_type is a 0/1 toggle that decides which
+    # labor line carries quantity, so the crew needs to see which job this is.
+    if est.get('estimate_type') == 'commercial':
+        meas_rows.append(('Commercial', 'JOB TYPE: NEW CONSTRUCTION (install only)'
+                          if _mnum('comm_work_type') else
+                          'JOB TYPE: RE-ROOF (tear-off & disposal included)', 1, ''))
     if meas_rows:
         section_title('Measurements')
         table_header([('Area', 30, 'L'), ('Measurement', 92, 'L'), ('Value', 36, 'R'), ('Unit', 24, 'C')])
@@ -4918,14 +5158,91 @@ def build_production_packet_pdf(est):
                      new_x='LMARGIN', new_y='NEXT')
         pdf.ln(4)
 
+    # Commercial complexity flags — rep-entered, never priced, but the crew and
+    # the scheduler need to know before they show up.
+    comm = est.get('commercial') or {}
+    flags = [lbl for key, lbl in COMM_FLAG_LABELS if (comm.get('flags') or {}).get(key)]
+    notes = (comm.get('notes') or '').strip()
+    if est.get('estimate_type') == 'commercial' and (flags or notes):
+        section_title('Job Complexity')
+        pdf.set_font('Helvetica', '', 9)
+        for lbl in flags:
+            pdf.cell(0, 5.5, _pdf_safe(f'- {lbl}'), new_x='LMARGIN', new_y='NEXT')
+        if notes:
+            pdf.set_font('Helvetica', 'I', 9)
+            pdf.multi_cell(0, 5, _pdf_safe(notes))
+        pdf.ln(4)
+
+    # ── Fastening schedule ──
+    # The crew lays the roof out from this: corner spacing is not the same as
+    # field spacing, and getting it wrong is how a roof leaves in a windstorm.
+    if est.get('estimate_type') == 'commercial':
+        _ft = _load_commercial_fastening()
+        fz = commercial_fastening(m, _ft)
+        section_title('Fastening Schedule')
+        if not fz['ok']:
+            # A silently-absent section is how a crew ends up guessing. Say it loudly.
+            pdf.set_font('Helvetica', 'B', 10)
+            pdf.set_text_color(170, 30, 30)
+            pdf.cell(0, 6, 'NOT CALCULATED - DO NOT ORDER FASTENERS FROM THIS SHEET',
+                     new_x='LMARGIN', new_y='NEXT')
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font('Helvetica', '', 8.5)
+            _why = {'no_uplift_rating': 'No uplift rating was selected on the estimate.',
+                    'missing_dimensions': 'Building length, width, and height were not entered.',
+                    'no_table': 'No fastening table is configured.'}
+            pdf.multi_cell(0, 4.6, _pdf_safe(
+                _why.get(fz['reason'], 'Required inputs were missing.') +
+                ' Fastener quantities on the Material Order are ZERO. Confirm the fastening '
+                'schedule against the system approval before the crew starts.'))
+        else:
+            pdf.set_font('Helvetica', '', 8.5)
+            _zr = _ft.get('zone_rule') or {}
+            pdf.cell(0, 4.8, _pdf_safe(
+                f"Uplift: {fz['rating_label']}   |   Zone width a = {fz['a']:.1f} ft   |   "
+                f"{_zr.get('standard', '')}"
+                f"{' (L-shaped corners)' if _zr.get('corner_shape') == 'L' else ' (square corners)'}"),
+                new_x='LMARGIN', new_y='NEXT')
+            pdf.ln(1)
+            table_header([('Zone', 26, 'L'), ('Area SF', 24, 'R'), ('Plates/Bd', 22, 'R'),
+                          ('Insul Qty', 24, 'R'), ('Seam Spacing', 34, 'C'), ('Seam Qty', 24, 'R')])
+            pdf.set_font('Helvetica', '', 8)
+            for _z in ('field', 'perimeter', 'corner'):
+                _zi, _in, _se = fz['zones'][_z], fz['insul']['by_zone'][_z], fz['seam']['by_zone'][_z]
+                pdf.cell(26, 6, _z.title(), border=1)
+                pdf.cell(24, 6, f"{_zi['sf']:,.0f}", border=1, align='R')
+                pdf.cell(22, 6, f"{_in['per_board']:g}" if fz['insul']['applies'] else '-', border=1, align='R')
+                pdf.cell(24, 6, f"{math.ceil(_in['count']):,}" if fz['insul']['applies'] else '-', border=1, align='R')
+                pdf.cell(34, 6, (f"{_se['spacing_in']:g}\" o.c. / {_se['sheet_width_ft']:g}ft sheet"
+                                 if fz['seam']['applies'] else '-'), border=1, align='C')
+                pdf.cell(24, 6, f"{math.ceil(_se['count']):,}" if fz['seam']['applies'] else '-', border=1, align='R')
+                pdf.ln()
+            pdf.set_font('Helvetica', 'B', 8)
+            pdf.cell(96, 6, f"TOTAL (incl. {fz['waste_pct']:g}% waste)", border=1)
+            pdf.cell(24, 6, f"{fz['insul']['total']:,}" if fz['insul']['applies'] else '0', border=1, align='R')
+            pdf.cell(34, 6, '', border=1)
+            pdf.cell(24, 6, f"{fz['seam']['total']:,}" if fz['seam']['applies'] else '0', border=1, align='R')
+            pdf.ln()
+            pdf.set_font('Helvetica', 'I', 7.5)
+            if not fz['seam']['applies']:
+                pdf.cell(0, 4.4, _pdf_safe('Seam fasteners: not applicable for this system.'),
+                         new_x='LMARGIN', new_y='NEXT')
+            if not fz['insul']['applies']:
+                pdf.cell(0, 4.4, _pdf_safe('Insulation fasteners: no fastened layers on this job.'),
+                         new_x='LMARGIN', new_y='NEXT')
+            for _w in fz['warnings']:
+                pdf.multi_cell(0, 4.2, _pdf_safe('! ' + _w))
+            pdf.multi_cell(0, 4.2, _pdf_safe(_ft.get('source_note', '')))
+        pdf.ln(4)
+
     if not is_ins:
         # Materials: signed-tier lines with a material cost (or simple-mode lines)
         mat_rows, lab_rows = [], []
-        for tk in ['roofing', 'siding', 'windows', 'gutters', 'other']:
+        for tk in GBB_TRADES:
             td = trades.get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
                 continue
-            trade_mode = td.get('mode', 'simple' if tk == 'gutters' else 'gbb')
+            trade_mode = _trade_mode(tk, td)
             for it, qty, t in _tier_items(td, trade_mode, _trade_tier(est, tk)):
                 name = _with_section(it, it.get('name', ''))
                 desc = (t.get('description') or it.get('description') or '').strip()
@@ -5211,8 +5528,12 @@ def generate_production_packet(est_id):
 
     sig  = est.get('signature') or {}
     tier = sig.get('selected_tier') or est.get('selected_tier', 'better')
-    label = ('Production Packet' if est.get('estimate_type') == 'insurance'
-             else f'Production Packet - {_pick_summary_label(est) or tier.title()}')
+    if est.get('estimate_type') == 'insurance':
+        label = 'Production Packet'
+    elif est.get('estimate_type') == 'commercial' and not _pick_summary_label(est):
+        label = 'Production Packet - Commercial'
+    else:
+        label = f'Production Packet - {_pick_summary_label(est) or tier.title()}'
     att = {
         'id':               uuid.uuid4().hex[:12],
         'filename':         f'{est_id}/{fname}',
@@ -6532,59 +6853,80 @@ def _save_price_book(pb):
 # <trade>_catalog yet (fresh install or the live volume book), so the feature
 # works out of the box; once the manager edits + saves in the Price Book, their
 # version persists.
+# Each product carries the customer-facing bullet(s) it contributes to a
+# Good/Better/Best card in `bullets`. The card is BUILT from the products the
+# bundle actually contains (bundleFeatures() in app.js) rather than from a copy
+# blob stored on the bundle, so a bundle without soffit can't promise soffit and
+# a manager-built bundle describes itself correctly. A product with no `bullets`
+# key falls back to its name; an explicit [] contributes nothing.
 ROOFING_CATALOG_SEED = [
-    {"id": "m_landmark", "name": "CertainTeed Landmark (Architectural Shingle)", "unit": "SQ", "cost": 142, "measure": "squares_waste"},
-    {"id": "m_northgate", "name": "CertainTeed Northgate (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste"},
-    {"id": "m_iko_nordic", "name": "IKO Nordic (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste"},
-    {"id": "m_edco", "name": "EDCO Steel Shingle", "unit": "SQ", "cost": 300, "measure": "squares_waste"},
-    {"id": "m_stone", "name": "Stone-Coated Steel", "unit": "SQ", "cost": 330, "measure": "squares_waste"},
-    {"id": "m_standing_seam", "name": "Standing Seam Metal (24ga)", "unit": "SQ", "cost": 400, "measure": "squares_waste"},
-    {"id": "m_euroshield", "name": "Euroshield (Rubber)", "unit": "SQ", "cost": 360, "measure": "squares_waste"},
-    {"id": "a_underlayment", "name": "Synthetic Underlayment", "unit": "SQ", "cost": 9.1, "measure": "squares_waste"},
-    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "SQ", "cost": 46.46, "measure": "eave_valley"},
-    {"id": "a_drip_edge", "name": "Drip Edge", "unit": "LF", "cost": 0, "measure": "eave_rake"},
-    {"id": "a_ridge_cap", "name": "Ridge Cap", "unit": "LF", "cost": 0, "measure": "ridge_hip"},
-    {"id": "a_starter", "name": "Starter Strip", "unit": "LF", "cost": 0, "measure": "eave_rake"},
-    {"id": "a_pipe_boots", "name": "Pipe Boots", "unit": "EA", "cost": 0, "measure": "pipe_boots"},
-    {"id": "a_step_flash", "name": "Step / Wall Flashing", "unit": "LF", "cost": 0, "measure": "step"},
-    {"id": "a_skylight", "name": "Skylight Flashing", "unit": "EA", "cost": 0, "measure": "skylights"},
-    {"id": "a_decking", "name": "Decking (OSB 7/16\")", "unit": "EA", "cost": 30},
-    {"id": "a_ridge_vent", "name": "Ridge Vent", "unit": "LF", "cost": 34, "measure": "ridge_vent_code", "bundle_lf": 4, "bundle_unit": "sticks"},
-    {"id": "a_intake_vent", "name": "Intake Vent", "unit": "LF", "cost": 4.5, "measure": "eave"},
-    {"id": "a_vent_plug", "name": "Vent Plug", "unit": "EA", "cost": 25, "measure": "turtle_vents"},
-    {"id": "l_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste"},
-    {"id": "l_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste"},
-    {"id": "x_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0},
-    {"id": "x_permit", "name": "Permit", "unit": "LS", "cost": 0},
+    {"id": "m_landmark", "name": "CertainTeed Landmark (Architectural Shingle)", "unit": "SQ", "cost": 142, "measure": "squares_waste",
+     "bullets": ["CertainTeed Landmark architectural laminate shingles", "Lifetime limited manufacturer warranty", "130 mph wind rating", "Dimensional shadow lines for depth and curb appeal"]},
+    {"id": "m_northgate", "name": "CertainTeed Northgate (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste",
+     "bullets": ["CertainTeed Northgate SBS-modified impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "May qualify for a homeowners insurance premium discount", "Lifetime limited manufacturer warranty", "130 mph wind rating"]},
+    {"id": "m_iko_nordic", "name": "IKO Nordic (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste",
+     "bullets": ["IKO Nordic impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "Built for extreme cold and freeze-thaw cycles", "May qualify for a homeowners insurance premium discount", "Limited lifetime manufacturer warranty"]},
+    {"id": "m_edco", "name": "EDCO Steel Shingle", "unit": "SQ", "cost": 300, "measure": "squares_waste",
+     "bullets": ["EDCO steel shingles — architectural shingle look in real steel", "Class 4 impact rating, will not crack or lose granules to hail", "Limited lifetime warranty with hail damage coverage", "Baked-on finish that will not chip, peel, or fade"]},
+    {"id": "m_stone", "name": "Stone-Coated Steel", "unit": "SQ", "cost": 330, "measure": "squares_waste",
+     "bullets": ["Stone-coated steel panels with a textured shake/shingle profile", "Class 4 impact rating and 120+ mph wind rating", "Steel strength at a fraction of the weight of tile", "50-year limited manufacturer warranty"]},
+    {"id": "m_standing_seam", "name": "Standing Seam Metal (24ga)", "unit": "SQ", "cost": 400, "measure": "squares_waste",
+     "bullets": ["24ga standing seam metal panels with concealed fasteners", "No exposed screws to back out or leak over time", "50+ year service life — the last roof this house needs", "Class 4 impact rating and Kynar 500 finish warranty", "Clean modern lines in your choice of color"]},
+    {"id": "m_euroshield", "name": "Euroshield (Rubber)", "unit": "SQ", "cost": 360, "measure": "squares_waste",
+     "bullets": ["Euroshield recycled-rubber roofing in a slate or shake profile", "Class 4 impact rating — rubber absorbs hail instead of cracking", "Engineered for Colorado freeze-thaw cycles", "50-year limited manufacturer warranty", "Made from recycled tires — a genuinely green roof"]},
+    {"id": "a_underlayment", "name": "Synthetic Underlayment", "unit": "SQ", "cost": 9.1, "measure": "squares_waste",
+     "bullets": ["Synthetic underlayment over the full roof deck"]},
+    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "SQ", "cost": 46.46, "measure": "eave_valley",
+     "bullets": ["Ice & water shield at eaves and valleys"]},
+    {"id": "a_drip_edge", "name": "Drip Edge", "unit": "LF", "cost": 0, "measure": "eave_rake",
+     "bullets": ["New drip edge at eaves and rakes"]},
+    {"id": "a_ridge_cap", "name": "Ridge Cap", "unit": "LF", "cost": 0, "measure": "ridge_hip",
+     "bullets": ["New ridge cap over every ridge and hip"]},
+    {"id": "a_starter", "name": "Starter Strip", "unit": "LF", "cost": 0, "measure": "eave_rake",
+     "bullets": ["New starter strip at eaves and rakes"]},
+    {"id": "a_pipe_boots", "name": "Pipe Boots", "unit": "EA", "cost": 0, "measure": "pipe_boots",
+     "bullets": ["New pipe boots on every roof penetration"]},
+    {"id": "a_step_flash", "name": "Step / Wall Flashing", "unit": "LF", "cost": 0, "measure": "step",
+     "bullets": ["New step and wall flashing"]},
+    {"id": "a_skylight", "name": "Skylight Flashing", "unit": "EA", "cost": 0, "measure": "skylights",
+     "bullets": ["New skylight flashing kits"]},
+    {"id": "a_decking", "name": "Decking (OSB 7/16\")", "unit": "EA", "cost": 30,
+     "bullets": ["Damaged decking replaced sheet for sheet"]},
+    {"id": "a_ridge_vent", "name": "Ridge Vent", "unit": "LF", "cost": 34, "measure": "ridge_vent_code", "bundle_lf": 4, "bundle_unit": "sticks",
+     "bullets": ["Continuous ridge vent cut in along the ridge"]},
+    {"id": "a_intake_vent", "name": "Intake Vent", "unit": "LF", "cost": 4.5, "measure": "eave",
+     "bullets": ["Intake venting at the eaves to balance the attic"]},
+    {"id": "a_vent_plug", "name": "Vent Plug", "unit": "EA", "cost": 25, "measure": "turtle_vents",
+     "bullets": ["Old turtle vents removed and decked over"]},
+    {"id": "l_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
+     "bullets": ["Complete tear-off of existing roofing down to the deck"]},
+    {"id": "l_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
+     "bullets": ["Installed by Project One crews to manufacturer spec"]},
+    {"id": "x_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
+     "bullets": ["Dumpster and full magnetic nail sweep"]},
+    {"id": "x_permit", "name": "Permit", "unit": "LS", "cost": 0,
+     "bullets": ["Permit pulled and final inspection scheduled"]},
 ]
 _RS = ["a_underlayment", "a_ice_water", "a_drip_edge", "a_ridge_cap", "a_starter",
        "a_pipe_boots", "a_step_flash", "a_decking", "l_tearoff", "l_install", "x_dumpster", "x_permit"]
-# Every bundle carries its OWN customer story — the `description` tagline and the
-# `features` bullet list that fill the Good/Better/Best card. Swapping a bundle on
-# an estimate replaces both, so the copy can never describe last week's shingle.
-_RS_FEATURES = [
-    "Complete tear-off of existing roofing down to the deck",
-    "Synthetic underlayment over the full roof deck",
-    "Ice & water shield at eaves and valleys",
-    "New drip edge, starter strip, pipe boots, and flashing",
-    "Dumpster, permit, and full magnetic nail sweep",
-    "5-year Project One workmanship warranty",
-]
+# Bullets no product owns. Everything else on the card comes from the products,
+# so this list stays short — it closes the card, it doesn't describe the scope.
+_RS_EXTRA = ["5-year Project One workmanship warranty"]
 ROOFING_BUNDLES_SEED = [
     {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Architectural laminate shingle system — dimensional shadow lines, lifetime limited warranty.",
-     "features": ["CertainTeed Landmark architectural laminate shingles", "Lifetime limited manufacturer warranty", "130 mph wind rating", "Dimensional shadow lines for depth and curb appeal"] + _RS_FEATURES},
+     "extra_features": _RS_EXTRA},
     {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle — hail-country durability, may qualify for an insurance discount.",
-     "features": ["CertainTeed Northgate SBS-modified impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "May qualify for a homeowners insurance premium discount", "Lifetime limited manufacturer warranty", "130 mph wind rating"] + _RS_FEATURES},
+     "extra_features": _RS_EXTRA},
     {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Class 4 impact-resistant shingle built for extreme cold and hail.",
-     "features": ["IKO Nordic impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "Built for extreme cold and freeze-thaw cycles", "May qualify for a homeowners insurance premium discount", "Limited lifetime manufacturer warranty"] + _RS_FEATURES},
+     "extra_features": _RS_EXTRA},
     {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "EDCO steel shingles — the look of architectural shingles in Class 4 impact-rated steel.",
-     "features": ["EDCO steel shingles — architectural shingle look in real steel", "Class 4 impact rating, will not crack or lose granules to hail", "Limited lifetime warranty with hail damage coverage", "Baked-on finish that will not chip, peel, or fade"] + _RS_FEATURES},
+     "extra_features": _RS_EXTRA},
     {"id": "b_stone", "name": "Stone-Coated Steel", "product_ids": ["m_stone"] + _RS, "description": "Stone-coated steel panels — steel strength with a textured shake/shingle look, wind-rated 120+ mph.",
-     "features": ["Stone-coated steel panels with a textured shake/shingle profile", "Class 4 impact rating and 120+ mph wind rating", "Steel strength at a fraction of the weight of tile", "50-year limited manufacturer warranty"] + _RS_FEATURES},
+     "extra_features": _RS_EXTRA},
     {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _RS, "description": "24ga standing seam metal with concealed fasteners — the premium 50+ year system.",
-     "features": ["24ga standing seam metal panels with concealed fasteners", "No exposed screws to back out or leak over time", "50+ year service life — the last roof this house needs", "Class 4 impact rating and Kynar 500 finish warranty", "Clean modern lines in your choice of color"] + _RS_FEATURES},
+     "extra_features": _RS_EXTRA},
     {"id": "b_euroshield", "name": "Euroshield", "product_ids": ["m_euroshield"] + _RS, "description": "Recycled-rubber roofing with the look of slate/shake — Class 4 impact, freeze-thaw resistant.",
-     "features": ["Euroshield recycled-rubber roofing in a slate or shake profile", "Class 4 impact rating — rubber absorbs hail instead of cracking", "Engineered for Colorado freeze-thaw cycles", "50-year limited manufacturer warranty", "Made from recycled tires — a genuinely green roof"] + _RS_FEATURES},
+     "extra_features": _RS_EXTRA},
 ]
 ROOFING_TIER_DEFAULTS_SEED = {"good": "b_landmark", "better": "b_northgate", "best": "b_standing_seam"}
 
@@ -6594,80 +6936,228 @@ ROOFING_TIER_DEFAULTS_SEED = {"good": "b_landmark", "better": "b_northgate", "be
 # the old per-tier variant menus; accessory/labor costs are PLACEHOLDERS (0) —
 # the manager sets real numbers in Price Book → Siding → Products.
 SIDING_CATALOG_SEED = [
-    {"id": "s_vinyl_dutch", "name": "Vinyl - Dutch Lap 4\"", "unit": "SQ", "cost": 165, "measure": "siding_sq_waste"},
-    {"id": "s_vinyl_clap", "name": "Vinyl - Clapboard 4.5\"", "unit": "SQ", "cost": 170, "measure": "siding_sq_waste"},
-    {"id": "s_vinyl_bb", "name": "Vinyl - Board & Batten", "unit": "SQ", "cost": 195, "measure": "siding_sq_waste"},
-    {"id": "s_lp_lap", "name": "LP SmartSide - Lap 8\"", "unit": "SQ", "cost": 240, "measure": "siding_sq_waste"},
-    {"id": "s_lp_panel", "name": "LP SmartSide - Panel / Board & Batten", "unit": "SQ", "cost": 265, "measure": "siding_sq_waste"},
-    {"id": "s_hardie_cedar", "name": "James Hardie - Plank Lap 8.25\" (Cedarmill)", "unit": "SQ", "cost": 320, "measure": "siding_sq_waste"},
-    {"id": "s_hardie_smooth", "name": "James Hardie - Plank Lap 7\" (Smooth)", "unit": "SQ", "cost": 315, "measure": "siding_sq_waste"},
-    {"id": "s_hardie_shingle", "name": "James Hardie - Shingle / Panel", "unit": "SQ", "cost": 360, "measure": "siding_sq_waste"},
-    {"id": "sa_house_wrap", "name": "House Wrap", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste"},
-    {"id": "sa_starter", "name": "Starter Strip", "unit": "LF", "cost": 0, "measure": "siding_starter"},
-    {"id": "sa_j_channel", "name": "J-Channel", "unit": "LF", "cost": 0, "measure": "j_channel"},
-    {"id": "sa_corner_out", "name": "Corner Posts", "unit": "LF", "cost": 0, "measure": "corners_out"},
-    {"id": "sa_corner_in", "name": "Inside Corners", "unit": "LF", "cost": 0, "measure": "corners_in"},
-    {"id": "sa_trim", "name": "Trim Board", "unit": "LF", "cost": 0},
-    {"id": "sa_soffit", "name": "Soffit", "unit": "LF", "cost": 0, "measure": "siding_soffit"},
-    {"id": "sa_fascia", "name": "Fascia", "unit": "LF", "cost": 0},
-    {"id": "sl_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "siding_squares"},
-    {"id": "sl_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "siding_squares"},
-    {"id": "sx_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0},
-    {"id": "sx_permit", "name": "Permit", "unit": "LS", "cost": 0},
+    {"id": "s_vinyl_dutch", "name": "Vinyl - Dutch Lap 4\"", "unit": "SQ", "cost": 165, "measure": "siding_sq_waste",
+     "bullets": ["Vinyl siding in the classic 4\" Dutch lap profile", "Never needs paint - wash it once a year and it is done", "Color runs all the way through, so scratches do not show", "Lifetime limited manufacturer warranty"]},
+    {"id": "s_vinyl_clap", "name": "Vinyl - Clapboard 4.5\"", "unit": "SQ", "cost": 170, "measure": "siding_sq_waste",
+     "bullets": ["Vinyl siding in a traditional 4.5\" clapboard profile", "Clean horizontal lines that suit almost any home style", "Fade-resistant color all the way through the panel", "Never needs paint", "Lifetime limited manufacturer warranty"]},
+    {"id": "s_vinyl_bb", "name": "Vinyl - Board & Batten", "unit": "SQ", "cost": 195, "measure": "siding_sq_waste",
+     "bullets": ["Vertical board & batten vinyl panels", "Modern farmhouse curb appeal", "Zero-maintenance vinyl durability - never needs paint", "Lifetime limited manufacturer warranty"]},
+    {"id": "s_lp_lap", "name": "LP SmartSide - Lap 8\"", "unit": "SQ", "cost": 240, "measure": "siding_sq_waste",
+     "bullets": ["LP SmartSide engineered wood lap siding, 8\" exposure", "The warmth and texture of real wood grain", "SmartGuard treated to resist rot, hail, and termites", "Holds paint far longer than natural wood", "50-year limited manufacturer warranty"]},
+    {"id": "s_lp_panel", "name": "LP SmartSide - Panel / Board & Batten", "unit": "SQ", "cost": 265, "measure": "siding_sq_waste",
+     "bullets": ["LP SmartSide engineered wood panel and batten system", "Bold vertical lines with real wood texture", "SmartGuard treated to resist rot, hail, and termites", "50-year limited manufacturer warranty"]},
+    {"id": "s_hardie_cedar", "name": "James Hardie - Plank Lap 8.25\" (Cedarmill)", "unit": "SQ", "cost": 320, "measure": "siding_sq_waste",
+     "bullets": ["James Hardie fiber cement lap siding, Cedarmill woodgrain texture", "Non-combustible - will not feed a fire", "Hail, pest, and rot proof", "ColorPlus factory finish backed for 15 years", "30-year limited manufacturer warranty"]},
+    {"id": "s_hardie_smooth", "name": "James Hardie - Plank Lap 7\" (Smooth)", "unit": "SQ", "cost": 315, "measure": "siding_sq_waste",
+     "bullets": ["James Hardie fiber cement lap siding with a clean smooth finish", "Engineered specifically for Colorado freeze-thaw and hail", "Non-combustible, hail, pest, and rot proof", "ColorPlus factory finish backed for 15 years", "30-year limited manufacturer warranty"]},
+    {"id": "s_hardie_shingle", "name": "James Hardie - Shingle / Panel", "unit": "SQ", "cost": 360, "measure": "siding_sq_waste",
+     "bullets": ["James Hardie shingle and panel siding", "Shake-style character without the maintenance of real cedar", "Ideal for gables, dormers, and accent walls", "Non-combustible, hail, pest, and rot proof", "30-year limited manufacturer warranty"]},
+    {"id": "sa_house_wrap", "name": "House Wrap", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste",
+     "bullets": ["House wrap weather barrier over the full wall area"]},
+    {"id": "sa_starter", "name": "Starter Strip", "unit": "LF", "cost": 0, "measure": "siding_starter",
+     "bullets": ["New starter strip along the bottom course"]},
+    {"id": "sa_j_channel", "name": "J-Channel", "unit": "LF", "cost": 0, "measure": "j_channel",
+     "bullets": ["New J-channel around every window and door"]},
+    {"id": "sa_corner_out", "name": "Corner Posts", "unit": "LF", "cost": 0, "measure": "corners_out",
+     "bullets": ["New outside corner posts"]},
+    {"id": "sa_corner_in", "name": "Inside Corners", "unit": "LF", "cost": 0, "measure": "corners_in",
+     "bullets": ["New inside corner trim"]},
+    {"id": "sa_trim", "name": "Trim Board", "unit": "LF", "cost": 0,
+     "bullets": ["New trim boards"]},
+    {"id": "sa_soffit", "name": "Soffit", "unit": "LF", "cost": 0, "measure": "siding_soffit",
+     "bullets": ["New soffit"]},
+    {"id": "sa_fascia", "name": "Fascia", "unit": "LF", "cost": 0,
+     "bullets": ["New fascia"]},
+    {"id": "sl_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "siding_squares",
+     "bullets": ["Complete tear-off of existing siding"]},
+    {"id": "sl_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "siding_squares",
+     "bullets": ["Installed by Project One crews to manufacturer spec"]},
+    {"id": "sx_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
+     "bullets": ["Dumpster and full site cleanup"]},
+    {"id": "sx_permit", "name": "Permit", "unit": "LS", "cost": 0,
+     "bullets": ["Permit pulled and final inspection scheduled"]},
 ]
 _SS = ["sa_house_wrap", "sa_starter", "sa_j_channel", "sa_corner_out", "sa_corner_in",
        "sa_trim", "sa_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"]
-_SS_FEATURES = [
-    "Complete tear-off of existing siding",
-    "House wrap weather barrier over the full wall area",
-    "New starter strip, J-channel, corner posts, and trim",
-    "Soffit and fascia included",
-    "Dumpster, permit, and full site cleanup",
-    "5-year Project One workmanship warranty",
-]
+_SS_EXTRA = ["5-year Project One workmanship warranty"]
 SIDING_BUNDLES_SEED = [
     {"id": "sb_vinyl_dutch", "name": "Vinyl - Dutch Lap", "product_ids": ["s_vinyl_dutch"] + _SS,
      "description": "Insulated-ready vinyl siding in the classic Dutch lap profile - low maintenance, never needs paint, lifetime limited warranty.",
-     "features": ["Vinyl siding in the classic 4\" Dutch lap profile", "Never needs paint - wash it once a year and it is done", "Color runs all the way through, so scratches do not show", "Lifetime limited manufacturer warranty"] + _SS_FEATURES},
+     "extra_features": _SS_EXTRA},
     {"id": "sb_vinyl_clap", "name": "Vinyl - Clapboard", "product_ids": ["s_vinyl_clap"] + _SS,
      "description": "Traditional clapboard vinyl siding - clean horizontal lines, fade-resistant color all the way through.",
-     "features": ["Vinyl siding in a traditional 4.5\" clapboard profile", "Clean horizontal lines that suit almost any home style", "Fade-resistant color all the way through the panel", "Never needs paint", "Lifetime limited manufacturer warranty"] + _SS_FEATURES},
+     "extra_features": _SS_EXTRA},
     {"id": "sb_vinyl_bb", "name": "Vinyl - Board & Batten", "product_ids": ["s_vinyl_bb"] + _SS,
      "description": "Vertical board & batten vinyl - modern farmhouse curb appeal with zero-maintenance vinyl durability.",
-     "features": ["Vertical board & batten vinyl panels", "Modern farmhouse curb appeal", "Zero-maintenance vinyl durability - never needs paint", "Lifetime limited manufacturer warranty"] + _SS_FEATURES},
+     "extra_features": _SS_EXTRA},
     {"id": "sb_lp_lap", "name": "LP SmartSide - Lap", "product_ids": ["s_lp_lap"] + _SS,
      "description": "LP SmartSide engineered wood lap siding - the warmth and texture of real wood, treated to resist rot, hail, and termites. 50-year limited warranty.",
-     "features": ["LP SmartSide engineered wood lap siding, 8\" exposure", "The warmth and texture of real wood grain", "SmartGuard treated to resist rot, hail, and termites", "Holds paint far longer than natural wood", "50-year limited manufacturer warranty"] + _SS_FEATURES},
+     "extra_features": _SS_EXTRA},
     {"id": "sb_lp_panel", "name": "LP SmartSide - Board & Batten", "product_ids": ["s_lp_panel"] + _SS,
      "description": "LP SmartSide engineered wood panel and batten system - bold vertical lines with impact-resistant engineered wood strength.",
-     "features": ["LP SmartSide engineered wood panel and batten system", "Bold vertical lines with real wood texture", "SmartGuard treated to resist rot, hail, and termites", "50-year limited manufacturer warranty"] + _SS_FEATURES},
+     "extra_features": _SS_EXTRA},
     {"id": "sb_hardie_cedar", "name": "James Hardie - Cedarmill Lap", "product_ids": ["s_hardie_cedar"] + _SS,
      "description": "James Hardie fiber cement in the Cedarmill woodgrain texture - non-combustible, hail and pest proof, ColorPlus finish backed for 15 years.",
-     "features": ["James Hardie fiber cement lap siding, Cedarmill woodgrain texture", "Non-combustible - will not feed a fire", "Hail, pest, and rot proof", "ColorPlus factory finish backed for 15 years", "30-year limited manufacturer warranty"] + _SS_FEATURES},
+     "extra_features": _SS_EXTRA},
     {"id": "sb_hardie_smooth", "name": "James Hardie - Smooth Lap", "product_ids": ["s_hardie_smooth"] + _SS,
      "description": "James Hardie fiber cement lap siding with a clean smooth finish - the premium look, engineered for Colorado freeze-thaw and hail.",
-     "features": ["James Hardie fiber cement lap siding with a clean smooth finish", "Engineered specifically for Colorado freeze-thaw and hail", "Non-combustible, hail, pest, and rot proof", "ColorPlus factory finish backed for 15 years", "30-year limited manufacturer warranty"] + _SS_FEATURES},
+     "extra_features": _SS_EXTRA},
     {"id": "sb_hardie_shingle", "name": "James Hardie - Shingle / Panel", "product_ids": ["s_hardie_shingle"] + _SS,
      "description": "James Hardie shingle and panel siding - shake-style character in fiber cement, ideal for gables and accent walls.",
-     "features": ["James Hardie shingle and panel siding", "Shake-style character without the maintenance of real cedar", "Ideal for gables, dormers, and accent walls", "Non-combustible, hail, pest, and rot proof", "30-year limited manufacturer warranty"] + _SS_FEATURES},
+     "extra_features": _SS_EXTRA},
 ]
 SIDING_TIER_DEFAULTS_SEED = {"good": "sb_vinyl_dutch", "better": "sb_lp_lap", "best": "sb_hardie_cedar"}
+
+# Commercial low-slope catalog. Membrane/insulation/accessory costs are
+# PLACEHOLDERS (0) on purpose — commercial material pricing comes off the
+# supplier's quote for the specific job, so the manager sets real numbers in
+# Price Book -> Commercial -> Products (or the rep overrides per estimate).
+# The two LABOR rates are real Project One standards and ship priced.
+COMMERCIAL_CATALOG_SEED = [
+    # Membranes — one per bundle; qty is squares + waste.
+    {"id": "cm_tpo_ma", "name": "TPO Membrane 60-mil (Mechanically Attached)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "mechanical",
+     "bullets": ["60-mil TPO single-ply membrane, hot-air welded seams", "Highly reflective white surface cuts cooling load", "Mechanically attached — fast install, proven wind uplift performance", "20-year manufacturer system warranty available"]},
+    {"id": "cm_tpo_fa", "name": "TPO Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil TPO single-ply membrane, fully adhered to the substrate", "Highest wind uplift rating — built for exposed and high-rise decks", "Smooth, flutter-free finished surface", "Highly reflective white surface cuts cooling load", "20-year manufacturer system warranty available"]},
+    {"id": "cm_epdm", "name": "EPDM Membrane 60-mil", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil EPDM rubber single-ply membrane", "Decades of proven field performance in freeze-thaw climates", "Excellent flexibility and hail resistance", "Simple, reliable seam and repair detailing"]},
+    {"id": "cm_modbit", "name": "Modified Bitumen, 2-Ply (Base + Cap Sheet)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["Two-ply modified bitumen base sheet and cap sheet", "Redundant membrane layers — a second line of waterproofing", "Stands up to foot traffic and rooftop equipment service", "Granulated cap surface for UV protection"]},
+    {"id": "cm_coating", "name": "Silicone Restoration Coating System", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "coating",
+     "bullets": ["Seamless silicone coating applied over the existing roof", "No tear-off — far less disruption to building operations", "Ponding-water resistant and highly reflective", "Renewable: recoat at the end of the warranty instead of re-roofing", "10-15 year renewable manufacturer warranty available"]},
+    # Build-up
+    {"id": "ca_iso", "name": "Polyiso Insulation", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
+     "bullets": ["Polyiso insulation to the specified R-value"]},
+    {"id": "ca_cover", "name": "Cover Board (1/2\" HD)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
+     "bullets": ["High-density cover board over the insulation"]},
+    {"id": "ca_adhesive", "name": "Bonding Adhesive / Seam Tape", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
+     "bullets": ["Manufacturer-specified bonding adhesive and seam tape"]},
+    # Superseded by the two zone-calculated fastener lines — it stays in the
+    # catalog for old estimates but has nothing left to say on a card.
+    {"id": "ca_fasteners", "name": "Plates & Fasteners (legacy — replaced by the zone calculator)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
+     "bullets": []},
+    # Counts come from commercial_fastening(): zone area x the density table.
+    {"id": "ca_fast_insul", "name": "Insulation Fasteners & Plates", "unit": "EA", "cost": 0, "measure": "comm_fast_insul",
+     "bullets": ["Insulation fastened at the wind-zone density the code requires"]},
+    {"id": "ca_fast_seam", "name": "Membrane Seam Fasteners & Plates", "unit": "EA", "cost": 0, "measure": "comm_fast_seam",
+     "bullets": ["Membrane seams fastened at the wind-zone density the code requires"]},
+    # Perimeter
+    {"id": "ca_edge", "name": "Edge Metal / Drip", "unit": "LF", "cost": 0, "measure": "comm_perimeter",
+     "bullets": ["New edge metal around the full perimeter"]},
+    {"id": "ca_coping", "name": "Coping Cap", "unit": "LF", "cost": 0, "measure": "comm_parapet",
+     "bullets": ["New coping cap on the parapet walls"]},
+    {"id": "ca_termbar", "name": "Termination Bar / Wall Flashing", "unit": "LF", "cost": 0, "measure": "comm_parapet",
+     "bullets": ["New termination bar and wall flashing"]},
+    # Details
+    {"id": "ca_pipe_flash", "name": "Penetration Flashing / Pipe Boot", "unit": "EA", "cost": 0, "measure": "comm_penetrations",
+     "bullets": ["Every penetration flashed and sealed"]},
+    {"id": "ca_drain", "name": "Drain Assembly / Retrofit Drain", "unit": "EA", "cost": 0, "measure": "comm_drains",
+     "bullets": ["Roof drains flashed and tied into the new membrane"]},
+    {"id": "ca_curb", "name": "Curb Flashing (HVAC / Skylight)", "unit": "EA", "cost": 0, "measure": "comm_curbs",
+     "bullets": ["HVAC and skylight curbs flashed"]},
+    {"id": "ca_pitchpan", "name": "Pitch Pan", "unit": "EA", "cost": 0, "measure": "comm_pitch_pans",
+     "bullets": ["Pitch pans set and sealed at odd penetrations"]},
+    {"id": "ca_walkway", "name": "Walkway Pad", "unit": "EA", "cost": 0, "measure": "comm_walkway_pads",
+     "bullets": ["Walkway pads at access points and service areas"]},
+    # Labor — Project One standard rates. Both ship in every bundle; the
+    # comm_work_type toggle zeroes the one that doesn't apply, and a zero-qty
+    # item never prices and never shows on a customer page.
+    #
+    # Neither line claims a tear-off, deliberately. Whether there IS one is a
+    # measurement (comm_work_type), not a bundle fact, and every bundle carries
+    # BOTH lines — so a tear-off bullet here would print on a new-construction
+    # bid and, worse, on the coating system whose whole pitch is "no tear-off".
+    # The re-roof line says the honest half; the Scope page carries the rest.
+    {"id": "cl_labor_reroof", "name": "Tear-Off, Disposal & Install Labor (Re-Roof)", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+     "bullets": ["Installed by Project One crews to manufacturer spec"]},
+    {"id": "cl_labor_new", "name": "Install Labor (New Construction)", "unit": "SQ", "cost": 250, "measure": "comm_labor_new",
+     "bullets": []},
+    # Misc — manual quantities.
+    {"id": "cx_misc", "name": "Misc Accessories (lap sealant, pitch pans, pads)", "unit": "LS", "cost": 0,
+     "bullets": []},
+    {"id": "cx_crane", "name": "Crane / Equipment", "unit": "LS", "cost": 0,
+     "bullets": ["Crane and equipment for rooftop material handling"]},
+    {"id": "cx_permit", "name": "Permit", "unit": "LS", "cost": 0,
+     "bullets": ["Permit pulled and final inspection scheduled"]},
+]
+# Shared build-up every commercial system includes.
+_CS = ["ca_iso", "ca_cover", "ca_adhesive", "ca_fast_insul", "ca_fast_seam", "ca_edge", "ca_coping",
+       "ca_termbar", "ca_pipe_flash", "ca_drain", "ca_curb", "ca_pitchpan",
+       "ca_walkway", "cl_labor_reroof", "cl_labor_new", "cx_misc", "cx_permit"]
+_CS_EXTRA = ["5-year Project One workmanship warranty"]
+COMMERCIAL_BUNDLES_SEED = [
+    {"id": "cb_tpo_ma", "name": "TPO — Mechanically Attached", "product_ids": ["cm_tpo_ma"] + _CS,
+     "description": "60-mil TPO welded membrane, mechanically attached — the workhorse commercial flat roof.",
+     "extra_features": _CS_EXTRA},
+    {"id": "cb_tpo_fa", "name": "TPO — Fully Adhered", "product_ids": ["cm_tpo_fa"] + _CS,
+     "description": "60-mil TPO fully adhered — smooth finished surface and the highest wind uplift rating.",
+     "extra_features": _CS_EXTRA},
+    {"id": "cb_epdm", "name": "EPDM Rubber", "product_ids": ["cm_epdm"] + _CS,
+     "description": "60-mil EPDM rubber membrane — the longest field track record in low-slope roofing.",
+     "extra_features": _CS_EXTRA},
+    {"id": "cb_modbit", "name": "Modified Bitumen (2-Ply)", "product_ids": ["cm_modbit"] + _CS,
+     "description": "Two-ply modified bitumen base and cap sheet — redundant waterproofing for high-traffic roofs.",
+     "extra_features": _CS_EXTRA},
+    {"id": "cb_coating", "name": "Silicone Restoration Coating", "product_ids": ["cm_coating"] + _CS,
+     "description": "Silicone restoration coating over the existing roof — extends service life without a tear-off.",
+     "extra_features": _CS_EXTRA},
+]
+COMMERCIAL_TIER_DEFAULTS_SEED = {"good": "cb_epdm", "better": "cb_tpo_ma", "best": "cb_tpo_fa"}
+# The system loaded when the trade is in single-price (simple) mode, which is
+# how a commercial bid sells by default.
+COMMERCIAL_SIMPLE_DEFAULT = "cb_tpo_ma"
 
 # trade -> (catalog seed, bundle seed, tier-default seed). Mirrored client-side
 # by BUNDLE_TRADES in app.js — keep the two lists in sync.
 BUNDLE_SEEDS = {
     'roofing': (ROOFING_CATALOG_SEED, ROOFING_BUNDLES_SEED, ROOFING_TIER_DEFAULTS_SEED),
     'siding':  (SIDING_CATALOG_SEED,  SIDING_BUNDLES_SEED,  SIDING_TIER_DEFAULTS_SEED),
+    'commercial': (COMMERCIAL_CATALOG_SEED, COMMERCIAL_BUNDLES_SEED, COMMERCIAL_TIER_DEFAULTS_SEED),
 }
+# trade -> bundle id used when the trade prices as a single package.
+SIMPLE_BUNDLE_DEFAULTS = {'commercial': COMMERCIAL_SIMPLE_DEFAULT}
+
+# Rep-entered commercial complexity flags. Display only — these never price.
+# MUST mirror COMM_FLAGS in app.js (the keys are what the estimate stores).
+COMM_FLAG_LABELS = [
+    ('penetrations_10plus', '10+ penetrations'),
+    ('levels_3plus', '3+ roof levels / sections'),
+    ('expansion_joints', 'Expansion joints'),
+    ('heavy_hvac', 'Heavy rooftop HVAC'),
+]
 
 
 def _copy_seed_bundle(b):
     """Deep-enough copy so an edited response can never mutate the seed constant."""
-    return dict(b, product_ids=list(b['product_ids']), features=list(b.get('features') or []))
+    return dict(b, product_ids=list(b['product_ids']),
+                extra_features=list(b.get('extra_features') or []))
+
+
+def _copy_seed_product(p):
+    """Same, for a catalog product — `bullets` is a list and would otherwise be
+    aliased into the response and appended to by the next PUT."""
+    out = dict(p)
+    if isinstance(out.get('bullets'), list):
+        out['bullets'] = list(out['bullets'])
+    return out
 
 
 # Customer-facing copy the server may fill in on a bundle the manager already owns.
-_BUNDLE_COPY_FIELDS = ('description', 'features')
+# The What's Included bullets are NOT here — they are built from the bundle's
+# products (bundleFeatures() in app.js), so `extra_features` only carries the
+# bullets no product owns. A live book's legacy `features` blob is left alone and
+# no longer read; the Price Book editor writes `extra_features` now.
+_BUNDLE_COPY_FIELDS = ('description', 'extra_features')
+
+# Product facts (not prices) the server may backfill onto a catalog product a
+# manager already has. `attach` decides whether a system gets seam fasteners;
+# `bullets` is the product's line(s) on a Good/Better/Best card.
+_PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets')
+
+# old product id -> the product(s) that replaced it, swapped into SEEDED bundles
+# on read. The old product stays in the catalog: an estimate may reference it and
+# the manager may have priced it.
+_PRODUCT_SUPERSEDED = {'ca_fasteners': ['ca_fast_insul', 'ca_fast_seam']}
 
 
 def _ensure_bundle_catalogs(pb):
@@ -6675,7 +7165,7 @@ def _ensure_bundle_catalogs(pb):
     has none. Non-destructive (mutates the in-memory dict for the response only)."""
     for trade, (catalog, bundles, defaults) in BUNDLE_SEEDS.items():
         if not pb.get(trade + '_catalog'):
-            pb[trade + '_catalog'] = [dict(p) for p in catalog]
+            pb[trade + '_catalog'] = [_copy_seed_product(p) for p in catalog]
             pb[trade + '_bundles'] = [_copy_seed_bundle(b) for b in bundles]
             pb[trade + '_tier_defaults'] = dict(defaults)
         else:
@@ -6698,6 +7188,45 @@ def _ensure_bundle_catalogs(pb):
                     if field not in live and field in seed:
                         val = seed[field]
                         live[field] = list(val) if isinstance(val, list) else val
+
+            # A price book saved before a seed product existed would never get
+            # it: the branch above only runs when the catalog is ABSENT, and
+            # PUT /api/pricebook persists whatever the client last saw. So
+            # append seed products the live catalog is missing BY ID. A catalog
+            # is a menu — an extra product nobody uses is harmless, whereas a
+            # missing one silently drops its line from every bundle.
+            live_cat = pb[trade + '_catalog']
+            have = {p.get('id') for p in live_cat if isinstance(p, dict)}
+            for seed_p in catalog:
+                if seed_p['id'] not in have:
+                    live_cat.append(_copy_seed_product(seed_p))
+                    have.add(seed_p['id'])
+                else:
+                    # Backfill product facts added after the book was saved
+                    # (e.g. `attach`, which decides whether a system gets seam
+                    # fasteners, or `bullets`, the product's line on a package
+                    # card). Absence is the test — a manager who cleared it
+                    # keeps it cleared.
+                    p_live = next(p for p in live_cat
+                                  if isinstance(p, dict) and p.get('id') == seed_p['id'])
+                    for field in _PRODUCT_BACKFILL_FIELDS:
+                        if field in seed_p and field not in p_live:
+                            val = seed_p[field]
+                            p_live[field] = list(val) if isinstance(val, list) else val
+
+            # Seeded bundles that still carry a superseded product swap it for
+            # its replacement(s). Manager-created bundles are left alone.
+            for seed in bundles:
+                live = by_id.get(seed['id'])
+                if live is None or not isinstance(live.get('product_ids'), list):
+                    continue
+                for old, new_ids in _PRODUCT_SUPERSEDED.items():
+                    if old in live['product_ids'] and old not in (seed.get('product_ids') or []):
+                        at = live['product_ids'].index(old)
+                        live['product_ids'][at:at + 1] = [
+                            n for n in new_ids if n not in live['product_ids']]
+    for trade, bundle_id in SIMPLE_BUNDLE_DEFAULTS.items():
+        pb.setdefault(trade + '_simple_default', bundle_id)
     return pb
 
 
@@ -7039,6 +7568,98 @@ def put_permit_defaults():
         return _forbid()
     data = request.get_json(force=True)
     with open(PERMIT_DEFAULTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+    return jsonify({'ok': True})
+
+
+# ── Commercial fastening table ──────────────────────────────────────────────
+# Fastener density on a low-slope roof is set by roof zone (ASCE 7 field /
+# perimeter / corner), by the uplift the roof must resist, and by which layer is
+# being fastened. This table holds those densities; commercial_fastening() below
+# does the math.
+#
+# ONE copy of the table, served by this API — app.js fetches it rather than
+# mirroring it. Only the ALGORITHM is duplicated JS<->PY, and tests/test_fastening.py
+# holds the two implementations to the same numbers. (Contrast attic_ventilation,
+# whose constants are mirrored in both files with nothing to catch drift.)
+#
+# The seeded densities are GENERIC and invented — see source_note. They are a
+# starting point for a manager, not a manufacturer's approval.
+_COMM_FASTENING_FALLBACK = {
+    'version': 1,
+    'source_note': ("GENERIC INDUSTRY-TYPICAL DEFAULTS - not a manufacturer's approval and not "
+                    "tied to any manufacturer. Verify against the specified system's FM approval "
+                    "or wind-uplift design guide before ordering or installing."),
+    'zone_rule': {
+        'standard': 'ASCE 7-16 low-slope (theta <= 7 deg)',
+        'a_pct_least': 0.10, 'a_pct_height': 0.40,
+        'a_min_pct_least': 0.04, 'a_min_ft': 3,
+        # ASCE 7-10 drew the corner (Zone 3) as a square a x a -> 4a^2 total.
+        # ASCE 7-16 redrew it as an L (two 2a x a legs) -> 3a^2 each, 12a^2 total.
+        # That is 3x in the highest-uplift zone, so it is a setting, not a
+        # constant, and defaults to the conservative reading.
+        'corner_shape': 'L',
+    },
+    'board_sf': 32,
+    'waste_pct': 5,
+    'ratings': {
+        '60': {'label': 'FM 1-60',
+               'insul_per_board': {'field': 4, 'perimeter': 6, 'corner': 8},
+               'seam': {'field':     {'sheet_width_ft': 10, 'spacing_in': 12},
+                        'perimeter': {'sheet_width_ft': 6,  'spacing_in': 12},
+                        'corner':    {'sheet_width_ft': 5,  'spacing_in': 12}}},
+        '75': {'label': 'FM 1-75',
+               'insul_per_board': {'field': 5, 'perimeter': 8, 'corner': 10},
+               'seam': {'field':     {'sheet_width_ft': 10, 'spacing_in': 12},
+                        'perimeter': {'sheet_width_ft': 5,  'spacing_in': 12},
+                        'corner':    {'sheet_width_ft': 5,  'spacing_in': 9}}},
+        '90': {'label': 'FM 1-90',
+               'insul_per_board': {'field': 5, 'perimeter': 8, 'corner': 12},
+               'seam': {'field':     {'sheet_width_ft': 8, 'spacing_in': 12},
+                        'perimeter': {'sheet_width_ft': 5, 'spacing_in': 12},
+                        'corner':    {'sheet_width_ft': 5, 'spacing_in': 6}}},
+        '105': {'label': 'FM 1-105',
+                'insul_per_board': {'field': 6, 'perimeter': 10, 'corner': 14},
+                'seam': {'field':     {'sheet_width_ft': 6, 'spacing_in': 12},
+                         'perimeter': {'sheet_width_ft': 5, 'spacing_in': 9},
+                         'corner':    {'sheet_width_ft': 5, 'spacing_in': 6}}},
+    },
+    # {bundle_id: {insulation: bool, seam: bool, board_sf: n, ratings: {...partial...}}}
+    'bundle_overrides': {},
+}
+
+
+def _load_commercial_fastening():
+    """DATA_DIR file -> repo seed -> hardcoded fallback, merged per TOP-LEVEL key
+    so a table saved under v1 still gains fields added in a later version."""
+    for path in (COMM_FASTENING_FILE, os.path.join(BASE_DIR, 'commercial_fastening.json')):
+        if os.path.exists(path):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    saved = json.load(f)
+                if isinstance(saved, dict):
+                    merged = dict(_COMM_FASTENING_FALLBACK)
+                    merged.update(saved)
+                    # zone_rule gains fields over time; a v1 file must not lose them.
+                    merged['zone_rule'] = {**_COMM_FASTENING_FALLBACK['zone_rule'],
+                                           **(saved.get('zone_rule') or {})}
+                    return merged
+            except Exception:
+                pass
+    return json.loads(json.dumps(_COMM_FASTENING_FALLBACK))
+
+
+@app.route('/api/commercial-fastening', methods=['GET'])
+def get_commercial_fastening():
+    return jsonify(_load_commercial_fastening())
+
+
+@app.route('/api/commercial-fastening', methods=['PUT'])
+def put_commercial_fastening():
+    if not _is_manager_up():
+        return _forbid()
+    data = request.get_json(force=True)
+    with open(COMM_FASTENING_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
     return jsonify({'ok': True})
 
@@ -7468,8 +8089,11 @@ def _build_backup_zip(include_uploads=True):
                         zf.write(full, rel)
                     except OSError:
                         pass
+        # Every manager-edited config file belongs here — these are hand-entered
+        # and unrecoverable. permit_defaults/jurisdictions were missing.
         for cfg in ('price_book.json', 'tier_defaults.json', 'config.json',
-                    'sales_goals.json'):
+                    'sales_goals.json', 'permit_defaults.json',
+                    'jurisdictions.json', 'commercial_fastening.json'):
             full = os.path.join(DATA_DIR, cfg)
             if os.path.exists(full):
                 try:

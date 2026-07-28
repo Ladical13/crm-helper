@@ -161,6 +161,66 @@ FIXTURES = [
     ('mode junk', {'pricing': _pricing(mode='wat', global_rate=35),
         'trades': {'roofing': {'enabled': True, 'mode': 'gbb',
         'line_items': [_gbb(10, {'good': (100, 0), 'better': (100, 0), 'best': (100, 0)})]}}}),
+
+    # ── commercial ────────────────────────────────────────────────────
+    # Commercial sells single-price, so it must total identically at every
+    # tier. It is also the first trade whose mode DEFAULT is simple — if one
+    # side resolves an unset mode to 'gbb' it reads flat items as tiered and
+    # totals $0, which is invisible until a bid goes out at nothing.
+    ('commercial simple', {'pricing': STD, 'trades': {'commercial': {
+        'enabled': True, 'mode': 'simple',
+        'line_items': [{'name': 'TPO', 'quantity': 44, 'unit_price': 140.85},
+                       {'name': 'Edge', 'quantity': 500, 'unit_price': 2.82},
+                       {'name': 'Labor', 'quantity': 40, 'unit_price': 563.38}]}}}),
+
+    ('commercial mode absent defaults to simple', {'pricing': STD, 'trades': {'commercial': {
+        'enabled': True,
+        'line_items': [{'name': 'TPO', 'quantity': 44, 'unit_price': 140.85}]}}}),
+
+    # The labor line that doesn't apply sits at qty 0 and must contribute
+    # nothing on either side.
+    ('commercial zero-qty labor line', {'pricing': STD, 'trades': {'commercial': {
+        'enabled': True, 'mode': 'simple',
+        'line_items': [{'name': 'TPO', 'quantity': 44, 'unit_price': 140.85},
+                       {'name': 'Re-Roof Labor', 'quantity': 40, 'unit_price': 563.38},
+                       {'name': 'New Const Labor', 'quantity': 0, 'unit_price': 352.11}]}}}),
+
+    ('commercial gbb with an excluded line', {'pricing': STD, 'trades': {'commercial': {
+        'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(44, {'good': (90, 380), 'better': (100, 400), 'best': (130, 400)}),
+                       dict(_gbb(2, {'good': (250, 0), 'better': (250, 0), 'best': (250, 0)}),
+                            tiers={'good':   {'material_unit_cost': 250, 'labor_unit_cost': 0, 'included': False},
+                                   'better': {'material_unit_cost': 250, 'labor_unit_cost': 0},
+                                   'best':   {'material_unit_cost': 250, 'labor_unit_cost': 0}})]}}}),
+
+    # The 29% commercial default, scoped to the trade, must resolve the same
+    # both sides — and must not leak onto roofing.
+    ('commercial 29% trade rate', {
+        'pricing': dict(STD, trade_rates={'commercial': {'simple': 29, 'good': 29,
+                                                         'better': 29, 'best': 29}}),
+        'trades': {'commercial': {'enabled': True, 'mode': 'gbb',
+                                  'line_items': [_gbb(40, {'good': (100, 400), 'better': (100, 400), 'best': (100, 400)})]},
+                   'roofing': {'enabled': True, 'mode': 'gbb',
+                               'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)})]}},
+        'rate_probe': {'trade': 'commercial', 'tier': 'better'}}),
+
+    # The fastener counts the zone calculator produces, priced as ordinary EA
+    # lines — closes the loop from commercial_fastening() through to the total.
+    ('commercial fastener lines priced', {'pricing': STD, 'trades': {'commercial': {
+        'enabled': True, 'mode': 'simple',
+        'line_items': [{'name': 'Insulation Fasteners & Plates', 'quantity': 998, 'unit_price': 0.56},
+                       {'name': 'Membrane Seam Fasteners & Plates', 'quantity': 830, 'unit_price': 0.70},
+                       # An adhered system zeroes the seam line; it must not price.
+                       {'name': 'Seam (n/a on this system)', 'quantity': 0, 'unit_price': 0.70}]}}}),
+
+    # A commercial roof alongside residential trades, each at its own tier.
+    ('commercial mixed with roofing', {'pricing': STD, 'trades': {
+        'commercial': {'enabled': True, 'mode': 'simple', 'selected_tier': 'good',
+                       'line_items': [{'name': 'TPO', 'quantity': 44, 'unit_price': 140.85}]},
+        'roofing': {'enabled': True, 'mode': 'gbb', 'selected_tier': 'best',
+                    'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)})]},
+        'gutters': {'enabled': True, 'mode': 'simple',
+                    'line_items': [{'name': 'g', 'quantity': 100, 'unit_price': 9}]}}}),
 ]
 
 

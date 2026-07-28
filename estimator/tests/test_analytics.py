@@ -206,13 +206,28 @@ def test_margin_uses_a_matching_revenue_and_cost_basis(client, A):
     assert _row(client.get('/api/analytics').get_json(), _month())['margin_pct'] == 40.0
 
 
-def test_retail_and_insurance_split_by_month(client, A):
+def test_revenue_split_by_type_and_month(client, A):
+    # _seed prices through the roofing trade, so an insurance-typed estimate
+    # totals 0 (insurance revenue comes from its own sections) — the point here
+    # is which BUCKET a type's revenue lands in.
     _seed(A, 'a1', signed_at=_month() + '-10T12:00:00', total=40000.0)
-    _seed(A, 'a2', signed_at=_month() + '-11T12:00:00', total=60000.0, est_type='commercial')
+    _seed(A, 'a2', signed_at=_month() + '-12T12:00:00', total=25000.0, est_type='commercial')
     row = _row(client.get('/api/analytics').get_json(), _month())
-    # An unknown estimate type falls into retail rather than vanishing from the
-    # split — the two buckets must always add up to the month's revenue.
-    assert row['retail'] + row['insurance'] == row['revenue']
+    assert row['retail'] == 40000.0
+    # Commercial has its own bucket — before it did, its revenue was reported
+    # as retail, which quietly overstated the residential number.
+    assert row['commercial'] == 25000.0
+    # Every known type has a bucket, so the split must always reconstruct the
+    # month's revenue.
+    assert row['retail'] + row['insurance'] + row['commercial'] == row['revenue']
+
+
+def test_an_unknown_estimate_type_still_lands_in_the_split(client, A):
+    """A type nobody has defined must fall into retail rather than vanish from
+    the split and break the reconciliation above."""
+    _seed(A, 'a1', signed_at=_month() + '-10T12:00:00', total=40000.0, est_type='barter')
+    row = _row(client.get('/api/analytics').get_json(), _month())
+    assert row['retail'] + row['insurance'] + row['commercial'] == row['revenue']
 
 
 # ── pace ───────────────────────────────────────────────────────────────
