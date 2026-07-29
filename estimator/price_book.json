@@ -865,14 +865,14 @@
       "id": "s_lp_expert",
       "name": "LP SmartSide Expert Finish 8\" Lap",
       "unit": "SQ",
-      "cost": 254,
+      "cost": 245.14,
       "measure": "siding_sq_waste"
     },
     {
       "id": "s_lp_standard",
       "name": "LP SmartSide 8\" Cedar Text Lap",
       "unit": "SQ",
-      "cost": 170,
+      "cost": 163.61,
       "measure": "siding_sq_waste"
     },
     {
