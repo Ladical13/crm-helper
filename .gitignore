@@ -30,9 +30,11 @@ CO_Weekly_Report.xlsx
 *.xlsx
 *.csv
 
-# Claude Code config (contains tokens and local settings)
+# Claude Code local config — may hold tokens and machine-specific settings.
+# CLAUDE.md is deliberately NOT ignored: it is the project's documentation and
+# holds only env-var names and <placeholders>, never a real secret. Keeping it
+# tracked means the accumulated invariants survive a dead laptop like the code.
 .claude/
-CLAUDE.md
 
 # OS
 .DS_Store

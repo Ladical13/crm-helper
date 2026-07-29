@@ -48,23 +48,26 @@ jobs:
 
       # -rs lists the reason for any skip; the logs are checked at the end.
       # pipefail keeps a pytest failure from being masked by tee's exit code.
+      # No -q: salescrm/pytest.ini and portal/pytest.ini already set it, and a
+      # second -q suppresses pytest's final count line, which both makes the log
+      # unreadable and leaves the skip guard below less to match on.
       - name: salescrm
         working-directory: salescrm
         run: |
           set -o pipefail
-          python -m pytest -q -rs | tee "$RUNNER_TEMP/salescrm.log"
+          python -m pytest -rs | tee "$RUNNER_TEMP/salescrm.log"
 
       - name: portal
         working-directory: portal
         run: |
           set -o pipefail
-          python -m pytest -q -rs | tee "$RUNNER_TEMP/portal.log"
+          python -m pytest -rs | tee "$RUNNER_TEMP/portal.log"
 
       - name: estimator
         working-directory: estimator
         run: |
           set -o pipefail
-          python -m pytest -q -rs | tee "$RUNNER_TEMP/estimator.log"
+          python -m pytest -rs | tee "$RUNNER_TEMP/estimator.log"
 
       - name: prospector
         run: |
