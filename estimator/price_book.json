@@ -908,28 +908,28 @@
       "name": "James Hardie Statement Trim 5/4×5.5",
       "unit": "LF",
       "cost": 2.60,
-      "measure": "j_channel"
+      "measure": "siding_trim"
     },
     {
       "id": "sa_hardie_primed_trim",
       "name": "James Hardie Primed Trim 5/4×6",
       "unit": "LF",
       "cost": 2.51,
-      "measure": "j_channel"
+      "measure": "siding_trim"
     },
     {
       "id": "sa_lp_expert_trim",
       "name": "LP Expert Finish Trim 5/4×5.5",
       "unit": "LF",
       "cost": 2.33,
-      "measure": "j_channel"
+      "measure": "siding_trim"
     },
     {
       "id": "sa_lp_standard_trim",
       "name": "LP SmartSide Trim 5/4×6",
       "unit": "LF",
       "cost": 1.83,
-      "measure": "j_channel"
+      "measure": "siding_trim"
     },
     {
       "id": "sa_edco_jchannel",
@@ -941,37 +941,37 @@
     {
       "id": "sa_hardie_statement_soffit",
       "name": "James Hardie Statement Vented Soffit 24\"",
-      "unit": "LF",
-      "cost": 3.66,
-      "measure": "siding_soffit"
+      "unit": "SF",
+      "cost": 1.83,
+      "measure": "siding_soffit_sf"
     },
     {
       "id": "sa_hardie_primed_soffit",
       "name": "James Hardie Primed Vented Soffit 24\"",
-      "unit": "LF",
-      "cost": 2.35,
-      "measure": "siding_soffit"
+      "unit": "SF",
+      "cost": 1.18,
+      "measure": "siding_soffit_sf"
     },
     {
       "id": "sa_lp_expert_soffit",
       "name": "LP Expert Finish Vented Soffit 24\"",
-      "unit": "LF",
-      "cost": 6.51,
-      "measure": "siding_soffit"
+      "unit": "SF",
+      "cost": 3.26,
+      "measure": "siding_soffit_sf"
     },
     {
       "id": "sa_lp_standard_soffit",
       "name": "LP SmartSide Vented Soffit 24\"",
-      "unit": "LF",
-      "cost": 4.06,
-      "measure": "siding_soffit"
+      "unit": "SF",
+      "cost": 2.03,
+      "measure": "siding_soffit_sf"
     },
     {
       "id": "sa_edco_soffit",
       "name": "EDCO Soffit Panel 16\"×12'",
-      "unit": "LF",
-      "cost": 4.03,
-      "measure": "siding_soffit"
+      "unit": "SF",
+      "cost": 3.02,
+      "measure": "siding_soffit_sf"
     },
     {
       "id": "sa_edco_corner",

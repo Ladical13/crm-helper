@@ -1678,6 +1678,14 @@ body.is-home #nav-toggle       { display: none; }
   background: #fff; outline: none; text-align: right;
 }
 .measure-input-wrap input:focus { border-color: #0284c7; box-shadow: 0 0 0 3px rgba(2,132,199,.15); }
+/* Fixed-choice measurement (soffit width) — sized to sit level with the number
+   boxes beside it rather than shrinking to its widest option. */
+.measure-select {
+  width: 76px; border: 1px solid #7dd3fc; border-radius: 5px;
+  padding: 7px 8px; font-size: 13.5px; font-weight: 600; color: #0c4a6e;
+  background: #fff; outline: none;
+}
+.measure-select:focus { border-color: #0284c7; box-shadow: 0 0 0 3px rgba(2,132,199,.15); }
 .measure-unit { font-size: 11px; font-weight: 700; color: #0369a1; width: 22px; }
 .iw-second-row-toggle {
   display: inline-flex; align-items: center; gap: 7px; margin-top: 12px;
@@ -3385,7 +3393,7 @@ a.jx-contact:hover { text-decoration: underline; }
   .li-row-numbers { flex-wrap: wrap; row-gap: 8px; }
   .other-unit-select  { width: 72px; min-height: 44px; }
   input.other-price-input { width: 104px; min-height: 44px; padding: 8px 6px; }
-  .measure-input-wrap input { width: 84px; min-height: 44px; }
+  .measure-input-wrap input, .measure-select { width: 84px; min-height: 44px; }
   .scope-qty-input::-webkit-outer-spin-button,
   .scope-qty-input::-webkit-inner-spin-button,
   .li-row-qty-input::-webkit-outer-spin-button,

@@ -5278,9 +5278,14 @@ MEASURE_LABELS = [
     ('Siding', [('siding_squares', 'Siding Area', 'SQ'), ('siding_waste_pct', 'Waste', '%'),
                 ('siding_outside_corners_lf', 'Outside Corners', 'LF'),
                 ('siding_inside_corners_lf', 'Inside Corners', 'LF'),
-                ('siding_j_channel_lf', 'J-Channel / Trim', 'LF'),
+                # J-channel and trim boards are separate measurements: EDCO
+                # bundles run J-channel, LP and Hardie run 5/4 trim board.
+                ('siding_j_channel_lf', 'J-Channel', 'LF'),
+                ('siding_trim_lf', 'Trim Boards', 'LF'),
                 ('siding_starter_lf', 'Starter Strip', 'LF'),
-                ('siding_soffit_lf', 'Soffit', 'LF')]),
+                # Run plus overhang depth — the crew needs both to pull soffit.
+                ('siding_soffit_lf', 'Soffit Run', 'LF'),
+                ('siding_soffit_width', 'Soffit Width', 'in')]),
     ('Windows', [('windows_count', 'Windows', 'EA'), ('doors_count', 'Doors', 'EA')]),
     ('Commercial', [('comm_squares', 'Roof Area', 'SQ'), ('comm_waste_pct', 'Waste', '%'),
                     ('comm_perimeter_lf', 'Perimeter / Edge', 'LF'),

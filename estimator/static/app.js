@@ -331,9 +331,18 @@ const MEASURE_FIELDS = [
     {key:'siding_waste_pct',          label:'Waste',            unit:'%'},
     {key:'siding_outside_corners_lf', label:'Outside Corners',  unit:'LF'},
     {key:'siding_inside_corners_lf',  label:'Inside Corners',   unit:'LF'},
-    {key:'siding_j_channel_lf',       label:'J-Channel / Trim', unit:'LF'},
+    // J-channel and trim boards were one combined field. They are different
+    // products at different prices — EDCO runs J-channel, LP and Hardie run
+    // 5/4 trim boards — so a bundle can only auto-fill the right one if the
+    // rep measured them apart.
+    {key:'siding_j_channel_lf',       label:'J-Channel',        unit:'LF'},
+    {key:'siding_trim_lf',            label:'Trim Boards',      unit:'LF'},
     {key:'siding_starter_lf',         label:'Starter Strip',    unit:'LF'},
-    {key:'siding_soffit_lf',          label:'Soffit',           unit:'LF'},
+    {key:'siding_soffit_lf',          label:'Soffit Run',       unit:'LF'},
+    // Overhang depth turns the eave run into actual soffit coverage. A menu,
+    // not a number box, because these are the widths soffit is sold in.
+    {key:'siding_soffit_width',       label:'Soffit Width',     unit:'in',
+     opts:[[12,'12"'],[16,'16"'],[24,'24"'],[36,'36"'],[48,'48"']]},
   ]},
   { group:'Windows', fields:[
     {key:'windows_count', label:'Windows', unit:'EA'},
@@ -404,9 +413,16 @@ const MEASURE_DEFS = {
   siding_sq_waste:      { label:'Siding SQ + Waste',   calc:m => mnum(m.siding_squares) * (1 + mnum(m.siding_waste_pct !== undefined ? m.siding_waste_pct : m.waste_pct, 10)/100) },
   corners_out:          { label:'Outside Corners LF',  calc:m => mnum(m.siding_outside_corners_lf) },
   corners_in:           { label:'Inside Corners LF',   calc:m => mnum(m.siding_inside_corners_lf) },
-  j_channel:            { label:'J-Channel / Trim LF', calc:m => mnum(m.siding_j_channel_lf) },
+  j_channel:            { label:'J-Channel LF',        calc:m => mnum(m.siding_j_channel_lf) },
+  siding_trim:          { label:'Trim Board LF',       calc:m => mnum(m.siding_trim_lf) },
   siding_starter:       { label:'Starter Strip LF',    calc:m => mnum(m.siding_starter_lf) },
-  siding_soffit:        { label:'Soffit LF',           calc:m => mnum(m.siding_soffit_lf) },
+  siding_soffit:        { label:'Soffit Run LF',       calc:m => mnum(m.siding_soffit_lf) },
+  // Soffit sold by coverage rather than by run. Width missing means 12" — the
+  // identity multiplier, so an estimate written before the width menu existed
+  // still prices exactly as it did. Never fall back to 0: that would zero the
+  // soffit line while it still looked filled in on screen.
+  siding_soffit_sf:     { label:'Soffit SF',           calc:m => mnum(m.siding_soffit_lf) * (mnum(m.siding_soffit_width, 12) || 12) / 12 },
+  siding_soffit_sq:     { label:'Soffit SQ',           calc:m => mnum(m.siding_soffit_lf) * (mnum(m.siding_soffit_width, 12) || 12) / 12 / 100 },
   windows:              { label:'# Windows',           calc:m => mnum(m.windows_count) },
   doors:                { label:'# Doors',             calc:m => mnum(m.doors_count) },
   comm_sq:              { label:'Commercial SQ',            calc:m => mnum(m.comm_squares) },
@@ -887,7 +903,8 @@ function applyMeasurements() {
 }
 const SIDING_MEAS_KEYS = new Set([
   'siding_squares','siding_waste_pct','siding_outside_corners_lf',
-  'siding_inside_corners_lf','siding_j_channel_lf','siding_starter_lf','siding_soffit_lf',
+  'siding_inside_corners_lf','siding_j_channel_lf','siding_trim_lf','siding_starter_lf',
+  'siding_soffit_lf','siding_soffit_width',
 ]);
 const COMMERCIAL_MEAS_KEYS = new Set([
   'comm_squares','comm_waste_pct','comm_perimeter_lf','comm_parapet_lf',
@@ -3527,6 +3544,18 @@ function renderScopePage() {
         ${g.fields.filter(f => !f.panelOnly).map(f => {
           const dflt = f.key === 'waste_pct' ? (m.waste_pct ?? 10) : f.key === 'siding_waste_pct' ? (m.siding_waste_pct ?? 10) : f.key === 'attic_sqft' ? (mnum(m.roof_squares)*100 || '') : '';
           const val  = m[f.key] !== undefined && m[f.key] !== 0 ? m[f.key] : dflt;
+          // A field with opts is a fixed menu (soffit width), not a free number.
+          if (f.opts) {
+            const cur = mnum(m[f.key], f.opts[0][0]) || f.opts[0][0];
+            return `<div class="measure-field">
+              <label>${f.label}</label>
+              <div class="measure-input-wrap">
+                <select class="measure-select" onchange="setMeasurement('${f.key}', this.value)">
+                  ${f.opts.map(([v,lbl]) => `<option value="${v}" ${cur===v?'selected':''}>${lbl}</option>`).join('')}
+                </select>
+              </div>
+            </div>`;
+          }
           return `<div class="measure-field">
             <label>${f.label}</label>
             <div class="measure-input-wrap">
@@ -3609,7 +3638,7 @@ function renderScopePage() {
         <input class="scope-formula-input" type="text"
           value="${esc(item.formula||'')}"
           placeholder="e.g. eave_lf + valley_lf"
-          title="Roof: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1) — Siding: siding_squares, siding_waste_pct, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_starter_lf, siding_soffit_lf, windows_count, doors_count"
+          title="Roof: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1) — Siding: siding_squares, siding_waste_pct, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_trim_lf, siding_starter_lf, siding_soffit_lf, siding_soffit_width, windows_count, doors_count"
           onchange="setItemFormula('${item._trade}','${item.id}',this.value)">
         <span class="scope-formula-hint">eave_lf + valley_lf</span>
       </div>` : '';
