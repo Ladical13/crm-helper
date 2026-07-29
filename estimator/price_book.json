@@ -845,5 +845,278 @@
     "good": "b_landmark",
     "better": "b_northgate",
     "best": "b_standing_seam"
+  },
+  "siding_catalog": [
+    {
+      "id": "s_hardie_statement",
+      "name": "James Hardie Statement Collection 8.25\" Lap",
+      "unit": "SQ",
+      "cost": 249,
+      "measure": "siding_sq_waste"
+    },
+    {
+      "id": "s_hardie_primed",
+      "name": "James Hardie Primed 8.25\" Cedar Mill Lap",
+      "unit": "SQ",
+      "cost": 201,
+      "measure": "siding_sq_waste"
+    },
+    {
+      "id": "s_lp_expert",
+      "name": "LP SmartSide Expert Finish 8\" Lap",
+      "unit": "SQ",
+      "cost": 254,
+      "measure": "siding_sq_waste"
+    },
+    {
+      "id": "s_lp_standard",
+      "name": "LP SmartSide 8\" Cedar Text Lap",
+      "unit": "SQ",
+      "cost": 170,
+      "measure": "siding_sq_waste"
+    },
+    {
+      "id": "s_edco_d4",
+      "name": "EDCO D4\" TimberGrain Steel Siding",
+      "unit": "SQ",
+      "cost": 386,
+      "measure": "siding_sq_waste"
+    },
+    {
+      "id": "s_edco_8",
+      "name": "EDCO 8\" Enduragrain Steel Siding",
+      "unit": "SQ",
+      "cost": 386,
+      "measure": "siding_sq_waste"
+    },
+    {
+      "id": "sa_wrap_hardie",
+      "name": "Hardie Wrap",
+      "unit": "SQ",
+      "cost": 23.46,
+      "measure": "siding_sq_waste"
+    },
+    {
+      "id": "sa_wrap_tribuilt",
+      "name": "TriBuilt House Wrap",
+      "unit": "SQ",
+      "cost": 6.23,
+      "measure": "siding_sq_waste"
+    },
+    {
+      "id": "sa_hardie_statement_trim",
+      "name": "James Hardie Statement Trim 5/4×5.5",
+      "unit": "LF",
+      "cost": 2.60,
+      "measure": "j_channel"
+    },
+    {
+      "id": "sa_hardie_primed_trim",
+      "name": "James Hardie Primed Trim 5/4×6",
+      "unit": "LF",
+      "cost": 2.51,
+      "measure": "j_channel"
+    },
+    {
+      "id": "sa_lp_expert_trim",
+      "name": "LP Expert Finish Trim 5/4×5.5",
+      "unit": "LF",
+      "cost": 2.33,
+      "measure": "j_channel"
+    },
+    {
+      "id": "sa_lp_standard_trim",
+      "name": "LP SmartSide Trim 5/4×6",
+      "unit": "LF",
+      "cost": 1.83,
+      "measure": "j_channel"
+    },
+    {
+      "id": "sa_edco_jchannel",
+      "name": "EDCO 5/8\" J-Channel",
+      "unit": "LF",
+      "cost": 1.21,
+      "measure": "j_channel"
+    },
+    {
+      "id": "sa_hardie_statement_soffit",
+      "name": "James Hardie Statement Vented Soffit 24\"",
+      "unit": "LF",
+      "cost": 3.66,
+      "measure": "siding_soffit"
+    },
+    {
+      "id": "sa_hardie_primed_soffit",
+      "name": "James Hardie Primed Vented Soffit 24\"",
+      "unit": "LF",
+      "cost": 2.35,
+      "measure": "siding_soffit"
+    },
+    {
+      "id": "sa_lp_expert_soffit",
+      "name": "LP Expert Finish Vented Soffit 24\"",
+      "unit": "LF",
+      "cost": 6.51,
+      "measure": "siding_soffit"
+    },
+    {
+      "id": "sa_lp_standard_soffit",
+      "name": "LP SmartSide Vented Soffit 24\"",
+      "unit": "LF",
+      "cost": 4.06,
+      "measure": "siding_soffit"
+    },
+    {
+      "id": "sa_edco_soffit",
+      "name": "EDCO Soffit Panel 16\"×12'",
+      "unit": "LF",
+      "cost": 4.03,
+      "measure": "siding_soffit"
+    },
+    {
+      "id": "sa_edco_corner",
+      "name": "EDCO Snap-On Corner Post",
+      "unit": "LF",
+      "cost": 2.94,
+      "measure": "corners_out"
+    },
+    {
+      "id": "sa_edco_starter",
+      "name": "EDCO Starter Strip Steel",
+      "unit": "LF",
+      "cost": 1.05,
+      "measure": "siding_starter"
+    },
+    {
+      "id": "sl_tearoff",
+      "name": "Tear-Off Labor",
+      "unit": "SQ",
+      "cost": 0,
+      "measure": "siding_sq_waste",
+      "customer_visible": false,
+      "bullets": ["Complete removal and disposal of old siding"]
+    },
+    {
+      "id": "sl_install",
+      "name": "Install Labor",
+      "unit": "SQ",
+      "cost": 0,
+      "measure": "siding_sq_waste",
+      "customer_visible": false,
+      "bullets": ["Installed by Project One crews to manufacturer spec"]
+    },
+    {
+      "id": "sx_dumpster",
+      "name": "Dumpster",
+      "unit": "LS",
+      "cost": 0,
+      "bullets": []
+    },
+    {
+      "id": "sx_permit",
+      "name": "Permit",
+      "unit": "LS",
+      "cost": 0,
+      "bullets": []
+    }
+  ],
+  "siding_bundles": [
+    {
+      "id": "b_lp_standard",
+      "name": "LP SmartSide",
+      "product_ids": [
+        "s_lp_standard",
+        "sa_wrap_tribuilt",
+        "sa_lp_standard_trim",
+        "sa_lp_standard_soffit",
+        "sl_tearoff",
+        "sl_install",
+        "sx_dumpster",
+        "sx_permit"
+      ],
+      "description": "Engineered wood lap siding — field-painted to any color, 5/50 year limited warranty."
+    },
+    {
+      "id": "b_lp_expert",
+      "name": "LP SmartSide Expert Finish",
+      "product_ids": [
+        "s_lp_expert",
+        "sa_wrap_tribuilt",
+        "sa_lp_expert_trim",
+        "sa_lp_expert_soffit",
+        "sl_tearoff",
+        "sl_install",
+        "sx_dumpster",
+        "sx_permit"
+      ],
+      "description": "Pre-finished engineered wood siding — no painting required, 5/50 year warranty."
+    },
+    {
+      "id": "b_hardie_primed",
+      "name": "James Hardie Primed",
+      "product_ids": [
+        "s_hardie_primed",
+        "sa_wrap_hardie",
+        "sa_hardie_primed_trim",
+        "sa_hardie_primed_soffit",
+        "sl_tearoff",
+        "sl_install",
+        "sx_dumpster",
+        "sx_permit"
+      ],
+      "description": "Fiber cement lap siding — field-painted to any color, non-combustible, lifetime limited warranty."
+    },
+    {
+      "id": "b_hardie_statement",
+      "name": "James Hardie Statement Collection",
+      "product_ids": [
+        "s_hardie_statement",
+        "sa_wrap_hardie",
+        "sa_hardie_statement_trim",
+        "sa_hardie_statement_soffit",
+        "sl_tearoff",
+        "sl_install",
+        "sx_dumpster",
+        "sx_permit"
+      ],
+      "description": "Pre-finished fiber cement siding — no painting required, non-combustible, 15-year ColorPlus finish warranty."
+    },
+    {
+      "id": "b_edco_d4",
+      "name": "EDCO D4\" TimberGrain",
+      "product_ids": [
+        "s_edco_d4",
+        "sa_edco_jchannel",
+        "sa_edco_corner",
+        "sa_edco_starter",
+        "sa_edco_soffit",
+        "sl_tearoff",
+        "sl_install",
+        "sx_dumpster",
+        "sx_permit"
+      ],
+      "description": "28ga steel siding — Class 4 impact-rated, TimberGrain wood-look finish, lifetime limited warranty."
+    },
+    {
+      "id": "b_edco_8",
+      "name": "EDCO 8\" Enduragrain",
+      "product_ids": [
+        "s_edco_8",
+        "sa_edco_jchannel",
+        "sa_edco_corner",
+        "sa_edco_starter",
+        "sa_edco_soffit",
+        "sl_tearoff",
+        "sl_install",
+        "sx_dumpster",
+        "sx_permit"
+      ],
+      "description": "28ga steel siding — Class 4 impact-rated, Enduragrain finish, lifetime limited warranty."
+    }
+  ],
+  "siding_tier_defaults": {
+    "good": "b_lp_standard",
+    "better": "b_hardie_primed",
+    "best": "b_hardie_statement"
   }
 }

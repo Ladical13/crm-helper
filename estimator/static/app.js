@@ -2256,10 +2256,20 @@ function pbRenderRoofCatalog() {
             <textarea class="pb-bullets-ta" rows="3"
               placeholder="${esc(it.name||'Product name')}"
               onchange="pbRoofCatSetBullets(${i},this.value)">${esc((it.bullets||[]).join('\n'))}</textarea>
-            <div class="pb-bundle-copy-hint">${Array.isArray(it.bullets)
-              ? (it.bullets.length ? 'Shown on every package that includes this product.'
-                 : 'Empty — this product is in the scope and priced, but says nothing on the card.')
-              : `Not set — the card falls back to the product name, “${esc(it.name||'')}”.`}</div>
+            <label class="pb-bullet-silence">
+              <input type="checkbox" ${Array.isArray(it.bullets)&&!it.bullets.length?'checked':''}
+                onchange="pbRoofCatSilence(${i},this.checked)">
+              Say nothing on the card
+            </label>
+            <div class="pb-bundle-copy-hint">${
+              (Array.isArray(it.bullets) && !it.bullets.length)
+                ? 'Silent — this product is in the scope and priced, but says nothing on the card.'
+              : (Array.isArray(it.bullets) && it.bullets.length)
+                ? ('Shown on every package that includes this product.' + (it.customer_visible === false
+                    ? ' Show is off, so the customer reads these lines without seeing the price broken out.' : ''))
+              : (it.customer_visible === false)
+                ? 'Not set, and Show is off — this product says nothing on the card. Write the wording above to promise the work without showing its price.'
+                : `Not set — the card falls back to the product name, “${esc(it.name||'')}”.`}</div>
           </td></tr>` : ''}`).join('') : `<tr><td colspan="7" class="pb-empty">No products yet — add your first below.</td></tr>`}
       </tbody>
     </table>
@@ -2270,13 +2280,20 @@ function pbRenderRoofCatalog() {
 let _pbBulletsOpen = {};
 function pbToggleBullets(pid) { _pbBulletsOpen[pid] = !_pbBulletsOpen[pid]; renderPBModal(); }
 /* Empty box DELETES the key rather than saving [] — absence means "fall back to
-   the product name", which is what a manager who never touched this wants. To
-   silence a product deliberately, untick Show. (An explicit [] in the seeds is
-   how the legacy fastener line and the misc/labor lines stay quiet.) */
+   the product name", which is what a manager who never touched this wants.
+   Deliberate silence is the checkbox below (an explicit []), NOT the Show
+   column: Show governs whether the customer sees the priced row, and labor is
+   exactly the case where the answer to "show the price?" and "say we do it?"
+   differ. See bundleFeatures(). */
 function pbRoofCatSetBullets(i, text) {
   const it = pbCat()[i]; if (!it) return;
   const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
   if (lines.length) it.bullets = lines; else delete it.bullets;
+  renderPBModal();
+}
+function pbRoofCatSilence(i, on) {
+  const it = pbCat()[i]; if (!it) return;
+  if (on) it.bullets = []; else delete it.bullets;
   renderPBModal();
 }
 function pbRoofCatSet(i, field, val) {
@@ -3769,12 +3786,14 @@ function renderTradeOptionCards(trade) {
         const desc     = content.descriptions[tier] || '';
         const isSel    = tier === selTier;
         const features = content.features[tier] || [];
+        const sysName  = tierPackageName(trade, tier);
         return `
           <div class="pkg-card pkg-${tier} ${isSel?'selected':''}">
             <div class="pkg-card-header">
               <span class="pkg-tier-name">${TIER_LABELS[tier]}</span>
               ${isSel?'<span class="pkg-selected-badge">Selected ✓</span>':''}
             </div>
+            ${sysName?`<div class="pkg-system-name" title="Custom package name — set on the Pricing tab">${esc(sysName)}</div>`:''}
             <div class="pkg-total">${fmtCur(total)}</div>
             <textarea class="pkg-description"
               placeholder="Short tagline for this package…"
@@ -4763,12 +4782,18 @@ function _tradeBundle(trade, id) { return _tradeBundles(trade).find(b => b.id ==
    the sales bullets, accessories carry one line each). A product with no
    `bullets` key falls back to its name — the honest answer for a manager's
    own product, and it still tracks the bundle. Rules:
-     * `customer_visible: false`   -> contributes nothing (same field that
-       already hides the row on the customer estimate);
+     * `bullets: [...]`            -> exactly those lines, EVEN IF the product is
+       hidden from the customer. Hiding a row hides the PRICE, not the promise:
+       the customer must not see "Install Labor — $9,400" broken out, but
+       "Installed by Project One crews to manufacturer spec" is one of the
+       strongest lines on the card;
      * `bullets: []` (explicit)    -> contributes nothing, so a manager can
        silence a line without hiding its price;
-     * key ABSENT                  -> `[name]`. Absence vs empty is the test,
-       same contract as manual measures and bundle copy backfill.
+     * key ABSENT                  -> `[name]`, unless the product is hidden
+       (`customer_visible: false`), in which case it says nothing — a product
+       nobody wrote copy for and nobody shows the price of has no business
+       naming itself on the card. Absence vs empty is the test, same contract
+       as manual measures and bundle copy backfill.
    `bundle.extra_features` closes the list with the bullets no product owns —
    the workmanship warranty. Order follows product_ids so the material leads. */
 function bundleFeatures(trade, bundle) {
@@ -4782,9 +4807,9 @@ function bundleFeatures(trade, bundle) {
   };
   (bundle.product_ids || []).forEach(pid => {
     const p = catalog.find(x => x.id === pid);
-    if (!p || p.customer_visible === false) return;
+    if (!p) return;
     if (Array.isArray(p.bullets)) p.bullets.forEach(push);
-    else push(p.name);
+    else if (p.customer_visible !== false) push(p.name);
   });
   (bundle.extra_features || []).forEach(push);
   return out;
@@ -4798,13 +4823,31 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
 
   const bundle = _tradeBundle(trade, bundleId);
   if (bundleId === '__custom__' || !bundle) {
-    // Custom: keep the tier's current items; just remember the choice.
-    td.tier_bundles[tier] = '__custom__';
+    // Custom is a BLANK SLATE for this tier — the rep is building a package the
+    // price book doesn't sell, and starting from the last bundle's items means
+    // deleting a dozen rows first. Everything here is excluded from THIS tier
+    // only: nothing is deleted, the other tiers keep pricing their own systems,
+    // and re-picking a bundle brings it all straight back.
+    //
+    // Switching to Custom when the tier is ALREADY custom is a no-op. That is
+    // the re-render / reopened-estimate case, and it must never wipe the
+    // package the rep just typed in by hand.
+    if (td.tier_bundles[tier] !== '__custom__') {
+      td.line_items.forEach(item => {
+        if (item.tiers && item.tiers[tier]) item.tiers[tier].included = false;
+      });
+      td.tier_bundles[tier] = '__custom__';
+    }
+    if (autoOpen) _tierDetailsOpen[trade + ':' + tier] = true;
     setDirty();
     if (activePage === 'pricing') renderTradeContent();
     renderTotals();
     return;
   }
+  // Leaving Custom for a real bundle drops the hand-typed package name — the
+  // bundle names itself, and a stale "Luke's cedar package" over a Hardie card
+  // is the same stale-copy bug the bundle description swap fixes.
+  if (td.tier_bundle_names) td.tier_bundle_names[tier] = '';
   const catalog = _tradeCatalog(trade);
   const wantIds = new Set(bundle.product_ids || []);
   const norm = s => String(s || '').trim().toLowerCase();
@@ -4880,6 +4923,22 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   setDirty();
   if (activePage === 'pricing') renderTradeContent();
   renderTotals();
+}
+
+/* The customer-facing name of a tier's package. Only a CUSTOM package carries
+   one — a bundle tier is already named by its bundle, and duplicating that name
+   into the estimate would let the two drift apart. Mirrored server-side by
+   _tier_package_name() in app.py, which reads the same field. */
+function tierPackageName(trade, tier) {
+  const td = S.trades[trade] || {};
+  return String((td.tier_bundle_names || {})[tier] || '').trim();
+}
+function setTierBundleName(trade, tier, v) {
+  const td = S.trades[trade]; if (!td) return;
+  td.tier_bundle_names = td.tier_bundle_names || { good:'', better:'', best:'' };
+  td.tier_bundle_names[tier] = String(v || '').trim();
+  setDirty();
+  if (activePage === 'options') renderOptionsPage();
 }
 
 // Seed all three tiers of a bundle trade from its default bundles.
@@ -5025,23 +5084,21 @@ function renderGBBGrid(trade) {
   const qtyOf = item => parseFloat(item.quantity) || 0;
   const rateLbl = S.pricing.mode === 'markup' ? 'Markup' : 'Margin';
   const shown = enabledTiers();
+  const isRoof = isBundleTrade(trade);
   const grid  = shown.map(t => {
     const inc      = item => item.tiers?.[t]?.included !== false;
-    let   visible  = items.filter(item => inc(item) && (qtyOf(item) > 0 || item._showZero));
+    // A bundle tier shows EVERY item the bundle put in it, priced or not. The
+    // details panel is the one place the rep edits the system, and an accessory
+    // that stays hidden until a measurement exists can't be costed, renamed or
+    // dropped — the rep can't even see what the bundle actually loaded. Other
+    // trades keep the measured view: 0-qty rows collapse into the chips below.
+    const visible  = isRoof ? items.filter(inc)
+                            : items.filter(item => inc(item) && (qtyOf(item) > 0 || item._showZero));
     const excluded = items.filter(item => !inc(item));
-    const zeroQty  = items.filter(item => inc(item) && qtyOf(item) === 0 && !item._showZero);
-    // Bundle trades have no zero-qty reveal (unlike the others). Before
-    // measurements exist, a freshly-picked bundle loads all items at qty 0, so the
-    // qty>0 filter hides everything and the tier looks empty. When that happens,
-    // fall back to showing the bundle's included items (at 0 qty) with a
-    // measurement nudge, so the rep can see the bundle actually loaded. The clean
-    // measured view (0-qty accessories stay hidden) is unchanged once any
-    // quantity is present.
-    let needsMeasure = false;
-    if (isBundleTrade(trade) && visible.length === 0) {
-      const includedZero = items.filter(inc);
-      if (includedZero.length) { visible = includedZero; needsMeasure = true; }
-    }
+    const zeroQty  = isRoof ? [] : items.filter(item => inc(item) && qtyOf(item) === 0 && !item._showZero);
+    // Nothing is measured yet, so every row reads 0 — say why rather than let
+    // the rep think the bundle loaded empty.
+    const needsMeasure = isRoof && visible.length > 0 && !visible.some(item => qtyOf(item) > 0);
     // Per-trade, per-tier margin: the value shown here overrides the sidebar
     // default for THIS trade only. Blank = inherit the default (shown as the
     // input placeholder). `dflt` is the effective rate with the trade override
@@ -5055,20 +5112,27 @@ function renderGBBGrid(trade) {
     // Bundle trades: a hero bundle dropdown drives each tier; the item breakdown
     // collapses under a "Show details" toggle (default collapsed) so the tab
     // stays clean. Other trades keep the full per-item layout + excluded chips.
-    const isRoof = isBundleTrade(trade);
     const bundles = _tradeBundles(trade);
     const selBundle = ((S.trades[trade].tier_bundles) || {})[t] || '';
     const isCustomBundle = selBundle === '__custom__' || (selBundle && !bundles.some(b => b.id === selBundle));
     const detailsOpen = !!_tierDetailsOpen[trade + ':' + t];
 
+    const emptyMsg = isCustomBundle
+      ? 'Custom package — blank slate. Add your line items below.'
+      : (isRoof ? 'Pick a Product above to load a system, or add an item'
+                : 'Load Defaults or add an item below');
     const itemsInner = visible.length ? groupedTradeItems(trade, visible).map(g => {
         if (!g.items.length) return g.name ? `<div class="tier-section-hd">${esc(g.name)}<span class="tier-section-empty">empty</span></div>` : '';
         const hd = g.name ? `<div class="tier-section-hd">${esc(g.name)}</div>`
                  : (tradeSections(trade).length ? `<div class="tier-section-hd tier-section-general">General</div>` : '');
         return hd + g.items.map(item => renderLiRow(trade,t,item)).join('');
       }).join('')
-      : `<div class="empty-items">${isRoof ? 'Pick a Product above to load a system, or add an item' : 'Load Defaults or add an item below'}</div>`;
+      : `<div class="empty-items">${emptyMsg}</div>`;
 
+    // A custom package has no bundle to take its name from, so the rep names it.
+    // That name is what the customer sees on the package card in place of the
+    // bundle's; blank leaves the card as plain Good/Better/Best.
+    const customName = ((S.trades[trade].tier_bundle_names) || {})[t] || '';
     const heroSel = isRoof ? `
       <div class="tier-hero">
         <label class="tier-hero-lbl">Product</label>
@@ -5077,6 +5141,11 @@ function renderGBBGrid(trade) {
           ${bundles.map(b=>`<option value="${b.id}" ${b.id===selBundle?'selected':''}>${esc(b.name||'(unnamed)')}</option>`).join('')}
           <option value="__custom__" ${isCustomBundle?'selected':''}>Custom…</option>
         </select>
+        ${isCustomBundle ? `
+        <input class="tier-hero-name" type="text" value="${esc(customName)}"
+          placeholder="Name this package…"
+          title="What this custom package is called — shown to the customer on the package card"
+          onchange="setTierBundleName('${trade}','${t}',this.value)">` : ''}
       </div>` : '';
 
     const measureNudge = needsMeasure
@@ -5089,7 +5158,7 @@ function renderGBBGrid(trade) {
       </button>
       <div class="tier-items tier-items-collapsible" ${detailsOpen?'':'style="display:none"'}>
         ${itemsInner}
-        <button class="li-tier-add" onclick="addLineItem('${trade}')">+ Add Item</button>
+        <button class="li-tier-add" onclick="addLineItem('${trade}','${t}')">+ Add Item</button>
       </div>`
       : `
       <div class="tier-items">${itemsInner}</div>
@@ -6445,8 +6514,11 @@ function liRevealZero(trade, id) {
   item._showZero = true;
   if (activePage === 'pricing') renderTradeContent();
 }
-function addLineItem(trade) {
-  S.trades[trade].line_items.push({
+// `tier` is the column the + Add Item button was clicked in (bundle trades pass
+// it; everything else adds to all three tiers as before).
+function addLineItem(trade, tier) {
+  const td = S.trades[trade];
+  const item = {
     id:uid(), name:'', unit:'EA', quantity:0, scope_note:'',
     customer_visible: true, _showZero: true,
     tiers:{
@@ -6454,7 +6526,14 @@ function addLineItem(trade) {
       better:{material_unit_cost:0,labor_unit_cost:0,description:'',notes:''},
       best:  {material_unit_cost:0,labor_unit_cost:0,description:'',notes:''},
     }
-  });
+  };
+  // Added from inside a Custom tier: that package is being built by hand, so the
+  // row belongs to THAT tier only. Otherwise every blank line typed into a
+  // custom Good also lands in the Better and Best bundles beside it.
+  if (tier && isBundleTrade(trade) && ((td.tier_bundles || {})[tier] === '__custom__')) {
+    TIERS.forEach(t => { item.tiers[t].included = (t === tier); });
+  }
+  td.line_items.push(item);
   setDirty(); rerender();
   if(activePage==='pricing'){renderTradeContent();}
 }
@@ -8586,8 +8665,10 @@ function showShareModal(fullUrl, relUrl) {
         <button class="share-copy-btn" style="background:#1a3a5c" onclick="savePublicUrl()">Save</button>
       </div>
     </div>` : ''}
-    <div style="text-align:center">
+    <div style="text-align:center;display:flex;gap:16px;justify-content:center;flex-wrap:wrap">
       <a href="${esc(relUrl||fullUrl)}" target="_blank" class="share-preview-link">Preview customer view ↗</a>
+      <a href="${esc((relUrl||fullUrl).replace('/sign/','/present/'))}" target="_blank"
+        class="share-preview-link" style="background:#0e2440;color:#fff;padding:6px 16px;border-radius:6px;text-decoration:none;font-weight:600;font-size:13px">📊 Present on Tablet</a>
     </div>`;
 
   document.getElementById('share-modal').classList.remove('hidden');

@@ -42,9 +42,14 @@ PRICE_BOOK = {
         {'id': 'sa_soffit', 'name': 'Soffit', 'unit': 'LF', 'cost': 4},
         # Priced and in the scope, but says nothing on the card.
         {'id': 'sx_dump', 'name': 'Dumpster', 'unit': 'LS', 'cost': 500, 'bullets': []},
-        # Never shown to the customer at all.
+        # Priced into the package, never broken out as a row — and no copy
+        # written for it, so it says nothing either.
         {'id': 'sx_fee', 'name': 'Overhead', 'unit': 'LS', 'cost': 300,
-         'customer_visible': False, 'bullets': ['Should never appear']},
+         'customer_visible': False},
+        # Labor: the price row is hidden, the promise is not.
+        {'id': 'sl_install', 'name': 'Install Labor', 'unit': 'SQ', 'cost': 90,
+         'customer_visible': False,
+         'bullets': ['Installed by Project One crews to manufacturer spec']},
     ],
     'siding_bundles': [
         {'id': 'b_vinyl', 'name': 'Vinyl', 'product_ids': ['s_vinyl', 'sa_wrap'],
@@ -153,15 +158,47 @@ def test_a_product_can_be_priced_and_still_say_nothing(tmp_path):
     assert 'Dumpster' in {i['name'] for i in td['line_items']}    # still in the scope
 
 
-def test_a_hidden_product_never_reaches_the_card(tmp_path):
-    """customer_visible: false already hides the row on the customer estimate —
-    it must not leak back in as a bullet."""
+def test_a_hidden_product_with_no_copy_names_nothing(tmp_path):
+    """customer_visible: false hides the priced row. A product nobody wrote copy
+    for and nobody shows the price of has no business naming itself either —
+    "Overhead" is not a selling point."""
     book = json.loads(json.dumps(PRICE_BOOK))
     next(b for b in book['siding_bundles']
          if b['id'] == 'b_vinyl')['product_ids'].append('sx_fee')
     td = _run(tmp_path, _estimate(), [
         {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': 'b_vinyl'}], book)
-    assert 'Should never appear' not in td['tier_features']['good']
+    assert 'Overhead' not in td['tier_features']['good']
+
+
+def test_hidden_labor_keeps_its_promise_on_the_card(tmp_path):
+    """Hiding the ROW must not silence the PROMISE. The customer should never
+    read "Install Labor - $9,400" as its own negotiable line, but "Installed by
+    Project One crews to manufacturer spec" is one of the strongest bullets on
+    the card — and it is the only place the customer is told the work is done by
+    our own crews."""
+    book = json.loads(json.dumps(PRICE_BOOK))
+    next(b for b in book['siding_bundles']
+         if b['id'] == 'b_vinyl')['product_ids'].append('sl_install')
+    td = _run(tmp_path, _estimate(), [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': 'b_vinyl'}], book)
+    assert 'Installed by Project One crews to manufacturer spec' in td['tier_features']['good']
+    # …and the item still prices into the package, hidden or not.
+    labor = next(i for i in td['line_items'] if i['name'] == 'Install Labor')
+    assert labor['customer_visible'] is False
+    assert labor['tiers']['good']['material_unit_cost'] == 90
+
+
+def test_a_silenced_product_stays_silent_whether_shown_or_not(tmp_path):
+    """`bullets: []` is the deliberate-silence marker, and it is independent of
+    Show — that split is the whole point of the rule above."""
+    book = json.loads(json.dumps(PRICE_BOOK))
+    dump = next(p for p in book['siding_catalog'] if p['id'] == 'sx_dump')
+    dump['customer_visible'] = False
+    next(b for b in book['siding_bundles']
+         if b['id'] == 'b_vinyl')['product_ids'].append('sx_dump')
+    td = _run(tmp_path, _estimate(), [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': 'b_vinyl'}], book)
+    assert 'Dumpster' not in td['tier_features']['good']
 
 
 def test_duplicate_bullets_collapse(tmp_path):
@@ -256,12 +293,54 @@ def test_legacy_item_is_adopted_not_duplicated(tmp_path):
     assert wraps[0]['tiers']['good']['material_unit_cost'] == 12   # repriced
 
 
-def test_custom_keeps_the_tier_as_built(tmp_path):
+def test_custom_clears_the_tier_to_a_blank_slate(tmp_path):
+    """Custom means "the price book doesn't sell this" — starting from the last
+    bundle's rows means deleting a dozen of them first."""
     td = _run(tmp_path, _estimate(), [
         {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': 'b_vinyl'},
         {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': '__custom__'}])
     assert td['tier_bundles']['good'] == '__custom__'
-    assert _included(td, 'good') == {'Vinyl', 'House Wrap'}
+    assert _included(td, 'good') == set()
+
+
+def test_custom_clears_only_its_own_tier(tmp_path):
+    """Nothing is DELETED — the rows stay in the shared list, excluded from this
+    tier only, so the other packages keep pricing their own systems."""
+    td = _run(tmp_path, _estimate(), [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': 'b_vinyl'},
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'best', 'id': 'b_hardie'},
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': '__custom__'}])
+    assert _included(td, 'good') == set()
+    assert _included(td, 'best') == {'James Hardie', 'House Wrap'}
+
+
+def test_custom_twice_does_not_wipe_a_hand_built_package(tmp_path):
+    """Re-selecting Custom on a tier that is already custom is the re-render and
+    reopened-estimate case. It must never clear the rows the rep just typed."""
+    est = _estimate()
+    td = _run(tmp_path, est, [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': '__custom__'}])
+    td['line_items'].append({
+        'id': 'hand1', 'name': 'Rep cedar package', 'unit': 'SQ', 'quantity': 12,
+        'tiers': {t: {'material_unit_cost': 400, 'labor_unit_cost': 0, 'description': '',
+                      'notes': '', 'included': t == 'good'}
+                  for t in ('good', 'better', 'best')}})
+    est2 = {'trades': {'siding': td}}
+    td2 = _run(tmp_path, est2, [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': '__custom__'}])
+    assert _included(td2, 'good') == {'Rep cedar package'}
+
+
+def test_leaving_custom_for_a_bundle_drops_the_custom_name(tmp_path):
+    """The bundle names itself — a stale hand-typed name over a Hardie card is
+    the same drift the description swap exists to prevent."""
+    est = _estimate()
+    est['trades']['siding']['tier_bundle_names'] = {'good': 'Rep cedar package', 'better': '', 'best': ''}
+    td = _run(tmp_path, est, [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': '__custom__'},
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'good', 'id': 'b_hardie'}])
+    assert td['tier_bundle_names']['good'] == ''
+    assert _included(td, 'good') == {'James Hardie', 'House Wrap'}
 
 
 def test_non_bundle_trade_is_untouched(tmp_path):
@@ -398,6 +477,81 @@ def test_mode_round_trip_keeps_the_bundle_link(tmp_path):
     names = [i['name'] for i in td2['line_items']]
     assert 'EPDM Membrane' in names
     assert 'TPO Membrane' not in names, 'two membranes in one bid'
+
+
+# ── what the customer actually reads ───────────────────────────────────
+# The two rules above only pay off on the customer's page, and that page is
+# rendered by app.py from the saved estimate — so it gets its own check rather
+# than trusting the loader's output.
+
+def _siding_gbb_est(**td_kw):
+    """A signed-ready siding estimate: one visible material line, one hidden
+    labor line, priced identically."""
+    def cell(cost):
+        return {'material_unit_cost': cost, 'labor_unit_cost': 0,
+                'description': '', 'notes': '', 'included': True}
+    td = {
+        'enabled': True, 'mode': 'gbb', 'selected_tier': 'good',
+        'tier_bundles': {'good': '__custom__', 'better': '', 'best': ''},
+        'tier_features': {'good': ['Installed by Project One crews to manufacturer spec'],
+                          'better': [], 'best': []},
+        'tier_descriptions': {'good': '', 'better': '', 'best': ''},
+        'line_items': [
+            {'id': 'i1', 'name': 'LP SmartSide - Lap 8"', 'unit': 'SQ', 'quantity': 26,
+             'customer_visible': True,
+             'tiers': {t: cell(240) for t in ('good', 'better', 'best')}},
+            {'id': 'i2', 'name': 'Install Labor', 'unit': 'SQ', 'quantity': 24,
+             'customer_visible': False,
+             'tiers': {t: cell(90) for t in ('good', 'better', 'best')}},
+        ],
+    }
+    td.update(td_kw)
+    return {
+        'estimate_type': 'retail', 'salesperson': 'luke', 'selected_tier': 'good',
+        'customer': {'name': 'Dana Reyes', 'email': 'dana@example.com', 'phone': '9705550123',
+                     'address': {'street': '12 Elm St', 'city': 'Loveland', 'state': 'CO'}},
+        'shingle_selection': {'enabled': False, 'options': [], 'chosen': ''},
+        'pricing': {'mode': 'margin', 'global_rate': 35, 'tier_rates': {},
+                    'trade_rates': {}, 'per_trade_overrides': {}},
+        'trades': {'siding': td},
+    }
+
+
+def _customer_page(client, est):
+    r = client.post('/api/estimates', json=est)
+    assert r.status_code in (200, 201), r.data
+    est_id = r.get_json()['estimate_id']
+    token = client.post(f'/api/estimates/{est_id}/share').get_json()['token']
+    page = client.get(f'/sign/{token}')
+    assert page.status_code == 200
+    return page.get_data(as_text=True)
+
+
+def test_hidden_labor_is_priced_in_but_never_broken_out(client, A):
+    """The customer sees the material row and the promise, never the labor row
+    — but the labor is in the number they're signing."""
+    est = _siding_gbb_est()
+    html = _customer_page(client, est)
+    assert 'LP SmartSide' in html
+    assert 'Install Labor' not in html, 'labor must not be broken out as its own row'
+    assert 'Installed by Project One crews to manufacturer spec' in html
+    # 26*240 + 24*90 at 35% margin — the labor is in the total the customer signs.
+    assert A.calc_selected_total(est) == pytest.approx((26 * 240 + 24 * 90) / 0.65)
+
+
+def test_a_custom_package_shows_the_name_the_rep_gave_it(client):
+    """A Custom tier has no bundle to name it, so the rep's name is what the
+    customer reads on the package card."""
+    est = _siding_gbb_est(tier_bundle_names={'good': 'Rep Cedar Package',
+                                             'better': '', 'best': ''})
+    assert 'Rep Cedar Package' in _customer_page(client, est)
+
+
+def test_a_bundle_package_card_carries_no_extra_name(client):
+    """Nothing to show, and nothing invented — the card stays plain
+    Good/Better/Best."""
+    html = _customer_page(client, _siding_gbb_est())
+    assert '<div class="cv-tier-system">' not in html   # the CSS rule always ships
 
 
 def test_setting_the_mode_a_trade_is_already_in_is_a_no_op(tmp_path):

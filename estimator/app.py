@@ -1808,6 +1808,17 @@ def _trade_tier_content(est, trade):
     return (feats or {}), (descs or {})
 
 
+def _tier_package_names(est, trade):
+    """tier -> the rep's name for that package, for the trades that carry one.
+
+    Only a CUSTOM package has a name here: a bundle tier is named by its bundle
+    in the price book, and copying that name onto the estimate would let the two
+    drift apart. Mirrors tierPackageName() in app.js — same field, same rule."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    names = td.get('tier_bundle_names')
+    return names if isinstance(names, dict) else {}
+
+
 @app.route('/api/analytics')
 def get_analytics():
     """Per-trade and per-rep revenue, cost, and margin across all estimates."""
@@ -2436,6 +2447,7 @@ transition:transform .18s,box-shadow .18s,background .18s;background:#fff;positi
 color:#fff;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;padding:4px 12px;border-radius:999px;
 white-space:nowrap;box-shadow:0 4px 10px -3px rgba(22,163,74,.6)}
 .cv-tier-name{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px}
+.cv-tier-system{font-size:13.5px;font-weight:700;color:var(--ink);margin-bottom:6px;line-height:1.3}
 .cv-tier-price{font-size:27px;font-weight:800;letter-spacing:-.5px;margin-bottom:6px;font-variant-numeric:tabular-nums}
 .cv-tier-desc{font-size:11.5px;color:var(--mut);margin-bottom:8px;line-height:1.5}
 .cv-tier-feats{list-style:none;margin:10px 0 6px;padding:10px 2px 0;border-top:1px dashed var(--line);text-align:left;
@@ -3490,7 +3502,7 @@ def _build_insurance_cv(est, token):
 {_cv_next_steps()}
 {_cv_contact_card(est)}
 
-<div class="cvsig">
+<div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
   <p class="sub">Your electronic signature confirms you have reviewed and agreed to the insurance estimate above and all terms &amp; conditions.</p>
   {_cv_sig_form(f'/sign/{he(token)}',
@@ -3579,7 +3591,7 @@ def _build_simple_retail_cv(est, token):
 {_cv_next_steps()}
 {_cv_contact_card(est)}
 
-<div class="cvsig">
+<div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
   <p class="sub">Your electronic signature confirms you have reviewed and agreed to the estimate above and all terms &amp; conditions.</p>
   {_cv_sig_form(f'/sign/{he(token)}',
@@ -3646,6 +3658,7 @@ def build_customer_view(est, token):
     sections_html = ''
     for tk in gbb_tks:
         tfeat, tdesc = _trade_tier_content(est, tk)
+        tnames = _tier_package_names(est, tk)
         d_tier = _trade_tier(est, tk)
         if d_tier not in enabled_tiers:
             d_tier = enabled_tiers[0]
@@ -3662,6 +3675,8 @@ def build_customer_view(est, token):
             is_sel = t == d_tier
             popular_badge = '<div class="cv-tier-popular">Most Popular</div>' if t == 'better' else ''
             desc_el = f'<div class="cv-tier-desc">{he(desc)}</div>' if desc else ''
+            sysname = str(tnames.get(t) or '').strip()
+            sys_el  = f'<div class="cv-tier-system">{he(sysname)}</div>' if sysname else ''
             # "What's Included" bullets the rep curates on the Options page — shown
             # to the customer making the Good/Better/Best decision.
             feats = [str(f).strip() for f in (tfeat.get(t) or []) if str(f).strip()]
@@ -3677,6 +3692,7 @@ def build_customer_view(est, token):
               onclick="selectCvTier('{tk}','{t}')">
               {popular_badge}
               <div class="cv-tier-name" style="color:{clr}">{lbl}</div>
+              {sys_el}
               <div class="cv-tier-price" style="color:{clr}">{fc(total)}</div>
               {desc_el}
               {feats_el}
@@ -3750,7 +3766,7 @@ def build_customer_view(est, token):
 {_cv_next_steps()}
 {_cv_contact_card(est)}
 
-<div class="cvsig">
+<div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
   <p class="sub" id="cv-sig-sub">Your electronic signature confirms you have reviewed and agreed to the
     <strong id="cv-sig-tier">{default_lbl}</strong> and all terms above.</p>
@@ -3825,8 +3841,572 @@ function _cvRefreshTotal(){{
     }}
   }}
 }}
+// Pre-select tiers from URL params (presentation handoff)
+(function(){{
+  var p=new URLSearchParams(window.location.search);
+  _cv_trades.forEach(function(tr){{
+    var t=p.get('tier_'+tr);
+    if(t&&_cv_tiers.indexOf(t)>=0)selectCvTier(tr,t);
+  }});
+}})();
 </script>
 ''' + _cv_footer()
+
+
+# ── Tablet presentation mode ─────────────────────────────────────────────
+# Slide-by-slide walkthrough for face-to-face estimate presentations on a
+# tablet. The customer picks their G/B/B package live; selections carry
+# forward to /sign/<token> via query params.
+
+_PRES_CSS = """
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:#0e2440;
+  color:#1e293b;overflow:hidden;height:100vh;height:100dvh}
+.pw{height:100vh;height:100dvh;display:flex;flex-direction:column}
+.ph{background:#0e2440;padding:8px 20px;display:flex;align-items:center;
+  justify-content:space-between;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,.08)}
+.ph img{height:26px}
+.ph-r{color:rgba(255,255,255,.6);font-size:12px;text-align:right}
+.pv{flex:1;overflow:hidden;position:relative}
+.ps{position:absolute;inset:0;padding:24px 24px 12px;overflow-y:auto;
+  opacity:0;pointer-events:none;transition:opacity .32s,transform .32s;
+  transform:translateX(30px);display:flex;justify-content:center;align-items:flex-start}
+.ps.act{opacity:1;pointer-events:auto;transform:translateX(0)}
+.ps.ex{transform:translateX(-30px)}
+.pc{background:#fff;border-radius:16px;padding:40px;max-width:920px;width:100%;
+  box-shadow:0 8px 40px rgba(0,0,0,.18)}
+@media(max-width:600px){.pc{padding:24px 18px;border-radius:12px}}
+/* nav */
+.pn{background:#0e2440;padding:10px 20px;display:flex;align-items:center;
+  justify-content:space-between;flex-shrink:0;border-top:1px solid rgba(255,255,255,.08)}
+.pn-b{background:rgba(255,255,255,.1);color:#fff;border:none;padding:10px 28px;
+  border-radius:8px;font:600 14px/1 'Plus Jakarta Sans',sans-serif;cursor:pointer;
+  min-width:110px;transition:background .15s}
+.pn-b:hover{background:rgba(255,255,255,.2)}
+.pn-b:disabled{opacity:.25;cursor:default}
+.pn-b.pri{background:#0ea5e9}.pn-b.pri:hover{background:#0284c7}
+.pn-b.cta{background:#16a34a;font-size:15px;padding:12px 32px}.pn-b.cta:hover{background:#15803d}
+.pd{display:flex;gap:6px;align-items:center}
+.pd button{width:9px;height:9px;border-radius:9px;background:rgba(255,255,255,.2);
+  border:none;cursor:pointer;padding:0;transition:all .2s}
+.pd button.act{background:#0ea5e9;width:24px}
+.pctr{color:rgba(255,255,255,.45);font-size:12px;margin:0 10px}
+/* hero */
+.ps-hero{text-align:center;padding:48px 32px}
+.ps-hero-cover{width:100%;max-height:320px;object-fit:cover;border-radius:12px;margin-bottom:28px}
+.ps-hero h1{font-size:clamp(26px,4vw,38px);font-weight:800;color:#0e2440;margin-bottom:6px}
+.ps-hero .sub{font-size:17px;color:#64748b;margin-bottom:4px}
+.ps-det{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:14px;text-align:left;margin-top:28px;padding-top:28px;border-top:1px solid #e2e8f0}
+.ps-det label{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;margin-bottom:2px;display:block}
+.ps-det strong{font-size:15px;color:#1e293b}
+/* intro */
+.ps-intro h2{font-size:22px;font-weight:700;color:#0e2440;margin-bottom:14px}
+.ps-intro p{font-size:15px;line-height:1.75;color:#334155;white-space:pre-wrap}
+/* photos */
+.ps-ph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.ps-ph-wrap{border-radius:10px;overflow:hidden;background:#f8fafc}
+.ps-ph-wrap img{width:100%;display:block}
+.ps-ph-wrap .ps-ph-canvas{position:absolute;top:0;left:0}
+.ps-ph-cap{padding:6px 10px;font-size:12px;color:#475569}
+/* package selection */
+.ps-pkg h2{font-size:clamp(22px,3.5vw,30px);font-weight:800;color:#0e2440;
+  text-align:center;margin-bottom:6px}
+.ps-pkg .sub{text-align:center;font-size:15px;color:#64748b;margin-bottom:28px}
+.ps-pkg-trade{margin-bottom:24px}
+.ps-pkg-tn{font-size:16px;font-weight:700;color:#334155;margin-bottom:14px;
+  padding-bottom:8px;border-bottom:2px solid #e2e8f0}
+.pt-cards{display:grid;gap:14px}
+@media(min-width:700px){.pt-cards{grid-template-columns:repeat(var(--cols,3),1fr)}}
+.pt-c{border:3px solid #e2e8f0;border-radius:14px;padding:22px;cursor:pointer;
+  transition:all .22s;position:relative;background:#fff}
+.pt-c:hover{border-color:#94a3b8;box-shadow:0 4px 12px rgba(0,0,0,.06)}
+.pt-c.sel{box-shadow:0 4px 20px rgba(0,0,0,.1)}
+.pt-pop{position:absolute;top:-11px;right:16px;background:#16a34a;color:#fff;
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;
+  padding:3px 10px;border-radius:16px}
+.pt-top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;flex-wrap:wrap;gap:4px}
+.pt-name{font-size:20px;font-weight:800}
+.pt-price{font-size:22px;font-weight:800}
+.pt-sys{font-size:13px;font-weight:600;color:#475569;margin-bottom:4px}
+.pt-desc{font-size:13px;color:#64748b;margin-bottom:10px}
+.pt-feats{list-style:none;padding:0;margin:0}
+.pt-feats li{font-size:13px;padding:3px 0;color:#334155}
+.pt-feats li::before{content:'\\2713 ';color:#16a34a;font-weight:700}
+.pt-chk{margin-top:14px;text-align:center;font-weight:700;font-size:14px;
+  padding:10px;border-radius:8px;transition:all .15s}
+/* total bar */
+.ps-total{background:#0e2440;color:#fff;border-radius:12px;padding:18px 24px;
+  display:flex;align-items:center;justify-content:space-between;margin-top:20px}
+.ps-total-l{font-size:15px;font-weight:600;opacity:.8}
+.ps-total-a{font-size:26px;font-weight:800}
+/* items */
+.ps-items h2{font-size:22px;font-weight:800;color:#0e2440;margin-bottom:16px}
+.ps-items .cvtrade{margin-bottom:18px}
+.ps-items .cvtrade-hd{font-size:15px;font-weight:700;color:#0e2440;margin-bottom:8px;
+  padding-bottom:6px;border-bottom:2px solid #e2e8f0}
+.ps-items .cvt{width:100%;border-collapse:collapse;font-size:13px}
+.ps-items .cvt th{text-align:left;padding:8px 10px;background:#f1f5f9;font-weight:700;
+  color:#334155;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+.ps-items .cvth-c{text-align:center}
+.ps-items .cvth-r{text-align:right}
+.ps-items .cvt td{padding:8px 10px;border-bottom:1px solid #f1f5f9;color:#475569}
+.ps-items .cvr{text-align:right;font-weight:600;color:#1e293b}
+.ps-items .cvc{text-align:center}
+.ps-items .cvn .cvd{font-size:11px;color:#94a3b8;margin-top:2px}
+.ps-items .cvsub-l{text-align:right;font-weight:700;color:#1e293b}
+.ps-items .cvsub{font-weight:700;color:#1e293b}
+.ps-items .cvhidden-note{text-align:center;font-style:italic;color:#94a3b8;font-size:12px}
+.ps-items .cv-section-row td{font-weight:700;color:#0e2440;background:#f8fafc;font-size:12px;
+  text-transform:uppercase;letter-spacing:.5px;padding:6px 10px}
+.ps-items .cv-section-sub td{font-weight:600;color:#334155;font-size:12px;background:#fafbfc}
+/* trust */
+.ps-trust h2{font-size:22px;font-weight:800;color:#0e2440;margin-bottom:20px;text-align:center}
+.ps-trust-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.ps-trust-it{background:#f8fafc;padding:22px;border-radius:12px}
+.ps-trust-it h3{font-size:15px;font-weight:700;color:#1e293b;margin-bottom:6px}
+.ps-trust-it p{font-size:13px;color:#64748b;line-height:1.6}
+.ps-trust-it ul{list-style:none;padding:0;margin:0}
+.ps-trust-it li{font-size:13px;padding:3px 0;color:#334155}
+.ps-trust-it li::before{content:'\\2713 ';color:#16a34a;font-weight:700}
+.ps-rev{background:#fffbeb;padding:16px;border-radius:10px;margin-bottom:10px}
+.ps-rev-stars{color:#f59e0b;font-size:16px;margin-bottom:4px}
+.ps-rev-text{font-size:13px;color:#334155;font-style:italic;line-height:1.5}
+.ps-rev-who{font-size:12px;color:#64748b;margin-top:4px}
+/* sign CTA */
+.ps-sign{text-align:center;padding:32px 20px}
+.ps-sign h2{font-size:clamp(22px,3.5vw,30px);font-weight:800;color:#0e2440;margin-bottom:10px}
+.ps-sign .sub{font-size:15px;color:#64748b;margin-bottom:28px}
+.ps-sign-box{background:#f0fdf4;border:2px solid #16a34a;border-radius:14px;
+  padding:24px;margin-bottom:28px;display:inline-block;min-width:280px}
+.ps-sign-box .lbl{font-size:13px;color:#16a34a;font-weight:600;margin-bottom:4px}
+.ps-sign-box .amt{font-size:clamp(28px,5vw,40px);font-weight:800;color:#15803d}
+.ps-sign-btn{display:inline-block;background:#16a34a;color:#fff;text-decoration:none;
+  padding:16px 48px;border-radius:12px;font-size:17px;font-weight:700;
+  transition:background .2s;border:none;cursor:pointer}
+.ps-sign-btn:hover{background:#15803d}
+.ps-sign-sel{font-size:14px;color:#475569;margin-bottom:20px}
+/* next-steps mini timeline */
+.ps-steps{text-align:left;max-width:500px;margin:28px auto 0}
+.ps-steps ol{list-style:none;padding:0;counter-reset:step}
+.ps-steps li{padding:10px 0 10px 44px;position:relative;border-left:2px solid #e2e8f0;margin-left:14px}
+.ps-steps li:last-child{border-left-color:transparent}
+.ps-steps li::before{counter-increment:step;content:counter(step);position:absolute;left:-14px;top:8px;
+  width:26px;height:26px;background:#0ea5e9;color:#fff;border-radius:50%;font-size:12px;
+  font-weight:700;display:flex;align-items:center;justify-content:center}
+.ps-steps li strong{display:block;font-size:14px;color:#1e293b}
+.ps-steps li span{font-size:12px;color:#64748b}
+/* condition */
+.ps-cond h2{font-size:22px;font-weight:800;color:#0e2440;margin-bottom:16px}
+.ps-cond-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.ps-cond-it{background:#f8fafc;padding:14px;border-radius:10px}
+.ps-cond-it label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;display:block;margin-bottom:2px}
+.ps-cond-it strong{font-size:14px;color:#1e293b}
+.ps-cond-notes{margin-top:14px;font-size:13px;color:#475569;line-height:1.6;white-space:pre-wrap}
+"""
+
+
+def build_presentation_view(est, token):
+    """Tablet presentation — swipeable slides for face-to-face walkthroughs.
+    G/B/B package selection is live; the final slide links to /sign/<token>
+    with selected tiers as query params."""
+    c    = est.get('customer', {})
+    a    = c.get('address', {})
+    cs   = ', '.join(filter(None, [a.get('city'), a.get('state')]))
+    addr = ', '.join(filter(None, [a.get('street'), cs]))
+    eid  = est.get('estimate_id', '')
+    enum = 'EST-' + eid.split('-')[0].upper() if eid else 'DRAFT'
+    sp   = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
+    pv   = est.get('page_visibility') or {}
+
+    slides = []
+
+    # ── Slide: Hero ────────────────────────────────────────────────────
+    cover = _cover_photo_url(est)
+    cover_img = f'<img class="ps-hero-cover" src="{he(cover)}" alt="Property">' if cover else ''
+    det_items = [
+        ('Prepared For', c.get('name', '—')),
+        ('Estimate #', enum),
+        ('Address', addr or '—'),
+        ('Date', est.get('estimate_date', '—')),
+    ]
+    if sp:
+        det_items.append(('Your Consultant', sp))
+    det_items.append(('Valid Until', est.get('valid_until', '—')))
+    det_html = ''.join(f'<div><label>{he(l)}</label><strong>{he(v)}</strong></div>'
+                       for l, v in det_items if v)
+    slides.append(('Welcome', f'''<div class="ps-hero">
+      {cover_img}
+      <h1>Your Estimate is Ready</h1>
+      <div class="sub">Prepared exclusively for {he(c.get("name",""))} by Project One Roofing</div>
+      <div class="ps-det">{det_html}</div>
+    </div>'''))
+
+    # ── Slide: Intro ───────────────────────────────────────────────────
+    intro_text = (est.get('intro_text') or '').strip()
+    if intro_text and pv.get('intro') is not False:
+        slides.append(('Introduction', f'''<div class="ps-intro">
+          <h2>A Message From Your Consultant</h2>
+          <p>{he(intro_text)}</p>
+        </div>'''))
+
+    # ── Slide: Photos ──────────────────────────────────────────────────
+    photos = [p for p in (est.get('photos') or [])
+              if p.get('show_in_estimate') is not False and p.get('filename')]
+    if photos:
+        ph_cards = ''
+        for p in photos[:12]:
+            cap = (p.get('caption') or '').strip()
+            cap_html = f'<div class="ps-ph-cap">{he(cap)}</div>' if cap else ''
+            anns = p.get('annotations') or []
+            ann_attr = f' data-ann=\'{json.dumps(anns)}\'' if anns else ''
+            canvas = (f'<canvas class="ps-ph-canvas cvph-canvas"{ann_attr}></canvas>'
+                      if anns else '')
+            ph_cards += f'''<div class="ps-ph-wrap" style="position:relative">
+              <img src="/uploads/{he(p['filename'])}" alt="{he(cap)}" loading="lazy">
+              {canvas}{cap_html}</div>'''
+        slides.append(('Photos', f'''<div>
+          <h2 style="font-size:22px;font-weight:800;color:#0e2440;margin-bottom:16px">
+            Photo Report</h2>
+          <div class="ps-ph-grid">{ph_cards}</div>
+        </div>{_CV_ANN_JS}'''))
+
+    # ── Slide: Property Condition ──────────────────────────────────────
+    cond = est.get('property_condition') or est.get('roof_health') or {}
+    cond_items = [(k.replace('_', ' ').title(), str(v).strip())
+                  for k, v in cond.items()
+                  if k != 'notes' and str(v).strip() and str(v).strip().lower() != 'n/a']
+    cond_notes = (cond.get('notes') or '').strip()
+    if cond_items:
+        ci_html = ''.join(f'<div class="ps-cond-it"><label>{he(l)}</label><strong>{he(v)}</strong></div>'
+                          for l, v in cond_items)
+        notes_h = f'<div class="ps-cond-notes">{he(cond_notes)}</div>' if cond_notes else ''
+        slides.append(('Condition', f'''<div class="ps-cond">
+          <h2>Property Condition Report</h2>
+          <div class="ps-cond-grid">{ci_html}</div>
+          {notes_h}
+        </div>'''))
+
+    # ── Slide: Package Selection (GBB, interactive) ────────────────────
+    is_insurance = (est.get('estimate_type') == 'insurance') or \
+                   (est.get('trades', {}).get('insurance', {}).get('enabled', False))
+
+    te = est.get('tiers_enabled') or {}
+    enabled_tiers = [t for t in ('good', 'better', 'best') if te.get(t, True) is not False]
+    if not enabled_tiers:
+        enabled_tiers = ['good', 'better', 'best']
+
+    tier_clrs = dict(good='#2563eb', better='#16a34a', best='#b45309')
+    tier_bgs  = dict(good='#dbeafe', better='#dcfce7', best='#fef3c7')
+    tier_lbls = dict(good='Good',    better='Better',  best='Best')
+    trade_lbls = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                      gutters='Gutters', other='Other / Misc')
+
+    gbb_tks    = [tk for tk in _gbb_trade_keys(est)
+                  if ((est.get('trades') or {}).get(tk) or {}).get('line_items')]
+    simple_tks = [tk for tk in GBB_TRADES if tk not in gbb_tks]
+    multi      = len(gbb_tks) > 1
+
+    defaults = {}
+    totals   = {}
+
+    if not is_insurance and gbb_tks:
+        pkg_sections = ''
+        for tk in gbb_tks:
+            tfeat, tdesc = _trade_tier_content(est, tk)
+            tnames = _tier_package_names(est, tk)
+            d_tier = _trade_tier(est, tk)
+            if d_tier not in enabled_tiers:
+                d_tier = enabled_tiers[0]
+            defaults[tk] = d_tier
+            totals[tk] = {t: _trade_subtotal(est, tk, t) for t in enabled_tiers}
+
+            cards = ''
+            for t in enabled_tiers:
+                total  = totals[tk][t]
+                desc   = (tdesc.get(t) or '').strip()
+                clr    = tier_clrs[t]
+                bg     = tier_bgs[t]
+                lbl    = tier_lbls[t]
+                is_sel = t == d_tier
+                pop    = '<div class="pt-pop">Most Popular</div>' if t == 'better' else ''
+                desc_e = f'<div class="pt-desc">{he(desc)}</div>' if desc else ''
+                sysname = str(tnames.get(t) or '').strip()
+                sys_e   = f'<div class="pt-sys">{he(sysname)}</div>' if sysname else ''
+                feats = [str(f).strip() for f in (tfeat.get(t) or []) if str(f).strip()]
+                feats_e = ''
+                if feats:
+                    feats_e = ('<ul class="pt-feats">'
+                               + ''.join(f'<li>{he(f)}</li>' for f in feats[:8])
+                               + ('</ul>'))
+                chk_txt = '&#10003; Selected' if is_sel else 'Tap to Select'
+                chk_bg  = bg if is_sel else '#f8fafc'
+                chk_clr = clr if is_sel else '#94a3b8'
+                cards += f'''<div class="pt-c{'  sel' if is_sel else ''}"
+                  data-trade="{tk}" data-tier="{t}"
+                  style="border-color:{clr if is_sel else '#e2e8f0'};{'background:'+bg if is_sel else ''}"
+                  onclick="presSelect('{tk}','{t}')">
+                  {pop}
+                  <div class="pt-top">
+                    <div class="pt-name" style="color:{clr}">{lbl}</div>
+                    <div class="pt-price" style="color:{clr}">{fc(total)}</div>
+                  </div>
+                  {sys_e}{desc_e}{feats_e}
+                  <div class="pt-chk" style="background:{chk_bg};color:{chk_clr}">{chk_txt}</div>
+                </div>'''
+
+            heading = f'{trade_lbls.get(tk, tk.title())} — Choose Your Package' if multi else ''
+            heading_html = f'<div class="ps-pkg-tn">{heading}</div>' if heading else ''
+            pkg_sections += f'''<div class="ps-pkg-trade">
+              {heading_html}
+              <div class="pt-cards" style="--cols:{len(enabled_tiers)}">{cards}</div>
+            </div>'''
+
+        simple_html_pres, simple_total = render_line_items(est, only_trades=simple_tks)
+        default_total = simple_total + sum(totals[tk][defaults[tk]] for tk in gbb_tks)
+        default_lbl   = (' · '.join(f'{trade_lbls.get(tk, tk.title())}: {tier_lbls[defaults[tk]]}'
+                                     for tk in gbb_tks) if multi
+                         else tier_lbls[defaults[gbb_tks[0]]] + ' Package')
+
+        slides.append(('Your Options', f'''<div class="ps-pkg">
+          <h2>Choose Your Package</h2>
+          <div class="sub">Tap to select &mdash; your total updates instantly</div>
+          {pkg_sections}
+          <div class="ps-total">
+            <div class="ps-total-l" id="pt-total-lbl">Total &mdash; {he(default_lbl)}</div>
+            <div class="ps-total-a" id="pt-total-amt">{fc(default_total)}</div>
+          </div>
+        </div>'''))
+
+        # Items per tier (all rendered, JS toggles visibility)
+        items_blocks = ''
+        for tk in gbb_tks:
+            for t in enabled_tiers:
+                li_html, _tot = render_line_items(est, tier=t, only_trades=[tk])
+                vis = '' if t == defaults[tk] else 'display:none'
+                items_blocks += f'<div id="pt-items-{tk}-{t}" style="{vis}">{li_html}</div>\n'
+        if simple_html_pres.strip():
+            items_blocks += simple_html_pres
+
+        slides.append(('Details', f'''<div class="ps-items">
+          <h2>What&rsquo;s Included</h2>
+          {items_blocks}
+        </div>'''))
+
+    elif is_insurance:
+        ins_html, ins_total = _insurance_cv_table(est)
+        slides.append(('Pricing', f'''<div class="ps-items">
+          <h2>Insurance Claim Summary</h2>
+          {ins_html}
+        </div>'''))
+
+    else:
+        # Simple-mode-only estimate
+        all_html, all_total = render_line_items(est)
+        slides.append(('Pricing', f'''<div class="ps-items">
+          <h2>Your Estimate</h2>
+          {all_html}
+          <div class="ps-total">
+            <div class="ps-total-l">Total</div>
+            <div class="ps-total-a">{fc(all_total)}</div>
+          </div>
+        </div>'''))
+
+    # ── Slide: Trust blocks ────────────────────────────────────────────
+    cc = _load_company_content()
+    trust_items = []
+    for key, dflt_title, icon in (('about', 'About Us', '&#127968;'),
+                                   ('warranty', 'Our Warranty', '&#128737;&#65039;')):
+        blk = cc.get(key) or {}
+        if not blk.get('enabled', True) or pv.get(f'trust_{key}') is False:
+            continue
+        body = (blk.get('body') or '').strip()
+        if not body:
+            continue
+        title = (blk.get('title') or '').strip() or dflt_title
+        paras = ''.join(f'<p>{he(p.strip())}</p>' for p in body.split('\n\n') if p.strip())
+        trust_items.append(f'<div class="ps-trust-it"><h3>{icon} {he(title)}</h3>{paras}</div>')
+
+    blk = cc.get('certifications') or {}
+    if blk.get('enabled', True) and pv.get('trust_certifications') is not False:
+        items = [str(i).strip() for i in (blk.get('items') or []) if str(i).strip()]
+        if items:
+            title = (blk.get('title') or '').strip() or 'Licenses & Certifications'
+            lis = ''.join(f'<li>{he(i)}</li>' for i in items)
+            trust_items.append(f'<div class="ps-trust-it"><h3>&#127942; {he(title)}</h3><ul>{lis}</ul></div>')
+
+    blk = cc.get('reviews') or {}
+    revs_html = ''
+    if blk.get('enabled', True) and pv.get('trust_reviews') is not False:
+        revs = [r for r in (blk.get('items') or [])
+                if isinstance(r, dict) and (r.get('text') or '').strip()]
+        for r in revs[:4]:
+            try: n = max(1, min(5, int(r.get('stars') or 5)))
+            except (TypeError, ValueError): n = 5
+            name = (r.get('name') or '').strip()
+            who  = f'<div class="ps-rev-who">&mdash; {he(name)}</div>' if name else ''
+            revs_html += f'''<div class="ps-rev">
+              <div class="ps-rev-stars">{'&#9733;' * n}</div>
+              <div class="ps-rev-text">&ldquo;{he(r["text"].strip())}&rdquo;</div>
+              {who}</div>'''
+
+    if trust_items or revs_html:
+        slides.append(('Why Us', f'''<div class="ps-trust">
+          <h2>Why Project One Roofing</h2>
+          <div class="ps-trust-grid">{''.join(trust_items)}</div>
+          {revs_html}
+        </div>'''))
+
+    # ── Slide: Sign CTA ───────────────────────────────────────────────
+    if not is_insurance and gbb_tks:
+        sign_total = default_total
+        sign_lbl   = default_lbl
+    elif is_insurance:
+        sign_total = ins_total
+        sign_lbl   = 'Insurance Claim Total'
+    else:
+        sign_total = all_total
+        sign_lbl   = 'Your Estimate Total'
+
+    sign_url = f'/sign/{he(token)}'
+    steps_html = '''<div class="ps-steps"><ol>
+      <li><strong>Sign electronically</strong><span>Takes less than a minute, right from this device</span></li>
+      <li><strong>We reach out to welcome you</strong><span>A call within one business day to confirm details</span></li>
+      <li><strong>Scheduling &amp; materials</strong><span>We order materials and lock in your installation date</span></li>
+      <li><strong>Installation day</strong><span>Our crew arrives on time and leaves your home spotless</span></li>
+      <li><strong>Final walkthrough &amp; warranty</strong><span>We walk the project with you and register your warranty</span></li>
+    </ol></div>'''
+
+    slides.append(('Ready to Sign', f'''<div class="ps-sign">
+      <h2>Ready to Move Forward?</h2>
+      <div class="sub" id="pt-sign-sel">{he(sign_lbl)}</div>
+      <div class="ps-sign-box">
+        <div class="lbl">Your Total</div>
+        <div class="amt" id="pt-sign-amt">{fc(sign_total)}</div>
+      </div>
+      <div><a class="ps-sign-btn" id="pt-sign-link" href="{sign_url}#sign"
+         data-base="{sign_url}">&#10003; Review &amp; Sign Electronically</a></div>
+      {steps_html}
+    </div>'''))
+
+    # ── Assemble ───────────────────────────────────────────────────────
+    slides_html = '\n'.join(
+        f'<div class="ps{" act" if i == 0 else ""}" data-idx="{i}"><div class="pc">{html}</div></div>'
+        for i, (_label, html) in enumerate(slides))
+    dots = ''.join(
+        f'<button class="{"act " if i == 0 else ""}" data-idx="{i}"></button>'
+        for i in range(len(slides)))
+    n = len(slides)
+
+    # Build the JS (package selection + navigation + swipe)
+    gbb_js = ''
+    if not is_insurance and gbb_tks:
+        _ptg_data = json.dumps({tk: {'cur': defaults[tk],
+                                     'totals': {t: round(totals[tk][t], 2) for t in enabled_tiers}}
+                                for tk in gbb_tks})
+        gbb_js = f'''
+var _pt={json.dumps(enabled_tiers)};
+var _ptr={json.dumps(gbb_tks)};
+var _ptm={json.dumps(multi)};
+var _ptg={_ptg_data};
+var _pts={simple_total:.2f};
+var _tl={json.dumps(trade_lbls)};
+var _tn={{good:'Good',better:'Better',best:'Best'}};
+var _tc={{good:'#2563eb',better:'#16a34a',best:'#b45309'}};
+var _tb={{good:'#dbeafe',better:'#dcfce7',best:'#fef3c7'}};
+function _fmt(n){{return'$'+Math.abs(n).toFixed(2).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,',');}}
+function presSelect(trade,tier){{
+  var g=_ptg[trade];if(!g)return;g.cur=tier;
+  _pt.forEach(function(t){{
+    var card=document.querySelector('[data-trade="'+trade+'"][data-tier="'+t+'"]');
+    if(!card)return;
+    var chk=card.querySelector('.pt-chk');
+    if(t===tier){{
+      card.classList.add('sel');
+      card.style.borderColor=_tc[t];card.style.background=_tb[t];
+      if(chk){{chk.innerHTML='\\u2713 Selected';chk.style.background=_tb[t];chk.style.color=_tc[t];}}
+    }}else{{
+      card.classList.remove('sel');
+      card.style.borderColor='#e2e8f0';card.style.background='';
+      if(chk){{chk.innerHTML='Tap to Select';chk.style.background='#f8fafc';chk.style.color='#94a3b8';}}
+    }}
+    var blk=document.getElementById('pt-items-'+trade+'-'+t);
+    if(blk)blk.style.display=(t===tier?'':'none');
+  }});
+  _presTotal();
+}}
+function _presTotal(){{
+  var sum=_pts,parts=[];
+  _ptr.forEach(function(tr){{var g=_ptg[tr];sum+=(g.totals[g.cur]||0);
+    parts.push(_tl[tr]+': '+_tn[g.cur]);
+  }});
+  var lbl=_ptm?parts.join(' \\xb7 '):(_tn[_ptg[_ptr[0]].cur]+' Package');
+  var el=document.getElementById('pt-total-lbl');if(el)el.textContent='Total \\u2014 '+lbl;
+  var ea=document.getElementById('pt-total-amt');if(ea)ea.textContent=_fmt(sum);
+  var sa=document.getElementById('pt-sign-amt');if(sa)sa.textContent=_fmt(sum);
+  var sl=document.getElementById('pt-sign-sel');if(sl)sl.textContent=lbl;
+  // Update sign link with tier params
+  var link=document.getElementById('pt-sign-link');
+  if(link){{var base=link.dataset.base,p=[];
+    _ptr.forEach(function(tr){{p.push('tier_'+tr+'='+_ptg[tr].cur);}});
+    if(_ptr.length)p.push('tier='+_ptg[_ptr[0]].cur);
+    link.href=base+'?'+p.join('&')+'#sign';
+  }}
+}}'''
+
+    return f'''<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="theme-color" content="#0e2440">
+<link rel="icon" href="/estimate/static/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<title>Estimate Presentation — Project One Roofing</title>
+<style>{_PRES_CSS}</style></head><body>
+<div class="pw">
+  <div class="ph">
+    <img src="/estimate/static/logo.png" alt="Project One Roofing">
+    <div class="ph-r">{he(c.get("name",""))} &middot; {he(enum)}</div>
+  </div>
+  <div class="pv" id="pv">{slides_html}</div>
+  <div class="pn">
+    <button class="pn-b" id="pres-prev" onclick="presNav(-1)" disabled>&#8249; Back</button>
+    <div class="pd" id="pres-dots">{dots}</div>
+    <span class="pctr" id="pres-ctr">1 / {n}</span>
+    <button class="pn-b pri" id="pres-next" onclick="presNav(1)">Next &#8250;</button>
+  </div>
+</div>
+<script>
+var _cur=0,_n={n};
+var _sl=document.querySelectorAll('.ps');
+var _dt=document.querySelectorAll('.pd button');
+function presGo(i){{
+  if(i<0||i>=_n)return;
+  _sl.forEach(function(s){{s.classList.remove('act','ex');}});
+  _sl[i].classList.add('act');
+  _dt.forEach(function(d,j){{d.classList.toggle('act',j===i);}});
+  _cur=i;
+  document.getElementById('pres-prev').disabled=(i===0);
+  var nb=document.getElementById('pres-next');
+  nb.style.display=(i===_n-1)?'none':'';
+  document.getElementById('pres-ctr').textContent=(i+1)+' / '+_n;
+}}
+function presNav(d){{presGo(_cur+d);}}
+_dt.forEach(function(d){{d.addEventListener('click',function(){{presGo(+d.dataset.idx);}});}});
+// Swipe
+var _tx=0,_ty=0;
+document.getElementById('pv').addEventListener('touchstart',function(e){{
+  _tx=e.touches[0].clientX;_ty=e.touches[0].clientY;}});
+document.getElementById('pv').addEventListener('touchend',function(e){{
+  var dx=e.changedTouches[0].clientX-_tx,dy=e.changedTouches[0].clientY-_ty;
+  if(Math.abs(dx)>Math.abs(dy)&&Math.abs(dx)>50)presNav(dx<0?1:-1);
+}});
+// Keyboard
+document.addEventListener('keydown',function(e){{
+  if(e.key==='ArrowRight')presNav(1);if(e.key==='ArrowLeft')presNav(-1);
+}});
+{gbb_js}
+</script></body></html>'''
 
 
 def build_signed_confirmation(est):
@@ -4320,36 +4900,55 @@ def build_signed_pdf(est):
     is_ins = est.get('estimate_type') == 'insurance'
     tier = est.get('selected_tier', 'better')
 
-    pdf = FPDF(orientation='P', unit='mm', format='Letter')
-    pdf.set_auto_page_break(auto=True, margin=16)
-    pdf.set_margins(14, 14, 14)
-    pdf.add_page()
-    W = pdf.w - 28  # content width
+    LM = 16
+    RM = 16
 
-    # Header: logo + company info
+    class _PDF(FPDF):
+        def footer(self):
+            self.set_y(-11)
+            self.set_draw_color(200, 200, 200)
+            self.line(LM, self.get_y(), self.w - RM, self.get_y())
+            self.ln(2)
+            self.set_font('Helvetica', '', 6.5)
+            self.set_text_color(140, 140, 140)
+            self.cell(0, 4, 'Project One Roofing  |  970-776-0945  |  '
+                      'projectoneroofingcolorado.com', align='L')
+            self.cell(0, 4, f'Page {self.page_no()}/{{nb}}',
+                      align='R', new_x='LMARGIN', new_y='NEXT')
+            self.set_text_color(0, 0, 0)
+
+    pdf = _PDF(orientation='P', unit='mm', format='Letter')
+    pdf.alias_nb_pages()
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.set_margins(LM, 14, RM)
+    pdf.add_page()
+    W = pdf.w - LM - RM
+
+    # Header
     logo = os.path.join(BASE_DIR, 'static', 'logo.png')
     if os.path.exists(logo):
         try:
-            pdf.image(logo, x=14, y=12, h=16)
+            pdf.image(logo, x=LM, y=12, h=14)
         except Exception:
             pass
-    pdf.set_xy(14, 12)
+    pdf.set_xy(LM, 12)
     pdf.set_font('Helvetica', 'B', 11)
     pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_font('Helvetica', '', 8)
-    pdf.cell(W, 4, '970-776-0945  -  projectoneroofingcolorado.com', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_y(32)
+    pdf.set_font('Helvetica', '', 7.5)
+    pdf.cell(W, 3.5, '970-776-0945  |  projectoneroofingcolorado.com',
+             align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.ln(4)
 
     # Title bar
     pdf.set_fill_color(26, 58, 92)
     pdf.set_text_color(255, 255, 255)
-    pdf.set_font('Helvetica', 'B', 13)
-    title = 'SIGNED CONTRACT  -  INSURANCE CLAIM' if is_ins else 'SIGNED CONTRACT'
-    pdf.cell(W, 10, f'  {title}', fill=True, new_x='LMARGIN', new_y='NEXT')
+    pdf.set_font('Helvetica', 'B', 12)
+    title = 'SIGNED CONTRACT  |  INSURANCE CLAIM' if is_ins else 'SIGNED CONTRACT'
+    pdf.cell(W, 9, f'  {title}', fill=True, new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
-    pdf.ln(4)
+    pdf.ln(5)
 
-    # Info block
+    # Info block — two columns
     addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'),
                                        a.get('state'), a.get('zip')]))
     sp = (est.get('salesperson') or '').replace('.', ' ').title()
@@ -4360,53 +4959,82 @@ def build_signed_pdf(est):
     except Exception:
         signed_fmt = signed_at
 
-    info_rows = [
-        ('Estimate #', enum),
+    left_rows = [
         ('Customer', c.get('name', '')),
+        ('Address', addr_str),
         ('Phone', c.get('phone', '')),
         ('Email', c.get('email', '')),
-        ('Address', addr_str),
-        ('Estimate Date', est.get('estimate_date', '')),
+    ]
+    right_rows = [
+        ('Estimate #', enum),
+        ('Date', est.get('estimate_date', '')),
         ('Salesperson', sp),
     ]
     job_num = c.get('crm_job_number') or ''
     if job_num:
-        info_rows.append(('Job #', job_num))
+        right_rows.append(('Job #', job_num))
     if is_ins:
         ins_td = est.get('trades', {}).get('insurance', {})
         if ins_td.get('carrier'):
-            info_rows.append(('Insurance Carrier', ins_td['carrier']))
+            right_rows.append(('Carrier', ins_td['carrier']))
         if ins_td.get('claim_number'):
-            info_rows.append(('Claim #', ins_td['claim_number']))
+            right_rows.append(('Claim #', ins_td['claim_number']))
     else:
-        info_rows.append(('Package', _pick_summary_label(est)
+        right_rows.append(('Package', _pick_summary_label(est)
                           or dict(good='Good', better='Better',
                                   best='Best').get(tier, tier.title())))
     shingle_color = (sig.get('shingle_color') or '').strip()
     if shingle_color:
-        info_rows.append(('Shingle Color', shingle_color))
+        right_rows.append(('Shingle Color', shingle_color))
 
-    pdf.set_font('Helvetica', '', 9)
-    for label, val in info_rows:
-        if not val:
-            continue
-        pdf.set_font('Helvetica', 'B', 9)
-        pdf.cell(40, 5.5, _pdf_safe(label))
-        pdf.set_font('Helvetica', '', 9)
-        pdf.cell(0, 5.5, _pdf_safe(val), new_x='LMARGIN', new_y='NEXT')
-    pdf.ln(4)
+    col_w = W / 2
+    y_start = pdf.get_y()
+
+    def _info_col(rows, x_off):
+        pdf.set_xy(LM + x_off, y_start)
+        for label, val in rows:
+            if not val:
+                continue
+            pdf.set_x(LM + x_off)
+            pdf.set_font('Helvetica', '', 7)
+            pdf.set_text_color(120, 120, 120)
+            pdf.cell(col_w, 3.5, _pdf_safe(label.upper()),
+                     new_x='LMARGIN', new_y='NEXT')
+            pdf.set_x(LM + x_off)
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(col_w, 5, _pdf_safe(val),
+                     new_x='LMARGIN', new_y='NEXT')
+            pdf.ln(1.5)
+
+    _info_col(left_rows, 0)
+    y_after_left = pdf.get_y()
+    _info_col(right_rows, col_w)
+    pdf.set_y(max(y_after_left, pdf.get_y()) + 4)
+
+    # Thin divider
+    pdf.set_draw_color(220, 220, 220)
+    pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
+    pdf.ln(6)
+
+    # Table helpers
+    ZEBRA_BG = (248, 250, 252)
+    HDR_BG   = (26, 58, 92)
 
     def table_header(cols):
-        pdf.set_fill_color(234, 239, 245)
-        pdf.set_font('Helvetica', 'B', 8)
+        pdf.set_fill_color(*HDR_BG)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font('Helvetica', 'B', 7.5)
         for txt, w, align in cols:
-            pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
+            pdf.cell(w, 7, '  ' + _pdf_safe(txt) if align == 'L' else _pdf_safe(txt) + '  ',
+                     fill=True, align=align)
         pdf.ln()
+        pdf.set_text_color(0, 0, 0)
 
     def trade_title(txt):
-        pdf.set_font('Helvetica', 'B', 10.5)
+        pdf.set_font('Helvetica', 'B', 10)
         pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.cell(0, 8, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
         pdf.set_text_color(0, 0, 0)
 
     def trunc(s, n):
@@ -4414,13 +5042,17 @@ def build_signed_pdf(est):
         return s if len(s) <= n else s[:n - 1] + '...'
 
     grand = 0.0
+    row_h = 6.5
     if is_ins:
         ins_td   = est.get('trades', {}).get('insurance', {})
         sections = ins_td.get('sections') or (
             [{'name': '', 'items': ins_td.get('line_items', [])}]
             if ins_td.get('line_items') else [])
-        cols = [('Item', 48, 'L'), ('Description', 60, 'L'),
-                ('ACV', 22, 'R'), ('Depreciation', 28, 'R'), ('RCV', 24, 'R')]
+        desc_w = W - 22 - 26 - 24
+        c_item = desc_w * 0.38
+        c_desc = desc_w * 0.62
+        cols = [('Item', c_item, 'L'), ('Description', c_desc, 'L'),
+                ('ACV', 22, 'R'), ('Depreciation', 26, 'R'), ('RCV', 24, 'R')]
         for sec in sections:
             items = sec.get('items', [])
             if not items:
@@ -4429,39 +5061,47 @@ def build_signed_pdf(est):
             table_header(cols)
             pdf.set_font('Helvetica', '', 8)
             sub = 0.0
-            for it in items:
+            for ri, it in enumerate(items):
                 acv = float(it.get('acv') or 0)
                 dep = float(it.get('depreciation') or 0)
-                tot = acv + dep  # RCV
+                tot = acv + dep
                 sub += tot
-                pdf.cell(48, 6, trunc(it.get('name', ''), 32), border=1)
-                pdf.cell(60, 6, trunc(it.get('description', ''), 42), border=1)
-                pdf.cell(22, 6, fc(acv), border=1, align='R')
-                pdf.cell(28, 6, fc(dep), border=1, align='R')
-                pdf.cell(24, 6, fc(tot), border=1, align='R')
+                if ri % 2 == 1:
+                    pdf.set_fill_color(*ZEBRA_BG)
+                    fill = True
+                else:
+                    fill = False
+                pdf.cell(c_item, row_h, '  ' + trunc(it.get('name', ''), 38), fill=fill)
+                pdf.cell(c_desc, row_h, '  ' + trunc(it.get('description', ''), 50), fill=fill)
+                pdf.cell(22, row_h, fc(acv) + ' ', fill=fill, align='R')
+                pdf.cell(26, row_h, fc(dep) + ' ', fill=fill, align='R')
+                pdf.cell(24, row_h, fc(tot) + ' ', fill=fill, align='R')
                 pdf.ln()
             grand += sub
+            pdf.set_draw_color(26, 58, 92)
+            pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
             pdf.set_font('Helvetica', 'B', 8.5)
-            pdf.cell(158, 6.5, _pdf_safe((sec.get('name') or 'Section') + ' Subtotal  '),
-                     border=1, align='R')
-            pdf.cell(24, 6.5, fc(sub), border=1, align='R')
+            pdf.cell(W - 24, 7, _pdf_safe((sec.get('name') or 'Section') + ' Subtotal'),
+                     align='R')
+            pdf.cell(24, 7, fc(sub) + ' ', align='R')
             pdf.ln(10)
+            pdf.set_draw_color(220, 220, 220)
         total_label = 'INSURANCE CLAIM TOTAL'
     else:
         pricing = est.get('pricing', {})
         mode    = pricing.get('mode', 'margin')
         labels  = dict(roofing='Roofing', siding='Siding', windows='Windows',
                        gutters='Gutters', other='Other / Misc')
-        cols = [('Description', 92, 'L'), ('Qty', 16, 'R'), ('Unit', 16, 'C'),
-                ('Unit Price', 29, 'R'), ('Total', 29, 'R')]
+        c_desc = W - 14 - 14 - 28 - 28
+        cols = [('Description', c_desc, 'L'), ('Qty', 14, 'R'), ('Unit', 14, 'C'),
+                ('Unit Price', 28, 'R'), ('Total', 28, 'R')]
         for tk in GBB_TRADES:
             td = est.get('trades', {}).get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
                 continue
             trade_mode = _trade_mode(tk, td)
-            t_tier = _trade_tier(est, tk)   # each product at its signed package
+            t_tier = _trade_tier(est, tk)
             r = _tier_rate(pricing, tk, t_tier)
-            # Skip the whole trade if nothing will print (all zero-qty / excluded)
             if not any(
                     float(it.get('quantity') or 0) > 0 and
                     (trade_mode == 'simple'
@@ -4473,10 +5113,11 @@ def build_signed_pdf(est):
             pdf.set_font('Helvetica', '', 8)
             sub = 0.0
             hidden = 0
+            ri = 0
             for it in td['line_items']:
                 qty = float(it.get('quantity') or 0)
                 if qty <= 0:
-                    continue  # zero-quantity items are hidden from the customer
+                    continue
                 if trade_mode == 'simple':
                     sp_  = float(it.get('unit_price') or 0)
                     line = sp_ * qty
@@ -4484,7 +5125,7 @@ def build_signed_pdf(est):
                 else:
                     t    = (it.get('tiers') or {}).get(t_tier, {})
                     if t.get('included') is False:
-                        continue  # item excluded from this package tier
+                        continue
                     line = _line_sell_total(it, t_tier, r, mode)
                     sp_  = line / qty
                     desc = t.get('description', '')
@@ -4495,35 +5136,46 @@ def build_signed_pdf(est):
                 name = _with_section(it, it.get('name', ''))
                 if desc:
                     name = f'{name} - {desc}'
-                pdf.cell(92, 6, trunc(name, 62), border=1)
-                pdf.cell(16, 6, f'{qty:g}', border=1, align='R')
-                pdf.cell(16, 6, trunc(it.get('unit', ''), 8), border=1, align='C')
-                pdf.cell(29, 6, fc(sp_), border=1, align='R')
-                pdf.cell(29, 6, fc(line), border=1, align='R')
+                if ri % 2 == 1:
+                    pdf.set_fill_color(*ZEBRA_BG)
+                    fill = True
+                else:
+                    fill = False
+                pdf.cell(c_desc, row_h, '  ' + trunc(name, 78), fill=fill)
+                pdf.cell(14, row_h, f'{qty:g} ', fill=fill, align='R')
+                pdf.cell(14, row_h, trunc(it.get('unit', ''), 8), fill=fill, align='C')
+                pdf.cell(28, row_h, fc(sp_) + ' ', fill=fill, align='R')
+                pdf.cell(28, row_h, fc(line) + ' ', fill=fill, align='R')
                 pdf.ln()
+                ri += 1
             if hidden:
-                pdf.set_font('Helvetica', 'I', 7.5)
-                pdf.cell(182, 5.5, 'Additional materials & supplies included in total',
-                         border=1, align='C')
+                pdf.set_font('Helvetica', 'I', 7)
+                pdf.set_text_color(140, 140, 140)
+                pdf.cell(W, 5.5, 'Additional materials & supplies included in total',
+                         align='C')
                 pdf.ln()
+                pdf.set_text_color(0, 0, 0)
                 pdf.set_font('Helvetica', '', 8)
             grand += sub
+            pdf.set_draw_color(26, 58, 92)
+            pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
             pdf.set_font('Helvetica', 'B', 8.5)
-            pdf.cell(153, 6.5, _pdf_safe(labels.get(tk, tk.title()) + ' Subtotal  '),
-                     border=1, align='R')
-            pdf.cell(29, 6.5, fc(sub), border=1, align='R')
+            pdf.cell(W - 28, 7, _pdf_safe(labels.get(tk, tk.title()) + ' Subtotal'),
+                     align='R')
+            pdf.cell(28, 7, fc(sub) + ' ', align='R')
             pdf.ln(10)
+            pdf.set_draw_color(220, 220, 220)
         _sum = _pick_summary_label(est)
-        total_label = (f'TOTAL - {_sum.upper()}' if _sum
-                       else f'TOTAL - {tier.upper()} PACKAGE')
+        total_label = (f'TOTAL  |  {_sum.upper()}' if _sum
+                       else f'TOTAL  |  {tier.upper()} PACKAGE')
 
     # Grand total bar
     pdf.set_fill_color(26, 58, 92)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(W - 40, 9, f'  {_pdf_safe(total_label)}', fill=True)
-    pdf.cell(40, 9, fc(grand) + '  ', fill=True, align='R')
-    pdf.ln(14)
+    pdf.cell(W - 42, 10, f'  {_pdf_safe(total_label)}', fill=True)
+    pdf.cell(42, 10, fc(grand) + '  ', fill=True, align='R')
+    pdf.ln(12)
     pdf.set_text_color(0, 0, 0)
 
     # Scope of work / notes
@@ -4531,14 +5183,14 @@ def build_signed_pdf(est):
         scope = (est.get('trades', {}).get('insurance', {}).get('scope_notes') or '').strip()
         if scope:
             pdf.set_font('Helvetica', 'B', 10)
-            pdf.cell(0, 6, 'Scope of Work', new_x='LMARGIN', new_y='NEXT')
+            pdf.cell(0, 7, 'Scope of Work', new_x='LMARGIN', new_y='NEXT')
             pdf.set_font('Helvetica', '', 8.5)
             pdf.multi_cell(W, 4.6, _pdf_safe(scope))
             pdf.ln(4)
     notes = (est.get('notes_customer') or '').strip()
     if notes:
         pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(0, 6, 'Notes', new_x='LMARGIN', new_y='NEXT')
+        pdf.cell(0, 7, 'Notes', new_x='LMARGIN', new_y='NEXT')
         pdf.set_font('Helvetica', '', 8.5)
         pdf.multi_cell(W, 4.6, _pdf_safe(notes))
         pdf.ln(4)
@@ -4549,7 +5201,9 @@ def build_signed_pdf(est):
         pdf.add_page()
         pdf.set_font('Helvetica', 'B', 11)
         pdf.cell(0, 7, 'Terms & Conditions', new_x='LMARGIN', new_y='NEXT')
-        pdf.ln(1)
+        pdf.set_draw_color(220, 220, 220)
+        pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
+        pdf.ln(3)
         pdf.set_font('Helvetica', '', 7.5)
         pdf.multi_cell(W, 4.0, _pdf_safe(ctext))
         pdf.ln(6)
@@ -4560,33 +5214,35 @@ def build_signed_pdf(est):
         if pdf.get_y() > pdf.h - 40:
             pdf.add_page()
         pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(0, 6, 'Initialed Acknowledgements', new_x='LMARGIN', new_y='NEXT')
+        pdf.cell(0, 7, 'Initialed Acknowledgements', new_x='LMARGIN', new_y='NEXT')
         pdf.ln(1)
         for it in inits:
-            pdf.set_font('Helvetica', 'B', 8.5)
-            pdf.cell(16, 5.4, _pdf_safe(it['value'].upper()), border=0)
+            pdf.set_fill_color(248, 250, 252)
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.cell(18, 5.5, _pdf_safe(it['value'].upper()), fill=True)
             pdf.set_font('Helvetica', '', 8.5)
-            pdf.multi_cell(W - 16, 5.4, _pdf_safe(it['text']),
+            pdf.multi_cell(W - 18, 5.5, _pdf_safe(it['text']),
                            new_x='LMARGIN', new_y='NEXT')
-        pdf.ln(4)
+            pdf.ln(1)
+        pdf.ln(3)
 
     # Signature block
-    if pdf.get_y() > pdf.h - 75:
+    if pdf.get_y() > pdf.h - 70:
         pdf.add_page()
     pdf.set_draw_color(22, 163, 74)
     pdf.set_fill_color(240, 253, 244)
     y0 = pdf.get_y()
-    pdf.rect(14, y0, W, 52, style='DF')
-    pdf.set_xy(18, y0 + 4)
+    pdf.rect(LM, y0, W, 50, style='DF')
+    pdf.set_xy(LM + 5, y0 + 4)
     pdf.set_text_color(22, 101, 52)
     pdf.set_font('Helvetica', 'B', 10)
     pdf.cell(0, 6, 'ELECTRONICALLY SIGNED', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_x(18)
+    pdf.set_x(LM + 5)
     pdf.set_text_color(0, 0, 0)
     pdf.set_font('Helvetica', 'I', 17)
     pdf.cell(0, 10, _pdf_safe(sig.get('name', '')), new_x='LMARGIN', new_y='NEXT')
-    pdf.set_x(18)
-    pdf.set_font('Helvetica', '', 8)
+    pdf.set_x(LM + 5)
+    pdf.set_font('Helvetica', '', 7.5)
     sig_lines = [
         f"Signed by: {sig.get('name', '')}"
         + (f"  ({sig.get('email')})" if sig.get('email') else ''),
@@ -4595,8 +5251,8 @@ def build_signed_pdf(est):
         f"Document SHA-256: {sig.get('document_hash', '')[:32]}...",
     ]
     for line in sig_lines:
-        pdf.cell(0, 4.6, _pdf_safe(line), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_x(18)
+        pdf.cell(0, 4.4, _pdf_safe(line), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_x(LM + 5)
     pdf.set_draw_color(0, 0, 0)
 
     return bytes(pdf.output())
@@ -6431,6 +7087,17 @@ def view_signed_estimate(est_id):
     return Response(html, mimetype='text/html')
 
 
+@app.route('/present/<token>')
+def present_estimate(token):
+    """Tablet presentation mode — slide-by-slide estimate walkthrough."""
+    est = est_find_by_token(token)
+    if est is None:
+        return '<h2 style="font-family:sans-serif;padding:40px">Link not found or expired.</h2>', 404
+    if est.get('signature'):
+        return build_signed_confirmation(est)
+    return build_presentation_view(est, token)
+
+
 @app.route('/sign/<token>', methods=['GET', 'POST'])
 def customer_sign(token):
     est = est_find_by_token(token)
@@ -6968,9 +7635,16 @@ SIDING_CATALOG_SEED = [
      "bullets": ["New soffit"]},
     {"id": "sa_fascia", "name": "Fascia", "unit": "LF", "cost": 0,
      "bullets": ["New fascia"]},
+    # Labor prices into the package but is NOT broken out for the customer:
+    # "Install Labor - $9,400" invites a line-item negotiation over the one
+    # number that is really the crew, while the bullets keep promising the work.
+    # `customer_visible: False` hides the ROW, not the promise — see
+    # bundleFeatures() in app.js.
     {"id": "sl_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "siding_squares",
+     "customer_visible": False,
      "bullets": ["Complete tear-off of existing siding"]},
     {"id": "sl_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "siding_squares",
+     "customer_visible": False,
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
     {"id": "sx_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
      "bullets": ["Dumpster and full site cleanup"]},
@@ -7151,8 +7825,11 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 
 # Product facts (not prices) the server may backfill onto a catalog product a
 # manager already has. `attach` decides whether a system gets seam fasteners;
-# `bullets` is the product's line(s) on a Good/Better/Best card.
-_PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets')
+# `bullets` is the product's line(s) on a Good/Better/Best card;
+# `customer_visible` is whether the priced row is broken out for the customer
+# (labor is not) — a book saved before that call was made has no such key, and
+# absence is the test, so a manager who ticked Show keeps it ticked.
+_PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible')
 
 # old product id -> the product(s) that replaced it, swapped into SEEDED bundles
 # on read. The old product stays in the catalog: an estimate may reference it and
