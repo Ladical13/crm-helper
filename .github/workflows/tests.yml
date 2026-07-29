@@ -1,0 +1,83 @@
+# Runs all four test suites on every push and pull request.
+#
+# The four suites must run as SEPARATE pytest invocations. Each app has its own
+# tests/conftest.py, and pytest imports them by bare module name, so collecting
+# two apps in one run collides on the name `conftest` and errors out.
+#
+# Node is not optional. estimator/tests/test_parity.py and test_fastening.py run
+# the real functions out of static/app.js under node and compare them to app.py
+# to the cent. Both files are marked `skipif(shutil.which('node') is None)`, so
+# WITHOUT node they skip silently and the run still goes green — with pricing
+# parity, the invariant that has already broken once, entirely unchecked. The
+# node check below and the "no tests were skipped" guard at the end exist to
+# make that failure mode impossible rather than invisible.
+
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.12 has the widest wheel coverage for pymupdf/psycopg. Local dev is on
+      # 3.14; nothing here is version-specific, so bump this when you want CI to
+      # match your machine.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # Fail loudly here rather than letting the parity tests quietly skip.
+      - name: Check node is available for the parity tests
+        run: node --version
+
+      # -rs lists the reason for any skip; the logs are checked at the end.
+      # pipefail keeps a pytest failure from being masked by tee's exit code.
+      - name: salescrm
+        working-directory: salescrm
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs | tee "$RUNNER_TEMP/salescrm.log"
+
+      - name: portal
+        working-directory: portal
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs | tee "$RUNNER_TEMP/portal.log"
+
+      - name: estimator
+        working-directory: estimator
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs | tee "$RUNNER_TEMP/estimator.log"
+
+      - name: prospector
+        run: |
+          set -o pipefail
+          python -m pytest prospector/tests -q -rs | tee "$RUNNER_TEMP/prospector.log"
+
+      # A skip means a suite quietly stopped testing something. The likeliest
+      # cause is node going missing, which takes pricing parity with it.
+      - name: Fail if any test was skipped
+        run: |
+          if grep -il 'skipped' "$RUNNER_TEMP"/*.log; then
+            echo "::error::A suite skipped tests — see the matching step above."
+            grep -i 'skipped' "$RUNNER_TEMP"/*.log
+            exit 1
+          fi
+          echo "No tests were skipped."
