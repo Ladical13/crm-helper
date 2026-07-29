@@ -338,9 +338,12 @@ const MEASURE_FIELDS = [
     {key:'siding_j_channel_lf',       label:'J-Channel',        unit:'LF'},
     {key:'siding_trim_lf',            label:'Trim Boards',      unit:'LF'},
     {key:'siding_starter_lf',         label:'Starter Strip',    unit:'LF'},
-    {key:'siding_soffit_lf',          label:'Soffit Run',       unit:'LF'},
-    // Overhang depth turns the eave run into actual soffit coverage. A menu,
-    // not a number box, because these are the widths soffit is sold in.
+    {key:'siding_soffit_lf',          label:'Soffit',           unit:'LF'},
+    // Soffit is measured and priced by the linear foot — that is how the
+    // measurement report comes back. Width is the SPEC the rep picks so the
+    // order pulls the right panel; it rides to the production packet and does
+    // NOT scale quantity or price. A per-SF soffit product can point at
+    // siding_soffit_sf instead if one is ever added.
     {key:'siding_soffit_width',       label:'Soffit Width',     unit:'in',
      opts:[[12,'12"'],[16,'16"'],[24,'24"'],[36,'36"'],[48,'48"']]},
   ]},
@@ -416,11 +419,12 @@ const MEASURE_DEFS = {
   j_channel:            { label:'J-Channel LF',        calc:m => mnum(m.siding_j_channel_lf) },
   siding_trim:          { label:'Trim Board LF',       calc:m => mnum(m.siding_trim_lf) },
   siding_starter:       { label:'Starter Strip LF',    calc:m => mnum(m.siding_starter_lf) },
-  siding_soffit:        { label:'Soffit Run LF',       calc:m => mnum(m.siding_soffit_lf) },
-  // Soffit sold by coverage rather than by run. Width missing means 12" — the
-  // identity multiplier, so an estimate written before the width menu existed
-  // still prices exactly as it did. Never fall back to 0: that would zero the
-  // soffit line while it still looked filled in on screen.
+  siding_soffit:        { label:'Soffit LF',           calc:m => mnum(m.siding_soffit_lf) },
+  // Available for a soffit product sold by coverage rather than by the foot —
+  // nothing in the shipped price book uses it, since the measurement report
+  // gives soffit as a linear total. Width missing means 12", the identity
+  // multiplier. Never fall back to 0: that would zero the line while the run
+  // still looked filled in on screen.
   siding_soffit_sf:     { label:'Soffit SF',           calc:m => mnum(m.siding_soffit_lf) * (mnum(m.siding_soffit_width, 12) || 12) / 12 },
   siding_soffit_sq:     { label:'Soffit SQ',           calc:m => mnum(m.siding_soffit_lf) * (mnum(m.siding_soffit_width, 12) || 12) / 12 / 100 },
   windows:              { label:'# Windows',           calc:m => mnum(m.windows_count) },

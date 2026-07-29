@@ -941,37 +941,37 @@
     {
       "id": "sa_hardie_statement_soffit",
       "name": "James Hardie Statement Vented Soffit 24\"",
-      "unit": "SF",
-      "cost": 1.83,
-      "measure": "siding_soffit_sf"
+      "unit": "LF",
+      "cost": 3.66,
+      "measure": "siding_soffit"
     },
     {
       "id": "sa_hardie_primed_soffit",
       "name": "James Hardie Primed Vented Soffit 24\"",
-      "unit": "SF",
-      "cost": 1.18,
-      "measure": "siding_soffit_sf"
+      "unit": "LF",
+      "cost": 2.35,
+      "measure": "siding_soffit"
     },
     {
       "id": "sa_lp_expert_soffit",
       "name": "LP Expert Finish Vented Soffit 24\"",
-      "unit": "SF",
-      "cost": 3.26,
-      "measure": "siding_soffit_sf"
+      "unit": "LF",
+      "cost": 6.51,
+      "measure": "siding_soffit"
     },
     {
       "id": "sa_lp_standard_soffit",
       "name": "LP SmartSide Vented Soffit 24\"",
-      "unit": "SF",
-      "cost": 2.03,
-      "measure": "siding_soffit_sf"
+      "unit": "LF",
+      "cost": 4.06,
+      "measure": "siding_soffit"
     },
     {
       "id": "sa_edco_soffit",
       "name": "EDCO Soffit Panel 16\"×12'",
-      "unit": "SF",
-      "cost": 3.02,
-      "measure": "siding_soffit_sf"
+      "unit": "LF",
+      "cost": 4.03,
+      "measure": "siding_soffit"
     },
     {
       "id": "sa_edco_corner",

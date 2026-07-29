@@ -142,12 +142,14 @@ def test_siding_trim_and_soffit_products_read_the_new_measures():
         assert cat[pid]['measure'] == 'siding_trim', pid
     assert cat['sa_edco_jchannel']['measure'] == 'j_channel'
 
-    # Soffit is priced by coverage so the width menu actually moves the number;
-    # a per-LF soffit would ignore the overhang entirely.
+    # Soffit is measured and priced by the linear foot — that is the shape the
+    # measurement report comes back in. The Soffit Width menu is a spec for the
+    # order, NOT a quantity multiplier, so nothing here may drift to per-SF
+    # without the costs being re-derived at the same time.
     for pid in ('sa_hardie_statement_soffit', 'sa_hardie_primed_soffit',
                 'sa_lp_expert_soffit', 'sa_lp_standard_soffit', 'sa_edco_soffit'):
-        assert cat[pid]['measure'] == 'siding_soffit_sf', pid
-        assert cat[pid]['unit'] == 'SF', pid
+        assert cat[pid]['measure'] == 'siding_soffit', pid
+        assert cat[pid]['unit'] == 'LF', pid
 
 
 def test_app_js_and_app_py_agree_on_the_siding_fields(A):
