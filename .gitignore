@@ -41,3 +41,7 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Prospector working files - pulled segments and browser harvests, sometimes large
+prospector/inbox/*
+!prospector/inbox/.gitkeep

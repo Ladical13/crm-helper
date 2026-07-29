@@ -111,6 +111,28 @@ BILLING_SUFFIX = {'monthly': '/mo', 'quarterly': '/qtr', 'annual': '/yr'}
 # Which local activity kinds count as "outreach" for scorecards.
 OUTREACH_KINDS = ('call', 'text', 'email', 'door', 'meeting')
 
+# ── Contact normalization ─────────────────────────────────────────────────────
+# Defined up here rather than beside the other lead helpers because migrate_db()
+# backfills with them, and that runs at import time before those are bound.
+#
+# These exist so the bulk prospect importer can dedupe. Nothing else compares
+# contact details: the Base44 dedup in _find_existing_contact() does its own
+# exact-string match against the Den, and deliberately stays that way.
+
+def _norm_phone(s):
+    """Digits only, US country code dropped. '' when it can't be a real number.
+
+    '(970) 555-1212', '970-555-1212' and '+1 970 555 1212' all collapse to
+    '9705551212' so the importer sees one contact, not three.
+    """
+    digits = ''.join(c for c in (s or '') if c.isdigit())
+    if len(digits) == 11 and digits.startswith('1'):
+        digits = digits[1:]
+    return digits if len(digits) == 10 else ''
+
+def _norm_email(s):
+    return (s or '').strip().lower()
+
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def get_db():
@@ -230,6 +252,20 @@ def init_db():
             );
         ''')
 
+# Prospecting columns, added after the first release. Additive only — SQLite
+# cannot drop a column, so nothing here is ever removed, only stopped being read.
+_PROSPECT_COLS = [
+    ('website',      "TEXT DEFAULT ''"),
+    ('license_no',   "TEXT DEFAULT ''"),   # DORA licence number — a dedupe key
+    ('icp_score',    'INTEGER DEFAULT 0'),  # queue ordering
+    ('source_ref',   "TEXT DEFAULT ''"),   # dataset + row id, for provenance
+    ('hook',         "TEXT DEFAULT ''"),   # the one personalization slot needing judgment
+    ('import_batch', "TEXT DEFAULT ''"),   # '' means hand-entered, never deduped
+    ('dnc',          'INTEGER DEFAULT 0'),
+    ('phone_norm',   "TEXT DEFAULT ''"),
+    ('email_norm',   "TEXT DEFAULT ''"),
+]
+
 def migrate_db():
     """Additive column migrations for DBs created before a field existed."""
     with get_db() as db:
@@ -240,6 +276,9 @@ def migrate_db():
             db.execute("ALTER TABLE leads ADD COLUMN plan TEXT DEFAULT ''")
         if 'billing' not in cols:
             db.execute("ALTER TABLE leads ADD COLUMN billing TEXT DEFAULT ''")
+        for name, decl in _PROSPECT_COLS:
+            if name not in cols:
+                db.execute(f'ALTER TABLE leads ADD COLUMN {name} {decl}')
         db.executescript('''
             CREATE TABLE IF NOT EXISTS documents (
                 id          TEXT PRIMARY KEY,
@@ -251,7 +290,48 @@ def migrate_db():
                 created_at  TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS doc_lead_idx ON documents(lead_id);
+
+            -- Opt-outs. Checked on import AND on every queue build, because a
+            -- partner who asks to be left alone must not resurface tomorrow in
+            -- a batch sourced from a different dataset.
+            CREATE TABLE IF NOT EXISTS suppressions (
+                id         TEXT PRIMARY KEY,
+                kind       TEXT NOT NULL CHECK (kind IN ('email','phone','domain')),
+                value      TEXT NOT NULL,
+                reason     TEXT DEFAULT '',
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS supp_val_idx ON suppressions(kind, value);
+
+            CREATE INDEX IF NOT EXISTS leads_phone_idx ON leads(phone_norm);
+            CREATE INDEX IF NOT EXISTS leads_email_idx ON leads(email_norm);
+            CREATE INDEX IF NOT EXISTS leads_batch_idx ON leads(import_batch);
+
+            -- The queue's net-new top-up, which is the one query that grows with
+            -- the prospect list. Without this SQLite picks leads_stage_idx and
+            -- scans every 'new' lead in the table -- and in a prospecting DB
+            -- almost every lead is 'new', so that index selects nothing. The
+            -- trailing icp_score/created_at also satisfy the ORDER BY, dropping
+            -- the temp B-tree sort over the whole candidate set.
+            CREATE INDEX IF NOT EXISTS leads_queue_idx
+                ON leads(rep, stage, icp_score DESC, created_at);
         ''')
+        _backfill_norms(db)
+
+def _backfill_norms(db):
+    """Populate phone_norm/email_norm for rows written before they existed.
+
+    Idempotent and cheap: only rows with contact details but no normalized form
+    are touched, so this is a no-op on every run after the first.
+    """
+    rows = db.execute(
+        "SELECT id, phone, email FROM leads "
+        "WHERE (phone != '' AND phone_norm = '') OR (email != '' AND email_norm = '')"
+    ).fetchall()
+    for r in rows:
+        db.execute('UPDATE leads SET phone_norm=?, email_norm=? WHERE id=?',
+                   (_norm_phone(r['phone']), _norm_email(r['email']), r['id']))
 
 init_db()
 migrate_db()
@@ -269,6 +349,8 @@ def _load_json(name, default):
 CADENCES = _load_json('cadences.json', [])
 PLAYBOOK = _load_json('playbook.json', {'objections': [], 'scripts': [], 'principles': []})
 PLANS    = _load_json('plans.json', [])
+TEMPLATES = _load_json('outreach_templates.json',
+                       {'signature': '', 'banned_phrases': [], 'templates': {}})
 CADENCE_BY_ID = {c['id']: c for c in CADENCES}
 PLAN_BY_ID    = {p['id']: p for p in PLANS}
 
@@ -450,15 +532,24 @@ def list_leads():
         clauses.append('lead_type=?'); params.append(ltype)
     if service:
         clauses.append('service=?'); params.append(service)
+    if q:
+        # Matched in SQL, not in Python afterwards: filtering the page the LIMIT
+        # already returned would search only the most recently updated `limit`
+        # rows, so a partner outside that window could not be found at all. With
+        # tens of thousands of imported prospects that is most of the table.
+        # `_` and `%` are escaped so a literal one is not read as a wildcard.
+        esc = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        clauses.append(
+            "LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'') || ' ' ||"
+            "      COALESCE(phone,'')      || ' ' || COALESCE(email,'')     || ' ' ||"
+            "      COALESCE(address,'')    || ' ' || COALESCE(company,''))"
+            " LIKE ? ESCAPE '\\'")
+        params.append(f'%{esc}%')
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
     with get_db() as db:
         rows = db.execute(f'SELECT * FROM leads {where} ORDER BY updated_at DESC LIMIT ?',
                           params + [limit]).fetchall()
-    out = [_lead_row(r) for r in rows]
-    if q:
-        out = [d for d in out if q in (d['name'] + ' ' + d['phone'] + ' ' +
-               d['email'] + ' ' + d['address'] + ' ' + d['company']).lower()]
-    return jsonify(out)
+    return jsonify([_lead_row(r) for r in rows])
 
 @app.route('/api/leads', methods=['POST'])
 @login_required
@@ -489,6 +580,8 @@ def create_lead():
         'source': data.get('source', ''), 'temperature': data.get('temperature', 'warm'),
         'stage': stage, 'rep': rep, 'est_value': float(data.get('est_value') or 0),
         'referred_by': data.get('referred_by', ''),
+        'phone_norm': _norm_phone(data.get('phone', '')),
+        'email_norm': _norm_email(data.get('email', '')),
         'created_at': _now(), 'updated_at': _now(),
     }
     cols = ','.join(fields.keys())
@@ -531,10 +624,12 @@ def get_lead(lead_id):
         e['cadence_name'] = cad['name'] if cad else e['cadence_id']
     return jsonify(d)
 
-# Fields a rep may PUT directly.
+# Fields a rep may PUT directly. source_ref/import_batch/phone_norm/email_norm
+# are server-owned — they record where a row came from and must not be editable.
 LEAD_EDITABLE = ['lead_type', 'service', 'plan', 'billing', 'first_name', 'last_name',
                  'company', 'phone', 'email', 'address', 'city', 'state', 'zip', 'source',
-                 'temperature', 'est_value', 'referred_by', 'lost_reason', 'estimate_id', 'rep']
+                 'temperature', 'est_value', 'referred_by', 'lost_reason', 'estimate_id', 'rep',
+                 'website', 'license_no', 'icp_score', 'dnc', 'hook']
 
 @app.route('/api/leads/<lead_id>', methods=['PUT'])
 @login_required
@@ -557,6 +652,14 @@ def update_lead(lead_id):
                     return jsonify({'error': 'Invalid billing'}), 400
                 if f == 'est_value':
                     sets.append('est_value=?'); params.append(float(data[f] or 0)); continue
+                if f in ('icp_score', 'dnc'):
+                    sets.append(f'{f}=?'); params.append(int(data[f] or 0)); continue
+                # Keep the normalized forms in step, or an edited phone number
+                # would still dedupe against the value it replaced.
+                if f == 'phone':
+                    sets.append('phone_norm=?'); params.append(_norm_phone(data[f]))
+                if f == 'email':
+                    sets.append('email_norm=?'); params.append(_norm_email(data[f]))
                 sets.append(f'{f}=?'); params.append(data[f])
         if not sets:
             return jsonify({'error': 'Nothing to update'}), 400
@@ -964,6 +1067,482 @@ def list_partners():
         out.append(d)
     return jsonify(out)
 
+# ── Prospecting: bulk import, dedupe, suppression ─────────────────────────────
+#
+# Partner prospects arrive in bulk from prospector/ (Colorado open data) or from
+# a browser harvest dropped into prospector/inbox. Two rules govern every row:
+#
+#   • Suppression beats everything. A partner who asked to be left alone must
+#     not resurface tomorrow in a batch sourced from a different dataset.
+#   • Import is idempotent. Re-running a batch inserts nothing, so a run that
+#     died halfway is always safe to retry.
+#
+# Dedupe lives HERE and nowhere else. `POST /api/leads` stays duplicate-friendly
+# on purpose: the cross-sell "Pitch" button deliberately creates a second lead
+# for the same person as a separate deal, and matching on contact details there
+# would break it.
+
+# Text keys read off an incoming prospect row. Anything else in the row is
+# ignored rather than rejected, so a source can carry extra provenance fields
+# without this needing to know about them.
+PROSPECT_TEXT_FIELDS = ['first_name', 'last_name', 'company', 'phone', 'email',
+                        'address', 'city', 'state', 'zip', 'website', 'license_no',
+                        'source_ref', 'hook']
+
+# What makes two rows the same partner. `source_ref` carries the weight for
+# open-data rows that have no contact details at all — a DORA HOA record is a
+# name, a city and a licence number, and without a stable key every re-import
+# would duplicate it.
+_DEDUPE_KEYS = ('phone_norm', 'email_norm', 'license_no', 'source_ref')
+
+def _host_of(url):
+    """Bare hostname from a URL or domain, lowercased, no scheme and no www."""
+    s = (url or '').strip().lower()
+    if '://' in s:
+        s = s.split('://', 1)[1]
+    s = s.split('/', 1)[0].split('?', 1)[0]
+    return s[4:] if s.startswith('www.') else s
+
+def _email_domain(email_norm):
+    return email_norm.rsplit('@', 1)[1] if '@' in email_norm else ''
+
+def _suppression_index(db):
+    """{kind: set(values)} — one query, rather than one per imported row."""
+    idx = {'email': set(), 'phone': set(), 'domain': set()}
+    for r in db.execute('SELECT kind, value FROM suppressions'):
+        idx[r['kind']].add(r['value'])
+    return idx
+
+def _suppressed_by(supp, phone_norm, email_norm, website):
+    """Which suppression rule blocks this contact, or '' if none does."""
+    if email_norm and email_norm in supp['email']:
+        return 'email'
+    if phone_norm and phone_norm in supp['phone']:
+        return 'phone'
+    domain = _email_domain(email_norm) or _host_of(website)
+    if domain and domain in supp['domain']:
+        return 'domain'
+    return ''
+
+def _dedupe_index(db):
+    """Existing lead ids keyed by each dedupe value, e.g. {'phone_norm': {...}}.
+
+    Held in memory for the length of one import so rows are also checked against
+    *each other* — a single batch routinely lists the same brokerage twice.
+    """
+    idx = {k: {} for k in _DEDUPE_KEYS}
+    cols = ', '.join(_DEDUPE_KEYS)
+    for r in db.execute(f'SELECT id, {cols} FROM leads'):
+        for k in _DEDUPE_KEYS:
+            if r[k]:
+                idx[k].setdefault(r[k], r['id'])
+    return idx
+
+def _assignment_pool(assign):
+    """Usernames to spread a batch across. Returns (pool, error_message)."""
+    if assign == 'round_robin':
+        users = pusers.all_users()
+        pool = [u['username'] for u in users if u['role'] == 'rep']
+        # A one-person shop has no 'rep'-role accounts; fall back to everyone
+        # rather than silently importing nothing.
+        return (pool or [u['username'] for u in users], '')
+    if assign:
+        if not pusers.get(assign):
+            return ([], f'Unknown rep "{assign}"')
+        return ([assign], '')
+    return ([current_rep()], '')
+
+@app.route('/api/prospects/import', methods=['POST'])
+@admin_required
+def import_prospects():
+    """Bulk-create partner leads from a sourced list. Manager-only.
+
+    Body: {rows[], lead_type, source, assign, dry_run}
+      assign  — 'round_robin', a username, or omitted (assigns to the caller)
+      dry_run — classify every row and write nothing
+    """
+    data = request.get_json(force=True)
+    rows = data.get('rows')
+    if not isinstance(rows, list):
+        return jsonify({'error': 'rows must be a list'}), 400
+    if len(rows) > 5000:
+        return jsonify({'error': 'Batch too large (max 5000 rows)'}), 400
+
+    lead_type = data.get('lead_type', 'referral_partner')
+    if lead_type not in LEAD_TYPE_KEYS:
+        return jsonify({'error': 'Invalid lead type'}), 400
+    service = data.get('service', 'roofing')
+    if service not in SERVICE_KEYS:
+        return jsonify({'error': 'Invalid service'}), 400
+
+    pool, err = _assignment_pool((data.get('assign') or '').strip())
+    if err:
+        return jsonify({'error': err}), 400
+
+    dry_run = bool(data.get('dry_run'))
+    source  = (data.get('source') or 'prospecting').strip()
+    batch   = (data.get('batch') or f'{source}-{_now()}').strip()
+
+    counts  = {'inserted': 0, 'duplicate': 0, 'suppressed': 0, 'invalid': 0}
+    details = []
+
+    with get_db() as db:
+        supp = _suppression_index(db)
+        seen = _dedupe_index(db)
+
+        for i, raw in enumerate(rows):
+            if not isinstance(raw, dict):
+                counts['invalid'] += 1
+                details.append({'row': i, 'status': 'invalid', 'reason': 'not an object'})
+                continue
+
+            row = {f: str(raw.get(f) or '').strip() for f in PROSPECT_TEXT_FIELDS}
+            row['phone_norm'] = _norm_phone(row['phone'])
+            row['email_norm'] = _norm_email(row['email'])
+            label = (f"{row['first_name']} {row['last_name']}").strip() or row['company']
+
+            if not label:
+                counts['invalid'] += 1
+                details.append({'row': i, 'status': 'invalid', 'reason': 'no name or company'})
+                continue
+            if not any(row[k] for k in _DEDUPE_KEYS):
+                # Nothing stable to match on: importing it would duplicate on
+                # every future run. Reject rather than poison the list.
+                counts['invalid'] += 1
+                details.append({'row': i, 'status': 'invalid', 'name': label,
+                                'reason': 'no phone, email, licence or source_ref to dedupe on'})
+                continue
+
+            blocked = _suppressed_by(supp, row['phone_norm'], row['email_norm'], row['website'])
+            if blocked:
+                counts['suppressed'] += 1
+                details.append({'row': i, 'status': 'suppressed', 'name': label,
+                                'reason': f'{blocked} on the suppression list'})
+                continue
+
+            hit = next((seen[k][row[k]] for k in _DEDUPE_KEYS
+                        if row[k] and row[k] in seen[k]), None)
+            if hit:
+                counts['duplicate'] += 1
+                details.append({'row': i, 'status': 'duplicate', 'name': label,
+                                'lead_id': hit})
+                continue
+
+            lid = str(uuid.uuid4())
+            rep = pool[counts['inserted'] % len(pool)]
+            fields = dict(row)
+            fields.update({
+                'id': lid, 'lead_type': lead_type, 'service': service,
+                'source': 'prospecting', 'temperature': 'cold', 'stage': 'new',
+                'rep': rep, 'import_batch': batch,
+                'est_value': float(raw.get('est_value') or 0),
+                'icp_score': int(raw.get('icp_score') or 0),
+                'created_at': _now(), 'updated_at': _now(),
+            })
+            if not dry_run:
+                cols = ','.join(fields.keys())
+                ph   = ','.join('?' * len(fields))
+                db.execute(f'INSERT INTO leads ({cols}) VALUES ({ph})', list(fields.values()))
+                _log_activity(db, lid, 'system', rep=rep,
+                              body=f'Imported from {source} (batch {batch})')
+            # Index it either way, so a dry run reports intra-batch duplicates
+            # exactly as the real run would.
+            for k in _DEDUPE_KEYS:
+                if row[k]:
+                    seen[k].setdefault(row[k], lid)
+            counts['inserted'] += 1
+            details.append({'row': i, 'status': 'inserted', 'name': label,
+                            'lead_id': lid, 'rep': rep})
+
+        if dry_run:
+            db.rollback()
+
+    return jsonify({'batch': batch, 'source': source, 'lead_type': lead_type,
+                    'dry_run': dry_run, 'assigned_to': pool, 'total': len(rows),
+                    'counts': counts, 'details': details[:500],
+                    'details_truncated': len(details) > 500}), 200 if dry_run else 201
+
+@app.route('/api/prospects/batches')
+@admin_required
+def list_batches():
+    """Import history, derived from leads.import_batch — no separate table."""
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT import_batch AS batch, COUNT(*) AS leads, MIN(created_at) AS first_at, "
+            "       MAX(created_at) AS last_at, "
+            "       SUM(CASE WHEN stage='won' THEN 1 ELSE 0 END) AS won, "
+            "       SUM(CASE WHEN last_activity_at != '' THEN 1 ELSE 0 END) AS touched "
+            "FROM leads WHERE import_batch != '' "
+            "GROUP BY import_batch ORDER BY first_at DESC"
+        ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+# ── Suppressions (opt-outs) ───────────────────────────────────────────────────
+
+SUPPRESSION_KINDS = ('email', 'phone', 'domain')
+
+def _norm_suppression(kind, value):
+    """Store suppressions in the same shape the lead columns are matched in."""
+    if kind == 'email':
+        return _norm_email(value)
+    if kind == 'phone':
+        return _norm_phone(value)
+    return _host_of(value)
+
+@app.route('/api/suppressions', methods=['GET'])
+@login_required
+def list_suppressions():
+    with get_db() as db:
+        rows = db.execute('SELECT * FROM suppressions ORDER BY created_at DESC').fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/suppressions', methods=['POST'])
+@login_required
+def add_suppression():
+    """Any rep can opt a contact out — asking twice is the thing to prevent."""
+    data  = request.get_json(force=True)
+    kind  = (data.get('kind') or '').strip()
+    if kind not in SUPPRESSION_KINDS:
+        return jsonify({'error': f'kind must be one of {", ".join(SUPPRESSION_KINDS)}'}), 400
+    value = _norm_suppression(kind, data.get('value'))
+    if not value:
+        return jsonify({'error': f'Not a usable {kind}'}), 400
+    sid = str(uuid.uuid4())
+    with get_db() as db:
+        existing = db.execute('SELECT * FROM suppressions WHERE kind=? AND value=?',
+                              (kind, value)).fetchone()
+        if existing:
+            return jsonify(dict(existing)), 200      # already opted out; not an error
+        db.execute('INSERT INTO suppressions (id, kind, value, reason, created_by, created_at) '
+                   'VALUES (?,?,?,?,?,?)',
+                   (sid, kind, value, (data.get('reason') or '').strip(),
+                    current_rep(), _now()))
+        # Flag the matching leads so they drop out of any queue built from here
+        # on, not just out of future imports.
+        if kind == 'email':
+            db.execute('UPDATE leads SET dnc=1, updated_at=? WHERE email_norm=?', (_now(), value))
+        elif kind == 'phone':
+            db.execute('UPDATE leads SET dnc=1, updated_at=? WHERE phone_norm=?', (_now(), value))
+        row = db.execute('SELECT * FROM suppressions WHERE id=?', (sid,)).fetchone()
+    return jsonify(dict(row)), 201
+
+@app.route('/api/suppressions/<sid>', methods=['DELETE'])
+@admin_required
+def delete_suppression(sid):
+    """Manager-only: undoing an opt-out is not a rep's call."""
+    with get_db() as db:
+        cur = db.execute('DELETE FROM suppressions WHERE id=?', (sid,))
+        if not cur.rowcount:
+            return jsonify({'error': 'Not found'}), 404
+    return jsonify({'ok': True})
+
+# ── Outreach drafts ───────────────────────────────────────────────────────────
+#
+# Rendered server-side and handed to the rep as a *draft* — the UI opens it in
+# their own Gmail compose window. Nothing here ever sends. That is what keeps
+# this 1:1 mail from a real person rather than bulk mail, which in turn is why
+# the whole thing needs no sending subdomain, no DKIM setup and no warmup.
+
+# 0 prior touches opens, 1-2 follows up, 3+ closes the loop. Partners who have
+# ignored three emails are not persuaded by a fourth.
+def _draft_step(touches):
+    if touches <= 0:
+        return 'first'
+    return 'followup' if touches < 3 else 'breakup'
+
+def _fill(text, ctx):
+    """Substitute slots, then drop paragraphs an empty slot left blank.
+
+    `{hook}` sits in its own paragraph precisely so an unresearched lead gets a
+    shorter email rather than a visible gap where the personal line should be.
+    """
+    for key, val in ctx.items():
+        text = text.replace('{' + key + '}', val)
+    return '\n\n'.join(p for p in (p.strip() for p in text.split('\n\n')) if p)
+
+def _render_draft(lead, step, rep_name):
+    """{'subject','body','step'} for a lead, or None if no template applies."""
+    tpls = TEMPLATES.get('templates', {})
+    tpl = tpls.get(lead.get('lead_type')) or tpls.get('referral_partner')
+    if not tpl or step not in tpl:
+        return None
+    first = (lead.get('first_name') or '').strip()
+    ctx = {
+        'greeting':   f'Hi {first},' if first else 'Hi there,',
+        'first_name': first,
+        'company':    (lead.get('company') or '').strip(),
+        'city':       (lead.get('city') or '').strip() or 'the Front Range',
+        'hook':       (lead.get('hook') or '').strip(),
+        'rep_name':   rep_name,
+        'rep_first':  rep_name.split(' ')[0] if rep_name else '',
+    }
+    sig = TEMPLATES.get('signature', '')
+    body = _fill(tpl[step]['body'], ctx)
+    if sig:
+        body += '\n\n' + _fill(sig, ctx)
+    return {'subject': _fill(tpl[step]['subject'], ctx), 'body': body, 'step': step}
+
+@app.route('/api/leads/<lead_id>/draft')
+@login_required
+def lead_draft(lead_id):
+    """The email a rep would send this partner right now."""
+    with get_db() as db:
+        row = _lead_visible(db, lead_id)
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        touches = db.execute(
+            'SELECT COUNT(*) c FROM activities WHERE lead_id = ? AND kind IN (%s)'
+            % ','.join('?' * len(OUTREACH_KINDS)),
+            [lead_id] + list(OUTREACH_KINDS)).fetchone()['c']
+    step = request.args.get('step') or _draft_step(touches)
+    draft = _render_draft(dict(row), step, pusers.display_name(current_rep()))
+    if not draft:
+        return jsonify({'error': 'No template for this lead type'}), 404
+    return jsonify(draft)
+
+# ── Outreach queue ────────────────────────────────────────────────────────────
+#
+# What a rep actually works. Two halves, and the split is the point:
+#
+#   due  — tasks already scheduled, i.e. cadence re-touches on partners they've
+#          met. For partner development this is the half that converts; a
+#          realtor who sees you five times refers, a hundred who see you once
+#          don't.
+#   new  — net-new cold cards, only enough to top the day up to the target.
+#
+# Because re-touches count toward the number, sourcing demand is roughly half
+# the daily target, which is what keeps the free data lasting.
+
+DAILY_TARGET  = int(os.environ.get('SALESCRM_DAILY_TARGET', '40'))
+# Never put the same partner back in front of a rep inside this window. Mirrors
+# the non-negotiable 7-day cooldown the outreach skills already enforce.
+COOLDOWN_DAYS = int(os.environ.get('SALESCRM_COOLDOWN_DAYS', '7'))
+
+def _end_of_today():
+    return _iso(_now_dt().replace(hour=23, minute=59, second=59))
+
+def _start_of_today():
+    return _iso(_now_dt().replace(hour=0, minute=0, second=0))
+
+@app.route('/api/queue/today')
+@login_required
+def queue_today():
+    """Today's touch list for one rep, capped at the daily target."""
+    rep = request.args.get('rep') or current_rep()
+    if rep != current_rep() and not is_manager():
+        return jsonify({'error': 'Forbidden'}), 403
+    target = max(1, min(int(request.args.get('target') or DAILY_TARGET), 200))
+    cooldown = _iso(_now_dt() - timedelta(days=COOLDOWN_DAYS))
+
+    with get_db() as db:
+        supp = _suppression_index(db)
+
+        # Already-scheduled work: cadence steps and manual follow-ups due by
+        # end of day. dnc=0 keeps opted-out partners out even mid-cadence.
+        due = [dict(r) for r in db.execute(
+            'SELECT t.id, t.kind, t.title, t.due_at, t.lead_id, '
+            '       l.first_name, l.last_name, l.company, l.phone, l.email, '
+            '       l.website, l.city, l.stage, l.lead_type, l.icp_score, l.hook '
+            'FROM tasks t JOIN leads l ON l.id = t.lead_id '
+            'WHERE t.rep = ? AND t.done = 0 AND t.due_at <= ? AND l.dnc = 0 '
+            'ORDER BY t.due_at LIMIT ?', (rep, _end_of_today(), target)).fetchall()]
+        for d in due:
+            d['name'] = (f"{d['first_name']} {d['last_name']}").strip() or d['company']
+            d['overdue'] = d['due_at'] < _now()
+
+        done_today = db.execute(
+            'SELECT COUNT(*) c FROM activities WHERE rep = ? AND created_at >= ? '
+            'AND kind IN (%s)' % ','.join('?' * len(OUTREACH_KINDS)),
+            [rep, _start_of_today()] + list(OUTREACH_KINDS)).fetchone()['c']
+
+        # Top up with net-new. Anything with an open task is already in `due`,
+        # and anything touched inside the cooldown is deliberately left alone.
+        room = max(0, target - len(due) - done_today)
+        fresh = []
+        if room:
+            rows = db.execute(
+                "SELECT * FROM leads "
+                "WHERE rep = ? AND stage = 'new' AND dnc = 0 "
+                "  AND (last_activity_at = '' OR last_activity_at < ?) "
+                "  AND id NOT IN (SELECT lead_id FROM tasks WHERE done = 0) "
+                "ORDER BY icp_score DESC, created_at ASC LIMIT ?",
+                (rep, cooldown, room * 3)).fetchall()
+            for r in rows:
+                # Re-check suppression here, not just at import: a domain added
+                # to the list this morning has to drop rows imported last week.
+                if _suppressed_by(supp, r['phone_norm'], r['email_norm'], r['website']):
+                    continue
+                fresh.append(_lead_row(r))
+                if len(fresh) >= room:
+                    break
+
+        # Attach the email each card would send. One grouped query for the
+        # touch counts rather than one per card.
+        ids = [d['lead_id'] for d in due] + [f['id'] for f in fresh]
+        touches = {}
+        if ids:
+            rows = db.execute(
+                'SELECT lead_id, COUNT(*) c FROM activities '
+                'WHERE lead_id IN (%s) AND kind IN (%s) GROUP BY lead_id'
+                % (','.join('?' * len(ids)), ','.join('?' * len(OUTREACH_KINDS))),
+                ids + list(OUTREACH_KINDS)).fetchall()
+            touches = {r['lead_id']: r['c'] for r in rows}
+
+    rep_name = pusers.display_name(rep)
+    for item, lid in ([(d, d['lead_id']) for d in due] + [(f, f['id']) for f in fresh]):
+        item['draft'] = _render_draft(item, _draft_step(touches.get(lid, 0)), rep_name)
+
+    return jsonify({
+        'rep': rep, 'target': target, 'done_today': done_today,
+        'cooldown_days': COOLDOWN_DAYS,
+        'due': due, 'new': fresh,
+        'remaining': max(0, target - done_today),
+    })
+
+@app.route('/api/queue/assign', methods=['POST'])
+@admin_required
+def queue_assign():
+    """Spread a manager's unworked prospects across the reps who'll call them.
+
+    Import parks a batch on whoever ran it unless told otherwise; this is the
+    "now hand it out" step. Only untouched `new` leads move, so a rep never
+    loses a partner they've already spoken to.
+    """
+    data = request.get_json(force=True)
+    from_rep = (data.get('from_rep') or current_rep()).strip()
+    limit    = max(1, min(int(data.get('limit') or 1000), 5000))
+
+    reps = data.get('reps')
+    if reps:
+        unknown = [r for r in reps if not pusers.get(r)]
+        if unknown:
+            return jsonify({'error': f'Unknown rep(s): {", ".join(unknown)}'}), 400
+    else:
+        pool, err = _assignment_pool('round_robin')
+        if err:
+            return jsonify({'error': err}), 400
+        reps = pool
+    if not reps:
+        return jsonify({'error': 'No reps to assign to'}), 400
+
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT id FROM leads WHERE rep = ? AND stage = 'new' AND dnc = 0 "
+            "AND last_activity_at = '' AND import_batch != '' "
+            "ORDER BY icp_score DESC, created_at ASC LIMIT ?",
+            (from_rep, limit)).fetchall()
+        if not data.get('dry_run'):
+            for i, r in enumerate(rows):
+                db.execute('UPDATE leads SET rep = ?, updated_at = ? WHERE id = ?',
+                           (reps[i % len(reps)], _now(), r['id']))
+
+    per = {}
+    for i in range(len(rows)):
+        rep = reps[i % len(reps)]
+        per[rep] = per.get(rep, 0) + 1
+    return jsonify({'from_rep': from_rep, 'moved': len(rows), 'per_rep': per,
+                    'dry_run': bool(data.get('dry_run'))})
+
 # ── Dashboard / scorecards / coaching ─────────────────────────────────────────
 
 def _date_bounds(days):
@@ -1307,6 +1886,8 @@ def config():
             {'key': 'annual',    'label': 'Annual'},
         ],
         'stall_days': STALL_DAYS,
+        'daily_target': DAILY_TARGET,
+        'cooldown_days': COOLDOWN_DAYS,
     })
 
 @app.route('/health')

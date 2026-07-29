@@ -106,7 +106,7 @@ async function afterLogin() {
 }
 
 // ── Router ───────────────────────────────────────────────────────────────────
-const TITLES={myday:'My Day',pipeline:'Pipeline',partners:'Partners',
+const TITLES={myday:'My Day',outreach:'Outreach',pipeline:'Pipeline',partners:'Partners',
   dashboard:'Numbers',coaching:'Coaching',playbook:'Playbook'};
 function go(view){
   S.view=view;
@@ -115,7 +115,7 @@ function go(view){
   $$('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
   $$('.side-item').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
   $('#view-title').textContent=TITLES[view];
-  ({myday:renderMyDay,pipeline:renderPipeline,partners:renderPartners,
+  ({myday:renderMyDay,outreach:renderOutreach,pipeline:renderPipeline,partners:renderPartners,
     dashboard:renderDashboard,coaching:renderCoaching,playbook:renderPlaybook}[view])();
 }
 $$('.tab').forEach(t=>t.onclick=()=>go(t.dataset.view));
@@ -147,6 +147,145 @@ function buildRepSelects(){
   if(coach) coach.innerHTML=S.users.map(u=>`<option value="${esc(u.username)}">${esc(u.full_name||u.username)}</option>`).join('');
 }
 function repName(u){ const x=S.users.find(z=>z.username===u); return x&&x.full_name?x.full_name:u; }
+
+// ── Outreach queue ───────────────────────────────────────────────────────────
+// One partner at a time until the day's number is done. Every action logs an
+// activity through the normal endpoint, which is what makes the leaderboard
+// count the day without any new reporting code.
+const Q={items:[],idx:0,target:0,done:0};
+
+// Openers come from playbook.json rather than being written here, so the words
+// reps use stay in one place. Partner types get the referral ask.
+const SCRIPT_FOR={realtor:'Asking for the referral',hoa:'Asking for the referral',
+  insurance_agent:'Asking for the referral',property_manager:'Asking for the referral',
+  adjuster:'Asking for the referral',referral_partner:'Asking for the referral'};
+
+async function renderOutreach(){
+  const q=await api('/queue/today');
+  Q.target=q.target; Q.done=q.done_today; Q.idx=0;
+  // Re-touches lead. A partner who already knows you converts better than a
+  // cold name, so they must never sit behind thirty fresh cards.
+  Q.items=[
+    ...q.due.map(d=>({lead_id:d.lead_id,task_id:d.id,kind:d.kind||'call',retouch:true,
+      why:d.title||'Follow-up due',name:d.name,company:d.company,phone:d.phone,
+      email:d.email,city:d.city,lead_type:d.lead_type,overdue:d.overdue,
+      draft:d.draft,hook:d.hook})),
+    ...q.new.map(l=>({lead_id:l.id,kind:'call',retouch:false,
+      why:'New — first touch',name:l.name,company:l.company,phone:l.phone,
+      email:l.email,city:l.city,lead_type:l.lead_type,score:l.icp_score,
+      draft:l.draft,hook:l.hook})),
+  ];
+  if(!PB){ try{ PB=await api('/playbook'); }catch(e){} }
+  drawQueue();
+}
+
+function drawQueue(){
+  const pct=Math.min(100,Math.round(Q.done/Math.max(1,Q.target)*100));
+  const fill=$('#oq-fill');
+  fill.style.width=pct+'%';
+  fill.classList.toggle('done',Q.done>=Q.target);
+  $('#oq-label').textContent=`${Q.done} of ${Q.target} touches today`+
+    (Q.done>=Q.target?' — target hit 🎉':'');
+  const badge=$('#side-queue-badge');
+  if(badge){ const left=Q.items.length-Q.idx;
+    badge.textContent=left; badge.classList.toggle('hidden',!left); }
+
+  const rest=Q.items.slice(Q.idx+1);
+  $('#oq-left').textContent=Math.max(0,rest.length);
+  $('#oq-upnext').innerHTML=rest.slice(0,12).map(i=>`
+    <div class="mini-lead"><span class="nm">${esc(i.name||i.company)}</span>
+      <span class="sub">${esc(i.city||'')}</span></div>`).join('')||
+    '<div class="empty">Nothing else queued.</div>';
+
+  const it=Q.items[Q.idx];
+  if(!it){
+    $('#oq-card').innerHTML=Q.done>=Q.target
+      ? '<div class="empty">Day\'s number is done. 🎯</div>'
+      : '<div class="empty">Queue is empty. Ask your manager to assign more prospects.</div>';
+    return;
+  }
+
+  const tel=(it.phone||'').replace(/[^0-9+]/g,'');
+  const script=PB&&PB.scripts?PB.scripts.find(s=>s.name===SCRIPT_FOR[it.lead_type]):null;
+  const type=(S.cfg.lead_types.find(t=>t.key===it.lead_type)||{}).label||it.lead_type;
+  const draft=it.draft;
+  // Default to whichever channel this partner can actually be reached on.
+  if(it.tab===undefined) it.tab=(tel||!draft)?'call':'email';
+  const card=el('div','oq-card'+(it.retouch?' retouch':''));
+  card.innerHTML=`
+    <div class="oq-why">${it.retouch?'↻ ':''}${esc(it.why)}${it.overdue?' · overdue':''}</div>
+    <h3 class="oq-name">${esc(it.name||it.company||'(no name)')}</h3>
+    <div class="oq-sub">${esc(it.company&&it.company!==it.name?it.company+' · ':'')}${esc(it.city||'')}</div>
+    <div class="oq-meta"><span class="chip">${esc(type)}</span>
+      ${it.score?`<span class="chip">fit ${it.score}/6</span>`:''}
+      ${tel?'':'<span class="chip">no phone</span>'}
+      ${it.email?'':'<span class="chip">no email</span>'}
+      ${it.hook?'':'<span class="chip">not researched</span>'}</div>
+    ${(script||draft)?`<div class="oq-tabs">
+      ${script?`<button data-tab="call" class="${it.tab==='call'?'on':''}">Call script</button>`:''}
+      ${draft?`<button data-tab="email" class="${it.tab==='email'?'on':''}">Email draft</button>`:''}
+    </div>`:''}
+    ${it.tab==='email'&&draft
+      ? `<div class="oq-script"><b>${esc(draft.subject)}</b>\n\n${esc(draft.body)}</div>`
+      : (script?`<div class="oq-script">${esc(script.body)}</div>`:'')}
+    <div class="oq-actions">
+      <a class="call${tel?'':' disabled'}" href="${tel?'tel:'+tel:'#'}" data-log="call">📞 Call</a>
+      <a class="email${(it.email&&draft)?'':' disabled'}" target="_blank" rel="noopener"
+         href="${(it.email&&draft)?gmailUrl(it.email,draft):'#'}" data-log="email">✉️ Open in Gmail</a>
+    </div>
+    <div class="oq-skips">
+      <button data-act="skip">Skip</button>
+      <button data-act="lost">Not a fit</button>
+      <button class="dnc" data-act="dnc">Do not contact</button>
+    </div>`;
+  // The href does the dialling / opens the compose window; we only record that
+  // it happened. Nothing is ever sent from here.
+  card.querySelectorAll('[data-log]').forEach(a=>a.onclick=()=>qLog(a.dataset.log));
+  card.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>qSkip(b.dataset.act));
+  card.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ it.tab=b.dataset.tab; drawQueue(); });
+  $('#oq-card').innerHTML=''; $('#oq-card').appendChild(card);
+}
+
+// Prefills a compose window in the rep's OWN Google account. Draft-only by
+// construction — Gmail opens it, the rep reads it, the rep decides to send.
+function gmailUrl(to, draft){
+  const q=encodeURIComponent;
+  return 'https://mail.google.com/mail/?view=cm&fs=1'+
+    '&to='+q(to)+'&su='+q(draft.subject)+'&body='+q(draft.body);
+}
+
+async function qLog(kind){
+  const it=Q.items[Q.idx];
+  try{
+    await api('/leads/'+it.lead_id+'/activities',{method:'POST',body:{kind}});
+    if(it.task_id) await api('/tasks/'+it.task_id,{method:'PATCH',body:{done:true}});
+    Q.done++; toast('Logged ✓');
+  }catch(e){ toast(e.message,true); return; }
+  qNext();
+}
+
+async function qSkip(act){
+  const it=Q.items[Q.idx];
+  try{
+    if(act==='lost'){
+      await api('/leads/'+it.lead_id+'/stage',{method:'PATCH',
+        body:{stage:'lost',lost_reason:'Not a fit'}});
+      toast('Marked not a fit');
+    } else if(act==='dnc'){
+      // Suppress whichever handle we have; both when we have both, since the
+      // point is that nobody here contacts them again by any route.
+      if(it.email) await api('/suppressions',{method:'POST',
+        body:{kind:'email',value:it.email,reason:'Rep marked do-not-contact'}});
+      if(it.phone) await api('/suppressions',{method:'POST',
+        body:{kind:'phone',value:it.phone,reason:'Rep marked do-not-contact'}});
+      if(!it.email&&!it.phone) await api('/leads/'+it.lead_id,{method:'PUT',body:{dnc:1}});
+      toast('Added to do-not-contact');
+    }
+  }catch(e){ toast(e.message,true); return; }
+  qNext();
+}
+
+function qNext(){ Q.idx++; drawQueue(); }
 
 // ── My Day ───────────────────────────────────────────────────────────────────
 async function renderMyDay(){
@@ -220,8 +359,23 @@ function renderMini(container, leads, emptyMsg){
 }
 
 // ── Pipeline (kanban) ────────────────────────────────────────────────────────
+//
+// Search runs on the SERVER (?q=). It used to filter the fetched page in the
+// browser, which meant it only ever searched the most recently updated 1000
+// leads — fine for a few hundred homeowners, but it hid most of the table once
+// prospecting started importing partners in the tens of thousands.
 let pipeSearch='';
-$('#pipeline-search').oninput=e=>{pipeSearch=e.target.value.trim().toLowerCase();renderPipeline();};
+let searchTimer=null;
+// Monotonic token: keystrokes fire overlapping requests and they can come back
+// out of order, so a stale response must not overwrite a newer board.
+let pipeReq=0;
+
+$('#pipeline-search').oninput=e=>{
+  pipeSearch=e.target.value.trim();
+  // Debounced, because each render is now a query rather than an array filter.
+  clearTimeout(searchTimer);
+  searchTimer=setTimeout(renderPipeline, 200);
+};
 $('#pipeline-rep').onchange=()=>renderPipeline();
 $('#pipeline-service').onchange=()=>renderPipeline();
 function buildServiceSelect(){
@@ -234,10 +388,17 @@ async function renderPipeline(){
   buildServiceSelect();
   const rep=S.me.is_manager ? $('#pipeline-rep').value : '';
   const svc=$('#pipeline-service').value;
-  let leads=await api('/leads'+(rep?'?rep='+encodeURIComponent(rep):''));
-  S.leadCache=leads;
+  const qs=[];
+  if(rep) qs.push('rep='+encodeURIComponent(rep));
+  if(pipeSearch) qs.push('q='+encodeURIComponent(pipeSearch));
+  const token=++pipeReq;
+  let leads=await api('/leads'+(qs.length?'?'+qs.join('&'):''));
+  if(token!==pipeReq) return;            // a newer search already answered
+  // Only cache an UNsearched load: the sidebar stage counts and the drawer's
+  // "referred by" partner list read this and both want the whole pipeline, not
+  // whatever the box currently matches.
+  if(!pipeSearch) S.leadCache=leads;
   if(svc) leads=leads.filter(l=>l.service===svc);
-  if(pipeSearch) leads=leads.filter(l=>(l.name+l.phone+l.address+l.company).toLowerCase().includes(pipeSearch));
   const board=$('#kanban'); board.innerHTML='';
   S.cfg.stages.forEach(st=>{
     const col=el('div','kcol'); col.dataset.stage=st.key;

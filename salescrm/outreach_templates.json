@@ -1,0 +1,124 @@
+{
+  "_readme": [
+    "Partner outreach openers, one set per lead_type. Rendered server-side by",
+    "_render_template() and opened as a Gmail draft in the rep's own account -",
+    "nothing here is ever auto-sent.",
+    "",
+    "Slots: {greeting} {first_name} {company} {city} {hook} {rep_name} {rep_first}",
+    "{hook} is the one field needing judgment (a storm in their zip, an HOA's",
+    "roof age, a recent listing). It sits in its own paragraph so an empty hook",
+    "drops the paragraph instead of leaving a gap.",
+    "",
+    "Voice matches the outreach-queue and estimate-followup skills: under 100",
+    "words, one ask, no hedging. banned_phrases is enforced by a test - if you",
+    "add a template that opens with 'just checking in', the suite fails.",
+    "",
+    "Editing this file needs a process restart (loaded at import, like",
+    "cadences.json and playbook.json)."
+  ],
+
+  "signature": "{rep_name}\nProject One Roofing\nprojectoneroofingcolorado.com",
+
+  "banned_phrases": [
+    "just wanted to follow up",
+    "just checking in",
+    "as per my previous email",
+    "circling back",
+    "touching base",
+    "i hope this email finds you well",
+    "reaching out to see if",
+    "per my last email"
+  ],
+
+  "templates": {
+    "hoa": {
+      "first": {
+        "subject": "Roof condition report for {company}",
+        "body": "{greeting}\n\nI work with associations around {city} on roof condition assessments - the kind a board needs before a reserve study or a special assessment conversation.\n\n{hook}\n\nWe'll walk the roofs, photograph what we find, and give you a written condition report with a realistic remaining-life estimate. No charge, and no obligation to use us for the work.\n\nWould that be useful to your board this year?"
+      },
+      "followup": {
+        "subject": "Re: Roof condition report for {company}",
+        "body": "{greeting}\n\nI sent a note about a roof condition report for {company} and haven't heard back, which usually means one of two things - it's not a priority this year, or it went to the wrong person.\n\nWhich is it? If it's the second, point me at whoever handles maintenance and I'll take it from there."
+      },
+      "breakup": {
+        "subject": "Closing the loop - {company}",
+        "body": "{greeting}\n\nI'll stop emailing. If the board ever wants a straight answer on how much life is left in those roofs, my number's below and there's no charge for looking.\n\nGood luck with the season."
+      }
+    },
+
+    "property_manager": {
+      "first": {
+        "subject": "Roof help across the {company} portfolio",
+        "body": "{greeting}\n\nMost property managers I talk to don't need another roofer - they need one who picks up when a tenant reports a leak on a Friday afternoon.\n\n{hook}\n\nThat's the part we're good at. Same-week response on active leaks, written condition reports on the rest so nothing surprises you at budget time.\n\nWorth a short call to see if we'd be useful across your properties?"
+      },
+      "followup": {
+        "subject": "Re: Roof help across the {company} portfolio",
+        "body": "{greeting}\n\nNo reply on my last note, so let me make it easy - is roofing handled well enough right now that you don't need another option, or is it just not this month's problem?\n\nEither answer is fine. I'd rather know than keep guessing."
+      },
+      "breakup": {
+        "subject": "Closing the loop - {company}",
+        "body": "{greeting}\n\nI'll leave you alone. If a roof ever goes sideways on one of your properties and you need someone out fast, my number's below.\n\nNo hard feelings either way."
+      }
+    },
+
+    "realtor": {
+      "first": {
+        "subject": "Roof problems that kill closings",
+        "body": "{greeting}\n\nYou've probably had a deal wobble because an inspector flagged the roof and nobody could say how bad it actually was.\n\n{hook}\n\nI can get out to a {city} property within a few days and give you and your client a straight answer in writing - repair, replace, or it's fine and the inspector was being cautious.\n\nWant me on your list for the next one?"
+      },
+      "followup": {
+        "subject": "Re: Roof problems that kill closings",
+        "body": "{greeting}\n\nI reached out about fast roof assessments on your listings and haven't heard back.\n\nWhere would you like to go from here - is this worth a five-minute call, or should I stop?"
+      },
+      "breakup": {
+        "subject": "Closing the loop",
+        "body": "{greeting}\n\nLast note from me. If a roof ever threatens a closing and you need an answer the same week, my number's below.\n\nBest of luck out there."
+      }
+    },
+
+    "insurance_agent": {
+      "first": {
+        "subject": "The roofer question your clients ask you",
+        "body": "{greeting}\n\nAfter a storm your clients ask you who to call, and recommending the wrong contractor comes back on you.\n\n{hook}\n\nWe inspect, and when there's no real damage we say so - we don't talk people into filing claims that get denied. That protects your loss ratio as much as it protects them.\n\nCan I be the name you give out around {city}?"
+      },
+      "followup": {
+        "subject": "Re: The roofer question your clients ask you",
+        "body": "{greeting}\n\nI wrote about being a contractor you could hand clients to after a storm, and haven't heard back.\n\nIs that already covered by someone you trust? If so, I'll leave it - I'd just rather know than keep writing."
+      },
+      "breakup": {
+        "subject": "Closing the loop",
+        "body": "{greeting}\n\nI'll stop here. If your current roofer ever lets a client down, my number's below.\n\nGood luck this storm season."
+      }
+    },
+
+    "adjuster": {
+      "first": {
+        "subject": "Roof inspections around {city}",
+        "body": "{greeting}\n\nWe do a lot of storm work around {city} and deal with adjusters most weeks.\n\n{hook}\n\nOur documentation is thorough and our scopes are honest - if a roof doesn't need replacing, our report says so. That tends to make everyone's job faster.\n\nHappy to be a contractor you can work with rather than around."
+      },
+      "followup": {
+        "subject": "Re: Roof inspections around {city}",
+        "body": "{greeting}\n\nFollowing my note about working together on {city} claims - is there a better person on your team for this, or is it not something you need?"
+      },
+      "breakup": {
+        "subject": "Closing the loop",
+        "body": "{greeting}\n\nLast one from me. My number's below if a file ever needs a contractor who documents properly.\n\nAll the best."
+      }
+    },
+
+    "referral_partner": {
+      "first": {
+        "subject": "Someone to send roof problems to",
+        "body": "{greeting}\n\nYou deal with homeowners around {city} every week, and some of them end up needing a roof.\n\n{hook}\n\nWhen that comes up, would it help to have someone you can hand them to who'll get out same week and tell them straight whether it needs replacing?\n\nI'm not asking you to sell anything - just keep my name. I'll make you look good."
+      },
+      "followup": {
+        "subject": "Re: Someone to send roof problems to",
+        "body": "{greeting}\n\nNo reply to my last note, which is fair - you're busy.\n\nOne question: do you already have a roofer you trust? If yes I'll stop. If not, it's worth five minutes."
+      },
+      "breakup": {
+        "subject": "Closing the loop",
+        "body": "{greeting}\n\nI'll stop emailing. If a client ever needs a roof looked at around {city}, my number's below.\n\nTake care."
+      }
+    }
+  }
+}

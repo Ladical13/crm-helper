@@ -229,6 +229,45 @@ def test_document_visibility_isolation(client):
     assert client.delete(f'/api/documents/{did}').status_code == 403
 
 
+def test_search_reaches_past_the_limit_window(app, client):
+    """?q= must search the whole table, not just the page ?limit= returned.
+
+    The filter used to run in Python after the LIMIT, so a lead outside the most
+    recently updated `limit` rows was unfindable. Harmless with a few hundred
+    homeowners; with tens of thousands of imported prospects it hid almost
+    everything.
+    """
+    signup(client)
+    needle = new_lead(client, first_name='Zophia', last_name='Quintrell')['id']
+    for i in range(5):
+        new_lead(client, first_name=f'Filler{i}', last_name='Person')
+    # Backdate it out of the window: the list sorts on updated_at, and leads
+    # created in the same second would otherwise tie.
+    with app.get_db() as db:
+        db.execute("UPDATE leads SET updated_at='2020-01-01T00:00:00Z' WHERE id=?",
+                   (needle,))
+
+    assert needle not in [l['id'] for l in
+                          client.get('/api/leads?limit=3').get_json()]
+    hits = client.get('/api/leads?q=quintrell&limit=3').get_json()
+    assert [l['id'] for l in hits] == [needle]
+
+    # Matches on the other searchable columns, and stays case-insensitive.
+    assert client.get('/api/leads?q=ZOPHIA').get_json()[0]['id'] == needle
+    assert client.get('/api/leads?q=nobodyhere').get_json() == []
+
+
+def test_search_treats_wildcards_literally(client):
+    """A user typing % must not match every lead in the pipeline."""
+    signup(client)
+    new_lead(client, first_name='Alpha', last_name='One')
+    assert client.get('/api/leads?q=%25').get_json() == []      # %25 -> '%'
+    assert client.get('/api/leads?q=_').get_json() == []
+    # and a literal underscore in the data is still findable
+    lid = new_lead(client, company='Snake_Case HOA', first_name='', last_name='')['id']
+    assert client.get('/api/leads?q=snake_case').get_json()[0]['id'] == lid
+
+
 def test_service_migration_adds_column(app, client):
     # simulate a pre-service DB: drop the column, rerun migrate
     with app.get_db() as db:

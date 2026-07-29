@@ -1,4 +1,4 @@
-// Project One Pipeline — service worker. Bump CACHE on any shell asset change.
+﻿// Project One Pipeline â€” service worker. Bump CACHE on any shell asset change.
 //
 // Mount prefix, derived from the worker's own scope: '/crm' inside the portal,
 // '' when served standalone. A worker can never claim a scope broader than the
@@ -6,11 +6,11 @@
 // from fighting now that they share an origin.
 const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
 
-const CACHE = 'p1pipeline-v9';
+const CACHE = 'p1pipeline-v12';
 const SHELL = [
   BASE + '/',
-  BASE + '/static/style.css?v=9',
-  BASE + '/static/app.js?v=9',
+  BASE + '/static/style.css?v=12',
+  BASE + '/static/app.js?v=12',
   BASE + '/static/icon-192.png',
   BASE + '/static/icon-512.png',
 ];

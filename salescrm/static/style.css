@@ -282,6 +282,37 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .contact-actions a.call{color:#86efac;border-color:rgba(16,185,129,.4)}
 .contact-actions a.text{color:#93c5fd;border-color:rgba(59,130,246,.4)}
 .contact-actions a.email{color:#fcd34d;border-color:rgba(245,158,11,.4)}
+/* ── Outreach queue ─────────────────────────────────────────────────────── */
+.oq-head{margin-bottom:14px}
+.oq-bar{height:8px;background:var(--bg3);border:1px solid var(--line);border-radius:20px;overflow:hidden}
+.oq-fill{height:100%;width:0;background:var(--brand);border-radius:20px;transition:width .35s ease}
+.oq-fill.done{background:var(--green,#10b981)}
+.oq-label{font-size:12px;color:var(--txt3);margin-top:6px;text-align:center}
+.oq-card{background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+.oq-card.retouch{border-color:var(--brand)}
+.oq-why{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--txt3);margin-bottom:8px}
+.oq-card.retouch .oq-why{color:var(--brand2)}
+.oq-name{font-size:19px;font-weight:800;margin:0 0 2px}
+.oq-sub{font-size:13px;color:var(--txt2);margin-bottom:10px}
+.oq-meta{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.oq-tabs{display:flex;gap:6px;margin-bottom:8px}
+.oq-tabs button{padding:5px 11px;border-radius:20px;background:transparent;
+  border:1px solid var(--line);color:var(--txt3);font-size:11.5px;font-weight:700;cursor:pointer}
+.oq-tabs button.on{background:var(--bg3);color:var(--txt);border-color:var(--brand)}
+.oq-script{background:var(--bg3);border:1px solid var(--line);border-radius:10px;padding:11px;
+  font-size:13px;line-height:1.5;color:var(--txt2);white-space:pre-wrap;margin-bottom:12px}
+.oq-actions{display:flex;gap:8px;margin-bottom:8px}
+.oq-actions a,.oq-actions button{flex:1;text-align:center;padding:12px;border-radius:11px;
+  background:var(--bg3);border:1px solid var(--line);color:var(--txt);text-decoration:none;
+  font-weight:700;font-size:14px;cursor:pointer}
+.oq-actions a.call{color:#86efac;border-color:rgba(16,185,129,.4)}
+.oq-actions a.email{color:#fcd34d;border-color:rgba(245,158,11,.4)}
+.oq-actions a.disabled{opacity:.35;pointer-events:none}
+.oq-skips{display:flex;gap:8px}
+.oq-skips button{flex:1;padding:9px;border-radius:10px;background:transparent;
+  border:1px solid var(--line);color:var(--txt3);font-size:12.5px;font-weight:600;cursor:pointer}
+.oq-skips button.dnc{color:var(--red);border-color:rgba(239,68,68,.35)}
 .stage-select{width:100%;padding:12px;background:var(--bg2);border:1px solid var(--line);
   border-radius:11px;color:var(--txt);font-weight:700;font-size:15px}
 .field{margin-bottom:10px}
