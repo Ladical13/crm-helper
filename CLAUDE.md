@@ -38,9 +38,21 @@ python -m pytest prospector/tests   # 27 — offline, no network
 **Deploying.** ONE Railway service, whole repo — see the deploy note at the end
 of the portal section. Never deploy a subdirectory.
 
-**What is NOT in git** (so git will not save you if the drive dies):
-`estimator/estimates/`, every `*.db` SQLite file, and `prospector/inbox/`.
-Back those up separately.
+**Nothing is backed up yet — open gap, decided 2026-07-29 to defer.** Two
+separate things, and they are easy to confuse:
+
+- *On this laptop*, `estimator/estimates/`, every `*.db`, and
+  `prospector/inbox/` are gitignored, so a push never includes them. But these
+  are mostly **dev scratch** (a few MB) — losing them costs little.
+- *The real data* — live estimates, signed contracts, leads, canvasser pins —
+  lives on the **Railway volume**, not here. Nothing currently copies it
+  anywhere. A dead volume, a bad migration or a fat-fingered delete loses it
+  outright, and pushing to GitHub does nothing to protect it.
+
+When picking this back up: the shape that fits is a manager-only export
+endpoint plus a scheduled pull into OneDrive (`C:\Users\ldurn\OneDrive` exists).
+Back up the volume before any migration regardless, as the estimator and CRM
+notes below already warn.
 
 ## The Portal — one login, one site (`portal/`)
 
