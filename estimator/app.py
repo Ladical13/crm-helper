@@ -2887,6 +2887,21 @@ def _cv_contact_card(est):
   </div></div>'''
 
 
+def _mount_path(path):
+    """Prefix a root-absolute app path with this app's mount prefix
+    ('/estimate' under the portal, '' standalone).
+
+    Sign forms MUST post to the mounted path. The portal keeps root-level
+    /sign/<token> and /sign-co/<token> routes so links already sitting in
+    customers' inboxes still resolve, but those are GET-only redirects — a
+    form posting to the bare root path got 405 Method Not Allowed and the
+    signature was lost. Mirrors the script_root use in the auth guard."""
+    try:
+        return request.script_root + path
+    except RuntimeError:      # called outside a request context
+        return path
+
+
 def _cv_sig_form(action, hidden='', extra_blocks='', agree_text='',
                  btn_text='&#10003; Accept &mdash; Sign Electronically', btn_id=''):
     """Shared sign form: labeled fields, live script-font signature preview
@@ -3505,7 +3520,7 @@ def _build_insurance_cv(est, token):
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
   <p class="sub">Your electronic signature confirms you have reviewed and agreed to the insurance estimate above and all terms &amp; conditions.</p>
-  {_cv_sig_form(f'/sign/{he(token)}',
+  {_cv_sig_form(_mount_path(f'/sign/{he(token)}'),
                 hidden='<input type="hidden" name="selected_tier" value="insurance">',
                 extra_blocks=_cv_shingle_block(est) + _cv_initials_block(est),
                 agree_text='I have read this insurance estimate and I agree to all terms &amp; conditions.')}
@@ -3594,7 +3609,7 @@ def _build_simple_retail_cv(est, token):
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
   <p class="sub">Your electronic signature confirms you have reviewed and agreed to the estimate above and all terms &amp; conditions.</p>
-  {_cv_sig_form(f'/sign/{he(token)}',
+  {_cv_sig_form(_mount_path(f'/sign/{he(token)}'),
                 hidden=f'<input type="hidden" name="selected_tier" value="{he(tier)}">',
                 extra_blocks=_cv_shingle_block(est) + _cv_initials_block(est),
                 agree_text='I have read this estimate and I agree to all terms &amp; conditions.')}
@@ -3770,7 +3785,7 @@ def build_customer_view(est, token):
   <h2>Sign to Accept</h2>
   <p class="sub" id="cv-sig-sub">Your electronic signature confirms you have reviewed and agreed to the
     <strong id="cv-sig-tier">{default_lbl}</strong> and all terms above.</p>
-  {_cv_sig_form(f'/sign/{he(token)}',
+  {_cv_sig_form(_mount_path(f'/sign/{he(token)}'),
                 hidden=(f'<input type="hidden" name="selected_tier" id="cv-tier-input" value="{he(default_tier)}">'
                         + ''.join(f'<input type="hidden" name="tier_{tk}" id="cv-tier-input-{tk}" value="{he(defaults[tk])}">'
                                   for tk in gbb_tks)),
@@ -6663,7 +6678,7 @@ def build_co_sign_page(est, co, token):
       <h2>Sign to Approve</h2>
       <p class="sub">Your electronic signature approves this change order as an addendum to your
         original contract ({he(enum)}). All original terms &amp; conditions remain in effect.</p>
-      {_cv_sig_form(f'/sign-co/{he(token)}',
+      {_cv_sig_form(_mount_path(f'/sign-co/{he(token)}'),
                     agree_text='I have reviewed this change order and approve the changes and pricing above.',
                     btn_text='&#10003; Approve &mdash; Sign Electronically')}
     </div>'''

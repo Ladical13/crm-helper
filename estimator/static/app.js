@@ -8873,6 +8873,12 @@ async function doLoadEstimate(id) {
     if(!S.page_visibility) S.page_visibility={intro:false,options:true,products:true,pricing:true,report:true};
     if(S.share_token===undefined) S.share_token=null;
     if(S.signature===undefined) S.signature=null;
+    // `trades` can be absent altogether: POST /api/estimates stores the posted
+    // JSON as-is (no schema defaulting), so a doc created by an integration —
+    // the CRM's start-estimate hand-off — may never have had the key. The
+    // per-trade backfill below would restore it, but the insurance migration
+    // right here dereferences S.trades first and threw before reaching it.
+    if(!S.trades) S.trades={};
     if(!S.trades.insurance) {
       S.trades.insurance={enabled:false,sections:[{id:'sec_'+uid(),name:'',items:[]}],scope_notes:'',claim_number:'',carrier:'',colors:{}};
     } else if(S.trades.insurance.line_items && !S.trades.insurance.sections) {
@@ -9308,10 +9314,10 @@ function buildPrintContent() {
         : 'Package: '+TIER_LABELS[gbbTrades().length?tradeTier(gbbTrades()[0]):tier]
     }</div>`;
     TRADES.filter(t=>t!=='insurance').forEach(trade=>{
-      // Optional-chain: a doc created through the API can arrive without the
-      // full trade skeleton, and doLoadEstimate replaces S wholesale (it only
-      // backfills `insurance`). A bare td.enabled threw here, which killed
-      // Print / PDF outright — the button appeared to do nothing.
+      // Belt-and-braces. doLoadEstimate backfills the full trade skeleton, so
+      // this should always be populated — but printing is the last step before
+      // a customer sees the document, and a missing key here used to throw and
+      // kill Print / PDF outright, with the button appearing to do nothing.
       const td=S.trades[trade];
       if(!td?.enabled||!(td.line_items||[]).length)return;
       const tier=tradeTier(trade);   // each product prints at ITS chosen package

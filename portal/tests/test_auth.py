@@ -139,6 +139,62 @@ def test_compat_redirects_do_not_require_a_login(client):
         assert client.get(path).status_code == 302, path
 
 
+def test_an_estimate_stored_without_trades_still_serves(admin):
+    """POST /api/estimates stores the posted JSON as-is, so an integration can
+    create a document with no `trades` key at all. Everything downstream — the
+    customer view, the share link — has to cope rather than 500."""
+    est = admin.post('/estimate/api/estimates', json={
+        'customer': {'name': 'Skeletal Sam'},
+        'estimate_type': 'retail',
+        'salesperson': 'luke',
+    }).get_json()
+    est_id = est['estimate_id']
+
+    assert admin.get(f'/estimate/api/estimates/{est_id}').status_code == 200
+    token = admin.post(f'/estimate/api/estimates/{est_id}/share').get_json()['token']
+    assert admin.get(f'/estimate/sign/{token}').status_code == 200
+    assert admin.get(f'/estimate/present/{token}').status_code == 200
+
+
+def test_sign_form_posts_to_the_mounted_path(admin):
+    """The whole point: mounted under /estimate, the signature form must post
+    to /estimate/sign/<token>. It used to emit a root-absolute /sign/<token>,
+    which lands on the portal's compat redirect and came back 405 — every
+    signature was rejected."""
+    est = admin.post('/estimate/api/estimates', json={
+        'customer': {'name': 'Jane Homeowner'},
+        'estimate_type': 'retail',
+        'salesperson': 'luke',
+        'trades': {'roofing': {'enabled': True, 'line_items': [
+            {'id': 'x1', 'name': 'Shingles', 'unit': 'SQ', 'quantity': 10,
+             'unit_price': 400, 'unit_cost': 250}]}},
+    }).get_json()
+    est_id = est['estimate_id']
+    token = admin.post(f'/estimate/api/estimates/{est_id}/share').get_json()['token']
+
+    html = admin.get(f'/estimate/sign/{token}').get_data(as_text=True)
+    assert f'action="/estimate/sign/{token}"' in html, \
+        'sign form must post to the mounted path, not the root compat redirect'
+
+    # And the post that action performs is actually accepted.
+    r = admin.post(f'/estimate/sign/{token}',
+                   data={'sig_name': 'Jane Homeowner', 'agree': 'on'})
+    assert r.status_code == 200, f'signing returned {r.status_code}'
+    assert 'Jane Homeowner' in r.get_data(as_text=True)
+
+
+def test_signing_can_be_posted_to_the_old_root_paths(client):
+    """A customer who loaded the sign page before the forms moved to the
+    mounted path still has a form posting here. GET-only meant 405 and a lost
+    signature. 307 — not 302 — because only 307 preserves the method and the
+    body, so the signature fields survive the hop to /estimate."""
+    for path, target in (('/sign/abc123', '/estimate/sign/abc123'),
+                         ('/sign-co/abc123', '/estimate/sign-co/abc123')):
+        r = client.post(path, data={'sig_name': 'Jane Homeowner', 'agree': 'on'})
+        assert r.status_code == 307, f'{path} -> {r.status_code}'
+        assert r.headers['Location'] == target
+
+
 # ── Mounting ─────────────────────────────────────────────────────────────────
 
 def test_each_app_serves_its_own_shell_and_assets(client):

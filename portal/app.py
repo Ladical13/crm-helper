@@ -344,14 +344,24 @@ def health():
 # paths. Those links must keep resolving after the estimator moves to
 # /estimate, so forward them rather than 404. Do not remove these.
 
-@app.route('/sign/<token>')
+# POST is here on purpose. The estimator now posts its sign forms to the
+# mounted path, but a customer who loaded the page before that change still
+# has a form pointing at this root path — GET-only meant their submission
+# came back 405 Method Not Allowed and the signature was lost. 307 (not 302)
+# is required: it preserves the method AND the body, so the fields survive
+# the hop. Do not downgrade these to 302.
+def _compat_redirect(target):
+    return redirect(target, code=307 if request.method == 'POST' else 302)
+
+
+@app.route('/sign/<token>', methods=['GET', 'POST'])
 def compat_sign(token):
-    return redirect(f'/estimate/sign/{token}', code=302)
+    return _compat_redirect(f'/estimate/sign/{token}')
 
 
-@app.route('/sign-co/<token>')
+@app.route('/sign-co/<token>', methods=['GET', 'POST'])
 def compat_sign_co(token):
-    return redirect(f'/estimate/sign-co/{token}', code=302)
+    return _compat_redirect(f'/estimate/sign-co/{token}')
 
 
 @app.route('/uploads/<path:filename>')
