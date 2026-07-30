@@ -851,14 +851,14 @@
       "id": "s_hardie_statement",
       "name": "James Hardie Statement Collection 8.25\" Lap",
       "unit": "SQ",
-      "cost": 249,
+      "cost": 248.71,
       "measure": "siding_sq_waste"
     },
     {
       "id": "s_hardie_primed",
       "name": "James Hardie Primed 8.25\" Cedar Mill Lap",
       "unit": "SQ",
-      "cost": 201,
+      "cost": 201.29,
       "measure": "siding_sq_waste"
     },
     {
@@ -879,14 +879,14 @@
       "id": "s_edco_d4",
       "name": "EDCO D4\" TimberGrain Steel Siding",
       "unit": "SQ",
-      "cost": 386,
+      "cost": 386.11,
       "measure": "siding_sq_waste"
     },
     {
       "id": "s_edco_8",
       "name": "EDCO 8\" Enduragrain Steel Siding",
       "unit": "SQ",
-      "cost": 386,
+      "cost": 386.11,
       "measure": "siding_sq_waste"
     },
     {
