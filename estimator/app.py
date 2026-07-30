@@ -7894,7 +7894,13 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 # `customer_visible` is whether the priced row is broken out for the customer
 # (labor is not) — a book saved before that call was made has no such key, and
 # absence is the test, so a manager who ticked Show keeps it ticked.
-_PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible')
+# `measure` is safe to backfill because of the manual-qty contract: an explicit
+# `measure: ''` is the manager choosing Manual and STAYS empty (the field is
+# present, so absence-is-the-test skips it), while a missing key means the
+# product predates the measurement and should adopt the seed's. Without it the
+# live Fascia product — seeded long before a fascia measurement existed — keeps
+# no measure and the Scope field it was added for silently fills nothing.
+_PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure')
 
 # old product id -> the product(s) that replaced it, swapped into SEEDED bundles
 # on read. The old product stays in the catalog: an estimate may reference it and

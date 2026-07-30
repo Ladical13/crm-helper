@@ -204,6 +204,27 @@ def test_a_deleted_bundle_stays_deleted(A):
     assert not any(i.startswith('sb_vinyl') for i in ids), 'deleted bundle came back'
 
 
+def test_fascia_measure_reaches_a_book_that_already_has_the_product(A):
+    """Production's Fascia product was seeded long before a fascia measurement
+    existed, so it carries no measure key. Adding the Scope field does nothing
+    for it unless the backfill fills that in."""
+    saved = {'siding_catalog': [{'id': 'sa_fascia', 'name': 'Fascia',
+                                 'unit': 'LF', 'cost': 0}]}
+    pb = A._ensure_bundle_catalogs(saved)
+    live = {p['id']: p for p in pb['siding_catalog']}
+    assert live['sa_fascia'].get('measure') == 'siding_fascia'
+
+
+def test_manual_qty_survives_the_measure_backfill(A):
+    """The other half of the contract: an explicit empty measure is the manager
+    picking Manual, and the server must not overwrite it on every read."""
+    saved = {'siding_catalog': [{'id': 'sa_fascia', 'name': 'Fascia', 'unit': 'LF',
+                                 'cost': 0, 'measure': ''}]}
+    pb = A._ensure_bundle_catalogs(saved)
+    live = {p['id']: p for p in pb['siding_catalog']}
+    assert live['sa_fascia']['measure'] == '', 'Manual qty was overwritten'
+
+
 def test_siding_is_seeded_from_app_py_not_price_book_json():
     """The whole point of the port. price_book.json must NOT carry siding data:
     two copies drift, and only one of them reaches production — which is how the
