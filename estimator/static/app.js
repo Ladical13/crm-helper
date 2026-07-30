@@ -8707,6 +8707,40 @@ function showShareModal(fullUrl, relUrl) {
   document.getElementById('share-modal').classList.remove('hidden');
 }
 
+/* Open the tablet presentation for this estimate. Shares the same token as
+   Send / Sign — presenting an estimate is also "sending" it, so a customer who
+   watches the walkthrough can sign from the same link afterwards. */
+async function presentEstimate() {
+  // Grab the tab up front: Safari and iOS block window.open() once an await
+  // has broken the click's gesture context, and getting a token needs one.
+  const win = window.open('', '_blank');
+  try {
+    if (!S.estimate_id) {
+      await saveEstimate();
+      if (!S.estimate_id) { if (win) win.close(); return; }
+    }
+    if (dirty) await saveEstimate();
+
+    let token = S.share_token;
+    if (!token) {
+      const r = await fetch(`/api/estimates/${S.estimate_id}/share`, { method: 'POST' });
+      if (!r.ok) throw new Error('Could not generate a presentation link');
+      const d = await r.json();
+      token = d.token;
+      if (!token) throw new Error('Could not generate a presentation link');
+      S.share_token = token;
+      if (!S.sent_at) S.sent_at = new Date().toISOString();
+      if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); }
+    }
+
+    const url = `${BASE}/present/${token}`;
+    if (win) win.location = url; else window.open(url, '_blank');
+  } catch (e) {
+    if (win) win.close();
+    alert('Error: ' + e.message);
+  }
+}
+
 async function emailEstimateLink() {
   const btn = document.getElementById('share-email-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
@@ -9274,8 +9308,12 @@ function buildPrintContent() {
         : 'Package: '+TIER_LABELS[gbbTrades().length?tradeTier(gbbTrades()[0]):tier]
     }</div>`;
     TRADES.filter(t=>t!=='insurance').forEach(trade=>{
+      // Optional-chain: a doc created through the API can arrive without the
+      // full trade skeleton, and doLoadEstimate replaces S wholesale (it only
+      // backfills `insurance`). A bare td.enabled threw here, which killed
+      // Print / PDF outright — the button appeared to do nothing.
       const td=S.trades[trade];
-      if(!td.enabled||!td.line_items.length)return;
+      if(!td?.enabled||!(td.line_items||[]).length)return;
       const tier=tradeTier(trade);   // each product prints at ITS chosen package
       const tradeMode=effectiveTradeMode(trade, td);
       const _shown=td.line_items.filter(item=>{

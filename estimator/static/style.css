@@ -77,6 +77,8 @@ button { cursor: pointer; font-family: inherit; }
 .header-right .btn-print:hover { background: #d4780f; }
 .header-right .btn-share { background: var(--teal); border-color: transparent; }
 .header-right .btn-share:hover { background: #008f9a; }
+.header-right .btn-present { background: #0e2440; border-color: transparent; }
+.header-right .btn-present:hover { background: #1b3a63; }
 .user-badge {
   display: flex; align-items: center; gap: 8px;
   padding: 4px 10px; background: rgba(255,255,255,.12);
@@ -1229,8 +1231,11 @@ input#cover-file-input { display: none; }
   body > #app-layout,
   body > .modal { display: none !important; }
   #print-content { display: block !important; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10pt; color: #111; }
-  @page { margin: 1.8cm 1.5cm; }
+  @page { margin: 1.5cm 1.4cm; }
   @page :first { margin: 0; }
+
+  /* Paragraph text never strands a single line across a page break */
+  #print-content p, .p-intro-body, .p-contract-body { orphans: 3; widows: 3; }
 
   /* Cover page — logo top · photo center · customer info bottom (all dark-on-white for readability) */
   .p-cover { page-break-after: always; min-height: 100vh; display: flex; flex-direction: column; }
@@ -1289,9 +1294,10 @@ input#cover-file-input { display: none; }
   .p-products-value { font-weight: 600; color: #111; }
 
   /* Package comparison */
-  .p-pkg-comparison { margin-bottom: 20pt; }
-  .p-pkg-comparison h2 { font-size: 12pt; font-weight: 700; color: #1a3a5c; margin-bottom: 10pt; }
-  .p-pkg-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
+  .p-pkg-comparison { margin-bottom: 20pt; break-inside: avoid; }
+  .p-pkg-comparison h2 { font-size: 12pt; font-weight: 700; color: #1a3a5c; margin-bottom: 10pt; break-after: avoid; }
+  .p-pkg-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; table-layout: fixed; }
+  .p-pkg-table td { word-wrap: break-word; overflow-wrap: break-word; }
   .p-pkg-table th { padding: 7pt 10pt; text-align: center; font-size: 11pt; font-weight: 800; text-transform: uppercase; }
   .p-pkg-table th.col-good   { background: #dbeafe; color: #1d4ed8; }
   .p-pkg-table th.col-better { background: #dcfce7; color: #15803d; }
@@ -1305,12 +1311,21 @@ input#cover-file-input { display: none; }
 
   /* Trade tables */
   .p-package-banner { background: #1a3a5c; color: #fff; padding: 6pt 12pt; border-radius: 4pt; font-size: 11pt; font-weight: 700; margin-bottom: 14pt; display: inline-block; }
-  .p-trade { margin-bottom: 18pt; page-break-inside: avoid; }
-  .p-trade-title { font-size: 12pt; font-weight: 700; border-bottom: 1.5pt solid #d1d5db; padding-bottom: 4pt; margin-bottom: 8pt; color: #1a3a5c; }
+  /* A long trade MUST be allowed to split. `page-break-inside: avoid` here used
+     to shove any trade taller than the remaining space onto a fresh page — and
+     if it was taller than a whole page it overflowed anyway, leaving a blank
+     gap behind it. The thead/tr rules below make a split table still read
+     correctly, which is what `avoid` was really trying to buy. */
+  .p-trade { margin-bottom: 18pt; break-inside: auto; }
+  .p-trade-title { font-size: 12pt; font-weight: 700; border-bottom: 1.5pt solid #d1d5db; padding-bottom: 4pt; margin-bottom: 8pt; color: #1a3a5c; break-after: avoid; }
   .p-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
+  /* Repeat the column headers on every page a table spills onto */
+  .p-table thead { display: table-header-group; }
+  .p-table tfoot { display: table-footer-group; }
+  .p-table tr { break-inside: avoid; }
   .p-table th { text-align: left; padding: 5pt 7pt; border-bottom: 1.5pt solid #1a3a5c; font-size: 8pt; text-transform: uppercase; letter-spacing: .5px; color: #555; }
   .p-table td { padding: 4pt 7pt; border-bottom: .5pt solid #e5e7eb; vertical-align: top; }
-  .p-table tr:nth-child(even) td { background: #f9fafb; }
+  .p-table tbody tr:nth-child(even) td { background: #f9fafb; }
   .p-desc-sub { font-size: 8pt; color: #888; margin-top: 1pt; }
   .p-right { text-align: right; }
   .p-table tfoot td { padding: 6pt 7pt; font-weight: 700; font-size: 10pt; border-top: 1.5pt solid #1a3a5c; border-bottom: none; }
@@ -1324,6 +1339,7 @@ input#cover-file-input { display: none; }
   .p-grand-total {
     display: flex; justify-content: space-between; align-items: baseline;
     border-top: 2.5pt solid #1a3a5c; padding: 10pt 2pt 6pt; margin: 10pt 0 18pt;
+    break-inside: avoid;
   }
   .p-grand-total span:first-child {
     font-size: 10pt; font-weight: 800; color: #1a3a5c;
@@ -1332,8 +1348,8 @@ input#cover-file-input { display: none; }
   .p-grand-total span:last-child {
     font-size: 22pt; font-weight: 900; color: #1a3a5c;
   }
-  .p-notes { margin-bottom: 16pt; }
-  .p-notes h3 { font-size: 10pt; font-weight: 700; margin-bottom: 4pt; }
+  .p-notes { margin-bottom: 16pt; break-inside: avoid; }
+  .p-notes h3 { font-size: 10pt; font-weight: 700; margin-bottom: 4pt; break-after: avoid; }
   .p-notes p  { font-size: 9.5pt; color: #333; line-height: 1.5; }
   /* Standalone Photo Report page (after the intro) */
   .p-photos-page { page-break-after: always; page-break-before: avoid; }

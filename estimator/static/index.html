@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=133">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=135">
 </head>
 <body>
 
@@ -33,6 +33,7 @@
       <button onclick="newEstimateAction()">New</button>
       <button onclick="openEstimate()">Open</button>
       <button onclick="openPriceBook()" class="btn-pricebook">📋 Price Book</button>
+      <button id="present-btn" onclick="presentEstimate()" class="btn-present">📊 Present</button>
       <button id="share-btn" onclick="shareEstimate()" class="btn-share">Send / Sign</button>
       <button onclick="doPrint()" class="btn-print">Print / PDF</button>
       <button onclick="openSettings()" class="btn-settings" title="Settings">⚙</button>
@@ -53,6 +54,7 @@
     <button onclick="newEstimateAction();closeMoreMenu()">New Estimate</button>
     <button onclick="openEstimate();closeMoreMenu()">Open</button>
     <button id="mm-pricebook" onclick="openPriceBook();closeMoreMenu()">📋 Price Book</button>
+    <button onclick="presentEstimate();closeMoreMenu()">📊 Present on Tablet</button>
     <button onclick="shareEstimate();closeMoreMenu()">Send / Sign</button>
     <button onclick="doPrint();closeMoreMenu()">Print / PDF</button>
     <button id="mm-settings" onclick="openSettings();closeMoreMenu()">⚙ Settings</button>
@@ -703,6 +705,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=133"></script>
+<script src="/estimate/static/app.js?v=135"></script>
 </body>
 </html>
