@@ -77,6 +77,13 @@ FIXTURES = [
      {'siding_trim_lf': 175}, 175.0),
     ('j-channel with no trim measured', 'j_channel',
      {'siding_j_channel_lf': 40}, 40.0),
+
+    # Fascia runs alongside the soffit but is its own material and its own
+    # number — reading the soffit run would over- or under-order it.
+    ('fascia reads its own footage', 'siding_fascia',
+     {'siding_fascia_lf': 120, 'siding_soffit_lf': 100}, 120.0),
+    ('fascia unmeasured is zero, not the soffit run', 'siding_fascia',
+     {'siding_soffit_lf': 100}, 0.0),
 ]
 
 
@@ -152,15 +159,29 @@ def test_siding_trim_and_soffit_products_read_the_new_measures():
         assert cat[pid]['unit'] == 'LF', pid
 
 
+def test_seed_fascia_product_auto_fills(A):
+    """The seed catalog has carried a Fascia product since the bundles shipped,
+    but with no measure key it sat at manual qty — the rep had to type the
+    footage onto the line by hand, and a missed one printed as zero fascia."""
+    seed = {p['id']: p for p in A.SIDING_CATALOG_SEED}
+    assert seed['sa_fascia']['measure'] == 'siding_fascia'
+    assert 'siding_fascia' in _known_measure_keys()
+
+
 def test_app_js_and_app_py_agree_on_the_siding_fields(A):
     """MEASURE_FIELDS (app.js, the Scope page) and MEASURE_LABELS (app.py, the
     production packet) are hand-mirrored. A field added to one and not the other
     is either uncollectable or unprintable."""
     import re
     js = open(APP_JS, encoding='utf-8').read()
+    # Slice to the START OF THE NEXT GROUP, not to the first ']},'. A field with
+    # an opts menu ends '...[48,'48"']]},' which contains that marker, so the
+    # naive cut silently dropped every field defined after the soffit width —
+    # which is how this test first "passed" while the two files disagreed.
     block = js[js.index("{ group:'Siding'"):]
-    block = block[:block.index(']},')]
+    block = block[:block.index("{ group:", 1)]
     js_keys = re.findall(r"key:'(\w+)'", block)
+    assert 'siding_fascia_lf' in js_keys, 'extraction truncated before the end of the group'
 
     py_keys = [k for group, fields in A.MEASURE_LABELS if group == 'Siding'
                for k, _label, _unit in fields]

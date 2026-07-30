@@ -5301,7 +5301,8 @@ MEASURE_LABELS = [
                 # Soffit prices by the foot; the width is the spec the crew
                 # needs to pull the right panel, and prints for that reason.
                 ('siding_soffit_lf', 'Soffit', 'LF'),
-                ('siding_soffit_width', 'Soffit Width', 'in')]),
+                ('siding_soffit_width', 'Soffit Width', 'in'),
+                ('siding_fascia_lf', 'Fascia', 'LF')]),
     ('Windows', [('windows_count', 'Windows', 'EA'), ('doors_count', 'Doors', 'EA')]),
     ('Commercial', [('comm_squares', 'Roof Area', 'SQ'), ('comm_waste_pct', 'Waste', '%'),
                     ('comm_perimeter_lf', 'Perimeter / Edge', 'LF'),
@@ -7654,7 +7655,7 @@ SIDING_CATALOG_SEED = [
      "bullets": ["New trim boards"]},
     {"id": "sa_soffit", "name": "Soffit", "unit": "LF", "cost": 0, "measure": "siding_soffit",
      "bullets": ["New soffit"]},
-    {"id": "sa_fascia", "name": "Fascia", "unit": "LF", "cost": 0,
+    {"id": "sa_fascia", "name": "Fascia", "unit": "LF", "cost": 0, "measure": "siding_fascia",
      "bullets": ["New fascia"]},
     # Labor prices into the package but is NOT broken out for the customer:
     # "Install Labor - $9,400" invites a line-item negotiation over the one

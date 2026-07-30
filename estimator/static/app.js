@@ -346,6 +346,10 @@ const MEASURE_FIELDS = [
     // siding_soffit_sf instead if one is ever added.
     {key:'siding_soffit_width',       label:'Soffit Width',     unit:'in',
      opts:[[12,'12"'],[16,'16"'],[24,'24"'],[36,'36"'],[48,'48"']]},
+    // Fascia runs with the soffit but is its own material and its own number.
+    // The seed catalog has always carried a Fascia product; until this field
+    // existed it had no measurement to read and sat at manual qty.
+    {key:'siding_fascia_lf',          label:'Fascia',           unit:'LF'},
   ]},
   { group:'Windows', fields:[
     {key:'windows_count', label:'Windows', unit:'EA'},
@@ -419,6 +423,7 @@ const MEASURE_DEFS = {
   j_channel:            { label:'J-Channel LF',        calc:m => mnum(m.siding_j_channel_lf) },
   siding_trim:          { label:'Trim Board LF',       calc:m => mnum(m.siding_trim_lf) },
   siding_starter:       { label:'Starter Strip LF',    calc:m => mnum(m.siding_starter_lf) },
+  siding_fascia:        { label:'Fascia LF',           calc:m => mnum(m.siding_fascia_lf) },
   siding_soffit:        { label:'Soffit LF',           calc:m => mnum(m.siding_soffit_lf) },
   // Available for a soffit product sold by coverage rather than by the foot —
   // nothing in the shipped price book uses it, since the measurement report
@@ -908,7 +913,7 @@ function applyMeasurements() {
 const SIDING_MEAS_KEYS = new Set([
   'siding_squares','siding_waste_pct','siding_outside_corners_lf',
   'siding_inside_corners_lf','siding_j_channel_lf','siding_trim_lf','siding_starter_lf',
-  'siding_soffit_lf','siding_soffit_width',
+  'siding_soffit_lf','siding_soffit_width','siding_fascia_lf',
 ]);
 const COMMERCIAL_MEAS_KEYS = new Set([
   'comm_squares','comm_waste_pct','comm_perimeter_lf','comm_parapet_lf',
@@ -3642,7 +3647,7 @@ function renderScopePage() {
         <input class="scope-formula-input" type="text"
           value="${esc(item.formula||'')}"
           placeholder="e.g. eave_lf + valley_lf"
-          title="Roof: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1) — Siding: siding_squares, siding_waste_pct, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_trim_lf, siding_starter_lf, siding_soffit_lf, siding_soffit_width, windows_count, doors_count"
+          title="Roof: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1) — Siding: siding_squares, siding_waste_pct, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_trim_lf, siding_starter_lf, siding_soffit_lf, siding_soffit_width, siding_fascia_lf, windows_count, doors_count"
           onchange="setItemFormula('${item._trade}','${item.id}',this.value)">
         <span class="scope-formula-hint">eave_lf + valley_lf</span>
       </div>` : '';
