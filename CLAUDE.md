@@ -36,7 +36,8 @@ python -m pytest prospector/tests   # 27 — offline, no network
 ```
 
 **Deploying.** ONE Railway service, whole repo — see the deploy note at the end
-of the portal section. Never deploy a subdirectory.
+of the portal section. Never deploy a subdirectory. **Pushing is not
+deploying**: `railway up` is a separate, manual step.
 
 **Nothing is backed up yet — open gap, decided 2026-07-29 to defer.** Two
 separate things, and they are easy to confuse:
@@ -106,6 +107,31 @@ the volume before the cutover deploy.
 
 **Deploy:** ONE service. Root `Procfile` is
 `gunicorn portal.wsgi:application`; deploy the whole repo, not a subdirectory.
+
+```bash
+railway status                              # confirm project-one-estimator / production
+railway up --service project-one-estimator  # from the repo root
+railway deployment list                     # watch for SUCCESS
+```
+
+**A `git push` does NOT deploy.** There is no GitHub auto-deploy on this
+service — pushing only runs CI. Until someone runs `railway up`, production
+keeps serving the last deployed build no matter how green the Actions tab is.
+This has already caused real confusion: work sat pushed-but-unshipped for days
+while production ran an older build. After deploying, confirm what is actually
+live rather than assuming:
+
+```bash
+curl -s https://project-one-estimator-production.up.railway.app/estimate/static/index.html | grep -o 'v=[0-9]*' | sort -u
+```
+
+That cache-buster is the fastest honest answer to "is my change live?" — it
+should match `python estimator/bump_version.py --check` locally.
+
+Note `_seed_data_dir()` copies `price_book.json`, `tier_defaults.json`,
+`jurisdictions.json` and friends to the volume **only if absent**. On a
+long-lived volume the deployed repo copies are inert — editing
+`estimator/price_book.json` and deploying does not change live pricing.
 
 **CI:** `.github/workflows/tests.yml` runs all four suites on every push and PR.
 They run as four separate pytest invocations — one run collecting two apps
