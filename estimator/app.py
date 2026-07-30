@@ -7672,6 +7672,30 @@ SIDING_CATALOG_SEED = [
      "bullets": ["Dumpster and full site cleanup"]},
     {"id": "sx_permit", "name": "Permit", "unit": "LS", "cost": 0,
      "bullets": ["Permit pulled and final inspection scheduled"]},
+    # ── 2026 QXO line, priced off the supplier sheets ──────────────────
+    # Derivations live in the commit that added them: lap siding is
+    # $/board x boards-per-SQ at the manufacturer exposure, EDCO cartons
+    # ship as 1 SQ, everything linear is $/stick / stick length.
+    {"id": "s_hardie_statement", "name": "James Hardie Statement Collection 8.25\" Lap", "unit": "SQ", "cost": 248.71, "measure": "siding_sq_waste"},
+    {"id": "s_hardie_primed", "name": "James Hardie Primed 8.25\" Cedar Mill Lap", "unit": "SQ", "cost": 201.29, "measure": "siding_sq_waste"},
+    {"id": "s_lp_expert", "name": "LP SmartSide Expert Finish 8\" Lap", "unit": "SQ", "cost": 245.14, "measure": "siding_sq_waste"},
+    {"id": "s_lp_standard", "name": "LP SmartSide 8\" Cedar Text Lap", "unit": "SQ", "cost": 163.61, "measure": "siding_sq_waste"},
+    {"id": "s_edco_d4", "name": "EDCO D4\" TimberGrain Steel Siding", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste"},
+    {"id": "s_edco_8", "name": "EDCO 8\" Enduragrain Steel Siding", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste"},
+    {"id": "sa_wrap_hardie", "name": "Hardie Wrap", "unit": "SQ", "cost": 23.46, "measure": "siding_sq_waste"},
+    {"id": "sa_wrap_tribuilt", "name": "TriBuilt House Wrap", "unit": "SQ", "cost": 6.23, "measure": "siding_sq_waste"},
+    {"id": "sa_hardie_statement_trim", "name": "James Hardie Statement Trim 5/4×5.5", "unit": "LF", "cost": 2.6, "measure": "siding_trim"},
+    {"id": "sa_hardie_primed_trim", "name": "James Hardie Primed Trim 5/4×6", "unit": "LF", "cost": 2.51, "measure": "siding_trim"},
+    {"id": "sa_lp_expert_trim", "name": "LP Expert Finish Trim 5/4×5.5", "unit": "LF", "cost": 2.33, "measure": "siding_trim"},
+    {"id": "sa_lp_standard_trim", "name": "LP SmartSide Trim 5/4×6", "unit": "LF", "cost": 1.83, "measure": "siding_trim"},
+    {"id": "sa_edco_jchannel", "name": "EDCO 5/8\" J-Channel", "unit": "LF", "cost": 1.21, "measure": "j_channel"},
+    {"id": "sa_hardie_statement_soffit", "name": "James Hardie Statement Vented Soffit 24\"", "unit": "LF", "cost": 3.66, "measure": "siding_soffit"},
+    {"id": "sa_hardie_primed_soffit", "name": "James Hardie Primed Vented Soffit 24\"", "unit": "LF", "cost": 2.35, "measure": "siding_soffit"},
+    {"id": "sa_lp_expert_soffit", "name": "LP Expert Finish Vented Soffit 24\"", "unit": "LF", "cost": 6.51, "measure": "siding_soffit"},
+    {"id": "sa_lp_standard_soffit", "name": "LP SmartSide Vented Soffit 24\"", "unit": "LF", "cost": 4.06, "measure": "siding_soffit"},
+    {"id": "sa_edco_soffit", "name": "EDCO Soffit Panel 16\"×12'", "unit": "LF", "cost": 4.03, "measure": "siding_soffit"},
+    {"id": "sa_edco_corner", "name": "EDCO Snap-On Corner Post", "unit": "LF", "cost": 2.94, "measure": "corners_out"},
+    {"id": "sa_edco_starter", "name": "EDCO Starter Strip Steel", "unit": "LF", "cost": 1.05, "measure": "siding_starter"},
 ]
 _SS = ["sa_house_wrap", "sa_starter", "sa_j_channel", "sa_corner_out", "sa_corner_in",
        "sa_trim", "sa_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"]
@@ -7701,8 +7725,27 @@ SIDING_BUNDLES_SEED = [
     {"id": "sb_hardie_shingle", "name": "James Hardie - Shingle / Panel", "product_ids": ["s_hardie_shingle"] + _SS,
      "description": "James Hardie shingle and panel siding - shake-style character in fiber cement, ideal for gables and accent walls.",
      "extra_features": _SS_EXTRA},
+    {"id": "b_lp_standard", "name": "LP SmartSide", "product_ids": ["s_lp_standard", "sa_wrap_tribuilt", "sa_lp_standard_trim", "sa_lp_standard_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+     "description": "Engineered wood lap siding — field-painted to any color, 5/50 year limited warranty.",
+     "extra_features": _SS_EXTRA},
+    {"id": "b_lp_expert", "name": "LP SmartSide Expert Finish", "product_ids": ["s_lp_expert", "sa_wrap_tribuilt", "sa_lp_expert_trim", "sa_lp_expert_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+     "description": "Pre-finished engineered wood siding — no painting required, 5/50 year warranty.",
+     "extra_features": _SS_EXTRA},
+    {"id": "b_hardie_primed", "name": "James Hardie Primed", "product_ids": ["s_hardie_primed", "sa_wrap_hardie", "sa_hardie_primed_trim", "sa_hardie_primed_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+     "description": "Fiber cement lap siding — field-painted to any color, non-combustible, lifetime limited warranty.",
+     "extra_features": _SS_EXTRA},
+    {"id": "b_hardie_statement", "name": "James Hardie Statement Collection", "product_ids": ["s_hardie_statement", "sa_wrap_hardie", "sa_hardie_statement_trim", "sa_hardie_statement_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+     "description": "Pre-finished fiber cement siding — no painting required, non-combustible, 15-year ColorPlus finish warranty.",
+     "extra_features": _SS_EXTRA},
+    {"id": "b_edco_d4", "name": "EDCO D4\" TimberGrain", "product_ids": ["s_edco_d4", "sa_edco_jchannel", "sa_edco_corner", "sa_edco_starter", "sa_edco_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+     "description": "28ga steel siding — Class 4 impact-rated, TimberGrain wood-look finish, lifetime limited warranty.",
+     "extra_features": _SS_EXTRA},
+    {"id": "b_edco_8", "name": "EDCO 8\" Enduragrain", "product_ids": ["s_edco_8", "sa_edco_jchannel", "sa_edco_corner", "sa_edco_starter", "sa_edco_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+     "description": "28ga steel siding — Class 4 impact-rated, Enduragrain finish, lifetime limited warranty.",
+     "extra_features": _SS_EXTRA},
 ]
-SIDING_TIER_DEFAULTS_SEED = {"good": "sb_vinyl_dutch", "better": "sb_lp_lap", "best": "sb_hardie_cedar"}
+SIDING_TIER_DEFAULTS_SEED = {"good": "b_lp_standard", "better": "b_hardie_primed",
+                             "best": "b_hardie_statement"}
 
 # Commercial low-slope catalog. Membrane/insulation/accessory costs are
 # PLACEHOLDERS (0) on purpose — commercial material pricing comes off the
@@ -7858,6 +7901,14 @@ _PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible')
 # the manager may have priced it.
 _PRODUCT_SUPERSEDED = {'ca_fasteners': ['ca_fast_insul', 'ca_fast_seam']}
 
+# Seed bundles that shipped AFTER their trade already had saved price books, so
+# _ensure_bundle_catalogs must append them by id rather than assume a missing id
+# means the manager deleted it. See the append loop for the full reasoning.
+# The 2026 QXO siding line: production's volume already carried siding_bundles,
+# so without this the six new bundles reached nobody.
+_LATE_BUNDLE_IDS = {'b_lp_standard', 'b_lp_expert', 'b_hardie_primed',
+                    'b_hardie_statement', 'b_edco_d4', 'b_edco_8'}
+
 
 def _ensure_bundle_catalogs(pb):
     """Inject each bundle trade's catalog/bundles/defaults into a price book that
@@ -7887,6 +7938,21 @@ def _ensure_bundle_catalogs(pb):
                     if field not in live and field in seed:
                         val = seed[field]
                         live[field] = list(val) if isinstance(val, list) else val
+
+            # ...but "absent" also covers a bundle the book has NEVER seen, and
+            # the loop above cannot tell that apart from a deletion, so it skips
+            # both. That means a bundle added to the seeds after books were
+            # already saved can never reach them — the QXO siding line shipped
+            # to production with every product present and no bundle to pick.
+            #
+            # Listing the late arrivals explicitly keeps deletion sticky for
+            # everything else: an id is only appended while it is on this list,
+            # so a manager who deletes one still gets it back until it ages off.
+            # Add an id here when a seed bundle ships after its trade already
+            # has live books; drop it once those books have been saved past it.
+            for seed in bundles:
+                if seed['id'] in _LATE_BUNDLE_IDS and seed['id'] not in by_id:
+                    pb[trade + '_bundles'].append(_copy_seed_bundle(seed))
 
             # A price book saved before a seed product existed would never get
             # it: the branch above only runs when the catalog is ABSENT, and

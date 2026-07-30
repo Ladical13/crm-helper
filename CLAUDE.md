@@ -399,6 +399,25 @@ migration, packet).
   superseded ones (`_PRODUCT_SUPERSEDED`) into **seeded** bundles only — a price
   book saved before a product existed would otherwise never get it.
 
+### Where catalog/bundle data must live
+
+**Bundle-trade data belongs in the `*_SEED` constants in `app.py`, not in
+`price_book.json`.** `_seed_data_dir()` copies `price_book.json` to the volume
+only when it is **absent**, so on any long-lived volume the repo's copy is inert
+— editing it and deploying changes nothing. `_ensure_bundle_catalogs()` reads
+the seeds on every GET and backfills them into the live book, which is the only
+path that reaches production. Siding data was briefly in both; the copy in
+`price_book.json` was removed and `test_siding_is_seeded_from_app_py_not_price_book_json`
+now fails if it comes back.
+
+Two things behave differently once books are in the wild:
+
+- **Products** append by id automatically — a new seed product always arrives.
+- **Bundles do not.** The copy-field backfill reads a missing id as "the manager
+  deleted it" and skips it, so a *new* bundle reaches nobody. List its id in
+  `_LATE_BUNDLE_IDS` to have it appended, and drop it once live books have been
+  saved past it. Deletion stays sticky for every id not on that list.
+
 ### Monthly trends & sales goals
 
 The analytics tab's **📈 Monthly Trends & Goals** panel is the "did we make our

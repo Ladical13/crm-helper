@@ -118,31 +118,39 @@ def _known_measure_keys():
     return set(re.findall(r'^\s{2}(\w+):', block, re.M))
 
 
-def test_shipped_price_book_measures_are_known_keys():
+def test_shipped_price_book_measures_are_known_keys(A):
     """A measure key that MEASURE_DEFS doesn't define never auto-fills, so the
-    line sits at qty 0 and prices at nothing while looking perfectly normal."""
+    line sits at qty 0 and prices at nothing while looking perfectly normal.
+
+    Covers the seed catalogs as well as price_book.json. The seeds are the half
+    that actually reaches a long-lived volume: _seed_data_dir() only copies
+    price_book.json when it is ABSENT, so on production the repo's copy is inert
+    and _ensure_bundle_catalogs backfills from these constants instead."""
     known = _known_measure_keys()
     with open(PRICE_BOOK, encoding='utf-8') as f:
-        pb = json.load(f)
+        catalogs = [(k, v) for k, v in json.load(f).items()
+                    if k.endswith('_catalog') and isinstance(v, list)]
+    catalogs += [(trade + ' seed', cat) for trade, (cat, _b, _d) in A.BUNDLE_SEEDS.items()]
+
     checked = 0
-    for key, value in pb.items():
-        if not key.endswith('_catalog') or not isinstance(value, list):
-            continue
-        for p in value:
+    for label, products in catalogs:
+        for p in products:
             measure = p.get('measure')
             if not measure:      # '' is the explicit Manual-qty contract
                 continue
             checked += 1
             assert measure in known, (
-                f"unknown measure {measure!r} on {key} product {p.get('name')!r}")
+                f"unknown measure {measure!r} on {label} product {p.get('name')!r}")
     assert checked, 'no catalog products checked — did the price book shape change?'
 
 
-def test_siding_trim_and_soffit_products_read_the_new_measures():
+def test_siding_trim_and_soffit_products_read_the_new_measures(A):
     """The reason the fields were split: LP and Hardie bundles carry 5/4 trim
-    board and must read trim footage, while EDCO's J-channel reads J-channel."""
-    with open(PRICE_BOOK, encoding='utf-8') as f:
-        cat = {p['id']: p for p in json.load(f)['siding_catalog']}
+    board and must read trim footage, while EDCO's J-channel reads J-channel.
+
+    Reads SIDING_CATALOG_SEED, not price_book.json — the QXO line lives in the
+    seed constants precisely so it reaches production's existing volume."""
+    cat = {p['id']: p for p in A.SIDING_CATALOG_SEED}
 
     for pid in ('sa_hardie_statement_trim', 'sa_hardie_primed_trim',
                 'sa_lp_expert_trim', 'sa_lp_standard_trim'):
@@ -157,6 +165,55 @@ def test_siding_trim_and_soffit_products_read_the_new_measures():
                 'sa_lp_expert_soffit', 'sa_lp_standard_soffit', 'sa_edco_soffit'):
         assert cat[pid]['measure'] == 'siding_soffit', pid
         assert cat[pid]['unit'] == 'LF', pid
+
+
+def test_new_bundles_reach_a_book_that_already_has_siding(A):
+    """Production's volume already carried siding_bundles, and the copy-field
+    backfill skips any seed id it cannot find — it reads a missing id as a
+    deletion. So the six QXO bundles would have deployed to nobody: every
+    product present, no package to pick."""
+    saved = {
+        'siding_catalog': [dict(p) for p in A.SIDING_CATALOG_SEED
+                           if p['id'].startswith(('s_vinyl', 'sa_', 'sl_', 'sx_'))],
+        'siding_bundles': [dict(b) for b in A.SIDING_BUNDLES_SEED
+                           if b['id'].startswith('sb_')],
+        'siding_tier_defaults': {'good': 'sb_vinyl_dutch', 'better': 'sb_lp_lap',
+                                 'best': 'sb_hardie_cedar'},
+    }
+    pb = A._ensure_bundle_catalogs(saved)
+    ids = {b['id'] for b in pb['siding_bundles']}
+    for late in A._LATE_BUNDLE_IDS:
+        assert late in ids, f'{late} never reached a book that already had bundles'
+    # The QXO products must land too, with their sheet-derived costs intact.
+    cat = {p['id']: p for p in pb['siding_catalog']}
+    assert cat['s_lp_standard']['cost'] == 163.61
+    assert cat['s_hardie_statement']['cost'] == 248.71
+
+
+def test_a_deleted_bundle_stays_deleted(A):
+    """The flip side. Appending by id must not resurrect a package the manager
+    removed on purpose — only ids on the late-arrival list are re-added."""
+    saved = {
+        'siding_catalog': [dict(p) for p in A.SIDING_CATALOG_SEED],
+        # Manager deleted every vinyl package, and one of the new ones.
+        'siding_bundles': [dict(b) for b in A.SIDING_BUNDLES_SEED
+                           if not b['id'].startswith('sb_vinyl')],
+    }
+    pb = A._ensure_bundle_catalogs(saved)
+    ids = {b['id'] for b in pb['siding_bundles']}
+    assert not any(i.startswith('sb_vinyl') for i in ids), 'deleted bundle came back'
+
+
+def test_siding_is_seeded_from_app_py_not_price_book_json():
+    """The whole point of the port. price_book.json must NOT carry siding data:
+    two copies drift, and only one of them reaches production — which is how the
+    QXO pricing sat in the repo looking shipped while reps saw $0 placeholders."""
+    with open(PRICE_BOOK, encoding='utf-8') as f:
+        pb = json.load(f)
+    for key in ('siding_catalog', 'siding_bundles', 'siding_tier_defaults'):
+        assert key not in pb, (
+            f'{key} is back in price_book.json — it will not reach a volume that '
+            'already has the file. Put siding data in the SIDING_*_SEED constants.')
 
 
 def test_seed_fascia_product_auto_fills(A):
