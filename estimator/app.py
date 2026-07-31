@@ -7741,26 +7741,83 @@ SIDING_CATALOG_SEED = [
     # Derivations live in the commit that added them: lap siding is
     # $/board x boards-per-SQ at the manufacturer exposure, EDCO cartons
     # ship as 1 SQ, everything linear is $/stick / stick length.
-    {"id": "s_hardie_statement", "name": "James Hardie Statement Collection 8.25\" Lap", "unit": "SQ", "cost": 248.71, "measure": "siding_sq_waste"},
-    {"id": "s_hardie_primed", "name": "James Hardie Primed 8.25\" Cedar Mill Lap", "unit": "SQ", "cost": 201.29, "measure": "siding_sq_waste"},
-    {"id": "s_lp_expert", "name": "LP SmartSide Expert Finish 8\" Lap", "unit": "SQ", "cost": 245.14, "measure": "siding_sq_waste"},
-    {"id": "s_lp_standard", "name": "LP SmartSide 8\" Cedar Text Lap", "unit": "SQ", "cost": 163.61, "measure": "siding_sq_waste"},
-    {"id": "s_edco_d4", "name": "EDCO D4\" TimberGrain Steel Siding", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste"},
-    {"id": "s_edco_8", "name": "EDCO 8\" Enduragrain Steel Siding", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste"},
-    {"id": "sa_wrap_hardie", "name": "Hardie Wrap", "unit": "SQ", "cost": 23.46, "measure": "siding_sq_waste"},
-    {"id": "sa_wrap_tribuilt", "name": "TriBuilt House Wrap", "unit": "SQ", "cost": 6.23, "measure": "siding_sq_waste"},
-    {"id": "sa_hardie_statement_trim", "name": "James Hardie Statement Trim 5/4×5.5", "unit": "LF", "cost": 2.6, "measure": "siding_trim"},
-    {"id": "sa_hardie_primed_trim", "name": "James Hardie Primed Trim 5/4×6", "unit": "LF", "cost": 2.51, "measure": "siding_trim"},
-    {"id": "sa_lp_expert_trim", "name": "LP Expert Finish Trim 5/4×5.5", "unit": "LF", "cost": 2.33, "measure": "siding_trim"},
-    {"id": "sa_lp_standard_trim", "name": "LP SmartSide Trim 5/4×6", "unit": "LF", "cost": 1.83, "measure": "siding_trim"},
-    {"id": "sa_edco_jchannel", "name": "EDCO 5/8\" J-Channel", "unit": "LF", "cost": 1.21, "measure": "j_channel"},
-    {"id": "sa_hardie_statement_soffit", "name": "James Hardie Statement Vented Soffit 24\"", "unit": "LF", "cost": 3.66, "measure": "siding_soffit"},
-    {"id": "sa_hardie_primed_soffit", "name": "James Hardie Primed Vented Soffit 24\"", "unit": "LF", "cost": 2.35, "measure": "siding_soffit"},
-    {"id": "sa_lp_expert_soffit", "name": "LP Expert Finish Vented Soffit 24\"", "unit": "LF", "cost": 6.51, "measure": "siding_soffit"},
-    {"id": "sa_lp_standard_soffit", "name": "LP SmartSide Vented Soffit 24\"", "unit": "LF", "cost": 4.06, "measure": "siding_soffit"},
-    {"id": "sa_edco_soffit", "name": "EDCO Soffit Panel 16\"×12'", "unit": "LF", "cost": 4.03, "measure": "siding_soffit"},
-    {"id": "sa_edco_corner", "name": "EDCO Snap-On Corner Post", "unit": "LF", "cost": 2.94, "measure": "corners_out"},
-    {"id": "sa_edco_starter", "name": "EDCO Starter Strip Steel", "unit": "LF", "cost": 1.05, "measure": "siding_starter"},
+    {"id": "s_hardie_statement", "name": "James Hardie Statement Collection 8.25\" Lap", "unit": "SQ", "cost": 248.71, "measure": "siding_sq_waste",
+     "bullets": ["James Hardie Statement Collection fiber cement lap, 8.25\" exposure",
+                 "ColorPlus factory finish — no field painting, backed by a 15-year finish warranty",
+                 "Non-combustible fiber cement — will not feed a fire",
+                 "Hail, pest, and rot proof; engineered for Colorado freeze-thaw",
+                 "30-year limited manufacturer warranty"]},
+    {"id": "s_hardie_primed", "name": "James Hardie Primed 8.25\" Cedar Mill Lap", "unit": "SQ", "cost": 201.29, "measure": "siding_sq_waste",
+     "bullets": ["James Hardie primed fiber cement lap, 8.25\" Cedar Mill woodgrain texture",
+                 "Field-painted in the color of your choice for a custom look",
+                 "Non-combustible fiber cement — will not feed a fire",
+                 "Hail, pest, and rot proof; engineered for Colorado freeze-thaw",
+                 "30-year limited manufacturer warranty"]},
+    {"id": "s_lp_expert", "name": "LP SmartSide Expert Finish 8\" Lap", "unit": "SQ", "cost": 245.14, "measure": "siding_sq_waste",
+     "bullets": ["LP SmartSide Expert Finish engineered wood lap, 8\" exposure",
+                 "Pre-finished at the factory — no field painting required",
+                 "SmartGuard-treated engineered wood resists rot, hail, and termites",
+                 "5/50 year limited manufacturer warranty"]},
+    {"id": "s_lp_standard", "name": "LP SmartSide 8\" Cedar Text Lap", "unit": "SQ", "cost": 163.61, "measure": "siding_sq_waste",
+     "bullets": ["LP SmartSide engineered wood lap, 8\" Cedar Text exposure",
+                 "Field-painted in the color of your choice",
+                 "SmartGuard-treated engineered wood resists rot, hail, and termites",
+                 "5/50 year limited manufacturer warranty"]},
+    {"id": "s_edco_d4", "name": "EDCO D4\" TimberGrain Steel Siding", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste",
+     "bullets": ["EDCO D4\" 28ga steel siding with TimberGrain wood-look finish",
+                 "Class 4 impact rated — will not crack or lose finish to hail",
+                 "May qualify for a homeowners insurance premium discount",
+                 "Non-combustible steel construction, baked-on finish that will not chip, peel, or fade",
+                 "Limited lifetime manufacturer warranty"]},
+    {"id": "s_edco_8", "name": "EDCO 8\" Enduragrain Steel Siding", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste",
+     "bullets": ["EDCO 8\" 28ga steel siding with Enduragrain finish",
+                 "Class 4 impact rated — will not crack or lose finish to hail",
+                 "May qualify for a homeowners insurance premium discount",
+                 "Non-combustible steel construction, baked-on finish that will not chip, peel, or fade",
+                 "Limited lifetime manufacturer warranty"]},
+    {"id": "sa_wrap_hardie", "name": "HardieWrap Weather Barrier", "unit": "SQ", "cost": 23.46, "measure": "siding_sq_waste",
+     "bullets": ["HardieWrap weather-resistant barrier over the full wall area — required for the James Hardie system warranty"]},
+    {"id": "sa_wrap_tribuilt", "name": "TriBuilt House Wrap", "unit": "SQ", "cost": 6.23, "measure": "siding_sq_waste",
+     "bullets": ["TriBuilt weather-resistant house wrap over the full wall area"]},
+    {"id": "sa_hardie_statement_trim", "name": "James Hardie Statement Trim 5/4×5.5", "unit": "LF", "cost": 2.6, "measure": "siding_trim",
+     "bullets": ["James Hardie Statement fiber cement trim at corners, windows, and doors — ColorPlus finished to match"]},
+    {"id": "sa_hardie_primed_trim", "name": "James Hardie Primed Trim 5/4×6", "unit": "LF", "cost": 2.51, "measure": "siding_trim",
+     "bullets": ["James Hardie primed fiber cement trim at corners, windows, and doors — painted to match"]},
+    {"id": "sa_lp_expert_trim", "name": "LP Expert Finish Trim 5/4×5.5", "unit": "LF", "cost": 2.33, "measure": "siding_trim",
+     "bullets": ["LP SmartSide Expert Finish trim at corners, windows, and doors — pre-finished to match"]},
+    {"id": "sa_lp_standard_trim", "name": "LP SmartSide Trim 5/4×6", "unit": "LF", "cost": 1.83, "measure": "siding_trim",
+     "bullets": ["LP SmartSide trim at corners, windows, and doors — painted to match"]},
+    {"id": "sa_edco_jchannel", "name": "EDCO 5/8\" J-Channel", "unit": "LF", "cost": 1.21, "measure": "j_channel",
+     "bullets": ["EDCO 5/8\" steel J-channel around every window and door"]},
+    {"id": "sa_hardie_statement_soffit", "name": "James Hardie Statement Vented Soffit 24\"", "unit": "LF", "cost": 3.66, "measure": "siding_soffit",
+     "bullets": ["James Hardie Statement vented fiber cement soffit — ColorPlus finished to match"]},
+    {"id": "sa_hardie_primed_soffit", "name": "James Hardie Primed Vented Soffit 24\"", "unit": "LF", "cost": 2.35, "measure": "siding_soffit",
+     "bullets": ["James Hardie primed vented fiber cement soffit — painted to match"]},
+    {"id": "sa_lp_expert_soffit", "name": "LP Expert Finish Vented Soffit 24\"", "unit": "LF", "cost": 6.51, "measure": "siding_soffit",
+     "bullets": ["LP SmartSide Expert Finish vented soffit — pre-finished to match"]},
+    {"id": "sa_lp_standard_soffit", "name": "LP SmartSide Vented Soffit 24\"", "unit": "LF", "cost": 4.06, "measure": "siding_soffit",
+     "bullets": ["LP SmartSide vented soffit — painted to match"]},
+    {"id": "sa_edco_soffit", "name": "EDCO Soffit Panel 16\"×12'", "unit": "LF", "cost": 4.03, "measure": "siding_soffit",
+     "bullets": ["EDCO 16\" steel soffit panels"]},
+    {"id": "sa_edco_corner", "name": "EDCO Snap-On Corner Post", "unit": "LF", "cost": 2.94, "measure": "corners_out",
+     "bullets": ["EDCO snap-on steel corner posts for a clean, finished outside corner"]},
+    {"id": "sa_edco_starter", "name": "EDCO Starter Strip Steel", "unit": "LF", "cost": 1.05, "measure": "siding_starter",
+     "bullets": ["EDCO steel starter strip that sets the first course dead level"]},
+    # ── Manufacturer-required accessories the initial QXO seed missed. ─────
+    # Manual qty (no measure key) on the ones the rep counts per house;
+    # sa_paint tracks siding area because it scales with the wall.
+    {"id": "sa_kickout", "name": "Kickout Flashing", "unit": "EA", "cost": 0,
+     "bullets": ["Kickout flashing at every roof-to-wall intersection — required to keep water out of the wall assembly and to satisfy the manufacturer warranty"]},
+    {"id": "sa_sealant", "name": "Elastomeric Sealant / Caulk", "unit": "LS", "cost": 0,
+     "bullets": ["Manufacturer-approved elastomeric sealant at butt joints and penetrations — required for the finish and system warranty"]},
+    {"id": "sa_paint", "name": "Field Paint (Primed Siding)", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste",
+     "bullets": ["Two-coat exterior paint applied over the primed siding in the color of your choice"]},
+    {"id": "sa_touchup", "name": "ColorPlus / Factory Touch-Up Paint", "unit": "LS", "cost": 0,
+     "bullets": ["Factory touch-up paint kept on site for field cuts and fasteners"]},
+    {"id": "sa_rot_repair", "name": "Rot Repair Allowance", "unit": "SF", "cost": 0,
+     "bullets": ["Sheathing or trim rot repair discovered on tear-off — priced per square foot and billed only if needed"]},
+    {"id": "sa_edco_fasteners", "name": "EDCO Manufacturer-Approved Fasteners", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste",
+     "bullets": ["EDCO-approved corrosion-resistant fasteners per the manufacturer's schedule"]},
 ]
 _SS = ["sa_house_wrap", "sa_starter", "sa_j_channel", "sa_corner_out", "sa_corner_in",
        "sa_trim", "sa_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"]
@@ -7790,22 +7847,22 @@ SIDING_BUNDLES_SEED = [
     {"id": "sb_hardie_shingle", "name": "James Hardie - Shingle / Panel", "product_ids": ["s_hardie_shingle"] + _SS,
      "description": "James Hardie shingle and panel siding - shake-style character in fiber cement, ideal for gables and accent walls.",
      "extra_features": _SS_EXTRA},
-    {"id": "b_lp_standard", "name": "LP SmartSide", "product_ids": ["s_lp_standard", "sa_wrap_tribuilt", "sa_lp_standard_trim", "sa_lp_standard_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+    {"id": "b_lp_standard", "name": "LP SmartSide", "product_ids": ["s_lp_standard", "sa_wrap_tribuilt", "sa_starter", "sa_lp_standard_trim", "sa_lp_standard_soffit", "sa_fascia", "sa_kickout", "sa_sealant", "sa_paint", "sa_rot_repair", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
      "description": "Engineered wood lap siding — field-painted to any color, 5/50 year limited warranty.",
      "extra_features": _SS_EXTRA},
-    {"id": "b_lp_expert", "name": "LP SmartSide Expert Finish", "product_ids": ["s_lp_expert", "sa_wrap_tribuilt", "sa_lp_expert_trim", "sa_lp_expert_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+    {"id": "b_lp_expert", "name": "LP SmartSide Expert Finish", "product_ids": ["s_lp_expert", "sa_wrap_tribuilt", "sa_starter", "sa_lp_expert_trim", "sa_lp_expert_soffit", "sa_fascia", "sa_kickout", "sa_sealant", "sa_touchup", "sa_rot_repair", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
      "description": "Pre-finished engineered wood siding — no painting required, 5/50 year warranty.",
      "extra_features": _SS_EXTRA},
-    {"id": "b_hardie_primed", "name": "James Hardie Primed", "product_ids": ["s_hardie_primed", "sa_wrap_hardie", "sa_hardie_primed_trim", "sa_hardie_primed_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
-     "description": "Fiber cement lap siding — field-painted to any color, non-combustible, lifetime limited warranty.",
+    {"id": "b_hardie_primed", "name": "James Hardie Primed", "product_ids": ["s_hardie_primed", "sa_wrap_hardie", "sa_starter", "sa_hardie_primed_trim", "sa_hardie_primed_soffit", "sa_fascia", "sa_kickout", "sa_sealant", "sa_paint", "sa_rot_repair", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+     "description": "Fiber cement lap siding — field-painted to any color, non-combustible, 30-year limited warranty.",
      "extra_features": _SS_EXTRA},
-    {"id": "b_hardie_statement", "name": "James Hardie Statement Collection", "product_ids": ["s_hardie_statement", "sa_wrap_hardie", "sa_hardie_statement_trim", "sa_hardie_statement_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+    {"id": "b_hardie_statement", "name": "James Hardie Statement Collection", "product_ids": ["s_hardie_statement", "sa_wrap_hardie", "sa_starter", "sa_hardie_statement_trim", "sa_hardie_statement_soffit", "sa_fascia", "sa_kickout", "sa_sealant", "sa_touchup", "sa_rot_repair", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
      "description": "Pre-finished fiber cement siding — no painting required, non-combustible, 15-year ColorPlus finish warranty.",
      "extra_features": _SS_EXTRA},
-    {"id": "b_edco_d4", "name": "EDCO D4\" TimberGrain", "product_ids": ["s_edco_d4", "sa_edco_jchannel", "sa_edco_corner", "sa_edco_starter", "sa_edco_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+    {"id": "b_edco_d4", "name": "EDCO D4\" TimberGrain", "product_ids": ["s_edco_d4", "sa_edco_jchannel", "sa_edco_corner", "sa_corner_in", "sa_edco_starter", "sa_edco_soffit", "sa_fascia", "sa_kickout", "sa_sealant", "sa_edco_fasteners", "sa_rot_repair", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
      "description": "28ga steel siding — Class 4 impact-rated, TimberGrain wood-look finish, lifetime limited warranty.",
      "extra_features": _SS_EXTRA},
-    {"id": "b_edco_8", "name": "EDCO 8\" Enduragrain", "product_ids": ["s_edco_8", "sa_edco_jchannel", "sa_edco_corner", "sa_edco_starter", "sa_edco_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
+    {"id": "b_edco_8", "name": "EDCO 8\" Enduragrain", "product_ids": ["s_edco_8", "sa_edco_jchannel", "sa_edco_corner", "sa_corner_in", "sa_edco_starter", "sa_edco_soffit", "sa_fascia", "sa_kickout", "sa_sealant", "sa_edco_fasteners", "sa_rot_repair", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
      "description": "28ga steel siding — Class 4 impact-rated, Enduragrain finish, lifetime limited warranty.",
      "extra_features": _SS_EXTRA},
 ]
@@ -7980,6 +8037,30 @@ _PRODUCT_SUPERSEDED = {'ca_fasteners': ['ca_fast_insul', 'ca_fast_seam']}
 _LATE_BUNDLE_IDS = {'b_lp_standard', 'b_lp_expert', 'b_hardie_primed',
                     'b_hardie_statement', 'b_edco_d4', 'b_edco_8'}
 
+# Product ids added to a SEEDED bundle after the trade already had live books.
+# Same trap as _LATE_BUNDLE_IDS but one level down: _BUNDLE_COPY_FIELDS does
+# not include product_ids (managers customize them), so changing a seed
+# bundle's product_ids never reaches production. This list forces specific
+# products into specific seeded bundles when they're missing.
+#
+# Use it for MANUFACTURER-REQUIRED accessories (kickout flashing, sealant,
+# paint on primed bundles, rot repair) — anything a bundle shouldn't be able
+# to ship without. Do NOT use it to reintroduce discretionary items a manager
+# may have deliberately removed. Drop an entry once live books have been
+# saved past it.
+#
+# 2026-07-31: the QXO siding bundles shipped missing the accessories the
+# manufacturer warranty depends on. This backfills them onto the six existing
+# seeded bundles in production.
+_LATE_BUNDLE_PRODUCTS = {
+    'b_lp_standard':      ['sa_starter', 'sa_kickout', 'sa_sealant', 'sa_paint', 'sa_rot_repair'],
+    'b_lp_expert':        ['sa_starter', 'sa_kickout', 'sa_sealant', 'sa_touchup', 'sa_rot_repair'],
+    'b_hardie_primed':    ['sa_starter', 'sa_kickout', 'sa_sealant', 'sa_paint', 'sa_rot_repair'],
+    'b_hardie_statement': ['sa_starter', 'sa_kickout', 'sa_sealant', 'sa_touchup', 'sa_rot_repair'],
+    'b_edco_d4':          ['sa_corner_in', 'sa_kickout', 'sa_sealant', 'sa_edco_fasteners', 'sa_rot_repair'],
+    'b_edco_8':           ['sa_corner_in', 'sa_kickout', 'sa_sealant', 'sa_edco_fasteners', 'sa_rot_repair'],
+}
+
 
 def _ensure_bundle_catalogs(pb):
     """Inject each bundle trade's catalog/bundles/defaults into a price book that
@@ -8061,6 +8142,18 @@ def _ensure_bundle_catalogs(pb):
                         at = live['product_ids'].index(old)
                         live['product_ids'][at:at + 1] = [
                             n for n in new_ids if n not in live['product_ids']]
+
+            # Manufacturer-required accessories added to seeded bundles after
+            # the trade already had live books. See _LATE_BUNDLE_PRODUCTS for
+            # the contract — this appends listed products only when missing,
+            # and only to bundles that still exist in the live book.
+            for bundle_id, late_ids in _LATE_BUNDLE_PRODUCTS.items():
+                live = by_id.get(bundle_id)
+                if live is None or not isinstance(live.get('product_ids'), list):
+                    continue
+                for pid in late_ids:
+                    if pid not in live['product_ids']:
+                        live['product_ids'].append(pid)
     for trade, bundle_id in SIMPLE_BUNDLE_DEFAULTS.items():
         pb.setdefault(trade + '_simple_default', bundle_id)
     return pb
