@@ -7086,7 +7086,7 @@ function daysAgoLabel(iso) {
   return `${d} days ago`;
 }
 function estStatusOf(e) {
-  if (e.signed) return 'signed';
+  if (e.signed || e.status === 'accepted') return 'signed';
   if (e.first_viewed_at) return 'viewed';
   if (e.sent) return 'sent';
   return 'draft';
@@ -7169,7 +7169,7 @@ function dashRow(e) {
     draft:  '<span class="dash-chip dash-chip-draft">Draft</span>',
   };
   let activity = '';
-  if (st === 'signed')      activity = `Signed ${daysAgoLabel(e.signed_at)}`;
+  if (st === 'signed')      activity = `${e.signed ? 'Signed' : 'Accepted'} ${daysAgoLabel(e.signed_at || e.updated_at)}`;
   else if (st === 'viewed') activity = `Viewed ${daysAgoLabel(e.last_viewed_at)}${e.view_count > 1 ? ` (${e.view_count}×)` : ''}`;
   else if (st === 'sent')   activity = `Sent ${daysAgoLabel(e.sent_at)} — not opened yet`;
   else                      activity = `Updated ${daysAgoLabel(e.updated_at)}`;
