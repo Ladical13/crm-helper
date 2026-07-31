@@ -36,7 +36,7 @@ const TIER_LABELS = { good:'Good', better:'Better', best:'Best' };
 // Trades built from a flat product catalog + named bundles (the tier dropdown)
 // instead of the per-tier template item list. Mirrored server-side by
 // BUNDLE_SEEDS in app.py — keep the two lists in sync.
-const BUNDLE_TRADES = ['roofing','siding','commercial'];
+const BUNDLE_TRADES = ['roofing','siding','windows','commercial'];
 function isBundleTrade(t) { return BUNDLE_TRADES.includes(t); }
 // Trades that sell as one price rather than Good/Better/Best unless the rep
 // says otherwise. Mirrored by SIMPLE_MODE_TRADES in app.py — the two must
@@ -924,6 +924,7 @@ const COMMERCIAL_MEAS_KEYS = new Set([
   'comm_insul_layers','comm_zone_field_sf','comm_zone_perim_sf','comm_zone_corner_sf',
   'comm_seam_attach','comm_insul_attach',
 ]);
+const WINDOWS_MEAS_KEYS = new Set(['windows_count','doors_count']);
 function setMeasurement(key, v) {
   if (!S.measurements) S.measurements = {};
   S.measurements[key] = parseFloat(v) || 0;
@@ -945,6 +946,13 @@ function setMeasurement(key, v) {
     const cd = S.trades.commercial;
     if (cd && cd.enabled && (!cd.line_items || cd.line_items.length === 0)) {
       buildBundleDefaults('commercial');
+      built = true;
+    }
+  }
+  if (WINDOWS_MEAS_KEYS.has(key)) {
+    const wd = S.trades.windows;
+    if (wd && wd.enabled && (!wd.line_items || wd.line_items.length === 0)) {
+      buildBundleDefaults('windows');
       built = true;
     }
   }

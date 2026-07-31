@@ -357,17 +357,17 @@ def test_leaving_custom_for_a_bundle_drops_the_custom_name(tmp_path):
 
 
 def test_non_bundle_trade_is_untouched(tmp_path):
-    """windows/gutters/other still use the per-tier template model."""
-    est = {'trades': {'windows': {'enabled': True, 'mode': 'gbb', 'line_items': []}}}
+    """gutters/other still use the per-tier template model."""
+    est = {'trades': {'gutters': {'enabled': True, 'mode': 'gbb', 'line_items': []}}}
     scenario = tmp_path / 's.json'
     out = tmp_path / 'o.json'
     scenario.write_text(json.dumps({'priceBook': PRICE_BOOK, 'estimate': est, 'ops': [
-        {'op': 'applyBundle', 'trade': 'windows', 'tier': 'good', 'id': 'b_vinyl'}]}),
+        {'op': 'applyBundle', 'trade': 'gutters', 'tier': 'good', 'id': 'b_vinyl'}]}),
         encoding='utf-8')
     r = subprocess.run(['node', RUNNER, str(scenario), str(out)],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    td = json.loads(out.read_text(encoding='utf-8'))['trades']['windows']
+    td = json.loads(out.read_text(encoding='utf-8'))['trades']['gutters']
     assert td['line_items'] == []
     assert 'tier_bundles' not in td
 

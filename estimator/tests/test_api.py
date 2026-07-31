@@ -183,7 +183,7 @@ def test_non_object_estimate_document_is_skipped(client):
 # references a missing product id, or a tier default pointing at a deleted
 # bundle, silently ships an empty tier to a rep. Guard the shipped seeds.
 
-@pytest.mark.parametrize('trade', ['roofing', 'siding', 'commercial'])
+@pytest.mark.parametrize('trade', ['roofing', 'siding', 'windows', 'commercial'])
 def test_pricebook_serves_bundle_catalog(client, trade):
     pb = client.get('/api/pricebook').get_json()
     assert pb[f'{trade}_catalog'], f'{trade} catalog must be seeded'
@@ -191,7 +191,7 @@ def test_pricebook_serves_bundle_catalog(client, trade):
     assert set(pb[f'{trade}_tier_defaults']) == {'good', 'better', 'best'}
 
 
-@pytest.mark.parametrize('trade', ['roofing', 'siding', 'commercial'])
+@pytest.mark.parametrize('trade', ['roofing', 'siding', 'windows', 'commercial'])
 def test_bundles_reference_real_products(client, trade):
     pb = client.get('/api/pricebook').get_json()
     ids = {p['id'] for p in pb[f'{trade}_catalog']}
@@ -201,7 +201,7 @@ def test_bundles_reference_real_products(client, trade):
         assert b.get('product_ids'), f"{trade} bundle {b['name']} has no products"
 
 
-@pytest.mark.parametrize('trade', ['roofing', 'siding'])
+@pytest.mark.parametrize('trade', ['roofing', 'siding', 'windows'])
 def test_tier_defaults_point_at_real_bundles(client, trade):
     pb = client.get('/api/pricebook').get_json()
     ids = {b['id'] for b in pb[f'{trade}_bundles']}
@@ -209,7 +209,7 @@ def test_tier_defaults_point_at_real_bundles(client, trade):
         assert bid in ids, f'{trade} {tier} default bundle {bid!r} does not exist'
 
 
-@pytest.mark.parametrize('trade', ['roofing', 'siding', 'commercial'])
+@pytest.mark.parametrize('trade', ['roofing', 'siding', 'windows', 'commercial'])
 def test_every_seeded_bundle_ships_customer_copy(client, trade):
     """A bundle with no copy silently leaves the PREVIOUS product's tagline and
     bullets on the card when a rep swaps to it — how a metal roof goes out
@@ -225,7 +225,7 @@ def test_every_seeded_bundle_ships_customer_copy(client, trade):
         assert speaks, f"{trade} bundle {b['name']} has no product that says anything"
 
 
-@pytest.mark.parametrize('trade', ['roofing', 'siding', 'commercial'])
+@pytest.mark.parametrize('trade', ['roofing', 'siding', 'windows', 'commercial'])
 def test_seeded_product_bullets_are_never_blank(client, trade):
     """A blank bullet prints as an empty dot on the customer's card."""
     for p in client.get('/api/pricebook').get_json()[f'{trade}_catalog']:

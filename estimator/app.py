@@ -7968,11 +7968,73 @@ COMMERCIAL_TIER_DEFAULTS_SEED = {"good": "cb_epdm", "better": "cb_tpo_ma", "best
 # how a commercial bid sells by default.
 COMMERCIAL_SIMPLE_DEFAULT = "cb_tpo_ma"
 
+# Windows catalog. Costs are PLACEHOLDERS — the manager sets real numbers in
+# Price Book -> Windows -> Products. Simonton is the value tier, ProVia is the
+# step-up (Endure vinyl) and premium (Aeris fiberglass).
+WINDOWS_CATALOG_SEED = [
+    {"id": "w_simonton", "name": "Simonton Reflections 5500 Double-Pane Low-E", "unit": "EA", "cost": 0, "measure": "windows",
+     "bullets": ["Simonton Reflections 5500 vinyl window",
+                 "Double-pane insulated glass with Low-E coating and argon gas fill",
+                 "Fusion-welded frame and sash for a tight, weather-resistant seal",
+                 "Energy Star certified for Colorado's climate zone",
+                 "Double lifetime limited manufacturer warranty"]},
+    {"id": "w_provia_endure", "name": "ProVia Endure Vinyl Double-Pane Low-E", "unit": "EA", "cost": 0, "measure": "windows",
+     "bullets": ["ProVia Endure premium vinyl window",
+                 "Double-pane insulated glass with Low-E coating and argon gas fill",
+                 "Heavier-gauge vinyl frame with foam-insulated chambers for a tighter U-factor",
+                 "Wider color palette and interior wood-grain options",
+                 "Lifetime limited manufacturer warranty"]},
+    {"id": "w_provia_aeris", "name": "ProVia Aeris Fiberglass Triple-Pane Low-E", "unit": "EA", "cost": 0, "measure": "windows",
+     "bullets": ["ProVia Aeris fiberglass window with a real-wood interior",
+                 "Triple-pane insulated glass with Low-E coatings and argon gas fill",
+                 "Fiberglass frame expands and contracts at the same rate as the glass — no seal fatigue",
+                 "The highest energy performance available for Colorado's climate extremes",
+                 "Premium sound reduction and maximum insulation value",
+                 "Lifetime limited manufacturer warranty"]},
+    {"id": "wa_wrap", "name": "Flashing Tape & Window Wrap", "unit": "EA", "cost": 0, "measure": "windows",
+     "bullets": ["Self-adhered flashing tape and window wrap at every rough opening for a fully sealed installation"]},
+    {"id": "wa_trim", "name": "Window Trim Kit", "unit": "EA", "cost": 0, "measure": "windows",
+     "bullets": ["Interior and exterior trim kit at every window"]},
+    {"id": "wa_casing", "name": "Exterior Casing", "unit": "LF", "cost": 0,
+     "bullets": ["Exterior casing with proper flashing integration"]},
+    {"id": "wa_screens", "name": "Insect Screens", "unit": "EA", "cost": 0, "measure": "windows",
+     "bullets": ["Full insect screens on every operable window"]},
+    # Labor prices into the package but is NOT broken out for the customer,
+    # same rule as siding labor — the ROW is hidden but the promise is not.
+    {"id": "wl_removal", "name": "Removal & Disposal Labor", "unit": "EA", "cost": 0, "measure": "windows",
+     "customer_visible": False,
+     "bullets": ["Careful removal and disposal of the existing windows"]},
+    {"id": "wl_install", "name": "Install Labor", "unit": "EA", "cost": 0, "measure": "windows",
+     "customer_visible": False,
+     "bullets": ["Installed level, plumb, and square with full foam insulation and air sealing per manufacturer spec"]},
+    {"id": "wx_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
+     "bullets": ["Dumpster and full site cleanup"]},
+    {"id": "wx_permit", "name": "Permit", "unit": "LS", "cost": 0,
+     "bullets": ["Permit pulled and final inspection scheduled"]},
+]
+_WS = ["wa_wrap", "wa_trim", "wa_casing", "wa_screens", "wl_removal", "wl_install",
+       "wx_dumpster", "wx_permit"]
+_WS_EXTRA = ["5-year Project One workmanship warranty"]
+WINDOWS_BUNDLES_SEED = [
+    {"id": "wb_simonton", "name": "Simonton Reflections", "product_ids": ["w_simonton"] + _WS,
+     "description": "Simonton Reflections 5500 vinyl — Energy Star Low-E performance backed by a double lifetime warranty.",
+     "extra_features": _WS_EXTRA},
+    {"id": "wb_provia_endure", "name": "ProVia Endure", "product_ids": ["w_provia_endure"] + _WS,
+     "description": "ProVia Endure premium vinyl — heavier-gauge frame, deeper color options, and a step up in energy performance.",
+     "extra_features": _WS_EXTRA},
+    {"id": "wb_provia_aeris", "name": "ProVia Aeris", "product_ids": ["w_provia_aeris"] + _WS,
+     "description": "ProVia Aeris fiberglass with triple-pane Low-E — the highest energy performance and quietest interior available.",
+     "extra_features": _WS_EXTRA},
+]
+WINDOWS_TIER_DEFAULTS_SEED = {"good": "wb_simonton", "better": "wb_provia_endure",
+                              "best": "wb_provia_aeris"}
+
 # trade -> (catalog seed, bundle seed, tier-default seed). Mirrored client-side
 # by BUNDLE_TRADES in app.js — keep the two lists in sync.
 BUNDLE_SEEDS = {
     'roofing': (ROOFING_CATALOG_SEED, ROOFING_BUNDLES_SEED, ROOFING_TIER_DEFAULTS_SEED),
     'siding':  (SIDING_CATALOG_SEED,  SIDING_BUNDLES_SEED,  SIDING_TIER_DEFAULTS_SEED),
+    'windows': (WINDOWS_CATALOG_SEED, WINDOWS_BUNDLES_SEED, WINDOWS_TIER_DEFAULTS_SEED),
     'commercial': (COMMERCIAL_CATALOG_SEED, COMMERCIAL_BUNDLES_SEED, COMMERCIAL_TIER_DEFAULTS_SEED),
 }
 # trade -> bundle id used when the trade prices as a single package.
