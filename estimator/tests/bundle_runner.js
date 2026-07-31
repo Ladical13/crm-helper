@@ -57,7 +57,7 @@ function grabConst(name) {
 
 const CONSTS = ['TIERS', 'BUNDLE_TRADES', 'SIMPLE_MODE_TRADES', 'DEFAULT_RATE'];
 const NAMES = ['isBundleTrade', 'effectiveTradeMode', '_tradeCatalog', '_tradeBundles',
-               '_tradeBundle', 'bundleFeatures', '_rateValue', '_resolveRate', 'tradeRate', 'tierRate',
+               '_tradeBundle', 'bundleFeatures', 'bundleDescription', '_rateValue', '_resolveRate', 'tradeRate', 'tierRate',
                'tradeTier', 'simpleApplyMargin', 'applyBundleToTier', 'seedTradeBundles',
                'defaultSimpleBundle', 'buildSimpleItemsFromBundle', 'applyBundleToSimple',
                'buildBundleDefaults', '_carryItemIdentity', 'setTradeMode',

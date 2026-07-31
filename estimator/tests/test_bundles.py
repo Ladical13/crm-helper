@@ -119,6 +119,19 @@ def test_bundle_description_fills_the_options_page(tmp_path):
     assert td['tier_descriptions']['best'] == 'Fiber cement.'
 
 
+def test_product_desc_wins_over_bundle_description(tmp_path):
+    """A tagline set on the primary material follows the material into any bundle,
+    so swapping the material also swaps the customer story. Bundle description is
+    the fallback for bundles whose products don't override it."""
+    book = json.loads(json.dumps(PRICE_BOOK))
+    for p in book['siding_catalog']:
+        if p['id'] == 's_hardie':
+            p['desc'] = 'From the material itself.'
+    td = _run(tmp_path, _estimate(), [
+        {'op': 'applyBundle', 'trade': 'siding', 'tier': 'best', 'id': 'b_hardie'}], book)
+    assert td['tier_descriptions']['best'] == 'From the material itself.'
+
+
 def test_bundle_features_fill_the_options_page(tmp_path):
     """Built from the bundle's products, in product_ids order, then the bundle's
     own closing bullets."""

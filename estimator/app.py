@@ -1793,19 +1793,53 @@ def _pick_summary_label(est):
 
 def _trade_tier_content(est, trade):
     """(features, descriptions) dicts for one trade's package cards. Legacy
-    estimates carried ONE estimate-level set — it belongs to the first GBB
-    trade so pre-existing shared estimates keep their copy."""
+    estimates carried ONE estimate-level set — that copy belongs to ROOFING,
+    which is where G/B/B lived before it went per-trade. Handing it to whatever
+    trade happened to be first in the list leaks roofing bullets onto a
+    siding/windows card when roofing isn't enabled."""
     td = (est.get('trades') or {}).get(trade) or {}
     feats = td.get('tier_features')
     descs = td.get('tier_descriptions')
     if not isinstance(feats, dict):
-        first = (_gbb_trade_keys(est) or [None])[0]
-        feats = est.get('tier_features') if trade == first else {}
-        if not isinstance(descs, dict):
-            descs = est.get('tier_descriptions') if trade == first else {}
+        feats = est.get('tier_features') if trade == 'roofing' else {}
     if not isinstance(descs, dict):
-        descs = {}
+        descs = est.get('tier_descriptions') if trade == 'roofing' else {}
     return (feats or {}), (descs or {})
+
+
+def _autofill_tier_features(est, trade, tier):
+    """Bullets built from priced, customer-visible line items — the fallback
+    when the rep hasn't curated tier content on the Options tab. Mirrors the
+    Auto-fill button in the UI so a blank card never reaches the customer."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    if not td.get('enabled'):
+        return []
+    mode = _trade_mode(trade, td)
+    out, seen = [], set()
+    for item in td.get('line_items', []) or []:
+        if item.get('customer_visible') is False:
+            continue
+        name = (item.get('name') or '').strip()
+        if not name:
+            continue
+        qty  = float(item.get('quantity') or 0)
+        if mode == 'simple':
+            up = float(item.get('unit_price') or 0)
+            if qty <= 0 and up <= 0:
+                continue
+            desc = (item.get('description') or '').strip()
+        else:
+            ti = (item.get('tiers') or {}).get(tier) or {}
+            if ti.get('included') is False:
+                continue
+            cost = float(ti.get('material_unit_cost') or 0) + float(ti.get('labor_unit_cost') or 0)
+            if qty <= 0 and cost <= 0:
+                continue
+            desc = (ti.get('description') or '').strip()
+        line = f'{name} — {desc}' if desc and desc != name else name
+        if line not in seen:
+            seen.add(line); out.append(line)
+    return out
 
 
 def _tier_package_names(est, trade):
@@ -3693,8 +3727,12 @@ def build_customer_view(est, token):
             sysname = str(tnames.get(t) or '').strip()
             sys_el  = f'<div class="cv-tier-system">{he(sysname)}</div>' if sysname else ''
             # "What's Included" bullets the rep curates on the Options page — shown
-            # to the customer making the Good/Better/Best decision.
+            # to the customer making the Good/Better/Best decision. If the rep hasn't
+            # curated any, fall back to the priced-items autofill so the card is
+            # never empty (windows especially — no bundle seeds them).
             feats = [str(f).strip() for f in (tfeat.get(t) or []) if str(f).strip()]
+            if not feats:
+                feats = _autofill_tier_features(est, tk, t)
             feats_el = ''
             if feats:
                 feats_el = ('<ul class="cv-tier-feats">'
@@ -3950,6 +3988,19 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:#0e2440;
 .pt-feats li::before{content:'\\2713 ';color:#16a34a;font-weight:700}
 .pt-chk{margin-top:14px;text-align:center;font-weight:700;font-size:14px;
   padding:10px;border-radius:8px;transition:all .15s}
+/* what's-included disclosure inside a trade slide */
+.ps-pkg-details{margin-top:22px;border:1px solid #e2e8f0;border-radius:10px;background:#fafbfc}
+.ps-pkg-details summary{padding:12px 18px;cursor:pointer;font-weight:600;color:#0e2440;
+  font-size:14px;list-style:none;user-select:none}
+.ps-pkg-details summary::-webkit-details-marker{display:none}
+.ps-pkg-details summary::before{content:'\\25B8 ';color:#94a3b8;margin-right:6px;
+  display:inline-block;transition:transform .15s}
+.ps-pkg-details[open] summary::before{transform:rotate(90deg)}
+.ps-pkg-details .ps-items{padding:6px 18px 18px}
+/* staff-only edit hint on a trade slide */
+.ps-pkg-edit-hint{text-align:center;font-size:12px;color:#94a3b8;font-style:italic;
+  margin:-14px 0 18px;padding:6px 12px;background:#f8fafc;border-radius:6px;
+  border:1px dashed #e2e8f0}
 /* total bar */
 .ps-total{background:#0e2440;color:#fff;border-radius:12px;padding:18px 24px;
   display:flex;align-items:center;justify-content:space-between;margin-top:20px}
@@ -4126,7 +4177,11 @@ def build_presentation_view(est, token):
     totals   = {}
 
     if not is_insurance and gbb_tks:
-        pkg_sections = ''
+        # Compute per-trade defaults + totals up front so the sign slide can
+        # reach them, then emit ONE slide per trade — cards, details, subtotal.
+        is_staff = bool(session.get('user'))
+        edit_hint = ('<div class="ps-pkg-edit-hint">Edit taglines &amp; bullets on the '
+                     'Options tab in the estimator</div>') if is_staff else ''
         for tk in gbb_tks:
             tfeat, tdesc = _trade_tier_content(est, tk)
             tnames = _tier_package_names(est, tk)
@@ -4149,6 +4204,8 @@ def build_presentation_view(est, token):
                 sysname = str(tnames.get(t) or '').strip()
                 sys_e   = f'<div class="pt-sys">{he(sysname)}</div>' if sysname else ''
                 feats = [str(f).strip() for f in (tfeat.get(t) or []) if str(f).strip()]
+                if not feats:
+                    feats = _autofill_tier_features(est, tk, t)
                 feats_e = ''
                 if feats:
                     feats_e = ('<ul class="pt-feats">'
@@ -4170,12 +4227,31 @@ def build_presentation_view(est, token):
                   <div class="pt-chk" style="background:{chk_bg};color:{chk_clr}">{chk_txt}</div>
                 </div>'''
 
-            heading = f'{trade_lbls.get(tk, tk.title())} — Choose Your Package' if multi else ''
-            heading_html = f'<div class="ps-pkg-tn">{heading}</div>' if heading else ''
-            pkg_sections += f'''<div class="ps-pkg-trade">
-              {heading_html}
+            # Line-item detail blocks for THIS trade at each tier (JS toggles
+            # visibility as the customer taps a package).
+            items_blocks = ''
+            for t in enabled_tiers:
+                li_html, _tot = render_line_items(est, tier=t, only_trades=[tk])
+                vis = '' if t == d_tier else 'display:none'
+                items_blocks += (f'<div id="pt-items-{tk}-{t}" '
+                                 f'style="{vis}">{li_html}</div>\n')
+
+            trade_lbl = trade_lbls.get(tk, tk.title())
+            slides.append((f'{trade_lbl}', f'''<div class="ps-pkg">
+              <h2>Your {he(trade_lbl)} Package</h2>
+              <div class="sub">Tap to select &mdash; your subtotal updates instantly</div>
+              {edit_hint}
               <div class="pt-cards" style="--cols:{len(enabled_tiers)}">{cards}</div>
-            </div>'''
+              <details class="ps-pkg-details">
+                <summary>What&rsquo;s included in this package</summary>
+                <div class="ps-items">{items_blocks}</div>
+              </details>
+              <div class="ps-total">
+                <div class="ps-total-l" id="pt-sub-{tk}-lbl">{he(trade_lbl)} &mdash;
+                  {he(tier_lbls[d_tier])}</div>
+                <div class="ps-total-a" id="pt-sub-{tk}-amt">{fc(totals[tk][d_tier])}</div>
+              </div>
+            </div>'''))
 
         simple_html_pres, simple_total = render_line_items(est, only_trades=simple_tks)
         default_total = simple_total + sum(totals[tk][defaults[tk]] for tk in gbb_tks)
@@ -4183,30 +4259,19 @@ def build_presentation_view(est, token):
                                      for tk in gbb_tks) if multi
                          else tier_lbls[defaults[gbb_tks[0]]] + ' Package')
 
-        slides.append(('Your Options', f'''<div class="ps-pkg">
-          <h2>Choose Your Package</h2>
-          <div class="sub">Tap to select &mdash; your total updates instantly</div>
-          {pkg_sections}
-          <div class="ps-total">
-            <div class="ps-total-l" id="pt-total-lbl">Total &mdash; {he(default_lbl)}</div>
-            <div class="ps-total-a" id="pt-total-amt">{fc(default_total)}</div>
-          </div>
-        </div>'''))
-
-        # Items per tier (all rendered, JS toggles visibility)
-        items_blocks = ''
-        for tk in gbb_tks:
-            for t in enabled_tiers:
-                li_html, _tot = render_line_items(est, tier=t, only_trades=[tk])
-                vis = '' if t == defaults[tk] else 'display:none'
-                items_blocks += f'<div id="pt-items-{tk}-{t}" style="{vis}">{li_html}</div>\n'
+        # Fixed-price simple trades ride their own slide (rare — usually
+        # everything is G/B/B or nothing is)
         if simple_html_pres.strip():
-            items_blocks += simple_html_pres
-
-        slides.append(('Details', f'''<div class="ps-items">
-          <h2>What&rsquo;s Included</h2>
-          {items_blocks}
-        </div>'''))
+            slides.append(('Also Included', f'''<div class="ps-items">
+              <h2>Also Included</h2>
+              <div class="sub" style="text-align:center;font-size:15px;color:#64748b;margin-bottom:20px">
+                Fixed-price items in this estimate</div>
+              {simple_html_pres}
+              <div class="ps-total">
+                <div class="ps-total-l">Fixed Items Subtotal</div>
+                <div class="ps-total-a">{fc(simple_total)}</div>
+              </div>
+            </div>'''))
 
     elif is_insurance:
         ins_html, ins_total = _insurance_cv_table(est)
@@ -4352,8 +4417,13 @@ function presSelect(trade,tier){{
 }}
 function _presTotal(){{
   var sum=_pts,parts=[];
-  _ptr.forEach(function(tr){{var g=_ptg[tr];sum+=(g.totals[g.cur]||0);
+  _ptr.forEach(function(tr){{var g=_ptg[tr];var sub=g.totals[g.cur]||0;sum+=sub;
     parts.push(_tl[tr]+': '+_tn[g.cur]);
+    // Per-trade subtotal on the trade's own slide
+    var sblbl=document.getElementById('pt-sub-'+tr+'-lbl');
+    if(sblbl)sblbl.textContent=_tl[tr]+' \\u2014 '+_tn[g.cur];
+    var sbamt=document.getElementById('pt-sub-'+tr+'-amt');
+    if(sbamt)sbamt.textContent=_fmt(sub);
   }});
   var lbl=_ptm?parts.join(' \\xb7 '):(_tn[_ptg[_ptr[0]].cur]+' Package');
   var el=document.getElementById('pt-total-lbl');if(el)el.textContent='Total \\u2014 '+lbl;

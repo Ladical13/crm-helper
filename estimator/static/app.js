@@ -90,12 +90,13 @@ function _syncLegacyTier() {
   if (first) S.selected_tier = tradeTier(first);
 }
 function tradeTierContent(trade) {
-  // Ensure + return this trade's package content, migrating estimate-level
-  // fields into the FIRST GBB trade so pre-existing estimates keep their copy.
+  // Ensure + return this trade's package content. Legacy estimate-level
+  // tier_features/tier_descriptions came from a single-trade world where the
+  // ONE trade was roofing — migrating them into the current first GBB trade
+  // leaks roofing bullets onto siding/windows/other cards.
   const td = S.trades[trade]; if (!td) return { features:{}, descriptions:{} };
   if (!td.tier_features) {
-    const isFirst = gbbTrades()[0] === trade;
-    const legacy  = isFirst && S.tier_features &&
+    const legacy = trade === 'roofing' && S.tier_features &&
       TIERS.some(t => (S.tier_features[t] || []).length);
     td.tier_features     = legacy ? JSON.parse(JSON.stringify(S.tier_features))
                                   : { good:[], better:[], best:[] };
@@ -2278,7 +2279,12 @@ function pbRenderRoofCatalog() {
           </tr>
           ${_pbBulletsOpen[it.id] ? `
           <tr class="pb-bullets-row"><td></td><td colspan="6">
-            <label class="pb-variant-field-label">Customer wording <small>one bullet per line</small></label>
+            <label class="pb-variant-field-label">Tagline <small>one line under the package price when this product is the primary material — overrides the bundle's default</small></label>
+            <input class="pb-bullets-ta" type="text"
+              value="${esc(it.desc||'')}"
+              placeholder="Short customer-facing tagline for this product"
+              onchange="pbRoofCatSetDesc(${i},this.value)">
+            <label class="pb-variant-field-label" style="margin-top:10px">Customer wording <small>one bullet per line</small></label>
             <textarea class="pb-bullets-ta" rows="3"
               placeholder="${esc(it.name||'Product name')}"
               onchange="pbRoofCatSetBullets(${i},this.value)">${esc((it.bullets||[]).join('\n'))}</textarea>
@@ -2316,6 +2322,14 @@ function pbRoofCatSetBullets(i, text) {
   const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
   if (lines.length) it.bullets = lines; else delete it.bullets;
   renderPBModal();
+}
+// Optional per-product tagline. When a bundle is applied to a tier, the first
+// product in that bundle with a non-empty `desc` wins over the bundle's own
+// description — so swapping the primary material also swaps the customer story.
+function pbRoofCatSetDesc(i, text) {
+  const it = pbCat()[i]; if (!it) return;
+  const t = (text || '').trim();
+  if (t) it.desc = t; else delete it.desc;
 }
 function pbRoofCatSilence(i, on) {
   const it = pbCat()[i]; if (!it) return;
@@ -2782,6 +2796,10 @@ function pbVariantEditor(item, i, tier) {
             onchange="pbSetVariant(${i},'${tier}',${vi},'cost',this.value)">
           <button class="pb-variant-del" title="Remove option" onclick="pbRemoveVariant(${i},'${tier}',${vi})">✕</button>
         </div>
+        <label class="pb-variant-field-label pb-variant-field-label-price">Tagline (optional)</label>
+        <input class="pb-variant-label" type="text" value="${esc(v.description||'')}"
+          placeholder="Short customer-facing tagline for this product"
+          onchange="pbSetVariant(${i},'${tier}',${vi},'description',this.value)">
         <label class="pb-variant-field-label pb-variant-field-label-price">Customer notes (optional)</label>
         <textarea class="pb-variant-notes" rows="2"
           placeholder="Shown on the customer estimate when this product is selected"
@@ -4765,7 +4783,7 @@ function liSetNameSmart(trade, id, v) {
         if (!Array.isArray(tt.variants)) {
           const menu = t['variants_'+tier];
           if (Array.isArray(menu) && menu.length) {
-            tt.variants = menu.map(v => ({ label: v.label || '', cost: parseFloat(v.cost)||0, notes: v.notes || '', features: Array.isArray(v.features) ? v.features.slice() : [] }));
+            tt.variants = menu.map(v => ({ label: v.label || '', cost: parseFloat(v.cost)||0, notes: v.notes || '', description: v.description || '', features: Array.isArray(v.features) ? v.features.slice() : [] }));
             const hit = tt.variants.findIndex(v => v.label && v.label === tt.description);
             tt.selected_variant = hit >= 0 ? hit : -1;
           }
@@ -4851,6 +4869,21 @@ function bundleFeatures(trade, bundle) {
   });
   (bundle.extra_features || []).forEach(push);
   return out;
+}
+
+/* First product in the bundle that carries its own tagline wins. Falls back to
+   the bundle's default `description`. The two knobs stay independent: a manager
+   can set every material's tagline once and reuse them across bundles without
+   editing bundles at all, while leftover bundles keep their old default. */
+function bundleDescription(trade, bundle) {
+  if (!bundle) return '';
+  const catalog = _tradeCatalog(trade);
+  for (const pid of (bundle.product_ids || [])) {
+    const p = catalog.find(x => x.id === pid);
+    const d = p && typeof p.desc === 'string' ? p.desc.trim() : '';
+    if (d) return d;
+  }
+  return (typeof bundle.description === 'string') ? bundle.description : '';
 }
 
 function applyBundleToTier(trade, tier, bundleId, autoOpen) {
@@ -4944,10 +4977,15 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   // point: swapping Best from a laminate shingle to standing seam must not leave
   // shingle copy on the card. Copy the bundle doesn't define is left alone,
   // since there'd be nothing to replace it with.
+  //
+  // Tagline preference: first product in the bundle with its own `desc` wins,
+  // so swapping the primary material inside a bundle carries its tagline with
+  // it. Falls back to bundle.description when no product overrides it.
   const feats = bundleFeatures(trade, bundle);
-  if (bundle.description || feats.length) {
+  const desc  = bundleDescription(trade, bundle);
+  if (desc || feats.length) {
     const content = tradeTierContent(trade);
-    if (bundle.description) content.descriptions[tier] = bundle.description;
+    if (desc) content.descriptions[tier] = desc;
     if (feats.length) content.features[tier] = feats;
   }
 
@@ -6458,6 +6496,10 @@ function liSetVariant(trade, id, tier, idx) {
     if (Array.isArray(v.features) && v.features.length) {
       tradeTierContent(trade).features[tier] = v.features.slice();
     }
+    // Same rule for the tagline: a variant's `description` becomes this tier's
+    // Options-tab tagline. Empty description leaves the rep's tagline alone.
+    const vd = typeof v.description === 'string' ? v.description.trim() : '';
+    if (vd) tradeTierContent(trade).descriptions[tier] = vd;
   }
   setDirty(); rerender();
   if (activePage === 'pricing') renderTradeContent();
@@ -6675,6 +6717,7 @@ function applyTierVariants(trade, t, tiers) {
     if (!Array.isArray(menu) || !menu.length) return;
     const variants = menu.map(v => ({
       label: v.label || '', cost: parseFloat(v.cost)||0, notes: v.notes || '',
+      description: v.description || '',
       features: Array.isArray(v.features) ? v.features.slice() : []
     }));
     const cell = tiers[tier] || (tiers[tier] = {material_unit_cost:0,labor_unit_cost:0,description:'',notes:'',included:true});
