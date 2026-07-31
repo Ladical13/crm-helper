@@ -7249,12 +7249,7 @@ def customer_sign(token):
     # A logged-in team member opening the link is a preview, not a customer
     # view — don't skew the viewed/not-viewed analytics or email the rep.
     if session.get('user'):
-        html = build_customer_view(est, token)
-        ribbon = ('<div style="position:fixed;bottom:14px;left:50%;transform:translateX(-50%);'
-                  'background:#1e293b;color:#fff;padding:7px 16px;border-radius:999px;'
-                  'font:600 12px/1.4 sans-serif;box-shadow:0 4px 12px rgba(0,0,0,.35);'
-                  'z-index:9999;white-space:nowrap">&#128065; Team preview &mdash; views aren\'t counted</div>')
-        return html.replace('</body>', ribbon + '</body>', 1)
+        return build_customer_view(est, token)
 
     # Record the customer view; notify the rep on the first one
     try:
