@@ -418,7 +418,9 @@ def _fetch_hail_days(date_strs):
             return ds, _fetch_hail_cached(ds)
         except Exception:
             return ds, []
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    # 16 workers keeps a 5-year first-cold scan (~1200 severe-season days)
+    # inside gunicorn's 60s worker timeout; every day is then cached forever.
+    with ThreadPoolExecutor(max_workers=16) as ex:
         return dict(ex.map(one, date_strs))
 
 @app.route('/api/hail')
@@ -521,7 +523,7 @@ def reverse_geocode():
 def hail_at_address():
     """Hail history near an address (or lat/lng) over a lookback window.
 
-    Params: q=<address> OR lat=&lng=, days=<lookback, default 365, max 730>,
+    Params: q=<address> OR lat=&lng=, days=<lookback, default 1825, max 1825>,
             radius=<miles, default 10>
     Scans NOAA SPC daily CSVs; to keep it fast we only fetch days, so we cap
     the scan by sampling: full scan for <=90 days, else the monthly summaries.
@@ -550,7 +552,7 @@ def hail_at_address():
         resolved_name = hits[0]['display_name']
 
     radius = min(float(request.args.get('radius', 10)), 50)
-    days   = min(int(request.args.get('days', 365)), 730)
+    days   = min(int(request.args.get('days', 1825)), 1825)
 
     # Severe-weather season heuristic: scan Mar–Oct days plus the last 45 days
     # fully; deep-winter hail in CO/TX is rare enough to skip. NOAA has no free

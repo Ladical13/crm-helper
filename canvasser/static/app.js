@@ -307,10 +307,10 @@ $('hail-here-btn').addEventListener('click', async () => {
   hide('drop-pin-modal');
   $('hail-address-input').value = $('pin-address').value || '';
   $('hail-address-results').innerHTML = '';
-  $('hail-address-status').textContent = 'Checking hail history at this spot... (first search on a new area can take ~30s)';
+  $('hail-address-status').textContent = 'Checking hail history at this spot... (first search on a new area can take up to a minute; repeat searches are instant)';
   show('hail-address-modal');
   try {
-    const days   = $v('hail-address-days')   || 365;
+    const days   = $v('hail-address-days')   || 1825;
     const radius = $v('hail-address-radius') || 10;
     const data = await api(`/api/hail/address?lat=${lat}&lng=${lng}&days=${days}&radius=${radius}`);
     // Show the tapped address (or coords) as the result label
@@ -698,7 +698,7 @@ $('hail-address-search-btn').addEventListener('click', async () => {
   if (!q) { $('hail-address-status').textContent = 'Enter an address first.'; return; }
   const days   = $v('hail-address-days');
   const radius = $v('hail-address-radius');
-  $('hail-address-status').textContent = 'Searching NOAA hail history... (first search on a new area can take ~30s)';
+  $('hail-address-status').textContent = 'Searching NOAA hail history... (first search on a new area can take up to a minute; repeat searches are instant)';
   $('hail-address-results').innerHTML = '';
   try {
     const data = await api(`/api/hail/address?q=${encodeURIComponent(q)}&days=${days}&radius=${radius}`);
