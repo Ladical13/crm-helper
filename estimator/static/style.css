@@ -2830,6 +2830,14 @@ a.jx-contact:hover { text-decoration: underline; }
 .tier-hero-lbl { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-light); }
 .tier-hero-select { width: 100%; box-sizing: border-box; font-size: 15px; font-weight: 600; color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 9px 10px; background: #fff; }
 .tier-hero-select:focus { outline: none; border-color: var(--primary-light); }
+/* Siding profile chip sits BELOW the bundle select, visually secondary */
+.tier-profile-lbl { margin-top: 6px; }
+.tier-profile-select { font-size: 13px; font-weight: 600; padding: 7px 9px; }
+.tier-profile-nag { margin: 4px 10px 6px; padding: 6px 8px; font-size: 11px; line-height: 1.35; color: #7a4a04; background: #fff7e0; border: 1px solid #f2c86a; border-radius: 6px; }
+
+/* Price Book product-list group headers (siding: LP / Hardie / EDCO / …) */
+.pb-group-hd td { background: #eef3fa; color: #1a3a5c; font-weight: 700; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; padding: 8px 12px; border-top: 1px solid #c8d4e6; border-bottom: 1px solid #c8d4e6; }
+.pb-group-hd:first-child td { border-top: none; }
 /* Only a Custom package needs naming — a bundle tier is named by its bundle. */
 .tier-hero-name { width: 100%; box-sizing: border-box; margin-top: 6px; font-size: 13px; font-weight: 600; color: var(--text); border: 1px dashed var(--border); border-radius: 7px; padding: 8px 10px; background: #fff; }
 .tier-hero-name:focus { outline: none; border-style: solid; border-color: var(--primary-light); }

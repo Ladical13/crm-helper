@@ -259,7 +259,9 @@ def test_app_js_and_app_py_agree_on_the_siding_fields(A):
     block = js[js.index("{ group:'Siding'"):]
     block = block[:block.index("{ group:", 1)]
     js_keys = re.findall(r"key:'(\w+)'", block)
-    assert 'siding_fascia_lf' in js_keys, 'extraction truncated before the end of the group'
+    # Sentinel = the last key inside the Siding group. A truncated slice used to
+    # silently miss every field defined after the soffit width menu.
+    assert 'siding_frieze_level_lf' in js_keys, 'extraction truncated before the end of the group'
 
     py_keys = [k for group, fields in A.MEASURE_LABELS if group == 'Siding'
                for k, _label, _unit in fields]

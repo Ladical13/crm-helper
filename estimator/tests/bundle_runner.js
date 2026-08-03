@@ -49,13 +49,47 @@ function grab(name) {
 }
 
 function grabConst(name) {
+  // Single-line const first — the fast, common case.
   const re = new RegExp('^const ' + name + '\\s*=\\s*[^;\\n]+;', 'm');
   const m = re.exec(src);
-  if (!m) throw new Error('bundle_runner: const not found in app.js: ' + name);
-  return m[0];
+  if (m) return m[0];
+  // Multi-line object literal (SIDING_PROFILE_FACTORS et al) — brace-match
+  // through strings/comments the same way grab() does for function bodies.
+  const openRe = new RegExp('^const ' + name + '\\s*=\\s*\\{', 'm');
+  const om = openRe.exec(src);
+  if (!om) throw new Error('bundle_runner: const not found in app.js: ' + name);
+  let i = om.index + om[0].length;
+  let depth = 1;
+  while (i < src.length && depth > 0) {
+    const ch = src[i], next = src[i + 1];
+    if (ch === '/' && next === '/') {
+      while (i < src.length && src[i] !== '\n') i++;
+    } else if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+    } else if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch;
+      i++;
+      while (i < src.length && src[i] !== quote) {
+        if (src[i] === '\\') i++;
+        i++;
+      }
+      i++;
+    } else {
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+      i++;
+    }
+  }
+  if (depth !== 0) throw new Error('bundle_runner: unbalanced braces reading ' + name);
+  // Include the trailing semicolon if present so the const statement ends cleanly.
+  if (src[i] === ';') i++;
+  return src.slice(om.index, i);
 }
 
-const CONSTS = ['TIERS', 'BUNDLE_TRADES', 'SIMPLE_MODE_TRADES', 'DEFAULT_RATE'];
+const CONSTS = ['TIERS', 'BUNDLE_TRADES', 'SIMPLE_MODE_TRADES', 'DEFAULT_RATE',
+                'SIDING_PROFILE_FACTORS', 'SIDING_BUNDLE_PROFILES', 'SIDING_PROFILE_LABELS'];
 const NAMES = ['isBundleTrade', 'effectiveTradeMode', '_tradeCatalog', '_tradeBundles',
                '_tradeBundle', 'bundleFeatures', 'bundleDescription', '_rateValue', '_resolveRate', 'tradeRate', 'tierRate',
                'tradeTier', 'simpleApplyMargin', 'applyBundleToTier', 'seedTradeBundles',

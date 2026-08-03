@@ -5361,18 +5361,31 @@ MEASURE_LABELS = [
               ('broan_8in', '8" Broan Vent', 'EA')]),
     ('Gutters', [('gutter_lf', 'Gutter', 'LF'), ('downspout_lf', 'Downspouts', 'LF')]),
     ('Siding', [('siding_squares', 'Siding Area', 'SQ'), ('siding_waste_pct', 'Waste', '%'),
+                ('siding_openings_count', 'Window + Door Openings', 'EA'),
                 ('siding_outside_corners_lf', 'Outside Corners', 'LF'),
                 ('siding_inside_corners_lf', 'Inside Corners', 'LF'),
-                # J-channel and trim boards are separate measurements: EDCO
-                # bundles run J-channel, LP and Hardie run 5/4 trim board.
+                # J-channel vs trim: EDCO bundles run J-channel, LP + Hardie
+                # run 5/4 trim board — separate SKUs, separate footages.
                 ('siding_j_channel_lf', 'J-Channel', 'LF'),
-                ('siding_trim_lf', 'Trim Boards', 'LF'),
+                # Trim split — sloped (rake/gable) runs long-cut and eats more
+                # waste (/0.84) than vertical (/0.85) on the material order.
+                ('siding_trim_sloped_lf', 'Trim — Sloped (rakes/gables)', 'LF'),
+                ('siding_trim_vertical_lf', 'Trim — Vertical', 'LF'),
+                ('siding_trim_width_default', 'Default Trim Width', 'in'),
                 ('siding_starter_lf', 'Starter Strip', 'LF'),
                 # Soffit prices by the foot; the width is the spec the crew
-                # needs to pull the right panel, and prints for that reason.
+                # orders from. ≤24" = LF sticks, ≥25" routes to panel SKUs.
                 ('siding_soffit_lf', 'Soffit', 'LF'),
                 ('siding_soffit_width', 'Soffit Width', 'in'),
-                ('siding_fascia_lf', 'Fascia', 'LF')]),
+                ('siding_soffit_vented_pct', 'Soffit % Vented', '%'),
+                # Fascia split into eaves vs rakes — supplier take-off uses
+                # the same split. The old single field is a fallback.
+                ('siding_fascia_eaves_lf', 'Fascia — Eaves', 'LF'),
+                ('siding_fascia_rakes_lf', 'Fascia — Rakes', 'LF'),
+                # Frieze board — the LP/Hardie band immediately under the
+                # eaves and above every window/door.
+                ('siding_frieze_eaves_lf', 'Frieze Board — Eaves (Sloped)', 'LF'),
+                ('siding_frieze_level_lf', 'Frieze Board — Level', 'LF')]),
     ('Windows', [('windows_count', 'Windows', 'EA'), ('doors_count', 'Doors', 'EA')]),
     ('Commercial', [('comm_squares', 'Roof Area', 'SQ'), ('comm_waste_pct', 'Waste', '%'),
                     ('comm_perimeter_lf', 'Perimeter / Edge', 'LF'),
@@ -5624,6 +5637,224 @@ def commercial_fastening(m, table):
         'insul': insul, 'seam': seam,
         'warnings': warnings,
     }
+
+
+def siding_material_takeoff(est, tier):
+    """Supplier-order piece counts for one signed siding tier.
+
+    Mirrors the QXO LP/Hardie take-off sheet Luke's supplier uses: convert the
+    Hover measurements into piece counts per SKU, at two waste factors — base
+    (what the sheet calls 'PC/Each') and +15% for siding / +19% for trim
+    (the sheet's PC/Each+15% column, i.e. /0.85 and /0.84 respectively).
+
+    Returns a list of (section, product, size, pieces_base, pieces_plus_waste).
+    Empty list when the tier is not on an LP/Hardie bundle or the sidding
+    trade is not enabled — nothing to order.
+
+    Does NOT change any sell price — this is packet output only.
+    """
+    trades = est.get('trades') or {}
+    td = trades.get('siding') or {}
+    if not td.get('enabled'):
+        return []
+    bundle_id = ((td.get('tier_bundles') or {}).get(tier) or '').strip()
+    profile = _siding_profile(td, tier)
+    if not bundle_id or not profile:
+        return []
+    cfg = SIDING_BUNDLE_PROFILES.get(bundle_id)
+    if not cfg:
+        return []
+    mfg = cfg['mfg']
+    pf = (SIDING_PROFILE_FACTORS.get(mfg) or {}).get(profile) or {}
+    primary_pf = pf.get('primary') or {}
+    if not primary_pf.get('pcs_per_sq'):
+        return []
+
+    m = est.get('measurements') or {}
+
+    def num(key, default=0):
+        try:
+            v = m.get(key)
+            if v is None or v == '':
+                return float(default)
+            return float(v)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def waste_siding(pcs):
+        # +15% column on the sheet = /0.85 (i.e., pcs / 0.85 ≈ pcs × 1.176).
+        return math.ceil(pcs / 0.85 - 1e-9) if pcs > 0 else 0
+
+    def waste_trim(pcs):
+        # +19% column = /0.84.
+        return math.ceil(pcs / 0.84 - 1e-9) if pcs > 0 else 0
+
+    def waste_none(pcs):
+        return math.ceil(pcs - 1e-9) if pcs > 0 else 0
+
+    # Total wall SQ, with the estimate's own waste already baked in — same shape
+    # as the primary siding line reads (measure: siding_sq_waste).
+    total_sq = num('siding_squares') * (1 + num('siding_waste_pct', 10) / 100.0)
+    # Prefer the split fascia / trim fields; fall back to the pre-split
+    # legacy field so an in-flight estimate can still be re-quoted.
+    fascia_eaves = num('siding_fascia_eaves_lf')
+    fascia_rakes = num('siding_fascia_rakes_lf')
+    if not (fascia_eaves + fascia_rakes):
+        fascia_eaves = num('siding_fascia_lf')      # legacy — dump into eaves
+    trim_sloped = num('siding_trim_sloped_lf')
+    trim_vertical = num('siding_trim_vertical_lf')
+    if not (trim_sloped + trim_vertical):
+        trim_vertical = num('siding_trim_lf')       # legacy — dump into vertical
+    trim_w = num('siding_trim_width_default', 4) or 4
+    trim_w_lbl = f'5/4×{int(trim_w) if trim_w == int(trim_w) else trim_w}'
+    j_channel = num('siding_j_channel_lf')
+    corners_out = num('siding_outside_corners_lf')
+    corners_in = num('siding_inside_corners_lf')
+    starter = num('siding_starter_lf')
+    soffit = num('siding_soffit_lf')
+    soffit_w = num('siding_soffit_width', 12) or 12
+    vented_pct = max(0.0, min(100.0, num('siding_soffit_vented_pct', 100)))
+    frieze_eaves = num('siding_frieze_eaves_lf')
+    frieze_level = num('siding_frieze_level_lf')
+    openings = num('siding_openings_count')
+
+    # Accessories default to 16' sticks on LP and 12' on Hardie (from the sheet).
+    stick_ft = 16 if mfg == 'lp' else 12
+    prod_prefix = 'LP Primed' if mfg == 'lp' and bundle_id == 'b_lp_standard' else \
+                  'LP Expert Finish' if mfg == 'lp' and bundle_id == 'b_lp_expert' else \
+                  'James Hardie Primed' if mfg == 'hardie' and bundle_id == 'b_hardie_primed' else \
+                  'James Hardie Statement' if mfg == 'hardie' and bundle_id == 'b_hardie_statement' else \
+                  cfg.get('mfg', '').title()
+
+    rows = []
+
+    # ── Primary siding ─────────────────────────────────────────────────────
+    # pcs_per_sq is already per SQUARE (100 SF), so the multiplier is simply
+    # total_sq × pcs_per_sq. Sheet's E5 = B5/100 * 11.11 = SQ * 11.11.
+    primary_size = primary_pf.get('size', '')
+    prim_pcs = total_sq * primary_pf['pcs_per_sq']
+    rows.append(('Siding', f'{prod_prefix} — {SIDING_PROFILE_LABELS.get(profile, profile)}',
+                 primary_size, prim_pcs, waste_siding(prim_pcs)))
+    src_note = primary_pf.get('source_note')
+    if src_note:
+        rows.append(('Siding', f'    ⚠ {src_note}', '', 0, 0))
+
+    battens_pf = pf.get('battens')
+    if battens_pf and battens_pf.get('pcs_per_panel'):
+        # Battens: 3 per panel (or whatever the sheet says), on the primary
+        # panel count. Same waste class as siding (/0.85).
+        bat_pcs = prim_pcs * battens_pf['pcs_per_panel']
+        rows.append(('Siding', f'{prod_prefix} — Battens',
+                     battens_pf.get('size', ''), bat_pcs, waste_siding(bat_pcs)))
+
+    # ── Openings trim (window + door) ──────────────────────────────────────
+    # Sheet convention: the rep enters TOTAL window+door trim LF on the
+    # openings row; we roll that into the vertical/sloped split unless the
+    # rep entered an openings-specific number elsewhere. For v1, treat
+    # window+door trim as part of the vertical trim number the rep already
+    # entered — the packet doesn't try to split it apart.
+
+    # ── Trim: sloped / vertical ────────────────────────────────────────────
+    if trim_vertical > 0:
+        pcs = trim_vertical / stick_ft
+        rows.append(('Trim', f'{prod_prefix} Trim — Vertical', trim_w_lbl, pcs, waste_trim(pcs)))
+    if trim_sloped > 0:
+        pcs = trim_sloped / stick_ft
+        rows.append(('Trim', f'{prod_prefix} Trim — Sloped', trim_w_lbl, pcs, waste_trim(pcs)))
+
+    # ── Corners ────────────────────────────────────────────────────────────
+    # Outside corners = LF × 2 / stick (per sheet). Inside = LF / stick.
+    if corners_out > 0:
+        pcs = corners_out * 2.0 / stick_ft
+        rows.append(('Corners', f'{prod_prefix} Corner Trim — Outside', f'{trim_w_lbl}×{stick_ft}\'',
+                     pcs, waste_trim(pcs)))
+    if corners_in > 0:
+        pcs = corners_in / stick_ft
+        rows.append(('Corners', f'{prod_prefix} Corner Trim — Inside', f'{trim_w_lbl}×{stick_ft}\'',
+                     pcs, waste_trim(pcs)))
+    if j_channel > 0:
+        pcs = j_channel / stick_ft
+        rows.append(('Corners', 'J-Channel', f'5/8"×{stick_ft}\'', pcs, waste_trim(pcs)))
+
+    # ── Starter strip ──────────────────────────────────────────────────────
+    if starter > 0:
+        pcs = starter / stick_ft
+        rows.append(('Starter', f'{prod_prefix} Starter Strip', f'{stick_ft}\' stick', pcs, waste_trim(pcs)))
+
+    # ── Fascia (eaves + rakes) + frieze ────────────────────────────────────
+    if fascia_eaves > 0:
+        pcs = fascia_eaves / stick_ft
+        rows.append(('Roofline', f'{prod_prefix} Fascia — Eaves', f'4/4×8"×{stick_ft}\'',
+                     pcs, waste_trim(pcs)))
+    if fascia_rakes > 0:
+        pcs = fascia_rakes / stick_ft
+        rows.append(('Roofline', f'{prod_prefix} Fascia — Rakes', f'4/4×8"×{stick_ft}\'',
+                     pcs, waste_trim(pcs)))
+    if frieze_eaves > 0:
+        pcs = frieze_eaves / stick_ft
+        rows.append(('Roofline', f'{prod_prefix} Frieze — Eaves (Sloped)', f'{trim_w_lbl}×{stick_ft}\'',
+                     pcs, waste_trim(pcs)))
+    if frieze_level > 0:
+        pcs = frieze_level / stick_ft
+        rows.append(('Roofline', f'{prod_prefix} Frieze — Level', f'{trim_w_lbl}×{stick_ft}\'',
+                     pcs, waste_trim(pcs)))
+
+    # ── Soffit ─────────────────────────────────────────────────────────────
+    if soffit > 0:
+        vented_lf = soffit * vented_pct / 100.0
+        solid_lf = soffit - vented_lf
+        if soffit_w >= 25:
+            # Wide overhang: order 4×8/9/10 panels (SF / 100 × factor).
+            panel_factor, panel_lbl = (3.125, '4×8') if mfg == 'lp' else (2.5, '4×10')
+            sf = soffit * soffit_w / 12.0
+            pcs = sf / 100.0 * panel_factor
+            rows.append(('Soffit', f'{prod_prefix} Soffit Panel', f'{panel_lbl} NG',
+                         pcs, waste_trim(pcs)))
+        else:
+            if vented_lf > 0:
+                pcs = vented_lf / stick_ft
+                rows.append(('Soffit', f'{prod_prefix} Vented Soffit', f'{int(soffit_w)}"×{stick_ft}\'',
+                             pcs, waste_trim(pcs)))
+            if solid_lf > 0:
+                pcs = solid_lf / stick_ft
+                rows.append(('Soffit', f'{prod_prefix} Solid Soffit', f'{int(soffit_w)}"×{stick_ft}\'',
+                             pcs, waste_trim(pcs)))
+
+    # ── Accessories (rolls, tubes, coils, packs) ───────────────────────────
+    if total_sq > 0:
+        wrap_name = 'HardieWrap' if mfg == 'hardie' else 'TriBuilt House Wrap'
+        wrap_rolls = total_sq / 13.5
+        rows.append(('Accessories', wrap_name, '9\' × 150\' Roll',
+                     wrap_rolls, waste_none(wrap_rolls)))
+        rows.append(('Accessories', 'Housewrap Tape', 'Roll',
+                     wrap_rolls, waste_none(wrap_rolls)))
+        tubes = total_sq * 1.5
+        rows.append(('Accessories', 'Elastomeric Sealant / Caulk', 'Tube',
+                     tubes, waste_none(tubes)))
+        coils = total_sq / 20.0
+        rows.append(('Accessories', 'Siding Coil Nails', '50# Coil',
+                     coils, waste_none(coils)))
+        trim_nail_divisor = 10.0 if bundle_id == 'b_lp_expert' else 15.0
+        trim_nails = total_sq / trim_nail_divisor
+        rows.append(('Accessories', 'Trim Nails', 'Box',
+                     trim_nails, waste_none(trim_nails)))
+        touchup_qt = total_sq / 20.0
+        rows.append(('Accessories', 'Field Paint / Touch-Up', 'Quart',
+                     touchup_qt, waste_none(touchup_qt)))
+
+    if openings > 0:
+        # Z-flash for window flashing — one 10' stick per ~4 openings.
+        zflash = openings / 4.0
+        rows.append(('Accessories', 'Z-Flash for Window Flashing', '1"×2"×10\'',
+                     zflash, waste_none(zflash)))
+
+    # Bear Skins pack — Hardie-only fastener pack of 55.
+    if mfg == 'hardie' and prim_pcs > 0:
+        packs = prim_pcs / 55.0
+        rows.append(('Accessories', 'Bear Skins Fastener Pack', '55 pc / pack',
+                     packs, waste_none(packs)))
+
+    return rows
 
 
 def build_production_packet_pdf(est):
@@ -6021,6 +6252,40 @@ def build_production_packet_pdf(est):
                 pdf.cell(112, 6, trunc(name, 74), border=1)
                 pdf.cell(20, 6, f'{qty:g}', border=1, align='R')
                 pdf.cell(24, 6, trunc(unit, 10), border=1, align='C')
+                pdf.ln()
+            pdf.ln(4)
+
+        # ── Siding Material Take-off ─────────────────────────────────────
+        # QXO-format supplier order: piece counts per SKU derived from the
+        # signed measurements + tier profile. Shown alongside (not replacing)
+        # the priced Materials section above. Ships base pieces + pieces at
+        # the sheet's +15%/+19% waste columns so the ordering desk sees both.
+        siding_tier = _trade_tier(est, 'siding')
+        takeoff_rows = siding_material_takeoff(est, siding_tier)
+        if takeoff_rows:
+            profile = _siding_profile(trades.get('siding') or {}, siding_tier)
+            profile_lbl = SIDING_PROFILE_LABELS.get(profile, profile) or profile
+            section_title(f'Siding Material Take-off — {profile_lbl}')
+            pdf.set_font('Helvetica', 'I', 8)
+            pdf.multi_cell(W, 4.4, _pdf_safe(
+                'Piece counts converted from the signed measurements per the QXO '
+                'take-off sheet. \"Order\" column includes waste (siding +15%, trim +19%) '
+                'and is rounded up to whole units.'))
+            pdf.ln(1)
+            table_header([('Section', 28, 'L'), ('Product', 96, 'L'),
+                          ('Size', 32, 'L'), ('Pieces', 16, 'R'), ('Order', 16, 'R')])
+            pdf.set_font('Helvetica', '', 8)
+            for section, product, size, pieces_base, pieces_order in takeoff_rows:
+                pdf.cell(28, 6, trunc(section, 16), border=1)
+                pdf.cell(96, 6, trunc(product, 64), border=1)
+                pdf.cell(32, 6, trunc(size, 20), border=1)
+                if pieces_base <= 0 and pieces_order <= 0:
+                    # Advisory row (source_note) — no numbers to show.
+                    pdf.cell(16, 6, '', border=1, align='R')
+                    pdf.cell(16, 6, '', border=1, align='R')
+                else:
+                    pdf.cell(16, 6, f'{pieces_base:.1f}', border=1, align='R')
+                    pdf.cell(16, 6, f'{pieces_order:g}', border=1, align='R')
                 pdf.ln()
             pdf.ln(4)
 
@@ -7689,135 +7954,158 @@ ROOFING_TIER_DEFAULTS_SEED = {"good": "b_landmark", "better": "b_northgate", "be
 # name instead of duplicated when a rep picks a bundle. Material costs come from
 # the old per-tier variant menus; accessory/labor costs are PLACEHOLDERS (0) —
 # the manager sets real numbers in Price Book → Siding → Products.
+# The catalog is grouped by system so a manager scanning the Price Book sees
+# every LP SKU together, every Hardie SKU together, etc. The `group` field is
+# metadata-only — the Price Book UI reads it to insert subheader rows and it
+# is backfilled onto pre-existing books via _PRODUCT_BACKFILL_FIELDS so a
+# saved catalog picks up the groups on the next GET. Reordering the seed does
+# not change customer pricing: every bundle carries its own product_ids in
+# its own order, and bundleFeatures/apply logic reads that.
 SIDING_CATALOG_SEED = [
-    {"id": "s_vinyl_dutch", "name": "Vinyl - Dutch Lap 4\"", "unit": "SQ", "cost": 165, "measure": "siding_sq_waste",
-     "bullets": ["Vinyl siding in the classic 4\" Dutch lap profile", "Never needs paint - wash it once a year and it is done", "Color runs all the way through, so scratches do not show", "Lifetime limited manufacturer warranty"]},
-    {"id": "s_vinyl_clap", "name": "Vinyl - Clapboard 4.5\"", "unit": "SQ", "cost": 170, "measure": "siding_sq_waste",
-     "bullets": ["Vinyl siding in a traditional 4.5\" clapboard profile", "Clean horizontal lines that suit almost any home style", "Fade-resistant color all the way through the panel", "Never needs paint", "Lifetime limited manufacturer warranty"]},
-    {"id": "s_vinyl_bb", "name": "Vinyl - Board & Batten", "unit": "SQ", "cost": 195, "measure": "siding_sq_waste",
-     "bullets": ["Vertical board & batten vinyl panels", "Modern farmhouse curb appeal", "Zero-maintenance vinyl durability - never needs paint", "Lifetime limited manufacturer warranty"]},
-    {"id": "s_lp_lap", "name": "LP SmartSide - Lap 8\"", "unit": "SQ", "cost": 240, "measure": "siding_sq_waste",
-     "bullets": ["LP SmartSide engineered wood lap siding, 8\" exposure", "The warmth and texture of real wood grain", "SmartGuard treated to resist rot, hail, and termites", "Holds paint far longer than natural wood", "50-year limited manufacturer warranty"]},
-    {"id": "s_lp_panel", "name": "LP SmartSide - Panel / Board & Batten", "unit": "SQ", "cost": 265, "measure": "siding_sq_waste",
-     "bullets": ["LP SmartSide engineered wood panel and batten system", "Bold vertical lines with real wood texture", "SmartGuard treated to resist rot, hail, and termites", "50-year limited manufacturer warranty"]},
-    {"id": "s_hardie_cedar", "name": "James Hardie - Plank Lap 8.25\" (Cedarmill)", "unit": "SQ", "cost": 320, "measure": "siding_sq_waste",
-     "bullets": ["James Hardie fiber cement lap siding, Cedarmill woodgrain texture", "Non-combustible - will not feed a fire", "Hail, pest, and rot proof", "ColorPlus factory finish backed for 15 years", "30-year limited manufacturer warranty"]},
-    {"id": "s_hardie_smooth", "name": "James Hardie - Plank Lap 7\" (Smooth)", "unit": "SQ", "cost": 315, "measure": "siding_sq_waste",
-     "bullets": ["James Hardie fiber cement lap siding with a clean smooth finish", "Engineered specifically for Colorado freeze-thaw and hail", "Non-combustible, hail, pest, and rot proof", "ColorPlus factory finish backed for 15 years", "30-year limited manufacturer warranty"]},
-    {"id": "s_hardie_shingle", "name": "James Hardie - Shingle / Panel", "unit": "SQ", "cost": 360, "measure": "siding_sq_waste",
-     "bullets": ["James Hardie shingle and panel siding", "Shake-style character without the maintenance of real cedar", "Ideal for gables, dormers, and accent walls", "Non-combustible, hail, pest, and rot proof", "30-year limited manufacturer warranty"]},
-    {"id": "sa_house_wrap", "name": "House Wrap", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste",
-     "bullets": ["House wrap weather barrier over the full wall area"]},
-    {"id": "sa_starter", "name": "Starter Strip", "unit": "LF", "cost": 0, "measure": "siding_starter",
-     "bullets": ["New starter strip along the bottom course"]},
-    {"id": "sa_j_channel", "name": "J-Channel", "unit": "LF", "cost": 0, "measure": "j_channel",
-     "bullets": ["New J-channel around every window and door"]},
-    {"id": "sa_corner_out", "name": "Corner Posts", "unit": "LF", "cost": 0, "measure": "corners_out",
-     "bullets": ["New outside corner posts"]},
-    {"id": "sa_corner_in", "name": "Inside Corners", "unit": "LF", "cost": 0, "measure": "corners_in",
-     "bullets": ["New inside corner trim"]},
-    {"id": "sa_trim", "name": "Trim Board", "unit": "LF", "cost": 0,
-     "bullets": ["New trim boards"]},
-    {"id": "sa_soffit", "name": "Soffit", "unit": "LF", "cost": 0, "measure": "siding_soffit",
-     "bullets": ["New soffit"]},
-    {"id": "sa_fascia", "name": "Fascia", "unit": "LF", "cost": 0, "measure": "siding_fascia",
-     "bullets": ["New fascia"]},
-    # Labor prices into the package but is NOT broken out for the customer:
-    # "Install Labor - $9,400" invites a line-item negotiation over the one
-    # number that is really the crew, while the bullets keep promising the work.
-    # `customer_visible: False` hides the ROW, not the promise — see
-    # bundleFeatures() in app.js.
-    {"id": "sl_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "siding_squares",
-     "customer_visible": False,
-     "bullets": ["Complete tear-off of existing siding"]},
-    {"id": "sl_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "siding_squares",
-     "customer_visible": False,
-     "bullets": ["Installed by Project One crews to manufacturer spec"]},
-    {"id": "sx_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
-     "bullets": ["Dumpster and full site cleanup"]},
-    {"id": "sx_permit", "name": "Permit", "unit": "LS", "cost": 0,
-     "bullets": ["Permit pulled and final inspection scheduled"]},
-    # ── 2026 QXO line, priced off the supplier sheets ──────────────────
-    # Derivations live in the commit that added them: lap siding is
-    # $/board x boards-per-SQ at the manufacturer exposure, EDCO cartons
-    # ship as 1 SQ, everything linear is $/stick / stick length.
-    {"id": "s_hardie_statement", "name": "James Hardie Statement Collection 8.25\" Lap", "unit": "SQ", "cost": 248.71, "measure": "siding_sq_waste",
-     "bullets": ["James Hardie Statement Collection fiber cement lap, 8.25\" exposure",
-                 "ColorPlus factory finish — no field painting, backed by a 15-year finish warranty",
-                 "Non-combustible fiber cement — will not feed a fire",
-                 "Hail, pest, and rot proof; engineered for Colorado freeze-thaw",
-                 "30-year limited manufacturer warranty"]},
-    {"id": "s_hardie_primed", "name": "James Hardie Primed 8.25\" Cedar Mill Lap", "unit": "SQ", "cost": 201.29, "measure": "siding_sq_waste",
+    # ── LP SmartSide (QXO 2026 line) ───────────────────────────────────────
+    # Materials, then LP-specific trim, soffit, and paint.
+    {"id": "s_lp_standard", "name": "LP SmartSide 8\" Cedar Text Lap", "group": "LP SmartSide", "unit": "SQ", "cost": 163.61, "measure": "siding_sq_waste",
+     "bullets": ["LP SmartSide engineered wood lap, 8\" Cedar Text exposure",
+                 "Field-painted in the color of your choice",
+                 "SmartGuard-treated engineered wood resists rot, hail, and termites",
+                 "5/50 year limited manufacturer warranty"]},
+    {"id": "s_lp_expert", "name": "LP SmartSide Expert Finish 8\" Lap", "group": "LP SmartSide", "unit": "SQ", "cost": 245.14, "measure": "siding_sq_waste",
+     "bullets": ["LP SmartSide Expert Finish engineered wood lap, 8\" exposure",
+                 "Pre-finished at the factory — no field painting required",
+                 "SmartGuard-treated engineered wood resists rot, hail, and termites",
+                 "5/50 year limited manufacturer warranty"]},
+    {"id": "sa_lp_standard_trim", "name": "LP SmartSide Trim 5/4×6", "group": "LP SmartSide", "unit": "LF", "cost": 1.83, "measure": "siding_trim",
+     "bullets": ["LP SmartSide trim at corners, windows, and doors — painted to match"]},
+    {"id": "sa_lp_expert_trim", "name": "LP Expert Finish Trim 5/4×5.5", "group": "LP SmartSide", "unit": "LF", "cost": 2.33, "measure": "siding_trim",
+     "bullets": ["LP SmartSide Expert Finish trim at corners, windows, and doors — pre-finished to match"]},
+    {"id": "sa_lp_standard_soffit", "name": "LP SmartSide Vented Soffit 24\"", "group": "LP SmartSide", "unit": "LF", "cost": 4.06, "measure": "siding_soffit",
+     "bullets": ["LP SmartSide vented soffit — painted to match"]},
+    {"id": "sa_lp_expert_soffit", "name": "LP Expert Finish Vented Soffit 24\"", "group": "LP SmartSide", "unit": "LF", "cost": 6.51, "measure": "siding_soffit",
+     "bullets": ["LP SmartSide Expert Finish vented soffit — pre-finished to match"]},
+
+    # ── James Hardie (QXO 2026 line) ───────────────────────────────────────
+    # Materials, HardieWrap (Hardie-only weather barrier — required for the
+    # system warranty), then Hardie-specific trim and soffit.
+    {"id": "s_hardie_primed", "name": "James Hardie Primed 8.25\" Cedar Mill Lap", "group": "James Hardie", "unit": "SQ", "cost": 201.29, "measure": "siding_sq_waste",
      "bullets": ["James Hardie primed fiber cement lap, 8.25\" Cedar Mill woodgrain texture",
                  "Field-painted in the color of your choice for a custom look",
                  "Non-combustible fiber cement — will not feed a fire",
                  "Hail, pest, and rot proof; engineered for Colorado freeze-thaw",
                  "30-year limited manufacturer warranty"]},
-    {"id": "s_lp_expert", "name": "LP SmartSide Expert Finish 8\" Lap", "unit": "SQ", "cost": 245.14, "measure": "siding_sq_waste",
-     "bullets": ["LP SmartSide Expert Finish engineered wood lap, 8\" exposure",
-                 "Pre-finished at the factory — no field painting required",
-                 "SmartGuard-treated engineered wood resists rot, hail, and termites",
-                 "5/50 year limited manufacturer warranty"]},
-    {"id": "s_lp_standard", "name": "LP SmartSide 8\" Cedar Text Lap", "unit": "SQ", "cost": 163.61, "measure": "siding_sq_waste",
-     "bullets": ["LP SmartSide engineered wood lap, 8\" Cedar Text exposure",
-                 "Field-painted in the color of your choice",
-                 "SmartGuard-treated engineered wood resists rot, hail, and termites",
-                 "5/50 year limited manufacturer warranty"]},
-    {"id": "s_edco_d4", "name": "EDCO D4\" TimberGrain Steel Siding", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste",
+    {"id": "s_hardie_statement", "name": "James Hardie Statement Collection 8.25\" Lap", "group": "James Hardie", "unit": "SQ", "cost": 248.71, "measure": "siding_sq_waste",
+     "bullets": ["James Hardie Statement Collection fiber cement lap, 8.25\" exposure",
+                 "ColorPlus factory finish — no field painting, backed by a 15-year finish warranty",
+                 "Non-combustible fiber cement — will not feed a fire",
+                 "Hail, pest, and rot proof; engineered for Colorado freeze-thaw",
+                 "30-year limited manufacturer warranty"]},
+    {"id": "sa_wrap_hardie", "name": "HardieWrap Weather Barrier", "group": "James Hardie", "unit": "SQ", "cost": 23.46, "measure": "siding_sq_waste",
+     "bullets": ["HardieWrap weather-resistant barrier over the full wall area — required for the James Hardie system warranty"]},
+    {"id": "sa_hardie_primed_trim", "name": "James Hardie Primed Trim 5/4×6", "group": "James Hardie", "unit": "LF", "cost": 2.51, "measure": "siding_trim",
+     "bullets": ["James Hardie primed fiber cement trim at corners, windows, and doors — painted to match"]},
+    {"id": "sa_hardie_statement_trim", "name": "James Hardie Statement Trim 5/4×5.5", "group": "James Hardie", "unit": "LF", "cost": 2.6, "measure": "siding_trim",
+     "bullets": ["James Hardie Statement fiber cement trim at corners, windows, and doors — ColorPlus finished to match"]},
+    {"id": "sa_hardie_primed_soffit", "name": "James Hardie Primed Vented Soffit 24\"", "group": "James Hardie", "unit": "LF", "cost": 2.35, "measure": "siding_soffit",
+     "bullets": ["James Hardie primed vented fiber cement soffit — painted to match"]},
+    {"id": "sa_hardie_statement_soffit", "name": "James Hardie Statement Vented Soffit 24\"", "group": "James Hardie", "unit": "LF", "cost": 3.66, "measure": "siding_soffit",
+     "bullets": ["James Hardie Statement vented fiber cement soffit — ColorPlus finished to match"]},
+
+    # ── EDCO Steel Siding (QXO 2026 line) ──────────────────────────────────
+    # Materials, then EDCO-specific J-channel, corners, starter, soffit, fasteners.
+    {"id": "s_edco_d4", "name": "EDCO D4\" TimberGrain Steel Siding", "group": "EDCO Steel", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste",
      "bullets": ["EDCO D4\" 28ga steel siding with TimberGrain wood-look finish",
                  "Class 4 impact rated — will not crack or lose finish to hail",
                  "May qualify for a homeowners insurance premium discount",
                  "Non-combustible steel construction, baked-on finish that will not chip, peel, or fade",
                  "Limited lifetime manufacturer warranty"]},
-    {"id": "s_edco_8", "name": "EDCO 8\" Enduragrain Steel Siding", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste",
+    {"id": "s_edco_8", "name": "EDCO 8\" Enduragrain Steel Siding", "group": "EDCO Steel", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste",
      "bullets": ["EDCO 8\" 28ga steel siding with Enduragrain finish",
                  "Class 4 impact rated — will not crack or lose finish to hail",
                  "May qualify for a homeowners insurance premium discount",
                  "Non-combustible steel construction, baked-on finish that will not chip, peel, or fade",
                  "Limited lifetime manufacturer warranty"]},
-    {"id": "sa_wrap_hardie", "name": "HardieWrap Weather Barrier", "unit": "SQ", "cost": 23.46, "measure": "siding_sq_waste",
-     "bullets": ["HardieWrap weather-resistant barrier over the full wall area — required for the James Hardie system warranty"]},
-    {"id": "sa_wrap_tribuilt", "name": "TriBuilt House Wrap", "unit": "SQ", "cost": 6.23, "measure": "siding_sq_waste",
-     "bullets": ["TriBuilt weather-resistant house wrap over the full wall area"]},
-    {"id": "sa_hardie_statement_trim", "name": "James Hardie Statement Trim 5/4×5.5", "unit": "LF", "cost": 2.6, "measure": "siding_trim",
-     "bullets": ["James Hardie Statement fiber cement trim at corners, windows, and doors — ColorPlus finished to match"]},
-    {"id": "sa_hardie_primed_trim", "name": "James Hardie Primed Trim 5/4×6", "unit": "LF", "cost": 2.51, "measure": "siding_trim",
-     "bullets": ["James Hardie primed fiber cement trim at corners, windows, and doors — painted to match"]},
-    {"id": "sa_lp_expert_trim", "name": "LP Expert Finish Trim 5/4×5.5", "unit": "LF", "cost": 2.33, "measure": "siding_trim",
-     "bullets": ["LP SmartSide Expert Finish trim at corners, windows, and doors — pre-finished to match"]},
-    {"id": "sa_lp_standard_trim", "name": "LP SmartSide Trim 5/4×6", "unit": "LF", "cost": 1.83, "measure": "siding_trim",
-     "bullets": ["LP SmartSide trim at corners, windows, and doors — painted to match"]},
-    {"id": "sa_edco_jchannel", "name": "EDCO 5/8\" J-Channel", "unit": "LF", "cost": 1.21, "measure": "j_channel",
+    {"id": "sa_edco_jchannel", "name": "EDCO 5/8\" J-Channel", "group": "EDCO Steel", "unit": "LF", "cost": 1.21, "measure": "j_channel",
      "bullets": ["EDCO 5/8\" steel J-channel around every window and door"]},
-    {"id": "sa_hardie_statement_soffit", "name": "James Hardie Statement Vented Soffit 24\"", "unit": "LF", "cost": 3.66, "measure": "siding_soffit",
-     "bullets": ["James Hardie Statement vented fiber cement soffit — ColorPlus finished to match"]},
-    {"id": "sa_hardie_primed_soffit", "name": "James Hardie Primed Vented Soffit 24\"", "unit": "LF", "cost": 2.35, "measure": "siding_soffit",
-     "bullets": ["James Hardie primed vented fiber cement soffit — painted to match"]},
-    {"id": "sa_lp_expert_soffit", "name": "LP Expert Finish Vented Soffit 24\"", "unit": "LF", "cost": 6.51, "measure": "siding_soffit",
-     "bullets": ["LP SmartSide Expert Finish vented soffit — pre-finished to match"]},
-    {"id": "sa_lp_standard_soffit", "name": "LP SmartSide Vented Soffit 24\"", "unit": "LF", "cost": 4.06, "measure": "siding_soffit",
-     "bullets": ["LP SmartSide vented soffit — painted to match"]},
-    {"id": "sa_edco_soffit", "name": "EDCO Soffit Panel 16\"×12'", "unit": "LF", "cost": 4.03, "measure": "siding_soffit",
-     "bullets": ["EDCO 16\" steel soffit panels"]},
-    {"id": "sa_edco_corner", "name": "EDCO Snap-On Corner Post", "unit": "LF", "cost": 2.94, "measure": "corners_out",
+    {"id": "sa_edco_corner", "name": "EDCO Snap-On Corner Post", "group": "EDCO Steel", "unit": "LF", "cost": 2.94, "measure": "corners_out",
      "bullets": ["EDCO snap-on steel corner posts for a clean, finished outside corner"]},
-    {"id": "sa_edco_starter", "name": "EDCO Starter Strip Steel", "unit": "LF", "cost": 1.05, "measure": "siding_starter",
+    {"id": "sa_edco_starter", "name": "EDCO Starter Strip Steel", "group": "EDCO Steel", "unit": "LF", "cost": 1.05, "measure": "siding_starter",
      "bullets": ["EDCO steel starter strip that sets the first course dead level"]},
-    # ── Manufacturer-required accessories the initial QXO seed missed. ─────
-    # Manual qty (no measure key) on the ones the rep counts per house;
-    # sa_paint tracks siding area because it scales with the wall.
-    {"id": "sa_kickout", "name": "Kickout Flashing", "unit": "EA", "cost": 0,
-     "bullets": ["Kickout flashing at every roof-to-wall intersection — required to keep water out of the wall assembly and to satisfy the manufacturer warranty"]},
-    {"id": "sa_sealant", "name": "Elastomeric Sealant / Caulk", "unit": "LS", "cost": 0,
-     "bullets": ["Manufacturer-approved elastomeric sealant at butt joints and penetrations — required for the finish and system warranty"]},
-    {"id": "sa_paint", "name": "Field Paint (Primed Siding)", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste",
-     "bullets": ["Two-coat exterior paint applied over the primed siding in the color of your choice"]},
-    {"id": "sa_touchup", "name": "ColorPlus / Factory Touch-Up Paint", "unit": "LS", "cost": 0,
-     "bullets": ["Factory touch-up paint kept on site for field cuts and fasteners"]},
-    {"id": "sa_rot_repair", "name": "Rot Repair Allowance", "unit": "SF", "cost": 0,
-     "bullets": ["Sheathing or trim rot repair discovered on tear-off — priced per square foot and billed only if needed"]},
-    {"id": "sa_edco_fasteners", "name": "EDCO Manufacturer-Approved Fasteners", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste",
+    {"id": "sa_edco_soffit", "name": "EDCO Soffit Panel 16\"×12'", "group": "EDCO Steel", "unit": "LF", "cost": 4.03, "measure": "siding_soffit",
+     "bullets": ["EDCO 16\" steel soffit panels"]},
+    {"id": "sa_edco_fasteners", "name": "EDCO Manufacturer-Approved Fasteners", "group": "EDCO Steel", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste",
      "bullets": ["EDCO-approved corrosion-resistant fasteners per the manufacturer's schedule"]},
+
+    # ── Shared Accessories ────────────────────────────────────────────────
+    # System-agnostic add-ons every bundle can carry — TriBuilt wrap is the
+    # default for anything not on HardieWrap; sa_starter/sa_fascia read the
+    # generic starter/fascia measurements; sa_paint/sa_touchup cover
+    # field-painted vs pre-finished; sa_rot_repair is a per-SF allowance.
+    {"id": "sa_wrap_tribuilt", "name": "TriBuilt House Wrap", "group": "Shared", "unit": "SQ", "cost": 6.23, "measure": "siding_sq_waste",
+     "bullets": ["TriBuilt weather-resistant house wrap over the full wall area"]},
+    {"id": "sa_starter", "name": "Starter Strip", "group": "Shared", "unit": "LF", "cost": 0, "measure": "siding_starter",
+     "bullets": ["New starter strip along the bottom course"]},
+    {"id": "sa_fascia", "name": "Fascia", "group": "Shared", "unit": "LF", "cost": 0, "measure": "siding_fascia",
+     "bullets": ["New fascia"]},
+    {"id": "sa_kickout", "name": "Kickout Flashing", "group": "Shared", "unit": "EA", "cost": 0,
+     "bullets": ["Kickout flashing at every roof-to-wall intersection — required to keep water out of the wall assembly and to satisfy the manufacturer warranty"]},
+    {"id": "sa_sealant", "name": "Elastomeric Sealant / Caulk", "group": "Shared", "unit": "LS", "cost": 0,
+     "bullets": ["Manufacturer-approved elastomeric sealant at butt joints and penetrations — required for the finish and system warranty"]},
+    {"id": "sa_paint", "name": "Field Paint (Primed Siding)", "group": "Shared", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste",
+     "bullets": ["Two-coat exterior paint applied over the primed siding in the color of your choice"]},
+    {"id": "sa_touchup", "name": "ColorPlus / Factory Touch-Up Paint", "group": "Shared", "unit": "LS", "cost": 0,
+     "bullets": ["Factory touch-up paint kept on site for field cuts and fasteners"]},
+    {"id": "sa_rot_repair", "name": "Rot Repair Allowance", "group": "Shared", "unit": "SF", "cost": 0,
+     "bullets": ["Sheathing or trim rot repair discovered on tear-off — priced per square foot and billed only if needed"]},
+
+    # ── Labor & Misc ──────────────────────────────────────────────────────
+    # Labor prices into the package but is NOT broken out for the customer:
+    # "Install Labor — $9,400" invites a line-item negotiation over the one
+    # number that is really the crew, while the bullets keep promising the work.
+    # `customer_visible: False` hides the ROW, not the promise — see
+    # bundleFeatures() in app.js.
+    {"id": "sl_tearoff", "name": "Tear-Off Labor", "group": "Labor & Misc", "unit": "SQ", "cost": 0, "measure": "siding_squares",
+     "customer_visible": False,
+     "bullets": ["Complete tear-off of existing siding"]},
+    {"id": "sl_install", "name": "Install Labor", "group": "Labor & Misc", "unit": "SQ", "cost": 0, "measure": "siding_squares",
+     "customer_visible": False,
+     "bullets": ["Installed by Project One crews to manufacturer spec"]},
+    {"id": "sx_dumpster", "name": "Dumpster", "group": "Labor & Misc", "unit": "LS", "cost": 0,
+     "bullets": ["Dumpster and full site cleanup"]},
+    {"id": "sx_permit", "name": "Permit", "group": "Labor & Misc", "unit": "LS", "cost": 0,
+     "bullets": ["Permit pulled and final inspection scheduled"]},
+
+    # ── Legacy (pre-QXO vinyl + old LP/Hardie + generic accessories) ──────
+    # Kept in the catalog so an in-flight estimate that references them still
+    # renders, and so a manager can price them per house if they want to
+    # continue offering the older systems. Nothing bundle-side ships to a new
+    # estimate on these — the QXO products above are the current defaults.
+    {"id": "s_vinyl_dutch", "name": "Vinyl - Dutch Lap 4\"", "group": "Legacy", "unit": "SQ", "cost": 165, "measure": "siding_sq_waste",
+     "bullets": ["Vinyl siding in the classic 4\" Dutch lap profile", "Never needs paint - wash it once a year and it is done", "Color runs all the way through, so scratches do not show", "Lifetime limited manufacturer warranty"]},
+    {"id": "s_vinyl_clap", "name": "Vinyl - Clapboard 4.5\"", "group": "Legacy", "unit": "SQ", "cost": 170, "measure": "siding_sq_waste",
+     "bullets": ["Vinyl siding in a traditional 4.5\" clapboard profile", "Clean horizontal lines that suit almost any home style", "Fade-resistant color all the way through the panel", "Never needs paint", "Lifetime limited manufacturer warranty"]},
+    {"id": "s_vinyl_bb", "name": "Vinyl - Board & Batten", "group": "Legacy", "unit": "SQ", "cost": 195, "measure": "siding_sq_waste",
+     "bullets": ["Vertical board & batten vinyl panels", "Modern farmhouse curb appeal", "Zero-maintenance vinyl durability - never needs paint", "Lifetime limited manufacturer warranty"]},
+    {"id": "s_lp_lap", "name": "LP SmartSide - Lap 8\"", "group": "Legacy", "unit": "SQ", "cost": 240, "measure": "siding_sq_waste",
+     "bullets": ["LP SmartSide engineered wood lap siding, 8\" exposure", "The warmth and texture of real wood grain", "SmartGuard treated to resist rot, hail, and termites", "Holds paint far longer than natural wood", "50-year limited manufacturer warranty"]},
+    {"id": "s_lp_panel", "name": "LP SmartSide - Panel / Board & Batten", "group": "Legacy", "unit": "SQ", "cost": 265, "measure": "siding_sq_waste",
+     "bullets": ["LP SmartSide engineered wood panel and batten system", "Bold vertical lines with real wood texture", "SmartGuard treated to resist rot, hail, and termites", "50-year limited manufacturer warranty"]},
+    {"id": "s_hardie_cedar", "name": "James Hardie - Plank Lap 8.25\" (Cedarmill)", "group": "Legacy", "unit": "SQ", "cost": 320, "measure": "siding_sq_waste",
+     "bullets": ["James Hardie fiber cement lap siding, Cedarmill woodgrain texture", "Non-combustible - will not feed a fire", "Hail, pest, and rot proof", "ColorPlus factory finish backed for 15 years", "30-year limited manufacturer warranty"]},
+    {"id": "s_hardie_smooth", "name": "James Hardie - Plank Lap 7\" (Smooth)", "group": "Legacy", "unit": "SQ", "cost": 315, "measure": "siding_sq_waste",
+     "bullets": ["James Hardie fiber cement lap siding with a clean smooth finish", "Engineered specifically for Colorado freeze-thaw and hail", "Non-combustible, hail, pest, and rot proof", "ColorPlus factory finish backed for 15 years", "30-year limited manufacturer warranty"]},
+    {"id": "s_hardie_shingle", "name": "James Hardie - Shingle / Panel", "group": "Legacy", "unit": "SQ", "cost": 360, "measure": "siding_sq_waste",
+     "bullets": ["James Hardie shingle and panel siding", "Shake-style character without the maintenance of real cedar", "Ideal for gables, dormers, and accent walls", "Non-combustible, hail, pest, and rot proof", "30-year limited manufacturer warranty"]},
+    {"id": "sa_house_wrap", "name": "House Wrap", "group": "Legacy", "unit": "SQ", "cost": 0, "measure": "siding_sq_waste",
+     "bullets": ["House wrap weather barrier over the full wall area"]},
+    {"id": "sa_j_channel", "name": "J-Channel", "group": "Legacy", "unit": "LF", "cost": 0, "measure": "j_channel",
+     "bullets": ["New J-channel around every window and door"]},
+    {"id": "sa_corner_out", "name": "Corner Posts", "group": "Legacy", "unit": "LF", "cost": 0, "measure": "corners_out",
+     "bullets": ["New outside corner posts"]},
+    {"id": "sa_corner_in", "name": "Inside Corners", "group": "Legacy", "unit": "LF", "cost": 0, "measure": "corners_in",
+     "bullets": ["New inside corner trim"]},
+    {"id": "sa_trim", "name": "Trim Board", "group": "Legacy", "unit": "LF", "cost": 0,
+     "bullets": ["New trim boards"]},
+    {"id": "sa_soffit", "name": "Soffit", "group": "Legacy", "unit": "LF", "cost": 0, "measure": "siding_soffit",
+     "bullets": ["New soffit"]},
 ]
 _SS = ["sa_house_wrap", "sa_starter", "sa_j_channel", "sa_corner_out", "sa_corner_in",
        "sa_trim", "sa_soffit", "sa_fascia", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"]
@@ -7868,6 +8156,64 @@ SIDING_BUNDLES_SEED = [
 ]
 SIDING_TIER_DEFAULTS_SEED = {"good": "b_lp_standard", "better": "b_hardie_primed",
                              "best": "b_hardie_statement"}
+
+# ── Siding profile factors ────────────────────────────────────────────────
+# Piece-per-SQ conversions the supplier take-off sheet uses (LP Primed, LP
+# Expert Finish, Hardie Primed, Hardie Statement tabs). Drives the Material
+# Order piece counts on the production packet + the customer-facing profile
+# name on the bundle card. Primary $/SQ COST does NOT change with profile —
+# the supplier sheet has counts, not dollars, so per-profile costs stay a
+# manager job until QXO supplies real B&B / Shake pricing.
+#
+# MUST mirror SIDING_PROFILE_FACTORS + SIDING_BUNDLE_PROFILES + SIDING_PROFILE_LABELS
+# in app.js — the tests hold the two lists to the same shape.
+SIDING_PROFILE_FACTORS = {
+    'lp': {
+        'lap_8':       {'primary': {'pcs_per_sq': 11.11, 'stick_ft': 16, 'size': '8" Cedar Text Lap'}},
+        'bb_4x8':      {'primary': {'pcs_per_sq': 3.0,  'size': '4×8 Board'},
+                        'battens': {'pcs_per_panel': 3, 'stick_ft': 16, 'size': '4/4×2 Batten'}},
+        'cedar_shake': {'primary': {'pcs_per_sq': 7.5, 'stick_ft': 8, 'size': '12" Cedar Shake Panel',
+                                    'source_note': 'PLACEHOLDER pcs/SQ — not in supplier sheet, confirm with QXO'}},
+    },
+    'hardie': {
+        'lap_8_25':        {'primary': {'pcs_per_sq': 14.25, 'stick_ft': 12, 'size': '8.25" Cedar Mill Lap'}},
+        'bb_4x10':         {'primary': {'pcs_per_sq': 2.5,  'size': '4×10 Board'},
+                            'battens': {'pcs_per_panel': 3, 'stick_ft': 12, 'size': '4/4×2.5 Batten'}},
+        'shake_straight':  {'primary': {'pcs_per_sq': 43, 'stick_ft': 4, 'size': '15.25×4 Straight-Edge Shake'}},
+        'shake_staggered': {'primary': {'pcs_per_sq': 50, 'stick_ft': 4, 'size': '15.25×4 Staggered-Edge Shake'}},
+    },
+}
+SIDING_BUNDLE_PROFILES = {
+    'b_lp_standard':      {'mfg': 'lp',     'default': 'lap_8',    'options': ['lap_8', 'bb_4x8', 'cedar_shake']},
+    'b_lp_expert':        {'mfg': 'lp',     'default': 'lap_8',    'options': ['lap_8', 'bb_4x8', 'cedar_shake']},
+    'b_hardie_primed':    {'mfg': 'hardie', 'default': 'lap_8_25', 'options': ['lap_8_25', 'bb_4x10', 'shake_straight', 'shake_staggered']},
+    'b_hardie_statement': {'mfg': 'hardie', 'default': 'lap_8_25', 'options': ['lap_8_25', 'bb_4x10', 'shake_straight', 'shake_staggered']},
+}
+SIDING_PROFILE_LABELS = {
+    'lap_8':           '8" Lap',
+    'bb_4x8':          'Board & Batten (4×8)',
+    'cedar_shake':     'Cedar Shake',
+    'lap_8_25':        '8.25" Lap',
+    'bb_4x10':         'Board & Batten (4×10)',
+    'shake_straight':  'Shake — Straight Edge',
+    'shake_staggered': 'Shake — Staggered Edge',
+}
+
+
+def _siding_profile(td, tier):
+    """Effective profile for a siding tier: stored per-tier value if valid for
+    the picked bundle, otherwise the bundle's default. Mirrors sidingProfile
+    (app.js)."""
+    if not isinstance(td, dict):
+        return ''
+    bundle_id = ((td.get('tier_bundles') or {}).get(tier) or '').strip()
+    cfg = SIDING_BUNDLE_PROFILES.get(bundle_id)
+    if not cfg:
+        return ''
+    stored = ((td.get('tier_profiles') or {}).get(tier) or '').strip()
+    if stored and stored in cfg['options']:
+        return stored
+    return cfg['default']
 
 # Commercial low-slope catalog. Membrane/insulation/accessory costs are
 # PLACEHOLDERS (0) on purpose — commercial material pricing comes off the
@@ -8084,7 +8430,7 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 # product predates the measurement and should adopt the seed's. Without it the
 # live Fascia product — seeded long before a fascia measurement existed — keeps
 # no measure and the Scope field it was added for silently fills nothing.
-_PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure')
+_PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure', 'group')
 
 # old product id -> the product(s) that replaced it, swapped into SEEDED bundles
 # on read. The old product stays in the catalog: an estimate may reference it and

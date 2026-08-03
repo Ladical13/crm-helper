@@ -42,6 +42,86 @@ function isBundleTrade(t) { return BUNDLE_TRADES.includes(t); }
 // says otherwise. Mirrored by SIMPLE_MODE_TRADES in app.py — the two must
 // agree or the server prices a trade the browser didn't.
 const SIMPLE_MODE_TRADES = ['gutters','commercial'];
+
+/* ── Siding profile factors ────────────────────────────────────────────────
+   Piece-per-SQ conversions the supplier take-off sheet uses — per manufacturer
+   × exposure. Drives the Material Order piece counts on the production packet
+   and the customer-facing profile name on the bundle card.
+
+   The primary material's per-SQ COST is baked into the seed catalog and does
+   NOT change with profile — the supplier sheet has piece counts but no
+   dollars, so shipping fake per-SQ costs for B&B or Shake would undersell
+   those systems. Until Luke supplies real supplier pricing per profile a
+   per-line price override on the pricing tab is how a rep distinguishes them,
+   and a yellow nag on the pricing tab says so out loud whenever a non-default
+   profile is picked.
+
+   MUST mirror SIDING_PROFILE_FACTORS + SIDING_BUNDLE_PROFILES in app.py. */
+const SIDING_PROFILE_FACTORS = {
+  lp: {
+    lap_8:       { primary:{ pcs_per_sq:11.11, stick_ft:16, size:'8" Cedar Text Lap' } },
+    bb_4x8:      { primary:{ pcs_per_sq:3.0,  size:'4×8 Board' },
+                   battens:{ pcs_per_panel:3, stick_ft:16, size:'4/4×2 Batten' } },
+    cedar_shake: { primary:{ pcs_per_sq:7.5, stick_ft:8, size:'12" Cedar Shake Panel',
+                             source_note:'PLACEHOLDER pcs/SQ — not in supplier sheet, confirm with QXO' } },
+  },
+  hardie: {
+    lap_8_25:        { primary:{ pcs_per_sq:14.25, stick_ft:12, size:'8.25" Cedar Mill Lap' } },
+    bb_4x10:         { primary:{ pcs_per_sq:2.5,  size:'4×10 Board' },
+                       battens:{ pcs_per_panel:3, stick_ft:12, size:'4/4×2.5 Batten' } },
+    shake_straight:  { primary:{ pcs_per_sq:43, stick_ft:4, size:'15.25×4 Straight-Edge Shake' } },
+    shake_staggered: { primary:{ pcs_per_sq:50, stick_ft:4, size:'15.25×4 Staggered-Edge Shake' } },
+  },
+};
+const SIDING_BUNDLE_PROFILES = {
+  b_lp_standard:      { mfg:'lp',     default:'lap_8',    options:['lap_8','bb_4x8','cedar_shake'] },
+  b_lp_expert:        { mfg:'lp',     default:'lap_8',    options:['lap_8','bb_4x8','cedar_shake'] },
+  b_hardie_primed:    { mfg:'hardie', default:'lap_8_25', options:['lap_8_25','bb_4x10','shake_straight','shake_staggered'] },
+  b_hardie_statement: { mfg:'hardie', default:'lap_8_25', options:['lap_8_25','bb_4x10','shake_straight','shake_staggered'] },
+};
+// Order the Price Book renders siding groups in. Any unlisted group name
+// (including 'Ungrouped') sorts to the end. Physical seed order is
+// consistent with this list so freshly-installed books look the same as
+// UI-sorted existing ones.
+const _SIDING_GROUP_ORDER = ['LP SmartSide', 'James Hardie', 'EDCO Steel',
+                             'Shared', 'Labor & Misc', 'Legacy'];
+const SIDING_PROFILE_LABELS = {
+  lap_8:           '8" Lap',
+  bb_4x8:          'Board & Batten (4×8)',
+  cedar_shake:     'Cedar Shake',
+  lap_8_25:        '8.25" Lap',
+  bb_4x10:         'Board & Batten (4×10)',
+  shake_straight:  'Shake — Straight Edge',
+  shake_staggered: 'Shake — Staggered Edge',
+};
+// The profile chosen for one tier — bundle's default when none is stored.
+function sidingProfile(tier) {
+  const td = S.trades && S.trades.siding; if (!td) return '';
+  const bundleId = (td.tier_bundles || {})[tier] || '';
+  const cfg = SIDING_BUNDLE_PROFILES[bundleId];
+  if (!cfg) return '';
+  const stored = ((td.tier_profiles || {})[tier] || '').trim();
+  if (stored && cfg.options.includes(stored)) return stored;
+  return cfg.default;
+}
+function isNonDefaultSidingProfile(tier) {
+  const td = S.trades && S.trades.siding; if (!td) return false;
+  const bundleId = (td.tier_bundles || {})[tier] || '';
+  const cfg = SIDING_BUNDLE_PROFILES[bundleId];
+  const p = sidingProfile(tier);
+  return !!cfg && !!p && p !== cfg.default;
+}
+function setSidingProfile(tier, profile) {
+  const td = S.trades && S.trades.siding; if (!td) return;
+  const bundleId = (td.tier_bundles || {})[tier] || '';
+  const cfg = SIDING_BUNDLE_PROFILES[bundleId];
+  if (!cfg) return;
+  const clean = cfg.options.includes(profile) ? profile : cfg.default;
+  td.tier_profiles = td.tier_profiles || { good:'', better:'', best:'' };
+  td.tier_profiles[tier] = clean;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
 function effectiveTradeMode(trade, td) {
   return ((td && td.mode) || (SIMPLE_MODE_TRADES.includes(trade) ? 'simple' : 'gbb'));
 }
@@ -330,27 +410,40 @@ const MEASURE_FIELDS = [
   { group:'Siding', fields:[
     {key:'siding_squares',            label:'Siding Area',      unit:'SQ'},
     {key:'siding_waste_pct',          label:'Waste',            unit:'%'},
+    {key:'siding_openings_count',     label:'Window + Door Openings', unit:'EA'},
     {key:'siding_outside_corners_lf', label:'Outside Corners',  unit:'LF'},
     {key:'siding_inside_corners_lf',  label:'Inside Corners',   unit:'LF'},
-    // J-channel and trim boards were one combined field. They are different
-    // products at different prices — EDCO runs J-channel, LP and Hardie run
-    // 5/4 trim boards — so a bundle can only auto-fill the right one if the
-    // rep measured them apart.
+    // J-channel and trim boards are separate products at separate prices —
+    // EDCO runs J-channel, LP and Hardie run 5/4 trim board — so the bundle
+    // can only auto-fill the right one if the rep measured them apart.
     {key:'siding_j_channel_lf',       label:'J-Channel',        unit:'LF'},
-    {key:'siding_trim_lf',            label:'Trim Boards',      unit:'LF'},
+    // Trim board split: sloped (rake/gable) runs long-cut so it eats more
+    // waste (/0.84) than vertical (/0.85). Supplier's take-off sheet uses
+    // this same split. The old siding_trim_lf survives as a fallback in
+    // MEASURE_DEFS so in-flight estimates don't lose their trim total.
+    {key:'siding_trim_sloped_lf',     label:'Trim — Sloped (rakes/gables)', unit:'LF'},
+    {key:'siding_trim_vertical_lf',   label:'Trim — Vertical',              unit:'LF'},
+    {key:'siding_trim_width_default', label:'Default Trim Width', unit:'in',
+     opts:[[4,'4"'],[6,'6"'],[8,'8"'],[10,'10"'],[12,'12"']]},
     {key:'siding_starter_lf',         label:'Starter Strip',    unit:'LF'},
     {key:'siding_soffit_lf',          label:'Soffit',           unit:'LF'},
-    // Soffit is measured and priced by the linear foot — that is how the
-    // measurement report comes back. Width is the SPEC the rep picks so the
-    // order pulls the right panel; it rides to the production packet and does
-    // NOT scale quantity or price. A per-SF soffit product can point at
-    // siding_soffit_sf instead if one is ever added.
+    // Soffit width is the SPEC the crew orders from. Widths ≤24" order LF
+    // sticks; ≥25" routes to 4×8/9/10 panels (SF-driven) via siding_soffit_sf.
     {key:'siding_soffit_width',       label:'Soffit Width',     unit:'in',
      opts:[[12,'12"'],[16,'16"'],[24,'24"'],[36,'36"'],[48,'48"']]},
-    // Fascia runs with the soffit but is its own material and its own number.
-    // The seed catalog has always carried a Fascia product; until this field
-    // existed it had no measurement to read and sat at manual qty.
-    {key:'siding_fascia_lf',          label:'Fascia',           unit:'LF'},
+    // Full-perimeter vented soffit is standard, so default 100%. When it's
+    // less than that (a soffit run that hits a vented section then a solid
+    // section) the material order splits the LF into the two SKUs.
+    {key:'siding_soffit_vented_pct',  label:'Soffit % Vented',  unit:'%'},
+    // Fascia split into eaves vs rakes — supplier's take-off sheet uses this
+    // same split. Old siding_fascia_lf survives as fallback in MEASURE_DEFS.
+    {key:'siding_fascia_eaves_lf',    label:'Fascia — Eaves',   unit:'LF'},
+    {key:'siding_fascia_rakes_lf',    label:'Fascia — Rakes',   unit:'LF'},
+    // Frieze boards ride the sloped and level runs immediately under the
+    // eaves and above every window/door — a real material line on every
+    // LP/Hardie job and not previously collected.
+    {key:'siding_frieze_eaves_lf',    label:'Frieze Board — Eaves (Sloped)', unit:'LF'},
+    {key:'siding_frieze_level_lf',    label:'Frieze Board — Level',          unit:'LF'},
   ]},
   { group:'Windows', fields:[
     {key:'windows_count', label:'Windows', unit:'EA'},
@@ -422,17 +515,41 @@ const MEASURE_DEFS = {
   corners_out:          { label:'Outside Corners LF',  calc:m => mnum(m.siding_outside_corners_lf) },
   corners_in:           { label:'Inside Corners LF',   calc:m => mnum(m.siding_inside_corners_lf) },
   j_channel:            { label:'J-Channel LF',        calc:m => mnum(m.siding_j_channel_lf) },
-  siding_trim:          { label:'Trim Board LF',       calc:m => mnum(m.siding_trim_lf) },
+  // Trim reads the sloped + vertical split introduced with the supplier
+  // take-off, and falls back to the pre-split single-field total when both
+  // new fields are empty (an in-flight estimate saved before the split).
+  siding_trim_sloped:   { label:'Trim Sloped LF',      calc:m => mnum(m.siding_trim_sloped_lf) },
+  siding_trim_vertical: { label:'Trim Vertical LF',    calc:m => mnum(m.siding_trim_vertical_lf) },
+  siding_trim:          { label:'Trim Board LF',       calc:m => {
+    const split = mnum(m.siding_trim_sloped_lf) + mnum(m.siding_trim_vertical_lf);
+    return split > 0 ? split : mnum(m.siding_trim_lf);
+  } },
   siding_starter:       { label:'Starter Strip LF',    calc:m => mnum(m.siding_starter_lf) },
-  siding_fascia:        { label:'Fascia LF',           calc:m => mnum(m.siding_fascia_lf) },
+  // Fascia the same shape: eaves + rakes split, fallback to old single field.
+  siding_fascia_eaves:  { label:'Fascia Eaves LF',     calc:m => mnum(m.siding_fascia_eaves_lf) },
+  siding_fascia_rakes:  { label:'Fascia Rakes LF',     calc:m => mnum(m.siding_fascia_rakes_lf) },
+  siding_fascia:        { label:'Fascia LF',           calc:m => {
+    const split = mnum(m.siding_fascia_eaves_lf) + mnum(m.siding_fascia_rakes_lf);
+    return split > 0 ? split : mnum(m.siding_fascia_lf);
+  } },
+  siding_frieze_eaves:  { label:'Frieze Eaves LF',     calc:m => mnum(m.siding_frieze_eaves_lf) },
+  siding_frieze_level:  { label:'Frieze Level LF',     calc:m => mnum(m.siding_frieze_level_lf) },
+  siding_frieze:        { label:'Frieze Total LF',     calc:m => mnum(m.siding_frieze_eaves_lf) + mnum(m.siding_frieze_level_lf) },
+  siding_openings:      { label:'# Openings (win + door)', calc:m => mnum(m.siding_openings_count) },
   siding_soffit:        { label:'Soffit LF',           calc:m => mnum(m.siding_soffit_lf) },
-  // Available for a soffit product sold by coverage rather than by the foot —
-  // nothing in the shipped price book uses it, since the measurement report
-  // gives soffit as a linear total. Width missing means 12", the identity
-  // multiplier. Never fall back to 0: that would zero the line while the run
-  // still looked filled in on screen.
+  // Vented % defaults to 100 (a fully vented perimeter soffit is the norm).
+  // Missing/junk keeps the identity (100), never 0: no vented soffit at all
+  // is a genuine choice the rep types explicitly, not the default.
+  siding_soffit_vented: { label:'Soffit Vented LF',    calc:m => mnum(m.siding_soffit_lf) * Math.min(Math.max(mnum(m.siding_soffit_vented_pct, 100), 0), 100) / 100 },
+  siding_soffit_solid:  { label:'Soffit Solid LF',     calc:m => mnum(m.siding_soffit_lf) * (100 - Math.min(Math.max(mnum(m.siding_soffit_vented_pct, 100), 0), 100)) / 100 },
+  // SF/SQ views. Width missing means 12" (identity), NEVER 0 — that would
+  // zero the line while the Scope page still showed a run filled in.
   siding_soffit_sf:     { label:'Soffit SF',           calc:m => mnum(m.siding_soffit_lf) * (mnum(m.siding_soffit_width, 12) || 12) / 12 },
   siding_soffit_sq:     { label:'Soffit SQ',           calc:m => mnum(m.siding_soffit_lf) * (mnum(m.siding_soffit_width, 12) || 12) / 12 / 100 },
+  // Z-flash for window flashing — one 10' stick per ~4 openings, per the
+  // supplier take-off (b_openings / 4 / 10 * 10 → openings / 4). Rounded up
+  // on the item via ceil (measuredQty rounds EA up whole).
+  siding_zflash:        { label:'Z-Flash EA',          calc:m => mnum(m.siding_openings_count) / 4 },
   windows:              { label:'# Windows',           calc:m => mnum(m.windows_count) },
   doors:                { label:'# Doors',             calc:m => mnum(m.doors_count) },
   comm_sq:              { label:'Commercial SQ',            calc:m => mnum(m.comm_squares) },
@@ -912,9 +1029,15 @@ function applyMeasurements() {
   renderTotals();
 }
 const SIDING_MEAS_KEYS = new Set([
-  'siding_squares','siding_waste_pct','siding_outside_corners_lf',
-  'siding_inside_corners_lf','siding_j_channel_lf','siding_trim_lf','siding_starter_lf',
-  'siding_soffit_lf','siding_soffit_width','siding_fascia_lf',
+  'siding_squares','siding_waste_pct','siding_openings_count',
+  'siding_outside_corners_lf','siding_inside_corners_lf','siding_j_channel_lf',
+  'siding_trim_sloped_lf','siding_trim_vertical_lf','siding_trim_width_default',
+  'siding_starter_lf','siding_soffit_lf','siding_soffit_width','siding_soffit_vented_pct',
+  'siding_fascia_eaves_lf','siding_fascia_rakes_lf',
+  'siding_frieze_eaves_lf','siding_frieze_level_lf',
+  // Legacy pre-split fields still trigger auto-build so an in-flight estimate
+  // opened after the change keeps working when the rep enters the OLD fields.
+  'siding_trim_lf','siding_fascia_lf',
 ]);
 const COMMERCIAL_MEAS_KEYS = new Set([
   'comm_squares','comm_waste_pct','comm_perimeter_lf','comm_parapet_lf',
@@ -2250,7 +2373,33 @@ function pbRenderBundleTrade() {
 }
 
 function pbRenderRoofCatalog() {
-  const items = pbCat();
+  // Stable-sort by group for display only, so an existing catalog that
+  // interleaves LP/Hardie/EDCO rows still renders as clean grouped blocks.
+  // The manager's underlying order is untouched — moves via ↑↓ act on the
+  // real positions and the render redraws grouped again. Order within a
+  // group stays whatever it was in the underlying array. The order of
+  // GROUPS themselves is fixed by _SIDING_GROUP_ORDER for siding; other
+  // trades fall back to first-seen order.
+  const rawItems = pbCat();
+  let items = rawItems;
+  if (pbActiveTrade === 'siding' && rawItems.some(x => (x.group || '').trim())) {
+    const order = _SIDING_GROUP_ORDER;
+    // Map: original index → item. Preserved so pbRoofCatSet/Move indices
+    // stay pointing at the true position in pbCat() (they always do — we
+    // sort only what the map receives). The ↑↓ buttons still use the same
+    // pbCat indices, but after a Move the render sorts again on the new
+    // positions.
+    const rank = it => {
+      const g = (it.group || '').trim() || 'Ungrouped';
+      const idx = order.indexOf(g);
+      return idx === -1 ? order.length : idx;
+    };
+    // Track original indices so the row's onclick handlers still target
+    // pbCat()[origIdx]. Stable sort — ties keep the original ordering.
+    items = rawItems.map((it, i) => ({it, i, r: rank(it)}))
+                    .sort((a, b) => a.r - b.r || a.i - b.i)
+                    .map(x => Object.assign({}, x.it, {__origIdx: x.i}));
+  }
   const measOpts = sel => `<option value="">Manual</option>` +
     Object.entries(MEASURE_DEFS).map(([k,d])=>`<option value="${k}" ${sel===k?'selected':''}>${esc(d.label)}</option>`).join('');
   return `
@@ -2267,50 +2416,70 @@ function pbRenderRoofCatalog() {
         <th></th>
       </tr></thead>
       <tbody>
-        ${items.length ? items.map((it,i)=>`
-          <tr class="pb-item-row">
-            <td class="pb-order-cell">
-              <button class="pb-order-btn" onclick="pbRoofCatMove(${i},-1)" ${i===0?'disabled':''} title="Move up">↑</button>
-              <button class="pb-order-btn" onclick="pbRoofCatMove(${i},1)" ${i===items.length-1?'disabled':''} title="Move down">↓</button>
-            </td>
-            <td><input class="pb-input-name" type="text" value="${esc(it.name||'')}" oninput="pbRoofCatSet(${i},'name',this.value)" placeholder="Product name"></td>
-            <td><input class="pb-input-unit" type="text" value="${esc(it.unit||'')}" oninput="pbRoofCatSet(${i},'unit',this.value)" placeholder="Unit"></td>
-            <td class="pb-auto-cell"><select class="pb-measure-select" onchange="pbRoofCatSet(${i},'measure',this.value)">${measOpts(it.measure||'')}</select></td>
-            <td><div class="pb-tier-cost-wrap"><span class="pb-tier-dollar">$</span>
-              <input class="pb-tier-cost" type="number" min="0" step="0.01" value="${it.cost!==undefined&&it.cost!==''?it.cost:''}" placeholder="0.00" onchange="pbRoofCatSet(${i},'cost',this.value)"></div></td>
-            <td style="text-align:center"><input type="checkbox" ${it.customer_visible!==false?'checked':''} onchange="pbRoofCatSet(${i},'customer_visible',this.checked)"></td>
-            <td class="pb-cat-actions">
-              <button class="pb-order-btn ${_pbBulletsOpen[it.id]?'on':''}" onclick="pbToggleBullets('${it.id}')"
-                title="What this product says on the Good/Better/Best card">💬</button>
-              <button class="pb-del-btn" onclick="pbRoofCatDel(${i})" title="Delete product">✕</button>
-            </td>
-          </tr>
-          ${_pbBulletsOpen[it.id] ? `
-          <tr class="pb-bullets-row"><td></td><td colspan="6">
-            <label class="pb-variant-field-label">Tagline <small>one line under the package price when this product is the primary material — overrides the bundle's default</small></label>
-            <input class="pb-bullets-ta" type="text"
-              value="${esc(it.desc||'')}"
-              placeholder="Short customer-facing tagline for this product"
-              onchange="pbRoofCatSetDesc(${i},this.value)">
-            <label class="pb-variant-field-label" style="margin-top:10px">Customer wording <small>one bullet per line</small></label>
-            <textarea class="pb-bullets-ta" rows="3"
-              placeholder="${esc(it.name||'Product name')}"
-              onchange="pbRoofCatSetBullets(${i},this.value)">${esc((it.bullets||[]).join('\n'))}</textarea>
-            <label class="pb-bullet-silence">
-              <input type="checkbox" ${Array.isArray(it.bullets)&&!it.bullets.length?'checked':''}
-                onchange="pbRoofCatSilence(${i},this.checked)">
-              Say nothing on the card
-            </label>
-            <div class="pb-bundle-copy-hint">${
-              (Array.isArray(it.bullets) && !it.bullets.length)
-                ? 'Silent — this product is in the scope and priced, but says nothing on the card.'
-              : (Array.isArray(it.bullets) && it.bullets.length)
-                ? ('Shown on every package that includes this product.' + (it.customer_visible === false
-                    ? ' Show is off, so the customer reads these lines without seeing the price broken out.' : ''))
-              : (it.customer_visible === false)
-                ? 'Not set, and Show is off — this product says nothing on the card. Write the wording above to promise the work without showing its price.'
-                : `Not set — the card falls back to the product name, “${esc(it.name||'')}”.`}</div>
-          </td></tr>` : ''}`).join('') : `<tr><td colspan="7" class="pb-empty">No products yet — add your first below.</td></tr>`}
+        ${items.length ? (() => {
+          // Insert a group subheader row when a product's `group` differs
+          // from the previous product's. Only kicks in when the catalog
+          // actually carries a group on any product; a manager who never
+          // grouped their catalog still sees the flat list they had before.
+          const anyGrouped = items.some(x => (x.group || '').trim());
+          return items.map((it, visI) => {
+            // Sorted view: visI is the position in `items` (rendered order),
+            // origI is the position in pbCat() the onclick handlers must
+            // target. When not sorted, __origIdx is absent → same as visI.
+            const i = (it.__origIdx !== undefined) ? it.__origIdx : visI;
+            const grp = (it.group || '').trim();
+            const prevGrp = visI > 0 ? ((items[visI - 1].group || '').trim()) : '__none__';
+            const headerRow = anyGrouped && grp !== prevGrp ? `
+              <tr class="pb-group-hd">
+                <td colspan="7">${esc(grp || 'Ungrouped')}</td>
+              </tr>` : '';
+            const rawLen = rawItems.length;
+            return headerRow + `
+            <tr class="pb-item-row">
+              <td class="pb-order-cell">
+                <button class="pb-order-btn" onclick="pbRoofCatMove(${i},-1)" ${i===0?'disabled':''} title="Move up">↑</button>
+                <button class="pb-order-btn" onclick="pbRoofCatMove(${i},1)" ${i===rawLen-1?'disabled':''} title="Move down">↓</button>
+              </td>
+              <td><input class="pb-input-name" type="text" value="${esc(it.name||'')}" oninput="pbRoofCatSet(${i},'name',this.value)" placeholder="Product name"></td>
+              <td><input class="pb-input-unit" type="text" value="${esc(it.unit||'')}" oninput="pbRoofCatSet(${i},'unit',this.value)" placeholder="Unit"></td>
+              <td class="pb-auto-cell"><select class="pb-measure-select" onchange="pbRoofCatSet(${i},'measure',this.value)">${measOpts(it.measure||'')}</select></td>
+              <td><div class="pb-tier-cost-wrap"><span class="pb-tier-dollar">$</span>
+                <input class="pb-tier-cost" type="number" min="0" step="0.01" value="${it.cost!==undefined&&it.cost!==''?it.cost:''}" placeholder="0.00" onchange="pbRoofCatSet(${i},'cost',this.value)"></div></td>
+              <td style="text-align:center"><input type="checkbox" ${it.customer_visible!==false?'checked':''} onchange="pbRoofCatSet(${i},'customer_visible',this.checked)"></td>
+              <td class="pb-cat-actions">
+                <button class="pb-order-btn ${_pbBulletsOpen[it.id]?'on':''}" onclick="pbToggleBullets('${it.id}')"
+                  title="What this product says on the Good/Better/Best card">💬</button>
+                <button class="pb-del-btn" onclick="pbRoofCatDel(${i})" title="Delete product">✕</button>
+              </td>
+            </tr>
+            ${_pbBulletsOpen[it.id] ? `
+            <tr class="pb-bullets-row"><td></td><td colspan="6">
+              <label class="pb-variant-field-label">Tagline <small>one line under the package price when this product is the primary material — overrides the bundle's default</small></label>
+              <input class="pb-bullets-ta" type="text"
+                value="${esc(it.desc||'')}"
+                placeholder="Short customer-facing tagline for this product"
+                onchange="pbRoofCatSetDesc(${i},this.value)">
+              <label class="pb-variant-field-label" style="margin-top:10px">Customer wording <small>one bullet per line</small></label>
+              <textarea class="pb-bullets-ta" rows="3"
+                placeholder="${esc(it.name||'Product name')}"
+                onchange="pbRoofCatSetBullets(${i},this.value)">${esc((it.bullets||[]).join('\n'))}</textarea>
+              <label class="pb-bullet-silence">
+                <input type="checkbox" ${Array.isArray(it.bullets)&&!it.bullets.length?'checked':''}
+                  onchange="pbRoofCatSilence(${i},this.checked)">
+                Say nothing on the card
+              </label>
+              <div class="pb-bundle-copy-hint">${
+                (Array.isArray(it.bullets) && !it.bullets.length)
+                  ? 'Silent — this product is in the scope and priced, but says nothing on the card.'
+                : (Array.isArray(it.bullets) && it.bullets.length)
+                  ? ('Shown on every package that includes this product.' + (it.customer_visible === false
+                      ? ' Show is off, so the customer reads these lines without seeing the price broken out.' : ''))
+                : (it.customer_visible === false)
+                  ? 'Not set, and Show is off — this product says nothing on the card. Write the wording above to promise the work without showing its price.'
+                  : `Not set — the card falls back to the product name, “${esc(it.name||'')}”.`}</div>
+            </td></tr>` : ''}`;
+          }).join('');
+        })() : `<tr><td colspan="7" class="pb-empty">No products yet — add your first below.</td></tr>`}
       </tbody>
     </table>
     </div>
@@ -3673,7 +3842,7 @@ function renderScopePage() {
         <input class="scope-formula-input" type="text"
           value="${esc(item.formula||'')}"
           placeholder="e.g. eave_lf + valley_lf"
-          title="Roof: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1) — Siding: siding_squares, siding_waste_pct, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_trim_lf, siding_starter_lf, siding_soffit_lf, siding_soffit_width, siding_fascia_lf, windows_count, doors_count"
+          title="Roof: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1) — Siding: siding_squares, siding_waste_pct, siding_openings_count, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_trim_sloped_lf, siding_trim_vertical_lf, siding_trim_width_default, siding_starter_lf, siding_soffit_lf, siding_soffit_width, siding_soffit_vented_pct, siding_fascia_eaves_lf, siding_fascia_rakes_lf, siding_frieze_eaves_lf, siding_frieze_level_lf, windows_count, doors_count"
           onchange="setItemFormula('${item._trade}','${item.id}',this.value)">
         <span class="scope-formula-hint">eave_lf + valley_lf</span>
       </div>` : '';
@@ -4979,6 +5148,18 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
     }
   });
   td.tier_bundles[tier] = bundleId;
+  // Reset the per-tier profile when the picked bundle doesn't offer the
+  // stored one. Switching LP → Hardie must not leave `lap_8` on a bundle
+  // whose valid options are `lap_8_25` / `bb_4x10` / `shake_*`.
+  if (trade === 'siding') {
+    const cfg = SIDING_BUNDLE_PROFILES[bundleId];
+    td.tier_profiles = td.tier_profiles || { good:'', better:'', best:'' };
+    if (!cfg) {
+      td.tier_profiles[tier] = '';
+    } else if (!cfg.options.includes(td.tier_profiles[tier])) {
+      td.tier_profiles[tier] = cfg.default;
+    }
+  }
 
   // The bundle owns this tier's customer story, so picking one REPLACES the
   // Options-page tagline and bullets — including a rep's hand-edits. That's the
@@ -5217,6 +5398,26 @@ function renderGBBGrid(trade) {
     // That name is what the customer sees on the package card in place of the
     // bundle's; blank leaves the card as plain Good/Better/Best.
     const customName = ((S.trades[trade].tier_bundle_names) || {})[t] || '';
+    // Siding-only profile picker (lap / B&B / shake) — takeoff-only property.
+    // Drives the Material Order piece counts, does NOT change the sell price;
+    // a yellow nag says so when a non-default profile is picked so the rep
+    // knows to per-line override if B&B/Shake costs are different at QXO.
+    let sidingProfileChip = '';
+    let sidingProfileNag  = '';
+    if (trade === 'siding' && SIDING_BUNDLE_PROFILES[selBundle]) {
+      const cfg = SIDING_BUNDLE_PROFILES[selBundle];
+      const cur = sidingProfile(t);
+      sidingProfileChip = `
+        <label class="tier-hero-lbl tier-profile-lbl" title="Exposure / board style — drives the Material Order piece counts.">Profile</label>
+        <select class="tier-hero-select tier-profile-select"
+          onchange="setSidingProfile('${t}', this.value)"
+          title="Exposure / board style — drives the material-order piece counts on the production packet.">
+          ${cfg.options.map(o => `<option value="${o}" ${o===cur?'selected':''}>${esc(SIDING_PROFILE_LABELS[o] || o)}</option>`).join('')}
+        </select>`;
+      if (cur && cur !== cfg.default) {
+        sidingProfileNag = `<div class="tier-profile-nag" title="Board & Batten and Shake usually cost more per SQ than lap. The material-order piece counts on the packet ARE profile-aware, but the sell price uses the bundle's baseline $/SQ — override the material line's cost on this tier if QXO's price differs.">⚠ ${esc(SIDING_PROFILE_LABELS[cur] || cur)} typically costs more per SQ than lap — set a per-line cost override if QXO's price differs.</div>`;
+      }
+    }
     const heroSel = isRoof ? `
       <div class="tier-hero">
         <label class="tier-hero-lbl">Product</label>
@@ -5225,12 +5426,14 @@ function renderGBBGrid(trade) {
           ${bundles.map(b=>`<option value="${b.id}" ${b.id===selBundle?'selected':''}>${esc(b.name||'(unnamed)')}</option>`).join('')}
           <option value="__custom__" ${isCustomBundle?'selected':''}>Custom…</option>
         </select>
+        ${sidingProfileChip}
         ${isCustomBundle ? `
         <input class="tier-hero-name" type="text" value="${esc(customName)}"
           placeholder="Name this package…"
           title="What this custom package is called — shown to the customer on the package card"
           onchange="setTierBundleName('${trade}','${t}',this.value)">` : ''}
-      </div>` : '';
+      </div>
+      ${sidingProfileNag}` : '';
 
     const measureNudge = needsMeasure
       ? `<div class="tier-measure-nudge">Bundle loaded — enter ${trade === 'siding' ? 'siding' : 'roof'} measurements on the Scope page to set quantities and price.</div>`

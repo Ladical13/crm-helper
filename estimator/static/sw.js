@@ -5,11 +5,11 @@
 // /estimate/ and nothing else.
 const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
 
-const CACHE = 'po-v140';
+const CACHE = 'po-v143';
 const SHELL = [
   BASE + '/',
-  BASE + '/static/style.css?v=140',
-  BASE + '/static/app.js?v=140',
+  BASE + '/static/style.css?v=143',
+  BASE + '/static/app.js?v=143',
   BASE + '/static/logo.png',
   BASE + '/static/icon-192.png',
 ];
