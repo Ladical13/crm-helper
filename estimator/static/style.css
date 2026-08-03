@@ -517,7 +517,7 @@ input#cover-file-input { display: none; }
   font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .8px; color: var(--text-light);
 }
-.scope-qty-input {
+input.scope-qty-input {
   width: 80px; text-align: center; font-weight: 600;
   padding: 5px 6px; border-radius: 4px;
 }
@@ -855,19 +855,22 @@ input#cover-file-input { display: none; }
 .li-row-variant-select:focus { border-color: var(--primary-light); outline: none; box-shadow: 0 0 0 2px rgba(2,132,199,.15); }
 
 .li-row-numbers { display: flex; align-items: center; gap: 5px; font-size: 11px; }
-.li-row-qty-static { color: var(--text-light); min-width: 40px; }
-.li-row-qty-input { width: 50px; font-size: 11px; }
-.li-row-unit-select { width: 52px; font-size: 11px; padding: 3px 2px; }
+.li-row-qty-static { color: var(--text-light); min-width: 36px; }
+/* `input.` prefix: beats the global `input[type=number] { width:100% }` rule at
+   line 179 on specificity — a bare `.li-row-qty-input` loses to it and gets
+   sized by the flex parent (~16px on iPad, unusable). */
+input.li-row-qty-input { width: 44px; font-size: 11px; flex-shrink: 0; }
+select.li-row-unit-select { width: 52px; font-size: 11px; padding: 3px 2px; flex-shrink: 0; }
 .li-row-sep { color: var(--border); }
 .li-row-cost-wrap { display: flex; align-items: center; }
-.li-row-cost-input {
-  width: 64px; font-size: 11px; border: 1px solid var(--border);
+input.li-row-cost-input {
+  width: 78px; flex-shrink: 0; font-size: 11px; border: 1px solid var(--border);
   border-radius: 3px; padding: 3px 5px; text-align: right;
 }
 .li-row-total { margin-left: auto; font-weight: 700; font-size: 12px; white-space: nowrap; }
 .li-row-total-wrap { margin-left: auto; display: flex; align-items: center; gap: 2px; }
-.li-row-total-input {
-  width: 68px; font-size: 12px; font-weight: 700; text-align: right;
+input.li-row-total-input {
+  width: 84px; flex-shrink: 0; font-size: 12px; font-weight: 700; text-align: right;
   border: 1px solid transparent; border-radius: 3px; padding: 2px 4px;
   background: transparent; cursor: pointer; color: inherit;
 }
@@ -912,8 +915,8 @@ input#cover-file-input { display: none; }
 }
 .li-desc-input:hover { border-color: var(--border); background: #fff; }
 .li-desc-input:focus { border-color: var(--primary-light); background: #fff; }
-.li-qty-input { width: 60px; font-size: 11px; }
-.li-unit-select { width: 54px; font-size: 11px; padding: 4px 3px; }
+input.li-qty-input { width: 54px; font-size: 11px; }
+select.li-unit-select { width: 54px; font-size: 11px; padding: 4px 3px; }
 .li-qty-static { font-size: 11px; color: var(--text-light); }
 .li-cost-wrap { flex: 1; display: flex; align-items: center; gap: 3px; }
 .li-cost-wrap label { font-size: 10px; color: var(--text-light); white-space: nowrap; }
@@ -954,8 +957,8 @@ input#cover-file-input { display: none; }
   padding: 9px 12px; text-align: left;
   font-size: 11px; text-transform: uppercase; letter-spacing: .5px; font-weight: 700;
 }
-.other-th-num   { width: 70px; text-align: center !important; }
-.other-th-price { width: 110px; text-align: right !important; }
+.other-th-num   { width: 62px; text-align: center !important; }
+.other-th-price { width: 130px; text-align: right !important; }
 .other-table td { padding: 8px 12px; border-bottom: 1px solid var(--border-light); vertical-align: middle; }
 .other-table tfoot td { border-bottom: none; border-top: 2px solid var(--border); background: var(--bg); }
 .other-table tr:last-child td { border-bottom: none; }
@@ -976,10 +979,10 @@ input#cover-file-input { display: none; }
 .other-note-input:hover  { border-color: var(--border); background: #fff; }
 .other-note-input:focus  { border-color: var(--primary-light); background: #fff; outline: none; }
 .other-qty-cell  { text-align: center; }
-.other-qty-input { width: 60px; text-align: center; font-weight: 600; font-size: 12px; }
-.other-unit-select { width: 58px; font-size: 11px; padding: 4px 3px; }
+input.other-qty-input { width: 54px; text-align: center; font-weight: 600; font-size: 12px; }
+select.other-unit-select { width: 58px; font-size: 11px; padding: 4px 3px; }
 .other-price-cell  { text-align: right; }
-.other-price-input { width: 90px; text-align: right; font-size: 12px; }
+input.other-price-input { width: 110px; text-align: right; font-size: 12px; }
 .other-total-cell  { text-align: right; font-weight: 600; font-size: 13px; color: var(--primary); white-space: nowrap; }
 
 /* ── Add row + subtotals ───────────────────────────────────────────── */
@@ -3439,6 +3442,58 @@ a.jx-contact:hover { text-decoration: underline; }
   .cf-open-btn  { min-height: 44px; display: flex; align-items: center; }
   #save-btn     { min-height: 44px; }
   .scope-trade-toggle { min-height: 44px; }
+}
+
+/* ── iPad / touch tablet: 40px touch targets, compact qty, wider price ──
+   Targets touch devices in the 768–1366px range (iPad mini portrait through
+   iPad Pro 12.9 landscape). Skips laptop touchscreens above 1366. The desktop
+   layout stays intact — only input sizing changes.
+   `input.*` prefix beats the global `input[type=…] { width:100% }` rule. */
+@media (min-width: 768px) and (max-width: 1366px) and (pointer: coarse) {
+  input.li-row-qty-input,
+  input.li-qty-input,
+  input.other-qty-input,
+  input.scope-qty-input {
+    min-height: 40px; padding: 6px 4px;
+    font-size: 14px; text-align: center; font-weight: 700;
+  }
+  input.li-row-qty-input { width: 54px; }
+  input.li-qty-input     { width: 60px; }
+  input.other-qty-input  { width: 58px; }
+  input.scope-qty-input  { width: 74px; }
+
+  /* Price / cost / total: bigger boxes so five figures don't get clipped */
+  input.li-row-cost-input   { width: 96px;  min-height: 40px; font-size: 14px; padding: 6px 8px; }
+  input.li-row-total-input  { width: 104px; min-height: 40px; font-size: 14px; padding: 6px 8px; }
+  input.other-price-input   { width: 132px; min-height: 40px; font-size: 14px; padding: 6px 8px; }
+
+  select.li-row-unit-select, select.li-unit-select, select.other-unit-select {
+    min-height: 40px; font-size: 13px; padding: 6px 4px; width: 68px;
+  }
+  .li-row-numbers { gap: 8px; font-size: 13px; row-gap: 8px; }
+  .li-row-total   { font-size: 13px; }
+
+  /* Kill the number spinner arrows — they steal ~18px per input on iPad Safari */
+  input.scope-qty-input::-webkit-outer-spin-button,
+  input.scope-qty-input::-webkit-inner-spin-button,
+  input.li-row-qty-input::-webkit-outer-spin-button,
+  input.li-row-qty-input::-webkit-inner-spin-button,
+  input.li-qty-input::-webkit-outer-spin-button,
+  input.li-qty-input::-webkit-inner-spin-button,
+  input.other-qty-input::-webkit-outer-spin-button,
+  input.other-qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+  /* Give the "Other" price column enough header width to match the wider input */
+  .other-th-num   { width: 68px; }
+  .other-th-price { width: 148px; }
+
+  /* Scope table qty column matches the new input width */
+  .scope-table thead th.th-qty { width: 84px; }
+
+  /* Delete button, reorder arrows, include checkbox — touch targets */
+  .li-row-del { min-height: 36px; min-width: 36px; display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; }
+  .li-move-btn { width: 32px; height: 36px; font-size: 14px; }
+  .li-row-include input[type="checkbox"] { width: 16px; height: 16px; }
 }
 
 /* ── PWA / iPhone safe area (Dynamic Island, notch, home indicator) ── */
