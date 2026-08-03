@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -10,15 +10,15 @@
        tools should put ONE "Project One" icon on the home screen. -->
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <title>Project One â€” Pipeline</title>
-  <link rel="stylesheet" href="/crm/static/style.css?v=12">
+  <title>Project One — Pipeline</title>
+  <link rel="stylesheet" href="/crm/static/style.css?v=13">
 </head>
 <body>
 
 <!-- No login screen: the portal owns sign-in (portal/app.py). Unauthenticated
      requests are bounced to /login by api() in app.js. -->
 
-<!-- â”€â”€ App â”€â”€ -->
+<!-- ── App ── -->
 <div id="app-screen" class="screen">
 <div class="app-shell">
   <!-- Left sidebar (desktop) -->
@@ -28,13 +28,13 @@
       <div><div class="side-title">The Pipeline</div><div class="side-sub">Project One Roofing</div></div>
     </div>
     <nav class="side-nav">
-      <button class="side-item active" data-view="myday"><span class="side-ico">â˜€</span>My Day<span class="side-badge hidden" id="side-task-badge"></span></button>
-      <button class="side-item" data-view="outreach"><span class="side-ico">âš¡</span>Outreach<span class="side-badge hidden" id="side-queue-badge"></span></button>
-      <button class="side-item" data-view="pipeline"><span class="side-ico">â–¦</span>Pipeline</button>
-      <button class="side-item" data-view="partners"><span class="side-ico">ðŸ¤</span>Partners</button>
-      <button class="side-item mgr-only" data-view="dashboard"><span class="side-ico">ðŸ“Š</span>Numbers</button>
-      <button class="side-item mgr-only" data-view="coaching"><span class="side-ico">ðŸŽ“</span>Coach</button>
-      <button class="side-item" data-view="playbook"><span class="side-ico">ðŸ“•</span>Playbook</button>
+      <button class="side-item active" data-view="myday"><span class="side-ico">☀</span>My Day<span class="side-badge hidden" id="side-task-badge"></span></button>
+      <button class="side-item" data-view="outreach"><span class="side-ico">⚡</span>Outreach<span class="side-badge hidden" id="side-queue-badge"></span></button>
+      <button class="side-item" data-view="pipeline"><span class="side-ico">📋</span>Pipeline</button>
+      <button class="side-item" data-view="partners"><span class="side-ico">🤝</span>Partners</button>
+      <button class="side-item mgr-only" data-view="dashboard"><span class="side-ico">📊</span>Numbers</button>
+      <button class="side-item mgr-only" data-view="coaching"><span class="side-ico">🎓</span>Coach</button>
+      <button class="side-item" data-view="playbook"><span class="side-ico">📕</span>Playbook</button>
     </nav>
     <div class="side-sec">Stages</div>
     <div id="side-stages"></div>
@@ -45,8 +45,8 @@
   <header class="topbar">
     <div class="topbar-title" id="view-title">My Day</div>
     <div class="topbar-actions">
-      <button class="icon-btn" id="add-lead-btn" title="Add lead">ï¼‹</button>
-      <button class="icon-btn" id="menu-btn" title="Menu">â˜°</button>
+      <button class="icon-btn" id="add-lead-btn" title="Add lead">+</button>
+      <button class="icon-btn" id="menu-btn" title="Menu">☰</button>
     </div>
   </header>
 
@@ -57,9 +57,9 @@
       <div class="stat-row" id="myday-stats"></div>
       <h3 class="section-h">Today &amp; overdue <span class="count-badge" id="tasks-count">0</span></h3>
       <div id="myday-tasks" class="task-list"></div>
-      <h3 class="section-h">ðŸ”¥ Hot leads</h3>
+      <h3 class="section-h">🔥 Hot leads</h3>
       <div id="myday-hot" class="mini-lead-list"></div>
-      <h3 class="section-h">âš  Stalled â€” no touch in a while</h3>
+      <h3 class="section-h">⚠ Stalled — no touch in a while</h3>
       <div id="myday-stalled" class="mini-lead-list"></div>
     </section>
 
@@ -79,7 +79,7 @@
       <div class="pipeline-toolbar">
         <select id="pipeline-service" class="mini-select"></select>
         <select id="pipeline-rep" class="mini-select hidden"></select>
-        <input id="pipeline-search" class="mini-search" placeholder="Search leadsâ€¦">
+        <input id="pipeline-search" class="mini-search" placeholder="Search leads…">
       </div>
       <div id="kanban" class="kanban"></div>
       <div id="pipeline-detail" class="inline-detail hidden"></div>
@@ -87,7 +87,7 @@
 
     <!-- Partners -->
     <section class="view" id="view-partners">
-      <p class="view-intro">Realtors, HOAs, insurance agents &amp; property managers â€” and the business they send you.</p>
+      <p class="view-intro">Realtors, HOAs, insurance agents &amp; property managers — and the business they send you.</p>
       <div id="partners-list" class="card-list"></div>
       <div id="partners-detail" class="inline-detail hidden"></div>
     </section>
@@ -112,7 +112,7 @@
         <div><h3 class="section-h">Activity</h3><div id="dash-activity" class="bar-list"></div></div>
         <div><h3 class="section-h">By source</h3><div id="dash-source" class="bar-list"></div></div>
       </div>
-      <h3 class="section-h">ðŸ† Leaderboard</h3>
+      <h3 class="section-h">🏆 Leaderboard</h3>
       <div id="dash-leaderboard" class="leaderboard"></div>
     </section>
 
@@ -127,21 +127,21 @@
         </select>
       </div>
       <div class="stat-grid" id="coach-scorecard"></div>
-      <h3 class="section-h">ðŸŽ¯ Goals</h3>
+      <h3 class="section-h">🎯 Goals</h3>
       <div id="coach-goals"></div>
       <button class="btn-ghost small" id="add-goal-btn">+ Add goal</button>
-      <h3 class="section-h">âš  Stalled deals</h3>
+      <h3 class="section-h">⚠ Stalled deals</h3>
       <div id="coach-stalled" class="mini-lead-list"></div>
-      <h3 class="section-h">ðŸ“ 1:1 Coaching notes</h3>
-      <textarea id="coach-note-input" class="note-input" placeholder="Add a coaching note for this repâ€¦"></textarea>
+      <h3 class="section-h">📝 1:1 Coaching notes</h3>
+      <textarea id="coach-note-input" class="note-input" placeholder="Add a coaching note for this rep…"></textarea>
       <button class="btn-ghost small" id="add-note-btn">Save note</button>
       <div id="coach-notes" class="note-list"></div>
     </section>
 
     <!-- Playbook -->
     <section class="view" id="view-playbook">
-      <input id="playbook-search" class="mini-search full" placeholder="Search plans, objections &amp; scriptsâ€¦">
-      <h3 class="section-h">ðŸ¡ Maintenance plans</h3>
+      <input id="playbook-search" class="mini-search full" placeholder="Search plans, objections &amp; scripts…">
+      <h3 class="section-h">🏡 Maintenance plans</h3>
       <div id="playbook-plans" class="card-list"></div>
       <div id="playbook-principles" class="principles"></div>
       <h3 class="section-h">Objection handling</h3>
@@ -155,23 +155,23 @@
 
   <!-- Bottom tab bar (mobile) -->
   <nav class="tabbar" id="tabbar">
-    <button class="tab active" data-view="myday"><span class="tab-ico">â˜€</span>My Day</button>
-    <button class="tab" data-view="outreach"><span class="tab-ico">âš¡</span>Outreach</button>
-    <button class="tab" data-view="pipeline"><span class="tab-ico">â–¦</span>Pipeline</button>
-    <button class="tab" data-view="partners"><span class="tab-ico">ðŸ¤</span>Partners</button>
-    <button class="tab mgr-only" data-view="dashboard"><span class="tab-ico">ðŸ“Š</span>Numbers</button>
-    <button class="tab mgr-only" data-view="coaching"><span class="tab-ico">ðŸŽ“</span>Coach</button>
-    <button class="tab" data-view="playbook"><span class="tab-ico">ðŸ“•</span>Playbook</button>
+    <button class="tab active" data-view="myday"><span class="tab-ico">☀</span>My Day</button>
+    <button class="tab" data-view="outreach"><span class="tab-ico">⚡</span>Outreach</button>
+    <button class="tab" data-view="pipeline"><span class="tab-ico">📋</span>Pipeline</button>
+    <button class="tab" data-view="partners"><span class="tab-ico">🤝</span>Partners</button>
+    <button class="tab mgr-only" data-view="dashboard"><span class="tab-ico">📊</span>Numbers</button>
+    <button class="tab mgr-only" data-view="coaching"><span class="tab-ico">🎓</span>Coach</button>
+    <button class="tab" data-view="playbook"><span class="tab-ico">📕</span>Playbook</button>
   </nav>
 </div>
 
-<!-- â”€â”€ Lead detail drawer â”€â”€ -->
+<!-- ── Lead detail drawer ── -->
 <div id="lead-drawer" class="drawer">
   <div class="drawer-scrim" data-close-drawer></div>
   <div class="drawer-panel" id="lead-panel"></div>
 </div>
 
-<!-- â”€â”€ Generic modal â”€â”€ -->
+<!-- ── Generic modal ── -->
 <div id="modal" class="modal">
   <div class="modal-scrim" data-close-modal></div>
   <div class="modal-box" id="modal-box"></div>
@@ -180,6 +180,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="/shell.js"></script>
-<script src="/crm/static/app.js?v=12"></script>
+<script src="/crm/static/app.js?v=13"></script>
 </body>
 </html>

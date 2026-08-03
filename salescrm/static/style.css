@@ -352,6 +352,22 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.err{border-color:var(--red);color:#fca5a5}
 
+/* ── iPad / touch tablet polish ─────────────────────────────────────────
+ * Bumps sub-44px touch targets that are fine on desktop but too small
+ * for reliable finger-tapping. Coarse-pointer gate so laptop widths in
+ * this range don't inherit tablet padding. */
+@media (min-width: 768px) and (max-width: 1366px) and (pointer: coarse) {
+  .icon-btn { width: 44px; height: 44px; font-size: 22px; }
+  .tab { padding: 10px 2px 8px; }
+  .tab .tab-ico { font-size: 22px; }
+  .side-ico { font-size: 18px; width: 24px; }
+  .kcard { padding: 13px; }        /* easier drag target on a touchscreen */
+  .oq-actions a, .oq-actions button,
+  .contact-actions a { min-height: 48px; }
+  .task-check { width: 28px; height: 28px; }
+  .log-btn, .stage-select, .field input, .field select { min-height: 44px; }
+}
+
 /* ── Portal shell offset ───────────────────────────────────────────────
  * The app-switcher bar (portal/static/shell.css) is fixed at the top of the
  * viewport. This app lays out in normal flow, so the body drops by the bar's
