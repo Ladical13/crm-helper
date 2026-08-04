@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=144">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=146">
 </head>
 <body>
 
@@ -239,6 +239,10 @@
       <button class="page-btn" data-page="report" onclick="switchPage('report')">
         <span class="pg-num">9</span>Condition
       </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="visualizer" onclick="switchPage('visualizer')">
+        <span class="pg-num">🎨</span>Visualizer
+      </button>
     </nav>
     <div id="print-pages-bar"></div>
 
@@ -322,6 +326,13 @@
     <!-- ── Page 10: Documents (job PDFs + document generators) ─────── -->
     <div id="page-documents" class="page" style="display:none">
       <div id="documents-content"></div>
+    </div>
+
+    <!-- ── Visualizer: photo of the house + G/B/B color/style overlay ── -->
+    <div id="page-visualizer" class="page" style="display:none">
+      <div id="visualizer-content"></div>
+      <input type="file" id="vz-upload-input" accept="image/*" style="display:none">
+      <input type="file" id="vz-camera-input" accept="image/*" capture="environment" style="display:none">
     </div>
 
   </main>
@@ -705,6 +716,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=144"></script>
+<script src="/estimate/static/app.js?v=146"></script>
 </body>
 </html>

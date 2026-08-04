@@ -2,6 +2,7 @@ import io
 import os
 import re
 import sys
+import copy
 import math
 import json
 import calendar
@@ -166,7 +167,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # DATA_DIR: where estimates, uploads, and config files live.
 # Set DATA_DIR env var to a persistent volume path on Railway (e.g. /data).
 # Falls back to BASE_DIR so local development works unchanged.
-DATA_DIR = os.environ.get('DATA_DIR', BASE_DIR)
+#
+# Normalized to an absolute path even when the env var is relative, because
+# send_from_directory (Flask 2+) joins a relative directory against
+# app.root_path, not os.getcwd() — so a relative DATA_DIR would let writes
+# land in <cwd>/uploads while reads looked in <app_root>/uploads. An
+# already-absolute path passes through unchanged.
+DATA_DIR = os.path.abspath(os.environ.get('DATA_DIR', BASE_DIR))
 
 ESTIMATES_DIR = os.path.join(DATA_DIR, 'estimates')
 UPLOADS_DIR   = os.path.join(DATA_DIR, 'uploads')
@@ -1061,6 +1068,138 @@ def delete_photo(est_id, filename):
                     except OSError:
                         pass
     return jsonify({'ok': True})
+
+
+# ── Visualizer ────────────────────────────────────────────────────────────
+# The Visualizer tab lets the rep upload a photo of the house, paint roof and
+# siding masks, then produce a Good/Better/Best rendering with colors picked
+# from the actual estimate bundles. State lives entirely under `est.visualizer`
+# — a top-level key the server does not whitelist, so it round-trips through
+# the normal PUT unchanged (see SERVER_MANAGED_FIELDS and _merge).
+#
+# Two endpoints:
+#  - POST .../visualizer/asset stores an image blob (base image, mask, or tier
+#    render). Base64 in JSON because canvas.toDataURL is base64 and it saves
+#    the frontend a form-encode step. Writes to the same UPLOADS_DIR as the
+#    normal upload path, so files serve at /uploads/<est_id>/<name>.
+#  - PUT .../visualizer/state updates the JSON selections/timestamp atomically
+#    without loading + re-saving the whole estimate.
+#
+# Auth mirrors POST /api/uploads/<est_id>: _can_touch_estimate on an existing
+# estimate, unauthenticated allowed when the estimate is missing (mirrors how
+# upload_photo handles new-estimate uploads).
+
+_VISUALIZER_MAX_BYTES = 12 * 1024 * 1024   # 12 MB — comfortably above a
+# camera photo but well under the 30 MB global request cap, so a bad client
+# can't fill the disk with one call.
+
+
+@app.route('/api/estimates/<est_id>/visualizer/asset', methods=['POST'])
+def visualizer_asset(est_id):
+    """Store a Visualizer image blob and update the pointer field in
+    est.visualizer. Body: JSON {kind, tier?, role?, content_b64, ext}.
+
+    kind='base'   -> visualizer.base_image
+    kind='mask'   -> visualizer.roof_mask | siding_mask (role required)
+    kind='render' -> visualizer.tier_renders[tier] (tier required)
+    """
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    est = est_load(est_id)
+    if est is not None and not _can_touch_estimate(est):
+        return _forbid()
+
+    body = request.get_json(silent=True) or {}
+    kind = (body.get('kind') or '').strip()
+    ext  = (body.get('ext') or '').strip().lower().lstrip('.')
+    b64  = body.get('content_b64') or ''
+    tier = (body.get('tier') or '').strip()
+    role = (body.get('role') or '').strip()
+
+    if kind not in ('base', 'mask', 'render'):
+        return jsonify({'error': 'invalid kind'}), 400
+    if ext not in ('jpg', 'jpeg', 'png', 'webp'):
+        return jsonify({'error': 'invalid ext'}), 400
+    if kind == 'render' and tier not in ('good', 'better', 'best'):
+        return jsonify({'error': 'render requires tier'}), 400
+    if kind == 'mask' and role not in ('roof', 'siding'):
+        return jsonify({'error': 'mask requires role'}), 400
+
+    import base64
+    # Strip a data-URI prefix if the client sent one — cheaper here than
+    # asking every caller to slice it off. Everything after the first comma
+    # is the payload.
+    if ',' in b64 and b64.startswith('data:'):
+        b64 = b64.split(',', 1)[1]
+    try:
+        data = base64.b64decode(b64, validate=True)
+    except Exception:
+        return jsonify({'error': 'invalid base64 payload'}), 400
+    if not data:
+        return jsonify({'error': 'empty payload'}), 400
+    if len(data) > _VISUALIZER_MAX_BYTES:
+        return jsonify({'error': 'payload too large'}), 400
+
+    if ext == 'jpeg':
+        ext = 'jpg'
+    prefix = {'base': 'vb', 'mask': 'vm', 'render': 'vr'}[kind]
+    safe_name = f'{prefix}_{uuid.uuid4().hex}.{ext}'
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    with open(os.path.join(dest_dir, safe_name), 'wb') as f:
+        f.write(data)
+    stored_ref = f'{est_id}/{safe_name}'
+    url = f'/uploads/{est_id}/{safe_name}'
+
+    def mutate(doc):
+        if doc is None:
+            # No estimate to attach to (new-draft flow). Return the URL so
+            # the frontend can hold the reference and PUT it once the
+            # estimate exists — mirrors upload_photo's no-est allowance.
+            return None
+        vz = doc.setdefault('visualizer', {})
+        if kind == 'base':
+            vz['base_image'] = stored_ref
+        elif kind == 'mask':
+            vz[f'{role}_mask'] = stored_ref
+        else:
+            vz.setdefault('tier_renders', {})[tier] = stored_ref
+        vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        return doc
+
+    est_update(est_id, mutate)
+    return jsonify({'filename': stored_ref, 'url': url, 'kind': kind,
+                    'tier': tier or None, 'role': role or None}), 201
+
+
+@app.route('/api/estimates/<est_id>/visualizer/state', methods=['PUT'])
+def visualizer_state(est_id):
+    """Update the JSON portion of the Visualizer state — selections, notes —
+    without a full-estimate PUT round-trip. Blob pointers stay set by
+    visualizer_asset and are not overwritten here."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    est = est_load(est_id)
+    if est is not None and not _can_touch_estimate(est):
+        return _forbid()
+    body = request.get_json(silent=True) or {}
+    selections = body.get('selections')
+    if selections is not None and not isinstance(selections, dict):
+        return jsonify({'error': 'selections must be an object'}), 400
+
+    def mutate(doc):
+        if doc is None:
+            return None
+        vz = doc.setdefault('visualizer', {})
+        if selections is not None:
+            vz['selections'] = selections
+        vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        return doc
+
+    doc = est_update(est_id, mutate)
+    if doc is None:
+        return jsonify({'error': 'estimate not found'}), 404
+    return jsonify({'visualizer': doc.get('visualizer', {})})
 
 
 # ── RoofR PDF import ───────────────────────────────────────────────────────
@@ -3087,6 +3226,61 @@ def _cv_photos_block(est):
 </div>{_CV_ANN_JS}'''
 
 
+def _cv_visualizer_block(est):
+    """See the look — Good/Better/Best photo renderings on the customer page.
+
+    Renders whichever tiers actually have a saved image; a partial save
+    (rep only rendered Better) shows just that tile rather than a broken
+    strip. Silent no-op when no renders are saved yet. Inline CSS lives
+    with the rest of the customer view — the customer page shell does NOT
+    load static/style.css."""
+    vz = est.get('visualizer') or {}
+    renders = vz.get('tier_renders') or {}
+    tiers = [t for t in ('good', 'better', 'best') if renders.get(t)]
+    if not tiers:
+        return ''
+    sels = vz.get('selections') or {}
+    cards = ''
+    for t in tiers:
+        label = {'good': 'Good', 'better': 'Better', 'best': 'Best'}[t]
+        rs = (sels.get('roofing') or {}).get(t) or {}
+        ss = (sels.get('siding') or {}).get(t) or {}
+        cap = []
+        if rs.get('color_name'):
+            cap.append('Roof: ' + he(str(rs['color_name'])))
+        if ss.get('color_name'):
+            sname = ss.get('style_name') or ''
+            side_lbl = 'Siding: ' + he(str(ss['color_name']))
+            if sname:
+                side_lbl += ' <span class="cvvz-style">(' + he(str(sname)) + ')</span>'
+            cap.append(side_lbl)
+        caption = '<br>'.join(cap) if cap else '&nbsp;'
+        src = '/uploads/' + he(renders[t])
+        cards += (f'<figure class="cvvz-card">'
+                  f'<figcaption class="cvvz-tier">{he(label)}</figcaption>'
+                  f'<img src="{src}" alt="{he(label)} preview" loading="lazy">'
+                  f'<div class="cvvz-cap">{caption}</div>'
+                  f'</figure>')
+    return f'''<div class="cvvz">
+  <h3>&#127912; See the look</h3>
+  <p class="cvvz-sub">Your home with the selected options blended onto your
+  photo. Colors are indicative &mdash; the real material may look slightly
+  different in person.</p>
+  <div class="cvvz-grid">{cards}</div>
+</div>
+<style>
+  .cvvz{{margin:24px 0;padding:18px;border:1px solid #e5e7eb;border-radius:12px;background:#fff}}
+  .cvvz h3{{margin:0 0 4px;font-size:18px;color:#1a3a5c}}
+  .cvvz-sub{{margin:0 0 12px;color:#64748b;font-size:13px}}
+  .cvvz-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}}
+  .cvvz-card{{margin:0;padding:10px;border:1px solid #e5e7eb;border-radius:10px;background:#f8fafc;display:flex;flex-direction:column}}
+  .cvvz-tier{{font-weight:700;color:#1a3a5c;text-transform:uppercase;letter-spacing:.06em;font-size:12px;margin-bottom:6px}}
+  .cvvz-card img{{width:100%;height:auto;border-radius:6px;display:block;background:#e5e7eb}}
+  .cvvz-cap{{margin-top:8px;font-size:12px;color:#334155;line-height:1.4}}
+  .cvvz-style{{color:#64748b}}
+</style>'''
+
+
 # Property Condition Report constants — mirror PC_SECTIONS / PC_GRADES /
 # RH_SEVERITIES / RH_PRIORITIES in app.js. Keep in sync.
 _PC_SECTIONS = [('roof', 'Roofing', '🏠'), ('siding', 'Siding', '🏗'),
@@ -3539,6 +3733,8 @@ def _build_insurance_cv(est, token):
 
 {_cv_photos_block(est)}
 
+{_cv_visualizer_block(est)}
+
 {_cv_products_block(est)}
 
 {ins_table}
@@ -3622,6 +3818,8 @@ def _build_simple_retail_cv(est, token):
 {_cv_intro_block(est)}
 
 {_cv_photos_block(est)}
+
+{_cv_visualizer_block(est)}
 
 {_cv_products_block(est)}
 
@@ -3799,6 +3997,8 @@ def build_customer_view(est, token):
 {_cv_intro_block(est)}
 
 {_cv_photos_block(est)}
+
+{_cv_visualizer_block(est)}
 
 {_cv_products_block(est)}
 
@@ -4988,6 +5188,101 @@ def _pdf_safe(s):
     return s.encode('latin-1', 'replace').decode('latin-1')
 
 
+_VISUALIZER_TIERS_ORDER = ('good', 'better', 'best')
+_VISUALIZER_TIER_LABELS = {'good': 'Good', 'better': 'Better', 'best': 'Best'}
+
+
+def _emit_visualizer_pdf_page(pdf, est, LM, W):
+    """Draw the Good/Better/Best visualizer renderings on a fresh PDF page.
+
+    Called from build_signed_pdf just before the signature block. Silent
+    no-op when no renders exist — the tool is optional. Draws whichever
+    tiers actually have a file; missing tiers get an empty slot with the
+    label rather than a broken layout, so a partial save (rep only rendered
+    Better) still reads clearly.
+    """
+    vz = est.get('visualizer') or {}
+    renders = vz.get('tier_renders') or {}
+    files = [(t, renders.get(t)) for t in _VISUALIZER_TIERS_ORDER
+             if renders.get(t)]
+    if not files:
+        return
+
+    # New page — three thumbnails don't fit alongside the last pricing table.
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.set_text_color(26, 58, 92)
+    pdf.cell(0, 7, _pdf_safe('How your home will look'),
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font('Helvetica', '', 8)
+    pdf.multi_cell(W, 4.2, _pdf_safe(
+        'These renderings show the selected Good/Better/Best package '
+        'options blended onto your home photo. Colors are indicative and '
+        'may vary from the manufacturer swatch.'))
+    pdf.ln(3)
+
+    # Three side-by-side landscape thumbnails. Sizing keeps the same layout
+    # whether one, two, or three tiers are present, so a partial save reads
+    # as "the ones the rep picked" rather than a broken page.
+    n = 3
+    gap = 4.0
+    thumb_w = (W - gap * (n - 1)) / n
+    thumb_h = thumb_w * 0.6      # landscape-ish ratio
+    y_top = pdf.get_y()
+
+    for i, tier in enumerate(_VISUALIZER_TIERS_ORDER):
+        x = LM + i * (thumb_w + gap)
+        pdf.set_xy(x, y_top)
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(thumb_w, 5, _VISUALIZER_TIER_LABELS[tier], align='C',
+                 new_x='LMARGIN', new_y='NEXT')
+
+        img_y = y_top + 5.5
+        ref = renders.get(tier)
+        path = os.path.join(UPLOADS_DIR, ref) if ref else None
+        drew = False
+        if path and os.path.isfile(path):
+            try:
+                pdf.image(path, x=x, y=img_y, w=thumb_w, h=thumb_h)
+                drew = True
+            except Exception:
+                # A corrupt JPEG shouldn't take the whole PDF down.
+                drew = False
+        if not drew:
+            pdf.set_draw_color(200, 200, 200)
+            pdf.set_fill_color(245, 246, 248)
+            pdf.rect(x, img_y, thumb_w, thumb_h, style='DF')
+            pdf.set_xy(x, img_y + thumb_h / 2 - 2)
+            pdf.set_font('Helvetica', 'I', 8)
+            pdf.set_text_color(140, 140, 140)
+            pdf.cell(thumb_w, 4, _pdf_safe('(no rendering saved)'),
+                     align='C')
+            pdf.set_text_color(0, 0, 0)
+
+        # Package label under the thumbnail: pull the selected bundle names
+        # and color choice from est.visualizer.selections if they've been
+        # saved, so the customer can tie the picture to what they're buying.
+        sel = ((vz.get('selections') or {}).get('roofing') or {}).get(tier) or {}
+        sel_s = ((vz.get('selections') or {}).get('siding') or {}).get(tier) or {}
+        caption_parts = []
+        if sel.get('color_name'):
+            caption_parts.append(f"Roof: {sel['color_name']}")
+        if sel_s.get('color_name'):
+            style_bit = sel_s.get('style_name') or ''
+            side_lbl = 'Siding: ' + sel_s['color_name']
+            if style_bit:
+                side_lbl += f" ({style_bit})"
+            caption_parts.append(side_lbl)
+        pdf.set_xy(x, img_y + thumb_h + 1.5)
+        pdf.set_font('Helvetica', '', 7)
+        pdf.multi_cell(thumb_w, 3.2,
+                       _pdf_safe('  |  '.join(caption_parts) or ' '))
+
+    # Advance below the row so the signature block doesn't overlap.
+    pdf.set_y(y_top + 5.5 + thumb_h + 20)
+
+
 def build_signed_pdf(est):
     """Render the signed contract as a PDF (bytes) for CRM upload."""
     if FPDF is None:
@@ -5325,6 +5620,12 @@ def build_signed_pdf(est):
                            new_x='LMARGIN', new_y='NEXT')
             pdf.ln(1)
         pdf.ln(3)
+
+    # ── Visualizer page ────────────────────────────────────────────────
+    # When the rep has saved Good/Better/Best photo renders, show the
+    # customer what they've selected before the signature. Skipped silently
+    # when there are no renders — nothing to show is not an error.
+    _emit_visualizer_pdf_page(pdf, est, LM, W)
 
     # Signature block
     if pdf.get_y() > pdf.h - 70:
@@ -7894,21 +8195,65 @@ def _save_price_book(pb):
 # blob stored on the bundle, so a bundle without soffit can't promise soffit and
 # a manager-built bundle describes itself correctly. A product with no `bullets`
 # key falls back to its name; an explicit [] contributes nothing.
+#
+# `colors` (and, on siding, `styles`) drive the in-app Visualizer — the rep
+# uploads a photo of the house and paints the roof/siding masks, the pickers
+# read these arrays. Hex values are hand-picked to sit close to the real
+# manufacturer swatches when blended `multiply` over a photo; they are NOT a
+# spec-sheet color match and are safe to edit. Seeded on material products
+# only (bundle carries the material, and the color follows the material).
+_ROOF_ASPHALT_COLORS = [
+    {"name": "Weathered Wood",  "hex": "#5a4a3c"},
+    {"name": "Charcoal Black",  "hex": "#2f2d2b"},
+    {"name": "Moire Black",     "hex": "#1e1d1c"},
+    {"name": "Driftwood",       "hex": "#7d6b52"},
+    {"name": "Georgetown Gray", "hex": "#4a4a48"},
+    {"name": "Colonial Slate",  "hex": "#3c4046"},
+    {"name": "Burnt Sienna",    "hex": "#6b3a2a"},
+]
+_ROOF_METAL_COLORS = [
+    {"name": "Charcoal Gray", "hex": "#2f2d2b"},
+    {"name": "Matte Black",   "hex": "#191919"},
+    {"name": "Regal Blue",    "hex": "#1a3252"},
+    {"name": "Slate Gray",    "hex": "#4a4d4f"},
+    {"name": "Copper Penny",  "hex": "#a65f2a"},
+    {"name": "Burgundy",      "hex": "#5c1f26"},
+    {"name": "Hemlock Green", "hex": "#2e3a2a"},
+    {"name": "Bone White",    "hex": "#e6ded0"},
+]
+_ROOF_STONE_COLORS = [
+    {"name": "Charcoal Shake",  "hex": "#2f2d2b"},
+    {"name": "Weathered Timber","hex": "#5c4a35"},
+    {"name": "Terracotta",      "hex": "#8a3f22"},
+    {"name": "Slate Blend",     "hex": "#3c4046"},
+]
+_ROOF_RUBBER_COLORS = [
+    {"name": "Beaumont Cedar",   "hex": "#5c4530"},
+    {"name": "Beaumont Charcoal","hex": "#2a2826"},
+    {"name": "Rundle Slate",     "hex": "#3c4046"},
+]
 ROOFING_CATALOG_SEED = [
     {"id": "m_landmark", "name": "CertainTeed Landmark (Architectural Shingle)", "unit": "SQ", "cost": 142, "measure": "squares_waste",
-     "bullets": ["CertainTeed Landmark architectural laminate shingles", "Lifetime limited manufacturer warranty", "130 mph wind rating", "Dimensional shadow lines for depth and curb appeal"]},
+     "bullets": ["CertainTeed Landmark architectural laminate shingles", "Lifetime limited manufacturer warranty", "130 mph wind rating", "Dimensional shadow lines for depth and curb appeal"],
+     "colors": _ROOF_ASPHALT_COLORS},
     {"id": "m_northgate", "name": "CertainTeed Northgate (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste",
-     "bullets": ["CertainTeed Northgate SBS-modified impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "May qualify for a homeowners insurance premium discount", "Lifetime limited manufacturer warranty", "130 mph wind rating"]},
+     "bullets": ["CertainTeed Northgate SBS-modified impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "May qualify for a homeowners insurance premium discount", "Lifetime limited manufacturer warranty", "130 mph wind rating"],
+     "colors": _ROOF_ASPHALT_COLORS},
     {"id": "m_iko_nordic", "name": "IKO Nordic (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste",
-     "bullets": ["IKO Nordic impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "Built for extreme cold and freeze-thaw cycles", "May qualify for a homeowners insurance premium discount", "Limited lifetime manufacturer warranty"]},
+     "bullets": ["IKO Nordic impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "Built for extreme cold and freeze-thaw cycles", "May qualify for a homeowners insurance premium discount", "Limited lifetime manufacturer warranty"],
+     "colors": _ROOF_ASPHALT_COLORS},
     {"id": "m_edco", "name": "EDCO Steel Shingle", "unit": "SQ", "cost": 300, "measure": "squares_waste",
-     "bullets": ["EDCO steel shingles — architectural shingle look in real steel", "Class 4 impact rating, will not crack or lose granules to hail", "Limited lifetime warranty with hail damage coverage", "Baked-on finish that will not chip, peel, or fade"]},
+     "bullets": ["EDCO steel shingles — architectural shingle look in real steel", "Class 4 impact rating, will not crack or lose granules to hail", "Limited lifetime warranty with hail damage coverage", "Baked-on finish that will not chip, peel, or fade"],
+     "colors": _ROOF_METAL_COLORS},
     {"id": "m_stone", "name": "Stone-Coated Steel", "unit": "SQ", "cost": 330, "measure": "squares_waste",
-     "bullets": ["Stone-coated steel panels with a textured shake/shingle profile", "Class 4 impact rating and 120+ mph wind rating", "Steel strength at a fraction of the weight of tile", "50-year limited manufacturer warranty"]},
+     "bullets": ["Stone-coated steel panels with a textured shake/shingle profile", "Class 4 impact rating and 120+ mph wind rating", "Steel strength at a fraction of the weight of tile", "50-year limited manufacturer warranty"],
+     "colors": _ROOF_STONE_COLORS},
     {"id": "m_standing_seam", "name": "Standing Seam Metal (24ga)", "unit": "SQ", "cost": 400, "measure": "squares_waste",
-     "bullets": ["24ga standing seam metal panels with concealed fasteners", "No exposed screws to back out or leak over time", "50+ year service life — the last roof this house needs", "Class 4 impact rating and Kynar 500 finish warranty", "Clean modern lines in your choice of color"]},
+     "bullets": ["24ga standing seam metal panels with concealed fasteners", "No exposed screws to back out or leak over time", "50+ year service life — the last roof this house needs", "Class 4 impact rating and Kynar 500 finish warranty", "Clean modern lines in your choice of color"],
+     "colors": _ROOF_METAL_COLORS},
     {"id": "m_euroshield", "name": "Euroshield (Rubber)", "unit": "SQ", "cost": 360, "measure": "squares_waste",
-     "bullets": ["Euroshield recycled-rubber roofing in a slate or shake profile", "Class 4 impact rating — rubber absorbs hail instead of cracking", "Engineered for Colorado freeze-thaw cycles", "50-year limited manufacturer warranty", "Made from recycled tires — a genuinely green roof"]},
+     "bullets": ["Euroshield recycled-rubber roofing in a slate or shake profile", "Class 4 impact rating — rubber absorbs hail instead of cracking", "Engineered for Colorado freeze-thaw cycles", "50-year limited manufacturer warranty", "Made from recycled tires — a genuinely green roof"],
+     "colors": _ROOF_RUBBER_COLORS},
     {"id": "a_underlayment", "name": "Synthetic Underlayment", "unit": "SQ", "cost": 9.1, "measure": "squares_waste",
      "bullets": ["Synthetic underlayment over the full roof deck"]},
     {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "SQ", "cost": 46.46, "measure": "eave_valley",
@@ -7977,6 +8322,40 @@ ROOFING_TIER_DEFAULTS_SEED = {"good": "b_landmark", "better": "b_northgate", "be
 # saved catalog picks up the groups on the next GET. Reordering the seed does
 # not change customer pricing: every bundle carries its own product_ids in
 # its own order, and bundleFeatures/apply logic reads that.
+# Siding colors + styles for the Visualizer. Colors are hex; styles carry a
+# `pattern_id` that keys into a frontend `SIDING_PATTERNS` bank of tileable
+# SVG overlays. Seeded on the material products only. The style list per
+# manufacturer covers what the family visually offers, not strictly what the
+# individual SKU ships — reps sell mixed-style houses (lap on the field, shake
+# on a gable) and the visualizer needs the flexibility to render both.
+_SIDING_NEUTRAL_COLORS = [
+    {"name": "Arctic White",  "hex": "#eae7de"},
+    {"name": "Iron Gray",     "hex": "#4a4d4f"},
+    {"name": "Aged Pewter",   "hex": "#6b6b64"},
+    {"name": "Cobble Stone",  "hex": "#a89a86"},
+    {"name": "Timber Bark",   "hex": "#7a6b5b"},
+    {"name": "Evening Blue",  "hex": "#3a4553"},
+    {"name": "Boothbay Blue", "hex": "#6b7f8f"},
+    {"name": "Khaki Brown",   "hex": "#8b7a5c"},
+    {"name": "Sail Cloth",    "hex": "#d4cdbf"},
+    {"name": "Deep Ocean",    "hex": "#2a2f33"},
+]
+_SIDING_STEEL_COLORS = [
+    {"name": "Charcoal",     "hex": "#2f2d2b"},
+    {"name": "Silver Gray",  "hex": "#8a8c8d"},
+    {"name": "Musket Brown", "hex": "#4a3527"},
+    {"name": "Coastal Sage", "hex": "#6b7a5a"},
+    {"name": "Slate",        "hex": "#4a4d4f"},
+    {"name": "Regal Red",    "hex": "#7a1f26"},
+]
+_STYLE_LAP   = {"id": "s_lap",   "name": "Lap Siding",     "pattern_id": "lap"}
+_STYLE_BNB   = {"id": "s_bnb",   "name": "Board & Batten", "pattern_id": "bnb"}
+_STYLE_SHAKE = {"id": "s_shake", "name": "Shingle-Style",  "pattern_id": "shake"}
+_STYLE_PANEL = {"id": "s_panel", "name": "Vertical Panel", "pattern_id": "panel"}
+_HARDIE_STYLES = [_STYLE_LAP, _STYLE_BNB, _STYLE_SHAKE, _STYLE_PANEL]
+_LP_STYLES     = [_STYLE_LAP, _STYLE_BNB, _STYLE_SHAKE]
+_EDCO_STYLES   = [_STYLE_LAP, _STYLE_PANEL]
+_VINYL_STYLES  = [_STYLE_LAP, _STYLE_BNB]
 SIDING_CATALOG_SEED = [
     # ── LP SmartSide (QXO 2026 line) ───────────────────────────────────────
     # Materials, then LP-specific trim, soffit, and paint.
@@ -7984,12 +8363,14 @@ SIDING_CATALOG_SEED = [
      "bullets": ["LP SmartSide engineered wood lap, 8\" Cedar Text exposure",
                  "Field-painted in the color of your choice",
                  "SmartGuard-treated engineered wood resists rot, hail, and termites",
-                 "5/50 year limited manufacturer warranty"]},
+                 "5/50 year limited manufacturer warranty"],
+     "colors": _SIDING_NEUTRAL_COLORS, "styles": _LP_STYLES},
     {"id": "s_lp_expert", "name": "LP SmartSide Expert Finish 8\" Lap", "group": "LP SmartSide", "unit": "SQ", "cost": 245.14, "measure": "siding_sq_waste",
      "bullets": ["LP SmartSide Expert Finish engineered wood lap, 8\" exposure",
                  "Pre-finished at the factory — no field painting required",
                  "SmartGuard-treated engineered wood resists rot, hail, and termites",
-                 "5/50 year limited manufacturer warranty"]},
+                 "5/50 year limited manufacturer warranty"],
+     "colors": _SIDING_NEUTRAL_COLORS, "styles": _LP_STYLES},
     {"id": "sa_lp_standard_trim", "name": "LP SmartSide Trim 5/4×6", "group": "LP SmartSide", "unit": "LF", "cost": 1.83, "measure": "siding_trim",
      "bullets": ["LP SmartSide trim at corners, windows, and doors — painted to match"]},
     {"id": "sa_lp_expert_trim", "name": "LP Expert Finish Trim 5/4×5.5", "group": "LP SmartSide", "unit": "LF", "cost": 2.33, "measure": "siding_trim",
@@ -8007,13 +8388,15 @@ SIDING_CATALOG_SEED = [
                  "Field-painted in the color of your choice for a custom look",
                  "Non-combustible fiber cement — will not feed a fire",
                  "Hail, pest, and rot proof; engineered for Colorado freeze-thaw",
-                 "30-year limited manufacturer warranty"]},
+                 "30-year limited manufacturer warranty"],
+     "colors": _SIDING_NEUTRAL_COLORS, "styles": _HARDIE_STYLES},
     {"id": "s_hardie_statement", "name": "James Hardie Statement Collection 8.25\" Lap", "group": "James Hardie", "unit": "SQ", "cost": 248.71, "measure": "siding_sq_waste",
      "bullets": ["James Hardie Statement Collection fiber cement lap, 8.25\" exposure",
                  "ColorPlus factory finish — no field painting, backed by a 15-year finish warranty",
                  "Non-combustible fiber cement — will not feed a fire",
                  "Hail, pest, and rot proof; engineered for Colorado freeze-thaw",
-                 "30-year limited manufacturer warranty"]},
+                 "30-year limited manufacturer warranty"],
+     "colors": _SIDING_NEUTRAL_COLORS, "styles": _HARDIE_STYLES},
     {"id": "sa_wrap_hardie", "name": "HardieWrap Weather Barrier", "group": "James Hardie", "unit": "SQ", "cost": 23.46, "measure": "siding_sq_waste",
      "bullets": ["HardieWrap weather-resistant barrier over the full wall area — required for the James Hardie system warranty"]},
     {"id": "sa_hardie_primed_trim", "name": "James Hardie Primed Trim 5/4×6", "group": "James Hardie", "unit": "LF", "cost": 2.51, "measure": "siding_trim",
@@ -8032,13 +8415,15 @@ SIDING_CATALOG_SEED = [
                  "Class 4 impact rated — will not crack or lose finish to hail",
                  "May qualify for a homeowners insurance premium discount",
                  "Non-combustible steel construction, baked-on finish that will not chip, peel, or fade",
-                 "Limited lifetime manufacturer warranty"]},
+                 "Limited lifetime manufacturer warranty"],
+     "colors": _SIDING_STEEL_COLORS, "styles": _EDCO_STYLES},
     {"id": "s_edco_8", "name": "EDCO 8\" Enduragrain Steel Siding", "group": "EDCO Steel", "unit": "SQ", "cost": 386.11, "measure": "siding_sq_waste",
      "bullets": ["EDCO 8\" 28ga steel siding with Enduragrain finish",
                  "Class 4 impact rated — will not crack or lose finish to hail",
                  "May qualify for a homeowners insurance premium discount",
                  "Non-combustible steel construction, baked-on finish that will not chip, peel, or fade",
-                 "Limited lifetime manufacturer warranty"]},
+                 "Limited lifetime manufacturer warranty"],
+     "colors": _SIDING_STEEL_COLORS, "styles": _EDCO_STYLES},
     {"id": "sa_edco_jchannel", "name": "EDCO 5/8\" J-Channel", "group": "EDCO Steel", "unit": "LF", "cost": 1.21, "measure": "j_channel",
      "bullets": ["EDCO 5/8\" steel J-channel around every window and door"]},
     {"id": "sa_edco_corner", "name": "EDCO Snap-On Corner Post", "group": "EDCO Steel", "unit": "LF", "cost": 2.94, "measure": "corners_out",
@@ -8419,12 +8804,11 @@ def _copy_seed_bundle(b):
 
 
 def _copy_seed_product(p):
-    """Same, for a catalog product — `bullets` is a list and would otherwise be
-    aliased into the response and appended to by the next PUT."""
-    out = dict(p)
-    if isinstance(out.get('bullets'), list):
-        out['bullets'] = list(out['bullets'])
-    return out
+    """Same, for a catalog product — list fields (`bullets`, `colors`, `styles`)
+    are deep-copied so the response can't mutate the seed constant. `colors`
+    and `styles` are lists of dicts, so a shallow list() would still alias the
+    inner dicts and a client PUT could edit the seed."""
+    return copy.deepcopy(p)
 
 
 # Customer-facing copy the server may fill in on a bundle the manager already owns.
@@ -8446,7 +8830,8 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 # product predates the measurement and should adopt the seed's. Without it the
 # live Fascia product — seeded long before a fascia measurement existed — keeps
 # no measure and the Scope field it was added for silently fills nothing.
-_PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure', 'group')
+_PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure',
+                            'group', 'colors', 'styles')
 
 # old product id -> the product(s) that replaced it, swapped into SEEDED bundles
 # on read. The old product stays in the catalog: an estimate may reference it and
@@ -8513,7 +8898,7 @@ def _ensure_bundle_catalogs(pb):
                 for field in _BUNDLE_COPY_FIELDS:
                     if field not in live and field in seed:
                         val = seed[field]
-                        live[field] = list(val) if isinstance(val, list) else val
+                        live[field] = copy.deepcopy(val) if isinstance(val, list) else val
 
             # ...but "absent" also covers a bundle the book has NEVER seen, and
             # the loop above cannot tell that apart from a deletion, so it skips
@@ -8553,7 +8938,7 @@ def _ensure_bundle_catalogs(pb):
                     for field in _PRODUCT_BACKFILL_FIELDS:
                         if field in seed_p and field not in p_live:
                             val = seed_p[field]
-                            p_live[field] = list(val) if isinstance(val, list) else val
+                            p_live[field] = copy.deepcopy(val) if isinstance(val, list) else val
 
             # Seeded bundles that still carry a superseded product swap it for
             # its replacement(s). Manager-created bundles are left alone.

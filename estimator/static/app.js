@@ -1703,6 +1703,7 @@ function switchPage(page) {
   if (page === 'report')   renderConditionPage();
   if (page === 'documents') renderDocumentsPage();
   if (page === 'client')   renderClientPage();
+  if (page === 'visualizer') renderVisualizerPage();
 }
 
 function pageComplete(page) {
@@ -1720,6 +1721,7 @@ function pageComplete(page) {
     case 'report':   return !!(S.roof_health?.condition);
     case 'documents': return (S.attachments||[]).length > 0;
     case 'client':   return !!(S.customer && S.customer.name);
+    case 'visualizer': return !!(S.visualizer && S.visualizer.tier_renders && Object.values(S.visualizer.tier_renders).some(v => v));
     default: return false;
   }
 }
@@ -11400,6 +11402,801 @@ async function permitGenerate(btn) {
   } finally {
     btn.disabled = false; btn.textContent = old;
   }
+}
+
+/* ── Visualizer ────────────────────────────────────────────────────────
+   Photo of the house + rep-painted roof/siding masks + product color/style
+   overlay. Stored under S.visualizer (mirrored to est.visualizer server-side)
+   and rendered on the customer /sign page and the signed PDF.
+
+   Free/no-AI approach: rep paints masks with a finger (brush + magic-wand
+   flood-fill), we composite the color onto the mask region with
+   globalCompositeOperation='multiply' so the base photo's shading is
+   preserved. Siding also tiles a style pattern (lap / board-and-batten /
+   shingle-style / vertical panel) so a Hardie Statement Iron Gray lap reads
+   differently from a Hardie Statement Iron Gray B&B — same color, real
+   visual difference. AI inpainting can layer on later without changing the
+   data shape.
+
+   The state lives in three places, in sync:
+   - vzState (module-level, live pixels + tool state) — the working copy the
+     brush edits, plus the loaded HTMLImageElement of the photo and the two
+     off-screen mask canvases. Not persisted directly.
+   - S.visualizer (client mirror of the estimate JSON) — filenames, selections,
+     tier_renders. Sent to the server on save.
+   - est.visualizer (server, in the estimate doc) — same shape as S.visualizer,
+     written by POST /api/estimates/<id>/visualizer/asset and PUT .../state.
+*/
+
+// Tileable SVG textures per siding style. Kept intentionally tiny — the
+// pattern is a hint, not a photorealistic render. Drawn 'multiply' at ~40%
+// opacity over the color layer, so the seams read as shadow lines and the
+// underlying color stays true. Add a style by extending _SIDING_PATTERN_SVG
+// AND the seed data in app.py (styles list per material product).
+const _SIDING_PATTERN_SVG = {
+  lap: `<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'>
+    <rect width='64' height='64' fill='white'/>
+    <line x1='0' y1='12' x2='64' y2='12' stroke='rgb(60,60,60)' stroke-width='1'/>
+    <line x1='0' y1='24' x2='64' y2='24' stroke='rgb(60,60,60)' stroke-width='1'/>
+    <line x1='0' y1='36' x2='64' y2='36' stroke='rgb(60,60,60)' stroke-width='1'/>
+    <line x1='0' y1='48' x2='64' y2='48' stroke='rgb(60,60,60)' stroke-width='1'/>
+    <line x1='0' y1='60' x2='64' y2='60' stroke='rgb(60,60,60)' stroke-width='1'/>
+  </svg>`,
+  bnb: `<svg xmlns='http://www.w3.org/2000/svg' width='96' height='64'>
+    <rect width='96' height='64' fill='white'/>
+    <rect x='0'  y='0' width='4' height='64' fill='rgb(50,50,50)'/>
+    <rect x='32' y='0' width='4' height='64' fill='rgb(50,50,50)'/>
+    <rect x='64' y='0' width='4' height='64' fill='rgb(50,50,50)'/>
+  </svg>`,
+  shake: `<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48'>
+    <rect width='48' height='48' fill='white'/>
+    <path d='M0 12 L6 8 L12 12 L18 8 L24 12 L30 8 L36 12 L42 8 L48 12' stroke='rgb(60,60,60)' stroke-width='1' fill='none'/>
+    <path d='M0 28 L6 24 L12 28 L18 24 L24 28 L30 24 L36 28 L42 24 L48 28' stroke='rgb(60,60,60)' stroke-width='1' fill='none'/>
+    <path d='M0 44 L6 40 L12 44 L18 40 L24 44 L30 40 L36 44 L42 40 L48 44' stroke='rgb(60,60,60)' stroke-width='1' fill='none'/>
+  </svg>`,
+  panel: `<svg xmlns='http://www.w3.org/2000/svg' width='96' height='64'>
+    <rect width='96' height='64' fill='white'/>
+    <line x1='16' y1='0' x2='16' y2='64' stroke='rgb(70,70,70)' stroke-width='1'/>
+    <line x1='48' y1='0' x2='48' y2='64' stroke='rgb(70,70,70)' stroke-width='1'/>
+    <line x1='80' y1='0' x2='80' y2='64' stroke='rgb(70,70,70)' stroke-width='1'/>
+  </svg>`,
+};
+const _vzPatternImg = {};   // pattern_id -> HTMLImageElement (once loaded)
+
+// Get the tile Image for a pattern id, loading it on demand from the SVG
+// data URI. Returns null on the first call and populates on next tick, so
+// callers can just retry on the next render. Cheap because there are only
+// four patterns total and each is a few hundred bytes.
+function _vzGetPatternImg(pid) {
+  if (!pid || !_SIDING_PATTERN_SVG[pid]) return null;
+  if (_vzPatternImg[pid]) return _vzPatternImg[pid];
+  const img = new Image();
+  const svg = _SIDING_PATTERN_SVG[pid].trim();
+  img.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+  _vzPatternImg[pid] = img;
+  img.onload = () => { if (activePage === 'visualizer') _vzRedrawAll(); };
+  return img;
+}
+
+let vzState = null;
+
+function _vzResetState() {
+  vzState = {
+    photoImg: null,          // loaded HTMLImageElement, or null before load
+    photoW: 0, photoH: 0,    // native pixel dimensions
+    roofMask: null,          // OffscreenCanvas-like <canvas> matching photo size
+    sidingMask: null,        // same
+    canvas: null,            // visible canvas element
+    ctx: null,
+    activeTool: 'roof',      // 'roof' | 'siding' | 'erase'
+    activeTier: 'better',    // 'good' | 'better' | 'best'
+    brushSize: 30,
+    magicWand: false,
+    painting: false,
+    lastX: 0, lastY: 0,
+    dirty: false,            // has the rep painted since last save?
+    pendingBaseDataUrl: null,  // photo data URL not yet uploaded
+    pendingBaseExt: 'jpg',
+  };
+}
+
+function _vzGet() {
+  if (!S.visualizer) S.visualizer = {};
+  const vz = S.visualizer;
+  vz.selections = vz.selections || {};
+  vz.selections.roofing = vz.selections.roofing || {};
+  vz.selections.siding  = vz.selections.siding  || {};
+  vz.tier_renders = vz.tier_renders || {};
+  return vz;
+}
+
+// Pull the trade's material product from the price book. The material is the
+// first `s_*` or `m_*` product on the currently selected bundle for this tier
+// — that's the one that carries `colors` and (for siding) `styles`.
+function _vzBundleFor(trade, tier) {
+  if (!priceBook) return null;
+  const defaults = priceBook[trade + '_tier_defaults'] || {};
+  const bundleId = defaults[tier];
+  const bundles = priceBook[trade + '_bundles'] || [];
+  return bundles.find(b => b && b.id === bundleId) || null;
+}
+function _vzMaterialForBundle(trade, bundle) {
+  if (!bundle || !priceBook) return null;
+  const catalog = priceBook[trade + '_catalog'] || [];
+  const pids = bundle.product_ids || [];
+  // For roofing the material is `m_*`; for siding it's `s_*` (a bare shingle
+  // or siding SKU, not an accessory prefixed `sa_`/`sl_`/`sx_`).
+  for (const pid of pids) {
+    if (trade === 'roofing' && pid.startsWith('m_')) {
+      const p = catalog.find(x => x && x.id === pid);
+      if (p) return p;
+    }
+    if (trade === 'siding' && pid.startsWith('s_') && !pid.startsWith('sa_') && !pid.startsWith('sl_') && !pid.startsWith('sx_')) {
+      const p = catalog.find(x => x && x.id === pid);
+      if (p) return p;
+    }
+  }
+  return null;
+}
+
+async function renderVisualizerPage() {
+  const container = document.getElementById('visualizer-content');
+  if (!container) return;
+  if (!vzState) _vzResetState();
+  const vz = _vzGet();
+  const hasPhoto = !!(vz.base_image || vzState.pendingBaseDataUrl);
+  container.innerHTML = _vzShellHtml(hasPhoto);
+  _vzWireInputs();
+  if (hasPhoto) {
+    await _vzLoadWorkspacePhoto();
+    _vzRenderPicker();
+    _vzRedrawAll();
+  }
+}
+
+function _vzShellHtml(hasPhoto) {
+  if (!hasPhoto) {
+    return `<div class="vz-wrap">
+      <div class="vz-header">
+        <div>
+          <h2>🎨 Product Visualizer</h2>
+          <p class="vz-sub">Show the customer what their home will look like with each Good/Better/Best package. Take or upload a front-of-house photo to get started.</p>
+        </div>
+      </div>
+      <div class="vz-empty">
+        <div class="vz-empty-actions">
+          <button class="btn-primary vz-big-btn" onclick="_vzTriggerCamera()">📷 Take Photo</button>
+          <button class="btn vz-big-btn" onclick="_vzTriggerUpload()">📁 Upload from Gallery</button>
+        </div>
+        <p class="vz-empty-tip">Tip: a clear front-of-house shot with the roof and siding both visible works best. No cars in the way if you can help it.</p>
+      </div>
+    </div>`;
+  }
+  const tier = vzState.activeTier;
+  const brush = vzState.brushSize;
+  return `<div class="vz-wrap">
+    <div class="vz-header">
+      <div>
+        <h2>🎨 Product Visualizer</h2>
+        <p class="vz-sub">Mark the roof and siding, then pick a package. Colors preview live.</p>
+      </div>
+      <div class="vz-header-actions">
+        <button class="btn" onclick="_vzTriggerCamera()">📷 New Photo</button>
+        <button class="btn-primary" onclick="_vzSaveAll()" id="vz-save-btn">💾 Save Renderings</button>
+      </div>
+    </div>
+    <div class="vz-body">
+      <div class="vz-canvas-col">
+        <div class="vz-canvas-wrap" id="vz-canvas-wrap">
+          <canvas id="vz-canvas" class="vz-canvas"></canvas>
+          <div class="vz-canvas-legend" id="vz-canvas-legend"></div>
+        </div>
+        <div class="vz-tools">
+          <div class="vz-tools-row">
+            <label class="vz-tool ${vzState.activeTool==='roof'?'active':''}">
+              <input type="radio" name="vz-tool" value="roof" ${vzState.activeTool==='roof'?'checked':''} onchange="_vzSetTool('roof')">
+              <span>🏠 Roof</span>
+            </label>
+            <label class="vz-tool ${vzState.activeTool==='siding'?'active':''}">
+              <input type="radio" name="vz-tool" value="siding" ${vzState.activeTool==='siding'?'checked':''} onchange="_vzSetTool('siding')">
+              <span>🏗 Siding</span>
+            </label>
+            <label class="vz-tool ${vzState.activeTool==='erase'?'active':''}">
+              <input type="radio" name="vz-tool" value="erase" ${vzState.activeTool==='erase'?'checked':''} onchange="_vzSetTool('erase')">
+              <span>🧽 Erase</span>
+            </label>
+          </div>
+          <div class="vz-tools-row">
+            <label class="vz-brush">Brush
+              <input type="range" min="8" max="120" value="${brush}" oninput="_vzSetBrush(this.value)">
+              <span class="vz-brush-val">${brush}px</span>
+            </label>
+            <label class="vz-magic">
+              <input type="checkbox" ${vzState.magicWand?'checked':''} onchange="_vzSetMagic(this.checked)">
+              ✨ Magic Wand
+            </label>
+            <button class="btn small" onclick="_vzClearMask('roof')">Clear Roof</button>
+            <button class="btn small" onclick="_vzClearMask('siding')">Clear Siding</button>
+          </div>
+        </div>
+      </div>
+      <div class="vz-picker-col">
+        <div class="vz-tier-tabs">
+          ${['good','better','best'].map(t => `
+            <button class="vz-tier-tab ${t===tier?'active':''}" data-tier="${t}" onclick="_vzSelectTier('${t}')">${TIER_LABELS[t]}</button>
+          `).join('')}
+        </div>
+        <div id="vz-picker-body"></div>
+      </div>
+    </div>
+    <div class="vz-triptych">
+      <h3>Good / Better / Best — side-by-side</h3>
+      <div class="vz-triptych-grid" id="vz-triptych-grid">
+        ${['good','better','best'].map(t => `
+          <div class="vz-triptych-tile">
+            <div class="vz-triptych-lbl">${TIER_LABELS[t]}</div>
+            <canvas class="vz-triptych-canvas" id="vz-thumb-${t}"></canvas>
+            <div class="vz-triptych-cap" id="vz-thumb-cap-${t}"></div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+function _vzWireInputs() {
+  const up = document.getElementById('vz-upload-input');
+  const cam = document.getElementById('vz-camera-input');
+  if (up)  up.onchange  = (e) => _vzHandleFile(e.target.files[0]);
+  if (cam) cam.onchange = (e) => _vzHandleFile(e.target.files[0]);
+}
+function _vzTriggerCamera() { document.getElementById('vz-camera-input')?.click(); }
+function _vzTriggerUpload() { document.getElementById('vz-upload-input')?.click(); }
+
+async function _vzHandleFile(file) {
+  if (!file) return;
+  const ext = (file.type || '').includes('heic') || /\.hei[cf]$/i.test(file.name) ? 'heic' : 'jpg';
+  if (ext === 'heic') {
+    alert('This looks like a HEIC file, which some browsers can\'t edit. Please take a fresh photo with the camera button or convert it to JPG first.');
+    return;
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+  if (!vzState) _vzResetState();
+  vzState.pendingBaseDataUrl = dataUrl;
+  // Guess an extension from the mime type. Fallback jpg.
+  if (dataUrl.startsWith('data:image/png')) vzState.pendingBaseExt = 'png';
+  else if (dataUrl.startsWith('data:image/webp')) vzState.pendingBaseExt = 'webp';
+  else vzState.pendingBaseExt = 'jpg';
+  // Reset masks — a new photo means old masks are for a different photo.
+  _vzGet().roof_mask = null;
+  _vzGet().siding_mask = null;
+  _vzGet().tier_renders = {};
+  vzState.roofMask = null;
+  vzState.sidingMask = null;
+  vzState.dirty = true;
+  setDirty();
+  renderVisualizerPage();
+}
+
+async function _vzLoadWorkspacePhoto() {
+  const vz = _vzGet();
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      vzState.photoImg = img;
+      vzState.photoW = img.naturalWidth;
+      vzState.photoH = img.naturalHeight;
+      const canvas = document.getElementById('vz-canvas');
+      if (!canvas) return resolve();
+      vzState.canvas = canvas;
+      // Native pixel size caps at 1200 wide to keep composite math fast on
+      // an iPad. The canvas element CSS width fills the wrap.
+      const maxW = 1200;
+      const scale = img.naturalWidth > maxW ? maxW / img.naturalWidth : 1;
+      const nW = Math.round(img.naturalWidth * scale);
+      const nH = Math.round(img.naturalHeight * scale);
+      canvas.width = nW;
+      canvas.height = nH;
+      vzState.ctx = canvas.getContext('2d');
+      // Fresh mask canvases matching photo dimensions.
+      if (!vzState.roofMask)   vzState.roofMask   = _vzMakeMaskCanvas(nW, nH);
+      if (!vzState.sidingMask) vzState.sidingMask = _vzMakeMaskCanvas(nW, nH);
+      _vzBindCanvasEvents(canvas);
+      resolve();
+    };
+    img.onerror = () => resolve();
+    img.src = vzState.pendingBaseDataUrl || (BASE + '/uploads/' + vz.base_image);
+  });
+}
+
+function _vzMakeMaskCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c;
+}
+
+function _vzActiveMaskCanvas() {
+  if (vzState.activeTool === 'roof') return vzState.roofMask;
+  if (vzState.activeTool === 'siding') return vzState.sidingMask;
+  return null;   // erase applies to whichever mask has ink under the brush
+}
+
+function _vzCanvasCoords(canvas, evt) {
+  const rect = canvas.getBoundingClientRect();
+  const t = (evt.touches && evt.touches[0]) || evt.changedTouches && evt.changedTouches[0] || evt;
+  const x = (t.clientX - rect.left) * (canvas.width  / rect.width);
+  const y = (t.clientY - rect.top)  * (canvas.height / rect.height);
+  return { x, y };
+}
+
+function _vzBindCanvasEvents(canvas) {
+  // Rebuild by cloning to drop stale listeners from a prior render.
+  const clone = canvas.cloneNode(false);
+  canvas.parentNode.replaceChild(clone, canvas);
+  vzState.canvas = clone;
+  vzState.ctx = clone.getContext('2d');
+
+  const onStart = (e) => {
+    e.preventDefault();
+    if (vzState.magicWand) {
+      const { x, y } = _vzCanvasCoords(clone, e);
+      _vzFloodFill(Math.round(x), Math.round(y));
+      _vzRedrawAll();
+      return;
+    }
+    vzState.painting = true;
+    const { x, y } = _vzCanvasCoords(clone, e);
+    vzState.lastX = x; vzState.lastY = y;
+    _vzPaintDot(x, y);
+    _vzRedrawAll();
+  };
+  const onMove = (e) => {
+    if (!vzState.painting) return;
+    e.preventDefault();
+    const { x, y } = _vzCanvasCoords(clone, e);
+    _vzPaintLine(vzState.lastX, vzState.lastY, x, y);
+    vzState.lastX = x; vzState.lastY = y;
+    _vzRedrawAll();
+  };
+  const onEnd = () => { vzState.painting = false; };
+
+  clone.addEventListener('mousedown', onStart);
+  clone.addEventListener('mousemove', onMove);
+  clone.addEventListener('mouseup', onEnd);
+  clone.addEventListener('mouseleave', onEnd);
+  clone.addEventListener('touchstart', onStart, { passive: false });
+  clone.addEventListener('touchmove',  onMove,  { passive: false });
+  clone.addEventListener('touchend', onEnd);
+  clone.addEventListener('touchcancel', onEnd);
+}
+
+function _vzPaintDot(x, y) {
+  const r = vzState.brushSize / 2;
+  if (vzState.activeTool === 'erase') {
+    // Erase from both masks so the rep doesn't have to remember which layer
+    // an old stroke landed in.
+    for (const c of [vzState.roofMask, vzState.sidingMask]) {
+      const ctx = c.getContext('2d');
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    vzState.dirty = true; setDirty();
+    return;
+  }
+  const mask = _vzActiveMaskCanvas();
+  if (!mask) return;
+  const ctx = mask.getContext('2d');
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,1)';
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  vzState.dirty = true; setDirty();
+}
+function _vzPaintLine(x1, y1, x2, y2) {
+  // Coarser than a per-pixel line — the brush dot fills between samples on
+  // most gestures. This just guarantees no gap on a fast swipe.
+  const dx = x2 - x1, dy = y2 - y1;
+  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / (vzState.brushSize / 3)));
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    _vzPaintDot(x1 + dx * t, y1 + dy * t);
+  }
+}
+
+// Scanline flood-fill on the base photo, adding pixels within a color
+// tolerance of the tap point to the active mask. Tolerance 40 in each
+// channel is coarse on purpose — a real roof photo has JPEG noise plus
+// shingle granule contrast, so a strict test fills nothing.
+function _vzFloodFill(sx, sy) {
+  if (vzState.activeTool === 'erase') return;
+  const mask = _vzActiveMaskCanvas();
+  if (!mask || !vzState.photoImg) return;
+  const W = mask.width, H = mask.height;
+  if (sx < 0 || sy < 0 || sx >= W || sy >= H) return;
+  // Cache the down-sampled photo pixel data on the off-screen canvas so we
+  // don't re-decode every flood.
+  if (!vzState._photoData) {
+    const pc = document.createElement('canvas');
+    pc.width = W; pc.height = H;
+    const pctx = pc.getContext('2d');
+    pctx.drawImage(vzState.photoImg, 0, 0, W, H);
+    vzState._photoData = pctx.getImageData(0, 0, W, H);
+  }
+  const photoData = vzState._photoData;
+  const srcPx = photoData.data;
+  const idx0 = (sy * W + sx) * 4;
+  const r0 = srcPx[idx0], g0 = srcPx[idx0 + 1], b0 = srcPx[idx0 + 2];
+  const TOL = 40;
+  const maskCtx = mask.getContext('2d');
+  const maskData = maskCtx.getImageData(0, 0, W, H);
+  const dst = maskData.data;
+  const stack = [[sx, sy]];
+  const visited = new Uint8Array(W * H);
+  visited[sy * W + sx] = 1;
+  while (stack.length) {
+    const [x, y] = stack.pop();
+    const p = (y * W + x) * 4;
+    const dr = Math.abs(srcPx[p]     - r0);
+    const dg = Math.abs(srcPx[p + 1] - g0);
+    const db = Math.abs(srcPx[p + 2] - b0);
+    if (dr > TOL || dg > TOL || db > TOL) continue;
+    dst[p + 3] = 255;   // opaque in the mask
+    dst[p]     = 255;
+    dst[p + 1] = 255;
+    dst[p + 2] = 255;
+    for (const [nx, ny] of [[x-1,y],[x+1,y],[x,y-1],[x,y+1]]) {
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const nk = ny * W + nx;
+      if (visited[nk]) continue;
+      visited[nk] = 1;
+      stack.push([nx, ny]);
+    }
+  }
+  maskCtx.putImageData(maskData, 0, 0);
+  vzState.dirty = true; setDirty();
+}
+
+function _vzSetTool(t)   { vzState.activeTool = t; renderVisualizerPage(); }
+function _vzSetBrush(v)  { vzState.brushSize = parseInt(v, 10) || 30; const el = document.querySelector('.vz-brush-val'); if (el) el.textContent = vzState.brushSize + 'px'; }
+function _vzSetMagic(on) { vzState.magicWand = !!on; }
+function _vzClearMask(role) {
+  const c = role === 'roof' ? vzState.roofMask : vzState.sidingMask;
+  if (!c) return;
+  c.getContext('2d').clearRect(0, 0, c.width, c.height);
+  vzState.dirty = true; setDirty();
+  _vzRedrawAll();
+}
+function _vzSelectTier(t) {
+  vzState.activeTier = t;
+  document.querySelectorAll('.vz-tier-tab').forEach(el => el.classList.toggle('active', el.dataset.tier === t));
+  _vzRenderPicker();
+  _vzRedrawAll();
+}
+
+function _vzRenderPicker() {
+  const host = document.getElementById('vz-picker-body');
+  if (!host) return;
+  const tier = vzState.activeTier;
+  const vz = _vzGet();
+  const roofBundle = _vzBundleFor('roofing', tier);
+  const sideBundle = _vzBundleFor('siding',  tier);
+  const roofMat = _vzMaterialForBundle('roofing', roofBundle);
+  const sideMat = _vzMaterialForBundle('siding',  sideBundle);
+
+  const rSel = vz.selections.roofing[tier] || {};
+  const sSel = vz.selections.siding[tier]  || {};
+
+  const roofColors = (roofMat && roofMat.colors) || [];
+  const sideColors = (sideMat && sideMat.colors) || [];
+  const sideStyles = (sideMat && sideMat.styles) || [];
+
+  // Default color: the currently saved one, or the first available.
+  const rColor = rSel.color_hex  || (roofColors[0] && roofColors[0].hex) || '';
+  const sColor = sSel.color_hex  || (sideColors[0] && sideColors[0].hex) || '';
+  const sStyleId = sSel.style_id || (sideStyles[0] && sideStyles[0].id) || '';
+
+  // Attribute-safe stringify so a color/style name containing quotes can't
+  // break out of the inline onclick. Manager-added names in v1.1 aren't
+  // going through any other escape yet, so this is the belt-and-braces.
+  const jArg = (s) => "'" + String(s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;') + "'";
+  const swatch = (arr, val, onclick, kind) => arr.map(c => `
+    <button class="vz-swatch ${c.hex===val?'active':''}" style="background:${c.hex}" title="${esc(c.name)}"
+      onclick="${onclick}(${jArg(c.hex)}, ${jArg(c.name)})"><span>${esc(c.name)}</span></button>
+  `).join('') || `<div class="vz-empty-sub">This bundle has no ${kind} palette yet — add colors in Price Book.</div>`;
+
+  host.innerHTML = `
+    <div class="vz-picker-section">
+      <div class="vz-picker-hd">
+        <span class="vz-picker-title">🏠 Roof — ${esc(roofBundle ? roofBundle.name : '(no bundle)')}</span>
+      </div>
+      <div class="vz-swatch-row">${swatch(roofColors, rColor, '_vzPickRoof', 'roof color')}</div>
+    </div>
+    <div class="vz-picker-section">
+      <div class="vz-picker-hd">
+        <span class="vz-picker-title">🏗 Siding — ${esc(sideBundle ? sideBundle.name : '(no bundle)')}</span>
+      </div>
+      ${sideStyles.length ? `
+      <div class="vz-picker-sublabel">Style</div>
+      <div class="vz-style-row">
+        ${sideStyles.map(s => `
+          <button class="vz-style-btn ${s.id===sStyleId?'active':''}" onclick="_vzPickStyle(${jArg(s.id)}, ${jArg(s.name)}, ${jArg(s.pattern_id||'')})">${esc(s.name)}</button>
+        `).join('')}
+      </div>` : ''}
+      <div class="vz-picker-sublabel">Color</div>
+      <div class="vz-swatch-row">${swatch(sideColors, sColor, '_vzPickSiding', 'siding color')}</div>
+    </div>
+  `;
+
+  // Seed default selections when the rep first opens a tier so the preview
+  // isn't blank. Doesn't dirty the save state — writing a defaulted pick is
+  // idempotent from the rep's point of view.
+  if (!vz.selections.roofing[tier] && roofBundle && rColor) {
+    vz.selections.roofing[tier] = {
+      bundle_id: roofBundle.id, bundle_name: roofBundle.name,
+      color_hex: rColor, color_name: (roofColors.find(c=>c.hex===rColor)||{}).name || '',
+    };
+  }
+  if (!vz.selections.siding[tier] && sideBundle && sColor) {
+    const sty = sideStyles.find(s => s.id === sStyleId) || null;
+    vz.selections.siding[tier] = {
+      bundle_id: sideBundle.id, bundle_name: sideBundle.name,
+      color_hex: sColor, color_name: (sideColors.find(c=>c.hex===sColor)||{}).name || '',
+      style_id: sty ? sty.id : '', style_name: sty ? sty.name : '',
+      pattern_id: sty ? (sty.pattern_id || '') : '',
+    };
+  }
+}
+
+function _vzPickRoof(hex, name) {
+  const vz = _vzGet();
+  const tier = vzState.activeTier;
+  const roofBundle = _vzBundleFor('roofing', tier);
+  vz.selections.roofing[tier] = {
+    bundle_id: roofBundle ? roofBundle.id : '',
+    bundle_name: roofBundle ? roofBundle.name : '',
+    color_hex: hex, color_name: name || '',
+  };
+  setDirty();
+  _vzRenderPicker(); _vzRedrawAll();
+}
+function _vzPickSiding(hex, name) {
+  const vz = _vzGet();
+  const tier = vzState.activeTier;
+  const sideBundle = _vzBundleFor('siding', tier);
+  const prev = vz.selections.siding[tier] || {};
+  vz.selections.siding[tier] = Object.assign({}, prev, {
+    bundle_id: sideBundle ? sideBundle.id : '',
+    bundle_name: sideBundle ? sideBundle.name : '',
+    color_hex: hex, color_name: name || '',
+  });
+  setDirty();
+  _vzRenderPicker(); _vzRedrawAll();
+}
+function _vzPickStyle(styleId, styleName, patternId) {
+  const vz = _vzGet();
+  const tier = vzState.activeTier;
+  const sideBundle = _vzBundleFor('siding', tier);
+  const prev = vz.selections.siding[tier] || {};
+  vz.selections.siding[tier] = Object.assign({}, prev, {
+    bundle_id: prev.bundle_id || (sideBundle && sideBundle.id) || '',
+    bundle_name: prev.bundle_name || (sideBundle && sideBundle.name) || '',
+    style_id: styleId, style_name: styleName || '',
+    pattern_id: patternId || '',
+  });
+  setDirty();
+  _vzRenderPicker(); _vzRedrawAll();
+}
+
+// Render one tier's composite into any target canvas at any size. Shared
+// between the main preview and the G/B/B triptych thumbnails.
+function _vzComposeInto(target, tier, opts) {
+  const showMaskOverlay = !!(opts && opts.showMaskOverlay);
+  if (!vzState || !vzState.photoImg) return;
+  const ctx = target.getContext('2d');
+  const W = target.width, H = target.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(vzState.photoImg, 0, 0, W, H);
+
+  const vz = _vzGet();
+  const rSel = vz.selections.roofing[tier] || {};
+  const sSel = vz.selections.siding[tier]  || {};
+
+  // Roof color — masked multiply.
+  if (rSel.color_hex && vzState.roofMask) {
+    _vzCompositeColor(ctx, W, H, vzState.roofMask, rSel.color_hex);
+  }
+  // Siding color — masked multiply.
+  if (sSel.color_hex && vzState.sidingMask) {
+    _vzCompositeColor(ctx, W, H, vzState.sidingMask, sSel.color_hex);
+    // Siding style pattern over the siding mask, softer.
+    const patImg = sSel.pattern_id ? _vzGetPatternImg(sSel.pattern_id) : null;
+    if (patImg && patImg.complete && patImg.naturalWidth) {
+      _vzCompositePattern(ctx, W, H, vzState.sidingMask, patImg);
+    }
+  }
+
+  // Editing overlay: on the main canvas, tint the currently-active mask so
+  // the rep can see where they're painting. Skipped on the triptych.
+  if (showMaskOverlay) {
+    const which = vzState.activeTool === 'roof' ? vzState.roofMask
+                : vzState.activeTool === 'siding' ? vzState.sidingMask
+                : null;
+    if (which) {
+      const tint = vzState.activeTool === 'roof' ? 'rgba(220,50,50,0.35)' : 'rgba(50,120,220,0.35)';
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      const tc = _vzTintMask(which, tint);
+      ctx.drawImage(tc, 0, 0, W, H);
+      ctx.restore();
+    }
+  }
+}
+
+function _vzCompositeColor(ctx, W, H, mask, hex) {
+  // Off-screen: color-fill clipped to the mask.
+  const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
+  const octx = oc.getContext('2d');
+  octx.drawImage(mask, 0, 0, W, H);
+  octx.globalCompositeOperation = 'source-in';
+  octx.fillStyle = hex;
+  octx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.drawImage(oc, 0, 0);
+  ctx.restore();
+}
+
+function _vzCompositePattern(ctx, W, H, mask, patImg) {
+  const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
+  const octx = oc.getContext('2d');
+  const pat = octx.createPattern(patImg, 'repeat');
+  if (!pat) return;
+  octx.fillStyle = pat;
+  octx.fillRect(0, 0, W, H);
+  // Clip to mask.
+  octx.globalCompositeOperation = 'destination-in';
+  octx.drawImage(mask, 0, 0, W, H);
+  ctx.save();
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.globalAlpha = 0.55;
+  ctx.drawImage(oc, 0, 0);
+  ctx.restore();
+}
+
+function _vzTintMask(mask, color) {
+  const W = mask.width, H = mask.height;
+  const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
+  const octx = oc.getContext('2d');
+  octx.drawImage(mask, 0, 0);
+  octx.globalCompositeOperation = 'source-in';
+  octx.fillStyle = color;
+  octx.fillRect(0, 0, W, H);
+  return oc;
+}
+
+function _vzRedrawAll() {
+  if (!vzState || !vzState.canvas) return;
+  _vzComposeInto(vzState.canvas, vzState.activeTier, { showMaskOverlay: true });
+  // Triptych thumbnails.
+  for (const t of ['good', 'better', 'best']) {
+    const tc = document.getElementById('vz-thumb-' + t);
+    if (!tc || !vzState.photoImg) continue;
+    const wrap = tc.parentElement;
+    const cw = Math.max(220, wrap.clientWidth || 260);
+    tc.width = cw;
+    tc.height = Math.round(cw * (vzState.photoH / vzState.photoW || 0.6));
+    _vzComposeInto(tc, t, { showMaskOverlay: false });
+    const capEl = document.getElementById('vz-thumb-cap-' + t);
+    if (capEl) {
+      const vz = _vzGet();
+      const rs = vz.selections.roofing[t] || {};
+      const ss = vz.selections.siding[t]  || {};
+      const parts = [];
+      if (rs.color_name) parts.push('Roof: ' + rs.color_name);
+      if (ss.color_name) parts.push('Siding: ' + ss.color_name + (ss.style_name ? ' (' + ss.style_name + ')' : ''));
+      capEl.textContent = parts.join(' · ');
+    }
+  }
+  const legend = document.getElementById('vz-canvas-legend');
+  if (legend) {
+    legend.textContent = vzState.activeTool === 'erase'
+      ? 'Erase mode — swipe to remove marks from either layer.'
+      : (vzState.magicWand
+          ? `Magic Wand — tap any point of the ${vzState.activeTool} to fill it.`
+          : `Painting: ${vzState.activeTool === 'roof' ? '🏠 roof (red overlay)' : '🏗 siding (blue overlay)'}`);
+  }
+}
+
+// ── Save ────────────────────────────────────────────────────────────────
+// Upload base + masks + tier renders + selections. Each blob goes through
+// POST .../visualizer/asset; the state PUT rides last so the pointer fields
+// are current on the server side by the time selections write.
+async function _vzSaveAll() {
+  const eid = S.estimate_id;
+  if (!eid) {
+    alert('Save the estimate first — the visualizer needs somewhere to attach its files.');
+    return;
+  }
+  const vz = _vzGet();
+  const btn = document.getElementById('vz-save-btn');
+  const oldTxt = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    // Base image — only re-upload if the rep just chose a fresh photo.
+    if (vzState.pendingBaseDataUrl) {
+      const b64 = vzState.pendingBaseDataUrl.split(',')[1];
+      const r = await _vzPostAsset(eid, {
+        kind: 'base', ext: vzState.pendingBaseExt, content_b64: b64,
+      });
+      if (r && r.filename) {
+        vz.base_image = r.filename;
+        vzState.pendingBaseDataUrl = null;
+      }
+    }
+    // Masks — always re-upload on save (the rep may have refined them).
+    if (vzState.roofMask) {
+      const b64 = vzState.roofMask.toDataURL('image/png').split(',')[1];
+      const r = await _vzPostAsset(eid, {
+        kind: 'mask', role: 'roof', ext: 'png', content_b64: b64,
+      });
+      if (r && r.filename) vz.roof_mask = r.filename;
+    }
+    if (vzState.sidingMask) {
+      const b64 = vzState.sidingMask.toDataURL('image/png').split(',')[1];
+      const r = await _vzPostAsset(eid, {
+        kind: 'mask', role: 'siding', ext: 'png', content_b64: b64,
+      });
+      if (r && r.filename) vz.siding_mask = r.filename;
+    }
+    // One JPEG per tier that has any selection.
+    for (const tier of ['good', 'better', 'best']) {
+      const rSel = vz.selections.roofing[tier];
+      const sSel = vz.selections.siding[tier];
+      if (!(rSel && rSel.color_hex) && !(sSel && sSel.color_hex)) continue;
+      const off = document.createElement('canvas');
+      off.width = vzState.canvas.width;
+      off.height = vzState.canvas.height;
+      _vzComposeInto(off, tier, { showMaskOverlay: false });
+      const b64 = off.toDataURL('image/jpeg', 0.85).split(',')[1];
+      const r = await _vzPostAsset(eid, {
+        kind: 'render', tier, ext: 'jpg', content_b64: b64,
+      });
+      if (r && r.filename) vz.tier_renders[tier] = r.filename;
+    }
+    // Selections + timestamp.
+    await fetch(`/api/estimates/${eid}/visualizer/state`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selections: vz.selections }),
+    });
+    vzState.dirty = false;
+    if (btn) btn.textContent = '✅ Saved';
+    setTimeout(() => { if (btn) { btn.textContent = oldTxt || '💾 Save Renderings'; btn.disabled = false; } }, 1500);
+  } catch (e) {
+    console.error('visualizer save failed', e);
+    alert('Save failed: ' + (e && e.message ? e.message : e));
+    if (btn) { btn.disabled = false; btn.textContent = oldTxt || '💾 Save Renderings'; }
+  }
+}
+
+async function _vzPostAsset(eid, body) {
+  const r = await fetch(`/api/estimates/${eid}/visualizer/asset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`asset POST failed (${r.status}): ${t.slice(0, 200)}`);
+  }
+  return r.json();
 }
 
 // ── Service Worker registration (Android PWA install + offline support) ──
