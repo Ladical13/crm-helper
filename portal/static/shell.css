@@ -120,3 +120,13 @@
   #p1-shell .p1-who { display: none; }
   #p1-shell .p1-app { padding: 6px 9px; }
 }
+
+/* Print: the app-switcher is UI chrome, not part of the document. Browsers
+ * repeat fixed-position headers on every printed page, which is how the
+ * Canvass / Pipeline / Estimate tabs showed up as a banner across every
+ * page of a printed estimate. Hide it, and clear the offset the host apps
+ * add to make room for it so the first page starts at the top of the paper. */
+@media print {
+  #p1-shell { display: none !important; }
+  :root { --p1-shell-h: 0px !important; }
+}
