@@ -2710,6 +2710,10 @@ box-shadow:0 12px 26px -10px rgba(22,163,74,.55);transition:transform .15s,box-s
 .cv-shingle-label{font-size:11px;font-weight:800;color:#0c4a6e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
 .cv-shingle-locked{font-size:17px;font-weight:800;color:var(--navy)}
 .cv-shingle-select{margin-bottom:0;background:#fff}
+.cv-siding{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px 15px;margin-bottom:14px}
+.cv-siding-label{font-size:11px;font-weight:800;color:#166534;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
+.cv-siding-locked{font-size:17px;font-weight:800;color:var(--navy)}
+.cv-siding-select{margin-bottom:0;background:#fff}
 .cv-initials{background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px 15px;margin-bottom:14px}
 .cv-initials-title{font-size:11px;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
 .cv-initial-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid #fef3c7}
@@ -3454,28 +3458,207 @@ def _roofing_enabled(est):
     return bool(((est.get('trades') or {}).get('roofing') or {}).get('enabled'))
 
 
-def _cv_shingle_block(est):
-    """Shingle-color step for the sign form. Locked display if the rep already
-    chose a color; otherwise a required dropdown for the customer."""
-    ss = est.get('shingle_selection') or {}
-    if not ss.get('enabled', False) or not _roofing_enabled(est):
+def _siding_enabled(est):
+    """Siding color only makes sense when siding is part of the job."""
+    return bool(((est.get('trades') or {}).get('siding') or {}).get('enabled'))
+
+
+# Manufacturer-agnostic fallbacks — used only when a bundle carries no material
+# with a colors[] array AND the rep didn't type a custom options list.
+DEFAULT_SHINGLE_COLORS = [
+    'Charcoal', 'Weathered Wood', 'Driftwood', 'Barkwood',
+    'Pewter Gray', 'Estate Gray', 'Slate', 'Shakewood',
+    'Hickory', 'Williamsburg Gray', 'Hunter Green', 'Mission Brown',
+    'Black Walnut', 'Aged Copper', 'Birchwood', 'Oyster Gray',
+]
+DEFAULT_SIDING_COLORS = [
+    'Arctic White', 'Iron Gray', 'Aged Pewter', 'Cobble Stone',
+    'Timber Bark', 'Evening Blue', 'Boothbay Blue', 'Khaki Brown',
+    'Sail Cloth', 'Deep Ocean',
+]
+
+
+def _bundle_id_for_tier(pb, est, trade, tier):
+    """The bundle id chosen for this estimate's trade+tier.
+    Estimate override (td.tier_bundles[tier]) → price-book default."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    b = ((td.get('tier_bundles') or {}).get(tier) or '').strip()
+    if b:
+        return b
+    return ((pb.get(trade + '_tier_defaults') or {}).get(tier) or '').strip()
+
+
+def _material_product_for_bundle(pb, trade, bundle_id):
+    """The bundle's material SKU (mirrors _vzMaterialForBundle in app.js):
+    roofing → first `m_*` product; siding → first `s_*` that isn't sa_/sl_/sx_."""
+    if not bundle_id:
+        return None
+    bundles = pb.get(trade + '_bundles') or []
+    bundle = next((b for b in bundles
+                   if isinstance(b, dict) and b.get('id') == bundle_id), None)
+    if not bundle:
+        return None
+    catalog = pb.get(trade + '_catalog') or []
+    by_id = {p.get('id'): p for p in catalog if isinstance(p, dict)}
+    for pid in bundle.get('product_ids') or []:
+        s = str(pid or '')
+        if trade == 'roofing' and s.startswith('m_'):
+            p = by_id.get(pid)
+            if p:
+                return p
+        if trade == 'siding' and s.startswith('s_') and not s.startswith(('sa_', 'sl_', 'sx_')):
+            p = by_id.get(pid)
+            if p:
+                return p
+    return None
+
+
+def _bundle_colors_for_tier(pb, est, trade, tier):
+    """Color names carried by the material product in est's chosen bundle,
+    for trade+tier. Empty when the bundle has no material with colors[]."""
+    mat = _material_product_for_bundle(pb, trade, _bundle_id_for_tier(pb, est, trade, tier))
+    if not mat:
+        return []
+    out = []
+    for c in mat.get('colors') or []:
+        if isinstance(c, dict):
+            n = (c.get('name') or '').strip()
+        else:
+            n = str(c or '').strip()
+        if n:
+            out.append(n)
+    return out
+
+
+def _customer_color_options(pb, est, trade, tier, ss):
+    """Ordered color names to offer the customer for trade+tier.
+    Bundle colors → rep-typed ss.options → manufacturer-agnostic fallback."""
+    seq = _bundle_colors_for_tier(pb, est, trade, tier)
+    if seq:
+        return seq
+    seq = [str(o).strip() for o in (ss.get('options') or []) if str(o).strip()]
+    if seq:
+        return seq
+    return list(DEFAULT_SHINGLE_COLORS if trade == 'roofing' else DEFAULT_SIDING_COLORS)
+
+
+def _tier_colors_map(pb, est):
+    """{trade: {tier: [color_name…]}} for every G/B/B trade with a color
+    selection enabled. Inlined into the sign page so the color dropdown
+    re-populates in the browser when the customer changes tiers."""
+    out = {}
+    picks = (
+        ('roofing', est.get('shingle_selection') or {}),
+        ('siding',  est.get('siding_selection')  or {}),
+    )
+    for trade, ss in picks:
+        if not ss.get('enabled'):
+            continue
+        td = (est.get('trades') or {}).get(trade) or {}
+        if not td.get('enabled'):
+            continue
+        row = {}
+        for tier in ('good', 'better', 'best'):
+            row[tier] = _customer_color_options(pb, est, trade, tier, ss)
+        out[trade] = row
+    return out
+
+
+def _cv_color_block(est, pb, trade, ss, chosen_tier, label_pick, label_locked,
+                    field_name, css_class):
+    """Shared shingle/siding color step for the sign form. Locked display
+    when the rep pre-picked a color; otherwise a required dropdown seeded
+    from the tier's bundle colors — swapped in the browser when the
+    customer changes tier."""
+    if not ss.get('enabled', False):
         return ''
-    chosen  = (ss.get('chosen') or '').strip()
-    options = [o for o in (ss.get('options') or []) if str(o).strip()]
+    chosen = (ss.get('chosen') or '').strip()
     if chosen:
-        return f'''<div class="cv-shingle">
-      <div class="cv-shingle-label">&#127912; Your Shingle Color</div>
-      <div class="cv-shingle-locked">{he(chosen)}</div>
-      <input type="hidden" name="shingle_color" value="{he(chosen)}">
+        return f'''<div class="{css_class}">
+      <div class="{css_class}-label">&#127912; {label_locked}</div>
+      <div class="{css_class}-locked">{he(chosen)}</div>
+      <input type="hidden" name="{field_name}" value="{he(chosen)}">
     </div>'''
+    options = _customer_color_options(pb, est, trade, chosen_tier, ss)
     opts = ''.join(f'<option value="{he(o)}">{he(o)}</option>' for o in options)
-    return f'''<div class="cv-shingle">
-      <div class="cv-shingle-label">&#127912; Choose Your Shingle Color *</div>
-      <select class="cvinput cv-shingle-select" name="shingle_color" required>
+    return f'''<div class="{css_class}" data-color-trade="{trade}">
+      <div class="{css_class}-label">&#127912; {label_pick}</div>
+      <select class="cvinput {css_class}-select" name="{field_name}" required
+        id="cv-color-{trade}">
         <option value="">Select a color&hellip;</option>
         {opts}
       </select>
     </div>'''
+
+
+def _cv_shingle_block(est, pb=None, chosen_tier='better'):
+    """Shingle-color step for the sign form. Locked display if the rep
+    already chose a color; otherwise a required dropdown for the customer,
+    seeded from the current tier's bundle colors (IKO shows IKO colors,
+    CertainTeed shows CertainTeed, …). The dropdown is re-populated in the
+    browser when the customer changes packages — see _cv_tier_color_script."""
+    if not _roofing_enabled(est):
+        return ''
+    if pb is None:
+        pb = _ensure_bundle_catalogs(_load_price_book())
+    return _cv_color_block(est, pb, 'roofing',
+                           est.get('shingle_selection') or {},
+                           chosen_tier,
+                           label_pick='Choose Your Shingle Color *',
+                           label_locked='Your Shingle Color',
+                           field_name='shingle_color',
+                           css_class='cv-shingle')
+
+
+def _cv_siding_block(est, pb=None, chosen_tier='better'):
+    """Siding-color step for the sign form. Same shape as _cv_shingle_block
+    but for siding — restricts the customer's palette to the picked siding
+    system (LP → LP colors, Hardie → Hardie colors, EDCO → EDCO colors)."""
+    if not _siding_enabled(est):
+        return ''
+    if pb is None:
+        pb = _ensure_bundle_catalogs(_load_price_book())
+    return _cv_color_block(est, pb, 'siding',
+                           est.get('siding_selection') or {},
+                           chosen_tier,
+                           label_pick='Choose Your Siding Color *',
+                           label_locked='Your Siding Color',
+                           field_name='siding_color',
+                           css_class='cv-siding')
+
+
+def _cv_tier_color_script(est, pb=None):
+    """Inline JS that re-populates the color <select> when the customer
+    changes the tier radio for a trade. Reads a JSON map inlined next to
+    it. Emits nothing when no color picker is enabled — the map is empty."""
+    if pb is None:
+        pb = _ensure_bundle_catalogs(_load_price_book())
+    tmap = _tier_colors_map(pb, est)
+    if not tmap:
+        return ''
+    return f'''<script>
+(function(){{
+  var TCM = {json.dumps(tmap)};
+  function _cvColorRepop(trade, tier){{
+    var sel = document.getElementById('cv-color-'+trade); if(!sel) return;
+    var opts = (TCM[trade] || {{}})[tier] || [];
+    var cur = sel.value;
+    var html = '<option value="">Select a color…</option>';
+    for (var i=0;i<opts.length;i++){{
+      var v = String(opts[i]).replace(/"/g,'&quot;');
+      html += '<option value="'+v+'">'+v+'</option>';
+    }}
+    sel.innerHTML = html;
+    if (cur && opts.indexOf(cur) !== -1) sel.value = cur;
+  }}
+  // Wrap selectCvTier so a tier change updates the color dropdown for that trade.
+  var orig = window.selectCvTier;
+  window.selectCvTier = function(trade, tier){{
+    if (typeof orig === 'function') orig(trade, tier);
+    _cvColorRepop(trade, tier);
+  }};
+}})();
+</script>'''
 
 
 def _cv_initials_block(est):
@@ -3752,7 +3935,8 @@ def _build_insurance_cv(est, token):
   <p class="sub">Your electronic signature confirms you have reviewed and agreed to the insurance estimate above and all terms &amp; conditions.</p>
   {_cv_sig_form(_mount_path(f'/sign/{he(token)}'),
                 hidden='<input type="hidden" name="selected_tier" value="insurance">',
-                extra_blocks=_cv_shingle_block(est) + _cv_initials_block(est),
+                extra_blocks=(_cv_shingle_block(est) + _cv_siding_block(est)
+                              + _cv_initials_block(est)),
                 agree_text='I have read this insurance estimate and I agree to all terms &amp; conditions.')}
 </div>
 </main>
@@ -3843,7 +4027,9 @@ def _build_simple_retail_cv(est, token):
   <p class="sub">Your electronic signature confirms you have reviewed and agreed to the estimate above and all terms &amp; conditions.</p>
   {_cv_sig_form(_mount_path(f'/sign/{he(token)}'),
                 hidden=f'<input type="hidden" name="selected_tier" value="{he(tier)}">',
-                extra_blocks=_cv_shingle_block(est) + _cv_initials_block(est),
+                extra_blocks=(_cv_shingle_block(est, chosen_tier=tier)
+                              + _cv_siding_block(est, chosen_tier=tier)
+                              + _cv_initials_block(est)),
                 agree_text='I have read this estimate and I agree to all terms &amp; conditions.')}
 </div>
 </main>
@@ -3899,6 +4085,10 @@ def build_customer_view(est, token):
 
     trade_lbls = dict(roofing='Roofing', siding='Siding', windows='Windows',
                       gutters='Gutters', other='Other / Misc')
+
+    # Load once — reused by the shingle/siding color blocks and the tier→color
+    # script so the customer's color dropdown swaps with the tier picker.
+    pb = _ensure_bundle_catalogs(_load_price_book())
 
     defaults = {}      # trade → default-selected tier
     totals   = {}      # trade → {tier: subtotal}
@@ -4027,7 +4217,9 @@ def build_customer_view(est, token):
                 hidden=(f'<input type="hidden" name="selected_tier" id="cv-tier-input" value="{he(default_tier)}">'
                         + ''.join(f'<input type="hidden" name="tier_{tk}" id="cv-tier-input-{tk}" value="{he(defaults[tk])}">'
                                   for tk in gbb_tks)),
-                extra_blocks=_cv_shingle_block(est) + _cv_initials_block(est),
+                extra_blocks=(_cv_shingle_block(est, pb=pb, chosen_tier=default_tier)
+                              + _cv_siding_block(est, pb=pb, chosen_tier=default_tier)
+                              + _cv_initials_block(est)),
                 agree_text='I have read this estimate, selected my package, and I agree to all terms &amp; conditions.',
                 btn_id='cv-sign-btn')}
 </div>
@@ -4103,6 +4295,7 @@ function _cvRefreshTotal(){{
   }});
 }})();
 </script>
+{_cv_tier_color_script(est, pb=pb)}
 ''' + _cv_footer()
 
 
@@ -7783,6 +7976,7 @@ def customer_sign(token):
         sig_email     = (request.form.get('sig_email') or '').strip()
         selected_tier = (request.form.get('selected_tier') or '').strip()
         shingle_color = (request.form.get('shingle_color') or '').strip()
+        siding_color  = (request.form.get('siding_color')  or '').strip()
         if not sig_name:
             return 'Full name is required.', 400
 
@@ -7801,6 +7995,11 @@ def customer_sign(token):
         if (ss.get('enabled') and _roofing_enabled(est)
                 and not (ss.get('chosen') or '').strip() and not shingle_color):
             return 'Please choose a shingle color before signing.', 400
+        # Same rule for the siding-color step, when siding is on the job
+        sds = est.get('siding_selection') or {}
+        if (sds.get('enabled') and _siding_enabled(est)
+                and not (sds.get('chosen') or '').strip() and not siding_color):
+            return 'Please choose a siding color before signing.', 400
 
         # Per-product package picks (tier_roofing, tier_siding, …). A page
         # rendered before per-product packages submits only selected_tier —
@@ -7855,6 +8054,14 @@ def customer_sign(token):
                 roof = doc.get('trades', {}).get('roofing')
                 if isinstance(roof, dict):
                     roof.setdefault('colors', {})['shingle_color'] = shingle_color
+            # Same for the siding color pick — save to both the selection
+            # blob (source of truth for the signing UI) and the siding trade's
+            # colors dict (source for print rows and the packet).
+            if siding_color:
+                doc.setdefault('siding_selection', {})['chosen'] = siding_color
+                side = doc.get('trades', {}).get('siding')
+                if isinstance(side, dict):
+                    side.setdefault('colors', {})['siding_color'] = siding_color
             # Hash BEFORE adding the signature so it represents what was signed
             content  = json.dumps(doc, sort_keys=True, separators=(',', ':')).encode('utf-8')
             doc['signature'] = {
@@ -7868,6 +8075,7 @@ def customer_sign(token):
                 'selected_tier': doc.get('selected_tier', 'better'),
                 'selected_tiers': doc.get('selected_tiers') or {},
                 'shingle_color': shingle_color or (ss.get('chosen') or '').strip(),
+                'siding_color':  siding_color  or (sds.get('chosen') or '').strip(),
                 'initials':      initials_captured,
             }
             doc['status']     = 'accepted'

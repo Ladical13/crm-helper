@@ -4889,16 +4889,63 @@ function renderProductsPage() {
         return `<div class="product-card">
           <div class="product-card-hd">${TRADE_LABELS[trade]}</div>
           <div class="product-card-fields">
-            ${TRADE_COLOR_FIELDS[trade].map(f => `
-              <div class="field-group">
-                <label>${esc(f.label)}</label>
-                <input type="text" value="${esc(colors[f.key]||'')}" placeholder="${esc(f.label)}…"
-                  onchange="setTradeColor('${trade}','${f.key}',this.value)">
-              </div>`).join('')}
+            ${TRADE_COLOR_FIELDS[trade].map(f => renderProductColorField(trade, f, colors[f.key] || '')).join('')}
           </div>
         </div>`;
       }).join('')}
     </div>`;
+}
+
+// A rep-side color field. For shingle_color / siding_color we render a
+// dropdown restricted to the picked bundle's palette (IKO Nordic → IKO
+// colors only, CertainTeed → CertainTeed only, LP → LP only, Hardie →
+// Hardie only), with a "Custom…" escape for special-order colors that
+// aren't on the manufacturer's list. Every other color field stays free
+// text, since only roofing/siding bundles carry a palette today.
+function renderProductColorField(trade, f, cur) {
+  const bundleKey = (trade === 'roofing' && f.key === 'shingle_color') ? 'roofing'
+                  : (trade === 'siding'  && f.key === 'siding_color')  ? 'siding'
+                  : '';
+  if (!bundleKey) {
+    return `<div class="field-group">
+      <label>${esc(f.label)}</label>
+      <input type="text" value="${esc(cur)}" placeholder="${esc(f.label)}…"
+        onchange="setTradeColor('${trade}','${f.key}',this.value)">
+    </div>`;
+  }
+  const tier   = tradeTier(bundleKey);
+  const colors = _bundleColorsForTradeTier(bundleKey, tier);
+  const names  = colors.map(c => c.name);
+  const inList = cur && names.indexOf(cur) !== -1;
+  const isCustom = cur && !inList;
+  const selVal = isCustom ? '__custom__' : (cur || '');
+  const opts = names.map(n => `<option value="${esc(n)}"${n === selVal ? ' selected' : ''}>${esc(n)}</option>`).join('');
+  const hint = colors.length
+    ? `<span class="sr-hint">from your ${esc(bundleKey === 'roofing' ? 'shingle' : 'siding')} package</span>`
+    : `<span class="sr-hint">no palette on the picked bundle — enter a color</span>`;
+  const customInput = isCustom || !colors.length
+    ? `<input type="text" value="${esc(cur)}" placeholder="Type a custom color…"
+        style="margin-top:6px" onchange="setTradeColor('${trade}','${f.key}',this.value)">`
+    : '';
+  return `<div class="field-group">
+    <label>${esc(f.label)} ${hint}</label>
+    <select onchange="onProductColorSelect('${trade}','${f.key}',this)">
+      <option value="">Select a color…</option>
+      ${opts}
+      <option value="__custom__"${isCustom ? ' selected' : ''}>Custom…</option>
+    </select>
+    ${customInput}
+  </div>`;
+}
+function onProductColorSelect(trade, key, sel) {
+  const v = sel.value;
+  if (v === '__custom__') {
+    setTradeColor(trade, key, '');
+    if (activePage === 'products') renderProductsPage();
+    return;
+  }
+  setTradeColor(trade, key, v);
+  if (activePage === 'products') renderProductsPage();
 }
 function setTradeColor(trade, key, v) {
   if (!S.trades[trade].colors) S.trades[trade].colors = {};
@@ -6026,9 +6073,14 @@ async function saveContractDefaults() {
 }
 
 function renderSigningRequirements() {
-  const ss = S.shingle_selection || {enabled:true, options:DEFAULT_SHINGLE_COLORS.slice(), chosen:''};
+  const ss  = S.shingle_selection || {enabled:true, options:[], chosen:''};
+  const sds = S.siding_selection  || {enabled:false, options:[], chosen:''};
   const initials = S.contract_initials || [];
-  const optionsText = (ss.options || []).join(', ');
+  const ssOptText  = (ss.options  || []).join(', ');
+  const sdsOptText = (sds.options || []).join(', ');
+  // Only show the siding block when siding is actually on the estimate —
+  // otherwise it's noise on a roof-only job.
+  const sidingOn = !!(S.trades && S.trades.siding && S.trades.siding.enabled);
 
   const initialRows = initials.map((it, idx) => `
     <div class="sr-initial-row">
@@ -6038,6 +6090,33 @@ function renderSigningRequirements() {
         onchange="setInitialText('${it.id}', this.value)">
       <button class="sr-initial-del" onclick="deleteInitial('${it.id}')" title="Remove">×</button>
     </div>`).join('');
+
+  const sidingBlock = !sidingOn ? '' : `
+    <div class="sr-block">
+      <label class="sr-toggle">
+        <input type="checkbox" ${sds.enabled ? 'checked' : ''}
+          onchange="setSidingEnabled(this.checked)">
+        <span>Ask the customer to confirm a <strong>siding color</strong> at signing</span>
+      </label>
+      <div class="sr-siding-body" style="${sds.enabled ? '' : 'display:none'}">
+        <div class="field-group">
+          <label>Color already chosen? <span class="sr-hint">leave blank to let the customer pick</span></label>
+          <input type="text" list="siding-color-list" class="sr-chosen-input"
+            value="${esc(sds.chosen || '')}" placeholder="e.g. Iron Gray — or leave blank"
+            onchange="setSidingChosen(this.value)">
+          <datalist id="siding-color-list">
+            ${(sds.options || []).map(o => `<option value="${esc(o)}">`).join('')}
+          </datalist>
+        </div>
+        <div class="field-group">
+          <label>Extra siding color options
+            <span class="sr-hint">optional — leave blank to use the picked bundle's colors</span></label>
+          <textarea class="sr-options-input" rows="2"
+            onchange="setSidingOptions(this.value)"
+            placeholder="Arctic White, Iron Gray, Musket Brown…">${esc(sdsOptText)}</textarea>
+        </div>
+      </div>
+    </div>`;
 
   return `
   <div class="signing-req">
@@ -6062,13 +6141,16 @@ function renderSigningRequirements() {
           </datalist>
         </div>
         <div class="field-group">
-          <label>Color options offered to the customer <span class="sr-hint">comma-separated</span></label>
+          <label>Extra shingle color options
+            <span class="sr-hint">optional — leave blank to use the picked bundle's colors (IKO Nordic → IKO, CertainTeed → CertainTeed…)</span></label>
           <textarea class="sr-options-input" rows="2"
             onchange="setShingleOptions(this.value)"
-            placeholder="Charcoal, Weathered Wood, Driftwood…">${esc(optionsText)}</textarea>
+            placeholder="Charcoal, Weathered Wood, Driftwood…">${esc(ssOptText)}</textarea>
         </div>
       </div>
     </div>
+
+    ${sidingBlock}
 
     <div class="sr-block">
       <div class="sr-block-title">Items the customer must <strong>initial</strong></div>
@@ -6080,12 +6162,12 @@ function renderSigningRequirements() {
 }
 
 function setShingleEnabled(v) {
-  if (!S.shingle_selection) S.shingle_selection = {options:DEFAULT_SHINGLE_COLORS.slice(), chosen:''};
+  if (!S.shingle_selection) S.shingle_selection = {options:[], chosen:''};
   S.shingle_selection.enabled = v; setDirty();
   renderContractPage();
 }
 function setShingleChosen(v) {
-  if (!S.shingle_selection) S.shingle_selection = {enabled:true, options:DEFAULT_SHINGLE_COLORS.slice()};
+  if (!S.shingle_selection) S.shingle_selection = {enabled:true, options:[]};
   S.shingle_selection.chosen = v.trim();
   // Keep roofing's color field in sync so it shows on prints
   if (S.trades.roofing) { S.trades.roofing.colors = S.trades.roofing.colors || {}; S.trades.roofing.colors.shingle_color = v.trim(); }
@@ -6093,8 +6175,24 @@ function setShingleChosen(v) {
 }
 function setShingleOptions(v) {
   if (!S.shingle_selection) S.shingle_selection = {enabled:true, chosen:''};
-  const opts = v.split(',').map(s => s.trim()).filter(Boolean);
-  S.shingle_selection.options = opts.length ? opts : DEFAULT_SHINGLE_COLORS.slice();
+  // Empty = use bundle colors (IKO/CertainTeed/…); non-empty = rep override
+  S.shingle_selection.options = v.split(',').map(s => s.trim()).filter(Boolean);
+  setDirty();
+}
+function setSidingEnabled(v) {
+  if (!S.siding_selection) S.siding_selection = {options:[], chosen:''};
+  S.siding_selection.enabled = v; setDirty();
+  renderContractPage();
+}
+function setSidingChosen(v) {
+  if (!S.siding_selection) S.siding_selection = {enabled:true, options:[]};
+  S.siding_selection.chosen = v.trim();
+  if (S.trades.siding) { S.trades.siding.colors = S.trades.siding.colors || {}; S.trades.siding.colors.siding_color = v.trim(); }
+  setDirty();
+}
+function setSidingOptions(v) {
+  if (!S.siding_selection) S.siding_selection = {enabled:true, chosen:''};
+  S.siding_selection.options = v.split(',').map(s => s.trim()).filter(Boolean);
   setDirty();
 }
 function addInitial() {
@@ -11537,6 +11635,26 @@ function _vzMaterialForBundle(trade, bundle) {
     }
   }
   return null;
+}
+
+// Colors for this ESTIMATE's picked bundle at the given tier — mirrors
+// the server-side _bundle_colors_for_tier. Uses the estimate's actual
+// td.tier_bundles pick when present; falls back to the price book default.
+// Returns [{name, hex}] (hex may be missing).
+function _bundleColorsForTradeTier(trade, tier) {
+  if (!priceBook) return [];
+  const td = (S.trades || {})[trade] || {};
+  let bid = ((td.tier_bundles || {})[tier] || '').trim();
+  if (!bid || bid === '__custom__') {
+    bid = ((priceBook[trade + '_tier_defaults'] || {})[tier] || '').trim();
+  }
+  if (!bid) return [];
+  const bundle = (priceBook[trade + '_bundles'] || []).find(b => b && b.id === bid);
+  const mat = _vzMaterialForBundle(trade, bundle);
+  const colors = (mat && mat.colors) || [];
+  return colors
+    .map(c => (typeof c === 'string' ? {name: c, hex: ''} : (c || {})))
+    .filter(c => (c.name || '').trim());
 }
 
 async function renderVisualizerPage() {
