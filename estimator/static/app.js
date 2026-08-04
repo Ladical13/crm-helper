@@ -292,7 +292,7 @@ MATERIALS
 All materials remain the property of Project One Roofing until paid in full. Contractor reserves the right to substitute materials of equal or greater quality if specified materials are unavailable, with prior homeowner notification.
 
 WARRANTY
-Project One Roofing warrants all workmanship against defects for 5 years from the date of project completion. Manufacturer warranties will be registered in the homeowner's name upon receipt of final payment.
+Project One Roofing warrants all workmanship against defects for 5 years from the date of project completion on Good and Better packages, and for the lifetime of the homeowner's ownership of the home on the Best package. Manufacturer warranties will be registered in the homeowner's name upon receipt of final payment.
 
 CHANGE ORDERS
 Any deviation from the agreed scope must be submitted in writing and signed by both parties before work proceeds. Verbal authorizations are not binding on Contractor.
@@ -339,7 +339,7 @@ MATERIALS
 All materials remain the property of Project One Roofing until paid in full. Contractor reserves the right to substitute materials of equal or greater quality if specified materials are unavailable, with prior notification to Homeowner.
 
 WARRANTY
-Project One Roofing warrants all workmanship against defects for 5 years from the date of project completion. Manufacturer warranties will be registered in the homeowner's name upon receipt of final payment.
+Project One Roofing warrants all workmanship against defects for 5 years from the date of project completion on standard scopes, and for the lifetime of the homeowner's ownership of the home when the Best package is selected. Manufacturer warranties will be registered in the homeowner's name upon receipt of final payment.
 
 INSURANCE & LICENSING
 Project One Roofing carries general liability insurance ($1,000,000 per occurrence / $2,000,000 aggregate) and maintains workers' compensation coverage for all employees and subcontractors. Certificates of insurance available upon request.

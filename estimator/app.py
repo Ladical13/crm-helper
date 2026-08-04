@@ -235,7 +235,8 @@ def _seed_data_dir():
     if DATA_DIR == BASE_DIR:
         return  # local dev — nothing to seed
     for fname in ('price_book.json', 'tier_defaults.json', 'permit_defaults.json',
-                  'jurisdictions.json', 'commercial_fastening.json'):
+                  'jurisdictions.json', 'commercial_fastening.json',
+                  'company_content.json'):
         src = os.path.join(BASE_DIR, fname)
         dst = os.path.join(DATA_DIR, fname)
         if os.path.exists(src) and not os.path.exists(dst):
@@ -2837,6 +2838,39 @@ background:#f8fafc;padding:5px 8px;border-bottom:1px solid var(--line)}
 .cvtrust-rev-text{font-size:13px;line-height:1.65;color:#33415a;font-style:italic}
 .cvtrust-rev-name{font-size:12px;font-weight:800;color:var(--navy);margin-top:7px}
 
+/* ── estimate details block (AI-readable "About This Estimate") ── */
+.cvdet{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin-top:14px;
+  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.cvdet-hd{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:800;color:var(--navy);margin-bottom:6px}
+.cvdet-lead{font-size:13.5px;color:var(--faint);line-height:1.6;margin-bottom:14px}
+.cvdet section{border-top:1px solid #f1f5f9;padding-top:14px;margin-top:14px}
+.cvdet section:first-of-type{border-top:none;padding-top:0;margin-top:0}
+.cvdet h4{font-size:12.5px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
+.cvdet p{font-size:13.5px;line-height:1.65;color:#33415a;margin-bottom:6px}
+.cvdet ul{list-style:none;padding:0;margin:4px 0}
+.cvdet ul li{position:relative;padding:4px 0 4px 22px;font-size:13.5px;color:#33415a;line-height:1.55}
+.cvdet ul li::before{content:'•';position:absolute;left:6px;font-weight:800;color:var(--navy);top:3px}
+.cvdet ul.chk li::before{content:'✓';color:var(--green)}
+.cvdet .cvdet-tiers{display:grid;gap:10px;margin-top:6px}
+@media(min-width:640px){.cvdet .cvdet-tiers{grid-template-columns:repeat(3,1fr)}}
+.cvdet-tier{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.cvdet-tier-lbl{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--faint)}
+.cvdet-tier-name{font-size:14px;font-weight:800;color:var(--navy);margin-top:2px}
+.cvdet-tier-tag{font-size:12.5px;line-height:1.5;color:#33415a;margin-top:6px}
+.cvdet-tier ul{margin-top:8px}
+.cvdet-tier ul li{font-size:12.5px}
+.cvdet-code{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-top:8px}
+.cvdet-code strong{color:var(--navy)}
+.cvdet-code-item{font-size:12.5px;color:#33415a;padding:3px 0;border-bottom:1px dashed #e2e8f0}
+.cvdet-code-item:last-child{border-bottom:none}
+.cvdet-code-item em{color:var(--faint);font-style:normal;font-size:11.5px;margin-left:6px}
+.cvdet-vent{background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6;color:#0c4a6e}
+.cvdet-vent strong{color:#0c4a6e}
+.cvdet-warr{display:grid;gap:8px;margin-top:4px}
+@media(min-width:640px){.cvdet-warr{grid-template-columns:repeat(3,1fr)}}
+.cvdet-warr div{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.cvdet-warr div b{display:block;font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--faint);margin-bottom:3px}
+
 /* ── scroll-reveal ── */
 @media(prefers-reduced-motion:no-preference){
 .cv-reveal{opacity:0;transform:translateY(18px);transition:opacity .6s cubic-bezier(.22,.61,.36,1),transform .6s cubic-bezier(.22,.61,.36,1)}
@@ -2952,16 +2986,106 @@ document.addEventListener('click',function(e){
 """
 
 
-def _cv_head(title):
-    """Shared <head> + opening <body> for every public customer page."""
+def _cv_meta_json_ld(manifest):
+    """schema.org JSON-LD for a customer estimate. Kept small on purpose —
+    this is a hint for machine readers (search previews, and Claude/ChatGPT
+    when the customer pastes the /sign link into a chat), not the main
+    payload. The customer-visible details block carries the real story."""
+    if not manifest:
+        return ''
+    m       = manifest
+    company = m.get('company') or {}
+    seller  = {
+        '@type':   'RoofingContractor',
+        'name':    company.get('name', 'Project One Roofing'),
+        'telephone': company.get('phone', ''),
+        'url':     f'https://{company.get("website", "")}' if company.get('website') else '',
+        'address': {
+            '@type':          'PostalAddress',
+            'streetAddress':  company.get('street', ''),
+            'addressLocality': company.get('city', ''),
+            'addressRegion':  company.get('state', ''),
+            'addressCountry': 'US',
+        },
+        'areaServed':      ['Colorado', 'Texas'],
+        'foundingDate':    str(company.get('founded_year') or ''),
+        'description':     company.get('about', ''),
+    }
+    certs = [str(x).strip() for x in (company.get('certifications') or []) if str(x).strip()]
+    if certs:
+        seller['hasCredential'] = certs
+
+    graph = {
+        '@context':  'https://schema.org',
+        '@type':     'Offer',
+        'name':      'Roof replacement estimate',
+        'description': m.get('summary', ''),
+        'seller':    seller,
+        'itemOffered': {
+            '@type':      'Service',
+            'serviceType': 'Roof replacement' if not m.get('is_insurance')
+                           else 'Insurance-claim roofing scope',
+            'provider':   {'@type': 'Organization',
+                           'name': company.get('name', 'Project One Roofing')},
+            'areaServed': f'{m.get("customer_city", "")}, {m.get("customer_state", "")}'.strip(', '),
+        },
+        'priceSpecification': {
+            '@type':         'PriceSpecification',
+            'price':         m.get('grand_total', 0),
+            'priceCurrency': 'USD',
+        },
+        'validThrough':   m.get('valid_until', ''),
+        'availability':   'https://schema.org/InStock',
+    }
+    revs = (m.get('reviews') or {})
+    if revs.get('count'):
+        graph['itemOffered']['aggregateRating'] = {
+            '@type':       'AggregateRating',
+            'ratingValue': revs.get('average', 5),
+            'reviewCount': revs.get('count', 0),
+        }
+    warranty_body = (m.get('warranty_body') or '').strip()
+    if warranty_body:
+        graph['warranty'] = {
+            '@type': 'WarrantyPromise',
+            'description': warranty_body,
+        }
+    return ('<script type="application/ld+json">'
+            + json.dumps(graph, separators=(',', ':'))
+            + '</script>')
+
+
+def _cv_head(title, manifest=None):
+    """Shared <head> + opening <body> for every public customer page.
+
+    When `manifest` is provided (from _build_estimate_manifest), the head
+    also carries meta description, OpenGraph tags and schema.org JSON-LD so
+    a link preview or an AI assistant reading the page has a specific,
+    machine-readable summary to work from — not just prices in a table."""
+    desc = ''
+    ld   = ''
+    og   = ''
+    if manifest:
+        desc = (manifest.get('summary') or '').strip()
+        if desc:
+            desc_esc = he(desc)
+            og += (f'<meta name="description" content="{desc_esc}">'
+                   f'<meta property="og:title" content="{he(title)}">'
+                   f'<meta property="og:description" content="{desc_esc}">'
+                   f'<meta property="og:type" content="website">'
+                   f'<meta name="twitter:card" content="summary">'
+                   f'<meta name="twitter:description" content="{desc_esc}">')
+        ld = _cv_meta_json_ld(manifest)
     return f'''<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#0e2440">
 <link rel="icon" href="/static/icon-192.png">
+{og}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Great+Vibes&display=swap" rel="stylesheet">
 <title>{title}</title>
+{ld}
 <style>{_CV_CSS}</style></head><body>'''
 
 
@@ -3789,6 +3913,413 @@ def _cv_trust_blocks(est):
     return out
 
 
+_TRADE_LABELS = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                     gutters='Gutters', commercial='Commercial', other='Other / Misc')
+
+_WARRANTY_BY_TIER = {
+    'good':   '5-year Project One workmanship warranty',
+    'better': '5-year Project One workmanship warranty',
+    'best':   'Lifetime Project One workmanship warranty (for as long as you own the home)',
+}
+
+
+def _build_estimate_manifest(est):
+    """Structured summary of what makes THIS estimate specific.
+
+    Consumed by the /sign page (schema.org JSON-LD + meta description +
+    a human-readable details block) and the signed PDF (About-This-Estimate
+    page + document metadata). Pure — reads company_content.json and
+    jurisdictions.json (same reads neighboring helpers already do) but
+    never mutates the estimate."""
+    cc = _load_company_content()
+    c  = est.get('customer', {}) or {}
+    a  = c.get('address', {}) or {}
+    is_ins = ((est.get('estimate_type') == 'insurance')
+              or ((est.get('trades', {}) or {}).get('insurance', {}) or {}).get('enabled'))
+
+    # Which packages the rep is offering — the customer only ever sees the
+    # enabled subset, so the manifest must mirror that.
+    te = est.get('tiers_enabled') or {}
+    enabled_tiers = [t for t in ('good', 'better', 'best')
+                     if te.get(t, True) is not False] or ['good', 'better', 'best']
+
+    trades_out = []
+    if not is_ins:
+        pb = _ensure_bundle_catalogs(_load_price_book())
+        for tk in GBB_TRADES:
+            td = (est.get('trades') or {}).get(tk) or {}
+            if not td.get('enabled') or not td.get('line_items'):
+                continue
+            tmode = _trade_mode(tk, td)
+            label = _TRADE_LABELS.get(tk, tk.title())
+            if tmode == 'simple':
+                # Only surface line items actually in scope (qty > 0). A
+                # commercial bundle ships both Re-Roof and New-Construction
+                # labor lines and zeros out the one that does not apply;
+                # _autofill_tier_features keeps priced zero-qty lines, so we
+                # walk items directly here.
+                feats = []
+                seen  = set()
+                for it in (td.get('line_items') or []):
+                    if it.get('customer_visible') is False:
+                        continue
+                    if float(it.get('quantity') or 0) <= 0:
+                        continue
+                    nm = (it.get('name') or '').strip()
+                    if not nm:
+                        continue
+                    desc = (it.get('description') or '').strip()
+                    line = f'{nm} — {desc}' if desc and desc != nm else nm
+                    if line in seen:
+                        continue
+                    seen.add(line)
+                    feats.append(line)
+                sub = _trade_subtotal(est, tk, 'better')
+                if sub <= 0 and not feats:
+                    continue
+                trades_out.append({
+                    'key': tk, 'label': label, 'mode': 'simple',
+                    'subtotal': round(sub, 2),
+                    'features': feats[:12],
+                })
+                continue
+            selected = _trade_tier(est, tk)
+            if selected not in enabled_tiers:
+                selected = enabled_tiers[0]
+            tfeat, tdesc = _trade_tier_content(est, tk)
+            tnames = _tier_package_names(est, tk)
+            tiers_info = []
+            for t in enabled_tiers:
+                sub = _trade_subtotal(est, tk, t)
+                feats = [str(x).strip() for x in (tfeat.get(t) or []) if str(x).strip()]
+                if not feats:
+                    feats = _autofill_tier_features(est, tk, t)
+                bundle_id  = _bundle_id_for_tier(pb, est, tk, t)
+                mat        = _material_product_for_bundle(pb, tk, bundle_id) or {}
+                bundle_rec = None
+                for b in (pb.get(tk + '_bundles') or []):
+                    if isinstance(b, dict) and b.get('id') == bundle_id:
+                        bundle_rec = b
+                        break
+                pkg_name = (str(tnames.get(t) or '').strip()
+                            or (bundle_rec.get('name') if bundle_rec else '')
+                            or '')
+                tagline  = ((tdesc.get(t) or '').strip()
+                            or (bundle_rec.get('description') if bundle_rec else '')
+                            or '')
+                tiers_info.append({
+                    'tier':          t,
+                    'tier_label':    dict(good='Good', better='Better', best='Best')[t],
+                    'package_name':  pkg_name,
+                    'tagline':       tagline,
+                    'features':      feats[:12],
+                    'subtotal':      round(sub, 2),
+                    'is_selected':   t == selected,
+                    'material_name': (mat.get('name') or '').strip(),
+                    'material_bullets': [str(b).strip()
+                                         for b in (mat.get('bullets') or [])
+                                         if str(b).strip()][:6],
+                    'workmanship':   _WARRANTY_BY_TIER[t],
+                })
+            trades_out.append({
+                'key':            tk, 'label': label, 'mode': 'gbb',
+                'selected_tier':  selected,
+                'tiers':          tiers_info,
+            })
+
+    # Code compliance + permit
+    jx        = _load_jurisdictions() or {}
+    baseline  = jx.get('colorado_baseline') or {}
+    perm      = est.get('permit_jurisdiction') or {}
+    sel_id    = (perm.get('selected_id') or perm.get('auto_id') or '').strip()
+    jur       = None
+    if sel_id:
+        for j in (jx.get('jurisdictions') or []):
+            if isinstance(j, dict) and j.get('id') == sel_id:
+                jur = j
+                break
+    baseline_points = [str(p).strip() for p in (baseline.get('code_points') or [])
+                       if str(p).strip()]
+    jur_points = ([str(p).strip() for p in ((jur or {}).get('code_points') or [])
+                   if str(p).strip()])
+    code_items = [{'label': str(i.get('label', '')).strip(),
+                   'basis': str(i.get('basis', '')).strip()}
+                  for i in (baseline.get('code_items') or [])
+                  if isinstance(i, dict) and str(i.get('label') or '').strip()]
+    code = None
+    if jur or baseline_points or jur_points or code_items:
+        code = {
+            'jurisdiction_name': (jur.get('name') if jur else '')
+                                 or 'Colorado (statewide baseline)',
+            'jurisdiction_kind': (jur.get('kind') if jur else ''),
+            'county':            (jur.get('county') if jur else ''),
+            'office':            (jur.get('office') if jur else ''),
+            'baseline_points':   baseline_points,
+            'jurisdiction_points': jur_points,
+            'code_items':        code_items[:12],
+            'verified':          bool(perm.get('verified')),
+        }
+
+    # Attic ventilation calc (mirrors what the crew packet already uses)
+    vent = None
+    if not is_ins:
+        roof_td = (est.get('trades') or {}).get('roofing') or {}
+        if roof_td.get('enabled'):
+            m = est.get('measurements') or {}
+            v = attic_ventilation(m)
+            if float(v.get('attic_sqft', 0) or 0) > 0:
+                vent = {
+                    'attic_sqft':          round(float(v['attic_sqft']), 0),
+                    'required_total_sqin': round(float(v['required_total']), 1),
+                    'required_intake_sqin':  round(float(v['required_intake']), 1),
+                    'required_exhaust_sqin': round(float(v['required_exhaust']), 1),
+                    'provided_exhaust_sqin': round(float(v['provided_exhaust']), 1),
+                    'deficit_exhaust_sqin':  round(float(v['deficit_exhaust']), 1),
+                    'ridge_lf_required':   round(float(v['ridge_lf_required']), 1),
+                    'intake_lf_suggested': int(v['intake_lf_suggested']),
+                    'code_basis':          'IRC R806 (balanced 1/300 rule)',
+                }
+
+    # Reviews summary
+    revs = [r for r in ((cc.get('reviews') or {}).get('items') or [])
+            if isinstance(r, dict) and (r.get('text') or '').strip()]
+    reviews = None
+    if revs:
+        stars = []
+        for r in revs:
+            try:
+                stars.append(max(1, min(5, int(r.get('stars') or 5))))
+            except (TypeError, ValueError):
+                stars.append(5)
+        reviews = {
+            'count':   len(revs),
+            'average': round(sum(stars) / len(stars), 2),
+            'items':   [{'stars': s, 'name': (r.get('name') or '').strip(),
+                         'text':  (r.get('text') or '').strip()}
+                        for r, s in zip(revs[:6], stars[:6])],
+        }
+
+    # Company
+    about = ((cc.get('about') or {}).get('body') or '').strip()
+    certs = [str(i).strip() for i in ((cc.get('certifications') or {}).get('items') or [])
+             if str(i).strip()]
+    warranty_body = ((cc.get('warranty') or {}).get('body') or '').strip()
+
+    # Grand total (customer's currently selected packages)
+    if is_ins:
+        _html, total = _insurance_cv_table(est)
+    else:
+        total = calc_selected_total(est)
+
+    ins_td   = (est.get('trades') or {}).get('insurance') or {}
+    enum     = _est_number(est)
+
+    # One-line summary for meta description + PDF metadata
+    if is_ins:
+        summary = ('Insurance-claim roofing scope prepared by Project One Roofing'
+                   + (f' for {c["name"]}' if c.get('name') else ''))
+        if ins_td.get('carrier'):
+            summary += f'; carrier {ins_td["carrier"]}'
+    else:
+        pkg = _pick_summary_label(est) or 'Roof replacement estimate'
+        summary = pkg + (f' prepared for {c["name"]}' if c.get('name') else '')
+    if a.get('city') and a.get('state'):
+        summary += f', {a["city"]}, {a["state"]}'
+    if total > 0:
+        summary += f' — total {fc(total)}'
+
+    return {
+        'estimate_number': enum,
+        'estimate_date':   est.get('estimate_date', ''),
+        'valid_until':     est.get('valid_until', ''),
+        'customer_name':   c.get('name', ''),
+        'customer_city':   a.get('city', ''),
+        'customer_state':  a.get('state', ''),
+        'customer_zip':    a.get('zip', ''),
+        'is_insurance':    bool(is_ins),
+        'carrier':         (ins_td.get('carrier') or '').strip(),
+        'claim_number':    (ins_td.get('claim_number') or '').strip(),
+        'grand_total':     round(float(total or 0), 2),
+        'trades':          trades_out,
+        'code':            code,
+        'ventilation':     vent,
+        'warranty_by_tier': dict(_WARRANTY_BY_TIER),
+        'warranty_body':   warranty_body,
+        'company': {
+            'name':          'Project One Roofing',
+            'phone':         COMPANY_PHONE_DISPLAY,
+            'phone_digits':  COMPANY_PHONE_DIGITS,
+            'city':          'Loveland',
+            'state':         'CO',
+            'street':        '115 E 5th St',
+            'website':       'projectoneroofingcolorado.com',
+            'about':         about,
+            'certifications': certs,
+            'founded_year':  2015,
+        },
+        'reviews':         reviews,
+        'summary':         summary,
+        'process': [
+            'Building permit pulled with the local authority having jurisdiction and final inspection scheduled',
+            'Property, landscaping and A/C units tarped and protected before tear-off',
+            'Complete tear-off to the deck; damaged decking replaced sheet-for-sheet',
+            'Installed to manufacturer specification by Project One crews (not day-labor subs)',
+            'Full magnetic nail sweep of driveway, walks and yard within one business day',
+            'Written change orders required before any out-of-scope work — no verbal upsells',
+            'Final walkthrough with the homeowner, then manufacturer warranty registered in your name',
+        ],
+    }
+
+
+def _cv_estimate_details_block(manifest, est=None):
+    """Human-readable 'About This Estimate' card rendered before the T&C.
+
+    Same content that drives the schema.org JSON-LD in the head — visible to
+    the customer as a genuinely useful walkthrough, and organized so that an
+    AI reader (Claude/ChatGPT, when the customer pastes the link into a chat)
+    picks up specifics a generic estimate wouldn't have: manufacturer +
+    warranty per package, code items with IRC citations, ventilation math,
+    workmanship per tier, and the standing process."""
+    if not manifest:
+        return ''
+    if est is not None:
+        pv = (est.get('page_visibility') or {})
+        if pv.get('estimate_details') is False:
+            return ''
+
+    m = manifest
+
+    # ── Scope / materials by package ───────────────────────────────────
+    scope_html = ''
+    trades = m.get('trades') or []
+    if trades:
+        sections = []
+        for tr in trades:
+            head = f'<h4>{he(tr["label"])}</h4>'
+            if tr.get('mode') == 'simple':
+                feats = tr.get('features') or []
+                bullets = ''.join(f'<li>{he(f)}</li>' for f in feats[:8])
+                sections.append(head + (f'<ul class="chk">{bullets}</ul>' if bullets else ''))
+                continue
+            cards = ''
+            for ti in tr.get('tiers') or []:
+                bullets = ''.join(f'<li>{he(b)}</li>'
+                                  for b in (ti.get('material_bullets') or [])[:5])
+                tag = ti.get('tagline') or ''
+                name = ti.get('package_name') or ti.get('tier_label')
+                sel  = ' style="border-color:var(--navy);background:#fff"' if ti.get('is_selected') else ''
+                cards += (f'<div class="cvdet-tier"{sel}>'
+                          f'<div class="cvdet-tier-lbl">{he(ti["tier_label"])} '
+                          f'{"(Selected)" if ti.get("is_selected") else ""}</div>'
+                          f'<div class="cvdet-tier-name">{he(name)}</div>'
+                          + (f'<div class="cvdet-tier-tag">{he(tag)}</div>' if tag else '')
+                          + (f'<ul>{bullets}</ul>' if bullets else '')
+                          + f'<div class="cvdet-tier-lbl" style="margin-top:8px">Workmanship</div>'
+                          f'<div class="cvdet-tier-tag">{he(ti.get("workmanship", ""))}</div>'
+                          + '</div>')
+            sections.append(head + f'<div class="cvdet-tiers">{cards}</div>')
+        scope_html = ('<section><h4>What&rsquo;s Included &mdash; Materials &amp; Workmanship</h4>'
+                      + ''.join(sections) + '</section>')
+
+    # ── Code compliance ────────────────────────────────────────────────
+    code = m.get('code')
+    code_html = ''
+    if code:
+        jname = code.get('jurisdiction_name') or ''
+        cty   = code.get('county') or ''
+        office = code.get('office') or ''
+        header = f'<strong>Authority having jurisdiction:</strong> {he(jname)}'
+        if cty and cty.lower() not in jname.lower():
+            header += f' &middot; {he(cty)} County'
+        if office:
+            header += f'<br><span style="color:var(--faint);font-size:12.5px">{he(office)}</span>'
+        pts = (code.get('jurisdiction_points') or []) + (code.get('baseline_points') or [])
+        pt_list = ''.join(f'<li>{he(p)}</li>' for p in pts[:8])
+        items_html = ''
+        if code.get('code_items'):
+            items_html = '<div style="margin-top:8px"><b style="font-size:12px;color:var(--faint)">Code line items in this scope</b>'
+            for ci in code['code_items'][:10]:
+                lb = ci.get('label') or ''
+                bs = ci.get('basis') or ''
+                items_html += (f'<div class="cvdet-code-item">{he(lb)}'
+                               + (f'<em>{he(bs)}</em>' if bs else '') + '</div>')
+            items_html += '</div>'
+        code_html = ('<section><h4>Code Compliance</h4>'
+                     f'<div class="cvdet-code">{header}'
+                     + (f'<ul class="chk" style="margin-top:8px">{pt_list}</ul>' if pt_list else '')
+                     + items_html + '</div></section>')
+
+    # ── Attic ventilation ──────────────────────────────────────────────
+    vent = m.get('ventilation')
+    vent_html = ''
+    if vent:
+        parts = [f'Your attic is <strong>{int(vent["attic_sqft"])} sq ft</strong>.']
+        parts.append(f' Colorado code (<strong>{he(vent.get("code_basis", ""))}</strong>) '
+                     'requires balanced intake and exhaust totaling '
+                     f'<strong>{vent["required_total_sqin"]:.0f} sq in</strong> of net free area '
+                     f'({vent["required_intake_sqin"]:.0f} intake / '
+                     f'{vent["required_exhaust_sqin"]:.0f} exhaust).')
+        if vent.get('deficit_exhaust_sqin', 0) > 0:
+            parts.append(f' This estimate cuts in <strong>{vent["ridge_lf_required"]:.0f} LF</strong> '
+                         'of ridge vent and adds <strong>'
+                         f'{vent["intake_lf_suggested"]} LF</strong> of intake venting at the eaves '
+                         'to bring the attic to code.')
+        else:
+            parts.append(' Existing exhaust already meets code — no ridge vent required.')
+        vent_html = ('<section><h4>Attic Ventilation Calculation</h4>'
+                     f'<div class="cvdet-vent">{"".join(parts)}</div></section>')
+
+    # ── Warranty summary (tiered) ─────────────────────────────────────
+    wt = m.get('warranty_by_tier') or {}
+    warr_html = ''
+    if wt:
+        warr_html = ('<section><h4>Workmanship Warranty</h4><div class="cvdet-warr">'
+                     f'<div><b>Good Package</b>{he(wt.get("good", ""))}</div>'
+                     f'<div><b>Better Package</b>{he(wt.get("better", ""))}</div>'
+                     f'<div><b>Best Package</b>{he(wt.get("best", ""))}</div>'
+                     '</div><p style="margin-top:8px;color:var(--faint);font-size:12.5px">'
+                     'Manufacturer warranties on the materials themselves are registered '
+                     'in your name once the final payment clears.</p></section>')
+
+    # ── Process ────────────────────────────────────────────────────────
+    proc = m.get('process') or []
+    proc_html = ''
+    if proc:
+        lis = ''.join(f'<li>{he(p)}</li>' for p in proc)
+        proc_html = ('<section><h4>Our Process</h4>'
+                     f'<ul class="chk">{lis}</ul></section>')
+
+    # ── Company + certifications ──────────────────────────────────────
+    comp = m.get('company') or {}
+    about = comp.get('about') or ''
+    certs = comp.get('certifications') or []
+    certs_html = ''
+    if certs:
+        certs_html = '<ul class="chk" style="margin-top:6px">' + ''.join(
+            f'<li>{he(c)}</li>' for c in certs) + '</ul>'
+    revs = m.get('reviews') or {}
+    revs_line = ''
+    if revs.get('count'):
+        revs_line = (f'<p style="margin-top:6px"><strong>{revs["average"]}/5</strong> '
+                     f'average across {revs["count"]} homeowner reviews.</p>')
+    comp_html = ('<section><h4>About Project One Roofing</h4>'
+                 + (f'<p>{he(about)}</p>' if about else '')
+                 + f'<p><strong>{he(comp.get("name", ""))}</strong> &middot; '
+                 f'{he(comp.get("city", ""))}, {he(comp.get("state", ""))} '
+                 f'&middot; {he(comp.get("phone", ""))} &middot; '
+                 f'{he(comp.get("website", ""))}</p>'
+                 + certs_html + revs_line
+                 + '</section>')
+
+    return ('<div class="cvdet">'
+            '<div class="cvdet-hd">&#128220; About This Estimate</div>'
+            '<div class="cvdet-lead">A concise summary of what&rsquo;s in this bid '
+            '&mdash; materials, code compliance, warranties, and our process &mdash; '
+            'so you can compare it apples-to-apples with any other quote.</div>'
+            + scope_html + code_html + vent_html + warr_html + proc_html + comp_html
+            + '</div>')
+
+
 def _signed_extras_html(est):
     """Chosen shingle color + captured initials, for the signed confirmation page."""
     sig = est.get('signature', {}) or {}
@@ -3893,7 +4424,8 @@ def _build_insurance_cv(est, token):
     claim_row   = f'<div class="cvgi"><label>Claim #</label><strong>{he(claim_num)}</strong></div>' if claim_num else ''
     scope_html  = f'<div class="cvnotes"><h3>Scope of Work</h3><p>{he(scope_notes)}</p></div>' if scope_notes else ''
 
-    return _cv_head('Your Insurance Estimate &mdash; Project One Roofing') + _cv_header() + f'''
+    manifest = _build_estimate_manifest(est)
+    return _cv_head('Your Insurance Estimate &mdash; Project One Roofing', manifest) + _cv_header() + f'''
 {_cv_hero(est, 'Your Insurance Estimate is Ready',
           'Review your scope below, then sign at the bottom to accept',
           steps=['Review Your Scope', 'Sign to Accept'])}
@@ -3925,6 +4457,7 @@ def _build_insurance_cv(est, token):
 {notes_html}
 {_cv_condition_block(est)}
 {_cv_attachments_block(est)}
+{_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
 {_cv_next_steps()}
@@ -3981,8 +4514,9 @@ def _build_simple_retail_cv(est, token):
     sp_html    = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
 
     li_html, grand_total = render_line_items(est, tier=tier)
+    manifest = _build_estimate_manifest(est)
 
-    return _cv_head('Your Estimate — Project One Roofing') + _cv_header() + f'''
+    return _cv_head('Your Estimate — Project One Roofing', manifest) + _cv_header() + f'''
 {_cv_hero(est, 'Your Estimate is Ready to Review',
           'Review your estimate below, then sign at the bottom to accept',
           steps=['Review Your Estimate', 'Sign to Accept'])}
@@ -4017,6 +4551,7 @@ def _build_simple_retail_cv(est, token):
 {notes_html}
 {_cv_condition_block(est)}
 {_cv_attachments_block(est)}
+{_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
 {_cv_next_steps()}
@@ -4166,8 +4701,9 @@ def build_customer_view(est, token):
                      else 'Your Selection')
     # First product's pick doubles as the legacy selected_tier for old consumers
     default_tier  = defaults[gbb_tks[0]] if gbb_tks else est.get('selected_tier', 'better')
+    manifest      = _build_estimate_manifest(est)
 
-    return _cv_head('Your Estimate — Project One Roofing') + _cv_header() + f'''
+    return _cv_head('Your Estimate — Project One Roofing', manifest) + _cv_header() + f'''
 {_cv_hero(est, 'Your Estimate is Ready to Review',
           'Choose your package below, then sign at the bottom to accept',
           steps=['Review', 'Choose Your Package', 'Sign to Accept'])}
@@ -4204,6 +4740,7 @@ def build_customer_view(est, token):
 {notes_html}
 {_cv_condition_block(est)}
 {_cv_attachments_block(est)}
+{_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
 {_cv_next_steps()}
@@ -4942,7 +5479,8 @@ def build_signed_confirmation(est):
 
     fname = (sname.split() or [''])[0]
     hero_h1 = f'You&rsquo;re All Set, {he(fname)}!' if fname else 'Estimate Accepted!'
-    return _cv_head('Estimate Accepted &mdash; Project One Roofing') + _cv_header() + f'''
+    manifest = _build_estimate_manifest(est)
+    return _cv_head('Estimate Accepted &mdash; Project One Roofing', manifest) + _cv_header() + f'''
 <div class="cvhero ok">
   <div class="cvhero-brand" style="color:#86efac">Project One Roofing</div>
   <div class="cv-check">&#10003;</div>
@@ -5476,6 +6014,167 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
     pdf.set_y(y_top + 5.5 + thumb_h + 20)
 
 
+def _render_estimate_details_page(pdf, est, manifest, LM, W):
+    """Adds an 'About This Estimate' page to the signed PDF, sourced from the
+    same manifest that drives the /sign page's JSON-LD and details block.
+
+    This is the AI-friendly summary — a homeowner who uploads the signed PDF
+    to Claude/ChatGPT for a second opinion will get specifics (manufacturer +
+    warranty per package, code items with IRC basis, ventilation calc, tiered
+    workmanship, standing process) rather than just line items and boilerplate.
+    Kept tight — single column, tight leading, one printed page in typical cases."""
+    if not manifest:
+        return
+    pdf.add_page()
+
+    def _h1(txt):
+        pdf.set_font('Helvetica', 'B', 12)
+        pdf.set_text_color(26, 58, 92)
+        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_draw_color(220, 220, 220)
+        pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
+        pdf.ln(3)
+
+    def _h2(txt):
+        pdf.set_font('Helvetica', 'B', 9.5)
+        pdf.set_text_color(26, 58, 92)
+        pdf.cell(0, 5.5, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(0, 0, 0)
+
+    def _p(txt):
+        pdf.set_font('Helvetica', '', 8.5)
+        pdf.multi_cell(W, 4.4, _pdf_safe(txt))
+
+    def _bullets(items, mark='- '):
+        pdf.set_font('Helvetica', '', 8.5)
+        for it in items:
+            pdf.multi_cell(W, 4.4, _pdf_safe(mark + str(it)))
+
+    _h1('About This Estimate')
+    _p('A concise summary of what is in this bid — materials, code compliance, '
+       'ventilation math, and warranties — so you can compare it apples-to-apples '
+       'with any other quote.')
+    pdf.ln(2)
+
+    # ── Materials & packages ────────────────────────────────────────────
+    trades = manifest.get('trades') or []
+    if trades:
+        _h2('Materials & Packages')
+        for tr in trades:
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.cell(0, 5, _pdf_safe(tr.get('label', '')), new_x='LMARGIN', new_y='NEXT')
+            if tr.get('mode') == 'simple':
+                feats = tr.get('features') or []
+                _bullets(feats[:6])
+            else:
+                for ti in tr.get('tiers') or []:
+                    pdf.set_font('Helvetica', 'B', 8.5)
+                    lbl = ti.get('tier_label', '')
+                    if ti.get('is_selected'):
+                        lbl += '  (Selected)'
+                    pkg = ti.get('package_name') or ''
+                    hdr = f'  {lbl} - {pkg}' if pkg else f'  {lbl}'
+                    pdf.cell(0, 4.6, _pdf_safe(hdr), new_x='LMARGIN', new_y='NEXT')
+                    tag = ti.get('tagline') or ''
+                    if tag:
+                        pdf.set_font('Helvetica', 'I', 8)
+                        pdf.multi_cell(W - 6, 4, _pdf_safe('    ' + tag))
+                    bullets = ti.get('material_bullets') or []
+                    if bullets:
+                        pdf.set_font('Helvetica', '', 8)
+                        for b in bullets[:4]:
+                            pdf.multi_cell(W - 8, 4, _pdf_safe('    - ' + b))
+                    ws = ti.get('workmanship') or ''
+                    if ws:
+                        pdf.set_font('Helvetica', '', 8)
+                        pdf.multi_cell(W - 8, 4, _pdf_safe('    Workmanship: ' + ws))
+                    pdf.ln(0.8)
+        pdf.ln(2)
+
+    # ── Code compliance ─────────────────────────────────────────────────
+    code = manifest.get('code')
+    if code:
+        _h2('Code Compliance')
+        pdf.set_font('Helvetica', '', 8.5)
+        jname  = code.get('jurisdiction_name') or ''
+        county = code.get('county') or ''
+        jline  = f'Authority having jurisdiction: {jname}'
+        if county and county.lower() not in jname.lower():
+            jline += f'  |  {county} County'
+        pdf.multi_cell(W, 4.4, _pdf_safe(jline))
+        pts = (code.get('jurisdiction_points') or []) + (code.get('baseline_points') or [])
+        if pts:
+            _bullets(pts[:6])
+        items = code.get('code_items') or []
+        if items:
+            pdf.ln(1)
+            pdf.set_font('Helvetica', 'B', 8)
+            pdf.cell(0, 4.4, _pdf_safe('Code line items in this scope:'),
+                     new_x='LMARGIN', new_y='NEXT')
+            pdf.set_font('Helvetica', '', 8)
+            for ci in items[:10]:
+                line = '  - ' + (ci.get('label') or '')
+                if ci.get('basis'):
+                    line += f'  ({ci["basis"]})'
+                pdf.multi_cell(W, 4.2, _pdf_safe(line))
+        pdf.ln(2)
+
+    # ── Ventilation ─────────────────────────────────────────────────────
+    v = manifest.get('ventilation')
+    if v:
+        _h2('Attic Ventilation Calculation')
+        parts = [
+            f'Attic area: {int(v["attic_sqft"])} sq ft.',
+            f'{v.get("code_basis", "")} requires balanced NFA of '
+            f'{v["required_total_sqin"]:.0f} sq in total '
+            f'({v["required_intake_sqin"]:.0f} intake / '
+            f'{v["required_exhaust_sqin"]:.0f} exhaust).',
+        ]
+        if v.get('deficit_exhaust_sqin', 0) > 0:
+            parts.append(f'This scope cuts in {v["ridge_lf_required"]:.0f} LF of ridge vent '
+                         f'and {v["intake_lf_suggested"]} LF of intake venting to reach code.')
+        else:
+            parts.append('Existing exhaust already meets code — no additional ridge vent required.')
+        _p(' '.join(parts))
+        pdf.ln(2)
+
+    # ── Workmanship warranty by tier ────────────────────────────────────
+    wt = manifest.get('warranty_by_tier') or {}
+    if wt:
+        _h2('Workmanship Warranty by Package')
+        _bullets([
+            f'Good Package:   {wt.get("good", "")}',
+            f'Better Package: {wt.get("better", "")}',
+            f'Best Package:   {wt.get("best", "")}',
+        ])
+        _p('Manufacturer warranties on the materials themselves are registered in '
+           "the homeowner's name once the final payment clears.")
+        pdf.ln(2)
+
+    # ── Process ─────────────────────────────────────────────────────────
+    proc = manifest.get('process') or []
+    if proc:
+        _h2('Our Process')
+        _bullets(proc)
+        pdf.ln(2)
+
+    # ── Company + certifications ───────────────────────────────────────
+    comp = manifest.get('company') or {}
+    about = comp.get('about') or ''
+    certs = comp.get('certifications') or []
+    _h2('About Project One Roofing')
+    if about:
+        _p(about)
+    _p(f'{comp.get("name", "")}  |  {comp.get("city", "")}, {comp.get("state", "")}'
+       f'  |  {comp.get("phone", "")}  |  {comp.get("website", "")}')
+    if certs:
+        _bullets(certs)
+    revs = manifest.get('reviews') or {}
+    if revs.get('count'):
+        _p(f'{revs["average"]}/5 average across {revs["count"]} homeowner reviews.')
+
+
 def build_signed_pdf(est):
     """Render the signed contract as a PDF (bytes) for CRM upload."""
     if FPDF is None:
@@ -5487,6 +6186,7 @@ def build_signed_pdf(est):
     enum = _est_number(est)
     is_ins = est.get('estimate_type') == 'insurance'
     tier = est.get('selected_tier', 'better')
+    manifest = _build_estimate_manifest(est)
 
     LM = 16
     RM = 16
@@ -5509,6 +6209,20 @@ def build_signed_pdf(est):
     pdf.alias_nb_pages()
     pdf.set_auto_page_break(auto=True, margin=18)
     pdf.set_margins(LM, 14, RM)
+    # PDF document metadata — visible in Acrobat's Document Properties and
+    # read by tools/AI parsers that inspect PDF metadata separately from the
+    # rendered page content. Latin-1 safe: fpdf2's metadata strings are.
+    _pdf_meta_title = _pdf_safe(
+        ('Roof Replacement Contract' if not is_ins else 'Insurance-Claim Roofing Contract')
+        + (f' - {c.get("name")}' if c.get('name') else '')
+        + ' - Project One Roofing')
+    pdf.set_title(_pdf_meta_title)
+    pdf.set_author('Project One Roofing')
+    pdf.set_subject(_pdf_safe(manifest.get('summary', '')) if manifest else '')
+    pdf.set_keywords('roof replacement, Project One Roofing, Colorado licensed insured, '
+                     'CertainTeed, IKO, Class 4 impact hail resistant, permit included, '
+                     'workmanship warranty, code compliant, IRC R806 ventilation')
+    pdf.set_creator('Project One Roofing Estimator')
     pdf.add_page()
     W = pdf.w - LM - RM
 
@@ -5782,6 +6496,12 @@ def build_signed_pdf(est):
         pdf.set_font('Helvetica', '', 8.5)
         pdf.multi_cell(W, 4.6, _pdf_safe(notes))
         pdf.ln(4)
+
+    # About This Estimate — the AI-friendly summary, inserted before the T&C
+    # so a reader (or an AI reading a customer's uploaded PDF) hits the
+    # differentiators (materials + warranties, code compliance, ventilation
+    # math, workmanship, process) before the boilerplate legal text.
+    _render_estimate_details_page(pdf, est, manifest, LM, W)
 
     # Terms & conditions
     ctext = (est.get('contract_text') or '').strip()
@@ -7677,6 +8397,15 @@ def build_co_pdf(est, co):
     pdf = FPDF(orientation='P', unit='mm', format='Letter')
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.set_margins(14, 14, 14)
+    pdf.set_title(_pdf_safe(
+        f'Change Order {co.get("number", "")} - '
+        + (c.get('name') or '') + ' - Project One Roofing'))
+    pdf.set_author('Project One Roofing')
+    pdf.set_subject(_pdf_safe(
+        f'Signed change order to contract {enum}, '
+        f'net {fc(total)}, from Project One Roofing.'))
+    pdf.set_keywords('change order, roofing, Project One Roofing, signed contract addendum')
+    pdf.set_creator('Project One Roofing Estimator')
     pdf.add_page()
     W = pdf.w - 28
 
