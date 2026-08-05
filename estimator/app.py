@@ -22,7 +22,7 @@ from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 from functools import wraps
 from urllib.parse import quote
-from flask import Flask, request, jsonify, send_from_directory, send_file, Response, session, redirect
+from flask import Flask, request, jsonify, send_from_directory, send_file, Response, session, redirect, make_response
 
 # The portal package lives one directory up. Put the repo root on the path so
 # this app works both mounted by portal/wsgi.py and run standalone (its test
@@ -2871,6 +2871,19 @@ background:#f8fafc;padding:5px 8px;border-bottom:1px solid var(--line)}
 .cvdet-warr div{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .cvdet-warr div b{display:block;font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--faint);margin-bottom:3px}
 
+/* ── download PDF card ── */
+.cvdl{background:#f8fafc;border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-top:14px;
+  display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;
+  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.cvdl-t{flex:1 1 260px;min-width:0}
+.cvdl-h{font-size:14px;font-weight:800;color:var(--navy);margin-bottom:3px}
+.cvdl-d{font-size:13px;color:#33415a;line-height:1.5}
+.cvdl-btn{display:inline-flex;align-items:center;gap:7px;background:#fff;border:1.5px solid var(--navy);color:var(--navy);
+  font-weight:800;font-size:14px;text-decoration:none;padding:10px 18px;border-radius:10px;transition:background .15s,color .15s;
+  white-space:nowrap}
+.cvdl-btn:hover{background:var(--navy);color:#fff}
+@media print{.cvdl{display:none}}
+
 /* ── scroll-reveal ── */
 @media(prefers-reduced-motion:no-preference){
 .cv-reveal{opacity:0;transform:translateY(18px);transition:opacity .6s cubic-bezier(.22,.61,.36,1),transform .6s cubic-bezier(.22,.61,.36,1)}
@@ -3123,6 +3136,21 @@ def _cv_sticky_bar(label, amount):
   <span class="cvstick-amt" id="cvstick-amt">{amount}</span></div>
   <button type="button" class="cvstick-btn" id="cvstick-btn">Review &amp; Sign &darr;</button>
 </div></div>'''
+
+
+def _cv_download_card(token):
+    """'Download PDF' card — lets a customer save/share/upload the estimate
+    without signing. Sits just above the signature section on every /sign
+    variant. Reads through the /sign/<token>/download.pdf route so a stale
+    or revoked share token 404s the same way the /sign page does."""
+    url = _mount_path(f'/sign/{he(token)}/download.pdf')
+    return f'''<div class="cvdl">
+  <div class="cvdl-t">
+    <div class="cvdl-h">&#128190; Want to Think It Over?</div>
+    <div class="cvdl-d">Download a PDF of this estimate to review offline, compare with other quotes, or share with a spouse.</div>
+  </div>
+  <a class="cvdl-btn" href="{url}" download>&#11015;&#65039; Download PDF</a>
+</div>'''
 
 
 def _cv_next_steps(signed=False):
@@ -4462,6 +4490,7 @@ def _build_insurance_cv(est, token):
 {ctext_html}
 {_cv_next_steps()}
 {_cv_contact_card(est)}
+{_cv_download_card(token)}
 
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
@@ -4556,6 +4585,7 @@ def _build_simple_retail_cv(est, token):
 {ctext_html}
 {_cv_next_steps()}
 {_cv_contact_card(est)}
+{_cv_download_card(token)}
 
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
@@ -4745,6 +4775,7 @@ def build_customer_view(est, token):
 {ctext_html}
 {_cv_next_steps()}
 {_cv_contact_card(est)}
+{_cv_download_card(token)}
 
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
@@ -6175,14 +6206,25 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
         _p(f'{revs["average"]}/5 average across {revs["count"]} homeowner reviews.')
 
 
-def build_signed_pdf(est):
-    """Render the signed contract as a PDF (bytes) for CRM upload."""
+def build_signed_pdf(est, signed=None):
+    """Render the estimate as a PDF (bytes).
+
+    When `signed` is True (default when a signature exists), the title bar
+    reads SIGNED CONTRACT and the tail carries the initialed acknowledgements
+    and E-SIGN certificate. When `signed` is False (customer's Download-PDF
+    button on the /sign page, or a rep previewing before send-out), the title
+    reads ESTIMATE and the signature tail is skipped — everything else is
+    identical, including the About-This-Estimate page and the T&C. The
+    default is to auto-detect from est['signature'] so all existing call
+    sites (email attachment, CRM upload) keep the signed behavior."""
     if FPDF is None:
         raise RuntimeError('fpdf2 not installed')
 
     c    = est.get('customer', {})
     a    = c.get('address', {})
     sig  = est.get('signature', {}) or {}
+    if signed is None:
+        signed = bool(sig)
     enum = _est_number(est)
     is_ins = est.get('estimate_type') == 'insurance'
     tier = est.get('selected_tier', 'better')
@@ -6212,8 +6254,10 @@ def build_signed_pdf(est):
     # PDF document metadata — visible in Acrobat's Document Properties and
     # read by tools/AI parsers that inspect PDF metadata separately from the
     # rendered page content. Latin-1 safe: fpdf2's metadata strings are.
+    _kind = ('Contract' if signed else 'Estimate')
     _pdf_meta_title = _pdf_safe(
-        ('Roof Replacement Contract' if not is_ins else 'Insurance-Claim Roofing Contract')
+        (f'Roof Replacement {_kind}' if not is_ins
+         else f'Insurance-Claim Roofing {_kind}')
         + (f' - {c.get("name")}' if c.get('name') else '')
         + ' - Project One Roofing')
     pdf.set_title(_pdf_meta_title)
@@ -6245,7 +6289,10 @@ def build_signed_pdf(est):
     pdf.set_fill_color(26, 58, 92)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font('Helvetica', 'B', 12)
-    title = 'SIGNED CONTRACT  |  INSURANCE CLAIM' if is_ins else 'SIGNED CONTRACT'
+    if signed:
+        title = 'SIGNED CONTRACT  |  INSURANCE CLAIM' if is_ins else 'SIGNED CONTRACT'
+    else:
+        title = 'INSURANCE CLAIM ESTIMATE' if is_ins else 'ESTIMATE'
     pdf.cell(W, 9, f'  {title}', fill=True, new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
     pdf.ln(5)
@@ -6516,29 +6563,55 @@ def build_signed_pdf(est):
         pdf.multi_cell(W, 4.0, _pdf_safe(ctext))
         pdf.ln(6)
 
-    # Initialed acknowledgements
-    inits = [i for i in (sig.get('initials') or []) if (i.get('value') or '').strip()]
-    if inits:
-        if pdf.get_y() > pdf.h - 40:
-            pdf.add_page()
-        pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(0, 7, 'Initialed Acknowledgements', new_x='LMARGIN', new_y='NEXT')
-        pdf.ln(1)
-        for it in inits:
-            pdf.set_fill_color(248, 250, 252)
-            pdf.set_font('Helvetica', 'B', 9)
-            pdf.cell(18, 5.5, _pdf_safe(it['value'].upper()), fill=True)
-            pdf.set_font('Helvetica', '', 8.5)
-            pdf.multi_cell(W - 18, 5.5, _pdf_safe(it['text']),
-                           new_x='LMARGIN', new_y='NEXT')
+    # Initialed acknowledgements — only when this PDF represents an actual
+    # signed contract. The unsigned preview shows the T&C without pretending
+    # the customer has initialed anything.
+    if signed:
+        inits = [i for i in (sig.get('initials') or []) if (i.get('value') or '').strip()]
+        if inits:
+            if pdf.get_y() > pdf.h - 40:
+                pdf.add_page()
+            pdf.set_font('Helvetica', 'B', 10)
+            pdf.cell(0, 7, 'Initialed Acknowledgements', new_x='LMARGIN', new_y='NEXT')
             pdf.ln(1)
-        pdf.ln(3)
+            for it in inits:
+                pdf.set_fill_color(248, 250, 252)
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.cell(18, 5.5, _pdf_safe(it['value'].upper()), fill=True)
+                pdf.set_font('Helvetica', '', 8.5)
+                pdf.multi_cell(W - 18, 5.5, _pdf_safe(it['text']),
+                               new_x='LMARGIN', new_y='NEXT')
+                pdf.ln(1)
+            pdf.ln(3)
 
     # ── Visualizer page ────────────────────────────────────────────────
     # When the rep has saved Good/Better/Best photo renders, show the
     # customer what they've selected before the signature. Skipped silently
     # when there are no renders — nothing to show is not an error.
     _emit_visualizer_pdf_page(pdf, est, LM, W)
+
+    if not signed:
+        # Unsigned preview PDF — a "Sign online" call-to-action instead of the
+        # E-SIGN certificate. Nothing else changes.
+        if pdf.get_y() > pdf.h - 30:
+            pdf.add_page()
+        pdf.set_draw_color(14, 116, 144)
+        pdf.set_fill_color(236, 254, 255)
+        y0 = pdf.get_y()
+        pdf.rect(LM, y0, W, 20, style='DF')
+        pdf.set_xy(LM + 5, y0 + 4)
+        pdf.set_text_color(6, 78, 95)
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(0, 5.5, _pdf_safe('THIS IS AN UNSIGNED PREVIEW'),
+                 new_x='LMARGIN', new_y='NEXT')
+        pdf.set_x(LM + 5)
+        pdf.set_font('Helvetica', '', 8.5)
+        pdf.multi_cell(W - 10, 4.6, _pdf_safe(
+            'To accept this proposal, return to the online link and sign electronically. '
+            'This preview PDF is for review only and does not constitute a contract.'))
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_draw_color(0, 0, 0)
+        return bytes(pdf.output())
 
     # Signature block
     if pdf.get_y() > pdf.h - 70:
@@ -8862,6 +8935,37 @@ def customer_sign(token):
         print(f'[view-track] failed: {exc}')
 
     return build_customer_view(est, token)
+
+
+@app.route('/sign/<token>/download.pdf')
+def customer_download_pdf(token):
+    """Public PDF download of an estimate — customer can save/share/upload
+    before deciding to sign. Reuses the signed-PDF renderer with signed=False,
+    which swaps the title to ESTIMATE, skips the E-SIGN certificate, and adds
+    an 'unsigned preview' notice at the tail.
+
+    If the estimate is already signed, the customer gets the signed contract
+    (same document the rep and CRM already have) rather than a stale preview."""
+    est = est_find_by_token(token)
+    if est is None:
+        return '<h2 style="font-family:sans-serif;padding:40px">Link not found or expired.</h2>', 404
+    if FPDF is None:
+        return '<h2 style="font-family:sans-serif;padding:40px">PDF generation is not available on this server.</h2>', 500
+    try:
+        already_signed = bool(est.get('signature'))
+        pdf_bytes = build_signed_pdf(est, signed=already_signed)
+    except Exception as exc:
+        print(f'[customer-download] failed for est {est.get("estimate_id")}: {exc}')
+        return '<h2 style="font-family:sans-serif;padding:40px">Sorry — we couldn\'t build the PDF. Please try again in a moment.</h2>', 500
+
+    enum = _est_number(est)
+    label = 'Contract' if already_signed else 'Estimate'
+    fname = f'ProjectOneRoofing-{label}-{enum}.pdf'
+    resp = make_response(pdf_bytes)
+    resp.headers['Content-Type']        = 'application/pdf'
+    resp.headers['Content-Disposition'] = f'attachment; filename="{fname}"'
+    resp.headers['Cache-Control']       = 'private, no-store'
+    return resp
 
 
 # ── Templates ──────────────────────────────────────────────────────────────

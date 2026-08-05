@@ -161,6 +161,59 @@ def test_signed_pdf_details_page_comes_before_terms(A):
         'the About This Estimate page must precede the T&C page'
 
 
+def test_unsigned_pdf_uses_estimate_title_and_skips_signature(A):
+    """When a customer downloads the PDF before signing, the title bar reads
+    ESTIMATE (not SIGNED CONTRACT) and the tail carries a preview notice
+    instead of the E-SIGN certificate. The About-This-Estimate page and T&C
+    still ship — those are the reason to download it."""
+    pdf = A.build_signed_pdf(_retail_estimate(), signed=False)
+    assert isinstance(pdf, (bytes, bytearray)) and len(pdf) > 5000
+    text = _pdf_text(pdf)
+    assert 'ESTIMATE' in text and 'SIGNED CONTRACT' not in text
+    assert 'UNSIGNED PREVIEW' in text
+    assert 'ELECTRONICALLY SIGNED' not in text
+    # Substantive content still lands
+    assert 'About This Estimate' in text
+    assert 'Northgate' in text
+
+
+def test_download_route_returns_pdf_attachment(client, A):
+    est = _retail_estimate()
+    est['share_token'] = 'download-test-token'
+    A.est_save(est)
+    r = client.get('/sign/download-test-token/download.pdf')
+    assert r.status_code == 200
+    assert r.headers['Content-Type'] == 'application/pdf'
+    dispo = r.headers.get('Content-Disposition', '')
+    assert 'attachment' in dispo
+    assert 'Estimate' in dispo and '.pdf' in dispo
+    assert r.data[:4] == b'%PDF'
+
+
+def test_download_route_404s_on_bad_token(client):
+    r = client.get('/sign/no-such-token/download.pdf')
+    assert r.status_code == 404
+
+
+def test_download_route_returns_signed_contract_when_already_signed(client, A):
+    est = _signed_estimate()
+    est['share_token'] = 'download-signed-token'
+    A.est_save(est)
+    r = client.get('/sign/download-signed-token/download.pdf')
+    assert r.status_code == 200
+    # It should be the signed version — title bar reads SIGNED CONTRACT.
+    import pytest
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        pytest.skip('pypdf not installed')
+    from io import BytesIO
+    text = '\n'.join(p.extract_text() or ''
+                    for p in PdfReader(BytesIO(r.data)).pages)
+    assert 'SIGNED CONTRACT' in text
+    assert 'ELECTRONICALLY SIGNED' in text
+
+
 def test_signed_pdf_sets_document_metadata(A):
     import pytest
     try:
