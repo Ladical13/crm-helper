@@ -145,8 +145,11 @@ def test_every_partner_type_has_all_three_steps():
 
 def test_templates_only_use_slots_the_renderer_fills():
     import re
+    # research_hook / storm_hook are Nimbus enrichment slots; they render
+    # blank (and drop their paragraph) for hand-entered leads that never
+    # went through the AI agents. See _render_draft + _first_line.
     known = {'greeting', 'first_name', 'company', 'city', 'hook',
-             'rep_name', 'rep_first'}
+             'rep_name', 'rep_first', 'research_hook', 'storm_hook'}
     text = str(appmod.TEMPLATES['templates']) + appmod.TEMPLATES['signature']
     for slot in set(re.findall(r'\{(\w+)\}', text)):
         assert slot in known, f'template uses unknown slot {{{slot}}}'

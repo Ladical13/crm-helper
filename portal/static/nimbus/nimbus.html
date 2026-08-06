@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nimbus — Project One</title>
+<link rel="icon" href="/static/icon-192.png">
+<meta name="theme-color" content="#000814">
+<style>
+  * { box-sizing: border-box; }
+  :root {
+    --bg:        #000814;
+    --panel:    #071026;
+    --panel-2: #0b1735;
+    --border:  #1a2947;
+    --border-2:#2a3e6a;
+    --text:    #d7e6ff;
+    --dim:     #6f89b8;
+    --dim2:    #4a608a;
+    --accent:  #22d3ee;
+    --accent-2:#38bdf8;
+    --warn:    #f59e0b;
+    --danger:  #ef4444;
+    --ok:      #22c55e;
+    --violet:  #8b5cf6;
+    --gradient: linear-gradient(135deg, var(--accent) 0%, var(--violet) 100%);
+  }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 14px/1.55 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top, 0) 0 0;
+    background-image:
+      radial-gradient(1000px 500px at 15% -20%, rgba(34,211,238,.12), transparent),
+      radial-gradient(900px 500px at 90% 15%, rgba(139,92,246,.12), transparent);
+    background-attachment: fixed;
+  }
+  code, .mono, .num { font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace; }
+
+  /* ── Top strip ───────────────────────────────────────────────────────── */
+  header {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto auto;
+    gap: 16px; align-items: center;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    background: rgba(0,8,20,.7); backdrop-filter: blur(10px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .glyph {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: var(--gradient); display: grid; place-items: center;
+    box-shadow: 0 0 32px rgba(34,211,238,.4);
+    font-size: 18px;
+  }
+  .brand h1 { margin: 0; font-size: 15px; letter-spacing: .3px; font-weight: 700; }
+  .brand small { display: block; color: var(--dim); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
+
+  .cost {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 14px; border: 1px solid var(--border-2); border-radius: 999px;
+    background: var(--panel); font-size: 13px;
+  }
+  .cost .lbl { color: var(--dim); }
+  .cost .num { font-weight: 700; color: var(--accent); }
+  .cost.warn .num { color: var(--warn); }
+  .cost.warn { border-color: var(--warn); box-shadow: 0 0 20px rgba(245,158,11,.2); }
+  .cost.hot  .num { color: var(--danger); }
+  .cost.hot  { border-color: var(--danger); box-shadow: 0 0 20px rgba(239,68,68,.3); animation: pulse 2s ease-in-out infinite; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; font-size: 12px; color: var(--dim);
+    border-radius: 999px; background: var(--panel);
+    border: 1px solid var(--border-2);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .dot.off  { background: var(--dim2); box-shadow: none; }
+
+  header a.exit {
+    color: var(--dim); text-decoration: none; font-size: 13px;
+    border: 1px solid var(--border-2); border-radius: 9px; padding: 6px 12px;
+  }
+  header a.exit:hover { color: var(--text); border-color: var(--accent); }
+
+  /* ── Nav bar ─────────────────────────────────────────────────────────── */
+  nav {
+    display: flex; gap: 4px; padding: 10px 20px; border-bottom: 1px solid var(--border);
+    background: rgba(7,16,38,.6);
+    overflow-x: auto;
+  }
+  nav a {
+    color: var(--dim); text-decoration: none; padding: 8px 14px;
+    font-size: 13px; border-radius: 8px; white-space: nowrap;
+  }
+  nav a:hover { color: var(--text); background: var(--panel); }
+  nav a.on { color: var(--accent); background: var(--panel-2); border: 1px solid var(--border-2); }
+
+  /* ── Main layout ─────────────────────────────────────────────────────── */
+  main { padding: 24px 20px 48px; max-width: 1600px; margin: 0 auto; }
+  .grid {
+    display: grid; gap: 18px;
+    grid-template-columns: minmax(300px, 1fr) minmax(400px, 2fr) minmax(300px, 1fr);
+  }
+  @media (max-width: 1100px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+
+  section.panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 18px; box-shadow: 0 4px 24px rgba(0,0,0,.4);
+  }
+  section.panel h2 {
+    margin: 0 0 14px; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 1.5px; color: var(--dim); font-weight: 600;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  section.panel h2 .count { color: var(--accent); font-size: 12px; }
+
+  /* Rep cards */
+  .rep {
+    background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 10px;
+    transition: border-color .15s, transform .15s;
+  }
+  .rep:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .rep .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .rep .name { font-weight: 600; font-size: 14px; }
+  .rep .terr { color: var(--dim); font-size: 12px; }
+  .rep .stats { display: flex; gap: 12px; color: var(--dim); font-size: 12px; margin: 6px 0 10px; }
+  .rep .stat b { color: var(--text); font-weight: 600; }
+  .rep .cap { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin: 8px 0; }
+  .rep .cap > div { height: 100%; background: var(--gradient); }
+  .rep .btn {
+    display: inline-block; padding: 6px 12px; font-size: 12px; border-radius: 7px;
+    background: var(--gradient); color: #001; font-weight: 700;
+    border: none; cursor: pointer; text-decoration: none; font-family: inherit;
+  }
+  .rep .btn:hover { filter: brightness(1.1); }
+  .rep .btn.ghost { background: transparent; color: var(--dim); border: 1px solid var(--border-2); }
+  .rep .btn.ghost:hover { color: var(--accent); border-color: var(--accent); }
+  .rep .btn:disabled { opacity: .5; cursor: default; filter: none; }
+  .rep .row { display: flex; gap: 6px; align-items: center; }
+
+  /* Pipeline */
+  .stages { display: grid; gap: 6px; margin: 8px 0 14px; }
+  .stage-row {
+    display: grid; grid-template-columns: 130px 1fr auto;
+    align-items: center; gap: 10px; font-size: 13px;
+  }
+  .stage-row .lbl { color: var(--dim); }
+  .stage-row .bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .stage-row .bar > div { height: 100%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .stage-row .num { font-weight: 600; text-align: right; min-width: 40px; }
+  .kv { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  .kv .k { color: var(--dim); }
+  .kv .v { font-weight: 700; color: var(--accent); }
+  .kv .v.hot { color: var(--ok); }
+
+  /* Topics + drafts */
+  .topic {
+    padding: 10px 12px; margin-bottom: 8px;
+    background: var(--panel-2); border-left: 3px solid var(--accent); border-radius: 6px;
+  }
+  .topic .t-hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .topic h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+  .topic .score { font-size: 12px; color: var(--accent); font-weight: 700; }
+  .topic p { margin: 0; color: var(--dim); font-size: 12px; line-height: 1.5; }
+  .topic .cite-row { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .topic .cite-row a { font-size: 11px; color: var(--dim); text-decoration: none;
+    background: var(--panel); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); }
+  .topic .cite-row a:hover { color: var(--accent); border-color: var(--accent); }
+  .topic .actions { margin-top: 8px; }
+
+  .draft {
+    background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 10px;
+    padding: 14px; margin-bottom: 12px;
+  }
+  .draft .head { display: flex; justify-content: space-between; margin-bottom: 8px; }
+  .draft .platform { color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; }
+  .draft .status { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--dim); }
+  .draft h4 { margin: 0 0 8px; font-size: 14px; }
+  .draft .body { color: var(--dim); font-size: 13px; white-space: pre-wrap; padding: 10px; background: var(--bg); border-radius: 6px; border: 1px solid var(--border); }
+  .draft .actions { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .draft .btn { padding: 6px 12px; font-size: 12px; border-radius: 7px;
+     background: transparent; color: var(--dim); border: 1px solid var(--border-2); cursor: pointer; font-family: inherit; }
+  .draft .btn.primary { background: var(--gradient); color: #001; font-weight: 700; border: none; }
+  .draft .btn:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* Settings */
+  .settings { display: grid; gap: 14px; max-width: 640px; }
+  .settings label { display: block; color: var(--dim); font-size: 12px; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 1px; }
+  .settings input, .settings select, .settings textarea {
+    width: 100%; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border-2);
+    color: var(--text); border-radius: 8px; font-size: 14px; font-family: inherit;
+  }
+  .settings input:focus, .settings select:focus { outline: none; border-color: var(--accent); }
+  .settings .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .settings button { padding: 10px 18px; background: var(--gradient); color: #001; font-weight: 700; border: none;
+    border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 14px; }
+
+  .empty { padding: 40px 20px; text-align: center; color: var(--dim2); font-size: 13px; }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.02); }
+  }
+  .spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid var(--border-2); border-top-color: var(--accent);
+    animation: spin 1s linear infinite; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .flash { position: fixed; bottom: 24px; right: 24px; z-index: 20;
+    padding: 12px 18px; background: var(--panel); border: 1px solid var(--accent);
+    border-radius: 10px; box-shadow: 0 0 30px rgba(34,211,238,.4); font-size: 13px;
+    transform: translateY(120%); transition: transform .3s ease; }
+  .flash.show { transform: translateY(0); }
+  .flash.err { border-color: var(--danger); box-shadow: 0 0 30px rgba(239,68,68,.4); }
+</style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="glyph">⛈️</div>
+      <div>
+        <h1>NIMBUS</h1>
+        <small>PROJECT ONE</small>
+      </div>
+    </div>
+    <div id="cost-strip" class="cost">
+      <span class="lbl">Perplexity mo.</span>
+      <span class="num" id="cost-mo">$0.00</span>
+      <span class="lbl">/</span>
+      <span class="num" id="cost-cap">$150.00</span>
+    </div>
+    <span class="badge"><span class="dot" id="ppx-dot"></span> <span id="ppx-label">sonar</span></span>
+    <span class="badge" id="ppx-status"><span class="dot off"></span> checking</span>
+    <a class="exit" href="/">Exit Nimbus</a>
+  </header>
+
+  <nav id="nav">
+    <a href="/nimbus/" data-route="/nimbus/">⚡ Dashboard</a>
+    <a href="/nimbus/marketing/topics" data-route="/nimbus/marketing/topics">📈 Trending Topics</a>
+    <a href="/nimbus/marketing/drafts" data-route="/nimbus/marketing/drafts">📝 Content Drafts</a>
+    <a href="/nimbus/settings" data-route="/nimbus/settings">⚙️ Settings</a>
+  </nav>
+
+  <main id="main"></main>
+
+  <div id="flash" class="flash"></div>
+
+<script>
+'use strict';
+
+const BASE = '/nimbus';
+const state = { settings: {}, territories: [], runs: {}, activeTimers: {} };
+
+/* ── router ────────────────────────────────────────────────────────────── */
+
+function route() {
+  const path = location.pathname.replace(/\/$/, '') || '/nimbus';
+  document.querySelectorAll('#nav a').forEach(a => {
+    a.classList.toggle('on', a.dataset.route.replace(/\/$/, '') === path);
+  });
+  if (path.startsWith('/nimbus/marketing/topics')) return renderTopics();
+  if (path.startsWith('/nimbus/marketing/drafts')) return renderDrafts();
+  if (path.startsWith('/nimbus/settings'))          return renderSettings();
+  if (path.startsWith('/nimbus/rep/'))              return renderRep(path.split('/').pop());
+  return renderDashboard();
+}
+
+document.body.addEventListener('click', ev => {
+  const a = ev.target.closest('a[data-route]');
+  if (!a) return;
+  ev.preventDefault();
+  history.pushState({}, '', a.href);
+  route();
+});
+window.addEventListener('popstate', route);
+
+/* ── flash ─────────────────────────────────────────────────────────────── */
+
+function flash(msg, err) {
+  const el = document.getElementById('flash');
+  el.textContent = msg;
+  el.className = 'flash show' + (err ? ' err' : '');
+  clearTimeout(flash._t);
+  flash._t = setTimeout(() => { el.className = 'flash' + (err ? ' err' : ''); }, 3800);
+}
+
+/* ── shared header data ───────────────────────────────────────────────── */
+
+async function refreshSettings() {
+  const r = await fetch(`${BASE}/api/settings`).then(r => r.json());
+  state.settings = r;
+  const spent = Number(r.month_spend_usd || 0);
+  const cap = Number(r.monthly_spend_cap_usd || 150);
+  const pct = cap ? spent / cap : 0;
+  document.getElementById('cost-mo').textContent  = '$' + spent.toFixed(2);
+  document.getElementById('cost-cap').textContent = '$' + cap.toFixed(2);
+  const strip = document.getElementById('cost-strip');
+  strip.classList.remove('warn', 'hot');
+  if (pct >= 1)      strip.classList.add('hot');
+  else if (pct >= .8) strip.classList.add('warn');
+  document.getElementById('ppx-label').textContent = r.perplexity_model || 'sonar';
+  const status = document.getElementById('ppx-status');
+  status.innerHTML = r.perplexity_key_set
+    ? '<span class="dot"></span> API online'
+    : '<span class="dot warn"></span> API key not set';
+}
+
+setInterval(refreshSettings, 8000);
+
+/* ── dashboard ─────────────────────────────────────────────────────────── */
+
+async function renderDashboard() {
+  document.getElementById('main').innerHTML = `
+    <div class="grid">
+      <section class="panel">
+        <h2>Reps <span class="count" id="rep-count"></span></h2>
+        <div id="rep-list"><div class="empty"><span class="spin"></span> loading</div></div>
+      </section>
+      <section class="panel">
+        <h2>Pipeline pulse <span class="count" id="pl-count"></span></h2>
+        <div id="pipeline"><div class="empty"><span class="spin"></span> loading</div></div>
+      </section>
+      <section class="panel">
+        <h2>Marketing <span class="count" id="mk-count"></span></h2>
+        <div id="marketing"><div class="empty"><span class="spin"></span> loading</div></div>
+      </section>
+    </div>
+  `;
+  await Promise.all([loadReps(), loadPipeline(), loadMarketingSidebar()]);
+}
+
+async function loadReps() {
+  const list = await fetch(`${BASE}/api/territories`).then(r => r.json());
+  state.territories = list;
+  document.getElementById('rep-count').textContent = list.length + ' territories';
+  const box = document.getElementById('rep-list');
+  if (!list.length) { box.innerHTML = '<div class="empty">no reps configured</div>'; return; }
+  box.innerHTML = list.map(rep => `
+    <div class="rep" data-rep="${rep.username}">
+      <div class="head">
+        <span class="name">${escapeHtml(rep.display_name)}</span>
+        <span class="terr">${(rep.counties || []).slice(0,2).join(', ')}${rep.counties.length>2 ? ' +' + (rep.counties.length-2) : ''}</span>
+      </div>
+      <div class="stats">
+        <span class="stat"><b>${rep.segments.length}</b> segments</span>
+        <span class="stat"><b>${rep.enrich_top_n}</b> enrich</span>
+        <span class="stat"><b>${rep.monthly_lead_cap}</b> cap</span>
+      </div>
+      <div class="cap"><div style="width: 0%"></div></div>
+      <div class="row">
+        <button class="btn run-b2b" data-rep="${rep.username}">▶ RUN</button>
+        <button class="btn ghost dry-b2b" data-rep="${rep.username}">Dry run</button>
+        <a class="btn ghost" style="text-decoration:none;padding-top:5px" href="${BASE}/rep/${rep.username}" data-route="${BASE}/rep/${rep.username}">Configure</a>
+      </div>
+      <div class="row" data-status="${rep.username}" style="margin-top: 8px; color: var(--dim); font-size: 11px;"></div>
+    </div>
+  `).join('');
+
+  box.querySelectorAll('.run-b2b').forEach(b => b.addEventListener('click', () => startRun(b.dataset.rep, false)));
+  box.querySelectorAll('.dry-b2b').forEach(b => b.addEventListener('click', () => startRun(b.dataset.rep, true)));
+}
+
+async function startRun(rep, dryRun) {
+  const btn = document.querySelector(`.rep[data-rep="${rep}"] .run-b2b`);
+  const dry = document.querySelector(`.rep[data-rep="${rep}"] .dry-b2b`);
+  btn.disabled = dry.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> starting';
+  try {
+    const r = await fetch(`${BASE}/api/b2b/run`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ rep: rep, dry_run: dryRun })
+    });
+    if (!r.ok) throw new Error((await r.json()).error || 'run failed');
+    const data = await r.json();
+    flash(`${rep}: run #${data.run_id} started${dryRun ? ' (dry)' : ''}`);
+    pollRun(rep, data.run_id, btn, dry);
+  } catch (e) {
+    flash(rep + ': ' + e.message, true);
+    btn.disabled = dry.disabled = false;
+    btn.innerHTML = '▶ RUN';
+  }
+}
+
+function pollRun(rep, runId, btn, dry) {
+  if (state.activeTimers[rep]) clearInterval(state.activeTimers[rep]);
+  const statusEl = document.querySelector(`[data-status="${rep}"]`);
+  state.activeTimers[rep] = setInterval(async () => {
+    const r = await fetch(`${BASE}/api/runs/${runId}`).then(r => r.json());
+    statusEl.textContent = `run #${runId}: ${r.status}  found ${r.leads_found}  pushed ${r.leads_pushed}  deduped ${r.leads_deduped}  $${(r.cost_usd || 0).toFixed(3)}`;
+    if (r.status === 'ok' || r.status === 'error') {
+      clearInterval(state.activeTimers[rep]);
+      delete state.activeTimers[rep];
+      btn.disabled = dry.disabled = false;
+      btn.innerHTML = '▶ RUN';
+      flash(rep + ': ' + (r.status === 'ok' ? 'run complete' : 'run failed'), r.status === 'error');
+      refreshSettings();
+    }
+  }, 2500);
+}
+
+async function loadPipeline() {
+  let pl;
+  try { pl = await fetch(`${BASE}/api/pipeline`).then(r => r.json()); }
+  catch { pl = null; }
+  const box = document.getElementById('pipeline');
+  if (!pl || pl.error) { box.innerHTML = '<div class="empty">no pipeline data</div>'; return; }
+  const stageOrder = ['new','contacted','appt_set','inspected','estimate_presented','follow_up','won','lost'];
+  const labels = {
+    new:'NEW', contacted:'CONTACTED', appt_set:'APPT SET', inspected:'INSPECTED',
+    estimate_presented:'PRESENTED', follow_up:'FOLLOW-UP', won:'WON', lost:'LOST'
+  };
+  const total = Math.max(1, ...Object.values(pl.stage_counts || {}));
+  const rows = stageOrder.map(k => {
+    const n = pl.stage_counts[k] || 0;
+    const pct = Math.round((n / total) * 100);
+    return `<div class="stage-row"><span class="lbl">${labels[k]}</span>
+      <div class="bar"><div style="width:${pct}%"></div></div>
+      <span class="num">${n}</span></div>`;
+  }).join('');
+  document.getElementById('pl-count').textContent = pl.open_leads + ' open';
+  box.innerHTML = `
+    <div class="stages">${rows}</div>
+    <div class="kv"><span class="k">$ open pipeline</span><span class="v">$${Number(pl.open_value).toLocaleString(undefined,{maximumFractionDigits:0})}</span></div>
+    <div class="kv"><span class="k">$ won</span><span class="v hot">$${Number(pl.won_value).toLocaleString(undefined,{maximumFractionDigits:0})}</span></div>
+    <div class="kv"><span class="k">won deals</span><span class="v">${pl.won_this_period}</span></div>
+  `;
+}
+
+async function loadMarketingSidebar() {
+  const topics = await fetch(`${BASE}/api/content/topics?limit=5`).then(r => r.json());
+  const drafts = await fetch(`${BASE}/api/content/drafts?status=draft`).then(r => r.json());
+  document.getElementById('mk-count').textContent = drafts.length + ' pending';
+  const box = document.getElementById('marketing');
+  const topicsHtml = topics.length
+    ? topics.map((t, i) => `<div class="topic">
+        <div class="t-hd"><h4>${i + 1}. ${escapeHtml(t.topic)}</h4><span class="score">${Number(t.score||0).toFixed(1)}</span></div>
+        <p>${escapeHtml((t.summary || '').slice(0, 140))}</p></div>`).join('')
+    : '<div class="empty">no topics yet — click Listen</div>';
+  box.innerHTML = `
+    <div style="margin-bottom:12px">
+      <button class="btn primary" onclick="startListen()" style="padding:8px 14px;border-radius:8px;background:var(--gradient);color:#001;font-weight:700;border:none;font-family:inherit;font-size:12px;cursor:pointer">▶ Run weekly listen</button>
+    </div>
+    ${topicsHtml}
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+      <a href="${BASE}/marketing/drafts" data-route="${BASE}/marketing/drafts" style="color:var(--accent);text-decoration:none;font-size:13px">${drafts.length} draft${drafts.length===1?'':'s'} awaiting review →</a>
+    </div>
+  `;
+}
+
+async function startListen() {
+  try {
+    const r = await fetch(`${BASE}/api/content/listen`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+    });
+    if (!r.ok) throw new Error('listen failed');
+    flash('Listening... refreshing in ~20s');
+    setTimeout(loadMarketingSidebar, 20000);
+  } catch (e) { flash(e.message, true); }
+}
+
+/* ── topics page ────────────────────────────────────────────────────────── */
+
+async function renderTopics() {
+  document.getElementById('main').innerHTML = `
+    <section class="panel">
+      <h2>Trending topics
+        <button class="btn" onclick="startListen()" style="padding:6px 12px;border-radius:7px;background:var(--gradient);color:#001;border:none;font-weight:700;font-family:inherit;font-size:12px;cursor:pointer">▶ Refresh</button>
+      </h2>
+      <div id="topics-list"><div class="empty"><span class="spin"></span> loading</div></div>
+    </section>
+  `;
+  const topics = await fetch(`${BASE}/api/content/topics?limit=25`).then(r => r.json());
+  const box = document.getElementById('topics-list');
+  if (!topics.length) { box.innerHTML = '<div class="empty">no topics captured yet</div>'; return; }
+  box.innerHTML = topics.map((t, i) => `
+    <div class="topic" data-tid="${t.id}">
+      <div class="t-hd">
+        <h4>${i + 1}. ${escapeHtml(t.topic)}</h4>
+        <span class="score">${Number(t.score || 0).toFixed(1)}</span>
+      </div>
+      <p>${escapeHtml(t.summary || '')}</p>
+      <div class="cite-row">${(t.sources || []).map(s => `<a href="${escapeHtml(s)}" target="_blank" rel="noopener">${escapeHtml(hostname(s))}</a>`).join('')}</div>
+      <div class="actions">
+        <button class="btn" onclick="draftTopic(${t.id})" style="padding:5px 10px;border-radius:6px;background:var(--gradient);color:#001;border:none;font-weight:700;font-family:inherit;font-size:12px;cursor:pointer">📝 Draft posts</button>
+        <small style="color:var(--dim2);margin-left:8px">captured ${escapeHtml(t.captured_at)}</small>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function draftTopic(id) {
+  try {
+    await fetch(`${BASE}/api/content/topics/${id}/draft`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+    });
+    flash('Drafting posts... check the Drafts tab in ~30s');
+  } catch (e) { flash(e.message, true); }
+}
+
+/* ── drafts page ────────────────────────────────────────────────────────── */
+
+async function renderDrafts() {
+  document.getElementById('main').innerHTML = `
+    <section class="panel">
+      <h2>Content drafts
+        <span>
+          <label style="color:var(--dim);font-size:11px;margin-right:8px">
+            <input type="radio" name="fs" value="" checked onchange="filterDrafts('')"> all
+          </label>
+          <label style="color:var(--dim);font-size:11px;margin-right:8px">
+            <input type="radio" name="fs" value="draft" onchange="filterDrafts('draft')"> draft
+          </label>
+          <label style="color:var(--dim);font-size:11px;margin-right:8px">
+            <input type="radio" name="fs" value="approved" onchange="filterDrafts('approved')"> approved
+          </label>
+          <label style="color:var(--dim);font-size:11px">
+            <input type="radio" name="fs" value="posted" onchange="filterDrafts('posted')"> posted
+          </label>
+        </span>
+      </h2>
+      <div id="drafts-list"><div class="empty"><span class="spin"></span> loading</div></div>
+    </section>
+  `;
+  filterDrafts('');
+}
+
+async function filterDrafts(status) {
+  const q = status ? `?status=${status}` : '';
+  const drafts = await fetch(`${BASE}/api/content/drafts${q}`).then(r => r.json());
+  const box = document.getElementById('drafts-list');
+  if (!drafts.length) { box.innerHTML = '<div class="empty">no drafts yet</div>'; return; }
+  box.innerHTML = drafts.map(d => `
+    <div class="draft" data-did="${d.id}">
+      <div class="head">
+        <span class="platform">${escapeHtml(d.platform)}</span>
+        <span class="status">${escapeHtml(d.status)}</span>
+      </div>
+      <h4>${escapeHtml(d.topic)}</h4>
+      <div class="body">${escapeHtml(d.draft_text)}</div>
+      <div class="cite-row">${(d.citations || []).map(c => `<a href="${escapeHtml(c)}" target="_blank" rel="noopener">${escapeHtml(hostname(c))}</a>`).join('')}</div>
+      <div class="actions">
+        <button class="btn" onclick="copyDraft(this)">📋 Copy</button>
+        <button class="btn primary" onclick="setDraftStatus(${d.id}, 'approved')">✓ Approve</button>
+        <button class="btn" onclick="setDraftStatus(${d.id}, 'posted')">Posted</button>
+        <button class="btn" onclick="setDraftStatus(${d.id}, 'rejected')">✕ Reject</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function copyDraft(btn) {
+  const body = btn.closest('.draft').querySelector('.body').textContent;
+  navigator.clipboard.writeText(body).then(() => flash('Copied to clipboard'));
+}
+
+async function setDraftStatus(id, status) {
+  const r = await fetch(`${BASE}/api/content/drafts/${id}`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ status })
+  });
+  if (r.ok) { flash('Marked ' + status); filterDrafts(document.querySelector('input[name=fs]:checked').value); }
+  else flash('Failed', true);
+}
+
+/* ── settings page ─────────────────────────────────────────────────────── */
+
+async function renderSettings() {
+  const s = await fetch(`${BASE}/api/settings`).then(r => r.json());
+  document.getElementById('main').innerHTML = `
+    <section class="panel">
+      <h2>Nimbus settings</h2>
+      <div class="settings">
+        <div>
+          <label>Perplexity model</label>
+          <select id="s-model">
+            <option value="sonar" ${s.perplexity_model==='sonar'?'selected':''}>sonar (cheap)</option>
+            <option value="sonar-pro" ${s.perplexity_model==='sonar-pro'?'selected':''}>sonar-pro (accurate)</option>
+            <option value="sonar-reasoning" ${s.perplexity_model==='sonar-reasoning'?'selected':''}>sonar-reasoning</option>
+            <option value="sonar-reasoning-pro" ${s.perplexity_model==='sonar-reasoning-pro'?'selected':''}>sonar-reasoning-pro</option>
+          </select>
+        </div>
+        <div class="row">
+          <div>
+            <label>Monthly spend cap (USD)</label>
+            <input id="s-cap" type="number" step="1" value="${Number(s.monthly_spend_cap_usd||150)}">
+          </div>
+          <div>
+            <label>Cache TTL (days)</label>
+            <input id="s-ttl" type="number" step="1" value="${Number(s.cache_ttl_days||30)}">
+          </div>
+        </div>
+        <div>
+          <label>This month's spend</label>
+          <div class="mono" style="padding:10px;background:var(--bg);border-radius:8px;border:1px solid var(--border-2);color:var(--accent);font-size:14px;font-weight:700">$${Number(s.month_spend_usd||0).toFixed(4)}</div>
+        </div>
+        <div>
+          <label>Perplexity API key</label>
+          <div class="mono" style="padding:10px;background:var(--bg);border-radius:8px;border:1px solid var(--border-2);color:${s.perplexity_key_set?'var(--ok)':'var(--warn)'};font-size:13px">
+            ${s.perplexity_key_set ? '● set (from PERPLEXITY_API_KEY env)' : '○ not set — set the PERPLEXITY_API_KEY env var to enable live calls'}
+          </div>
+        </div>
+        <div>
+          <button onclick="saveSettings()">Save changes</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+async function saveSettings() {
+  const patch = {
+    perplexity_model:      document.getElementById('s-model').value,
+    monthly_spend_cap_usd: Number(document.getElementById('s-cap').value || 150),
+    cache_ttl_days:        Number(document.getElementById('s-ttl').value || 30),
+  };
+  const r = await fetch(`${BASE}/api/settings`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(patch)
+  });
+  if (r.ok) { flash('Settings saved'); refreshSettings(); }
+  else flash('Save failed', true);
+}
+
+/* ── rep detail page ───────────────────────────────────────────────────── */
+
+async function renderRep(username) {
+  const list = await fetch(`${BASE}/api/territories`).then(r => r.json());
+  const rep = list.find(x => x.username === username);
+  if (!rep) { document.getElementById('main').innerHTML = '<div class="empty">unknown rep</div>'; return; }
+  const runs = await fetch(`${BASE}/api/runs?rep=${username}&limit=15`).then(r => r.json());
+  document.getElementById('main').innerHTML = `
+    <section class="panel">
+      <h2>${escapeHtml(rep.display_name)}</h2>
+      <div class="settings" style="max-width:900px">
+        <div class="row">
+          <div>
+            <label>Cities (comma-separated)</label>
+            <input id="c-cities" value="${escapeHtml((rep.cities||[]).join(', '))}">
+          </div>
+          <div>
+            <label>Counties (comma-separated)</label>
+            <input id="c-counties" value="${escapeHtml((rep.counties||[]).join(', '))}">
+          </div>
+        </div>
+        <div>
+          <label>Segments (comma-separated)</label>
+          <input id="c-segments" value="${escapeHtml((rep.segments||[]).join(', '))}">
+          <small style="color:var(--dim2);font-size:11px">Known: realtor, insurance_agent, hoa, property_manager, church, school, gc, commercial</small>
+        </div>
+        <div class="row">
+          <div>
+            <label>Monthly lead cap</label>
+            <input id="c-cap" type="number" step="10" value="${rep.monthly_lead_cap}">
+          </div>
+          <div>
+            <label>Enrich top-N per run</label>
+            <input id="c-top" type="number" step="5" value="${rep.enrich_top_n}">
+          </div>
+        </div>
+        <div>
+          <button onclick="saveRep('${username}')">Save changes</button>
+        </div>
+      </div>
+    </section>
+    <section class="panel" style="margin-top:18px">
+      <h2>Recent runs</h2>
+      ${runs.length ? runs.map(r => `
+        <div class="stage-row" style="grid-template-columns:100px 130px 1fr auto;padding:8px 0;border-bottom:1px solid var(--border)">
+          <span class="mono" style="color:var(--dim)">#${r.id}</span>
+          <span class="mono" style="color:var(--dim);font-size:12px">${r.started_at ? r.started_at.slice(0,16) : ''}</span>
+          <span>found <b>${r.leads_found}</b> · pushed <b>${r.leads_pushed}</b> · deduped <b>${r.leads_deduped}</b></span>
+          <span class="mono" style="color:${r.status==='ok'?'var(--ok)':r.status==='error'?'var(--danger)':'var(--warn)'}">${r.status}  $${(r.cost_usd||0).toFixed(3)}</span>
+        </div>`).join('') : '<div class="empty">no runs yet</div>'}
+    </section>
+  `;
+}
+
+async function saveRep(username) {
+  const patch = {
+    cities:            document.getElementById('c-cities').value.split(',').map(s => s.trim()).filter(Boolean),
+    counties:          document.getElementById('c-counties').value.split(',').map(s => s.trim()).filter(Boolean),
+    segments:          document.getElementById('c-segments').value.split(',').map(s => s.trim()).filter(Boolean),
+    monthly_lead_cap:  Number(document.getElementById('c-cap').value || 0),
+    enrich_top_n:      Number(document.getElementById('c-top').value || 0),
+  };
+  const r = await fetch(`${BASE}/api/territories/${username}`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(patch)
+  });
+  if (r.ok) flash('Saved');
+  else flash('Save failed', true);
+}
+
+/* ── helpers ───────────────────────────────────────────────────────────── */
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function hostname(u) {
+  try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; }
+}
+
+/* ── boot ──────────────────────────────────────────────────────────────── */
+refreshSettings();
+route();
+</script>
+</body>
+</html>

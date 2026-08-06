@@ -82,7 +82,10 @@ fetch('/api/me', { credentials: 'same-origin' })
   .then(function (me) {
     if (!me) return;
     document.getElementById('who').textContent = me.full_name || me.username;
-    document.getElementById('grid').innerHTML = me.apps.map(function (a) {
+    // Admin tiles (e.g. Nimbus) render alongside the normal apps for admins.
+    // Reps never see them because /api/me returns an empty list for them.
+    var tiles = (me.apps || []).concat(me.admin_apps || []);
+    document.getElementById('grid').innerHTML = tiles.map(function (a) {
       return '<a class="card" style="--accent:' + a.accent + '" href="' + a.prefix + '/">' +
              '<div class="icon">' + a.icon + '</div>' +
              '<h2>' + a.label + '</h2><p>' + a.blurb + '</p></a>';

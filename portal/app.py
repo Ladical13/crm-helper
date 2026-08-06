@@ -12,6 +12,7 @@ from markupsafe import escape
 from portal import session as psession
 from portal import users
 from portal.mounts import MOUNTS
+from portal.nimbus_bp import nimbus_bp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, 'static')
@@ -25,6 +26,11 @@ MIN_PASSWORD = 8
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='/static')
 psession.configure(app)
+
+# Nimbus — admin-only AI agent dashboard, mounted at /nimbus/*. The blueprint
+# guards its own routes on is_admin(); the before_request auth guard below
+# still blocks anonymous requests first.
+app.register_blueprint(nimbus_bp)
 
 
 # ── Auth guard ───────────────────────────────────────────────────────────────
@@ -46,7 +52,10 @@ PUBLIC_ENDPOINTS = {
 def _require_login():
     if request.endpoint in PUBLIC_ENDPOINTS or session.get('username'):
         return
-    if request.path.startswith('/api/'):
+    # Any /api/ path (root portal API or a blueprint's API namespace such as
+    # /nimbus/api/*) returns JSON 401 so the fetch client can react instead of
+    # following a redirect to the login page's HTML.
+    if request.path.startswith('/api/') or '/api/' in request.path:
         return jsonify({'error': 'authentication required'}), 401
     return redirect('/login?next=' + _quote_next(request.full_path or '/'))
 
@@ -161,6 +170,17 @@ def me():
         # leaving a session pointing at nobody.
         psession.sign_out(session)
         return jsonify({'authenticated': False}), 401
+    # Nimbus is an admin-only tile. Included in `admin_apps` so the launcher
+    # can render it in a separate row (or the same grid for admins) without
+    # a second round-trip.
+    admin_apps = []
+    if user['role'] == 'admin':
+        admin_apps.append({
+            'key': 'nimbus', 'prefix': '/nimbus', 'label': 'Nimbus',
+            'icon': '⛈️',
+            'blurb': 'AI lead generation + social listening.',
+            'accent': '#22d3ee',
+        })
     return jsonify({
         'authenticated': True,
         'username': user['username'],
@@ -172,6 +192,7 @@ def me():
         'must_change': user['must_change'],
         'apps': [{k: m[k] for k in ('key', 'prefix', 'label', 'icon', 'blurb', 'accent')}
                  for m in MOUNTS],
+        'admin_apps': admin_apps,
     })
 
 

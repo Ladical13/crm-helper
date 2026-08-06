@@ -119,6 +119,66 @@
         "subject": "Closing the loop",
         "body": "{greeting}\n\nI'll stop emailing. If a client ever needs a roof looked at around {city}, my number's below.\n\nTake care."
       }
+    },
+
+    "church": {
+      "first": {
+        "subject": "Roof condition report for {company}",
+        "body": "{greeting}\n\nI work with churches around {city} on no-cost roof condition reports - the kind that helps a board plan for maintenance before it becomes a leak over the sanctuary.\n\n{research_hook}\n\n{storm_hook}\n\nWe'll walk the roof, photograph the trouble spots, and write up remaining life so you can plan a capital campaign or just budget honestly. No obligation.\n\nWould that be useful this year?"
+      },
+      "followup": {
+        "subject": "Re: Roof condition report for {company}",
+        "body": "{greeting}\n\nI wrote about a no-cost roof condition report for {company} and haven't heard back.\n\nOften that lands in the wrong inbox - is there someone on the property or trustees committee I should reach out to instead?"
+      },
+      "breakup": {
+        "subject": "Closing the loop - {company}",
+        "body": "{greeting}\n\nI'll stop emailing. If a leak ever shows up or the trustees want a straight answer on how much roof life is left, my number's below.\n\nGod bless."
+      }
+    },
+
+    "school": {
+      "first": {
+        "subject": "Roof condition report for {company}",
+        "body": "{greeting}\n\nI work with schools and campuses around {city} on no-cost roof condition reports - the kind facilities directors need before a summer capital request.\n\n{research_hook}\n\n{storm_hook}\n\nWe walk each roof, document what we find, and give you honest remaining-life numbers - not a sales pitch. That way when you present to the board, the numbers are yours.\n\nWorth a short call?"
+      },
+      "followup": {
+        "subject": "Re: Roof condition report for {company}",
+        "body": "{greeting}\n\nNo reply to my note on {company}'s roofs - fair, it's a busy season.\n\nOne question: is roof condition already documented for this year's capital planning, or is that still an open item?"
+      },
+      "breakup": {
+        "subject": "Closing the loop - {company}",
+        "body": "{greeting}\n\nLast note from me. If a roof over a classroom ever needs a straight look, my number's below.\n\nBest of luck with the year."
+      }
+    },
+
+    "gc": {
+      "first": {
+        "subject": "Roofing sub for {city} projects",
+        "body": "{greeting}\n\nI'm looking to be the roofing sub on the next project you don't want to babysit.\n\n{research_hook}\n\n{storm_hook}\n\nWe show up when we say we will, hit deadlines, and don't shave the scope. If that's the kind of trade partner you're short on around {city}, worth a five-minute call.\n\nHappy to bid the next one blind if you want to see how we compare."
+      },
+      "followup": {
+        "subject": "Re: Roofing sub for {city} projects",
+        "body": "{greeting}\n\nNo reply on my last note about roofing sub work around {city}.\n\nQuick yes-or-no: are you full up on roofing subs right now, or is that still an open slot?"
+      },
+      "breakup": {
+        "subject": "Closing the loop",
+        "body": "{greeting}\n\nI'll stop emailing. If a roofing sub ever misses a date on you and you need someone reliable, my number's below.\n\nGood building out there."
+      }
+    },
+
+    "commercial": {
+      "first": {
+        "subject": "Roof report for {company}",
+        "body": "{greeting}\n\nMost commercial owners around {city} don't need another roofer knocking - they need documentation for the roof they already have, so budget season isn't guesswork.\n\n{research_hook}\n\n{storm_hook}\n\nWe walk the roofs, write a plain-English condition report, and give honest remaining-life numbers. No obligation. Would that be useful for {company}?"
+      },
+      "followup": {
+        "subject": "Re: Roof report for {company}",
+        "body": "{greeting}\n\nNo reply on my note about a no-cost roof condition report for {company}. Fair.\n\nIs that something the property team has already covered for this year, or still open?"
+      },
+      "breakup": {
+        "subject": "Closing the loop - {company}",
+        "body": "{greeting}\n\nLast note from me. If a roof ever needs an honest look, my number's below.\n\nAll the best."
+      }
     }
   }
 }

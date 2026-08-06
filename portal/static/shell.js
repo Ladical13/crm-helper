@@ -48,7 +48,10 @@
   }
 
   function render(me) {
-    var apps = (me && me.apps && me.apps.length) ? me.apps : FALLBACK_APPS;
+    // Admins get Nimbus in the switcher bar too. Reps get an empty
+    // admin_apps list so they never see it, matching the launcher grid.
+    var baseApps = (me && me.apps && me.apps.length) ? me.apps : FALLBACK_APPS;
+    var apps = baseApps.concat((me && me.admin_apps) || []);
     var current = activeKey(apps);
 
     var bar = el('div');

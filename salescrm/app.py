@@ -84,6 +84,10 @@ LEAD_TYPES = [
     {'key': 'adjuster',          'label': 'Adjuster',          'partner': True},
     {'key': 'commercial',        'label': 'Commercial',        'partner': False},
     {'key': 'referral_partner',  'label': 'Referral Partner',  'partner': True},
+    # Nimbus segments — cold outreach targets seeded by the AI agents.
+    {'key': 'church',            'label': 'Church',            'partner': False},
+    {'key': 'school',            'label': 'School',            'partner': False},
+    {'key': 'gc',                'label': 'General Contractor','partner': True},
 ]
 LEAD_TYPE_KEYS = [t['key'] for t in LEAD_TYPES]
 PARTNER_TYPES  = [t['key'] for t in LEAD_TYPES if t['partner']]
@@ -264,6 +268,11 @@ _PROSPECT_COLS = [
     ('dnc',          'INTEGER DEFAULT 0'),
     ('phone_norm',   "TEXT DEFAULT ''"),
     ('email_norm',   "TEXT DEFAULT ''"),
+    # Nimbus enrichment. Filled by agents/b2b/enrich.py; surfaced in the lead drawer.
+    ('research_notes',     "TEXT DEFAULT ''"),   # Perplexity JSON body, decision-makers, news, etc.
+    ('research_citations', "TEXT DEFAULT '[]'"), # JSON array of source URLs; reps verify before calling
+    ('recent_storm',       "TEXT DEFAULT ''"),   # canvasser hail-cache summary at this address
+    ('enriched_at',        "TEXT DEFAULT ''"),   # ISO timestamp of last enrichment pass
 ]
 
 def migrate_db():
@@ -1355,10 +1364,38 @@ def _fill(text, ctx):
 
     `{hook}` sits in its own paragraph precisely so an unresearched lead gets a
     shorter email rather than a visible gap where the personal line should be.
+    Same applies to Nimbus's `{research_hook}` and `{storm_hook}`.
     """
     for key, val in ctx.items():
         text = text.replace('{' + key + '}', val)
     return '\n\n'.join(p for p in (p.strip() for p in text.split('\n\n')) if p)
+
+
+def _first_line(text):
+    """First non-empty line of a possibly-JSON research blob, for the draft.
+
+    research_notes stores a JSON body from Perplexity; the first line/summary
+    is usually the highest-value fact and fits into an outreach template.
+    Falls back to the raw string when it isn't JSON.
+    """
+    s = (text or '').strip()
+    if not s:
+        return ''
+    if s.startswith('{'):
+        try:
+            data = json.loads(s)
+            for key in ('summary', 'decision_maker', 'headline', 'news', 'note'):
+                v = data.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v.strip().split('\n', 1)[0][:200]
+                if isinstance(v, dict):
+                    for k2 in ('name', 'title', 'text'):
+                        vv = v.get(k2)
+                        if isinstance(vv, str) and vv.strip():
+                            return vv.strip().split('\n', 1)[0][:200]
+        except (ValueError, TypeError):
+            pass
+    return s.split('\n', 1)[0][:200]
 
 def _render_draft(lead, step, rep_name):
     """{'subject','body','step'} for a lead, or None if no template applies."""
@@ -1367,14 +1404,18 @@ def _render_draft(lead, step, rep_name):
     if not tpl or step not in tpl:
         return None
     first = (lead.get('first_name') or '').strip()
+    # research_hook / storm_hook are optional and safe to leave blank; _fill()
+    # drops paragraphs an empty slot left blank, matching the {hook} pattern.
     ctx = {
-        'greeting':   f'Hi {first},' if first else 'Hi there,',
-        'first_name': first,
-        'company':    (lead.get('company') or '').strip(),
-        'city':       (lead.get('city') or '').strip() or 'the Front Range',
-        'hook':       (lead.get('hook') or '').strip(),
-        'rep_name':   rep_name,
-        'rep_first':  rep_name.split(' ')[0] if rep_name else '',
+        'greeting':      f'Hi {first},' if first else 'Hi there,',
+        'first_name':    first,
+        'company':       (lead.get('company') or '').strip(),
+        'city':          (lead.get('city') or '').strip() or 'the Front Range',
+        'hook':          (lead.get('hook') or '').strip(),
+        'research_hook': _first_line(lead.get('research_notes') or ''),
+        'storm_hook':    _first_line(lead.get('recent_storm') or ''),
+        'rep_name':      rep_name,
+        'rep_first':     rep_name.split(' ')[0] if rep_name else '',
     }
     sig = TEMPLATES.get('signature', '')
     body = _fill(tpl[step]['body'], ctx)

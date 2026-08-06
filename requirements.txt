@@ -13,3 +13,10 @@ pymupdf>=1.24
 
 # Estimator: Postgres backend for estimates when DATABASE_URL is set.
 psycopg[binary]>=3.1
+
+# Nimbus (AI agents): only stdlib + `requests` are required at runtime; the
+# Reddit / YouTube / Google Trends listeners are wired as optional and pull
+# these in only when a caller sets the corresponding API key env var.
+# praw>=7.7           # Reddit listening
+# google-api-python-client>=2   # YouTube Data API
+# pytrends>=4.9       # Google Trends
