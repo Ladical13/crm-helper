@@ -2918,7 +2918,10 @@ letter-spacing:.5px;margin-right:5px}
 body{background:#fff;padding-bottom:0 !important}
 .cvc-card,.cvnotes,.cvtrade,.cvsig,.cert,.cvnext,.cvrep-card{box-shadow:none;break-inside:avoid}
 .cvhero,.cvhero.ok{-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.cert{border-width:1.5pt}}
+.cert{border-width:1.5pt}
+.cvcontract,.cvcontract[open]{break-inside:auto}
+.cvcontract summary{display:none}
+.cvcontract-body{max-height:none !important;overflow:visible !important;padding:16px 18px}}
 """
 
 # Shared client-side behavior for every public customer page: scroll-reveal,
@@ -4349,14 +4352,21 @@ def _cv_estimate_details_block(manifest, est=None):
 
 
 def _signed_extras_html(est):
-    """Chosen shingle color + captured initials, for the signed confirmation page."""
+    """Chosen colors + captured initials, for the signed confirmation page."""
     sig = est.get('signature', {}) or {}
     out = ''
-    color = (sig.get('shingle_color') or '').strip()
-    if color:
+    shingle = (sig.get('shingle_color') or '').strip()
+    siding  = (sig.get('siding_color')  or '').strip()
+    color_cells = []
+    if shingle:
+        color_cells.append(
+            f'<div class="cvgi"><label>Shingle Color</label><strong>{he(shingle)}</strong></div>')
+    if siding:
+        color_cells.append(
+            f'<div class="cvgi"><label>Siding Color</label><strong>{he(siding)}</strong></div>')
+    if color_cells:
         out += (f'<div class="cvc-card"><div class="cvgrid">'
-                f'<div class="cvgi"><label>Shingle Color</label><strong>{he(color)}</strong></div>'
-                f'</div></div>')
+                + ''.join(color_cells) + '</div></div>')
     inits = sig.get('initials') or []
     inits = [i for i in inits if (i.get('value') or '').strip()]
     if inits:
@@ -6335,6 +6345,9 @@ def build_signed_pdf(est, signed=None):
     shingle_color = (sig.get('shingle_color') or '').strip()
     if shingle_color:
         right_rows.append(('Shingle Color', shingle_color))
+    siding_color = (sig.get('siding_color') or '').strip()
+    if siding_color:
+        right_rows.append(('Siding Color', siding_color))
 
     col_w = W / 2
     y_start = pdf.get_y()
@@ -7246,6 +7259,9 @@ def build_production_packet_pdf(est):
     shingle_color = (sig.get('shingle_color') or '').strip()
     if shingle_color:
         info_rows.append(('Shingle Color', shingle_color))
+    siding_color = (sig.get('siding_color') or '').strip()
+    if siding_color:
+        info_rows.append(('Siding Color', siding_color))
     for label, val in info_rows:
         if not val:
             continue
