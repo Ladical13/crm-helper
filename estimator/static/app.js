@@ -392,6 +392,7 @@ const MEASURE_FIELDS = [
     {key:'attic_sqft',    label:'Attic Area',     unit:'SF'},
     {key:'low_slope_squares', label:'Low Slope ≤2/12', unit:'SQ'},
     {key:'steep_squares',     label:'Steep 7/12+',     unit:'SQ'},
+    {key:'predominant_pitch', label:'Predominant Pitch', unit:'/12'},
     {key:'ridge_hip_lf',  label:'Ridge + Hip',    unit:'LF'},
     {key:'ridge_lf',      label:'Ridges',         unit:'LF'},
     {key:'valley_lf',     label:'Valley',         unit:'LF'},
@@ -3399,6 +3400,31 @@ function _jxCodePoints(j) {
   const base = ((_jurisdictions && _jurisdictions.colorado_baseline && _jurisdictions.colorado_baseline.code_points) || []);
   return base.concat((j && j.code_points) || []);
 }
+// The "Roofing code requirements" list on the Scope panel. When this
+// jurisdiction has a manager-approved verified_profile the list becomes
+// SPECIFIC to the jurisdiction (adopted IRC year first, then each local
+// amendment) and drops the generic Colorado baseline — those bullets are
+// only useful when we have nothing more precise to show. Any curated
+// per-jurisdiction code_points are always appended.
+function _jxDisplayCodePoints(j) {
+  const vp = j && j.verified_profile;
+  const approved = vp && (vp.reviewed_at || '').trim();
+  const jurPts = ((j && j.code_points) || []).map(String);
+  if (!approved) return _jxCodePoints(j);
+  const out = [];
+  const ac = (vp.adopted_code || '').trim();
+  if (ac) out.push(`Enforces ${ac}.`);
+  (vp.amendments || []).forEach(a => {
+    const tp = (a && a.topic || '').trim();
+    const tx = (a && a.text  || '').trim();
+    if (!tx) return;
+    out.push(tp ? `${tp}: ${tx}` : tx);
+  });
+  // Preserve curated per-jurisdiction bullets (e.g. "Roofing affidavit required")
+  // — they carry local nuance the manager entered by hand.
+  jurPts.forEach(p => { if (p && !out.some(x => x === p)) out.push(p); });
+  return out;
+}
 function _pjState() {
   if (!S.permit_jurisdiction) S.permit_jurisdiction = { selected_id:null, auto_id:null, confirmed:false, verified:null };
   return S.permit_jurisdiction;
@@ -3550,21 +3576,21 @@ function _jxVerifiedProfileMarkup(sel) {
   const busy = _jxProfileBusy[id];
   const vp = sel.verified_profile;
 
-  // 1) A manager-approved profile is already saved — show a compact summary
-  //    plus a "re-verify" affordance for managers.
+  // 1) A manager-approved profile is already saved. The requirements list
+  //    above already carries the specifics (see _jxDisplayCodePoints), so
+  //    this drawer stays compact — just the verified chip, the permit
+  //    portal, and manager controls to re-verify or clear.
   if (vp && (vp.reviewed_at || '').trim()) {
-    const ac = esc(vp.adopted_code || '');
     const via = esc(vp.verified_via || '');
     const at  = esc((vp.verified_at || '').slice(0, 10));
     const acu = vp.adopted_code_source_url || '';
-    const acLink = acu ? ` &middot; <a href="${esc(acu)}" target="_blank" rel="noopener">source</a>` : '';
-    const amends = (vp.amendments || []).slice(0, 6).map(a => {
-      const tp = esc((a.topic || '').trim());
-      const tx = esc((a.text || '').trim());
-      const su = a.source_url || '';
-      const link = su ? ` <a href="${esc(su)}" target="_blank" rel="noopener" style="font-size:11.5px">source</a>` : '';
-      return `<li>${tp ? `<b>${tp}:</b> ` : ''}${tx}${link}</li>`;
-    }).join('');
+    const acLink = (acu && acu !== 'unknown')
+      ? ` &middot; <a href="${esc(acu)}" target="_blank" rel="noopener">code source</a>` : '';
+    const sources = (vp.sources || [])
+      .filter(u => u && u !== acu)
+      .slice(0, 4)
+      .map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https?:\/\//,''))}</a>`)
+      .join(' · ');
     const rp = vp.reroof_permit || {};
     const rpBits = [];
     if (rp.submittal_method && rp.submittal_method !== 'unknown') rpBits.push('Submittal: ' + esc(rp.submittal_method));
@@ -3576,9 +3602,8 @@ function _jxVerifiedProfileMarkup(sel) {
       </div>` : '';
     return `
       <div class="jx-vp jx-vp-ok">
-        <div class="jx-vp-head">✅ Code data verified ${at}${via ? ` · source: ${via}` : ''}</div>
-        ${ac ? `<div class="jx-vp-adopted"><b>Enforces</b> ${ac}${acLink}</div>` : ''}
-        ${amends ? `<div class="jx-vp-title">Local amendments</div><ul class="jx-vp-list">${amends}</ul>` : ''}
+        <div class="jx-vp-head">✅ Code data verified ${at}${via ? ` · source: ${via}` : ''}${acLink}</div>
+        ${sources ? `<div class="jx-vp-sub">Additional sources: ${sources}</div>` : ''}
         ${rpLine}
         ${actions}
       </div>`;
@@ -3731,7 +3756,10 @@ function permitJurisdictionMarkup() {
 
   let card = '';
   if (sel) {
-    const points = _jxCodePoints(sel);
+    // Verified profile (when approved) replaces the generic baseline in this
+    // list with the jurisdiction's actual adopted-code line and amendments —
+    // see _jxDisplayCodePoints for the merge rule.
+    const points = _jxDisplayCodePoints(sel);
     const pull = sel.pull || (sel.kind === 'county'
       ? 'Confirm the reroof permit submittal method (portal / in person) with the county building department.'
       : 'Confirm the reroof permit submittal method (portal / in person) with the city building department.');
@@ -9446,6 +9474,7 @@ async function doLoadEstimate(id) {
     if(!Array.isArray(S.shingle_selection.options)||!S.shingle_selection.options.length)
       S.shingle_selection.options=DEFAULT_SHINGLE_COLORS.slice();
     if(!Array.isArray(S.attachments)) S.attachments=[];
+    if(!S.work_order || typeof S.work_order !== 'object') S.work_order = {};
     // Estimates created outside the UI (API, scripts) may lack these — a
     // missing photos array used to crash renderCoverPage and abort the load.
     if(!Array.isArray(S.photos)) S.photos=[];
@@ -10997,24 +11026,37 @@ function renderDocumentsPage() {
         <input type="file" id="doc-pdf-input" accept="application/pdf,.pdf" multiple style="display:none"
           onchange="docUploadPdf(this.files)">
       </div>
-      ${atts.length ? atts.map(att => `
+      ${atts.length ? atts.map(att => {
+        const icon = att.doc_type === 'signed_contract' ? '🖊'
+                   : att.doc_type === 'permit_packet'   ? '🏛'
+                   : att.server_generated               ? '🛠'
+                                                        : '📄';
+        // Work orders don't auto-push — the rep fills in scheduled date /
+        // dish / tear-off layers first, then clicks "↗ Push to Den".
+        const isWO = att.doc_type === 'work_order';
+        return `
       <div class="att-row">
-        <span class="att-icon">${att.doc_type === 'signed_contract' ? '🖊' : att.server_generated ? '🛠' : '📄'}</span>
+        <span class="att-icon">${icon}</span>
         <input type="text" class="att-label" value="${esc(att.label||att.original_name||'Document')}"
           onchange="attSetLabel('${att.id}',this.value)" placeholder="Document name">
         ${att.crm_document_id
           ? '<span class="doc-crm-chip" title="Filed in the CRM under this job">✓ CRM</span>'
-          : `<button class="doc-crm-push" onclick="pushDocToCrm('${att.id}')"
-               title="File this PDF in the CRM under the linked job">↗ CRM</button>`}
+          : (isWO
+              ? `<button class="doc-crm-push" onclick="pushWorkOrderToCrm()"
+                   title="Regenerate with the latest job details and file in Den">↗ Push to Den</button>`
+              : `<button class="doc-crm-push" onclick="pushDocToCrm('${att.id}')"
+                   title="File this PDF in the CRM under the linked job">↗ CRM</button>`)}
         <label class="att-show" title="Show this document to the customer on their estimate">
           <input type="checkbox" ${att.show_in_estimate!==false?'checked':''}
             onchange="attToggle('${att.id}',this.checked)"> Customer
         </label>
         <a class="att-view" href="${BASE}/uploads/${esc(att.filename)}" target="_blank" rel="noopener">View</a>
         ${att.server_generated
-          ? '<span class="doc-crm-chip" title="Auto-generated from the signed contract — use the Production Packet card below to regenerate">auto</span>'
+          ? `<span class="doc-crm-chip" title="Auto-generated from the signed contract${isWO ? ' — edit the Work Order fields below then Regenerate' : ''}">auto</span>`
           : `<button class="att-del" onclick="attDelete('${att.id}')" title="Remove">×</button>`}
-      </div>`).join('')
+      </div>
+      ${isWO ? renderWorkOrderForm() : ''}`;
+      }).join('')
       : '<p class="pm-hint">No documents yet — upload a PDF or create one below.</p>'}
       ${!((S.customer||{}).crm_project_id) && atts.length
         ? '<p class="pm-hint">⚠ Not linked to a CRM job — documents stay local only. Link via the customer search to file them in the CRM.</p>' : ''}
@@ -11032,13 +11074,25 @@ function renderDocumentsPage() {
         <button class="doc-card" onclick="generateProductionPacket(this)">
           <span class="doc-card-icon">🛠</span>
           <span class="doc-card-name">Production Packet</span>
-          <span class="doc-card-sub">${atts.some(a => a.server_generated)
-            ? 'Regenerate the work order + material list'
+          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'work_order')
+            ? 'Regenerate work order (does not push to Den — use ↗ Push to Den)'
             : 'Work order + material list from the signed contract'}</span>
+        </button>
+        <button class="doc-card" onclick="generatePermitPacket(this)">
+          <span class="doc-card-icon">🏛</span>
+          <span class="doc-card-name">Permit Application Packet</span>
+          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'permit_packet')
+            ? 'Regenerate + push to Den'
+            : 'Jurisdiction + squares + materials + cost split'}</span>
         </button>` : `
         <div class="doc-card doc-card-soon" title="Generated from the signed contract once the customer signs">
           <span class="doc-card-icon">🛠</span>
           <span class="doc-card-name">Production Packet</span>
+          <span class="doc-card-sub">Available after signing</span>
+        </div>
+        <div class="doc-card doc-card-soon" title="Generated from the signed contract once the customer signs">
+          <span class="doc-card-icon">🏛</span>
+          <span class="doc-card-name">Permit Application Packet</span>
           <span class="doc-card-sub">Available after signing</span>
         </div>`}
       </div>
@@ -11301,6 +11355,130 @@ async function generateProductionPacket(btn) {
     S.attachments.push(d.attachment);
   } catch (e) {
     alert('Could not generate the production packet: ' + e.message);
+  }
+  renderDocumentsPage();
+}
+
+async function generatePermitPacket(btn) {
+  if (!S.estimate_id) return;
+  const sub = btn.querySelector('.doc-card-sub');
+  if (sub) sub.textContent = 'Generating + pushing to Den…';
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/permit-packet`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({push_to_crm: true}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Generation failed');
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'permit_packet'));
+    S.attachments.push(d.attachment);
+  } catch (e) {
+    alert('Could not generate the permit packet: ' + e.message);
+  }
+  renderDocumentsPage();
+}
+
+/* Work-order fields the rep fills in AFTER signing (schedule date, satellite
+   dish, layers to tear off). Save writes to est.work_order without touching
+   the packet PDF; Regenerate rebuilds so the numbers land on the sheet;
+   Push to Den regenerates then files in Base44. */
+function renderWorkOrderForm() {
+  const wo = S.work_order || {};
+  const dish = wo.satellite_dish || '';
+  const dishOpts = ['', 'Reinstall', 'Remove', 'Leave in place', 'N/A — no dish'];
+  return `
+  <div class="wo-form">
+    <div class="wo-form-title">Work Order Details <span class="pm-hint" style="font-weight:normal">(fill in, then Regenerate — Push to Den when ready)</span></div>
+    <div class="wo-form-grid">
+      <label>Scheduled Date
+        <input type="date" id="wo-sched" value="${esc(wo.scheduled_date || '')}">
+      </label>
+      <label>Tear-off Layers
+        <input type="number" min="0" max="20" step="1" id="wo-layers"
+          value="${wo.tear_off_layers != null ? esc(String(wo.tear_off_layers)) : ''}"
+          placeholder="0 = new construction">
+      </label>
+      <label>Satellite Dish
+        <select id="wo-dish">
+          ${dishOpts.map(o => `<option value="${esc(o)}" ${o === dish ? 'selected' : ''}>${esc(o || '— choose —')}</option>`).join('')}
+        </select>
+      </label>
+    </div>
+    <div class="wo-form-btns">
+      <button class="doc-crm-push" onclick="saveWorkOrderFields()">💾 Save</button>
+      <button class="doc-crm-push" onclick="regenerateWorkOrder()">🔄 Save + Regenerate</button>
+    </div>
+  </div>`;
+}
+
+function _readWorkOrderForm() {
+  const sched  = (document.getElementById('wo-sched')  || {}).value || '';
+  const layers = (document.getElementById('wo-layers') || {}).value || '';
+  const dish   = (document.getElementById('wo-dish')   || {}).value || '';
+  const out = {scheduled_date: sched, satellite_dish: dish};
+  if (layers !== '') out.tear_off_layers = parseInt(layers, 10);
+  return out;
+}
+
+async function saveWorkOrderFields() {
+  if (!S.estimate_id) return null;
+  const payload = _readWorkOrderForm();
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/work-order`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    S.work_order = Object.assign({}, S.work_order || {}, d.work_order || {});
+    return d.work_order;
+  } catch (e) {
+    alert('Could not save work-order fields: ' + e.message);
+    return null;
+  }
+}
+
+async function regenerateWorkOrder() {
+  const saved = await saveWorkOrderFields();
+  if (saved === null) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/production-packet`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({push_to_crm: false}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Regeneration failed');
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'work_order'));
+    S.attachments.push(d.attachment);
+  } catch (e) {
+    alert('Could not regenerate the work order: ' + e.message);
+  }
+  renderDocumentsPage();
+}
+
+async function pushWorkOrderToCrm() {
+  if (!S.estimate_id) return;
+  if (!((S.customer||{}).crm_project_id)) {
+    alert('This estimate isn\'t linked to a CRM job yet — use the customer search to link it, then try again.');
+    return;
+  }
+  // Save whatever's in the form fields first so the pushed packet has them
+  await saveWorkOrderFields();
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/production-packet`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({push_to_crm: true}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Push failed');
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'work_order'));
+    S.attachments.push(d.attachment);
+  } catch (e) {
+    alert('Could not push the work order to Den: ' + e.message);
   }
   renderDocumentsPage();
 }

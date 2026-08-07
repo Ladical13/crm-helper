@@ -3917,6 +3917,30 @@ body.is-client #nav-toggle      { display: none; }
 }
 .doc-crm-push:hover { background: #e0ecf9; }
 
+/* Work-order fields — filled in AFTER signing, then Regenerate/Push to Den */
+.wo-form {
+  border: 1px solid var(--border, #e5e7eb);
+  background: #f7f9fc; border-radius: 8px;
+  padding: 10px 12px; margin: 4px 0 12px 34px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.wo-form-title {
+  font-size: 12px; font-weight: 800; color: #1a3a5c;
+}
+.wo-form-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 12px;
+}
+.wo-form-grid label {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 11px; font-weight: 700; color: #384b63;
+}
+.wo-form-grid input, .wo-form-grid select {
+  font-size: 13px; padding: 5px 7px; border: 1px solid #c6d8ec; border-radius: 5px;
+  background: #fff; font-weight: 500; color: #1a2740;
+}
+.wo-form-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+
 /* Company trust content editor (⚙ Settings, admin only) */
 .cc-block {
   border: 1px solid var(--border, #e5e7eb); border-radius: 8px;

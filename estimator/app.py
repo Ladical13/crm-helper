@@ -1349,6 +1349,18 @@ def _parse_roofr_pdf(file_bytes):
     # the address with no separator in the extracted text (e.g. "...pitch
     # 4/125416 South Timberline Road..."), which glues the pitch digits onto
     # the street number. Strip it before matching so the address starts clean.
+    # Capture the pitch on the way through so the work order has it.
+    predom_pitch = None
+    pp_m = re.search(r'predominant\s+pitch\s*(\d{1,2})\s*/\s*12', full_text, flags=re.I)
+    if pp_m:
+        try:
+            predom_pitch = int(pp_m.group(1))
+        except ValueError:
+            predom_pitch = None
+    # Fallback: predominant pitch = the pitch with the most area, when RoofR
+    # gives us the per-pitch table but no explicit label.
+    if predom_pitch is None and pitch_rows:
+        predom_pitch = max(pitch_rows, key=lambda pa: pa[1])[0]
     addr_search_text = re.sub(r'predominant\s+pitch\s*\d{1,2}\s*/\s*12', '', full_text, flags=re.I)
     addr_m = re.search(
         r'(\d+\s+[^\n,]+),\s+([A-Za-z][A-Za-z\s]+),\s+([A-Z]{2})\s+(\d{5})',
@@ -1366,6 +1378,7 @@ def _parse_roofr_pdf(file_bytes):
         'gutter_lf':     eave,
         'low_slope_squares': low_slope_sq,
         'steep_squares':     steep_sq,
+        'predominant_pitch': predom_pitch,
     }.items() if v is not None}
 
     addr = {}
@@ -6774,6 +6787,7 @@ MEASURE_LABELS = [
               ('attic_sqft', 'Attic Area', 'SF'),
               ('low_slope_squares', 'Low Slope Area (2/12 or less) - rolled roofing', 'SQ'),
               ('steep_squares', 'Steep Area (7/12 and up)', 'SQ'),
+              ('predominant_pitch', 'Predominant Pitch', '/12'),
               ('ridge_hip_lf', 'Ridge + Hip', 'LF'),
               # Ridges alone — ridge vent ORDERS the full ridge off this, so the
               # crew needs it on the packet. It was enterable in the UI but
@@ -7381,6 +7395,115 @@ def build_production_packet_pdf(est):
         pdf.cell(0, 5.5, _pdf_safe(val), new_x='LMARGIN', new_y='NEXT')
     pdf.ln(3)
 
+    # ── Job Details block ─────────────────────────────────────────────
+    # The scheduling + install-plan facts the crew actually needs at the top
+    # of the sheet: total squares installed, steep area + pitch, layers to
+    # tear off, scheduled date, dish disposition, ridge vent y/n. Some come
+    # from the estimate (measurements + roofing line items), some from the
+    # work_order fields the rep fills in after signing.
+    wo0 = est.get('work_order') or {}
+    m0 = est.get('measurements') or {}
+
+    def _mnum0(key):
+        try:
+            return float(m0.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    roof_sq_total   = _mnum0('roof_squares')
+    low_slope_sq    = _mnum0('low_slope_squares')
+    waste_pct       = _mnum0('waste_pct')
+    steep_sq        = _mnum0('steep_squares')
+    pitch_num       = _mnum0('predominant_pitch')
+    # Match squares_waste in app.js/app.py: (roof_sq - low_slope) × (1 + waste)
+    installed_sq    = max(roof_sq_total - low_slope_sq, 0.0) * (1 + waste_pct / 100.0)
+    roofing_td      = trades.get('roofing') or {}
+    has_ridge_vent  = any(it.get('vent_role') == 'ridge'
+                          for it in (roofing_td.get('line_items') or []))
+    vent_cutin0     = est.get('vent_cutin') or {}
+
+    detail_rows = []
+    if roof_sq_total > 0:
+        detail_rows.append(('Squares to Install',
+                            f'{installed_sq:.1f} SQ (roof {roof_sq_total:g} SQ + {waste_pct:g}% waste'
+                            + (f', minus {low_slope_sq:g} SQ low-slope' if low_slope_sq else '')
+                            + ')'))
+    if steep_sq > 0 or pitch_num > 0:
+        pitch_txt = f' at {int(pitch_num)}/12 pitch' if pitch_num > 0 else ''
+        steep_txt = f'{steep_sq:g} SQ steep{pitch_txt}' if steep_sq > 0 else \
+                    f'Predominant pitch {int(pitch_num)}/12'
+        detail_rows.append(('Steep Area', steep_txt))
+    # Ridge vent — always show it, with an explicit YES/NO
+    detail_rows.append(('Ridge Vent',
+                        'YES - see cut-in map below' if has_ridge_vent else 'NO'))
+    # work_order fields — fall back to "________" so the printed sheet has a
+    # blank line for the crew when nothing was entered
+    detail_rows.append(('Tear-off Layers',
+                        (str(wo0.get('tear_off_layers')) + ' layer(s)')
+                        if wo0.get('tear_off_layers') is not None
+                        else '____ (fill in)'))
+    detail_rows.append(('Scheduled Date',
+                        (wo0.get('scheduled_date') or '').strip() or '____________ (TBD)'))
+    detail_rows.append(('Satellite Dish',
+                        (wo0.get('satellite_dish') or '').strip() or '____________ (confirm w/ HO)'))
+
+    section_title('Job Details')
+    pdf.set_font('Helvetica', '', 9)
+    for label, val in detail_rows:
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(40, 5.5, _pdf_safe(label))
+        pdf.set_font('Helvetica', '', 9)
+        pdf.multi_cell(W - 40, 5.5, _pdf_safe(val))
+    pdf.ln(2)
+
+    # Ridge-vent cut-in map, inline under Job Details when applicable — the
+    # crew wants the picture right next to the "YES" row, not at the bottom
+    # of the sheet.
+    if has_ridge_vent or vent_cutin0.get('image_filename'):
+        try:
+            ridge_lf = float(m0.get('ridge_lf') or 0)
+        except (TypeError, ValueError):
+            ridge_lf = 0.0
+        vinfo = attic_ventilation(m0)
+        raw_cut = math.ceil(vinfo['ridge_lf_required'])
+        cutin = min(raw_cut, int(ridge_lf)) if ridge_lf > 0 else raw_cut
+        full_sticks = math.ceil(ridge_lf / 4) if ridge_lf > 0 else 0
+        pdf.set_font('Helvetica', '', 8.5)
+        if ridge_lf > 0:
+            pdf.multi_cell(W, 4.6, _pdf_safe(
+                f'Install ridge vent the FULL ridge ({ridge_lf:g} LF, '
+                f'{full_sticks} stick(s)) for a uniform look.'))
+        else:
+            pdf.multi_cell(W, 4.6, _pdf_safe(
+                'Install ridge vent the full ridge for a uniform look.'))
+        pdf.set_font('Helvetica', 'B', 9)
+        if ridge_lf > 0 and cutin >= ridge_lf:
+            pdf.multi_cell(W, 4.8, _pdf_safe(
+                f'CUT IN the full ridge (~{cutin:g} LF) for code ventilation.'))
+        else:
+            pdf.multi_cell(W, 4.8, _pdf_safe(
+                f'CUT IN only ~{cutin:g} LF for code-required ventilation - see map for locations.'))
+        note = (vent_cutin0.get('notes') or '').strip()
+        if note:
+            pdf.set_font('Helvetica', '', 8.5)
+            pdf.multi_cell(W, 4.6, _pdf_safe(note))
+        img_fn = vent_cutin0.get('image_filename')
+        if img_fn:
+            img_path = os.path.join(UPLOADS_DIR, *str(img_fn).split('/'))
+            if os.path.exists(img_path):
+                try:
+                    pdf.ln(2)
+                    pdf.set_font('Helvetica', 'I', 7.5)
+                    pdf.set_text_color(120, 120, 120)
+                    pdf.cell(0, 5, _pdf_safe(
+                        'Cut-In Map (highlighted = cut open for ventilation):'),
+                             new_x='LMARGIN', new_y='NEXT')
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.image(img_path, w=min(W, 150))
+                except Exception:
+                    pass
+        pdf.ln(3)
+
     # Product selections (brand/model/color per trade)
     prod_rows = []
     for trade, fields in TRADE_COLOR_FIELDS.items():
@@ -7469,55 +7592,9 @@ def build_production_packet_pdf(est):
         pdf.multi_cell(W, 4.6, _pdf_safe(crew))
         pdf.ln(3)
 
-    # ── Ventilation cut-in: how much ridge vent to actually cut open, and
-    # where. We run ridge vent the full ridge for looks but only cut the
-    # code-required footage — this tells the crew exactly what to cut.
-    m0 = est.get('measurements') or {}
-    roofing = trades.get('roofing', {})
-    has_ridge = any(it.get('vent_role') == 'ridge' for it in roofing.get('line_items', []))
-    vent_cutin = est.get('vent_cutin') or {}
-    if has_ridge or vent_cutin.get('image_filename'):
-        try:
-            ridge_lf = float(m0.get('ridge_lf') or 0)
-        except (TypeError, ValueError):
-            ridge_lf = 0.0
-        vinfo = attic_ventilation(m0)
-        raw_cut = math.ceil(vinfo['ridge_lf_required'])
-        cutin = min(raw_cut, int(ridge_lf)) if ridge_lf > 0 else raw_cut
-        full_sticks = math.ceil(ridge_lf / 4) if ridge_lf > 0 else 0
-        section_title('Ventilation - Ridge Vent Cut-In')
-        pdf.set_font('Helvetica', '', 8.5)
-        if ridge_lf > 0:
-            line1 = (f'Install ridge vent the FULL ridge ({ridge_lf:g} LF, '
-                     f'{full_sticks} stick(s)) for a uniform look.')
-        else:
-            line1 = 'Install ridge vent the full ridge for a uniform look.'
-        pdf.multi_cell(W, 4.6, _pdf_safe(line1))
-        pdf.set_font('Helvetica', 'B', 9)
-        if ridge_lf > 0 and cutin >= ridge_lf:
-            cut_msg = f'CUT IN the full ridge (~{cutin:g} LF) for code ventilation.'
-        else:
-            cut_msg = f'CUT IN only ~{cutin:g} LF for code-required ventilation - see map for locations.'
-        pdf.multi_cell(W, 4.8, _pdf_safe(cut_msg))
-        note = (vent_cutin.get('notes') or '').strip()
-        if note:
-            pdf.set_font('Helvetica', '', 8.5)
-            pdf.multi_cell(W, 4.6, _pdf_safe(note))
-        img_fn = vent_cutin.get('image_filename')
-        if img_fn:
-            img_path = os.path.join(UPLOADS_DIR, *str(img_fn).split('/'))
-            if os.path.exists(img_path):
-                try:
-                    pdf.ln(2)
-                    pdf.set_font('Helvetica', 'I', 7.5)
-                    pdf.set_text_color(120, 120, 120)
-                    pdf.cell(0, 5, _pdf_safe('Cut-In Map (highlighted = cut open for ventilation):'),
-                             new_x='LMARGIN', new_y='NEXT')
-                    pdf.set_text_color(0, 0, 0)
-                    pdf.image(img_path, w=min(W, 150))
-                except Exception:
-                    pass
-        pdf.ln(4)
+    # Ridge-vent cut-in is now printed inline under Job Details on page 1,
+    # right next to the "Ridge Vent: YES" row — the crew doesn't have to
+    # flip pages to find the picture.
 
     # ── Page 2: Material Order ──
     pdf.add_page()
@@ -7950,11 +8027,15 @@ def push_document_to_crm(est_id):
     return jsonify({'crm_document_id': doc_id})
 
 
-def generate_production_packet(est_id):
-    """Build the production-packet PDF for a signed estimate, store it as a
-    server-generated attachment (replacing any previous packet), and file it
-    on the linked CRM job. Returns the attachment dict. Raises on failure —
-    callers decide whether that's fatal (endpoint) or logged (pipeline)."""
+def generate_production_packet(est_id, push_to_crm=False):
+    """Build the production-packet PDF for a signed estimate and store it as a
+    server-generated attachment (replacing any previous packet). By default it
+    does NOT file to the CRM — the packet contains post-signing fields (crew
+    schedule, dish, tear-off layers) that the rep fills in later, so pushing
+    at signing time would ship an unfinished doc. The rep clicks "↗ Push to
+    Den" on the Documents tab when the packet is finalized. Returns the
+    attachment dict. Raises on failure — callers decide whether that's fatal
+    (endpoint) or logged (pipeline)."""
     est = est_load(est_id)
     if est is None:
         raise ValueError('estimate not found')
@@ -8007,7 +8088,10 @@ def generate_production_packet(est_id):
 
     est = est_update(est_id, _swap_packet) or est
 
-    # File it on the CRM job — best-effort, packet exists locally regardless
+    if not push_to_crm:
+        return att
+
+    # Explicit push (manual "↗ Push to Den" button from the Documents tab)
     c     = est.get('customer', {})
     cname = (c.get('name') or 'Customer').strip()
     enum  = _est_number(est)
@@ -8015,7 +8099,7 @@ def generate_production_packet(est_id):
         est, pdf_bytes, upload_name=f'Production_Packet_{enum}.pdf',
         hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
         doc_name=f'Production Packet - {cname} ({enum})', doc_type='work_order',
-        description='Work order + material list generated automatically from the signed contract.')
+        description='Work order + material list generated from the signed contract.')
     if doc_id:
         def _mark_pushed(doc):
             if doc is None:
@@ -8028,6 +8112,346 @@ def generate_production_packet(est_id):
         att['crm_document_id'] = doc_id
     elif err and err != 'not_linked':
         print(f'[packet] CRM push failed for {est_id}: {err}')
+    return att
+
+
+def _cost_split_by_trade(est):
+    """(materials_cost, labor_cost, sell_total) per enabled non-insurance trade
+    at its selected tier, for the permit packet's cost-breakdown table. Skips
+    excluded lines and zero-qty items — same rules the priced totals use."""
+    rows = []
+    trades = est.get('trades') or {}
+    for tk in GBB_TRADES:
+        td = trades.get(tk) or {}
+        if not td.get('enabled'):
+            continue
+        tier = _trade_tier(est, tk)
+        trade_mode = _trade_mode(tk, td)
+        mat_cost = lab_cost = 0.0
+        for item in td.get('line_items') or []:
+            qty = float(item.get('quantity') or 0)
+            if qty <= 0:
+                continue
+            if trade_mode == 'simple':
+                mat_cost += float(item.get('unit_cost') or 0) * qty
+                # simple-mode carries no labor line — the material_cost/unit_cost
+                # is already the all-in cost basis. Nothing to add to lab_cost.
+            else:
+                t = (item.get('tiers') or {}).get(tier) or {}
+                if t.get('included') is False:
+                    continue
+                mat_cost += float(t.get('material_unit_cost') or 0) * qty
+                lab_cost += float(t.get('labor_unit_cost') or 0) * qty
+        sell = _trade_subtotal(est, tk, tier)
+        if mat_cost > 0 or lab_cost > 0 or sell > 0:
+            rows.append({'trade': tk, 'materials_cost': mat_cost,
+                         'labor_cost': lab_cost, 'sell': sell})
+    return rows
+
+
+def _selected_permit_jurisdiction(est):
+    """Return the manager-approved jurisdiction dict (from jurisdictions.json)
+    the estimate points at — or the Colorado baseline when none is selected.
+    Includes the verified_profile only when it has a reviewed_at timestamp
+    (matches the customer-view rule)."""
+    jx       = _load_jurisdictions() or {}
+    baseline = jx.get('colorado_baseline') or {}
+    perm     = est.get('permit_jurisdiction') or {}
+    sel_id   = (perm.get('selected_id') or perm.get('auto_id') or '').strip()
+    jur = None
+    if sel_id:
+        for j in (jx.get('jurisdictions') or []):
+            if isinstance(j, dict) and j.get('id') == sel_id:
+                jur = j
+                break
+    vp = (jur.get('verified_profile') if isinstance(jur, dict) else None) or {}
+    if not (vp.get('reviewed_at') or '').strip():
+        vp = {}
+    return {
+        'name':     (jur.get('name') if jur else '') or 'Colorado (statewide baseline)',
+        'kind':     (jur.get('kind') if jur else ''),
+        'county':   (jur.get('county') if jur else ''),
+        'office':   (jur.get('office') if jur else ''),
+        'verified': bool(perm.get('verified')),
+        'adopted_code':    (vp.get('adopted_code') or '').strip(),
+        'submittal_method': ((vp.get('reroof_permit') or {}).get('submittal_method') or '').strip(),
+        'portal_url':       ((vp.get('reroof_permit') or {}).get('portal_url') or '').strip(),
+        'fee_basis':        ((vp.get('reroof_permit') or {}).get('fee_basis') or '').strip(),
+    }
+
+
+def build_permit_packet_pdf(est):
+    """Permit-application prep sheet. Everything an office admin needs to pull
+    a permit at any Colorado jurisdiction: where to apply, the job address,
+    installed roofing squares + brand/color, and a materials/labor/total cost
+    breakdown for the fee schedule. Not a filled application — the city's own
+    form still gets filled in (the Loveland permit generator does that for one
+    specific city). This is the info sheet."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+
+    c        = est.get('customer', {})
+    a        = c.get('address', {})
+    sig      = est.get('signature') or {}
+    enum     = _est_number(est)
+    trades   = est.get('trades') or {}
+    m        = est.get('measurements') or {}
+    jur      = _selected_permit_jurisdiction(est)
+
+    def _mnum(k):
+        try:
+            return float(m.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    roof_sq   = _mnum('roof_squares')
+    low_slope = _mnum('low_slope_squares')
+    waste_pct = _mnum('waste_pct')
+    installed = max(roof_sq - low_slope, 0.0) * (1 + waste_pct / 100.0)
+
+    pdf = FPDF(orientation='P', unit='mm', format='Letter')
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.set_margins(14, 14, 14)
+    pdf.add_page()
+    W = pdf.w - 28
+
+    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
+    if os.path.exists(logo):
+        try:
+            pdf.image(logo, x=14, y=12, h=16)
+        except Exception:
+            pass
+    pdf.set_xy(14, 12)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_font('Helvetica', '', 8)
+    pdf.cell(W, 4, '970-776-0945  -  projectoneroofingcolorado.com', align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_y(32)
+
+    pdf.set_fill_color(26, 58, 92)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font('Helvetica', 'B', 13)
+    pdf.cell(W, 10, '  PERMIT APPLICATION PACKET', fill=True, new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(4)
+
+    def section_title(txt):
+        pdf.set_font('Helvetica', 'B', 10.5)
+        pdf.set_text_color(26, 58, 92)
+        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(0, 0, 0)
+
+    def kv_row(label, val):
+        if not val:
+            return
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(50, 5.5, _pdf_safe(label))
+        pdf.set_font('Helvetica', '', 9)
+        pdf.multi_cell(W - 50, 5.5, _pdf_safe(val))
+
+    # Where to apply
+    section_title('Apply To')
+    kv_row('Jurisdiction',      jur['name'])
+    if jur['office']:
+        kv_row('Building Office', jur['office'])
+    if jur['county']:
+        kv_row('County',          jur['county'])
+    if jur['submittal_method']:
+        kv_row('Submittal Method', jur['submittal_method'])
+    if jur['portal_url']:
+        kv_row('Portal URL',      jur['portal_url'])
+    if jur['fee_basis']:
+        kv_row('Fee Basis',       jur['fee_basis'])
+    if jur['adopted_code']:
+        kv_row('Adopted Code',    jur['adopted_code'])
+    if not jur['verified']:
+        pdf.ln(1)
+        pdf.set_font('Helvetica', 'I', 8)
+        pdf.set_text_color(170, 30, 30)
+        pdf.multi_cell(W, 4.4, _pdf_safe(
+            'Jurisdiction has NOT been manager-verified for this address — '
+            'confirm the correct AHJ before submitting.'))
+        pdf.set_text_color(0, 0, 0)
+    pdf.ln(3)
+
+    # Job
+    section_title('Job')
+    addr = ', '.join(filter(None, [a.get('street'), a.get('city'), a.get('state'), a.get('zip')]))
+    kv_row('Job Address',   addr)
+    kv_row('Customer',      c.get('name', ''))
+    kv_row('Phone',         c.get('phone', ''))
+    kv_row('Estimate #',    enum)
+    signed_at = sig.get('signed_at', '')
+    try:
+        signed_fmt = datetime.fromisoformat(signed_at.replace('Z', '+00:00')).strftime('%B %d, %Y')
+    except Exception:
+        signed_fmt = signed_at
+    if signed_fmt:
+        kv_row('Contract Signed', signed_fmt)
+    pdf.ln(3)
+
+    # Squares installed
+    section_title('Roofing Scope')
+    if roof_sq > 0:
+        detail = (f'{installed:.1f} SQ (roof {roof_sq:g} SQ + {waste_pct:g}% waste'
+                  + (f', minus {low_slope:g} SQ low-slope' if low_slope else '') + ')')
+        kv_row('Squares to Install', detail)
+    steep = _mnum('steep_squares')
+    pitch = _mnum('predominant_pitch')
+    if steep > 0 or pitch > 0:
+        pitch_txt = f' at {int(pitch)}/12' if pitch > 0 else ''
+        kv_row('Steep Area', (f'{steep:g} SQ steep{pitch_txt}' if steep > 0
+                              else f'Predominant pitch {int(pitch)}/12'))
+    pdf.ln(2)
+
+    # Material brand/color per trade
+    prod_rows = []
+    for trade, fields in TRADE_COLOR_FIELDS.items():
+        td = trades.get(trade) or {}
+        if not td.get('enabled'):
+            continue
+        colors = td.get('colors') or {}
+        for key, label in fields:
+            v = (colors.get(key) or '').strip()
+            if v:
+                prod_rows.append((_PRODUCT_TRADE_LABELS.get(trade, trade.title()), label, v))
+    # Shingle color/siding color from the signed record — falls back to the
+    # trade's colors dict when the customer didn't pick during signing
+    ss_pick = (sig.get('shingle_color') or '').strip()
+    if ss_pick and not any(r[1] == 'Shingle Color' for r in prod_rows):
+        prod_rows.insert(0, ('Roofing', 'Shingle Color', ss_pick))
+    sd_pick = (sig.get('siding_color') or '').strip()
+    if sd_pick and not any(r[1] == 'Siding Color' for r in prod_rows):
+        prod_rows.append(('Siding', 'Siding Color', sd_pick))
+    if prod_rows:
+        section_title('Material Selection')
+        pdf.set_fill_color(234, 239, 245)
+        pdf.set_font('Helvetica', 'B', 8)
+        for txt, w, align in [('Trade', 30, 'L'), ('Item', 60, 'L'), ('Selection', 92, 'L')]:
+            pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
+        pdf.ln()
+        pdf.set_font('Helvetica', '', 8)
+        for trade, label, v in prod_rows:
+            pdf.cell(30, 6, _pdf_safe(trade[:18]), border=1)
+            pdf.cell(60, 6, _pdf_safe(label[:40]), border=1)
+            pdf.cell(92, 6, _pdf_safe(v[:62]), border=1)
+            pdf.ln()
+        pdf.ln(3)
+
+    # Cost breakdown
+    section_title('Cost Breakdown')
+    rows = _cost_split_by_trade(est)
+    total_mat = sum(r['materials_cost'] for r in rows)
+    total_lab = sum(r['labor_cost']     for r in rows)
+    total_sell = _estimate_total(est)
+    pdf.set_fill_color(234, 239, 245)
+    pdf.set_font('Helvetica', 'B', 8)
+    for txt, w, align in [('Trade', 40, 'L'), ('Materials', 44, 'R'),
+                          ('Labor', 44, 'R'), ('Contract Value', 54, 'R')]:
+        pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
+    pdf.ln()
+    pdf.set_font('Helvetica', '', 8)
+    for r in rows:
+        pdf.cell(40, 6, _pdf_safe(_PRODUCT_TRADE_LABELS.get(r['trade'], r['trade'].title())), border=1)
+        pdf.cell(44, 6, f'${r["materials_cost"]:,.2f}', border=1, align='R')
+        pdf.cell(44, 6, f'${r["labor_cost"]:,.2f}',     border=1, align='R')
+        pdf.cell(54, 6, f'${r["sell"]:,.2f}',           border=1, align='R')
+        pdf.ln()
+    pdf.set_font('Helvetica', 'B', 8.5)
+    pdf.cell(40, 6.5, 'TOTAL', border=1)
+    pdf.cell(44, 6.5, f'${total_mat:,.2f}',  border=1, align='R')
+    pdf.cell(44, 6.5, f'${total_lab:,.2f}',  border=1, align='R')
+    pdf.cell(54, 6.5, f'${total_sell:,.2f}', border=1, align='R')
+    pdf.ln()
+    pdf.ln(1)
+    pdf.set_font('Helvetica', 'I', 7.5)
+    pdf.set_text_color(120, 120, 120)
+    pdf.multi_cell(W, 4.2, _pdf_safe(
+        'Materials/Labor columns are Project One Roofing cost basis. Contract '
+        'Value is the customer-facing price and matches the signed contract '
+        'total. Most jurisdictions fee on Contract Value.'))
+    pdf.set_text_color(0, 0, 0)
+
+    pdf.ln(4)
+    pdf.set_font('Helvetica', 'I', 7.5)
+    pdf.set_text_color(120, 120, 120)
+    pdf.cell(0, 5, _pdf_safe('Generated from the signed contract. Internal document.'),
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+    return bytes(pdf.output())
+
+
+def generate_permit_packet(est_id, push_to_crm=True):
+    """Build the permit-application PDF, save as a server-generated attachment
+    (swaps any prior permit-packet row), and file it on the Base44 job. Permit
+    info is derivable at signing time and doesn't need post-sign editing — safe
+    to push automatically. Returns the attachment dict."""
+    est = est_load(est_id)
+    if est is None:
+        raise ValueError('estimate not found')
+    if not est.get('signature'):
+        raise ValueError('estimate is not signed')
+
+    pdf_bytes = build_permit_packet_pdf(est)
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'permit_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+
+    c     = est.get('customer', {})
+    cname = (c.get('name') or 'Customer').strip()
+    enum  = _est_number(est)
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            f'Permit Application Packet - {cname}',
+        'doc_type':         'permit_packet',
+        'show_in_estimate': False,
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+    }
+
+    def _is_permit(x):
+        return x.get('server_generated') and x.get('doc_type') == 'permit_packet'
+
+    def _swap(doc):
+        if doc is None:
+            return None
+        for old in filter(_is_permit, doc.get('attachments') or []):
+            parts = (old.get('filename') or '').split('/')
+            if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+                try:
+                    os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+                except OSError:
+                    pass
+        doc['attachments'] = [x for x in doc.get('attachments') or []
+                              if not _is_permit(x)] + [att]
+        return doc
+
+    est = est_update(est_id, _swap) or est
+
+    if not push_to_crm:
+        return att
+
+    doc_id, err = _crm_file_document(
+        est, pdf_bytes, upload_name=f'Permit_Packet_{enum}.pdf',
+        hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
+        doc_name=f'Permit Application Packet - {cname} ({enum})',
+        doc_type='permit',
+        description='Permit application info sheet generated from the signed contract.')
+    if doc_id:
+        def _mark_pushed(doc):
+            if doc is None:
+                return None
+            for x in doc.get('attachments', []):
+                if x.get('id') == att['id']:
+                    x['crm_document_id'] = doc_id
+            return doc
+        est_update(est_id, _mark_pushed)
+        att['crm_document_id'] = doc_id
+    elif err and err != 'not_linked':
+        print(f'[permit] CRM push failed for {est_id}: {err}')
     return att
 
 
@@ -8103,11 +8527,48 @@ def _post_sign_pipeline(est_id):
         print(f"[packet] generated {att['filename']} for {est_id}")
     except Exception as exc:
         print(f'[packet] generation failed for {est_id}: {exc}')
+    # Permit packet uses only data locked in at signing — safe to build and
+    # push to Den right now (the rep doesn't need to fill anything in later).
+    try:
+        att = generate_permit_packet(est_id)
+        print(f"[permit] generated {att['filename']} for {est_id}")
+    except Exception as exc:
+        print(f'[permit] generation failed for {est_id}: {exc}')
+
+
+@app.route('/api/estimates/<est_id>/permit-packet', methods=['POST'])
+def regenerate_permit_packet(est_id):
+    """Manual (re)generate the permit packet from the Documents tab. Optional
+    {\"push_to_crm\": true} — defaults to true because permit info is stable
+    at signing (no post-sign fields to wait on)."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    if not est.get('signature'):
+        return jsonify({'error': 'The permit packet is generated from the signed contract — '
+                                 'this estimate has not been signed yet.'}), 400
+    payload = request.get_json(silent=True) or {}
+    push = payload.get('push_to_crm')
+    if push is None:
+        push = True
+    try:
+        att = generate_permit_packet(est_id, push_to_crm=bool(push))
+    except Exception as exc:
+        print(f'[permit] manual generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Permit packet generation failed: {exc}'}), 500
+    return jsonify({'attachment': att})
 
 
 @app.route('/api/estimates/<est_id>/production-packet', methods=['POST'])
 def regenerate_production_packet(est_id):
-    """Manual (re)generate from the Documents tab. Signed estimates only."""
+    """Manual (re)generate from the Documents tab. Signed estimates only.
+    Accepts optional {\"push_to_crm\": true} to also file the fresh packet in
+    Base44 — otherwise it stays local (the packet contains post-sign fields
+    that aren't ready until the rep fills them in)."""
     if not _safe_path_id(est_id):
         return jsonify({'error': 'invalid estimate id'}), 400
     est = est_load(est_id)
@@ -8118,12 +8579,71 @@ def regenerate_production_packet(est_id):
     if not est.get('signature'):
         return jsonify({'error': 'The production packet is generated from the signed '
                                  'contract — this estimate has not been signed yet.'}), 400
+    payload = request.get_json(silent=True) or {}
+    push = bool(payload.get('push_to_crm'))
     try:
-        att = generate_production_packet(est_id)
+        att = generate_production_packet(est_id, push_to_crm=push)
     except Exception as exc:
         print(f'[packet] manual generation failed for {est_id}: {exc}')
         return jsonify({'error': f'Packet generation failed: {exc}'}), 500
     return jsonify({'attachment': att})
+
+
+# Fields the rep fills in on the Documents tab AFTER signing — the scheduling
+# details the sales rep didn't know at signing time. They live on the estimate
+# doc so a packet re-generate always pulls the latest, and they're excluded
+# from the signature hash (added after the fact, by design).
+_WORK_ORDER_STR_FIELDS  = ('scheduled_date', 'satellite_dish', 'crew_notes')
+_WORK_ORDER_INT_FIELDS  = ('tear_off_layers',)
+
+
+def _sanitize_work_order(payload):
+    out = {}
+    for k in _WORK_ORDER_STR_FIELDS:
+        v = payload.get(k)
+        if v is None:
+            continue
+        out[k] = str(v).strip()[:400]
+    for k in _WORK_ORDER_INT_FIELDS:
+        v = payload.get(k)
+        if v in (None, ''):
+            continue
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= n <= 20:
+            out[k] = n
+    return out
+
+
+@app.route('/api/estimates/<est_id>/work-order', methods=['PUT'])
+def save_work_order_fields(est_id):
+    """Save the post-signing work-order details (scheduled date, satellite
+    dish disposition, tear-off layers, crew notes). Never regenerates the
+    PDF — the UI calls production-packet after saving when a fresh PDF is
+    wanted, so a distracted rep doesn't ship a half-filled packet."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    payload = request.get_json(silent=True) or {}
+    cleaned = _sanitize_work_order(payload)
+
+    def _apply(doc):
+        if doc is None:
+            return None
+        wo = dict(doc.get('work_order') or {})
+        wo.update(cleaned)
+        wo['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        doc['work_order'] = wo
+        return doc
+
+    est_update(est_id, _apply)
+    return jsonify({'work_order': cleaned})
 
 
 # ── Change orders ────────────────────────────────────────────────────────────
