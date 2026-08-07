@@ -10999,7 +10999,7 @@ function renderDocumentsPage() {
       </div>
       ${atts.length ? atts.map(att => `
       <div class="att-row">
-        <span class="att-icon">${att.server_generated ? '🛠' : '📄'}</span>
+        <span class="att-icon">${att.doc_type === 'signed_contract' ? '🖊' : att.server_generated ? '🛠' : '📄'}</span>
         <input type="text" class="att-label" value="${esc(att.label||att.original_name||'Document')}"
           onchange="attSetLabel('${att.id}',this.value)" placeholder="Document name">
         ${att.crm_document_id

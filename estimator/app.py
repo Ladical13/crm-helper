@@ -7727,10 +7727,11 @@ def build_production_packet_pdf(est):
     return bytes(pdf.output())
 
 
-def push_contract_to_crm(est_id):
+def push_contract_to_crm(est_id, pdf_bytes=None):
     """Upload the signed contract PDF to Base44 and create a Document record
     tagged 'contract' on the linked CRM job. Runs in a background thread —
-    logs everything, never raises."""
+    logs everything, never raises. Accepts a pre-built PDF so the post-sign
+    pipeline can build it once and reuse it across steps."""
     try:
         est = est_load(est_id)
         if est is None:
@@ -7753,13 +7754,13 @@ def push_contract_to_crm(est_id):
         safe_name = ''.join(ch if ch.isalnum() or ch in ' -_' else '' for ch in cname).strip().replace(' ', '_')
         fname = f'Signed_Contract_{enum}_{safe_name}.pdf'
 
-        # 1) Build the PDF
-        pdf_bytes = None
-        try:
-            pdf_bytes = build_signed_pdf(est)
-            print(f'[crm-push] built PDF ({len(pdf_bytes)} bytes)')
-        except Exception as exc:
-            print(f'[crm-push] PDF build failed: {exc}')
+        # 1) Build the PDF (unless the caller already did)
+        if pdf_bytes is None:
+            try:
+                pdf_bytes = build_signed_pdf(est)
+                print(f'[crm-push] built PDF ({len(pdf_bytes)} bytes)')
+            except Exception as exc:
+                print(f'[crm-push] PDF build failed: {exc}')
 
         # 2) Upload the file to Base44 storage
         file_url  = None
@@ -8030,10 +8031,73 @@ def generate_production_packet(est_id):
     return att
 
 
+def save_signed_contract_attachment(est_id, pdf_bytes):
+    """Save the signed contract PDF as a server-generated attachment on the
+    estimate so the rep can see it in the Documents tab. Swaps any previous
+    signed-contract row (and cleans up its file). Internal — never surfaced on
+    the customer page. Returns the attachment dict, or None if pdf_bytes was
+    missing."""
+    if not pdf_bytes:
+        return None
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'signed_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            'Signed Contract',
+        'doc_type':         'signed_contract',
+        'show_in_estimate': False,   # already lives on the customer's copy
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+    }
+
+    def _is_signed(x):
+        return x.get('server_generated') and x.get('doc_type') == 'signed_contract'
+
+    def _swap(doc):
+        if doc is None:
+            return None
+        for old in filter(_is_signed, doc.get('attachments') or []):
+            parts = (old.get('filename') or '').split('/')
+            if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+                try:
+                    os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+                except OSError:
+                    pass
+        doc['attachments'] = [x for x in doc.get('attachments') or []
+                              if not _is_signed(x)] + [att]
+        return doc
+
+    est_update(est_id, _swap)
+    return att
+
+
 def _post_sign_pipeline(est_id):
     """Post-signature background work, run sequentially in ONE thread so two
     writers never read-modify-write the same estimate concurrently."""
-    push_contract_to_crm(est_id)
+    # Build the signed PDF once, then reuse it for the local Documents-tab
+    # attachment and the CRM push.
+    pdf_bytes = None
+    try:
+        est = est_load(est_id)
+        if est is not None:
+            pdf_bytes = build_signed_pdf(est)
+    except Exception as exc:
+        print(f'[post-sign] signed PDF build failed for {est_id}: {exc}')
+
+    if pdf_bytes:
+        try:
+            att = save_signed_contract_attachment(est_id, pdf_bytes)
+            if att:
+                print(f"[signed] filed {att['filename']} in Documents for {est_id}")
+        except Exception as exc:
+            print(f'[signed] attachment save failed for {est_id}: {exc}')
+
+    push_contract_to_crm(est_id, pdf_bytes=pdf_bytes)
     try:
         att = generate_production_packet(est_id)
         print(f"[packet] generated {att['filename']} for {est_id}")
