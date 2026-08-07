@@ -4077,8 +4077,34 @@ def _build_estimate_manifest(est):
                    'basis': str(i.get('basis', '')).strip()}
                   for i in (baseline.get('code_items') or [])
                   if isinstance(i, dict) and str(i.get('label') or '').strip()]
+    # Manager-approved per-jurisdiction profile — the adopted IRC year, local
+    # amendments, and reroof permit info a customer actually wants to see.
+    # Only surfaced when reviewed_at is set; an unreviewed profile might carry
+    # unvetted Perplexity output and must never reach the customer view.
+    vp = (jur.get('verified_profile') if isinstance(jur, dict) else None) or {}
+    verified_profile = None
+    if vp and (vp.get('reviewed_at') or '').strip():
+        verified_profile = {
+            'adopted_code':            str(vp.get('adopted_code') or '').strip(),
+            'adopted_code_source_url': str(vp.get('adopted_code_source_url') or '').strip(),
+            'amendments': [
+                {'topic': str(a.get('topic') or '').strip(),
+                 'text':  str(a.get('text')  or '').strip(),
+                 'source_url': str(a.get('source_url') or '').strip()}
+                for a in (vp.get('amendments') or [])
+                if isinstance(a, dict) and str(a.get('text') or '').strip()
+            ][:8],
+            'reroof_permit': {
+                'submittal_method': str((vp.get('reroof_permit') or {}).get('submittal_method') or '').strip(),
+                'portal_url':       str((vp.get('reroof_permit') or {}).get('portal_url') or '').strip(),
+                'fee_basis':        str((vp.get('reroof_permit') or {}).get('fee_basis') or '').strip(),
+            },
+            'sources':      [str(s).strip() for s in (vp.get('sources') or []) if str(s).strip()][:6],
+            'verified_at':  str(vp.get('verified_at') or '').strip(),
+            'verified_via': str(vp.get('verified_via') or '').strip(),
+        }
     code = None
-    if jur or baseline_points or jur_points or code_items:
+    if jur or baseline_points or jur_points or code_items or verified_profile:
         code = {
             'jurisdiction_name': (jur.get('name') if jur else '')
                                  or 'Colorado (statewide baseline)',
@@ -4089,6 +4115,7 @@ def _build_estimate_manifest(est):
             'jurisdiction_points': jur_points,
             'code_items':        code_items[:12],
             'verified':          bool(perm.get('verified')),
+            'verified_profile':  verified_profile,
         }
 
     # Attic ventilation calc (mirrors what the crew packet already uses)
@@ -4264,6 +4291,52 @@ def _cv_estimate_details_block(manifest, est=None):
             header += f' &middot; {he(cty)} County'
         if office:
             header += f'<br><span style="color:var(--faint);font-size:12.5px">{he(office)}</span>'
+        # Manager-approved profile: adopted IRC year + local amendments +
+        # reroof permit portal. Only present when a manager has stamped it,
+        # so this is the "specific to your address, verified" content the
+        # customer is meant to see. Baseline points still render below.
+        vp = code.get('verified_profile') or {}
+        verified_html = ''
+        if vp:
+            ac  = vp.get('adopted_code') or ''
+            acu = vp.get('adopted_code_source_url') or ''
+            va  = (vp.get('verified_at') or '')[:10]
+            via = vp.get('verified_via') or ''
+            src = ' &middot; '.join(filter(None, [
+                f'verified {he(va)}' if va else '',
+                f'source: {he(via)}' if via else '',
+            ]))
+            if ac:
+                ac_html = f'<div class="cvdet-code-adopted"><strong>Enforces</strong> {he(ac)}'
+                if acu:
+                    ac_html += f' &middot; <a href="{he(acu)}" target="_blank" rel="noopener">source</a>'
+                ac_html += '</div>'
+                verified_html += ac_html
+            amends = vp.get('amendments') or []
+            if amends:
+                verified_html += ('<div style="margin-top:8px"><b style="font-size:12px;color:var(--faint)">'
+                                  'Local amendments applied to this project</b>')
+                for a in amends[:8]:
+                    tp = (a.get('topic') or '').strip()
+                    tx = (a.get('text')  or '').strip()
+                    su = (a.get('source_url') or '').strip()
+                    label = f'<strong>{he(tp)}:</strong> ' if tp else ''
+                    link  = (f' <a href="{he(su)}" target="_blank" rel="noopener" '
+                             f'style="font-size:11.5px">source</a>') if su else ''
+                    verified_html += f'<div class="cvdet-code-item">{label}{he(tx)}{link}</div>'
+                verified_html += '</div>'
+            rp = vp.get('reroof_permit') or {}
+            rp_bits = []
+            if (rp.get('submittal_method') or '') and rp['submittal_method'].lower() != 'unknown':
+                rp_bits.append(f'Submittal: {he(rp["submittal_method"])}')
+            if (rp.get('portal_url') or '') and rp['portal_url'].lower() != 'unknown':
+                rp_bits.append(f'<a href="{he(rp["portal_url"])}" target="_blank" rel="noopener">Permit portal</a>')
+            if rp_bits:
+                verified_html += ('<div style="margin-top:8px;font-size:12.5px;color:var(--faint)">'
+                                  + ' &middot; '.join(rp_bits) + '</div>')
+            if src:
+                verified_html += (f'<div style="margin-top:6px;font-size:11.5px;color:var(--faint)">'
+                                  f'✅ Code data {src}</div>')
         pts = (code.get('jurisdiction_points') or []) + (code.get('baseline_points') or [])
         pt_list = ''.join(f'<li>{he(p)}</li>' for p in pts[:8])
         items_html = ''
@@ -4277,6 +4350,7 @@ def _cv_estimate_details_block(manifest, est=None):
             items_html += '</div>'
         code_html = ('<section><h4>Code Compliance</h4>'
                      f'<div class="cvdet-code">{header}'
+                     + verified_html
                      + (f'<ul class="chk" style="margin-top:8px">{pt_list}</ul>' if pt_list else '')
                      + items_html + '</div></section>')
 
@@ -6144,6 +6218,42 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
         if county and county.lower() not in jname.lower():
             jline += f'  |  {county} County'
         pdf.multi_cell(W, 4.4, _pdf_safe(jline))
+        vp = code.get('verified_profile') or {}
+        if vp:
+            ac = (vp.get('adopted_code') or '').strip()
+            if ac:
+                pdf.set_font('Helvetica', 'B', 8.5)
+                pdf.multi_cell(W, 4.4, _pdf_safe(f'Enforces {ac}'))
+                pdf.set_font('Helvetica', '', 8.5)
+            amends = vp.get('amendments') or []
+            if amends:
+                pdf.ln(1)
+                pdf.set_font('Helvetica', 'B', 8)
+                pdf.cell(0, 4.4, _pdf_safe('Local amendments applied to this project:'),
+                         new_x='LMARGIN', new_y='NEXT')
+                pdf.set_font('Helvetica', '', 8)
+                for a in amends[:8]:
+                    tp = (a.get('topic') or '').strip()
+                    tx = (a.get('text')  or '').strip()
+                    line = '  - ' + (f'{tp}: {tx}' if tp else tx)
+                    pdf.multi_cell(W, 4.2, _pdf_safe(line))
+            rp = vp.get('reroof_permit') or {}
+            rp_bits = []
+            if (rp.get('submittal_method') or '').lower() not in ('', 'unknown'):
+                rp_bits.append(f'Submittal: {rp["submittal_method"]}')
+            if (rp.get('portal_url') or '').lower() not in ('', 'unknown'):
+                rp_bits.append(f'Portal: {rp["portal_url"]}')
+            if rp_bits:
+                pdf.set_font('Helvetica', 'I', 8)
+                pdf.multi_cell(W, 4.2, _pdf_safe('  ' + '  |  '.join(rp_bits)))
+                pdf.set_font('Helvetica', '', 8.5)
+            va = (vp.get('verified_at') or '')[:10]
+            via = (vp.get('verified_via') or '').strip()
+            if va or via:
+                tag = 'Code data verified ' + va + (f' (source: {via})' if via else '')
+                pdf.set_font('Helvetica', 'I', 7.5)
+                pdf.multi_cell(W, 4.0, _pdf_safe(tag))
+                pdf.set_font('Helvetica', '', 8.5)
         pts = (code.get('jurisdiction_points') or []) + (code.get('baseline_points') or [])
         if pts:
             _bullets(pts[:6])
@@ -10619,6 +10729,297 @@ def verify_jurisdiction():
         'source':          res.get('source'),
         'checked_at':      datetime.now().isoformat(timespec='seconds'),
     })
+
+
+# ── Verified jurisdiction profile ────────────────────────────────────────────
+# The Scope-page code block used to be "the CO baseline for everyone" — six
+# generic IRC bullets identical across all 337 jurisdictions in the file. That
+# is not what a customer needs to see. This layer looks up the specific
+# adopted code + local amendments + reroof permit info FOR THIS jurisdiction
+# and puts it in front of the customer on the sign page — but only after a
+# manager has clicked "approve," so a model hallucination cannot reach a
+# customer.
+#
+# Sourcing order (tiered, Perplexity as fallback per Luke's instruction):
+#   1. curated `code_url` on the jurisdiction entry (if a manager added one)
+#   2. publisher heuristics (library.municode.com/co/{slug}, ...)
+#   3. the jurisdiction's own building-department page (`url`)
+#   4. Perplexity, with the citation allowlist in jurisdiction_prompts.py
+#
+# The direct tiers return whatever adopted_code they can parse out of the
+# fetched HTML — that's enough to skip Perplexity when the city's own page
+# says the year. Amendments and permit portal details come from Perplexity
+# (when direct fetch didn't produce them) or from a manager typing them into
+# ⚙ Settings.
+try:
+    from . import jurisdiction_prompts as _jp
+except ImportError:                            # pragma: no cover - script mode
+    import jurisdiction_prompts as _jp
+
+_CODE_YEAR_RE = re.compile(
+    r'(?P<yb>20\d{2}|19\d{2})\s+(?:International\s+Residential\s+Code|IRC)\b'
+    r'|(?:International\s+Residential\s+Code|IRC)[\s,]+(?:Edition\s+)?(?P<ya>20\d{2}|19\d{2})',
+    re.IGNORECASE,
+)
+
+
+def _jx_slug(name):
+    """'Fort Collins' → 'fortcollins' — the shape Municode / amlegal use in
+    their URL slugs. Not authoritative (both publishers have exceptions); the
+    heuristic is just there to give the direct-fetch tier something to try."""
+    return re.sub(r'[^a-z0-9]+', '', (name or '').lower())
+
+
+def _jx_extract_adopted_code(html, source_url):
+    """Loose regex — matches '2021 IRC', 'IRC 2021', 'International Residential
+    Code, 2018 Edition'. Never a guess: on no match we return None and the
+    caller falls through."""
+    if not html:
+        return None
+    m = _CODE_YEAR_RE.search(html)
+    if not m:
+        return None
+    year = m.group('yb') or m.group('ya') or ''
+    if not year:
+        return None
+    return {
+        'adopted_code':            f'IRC {year}',
+        'adopted_code_source_url': source_url,
+    }
+
+
+def _jx_fetch_html(url, timeout=10):
+    if not url or http is None:
+        return None
+    try:
+        r = http.get(url, timeout=timeout,
+                     headers={'User-Agent':
+                              'ProjectOneRoofing-Estimator/1.0 (jurisdiction-verify)'})
+    except Exception:
+        return None
+    if not r.ok:
+        return None
+    ct = (r.headers.get('Content-Type') or '').lower()
+    if 'html' not in ct and 'text' not in ct:
+        return None
+    return r.text
+
+
+def _jx_direct_urls(j):
+    """Order the direct-fetch pipeline tries. First hit wins."""
+    urls, seen = [], set()
+
+    def add(u):
+        u = (u or '').strip()
+        if not u or u in seen:
+            return
+        seen.add(u)
+        urls.append(u)
+
+    add(j.get('code_url'))
+    add(j.get('url'))
+    # Publisher heuristics — cheap to try, harmless when they 404.
+    name = j.get('name') or ''
+    slug = _jx_slug(name.replace('City of ', '').replace('Town of ', '')
+                        .replace('County of ', '').replace(' County', ''))
+    if slug:
+        add(f'https://library.municode.com/co/{slug}')
+        add(f'https://codelibrary.amlegal.com/codes/{slug}co/latest/overview')
+    return urls
+
+
+def _jx_direct_profile(j):
+    """Try the direct-fetch tier. Return {profile, source, citations} or None."""
+    for url in _jx_direct_urls(j):
+        html = _jx_fetch_html(url)
+        if not html:
+            continue
+        code = _jx_extract_adopted_code(html, url)
+        if not code:
+            continue
+        # A confidence tag so the rep drawer can label where the answer came from.
+        host = (url.split('/')[2] if '://' in url else '').lower()
+        if 'municode.com' in host:
+            source = 'municode'
+        elif 'amlegal.com' in host:
+            source = 'amlegal'
+        elif 'ecode360.com' in host:
+            source = 'ecode360'
+        else:
+            source = 'city-page'
+        return {
+            'profile': {
+                'adopted_code':            code['adopted_code'],
+                'adopted_code_source_url': code['adopted_code_source_url'],
+                'amendments':              [],
+                'reroof_permit':           {'submittal_method': 'unknown',
+                                            'portal_url':       'unknown',
+                                            'fee_basis':        'unknown'},
+                'issues_permits_for_roofing': True,
+                'delegated_to':            None,
+            },
+            'source':    source,
+            'citations': [url],
+        }
+    return None
+
+
+def _jx_perplexity_profile(j):
+    """Fallback — one Perplexity call, cached inside agents/perplexity.py.
+    Returns {profile, source:'perplexity', citations} or raises."""
+    try:
+        from agents.perplexity import search_json
+    except ImportError as e:                       # pragma: no cover
+        raise RuntimeError(f'Perplexity fallback unavailable: {e}') from e
+    prompt = _jp.build_prompt(j)
+    reason = f'jurisdiction verify: {j.get("id") or j.get("name")}'
+    result = search_json(prompt, reason=reason, max_tokens=1200)
+    data = result.get('data')
+    if not isinstance(data, dict) or 'raw' in data:
+        raise RuntimeError('Perplexity returned an answer we could not parse as JSON.')
+    citations = _jp.filter_allowed_citations(result.get('citations') or [])
+    if not citations:
+        # No authoritative source cited — refuse to save it. The prompt asks
+        # for real URLs on the allowlist; anything else fails closed rather
+        # than reaching a customer.
+        raise RuntimeError('Perplexity did not cite an authoritative source '
+                           '(.gov / municode / amlegal / ecode360 / iccsafe).')
+    # Coerce into the shape the frontend/UI expects, dropping any extra keys
+    # the model invented and defaulting missing ones to 'unknown'/[].
+    def _s(k):
+        v = data.get(k)
+        return str(v).strip() if isinstance(v, (str, int, float)) else 'unknown'
+    rp_in = data.get('reroof_permit') if isinstance(data.get('reroof_permit'), dict) else {}
+    def _rp(k):
+        v = rp_in.get(k)
+        return str(v).strip() if isinstance(v, (str, int, float)) else 'unknown'
+    amends_out = []
+    for a in (data.get('amendments') or []):
+        if not isinstance(a, dict):
+            continue
+        topic = str(a.get('topic') or '').strip()
+        text  = str(a.get('text')  or '').strip()
+        # Perplexity sometimes returns a placeholder row of `unknown`s when it
+        # has nothing — treat those as absent rather than persisting garbage.
+        if not text or text.lower() == 'unknown':
+            continue
+        amends_out.append({
+            'topic':      topic if topic.lower() != 'unknown' else '',
+            'text':       text,
+            'source_url': str(a.get('source_url') or '').strip(),
+        })
+    adopted_code = _s('adopted_code')
+    # An 'unknown' adopted_code means the model refused to commit to a year.
+    # There is no point saving that: the customer sees nothing useful and the
+    # baseline is a better default. Fail closed so the rep re-tries later.
+    if not adopted_code or adopted_code.lower() == 'unknown':
+        raise RuntimeError('Perplexity could not determine an adopted code '
+                           'year for this jurisdiction.')
+    return {
+        'profile': {
+            'adopted_code':            adopted_code,
+            'adopted_code_source_url': _s('adopted_code_source_url'),
+            'amendments':              amends_out,
+            'reroof_permit': {
+                'submittal_method': _rp('submittal_method'),
+                'portal_url':       _rp('portal_url'),
+                'fee_basis':        _rp('fee_basis'),
+            },
+            'issues_permits_for_roofing': bool(data.get('issues_permits_for_roofing', True)),
+            'delegated_to': (str(data.get('delegated_to')).strip()
+                             if data.get('delegated_to') and str(data.get('delegated_to')).lower() not in ('none', 'null', 'unknown', '')
+                             else None),
+        },
+        'source':    'perplexity',
+        'citations': citations,
+    }
+
+
+def _verify_jurisdiction_profile(j):
+    """Full pipeline: direct fetch first, Perplexity fallback. Never raises —
+    always returns a JSON-serializable dict for the API to hand back."""
+    direct = _jx_direct_profile(j)
+    if direct and direct['profile'].get('adopted_code'):
+        return {'ok': True, **direct}
+    try:
+        pplx = _jx_perplexity_profile(j)
+    except Exception as e:
+        # SpendCapReached surfaces here with its class name in the message so
+        # the frontend can style it differently.
+        return {'ok': False,
+                'error':  str(e),
+                'kind':   type(e).__name__,
+                'direct': direct}   # even a partial direct hit is worth showing
+    return {'ok': True, **pplx}
+
+
+def _jx_find_by_id(all_jx, jid):
+    for j in (all_jx.get('jurisdictions') or []):
+        if isinstance(j, dict) and j.get('id') == jid:
+            return j
+    return None
+
+
+def _jx_save_atomic(data):
+    """Same write pattern put_jurisdictions() uses — kept in one place so an
+    approve/reject can share it with the settings PUT."""
+    with open(JURISDICTIONS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+@app.route('/api/jurisdictions/<jid>/verify', methods=['POST'])
+def verify_jurisdiction_profile(jid):
+    if not _is_manager_up():
+        return _forbid()
+    data = _load_jurisdictions() or {}
+    j = _jx_find_by_id(data, jid)
+    if not j:
+        return jsonify({'ok': False, 'error': 'Unknown jurisdiction id.'}), 404
+    result = _verify_jurisdiction_profile(j)
+    return jsonify(result)
+
+
+@app.route('/api/jurisdictions/<jid>/approve', methods=['POST'])
+def approve_jurisdiction_profile(jid):
+    """Stamp reviewed_by/reviewed_at and persist. Body is the profile the rep
+    just previewed (never trust an in-memory verify to survive a redeploy)."""
+    if not _is_manager_up():
+        return _forbid()
+    body = request.get_json(force=True, silent=True) or {}
+    profile = body.get('profile') or {}
+    ac = (profile.get('adopted_code') or '').strip() if isinstance(profile, dict) else ''
+    if not ac or ac.lower() == 'unknown':
+        return jsonify({'ok': False, 'error':
+                        'Profile is missing adopted_code — nothing to approve.'}), 400
+    data = _load_jurisdictions() or {}
+    j = _jx_find_by_id(data, jid)
+    if not j:
+        return jsonify({'ok': False, 'error': 'Unknown jurisdiction id.'}), 404
+    verified = dict(profile)
+    verified['sources']     = [str(u).strip() for u in (body.get('citations') or []) if str(u).strip()]
+    verified['verified_at'] = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    verified['verified_via'] = str(body.get('source') or '').strip() or 'unknown'
+    verified['reviewed_by'] = _current_user() or ''
+    verified['reviewed_at'] = verified['verified_at']
+    j['verified_profile'] = verified
+    _jx_save_atomic(data)
+    return jsonify({'ok': True, 'jurisdiction': j})
+
+
+@app.route('/api/jurisdictions/<jid>/reject', methods=['POST'])
+def reject_jurisdiction_profile(jid):
+    """Clear any stored verified_profile — used to force a re-verify next time
+    or to remove a profile that has since gone stale."""
+    if not _is_manager_up():
+        return _forbid()
+    data = _load_jurisdictions() or {}
+    j = _jx_find_by_id(data, jid)
+    if not j:
+        return jsonify({'ok': False, 'error': 'Unknown jurisdiction id.'}), 404
+    if 'verified_profile' in j:
+        del j['verified_profile']
+        _jx_save_atomic(data)
+    return jsonify({'ok': True})
 
 
 _PERMIT_CHAR_MAP = str.maketrans({

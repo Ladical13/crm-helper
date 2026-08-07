@@ -3476,6 +3476,171 @@ function jxReverify() {
   rerenderJurisdictionPanels();
   _jxMaybeVerify(true);
 }
+
+/* ── Verified per-jurisdiction code profile (adopted IRC + amendments) ──
+   Kicks the tiered verifier on the server (curated URL → publisher heuristics
+   → city page → Perplexity fallback), previews the parsed result in a drawer,
+   and — once a manager approves — persists it into jurisdictions.json so the
+   customer sign page shows the specific code that applies to their address.
+   The button is manager-only (_meCanViewAll); reps see a "not verified yet"
+   note instead. */
+const _jxPendingProfile = {};   // jurisdiction_id → last verify result (unapproved)
+const _jxProfileBusy    = {};   // jurisdiction_id → true while a POST is in flight
+function jxVerifyProfile(id) {
+  if (!id || _jxProfileBusy[id]) return;
+  _jxProfileBusy[id] = true;
+  rerenderJurisdictionPanels();
+  fetch(`/api/jurisdictions/${encodeURIComponent(id)}/verify`, { method: 'POST' })
+    .then(r => r.json())
+    .then(res => {
+      _jxPendingProfile[id] = res || { ok:false, error:'Empty response.' };
+    })
+    .catch(e => { _jxPendingProfile[id] = { ok:false, error:String(e) }; })
+    .finally(() => { _jxProfileBusy[id] = false; rerenderJurisdictionPanels(); });
+}
+function jxApproveProfile(id) {
+  const pending = _jxPendingProfile[id];
+  if (!pending || !pending.ok || !pending.profile) return;
+  _jxProfileBusy[id] = true;
+  rerenderJurisdictionPanels();
+  fetch(`/api/jurisdictions/${encodeURIComponent(id)}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type':'application/json' },
+    body: JSON.stringify({
+      profile:   pending.profile,
+      source:    pending.source || '',
+      citations: pending.citations || [],
+    }),
+  }).then(r => r.json())
+    .then(res => {
+      if (res && res.ok && res.jurisdiction) {
+        // Splice the freshly-approved copy into _jurisdictions so the sign
+        // page picks it up on the next render without reloading the page.
+        const all = (_jurisdictions && _jurisdictions.jurisdictions) || [];
+        const i = all.findIndex(j => j.id === id);
+        if (i >= 0) all[i] = res.jurisdiction;
+        delete _jxPendingProfile[id];
+      } else {
+        alert('Could not approve: ' + ((res && res.error) || 'unknown error'));
+      }
+    })
+    .catch(e => alert('Approve failed: ' + e))
+    .finally(() => { _jxProfileBusy[id] = false; rerenderJurisdictionPanels(); });
+}
+function jxRejectProfile(id) {
+  // Clear the preview locally and, if a saved profile exists, wipe it on the
+  // server so the next verify runs fresh.
+  delete _jxPendingProfile[id];
+  const j = _jxById(id);
+  if (j && j.verified_profile) {
+    fetch(`/api/jurisdictions/${encodeURIComponent(id)}/reject`, { method:'POST' })
+      .then(() => { delete j.verified_profile; })
+      .finally(() => rerenderJurisdictionPanels());
+    return;
+  }
+  rerenderJurisdictionPanels();
+}
+// Rep-only surface — everything renders inside the jx-card so it lives right
+// under the roofing code requirements list.
+function _jxVerifiedProfileMarkup(sel) {
+  if (!sel) return '';
+  const id = sel.id;
+  const canManage = (typeof _meCanViewAll === 'function') && _meCanViewAll();
+  const pending = _jxPendingProfile[id];
+  const busy = _jxProfileBusy[id];
+  const vp = sel.verified_profile;
+
+  // 1) A manager-approved profile is already saved — show a compact summary
+  //    plus a "re-verify" affordance for managers.
+  if (vp && (vp.reviewed_at || '').trim()) {
+    const ac = esc(vp.adopted_code || '');
+    const via = esc(vp.verified_via || '');
+    const at  = esc((vp.verified_at || '').slice(0, 10));
+    const acu = vp.adopted_code_source_url || '';
+    const acLink = acu ? ` &middot; <a href="${esc(acu)}" target="_blank" rel="noopener">source</a>` : '';
+    const amends = (vp.amendments || []).slice(0, 6).map(a => {
+      const tp = esc((a.topic || '').trim());
+      const tx = esc((a.text || '').trim());
+      const su = a.source_url || '';
+      const link = su ? ` <a href="${esc(su)}" target="_blank" rel="noopener" style="font-size:11.5px">source</a>` : '';
+      return `<li>${tp ? `<b>${tp}:</b> ` : ''}${tx}${link}</li>`;
+    }).join('');
+    const rp = vp.reroof_permit || {};
+    const rpBits = [];
+    if (rp.submittal_method && rp.submittal_method !== 'unknown') rpBits.push('Submittal: ' + esc(rp.submittal_method));
+    if (rp.portal_url && rp.portal_url !== 'unknown') rpBits.push(`<a href="${esc(rp.portal_url)}" target="_blank" rel="noopener">Permit portal</a>`);
+    const rpLine = rpBits.length ? `<div class="jx-vp-permit">${rpBits.join(' &middot; ')}</div>` : '';
+    const actions = canManage ? `<div class="jx-vp-actions">
+        <button class="jx-vp-btn" onclick="jxVerifyProfile('${id}')" ${busy ? 'disabled' : ''}>${busy ? 'Verifying…' : '↻ Re-verify'}</button>
+        <button class="jx-vp-btn jx-vp-btn-warn" onclick="jxRejectProfile('${id}')">Clear</button>
+      </div>` : '';
+    return `
+      <div class="jx-vp jx-vp-ok">
+        <div class="jx-vp-head">✅ Code data verified ${at}${via ? ` · source: ${via}` : ''}</div>
+        ${ac ? `<div class="jx-vp-adopted"><b>Enforces</b> ${ac}${acLink}</div>` : ''}
+        ${amends ? `<div class="jx-vp-title">Local amendments</div><ul class="jx-vp-list">${amends}</ul>` : ''}
+        ${rpLine}
+        ${actions}
+      </div>`;
+  }
+
+  // 2) A pending verify result — manager reviews sources, clicks Approve/Reject.
+  if (pending) {
+    if (!pending.ok) {
+      const err = esc(pending.error || 'Verify failed.');
+      const kind = pending.kind || '';
+      const cls = kind === 'SpendCapReached' ? 'jx-vp-cap' : 'jx-vp-fail';
+      return `
+        <div class="jx-vp ${cls}">
+          <div class="jx-vp-head">⚠️ ${err}</div>
+          ${canManage ? `<div class="jx-vp-actions">
+            <button class="jx-vp-btn" onclick="jxVerifyProfile('${id}')" ${busy ? 'disabled' : ''}>${busy ? 'Verifying…' : 'Try again'}</button>
+            <button class="jx-vp-btn" onclick="jxRejectProfile('${id}')">Dismiss</button>
+          </div>` : ''}
+        </div>`;
+    }
+    const p = pending.profile || {};
+    const ac = esc(p.adopted_code || '');
+    const source = esc(pending.source || 'unknown');
+    const acu = p.adopted_code_source_url || '';
+    const acLink = acu && acu !== 'unknown' ? ` &middot; <a href="${esc(acu)}" target="_blank" rel="noopener">source</a>` : '';
+    const amends = (p.amendments || []).slice(0, 8).map(a => {
+      const tp = esc((a.topic || '').trim());
+      const tx = esc((a.text || '').trim());
+      const su = a.source_url || '';
+      const link = su ? ` <a href="${esc(su)}" target="_blank" rel="noopener" style="font-size:11.5px">source</a>` : '';
+      return `<li>${tp ? `<b>${tp}:</b> ` : ''}${tx}${link}</li>`;
+    }).join('');
+    const cites = (pending.citations || []).map(c => `<li><a href="${esc(c)}" target="_blank" rel="noopener">${esc(c)}</a></li>`).join('');
+    return `
+      <div class="jx-vp jx-vp-pending">
+        <div class="jx-vp-head">🔎 Preview — source: <b>${source}</b> (not yet visible to customers)</div>
+        ${ac ? `<div class="jx-vp-adopted"><b>Enforces</b> ${ac}${acLink}</div>` : '<div class="jx-vp-adopted">Adopted code not detected.</div>'}
+        ${amends ? `<div class="jx-vp-title">Local amendments</div><ul class="jx-vp-list">${amends}</ul>` : ''}
+        ${cites ? `<div class="jx-vp-title">Citations</div><ul class="jx-vp-list">${cites}</ul>` : ''}
+        ${canManage ? `<div class="jx-vp-actions">
+          <button class="jx-vp-btn jx-vp-btn-ok" onclick="jxApproveProfile('${id}')" ${busy || !ac ? 'disabled' : ''}>${busy ? 'Saving…' : 'Approve for customer view'}</button>
+          <button class="jx-vp-btn" onclick="jxRejectProfile('${id}')">Reject</button>
+          <button class="jx-vp-btn" onclick="jxVerifyProfile('${id}')" ${busy ? 'disabled' : ''}>Retry</button>
+        </div>` : '<div class="jx-vp-hint">Ask a manager to approve.</div>'}
+      </div>`;
+  }
+
+  // 3) No profile, no pending — offer to verify (managers) or note the gap.
+  if (canManage) {
+    return `
+      <div class="jx-vp jx-vp-idle">
+        <div class="jx-vp-head">Code data not yet verified for this jurisdiction.</div>
+        <div class="jx-vp-sub">Pulls the adopted IRC year + local amendments from the city's building department or its published code first, and falls back to Perplexity only if those don't answer.</div>
+        <div class="jx-vp-actions">
+          <button class="jx-vp-btn jx-vp-btn-ok" onclick="jxVerifyProfile('${id}')" ${busy ? 'disabled' : ''}>${busy ? '🔎 Verifying…' : '🔎 Verify code for this jurisdiction'}</button>
+        </div>
+      </div>`;
+  }
+  return `<div class="jx-vp jx-vp-idle">
+      <div class="jx-vp-head">Code data not yet verified — the customer will see the shared Colorado baseline until a manager verifies this jurisdiction.</div>
+    </div>`;
+}
 // Verification banner: the answer, its caveats, and a re-run.
 function _jxVerifyMarkup() {
   const pj = _pjState();
@@ -3586,6 +3751,7 @@ function permitJurisdictionMarkup() {
         <div class="jx-code-title">Roofing code requirements</div>
         <ul class="jx-code">${points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>
         ${baseline.verify_note ? `<div class="jx-verify">⚠️ ${esc(baseline.verify_note)}</div>` : ''}
+        ${_jxVerifiedProfileMarkup(sel)}
       </div>`;
   } else if (cand.hasAddr) {
     card = `<p class="jx-note">No exact match for this city — it may be an unincorporated area.

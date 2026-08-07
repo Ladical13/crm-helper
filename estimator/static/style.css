@@ -1968,6 +1968,37 @@ a.jx-contact:hover { text-decoration: underline; }
 .jx-reverify:hover { background: #f1f5f9; border-color: #94a3b8; }
 .jx-kind-ok { color: #14532d; background: #dcfce7; border-color: #86efac; }
 
+/* Verified per-jurisdiction code profile (adopted IRC + amendments) */
+.jx-vp {
+  margin-top: 14px; padding: 11px 13px; border-radius: 8px;
+  border: 1px solid #cbd5e1; background: #f8fafc; font-size: 12.5px; line-height: 1.55;
+}
+.jx-vp-idle    { background: #f8fafc; border-color: #cbd5e1; color: #475569; }
+.jx-vp-pending { background: #eff6ff; border-color: #93c5fd; border-left: 4px solid #3b82f6; color: #1e3a8a; }
+.jx-vp-ok      { background: #f0fdf4; border-color: #86efac; border-left: 4px solid #22c55e; color: #14532d; }
+.jx-vp-fail    { background: #fff7ed; border-color: #fdba74; border-left: 4px solid #f97316; color: #7c2d12; }
+.jx-vp-cap     { background: #fef2f2; border-color: #fecaca; border-left: 4px solid #ef4444; color: #7f1d1d; }
+.jx-vp-head    { font-weight: 700; margin-bottom: 5px; }
+.jx-vp-sub     { font-size: 11.5px; color: #475569; margin-bottom: 6px; }
+.jx-vp-adopted { margin: 4px 0; }
+.jx-vp-title   { margin-top: 8px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+                 letter-spacing: .5px; color: #475569; }
+.jx-vp-list    { margin: 4px 0 0; padding-left: 18px; }
+.jx-vp-list li { margin-bottom: 3px; word-break: break-word; }
+.jx-vp-permit  { margin-top: 6px; font-size: 11.5px; color: #334155; }
+.jx-vp-actions { margin-top: 9px; display: flex; gap: 8px; flex-wrap: wrap; }
+.jx-vp-btn {
+  font-size: 11.5px; font-weight: 700; cursor: pointer; padding: 5px 11px;
+  border-radius: 6px; border: 1px solid #cbd5e1; background: #fff; color: #334155;
+}
+.jx-vp-btn:hover:not(:disabled) { background: #f1f5f9; border-color: #94a3b8; }
+.jx-vp-btn:disabled { opacity: .55; cursor: default; }
+.jx-vp-btn-ok   { background: #16a34a; border-color: #15803d; color: #fff; }
+.jx-vp-btn-ok:hover:not(:disabled) { background: #15803d; }
+.jx-vp-btn-warn { color: #7c2d12; border-color: #fdba74; }
+.jx-vp-btn-warn:hover:not(:disabled) { background: #fff7ed; }
+.jx-vp-hint     { margin-top: 8px; font-size: 11.5px; font-style: italic; color: #64748b; }
+
 /* Insurance scope-gap check — carrier scope vs. what code requires */
 .gap-panel {
   margin: 18px 0 4px; padding: 14px 16px; border-radius: 10px;
