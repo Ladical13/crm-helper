@@ -3919,22 +3919,6 @@ function renderScopePage() {
   // a house doesn't get a Commercial checkbox and a warehouse doesn't get Siding.
   const RETAIL_TRADES = RETAIL_TRADE_KEYS.filter(t =>
     isCommercial ? t === 'commercial' || t === 'other' : t !== 'commercial');
-  const allItems = [];
-  RETAIL_TRADES.forEach(trade => {
-    const td = S.trades[trade];
-    const items = (td && td.line_items) || [];
-    if (items.length) {
-      allItems.push({ type:'group', trade });
-      const hasSections = tradeSections(trade).length > 0;
-      groupedTradeItems(trade, items).forEach(g => {
-        if (!g.items.length && !g.name) return;
-        if (hasSections) allItems.push({ type:'section', trade, name: g.name || 'General' });
-        g.items.forEach(item => allItems.push({ type:'item', trade, item }));
-      });
-    }
-  });
-
-  const hasAny = allItems.some(r => r.type === 'item');
   const m = S.measurements || {};
 
   const renderMeasureGroup = (groups) => groups.map(g => `
@@ -4029,32 +4013,6 @@ function renderScopePage() {
       </div>
     </div>` : '';
 
-  const measureOptions = (item) => {
-    const isFormula = !!item.formula;
-    const cur = isFormula ? '__formula__' : (item.measure || '');
-    const isAuto = !!MEASURE_DEFS[item.measure];
-    const formulaInput = isFormula ? `
-      <div class="scope-formula-wrap">
-        <input class="scope-formula-input" type="text"
-          value="${esc(item.formula||'')}"
-          placeholder="e.g. eave_lf + valley_lf"
-          title="Roof: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1) — Siding: siding_squares, siding_waste_pct, siding_openings_count, siding_outside_corners_lf, siding_inside_corners_lf, siding_j_channel_lf, siding_trim_sloped_lf, siding_trim_vertical_lf, siding_trim_width_default, siding_starter_lf, siding_soffit_lf, siding_soffit_width, siding_soffit_vented_pct, siding_fascia_eaves_lf, siding_fascia_rakes_lf, siding_frieze_eaves_lf, siding_frieze_level_lf, windows_count, doors_count"
-          onchange="setItemFormula('${item._trade}','${item.id}',this.value)">
-        <span class="scope-formula-hint">eave_lf + valley_lf</span>
-      </div>` : '';
-    return `<div class="scope-measure-cell-inner">
-      <select class="scope-measure-select ${(isAuto||isFormula)?'is-auto':''}"
-        onchange="handleMeasureSelect('${item._trade}','${item.id}',this.value)"
-        title="Auto-fill quantity from a measurement">
-        <option value="">Manual</option>
-        ${Object.entries(MEASURE_DEFS).map(([k, d]) =>
-          `<option value="${k}" ${cur===k?'selected':''}>${d.label}</option>`).join('')}
-        <option value="__formula__" ${isFormula?'selected':''}>Custom formula…</option>
-      </select>
-      ${formulaInput}
-    </div>`;
-  };
-
   document.getElementById('page-scope').innerHTML = `
     <div class="scope-header">
       <div>
@@ -4081,87 +4039,16 @@ function renderScopePage() {
 
     ${permitJurisdictionMarkup()}
 
-    ${isCommercial ? '' : sidingMeasurePanel}
-
-    ${hasAny ? `
-      <div class="scope-table-wrap">
-        <table class="scope-table">
-          <thead>
-            <tr>
-              <th class="th-move"></th>
-              <th>Item</th>
-              <th class="th-auto">Auto Qty From</th>
-              <th class="th-qty">Quantity</th>
-              <th class="th-unit">Unit</th>
-              <th class="th-note">Measurement Notes</th>
-              <th style="width:36px"></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${allItems.map(row => {
-              if (row.type === 'group') {
-                return `<tr class="scope-trade-group">
-                  <td colspan="7">${TRADE_LABELS[row.trade]}
-                    <button class="scope-defaults-btn" style="margin-left:10px"
-                      onclick="loadDefaults('${row.trade}')">Load Defaults</button>
-                  </td>
-                </tr>`;
-              }
-              if (row.type === 'section') {
-                return `<tr class="scope-section-row"><td colspan="7">${esc(row.name)}</td></tr>`;
-              }
-              const { trade, item } = row;
-              item._trade = trade;
-              const isAuto = !!MEASURE_DEFS[item.measure] || !!item.formula;
-              // Move arrows operate within the item's own section of its own
-              // trade — the table interleaves trades and sections.
-              return `<tr>
-                <td class="li-move-cell">
-                  <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liCanMove(trade,item,-1)?'':'disabled'} title="Move up">↑</button>
-                  <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${liCanMove(trade,item,1)?'':'disabled'} title="Move down">↓</button>
-                </td>
-                <td class="scope-name-cell">${esc(item.name)}</td>
-                <td class="scope-measure-cell">${measureOptions(item)}</td>
-                <td style="text-align:center">
-                  <input class="scope-qty-input ${isAuto?'qty-auto':''}" type="number" inputmode="decimal" min="0" step="0.5"
-                    value="${item.quantity||''}" placeholder="0"
-                    data-trade="${trade}" data-id="${item.id}" data-measured="${isAuto?1:0}"
-                    ${isAuto?'readonly title="Auto-calculated — switch to Manual to edit"':''}
-                    onchange="liSetQty('${trade}','${item.id}',this.value)">
-                </td>
-                <td class="scope-unit-cell">${esc(displayUnit(item))}</td>
-                <td>
-                  <input class="scope-note-input" type="text"
-                    value="${esc(item.scope_note||'')}"
-                    placeholder="e.g. North slope only, replace only…"
-                    onchange="liSetScopeNote('${trade}','${item.id}',this.value)">
-                </td>
-                <td>
-                  <button class="li-del" onclick="liDelete('${trade}','${item.id}')" title="Remove">×</button>
-                </td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-    ` : `
-      <div class="scope-empty">
-        <p>No items yet. Enable a trade above and click <strong>Load Defaults</strong> to get started.</p>
-        ${RETAIL_TRADES.filter(t=>S.trades[t].enabled).map(t =>
-          `<button class="scope-defaults-btn" style="margin:6px 4px"
-            onclick="loadDefaults('${t}')">Load ${TRADE_LABELS[t]} Defaults</button>`
-        ).join('')}
-      </div>`}`;
-}
-
-function liSetScopeNote(trade, id, v) {
-  const i = findItem(trade, id); if (!i) return;
-  i.scope_note = v; setDirty();
+    ${isCommercial ? '' : sidingMeasurePanel}`;
 }
 
 /* ── Page 3: Options ────────────────────────────────────────────────── */
 
 function renderOptionsPage() {
+  // Options tab retired — bullets/taglines now come from the picked bundle
+  // and can no longer be edited per-estimate. The renderer stays callable so
+  // rerender()/renderAll() don't have to know, but it no-ops without the div.
+  if (!document.getElementById('page-options')) return;
   // Insurance mode: show a notice instead of meaningless GBB cards
   if ((S.estimate_type || 'retail') === 'insurance') {
     document.getElementById('page-options').innerHTML = `

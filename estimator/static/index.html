@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=153">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=155">
 </head>
 <body>
 
@@ -220,24 +220,20 @@
         <span class="pg-num">4</span>Scope
       </button>
       <span class="pg-sep">›</span>
-      <button class="page-btn" data-page="options"  onclick="switchPage('options')">
-        <span class="pg-num">5</span>Options
-      </button>
-      <span class="pg-sep">›</span>
       <button class="page-btn" data-page="products" onclick="switchPage('products')">
-        <span class="pg-num">6</span>Products
+        <span class="pg-num">5</span>Products
       </button>
       <span class="pg-sep">›</span>
       <button class="page-btn" data-page="pricing"  onclick="switchPage('pricing')">
-        <span class="pg-num">7</span>Pricing
+        <span class="pg-num">6</span>Pricing
       </button>
       <span class="pg-sep">›</span>
       <button class="page-btn" data-page="contract" onclick="switchPage('contract')">
-        <span class="pg-num">8</span>Contract
+        <span class="pg-num">7</span>Contract
       </button>
       <span class="pg-sep">›</span>
       <button class="page-btn" data-page="report" onclick="switchPage('report')">
-        <span class="pg-num">9</span>Condition
+        <span class="pg-num">8</span>Condition
       </button>
       <span class="pg-sep">›</span>
       <button class="page-btn" data-page="visualizer" onclick="switchPage('visualizer')">
@@ -284,9 +280,6 @@
 
     <!-- ── Page 4: Scope / Measurements ──────────────────────────── -->
     <div id="page-scope" class="page" style="display:none"></div>
-
-    <!-- ── Page 3: Options (G/B/B comparison) ────────────────────── -->
-    <div id="page-options" class="page" style="display:none"></div>
 
     <!-- ── Page: Product Selection (brand/model/color per trade) ──── -->
     <div id="page-products" class="page" style="display:none"></div>
@@ -716,6 +709,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=153"></script>
+<script src="/estimate/static/app.js?v=155"></script>
 </body>
 </html>
