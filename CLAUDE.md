@@ -9,7 +9,7 @@ Four apps in one repo, served as **one site behind one login**: the portal
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers everything
 python -m portal.wsgi                 # run it all locally on :5010
-python run_tests.py                   # all five suites, the way CI runs them
+python run_tests.py                   # all six suites, the way CI runs them
 ```
 
 Then open <http://localhost:5010> — canvasser at `/canvass`, CRM at `/crm`,
@@ -21,19 +21,20 @@ estimator at `/estimate`.
 git add -A && git commit -m "what changed" && git push
 ```
 
-Every push runs the five suites on GitHub (**Actions** tab). Green means the
+Every push runs the six suites on GitHub (**Actions** tab). Green means the
 pricing math, the cache-busters and the per-rep visibility rules all still hold.
 
-**Before committing, run `python run_tests.py`.** It is the same four commands
+**Before committing, run `python run_tests.py`.** It is the same six commands
 CI runs, and it is much faster to find a break here than in the Actions log.
 Individual suites, when you only touched one app:
 
 ```bash
-cd estimator && pytest      # 534 — pricing parity, cache-buster, bundles
-cd salescrm  && pytest      #  90 — pipeline, prospecting, queue, drafts, assets
-cd portal    && pytest      #  47 — one login across all three, migration, shell
+cd estimator  && pytest     # 534 — pricing parity, cache-buster, bundles
+cd salescrm   && pytest     #  90 — pipeline, prospecting, queue, drafts, assets
+cd portal     && pytest     #  47 — one login across all three, migration, shell
 python -m pytest prospector/tests   # 27 — offline, no network
-cd agents    && pytest      #  12 — spend cap, cache, b2b/content sources
+cd agents     && pytest     #  12 — spend cap, cache, b2b/content sources
+cd canvasser  && pytest     #  15 — vendored Leaflet, cache-buster, sw wiring
 ```
 
 **Deploying.** ONE Railway service, whole repo — see the deploy note at the end
@@ -65,7 +66,7 @@ app-switcher bar across the top of all three.
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers all three apps
 python -m portal.wsgi                 # local dev on :5010 (all three mounted)
-cd portal && pytest                   # 28 tests
+cd portal && pytest                   # 47 tests
 ```
 
 `portal/wsgi.py` mounts the three **unchanged** Flask apps with
@@ -143,12 +144,53 @@ Note `_seed_data_dir()` copies `price_book.json`, `tier_defaults.json`,
 long-lived volume the deployed repo copies are inert — editing
 `estimator/price_book.json` and deploying does not change live pricing.
 
-**CI:** `.github/workflows/tests.yml` runs all five suites on every push and PR.
-They run as five separate pytest invocations — one run collecting two apps
+**CI:** `.github/workflows/tests.yml` runs all six suites on every push and PR.
+They run as six separate pytest invocations — one run collecting two apps
 collides on the bare module name `conftest`. It installs **node**, because the
 estimator's parity and fastening tests `skipif` it is missing and would
 otherwise go green without checking pricing at all; a final step fails the run
 if any suite reported a skip.
+
+## Canvasser (`canvasser/`)
+
+The door-knocking app: pins, team GPS, hail overlays, CRM sync. Flask + SQLite +
+Leaflet, mounted at `/canvass`. Storage is `CANVASSER_DATA_DIR/canvasser.db`
+(gitignored — **set that variable explicitly**, it falls back to the estimator's
+`DATA_DIR`).
+
+```bash
+cd canvasser && pytest                # 15 tests
+python -m portal.wsgi                 # dev: run the portal, canvasser is at /canvass
+```
+
+- **Leaflet is VENDORED under `static/vendor/`, pinned at 1.9.4** (markercluster
+  1.5.3). It used to come from unpkg, which made a third-party CDN a hard
+  dependency of the one tool that gets used in driveways on one bar of signal —
+  slow or unreachable unpkg meant a rep staring at a blank screen. Upgrading is a
+  deliberate re-download of all nine files (js, css, and the five `images/*.png`
+  that `leaflet.css` references **relatively**, so they must stay beside it under
+  `vendor/`). `test_leaflet_is_not_loaded_from_a_cdn` fails if a CDN URL returns.
+- **The service worker gives it an offline app shell.** Verified with the server
+  fully stopped: page, Leaflet, cluster, CSS, app.js and marker icons all serve
+  from cache. **Map tiles do not** — they are cross-origin, come back opaque, and
+  browsers charge opaque entries against the storage quota at a padded size, so
+  caching them blind can evict the very shell the worker exists to guarantee.
+  Doing tiles properly needs `crossOrigin` on the tile layer plus a bounded
+  cache; deliberately not done.
+- **`/api/*` is network-first, never stale.** A canvasser acting on a cached pin
+  list knocks doors a teammate already worked.
+- **`sw.js` is served from the app root (`/sw.js` in `app.py`), not `/static/`.**
+  A worker can only claim a scope at or below its own path, so `/static/sw.js`
+  could never control `/canvass/`. Same as the estimator and the CRM.
+- **Cache-buster is `?v=N` in `static/index.html` and `sw.js`** (`CACHE` + every
+  SHELL entry), bumped **by hand** — no `bump_version.py` here. Guarded by
+  `tests/test_assets.py`.
+- **`viewport-fit=cover` in the viewport meta is load-bearing**, not decoration:
+  `style.css` derives `--safe-top`/`--safe-bot` from `env(safe-area-inset-*)` and
+  uses them in five layout rules. Without it those resolve to `0` and, paired
+  with the translucent status bar, the header sits under the notch.
+  `user-scalable=no` stays — this is a full-screen map and page zoom on a stray
+  pinch fights Leaflet's own gestures.
 
 ## Sales CRM — "The Pipeline" (`salescrm/`)
 

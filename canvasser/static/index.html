@@ -20,9 +20,16 @@
   <title>P1 Canvasser</title>
   <link rel="preconnect" href="https://server.arcgisonline.com" crossorigin>
   <link rel="preconnect" href="https://basemaps.cartocdn.com" crossorigin>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
-  <link rel="stylesheet" href="/canvass/static/style.css">
+  <!-- Leaflet is vendored under static/vendor/ rather than loaded from unpkg.
+       This app is used in driveways on one bar of signal, and a CDN it cannot
+       reach is a CDN that leaves the rep looking at a blank screen — unpkg was
+       the only third-party runtime dependency in the whole system and the only
+       thing between a canvasser and a working map. Local also means the
+       service worker can precache it. Upgrading is a deliberate re-download:
+       see the vendor pinning note in CLAUDE.md. -->
+  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=1">
+  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=1">
+  <link rel="stylesheet" href="/canvass/static/style.css?v=1">
   <!-- The portal's manifest: one "Project One" icon for all three tools. -->
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -282,9 +289,25 @@
 
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="/canvass/static/vendor/leaflet.js?v=1"></script>
+<script src="/canvass/static/vendor/leaflet.markercluster.js?v=1"></script>
 <script src="/shell.js"></script>
-<script src="/canvass/static/app.js"></script>
+<script src="/canvass/static/app.js?v=1"></script>
+<script>
+  // Registered from the page rather than app.js so a JS error in the app still
+  // leaves the offline shell installed.
+  //
+  // The worker is served from the app ROOT (/canvass/sw.js), not /static/: a
+  // worker can only claim a scope at or below its own path, so /static/sw.js
+  // could never control /canvass/. Same BASE trick app.js uses, so this works
+  // mounted or standalone.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      var base = location.pathname.indexOf('/canvass') === 0 ? '/canvass' : '';
+      navigator.serviceWorker.register(base + '/sw.js', { scope: base + '/' })
+        .catch(function () { /* offline support is a bonus, never a blocker */ });
+    });
+  }
+</script>
 </body>
 </html>

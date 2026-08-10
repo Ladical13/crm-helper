@@ -150,6 +150,19 @@ def index():
 def static_files(path):
     return send_from_directory(STATIC_DIR, path)
 
+
+# Served from the app root, not /static/, exactly like the estimator's and the
+# CRM's. A worker can only claim a scope at or below its own path, so a worker
+# at /canvass/static/sw.js could never control /canvass/ — serving it here is
+# what makes the scope come out right without a Service-Worker-Allowed header.
+@app.route('/sw.js')
+def service_worker():
+    resp = send_from_directory(STATIC_DIR, 'sw.js', mimetype='text/javascript')
+    # The worker checks for its own updates; a cached copy would pin clients to
+    # an old shell list and there would be no way to ship a fix.
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp
+
 # ── Identity ────────────────────────────────────────────────────────────────
 # Login, logout, signup, invites and user administration moved to the portal
 # (portal/app.py) when the three tools merged onto one origin. What is left is

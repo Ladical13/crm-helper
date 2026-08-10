@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Run all five test suites, the same way CI does. Use this before committing.
+"""Run all six test suites, the same way CI does. Use this before committing.
 
     python run_tests.py            # everything
     python run_tests.py estimator  # just one (or several) by name
 
-Why five separate pytest runs rather than one: each app has its own
+Why six separate pytest runs rather than one: each app has its own
 tests/conftest.py, and pytest imports them by the bare module name `conftest`,
 so collecting two apps together collides and errors out.
 
@@ -24,12 +24,16 @@ ROOT = Path(__file__).resolve().parent
 # never listed here or in the workflow, so it ran only if someone invoked it by
 # hand — including the test that asserts the Perplexity spend cap actually
 # blocks further live calls, which is the one guarding a metered API.
+#
+# `canvasser` had no suite at all until Leaflet was vendored; it now guards the
+# vendoring, its cache-buster and its service-worker wiring.
 SUITES = [
     ('salescrm',   ROOT / 'salescrm',  []),
     ('portal',     ROOT / 'portal',    []),
     ('estimator',  ROOT / 'estimator', []),
     ('prospector', ROOT,               ['prospector/tests']),
     ('agents',     ROOT / 'agents',    []),
+    ('canvasser',  ROOT / 'canvasser', []),
 ]
 
 
