@@ -20,7 +20,14 @@
   // Flagged immediately rather than after /api/me resolves: each app scopes
   // its header offset to this class, and waiting would paint the app once at
   // the wrong offset and then jump.
-  document.documentElement.style.setProperty('--p1-shell-h', SHELL_H + 'px');
+  //
+  // The value must stay a calc() including the safe-area inset, and must match
+  // the :root default in shell.css. This is an inline style on <html>, so it
+  // beats the stylesheet — setting a bare '44px' here is what previously
+  // pinned every app's offset to 44 while the bar itself rendered taller than
+  // that on notched phones.
+  document.documentElement.style.setProperty(
+    '--p1-shell-h', 'calc(' + SHELL_H + 'px + env(safe-area-inset-top, 0px))');
   document.documentElement.classList.add('p1-has-shell');
 
   // Fallback list, used if /api/me is unreachable (offline, expired session

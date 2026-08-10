@@ -546,6 +546,22 @@ html, body {
 .hail-legend-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .hail-circle { border-radius: 50%; opacity: .7; border: 1px solid rgba(255,255,255,.3); }
 
+/* ── iOS focus zoom ───────────────────────────────────────────────────
+ * Mobile Safari zooms the page in whenever a focused form control has a
+ * font-size below 16px, and does NOT zoom back out on blur — the canvasser
+ * would jump to ~107% the moment a rep tapped the phone field at a door and
+ * stay there. (maximum-scale=1.0 does not prevent this; iOS ignores it.)
+ *
+ * Everything above renders at 15px to stay compact. Bumping to 16px only
+ * where a coarse pointer is driving keeps the desktop look and kills the zoom
+ * on the phones this app is actually used on. */
+@media (pointer: coarse) {
+  .login-box input,
+  .field-group input, .field-group textarea, .field-group select {
+    font-size: 16px;
+  }
+}
+
 /* ── Reduced motion ── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }

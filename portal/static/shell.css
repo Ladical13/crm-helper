@@ -12,8 +12,19 @@
  * still render standalone in tests.
  */
 
+/* Two variables, and the difference matters. --p1-shell-base is the bar's own
+ * content box; --p1-shell-h is the total vertical space it occupies, inset
+ * included, and is the ONLY one host apps should offset by.
+ *
+ * They used to be one variable set to 44px. But the bar also pads itself down
+ * past the notch, and with box-sizing:content-box that padding is height on
+ * top of the 44px — so on a notched iPhone the bar rendered 92px tall while
+ * all three apps offset their fixed headers by 44px, hiding 48px of every
+ * app header underneath it. Anything that reads --p1-shell-h now gets the
+ * real occupied height. */
 :root {
-  --p1-shell-h: 44px;
+  --p1-shell-base: 44px;
+  --p1-shell-h: calc(44px + env(safe-area-inset-top, 0px));
   --p1-shell-bg: #11161d;
   --p1-shell-line: #262d36;
   --p1-shell-txt: #e6edf3;
@@ -26,7 +37,7 @@
   left: 0;
   right: 0;
   z-index: 9000;
-  height: var(--p1-shell-h);
+  height: var(--p1-shell-base);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -39,6 +50,25 @@
   font: 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-user-select: none;
   user-select: none;
+}
+
+/* Touch targets. The visible pills stay small — the bar is 44px tall and a
+ * 44px pill would fill it edge to edge — so the tappable area is grown
+ * downward with a transparent ::after instead of by padding the box. Every
+ * link in the bar ends up at least 44px in the axis it is thin in, which is
+ * the phone minimum, without changing how the bar looks. */
+#p1-shell a { position: relative; }
+/* The P1 home square is the only link narrower than 44px too; it reaches into
+ * the 10px flex gap on either side to get there (that gap is empty space). */
+#p1-shell .p1-home::after { left: -9px; right: -9px; }
+#p1-shell a::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 44px;
+  transform: translateY(-50%);
 }
 
 #p1-shell .p1-home {

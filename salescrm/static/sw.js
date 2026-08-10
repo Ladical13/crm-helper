@@ -6,11 +6,11 @@
 // from fighting now that they share an origin.
 const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
 
-const CACHE = 'p1pipeline-v13';
+const CACHE = 'p1pipeline-v14';
 const SHELL = [
   BASE + '/',
-  BASE + '/static/style.css?v=12',
-  BASE + '/static/app.js?v=12',
+  BASE + '/static/style.css?v=14',
+  BASE + '/static/app.js?v=14',
   BASE + '/static/icon-192.png',
   BASE + '/static/icon-512.png',
 ];
@@ -40,11 +40,24 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
     return;
   }
+  // Everything else: cache-first, but ALWAYS revalidate in the background.
+  //
+  // This used to be `hit || fetch(...)`, which never refetched once something
+  // was cached. Versioned bundles survived that (a new ?v= is a new URL), but
+  // the portal's /shell.js and /shell.css carry no version, so the app-switcher
+  // bar froze at whatever was first cached and only a CACHE bump could shift
+  // it. Kicking off `live` unconditionally is what makes an unversioned asset
+  // one load stale instead of stale forever.
   e.respondWith(
-    caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
-      const copy = res.clone();
-      caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
-      return res;
-    }).catch(() => caches.match(BASE + '/')))
+    caches.match(e.request).then((hit) => {
+      const live = fetch(e.request).then((res) => {
+        if (res && res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
+        }
+        return res;
+      }).catch(() => hit || caches.match(BASE + '/'));
+      return hit || live;
+    })
   );
 });

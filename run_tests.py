@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Run all four test suites, the same way CI does. Use this before committing.
+"""Run all five test suites, the same way CI does. Use this before committing.
 
     python run_tests.py            # everything
     python run_tests.py estimator  # just one (or several) by name
 
-Why four separate pytest runs rather than one: each app has its own
+Why five separate pytest runs rather than one: each app has its own
 tests/conftest.py, and pytest imports them by the bare module name `conftest`,
 so collecting two apps together collides and errors out.
 
@@ -19,11 +19,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 # (name, working directory, pytest args). Mirrors .github/workflows/tests.yml.
+#
+# `agents` was written with its own pytest.ini and a passing suite but was
+# never listed here or in the workflow, so it ran only if someone invoked it by
+# hand — including the test that asserts the Perplexity spend cap actually
+# blocks further live calls, which is the one guarding a metered API.
 SUITES = [
     ('salescrm',   ROOT / 'salescrm',  []),
     ('portal',     ROOT / 'portal',    []),
     ('estimator',  ROOT / 'estimator', []),
     ('prospector', ROOT,               ['prospector/tests']),
+    ('agents',     ROOT / 'agents',    []),
 ]
 
 

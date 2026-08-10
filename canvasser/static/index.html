@@ -2,7 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <!-- viewport-fit=cover is load-bearing, not decoration: style.css derives
+       --safe-top/--safe-bot from env(safe-area-inset-*) and uses them to keep
+       the header out from under the notch and the bottom bars off the home
+       indicator. Without it those env() values resolve to 0 and all five of
+       those rules quietly do nothing — which, paired with the translucent
+       status bar below, put the header under the notch on every modern
+       iPhone. The other two apps already set it.
+
+       user-scalable=no stays: this app is a full-screen Leaflet map and page
+       zoom on a stray pinch fights the map's own gesture handling. iOS Safari
+       ignores it for accessibility anyway; Android Chrome honours it. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#0d1117">

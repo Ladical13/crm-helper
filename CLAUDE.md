@@ -9,7 +9,7 @@ Four apps in one repo, served as **one site behind one login**: the portal
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers everything
 python -m portal.wsgi                 # run it all locally on :5010
-python run_tests.py                   # all four suites, the way CI runs them
+python run_tests.py                   # all five suites, the way CI runs them
 ```
 
 Then open <http://localhost:5010> — canvasser at `/canvass`, CRM at `/crm`,
@@ -21,7 +21,7 @@ estimator at `/estimate`.
 git add -A && git commit -m "what changed" && git push
 ```
 
-Every push runs the four suites on GitHub (**Actions** tab). Green means the
+Every push runs the five suites on GitHub (**Actions** tab). Green means the
 pricing math, the cache-busters and the per-rep visibility rules all still hold.
 
 **Before committing, run `python run_tests.py`.** It is the same four commands
@@ -29,10 +29,11 @@ CI runs, and it is much faster to find a break here than in the Actions log.
 Individual suites, when you only touched one app:
 
 ```bash
-cd estimator && pytest      # 400 — pricing parity, cache-buster, bundles
-cd salescrm  && pytest      #  85 — pipeline, prospecting, queue, drafts
-cd portal    && pytest      #  28 — one login across all three, migration
+cd estimator && pytest      # 534 — pricing parity, cache-buster, bundles
+cd salescrm  && pytest      #  90 — pipeline, prospecting, queue, drafts, assets
+cd portal    && pytest      #  47 — one login across all three, migration, shell
 python -m pytest prospector/tests   # 27 — offline, no network
+cd agents    && pytest      #  12 — spend cap, cache, b2b/content sources
 ```
 
 **Deploying.** ONE Railway service, whole repo — see the deploy note at the end
@@ -95,6 +96,15 @@ what avoided renaming ~130 colliding routes. Rules that keep it working:
   the only path that is actually exercised.
 - **Service workers scope to their mount** via `self.registration.scope`. Do not
   hardcode `scope: '/'` — the estimator's and the CRM's would fight.
+- **`--p1-shell-h` is the app-switcher bar's TOTAL height, notch included.** The
+  bar is `--p1-shell-base` (44px) plus `env(safe-area-inset-top)` of padding, and
+  `box-sizing: content-box` makes that padding real height. All three apps offset
+  their own fixed header by `var(--p1-shell-h)`, so if that variable is just the
+  base, every app header hides under the bar by exactly the inset — 48px on a
+  notched iPhone, in installed-PWA mode, which is how the reps run it. Note
+  `shell.js` sets the variable as an **inline style on `<html>`**, so it beats
+  `shell.css`; a bare `'44px'` there silently reintroduces the bug. Both sides
+  must keep the inset. Guarded by `portal/tests/test_shell.py`.
 - **`/sign/<token>`, `/sign-co/<token>`, `/uploads/<f>` stay at the root** as
   redirects in `portal/app.py`. Signed-contract links already in customers'
   inboxes point there. Never remove them.
@@ -133,8 +143,8 @@ Note `_seed_data_dir()` copies `price_book.json`, `tier_defaults.json`,
 long-lived volume the deployed repo copies are inert — editing
 `estimator/price_book.json` and deploying does not change live pricing.
 
-**CI:** `.github/workflows/tests.yml` runs all four suites on every push and PR.
-They run as four separate pytest invocations — one run collecting two apps
+**CI:** `.github/workflows/tests.yml` runs all five suites on every push and PR.
+They run as five separate pytest invocations — one run collecting two apps
 collides on the bare module name `conftest`. It installs **node**, because the
 estimator's parity and fastening tests `skipif` it is missing and would
 otherwise go green without checking pricing at all; a final step fails the run
@@ -193,8 +203,17 @@ Guarded by `test_search_reaches_past_the_limit_window` and
 
 **PWA cache-buster:** any `app.js`/`style.css` change must bump `?v=N` in
 `static/index.html` (×2) **and** `static/sw.js` (`CACHE` + `SHELL`) — 5 spots, or PWA
-clients keep the stale bundle. Bumped **by hand**: unlike the estimator, this app has
-no `bump_version.py` and no test guarding it.
+clients keep the stale bundle. Bumped **by hand** — unlike the estimator there is no
+`bump_version.py` here — but `tests/test_assets.py` now fails if the five disagree.
+It drifted once before that test existed (`CACHE` at v13, `SHELL` still precaching
+`?v=12`), which precached two files the page never requests and left the bundle it
+*does* request out of the offline shell.
+
+The CRM service worker is **cache-first with background revalidation**, not plain
+cache-first. That matters because the portal's `/shell.js` and `/shell.css` carry no
+`?v=`: under the old `hit || fetch(...)` it never refetched, so the app-switcher bar
+froze at whatever was first cached until someone bumped `CACHE`. Guarded by
+`test_service_worker_revalidates_in_the_background`.
 
 **Deploy:** nothing CRM-specific. Since the portal merge this ships with everything
 else as the ONE service described above — the old standalone `project-one-crm`
