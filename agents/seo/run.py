@@ -28,7 +28,34 @@ def _site_url():
     return config.load_marketing_profile()['company']['website'].rstrip('/')
 
 
+# A run is a worker thread, so a process restart — a deploy, a dev-server
+# reload, a crash — kills it mid-flight and leaves its row saying "running"
+# forever. The UI then shows a run that never finishes and no reason why.
+STALE_RUN_MINUTES = 30
+
+
+def reap_stale_runs():
+    """Mark abandoned runs as interrupted. Returns how many were reaped.
+
+    Called before opening a run and before listing them, so the state is
+    corrected wherever someone might look at it.
+    """
+    from datetime import datetime, timedelta
+    cutoff = (datetime.utcnow() - timedelta(minutes=STALE_RUN_MINUTES)
+              ).strftime('%Y-%m-%dT%H:%M:%SZ')
+    with config.get_cache_db() as db:
+        cur = db.execute(
+            "UPDATE seo_runs SET status = 'interrupted', finished_at = ?, "
+            "error = 'The process restarted while this run was in progress "
+            "(deploy, reload or crash). Nothing was saved for it. Run again.' "
+            "WHERE status = 'running' AND started_at < ?",
+            (config.now_iso(), cutoff))
+        db.commit()
+        return cur.rowcount
+
+
 def _open_run(mode):
+    reap_stale_runs()
     with config.get_cache_db() as db:
         cur = db.execute(
             'INSERT INTO seo_runs (started_at, status, mode) VALUES (?, ?, ?)',
@@ -118,11 +145,17 @@ def run(dry_run=False, max_pages=crawler.DEFAULT_MAX_PAGES, use_cache=True):
             r['score'] = recommend.score(r)
         kept.sort(key=lambda r: -r['score'])
 
+        opportunities = recommend.topic_opportunities(questions, competitors, readable)
+        plan = recommend.content_plan(opportunities, kept)
+
         run_row = {'started_at': config.now_iso(), 'mode': mode}
-        markdown = report.render(run_row, crawl_result, kept, dropped, research_note)
+        markdown = report.render(run_row, crawl_result, kept, dropped,
+                                 research_note, opportunities, plan)
 
         manifest.update({
             'ok': True,
+            'opportunities': opportunities,
+            'content_plan': plan,
             'base_url': base,
             'pages_crawled': len(crawl_result['pages']),
             'pages_readable': len(readable),

@@ -198,6 +198,21 @@ def test_seo_review_404s_on_a_missing_recommendation(admin, tmp_path_factory,
     assert r.status_code == 404
 
 
+def test_brief_endpoints_are_admin_only(rep, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    assert rep.get('/nimbus/api/seo/briefs').status_code == 403
+    assert rep.post('/nimbus/api/seo/recommendations/1/brief').status_code == 403
+
+
+def test_a_brief_needs_an_approved_recommendation(admin, tmp_path_factory,
+                                                  monkeypatch):
+    """409, not 500 — refusing is the designed behaviour, not a failure."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    assert admin.get('/nimbus/api/seo/briefs').get_json() == []
+    r = admin.post('/nimbus/api/seo/recommendations/999/brief')
+    assert r.status_code == 404
+
+
 def test_anonymous_gets_401_not_403(client, tmp_path_factory, monkeypatch):
     """Portal's default-deny hook fires before Nimbus's admin gate."""
     _fresh_agents_dir(tmp_path_factory, monkeypatch)

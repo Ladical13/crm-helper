@@ -322,6 +322,23 @@ def _init_cache_db(conn):
         CREATE INDEX IF NOT EXISTS seo_recs_idx
             ON seo_recommendations(status, score DESC, id DESC);
 
+        -- Content briefs. Generated only from an APPROVED recommendation —
+        -- the strategist decides what is worth doing, the brief decides what
+        -- the page must contain, and only then would anything write copy.
+        CREATE TABLE IF NOT EXISTS seo_briefs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            rec_id        INTEGER NOT NULL,
+            created_at    TEXT NOT NULL,
+            topic         TEXT NOT NULL,
+            page_type     TEXT NOT NULL,
+            city          TEXT DEFAULT '',
+            service       TEXT DEFAULT '',
+            search_intent TEXT DEFAULT '',
+            brief_json    TEXT NOT NULL,
+            status        TEXT DEFAULT 'draft'
+        );
+        CREATE INDEX IF NOT EXISTS seo_briefs_idx ON seo_briefs(created_at DESC);
+
         -- Crawl cache. Stores EXTRACTED fields, never raw HTML: the whole
         -- point is the derived metadata, and a page body per URL would bloat
         -- the Nimbus DB for no gain.

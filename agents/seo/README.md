@@ -25,6 +25,52 @@ In Nimbus: **🔍 Local SEO** (admin only). "Dry run" writes nothing at all.
 - A Markdown weekly report saved to `seo_reports`
 - Ranked recommendations in `seo_recommendations`, each `pending` until a human
   approves or rejects
+- A structured **content brief** per approved recommendation, in `seo_briefs`
+
+### Weekly report sections
+
+| # | Section | Status |
+|---|---|---|
+| 1 | Local topic opportunities, by intent and business value | ✅ |
+| 2 | Search Console winners and decliners | ⛔ **Blocked** — needs Search Console |
+| 3 | Pages losing visibility | ⛔ **Blocked** — needs Search Console |
+| 4 | Technical website issues | ✅ |
+| 5 | Competitor and content gaps | ✅ |
+| 6 | Five recommended page improvements or new pages | ✅ |
+| 7 | Weekly content plan | ✅ |
+
+**2 and 3 render as explicitly blocked sections rather than being omitted.**
+Dropping them reads as an oversight; present-and-blocked tells the reader the
+gap is a constraint and what would lift it. No amount of crawling reveals what
+people searched or whether our position changed — anything printed there would
+be invention.
+
+Section 1 ranks **topics, not keywords.** `intent.py` classifies search intent
+(ready to hire / comparing / learning / brand) with a stated reason, and scores
+business value from intent × service × priority market. There is no volume or
+difficulty figure anywhere, and every opportunity carries a line saying so.
+
+## Content Brief bot (`brief.py`)
+
+Sits between the strategist and any future draft writer: the strategist decides
+*what* is worth doing, the brief decides *what the page must contain and
+prove*, and only then would anything write copy.
+
+**Briefs generate from approved recommendations only** — a brief for work
+nobody signed off on is just more output. Each carries target topic and search
+intent, city/service, the customer question, page type, an outline, internal
+links drawn from real crawled URLs, required proof and assets, claims needing
+review, a call to action, and how success will be measured.
+
+Two refusals worth knowing:
+
+- **It will not invent proof.** Required assets come from the marketing
+  profile. `provable_differentiators` is empty, so every brief forbids
+  comparative claims outright rather than leaving a tempting gap.
+- **It will not promise measurement we cannot deliver.** The measurement
+  section separates what is checkable today (page exists, is indexed, is
+  linked) from what is not (rankings, organic traffic, attributed leads) and
+  says why.
 
 Every recommendation carries: category, city/service context, the customer
 question or search intent, the action, the rationale, evidence URLs, a

@@ -112,9 +112,47 @@ outcomes. Six questions decide what is buildable:
 conversion rates. Without UTM capture every website lead collapses into one
 bucket called `website`, so no amount of SEO work can be tied to revenue.
 
-## Next up
+## The build order
 
-1. Work the SEO recommendation queue — it needs no permission from anyone.
-2. Google Business Profile, once Google approves the API request.
-3. Franchise CRM scorecard, once the six questions are answered.
-4. Search Console / GA4 — only if access ever appears.
+Agreed sequence, with where each stands.
+
+| # | Stage | Status |
+|---|---|---|
+| 1 | **SEO Strategist** | ✅ Built. Weekly report + ranked queue |
+| 2 | **Content Brief bot** | ✅ Built. Approved recommendation → structured brief |
+| 3 | **Draft Creator** | Not started — deliberately. A brief must come first |
+| 4 | **Google Business Profile + reputation** | ⛔ Blocked on Google's API approval |
+| 5 | **Scorecard** | ⛔ Blocked on the franchise CRM answers. Last by design |
+
+### 4 — Google Business Profile and reputation (not built)
+
+Flagging new reviews, drafting replies, spotting jobs eligible for a review
+request, drafting local posts, surfacing unanswered questions. Draft-only until
+it earns trust.
+
+**Not started because it cannot be verified.** The GBP connector has no
+credentials — Google has not approved API access — so every part of this would
+be written against mocks and shipped untested against reality. Two of its five
+jobs also need the franchise CRM: "completed jobs eligible for a review
+request" is a CRM query, not a Google one.
+
+Build it when the approval email lands.
+
+### 5 — Scorecard (not built, and last for good reason)
+
+Organic leads, booked inspections from organic, estimates and sold jobs from
+those leads, cost per qualified lead, visibility by city/service, GBP calls and
+actions, content that influenced leads.
+
+**Today we can produce roughly one row of that honestly.** Every other line
+needs either Search Console/GA4 (organic and visibility), the GBP API (calls
+and actions), or the franchise CRM with stage-transition dates and real source
+attribution (leads, inspections, sold jobs, influence).
+
+Building it now would produce a dashboard of blanks and estimates, which is
+worse than no dashboard — it invites people to read the estimates as numbers.
+The right measure of readiness is the six CRM questions below, not our appetite
+to ship it.
+
+**Agreed anti-metrics:** post count, impressions alone, and "AI activity" are
+not success. Nothing in the scorecard should reward volume.

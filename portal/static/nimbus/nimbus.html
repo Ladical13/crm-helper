@@ -800,6 +800,7 @@ async function renderSeo() {
         ${busy ? 'Running…' : 'Run weekly analysis'}
       </button>
       <button class="ghost" onclick="startSeo(true)" ${busy ? 'disabled' : ''}>Dry run</button>
+      <button class="ghost" onclick="showApproved()">Approved →&nbsp;briefs</button>
       <select id="seo-filter" onchange="filterRecs()">
         <option value="">All categories</option>
         ${Object.entries(CAT_LABEL).map(([k, v]) =>
@@ -857,8 +858,10 @@ function recCard(r, rank) {
           ? `<a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${escapeHtml(hostname(u))}</a>`
           : `<a>${escapeHtml(u)}</a>`).join('')}</div>` : ''}
       <div class="acts">
-        <button class="ok" onclick="reviewRec(${r.id}, 'approved')">Approve</button>
-        <button class="no" onclick="reviewRec(${r.id}, 'rejected')">Reject</button>
+        ${r.status === 'approved'
+          ? `<button class="ok" onclick="makeBrief(${r.id})">Create content brief</button>`
+          : `<button class="ok" onclick="reviewRec(${r.id}, 'approved')">Approve</button>
+             <button class="no" onclick="reviewRec(${r.id}, 'rejected')">Reject</button>`}
       </div>
     </div>`;
 }
@@ -922,6 +925,28 @@ function pollSeo(dryRun) {
       renderSeo();
     }
   }, 2000);
+}
+
+async function makeBrief(id) {
+  const r = await fetch(`${BASE}/api/seo/recommendations/${id}/brief`, {method: 'POST'});
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { flash(body.error || 'Could not build a brief', true); return; }
+  flash('Brief created');
+  document.getElementById('seo-live').innerHTML = `
+    <section class="panel" style="margin-bottom:18px;border-color:var(--accent)">
+      <h2>Content brief <span class="count">${escapeHtml(body.brief.page_type.replace(/_/g,' '))}</span></h2>
+      <div class="md">${escapeHtml(body.markdown)}</div>
+    </section>`;
+  document.getElementById('seo-live').scrollIntoView({behavior: 'smooth'});
+}
+
+async function showApproved() {
+  const recs = await fetch(`${BASE}/api/seo/recommendations?status=approved`)
+    .then(r => r.json()).catch(() => []);
+  document.getElementById('rec-list').innerHTML = recs.length
+    ? recs.map((r, i) => recCard(r, i + 1)).join('')
+    : '<div class="empty">Nothing approved yet.</div>';
+  document.getElementById('rec-count').textContent = `${recs.length} approved`;
 }
 
 async function reviewRec(id, status) {

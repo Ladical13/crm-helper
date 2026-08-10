@@ -462,6 +462,78 @@ def city_service_coverage(pages, cities, services):
     return recs
 
 
+def topic_opportunities(questions_by_ctx, competitor_by_ctx, pages):
+    """Candidate topics ranked by intent and business value.
+
+    Sources: researched customer questions, competitor content gaps, and our
+    own uncovered city × service combinations. No volume data anywhere — see
+    ``intent.py`` for why that is stated rather than quietly omitted.
+    """
+    from . import intent as intent_mod
+    out, seen = [], set()
+
+    def add(text, city='', service=''):
+        key = (text or '').strip().lower()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        out.append(intent_mod.opportunity(text.strip(), city, service))
+
+    for (city, service_key, _label), payload in (questions_by_ctx or {}).items():
+        for q in (payload.get('questions') or []):
+            add(str(q.get('question', '')), city, service_key)
+
+    for (city, service_key, _label), payload in (competitor_by_ctx or {}).items():
+        for gap in (payload.get('content_gaps') or []):
+            add(str(gap), city, service_key)
+
+    # Our own coverage gaps are topic opportunities too, and they are the ones
+    # we can state most confidently — we checked our own sitemap.
+    corpus = ' '.join((p.get('url', '') + ' ' + p.get('title', '')).lower()
+                      for p in pages)
+    for _label, examples in priority_markets():
+        for city in examples:
+            for key, service_label in approved_services():
+                if city.lower() not in corpus:
+                    add(f'{service_label} in {city}', city, key)
+                    break
+
+    return intent_mod.rank(out)
+
+
+# One week. More than this is a backlog pretending to be a plan.
+_PLAN_DAYS = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday')
+
+
+def content_plan(opportunities, recs):
+    """A week of work, drawn from the highest-value topics we can act on.
+
+    Page type follows intent: somebody ready to hire wants a service or city
+    page, somebody learning wants an FAQ or article. Deliberately capped at
+    five — the queue is the backlog, this is the week.
+    """
+    from . import intent as intent_mod
+
+    page_type_for = {
+        intent_mod.TRANSACTIONAL: 'service or city page',
+        intent_mod.COMMERCIAL:    'comparison page',
+        intent_mod.INFORMATIONAL: 'FAQ or article',
+        intent_mod.NAVIGATIONAL:  'Google Business post',
+    }
+    plan = []
+    for day, o in zip(_PLAN_DAYS, opportunities):
+        plan.append({
+            'day': day,
+            'title': o['topic'],
+            'page_type': page_type_for.get(o['intent'], 'article'),
+            'intent': o['intent'],
+            'city': o.get('city', ''),
+            'service': o.get('service', ''),
+            'business_value': o['business_value'],
+        })
+    return plan
+
+
 def build_all(crawl_result, questions_by_ctx=None, competitor_by_ctx=None):
     """Everything, scored and sorted. Honesty filtering happens in run.py."""
     pages = [p for p in crawl_result.get('pages') or [] if not p.get('error')]

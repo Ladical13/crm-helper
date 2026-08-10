@@ -79,6 +79,9 @@ _seo_active = {'running': False, 'stage': '', 'manifest': None}
 @nimbus_bp.route('/api/seo/runs', methods=['GET'])
 def seo_runs():
     from agents import config
+    from agents.seo import run as seo
+    # A run killed by a restart would otherwise read "running" forever.
+    seo.reap_stale_runs()
     limit = int(request.args.get('limit', 20))
     with config.get_cache_db() as db:
         rows = db.execute(
@@ -188,6 +191,38 @@ def seo_review(rec_id):
         return jsonify({'error': 'not found'}), 404
     return jsonify({'ok': True, 'acted': False,
                     'note': 'decision recorded — a human still does the work'})
+
+
+# ── Content briefs (approved recommendations only) ───────────────────────────
+
+@nimbus_bp.route('/api/seo/briefs', methods=['GET'])
+def seo_briefs():
+    from agents.seo import brief as brief_mod
+    return jsonify(brief_mod.list_briefs())
+
+
+@nimbus_bp.route('/api/seo/briefs/<int:brief_id>', methods=['GET'])
+def seo_brief(brief_id):
+    from agents.seo import brief as brief_mod
+    row = brief_mod.get(brief_id)
+    if not row:
+        return jsonify({'error': 'not found'}), 404
+    row['markdown'] = brief_mod.to_markdown(row['brief'])
+    return jsonify(row)
+
+
+@nimbus_bp.route('/api/seo/recommendations/<int:rec_id>/brief', methods=['POST'])
+def seo_make_brief(rec_id):
+    """Generate a structured content brief. Approved recommendations only."""
+    from agents.seo import brief as brief_mod
+    try:
+        brief = brief_mod.create_for_recommendation(rec_id)
+    except brief_mod.NotApproved as e:
+        return jsonify({'error': str(e)}), 409
+    except LookupError as e:
+        return jsonify({'error': str(e)}), 404
+    return jsonify({'ok': True, 'brief': brief,
+                    'markdown': brief_mod.to_markdown(brief)}), 201
 
 
 # ── Marketing connections (read-only status) ─────────────────────────────────
