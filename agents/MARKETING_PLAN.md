@@ -28,7 +28,7 @@ probe code is already written and tested.
 | Capability | Data source | Status |
 |---|---|---|
 | **Local SEO Strategist** | Our public site + public research | ✅ v1 shipped |
-| Public website / sitemap | `projectoneroofing.com/sitemap.xml` | ✅ Connected |
+| Public website / sitemap | `projectoneroofingcolorado.com/sitemap.xml` | ✅ Connected |
 | Marketing profile | `marketing_profile.json` (version-controlled) | ✅ In use |
 | Perplexity research | `PERPLEXITY_API_KEY`, capped monthly | ✅ In use |
 

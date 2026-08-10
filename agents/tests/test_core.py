@@ -139,7 +139,7 @@ def test_marketing_profile_loads_from_the_repo_not_the_volume():
     from agents import config
     profile = config.load_marketing_profile()
     assert config.data_dir() not in config.marketing_profile_path()
-    assert profile['company']['website_domain'] == 'projectoneroofing.com'
+    assert profile['company']['website_domain'] == 'projectoneroofingcolorado.com'
 
 
 def test_marketing_profile_has_every_required_section():

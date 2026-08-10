@@ -19,7 +19,7 @@
     "reviewed on the cadence in `review`."
   ],
 
-  "version": 1,
+  "version": 2,
   "last_reviewed": "2026-08-10",
   "review": {
     "cadence_days": 30,
@@ -28,8 +28,9 @@
 
   "company": {
     "name": "Project One Roofing",
-    "website": "https://projectoneroofing.com",
-    "website_domain": "projectoneroofing.com"
+    "website": "https://projectoneroofingcolorado.com",
+    "website_domain": "projectoneroofingcolorado.com",
+    "website_note": "Changed from projectoneroofing.com on 2026-08-10. The EMAIL domain is still @projectoneroofing.com and is a separate thing — see portal/users.py EMAIL_DOMAIN."
   },
 
   "approved_services": {

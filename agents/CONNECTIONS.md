@@ -116,8 +116,8 @@ Digits only — `123456789`, not `properties/123456789`. (The app strips a
 Search Console → the property picker at top left. The format depends on the
 property type and must match exactly:
 
-- Domain property → `sc-domain:projectoneroofing.com`
-- URL-prefix property → `https://projectoneroofing.com/` (**with** the
+- Domain property → `sc-domain:projectoneroofingcolorado.com`
+- URL-prefix property → `https://projectoneroofingcolorado.com/` (**with** the
   trailing slash)
 
 ### `GBP_ACCOUNT_ID` and `GBP_LOCATION_ID`

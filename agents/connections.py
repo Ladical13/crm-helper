@@ -108,9 +108,9 @@ CONNECTORS = [
         'auth':  'service_account',
         'secret_env': [SA_ENV_B64],
         'id_env': [
-            {'name': 'GSC_SITE_URL', 'example': 'sc-domain:projectoneroofing.com',
+            {'name': 'GSC_SITE_URL', 'example': 'sc-domain:projectoneroofingcolorado.com',
              'where': 'Search Console → property picker. A Domain property is '
-                      '"sc-domain:projectoneroofing.com"; a URL-prefix property is '
+                      '"sc-domain:projectoneroofingcolorado.com"; a URL-prefix property is '
                       'the full URL with trailing slash.'},
         ],
         'scopes': [GSC_SCOPE],
@@ -162,7 +162,7 @@ CONNECTORS = [
         'auth':  'none',
         'secret_env': [],
         'id_env': [
-            {'name': 'MARKETING_SITE_URL', 'example': 'https://projectoneroofing.com',
+            {'name': 'MARKETING_SITE_URL', 'example': 'https://projectoneroofingcolorado.com',
              'optional': True,
              'where': 'Defaults to the website in agents/marketing_profile.json.'},
         ],

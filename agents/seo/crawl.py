@@ -29,7 +29,7 @@ except ImportError:                            # pragma: no cover - dev only
 from .. import config
 from . import inspect as page_inspect
 
-USER_AGENT = ('ProjectOneNimbus/1.0 (+https://projectoneroofing.com; '
+USER_AGENT = ('ProjectOneNimbus/1.0 (+https://projectoneroofingcolorado.com; '
               'internal SEO audit; contact luke@projectoneroofing.com)')
 
 DEFAULT_MAX_PAGES = 40

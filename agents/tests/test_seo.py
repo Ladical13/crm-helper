@@ -195,7 +195,7 @@ def test_robots_disallow_is_respected(fake_web, site_profile):
 
 def test_the_crawler_identifies_itself(fake_web, site_profile):
     from agents.seo import crawl
-    assert 'projectoneroofing.com' in crawl.USER_AGENT
+    assert 'projectoneroofingcolorado.com' in crawl.USER_AGENT
     assert 'ProjectOneNimbus' in crawl.USER_AGENT
 
 
@@ -255,7 +255,7 @@ SPA_HTML = ('<!doctype html><html><head><title>Project One</title></head>'
 
 
 def test_a_javascript_shell_is_detected_as_client_rendered():
-    """projectoneroofing.com is a React SPA: 4.9KB of HTML, no H1, no content.
+    """projectoneroofingcolorado.com is a React SPA: 4.9KB of HTML, no H1, no content.
     Before this check the strategist reported 'add an H1' on all 40 pages."""
     from agents.seo import inspect
     page = inspect.extract(SPA_HTML, 'https://example.com/')
