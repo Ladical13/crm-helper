@@ -94,6 +94,53 @@ def save_settings(patch):
     return settings
 
 
+# ── Marketing profile ────────────────────────────────────────────────────────
+# What the marketing team may claim: approved services, service area, target
+# customers, banned phrases, proven differentiators, credentials.
+
+def marketing_profile_path():
+    """The REPO copy, deliberately — not ``data_dir()``.
+
+    Every other config file here lives on the volume so a manager can edit it
+    from the dashboard. This one is the opposite: it is version-controlled, so
+    git log is its change history and a review is a diff. Seeding it onto the
+    volume would recreate the ``price_book.json`` trap, where the repo copy is
+    only ever copied when absent and editing it stops changing anything.
+    """
+    return os.path.join(HERE, 'marketing_profile.json')
+
+
+def load_marketing_profile():
+    """Read the profile fresh. Raises if it is missing or malformed.
+
+    Failing loud is the point. An agent that silently got ``{}`` here would
+    have no banned phrases and no approved-service list, and would happily
+    write copy offering work we don't do. Re-read on every call so a local
+    edit takes effect without a restart.
+    """
+    path = marketing_profile_path()
+    try:
+        with open(path, encoding='utf-8') as f:
+            profile = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f'marketing profile missing at {path} — it is version-controlled '
+            f'and must be present; agents refuse to write copy without it')
+    except ValueError as e:
+        raise ValueError(f'marketing profile at {path} is not valid JSON: {e}')
+    if not isinstance(profile, dict):
+        raise ValueError(f'marketing profile at {path} must be a JSON object')
+    return profile
+
+
+def banned_phrases():
+    """Just the phrases, lowercased — the shape a copy check actually wants."""
+    section = load_marketing_profile().get('phrases_to_avoid') or {}
+    return [str(p.get('phrase', '')).strip().lower()
+            for p in (section.get('phrases') or [])
+            if str(p.get('phrase', '')).strip()]
+
+
 DEFAULT_TERRITORIES = {
     'avery': {
         'display_name': 'Avery Schroeder',

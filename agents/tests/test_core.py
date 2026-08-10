@@ -127,6 +127,69 @@ def test_score_ranks_more_actionable_topics_higher():
     assert ranked[0]['score'] > ranked[1]['score']
 
 
+# ── Marketing profile ────────────────────────────────────────────────────────
+
+def test_marketing_profile_loads_from_the_repo_not_the_volume():
+    """The autouse fixture points AGENTS_DATA_DIR at an empty scratch dir.
+
+    Loading anyway is the whole invariant: the profile is version-controlled,
+    so it must never be seeded onto the volume where the repo copy would go
+    inert.
+    """
+    from agents import config
+    profile = config.load_marketing_profile()
+    assert config.data_dir() not in config.marketing_profile_path()
+    assert profile['company']['website_domain'] == 'projectoneroofing.com'
+
+
+def test_marketing_profile_has_every_required_section():
+    from agents import config
+    profile = config.load_marketing_profile()
+    for key in ('version', 'last_reviewed', 'company', 'approved_services',
+                'service_area', 'target_customers', 'phrases_to_avoid',
+                'provable_differentiators', 'credentials'):
+        assert key in profile, f'marketing profile lost its {key!r} section'
+
+
+def test_approved_services_are_a_closed_list_and_customers_are_not():
+    """Both flags are load-bearing and point opposite ways.
+
+    Offering work we don't do is a promise we can't keep; refusing a customer
+    type merely because nobody listed it yet is lost business.
+    """
+    from agents import config
+    profile = config.load_marketing_profile()
+    assert profile['approved_services']['exhaustive'] is True
+    assert profile['target_customers']['exhaustive'] is False
+
+
+def test_banned_phrases_are_lowercased_and_include_free():
+    from agents import config
+    phrases = config.banned_phrases()
+    assert 'free' in phrases
+    assert all(p == p.lower() and p.strip() for p in phrases)
+
+
+def test_every_differentiator_carries_its_proof():
+    """Empty today, so this passes vacuously — and bites the day someone adds
+    an unbacked superiority claim."""
+    from agents import config
+    claims = config.load_marketing_profile()['provable_differentiators']['claims']
+    for c in claims:
+        assert c.get('claim'), f'differentiator with no claim text: {c!r}'
+        assert c.get('proof'), f'unproven differentiator: {c.get("claim")!r}'
+
+
+def test_marketing_profile_fails_loud_when_missing(monkeypatch, tmp_path):
+    """A silently-empty profile would mean no banned phrases and no approved
+    service list — an agent would write anything."""
+    from agents import config
+    monkeypatch.setattr(config, 'marketing_profile_path',
+                        lambda: str(tmp_path / 'nope.json'))
+    with pytest.raises(FileNotFoundError):
+        config.load_marketing_profile()
+
+
 # ── ingest annotate ─────────────────────────────────────────────────────────
 
 def test_annotate_leads_serializes_citations_list():
