@@ -114,9 +114,13 @@ CONNECTORS = [
         'secret_env': ['GBP_OAUTH_CLIENT_ID', 'GBP_OAUTH_CLIENT_SECRET',
                        'GBP_OAUTH_REFRESH_TOKEN'],
         'id_env': [
-            {'name': 'GBP_ACCOUNT_ID', 'example': '106...',
-             'where': 'Returned by the accounts list on first successful connect — '
-                      'the digits after "accounts/".'},
+            # Optional, and that is load-bearing: you discover this ID BY
+            # connecting, so requiring it would gate the probe on its own
+            # output. The probe lists accounts and reports the IDs it finds.
+            {'name': 'GBP_ACCOUNT_ID', 'example': '106...', 'optional': True,
+             'where': 'Discovered by connecting — the probe below reports it, and '
+                      '`python -m agents.scripts.gbp_oauth` prints it. Set it to '
+                      'pin reads to one account.'},
             {'name': 'GBP_LOCATION_ID', 'example': '123...', 'optional': True,
              'where': 'Digits after "locations/". Leave unset to read every '
                       'location on the account.'},
@@ -335,7 +339,10 @@ def _probe_gbp():
     accounts = (r.json() or {}).get('accounts') or []
     if not accounts:
         return ERROR, 'authenticated, but this Google account manages no Business Profile'
-    return CONNECTED, f'{len(accounts)} account(s) readable'
+    # Report the IDs rather than making someone go find them — this is where
+    # GBP_ACCOUNT_ID comes from. Non-secret identifiers, admin-only page.
+    ids = ', '.join(a.get('name', '').split('/')[-1] for a in accounts[:5])
+    return CONNECTED, f'{len(accounts)} account(s) readable — GBP_ACCOUNT_ID: {ids}'
 
 
 def _probe_website():

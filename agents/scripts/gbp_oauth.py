@@ -26,6 +26,9 @@ import requests
 
 AUTH_URL  = 'https://accounts.google.com/o/oauth2/v2/auth'
 TOKEN_URL = 'https://oauth2.googleapis.com/token'
+ACCOUNTS_URL = 'https://mybusinessaccountmanagement.googleapis.com/v1/accounts'
+LOCATIONS_URL_FMT = ('https://mybusinessbusinessinformation.googleapis.com/v1/'
+                     '{account}/locations')
 # The only scope Google publishes for the Business Profile APIs. It is
 # write-capable; Nimbus itself only ever issues GETs. See CONNECTIONS.md.
 SCOPE = 'https://www.googleapis.com/auth/business.manage'
@@ -54,6 +57,61 @@ def _free_port():
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0))
         return s.getsockname()[1]
+
+
+def _print_ids(access_token):
+    """Look up the account (and location) IDs so they don't have to be dug out.
+
+    Read-only GETs. Fails soft on purpose: the most likely reason this comes
+    back empty is that the Business Profile API access request is still
+    pending, which is the normal state for anyone running this the same week
+    they applied. The refresh token above is still good either way.
+    """
+    if not access_token:
+        return
+    hdr = {'Authorization': f'Bearer {access_token}'}
+    try:
+        r = requests.get(ACCOUNTS_URL, headers=hdr, timeout=30)
+    except Exception as e:                                       # noqa: BLE001
+        print(f'GBP_ACCOUNT_ID          = (lookup failed: {e})')
+        return
+    if r.status_code == 403:
+        print('GBP_ACCOUNT_ID          = (not readable yet — HTTP 403)')
+        print('    Expected if your Business Profile API access request is')
+        print('    still pending. Re-run this once Google approves it.')
+        return
+    if not r.ok:
+        print(f'GBP_ACCOUNT_ID          = (lookup failed: HTTP {r.status_code})')
+        return
+    accounts = (r.json() or {}).get('accounts') or []
+    if not accounts:
+        print('GBP_ACCOUNT_ID          = (this account manages no profiles)')
+        return
+    for acct in accounts:
+        # 'name' arrives as 'accounts/106...'; the env var wants the digits.
+        acct_id = acct.get('name', '').split('/')[-1]
+        label = acct.get('accountName') or acct.get('type') or ''
+        print(f'GBP_ACCOUNT_ID          = {acct_id}'
+              + (f'   ({label})' if label else ''))
+        _print_locations(hdr, acct.get('name', ''))
+
+
+def _print_locations(hdr, account_name):
+    """Optional GBP_LOCATION_ID values. Leaving it unset reads them all."""
+    if not account_name:
+        return
+    try:
+        r = requests.get(f'{LOCATIONS_URL_FMT.format(account=account_name)}',
+                         headers=hdr, timeout=30,
+                         params={'readMask': 'name,title'})
+    except Exception:                                            # noqa: BLE001
+        return
+    if not r.ok:
+        return
+    locations = (r.json() or {}).get('locations') or []
+    for loc in locations:
+        loc_id = loc.get('name', '').split('/')[-1]
+        print(f'  GBP_LOCATION_ID (optional) = {loc_id}   ({loc.get("title", "")})')
 
 
 def main():
@@ -125,7 +183,8 @@ def main():
     if not r.ok:
         print(f'Token exchange failed: HTTP {r.status_code}')
         return 1
-    refresh = (r.json() or {}).get('refresh_token', '')
+    body = r.json() or {}
+    refresh = body.get('refresh_token', '')
     if not refresh:
         print('Google returned no refresh_token. This usually means the account')
         print('has authorised before — revoke at')
@@ -133,13 +192,14 @@ def main():
         return 1
 
     print('\n' + '=' * 68)
-    print('Set these three in Railway (Variables tab). Nothing was saved here.')
+    print('Set these in Railway (Variables tab). Nothing was saved here.')
     print('=' * 68)
     print(f'GBP_OAUTH_CLIENT_ID     = {client_id}')
     print(f'GBP_OAUTH_CLIENT_SECRET = (the secret you just typed)')
     print(f'GBP_OAUTH_REFRESH_TOKEN = {refresh}')
+    _print_ids(body.get('access_token', ''))
     print('=' * 68)
-    print('\nThen redeploy and hit Re-check on Nimbus > Connections.')
+    print('\nThen hit Re-check on Nimbus > Connections.')
     print('Close this terminal when you are done — the token above is a')
     print('long-lived credential.')
     return 0

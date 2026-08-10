@@ -76,7 +76,7 @@ do not move it into the repo, do not paste it into a chat.
 | `GBP_OAUTH_CLIENT_ID` | Business Profile | Yes |
 | `GBP_OAUTH_CLIENT_SECRET` | Business Profile | Yes |
 | `GBP_OAUTH_REFRESH_TOKEN` | Business Profile | Yes |
-| `GBP_ACCOUNT_ID` | Business Profile | No |
+| `GBP_ACCOUNT_ID` | Business Profile (optional) | No |
 | `GBP_LOCATION_ID` | Business Profile (optional) | No |
 | `MARKETING_SITE_URL` | Website (optional) | No |
 
@@ -103,16 +103,19 @@ property type and must match exactly:
   trailing slash)
 
 ### `GBP_ACCOUNT_ID` and `GBP_LOCATION_ID`
-Chicken-and-egg: you get these *from* the API once OAuth works. Set the three
-OAuth variables first and hit **Re-check** — the page reports how many accounts
-are readable. Then list them:
+**Both are optional, and you discover them by connecting** — which is why
+neither gates the probe. Set the three OAuth variables, and either:
 
-- Accounts: `GET https://mybusinessaccountmanagement.googleapis.com/v1/accounts`
-  → returns `accounts/106…`; the digits are `GBP_ACCOUNT_ID`.
-- Locations: `GET https://mybusinessbusinessinformation.googleapis.com/v1/accounts/{accountId}/locations?readMask=name,title`
-  → returns `locations/123…`; the digits are `GBP_LOCATION_ID`.
+- run `python -m agents.scripts.gbp_oauth`, which prints both at the end; or
+- hit **Re-check** on the Connections page, which reports the account IDs it
+  can read in the status line.
 
-Leave `GBP_LOCATION_ID` unset to read every location on the account.
+Set `GBP_ACCOUNT_ID` only to pin reads to one account. Leave `GBP_LOCATION_ID`
+unset to read every location.
+
+If the lookup comes back HTTP 403, that is the expected state while the
+Business Profile API access request is still pending — the refresh token is
+fine, Google just hasn't granted quota yet.
 
 ## 5. Verifying each connection without changing live data
 

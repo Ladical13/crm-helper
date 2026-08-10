@@ -127,6 +127,21 @@ def test_configured_but_unprobed_is_not_reported_as_connected(monkeypatch):
     assert rows['gbp']['status'] != connections.CONNECTED
 
 
+def test_gbp_probes_on_the_oauth_vars_alone(monkeypatch):
+    """GBP_ACCOUNT_ID must stay optional. You discover that ID by connecting,
+    so requiring it would gate the probe on its own output."""
+    from agents import connections
+    monkeypatch.delenv('GBP_ACCOUNT_ID', raising=False)
+    for k in ('GBP_OAUTH_CLIENT_ID', 'GBP_OAUTH_CLIENT_SECRET',
+              'GBP_OAUTH_REFRESH_TOKEN'):
+        monkeypatch.setenv(k, 'x')
+    monkeypatch.setitem(connections._PROBES, 'gbp',
+                        lambda: (connections.CONNECTED, '1 account(s) readable'))
+    rows = {r['key']: r for r in connections.status_all(probe=True)}
+    assert rows['gbp']['status'] == connections.CONNECTED, \
+        'the probe was skipped — GBP_ACCOUNT_ID is being treated as required'
+
+
 def test_a_raising_probe_becomes_an_error_row_not_an_exception(monkeypatch):
     from agents import connections
     monkeypatch.setenv('GA4_PROPERTY_ID', '123')
