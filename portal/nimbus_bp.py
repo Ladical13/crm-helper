@@ -63,9 +63,29 @@ def _shell():
 @nimbus_bp.route('/rep/<username>')
 @nimbus_bp.route('/marketing/topics')
 @nimbus_bp.route('/marketing/drafts')
+@nimbus_bp.route('/marketing/connections')
 @nimbus_bp.route('/settings')
 def shell(**_kw):
     return _shell()
+
+
+# ── Marketing connections (read-only status) ─────────────────────────────────
+
+@nimbus_bp.route('/api/connections', methods=['GET'])
+def list_connections():
+    """Connector status for the Marketing Connections page.
+
+    Never returns a secret — ``connections.status_all()`` emits env var names,
+    set/unset booleans and non-secret IDs only. Guarded by
+    ``test_connections_api_never_returns_a_secret``.
+
+    ``?probe=0`` reports configuration without touching the network, which is
+    what the page paints first; the Re-check button then calls with probing on.
+    """
+    from agents import connections
+    probe = request.args.get('probe', '1') not in ('0', 'false', 'no')
+    return jsonify({'connections': connections.status_all(probe=probe),
+                    'summary': connections.summary()})
 
 
 # ── Territories ──────────────────────────────────────────────────────────────

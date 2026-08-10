@@ -199,6 +199,60 @@
   .settings button { padding: 10px 18px; background: var(--gradient); color: #001; font-weight: 700; border: none;
     border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 14px; }
 
+  /* Connections */
+  .conn {
+    background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .conn .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .conn .name { font-weight: 600; font-size: 14px; }
+  .conn .pill {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 700;
+    padding: 3px 10px; border-radius: 999px; border: 1px solid;
+  }
+  .conn .pill.connected     { color: var(--ok);     border-color: var(--ok);     background: rgba(34,197,94,.1); }
+  .conn .pill.not_connected { color: var(--dim);    border-color: var(--border-2); background: var(--panel); }
+  .conn .pill.error         { color: var(--danger); border-color: var(--danger); background: rgba(239,68,68,.1); }
+  .conn .pill.checking      { color: var(--warn);   border-color: var(--warn);   background: rgba(245,158,11,.1); }
+  .conn .authtag { font-size: 11px; color: var(--dim2); text-transform: uppercase; letter-spacing: 1px; }
+  .conn .detail { margin-top: 8px; font-size: 13px; color: var(--dim); }
+  .conn .reads  { margin-top: 4px; font-size: 12px; color: var(--dim2); }
+  .conn .caveat {
+    margin-top: 8px; font-size: 12px; color: var(--warn); line-height: 1.5;
+    background: rgba(245,158,11,.07); border-left: 2px solid var(--warn);
+    padding: 7px 10px; border-radius: 0 6px 6px 0;
+  }
+  .conn .envs { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .conn .env {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--dim2);
+  }
+  .conn .env.set   { color: var(--ok); border-color: rgba(34,197,94,.4); }
+  .conn .env.unset { color: var(--dim2); }
+  .conn .env.unset.required { color: var(--warn); border-color: rgba(245,158,11,.4); }
+  .conn details { margin-top: 10px; }
+  .conn summary { cursor: pointer; font-size: 12px; color: var(--dim); }
+  .conn summary:hover { color: var(--accent); }
+  .conn .howto { margin-top: 8px; font-size: 12px; color: var(--dim); line-height: 1.6; }
+  .conn .howto b { color: var(--text); font-weight: 600; }
+  .conn .howto code {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 1px 6px; font-size: 11px; color: var(--accent-2);
+  }
+  .ro-banner {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 16px;
+    padding: 11px 15px; border-radius: 10px; font-size: 13px;
+    background: rgba(34,197,94,.07); border: 1px solid rgba(34,197,94,.3); color: var(--dim);
+  }
+  .ro-banner b { color: var(--ok); }
+  .sa-box {
+    margin-bottom: 16px; padding: 12px 15px; border-radius: 10px;
+    background: var(--panel-2); border: 1px solid var(--border-2); font-size: 13px;
+  }
+  .sa-box .lbl { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  .sa-box .val { color: var(--accent); word-break: break-all; margin-top: 3px; }
+  .sa-box .hint { color: var(--dim2); font-size: 12px; margin-top: 6px; }
+
   .empty { padding: 40px 20px; text-align: center; color: var(--dim2); font-size: 13px; }
 
   @keyframes pulse {
@@ -243,6 +297,7 @@
     <a href="/nimbus/" data-route="/nimbus/">⚡ Dashboard</a>
     <a href="/nimbus/marketing/topics" data-route="/nimbus/marketing/topics">📈 Trending Topics</a>
     <a href="/nimbus/marketing/drafts" data-route="/nimbus/marketing/drafts">📝 Content Drafts</a>
+    <a href="/nimbus/marketing/connections" data-route="/nimbus/marketing/connections">🔌 Connections</a>
     <a href="/nimbus/settings" data-route="/nimbus/settings">⚙️ Settings</a>
   </nav>
 
@@ -265,6 +320,7 @@ function route() {
   });
   if (path.startsWith('/nimbus/marketing/topics')) return renderTopics();
   if (path.startsWith('/nimbus/marketing/drafts')) return renderDrafts();
+  if (path.startsWith('/nimbus/marketing/connections')) return renderConnections();
   if (path.startsWith('/nimbus/settings'))          return renderSettings();
   if (path.startsWith('/nimbus/rep/'))              return renderRep(path.split('/').pop());
   return renderDashboard();
@@ -624,6 +680,127 @@ async function saveSettings() {
   });
   if (r.ok) { flash('Settings saved'); refreshSettings(); }
   else flash('Save failed', true);
+}
+
+/* ── marketing connections ─────────────────────────────────────────────── */
+/* Read-only status board. The API returns env var NAMES and set/unset flags,
+   never values, so there is nothing secret to leak on this page. */
+
+const STATUS_LABEL = {
+  connected: 'Connected', not_connected: 'Not Connected', error: 'Error',
+};
+const AUTH_LABEL = {
+  service_account: 'read-only service account', oauth: 'Google OAuth login',
+  none: 'no credential needed', unknown: 'not yet specified',
+};
+
+async function renderConnections(probe) {
+  const main = document.getElementById('main');
+  if (!main.querySelector('.conn')) {
+    main.innerHTML = '<div class="empty"><span class="spin"></span> loading connections</div>';
+  }
+  let data;
+  try {
+    data = await fetch(`${BASE}/api/connections?probe=${probe === false ? 0 : 1}`)
+      .then(r => r.json());
+  } catch (e) {
+    main.innerHTML = '<div class="empty">could not load connection status</div>';
+    return;
+  }
+  const s = data.summary || {};
+  const rows = data.connections || [];
+
+  main.innerHTML = `
+    <div class="ro-banner">
+      🔒 <span><b>Read-only, v1.</b> Every connection below is fetched with HTTP GET only.
+      Nimbus does not publish, send email, edit the website, or write to the CRM.</span>
+    </div>
+
+    ${s.google_auth_installed === false ? `
+      <div class="conn" style="border-color:var(--warn)">
+        <div class="detail" style="color:var(--warn)">
+          The <code>google-auth</code> package is not installed, so the Google
+          service-account connections cannot authenticate. Add it to
+          requirements.txt and redeploy.
+        </div>
+      </div>` : ''}
+
+    <div class="sa-box">
+      <div class="lbl">Shared service account (non-secret — this is the address you grant)</div>
+      <div class="val mono">${s.service_account_email
+        ? escapeHtml(s.service_account_email)
+        : '<span style="color:var(--dim2)">not set — no service account key configured yet</span>'}</div>
+      <div class="hint">Grant this address read access in GA4 and Search Console.
+        Its private key stays in the Railway env var and is never shown here.</div>
+    </div>
+
+    <section class="panel">
+      <h2>
+        Marketing connections
+        <span class="count">${rows.filter(r => r.status === 'connected').length}/${rows.length} connected</span>
+      </h2>
+      <div style="margin-bottom:14px">
+        <button class="btn" id="recheck" onclick="recheckConnections()"
+          style="padding:7px 14px;font-size:12px;border-radius:7px;background:var(--gradient);color:#001;font-weight:700;border:none;cursor:pointer;font-family:inherit">
+          Re-check all
+        </button>
+        <span style="color:var(--dim2);font-size:12px;margin-left:10px">
+          Each check is a single read-only request. Nothing is written.
+        </span>
+      </div>
+      ${rows.map(connCard).join('')}
+    </section>
+  `;
+}
+
+function connCard(c) {
+  const envPills = [
+    ...(c.secret_env || []).map(e => `
+      <span class="env ${e.set ? 'set' : 'unset required'}" title="secret — value never shown">
+        ${e.set ? '●' : '○'} ${escapeHtml(e.name)}
+      </span>`),
+    ...(c.id_env || []).map(e => `
+      <span class="env ${e.set ? 'set' : (e.optional ? 'unset' : 'unset required')}">
+        ${e.set ? '●' : '○'} ${escapeHtml(e.name)}${e.optional && !e.set ? ' (optional)' : ''}${
+          e.set && e.value ? ' = ' + escapeHtml(e.value) : ''}
+      </span>`),
+  ].join('');
+
+  const ids = (c.id_env || []).filter(e => e.where);
+  return `
+    <div class="conn" data-conn="${escapeHtml(c.key)}">
+      <div class="head">
+        <span class="name">${escapeHtml(c.label)}</span>
+        <span class="pill ${escapeHtml(c.status)}">${STATUS_LABEL[c.status] || c.status}</span>
+        <span class="authtag">${AUTH_LABEL[c.auth] || escapeHtml(c.auth)}</span>
+      </div>
+      ${c.detail ? `<div class="detail">${escapeHtml(c.detail)}</div>` : ''}
+      ${c.reads ? `<div class="reads">Reads: ${escapeHtml(c.reads)}</div>` : ''}
+      ${c.caveat ? `<div class="caveat">⚠ ${escapeHtml(c.caveat)}</div>` : ''}
+      ${envPills ? `<div class="envs">${envPills}</div>` : ''}
+      ${(c.grant || ids.length) ? `
+        <details>
+          <summary>Setup steps</summary>
+          <div class="howto">
+            ${c.grant ? `<div><b>Grant access:</b> ${escapeHtml(c.grant)}</div>` : ''}
+            ${ids.map(e => `<div style="margin-top:6px"><b>${escapeHtml(e.name)}</b> —
+              ${escapeHtml(e.where)}${e.example ? ` Example: <code>${escapeHtml(e.example)}</code>` : ''}</div>`).join('')}
+            ${(c.scopes || []).length ? `<div style="margin-top:6px"><b>Scope:</b>
+              <code>${c.scopes.map(escapeHtml).join('</code> <code>')}</code>
+              ${c.scope_is_readonly ? '(read-only)' : '(no read-only scope exists — see warning above)'}</div>` : ''}
+          </div>
+        </details>` : ''}
+    </div>`;
+}
+
+async function recheckConnections() {
+  const btn = document.getElementById('recheck');
+  if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+  document.querySelectorAll('.conn .pill').forEach(p => {
+    p.className = 'pill checking'; p.textContent = 'Checking…';
+  });
+  await renderConnections(true);
+  flash('Connection check complete');
 }
 
 /* ── rep detail page ───────────────────────────────────────────────────── */

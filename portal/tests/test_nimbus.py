@@ -29,7 +29,8 @@ def test_reps_get_403_on_every_nimbus_route(rep, tmp_path_factory, monkeypatch):
     _fresh_agents_dir(tmp_path_factory, monkeypatch)
     for path in ('/nimbus/', '/nimbus/api/territories', '/nimbus/api/settings',
                  '/nimbus/api/runs', '/nimbus/api/content/topics',
-                 '/nimbus/api/content/drafts'):
+                 '/nimbus/api/content/drafts', '/nimbus/api/connections',
+                 '/nimbus/marketing/connections'):
         r = rep.get(path)
         assert r.status_code == 403, path
 
@@ -115,6 +116,57 @@ def test_runs_and_topics_and_drafts_default_empty(admin, tmp_path_factory, monke
     assert admin.get('/nimbus/api/runs').get_json() == []
     assert admin.get('/nimbus/api/content/topics').get_json() == []
     assert admin.get('/nimbus/api/content/drafts').get_json() == []
+
+
+# ── Marketing connections ────────────────────────────────────────────────────
+
+def test_connections_api_lists_every_connector(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    r = admin.get('/nimbus/api/connections?probe=0')
+    assert r.status_code == 200
+    body = r.get_json()
+    keys = {c['key'] for c in body['connections']}
+    assert {'ga4', 'gsc', 'gbp', 'website'} <= keys
+    assert body['summary']['read_only'] is True
+
+
+def test_connections_api_never_returns_a_secret(admin, tmp_path_factory, monkeypatch):
+    """The load-bearing one: this payload renders straight into the page."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    monkeypatch.setenv('GBP_OAUTH_CLIENT_SECRET', 'GOCSPX-zzLEAKCANARYzz')
+    monkeypatch.setenv('GBP_OAUTH_REFRESH_TOKEN', '1//zzLEAKCANARYzz')
+    r = admin.get('/nimbus/api/connections?probe=0')
+    assert 'zzLEAKCANARYzz' not in r.get_data(as_text=True)
+
+
+def test_connections_page_probes_nothing_when_unconfigured(admin, tmp_path_factory,
+                                                           monkeypatch):
+    """With no credentials set, a probing request must still return 200 and
+    must not attempt any network call — the missing-env short-circuit runs
+    first. `requests.get` is replaced with a landmine to prove it."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    for k in ('GOOGLE_SERVICE_ACCOUNT_JSON_B64', 'GOOGLE_SERVICE_ACCOUNT_JSON',
+              'GA4_PROPERTY_ID', 'GSC_SITE_URL', 'GBP_OAUTH_CLIENT_ID',
+              'GBP_OAUTH_CLIENT_SECRET', 'GBP_OAUTH_REFRESH_TOKEN',
+              'GBP_ACCOUNT_ID', 'MARKETING_SITE_URL'):
+        monkeypatch.delenv(k, raising=False)
+
+    from agents import connections
+
+    def landmine(*a, **kw):
+        raise AssertionError('probed the network with no credentials configured')
+
+    # The website probe legitimately needs no credential, so let it resolve to
+    # "not connected" by clearing the profile fallback instead of hitting it.
+    monkeypatch.setattr(connections, '_get', landmine)
+    monkeypatch.setitem(connections._PROBES, 'website',
+                        lambda: (connections.NOT_CONNECTED, 'MARKETING_SITE_URL is not set'))
+
+    r = admin.get('/nimbus/api/connections?probe=1')
+    assert r.status_code == 200
+    rows = {c['key']: c for c in r.get_json()['connections']}
+    assert rows['ga4']['status'] == 'not_connected'
+    assert rows['gbp']['status'] == 'not_connected'
 
 
 def test_anonymous_gets_401_not_403(client, tmp_path_factory, monkeypatch):
