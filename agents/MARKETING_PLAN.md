@@ -4,6 +4,19 @@ The living plan for the marketing side of Nimbus. Setup mechanics live in
 [CONNECTIONS.md](CONNECTIONS.md); this file is what we are building and why,
 and what we have deliberately decided not to wait for.
 
+## Two franchises, two websites
+
+| Site | Whose | Treat as |
+|---|---|---|
+| **projectoneroofingcolorado.com** | Colorado franchise — **us** | The site all marketing work targets |
+| projectoneroofing.com | Texas franchises (Tyler / Longview) | Same brand, different business. Not ours, not a competitor |
+
+The Texas site is live and **deliberately not redirected** here. Recorded in
+`marketing_profile.json` under `company.sibling_sites`, and
+`agents/seo/research.py` filters it out of competitor results, content gaps
+and citations — reporting it as a rival would benchmark us against ourselves,
+and treating it as ours would produce copy for a market we do not serve.
+
 ## The constraint that shapes everything
 
 **Google Search Console and Google Analytics 4 are owned at the franchise
@@ -20,6 +33,15 @@ to stop reading it.
 
 If access is ever granted, setting the env vars is the whole change — the
 probe code is already written and tested.
+
+**OPEN — worth re-testing.** That conclusion was reached while the website was
+projectoneroofing.com, the Texas domain. The Colorado franchise now has its
+own site, and a Search Console property is **per domain**: whoever set up
+projectoneroofingcolorado.com may hold its property, and that may not be the
+same people who hold the Texas one. Before writing GA4 and Search Console off
+permanently, check whether a property for the Colorado domain exists and who
+owns it. If nobody has claimed it, the CMS self-verification route makes it
+ours outright — no franchise involved.
 
 ## Tiers
 

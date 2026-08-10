@@ -403,6 +403,36 @@ def test_research_returns_questions_with_citations(monkeypatch):
     assert 'https://example.org/hail' in out['citations']
 
 
+def test_the_texas_franchise_is_never_reported_as_a_competitor(monkeypatch):
+    """projectoneroofing.com is the same brand, different franchise. Treating
+    it as a rival benchmarks us against ourselves; treating it as ours writes
+    copy for a market we do not serve."""
+    from agents import perplexity
+    from agents.seo import research
+    monkeypatch.setattr(perplexity, 'search_json', lambda *a, **kw: {
+        'data': {'competitors': [
+            {'name': 'Project One Roofing (Texas)',
+             'url': 'https://projectoneroofing.com', 'topics_covered': ['roofing']},
+            {'name': 'A Real Rival', 'url': 'https://rival.example',
+             'topics_covered': ['siding']}],
+            'content_gaps': ['metal roofing guide'],
+            'sources': ['https://projectoneroofing.com/x', 'https://rival.example/y']},
+        'citations': [], 'cost_usd': 0.0, 'cached': True})
+
+    out = research.competitor_landscape('Fort Collins', 'Roofing')
+    names = [c['name'] for c in out['competitors']]
+    assert names == ['A Real Rival']
+    assert out['excluded_siblings'] == 1
+    assert not any('projectoneroofing.com' in u for u in out['citations'])
+
+
+def test_sibling_domains_come_from_the_profile():
+    from agents.seo import research
+    assert 'projectoneroofing.com' in research.sibling_domains()
+    # The Colorado site must never be listed as its own sibling.
+    assert 'projectoneroofingcolorado.com' not in research.sibling_domains()
+
+
 def test_research_degrades_when_the_spend_cap_is_hit(monkeypatch):
     """A blown cap must cost us the research, not the whole report."""
     from agents import perplexity

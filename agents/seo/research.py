@@ -9,8 +9,30 @@ Nothing here is treated as measurement. Perplexity tells us what people ask
 and who else is visible; it does not tell us our rankings, and the system
 prompt in ``honesty.RESEARCH_SYSTEM`` forbids it from pretending otherwise.
 """
-from .. import perplexity
+from .. import config, perplexity
 from .honesty import RESEARCH_SYSTEM
+
+
+def sibling_domains():
+    """Same-brand franchise sites. Ours in name only, and never rivals.
+
+    projectoneroofing.com is the Texas franchise. Public research for
+    "roofing contractor Colorado" will not usually surface it, but research
+    for the brand name certainly can — and reporting it as a competitor would
+    have us benchmarking against ourselves, while treating it as ours would
+    produce copy for a market we do not serve.
+    """
+    try:
+        profile = config.load_marketing_profile()
+    except (FileNotFoundError, ValueError):
+        return []
+    siblings = (profile.get('company', {}).get('sibling_sites') or {}).get('sites') or []
+    return [str(s.get('domain', '')).lower() for s in siblings if s.get('domain')]
+
+
+def _is_sibling(url_or_name):
+    text = str(url_or_name or '').lower()
+    return any(d and d in text for d in sibling_domains())
 
 
 class ResearchUnavailable(RuntimeError):
@@ -95,11 +117,17 @@ def competitor_landscape(city, service_label, n=5, model=None):
         data = {}
     competitors = [c for c in (data.get('competitors') or [])
                    if isinstance(c, dict) and c.get('name')]
-    gaps = [g for g in (data.get('content_gaps') or []) if isinstance(g, str)]
+    # Drop our own sibling franchises before anything downstream sees them.
+    kept = [c for c in competitors
+            if not (_is_sibling(c.get('url')) or _is_sibling(c.get('name')))]
+    excluded = len(competitors) - len(kept)
+    gaps = [g for g in (data.get('content_gaps') or [])
+            if isinstance(g, str) and not _is_sibling(g)]
     return {
-        'competitors': competitors,
+        'competitors': kept,
         'content_gaps': gaps,
-        'citations': _citations(r),
+        'citations': [u for u in _citations(r) if not _is_sibling(u)],
+        'excluded_siblings': excluded,
         'cost_usd': float(r.get('cost_usd') or 0.0),
         'cached': bool(r.get('cached')),
     }

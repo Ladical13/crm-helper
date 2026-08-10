@@ -30,7 +30,17 @@
     "name": "Project One Roofing",
     "website": "https://projectoneroofingcolorado.com",
     "website_domain": "projectoneroofingcolorado.com",
-    "website_note": "Changed from projectoneroofing.com on 2026-08-10. The EMAIL domain is still @projectoneroofing.com and is a separate thing — see portal/users.py EMAIL_DOMAIN."
+    "website_note": "This profile is the COLORADO franchise. The EMAIL domain is still @projectoneroofing.com and is a separate thing — see portal/users.py EMAIL_DOMAIN.",
+    "sibling_sites": {
+      "rule": "Same brand, different franchise. NOT competitors, NOT ours, and NOT to be crawled, cited, compared against, or reported as a content gap. A tool that treats these as rivals is comparing us to ourselves; one that treats them as ours will write copy about a market we do not serve.",
+      "sites": [
+        {
+          "domain": "projectoneroofing.com",
+          "who": "Project One Roofing — Texas franchises (Tyler / Longview area)",
+          "note": "Live and independent. It is deliberately not redirected here, and must not be."
+        }
+      ]
+    }
   },
 
   "approved_services": {
