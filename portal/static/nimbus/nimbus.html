@@ -214,6 +214,15 @@
   .conn .pill.not_connected { color: var(--dim);    border-color: var(--border-2); background: var(--panel); }
   .conn .pill.error         { color: var(--danger); border-color: var(--danger); background: rgba(239,68,68,.1); }
   .conn .pill.checking      { color: var(--warn);   border-color: var(--warn);   background: rgba(245,158,11,.1); }
+  /* Owner-gated: deliberately muted, NOT red. Nobody here can fix these, so
+     styling them as failures would train people to ignore the whole page. */
+  .conn .pill.owner_required { color: var(--dim);   border-color: var(--dim2);   background: transparent; }
+  .conn.optional { opacity: .78; border-style: dashed; }
+  .conn .tier {
+    font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase;
+    color: var(--violet); border: 1px solid var(--violet); border-radius: 999px;
+    padding: 2px 8px; background: rgba(139,92,246,.08);
+  }
   .conn .authtag { font-size: 11px; color: var(--dim2); text-transform: uppercase; letter-spacing: 1px; }
   .conn .detail { margin-top: 8px; font-size: 13px; color: var(--dim); }
   .conn .reads  { margin-top: 4px; font-size: 12px; color: var(--dim2); }
@@ -238,6 +247,70 @@
   .conn .howto code {
     background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
     padding: 1px 6px; font-size: 11px; color: var(--accent-2);
+  }
+  /* Local SEO */
+  .rec {
+    background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .rec.approved { border-color: rgba(34,197,94,.45); }
+  .rec.rejected { opacity: .5; }
+  .rec .head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 7px; }
+  .rec .rank { font-weight: 700; color: var(--accent); font-size: 13px; min-width: 26px; }
+  .rec .cat {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 700;
+    padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border-2); color: var(--dim);
+  }
+  .rec .cat.technical_website_fix { color: var(--warn); border-color: rgba(245,158,11,.5); }
+  .rec .cat.improve_existing_page { color: var(--accent-2); border-color: rgba(56,189,248,.5); }
+  .rec .cat.google_business_profile_opportunity { color: var(--violet); border-color: rgba(139,92,246,.5); }
+  .rec .basis {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim2);
+    border: 1px dashed var(--border-2); border-radius: 999px; padding: 2px 8px;
+  }
+  .rec .conf { font-size: 11px; color: var(--dim2); }
+  .rec .score { margin-left: auto; font-size: 12px; color: var(--accent); font-weight: 700; }
+  .rec .action { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  .rec .ctx { font-size: 12px; color: var(--dim2); margin-bottom: 6px; }
+  .rec .intent {
+    font-size: 12px; color: var(--text); font-style: italic; margin: 6px 0;
+    border-left: 2px solid var(--accent); padding-left: 9px;
+  }
+  .rec .why { font-size: 13px; color: var(--dim); margin-bottom: 6px; }
+  .rec .check {
+    font-size: 12px; color: var(--warn); background: rgba(245,158,11,.07);
+    border-left: 2px solid var(--warn); padding: 7px 10px; border-radius: 0 6px 6px 0;
+    margin-bottom: 8px;
+  }
+  .rec .ev { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
+  .rec .ev a {
+    font-size: 11px; color: var(--dim2); text-decoration: none; background: var(--bg);
+    padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border);
+  }
+  .rec .ev a:hover { color: var(--accent); border-color: var(--accent); }
+  .rec .acts { display: flex; gap: 6px; }
+  .rec .acts button {
+    padding: 5px 12px; font-size: 12px; border-radius: 7px; cursor: pointer;
+    background: transparent; color: var(--dim); border: 1px solid var(--border-2);
+    font-family: inherit;
+  }
+  .rec .acts button.ok:hover   { color: var(--ok); border-color: var(--ok); }
+  .rec .acts button.no:hover   { color: var(--danger); border-color: var(--danger); }
+  .seo-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+  .seo-bar button {
+    padding: 8px 15px; font-size: 13px; border-radius: 8px; border: none; cursor: pointer;
+    background: var(--gradient); color: #001; font-weight: 700; font-family: inherit;
+  }
+  .seo-bar button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--border-2); }
+  .seo-bar button:disabled { opacity: .5; cursor: default; }
+  .seo-bar select {
+    padding: 8px 11px; background: var(--bg); border: 1px solid var(--border-2);
+    color: var(--text); border-radius: 8px; font-size: 13px; font-family: inherit;
+  }
+  .md {
+    font-size: 13px; color: var(--dim); line-height: 1.65; max-height: 460px;
+    overflow: auto; white-space: pre-wrap; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 14px;
   }
   .ro-banner {
     display: flex; align-items: center; gap: 10px; margin-bottom: 16px;
@@ -297,6 +370,7 @@
     <a href="/nimbus/" data-route="/nimbus/">⚡ Dashboard</a>
     <a href="/nimbus/marketing/topics" data-route="/nimbus/marketing/topics">📈 Trending Topics</a>
     <a href="/nimbus/marketing/drafts" data-route="/nimbus/marketing/drafts">📝 Content Drafts</a>
+    <a href="/nimbus/marketing/seo" data-route="/nimbus/marketing/seo">🔍 Local SEO</a>
     <a href="/nimbus/marketing/connections" data-route="/nimbus/marketing/connections">🔌 Connections</a>
     <a href="/nimbus/settings" data-route="/nimbus/settings">⚙️ Settings</a>
   </nav>
@@ -321,6 +395,7 @@ function route() {
   if (path.startsWith('/nimbus/marketing/topics')) return renderTopics();
   if (path.startsWith('/nimbus/marketing/drafts')) return renderDrafts();
   if (path.startsWith('/nimbus/marketing/connections')) return renderConnections();
+  if (path.startsWith('/nimbus/marketing/seo')) return renderSeo();
   if (path.startsWith('/nimbus/settings'))          return renderSettings();
   if (path.startsWith('/nimbus/rep/'))              return renderRep(path.split('/').pop());
   return renderDashboard();
@@ -682,12 +757,195 @@ async function saveSettings() {
   else flash('Save failed', true);
 }
 
+/* ── local SEO strategist ──────────────────────────────────────────────── */
+/* Public research only. Nothing on this page is a measured number, and the
+   banner says so — a reader who assumes otherwise will act on it wrongly. */
+
+const CAT_LABEL = {
+  improve_existing_page: 'Improve page',
+  create_service_page: 'New service page',
+  create_city_or_service_area_page: 'New city page',
+  faq_or_content_brief: 'FAQ / brief',
+  internal_linking_opportunity: 'Internal linking',
+  technical_website_fix: 'Technical fix',
+  google_business_profile_opportunity: 'Business Profile',
+};
+
+let seoPoll = null;
+
+async function renderSeo() {
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="empty"><span class="spin"></span> loading</div>';
+
+  const [recs, reportBody, runs] = await Promise.all([
+    fetch(`${BASE}/api/seo/recommendations?status=pending`).then(r => r.json()).catch(() => []),
+    fetch(`${BASE}/api/seo/report`).then(r => r.json()).catch(() => ({report: null})),
+    fetch(`${BASE}/api/seo/runs?limit=5`).then(r => r.json()).catch(() => ({runs: [], active: {}})),
+  ]);
+
+  const last = (runs.runs || [])[0];
+  const busy = (runs.active || {}).running;
+
+  main.innerHTML = `
+    <div class="ro-banner" style="background:rgba(139,92,246,.07);border-color:rgba(139,92,246,.3)">
+      🔍 <span><b style="color:var(--violet)">Public research only.</b>
+      No Search Console, Analytics or Business Profile data feeds this. Nothing
+      here is a measured ranking, traffic figure or competitor metric — findings
+      are observations of our own pages, or public-research opportunities with
+      sources attached. Every item needs a human before anything changes.</span>
+    </div>
+
+    <div class="seo-bar">
+      <button id="seo-run" onclick="startSeo(false)" ${busy ? 'disabled' : ''}>
+        ${busy ? 'Running…' : 'Run weekly analysis'}
+      </button>
+      <button class="ghost" onclick="startSeo(true)" ${busy ? 'disabled' : ''}>Dry run</button>
+      <select id="seo-filter" onchange="filterRecs()">
+        <option value="">All categories</option>
+        ${Object.entries(CAT_LABEL).map(([k, v]) =>
+          `<option value="${k}">${v}</option>`).join('')}
+      </select>
+      <span style="color:var(--dim2);font-size:12px">
+        ${last ? `last run #${last.id} · ${escapeHtml(last.status)} · ${last.pages_crawled} pages · $${(last.cost_usd||0).toFixed(3)}`
+               : 'no runs yet'}
+      </span>
+    </div>
+
+    <div id="seo-live"></div>
+
+    <section class="panel">
+      <h2>Recommendation queue <span class="count" id="rec-count">${recs.length} pending</span></h2>
+      <div id="rec-list">
+        ${recs.length ? recs.map((r, i) => recCard(r, i + 1)).join('')
+                      : '<div class="empty">Nothing pending. Run the weekly analysis to build a queue.</div>'}
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:18px">
+      <h2>Latest weekly report ${reportBody.report
+        ? `<span class="count">week of ${escapeHtml(reportBody.report.week_of)}</span>` : ''}</h2>
+      ${reportBody.report
+        ? `<div class="md">${escapeHtml(reportBody.report.markdown)}</div>`
+        : '<div class="empty">No report saved yet.</div>'}
+    </section>
+  `;
+  if (busy) pollSeo();
+}
+
+function recCard(r, rank) {
+  const ctx = [r.city, r.service].filter(Boolean).join(' · ');
+  const basis = r.evidence_basis === 'owned_data' ? 'Owned data' :
+    (['improve_existing_page','technical_website_fix','internal_linking_opportunity']
+      .includes(r.category) ? 'Observed on our site' : 'Public-research opportunity');
+  return `
+    <div class="rec ${escapeHtml(r.status || 'pending')}" data-rec="${r.id}"
+         data-cat="${escapeHtml(r.category)}">
+      <div class="head">
+        <span class="rank">#${rank}</span>
+        <span class="cat ${escapeHtml(r.category)}">${CAT_LABEL[r.category] || escapeHtml(r.category)}</span>
+        <span class="basis">${basis}</span>
+        <span class="conf">confidence: ${escapeHtml(r.confidence || 'low')}</span>
+        <span class="score">${Number(r.score || 0).toFixed(1)}</span>
+      </div>
+      <div class="action">${escapeHtml(r.action)}</div>
+      ${ctx ? `<div class="ctx">${escapeHtml(ctx)}</div>` : ''}
+      ${r.intent ? `<div class="intent">“${escapeHtml(r.intent)}”</div>` : ''}
+      ${r.rationale ? `<div class="why">${escapeHtml(r.rationale)}</div>` : ''}
+      ${r.review_notes ? `<div class="check">⚠ Before acting: ${escapeHtml(r.review_notes)}</div>` : ''}
+      ${(r.evidence || []).length ? `<div class="ev">${
+        (r.evidence || []).slice(0, 6).map(u => u.startsWith('http')
+          ? `<a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${escapeHtml(hostname(u))}</a>`
+          : `<a>${escapeHtml(u)}</a>`).join('')}</div>` : ''}
+      <div class="acts">
+        <button class="ok" onclick="reviewRec(${r.id}, 'approved')">Approve</button>
+        <button class="no" onclick="reviewRec(${r.id}, 'rejected')">Reject</button>
+      </div>
+    </div>`;
+}
+
+function filterRecs() {
+  const want = document.getElementById('seo-filter').value;
+  document.querySelectorAll('.rec').forEach(el => {
+    el.style.display = (!want || el.dataset.cat === want) ? '' : 'none';
+  });
+}
+
+async function startSeo(dryRun) {
+  const r = await fetch(`${BASE}/api/seo/run`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({dry_run: !!dryRun}),
+  });
+  if (r.status === 409) { flash('A run is already in progress', true); return; }
+  if (!r.ok) { flash('Could not start the run', true); return; }
+  flash(dryRun ? 'Dry run started — nothing will be saved' : 'Analysis started');
+  document.getElementById('seo-run').disabled = true;
+  document.getElementById('seo-live').innerHTML =
+    '<div class="conn"><div class="detail"><span class="spin"></span> '
+    + (dryRun ? 'Dry run in progress — crawling, no writes' : 'Crawling and researching…')
+    + '</div></div>';
+  pollSeo(dryRun);
+}
+
+function pollSeo(dryRun) {
+  clearInterval(seoPoll);
+  seoPoll = setInterval(async () => {
+    const s = await fetch(`${BASE}/api/seo/result`).then(r => r.json()).catch(() => null);
+    if (!s || s.running) return;
+    clearInterval(seoPoll);
+    const m = s.manifest || {};
+    if (!m.ok) {
+      document.getElementById('seo-live').innerHTML =
+        `<div class="conn" style="border-color:var(--danger)">
+           <div class="detail" style="color:var(--danger)">Run failed: ${escapeHtml(m.error || 'unknown error')}</div>
+         </div>`;
+      flash('Run failed', true);
+      return;
+    }
+    if (dryRun) {
+      // A dry run saves nothing, so this in-memory manifest is the only copy.
+      document.getElementById('seo-live').innerHTML = `
+        <section class="panel" style="margin-bottom:18px;border-color:var(--violet)">
+          <h2>Dry run — nothing was saved
+            <span class="count">${(m.recommendations || []).length} would be created</span></h2>
+          <div style="color:var(--dim);font-size:13px;margin-bottom:12px">
+            ${m.pages_crawled} pages crawled · ${m.skipped_by_robots} skipped by robots.txt ·
+            research: ${escapeHtml(m.research_note || '—')} · cost $${(m.cost_usd || 0).toFixed(3)}
+          </div>
+          ${(m.recommendations || []).slice(0, 20).map((r, i) => recCard({...r, id: 0}, i + 1)).join('')}
+          ${(m.dropped || []).length ? `<div style="color:var(--dim2);font-size:12px;margin-top:10px">
+            ${m.dropped.length} dropped by the honesty checks:
+            ${m.dropped.slice(0, 5).map(d => escapeHtml(d.reason)).join(' · ')}</div>` : ''}
+        </section>`;
+      flash('Dry run complete — nothing saved');
+    } else {
+      flash('Analysis complete');
+      renderSeo();
+    }
+  }, 2000);
+}
+
+async function reviewRec(id, status) {
+  if (!id) { flash('Dry-run items cannot be approved — run for real first', true); return; }
+  const r = await fetch(`${BASE}/api/seo/recommendations/${id}`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status}),
+  });
+  if (!r.ok) { flash('Could not record that', true); return; }
+  const el = document.querySelector(`.rec[data-rec="${id}"]`);
+  if (el) el.remove();
+  const left = document.querySelectorAll('.rec').length;
+  const c = document.getElementById('rec-count');
+  if (c) c.textContent = `${left} pending`;
+  flash(status === 'approved' ? 'Approved — recorded, not actioned' : 'Rejected');
+}
+
 /* ── marketing connections ─────────────────────────────────────────────── */
 /* Read-only status board. The API returns env var NAMES and set/unset flags,
    never values, so there is nothing secret to leak on this page. */
 
 const STATUS_LABEL = {
   connected: 'Connected', not_connected: 'Not Connected', error: 'Error',
+  owner_required: 'Owner Access Required', unchecked: 'Not Checked',
 };
 const AUTH_LABEL = {
   service_account: 'read-only service account', oauth: 'Google OAuth login',
@@ -737,7 +995,11 @@ async function renderConnections(probe) {
     <section class="panel">
       <h2>
         Marketing connections
-        <span class="count">${rows.filter(r => r.status === 'connected').length}/${rows.length} connected</span>
+        <span class="count">${
+          rows.filter(r => r.status === 'connected').length}/${
+          rows.filter(r => r.tier !== 'optional_future').length} active connected${
+          rows.some(r => r.tier === 'optional_future')
+            ? ` · ${rows.filter(r => r.tier === 'optional_future').length} optional` : ''}</span>
       </h2>
       <div style="margin-bottom:14px">
         <button class="btn" id="recheck" onclick="recheckConnections()"
@@ -767,11 +1029,13 @@ function connCard(c) {
   ].join('');
 
   const ids = (c.id_env || []).filter(e => e.where);
+  const optional = c.tier === 'optional_future';
   return `
-    <div class="conn" data-conn="${escapeHtml(c.key)}">
+    <div class="conn${optional ? ' optional' : ''}" data-conn="${escapeHtml(c.key)}">
       <div class="head">
         <span class="name">${escapeHtml(c.label)}</span>
         <span class="pill ${escapeHtml(c.status)}">${STATUS_LABEL[c.status] || c.status}</span>
+        ${optional ? '<span class="tier">Optional — future enhancement</span>' : ''}
         <span class="authtag">${AUTH_LABEL[c.auth] || escapeHtml(c.auth)}</span>
       </div>
       ${c.detail ? `<div class="detail">${escapeHtml(c.detail)}</div>` : ''}

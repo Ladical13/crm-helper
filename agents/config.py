@@ -272,6 +272,67 @@ def _init_cache_db(conn):
         );
         CREATE INDEX IF NOT EXISTS drafts_status_idx ON content_drafts(status, created_at DESC);
 
+        -- ── Local SEO strategist ──────────────────────────────────────────
+        -- Public-research only: no owned analytics feed these tables, so
+        -- every recommendation carries the basis of its evidence and nothing
+        -- claims a measured number. See agents/seo/.
+        CREATE TABLE IF NOT EXISTS seo_runs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at    TEXT NOT NULL,
+            finished_at   TEXT DEFAULT '',
+            status        TEXT NOT NULL DEFAULT 'running',  -- running|ok|error
+            mode          TEXT NOT NULL DEFAULT 'live',     -- live|dry_run
+            pages_crawled INTEGER DEFAULT 0,
+            recs_created  INTEGER DEFAULT 0,
+            cost_usd      REAL DEFAULT 0,
+            error         TEXT DEFAULT '',
+            summary       TEXT DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS seo_runs_idx ON seo_runs(started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS seo_reports (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id     INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            week_of    TEXT NOT NULL,
+            markdown   TEXT NOT NULL,
+            stats      TEXT DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS seo_reports_idx ON seo_reports(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS seo_recommendations (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id         INTEGER NOT NULL,
+            created_at     TEXT NOT NULL,
+            category       TEXT NOT NULL,
+            city           TEXT DEFAULT '',
+            service        TEXT DEFAULT '',
+            intent         TEXT DEFAULT '',   -- the customer question / search intent
+            action         TEXT NOT NULL,
+            rationale      TEXT DEFAULT '',
+            evidence       TEXT DEFAULT '[]', -- JSON list of URLs
+            confidence     TEXT DEFAULT 'low',        -- high|medium|low
+            evidence_basis TEXT DEFAULT 'public_research',  -- public_research|owned_data
+            review_notes   TEXT DEFAULT '',   -- what a human must check before acting
+            score          REAL DEFAULT 0,
+            status         TEXT DEFAULT 'pending',    -- pending|approved|rejected
+            reviewed_by    TEXT DEFAULT '',
+            reviewed_at    TEXT DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS seo_recs_idx
+            ON seo_recommendations(status, score DESC, id DESC);
+
+        -- Crawl cache. Stores EXTRACTED fields, never raw HTML: the whole
+        -- point is the derived metadata, and a page body per URL would bloat
+        -- the Nimbus DB for no gain.
+        CREATE TABLE IF NOT EXISTS seo_page_cache (
+            url         TEXT PRIMARY KEY,
+            fetched_at  TEXT NOT NULL,
+            status_code INTEGER DEFAULT 0,
+            extracted   TEXT DEFAULT '{}',
+            error       TEXT DEFAULT ''
+        );
+
         CREATE TABLE IF NOT EXISTS trending_topics (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             captured_at  TEXT NOT NULL,

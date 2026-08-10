@@ -30,7 +30,9 @@ def test_reps_get_403_on_every_nimbus_route(rep, tmp_path_factory, monkeypatch):
     for path in ('/nimbus/', '/nimbus/api/territories', '/nimbus/api/settings',
                  '/nimbus/api/runs', '/nimbus/api/content/topics',
                  '/nimbus/api/content/drafts', '/nimbus/api/connections',
-                 '/nimbus/marketing/connections'):
+                 '/nimbus/marketing/connections', '/nimbus/marketing/seo',
+                 '/nimbus/api/seo/runs', '/nimbus/api/seo/recommendations',
+                 '/nimbus/api/seo/report', '/nimbus/api/seo/result'):
         r = rep.get(path)
         assert r.status_code == 403, path
 
@@ -165,8 +167,35 @@ def test_connections_page_probes_nothing_when_unconfigured(admin, tmp_path_facto
     r = admin.get('/nimbus/api/connections?probe=1')
     assert r.status_code == 200
     rows = {c['key']: c for c in r.get_json()['connections']}
-    assert rows['ga4']['status'] == 'not_connected'
     assert rows['gbp']['status'] == 'not_connected'
+    # GA4 and Search Console are franchise-owned: optional, not misconfigured.
+    assert rows['ga4']['status'] == 'owner_required'
+    assert rows['gsc']['status'] == 'owner_required'
+
+
+# ── Local SEO strategist ─────────────────────────────────────────────────────
+
+def test_seo_endpoints_are_empty_before_any_run(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    assert admin.get('/nimbus/api/seo/recommendations').get_json() == []
+    assert admin.get('/nimbus/api/seo/report').get_json()['report'] is None
+    runs = admin.get('/nimbus/api/seo/runs').get_json()
+    assert runs['runs'] == []
+
+
+def test_seo_review_rejects_an_unknown_status(admin, tmp_path_factory, monkeypatch):
+    """The status vocabulary is closed — 'published' must not be smuggled in
+    as a way to imply something was actioned."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    r = admin.post('/nimbus/api/seo/recommendations/1', json={'status': 'published'})
+    assert r.status_code == 400
+
+
+def test_seo_review_404s_on_a_missing_recommendation(admin, tmp_path_factory,
+                                                     monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    r = admin.post('/nimbus/api/seo/recommendations/999', json={'status': 'approved'})
+    assert r.status_code == 404
 
 
 def test_anonymous_gets_401_not_403(client, tmp_path_factory, monkeypatch):

@@ -1,0 +1,98 @@
+# Nimbus marketing plan
+
+The living plan for the marketing side of Nimbus. Setup mechanics live in
+[CONNECTIONS.md](CONNECTIONS.md); this file is what we are building and why,
+and what we have deliberately decided not to wait for.
+
+## The constraint that shapes everything
+
+**Google Search Console and Google Analytics 4 are owned at the franchise
+level and we hold no role on either.** Not a limited role — no access at all.
+Confirmed 2026-08-10: both consoles show an empty "get started" screen for
+`luke@projectoneroofing.com`.
+
+That is a permanent-until-someone-else-acts condition, so **nothing in the
+marketing roadmap blocks on it.** Both appear in Nimbus as
+**Owner access required · Optional — future enhancement**, styled muted rather
+than red. They are not broken, not misconfigured, and not a to-do item we keep
+failing to complete. A dashboard that always shows two red rows trains people
+to stop reading it.
+
+If access is ever granted, setting the env vars is the whole change — the
+probe code is already written and tested.
+
+## Tiers
+
+### Active — built and working without anyone's permission
+
+| Capability | Data source | Status |
+|---|---|---|
+| **Local SEO Strategist** | Our public site + public research | ✅ v1 shipped |
+| Public website / sitemap | `projectoneroofing.com/sitemap.xml` | ✅ Connected |
+| Marketing profile | `marketing_profile.json` (version-controlled) | ✅ In use |
+| Perplexity research | `PERPLEXITY_API_KEY`, capped monthly | ✅ In use |
+
+### Pending someone else's clock
+
+| Capability | Blocked on | Notes |
+|---|---|---|
+| Google Business Profile | Google's API access approval | Manager access is enough. Form submitted → wait |
+| Franchise CRM scorecard | Answers from Base44 | See the six questions below |
+
+### Optional future enhancements — owner access required
+
+| Capability | Who must act | What it would add |
+|---|---|---|
+| Search Console | A franchise Owner, **or** self-verify a URL-prefix property via a CMS meta tag | Real queries, impressions, positions. Would upgrade SEO recommendations from public-research opportunities to measured findings |
+| Google Analytics 4 | A franchise property Administrator | Sessions, landing pages, conversions. No self-serve route exists |
+
+Search Console has a route around the franchise; **Analytics does not.** Worth
+remembering when prioritising which ask to chase.
+
+## What the absence of those two actually costs
+
+Being precise, because it determines what we may claim:
+
+- We **cannot** know our rankings, our search volume, our traffic, our
+  conversion rates, or any competitor's performance.
+- We **can** know what is on our own pages, what our sitemap contains, what
+  questions the public web says Northern Colorado homeowners ask, and what
+  topics competitors publish.
+
+So the Local SEO Strategist reports *opportunities with sources*, never
+*results*. That is not a hedge — it is the honest limit of the inputs, and
+`agents/seo/honesty.py` enforces it in code rather than trusting prose.
+
+## Local SEO Strategist v1
+
+`agents/seo/` — see [seo/README.md](seo/README.md).
+
+Weekly run → a saved Markdown report plus a ranked queue of recommendations in
+seven categories, each requiring human approval. Approving records a decision;
+it never performs the work.
+
+Read-only throughout: no publishing, no email, no CMS edits, no Business
+Profile changes, no CRM writes.
+
+## Franchise CRM scorecard — blocked on answers, not on code
+
+The franchise CRM (Base44) holds lead → inspection → estimate → sold-job
+outcomes. Six questions decide what is buildable:
+
+1. Can we get a **read-only** API token?
+2. Do the entity endpoints support **filtering and pagination**?
+3. What is the full **`Project.status`** vocabulary?
+4. Are **stage-transition dates** readable, or only `updated_date`?
+5. Is there a **sold amount** field on `Project`?
+6. Can `source` become a **picklist**, and can a **UTM/campaign field** be added?
+
+**4 and 6 are the decisive ones.** Without transition dates there are no true
+conversion rates. Without UTM capture every website lead collapses into one
+bucket called `website`, so no amount of SEO work can be tied to revenue.
+
+## Next up
+
+1. Work the SEO recommendation queue — it needs no permission from anyone.
+2. Google Business Profile, once Google approves the API request.
+3. Franchise CRM scorecard, once the six questions are answered.
+4. Search Console / GA4 — only if access ever appears.

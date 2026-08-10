@@ -64,9 +64,130 @@ def _shell():
 @nimbus_bp.route('/marketing/topics')
 @nimbus_bp.route('/marketing/drafts')
 @nimbus_bp.route('/marketing/connections')
+@nimbus_bp.route('/marketing/seo')
 @nimbus_bp.route('/settings')
 def shell(**_kw):
     return _shell()
+
+
+# ── Local SEO strategist (public research only, read-only) ───────────────────
+
+_seo_lock = threading.Lock()
+_seo_active = {'running': False, 'stage': '', 'manifest': None}
+
+
+@nimbus_bp.route('/api/seo/runs', methods=['GET'])
+def seo_runs():
+    from agents import config
+    limit = int(request.args.get('limit', 20))
+    with config.get_cache_db() as db:
+        rows = db.execute(
+            'SELECT id, started_at, finished_at, status, mode, pages_crawled, '
+            'recs_created, cost_usd, error, summary FROM seo_runs '
+            'ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
+    with _seo_lock:
+        active = dict(_seo_active)
+    return jsonify({'runs': [dict(r) for r in rows], 'active': active})
+
+
+@nimbus_bp.route('/api/seo/run', methods=['POST'])
+def seo_run():
+    """Kick off a strategist pass. ``dry_run`` writes nothing at all."""
+    data = request.get_json(force=True, silent=True) or {}
+    dry_run = bool(data.get('dry_run'))
+    max_pages = int(data.get('max_pages') or 40)
+
+    with _seo_lock:
+        if _seo_active['running']:
+            return jsonify({'error': 'a run is already in progress'}), 409
+        _seo_active.update({'running': True, 'stage': 'crawling', 'manifest': None})
+
+    def worker():
+        from agents.seo import run as seo
+        try:
+            manifest = seo.run(dry_run=dry_run, max_pages=max_pages)
+        except Exception as e:                                   # noqa: BLE001
+            manifest = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+        with _seo_lock:
+            _seo_active.update({'running': False, 'stage': 'done',
+                                'manifest': manifest})
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({'started': True, 'dry_run': dry_run}), 202
+
+
+@nimbus_bp.route('/api/seo/result', methods=['GET'])
+def seo_result():
+    """The last finished run's manifest — how a dry run is read back.
+
+    A dry run persists nothing, so this in-process handoff is the only place
+    its output exists.
+    """
+    with _seo_lock:
+        return jsonify(dict(_seo_active))
+
+
+@nimbus_bp.route('/api/seo/report', methods=['GET'])
+def seo_report():
+    from agents import config
+    report_id = request.args.get('id')
+    with config.get_cache_db() as db:
+        if report_id:
+            row = db.execute('SELECT * FROM seo_reports WHERE id = ?',
+                             (report_id,)).fetchone()
+        else:
+            row = db.execute('SELECT * FROM seo_reports ORDER BY id DESC '
+                             'LIMIT 1').fetchone()
+    if not row:
+        return jsonify({'report': None})
+    out = dict(row)
+    try:
+        out['stats'] = json.loads(out.get('stats') or '{}')
+    except (ValueError, TypeError):
+        out['stats'] = {}
+    return jsonify({'report': out})
+
+
+@nimbus_bp.route('/api/seo/recommendations', methods=['GET'])
+def seo_recommendations():
+    from agents import config
+    status = request.args.get('status', 'pending')
+    category = request.args.get('category', '')
+    where, params = [], []
+    if status and status != 'all':
+        where.append('status = ?'); params.append(status)
+    if category:
+        where.append('category = ?'); params.append(category)
+    clause = ('WHERE ' + ' AND '.join(where)) if where else ''
+    with config.get_cache_db() as db:
+        rows = db.execute(
+            f'SELECT * FROM seo_recommendations {clause} '
+            f'ORDER BY score DESC, id DESC LIMIT 200', params).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d['evidence'] = json.loads(d.get('evidence') or '[]')
+        except (ValueError, TypeError):
+            d['evidence'] = []
+        out.append(d)
+    return jsonify(out)
+
+
+@nimbus_bp.route('/api/seo/recommendations/<int:rec_id>', methods=['POST'])
+def seo_review(rec_id):
+    """Approve or reject. Records a decision — never performs the work."""
+    from agents.seo import run as seo
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        changed = seo.set_status(rec_id, data.get('status'),
+                                 session.get('username', ''))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if not changed:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify({'ok': True, 'acted': False,
+                    'note': 'decision recorded — a human still does the work'})
 
 
 # ── Marketing connections (read-only status) ─────────────────────────────────

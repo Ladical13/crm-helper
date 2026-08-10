@@ -44,6 +44,13 @@ except ImportError:                            # pragma: no cover - optional dep
 CONNECTED     = 'connected'
 NOT_CONNECTED = 'not_connected'
 ERROR         = 'error'
+# GA4 and Search Console are owned at the franchise level and cannot be
+# granted to us. They are OPTIONAL FUTURE ENHANCEMENTS, not breakage — a red
+# "error" row would be a standing lie about something nobody can fix, and a
+# dashboard that always shows two failures teaches people to ignore it. If the
+# franchise ever grants access, setting the env vars flips these to a normal
+# probe with no code change.
+OWNER_REQUIRED = 'owner_required'
 # Config looks complete but nothing has been verified against Google. Only
 # ever produced by status_all(probe=False), which the dashboard does not use —
 # the page always probes, so this never renders as a status. Claiming
@@ -86,8 +93,13 @@ CONNECTORS = [
         ],
         'scopes': [GA4_SCOPE],
         'scope_is_readonly': True,
-        'grant': 'Add the service account email as a Viewer on the GA4 property '
-                 '(Admin → Property Access Management).',
+        'requires_owner': True,
+        'tier': 'optional_future',
+        'blocked_reason': 'Owner access required — the GA4 property is owned at '
+                          'the franchise level. Only a property Administrator can '
+                          'add the service account, and we are not one.',
+        'grant': 'Requires a franchise Administrator: Admin → Property Access '
+                 'Management → add the service account email as a Viewer.',
         'reads': 'Sessions, traffic sources, landing pages, conversions.',
     },
     {
@@ -103,8 +115,15 @@ CONNECTORS = [
         ],
         'scopes': [GSC_SCOPE],
         'scope_is_readonly': True,
-        'grant': 'Search Console → Settings → Users and permissions → add the '
-                 'service account email as a Restricted user (read is enough).',
+        'requires_owner': True,
+        'tier': 'optional_future',
+        'blocked_reason': 'Owner access required — the Search Console property is '
+                          'owned at the franchise level. Only an Owner can add '
+                          'users, and we hold no role on it.',
+        'grant': 'Requires a franchise Owner: Settings → Users and permissions → '
+                 'add the service account email as a Restricted user. '
+                 'Alternative: self-verify a URL-prefix property via a meta tag '
+                 'in the CMS, which grants Owner without franchise involvement.',
         'reads': 'Queries, impressions, clicks, average position, indexed pages.',
     },
     {
@@ -394,6 +413,9 @@ def _describe(conn):
         'grant':  conn['grant'],
         'reads':  conn.get('reads', ''),
         'caveat': conn.get('caveat', ''),
+        'tier':   conn.get('tier', 'active'),
+        'requires_owner': bool(conn.get('requires_owner')),
+        'blocked_reason': conn.get('blocked_reason', ''),
     }
 
 
@@ -403,6 +425,12 @@ def _run_probe(conn):
     required_ids = [i['name'] for i in row['id_env']
                     if not i['set'] and not i['optional']]
     if missing or required_ids:
+        # An owner-gated connector with nothing configured is not misconfigured
+        # — nobody here can configure it. Report the real reason.
+        if row['requires_owner']:
+            row['status'] = OWNER_REQUIRED
+            row['detail'] = row['blocked_reason']
+            return row
         row['status'] = NOT_CONNECTED
         row['detail'] = 'not set: ' + ', '.join(missing + required_ids)
         return row
@@ -440,8 +468,13 @@ def status_all(probe=True):
             missing = [s['name'] for s in row['secret_env'] if not s['set']]
             missing += [i['name'] for i in row['id_env']
                         if not i['set'] and not i['optional']]
-            row['status'] = NOT_CONNECTED if missing else UNCHECKED
-            row['detail'] = ('not set: ' + ', '.join(missing)) if missing else 'configured — not verified'
+            if missing and row['requires_owner']:
+                row['status'], row['detail'] = OWNER_REQUIRED, row['blocked_reason']
+            elif missing:
+                row['status'] = NOT_CONNECTED
+                row['detail'] = 'not set: ' + ', '.join(missing)
+            else:
+                row['status'], row['detail'] = UNCHECKED, 'configured — not verified'
             rows.append(row)
 
     for u in UNDEFINED_CONNECTORS:

@@ -10,15 +10,33 @@ into a code comment.
 
 ---
 
+## Status at a glance
+
+| Connection | Tier | State |
+|---|---|---|
+| Website / sitemap | Active | ✅ Connected, no credential needed |
+| Google Business Profile | Active | Pending Google's API access approval |
+| Google Search Console | **Optional — owner access required** | Franchise-owned; we hold no role |
+| Google Analytics 4 | **Optional — owner access required** | Franchise-owned; we hold no role |
+
+**Search Console and GA4 are optional future enhancements, not broken
+connections.** Confirmed 2026-08-10: both consoles show an empty screen for
+`luke@projectoneroofing.com`. Nimbus displays them as *Owner access required*,
+muted rather than red, and no marketing work waits on them — see
+[MARKETING_PLAN.md](MARKETING_PLAN.md). The setup steps below stay documented
+because the day someone grants access, setting the env vars is the entire
+change.
+
 ## 1. Which connections use a read-only service account
 
 Both share **one** service account, so there is one key to create and one key
-to rotate.
+to rotate. **Both are currently owner-gated** — the service account exists and
+works; nobody has been able to grant it access.
 
-| Connection | Read-only scope |
-|---|---|
-| Google Analytics 4 | `analytics.readonly` |
-| Google Search Console | `webmasters.readonly` |
+| Connection | Read-only scope | Who must grant |
+|---|---|---|
+| Google Analytics 4 | `analytics.readonly` | A franchise property **Administrator**. No self-serve route exists |
+| Google Search Console | `webmasters.readonly` | A franchise **Owner** — or self-verify a URL-prefix property via a CMS meta tag, which needs nobody |
 
 A service account is the right fit here: it is not tied to a person, it can be
 granted view-only access inside each product, and it needs no browser consent.

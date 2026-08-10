@@ -110,9 +110,39 @@ def test_unconfigured_connectors_report_not_connected_with_the_missing_names(mon
                                      'GBP_ACCOUNT_ID', 'MARKETING_SITE_URL']:
         monkeypatch.delenv(k, raising=False)
     rows = {r['key']: r for r in connections.status_all(probe=False)}
-    assert rows['ga4']['status'] == connections.NOT_CONNECTED
-    assert 'GA4_PROPERTY_ID' in rows['ga4']['detail']
-    assert 'GOOGLE_SERVICE_ACCOUNT_JSON_B64' in rows['ga4']['detail']
+    # GBP is ours to configure, so an unset var really is "not connected".
+    assert rows['gbp']['status'] == connections.NOT_CONNECTED
+    assert 'GBP_OAUTH_CLIENT_ID' in rows['gbp']['detail']
+
+
+def test_owner_gated_connectors_are_optional_not_broken(monkeypatch):
+    """GA4 and Search Console are owned at the franchise level. Reporting them
+    as errors would be a standing lie about something nobody here can fix, and
+    a board that always shows two failures stops being read."""
+    from agents import connections
+    for k in ('GOOGLE_SERVICE_ACCOUNT_JSON_B64', 'GOOGLE_SERVICE_ACCOUNT_JSON',
+              'GA4_PROPERTY_ID', 'GSC_SITE_URL'):
+        monkeypatch.delenv(k, raising=False)
+    rows = {r['key']: r for r in connections.status_all(probe=False)}
+    for key in ('ga4', 'gsc'):
+        assert rows[key]['status'] == connections.OWNER_REQUIRED
+        assert rows[key]['status'] != connections.ERROR
+        assert rows[key]['tier'] == 'optional_future'
+        assert rows[key]['requires_owner'] is True
+        assert 'owner access required' in rows[key]['detail'].lower()
+
+
+def test_granting_owner_access_later_needs_no_code_change(monkeypatch):
+    """If the franchise ever grants access, setting the env vars must flip
+    these to a normal probe rather than staying stuck on 'owner required'."""
+    from agents import connections
+    monkeypatch.setenv('GOOGLE_SERVICE_ACCOUNT_JSON_B64',
+                       'eyJjbGllbnRfZW1haWwiOiJhQGIuY29tIn0=')
+    monkeypatch.setenv('GA4_PROPERTY_ID', '123456789')
+    monkeypatch.setitem(connections._PROBES, 'ga4',
+                        lambda: (connections.CONNECTED, 'property readable'))
+    rows = {r['key']: r for r in connections.status_all(probe=True)}
+    assert rows['ga4']['status'] == connections.CONNECTED
 
 
 def test_configured_but_unprobed_is_not_reported_as_connected(monkeypatch):
