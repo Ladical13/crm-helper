@@ -213,6 +213,22 @@ def test_a_brief_needs_an_approved_recommendation(admin, tmp_path_factory,
     assert r.status_code == 404
 
 
+def test_the_portal_service_worker_never_caches_nimbus(client):
+    """Nimbus's API is at /nimbus/api/..., which does NOT start with '/api/'.
+
+    Without an explicit '/nimbus' entry the portal worker served every Nimbus
+    API response cache-first. Observed in real use: "Re-check all" on the
+    Connections page returned a cached status, and the SEO page reported "no
+    runs yet" with a finished run sitting in the database.
+    """
+    body = client.get('/sw.js').get_data(as_text=True)
+    not_ours = body.split('NOT_OURS', 1)[1].split(']', 1)[0]
+    assert "'/nimbus'" in not_ours, \
+        'the portal SW will cache Nimbus API responses and serve stale status'
+    # '/api/' alone does not cover it — that is the whole trap.
+    assert '/nimbus/api/'.startswith('/api/') is False
+
+
 def test_anonymous_gets_401_not_403(client, tmp_path_factory, monkeypatch):
     """Portal's default-deny hook fires before Nimbus's admin gate."""
     _fresh_agents_dir(tmp_path_factory, monkeypatch)

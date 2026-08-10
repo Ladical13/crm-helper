@@ -201,6 +201,33 @@ def test_a_brief_is_honest_about_what_cannot_be_measured(fake_web, site_profile,
     assert b['measurement']['measurable_today']
 
 
+def test_a_city_brief_is_classified_on_its_subject_not_its_action_text():
+    """"Consider a Colorado Springs service-area page" contains no service
+    word, so classifying the action text read a city page as informational.
+    The subject is "Roofing in Colorado Springs" — someone ready to hire."""
+    from agents.seo import brief
+    b = brief.build({'category': 'create_city_or_service_area_page',
+                     'city': 'Colorado Springs', 'service': '', 'intent': '',
+                     'action': 'Consider a Colorado Springs service-area page.',
+                     'evidence': []}, pages=[])
+    assert b['search_intent'] == 'transactional'
+    assert b['topic'] == 'Roofing in Colorado Springs'
+
+
+def test_internal_link_labels_are_distinguishable_on_a_js_site():
+    """A client-rendered site serves the same shell <title> on every page, so
+    titles alone gave five identical labels and a writer could not tell which
+    link was which."""
+    from agents.seo import brief
+    same_title = 'Project One Roofing Colorado'
+    pages = [{'url': f'https://example.com/services/{slug}', 'title': same_title}
+             for slug in ('roof-repairs', 'roof-inspections', 'gutter-services')]
+    links = brief._internal_links({}, pages, '', 'Roofing')
+    labels = [l['label'] for l in links]
+    assert len(set(labels)) == len(labels), f'duplicate link labels: {labels}'
+    assert 'Roof Repairs' in labels
+
+
 def test_brief_internal_links_are_real_crawled_urls_not_invented(fake_web,
                                                                  site_profile,
                                                                  monkeypatch):

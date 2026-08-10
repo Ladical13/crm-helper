@@ -111,11 +111,25 @@ def _internal_links(rec, pages, city, service_label):
         if hits:
             scored.append((hits, p.get('url', ''), p.get('title') or p.get('url', '')))
     scored.sort(reverse=True)
-    links = [{'url': u, 'label': t} for _h, u, t in scored[:5]]
+    links = [{'url': u, 'label': _link_label(u, t)} for _h, u, t in scored[:5]]
     if not links and pages:
         links = [{'url': pages[0].get('url', ''),
                   'label': 'Homepage — no closely-related page found in the crawl'}]
     return links
+
+
+def _link_label(url, title):
+    """A label a writer can tell apart.
+
+    On a client-rendered site every page serves the same shell <title>, so
+    using it gives five identical labels and the writer cannot tell which link
+    is which. The URL path is the only distinguishing thing we actually have.
+    """
+    path = url.rstrip('/').rsplit('/', 1)[-1]
+    from_path = path.replace('-', ' ').replace('_', ' ').strip().title()
+    # Prefer the path. Appending a title that is identical across every page
+    # just repeats the same noise five times.
+    return from_path or title or url
 
 
 def _required_assets(page_type, profile):
@@ -191,14 +205,24 @@ def build(rec, pages=None, profile=None):
     """Build a brief dict from one recommendation. Pure — no DB, no network."""
     profile = profile or _profile()
     question = (rec.get('intent') or '').strip()
-    topic = question or rec.get('action', '')
-    search_intent, intent_why = intent_mod.classify(topic)
 
     city = rec.get('city', '')
     service_key = rec.get('service', '')
-    service_label = next(
-        (c['label'] for c in profile['approved_services']['categories']
-         if c['key'] == service_key), service_key or 'Roofing')
+    categories = profile['approved_services']['categories']
+    service_label = next((c['label'] for c in categories if c['key'] == service_key),
+                         '') or categories[0]['label']
+
+    # Classify what the page is ABOUT, not the sentence that recommended it.
+    # "Consider a Colorado Springs service-area page" contains no service word,
+    # so classifying the action text read a city page as informational. The
+    # subject is "Roofing in Colorado Springs", which is someone ready to hire.
+    if question:
+        topic = question
+    elif city:
+        topic = f'{service_label} in {city}'
+    else:
+        topic = rec.get('action', '')
+    search_intent, intent_why = intent_mod.classify(topic)
 
     page_type = _page_type(rec, search_intent)
 

@@ -7,7 +7,7 @@
 // CRM workers both claimed scope '/' with different cache names and whichever
 // registered last won. Passing everything else straight through is what keeps
 // them from fighting again.
-const CACHE = 'p1portal-v1';
+const CACHE = 'p1portal-v2';
 const SHELL = [
   '/',
   '/shell.css',
@@ -16,8 +16,18 @@ const SHELL = [
 ];
 
 // Prefixes owned by another service worker or by the server. Never intercept.
-const NOT_OURS = ['/canvass', '/crm', '/estimate', '/api/', '/login', '/logout',
-                  '/sign/', '/sign-co/', '/uploads/', '/account/'];
+//
+// `/nimbus` is here because its API lives at `/nimbus/api/...`, which does NOT
+// start with `/api/` — so without this entry the cache-first handler below
+// served every Nimbus API response from cache and revalidated in the
+// background. On a live-status dashboard that is worse than useless: "Re-check
+// all" on the Connections page returned a cached answer, and the SEO page
+// showed "no runs yet" while a completed run sat in the database. Nimbus is an
+// admin dashboard, it has no offline story, and stale status beats no status
+// only in situations that do not apply here.
+const NOT_OURS = ['/canvass', '/crm', '/estimate', '/nimbus', '/api/',
+                  '/login', '/logout', '/sign/', '/sign-co/', '/uploads/',
+                  '/account/'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
