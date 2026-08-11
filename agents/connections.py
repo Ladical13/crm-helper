@@ -51,6 +51,11 @@ ERROR         = 'error'
 # franchise ever grants access, setting the env vars flips these to a normal
 # probe with no code change.
 OWNER_REQUIRED = 'owner_required'
+# Gated by the provider rather than by us. Reddit's Responsible Builder Policy
+# requires explicit written approval before any API access, and separately
+# requires it for commercial use — which a roofing company's marketing plainly
+# is. Distinct from "not configured": no amount of setting env vars fixes it.
+APPROVAL_REQUIRED = 'approval_required'
 # Config looks complete but nothing has been verified against Google. Only
 # ever produced by status_all(probe=False), which the dashboard does not use —
 # the page always probes, so this never renders as a status. Claiming
@@ -190,15 +195,27 @@ CONNECTORS = [
         ],
         'scopes': [],
         'scope_is_readonly': True,
-        'grant': 'reddit.com/prefs/apps → create an app of type "script". The '
-                 'client ID sits under the app name; the secret is labelled '
-                 '"secret". No Reddit account of ours is posted from.',
-        'reads': 'Top weekly posts in Colorado and home-improvement subreddits, '
-                 'filtered to roofing keywords. Real homeowner questions with '
-                 'permalinks — a primary source, unlike research summaries.',
-        'caveat': 'Findings inform what we write about. Reddit posts are never '
-                  'reproduced in published copy — enforced by a rule carried '
-                  'into every brief built from a Reddit citation.',
+        'requires_approval': True,
+        'tier': 'blocked_external',
+        'blocked_reason': "Approval required — Reddit's Responsible Builder "
+                          'Policy (checked 2026-08-11) requires explicit approval '
+                          'before ANY API access, and separate written approval '
+                          'for commercial use. Marketing for a roofing company is '
+                          'commercial. The old self-serve script-app flow at '
+                          '/prefs/apps now bounces you to the Devvit developer '
+                          'platform, which builds apps that run ON Reddit — not '
+                          'this. Setting the env vars will not help.',
+        'grant': 'Would need written commercial approval from Reddit '
+                 '(support.reddithelp.com → contact). Not realistically '
+                 'obtainable for a single contractor. Reading those subreddits '
+                 'in a browser by hand is unaffected and entirely fine — it is '
+                 'automated API access that is gated.',
+        'reads': 'Would read: top weekly posts in Colorado and home-improvement '
+                 'subreddits, filtered to roofing keywords. Built and tested; '
+                 'switches on if approval is ever granted.',
+        'caveat': 'Code is complete and covered by tests. It stays in place so '
+                  'that if approval ever arrives it is two env vars away — but '
+                  'nobody should treat it as merely unconfigured.',
     },
     {
         'key':   'gdelt',
@@ -510,6 +527,7 @@ def _describe(conn):
         'caveat': conn.get('caveat', ''),
         'tier':   conn.get('tier', 'active'),
         'requires_owner': bool(conn.get('requires_owner')),
+        'requires_approval': bool(conn.get('requires_approval')),
         'blocked_reason': conn.get('blocked_reason', ''),
     }
 
@@ -520,10 +538,15 @@ def _run_probe(conn):
     required_ids = [i['name'] for i in row['id_env']
                     if not i['set'] and not i['optional']]
     if missing or required_ids:
-        # An owner-gated connector with nothing configured is not misconfigured
-        # — nobody here can configure it. Report the real reason.
+        # A connector gated by someone else is not misconfigured — nobody here
+        # can configure it. Report the real reason rather than a list of env
+        # vars that would not help.
         if row['requires_owner']:
             row['status'] = OWNER_REQUIRED
+            row['detail'] = row['blocked_reason']
+            return row
+        if row['requires_approval']:
+            row['status'] = APPROVAL_REQUIRED
             row['detail'] = row['blocked_reason']
             return row
         row['status'] = NOT_CONNECTED
@@ -565,6 +588,8 @@ def status_all(probe=True):
                         if not i['set'] and not i['optional']]
             if missing and row['requires_owner']:
                 row['status'], row['detail'] = OWNER_REQUIRED, row['blocked_reason']
+            elif missing and row['requires_approval']:
+                row['status'], row['detail'] = APPROVAL_REQUIRED, row['blocked_reason']
             elif missing:
                 row['status'] = NOT_CONNECTED
                 row['detail'] = 'not set: ' + ', '.join(missing)

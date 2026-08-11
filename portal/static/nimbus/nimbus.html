@@ -217,6 +217,7 @@
   /* Owner-gated: deliberately muted, NOT red. Nobody here can fix these, so
      styling them as failures would train people to ignore the whole page. */
   .conn .pill.owner_required { color: var(--dim);   border-color: var(--dim2);   background: transparent; }
+  .conn .pill.approval_required { color: var(--dim); border-color: var(--dim2); background: transparent; }
   .conn.optional { opacity: .78; border-style: dashed; }
   .conn .tier {
     font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase;
@@ -1112,6 +1113,7 @@ async function reviewRec(id, status) {
 const STATUS_LABEL = {
   connected: 'Connected', not_connected: 'Not Connected', error: 'Error',
   owner_required: 'Owner Access Required', unchecked: 'Not Checked',
+  approval_required: 'Approval Required',
 };
 const AUTH_LABEL = {
   service_account: 'read-only service account', oauth: 'Google OAuth login',
@@ -1196,13 +1198,16 @@ function connCard(c) {
   ].join('');
 
   const ids = (c.id_env || []).filter(e => e.where);
-  const optional = c.tier === 'optional_future';
+  const optional = c.tier === 'optional_future' || c.tier === 'blocked_external';
   return `
     <div class="conn${optional ? ' optional' : ''}" data-conn="${escapeHtml(c.key)}">
       <div class="head">
         <span class="name">${escapeHtml(c.label)}</span>
         <span class="pill ${escapeHtml(c.status)}">${STATUS_LABEL[c.status] || c.status}</span>
-        ${optional ? '<span class="tier">Optional — future enhancement</span>' : ''}
+        ${c.tier === 'optional_future'
+            ? '<span class="tier">Optional — future enhancement</span>' : ''}
+        ${c.tier === 'blocked_external'
+            ? '<span class="tier">Gated by the provider</span>' : ''}
         <span class="authtag">${AUTH_LABEL[c.auth] || escapeHtml(c.auth)}</span>
       </div>
       ${c.detail ? `<div class="detail">${escapeHtml(c.detail)}</div>` : ''}

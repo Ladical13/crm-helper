@@ -132,6 +132,22 @@ def test_owner_gated_connectors_are_optional_not_broken(monkeypatch):
         assert 'owner access required' in rows[key]['detail'].lower()
 
 
+def test_reddit_reports_the_approval_gate_not_missing_env_vars(monkeypatch):
+    """Reddit's Responsible Builder Policy (checked 2026-08-11) requires
+    explicit approval for any API access and written approval for commercial
+    use. Listing two env vars would send the next person down the same dead
+    end that cost us an afternoon."""
+    from agents import connections
+    for k in ('REDDIT_CLIENT_ID', 'REDDIT_CLIENT_SECRET'):
+        monkeypatch.delenv(k, raising=False)
+    row = {r['key']: r for r in connections.status_all(probe=False)}['reddit']
+    assert row['status'] == connections.APPROVAL_REQUIRED
+    assert row['status'] != connections.NOT_CONNECTED
+    assert row['tier'] == 'blocked_external'
+    assert 'commercial' in row['detail'].lower()
+    assert 'will not help' in row['detail'].lower()
+
+
 def test_granting_owner_access_later_needs_no_code_change(monkeypatch):
     """If the franchise ever grants access, setting the env vars must flip
     these to a normal probe rather than staying stuck on 'owner required'."""

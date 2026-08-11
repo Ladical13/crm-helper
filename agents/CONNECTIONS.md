@@ -17,26 +17,40 @@ into a code comment.
 | Website / sitemap | Active | ✅ Connected, no credential needed |
 | **GDELT** — Colorado news + storms | Active | ✅ Connected, no credential needed |
 | **Bing Webmaster Tools** | Active | Needs two env vars — **the only measured search data we can own** |
-| **Reddit** — customer language | Active | Needs two env vars (below) |
+| ~~**Reddit** — customer language~~ | **Gated by Reddit** | ⛔ Needs Reddit's written commercial approval — not obtainable |
 | Google Business Profile | Active | Pending Google's API access approval |
 | Google Search Console | **Optional — owner access required** | Franchise-owned; we hold no role |
 | Google Analytics 4 | **Optional — owner access required** | Franchise-owned; we hold no role |
 
-### Reddit — the two variables
+### Reddit — blocked by Reddit, do not retry
 
-reddit.com/prefs/apps → **create an app** → type **script**. The client ID sits
-under the app name; the secret is labelled *secret*.
+**Attempted 2026-08-11 and abandoned.** The connector is built, tested and
+switched off. Do not spend time on `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET`:
+setting them will not help.
 
-| Variable | Where it comes from |
-|---|---|
-| `REDDIT_CLIENT_ID` | Under the app name on the apps page |
-| `REDDIT_CLIENT_SECRET` | The field labelled "secret" |
-| `REDDIT_USER_AGENT` | Optional — a descriptive default is used if unset |
+Reddit's [Responsible Builder Policy](https://support.reddithelp.com/hc/en-us/articles/42728983564564-Responsible-Builder-Policy)
+now states:
 
-Read-only, application-only OAuth. Nothing is ever posted, voted, or commented
-from any account. **Reddit content is never reproduced in published copy** —
-findings tell us what to write about; we write it ourselves. That rule is
-carried into every content brief built from a Reddit citation.
+> "**Approval is required**: You must request access and get explicit approval
+> before accessing any Reddit data through our API"
+
+and separately, for commercial use:
+
+> "you'll need to get **explicit written approval**… our team will be in touch
+> if your proposal fits our criteria."
+
+Marketing research for a roofing company is commercial use. The old self-serve
+script-app flow at `/prefs/apps` still renders its form, which is why it looks
+like it ought to work — but submitting it bounces you to the Devvit developer
+platform, which exists for building apps that run *on* Reddit and is not this.
+
+**Still fine:** a person reading r/Denver, r/FortCollins or r/HomeImprovement in
+a browser for content ideas. It is automated API access that is gated, not
+reading the site.
+
+The code stays in `agents/content/sources/reddit.py` — if approval ever arrives
+it is two env vars away. `test_reddit_reports_the_approval_gate_not_missing_env_vars`
+stops the Connections page presenting it as merely unconfigured.
 
 ### Bing Webmaster Tools — the one that un-blinds search
 

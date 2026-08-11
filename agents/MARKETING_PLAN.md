@@ -54,7 +54,7 @@ ours outright — no franchise involved.
 | Public website / sitemap | `projectoneroofingcolorado.com/sitemap.xml` | ✅ Connected |
 | Marketing profile | `marketing_profile.json` (version-controlled) | ✅ In use |
 | **GDELT** — Colorado news + storm events | Free public endpoint, no key | ✅ Connected |
-| **Reddit** — customer language | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | ✅ Built, needs the two env vars |
+| ~~Reddit~~ — customer language | Reddit's written commercial approval | ⛔ **Gated by Reddit**, see CONNECTIONS.md. Built, tested, switched off |
 | Perplexity research | `PERPLEXITY_API_KEY`, capped monthly | ✅ In use |
 
 **Why the free sources matter more than their row count suggests.** The
