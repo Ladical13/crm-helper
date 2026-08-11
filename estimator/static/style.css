@@ -838,9 +838,14 @@ input.scope-qty-input {
 .li-row-del:hover { color: var(--danger); }
 
 .li-row-desc-row { display: flex; }
+/* A textarea, not an input — Enter starts a new line. resize/overflow are off
+   because autoGrow() sizes it to its content; a scrollbar or a drag handle
+   would both fight that. */
 .li-row-desc-input {
   flex: 1; font-size: 11px; font-style: italic; color: var(--text-light);
   border: 1px solid transparent; border-radius: 3px; padding: 2px 4px; background: transparent;
+  font-family: inherit; line-height: 1.45; resize: none; overflow: hidden;
+  display: block; min-height: 18px;
 }
 .li-row-desc-input:hover { border-color: var(--border); background: #fff; }
 .li-row-desc-input:focus { border-color: var(--primary-light); background: #fff; outline: none; color: var(--text); }
@@ -971,13 +976,8 @@ select.li-unit-select { width: 54px; font-size: 11px; padding: 4px 3px; }
 }
 .other-name-input:hover  { border-color: var(--border); background: #fff; }
 .other-name-input:focus  { border-color: var(--primary-light); background: #fff; outline: none; }
-.other-note-input {
-  width: 100%; font-size: 11px; font-style: italic; color: var(--text-light);
-  border: 1px solid transparent; border-radius: 3px;
-  padding: 2px 5px; background: transparent; margin-top: 3px;
-}
-.other-note-input:hover  { border-color: var(--border); background: #fff; }
-.other-note-input:focus  { border-color: var(--primary-light); background: #fff; outline: none; }
+/* The Other tab's one-line "Note" input is gone — it now uses the shared
+   .simple-item-desc description textarea, same as every other trade. */
 .other-qty-cell  { text-align: center; }
 input.other-qty-input { width: 54px; text-align: center; font-weight: 600; font-size: 12px; }
 select.other-unit-select { width: 58px; font-size: 11px; padding: 4px 3px; }
@@ -1437,10 +1437,13 @@ input.other-price-input { width: 110px; text-align: right; font-size: 12px; }
 .ins-th-desc { min-width: 200px; }
 .ins-name-cell { min-width: 140px; }
 .ins-desc-cell { min-width: 180px; }
+/* Textarea — see .li-row-desc-input for why resize/overflow are off. */
 .ins-desc-input {
   width: 100%; font-size: 12px; color: var(--text-light); font-style: italic;
   border: 1px solid transparent; border-radius: 3px;
   padding: 3px 5px; background: transparent; transition: border-color .12s;
+  font-family: inherit; line-height: 1.45; resize: none; overflow: hidden;
+  display: block; min-height: 20px; vertical-align: top;
 }
 .ins-desc-input:hover  { border-color: var(--border); background: #fff; }
 .ins-desc-input:focus  { border-color: var(--primary-light); background: #fff; outline: none; font-style: normal; }
@@ -3557,6 +3560,8 @@ a.jx-contact:hover { text-decoration: underline; }
 
 /* ── Price book: bundle/stick LF-per-unit field ─────────────────────── */
 .simple-cost-input { background: #f8fafc; color: var(--text-light); }
+/* Line-item description box: the Simple tabs and the Other tab share it.
+   See .li-row-desc-input for why resize/overflow are off. */
 .simple-item-desc {
   display: block; width: 100%; margin-top: 3px;
   font-size: 12px; color: var(--text-light); font-style: italic;

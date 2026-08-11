@@ -2659,9 +2659,12 @@ border-bottom:1px solid var(--line);color:var(--mut);font-weight:700}
 .cvt td{padding:9px 14px;border-bottom:1px solid #f4f7fa;font-size:13px;vertical-align:top}
 .cvt tbody tr:last-child td{border-bottom:none}
 .cvn{font-weight:600}
-.cvd{font-size:11px;color:var(--mut);font-weight:400;margin-top:2px;line-height:1.5}
+/* pre-wrap on both description cells: reps type multi-line line-item
+   descriptions on the Pricing tabs, and plain HTML would collapse every one of
+   those newlines into a space. */
+.cvd{font-size:11px;color:var(--mut);font-weight:400;margin-top:2px;line-height:1.5;white-space:pre-wrap}
 .cvc{text-align:center;color:var(--mut)}
-.cvc-desc{font-weight:400;color:var(--mut)}
+.cvc-desc{font-weight:400;color:var(--mut);white-space:pre-wrap}
 .cvr{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
 .cvt tfoot td{background:#f8fafc;font-weight:800;padding:11px 14px;border-top:2px solid var(--line);font-size:13px}
 .cvsub-l{text-align:right;color:var(--mut);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding-right:12px}
@@ -6047,6 +6050,19 @@ def _pdf_safe(s):
     return s.encode('latin-1', 'replace').decode('latin-1')
 
 
+def _pdf_oneline(s):
+    """_pdf_safe, plus every run of whitespace flattened to one space.
+
+    For pdf.cell() only — never multi_cell(), which wants the newlines.
+    Reps type multi-line line-item descriptions on the Pricing tabs, and
+    fpdf2's cell() does not wrap: it writes the raw newline straight into the
+    PDF text string, where it renders as a junk glyph rather than a break.
+    Flattening is the honest single-line rendering; the paths that can wrap
+    (customer view, browser print) keep the breaks.
+    """
+    return ' '.join(_pdf_safe(s).split())
+
+
 _VISUALIZER_TIERS_ORDER = ('good', 'better', 'best')
 _VISUALIZER_TIER_LABELS = {'good': 'Good', 'better': 'Better', 'best': 'Best'}
 
@@ -6523,7 +6539,8 @@ def build_signed_pdf(est, signed=None):
         pdf.set_text_color(0, 0, 0)
 
     def trunc(s, n):
-        s = _pdf_safe(s)
+        # _pdf_oneline, not _pdf_safe: these are single-line pdf.cell() values.
+        s = _pdf_oneline(s)
         return s if len(s) <= n else s[:n - 1] + '...'
 
     grand = 0.0
@@ -7354,7 +7371,8 @@ def build_production_packet_pdf(est):
         pdf.ln()
 
     def trunc(s, n):
-        s = _pdf_safe(s)
+        # _pdf_oneline, not _pdf_safe: these are single-line pdf.cell() values.
+        s = _pdf_oneline(s)
         return s if len(s) <= n else s[:n - 1] + '...'
 
     # ── Page 1: Work Order ──
@@ -9243,7 +9261,8 @@ def build_co_pdf(est, co):
         pdf.ln(3)
 
     def trunc(s, n):
-        s = _pdf_safe(s)
+        # _pdf_oneline, not _pdf_safe: these are single-line pdf.cell() values.
+        s = _pdf_oneline(s)
         return s if len(s) <= n else s[:n - 1] + '...'
 
     pdf.set_fill_color(234, 239, 245)

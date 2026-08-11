@@ -1534,6 +1534,37 @@ function esc(s) {
 }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }; }
 
+/* ── Multi-line description boxes (every Pricing tab) ────────────────
+   Every trade's line item carries a Description underneath its name, and every
+   one of those boxes is a <textarea>, not an <input> — so Enter inserts a new
+   line instead of doing nothing. They grow to fit rather than scrolling, which
+   is the only way a rep can see a three-line description they typed.
+
+   Two halves, and both are needed: `autoGrow` on every keystroke, and one
+   `autoGrowAll` pass after the tab is re-rendered — a saved description must
+   open at full height, not one row with the rest hidden. `rows=` alone only
+   counts hard newlines, so it under-sizes anything that wraps.
+   Textareas opt in with the `desc-ta` class. */
+function autoGrow(el) {
+  if (!el) return;
+  el.style.height = 'auto';
+  // A textarea inside a display:none ancestor measures 0 — the collapsed tier
+  // panels in the GBB grid are exactly that at render time. Writing that 0 back
+  // would pin the box shut, and expanding the tier would show a 0px-tall
+  // description. Leave the height alone and let the `rows` attribute hold it;
+  // toggleTierDetails re-renders the tab, so the panel gets measured for real
+  // the moment it opens. An empty box that IS laid out still measures > 0
+  // (padding + one line), so this only ever skips the unrendered case.
+  if (!el.scrollHeight) return;
+  el.style.height = el.scrollHeight + 'px';
+}
+function autoGrowAll(root) {
+  (root || document).querySelectorAll('textarea.desc-ta').forEach(autoGrow);
+}
+// Rows to open a description at before autoGrowAll measures it — keeps a saved
+// multi-line description from flashing as a single row on first paint.
+function descRows(s) { return Math.max(1, String(s || '').split('\n').length); }
+
 /* ── Calculations ──────────────────────────────────────────────────── */
 
 const DEFAULT_RATE = 35;
@@ -4250,7 +4281,8 @@ function renderTradeContent() {
   const showModeToggle   = !isInsurance && !isGutters && td.enabled;
   const showLoadDefaults = td.enabled && !isInsurance && trade !== 'other';
 
-  document.getElementById('trade-content').innerHTML =
+  const host = document.getElementById('trade-content');
+  host.innerHTML =
     `<div class="trade-header">
       <h2>${TRADE_LABELS[trade]}${isInsurance?' <span class="ins-badge">Insurance Claim</span>':''}</h2>
       <div class="trade-controls">
@@ -4287,6 +4319,8 @@ function renderTradeContent() {
                <p class="ins-tab-empty-hint">Importing turns on Insurance mode for you.</p>
              </div>`
           : `<div class="trade-disabled">Enable this trade to add line items.</div>`)}`;
+  // Every tab's description boxes are sized after the markup lands — see autoGrow.
+  autoGrowAll(host);
 }
 
 /* Single-price system picker for a bundle trade (commercial). The G/B/B grid
@@ -4343,6 +4377,8 @@ function renderOtherFreeform() {
   const items = td.line_items;
   const UNITS = ['EA','LS','SQ','LF','HR','SF','BD'];
 
+  if (items.some(otherFoldNoteIntoDesc)) setDirty();
+
   const rows = items.map(item => {
     const t    = (item.tiers && item.tiers[tier]) || {material_unit_cost:0,labor_unit_cost:0,notes:''};
     const cost = (parseFloat(t.material_unit_cost)||0) + (parseFloat(t.labor_unit_cost)||0);
@@ -4352,10 +4388,12 @@ function renderOtherFreeform() {
     const tot = override !== null ? override : calcTot;
     return `<tr>
       <td class="other-name-cell">
-        <input class="other-name-input" type="text" value="${esc(item.name)}" placeholder="Item description"
+        <input class="other-name-input" type="text" value="${esc(item.name)}" placeholder="Item name"
           onchange="liSetName('${trade}','${item.id}',this.value)">
-        <input class="other-note-input" type="text" value="${esc(t.notes||'')}" placeholder="Note (optional)"
-          onchange="liSetTier('${trade}','${item.id}','${tier}','notes',this.value)">
+        <textarea class="simple-item-desc desc-ta" rows="${descRows(t.description)}"
+          placeholder="Description (optional — prints on PDF, Enter for new line)"
+          oninput="autoGrow(this);otherSetDesc('${item.id}',this.value)"
+          >${esc(t.description||'')}</textarea>
       </td>
       <td class="other-qty-cell">
         <input class="other-qty-input" type="number" inputmode="decimal" min="0" step="0.5" value="${item.quantity||''}"
@@ -4423,6 +4461,45 @@ function renderOtherFreeform() {
     </div>`;
 }
 
+/* The Other tab used to carry a one-line per-tier "Note". It only ever reached
+   the printed estimate — never the customer view — and it was the one trade
+   with no Description box at all. Both are now the same field: fold a legacy
+   note into this tier's description the first time the row renders, so the text
+   the rep already typed survives and lands where every other trade's does.
+   Other-tab items are hand-entered (no price-book fill, no Load Defaults), so
+   in practice the description is empty and the note holds everything. If both
+   somehow carry text the note is appended on its own line rather than dropped —
+   never lose something a rep typed. Scoped to `other` on purpose: GBB trades
+   fill t.notes from the price book, and those are not this field.
+   Returns true if anything moved, so the caller can mark the estimate dirty. */
+function otherFoldNoteIntoDesc(item) {
+  let moved = false;
+  TIERS.forEach(tier => {
+    const t = item.tiers && item.tiers[tier];
+    if (!t) return;
+    const note = (t.notes || '').trim();
+    if (!note) { delete t.notes; return; }
+    const desc = (t.description || '').trim();
+    if (!desc)             t.description = note;
+    else if (desc !== note) t.description = desc + '\n' + note;
+    delete t.notes;
+    moved = true;
+  });
+  return moved;
+}
+
+// Same shape as otherSetUnitCost: the Other tab shows one tier at a time but
+// writes to all three, so the description prints on every package.
+function otherSetDesc(id, v) {
+  const item = findItem('other', id);
+  if (!item) return;
+  TIERS.forEach(tier => {
+    if (!item.tiers[tier]) item.tiers[tier] = {material_unit_cost:0,labor_unit_cost:0,description:'',notes:''};
+    item.tiers[tier].description = v;
+  });
+  setDirty();
+}
+
 function otherSetUnitCost(id, cost) {
   const item = findItem('other', id);
   if (!item) return;
@@ -4449,7 +4526,7 @@ function renderSimpleFreeform(trade) {
     const cost  = parseFloat(item.unit_cost)  || 0;
     const price = parseFloat(item.unit_price) || 0;
     const total = qty * price;
-    const descLines = (item.description||'').split('\n').length;
+    const descLines = descRows(item.description);
     const sectionSel = sections.length ? `
       <select class="li-section-select" title="Which section this item belongs to"
         onchange="liSetSection('${trade}','${item.id}',this.value)">
@@ -4465,9 +4542,9 @@ function renderSimpleFreeform(trade) {
         <input class="other-name-input" type="text" value="${esc(item.name||'')}" list="pb-list-${trade}"
           placeholder="Type to search price book…"
           onchange="liSetNameSmart('${trade}','${item.id}',this.value)">
-        <textarea class="simple-item-desc" rows="${Math.max(1, descLines)}"
+        <textarea class="simple-item-desc desc-ta" rows="${descLines}"
           placeholder="Description (optional — prints on PDF, Enter for new line)"
-          oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px';simpleSetField('${trade}','${item.id}','description',this.value)"
+          oninput="autoGrow(this);simpleSetField('${trade}','${item.id}','description',this.value)"
           >${esc(item.description||'')}</textarea>
         ${sectionSel}
       </td>
@@ -4734,8 +4811,11 @@ function _insSection(sec, sections) {
           onchange="insSetField('${sec.id}','${item.id}','name',this.value)">
       </td>
       <td class="ins-desc-cell">
-        <input class="ins-desc-input" type="text" value="${esc(item.description||'')}" placeholder="Description"
-          onchange="insSetField('${sec.id}','${item.id}','description',this.value)">
+        <textarea class="ins-desc-input desc-ta" rows="${descRows(item.description)}"
+          placeholder="Description (Enter for new line)"
+          oninput="autoGrow(this)"
+          onchange="insSetField('${sec.id}','${item.id}','description',this.value)"
+          >${esc(item.description||'')}</textarea>
       </td>
       <td class="ins-acv-cell">
         <input class="ins-price-input" type="number" min="0" step="0.01"
@@ -5694,10 +5774,12 @@ function renderLiRow(trade, tier, item) {
     ${sectionSel}
     ${variantSel}
     <div class="li-row-desc-row">
-      <input class="li-row-desc-input" type="text" value="${esc(t.description||'')}"
+      <textarea class="li-row-desc-input desc-ta" rows="${descRows(t.description)}"
         placeholder="${tier==='good'?'e.g. 3-Tab':tier==='better'?'e.g. Architectural':'e.g. Designer'}"
-        title="Product label shown to customer on this tier"
-        onchange="liSetTier('${trade}','${item.id}','${tier}','description',this.value)">
+        title="Description shown to the customer on this tier — Enter starts a new line"
+        oninput="autoGrow(this)"
+        onchange="liSetTier('${trade}','${item.id}','${tier}','description',this.value)"
+        >${esc(t.description||'')}</textarea>
     </div>
     <div class="li-row-numbers">
       <input class="li-row-qty-input" type="number" inputmode="decimal" min="0" step="0.5"
@@ -9853,7 +9935,7 @@ function buildPrintContent() {
             const dep=parseFloat(item.depreciation)||0;
             return `<tr>
               <td>${esc(item.name||'')}</td>
-              <td>${esc(item.description||'')}</td>
+              <td>${esc(item.description||'').replace(/\n/g,'<br>')}</td>
               <td class="p-right">${fmtCur(acv)}</td>
               <td class="p-right">${fmtCur(dep)}</td>
               <td class="p-right">${fmtCur(acv+dep)}</td>
