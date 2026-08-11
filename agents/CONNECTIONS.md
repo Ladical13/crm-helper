@@ -15,9 +15,34 @@ into a code comment.
 | Connection | Tier | State |
 |---|---|---|
 | Website / sitemap | Active | ✅ Connected, no credential needed |
+| **GDELT** — Colorado news + storms | Active | ✅ Connected, no credential needed |
+| **Reddit** — customer language | Active | Needs two env vars (below) |
 | Google Business Profile | Active | Pending Google's API access approval |
 | Google Search Console | **Optional — owner access required** | Franchise-owned; we hold no role |
 | Google Analytics 4 | **Optional — owner access required** | Franchise-owned; we hold no role |
+
+### Reddit — the two variables
+
+reddit.com/prefs/apps → **create an app** → type **script**. The client ID sits
+under the app name; the secret is labelled *secret*.
+
+| Variable | Where it comes from |
+|---|---|
+| `REDDIT_CLIENT_ID` | Under the app name on the apps page |
+| `REDDIT_CLIENT_SECRET` | The field labelled "secret" |
+| `REDDIT_USER_AGENT` | Optional — a descriptive default is used if unset |
+
+Read-only, application-only OAuth. Nothing is ever posted, voted, or commented
+from any account. **Reddit content is never reproduced in published copy** —
+findings tell us what to write about; we write it ourselves. That rule is
+carried into every content brief built from a Reddit citation.
+
+### GDELT — nothing to configure
+
+Free public endpoint, no key, no account. It rate-limits transiently (HTTP
+429); the client retries once and then reports it as a lost input rather than a
+failure. One press release syndicated across dozens of outlets collapses to a
+single signal, so nobody with a wire budget can set our content agenda.
 
 **Search Console and GA4 are optional future enhancements, not broken
 connections.** Confirmed 2026-08-10: both consoles show an empty screen for

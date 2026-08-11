@@ -56,6 +56,44 @@ def _citations(result):
     return list(dict.fromkeys(urls))
 
 
+def community_questions(city='', limit=8):
+    """Real homeowner questions from Reddit, with permalinks.
+
+    Free, and a *primary* source where Perplexity is a secondary one: these
+    are the words people actually used, not a model's summary of them. Costs
+    nothing against the spend cap, so it runs even when the cap is blown.
+
+    Returns the same shape as ``customer_questions`` so the two merge cleanly.
+    """
+    from ..content.sources import reddit
+    result = reddit.pull()
+    if not result.get('available'):
+        return {'questions': [], 'citations': [], 'cost_usd': 0.0,
+                'note': result.get('note', 'reddit not configured')}
+
+    posts = reddit.questions(result, limit=limit)
+    if city:
+        # Prefer threads that name the city, then Colorado-local subreddits.
+        posts.sort(key=lambda p: (city.lower() not in p['title'].lower(),
+                                  not p['is_local'], -p['comments']))
+
+    questions_out, citations = [], []
+    for p in posts[:limit]:
+        questions_out.append({
+            'question': p['title'],
+            'why_it_matters': p['summary'] if 'summary' in p else (
+                f'Asked in r/{p["subreddit"]}'
+                + (f', {p["comments"]} comments' if p['comments'] else '')
+                + ('. Colorado-local subreddit.' if p['is_local'] else '.')),
+            # Carried through so the brief can warn against quoting it.
+            'source': 'reddit',
+        })
+        if p.get('url'):
+            citations.append(p['url'])
+    return {'questions': questions_out, 'citations': citations,
+            'cost_usd': 0.0, 'note': result.get('note', '')}
+
+
 def customer_questions(service_label, city, n=6, model=None):
     """What homeowners in ``city`` actually ask about ``service_label``.
 

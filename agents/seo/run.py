@@ -85,23 +85,44 @@ def _gather_research(dry_run):
     questions, competitors, notes = {}, {}, []
     cost = 0.0
 
-    if dry_run:
-        return questions, competitors, 'skipped (dry run — no live research)', 0.0
-
     services = recommend.approved_services()
     if not services:
         return questions, competitors, 'no approved services in the profile', 0.0
     service_key, service_label = services[0]     # roofing leads the profile
+    markets = [m for m in recommend.priority_markets() if m[1]]
 
-    for _label, examples in recommend.priority_markets():
-        if not examples:
-            continue
+    # ── Free, primary source. Runs even on a dry run and even with the spend
+    # cap blown, because it costs nothing and hits no paid API. ──
+    for _label, examples in markets:
+        city = examples[0]
+        ctx = (city, service_key, service_label)
+        community = research.community_questions(city)
+        if community.get('questions'):
+            questions[ctx] = community
+            notes.append(f'reddit/{city}: {len(community["questions"])} question(s)')
+        elif community.get('note'):
+            notes.append(f'reddit: {community["note"]}')
+        break   # one Reddit pull covers every market; the subs are not per-city
+
+    if dry_run:
+        free_note = '; '.join(notes) if notes else 'no free sources reported'
+        return questions, competitors, f'free sources only (dry run) — {free_note}', 0.0
+
+    # ── Paid synthesis, per market ──
+    for _label, examples in markets:
         city = examples[0]
         ctx = (city, service_key, service_label)
         try:
             q = research.customer_questions(service_label, city)
-            questions[ctx] = q
             cost += q['cost_usd']
+            if ctx in questions:
+                # Merge Perplexity's questions in behind Reddit's, keeping both
+                # sets of citations. Reddit first: it is the primary source.
+                questions[ctx]['questions'] += q['questions']
+                questions[ctx]['citations'] = list(dict.fromkeys(
+                    questions[ctx]['citations'] + q['citations']))
+            else:
+                questions[ctx] = q
         except research.ResearchUnavailable as e:
             notes.append(f'{city}: {e}')
             continue
@@ -112,11 +133,13 @@ def _gather_research(dry_run):
         except research.ResearchUnavailable as e:
             notes.append(f'{city} competitors: {e}')
 
+    if not questions and not competitors:
+        why = '; '.join(notes[:3]) or 'no sources reported'
+        return questions, competitors, f'no research returned — {why}', cost
+    summary = f'{len(questions)} market(s)'
     if notes:
-        return questions, competitors, 'partial — ' + '; '.join(notes[:3]), cost
-    if not questions:
-        return questions, competitors, 'no research returned', cost
-    return questions, competitors, f'{len(questions)} market(s) researched', cost
+        summary += ' — ' + '; '.join(notes[:3])
+    return questions, competitors, summary, cost
 
 
 def run(dry_run=False, max_pages=crawler.DEFAULT_MAX_PAGES, use_cache=True):

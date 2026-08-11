@@ -153,7 +153,7 @@ def _required_assets(page_type, profile):
     return assets
 
 
-def _claims_needing_review(profile):
+def _claims_needing_review(profile, evidence=None):
     """The standing list. Short, because the profile keeps it short."""
     diffs = (profile.get('provable_differentiators') or {}).get('claims') or []
     out = [
@@ -178,6 +178,13 @@ def _claims_needing_review(profile):
     if banned:
         out.append('Banned phrases from the marketing profile: '
                    + ', '.join(sorted(banned)) + '.')
+    if any('reddit.com' in str(u) for u in (evidence or [])):
+        out.append(
+            'DO NOT QUOTE THE REDDIT THREAD. It told us what to write about; '
+            'it is not source material. Their words are theirs, and a homeowner '
+            'finding their own complaint reproduced in a roofing advert is a '
+            'worse outcome than any targeting is worth. Answer the question in '
+            'our own voice, and do not link to the thread from a public page.')
     return out
 
 
@@ -244,7 +251,8 @@ def build(rec, pages=None, profile=None):
         'outline': _outline(rec, page_type, city, service_label, question),
         'internal_links': _internal_links(rec, pages, city, service_label),
         'required_assets': _required_assets(page_type, profile),
-        'claims_needing_review': _claims_needing_review(profile),
+        'claims_needing_review': _claims_needing_review(profile,
+                                                        rec.get('evidence')),
         'call_to_action': _cta(page_type, city),
         'measurement': _MEASUREMENT,
         'evidence': rec.get('evidence') or [],

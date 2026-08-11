@@ -50,9 +50,28 @@ ours outright — no franchise involved.
 | Capability | Data source | Status |
 |---|---|---|
 | **Local SEO Strategist** | Our public site + public research | ✅ v1 shipped |
+| **Content Brief bot** | Approved recommendations | ✅ Shipped |
 | Public website / sitemap | `projectoneroofingcolorado.com/sitemap.xml` | ✅ Connected |
 | Marketing profile | `marketing_profile.json` (version-controlled) | ✅ In use |
+| **GDELT** — Colorado news + storm events | Free public endpoint, no key | ✅ Connected |
+| **Reddit** — customer language | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | ✅ Built, needs the two env vars |
 | Perplexity research | `PERPLEXITY_API_KEY`, capped monthly | ✅ In use |
+
+**Why the free sources matter more than their row count suggests.** The
+cross-source bonus in `content/score.py` was written as an intention long
+before anything could trigger it — with only Perplexity reporting, every topic
+had exactly one source and the bonus was dead code. A question asked on Reddit
+*and* covered in local news *and* surfaced by Perplexity now scores
+meaningfully higher than one that appears once. Wiring free sources upgrades
+the ranking, not just the volume.
+
+Reddit is also a **primary** source where everything else is secondary: the
+homeowner's own words with a permalink, rather than a model's summary of them.
+
+**Social media is not a ranking lever.** Google does not use social signals as
+a ranking factor. Social earns its place here as (a) a source of real customer
+language and (b) a driver of branded search and Google Business Profile
+engagement — not because posting moves rankings.
 
 ### Pending someone else's clock
 

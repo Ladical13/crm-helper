@@ -157,6 +157,42 @@ CONNECTORS = [
                   'Nimbus (GET only), not by Google.',
     },
     {
+        'key':   'reddit',
+        'label': 'Reddit (customer language)',
+        'auth':  'api_key',
+        'secret_env': ['REDDIT_CLIENT_ID', 'REDDIT_CLIENT_SECRET'],
+        'id_env': [
+            {'name': 'REDDIT_USER_AGENT', 'optional': True,
+             'example': 'python:project-one-nimbus:v1.0 (contact ...)',
+             'where': 'Optional. Reddit throttles generic user-agents; a default '
+                      'identifying one is used if unset.'},
+        ],
+        'scopes': [],
+        'scope_is_readonly': True,
+        'grant': 'reddit.com/prefs/apps → create an app of type "script". The '
+                 'client ID sits under the app name; the secret is labelled '
+                 '"secret". No Reddit account of ours is posted from.',
+        'reads': 'Top weekly posts in Colorado and home-improvement subreddits, '
+                 'filtered to roofing keywords. Real homeowner questions with '
+                 'permalinks — a primary source, unlike research summaries.',
+        'caveat': 'Findings inform what we write about. Reddit posts are never '
+                  'reproduced in published copy — enforced by a rule carried '
+                  'into every brief built from a Reddit citation.',
+    },
+    {
+        'key':   'gdelt',
+        'label': 'GDELT (Colorado news + storm events)',
+        'auth':  'none',
+        'secret_env': [],
+        'id_env': [],
+        'scopes': [],
+        'scope_is_readonly': True,
+        'grant': 'None. Free public endpoint, no key and no account.',
+        'reads': 'Colorado news matching roofing, hail and storm keywords. The '
+                 'only source that lets copy cite a real, dated weather event '
+                 'instead of staying silent about one.',
+    },
+    {
         'key':   'website',
         'label': 'Website / CMS',
         'auth':  'none',
@@ -381,10 +417,36 @@ def _probe_website():
     return CONNECTED, f'sitemap readable — {body.count("<loc>")} URLs listed'
 
 
+def _probe_reddit():
+    from ..content.sources import reddit
+    if not reddit.available():
+        return NOT_CONNECTED, 'REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET are not set'
+    # One cheap subreddit read proves the token exchange and the read scope.
+    result = reddit.pull(subs=['Roofing'], limit=5)
+    if not result.get('posts') and result.get('note', '').lower().startswith(
+            ('reddit rejected', 'reddit token', 'reddit auth')):
+        return ERROR, result['note']
+    return CONNECTED, result.get('note', 'readable')
+
+
+def _probe_gdelt():
+    from ..content.sources import news_gdelt
+    result = news_gdelt.pull(days=3, limit=5)
+    note = result.get('note', '')
+    if 'rate-limited' in note:
+        # Transient and expected on a free public endpoint — not a fault.
+        return CONNECTED, note
+    if result.get('articles') or 'no Colorado matches' in note:
+        return CONNECTED, note
+    return ERROR, note or 'no response'
+
+
 _PROBES = {
     'ga4':     _probe_ga4,
     'gsc':     _probe_gsc,
     'gbp':     _probe_gbp,
+    'reddit':  _probe_reddit,
+    'gdelt':   _probe_gdelt,
     'website': _probe_website,
 }
 
