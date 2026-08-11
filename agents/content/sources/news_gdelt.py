@@ -29,22 +29,27 @@ RETRY_BACKOFF_S = 5
 # bare "roof" hits stadium roofs. Requiring a two-word domain phrase costs a
 # little recall and removes most of the noise.
 KEYWORDS = [
-    'hail damage', 'hail storm', 'hailstorm', 'storm damage', 'wind damage',
-    'roof damage', 'roof replacement', 'roofing contractor', 'severe storm',
-    'severe thunderstorm', 'insurance claim',
+    'hail damage', 'storm damage', 'roof damage', 'hail storm',
 ]
 
 # GDELT has no state filter, so the state name goes in the query itself. Terms
 # are OR-ed and AND-ed with Colorado, which keeps Texas hail out of a Colorado
 # report — the same brand operates there, and mixing the two would be worse
 # than returning nothing.
-_LOCALITY = ('Colorado OR "Fort Collins" OR Greeley OR Loveland OR '
-             '"Colorado Springs" OR Denver OR Windsor')
+#
+# Kept deliberately short: GDELT rejects a long query outright with "Your
+# query was too short or too long", and the full city list plus a full
+# keyword list blew straight past it. "Colorado" catches most in-state
+# coverage on its own, so only the two largest markets are named separately.
+_LOCALITY = 'Colorado OR Denver OR "Fort Collins"'
 
-# Colorado's sports teams dominate any query mentioning the state. Excluding
-# them is cheap and removes the bulk of what survives the phrase filter.
-_EXCLUDE = ['Broncos', 'Rockies', 'Nuggets', 'Avalanche', 'quarterback',
-            'playoff', 'touchdown', '"retractable roof"']
+# Colorado's sports teams dominate any query mentioning the state. Three
+# exclusions remove most of it; more would cost us the length budget.
+_EXCLUDE = ['Broncos', 'Rockies', 'Nuggets']
+
+# GDELT's limit is not published precisely. 250 is comfortably inside where it
+# started rejecting ours, and the guard below trims rather than 400s.
+MAX_QUERY_CHARS = 250
 
 
 def available():
@@ -53,11 +58,23 @@ def available():
 
 
 def _build_query(keywords=None, locality=None, exclude=None):
-    terms = ' OR '.join(f'"{k}"' if ' ' in k else k
-                        for k in (keywords or KEYWORDS))
+    """Assemble the query, dropping keywords until it fits GDELT's limit.
+
+    Trimming beats being rejected: a slightly narrower query returns articles,
+    an over-long one returns an HTML error page and the week loses the source
+    entirely. Keywords are ordered most-valuable-first for exactly this.
+    """
+    kws = list(keywords or KEYWORDS)
     negations = ' '.join(f'-{t}' for t in (_EXCLUDE if exclude is None else exclude))
-    q = f'({terms}) AND ({locality or _LOCALITY}) sourcelang:english'
-    return f'{q} {negations}'.strip()
+    loc = locality or _LOCALITY
+
+    while kws:
+        terms = ' OR '.join(f'"{k}"' if ' ' in k else k for k in kws)
+        q = f'({terms}) AND ({loc}) sourcelang:english {negations}'.strip()
+        if len(q) <= MAX_QUERY_CHARS or len(kws) == 1:
+            return q
+        kws.pop()      # drop the least important keyword and retry
+    return f'("hail damage") AND ({loc}) sourcelang:english'
 
 
 def _title_key(title):
@@ -186,5 +203,4 @@ def storm_events(days=30, limit=25):
     the honesty rules otherwise forbid asserting.
     """
     return pull(days=days, limit=limit,
-                keywords=['hail', 'hailstorm', 'storm damage', 'severe storm',
-                          'wind damage'])
+                keywords=['hail damage', 'hail storm', 'severe storm'])

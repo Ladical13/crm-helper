@@ -108,11 +108,28 @@ def test_gdelt_query_excludes_colorado_sports():
     stadium roofs."""
     from agents.content.sources import news_gdelt
     q = news_gdelt._build_query()
-    for team in ('-Broncos', '-Rockies', '-Nuggets', '-Avalanche'):
+    for team in ('-Broncos', '-Rockies', '-Nuggets'):
         assert team in q
     # Two-word domain phrases, not bare words.
     assert '"hail damage"' in q
     assert ' roof OR' not in q and '(roof OR' not in q
+
+
+def test_gdelt_query_stays_inside_the_length_limit():
+    """GDELT rejects a long query outright — "Your query was too short or too
+    long" — and the week loses the source. Hit for real when the keyword list
+    and the full city list were both long."""
+    from agents.content.sources import news_gdelt
+    assert len(news_gdelt._build_query()) <= news_gdelt.MAX_QUERY_CHARS
+    assert len(news_gdelt._build_query(
+        keywords=news_gdelt.KEYWORDS + ['a very long extra phrase'] * 20
+    )) <= news_gdelt.MAX_QUERY_CHARS
+
+
+def test_gdelt_trims_keywords_rather_than_dropping_the_query():
+    from agents.content.sources import news_gdelt
+    q = news_gdelt._build_query(keywords=['hail damage'] + [f'filler {i}' for i in range(30)])
+    assert '"hail damage"' in q, 'the most valuable keyword must survive trimming'
 
 
 def test_gdelt_topics_carry_their_source_and_citation(monkeypatch):
