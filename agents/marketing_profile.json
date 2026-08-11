@@ -1,0 +1,157 @@
+{
+  "_README": [
+    "The marketing team's source of truth: what we may say we do, where we say",
+    "we do it, who we say it to, and what we may never claim.",
+    "",
+    "VERSION CONTROL: this file lives in the REPO and is read from the repo by",
+    "config.load_marketing_profile(). It is deliberately NOT copied to",
+    "AGENTS_DATA_DIR. Volume-seeded config (price_book.json and friends) is",
+    "copied only when absent, so on a long-lived volume the repo copy goes inert",
+    "and editing it changes nothing in production. This file has the opposite",
+    "behaviour on purpose: edit here, commit, deploy, and it is live. Git log is",
+    "the change history.",
+    "",
+    "TO UPDATE: edit, bump `version`, set `last_reviewed` to today, commit.",
+    "`cd agents && pytest` fails if the shape is wrong. No process restart is",
+    "needed locally — the loader re-reads on every call.",
+    "",
+    "Sections marked \"volatile\": true are expected to churn and should be",
+    "reviewed on the cadence in `review`."
+  ],
+
+  "version": 2,
+  "last_reviewed": "2026-08-10",
+  "review": {
+    "cadence_days": 30,
+    "note": "phrases_to_avoid and provable_differentiators drive the review; the rest changes rarely."
+  },
+
+  "company": {
+    "name": "Project One Roofing",
+    "website": "https://projectoneroofingcolorado.com",
+    "website_domain": "projectoneroofingcolorado.com",
+    "website_note": "This profile is the COLORADO franchise. The EMAIL domain is still @projectoneroofing.com and is a separate thing — see portal/users.py EMAIL_DOMAIN.",
+    "sibling_sites": {
+      "rule": "Same brand, different franchise. NOT competitors, NOT ours, and NOT to be crawled, cited, compared against, or reported as a content gap. A tool that treats these as rivals is comparing us to ourselves; one that treats them as ours will write copy about a market we do not serve.",
+      "sites": [
+        {
+          "domain": "projectoneroofing.com",
+          "who": "Project One Roofing — Texas franchises (Tyler / Longview area)",
+          "note": "Live and independent. It is deliberately not redirected here, and must not be."
+        }
+      ]
+    }
+  },
+
+  "approved_services": {
+    "exhaustive": true,
+    "rule": "Marketing copy may only offer work named here. A service not on this list must not be implied, bundled, or teased, even if a competitor or a trending topic centers on it.",
+    "categories": [
+      {
+        "key": "roofing",
+        "label": "Roofing",
+        "types": ["shingle", "metal", "flat / low-slope"],
+        "segments": ["residential", "commercial"],
+        "note": "All flat roof work is in scope, residential and commercial alike."
+      },
+      {
+        "key": "windows",
+        "label": "Windows",
+        "types": [],
+        "segments": ["residential", "commercial"]
+      },
+      {
+        "key": "doors",
+        "label": "Doors",
+        "types": [],
+        "segments": ["residential", "commercial"]
+      },
+      {
+        "key": "siding",
+        "label": "Siding",
+        "types": [],
+        "segments": ["residential", "commercial"]
+      },
+      {
+        "key": "paint",
+        "label": "Paint",
+        "types": [],
+        "segments": ["residential", "commercial"]
+      }
+    ]
+  },
+
+  "service_area": {
+    "states": ["CO"],
+    "description": "All of Colorado east of the mountains.",
+    "boundary_note": "Eastern Colorado — the Front Range and the plains. Copy should not promise service on the Western Slope or in the mountain resort corridor.",
+    "priority_markets": [
+      {
+        "key": "northern_colorado",
+        "label": "Northern Colorado",
+        "examples": ["Fort Collins", "Loveland", "Greeley", "Windsor"]
+      },
+      {
+        "key": "colorado_springs",
+        "label": "Colorado Springs area",
+        "examples": ["Colorado Springs"]
+      }
+    ],
+    "open_question": "OPEN: 'east of the mountains' has not been pinned to a boundary. The existing rep territories in agents/config.py include Woodland Park (Teller) and Cañon City (Fremont), which sit in or against the foothills. Resolve before any copy names a town near the line; the examples above are the ones that are unambiguous.",
+    "cross_reference": "agents/config.py DEFAULT_SETTINGS.service_area_counties is a NARROWER list used only for ICP scoring boosts on B2B leads. It is not the marketing claimable area and the two are allowed to differ."
+  },
+
+  "target_customers": {
+    "exhaustive": false,
+    "rule": "A starting list, not a fence. A customer type absent from this list is not disqualified — treat an unlisted but plausible audience as in scope and flag it for a future addition here.",
+    "segments": [
+      { "key": "homeowner",         "label": "Homeowners",           "kind": "b2c" },
+      { "key": "property_manager",  "label": "Property managers",    "kind": "b2b" },
+      { "key": "hoa",               "label": "HOAs",                 "kind": "b2b" },
+      { "key": "commercial",        "label": "Commercial properties","kind": "b2b" },
+      { "key": "realtor",           "label": "Realtors",             "kind": "referral_partner" },
+      { "key": "insurance_agent",   "label": "Insurance agents",     "kind": "referral_partner" },
+      { "key": "mortgage_lender",   "label": "Mortgage lenders",     "kind": "referral_partner" },
+      { "key": "church",            "label": "Churches",             "kind": "b2b" },
+      { "key": "school",            "label": "Schools",              "kind": "b2b" }
+    ]
+  },
+
+  "phrases_to_avoid": {
+    "volatile": true,
+    "rule": "Case-insensitive whole-word match. A draft containing one of these must be rewritten, not shipped with the phrase softened.",
+    "note": "Expected to grow often. Add the reason when it is known — an entry with an empty reason is still enforced.",
+    "phrases": [
+      { "phrase": "free", "reason": "" }
+    ]
+  },
+
+  "provable_differentiators": {
+    "volatile": true,
+    "rule": "The ONLY claims of superiority marketing copy may make. This list is intentionally empty until each entry has evidence behind it. While it is empty, agents must write copy that makes no comparative or superiority claim at all — an empty list means 'none proven yet', never 'use your judgement'.",
+    "note": "Each entry carries its own proof, so a reviewer can check the claim without leaving this file. Enforced by test_every_differentiator_carries_its_proof.",
+    "entry_shape": {
+      "claim": "the sentence copy is allowed to assert",
+      "proof": "what backs it — a number, a document, a source we can point at",
+      "verified_on": "YYYY-MM-DD"
+    },
+    "claims": []
+  },
+
+  "credentials": {
+    "licensing": {
+      "statement": "Licensed in all local jurisdictions we serve.",
+      "note": "Stated as a blanket claim by the company. Per-jurisdiction licence numbers are not tracked here; the estimator's jurisdictions.json is the permit-side reference and is a separate concern."
+    },
+    "manufacturer_accreditations": [
+      { "key": "iko",         "label": "IKO" },
+      { "key": "certainteed", "label": "CertainTeed" },
+      { "key": "carlisle",    "label": "Carlisle" },
+      { "key": "gaf",         "label": "GAF" }
+    ],
+    "certifications": [
+      { "key": "fortified_roofing", "label": "Fortified Roofing Certified" }
+    ],
+    "rule": "Name only the accreditations listed here, spelled as written. Do not upgrade an accreditation into a superlative (e.g. a manufacturer credential is not 'the highest certification available') unless that upgrade is listed under provable_differentiators with proof."
+  }
+}

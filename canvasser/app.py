@@ -493,7 +493,7 @@ def geocode():
     try:
         r = http.get('https://nominatim.openstreetmap.org/search',
                      params={'q': q, 'format': 'json', 'limit': 3, 'countrycodes': 'us'},
-                     headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofing.com)'},
+                     headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'},
                      timeout=10)
         r.raise_for_status()
         results = [{'display_name': x['display_name'],
@@ -515,7 +515,7 @@ def reverse_geocode():
     try:
         r = http.get('https://nominatim.openstreetmap.org/reverse',
                      params={'lat': lat, 'lon': lng, 'format': 'json', 'zoom': 18},
-                     headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofing.com)'},
+                     headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'},
                      timeout=10)
         r.raise_for_status()
         data = r.json()
@@ -553,7 +553,7 @@ def hail_at_address():
         try:
             r = http.get('https://nominatim.openstreetmap.org/search',
                          params={'q': q, 'format': 'json', 'limit': 1, 'countrycodes': 'us'},
-                         headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofing.com)'},
+                         headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'},
                          timeout=10)
             r.raise_for_status()
             hits = r.json()

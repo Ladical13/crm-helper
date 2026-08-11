@@ -67,6 +67,26 @@ def build():
 application = build()
 
 
+def _start_scheduler():
+    """Start the Nimbus weekly job runner, if it is switched on.
+
+    Opt-in via ``NIMBUS_SCHEDULER=1`` so importing this module — which the
+    test suite does — never starts background work by surprise. Gunicorn runs
+    two workers and each will call this; the scheduler's job claim is atomic,
+    so exactly one of them runs any given job.
+    """
+    try:
+        from agents import scheduler
+        if scheduler.start():
+            print('[nimbus] weekly scheduler started')
+    except Exception as e:                                       # noqa: BLE001
+        # A scheduler that will not start must never stop the site serving.
+        print(f'[nimbus] scheduler did not start: {e}')
+
+
+_start_scheduler()
+
+
 if __name__ == '__main__':
     # Local dev: `python -m portal.wsgi`. `flask run` cannot serve this —
     # DispatcherMiddleware is a plain WSGI callable, not a Flask app.

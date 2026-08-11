@@ -14,6 +14,13 @@ pymupdf>=1.24
 # Estimator: Postgres backend for estimates when DATABASE_URL is set.
 psycopg[binary]>=3.1
 
+# Nimbus marketing connections: signs the service-account JWT for the
+# read-only GA4 and Search Console probes. Google Business Profile uses a
+# plain OAuth refresh-token exchange over `requests` and needs nothing extra.
+# agents/connections.py imports this optionally, so a missing install shows up
+# as "not connected" on the dashboard rather than a boot failure.
+google-auth>=2.28
+
 # Nimbus (AI agents): only stdlib + `requests` are required at runtime; the
 # Reddit / YouTube / Google Trends listeners are wired as optional and pull
 # these in only when a caller sets the corresponding API key env var.

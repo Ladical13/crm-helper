@@ -94,6 +94,53 @@ def save_settings(patch):
     return settings
 
 
+# ── Marketing profile ────────────────────────────────────────────────────────
+# What the marketing team may claim: approved services, service area, target
+# customers, banned phrases, proven differentiators, credentials.
+
+def marketing_profile_path():
+    """The REPO copy, deliberately — not ``data_dir()``.
+
+    Every other config file here lives on the volume so a manager can edit it
+    from the dashboard. This one is the opposite: it is version-controlled, so
+    git log is its change history and a review is a diff. Seeding it onto the
+    volume would recreate the ``price_book.json`` trap, where the repo copy is
+    only ever copied when absent and editing it stops changing anything.
+    """
+    return os.path.join(HERE, 'marketing_profile.json')
+
+
+def load_marketing_profile():
+    """Read the profile fresh. Raises if it is missing or malformed.
+
+    Failing loud is the point. An agent that silently got ``{}`` here would
+    have no banned phrases and no approved-service list, and would happily
+    write copy offering work we don't do. Re-read on every call so a local
+    edit takes effect without a restart.
+    """
+    path = marketing_profile_path()
+    try:
+        with open(path, encoding='utf-8') as f:
+            profile = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f'marketing profile missing at {path} — it is version-controlled '
+            f'and must be present; agents refuse to write copy without it')
+    except ValueError as e:
+        raise ValueError(f'marketing profile at {path} is not valid JSON: {e}')
+    if not isinstance(profile, dict):
+        raise ValueError(f'marketing profile at {path} must be a JSON object')
+    return profile
+
+
+def banned_phrases():
+    """Just the phrases, lowercased — the shape a copy check actually wants."""
+    section = load_marketing_profile().get('phrases_to_avoid') or {}
+    return [str(p.get('phrase', '')).strip().lower()
+            for p in (section.get('phrases') or [])
+            if str(p.get('phrase', '')).strip()]
+
+
 DEFAULT_TERRITORIES = {
     'avery': {
         'display_name': 'Avery Schroeder',
@@ -225,6 +272,84 @@ def _init_cache_db(conn):
         );
         CREATE INDEX IF NOT EXISTS drafts_status_idx ON content_drafts(status, created_at DESC);
 
+        -- ── Local SEO strategist ──────────────────────────────────────────
+        -- Public-research only: no owned analytics feed these tables, so
+        -- every recommendation carries the basis of its evidence and nothing
+        -- claims a measured number. See agents/seo/.
+        CREATE TABLE IF NOT EXISTS seo_runs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at    TEXT NOT NULL,
+            finished_at   TEXT DEFAULT '',
+            status        TEXT NOT NULL DEFAULT 'running',  -- running|ok|error
+            mode          TEXT NOT NULL DEFAULT 'live',     -- live|dry_run
+            pages_crawled INTEGER DEFAULT 0,
+            recs_created  INTEGER DEFAULT 0,
+            cost_usd      REAL DEFAULT 0,
+            error         TEXT DEFAULT '',
+            summary       TEXT DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS seo_runs_idx ON seo_runs(started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS seo_reports (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id     INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            week_of    TEXT NOT NULL,
+            markdown   TEXT NOT NULL,
+            stats      TEXT DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS seo_reports_idx ON seo_reports(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS seo_recommendations (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id         INTEGER NOT NULL,
+            created_at     TEXT NOT NULL,
+            category       TEXT NOT NULL,
+            city           TEXT DEFAULT '',
+            service        TEXT DEFAULT '',
+            intent         TEXT DEFAULT '',   -- the customer question / search intent
+            action         TEXT NOT NULL,
+            rationale      TEXT DEFAULT '',
+            evidence       TEXT DEFAULT '[]', -- JSON list of URLs
+            confidence     TEXT DEFAULT 'low',        -- high|medium|low
+            evidence_basis TEXT DEFAULT 'public_research',  -- public_research|owned_data
+            review_notes   TEXT DEFAULT '',   -- what a human must check before acting
+            score          REAL DEFAULT 0,
+            status         TEXT DEFAULT 'pending',    -- pending|approved|rejected
+            reviewed_by    TEXT DEFAULT '',
+            reviewed_at    TEXT DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS seo_recs_idx
+            ON seo_recommendations(status, score DESC, id DESC);
+
+        -- Content briefs. Generated only from an APPROVED recommendation —
+        -- the strategist decides what is worth doing, the brief decides what
+        -- the page must contain, and only then would anything write copy.
+        CREATE TABLE IF NOT EXISTS seo_briefs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            rec_id        INTEGER NOT NULL,
+            created_at    TEXT NOT NULL,
+            topic         TEXT NOT NULL,
+            page_type     TEXT NOT NULL,
+            city          TEXT DEFAULT '',
+            service       TEXT DEFAULT '',
+            search_intent TEXT DEFAULT '',
+            brief_json    TEXT NOT NULL,
+            status        TEXT DEFAULT 'draft'
+        );
+        CREATE INDEX IF NOT EXISTS seo_briefs_idx ON seo_briefs(created_at DESC);
+
+        -- Crawl cache. Stores EXTRACTED fields, never raw HTML: the whole
+        -- point is the derived metadata, and a page body per URL would bloat
+        -- the Nimbus DB for no gain.
+        CREATE TABLE IF NOT EXISTS seo_page_cache (
+            url         TEXT PRIMARY KEY,
+            fetched_at  TEXT NOT NULL,
+            status_code INTEGER DEFAULT 0,
+            extracted   TEXT DEFAULT '{}',
+            error       TEXT DEFAULT ''
+        );
+
         CREATE TABLE IF NOT EXISTS trending_topics (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             captured_at  TEXT NOT NULL,
@@ -234,8 +359,32 @@ def _init_cache_db(conn):
             summary      TEXT DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS topics_captured_idx ON trending_topics(captured_at DESC);
+        -- Scheduled jobs. One row per job; the claim is atomic so two gunicorn
+        -- workers cannot both run the weekly report.
+        CREATE TABLE IF NOT EXISTS scheduled_jobs (
+            name         TEXT PRIMARY KEY,
+            weekday      INTEGER NOT NULL DEFAULT 0,   -- 0 = Monday
+            hour_utc     INTEGER NOT NULL DEFAULT 6,
+            enabled      INTEGER NOT NULL DEFAULT 1,
+            last_run_at  TEXT DEFAULT '',
+            last_status  TEXT DEFAULT '',
+            last_summary TEXT DEFAULT ''
+        );
     ''')
+    # Columns added after the tables shipped. Live volumes already have the
+    # tables, so these are the only way the new fields arrive.
+    _add_column_if_missing(conn, 'content_drafts', 'package_id', "TEXT DEFAULT ''")
+    _add_column_if_missing(conn, 'content_drafts', 'source', "TEXT DEFAULT ''")
+    _add_column_if_missing(conn, 'content_drafts', 'review_notes', "TEXT DEFAULT ''")
     conn.commit()
+
+
+def _add_column_if_missing(conn, table, column, ddl):
+    """SQLite has no ADD COLUMN IF NOT EXISTS, and the schema above only ever
+    CREATEs. This is how an existing table on a live volume gains a column."""
+    cols = {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}
+    if column not in cols:
+        conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}')
 
 
 def now_iso():
