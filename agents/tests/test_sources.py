@@ -132,6 +132,61 @@ def test_gdelt_trims_keywords_rather_than_dropping_the_query():
     assert '"hail damage"' in q, 'the most valuable keyword must survive trimming'
 
 
+def test_gdelt_drops_out_of_state_mentions(monkeypatch):
+    """GDELT matches the article body, so a national roundup listing every
+    state arrives looking local. A live run returned Arkansas homeowners,
+    Kansas City, Georgia, and a Writer's Digest piece on fiction writing."""
+    from agents.content.sources import news_gdelt
+    body = {'articles': [
+        {'url': 'https://a/1', 'title': 'Hail damage hits Fort Collins homes',
+         'domain': 'random.example', 'seendate': '20260810T120000Z'},
+        {'url': 'https://a/2', 'title': 'Power outages follow 5.6 inch hail',
+         'domain': 'coloradodaily.com', 'seendate': '20260810T120000Z'},
+        {'url': 'https://a/3', 'title': 'Arkansas homeowners insurance costs rise',
+         'domain': 'liveinsurancenews.com', 'seendate': '20260810T120000Z'},
+        {'url': 'https://a/4', 'title': 'How to write morally grey characters',
+         'domain': 'writersdigest.com', 'seendate': '20260810T120000Z'},
+    ]}
+    monkeypatch.setattr(news_gdelt, 'requests', type('R', (), {
+        'get': staticmethod(lambda *a, **k: FakeResp(body))}))
+    out = news_gdelt.pull()
+    titles = [a['title'] for a in out['articles']]
+    assert len(titles) == 2, titles
+    assert any('Fort Collins' in t for t in titles), 'place in the headline'
+    assert any('5.6 inch hail' in t for t in titles), 'Colorado outlet'
+    assert out['filtered_out'] == 2
+    assert 'filtered' in out['note'], 'a silent filter is undebuggable'
+
+
+def test_colorado_city_texas_is_not_our_colorado():
+    """The live feed returned "Storm damage leaves Colorado City residents"
+    from a station in Abilene. Colorado City is in TEXAS — the sibling
+    franchise's patch, and the exact confusion the profile exists to prevent."""
+    from agents.content.sources import news_gdelt
+    assert news_gdelt.looks_colorado(
+        {'title': 'Storm damage leaves Colorado City residents without power',
+         'domain': 'ktxs.com'}) is False
+
+
+def test_western_colorado_is_outside_the_service_area():
+    """Real Colorado, wrong side of the mountains. The profile says east."""
+    from agents.content.sources import news_gdelt
+    assert news_gdelt.looks_colorado(
+        {'title': 'I-70 closed in Western Colorado after mudslide',
+         'domain': 'travelerstoday.com'}) is False
+    assert news_gdelt.looks_colorado(
+        {'title': 'Hail damage across Fort Collins', 'domain': 'x.example'}) is True
+
+
+def test_gdelt_keeps_a_local_story_whose_headline_omits_the_state():
+    """The single most relevant live result was a Colorado hail story whose
+    headline never said "Colorado" — the outlet is what identified it."""
+    from agents.content.sources import news_gdelt
+    assert news_gdelt.looks_colorado(
+        {'title': 'Power outages, downed trees follow 5.6 inch hail',
+         'domain': 'coloradodaily.com'}) is True
+
+
 def test_gdelt_topics_carry_their_source_and_citation(monkeypatch):
     from agents.content.sources import news_gdelt
     monkeypatch.setattr(news_gdelt, 'requests', type('R', (), {

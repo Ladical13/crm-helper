@@ -77,6 +77,51 @@ def _build_query(keywords=None, locality=None, exclude=None):
     return f'("hail damage") AND ({loc}) sourcelang:english'
 
 
+# GDELT matches the whole article body, so a national insurance roundup that
+# lists every state matches "Colorado" and arrives looking local. A live run
+# returned Arkansas homeowners, Kansas City, Georgia and a Writer's Digest
+# piece on morally grey characters. Two cheap signals separate real local
+# coverage from that: the headline names a Colorado place, or the outlet is a
+# Colorado one.
+_CO_PLACES = (
+    'colorado', 'denver', 'fort collins', 'greeley', 'loveland', 'boulder',
+    'aurora', 'longmont', 'windsor', 'pueblo', 'front range', 'larimer',
+    'weld county', 'castle rock', 'lakewood', 'thornton', 'westminster',
+)
+_CO_DOMAINS = (
+    'colorado', 'denver', 'coloradoan', 'gazette.com', '9news', 'cpr.org',
+    'summitdaily', 'aspentimes', 'steamboatpilot', 'greeleytribune',
+    'reporterherald', 'timescall', 'dailycamera', 'westword', 'krdo',
+    'kktv', 'fox21news', 'kdvr', 'thedenverchannel', 'coloradopolitics',
+    'canoncitydailyrecord', 'ourcoloradonews',
+)
+
+
+# Places that contain "Colorado" and are not this Colorado. The live feed
+# returned "Storm damage leaves Colorado City residents..." from a station in
+# Abilene — Colorado City is in TEXAS, which is the sibling franchise's patch
+# and the exact confusion this whole profile is meant to prevent.
+#
+# Western Colorado is real Colorado but outside our service area: the profile
+# says east of the mountains, so a Western Slope mudslide is not our story.
+_CO_FALSE_FRIENDS = (
+    'colorado city',        # Texas (and Arizona)
+    'colorado river',       # mostly Arizona / California / Texas
+    'western colorado', 'western slope', 'grand junction', 'durango',
+)
+
+
+def looks_colorado(article):
+    """True when this is plausibly *our* Colorado rather than a mention."""
+    title = (article.get('title') or '').lower()
+    domain = (article.get('domain') or '').lower()
+    if any(f in title for f in _CO_FALSE_FRIENDS):
+        return False
+    if any(p in title for p in _CO_PLACES):
+        return True
+    return any(d in domain for d in _CO_DOMAINS)
+
+
 def _title_key(title):
     """Normalise a headline so syndicated copies collapse to one.
 
@@ -171,9 +216,19 @@ def pull(days=7, limit=40, keywords=None):
         }
         by_title[key] = record
         articles.append(record)
-    note = (f'{len(articles)} article(s) in the last {days} days'
+
+    # Drop mentions-of-Colorado that are not Colorado stories, and say how
+    # many went — a filter that silently halves the feed is a filter nobody
+    # can debug.
+    kept = [a for a in articles if looks_colorado(a)]
+    filtered = len(articles) - len(kept)
+    articles = kept
+    note = (f'{len(articles)} Colorado article(s) in the last {days} days'
             if articles else f'no Colorado matches in the last {days} days')
-    return {'articles': articles, 'available': True, 'note': note}
+    if filtered:
+        note += f' ({filtered} out-of-state mention(s) filtered)'
+    return {'articles': articles, 'available': True, 'note': note,
+            'filtered_out': filtered}
 
 
 def as_topics(result):
