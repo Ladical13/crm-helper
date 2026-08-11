@@ -38,7 +38,7 @@ def week_of(when=None):
     return monday.strftime('%Y-%m-%d')
 
 
-def _blocked_section(a, title, needs, would_show):
+def _blocked_section(a, title, needs, would_show, extra=''):
     a(f'## {title}')
     a('')
     a(f'> **Not available — {needs}.**')
@@ -47,13 +47,82 @@ def _blocked_section(a, title, needs, would_show):
       f'public research: no amount of crawling or web search reveals what '
       f'people searched, what we ranked for, or whether that changed. '
       f'Anything printed here without that data would be invention.')
+    if extra:
+        a('>')
+        a(f'> {extra}')
     a('')
     a('See `agents/MARKETING_PLAN.md` for what it would take to unblock.')
     a('')
 
 
+def _bing_section(a, bing):
+    """The one section allowed to state numbers — because they are measured.
+
+    Every figure is labelled Bing. A reader taking a Bing impression count for
+    a Google one has been misled just as surely as by an invented number.
+    """
+    from .bing import winners_and_decliners
+    split = winners_and_decliners(bing['queries'])
+
+    a('## 2. Search performance — **Bing only**')
+    a('')
+    a(f'> These are **measured** figures from {bing.get("source", "Bing")}, and '
+      f'the only real search data in this report. **They are Bing, not '
+      f'Google.** Bing is a minority of search, so treat this as a directional '
+      f'read on the same queries rather than a picture of total demand. '
+      f'Google Search Console remains owner-gated.')
+    a('')
+
+    a('**Queries earning clicks**')
+    a('')
+    if split['earning_clicks']:
+        a('| Query | Impressions | Clicks | Avg position |')
+        a('|---|---|---|---|')
+        for q in split['earning_clicks']:
+            a(f'| {q["query"]} | {q["impressions"]} | {q["clicks"]} '
+              f'| {q["avg_position"]} |')
+    else:
+        a('_No query earned a click in this window._')
+    a('')
+
+    a('**Seen but not clicked** — impressions with no clicks. Usually a title '
+      'or description problem rather than a ranking one, and the cheapest '
+      'thing on this page to fix.')
+    a('')
+    if split['seen_not_clicked']:
+        a('| Query | Impressions | Avg position |')
+        a('|---|---|---|')
+        for q in split['seen_not_clicked']:
+            a(f'| {q["query"]} | {q["impressions"]} | {q["avg_position"]} |')
+    else:
+        a('_Nothing with impressions and no clicks._')
+    a('')
+
+    if bing.get('pages'):
+        a('**Pages by impressions (Bing)**')
+        a('')
+        a('| Page | Impressions | Clicks |')
+        a('|---|---|---|')
+        for p in bing['pages'][:10]:
+            a(f'| {p["url"]} | {p["impressions"]} | {p["clicks"]} |')
+        a('')
+
+    a('> One caveat on "winners and decliners": Bing\'s basic API returns a '
+      'current window, not a period-over-period delta. So this is *what earns '
+      'clicks* versus *what is seen and ignored* — not a trend. Calling it a '
+      'trend would be the same overclaim this report exists to avoid.')
+    a('')
+
+    a('## 3. Pages losing visibility')
+    a('')
+    a('> **Not available.** Needs a period-over-period comparison, which needs '
+      'Search Console — Bing\'s basic API does not return deltas. The Bing page '
+      'table above is the closest available substitute.')
+    a('')
+
+
 def render(run, crawl_result, recs, dropped, research_notes, opportunities=None,
-           content_plan=None):
+           content_plan=None, bing_data=None):
     """Return the Markdown body of the weekly report."""
     lines = []
     a = lines.append
@@ -79,6 +148,8 @@ def render(run, crawl_result, recs, dropped, research_notes, opportunities=None,
     a(f'| Sitemap | {crawl_result.get("sitemap_note", "—")} |')
     a(f'| robots.txt | {crawl_result.get("robots_note", "—")} |')
     a(f'| Public web research | {research_notes or "—"} |')
+    _bing = bing_data or {}
+    a(f'| Bing Webmaster Tools | {"**measured data** — " + _bing.get("note", "") if _bing.get("available") else "not connected"} |')
     a('| Google Search Console | **not available** — owner access required |')
     a('| Google Analytics 4 | **not available** — owner access required |')
     a('')
@@ -113,17 +184,26 @@ def render(run, crawl_result, recs, dropped, research_notes, opportunities=None,
           'usable, or the spend cap was reached. Check the sources table above._')
         a('')
 
-    # ── 2 & 3. The blocked sections ──
-    _blocked_section(
-        a, '2. Search Console winners and decliners',
-        'requires Google Search Console',
-        'which queries and pages gained or lost clicks, impressions and average '
-        'position against the previous period.')
-    _blocked_section(
-        a, '3. Pages losing visibility',
-        'requires Google Search Console',
-        'pages whose impressions or positions declined, which is the earliest '
-        'warning that something has gone wrong on a page that used to work.')
+    # ── 2 & 3. Measured search data, where any exists ──
+    bing = bing_data or {}
+    if bing.get('available') and bing.get('queries'):
+        _bing_section(a, bing)
+    else:
+        _blocked_section(
+            a, '2. Search Console winners and decliners',
+            'requires Google Search Console',
+            'which queries and pages gained or lost clicks, impressions and '
+            'average position against the previous period.',
+            extra=('Bing Webmaster Tools would fill part of this and needs '
+                   'nobody\'s permission — verification is independent of '
+                   'Google. '
+                   + (f'Currently: {bing.get("note")}.' if bing.get('note') else '')))
+        _blocked_section(
+            a, '3. Pages losing visibility',
+            'requires Google Search Console',
+            'pages whose impressions or positions declined, which is the '
+            'earliest warning that something has gone wrong on a page that '
+            'used to work.')
 
     # ── 4. Technical ──
     tech = [r for r in recs if r['category'] == 'technical_website_fix']

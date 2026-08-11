@@ -359,8 +359,32 @@ def _init_cache_db(conn):
             summary      TEXT DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS topics_captured_idx ON trending_topics(captured_at DESC);
+        -- Scheduled jobs. One row per job; the claim is atomic so two gunicorn
+        -- workers cannot both run the weekly report.
+        CREATE TABLE IF NOT EXISTS scheduled_jobs (
+            name         TEXT PRIMARY KEY,
+            weekday      INTEGER NOT NULL DEFAULT 0,   -- 0 = Monday
+            hour_utc     INTEGER NOT NULL DEFAULT 6,
+            enabled      INTEGER NOT NULL DEFAULT 1,
+            last_run_at  TEXT DEFAULT '',
+            last_status  TEXT DEFAULT '',
+            last_summary TEXT DEFAULT ''
+        );
     ''')
+    # Columns added after the tables shipped. Live volumes already have the
+    # tables, so these are the only way the new fields arrive.
+    _add_column_if_missing(conn, 'content_drafts', 'package_id', "TEXT DEFAULT ''")
+    _add_column_if_missing(conn, 'content_drafts', 'source', "TEXT DEFAULT ''")
+    _add_column_if_missing(conn, 'content_drafts', 'review_notes', "TEXT DEFAULT ''")
     conn.commit()
+
+
+def _add_column_if_missing(conn, table, column, ddl):
+    """SQLite has no ADD COLUMN IF NOT EXISTS, and the schema above only ever
+    CREATEs. This is how an existing table on a live volume gains a column."""
+    cols = {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}
+    if column not in cols:
+        conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}')
 
 
 def now_iso():

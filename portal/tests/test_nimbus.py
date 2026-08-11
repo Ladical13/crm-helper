@@ -32,7 +32,9 @@ def test_reps_get_403_on_every_nimbus_route(rep, tmp_path_factory, monkeypatch):
                  '/nimbus/api/content/drafts', '/nimbus/api/connections',
                  '/nimbus/marketing/connections', '/nimbus/marketing/seo',
                  '/nimbus/api/seo/runs', '/nimbus/api/seo/recommendations',
-                 '/nimbus/api/seo/report', '/nimbus/api/seo/result'):
+                 '/nimbus/api/seo/report', '/nimbus/api/seo/result',
+                 '/nimbus/marketing/social', '/nimbus/api/social/drafts',
+                 '/nimbus/api/schedule'):
         r = rep.get(path)
         assert r.status_code == 403, path
 
@@ -227,6 +229,62 @@ def test_the_portal_service_worker_never_caches_nimbus(client):
         'the portal SW will cache Nimbus API responses and serve stale status'
     # '/api/' alone does not cover it — that is the whole trap.
     assert '/nimbus/api/'.startswith('/api/') is False
+
+
+# ── Social posts and the scheduler ───────────────────────────────────────────
+
+def test_social_drafts_start_empty(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    assert admin.get('/nimbus/api/social/drafts').get_json() == []
+
+
+def test_marking_a_draft_posted_does_not_publish(admin, tmp_path_factory,
+                                                 monkeypatch):
+    """"Posted" records that a HUMAN posted it. Nimbus publishes nothing, and
+    the response says so explicitly so nobody assumes otherwise."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    from agents import config
+    with config.get_cache_db() as db:
+        cur = db.execute(
+            "INSERT INTO content_drafts (created_at, platform, topic, draft_text) "
+            "VALUES ('2026-08-11T00:00:00Z', 'facebook', 't', 'body')")
+        db.commit()
+        draft_id = cur.lastrowid
+    r = admin.post(f'/nimbus/api/social/drafts/{draft_id}', json={'status': 'posted'})
+    assert r.status_code == 200
+    assert r.get_json()['published'] is False
+
+
+def test_social_review_rejects_an_unknown_status(admin, tmp_path_factory,
+                                                 monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    r = admin.post('/nimbus/api/social/drafts/1', json={'status': 'publish'})
+    assert r.status_code == 400
+
+
+def test_schedule_lists_the_weekly_jobs(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    body = admin.get('/nimbus/api/schedule').get_json()
+    names = {j['name'] for j in body['jobs']}
+    assert {'seo_weekly', 'content_listen', 'social_weekly'} <= names
+    # The process flag is separate from a job being enabled.
+    assert 'enabled' in body
+
+
+def test_a_job_can_be_switched_off(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    r = admin.post('/nimbus/api/schedule/seo_weekly', json={'enabled': False})
+    assert r.status_code == 200
+    job = next(j for j in r.get_json()['jobs'] if j['name'] == 'seo_weekly')
+    assert job['enabled'] == 0
+    assert admin.post('/nimbus/api/schedule/nope', json={'enabled': True}).status_code == 404
+
+
+def test_importing_the_app_does_not_start_the_scheduler(monkeypatch):
+    """The test suite imports portal.wsgi. Background work must not begin."""
+    from agents import scheduler
+    monkeypatch.delenv('NIMBUS_SCHEDULER', raising=False)
+    assert scheduler.enabled() is False
 
 
 def test_anonymous_gets_401_not_403(client, tmp_path_factory, monkeypatch):

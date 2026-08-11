@@ -16,6 +16,7 @@ into a code comment.
 |---|---|---|
 | Website / sitemap | Active | ✅ Connected, no credential needed |
 | **GDELT** — Colorado news + storms | Active | ✅ Connected, no credential needed |
+| **Bing Webmaster Tools** | Active | Needs two env vars — **the only measured search data we can own** |
 | **Reddit** — customer language | Active | Needs two env vars (below) |
 | Google Business Profile | Active | Pending Google's API access approval |
 | Google Search Console | **Optional — owner access required** | Franchise-owned; we hold no role |
@@ -36,6 +37,33 @@ Read-only, application-only OAuth. Nothing is ever posted, voted, or commented
 from any account. **Reddit content is never reproduced in published copy** —
 findings tell us what to write about; we write it ourselves. That rule is
 carried into every content brief built from a Reddit citation.
+
+### Bing Webmaster Tools — the one that un-blinds search
+
+Search Console is owner-gated at the franchise. **Bing is not** — verification
+is independent of Google, so a meta tag through the CMS makes the property
+ours outright, with nobody outside the Colorado team involved.
+
+1. **bing.com/webmasters** → Add site → `https://projectoneroofingcolorado.com`
+2. Verify with the **meta tag** option, pasted into the site `<head>` via the CMS
+3. **Settings → API access → API Key** → generate
+
+| Variable | Value |
+|---|---|
+| `BING_WEBMASTER_API_KEY` | The generated key |
+| `BING_SITE_URL` | The site exactly as Bing lists it |
+
+Once connected, the weekly report gains a **Search performance (Bing only)**
+section with real queries, impressions, clicks and average position — the only
+measured numbers in the whole system. Every figure is labelled Bing and never
+presented as "search": Bing is a minority of search, and a reader who takes a
+Bing impression count for a Google one has been misled just as surely as by an
+invented number.
+
+One honest limit: Bing's basic API returns a current window, not a
+period-over-period delta, so the report shows *what earns clicks* versus *what
+is seen and ignored* rather than a trend. "Pages losing visibility" still needs
+Search Console.
 
 ### GDELT — nothing to configure
 
@@ -122,6 +150,16 @@ do not move it into the repo, do not paste it into a chat.
 | `GBP_ACCOUNT_ID` | Business Profile (optional) | No |
 | `GBP_LOCATION_ID` | Business Profile (optional) | No |
 | `MARKETING_SITE_URL` | Website (optional) | No |
+| `BING_WEBMASTER_API_KEY` | Bing Webmaster Tools | Yes |
+| `BING_SITE_URL` | Bing Webmaster Tools | No |
+| `REDDIT_CLIENT_ID` | Reddit | Yes |
+| `REDDIT_CLIENT_SECRET` | Reddit | Yes |
+| `NIMBUS_SCHEDULER` | Set to `1` to run the weekly jobs | No |
+
+**`NIMBUS_SCHEDULER=1` is what makes "weekly" mean weekly.** Without it every
+run is a button somebody has to remember to press. It is opt-in rather than
+default-on so that importing the app — which the test suite does — never
+starts background work by surprise.
 
 `MARKETING_SITE_URL` defaults to the website in `marketing_profile.json`, so
 you only need it if the two should differ.

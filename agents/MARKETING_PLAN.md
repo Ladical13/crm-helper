@@ -139,9 +139,25 @@ Agreed sequence, with where each stands.
 |---|---|---|
 | 1 | **SEO Strategist** | ✅ Built. Weekly report + ranked queue |
 | 2 | **Content Brief bot** | ✅ Built. Approved recommendation → structured brief |
-| 3 | **Draft Creator** | Not started — deliberately. A brief must come first |
-| 4 | **Google Business Profile + reputation** | ⛔ Blocked on Google's API approval |
-| 5 | **Scorecard** | ⛔ Blocked on the franchise CRM answers. Last by design |
+| 3 | **Social + GBP post bot** | ✅ Built. Facebook, Instagram, LinkedIn, Business Profile — drafts only |
+| 4 | **Weekly scheduler** | ✅ Built. `NIMBUS_SCHEDULER=1` |
+| 5 | **Bing Webmaster Tools** | ✅ Built. Needs two env vars — real query data, no franchise involvement |
+| 6 | **Draft Creator (long-form pages)** | Not started. A brief must come first |
+| 7 | **GBP reputation** (reviews, replies, review requests) | ⛔ Blocked on Google's API approval |
+| 8 | **Scorecard** | ⛔ Blocked on the franchise CRM answers. Last by design |
+
+### On publishing
+
+The post bot writes; it never publishes. That is a decision, not a missing
+feature. Auto-posting to Facebook, Instagram or LinkedIn needs app review on
+each platform, and Business Profile needs the API approval still pending — but
+even with all four wired, posting without a person reading it first would
+abandon the one rule the whole system is built around. The handoff is a copy
+button and a link to the platform.
+
+Every post passes the same honesty guard as an SEO recommendation. A post
+claiming "the #1 roofer in Fort Collins" is the same fabrication as a report
+claiming it, and is rejected rather than softened.
 
 ### 4 — Google Business Profile and reputation (not built)
 

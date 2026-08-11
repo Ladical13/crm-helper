@@ -65,6 +65,7 @@ def _shell():
 @nimbus_bp.route('/marketing/drafts')
 @nimbus_bp.route('/marketing/connections')
 @nimbus_bp.route('/marketing/seo')
+@nimbus_bp.route('/marketing/social')
 @nimbus_bp.route('/settings')
 def shell(**_kw):
     return _shell()
@@ -485,6 +486,85 @@ def content_listen():
 
     threading.Thread(target=wrapped, daemon=True).start()
     return jsonify({'started': True}), 202
+
+
+@nimbus_bp.route('/api/social/drafts', methods=['GET'])
+def social_drafts():
+    from agents.content import posts
+    return jsonify(posts.list_drafts(status=request.args.get('status', 'draft')))
+
+
+@nimbus_bp.route('/api/social/run', methods=['POST'])
+def social_run():
+    """Write a week's post packages. Drafts only — nothing is published."""
+    data = request.get_json(force=True, silent=True) or {}
+    dry_run = bool(data.get('dry_run'))
+    max_topics = int(data.get('max_topics') or 2)
+
+    with _seo_lock:
+        if _seo_active['running']:
+            return jsonify({'error': 'a run is already in progress'}), 409
+        _seo_active.update({'running': True, 'stage': 'writing posts',
+                            'manifest': None})
+
+    def worker():
+        from agents.content import posts
+        try:
+            out = posts.weekly_run(max_topics=max_topics, dry_run=dry_run)
+            out['ok'] = True
+        except Exception as e:                                   # noqa: BLE001
+            out = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+        with _seo_lock:
+            _seo_active.update({'running': False, 'stage': 'done', 'manifest': out})
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({'started': True, 'dry_run': dry_run}), 202
+
+
+@nimbus_bp.route('/api/social/drafts/<int:draft_id>', methods=['POST'])
+def social_review(draft_id):
+    """Approve, reject, or mark posted. Marking posted records that a HUMAN
+    posted it — nothing here publishes anything."""
+    from agents import config
+    data = request.get_json(force=True, silent=True) or {}
+    status = data.get('status')
+    if status not in ('draft', 'approved', 'rejected', 'posted'):
+        return jsonify({'error': 'unknown status'}), 400
+    now = config.now_iso()
+    with config.get_cache_db() as db:
+        sets, params = ['status = ?'], [status]
+        if status == 'approved':
+            sets += ['approved_by = ?', 'approved_at = ?']
+            params += [session.get('username', ''), now]
+        if status == 'posted':
+            sets.append('posted_at = ?'); params.append(now)
+        if data.get('draft_text') is not None:
+            sets.append('draft_text = ?'); params.append(data['draft_text'])
+        params.append(draft_id)
+        cur = db.execute(
+            f'UPDATE content_drafts SET {", ".join(sets)} WHERE id = ?', params)
+        db.commit()
+        if not cur.rowcount:
+            return jsonify({'error': 'not found'}), 404
+    return jsonify({'ok': True, 'published': False,
+                    'note': 'recorded — Nimbus does not publish anything'})
+
+
+# ── Scheduler ────────────────────────────────────────────────────────────────
+
+@nimbus_bp.route('/api/schedule', methods=['GET'])
+def schedule_list():
+    from agents import scheduler
+    return jsonify({'enabled': scheduler.enabled(), 'jobs': scheduler.list_jobs()})
+
+
+@nimbus_bp.route('/api/schedule/<name>', methods=['POST'])
+def schedule_toggle(name):
+    from agents import scheduler
+    data = request.get_json(force=True, silent=True) or {}
+    if not scheduler.set_enabled(name, bool(data.get('enabled'))):
+        return jsonify({'error': 'unknown job'}), 404
+    return jsonify({'ok': True, 'jobs': scheduler.list_jobs()})
 
 
 @nimbus_bp.route('/api/content/drafts', methods=['GET'])

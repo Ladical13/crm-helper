@@ -371,6 +371,7 @@
     <a href="/nimbus/marketing/topics" data-route="/nimbus/marketing/topics">📈 Trending Topics</a>
     <a href="/nimbus/marketing/drafts" data-route="/nimbus/marketing/drafts">📝 Content Drafts</a>
     <a href="/nimbus/marketing/seo" data-route="/nimbus/marketing/seo">🔍 Local SEO</a>
+    <a href="/nimbus/marketing/social" data-route="/nimbus/marketing/social">📣 Social &amp; GBP</a>
     <a href="/nimbus/marketing/connections" data-route="/nimbus/marketing/connections">🔌 Connections</a>
     <a href="/nimbus/settings" data-route="/nimbus/settings">⚙️ Settings</a>
   </nav>
@@ -396,6 +397,7 @@ function route() {
   if (path.startsWith('/nimbus/marketing/drafts')) return renderDrafts();
   if (path.startsWith('/nimbus/marketing/connections')) return renderConnections();
   if (path.startsWith('/nimbus/marketing/seo')) return renderSeo();
+  if (path.startsWith('/nimbus/marketing/social')) return renderSocial();
   if (path.startsWith('/nimbus/settings'))          return renderSettings();
   if (path.startsWith('/nimbus/rep/'))              return renderRep(path.split('/').pop());
   return renderDashboard();
@@ -755,6 +757,145 @@ async function saveSettings() {
   });
   if (r.ok) { flash('Settings saved'); refreshSettings(); }
   else flash('Save failed', true);
+}
+
+/* ── social + Google Business Profile ──────────────────────────────────── */
+/* Draft-only. Nothing on this page publishes anything — the handoff is a copy
+   button and a link to the platform. */
+
+const PLAT = {
+  facebook:        {label: 'Facebook',       icon: 'f',  colour: '#1877f2'},
+  instagram:       {label: 'Instagram',      icon: '◎',  colour: '#e1306c'},
+  linkedin:        {label: 'LinkedIn',       icon: 'in', colour: '#0a66c2'},
+  google_business: {label: 'Business Profile', icon: 'G', colour: '#34a853'},
+};
+
+async function renderSocial() {
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="empty"><span class="spin"></span> loading</div>';
+  const [drafts, sched] = await Promise.all([
+    fetch(`${BASE}/api/social/drafts?status=draft`).then(r => r.json()).catch(() => []),
+    fetch(`${BASE}/api/schedule`).then(r => r.json()).catch(() => ({jobs: [], enabled: false})),
+  ]);
+
+  const byPkg = {};
+  drafts.forEach(d => { (byPkg[d.package_id || 'loose'] ||= []).push(d); });
+  const social = (sched.jobs || []).find(j => j.name === 'social_weekly');
+
+  main.innerHTML = `
+    <div class="ro-banner" style="background:rgba(56,189,248,.07);border-color:rgba(56,189,248,.3)">
+      📣 <span><b style="color:var(--accent-2)">Drafts only.</b> Nimbus writes
+      posts; it never publishes them. Copy the text, open the platform, and
+      post it yourself after reading it. Auto-posting would need app review on
+      each platform and a deliberate decision to stop having a person in the
+      loop.</span>
+    </div>
+
+    <div class="seo-bar">
+      <button onclick="startSocial(false)">Write this week's posts</button>
+      <button class="ghost" onclick="startSocial(true)">Dry run</button>
+      <span style="color:var(--dim2);font-size:12px">
+        ${social ? `scheduled: ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][social.weekday]}
+          ${String(social.hour_utc).padStart(2,'0')}:00 UTC ·
+          ${social.enabled ? 'on' : 'off'} ·
+          last: ${social.last_status || 'never'}` : ''}
+        ${sched.enabled ? '' : ' · scheduler process is OFF (set NIMBUS_SCHEDULER=1)'}
+      </span>
+    </div>
+
+    <div id="social-live"></div>
+
+    <section class="panel">
+      <h2>Draft posts <span class="count">${drafts.length} awaiting review</span></h2>
+      ${Object.keys(byPkg).length
+        ? Object.entries(byPkg).map(([pkg, items]) => `
+            <div style="margin-bottom:22px">
+              <div style="color:var(--dim);font-size:12px;text-transform:uppercase;
+                          letter-spacing:1.2px;margin-bottom:8px">
+                ${escapeHtml(items[0].topic)}
+                ${items[0].source ? `<span style="color:var(--dim2)"> · from ${escapeHtml(items[0].source)}</span>` : ''}
+              </div>
+              ${items.map(postCard).join('')}
+            </div>`).join('')
+        : '<div class="empty">No drafts yet. Write this week\'s posts to fill the queue.</div>'}
+    </section>
+  `;
+}
+
+function postCard(d) {
+  const p = PLAT[d.platform] || {label: d.platform, colour: 'var(--dim)'};
+  return `
+    <div class="rec" data-draft="${d.id}">
+      <div class="head">
+        <span class="cat" style="color:${p.colour};border-color:${p.colour}">
+          ${escapeHtml(p.label)}</span>
+        <span class="conf">${d.draft_text.length} chars</span>
+      </div>
+      <div class="body" style="white-space:pre-wrap;color:var(--text);font-size:13px;
+           background:var(--bg);border:1px solid var(--border);border-radius:8px;
+           padding:12px;margin-bottom:9px">${escapeHtml(d.draft_text)}</div>
+      ${d.review_notes ? `<div class="check">⚠ ${escapeHtml(d.review_notes)}</div>` : ''}
+      ${(d.citations || []).length ? `<div class="ev">${
+        d.citations.slice(0,4).map(u => `<a href="${escapeHtml(u)}" target="_blank"
+          rel="noopener noreferrer">${escapeHtml(hostname(u))}</a>`).join('')}</div>` : ''}
+      <div class="acts">
+        <button onclick="copyDraft(${d.id})">Copy text</button>
+        ${d.platform_link ? `<button onclick="window.open('${escapeHtml(d.platform_link)}','_blank','noopener')">Open ${escapeHtml(p.label)}</button>` : ''}
+        <button class="ok" onclick="reviewDraft(${d.id}, 'approved')">Approve</button>
+        <button class="no" onclick="reviewDraft(${d.id}, 'rejected')">Reject</button>
+        <button onclick="reviewDraft(${d.id}, 'posted')">I posted this</button>
+      </div>
+    </div>`;
+}
+
+function copyDraft(id) {
+  const el = document.querySelector(`.rec[data-draft="${id}"] .body`);
+  if (!el) return;
+  navigator.clipboard.writeText(el.innerText)
+    .then(() => flash('Copied — paste it into the platform'))
+    .catch(() => flash('Could not copy', true));
+}
+
+async function reviewDraft(id, status) {
+  const r = await fetch(`${BASE}/api/social/drafts/${id}`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status}),
+  });
+  if (!r.ok) { flash('Could not record that', true); return; }
+  const el = document.querySelector(`.rec[data-draft="${id}"]`);
+  if (el) el.remove();
+  flash(status === 'posted' ? 'Marked as posted' : `Marked ${status}`);
+}
+
+async function startSocial(dryRun) {
+  const r = await fetch(`${BASE}/api/social/run`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({dry_run: !!dryRun}),
+  });
+  if (r.status === 409) { flash('A run is already in progress', true); return; }
+  flash(dryRun ? 'Dry run started — nothing saved' : 'Writing posts…');
+  document.getElementById('social-live').innerHTML =
+    '<div class="conn"><div class="detail"><span class="spin"></span> writing…</div></div>';
+  const poll = setInterval(async () => {
+    const s = await fetch(`${BASE}/api/seo/result`).then(x => x.json()).catch(() => null);
+    if (!s || s.running) return;
+    clearInterval(poll);
+    const m = s.manifest || {};
+    if (!m.ok) {
+      document.getElementById('social-live').innerHTML =
+        `<div class="conn" style="border-color:var(--danger)"><div class="detail"
+          style="color:var(--danger)">${escapeHtml(m.error || 'run failed')}</div></div>`;
+      return;
+    }
+    const rejected = (m.packages || []).flatMap(p => p.rejected || []);
+    document.getElementById('social-live').innerHTML = rejected.length
+      ? `<div class="conn" style="border-color:var(--warn)"><div class="detail"
+          style="color:var(--warn)">${rejected.length} draft(s) rejected by the
+          honesty check: ${escapeHtml(rejected.map(x => x.platform + ' — ' + x.reason).join(' · '))}</div></div>`
+      : '';
+    flash(m.note || 'Done');
+    if (!dryRun) renderSocial();
+  }, 2000);
 }
 
 /* ── local SEO strategist ──────────────────────────────────────────────── */

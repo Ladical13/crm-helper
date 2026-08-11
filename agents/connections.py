@@ -157,6 +157,27 @@ CONNECTORS = [
                   'Nimbus (GET only), not by Google.',
     },
     {
+        'key':   'bing',
+        'label': 'Bing Webmaster Tools',
+        'auth':  'api_key',
+        'secret_env': ['BING_WEBMASTER_API_KEY'],
+        'id_env': [
+            {'name': 'BING_SITE_URL', 'example': 'https://projectoneroofingcolorado.com',
+             'where': 'The site exactly as it appears in Bing Webmaster Tools.'},
+        ],
+        'scopes': [],
+        'scope_is_readonly': True,
+        'grant': 'bing.com/webmasters → add the site → verify with a meta tag '
+                 'through the CMS (verification is independent of Google, so '
+                 'this needs nobody outside the Colorado team) → Settings → '
+                 'API access → API Key.',
+        'reads': 'Real search queries, impressions, clicks and average position. '
+                 'The only MEASURED search data available to us.',
+        'caveat': 'Bing is a minority of search. Its figures are real and are '
+                  'always labelled Bing — never presented as "search" or as a '
+                  'stand-in for Google.',
+    },
+    {
         'key':   'reddit',
         'label': 'Reddit (customer language)',
         'auth':  'api_key',
@@ -441,7 +462,19 @@ def _probe_gdelt():
     return ERROR, note or 'no response'
 
 
+def _probe_bing():
+    from .seo import bing
+    result = bing.summary()
+    if not result.get('available'):
+        note = result.get('note', '')
+        if 'not set' in note:
+            return NOT_CONNECTED, note
+        return ERROR, note
+    return CONNECTED, result.get('note', 'readable')
+
+
 _PROBES = {
+    'bing':    _probe_bing,
     'ga4':     _probe_ga4,
     'gsc':     _probe_gsc,
     'gbp':     _probe_gbp,

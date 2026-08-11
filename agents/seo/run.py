@@ -171,9 +171,14 @@ def run(dry_run=False, max_pages=crawler.DEFAULT_MAX_PAGES, use_cache=True):
         opportunities = recommend.topic_opportunities(questions, competitors, readable)
         plan = recommend.content_plan(opportunities, kept)
 
+        # Measured search data, if any exists. Never raises — an unhappy Bing
+        # costs the report one section, not the run.
+        from . import bing as bing_mod
+        bing_data = bing_mod.summary()
+
         run_row = {'started_at': config.now_iso(), 'mode': mode}
         markdown = report.render(run_row, crawl_result, kept, dropped,
-                                 research_note, opportunities, plan)
+                                 research_note, opportunities, plan, bing_data)
 
         manifest.update({
             'ok': True,
