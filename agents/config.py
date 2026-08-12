@@ -359,6 +359,24 @@ def _init_cache_db(conn):
             summary      TEXT DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS topics_captured_idx ON trending_topics(captured_at DESC);
+        -- Field notes: a question somebody actually heard or read, typed in
+        -- by hand. This is the compliant way Reddit reading reaches the
+        -- system — a person browses, a person paraphrases, nothing is
+        -- scraped. `heard_where` is a free-text hint, not a citation.
+        CREATE TABLE IF NOT EXISTS field_notes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at  TEXT NOT NULL,
+            created_by  TEXT DEFAULT '',
+            question    TEXT NOT NULL,
+            heard_where TEXT DEFAULT '',
+            city        TEXT DEFAULT '',
+            service     TEXT DEFAULT '',
+            status      TEXT DEFAULT 'new',   -- new | used | archived
+            used_run_id INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS field_notes_idx
+            ON field_notes(status, created_at DESC);
+
         -- Scheduled jobs. One row per job; the claim is atomic so two gunicorn
         -- workers cannot both run the weekly report.
         CREATE TABLE IF NOT EXISTS scheduled_jobs (

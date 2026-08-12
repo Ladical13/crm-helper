@@ -194,6 +194,54 @@ def seo_review(rec_id):
                     'note': 'decision recorded — a human still does the work'})
 
 
+# ── Field notes + CRM question mining ────────────────────────────────────────
+
+@nimbus_bp.route('/api/seo/field-notes', methods=['GET'])
+def list_field_notes():
+    from agents.seo import field_notes
+    return jsonify(field_notes.listing(status=request.args.get('status', 'new')))
+
+
+@nimbus_bp.route('/api/seo/field-notes', methods=['POST'])
+def add_field_note():
+    """A question somebody actually heard, typed in by hand.
+
+    Rejects anything that looks pasted rather than paraphrased — this is how
+    Reddit reading reaches the system legitimately, and storing somebody's
+    post text would defeat the point.
+    """
+    from agents.seo import field_notes
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        note = field_notes.add(
+            data.get('question', ''), data.get('heard_where', ''),
+            data.get('city', ''), data.get('service', ''),
+            session.get('username', ''))
+    except field_notes.Rejected as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify(note), 201
+
+
+@nimbus_bp.route('/api/seo/field-notes/<int:note_id>', methods=['POST'])
+def update_field_note(note_id):
+    from agents.seo import field_notes
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        changed = field_notes.set_status(note_id, data.get('status'))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if not changed:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify({'ok': True})
+
+
+@nimbus_bp.route('/api/seo/crm-questions', methods=['GET'])
+def crm_questions_preview():
+    """What the CRM miner currently sees. Read-only against salescrm.db."""
+    from agents.seo import crm_questions
+    return jsonify(crm_questions.mine(days=int(request.args.get('days', 180))))
+
+
 # ── Content briefs (approved recommendations only) ───────────────────────────
 
 @nimbus_bp.route('/api/seo/briefs', methods=['GET'])

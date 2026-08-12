@@ -956,6 +956,30 @@ async function renderSeo() {
 
     <div id="seo-live"></div>
 
+    <section class="panel" style="margin-bottom:18px">
+      <h2>Questions we actually hear
+        <span class="count" id="fn-count">—</span></h2>
+      <div style="color:var(--dim2);font-size:12px;margin-bottom:12px;line-height:1.6">
+        Two sources, both ours, both free. <b style="color:var(--dim)">Your CRM</b>
+        is mined automatically for questions that come up more than once.
+        <b style="color:var(--dim)">Field notes</b> are what you type in below —
+        reading r/FortCollins at night, something a rep mentions in the truck,
+        an HOA meeting. Write the <i>question</i> in your own words; don't paste
+        anyone's post.
+      </div>
+      <div class="settings" style="max-width:none;margin-bottom:14px">
+        <input id="fn-q" placeholder="What did they ask? e.g. Does my insurance cover a 12-year-old roof?"
+               onkeydown="if(event.key==='Enter')addFieldNote()">
+        <div class="row" style="grid-template-columns:1fr 1fr auto">
+          <input id="fn-where" placeholder="Where you heard it — r/Denver, phone call, HOA meeting">
+          <input id="fn-city" placeholder="City (optional)">
+          <button onclick="addFieldNote()">Add</button>
+        </div>
+      </div>
+      <div id="fn-list"></div>
+      <div id="crm-q" style="margin-top:14px"></div>
+    </section>
+
     <section class="panel">
       <h2>Recommendation queue <span class="count" id="rec-count">${recs.length} pending</span></h2>
       <div id="rec-list">
@@ -973,6 +997,90 @@ async function renderSeo() {
     </section>
   `;
   if (busy) pollSeo();
+  loadFieldNotes();
+  loadCrmQuestions();
+}
+
+/* Field notes: the compliant route for anything you read on Reddit at night.
+   You read, you paraphrase, you type. Nothing is scraped. */
+async function loadFieldNotes() {
+  const notes = await fetch(`${BASE}/api/seo/field-notes?status=new`)
+    .then(r => r.json()).catch(() => []);
+  const c = document.getElementById('fn-count');
+  if (c) c.textContent = `${notes.length} waiting to be used`;
+  const box = document.getElementById('fn-list');
+  if (!box) return;
+  box.innerHTML = notes.length ? notes.map(n => `
+    <div class="topic" data-fn="${n.id}">
+      <div class="t-hd">
+        <h4>${escapeHtml(n.question)}</h4>
+        <button class="btn ghost" style="padding:2px 9px;font-size:11px;border-radius:6px;
+          background:transparent;color:var(--dim);border:1px solid var(--border-2);cursor:pointer"
+          onclick="archiveFieldNote(${n.id})">Remove</button>
+      </div>
+      <p>${escapeHtml(n.heard_where || 'source not noted')}${
+        n.city ? ' · ' + escapeHtml(n.city) : ''}${
+        n.created_by ? ' · added by ' + escapeHtml(n.created_by) : ''}</p>
+    </div>`).join('')
+    : '<div style="color:var(--dim2);font-size:12px">Nothing yet. Add one above — '
+      + 'it goes into the next weekly analysis.</div>';
+}
+
+async function addFieldNote() {
+  const q = document.getElementById('fn-q');
+  if (!q.value.trim()) return;
+  const r = await fetch(`${BASE}/api/seo/field-notes`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      question: q.value,
+      heard_where: document.getElementById('fn-where').value,
+      city: document.getElementById('fn-city').value,
+    }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { flash(body.error || 'Could not add that', true); return; }
+  q.value = '';
+  document.getElementById('fn-where').value = '';
+  flash('Added — it will feed the next analysis');
+  loadFieldNotes();
+}
+
+async function archiveFieldNote(id) {
+  await fetch(`${BASE}/api/seo/field-notes/${id}`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status: 'archived'}),
+  });
+  loadFieldNotes();
+}
+
+async function loadCrmQuestions() {
+  const box = document.getElementById('crm-q');
+  if (!box) return;
+  const out = await fetch(`${BASE}/api/seo/crm-questions`)
+    .then(r => r.json()).catch(() => null);
+  if (!out) return;
+  if (!out.available) {
+    box.innerHTML = `<div style="color:var(--dim2);font-size:12px;
+      border-top:1px solid var(--border);padding-top:12px">
+      <b style="color:var(--dim)">From the CRM:</b> ${escapeHtml(out.note || 'unavailable')}</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div style="border-top:1px solid var(--border);padding-top:12px">
+      <div style="color:var(--dim);font-size:12px;margin-bottom:8px">
+        <b>From the CRM</b> — ${escapeHtml(out.note)}
+        <span style="color:var(--dim2)"> · read-only, ${out.notes_scanned} note(s) scanned</span>
+      </div>
+      ${(out.questions || []).slice(0, 8).map(q => `
+        <div class="topic" style="border-left-color:var(--ok)">
+          <div class="t-hd">
+            <h4>${escapeHtml(q.question)}</h4>
+            <span class="score" style="color:var(--ok)">×${q.mentions}</span>
+          </div>
+          <p>${escapeHtml(q.why_it_matters)}</p>
+        </div>`).join('')
+        || '<div style="color:var(--dim2);font-size:12px">No recurring themes yet.</div>'}
+    </div>`;
 }
 
 function recCard(r, rank) {

@@ -392,9 +392,10 @@ def from_research(questions_by_ctx, competitor_by_ctx, existing_pages):
          ' '.join(p.get('h2') or [])).lower()
         for p in existing_pages)
 
+    from .honesty import FIRST_PARTY
     for (city, service_key, service_label), payload in (questions_by_ctx or {}).items():
         cites = payload.get('citations') or []
-        for q in (payload.get('questions') or [])[:4]:
+        for q in (payload.get('questions') or [])[:6]:
             question = str(q.get('question', '')).strip()
             if not question:
                 continue
@@ -402,17 +403,39 @@ def from_research(questions_by_ctx, competitor_by_ctx, existing_pages):
             key_terms = [w for w in question.lower().split() if len(w) > 5][:3]
             if key_terms and all(t in have_text for t in key_terms):
                 continue
-            recs.append(_rec(
+
+            # A question our own records show customers asking is a stronger
+            # basis than one a model inferred, and it says so on the card.
+            src = q.get('source', '')
+            first_party = src in ('crm', 'field_note')
+            if first_party:
+                where = ('our own CRM notes' if src == 'crm'
+                         else 'a note somebody typed in after hearing it')
+                rationale = (f'This came from {where}, not from public research. '
+                             + (str(q.get('why_it_matters', '')).strip() or ''))
+                review = ('Confirm the phrasing matches how customers say it. '
+                          'Answer from our own experience.')
+                own_cites = [c for c in cites
+                             if str(c).startswith(('crm:', 'field-note:'))] or cites
+            else:
+                rationale = (f'Public research indicates this is a question '
+                             f'{city} homeowners ask about {service_label}. '
+                             + (str(q.get('why_it_matters', '')).strip() or ''))
+                review = ('Confirm the question matches what our reps actually '
+                          'hear before writing. Answer from our own experience — '
+                          'do not restate the research as if it were our data.')
+                own_cites = cites
+
+            rec = _rec(
                 'faq_or_content_brief',
                 f'Write a page or FAQ entry answering: "{question}"',
-                f'Public research indicates this is a question {city} homeowners ask '
-                f'about {service_label}. '
-                + (str(q.get('why_it_matters', '')).strip() or ''),
-                cites, confidence='medium' if cites else 'low',
+                rationale, own_cites,
+                confidence='high' if first_party else ('medium' if cites else 'low'),
                 city=city, service=service_key, intent=question,
-                review_notes='Confirm the question matches what our reps actually '
-                             'hear before writing. Answer from our own experience — '
-                             'do not restate the research as if it were our data.'))
+                review_notes=review)
+            if first_party:
+                rec['evidence_basis'] = FIRST_PARTY
+            recs.append(rec)
 
     for (city, service_key, service_label), payload in (competitor_by_ctx or {}).items():
         cites = payload.get('citations') or []

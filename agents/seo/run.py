@@ -91,18 +91,31 @@ def _gather_research(dry_run):
     service_key, service_label = services[0]     # roofing leads the profile
     markets = [m for m in recommend.priority_markets() if m[1]]
 
-    # ── Free, primary source. Runs even on a dry run and even with the spend
-    # cap blown, because it costs nothing and hits no paid API. ──
-    for _label, examples in markets:
-        city = examples[0]
-        ctx = (city, service_key, service_label)
-        community = research.community_questions(city)
-        if community.get('questions'):
-            questions[ctx] = community
-            notes.append(f'reddit/{city}: {len(community["questions"])} question(s)')
-        elif community.get('note'):
-            notes.append(f'reddit: {community["note"]}')
-        break   # one Reddit pull covers every market; the subs are not per-city
+    # ── First-party sources, first. Free, ours, and better than anything
+    # public: our own records of real conversations with real customers.
+    # They run even on a dry run and even with the spend cap blown. ──
+    from . import crm_questions, field_notes
+    primary_ctx = (markets[0][1][0] if markets else '', service_key, service_label)
+
+    crm = crm_questions.as_research()
+    if crm.get('questions'):
+        questions[primary_ctx] = crm
+        notes.append(f'crm: {len(crm["questions"])} recurring question(s)')
+    elif crm.get('note'):
+        notes.append(f'crm: {crm["note"]}')
+
+    field = field_notes.as_research()
+    if field.get('questions'):
+        if primary_ctx in questions:
+            # Field notes lead: somebody typed them in on purpose, which is a
+            # stronger signal than a theme inferred from note text.
+            questions[primary_ctx]['questions'] = (
+                field['questions'] + questions[primary_ctx]['questions'])
+            questions[primary_ctx]['citations'] = list(dict.fromkeys(
+                field['citations'] + questions[primary_ctx]['citations']))
+        else:
+            questions[primary_ctx] = field
+        notes.append(f'field notes: {len(field["questions"])}')
 
     if dry_run:
         free_note = '; '.join(notes) if notes else 'no free sources reported'
@@ -160,6 +173,13 @@ def run(dry_run=False, max_pages=crawler.DEFAULT_MAX_PAGES, use_cache=True):
                 f'no readable pages at {base} — cannot build a strategy without '
                 f'the site. Check the site is up and robots.txt is not blocking us.')
 
+        # Snapshot the unused field notes before gathering. `_gather_research`
+        # reads exactly this set, and keeping the signature to one argument
+        # matters: several tests monkeypatch it, and an out-parameter would be
+        # both uglier and a trap for the next person who mocks it.
+        from . import field_notes as _fn
+        used_field_notes = [n['id'] for n in _fn.listing(status='new')]
+
         questions, competitors, research_note, research_cost = _gather_research(dry_run)
 
         raw = recommend.build_all(crawl_result, questions, competitors)
@@ -200,6 +220,11 @@ def run(dry_run=False, max_pages=crawler.DEFAULT_MAX_PAGES, use_cache=True):
 
         if not dry_run:
             _persist(run_id, kept, markdown, manifest)
+            # Consumed field notes stop reappearing every week. A dry run
+            # leaves them alone, so it can be re-run without eating the queue.
+            if used_field_notes:
+                from . import field_notes
+                field_notes.mark_used(used_field_notes, run_id)
             _close_run(run_id, status='ok', pages_crawled=len(crawl_result['pages']),
                        recs_created=len(kept), cost_usd=round(research_cost, 4),
                        summary=f'{len(kept)} recommendations, '

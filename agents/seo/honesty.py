@@ -24,6 +24,12 @@ from .. import config
 
 PUBLIC_RESEARCH = 'public_research'
 OWNED_DATA      = 'owned_data'
+# Our own CRM notes and field notes. A genuinely different category from
+# OWNED_DATA: that means owned *search analytics*, which we do not have and
+# cannot fake. This means records we wrote ourselves about conversations we
+# actually had — so "mentioned in 7 logged conversations" is a fact we can
+# stand behind, while "ranks #3" remains impossible either way.
+FIRST_PARTY     = 'first_party'
 
 # Phrasing that asserts a measurement. Each pattern is a claim we would need
 # Search Console, GA4 or a paid rank tracker to make — and we have none.
@@ -105,6 +111,8 @@ def label_for(rec):
     """The prefix a human sees. Indirect evidence must announce itself."""
     if rec.get('evidence_basis') == OWNED_DATA:
         return ''
+    if rec.get('evidence_basis') == FIRST_PARTY:
+        return 'From our own records'
     if rec.get('category') in _DIRECT_OBSERVATION_CATEGORIES:
         # Observed on our own page — still not owned *analytics*, but it is a
         # direct observation rather than an inference about the market.
@@ -124,7 +132,7 @@ def check(rec):
         raise Rejected(f'confidence must be one of {VALID_CONFIDENCE}')
 
     basis = rec.get('evidence_basis') or PUBLIC_RESEARCH
-    if basis not in (PUBLIC_RESEARCH, OWNED_DATA):
+    if basis not in (PUBLIC_RESEARCH, OWNED_DATA, FIRST_PARTY):
         raise Rejected(f'unknown evidence_basis {basis!r}')
     if basis == OWNED_DATA:
         # v1 has no owned data source at all. Anything claiming one is wrong
@@ -147,9 +155,12 @@ def check(rec):
 
     # Research-derived recommendations must show their work. A direct
     # observation of our own page is evidenced by the page URL itself.
+    # Evidence is normally a URL, but a first-party finding cites an internal
+    # record instead (`crm:lead:abc123`, `field-note:12`). Both are sources; a
+    # claim with neither is not shippable.
     evidence = rec.get('evidence') or []
     if not evidence:
-        raise Rejected('no evidence URLs — a claim with no source is not shippable')
+        raise Rejected('no evidence — a claim with no source is not shippable')
 
     services, service_labels, cities = _profile_bounds()
     service = (rec.get('service') or '').strip().lower()
