@@ -10364,6 +10364,7 @@ async function renderTeamLogins() {
         <span class="tl-name">${esc(u.display_name)}</span>
         <span class="tl-role-badge tl-role-${u.role||'rep'}">${ROLE_LABELS[u.role||'rep']}</span>
         <span class="tl-status ${stcls}" id="tlst-${u.username}">${status}</span>
+        ${u.locked ? `<span class="tl-status tl-locked">🔒 Locked ${Math.max(1,Math.round(u.locked/60))}m</span>` : ''}
       </div>
       <div class="tl-contact">
         <input type="text" class="tl-pw" id="tlphone-${u.username}" placeholder="Cell # shown on customer Call/Text buttons" value="${esc(u.phone||'')}" autocomplete="off">
@@ -10375,6 +10376,7 @@ async function renderTeamLogins() {
         <input type="text" class="tl-pw" id="tlpw-${u.username}" placeholder="Temp password" autocomplete="off">
         <button class="tl-gen" onclick="tlGen('${u.username}')" title="Generate a password">🎲</button>
         <button class="tl-set btn-primary" onclick="adminSetPassword('${u.username}')">Set PW</button>
+        ${u.locked ? `<button class="tl-set btn-primary" onclick="adminUnlockUser('${u.username}')" title="Clear the failed-login lockout">🔓 Unlock</button>` : ''}
         ${u.enrolled && !isSelf(u) ? `<button class="tl-reset" onclick="adminResetUser('${u.username}')">Clear</button>` : ''}
         ${!isSelf(u) ? `<button class="tl-remove" onclick="adminRemoveMember('${u.username}','${esc(u.display_name)}')">✕</button>` : ''}
       </div>
@@ -10489,6 +10491,13 @@ async function adminSetPassword(u) {
 async function adminResetUser(u) {
   if (!confirm('Clear this login? They will need a new temporary password before they can sign in.')) return;
   const r = await fetch(`/api/users/${u}/reset`, { method: 'POST' });
+  if (r.ok) renderTeamLogins();
+}
+
+// Releases a failed-login lockout. No confirm() — this is the fix for someone
+// who is currently locked out and waiting, not a destructive action.
+async function adminUnlockUser(u) {
+  const r = await fetch(`/api/users/${u}/unlock`, { method: 'POST' });
   if (r.ok) renderTeamLogins();
 }
 

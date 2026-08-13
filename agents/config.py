@@ -204,9 +204,12 @@ def save_territories(data):
 # so a nuke of the Nimbus state never risks a lead.
 
 def get_cache_db():
+    from portal import dbtune            # local: keeps agents importable alone
+
     conn = sqlite3.connect(cache_db_path())
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
+    dbtune.tune(conn)
     _init_cache_db(conn)
     return conn
 

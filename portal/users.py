@@ -22,6 +22,8 @@ from datetime import datetime, timedelta
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from portal import dbtune
+
 EMAIL_DOMAIN = 'projectoneroofing.com'
 ROLES = ('rep', 'manager', 'admin')
 
@@ -57,14 +59,14 @@ def get_db():
         _init(path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    return conn
+    return dbtune.tune(conn)
 
 
 def _init(path):
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = dbtune.tune(sqlite3.connect(path))
     try:
         conn.executescript('''
             CREATE TABLE IF NOT EXISTS users (

@@ -28,6 +28,7 @@ from flask import Flask, request, jsonify, send_from_directory, session
 # this app works both mounted by portal/wsgi.py and run standalone (its test
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import dbtune                # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
 
@@ -143,7 +144,7 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
-    return conn
+    return dbtune.tune(conn)
 
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)

@@ -3079,6 +3079,9 @@ a.jx-contact:hover { text-decoration: underline; }
 .tl-status.tl-active { color: var(--better); }
 .tl-status.tl-temp   { color: var(--orange); }
 .tl-status.tl-none   { color: var(--text-light); }
+/* Failed-login lockout — see portal/throttle.py. Red because it means a rep
+   cannot get in right now, which is more urgent than any other row state. */
+.tl-status.tl-locked { color: var(--bad, #dc2626); font-weight: 600; }
 .tl-contact { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .tl-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .tl-pw { flex: 1; min-width: 120px; font-size: 12px; padding: 6px 8px; }

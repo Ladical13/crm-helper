@@ -29,11 +29,11 @@ CI runs, and it is much faster to find a break here than in the Actions log.
 Individual suites, when you only touched one app:
 
 ```bash
-cd estimator  && pytest     # 534 — pricing parity, cache-buster, bundles
+cd estimator  && pytest     # 552 — pricing parity, cache-buster, bundles
 cd salescrm   && pytest     #  90 — pipeline, prospecting, queue, drafts, assets
-cd portal     && pytest     #  47 — one login across all three, migration, shell
+cd portal     && pytest     #  90 — one login, migration, shell, hardening
 python -m pytest prospector/tests   # 27 — offline, no network
-cd agents     && pytest     #  12 — spend cap, cache, b2b/content sources
+cd agents     && pytest     # 195 — spend cap, cache, b2b/content sources
 cd canvasser  && pytest     #  15 — vendored Leaflet, cache-buster, sw wiring
 ```
 
@@ -41,16 +41,24 @@ cd canvasser  && pytest     #  15 — vendored Leaflet, cache-buster, sw wiring
 of the portal section. Never deploy a subdirectory. **Pushing is not
 deploying**: `railway up` is a separate, manual step.
 
-**Nothing is backed up yet — open gap, decided 2026-07-29 to defer.** Two
-separate things, and they are easy to confuse:
+**Backups: the estimator has one, the other three do not** (audited 2026-08-12;
+the earlier "nothing is backed up" note was already out of date). Three separate
+things, easy to confuse:
 
-- *On this laptop*, `estimator/estimates/`, every `*.db`, and
-  `prospector/inbox/` are gitignored, so a push never includes them. But these
-  are mostly **dev scratch** (a few MB) — losing them costs little.
-- *The real data* — live estimates, signed contracts, leads, canvasser pins —
-  lives on the **Railway volume**, not here. Nothing currently copies it
-  anywhere. A dead volume, a bad migration or a fat-fingered delete loses it
-  outright, and pushing to GitHub does nothing to protect it.
+- *On this laptop*, `estimator/estimates/`, every `*.db` (plus the `-wal`/`-shm`
+  sidecars), and `prospector/inbox/` are gitignored, so a push never includes
+  them. These are mostly **dev scratch** (a few MB) — losing them costs little.
+- *The estimator's real data* **is** covered: `_check_daily_backup()` emails a
+  zip of every estimate nightly to `BACKUP_EMAIL` (defaults to Luke), and
+  admins can pull `/api/backup` for estimates + photos + config on demand. The
+  nightly job takes an `O_EXCL` lockfile so two gunicorn workers can't both
+  send it.
+- *The other three databases are not covered at all.* `salescrm.db` (leads,
+  activities, prospecting history, documents), `canvasser.db` (pins, GPS) and
+  `portal.db` (every password hash and invite) live on the **Railway volume**
+  with nothing copying them anywhere. A dead volume, a bad migration or a
+  fat-fingered delete loses them outright, and pushing to GitHub does nothing
+  to protect it.
 
 When picking this back up: the shape that fits is a manager-only export
 endpoint plus a scheduled pull into OneDrive (`C:\Users\ldurn\OneDrive` exists).
@@ -66,7 +74,7 @@ app-switcher bar across the top of all three.
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers all three apps
 python -m portal.wsgi                 # local dev on :5010 (all three mounted)
-cd portal && pytest                   # 47 tests
+cd portal && pytest                   # 90 tests
 ```
 
 `portal/wsgi.py` mounts the three **unchanged** Flask apps with
@@ -115,6 +123,54 @@ what avoided renaming ~130 colliding routes. Rules that keep it working:
 **Migration:** `python -m portal.migrate_users` (dry run) → `--apply`. Merges the
 three old stores on lowercase username, estimator password wins. Must be run on
 the volume before the cutover deploy.
+
+### Hardening (2026-08-12) — four settings that fail silently
+
+All guarded by `portal/tests/test_hardening.py`, because every one of these is
+invisible when it stops working.
+
+- **Every SQLite connection goes through `portal/dbtune.py`.** `journal_mode=WAL`
+  plus a 5s `busy_timeout`, applied in all four `get_db()`s (portal, salescrm,
+  canvasser, Nimbus cache). Without WAL a single writer locks the whole file, so
+  one rep saving a lead blocks every reader; without `busy_timeout` a contending
+  statement raises `database is locked` **immediately** rather than waiting.
+  Order matters inside `tune()` — the timeout is set first so the WAL switch
+  itself waits out a lock instead of raising. WAL adds `-wal`/`-shm` sidecars
+  beside every DB, which is why `.gitignore` now globs `*.db*` rather than naming
+  files: the documented save routine is `git add -A`.
+- **`/login` is throttled** (`portal/throttle.py`), per username (8 fails) *and*
+  per IP (30 fails, catches one password sprayed across many names). State is in
+  `portal.db`, **not** process memory — two workers would each keep their own
+  counter and hand out double the allowance, and every deploy would reset it.
+  The check runs *before* the password is verified, since the pbkdf2 hash is the
+  expensive thing being protected. Lockouts escalate 15 → 60 min, and an
+  unreadable client address buckets into `ip:unknown` rather than skipping the
+  per-IP check — **fail closed**. `PORTAL_DISABLE_LOGIN_THROTTLE=1` for local
+  work only.
+  **The release valve is in 🔑 Passwords & Logins**: a locked rep shows a red
+  `🔒 Locked Nm` badge with a `🔓 Unlock` button (admin-only, `POST
+  /api/users/<u>/unlock` on both the estimator and the portal). Keep it — a
+  lockout nobody can clear means a rep standing on a doorstep waiting 15
+  minutes. Unlock is deliberately **per-username only**, so clearing one rep
+  never hands a password-sprayer a fresh per-IP budget.
+- **Security headers ship from `portal/session.py`'s `after_request`**, so all
+  four apps get them from one place. HSTS is gated on `_secure_cookies()` — the
+  same signal as the Secure flag, so the two can never disagree — because a
+  browser remembers HSTS for a year and emitting it on localhost would break
+  plain http:// for every other project on the laptop. **There is deliberately
+  no CSP**: all four front ends use inline handlers and inline `<style>`, and the
+  estimator's customer pages are inline-CSS strings in `app.py`, so a useful
+  policy would need `unsafe-inline` and a strict one would break signing links
+  customers already hold. Nothing embeds anything in an iframe, so
+  `X-Frame-Options: DENY` is safe — check that before relaxing it.
+- **`MAX_CONTENT_LENGTH` is now set for every app**, defaulting to 32 MB in
+  `configure()`; the estimator still asks for its own 30 MB. Werkzeug buffers an
+  upload into memory once code calls `.read()` on it (which the CRM's document
+  upload does), so one unbounded POST takes out a worker — and there are only
+  two.
+- **`DISABLE_AUTH` refuses to engage when `RAILWAY_ENVIRONMENT` is set.** It
+  turns off the guard on every estimator route; it existed one fat-fingered
+  Railway variable away from publishing every estimate and signed contract.
 
 **Deploy:** ONE service. Root `Procfile` is
 `gunicorn portal.wsgi:application`; deploy the whole repo, not a subdirectory.
@@ -201,7 +257,7 @@ a single SQLite file (`SALESCRM_DATA_DIR/salescrm.db`, gitignored — back it up
 before any migration). No pricing math lives here.
 
 ```bash
-cd salescrm && pytest                 # 85 tests, <2s
+cd salescrm && pytest                 # 90 tests, <2s
 python -m portal.wsgi                 # dev: run the portal, CRM is at /crm
 ```
 
@@ -354,7 +410,7 @@ Per `lead_type`, three steps chosen by prior outreach count (0 → `first`,
 ## Estimator — tests & invariants
 
 ```bash
-cd estimator && pytest                # 400 tests, <6s
+cd estimator && pytest                # 552 tests, <10s
 ```
 
 **Run `pytest` before every estimator commit.** Two invariants it guards, both

@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, Respo
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from portal import session as psession   # noqa: E402
+from portal import throttle as pthrottle  # noqa: E402
 from portal import users as pusers       # noqa: E402
 
 try:
@@ -141,6 +142,18 @@ PUBLIC_ENDPOINTS = {
 }
 
 DISABLE_AUTH = os.environ.get('DISABLE_AUTH', '').strip().lower() in ('1', 'true', 'yes')
+
+# ...but never in production, whatever the variable says. This one flag turns
+# off the guard for every route below — estimates, signed contracts, customer
+# PII, the price book. It exists so a developer can poke at the app locally
+# without enrolling, and the cost of that convenience is one fat-fingered
+# Railway variable away from publishing the whole estimator. RAILWAY_ENVIRONMENT
+# is set by the platform and is the same signal portal/session.py uses to decide
+# the cookies are going over HTTPS.
+if DISABLE_AUTH and os.environ.get('RAILWAY_ENVIRONMENT'):
+    print('[auth] DISABLE_AUTH is set but ignored: refusing to disable '
+          'authentication in a deployed environment.')
+    DISABLE_AUTH = False
 
 @app.before_request
 def _require_login():
@@ -525,6 +538,7 @@ def list_users():
     if not _is_admin(session.get('user', '')):
         return jsonify({'error': 'admin only'}), 403
     accounts = {u['username']: u for u in pusers.all_users()}
+    locked = pthrottle.locked_usernames()
     return jsonify([
         {'username': m['username'],
          'display_name': m.get('display_name') or _display_name(m['username']),
@@ -535,9 +549,27 @@ def list_users():
          'enrolled':     m['username'] in accounts,
          'must_change':  bool(accounts.get(m['username'], {}).get('must_change')),
          'is_admin':     _get_role(m['username']) == 'admin',
-         'role':         _get_role(m['username'])}
+         'role':         _get_role(m['username']),
+         # Seconds left on a failed-login lockout, 0 when not locked. Surfaced
+         # here because this panel is where user trouble actually gets fixed.
+         'locked':       locked.get(m['username'], 0)}
         for m in load_team()
     ])
+
+
+@app.route('/api/users/<username>/unlock', methods=['POST'])
+def unlock_user_account(username):
+    """Admin-only: clear a rep's failed-login lockout.
+
+    The throttle in portal/throttle.py locks an account for 15+ minutes after
+    repeated wrong passwords. That is right for an attacker and wrong for a rep
+    on a doorstep, so an admin needs to be able to release it from the panel
+    they already use for passwords.
+    """
+    if not _is_admin(session.get('user', '')):
+        return jsonify({'error': 'admin only'}), 403
+    pthrottle.unlock_user(username)
+    return jsonify({'ok': True})
 
 
 @app.route('/api/users/<username>/set-password', methods=['POST'])

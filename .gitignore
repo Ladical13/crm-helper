@@ -18,9 +18,15 @@ estimator/users.json
 estimator/company_content.json
 estimator/app_settings.json
 
-# Portal — the shared user store (password hashes; never in git)
-portal.db
-portal.db-journal
+# SQLite — the portal user store (password hashes), the CRM, the canvasser, and
+# Nimbus's cache. Globbed rather than named one by one because WAL mode (see
+# portal/dbtune.py) adds `-wal` and `-shm` sidecars beside every database, and
+# the documented save routine is `git add -A` — a pattern that misses a sidecar
+# is a pattern that commits live customer data.
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
 .localdata/
 
 # CRM helper / reporting scripts (contain API tokens, not needed on Railway)

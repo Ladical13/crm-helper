@@ -10,6 +10,7 @@ from flask import (Flask, jsonify, redirect, request, send_from_directory,
 from markupsafe import escape
 
 from portal import session as psession
+from portal import throttle
 from portal import users
 from portal.mounts import MOUNTS
 from portal.nimbus_bp import nimbus_bp
@@ -102,13 +103,21 @@ def login():
         return _login_page(error='Enter your username and password.',
                            next_url=nxt, invite=code, username=username), 400
 
+    # Throttle check comes before the password check, so a locked-out attacker
+    # never gets us to spend a hash on them. See portal/throttle.py.
+    ip = request.remote_addr or ''
+    wait = throttle.retry_after(username, ip)
+    if wait:
+        return _locked_out(wait, next_url=nxt, username=username)
+
     existing = users.get(username)
 
     if existing:
         user = users.verify(username, password)
         if not user:
-            return _login_page(error='Wrong username or password.',
-                               next_url=nxt, username=username), 401
+            return _fail_login(username, ip, 'Wrong username or password.',
+                               next_url=nxt)
+        throttle.clear(username, ip)
         psession.sign_in(session, user)
         if user['must_change']:
             return redirect('/account/password?next=' + _quote_next(nxt))
@@ -126,16 +135,40 @@ def login():
                                next_url=nxt, invite=code, username=username,
                                mode='signup'), 403
     elif not (SIGNUP_CODE and code == SIGNUP_CODE):
-        return _login_page(error='That setup code is not valid. Ask Luke for an invite link.',
-                           next_url=nxt, username=username, mode='signup'), 403
+        # A wrong enrollment code counts as a failure too — it is the other
+        # guessable secret on this form.
+        return _fail_login(username, ip,
+                           'That setup code is not valid. Ask Luke for an invite link.',
+                           next_url=nxt, mode='signup')
 
     # First account on a fresh install bootstraps as admin.
     role = 'admin' if users.count() == 0 else 'rep'
     user = users.create(username, password=password, role=role)
     if invite is not None:
         users.consume_invite(invite['code'], username)
+    throttle.clear(username, ip)
     psession.sign_in(session, user)
     return redirect(nxt)
+
+
+def _fail_login(username, ip, error, next_url='/', mode='signin'):
+    """Record the failed attempt, then render the error — or the lockout page if
+    this attempt was the one that tripped the limit."""
+    wait = throttle.record_failure(username, ip)
+    if wait:
+        return _locked_out(wait, next_url=next_url, username=username)
+    status = 403 if mode == 'signup' else 401
+    return _login_page(error=error, next_url=next_url, username=username,
+                       mode=mode), status
+
+
+def _locked_out(wait, next_url='/', username=''):
+    minutes = max(1, round(wait / 60))
+    resp = _login_page(
+        error=f'Too many failed attempts. Try again in about {minutes} '
+              f'minute{"s" if minutes != 1 else ""}.',
+        next_url=next_url, username=username)
+    return resp, 429, {'Retry-After': str(wait)}
 
 
 @app.route('/logout', methods=['GET', 'POST'])
@@ -202,9 +235,15 @@ def list_users():
 
     salescrm deliberately made this login-only (app.py:465-473) because reps
     need names for assignment dropdowns. Keeping that.
+
+    `locked` carries the seconds remaining on a failed-login lockout (0 when
+    not locked) so the admin panel can offer the unlock button to the right row.
     """
-    return jsonify([{k: u[k] for k in
-                     ('username', 'full_name', 'email', 'role', 'is_admin', 'created_at')}
+    locked = throttle.locked_usernames()
+    return jsonify([dict({k: u[k] for k in
+                          ('username', 'full_name', 'email', 'role', 'is_admin',
+                           'created_at')},
+                         locked=locked.get(u['username'], 0))
                     for u in users.all_users()])
 
 
@@ -260,6 +299,21 @@ def admin_set_role(username):
     if not users.get(username):
         return jsonify({'error': 'No such user'}), 404
     users.set_role(username, role)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/users/<username>/unlock', methods=['POST'])
+def admin_unlock_user(username):
+    """Clear a failed-login lockout. Admin-only.
+
+    Without this the only cure for a mistyped password is waiting, which is a
+    poor answer for a rep on a doorstep. Reported in `locked` on GET /api/users
+    so an admin can see who needs it.
+    """
+    denied = _admin_only()
+    if denied:
+        return denied
+    throttle.unlock_user(username)
     return jsonify({'ok': True})
 
 

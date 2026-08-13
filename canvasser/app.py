@@ -18,6 +18,7 @@ from flask import Flask, request, jsonify, send_from_directory, session
 # The portal package lives one directory up. Put the repo root on the path so
 # this app works both mounted by portal/wsgi.py and run standalone.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import dbtune                # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
 
@@ -59,7 +60,7 @@ PIN_TYPES = {
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    return dbtune.tune(conn)
 
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)

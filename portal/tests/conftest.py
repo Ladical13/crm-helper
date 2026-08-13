@@ -28,6 +28,7 @@ os.environ.pop('DISABLE_AUTH', None)
 
 import pytest  # noqa: E402
 
+from portal import throttle as pthrottle  # noqa: E402
 from portal import users as pusers  # noqa: E402
 from portal.wsgi import application  # noqa: E402  (loads all three sub-apps)
 
@@ -39,6 +40,10 @@ def _wipe():
     with pusers.get_db() as db:
         db.execute('DELETE FROM users')
         db.execute('DELETE FROM invites')
+    # Every test in the suite logs in from the same 127.0.0.1, so without this
+    # the per-IP failure budget accumulates across unrelated cases and the last
+    # tests in a run start getting 429s.
+    pthrottle.reset_all()
 
 
 @pytest.fixture
