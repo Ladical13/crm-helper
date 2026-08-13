@@ -149,11 +149,18 @@ def test_customer_view_preserves_description_newlines():
 
 
 def test_browser_print_turns_newlines_into_breaks(js):
-    """The print builder emits HTML, so it has to convert explicitly."""
-    m = re.search(r'function buildPrintContent\(\).*?\n\}', js, re.S)
-    assert m, 'buildPrintContent not found'
-    body = m.group(0)
-    # trade line items, and the insurance table's own Description column
+    """The print builder emits HTML, so it has to convert explicitly.
+
+    Two of the three live in printTradeBody — the per-package trade table, which
+    buildPrintContent calls once per offered tier. Both functions are checked so
+    splitting the builder again can't quietly drop a conversion."""
+    body = ''
+    for name in ('buildPrintContent\\(\\)', 'printTradeBody\\(trade, tier, o\\)'):
+        m = re.search(r'function ' + name + r'.*?\n\}', js, re.S)
+        assert m, f'{name} not found'
+        body += m.group(0)
+    # trade line items (description + notes), and the insurance table's own
+    # Description column
     assert body.count(r"replace(/\n/g,'<br>')") >= 3, (
         'a print path stopped converting description newlines to <br>'
     )

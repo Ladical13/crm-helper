@@ -238,6 +238,61 @@ def test_print_leaves_other_out_of_the_options_comparison():
     )
 
 
+def test_print_gives_every_offered_package_its_own_scope_table():
+    """Online the customer taps between packages and the item list swaps
+    underneath. On paper there is nothing to tap, so printing only the selected
+    tier put the Best package's price on the options card with its scope nowhere
+    in the document — a TPO roof quoted at $19,461 and never described."""
+    js = _js()
+    m = re.search(r'const tiers=\(tradeMode===\'simple\'\|\|!allPkgs\)\?\[selTier\]:enabledTiers\(\);', js)
+    assert m, (
+        'the trade loop went back to a single tier — every offered package '
+        'needs its own detail table'
+    )
+    assert 'const allPkgs = pv.allPackages !== false;' in js, (
+        'the All Packages print chip must default ON'
+    )
+
+
+def test_print_collapses_packages_that_sell_the_same_thing():
+    """Three copies of one table is not a comparison. Two packages merge only
+    when scope AND price match — `sig` is the rendered rows plus the subtotal,
+    so a tier that differs by one line or one dollar still prints separately."""
+    js = _js()
+    m = re.search(r'function printTradeBody\(trade, tier, o\).*?\n\}', js, re.S)
+    assert m, 'printTradeBody not found'
+    assert "sig: body + '|' + subtotal.toFixed(2)" in m.group(0), (
+        'the signature stopped covering price, so two packages with the same '
+        'scope at different money would collapse into one'
+    )
+    assert 'if(last&&last.sig===b.sig){ last.tiers.push(b.tier); return; }' in js
+
+
+def test_an_unbuilt_package_prints_no_empty_table():
+    """A tier the rep never built has no items in scope. It must not print a
+    heading over an empty table with a $0.00 subtotal — that reads as a package
+    being offered for nothing."""
+    m = re.search(r'function printTradeBody\(trade, tier, o\).*?\n\}', _js(), re.S)
+    body = m.group(0)
+    assert "if (!inTier.length) return { body: '', subtotal: 0, sig: '' };" in body
+    assert "if (!body) return { body: '', subtotal: 0, sig: '' };" in body, (
+        'a tier whose only items are customer-hidden still renders no rows'
+    )
+    assert '.filter(b=>b.body);' in _js(), 'the caller must drop the empty tiers'
+
+
+def test_the_grand_total_names_its_package_when_several_are_shown():
+    """"Project Total $10,907.69" printed under a Best subtotal of $19,461.54
+    reads as arithmetic that doesn't add up."""
+    js = _js()
+    assert "const totalLbl=multiPkgPrinted" in js
+    assert "'Project Total — '" in js
+    assert re.search(r"if\(!uniform\) multiPkgPrinted=true;", js), (
+        'packages that all sell the same scope print one plain table, so the '
+        'total should stay plain too'
+    )
+
+
 def test_a_new_other_row_starts_at_quantity_one():
     """tradeTotal drops zero-qty lines even when the sell price is locked, so a
     hand-entered allowance with a blank qty priced at $0 and never printed —

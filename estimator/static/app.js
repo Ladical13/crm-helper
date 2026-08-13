@@ -3386,6 +3386,8 @@ function renderPrintPagesBar() {
     { id:'pricing',    label:'Pricing',      on: pv.pricing    !== false,        always: false },
     { id:'linePrices', label:'Line Prices', on: pv.linePrices === true,         always: false },
     { id:'options',    label:'Options',     on: pv.options    !== false,        always: false },
+    // Off = the old behavior, detail tables for the selected package only.
+    { id:'allPackages', label:'All Packages', on: pv.allPackages !== false,     always: false },
     { id:'contract', label:'Contract',     on: S.print_contract !== false,     always: false },
     { id:'report',   label:'Roof Health',  on: pv.report  !== false,           always: false },
   ];
@@ -9716,6 +9718,67 @@ async function doPrint() {
 window.addEventListener('beforeprint', () => { _printDialogOpened = true; buildPrintContent(); });
 window.addEventListener('afterprint',  ()=>{document.getElementById('print-content').innerHTML='';});
 
+/* One trade's printed rows at ONE package tier. Returns {body, subtotal, sig},
+   or body:'' when nothing in this tier is in scope — a tier the rep never built
+   must not print an empty table under a package heading.
+
+   `sig` is the rows plus the subtotal, so the caller can tell two packages that
+   sell exactly the same scope at exactly the same price from two that differ.
+   Pulled out of buildPrintContent so every offered package renders through the
+   identical path — the selected tier having its own copy of this markup is how
+   the printed unit prices once drifted from the printed subtotal. */
+function printTradeBody(trade, tier, o) {
+  const td = S.trades[trade] || {};
+  const { showLP, tradeMode } = o;
+  const inTier = (td.line_items || []).filter(item => {
+    if ((parseFloat(item.quantity) || 0) <= 0) return false;
+    if (tradeMode === 'simple') return true;
+    return (item.tiers?.[tier]?.included) !== false;
+  });
+  if (!inTier.length) return { body: '', subtotal: 0, sig: '' };
+
+  // Unit sell via lineTotalEffective so the printed prices honor per-tier
+  // margins AND locked price overrides — the raw cost/(1-rate) formula here
+  // previously priced every tier at the GOOD tier's rate, disagreeing with the
+  // printed subtotal.
+  const sellOf = item => {
+    if (tradeMode === 'simple') return parseFloat(item.unit_price) || 0;
+    const q = parseFloat(item.quantity) || 0;
+    return q > 0 ? lineTotalEffective(item, tier, trade) / q : 0;
+  };
+  const rowFor = item => {
+    let desc = '', notes = '';
+    if (tradeMode === 'simple') { desc = (item.description || '').trim(); }
+    else { const t = (item.tiers && item.tiers[tier]) || {}; desc = (t.description || '').trim(); notes = (t.notes || '').trim(); }
+    const sell = sellOf(item);
+    const tot  = sell * (parseFloat(item.quantity) || 0);
+    return `<tr>
+      <td>${esc(item.name)}
+        ${desc?`<div class="p-desc-sub">${esc(desc).replace(/\n/g,'<br>')}</div>`:''}
+        ${notes?`<div class="p-desc-sub" style="font-style:italic;color:#555">${esc(notes).replace(/\n/g,'<br>')}</div>`:''}
+      </td>
+      <td class="p-right">${item.quantity||0}</td>
+      <td>${esc(displayUnit(item))}</td>
+      ${showLP?`<td class="p-right">${fmtCur(sell)}</td><td class="p-right">${fmtCur(tot)}</td>`:''}
+    </tr>`;
+  };
+  const hasSections = tradeSections(trade).length > 0;
+  const cols = showLP ? 5 : 3;
+  const body = groupedTradeItems(trade, inTier).map(g => {
+    const rows = g.items.filter(i => i.customer_visible !== false).map(rowFor).join('');
+    if (!g.items.length || (!rows && !hasSections)) return '';
+    const hd = hasSections?`<tr class="p-section-row"><td colspan="${cols}">${esc(g.name||'General')}</td></tr>`:'';
+    // Per-section subtotal (sections only) — includes customer-hidden items so
+    // section subtotals sum to the trade subtotal.
+    const secTot = g.items.reduce((s,i)=>s+sellOf(i)*(parseFloat(i.quantity)||0),0);
+    const sub = hasSections?`<tr class="p-section-sub"><td colspan="${cols-1}" class="p-right">${esc(g.name||'General')} Subtotal</td><td class="p-right">${fmtCur(secTot)}</td></tr>`:'';
+    return hd + rows + sub;
+  }).join('');
+  if (!body) return { body: '', subtotal: 0, sig: '' };
+  const subtotal = tradeTotal(trade, tier);
+  return { body, subtotal, sig: body + '|' + subtotal.toFixed(2) };
+}
+
 function buildPrintContent() {
   const tier=S.selected_tier;
   const c=S.customer;
@@ -9927,6 +9990,17 @@ function buildPrintContent() {
         ? 'Packages: '+_pkgTrades.map(gt=>`${TRADE_LABELS[gt]} — ${TIER_LABELS[tradeTier(gt)]}`).join(' · ')
         : 'Package: '+TIER_LABELS[tradeTier(_pkgTrades[0])]
     }</div>`;
+    /* ── Detail tables: ONE PER OFFERED PACKAGE ──────────────────────────
+       A G/B/B trade prints every package it offers, not only the selected
+       one. Online the customer taps between packages and the page swaps the
+       item list underneath; on paper there is nothing to tap, so printing the
+       selected tier alone left a Best package priced on the options card with
+       its scope nowhere in the document — the customer could read the price of
+       the TPO roof but never what it included. Turn it off with the "All
+       Packages" print chip to go back to selected-only. */
+    const showLP  = pv.linePrices === true;
+    const allPkgs = pv.allPackages !== false;
+    let multiPkgPrinted = false;
     TRADES.filter(t=>t!=='insurance').forEach(trade=>{
       // Belt-and-braces. doLoadEstimate backfills the full trade skeleton, so
       // this should always be populated — but printing is the last step before
@@ -9934,77 +10008,58 @@ function buildPrintContent() {
       // kill Print / PDF outright, with the button appearing to do nothing.
       const td=S.trades[trade];
       if(!td?.enabled||!(td.line_items||[]).length)return;
-      const tier=tradeTier(trade);   // each product prints at ITS chosen package
       const tradeMode=effectiveTradeMode(trade, td);
-      const _shown=td.line_items.filter(item=>{
-        if((parseFloat(item.quantity)||0)<=0) return false;
-        if(tradeMode==='simple') return true;
-        return (item.tiers?.[tier]?.included)!==false;
+      const selTier=tradeTier(trade);   // each product prints at ITS chosen package
+      const tiers=(tradeMode==='simple'||!allPkgs)?[selTier]:enabledTiers();
+
+      const built=tiers.map(t=>Object.assign({tier:t},
+        printTradeBody(trade,t,{showLP,tradeMode}))).filter(b=>b.body);
+      if(!built.length)return;
+      // Collapse packages whose scope AND pricing are identical — three copies
+      // of one table is not a comparison, it is three pages of noise.
+      const groups=[];
+      built.forEach(b=>{
+        const last=groups[groups.length-1];
+        if(last&&last.sig===b.sig){ last.tiers.push(b.tier); return; }
+        groups.push({sig:b.sig,body:b.body,subtotal:b.subtotal,tiers:[b.tier]});
       });
-      if(!_shown.length)return;
-      const subtot=tradeTotal(trade,tier);
+      // One group covering every offered package means the packages don't
+      // differ here — title it plainly rather than claiming a choice.
+      const uniform=groups.length===1&&groups[0].tiers.length===tiers.length;
+      if(!uniform) multiPkgPrinted=true;
+
       const colors=td.colors||{};
       const colorStr=Object.entries(colors).filter(([,v])=>v).map(([k,v])=>`${cap(k.replace(/_/g,' '))}: ${v}`).join(' · ');
-      const showLP = pv.linePrices === true;
-      ph+=`<div class="p-trade">
-        <div class="p-trade-title">${TRADE_LABELS[trade]}
+      groups.forEach(g=>{
+        const pkg=g.tiers.map(t=>TIER_LABELS[t]).join(' & ')
+                 +' Package'+(g.tiers.length>1?'s':'');
+        const title=uniform?TRADE_LABELS[trade]:`${TRADE_LABELS[trade]} — ${pkg}`;
+        const subLbl=uniform?`${TRADE_LABELS[trade]} Subtotal`:`${pkg} Subtotal`;
+        const sel=!uniform&&g.tiers.includes(selTier);
+        ph+=`<div class="p-trade${sel?' p-trade-chosen':''}">
+        <div class="p-trade-title">${esc(title)}
+          ${sel?'<span class="p-trade-tag">SELECTED</span>':''}
           ${colorStr?`<span style="font-size:9pt;font-weight:400;color:#555;margin-left:10pt">· ${esc(colorStr)}</span>`:''}
         </div>
         <table class="p-table"><thead><tr>
           <th>Description</th><th class="p-right">Qty</th><th>Unit</th>
           ${showLP?`<th class="p-right">Unit Price</th><th class="p-right">Total</th>`:''}
-        </tr></thead><tbody>
-          ${(()=>{
-            const inTier = td.line_items.filter(item=>{
-              if((parseFloat(item.quantity)||0)<=0) return false;
-              if(tradeMode==='simple') return true;
-              return (item.tiers?.[tier]?.included)!==false;
-            });
-            // Unit sell via lineTotalEffective so the printed prices honor
-            // per-tier margins AND locked price overrides — the raw
-            // cost/(1-rate) formula here previously priced every tier at the
-            // GOOD tier's rate, disagreeing with the printed subtotal.
-            const sellOf=item=>{
-              if(tradeMode==='simple') return parseFloat(item.unit_price)||0;
-              const q=parseFloat(item.quantity)||0;
-              return q>0 ? lineTotalEffective(item,tier,trade)/q : 0;
-            };
-            const rowFor=item=>{
-              let desc='',notes='';
-              if(tradeMode==='simple'){ desc=(item.description||'').trim(); }
-              else { const t=(item.tiers&&item.tiers[tier])||{}; desc=(t.description||'').trim(); notes=(t.notes||'').trim(); }
-              const sell=sellOf(item);
-              const tot=sell*(parseFloat(item.quantity)||0);
-              return `<tr>
-                <td>${esc(item.name)}
-                  ${desc?`<div class="p-desc-sub">${esc(desc).replace(/\n/g,'<br>')}</div>`:''}
-                  ${notes?`<div class="p-desc-sub" style="font-style:italic;color:#555">${esc(notes).replace(/\n/g,'<br>')}</div>`:''}
-                </td>
-                <td class="p-right">${item.quantity||0}</td>
-                <td>${esc(displayUnit(item))}</td>
-                ${showLP?`<td class="p-right">${fmtCur(sell)}</td><td class="p-right">${fmtCur(tot)}</td>`:''}
-              </tr>`;
-            };
-            const hasSections=tradeSections(trade).length>0;
-            const cols=showLP?5:3;
-            return groupedTradeItems(trade,inTier).map(g=>{
-              const rows=g.items.filter(i=>i.customer_visible!==false).map(rowFor).join('');
-              if(!g.items.length||( !rows && !hasSections)) return '';
-              const hd=hasSections?`<tr class="p-section-row"><td colspan="${cols}">${esc(g.name||'General')}</td></tr>`:'';
-              // Per-section subtotal (sections only) — includes customer-hidden
-              // items so section subtotals sum to the trade subtotal.
-              const secTot=g.items.reduce((s,i)=>s+sellOf(i)*(parseFloat(i.quantity)||0),0);
-              const sub=hasSections?`<tr class="p-section-sub"><td colspan="${cols-1}" class="p-right">${esc(g.name||'General')} Subtotal</td><td class="p-right">${fmtCur(secTot)}</td></tr>`:'';
-              return hd+rows+sub;
-            }).join('');
-          })()}
-        </tbody><tfoot><tr>
-          <td colspan="${showLP?4:2}">${TRADE_LABELS[trade]} Subtotal</td>
-          <td class="p-right">${fmtCur(subtot)}</td>
+        </tr></thead><tbody>${g.body}</tbody><tfoot><tr>
+          <td colspan="${showLP?4:2}">${esc(subLbl)}</td>
+          <td class="p-right">${fmtCur(g.subtotal)}</td>
         </tr></tfoot></table>
       </div>`;
+      });
     });
-    ph+=`<div class="p-grand-total"><span>Project Total</span><span>${fmtCur(selectedTotal())}</span></div>`;
+    // With several packages laid out, an unqualified "Project Total" beside a
+    // Best subtotal reads as arithmetic that doesn't add up. Name the package
+    // the number is for.
+    const totalLbl=multiPkgPrinted
+      ? 'Project Total — '+(packageTrades().length>1
+          ? packageTrades().map(gt=>`${TRADE_LABELS[gt]} ${TIER_LABELS[tradeTier(gt)]}`).join(' · ')
+          : TIER_LABELS[tradeTier(packageTrades()[0]||'roofing')]+' Package')
+      : 'Project Total';
+    ph+=`<div class="p-grand-total"><span>${esc(totalLbl)}</span><span>${fmtCur(selectedTotal())}</span></div>`;
   } else {
     const insTd=S.trades.insurance;
     const insCarrier=insTd?.carrier?` — ${esc(insTd.carrier)}`:'';
