@@ -305,6 +305,53 @@ def test_a_new_other_row_starts_at_quantity_one():
     )
 
 
+def test_changing_an_other_quantity_keeps_the_price_the_rep_typed():
+    """liSetQty deletes every locked price, which is right for a G/B/B trade —
+    a locked line total was locked against a quantity, so 10 SQ and 40 SQ must
+    not both cost $4,000, and the item's cost still drives a number afterwards.
+    On the Other tab the sell price is the ONLY price a rep enters, so deleting
+    it left $0, a $0 subtotal, and a row that never printed."""
+    js = _js()
+    m = re.search(r'function otherSetQty\(id, v\).*?\n\}', js, re.S)
+    assert m, 'otherSetQty not found'
+    body = m.group(0)
+    assert 'delete' not in body, 'the Other tab is wiping locked prices again'
+    assert 'cell.price_override = Math.round(unit * newQty * 100) / 100;' in body, (
+        'the per-unit price the rep typed has to survive a quantity change'
+    )
+    assert "onchange=\"otherSetQty('${item.id}',this.value)\"" in js, (
+        'the Other qty box went back to liSetQty'
+    )
+    # liSetQty calls rerender() but never renderTradeContent(), so the Other
+    # table kept showing money the data no longer held.
+    assert 'if (activePage === \'pricing\') renderTradeContent();' in body
+
+
+def test_the_other_sell_price_box_is_per_unit():
+    """It sits beside "Unit Cost" and matches the Simple tab. price_override
+    still stores the LINE TOTAL — tradeTotal, the PDF and the server all read
+    that — so the box divides on the way in and multiplies on the way out, and
+    no existing estimate changes value."""
+    js = _js()
+    assert 'const unitSell = qty > 0 ? tot / qty : 0;' in js
+    m = re.search(r'function otherSetPrice\(id, value\).*?\n\}', js, re.S)
+    assert m and 'Math.round(unit * (qty > 0 ? qty : 1) * 100) / 100' in m.group(0), (
+        'otherSetPrice stopped converting the per-unit box back to a line total'
+    )
+    assert '<th class="other-th-price">Total</th>' in js, (
+        'the Total column is what makes the per-unit box unambiguous'
+    )
+    assert '<td colspan="5" style="text-align:right' in js, (
+        'the Subtotal row has to span the new column count'
+    )
+
+
+def test_a_zero_qty_other_row_shows_the_zero_it_contributes():
+    """tradeTotal drops zero-qty lines, so printing the stored locked figure in
+    the Total column contradicted the subtotal directly below it."""
+    assert 'fmtCur(qty > 0 ? tot : 0)' in _js()
+
+
 def test_the_other_tab_locks_a_sell_price_on_every_tier():
     """The tab renders ONE tier and has no package UI, so a per-tier override
     was invisible: a $500 allowance typed on Better was $0 on Good and Best."""

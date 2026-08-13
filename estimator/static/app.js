@@ -4433,6 +4433,15 @@ function renderOtherFreeform() {
     const override = (t.price_override !== undefined && t.price_override !== null && t.price_override !== '')
       ? parseFloat(t.price_override) : null;
     const tot = override !== null ? override : calcTot;
+    // price_override stores the LINE TOTAL — that is what tradeTotal, the PDF
+    // and the server all read, and changing it would ripple through pricing
+    // parity. The BOX is per-unit, like the Unit Cost beside it and like the
+    // Simple tab's Sell Price; the unit figure is derived here and multiplied
+    // back out in otherSetPrice. A zero-qty row has no meaningful unit price,
+    // and its Total shows $0.00 rather than the stored figure: tradeTotal drops
+    // zero-qty lines, so showing the locked number would contradict the
+    // subtotal directly below it.
+    const unitSell = qty > 0 ? tot / qty : 0;
     return `<tr>
       <td class="other-name-cell">
         <input class="other-name-input" type="text" value="${esc(item.name)}" placeholder="Item name"
@@ -4446,7 +4455,7 @@ function renderOtherFreeform() {
         <input class="other-qty-input${qty>0?'':' other-qty-zero'}" type="number" inputmode="decimal"
           min="0" step="0.5" value="${item.quantity||''}" placeholder="1"
           title="${qty>0?'':'Quantity 0 — this line will not price and will not print. New items start at 1.'}"
-          onchange="liSetQty('${trade}','${item.id}',this.value)">
+          onchange="otherSetQty('${item.id}',this.value)">
       </td>
       <td>
         <select class="other-unit-select" onchange="liSetUnit('${trade}','${item.id}',this.value)">
@@ -4461,14 +4470,15 @@ function renderOtherFreeform() {
       <td class="other-price-cell">
         <div class="simple-price-wrap${override !== null ? ' has-override' : ''}">
           <input class="other-price-input" type="number" min="0" step="0.01"
-            value="${tot.toFixed(2)}"
-            title="${override !== null ? 'Locked sell price — margin changes won’t touch it. ↺ resets to cost + margin.'
-                     : 'Auto-calculated from cost + margin. Edit to lock a specific price.'}"
+            value="${unitSell.toFixed(2)}"
+            title="${override !== null ? 'Locked sell price PER ' + esc(item.unit||'EA') + ' — margin changes won’t touch it. ↺ resets to cost + margin.'
+                     : 'Price per ' + esc(item.unit||'EA') + ', auto-calculated from cost + margin. Edit to lock a specific price.'}"
             onchange="otherSetPrice('${item.id}',this.value)">
           ${override !== null ? `<button class="li-override-reset" title="Reset to margin-calculated price"
             onclick="otherClearPrice('${item.id}')">↺</button>` : ''}
         </div>
       </td>
+      <td class="other-total-cell">${fmtCur(qty > 0 ? tot : 0)}</td>
       <td><button class="li-del" onclick="liDelete('${trade}','${item.id}')" title="Remove">×</button></td>
     </tr>`;
   }).join('');
@@ -4495,11 +4505,12 @@ function renderOtherFreeform() {
             <th class="other-th-num">Unit</th>
             <th class="other-th-price">Unit Cost</th>
             <th class="other-th-price">Sell Price</th>
+            <th class="other-th-price">Total</th>
             <th style="width:32px"></th>
           </tr></thead>
           <tbody>${rows}</tbody>
           <tfoot><tr>
-            <td colspan="4" style="text-align:right;padding-right:12px;font-weight:600">Subtotal</td>
+            <td colspan="5" style="text-align:right;padding-right:12px;font-weight:600">Subtotal</td>
             <td class="other-total-cell" style="font-weight:700;font-size:14px">${fmtCur(subtot)}</td>
             <td></td>
           </tr></tfoot>
@@ -4553,11 +4564,47 @@ function otherSetDesc(id, v) {
    cost and description boxes follow. Per-tier would be a trap the tab cannot
    show: it renders ONE tier at a time with no package UI, so a $500 allowance
    typed while Better was selected priced at $500 on Better and $0 on Good and
-   Best, and the rep had no way to see it. */
+   Best, and the rep had no way to see it.
+
+   `value` is a PER-UNIT price (the box sits beside Unit Cost and matches the
+   Simple tab); price_override stores the line total, so multiply back out. */
 function otherSetPrice(id, value) {
   const item = findItem('other', id);
   if (!item) return;
-  TIERS.forEach(tier => otherApplyPrice(item, tier, value));
+  const qty = parseFloat(item.quantity) || 0;
+  const unit = parseFloat(value);
+  const total = (!value || isNaN(unit)) ? value
+              : Math.round(unit * (qty > 0 ? qty : 1) * 100) / 100;
+  TIERS.forEach(tier => otherApplyPrice(item, tier, total));
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
+/* Quantity on the Other tab. liSetQty DELETES every locked price, which is
+   right for a G/B/B trade — a locked line total was locked against a quantity,
+   so 10 SQ and 40 SQ must not both cost $4,000, and the item's cost still
+   drives a sensible number afterwards. On this tab the sell price is the only
+   price a rep enters, so deleting it left $0, a $0 subtotal, and a row that
+   never printed. Rescale instead: the per-unit price the rep typed survives,
+   which is the whole point of the box being per-unit.
+
+   It also re-renders the tab. liSetQty calls rerender() alone, so the Other
+   table kept showing the old money after the data had already changed. */
+function otherSetQty(id, v) {
+  const item = findItem('other', id);
+  if (!item) return;
+  const oldQty = parseFloat(item.quantity) || 0;
+  const newQty = parseFloat(v) || 0;
+  TIERS.forEach(tier => {
+    const cell = item.tiers && item.tiers[tier];
+    if (!cell) return;
+    const po = cell.price_override;
+    if (po === undefined || po === null || po === '') return;
+    // A row sitting at qty 0 has a stored total that never priced anything;
+    // read it as the unit price the rep meant rather than scaling from zero.
+    const unit = oldQty > 0 ? (parseFloat(po) || 0) / oldQty : (parseFloat(po) || 0);
+    cell.price_override = Math.round(unit * newQty * 100) / 100;
+  });
+  item.quantity = newQty;
   setDirty(); rerender();
   if (activePage === 'pricing') renderTradeContent();
 }
