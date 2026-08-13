@@ -3,6 +3,7 @@
 Mounted at '/' by portal.wsgi. Everything under /canvass, /crm, and /estimate
 is a different Flask app; this one owns identity and the front door.
 """
+import io
 import os
 
 from flask import (Flask, jsonify, redirect, request, send_from_directory,
@@ -377,6 +378,33 @@ def revoke_invite(code):
         return denied
     users.revoke_invite(code)
     return jsonify({'ok': True})
+
+
+# ── Database backup ──────────────────────────────────────────────────────────
+
+@app.route('/api/backup/databases')
+def backup_databases():
+    """Consistent snapshot of portal.db, salescrm.db and canvasser.db.
+
+    **Admin, not manager.** The note this came from said "manager-only", but
+    portal.db holds every password hash in the company, and a manager who can
+    download it can take those hashes offline and work on an admin's. That is
+    a privilege escalation dressed as a backup. Managers keep the reporting
+    exports they already have; whole-database dumps stay with admins.
+
+    Matches the estimator's /api/backup: synchronous, no size cap. Three small
+    SQLite files zip to a few MB, and the snapshot never blocks a writer.
+    """
+    denied = _admin_only()
+    if denied:
+        return denied
+    from flask import send_file
+
+    from portal import backup as pbackup
+
+    data, _manifest = pbackup.build_zip()
+    return send_file(io.BytesIO(data), mimetype='application/zip',
+                     as_attachment=True, download_name=pbackup.filename())
 
 
 # ── Launcher + shell assets ──────────────────────────────────────────────────
