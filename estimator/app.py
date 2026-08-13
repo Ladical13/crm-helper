@@ -1961,13 +1961,81 @@ def _gbb_trade_keys(est):
     return out
 
 
+def _package_trade_keys(est):
+    """Trades presented to the customer as a Good/Better/Best choice.
+
+    Drops `other`, which is a G/B/B trade by data shape only — its Pricing tab
+    shows one tier at a time and writes cost and description to all three, so
+    offering it as a package renders three identical columns. It still gets its
+    own line-item table everywhere. Mirrors packageTrades() in app.js."""
+    return [tk for tk in _gbb_trade_keys(est) if tk != 'other']
+
+
+def _tier_bullets_are_stale(pb, est, trade, tier):
+    """Have this tier's stored bullets/tagline stopped describing what it sells?
+
+    tier_features / tier_descriptions are written by a bundle pick (and, before
+    it was retired, by the Options tab). Nothing rewrites them when a rep builds
+    the package by hand, so a customer reads "Architectural laminate shingle
+    system - lifetime limited warranty" over a rolled-roofing line item, and
+    there is no editor left to correct it. Stale means either the tier is
+    __custom__, or it still names a bundle but none of that bundle's products is
+    priced in the tier any more. A pre-bundle estimate carries no tier_bundles
+    at all; those bullets were curated by hand and are left alone.
+
+    MUST mirror tierBulletsAreStale in app.js."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    tb = td.get('tier_bundles')
+    if not isinstance(tb, dict):
+        return False                      # pre-bundle estimate - hand-curated
+    items = td.get('line_items') or []
+    # Only judge a trade the bundles actually built. Items created by
+    # applyBundleToTier carry catalog_id; a hand-shaped trade has none, and
+    # without that evidence there is no bundle whose leftover copy this could
+    # be - the bullets are the rep's own and stay.
+    if not any(it.get('catalog_id') for it in items):
+        return False
+    bid = str(tb.get(tier) or '').strip()
+    if bid == '__custom__':
+        return True
+    if not bid:
+        return False
+    bundle = next((b for b in (pb.get(trade + '_bundles') or [])
+                   if isinstance(b, dict) and b.get('id') == bid), None)
+    ids = set(bundle.get('product_ids') or []) if bundle else set()
+    if not ids:
+        return False                      # bundle gone from the book - no call to make
+    for it in items:
+        if it.get('catalog_id') not in ids:
+            continue
+        if float(it.get('quantity') or 0) <= 0:
+            continue
+        if ((it.get('tiers') or {}).get(tier) or {}).get('included') is False:
+            continue
+        return False
+    return True
+
+
+def _tier_card_content(pb, est, trade, tier, tfeat, tdesc):
+    """(bullets, tagline) for one package card — the stored pair when it still
+    matches the tier's line items, the autofill built from those line items
+    when it doesn't. One helper so the customer page, the presentation and the
+    AI feed can never disagree about what a package includes."""
+    if _tier_bullets_are_stale(pb, est, trade, tier):
+        return _autofill_tier_features(est, trade, tier), ''
+    feats = [str(f).strip() for f in (tfeat.get(tier) or []) if str(f).strip()]
+    if not feats:
+        feats = _autofill_tier_features(est, trade, tier)
+    return feats, (tdesc.get(tier) or '').strip()
+
+
 def _pick_summary_label(est):
     """Human label for what was/is selected: 'Better Package' for a single
     G/B/B product, 'Roofing: Better · Siding: Good' for a mix."""
     tls  = dict(roofing='Roofing', siding='Siding', windows='Windows',
                 gutters='Gutters', commercial='Commercial', other='Other / Misc')
     lbls = dict(good='Good', better='Better', best='Best')
-    tks  = [tk for tk in _gbb_trade_keys(est)
+    tks  = [tk for tk in _package_trade_keys(est)
             if ((est.get('trades') or {}).get(tk) or {}).get('line_items')]
     if not tks:
         return ''
@@ -4068,11 +4136,11 @@ def _build_estimate_manifest(est):
             tfeat, tdesc = _trade_tier_content(est, tk)
             tnames = _tier_package_names(est, tk)
             tiers_info = []
+            stale_by_tier = {t: _tier_bullets_are_stale(pb, est, tk, t)
+                             for t in enabled_tiers}
             for t in enabled_tiers:
                 sub = _trade_subtotal(est, tk, t)
-                feats = [str(x).strip() for x in (tfeat.get(t) or []) if str(x).strip()]
-                if not feats:
-                    feats = _autofill_tier_features(est, tk, t)
+                feats, tag_stored = _tier_card_content(pb, est, tk, t, tfeat, tdesc)
                 bundle_id  = _bundle_id_for_tier(pb, est, tk, t)
                 mat        = _material_product_for_bundle(pb, tk, bundle_id) or {}
                 bundle_rec = None
@@ -4080,12 +4148,19 @@ def _build_estimate_manifest(est):
                     if isinstance(b, dict) and b.get('id') == bundle_id:
                         bundle_rec = b
                         break
+                # Same rule as the tagline: a stale bundle must not name a
+                # package it no longer supplies.
                 pkg_name = (str(tnames.get(t) or '').strip()
-                            or (bundle_rec.get('name') if bundle_rec else '')
+                            or ('' if stale_by_tier[t]
+                                else (bundle_rec.get('name') if bundle_rec else ''))
                             or '')
-                tagline  = ((tdesc.get(t) or '').strip()
-                            or (bundle_rec.get('description') if bundle_rec else '')
-                            or '')
+                # A hand-built tier gets no tagline at all — neither the stored
+                # one nor the bundle's, since the bundle is no longer what this
+                # package sells.
+                tagline  = '' if stale_by_tier[t] else (
+                    tag_stored
+                    or (bundle_rec.get('description') if bundle_rec else '')
+                    or '')
                 tiers_info.append({
                     'tier':          t,
                     'tier_label':    dict(good='Good', better='Better', best='Best')[t],
@@ -4775,7 +4850,9 @@ def build_customer_view(est, token):
 
     # Each G/B/B product gets its own package choice; simple-mode trades are
     # priced as-is and always shown. Total = sum of the customer's picks.
-    gbb_tks    = [tk for tk in _gbb_trade_keys(est)
+    # `other` falls into simple_tks and renders as a plain table — its own
+    # tier math still applies, render_line_items reads _trade_mode itself.
+    gbb_tks    = [tk for tk in _package_trade_keys(est)
                   if ((est.get('trades') or {}).get(tk) or {}).get('line_items')]
     simple_tks = [tk for tk in GBB_TRADES if tk not in gbb_tks]
     multi      = len(gbb_tks) > 1
@@ -4802,7 +4879,9 @@ def build_customer_view(est, token):
         cards_html = ''
         for t in enabled_tiers:
             total  = totals[tk][t]
-            desc   = (tdesc.get(t) or '').strip()
+            # Bullets + tagline that actually match this tier's line items —
+            # see _tier_card_content.
+            feats, desc = _tier_card_content(pb, est, tk, t, tfeat, tdesc)
             clr    = tier_clrs[t]
             bg     = tier_bgs[t]
             lbl    = tier_lbls[t]
@@ -4811,13 +4890,6 @@ def build_customer_view(est, token):
             desc_el = f'<div class="cv-tier-desc">{he(desc)}</div>' if desc else ''
             sysname = str(tnames.get(t) or '').strip()
             sys_el  = f'<div class="cv-tier-system">{he(sysname)}</div>' if sysname else ''
-            # "What's Included" bullets the rep curates on the Options page — shown
-            # to the customer making the Good/Better/Best decision. If the rep hasn't
-            # curated any, fall back to the priced-items autofill so the card is
-            # never empty (windows especially — no bundle seeds them).
-            feats = [str(f).strip() for f in (tfeat.get(t) or []) if str(f).strip()]
-            if not feats:
-                feats = _autofill_tier_features(est, tk, t)
             feats_el = ''
             if feats:
                 feats_el = ('<ul class="cv-tier-feats">'
@@ -5261,7 +5333,11 @@ def build_presentation_view(est, token):
     trade_lbls = dict(roofing='Roofing', siding='Siding', windows='Windows',
                       gutters='Gutters', other='Other / Misc')
 
-    gbb_tks    = [tk for tk in _gbb_trade_keys(est)
+    # Needed to tell a still-current bundle from one the rep replaced by hand —
+    # see _tier_bullets_are_stale.
+    pb = _ensure_bundle_catalogs(_load_price_book())
+
+    gbb_tks    = [tk for tk in _package_trade_keys(est)
                   if ((est.get('trades') or {}).get(tk) or {}).get('line_items')]
     simple_tks = [tk for tk in GBB_TRADES if tk not in gbb_tks]
     multi      = len(gbb_tks) > 1
@@ -5273,8 +5349,12 @@ def build_presentation_view(est, token):
         # Compute per-trade defaults + totals up front so the sign slide can
         # reach them, then emit ONE slide per trade — cards, details, subtotal.
         is_staff = bool(session.get('user'))
-        edit_hint = ('<div class="ps-pkg-edit-hint">Edit taglines &amp; bullets on the '
-                     'Options tab in the estimator</div>') if is_staff else ''
+        # The Options tab that used to edit these is gone. Bullets now track the
+        # Pricing tab's line items whenever the stored copy has gone stale, so
+        # the hint points a rep at the place that actually changes them.
+        edit_hint = ('<div class="ps-pkg-edit-hint">These bullets come from the '
+                     'package bundle, or from your line items when you build a '
+                     'package by hand — edit them on the Pricing tab</div>') if is_staff else ''
         for tk in gbb_tks:
             tfeat, tdesc = _trade_tier_content(est, tk)
             tnames = _tier_package_names(est, tk)
@@ -5287,7 +5367,7 @@ def build_presentation_view(est, token):
             cards = ''
             for t in enabled_tiers:
                 total  = totals[tk][t]
-                desc   = (tdesc.get(t) or '').strip()
+                feats, desc = _tier_card_content(pb, est, tk, t, tfeat, tdesc)
                 clr    = tier_clrs[t]
                 bg     = tier_bgs[t]
                 lbl    = tier_lbls[t]
@@ -5296,9 +5376,6 @@ def build_presentation_view(est, token):
                 desc_e = f'<div class="pt-desc">{he(desc)}</div>' if desc else ''
                 sysname = str(tnames.get(t) or '').strip()
                 sys_e   = f'<div class="pt-sys">{he(sysname)}</div>' if sysname else ''
-                feats = [str(f).strip() for f in (tfeat.get(t) or []) if str(f).strip()]
-                if not feats:
-                    feats = _autofill_tier_features(est, tk, t)
                 feats_e = ''
                 if feats:
                     feats_e = ('<ul class="pt-feats">'

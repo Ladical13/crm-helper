@@ -187,6 +187,50 @@ function tradeTierContent(trade) {
   if (!td.tier_descriptions) td.tier_descriptions = { good:'', better:'', best:'' };
   return { features: td.tier_features, descriptions: td.tier_descriptions };
 }
+/* ── Do a tier's stored bullets still describe what it actually sells? ─────
+   tier_features / tier_descriptions are written by a bundle pick (and, before
+   it was retired, by the Options tab). Nothing rewrites them when a rep builds
+   the package by hand, so they go stale silently and the customer reads
+   "Architectural laminate shingle system — lifetime limited warranty" over a
+   rolled-roofing line item. There is no editor left to fix that by hand.
+
+   Stale means one of two things, and both are checked against the estimate's
+   own data rather than guessed:
+     · the tier is __custom__ — the rep is building a package the price book
+       doesn't sell, so the copy belongs to whatever bundle was there before;
+     · the tier still names a bundle, but not one of that bundle's products is
+       priced in this tier any more — the rep replaced the whole system without
+       touching the dropdown.
+   A pre-bundle estimate has no tier_bundles at all. Those bullets were curated
+   by hand on the Options tab and are the best copy that estimate will ever
+   have, so leave them alone — MUST mirror _tier_bullets_are_stale in app.py. */
+function tierBulletsAreStale(trade, tier) {
+  const td = S.trades[trade] || {};
+  const tb = td.tier_bundles;
+  if (!tb) return false;                 // pre-bundle estimate — hand-curated
+  const items = td.line_items || [];
+  // Only judge a trade the bundles actually built. Items created by
+  // applyBundleToTier carry catalog_id; a hand-shaped trade has none, and
+  // without that evidence there is no bundle whose leftover copy this could
+  // be — the bullets are the rep's own and stay.
+  if (!items.some(it => it.catalog_id)) return false;
+  const bid = (tb[tier] || '').trim();
+  if (bid === '__custom__') return true;
+  if (!bid) return false;
+  const ids = new Set((_tradeBundle(trade, bid) || {}).product_ids || []);
+  if (!ids.size) return false;           // bundle deleted from the book — no call to make
+  return !items.some(it =>
+    ids.has(it.catalog_id) &&
+    (parseFloat(it.quantity) || 0) > 0 &&
+    ((it.tiers || {})[tier] || {}).included !== false);
+}
+/* Trades that print as a Good/Better/Best package choice. `other` is a G/B/B
+   trade by data shape only: its tab shows one tier at a time and writes cost
+   and description to ALL THREE (otherSetUnitCost / otherSetDesc), so offering
+   it as a package prints three identical columns — $0.00 / $0.00 on an
+   estimate where the extras were never given a quantity. It still prints its
+   own line-item table like every other trade. */
+function packageTrades() { return gbbTrades().filter(t => t !== 'other'); }
 
 /* ── Estimate sections (structures / roof areas) ──────────────────────
    A trade's items can be grouped under named sections ("Main House",
@@ -4381,6 +4425,7 @@ function renderOtherFreeform() {
 
   const rows = items.map(item => {
     const t    = (item.tiers && item.tiers[tier]) || {material_unit_cost:0,labor_unit_cost:0,notes:''};
+    const qty  = parseFloat(item.quantity) || 0;
     const cost = (parseFloat(t.material_unit_cost)||0) + (parseFloat(t.labor_unit_cost)||0);
     const calcTot  = lineTotal(item.quantity, t.material_unit_cost, t.labor_unit_cost, trade, tier);
     const override = (t.price_override !== undefined && t.price_override !== null && t.price_override !== '')
@@ -4396,8 +4441,10 @@ function renderOtherFreeform() {
           >${esc(t.description||'')}</textarea>
       </td>
       <td class="other-qty-cell">
-        <input class="other-qty-input" type="number" inputmode="decimal" min="0" step="0.5" value="${item.quantity||''}"
-          placeholder="1" onchange="liSetQty('${trade}','${item.id}',this.value)">
+        <input class="other-qty-input${qty>0?'':' other-qty-zero'}" type="number" inputmode="decimal"
+          min="0" step="0.5" value="${item.quantity||''}" placeholder="1"
+          title="${qty>0?'':'Quantity 0 — this line will not price and will not print. New items start at 1.'}"
+          onchange="liSetQty('${trade}','${item.id}',this.value)">
       </td>
       <td>
         <select class="other-unit-select" onchange="liSetUnit('${trade}','${item.id}',this.value)">
@@ -4415,9 +4462,9 @@ function renderOtherFreeform() {
             value="${tot.toFixed(2)}"
             title="${override !== null ? 'Locked sell price — margin changes won’t touch it. ↺ resets to cost + margin.'
                      : 'Auto-calculated from cost + margin. Edit to lock a specific price.'}"
-            onchange="liSetPriceOverride('${trade}','${item.id}','${tier}',this.value)">
+            onchange="otherSetPrice('${item.id}',this.value)">
           ${override !== null ? `<button class="li-override-reset" title="Reset to margin-calculated price"
-            onclick="liClearPriceOverride('${trade}','${item.id}','${tier}')">↺</button>` : ''}
+            onclick="otherClearPrice('${item.id}')">↺</button>` : ''}
         </div>
       </td>
       <td><button class="li-del" onclick="liDelete('${trade}','${item.id}')" title="Remove">×</button></td>
@@ -4498,6 +4545,39 @@ function otherSetDesc(id, v) {
     item.tiers[tier].description = v;
   });
   setDirty();
+}
+
+/* Sell price on the Other tab, locked across all three tiers — same rule the
+   cost and description boxes follow. Per-tier would be a trap the tab cannot
+   show: it renders ONE tier at a time with no package UI, so a $500 allowance
+   typed while Better was selected priced at $500 on Better and $0 on Good and
+   Best, and the rep had no way to see it. */
+function otherSetPrice(id, value) {
+  const item = findItem('other', id);
+  if (!item) return;
+  TIERS.forEach(tier => otherApplyPrice(item, tier, value));
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function otherClearPrice(id) {
+  const item = findItem('other', id);
+  if (!item) return;
+  TIERS.forEach(tier => { if (item.tiers[tier]) delete item.tiers[tier].price_override; });
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
+// One tier's half of otherSetPrice — mirrors liSetPriceOverride, including the
+// "same as the calculated price" case, which stores nothing so the line keeps
+// tracking margin instead of freezing at today's number.
+function otherApplyPrice(item, tier, value) {
+  if (!item.tiers[tier]) item.tiers[tier] = {material_unit_cost:0,labor_unit_cost:0,description:'',notes:''};
+  const cell = item.tiers[tier];
+  const v = parseFloat(value);
+  if (!value || isNaN(v)) { delete cell.price_override; return; }
+  const calc = lineTotal(item.quantity, cell.material_unit_cost || 0,
+                         cell.labor_unit_cost || 0, 'other', tier);
+  if (Math.abs(v - calc) < 0.01) delete cell.price_override;
+  else cell.price_override = v;
 }
 
 function otherSetUnitCost(id, cost) {
@@ -7072,8 +7152,15 @@ function liRevealZero(trade, id) {
 // it; everything else adds to all three tiers as before).
 function addLineItem(trade, tier) {
   const td = S.trades[trade];
+  // Other/Misc rows are hand-entered one-offs — an allowance, a haul-away, a
+  // repair charge — and there is no measurement to auto-fill their quantity,
+  // so qty 0 meant a rep typed a name and a sell price, saw the number in the
+  // box, and shipped an estimate that priced it at $0 and never printed it
+  // (tradeTotal drops zero-qty lines even with a locked price). The qty box
+  // already showed a "1" placeholder; start there for real. Every other trade
+  // keeps 0 — its quantity comes from the measurements.
   const item = {
-    id:uid(), name:'', unit:'EA', quantity:0, scope_note:'',
+    id:uid(), name:'', unit:'EA', quantity: trade==='other' ? 1 : 0, scope_note:'',
     customer_visible: true, _showZero: true,
     tiers:{
       good:  {material_unit_cost:0,labor_unit_cost:0,description:'',notes:''},
@@ -9774,7 +9861,7 @@ function buildPrintContent() {
     const out={};
     TIERS.forEach(t=>{
       const f=(content.features||{})[t];
-      if(f&&f.length){out[t]=f;return;}
+      if(f&&f.length&&!tierBulletsAreStale(trade,t)){out[t]=f;return;}
       const items=[];
       const tradeMode=effectiveTradeMode(trade, td);
       (td.line_items||[]).forEach(item=>{
@@ -9806,11 +9893,11 @@ function buildPrintContent() {
   // This MUST NOT be `=== 'retail'`: a new estimate type would silently print
   // a blank PDF, which is exactly what happened to commercial before this.
   if (estType !== 'insurance') {
-    if (pv.options !== false && !isAllSimple) gbbTrades().forEach(gt=>{
+    if (pv.options !== false && !isAllSimple) packageTrades().forEach(gt=>{
       const gtTier=tradeTier(gt);
       const disp=tradeDisplayItems(gt);
       const content=tradeTierContent(gt);
-      const multi=gbbTrades().length>1;
+      const multi=packageTrades().length>1;
       ph+=`<div class="p-pkg-comparison">
       <h2>${multi?esc(TRADE_LABELS[gt])+' — ':''}Your Options</h2>
       <table class="p-pkg-table"><thead><tr>
@@ -9820,7 +9907,10 @@ function buildPrintContent() {
       </tr></thead><tbody><tr>
         ${enabledTiers().map(t=>{
           const tot=tradeTotal(gt,t);
-          const desc=(content.descriptions||{})[t]||'';
+          // The tagline goes stale with the bullets it sits above — it names a
+          // system ("Architectural laminate shingle system"), so printing it
+          // over a hand-built package is the same lie in one line.
+          const desc=tierBulletsAreStale(gt,t)?'':((content.descriptions||{})[t]||'');
           return `<td>
             <span class="p-pkg-price">${fmtCur(tot)}</span>
             ${desc?`<span class="p-pkg-desc">${esc(desc)}</span>`:''}
@@ -9831,10 +9921,11 @@ function buildPrintContent() {
       </tr></tbody></table>
     </div>`;
     });
-    if (!isAllSimple) ph+=`<div class="p-package-banner">${
-      gbbTrades().length>1
-        ? 'Packages: '+gbbTrades().map(gt=>`${TRADE_LABELS[gt]} — ${TIER_LABELS[tradeTier(gt)]}`).join(' · ')
-        : 'Package: '+TIER_LABELS[gbbTrades().length?tradeTier(gbbTrades()[0]):tier]
+    const _pkgTrades = packageTrades();
+    if (!isAllSimple && _pkgTrades.length) ph+=`<div class="p-package-banner">${
+      _pkgTrades.length>1
+        ? 'Packages: '+_pkgTrades.map(gt=>`${TRADE_LABELS[gt]} — ${TIER_LABELS[tradeTier(gt)]}`).join(' · ')
+        : 'Package: '+TIER_LABELS[tradeTier(_pkgTrades[0])]
     }</div>`;
     TRADES.filter(t=>t!=='insurance').forEach(trade=>{
       // Belt-and-braces. doLoadEstimate backfills the full trade skeleton, so
