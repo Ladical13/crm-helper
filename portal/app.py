@@ -11,6 +11,7 @@ from flask import (Flask, jsonify, redirect, request, send_from_directory,
 from markupsafe import escape
 
 from portal import session as psession
+from portal import apibot
 from portal import throttle
 from portal import users
 from portal.mounts import MOUNTS
@@ -34,6 +35,11 @@ psession.configure(app)
 # still blocks anonymous requests first.
 app.register_blueprint(nimbus_bp)
 
+# The executive team's read-only token exchange. Registered on the portal app
+# only; the GET-only allowlist guard that bounds the principal it issues is
+# applied to all four apps by psession.configure().
+apibot.register(app)
+
 
 # ── Auth guard ───────────────────────────────────────────────────────────────
 # Default-deny, matching the estimator's model rather than the decorator model
@@ -47,6 +53,11 @@ PUBLIC_ENDPOINTS = {
     # Customer-facing estimator links that predate the merge. See the compat
     # redirects at the bottom of this file.
     'compat_sign', 'compat_sign_co', 'compat_upload',
+    # The executive team's token exchange. "Public" only in the sense that it
+    # is reachable without a cookie — it authenticates on X-P1-Token, is
+    # throttled per IP, and 404s unless P1_READONLY_TOKEN is set. The principal
+    # it hands out is GET-only and allowlisted. See portal/apibot.py.
+    'apibot_session',
 }
 
 

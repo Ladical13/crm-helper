@@ -128,6 +128,14 @@ def configure(app, max_content_length=None):
     if not getattr(app, '_p1_security_headers', False):
         app.after_request(_add_security_headers)
         app._p1_security_headers = True
+    # The read-only executive-team principal is bounded here rather than in
+    # each app, for the same reason the cookie config is: four copies of a
+    # security rule is three chances to forget one. Cheap on a normal request —
+    # it returns immediately unless the session belongs to apibot.
+    if not getattr(app, '_p1_apibot_guard', False):
+        from portal import apibot
+        app.before_request(apibot.guard)
+        app._p1_apibot_guard = True
     # Cap request bodies. Werkzeug buffers an upload into memory once the code
     # calls .read() on it, so without a limit one oversized POST can take a
     # whole gunicorn worker down — and with only two workers that is half the
