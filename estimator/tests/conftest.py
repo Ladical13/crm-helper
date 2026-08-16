@@ -23,11 +23,31 @@ sys.path.insert(0, ESTIMATOR_DIR)
 
 # Price book / tier defaults are read from DATA_DIR; copy the real ones in so
 # tests exercise the shipped configuration.
+#
+# company_content.json is the exception: it is gitignored, so on a fresh clone
+# and in CI there is nothing to copy and four tests that assert on its seeded
+# values fail. FIXTURES holds a stand-in for exactly that case. The real file
+# still wins whenever it is present, so this changes nothing on a machine that
+# has one — it only stops the suite depending on whether it does.
 import shutil
-for _f in ('price_book.json', 'tier_defaults.json', 'company_content.json'):
+
+FIXTURES = os.path.join(HERE_DIR := os.path.dirname(os.path.abspath(__file__)),
+                        'fixtures')
+
+
+def company_content_source():
+    """The company_content.json the suite should read — real if present."""
+    real = os.path.join(ESTIMATOR_DIR, 'company_content.json')
+    return real if os.path.exists(real) else os.path.join(FIXTURES, 'company_content.json')
+
+
+for _f in ('price_book.json', 'tier_defaults.json'):
     _src = os.path.join(ESTIMATOR_DIR, _f)
     if os.path.exists(_src):
         shutil.copy(_src, os.path.join(TEST_DATA_DIR, _f))
+
+shutil.copy(company_content_source(),
+            os.path.join(TEST_DATA_DIR, 'company_content.json'))
 
 import pytest
 import app as estimator_app

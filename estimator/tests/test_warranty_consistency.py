@@ -14,10 +14,15 @@ import os
 import re
 
 
+from conftest import company_content_source
+
 HERE   = os.path.dirname(os.path.abspath(__file__))
 EST    = os.path.dirname(HERE)
 APP_JS = os.path.join(EST, 'static', 'app.js')
-CC     = os.path.join(EST, 'company_content.json')
+# The real file when the machine has one, the test fixture otherwise — see
+# conftest. Hardcoding the repo path made this test pass only on machines that
+# had the gitignored file, which is every machine except CI's.
+CC     = company_content_source()
 
 
 def test_company_content_warranty_mentions_both_tiers():

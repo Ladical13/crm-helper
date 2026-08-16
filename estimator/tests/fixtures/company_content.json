@@ -1,0 +1,50 @@
+{
+  "_comment": [
+    "TEST FIXTURE — not real company content, never shipped, never seeded.",
+    "estimator/company_content.json is gitignored, so a fresh clone (and CI)",
+    "has no company content at all and four tests that assert on its seeded",
+    "values fail. conftest.py prefers the real file and falls back to this,",
+    "which makes those tests deterministic instead of dependent on whatever",
+    "happens to be on the machine.",
+    "",
+    "The warranty wording below is NOT invented: it mirrors _WARRANTY_BY_TIER",
+    "in app.py, which is tracked and is the structured source the PDF and the",
+    "JSON-LD already use. The reviews and certifications ARE invented, and are",
+    "deliberately obvious about it so nobody mistakes them for real customers.",
+    "",
+    "This unblocks the tests. It does NOT fix the underlying bug: app.py's",
+    "_seed_data_dir() lists company_content.json alongside five files that are",
+    "all tracked, so a rebuilt Railway volume still comes up with empty trust",
+    "blocks. Track the real file to close that. See CLAUDE.md."
+  ],
+  "about": {
+    "enabled": true,
+    "body": "Sample about-us copy for tests. The real text lives in the admin Settings page."
+  },
+  "warranty": {
+    "enabled": true,
+    "body": "Good and Better packages carry a 5-year workmanship warranty. The Best package carries a Lifetime workmanship warranty."
+  },
+  "certifications": {
+    "enabled": true,
+    "items": [
+      "Sample Manufacturer Certification (test fixture)",
+      "Sample Trade Association Membership (test fixture)"
+    ]
+  },
+  "reviews": {
+    "enabled": true,
+    "items": [
+      {
+        "stars": 5,
+        "name": "Sample Customer A",
+        "text": "Placeholder review text used only by the test suite."
+      },
+      {
+        "stars": 5,
+        "name": "Sample Customer B",
+        "text": "Placeholder review text used only by the test suite."
+      }
+    ]
+  }
+}

@@ -413,6 +413,28 @@ Per `lead_type`, three steps chosen by prior outreach count (0 → `first`,
 cd estimator && pytest                # 552 tests, <10s
 ```
 
+**Open bug: `company_content.json` is seeded but not shipped.** `app.py`'s
+`_seed_data_dir()` copies it into a fresh `DATA_DIR` alongside `price_book`,
+`tier_defaults`, `permit_defaults`, `jurisdictions` and `commercial_fastening`
+— all five of which are tracked. `company_content.json` is not: `.gitignore`
+lists it under *"Estimator — user data"* next to `config.json` and
+`users.json`, which really are sensitive. It is marketing copy, and looks
+swept in by association.
+
+Two consequences. The visible one: four tests asserting its seeded values
+failed on every fresh clone and in CI from 2026-08-04 until a test fixture was
+added on 2026-08-16 (`tests/fixtures/company_content.json`, used only when the
+real file is absent — see `conftest.company_content_source`). The one still
+open: `_seed_data_dir` copies `if os.path.exists(src)`, so **a rebuilt Railway
+volume comes up with empty About Us / Warranty / Certifications / Reviews on
+customer proposals** until an admin re-enters them in Settings. Today's volume
+has the file because someone typed it in, not because the repo ships it.
+
+Fix by tracking the real file once it is confirmed to hold no secrets, then
+delete the fixture fallback. Do **not** fix by making the tests skip — the
+workflow's final *"Fail if any test was skipped"* step exists precisely to
+stop that, and would fail the build anyway.
+
 **Run `pytest` before every estimator commit.** Two invariants it guards, both
 of which have already broken once:
 
