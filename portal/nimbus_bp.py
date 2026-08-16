@@ -60,6 +60,7 @@ def _shell():
 
 
 @nimbus_bp.route('/')
+@nimbus_bp.route('/supervisor')
 @nimbus_bp.route('/rep/<username>')
 @nimbus_bp.route('/marketing/topics')
 @nimbus_bp.route('/marketing/drafts')
@@ -691,6 +692,103 @@ def draft_from_topic(topic_id):
 
     threading.Thread(target=wrapped, daemon=True).start()
     return jsonify({'started': True}), 202
+
+
+# ── Supervisor ───────────────────────────────────────────────────────────────
+# The conversational layer. Its tools reach the rest of Nimbus through THIS
+# API, using the caller's own cookie — see agents/supervisor/tools.py. So the
+# supervisor is bounded by the same admin gate as the browser, and the cookie
+# has to be captured here, in the request, before the worker thread starts.
+
+def _supervisor_ctx():
+    """An in-process client authenticated as the caller, for the tool layer."""
+    from portal.wsgi import application
+    from werkzeug.test import Client
+    cookie = request.cookies.get('p1session')
+    if not cookie:
+        return None
+    client = Client(application)
+    client.set_cookie('p1session', cookie, domain='localhost')
+    return {'client': client, 'username': session.get('username', '')}
+
+
+@nimbus_bp.route('/api/supervisor/threads', methods=['GET'])
+def supervisor_threads():
+    from agents.supervisor import chat
+    chat.reap_stale_threads()
+    return jsonify({'threads': chat.list_threads(
+        limit=int(request.args.get('limit', 25)))})
+
+
+@nimbus_bp.route('/api/supervisor/threads', methods=['POST'])
+def supervisor_new_thread():
+    from agents.supervisor import chat
+    thread_id = chat.create_thread(session.get('username', ''))
+    return jsonify({'thread_id': thread_id}), 201
+
+
+@nimbus_bp.route('/api/supervisor/threads/<int:thread_id>', methods=['GET'])
+def supervisor_thread(thread_id):
+    from agents.supervisor import chat
+    chat.reap_stale_threads()
+    thread = chat.get_thread(thread_id)
+    if not thread:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify(thread)
+
+
+@nimbus_bp.route('/api/supervisor/threads/<int:thread_id>/message',
+                 methods=['POST'])
+def supervisor_message(thread_id):
+    """Queue one turn. Returns immediately; the client polls the thread.
+
+    A turn runs tool calls and can take tens of seconds. With two gunicorn
+    workers, holding the request open would block the rest of the portal —
+    same reason every other long Nimbus job returns 202.
+    """
+    from agents.supervisor import chat, client as sup_client
+    data = request.get_json(force=True, silent=True) or {}
+    text = (data.get('text') or '').strip()
+    if not text:
+        return jsonify({'error': 'text is required'}), 400
+
+    thread = chat.get_thread(thread_id)
+    if not thread:
+        return jsonify({'error': 'not found'}), 404
+    if thread['status'] == 'running':
+        return jsonify({'error': 'that thread is still working on the last '
+                                 'message'}), 409
+    if not sup_client.key_is_set():
+        return jsonify({'error': 'ANTHROPIC_API_KEY is not set — the '
+                                 'supervisor cannot run yet.'}), 503
+
+    ctx = _supervisor_ctx()
+    if ctx is None:
+        return jsonify({'error': 'no session cookie to forward'}), 400
+
+    chat.start_turn(thread_id, text, ctx)
+    return jsonify({'started': True, 'thread_id': thread_id}), 202
+
+
+@nimbus_bp.route('/api/supervisor/status', methods=['GET'])
+def supervisor_status():
+    """What the tab needs before it will let anyone type: is there a key, and
+    is there any budget left."""
+    from agents import config
+    from agents.supervisor import client as sup_client, tools as sup_tools
+    settings = config.load_settings()
+    cap = float(settings.get('supervisor_monthly_cap_usd', 50.0) or 0)
+    spent = sup_client.month_spend_usd()
+    return jsonify({
+        'key_set':        sup_client.key_is_set(),
+        'model':          settings.get('anthropic_model'),
+        'effort':         settings.get('supervisor_effort'),
+        'month_spend_usd': round(spent, 4),
+        'cap_usd':        cap,
+        'cap_reached':    bool(cap and spent >= cap),
+        'tool_count':     len(sup_tools.TOOLS),
+        'action_tools':   sorted(sup_tools.ACTION_TOOLS),
+    })
 
 
 # ── Pipeline pulse (proxy salescrm) ──────────────────────────────────────────

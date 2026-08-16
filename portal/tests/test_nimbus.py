@@ -292,3 +292,220 @@ def test_anonymous_gets_401_not_403(client, tmp_path_factory, monkeypatch):
     _fresh_agents_dir(tmp_path_factory, monkeypatch)
     r = client.get('/nimbus/api/territories')
     assert r.status_code == 401
+
+
+# ── Supervisor ───────────────────────────────────────────────────────────────
+
+def test_reps_get_403_on_every_supervisor_route(rep, tmp_path_factory, monkeypatch):
+    """The supervisor can start runs and read the whole pipeline. A rep
+    reaching it would bypass the per-rep visibility rules the CRM enforces."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    for path in ('/nimbus/supervisor', '/nimbus/api/supervisor/status',
+                 '/nimbus/api/supervisor/threads',
+                 '/nimbus/api/supervisor/threads/1'):
+        assert rep.get(path).status_code == 403, path
+    assert rep.post('/nimbus/api/supervisor/threads').status_code == 403
+    assert rep.post('/nimbus/api/supervisor/threads/1/message',
+                    json={'text': 'hi'}).status_code == 403
+
+
+def test_supervisor_tab_serves_the_shell(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    r = admin.get('/nimbus/supervisor')
+    assert r.status_code == 200
+    assert 'NIMBUS' in r.get_data(as_text=True)
+
+
+def test_supervisor_status_never_leaks_the_key(admin, tmp_path_factory,
+                                               monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-secret-value')
+    body = admin.get('/nimbus/api/supervisor/status').get_json()
+    assert body['key_set'] is True
+    assert 'secret-value' not in admin.get(
+        '/nimbus/api/supervisor/status').get_data(as_text=True)
+    assert body['tool_count'] > 0
+
+
+def test_a_thread_can_be_created_and_read_back(admin, tmp_path_factory,
+                                               monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    tid = admin.post('/nimbus/api/supervisor/threads').get_json()['thread_id']
+    thread = admin.get(f'/nimbus/api/supervisor/threads/{tid}').get_json()
+    assert thread['status'] == 'idle'
+    assert thread['messages'] == []
+    listed = admin.get('/nimbus/api/supervisor/threads').get_json()['threads']
+    assert tid in [t['id'] for t in listed]
+    assert admin.get('/nimbus/api/supervisor/threads/99999').status_code == 404
+
+
+def test_message_without_a_key_fails_loudly(admin, tmp_path_factory, monkeypatch):
+    """503 with a sentence, not a 500 traceback or a silent no-op — an unset
+    key is the most likely first-run state."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    tid = admin.post('/nimbus/api/supervisor/threads').get_json()['thread_id']
+    r = admin.post(f'/nimbus/api/supervisor/threads/{tid}/message',
+                   json={'text': 'what needs my attention?'})
+    assert r.status_code == 503
+    assert 'ANTHROPIC_API_KEY' in r.get_json()['error']
+
+
+def test_empty_message_is_rejected(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-test')
+    tid = admin.post('/nimbus/api/supervisor/threads').get_json()['thread_id']
+    r = admin.post(f'/nimbus/api/supervisor/threads/{tid}/message',
+                   json={'text': '   '})
+    assert r.status_code == 400
+
+
+def test_a_busy_thread_refuses_a_second_message(admin, tmp_path_factory,
+                                                monkeypatch):
+    """Two turns interleaving on one thread would corrupt the message history
+    the next API call is rebuilt from."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-test')
+    from agents.supervisor import chat
+    tid = admin.post('/nimbus/api/supervisor/threads').get_json()['thread_id']
+    chat._set_status(tid, 'running')
+    r = admin.post(f'/nimbus/api/supervisor/threads/{tid}/message',
+                   json={'text': 'hello'})
+    assert r.status_code == 409
+
+
+class _FakeBlock:
+    """Stands in for an SDK content block. `model_dump` is what the real loop
+    uses to round-trip blocks back into the next request."""
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+    def model_dump(self, exclude_none=True):
+        return {k: v for k, v in self.__dict__.items()
+                if not (exclude_none and v is None)}
+
+
+class _FakeResponse:
+    def __init__(self, blocks, stop_reason):
+        self.content = blocks
+        self.stop_reason = stop_reason
+        self.usage = type('U', (), {
+            'input_tokens': 1000, 'output_tokens': 200,
+            'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0})()
+
+
+def test_a_full_turn_calls_a_tool_and_answers(admin, tmp_path_factory, monkeypatch):
+    """End-to-end through the real loop: the model asks for a tool, the tool
+    layer reaches the real Nimbus API with the admin's session, the result
+    goes back, and the answer is stored. Only the Anthropic call is faked.
+    """
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    from agents.supervisor import chat, client as sup_client
+
+    calls = []
+
+    def fake_call(messages, system, tools=None, max_tokens=8000, reason=''):
+        calls.append(messages)
+        if len(calls) == 1:
+            return _FakeResponse([
+                _FakeBlock(type='tool_use', id='toolu_1',
+                           name='get_pipeline', input={}),
+            ], 'tool_use'), 0.01
+        return _FakeResponse([
+            _FakeBlock(type='text', text='Nothing is stuck. The pipeline is empty.'),
+        ], 'end_turn'), 0.02
+
+    monkeypatch.setattr(sup_client, 'call', fake_call)
+    monkeypatch.setattr(sup_client, 'check_cap', lambda: None)
+
+    tid = chat.create_thread('luke')
+    chat.run_turn(tid, 'What needs my attention?', {'client': admin})
+
+    thread = chat.get_thread(tid)
+    assert thread['status'] == 'idle', thread['error']
+    assert thread['cost_usd'] > 0
+
+    # The tool result really came back from the portal's own pipeline route.
+    second_request = calls[1]
+    tool_results = [b for m in second_request if m['role'] == 'user'
+                    for b in m['content'] if b.get('type') == 'tool_result']
+    assert len(tool_results) == 1
+    assert 'stage_counts' in tool_results[0]['content']
+    assert tool_results[0]['is_error'] is False
+
+    shown = [m for m in thread['messages'] if m['display']]
+    assert shown[0]['display'] == 'What needs my attention?'
+    assert shown[-1]['display'] == 'Nothing is stuck. The pipeline is empty.'
+    assert 'get_pipeline' in thread['messages'][1]['tools_used']
+
+
+def test_a_turn_that_never_stops_calling_tools_is_cut_off(admin, tmp_path_factory,
+                                                          monkeypatch):
+    """A model that loops on tool calls would otherwise burn the month's cap
+    on one question. MAX_ITERATIONS is the backstop."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    from agents.supervisor import chat, client as sup_client
+
+    def always_tools(messages, system, tools=None, max_tokens=8000, reason=''):
+        return _FakeResponse([
+            _FakeBlock(type='tool_use', id='toolu_x', name='get_pipeline', input={}),
+        ], 'tool_use'), 0.01
+
+    monkeypatch.setattr(sup_client, 'call', always_tools)
+    monkeypatch.setattr(sup_client, 'check_cap', lambda: None)
+    monkeypatch.setattr(chat, 'MAX_ITERATIONS', 3)
+
+    tid = chat.create_thread('luke')
+    chat.run_turn(tid, 'go', {'client': admin})
+    thread = chat.get_thread(tid)
+    assert thread['status'] == 'error'
+    assert '3 rounds' in thread['error']
+
+
+def test_a_failing_tool_is_reported_not_raised(admin, tmp_path_factory, monkeypatch):
+    """A 404 from a tool has to come back as a readable result so the model can
+    say so, rather than killing the turn."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    from agents.supervisor import chat, client as sup_client
+
+    seen = []
+
+    def fake_call(messages, system, tools=None, max_tokens=8000, reason=''):
+        seen.append(messages)
+        if len(seen) == 1:
+            return _FakeResponse([
+                _FakeBlock(type='tool_use', id='toolu_1',
+                           name='make_content_brief', input={'rec_id': 99999}),
+            ], 'tool_use'), 0.01
+        return _FakeResponse([
+            _FakeBlock(type='text', text='That recommendation does not exist.'),
+        ], 'end_turn'), 0.01
+
+    monkeypatch.setattr(sup_client, 'call', fake_call)
+    monkeypatch.setattr(sup_client, 'check_cap', lambda: None)
+
+    tid = chat.create_thread('luke')
+    chat.run_turn(tid, 'make a brief for 99999', {'client': admin})
+    assert chat.get_thread(tid)['status'] == 'idle'
+    results = [b for m in seen[1] if m['role'] == 'user'
+               for b in m['content'] if b.get('type') == 'tool_result']
+    assert results[0]['is_error'] is False   # HTTP error, surfaced as data
+    assert '"ok": false' in results[0]['content']
+
+
+def test_spend_cap_stops_a_turn_with_a_sentence(admin, tmp_path_factory,
+                                                monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    from agents.supervisor import chat, client as sup_client
+
+    def capped():
+        raise sup_client.SpendCapReached('The monthly cap of $50.00 is used up.')
+
+    monkeypatch.setattr(sup_client, 'check_cap', capped)
+    tid = chat.create_thread('luke')
+    chat.run_turn(tid, 'hello', {'client': admin})
+    thread = chat.get_thread(tid)
+    assert thread['status'] == 'error'
+    assert 'used up' in thread['error']
+    # The question is still in the transcript — it was not silently dropped.
+    assert [m for m in thread['messages'] if m['display'] == 'hello']

@@ -168,7 +168,14 @@ do not move it into the repo, do not paste it into a chat.
 | `BING_SITE_URL` | Bing Webmaster Tools | No |
 | `REDDIT_CLIENT_ID` | Reddit | Yes |
 | `REDDIT_CLIENT_SECRET` | Reddit | Yes |
+| `ANTHROPIC_API_KEY` | Supervisor (the 🧠 tab) | Yes |
 | `NIMBUS_SCHEDULER` | Set to `1` to run the weekly jobs | No |
+
+**`ANTHROPIC_API_KEY` is the only credential the Supervisor needs.** Without
+it the tab loads and says so rather than erroring, and nothing else in Nimbus
+changes behaviour. Get one at <https://console.anthropic.com> → API keys. Its
+spend is capped separately from research spend
+(`supervisor_monthly_cap_usd`, default $50) — see MARKETING_PLAN.md.
 
 **`NIMBUS_SCHEDULER=1` is what makes "weekly" mean weekly.** Without it every
 run is a button somebody has to remember to press. It is opt-in rather than

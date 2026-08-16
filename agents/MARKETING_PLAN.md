@@ -142,6 +142,7 @@ Agreed sequence, with where each stands.
 | 3 | **Social + GBP post bot** | ✅ Built. Facebook, Instagram, LinkedIn, Business Profile — drafts only |
 | 4 | **Weekly scheduler** | ✅ Built. `NIMBUS_SCHEDULER=1` |
 | 5 | **Bing Webmaster Tools** | ✅ Built. Needs two env vars — real query data, no franchise involvement |
+| 5.5 | **Supervisor** | ✅ Built. Needs `ANTHROPIC_API_KEY` — see below |
 | 6 | **Draft Creator (long-form pages)** | Not started. A brief must come first |
 | 7 | **GBP reputation** (reviews, replies, review requests) | ⛔ Blocked on Google's API approval |
 | 8 | **Scorecard** | ⛔ Blocked on the franchise CRM answers. Last by design |
@@ -158,6 +159,41 @@ button and a link to the platform.
 Every post passes the same honesty guard as an SEO recommendation. A post
 claiming "the #1 roofer in Fort Collins" is the same fabrication as a report
 claiming it, and is rejected rather than softened.
+
+## Supervisor — the layer you talk to
+
+`agents/supervisor/` — the 🧠 tab in Nimbus. A conversation that can read
+everything the other bots produced and start any of them running.
+
+It exists because the rest of Nimbus is six narrow bots writing into six
+screens, and nobody reads six screens. The supervisor is the one place to ask
+"what needs my attention" and get an answer assembled from all of them.
+
+**It cannot approve anything.** Not an SEO recommendation, not a social draft,
+not marking a post published. It also cannot raise its own spend cap or move a
+rep's territory. Those stay a human click, because the rule the whole system is
+built around is that a person reads copy before a customer does — and a
+supervisor that could approve its own team's output would quietly delete that
+rule. `tools.FORBIDDEN_ROUTES` states it in code and
+`test_supervisor_cannot_approve` fails if a tool ever reaches one.
+
+**Every tool is an HTTP call to Nimbus's own API, made with the signed-in
+admin's cookie.** Nothing in `tools.py` touches the database or imports an
+agent module. So the supervisor is exactly as powerful as the person at the
+dashboard, it inherits every guard already written (the admin gate, the
+"already running" 409, the NotApproved check on briefs), and there is no
+second copy of those rules to drift out of sync.
+
+**Its spend has its own cap**, `supervisor_monthly_cap_usd` (default $50),
+tracked in the same `spend_ledger` under source `anthropic`. Separate from the
+research cap on purpose: the two fail differently. Exhausting Perplexity stops
+research; exhausting this stops the only thing a human talks to. One shared
+cap would let a chatty afternoon silently starve next week's SEO run.
+
+The honesty rule is in its system prompt, not just in this document. It is
+told what we cannot measure — rankings, traffic, conversion rates, competitor
+performance — and told to say so plainly rather than produce a number. If it
+ever quotes a traffic figure, that is a bug worth fixing the same day.
 
 ### 4 — Google Business Profile and reputation (not built)
 

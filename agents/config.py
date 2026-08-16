@@ -62,6 +62,18 @@ DEFAULT_SETTINGS = {
     # further Perplexity calls until reset. Prevents a runaway from a bad
     # prompt or an infinite loop.
     'monthly_spend_cap_usd': 150.0,
+    # ── Supervisor ───────────────────────────────────────────────────────
+    # The conversational layer over the other agents. Its spend is tracked in
+    # the SAME ledger but under its own source and its own cap, because the
+    # two fail differently: exhausting Perplexity stops research, exhausting
+    # this stops the only thing a human talks to. One shared cap would let a
+    # chatty afternoon silently starve next week's SEO run.
+    'anthropic_model': 'claude-opus-5',
+    'supervisor_monthly_cap_usd': 50.0,
+    # How hard the supervisor thinks per turn: low | medium | high | xhigh |
+    # max. `medium` keeps a chat turn responsive; raise it when the questions
+    # get strategic rather than "what happened yesterday".
+    'supervisor_effort': 'medium',
     # 30 days of caching kills most re-charge. Bump higher for slow-changing
     # research (org names, addresses) or lower for volatile topics (news).
     'cache_ttl_days': 30,
@@ -379,6 +391,38 @@ def _init_cache_db(conn):
         );
         CREATE INDEX IF NOT EXISTS field_notes_idx
             ON field_notes(status, created_at DESC);
+
+        -- ── Supervisor ────────────────────────────────────────────────────
+        -- The conversation with the marketing supervisor. One row per API
+        -- message, storing the content blocks VERBATIM as JSON: rebuilding
+        -- the history for the next turn is then a SELECT, with no lossy
+        -- round-trip through a display string. `display` is the derived
+        -- copy the UI renders, never the source of truth.
+        CREATE TABLE IF NOT EXISTS supervisor_threads (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            created_by  TEXT DEFAULT '',
+            title       TEXT DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'idle',  -- idle | running | error
+            error       TEXT DEFAULT '',
+            cost_usd    REAL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS supervisor_threads_idx
+            ON supervisor_threads(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS supervisor_messages (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_id  INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            role       TEXT NOT NULL,        -- user | assistant
+            content    TEXT NOT NULL,        -- JSON: API content blocks, verbatim
+            display    TEXT DEFAULT '',      -- derived plain text for the UI
+            tools_used TEXT DEFAULT '[]',    -- JSON list of tool names, for the trace
+            cost_usd   REAL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS supervisor_msgs_idx
+            ON supervisor_messages(thread_id, id);
 
         -- Scheduled jobs. One row per job; the claim is atomic so two gunicorn
         -- workers cannot both run the weekly report.
