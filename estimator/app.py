@@ -772,6 +772,11 @@ def list_estimates():
             sig = d.get('signature') or {}
             result.append({
                 'estimate_id':     d.get('estimate_id', ''),
+                # The join key to The Den. Empty on estimates created before
+                # the link was captured, and on any started without going
+                # through the CRM — treat empty as "not matchable", never as
+                # a reason to fall back to name matching.
+                'crm_contact_id':  c.get('crm_contact_id') or '',
                 'customer_name':   c.get('name', ''),
                 'city':            a.get('city', ''),
                 'estimate_date':   d.get('estimate_date', ''),
@@ -1796,6 +1801,12 @@ def search_jobs():
     projects = sorted(projects, key=lambda p: p.get('created_date') or '', reverse=True)
     slim = [{
         'id':                   p.get('id'),
+        # The Den's contact id. Carried through so an estimate started from
+        # this picker records which job it belongs to — without it, the only
+        # way to match a bid to its actual costs later is by customer name,
+        # which silently mismatches. salescrm sets this on every project it
+        # creates (`project_payload['contact_id']`).
+        'contact_id':           p.get('contact_id', ''),
         'name':                 p.get('name', ''),
         'job_number':           p.get('job_number', ''),
         'client_name':          p.get('client_name', ''),

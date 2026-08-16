@@ -7535,7 +7535,10 @@ function selectJob(p) {
     }
   }
   const a=parseCrmAddress(p.address);
-  S.customer={crm_contact_id:null,crm_project_id:p.id,crm_job_number:p.job_number||'',
+  // crm_contact_id is what links this estimate back to the job's actual costs
+  // in The Den. It used to be hardcoded null here even though the project the
+  // rep just picked carries one, which left bid-vs-actual unanswerable.
+  S.customer={crm_contact_id:p.contact_id||null,crm_project_id:p.id,crm_job_number:p.job_number||'',
     name:p.client_name||p.name||'',phone:p.client_phone||'',email:p.client_email||'',
     address:a};
   if(!S.project_address)
@@ -9490,6 +9493,7 @@ async function newEstimateAction() {
   if(dirty&&!confirm('You have unsaved changes. Start a new estimate anyway?'))return;
   S=blankEstimate();
   applyTierDefaults(S); // pre-fill from global admin defaults
+  applyCrmHandoff(S);   // carry the CRM's contact id onto this estimate
   seedTradeBundles('roofing', false); // load the default roofing bundles into the tiers
   activeTrade='roofing'; dirty=false;
   document.getElementById('save-indicator').textContent='';
@@ -10456,8 +10460,56 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   } catch {}
   // Apply any saved defaults to the initial blank estimate
   applyTierDefaults(S);
+  captureCrmHandoff();
+  // Also apply it to the blank estimate that already exists at load. The rep
+  // normally clicks New from the home screen (which applies it again), but if
+  // any path ever writes into this one instead, the link would otherwise be
+  // silently lost — and a missing link is indistinguishable from a job that
+  // never came from the CRM.
+  applyCrmHandoff(S);
   switchPage('home');   // home screen first — rep must choose New or open existing
 });
+
+/* ── CRM handoff ────────────────────────────────────────────────────────
+   The sales CRM's "Start estimate" button sends the rep here with
+   `?contact=<base44 contact id>&name=<customer>` (salescrm/app.py
+   start_estimate). That contact id is the ONLY reliable key linking an
+   estimate to its job in The Den — and therefore the only way to compare
+   what we bid against what the job actually cost.
+
+   It used to be dropped: `crm_contact_id` existed on S.customer but was
+   never assigned, so every estimate saved a null and bid-vs-actual could
+   only be attempted by matching customer names, which is how you get
+   confident, wrong margin numbers.
+
+   Stashed rather than written straight onto S.customer because the rep
+   lands on the home screen and has not started an estimate yet — S is
+   replaced when they click New. applyCrmHandoff() puts it on whichever
+   estimate they actually create. */
+let _crmHandoff = null;
+
+function captureCrmHandoff() {
+  try {
+    const q = new URLSearchParams(location.search);
+    const contact = (q.get('contact') || '').trim();
+    if (!contact) return;
+    _crmHandoff = { crm_contact_id: contact, name: (q.get('name') || '').trim() };
+    // Drop the params from the address bar so a refresh, a bookmark, or a
+    // shared URL cannot re-attach this contact to a different estimate.
+    history.replaceState({}, '', location.pathname);
+  } catch { _crmHandoff = null; }
+}
+
+function applyCrmHandoff(est) {
+  if (!_crmHandoff || !est || !est.customer) return;
+  // Never overwrite a link that is already set — an estimate opened from the
+  // CRM twice, or a rep who picked the job from the CRM browser in between,
+  // already has the right id.
+  if (!est.customer.crm_contact_id) {
+    est.customer.crm_contact_id = _crmHandoff.crm_contact_id;
+    if (!est.customer.name && _crmHandoff.name) est.customer.name = _crmHandoff.name;
+  }
+}
 
 /* ── Mobile navigation ─────────────────────────────────────────────── */
 function toggleSidebar() {
