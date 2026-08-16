@@ -12163,6 +12163,33 @@ def _check_daily_backup():
         print(f'[backup] nightly backup failed: {exc}')
 
 
+def _check_daily_db_backup():
+    """Nightly off-platform copy of the three SQLite databases.
+
+    Lives here rather than in the portal because this is where the working
+    hourly loop and the configured email sender already are — under the merged
+    deploy it is all one process anyway. The zip itself is built by
+    portal/backup.py, which knows about WAL.
+
+    Its own lockfile, separate from the estimator's: if one of the two jobs
+    fails, the other must still run.
+    """
+    if not _email_configured():
+        return
+    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    lock  = os.path.join(REMINDER_LOCKS_DIR, f'dbbackup_{stamp}.lock')
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except (FileExistsError, OSError):
+        return
+    try:
+        from portal import backup as pbackup
+        pbackup.nightly_email(_send_email, BACKUP_EMAIL, _base_url())
+    except Exception as exc:
+        print(f'[backup] nightly database backup failed: {exc}')
+
+
 def _reminder_loop():
     time.sleep(30)  # let the app finish booting
     while True:
@@ -12174,6 +12201,10 @@ def _reminder_loop():
             _check_daily_backup()
         except Exception as exc:
             print(f'[backup] check failed: {exc}')
+        try:
+            _check_daily_db_backup()
+        except Exception as exc:
+            print(f'[backup] database check failed: {exc}')
         time.sleep(3600)
 
 

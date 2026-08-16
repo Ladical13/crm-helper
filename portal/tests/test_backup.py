@@ -143,6 +143,55 @@ def test_manifest_counts_rows_from_the_snapshot(admin):
     assert tables['users'] >= 1
 
 
+# ── Nightly email ────────────────────────────────────────────────────────────
+
+class _Sender:
+    """Stand-in for the estimator's _send_email."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, subject, html, to_addr, attachments=None, **kw):
+        self.calls.append({'subject': subject, 'html': html,
+                           'to': to_addr, 'attachments': attachments})
+        return True
+
+
+def test_nightly_email_attaches_the_zip(admin):
+    send = _Sender()
+    assert pbackup.nightly_email(send, 'luke@projectoneroofing.com') is True
+
+    call = send.calls[0]
+    assert call['to'] == 'luke@projectoneroofing.com'
+    name, blob = call['attachments'][0]
+    assert name.endswith('.zip')
+    assert 'portal.db' in zipfile.ZipFile(io.BytesIO(blob)).namelist()
+
+
+def test_nightly_email_reports_row_counts(admin):
+    """A backup that has been silently empty for a month is the failure mode
+    worth designing the email around."""
+    send = _Sender()
+    pbackup.nightly_email(send, 'luke@projectoneroofing.com')
+    assert 'users' in send.calls[0]['html']
+
+
+def test_nightly_email_without_a_recipient_is_a_no_op(admin):
+    send = _Sender()
+    assert pbackup.nightly_email(send, '') is False
+    assert send.calls == []
+
+
+def test_oversized_backup_links_instead_of_attaching(admin, monkeypatch):
+    """Mail providers bounce big attachments — send the link, not nothing."""
+    monkeypatch.setattr(pbackup, 'MAX_ATTACH_MB', 0)
+    send = _Sender()
+    pbackup.nightly_email(send, 'luke@projectoneroofing.com', 'https://example.test')
+    call = send.calls[0]
+    assert call['attachments'] is None
+    assert '/api/backup/databases' in call['html']
+
+
 def test_backup_does_not_disturb_the_live_database(admin):
     """The site keeps serving during a backup — no exclusive lock, and the
     source stays in WAL afterwards."""

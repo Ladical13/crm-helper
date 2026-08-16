@@ -168,3 +168,89 @@ def build_zip():
 def filename(stamp=None):
     stamp = stamp or datetime.now(timezone.utc)
     return f"p1_databases_{stamp.strftime('%Y-%m-%d')}.zip"
+
+
+# ── Nightly off-platform copy ────────────────────────────────────────────────
+# Railway's own volume backups are a Pro-plan feature, so on the current plan
+# there is no platform-side copy at all. Email is not elegant, but it is the
+# one channel this app already has working in production (the estimator has
+# mailed a nightly estimates zip for months), it needs no new credentials, and
+# it lands the data somewhere Railway cannot take with it.
+#
+# `send_email` is injected rather than imported: the sender lives in
+# estimator/app.py, and importing that module from here would drag the whole
+# estimator — and its boot-time side effects — into anything that wants a
+# backup. It also keeps this testable with a stub.
+
+# Matches the estimator's own threshold. Above it, mail providers start
+# bouncing attachments, so send the link instead of losing the mail.
+MAX_ATTACH_MB = 20
+
+
+def _summary_rows(manifest):
+    rows = []
+    for name, info in sorted(manifest['databases'].items()):
+        if not info.get('present'):
+            detail = 'not created yet'
+        elif info.get('error'):
+            detail = f"could not be read — {info['error']}"
+        else:
+            tables = info.get('tables') or {}
+            biggest = sorted(tables.items(), key=lambda kv: -kv[1])[:3]
+            counts = ', '.join(f'{n}: {c}' for n, c in biggest) or 'empty'
+            detail = f"{info['bytes'] / 1024:.0f} KB — {counts}"
+        rows.append(
+            f'<tr><td style="padding:4px 10px 4px 0;font-family:monospace;'
+            f'font-size:12px;color:#374151">{name}</td>'
+            f'<td style="padding:4px 0;font-size:12px;color:#6b7280">{detail}</td></tr>')
+    return ''.join(rows)
+
+
+def nightly_email(send_email, to_addr, base_url=''):
+    """Build the zip and mail it. Returns True when the send was attempted.
+
+    The row counts go in the body on purpose. A backup nobody reads is a
+    backup nobody notices has been silently empty for a month — seeing
+    "leads: 0" in an inbox is what catches that.
+    """
+    if not to_addr:
+        return False
+
+    data, manifest = build_zip()
+    size_mb = len(data) / 1048576
+    name = filename()
+
+    if size_mb > MAX_ATTACH_MB:
+        attachments = None
+        extra = (f'<p style="font-size:13px;color:#b45309">The zip is '
+                 f'{size_mb:.1f} MB — too large to attach. Download it from '
+                 f'<a href="{base_url}/api/backup/databases">/api/backup/databases</a> '
+                 f'(admin sign-in required).</p>')
+    else:
+        attachments = [(name, data)]
+        extra = ''
+
+    html = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#1a3a5c;padding:20px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:6px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:19px;font-weight:800">&#128190; Nightly Database Backup</h1>
+  </div>
+  <div style="padding:20px 26px">
+    <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 12px">
+      Attached is tonight&rsquo;s snapshot of the CRM, the canvasser and the
+      account store ({size_mb:.1f} MB zipped).</p>
+    <table style="border-collapse:collapse;margin:0 0 12px">{_summary_rows(manifest)}</table>
+    {extra}
+    <p style="font-size:11px;color:#9ca3af;margin:14px 0 0">
+      Unzip and drop each .db back into its data directory to restore — no
+      other files needed. If a row count above looks wrong, say so before the
+      next one overwrites your sense of normal.</p>
+  </div>
+</div>
+</body></html>'''
+
+    send_email(f'💾 Database backup — {name}', html, to_addr,
+               attachments=attachments)
+    return True
