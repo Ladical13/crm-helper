@@ -1739,17 +1739,421 @@ def _parse_xactimate_pdf(file_bytes):
             'summary': summary, 'warnings': warnings}
 
 
+# ── Symbility (insurance carrier estimate) PDF import ──────────────────────
+# Symbility/Cotality exports (Safeco, Liberty Mutual, Farmers …) use a
+# different grid from Xactimate — nine columns:
+#   DESCRIPTION QUANTITY UNIT-PRICE PER TOTAL-O&P TOTAL-TAXES RC DEPRECIATION ACV
+# where "RC" is Xactimate's RCV and "Per" is the unit. Items group under plans
+# ("EXTERIOR PLAN: Exterior Plan", "ROOFPLAN: DWELLING ROOF"), each closing
+# with a "<name> - Subtotal (N items)" checksum row. Output is the same shape
+# the Xactimate importer returns, so the review modal renders it unchanged.
+#
+# Parsed in pypdf's LAYOUT mode, unlike Xactimate. In default mode Symbility
+# splits an item's numeric tail across two lines whenever depreciation is
+# non-zero, and loses the column geometry that separates a wrapped description
+# from an adjuster's free-text note. Layout mode keeps each item on one line
+# and keeps the indentation that tells those two apart.
+
+_SYM_MONEY = r'\$?\(?-?[\d,]+\.\d{2}\)?'
+_SYM_QTY = r'[\d,]+(?:\.\d+)?'
+
+# The column header, in layout mode and in the right-to-left run that default
+# extraction produces. Either one identifies the format.
+_SYM_HEADER_RE = re.compile(
+    r'Description\s+Quantity\s+Unit\s*Price\s+Per\s+Total\s*O&P\s+'
+    r'Total\s*Taxes\s+RC\s+Depreciation\s+ACV', re.I)
+_SYM_HEADER_FLAT_RE = re.compile(
+    r'ACVDepreciationRCTotal\s*TaxesTotal\s*O&PPerUnit\s*PriceQuantityDescription', re.I)
+
+# "16  ITEL, Shingles,   11.87 (12.00)  $135.59  SQ  $0.00  $135.05  $1,762.13  $293.74  $1,468.39"
+# The parenthesised second quantity is Symbility's materials bundle rounding —
+# it is the quantity actually priced (RC = it × unit price + taxes + O&P), so
+# it wins; the pre-rounding figure is kept as qty_calculated.
+_SYM_ITEM_RE = re.compile(
+    r'^(?P<lead>\s*)(?P<no>\d{1,3})\s+(?P<desc>\S.*?)\s{2,}'
+    r'(?P<qty>' + _SYM_QTY + r')'
+    r'(?:\s*\((?P<qty_billed>' + _SYM_QTY + r')\))?\s+'
+    r'\$(?P<price>[\d,]+\.\d{2})\s+'
+    r'(?P<unit>[A-Za-z][A-Za-z0-9/]{0,4})\s+'
+    r'(?P<oandp>' + _SYM_MONEY + r')\s+'
+    r'(?P<tax>' + _SYM_MONEY + r')\s+'
+    r'(?P<rc>' + _SYM_MONEY + r')\s+'
+    r'(?P<dep>' + _SYM_MONEY + r')\s+'
+    r'(?P<acv>' + _SYM_MONEY + r')\s*$')
+
+# "EXTERIOR PLAN: Exterior Plan", "ROOFPLAN: DWELLING ROOF", "INTERIOR PLAN: …"
+_SYM_PLAN_RE = re.compile(r'^([A-Z][A-Z ]*PLAN)\s*:\s*(.+?)\s*$')
+_SYM_SUBTOTAL_RE = re.compile(
+    r'^(?P<name>.+?)\s+-\s+Subtotal\s+\(\d+\s+items?\)\s+'
+    r'(?P<oandp>' + _SYM_MONEY + r')\s+(?P<tax>' + _SYM_MONEY + r')\s+'
+    r'(?P<rc>' + _SYM_MONEY + r')\s+(?P<dep>' + _SYM_MONEY + r')\s+'
+    r'(?P<acv>' + _SYM_MONEY + r')\s*$')
+_SYM_GRAND_RE = re.compile(
+    r'^Subtotal\s+(?P<oandp>' + _SYM_MONEY + r')\s+(?P<tax>' + _SYM_MONEY + r')\s+'
+    r'(?P<rc>' + _SYM_MONEY + r')\s+(?P<dep>' + _SYM_MONEY + r')\s+'
+    r'(?P<acv>' + _SYM_MONEY + r')\s*$')
+# "Roof area: 2,678.53 SF  Squares: 26.8 SQ  Soffit: 627.62 SF"
+_SYM_MEASURE_RE = re.compile(
+    r'([A-Z][A-Za-z ()/]*?):\s+([\d,]+(?:\.\d+)?)\s+([A-Z]{2})(?=\s|$)')
+
+_SYM_NOISE_RES = [re.compile(p, re.I) for p in (
+    r'^Includes\s+[\d.]+%\s+waste', r'^Materials quantity bundle rounding',
+    r'^This line item includes', r'^This item has been applied',
+    r'^For more information', r'^verified by ITEL',
+    r'^ESTIMATE:', r'^Completed$', r'^Description\s+Quantity',
+    r'^Claim\s+\S+\s+Page', r'^Page\s+\d+', r'^P\.?O\.? Box', r'^Fax:',
+    r'^www\.', r'^[A-Za-z .]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\s*$',
+)]
+
+# Claim-totals labels (last page). One occurrence each and unambiguous — unlike
+# Xactimate these need no per-coverage summing.
+_SYM_SUMMARY_LABELS = {
+    'line_item_total':          r'^Subtotal:',
+    'material_sales_tax':       r'^Total taxes:',
+    'rcv_total':                r'^Replacement cost value:',
+    'paid_when_incurred':       r'^Less costs payable when incurred:',
+    'acv_total':                r'^Actual cash value:',
+    'deductible':               r'^Applied deductible:',
+    'net_claim':                r'^Net actual cash value:',
+    # These two run long enough that a carrier's page width can wrap the label
+    # onto a second line, stranding the colon away from the figure, so neither
+    # is anchored on one.
+    'recoverable_depreciation': r'^Less Recoverable depreciation',
+    'net_claim_if_recovered':   r'^Amount payable if depreciation is recovered',
+}
+# Carrier accounting writes money coming off the claim as negatives; the
+# estimate's claim card wants magnitudes, matching the Xactimate importer.
+_SYM_ABS_KEYS = {'deductible', 'recoverable_depreciation', 'paid_when_incurred'}
+
+
+def _sym_num(s):
+    """'$1,234.56' → 1234.56; '$(678.24)' → -678.24 (parens are a negative)."""
+    s = str(s).strip()
+    neg = s.startswith('-') or s.lstrip('$').startswith('(')
+    v = float(re.sub(r'[^\d.]', '', s) or 0)
+    return -v if neg else v
+
+
+def _sym_is_noise(line):
+    return any(rx.match(line) for rx in _SYM_NOISE_RES)
+
+
+def _sym_pages(file_bytes):
+    """(layout_pages, flat_pages) — both text extractions of every page."""
+    if _pypdf is None:
+        raise RuntimeError('pypdf not installed')
+    reader = _pypdf.PdfReader(io.BytesIO(file_bytes))
+    layout, flat = [], []
+    for p in reader.pages:
+        flat.append(p.extract_text() or '')
+        try:
+            layout.append(p.extract_text(extraction_mode='layout') or '')
+        except Exception:
+            layout.append(flat[-1])      # pypdf too old for layout mode
+    return layout, flat
+
+
+def _sym_cell(text, pattern, cont=False):
+    """Value of a "Label:  value" cell in the two-column page-1 form.
+
+    Page 1 is a grid, so a value ends at the next run of 2+ spaces — the gutter
+    before the right-hand column. With cont=True a wrapped second line is
+    appended when it starts in the same column and carries no label of its own,
+    which is how "Pricing Database" spills its year onto the next row.
+    """
+    lines = text.split('\n')
+    rx = re.compile(pattern)
+    for i, ln in enumerate(lines):
+        m = rx.search(ln)
+        if not m:
+            continue
+        rest = ln[m.end():]
+        if not rest.strip():
+            continue
+        val = re.split(r'\s{2,}', rest.strip())[0].strip()
+        if cont and i + 1 < len(lines):
+            col = m.end() + (len(rest) - len(rest.lstrip()))
+            nxt = lines[i + 1]
+            seg = re.split(r'\s{2,}', nxt.strip())[0].strip() if nxt.strip() else ''
+            start = len(nxt) - len(nxt.lstrip())
+            if seg and ':' not in seg and abs(start - col) <= 3:
+                val = f'{val} {seg}'
+        return val
+    return None
+
+
+# "FORT COLLINS CO  80526-4410" at the tail of a row. Anchored at the end and
+# started on a letter so it cannot swallow the left-hand column of the same
+# grid row ("Deductible:  $3,878.00        FORT COLLINS CO  80526-4410").
+_SYM_CITY_RE = re.compile(
+    r"([A-Za-z][A-Za-z .'-]*?)\s+([A-Z]{2})\s+(\d{5})(?:-\d{4})?\s*$")
+
+
+def _sym_address(page1):
+    """Property address. "Loss address:" is the risk location; the bare
+    "Address:" cell is the insured's mailing address and only stands in when
+    the loss address is blank."""
+    lines = page1.split('\n')
+    for pat in (r'Loss address:', r'(?<!Contact )\bAddress:'):
+        rx = re.compile(pat)
+        for i, ln in enumerate(lines):
+            m = rx.search(ln)
+            if not m or not ln[m.end():].strip():
+                continue
+            rest = ln[m.end():]
+            street = re.split(r'\s{2,}', rest.strip())[0].strip()
+            col = m.end() + (len(rest) - len(rest.lstrip()))
+            for nxt in lines[i + 1:i + 3]:
+                cm = _SYM_CITY_RE.search(nxt)
+                if cm and abs(cm.start() - col) <= 4:
+                    return {'street': street, 'city': cm.group(1).strip().title(),
+                            'state': cm.group(2), 'zip': cm.group(3)}
+    return {}
+
+
+def _parse_symbility_meta(page1):
+    meta = {}
+    for ln in page1.split('\n'):
+        s = ln.strip()
+        if s and not s.isdigit():
+            meta['carrier'] = s
+            break
+    for key, pat in (
+            ('claim_number',  r'CLAIM NO\.?:'),
+            ('insured',       r'INSURED:'),
+            ('date_of_loss',  r'Date of Loss:'),
+            ('policy_number', r'Policy No\.?:'),
+            ('policy_type',   r'Policy Type:'),
+            ('type_of_loss',  r'Type of Claim:'),
+            ('adjuster',      r'Claim Rep:')):
+        v = _sym_cell(page1, pat)
+        if v:
+            meta[key] = v
+    v = _sym_cell(page1, r'Pricing Database:', cont=True)
+    if v:
+        meta['price_list'] = v
+    return meta
+
+
+def _parse_symbility_items(layout_pages):
+    """Item pages → (sections, grand, warnings).
+
+    A section is one plan. Its items carry the ALL-CAPS category label they sat
+    under ("SOFFIT", "UNDERLAYMENTS") for reference; the plan is the grouping
+    because that is the level Symbility gives a subtotal checksum for.
+    """
+    sections, by_key, warnings = [], {}, []
+    plan = None
+    category = None
+    open_item = None      # last emitted item; may absorb wrapped description
+    desc_col = 0
+    cont = 0
+    body_indent = None    # column the item numbers start in, on this page
+    grand = None
+
+    def section_for(name):
+        key = name.casefold()
+        if key not in by_key:
+            by_key[key] = {'name': name.title() if name.isupper() else name,
+                           'raw_name': name, 'items': [], 'totals': None,
+                           'measurements': {}}
+            sections.append(by_key[key])
+        return by_key[key]
+
+    for page in layout_pages:
+        if not _SYM_HEADER_RE.search(page):
+            continue                      # cover letter / summary page
+        for raw in page.split('\n'):
+            line = raw.rstrip()
+            s = line.strip()
+            if not s:
+                continue
+            indent = len(line) - len(line.lstrip())
+
+            m = _SYM_ITEM_RE.match(line)
+            if m:
+                qty = _sym_num(m.group('qty'))
+                billed = m.group('qty_billed')
+                item = {
+                    'line_no':      int(m.group('no')),
+                    'description':  re.sub(r'\s+', ' ', m.group('desc')).strip(),
+                    'qty':          _sym_num(billed) if billed else qty,
+                    'unit':         m.group('unit'),
+                    'unit_price':   _sym_num(m.group('price')),
+                    'overhead_profit': _sym_num(m.group('oandp')),
+                    'tax':          _sym_num(m.group('tax')),
+                    'rcv':          _sym_num(m.group('rc')),
+                    'depreciation': _sym_num(m.group('dep')),
+                    'acv':          _sym_num(m.group('acv')),
+                }
+                if billed:
+                    item['qty_calculated'] = qty
+                if category:
+                    item['category'] = category
+                section_for(plan or 'Estimate')['items'].append(item)
+                open_item, desc_col, cont = item, m.start('desc'), 0
+                body_indent = len(m.group('lead'))
+                continue
+
+            pm = _SYM_PLAN_RE.match(s)
+            if pm:
+                plan = pm.group(2).strip()
+                section_for(plan)
+                category = open_item = None
+                if body_indent is None:
+                    body_indent = indent
+                continue
+
+            sm = _SYM_SUBTOTAL_RE.match(s)
+            if sm:
+                sec = by_key.get(sm.group('name').strip().casefold())
+                if sec is not None:
+                    sec['totals'] = {'rcv': _sym_num(sm.group('rc')),
+                                     'dep': _sym_num(sm.group('dep')),
+                                     'acv': _sym_num(sm.group('acv'))}
+                open_item = None
+                continue
+
+            gm = _SYM_GRAND_RE.match(s)
+            if gm:
+                grand = (_sym_num(gm.group('rc')), _sym_num(gm.group('dep')),
+                         _sym_num(gm.group('acv')))
+                open_item = None
+                continue
+
+            # A wrapped description resumes in the description column; an
+            # adjuster's note is indented well past it. That gap is the only
+            # thing distinguishing them, which is why layout mode is required.
+            if (open_item is not None and cont < 4 and abs(indent - desc_col) <= 2
+                    and not _sym_is_noise(s)):
+                open_item['description'] = re.sub(
+                    r'\s+', ' ', f"{open_item['description']} {s}").strip()
+                cont += 1
+                continue
+
+            if _sym_is_noise(s):
+                open_item = None
+                continue
+
+            if '$' not in s and _SYM_MEASURE_RE.search(s):
+                sec = by_key.get((plan or '').casefold())
+                if sec is not None:
+                    for lbl, val, unit in _SYM_MEASURE_RE.findall(s):
+                        sec['measurements'][lbl.strip()] = {
+                            'value': _sym_num(val), 'unit': unit}
+                open_item = None
+                continue
+
+            # ALL-CAPS group label ("SOFFIT", "VENTS AND FLASHINGS"). Adjuster
+            # comments are typed in caps too, so two things separate a heading
+            # from a sentence: headings sit at or left of the item-number
+            # column (comments are indented past it, including their wrapped
+            # second line), and headings are short — a comment left at that
+            # column runs long ("BACK LOWER T-LOCK SECTION PAID FOR ON …").
+            if (body_indent is not None and indent <= body_indent
+                    and len(s) <= 45 and any(c.isalpha() for c in s)
+                    and not any(c.islower() for c in s)):
+                category = s
+            open_item = None
+
+    for sec in sections:
+        for it in sec['items']:
+            if abs(it['rcv'] - (it['acv'] + it['depreciation'])) > 0.02:
+                warnings.append(
+                    f"Line {it['line_no']}: RC {it['rcv']:.2f} ≠ ACV + depreciation "
+                    f"({it['acv'] + it['depreciation']:.2f}) — ACV/depreciation kept.")
+        t = sec['totals']
+        if t and abs(sum(i['rcv'] for i in sec['items']) - t['rcv']) > 0.05:
+            warnings.append(
+                f"{sec['name']}: line items total "
+                f"{sum(i['rcv'] for i in sec['items']):,.2f} but the section subtotal "
+                f"says {t['rcv']:,.2f} — review carefully.")
+
+    total_rcv = sum(i['rcv'] for s in sections for i in s['items'])
+    if grand is not None and abs(total_rcv - grand[0]) > 0.05:
+        warnings.append(
+            f'Line items total {total_rcv:,.2f} but the estimate subtotal says '
+            f'{grand[0]:,.2f} — review carefully.')
+
+    return [s for s in sections if s['items']], grand, warnings
+
+
+def _parse_symbility_summary(flat_text, grand):
+    summary = {}
+    for key, pat in _SYM_SUMMARY_LABELS.items():
+        rx = re.compile(pat, re.I)
+        for ln in flat_text.split('\n'):
+            s = ln.strip()
+            if not rx.match(s):
+                continue
+            nums = re.findall(r'\$\(?-?[\d,]+\.\d{2}\)?', s)
+            if nums:
+                v = _sym_num(nums[-1])
+                summary[key] = round(abs(v) if key in _SYM_ABS_KEYS else v, 2)
+                break
+    if 'recoverable_depreciation' in summary:
+        summary.setdefault('depreciation_total', summary['recoverable_depreciation'])
+    if grand is not None:
+        summary['line_items_rcv'] = grand[0]
+        summary['line_items_depreciation'] = grand[1]
+        summary['line_items_acv'] = grand[2]
+    return summary
+
+
+def _parse_symbility_pdf(file_bytes):
+    layout_pages, flat_pages = _sym_pages(file_bytes)
+    page1 = layout_pages[0] if layout_pages else ''
+    meta = _parse_symbility_meta(page1)
+    addr = _sym_address(page1)
+    sections, grand, warnings = _parse_symbility_items(layout_pages)
+    summary = _parse_symbility_summary('\n'.join(flat_pages), grand)
+    return {'format': 'symbility', 'meta': meta, 'address': addr,
+            'sections': sections, 'summary': summary, 'warnings': warnings}
+
+
+def _detect_carrier_format(file_bytes):
+    """'symbility' or 'xactimate'. Neither product stamps its own name on the
+    export, so this goes by the column header, which differs completely."""
+    if _pypdf is None:
+        raise RuntimeError('pypdf not installed')
+    reader = _pypdf.PdfReader(io.BytesIO(file_bytes))
+    for p in reader.pages:
+        flat = p.extract_text() or ''
+        if _SYM_HEADER_FLAT_RE.search(flat):
+            return 'symbility'
+        if _XACT_HEADER_RE.search(flat):
+            return 'xactimate'
+        try:
+            if _SYM_HEADER_RE.search(p.extract_text(extraction_mode='layout') or ''):
+                return 'symbility'
+        except Exception:
+            pass
+    return 'xactimate'
+
+
 @app.route('/api/parse-xactimate', methods=['POST'])
 def parse_xactimate():
+    """Carrier estimate import — Xactimate or Symbility.
+
+    The two products share nothing but the job they do, so the format is
+    sniffed and dispatched. Both parsers return the same shape, so the review
+    modal renders either one; the route stays parse-only and persists nothing.
+    The path keeps its original name because the browser posts here.
+    """
     f = request.files.get('file')
     if not f or not f.filename.lower().endswith('.pdf'):
         return jsonify({'error': 'Please upload a PDF file.'}), 400
+    raw = f.read()
     try:
-        data = _parse_xactimate_pdf(f.read())
+        fmt = _detect_carrier_format(raw)
+        data = (_parse_symbility_pdf if fmt == 'symbility'
+                else _parse_xactimate_pdf)(raw)
     except Exception as e:
         return jsonify({'error': f'Could not read PDF: {e}'}), 400
+    data.setdefault('format', 'xactimate')
     if not any(s.get('items') for s in data['sections']):
-        return jsonify({'error': "Couldn’t find Xactimate line items in this PDF. "
+        label = 'Symbility' if data['format'] == 'symbility' else 'Xactimate'
+        return jsonify({'error': f"Couldn’t find {label} line items in this PDF. "
                                  "Make sure it’s the carrier’s estimate export."}), 422
     return jsonify(data)
 

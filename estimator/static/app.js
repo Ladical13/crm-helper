@@ -5026,7 +5026,7 @@ function renderInsuranceFreeform() {
     </div>
     ${_insClaimCard()}
     <div class="other-desc" style="margin-bottom:14px">
-      Add sections to match your Xactimate breakdown (e.g. Roof, Gutters, Interior) — or use <strong>Import Carrier PDF</strong> to load them straight from the carrier's estimate. Each section has its own subtotal — ACV + Depreciation = RCV.
+      Add sections to match the carrier's breakdown (e.g. Roof, Gutters, Interior) — or use <strong>Import Carrier PDF</strong> to load them straight from the carrier's estimate. Xactimate and Symbility exports are both read automatically. Each section has its own subtotal — ACV + Depreciation = RCV.
     </div>
     ${sections.map(sec => _insSection(sec, sections)).join('')}
     <div class="ins-section-actions">
@@ -5068,10 +5068,12 @@ function _insClaimCard() {
         ${row('Policy #', c.policy_number)}
         ${row('Type of Loss', c.type_of_loss)}
         ${row('Date of Loss', c.date_of_loss)}
-        ${row('Price List', c.price_list)}
+        ${row('Adjuster', c.adjuster)}
+        ${row(c.source === 'symbility_import' ? 'Pricing Database' : 'Price List', c.price_list)}
         ${row('Deductible', c.deductible, true)}
         ${row('Net Claim (ACV)', c.net_claim, true)}
         ${row('Recoverable Depreciation', c.recoverable_depreciation, true)}
+        ${row('Paid When Incurred', c.paid_when_incurred, true)}
         ${row('Net Claim if Dep. Recovered', c.net_claim_if_recovered, true)}
       </div>
     </div>`;
@@ -10951,14 +10953,21 @@ function openXactModal(data) {
       </div>`;
   }).join('');
 
+  // Symbility and Xactimate parse to the same shape, so only labels differ.
+  // The detected format is shown because it is worth knowing which parser
+  // produced the lines when a review looks wrong.
+  const isSym = data.format === 'symbility';
+
   document.getElementById('xact-modal-body').innerHTML = `
     <div class="xact-meta-card">
+      ${metaRow('Format', isSym ? 'Symbility' : 'Xactimate')}
       ${metaRow('Carrier', meta.carrier)}
       ${metaRow('Claim #', meta.claim_number)}
       ${metaRow('Insured', meta.insured)}
       ${metaRow('Property', addrLine)}
       ${metaRow('Type of Loss', meta.type_of_loss)}
-      ${metaRow('Price List', meta.price_list)}
+      ${metaRow('Adjuster', meta.adjuster)}
+      ${metaRow(isSym ? 'Pricing Database' : 'Price List', meta.price_list)}
     </div>
     ${(data.warnings || []).length ? `<div class="xact-warn">⚠ ${data.warnings.map(esc).join('<br>')}</div>` : ''}
     <p class="xact-hint">Uncheck any lines <strong>we will not be doing</strong> — they are dropped from the contract entirely.</p>
@@ -11078,13 +11087,17 @@ async function applyXactImport() {
     type_of_loss:  meta.type_of_loss,
     price_list:    meta.price_list,
     date_of_loss:  meta.date_of_loss,
+    adjuster:      meta.adjuster,
     deductible:    sum.deductible,
     net_claim:     sum.net_claim,
     recoverable_depreciation: sum.recoverable_depreciation,
     net_claim_if_recovered:   sum.net_claim_if_recovered,
+    // Symbility pays debris removal only once the work is done, so it sits
+    // outside ACV — carried through so the card's figures reconcile.
+    paid_when_incurred: sum.paid_when_incurred,
     rcv_total:     sum.rcv_total,
     acv_total:     sum.acv_total,
-    source:        'xactimate_import',
+    source:        `${data.format || 'xactimate'}_import`,
     imported_at:   new Date().toISOString(),
   }).filter(([, v]) => v !== undefined));
 
