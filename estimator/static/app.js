@@ -5057,6 +5057,16 @@ function _insClaimCard() {
   if (!c) return '';
   const row = (label, val, money) => val === undefined || val === '' ? '' :
     `<span class="xact-meta-label">${label}</span><span class="xact-meta-value">${money ? fmtCur(val) : esc(String(val))}</span>`;
+
+  // Roof figures lifted off the carrier PDF. Shown here because in Insurance
+  // mode the Measurements page is a notice, so this card is the only place
+  // they are visible without switching the estimate back to Retail.
+  const m = S.measurements || {};
+  const carrierRoof = !c.measurements_from_carrier ? '' : [
+    mnum(m.roof_squares) ? `${mnum(m.roof_squares)} SQ` : '',
+    mnum(m.eave_lf)      ? `${mnum(m.eave_lf)} LF eaves` : '',
+    mnum(m.ridge_lf)     ? `${mnum(m.ridge_lf)} LF ridge` : '',
+  ].filter(Boolean).join(' · ');
   return `
     <div class="ins-claim-card">
       <div class="ins-claim-card-hd">
@@ -5075,6 +5085,7 @@ function _insClaimCard() {
         ${row('Recoverable Depreciation', c.recoverable_depreciation, true)}
         ${row('Paid When Incurred', c.paid_when_incurred, true)}
         ${row('Net Claim if Dep. Recovered', c.net_claim_if_recovered, true)}
+        ${row('Roof (from carrier PDF)', carrierRoof)}
       </div>
     </div>`;
 }
@@ -10958,6 +10969,17 @@ function openXactModal(data) {
   // produced the lines when a review looks wrong.
   const isSym = data.format === 'symbility';
 
+  // Say up front whether the carrier's roof figures will be used, so the rep
+  // is not left wondering why the Measurements page did or didn't change.
+  // The rule itself lives in applyXactImport.
+  const meas = data.measurements || {};
+  const measHeld = mnum((S.measurements || {}).roof_squares) > 0;
+  const measBits = [
+    meas.roof_squares !== undefined ? `${meas.roof_squares} SQ roof` : '',
+    meas.eave_lf     !== undefined ? `${meas.eave_lf} LF eaves`      : '',
+    meas.ridge_lf    !== undefined ? `${meas.ridge_lf} LF ridge`     : '',
+  ].filter(Boolean).join(' · ');
+
   document.getElementById('xact-modal-body').innerHTML = `
     <div class="xact-meta-card">
       ${metaRow('Format', isSym ? 'Symbility' : 'Xactimate')}
@@ -10970,6 +10992,10 @@ function openXactModal(data) {
       ${metaRow(isSym ? 'Pricing Database' : 'Price List', meta.price_list)}
     </div>
     ${(data.warnings || []).length ? `<div class="xact-warn">⚠ ${data.warnings.map(esc).join('<br>')}</div>` : ''}
+    ${measBits ? `<div class="xact-claim-note">📐 Roof measurements in this PDF: ${esc(measBits)} — ${
+      measHeld
+        ? 'left out. This estimate already has measurements, and those win.'
+        : 'these will fill the Measurements page, which is currently empty.'}</div>` : ''}
     <p class="xact-hint">Uncheck any lines <strong>we will not be doing</strong> — they are dropped from the contract entirely.</p>
     ${sectionsHtml}
     <div class="xact-footer">
@@ -11080,6 +11106,20 @@ async function applyXactImport() {
     setVal('cust-zip',    a.zip);
   }
 
+  // The carrier's roof figures are a fallback, never an override. A RoofR (or
+  // any other) report is a measured take-off; this is three numbers off the
+  // adjuster's diagram. So it is all-or-nothing on roof_squares rather than
+  // per-field: filling the gaps around an existing report would blend two
+  // sources into one take-off nobody could later account for. Xactimate
+  // exports carry no measurements, so this is a no-op for them.
+  const carrierMeas = data.measurements || {};
+  let carrierMeasUsed = false;
+  if (Object.keys(carrierMeas).length && !(mnum((S.measurements || {}).roof_squares) > 0)) {
+    if (!S.measurements) S.measurements = {};
+    Object.assign(S.measurements, carrierMeas);
+    carrierMeasUsed = true;
+  }
+
   // Claim metadata for the internal reference card — never customer-facing.
   const sum = data.summary || {};
   S.insurance_claim = Object.fromEntries(Object.entries({
@@ -11097,6 +11137,10 @@ async function applyXactImport() {
     paid_when_incurred: sum.paid_when_incurred,
     rcv_total:     sum.rcv_total,
     acv_total:     sum.acv_total,
+    // Insurance mode replaces the Measurements page with a notice, so figures
+    // taken off the carrier PDF would otherwise be invisible until someone
+    // switched back to Retail. Flagged here so the claim card can show them.
+    measurements_from_carrier: carrierMeasUsed || undefined,
     source:        `${data.format || 'xactimate'}_import`,
     imported_at:   new Date().toISOString(),
   }).filter(([, v]) => v !== undefined));

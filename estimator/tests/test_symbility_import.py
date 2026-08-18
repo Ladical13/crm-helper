@@ -146,9 +146,11 @@ PAGE_ROOF = [
         '$0.00', '$135.10', '$2,182.84', '$293.74', '$1,889.10'),
     row('DWELLING ROOF - Subtotal (2 items)', None, None, None,
         '$0.00', '$135.10', '$2,182.84', '$293.74', '$1,889.10'),
-    # A plan the adjuster zeroed out: no items, must not reach the estimate.
+    # A plan the adjuster zeroed out: no items, must not reach the estimate —
+    # and its squares must not reach the roof total either.
     at((X_HEAD, 'ROOFPLAN: SHED ROOF')),
     at((16, 'Roof')),
+    at((16, 'Roof area:  362.94 SF     Squares:  3.6 SQ')),
     at((X_HEAD, 'NO COVERAGE AS REPLACEMENT WAS PAID ON PRIOR CLAIM 056541748')),
     row('Roof - Subtotal (1 item)', None, None, None,
         '$0.00', '$0.00', '$0.00', '$0.00', '$0.00'),
@@ -410,12 +412,13 @@ needs_node = pytest.mark.skipif(shutil.which('node') is None,
                                 reason='node not installed — modal cannot be rendered')
 
 
-def _render(payload, tmp_path):
+def _render(payload, tmp_path, measurements=None):
     src = tmp_path / 'payload.json'
     out = tmp_path / 'modal.json'
     src.write_text(json.dumps(payload), encoding='utf-8')
-    proc = subprocess.run(['node', RUNNER, str(src), str(out)],
-                          capture_output=True, text=True)
+    proc = subprocess.run(
+        ['node', RUNNER, str(src), str(out), json.dumps(measurements or {})],
+        capture_output=True, text=True)
     assert proc.returncode == 0, f'xact_modal_runner.js failed:\n{proc.stderr}'
     return json.loads(out.read_text(encoding='utf-8'))
 
@@ -451,3 +454,76 @@ def test_modal_still_labels_an_xactimate_import(tmp_path):
     assert '>Xactimate<' in r['modal']
     assert 'Price List' in r['modal']
     assert 'Pricing Database' not in r['modal']
+
+
+# ── roof measurements ──────────────────────────────────────────────────────
+# Symbility prints a measurement block per plan. Those figures are offered to
+# the estimate only as a fallback: a RoofR report is a measured take-off and
+# these are a few numbers off the adjuster's diagram, so an estimate that
+# already has measurements keeps them. The rule itself lives in
+# applyXactImport; these cover the figures it is handed.
+
+def test_roof_measurements_map_to_estimator_fields():
+    assert parsed()['measurements'] == {'roof_squares': 26.8}
+
+
+def test_only_mappable_labels_come_across():
+    """Soffit, Footprint, Subtractions and the exterior wall areas have no
+    unambiguous counterpart, so they are dropped rather than guessed at."""
+    assert set(parsed()['measurements']) <= {'roof_squares', 'eave_lf', 'ridge_lf'}
+
+
+def test_zeroed_out_plan_does_not_inflate_the_roof_total():
+    """The fixture's SHED ROOF is a plan the adjuster gave no coverage. Its
+    squares must not be added to the dwelling's — the estimate would order
+    material for a roof nobody is paying to replace."""
+    assert parsed()['measurements']['roof_squares'] == 26.8
+
+
+def test_roof_area_stands_in_when_a_plan_omits_its_squares():
+    import app as A
+    page = [row(*HEADER),
+            at((X_HEAD, 'ROOFPLAN: DWELLING ROOF')),
+            at((16, 'Roof area:  2,678.53 SF')),
+            at((X_HEAD, 'VENTS AND FLASHINGS')),
+            row('1  Roof Vent, Static,', '6', '$70.11', 'EA',
+                '$0.00', '$0.05', '$420.71', '$0.00', '$420.71')]
+    m = A._parse_symbility_pdf(_pdf([PAGE_META, page]))['measurements']
+    assert m['roof_squares'] == 26.79      # 2,678.53 SF / 100
+
+
+def test_two_covered_roof_plans_are_summed():
+    import app as A
+    page = [row(*HEADER),
+            at((X_HEAD, 'ROOFPLAN: MAIN')),
+            at((16, 'Squares:  20.0 SQ')), at((16, 'Eaves:  100.00 LF')),
+            row('1  Roof Vent, Static,', '6', '$70.11', 'EA',
+                '$0.00', '$0.05', '$420.71', '$0.00', '$420.71'),
+            at((X_HEAD, 'ROOFPLAN: DETACHED GARAGE')),
+            at((16, 'Squares:  6.5 SQ')), at((16, 'Eaves:  40.00 LF')),
+            row('2  Roof Vent, Static,', '2', '$70.11', 'EA',
+                '$0.00', '$0.02', '$140.24', '$0.00', '$140.24')]
+    m = A._parse_symbility_pdf(_pdf([PAGE_META, page]))['measurements']
+    assert m['roof_squares'] == 26.5
+    assert m['eave_lf'] == 140.0
+
+
+@needs_node
+def test_modal_says_measurements_will_be_used_when_the_estimate_is_empty(tmp_path):
+    r = _render(parsed(), tmp_path, measurements={})
+    assert 'Roof measurements in this PDF' in r['modal']
+    assert 'currently empty' in r['modal']
+
+
+@needs_node
+def test_modal_says_measurements_are_held_back_when_a_report_exists(tmp_path):
+    r = _render(parsed(), tmp_path, measurements={'roof_squares': 31.2})
+    assert 'left out' in r['modal']
+    assert 'already has measurements' in r['modal']
+
+
+@needs_node
+def test_modal_says_nothing_about_measurements_for_xactimate(tmp_path):
+    payload = {'format': 'xactimate', 'meta': {}, 'address': {}, 'warnings': [],
+               'summary': {}, 'sections': [{'name': 'Roof', 'items': []}]}
+    assert 'Roof measurements in this PDF' not in _render(payload, tmp_path)['modal']

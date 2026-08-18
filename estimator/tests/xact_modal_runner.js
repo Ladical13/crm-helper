@@ -85,13 +85,18 @@ let _xactData = null;
 let _xactExcluded = new Set();
 
 const body = [
-  grab('esc'), grab('fmtCur'), grab('xactUpdateTotals'), grab('openXactModal'),
+  grab('esc'), grab('fmtCur'), grab('mnum'),
+  grab('xactUpdateTotals'), grab('openXactModal'),
   'openXactModal(PAYLOAD);',
   'return { modal: els["xact-modal-body"].innerHTML,'
   + ' totals: els["xact-footer-totals"].innerHTML };',
 ].join('\n\n');
 
+// argv[4] is the estimate's existing S.measurements, so a test can render the
+// modal both against a blank estimate and against one that already carries a
+// measurement report.
 const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-const run = new Function('PAYLOAD', 'document', 'els', '_xactData', '_xactExcluded', body);
-const out = run(payload, document, els, _xactData, _xactExcluded);
+const S = { measurements: JSON.parse(process.argv[4] || '{}') };
+const run = new Function('PAYLOAD', 'document', 'els', 'S', '_xactData', '_xactExcluded', body);
+const out = run(payload, document, els, S, _xactData, _xactExcluded);
 fs.writeFileSync(process.argv[3], JSON.stringify(out), 'utf8');

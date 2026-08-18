@@ -2100,6 +2100,42 @@ def _parse_symbility_summary(flat_text, grand):
     return summary
 
 
+# Symbility plan measurement labels → the estimator's measurement fields, in
+# the same {'measurements': {...}} shape /api/parse-roofr returns so the two
+# importers stay interchangeable. Only labels that map without inventing a
+# definition are here: Soffit, Footprint, Subtractions and the exterior wall
+# areas have no unambiguous counterpart and are left out rather than guessed
+# at — a wrong take-off figure is worse than a missing one.
+_SYM_MEASURE_MAP = {
+    'squares': 'roof_squares',
+    'eaves':   'eave_lf',
+    'ridge':   'ridge_lf',
+}
+
+
+def _symbility_measurements(sections):
+    """Roof measurements, summed across the plans that actually carry work.
+
+    Plans the adjuster zeroed out are already dropped for having no items,
+    which is what keeps an uncovered shed's squares out of the roof total.
+    """
+    out = {}
+    for sec in sections:
+        for label, m in sec.get('measurements', {}).items():
+            key = _SYM_MEASURE_MAP.get(label.strip().casefold())
+            if key:
+                out[key] = round(out.get(key, 0.0) + m['value'], 2)
+    if 'roof_squares' not in out:
+        # A plan that prints its area but not its squares still gives the one
+        # figure the estimator cannot work without.
+        area = sum(m['value'] for sec in sections
+                   for label, m in sec.get('measurements', {}).items()
+                   if label.strip().casefold() == 'roof area')
+        if area:
+            out['roof_squares'] = round(area / 100, 2)
+    return out
+
+
 def _parse_symbility_pdf(file_bytes):
     layout_pages, flat_pages = _sym_pages(file_bytes)
     page1 = layout_pages[0] if layout_pages else ''
@@ -2108,7 +2144,8 @@ def _parse_symbility_pdf(file_bytes):
     sections, grand, warnings = _parse_symbility_items(layout_pages)
     summary = _parse_symbility_summary('\n'.join(flat_pages), grand)
     return {'format': 'symbility', 'meta': meta, 'address': addr,
-            'sections': sections, 'summary': summary, 'warnings': warnings}
+            'sections': sections, 'summary': summary, 'warnings': warnings,
+            'measurements': _symbility_measurements(sections)}
 
 
 def _detect_carrier_format(file_bytes):
