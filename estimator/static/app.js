@@ -4626,9 +4626,52 @@ function otherSetDesc(id, v) {
 
    `value` is a PER-UNIT price (the box sits beside Unit Cost and matches the
    Simple tab); price_override stores the line total, so multiply back out. */
+/* Other-tab rows saved before addLineItem started them at qty 1 sit at
+   quantity 0, and a zero-qty line prices at nothing however good the cost and
+   sell price beside it look: tradeTotal and calc_tier_total both drop it, so a
+   $9,548 deck shows 0.00 in the Sell Price column, adds nothing to the subtotal
+   and never prints. Unlike the G/B/B trades this tab has no way to say "not in
+   scope" — no chip row, no include toggle, the quantity box is the only
+   control — so a zero here is never a deliberate exclusion; it is a row nobody
+   ever gave a quantity. Heal the ones that carry money, which are exactly the
+   rows a rep meant to charge for, and leave the empty scaffolding rows alone.
+   A signed estimate is skipped: its total is a number the customer agreed to,
+   and that moves through a change order, never through a migration that runs
+   quietly when the estimate is opened.
+   Returns how many rows changed, so the caller can mark the doc dirty. */
+function healOtherZeroQty(est) {
+  if (!est || est.signature) return 0;
+  const items = ((est.trades || {}).other || {}).line_items || [];
+  let healed = 0;
+  items.forEach(i => {
+    if ((parseFloat(i.quantity) || 0) > 0) return;
+    const carriesMoney = TIERS.some(t => {
+      const c = (i.tiers || {})[t] || {};
+      return (parseFloat(c.material_unit_cost) || 0) > 0
+          || (parseFloat(c.labor_unit_cost)    || 0) > 0
+          || (parseFloat(c.price_override)     || 0) > 0;
+    });
+    if (carriesMoney) { i.quantity = 1; healed++; }
+  });
+  return healed;
+}
+
+/* Quantity is the one number this tab cannot infer — there is no measurement
+   behind a haul-away, an allowance or a deck rebuild — so a rep types the
+   money, sees the "1" the box has shown as a placeholder all along, and ships
+   a line that prices at $0. Entering a cost or a sell price IS the intent to
+   charge, so give the row that 1 for real. Only ever fills a blank or zero,
+   and only when a real number was typed: a quantity the rep set is theirs, and
+   clearing a price must not conjure one. */
+function otherEnsureQty(item, entered) {
+  if ((parseFloat(entered) || 0) > 0 && (parseFloat(item.quantity) || 0) <= 0)
+    item.quantity = 1;
+}
+
 function otherSetPrice(id, value) {
   const item = findItem('other', id);
   if (!item) return;
+  otherEnsureQty(item, value);
   const qty = parseFloat(item.quantity) || 0;
   const unit = parseFloat(value);
   const total = (!value || isNaN(unit)) ? value
@@ -4690,6 +4733,7 @@ function otherApplyPrice(item, tier, value) {
 function otherSetUnitCost(id, cost) {
   const item = findItem('other', id);
   if (!item) return;
+  otherEnsureQty(item, cost);
   // sync the same cost across all tiers so it prints on every package
   TIERS.forEach(tier => {
     if (!item.tiers[tier]) item.tiers[tier] = {material_unit_cost:0,labor_unit_cost:0,description:'',notes:''};
@@ -9710,7 +9754,10 @@ async function doLoadEstimate(id) {
         if(i.measure === 'ridge' || i.measure === 'hip') i.measure = 'ridge_hip';
       });
     });
-    activeTrade='roofing'; closeModal(); setClean(); renderAll(); switchPage('client');
+    const _otherQtyHealed = healOtherZeroQty(S);
+    activeTrade='roofing'; closeModal(); setClean();
+    if (_otherQtyHealed) setDirty();   // let the 60s autosave persist the fix
+    renderAll(); switchPage('client');
     warmPrintPhotos();
     backfillPdfPages();
   }catch(e){alert('Could not load estimate: '+e.message);}
