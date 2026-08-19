@@ -9603,6 +9603,7 @@ async function doLoadEstimate(id) {
       S.shingle_selection.options=DEFAULT_SHINGLE_COLORS.slice();
     if(!Array.isArray(S.attachments)) S.attachments=[];
     if(!S.work_order || typeof S.work_order !== 'object') S.work_order = {};
+    if(!S.roof_certificate || typeof S.roof_certificate !== 'object') S.roof_certificate = {};
     // Estimates created outside the UI (API, scripts) may lack these — a
     // missing photos array used to crash renderCoverPage and abort the load.
     if(!Array.isArray(S.photos)) S.photos=[];
@@ -11313,10 +11314,11 @@ function renderDocumentsPage() {
           onchange="docUploadPdf(this.files)">
       </div>
       ${atts.length ? atts.map(att => {
-        const icon = att.doc_type === 'signed_contract' ? '🖊'
-                   : att.doc_type === 'permit_packet'   ? '🏛'
-                   : att.server_generated               ? '🛠'
-                                                        : '📄';
+        const icon = att.doc_type === 'signed_contract'  ? '🖊'
+                   : att.doc_type === 'permit_packet'    ? '🏛'
+                   : att.doc_type === 'roof_certificate' ? '🏅'
+                   : att.server_generated                ? '🛠'
+                                                         : '📄';
         // Work orders don't auto-push — the rep fills in scheduled date /
         // dish / tear-off layers first, then clicks "↗ Push to Den".
         const isWO = att.doc_type === 'work_order';
@@ -11356,6 +11358,13 @@ function renderDocumentsPage() {
           <span class="doc-card-name">Loveland Permit &amp; Affidavit</span>
           <span class="doc-card-sub">City reroof packet, auto-filled from this job</span>
         </button>
+        <button class="doc-card ${_docGenerator==='roofcert'?'doc-card-active':''}" onclick="docToggleGenerator('roofcert')">
+          <span class="doc-card-icon">🏅</span>
+          <span class="doc-card-name">Roof Certificate</span>
+          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'roof_certificate')
+            ? 'Issued — reopen to edit and re-issue'
+            : 'Realtor certification + short labor-only warranty'}</span>
+        </button>
         ${S.signature ? `
         <button class="doc-card" onclick="generateProductionPacket(this)">
           <span class="doc-card-icon">🛠</span>
@@ -11387,8 +11396,10 @@ function renderDocumentsPage() {
     <div id="co-panel"></div>
 
     <div id="permit-form-container"></div>
+    <div id="roofcert-form-container"></div>
   </div>`;
-  if (_docGenerator === 'permit') renderPermitForm();
+  if (_docGenerator === 'permit')   renderPermitForm();
+  if (_docGenerator === 'roofcert') renderRoofCertForm();
   if (S.signature && S.estimate_id) loadChangeOrders();
 }
 
@@ -11765,6 +11776,243 @@ async function pushWorkOrderToCrm() {
     S.attachments.push(d.attachment);
   } catch (e) {
     alert('Could not push the work order to Den: ' + e.message);
+  }
+  renderDocumentsPage();
+}
+
+/* ── Roof certificate (realtor labor-only warranty) ────────────────────
+   Standalone product: a realtor needs a roof signed off before closing, so
+   the rep inspects, certifies condition and remaining life, and backs it
+   with a short LABOR-ONLY leak warranty. There is no estimate to build and
+   nothing to sign — the rep's name and the inspection date at the bottom of
+   the PDF are the promise.
+
+   Save writes the fields; Issue rebuilds the PDF. Same two-step as the work
+   order, and for the same reason: a half-filled certificate must never be
+   the thing that reaches a realtor. */
+const RC_TERMS      = [6, 12, 24];
+const RC_CONDITIONS = ['Excellent', 'Good', 'Fair', 'Serviceable with repairs'];
+
+function renderRoofCertForm() {
+  const el = document.getElementById('roofcert-form-container');
+  if (!el) return;
+  const rc   = S.roof_certificate || {};
+  const c    = S.customer || {};
+  const term = rc.term_months;
+  // Sensible openers so the rep types as little as possible on a roof.
+  const inspector = rc.inspector || cap(S.salesperson || _loggedInUser || '');
+  const inspDate  = rc.inspection_date || fmtDate(new Date());
+  const issued    = (S.attachments || []).some(
+    a => a.server_generated && a.doc_type === 'roof_certificate');
+
+  // .rc-f is a flex column, so a bare text node plus a trailing note-tag would
+  // become two stacked rows. Wrapping them keeps the hint beside the label.
+  const lab = (text, note) =>
+    `<span class="rc-lab">${text}${note ? ` <span class="note-tag">${note}</span>` : ''}</span>`;
+
+  const t = (id, label, val, ph, extra='') => `
+    <label class="rc-f">${lab(label)}
+      <input type="text" id="${id}" value="${esc(val || '')}" placeholder="${esc(ph||'')}" ${extra}>
+    </label>`;
+
+  el.innerHTML = `
+  <div class="panel rc-panel">
+    <div class="panel-header">
+      <h3>🏅 Roof Certificate — ${esc(c.name || 'this property')}</h3>
+      ${issued ? '<span class="rc-issued-chip">Issued</span>' : ''}
+    </div>
+
+    <p class="pm-hint rc-lede">Certifies the roof's condition for a real-estate
+      transaction and backs it with a <strong>labor-only</strong> leak warranty
+      for a short term. Not a workmanship warranty and not a manufacturer
+      warranty.</p>
+
+    <div class="rc-sec">Inspection</div>
+    <div class="rc-grid">
+      <label class="rc-f">${lab('Inspection Date', 'term starts here')}
+        <input type="date" id="rc-date" value="${esc(inspDate)}">
+      </label>
+      ${t('rc-inspector', 'Inspected By', inspector, 'Rep name — signs the certificate')}
+      ${t('rc-material', 'Roof Covering', rc.roof_material, 'e.g. Architectural asphalt shingle')}
+      ${t('rc-age', 'Approximate Age', rc.roof_age, 'e.g. Approximately 11 years')}
+      <label class="rc-f">${lab('Condition')}
+        <select id="rc-condition">
+          <option value="">— choose —</option>
+          ${RC_CONDITIONS.map(o => `<option value="${esc(o)}" ${o === (rc.condition||'') ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+        </select>
+      </label>
+      ${t('rc-life', 'Est. Remaining Life', rc.remaining_life, 'e.g. 8-12 years')}
+    </div>
+    <label class="rc-f rc-wide">${lab('Findings', 'prints on the certificate')}
+      <textarea id="rc-findings" rows="4"
+        placeholder="What you saw: field condition, flashings, penetrations, attic check…">${esc(rc.findings || '')}</textarea>
+    </label>
+    <label class="rc-f rc-wide">${lab('Repairs Performed Before Certifying')}
+      <textarea id="rc-repairs" rows="2"
+        placeholder="Leave blank if none were needed">${esc(rc.repairs_made || '')}</textarea>
+    </label>
+
+    <div class="rc-sec">Warranty</div>
+    <div class="rc-term-row">
+      <div class="rc-term-btns" id="rc-term-btns">
+        ${RC_TERMS.map(n => `<button type="button" class="rc-term-btn ${term === n ? 'active' : ''}"
+          onclick="rcSetTerm(${n})">${n} months</button>`).join('')}
+      </div>
+      <label class="rc-f rc-price">${lab('Price')}
+        <input type="number" id="rc-price" min="0" step="25"
+          value="${rc.price != null ? esc(String(rc.price)) : ''}" placeholder="0">
+      </label>
+    </div>
+    <div class="rc-expiry" id="rc-expiry"></div>
+    <label class="rc-f rc-wide">${lab('Exclusions', 'blank = our standard language')}
+      <textarea id="rc-exclusions" rows="3"
+        placeholder="Leave blank to print the standard exclusions.">${esc(rc.exclusions || '')}</textarea>
+    </label>
+    <button class="rc-load-std" type="button" onclick="rcLoadStandardExclusions()">
+      Load the standard text to edit it</button>
+
+    <div class="rc-sec">Realtor &amp; Transaction <span class="note-tag">optional</span></div>
+    <div class="rc-grid">
+      ${t('rc-realtor', 'Requested By', rc.realtor_name, 'Realtor name')}
+      ${t('rc-brokerage', 'Brokerage', rc.realtor_brokerage, '')}
+      ${t('rc-rphone', 'Realtor Phone', rc.realtor_phone, '')}
+      ${t('rc-remail', 'Realtor Email', rc.realtor_email, '')}
+      ${t('rc-buyer', 'Buyer', rc.buyer_name, '')}
+      ${t('rc-seller', 'Seller', rc.seller_name, '')}
+      ${t('rc-closing', 'Closing Date', rc.closing_date, 'e.g. September 12, 2026')}
+    </div>
+
+    <div class="rc-btns">
+      <button class="doc-crm-push" onclick="saveRoofCertFields()">💾 Save</button>
+      <button class="btn-primary rc-issue" onclick="issueRoofCert()">
+        🏅 ${issued ? 'Save + Re-issue' : 'Save + Issue Certificate'}</button>
+      ${issued ? `<button class="doc-crm-push" onclick="issueRoofCert(true)">↗ Issue + File in Den</button>` : ''}
+      <span class="rc-saved" id="rc-saved"></span>
+    </div>
+  </div>`;
+  rcUpdateExpiry();
+  const d = document.getElementById('rc-date');
+  if (d) d.onchange = rcUpdateExpiry;
+}
+
+function rcSetTerm(n) {
+  S.roof_certificate = Object.assign({}, S.roof_certificate || {}, {term_months: n});
+  document.querySelectorAll('#rc-term-btns .rc-term-btn').forEach(b =>
+    b.classList.toggle('active', b.textContent.trim() === n + ' months'));
+  rcUpdateExpiry();
+}
+
+/* Mirrors _add_months in app.py: clamp to the last day of the target month so
+   an inspection on the 31st does not roll into the following month. The rep
+   sees the expiration before issuing, so this preview must agree with the PDF. */
+function rcAddMonths(iso, months) {
+  const p = String(iso || '').slice(0, 10).split('-').map(Number);
+  if (p.length !== 3 || p.some(isNaN)) return null;
+  let [y, m, d] = p;
+  m = m - 1 + months;
+  y += Math.floor(m / 12);
+  m = ((m % 12) + 12) % 12;
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const dt = new Date(Date.UTC(y, m, Math.min(d, last)));
+  return dt.toLocaleDateString('en-US', {month:'long', day:'numeric', year:'numeric', timeZone:'UTC'});
+}
+
+function rcUpdateExpiry() {
+  const el = document.getElementById('rc-expiry');
+  if (!el) return;
+  const iso  = (document.getElementById('rc-date') || {}).value || '';
+  const term = (S.roof_certificate || {}).term_months;
+  if (!iso || !RC_TERMS.includes(term)) {
+    el.innerHTML = '<span class="rc-expiry-todo">Pick an inspection date and a term to see the coverage window.</span>';
+    return;
+  }
+  const end = rcAddMonths(iso, term);
+  el.innerHTML = `Covers <strong>${term} months, labor only</strong> — through <strong>${esc(end || '')}</strong>.`;
+}
+
+async function rcLoadStandardExclusions() {
+  const ta = document.getElementById('rc-exclusions');
+  if (!ta) return;
+  if (ta.value.trim() && !confirm('Replace what you have typed with the standard exclusions?')) return;
+  try {
+    const r = await fetch(`/api/roof-certificate-defaults`);
+    const d = await r.json();
+    ta.value = d.exclusions || '';
+  } catch (e) {
+    alert('Could not load the standard exclusions: ' + e.message);
+  }
+}
+
+function _readRoofCertForm() {
+  const v = id => ((document.getElementById(id) || {}).value || '').trim();
+  const out = {
+    inspection_date:   v('rc-date'),
+    inspector:         v('rc-inspector'),
+    roof_material:     v('rc-material'),
+    roof_age:          v('rc-age'),
+    condition:         v('rc-condition'),
+    remaining_life:    v('rc-life'),
+    findings:          v('rc-findings'),
+    repairs_made:      v('rc-repairs'),
+    exclusions:        v('rc-exclusions'),
+    realtor_name:      v('rc-realtor'),
+    realtor_brokerage: v('rc-brokerage'),
+    realtor_phone:     v('rc-rphone'),
+    realtor_email:     v('rc-remail'),
+    buyer_name:        v('rc-buyer'),
+    seller_name:       v('rc-seller'),
+    closing_date:      v('rc-closing'),
+  };
+  const term = (S.roof_certificate || {}).term_months;
+  if (RC_TERMS.includes(term)) out.term_months = term;
+  const price = v('rc-price');
+  if (price !== '') out.price = parseFloat(price);
+  return out;
+}
+
+async function saveRoofCertFields(quiet) {
+  if (!S.estimate_id) await saveEstimate();
+  if (!S.estimate_id) return null;
+  const payload = _readRoofCertForm();
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/roof-certificate`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    S.roof_certificate = Object.assign({}, S.roof_certificate || {}, d.roof_certificate || {});
+    // Local confirmation only. setClean() would clear the header's global
+    // unsaved flag, which this save does not earn — the estimate itself may
+    // still have edits pending.
+    const flag = document.getElementById('rc-saved');
+    if (flag && !quiet) {
+      flag.textContent = '✓ Saved';
+      setTimeout(() => { if (flag.textContent === '✓ Saved') flag.textContent = ''; }, 2500);
+    }
+    return d.roof_certificate;
+  } catch (e) {
+    alert('Could not save the certificate: ' + e.message);
+    return null;
+  }
+}
+
+async function issueRoofCert(pushToCrm) {
+  const saved = await saveRoofCertFields(true);
+  if (saved === null) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/roof-certificate`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({push_to_crm: !!pushToCrm}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not issue the certificate');
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(
+      a => !(a.server_generated && a.doc_type === 'roof_certificate'));
+    S.attachments.push(d.attachment);
+  } catch (e) {
+    alert(e.message);
   }
   renderDocumentsPage();
 }

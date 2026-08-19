@@ -16,7 +16,7 @@ import smtplib
 import zipfile
 import threading
 import html as _html
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
@@ -9310,6 +9310,490 @@ def save_work_order_fields(est_id):
 
     est_update(est_id, _apply)
     return jsonify({'work_order': cleaned})
+
+
+# ── Roof certificate (realtor labor-only warranty) ───────────────────────────
+# Sold standalone during a real-estate transaction: the rep inspects a roof
+# Project One did not necessarily install, certifies its condition and
+# remaining service life, and backs that with a SHORT, LABOR-ONLY leak-repair
+# warranty. Deliberately not a workmanship warranty (there is no install to
+# warrant) and not a manufacturer warranty — it covers our labor to chase down
+# leaks that appear during the term, and nothing else.
+#
+# Stored on the estimate doc, like work_order. A certificate job IS an
+# estimate whose only artifact is this PDF: that way the customer record, the
+# CRM job link, the uploads dir, the Documents tab and the dashboard all work
+# on it unchanged. Nothing new had to be introduced to store or find one.
+#
+# Unlike the production and permit packets this does NOT gate on a signature.
+# There is no contract to sign — the certificate is issued, and the rep's
+# signature at the bottom is the promise.
+_ROOF_CERT_TERMS = (6, 12, 24)
+
+_ROOF_CERT_STR_FIELDS = (
+    'inspection_date', 'inspector', 'roof_material', 'roof_age',
+    'remaining_life', 'condition', 'findings', 'repairs_made',
+    'realtor_name', 'realtor_brokerage', 'realtor_phone', 'realtor_email',
+    'buyer_name', 'seller_name', 'closing_date', 'exclusions',
+)
+
+# Default exclusions. Editable per certificate — a rep can call out a specific
+# pre-existing condition — but this is the language that ships if nobody
+# touches it, so it has to stand on its own.
+ROOF_CERT_DEFAULT_EXCLUSIONS = (
+    'This certificate covers LABOR ONLY to repair roof leaks originating in '
+    'the certified roof area during the term shown above. Materials are not '
+    'included and are billed separately at cost.\n\n'
+    'This certificate does NOT cover: damage from hail, wind, snow or ice '
+    'load, fire, lightning, falling limbs, or any other storm or casualty '
+    'event; damage caused by foot traffic or by work performed by anyone '
+    'other than Project One Roofing; gutters, skylights, chimneys, solar '
+    'equipment, swamp coolers, siding, or any component that is not part of '
+    'the roof covering; ice damming; condensation or moisture caused by '
+    'inadequate attic ventilation; structural movement or deck deterioration '
+    'not visible at the time of inspection; and any pre-existing condition '
+    'noted in the findings above.\n\n'
+    'This is not a manufacturer warranty and does not extend, replace, or '
+    'affect any manufacturer warranty on the existing roof. Coverage begins '
+    'on the inspection date and ends on the expiration date shown above. '
+    'Project One Roofing must be notified of a leak within 30 days of its '
+    'discovery and given reasonable access to inspect and repair.'
+)
+
+
+def _roof_cert_number(est):
+    """Certificate number. Derived from the estimate id so it is stable across
+    regenerations — a realtor holding an emailed copy and the office looking at
+    the record are always talking about the same number."""
+    eid = est.get('estimate_id', '')
+    return 'RC-' + eid.split('-')[0].upper() if eid else 'RC-DRAFT'
+
+
+def _add_months(d, months):
+    """Date `months` after d, clamped to the last day of the target month so an
+    inspection on the 31st does not roll into the following month."""
+    y, m = d.year, d.month + months
+    y += (m - 1) // 12
+    m = (m - 1) % 12 + 1
+    last = calendar.monthrange(y, m)[1]
+    return date(y, m, min(d.day, last))
+
+
+def _roof_cert_dates(cert):
+    """(start, expiration) as dates, or (None, None). The term runs from the
+    INSPECTION, not from whenever the PDF was generated — regenerating a
+    certificate must never quietly extend its coverage."""
+    raw = (cert.get('inspection_date') or '').strip()
+    if not raw:
+        return None, None
+    try:
+        start = date.fromisoformat(raw[:10])
+    except ValueError:
+        return None, None
+    term = cert.get('term_months')
+    if term not in _ROOF_CERT_TERMS:
+        return start, None
+    return start, _add_months(start, term)
+
+
+def _sanitize_roof_cert(payload):
+    out = {}
+    for k in _ROOF_CERT_STR_FIELDS:
+        v = payload.get(k)
+        if v is None:
+            continue
+        # Findings/repairs/exclusions are paragraphs; the rest are one-liners.
+        cap = 4000 if k in ('findings', 'repairs_made', 'exclusions') else 300
+        out[k] = str(v).strip()[:cap]
+    term = payload.get('term_months')
+    if term not in (None, ''):
+        try:
+            n = int(term)
+        except (TypeError, ValueError):
+            n = None
+        if n in _ROOF_CERT_TERMS:
+            out['term_months'] = n
+    price = payload.get('price')
+    if price not in (None, ''):
+        try:
+            p = float(price)
+        except (TypeError, ValueError):
+            p = None
+        if p is not None and 0 <= p <= 100000:
+            out['price'] = round(p, 2)
+    return out
+
+
+def build_roof_certificate_pdf(est):
+    """One-page roof certification + limited labor warranty, signed by the
+    inspecting rep. Written to be handed to a realtor and dropped straight into
+    a transaction file, so every fact a title company or buyer would ask about
+    (what was inspected, when, by whom, what is covered, what is not, when it
+    expires) is on the single page."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+
+    c    = est.get('customer', {})
+    a    = c.get('address', {})
+    cert = est.get('roof_certificate') or {}
+    num  = _roof_cert_number(est)
+    start, end = _roof_cert_dates(cert)
+    term = cert.get('term_months')
+
+    def _fmt(d):
+        return d.strftime('%B %d, %Y') if d else '________________'
+
+    pdf = FPDF(orientation='P', unit='mm', format='Letter')
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.set_margins(14, 14, 14)
+    pdf.add_page()
+    W = pdf.w - 28
+
+    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
+    if os.path.exists(logo):
+        try:
+            pdf.image(logo, x=14, y=12, h=16)
+        except Exception:
+            pass
+    pdf.set_xy(14, 12)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_font('Helvetica', '', 8)
+    pdf.cell(W, 4, '970-776-0945  -  projectoneroofingcolorado.com',
+             align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_y(32)
+
+    pdf.set_fill_color(26, 58, 92)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font('Helvetica', 'B', 13)
+    pdf.cell(W, 10, '  ROOF CERTIFICATION & LIMITED LABOR WARRANTY',
+             fill=True, new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+
+    pdf.set_font('Helvetica', '', 8.5)
+    pdf.set_text_color(90, 90, 90)
+    pdf.cell(W, 6, _pdf_safe(
+        f'Certificate {num}    Issued {datetime.utcnow().strftime("%B %d, %Y")}'),
+        align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(1)
+
+    def section_title(txt):
+        pdf.set_font('Helvetica', 'B', 10.5)
+        pdf.set_text_color(26, 58, 92)
+        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(0, 0, 0)
+
+    # A certificate that runs to a second page reads as a form, not a
+    # certificate, so the short facts pair up two to a line. Anything too long
+    # for a half column falls back to its own full-width row — a value wrapped
+    # inside a 55mm column is worse than one extra line. Both layouts share
+    # LAB_W so the full-width rows line up with the columns above them.
+    HALF   = W / 2
+    LAB_W  = 38
+    VAL_W  = HALF - LAB_W
+
+    def kv_row(label, val):
+        if not val:
+            return
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(LAB_W, 5.5, _pdf_safe(label))
+        pdf.set_font('Helvetica', '', 9)
+        # new_x is explicit: fpdf2's multi_cell defaults to leaving the cursor
+        # at the RIGHT edge of the cell, so without this every row after the
+        # first starts at the right margin and wraps off the page.
+        pdf.multi_cell(W - LAB_W, 5.5, _pdf_safe(val),
+                       new_x='LMARGIN', new_y='NEXT')
+
+    def _half(label, val, x):
+        pdf.set_xy(x, pdf.get_y())
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(LAB_W, 5.5, _pdf_safe(label))
+        pdf.set_font('Helvetica', '', 9)
+        pdf.cell(VAL_W, 5.5, _pdf_oneline(val))
+
+    def kv_grid(pairs):
+        pending = None
+        for label, val in pairs:
+            val = (val or '').strip()
+            if not val:
+                continue
+            pdf.set_font('Helvetica', '', 9)
+            if pdf.get_string_width(_pdf_oneline(val)) > VAL_W - 2:
+                if pending:
+                    _half(*pending, x=14)
+                    pdf.ln(5.5)
+                    pending = None
+                kv_row(label, val)
+            elif pending is None:
+                pending = (label, val)
+            else:
+                _half(*pending, x=14)
+                _half(label, val, x=14 + HALF)
+                pdf.ln(5.5)
+                pending = None
+        if pending:
+            _half(*pending, x=14)
+            pdf.ln(5.5)
+
+    def para(txt):
+        pdf.set_font('Helvetica', '', 8.4)
+        for block in str(txt).split('\n\n'):
+            block = ' '.join(block.split())
+            if not block:
+                continue
+            pdf.multi_cell(W, 4.15, _pdf_safe(block))
+            pdf.ln(1.2)
+
+    # ── Property ──
+    section_title('Property Certified')
+    addr = ', '.join(filter(None, [a.get('street'), a.get('city'),
+                                   a.get('state'), a.get('zip')]))
+    kv_row('Address',         est.get('project_address') or addr)
+    kv_row('Owner of Record', c.get('name', ''))
+    pdf.ln(2)
+
+    # ── Inspection ──
+    section_title('Inspection')
+    kv_grid([
+        ('Inspection Date',     _fmt(start) if start else ''),
+        ('Inspected By',        cert.get('inspector')
+                                or (est.get('salesperson') or '').title()),
+        ('Approximate Age',     cert.get('roof_age', '')),
+        ('Condition',           cert.get('condition', '')),
+        ('Est. Remaining Life', cert.get('remaining_life', '')),
+        ('Roof Covering',       cert.get('roof_material', '')),
+    ])
+    if (cert.get('findings') or '').strip():
+        pdf.ln(1)
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(W, 5, 'Findings', new_x='LMARGIN', new_y='NEXT')
+        para(cert['findings'])
+    if (cert.get('repairs_made') or '').strip():
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.cell(W, 5, 'Repairs Performed Prior to Certification',
+                 new_x='LMARGIN', new_y='NEXT')
+        para(cert['repairs_made'])
+    pdf.ln(1)
+
+    # ── The grant — the part everyone actually reads ──
+    pdf.set_fill_color(240, 245, 250)
+    pdf.set_draw_color(26, 58, 92)
+    pdf.set_font('Helvetica', 'B', 10)
+    pdf.set_text_color(26, 58, 92)
+    pdf.cell(W, 7, '  WARRANTY GRANTED', fill=True, border=1,
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font('Helvetica', '', 9)
+    grant = (
+        'Project One Roofing certifies the roof described above and warrants it '
+        'against leaks for a period of '
+        f'{term if term else "____"} MONTHS, LABOR ONLY, '
+        f'from {_fmt(start)} through {_fmt(end)}.'
+    )
+    pdf.multi_cell(W, 5.2, _pdf_safe(grant), border='LR',
+                   new_x='LMARGIN', new_y='NEXT')
+    pdf.set_font('Helvetica', 'I', 8.4)
+    pdf.multi_cell(W, 4.6, _pdf_safe(
+        'Coverage is limited to Project One Roofing labor to locate and repair '
+        'leaks in the certified roof area. See exclusions below.'),
+        border='LRB', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_draw_color(0, 0, 0)
+    pdf.ln(3)
+
+    # ── Exclusions ──
+    section_title('What This Certificate Does and Does Not Cover')
+    para(cert.get('exclusions') or ROOF_CERT_DEFAULT_EXCLUSIONS)
+
+    # ── Transaction / realtor ──
+    if any((cert.get(k) or '').strip() for k in
+           ('realtor_name', 'realtor_brokerage', 'buyer_name',
+            'seller_name', 'closing_date')):
+        pdf.ln(1)
+        section_title('Real Estate Transaction')
+        kv_grid([
+            ('Requested By',  cert.get('realtor_name', '')),
+            ('Brokerage',     cert.get('realtor_brokerage', '')),
+            ('Realtor Phone', cert.get('realtor_phone', '')),
+            ('Realtor Email', cert.get('realtor_email', '')),
+            ('Buyer',         cert.get('buyer_name', '')),
+            ('Seller',        cert.get('seller_name', '')),
+            ('Closing Date',  cert.get('closing_date', '')),
+        ])
+
+    # ── Signature block ──
+    # Keep the whole block together: a signature stranded alone on page 2 makes
+    # the certificate look unsigned to anyone skimming page 1. The block needs
+    # ~24mm and the break margin is 16mm, so 239 is the last y it still fits.
+    if pdf.get_y() > 239:
+        pdf.add_page()
+    pdf.ln(4)
+    inspector = (cert.get('inspector')
+                 or (est.get('salesperson') or '').title()
+                 or 'Project One Roofing')
+    sig_w = W * 0.56
+    gap   = 8
+    # The rep's name set in a large Times italic over the rule reads as a
+    # signature on a certificate. There is no drawn-signature capture on this
+    # document by design — it is issued, not negotiated.
+    pdf.set_font('Times', 'I', 19)
+    pdf.cell(sig_w, 9, _pdf_oneline(inspector))
+    pdf.set_font('Helvetica', '', 10)
+    pdf.cell(W - sig_w - gap, 9, _pdf_safe(_fmt(start)),
+             new_x='LMARGIN', new_y='NEXT')
+    rule_y = pdf.get_y()
+    pdf.set_draw_color(60, 60, 60)
+    pdf.line(14, rule_y, 14 + sig_w, rule_y)
+    pdf.line(14 + sig_w + gap, rule_y, 14 + W, rule_y)
+    pdf.ln(1)
+    pdf.set_font('Helvetica', '', 8)
+    pdf.set_text_color(90, 90, 90)
+    pdf.cell(sig_w + gap, 4.5,
+             _pdf_safe('Authorized Signature, Project One Roofing'))
+    pdf.cell(W - sig_w - gap, 4.5, 'Inspection Date',
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.cell(W, 4.5, _pdf_safe(f'{inspector}  -  Certificate {num}'),
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+
+    out = pdf.output()
+    return bytes(out) if not isinstance(out, bytes) else out
+
+
+def generate_roof_certificate(est_id, push_to_crm=True):
+    """Build the certificate PDF, save it as a server-generated attachment
+    (swapping any prior one), and optionally file it on the linked CRM job.
+    Returns the attachment dict. No signature gate — see the note above."""
+    est = est_load(est_id)
+    if est is None:
+        raise ValueError('estimate not found')
+
+    pdf_bytes = build_roof_certificate_pdf(est)
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'roofcert_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+
+    c     = est.get('customer', {})
+    cname = (c.get('name') or 'Customer').strip()
+    num   = _roof_cert_number(est)
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            f'Roof Certificate - {cname}',
+        'doc_type':         'roof_certificate',
+        'show_in_estimate': False,
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+    }
+
+    def _is_cert(x):
+        return x.get('server_generated') and x.get('doc_type') == 'roof_certificate'
+
+    def _swap(doc):
+        if doc is None:
+            return None
+        for old in filter(_is_cert, doc.get('attachments') or []):
+            parts = (old.get('filename') or '').split('/')
+            if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+                try:
+                    os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+                except OSError:
+                    pass
+        doc['attachments'] = [x for x in doc.get('attachments') or []
+                              if not _is_cert(x)] + [att]
+        return doc
+
+    est = est_update(est_id, _swap) or est
+
+    if not push_to_crm:
+        return att
+
+    doc_id, err = _crm_file_document(
+        est, pdf_bytes, upload_name=f'Roof_Certificate_{num}.pdf',
+        hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
+        doc_name=f'Roof Certificate - {cname} ({num})',
+        doc_type='other',
+        description='Roof certification with a limited labor-only leak warranty, '
+                    'issued for a real-estate transaction.')
+    if doc_id:
+        def _mark_pushed(doc):
+            if doc is None:
+                return None
+            for x in doc.get('attachments', []):
+                if x.get('id') == att['id']:
+                    x['crm_document_id'] = doc_id
+            return doc
+        est_update(est_id, _mark_pushed)
+        att['crm_document_id'] = doc_id
+    elif err and err != 'not_linked':
+        print(f'[roofcert] CRM push failed for {est_id}: {err}')
+    return att
+
+
+@app.route('/api/roof-certificate-defaults', methods=['GET'])
+def roof_certificate_defaults():
+    """The standard exclusions text and the allowed terms. Served rather than
+    duplicated in app.js so the legal language has exactly one home — a rep
+    editing the exclusions on one certificate must not be editing a second
+    copy that the PDF never reads."""
+    return jsonify({'exclusions': ROOF_CERT_DEFAULT_EXCLUSIONS,
+                    'terms': list(_ROOF_CERT_TERMS)})
+
+
+@app.route('/api/estimates/<est_id>/roof-certificate', methods=['PUT'])
+def save_roof_certificate_fields(est_id):
+    """Save the certificate fields. Never regenerates the PDF — the UI POSTs
+    afterwards when a fresh one is wanted, so a half-filled draft is never
+    handed to a realtor."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    cleaned = _sanitize_roof_cert(request.get_json(silent=True) or {})
+
+    def _apply(doc):
+        if doc is None:
+            return None
+        rc = dict(doc.get('roof_certificate') or {})
+        rc.update(cleaned)
+        rc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        doc['roof_certificate'] = rc
+        return doc
+
+    est_update(est_id, _apply)
+    return jsonify({'roof_certificate': cleaned})
+
+
+@app.route('/api/estimates/<est_id>/roof-certificate', methods=['POST'])
+def regenerate_roof_certificate(est_id):
+    """(Re)generate the certificate PDF from the Documents tab. Optional
+    {"push_to_crm": true}; defaults to false so the rep can eyeball the PDF
+    before it lands in the job file."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    cert = est.get('roof_certificate') or {}
+    if not (cert.get('inspection_date') or '').strip():
+        return jsonify({'error': 'Set the inspection date first — the warranty '
+                                 'term runs from it.'}), 400
+    if cert.get('term_months') not in _ROOF_CERT_TERMS:
+        return jsonify({'error': 'Choose a warranty term (6, 12, or 24 months).'}), 400
+    push = bool((request.get_json(silent=True) or {}).get('push_to_crm'))
+    try:
+        att = generate_roof_certificate(est_id, push_to_crm=push)
+    except Exception as exc:
+        print(f'[roofcert] generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Certificate generation failed: {exc}'}), 500
+    return jsonify({'attachment': att})
 
 
 # ── Change orders ────────────────────────────────────────────────────────────

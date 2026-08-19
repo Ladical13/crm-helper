@@ -4109,3 +4109,74 @@ body.is-client #nav-toggle      { display: none; }
     height: calc(100dvh - var(--header-h) - var(--p1-shell-h));
   }
 }
+
+
+/* ── Roof certificate form (Documents tab) ─────────────────────────── */
+.rc-panel { display: flex; flex-direction: column; gap: 8px; }
+.rc-issued-chip {
+  margin-left: auto; font-size: 11px; font-weight: 800;
+  color: #166534; background: #dcfce7; border: 1px solid #86efac;
+  padding: 2px 9px; border-radius: 10px;
+}
+.rc-lede { margin-bottom: 2px; }
+.rc-sec {
+  font-size: 11px; font-weight: 800; letter-spacing: .04em;
+  text-transform: uppercase; color: #1a3a5c;
+  border-bottom: 1px solid var(--border-light); padding-bottom: 4px;
+  margin-top: 6px;
+}
+.rc-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px 12px;
+}
+.rc-f {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 11px; font-weight: 700; color: #384b63;
+}
+/* Label text and its hint on one line above the control. */
+.rc-lab { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.rc-f input, .rc-f select, .rc-f textarea {
+  font-size: 13px; padding: 6px 8px; border: 1px solid #c6d8ec; border-radius: 5px;
+  background: #fff; font-weight: 500; color: #1a2740; font-family: inherit;
+}
+.rc-f textarea { resize: vertical; line-height: 1.45; }
+.rc-wide { width: 100%; }
+
+.rc-term-row { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.rc-term-btns { display: flex; gap: 6px; }
+.rc-term-btn {
+  padding: 8px 16px; border: 1px solid #c6d8ec; border-radius: 6px;
+  background: #fff; font-size: 13px; font-weight: 700; color: #384b63;
+  transition: all .12s;
+}
+.rc-term-btn:hover { border-color: #1a3a5c; }
+.rc-term-btn.active {
+  background: var(--primary); border-color: var(--primary); color: #fff;
+}
+.rc-price { max-width: 130px; }
+
+/* The coverage window, spelled out before the rep issues anything — the one
+   number a realtor will actually check. */
+.rc-expiry {
+  font-size: 12.5px; color: #14532d; background: #f0fdf4;
+  border: 1px solid #bbf7d0; border-radius: 6px; padding: 7px 10px;
+}
+.rc-expiry-todo { color: var(--text-light); font-style: italic; }
+.rc-expiry:has(.rc-expiry-todo) { background: #f8fafc; border-color: var(--border-light); }
+
+.rc-load-std {
+  align-self: flex-start; font-size: 11px; font-weight: 600;
+  color: var(--primary-light); background: none; border: none;
+  text-decoration: underline; padding: 0;
+}
+.rc-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.rc-issue { font-weight: 700; }
+.rc-saved { font-size: 12px; font-weight: 700; color: #16a34a; }
+
+@media (max-width: 640px) {
+  .rc-grid { grid-template-columns: 1fr; }
+  .rc-term-btns { width: 100%; }
+  .rc-term-btn { flex: 1; min-height: 42px; padding: 8px 6px; }
+  .rc-price { max-width: none; width: 100%; }
+  .rc-btns button { flex: 1; min-height: 42px; }
+}
