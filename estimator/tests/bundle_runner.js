@@ -95,7 +95,9 @@ const NAMES = ['isBundleTrade', 'effectiveTradeMode', '_tradeCatalog', '_tradeBu
                'tradeTier', 'simpleApplyMargin', 'applyBundleToTier', 'seedTradeBundles',
                'defaultSimpleBundle', 'buildSimpleItemsFromBundle', 'applyBundleToSimple',
                'buildBundleDefaults', '_carryItemIdentity', 'setTradeMode',
-               '_commAttachProfile', '_syncCommAttachment'];
+               '_commAttachProfile', '_syncCommAttachment',
+               // Buildings on a complex — applyBundleToSimple rebuilds per building.
+               'estStructures', 'tradeStructures', 'itemSection'];
 
 const scenario = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 

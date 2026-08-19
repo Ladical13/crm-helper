@@ -276,6 +276,12 @@ function renameTradeSection(trade, idx) {
   const td = S.trades[trade];
   const old = (td.sections || [])[idx];
   if (old === undefined) return;
+  // A section that names a building is that building. Renaming it here without
+  // moving the structure would leave the roof's measurements joined to a name
+  // nothing carries any more, and every item on it would fall back to the
+  // estimate's numbers. Hand it to the one function that moves all three.
+  const st = structureNamed(old);
+  if (st) { renameStructure(st.id); return; }
   const name = (prompt('Rename section:', old) || '').trim();
   if (!name || name === old) return;
   if (td.sections.includes(name)) { alert('That section already exists.'); return; }
@@ -288,6 +294,10 @@ function deleteTradeSection(trade, idx) {
   const td = S.trades[trade];
   const name = (td.sections || [])[idx];
   if (name === undefined) return;
+  // Same reasoning as the rename above -- and removeStructure asks its own
+  // question, because dropping a building drops its priced work with it.
+  const st = structureNamed(name);
+  if (st) { removeStructure(st.id); return; }
   if (!confirm(`Remove the "${name}" section? Its items stay on the estimate under General.`)) return;
   td.sections.splice(idx, 1);
   (td.line_items || []).forEach(i => { if (itemSection(i) === name) delete i.section; });
@@ -324,6 +334,199 @@ function sectionManagerBar(trade) {
     <button class="est-section-add" onclick="addTradeSection('${trade}')">+ Add Section</button>
   </div>`;
 }
+/* ── Buildings (structures) ───────────────────────────────────
+   An apartment complex is seven roofs on one contract, each with its own square
+   count. The estimate carried ONE `measurements` dict, so every line item on it
+   priced off the same numbers however many buildings the rep typed in.
+
+   A structure is a building: a name, the trade its work lives on, and its own
+   measurements in the SAME flat key namespace as S.measurements. That shared
+   namespace is the whole trick — every MEASURE_DEFS calc is a pure function of a
+   measurements dict, and so is commercialFastening(), so both run unchanged on
+   one building's numbers.
+
+   The structure's NAME is its section name. Sections already group items, print
+   section headers with their own subtotals on the PDF, and do the same on the
+   page the customer signs — so a building is priced, printed and subtotaled by
+   machinery that already exists. structures[] adds the measurements behind the
+   name, nothing else.
+
+   An estimate with no structures is every estimate written before this and every
+   ordinary one-roof job after it: S.measurements stays exactly what it was and
+   stays the fallback, so those price identically. */
+function estStructures() {
+  return Array.isArray(S.structures) ? S.structures.filter(Boolean) : [];
+}
+function findStructure(id) {
+  return estStructures().find(st => st.id === id) || null;
+}
+function structureNamed(name) {
+  const n = String(name || '').trim();
+  if (!n) return null;
+  return estStructures().find(st => String(st.name || '').trim() === n) || null;
+}
+function tradeStructures(trade) {
+  return estStructures().filter(st => (st.trade || 'commercial') === trade);
+}
+/* The measurements ONE item's quantity is computed from. An item tagged to a
+   building reads that building's numbers; an untagged item — mobilization, a
+   dumpster, anything that belongs to the job rather than to a roof — reads the
+   estimate's own, which on a single-building estimate is all of them. */
+function itemMeasurements(item) {
+  const st = structureNamed(itemSection(item));
+  return (st && st.measurements) || S.measurements || {};
+}
+/* The dict a Scope-page field writes into: a building's, or the estimate's. */
+function structureMeasurements(id) {
+  const st = id ? findStructure(id) : null;
+  if (st) return (st.measurements = st.measurements || {});
+  return (S.measurements = S.measurements || {});
+}
+/* Keep the trade's section list carrying every one of its building names.
+   Sections may also be plain roof areas the rep added by hand ("South Slope"),
+   which have no structure behind them and are left exactly where they are. */
+/* One building's subtotal, by exactly the rules tradeTotal() prices a trade
+   with -- zero-qty out, tier exclusions honoured -- so the number on the
+   building card is the number that reaches the customer's section subtotal. */
+function structureTotal(st) {
+  if (!st) return 0;
+  const trade = st.trade || 'commercial';
+  const td = S.trades[trade];
+  if (!td || !td.enabled) return 0;
+  const mode = effectiveTradeMode(trade, td);
+  const tier = tradeTier(trade);
+  const name = String(st.name || '').trim();
+  return (td.line_items || []).reduce((sum, i) => {
+    if (itemSection(i) !== name) return sum;
+    if ((parseFloat(i.quantity) || 0) <= 0) return sum;
+    if (mode === 'simple') return sum + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0);
+    const t = (i.tiers || {})[tier] || {};
+    if (t.included === false) return sum;
+    return sum + lineTotalEffective(i, tier, trade);
+  }, 0);
+}
+
+/* Next free "Building N". Counts by name rather than by list length so
+   removing Building 2 of three doesn't hand the next one a name already taken. */
+function _nextStructureName(trade) {
+  const taken = new Set(estStructures().map(st => String(st.name || '').trim()));
+  for (let n = 1; n < 500; n++) {
+    const name = 'Building ' + n;
+    if (!taken.has(name)) return name;
+  }
+  return 'Building ' + uid();
+}
+/* The first building on an estimate that already has work on it is the work
+   already there. Promote it rather than leaving the rep's typed-in roof
+   untagged beside a shiny empty Building 1: its measurements become Building
+   1's, and every item on the trade takes its name. S.measurements is COPIED,
+   not moved, so any other trade's numbers on this estimate keep working. */
+function _promoteTradeToStructures(trade) {
+  if (tradeStructures(trade).length) return null;
+  const td = S.trades[trade] || {};
+  const first = {
+    id: 'st_' + uid(), name: 'Building 1', trade,
+    measurements: JSON.parse(JSON.stringify(S.measurements || {})),
+  };
+  S.structures = estStructures().concat([first]);
+  (td.line_items || []).forEach(i => { if (!itemSection(i)) i.section = first.name; });
+  syncStructureSections(trade);
+  return first;
+}
+function addStructure(trade) {
+  trade = trade || 'commercial';
+  _promoteTradeToStructures(trade);
+  const st = { id: 'st_' + uid(), name: _nextStructureName(trade), trade, measurements: {} };
+  S.structures = estStructures().concat([st]);
+  syncStructureSections(trade);
+  _structureOpen = st.id;
+  setDirty(); rerender();
+  return st;
+}
+/* The way buildings 2..7 actually get made. A complex is one roof detail
+   repeated with different numbers, so the copy carries the whole priced build-up
+   -- every line item, its costs, its description -- and the rep changes the
+   squares. Items are deep-cloned with fresh ids: sharing them would make
+   editing Building 2 silently edit Building 1. */
+function duplicateStructure(id) {
+  const src = findStructure(id);
+  if (!src) return null;
+  const trade = src.trade || 'commercial';
+  const copy = {
+    id: 'st_' + uid(), name: _nextStructureName(trade), trade,
+    measurements: JSON.parse(JSON.stringify(src.measurements || {})),
+  };
+  S.structures = estStructures().concat([copy]);
+  const td = S.trades[trade] || {};
+  const srcName = String(src.name || '').trim();
+  const clones = (td.line_items || [])
+    .filter(i => itemSection(i) === srcName)
+    .map(i => Object.assign(JSON.parse(JSON.stringify(i)), { id: uid(), section: copy.name }));
+  td.line_items = (td.line_items || []).concat(clones);
+  syncStructureSections(trade);
+  _structureOpen = copy.id;
+  setDirty(); rerender();
+  return copy;
+}
+/* Rename in one move: the structure, the trade's section list and every item
+   tagged to it. The name IS the join between a building and its measurements,
+   so letting any one of the three drift orphans a roof's numbers. */
+function renameStructure(id, name) {
+  const st = findStructure(id);
+  if (!st) return;
+  const next = String(name == null ? (prompt('Rename building:', st.name) || '') : name).trim();
+  if (!next || next === st.name) return;
+  if (estStructures().some(o => o.id !== id && String(o.name || '').trim() === next)) {
+    alert('There is already a building called "' + next + '".');
+    return;
+  }
+  const trade = st.trade || 'commercial';
+  const td = S.trades[trade] || {};
+  const old = String(st.name || '').trim();
+  st.name = next;
+  td.sections = (td.sections || []).map(n => (n === old ? next : n));
+  (td.line_items || []).forEach(i => { if (itemSection(i) === old) i.section = next; });
+  setDirty(); rerender();
+}
+/* Removing a building removes its work. deleteTradeSection() parks a section's
+   items under General, which is right for a roof area but wrong here: 20 items
+   from a deleted building would sit in the estimate pricing off whatever
+   measurements General resolves to. The count is in the prompt so nobody
+   deletes a priced building thinking they are tidying a label. */
+function removeStructure(id) {
+  const st = findStructure(id);
+  if (!st) return;
+  const trade = st.trade || 'commercial';
+  const td = S.trades[trade] || {};
+  const name = String(st.name || '').trim();
+  const doomed = (td.line_items || []).filter(i => itemSection(i) === name);
+  const what = doomed.length
+    ? `Remove ${name} and its ${doomed.length} line item${doomed.length === 1 ? '' : 's'}?`
+    : `Remove ${name}?`;
+  if (!confirm(what)) return;
+  td.line_items = (td.line_items || []).filter(i => itemSection(i) !== name);
+  td.sections   = (td.sections || []).filter(n => n !== name);
+  S.structures  = estStructures().filter(o => o.id !== id);
+  if (_structureOpen === id) _structureOpen = (estStructures()[0] || {}).id || '';
+  setDirty(); rerender();
+}
+/* Which building's card is expanded on the Scope page. View state, not data. */
+let _structureOpen = '';
+function toggleStructureOpen(id) {
+  _structureOpen = (_structureOpen === id) ? '' : id;
+  if (activePage === 'scope') renderScopePage();
+}
+
+function syncStructureSections(trade) {
+  const td = S.trades[trade];
+  if (!td) return;
+  td.sections = td.sections || [];
+  tradeStructures(trade).forEach(st => {
+    const n = String(st.name || '').trim();
+    if (n && !td.sections.includes(n)) td.sections.push(n);
+  });
+}
+
 const TEAM = ['avery','bryan','derik','luke','phil'];
 const TRADE_COLOR_FIELDS = {
   roofing: [{key:'shingle_color',label:'Shingle Color'},{key:'manufacturer',label:'Manufacturer'},{key:'product_line',label:'Product Line'},
@@ -850,7 +1053,13 @@ function _ensureFastenTable() {
       if (activePage === 'scope') renderScopePage();
     });
 }
-function commFastening() { return commercialFastening(S.measurements || {}, _fastenTable); }
+/* Zone geometry is a fact about ONE building -- its length, width, height and
+   uplift rating -- so the panel calculates per structure. The measure keys
+   comm_fast_insul / comm_fast_seam need no such change: they are already pure
+   functions of the dict measuredQty() hands them, which is now the building's. */
+function commFastening(structureId) {
+  return commercialFastening(structureMeasurements(structureId), _fastenTable);
+}
 
 /* ── Fastening panel (Scope page, commercial only) ──────────────────────
    Shows the zone geometry, the density row in force, and the resulting
@@ -863,18 +1072,19 @@ const _FASTEN_BAIL_TEXT = {
   missing_dimensions: 'Enter building length, width, and height below (or type the zone areas in directly).',
   no_table: 'No fastening table is configured. A manager can set one in ⚙ Settings.',
 };
-function setCommUplift(v)          { setMeasurement('comm_uplift', v); if (activePage === 'scope') renderScopePage(); }
-function setCommFastenNum(key, v)  { setMeasurement(key, v); if (activePage === 'scope') renderScopePage(); }
-function fastenPanelMarkup() {
+function setCommUplift(v, sid)          { setMeasurement('comm_uplift', v, sid); if (activePage === 'scope') renderScopePage(); }
+function setCommFastenNum(key, v, sid)  { setMeasurement(key, v, sid); if (activePage === 'scope') renderScopePage(); }
+function fastenPanelMarkup(sid) {
   if (!S.trades.commercial || !S.trades.commercial.enabled) return '';
   _ensureFastenTable();
-  const m = S.measurements || {};
+  const m = structureMeasurements(sid);
+  const sarg = `, '${sid || ''}'`;
   if (_fastenTableLoading || !_fastenTable) {
     return `<div class="measure-panel measure-panel-fasten">
       <div class="measure-panel-head"><h3>🔩 Fastening Schedule</h3>
         <span class="measure-hint">Loading the fastening table…</span></div></div>`;
   }
-  const r = commFastening();
+  const r = commFastening(sid);
   const t = _fastenTable;
   const attach = _commAttachProfile('commercial');
   const num = (k, lbl, unit, ph) => `
@@ -882,7 +1092,7 @@ function fastenPanelMarkup() {
       <label>${lbl}</label>
       <div class="measure-input-wrap">
         <input type="number" min="0" step="0.1" value="${m[k] || ''}" placeholder="${ph || '0'}"
-          onchange="setCommFastenNum('${k}', this.value)">
+          onchange="setCommFastenNum('${k}', this.value${sarg})">
         <span class="measure-unit">${unit}</span>
       </div>
     </div>`;
@@ -893,7 +1103,7 @@ function fastenPanelMarkup() {
   const upliftSel = `
     <div class="measure-field">
       <label>Uplift Rating <span class="fasten-req">required</span></label>
-      <select class="fasten-select ${cur ? '' : 'is-empty'}" onchange="setCommUplift(this.value)">
+      <select class="fasten-select ${cur ? '' : 'is-empty'}" onchange="setCommUplift(this.value${sarg})">
         <option value="0" ${cur ? '' : 'selected'}>Choose…</option>
         ${ratingKeys.map(k => `<option value="${k}" ${cur === k ? 'selected' : ''}>${esc((t.ratings[String(k)] || {}).label || (k + ' psf'))}</option>`).join('')}
       </select>
@@ -1052,7 +1262,7 @@ function evalFormula(formula, m) {
   catch { return 0; }
 }
 function measuredQty(item) {
-  const m = S.measurements || {};
+  const m = itemMeasurements(item);
   let raw;
   if (item.formula) {
     raw = evalFormula(item.formula, m);
@@ -1103,9 +1313,10 @@ const COMMERCIAL_MEAS_KEYS = new Set([
   'comm_seam_attach','comm_insul_attach',
 ]);
 const WINDOWS_MEAS_KEYS = new Set(['windows_count','doors_count']);
-function setMeasurement(key, v) {
-  if (!S.measurements) S.measurements = {};
-  S.measurements[key] = parseFloat(v) || 0;
+/* `structureId` addresses ONE building's numbers; omitted (or '') writes the
+   estimate's own, which is every measurement on a single-building job. */
+function setMeasurement(key, v, structureId) {
+  structureMeasurements(structureId)[key] = parseFloat(v) || 0;
   // Auto-build trade defaults on first measurement entry when trade is enabled + empty.
   const rd = S.trades.roofing;
   let built = false;
@@ -1152,8 +1363,24 @@ function setMeasurement(key, v) {
   if (vp) { const html = ventPanelMarkup(); if (html) vp.outerHTML = html; else vp.remove(); }
   // Same for the fastening panel — its counts change with almost every
   // commercial measurement, so it has to keep up while the rep is typing.
-  const fp = document.querySelector('.measure-panel-fasten');
-  if (fp) { const html = fastenPanelMarkup(); if (html) fp.outerHTML = html; else fp.remove(); }
+  // On a complex there is one panel per building: scope the swap to the card
+  // being typed into, or building 1's schedule gets replaced by whichever
+  // building the rep is actually editing.
+  const card = structureId ? document.querySelector(`.bld-card[data-st="${structureId}"]`) : null;
+  const fp = (card || document).querySelector('.measure-panel-fasten');
+  if (fp) { const html = fastenPanelMarkup(structureId); if (html) fp.outerHTML = html; else fp.remove(); }
+  // The collapsed head carries this building's roof area and price. Leaving it
+  // stale while the rep types the roof area into the box right below it reads
+  // as the number not registering.
+  if (card) {
+    const facts = card.querySelector('.bld-facts');
+    const st = findStructure(structureId);
+    if (facts && st) {
+      const sq = mnum((st.measurements || {}).comm_squares);
+      facts.innerHTML = `<span class="${sq ? '' : 'bld-fact-empty'}">${sq ? sq + ' SQ' : 'no roof area yet'}</span>`
+                      + `<span class="bld-total">${fmtCur(structureTotal(st))}</span>`;
+    }
+  }
 }
 function setIwSecondRow(on) {
   // Stored as 0/1 in measurements so it survives save/load and is available
@@ -1168,8 +1395,8 @@ function setIwSecondRow(on) {
    the same reason iw_second_row does: MEASURE_DEFS and custom formulas can only
    see measurements. It drives which of the two labor lines carries quantity —
    the other goes to 0 and a zero-qty line never prices and never prints. */
-function setCommWorkType(v) {
-  setMeasurement('comm_work_type', v ? 1 : 0);
+function setCommWorkType(v, sid) {
+  setMeasurement('comm_work_type', v ? 1 : 0, sid);
   if (activePage === 'scope') renderScopePage();
 }
 // Rep-facing only — these never touch price. They ride along to the production
@@ -1536,6 +1763,7 @@ function blankEstimate() {
     contract_initials: defaultInitials('retail'),
     shingle_selection: { enabled: true, options: _globalShingleColors(), chosen: '' },
     measurements: { waste_pct: _globalWastePct() },
+    structures: [],            // buildings on a complex; empty = one roof, measured above
     intro_text: '',
     page_visibility: { intro: false, options: true, products: true, pricing: true, report: true },
     roof_health: {
@@ -4066,7 +4294,12 @@ function renderScopePage() {
     isCommercial ? t === 'commercial' || t === 'other' : t !== 'commercial');
   const m = S.measurements || {};
 
-  const renderMeasureGroup = (groups) => groups.map(g => `
+  // `sid` is the building whose numbers these boxes read and write. Omitted,
+  // they are the estimate's own -- which is every measurement on a one-roof job
+  // and on every trade that does not do buildings.
+  const renderMeasureGroup = (groups, sid) => { const m = structureMeasurements(sid);
+    const sarg = `, '${sid || ''}'`;
+    return groups.map(g => `
     <div class="measure-group">
       <div class="measure-group-title">${g.group}</div>
       <div class="measure-fields">
@@ -4079,7 +4312,7 @@ function renderScopePage() {
             return `<div class="measure-field">
               <label>${f.label}</label>
               <div class="measure-input-wrap">
-                <select class="measure-select" onchange="setMeasurement('${f.key}', this.value)">
+                <select class="measure-select" onchange="setMeasurement('${f.key}', this.value${sarg})">
                   ${f.opts.map(([v,lbl]) => `<option value="${v}" ${cur===v?'selected':''}>${lbl}</option>`).join('')}
                 </select>
               </div>
@@ -4090,13 +4323,13 @@ function renderScopePage() {
             <div class="measure-input-wrap">
               <input type="number" min="0" step="${f.unit==='SQ'?'0.1':f.unit==='%'?'1':'1'}"
                 value="${val}" placeholder="0"
-                onchange="setMeasurement('${f.key}', this.value)">
+                onchange="setMeasurement('${f.key}', this.value${sarg})">
               <span class="measure-unit">${f.unit}</span>
             </div>
           </div>`;
         }).join('')}
       </div>
-    </div>`).join('');
+    </div>`).join(''); };
 
   const measurePanel = `
     <div class="measure-panel">
@@ -4121,29 +4354,80 @@ function renderScopePage() {
   // Commercial low-slope. A flat roof has no attic to ventilate and no ridge or
   // valley to measure, so in commercial mode the steep-slope roof panel and the
   // ventilation calculator are hidden rather than shown full of blanks.
-  const commercialMeasurePanel = S.trades.commercial?.enabled ? `
-    <div class="measure-panel measure-panel-commercial">
-      <div class="measure-panel-head">
-        <h3>🏢 Commercial Roof Measurements</h3>
-        <span class="measure-hint">From the EagleView / Hover report — the system build-up auto-fills from these</span>
-      </div>
+  /* The measurement body one roof gets: the Commercial field group, the job-type
+     switch and the fastening schedule. Rendered once for a single-roof estimate
+     and once per building on a complex -- same markup either way, so the two
+     layouts cannot drift into asking for different numbers. `sid` is '' for the
+     estimate's own measurements. */
+  const commMeasureBody = (sid) => {
+    const cm = structureMeasurements(sid);
+    const sarg = `, '${sid || ''}'`;
+    const rname = 'comm-work-type-' + (sid || 'est');   // radios must not pair across buildings
+    return `
       <div class="measure-groups">
-        ${renderMeasureGroup(MEASURE_FIELDS.filter(g => g.group === 'Commercial'))}
+        ${renderMeasureGroup(MEASURE_FIELDS.filter(g => g.group === 'Commercial'), sid)}
       </div>
       <div class="comm-worktype">
         <span class="comm-worktype-label">Job type</span>
-        <label class="comm-worktype-opt ${!mnum(m.comm_work_type) ? 'enabled' : ''}">
-          <input type="radio" name="comm-work-type" ${!mnum(m.comm_work_type) ? 'checked' : ''}
-            onchange="setCommWorkType(0)">
+        <label class="comm-worktype-opt ${!mnum(cm.comm_work_type) ? 'enabled' : ''}">
+          <input type="radio" name="${rname}" ${!mnum(cm.comm_work_type) ? 'checked' : ''}
+            onchange="setCommWorkType(0${sarg})">
           Re-Roof <span class="comm-worktype-rate">tear-off &amp; disposal included</span>
         </label>
-        <label class="comm-worktype-opt ${mnum(m.comm_work_type) ? 'enabled' : ''}">
-          <input type="radio" name="comm-work-type" ${mnum(m.comm_work_type) ? 'checked' : ''}
-            onchange="setCommWorkType(1)">
+        <label class="comm-worktype-opt ${mnum(cm.comm_work_type) ? 'enabled' : ''}">
+          <input type="radio" name="${rname}" ${mnum(cm.comm_work_type) ? 'checked' : ''}
+            onchange="setCommWorkType(1${sarg})">
           New Construction <span class="comm-worktype-rate">install only</span>
         </label>
         <span class="comm-worktype-hint">Switches which labor line prices — the other drops to zero.</span>
       </div>
+      ${fastenPanelMarkup(sid)}`;
+  };
+
+  /* One collapsible card per building, one open at a time. The head carries the
+     two numbers a rep scans a complex for -- roof area and what that building
+     costs -- so seven buildings can be checked without opening seven cards. */
+  const buildingCard = (st) => {
+    const open = _structureOpen === st.id;
+    const sm   = st.measurements || {};
+    const sq   = mnum(sm.comm_squares);
+    const tot  = structureTotal(st);
+    return `
+      <div class="bld-card ${open ? 'is-open' : ''}" data-st="${st.id}">
+        <div class="bld-head" onclick="toggleStructureOpen('${st.id}')">
+          <span class="bld-caret">${open ? '▾' : '▸'}</span>
+          <span class="bld-name">${esc(st.name || '(unnamed)')}</span>
+          <span class="bld-facts">
+            <span class="${sq ? '' : 'bld-fact-empty'}">${sq ? sq + ' SQ' : 'no roof area yet'}</span>
+            <span class="bld-total">${fmtCur(tot)}</span>
+          </span>
+          <span class="bld-actions">
+            <button class="bld-btn" title="Copy this building — same build-up, new measurements"
+              onclick="event.stopPropagation();duplicateStructure('${st.id}')">⧉ Duplicate</button>
+            <button class="bld-btn" title="Rename"
+              onclick="event.stopPropagation();renameStructure('${st.id}')">✏</button>
+            <button class="bld-btn bld-btn-del" title="Remove this building and its line items"
+              onclick="event.stopPropagation();removeStructure('${st.id}')">×</button>
+          </span>
+        </div>
+        ${open ? `<div class="bld-body">${commMeasureBody(st.id)}</div>` : ''}
+      </div>`;
+  };
+
+  const commStructures = tradeStructures('commercial');
+  const commercialMeasurePanel = S.trades.commercial?.enabled ? `
+    <div class="measure-panel measure-panel-commercial">
+      <div class="measure-panel-head">
+        <h3>🏢 Commercial Roof Measurements</h3>
+        <span class="measure-hint">${commStructures.length
+          ? 'One card per building — each carries its own measurements and prices on its own'
+          : 'From the EagleView / Hover report — the system build-up auto-fills from these'}</span>
+        <button class="btn-add-building" title="A complex is one roof repeated — add a building, then duplicate it"
+          onclick="addStructure('commercial')">+ Add Building</button>
+      </div>
+      ${commStructures.length
+        ? `<div class="bld-list">${commStructures.map(buildingCard).join('')}</div>`
+        : commMeasureBody('')}
       ${commComplexityMarkup()}
     </div>` : '';
 
@@ -4179,8 +4463,6 @@ function renderScopePage() {
     ${isCommercial ? '' : ventPanel}
 
     ${commercialMeasurePanel}
-
-    ${isCommercial ? fastenPanelMarkup() : ''}
 
     ${permitJurisdictionMarkup()}
 
@@ -5715,13 +5997,22 @@ function defaultSimpleBundle(trade) {
    data transform that bundle_runner.js can exercise without the pricing chain.
    Quantities, scope notes, and Manual-measure choices survive a system swap:
    re-picking TPO → EPDM must not wipe the squares the rep already entered. */
-function buildSimpleItemsFromBundle(trade, bundleId) {
+/* `sectionName` builds the system for ONE building: the carry-over map is
+   scoped to that building's rows and the output is tagged to it. Without it
+   every building's rows collide in `prev` on the shared catalog_id, and all
+   seven inherit the quantity and locked price of whichever happened to sit
+   last in line_items. Omitted, this behaves exactly as it did. */
+function buildSimpleItemsFromBundle(trade, bundleId, sectionName) {
   const bundle = _tradeBundle(trade, bundleId);
   if (!bundle) return null;
   const catalog = _tradeCatalog(trade);
   const td = S.trades[trade] || {};
   const prev = new Map();
-  (td.line_items || []).forEach(li => { if (li.catalog_id) prev.set(li.catalog_id, li); });
+  (td.line_items || []).forEach(li => {
+    if (!li.catalog_id) return;
+    if (sectionName !== undefined && itemSection(li) !== sectionName) return;
+    prev.set(li.catalog_id, li);
+  });
 
   const items = [];
   (bundle.product_ids || []).forEach(pid => {
@@ -5745,6 +6036,7 @@ function buildSimpleItemsFromBundle(trade, bundleId) {
       unit_cost: parseFloat(p.cost) || 0,
       unit_price: (old && old.price_locked) ? old.unit_price : 0,
       price_locked: (old && old.price_locked) || undefined,
+      section: sectionName || undefined,
     });
   });
   // Hand-added rows (no catalog_id) belong to the rep, not the bundle — they
@@ -5752,13 +6044,39 @@ function buildSimpleItemsFromBundle(trade, bundleId) {
   (td.line_items || []).forEach(li => { if (!li.catalog_id) items.push(li); });
   return items;
 }
+/* Picking a system rebuilds the trade from the bundle. On a complex that has
+   to happen once PER BUILDING: the old `td.line_items = items` collapsed seven
+   roofs into one set of rows and took six buildings off the estimate. Each
+   building keeps its own quantities and locked prices through the carry-over in
+   buildSimpleItemsFromBundle, and rows filed outside a building are left where
+   the rep put them. */
 function applyBundleToSimple(trade, bundleId) {
   const td = S.trades[trade]; if (!td || !isBundleTrade(trade)) return;
-  const items = buildSimpleItemsFromBundle(trade, bundleId);
-  if (!items) return;
-  td.line_items = items;
+  const structures = tradeStructures(trade);
+  if (!structures.length) {
+    const items = buildSimpleItemsFromBundle(trade, bundleId);
+    if (!items) return;
+    td.line_items = items;
+    items.forEach(it => simpleApplyMargin(trade, it));
+  } else {
+    if (!_tradeBundle(trade, bundleId)) return;
+    if (structures.length > 1 &&
+        !confirm(`Rebuild all ${structures.length} buildings with this system? `
+               + 'Their measurements and quantities are kept.')) return;
+    const names = new Set(structures.map(st => String(st.name || '').trim()));
+    const keep  = (td.line_items || []).filter(i => !names.has(itemSection(i)));
+    // Built against the ORIGINAL line_items -- assigning inside the loop would
+    // let building 2 carry over from building 1's freshly-written rows.
+    const rebuilt = [];
+    structures.forEach(st => {
+      const items = buildSimpleItemsFromBundle(trade, bundleId, String(st.name || '').trim());
+      if (!items) return;
+      items.forEach(it => simpleApplyMargin(trade, it));
+      rebuilt.push(...items);
+    });
+    td.line_items = keep.concat(rebuilt);
+  }
   td.simple_bundle = bundleId;
-  items.forEach(it => simpleApplyMargin(trade, it));
   _syncCommAttachment();          // AFTER the rebuild — the new system decides
   applyMeasurements();
   setDirty();
@@ -9741,6 +10059,13 @@ async function doLoadEstimate(id) {
     if(!Array.isArray(S.shingle_selection.options)||!S.shingle_selection.options.length)
       S.shingle_selection.options=DEFAULT_SHINGLE_COLORS.slice();
     if(!Array.isArray(S.attachments)) S.attachments=[];
+    // Buildings. An estimate written before this has none, and every path falls
+    // back to S.measurements for it — that is the whole compatibility story.
+    // The section sync is belt-and-braces: a structure whose name went missing
+    // from its trade's section list would still price (items carry the name)
+    // but would stop printing under its own header.
+    if(!Array.isArray(S.structures)) S.structures=[];
+    TRADES.forEach(t => { if (S.trades[t] && tradeStructures(t).length) syncStructureSections(t); });
     if(!S.work_order || typeof S.work_order !== 'object') S.work_order = {};
     if(!S.roof_certificate || typeof S.roof_certificate !== 'object') S.roof_certificate = {};
     // Estimates created outside the UI (API, scripts) may lack these — a

@@ -2968,6 +2968,35 @@ def _cv_products_block(est):
     </div>'''
 
 
+def _est_structures(est):
+    """Buildings on a complex. Each carries its own measurements in the same
+    flat key namespace as est['measurements'], so every calculator that takes a
+    measurements dict runs on one building unchanged.
+
+    Mirrors estStructures() in app.js. Pricing needs none of this - quantities
+    are resolved in the browser and stored on the items - so the server reads
+    structures only where it recalculates from measurements, which today is the
+    fastening schedule on the production packet."""
+    sts = est.get('structures')
+    return [s for s in sts if isinstance(s, dict)] if isinstance(sts, list) else []
+
+
+def _trade_structures(est, trade):
+    return [s for s in _est_structures(est) if (s.get('trade') or 'commercial') == trade]
+
+
+def _measurement_sets(est):
+    """(building name, measurements) pairs the packet reports over: one per
+    building on a complex, or one unnamed set for a single roof. A crew lays out
+    corners from these numbers, so seven roofs need seven fastening schedules
+    and seven sets of measurements, not the first roof's printed once."""
+    sts = _trade_structures(est, 'commercial')
+    if sts:
+        return [(str(s.get('name') or '').strip(), s.get('measurements') or {})
+                for s in sts]
+    return [('', est.get('measurements') or {})]
+
+
 def _with_section(item, name):
     """Append the item's estimate-section (structure / roof area) to its name
     for flat PDF lists (signed contract, production packet) that have no
@@ -8258,11 +8287,20 @@ def build_production_packet_pdf(est):
             return 0.0
 
     meas_rows = []
-    for group, fields in MEASURE_LABELS:
-        for key, label, unit in fields:
-            v = _mnum(key)
-            if v:
-                meas_rows.append((group, label, v, unit))
+    # A complex carries its numbers per building, so the Area column names the
+    # building rather than repeating "Commercial" seven times - the crew has to
+    # be able to tell Building 3's perimeter from Building 5's. A single-roof
+    # job has one unnamed set and reads exactly as it did.
+    for _bld, _bm in _measurement_sets(est):
+        for group, fields in MEASURE_LABELS:
+            for key, label, unit in fields:
+                try:
+                    v = float(_bm.get(key) or 0)
+                except (TypeError, ValueError):
+                    v = 0.0
+                if v:
+                    meas_rows.append((_bld if (_bld and group == 'Commercial') else group,
+                                      label, v, unit))
     # iw_second_row is a 0/1 toggle, not a MEASURE_LABELS field: a 2nd course of
     # ice & water at the eaves (code). The I&W line qty already includes it —
     # this row tells the crew WHY the footage is doubled.
@@ -8271,9 +8309,11 @@ def build_production_packet_pdf(est):
     # Same idea for commercial: comm_work_type is a 0/1 toggle that decides which
     # labor line carries quantity, so the crew needs to see which job this is.
     if est.get('estimate_type') == 'commercial':
-        meas_rows.append(('Commercial', 'JOB TYPE: NEW CONSTRUCTION (install only)'
-                          if _mnum('comm_work_type') else
-                          'JOB TYPE: RE-ROOF (tear-off & disposal included)', 1, ''))
+        for _bld, _bm in _measurement_sets(est):
+            meas_rows.append((_bld or 'Commercial',
+                              'JOB TYPE: NEW CONSTRUCTION (install only)'
+                              if float(_bm.get('comm_work_type') or 0) else
+                              'JOB TYPE: RE-ROOF (tear-off & disposal included)', 1, ''))
     if meas_rows:
         section_title('Measurements')
         table_header([('Area', 30, 'L'), ('Measurement', 92, 'L'), ('Value', 36, 'R'), ('Unit', 24, 'C')])
@@ -8339,62 +8379,72 @@ def build_production_packet_pdf(est):
     # field spacing, and getting it wrong is how a roof leaves in a windstorm.
     if est.get('estimate_type') == 'commercial':
         _ft = _load_commercial_fastening()
-        fz = commercial_fastening(m, _ft)
         section_title('Fastening Schedule')
-        if not fz['ok']:
-            # A silently-absent section is how a crew ends up guessing. Say it loudly.
-            pdf.set_font('Helvetica', 'B', 10)
-            pdf.set_text_color(170, 30, 30)
-            pdf.cell(0, 6, 'NOT CALCULATED - DO NOT ORDER FASTENERS FROM THIS SHEET',
-                     new_x='LMARGIN', new_y='NEXT')
-            pdf.set_text_color(0, 0, 0)
-            pdf.set_font('Helvetica', '', 8.5)
-            _why = {'no_uplift_rating': 'No uplift rating was selected on the estimate.',
-                    'missing_dimensions': 'Building length, width, and height were not entered.',
-                    'no_table': 'No fastening table is configured.'}
-            pdf.multi_cell(0, 4.6, _pdf_safe(
-                _why.get(fz['reason'], 'Required inputs were missing.') +
-                ' Fastener quantities on the Material Order are ZERO. Confirm the fastening '
-                'schedule against the system approval before the crew starts.'))
-        else:
-            pdf.set_font('Helvetica', '', 8.5)
-            _zr = _ft.get('zone_rule') or {}
-            pdf.cell(0, 4.8, _pdf_safe(
-                f"Uplift: {fz['rating_label']}   |   Zone width a = {fz['a']:.1f} ft   |   "
-                f"{_zr.get('standard', '')}"
-                f"{' (L-shaped corners)' if _zr.get('corner_shape') == 'L' else ' (square corners)'}"),
-                new_x='LMARGIN', new_y='NEXT')
-            pdf.ln(1)
-            table_header([('Zone', 26, 'L'), ('Area SF', 24, 'R'), ('Plates/Bd', 22, 'R'),
-                          ('Insul Qty', 24, 'R'), ('Seam Spacing', 34, 'C'), ('Seam Qty', 24, 'R')])
-            pdf.set_font('Helvetica', '', 8)
-            for _z in ('field', 'perimeter', 'corner'):
-                _zi, _in, _se = fz['zones'][_z], fz['insul']['by_zone'][_z], fz['seam']['by_zone'][_z]
-                pdf.cell(26, 6, _z.title(), border=1)
-                pdf.cell(24, 6, f"{_zi['sf']:,.0f}", border=1, align='R')
-                pdf.cell(22, 6, f"{_in['per_board']:g}" if fz['insul']['applies'] else '-', border=1, align='R')
-                pdf.cell(24, 6, f"{math.ceil(_in['count']):,}" if fz['insul']['applies'] else '-', border=1, align='R')
-                pdf.cell(34, 6, (f"{_se['spacing_in']:g}\" o.c. / {_se['sheet_width_ft']:g}ft sheet"
-                                 if fz['seam']['applies'] else '-'), border=1, align='C')
-                pdf.cell(24, 6, f"{math.ceil(_se['count']):,}" if fz['seam']['applies'] else '-', border=1, align='R')
+        for _bld, _bm in _measurement_sets(est):
+            fz = commercial_fastening(_bm, _ft)
+            if _bld:
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.cell(0, 5.4, _pdf_safe(_bld), new_x='LMARGIN', new_y='NEXT')
+            if not fz['ok']:
+                # A silently-absent section is how a crew ends up guessing. Say it loudly.
+                pdf.set_font('Helvetica', 'B', 10)
+                pdf.set_text_color(170, 30, 30)
+                pdf.cell(0, 6, 'NOT CALCULATED - DO NOT ORDER FASTENERS FROM THIS SHEET',
+                         new_x='LMARGIN', new_y='NEXT')
+                pdf.set_text_color(0, 0, 0)
+                pdf.set_font('Helvetica', '', 8.5)
+                _why = {'no_uplift_rating': 'No uplift rating was selected on the estimate.',
+                        'missing_dimensions': 'Building length, width, and height were not entered.',
+                        'no_table': 'No fastening table is configured.'}
+                pdf.multi_cell(0, 4.6, _pdf_safe(
+                    _why.get(fz['reason'], 'Required inputs were missing.') +
+                    ' Fastener quantities on the Material Order are ZERO. Confirm the fastening '
+                    'schedule against the system approval before the crew starts.'))
+            else:
+                pdf.set_font('Helvetica', '', 8.5)
+                _zr = _ft.get('zone_rule') or {}
+                pdf.cell(0, 4.8, _pdf_safe(
+                    f"Uplift: {fz['rating_label']}   |   Zone width a = {fz['a']:.1f} ft   |   "
+                    f"{_zr.get('standard', '')}"
+                    f"{' (L-shaped corners)' if _zr.get('corner_shape') == 'L' else ' (square corners)'}"),
+                    new_x='LMARGIN', new_y='NEXT')
+                pdf.ln(1)
+                table_header([('Zone', 26, 'L'), ('Area SF', 24, 'R'), ('Plates/Bd', 22, 'R'),
+                              ('Insul Qty', 24, 'R'), ('Seam Spacing', 34, 'C'), ('Seam Qty', 24, 'R')])
+                pdf.set_font('Helvetica', '', 8)
+                for _z in ('field', 'perimeter', 'corner'):
+                    _zi, _in, _se = fz['zones'][_z], fz['insul']['by_zone'][_z], fz['seam']['by_zone'][_z]
+                    pdf.cell(26, 6, _z.title(), border=1)
+                    pdf.cell(24, 6, f"{_zi['sf']:,.0f}", border=1, align='R')
+                    pdf.cell(22, 6, f"{_in['per_board']:g}" if fz['insul']['applies'] else '-', border=1, align='R')
+                    pdf.cell(24, 6, f"{math.ceil(_in['count']):,}" if fz['insul']['applies'] else '-', border=1, align='R')
+                    pdf.cell(34, 6, (f"{_se['spacing_in']:g}\" o.c. / {_se['sheet_width_ft']:g}ft sheet"
+                                     if fz['seam']['applies'] else '-'), border=1, align='C')
+                    pdf.cell(24, 6, f"{math.ceil(_se['count']):,}" if fz['seam']['applies'] else '-', border=1, align='R')
+                    pdf.ln()
+                pdf.set_font('Helvetica', 'B', 8)
+                pdf.cell(96, 6, f"TOTAL (incl. {fz['waste_pct']:g}% waste)", border=1)
+                pdf.cell(24, 6, f"{fz['insul']['total']:,}" if fz['insul']['applies'] else '0', border=1, align='R')
+                pdf.cell(34, 6, '', border=1)
+                pdf.cell(24, 6, f"{fz['seam']['total']:,}" if fz['seam']['applies'] else '0', border=1, align='R')
                 pdf.ln()
-            pdf.set_font('Helvetica', 'B', 8)
-            pdf.cell(96, 6, f"TOTAL (incl. {fz['waste_pct']:g}% waste)", border=1)
-            pdf.cell(24, 6, f"{fz['insul']['total']:,}" if fz['insul']['applies'] else '0', border=1, align='R')
-            pdf.cell(34, 6, '', border=1)
-            pdf.cell(24, 6, f"{fz['seam']['total']:,}" if fz['seam']['applies'] else '0', border=1, align='R')
-            pdf.ln()
-            pdf.set_font('Helvetica', 'I', 7.5)
-            if not fz['seam']['applies']:
-                pdf.cell(0, 4.4, _pdf_safe('Seam fasteners: not applicable for this system.'),
-                         new_x='LMARGIN', new_y='NEXT')
-            if not fz['insul']['applies']:
-                pdf.cell(0, 4.4, _pdf_safe('Insulation fasteners: no fastened layers on this job.'),
-                         new_x='LMARGIN', new_y='NEXT')
-            for _w in fz['warnings']:
-                pdf.multi_cell(0, 4.2, _pdf_safe('! ' + _w))
-            pdf.multi_cell(0, 4.2, _pdf_safe(_ft.get('source_note', '')))
-        pdf.ln(4)
+                pdf.set_font('Helvetica', 'I', 7.5)
+                if not fz['seam']['applies']:
+                    pdf.cell(0, 4.4, _pdf_safe('Seam fasteners: not applicable for this system.'),
+                             new_x='LMARGIN', new_y='NEXT')
+                if not fz['insul']['applies']:
+                    pdf.cell(0, 4.4, _pdf_safe('Insulation fasteners: no fastened layers on this job.'),
+                             new_x='LMARGIN', new_y='NEXT')
+                # new_x/new_y on every multi_cell, per the note further up: without
+                # them the cursor stays where the last line ended, and the NEXT
+                # building's schedule gets a width-0 box and throws. Harmless
+                # while this ran once; a complex runs it per building.
+                for _w in fz['warnings']:
+                    pdf.multi_cell(0, 4.2, _pdf_safe('! ' + _w),
+                                   new_x='LMARGIN', new_y='NEXT')
+                pdf.multi_cell(0, 4.2, _pdf_safe(_ft.get('source_note', '')),
+                               new_x='LMARGIN', new_y='NEXT')
+            pdf.ln(4)
 
     if not is_ins:
         # Materials: signed-tier lines with a material cost (or simple-mode lines)
