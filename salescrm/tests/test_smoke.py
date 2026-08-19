@@ -1,6 +1,7 @@
 """Smoke tests for the sales-CRM invariants that matter most:
 stage transitions, cadence/task advancement, and per-rep visibility."""
 from conftest import signup, login, logout, new_lead
+import app as appmod
 
 
 def test_first_user_is_admin(client):
@@ -109,7 +110,11 @@ def test_den_dry_run_builds_payload_without_writing(client):
     assert j['dry_run'] is True
     assert j['contact']['name'] == 'Jane Doe'
     assert j['contact']['assigned_to'] == 'luke@projectoneroofing.com'
-    assert j['project']['status'] == 'lead'
+    # 'lead' was never a Base44 status. An un-won lead enters at 'new_lead'.
+    assert j['project']['status'] == 'new_lead'
+    # Without location_id the record is invisible to every executive query.
+    assert j['contact']['location_id'] == appmod.CO_LOCATION_ID
+    assert j['project']['location_id'] == appmod.CO_LOCATION_ID
     # nothing was persisted to the Den
     assert client.get(f'/api/leads/{lid}').get_json()['crm_contact_id'] == ''
 
@@ -169,7 +174,7 @@ def test_service_lines(client):
     assert d['by_service']['window_cleaning']['won_value'] == 400
     # Den project payload carries the service name
     dry = client.post(f"/api/leads/{wc['id']}/convert?dry_run=1").get_json()
-    assert dry['project']['name'].startswith('Window Cleaning - ')
+    assert dry['project']['job_name'].startswith('Window Cleaning - ')
 
 
 def test_plans_and_mrr(client):

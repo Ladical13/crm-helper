@@ -310,6 +310,39 @@ Guarded by `test_search_reaches_past_the_limit_window` and
   Base44 `Contact` + `Project` and stores `crm_contact_id`/`crm_project_id` back on the
   lead (dedups on phone/email first). Adapted from `crm_sync()` in `canvasser/app.py`.
   `POST /api/leads/<id>/convert?dry_run=1` returns the payloads without writing.
+
+  **This is the seam where attribution dies if you let it.** Base44 cannot
+  re-derive where a lead came from — this app is the only place that ever held
+  it — so anything not carried across is gone for the executive team forever.
+  Pinned by `tests/test_den_payload.py`; the whole payload was previously
+  unguarded, which is how it drifted. Four rules:
+
+  - **`location_id` is mandatory on both payloads.** Every executive query
+    filters `?q={"location_id": ...}` and so does the estimator's contact cache
+    (`estimator/app.py` `CO_LOCATION_ID`). A record without it is not
+    hard-to-find, it is **invisible** — to the CEO dashboard, pipeline health,
+    job margin, referral intel *and* to `start-estimate`'s handoff. The two
+    constants are held equal by a test.
+  - **A won lead is `status: 'contracted'`,** not `'lead'` — which was never in
+    Base44's vocabulary at all. Everything not yet won enters at `new_lead`
+    rather than guessing at a production state we have no evidence for.
+  - **`referred_by` holds the partner's LEAD ID, not a name.** Resolve it
+    before it crosses (the lead drawer does the same thing for
+    `referred_by_name`); a raw uuid in front of the exec team is worse than
+    nothing. Free text typed by a rep passes through as-is.
+  - **Provenance rides in `notes`** (partner, lead type, campaign, source_ref,
+    lead-created and won dates) because Base44 has no documented field for it.
+    A dedicated field is better and is the follow-up once the schema is
+    confirmed — but notes survive any schema, and *losing the partner entirely
+    is what makes partner ROI unanswerable.*
+
+  ⚠ **The field names and status vocabulary are UNVERIFIED against the live
+  Base44 API** (as of 2026-08-19). They come from the documented field map, not
+  from a response body. Before this ships to `portal-merge`, GET one `Contact`
+  and one `Project` with a real `BASE44_TOKEN` and confirm `job_name`,
+  `assigned_salesperson`, `job_category`, `contract_value` and the `status`
+  list. Each is a one-line constant at the top of `salescrm/app.py` with a
+  failing test to prove any correction.
 - **↔ Estimator:** `POST /api/leads/<id>/start-estimate` ensures a Base44 contact exists,
   then hands back the estimator URL (the estimator's own contact search picks it up).
   `GET /api/leads/<id>/estimate` reads job/document status back by `contact_id`.
@@ -357,6 +390,11 @@ python -m pytest prospector/tests                      # 27 tests, offline
   second lead for the same person as a separate deal. Matching on contact details
   there would break it. Guarded by
   `test_cross_sell_still_creates_a_second_lead`.
+- **The importing channel is preserved on the lead.** `/api/prospects/import`
+  writes the caller's `source` (`nimbus`, `dora`, a campaign name) onto every
+  row. It used to hardcode `'prospecting'`, which flattened every channel into
+  one bucket and made agent spend impossible to tie to revenue — the exact
+  failure `agents/MARKETING_PLAN.md` calls decisive.
 - **`source_ref` is the load-bearing dedupe key**, not phone/email. Most open-data
   rows have *no* contact details — a DORA HOA record is a name, a city and a
   licence — so `source_ref` (`dora:4zse-6bnw:51739`) is the only stable thing to
@@ -373,6 +411,19 @@ python -m pytest prospector/tests                      # 27 tests, offline
   manager-only.
 - **Always `--dry-run` first.** It classifies every row, reports intra-batch
   duplicates exactly as the real run would, and writes nothing.
+- **Churches and schools now have free sources.** `agents/b2b/sources/irs_bmf.py`
+  (IRS Exempt Organizations BMF, dedupe key `irs:bmf:<EIN>`) and
+  `agents/b2b/sources/nces.py` (NCES Common Core of Data via the Urban
+  Institute API, key `nces:ccd:<ncessch>`). Both were stubs returning `[]`, so
+  every church/school lead fell through to **paid Perplexity**. The dispatcher
+  stops at the first puller that returns rows, so a free source only saves
+  money if it is listed first in `SEGMENT_SOURCES` — pinned by a test.
+  Both **fail safe**: any network, HTTP or parse error returns `[]` and the run
+  falls through to Perplexity exactly as before, so wiring one can never break
+  a run that used to work. Honest coverage limits, both documented in the
+  modules: the BMF misses churches that never filed (they are exempt
+  automatically), and CCD is **public schools only**. `gc` stays on Perplexity
+  — Colorado has no statewide contractor licence.
 - **`dora:broker` (40,264 individual brokers) is off by default.** DORA publishes
   no contact details, so that segment is the paid-enrichment tier. Work
   `dora:brokerage` — one office visit reaches every agent in it.

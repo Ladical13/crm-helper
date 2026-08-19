@@ -95,6 +95,42 @@ PARTNER_TYPES  = [t['key'] for t in LEAD_TYPES if t['partner']]
 
 SOURCES     = ['referral', 'door_knock', 'phone_call', 'website', 'social_media', 'storm',
                'existing_customer', 'other']
+
+# ── The Den (Base44) handoff vocabulary ──────────────────────────────────────
+# Base44 owns the job from `won` onward; this app owns everything before it.
+# Everything below maps this app's vocabulary onto Base44's.
+#
+# ⚠ UNVERIFIED against the live Base44 API as of 2026-08-19. Field names and
+# status values are taken from the documented field map, not from a response
+# body. Confirm with a read-only GET of one Contact and one Project before
+# trusting this on a real push. `tests/test_den_payload.py` pins every mapping,
+# so correcting a name here is a one-line change with a failing test to prove it.
+
+# Base44 filters EVERY executive query by location_id, and so does the
+# estimator's own contact search (`estimator/app.py` fetch_all_contacts).
+# A record pushed without it is invisible to the CEO dashboard, pipeline
+# health, job margin, referral intel AND the estimator. This is not cosmetic.
+CO_LOCATION_ID = os.environ.get('CO_LOCATION_ID', '6984bb86d86d9c92d6827a17')
+
+# salescrm stage -> Base44 Project.status. `won` is the only stage that
+# normally crosses; anything else lands at the front of Base44's pipeline
+# rather than inventing a production state we have no evidence for.
+DEN_STATUS         = {'won': 'contracted'}
+DEN_STATUS_DEFAULT = 'new_lead'
+
+# salescrm source -> Base44 source. Base44's `source` is free text, so an
+# unmapped value passes through UNCHANGED rather than being flattened into a
+# bucket. Losing the channel name is the failure mode we are fixing.
+DEN_SOURCE = {
+    'door_knock':        'canvassing',
+    'website':           'google',
+    'existing_customer': 'repeat',
+}
+
+# salescrm service/lead_type -> Base44 job_category (documented as required).
+DEN_JOB_CATEGORY         = {'commercial': 'commercial'}   # by lead_type
+DEN_JOB_CATEGORY_DEFAULT = 'insurance'                    # Base44's own default
+
 TEMPERATURE = ['hot', 'warm', 'cold']
 
 # Service lines. Every lead is a deal for ONE service; pitching a second service
@@ -888,34 +924,116 @@ def _advance_cadence(db, enrollment_id):
 def _crm_headers():
     return {'Authorization': f'Bearer {BASE44_TOKEN}', 'Content-Type': 'application/json'}
 
+def _looks_like_id(value):
+    """True for a uuid4 as generated for lead ids — i.e. an unresolved pointer
+    rather than something a human typed."""
+    v = str(value or '').strip()
+    return len(v) == 36 and v.count('-') == 4
+
+
+def _den_provenance(lead):
+    """The attribution block that travels with a job into The Den.
+
+    Base44 has no documented field for "which partner referred this", so the
+    provenance rides in `notes` where referral-intel can read it. A dedicated
+    field is better and is the follow-up once the schema is confirmed — but
+    notes survive any schema, and losing the partner entirely is what makes
+    partner ROI unanswerable today.
+    """
+    bits = []
+    if lead.get('referred_by'):
+        # `referred_by` stores the PARTNER'S LEAD ID, not a name. Pushing the
+        # raw uuid would put an opaque string in front of the exec team, so
+        # resolve it the same way the lead drawer does (`referred_by_name`).
+        partner = ''
+        try:
+            with get_db() as db:
+                ref = db.execute(
+                    'SELECT first_name, last_name, company FROM leads WHERE id=?',
+                    (lead['referred_by'],)).fetchone()
+            if ref:
+                partner = (f"{ref['first_name']} {ref['last_name']}".strip()
+                           or ref['company'] or '')
+        except Exception as e:                       # never block a push on this
+            print(f'[Den] referred_by lookup failed: {e}')
+        # The field is normally an id, but the API accepts free text, so a
+        # hand-entered partner name must not vanish just because it never
+        # matched a lead row. Anything that isn't an unresolved uuid is a name.
+        if not partner and not _looks_like_id(lead['referred_by']):
+            partner = lead['referred_by'].strip()
+        if partner:
+            bits.append(f"Referred by: {partner}")
+    if lead.get('lead_type') and lead['lead_type'] != 'homeowner':
+        label = next((t['label'] for t in LEAD_TYPES if t['key'] == lead['lead_type']),
+                     lead['lead_type'])
+        bits.append(f"Lead type: {label}")
+    if lead.get('import_batch'):
+        bits.append(f"Campaign: {lead['import_batch']}")
+    if lead.get('source_ref'):
+        bits.append(f"Source ref: {lead['source_ref']}")
+    if lead.get('created_at'):
+        bits.append(f"Lead created: {lead['created_at']}")
+    if lead.get('won_at'):
+        bits.append(f"Won: {lead['won_at']}")
+    return bits
+
+
 def _den_payloads(lead):
-    """Build the Contact + Project payloads (also used by the dry-run endpoint)."""
+    """Build the Contact + Project payloads (also used by the dry-run endpoint).
+
+    Everything this app knows that Base44 cannot re-derive must cross here.
+    Anything dropped is gone: the CRM is the only place that ever held the
+    lead's origin, and the exec team reports off Base44.
+    """
     name = (f"{lead['first_name']} {lead['last_name']}").strip() or lead['company'] or 'Unknown'
     assigned = f"{lead['rep']}@{EMAIL_DOMAIN}"
+
+    # Free text on Base44's side, so an unmapped channel passes through intact.
+    src = lead['source'] or 'referral'
+    src = DEN_SOURCE.get(src, src)
+
     contact = {
         'name': name, 'first_name': lead['first_name'], 'last_name': lead['last_name'],
         'phone': lead['phone'], 'email': lead['email'],
         'street_address': lead['address'], 'city': lead['city'],
         'state': lead['state'], 'zip_code': lead['zip'],
-        'source': lead['source'] or 'referral', 'assigned_to': assigned,
+        'source': src, 'assigned_to': assigned,
+        'location_id': CO_LOCATION_ID,
     }
+
     service_label = SERVICE_META.get(lead.get('service') or 'roofing', SERVICES[0])['label']
     # Recurring plans carry their plan name + billing cadence into the project name/notes
     # so The Den/production can see it's a maintenance agreement, not a one-time job.
     pname = f"{service_label} - {name}"
-    notes = ''
+    notes_lines = []
     plan = PLAN_BY_ID.get(lead.get('plan') or '')
     if plan:
         pname = f"{plan['name']} ({service_label}) - {name}"
         suffix = BILLING_SUFFIX.get(lead.get('billing') or '', '')
-        notes = f"Recurring maintenance plan: {plan['name']}"
+        line = f"Recurring maintenance plan: {plan['name']}"
         if lead.get('est_value'):
-            notes += f" — {int(lead['est_value'])}{suffix}"
+            line += f" — {int(lead['est_value'])}{suffix}"
+        notes_lines.append(line)
+    notes_lines.extend(_den_provenance(lead))
+
     project = {
-        'name': pname, 'source': lead['source'] or 'referral',
-        'assigned_to': assigned, 'status': 'lead', 'notes': notes,
+        'job_name': pname,
+        'contact_name': name,
+        'contact_phone': lead['phone'],
+        'contact_email': lead['email'],
+        'street_address': lead['address'], 'city': lead['city'],
+        'state': lead['state'], 'zip_code': lead['zip'],
+        'job_category': DEN_JOB_CATEGORY.get(lead.get('lead_type') or '',
+                                             DEN_JOB_CATEGORY_DEFAULT),
+        'source': src,
+        'assigned_salesperson': assigned,
+        'status': DEN_STATUS.get(lead.get('stage') or '', DEN_STATUS_DEFAULT),
+        'contract_value': float(lead.get('est_value') or 0),
+        'notes': '\n'.join(notes_lines),
+        'location_id': CO_LOCATION_ID,
     }
     return contact, project
+
 
 def _find_existing_contact(lead):
     """Dedup: reuse a Base44 contact matching phone/email before creating one."""
@@ -1243,7 +1361,10 @@ def import_prospects():
             fields = dict(row)
             fields.update({
                 'id': lid, 'lead_type': lead_type, 'service': service,
-                'source': 'prospecting', 'temperature': 'cold', 'stage': 'new',
+                # The channel that sourced this row ('prospecting', 'nimbus', a
+                # campaign name). Hardcoding it flattened every channel into one
+                # bucket and made SEO/agent spend impossible to tie to revenue.
+                'source': source, 'temperature': 'cold', 'stage': 'new',
                 'rep': rep, 'import_batch': batch,
                 'est_value': float(raw.get('est_value') or 0),
                 'icp_score': int(raw.get('icp_score') or 0),
