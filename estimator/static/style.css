@@ -96,6 +96,57 @@ button { cursor: pointer; font-family: inherit; }
   padding: 2px 7px; border-radius: 10px; margin-left: 6px;
   font-weight: 700; letter-spacing: .3px;
 }
+/* Signed / sent state in the header. Deliberately NOT nested inside
+   #estimate-number: that element is hidden on phones and used to take this
+   badge down with it, leaving a rep unable to tell a signed estimate from a
+   draft. This one survives every breakpoint. */
+.est-status-badge {
+  font-size: 10px; padding: 3px 9px; border-radius: 10px;
+  font-weight: 700; letter-spacing: .3px; border: 1px solid transparent;
+  background: rgba(255,255,255,.12); color: #fff; flex-shrink: 0;
+  font-family: inherit;
+}
+.est-status-signed {
+  background: rgba(22,163,74,.32); color: #86efac;
+  border-color: rgba(134,239,172,.45); cursor: pointer;
+}
+.est-status-signed:hover { background: rgba(22,163,74,.55); color: #fff; }
+.est-status-sent {
+  background: rgba(37,99,235,.3); color: #bfdbfe;
+  border-color: rgba(191,219,254,.4); cursor: default;
+}
+
+/* Executed contract, surfaced on the Contract page itself */
+.signed-doc-panel {
+  background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px;
+  padding: 12px 14px; margin-bottom: 12px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap;
+}
+.signed-doc-head { display: flex; align-items: center; gap: 11px; }
+.signed-doc-check {
+  width: 26px; height: 26px; border-radius: 50%; background: #16a34a; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 800; flex-shrink: 0;
+}
+.signed-doc-title { font-size: 13px; font-weight: 800; color: #15803d; }
+.signed-doc-sub   { font-size: 11px; color: #3f7350; }
+.signed-doc-acts  { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.signed-doc-open {
+  text-decoration: none; display: inline-flex; align-items: center;
+  padding: 8px 14px; border-radius: 5px; font-size: 12px; font-weight: 700;
+}
+.signed-doc-alt {
+  background: none; border: 1px solid #86efac; color: #15803d;
+  padding: 8px 12px; border-radius: 5px; font-size: 12px; font-weight: 600;
+}
+.signed-doc-alt:hover { background: #dcfce7; }
+.signed-doc-pending { font-size: 11.5px; color: #3f7350; font-style: italic; }
+@media (max-width: 640px) {
+  .signed-doc-panel { flex-direction: column; align-items: stretch; }
+  .signed-doc-acts  { justify-content: stretch; }
+  .signed-doc-open, .signed-doc-alt { flex: 1; justify-content: center; min-height: 42px; }
+}
 
 /* ── Share modal internals ─────────────────────────────────────────── */
 .share-step {
@@ -3217,9 +3268,15 @@ a.jx-contact:hover { text-decoration: underline; }
 /* Header desktop-button group */
 .header-desktop-btns { display: flex; align-items: center; gap: 8px; }
 
-/* More-menu button — hidden on desktop */
+/* More-menu button — shown at EVERY width.
+   It used to be phone-only, which quietly made the menu's four exclusive
+   entries unreachable on a laptop: Order Sheet had no other caller anywhere
+   in the app, so the whole feature simply did not exist on desktop. RoofR and
+   Insurance import at least had buttons on their own pages; Order Sheet did
+   not. Duplicating the visible desktop buttons inside an overflow menu is
+   normal and costs nothing. */
 .more-menu-btn {
-  display: none;
+  display: block;
   background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.25);
   color: #fff; font-size: 22px; padding: 0 10px; border-radius: 4px;
   line-height: 1.5; cursor: pointer; flex-shrink: 0;
@@ -3262,19 +3319,27 @@ a.jx-contact:hover { text-decoration: underline; }
 .gbb-swipe-hint { display: none; }
 
 @media (max-width: 767px) {
-  /* Show hamburger + overflow button */
+  /* Show hamburger (the overflow button is visible at every width now) */
   .nav-toggle-btn { display: block; }
-  .more-menu-btn  { display: block; }
 
   /* Hide desktop button group */
   .header-desktop-btns { display: none; }
 
-  /* Tighten header */
-  #app-header { padding: 0 10px; }
-  .header-logo { height: 30px; }
+  /* Tighten header. The gaps come down because the status badge and the save
+     pill both stay visible here now — at the old 14px/8px gaps the row
+     overflowed a 375px phone by ~14px once a signed estimate was open. */
+  #app-header { padding: 0 8px; }
+  .header-left  { gap: 8px; }
+  .header-right { gap: 6px; }
+  .header-logo { height: 28px; }
   .estimate-number { display: none; }
-  .save-indicator { display: none; }
   .user-badge { display: none !important; }
+
+  /* The save pill STAYS. It is the only thing telling a rep whether their
+     work survived, and a phone is where the tab is most likely to be killed
+     by the OS mid-edit. Narrowed rather than hidden. */
+  .save-indicator { min-width: 0; padding: 3px 6px; font-size: 10px; }
+  .est-status-badge { padding: 3px 6px; font-size: 9.5px; }
 
   /* Overflow menu: full width on phone so nothing clips */
   .header-overflow-menu { min-width: min(280px, 94vw); right: 0; border-radius: 0 0 8px 8px; }
@@ -4179,4 +4244,22 @@ body.is-client #nav-toggle      { display: none; }
   .rc-term-btn { flex: 1; min-height: 42px; padding: 8px 6px; }
   .rc-price { max-width: none; width: 100%; }
   .rc-btns button { flex: 1; min-height: 42px; }
+}
+
+/* Narrow phones (iPhone SE and similar).
+   Once an estimate is signed the header row carries six controls — hamburger,
+   logo, status badge, save pill, Save, overflow — and at 320px the default
+   mobile sizes overflow it by ~39px. Everything here buys width. Nothing is
+   hidden: the two candidates (signed state and save state) are precisely what
+   this row exists to show, and hiding them is the bug this replaced. */
+@media (max-width: 380px) {
+  #app-header       { padding: 0 6px; }
+  .header-left      { gap: 5px; }
+  .header-right     { gap: 4px; }
+  .header-logo      { height: 22px; padding: 2px 5px; }
+  #save-btn         { padding: 8px 10px; }
+  .save-indicator   { padding: 3px 5px; font-size: 9.5px; }
+  .est-status-badge { padding: 3px 5px; font-size: 9px; }
+  .more-menu-btn    { padding: 0 7px; }
+  .nav-toggle-btn   { padding: 2px 7px 4px; }
 }

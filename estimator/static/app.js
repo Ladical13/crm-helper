@@ -1846,16 +1846,68 @@ function setVal(id, v) {
   const el = document.getElementById(id);
   if (el && el.value !== String(v ?? '')) el.value = v ?? '';
 }
+/* The EST number and the signed/sent state render into SEPARATE elements on
+   purpose. The mobile breakpoint hides the number (monospace noise on a 375px
+   header) — but it used to carry the "Signed" badge with it, so a rep on a
+   phone had no way to tell a signed estimate from a draft. The badge now
+   stands on its own and survives every breakpoint. */
 function renderEstNum() {
-  const num = S.estimate_id ? 'EST-' + S.estimate_id.split('-')[0].toUpperCase() : 'New Estimate';
+  const numEl = document.getElementById('estimate-number');
+  if (numEl) {
+    numEl.textContent = S.estimate_id
+      ? 'EST-' + S.estimate_id.split('-')[0].toUpperCase()
+      : 'New Estimate';
+  }
+
+  const el = document.getElementById('est-status-badge');
+  if (!el) return;
   const sig = S.signature;
-  let badge = '';
   if (sig) {
     const dt  = new Date(sig.signed_at);
-    const fmt = dt.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
-    badge = ` <span class="sig-badge" title="Signed by ${sig.name} on ${fmt}">✓ Signed</span>`;
+    const fmt = isNaN(dt) ? '' : dt.toLocaleDateString('en-US',
+      { month:'short', day:'numeric', year:'numeric' });
+    el.className   = 'est-status-badge est-status-signed';
+    el.textContent = '✓ Signed';
+    el.title = `Signed by ${sig.name || 'customer'}${fmt ? ' on ' + fmt : ''} — open the signed PDF`;
+    el.style.display = '';
+  } else if (S.share_token) {
+    el.className   = 'est-status-badge est-status-sent';
+    el.textContent = '📤 Sent';
+    el.title = 'Sent to the customer — not signed yet';
+    el.style.display = '';
+  } else {
+    el.style.display = 'none';
+    el.textContent = '';
+    el.title = '';
   }
-  document.getElementById('estimate-number').innerHTML = num + badge;
+}
+
+/* ── Signed contract, front and centre ──────────────────────────────────
+   The signed PDF is filed automatically by the server's post-sign pipeline
+   (app.py _post_sign_pipeline -> save_signed_contract_attachment), and always
+   has been. But Documents has no entry in the tab strip, so unless a rep went
+   Customer -> Documents deliberately they never saw it. These give it a door
+   from the places the rep actually is after a signature lands. */
+function signedContractAttachment() {
+  return (S.attachments || []).find(
+    a => a.server_generated && a.doc_type === 'signed_contract') || null;
+}
+
+function openSignedContract() {
+  const att = signedContractAttachment();
+  if (!att) return false;
+  window.open(`${BASE}/uploads/${att.filename}`, '_blank', 'noopener');
+  return true;
+}
+
+function estStatusBadgeClick() {
+  if (!S.signature) return;          // "Sent" is a status, not a link
+  if (openSignedContract()) return;
+  // The pipeline builds the PDF in a background thread, so for a few seconds
+  // after signing the attachment genuinely is not there yet. Say so rather
+  // than appearing to do nothing.
+  alert('The signed PDF is still being generated — it lands in Documents within '
+      + 'a few seconds of signing. Reopen the estimate if it does not appear.');
 }
 function renderPricingModeUI() {
   document.getElementById('mode-margin').classList.toggle('active', S.pricing.mode === 'margin');
@@ -6341,7 +6393,39 @@ function renderRoofHealthPage() {
     </div>`;
 }
 
-/* ── Page 5: Contract ───────────────────────────────────────────────── */
+/* ── Page 9: Contract ───────────────────────────────────────────────── */
+
+/* Once an estimate is signed, the Contract page is the first place a rep
+   looks — so the executed PDF belongs here, not only three clicks away under
+   Customer -> Documents. */
+function renderSignedContractPanel() {
+  const sig = S.signature;
+  if (!sig) return '';
+  const dt   = new Date(sig.signed_at);
+  const when = isNaN(dt) ? '' : dt.toLocaleDateString('en-US',
+    { month:'long', day:'numeric', year:'numeric' });
+  const att  = signedContractAttachment();
+  return `
+  <div class="signed-doc-panel">
+    <div class="signed-doc-head">
+      <span class="signed-doc-check">✓</span>
+      <div>
+        <div class="signed-doc-title">Signed by ${esc(sig.name || 'customer')}</div>
+        <div class="signed-doc-sub">${when ? esc(when) : ''}${
+          sig.email ? ' · ' + esc(sig.email) : ''}</div>
+      </div>
+    </div>
+    ${att
+      ? `<div class="signed-doc-acts">
+           <a class="btn-primary signed-doc-open" target="_blank" rel="noopener"
+              href="${BASE}/uploads/${esc(att.filename)}">📄 Open signed PDF</a>
+           <button class="signed-doc-alt" onclick="switchPage('documents')">
+             All documents →</button>
+         </div>`
+      : `<div class="signed-doc-pending">The signed PDF is generating — it appears
+           in Documents within a few seconds of signing.</div>`}
+  </div>`;
+}
 
 function renderContractPage() {
   // Notes
@@ -6349,6 +6433,7 @@ function renderContractPage() {
   setTA('notes-customer', S.notes_customer);
   // Contract
   document.getElementById('contract-section').innerHTML =
+    renderSignedContractPanel() +
     `<div class="panel-header">
       <h3>Contract Terms</h3>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">

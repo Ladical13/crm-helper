@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=164">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=165">
 </head>
 <body>
 
@@ -24,6 +24,11 @@
     <button id="nav-toggle" class="nav-toggle-btn" onclick="toggleSidebar()">☰</button>
     <img src="/estimate/static/logo.png" alt="Project One Roofing" class="header-logo">
     <div id="estimate-number" class="estimate-number">New Estimate</div>
+    <!-- Signed / sent state lives OUTSIDE #estimate-number, which the mobile
+         breakpoint hides. A rep on a phone has to be able to see that an
+         estimate is already signed; when it is, this opens the signed PDF. -->
+    <button id="est-status-badge" class="est-status-badge" style="display:none"
+      onclick="estStatusBadgeClick()"></button>
   </div>
   <div class="header-right">
     <span id="save-indicator" class="save-indicator"></span>
@@ -198,46 +203,51 @@
   <!-- Main content -->
   <main id="main-content">
 
-    <!-- Page navigation -->
+    <!-- Page navigation
+         The strip IS the pitch, read left to right: who we are, what we found,
+         what we'll do, what it will look like, what it costs, sign here.
+         Condition sits with Photos because it is the evidence — asking for the
+         signature and THEN producing the diagnosis inverts the sale. Contract
+         is last so everything ahead of it argues for signing. -->
     <nav id="page-nav">
       <button class="page-btn page-btn-client" data-page="client" onclick="switchPage('client')">
         👤 Customer
       </button>
       <span class="pg-sep">›</span>
-      <button class="page-btn" data-page="cover"    onclick="switchPage('cover')">
+      <button class="page-btn" data-page="cover"      onclick="switchPage('cover')">
         <span class="pg-num">1</span>Cover
       </button>
       <span class="pg-sep">›</span>
-      <button class="page-btn" data-page="intro"    onclick="switchPage('intro')">
+      <button class="page-btn" data-page="intro"      onclick="switchPage('intro')">
         <span class="pg-num">2</span>Intro
       </button>
       <span class="pg-sep">›</span>
-      <button class="page-btn" data-page="photos"   onclick="switchPage('photos')">
+      <button class="page-btn" data-page="photos"     onclick="switchPage('photos')">
         <span class="pg-num">3</span>Photos
       </button>
       <span class="pg-sep">›</span>
-      <button class="page-btn" data-page="scope"    onclick="switchPage('scope')">
-        <span class="pg-num">4</span>Scope
+      <button class="page-btn" data-page="report"     onclick="switchPage('report')">
+        <span class="pg-num">4</span>Condition
       </button>
       <span class="pg-sep">›</span>
-      <button class="page-btn" data-page="products" onclick="switchPage('products')">
-        <span class="pg-num">5</span>Products
+      <button class="page-btn" data-page="scope"      onclick="switchPage('scope')">
+        <span class="pg-num">5</span>Scope
       </button>
       <span class="pg-sep">›</span>
-      <button class="page-btn" data-page="pricing"  onclick="switchPage('pricing')">
-        <span class="pg-num">6</span>Pricing
-      </button>
-      <span class="pg-sep">›</span>
-      <button class="page-btn" data-page="contract" onclick="switchPage('contract')">
-        <span class="pg-num">7</span>Contract
-      </button>
-      <span class="pg-sep">›</span>
-      <button class="page-btn" data-page="report" onclick="switchPage('report')">
-        <span class="pg-num">8</span>Condition
+      <button class="page-btn" data-page="products"   onclick="switchPage('products')">
+        <span class="pg-num">6</span>Products
       </button>
       <span class="pg-sep">›</span>
       <button class="page-btn" data-page="visualizer" onclick="switchPage('visualizer')">
-        <span class="pg-num">🎨</span>Visualizer
+        <span class="pg-num">7</span>Visualizer
+      </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="pricing"    onclick="switchPage('pricing')">
+        <span class="pg-num">8</span>Pricing
+      </button>
+      <span class="pg-sep">›</span>
+      <button class="page-btn" data-page="contract"   onclick="switchPage('contract')">
+        <span class="pg-num">9</span>Contract
       </button>
     </nav>
     <div id="print-pages-bar"></div>
@@ -278,13 +288,13 @@
       </div>
     </div>
 
-    <!-- ── Page 4: Scope / Measurements ──────────────────────────── -->
+    <!-- ── Page 5: Scope / Measurements ──────────────────────────── -->
     <div id="page-scope" class="page" style="display:none"></div>
 
     <!-- ── Page: Product Selection (brand/model/color per trade) ──── -->
     <div id="page-products" class="page" style="display:none"></div>
 
-    <!-- ── Page 4: Pricing (per-trade line items) ────────────────── -->
+    <!-- ── Page 8: Pricing (per-trade line items) ────────────────── -->
     <div id="page-pricing" class="page" style="display:none">
       <div id="trade-tabs">
         <div class="tab-bar" id="tab-bar"></div>
@@ -293,7 +303,7 @@
       <div id="cost-profit-panel"></div>
     </div>
 
-    <!-- ── Page 7: Contract ───────────────────────────────────────── -->
+    <!-- ── Page 9: Contract ───────────────────────────────────────── -->
     <div id="page-contract" class="page" style="display:none">
       <div id="notes-section" class="panel">
         <div class="panel-header"><h3>Notes</h3></div>
@@ -311,12 +321,12 @@
       <div id="contract-section" class="panel"></div>
     </div>
 
-    <!-- ── Page 8: Roof Health Report ───────────────────────────────── -->
+    <!-- ── Page 4: Roof Health Report (Condition) ───────────────────────────────── -->
     <div id="page-report" class="page" style="display:none">
       <div id="roof-health-content"></div>
     </div>
 
-    <!-- ── Page 10: Documents (job PDFs + document generators) ─────── -->
+    <!-- ── Documents (job PDFs + generators) -- opened from the Customer hub ─────── -->
     <div id="page-documents" class="page" style="display:none">
       <div id="documents-content"></div>
     </div>
@@ -709,6 +719,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=164"></script>
+<script src="/estimate/static/app.js?v=165"></script>
 </body>
 </html>
