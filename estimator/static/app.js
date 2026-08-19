@@ -208,14 +208,24 @@ function tierBulletsAreStale(trade, tier) {
   const td = S.trades[trade] || {};
   const tb = td.tier_bundles;
   if (!tb) return false;                 // pre-bundle estimate — hand-curated
-  const items = td.line_items || [];
-  // Only judge a trade the bundles actually built. Items created by
-  // applyBundleToTier carry catalog_id; a hand-shaped trade has none, and
-  // without that evidence there is no bundle whose leftover copy this could
-  // be — the bullets are the rep's own and stay.
-  if (!items.some(it => it.catalog_id)) return false;
   const bid = (tb[tier] || '').trim();
+  /* Custom is the rep saying, on the Product dropdown, that this tier is not
+     a package the book sells. Nothing else ever writes __custom__, so it is
+     evidence on its own and is judged BEFORE the catalog test below.
+     It used to be judged after, and that cost a real estimate: seeding a new
+     estimate loads the default shingle bundles, so building a rolled-roofing
+     job by hand means deleting those rows — which deletes the last catalog_id
+     in the trade, and a trade with no catalog_id was ruled "never built by a
+     bundle, bullets are the rep's own". The shingle tagline the bundle wrote
+     on the way past then printed over the rolled roofing. Evidence the rep
+     destroyed while doing exactly what the tab asks is not evidence. */
   if (bid === '__custom__') return true;
+  const items = td.line_items || [];
+  // A tier that still NAMES a bundle is judged only on a trade the bundles
+  // actually built. Items created by applyBundleToTier carry catalog_id; a
+  // hand-shaped trade has none, and without that evidence there is no bundle
+  // whose leftover copy this could be — the bullets are the rep's own and stay.
+  if (!items.some(it => it.catalog_id)) return false;
   if (!bid) return false;
   const ids = new Set((_tradeBundle(trade, bid) || {}).product_ids || []);
   if (!ids.size) return false;           // bundle deleted from the book — no call to make

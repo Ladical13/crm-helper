@@ -2431,25 +2431,36 @@ def _tier_bullets_are_stale(pb, est, trade, tier):
     the package by hand, so a customer reads "Architectural laminate shingle
     system - lifetime limited warranty" over a rolled-roofing line item, and
     there is no editor left to correct it. Stale means either the tier is
-    __custom__, or it still names a bundle but none of that bundle's products is
-    priced in the tier any more. A pre-bundle estimate carries no tier_bundles
-    at all; those bullets were curated by hand and are left alone.
+    __custom__ - the rep said so on the dropdown, and that stands on its own -
+    or it still names a bundle but none of that bundle's products is priced in
+    the tier any more. A pre-bundle estimate carries no tier_bundles at all;
+    those bullets were curated by hand and are left alone.
 
     MUST mirror tierBulletsAreStale in app.js."""
     td = (est.get('trades') or {}).get(trade) or {}
     tb = td.get('tier_bundles')
     if not isinstance(tb, dict):
         return False                      # pre-bundle estimate - hand-curated
-    items = td.get('line_items') or []
-    # Only judge a trade the bundles actually built. Items created by
-    # applyBundleToTier carry catalog_id; a hand-shaped trade has none, and
-    # without that evidence there is no bundle whose leftover copy this could
-    # be - the bullets are the rep's own and stay.
-    if not any(it.get('catalog_id') for it in items):
-        return False
     bid = str(tb.get(tier) or '').strip()
+    # Custom is the rep saying, on the Product dropdown, that this tier is not
+    # a package the book sells. Nothing else ever writes __custom__, so it is
+    # evidence on its own and is judged BEFORE the catalog test below.
+    # It used to be judged after, and that cost a real estimate: seeding a new
+    # estimate loads the default shingle bundles, so building a rolled-roofing
+    # job by hand means deleting those rows - which deletes the last catalog_id
+    # in the trade, and a trade with no catalog_id was ruled "never built by a
+    # bundle, bullets are the rep's own". The shingle tagline the bundle wrote
+    # on the way past then printed over the rolled roofing. Evidence the rep
+    # destroyed while doing exactly what the tab asks is not evidence.
     if bid == '__custom__':
         return True
+    items = td.get('line_items') or []
+    # A tier that still NAMES a bundle is judged only on a trade the bundles
+    # actually built. Items created by applyBundleToTier carry catalog_id; a
+    # hand-shaped trade has none, and without that evidence there is no bundle
+    # whose leftover copy this could be - the bullets are the rep's own and stay.
+    if not any(it.get('catalog_id') for it in items):
+        return False
     if not bid:
         return False
     bundle = next((b for b in (pb.get(trade + '_bundles') or [])
