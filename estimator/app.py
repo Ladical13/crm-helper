@@ -3724,9 +3724,14 @@ def _cv_download_card(token):
 </div>'''
 
 
-def _cv_next_steps(signed=False):
+def _cv_next_steps(signed=False, commercial=False):
     """'What happens next' timeline — sets expectations on the sign page and
-    reassures on the confirmation page."""
+    reassures on the confirmation page.
+
+    The two middle steps are written for the building they are describing: a
+    commercial re-roof is scheduled around an operating tenant and walked by a
+    property manager, so promising to protect the landscaping and leave the
+    home spotless lands as the wrong template on a warehouse bid."""
     steps = []
     if not signed:
         steps.append(('Review &amp; sign below',
@@ -3737,8 +3742,12 @@ def _cv_next_steps(signed=False):
          'A member of our team will call within one business day to say hello and '
          'confirm the details of your project.'),
         ('Scheduling &amp; materials',
-         'We order your materials and lock in an installation date that works for your schedule.'),
+         'We order your materials and lock in an installation date that works '
+         + ('around your building&rsquo;s operating hours.' if commercial
+            else 'for your schedule.')),
         ('Installation day',
+         'Our crew arrives on time, keeps the building watertight and in operation, '
+         'completes the work, and leaves the site clean.' if commercial else
          'Our crew arrives on time, protects your landscaping and property, completes '
          'the work, and leaves your home spotless.'),
         ('Final walkthrough &amp; warranty',
@@ -4520,6 +4529,48 @@ _WARRANTY_BY_TIER = {
     'better': '5-year Project One workmanship warranty',
     'best':   'Lifetime Project One workmanship warranty (for as long as you own the home)',
 }
+# Same promise, said to a building owner. The commercial bid goes to a property
+# manager or an owner's rep, and "for as long as you own the home" on a
+# warehouse reads as a residential template nobody bothered to change.
+_WARRANTY_BY_TIER_COMMERCIAL = dict(
+    _WARRANTY_BY_TIER,
+    best='Lifetime Project One workmanship warranty (for as long as you own the building)')
+
+# The seven process steps a customer reads. The residential list talks about
+# landscaping, A/C units and the homeowner; a commercial re-roof is staged
+# around an operating building instead. Same commitments, same order — only
+# the things being protected and the person walking the job change.
+_PROCESS_RESIDENTIAL = [
+    'Building permit pulled with the local authority having jurisdiction and final inspection scheduled',
+    'Property, landscaping and A/C units tarped and protected before tear-off',
+    'Complete tear-off to the deck; damaged decking replaced sheet-for-sheet',
+    'Installed to manufacturer specification by Project One crews (not day-labor subs)',
+    'Full magnetic nail sweep of driveway, walks and yard within one business day',
+    'Written change orders required before any out-of-scope work — no verbal upsells',
+    'Final walkthrough with the homeowner, then manufacturer warranty registered in your name',
+]
+# A LAYOVER has no tear-off, so the two middle steps of the commercial list
+# are simply untrue on one — and "torn off and dried in by section" is exactly
+# the sentence a property manager will quote back when the invoice has no
+# disposal on it. What replaces them is the recover prep GAF actually requires.
+_PROCESS_COMMERCIAL_LAYOVER = [
+    'Building permit pulled with the local authority having jurisdiction and final inspection scheduled',
+    'Staging, roof access and material handling scheduled with building management before work starts',
+    'Existing roof scanned for trapped moisture; any wet material removed and replaced before work begins',
+    'Existing membrane cut and prepped to manufacturer requirement, then the new cover board laid over it',
+    'Installed to manufacturer specification by Project One crews (not day-labor subs)',
+    'Written change orders required before any out-of-scope work — no verbal upsells',
+    'Final walkthrough with the owner or property manager, then the manufacturer system warranty registered in your name',
+]
+_PROCESS_COMMERCIAL = [
+    'Building permit pulled with the local authority having jurisdiction and final inspection scheduled',
+    'Staging, roof access and material handling scheduled with building management before work starts',
+    'Torn off and dried in by section so the building stays watertight and in operation overnight',
+    'Wet or damaged decking and insulation replaced, and the deck documented before the new system goes down',
+    'Installed to manufacturer specification by Project One crews (not day-labor subs)',
+    'Written change orders required before any out-of-scope work — no verbal upsells',
+    'Final walkthrough with the owner or property manager, then the manufacturer system warranty registered in your name',
+]
 
 
 def _build_estimate_manifest(est):
@@ -4535,6 +4586,9 @@ def _build_estimate_manifest(est):
     a  = c.get('address', {}) or {}
     is_ins = ((est.get('estimate_type') == 'insurance')
               or ((est.get('trades', {}) or {}).get('insurance', {}) or {}).get('enabled'))
+    # A commercial bid is read by an owner's rep or a property manager, so the
+    # process steps and the warranty wording switch to the commercial pair.
+    is_comm = est.get('estimate_type') == 'commercial'
 
     # Which packages the rep is offering — the customer only ever sees the
     # enabled subset, so the manifest must mirror that.
@@ -4644,14 +4698,25 @@ def _build_estimate_manifest(est):
             if isinstance(j, dict) and j.get('id') == sel_id:
                 jur = j
                 break
+    # Every one of these points is steep-slope ASPHALT SHINGLE guidance: ice
+    # barrier at the eave, attic ventilation on the 1/300 rule, hip and ridge
+    # cap, Class 4 shingles, IRC R905 chapter and verse. On a bid with no
+    # shingle roof in it — a commercial TPO flat roof, or a siding- or
+    # window-only job — none of it is true, and quoting R905.2.8.5 drip edge
+    # next to a welded membrane reads as a copy-paste bid to the property
+    # manager reading it. The JURISDICTION still applies (a commercial reroof
+    # pulls a permit too), so only the roof-covering content drops: the
+    # jurisdiction name, the verified profile and the permit info all stay.
+    shingle_scope = bool(((est.get('trades') or {}).get('roofing') or {}).get('enabled'))
     baseline_points = [str(p).strip() for p in (baseline.get('code_points') or [])
-                       if str(p).strip()]
+                       if str(p).strip()] if shingle_scope else []
     jur_points = ([str(p).strip() for p in ((jur or {}).get('code_points') or [])
-                   if str(p).strip()])
+                   if str(p).strip()]) if shingle_scope else []
     code_items = [{'label': str(i.get('label', '')).strip(),
                    'basis': str(i.get('basis', '')).strip()}
                   for i in (baseline.get('code_items') or [])
-                  if isinstance(i, dict) and str(i.get('label') or '').strip()]
+                  if isinstance(i, dict) and str(i.get('label') or '').strip()
+                  ] if shingle_scope else []
     # Manager-approved per-jurisdiction profile — the adopted IRC year, local
     # amendments, and reroof permit info a customer actually wants to see.
     # Only surfaced when reviewed_at is set; an unreviewed profile might carry
@@ -4776,7 +4841,7 @@ def _build_estimate_manifest(est):
         'trades':          trades_out,
         'code':            code,
         'ventilation':     vent,
-        'warranty_by_tier': dict(_WARRANTY_BY_TIER),
+        'warranty_by_tier': dict(_WARRANTY_BY_TIER_COMMERCIAL if is_comm else _WARRANTY_BY_TIER),
         'warranty_body':   warranty_body,
         'company': {
             'name':          'Project One Roofing',
@@ -4792,15 +4857,9 @@ def _build_estimate_manifest(est):
         },
         'reviews':         reviews,
         'summary':         summary,
-        'process': [
-            'Building permit pulled with the local authority having jurisdiction and final inspection scheduled',
-            'Property, landscaping and A/C units tarped and protected before tear-off',
-            'Complete tear-off to the deck; damaged decking replaced sheet-for-sheet',
-            'Installed to manufacturer specification by Project One crews (not day-labor subs)',
-            'Full magnetic nail sweep of driveway, walks and yard within one business day',
-            'Written change orders required before any out-of-scope work — no verbal upsells',
-            'Final walkthrough with the homeowner, then manufacturer warranty registered in your name',
-        ],
+        'process': list(_PROCESS_COMMERCIAL_LAYOVER if is_comm and _est_is_layover(est)
+                        else _PROCESS_COMMERCIAL if is_comm
+                        else _PROCESS_RESIDENTIAL),
     }
 
 
@@ -5147,7 +5206,7 @@ def _build_insurance_cv(est, token):
 {_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
-{_cv_next_steps()}
+{_cv_next_steps(commercial=est.get('estimate_type') == 'commercial')}
 {_cv_contact_card(est)}
 {_cv_download_card(token)}
 
@@ -5242,7 +5301,7 @@ def _build_simple_retail_cv(est, token):
 {_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
-{_cv_next_steps()}
+{_cv_next_steps(commercial=est.get('estimate_type') == 'commercial')}
 {_cv_contact_card(est)}
 {_cv_download_card(token)}
 
@@ -5429,7 +5488,7 @@ def build_customer_view(est, token):
 {_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
 {ctext_html}
-{_cv_next_steps()}
+{_cv_next_steps(commercial=est.get('estimate_type') == 'commercial')}
 {_cv_contact_card(est)}
 {_cv_download_card(token)}
 
@@ -6182,7 +6241,7 @@ def build_signed_confirmation(est):
 </div>
 
 <main class="cvmain">
-{_cv_next_steps(signed=True)}
+{_cv_next_steps(signed=True, commercial=est.get('estimate_type') == 'commercial')}
 
 <div class="cert">
   <div class="cert-title">&#128274; Electronic Signature Certificate</div>
@@ -8234,6 +8293,34 @@ def build_production_packet_pdf(est):
         if notes:
             pdf.set_font('Helvetica', 'I', 9)
             pdf.multi_cell(0, 5, _pdf_safe(notes))
+        pdf.ln(4)
+
+    # ── Layover / recover requirements ──
+    # A recover has rules a tear-off does not, and every one of them is decided
+    # ON THE ROOF before the first board goes down — whether the building is
+    # even allowed a second covering, whether the existing single-ply has been
+    # cut into 10' squares, whether anything underneath is wet. The crew needs
+    # them on the sheet in their hands, not in a manual back at the office.
+    #
+    # Keyed off the 1/4" cover board rather than the bundle id: that product IS
+    # the layover assembly, so a manager who builds a custom recover package
+    # still gets the requirements printed.
+    if est.get('estimate_type') == 'commercial' and _est_is_layover(est):
+        section_title('Layover / Recover Requirements')
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_text_color(170, 30, 30)
+        # new_x/new_y on EVERY multi_cell: without them the cursor stays where
+        # the last line ended, and the next call gets a width-0 box and throws
+        # "Not enough horizontal space to render a single character".
+        pdf.multi_cell(0, 5, _pdf_safe(
+            'VERIFY BEFORE THE FIRST BOARD GOES DOWN - a recover that does not '
+            'meet these does not pass inspection and does not carry a warranty.'),
+            new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font('Helvetica', '', 8.5)
+        for rule in COMMERCIAL_LAYOVER_RULES:
+            pdf.multi_cell(0, 4.6, _pdf_safe(f'- {rule}'),
+                           new_x='LMARGIN', new_y='NEXT')
         pdf.ln(4)
 
     # ── Fastening schedule ──
@@ -10947,101 +11034,382 @@ def _siding_profile(td, tier):
         return stored
     return cfg['default']
 
-# Commercial low-slope catalog. Membrane/insulation/accessory costs are
-# PLACEHOLDERS (0) on purpose — commercial material pricing comes off the
-# supplier's quote for the specific job, so the manager sets real numbers in
-# Price Book -> Commercial -> Products (or the rep overrides per estimate).
-# The two LABOR rates are real Project One standards and ship priced.
+# Commercial low-slope catalog.
+#
+# The package matrix is membrane x attachment x substrate approach:
+#
+#                     TEAR-OFF                    LAYOVER (recover)
+#   TPO     mechanically fastened / adhered   mechanically fastened / adhered
+#   EPDM    mechanically fastened / adhered   mechanically fastened / adhered
+#
+# TPO costs come off the GAF sheet Project One was quoted on 2026-05-19 (see
+# COMMERCIAL_PRICE_SHEET). EPDM is NOT on that sheet and is not a GAF product
+# at all — GAF's EverGuard line is TPO and PVC only — so every EPDM line is 0
+# until a second supplier (Johns Manville, Carlisle, Elevate, Versico,
+# Mule-Hide) quotes it.
+#
+# The sheet prices by ROLL / BOX / carton; the catalog prices by SQ / LF / EA.
+# Every conversion is written out on the line that uses it so the next person
+# holding a newer sheet can redo it without guessing what was assumed.
+COMMERCIAL_PRICE_SHEET = {
+    'supplier': 'GAF',
+    'quoted': '2026-05-19',
+    'expires': '2026-06-30',
+    'scope': 'GAF TPO systems only - EPDM is a different manufacturer and is not priced here.',
+    'excludes': 'Manufacturer fuel surcharge and freight. Direct truckload freight $750/load; '
+                'warehouse truckload $200/truck. Tax figured at shipment.',
+}
+
+# Manufacturer + code requirements that decide whether a LAYOVER is even legal
+# on a given building. Surfaced on the Scope tab so the rep checks them on the
+# roof instead of finding out at inspection.
+#
+#   IBC 1511.3 / 1512.2 (adopted locally in CO): a recover is NOT permitted
+#   where the existing roof is water-soaked or deteriorated past serving as a
+#   base, or where TWO OR MORE roof coverings are already in place.
+#
+#   GAF EverGuard recover requirements: strip ballast, loose gravel and debris;
+#   cut out blisters and ridges; an existing SINGLE-PLY roof must first be cut
+#   into 10' x 10' sections maximum before the separator/cover board goes down;
+#   pull all existing flashings, metal edge, drain leads, pipe boots and pitch
+#   pockets; remove and replace anything wet. A moisture survey is strongly
+#   recommended and is REQUIRED where perlite or wood-fibre insulation stays in
+#   the assembly. Recover over a coal-tar pitch roof is not allowed at all.
+#   GAF also calls for tear-off outright once more than 25% of the roof is wet.
+#
+#   EPDM additionally cannot touch asphalt: the bitumen's oils migrate into the
+#   rubber and embrittle it, so an EPDM layover over BUR or mod-bit needs the
+#   cover board as a permanent separation layer (or fleece-back membrane).
+COMMERCIAL_LAYOVER_RULES = [
+    'Recover is not permitted where the existing roof already carries two or more '
+    'roof coverings, or where it is water-soaked or deteriorated (IBC 1511.3 / 1512.2).',
+    'Existing single-ply must be cut into 10\' x 10\' sections maximum before the cover '
+    'board is installed, per GAF EverGuard recover requirements.',
+    'Strip all ballast, loose gravel and debris; cut out blisters and ridges; remove all '
+    'existing flashings, metal edge, drain leads, pipe boots and pitch pans.',
+    'Moisture survey strongly recommended - and required by GAF where perlite or '
+    'wood-fibre insulation stays in the assembly. Wet material must be removed.',
+    'GAF calls for a full tear-off once more than 25% of the roof area is wet.',
+    'Recover over a coal-tar pitch roof is not permitted.',
+    'EPDM cannot contact asphalt - over BUR or mod-bit the cover board is the required '
+    'separation layer.',
+]
+
+# Polyiso ships priced BY THE SQUARE on the sheet, so these are lifted straight
+# across. R-value drives which one the spec calls for, so they are all offered
+# rather than folded into one line: ~R-6 per inch of polyiso.
+COMMERCIAL_ISO_SEED = [
+    ("ca_iso_10", '1.0" Polyiso Insulation (~R-6)',   65.34),
+    ("ca_iso_15", '1.5" Polyiso Insulation (~R-9)',   74.15),
+    ("ca_iso_22", '2.2" Polyiso Insulation (~R-13)', 108.75),
+    ("ca_iso_30", '3.0" Polyiso Insulation (~R-17)', 148.30),
+    ("ca_iso_40", '4.0" Polyiso Insulation (~R-23)', 197.73),
+]
+
 COMMERCIAL_CATALOG_SEED = [
-    # Membranes — one per bundle; qty is squares + waste.
-    {"id": "cm_tpo_ma", "name": "TPO Membrane 60-mil (Mechanically Attached)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "mechanical",
-     "bullets": ["60-mil TPO single-ply membrane, hot-air welded seams", "Highly reflective white surface cuts cooling load", "Mechanically attached — fast install, proven wind uplift performance", "20-year manufacturer system warranty available"]},
-    {"id": "cm_tpo_fa", "name": "TPO Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
-     "bullets": ["60-mil TPO single-ply membrane, fully adhered to the substrate", "Highest wind uplift rating — built for exposed and high-rise decks", "Smooth, flutter-free finished surface", "Highly reflective white surface cuts cooling load", "20-year manufacturer system warranty available"]},
-    {"id": "cm_epdm", "name": "EPDM Membrane 60-mil", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
-     "bullets": ["60-mil EPDM rubber single-ply membrane", "Decades of proven field performance in freeze-thaw climates", "Excellent flexibility and hail resistance", "Simple, reliable seam and repair detailing"]},
+    # ── TPO membranes. Sheet is priced per roll; a 10'x100' roll is 1,000 sf =
+    # 10 SQ, and the half rolls confirm the math (5'x100' at exactly half).
+    # 60-mil is the default sell on both attachment methods — it is the same
+    # roll either way, and what changes is the attachment line under it. GAF
+    # requires HALF sheets on mechanically attached systems, which is why the
+    # sheet carries both widths at the same price per square.
+    {"id": "cm_tpo_ma", "name": "TPO Membrane 60-mil (Mechanically Fastened)", "unit": "SQ", "cost": 84.66, "measure": "comm_sq_waste", "attach": "mechanical",
+     "bullets": ["60-mil GAF EverGuard TPO single-ply membrane", "Seams hot-air welded into a monolithic sheet - no adhesive, no tape", "Fastened at the wind-zone density the code requires", "Highly reflective white surface cuts cooling load", "20-year manufacturer system warranty available"]},
+    {"id": "cm_tpo_fa", "name": "TPO Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 84.66, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil GAF EverGuard TPO single-ply membrane, fully adhered to the substrate", "Seams hot-air welded into a monolithic sheet", "Highest wind uplift rating - built for exposed and high-rise decks", "Smooth, flutter-free finished surface with no fastener pattern showing", "20-year manufacturer system warranty available"]},
+    # Alternate thicknesses and specialty membranes. These are OPTIONS a rep
+    # swaps into a package, not packages of their own — 45-mil where budget
+    # drives it, 80-mil for hail and service traffic, self-adhered where fumes
+    # are a problem, fleece-back to bond over a rough existing substrate.
+    {"id": "cm_tpo45_ma", "name": "TPO Membrane 45-mil (Mechanically Fastened)", "unit": "SQ", "cost": 72.73, "measure": "comm_sq_waste", "attach": "mechanical",
+     "bullets": ["45-mil GAF EverGuard TPO single-ply membrane, hot-air welded seams", "The value membrane when budget drives the decision", "Highly reflective white surface cuts cooling load"]},
+    {"id": "cm_tpo80_ma", "name": "TPO Membrane 80-mil (Mechanically Fastened)", "unit": "SQ", "cost": 135.23, "measure": "comm_sq_waste", "attach": "mechanical",
+     "bullets": ["80-mil GAF EverGuard TPO - the thickest TPO GAF builds", "Extra thickness for hail resistance and heavy rooftop foot traffic", "Longest available TPO system warranty"]},
+    {"id": "cm_tpo_sa", "name": "TPO Membrane 60-mil (Self-Adhered)", "unit": "SQ", "cost": 172.16, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil self-adhered TPO - factory-applied adhesive, no solvent bonding adhesive on site", "No open flame and no adhesive fumes - the low-disruption option over occupied space", "Highest wind uplift rating with a smooth finished surface"]},
+    {"id": "cm_tpo_fb60", "name": "TPO Fleece-Back Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 139.21, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil fleece-back TPO - laminated fleece backing bonds over rough substrate", "The factory fleece doubles as a separation layer over an asphalt roof", "Extra puncture resistance and a cushioned walking surface"]},
+    # ── EPDM membranes. NOT on the GAF sheet and not a GAF product: EverGuard
+    # is TPO and PVC. These need a Johns Manville / Carlisle / Elevate quote.
+    #
+    # The reinforced/non-reinforced split is a real manufacturer requirement,
+    # not a preference: a mechanically fastened system pulls against the sheet
+    # at every plate, so it needs the scrim-REINFORCED membrane. Fully adhered
+    # systems carry the load across the whole surface and run non-reinforced.
+    {"id": "cm_epdm_mf", "name": "EPDM Membrane 60-mil Reinforced (Mechanically Fastened)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "mechanical",
+     "bullets": ["60-mil scrim-reinforced EPDM rubber membrane", "Reinforced sheet is what a mechanically fastened EPDM system requires", "Seams spliced with primer and factory-applied seam tape", "Decades of proven field performance in freeze-thaw climates"]},
+    {"id": "cm_epdm_fa", "name": "EPDM Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil EPDM rubber single-ply membrane, fully adhered", "Seams spliced with primer and factory-applied seam tape", "Excellent flexibility and hail resistance in freeze-thaw climates", "Smooth finished surface with no fastener pattern showing"]},
+    # The original generic EPDM line. Kept so estimates written against it still
+    # load; new bids should use the reinforced/adhered pair above.
+    {"id": "cm_epdm", "name": "EPDM Membrane 60-mil (legacy - use the fastened or adhered line)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": []},
     {"id": "cm_modbit", "name": "Modified Bitumen, 2-Ply (Base + Cap Sheet)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
-     "bullets": ["Two-ply modified bitumen base sheet and cap sheet", "Redundant membrane layers — a second line of waterproofing", "Stands up to foot traffic and rooftop equipment service", "Granulated cap surface for UV protection"]},
+     "bullets": ["Two-ply modified bitumen base sheet and cap sheet", "Redundant membrane layers - a second line of waterproofing", "Stands up to foot traffic and rooftop equipment service", "Granulated cap surface for UV protection"]},
     {"id": "cm_coating", "name": "Silicone Restoration Coating System", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "coating",
-     "bullets": ["Seamless silicone coating applied over the existing roof", "No tear-off — far less disruption to building operations", "Ponding-water resistant and highly reflective", "Renewable: recoat at the end of the warranty instead of re-roofing", "10-15 year renewable manufacturer warranty available"]},
-    # Build-up
-    {"id": "ca_iso", "name": "Polyiso Insulation", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
+     "bullets": ["Seamless silicone coating applied over the existing roof", "No tear-off - far less disruption to building operations", "Ponding-water resistant and highly reflective", "Renewable: recoat at the end of the warranty instead of re-roofing"]},
+
+    # ── Build-up, tear-off systems
+    # Default iso is 2.6" (~R-15), the common single-layer Colorado spec. The
+    # other thicknesses ride in the catalog — see COMMERCIAL_ISO_SEED.
+    {"id": "ca_iso", "name": '2.6" Polyiso Insulation (~R-15)', "unit": "SQ", "cost": 128.52, "measure": "comm_sq_waste",
      "bullets": ["Polyiso insulation to the specified R-value"]},
-    {"id": "ca_cover", "name": "Cover Board (1/2\" HD)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
+    # GAF ISO High Density 0.5" 4'x8', already priced per SQ on the sheet.
+    {"id": "ca_cover", "name": "Cover Board (1/2\" HD)", "unit": "SQ", "cost": 88.64, "measure": "comm_sq_waste",
      "bullets": ["High-density cover board over the insulation"]},
-    {"id": "ca_adhesive", "name": "Bonding Adhesive / Seam Tape", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
-     "bullets": ["Manufacturer-specified bonding adhesive and seam tape"]},
+    # ── Build-up, layover systems
+    # The 1/4" board is the whole layover assembly: it is the smooth substrate
+    # for the new membrane AND the separation layer the manufacturer requires
+    # over an existing roof (mandatory under EPDM over anything asphaltic).
+    # NOT on the GAF sheet — 1/4" recover boards are gypsum (DensDeck Prime,
+    # SecuRock), so this needs its own quote. Note GAF does not allow a perlite
+    # recover board under a FULLY ADHERED single-ply, which is why the layover
+    # packages specify a gypsum board rather than perlite.
+    {"id": "ca_cover_quarter", "name": "Cover Board 1/4\" (Layover / Recover)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
+     "bullets": ["1/4\" high-density cover board installed over the existing roof", "Gives the new membrane a smooth, sound substrate without a tear-off", "Acts as the separation layer the membrane manufacturer requires over an existing roof"]},
+
+    # ── Attachment
+    # Bonding adhesive is an ADHERED-SYSTEM cost and is only in the adhered
+    # packages. A mechanically fastened roof welds its seams and screws the
+    # membrane down — it buys no field adhesive, and carrying this line at
+    # $83/SQ on a fastened bid would add thousands of dollars of material that
+    # never ships.
+    #
+    # GAF publishes the coverage rate this is derived from: solvent-based
+    # bonding adhesive covers 60 sq ft of finished, MATED surface per gallon,
+    # i.e. 300 sq ft (3 SQ) per 5-gallon pail. The sheet's LOW VOC pail is
+    # labelled "3.0 sq" and agrees exactly: 250.00 / 3 = 83.33 per SQ.
+    # Cheaper options on the same sheet, same 3 SQ per pail: the 1121 solvent
+    # pail at 183.75 works out to 61.25/SQ. The water-based WB181 pail covers
+    # 100 sq ft mated per gallon (5 SQ per pail) at 390.00 -> 78.00/SQ, and
+    # 6 SQ per pail under fleece-back -> 65.00/SQ.
+    {"id": "ca_adhesive", "name": "Bonding Adhesive (Fully Adhered Systems)", "unit": "SQ", "cost": 83.33, "measure": "comm_sq_waste",
+     "bullets": ["Manufacturer-specified bonding adhesive at the published coverage rate"]},
+    # EPDM does not weld. Its seams are spliced with primer and seam tape, so
+    # an EPDM system buys a consumable that a TPO system simply does not have.
+    {"id": "ca_epdm_seam", "name": "EPDM Seam Tape & Splice Primer", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
+     "bullets": ["Seams primed and spliced with factory-applied seam tape"]},
+    {"id": "ca_epdm_adhesive", "name": "EPDM Bonding Adhesive (Fully Adhered Systems)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
+     "bullets": ["Manufacturer-specified EPDM bonding adhesive at the published coverage rate"]},
     # Superseded by the two zone-calculated fastener lines — it stays in the
     # catalog for old estimates but has nothing left to say on a card.
-    {"id": "ca_fasteners", "name": "Plates & Fasteners (legacy — replaced by the zone calculator)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
+    {"id": "ca_fasteners", "name": "Plates & Fasteners (legacy - replaced by the zone calculator)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
      "bullets": []},
     # Counts come from commercial_fastening(): zone area x the density table.
-    {"id": "ca_fast_insul", "name": "Insulation Fasteners & Plates", "unit": "EA", "cost": 0, "measure": "comm_fast_insul",
+    # TEAR-OFF cost is one fastener + one plate sized for the default 2.6" iso
+    # + 1/2" cover board (about 3.1" of build-up, so a 4" fastener):
+    #   4" #12 fastener  226.70 / 1,000 = 0.2267
+    #   3" DT plate      260.23 / 1,000 = 0.2602
+    {"id": "ca_fast_insul", "name": "Insulation Fasteners & Plates", "unit": "EA", "cost": 0.49, "measure": "comm_fast_insul",
      "bullets": ["Insulation fastened at the wind-zone density the code requires"]},
-    {"id": "ca_fast_seam", "name": "Membrane Seam Fasteners & Plates", "unit": "EA", "cost": 0, "measure": "comm_fast_seam",
+    {"id": "ca_fast_seam", "name": "Membrane Seam Fasteners & Plates", "unit": "EA", "cost": 0.49, "measure": "comm_fast_seam",
      "bullets": ["Membrane seams fastened at the wind-zone density the code requires"]},
-    # Perimeter
-    {"id": "ca_edge", "name": "Edge Metal / Drip", "unit": "LF", "cost": 0, "measure": "comm_perimeter",
+    # LAYOVER fasteners are longer and cost more: they pass through the 1/4"
+    # board AND the entire existing roof to reach the deck. Priced at a 5"
+    # screw, which suits roughly 3-4" of existing build-up:
+    #   5" #12 fastener  288.75 / 1,000 = 0.28875
+    #   3" DT plate      260.23 / 1,000 = 0.2602
+    # A thicker existing assembly needs a longer screw again — the sheet runs
+    # to 10" and the price climbs the whole way, so check the core cut.
+    {"id": "ca_fast_cover", "name": "Cover Board Fasteners & Plates (Layover)", "unit": "EA", "cost": 0.55, "measure": "comm_fast_insul",
+     "bullets": ["Cover board fastened through the existing roof into the deck at the wind-zone density"]},
+    {"id": "ca_fast_seam_lo", "name": "Membrane Seam Fasteners & Plates (Layover)", "unit": "EA", "cost": 0.55, "measure": "comm_fast_seam",
+     "bullets": ["Membrane seams fastened through to the deck at the wind-zone density"]},
+
+    # ── Perimeter — both fabricated in-house from GAF coated metal, 4'x10'
+    # white 24ga at $463.06/sheet. Yield depends on the girth of the profile
+    # being bent, which is why these two differ so much:
+    #   edge/drip, ~8" girth  -> 6 strips x 10' = 60 LF/sheet -> 7.72/LF
+    #   coping,   ~18" girth  -> 2 strips x 10' = 20 LF/sheet -> 23.15/LF
+    {"id": "ca_edge", "name": "Edge Metal / Drip", "unit": "LF", "cost": 7.72, "measure": "comm_perimeter",
      "bullets": ["New edge metal around the full perimeter"]},
-    {"id": "ca_coping", "name": "Coping Cap", "unit": "LF", "cost": 0, "measure": "comm_parapet",
+    {"id": "ca_coping", "name": "Coping Cap", "unit": "LF", "cost": 23.15, "measure": "comm_parapet",
      "bullets": ["New coping cap on the parapet walls"]},
-    {"id": "ca_termbar", "name": "Termination Bar / Wall Flashing", "unit": "LF", "cost": 0, "measure": "comm_parapet",
+    # TPO lip term bar, 10' per piece at $17.60 -> 1.76/LF.
+    {"id": "ca_termbar", "name": "Termination Bar / Wall Flashing", "unit": "LF", "cost": 1.76, "measure": "comm_parapet",
      "bullets": ["New termination bar and wall flashing"]},
-    # Details
-    {"id": "ca_pipe_flash", "name": "Penetration Flashing / Pipe Boot", "unit": "EA", "cost": 0, "measure": "comm_penetrations",
+    # ── Details
+    # GAF pre-molded vent boot, 1"-6" pipe, $45.23 each.
+    {"id": "ca_pipe_flash", "name": "Penetration Flashing / Pipe Boot", "unit": "EA", "cost": 45.23, "measure": "comm_penetrations",
      "bullets": ["Every penetration flashed and sealed"]},
-    {"id": "ca_drain", "name": "Drain Assembly / Retrofit Drain", "unit": "EA", "cost": 0, "measure": "comm_drains",
+    # The sheet has no retrofit drain, so this is priced off the TPO scupper it
+    # shares a measurement with (4"x6"x12" at $240.43). A cast retrofit drain
+    # is a different part and a different number — price it per job.
+    {"id": "ca_drain", "name": "Drain Assembly / Retrofit Drain", "unit": "EA", "cost": 240.43, "measure": "comm_drains",
      "bullets": ["Roof drains flashed and tied into the new membrane"]},
-    {"id": "ca_curb", "name": "Curb Flashing (HVAC / Skylight)", "unit": "EA", "cost": 0, "measure": "comm_curbs",
+    # Curb flashing is fabricated, not bought, so this is built from the
+    # detailing membrane: UN-55 24"x50' at $452.50 = $9.05/LF, times a 24 LF
+    # perimeter (a typical 8'x4' HVAC curb) = $217.20. Big curbs cost more.
+    {"id": "ca_curb", "name": "Curb Flashing (HVAC / Skylight)", "unit": "EA", "cost": 217.20, "measure": "comm_curbs",
      "bullets": ["HVAC and skylight curbs flashed"]},
-    {"id": "ca_pitchpan", "name": "Pitch Pan", "unit": "EA", "cost": 0, "measure": "comm_pitch_pans",
+    # Pourable sealant pocket 9"x6"x4" at $60.58, plus one 2-litre pouch of
+    # 1-part pourable sealer (4-pouch carton $87.28 -> $21.82/pouch) = $82.40.
+    {"id": "ca_pitchpan", "name": "Pitch Pan", "unit": "EA", "cost": 82.40, "measure": "comm_pitch_pans",
      "bullets": ["Pitch pans set and sealed at odd penetrations"]},
-    {"id": "ca_walkway", "name": "Walkway Pad", "unit": "EA", "cost": 0, "measure": "comm_walkway_pads",
+    # Cut from a 30.25"x50' walkway roll at $734.77 — ten 5' pads per roll.
+    {"id": "ca_walkway", "name": "Walkway Pad", "unit": "EA", "cost": 73.48, "measure": "comm_walkway_pads",
      "bullets": ["Walkway pads at access points and service areas"]},
-    # Labor — Project One standard rates. Both ship in every bundle; the
-    # comm_work_type toggle zeroes the one that doesn't apply, and a zero-qty
-    # item never prices and never shows on a customer page.
+
+    # ── Labor. One line per package, because tearing a roof off is not the
+    # same job as laying over it and welding TPO is not the same job as taping
+    # EPDM. All eight are measured on comm_labor_reroof, so comm_work_type
+    # still zeroes them on a new-construction bid.
     #
-    # Neither line claims a tear-off, deliberately. Whether there IS one is a
-    # measurement (comm_work_type), not a bundle fact, and every bundle carries
-    # BOTH lines — so a tear-off bullet here would print on a new-construction
-    # bid and, worse, on the coating system whose whole pitch is "no tear-off".
-    # The re-roof line says the honest half; the Scope page carries the rest.
+    # The four TEAR-OFF lines carry the existing $400/SQ Project One standard
+    # as their starting number — that rate was set for tear-off work, so this
+    # is the status quo rather than a new guess. The four LAYOVER lines are 0
+    # and MUST be filled in before a layover is quoted; see the seeded-cost
+    # test, which names them explicitly so the list shrinks as they land.
+    {"id": "cl_tpo_to_mf", "name": "Tear-Off, Disposal & Install Labor - TPO Mechanically Fastened", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+     "bullets": ["Installed by Project One crews to manufacturer spec"]},
+    {"id": "cl_tpo_to_fa", "name": "Tear-Off, Disposal & Install Labor - TPO Fully Adhered", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+     "bullets": ["Installed by Project One crews to manufacturer spec"]},
+    {"id": "cl_epdm_to_mf", "name": "Tear-Off, Disposal & Install Labor - EPDM Mechanically Fastened", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+     "bullets": ["Installed by Project One crews to manufacturer spec"]},
+    {"id": "cl_epdm_to_fa", "name": "Tear-Off, Disposal & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+     "bullets": ["Installed by Project One crews to manufacturer spec"]},
+    {"id": "cl_tpo_lo_mf", "name": "Layover Prep & Install Labor - TPO Mechanically Fastened", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+     "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
+    {"id": "cl_tpo_lo_fa", "name": "Layover Prep & Install Labor - TPO Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+     "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
+    {"id": "cl_epdm_lo_mf", "name": "Layover Prep & Install Labor - EPDM Mechanically Fastened", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+     "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
+    {"id": "cl_epdm_lo_fa", "name": "Layover Prep & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+     "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
+    # The original single re-roof rate. Kept so estimates written against it
+    # still load and still price; new bids use the per-package lines above.
     {"id": "cl_labor_reroof", "name": "Tear-Off, Disposal & Install Labor (Re-Roof)", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
+    # New construction rides in the tear-off packages only — there is nothing
+    # to lay over on a building that has never been roofed.
     {"id": "cl_labor_new", "name": "Install Labor (New Construction)", "unit": "SQ", "cost": 250, "measure": "comm_labor_new",
      "bullets": []},
-    # Misc — manual quantities.
+
+    # ── Misc — manual quantities, job-specific, so they stay unpriced.
+    # Freight belongs here: the sheet excludes it, at $750 per direct truckload
+    # or $200 per truck out of the warehouse.
     {"id": "cx_misc", "name": "Misc Accessories (lap sealant, pitch pans, pads)", "unit": "LS", "cost": 0,
      "bullets": []},
+    {"id": "cx_freight", "name": "Material Freight / Delivery", "unit": "LS", "cost": 0,
+     "bullets": ["Material delivered to the site"]},
     {"id": "cx_crane", "name": "Crane / Equipment", "unit": "LS", "cost": 0,
      "bullets": ["Crane and equipment for rooftop material handling"]},
+    # Rides in every layover package: GAF strongly recommends a survey before
+    # any recover and REQUIRES one where perlite or wood fibre stays in the
+    # assembly, and it is what tells you whether a layover is legal at all.
+    {"id": "cx_moisture_survey", "name": "Moisture Survey / Infrared Scan", "unit": "LS", "cost": 0,
+     "bullets": ["Existing roof scanned for trapped moisture before any recover work begins"]},
     {"id": "cx_permit", "name": "Permit", "unit": "LS", "cost": 0,
      "bullets": ["Permit pulled and final inspection scheduled"]},
 ]
-# Shared build-up every commercial system includes.
-_CS = ["ca_iso", "ca_cover", "ca_adhesive", "ca_fast_insul", "ca_fast_seam", "ca_edge", "ca_coping",
-       "ca_termbar", "ca_pipe_flash", "ca_drain", "ca_curb", "ca_pitchpan",
-       "ca_walkway", "cl_labor_reroof", "cl_labor_new", "cx_misc", "cx_permit"]
+# The alternate insulation thicknesses share every field but name and cost.
+COMMERCIAL_CATALOG_SEED.extend(
+    {"id": _iid, "name": _iname, "unit": "SQ", "cost": _icost, "measure": "comm_sq_waste",
+     "bullets": ["Polyiso insulation to the specified R-value"]}
+    for _iid, _iname, _icost in COMMERCIAL_ISO_SEED)
+
+# ── Package build-ups ───────────────────────────────────────────────────
+# Perimeter, details and the lump sums are the same on all eight.
+_C_DETAIL = ["ca_edge", "ca_coping", "ca_termbar", "ca_pipe_flash", "ca_drain",
+             "ca_curb", "ca_pitchpan", "ca_walkway", "cx_misc", "cx_freight", "cx_permit"]
+# Tear-off builds a new thermal assembly and can also serve new construction.
+_C_TEAROFF = ["ca_iso", "ca_cover", "ca_fast_insul"]
+# Layover keeps the existing insulation and adds the 1/4" board over the top.
+# The survey is what establishes the recover is permitted in the first place.
+_C_LAYOVER = ["ca_cover_quarter", "ca_fast_cover", "cx_moisture_survey"]
+
+
+def _c_pkg(membrane, base, labor, *, fastened, epdm=False):
+    """One commercial package's product list, in installed order.
+
+    ADHESIVE is what actually differs by attachment: a mechanically fastened
+    system buys none, and the adhesive line has no measurement gating it, so
+    carrying it on a fastened bid would price thousands of dollars of material
+    that never ships.
+
+    The SEAM FASTENER line ships on every package regardless — same idiom as
+    the two labor lines. comm_seam_attach (resolved from the membrane's attach
+    tag) zeroes it on an adhered system, and a zero-quantity item never prices
+    and never shows. Keeping it present means a rep who swaps an adhered
+    package's membrane for a fastened one gets the screws priced instead of
+    silently bidding a roof with nothing holding it down.
+
+    EPDM adds seam tape either way, because EPDM splices rather than welds."""
+    layover = "ca_fast_cover" in base
+    ids = [membrane] + list(base)
+    ids.append("ca_fast_seam_lo" if layover else "ca_fast_seam")
+    if not fastened:
+        ids.append("ca_epdm_adhesive" if epdm else "ca_adhesive")
+    if epdm:
+        ids.append("ca_epdm_seam")
+    ids += _C_DETAIL + [labor]
+    if "ca_iso" in base:          # tear-off packages can also bid new construction
+        ids.append("cl_labor_new")
+    return ids
+
+
 _CS_EXTRA = ["5-year Project One workmanship warranty"]
+_LAYOVER_EXTRA = _CS_EXTRA + [
+    "No tear-off - the building stays dry and in operation throughout",
+]
 COMMERCIAL_BUNDLES_SEED = [
-    {"id": "cb_tpo_ma", "name": "TPO — Mechanically Attached", "product_ids": ["cm_tpo_ma"] + _CS,
-     "description": "60-mil TPO welded membrane, mechanically attached — the workhorse commercial flat roof.",
+    # ── TPO, tear-off
+    {"id": "cb_tpo_ma", "name": "TPO - Tear-Off, Mechanically Fastened",
+     "product_ids": _c_pkg("cm_tpo_ma", _C_TEAROFF, "cl_tpo_to_mf", fastened=True),
+     "description": "Full tear-off to the deck, new polyiso and cover board, 60-mil TPO mechanically fastened and hot-air welded - the workhorse commercial flat roof.",
      "extra_features": _CS_EXTRA},
-    {"id": "cb_tpo_fa", "name": "TPO — Fully Adhered", "product_ids": ["cm_tpo_fa"] + _CS,
-     "description": "60-mil TPO fully adhered — smooth finished surface and the highest wind uplift rating.",
+    {"id": "cb_tpo_fa", "name": "TPO - Tear-Off, Fully Adhered",
+     "product_ids": _c_pkg("cm_tpo_fa", _C_TEAROFF, "cl_tpo_to_fa", fastened=False),
+     "description": "Full tear-off to the deck, new polyiso and cover board, 60-mil TPO fully adhered - smooth finished surface and the highest wind uplift rating.",
      "extra_features": _CS_EXTRA},
-    {"id": "cb_epdm", "name": "EPDM Rubber", "product_ids": ["cm_epdm"] + _CS,
-     "description": "60-mil EPDM rubber membrane — the longest field track record in low-slope roofing.",
+    # ── TPO, layover
+    {"id": "cb_tpo_lo_mf", "name": "TPO - Layover, Mechanically Fastened",
+     "product_ids": _c_pkg("cm_tpo_ma", _C_LAYOVER, "cl_tpo_lo_mf", fastened=True),
+     "description": "1/4\" cover board over the existing roof, then 60-mil TPO mechanically fastened and hot-air welded - no tear-off, no disposal, and the building stays in operation.",
+     "extra_features": _LAYOVER_EXTRA},
+    {"id": "cb_tpo_lo_fa", "name": "TPO - Layover, Fully Adhered",
+     "product_ids": _c_pkg("cm_tpo_fa", _C_LAYOVER, "cl_tpo_lo_fa", fastened=False),
+     "description": "1/4\" cover board over the existing roof, then 60-mil TPO fully adhered - no tear-off, and a smooth finished surface with no fastener pattern.",
+     "extra_features": _LAYOVER_EXTRA},
+    # ── EPDM, tear-off
+    {"id": "cb_epdm_mf", "name": "EPDM - Tear-Off, Mechanically Fastened",
+     "product_ids": _c_pkg("cm_epdm_mf", _C_TEAROFF, "cl_epdm_to_mf", fastened=True, epdm=True),
+     "description": "Full tear-off to the deck, new polyiso and cover board, 60-mil reinforced EPDM mechanically fastened with taped seams.",
      "extra_features": _CS_EXTRA},
-    {"id": "cb_modbit", "name": "Modified Bitumen (2-Ply)", "product_ids": ["cm_modbit"] + _CS,
-     "description": "Two-ply modified bitumen base and cap sheet — redundant waterproofing for high-traffic roofs.",
+    {"id": "cb_epdm", "name": "EPDM - Tear-Off, Fully Adhered",
+     "product_ids": _c_pkg("cm_epdm_fa", _C_TEAROFF, "cl_epdm_to_fa", fastened=False, epdm=True),
+     "description": "Full tear-off to the deck, new polyiso and cover board, 60-mil EPDM fully adhered - the longest field track record in low-slope roofing.",
      "extra_features": _CS_EXTRA},
-    {"id": "cb_coating", "name": "Silicone Restoration Coating", "product_ids": ["cm_coating"] + _CS,
-     "description": "Silicone restoration coating over the existing roof — extends service life without a tear-off.",
+    # ── EPDM, layover
+    {"id": "cb_epdm_lo_mf", "name": "EPDM - Layover, Mechanically Fastened",
+     "product_ids": _c_pkg("cm_epdm_mf", _C_LAYOVER, "cl_epdm_lo_mf", fastened=True, epdm=True),
+     "description": "1/4\" cover board over the existing roof, then 60-mil reinforced EPDM mechanically fastened with taped seams - no tear-off, and the board keeps the rubber off any asphalt below.",
+     "extra_features": _LAYOVER_EXTRA},
+    {"id": "cb_epdm_lo_fa", "name": "EPDM - Layover, Fully Adhered",
+     "product_ids": _c_pkg("cm_epdm_fa", _C_LAYOVER, "cl_epdm_lo_fa", fastened=False, epdm=True),
+     "description": "1/4\" cover board over the existing roof, then 60-mil EPDM fully adhered - no tear-off, and the board keeps the rubber off any asphalt below.",
+     "extra_features": _LAYOVER_EXTRA},
+    # ── Still offered, still unpriced, not part of the eight-package matrix.
+    # Built explicitly rather than through _c_pkg: mod-bit is torched or mopped,
+    # so it buys neither the TPO bonding adhesive nor any seam fastener.
+    {"id": "cb_modbit", "name": "Modified Bitumen (2-Ply)",
+     "product_ids": (["cm_modbit"] + _C_TEAROFF + ["ca_fast_seam"] + _C_DETAIL
+                     + ["cl_labor_reroof", "cl_labor_new"]),
+     "description": "Two-ply modified bitumen base and cap sheet - redundant waterproofing for high-traffic roofs.",
+     "extra_features": _CS_EXTRA},
+    {"id": "cb_coating", "name": "Silicone Restoration Coating",
+     "product_ids": (["cm_coating", "ca_fast_insul", "ca_fast_seam"]
+                     + _C_DETAIL + ["cl_labor_reroof"]),
+     "description": "Silicone restoration coating over the existing roof - extends service life without a tear-off.",
      "extra_features": _CS_EXTRA},
 ]
-COMMERCIAL_TIER_DEFAULTS_SEED = {"good": "cb_epdm", "better": "cb_tpo_ma", "best": "cb_tpo_fa"}
+# The honest ladder: layover is the cheapest way to a new roof, tear-off
+# mechanically fastened is the standard, tear-off fully adhered is the top.
+# NOTE the Good tier is a layover, whose LABOR rate is still 0 — Good/Better/
+# Best mode will under-bid until that number lands. Simple mode (the commercial
+# default) sells cb_tpo_ma and is fully priced today.
+COMMERCIAL_TIER_DEFAULTS_SEED = {"good": "cb_tpo_lo_mf", "better": "cb_tpo_ma",
+                                 "best": "cb_tpo_fa"}
 # The system loaded when the trade is in single-price (simple) mode, which is
 # how a commercial bid sells by default.
 COMMERCIAL_SIMPLE_DEFAULT = "cb_tpo_ma"
@@ -11118,6 +11486,15 @@ BUNDLE_SEEDS = {
 # trade -> bundle id used when the trade prices as a single package.
 SIMPLE_BUNDLE_DEFAULTS = {'commercial': COMMERCIAL_SIMPLE_DEFAULT}
 
+def _est_is_layover(est):
+    """True when the commercial package being sold is a recover rather than a
+    tear-off. The 1/4" cover board is the layover assembly, so its presence is
+    the test — a manager's custom recover package answers correctly too."""
+    td = (est.get('trades') or {}).get('commercial') or {}
+    return any((it or {}).get('catalog_id') == 'ca_cover_quarter'
+               for it in (td.get('line_items') or []))
+
+
 # Rep-entered commercial complexity flags. Display only — these never price.
 # MUST mirror COMM_FLAGS in app.js (the keys are what the estimate stores).
 COMM_FLAG_LABELS = [
@@ -11125,6 +11502,10 @@ COMM_FLAG_LABELS = [
     ('levels_3plus', '3+ roof levels / sections'),
     ('expansion_joints', 'Expansion joints'),
     ('heavy_hvac', 'Heavy rooftop HVAC'),
+    # These two are what rule a LAYOVER out. Either one means the job is a
+    # tear-off no matter what the customer would prefer to pay for.
+    ('existing_layers_2plus', 'Existing roof already has 2+ coverings (no recover)'),
+    ('wet_insulation', 'Ponding / suspected wet insulation'),
 ]
 
 
@@ -11164,6 +11545,12 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 _PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure',
                             'group', 'colors', 'styles')
 
+# Trades whose seeded costs are allowed to fill a live book's ZERO cost. See the
+# backfill in _ensure_bundle_catalogs for why this is narrow and one-directional.
+# Only commercial qualifies: it is the one catalog that shipped entirely
+# unpriced by design, so a 0 there means "no supplier sheet yet", not a price.
+_SEED_COST_BACKFILL_TRADES = {'commercial'}
+
 # old product id -> the product(s) that replaced it, swapped into SEEDED bundles
 # on read. The old product stays in the catalog: an estimate may reference it and
 # the manager may have priced it.
@@ -11175,7 +11562,18 @@ _PRODUCT_SUPERSEDED = {'ca_fasteners': ['ca_fast_insul', 'ca_fast_seam']}
 # The 2026 QXO siding line: production's volume already carried siding_bundles,
 # so without this the six new bundles reached nobody.
 _LATE_BUNDLE_IDS = {'b_lp_standard', 'b_lp_expert', 'b_hardie_primed',
-                    'b_hardie_statement', 'b_edco_d4', 'b_edco_8'}
+                    'b_hardie_statement', 'b_edco_d4', 'b_edco_8',
+                    # The layover and EPDM packages added when the commercial
+                    # menu was restructured into the tear-off/layover matrix.
+                    # Same trap: a book saved with the original five commercial
+                    # bundles would otherwise never see them.
+                    #
+                    # Their LABOR lines deliberately do NOT go through
+                    # _LATE_BUNDLE_PRODUCTS. A saved cb_tpo_ma still carries the
+                    # old cl_labor_reroof, and appending cl_tpo_to_mf next to it
+                    # would bill the tear-off twice.
+                    'cb_tpo_lo_mf', 'cb_tpo_lo_fa',
+                    'cb_epdm_mf', 'cb_epdm_lo_mf', 'cb_epdm_lo_fa'}
 
 # Product ids added to a SEEDED bundle after the trade already had live books.
 # Same trap as _LATE_BUNDLE_IDS but one level down: _BUNDLE_COPY_FIELDS does
@@ -11270,6 +11668,22 @@ def _ensure_bundle_catalogs(pb):
                         if field in seed_p and field not in p_live:
                             val = seed_p[field]
                             p_live[field] = copy.deepcopy(val) if isinstance(val, list) else val
+                    # Cost is deliberately NOT in _PRODUCT_BACKFILL_FIELDS —
+                    # a saved cost is the manager's number and the seed must
+                    # never overwrite it. The one exception is a product that
+                    # shipped as an unpriced PLACEHOLDER: the whole commercial
+                    # catalog was seeded at 0 pending a supplier sheet, so a
+                    # live book holds 0 not because anyone chose 0 but because
+                    # there was nothing to choose yet. Filling those in is the
+                    # difference between the 2026-05-19 GAF numbers reaching
+                    # production and the bid silently pricing no membrane.
+                    #
+                    # Strictly one-directional: 0 -> seed. A cost the manager
+                    # actually set is never touched, and once they save the
+                    # book their number sticks. Drop this block when the live
+                    # books have all been saved past it.
+                    if trade in _SEED_COST_BACKFILL_TRADES and _mnum(seed_p.get('cost')) > 0                             and _mnum(p_live.get('cost')) <= 0:
+                        p_live['cost'] = seed_p['cost']
 
             # Seeded bundles that still carry a superseded product swap it for
             # its replacement(s). Manager-created bundles are left alone.

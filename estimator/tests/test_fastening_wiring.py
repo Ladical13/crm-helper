@@ -77,12 +77,18 @@ def test_a_cleared_product_field_stays_cleared(A):
 # ── shipped catalog ────────────────────────────────────────────────────
 
 def test_shipped_bundles_all_carry_the_fastener_lines(client):
+    """Every package needs somewhere for the zone calculator to land, on both
+    layers. Checked by MEASURE rather than by product id: a tear-off fastens
+    insulation (ca_fast_insul) and a layover fastens the cover board through
+    the existing roof (ca_fast_cover), and those are different products with
+    different fastener lengths — but both answer comm_fast_insul."""
     pb = client.get('/api/pricebook').get_json()
-    cat = {p['id'] for p in pb['commercial_catalog']}
-    assert {'ca_fast_insul', 'ca_fast_seam'} <= cat
+    cat = {p['id']: p for p in pb['commercial_catalog']}
+    assert {'ca_fast_insul', 'ca_fast_seam'} <= set(cat)
     for b in pb['commercial_bundles']:
-        assert 'ca_fast_insul' in b['product_ids'], b['name'] + ' has no insulation fasteners'
-        assert 'ca_fast_seam' in b['product_ids'], b['name'] + ' has no seam fasteners'
+        measures = {cat[pid].get('measure') for pid in b['product_ids'] if pid in cat}
+        assert 'comm_fast_insul' in measures, b['name'] + ' has no insulation/cover fasteners'
+        assert 'comm_fast_seam' in measures, b['name'] + ' has no seam fasteners'
 
 
 def test_every_membrane_declares_how_it_attaches(client):

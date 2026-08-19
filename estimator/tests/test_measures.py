@@ -182,7 +182,9 @@ def test_new_bundles_reach_a_book_that_already_has_siding(A):
     }
     pb = A._ensure_bundle_catalogs(saved)
     ids = {b['id'] for b in pb['siding_bundles']}
-    for late in A._LATE_BUNDLE_IDS:
+    siding_late = {b['id'] for b in A.SIDING_BUNDLES_SEED} & A._LATE_BUNDLE_IDS
+    assert siding_late, 'no siding bundles on the late-arrival list to check'
+    for late in siding_late:
         assert late in ids, f'{late} never reached a book that already had bundles'
     # The QXO products must land too, with their sheet-derived costs intact.
     cat = {p['id']: p for p in pb['siding_catalog']}

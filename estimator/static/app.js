@@ -1166,9 +1166,15 @@ function setCommWorkType(v) {
 // packet so the crew and the scheduler see what makes the job hard.
 const COMM_FLAGS = [
   { key:'penetrations_10plus', label:'10+ penetrations',        auto:m => mnum(m.comm_penetrations) >= 10 },
-  { key:'levels_3plus',        label:'3+ roof levels/sections', auto:m => mnum(m.comm_sections) >= 3 },
+  { key:'levels_3plus',        label:'3+ roof levels / sections', auto:m => mnum(m.comm_sections) >= 3 },
   { key:'expansion_joints',    label:'Expansion joints' },
   { key:'heavy_hvac',          label:'Heavy rooftop HVAC' },
+  // These two rule a LAYOVER out: IBC does not permit a recover over two or
+  // more existing coverings, and GAF calls for tear-off once the existing
+  // assembly is wet. Either one means the job is a tear-off regardless of
+  // what the customer would rather pay for. MUST mirror COMM_FLAG_LABELS.
+  { key:'existing_layers_2plus', label:'Existing roof already has 2+ coverings (no recover)' },
+  { key:'wet_insulation',        label:'Ponding / suspected wet insulation' },
 ];
 function commState() {
   if (!S.commercial || typeof S.commercial !== 'object') S.commercial = { flags:{}, notes:'' };
