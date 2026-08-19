@@ -6286,14 +6286,27 @@ function renderGBBGrid(trade) {
 }
 
 // Compact per-tier line item row — all three tiers are fully editable.
-// The master name is editable in the Better column (Good/Best show it as a
-// static label); qty + unit are SHARED fields editable from ANY column —
-// changing one updates the item everywhere. Per-tier fields (description,
-// cost, include/exclude) are editable in every column.
+// The master name is normally typed in the Better column (Good/Best show it as
+// a static label) so the rep isn't given three boxes for one value; qty + unit
+// are SHARED fields editable from ANY column — changing one updates the item
+// everywhere. Per-tier fields (description, cost, include/exclude) are editable
+// in every column.
+//
+// Better can't always carry the name, though. A row added from inside a Custom
+// Good or Best belongs to that tier ALONE (see addLineItem), so it never
+// renders in the Better column at all — and a row the rep just added has no
+// name yet, so the static label is blank. Either way the rep was left looking
+// at an empty label with nowhere to type, able to write a description for a
+// line item that has no name. Whichever column actually owns the row gets the
+// name input, and a brand-new unnamed row offers it wherever it shows up.
 function renderLiRow(trade, tier, item) {
   const t        = (item.tiers && item.tiers[tier]) || {material_unit_cost:0,labor_unit_cost:0,description:'',notes:'',included:true};
   const included = t.included !== false;
   const isB      = tier === 'better';
+  // Does Better carry this row? If not, this column is the only place the
+  // master name, ordering and the customer-visible toggle can be reached.
+  const ownsMaster = isB || ((item.tiers || {}).better || {}).included === false;
+  const nameHere   = ownsMaster || !String(item.name || '').trim();
   const UNITS    = ['SQ','LF','EA','HR','LS','SF','BD'];
   const mat  = parseFloat(t.material_unit_cost) || 0;
   const lab  = parseFloat(t.labor_unit_cost)    || 0;
@@ -6304,7 +6317,10 @@ function renderLiRow(trade, tier, item) {
   const isVisible = item.customer_visible !== false;
 
   const sections = tradeSections(trade);
-  const sectionSel = (isB && sections.length) ? `
+  // Same reasoning as the name: a tier-only row has no Better column to be
+  // filed from, and on a multi-building estimate the section IS the building
+  // whose measurements price it — unreachable would mean unpriceable.
+  const sectionSel = (ownsMaster && sections.length) ? `
     <select class="li-section-select" title="Which section this item belongs to"
       onchange="liSetSection('${trade}','${item.id}',this.value)">
       <option value="">General</option>
@@ -6328,13 +6344,13 @@ function renderLiRow(trade, tier, item) {
 
   return `<div class="li-row-card${!included?' li-row-excluded':''}${!isVisible?' li-row-hidden':''}">
     <div class="li-row-top">
-      ${isB
+      ${nameHere
         ? `<input class="li-row-name-input" type="text" value="${esc(item.name)}" list="pb-list-${trade}"
              placeholder="Type to search price book…"
              onchange="liSetNameSmart('${trade}','${item.id}',this.value)">`
         : `<span class="li-row-name-static">${esc(item.name)}</span>`}
       <div class="li-row-actions">
-        ${isB ? `<button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liCanMove(trade,item,-1)?'':'disabled'} title="Move up">↑</button>
+        ${ownsMaster ? `<button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liCanMove(trade,item,-1)?'':'disabled'} title="Move up">↑</button>
         <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${liCanMove(trade,item,1)?'':'disabled'} title="Move down">↓</button>
         <label class="li-vis-toggle${!isVisible?' vis-off':''}" title="${isVisible?'Shown on customer estimate':'Hidden from customer'}">
           <input type="checkbox" ${isVisible?'checked':''} onchange="liSetVisible('${trade}','${item.id}',this.checked)">
