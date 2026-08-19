@@ -38,8 +38,9 @@ cd canvasser  && pytest     #  15 — vendored Leaflet, cache-buster, sw wiring
 ```
 
 **Deploying.** ONE Railway service, whole repo — see the deploy note at the end
-of the portal section. Never deploy a subdirectory. **Pushing is not
-deploying**: `railway up` is a separate, manual step.
+of the portal section. Never deploy a subdirectory. **Pushing to `portal-merge`
+IS deploying**: auto-deploy fires as soon as CI is green, so a push goes
+straight in front of the reps.
 
 **Backups: the estimator has one, the other three do not** (audited 2026-08-12;
 the earlier "nothing is backed up" note was already out of date). Three separate
@@ -175,18 +176,33 @@ invisible when it stops working.
 **Deploy:** ONE service. Root `Procfile` is
 `gunicorn portal.wsgi:application`; deploy the whole repo, not a subdirectory.
 
+**Pushing to `portal-merge` IS deploying.** The service is connected to
+`Ladical13/crm-helper` with auto-deploy and "Wait for CI" both on, so a push
+that goes green in Actions ships itself, straight in front of the reps. There
+is nothing to run by hand.
+
+*(This inverted on 2026-08-16. Before that there was no auto-deploy and the
+rule was the opposite — `railway up` or nothing. Older notes and habits still
+say so; they are wrong.)*
+
+Treat every push as a production deploy. Run `python run_tests.py` first, and
+for anything touching login/session, a DB migration, or pricing, agree it with
+Luke **before** pushing rather than after. The green suite is the only gate, so
+never push with a known-failing test "to fix later": that either blocks every
+deploy or ships the bug.
+
+`railway up` still exists and still works, but it uploads **the local working
+directory** — untracked files included, CI skipped. Reach for it only to ship
+something deliberately unpushed, and know that it supersedes the git-built
+image. Running it right after a push just deploys the same code twice, the
+second time from a less trustworthy source.
+
 ```bash
-railway status                              # confirm project-one-estimator / production
-railway up --service project-one-estimator  # from the repo root
-railway deployment list                     # watch for SUCCESS
+railway status            # confirm project-one-estimator / production
+railway deployment list   # watch the automatic deploy reach SUCCESS
 ```
 
-**A `git push` does NOT deploy.** There is no GitHub auto-deploy on this
-service — pushing only runs CI. Until someone runs `railway up`, production
-keeps serving the last deployed build no matter how green the Actions tab is.
-This has already caused real confusion: work sat pushed-but-unshipped for days
-while production ran an older build. After deploying, confirm what is actually
-live rather than assuming:
+After any deploy, confirm what is actually live rather than assuming:
 
 ```bash
 curl -s https://project-one-estimator-production.up.railway.app/estimate/static/index.html | grep -o 'v=[0-9]*' | sort -u
