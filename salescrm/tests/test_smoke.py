@@ -1,5 +1,6 @@
 """Smoke tests for the sales-CRM invariants that matter most:
 stage transitions, cadence/task advancement, and per-rep visibility."""
+import app as appmod
 from conftest import signup, login, logout, new_lead
 
 
@@ -43,12 +44,16 @@ def test_stage_change_logs_activity_and_won_closes_tasks(client):
 
 
 def test_cadence_enroll_and_advance(client):
+    """A new lead follows itself up without anyone clicking Enroll.
+
+    The cadences existed long before anything enrolled a lead into one, so the
+    follow-up engine only ever ran for the reps who remembered to ask for it —
+    the opposite of what a follow-up engine is for.
+    """
     signup(client)
     lead = new_lead(client)
     lid = lead['id']
-    r = client.post(f'/api/leads/{lid}/enroll', json={'cadence_id': 'new_lead_7touch'})
-    assert r.status_code == 201
-    # exactly one task materialized at enroll
+    # exactly one task materialized, automatically, at creation
     tasks = client.get('/api/tasks?scope=all').get_json()
     assert len(tasks) == 1
     first = tasks[0]
@@ -60,11 +65,21 @@ def test_cadence_enroll_and_advance(client):
 
 
 def test_double_enroll_rejected(client):
+    """The automatic enrollment counts — a manual one on top is the duplicate."""
     signup(client)
     lid = new_lead(client)['id']
-    client.post(f'/api/leads/{lid}/enroll', json={'cadence_id': 'new_lead_7touch'})
     r = client.post(f'/api/leads/{lid}/enroll', json={'cadence_id': 'new_lead_7touch'})
     assert r.status_code == 409
+
+
+def test_a_partner_does_not_get_the_homeowner_cadence(client):
+    """Seven touches in two weeks is right for a storm lead, wrong for a realtor."""
+    signup(client)
+    lid = new_lead(client, lead_type='realtor', company='Front Range Realty')['id']
+    r = client.post(f'/api/leads/{lid}/enroll', json={'cadence_id': 'partner_nurture'})
+    assert r.status_code == 409          # already on the partner track
+    r = client.post(f'/api/leads/{lid}/enroll', json={'cadence_id': 'new_lead_7touch'})
+    assert r.status_code == 201          # the homeowner one was never started
 
 
 def test_next_action_tracks_soonest_task(client):
@@ -109,7 +124,14 @@ def test_den_dry_run_builds_payload_without_writing(client):
     assert j['dry_run'] is True
     assert j['contact']['name'] == 'Jane Doe'
     assert j['contact']['assigned_to'] == 'luke@projectoneroofing.com'
-    assert j['project']['status'] == 'lead'
+    # A job only reaches The Den once it is signed, so it lands as `contracted`.
+    # It used to be pushed as `lead`, which is not one of The Den's statuses at
+    # all — those jobs sat outside every pipeline report it produces.
+    assert j['project']['status'] == 'contracted'
+    # Colorado, explicitly. Without it the job misses the location filter that
+    # the estimator's contact search and every exec-team skill apply.
+    assert j['contact']['location_id'] == appmod.CO_LOCATION_ID
+    assert j['project']['location_id'] == appmod.CO_LOCATION_ID
     # nothing was persisted to the Den
     assert client.get(f'/api/leads/{lid}').get_json()['crm_contact_id'] == ''
 

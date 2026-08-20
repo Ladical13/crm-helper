@@ -7,6 +7,7 @@
 const BASE = location.pathname.startsWith('/canvass') ? '/canvass' : '';
 
 const PIN_TYPES = {};  // populated from /api/config
+const PIN_STAGE = {};  // pin type → Pipeline stage, same source
 let map, currentUser, markers = {}, hailLayer = null, pinLayer = null;
 let teamMarkers = {}, teamTimer = null, locationTimer = null, teamEnabled = true;
 let hailResultLayer = null;
@@ -23,6 +24,7 @@ async function boot() {
   try {
     const cfg = await api('/api/config');
     Object.assign(PIN_TYPES, cfg.pin_types);
+    Object.assign(PIN_STAGE, cfg.pin_stage || {});
   } catch(e) { /* use defaults */ }
 
   // No sign-in screen here any more — the portal owns login. api() bounces to
@@ -385,8 +387,10 @@ function showPinDetail(pin) {
   $('pin-detail-title').textContent = meta.label;
 
   const isOwner = pin.rep === currentUser.username || currentUser.is_admin;
-  const isClosed = pin.pin_type === 'closed';
-  const alreadySynced = !!pin.crm_contact_id;
+  // Any door with a name and a reason to come back belongs in the Pipeline —
+  // not only a closed deal, which is what the old Den sync was limited to.
+  const canPipeline = !!PIN_STAGE[pin.pin_type];
+  const alreadyInPipeline = !!pin.crm_lead_id;
 
   const rows = [
     ['Rep',    displayName(pin.rep)],
@@ -413,11 +417,11 @@ function showPinDetail(pin) {
   if (isOwner) {
     html += `<button class="pin-action-btn" onclick="openEditPin('${pin.id}')">✏️ Edit</button>`;
   }
-  if (isClosed && pin.contact_name && !alreadySynced && isOwner) {
-    html += `<button class="pin-action-btn crm-btn" onclick="syncToCRM('${pin.id}')">📋 Add to CRM</button>`;
+  if (canPipeline && pin.contact_name && !alreadyInPipeline && isOwner) {
+    html += `<button class="pin-action-btn crm-btn" onclick="addToPipeline('${pin.id}')">📋 Add to Pipeline</button>`;
   }
-  if (alreadySynced) {
-    html += `<div style="font-size:12px;color:#10B981;padding:8px 0">✓ Synced to CRM</div>`;
+  if (alreadyInPipeline) {
+    html += `<div style="font-size:12px;color:#10B981;padding:8px 0">✓ In the Pipeline</div>`;
   }
   html += `</div>`;
 
@@ -427,22 +431,54 @@ function showPinDetail(pin) {
 
 $('close-pin-detail').addEventListener('click', () => hide('pin-detail'));
 
-// ── CRM Sync ───────────────────────────────────────────────────────────────
+// ── Pipeline handoff ───────────────────────────────────────────────────────
 
-async function syncToCRM(pinId) {
-  if (!confirm('Add this deal to the Base44 CRM? This will create a Contact and Project.')) return;
+// The lead is created against the CRM's own API rather than through a
+// canvasser endpoint: all four apps share one origin and one cookie, so the
+// rep's session already authorizes it, and the CRM stays the only thing that
+// decides what a lead is — stage rules, dedupe, and which cadence starts.
+async function addToPipeline(pinId) {
+  const pin = allPins.find(p => p.id === pinId);
+  if (!pin) return;
+  const stage = PIN_STAGE[pin.pin_type];
+  if (!stage) return;
+  if (!confirm(`Add ${pin.contact_name} to the Pipeline? Follow-up starts automatically.`)) return;
+
+  const parts = (pin.contact_name || '').trim().split(/\s+/);
   try {
-    const result = await api(`/api/crm/sync/${pinId}`, 'POST', {});
-    // Update local pin
-    const pin = allPins.find(p => p.id === pinId);
-    if (pin) {
-      pin.crm_contact_id = result.crm_contact_id;
-      pin.crm_project_id = result.crm_project_id;
+    const res = await fetch('/crm/api/leads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        first_name: parts[0] || '',
+        last_name:  parts.slice(1).join(' '),
+        phone:   pin.contact_phone || '',
+        email:   pin.contact_email || '',
+        address: pin.address || '',
+        source:  'door_knock',
+        stage,
+        lead_type: 'homeowner',
+      }),
+    });
+    const lead = await res.json();
+    if (!res.ok) throw new Error(lead.error || `HTTP ${res.status}`);
+    // Leads have no notes column, so what the rep wrote at the door goes on
+    // the timeline instead of being quietly dropped.
+    if (pin.notes) {
+      await fetch(`/crm/api/leads/${lead.id}/activities`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ kind: 'note', body: `At the door: ${pin.notes}` }),
+      }).catch(() => {});
     }
-    alert('✓ Added to CRM successfully!');
+    await api(`/api/pins/${pinId}/lead`, 'POST', { lead_id: lead.id });
+    pin.crm_lead_id = lead.id;
+    alert('✓ In the Pipeline. The first follow-up is already on your list.');
     hide('pin-detail');
   } catch(e) {
-    alert('CRM sync failed: ' + e.message);
+    alert('Could not add to the Pipeline: ' + e.message);
   }
 }
 

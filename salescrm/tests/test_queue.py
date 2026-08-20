@@ -78,13 +78,15 @@ def test_due_tasks_appear_and_count_against_the_target(client):
     """Cadence re-touches are half the point; they must consume the day's number."""
     signup(client)
     lead = new_lead(client, first_name='Jane', last_name='Doe')
+    # A new lead now arrives already enrolled, so it carries its own first
+    # cadence task; this adds a second, manual one.
     client.post(f"/api/leads/{lead['id']}/tasks",
                 json={'kind': 'call', 'title': 'Call #1', 'due_at': _ago(0)})
     _import(client, _prospects(10))
     q = client.get('/api/queue/today?target=4').get_json()
-    assert len(q['due']) == 1
-    assert q['due'][0]['name'] == 'Jane Doe'
-    assert len(q['new']) == 3            # topped up to 4, not 4 on top of the task
+    assert len(q['due']) == 2
+    assert {d['name'] for d in q['due']} == {'Jane Doe'}
+    assert len(q['new']) == 2            # topped up to 4, not 4 on top of the tasks
 
 
 def test_a_lead_with_an_open_task_is_not_also_a_new_card(client):
@@ -110,6 +112,10 @@ def test_work_already_done_today_shrinks_the_queue(client):
 def test_future_tasks_are_not_due_today(client):
     signup(client)
     lead = new_lead(client)
+    # Clear the task the automatic enrollment just created, so the only thing
+    # left is the one scheduled five days out.
+    with appmod.get_db() as db:
+        db.execute('UPDATE tasks SET done=1 WHERE lead_id=?', (lead['id'],))
     client.post(f"/api/leads/{lead['id']}/tasks",
                 json={'kind': 'call', 'due_at': _ago(-5)})
     assert client.get('/api/queue/today').get_json()['due'] == []
@@ -129,7 +135,8 @@ def test_opting_out_removes_a_lead_from_a_running_cadence(client):
     signup(client)
     lead = new_lead(client, email='jane@acme.com')
     client.post(f"/api/leads/{lead['id']}/tasks", json={'kind': 'call', 'due_at': _ago(0)})
-    assert len(client.get('/api/queue/today').get_json()['due']) == 1
+    # Two: the automatic cadence step and the manual follow-up above.
+    assert len(client.get('/api/queue/today').get_json()['due']) == 2
     client.post('/api/suppressions', json={'kind': 'email', 'value': 'jane@acme.com'})
     assert client.get('/api/queue/today').get_json()['due'] == []
 

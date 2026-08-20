@@ -1737,6 +1737,7 @@ function blankEstimate() {
     estimate_id: null, version: 1,
     created_at: null, updated_at: null, status: 'draft',
     customer: { crm_contact_id:null, crm_project_id:null, crm_job_number:'',
+                crm_lead_id:'',
                 name:'', phone:'', email:'',
                 address:{ street:'', city:'', state:'', zip:'' } },
     project_address: '',
@@ -2076,6 +2077,7 @@ function renderSidebar() {
   renderEstNum();
   renderCrmLinkBadge();
   renderSentLockBanner();
+  renderEstStatusBar();
   // Show "Customer File" button only when a customer name is present
   const cfBtn = document.getElementById('cf-open-btn');
   if (cfBtn) cfBtn.style.display = (S.customer && S.customer.name) ? '' : 'none';
@@ -8061,6 +8063,53 @@ function renderSentLockBanner() {
   }
 }
 
+/* Outcome control for the estimate you are looking at.
+   Only appears once an estimate exists and has been saved — there is no
+   outcome to record on something that was never sent. A signature is a fact
+   about what the customer did, so a signed estimate shows the fact and offers
+   no control; the server enforces the same rule. */
+function renderEstStatusBar() {
+  const el = document.getElementById('est-status-bar');
+  if (!el) return;
+  if (!S.estimate_id) { el.style.display = 'none'; return; }
+
+  if (S.signature) {
+    el.className = 'est-status-bar est-status-signed';
+    el.innerHTML = '✓ <strong>Signed</strong> — this job is won and has gone to The Den';
+    el.style.display = 'block';
+    return;
+  }
+
+  const st = S.status || 'draft';
+  const opts = [['draft','Draft'], ['sent','Sent'], ['accepted','Accepted ✓'], ['lost','Lost ✗']];
+  el.className = 'est-status-bar' + (st === 'lost' ? ' est-status-lost' : '');
+  el.innerHTML = `
+    <label for="est-status-select">Outcome</label>
+    <select id="est-status-select" onchange="setEstStatus(this.value)">
+      ${opts.map(([v, l]) => `<option value="${v}" ${st === v ? 'selected' : ''}>${l}</option>`).join('')}
+    </select>
+    ${st === 'lost' ? '<span class="est-status-note">Out of Outstanding and follow-ups. The lead stays open in the Pipeline.</span>' : ''}`;
+  el.style.display = 'flex';
+}
+
+async function setEstStatus(status) {
+  if (!S.estimate_id) return;
+  try {
+    const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ status }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'Could not update the outcome.');
+    S.status = j.status;
+  } catch (e) {
+    alert(e.message);
+  }
+  renderEstStatusBar();
+}
+
 function renderCrmLinkBadge() {
   const el=document.getElementById('crm-link-badge');
   if(!el)return;
@@ -8192,6 +8241,12 @@ function daysAgoLabel(iso) {
 }
 function estStatusOf(e) {
   if (e.signed || e.status === 'accepted') return 'signed';
+  // Lost is checked before viewed/sent, and that ordering is the whole point.
+  // It used to be missing entirely, so a lost estimate still reported itself as
+  // 'viewed' — which left it sitting in Outstanding, counting toward the
+  // outstanding total, and nagging from the follow-up banner forever. Marking
+  // one lost changed nothing a rep could see.
+  if (e.status === 'lost' || e.status === 'declined') return 'lost';
   if (e.first_viewed_at) return 'viewed';
   if (e.sent) return 'sent';
   return 'draft';
@@ -8259,9 +8314,17 @@ async function dashUpdateStatus(id, status, selectEl) {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({status}),
   });
-  if (!r.ok) { alert('Could not update status.'); if (selectEl) selectEl.value = ''; return; }
+  if (!r.ok) {
+    const msg = await r.json().catch(() => ({}));
+    alert(msg.error || 'Could not update status.');
+    return renderDashboard();
+  }
   const est = _dashData.find(e => e.estimate_id === id);
   if (est) est.status = status;
+  // Re-render, so the row actually moves to its new section. Without this the
+  // status changed on the server and the dashboard carried on showing the
+  // estimate exactly where it was, which made marking one lost feel broken.
+  renderDashboard();
 }
 
 function dashRow(e) {
@@ -8272,11 +8335,13 @@ function dashRow(e) {
     viewed: '<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
     sent:   '<span class="dash-chip dash-chip-sent">📤 Sent</span>',
     draft:  '<span class="dash-chip dash-chip-draft">Draft</span>',
+    lost:   '<span class="dash-chip dash-chip-lost">✗ Lost</span>',
   };
   let activity = '';
   if (st === 'signed')      activity = `${e.signed ? 'Signed' : 'Accepted'} ${daysAgoLabel(e.signed_at || e.updated_at)}`;
   else if (st === 'viewed') activity = `Viewed ${daysAgoLabel(e.last_viewed_at)}${e.view_count > 1 ? ` (${e.view_count}×)` : ''}`;
   else if (st === 'sent')   activity = `Sent ${daysAgoLabel(e.sent_at)} — not opened yet`;
+  else if (st === 'lost')   activity = `Marked lost ${daysAgoLabel(e.updated_at)}`;
   else                      activity = `Updated ${daysAgoLabel(e.updated_at)}`;
   const typeLbl = e.estimate_type === 'commercial' ? '🏢 Commercial'
                 : e.estimate_type === 'insurance' ? '🏛 Insurance'
@@ -8289,7 +8354,7 @@ function dashRow(e) {
       <option value="draft"    ${e.status==='draft'?'selected':''}>Draft</option>
       <option value="sent"     ${e.status==='sent'?'selected':''}>Sent</option>
       <option value="accepted" ${e.status==='accepted'?'selected':''}>Accepted ✓</option>
-      <option value="declined" ${e.status==='declined'?'selected':''}>Declined</option>
+      <option value="lost"     ${st==='lost'?'selected':''}>Lost ✗</option>
     </select>`;
   return `<div class="dash-row${st==='viewed'?' dash-row-viewed':''}" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
     <div class="dash-row-main">
@@ -8325,6 +8390,8 @@ function renderDashboard() {
                       .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
   const signed  = list.filter(e => estStatusOf(e) === 'signed')
                       .sort((a, b) => (b.signed_at || '').localeCompare(a.signed_at || ''));
+  const lost    = list.filter(e => estStatusOf(e) === 'lost')
+                      .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
 
   const outstanding   = [...viewed, ...sent];
   const outstandingSum = outstanding.reduce((s, e) => s + (e.total || 0), 0);
@@ -8419,7 +8486,7 @@ function renderDashboard() {
       </div>
     </div>
     ${_dashFilter ? `<div class="dash-filter-bar">
-      Showing: <strong>${{outstanding:'Outstanding',sent:'Sent',signed:'Signed',draft:'Drafts'}[_dashFilter]||_dashFilter}</strong>
+      Showing: <strong>${{outstanding:'Outstanding',sent:'Sent',signed:'Signed',draft:'Drafts',lost:'Lost'}[_dashFilter]||_dashFilter}</strong>
       <button class="dash-filter-clear" onclick="dashSetFilter(null)">× Show all</button>
     </div>` : ''}
     ${(!_dashFilter || _dashFilter==='outstanding') && (viewed.length||sent.length) ?
@@ -8430,6 +8497,8 @@ function renderDashboard() {
         section('📝 Drafts', drafts) : ''}
     ${(!_dashFilter || _dashFilter==='signed') ?
         section('✅ Signed', _dashFilter==='signed' ? signed : signed.slice(0,15), 'dash-h-won') : ''}
+    ${lost.length && (!_dashFilter || _dashFilter==='lost') ?
+        section('✗ Lost', _dashFilter==='lost' ? lost : lost.slice(0,10), 'dash-h-lost') : ''}
     ${!list.length ? '<div class="dash-empty">No estimates yet for this rep.</div>' : ''}
     `}`;
 }
@@ -8462,7 +8531,7 @@ function _clr(rate) {
 }
 
 function renderDashboardAnalytics(filteredList, allData) {
-  const ad  = _analyticsData || { by_trade:{}, by_rep:{}, monthly:[], funnel:{total:0,sent:0,viewed:0,signed:0,declined:0}, pipeline_aging:{}, by_type:{}, top_cities:[], ytd_revenue:0, avg_days_to_close:null };
+  const ad  = _analyticsData || { by_trade:{}, by_rep:{}, monthly:[], funnel:{total:0,sent:0,viewed:0,signed:0,lost:0}, pipeline_aging:{}, by_type:{}, top_cities:[], ytd_revenue:0, avg_days_to_close:null };
   const now = Date.now();
   const ms30 = 30*86400000;
 
@@ -8487,7 +8556,7 @@ function renderDashboardAnalytics(filteredList, allData) {
   const repEntries = Object.entries(ad.by_rep).filter(([,d])=>d.sent>0||d.revenue>0);
 
   // ── Conversion funnel ────────────────────────────────────────────────
-  const fn = ad.funnel||{total:0,sent:0,viewed:0,signed:0,declined:0};
+  const fn = ad.funnel||{total:0,sent:0,viewed:0,signed:0,lost:0};
   const funnelSteps = [
     {label:'Created', val:fn.total, pct:100},
     {label:'Sent',    val:fn.sent,    pct:fn.total?Math.round(fn.sent/fn.total*100):0},
@@ -8505,7 +8574,7 @@ function renderDashboardAnalytics(filteredList, allData) {
         <span class="funnel-pct">${s.pct}%</span>
       </div>
     </div>`).join('');
-  const declinedHtml = fn.declined ? `<div class="funnel-declined">✗ ${fn.declined} declined</div>` : '';
+  const lostHtml = fn.lost ? `<div class="funnel-declined">✗ ${fn.lost} lost</div>` : '';
 
   // ── Pipeline aging ───────────────────────────────────────────────────
   const pa = ad.pipeline_aging||{};
@@ -8645,7 +8714,7 @@ function renderDashboardAnalytics(filteredList, allData) {
       <div class="analytics-section a-card">
         <h4 class="analytics-h">Conversion Funnel</h4>
         ${funnelHtml}
-        ${declinedHtml}
+        ${lostHtml}
       </div>
       <div class="analytics-section a-card">
         <h4 class="analytics-h">Pipeline Health <span class="analytics-pct">${fmtCur(pipelineVal)}</span></h4>
@@ -9773,7 +9842,7 @@ async function shareEstimate() {
     const data = await r.json();
     S.share_token = data.token;
     if (!S.sent_at) S.sent_at = new Date().toISOString();
-    if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); }
+    if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); renderEstStatusBar(); }
     showShareModal(data.full_url || (window.location.origin + data.url), data.url);
   } catch(e) {
     alert('Error: ' + e.message);
@@ -9883,7 +9952,7 @@ async function presentEstimate() {
       if (!token) throw new Error('Could not generate a presentation link');
       S.share_token = token;
       if (!S.sent_at) S.sent_at = new Date().toISOString();
-      if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); }
+      if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); renderEstStatusBar(); }
     }
 
     const url = `${BASE}/present/${token}`;
@@ -9906,7 +9975,7 @@ async function emailEstimateLink() {
       // Server just generated the token as part of sending
       S.share_token = d.full_url.split('/sign/')[1] || S.share_token;
     }
-    if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); }
+    if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); renderEstStatusBar(); }
     if (btn) { btn.textContent = `✓ Sent to ${d.sent_to}`; btn.style.background = '#16a34a'; }
   } catch (e) {
     alert('Could not send email: ' + e.message);
@@ -10852,6 +10921,7 @@ async function renderHomePage() {
     viewed: '<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
     sent:   '<span class="dash-chip dash-chip-sent">📤 Sent</span>',
     draft:  '<span class="dash-chip dash-chip-draft">Draft</span>',
+    lost:   '<span class="dash-chip dash-chip-lost">✗ Lost</span>',
   };
   el.innerHTML = `
     <img src="${BASE}/static/logo.png" class="home-logo" alt="Project One Roofing">
@@ -10995,8 +11065,14 @@ function captureCrmHandoff() {
   try {
     const q = new URLSearchParams(location.search);
     const contact = (q.get('contact') || '').trim();
-    if (!contact) return;
-    _crmHandoff = { crm_contact_id: contact, name: (q.get('name') || '').trim() };
+    const lead    = (q.get('lead') || '').trim();
+    if (!contact && !lead) return;
+    // The lead id is the half that makes the funnel joinable: without it the
+    // estimator can report sent/viewed/signed but nothing can say which door
+    // those came from. Either id alone is a valid handoff — a lead that has no
+    // Den contact yet still needs its estimate tracked.
+    _crmHandoff = { crm_contact_id: contact, crm_lead_id: lead,
+                    name: (q.get('name') || '').trim() };
     // Drop the params from the address bar so a refresh, a bookmark, or a
     // shared URL cannot re-attach this contact to a different estimate.
     history.replaceState({}, '', location.pathname);
@@ -11011,6 +11087,12 @@ function applyCrmHandoff(est) {
   if (!est.customer.crm_contact_id) {
     est.customer.crm_contact_id = _crmHandoff.crm_contact_id;
     if (!est.customer.name && _crmHandoff.name) est.customer.name = _crmHandoff.name;
+  }
+  // Tracked separately from the contact id: a rep who picked the Den job by
+  // hand has a contact but no lead, and that estimate still belongs to the
+  // lead it was started from.
+  if (!est.customer.crm_lead_id && _crmHandoff.crm_lead_id) {
+    est.customer.crm_lead_id = _crmHandoff.crm_lead_id;
   }
 }
 

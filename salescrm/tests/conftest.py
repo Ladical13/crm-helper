@@ -15,6 +15,7 @@ import app as appmod  # noqa: E402
 
 import pytest  # noqa: E402
 
+from portal import funnel as pfunnel    # noqa: E402
 from portal import session as psession  # noqa: E402
 from portal import users as pusers      # noqa: E402
 
@@ -33,6 +34,10 @@ def _wipe():
     with pusers.get_db() as db:
         db.execute('DELETE FROM users')
         db.execute('DELETE FROM invites')
+    # So does the estimator↔CRM funnel join. Left behind, a signed estimate
+    # from an earlier test drains into the next one's leads.
+    with pfunnel.get_db() as db:
+        db.execute('DELETE FROM estimate_links')
 
 
 @pytest.fixture

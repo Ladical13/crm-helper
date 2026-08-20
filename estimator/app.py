@@ -28,6 +28,7 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, Respo
 # this app works both mounted by portal/wsgi.py and run standalone (its test
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import funnel as pfunnel     # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import throttle as pthrottle  # noqa: E402
 from portal import users as pusers       # noqa: E402
@@ -729,6 +730,25 @@ def service_worker():
 
 # ── Estimates CRUD ─────────────────────────────────────────────────────────
 
+# `declined` was the old name for `lost`. It is still written on every estimate
+# that reached that outcome before the rename, and those are real records on a
+# live volume — so nothing rewrites them. `lost` is what gets written from now
+# on, and everything that reads a status comes through here.
+#
+# Change orders keep `declined`, deliberately: a customer saying no to an
+# add-on is not a lost job, and collapsing the two would lose that distinction.
+LOST_STATUSES = ('lost', 'declined')
+
+
+def _norm_est_status(status):
+    """The canonical name for a stored estimate status."""
+    return 'lost' if (status or '') in LOST_STATUSES else (status or 'draft')
+
+
+def _is_lost(est):
+    return (est.get('status') or '') in LOST_STATUSES
+
+
 def _estimate_total(est):
     """Grand total for any estimate type (insurance sections-aware)."""
     if est.get('estimate_type') == 'insurance':
@@ -739,6 +759,35 @@ def _estimate_total(est):
         return sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
                    for sec in sections for i in sec.get('items', []))
     return calc_selected_total(est)
+
+
+def _funnel_record(est, state, at=''):
+    """Report an estimate's funnel state to the shared join. Never raises.
+
+    This is what lets the CRM answer "of the doors we knocked, where do we
+    lose people" — the estimator is the only system that knows an estimate was
+    sent, opened or signed, and the CRM is the only one that knows which door
+    it started at. Best-effort on purpose: a customer signing a contract must
+    never fail because a reporting table was locked.
+    """
+    try:
+        c = est.get('customer', {}) or {}
+        pfunnel.record(
+            est.get('estimate_id') or '',
+            state,
+            lead_id=c.get('crm_lead_id') or '',
+            contact_id=c.get('crm_contact_id') or '',
+            rep=(est.get('salesperson') or '').strip(),
+            value=round(_estimate_total(est), 2),
+            # Carried so the CRM can file the signed contract in The Den
+            # without reaching back into the estimator: Base44 refuses file
+            # uploads from our token (405), so that Document is a link to the
+            # hosted signing page anyway, and the token is the whole link.
+            share_token=est.get('share_token') or '',
+            at=at or None)
+    except Exception as exc:
+        print(f'[funnel] {state} not recorded for '
+              f'{est.get("estimate_id", "?")}: {exc}')
 
 
 @app.route('/api/estimates', methods=['GET'])
@@ -780,7 +829,9 @@ def list_estimates():
                 'customer_name':   c.get('name', ''),
                 'city':            a.get('city', ''),
                 'estimate_date':   d.get('estimate_date', ''),
-                'status':          d.get('status', 'draft'),
+                # Normalized, so the front end only ever sees one spelling and
+                # a record written before the rename behaves like a new one.
+                'status':          _norm_est_status(d.get('status')),
                 'estimate_type':   d.get('estimate_type', 'retail'),
                 'selected_tier':   d.get('selected_tier', 'better'),
                 'salesperson':     d.get('salesperson', ''),
@@ -977,18 +1028,28 @@ def update_estimate_label(est_id):
 
 @app.route('/api/estimates/<est_id>/status', methods=['PATCH'])
 def update_estimate_status(est_id):
-    VALID = {'draft', 'sent', 'accepted', 'declined'}
+    VALID = {'draft', 'sent', 'accepted', 'lost', 'declined'}
     status = (request.json or {}).get('status')
     if status not in VALID:
         return jsonify({'error': 'Invalid status'}), 400
+    status = _norm_est_status(status)          # `declined` in, `lost` stored
     est = est_load(est_id)
     if est is None:
         return jsonify({'error': 'Not found'}), 404
     if not _can_touch_estimate(est):
         return _forbid()
+    # A signature is a fact about what the customer did, not a status a rep
+    # can retract. Reopening a signed job is a change order, not an edit here.
+    if est.get('signature') and status != 'accepted':
+        return jsonify({'error': 'A signed estimate cannot change status.'}), 400
     est['status'] = status
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     est_save(est)
+    # Tell the CRM. Marking an estimate lost does NOT lose the lead — plenty
+    # get re-quoted, and losing it would close the tasks that win it back — but
+    # the pipeline should say so on the timeline.
+    if status == 'lost':
+        _funnel_record(est, 'lost')
     return jsonify({'ok': True, 'status': status})
 
 
@@ -2595,7 +2656,7 @@ def get_analytics():
         })
 
     # ── New aggregations ──────────────────────────────────────────────
-    funnel = {'total': 0, 'sent': 0, 'viewed': 0, 'signed': 0, 'declined': 0}
+    funnel = {'total': 0, 'sent': 0, 'viewed': 0, 'signed': 0, 'lost': 0}
     pipeline_aging = {
         'fresh':  {'count': 0, 'value': 0.0},   # 0–3 days
         'active': {'count': 0, 'value': 0.0},   # 4–14 days
@@ -2625,10 +2686,10 @@ def get_analytics():
         if is_sent:   funnel['sent']    += 1
         if est.get('first_viewed_at'): funnel['viewed'] += 1
         if is_signed: funnel['signed']  += 1
-        if est.get('status') == 'declined': funnel['declined'] += 1
+        if _is_lost(est): funnel['lost'] += 1
 
         # ── Pipeline aging (open, sent estimates only) ────────────────
-        if is_sent and not is_signed and est.get('status') != 'declined':
+        if is_sent and not is_signed and not _is_lost(est):
             sent_dt_str = est.get('sent_at') or ''
             est_total   = _estimate_total(est)
             try:
@@ -6372,6 +6433,7 @@ def _ensure_share_token(est):
 
     stored = est_update(est.get('estimate_id'), _mark)
     est.update(stored or {})
+    _funnel_record(est, 'sent', at=est.get('sent_at') or '')
     return est['share_token']
 
 
@@ -10814,6 +10876,12 @@ def customer_sign(token):
                 ('<h2 style="font-family:sans-serif;padding:40px">This estimate is no '
                  'longer available for signing.</h2>', 409)
         est = stored
+        # The funnel gets the signature before any of the background work below:
+        # it is a single local write, and it is what moves the CRM lead to Won
+        # and hands the job to The Den. Recording it inline means a slow SMTP or
+        # Base44 cannot leave the pipeline showing a deal that is already closed.
+        _funnel_record(est, 'signed',
+                       at=(est.get('signature') or {}).get('signed_at') or '')
         # Signature is saved above — everything below is best-effort. Run the rep
         # notification and the CRM/packet pipeline in background threads so a slow
         # or unreachable SMTP/CRM endpoint can never block (or 500) the customer's
@@ -10852,6 +10920,7 @@ def customer_sign(token):
 
         est = est_update(est.get('estimate_id'), _track) or est
         if first_view[0]:
+            _funnel_record(est, 'viewed', at=now_iso)
             threading.Thread(target=send_view_notification, args=(est,), daemon=True).start()
     except Exception as exc:
         print(f'[view-track] failed: {exc}')
@@ -13343,7 +13412,7 @@ def _check_reminders():
     for est in est_iter():
         if est.get('signature') or not est.get('share_token'):
             continue
-        if est.get('status') == 'declined':
+        if _is_lost(est):
             continue
         sent_at = est.get('sent_at')
         if not sent_at:

@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify, send_from_directory, session
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from portal import dbtune                # noqa: E402
+from portal import funnel as pfunnel     # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
 
@@ -46,6 +47,13 @@ psession.configure(app)
 HERE         = os.path.dirname(os.path.abspath(__file__))
 BASE44_TOKEN = os.environ.get('BASE44_TOKEN', '')
 BASE44_URL   = 'https://base44.app/api/apps/69320ef0c647fee442697971'
+# The Den scopes every Colorado report to this location, and it is chosen from a
+# dropdown when a job is created in its own UI — so anything created through the
+# API without it is invisible to the estimator's contact search and to every
+# executive-team skill, which all filter on it. Sending it is a guess we can
+# make safely: if the API ignores the field the job still lands, and the only
+# cost is that someone sets the location by hand, exactly as they do today.
+CO_LOCATION_ID = os.environ.get('CO_LOCATION_ID', '6984bb86d86d9c92d6827a17')
 # Deep-link target for "Start estimate". Same origin now that the estimator is
 # mounted at /estimate, so the rep keeps their session and their tab.
 ESTIMATOR_URL = os.environ.get('ESTIMATOR_URL', '/estimate')
@@ -524,6 +532,7 @@ def _refresh_next_action(db, lead_id):
 @app.route('/api/leads', methods=['GET'])
 @login_required
 def list_leads():
+    _reconcile_funnel()
     rep     = request.args.get('rep')
     stage   = request.args.get('stage')
     ltype   = request.args.get('type')
@@ -599,12 +608,19 @@ def create_lead():
     with get_db() as db:
         db.execute(f'INSERT INTO leads ({cols}) VALUES ({ph})', list(fields.values()))
         _log_activity(db, lid, 'system', body=f'Lead created in stage "{STAGE_META[stage]["label"]}"')
+        # A new lead starts following itself up. The cadence engine and its four
+        # cadences already existed; nothing ever enrolled anyone, so the whole
+        # follow-up apparatus only ran for reps who remembered to ask for it.
+        auto = _cadence_for(stage, lead_type)
+        if auto:
+            _enroll(db, lid, rep, auto)
         row = db.execute('SELECT * FROM leads WHERE id=?', (lid,)).fetchone()
     return jsonify(_lead_row(row)), 201
 
 @app.route('/api/leads/<lead_id>', methods=['GET'])
 @login_required
 def get_lead(lead_id):
+    _reconcile_funnel()
     with get_db() as db:
         row = _lead_visible(db, lead_id)
         if not row:
@@ -708,8 +724,15 @@ def set_stage(lead_id):
         row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
 
     # Auto-handoff to The Den on Won (unless already pushed).
-    if new_stage == 'won' and not row['crm_contact_id']:
-        den_result = _push_to_den(lead_id)
+    #
+    # The guard is `crm_project_id`, and the distinction is the whole reason no
+    # job ever reached The Den: `crm_contact_id` is set the moment a rep starts
+    # an estimate, so guarding on it meant every lead that got a quote was read
+    # as "already pushed" and skipped. A project id is only ever written by a
+    # push that actually happened.
+    if new_stage == 'won' and not row['crm_project_id']:
+        est = (pfunnel.for_lead(lead_id) or [None])[0]
+        den_result = _push_to_den(lead_id, estimate=est)
 
     with get_db() as db:
         row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
@@ -753,6 +776,7 @@ def add_activity(lead_id):
 @app.route('/api/tasks', methods=['GET'])
 @login_required
 def list_tasks():
+    _reconcile_funnel()
     rep   = request.args.get('rep') if is_manager() else current_rep()
     scope = request.args.get('scope', 'open')     # open | today | overdue | all
     clauses, params = ['t.done=0'], []
@@ -839,30 +863,45 @@ def _create_step_task(db, lead_id, rep, enrollment_id, started_at, step):
                (str(uuid.uuid4()), lead_id, rep, step.get('kind', 'call'),
                 step.get('title', ''), due, enrollment_id, _now()))
 
+def _enroll(db, lead_id, rep, cadence_id):
+    """Start a cadence and materialize its first task. Returns the enrollment
+    id, or '' if the cadence is unknown or the lead is already in it.
+
+    Shared by the manual Enroll button and the automatic enrollment that fires
+    on a stage change. One active enrollment per cadence per lead, which is
+    what makes the automatic path safe to re-run.
+    """
+    cad = CADENCE_BY_ID.get(cadence_id)
+    if not cad:
+        return ''
+    exists = db.execute(
+        'SELECT id FROM cadence_enrollments WHERE lead_id=? AND cadence_id=? AND active=1',
+        (lead_id, cadence_id)).fetchone()
+    if exists:
+        return ''
+    eid = str(uuid.uuid4())
+    started = _now()
+    db.execute('INSERT INTO cadence_enrollments (id, lead_id, cadence_id, step_idx, started_at, active) '
+               'VALUES (?,?,?,0,?,1)', (eid, lead_id, cadence_id, started))
+    if cad['steps']:
+        _create_step_task(db, lead_id, rep, eid, started, cad['steps'][0])
+    _log_activity(db, lead_id, 'system', body=f'Enrolled in cadence: {cad["name"]}')
+    _refresh_next_action(db, lead_id)
+    return eid
+
 @app.route('/api/leads/<lead_id>/enroll', methods=['POST'])
 @login_required
 def enroll_cadence(lead_id):
     cadence_id = request.get_json(force=True).get('cadence_id')
-    cad = CADENCE_BY_ID.get(cadence_id)
-    if not cad:
+    if cadence_id not in CADENCE_BY_ID:
         return jsonify({'error': 'Unknown cadence'}), 400
     with get_db() as db:
         row = _lead_visible(db, lead_id)
         if not row:
             return jsonify({'error': 'Not found'}), 404
-        # One active enrollment per cadence per lead.
-        exists = db.execute('SELECT id FROM cadence_enrollments WHERE lead_id=? AND cadence_id=? AND active=1',
-                            (lead_id, cadence_id)).fetchone()
-        if exists:
+        eid = _enroll(db, lead_id, row['rep'], cadence_id)
+        if not eid:
             return jsonify({'error': 'Already enrolled in this cadence'}), 409
-        eid = str(uuid.uuid4())
-        started = _now()
-        db.execute('INSERT INTO cadence_enrollments (id, lead_id, cadence_id, step_idx, started_at, active) '
-                   'VALUES (?,?,?,0,?,1)', (eid, lead_id, cadence_id, started))
-        if cad['steps']:
-            _create_step_task(db, lead_id, row['rep'], eid, started, cad['steps'][0])
-        _log_activity(db, lead_id, 'system', body=f'Enrolled in cadence: {cad["name"]}')
-        _refresh_next_action(db, lead_id)
     return jsonify({'ok': True, 'enrollment_id': eid}), 201
 
 def _advance_cadence(db, enrollment_id):
@@ -883,6 +922,157 @@ def _advance_cadence(db, enrollment_id):
     _create_step_task(db, e['lead_id'], lead['rep'] if lead else '', enrollment_id,
                       e['started_at'], cad['steps'][next_idx])
 
+# ── Funnel reconciliation — the estimator's events land here ─────────────────
+#
+# Stage used to be a card a rep remembered to drag, which meant the leaderboard
+# and every close-rate number downstream measured *bookkeeping discipline*
+# rather than selling. These four rules move a lead on the events that actually
+# happened, so the numbers describe the business instead of the paperwork.
+
+# Reaching a stage starts the cadence that belongs to it. Nothing enrolled
+# leads automatically before this: four well-written cadences existed and only
+# ever ran when someone clicked Enroll — which is precisely the moment a busy
+# rep does not.
+STAGE_CADENCE = {
+    'new':                'new_lead_7touch',
+    'estimate_presented': 'estimate_followup',
+}
+
+# A realtor is not a homeowner and must not get the homeowner's seven touches:
+# partner development is a relationship on a much longer clock, which is what
+# `partner_nurture` encodes (call, coffee at two weeks, recap at six).
+PARTNER_CADENCE = 'partner_nurture'
+
+
+def _cadence_for(stage, lead_type):
+    """Which cadence a lead entering `stage` should start, or '' for none."""
+    if stage == 'new' and lead_type in PARTNER_TYPES:
+        return PARTNER_CADENCE
+    return STAGE_CADENCE.get(stage, '')
+
+TERMINAL_STAGES = ('won', 'lost')
+
+
+def _stage_rank(stage):
+    """Position on the ladder. Unknown stages rank first so they never block."""
+    try:
+        return STAGE_KEYS.index(stage)
+    except ValueError:
+        return 0
+
+
+def _auto_advance(db, lead_id, target, reason):
+    """Move a lead forward on a real event. Returns True if the stage changed.
+
+    **This is the manual override.** A rep is always allowed to be ahead of the
+    automation: a lead already at or past `target` is left exactly where the
+    rep put it. The one exception is a signature, which is ground truth — if a
+    lead was marked lost and the customer then signs, the signature wins, and
+    the activity log says so rather than silently rewriting history.
+    """
+    row = db.execute('SELECT stage, rep, lead_type FROM leads WHERE id=?',
+                     (lead_id,)).fetchone()
+    if not row:
+        return False
+    old = row['stage']
+    if old == target:
+        return False
+    if target == 'won':
+        if old == 'won':
+            return False
+    elif old in TERMINAL_STAGES or _stage_rank(target) <= _stage_rank(old):
+        return False
+
+    won_at = _now() if target == 'won' else ''
+    db.execute('UPDATE leads SET stage=?, won_at=?, updated_at=? WHERE id=?',
+               (target, won_at, _now(), lead_id))
+    _log_activity(db, lead_id, 'stage_change', rep=row['rep'],
+                  body=f'{STAGE_META[old]["label"]} → {STAGE_META[target]["label"]} ({reason})')
+    if target in TERMINAL_STAGES:
+        db.execute('UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0',
+                   (_now(), lead_id))
+        db.execute('UPDATE cadence_enrollments SET active=0 WHERE lead_id=?', (lead_id,))
+    else:
+        auto = _cadence_for(target, row['lead_type'])
+        if auto:
+            _enroll(db, lead_id, row['rep'], auto)
+    _refresh_next_action(db, lead_id)
+    return True
+
+
+def _lead_for_event(db, ev):
+    """Which lead an estimate belongs to — by lead id, else by Den contact."""
+    if ev.get('lead_id'):
+        r = db.execute('SELECT id FROM leads WHERE id=?', (ev['lead_id'],)).fetchone()
+        if r:
+            return r['id']
+    if ev.get('contact_id'):
+        r = db.execute('SELECT id FROM leads WHERE crm_contact_id=? '
+                       'ORDER BY updated_at DESC LIMIT 1', (ev['contact_id'],)).fetchone()
+        if r:
+            return r['id']
+    return ''
+
+
+# state the estimate reached → the stage that implies
+_FUNNEL_STAGE = {
+    'sent':   'estimate_presented',
+    'viewed': 'estimate_presented',
+    'signed': 'won',
+    # A lost estimate is deliberately NOT auto-lost as a lead. Plenty get
+    # re-quoted, and marking the lead dead would close the tasks that win it
+    # back. The rep decides; the activity log makes sure they know.
+    'lost': '',
+    'declined': '',          # the old name, still arriving from older records
+}
+
+
+def _reconcile_funnel():
+    """Apply the estimator's funnel events to their leads. Safe to call often.
+
+    Called on the reads a rep or manager actually makes, rather than from a
+    background thread: the events are already durable in the shared table, so
+    the only thing a sweep adds is latency between the signature and the board
+    catching up — and every screen that would show the difference triggers one.
+    Costs a single indexed SELECT when nothing is pending.
+    """
+    try:
+        events = pfunnel.claim_pending()
+    except Exception as exc:
+        print(f'[funnel] could not read events: {exc}')
+        return []
+    if not events:
+        return []
+    signed = []
+    with get_db() as db:
+        for ev in events:
+            lead_id = _lead_for_event(db, ev)
+            if not lead_id:
+                continue
+            db.execute('UPDATE leads SET estimate_id=?, updated_at=? WHERE id=?',
+                       (ev['estimate_id'], _now(), lead_id))
+            if ev['state'] in ('lost', 'declined'):
+                _log_activity(db, lead_id, 'system',
+                              body='Estimate marked lost — the lead is still open')
+                continue
+            target = _FUNNEL_STAGE.get(ev['state'], '')
+            if not target:
+                continue
+            if ev['state'] == 'signed' and ev['value']:
+                db.execute('UPDATE leads SET est_value=? WHERE id=?',
+                           (ev['value'], lead_id))
+            reason = {'sent': 'estimate sent', 'viewed': 'customer opened the estimate',
+                      'signed': 'contract signed'}[ev['state']]
+            if _auto_advance(db, lead_id, target, reason) and target == 'won':
+                signed.append((lead_id, ev))
+    # The Den handoff runs outside the DB block — it is a network call, and
+    # holding a write transaction open across Base44's latency is how the
+    # whole CRM ends up waiting on someone else's API.
+    for lead_id, ev in signed:
+        _push_to_den(lead_id, estimate=ev)
+    return events
+
+
 # ── The Den (Base44) handoff ──────────────────────────────────────────────────
 
 def _crm_headers():
@@ -898,6 +1088,7 @@ def _den_payloads(lead):
         'street_address': lead['address'], 'city': lead['city'],
         'state': lead['state'], 'zip_code': lead['zip'],
         'source': lead['source'] or 'referral', 'assigned_to': assigned,
+        'location_id': CO_LOCATION_ID,
     }
     service_label = SERVICE_META.get(lead.get('service') or 'roofing', SERVICES[0])['label']
     # Recurring plans carry their plan name + billing cadence into the project name/notes
@@ -913,8 +1104,20 @@ def _den_payloads(lead):
             notes += f" — {int(lead['est_value'])}{suffix}"
     project = {
         'name': pname, 'source': lead['source'] or 'referral',
-        'assigned_to': assigned, 'status': 'lead', 'notes': notes,
+        'assigned_to': assigned, 'notes': notes,
+        'location_id': CO_LOCATION_ID,
+        # 'lead' is not one of The Den's statuses and every job pushed with it
+        # sat outside the pipeline reports. A job only reaches this function
+        # once the customer has signed, so `contracted` is both valid and true.
+        'status': 'contracted',
+        'assigned_salesperson': assigned,
+        'client_name': name, 'client_phone': lead['phone'],
+        'client_email': lead['email'],
+        'street_address': lead['address'], 'city': lead['city'],
+        'state': lead['state'] or 'CO', 'zip_code': lead['zip'],
     }
+    if lead.get('est_value'):
+        project['contract_value'] = float(lead['est_value'])
     return contact, project
 
 def _find_existing_contact(lead):
@@ -935,8 +1138,49 @@ def _find_existing_contact(lead):
         print(f'[Den] dedup lookup failed: {e}')
     return ''
 
-def _push_to_den(lead_id):
-    """Create (or reuse) a Base44 Contact + Project. Returns a result dict."""
+def _den_document(project_id, lead, estimate):
+    """File the signed contract on the job as a link to the signing page.
+
+    Not an upload: Base44's external API refuses the UploadFile integration to
+    our token (blanket 405), so the estimator's own push has always fallen back
+    to linking its hosted page. Doing the same here means the contract is on
+    the job the moment production picks it up, instead of never — which is
+    where it landed while the handoff was broken.
+    """
+    token = (estimate or {}).get('share_token') or ''
+    if not token or not project_id:
+        return ''
+    name = (f"{lead['first_name']} {lead['last_name']}").strip() or lead['company'] or 'Customer'
+    base = (os.environ.get('PUBLIC_BASE_URL') or '').rstrip('/')
+    if not base:
+        base = request.url_root.rstrip('/') if request else ''
+    doc = {
+        'name': f'Signed Contract - {name}',
+        'type': 'contract',
+        'project_id': project_id,
+        'file_url': f'{base}/sign/{token}',
+        'file_type': 'text/html',
+        'description': (f'Signed {(estimate.get("signed_at") or "")[:10]}. '
+                        f'Linked automatically when the lead closed in The Pipeline.'),
+        'share_with_client': False,
+    }
+    try:
+        r = http.post(f'{BASE44_URL}/entities/Document', json=doc,
+                      headers=_crm_headers(), timeout=20)
+        r.raise_for_status()
+        return (r.json() or {}).get('id', '')
+    except Exception as e:
+        print(f'[Den] contract document failed: {e}')
+        return ''
+
+
+def _push_to_den(lead_id, estimate=None):
+    """Create (or reuse) a Base44 Contact + Project. Returns a result dict.
+
+    Called at signature, which is the only moment a sale becomes production
+    work. `estimate` is the funnel row for the signed estimate, when there is
+    one — it carries the share token used to file the contract on the job.
+    """
     if not BASE44_TOKEN:
         return {'ok': False, 'error': 'BASE44_TOKEN not configured'}
     if not http:
@@ -946,6 +1190,10 @@ def _push_to_den(lead_id):
     if not lead:
         return {'ok': False, 'error': 'Lead not found'}
     lead = dict(lead)
+    if lead.get('crm_project_id'):
+        return {'ok': True, 'already': True,
+                'crm_contact_id': lead['crm_contact_id'],
+                'crm_project_id': lead['crm_project_id']}
     contact_payload, project_payload = _den_payloads(lead)
 
     contact_id = lead.get('crm_contact_id') or _find_existing_contact(lead)
@@ -970,12 +1218,22 @@ def _push_to_den(lead_id):
     except Exception as e:
         print(f'[Den] project create failed: {e}')
 
+    doc_id = _den_document(project_id, lead, estimate) if estimate else ''
+
     with get_db() as db:
         db.execute('UPDATE leads SET crm_contact_id=?, crm_project_id=?, updated_at=? WHERE id=?',
                    (contact_id, project_id, _now(), lead_id))
-        _log_activity(db, lead_id, 'system',
-                      body=f'Pushed to The Den (contact {contact_id[:8]}…)', rep=lead['rep'])
-    return {'ok': True, 'crm_contact_id': contact_id, 'crm_project_id': project_id}
+        note = f'Handed to The Den (contact {contact_id[:8]}…'
+        note += f', job {project_id[:8]}…)' if project_id else ', job create failed)'
+        if doc_id:
+            note += ' — signed contract filed'
+        # Worth saying out loud on the timeline: the location is a dropdown in
+        # The Den's own form and may not be settable through the API, so the
+        # job can land unassigned and drop out of every Colorado report.
+        note += '. Check the location on the job.'
+        _log_activity(db, lead_id, 'system', body=note, rep=lead['rep'])
+    return {'ok': True, 'crm_contact_id': contact_id, 'crm_project_id': project_id,
+            'document_id': doc_id}
 
 @app.route('/api/leads/<lead_id>/convert', methods=['POST'])
 @login_required
@@ -995,45 +1253,56 @@ def convert_lead(lead_id):
 @app.route('/api/leads/<lead_id>/start-estimate', methods=['POST'])
 @login_required
 def start_estimate(lead_id):
-    """Ensure a Base44 contact exists (the estimator's join key), then hand back
-    the estimator URL. The estimator's own contact search picks up the contact."""
+    """Hand the rep to the estimator, carrying this lead's id.
+
+    **Nothing is written to The Den here.** It used to create a Base44 Contact
+    at this point, which put every lead that ever got a quote into the
+    production system whether or not it closed — and, worse, set
+    `crm_contact_id`, which the Won handoff read as "already pushed" and so
+    never pushed anything at all. The Den now receives a job at exactly one
+    moment: signature.
+
+    An *existing* Den contact is still looked up, because a past customer
+    already has one and reusing it keeps the estimator's contact search and
+    bid-vs-actual working. A lookup is a read; it creates nothing.
+    """
     with get_db() as db:
         row = _lead_visible(db, lead_id)
         if not row:
             return jsonify({'error': 'Not found'}), 404
     lead = dict(row)
-    contact_id = lead['crm_contact_id']
-    if not contact_id:
-        contact_id = _find_existing_contact(lead)
-        if not contact_id and BASE44_TOKEN and http:
-            contact_payload, _ = _den_payloads(lead)
-            try:
-                r = http.post(f'{BASE44_URL}/entities/Contact', json=contact_payload,
-                              headers=_crm_headers(), timeout=15)
-                r.raise_for_status()
-                contact_id = r.json().get('id', '')
-            except Exception as e:
-                return jsonify({'error': f'Could not create contact for estimate: {e}'}), 502
-        if contact_id:
-            with get_db() as db:
-                db.execute('UPDATE leads SET crm_contact_id=?, updated_at=? WHERE id=?',
-                           (contact_id, _now(), lead_id))
-                _log_activity(db, lead_id, 'system', body='Started an estimate', rep=lead['rep'])
+    contact_id = lead['crm_contact_id'] or _find_existing_contact(lead)
+    with get_db() as db:
+        if contact_id and contact_id != lead['crm_contact_id']:
+            db.execute('UPDATE leads SET crm_contact_id=?, updated_at=? WHERE id=?',
+                       (contact_id, _now(), lead_id))
+        _log_activity(db, lead_id, 'system', body='Started an estimate', rep=lead['rep'])
     name = quote((f"{lead['first_name']} {lead['last_name']}").strip() or lead['company'])
-    return jsonify({'ok': True, 'contact_id': contact_id,
-                    'estimator_url': f'{ESTIMATOR_URL}/?contact={contact_id}&name={name}'})
+    return jsonify({'ok': True, 'contact_id': contact_id, 'lead_id': lead_id,
+                    'estimator_url': (f'{ESTIMATOR_URL}/?contact={contact_id}'
+                                      f'&lead={quote(lead_id)}&name={name}')})
 
 @app.route('/api/leads/<lead_id>/estimate', methods=['GET'])
 @login_required
 def lead_estimate(lead_id):
-    """Read estimate/job status back from The Den by shared contact_id."""
+    """Estimate state for a lead: the funnel first, The Den second.
+
+    The funnel is the live answer — it knows this lead's estimates were sent,
+    opened and signed, with timestamps, and it knows it without a network call.
+    The Den read stays for what only production has: permits pulled, documents
+    filed, the job's status after we handed it over.
+    """
     with get_db() as db:
         row = _lead_visible(db, lead_id)
         if not row:
             return jsonify({'error': 'Not found'}), 404
+    estimates = pfunnel.for_lead(lead_id)
+    if not estimates and row['crm_contact_id']:
+        estimates = pfunnel.for_contact(row['crm_contact_id'])
     contact_id = row['crm_contact_id']
     if not contact_id or not (BASE44_TOKEN and http):
-        return jsonify({'linked': False, 'documents': [], 'projects': []})
+        return jsonify({'linked': bool(estimates), 'estimates': estimates,
+                        'documents': [], 'projects': []})
     docs, projects = [], []
     try:
         rd = http.get(f'{BASE44_URL}/entities/Document', headers=_crm_headers(), timeout=15)
@@ -1048,6 +1317,7 @@ def lead_estimate(lead_id):
     except Exception as e:
         print(f'[Den] project read failed: {e}')
     return jsonify({'linked': True, 'contact_id': contact_id,
+                    'estimates': estimates,
                     'documents': docs[:20], 'projects': projects[:20]})
 
 # ── Partners ──────────────────────────────────────────────────────────────────
@@ -1696,6 +1966,7 @@ def dashboard():
 @app.route('/api/leaderboard')
 @login_required
 def leaderboard():
+    _reconcile_funnel()
     days = min(int(request.args.get('days', 30)), 365)
     since = _date_bounds(days)
     with get_db() as db:

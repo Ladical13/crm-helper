@@ -55,6 +55,24 @@ PIN_TYPES = {
     'no_soliciting': {'label': 'No Soliciting',   'color': '#1F2937'},
 }
 
+# Which Pipeline stage a knocked door becomes.
+#
+# Pins used to sync straight to The Den, which meant a door-knocked lead
+# skipped the entire follow-up apparatus — no stage, no cadence, no task, no
+# place in the outreach queue and no line on the leaderboard. The Den is for
+# jobs; a knock is a lead, and a lead belongs in The Pipeline. These stages are
+# the honest translation of what the rep saw at the door.
+#
+# The three types not listed never become leads: `not_home` has nobody to
+# follow up with yet, and `no_interest` and `no_soliciting` are answers.
+PIN_STAGE = {
+    'come_back':   'contacted',
+    'interested':  'contacted',
+    'appointment': 'appt_set',
+    'inspected':   'inspected',
+    'closed':      'won',
+}
+
 # ── Database ─────────────────────────────────────────────────────────────────
 
 def get_db():
@@ -85,6 +103,7 @@ def init_db():
                 contact_email TEXT DEFAULT '',
                 crm_contact_id TEXT DEFAULT '',
                 crm_project_id TEXT DEFAULT '',
+                crm_lead_id   TEXT DEFAULT '',
                 created_at    TEXT NOT NULL,
                 updated_at    TEXT NOT NULL
             );
@@ -113,6 +132,12 @@ def init_db():
                 updated_at TEXT NOT NULL
             );
         ''')
+        # `CREATE TABLE IF NOT EXISTS` above only ever describes a fresh
+        # database, so a column added later has to be applied explicitly or it
+        # exists on a developer's laptop and nowhere else.
+        cols = [r['name'] for r in db.execute('PRAGMA table_info(pins)')]
+        if 'crm_lead_id' not in cols:
+            db.execute("ALTER TABLE pins ADD COLUMN crm_lead_id TEXT DEFAULT ''")
 
 init_db()
 
@@ -247,6 +272,7 @@ def create_pin():
         'contact_email': data.get('contact_email', ''),
         'crm_contact_id': '',
         'crm_project_id': '',
+        'crm_lead_id':   '',
         'created_at':    _now(),
         'updated_at':    _now(),
     }
@@ -601,93 +627,45 @@ def hail_at_address():
         'reports': reports[:100],
     })
 
-# ── CRM Sync ──────────────────────────────────────────────────────────────────
+# ── Pipeline handoff ──────────────────────────────────────────────────────────
+#
+# A knocked door becomes a lead in The Pipeline, not a job in The Den.
+#
+# This used to POST a Contact and a Project straight to Base44. Three things
+# were wrong with that. The lead never entered the sales pipeline, so nothing
+# followed it up and it appeared on no leaderboard. The Project was created
+# with `status: 'lead'`, which is not one of The Den's statuses. And neither
+# payload carried a `location_id`, so every record it made fell outside the
+# Colorado filter that the estimator's contact search and every executive-team
+# skill apply — the jobs existed and were invisible.
+#
+# The lead itself is created by the browser against `/crm/api/leads`: all four
+# apps sit on one origin behind one cookie, so the rep's own session authorizes
+# it, and the CRM keeps sole ownership of what a lead is. This endpoint only
+# records the resulting id back onto the pin.
 
-@app.route('/api/crm/sync/<pin_id>', methods=['POST'])
+@app.route('/api/pins/<pin_id>/lead', methods=['POST'])
 @login_required
-def crm_sync(pin_id):
-    if not BASE44_TOKEN:
-        return jsonify({'error': 'BASE44_TOKEN not configured'}), 500
-    if not http:
-        return jsonify({'error': 'requests library not available'}), 500
-
+def link_pin_to_lead(pin_id):
+    """Record the Pipeline lead a pin became."""
+    lead_id = (request.get_json(force=True) or {}).get('lead_id', '').strip()
+    if not lead_id:
+        return jsonify({'error': 'lead_id required'}), 400
     with get_db() as db:
         pin = db.execute('SELECT * FROM pins WHERE id=?', (pin_id,)).fetchone()
-    if not pin:
-        return jsonify({'error': 'Pin not found'}), 404
-    pin = dict(pin)
-
-    headers = {
-        'Authorization': f'Bearer {BASE44_TOKEN}',
-        'Content-Type': 'application/json',
-    }
-
-    contact_id = pin.get('crm_contact_id') or ''
-
-    # Create or reuse contact
-    if not contact_id:
-        if not pin.get('contact_name'):
-            return jsonify({'error': 'Contact name required to sync to CRM'}), 400
-
-        name_parts = (pin['contact_name'] or '').strip().split(None, 1)
-        first_name = name_parts[0] if name_parts else ''
-        last_name  = name_parts[1] if len(name_parts) > 1 else ''
-
-        contact_payload = {
-            'name':           pin['contact_name'],
-            'first_name':     first_name,
-            'last_name':      last_name,
-            'phone':          pin.get('contact_phone', ''),
-            'email':          pin.get('contact_email', ''),
-            'street_address': pin.get('address', ''),
-            'source':         'door_knock',
-            'assigned_to':    f"{pin['rep']}@projectoneroofing.com",
-            'notes':          pin.get('notes', ''),
-        }
-        try:
-            r = http.post(f'{BASE44_URL}/entities/Contact',
-                          json=contact_payload, headers=headers, timeout=15)
-            r.raise_for_status()
-            contact_id = r.json().get('id', '')
-        except Exception as e:
-            return jsonify({'error': f'CRM contact creation failed: {e}'}), 502
-
-        with get_db() as db:
-            db.execute('UPDATE pins SET crm_contact_id=?, updated_at=? WHERE id=?',
-                       (contact_id, _now(), pin_id))
-
-    # Create Project
-    project_payload = {
-        'name':         f"Roofing - {pin.get('contact_name', 'Unknown')}",
-        'contact_id':   contact_id,
-        'source':       'door_knock',
-        'assigned_to':  f"{pin['rep']}@projectoneroofing.com",
-        'notes':        pin.get('notes', ''),
-        'status':       'lead',
-    }
-    try:
-        r = http.post(f'{BASE44_URL}/entities/Project',
-                      json=project_payload, headers=headers, timeout=15)
-        r.raise_for_status()
-        project_id = r.json().get('id', '')
-    except Exception as e:
-        project_id = ''
-
-    with get_db() as db:
-        db.execute('UPDATE pins SET crm_project_id=?, updated_at=? WHERE id=?',
-                   (project_id, _now(), pin_id))
-
-    return jsonify({
-        'ok': True,
-        'crm_contact_id': contact_id,
-        'crm_project_id': project_id,
-    })
+        if not pin:
+            return jsonify({'error': 'Pin not found'}), 404
+        if pin['rep'] != session['username'] and not pusers.is_manager_up(session['username']):
+            return jsonify({'error': 'Forbidden'}), 403
+        db.execute('UPDATE pins SET crm_lead_id=?, updated_at=? WHERE id=?',
+                   (lead_id, _now(), pin_id))
+    return jsonify({'ok': True, 'crm_lead_id': lead_id})
 
 # ── Config endpoint (pin types) ───────────────────────────────────────────────
 
 @app.route('/api/config')
 def config():
-    return jsonify({'pin_types': PIN_TYPES})
+    return jsonify({'pin_types': PIN_TYPES, 'pin_stage': PIN_STAGE})
 
 @app.route('/health')
 def health():

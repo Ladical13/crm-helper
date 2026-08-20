@@ -1585,6 +1585,28 @@ input.other-price-input { width: 110px; text-align: right; font-size: 12px; }
 }
 .crm-link-badge strong { color: #1a3a5c; }
 
+/* Outcome control, in the estimate itself rather than only on a dashboard row */
+.est-status-bar {
+  align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 11px; line-height: 1.5; padding: 7px 10px;
+  border-radius: 5px; margin-bottom: 10px;
+  background: #f8fafc; border: 1px solid #e2e8f0; color: #475569;
+}
+.est-status-bar label {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: #64748b; margin: 0;
+}
+.est-status-bar select {
+  font-size: 11px; padding: 3px 6px; border-radius: 4px;
+  border: 1px solid #cbd5e1; background: #fff; color: #1e293b; cursor: pointer;
+}
+.est-status-note { flex-basis: 100%; color: #64748b; font-size: 10.5px; }
+.est-status-lost { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
+.est-status-lost label, .est-status-lost .est-status-note { color: #b91c1c; }
+.est-status-signed {
+  display: block; background: #f0fdf4; border: 1px solid #86efac; color: #15803d;
+}
+
 /* Home button */
 .btn-home {
   font-size: 16px; padding: 5px 9px; background: rgba(255,255,255,.12);
@@ -2228,6 +2250,7 @@ a.jx-contact:hover { text-decoration: underline; }
 }
 .dash-section h4.dash-h-hot { color: #ea580c; }
 .dash-section h4.dash-h-won { color: #16a34a; }
+.dash-section h4.dash-h-lost { color: #b91c1c; }
 .dash-count {
   font-size: 10px; background: #e5e7eb; color: #374151;
   border-radius: 10px; padding: 1px 8px;
@@ -2253,6 +2276,7 @@ a.jx-contact:hover { text-decoration: underline; }
 .dash-chip-viewed { background: #ffedd5; color: #c2410c; }
 .dash-chip-sent   { background: #e0f2fe; color: #0369a1; }
 .dash-chip-draft  { background: #f3f4f6; color: #6b7280; }
+.dash-chip-lost   { background: #fee2e2; color: #b91c1c; }
 .dash-activity { font-size: 10.5px; color: var(--text-light); white-space: nowrap; min-width: 130px; text-align: right; }
 .dash-empty { text-align: center; color: var(--text-light); padding: 30px 0; font-size: 13px; }
 
