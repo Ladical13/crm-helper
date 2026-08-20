@@ -11656,85 +11656,113 @@ def _siding_profile(td, tier):
 #   TPO     mechanically fastened / adhered   mechanically fastened / adhered
 #   EPDM    mechanically fastened / adhered   mechanically fastened / adhered
 #
-# TPO costs come off the GAF sheet Project One was quoted on 2026-05-19 (see
-# COMMERCIAL_PRICE_SHEET). EPDM is NOT on that sheet and is not a GAF product
-# at all — GAF's EverGuard line is TPO and PVC only — so every EPDM line is 0
-# until a second supplier (Johns Manville, Carlisle, Elevate, Versico,
-# Mule-Hide) quotes it.
+# CARLISLE is the priced supplier: the 2026-08-19 quote covers TPO and EPDM
+# from one house, which is what finally made the EPDM half of the matrix real.
+# GAF numbers survive only where Carlisle quoted no equivalent (the 45/80-mil
+# and specialty TPO membranes, the odd polyiso thicknesses, scuppers) — those
+# came off a sheet that EXPIRED 2026-06-30 and need re-quoting before they are
+# sold. Which supplier each cost came from is written on the line.
 #
-# The sheet prices by ROLL / BOX / carton; the catalog prices by SQ / LF / EA.
+# Both sheets price by ROLL / BOX / carton; the catalog prices by SQ / LF / EA.
 # Every conversion is written out on the line that uses it so the next person
 # holding a newer sheet can redo it without guessing what was assumed.
-COMMERCIAL_PRICE_SHEET = {
-    'supplier': 'GAF',
-    'quoted': '2026-05-19',
-    'expires': '2026-06-30',
-    'scope': 'GAF TPO systems only - EPDM is a different manufacturer and is not priced here.',
-    'excludes': 'Manufacturer fuel surcharge and freight. Direct truckload freight $750/load; '
-                'warehouse truckload $200/truck. Tax figured at shipment.',
+COMMERCIAL_PRICE_SHEETS = {
+    'carlisle': {
+        'supplier': 'Carlisle',
+        'quoted': '2026-08-19',
+        'expires': '2026-08-30',
+        'scope': 'Sure-Weld TPO and Sure-Seal EPDM, insulation, fasteners, accessories.',
+        'excludes': 'Freight, fuel and material surcharges, and hazmat fees. Warehouse '
+                    'truckload $200/truck. Tax figured at shipment.',
+        'gaps': 'No REINFORCED EPDM (Sure-Tough) - so a mechanically fastened EPDM roof '
+                'has no priced membrane. No 1/4" cover board. No retrofit drain or scupper.',
+    },
+    'gaf': {
+        'supplier': 'GAF',
+        'quoted': '2026-05-19',
+        'expires': '2026-06-30',
+        'expired': True,
+        'scope': 'EverGuard TPO only. Retained for the membranes Carlisle did not quote.',
+        'excludes': 'Manufacturer fuel surcharge and freight. Direct truckload freight '
+                    '$750/load; warehouse truckload $200/truck. Tax figured at shipment.',
+    },
 }
+# Kept as the "current" sheet for anything that asks for one.
+COMMERCIAL_PRICE_SHEET = COMMERCIAL_PRICE_SHEETS['carlisle']
 
-# Manufacturer + code requirements that decide whether a LAYOVER is even legal
-# on a given building. Surfaced on the Scope tab so the rep checks them on the
-# roof instead of finding out at inspection.
+# What decides whether a LAYOVER is legal on a given building. Split by WHERE
+# the rule comes from, because they carry different weight: the code ones are
+# not negotiable by anybody, the material one is physics, and the manufacturer
+# ones vary by the system actually specified.
 #
-#   IBC 1511.3 / 1512.2 (adopted locally in CO): a recover is NOT permitted
-#   where the existing roof is water-soaked or deteriorated past serving as a
-#   base, or where TWO OR MORE roof coverings are already in place.
-#
-#   GAF EverGuard recover requirements: strip ballast, loose gravel and debris;
-#   cut out blisters and ridges; an existing SINGLE-PLY roof must first be cut
-#   into 10' x 10' sections maximum before the separator/cover board goes down;
-#   pull all existing flashings, metal edge, drain leads, pipe boots and pitch
-#   pockets; remove and replace anything wet. A moisture survey is strongly
-#   recommended and is REQUIRED where perlite or wood-fibre insulation stays in
-#   the assembly. Recover over a coal-tar pitch roof is not allowed at all.
-#   GAF also calls for tear-off outright once more than 25% of the roof is wet.
-#
-#   EPDM additionally cannot touch asphalt: the bitumen's oils migrate into the
-#   rubber and embrittle it, so an EPDM layover over BUR or mod-bit needs the
-#   cover board as a permanent separation layer (or fleece-back membrane).
+# The manufacturer block below is GAF EverGuard's published recover procedure.
+# It is retained because it is the one Project One has actually been working
+# to, and because the steps (relieve trapped vapour, strip the roof back to a
+# sound substrate, survey for moisture) are common to every single-ply recover.
+# Carlisle publishes its own recover requirements for Sure-Weld and Sure-Seal,
+# and THOSE govern on a Carlisle job — the closing line says so rather than
+# quietly re-badging one manufacturer's procedure as another's.
 COMMERCIAL_LAYOVER_RULES = [
-    'Recover is not permitted where the existing roof already carries two or more '
-    'roof coverings, or where it is water-soaked or deteriorated (IBC 1511.3 / 1512.2).',
-    'Existing single-ply must be cut into 10\' x 10\' sections maximum before the cover '
-    'board is installed, per GAF EverGuard recover requirements.',
+    'CODE: a recover is not permitted where the existing roof already carries two or '
+    'more roof coverings, or where it is water-soaked or deteriorated past serving as '
+    'a base (IBC 1511.3 / 1512.2, adopted locally).',
+    'MATERIAL: EPDM cannot contact asphalt - the bitumen migrates into the rubber and '
+    'embrittles it. Over BUR or mod-bit the cover board is the required separation layer.',
     'Strip all ballast, loose gravel and debris; cut out blisters and ridges; remove all '
     'existing flashings, metal edge, drain leads, pipe boots and pitch pans.',
-    'Moisture survey strongly recommended - and required by GAF where perlite or '
-    'wood-fibre insulation stays in the assembly. Wet material must be removed.',
-    'GAF calls for a full tear-off once more than 25% of the roof area is wet.',
-    'Recover over a coal-tar pitch roof is not permitted.',
-    'EPDM cannot contact asphalt - over BUR or mod-bit the cover board is the required '
-    'separation layer.',
+    'Existing single-ply must be cut into 10\' x 10\' sections maximum before the cover '
+    'board is installed, to relieve trapped vapour.',
+    'Moisture survey strongly recommended - and required where perlite or wood-fibre '
+    'insulation stays in the assembly. Wet material must be removed and replaced.',
+    'Full tear-off once more than 25% of the roof area is wet.',
+    'No recover over a coal-tar pitch roof.',
+    'Confirm the above against the published recover requirements for the system '
+    'actually specified - the manufacturer\'s procedure governs the warranty.',
 ]
 
-# Polyiso ships priced BY THE SQUARE on the sheet, so these are lifted straight
+# Polyiso ships priced BY THE SQUARE on both sheets, so these lift straight
 # across. R-value drives which one the spec calls for, so they are all offered
 # rather than folded into one line: ~R-6 per inch of polyiso.
+#
+# Carlisle quoted 2.0" and 2.6" only. The rest are GAF's numbers off the
+# EXPIRED sheet - usable to scope a job, not to sign one. Re-quote before use.
 COMMERCIAL_ISO_SEED = [
-    ("ca_iso_10", '1.0" Polyiso Insulation (~R-6)',   65.34),
-    ("ca_iso_15", '1.5" Polyiso Insulation (~R-9)',   74.15),
-    ("ca_iso_22", '2.2" Polyiso Insulation (~R-13)', 108.75),
-    ("ca_iso_30", '3.0" Polyiso Insulation (~R-17)', 148.30),
-    ("ca_iso_40", '4.0" Polyiso Insulation (~R-23)', 197.73),
+    ("ca_iso_10", '1.0" Polyiso Insulation (~R-6)',   65.34, 'gaf'),
+    ("ca_iso_15", '1.5" Polyiso Insulation (~R-9)',   74.15, 'gaf'),
+    ("ca_iso_20", '2.0" Polyiso Insulation (~R-11)', 100.00, 'carlisle'),
+    ("ca_iso_22", '2.2" Polyiso Insulation (~R-13)', 108.75, 'gaf'),
+    ("ca_iso_30", '3.0" Polyiso Insulation (~R-17)', 148.30, 'gaf'),
+    ("ca_iso_40", '4.0" Polyiso Insulation (~R-23)', 197.73, 'gaf'),
+]
+
+# Tapered polyiso, priced BY THE PANEL on the Carlisle sheet (4'x4'). Left as
+# PC with a manual quantity on purpose: a tapered layout is engineered per roof
+# off the drain locations, so the panel counts come from that layout and not
+# from a square-foot measurement.
+COMMERCIAL_TAPERED_SEED = [
+    ("ca_taper_x", 'Tapered Polyiso - X panel, 1/4"/ft (0.5"-1.5", 4\'x4\')', 11.71),
+    ("ca_taper_y", 'Tapered Polyiso - Y panel, 1/4"/ft (1.5"-2.5", 4\'x4\')', 23.41),
+    ("ca_taper_q", 'Tapered Polyiso - Q panel, 1/2"/ft (0.5"-2.5", 4\'x4\')', 17.56),
 ]
 
 COMMERCIAL_CATALOG_SEED = [
-    # ── TPO membranes. Sheet is priced per roll; a 10'x100' roll is 1,000 sf =
-    # 10 SQ, and the half rolls confirm the math (5'x100' at exactly half).
-    # 60-mil is the default sell on both attachment methods — it is the same
-    # roll either way, and what changes is the attachment line under it. GAF
-    # requires HALF sheets on mechanically attached systems, which is why the
-    # sheet carries both widths at the same price per square.
-    {"id": "cm_tpo_ma", "name": "TPO Membrane 60-mil (Mechanically Fastened)", "unit": "SQ", "cost": 84.66, "measure": "comm_sq_waste", "attach": "mechanical",
-     "bullets": ["60-mil GAF EverGuard TPO single-ply membrane", "Seams hot-air welded into a monolithic sheet - no adhesive, no tape", "Fastened at the wind-zone density the code requires", "Highly reflective white surface cuts cooling load", "20-year manufacturer system warranty available"]},
-    {"id": "cm_tpo_fa", "name": "TPO Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 84.66, "measure": "comm_sq_waste", "attach": "adhered",
-     "bullets": ["60-mil GAF EverGuard TPO single-ply membrane, fully adhered to the substrate", "Seams hot-air welded into a monolithic sheet", "Highest wind uplift rating - built for exposed and high-rise decks", "Smooth, flutter-free finished surface with no fastener pattern showing", "20-year manufacturer system warranty available"]},
-    # Alternate thicknesses and specialty membranes. These are OPTIONS a rep
-    # swaps into a package, not packages of their own — 45-mil where budget
-    # drives it, 80-mil for hail and service traffic, self-adhered where fumes
-    # are a problem, fleece-back to bond over a rough existing substrate.
+    # ── TPO membranes. CARLISLE Sure-Weld 060, priced per roll: a 10'x100'
+    # roll is 1,000 sf = 10 SQ, so 806.82 / 10 = 80.68 per SQ. The 6'x100' roll
+    # confirms it (600 sf, 484.09 -> the same 80.68). Both widths are stocked
+    # because a mechanically fastened roof in a high-wind zone runs narrower
+    # sheets to get more fastening rows; the cost per square is identical.
+    {"id": "cm_tpo_ma", "name": "TPO Membrane 60-mil (Mechanically Fastened)", "unit": "SQ", "cost": 80.68, "measure": "comm_sq_waste", "attach": "mechanical",
+     "bullets": ["60-mil Carlisle Sure-Weld TPO single-ply membrane", "Seams hot-air welded into a monolithic sheet - no adhesive, no tape", "Fastened at the wind-zone density the code requires", "Highly reflective white surface cuts cooling load", "20-year manufacturer system warranty available"]},
+    {"id": "cm_tpo_fa", "name": "TPO Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 80.68, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil Carlisle Sure-Weld TPO single-ply membrane, fully adhered to the substrate", "Seams hot-air welded into a monolithic sheet", "Highest wind uplift rating - built for exposed and high-rise decks", "Smooth, flutter-free finished surface with no fastener pattern showing", "20-year manufacturer system warranty available"]},
+    # Alternate thicknesses and specialty membranes — OPTIONS a rep swaps into
+    # a package, not packages of their own: 45-mil where budget drives it,
+    # 80-mil for hail and service traffic, self-adhered where fumes are a
+    # problem, fleece-back to bond over a rough existing substrate.
+    #
+    # These are GAF EverGuard products at GAF's prices, and Carlisle did not
+    # quote an equivalent. That sheet EXPIRED 2026-06-30 — good enough to scope
+    # a job, not to sign one. Re-quote (from either house) before selling.
     {"id": "cm_tpo45_ma", "name": "TPO Membrane 45-mil (Mechanically Fastened)", "unit": "SQ", "cost": 72.73, "measure": "comm_sq_waste", "attach": "mechanical",
      "bullets": ["45-mil GAF EverGuard TPO single-ply membrane, hot-air welded seams", "The value membrane when budget drives the decision", "Highly reflective white surface cuts cooling load"]},
     {"id": "cm_tpo80_ma", "name": "TPO Membrane 80-mil (Mechanically Fastened)", "unit": "SQ", "cost": 135.23, "measure": "comm_sq_waste", "attach": "mechanical",
@@ -11743,17 +11771,30 @@ COMMERCIAL_CATALOG_SEED = [
      "bullets": ["60-mil self-adhered TPO - factory-applied adhesive, no solvent bonding adhesive on site", "No open flame and no adhesive fumes - the low-disruption option over occupied space", "Highest wind uplift rating with a smooth finished surface"]},
     {"id": "cm_tpo_fb60", "name": "TPO Fleece-Back Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 139.21, "measure": "comm_sq_waste", "attach": "adhered",
      "bullets": ["60-mil fleece-back TPO - laminated fleece backing bonds over rough substrate", "The factory fleece doubles as a separation layer over an asphalt roof", "Extra puncture resistance and a cushioned walking surface"]},
-    # ── EPDM membranes. NOT on the GAF sheet and not a GAF product: EverGuard
-    # is TPO and PVC. These need a Johns Manville / Carlisle / Elevate quote.
+    # ── EPDM membranes. Carlisle quoted 060 FR NON-REINFORCED Sure-Seal:
+    # a 10'x100' roll is 1,000 sf = 10 SQ, so 965.91 / 10 = 96.59 per SQ
+    # (the 10'x50' roll agrees at 482.95 / 5).
     #
-    # The reinforced/non-reinforced split is a real manufacturer requirement,
-    # not a preference: a mechanically fastened system pulls against the sheet
-    # at every plate, so it needs the scrim-REINFORCED membrane. Fully adhered
-    # systems carry the load across the whole surface and run non-reinforced.
+    # The reinforced/non-reinforced split is a manufacturer requirement, not a
+    # preference. A mechanically fastened system loads the sheet at every
+    # plate, so it needs the scrim-REINFORCED membrane — Carlisle's Sure-Tough,
+    # sold specifically for their Reinforced Mechanically Fastened system.
+    # Non-reinforced Sure-Seal is specified for ADHERED and BALLASTED assemblies
+    # only.
+    #
+    # The 2026-08-19 quote has NO Sure-Tough on it. So the fastened EPDM
+    # package still has no membrane price, and putting the non-reinforced
+    # number there would spec a roof the manufacturer does not warrant.
+    # Ask Carlisle to add Sure-Tough reinforced EPDM to the quote.
     {"id": "cm_epdm_mf", "name": "EPDM Membrane 60-mil Reinforced (Mechanically Fastened)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "mechanical",
-     "bullets": ["60-mil scrim-reinforced EPDM rubber membrane", "Reinforced sheet is what a mechanically fastened EPDM system requires", "Seams spliced with primer and factory-applied seam tape", "Decades of proven field performance in freeze-thaw climates"]},
-    {"id": "cm_epdm_fa", "name": "EPDM Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
-     "bullets": ["60-mil EPDM rubber single-ply membrane, fully adhered", "Seams spliced with primer and factory-applied seam tape", "Excellent flexibility and hail resistance in freeze-thaw climates", "Smooth finished surface with no fastener pattern showing"]},
+     "bullets": ["60-mil scrim-reinforced EPDM rubber membrane", "Reinforced sheet is what a mechanically fastened EPDM system requires", "Seams spliced with primer and seam tape", "Decades of proven field performance in freeze-thaw climates"]},
+    {"id": "cm_epdm_fa", "name": "EPDM Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 96.59, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil Carlisle Sure-Seal EPDM rubber single-ply membrane, fully adhered", "Seams spliced with primer and seam tape", "Excellent flexibility and hail resistance in freeze-thaw climates", "Smooth finished surface with no fastener pattern showing"]},
+    # Same sheet with the splice tape factory-applied: 1,045.45 / 10 SQ =
+    # 104.55. Against the plain roll at 96.59 plus 9.22 of SecureTape that is
+    # a wash on material and saves the crew taping in the field.
+    {"id": "cm_epdm_fa_taped", "name": "EPDM Membrane 60-mil, Factory-Taped (Fully Adhered)", "unit": "SQ", "cost": 104.55, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil Carlisle Sure-Seal EPDM with factory-applied splice tape", "Factory tape means a cleaner, more consistent seam than taping in the field", "Excellent flexibility and hail resistance in freeze-thaw climates"]},
     # The original generic EPDM line. Kept so estimates written against it still
     # load; new bids should use the reinforced/adhered pair above.
     {"id": "cm_epdm", "name": "EPDM Membrane 60-mil (legacy - use the fastened or adhered line)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
@@ -11766,19 +11807,25 @@ COMMERCIAL_CATALOG_SEED = [
     # ── Build-up, tear-off systems
     # Default iso is 2.6" (~R-15), the common single-layer Colorado spec. The
     # other thicknesses ride in the catalog — see COMMERCIAL_ISO_SEED.
-    {"id": "ca_iso", "name": '2.6" Polyiso Insulation (~R-15)', "unit": "SQ", "cost": 128.52, "measure": "comm_sq_waste",
+    {"id": "ca_iso", "name": '2.6" Polyiso Insulation (~R-15)', "unit": "SQ", "cost": 130.00, "measure": "comm_sq_waste",
      "bullets": ["Polyiso insulation to the specified R-value"]},
-    # GAF ISO High Density 0.5" 4'x8', already priced per SQ on the sheet.
-    {"id": "ca_cover", "name": "Cover Board (1/2\" HD)", "unit": "SQ", "cost": 88.64, "measure": "comm_sq_waste",
+    # Carlisle 1/2" SecureShield HD, already priced per SQ on the sheet.
+    {"id": "ca_cover", "name": "Cover Board (1/2\" HD)", "unit": "SQ", "cost": 96.34, "measure": "comm_sq_waste",
      "bullets": ["High-density cover board over the insulation"]},
     # ── Build-up, layover systems
     # The 1/4" board is the whole layover assembly: it is the smooth substrate
     # for the new membrane AND the separation layer the manufacturer requires
     # over an existing roof (mandatory under EPDM over anything asphaltic).
-    # NOT on the GAF sheet — 1/4" recover boards are gypsum (DensDeck Prime,
-    # SecuRock), so this needs its own quote. Note GAF does not allow a perlite
-    # recover board under a FULLY ADHERED single-ply, which is why the layover
-    # packages specify a gypsum board rather than perlite.
+    # STILL not quoted. Carlisle's 2026-08-19 sheet carries 1/2" SecureShield
+    # HD (see ca_cover, 96.34/SQ) but no 1/4" board — the 1/4" entries on that
+    # sheet are TAPERED panels, where 1/4" is the SLOPE PER FOOT, not the
+    # thickness. A true 1/4" recover board is gypsum (DensDeck Prime,
+    # SecuRock) and needs its own quote.
+    #
+    # Two ways to close this: quote a 1/4" gypsum board, or respec the layover
+    # on the 1/2" SecureShield HD that is already priced. Note a perlite
+    # recover board is NOT allowed under a fully adhered single-ply, so the
+    # cheap option is off the table for the two adhered layover packages.
     {"id": "ca_cover_quarter", "name": "Cover Board 1/4\" (Layover / Recover)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
      "bullets": ["1/4\" high-density cover board installed over the existing roof", "Gives the new membrane a smooth, sound substrate without a tear-off", "Acts as the separation layer the membrane manufacturer requires over an existing roof"]},
 
@@ -11789,79 +11836,92 @@ COMMERCIAL_CATALOG_SEED = [
     # $83/SQ on a fastened bid would add thousands of dollars of material that
     # never ships.
     #
-    # GAF publishes the coverage rate this is derived from: solvent-based
-    # bonding adhesive covers 60 sq ft of finished, MATED surface per gallon,
-    # i.e. 300 sq ft (3 SQ) per 5-gallon pail. The sheet's LOW VOC pail is
-    # labelled "3.0 sq" and agrees exactly: 250.00 / 3 = 83.33 per SQ.
-    # Cheaper options on the same sheet, same 3 SQ per pail: the 1121 solvent
-    # pail at 183.75 works out to 61.25/SQ. The water-based WB181 pail covers
-    # 100 sq ft mated per gallon (5 SQ per pail) at 390.00 -> 78.00/SQ, and
-    # 6 SQ per pail under fleece-back -> 65.00/SQ.
-    {"id": "ca_adhesive", "name": "Bonding Adhesive (Fully Adhered Systems)", "unit": "SQ", "cost": 83.33, "measure": "comm_sq_waste",
+    # Carlisle publishes the coverage rate this is derived from: Sure-Weld TPO
+    # Bonding Adhesive covers ~60 sq ft of FINISHED surface per gallon, i.e.
+    # 300 sq ft (3 SQ) per 5-gallon pail. 188.58 / 3 = 62.86 per SQ.
+    # (GAF's equivalent pail worked out to 83.33 — this is the cheaper house.)
+    {"id": "ca_adhesive", "name": "Bonding Adhesive (Fully Adhered Systems)", "unit": "SQ", "cost": 62.86, "measure": "comm_sq_waste",
      "bullets": ["Manufacturer-specified bonding adhesive at the published coverage rate"]},
     # EPDM does not weld. Its seams are spliced with primer and seam tape, so
     # an EPDM system buys a consumable that a TPO system simply does not have.
-    {"id": "ca_epdm_seam", "name": "EPDM Seam Tape & Splice Primer", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
-     "bullets": ["Seams primed and spliced with factory-applied seam tape"]},
-    {"id": "ca_epdm_adhesive", "name": "EPDM Bonding Adhesive (Fully Adhered Systems)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
-     "bullets": ["Manufacturer-specified EPDM bonding adhesive at the published coverage rate"]},
+    # SecureTape 3"x100' at 92.21 is 0.9221 per LF of splice. A 10'-wide sheet
+    # puts a seam every 10 ft, which is ~10 LF of splice per SQ of roof, so
+    # 9.22/SQ of tape. HP-250 primer at 51.26/gal is the ASSUMED part: taken at
+    # 300 LF of 3" splice per gallon -> 1.71/SQ. Check the primer figure
+    # against real usage on the first EPDM job and correct it here.
+    {"id": "ca_epdm_seam", "name": "EPDM Seam Tape & Splice Primer", "unit": "SQ", "cost": 10.93, "measure": "comm_sq_waste",
+     "bullets": ["Seams primed and spliced with Carlisle SecureTape"]},
+    # Carlisle 90-8-30A: ~60 sq ft of finished surface per gallon, so 3 SQ per
+    # 5-gallon pail. 188.58 / 3 = 62.86 per SQ — same rate as the TPO adhesive.
+    {"id": "ca_epdm_adhesive", "name": "EPDM Bonding Adhesive (Fully Adhered Systems)", "unit": "SQ", "cost": 62.86, "measure": "comm_sq_waste",
+     "bullets": ["Carlisle 90-8-30A bonding adhesive at the published coverage rate"]},
     # Superseded by the two zone-calculated fastener lines — it stays in the
     # catalog for old estimates but has nothing left to say on a card.
     {"id": "ca_fasteners", "name": "Plates & Fasteners (legacy - replaced by the zone calculator)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
      "bullets": []},
     # Counts come from commercial_fastening(): zone area x the density table.
-    # TEAR-OFF cost is one fastener + one plate sized for the default 2.6" iso
-    # + 1/2" cover board (about 3.1" of build-up, so a 4" fastener):
-    #   4" #12 fastener  226.70 / 1,000 = 0.2267
-    #   3" DT plate      260.23 / 1,000 = 0.2602
-    {"id": "ca_fast_insul", "name": "Insulation Fasteners & Plates", "unit": "EA", "cost": 0.49, "measure": "comm_fast_insul",
+    # TEAR-OFF, insulation: one fastener + one plate sized for the default 2.6"
+    # iso + 1/2" cover board (about 3.1" of build-up, so a 4" fastener):
+    #   Carlisle 4" InsulFast   240.19 / 1,000 = 0.24019
+    #   Carlisle 3" Insul Plate 263.40 / 1,000 = 0.26340
+    {"id": "ca_fast_insul", "name": "Insulation Fasteners & Plates", "unit": "EA", "cost": 0.50, "measure": "comm_fast_insul",
      "bullets": ["Insulation fastened at the wind-zone density the code requires"]},
-    {"id": "ca_fast_seam", "name": "Membrane Seam Fasteners & Plates", "unit": "EA", "cost": 0.49, "measure": "comm_fast_seam",
+    # TEAR-OFF, membrane seam: the heavy-duty screw and the seam plate, which
+    # cost more than the insulation pair — the seam is what holds the roof on.
+    #   Carlisle 4" HP fastener 311.63 / 1,000 = 0.31163
+    #   Carlisle 2" seam plate  306.27 / 1,000 = 0.30627
+    {"id": "ca_fast_seam", "name": "Membrane Seam Fasteners & Plates", "unit": "EA", "cost": 0.62, "measure": "comm_fast_seam",
      "bullets": ["Membrane seams fastened at the wind-zone density the code requires"]},
-    # LAYOVER fasteners are longer and cost more: they pass through the 1/4"
+    # LAYOVER fasteners are longer and cost more: they pass through the cover
     # board AND the entire existing roof to reach the deck. Priced at a 5"
     # screw, which suits roughly 3-4" of existing build-up:
-    #   5" #12 fastener  288.75 / 1,000 = 0.28875
-    #   3" DT plate      260.23 / 1,000 = 0.2602
-    # A thicker existing assembly needs a longer screw again — the sheet runs
-    # to 10" and the price climbs the whole way, so check the core cut.
-    {"id": "ca_fast_cover", "name": "Cover Board Fasteners & Plates (Layover)", "unit": "EA", "cost": 0.55, "measure": "comm_fast_insul",
+    #   Carlisle 5" InsulFast   294.15 / 1,000 = 0.29415  (+ 3" plate 0.26340)
+    #   Carlisle 5" HP fastener 409.07 / 1,000 = 0.40907  (+ 2" seam plate 0.30627)
+    # A thicker existing assembly needs a longer screw again and the price
+    # climbs the whole way, so check the core cut before ordering.
+    {"id": "ca_fast_cover", "name": "Cover Board Fasteners & Plates (Layover)", "unit": "EA", "cost": 0.56, "measure": "comm_fast_insul",
      "bullets": ["Cover board fastened through the existing roof into the deck at the wind-zone density"]},
-    {"id": "ca_fast_seam_lo", "name": "Membrane Seam Fasteners & Plates (Layover)", "unit": "EA", "cost": 0.55, "measure": "comm_fast_seam",
+    {"id": "ca_fast_seam_lo", "name": "Membrane Seam Fasteners & Plates (Layover)", "unit": "EA", "cost": 0.72, "measure": "comm_fast_seam",
      "bullets": ["Membrane seams fastened through to the deck at the wind-zone density"]},
 
-    # ── Perimeter — both fabricated in-house from GAF coated metal, 4'x10'
-    # white 24ga at $463.06/sheet. Yield depends on the girth of the profile
-    # being bent, which is why these two differ so much:
-    #   edge/drip, ~8" girth  -> 6 strips x 10' = 60 LF/sheet -> 7.72/LF
-    #   coping,   ~18" girth  -> 2 strips x 10' = 20 LF/sheet -> 23.15/LF
-    {"id": "ca_edge", "name": "Edge Metal / Drip", "unit": "LF", "cost": 7.72, "measure": "comm_perimeter",
+    # ── Perimeter — both fabricated in-house from Carlisle TPO coated metal,
+    # 4'x10' at $383.65/sheet. Yield depends on the girth of the profile being
+    # bent, which is why these two differ so much:
+    #   edge/drip, ~8" girth  -> 6 strips x 10' = 60 LF/sheet -> 6.39/LF
+    #   coping,   ~18" girth  -> 2 strips x 10' = 20 LF/sheet -> 19.18/LF
+    # A parapet wider than ~16" needs a bigger girth and a new number.
+    {"id": "ca_edge", "name": "Edge Metal / Drip", "unit": "LF", "cost": 6.39, "measure": "comm_perimeter",
      "bullets": ["New edge metal around the full perimeter"]},
-    {"id": "ca_coping", "name": "Coping Cap", "unit": "LF", "cost": 23.15, "measure": "comm_parapet",
+    {"id": "ca_coping", "name": "Coping Cap", "unit": "LF", "cost": 19.18, "measure": "comm_parapet",
      "bullets": ["New coping cap on the parapet walls"]},
-    # TPO lip term bar, 10' per piece at $17.60 -> 1.76/LF.
-    {"id": "ca_termbar", "name": "Termination Bar / Wall Flashing", "unit": "LF", "cost": 1.76, "measure": "comm_parapet",
+    # Carlisle termination bar 1"x10', 10' per piece at $18.52 -> 1.85/LF.
+    {"id": "ca_termbar", "name": "Termination Bar / Wall Flashing", "unit": "LF", "cost": 1.85, "measure": "comm_parapet",
      "bullets": ["New termination bar and wall flashing"]},
     # ── Details
-    # GAF pre-molded vent boot, 1"-6" pipe, $45.23 each.
-    {"id": "ca_pipe_flash", "name": "Penetration Flashing / Pipe Boot", "unit": "EA", "cost": 45.23, "measure": "comm_penetrations",
+    # Carlisle TPO universal pipe boot, $42.41 each. (The EPDM equivalent, the
+    # 1"-6" PS molded pipe seal, is $56.41 — swap it in on an EPDM job.)
+    {"id": "ca_pipe_flash", "name": "Penetration Flashing / Pipe Boot", "unit": "EA", "cost": 42.41, "measure": "comm_penetrations",
      "bullets": ["Every penetration flashed and sealed"]},
-    # The sheet has no retrofit drain, so this is priced off the TPO scupper it
-    # shares a measurement with (4"x6"x12" at $240.43). A cast retrofit drain
-    # is a different part and a different number — price it per job.
+    # NEITHER sheet has a retrofit drain, and Carlisle quoted no scupper at
+    # all, so this is still the GAF scupper price (4"x6"x12" at $240.43) off
+    # the EXPIRED sheet. A cast retrofit drain is a different part and a
+    # different number — get it quoted, or price it per job.
     {"id": "ca_drain", "name": "Drain Assembly / Retrofit Drain", "unit": "EA", "cost": 240.43, "measure": "comm_drains",
      "bullets": ["Roof drains flashed and tied into the new membrane"]},
     # Curb flashing is fabricated, not bought, so this is built from the
-    # detailing membrane: UN-55 24"x50' at $452.50 = $9.05/LF, times a 24 LF
-    # perimeter (a typical 8'x4' HVAC curb) = $217.20. Big curbs cost more.
-    {"id": "ca_curb", "name": "Curb Flashing (HVAC / Skylight)", "unit": "EA", "cost": 217.20, "measure": "comm_curbs",
+    # flashing membrane: Carlisle 060 24"x50' at $440.40 = $8.81/LF, times a
+    # 24 LF perimeter (a typical 8'x4' HVAC curb) = $211.44. Bigger curbs cost
+    # more — this is a typical-curb allowance, not a measured quantity.
+    {"id": "ca_curb", "name": "Curb Flashing (HVAC / Skylight)", "unit": "EA", "cost": 211.44, "measure": "comm_curbs",
      "bullets": ["HVAC and skylight curbs flashed"]},
-    # Pourable sealant pocket 9"x6"x4" at $60.58, plus one 2-litre pouch of
-    # 1-part pourable sealer (4-pouch carton $87.28 -> $21.82/pouch) = $82.40.
-    {"id": "ca_pitchpan", "name": "Pitch Pan", "unit": "EA", "cost": 82.40, "measure": "comm_pitch_pans",
+    # Carlisle molded sealant pocket at $44.96, plus one pouch of one-part
+    # pourable sealer (4-pouch carton $67.94 -> $16.99/pouch) = $61.95.
+    {"id": "ca_pitchpan", "name": "Pitch Pan", "unit": "EA", "cost": 61.95, "measure": "comm_pitch_pans",
      "bullets": ["Pitch pans set and sealed at odd penetrations"]},
-    # Cut from a 30.25"x50' walkway roll at $734.77 — ten 5' pads per roll.
-    {"id": "ca_walkway", "name": "Walkway Pad", "unit": "EA", "cost": 73.48, "measure": "comm_walkway_pads",
+    # Cut from a Carlisle 34"x50' TPO walkway roll at $650.59 — ten 5' pads
+    # per roll. On an EPDM job the pre-made 30"x30" PS walkpad is $42.27 and
+    # needs no cutting; swap it in there.
+    {"id": "ca_walkway", "name": "Walkway Pad", "unit": "EA", "cost": 65.06, "measure": "comm_walkway_pads",
      "bullets": ["Walkway pads at access points and service areas"]},
 
     # ── Labor. One line per package, because tearing a roof off is not the
@@ -11900,8 +11960,9 @@ COMMERCIAL_CATALOG_SEED = [
      "bullets": []},
 
     # ── Misc — manual quantities, job-specific, so they stay unpriced.
-    # Freight belongs here: the sheet excludes it, at $750 per direct truckload
-    # or $200 per truck out of the warehouse.
+    # Freight belongs here: Carlisle excludes freight, fuel and material
+    # surcharges and hazmat fees, and charges $200 per truck out of the
+    # warehouse.
     {"id": "cx_misc", "name": "Misc Accessories (lap sealant, pitch pans, pads)", "unit": "LS", "cost": 0,
      "bullets": []},
     {"id": "cx_freight", "name": "Material Freight / Delivery", "unit": "LS", "cost": 0,
@@ -11920,7 +11981,12 @@ COMMERCIAL_CATALOG_SEED = [
 COMMERCIAL_CATALOG_SEED.extend(
     {"id": _iid, "name": _iname, "unit": "SQ", "cost": _icost, "measure": "comm_sq_waste",
      "bullets": ["Polyiso insulation to the specified R-value"]}
-    for _iid, _iname, _icost in COMMERCIAL_ISO_SEED)
+    for _iid, _iname, _icost, _isrc in COMMERCIAL_ISO_SEED)
+# Tapered panels carry no measure: the layout decides the count, not the area.
+COMMERCIAL_CATALOG_SEED.extend(
+    {"id": _tid, "name": _tname, "unit": "PC", "cost": _tcost,
+     "bullets": ["Tapered polyiso to the engineered layout, sloping the roof to drain"]}
+    for _tid, _tname, _tcost in COMMERCIAL_TAPERED_SEED)
 
 # ── Package build-ups ───────────────────────────────────────────────────
 # Perimeter, details and the lump sums are the same on all eight.

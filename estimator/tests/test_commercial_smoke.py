@@ -235,26 +235,33 @@ def test_every_package_builds_and_prices_on_the_same_building(client, A):
     out.append('')
     print('\n'.join(out))
 
-    # The four TPO packages price their materials either way; only the two
-    # tear-off ones are complete, because layover labor has not landed yet.
+    # Complete today: both TPO tear-offs, and — since the Carlisle quote landed
+    # — EPDM tear-off fully adhered. That last one is the milestone: before
+    # Carlisle there was no priced EPDM roof at all.
     priced = {name for name, cost, nblank in rows if not nblank}
-    assert 'TPO - Tear-Off, Mechanically Fastened' in priced
-    assert 'TPO - Tear-Off, Fully Adhered' in priced
+    assert priced == {'TPO - Tear-Off, Mechanically Fastened',
+                      'TPO - Tear-Off, Fully Adhered',
+                      'EPDM - Tear-Off, Fully Adhered'}, sorted(priced)
 
-    # Everything still open must be an EPDM line, a 1/4" board, or layover
-    # labor — i.e. something a supplier or Luke still owes a number for, never
-    # a line that silently lost its cost in a refactor.
-    expected_open = {'EPDM Membrane 60-mil Reinforced (Mechanically Fastened)',
-                     'EPDM Membrane 60-mil (Fully Adhered)',
-                     'EPDM Seam Tape & Splice Primer',
-                     'EPDM Bonding Adhesive (Fully Adhered Systems)',
-                     'Cover Board 1/4" (Layover / Recover)',
-                     'Layover Prep & Install Labor - TPO Mechanically Fastened',
-                     'Layover Prep & Install Labor - TPO Fully Adhered',
-                     'Layover Prep & Install Labor - EPDM Mechanically Fastened',
-                     'Layover Prep & Install Labor - EPDM Fully Adhered'}
+    # Asserted EXACTLY, not as a subset: this is a live checklist. A line that
+    # silently loses its cost in a refactor fails it, and so does one that gets
+    # filled in without being struck off here.
+    expected_open = {
+        # Carlisle quoted only NON-reinforced EPDM, which is specified for
+        # adhered and ballasted work. Fastened needs Sure-Tough reinforced.
+        'EPDM Membrane 60-mil Reinforced (Mechanically Fastened)',
+        # Neither sheet carries a 1/4" board.
+        'Cover Board 1/4" (Layover / Recover)',
+        # The four rates Luke is getting from his crew.
+        'Layover Prep & Install Labor - TPO Mechanically Fastened',
+        'Layover Prep & Install Labor - TPO Fully Adhered',
+        'Layover Prep & Install Labor - EPDM Mechanically Fastened',
+        'Layover Prep & Install Labor - EPDM Fully Adhered',
+    }
     seen = {n for _, names in unpriced_pkgs for n in names}
-    assert seen <= expected_open, f'unexpectedly unpriced: {sorted(seen - expected_open)}'
+    assert seen == expected_open, (
+        f'newly unpriced: {sorted(seen - expected_open)}; '
+        f'now priced, strike off: {sorted(expected_open - seen)}')
 
 
 def test_a_layover_bid_renders_its_requirements_for_the_crew(client, A):
