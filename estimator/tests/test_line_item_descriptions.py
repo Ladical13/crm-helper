@@ -199,6 +199,9 @@ def test_every_single_line_pdf_cell_uses_the_flattening_trunc():
     truncs = re.findall(r'    def trunc\(s, n\):\n(.*?)\n\n', src, re.S)
     assert len(truncs) == 2, f'expected 2 local trunc() helpers, found {len(truncs)}'
     for body in truncs:
-        assert '_pdf_oneline(s)' in body, (
+        # Either flattener is fine — _pdf_oneline_rich is the same collapse for
+        # the documents that embed Unicode faces. What must not come back is a
+        # bare _pdf_safe, which leaves the newline in place for pdf.cell().
+        assert ('_pdf_oneline(s)' in body or '_pdf_oneline_rich(s)' in body), (
             'a local trunc() no longer flattens newlines before pdf.cell()'
         )

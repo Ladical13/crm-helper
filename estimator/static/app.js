@@ -12513,13 +12513,19 @@ async function generatePermitPacket(btn) {
 }
 
 /* Work-order fields the rep fills in AFTER signing (schedule date, satellite
-   dish, layers to tear off). Save writes to est.work_order without touching
+   dish, layers, height/access, hand load). Save writes to est.work_order without touching
    the packet PDF; Regenerate rebuilds so the numbers land on the sheet;
    Push to Den regenerates then files in Base44. */
 function renderWorkOrderForm() {
   const wo = S.work_order || {};
   const dish = wo.satellite_dish || '';
   const dishOpts = ['', 'Reinstall', 'Remove', 'Leave in place', 'N/A — no dish'];
+  // Height and hand load change crew size and the day rate, so the crew needs
+  // them before they roll — not discovered in the driveway.
+  const height = wo.height_access || '';
+  const heightOpts = ['', '1-story', '2-story', '3-story / high', 'Walkout / split level'];
+  const handLoad = wo.hand_load || '';
+  const loadOpts = ['', 'No — boom/conveyor', 'YES — hand load', 'Partial hand load'];
   return `
   <div class="wo-form">
     <div class="wo-form-title">Work Order Details <span class="pm-hint" style="font-weight:normal">(fill in, then Regenerate — Push to Den when ready)</span></div>
@@ -12537,6 +12543,16 @@ function renderWorkOrderForm() {
           ${dishOpts.map(o => `<option value="${esc(o)}" ${o === dish ? 'selected' : ''}>${esc(o || '— choose —')}</option>`).join('')}
         </select>
       </label>
+      <label>Height / Access
+        <select id="wo-height">
+          ${heightOpts.map(o => `<option value="${esc(o)}" ${o === height ? 'selected' : ''}>${esc(o || '— choose —')}</option>`).join('')}
+        </select>
+      </label>
+      <label>Hand Load
+        <select id="wo-handload">
+          ${loadOpts.map(o => `<option value="${esc(o)}" ${o === handLoad ? 'selected' : ''}>${esc(o || '— choose —')}</option>`).join('')}
+        </select>
+      </label>
     </div>
     <div class="wo-form-btns">
       <button class="doc-crm-push" onclick="saveWorkOrderFields()">💾 Save</button>
@@ -12549,7 +12565,10 @@ function _readWorkOrderForm() {
   const sched  = (document.getElementById('wo-sched')  || {}).value || '';
   const layers = (document.getElementById('wo-layers') || {}).value || '';
   const dish   = (document.getElementById('wo-dish')   || {}).value || '';
-  const out = {scheduled_date: sched, satellite_dish: dish};
+  const height = (document.getElementById('wo-height') || {}).value || '';
+  const hload  = (document.getElementById('wo-handload') || {}).value || '';
+  const out = {scheduled_date: sched, satellite_dish: dish,
+               height_access: height, hand_load: hload};
   if (layers !== '') out.tear_off_layers = parseInt(layers, 10);
   return out;
 }

@@ -7298,8 +7298,8 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
 
     # New page — three thumbnails don't fit alongside the last pricing table.
     pdf.add_page()
-    pdf.set_font(_S(pdf), 'B', 12)
-    pdf.set_text_color(26, 58, 92)
+    pdf.set_font(getattr(pdf, '_serif', _S(pdf)), 'B', 13)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
     pdf.cell(0, 7, _pdf_rich('How your home will look'),
              new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
@@ -8612,6 +8612,102 @@ def siding_material_takeoff(est, tier):
     return rows
 
 
+def _new_internal_pdf(eyebrow):
+    """An internal document (work order, material order, permit sheet) with the
+    same chrome as the customer PDF.
+
+    These are the sheets that go to a crew on a roof and to a supplier's
+    counter, and they were the last documents still drawing in core Helvetica
+    on the old #1a3a5c navy with no page numbers at all — a three-page packet
+    that gets separated in a truck has no way to be put back in order. Returns
+    (pdf, SANS, SERIF, W).
+    """
+    LM = RM = 14
+    _LOGO = os.path.join(BASE_DIR, 'static', 'logo.png')
+    _W = 215.9 - LM - RM
+
+    class _IntPDF(FPDF):
+        def header(self):
+            if getattr(self, '_no_chrome', False):
+                return
+            y = 11
+            if os.path.exists(_LOGO):
+                try:
+                    self.image(_LOGO, x=LM, y=y, h=6.5)
+                except Exception:
+                    pass
+            self.set_xy(LM, y)
+            self.set_font(self._sans, '', 7)
+            self.set_text_color(*_PDF_STYLE['faint'])
+            self.cell(_W, 4, _pdf_rich(self._eyebrow), align='R',
+                      new_x='LMARGIN', new_y='NEXT')
+            self.set_draw_color(*_PDF_STYLE['rule'])
+            self.set_line_width(0.2)
+            self.line(LM, y + 10.5, self.w - RM, y + 10.5)
+            self.set_text_color(*_PDF_STYLE['ink'])
+            self.set_y(y + 15)
+
+        def footer(self):
+            if getattr(self, '_no_chrome', False):
+                return
+            self.set_y(-12)
+            self.set_draw_color(*_PDF_STYLE['rule'])
+            self.set_line_width(0.2)
+            self.line(LM, self.get_y(), self.w - RM, self.get_y())
+            self.ln(2.5)
+            self.set_font(self._sans, '', 6.5)
+            self.set_text_color(*_PDF_STYLE['faint'])
+            self.cell(0, 4, _pdf_rich('Project One Roofing  ·  Internal document'), align='L')
+            self.cell(0, 4, f'Page {self.page_no()} of {{nb}}',
+                      align='R', new_x='LMARGIN', new_y='NEXT')
+            self.set_text_color(*_PDF_STYLE['ink'])
+
+    pdf = _IntPDF(orientation='P', unit='mm', format='Letter')
+    SANS, SERIF = _pdf_fonts(pdf)
+    pdf._sans, pdf._serif, pdf._eyebrow = SANS, SERIF, eyebrow
+    pdf.alias_nb_pages()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.set_margins(LM, 26, RM)
+    pdf.add_page()
+    return pdf, SANS, SERIF, _W
+
+
+def _int_styles(pdf, SANS, SERIF, W):
+    """Section heading / key-value / table helpers shared by the internal docs."""
+    def section(eyebrow, title):
+        if pdf.get_y() > pdf.h - 46:
+            pdf.add_page()
+        pdf.ln(3)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['teal'])
+        pdf.cell(0, 4, _pdf_rich(eyebrow.upper()), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font(SERIF, 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(title), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(1)
+
+    def kv(rows, label_w=44):
+        """Key/value rows on hairlines. multi_cell for the value so a long
+        address wraps instead of running off the page."""
+        for label, val in rows:
+            if val in (None, ''):
+                continue
+            y0 = pdf.get_y()
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(label_w, 5.6, _pdf_rich(str(label).upper()))
+            pdf.set_font(SANS, '', 9.5)
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.multi_cell(W - label_w, 5.6, _pdf_rich(str(val)),
+                           new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.set_draw_color(*_PDF_STYLE['rule'])
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+            pdf.ln(1.6)
+
+    return section, kv
+
+
 def build_production_packet_pdf(est):
     """Work order + material order for the SIGNED package, for the crew and
     supplier. Deliberately contains NO pricing anywhere — it leaves the
@@ -8629,49 +8725,47 @@ def build_production_packet_pdf(est):
     labels = dict(roofing='Roofing', siding='Siding', windows='Windows',
                   gutters='Gutters', other='Other / Misc')
 
-    pdf = FPDF(orientation='P', unit='mm', format='Letter')
-    pdf.set_auto_page_break(auto=True, margin=16)
-    pdf.set_margins(14, 14, 14)
-    pdf.add_page()
-    W = pdf.w - 28
-
-    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
-    if os.path.exists(logo):
-        try:
-            pdf.image(logo, x=14, y=12, h=16)
-        except Exception:
-            pass
-    pdf.set_xy(14, 12)
-    pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_font('Helvetica', '', 8)
-    pdf.cell(W, 4, '970-776-0945  -  projectoneroofingcolorado.com', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_y(32)
+    pdf, SANS, SERIF, W = _new_internal_pdf(f'Work order  ·  {enum}')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
 
     def title_bar(txt):
-        pdf.set_fill_color(26, 58, 92)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font('Helvetica', 'B', 13)
-        pdf.cell(W, 10, f'  {txt}', fill=True, new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
-        pdf.ln(4)
+        pdf.set_font(SERIF, 'B', 20)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(W, 10, _pdf_rich(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+        pdf.ln(5)
 
-    def section_title(txt):
-        pdf.set_font('Helvetica', 'B', 10.5)
-        pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
+    def section_title(txt, need=42):
+        # `need` is the vertical room this section wants in mm. The default
+        # carries the heading plus roughly five lines of body, which is what
+        # stops a heading sitting alone at the foot of a page with its text on
+        # the next one. Tables ask for more so they don't strand a stub.
+        if pdf.get_y() > pdf.h - need:
+            pdf.add_page()
+        pdf.ln(3)
+        pdf.set_font(SERIF, 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(1)
 
     def table_header(cols):
-        pdf.set_fill_color(234, 239, 245)
-        pdf.set_font('Helvetica', 'B', 8)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.set_draw_color(*_PDF_STYLE['navy'])
+        pdf.set_line_width(0.3)
         for txt, w, align in cols:
-            pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
+            pdf.cell(w, 7, _pdf_rich(str(txt).upper()), border='B', align=align)
         pdf.ln()
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
 
     def trunc(s, n):
         # _pdf_oneline, not _pdf_safe: these are single-line pdf.cell() values.
-        s = _pdf_oneline(s)
+        s = _pdf_oneline_rich(s)
         return s if len(s) <= n else s[:n - 1] + '...'
 
     # ── Page 1: Work Order ──
@@ -8706,10 +8800,10 @@ def build_production_packet_pdf(est):
     for label, val in info_rows:
         if not val:
             continue
-        pdf.set_font('Helvetica', 'B', 9)
-        pdf.cell(40, 5.5, _pdf_safe(label))
-        pdf.set_font('Helvetica', '', 9)
-        pdf.cell(0, 5.5, _pdf_safe(val), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font(SANS, 'B', 9)
+        pdf.cell(40, 5.5, _pdf_rich(label))
+        pdf.set_font(SANS, '', 9)
+        pdf.cell(0, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT')
     pdf.ln(3)
 
     # ── Job Details block ─────────────────────────────────────────────
@@ -8735,9 +8829,17 @@ def build_production_packet_pdf(est):
     # Match squares_waste in app.js/app.py: (roof_sq - low_slope) × (1 + waste)
     installed_sq    = max(roof_sq_total - low_slope_sq, 0.0) * (1 + waste_pct / 100.0)
     roofing_td      = trades.get('roofing') or {}
-    has_ridge_vent  = any(it.get('vent_role') == 'ridge'
-                          for it in (roofing_td.get('line_items') or []))
+    _vent_roles     = {it.get('vent_role') for it in (roofing_td.get('line_items') or [])}
+    has_ridge_vent  = 'ridge' in _vent_roles
+    has_intake_vent = 'intake' in _vent_roles
     vent_cutin0     = est.get('vent_cutin') or {}
+
+    # Blank-line fallback so an unfilled sheet still gives the crew somewhere
+    # to write it down on the roof.
+    def _wo(key, blank):
+        v = wo0.get(key)
+        v = str(v).strip() if v is not None else ''
+        return v or blank
 
     detail_rows = []
     if roof_sq_total > 0:
@@ -8745,32 +8847,38 @@ def build_production_packet_pdf(est):
                             f'{installed_sq:.1f} SQ (roof {roof_sq_total:g} SQ + {waste_pct:g}% waste'
                             + (f', minus {low_slope_sq:g} SQ low-slope' if low_slope_sq else '')
                             + ')'))
-    if steep_sq > 0 or pitch_num > 0:
-        pitch_txt = f' at {int(pitch_num)}/12 pitch' if pitch_num > 0 else ''
-        steep_txt = f'{steep_sq:g} SQ steep{pitch_txt}' if steep_sq > 0 else \
-                    f'Predominant pitch {int(pitch_num)}/12'
-        detail_rows.append(('Steep Area', steep_txt))
-    # Ridge vent — always show it, with an explicit YES/NO
-    detail_rows.append(('Ridge Vent',
-                        'YES - see cut-in map below' if has_ridge_vent else 'NO'))
-    # work_order fields — fall back to "________" so the printed sheet has a
-    # blank line for the crew when nothing was entered
+    detail_rows.append(('Scheduled Date',
+                        _wo('scheduled_date', '____________ (TBD)')))
     detail_rows.append(('Tear-off Layers',
                         (str(wo0.get('tear_off_layers')) + ' layer(s)')
                         if wo0.get('tear_off_layers') is not None
                         else '____ (fill in)'))
-    detail_rows.append(('Scheduled Date',
-                        (wo0.get('scheduled_date') or '').strip() or '____________ (TBD)'))
+    # Steep and height are the two adders that change crew size and day rate,
+    # so they ride at the top rather than being inferred from the line items.
+    if steep_sq > 0 or pitch_num > 0:
+        pitch_txt = f' at {int(pitch_num)}/12 pitch' if pitch_num > 0 else ''
+        steep_txt = f'{steep_sq:g} SQ steep{pitch_txt}' if steep_sq > 0 else \
+                    f'Predominant pitch {int(pitch_num)}/12'
+        detail_rows.append(('Steep Charge', steep_txt))
+    else:
+        detail_rows.append(('Steep Charge', 'None - walkable'))
+    detail_rows.append(('Height / Access',
+                        _wo('height_access', '____________ (1-story / 2-story / high)')))
+    detail_rows.append(('Hand Load',
+                        _wo('hand_load', '____________ (yes / no)')))
+    detail_rows.append(('Ridge Vent',
+                        'YES - see cut-in map below' if has_ridge_vent else 'NO'))
+    detail_rows.append(('Intake Vent', 'YES' if has_intake_vent else 'NO'))
     detail_rows.append(('Satellite Dish',
-                        (wo0.get('satellite_dish') or '').strip() or '____________ (confirm w/ HO)'))
+                        _wo('satellite_dish', '____________ (confirm w/ HO)')))
 
     section_title('Job Details')
-    pdf.set_font('Helvetica', '', 9)
+    pdf.set_font(SANS, '', 9)
     for label, val in detail_rows:
-        pdf.set_font('Helvetica', 'B', 9)
-        pdf.cell(40, 5.5, _pdf_safe(label))
-        pdf.set_font('Helvetica', '', 9)
-        pdf.multi_cell(W - 40, 5.5, _pdf_safe(val))
+        pdf.set_font(SANS, 'B', 9)
+        pdf.cell(40, 5.5, _pdf_rich(label))
+        pdf.set_font(SANS, '', 9)
+        pdf.multi_cell(W - 40, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT', align='L')
     pdf.ln(2)
 
     # Ridge-vent cut-in map, inline under Job Details when applicable — the
@@ -8785,34 +8893,34 @@ def build_production_packet_pdf(est):
         raw_cut = math.ceil(vinfo['ridge_lf_required'])
         cutin = min(raw_cut, int(ridge_lf)) if ridge_lf > 0 else raw_cut
         full_sticks = math.ceil(ridge_lf / 4) if ridge_lf > 0 else 0
-        pdf.set_font('Helvetica', '', 8.5)
+        pdf.set_font(SANS, '', 8.5)
         if ridge_lf > 0:
-            pdf.multi_cell(W, 4.6, _pdf_safe(
+            pdf.multi_cell(W, 4.6, _pdf_rich(
                 f'Install ridge vent the FULL ridge ({ridge_lf:g} LF, '
-                f'{full_sticks} stick(s)) for a uniform look.'))
+                f'{full_sticks} stick(s)) for a uniform look.'), new_x='LMARGIN', new_y='NEXT', align='L')
         else:
-            pdf.multi_cell(W, 4.6, _pdf_safe(
-                'Install ridge vent the full ridge for a uniform look.'))
-        pdf.set_font('Helvetica', 'B', 9)
+            pdf.multi_cell(W, 4.6, _pdf_rich(
+                'Install ridge vent the full ridge for a uniform look.'), new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.set_font(SANS, 'B', 9)
         if ridge_lf > 0 and cutin >= ridge_lf:
-            pdf.multi_cell(W, 4.8, _pdf_safe(
-                f'CUT IN the full ridge (~{cutin:g} LF) for code ventilation.'))
+            pdf.multi_cell(W, 4.8, _pdf_rich(
+                f'CUT IN the full ridge (~{cutin:g} LF) for code ventilation.'), new_x='LMARGIN', new_y='NEXT', align='L')
         else:
-            pdf.multi_cell(W, 4.8, _pdf_safe(
-                f'CUT IN only ~{cutin:g} LF for code-required ventilation - see map for locations.'))
+            pdf.multi_cell(W, 4.8, _pdf_rich(
+                f'CUT IN only ~{cutin:g} LF for code-required ventilation - see map for locations.'), new_x='LMARGIN', new_y='NEXT', align='L')
         note = (vent_cutin0.get('notes') or '').strip()
         if note:
-            pdf.set_font('Helvetica', '', 8.5)
-            pdf.multi_cell(W, 4.6, _pdf_safe(note))
+            pdf.set_font(SANS, '', 8.5)
+            pdf.multi_cell(W, 4.6, _pdf_rich(note), new_x='LMARGIN', new_y='NEXT', align='L')
         img_fn = vent_cutin0.get('image_filename')
         if img_fn:
             img_path = os.path.join(UPLOADS_DIR, *str(img_fn).split('/'))
             if os.path.exists(img_path):
                 try:
                     pdf.ln(2)
-                    pdf.set_font('Helvetica', 'I', 7.5)
+                    pdf.set_font(SANS, 'I', 7.5)
                     pdf.set_text_color(120, 120, 120)
-                    pdf.cell(0, 5, _pdf_safe(
+                    pdf.cell(0, 5, _pdf_rich(
                         'Cut-In Map (highlighted = cut open for ventilation):'),
                              new_x='LMARGIN', new_y='NEXT')
                     pdf.set_text_color(0, 0, 0)
@@ -8835,7 +8943,7 @@ def build_production_packet_pdf(est):
     if prod_rows:
         section_title('Product Selection')
         table_header([('Trade', 30, 'L'), ('Item', 60, 'L'), ('Selection', 92, 'L')])
-        pdf.set_font('Helvetica', '', 8)
+        pdf.set_font(SANS, '', 8)
         for trade, label, v in prod_rows:
             pdf.cell(30, 6, trunc(trade, 18), border=1)
             pdf.cell(60, 6, trunc(label, 40), border=1)
@@ -8861,7 +8969,7 @@ def build_production_packet_pdf(est):
     section_title('Scope of Work')
     if is_ins:
         table_header([('Item', 70, 'L'), ('Description', 112, 'L')])
-        pdf.set_font('Helvetica', '', 8)
+        pdf.set_font(SANS, '', 8)
         for sec in _insurance_sections(est):
             for it in sec.get('items', []):
                 pdf.cell(70, 6, trunc(it.get('name', ''), 46), border=1)
@@ -8870,51 +8978,66 @@ def build_production_packet_pdf(est):
         scope = (trades.get('insurance', {}).get('scope_notes') or '').strip()
         if scope:
             pdf.ln(2)
-            pdf.set_font('Helvetica', '', 8.5)
-            pdf.multi_cell(W, 4.6, _pdf_safe(scope))
+            pdf.set_font(SANS, '', 8.5)
+            pdf.multi_cell(W, 4.6, _pdf_rich(scope), new_x='LMARGIN', new_y='NEXT', align='L')
         pdf.ln(4)
     else:
+        # Retail/GBB: one line per trade, not the full item list. The Material
+        # Order below itemizes the same rows with quantities and units, so
+        # repeating them here made the crew read the scope twice and pushed the
+        # packet onto a fourth page.
+        summary = []
         for tk in GBB_TRADES:
             td = trades.get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
                 continue
-            trade_mode = _trade_mode(tk, td)
-            rows = list(_tier_items(td, trade_mode, _trade_tier(est, tk)))
-            if not rows:
-                continue
-            section_title(labels.get(tk, tk.title()))
-            table_header([('Work Item', 138, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
-            pdf.set_font('Helvetica', '', 8)
-            for it, qty, t in rows:
-                name = _with_section(it, it.get('name', ''))
-                desc = (t.get('description') or it.get('description') or '').strip()
-                if desc:
-                    name = f'{name} - {desc}'
-                pdf.cell(138, 6, trunc(name, 92), border=1)
-                pdf.cell(20, 6, f'{qty:g}', border=1, align='R')
-                pdf.cell(24, 6, trunc(it.get('unit', ''), 10), border=1, align='C')
-                pdf.ln()
-            pdf.ln(4)
+            rows = list(_tier_items(td, _trade_mode(tk, td), _trade_tier(est, tk)))
+            if rows:
+                summary.append((labels.get(tk, tk.title()), len(rows)))
+        if summary:
+            for label, n in summary:
+                pdf.set_font(SANS, '', 6.5)
+                pdf.set_text_color(*_PDF_STYLE['faint'])
+                pdf.cell(44, 5.6, _pdf_rich(str(label).upper()))
+                pdf.set_font(SANS, '', 9.5)
+                pdf.set_text_color(*_PDF_STYLE['ink'])
+                pdf.cell(0, 5.6, _pdf_rich(f'{n} work item(s) - itemized on the Material Order'),
+                         new_x='LMARGIN', new_y='NEXT')
+                pdf.set_draw_color(*_PDF_STYLE['rule'])
+                pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+                pdf.ln(1.6)
+            pdf.ln(3)
 
+    # One Notes section with two labelled blocks rather than two headings. Two
+    # separate section titles cost ~20mm of the sheet between them, which was
+    # enough to push a two-line crew note onto a page of its own.
     notes = (est.get('notes_customer') or '').strip()
-    if notes:
-        section_title('Customer Notes')
-        pdf.set_font('Helvetica', '', 8.5)
-        pdf.multi_cell(W, 4.6, _pdf_safe(notes))
-        pdf.ln(3)
-    crew = (est.get('notes_internal') or '').strip()
-    if crew:
-        section_title('Crew Notes (internal)')
-        pdf.set_font('Helvetica', '', 8.5)
-        pdf.multi_cell(W, 4.6, _pdf_safe(crew))
-        pdf.ln(3)
+    crew  = (est.get('notes_internal') or '').strip()
+    if notes or crew:
+        section_title('Notes')
+        for lbl, body in (('From the estimate', notes), ('Crew only - internal', crew)):
+            if not body:
+                continue
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(0, 4.4, _pdf_rich(lbl.upper()), new_x='LMARGIN', new_y='NEXT')
+            pdf.set_font(SANS, '', 8.5)
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.multi_cell(W, 4.6, _pdf_rich(body), new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.ln(2)
 
     # Ridge-vent cut-in is now printed inline under Job Details on page 1,
     # right next to the "Ridge Vent: YES" row — the crew doesn't have to
     # flip pages to find the picture.
 
-    # ── Page 2: Material Order ──
-    pdf.add_page()
+    # ── Material Order, on its own sheet ──
+    # Only break if this page has something on it. The last write of the work
+    # order can push past the auto-break threshold and silently open a fresh
+    # page; an unconditional add_page() on top of that left a completely blank
+    # sheet in the middle of the packet. On a just-broken page the cursor is
+    # still at the top margin.
+    if pdf.get_y() > pdf.t_margin + 1:
+        pdf.add_page()
     title_bar('MATERIAL ORDER')
 
     m = est.get('measurements') or {}
@@ -8954,19 +9077,19 @@ def build_production_packet_pdf(est):
                               if float(_bm.get('comm_work_type') or 0) else
                               'JOB TYPE: RE-ROOF (tear-off & disposal included)', 1, ''))
     if meas_rows:
-        section_title('Measurements')
+        section_title('Measurements', need=60)
         table_header([('Area', 30, 'L'), ('Measurement', 92, 'L'), ('Value', 36, 'R'), ('Unit', 24, 'C')])
-        pdf.set_font('Helvetica', '', 8)
+        pdf.set_font(SANS, '', 8)
         for group, label, v, unit in meas_rows:
             pdf.cell(30, 6, trunc(group, 18), border=1)
             pdf.cell(92, 6, trunc(label, 62), border=1)
             pdf.cell(36, 6, f'{v:g}', border=1, align='R')
-            pdf.cell(24, 6, _pdf_safe(unit), border=1, align='C')
+            pdf.cell(24, 6, _pdf_rich(unit), border=1, align='C')
             pdf.ln()
         waste = _mnum('waste_pct')
         if waste:
-            pdf.set_font('Helvetica', 'I', 8)
-            pdf.cell(0, 6, _pdf_safe(f'Roof quantities below already include {waste:g}% waste.'),
+            pdf.set_font(SANS, 'I', 8)
+            pdf.cell(0, 6, _pdf_rich(f'Roof quantities below already include {waste:g}% waste.'),
                      new_x='LMARGIN', new_y='NEXT')
         pdf.ln(4)
 
@@ -8977,12 +9100,12 @@ def build_production_packet_pdf(est):
     notes = (comm.get('notes') or '').strip()
     if est.get('estimate_type') == 'commercial' and (flags or notes):
         section_title('Job Complexity')
-        pdf.set_font('Helvetica', '', 9)
+        pdf.set_font(SANS, '', 9)
         for lbl in flags:
-            pdf.cell(0, 5.5, _pdf_safe(f'- {lbl}'), new_x='LMARGIN', new_y='NEXT')
+            pdf.cell(0, 5.5, _pdf_rich(f'- {lbl}'), new_x='LMARGIN', new_y='NEXT')
         if notes:
-            pdf.set_font('Helvetica', 'I', 9)
-            pdf.multi_cell(0, 5, _pdf_safe(notes))
+            pdf.set_font(SANS, 'I', 9)
+            pdf.multi_cell(0, 5, _pdf_rich(notes), new_x='LMARGIN', new_y='NEXT', align='L')
         pdf.ln(4)
 
     # ── Layover / recover requirements ──
@@ -8997,19 +9120,19 @@ def build_production_packet_pdf(est):
     # still gets the requirements printed.
     if est.get('estimate_type') == 'commercial' and _est_is_layover(est):
         section_title('Layover / Recover Requirements')
-        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_font(SANS, 'B', 9)
         pdf.set_text_color(170, 30, 30)
         # new_x/new_y on EVERY multi_cell: without them the cursor stays where
         # the last line ended, and the next call gets a width-0 box and throws
         # "Not enough horizontal space to render a single character".
-        pdf.multi_cell(0, 5, _pdf_safe(
+        pdf.multi_cell(0, 5, _pdf_rich(
             'VERIFY BEFORE THE FIRST BOARD GOES DOWN - a recover that does not '
             'meet these does not pass inspection and does not carry a warranty.'),
             new_x='LMARGIN', new_y='NEXT')
         pdf.set_text_color(0, 0, 0)
-        pdf.set_font('Helvetica', '', 8.5)
+        pdf.set_font(SANS, '', 8.5)
         for rule in COMMERCIAL_LAYOVER_RULES:
-            pdf.multi_cell(0, 4.6, _pdf_safe(f'- {rule}'),
+            pdf.multi_cell(0, 4.6, _pdf_rich(f'- {rule}'),
                            new_x='LMARGIN', new_y='NEXT')
         pdf.ln(4)
 
@@ -9022,27 +9145,27 @@ def build_production_packet_pdf(est):
         for _bld, _bm in _measurement_sets(est):
             fz = commercial_fastening(_bm, _ft)
             if _bld:
-                pdf.set_font('Helvetica', 'B', 9)
-                pdf.cell(0, 5.4, _pdf_safe(_bld), new_x='LMARGIN', new_y='NEXT')
+                pdf.set_font(SANS, 'B', 9)
+                pdf.cell(0, 5.4, _pdf_rich(_bld), new_x='LMARGIN', new_y='NEXT')
             if not fz['ok']:
                 # A silently-absent section is how a crew ends up guessing. Say it loudly.
-                pdf.set_font('Helvetica', 'B', 10)
+                pdf.set_font(SANS, 'B', 10)
                 pdf.set_text_color(170, 30, 30)
                 pdf.cell(0, 6, 'NOT CALCULATED - DO NOT ORDER FASTENERS FROM THIS SHEET',
                          new_x='LMARGIN', new_y='NEXT')
                 pdf.set_text_color(0, 0, 0)
-                pdf.set_font('Helvetica', '', 8.5)
+                pdf.set_font(SANS, '', 8.5)
                 _why = {'no_uplift_rating': 'No uplift rating was selected on the estimate.',
                         'missing_dimensions': 'Building length, width, and height were not entered.',
                         'no_table': 'No fastening table is configured.'}
-                pdf.multi_cell(0, 4.6, _pdf_safe(
+                pdf.multi_cell(0, 4.6, _pdf_rich(
                     _why.get(fz['reason'], 'Required inputs were missing.') +
                     ' Fastener quantities on the Material Order are ZERO. Confirm the fastening '
-                    'schedule against the system approval before the crew starts.'))
+                    'schedule against the system approval before the crew starts.'), new_x='LMARGIN', new_y='NEXT', align='L')
             else:
-                pdf.set_font('Helvetica', '', 8.5)
+                pdf.set_font(SANS, '', 8.5)
                 _zr = _ft.get('zone_rule') or {}
-                pdf.cell(0, 4.8, _pdf_safe(
+                pdf.cell(0, 4.8, _pdf_rich(
                     f"Uplift: {fz['rating_label']}   |   Zone width a = {fz['a']:.1f} ft   |   "
                     f"{_zr.get('standard', '')}"
                     f"{' (L-shaped corners)' if _zr.get('corner_shape') == 'L' else ' (square corners)'}"),
@@ -9050,7 +9173,7 @@ def build_production_packet_pdf(est):
                 pdf.ln(1)
                 table_header([('Zone', 26, 'L'), ('Area SF', 24, 'R'), ('Plates/Bd', 22, 'R'),
                               ('Insul Qty', 24, 'R'), ('Seam Spacing', 34, 'C'), ('Seam Qty', 24, 'R')])
-                pdf.set_font('Helvetica', '', 8)
+                pdf.set_font(SANS, '', 8)
                 for _z in ('field', 'perimeter', 'corner'):
                     _zi, _in, _se = fz['zones'][_z], fz['insul']['by_zone'][_z], fz['seam']['by_zone'][_z]
                     pdf.cell(26, 6, _z.title(), border=1)
@@ -9061,27 +9184,27 @@ def build_production_packet_pdf(est):
                                      if fz['seam']['applies'] else '-'), border=1, align='C')
                     pdf.cell(24, 6, f"{math.ceil(_se['count']):,}" if fz['seam']['applies'] else '-', border=1, align='R')
                     pdf.ln()
-                pdf.set_font('Helvetica', 'B', 8)
+                pdf.set_font(SANS, 'B', 8)
                 pdf.cell(96, 6, f"TOTAL (incl. {fz['waste_pct']:g}% waste)", border=1)
                 pdf.cell(24, 6, f"{fz['insul']['total']:,}" if fz['insul']['applies'] else '0', border=1, align='R')
                 pdf.cell(34, 6, '', border=1)
                 pdf.cell(24, 6, f"{fz['seam']['total']:,}" if fz['seam']['applies'] else '0', border=1, align='R')
                 pdf.ln()
-                pdf.set_font('Helvetica', 'I', 7.5)
+                pdf.set_font(SANS, 'I', 7.5)
                 if not fz['seam']['applies']:
-                    pdf.cell(0, 4.4, _pdf_safe('Seam fasteners: not applicable for this system.'),
+                    pdf.cell(0, 4.4, _pdf_rich('Seam fasteners: not applicable for this system.'),
                              new_x='LMARGIN', new_y='NEXT')
                 if not fz['insul']['applies']:
-                    pdf.cell(0, 4.4, _pdf_safe('Insulation fasteners: no fastened layers on this job.'),
+                    pdf.cell(0, 4.4, _pdf_rich('Insulation fasteners: no fastened layers on this job.'),
                              new_x='LMARGIN', new_y='NEXT')
                 # new_x/new_y on every multi_cell, per the note further up: without
                 # them the cursor stays where the last line ended, and the NEXT
                 # building's schedule gets a width-0 box and throws. Harmless
                 # while this ran once; a complex runs it per building.
                 for _w in fz['warnings']:
-                    pdf.multi_cell(0, 4.2, _pdf_safe('! ' + _w),
+                    pdf.multi_cell(0, 4.2, _pdf_rich('! ' + _w),
                                    new_x='LMARGIN', new_y='NEXT')
-                pdf.multi_cell(0, 4.2, _pdf_safe(_ft.get('source_note', '')),
+                pdf.multi_cell(0, 4.2, _pdf_rich(_ft.get('source_note', '')),
                                new_x='LMARGIN', new_y='NEXT')
             pdf.ln(4)
 
@@ -9103,9 +9226,9 @@ def build_production_packet_pdf(est):
                 if float(t.get('labor_unit_cost') or 0) > 0:
                     lab_rows.append((trade_lbl, name, qty, unit))
         if mat_rows:
-            section_title('Materials')
+            section_title('Materials', need=60)
             table_header([('Trade', 26, 'L'), ('Material', 112, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
-            pdf.set_font('Helvetica', '', 8)
+            pdf.set_font(SANS, '', 8)
             for trade_lbl, name, desc, qty, unit in mat_rows:
                 nm = f'{name} - {desc}' if desc else name
                 pdf.cell(26, 6, trunc(trade_lbl, 15), border=1)
@@ -9115,9 +9238,9 @@ def build_production_packet_pdf(est):
                 pdf.ln()
             pdf.ln(4)
         if lab_rows:
-            section_title('Labor Summary')
+            section_title('Labor Summary', need=70)
             table_header([('Trade', 26, 'L'), ('Work Item', 112, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
-            pdf.set_font('Helvetica', '', 8)
+            pdf.set_font(SANS, '', 8)
             for trade_lbl, name, qty, unit in lab_rows:
                 pdf.cell(26, 6, trunc(trade_lbl, 15), border=1)
                 pdf.cell(112, 6, trunc(name, 74), border=1)
@@ -9137,15 +9260,15 @@ def build_production_packet_pdf(est):
             profile = _siding_profile(trades.get('siding') or {}, siding_tier)
             profile_lbl = SIDING_PROFILE_LABELS.get(profile, profile) or profile
             section_title(f'Siding Material Take-off — {profile_lbl}')
-            pdf.set_font('Helvetica', 'I', 8)
-            pdf.multi_cell(W, 4.4, _pdf_safe(
+            pdf.set_font(SANS, 'I', 8)
+            pdf.multi_cell(W, 4.4, _pdf_rich(
                 'Piece counts converted from the signed measurements per the QXO '
                 'take-off sheet. \"Order\" column includes waste (siding +15%, trim +19%) '
-                'and is rounded up to whole units.'))
+                'and is rounded up to whole units.'), new_x='LMARGIN', new_y='NEXT', align='L')
             pdf.ln(1)
             table_header([('Section', 28, 'L'), ('Product', 96, 'L'),
                           ('Size', 32, 'L'), ('Pieces', 16, 'R'), ('Order', 16, 'R')])
-            pdf.set_font('Helvetica', '', 8)
+            pdf.set_font(SANS, '', 8)
             for section, product, size, pieces_base, pieces_order in takeoff_rows:
                 pdf.cell(28, 6, trunc(section, 16), border=1)
                 pdf.cell(96, 6, trunc(product, 64), border=1)
@@ -9160,9 +9283,9 @@ def build_production_packet_pdf(est):
                 pdf.ln()
             pdf.ln(4)
 
-    pdf.set_font('Helvetica', 'I', 7.5)
+    pdf.set_font(SANS, 'I', 7.5)
     pdf.set_text_color(120, 120, 120)
-    pdf.cell(0, 5, _pdf_safe('Generated from the signed contract. Excludes change orders. '
+    pdf.cell(0, 5, _pdf_rich('Generated from the signed contract. Excludes change orders. '
                              'Internal document - no pricing included.'),
              new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
@@ -9575,45 +9698,45 @@ def build_permit_packet_pdf(est):
     waste_pct = _mnum('waste_pct')
     installed = max(roof_sq - low_slope, 0.0) * (1 + waste_pct / 100.0)
 
-    pdf = FPDF(orientation='P', unit='mm', format='Letter')
-    pdf.set_auto_page_break(auto=True, margin=16)
-    pdf.set_margins(14, 14, 14)
-    pdf.add_page()
-    W = pdf.w - 28
-
-    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
-    if os.path.exists(logo):
-        try:
-            pdf.image(logo, x=14, y=12, h=16)
-        except Exception:
-            pass
-    pdf.set_xy(14, 12)
-    pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_font('Helvetica', '', 8)
-    pdf.cell(W, 4, '970-776-0945  -  projectoneroofingcolorado.com', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_y(32)
-
-    pdf.set_fill_color(26, 58, 92)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font('Helvetica', 'B', 13)
-    pdf.cell(W, 10, '  PERMIT APPLICATION PACKET', fill=True, new_x='LMARGIN', new_y='NEXT')
-    pdf.set_text_color(0, 0, 0)
-    pdf.ln(4)
+    pdf, SANS, SERIF, W = _new_internal_pdf(f'Permit packet  ·  {enum}')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+    pdf.set_font(SERIF, 'B', 20)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W, 10, _pdf_rich('Permit Application Packet'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+    pdf.ln(5)
 
     def section_title(txt):
-        pdf.set_font('Helvetica', 'B', 10.5)
-        pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
+        if pdf.get_y() > pdf.h - 46:
+            pdf.add_page()
+        pdf.ln(3)
+        pdf.set_font(SERIF, 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(1)
+
+    def table_header(cols):
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.set_draw_color(*_PDF_STYLE['navy'])
+        pdf.set_line_width(0.3)
+        for txt, w, align in cols:
+            pdf.cell(w, 7, _pdf_rich(str(txt).upper()), border='B', align=align)
+        pdf.ln()
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
 
     def kv_row(label, val):
         if not val:
             return
-        pdf.set_font('Helvetica', 'B', 9)
-        pdf.cell(50, 5.5, _pdf_safe(label))
-        pdf.set_font('Helvetica', '', 9)
-        pdf.multi_cell(W - 50, 5.5, _pdf_safe(val))
+        pdf.set_font(SANS, 'B', 9)
+        pdf.cell(50, 5.5, _pdf_rich(label))
+        pdf.set_font(SANS, '', 9)
+        pdf.multi_cell(W - 50, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT', align='L')
 
     # Where to apply
     section_title('Apply To')
@@ -9632,11 +9755,11 @@ def build_permit_packet_pdf(est):
         kv_row('Adopted Code',    jur['adopted_code'])
     if not jur['verified']:
         pdf.ln(1)
-        pdf.set_font('Helvetica', 'I', 8)
+        pdf.set_font(SANS, 'I', 8)
         pdf.set_text_color(170, 30, 30)
-        pdf.multi_cell(W, 4.4, _pdf_safe(
+        pdf.multi_cell(W, 4.4, _pdf_rich(
             'Jurisdiction has NOT been manager-verified for this address — '
-            'confirm the correct AHJ before submitting.'))
+            'confirm the correct AHJ before submitting.'), new_x='LMARGIN', new_y='NEXT', align='L')
         pdf.set_text_color(0, 0, 0)
     pdf.ln(3)
 
@@ -9668,6 +9791,28 @@ def build_permit_packet_pdf(est):
         pitch_txt = f' at {int(pitch)}/12' if pitch > 0 else ''
         kv_row('Steep Area', (f'{steep:g} SQ steep{pitch_txt}' if steep > 0
                               else f'Predominant pitch {int(pitch)}/12'))
+    # The material actually going on the roof — the permit clerk needs the
+    # covering, not just its color. Pulled from the signed tier's bundle so it
+    # names the product ("CertainTeed Northgate"), which is what the roofing
+    # affidavit and the Class-4 question both turn on.
+    try:
+        _mf = _build_estimate_manifest(est)
+        for _t in (_mf.get('trades') or []):
+            if _t.get('key') != 'roofing':
+                continue
+            for _ti in (_t.get('tiers') or []):
+                if not _ti.get('is_selected'):
+                    continue
+                _name = (_ti.get('material_name') or _ti.get('package_name') or '').strip()
+                if _name:
+                    kv_row('Roof Covering', _name)
+                _wm = (_ti.get('workmanship') or '').strip()
+                if _wm:
+                    kv_row('Workmanship', _wm)
+                break
+            break
+    except Exception:
+        pass
     pdf.ln(2)
 
     # Material brand/color per trade
@@ -9691,16 +9836,16 @@ def build_permit_packet_pdf(est):
         prod_rows.append(('Siding', 'Siding Color', sd_pick))
     if prod_rows:
         section_title('Material Selection')
-        pdf.set_fill_color(234, 239, 245)
-        pdf.set_font('Helvetica', 'B', 8)
+        pdf.set_fill_color(*_PDF_STYLE['paper'])
+        pdf.set_font(SANS, 'B', 8)
         for txt, w, align in [('Trade', 30, 'L'), ('Item', 60, 'L'), ('Selection', 92, 'L')]:
-            pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
+            pdf.cell(w, 6.5, _pdf_rich(txt), border=1, fill=True, align=align)
         pdf.ln()
-        pdf.set_font('Helvetica', '', 8)
+        pdf.set_font(SANS, '', 8)
         for trade, label, v in prod_rows:
-            pdf.cell(30, 6, _pdf_safe(trade[:18]), border=1)
-            pdf.cell(60, 6, _pdf_safe(label[:40]), border=1)
-            pdf.cell(92, 6, _pdf_safe(v[:62]), border=1)
+            pdf.cell(30, 6, _pdf_rich(trade[:18]), border=1)
+            pdf.cell(60, 6, _pdf_rich(label[:40]), border=1)
+            pdf.cell(92, 6, _pdf_rich(v[:62]), border=1)
             pdf.ln()
         pdf.ln(3)
 
@@ -9710,40 +9855,51 @@ def build_permit_packet_pdf(est):
     total_mat = sum(r['materials_cost'] for r in rows)
     total_lab = sum(r['labor_cost']     for r in rows)
     total_sell = _estimate_total(est)
-    pdf.set_fill_color(234, 239, 245)
-    pdf.set_font('Helvetica', 'B', 8)
-    for txt, w, align in [('Trade', 40, 'L'), ('Materials', 44, 'R'),
-                          ('Labor', 44, 'R'), ('Contract Value', 54, 'R')]:
-        pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
-    pdf.ln()
-    pdf.set_font('Helvetica', '', 8)
+    # Materials + Labor with NO margin on it is the number most fee schedules
+    # ask for as job valuation, and it had to be added up by hand off the old
+    # table — the TOTAL row carried the two costs and the contract value, but
+    # never their sum. Contract value stays (some jurisdictions fee on it) but
+    # no longer leads.
+    cw = (38, 40, 40, 42, 40)
+    table_header([('Trade', cw[0], 'L'), ('Materials', cw[1], 'R'),
+                  ('Labor', cw[2], 'R'), ('Cost Total', cw[3], 'R'),
+                  ('Contract Value', cw[4], 'R')])
+    pdf.set_font(SANS, '', 8.5)
     for r in rows:
-        pdf.cell(40, 6, _pdf_safe(_PRODUCT_TRADE_LABELS.get(r['trade'], r['trade'].title())), border=1)
-        pdf.cell(44, 6, f'${r["materials_cost"]:,.2f}', border=1, align='R')
-        pdf.cell(44, 6, f'${r["labor_cost"]:,.2f}',     border=1, align='R')
-        pdf.cell(54, 6, f'${r["sell"]:,.2f}',           border=1, align='R')
+        pdf.cell(cw[0], 7, _pdf_rich(_PRODUCT_TRADE_LABELS.get(r['trade'], r['trade'].title())),
+                 border='B')
+        pdf.cell(cw[1], 7, f'${r["materials_cost"]:,.2f}', border='B', align='R')
+        pdf.cell(cw[2], 7, f'${r["labor_cost"]:,.2f}',     border='B', align='R')
+        pdf.cell(cw[3], 7, f'${r["materials_cost"] + r["labor_cost"]:,.2f}',
+                 border='B', align='R')
+        pdf.cell(cw[4], 7, f'${r["sell"]:,.2f}',           border='B', align='R')
         pdf.ln()
-    pdf.set_font('Helvetica', 'B', 8.5)
-    pdf.cell(40, 6.5, 'TOTAL', border=1)
-    pdf.cell(44, 6.5, f'${total_mat:,.2f}',  border=1, align='R')
-    pdf.cell(44, 6.5, f'${total_lab:,.2f}',  border=1, align='R')
-    pdf.cell(54, 6.5, f'${total_sell:,.2f}', border=1, align='R')
+    pdf.set_draw_color(*_PDF_STYLE['navy'])
+    pdf.set_line_width(0.3)
+    pdf.set_font(SANS, 'B', 9)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(cw[0], 8, _pdf_rich('TOTAL'), border='T')
+    pdf.cell(cw[1], 8, f'${total_mat:,.2f}', border='T', align='R')
+    pdf.cell(cw[2], 8, f'${total_lab:,.2f}', border='T', align='R')
+    pdf.cell(cw[3], 8, f'${total_mat + total_lab:,.2f}', border='T', align='R')
+    pdf.cell(cw[4], 8, f'${total_sell:,.2f}', border='T', align='R')
     pdf.ln()
-    pdf.ln(1)
-    pdf.set_font('Helvetica', 'I', 7.5)
-    pdf.set_text_color(120, 120, 120)
-    pdf.multi_cell(W, 4.2, _pdf_safe(
-        'Materials/Labor columns are Project One Roofing cost basis. Contract '
-        'Value is the customer-facing price and matches the signed contract '
-        'total. Most jurisdictions fee on Contract Value.'))
-    pdf.set_text_color(0, 0, 0)
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.set_line_width(0.2)
+    pdf.ln(2)
+    pdf.set_font(SANS, '', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['mute'])
+    pdf.multi_cell(W, 4.4, _pdf_rich(
+        'Cost Total is materials plus labor at Project One Roofing cost basis, with '
+        'no margin added — this is the job valuation most fee schedules ask for. '
+        'Contract Value is the customer-facing price and matches the signed contract; '
+        'some jurisdictions fee on that instead.'), new_x='LMARGIN', new_y='NEXT', align='L')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
 
-    pdf.ln(4)
-    pdf.set_font('Helvetica', 'I', 7.5)
-    pdf.set_text_color(120, 120, 120)
-    pdf.cell(0, 5, _pdf_safe('Generated from the signed contract. Internal document.'),
-             new_x='LMARGIN', new_y='NEXT')
-    pdf.set_text_color(0, 0, 0)
+    # No trailing "internal document" line — the running footer already says it
+    # on every page, and the duplicate was spilling onto a second, otherwise
+    # empty sheet.
     return bytes(pdf.output())
 
 
@@ -9959,7 +10115,10 @@ def regenerate_production_packet(est_id):
 # details the sales rep didn't know at signing time. They live on the estimate
 # doc so a packet re-generate always pulls the latest, and they're excluded
 # from the signature hash (added after the fact, by design).
-_WORK_ORDER_STR_FIELDS  = ('scheduled_date', 'satellite_dish', 'crew_notes')
+# Whitelist — anything not named here is silently dropped by
+# _sanitize_work_order, so a new field on the form needs a line here too.
+_WORK_ORDER_STR_FIELDS  = ('scheduled_date', 'satellite_dish', 'crew_notes',
+                           'height_access', 'hand_load')
 _WORK_ORDER_INT_FIELDS  = ('tear_off_layers',)
 
 
