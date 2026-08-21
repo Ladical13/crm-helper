@@ -53,3 +53,6 @@ Thumbs.db
 # Prospector working files - pulled segments and browser harvests, sometimes large
 prospector/inbox/*
 !prospector/inbox/.gitkeep
+
+# Parked work-in-progress test, deliberately untracked.
+estimator/tests/*.pending
