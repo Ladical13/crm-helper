@@ -10948,90 +10948,80 @@ function _printTrustHTML(pHeader, pHead2) {
 }
 
 /* ── Permits & code page ──────────────────────────────────────────────
-   Who holds the permit for THIS address and what THAT office requires —
-   the jurisdiction's own rules kept separate from the Colorado statewide
-   baseline, because concatenating the two is what made this read as
-   boilerplate. Mirrors _cv_permit_block in app.py; keep the two in sync.
+   Two facts only: who issues the permit for this address, and what that
+   office requires of the roof install. The adopted-code citation, amendment
+   sources, submittal mechanics and IRC section numbers belong in the
+   production packet — in a proposal they bury the part a homeowner can act
+   on. Mirrors _cv_permit_block / _code_requirements in app.py.
 
-   Reads the _jurisdictions cache warmed by warmPrintPhotos(). If it never
-   arrived, or no jurisdiction is matched to the address, the page says so
-   plainly rather than passing generic Colorado guidance off as local. */
+   Reads the _jurisdictions cache warmed by warmPrintPhotos(). If no
+   jurisdiction is matched to the address the page says so rather than passing
+   the Colorado statewide baseline off as local. */
+function _codeRequirements(jur, base, shingleScope, limit = 10) {
+  const out = [], seen = new Set();
+  const add = t => {
+    t = String(t || '').split(/\s+/).filter(Boolean).join(' ');
+    if (!t) return;
+    // Key on the first two significant words. The same rule arrives from up
+    // to three sources phrased differently; two words collapses those while
+    // leaving genuinely different rules distinct. Mirrors _code_requirements.
+    const key = t.toLowerCase().replace(/[()::—]/g, ' ')
+      .split(/\s+/).filter(Boolean).slice(0, 2).join(' ');
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(t);
+  };
+  if (!shingleScope) return [];
+  (jur?.code_points || []).forEach(add);
+  const vpRaw = jur?.verified_profile || null;
+  const vp = (vpRaw && String(vpRaw.reviewed_at || '').trim()) ? vpRaw : null;
+  (vp?.amendments || []).forEach(a => {
+    const tx = (a?.text || '').trim();
+    const tp = (a?.topic || '').trim();
+    if (tx) add(tp ? `${tp}: ${tx}` : tx);
+  });
+  // Label only — the IRC section number is documentation, not a requirement
+  // a homeowner can act on.
+  (base?.code_items || []).forEach(ci => add(ci?.label));
+  return out.slice(0, limit);
+}
+
 function _printPermitHTML(pHeader, pHead2) {
   const pj  = S.permit_jurisdiction || {};
   const eff = (pj.selected_id && _jxById(pj.selected_id)) ? pj.selected_id : pj.auto_id;
   const jur = eff ? _jxById(eff) : null;
   const base = (_jurisdictions && _jurisdictions.colorado_baseline) || {};
-
-  // Steep-slope asphalt guidance only applies where there is a shingle roof.
   const shingleScope = !!(S.trades?.roofing?.enabled);
-  const jpts = shingleScope ? (jur?.code_points || []).filter(x => String(x).trim()) : [];
-  const bpts = shingleScope ? (base.code_points || []).filter(x => String(x).trim()) : [];
-  const items = shingleScope ? (base.code_items || []).filter(i => (i?.label || '').trim()) : [];
+  const reqs = _codeRequirements(jur, base, shingleScope);
 
-  const vpRaw = jur?.verified_profile || null;
-  const vp = (vpRaw && String(vpRaw.reviewed_at || '').trim()) ? vpRaw : null;
+  if (!reqs.length && !jur) return '';
 
-  if (!jur && !jpts.length && !bpts.length && !items.length) return '';
-
-  const sub = (label, inner) => inner
-    ? `<div class="p-perm-sub"><div class="p-perm-h">${esc(label)}</div>${inner}</div>` : '';
-  const list = (arr, cls) => `<ul class="p-perm-list${cls ? ' ' + cls : ''}">`
-    + arr.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>';
-
-  let body = '';
+  let head, lead;
   if (jur) {
     const meta = [jur.office, jur.county ? jur.county + ' County' : '', jur.phone]
       .filter(Boolean).map(esc).join(' · ');
-    body += `<div class="p-perm-name">${esc(jur.name)}</div>`
-          + (meta ? `<div class="p-perm-meta">${meta}</div>` : '');
+    head = `<div class="p-perm-name">${esc(jur.name)}</div>`
+         + (meta ? `<div class="p-perm-meta">${meta}</div>` : '');
+    lead = `<div class="p-perm-lead">${esc(jur.name)} issues the permit for this address and
+      inspects the finished roof. Everything below is required there — it is priced into your
+      estimate, not an add-on.</div>`;
   } else {
-    body += `<div class="p-perm-name p-perm-unknown">Permitting authority not yet confirmed</div>
-      <div class="p-perm-meta">Colorado has no statewide residential building code — the city or
-      county adopts and enforces its own. We confirm the authority for this address, its adopted
-      code edition and any local amendments before pulling the permit, and the permit is included
-      in your price either way.</div>`;
+    head = `<div class="p-perm-name p-perm-unknown">Permitting authority not yet confirmed</div>`;
+    lead = `<div class="p-perm-lead">Colorado has no statewide residential building code — the
+      city or county adopts and enforces its own. We confirm the authority for this address
+      before pulling the permit, and the permit is included in your price either way.</div>`;
   }
 
-  if (vp?.adopted_code)
-    body += sub('Adopted code', `<div class="p-perm-p">${esc(vp.adopted_code)}</div>`);
-
-  const amends = (vp?.amendments || []).filter(a => (a?.text || '').trim()).slice(0, 8);
-  if (amends.length)
-    body += sub(jur ? `Local amendments in ${jur.name}` : 'Local amendments',
-      `<ul class="p-perm-list">${amends.map(a => `<li>${
-        a.topic ? `<strong>${esc(a.topic)}:</strong> ` : ''}${esc(a.text)}</li>`).join('')}</ul>`);
-
-  if (jpts.length)
-    body += sub(jur ? `What ${jur.name} requires` : 'Local requirements', list(jpts.slice(0, 8)));
-
-  // jur.pull is written for the office admin and names our own tooling —
-  // never printed for a customer. Only the reviewed permit facts go out.
-  const rp = vp?.reroof_permit || {};
-  const rpBits = [];
-  const ok = v => v && String(v).trim() && String(v).trim().toLowerCase() !== 'unknown';
-  if (ok(rp.submittal_method)) rpBits.push('Submittal: ' + rp.submittal_method);
-  if (ok(rp.fee_basis))        rpBits.push('Fees: ' + rp.fee_basis);
-  if (rpBits.length)
-    body += sub('How the permit is pulled',
-      `<div class="p-perm-meta">${rpBits.map(esc).join(' · ')}</div>`);
-
-  if (items.length)
-    body += sub('Code line items priced into your scope',
-      `<ul class="p-perm-list">${items.slice(0, 12).map(i =>
-        `<li>${esc(i.label)}${i.basis ? `<span class="p-perm-basis">${esc(i.basis)}</span>` : ''}</li>`
-      ).join('')}</ul>`);
-
-  if (bpts.length)
-    body += sub('Colorado statewide baseline', list(bpts.slice(0, 8), 'p-perm-muted'));
-
-  if (pj.verified)
-    body += `<div class="p-perm-stamp">Jurisdiction boundary verified against the published
-      municipal limits for this address.</div>`;
+  const reqsHtml = reqs.length
+    ? `<div class="p-perm-sub"><div class="p-perm-h">${
+        jur ? `Required on your roof in ${esc(jur.name)}` : 'Required on your roof'}</div>
+       <ul class="p-perm-list">${reqs.map(r => `<li>${esc(r)}</li>`).join('')}</ul></div>`
+    : '';
 
   return `<div class="p-permit">${pHeader}
     ${pHead2('Permits & code', 'Who Pulls Your Permit',
              'The office that issues the permit for this address, and what it requires.')}
-    ${body}</div>`;
+    ${head}${lead}${reqsHtml}</div>`;
 }
 
 /* ── Condition report print pages ─────────────────────────────────────

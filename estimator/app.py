@@ -3561,6 +3561,7 @@ text-transform:uppercase;letter-spacing:1.2px}
 line-height:1.25;margin-bottom:var(--sp-1)}
 .cvperm-name.cvperm-unknown{font-size:var(--fz-h3);color:var(--mut)}
 .cvperm-meta{font-size:var(--fz-sm);color:var(--mut);line-height:1.65}
+.cvperm-lead{font-size:var(--fz-sm);color:var(--mut);line-height:1.7;margin-top:var(--sp-3);max-width:56ch}
 .cvperm-meta a{color:var(--navy);text-decoration:none;border-bottom:1px solid var(--line)}
 .cvperm-sub{margin-top:var(--sp-4);padding-top:var(--sp-3);border-top:1px solid var(--line)}
 .cvperm-h{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;
@@ -4824,21 +4825,68 @@ def _cv_glance_block(est, manifest, sel_label='', sel_total=None):
 </section>'''
 
 
+def _code_requirements(code, limit=10):
+    """Plain-language install requirements that apply at this address.
+
+    Merged most-specific-first — the jurisdiction's own rules, then its local
+    amendments, then the code line items priced into the scope with their IRC
+    citations stripped. Lightly de-duplicated: the same requirement usually
+    appears in more than one of those sources (a roofing affidavit shows up as
+    both a jurisdiction rule and an amendment), and printing it twice makes the
+    list look padded.
+
+    Returns [] when nothing is known, so the caller can drop the section rather
+    than print a heading over an empty list.
+    """
+    if not code:
+        return []
+    out, seen = [], set()
+
+    def add(text):
+        t = ' '.join(str(text or '').split())
+        if not t:
+            return
+        # Key on the first two significant words. The same requirement reaches
+        # here from up to three sources phrased differently — "Roofing
+        # affidavit required with the reroof permit" and "Roofing affidavit: A
+        # signed roofing affidavit identifying..." are one rule, and a longer
+        # key keeps both. Two words collapses them while leaving genuinely
+        # different rules ("Ice barrier" vs "Ice and water") distinct.
+        key = ' '.join(t.lower().replace('(', ' ').replace(')', ' ')
+                       .replace(':', ' ').replace('—', ' ').split()[:2])
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(t)
+
+    for pt in (code.get('jurisdiction_points') or []):
+        add(pt)
+    for a in ((code.get('verified_profile') or {}).get('amendments') or []):
+        txt = (a.get('text') or '').strip()
+        top = (a.get('topic') or '').strip()
+        if txt:
+            add(f'{top}: {txt}' if top else txt)
+    for ci in (code.get('code_items') or []):
+        # Label only — the IRC section number is documentation, not a
+        # requirement a homeowner can act on.
+        add(ci.get('label'))
+    return out[:limit]
+
+
 def _cv_permit_block(manifest):
-    """Who holds the permit for THIS address, and what THAT office requires.
+    """Who holds the permit for THIS address, and what that office requires of
+    the roof install.
 
-    Split out of the general "What's Included and Why" card, where it was a
-    sub-heading that concatenated the jurisdiction's own requirements with the
-    Colorado statewide baseline into one undifferentiated list — so a Loveland
-    homeowner read two lines that were actually about their city followed by
-    six that were about the whole state, and the section landed as boilerplate.
+    Deliberately short. The adopted code edition, amendment source links,
+    submittal mechanics and IRC section numbers all live in the manifest and
+    belong in the production packet — in a proposal they bury the two things a
+    homeowner actually wants, which are the name of the authority and the list
+    of things that authority makes us do.
 
-    Here the jurisdiction leads, its specific requirements are their own list,
-    and the statewide baseline is labelled as exactly that. When no
-    jurisdiction has been matched to the address the block says so plainly
-    rather than dressing the generic text up as local: claiming to know a
-    customer's code authority when we don't is the one failure mode that would
-    actually cost trust.
+    When no jurisdiction has been matched to the address the block says so
+    plainly rather than dressing the Colorado statewide baseline up as local:
+    claiming to know a customer's code authority when we don't is the one
+    failure here that would actually cost trust.
     """
     if not manifest:
         return ''
@@ -4848,10 +4896,8 @@ def _cv_permit_block(manifest):
 
     matched = code.get('matched')
     name    = (code.get('jurisdiction_name') or '').strip()
-    vp      = code.get('verified_profile') or {}
-    body    = ''
+    reqs    = _code_requirements(code)
 
-    # ── Who issues it ───────────────────────────────────────────────────
     if matched and name:
         meta = []
         if code.get('office'):
@@ -4860,98 +4906,34 @@ def _cv_permit_block(manifest):
             meta.append(he(code['county']) + ' County')
         if code.get('phone'):
             meta.append(f'<a href="tel:{he(code["phone"])}">{he(code["phone"])}</a>')
-        if code.get('url'):
-            meta.append(f'<a href="{he(code["url"])}" target="_blank" rel="noopener">'
-                        'Permit office</a>')
-        body += (f'<p class="cvperm-name">{he(name)}</p>'
-                 + (f'<p class="cvperm-meta">{" &middot; ".join(meta)}</p>' if meta else ''))
+        head = (f'<p class="cvperm-name">{he(name)}</p>'
+                + (f'<p class="cvperm-meta">{" &middot; ".join(meta)}</p>' if meta else ''))
+        lead = (f'<p class="cvperm-lead">{he(name)} issues the permit for this address and '
+                'inspects the finished roof. Everything below is required there &mdash; it is '
+                'priced into your estimate, not an add-on.</p>')
     else:
-        body += ('<p class="cvperm-name cvperm-unknown">Permitting authority not yet confirmed</p>'
-                 '<p class="cvperm-meta">Colorado has no statewide residential building code &mdash; '
-                 'the city or county adopts and enforces its own. We confirm the authority for this '
-                 'address, its adopted code edition and any local amendments before pulling the '
-                 'permit, and the permit is included in your price either way.</p>')
+        if not reqs:
+            return ''
+        head = ('<p class="cvperm-name cvperm-unknown">Permitting authority not yet confirmed</p>')
+        lead = ('<p class="cvperm-lead">Colorado has no statewide residential building code &mdash; '
+                'the city or county adopts and enforces its own. We confirm the authority for this '
+                'address before pulling the permit, and the permit is included in your price '
+                'either way.</p>')
 
-    def _sub(label, inner):
-        return (f'<div class="cvperm-sub"><h3 class="cvperm-h">{label}</h3>{inner}</div>'
-                if inner else '')
-
-    # ── Adopted code edition ────────────────────────────────────────────
-    ac  = (vp.get('adopted_code') or '').strip()
-    acu = (vp.get('adopted_code_source_url') or '').strip()
-    if ac:
-        link = (f' <a href="{he(acu)}" target="_blank" rel="noopener">source</a>') if acu else ''
-        body += _sub('Adopted code', f'<p class="cvperm-p">{he(ac)}{link}</p>')
-
-    # ── Local amendments ────────────────────────────────────────────────
-    amends = vp.get('amendments') or []
-    if amends:
-        rows = ''
-        for a in amends[:8]:
-            tp = (a.get('topic') or '').strip()
-            tx = (a.get('text') or '').strip()
-            su = (a.get('source_url') or '').strip()
-            lab = f'<strong>{he(tp)}:</strong> ' if tp else ''
-            lnk = (f' <a href="{he(su)}" target="_blank" rel="noopener">source</a>') if su else ''
-            rows += f'<li>{lab}{he(tx)}{lnk}</li>'
-        body += _sub(f'Local amendments in {he(name)}' if matched else 'Local amendments',
-                     f'<ul class="cvperm-list">{rows}</ul>')
-
-    # ── What THIS jurisdiction requires (never mixed with the baseline) ──
-    jpts = [x for x in (code.get('jurisdiction_points') or []) if str(x).strip()]
-    if jpts:
-        body += _sub(f'What {he(name)} requires',
-                     '<ul class="cvperm-list">'
-                     + ''.join(f'<li>{he(x)}</li>' for x in jpts[:8]) + '</ul>')
-
-    # ── How the permit is pulled ────────────────────────────────────────
-    # code['permit_process_internal'] is deliberately NOT shown: it is written
-    # for the admin pulling the permit and names our own tooling.
-    rp   = vp.get('reroof_permit') or {}
-    bits = []
-    rp_bits = []
-    sm = (rp.get('submittal_method') or '').strip()
-    pu = (rp.get('portal_url') or '').strip()
-    fb = (rp.get('fee_basis') or '').strip()
-    if sm and sm.lower() != 'unknown':
-        rp_bits.append('Submittal: ' + he(sm))
-    if fb and fb.lower() != 'unknown':
-        rp_bits.append('Fees: ' + he(fb))
-    if pu and pu.lower() != 'unknown':
-        rp_bits.append(f'<a href="{he(pu)}" target="_blank" rel="noopener">Permit portal</a>')
-    if rp_bits:
-        bits.append('<p class="cvperm-meta">' + ' &middot; '.join(rp_bits) + '</p>')
-    if bits:
-        body += _sub('How the permit is pulled', ''.join(bits))
-
-    # ── Code line items priced into this scope ──────────────────────────
-    items = code.get('code_items') or []
-    if items:
-        rows = ''
-        for ci in items[:12]:
-            lb = (ci.get('label') or '').strip()
-            bs = (ci.get('basis') or '').strip()
-            if not lb:
-                continue
-            rows += (f'<li>{he(lb)}'
-                     + (f'<em class="cvperm-basis">{he(bs)}</em>' if bs else '') + '</li>')
-        body += _sub('Code line items priced into your scope',
-                     f'<ul class="cvperm-list">{rows}</ul>')
-
-    # ── Statewide baseline, labelled as such ────────────────────────────
-    bpts = [x for x in (code.get('baseline_points') or []) if str(x).strip()]
-    if bpts:
-        body += _sub('Colorado statewide baseline',
-                     '<ul class="cvperm-list cvperm-muted">'
-                     + ''.join(f'<li>{he(x)}</li>' for x in bpts[:8]) + '</ul>')
-
-    if code.get('verified'):
-        body += ('<p class="cvperm-stamp">Jurisdiction boundary verified against the '
-                 'published municipal limits for this address.</p>')
+    reqs_html = ''
+    if reqs:
+        reqs_html = (f'<div class="cvperm-sub"><h3 class="cvperm-h">'
+                     + (f'Required on your roof in {he(name)}' if matched and name
+                        else 'Required on your roof')
+                     + '</h3><ul class="cvperm-list">'
+                     + ''.join(f'<li>{he(r)}</li>' for r in reqs)
+                     + '</ul></div>')
 
     return f'''<section class="cvnotes cvperm">
   <h2 data-eyebrow="Permits &amp; code">Who Pulls Your Permit</h2>
-  {body}
+  {head}
+  {lead}
+  {reqs_html}
 </section>'''
 
 
@@ -7475,18 +7457,18 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
         pdf.ln(2)
 
     # ── Permits & code ──────────────────────────────────────────────────
-    # Its own page, and the jurisdiction's own requirements kept separate from
-    # the Colorado statewide baseline. They used to be concatenated into one
-    # capped list, so two lines that were genuinely about the customer's city
-    # were followed by four about the whole state and the section read as
-    # boilerplate — which is the opposite of its job.
+    # Two facts only: who issues the permit for this address, and what that
+    # office requires of the install. The adopted-code citation, amendment
+    # sources, submittal mechanics and IRC section numbers are all still in the
+    # manifest — they belong in the production packet, not in a proposal, where
+    # they bury the part a homeowner can actually act on.
     code = manifest.get('code')
-    if code:
+    reqs = _code_requirements(code)
+    if code and (reqs or code.get('matched')):
         pdf.add_page()
         matched = code.get('matched')
         jname   = code.get('jurisdiction_name') or ''
         _h1('Permits & code', 'Who Pulls Your Permit')
-        pdf.set_font(_S(pdf), '', 8.5)
         if matched and jname:
             pdf.set_font(getattr(pdf, '_serif', _S(pdf)), 'B', 15)
             pdf.set_text_color(*_PDF_STYLE['navy'])
@@ -7502,80 +7484,21 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
                 pdf.multi_cell(W, 4.4, _pdf_rich('  ·  '.join(meta)),
                                new_x='LMARGIN', new_y='NEXT', align='L')
                 pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.ln(1.5)
+            _p(f'{jname} issues the permit for this address and inspects the finished '
+               'roof. Everything below is required there — it is priced into your '
+               'estimate, not an add-on.')
         else:
             # Never dress the statewide fallback up as the customer's authority.
-            pdf.set_font(_S(pdf), '', 8.5)
-            pdf.multi_cell(W, 4.4, _pdf_rich(
-                'Permitting authority not yet confirmed. Colorado has no statewide residential '
-                'building code — the city or county adopts and enforces its own. We confirm the '
-                'authority for this address, its adopted code edition and any local amendments '
-                'before pulling the permit, and the permit is included in your price either way.'),
-                new_x='LMARGIN', new_y='NEXT', align='L')
-        pdf.ln(2)
-        pdf.set_font(_S(pdf), '', 8.5)
-        vp = code.get('verified_profile') or {}
-        if vp:
-            ac = (vp.get('adopted_code') or '').strip()
-            if ac:
-                pdf.set_font(_S(pdf), 'B', 8.5)
-                pdf.multi_cell(W, 4.4, _pdf_rich(f'Enforces {ac}'),
-                       new_x='LMARGIN', new_y='NEXT', align='L')
-                pdf.set_font(_S(pdf), '', 8.5)
-            amends = vp.get('amendments') or []
-            if amends:
-                pdf.ln(1)
-                pdf.set_font(_S(pdf), 'B', 8)
-                pdf.cell(0, 4.4, _pdf_rich('Local amendments applied to this project:'),
-                         new_x='LMARGIN', new_y='NEXT', align='L')
-                pdf.set_font(_S(pdf), '', 8)
-                for a in amends[:8]:
-                    tp = (a.get('topic') or '').strip()
-                    tx = (a.get('text')  or '').strip()
-                    line = '  - ' + (f'{tp}: {tx}' if tp else tx)
-                    pdf.multi_cell(W, 4.2, _pdf_rich(line),
-                       new_x='LMARGIN', new_y='NEXT', align='L')
-            rp = vp.get('reroof_permit') or {}
-            rp_bits = []
-            if (rp.get('submittal_method') or '').lower() not in ('', 'unknown'):
-                rp_bits.append(f'Submittal: {rp["submittal_method"]}')
-            if (rp.get('portal_url') or '').lower() not in ('', 'unknown'):
-                rp_bits.append(f'Portal: {rp["portal_url"]}')
-            if rp_bits:
-                pdf.set_font(_S(pdf), 'I', 8)
-                pdf.multi_cell(W, 4.2, _pdf_rich('  ' + '  |  '.join(rp_bits)),
-                       new_x='LMARGIN', new_y='NEXT', align='L')
-                pdf.set_font(_S(pdf), '', 8.5)
-            va = (vp.get('verified_at') or '')[:10]
-            via = (vp.get('verified_via') or '').strip()
-            if va or via:
-                tag = 'Code data verified ' + va + (f' (source: {via})' if via else '')
-                pdf.set_font(_S(pdf), 'I', 7.5)
-                pdf.multi_cell(W, 4.0, _pdf_rich(tag),
-                       new_x='LMARGIN', new_y='NEXT', align='L')
-                pdf.set_font(_S(pdf), '', 8.5)
-        jpts = [x for x in (code.get('jurisdiction_points') or []) if str(x).strip()]
-        if jpts:
-            _h2(f'What {jname} requires' if matched and jname else 'Local requirements')
-            _bullets(jpts[:8])
-        items = code.get('code_items') or []
-        if items:
+            _p('Permitting authority not yet confirmed. Colorado has no statewide '
+               'residential building code — the city or county adopts and enforces its '
+               'own. We confirm the authority for this address before pulling the '
+               'permit, and the permit is included in your price either way.')
+        if reqs:
             pdf.ln(1)
-            _h2('Code line items priced into your scope')
-            pdf.set_font(_S(pdf), '', 8)
-            pdf.set_font(_S(pdf), '', 8)
-            for ci in items[:10]:
-                line = '  - ' + (ci.get('label') or '')
-                if ci.get('basis'):
-                    line += f'  ({ci["basis"]})'
-                pdf.multi_cell(W, 4.2, _pdf_rich(line),
-                       new_x='LMARGIN', new_y='NEXT', align='L')
-        bpts = [x for x in (code.get('baseline_points') or []) if str(x).strip()]
-        if bpts:
-            pdf.ln(1)
-            _h2('Colorado statewide baseline')
-            pdf.set_text_color(*_PDF_STYLE['mute'])
-            _bullets(bpts[:8])
-            pdf.set_text_color(*_PDF_STYLE['ink'])
+            _h2(f'Required on your roof in {jname}' if matched and jname
+                else 'Required on your roof')
+            _bullets(reqs)
         pdf.ln(2)
 
     # ── Ventilation ─────────────────────────────────────────────────────
