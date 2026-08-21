@@ -33,6 +33,9 @@ const TRADE_LABELS = { roofing:'Roofing', siding:'Siding', windows:'Windows', gu
 const RETAIL_TRADE_KEYS = ['roofing','siding','windows','gutters','commercial','other'];
 const TIERS = ['good','better','best'];
 const TIER_LABELS = { good:'Good', better:'Better', best:'Best' };
+// Letterhead line for every printed page. Mirrors the company block in
+// _cv_header / the PDF masthead in app.py — keep the three in sync.
+const COMPANY_ADDR_LINE = '115 E 5th St · Loveland, CO 80537 · 970-776-0945 · projectoneroofingcolorado.com';
 // Trades built from a flat product catalog + named bundles (the tier dropdown)
 // instead of the per-tier template item list. Mirrored server-side by
 // BUNDLE_SEEDS in app.py — keep the two lists in sync.
@@ -3689,8 +3692,10 @@ function renderPrintPagesBar() {
     { id:'contract', label:'Contract',     on: S.print_contract !== false,     always: false },
     { id:'report',   label:'Roof Health',  on: pv.report  !== false,           always: false },
   ];
-  // Trust blocks live on the ONLINE signing link (content set in ⚙ Settings),
-  // unlike the print chips above which only gate the printed estimate.
+  // Trust blocks (content set in ⚙ Settings) now appear on BOTH the online
+  // signing link and the printed credibility page, so these chips gate the two
+  // together. They stay out of the signed PDF and the document hash — that
+  // exclusion is deliberate, see _cv_trust_blocks in app.py.
   const trust = [
     { id:'trust_about',          label:'About Us' },
     { id:'trust_warranty',       label:'Warranty' },
@@ -3707,11 +3712,11 @@ function renderPrintPagesBar() {
         title="${p.always ? 'Always included' : (p.on ? 'Click to exclude from print' : 'Click to include in print')}">
         <span class="ppb-dot"></span>${esc(p.label)}
       </button>`).join('') +
-    `<span class="ppb-label" title="Company sections on the customer's online signing page — edit the content in ⚙ Settings">Online:</span>` +
+    `<span class="ppb-label" title="Company sections shown on the printed credibility page and the customer's online signing page — edit the content in ⚙ Settings">Why Us:</span>` +
     trust.map(p => `
       <button class="ppb-btn ${pv[p.id] !== false ? 'on' : 'off'}"
         onclick="togglePagePrint('${p.id}')"
-        title="${pv[p.id] !== false ? 'Shown on the customer signing page — click to hide for this estimate' : 'Hidden from the customer signing page — click to show'}">
+        title="${pv[p.id] !== false ? 'Shown in print and on the signing page — click to hide for this estimate' : 'Hidden from print and the signing page — click to show'}">
         <span class="ppb-dot"></span>${esc(p.label)}
       </button>`).join('');
 }
@@ -10270,10 +10275,25 @@ async function preparePrintPhotos() {
   }
 }
 
+/* Company trust content (About / Warranty / Certifications / Reviews), cached
+   for the printed credibility page. buildPrintContent() has to stay fully
+   synchronous — iOS Safari only honors window.print() inside the click's
+   gesture context — so this is warmed alongside the photos and read from the
+   cache at build time. If it never arrived, the page is simply skipped. */
+let _ccCache = null;
+function warmCompanyContent() {
+  return fetch(BASE + '/api/company-content')
+    .then(r => r.ok ? r.json() : null)
+    .then(cc => { if (cc) _ccCache = cc; })
+    .catch(() => {});
+}
+
 /* Warm the cache opportunistically (fire-and-forget) so direct Ctrl+P works too.
    The in-flight promise is kept so doPrint can await it on a cold cache. */
 let _printWarmPromise = null;
 function warmPrintPhotos() {
+  if (!_ccCache) warmCompanyContent();
+  _ensureJurisdictions();   // permit page reads _jurisdictions synchronously
   _printWarmPromise = preparePrintPhotos().catch(()=>{});
   return _printWarmPromise;
 }
@@ -10416,10 +10436,19 @@ function buildPrintContent() {
   const pHeader = `<div class="p-header">
     <div class="p-header-brand">
       <img src="${BASE}/static/logo.png" class="p-header-logo" alt="Project One Roofing">
-      <div class="p-company-sub">115 E 5th St · Loveland, CO 80537 · 970-776-0945 · projectoneroofingcolorado.com</div>
+      <div class="p-company-sub">${esc(COMPANY_ADDR_LINE)}</div>
     </div>
     <div class="p-est-badge"><span class="p-badge-num">${esc(estNum)}</span>${esc(S.estimate_date||'')}</div>
   </div>`;
+
+  /* Section heading: small caps eyebrow over a serif line, with an optional
+     orienting sentence. Headings name what the section answers rather than
+     what the data is called — "What We Found" beats "Photo Report" on a
+     document whose job is to be read by a homeowner, not filed. */
+  const pHead2 = (eyebrow, title, lede) =>
+    `<div class="p-eyebrow">${esc(eyebrow)}</div>
+     <div class="p-h2">${esc(title)}</div>
+     ${lede ? `<div class="p-lede">${esc(lede)}</div>` : ''}`;
 
   // ── Cover page: logo (top) · photo (center) · customer info (bottom) ──
   let html=`<div class="p-cover">
@@ -10441,12 +10470,18 @@ function buildPrintContent() {
         <div><span>Valid Until</span>${esc(S.valid_until||'—')}</div>
         ${S.salesperson?`<div><span>Sales Rep</span>${esc(cap(S.salesperson))}</div>`:''}
       </div>
-      <div class="p-cover-company">115 E 5th St · Loveland, CO 80537 · 970-776-0945 · projectoneroofingcolorado.com</div>
+      <div class="p-cover-company">${esc(COMPANY_ADDR_LINE)}</div>
     </div>
   </div>`;
 
-  // ── Intro letter — always included when text exists ─────────────
   const pv = S.page_visibility || {};
+
+  // ── At a glance — the digest that opens the document ─────────────
+  // Sits above the letter deliberately: this is the page a homeowner reads
+  // before deciding whether to read the rest, and the one they forward.
+  html += _printGlanceHTML(pHeader, estNum);
+
+  // ── Intro letter — always included when text exists ─────────────
   if (S.intro_text?.trim()) {
     html += `<div class="p-intro">
       <div class="p-intro-letterhead">
@@ -10456,12 +10491,13 @@ function buildPrintContent() {
     </div>`;
   }
 
-  // ── Photo Report (its own page, right after the intro) ───────────
+  // ── What we found: photos, then the condition report that reads them ──
   const printPhotos = S.photos.filter(p => p.show_in_estimate && p.id !== S.cover_photo_id);
   if (printPhotos.length)
     html += `<div class="p-photos-page">
       ${pHeader}
-      <h2 class="p-photos-title">Photo Report</h2>
+      ${pHead2('Inspection', 'What We Found',
+               'Photographs taken during your inspection. The report that follows explains what they show.')}
       <div class="p-photo-grid">
         ${printPhotos.map(p=>`<figure class="p-photo-fig">
           <img src="${printPhotoSrc(p)}" alt="${esc(p.caption)}">
@@ -10527,7 +10563,8 @@ function buildPrintContent() {
     });
     if (prodRows.length) {
       ph += `<div class="p-products">
-        <h2>Product Selection</h2>
+        ${pHead2('Specification', 'The Materials We’ll Use',
+                 'The exact products and colors selected for your home.')}
         <table class="p-products-table"><tbody>
           ${prodRows.map(r => `<tr>
             <td class="p-products-trade">${esc(TRADE_LABELS[r.trade])}</td>
@@ -10585,7 +10622,9 @@ function buildPrintContent() {
       const content=tradeTierContent(gt);
       const multi=packageTrades().length>1;
       ph+=`<div class="p-pkg-comparison">
-      <h2>${multi?esc(TRADE_LABELS[gt])+' — ':''}Your Options</h2>
+      ${pHead2(multi ? TRADE_LABELS[gt] : 'Your Options',
+               multi ? 'Choose Your ' + TRADE_LABELS[gt] + ' Package' : 'Choose Your Package',
+               'Every package below is a complete job. They differ in materials and coverage, not in workmanship.')}
       <table class="p-pkg-table"><thead><tr>
         ${enabledTiers().map(t=>`<th class="col-${t} ${t===gtTier?'selected-col':''}">
           ${TIER_LABELS[t]} ${t===gtTier?'<br><span class="p-selected-tag">SELECTED</span>':''}
@@ -10719,17 +10758,32 @@ function buildPrintContent() {
         ph+=`<div class="p-grand-total"><span>Insurance Claim Total</span><span>${fmtCur(insuranceTotal())}</span></div>`;
     }
     if(insTd?.scope_notes?.trim())
-      ph+=`<div class="p-notes" style="margin-top:8pt"><h3>Scope of Work</h3><p>${esc(insTd.scope_notes)}</p></div>`;
+      ph+=`<div class="p-notes">${pHead2('Scope','Scope of Work')}<p>${esc(insTd.scope_notes)}</p></div>`;
   }
   if(S.notes_customer?.trim())
-    ph+=`<div class="p-notes"><h3>Notes</h3><p>${esc(S.notes_customer)}</p></div>`;
+    ph+=`<div class="p-notes">${pHead2('Additional','Notes')}<p>${esc(S.notes_customer)}</p></div>`;
+
+  ph+=`</div>`;   // close p-page — the priced body ends at the notes
+
+  /* Credibility sits between the number and the signature, which is where the
+     objections actually are. Marketing content only, so it stays out of the
+     signed hash and the signed PDF (see _cv_trust_blocks in app.py). */
+  ph += _printPermitHTML(pHeader, pHead2);
+  ph += _printTrustHTML(pHeader, pHead2);
+
+  /* Signing gets its own page. It used to fall wherever the notes happened to
+     end, so on a long estimate the customer signed in the gutter beneath the
+     last line item. */
+  ph+=`<div class="p-page p-sign-page">${pHeader}
+    ${pHead2('Agreement', 'Authorization to Proceed',
+             'Signing below accepts the scope and pricing in this estimate.')}`;
 
   // Per-clause initial lines — same statements the online sign form collects,
   // printed with a blank line so a paper copy works for in-person signing too.
   const printInitials = (S.contract_initials||[]).filter(i => (i.text||'').trim());
   if (printInitials.length) {
     ph+=`<div class="p-initials">
-      <h3>Please Initial Each Item Below</h3>
+      <div class="p-eyebrow">Please initial each item</div>
       ${printInitials.map((it,idx)=>`<div class="p-initial-row">
         <span class="p-initial-num">${idx+1}</span>
         <span class="p-initial-text">${esc(it.text)}</span>
@@ -10743,15 +10797,241 @@ function buildPrintContent() {
       <div class="p-sig-date"><div><div class="p-sig-date-line"></div><span>Date</span></div></div></div>
     <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Project One Roofing Representative</div>
       <div class="p-sig-date"><div><div class="p-sig-date-line"></div><span>Date</span></div></div></div>
-  </div></div>`; // close p-page
+  </div></div>`; // close p-sign-page
   return ph;
   })(); // end pricing IIFE
 
   if(S.print_contract!==false&&S.contract_text?.trim())
-    html+=`<div class="p-contract">${pHeader}<h2>Terms &amp; Conditions</h2>
+    html+=`<div class="p-contract">${pHeader}
+      ${pHead2('Legal', 'Terms & Conditions')}
       <div class="p-contract-body">${esc(S.contract_text)}</div></div>`;
 
   document.getElementById('print-content').innerHTML=html;
+}
+
+/* ── "At a glance" page ───────────────────────────────────────────────
+   Five lines answering what a homeowner asks before reading anything else:
+   what are you doing, what are my choices, what does it cost, what backs it,
+   and how long do I have to decide. Every row is dropped rather than shown
+   empty, so a thin estimate produces a short page instead of a page of
+   dashes. Deliberately defensive — a throw in the print path used to make
+   the Print / PDF button appear to do nothing at all. */
+function _printGlanceHTML(pHeader, estNum) {
+  const rows = [];
+  try {
+    const isIns = (S.estimate_type || 'retail') === 'insurance';
+    const c     = S.customer || {};
+    const addr  = S.project_address ||
+                  [c.address?.street, c.address?.city].filter(Boolean).join(', ');
+
+    if (isIns) {
+      const carrier = S.trades.insurance?.carrier;
+      rows.push(['Your project',
+                 'Insurance claim scope' + (carrier ? ` — <strong>${esc(carrier)}</strong>` : '')]);
+    } else {
+      const scope = RETAIL_TRADE_KEYS
+        .filter(t => { const td = S.trades[t]; return td?.enabled && (td.line_items||[]).length; })
+        .map(t => TRADE_LABELS[t]);
+      if (scope.length)
+        rows.push(['Your project',
+                   `<strong>${esc(scope.join(' · '))}</strong>${addr ? ' at ' + esc(addr) : ''}`]);
+
+      // Only claim a choice when one is actually being offered.
+      const gbb = packageTrades();
+      const tiers = enabledTiers();
+      if (gbb.length && tiers.length > 1)
+        rows.push(['Your options',
+                   `${esc(tiers.map(t => TIER_LABELS[t]).join(', '))} — each one a complete job, `
+                   + 'priced in full on the pages that follow']);
+
+      /* Deliberately NO price here. This page sits ahead of the photographs
+         and the condition report, and a number on page 2 invites a decision
+         before the customer has seen why the work is needed. The total lives
+         after the scope, where it can be judged against something. Mirrors
+         _cv_glance_block in app.py. */
+    }
+
+    // Warranty headline, from the same company content the sign page uses.
+    const wb = (_ccCache?.warranty?.body || '').trim();
+    if (wb && _ccCache?.warranty?.enabled !== false) {
+      const first = wb.split(/\n|(?<=\.)\s+/)[0].trim();
+      if (first) rows.push(['Backed by', first.length > 190 ? first.slice(0, 187) + '…' : first]);
+    }
+
+    const insp = (S.property_condition?.inspection_date || '').trim();
+    if (insp)
+      rows.push(['Inspected',
+                 `<strong>${esc(insp)}</strong> — full condition report follows, with photographs`]);
+
+    if (S.valid_until)
+      rows.push(['Pricing held until', `<strong>${esc(S.valid_until)}</strong>`]);
+  } catch (e) { return ''; }
+
+  if (!rows.length) return '';
+  return `<div class="p-glance">
+    ${pHeader}
+    <div class="p-eyebrow">Summary</div>
+    <div class="p-h2">At a Glance</div>
+    <div class="p-lede">Everything below in five lines. The detail follows.</div>
+    <div class="p-glance-list">
+      ${rows.map(([k, v]) => `<div class="p-glance-row">
+        <div class="p-glance-k">${esc(k)}</div>
+        <div class="p-glance-v">${v}</div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+/* ── Credibility page ─────────────────────────────────────────────────
+   Warranty, certifications, reviews and the company story — the same
+   content the sign link carries, which the printed estimate had no version
+   of at all. The paper copy is the one that sits on the counter for a week
+   while the homeowner collects other bids, so it is the copy that most needs
+   an answer to "why you".
+
+   Reads the cache warmed by warmCompanyContent(); returns '' when it never
+   arrived, so print still works offline. Gated per-block by the same
+   page_visibility.trust_* flags the sign page uses. */
+function _printTrustHTML(pHeader, pHead2) {
+  const cc = _ccCache;
+  if (!cc) return '';
+  const pv = S.page_visibility || {};
+  const on = (key, block) =>
+    pv['trust_' + key] !== false && block && block.enabled !== false;
+
+  let body = '';
+
+  const wr = cc.warranty || {};
+  if (on('warranty', wr) && (wr.body || '').trim())
+    body += `<div class="p-trust-block">
+      <div class="p-trust-h">${esc(wr.title || 'Our Warranty')}</div>
+      <div class="p-trust-body">${wr.body.trim().split(/\n{2,}/)
+        .map(p => `<p>${esc(p.trim())}</p>`).join('')}</div>
+    </div>`;
+
+  const ct = cc.certifications || {};
+  const certs = (ct.items || []).filter(x => (x || '').trim());
+  if (on('certifications', ct) && certs.length)
+    body += `<div class="p-trust-block">
+      <div class="p-trust-h">${esc(ct.title || 'Certifications')}</div>
+      <div class="p-trust-certs">${certs
+        .map(x => `<div class="p-trust-cert">— ${esc(x.trim())}</div>`).join('')}</div>
+    </div>`;
+
+  const rv = cc.reviews || {};
+  // Capped at six for the same reason the sign page caps them: a long review
+  // list swamps the page it is meant to support.
+  const revs = (rv.items || []).filter(r => (r.text || '').trim()).slice(0, 6);
+  if (on('reviews', rv) && revs.length)
+    body += `<div class="p-trust-block">
+      <div class="p-trust-h">${esc(rv.title || 'What Our Customers Say')}</div>
+      <div class="p-trust-revs">${revs.map(r => `<div class="p-trust-rev">
+        <div class="p-trust-rev-stars">${'★'.repeat(Math.max(1, Math.min(5, parseInt(r.stars, 10) || 5)))}</div>
+        <div class="p-trust-rev-text">${esc(r.text.trim())}</div>
+        ${r.name ? `<div class="p-trust-rev-name">${esc(r.name)}</div>` : ''}
+      </div>`).join('')}</div>
+    </div>`;
+
+  const ab = cc.about || {};
+  if (on('about', ab) && (ab.body || '').trim())
+    body += `<div class="p-trust-block">
+      <div class="p-trust-h">${esc(ab.title || 'About Project One Roofing')}</div>
+      <div class="p-trust-body">${ab.body.trim().split(/\n{2,}/)
+        .map(p => `<p>${esc(p.trim())}</p>`).join('')}</div>
+    </div>`;
+
+  if (!body) return '';
+  return `<div class="p-trust">${pHeader}
+    ${pHead2('Why Project One', 'The Company Behind the Work',
+             'Who you are hiring, what stands behind the job, and what your neighbors say.')}
+    ${body}</div>`;
+}
+
+/* ── Permits & code page ──────────────────────────────────────────────
+   Who holds the permit for THIS address and what THAT office requires —
+   the jurisdiction's own rules kept separate from the Colorado statewide
+   baseline, because concatenating the two is what made this read as
+   boilerplate. Mirrors _cv_permit_block in app.py; keep the two in sync.
+
+   Reads the _jurisdictions cache warmed by warmPrintPhotos(). If it never
+   arrived, or no jurisdiction is matched to the address, the page says so
+   plainly rather than passing generic Colorado guidance off as local. */
+function _printPermitHTML(pHeader, pHead2) {
+  const pj  = S.permit_jurisdiction || {};
+  const eff = (pj.selected_id && _jxById(pj.selected_id)) ? pj.selected_id : pj.auto_id;
+  const jur = eff ? _jxById(eff) : null;
+  const base = (_jurisdictions && _jurisdictions.colorado_baseline) || {};
+
+  // Steep-slope asphalt guidance only applies where there is a shingle roof.
+  const shingleScope = !!(S.trades?.roofing?.enabled);
+  const jpts = shingleScope ? (jur?.code_points || []).filter(x => String(x).trim()) : [];
+  const bpts = shingleScope ? (base.code_points || []).filter(x => String(x).trim()) : [];
+  const items = shingleScope ? (base.code_items || []).filter(i => (i?.label || '').trim()) : [];
+
+  const vpRaw = jur?.verified_profile || null;
+  const vp = (vpRaw && String(vpRaw.reviewed_at || '').trim()) ? vpRaw : null;
+
+  if (!jur && !jpts.length && !bpts.length && !items.length) return '';
+
+  const sub = (label, inner) => inner
+    ? `<div class="p-perm-sub"><div class="p-perm-h">${esc(label)}</div>${inner}</div>` : '';
+  const list = (arr, cls) => `<ul class="p-perm-list${cls ? ' ' + cls : ''}">`
+    + arr.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>';
+
+  let body = '';
+  if (jur) {
+    const meta = [jur.office, jur.county ? jur.county + ' County' : '', jur.phone]
+      .filter(Boolean).map(esc).join(' · ');
+    body += `<div class="p-perm-name">${esc(jur.name)}</div>`
+          + (meta ? `<div class="p-perm-meta">${meta}</div>` : '');
+  } else {
+    body += `<div class="p-perm-name p-perm-unknown">Permitting authority not yet confirmed</div>
+      <div class="p-perm-meta">Colorado has no statewide residential building code — the city or
+      county adopts and enforces its own. We confirm the authority for this address, its adopted
+      code edition and any local amendments before pulling the permit, and the permit is included
+      in your price either way.</div>`;
+  }
+
+  if (vp?.adopted_code)
+    body += sub('Adopted code', `<div class="p-perm-p">${esc(vp.adopted_code)}</div>`);
+
+  const amends = (vp?.amendments || []).filter(a => (a?.text || '').trim()).slice(0, 8);
+  if (amends.length)
+    body += sub(jur ? `Local amendments in ${jur.name}` : 'Local amendments',
+      `<ul class="p-perm-list">${amends.map(a => `<li>${
+        a.topic ? `<strong>${esc(a.topic)}:</strong> ` : ''}${esc(a.text)}</li>`).join('')}</ul>`);
+
+  if (jpts.length)
+    body += sub(jur ? `What ${jur.name} requires` : 'Local requirements', list(jpts.slice(0, 8)));
+
+  // jur.pull is written for the office admin and names our own tooling —
+  // never printed for a customer. Only the reviewed permit facts go out.
+  const rp = vp?.reroof_permit || {};
+  const rpBits = [];
+  const ok = v => v && String(v).trim() && String(v).trim().toLowerCase() !== 'unknown';
+  if (ok(rp.submittal_method)) rpBits.push('Submittal: ' + rp.submittal_method);
+  if (ok(rp.fee_basis))        rpBits.push('Fees: ' + rp.fee_basis);
+  if (rpBits.length)
+    body += sub('How the permit is pulled',
+      `<div class="p-perm-meta">${rpBits.map(esc).join(' · ')}</div>`);
+
+  if (items.length)
+    body += sub('Code line items priced into your scope',
+      `<ul class="p-perm-list">${items.slice(0, 12).map(i =>
+        `<li>${esc(i.label)}${i.basis ? `<span class="p-perm-basis">${esc(i.basis)}</span>` : ''}</li>`
+      ).join('')}</ul>`);
+
+  if (bpts.length)
+    body += sub('Colorado statewide baseline', list(bpts.slice(0, 8), 'p-perm-muted'));
+
+  if (pj.verified)
+    body += `<div class="p-perm-stamp">Jurisdiction boundary verified against the published
+      municipal limits for this address.</div>`;
+
+  return `<div class="p-permit">${pHeader}
+    ${pHead2('Permits & code', 'Who Pulls Your Permit',
+             'The office that issues the permit for this address, and what it requires.')}
+    ${body}</div>`;
 }
 
 /* ── Condition report print pages ─────────────────────────────────────
@@ -10796,7 +11076,7 @@ function _printConditionHTML(pHeader){
     const sec=pc.sections[s.key]; const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
     return `<div class="p-cond-grade-cell">
       <div class="p-cond-grade-lbl">${s.icon} ${s.label}</div>
-      <div class="p-cond-grade-letter" style="color:${g.color};background:${g.bg}">${sec.grade}</div>
+      <div class="p-cond-grade-letter" style="color:${g.color}">${sec.grade}</div>
       <div class="p-cond-grade-desc" style="color:${g.color}">${g.label}</div>
     </div>`;
   }).join('');
@@ -10854,7 +11134,7 @@ function _printConditionHTML(pHeader){
       ${pHeader}
       <div class="p-rh-titlebar">
         <h2>${s.icon} ${s.label}</h2>
-        <div class="p-rh-badge" style="color:${g.color};background:${g.bg}">Grade ${sec.grade} — ${g.label}</div>
+        <div class="p-rh-badge" style="color:${g.color}">Grade ${sec.grade} — ${g.label}</div>
       </div>
       ${roofMeta}
       ${sec.summary?`<div class="p-rh-summary">${esc(sec.summary)}</div>`:''}

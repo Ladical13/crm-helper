@@ -3024,7 +3024,7 @@ def _cv_products_block(est):
         for trade, label, value in rows
     )
     return f'''<div class="cvproducts">
-      <h3>Product Selection</h3>
+      <h2 data-eyebrow="Specification">The Materials We&rsquo;ll Use</h2>
       <table class="cvprod-tbl"><tbody>{trs}</tbody></table>
     </div>'''
 
@@ -3157,12 +3157,12 @@ def render_line_items(est, tier=None, only_trades=None):
             continue  # nothing priced to show the customer for this trade
         gtotal += sub
         lbl = labels.get(tk, tk.title())
-        lp_ths = '<th class="cvth-r">Unit Price</th><th class="cvth-r">Total</th>' if show_lp else ''
+        lp_ths = '<th scope="col" class="cvth-r">Unit Price</th><th scope="col" class="cvth-r">Total</th>' if show_lp else ''
         parts.append(f'''<div class="cvtrade">
           <div class="cvtrade-hd">{lbl}</div>
           <table class="cvt"><thead><tr>
-            <th>Description</th><th class="cvth-c">Qty</th>
-            <th class="cvth-c">Unit</th>{lp_ths}</tr></thead>
+            <th>Description</th><th scope="col" class="cvth-c">Qty</th>
+            <th scope="col" class="cvth-c">Unit</th>{lp_ths}</tr></thead>
           <tbody>{''.join(rows)}</tbody>
           <tfoot><tr><td colspan="{ncols - 1}" class="cvsub-l">{lbl} Subtotal</td>
             <td class="cvr cvsub">{fc(sub)}</td></tr></tfoot>
@@ -3172,14 +3172,28 @@ def render_line_items(est, tier=None, only_trades=None):
 
 
 _CV_CSS = """
-:root{--navy:#1a3a5c;--navy2:#0e2440;--navy3:#2c5580;--ink:#101a2c;--mut:#5b6b81;--faint:#93a1b5;
---line:#e3e9f1;--bg:#eef2f6;--cyan:#22c7da;--gold:#ffd400;--red:#ee3d42;--green:#16a34a;
---r:16px;--sh:0 1px 2px rgba(15,23,42,.05),0 10px 30px -18px rgba(15,23,42,.22)}
+/* Palette sampled from logo.png, not eyeballed. The page shipped for years on
+   #1a3a5c as "the brand navy" — a slate blue that appears nowhere in the mark,
+   so the letterhead and everything under it were two different colors. --navy
+   is the real one. Cyan is the single accent; gold and red survive only in the
+   one footer stripe (the Colorado nod), and amber marks the selected package
+   and nothing else on the page. */
+:root{--navy:#082878;--navy2:#05184a;--navy3:#1a3f96;--ink:#0c1830;--mut:#5a6478;--faint:#8b93a4;
+--line:#e3e0da;--bg:#faf9f7;--cyan:#00a8b8;--gold:#f8d000;--red:#b81010;--green:#16a34a;--amber:#e88400;
+--serif:'Source Serif 4',Georgia,'Times New Roman',serif;
+--r:10px;--sh:0 1px 2px rgba(12,24,48,.04),0 8px 24px -18px rgba(12,24,48,.18);
+/* type scale — every size in this sheet used to be a bare literal, which is
+   exactly how it drifted out of step with the printed estimate */
+--fz-micro:10px;--fz-fine:12px;--fz-sm:13.5px;--fz-body:15px;--fz-lead:16.5px;
+--fz-h3:19px;--fz-h2:24px;
+/* space scale */
+--sp-1:6px;--sp-2:10px;--sp-3:16px;--sp-4:22px;--sp-5:28px;--sp-6:40px;
+--gut:16px}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
-body{font-family:'Plus Jakarta Sans',system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14.5px;
-color:var(--ink);background:linear-gradient(180deg,#f7f9fc 0%,var(--bg) 320px);min-height:100vh;
--webkit-font-smoothing:antialiased}
+body{font-family:'InterDoc',system-ui,-apple-system,'Segoe UI',sans-serif;font-size:var(--fz-body);
+color:var(--ink);background:var(--bg);min-height:100vh;
+font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
 img{max-width:100%}
 body.cv-has-stick{padding-bottom:96px}
 
@@ -3190,34 +3204,36 @@ display:flex;align-items:center;justify-content:space-between;gap:14px;border-bo
 .cvhdr img{height:50px;width:auto;display:block}
 .cvhdr-contact{display:flex;flex-direction:column;align-items:flex-end;gap:4px;text-align:right}
 .cvhdr-contact a{display:inline-flex;align-items:center;gap:7px;background:var(--navy);color:#fff;
-font-weight:700;font-size:13.5px;text-decoration:none;padding:9px 16px;border-radius:999px;
-box-shadow:0 6px 14px -6px rgba(26,58,92,.55);transition:transform .15s}
+font-weight:600;font-size:var(--fz-sm);text-decoration:none;padding:9px 16px;border-radius:999px;
+transition:transform .15s}
 .cvhdr-contact a:active{transform:scale(.96)}
-.cvhdr-contact span{color:var(--faint);font-size:10.5px;letter-spacing:.3px}
-.cvbrand-stripe{height:4px;background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
+.cvhdr-contact span{color:var(--faint);font-size:var(--fz-micro);letter-spacing:.6px;text-transform:uppercase}
+/* The Colorado tricolor. It used to fire three times on one page — header,
+   signature card and footer — which is two times too many for a device that
+   is supposed to read as a signature. It now appears once, at the footer. */
+.cvbrand-stripe{height:3px;background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
+.cvhdr+.cvbrand-stripe{height:1px;background:var(--line)}
 
 /* ── hero ── */
-.cvhero{position:relative;background:radial-gradient(130% 150% at 88% -30%,var(--navy3) 0%,var(--navy) 48%,var(--navy2) 100%);
-color:#fff;padding:46px 20px 42px;text-align:center;overflow:hidden}
-.cvhero::before{content:'';position:absolute;width:360px;height:360px;border-radius:50%;
-background:radial-gradient(circle,rgba(34,199,218,.16),transparent 65%);top:-150px;left:-110px}
-.cvhero-brand{position:relative;font-size:11px;font-weight:800;letter-spacing:3px;text-transform:uppercase;color:var(--cyan);margin-bottom:12px}
-.cvhero h1{position:relative;font-size:clamp(24px,5.5vw,34px);font-weight:800;letter-spacing:-.6px;margin-bottom:8px}
-.cvhero p{position:relative;font-size:14.5px;opacity:.85;max-width:540px;margin:0 auto;line-height:1.55}
-.cvhero.ok{background:radial-gradient(130% 150% at 88% -30%,#22a558 0%,#178a44 48%,#0d6630 100%)}
-.cvsteps{position:relative;display:flex;justify-content:center;gap:8px;margin-top:22px;flex-wrap:wrap}
-.cvstep{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.09);
-border:1px solid rgba(255,255,255,.22);border-radius:999px;padding:6px 14px 6px 7px;font-size:12px;font-weight:600;color:#fff}
-.cvstep b{display:inline-flex;width:21px;height:21px;border-radius:50%;background:var(--cyan);color:var(--navy2);
-font-size:11px;font-weight:800;align-items:center;justify-content:center}
+.cvhero{position:relative;background:var(--navy2);
+color:#fff;padding:var(--sp-6) 20px;text-align:center;overflow:hidden}
+.cvhero-brand{position:relative;font-size:var(--fz-micro);font-weight:600;letter-spacing:3px;text-transform:uppercase;color:var(--cyan);margin-bottom:14px}
+.cvhero h1{position:relative;font-family:var(--serif);font-size:clamp(26px,5.5vw,38px);font-weight:600;letter-spacing:-.5px;margin-bottom:10px}
+.cvhero p{position:relative;font-size:var(--fz-lead);opacity:.8;max-width:520px;margin:0 auto;line-height:1.6}
+.cvhero.ok{background:#0d5c33}
+.cvsteps{position:relative;display:flex;justify-content:center;gap:8px;margin-top:var(--sp-5);flex-wrap:wrap}
+.cvstep{display:inline-flex;align-items:center;gap:8px;background:transparent;
+border:1px solid rgba(255,255,255,.28);border-radius:999px;padding:6px 15px 6px 7px;font-size:var(--fz-fine);font-weight:500;color:rgba(255,255,255,.88)}
+.cvstep b{display:inline-flex;width:20px;height:20px;border-radius:50%;background:var(--cyan);color:var(--navy2);
+font-size:11px;font-weight:700;align-items:center;justify-content:center}
 
 /* ── cover-photo hero ── */
 .cvcover{position:relative;overflow:hidden;background:var(--navy2)}
 .cvcover img{width:100%;height:min(500px,62vh);object-fit:cover;display:block}
 .cvcover-shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,25,41,.25) 0%,rgba(10,25,41,.05) 40%,rgba(10,25,41,.9) 100%)}
 .cvcover-text{position:absolute;left:0;right:0;bottom:0;padding:34px 20px 30px;text-align:center;color:#fff}
-.cvcover-text h1{font-size:clamp(24px,5.5vw,36px);font-weight:800;letter-spacing:-.6px;margin-bottom:8px;text-shadow:0 2px 14px rgba(0,0,0,.55)}
-.cvcover-text p{font-size:14.5px;opacity:.95;text-shadow:0 1px 6px rgba(0,0,0,.6)}
+.cvcover-text h1{font-family:var(--serif);font-size:clamp(26px,5.5vw,38px);font-weight:600;letter-spacing:-.5px;margin-bottom:8px;text-shadow:0 2px 14px rgba(0,0,0,.55)}
+.cvcover-text p{font-size:var(--fz-lead);opacity:.95;text-shadow:0 1px 6px rgba(0,0,0,.6)}
 @media(max-width:520px){.cvcover img{height:340px}}
 .cv-check{width:76px;height:76px;margin:0 auto 16px;border-radius:50%;background:rgba(255,255,255,.14);
 border:2.5px solid rgba(255,255,255,.9);display:flex;align-items:center;justify-content:center;
@@ -3228,21 +3244,43 @@ color:#fff;padding:11px 24px;border-radius:999px;font-size:14px;font-weight:700;
 .cv-print-btn:hover{background:rgba(255,255,255,.28)}
 
 /* ── layout + cards ── */
-.cvmain{max-width:960px;margin:0 auto;padding:6px 0 46px}
-@media(min-width:720px){.cvmain{padding:14px 22px 60px}}
+/* The gutter lives on .cvmain, not on each card. It used to be per-card
+   `margin:16px 16px 0`, and the three blocks that forgot it — .cvdet, .cvdl,
+   .cvvz — ran edge-to-edge on a phone while every neighbour sat inset. */
+.cvmain{max-width:900px;margin:0 auto;padding:var(--sp-1) var(--gut) var(--sp-6)}
+@media(min-width:720px){.cvmain{--gut:22px;padding:var(--sp-3) var(--gut) 64px}}
 .cvc-card,.cvnotes,.cvproducts,.cvintro,.cvphotos,.cvcond,.cvnext,.cvrep-card{background:#fff;border:1px solid var(--line);
-border-radius:var(--r);box-shadow:var(--sh);margin:16px 16px 0;padding:18px}
-.cvgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px 16px}
-.cvgi label{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--faint);font-weight:700;display:block;margin-bottom:3px}
-.cvgi strong{font-size:14px;font-weight:700;color:var(--ink);line-height:1.4}
-.cvnotes h3,.cvproducts h3,.cvphotos h3,.cvcond>h3,.cvnext h3,.cvrep-card h3{display:flex;align-items:center;gap:9px;
-font-size:11.5px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--navy);margin-bottom:12px}
-.cvnotes h3::before,.cvproducts h3::before,.cvphotos h3::before,.cvcond>h3::before,.cvnext h3::before,.cvrep-card h3::before{
-content:'';width:20px;height:3.5px;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--gold));flex-shrink:0}
-.cvnotes p{font-size:14px;line-height:1.7;color:#33415a;white-space:pre-wrap}
-.cvintro{padding:22px}
-.cvintro-logo{height:40px;width:auto;display:block;margin-bottom:14px}
-.cvintro p{font-size:14.5px;line-height:1.8;color:#33415a;white-space:pre-wrap}
+border-radius:var(--r);box-shadow:var(--sh);margin:var(--sp-3) 0 0;padding:var(--sp-5)}
+.cvgrid{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4) var(--sp-3)}
+.cvgi label{font-size:var(--fz-micro);text-transform:uppercase;letter-spacing:1.2px;color:var(--faint);font-weight:600;display:block;margin-bottom:5px}
+.cvgi strong{font-size:var(--fz-body);font-weight:500;color:var(--ink);line-height:1.4}
+/* Section heading: a small caps teal eyebrow over a serif line. Replaces the
+   11.5px/800 uppercase run-in, which was a SaaS pattern on a document that
+   wants to read like a proposal. */
+.cvnotes h2,.cvproducts h2,.cvphotos h2,.cvcond>h2,.cvnext h2,.cvrep-card h2,.cvtrust h2{display:block;
+font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;text-transform:none;letter-spacing:-.2px;
+color:var(--navy);margin:0 0 var(--sp-3)}
+/* Attribute-gated so a heading without an eyebrow doesn't render an empty box
+   above itself. */
+.cvmain h2[data-eyebrow]::before,.cvmain h3[data-eyebrow]::before{
+content:attr(data-eyebrow);display:block;font-family:'InterDoc',system-ui,sans-serif;font-size:var(--fz-micro);
+font-weight:600;letter-spacing:1.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:var(--sp-1)}
+
+/* ── at a glance ── */
+.cvglance-list{margin:0}
+.cvglance-row{display:grid;grid-template-columns:118px 1fr;gap:var(--sp-3);
+padding:13px 0;border-bottom:1px solid var(--line)}
+.cvglance-row:last-child{border-bottom:none}
+.cvglance-row:first-child{padding-top:0}
+.cvglance-k{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.2px;
+color:var(--faint);padding-top:2px}
+.cvglance-v{font-size:var(--fz-body);line-height:1.55;color:var(--ink);margin:0}
+.cvglance-v strong{font-weight:600;color:var(--navy)}
+@media(max-width:640px){.cvglance-row{grid-template-columns:1fr;gap:var(--sp-1)}}
+.cvnotes p{font-size:var(--fz-body);line-height:1.75;color:var(--mut);white-space:pre-wrap}
+.cvintro{padding:var(--sp-5)}
+.cvintro-logo{height:34px;width:auto;display:block;margin-bottom:var(--sp-4)}
+.cvintro p{font-family:var(--serif);font-size:var(--fz-lead);line-height:1.8;color:var(--ink);white-space:pre-wrap}
 
 /* ── photos + lightbox ── */
 .cvph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
@@ -3273,120 +3311,125 @@ color:#fff;border:none;font-size:24px;line-height:1;cursor:pointer;z-index:2;fon
 @media(max-width:480px){.cvprod-trade,.cvprod-label{width:auto}.cvprod-tbl td{padding:6px 4px;font-size:12.5px}}
 
 /* ── package (tier) cards ── */
-.cv-tier-section{margin:6px 16px 0}
-.cv-tier-heading{display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:800;text-transform:uppercase;
-letter-spacing:1px;color:var(--navy);padding:20px 0 12px}
-.cv-tier-heading::before{content:'';width:20px;height:3.5px;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--gold));flex-shrink:0}
-.cv-tier-cards{display:grid;gap:12px;margin-bottom:6px}
-.cv-tier-card{border:2px solid var(--line);border-radius:var(--r);padding:22px 14px 18px;text-align:center;cursor:pointer;
-transition:transform .18s,box-shadow .18s,background .18s;background:#fff;position:relative;
--webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;box-shadow:0 2px 10px -4px rgba(15,23,42,.12)}
-.cv-tier-card:hover{transform:translateY(-3px);box-shadow:0 14px 30px -14px rgba(15,23,42,.35)}
-.cv-tier-card.cv-tier-selected{transform:translateY(-3px);box-shadow:0 18px 36px -16px rgba(15,23,42,.4)}
-.cv-tier-popular{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1d8a4b,var(--green));
-color:#fff;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;padding:4px 12px;border-radius:999px;
-white-space:nowrap;box-shadow:0 4px 10px -3px rgba(22,163,74,.6)}
-.cv-tier-name{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px}
-.cv-tier-system{font-size:13.5px;font-weight:700;color:var(--ink);margin-bottom:6px;line-height:1.3}
-.cv-tier-price{font-size:27px;font-weight:800;letter-spacing:-.5px;margin-bottom:6px;font-variant-numeric:tabular-nums}
-.cv-tier-desc{font-size:11.5px;color:var(--mut);margin-bottom:8px;line-height:1.5}
-.cv-tier-feats{list-style:none;margin:10px 0 6px;padding:10px 2px 0;border-top:1px dashed var(--line);text-align:left;
-font-size:11.5px;color:#33415a;line-height:1.55}
-.cv-tier-feats li{position:relative;padding:2px 0 2px 18px}
-.cv-tier-feats li::before{content:'✓';position:absolute;left:0;font-weight:800;color:var(--green)}
+/* No hover lift, no pastel fills, no drop shadow bloom. Three cards competing
+   with color and motion made the choice feel like a pricing page; the choice
+   now reads through one amber rule on the selected card and nothing else. */
+.cv-tier-section{margin:var(--sp-1) 0 0}
+.cv-tier-heading{display:block;margin:0;font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;text-transform:none;
+letter-spacing:-.2px;color:var(--navy);padding:var(--sp-5) 0 var(--sp-3)}
+.cv-tier-heading::before{content:attr(data-eyebrow);display:block;font-family:'InterDoc',system-ui,sans-serif;
+font-size:var(--fz-micro);font-weight:600;letter-spacing:1.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:var(--sp-1)}
+.cv-tier-cards{display:grid;gap:var(--sp-2);margin-bottom:var(--sp-1)}
+.cv-tier-card{border:1px solid var(--line);border-top:2px solid var(--line);border-radius:var(--r);
+padding:var(--sp-5) var(--sp-3) var(--sp-4);text-align:left;cursor:pointer;
+transition:border-color .18s,background .18s;background:#fff;position:relative;
+-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+.cv-tier-card:hover{border-color:var(--mut)}
+.cv-tier-card.cv-tier-selected{border-color:var(--line);border-top-color:var(--amber);background:#fff}
+.cv-tier-popular{position:absolute;top:-1px;right:var(--sp-3);background:transparent;
+color:var(--green);font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;padding:var(--sp-1) 0;
+white-space:nowrap}
+.cv-tier-name{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.6px;margin-bottom:var(--sp-2)}
+.cv-tier-system{font-size:var(--fz-sm);font-weight:500;color:var(--ink);margin-bottom:var(--sp-1);line-height:1.4}
+.cv-tier-price{font-family:var(--serif);font-size:30px;font-weight:600;letter-spacing:-.5px;margin-bottom:var(--sp-1);font-variant-numeric:tabular-nums}
+.cv-tier-desc{font-size:var(--fz-fine);color:var(--mut);margin-bottom:var(--sp-2);line-height:1.55}
+.cv-tier-feats{list-style:none;margin:var(--sp-3) 0 var(--sp-1);padding:var(--sp-3) 0 0;border-top:1px solid var(--line);text-align:left;
+font-size:var(--fz-fine);color:var(--mut);line-height:1.6}
+.cv-tier-feats li{position:relative;padding:3px 0 3px 16px}
+.cv-tier-feats li::before{content:'';position:absolute;left:0;top:11px;width:5px;height:1px;background:var(--faint)}
 .cv-tier-feats .cv-tier-more{color:var(--faint);font-style:italic}
-.cv-tier-feats .cv-tier-more::before{content:''}
-.cv-tier-check{font-size:12.5px;font-weight:700;color:var(--mut);border:1.5px solid var(--line);border-radius:999px;
-padding:7px 18px;display:inline-block;margin-top:8px;transition:all .15s;background:#fff}
+.cv-tier-feats .cv-tier-more::before{content:none}
+.cv-tier-check{font-size:var(--fz-fine);font-weight:600;color:var(--mut);border:1px solid var(--line);border-radius:999px;
+padding:8px 18px;display:inline-block;margin-top:var(--sp-3);transition:all .15s;background:#fff;letter-spacing:.3px}
 .cv-tier-selected .cv-tier-check{background:var(--navy);border-color:var(--navy);color:#fff}
 
 /* ── line-item tables ── */
-.cvtrade{margin:16px 16px 0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--sh);background:#fff}
-.cvtrade-hd{background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;padding:12px 18px;font-size:12px;
-font-weight:800;letter-spacing:1px;text-transform:uppercase}
+.cvtrade{margin:var(--sp-3) 0 0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--sh);background:#fff}
+.cvtrade-hd{background:#fff;color:var(--navy);padding:var(--sp-4) var(--sp-4) var(--sp-2);
+font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;letter-spacing:-.2px;text-transform:none}
 .cvt{width:100%;border-collapse:collapse;background:#fff}
-.cvt th{padding:9px 14px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.6px;background:#f8fafc;
-border-bottom:1px solid var(--line);color:var(--mut);font-weight:700}
+.cvt th{padding:var(--sp-2) var(--sp-4);text-align:left;font-size:var(--fz-micro);text-transform:uppercase;letter-spacing:1.2px;background:#fff;
+border-bottom:1px solid var(--navy);color:var(--faint);font-weight:600}
 .cvth-c{width:52px;text-align:center !important}
-.cvth-r{width:92px;text-align:right !important}
-.cvt td{padding:9px 14px;border-bottom:1px solid #f4f7fa;font-size:13px;vertical-align:top}
+.cvth-r{width:96px;text-align:right !important}
+.cvt td{padding:13px var(--sp-4);border-bottom:1px solid var(--line);font-size:var(--fz-sm);vertical-align:top}
 .cvt tbody tr:last-child td{border-bottom:none}
-.cvn{font-weight:600}
+.cvn{font-weight:500;color:var(--ink)}
 /* pre-wrap on both description cells: reps type multi-line line-item
    descriptions on the Pricing tabs, and plain HTML would collapse every one of
    those newlines into a space. */
-.cvd{font-size:11px;color:var(--mut);font-weight:400;margin-top:2px;line-height:1.5;white-space:pre-wrap}
+.cvd{font-size:var(--fz-fine);color:var(--mut);font-weight:400;margin-top:4px;line-height:1.55;white-space:pre-wrap}
 .cvc{text-align:center;color:var(--mut)}
 .cvc-desc{font-weight:400;color:var(--mut);white-space:pre-wrap}
-.cvr{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
-.cvt tfoot td{background:#f8fafc;font-weight:800;padding:11px 14px;border-top:2px solid var(--line);font-size:13px}
-.cvsub-l{text-align:right;color:var(--mut);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding-right:12px}
-.cvsub{color:var(--navy);font-size:14px}
-.cvhidden-note{font-size:10.5px;color:var(--faint);font-style:italic;padding:6px 14px;text-align:left}
-.cv-section-row td{background:#eef4fb!important;color:var(--navy);font-weight:800;font-size:10px;
-text-transform:uppercase;letter-spacing:.6px;padding:7px 14px!important}
-.cv-section-sub td{background:#f8fafc;font-weight:700;font-size:11.5px;color:var(--navy);
-border-bottom:1px solid var(--line);padding:7px 14px}
+.cvr{text-align:right;font-weight:500;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cvt tfoot td{background:#fff;font-weight:600;padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--navy);font-size:var(--fz-sm)}
+.cvsub-l{text-align:right;color:var(--faint);font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.2px;padding-right:12px}
+.cvsub{color:var(--navy);font-size:var(--fz-lead)}
+.cvhidden-note{font-size:var(--fz-fine);color:var(--faint);font-style:italic;padding:var(--sp-2) var(--sp-4);text-align:left}
+/* No tinted band; a rule and small caps carry the grouping just as well and
+   don't stripe the table. */
+.cv-section-row td{background:#fff!important;color:var(--navy);font-weight:600;font-size:var(--fz-micro);
+text-transform:uppercase;letter-spacing:1.4px;padding:var(--sp-4) var(--sp-4) var(--sp-1)!important;border-bottom:1px solid var(--line)}
+.cv-section-sub td{background:#fff;font-weight:600;font-size:var(--fz-fine);color:var(--mut);
+border-bottom:1px solid var(--line);padding:var(--sp-2) var(--sp-4)}
 .cv-section-sub td:first-child{text-align:right}
 
 /* ── grand total ── */
-.cvgrand{margin:16px 16px 0;background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);color:#fff;
-padding:18px 22px;border-radius:var(--r);display:flex;justify-content:space-between;align-items:center;gap:12px;
-box-shadow:0 14px 30px -14px rgba(14,36,64,.55);position:relative;overflow:hidden}
-.cvgrand::before{content:'';position:absolute;left:0;top:0;bottom:0;width:5px;
-background:linear-gradient(180deg,var(--cyan),var(--gold),var(--red))}
-.cvgrand-lbl{font-size:13px;font-weight:600;opacity:.85}
-.cvgrand-amt{font-size:clamp(22px,6vw,30px);font-weight:800;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+/* The one filled element on the page. Everything above it got quieter so this
+   is where the eye stops. */
+.cvgrand{margin:var(--sp-3) 0 0;background:var(--navy);color:#fff;
+padding:var(--sp-5);border-radius:var(--r);display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+position:relative;overflow:hidden;flex-wrap:wrap}
+.cvgrand-lbl{font-size:var(--fz-micro);font-weight:600;letter-spacing:1.8px;text-transform:uppercase;color:rgba(255,255,255,.72)}
+.cvgrand-amt{font-family:var(--serif);font-size:clamp(26px,6vw,34px);font-weight:600;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
 
 /* ── contract / terms ── */
-.cvcontract{margin:16px 16px 0;background:#fff;border-radius:var(--r);border:1px solid var(--line);overflow:hidden;box-shadow:var(--sh)}
+.cvcontract{margin:var(--sp-3) 0 0;background:#fff;border-radius:var(--r);border:1px solid var(--line);overflow:hidden;box-shadow:var(--sh)}
 .cvcontract summary{padding:15px 18px;cursor:pointer;font-weight:700;font-size:13.5px;color:var(--navy);list-style:none;
 display:flex;align-items:center;justify-content:space-between;gap:10px}
 .cvcontract summary::-webkit-details-marker{display:none}
 .cvcontract summary::after{content:'▾';color:var(--faint);transition:transform .2s}
 .cvcontract[open] summary::after{transform:rotate(180deg)}
 .cvcontract[open] summary{border-bottom:1px solid var(--line)}
-.cvcontract-body{padding:16px 18px;font-size:11.5px;line-height:1.75;color:#4b5a72;white-space:pre-wrap;
-max-height:300px;overflow-y:auto;background:#fafbfd}
+.cvcontract-body{padding:var(--sp-3) var(--sp-4);font-size:var(--fz-fine);line-height:1.8;color:var(--mut);white-space:pre-wrap;
+max-height:300px;overflow-y:auto;background:#fff;border-top:1px solid var(--line)}
 
 /* ── signature area ── */
-.cvsig{margin:24px 16px 0;padding:26px 20px 20px;background:#fff;border-radius:var(--r);border:1px solid var(--line);
-box-shadow:0 18px 44px -20px rgba(14,36,64,.35);position:relative;overflow:hidden}
-.cvsig::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;
-background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
-.cvsig h2{font-size:20px;font-weight:800;color:var(--navy);letter-spacing:-.3px;margin-bottom:5px}
-.cvsig .sub{font-size:13px;color:var(--mut);margin-bottom:18px;line-height:1.6}
-.cvfield{display:block;margin-bottom:12px}
-.cvfield>span{display:block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);margin-bottom:6px}
-.cvfield em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--faint);font-weight:500}
-.cvinput{width:100%;border:1.5px solid #d7dfe9;border-radius:11px;padding:13px 15px;font-size:16px;font-family:inherit;
-outline:none;color:var(--ink);background:#fbfcfe;transition:border-color .15s,box-shadow .15s}
-.cvinput:focus{border-color:var(--navy);box-shadow:0 0 0 4px rgba(26,58,92,.1);background:#fff}
-.cv-sigpad{border:1.5px dashed #b9c7d8;border-radius:12px;background:#fbfcfe;padding:16px 16px 10px;text-align:center;margin:4px 0 16px}
+/* Keeps its elevation — this should be the most important object on the page —
+   but loses the tricolor bar (now the footer's alone) and the three differently
+   tinted sub-panels, which made one form look like three unrelated widgets. */
+.cvsig{margin:var(--sp-5) 0 0;padding:var(--sp-5);background:#fff;border-radius:var(--r);border:1px solid var(--line);
+box-shadow:0 18px 44px -22px rgba(12,24,48,.3);position:relative;overflow:hidden}
+.cvsig::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--navy)}
+.cvsig h2{font-family:var(--serif);font-size:var(--fz-h2);font-weight:600;color:var(--navy);letter-spacing:-.4px;margin-bottom:var(--sp-1)}
+.cvsig .sub{font-size:var(--fz-sm);color:var(--mut);margin-bottom:var(--sp-5);line-height:1.65}
+.cvfield{display:block;margin-bottom:var(--sp-3)}
+.cvfield>span{display:block;font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.2px;color:var(--faint);margin-bottom:var(--sp-1)}
+.cvfield em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--faint);font-weight:400}
+/* 16px is deliberate — anything smaller makes iOS zoom the page on focus. */
+.cvinput{width:100%;border:1px solid #d7dfe9;border-radius:8px;padding:13px 15px;font-size:16px;font-family:inherit;
+outline:none;color:var(--ink);background:#fff;transition:border-color .15s,box-shadow .15s}
+.cvinput:focus{border-color:var(--navy);box-shadow:0 0 0 3px rgba(8,40,120,.1);background:#fff}
+.cv-sigpad{border:1px dashed #c3ccda;border-radius:8px;background:#fff;padding:var(--sp-3) var(--sp-3) var(--sp-2);text-align:center;margin:var(--sp-1) 0 var(--sp-3)}
 #cv-sig-script{font-family:'Great Vibes','Segoe Script',cursive;font-size:38px;line-height:1.25;color:var(--navy);
 min-height:48px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cv-sigpad-hint{font-size:10px;color:var(--faint);border-top:1.5px solid #dbe3ee;margin-top:6px;padding-top:8px;
-text-transform:uppercase;letter-spacing:.6px;font-weight:600}
-.cvagree{display:flex;align-items:flex-start;gap:11px;font-size:13px;color:#33415a;margin-bottom:16px;line-height:1.55;
-cursor:pointer;background:#f8fafc;border:1px solid var(--line);border-radius:11px;padding:13px 14px}
+.cv-sigpad-hint{font-size:var(--fz-micro);color:var(--faint);border-top:1px solid var(--line);margin-top:var(--sp-1);padding-top:var(--sp-2);
+text-transform:uppercase;letter-spacing:1.2px;font-weight:600}
+.cvagree{display:flex;align-items:flex-start;gap:11px;font-size:var(--fz-sm);color:var(--mut);margin-bottom:var(--sp-3);line-height:1.6;
+cursor:pointer;background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px}
 .cvagree input{margin-top:1px;flex-shrink:0;width:19px;height:19px;cursor:pointer;accent-color:var(--navy)}
-.cvbtn{width:100%;padding:16px;background:linear-gradient(135deg,#1d8a4b,#16a34a);color:#fff;border:none;border-radius:12px;
-font-size:16.5px;font-weight:800;font-family:inherit;cursor:pointer;margin-bottom:12px;
-box-shadow:0 12px 26px -10px rgba(22,163,74,.55);transition:transform .15s,box-shadow .15s}
-.cvbtn:hover{transform:translateY(-1px);box-shadow:0 16px 30px -10px rgba(22,163,74,.6)}
-.cvbtn:active{transform:scale(.98)}
-.cvlegal{font-size:10.5px;color:var(--faint);text-align:center;line-height:1.6}
-.cv-shingle{background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:14px 15px;margin-bottom:14px}
-.cv-shingle-label{font-size:11px;font-weight:800;color:#0c4a6e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
-.cv-shingle-locked{font-size:17px;font-weight:800;color:var(--navy)}
-.cv-shingle-select{margin-bottom:0;background:#fff}
-.cv-siding{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px 15px;margin-bottom:14px}
-.cv-siding-label{font-size:11px;font-weight:800;color:#166534;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
-.cv-siding-locked{font-size:17px;font-weight:800;color:var(--navy)}
-.cv-siding-select{margin-bottom:0;background:#fff}
-.cv-initials{background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px 15px;margin-bottom:14px}
-.cv-initials-title{font-size:11px;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
-.cv-initial-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid #fef3c7}
+.cvbtn{width:100%;padding:17px;background:var(--navy);color:#fff;border:none;border-radius:8px;
+font-size:var(--fz-lead);font-weight:600;font-family:inherit;cursor:pointer;margin-bottom:var(--sp-3);letter-spacing:.2px;
+transition:background .15s,transform .15s}
+.cvbtn:hover{background:var(--navy3)}
+.cvbtn:active{transform:scale(.99)}
+.cvlegal{font-size:var(--fz-micro);color:var(--faint);text-align:center;line-height:1.7}
+.cv-shingle,.cv-siding,.cv-initials{background:#fff;border:1px solid var(--line);border-radius:8px;padding:var(--sp-3);margin-bottom:var(--sp-3)}
+.cv-shingle-label,.cv-siding-label,.cv-initials-title{font-size:var(--fz-micro);font-weight:600;color:var(--faint);
+text-transform:uppercase;letter-spacing:1.2px;margin-bottom:var(--sp-2)}
+.cv-shingle-locked,.cv-siding-locked{font-size:var(--fz-lead);font-weight:500;color:var(--navy)}
+.cv-shingle-select,.cv-siding-select{margin-bottom:0;background:#fff}
+.cv-initial-row{display:flex;align-items:center;gap:12px;padding:var(--sp-2) 0;border-top:1px solid var(--line)}
 .cv-initial-row:first-of-type{border-top:none}
 .cv-initial-text{flex:1;font-size:13px;color:#33415a;line-height:1.5}
 .cv-initial-box{width:82px;flex-shrink:0;border:2px solid var(--navy);border-radius:9px;padding:10px 8px;font-size:16px;
@@ -3399,52 +3442,54 @@ font-weight:800;text-align:center;text-transform:uppercase;outline:none;color:va
 .cvnext-it:last-child{padding-bottom:2px}
 .cvnext-it::after{content:'';position:absolute;left:15px;top:34px;bottom:4px;width:2px;background:var(--line)}
 .cvnext-it:last-child::after{display:none}
-.cvnext-n{position:absolute;left:0;top:0;width:31px;height:31px;border-radius:50%;
-background:linear-gradient(135deg,var(--navy3),var(--navy2));color:#fff;font-weight:800;font-size:13px;
-display:flex;align-items:center;justify-content:center;box-shadow:0 5px 12px -5px rgba(14,36,64,.6)}
-.cvnext-t{font-weight:800;font-size:14px;color:var(--ink);padding-top:5px;margin-bottom:3px}
-.cvnext-d{font-size:13px;color:var(--mut);line-height:1.6}
+.cvnext-n{position:absolute;left:0;top:0;width:30px;height:30px;border-radius:50%;
+background:#fff;border:1px solid var(--line);color:var(--navy);font-weight:600;font-size:var(--fz-sm);
+display:flex;align-items:center;justify-content:center}
+.cvnext-t{font-weight:600;font-size:var(--fz-body);color:var(--ink);padding-top:4px;margin-bottom:4px}
+.cvnext-d{font-size:var(--fz-sm);color:var(--mut);line-height:1.65}
 
 /* ── your consultant ── */
 .cvrep{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-.cvrep-av{width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,var(--navy3),var(--navy2));color:#fff;
-font-weight:800;font-size:19px;display:flex;align-items:center;justify-content:center;letter-spacing:1px;flex-shrink:0;
-box-shadow:0 6px 14px -6px rgba(14,36,64,.5)}
+.cvrep-av{width:52px;height:52px;border-radius:50%;background:var(--navy);color:#fff;
+font-family:var(--serif);font-weight:600;font-size:19px;display:flex;align-items:center;justify-content:center;letter-spacing:.5px;flex-shrink:0}
 .cvrep-info{min-width:130px}
-.cvrep-name{font-weight:800;font-size:15.5px;color:var(--ink)}
-.cvrep-role{font-size:12px;color:var(--mut);margin-top:1px}
+.cvrep-name{font-weight:600;font-size:var(--fz-lead);color:var(--ink)}
+.cvrep-role{font-size:var(--fz-fine);color:var(--mut);margin-top:2px}
 .cvrep-btns{display:flex;gap:8px;flex:1 1 100%;margin-top:6px}
 @media(min-width:560px){.cvrep-btns{flex:0 0 auto;margin-top:0;margin-left:auto}}
-.cvrep-btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:11px 16px;border-radius:11px;
-font-size:13.5px;font-weight:700;text-decoration:none;border:1.5px solid var(--line);color:var(--navy);background:#fff;
+.cvrep-btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:12px 16px;border-radius:8px;
+font-size:var(--fz-sm);font-weight:600;text-decoration:none;border:1px solid var(--line);color:var(--navy);background:#fff;
 white-space:nowrap;transition:transform .15s,background .15s}
 .cvrep-btn:active{transform:scale(.97)}
-.cvrep-btn.pri{background:var(--navy);border-color:var(--navy);color:#fff;box-shadow:0 8px 16px -8px rgba(26,58,92,.6)}
+.cvrep-btn.pri{background:var(--navy);border-color:var(--navy);color:#fff}
 
 /* ── sticky sign bar ── */
 .cvstick{position:fixed;left:0;right:0;bottom:0;z-index:60;padding:10px 12px calc(10px + env(safe-area-inset-bottom));
 transform:translateY(130%);transition:transform .35s cubic-bezier(.22,.61,.36,1);pointer-events:none}
 .cvstick.on{transform:none;pointer-events:auto}
-.cvstick-in{max-width:660px;margin:0 auto;background:rgba(14,36,64,.97);backdrop-filter:blur(10px);
-border:1px solid rgba(255,255,255,.08);border-radius:16px;box-shadow:0 20px 44px -14px rgba(14,36,64,.65);
+.cvstick-in{max-width:660px;margin:0 auto;background:rgba(5,24,74,.97);backdrop-filter:blur(10px);
+border:1px solid rgba(255,255,255,.1);border-radius:12px;box-shadow:0 20px 44px -16px rgba(5,24,74,.6);
 display:flex;align-items:center;gap:14px;padding:12px 12px 12px 18px;color:#fff}
 .cvstick-t{display:flex;flex-direction:column;min-width:0}
-.cvstick-lbl{font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;opacity:.65;
-white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46vw}
-.cvstick-amt{font-size:20px;font-weight:800;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
-.cvstick-btn{margin-left:auto;background:linear-gradient(135deg,#1d8a4b,#16a34a);color:#fff;border:none;border-radius:12px;
-padding:13px 18px;font-size:14px;font-weight:800;font-family:inherit;cursor:pointer;white-space:nowrap;
-box-shadow:0 10px 20px -8px rgba(22,163,74,.7);transition:transform .15s}
+/* max-width:46vw ellipsised "Roofing: Better - Siding: Best" almost immediately
+   on a 375px phone, and that label is the half that says WHAT is being priced.
+   Two lines cost nothing. */
+.cvstick-lbl{font-size:var(--fz-micro);font-weight:600;letter-spacing:1.2px;text-transform:uppercase;opacity:.62;
+line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cvstick-amt{font-family:var(--serif);font-size:21px;font-weight:600;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
+.cvstick-btn{margin-left:auto;background:#fff;color:var(--navy);border:none;border-radius:8px;
+padding:13px 18px;font-size:var(--fz-sm);font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;
+transition:transform .15s}
 .cvstick-btn:active{transform:scale(.96)}
 
 /* ── attachments ── */
 .cv-att-list{display:flex;flex-direction:column;gap:10px}
-.cv-att{display:inline-flex;align-items:center;gap:9px;background:#f8fafc;border:1px solid var(--line);border-radius:11px;
-padding:13px 16px;font-size:14px;font-weight:700;color:var(--navy);text-decoration:none;transition:border-color .15s,background .15s}
-.cv-att:hover{background:#eef2f7;border-color:var(--faint)}
+.cv-att{display:inline-flex;align-items:center;gap:9px;background:#fff;border:1px solid var(--line);border-radius:8px;
+padding:13px 16px;font-size:var(--fz-sm);font-weight:600;color:var(--navy);text-decoration:none;transition:border-color .15s}
+.cv-att:hover{border-color:var(--mut)}
 .cv-att-doc{display:flex;flex-direction:column;gap:10px;margin-bottom:8px}
-.cv-att-doc-title{font-size:13.5px;font-weight:800;color:var(--navy)}
-.cv-att-page{width:100%;display:block;border:1px solid var(--line);border-radius:10px;box-shadow:0 2px 8px -3px rgba(15,23,42,.15)}
+.cv-att-doc-title{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--navy)}
+.cv-att-page{width:100%;display:block;border:1px solid var(--line);border-radius:6px}
 
 /* ── signed certificate ── */
 .cvinit-tbl td:first-child{width:auto;text-transform:none;letter-spacing:0;font-size:12px;color:#33415a;font-weight:500}
@@ -3460,95 +3505,121 @@ margin-bottom:13px;padding-bottom:10px;border-bottom:2px solid var(--navy)}
 .mono{font-family:ui-monospace,Consolas,monospace;font-size:10px}
 
 /* ── footer ── */
-.cvftr{position:relative;text-align:center;padding:36px 18px 44px;background:var(--navy2);color:rgba(255,255,255,.55);
-line-height:1.7;margin-top:28px}
+.cvftr{position:relative;text-align:center;padding:44px 18px 52px;background:var(--navy2);color:rgba(255,255,255,.55);
+line-height:1.7;margin-top:var(--sp-6)}
 .cvftr::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;
 background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
-.cvftr-logo{height:44px;width:auto;background:#fff;padding:8px 16px;border-radius:12px;margin-bottom:14px}
-.cvftr strong{color:#fff;font-size:15.5px;display:block;margin-bottom:4px;letter-spacing:.3px}
-.cvftr-c{font-size:12.5px}
+.cvftr-logo{height:40px;width:auto;background:#fff;padding:8px 16px;border-radius:8px;margin-bottom:var(--sp-3)}
+.cvftr strong{color:#fff;font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;display:block;margin-bottom:var(--sp-1);letter-spacing:0}
+.cvftr-c{font-size:var(--fz-sm)}
 .cvftr-c a{color:rgba(255,255,255,.78);text-decoration:none;font-weight:600}
 .cvftr-sub{font-size:10.5px;margin-top:10px;opacity:.7}
 
 /* ── condition report ── */
 .cvcond-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;margin-bottom:12px}
-.cvcond-cell{text-align:center;border:1px solid var(--line);border-radius:12px;padding:11px 4px;background:#fbfcfe}
-.cvcond-cell-lbl{font-size:10px;font-weight:700;color:#33415a;margin-bottom:6px;line-height:1.3}
-.cvcond-letter{font-size:22px;font-weight:800;width:44px;height:44px;line-height:44px;border-radius:50%;margin:0 auto 5px}
-.cvcond-word{font-size:10px;font-weight:800}
-.cvcond-exec{font-size:12.5px;line-height:1.65;color:#33415a;background:#f8fafc;border-left:3px solid var(--navy);
-padding:10px 12px;border-radius:0 10px 10px 0;margin-bottom:10px}
+.cvcond-cell{text-align:left;border:none;border-top:1px solid var(--line);border-radius:0;padding:var(--sp-2) 0 0;background:#fff}
+.cvcond-cell-lbl{font-size:var(--fz-micro);font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:var(--sp-1);line-height:1.35}
+.cvcond-letter{font-family:var(--serif);font-size:28px;font-weight:600;width:auto;height:auto;line-height:1.1;border-radius:0;margin:0 0 3px;background:none!important}
+.cvcond-word{font-size:var(--fz-fine);font-weight:500;color:var(--mut)}
+.cvcond-exec{font-family:var(--serif);font-size:var(--fz-body);line-height:1.75;color:var(--ink);background:#fff;border-left:2px solid var(--cyan);
+padding:2px 0 2px var(--sp-3);border-radius:0;margin-bottom:var(--sp-3)}
 .cvcond-sec{margin-top:14px;border-top:1px solid var(--line);padding-top:13px}
 .cvcond-sec-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap}
-.cvcond-sec-hd h4{font-size:13.5px;color:var(--navy);margin:0}
-.cvcond-badge{font-size:11px;font-weight:800;border-radius:999px;padding:4px 11px;white-space:nowrap}
+.cvcond-sec-hd h4{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--navy);margin:0}
+.cvcond-badge{font-size:var(--fz-micro);font-weight:600;border-radius:999px;padding:4px 11px;white-space:nowrap;letter-spacing:1px;text-transform:uppercase;background:none!important;border:1px solid currentColor}
 .cvcond-meta{font-size:11.5px;color:var(--mut);margin-bottom:6px}
 .cvcond-summary{font-size:12.5px;line-height:1.65;color:#33415a;margin-bottom:8px}
-.cvcond-sh{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--navy);margin:9px 0 5px}
+.cvcond-sh{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;color:var(--faint);margin:var(--sp-3) 0 var(--sp-1)}
 .cvcond-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
-.cvcond-tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);
-background:#f8fafc;padding:5px 8px;border-bottom:1px solid var(--line)}
-.cvcond-tbl td{padding:6px 8px;border-bottom:1px solid #f4f7fa;vertical-align:top;line-height:1.5}
+.cvcond-tbl th{text-align:left;font-size:var(--fz-micro);text-transform:uppercase;letter-spacing:1.2px;color:var(--faint);
+background:#fff;padding:var(--sp-1) 8px;border-bottom:1px solid var(--navy)}
+.cvcond-tbl th:first-child,.cvcond-tbl td:first-child{padding-left:0}
+.cvcond-tbl td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.55}
 .cvcond-tbl tr:last-child td{border-bottom:none}
-.cvcond-cost-total td{font-weight:800;border-top:2px solid var(--line);background:#f8fafc}
-.cvcond-foot{font-size:10px;color:var(--faint);line-height:1.6;margin-top:12px;border-top:1px solid #f1f5f9;padding-top:9px}
+.cvcond-cost-total td{font-weight:600;color:var(--navy);border-top:1px solid var(--navy);background:#fff}
+.cvcond-foot{font-size:var(--fz-micro);color:var(--faint);line-height:1.7;margin-top:var(--sp-3);border-top:1px solid var(--line);padding-top:var(--sp-2)}
 .cvcond .cvph-grid{margin-top:10px}
 
 /* ── trust blocks ── */
-.cvtrust-body p{font-size:13.5px;line-height:1.7;color:#33415a;margin-bottom:8px}
+.cvtrust-body p{font-size:var(--fz-body);line-height:1.75;color:var(--mut);margin-bottom:var(--sp-2)}
 .cvtrust-body p:last-child{margin-bottom:0}
 .cvtrust-certs{list-style:none;margin:0;padding:0}
-.cvtrust-certs li{position:relative;padding:5px 0 5px 24px;font-size:13.5px;color:#33415a;line-height:1.55}
-.cvtrust-certs li::before{content:'✓';position:absolute;left:2px;font-weight:800;color:var(--green)}
-.cvtrust-revs{display:grid;gap:10px}
-@media(min-width:640px){.cvtrust-revs{grid-template-columns:1fr 1fr}}
-.cvtrust-rev{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-.cvtrust-rev-stars{color:#f59e0b;font-size:14px;letter-spacing:2px;margin-bottom:5px}
-.cvtrust-rev-text{font-size:13px;line-height:1.65;color:#33415a;font-style:italic}
-.cvtrust-rev-name{font-size:12px;font-weight:800;color:var(--navy);margin-top:7px}
+.cvtrust-certs li{position:relative;padding:var(--sp-2) 0;padding-left:20px;font-size:var(--fz-sm);color:var(--ink);
+line-height:1.6;border-bottom:1px solid var(--line)}
+.cvtrust-certs li:last-child{border-bottom:none}
+.cvtrust-certs li::before{content:'';position:absolute;left:0;top:19px;width:8px;height:1px;background:var(--cyan)}
+.cvtrust-revs{display:grid;gap:var(--sp-4)}
+@media(min-width:640px){.cvtrust-revs{grid-template-columns:1fr 1fr;gap:var(--sp-4) var(--sp-5)}}
+.cvtrust-rev{background:#fff;border:none;border-left:1px solid var(--line);border-radius:0;padding:0 0 0 var(--sp-3)}
+.cvtrust-rev-stars{color:var(--amber);font-size:var(--fz-sm);letter-spacing:2px;margin-bottom:var(--sp-1)}
+.cvtrust-rev-text{font-family:var(--serif);font-size:var(--fz-body);line-height:1.7;color:var(--ink);font-style:normal}
+.cvtrust-rev-name{font-size:var(--fz-micro);font-weight:600;color:var(--faint);margin-top:var(--sp-2);
+text-transform:uppercase;letter-spacing:1.2px}
+
+/* ── permits & code ── */
+.cvperm-name{font-family:var(--serif);font-size:var(--fz-h2);font-weight:600;color:var(--navy);
+line-height:1.25;margin-bottom:var(--sp-1)}
+.cvperm-name.cvperm-unknown{font-size:var(--fz-h3);color:var(--mut)}
+.cvperm-meta{font-size:var(--fz-sm);color:var(--mut);line-height:1.65}
+.cvperm-meta a{color:var(--navy);text-decoration:none;border-bottom:1px solid var(--line)}
+.cvperm-sub{margin-top:var(--sp-4);padding-top:var(--sp-3);border-top:1px solid var(--line)}
+.cvperm-h{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;
+color:var(--faint);margin:0 0 var(--sp-2)}
+.cvperm-p{font-size:var(--fz-sm);color:var(--ink);line-height:1.7}
+.cvperm-p a,.cvperm-list a{color:var(--navy);font-size:var(--fz-fine)}
+.cvperm-list{list-style:none;margin:0;padding:0}
+.cvperm-list li{position:relative;padding:6px 0 6px 16px;font-size:var(--fz-sm);color:var(--ink);
+line-height:1.6}
+.cvperm-list li::before{content:'';position:absolute;left:0;top:15px;width:7px;height:1px;background:var(--cyan)}
+.cvperm-list.cvperm-muted li{color:var(--mut);font-size:var(--fz-fine)}
+.cvperm-list.cvperm-muted li::before{background:var(--faint)}
+.cvperm-basis{display:block;font-style:normal;color:var(--faint);font-size:var(--fz-fine);margin-top:2px}
+.cvperm-stamp{margin-top:var(--sp-3);font-size:var(--fz-fine);color:var(--mut)}
 
 /* ── estimate details block (AI-readable "About This Estimate") ── */
-.cvdet{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin-top:14px;
-  box-shadow:0 1px 2px rgba(15,23,42,.04)}
-.cvdet-hd{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:800;color:var(--navy);margin-bottom:6px}
-.cvdet-lead{font-size:13.5px;color:var(--faint);line-height:1.6;margin-bottom:14px}
-.cvdet section{border-top:1px solid #f1f5f9;padding-top:14px;margin-top:14px}
+/* Horizontal margin removed on purpose: .cvmain owns the gutter now. This
+   card, .cvdl and .cvvz were the three that ran edge-to-edge on a phone. */
+.cvdet{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:var(--sp-5);margin:var(--sp-3) 0 0;
+  box-shadow:var(--sh)}
+.cvdet-hd{display:block;margin:0 0 var(--sp-1);font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;color:var(--navy)}
+.cvdet-lead{font-size:var(--fz-sm);color:var(--mut);line-height:1.65;margin-bottom:var(--sp-4)}
+.cvdet section{border-top:1px solid var(--line);padding-top:var(--sp-4);margin-top:var(--sp-4)}
 .cvdet section:first-of-type{border-top:none;padding-top:0;margin-top:0}
-.cvdet h4{font-size:12.5px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
-.cvdet p{font-size:13.5px;line-height:1.65;color:#33415a;margin-bottom:6px}
-.cvdet ul{list-style:none;padding:0;margin:4px 0}
-.cvdet ul li{position:relative;padding:4px 0 4px 22px;font-size:13.5px;color:#33415a;line-height:1.55}
-.cvdet ul li::before{content:'•';position:absolute;left:6px;font-weight:800;color:var(--navy);top:3px}
-.cvdet ul.chk li::before{content:'✓';color:var(--green)}
+.cvdet h4{font-size:var(--fz-micro);font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:1.4px;margin-bottom:var(--sp-2)}
+.cvdet p{font-size:var(--fz-sm);line-height:1.7;color:var(--mut);margin-bottom:var(--sp-1)}
+.cvdet ul{list-style:none;padding:0;margin:var(--sp-1) 0}
+.cvdet ul li{position:relative;padding:5px 0 5px 18px;font-size:var(--fz-sm);color:var(--mut);line-height:1.6}
+.cvdet ul li::before{content:'';position:absolute;left:0;top:14px;width:6px;height:1px;background:var(--faint)}
+.cvdet ul.chk li::before{background:var(--cyan)}
 .cvdet .cvdet-tiers{display:grid;gap:10px;margin-top:6px}
 @media(min-width:640px){.cvdet .cvdet-tiers{grid-template-columns:repeat(3,1fr)}}
-.cvdet-tier{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-.cvdet-tier-lbl{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--faint)}
-.cvdet-tier-name{font-size:14px;font-weight:800;color:var(--navy);margin-top:2px}
-.cvdet-tier-tag{font-size:12.5px;line-height:1.5;color:#33415a;margin-top:6px}
+.cvdet-tier{background:#fff;border:none;border-top:1px solid var(--line);border-radius:0;padding:var(--sp-2) 0 0}
+.cvdet-tier-lbl{font-size:var(--fz-micro);font-weight:600;letter-spacing:1.4px;text-transform:uppercase;color:var(--faint)}
+.cvdet-tier-name{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--navy);margin-top:3px}
+.cvdet-tier-tag{font-size:var(--fz-fine);line-height:1.55;color:var(--mut);margin-top:var(--sp-1)}
 .cvdet-tier ul{margin-top:8px}
 .cvdet-tier ul li{font-size:12.5px}
-.cvdet-code{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-top:8px}
-.cvdet-code strong{color:var(--navy)}
-.cvdet-code-item{font-size:12.5px;color:#33415a;padding:3px 0;border-bottom:1px dashed #e2e8f0}
+.cvdet-code{background:#fff;border:1px solid var(--line);border-radius:8px;padding:var(--sp-3);margin-top:var(--sp-2)}
+.cvdet-code strong{color:var(--navy);font-weight:600}
+.cvdet-code-item{font-size:var(--fz-fine);color:var(--mut);padding:var(--sp-1) 0;border-bottom:1px solid var(--line)}
 .cvdet-code-item:last-child{border-bottom:none}
-.cvdet-code-item em{color:var(--faint);font-style:normal;font-size:11.5px;margin-left:6px}
-.cvdet-vent{background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6;color:#0c4a6e}
-.cvdet-vent strong{color:#0c4a6e}
-.cvdet-warr{display:grid;gap:8px;margin-top:4px}
+.cvdet-code-item em{color:var(--faint);font-style:normal;font-size:var(--fz-micro);margin-left:6px}
+.cvdet-vent{background:#fff;border:1px solid var(--line);border-left:2px solid var(--cyan);border-radius:0;padding:var(--sp-2) var(--sp-3);font-size:var(--fz-sm);line-height:1.65;color:var(--mut)}
+.cvdet-vent strong{color:var(--navy);font-weight:600}
+.cvdet-warr{display:grid;gap:var(--sp-3);margin-top:var(--sp-1)}
 @media(min-width:640px){.cvdet-warr{grid-template-columns:repeat(3,1fr)}}
-.cvdet-warr div{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
-.cvdet-warr div b{display:block;font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--faint);margin-bottom:3px}
+.cvdet-warr div{background:#fff;border:none;border-top:1px solid var(--line);border-radius:0;padding:var(--sp-2) 0 0}
+.cvdet-warr div b{display:block;font-size:var(--fz-micro);letter-spacing:1.4px;text-transform:uppercase;color:var(--faint);margin-bottom:var(--sp-1);font-weight:600}
 
 /* ── download PDF card ── */
-.cvdl{background:#f8fafc;border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-top:14px;
-  display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;
-  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.cvdl{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:var(--sp-4);margin:var(--sp-3) 0 0;
+  display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-3);
+  box-shadow:var(--sh)}
 .cvdl-t{flex:1 1 260px;min-width:0}
-.cvdl-h{font-size:14px;font-weight:800;color:var(--navy);margin-bottom:3px}
-.cvdl-d{font-size:13px;color:#33415a;line-height:1.5}
-.cvdl-btn{display:inline-flex;align-items:center;gap:7px;background:#fff;border:1.5px solid var(--navy);color:var(--navy);
-  font-weight:800;font-size:14px;text-decoration:none;padding:10px 18px;border-radius:10px;transition:background .15s,color .15s;
+.cvdl-h{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--navy);margin-bottom:3px}
+.cvdl-d{font-size:var(--fz-sm);color:var(--mut);line-height:1.6}
+.cvdl-btn{display:inline-flex;align-items:center;gap:7px;background:#fff;border:1px solid var(--navy);color:var(--navy);
+  font-weight:600;font-size:var(--fz-sm);text-decoration:none;padding:11px 18px;border-radius:8px;transition:background .15s,color .15s;
   white-space:nowrap}
 .cvdl-btn:hover{background:var(--navy);color:#fff}
 @media print{.cvdl{display:none}}
@@ -3572,8 +3643,8 @@ background:#f8fafc;padding:5px 8px;border-bottom:1px solid var(--line)}
 .cvt td{display:inline-block;border:none !important;padding:0 !important;font-size:13px}
 .cvt td.cvn{flex:1 1 100%;padding-bottom:1px !important}
 .cvt td.cvc-desc{flex:1 1 100%}
-.cvt td[data-l]::before{content:attr(data-l);color:var(--faint);font-weight:700;font-size:9.5px;text-transform:uppercase;
-letter-spacing:.5px;margin-right:5px}
+.cvt td[data-l]::before{content:attr(data-l);color:var(--faint);font-weight:600;font-size:9.5px;text-transform:uppercase;
+letter-spacing:1px;margin-right:5px}
 .cvt td.cvr:last-child{margin-left:auto}
 .cvt tfoot tr{display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border-top:2px solid var(--line);padding:11px 14px}
 .cvt tfoot td{background:transparent;border-top:none !important;padding:0 !important}
@@ -3672,10 +3743,18 @@ document.addEventListener('click',function(e){
 
 
 def _cv_meta_json_ld(manifest):
-    """schema.org JSON-LD for a customer estimate. Kept small on purpose —
-    this is a hint for machine readers (search previews, and Claude/ChatGPT
-    when the customer pastes the /sign link into a chat), not the main
-    payload. The customer-visible details block carries the real story."""
+    """schema.org JSON-LD for a customer estimate.
+
+    This is what a search preview or an assistant reads when the customer
+    pastes the /sign link into a chat and asks whether the bid is any good.
+    It carries the things that actually differentiate the quote — each package
+    priced separately, the workmanship warranty term, certifications, the code
+    basis, and the individual reviews — rather than one bare number, because a
+    single price with no structure around it can only be compared on price.
+
+    Everything here is drawn from _build_estimate_manifest; this function makes
+    no claims the customer-visible page does not already make.
+    """
     if not manifest:
         return ''
     m       = manifest
@@ -3700,41 +3779,128 @@ def _cv_meta_json_ld(manifest):
     if certs:
         seller['hasCredential'] = certs
 
+    is_ins  = bool(m.get('is_insurance'))
+    total   = m.get('grand_total', 0)
+    service = {
+        '@type':      'Service',
+        'serviceType': 'Roof replacement' if not is_ins
+                       else 'Insurance-claim roofing scope',
+        'provider':   {'@type': 'Organization',
+                       'name': company.get('name', 'Project One Roofing')},
+        'areaServed': f'{m.get("customer_city", "")}, {m.get("customer_state", "")}'.strip(', '),
+    }
+
+    # One Offer per package the rep is actually offering, so a reader can see
+    # that this is a choice of three complete jobs rather than a single price.
+    pkg_offers = []
+    for trade in (m.get('trades') or []):
+        for t in (trade.get('tiers') or []):
+            sub = t.get('subtotal') or 0
+            if sub <= 0:
+                continue
+            name = ' — '.join(x for x in (trade.get('label'),
+                                          t.get('tier_label')) if x)
+            desc_bits = [x for x in (t.get('package_name'), t.get('tagline')) if x]
+            offer = {
+                '@type': 'Offer',
+                'name':  name,
+                'price': round(float(sub), 2),
+                'priceCurrency': 'USD',
+                'itemOffered': service,
+            }
+            if desc_bits:
+                offer['description'] = ' — '.join(desc_bits)
+            if t.get('workmanship'):
+                offer['warranty'] = {'@type': 'WarrantyPromise',
+                                     'description': t['workmanship']}
+            if t.get('is_selected'):
+                offer['availability'] = 'https://schema.org/InStock'
+            pkg_offers.append(offer)
+
     graph = {
         '@context':  'https://schema.org',
         '@type':     'Offer',
         'name':      'Roof replacement estimate',
         'description': m.get('summary', ''),
         'seller':    seller,
-        'itemOffered': {
-            '@type':      'Service',
-            'serviceType': 'Roof replacement' if not m.get('is_insurance')
-                           else 'Insurance-claim roofing scope',
-            'provider':   {'@type': 'Organization',
-                           'name': company.get('name', 'Project One Roofing')},
-            'areaServed': f'{m.get("customer_city", "")}, {m.get("customer_state", "")}'.strip(', '),
-        },
+        'itemOffered': service,
         'priceSpecification': {
             '@type':         'PriceSpecification',
-            'price':         m.get('grand_total', 0),
+            'price':         total,
             'priceCurrency': 'USD',
+            'valueAddedTaxIncluded': True,
         },
         'validThrough':   m.get('valid_until', ''),
         'availability':   'https://schema.org/InStock',
     }
+    if m.get('estimate_number'):
+        graph['identifier'] = m['estimate_number']
+
+    if len(pkg_offers) > 1:
+        prices = [o['price'] for o in pkg_offers]
+        graph['addOn'] = {
+            '@type':     'AggregateOffer',
+            'offerCount': len(pkg_offers),
+            'lowPrice':  min(prices),
+            'highPrice': max(prices),
+            'priceCurrency': 'USD',
+            'offers':    pkg_offers,
+        }
+    elif pkg_offers:
+        graph['addOn'] = pkg_offers[0]
+
     revs = (m.get('reviews') or {})
     if revs.get('count'):
-        graph['itemOffered']['aggregateRating'] = {
+        service['aggregateRating'] = {
             '@type':       'AggregateRating',
             'ratingValue': revs.get('average', 5),
             'reviewCount': revs.get('count', 0),
         }
+        # Individual reviews, not just the average — an average alone is a
+        # number anyone can type.
+        items = []
+        for r in (revs.get('items') or [])[:6]:
+            if not (r.get('text') or '').strip():
+                continue
+            rv = {'@type': 'Review',
+                  'reviewBody': r['text'].strip(),
+                  'reviewRating': {'@type': 'Rating',
+                                   'ratingValue': r.get('stars', 5),
+                                   'bestRating': 5}}
+            if r.get('name'):
+                rv['author'] = {'@type': 'Person', 'name': r['name']}
+            items.append(rv)
+        if items:
+            service['review'] = items
+
     warranty_body = (m.get('warranty_body') or '').strip()
     if warranty_body:
         graph['warranty'] = {
             '@type': 'WarrantyPromise',
             'description': warranty_body,
         }
+
+    # Code compliance and ventilation math as additionalProperty — the parts a
+    # competing bid usually cannot answer at all.
+    props = []
+    code = m.get('code') or {}
+    if code.get('jurisdiction_name'):
+        props.append(('Authority having jurisdiction', code['jurisdiction_name']))
+    if code.get('verified'):
+        props.append(('Jurisdiction code profile', 'Verified against the published local amendments'))
+    _n_code = len(code.get('code_items') or [])
+    if _n_code:
+        props.append(('Code line items in scope', f'{_n_code} itemized'))
+    for _v in (m.get('ventilation') or {}).values():
+        if isinstance(_v, dict) and _v.get('code_basis'):
+            props.append(('Ventilation code basis', _v['code_basis']))
+            break
+    if m.get('carrier'):
+        props.append(('Insurance carrier', m['carrier']))
+    if props:
+        service['additionalProperty'] = [
+            {'@type': 'PropertyValue', 'name': k, 'value': v} for k, v in props]
+
     return ('<script type="application/ld+json">'
             + json.dumps(graph, separators=(',', ':'))
             + '</script>')
@@ -3763,12 +3929,25 @@ def _cv_head(title, manifest=None):
         ld = _cv_meta_json_ld(manifest)
     return f'''<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#0e2440">
-<link rel="icon" href="/static/icon-192.png">
+<meta name="theme-color" content="#05184a">
+<link rel="icon" href="{_mount_path('/static/icon-192.png')}">
 {og}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Great+Vibes&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet">
+<style>
+/* Source Serif 4 + Inter are served from our own static dir rather than Google,
+   so this page sets type identically to the printed estimate and the signed
+   PDF — all three now read from estimator/static/fonts. Great Vibes stays on
+   Google: it is decorative (the signature preview only) and degrades to a
+   system cursive if it never loads. */
+@font-face{{font-family:'Source Serif 4';
+  src:url('{_mount_path('/static/fonts/SourceSerif4-var.woff2')}') format('woff2-variations');
+  font-weight:200 900;font-style:normal;font-display:swap}}
+@font-face{{font-family:'InterDoc';
+  src:url('{_mount_path('/static/fonts/Inter-var.woff2')}') format('woff2-variations');
+  font-weight:100 900;font-style:normal;font-display:swap}}
+</style>
 <title>{title}</title>
 {ld}
 <style>{_CV_CSS}</style></head><body>'''
@@ -3777,7 +3956,7 @@ def _cv_head(title, manifest=None):
 def _cv_header():
     """Shared top bar: logo left, tap-to-call pill right, brand stripe."""
     return f'''<header class="cvhdr">
-  <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
+  <div class="cvhdr-logo-wrap"><img src="{_mount_path('/static/logo.png')}" alt="Project One Roofing"></div>
   <div class="cvhdr-contact">
     <a href="tel:{COMPANY_PHONE_DIGITS}">&#128222; {COMPANY_PHONE_DISPLAY}</a>
     <span>projectoneroofingcolorado.com</span>
@@ -3789,7 +3968,7 @@ def _cv_header():
 def _cv_footer(extra=''):
     """Shared footer + the shared behavior script. Closes the document."""
     return f'''<div class="cvftr">
-  <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
+  <img src="{_mount_path('/static/logo.png')}" class="cvftr-logo" alt="Project One Roofing">
   <strong>Project One Roofing</strong>
   <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>
     <a href="tel:{COMPANY_PHONE_DIGITS}">{COMPANY_PHONE_DISPLAY}</a> &middot; projectoneroofingcolorado.com</div>
@@ -3860,7 +4039,7 @@ def _cv_next_steps(signed=False, commercial=False):
       <div class="cvnext-t">{t}</div><div class="cvnext-d">{d}</div></li>'''
         for i, (t, d) in enumerate(steps))
     title = 'What Happens Next' if not signed else 'What Happens Next &mdash; You&rsquo;re All Set'
-    return f'<div class="cvnext"><h3>{title}</h3><ol class="cvnext-list">{items}</ol></div>'
+    return f'<div class="cvnext"><h2 data-eyebrow="Your project">{title}</h2><ol class="cvnext-list">{items}</ol></div>'
 
 
 def _cv_contact_card(est):
@@ -3885,7 +4064,7 @@ def _cv_contact_card(est):
     email_btn = (f'<a class="cvrep-btn" href="mailto:{he(email)}">&#9993;&#65039; Email</a>'
                  if email else '')
 
-    return f'''<div class="cvrep-card"><h3>Questions? We&rsquo;re Here to Help</h3>
+    return f'''<div class="cvrep-card"><h2 data-eyebrow="Your consultant">Questions? We&rsquo;re Here to Help</h2>
   <div class="cvrep">
     <div class="cvrep-av">{he(initials)}</div>
     <div class="cvrep-info"><div class="cvrep-name">{he(name)}</div><div class="cvrep-role">{role}</div></div>
@@ -4030,7 +4209,7 @@ def _cv_intro_block(est):
     if not txt or pv.get('intro') is False:
         return ''
     return f'''<div class="cvintro">
-  <img src="/static/logo.png" class="cvintro-logo" alt="Project One Roofing">
+  <img src="{_mount_path('/static/logo.png')}" class="cvintro-logo" alt="Project One Roofing">
   <p>{he(txt)}</p>
 </div>'''
 
@@ -4058,7 +4237,7 @@ def _cv_photos_block(est):
         return ''
     figs = ''.join(_cv_photo_fig(p) for p in photos)
     return f'''<div class="cvphotos">
-  <h3>Photo Report</h3>
+  <h2 data-eyebrow="Inspection">What We Found on Your Roof</h2>
   <div class="cvph-grid">{figs}</div>
 </div>{_CV_ANN_JS}'''
 
@@ -4099,22 +4278,27 @@ def _cv_visualizer_block(est):
                   f'<div class="cvvz-cap">{caption}</div>'
                   f'</figure>')
     return f'''<div class="cvvz">
-  <h3>&#127912; See the look</h3>
+  <h2 data-eyebrow="Visualize">See It on Your Home</h2>
   <p class="cvvz-sub">Your home with the selected options blended onto your
   photo. Colors are indicative &mdash; the real material may look slightly
   different in person.</p>
   <div class="cvvz-grid">{cards}</div>
 </div>
 <style>
-  .cvvz{{margin:24px 0;padding:18px;border:1px solid #e5e7eb;border-radius:12px;background:#fff}}
-  .cvvz h3{{margin:0 0 4px;font-size:18px;color:#1a3a5c}}
-  .cvvz-sub{{margin:0 0 12px;color:#64748b;font-size:13px}}
-  .cvvz-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}}
-  .cvvz-card{{margin:0;padding:10px;border:1px solid #e5e7eb;border-radius:10px;background:#f8fafc;display:flex;flex-direction:column}}
-  .cvvz-tier{{font-weight:700;color:#1a3a5c;text-transform:uppercase;letter-spacing:.06em;font-size:12px;margin-bottom:6px}}
-  .cvvz-card img{{width:100%;height:auto;border-radius:6px;display:block;background:#e5e7eb}}
-  .cvvz-cap{{margin-top:8px;font-size:12px;color:#334155;line-height:1.4}}
-  .cvvz-style{{color:#64748b}}
+  /* This block used to ship its own visual language — hardcoded #1a3a5c and
+     #e5e7eb, an 18px heading, no gutter — so it read as a different product
+     bolted onto the page and ran edge-to-edge on phones. It now uses the
+     page's tokens and inherits .cvmain's gutter like every other card. */
+  .cvvz{{margin:var(--sp-3) 0 0;padding:var(--sp-5);border:1px solid var(--line);
+    border-radius:var(--r);background:#fff;box-shadow:var(--sh)}}
+  .cvvz-sub{{margin:0 0 var(--sp-4);color:var(--mut);font-size:var(--fz-sm);line-height:1.65}}
+  .cvvz-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--sp-3)}}
+  .cvvz-card{{margin:0;padding:0;border:none;background:#fff;display:flex;flex-direction:column}}
+  .cvvz-tier{{font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:1.4px;
+    font-size:var(--fz-micro);margin-bottom:var(--sp-1)}}
+  .cvvz-card img{{width:100%;height:auto;border:1px solid var(--line);border-radius:6px;display:block;background:var(--bg)}}
+  .cvvz-cap{{margin-top:var(--sp-1);font-size:var(--fz-fine);color:var(--mut);line-height:1.5}}
+  .cvvz-style{{color:var(--faint)}}
 </style>'''
 
 
@@ -4245,7 +4429,7 @@ def _cv_condition_block(est):
                           f'<td><span style="color:{sev_c};font-weight:700">{he(sev_lbl)}</span></td>'
                           f'<td>{he(f_.get("description") or "")}</td></tr>')
         find_html = (f'''<div class="cvcond-sh">Findings</div>
-<table class="cvcond-tbl"><thead><tr><th>Area</th><th>Severity</th><th>Description</th></tr></thead>
+<table class="cvcond-tbl"><thead><tr><th scope="col">Area</th><th scope="col">Severity</th><th scope="col">Description</th></tr></thead>
 <tbody>{find_rows}</tbody></table>''' if find_rows else '')
 
         rec_rows = ''
@@ -4256,7 +4440,7 @@ def _cv_condition_block(est):
                          f'<td>{he(rec.get("description") or "")}</td>'
                          f'<td style="white-space:nowrap">{he(rec.get("cost_range") or "—")}</td></tr>')
         rec_html = (f'''<div class="cvcond-sh">Recommendations</div>
-<table class="cvcond-tbl"><thead><tr><th>Priority</th><th>Description</th><th>Est. Cost</th></tr></thead>
+<table class="cvcond-tbl"><thead><tr><th scope="col">Priority</th><th scope="col">Description</th><th scope="col">Est. Cost</th></tr></thead>
 <tbody>{rec_rows}</tbody></table>''' if rec_rows else '')
 
         sec_html += f'''<div class="cvcond-sec">
@@ -4271,7 +4455,7 @@ def _cv_condition_block(est):
     insp_html = f'<div class="cvcond-meta">Inspection Date: <strong>{he(insp_date)}</strong></div>' if insp_date else ''
 
     return f'''<div class="cvcond">
-  <h3>{w_title}</h3>
+  <h2 data-eyebrow="Inspection">{w_title}</h2>
   {insp_html}
   <div class="cvcond-grid">{cells}</div>
   {exec_html}
@@ -4538,7 +4722,7 @@ def _cv_attachments_block(est):
             blocks += f'<div class="cv-att-doc"><div class="cv-att-doc-title">&#128196; {he(label)}</div>{imgs}{link}</div>'
         else:
             blocks += link
-    return f'<div class="cvnotes"><h3>Documents &amp; Reports</h3><div class="cv-att-list">{blocks}</div></div>'
+    return f'<div class="cvnotes"><h2 data-eyebrow="Attached">Documents &amp; Reports</h2><div class="cv-att-list">{blocks}</div></div>'
 
 
 def _load_company_content():
@@ -4552,6 +4736,223 @@ def _load_company_content():
     except Exception:
         pass
     return {}
+
+
+def _cv_glance_block(est, manifest, sel_label='', sel_total=None):
+    """The five-line digest that opens the proposal.
+
+    A homeowner decides whether to read the rest of this page in about ten
+    seconds, and the thing they forward to a spouse is whatever fits in a
+    screenshot. This answers what we're doing, what the choices are, what it
+    costs, what stands behind it and how long the price holds — before any
+    table appears.
+
+    It doubles as the passage an assistant quotes: when a customer pastes this
+    link into a chat and asks "is this a good deal", this is the block that
+    parses cleanly. Mirrors _printGlanceHTML in static/app.js — keep the two
+    saying the same things.
+
+    Rows with no data are dropped rather than rendered empty."""
+    if not manifest:
+        return ''
+    m    = manifest
+    rows = []
+
+    if m.get('is_insurance'):
+        carrier = (m.get('carrier') or '').strip()
+        rows.append(('Your project',
+                     'Insurance claim scope'
+                     + (f' &mdash; <strong>{he(carrier)}</strong>' if carrier else '')))
+    else:
+        labels = [t.get('label', '') for t in (m.get('trades') or []) if t.get('label')]
+        city   = ', '.join(x for x in (m.get('customer_city'), m.get('customer_state')) if x)
+        if labels:
+            scope = ' &middot; '.join(he(x) for x in labels)
+            rows.append(('Your project',
+                         f'<strong>{scope}</strong>'
+                         + (f' at your home in {he(city)}' if city else '')))
+
+        # Only claim a choice where one is actually offered.
+        tiers = []
+        for t in (m.get('trades') or []):
+            for tier in (t.get('tiers') or []):
+                lbl = tier.get('tier_label') or tier.get('tier')
+                if lbl and lbl not in tiers:
+                    tiers.append(lbl)
+        if len(tiers) > 1:
+            rows.append(('Your options',
+                         f'{he(", ".join(tiers))} &mdash; each one a complete job, '
+                         'priced in full further down this page'))
+
+    # Deliberately NO price here. This block sits above the photographs and the
+    # condition report, and a number on the second thing a homeowner reads
+    # invites them to decide before they have seen why the work is needed —
+    # which is the whole reason the page was reordered. The total lives after
+    # the scope, where it can be judged against something.
+
+    # Warranty headline: the selected tier's promise beats the generic body copy.
+    warr = ''
+    wbt  = m.get('warranty_by_tier') or {}
+    sel  = (est.get('selected_tier') or '').strip().lower()
+    if sel and wbt.get(sel):
+        warr = wbt[sel]
+    else:
+        body = (m.get('warranty_body') or '').strip()
+        if body:
+            warr = re.split(r'\n|(?<=\.)\s+', body)[0].strip()
+    if warr:
+        rows.append(('Backed by', he(warr[:190] + '…' if len(warr) > 190 else warr)))
+
+    insp = ((est.get('property_condition') or {}).get('inspection_date') or '').strip()
+    if insp:
+        rows.append(('Inspected',
+                     f'<strong>{he(insp)}</strong> &mdash; full condition report below, '
+                     'with photographs'))
+
+    if m.get('valid_until'):
+        rows.append(('Pricing held until',
+                     f'<strong>{he(m["valid_until"])}</strong>'))
+
+    if not rows:
+        return ''
+    body = ''.join(f'''<div class="cvglance-row">
+        <dt class="cvglance-k">{he(k)}</dt><dd class="cvglance-v">{v}</dd>
+      </div>''' for k, v in rows)
+    return f'''<section class="cvnotes cvglance">
+  <h2 data-eyebrow="Summary">At a Glance</h2>
+  <dl class="cvglance-list">{body}</dl>
+</section>'''
+
+
+def _cv_permit_block(manifest):
+    """Who holds the permit for THIS address, and what THAT office requires.
+
+    Split out of the general "What's Included and Why" card, where it was a
+    sub-heading that concatenated the jurisdiction's own requirements with the
+    Colorado statewide baseline into one undifferentiated list — so a Loveland
+    homeowner read two lines that were actually about their city followed by
+    six that were about the whole state, and the section landed as boilerplate.
+
+    Here the jurisdiction leads, its specific requirements are their own list,
+    and the statewide baseline is labelled as exactly that. When no
+    jurisdiction has been matched to the address the block says so plainly
+    rather than dressing the generic text up as local: claiming to know a
+    customer's code authority when we don't is the one failure mode that would
+    actually cost trust.
+    """
+    if not manifest:
+        return ''
+    code = manifest.get('code') or {}
+    if not code:
+        return ''
+
+    matched = code.get('matched')
+    name    = (code.get('jurisdiction_name') or '').strip()
+    vp      = code.get('verified_profile') or {}
+    body    = ''
+
+    # ── Who issues it ───────────────────────────────────────────────────
+    if matched and name:
+        meta = []
+        if code.get('office'):
+            meta.append(he(code['office']))
+        if code.get('county'):
+            meta.append(he(code['county']) + ' County')
+        if code.get('phone'):
+            meta.append(f'<a href="tel:{he(code["phone"])}">{he(code["phone"])}</a>')
+        if code.get('url'):
+            meta.append(f'<a href="{he(code["url"])}" target="_blank" rel="noopener">'
+                        'Permit office</a>')
+        body += (f'<p class="cvperm-name">{he(name)}</p>'
+                 + (f'<p class="cvperm-meta">{" &middot; ".join(meta)}</p>' if meta else ''))
+    else:
+        body += ('<p class="cvperm-name cvperm-unknown">Permitting authority not yet confirmed</p>'
+                 '<p class="cvperm-meta">Colorado has no statewide residential building code &mdash; '
+                 'the city or county adopts and enforces its own. We confirm the authority for this '
+                 'address, its adopted code edition and any local amendments before pulling the '
+                 'permit, and the permit is included in your price either way.</p>')
+
+    def _sub(label, inner):
+        return (f'<div class="cvperm-sub"><h3 class="cvperm-h">{label}</h3>{inner}</div>'
+                if inner else '')
+
+    # ── Adopted code edition ────────────────────────────────────────────
+    ac  = (vp.get('adopted_code') or '').strip()
+    acu = (vp.get('adopted_code_source_url') or '').strip()
+    if ac:
+        link = (f' <a href="{he(acu)}" target="_blank" rel="noopener">source</a>') if acu else ''
+        body += _sub('Adopted code', f'<p class="cvperm-p">{he(ac)}{link}</p>')
+
+    # ── Local amendments ────────────────────────────────────────────────
+    amends = vp.get('amendments') or []
+    if amends:
+        rows = ''
+        for a in amends[:8]:
+            tp = (a.get('topic') or '').strip()
+            tx = (a.get('text') or '').strip()
+            su = (a.get('source_url') or '').strip()
+            lab = f'<strong>{he(tp)}:</strong> ' if tp else ''
+            lnk = (f' <a href="{he(su)}" target="_blank" rel="noopener">source</a>') if su else ''
+            rows += f'<li>{lab}{he(tx)}{lnk}</li>'
+        body += _sub(f'Local amendments in {he(name)}' if matched else 'Local amendments',
+                     f'<ul class="cvperm-list">{rows}</ul>')
+
+    # ── What THIS jurisdiction requires (never mixed with the baseline) ──
+    jpts = [x for x in (code.get('jurisdiction_points') or []) if str(x).strip()]
+    if jpts:
+        body += _sub(f'What {he(name)} requires',
+                     '<ul class="cvperm-list">'
+                     + ''.join(f'<li>{he(x)}</li>' for x in jpts[:8]) + '</ul>')
+
+    # ── How the permit is pulled ────────────────────────────────────────
+    # code['permit_process_internal'] is deliberately NOT shown: it is written
+    # for the admin pulling the permit and names our own tooling.
+    rp   = vp.get('reroof_permit') or {}
+    bits = []
+    rp_bits = []
+    sm = (rp.get('submittal_method') or '').strip()
+    pu = (rp.get('portal_url') or '').strip()
+    fb = (rp.get('fee_basis') or '').strip()
+    if sm and sm.lower() != 'unknown':
+        rp_bits.append('Submittal: ' + he(sm))
+    if fb and fb.lower() != 'unknown':
+        rp_bits.append('Fees: ' + he(fb))
+    if pu and pu.lower() != 'unknown':
+        rp_bits.append(f'<a href="{he(pu)}" target="_blank" rel="noopener">Permit portal</a>')
+    if rp_bits:
+        bits.append('<p class="cvperm-meta">' + ' &middot; '.join(rp_bits) + '</p>')
+    if bits:
+        body += _sub('How the permit is pulled', ''.join(bits))
+
+    # ── Code line items priced into this scope ──────────────────────────
+    items = code.get('code_items') or []
+    if items:
+        rows = ''
+        for ci in items[:12]:
+            lb = (ci.get('label') or '').strip()
+            bs = (ci.get('basis') or '').strip()
+            if not lb:
+                continue
+            rows += (f'<li>{he(lb)}'
+                     + (f'<em class="cvperm-basis">{he(bs)}</em>' if bs else '') + '</li>')
+        body += _sub('Code line items priced into your scope',
+                     f'<ul class="cvperm-list">{rows}</ul>')
+
+    # ── Statewide baseline, labelled as such ────────────────────────────
+    bpts = [x for x in (code.get('baseline_points') or []) if str(x).strip()]
+    if bpts:
+        body += _sub('Colorado statewide baseline',
+                     '<ul class="cvperm-list cvperm-muted">'
+                     + ''.join(f'<li>{he(x)}</li>' for x in bpts[:8]) + '</ul>')
+
+    if code.get('verified'):
+        body += ('<p class="cvperm-stamp">Jurisdiction boundary verified against the '
+                 'published municipal limits for this address.</p>')
+
+    return f'''<section class="cvnotes cvperm">
+  <h2 data-eyebrow="Permits &amp; code">Who Pulls Your Permit</h2>
+  {body}
+</section>'''
 
 
 def _cv_trust_blocks(est):
@@ -4570,8 +4971,8 @@ def _cv_trust_blocks(est):
         return blk
 
     out = ''
-    for key, dflt_title, icon in (('about', 'About Us', '&#127968;'),
-                                  ('warranty', 'Our Warranty', '&#128737;&#65039;')):
+    for key, dflt_title, eyebrow in (('about', 'About Us', 'Who you&rsquo;re hiring'),
+                                     ('warranty', 'Our Warranty', 'What backs the work')):
         blk = _blk(key)
         body = (blk.get('body') or '').strip() if blk else ''
         if not body:
@@ -4580,7 +4981,7 @@ def _cv_trust_blocks(est):
                         for p in body.split('\n\n') if p.strip())
         title = (blk.get('title') or '').strip() or dflt_title
         out += f'''<div class="cvnotes cvtrust">
-      <h3>{icon} {he(title)}</h3>
+      <h2 data-eyebrow="{eyebrow}">{he(title)}</h2>
       <div class="cvtrust-body">{paras}</div>
     </div>'''
 
@@ -4591,7 +4992,7 @@ def _cv_trust_blocks(est):
             title = (blk.get('title') or '').strip() or 'Licenses & Certifications'
             lis = ''.join(f'<li>{he(i)}</li>' for i in items)
             out += f'''<div class="cvnotes cvtrust">
-      <h3>&#127942; {he(title)}</h3>
+      <h2 data-eyebrow="Credentials">{he(title)}</h2>
       <ul class="cvtrust-certs">{lis}</ul>
     </div>'''
 
@@ -4615,7 +5016,7 @@ def _cv_trust_blocks(est):
           {who}
         </div>'''
             out += f'''<div class="cvnotes cvtrust">
-      <h3>&#11088; {he(title)}</h3>
+      <h2 data-eyebrow="Your neighbors">{he(title)}</h2>
       <div class="cvtrust-revs">{cards}</div>
     </div>'''
 
@@ -4847,11 +5248,21 @@ def _build_estimate_manifest(est):
     code = None
     if jur or baseline_points or jur_points or code_items or verified_profile:
         code = {
+            # matched is the honest flag: without it the customer view cannot
+            # tell a real address match from the statewide fallback, and would
+            # present generic Colorado guidance as if it were their city's.
+            'matched':           bool(jur),
             'jurisdiction_name': (jur.get('name') if jur else '')
                                  or 'Colorado (statewide baseline)',
             'jurisdiction_kind': (jur.get('kind') if jur else ''),
             'county':            (jur.get('county') if jur else ''),
             'office':            (jur.get('office') if jur else ''),
+            'phone':             (jur.get('phone') if jur else ''),
+            'url':               (jur.get('url') if jur else ''),
+            # Written for the office admin pulling the permit, NOT for the
+            # customer — it names internal tooling. Never render this on a
+            # customer-facing surface; see _cv_permit_block.
+            'permit_process_internal': (jur.get('pull') if jur else ''),
             'baseline_points':   baseline_points,
             'jurisdiction_points': jur_points,
             'code_items':        code_items[:12],
@@ -5083,11 +5494,10 @@ def _cv_estimate_details_block(manifest, est=None):
                 items_html += (f'<div class="cvdet-code-item">{he(lb)}'
                                + (f'<em>{he(bs)}</em>' if bs else '') + '</div>')
             items_html += '</div>'
-        code_html = ('<section><h4>Code Compliance</h4>'
-                     f'<div class="cvdet-code">{header}'
-                     + verified_html
-                     + (f'<ul class="chk" style="margin-top:8px">{pt_list}</ul>' if pt_list else '')
-                     + items_html + '</div></section>')
+        # Rendered by _cv_permit_block now, as its own card ahead of this
+        # one — jurisdiction first, its requirements separated from the
+        # statewide baseline. Kept out of here so the page says it once.
+        code_html = ''
 
     # ── Attic ventilation ──────────────────────────────────────────────
     vent = m.get('ventilation')
@@ -5152,7 +5562,7 @@ def _cv_estimate_details_block(manifest, est=None):
                  + '</section>')
 
     return ('<div class="cvdet">'
-            '<div class="cvdet-hd">&#128220; About This Estimate</div>'
+            '<h2 class="cvdet-hd" data-eyebrow="The details">What&rsquo;s Included and Why</h2>'
             '<div class="cvdet-lead">A concise summary of what&rsquo;s in this bid '
             '&mdash; materials, code compliance, warranties, and our process &mdash; '
             'so you can compare it apples-to-apples with any other quote.</div>'
@@ -5226,9 +5636,9 @@ def _insurance_cv_table(est):
         sections_html += f'''<div class="cvtrade">
           <div class="cvtrade-hd">{hd}</div>
           <table class="cvt cvt-ins"><thead><tr>
-            <th>Item Name</th><th>Description</th>
-            <th class="cvth-r">ACV</th><th class="cvth-r">Depreciation</th>
-            <th class="cvth-r">RCV</th></tr></thead>
+            <th scope="col">Item Name</th><th scope="col">Description</th>
+            <th scope="col" class="cvth-r">ACV</th><th scope="col" class="cvth-r">Depreciation</th>
+            <th scope="col" class="cvth-r">RCV</th></tr></thead>
           <tbody>{rows}</tbody>
           <tfoot><tr><td colspan="4" class="cvsub-l">{(he(sec_name)+' Subtotal') if sec_name else 'Subtotal'}</td>
             <td class="cvr cvsub">{fc(sec_total)}</td></tr></tfoot>
@@ -5263,13 +5673,13 @@ def _build_insurance_cv(est, token):
 
     ins_table, ins_total = _insurance_cv_table(est)
 
-    notes_html  = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    notes_html  = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
     ctext_html  = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     sp_html     = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
     carrier_row = f'<div class="cvgi"><label>Insurance Carrier</label><strong>{he(carrier)}</strong></div>' if carrier else ''
     claim_row   = f'<div class="cvgi"><label>Claim #</label><strong>{he(claim_num)}</strong></div>' if claim_num else ''
-    scope_html  = f'<div class="cvnotes"><h3>Scope of Work</h3><p>{he(scope_notes)}</p></div>' if scope_notes else ''
+    scope_html  = f'<div class="cvnotes"><h2 data-eyebrow="Scope">Scope of Work</h2><p>{he(scope_notes)}</p></div>' if scope_notes else ''
 
     manifest = _build_estimate_manifest(est)
     return _cv_head('Your Insurance Estimate &mdash; Project One Roofing', manifest) + _cv_header() + f'''
@@ -5291,9 +5701,14 @@ def _build_insurance_cv(est, token):
   </div>
 </div>
 
+{_cv_glance_block(est, manifest)}
+
 {_cv_intro_block(est)}
 
+<!-- Evidence before price — see the note in build_customer_view. -->
 {_cv_photos_block(est)}
+
+{_cv_condition_block(est)}
 
 {_cv_visualizer_block(est)}
 
@@ -5302,14 +5717,14 @@ def _build_insurance_cv(est, token):
 {ins_table}
 {scope_html}
 {notes_html}
-{_cv_condition_block(est)}
 {_cv_attachments_block(est)}
+{_cv_permit_block(manifest)}
 {_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
-{ctext_html}
 {_cv_next_steps(commercial=est.get('estimate_type') == 'commercial')}
 {_cv_contact_card(est)}
 {_cv_download_card(token)}
+{ctext_html}
 
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
@@ -5356,7 +5771,7 @@ def _build_simple_retail_cv(est, token):
     sp    = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
     tier  = est.get('selected_tier', 'better')  # passed through for POST; irrelevant for pricing
 
-    notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
     ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     sp_html    = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
@@ -5381,9 +5796,14 @@ def _build_simple_retail_cv(est, token):
   </div>
 </div>
 
+{_cv_glance_block(est, manifest, '', grand_total)}
+
 {_cv_intro_block(est)}
 
+<!-- Evidence before price — see the note in build_customer_view. -->
 {_cv_photos_block(est)}
+
+{_cv_condition_block(est)}
 
 {_cv_visualizer_block(est)}
 
@@ -5391,20 +5811,20 @@ def _build_simple_retail_cv(est, token):
 
 {li_html}
 
-<div class="cvgrand" style="margin-top:14px">
+<div class="cvgrand">
   <span class="cvgrand-lbl">Total</span>
   <span class="cvgrand-amt">{fc(grand_total)}</span>
 </div>
 
 {notes_html}
-{_cv_condition_block(est)}
 {_cv_attachments_block(est)}
+{_cv_permit_block(manifest)}
 {_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
-{ctext_html}
 {_cv_next_steps(commercial=est.get('estimate_type') == 'commercial')}
 {_cv_contact_card(est)}
 {_cv_download_card(token)}
+{ctext_html}
 
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
@@ -5451,13 +5871,11 @@ def build_customer_view(est, token):
     if not enabled_tiers:
         enabled_tiers = ['good', 'better', 'best']
 
-    notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
     ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     sp_html    = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
 
-    tier_clrs = dict(good='#2563eb', better='#16a34a', best='#b45309')
-    tier_bgs  = dict(good='#dbeafe', better='#dcfce7', best='#fef3c7')
     tier_lbls = dict(good='Good',    better='Better',  best='Best')
 
     # Each G/B/B product gets its own package choice; simple-mode trades are
@@ -5494,8 +5912,6 @@ def build_customer_view(est, token):
             # Bullets + tagline that actually match this tier's line items —
             # see _tier_card_content.
             feats, desc = _tier_card_content(pb, est, tk, t, tfeat, tdesc)
-            clr    = tier_clrs[t]
-            bg     = tier_bgs[t]
             lbl    = tier_lbls[t]
             is_sel = t == d_tier
             popular_badge = '<div class="cv-tier-popular">Most Popular</div>' if t == 'better' else ''
@@ -5510,12 +5926,11 @@ def build_customer_view(est, token):
                             + '</ul>')
             cards_html += f'''<div class="cv-tier-card {'cv-tier-selected' if is_sel else ''}"
               data-trade="{tk}" data-tier="{t}"
-              style="border-color:{clr};{'background:'+bg if is_sel else ''}"
               onclick="selectCvTier('{tk}','{t}')">
               {popular_badge}
-              <div class="cv-tier-name" style="color:{clr}">{lbl}</div>
+              <div class="cv-tier-name">{lbl}</div>
               {sys_el}
-              <div class="cv-tier-price" style="color:{clr}">{fc(total)}</div>
+              <div class="cv-tier-price">{fc(total)}</div>
               {desc_el}
               {feats_el}
               <div class="cv-tier-check" id="cv-check-{tk}-{t}">{'&#10003; Selected' if is_sel else 'Select'}</div>
@@ -5524,7 +5939,7 @@ def build_customer_view(est, token):
         heading = (f'{trade_lbls.get(tk, tk.title())} &mdash; Choose Your Package'
                    if multi else 'Choose Your Package')
         sections_html += f'''<div class="cv-tier-section">
-  <div class="cv-tier-heading">{heading}</div>
+  <h2 class="cv-tier-heading" data-eyebrow="Your options">{heading}</h2>
   <div class="cv-tier-cards" style="grid-template-columns:repeat({len(enabled_tiers)},1fr)">
     {cards_html}
   </div>
@@ -5566,9 +5981,16 @@ def build_customer_view(est, token):
   </div>
 </div>
 
+{_cv_glance_block(est, manifest, default_lbl, default_total)}
+
 {_cv_intro_block(est)}
 
+<!-- What we found: the photographs and the report that reads them, together
+     and ABOVE the price. They used to sit on opposite sides of the total, so
+     the homeowner met the number before the evidence for it. -->
 {_cv_photos_block(est)}
+
+{_cv_condition_block(est)}
 
 {_cv_visualizer_block(est)}
 
@@ -5578,20 +6000,23 @@ def build_customer_view(est, token):
 
 {simple_html}
 
-<div class="cvgrand" style="margin-top:14px" id="cv-grand-bar">
+<div class="cvgrand" id="cv-grand-bar">
   <span class="cvgrand-lbl" id="cv-grand-lbl">Total &mdash; {default_lbl}</span>
   <span class="cvgrand-amt" id="cv-grand-amt">{fc(default_total)}</span>
 </div>
 
 {notes_html}
-{_cv_condition_block(est)}
 {_cv_attachments_block(est)}
+
+<!-- Reassurance belongs between the number and the signature: that is where
+     the objections are. -->
+{_cv_permit_block(manifest)}
 {_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
-{ctext_html}
 {_cv_next_steps(commercial=est.get('estimate_type') == 'commercial')}
 {_cv_contact_card(est)}
 {_cv_download_card(token)}
+{ctext_html}
 
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
@@ -5621,8 +6046,6 @@ var _cv_gbb      = {json.dumps({tk: {'cur': defaults[tk],
 var _cv_simple_total = {simple_total:.2f};
 var _trade_lbls  = {json.dumps(trade_lbls)};
 var _tier_lbls   = {{good:'Good',better:'Better',best:'Best'}};
-var _tier_clrs   = {{good:'#2563eb',better:'#16a34a',best:'#b45309'}};
-var _tier_bgs    = {{good:'#dbeafe',better:'#dcfce7',best:'#fef3c7'}};
 function _fmt(n){{return'$'+Math.abs(n).toFixed(2).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,',');}}
 function selectCvTier(trade,tier){{
   var g=_cv_gbb[trade]; if(!g)return;
@@ -5633,11 +6056,9 @@ function selectCvTier(trade,tier){{
     if(card&&chk){{
       if(t===tier){{
         card.classList.add('cv-tier-selected');
-        card.style.background=_tier_bgs[t];
         chk.innerHTML='&#10003; Selected';
       }}else{{
         card.classList.remove('cv-tier-selected');
-        card.style.background='';
         chk.innerHTML='Select';
       }}
     }}
@@ -6323,7 +6744,7 @@ def build_signed_confirmation(est):
 
     notes  = (est.get('notes_customer') or '').strip()
     ctext  = (est.get('contract_text') or '').strip()
-    notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
     ctext_html = f'''<details class="cvcontract" open><summary>&#128203; Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     email_row  = f'<tr><td>Email</td><td>{he(semail)}</td></tr>' if semail else ''
@@ -6759,17 +7180,100 @@ def send_signature_notification(est):
 
 # ── Signed-contract PDF + CRM push ──────────────────────────────────────────
 
+# ── Shared PDF design tokens ────────────────────────────────────────────────
+# Every customer-facing builder draws from this. Before it existed each one
+# re-typed set_fill_color(26, 58, 92) inline, which is how five documents ended
+# up on a navy that appears nowhere in logo.png. NAVY here is sampled from the
+# logo's "ROOFING" wordmark and matches --doc-navy in static/style.css and
+# --navy in _CV_CSS; change it in one place and all three surfaces follow.
+_PDF_STYLE = {
+    'ink':       (12, 24, 48),
+    'navy':      (8, 40, 120),
+    'navy_deep': (5, 24, 74),
+    'mute':      (90, 100, 120),
+    'faint':     (139, 147, 164),
+    'rule':      (227, 224, 218),
+    'paper':     (250, 249, 247),
+    'teal':      (0, 168, 184),
+    'amber':     (232, 132, 0),
+    'white':     (255, 255, 255),
+}
+
+_PDF_FONT_DIR = os.path.join(BASE_DIR, 'static', 'fonts')
+# (family, style, filename) — the same faces the browser surfaces load.
+_PDF_FONT_FILES = [
+    ('P1Sans',  '',  'Inter-Regular.ttf'),
+    ('P1Sans',  'B', 'Inter-SemiBold.ttf'),
+    ('P1Sans',  'I', 'Inter-Italic.ttf'),
+    ('P1Serif', '',  'SourceSerif4-Regular.ttf'),
+    ('P1Serif', 'B', 'SourceSerif4-SemiBold.ttf'),
+]
+_PDF_FONTS_PRESENT = all(
+    os.path.exists(os.path.join(_PDF_FONT_DIR, f)) for _, _, f in _PDF_FONT_FILES)
+
+
+def _pdf_fonts(pdf):
+    """Register the document faces on `pdf` and return (sans, serif) family names.
+
+    Falls back to Helvetica if the vendored TTFs are missing, so a deploy that
+    somehow ships without static/fonts still produces a readable PDF instead of
+    raising. The Inter statics carry tabular figures baked into the cmap, which
+    is what lines the money columns up — fpdf2 only applies OpenType features
+    when uharfbuzz is installed, and it isn't.
+    """
+    if not _PDF_FONTS_PRESENT:
+        return 'Helvetica', 'Helvetica'
+    for fam, style, fname in _PDF_FONT_FILES:
+        try:
+            pdf.add_font(fam, style, os.path.join(_PDF_FONT_DIR, fname))
+        except Exception:
+            return 'Helvetica', 'Helvetica'
+    return 'P1Sans', 'P1Serif'
+
+
 def _pdf_safe(s):
-    """fpdf2 core fonts are latin-1 only; swap common unicode for ASCII."""
+    """Latin-1 transliteration for the core-font (Helvetica) builders.
+
+    fpdf2 raises FPDFUnicodeEncodingException rather than substituting when a
+    core font meets a character it cannot encode, so the internal production
+    and permit packets — which still draw in Helvetica — need this. The
+    customer-facing documents embed real Unicode faces and use _pdf_rich
+    instead, so their en-dashes, curly quotes and bullets survive.
+    """
     if s is None:
         return ''
     s = str(s)
-    for k, v in {'—': '-', '–': '-', '‘': "'", '’': "'",
-                 '“': '"', '”': '"', '•': '*', '·': '-',
-                 '✓': '[x]', '×': 'x', '…': '...',
-                 '→': '->', ' ': ' '}.items():
+    for k, v in {'\u2014': '-', '\u2013': '-', '\u2018': "'", '\u2019': "'",
+                 '\u201c': '"', '\u201d': '"', '\u2022': '*', '\u00b7': '-',
+                 '\u2713': '[x]', '\u00d7': 'x', '\u2026': '...',
+                 '\u2192': '->', '\u00a0': ' '}.items():
         s = s.replace(k, v)
     return s.encode('latin-1', 'replace').decode('latin-1')
+
+
+def _S(pdf):
+    """Sans family registered on this document, or the core font.
+
+    build_signed_pdf stamps _sans on the FPDF instance; the shared page
+    helpers are also called from builders that never registered a face.
+    """
+    return getattr(pdf, '_sans', 'Helvetica')
+
+
+def _pdf_rich(s):
+    """Text for a PDF drawn with the embedded Unicode faces.
+
+    Only normalizes the non-breaking space that Word-pasted scope notes drag
+    in. Everything else is left alone — transliterating an em-dash into a
+    hyphen in a document whose whole job is to look considered is pure loss.
+    Falls back to _pdf_safe when the vendored fonts are missing, so a deploy
+    without static/fonts still renders instead of raising.
+    """
+    if s is None:
+        return ''
+    if not _PDF_FONTS_PRESENT:
+        return _pdf_safe(s)
+    return str(s).replace('\u00a0', ' ')
 
 
 def _pdf_oneline(s):
@@ -6783,6 +7287,11 @@ def _pdf_oneline(s):
     (customer view, browser print) keep the breaks.
     """
     return ' '.join(_pdf_safe(s).split())
+
+
+def _pdf_oneline_rich(s):
+    """_pdf_oneline for the documents that embed Unicode faces."""
+    return ' '.join(_pdf_rich(s).split())
 
 
 _VISUALIZER_TIERS_ORDER = ('good', 'better', 'best')
@@ -6807,13 +7316,13 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
 
     # New page — three thumbnails don't fit alongside the last pricing table.
     pdf.add_page()
-    pdf.set_font('Helvetica', 'B', 12)
+    pdf.set_font(_S(pdf), 'B', 12)
     pdf.set_text_color(26, 58, 92)
-    pdf.cell(0, 7, _pdf_safe('How your home will look'),
+    pdf.cell(0, 7, _pdf_rich('How your home will look'),
              new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
-    pdf.set_font('Helvetica', '', 8)
-    pdf.multi_cell(W, 4.2, _pdf_safe(
+    pdf.set_font(_S(pdf), '', 8)
+    pdf.multi_cell(W, 4.2, _pdf_rich(
         'These renderings show the selected Good/Better/Best package '
         'options blended onto your home photo. Colors are indicative and '
         'may vary from the manufacturer swatch.'))
@@ -6831,7 +7340,7 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
     for i, tier in enumerate(_VISUALIZER_TIERS_ORDER):
         x = LM + i * (thumb_w + gap)
         pdf.set_xy(x, y_top)
-        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_font(_S(pdf), 'B', 9)
         pdf.cell(thumb_w, 5, _VISUALIZER_TIER_LABELS[tier], align='C',
                  new_x='LMARGIN', new_y='NEXT')
 
@@ -6851,9 +7360,9 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
             pdf.set_fill_color(245, 246, 248)
             pdf.rect(x, img_y, thumb_w, thumb_h, style='DF')
             pdf.set_xy(x, img_y + thumb_h / 2 - 2)
-            pdf.set_font('Helvetica', 'I', 8)
+            pdf.set_font(_S(pdf), 'I', 8)
             pdf.set_text_color(140, 140, 140)
-            pdf.cell(thumb_w, 4, _pdf_safe('(no rendering saved)'),
+            pdf.cell(thumb_w, 4, _pdf_rich('(no rendering saved)'),
                      align='C')
             pdf.set_text_color(0, 0, 0)
 
@@ -6872,9 +7381,9 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
                 side_lbl += f" ({style_bit})"
             caption_parts.append(side_lbl)
         pdf.set_xy(x, img_y + thumb_h + 1.5)
-        pdf.set_font('Helvetica', '', 7)
+        pdf.set_font(_S(pdf), '', 7)
         pdf.multi_cell(thumb_w, 3.2,
-                       _pdf_safe('  |  '.join(caption_parts) or ' '))
+                       _pdf_rich('  |  '.join(caption_parts) or ' '))
 
     # Advance below the row so the signature block doesn't overlap.
     pdf.set_y(y_top + 5.5 + thumb_h + 20)
@@ -6893,31 +7402,35 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
         return
     pdf.add_page()
 
-    def _h1(txt):
-        pdf.set_font('Helvetica', 'B', 12)
-        pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
-        pdf.set_draw_color(220, 220, 220)
-        pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
-        pdf.ln(3)
+    def _h1(eyebrow, txt):
+        pdf.set_font(_S(pdf), '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['teal'])
+        pdf.cell(0, 4, _pdf_rich(eyebrow.upper()), new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.set_font(getattr(pdf, '_serif', _S(pdf)), 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(txt), new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(2)
 
     def _h2(txt):
-        pdf.set_font('Helvetica', 'B', 9.5)
-        pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 5.5, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
+        pdf.ln(2)
+        pdf.set_font(_S(pdf), '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(0, 4.5, _pdf_rich(txt.upper()), new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
 
     def _p(txt):
-        pdf.set_font('Helvetica', '', 8.5)
-        pdf.multi_cell(W, 4.4, _pdf_safe(txt))
+        pdf.set_font(_S(pdf), '', 8.5)
+        pdf.multi_cell(W, 4.4, _pdf_rich(txt),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
 
     def _bullets(items, mark='- '):
-        pdf.set_font('Helvetica', '', 8.5)
+        pdf.set_font(_S(pdf), '', 8.5)
         for it in items:
-            pdf.multi_cell(W, 4.4, _pdf_safe(mark + str(it)))
+            pdf.multi_cell(W, 4.4, _pdf_rich(mark + str(it)),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
 
-    _h1('About This Estimate')
+    _h1('The details', 'What’s Included and Why')
     _p('A concise summary of what is in this bid — materials, code compliance, '
        'ventilation math, and warranties — so you can compare it apples-to-apples '
        'with any other quote.')
@@ -6928,66 +7441,99 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
     if trades:
         _h2('Materials & Packages')
         for tr in trades:
-            pdf.set_font('Helvetica', 'B', 9)
-            pdf.cell(0, 5, _pdf_safe(tr.get('label', '')), new_x='LMARGIN', new_y='NEXT')
+            pdf.set_font(_S(pdf), 'B', 9)
+            pdf.cell(0, 5, _pdf_rich(tr.get('label', '')), new_x='LMARGIN', new_y='NEXT', align='L')
             if tr.get('mode') == 'simple':
                 feats = tr.get('features') or []
                 _bullets(feats[:6])
             else:
                 for ti in tr.get('tiers') or []:
-                    pdf.set_font('Helvetica', 'B', 8.5)
+                    pdf.set_font(_S(pdf), 'B', 8.5)
                     lbl = ti.get('tier_label', '')
                     if ti.get('is_selected'):
                         lbl += '  (Selected)'
                     pkg = ti.get('package_name') or ''
                     hdr = f'  {lbl} - {pkg}' if pkg else f'  {lbl}'
-                    pdf.cell(0, 4.6, _pdf_safe(hdr), new_x='LMARGIN', new_y='NEXT')
+                    pdf.cell(0, 4.6, _pdf_rich(hdr), new_x='LMARGIN', new_y='NEXT', align='L')
                     tag = ti.get('tagline') or ''
                     if tag:
-                        pdf.set_font('Helvetica', 'I', 8)
-                        pdf.multi_cell(W - 6, 4, _pdf_safe('    ' + tag))
+                        pdf.set_font(_S(pdf), 'I', 8)
+                        pdf.multi_cell(W - 6, 4, _pdf_rich('    ' + tag),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
                     bullets = ti.get('material_bullets') or []
                     if bullets:
-                        pdf.set_font('Helvetica', '', 8)
+                        pdf.set_font(_S(pdf), '', 8)
                         for b in bullets[:4]:
-                            pdf.multi_cell(W - 8, 4, _pdf_safe('    - ' + b))
+                            pdf.multi_cell(W - 8, 4, _pdf_rich('    - ' + b),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
                     ws = ti.get('workmanship') or ''
                     if ws:
-                        pdf.set_font('Helvetica', '', 8)
-                        pdf.multi_cell(W - 8, 4, _pdf_safe('    Workmanship: ' + ws))
+                        pdf.set_font(_S(pdf), '', 8)
+                        pdf.multi_cell(W - 8, 4, _pdf_rich('    Workmanship: ' + ws),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
                     pdf.ln(0.8)
         pdf.ln(2)
 
-    # ── Code compliance ─────────────────────────────────────────────────
+    # ── Permits & code ──────────────────────────────────────────────────
+    # Its own page, and the jurisdiction's own requirements kept separate from
+    # the Colorado statewide baseline. They used to be concatenated into one
+    # capped list, so two lines that were genuinely about the customer's city
+    # were followed by four about the whole state and the section read as
+    # boilerplate — which is the opposite of its job.
     code = manifest.get('code')
     if code:
-        _h2('Code Compliance')
-        pdf.set_font('Helvetica', '', 8.5)
-        jname  = code.get('jurisdiction_name') or ''
-        county = code.get('county') or ''
-        jline  = f'Authority having jurisdiction: {jname}'
-        if county and county.lower() not in jname.lower():
-            jline += f'  |  {county} County'
-        pdf.multi_cell(W, 4.4, _pdf_safe(jline))
+        pdf.add_page()
+        matched = code.get('matched')
+        jname   = code.get('jurisdiction_name') or ''
+        _h1('Permits & code', 'Who Pulls Your Permit')
+        pdf.set_font(_S(pdf), '', 8.5)
+        if matched and jname:
+            pdf.set_font(getattr(pdf, '_serif', _S(pdf)), 'B', 15)
+            pdf.set_text_color(*_PDF_STYLE['navy'])
+            pdf.multi_cell(W, 7, _pdf_rich(jname),
+                           new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            meta = [x for x in (code.get('office') or '',
+                                (code.get('county') + ' County') if code.get('county') else '',
+                                code.get('phone') or '') if x]
+            if meta:
+                pdf.set_font(_S(pdf), '', 8.5)
+                pdf.set_text_color(*_PDF_STYLE['mute'])
+                pdf.multi_cell(W, 4.4, _pdf_rich('  ·  '.join(meta)),
+                               new_x='LMARGIN', new_y='NEXT', align='L')
+                pdf.set_text_color(*_PDF_STYLE['ink'])
+        else:
+            # Never dress the statewide fallback up as the customer's authority.
+            pdf.set_font(_S(pdf), '', 8.5)
+            pdf.multi_cell(W, 4.4, _pdf_rich(
+                'Permitting authority not yet confirmed. Colorado has no statewide residential '
+                'building code — the city or county adopts and enforces its own. We confirm the '
+                'authority for this address, its adopted code edition and any local amendments '
+                'before pulling the permit, and the permit is included in your price either way.'),
+                new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.ln(2)
+        pdf.set_font(_S(pdf), '', 8.5)
         vp = code.get('verified_profile') or {}
         if vp:
             ac = (vp.get('adopted_code') or '').strip()
             if ac:
-                pdf.set_font('Helvetica', 'B', 8.5)
-                pdf.multi_cell(W, 4.4, _pdf_safe(f'Enforces {ac}'))
-                pdf.set_font('Helvetica', '', 8.5)
+                pdf.set_font(_S(pdf), 'B', 8.5)
+                pdf.multi_cell(W, 4.4, _pdf_rich(f'Enforces {ac}'),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+                pdf.set_font(_S(pdf), '', 8.5)
             amends = vp.get('amendments') or []
             if amends:
                 pdf.ln(1)
-                pdf.set_font('Helvetica', 'B', 8)
-                pdf.cell(0, 4.4, _pdf_safe('Local amendments applied to this project:'),
-                         new_x='LMARGIN', new_y='NEXT')
-                pdf.set_font('Helvetica', '', 8)
+                pdf.set_font(_S(pdf), 'B', 8)
+                pdf.cell(0, 4.4, _pdf_rich('Local amendments applied to this project:'),
+                         new_x='LMARGIN', new_y='NEXT', align='L')
+                pdf.set_font(_S(pdf), '', 8)
                 for a in amends[:8]:
                     tp = (a.get('topic') or '').strip()
                     tx = (a.get('text')  or '').strip()
                     line = '  - ' + (f'{tp}: {tx}' if tp else tx)
-                    pdf.multi_cell(W, 4.2, _pdf_safe(line))
+                    pdf.multi_cell(W, 4.2, _pdf_rich(line),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
             rp = vp.get('reroof_permit') or {}
             rp_bits = []
             if (rp.get('submittal_method') or '').lower() not in ('', 'unknown'):
@@ -6995,31 +7541,41 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
             if (rp.get('portal_url') or '').lower() not in ('', 'unknown'):
                 rp_bits.append(f'Portal: {rp["portal_url"]}')
             if rp_bits:
-                pdf.set_font('Helvetica', 'I', 8)
-                pdf.multi_cell(W, 4.2, _pdf_safe('  ' + '  |  '.join(rp_bits)))
-                pdf.set_font('Helvetica', '', 8.5)
+                pdf.set_font(_S(pdf), 'I', 8)
+                pdf.multi_cell(W, 4.2, _pdf_rich('  ' + '  |  '.join(rp_bits)),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+                pdf.set_font(_S(pdf), '', 8.5)
             va = (vp.get('verified_at') or '')[:10]
             via = (vp.get('verified_via') or '').strip()
             if va or via:
                 tag = 'Code data verified ' + va + (f' (source: {via})' if via else '')
-                pdf.set_font('Helvetica', 'I', 7.5)
-                pdf.multi_cell(W, 4.0, _pdf_safe(tag))
-                pdf.set_font('Helvetica', '', 8.5)
-        pts = (code.get('jurisdiction_points') or []) + (code.get('baseline_points') or [])
-        if pts:
-            _bullets(pts[:6])
+                pdf.set_font(_S(pdf), 'I', 7.5)
+                pdf.multi_cell(W, 4.0, _pdf_rich(tag),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+                pdf.set_font(_S(pdf), '', 8.5)
+        jpts = [x for x in (code.get('jurisdiction_points') or []) if str(x).strip()]
+        if jpts:
+            _h2(f'What {jname} requires' if matched and jname else 'Local requirements')
+            _bullets(jpts[:8])
         items = code.get('code_items') or []
         if items:
             pdf.ln(1)
-            pdf.set_font('Helvetica', 'B', 8)
-            pdf.cell(0, 4.4, _pdf_safe('Code line items in this scope:'),
-                     new_x='LMARGIN', new_y='NEXT')
-            pdf.set_font('Helvetica', '', 8)
+            _h2('Code line items priced into your scope')
+            pdf.set_font(_S(pdf), '', 8)
+            pdf.set_font(_S(pdf), '', 8)
             for ci in items[:10]:
                 line = '  - ' + (ci.get('label') or '')
                 if ci.get('basis'):
                     line += f'  ({ci["basis"]})'
-                pdf.multi_cell(W, 4.2, _pdf_safe(line))
+                pdf.multi_cell(W, 4.2, _pdf_rich(line),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+        bpts = [x for x in (code.get('baseline_points') or []) if str(x).strip()]
+        if bpts:
+            pdf.ln(1)
+            _h2('Colorado statewide baseline')
+            pdf.set_text_color(*_PDF_STYLE['mute'])
+            _bullets(bpts[:8])
+            pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.ln(2)
 
     # ── Ventilation ─────────────────────────────────────────────────────
@@ -7103,70 +7659,148 @@ def build_signed_pdf(est, signed=None):
 
     LM = 16
     RM = 16
+    _LOGO = os.path.join(BASE_DIR, 'static', 'logo.png')
+    _W    = 215.9 - LM - RM
 
     class _PDF(FPDF):
+        # `header()` did not exist before, so the letterhead appeared on page 1
+        # only and every page after it started blank at the top margin. On a
+        # document a customer prints and hands to their spouse, page 4 with no
+        # company name on it is the tell.
+        def header(self):
+            if getattr(self, '_no_chrome', False):
+                return
+            y = 11
+            if os.path.exists(_LOGO):
+                try:
+                    self.image(_LOGO, x=LM, y=y, h=6.5)
+                except Exception:
+                    pass
+            self.set_xy(LM, y)
+            self.set_font(self._sans, '', 7)
+            self.set_text_color(*_PDF_STYLE['faint'])
+            self.cell(_W, 4, _pdf_rich(self._eyebrow), align='R',
+                      new_x='LMARGIN', new_y='NEXT')
+            self.set_draw_color(*_PDF_STYLE['rule'])
+            self.set_line_width(0.2)
+            self.line(LM, y + 10.5, self.w - RM, y + 10.5)
+            self.set_text_color(*_PDF_STYLE['ink'])
+            self.set_y(y + 15)
+
         def footer(self):
-            self.set_y(-11)
-            self.set_draw_color(200, 200, 200)
+            if getattr(self, '_no_chrome', False):
+                return
+            self.set_y(-12)
+            self.set_draw_color(*_PDF_STYLE['rule'])
+            self.set_line_width(0.2)
             self.line(LM, self.get_y(), self.w - RM, self.get_y())
-            self.ln(2)
-            self.set_font('Helvetica', '', 6.5)
-            self.set_text_color(140, 140, 140)
-            self.cell(0, 4, 'Project One Roofing  |  970-776-0945  |  '
-                      'projectoneroofingcolorado.com', align='L')
-            self.cell(0, 4, f'Page {self.page_no()}/{{nb}}',
+            self.ln(2.5)
+            self.set_font(self._sans, '', 6.5)
+            self.set_text_color(*_PDF_STYLE['faint'])
+            self.cell(0, 4, _pdf_rich('Project One Roofing  ·  970-776-0945  ·  '
+                                      'projectoneroofingcolorado.com'), align='L')
+            self.cell(0, 4, f'Page {self.page_no()} of {{nb}}',
                       align='R', new_x='LMARGIN', new_y='NEXT')
-            self.set_text_color(0, 0, 0)
+            self.set_text_color(*_PDF_STYLE['ink'])
 
     pdf = _PDF(orientation='P', unit='mm', format='Letter')
+    SANS, SERIF = _pdf_fonts(pdf)
+    pdf._sans = SANS
+    pdf._serif = SERIF
+    pdf._eyebrow = ''
     pdf.alias_nb_pages()
-    pdf.set_auto_page_break(auto=True, margin=18)
-    pdf.set_margins(LM, 14, RM)
+    pdf.set_auto_page_break(auto=True, margin=20)
+    # Top margin leaves room for the running letterhead the header() draws.
+    pdf.set_margins(LM, 26, RM)
     # PDF document metadata — visible in Acrobat's Document Properties and
     # read by tools/AI parsers that inspect PDF metadata separately from the
     # rendered page content. Latin-1 safe: fpdf2's metadata strings are.
     _kind = ('Contract' if signed else 'Estimate')
-    _pdf_meta_title = _pdf_safe(
+    _pdf_meta_title = _pdf_rich(
         (f'Roof Replacement {_kind}' if not is_ins
          else f'Insurance-Claim Roofing {_kind}')
         + (f' - {c.get("name")}' if c.get('name') else '')
         + ' - Project One Roofing')
     pdf.set_title(_pdf_meta_title)
     pdf.set_author('Project One Roofing')
-    pdf.set_subject(_pdf_safe(manifest.get('summary', '')) if manifest else '')
+    pdf.set_subject(_pdf_rich(manifest.get('summary', '')) if manifest else '')
     pdf.set_keywords('roof replacement, Project One Roofing, Colorado licensed insured, '
                      'CertainTeed, IKO, Class 4 impact hail resistant, permit included, '
                      'workmanship warranty, code compliant, IRC R806 ventilation')
     pdf.set_creator('Project One Roofing Estimator')
-    pdf.add_page()
     W = pdf.w - LM - RM
 
-    # Header
-    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
-    if os.path.exists(logo):
+    if signed:
+        title = 'Signed Contract  ·  Insurance Claim' if is_ins else 'Signed Contract'
+    else:
+        title = 'Insurance Claim Estimate' if is_ins else 'Your Project Estimate'
+    pdf._eyebrow = f'{title}  ·  {enum}'
+
+    # ── Cover ───────────────────────────────────────────────────────────────
+    # The document used to open straight into a masthead and a filled navy bar,
+    # which reads like an invoice. A cover costs one page and is the first
+    # thing the customer sees.
+    pdf._no_chrome = True
+    pdf.add_page()
+    pdf._no_chrome = False
+
+    if os.path.exists(_LOGO):
         try:
-            pdf.image(logo, x=LM, y=12, h=14)
+            pdf.image(_LOGO, x=LM, y=26, h=13)
         except Exception:
             pass
-    pdf.set_xy(LM, 12)
-    pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_font('Helvetica', '', 7.5)
-    pdf.cell(W, 3.5, '970-776-0945  |  projectoneroofingcolorado.com',
-             align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.ln(4)
+    pdf.set_xy(LM, 46)
+    pdf.set_font(SANS, '', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['teal'])
+    pdf.cell(W, 4, _pdf_rich(title.upper()), new_x='LMARGIN', new_y='NEXT')
 
-    # Title bar
-    pdf.set_fill_color(26, 58, 92)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font('Helvetica', 'B', 12)
-    if signed:
-        title = 'SIGNED CONTRACT  |  INSURANCE CLAIM' if is_ins else 'SIGNED CONTRACT'
-    else:
-        title = 'INSURANCE CLAIM ESTIMATE' if is_ins else 'ESTIMATE'
-    pdf.cell(W, 9, f'  {title}', fill=True, new_x='LMARGIN', new_y='NEXT')
-    pdf.set_text_color(0, 0, 0)
-    pdf.ln(5)
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.set_line_width(0.2)
+    pdf.line(LM, 56, LM + W, 56)
+
+    pdf.set_xy(LM, 92)
+    pdf.set_font(SERIF, 'B', 27)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W, 12, _pdf_rich(c.get('name') or '—'), new_x='LMARGIN', new_y='NEXT')
+
+    _cover_addr = ', '.join(filter(None, [a.get('street'),
+                                          ', '.join(filter(None, [a.get('city'), a.get('state')]))]))
+    if _cover_addr:
+        pdf.set_x(LM)
+        pdf.set_font(SANS, '', 11)
+        pdf.set_text_color(*_PDF_STYLE['mute'])
+        pdf.cell(W, 6, _pdf_rich(_cover_addr), new_x='LMARGIN', new_y='NEXT')
+
+    # Meta strip — small caps label over value, evenly spaced.
+    _meta = [('Estimate', enum), ('Date', est.get('estimate_date', '')),
+             ('Valid Until', est.get('valid_until', ''))]
+    _sp_cover = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
+    if _sp_cover:
+        _meta.append(('Sales Rep', _sp_cover))
+    _y = 128
+    _cw = W / len(_meta)
+    for i, (lbl, val) in enumerate(_meta):
+        pdf.set_xy(LM + i * _cw, _y)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(_cw, 3.5, _pdf_rich(lbl.upper()), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_xy(LM + i * _cw, _y + 4.5)
+        pdf.set_font(SANS, '', 10.5)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.cell(_cw, 5, _pdf_rich(val or '—'), new_x='LMARGIN', new_y='NEXT')
+
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(LM, 249, LM + W, 249)
+    pdf.set_xy(LM, 253)
+    pdf.set_font(SANS, '', 8.5)
+    pdf.set_text_color(*_PDF_STYLE['faint'])
+    pdf.cell(W, 4, _pdf_rich('115 E 5th St · Loveland, CO 80537 · 970-776-0945 · '
+                             'projectoneroofingcolorado.com'),
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+
+    # ── Estimate detail page ────────────────────────────────────────────────
+    pdf.add_page()
 
     # Info block — two columns
     addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'),
@@ -7219,51 +7853,79 @@ def build_signed_pdf(est, signed=None):
             if not val:
                 continue
             pdf.set_x(LM + x_off)
-            pdf.set_font('Helvetica', '', 7)
-            pdf.set_text_color(120, 120, 120)
-            pdf.cell(col_w, 3.5, _pdf_safe(label.upper()),
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(col_w, 3.5, _pdf_rich(label.upper()),
                      new_x='LMARGIN', new_y='NEXT')
             pdf.set_x(LM + x_off)
-            pdf.set_font('Helvetica', 'B', 9)
-            pdf.set_text_color(0, 0, 0)
-            pdf.cell(col_w, 5, _pdf_safe(val),
+            pdf.set_font(SANS, '', 9.5)
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.cell(col_w, 5, _pdf_rich(val),
                      new_x='LMARGIN', new_y='NEXT')
-            pdf.ln(1.5)
+            pdf.ln(2)
 
     _info_col(left_rows, 0)
     y_after_left = pdf.get_y()
     _info_col(right_rows, col_w)
-    pdf.set_y(max(y_after_left, pdf.get_y()) + 4)
+    pdf.set_y(max(y_after_left, pdf.get_y()) + 5)
 
-    # Thin divider
-    pdf.set_draw_color(220, 220, 220)
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.set_line_width(0.2)
     pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
-    pdf.ln(6)
+    pdf.ln(8)
 
-    # Table helpers
-    ZEBRA_BG = (248, 250, 252)
-    HDR_BG   = (26, 58, 92)
+    # ── Table helpers ───────────────────────────────────────────────────────
+    # Hand-placed cells are gone. pdf.table() wraps long descriptions instead
+    # of clipping them at a character count, and repeats the column headings on
+    # every page a table spills onto — before this, a table that crossed a page
+    # boundary continued with no headings and (with no header()) no letterhead
+    # either. It also drops the '  ' string-padding hack, which is what made the
+    # old PDF extract as ragged text when a customer pasted it into a chat.
+    from fpdf.fonts import FontFace
+    from fpdf.enums import TableCellFillMode
 
-    def table_header(cols):
-        pdf.set_fill_color(*HDR_BG)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font('Helvetica', 'B', 7.5)
-        for txt, w, align in cols:
-            pdf.cell(w, 7, '  ' + _pdf_safe(txt) if align == 'L' else _pdf_safe(txt) + '  ',
-                     fill=True, align=align)
-        pdf.ln()
-        pdf.set_text_color(0, 0, 0)
+    HEAD_FACE = FontFace(family=SANS, size_pt=6.5,
+                         color=_PDF_STYLE['faint'], fill_color=None)
 
-    def trade_title(txt):
-        pdf.set_font('Helvetica', 'B', 10)
-        pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 8, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
+    def section_head(eyebrow, title):
+        # Keep the heading with its table. Without this a trade heading could
+        # land at the bottom of a page with its first row on the next one,
+        # which is the classic orphan that makes a document look generated.
+        if pdf.get_y() > pdf.h - 52:
+            pdf.add_page()
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['teal'])
+        pdf.cell(0, 4, _pdf_rich(eyebrow.upper()), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font(SERIF, 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(title), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(1)
 
-    def trunc(s, n):
-        # _pdf_oneline, not _pdf_safe: these are single-line pdf.cell() values.
-        s = _pdf_oneline(s)
-        return s if len(s) <= n else s[:n - 1] + '...'
+    def subtotal_row(label, amount, amt_w):
+        pdf.set_draw_color(*_PDF_STYLE['navy'])
+        pdf.set_line_width(0.3)
+        pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
+        pdf.set_font(SANS, 'B', 9)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(W - amt_w, 8, _pdf_rich(label), align='R')
+        pdf.cell(amt_w, 8, fc(amount), align='R')
+        pdf.ln(11)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
+
+    def open_table(widths, aligns):
+        pdf.set_font(SANS, '', 8)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
+        return pdf.table(
+            col_widths=widths, text_align=aligns, width=W,
+            borders_layout='HORIZONTAL_LINES',
+            headings_style=HEAD_FACE,
+            cell_fill_mode=TableCellFillMode.NONE,
+            line_height=5, padding=(2.4, 2, 2.4, 0), v_align='T')
 
     grand = 0.0
     row_h = 6.5
@@ -7273,52 +7935,39 @@ def build_signed_pdf(est, signed=None):
             [{'name': '', 'items': ins_td.get('line_items', [])}]
             if ins_td.get('line_items') else [])
         desc_w = W - 22 - 26 - 24
-        c_item = desc_w * 0.38
-        c_desc = desc_w * 0.62
-        cols = [('Item', c_item, 'L'), ('Description', c_desc, 'L'),
-                ('ACV', 22, 'R'), ('Depreciation', 26, 'R'), ('RCV', 24, 'R')]
-        for sec in sections:
+        widths = (desc_w * 0.38, desc_w * 0.62, 22, 26, 24)
+        aligns = ('LEFT', 'LEFT', 'RIGHT', 'RIGHT', 'RIGHT')
+        for si, sec in enumerate(sections):
             items = sec.get('items', [])
             if not items:
                 continue
-            trade_title(sec.get('name') or 'Insurance Estimate Items')
-            table_header(cols)
-            pdf.set_font('Helvetica', '', 8)
+            section_head('Scope', sec.get('name') or 'Insurance Estimate Items')
             sub = 0.0
-            for ri, it in enumerate(items):
-                acv = float(it.get('acv') or 0)
-                dep = float(it.get('depreciation') or 0)
-                tot = acv + dep
-                sub += tot
-                if ri % 2 == 1:
-                    pdf.set_fill_color(*ZEBRA_BG)
-                    fill = True
-                else:
-                    fill = False
-                pdf.cell(c_item, row_h, '  ' + trunc(it.get('name', ''), 38), fill=fill)
-                pdf.cell(c_desc, row_h, '  ' + trunc(it.get('description', ''), 50), fill=fill)
-                pdf.cell(22, row_h, fc(acv) + ' ', fill=fill, align='R')
-                pdf.cell(26, row_h, fc(dep) + ' ', fill=fill, align='R')
-                pdf.cell(24, row_h, fc(tot) + ' ', fill=fill, align='R')
-                pdf.ln()
+            with open_table(widths, aligns) as table:
+                head = table.row()
+                for h in ('Item', 'Description', 'ACV', 'Depreciation', 'RCV'):
+                    head.cell(h)
+                for it in items:
+                    acv = float(it.get('acv') or 0)
+                    dep = float(it.get('depreciation') or 0)
+                    tot = acv + dep
+                    sub += tot
+                    row = table.row()
+                    row.cell(_pdf_rich(it.get('name', '')))
+                    row.cell(_pdf_oneline_rich(it.get('description', '')))
+                    row.cell(fc(acv))
+                    row.cell(fc(dep))
+                    row.cell(fc(tot))
             grand += sub
-            pdf.set_draw_color(26, 58, 92)
-            pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
-            pdf.set_font('Helvetica', 'B', 8.5)
-            pdf.cell(W - 24, 7, _pdf_safe((sec.get('name') or 'Section') + ' Subtotal'),
-                     align='R')
-            pdf.cell(24, 7, fc(sub) + ' ', align='R')
-            pdf.ln(10)
-            pdf.set_draw_color(220, 220, 220)
-        total_label = 'INSURANCE CLAIM TOTAL'
+            subtotal_row((sec.get('name') or 'Section') + ' Subtotal', sub, 24)
+        total_label = 'Insurance Claim Total'
     else:
         pricing = est.get('pricing', {})
         mode    = pricing.get('mode', 'margin')
         labels  = dict(roofing='Roofing', siding='Siding', windows='Windows',
                        gutters='Gutters', other='Other / Misc')
-        c_desc = W - 14 - 14 - 28 - 28
-        cols = [('Description', c_desc, 'L'), ('Qty', 14, 'R'), ('Unit', 14, 'C'),
-                ('Unit Price', 28, 'R'), ('Total', 28, 'R')]
+        widths = (W - 14 - 14 - 28 - 28, 14, 14, 28, 28)
+        aligns = ('LEFT', 'RIGHT', 'CENTER', 'RIGHT', 'RIGHT')
         for tk in GBB_TRADES:
             td = est.get('trades', {}).get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
@@ -7332,92 +7981,92 @@ def build_signed_pdf(est, signed=None):
                      or (it.get('tiers') or {}).get(t_tier, {}).get('included') is not False)
                     for it in td['line_items']):
                 continue
-            trade_title(labels.get(tk, tk.title()))
-            table_header(cols)
-            pdf.set_font('Helvetica', '', 8)
+            _pkg = dict(good='Good', better='Better', best='Best').get(t_tier, '')
+            section_head(f'{_pkg} package' if _pkg and trade_mode != 'simple' else 'Scope',
+                         labels.get(tk, tk.title()))
             sub = 0.0
             hidden = 0
-            ri = 0
-            for it in td['line_items']:
-                qty = float(it.get('quantity') or 0)
-                if qty <= 0:
-                    continue
-                if trade_mode == 'simple':
-                    sp_  = float(it.get('unit_price') or 0)
-                    line = sp_ * qty
-                    desc = (it.get('description') or '').strip()
-                else:
-                    t    = (it.get('tiers') or {}).get(t_tier, {})
-                    if t.get('included') is False:
+            with open_table(widths, aligns) as table:
+                head = table.row()
+                for h in ('Description', 'Qty', 'Unit', 'Unit Price', 'Total'):
+                    head.cell(h)
+                for it in td['line_items']:
+                    qty = float(it.get('quantity') or 0)
+                    if qty <= 0:
                         continue
-                    line = _line_sell_total(it, t_tier, r, mode)
-                    sp_  = line / qty
-                    desc = t.get('description', '')
-                sub += line
-                if not it.get('customer_visible', True):
-                    hidden += 1
-                    continue
-                name = _with_section(it, it.get('name', ''))
-                if desc:
-                    name = f'{name} - {desc}'
-                if ri % 2 == 1:
-                    pdf.set_fill_color(*ZEBRA_BG)
-                    fill = True
-                else:
-                    fill = False
-                pdf.cell(c_desc, row_h, '  ' + trunc(name, 78), fill=fill)
-                pdf.cell(14, row_h, f'{qty:g} ', fill=fill, align='R')
-                pdf.cell(14, row_h, trunc(it.get('unit', ''), 8), fill=fill, align='C')
-                pdf.cell(28, row_h, fc(sp_) + ' ', fill=fill, align='R')
-                pdf.cell(28, row_h, fc(line) + ' ', fill=fill, align='R')
-                pdf.ln()
-                ri += 1
+                    if trade_mode == 'simple':
+                        sp_  = float(it.get('unit_price') or 0)
+                        line = sp_ * qty
+                        desc = (it.get('description') or '').strip()
+                    else:
+                        t    = (it.get('tiers') or {}).get(t_tier, {})
+                        if t.get('included') is False:
+                            continue
+                        line = _line_sell_total(it, t_tier, r, mode)
+                        sp_  = line / qty
+                        desc = t.get('description', '')
+                    sub += line
+                    if not it.get('customer_visible', True):
+                        hidden += 1
+                        continue
+                    name = _with_section(it, it.get('name', ''))
+                    # The description wraps under the name now instead of being
+                    # clipped at 78 characters mid-word.
+                    if desc:
+                        name = f'{name} — {_pdf_oneline_rich(desc)}'
+                    row = table.row()
+                    row.cell(_pdf_rich(name))
+                    row.cell(f'{qty:g}')
+                    row.cell(_pdf_rich(it.get('unit', '')))
+                    row.cell(fc(sp_))
+                    row.cell(fc(line))
             if hidden:
-                pdf.set_font('Helvetica', 'I', 7)
-                pdf.set_text_color(140, 140, 140)
-                pdf.cell(W, 5.5, 'Additional materials & supplies included in total',
-                         align='C')
-                pdf.ln()
-                pdf.set_text_color(0, 0, 0)
-                pdf.set_font('Helvetica', '', 8)
+                pdf.set_font(SANS, 'I', 7)
+                pdf.set_text_color(*_PDF_STYLE['faint'])
+                pdf.cell(W, 5.5, _pdf_rich('Additional materials & supplies included in total'),
+                         align='L', new_x='LMARGIN', new_y='NEXT')
+                pdf.set_text_color(*_PDF_STYLE['ink'])
             grand += sub
-            pdf.set_draw_color(26, 58, 92)
-            pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
-            pdf.set_font('Helvetica', 'B', 8.5)
-            pdf.cell(W - 28, 7, _pdf_safe(labels.get(tk, tk.title()) + ' Subtotal'),
-                     align='R')
-            pdf.cell(28, 7, fc(sub) + ' ', align='R')
-            pdf.ln(10)
-            pdf.set_draw_color(220, 220, 220)
+            subtotal_row(labels.get(tk, tk.title()) + ' Subtotal', sub, 28)
         _sum = _pick_summary_label(est)
-        total_label = (f'TOTAL  |  {_sum.upper()}' if _sum
-                       else f'TOTAL  |  {tier.upper()} PACKAGE')
+        total_label = (f'Total — {_sum}' if _sum
+                       else 'Total — ' + dict(good='Good', better='Better',
+                                              best='Best').get(tier, tier.title()) + ' Package')
 
-    # Grand total bar
-    pdf.set_fill_color(26, 58, 92)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(W - 42, 10, f'  {_pdf_safe(total_label)}', fill=True)
-    pdf.cell(42, 10, fc(grand) + '  ', fill=True, align='R')
-    pdf.ln(12)
-    pdf.set_text_color(0, 0, 0)
+    # Grand total — the one filled element in the document, which is why
+    # everything above it stopped being filled.
+    if pdf.get_y() > pdf.h - 46:
+        pdf.add_page()
+    pdf.ln(2)
+    _gy = pdf.get_y()
+    pdf.set_fill_color(*_PDF_STYLE['navy'])
+    pdf.rect(LM, _gy, W, 18, style='F')
+    pdf.set_xy(LM + 7, _gy + 4)
+    pdf.set_font(SANS, '', 7)
+    pdf.set_text_color(210, 218, 236)
+    pdf.cell(W - 14, 4, _pdf_rich(total_label.upper()), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_xy(LM + 7, _gy + 8)
+    pdf.set_font(SERIF, 'B', 17)
+    pdf.set_text_color(*_PDF_STYLE['white'])
+    pdf.cell(W - 14, 8, fc(grand), align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_y(_gy + 18)
+    pdf.ln(9)
+    pdf.set_text_color(*_PDF_STYLE['ink'])
 
     # Scope of work / notes
     if is_ins:
         scope = (est.get('trades', {}).get('insurance', {}).get('scope_notes') or '').strip()
         if scope:
-            pdf.set_font('Helvetica', 'B', 10)
-            pdf.cell(0, 7, 'Scope of Work', new_x='LMARGIN', new_y='NEXT')
-            pdf.set_font('Helvetica', '', 8.5)
-            pdf.multi_cell(W, 4.6, _pdf_safe(scope))
-            pdf.ln(4)
+            section_head('Scope', 'Scope of Work')
+            pdf.set_font(SANS, '', 9)
+            pdf.multi_cell(W, 5, _pdf_rich(scope), align='L')
+            pdf.ln(6)
     notes = (est.get('notes_customer') or '').strip()
     if notes:
-        pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(0, 7, 'Notes', new_x='LMARGIN', new_y='NEXT')
-        pdf.set_font('Helvetica', '', 8.5)
-        pdf.multi_cell(W, 4.6, _pdf_safe(notes))
-        pdf.ln(4)
+        section_head('Additional', 'Notes')
+        pdf.set_font(SANS, '', 9)
+        pdf.multi_cell(W, 5, _pdf_rich(notes), align='L')
+        pdf.ln(6)
 
     # About This Estimate — the AI-friendly summary, inserted before the T&C
     # so a reader (or an AI reading a customer's uploaded PDF) hits the
@@ -7429,13 +8078,12 @@ def build_signed_pdf(est, signed=None):
     ctext = (est.get('contract_text') or '').strip()
     if ctext:
         pdf.add_page()
-        pdf.set_font('Helvetica', 'B', 11)
-        pdf.cell(0, 7, 'Terms & Conditions', new_x='LMARGIN', new_y='NEXT')
-        pdf.set_draw_color(220, 220, 220)
-        pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
-        pdf.ln(3)
-        pdf.set_font('Helvetica', '', 7.5)
-        pdf.multi_cell(W, 4.0, _pdf_safe(ctext))
+        section_head('Legal', 'Terms & Conditions')
+        pdf.ln(2)
+        pdf.set_font(SANS, '', 7.5)
+        pdf.set_text_color(*_PDF_STYLE['mute'])
+        pdf.multi_cell(W, 4.3, _pdf_rich(ctext), align='L')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.ln(6)
 
     # Initialed acknowledgements — only when this PDF represents an actual
@@ -7446,17 +8094,21 @@ def build_signed_pdf(est, signed=None):
         if inits:
             if pdf.get_y() > pdf.h - 40:
                 pdf.add_page()
-            pdf.set_font('Helvetica', 'B', 10)
-            pdf.cell(0, 7, 'Initialed Acknowledgements', new_x='LMARGIN', new_y='NEXT')
-            pdf.ln(1)
+            section_head('Acknowledged', 'Initialed by the Homeowner')
             for it in inits:
-                pdf.set_fill_color(248, 250, 252)
-                pdf.set_font('Helvetica', 'B', 9)
-                pdf.cell(18, 5.5, _pdf_safe(it['value'].upper()), fill=True)
-                pdf.set_font('Helvetica', '', 8.5)
-                pdf.multi_cell(W - 18, 5.5, _pdf_safe(it['text']),
-                               new_x='LMARGIN', new_y='NEXT')
-                pdf.ln(1)
+                _ry = pdf.get_y()
+                pdf.set_font(SANS, 'B', 9)
+                pdf.set_text_color(*_PDF_STYLE['navy'])
+                pdf.cell(16, 5.5, _pdf_rich(it['value'].upper()))
+                pdf.set_font(SANS, '', 8.5)
+                pdf.set_text_color(*_PDF_STYLE['ink'])
+                pdf.multi_cell(W - 16, 5.5, _pdf_rich(it['text']),
+                               new_x='LMARGIN', new_y='NEXT', align='L')
+                pdf.ln(1.5)
+                pdf.set_draw_color(*_PDF_STYLE['rule'])
+                pdf.set_line_width(0.2)
+                pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
+                pdf.ln(2.5)
             pdf.ln(3)
 
     # ── Visualizer page ────────────────────────────────────────────────
@@ -7470,41 +8122,43 @@ def build_signed_pdf(est, signed=None):
         # E-SIGN certificate. Nothing else changes.
         if pdf.get_y() > pdf.h - 30:
             pdf.add_page()
-        pdf.set_draw_color(14, 116, 144)
-        pdf.set_fill_color(236, 254, 255)
         y0 = pdf.get_y()
-        pdf.rect(LM, y0, W, 20, style='DF')
-        pdf.set_xy(LM + 5, y0 + 4)
-        pdf.set_text_color(6, 78, 95)
-        pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(0, 5.5, _pdf_safe('THIS IS AN UNSIGNED PREVIEW'),
-                 new_x='LMARGIN', new_y='NEXT')
-        pdf.set_x(LM + 5)
-        pdf.set_font('Helvetica', '', 8.5)
-        pdf.multi_cell(W - 10, 4.6, _pdf_safe(
+        pdf.set_draw_color(*_PDF_STYLE['teal'])
+        pdf.set_line_width(0.6)
+        pdf.line(LM, y0, LM, y0 + 19)
+        pdf.set_xy(LM + 6, y0)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['teal'])
+        pdf.cell(0, 4, _pdf_rich('UNSIGNED PREVIEW'), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_xy(LM + 6, y0 + 5)
+        pdf.set_font(SANS, '', 8.5)
+        pdf.set_text_color(*_PDF_STYLE['mute'])
+        pdf.multi_cell(W - 12, 4.8, _pdf_rich(
             'To accept this proposal, return to the online link and sign electronically. '
-            'This preview PDF is for review only and does not constitute a contract.'))
-        pdf.set_text_color(0, 0, 0)
-        pdf.set_draw_color(0, 0, 0)
+            'This preview is for review only and does not constitute a contract.'))
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
         return bytes(pdf.output())
 
     # Signature block
     if pdf.get_y() > pdf.h - 70:
         pdf.add_page()
-    pdf.set_draw_color(22, 163, 74)
-    pdf.set_fill_color(240, 253, 244)
     y0 = pdf.get_y()
-    pdf.rect(LM, y0, W, 50, style='DF')
-    pdf.set_xy(LM + 5, y0 + 4)
+    pdf.set_draw_color(22, 163, 74)
+    pdf.set_line_width(0.6)
+    pdf.line(LM, y0, LM, y0 + 48)
+    pdf.set_line_width(0.2)
+    pdf.set_xy(LM + 6, y0)
     pdf.set_text_color(22, 101, 52)
-    pdf.set_font('Helvetica', 'B', 10)
-    pdf.cell(0, 6, 'ELECTRONICALLY SIGNED', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_x(LM + 5)
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font('Helvetica', 'I', 17)
-    pdf.cell(0, 10, _pdf_safe(sig.get('name', '')), new_x='LMARGIN', new_y='NEXT')
-    pdf.set_x(LM + 5)
-    pdf.set_font('Helvetica', '', 7.5)
+    pdf.set_font(SANS, '', 6.5)
+    pdf.cell(0, 4.5, _pdf_rich('ELECTRONICALLY SIGNED'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_x(LM + 6)
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_font(SERIF, 'B', 19)
+    pdf.cell(0, 11, _pdf_rich(sig.get('name', '')), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_x(LM + 6)
+    pdf.set_font(SANS, '', 7.5)
     sig_lines = [
         f"Signed by: {sig.get('name', '')}"
         + (f"  ({sig.get('email')})" if sig.get('email') else ''),
@@ -7513,9 +8167,9 @@ def build_signed_pdf(est, signed=None):
         f"Document SHA-256: {sig.get('document_hash', '')[:32]}...",
     ]
     for line in sig_lines:
-        pdf.cell(0, 4.4, _pdf_safe(line), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_x(LM + 5)
-    pdf.set_draw_color(0, 0, 0)
+        pdf.cell(0, 4.4, _pdf_rich(line), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_x(LM + 6)
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
 
     return bytes(pdf.output())
 
@@ -10332,8 +10986,8 @@ def build_co_sign_page(est, co, token):
 <div class="cvtrade">
   <div class="cvtrade-hd">Change Order Items</div>
   <table class="cvt"><thead><tr>
-    <th>Description</th><th class="cvth-c">Qty</th>
-    <th class="cvth-c">Unit</th><th class="cvth-r">Total</th></tr></thead>
+    <th>Description</th><th scope="col" class="cvth-c">Qty</th>
+    <th scope="col" class="cvth-c">Unit</th><th scope="col" class="cvth-r">Total</th></tr></thead>
   <tbody>{rows}</tbody></table>
 </div>
 
