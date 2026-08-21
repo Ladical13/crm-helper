@@ -292,7 +292,7 @@ def test_the_packet_names_every_building(A):
     """A crew lays out corner fastener spacing from this sheet. Printing the
     first building's schedule once, unlabelled, is how the wrong roof gets
     fastened to the wrong number."""
-    packet = A.build_production_packet_pdf(_packet_est())
+    packet = A.build_material_order_pdf(_packet_est())
     assert packet[:4] == b'%PDF'
     text = _pdf_text(packet)
     assert 'Building 1' in text and 'Building 2' in text
@@ -302,5 +302,5 @@ def test_the_packet_reports_each_buildings_job_type(A):
     """Re-roof on one building and new construction on another is an ordinary
     complex. One job type printed for all seven sends a tear-off crew to a
     building that never needed one."""
-    text = _pdf_text(A.build_production_packet_pdf(_packet_est()))
+    text = _pdf_text(A.build_material_order_pdf(_packet_est()))
     assert 'RE-ROOF' in text and 'NEW CONSTRUCTION' in text

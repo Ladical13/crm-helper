@@ -193,11 +193,14 @@ def test_every_single_line_pdf_cell_uses_the_flattening_trunc():
     build_signed_pdf is deliberately NOT in this set: it draws its line items
     with pdf.table(), which wraps long descriptions instead of clipping them at
     a character count, so it has no trunc() to guard. Adding one back there
-    would be a regression, not a fix."""
+    would be a regression, not a fix.
+
+    The count tracks the internal builders that still hand-place cells: the
+    work order, the material order and the change order."""
     with open(os.path.join(BASE, 'app.py'), encoding='utf-8') as fh:
         src = fh.read()
     truncs = re.findall(r'    def trunc\(s, n\):\n(.*?)\n\n', src, re.S)
-    assert len(truncs) == 2, f'expected 2 local trunc() helpers, found {len(truncs)}'
+    assert len(truncs) == 3, f'expected 3 local trunc() helpers, found {len(truncs)}'
     for body in truncs:
         # Either flattener is fine — _pdf_oneline_rich is the same collapse for
         # the documents that embed Unicode faces. What must not come back is a

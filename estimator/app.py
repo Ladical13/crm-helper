@@ -8394,6 +8394,129 @@ def commercial_fastening(m, table):
     }
 
 
+# ── Ordering pack sizes ─────────────────────────────────────────────────────
+# The estimate measures in squares and linear feet; a supplier order is placed
+# in bundles, sticks and rolls. The catalog carries a `unit` (SQ / LF / EA) but
+# nothing about packaging, so this table is the bridge.
+#
+# THESE ARE INDUSTRY DEFAULTS, NOT VERIFIED PER SUPPLIER. Pack sizes vary by
+# manufacturer and by what the branch stocks — CertainTeed Shadow Ridge runs
+# 24 LF/bundle where IKO Hip & Ridge runs ~33, and starter varies more than
+# that. Every converted row on the material order prints the arithmetic it
+# used ("33.6 SQ x 3/SQ = 101 bundles") so a wrong factor is visible on the
+# sheet rather than silently mis-ordering. Correct a number here and the sheet
+# follows.
+#
+# Matching is on a lowercase substring of the line-item name, first hit wins,
+# so put the specific keys above the general ones.
+_ORDER_PACK = [
+    # (name fragment, from-unit, per, order-unit, note)
+    ('ridge cap',              'LF', 25.0,  'bundles', 'ridge + hip'),
+    ('hip / ridge',            'LF', 25.0,  'bundles', 'ridge + hip'),
+    ('starter strip',          'LF', 116.0, 'bundles', ''),
+    ('starter',                'LF', 116.0, 'bundles', ''),
+    ('ridge vent',             'LF', 4.0,   'sticks',  '4 ft sticks'),
+    ('intake vent',            'LF', 4.0,   'sticks',  '4 ft sticks'),
+    ('drip edge',              'LF', 10.0,  'sticks',  '10 ft sticks'),
+    ('gutter apron',           'LF', 10.0,  'sticks',  '10 ft sticks'),
+    ('downspout',              'LF', 10.0,  'sticks',  '10 ft sticks'),
+    ('ice & water',            'SQ', 2.0,   'rolls',   '36 in x 66.7 ft'),
+    ('ice and water',          'SQ', 2.0,   'rolls',   '36 in x 66.7 ft'),
+    ('synthetic underlayment', 'SQ', 10.0,  'rolls',   '10 SQ rolls'),
+    ('underlayment',           'SQ', 10.0,  'rolls',   '10 SQ rolls'),
+    # Asphalt shingles: 3 bundles to the square on every architectural and
+    # impact-resistant line in the catalog. Metal, steel and rubber are sold by
+    # the square or the panel and are deliberately absent — they fall through
+    # to "order as measured" rather than being converted into a bundle count
+    # that does not exist.
+    ('landmark',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
+    ('northgate',              'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
+    ('nordic',                 'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
+    ('shingles',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
+]
+
+# Named so the material order can print the list it actually used.
+_ORDER_PACK_NOTE = ('Pack sizes are industry defaults, not supplier-verified. '
+                    'Each converted row shows its arithmetic - check it against '
+                    'your branch before ordering.')
+
+
+def _order_pack_for(name, unit):
+    """Pack rule for a line item, or None to order as measured."""
+    n = ' '.join(str(name or '').lower().split())
+    u = str(unit or '').strip().upper()
+    for frag, from_unit, per, order_unit, note in _ORDER_PACK:
+        if frag in n and from_unit == u:
+            return {'per': per, 'order_unit': order_unit, 'note': note,
+                    'from_unit': from_unit}
+    return None
+
+
+def material_order_rows(est):
+    """What to actually buy, per line item, across every enabled trade.
+
+    Returns a list of dicts:
+      trade, name, qty, unit           - as the estimate measures it
+      order_qty, order_unit            - what you place the order in
+      math                             - the arithmetic, for checking
+
+    Rows with no pack rule come back with order_qty None and are ordered as
+    measured. Labor lines and anything with no quantity are dropped: this is a
+    purchase order, not a scope list.
+    """
+    import math as _math
+    trades = est.get('trades') or {}
+    labels = _PRODUCT_TRADE_LABELS if '_PRODUCT_TRADE_LABELS' in globals() else {}
+    out = []
+    for tk in GBB_TRADES:
+        td = trades.get(tk) or {}
+        if not td.get('enabled') or not td.get('line_items'):
+            continue
+        tmode = _trade_mode(tk, td)
+        tier = _trade_tier(est, tk)
+        for it in (td.get('line_items') or []):
+            try:
+                qty = float(it.get('quantity') or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            if qty <= 0:
+                continue
+            if tmode != 'simple':
+                t = (it.get('tiers') or {}).get(tier) or {}
+                if t.get('included') is False:
+                    continue
+            name = (it.get('name') or '').strip()
+            # Labor, fees and REMOVAL lines are not ordered. "Remove existing
+            # gutters & downspouts" is 168 LF of tear-off, not 17 sticks of
+            # downspout to buy — the word match alone would have ordered it.
+            _n = name.lower()
+            if any(w in _n for w in
+                   ('labor', 'permit', 'inspection', 'cleanup', 'site protection',
+                    'dumpster', 'tear off', 'tear-off', 'deck inspection',
+                    'remove', 'removal', 'detach', 'dispose', 'disposal', 'haul')):
+                continue
+            unit = (it.get('unit') or '').strip().upper()
+            rule = _order_pack_for(name, unit)
+            row = {'trade': labels.get(tk, tk.title()), 'name': name,
+                   'qty': qty, 'unit': unit,
+                   'order_qty': None, 'order_unit': '', 'math': ''}
+            if rule:
+                per = rule['per']
+                if rule['order_unit'] == 'bundles' and per < 1:
+                    # squares -> bundles: 3 per square
+                    n_units = _math.ceil(qty / per - 1e-9)
+                    row['math'] = f'{qty:g} {unit} x {round(1 / per)}/{unit}'
+                else:
+                    n_units = _math.ceil(qty / per - 1e-9)
+                    row['math'] = f'{qty:g} {unit} / {per:g} per {rule["order_unit"][:-1]}'
+                row['order_qty'] = n_units
+                row['order_unit'] = rule['order_unit']
+                if rule['note']:
+                    row['math'] += f'  ({rule["note"]})'
+            out.append(row)
+    return out
+
+
 def siding_material_takeoff(est, tier):
     """Supplier-order piece counts for one signed siding tier.
 
@@ -8708,10 +8831,33 @@ def _int_styles(pdf, SANS, SERIF, W):
     return section, kv
 
 
-def build_production_packet_pdf(est):
-    """Work order + material order for the SIGNED package, for the crew and
-    supplier. Deliberately contains NO pricing anywhere — it leaves the
-    office. v1 reflects the signed contract only (change orders excluded)."""
+def _tier_items(td, trade_mode, t_tier):
+    """Line items in scope for one trade at one package tier.
+
+    Module level rather than nested because the work order and the material
+    order are separate documents now and both walk the same rows.
+    """
+    for it in td.get('line_items', []):
+        qty = float(it.get('quantity') or 0)
+        if qty <= 0:
+            continue
+        if trade_mode != 'simple':
+            t = (it.get('tiers') or {}).get(t_tier, {})
+            if t.get('included') is False:
+                continue
+            yield it, qty, t
+        else:
+            yield it, qty, {}
+
+
+def build_work_order_pdf(est):
+    """Work order for the SIGNED package — the sheet the crew works from.
+
+    Job card, product selection, a one-line scope summary per trade and the
+    notes. Deliberately contains NO pricing anywhere: it leaves the office.
+    What to buy lives in build_material_order_pdf, which goes to whoever
+    places the supplier order rather than to the roof. v1 reflects the signed
+    contract only (change orders excluded)."""
     if FPDF is None:
         raise RuntimeError('fpdf2 not installed')
 
@@ -8769,7 +8915,7 @@ def build_production_packet_pdf(est):
         return s if len(s) <= n else s[:n - 1] + '...'
 
     # ── Page 1: Work Order ──
-    title_bar('PRODUCTION PACKET  -  WORK ORDER')
+    title_bar('Work Order')
 
     signed_at = sig.get('signed_at', '')
     try:
@@ -8953,19 +9099,6 @@ def build_production_packet_pdf(est):
 
     # Scope of work — every line on the signed package (including items the
     # customer view hides), no prices. The crew works from this list.
-    def _tier_items(td, trade_mode, t_tier):
-        for it in td.get('line_items', []):
-            qty = float(it.get('quantity') or 0)
-            if qty <= 0:
-                continue
-            if trade_mode != 'simple':
-                t = (it.get('tiers') or {}).get(t_tier, {})
-                if t.get('included') is False:
-                    continue
-                yield it, qty, t
-            else:
-                yield it, qty, {}
-
     section_title('Scope of Work')
     if is_ins:
         table_header([('Item', 70, 'L'), ('Description', 112, 'L')])
@@ -8986,27 +9119,32 @@ def build_production_packet_pdf(est):
         # Order below itemizes the same rows with quantities and units, so
         # repeating them here made the crew read the scope twice and pushed the
         # packet onto a fourth page.
-        summary = []
+        # What the crew actually does, per trade. Quantities only — no prices,
+        # no pack sizes: buying is the material order's job.
         for tk in GBB_TRADES:
             td = trades.get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
                 continue
             rows = list(_tier_items(td, _trade_mode(tk, td), _trade_tier(est, tk)))
-            if rows:
-                summary.append((labels.get(tk, tk.title()), len(rows)))
-        if summary:
-            for label, n in summary:
-                pdf.set_font(SANS, '', 6.5)
-                pdf.set_text_color(*_PDF_STYLE['faint'])
-                pdf.cell(44, 5.6, _pdf_rich(str(label).upper()))
-                pdf.set_font(SANS, '', 9.5)
-                pdf.set_text_color(*_PDF_STYLE['ink'])
-                pdf.cell(0, 5.6, _pdf_rich(f'{n} work item(s) - itemized on the Material Order'),
-                         new_x='LMARGIN', new_y='NEXT')
-                pdf.set_draw_color(*_PDF_STYLE['rule'])
-                pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
-                pdf.ln(1.6)
-            pdf.ln(3)
+            if not rows:
+                continue
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['teal'])
+            pdf.cell(0, 5, _pdf_rich(labels.get(tk, tk.title()).upper()),
+                     new_x='LMARGIN', new_y='NEXT')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            table_header([('Work Item', W - 44, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
+            pdf.set_font(SANS, '', 8.5)
+            for it, qty, t in rows:
+                name = _with_section(it, it.get('name', ''))
+                desc = (t.get('description') or it.get('description') or '').strip()
+                if desc:
+                    name = f'{name} - {desc}'
+                pdf.cell(W - 44, 6.2, trunc(name, 86), border='B')
+                pdf.cell(20, 6.2, f'{qty:g}', border='B', align='R')
+                pdf.cell(24, 6.2, trunc(it.get('unit', ''), 10), border='B', align='C')
+                pdf.ln()
+            pdf.ln(4)
 
     # One Notes section with two labelled blocks rather than two headings. Two
     # separate section titles cost ~20mm of the sheet between them, which was
@@ -9030,15 +9168,109 @@ def build_production_packet_pdf(est):
     # right next to the "Ridge Vent: YES" row — the crew doesn't have to
     # flip pages to find the picture.
 
-    # ── Material Order, on its own sheet ──
-    # Only break if this page has something on it. The last write of the work
-    # order can push past the auto-break threshold and silently open a fresh
-    # page; an unconditional add_page() on top of that left a completely blank
-    # sheet in the middle of the packet. On a just-broken page the cursor is
-    # still at the top margin.
-    if pdf.get_y() > pdf.t_margin + 1:
-        pdf.add_page()
-    title_bar('MATERIAL ORDER')
+    return bytes(pdf.output())
+
+
+def build_material_order_pdf(est):
+    """What to buy for the SIGNED package, in the units it is ordered in.
+
+    Separate document from the work order: the crew does not need the buy list
+    and the person ordering does not need the job card. Quantities are
+    converted from the estimate's squares and linear feet into bundles, sticks
+    and rolls by _ORDER_PACK, and every converted row prints the arithmetic it
+    used so a wrong pack size is visible here rather than at the branch."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+
+    c      = est.get('customer', {})
+    a      = c.get('address', {})
+    sig    = est.get('signature', {}) or {}
+    enum   = _est_number(est)
+    is_ins = est.get('estimate_type') == 'insurance'
+    tier   = sig.get('selected_tier') or est.get('selected_tier', 'better')
+    trades = est.get('trades', {})
+    labels = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                  gutters='Gutters', other='Other / Misc')
+
+    pdf, SANS, SERIF, W = _new_internal_pdf(f'Material order  ·  {enum}')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+
+    def section_title(txt, need=42):
+        if pdf.get_y() > pdf.h - need:
+            pdf.add_page()
+        pdf.ln(3)
+        pdf.set_font(SERIF, 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(1)
+
+    def table_header(cols):
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.set_draw_color(*_PDF_STYLE['navy'])
+        pdf.set_line_width(0.3)
+        for txt, w, align in cols:
+            pdf.cell(w, 7, _pdf_rich(str(txt).upper()), border='B', align=align)
+        pdf.ln()
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
+
+    def trunc(s, n):
+        s = _pdf_oneline_rich(s)
+        return s if len(s) <= n else s[:n - 1] + '...'
+
+    pdf.set_font(SERIF, 'B', 20)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W, 10, _pdf_rich('Material Order'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+    pdf.ln(5)
+
+    addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'),
+                                       a.get('state'), a.get('zip')]))
+    kv([('Customer', c.get('name', '')),
+        ('Job Address', addr_str),
+        ('Estimate #', enum),
+        ('Package', _pick_summary_label(est) or tier.title())])
+    pdf.ln(2)
+
+    # ── What to order ──────────────────────────────────────────────────────
+    order_rows = material_order_rows(est)
+    if order_rows:
+        section_title('Order This', need=70)
+        pdf.set_font(SANS, '', 7.5)
+        pdf.set_text_color(*_PDF_STYLE['mute'])
+        pdf.multi_cell(W, 4.2, _pdf_rich(_ORDER_PACK_NOTE),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(2)
+        table_header([('Trade', 22, 'L'), ('Material', 60, 'L'),
+                      ('Order', 28, 'R'), ('Measured', 22, 'R'),
+                      ('How that was worked out', 56, 'L')])
+        pdf.set_font(SANS, '', 8)
+        for r in order_rows:
+            if r['order_qty']:
+                order_txt = f"{r['order_qty']:g} {r['order_unit']}"
+            else:
+                order_txt = f"{r['qty']:g} {r['unit']}"
+            pdf.cell(22, 6.4, trunc(r['trade'], 12), border='B')
+            pdf.cell(60, 6.4, trunc(r['name'], 40), border='B')
+            pdf.set_font(SANS, 'B', 8)
+            pdf.cell(28, 6.4, trunc(order_txt, 16), border='B', align='R')
+            pdf.set_font(SANS, '', 8)
+            pdf.cell(22, 6.4, f"{r['qty']:g} {r['unit']}", border='B', align='R')
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(56, 6.4, trunc(r['math'] or 'order as measured', 52), border='B')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.set_font(SANS, '', 8)
+            pdf.ln()
+        pdf.ln(3)
+
+    # ── Reference detail: measurements, priced list, labor ────────────────
 
     m = est.get('measurements') or {}
 
@@ -9089,7 +9321,7 @@ def build_production_packet_pdf(est):
         waste = _mnum('waste_pct')
         if waste:
             pdf.set_font(SANS, 'I', 8)
-            pdf.cell(0, 6, _pdf_rich(f'Roof quantities below already include {waste:g}% waste.'),
+            pdf.cell(0, 6, _pdf_rich(f'Order quantities above already include {waste:g}% waste.'),
                      new_x='LMARGIN', new_y='NEXT')
         pdf.ln(4)
 
@@ -9210,44 +9442,11 @@ def build_production_packet_pdf(est):
 
     if not is_ins:
         # Materials: signed-tier lines with a material cost (or simple-mode lines)
-        mat_rows, lab_rows = [], []
-        for tk in GBB_TRADES:
-            td = trades.get(tk, {})
-            if not td.get('enabled') or not td.get('line_items'):
-                continue
-            trade_mode = _trade_mode(tk, td)
-            for it, qty, t in _tier_items(td, trade_mode, _trade_tier(est, tk)):
-                name = _with_section(it, it.get('name', ''))
-                desc = (t.get('description') or it.get('description') or '').strip()
-                unit = it.get('unit', '')
-                trade_lbl = labels.get(tk, tk.title())
-                if trade_mode == 'simple' or float(t.get('material_unit_cost') or 0) > 0:
-                    mat_rows.append((trade_lbl, name, desc, qty, unit))
-                if float(t.get('labor_unit_cost') or 0) > 0:
-                    lab_rows.append((trade_lbl, name, qty, unit))
-        if mat_rows:
-            section_title('Materials', need=60)
-            table_header([('Trade', 26, 'L'), ('Material', 112, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
-            pdf.set_font(SANS, '', 8)
-            for trade_lbl, name, desc, qty, unit in mat_rows:
-                nm = f'{name} - {desc}' if desc else name
-                pdf.cell(26, 6, trunc(trade_lbl, 15), border=1)
-                pdf.cell(112, 6, trunc(nm, 74), border=1)
-                pdf.cell(20, 6, f'{qty:g}', border=1, align='R')
-                pdf.cell(24, 6, trunc(unit, 10), border=1, align='C')
-                pdf.ln()
-            pdf.ln(4)
-        if lab_rows:
-            section_title('Labor Summary', need=70)
-            table_header([('Trade', 26, 'L'), ('Work Item', 112, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
-            pdf.set_font(SANS, '', 8)
-            for trade_lbl, name, qty, unit in lab_rows:
-                pdf.cell(26, 6, trunc(trade_lbl, 15), border=1)
-                pdf.cell(112, 6, trunc(name, 74), border=1)
-                pdf.cell(20, 6, f'{qty:g}', border=1, align='R')
-                pdf.cell(24, 6, trunc(unit, 10), border=1, align='C')
-                pdf.ln()
-            pdf.ln(4)
+        # The priced "Materials" list and the "Labor Summary" that used to sit
+        # here are gone. Materials showed the same rows as "Order This" in
+        # measured units, which that table already carries as a column; the
+        # work items are what the crew does, so they moved to the work order.
+        # This document is a purchase order.
 
         # ── Siding Material Take-off ─────────────────────────────────────
         # QXO-format supplier order: piece counts per SKU derived from the
@@ -9291,6 +9490,18 @@ def build_production_packet_pdf(est):
     pdf.set_text_color(0, 0, 0)
 
     return bytes(pdf.output())
+
+
+
+
+def build_production_packet_pdf(est):
+    """Back-compat: the production packet is now two documents.
+
+    Returns the work order, which is what every existing caller (the CRM push,
+    the Documents tab regenerate) meant by "the packet". The material order is
+    generated alongside it by generate_production_packet.
+    """
+    return build_work_order_pdf(est)
 
 
 def push_contract_to_crm(est_id, pdf_bytes=None):
@@ -9531,35 +9742,48 @@ def generate_production_packet(est_id, push_to_crm=False):
     if not est.get('signature'):
         raise ValueError('estimate is not signed')
 
-    pdf_bytes = build_production_packet_pdf(est)
-    dest_dir = os.path.join(UPLOADS_DIR, est_id)
-    os.makedirs(dest_dir, exist_ok=True)
-    fname = f'packet_{uuid.uuid4().hex[:8]}.pdf'
-    with open(os.path.join(dest_dir, fname), 'wb') as f:
-        f.write(pdf_bytes)
-
+    # Two documents, two audiences: the crew works from the work order, the
+    # buy list goes to whoever places the supplier order. They used to be one
+    # PDF, so the crew carried the ordering sheet and the buyer paged past the
+    # job card.
     sig  = est.get('signature') or {}
     tier = sig.get('selected_tier') or est.get('selected_tier', 'better')
     if est.get('estimate_type') == 'insurance':
-        label = 'Production Packet'
+        pkg = ''
     elif est.get('estimate_type') == 'commercial' and not _pick_summary_label(est):
-        label = 'Production Packet - Commercial'
+        pkg = ' - Commercial'
     else:
-        label = f'Production Packet - {_pick_summary_label(est) or tier.title()}'
-    att = {
-        'id':               uuid.uuid4().hex[:12],
-        'filename':         f'{est_id}/{fname}',
-        'label':            label,
-        'doc_type':         'work_order',
-        'show_in_estimate': False,   # internal — never on the customer page
-        'server_generated': True,
-        'generated_at':     datetime.utcnow().isoformat() + 'Z',
-    }
+        pkg = f' - {_pick_summary_label(est) or tier.title()}'
 
-    # Replace any previous packet (and clean up its file). Only work_order
-    # rows — other server-generated docs (signed change orders) stay put.
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+
+    built = []
+    for builder, doc_type, prefix, name in (
+            (build_work_order_pdf,    'work_order',     'workorder', 'Work Order'),
+            (build_material_order_pdf, 'material_order', 'material',  'Material Order')):
+        body = builder(est)
+        fn = f'{prefix}_{uuid.uuid4().hex[:8]}.pdf'
+        with open(os.path.join(dest_dir, fn), 'wb') as f:
+            f.write(body)
+        built.append({
+            'id':               uuid.uuid4().hex[:12],
+            'filename':         f'{est_id}/{fn}',
+            'label':            f'{name}{pkg}',
+            'doc_type':         doc_type,
+            'show_in_estimate': False,   # internal — never on the customer page
+            'server_generated': True,
+            'generated_at':     datetime.utcnow().isoformat() + 'Z',
+        })
+    att, mat_att = built
+    pdf_bytes = None   # set below for the CRM push (work order)
+    fname = built[0]['filename'].split('/')[-1]
+
+    # Replace any previous packet (and clean up its files). Both packet
+    # doc_types — other server-generated docs (signed change orders) stay put.
     def _is_packet(x):
-        return x.get('server_generated') and x.get('doc_type') == 'work_order'
+        return (x.get('server_generated')
+                and x.get('doc_type') in ('work_order', 'material_order'))
 
     def _swap_packet(doc):
         if doc is None:
@@ -9572,7 +9796,7 @@ def generate_production_packet(est_id, push_to_crm=False):
                 except OSError:
                     pass
         doc['attachments'] = [x for x in doc.get('attachments') or []
-                              if not _is_packet(x)] + [att]
+                              if not _is_packet(x)] + built
         return doc
 
     est = est_update(est_id, _swap_packet) or est
@@ -9584,11 +9808,14 @@ def generate_production_packet(est_id, push_to_crm=False):
     c     = est.get('customer', {})
     cname = (c.get('name') or 'Customer').strip()
     enum  = _est_number(est)
+    with open(os.path.join(dest_dir, fname), 'rb') as f:
+        pdf_bytes = f.read()
     doc_id, err = _crm_file_document(
-        est, pdf_bytes, upload_name=f'Production_Packet_{enum}.pdf',
+        est, pdf_bytes, upload_name=f'Work_Order_{enum}.pdf',
         hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
-        doc_name=f'Production Packet - {cname} ({enum})', doc_type='work_order',
-        description='Work order + material list generated from the signed contract.')
+        doc_name=f'Work Order - {cname} ({enum})', doc_type='work_order',
+        description='Work order generated from the signed contract. The material '
+                    'order is a separate document.')
     if doc_id:
         def _mark_pushed(doc):
             if doc is None:

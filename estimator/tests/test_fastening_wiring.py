@@ -133,7 +133,7 @@ def test_measure_fields_and_labels_stay_in_sync(A):
 
 def _packet_text(A, est):
     from pypdf import PdfReader
-    r = PdfReader(io.BytesIO(A.build_production_packet_pdf(est)))
+    r = PdfReader(io.BytesIO(A.build_material_order_pdf(est)))
     return ' '.join((p.extract_text() or '') for p in r.pages)
 
 

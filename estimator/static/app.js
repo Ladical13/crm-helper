@@ -12156,7 +12156,11 @@ function renderDocumentsPage() {
                                                          : '📄';
         // Work orders don't auto-push — the rep fills in scheduled date /
         // dish / tear-off layers first, then clicks "↗ Push to Den".
+        // Two internal packet docs now: the crew's work order carries the
+        // fill-in form and the Push-to-Den button; the material order is just
+        // a file to open.
         const isWO = att.doc_type === 'work_order';
+        const isMO = att.doc_type === 'material_order';
         return `
       <div class="att-row">
         <span class="att-icon">${icon}</span>
@@ -12167,7 +12171,9 @@ function renderDocumentsPage() {
           : (isWO
               ? `<button class="doc-crm-push" onclick="pushWorkOrderToCrm()"
                    title="Regenerate with the latest job details and file in Den">↗ Push to Den</button>`
-              : `<button class="doc-crm-push" onclick="pushDocToCrm('${att.id}')"
+              : isMO
+                ? ''
+                : `<button class="doc-crm-push" onclick="pushDocToCrm('${att.id}')"
                    title="File this PDF in the CRM under the linked job">↗ CRM</button>`)}
         <label class="att-show" title="Show this document to the customer on their estimate">
           <input type="checkbox" ${att.show_in_estimate!==false?'checked':''}
@@ -12203,10 +12209,10 @@ function renderDocumentsPage() {
         ${S.signature ? `
         <button class="doc-card" onclick="generateProductionPacket(this)">
           <span class="doc-card-icon">🛠</span>
-          <span class="doc-card-name">Production Packet</span>
+          <span class="doc-card-name">Work Order + Material Order</span>
           <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'work_order')
-            ? 'Regenerate work order (does not push to Den — use ↗ Push to Den)'
-            : 'Work order + material list from the signed contract'}</span>
+            ? 'Regenerate both (does not push to Den — use ↗ Push to Den)'
+            : 'Two documents: the crew work order and the buy list'}</span>
         </button>
         <button class="doc-card" onclick="generatePermitPacket(this)">
           <span class="doc-card-icon">🏛</span>
@@ -12483,7 +12489,8 @@ async function generateProductionPacket(btn) {
     // Server replaced any previous packet — mirror that in S (packet only;
     // other server-generated docs like signed change orders stay)
     if (!Array.isArray(S.attachments)) S.attachments = [];
-    S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'work_order'));
+    S.attachments = S.attachments.filter(a => !(a.server_generated
+      && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
     S.attachments.push(d.attachment);
   } catch (e) {
     alert('Could not generate the production packet: ' + e.message);
@@ -12602,7 +12609,8 @@ async function regenerateWorkOrder() {
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Regeneration failed');
     if (!Array.isArray(S.attachments)) S.attachments = [];
-    S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'work_order'));
+    S.attachments = S.attachments.filter(a => !(a.server_generated
+      && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
     S.attachments.push(d.attachment);
   } catch (e) {
     alert('Could not regenerate the work order: ' + e.message);
@@ -12626,7 +12634,8 @@ async function pushWorkOrderToCrm() {
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Push failed');
     if (!Array.isArray(S.attachments)) S.attachments = [];
-    S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'work_order'));
+    S.attachments = S.attachments.filter(a => !(a.server_generated
+      && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
     S.attachments.push(d.attachment);
   } catch (e) {
     alert('Could not push the work order to Den: ' + e.message);
