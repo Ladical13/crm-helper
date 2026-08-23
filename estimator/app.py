@@ -9032,67 +9032,10 @@ def build_work_order_pdf(est):
         pdf.multi_cell(W - 40, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT', align='L')
     pdf.ln(2)
 
-    prod_rows = []
-    for trade, fields in TRADE_COLOR_FIELDS.items():
-        td = trades.get(trade) or {}
-        if not td.get('enabled'):
-            continue
-        colors = td.get('colors') or {}
-        for key, label in fields:
-            v = (colors.get(key) or '').strip()
-            if v:
-                prod_rows.append((_PRODUCT_TRADE_LABELS.get(trade, trade.title()), label, v))
-    if prod_rows:
-        section_title('Product Selection')
-        table_header([('Trade', 30, 'L'), ('Item', 60, 'L'), ('Selection', 92, 'L')])
-        pdf.set_font(SANS, '', 8)
-        for trade, label, v in prod_rows:
-            pdf.cell(30, 6, trunc(trade, 18), border=1)
-            pdf.cell(60, 6, trunc(label, 40), border=1)
-            pdf.cell(92, 6, trunc(v, 62), border=1)
-            pdf.ln()
-        pdf.ln(4)
-
-    # Scope of work — every line on the signed package (including items the
-    # customer view hides), no prices. The crew works from this list.
-    section_title('Scope of Work')
-    if is_ins:
-        table_header([('Item', 70, 'L'), ('Description', 112, 'L')])
-        pdf.set_font(SANS, '', 8)
-        for sec in _insurance_sections(est):
-            for it in sec.get('items', []):
-                pdf.cell(70, 6, trunc(it.get('name', ''), 46), border='B')
-                pdf.cell(112, 6, trunc(it.get('description', ''), 76), border='B')
-                pdf.ln()
-        scope = (trades.get('insurance', {}).get('scope_notes') or '').strip()
-        if scope:
-            pdf.ln(2)
-            pdf.set_font(SANS, '', 8.5)
-            pdf.multi_cell(W, 4.6, _pdf_rich(scope),
-                           new_x='LMARGIN', new_y='NEXT', align='L')
-        pdf.ln(4)
-    else:
-        # A count per trade rather than the contract reprinted line by line.
-        # The crew works from the job card, the colours and the notes; the
-        # itemised list is the material order's job.
-        for tk in GBB_TRADES:
-            td = trades.get(tk, {})
-            if not td.get('enabled') or not td.get('line_items'):
-                continue
-            rows = list(_tier_items(td, _trade_mode(tk, td), _trade_tier(est, tk)))
-            if not rows:
-                continue
-            pdf.set_font(SANS, '', 6.5)
-            pdf.set_text_color(*_PDF_STYLE['faint'])
-            pdf.cell(46, 5.6, _pdf_rich(labels.get(tk, tk.title()).upper()))
-            pdf.set_font(SANS, '', 9.5)
-            pdf.set_text_color(*_PDF_STYLE['ink'])
-            pdf.cell(0, 5.6, _pdf_rich(f'{len(rows)} work items - itemised on the material order'),
-                     new_x='LMARGIN', new_y='NEXT')
-            pdf.set_draw_color(*_PDF_STYLE['rule'])
-            pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
-            pdf.ln(1.6)
-        pdf.ln(3)
+    # No Product Selection or Scope of Work here. The colours the crew needs
+    # are already in the header block above (shingle and siding, off the
+    # signature), and the item list is the material order's document — this
+    # sheet is the job card.
 
     # One Notes section with two labelled blocks rather than two headings. Two
     # separate section titles cost ~20mm of the sheet between them, which was
