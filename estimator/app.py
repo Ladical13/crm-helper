@@ -8411,14 +8411,19 @@ def commercial_fastening(m, table):
 # so put the specific keys above the general ones.
 _ORDER_PACK = [
     # (name fragment, from-unit, per, order-unit, note)
-    ('ridge cap',              'LF', 25.0,  'bundles', 'ridge + hip'),
-    ('hip / ridge',            'LF', 25.0,  'bundles', 'ridge + hip'),
-    ('starter strip',          'LF', 116.0, 'bundles', ''),
-    ('starter',                'LF', 116.0, 'bundles', ''),
+    # Ridge VENT before ridge CAP: a line named "ridge vent" must not be
+    # caught by the shingle rule and ordered in bundles.
     ('ridge vent',             'LF', 4.0,   'sticks',  '4 ft sticks'),
     ('intake vent',            'LF', 4.0,   'sticks',  '4 ft sticks'),
-    ('drip edge',              'LF', 10.0,  'sticks',  '10 ft sticks'),
-    ('gutter apron',           'LF', 10.0,  'sticks',  '10 ft sticks'),
+    ('ridge cap',              'LF', 25.0,  'bundles', 'ridge + hip'),
+    ('ridge shingle',          'LF', 25.0,  'bundles', 'ridge + hip'),
+    ('hip / ridge',            'LF', 25.0,  'bundles', 'ridge + hip'),
+    ('starter strip',          'LF', 105.0, 'bundles', '105 LF / bundle'),
+    ('starter',                'LF', 105.0, 'bundles', '105 LF / bundle'),
+    # Drip edge and gutter apron come in 10 ft sticks but are lapped, so the
+    # usable run is 9 ft — order against that, not the nominal length.
+    ('drip edge',              'LF', 9.0,   'sticks',  '9 ft usable per stick'),
+    ('gutter apron',           'LF', 9.0,   'sticks',  '9 ft usable per stick'),
     ('downspout',              'LF', 10.0,  'sticks',  '10 ft sticks'),
     ('ice & water',            'SQ', 2.0,   'rolls',   '36 in x 66.7 ft'),
     ('ice and water',          'SQ', 2.0,   'rolls',   '36 in x 66.7 ft'),
@@ -9013,7 +9018,7 @@ def build_work_order_pdf(est):
     detail_rows.append(('Hand Load',
                         _wo('hand_load', '____________ (yes / no)')))
     detail_rows.append(('Ridge Vent',
-                        'YES - see cut-in map below' if has_ridge_vent else 'NO'))
+                        'YES - see the Ventilation Layout page' if has_ridge_vent else 'NO'))
     detail_rows.append(('Intake Vent', 'YES' if has_intake_vent else 'NO'))
     detail_rows.append(('Satellite Dish',
                         _wo('satellite_dish', '____________ (confirm w/ HO)')))
@@ -9027,55 +9032,6 @@ def build_work_order_pdf(est):
         pdf.multi_cell(W - 40, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT', align='L')
     pdf.ln(2)
 
-    # Ridge-vent cut-in map, inline under Job Details when applicable — the
-    # crew wants the picture right next to the "YES" row, not at the bottom
-    # of the sheet.
-    if has_ridge_vent or vent_cutin0.get('image_filename'):
-        try:
-            ridge_lf = float(m0.get('ridge_lf') or 0)
-        except (TypeError, ValueError):
-            ridge_lf = 0.0
-        vinfo = attic_ventilation(m0)
-        raw_cut = math.ceil(vinfo['ridge_lf_required'])
-        cutin = min(raw_cut, int(ridge_lf)) if ridge_lf > 0 else raw_cut
-        full_sticks = math.ceil(ridge_lf / 4) if ridge_lf > 0 else 0
-        pdf.set_font(SANS, '', 8.5)
-        if ridge_lf > 0:
-            pdf.multi_cell(W, 4.6, _pdf_rich(
-                f'Install ridge vent the FULL ridge ({ridge_lf:g} LF, '
-                f'{full_sticks} stick(s)) for a uniform look.'), new_x='LMARGIN', new_y='NEXT', align='L')
-        else:
-            pdf.multi_cell(W, 4.6, _pdf_rich(
-                'Install ridge vent the full ridge for a uniform look.'), new_x='LMARGIN', new_y='NEXT', align='L')
-        pdf.set_font(SANS, 'B', 9)
-        if ridge_lf > 0 and cutin >= ridge_lf:
-            pdf.multi_cell(W, 4.8, _pdf_rich(
-                f'CUT IN the full ridge (~{cutin:g} LF) for code ventilation.'), new_x='LMARGIN', new_y='NEXT', align='L')
-        else:
-            pdf.multi_cell(W, 4.8, _pdf_rich(
-                f'CUT IN only ~{cutin:g} LF for code-required ventilation - see map for locations.'), new_x='LMARGIN', new_y='NEXT', align='L')
-        note = (vent_cutin0.get('notes') or '').strip()
-        if note:
-            pdf.set_font(SANS, '', 8.5)
-            pdf.multi_cell(W, 4.6, _pdf_rich(note), new_x='LMARGIN', new_y='NEXT', align='L')
-        img_fn = vent_cutin0.get('image_filename')
-        if img_fn:
-            img_path = os.path.join(UPLOADS_DIR, *str(img_fn).split('/'))
-            if os.path.exists(img_path):
-                try:
-                    pdf.ln(2)
-                    pdf.set_font(SANS, 'I', 7.5)
-                    pdf.set_text_color(120, 120, 120)
-                    pdf.cell(0, 5, _pdf_rich(
-                        'Cut-In Map (highlighted = cut open for ventilation):'),
-                             new_x='LMARGIN', new_y='NEXT')
-                    pdf.set_text_color(0, 0, 0)
-                    pdf.image(img_path, w=min(W, 150))
-                except Exception:
-                    pass
-        pdf.ln(3)
-
-    # Product selections (brand/model/color per trade)
     prod_rows = []
     for trade, fields in TRADE_COLOR_FIELDS.items():
         td = trades.get(trade) or {}
@@ -9105,22 +9061,20 @@ def build_work_order_pdf(est):
         pdf.set_font(SANS, '', 8)
         for sec in _insurance_sections(est):
             for it in sec.get('items', []):
-                pdf.cell(70, 6, trunc(it.get('name', ''), 46), border=1)
-                pdf.cell(112, 6, trunc(it.get('description', ''), 76), border=1)
+                pdf.cell(70, 6, trunc(it.get('name', ''), 46), border='B')
+                pdf.cell(112, 6, trunc(it.get('description', ''), 76), border='B')
                 pdf.ln()
         scope = (trades.get('insurance', {}).get('scope_notes') or '').strip()
         if scope:
             pdf.ln(2)
             pdf.set_font(SANS, '', 8.5)
-            pdf.multi_cell(W, 4.6, _pdf_rich(scope), new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.multi_cell(W, 4.6, _pdf_rich(scope),
+                           new_x='LMARGIN', new_y='NEXT', align='L')
         pdf.ln(4)
     else:
-        # Retail/GBB: one line per trade, not the full item list. The Material
-        # Order below itemizes the same rows with quantities and units, so
-        # repeating them here made the crew read the scope twice and pushed the
-        # packet onto a fourth page.
-        # What the crew actually does, per trade. Quantities only — no prices,
-        # no pack sizes: buying is the material order's job.
+        # A count per trade rather than the contract reprinted line by line.
+        # The crew works from the job card, the colours and the notes; the
+        # itemised list is the material order's job.
         for tk in GBB_TRADES:
             td = trades.get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
@@ -9129,22 +9083,16 @@ def build_work_order_pdf(est):
             if not rows:
                 continue
             pdf.set_font(SANS, '', 6.5)
-            pdf.set_text_color(*_PDF_STYLE['teal'])
-            pdf.cell(0, 5, _pdf_rich(labels.get(tk, tk.title()).upper()),
-                     new_x='LMARGIN', new_y='NEXT')
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(46, 5.6, _pdf_rich(labels.get(tk, tk.title()).upper()))
+            pdf.set_font(SANS, '', 9.5)
             pdf.set_text_color(*_PDF_STYLE['ink'])
-            table_header([('Work Item', W - 44, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
-            pdf.set_font(SANS, '', 8.5)
-            for it, qty, t in rows:
-                name = _with_section(it, it.get('name', ''))
-                desc = (t.get('description') or it.get('description') or '').strip()
-                if desc:
-                    name = f'{name} - {desc}'
-                pdf.cell(W - 44, 6.2, trunc(name, 86), border='B')
-                pdf.cell(20, 6.2, f'{qty:g}', border='B', align='R')
-                pdf.cell(24, 6.2, trunc(it.get('unit', ''), 10), border='B', align='C')
-                pdf.ln()
-            pdf.ln(4)
+            pdf.cell(0, 5.6, _pdf_rich(f'{len(rows)} work items - itemised on the material order'),
+                     new_x='LMARGIN', new_y='NEXT')
+            pdf.set_draw_color(*_PDF_STYLE['rule'])
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+            pdf.ln(1.6)
+        pdf.ln(3)
 
     # One Notes section with two labelled blocks rather than two headings. Two
     # separate section titles cost ~20mm of the sheet between them, which was
@@ -9167,6 +9115,91 @@ def build_work_order_pdf(est):
     # Ridge-vent cut-in is now printed inline under Job Details on page 1,
     # right next to the "Ridge Vent: YES" row — the crew doesn't have to
     # flip pages to find the picture.
+
+    # ── Ventilation layout, on its own sheet ──────────────────────────────
+    # The crew marks the as-installed run here, so it needs the full width. It
+    # used to be a 150mm thumbnail tucked under the "Ridge Vent: YES" row on
+    # the job card. Prints whether or not a map was marked: without one it is
+    # still the sheet the ridge and intake footage gets written on.
+    try:
+        ridge_lf = float(m0.get('ridge_lf') or 0)
+    except (TypeError, ValueError):
+        ridge_lf = 0.0
+    try:
+        eave_lf = float(m0.get('eave_lf') or 0)
+    except (TypeError, ValueError):
+        eave_lf = 0.0
+    img_fn = vent_cutin0.get('image_filename')
+    img_path = os.path.join(UPLOADS_DIR, *str(img_fn).split('/')) if img_fn else ''
+
+    if has_ridge_vent or has_intake_vent or img_fn:
+        pdf.add_page()
+        title_bar('Ventilation Layout')
+
+        vinfo = attic_ventilation(m0)
+        raw_cut = math.ceil(vinfo['ridge_lf_required'])
+        cutin = min(raw_cut, int(ridge_lf)) if ridge_lf > 0 else raw_cut
+
+        vrows = []
+        if has_ridge_vent:
+            full_sticks = math.ceil(ridge_lf / 4) if ridge_lf > 0 else 0
+            vrows.append(('Ridge vent',
+                          (f'Run the FULL ridge - {ridge_lf:g} LF, {full_sticks} stick(s)'
+                           if ridge_lf > 0 else 'Run the full ridge')))
+            vrows.append(('Cut in for code',
+                          (f'~{cutin:g} LF of the ridge cut open'
+                           + (' (the whole ridge)' if ridge_lf and cutin >= ridge_lf
+                              else ' - see the map for locations'))))
+        else:
+            vrows.append(('Ridge vent', 'NOT on this job'))
+        if has_intake_vent:
+            intake_sticks = math.ceil(eave_lf / 4) if eave_lf > 0 else 0
+            vrows.append(('Intake vent',
+                          (f'{eave_lf:g} LF at the eaves, {intake_sticks} stick(s)'
+                           if eave_lf > 0 else 'At the eaves')))
+        else:
+            vrows.append(('Intake vent', 'NOT on this job'))
+        kv(vrows, label_w=42)
+
+        note = (vent_cutin0.get('notes') or '').strip()
+        if note:
+            pdf.ln(1)
+            pdf.set_font(SANS, '', 8.5)
+            pdf.multi_cell(W, 4.6, _pdf_rich(note),
+                           new_x='LMARGIN', new_y='NEXT', align='L')
+
+        pdf.ln(3)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(0, 5, _pdf_rich('AS INSTALLED - FILL IN ON SITE'),
+                 new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_font(SANS, '', 9.5)
+        y0 = pdf.get_y() + 5
+        for k, lbl in enumerate(('Ridge vent installed', 'Intake vent installed')):
+            pdf.set_xy(pdf.l_margin + k * 92, y0)
+            pdf.cell(88, 6, _pdf_rich(lbl + '   ____________ LF'))
+        pdf.set_y(y0 + 12)
+
+        if img_path and os.path.exists(img_path):
+            try:
+                pdf.set_font(SANS, '', 6.5)
+                pdf.set_text_color(*_PDF_STYLE['faint'])
+                pdf.cell(0, 5, _pdf_rich(
+                    'MARKED CUT-IN MAP - HIGHLIGHTED RUNS ARE CUT OPEN FOR VENTILATION'),
+                         new_x='LMARGIN', new_y='NEXT')
+                pdf.set_text_color(*_PDF_STYLE['ink'])
+                pdf.image(img_path, w=W)
+            except Exception:
+                pass
+        else:
+            pdf.set_font(SANS, '', 8)
+            pdf.set_text_color(*_PDF_STYLE['mute'])
+            pdf.multi_cell(W, 4.6, _pdf_rich(
+                'No roof diagram marked for this job. Import the RoofR report, then use '
+                '"Mark cut-in on roof" on the Scope tab to put the overhead here.'),
+                new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
 
     return bytes(pdf.output())
 
@@ -9970,8 +10003,8 @@ def build_permit_packet_pdf(est):
     kv_row('Jurisdiction',      jur['name'])
     if jur['office']:
         kv_row('Building Office', jur['office'])
-    if jur['county']:
-        kv_row('County',          jur['county'])
+    # County deliberately not shown: the sheet only needs to say where the
+    # permit gets pulled, and the office name already carries the jurisdiction.
     if jur['submittal_method']:
         kv_row('Submittal Method', jur['submittal_method'])
     if jur['portal_url']:
