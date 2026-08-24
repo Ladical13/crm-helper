@@ -17,8 +17,13 @@
        here and therefore render unstyled anywhere else; relative hrefs mean
        this page works standalone at / AND mounted under a prefix, which is the
        only reason it can be developed without the portal running. -->
-  <link rel="stylesheet" href="static/style.css?v=1">
+  <link rel="stylesheet" href="static/style.css?v=2">
   <link rel="manifest" href="manifest.json">
+  <!-- iOS ignores the manifest's icons for "Add to Home Screen" and uses this
+       one, so both have to be here or the installed app gets a screenshot of
+       the page as its icon. -->
+  <link rel="apple-touch-icon" href="static/icon-192.png?v=2">
+  <meta name="apple-mobile-web-app-title" content="P1 Lift">
 </head>
 <body>
 
@@ -108,7 +113,7 @@
   </div>
 </div>
 
-<script src="static/app.js?v=1"></script>
+<script src="static/app.js?v=2"></script>
 <script>
   // Registered from the page, not app.js, so a JS error in the app still leaves
   // the offline shell installed. The worker is served from the app ROOT

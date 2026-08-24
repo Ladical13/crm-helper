@@ -14,7 +14,7 @@ from portal import session as psession
 from portal import apibot
 from portal import throttle
 from portal import users
-from portal.mounts import MOUNTS
+from portal.mounts import VISIBLE
 from portal.nimbus_bp import nimbus_bp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -235,8 +235,10 @@ def me():
         'is_admin': user['role'] == 'admin',
         'is_manager': user['role'] in users.ELEVATED,
         'must_change': user['must_change'],
+        # VISIBLE, not MOUNTS: a hidden app is mounted and reachable but never
+        # advertised, so it stays out of the launcher grid and the switcher bar.
         'apps': [{k: m[k] for k in ('key', 'prefix', 'label', 'icon', 'blurb', 'accent')}
-                 for m in MOUNTS],
+                 for m in VISIBLE],
         'admin_apps': admin_apps,
     })
 

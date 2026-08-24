@@ -3,8 +3,8 @@
 Four apps in one repo, served as **one site behind one login**: the portal
 (launcher + accounts), the canvasser, the sales CRM, and the estimator. Plus
 `prospector/`, an offline tool that feeds the CRM partner lists, and
-`workout/`, a standalone training log that is deliberately not part of the
-site at all.
+`workout/` — a personal training log, mounted at `/workout` but **hidden**, so
+it is reachable and installable without appearing on anybody's launcher.
 
 ## Working on this repo
 
@@ -37,7 +37,7 @@ cd portal     && pytest     # 136 — one login, migration, shell, hardening
 python -m pytest prospector/tests   # 27 — offline, no network
 cd agents     && pytest     # 219 — spend cap, cache, b2b/content sources
 cd canvasser  && pytest     #  15 — vendored Leaflet, cache-buster, sw wiring
-cd workout    && pytest     #  40 — training log; standalone, ships with nothing
+cd workout    && pytest     #  52 — training log; per-user scoping, hidden mount
 ```
 
 **Deploying.** ONE Railway service, whole repo — see the deploy note at the end
@@ -45,7 +45,7 @@ of the portal section. Never deploy a subdirectory. **Pushing to `portal-merge`
 IS deploying**: auto-deploy fires as soon as CI is green, so a push goes
 straight in front of the reps.
 
-**Backups: the estimator has one, the other three do not** (audited 2026-08-12;
+**Backups: the estimator has one, the others do not** (audited 2026-08-12;
 the earlier "nothing is backed up" note was already out of date). Three separate
 things, easy to confuse:
 
@@ -57,10 +57,10 @@ things, easy to confuse:
   admins can pull `/api/backup` for estimates + photos + config on demand. The
   nightly job takes an `O_EXCL` lockfile so two gunicorn workers can't both
   send it.
-- *The other three databases are not covered at all.* `salescrm.db` (leads,
-  activities, prospecting history, documents), `canvasser.db` (pins, GPS) and
-  `portal.db` (every password hash and invite) live on the **Railway volume**
-  with nothing copying them anywhere. A dead volume, a bad migration or a
+- *The other databases are not covered at all.* `salescrm.db` (leads,
+  activities, prospecting history, documents), `canvasser.db` (pins, GPS),
+  `portal.db` (every password hash and invite) and `workout.db` live on the
+  **Railway volume** with nothing copying them anywhere. A dead volume, a bad migration or a
   fat-fingered delete loses them outright, and pushing to GitHub does nothing
   to protect it.
 
@@ -89,12 +89,22 @@ cd portal && pytest                   # 136 tests
 /canvass/*   canvasser
 /crm/*       salescrm
 /estimate/*  estimator
+/workout/*   workout     hidden — mounted, never advertised
 ```
+
+**`hidden` in `portal/mounts.py`** means mounted and reachable but not
+advertised: `wsgi.py` builds its dispatch map from `MOUNTS`, while the launcher
+grid and the switcher bar render from `VISIBLE` (`portal/app.py` filters it out
+of `/api/me`, and `shell.js`'s offline fallback list must not list it either).
+It exists for an app that belongs to one person rather than to the company. A
+hidden app is **not** a private one — the guard is that its own data is scoped
+to the signed-in user, which is why `/workout` can sit on the company site at
+all. Guarded by `portal/tests/test_auth.py`.
 
 Every route in every app stays registered at its own root — prefix mounting is
 what avoided renaming ~130 colliding routes. Rules that keep it working:
 
-- **All four apps must call `portal.session.configure(app)`.** They share one
+- **All five apps must call `portal.session.configure(app)`.** They share one
   cookie and each re-saves it whenever it touches `session`; one mismatched
   `SESSION_COOKIE_SECURE` logs reps out at random.
 - **Identity is `portal/users.py` only** (SQLite `PORTAL_DATA_DIR/portal.db`).
@@ -121,8 +131,11 @@ what avoided renaming ~130 colliding routes. Rules that keep it working:
 - **`/sign/<token>`, `/sign-co/<token>`, `/uploads/<f>` stay at the root** as
   redirects in `portal/app.py`. Signed-contract links already in customers'
   inboxes point there. Never remove them.
-- **Set `CANVASSER_DATA_DIR` and `SALESCRM_DATA_DIR` explicitly** — both fall
-  back to `DATA_DIR`, which is the estimator's volume.
+- **Set `CANVASSER_DATA_DIR`, `SALESCRM_DATA_DIR` and `WORKOUT_DATA_DIR`
+  explicitly** — all three fall back to `DATA_DIR`, which is the estimator's
+  volume. For the first two that is untidy; for the third it is the difference
+  between the training log surviving a deploy and not, since its last fallback
+  is the container's own disk.
 
 **Migration:** `python -m portal.migrate_users` (dry run) → `--apply`. Merges the
 three old stores on lowercase username, estimator password wins. Must be run on
@@ -286,27 +299,44 @@ python -m portal.wsgi                 # dev: run the portal, canvasser is at /ca
 
 ## Workout tracker — "P1 Lift" (`workout/`)
 
-A personal training log. Flask + SQLite + PWA like the canvasser, and
-**deliberately standalone**: it is not in `portal/mounts.py`, not mounted by
-`portal/wsgi.py`, and therefore not in the launcher, not in the app-switcher
-bar and not in the deploy. Nothing about it reaches the reps.
+A personal training log. Flask + SQLite + PWA like the canvasser, mounted at
+`/workout` and **hidden**: reachable by URL and installable to a home screen,
+but absent from the launcher grid and the app-switcher bar. It is used on a
+phone in a gym, which is why it is on the site at all.
 
 ```bash
-python workout/app.py                 # http://127.0.0.1:5020
-cd workout && pytest                  # 40 tests, offline
+python -m portal.wsgi                 # http://localhost:5010/workout/
+python workout/app.py                 # standalone dev on :5020
+cd workout && pytest                  # 52 tests, offline
 ```
 
-- **It binds to 127.0.0.1 and has no login.** That default IS the security
-  boundary — there is no user table and no password, so `WORKOUT_HOST=0.0.0.0`
-  puts an unauthenticated write API on the network. If it ever needs to be
-  reachable from a phone over the internet, mount it behind the portal (four
-  lines: a `MOUNTS` entry) rather than opening the host; the shared cookie is
-  already the answer to that problem, and the front end is written to work
-  either way.
+- **Everything is scoped to the signed-in user.** `workouts`, `routines`,
+  `settings` and custom movements carry a `user`, and every read filters on it.
+  That scoping is what lets a personal app live on the company site: a rep who
+  finds the URL gets their own empty log. A workout that is not yours **404s
+  rather than 403s** — confirming the row exists already says somebody trained.
+  Guarded by the isolation tests in `tests/test_workout.py`.
+- **The seed exercise library is shared; hiding one is not.** `exercise_hidden`
+  is a per-user table rather than a flag on the row, because a flag would let
+  one person delete Back Squat out of everybody else's list. Custom movements
+  carry `owner` and are visible only to their author.
+- **`WORKOUT_DEV_USER` stands in for the portal when running standalone**, and
+  **refuses to engage when `RAILWAY_ENVIRONMENT` is set** — the same guard the
+  estimator's `DISABLE_AUTH` carries, because it is one fat-fingered Railway
+  variable away from serving one shared unauthenticated log to everybody.
+- **`WORKOUT_DATA_DIR` falls back to `DATA_DIR` and then to the app directory.**
+  That last step is the container's own disk, which is rebuilt on every deploy —
+  the app would work perfectly and forget everything each time the site ships.
+  It prints a loud warning if it lands there on Railway. Set it to the volume.
 - **`index.html` uses RELATIVE asset paths**, unlike the other three, which
   hardcode their mount prefix and render unstyled anywhere else. That is what
-  lets this one be developed without the portal running, and
-  `test_the_page_does_not_hardcode_a_mount_prefix` keeps it that way.
+  lets this one run standalone and mounted from one bundle, and
+  `test_the_page_does_not_hardcode_a_mount_prefix` keeps it that way. The
+  manifest's `start_url`/`scope` are relative for the same reason: an absolute
+  `/` would scope the installed PWA to the whole site, so every tap on the
+  home-screen icon would open the portal launcher instead.
+- **It does not load `/shell.js`.** The switcher bar belongs to the three rep
+  tools; a training log does not want a Pipeline pill across the top.
 - **`local_date` is sent by the browser, not derived from the clock.** Streaks
   and "this week" are questions about the day you would say you trained on, and
   a 7pm Sunday session in Colorado is already Monday in UTC — deriving it
@@ -334,8 +364,8 @@ cd workout && pytest                  # 40 tests, offline
 - **Cache-buster is `?v=N` in `static/index.html` and `sw.js`** (`CACHE` +
   every SHELL entry), bumped **by hand** — no `bump_version.py` here, same as
   the canvasser. Guarded by `tests/test_assets.py`.
-- It shares exactly one thing with the site: `portal/dbtune.py`. That is why
-  its suite runs in CI even though nothing it contains ever deploys.
+- The icons are generated art, not a downloaded asset; regenerate them from the
+  snippet in the commit that added them rather than hand-editing the PNGs.
 
 ## Sales CRM — "The Pipeline" (`salescrm/`)
 

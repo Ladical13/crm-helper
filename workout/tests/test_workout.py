@@ -339,3 +339,156 @@ def test_the_series_always_reaches_the_current_week(client, ex_id):
     finish(client, w['id'])
     weeks = client.get('/api/stats?today=2026-08-24').get_json()['weeks']
     assert weeks[-1] == {'week': '2026-08-24', 'workouts': 0, 'volume': 0.0}
+
+
+# ── Identity and isolation ───────────────────────────────────────────────────
+# This app is mounted on the public site now. Everything below is about the
+# difference between "my training log" and "the company's training log".
+
+def test_nothing_is_readable_without_a_session(anon):
+    """Every endpoint, not just the obvious ones — an unguarded read is how a
+    training log becomes public."""
+    for path in ('/api/workouts', '/api/workouts/active', '/api/exercises',
+                 '/api/records', '/api/stats', '/api/routines', '/api/settings',
+                 '/api/exercises/1/history', '/api/exercises/1/last',
+                 '/api/workouts/1'):
+        assert anon.get(path).status_code == 401, f'{path} answered without a session'
+    assert anon.post('/api/workouts', json={}).status_code == 401
+    assert anon.post('/api/workouts/1/sets', json={}).status_code == 401
+    assert anon.patch('/api/sets/1', json={'reps': 5}).status_code == 401
+    assert anon.delete('/api/workouts/1').status_code == 401
+    assert anon.post('/api/routines', json={'name': 'x'}).status_code == 401
+
+
+def test_the_page_bounces_to_the_portal_login(anon):
+    """A cold load must not paint an empty log for a moment before bouncing,
+    and signing in must land back here rather than on the launcher."""
+    r = anon.get('/')
+    assert r.status_code == 302
+    # Rooted at the ORIGIN, not the mount: the portal owns /login, and
+    # /workout/login is this app's 404. `next` is the mount prefix, which is ''
+    # here and '/workout' under the portal — portal/tests/test_auth.py pins the
+    # mounted shape.
+    assert r.headers['Location'] == '/login?next=/'
+
+
+
+def test_the_health_check_stays_public(anon):
+    """A health check that needs a cookie is one the platform cannot run."""
+    r = anon.get('/health')
+    assert r.status_code == 200 and r.get_json()['ok'] is True
+
+
+def test_two_lifters_have_two_separate_logs(client, app, ex_id):
+    mine = start(client)
+    log(client, mine['id'], ex_id, 225, 5)
+    finish(client, mine['id'])
+
+    from conftest import second_client
+    theirs = second_client(app)
+    assert theirs.get('/api/workouts').get_json() == []
+    assert theirs.get('/api/records').get_json() == []
+    assert theirs.get('/api/stats').get_json()['total_workouts'] == 0
+    assert theirs.get(f'/api/exercises/{ex_id}/history').get_json() == []
+    assert theirs.get(f'/api/exercises/{ex_id}/last').get_json() is None
+
+
+def test_another_lifters_workout_reads_as_one_that_does_not_exist(client, app, ex_id):
+    """A guessed id must 404, not 403: confirming the row is there tells you
+    somebody trained, which is already more than none of your business."""
+    mine = start(client)
+    s = log(client, mine['id'], ex_id, 225, 5)
+
+    from conftest import second_client
+    theirs = second_client(app)
+    assert theirs.get(f"/api/workouts/{mine['id']}").status_code == 404
+    assert theirs.delete(f"/api/workouts/{mine['id']}").status_code == 404
+    assert theirs.patch(f"/api/workouts/{mine['id']}", json={'name': 'x'}).status_code == 404
+    assert theirs.post(f"/api/workouts/{mine['id']}/sets",
+                       json={'exercise_id': ex_id, 'weight': 1, 'reps': 1}).status_code == 404
+    assert theirs.patch(f"/api/sets/{s['id']}", json={'reps': 99}).status_code == 404
+    assert theirs.delete(f"/api/sets/{s['id']}").status_code == 404
+    # And none of it touched the real set.
+    assert client.get(f"/api/workouts/{mine['id']}").get_json()['volume'] == 225 * 5
+
+
+def test_an_open_session_is_only_open_for_its_owner(client, app, ex_id):
+    """Two people training at once must not be handed each other's session by
+    the one-open-workout rule."""
+    mine = start(client)
+    from conftest import second_client
+    theirs = second_client(app)
+    assert theirs.get('/api/workouts/active').get_json() is None
+    theirs_workout = theirs.post('/api/workouts',
+                                 json={'local_date': '2026-08-24'}).get_json()
+    assert theirs_workout['id'] != mine['id']
+    assert client.get('/api/workouts/active').get_json()['id'] == mine['id']
+
+
+def test_a_custom_movement_belongs_to_the_person_who_made_it(client, app):
+    """The seed library is shared; somebody else's invention is not. A library
+    full of other people's lifts is one you cannot find your own lift in."""
+    mine = client.post('/api/exercises', json={'name': 'Jefferson Curl'}).get_json()
+    from conftest import second_client
+    theirs = second_client(app)
+    assert 'Jefferson Curl' not in [e['name'] for e in
+                                    theirs.get('/api/exercises').get_json()]
+    # ...and cannot be logged against by id, either.
+    w = theirs.post('/api/workouts', json={'local_date': '2026-08-24'}).get_json()
+    assert theirs.post(f"/api/workouts/{w['id']}/sets",
+                       json={'exercise_id': mine['id'], 'weight': 95,
+                             'reps': 5}).status_code == 400
+
+
+def test_hiding_a_seeded_movement_only_hides_it_for_you(client, app, ex_id):
+    """It is one shared library, so a flag on the row would let one person
+    delete Back Squat out of everybody's list."""
+    client.delete(f'/api/exercises/{ex_id}')
+    from conftest import second_client
+    theirs = second_client(app)
+    assert ex_id in [e['id'] for e in theirs.get('/api/exercises').get_json()]
+    assert ex_id not in [e['id'] for e in client.get('/api/exercises').get_json()]
+
+
+def test_routines_are_private_too(client, app, ex_id):
+    routine = client.post('/api/routines', json={'name': 'Lower A',
+                                                 'exercise_ids': [ex_id]}).get_json()
+    from conftest import second_client
+    theirs = second_client(app)
+    assert theirs.get('/api/routines').get_json() == []
+    assert theirs.delete(f"/api/routines/{routine['id']}").status_code == 404
+    # Starting from somebody else's routine seeds nothing.
+    w = theirs.post('/api/workouts', json={'local_date': '2026-08-24',
+                                           'routine_id': routine['id']}).get_json()
+    assert w['exercise_list'] == []
+    assert client.get('/api/routines').get_json()[0]['id'] == routine['id']
+
+
+def test_a_routine_cannot_be_built_from_someone_elses_workout(client, app, ex_id):
+    mine = start(client)
+    log(client, mine['id'], ex_id, 225, 5)
+    from conftest import second_client
+    theirs = second_client(app)
+    r = theirs.post('/api/routines', json={'name': 'Stolen',
+                                           'from_workout_id': mine['id']})
+    assert r.status_code == 400
+
+
+def test_the_unit_is_per_person(client, app):
+    client.patch('/api/settings', json={'unit': 'kg'})
+    from conftest import second_client
+    theirs = second_client(app)
+    assert theirs.get('/api/settings').get_json()['unit'] == 'lb'
+    assert client.get('/api/settings').get_json()['unit'] == 'kg'
+
+
+def test_the_standalone_dev_identity_refuses_to_run_on_railway(app, monkeypatch):
+    """It exists so `python workout/app.py` works with no portal to sign into.
+    One fat-fingered Railway variable away from serving one shared,
+    unauthenticated log to the whole company — so it is switched off there, the
+    same guard the estimator's DISABLE_AUTH carries."""
+    monkeypatch.setenv('WORKOUT_DEV_USER', 'dev')
+    with app.app.test_request_context():
+        assert app.current_user() == 'dev'
+        monkeypatch.setenv('RAILWAY_ENVIRONMENT', 'production')
+        assert app.current_user() is None

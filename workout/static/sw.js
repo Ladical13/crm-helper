@@ -8,11 +8,15 @@
 // There is no bump_version.py here (same as the canvasser); tests/test_assets.py
 // fails if the numbers disagree.
 const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
-const CACHE = 'p1lift-v1';
+const CACHE = 'p1lift-v2';
 const SHELL = [
   BASE + '/',
-  BASE + '/static/style.css?v=1',
-  BASE + '/static/app.js?v=1',
+  BASE + '/static/style.css?v=2',
+  BASE + '/static/app.js?v=2',
+  // Precached so an installed app that is opened offline still has its icon
+  // and its manifest.
+  BASE + '/static/icon-192.png?v=2',
+  BASE + '/manifest.json',
 ];
 
 self.addEventListener('install', (e) => {

@@ -1,56 +1,77 @@
 """P1 Lift — a workout tracker. Flask + SQLite + PWA, same stack as the rest.
 
-Deliberately **standalone**. It is not in `portal/mounts.py` and not mounted by
-`portal/wsgi.py`, so it never appears in the launcher, never appears in the
-app-switcher bar, and a deploy of the reps' tools does not ship it. This is a
-personal tool that happens to live in the same repo because the stack, the
-tests and the deploy story were already here.
+Mounted by the portal at `/workout`, behind the same one login as the other
+four apps, because it is used on a phone in a gym. It is **deliberately not
+advertised**: its `portal/mounts.py` entry is marked `hidden`, so it is absent
+from the launcher grid and from the app-switcher bar. Reps never see a tile for
+somebody's training log; you reach it by URL and then install it to the home
+screen, where it lives as its own icon.
 
-    python workout/app.py            # http://127.0.0.1:5020
+    python -m portal.wsgi            # http://localhost:5010/workout/
+    python workout/app.py            # standalone dev, http://127.0.0.1:5020
     cd workout && pytest             # the suite
 
-**No login.** There is no user table and no password, because the app binds to
-127.0.0.1 by default and the whole database is one person's sets and reps.
-That default is the security boundary: `WORKOUT_HOST=0.0.0.0` puts an
-unauthenticated write API on the network, so only set it on a LAN you trust.
-If this ever wants to be reachable from a phone over the internet, mount it
-behind the portal (add it to `portal/mounts.py`) rather than opening the host —
-the shared cookie is already the answer to that problem.
+**Everything is scoped to the signed-in user.** Workouts, routines and custom
+movements carry a `user`, and every read filters on it, so two people using
+this see two separate training logs and neither can reach the other's — the
+same rule as the CRM's per-rep lead visibility. Identity is the portal's
+(`portal/users.py`); there is no user table here and never should be.
+
+Running `python workout/app.py` standalone has no portal to sign into, so it
+falls back to `WORKOUT_DEV_USER` (defaulting to `dev` in __main__). That
+fallback **refuses to engage when RAILWAY_ENVIRONMENT is set**, the same guard
+the estimator's DISABLE_AUTH carries, because it is one fat-fingered Railway
+variable away from serving one shared unauthenticated log to everybody.
 
 The front end derives its own prefix from the URL (`BASE` in app.js and sw.js)
-exactly like the other three apps, and the static tags here are *relative*, so
-it works standalone AND mounted. That is the one thing the other apps' index
-files get wrong — theirs hardcode `/crm`, `/canvass`, `/estimate` and render
-unstyled at the root.
+and the static tags here are *relative*, so the same bundle works mounted and
+standalone. That is the one thing the other apps' index files get wrong —
+theirs hardcode `/crm`, `/canvass`, `/estimate` and render unstyled anywhere
+else.
 """
 import os
 import sys
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from urllib.parse import quote
 
 import sqlite3
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, redirect, request, send_from_directory, session
 
-# The portal package lives one directory up. On the path so `portal.dbtune`
-# resolves both when run from here and when run from the repo root. Nothing
-# else from the portal is imported: no session, no users, no identity.
+# The portal package lives one directory up. On the path so these resolve both
+# when run from here and when run from the repo root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from portal import dbtune               # noqa: E402
+from portal import session as psession   # noqa: E402
+from portal import users as pusers       # noqa: E402
 
 app = Flask(__name__, static_folder='static')
+# The same secret, ProxyFix, cookie config and security headers as the other
+# four. Mandatory, not optional: the five apps share ONE cookie and each
+# re-saves it whenever it touches `session`, so one mismatched flag here logs
+# reps out of the CRM at random. A body-weight set is a few dozen bytes, so the
+# 32 MB default is replaced with something that fits what this app accepts.
+psession.configure(app, max_content_length=1 * 1024 * 1024)
 
 HERE       = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, 'static')
-# Its own variable, with no DATA_DIR fallback on purpose. Every other app in
-# this repo falls back to DATA_DIR and CLAUDE.md has to warn twice that doing so
-# drops the database into the estimator's volume; here an unset variable just
-# means "beside the code", which on a personal tool is the right answer.
-DATA_DIR   = os.environ.get('WORKOUT_DATA_DIR', HERE)
+# WORKOUT_DATA_DIR first, then the estimator's volume, then beside the code.
+# The DATA_DIR step is what the other apps' notes warn about — it drops the
+# file into the estimator's directory — but on Railway that directory IS the
+# mounted volume, and the alternative is worse: the container's own disk is
+# rebuilt on every deploy, so an unset variable would silently discard the
+# training log every time the site ships. Tidiness loses to durability; set
+# WORKOUT_DATA_DIR explicitly and neither matters.
+DATA_DIR   = (os.environ.get('WORKOUT_DATA_DIR')
+              or os.environ.get('DATA_DIR')
+              or HERE)
 DB_PATH    = os.path.join(DATA_DIR, 'workout.db')
 
-# A body-weight movement logs weight 0, so requests stay small; this only has to
-# stop a runaway client from buffering something silly into a worker.
-app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024
+if DATA_DIR == HERE and os.environ.get('RAILWAY_ENVIRONMENT'):
+    # Loud, because the failure is invisible: the app works perfectly and
+    # forgets everything on the next deploy.
+    print('[workout] WARNING: writing workout.db inside the container — set '
+          'WORKOUT_DATA_DIR to a path on the volume or this is lost on deploy.')
 
 SET_TYPES = ('work', 'warmup')
 
@@ -73,17 +94,34 @@ SCHEMA = '''
         muscle     TEXT DEFAULT '',
         equipment  TEXT DEFAULT '',
         is_custom  INTEGER DEFAULT 0,
-        archived   INTEGER DEFAULT 0,
+        -- '' is the shared seed library everybody sees; anything else is one
+        -- person's own movement, visible only to them. A custom lift is not
+        -- private data, but a library that fills up with other people's
+        -- inventions is a library nobody can find their own lift in.
+        owner      TEXT DEFAULT '',
         created_at TEXT NOT NULL
     );
-    -- NOCASE so "Bench Press" and "bench press" cannot both exist. Two spellings
-    -- of one lift split its history in half, which quietly breaks the only
-    -- number this app exists to show: what you did last time.
+    -- NOCASE so "Bench Press" and "bench press" cannot both exist for one
+    -- person. Two spellings of one lift split its history in half, which
+    -- quietly breaks the only number this app exists to show: what you did
+    -- last time. Scoped by owner, so two people may each have their own.
     CREATE UNIQUE INDEX IF NOT EXISTS exercises_name_idx
-        ON exercises(name COLLATE NOCASE);
+        ON exercises(owner, name COLLATE NOCASE);
+
+    -- Hiding a movement is per-person, and a row here rather than a flag on
+    -- the exercise: the seed library is shared, so a flag would let one person
+    -- delete "Back Squat" out of everybody else's list.
+    CREATE TABLE IF NOT EXISTS exercise_hidden (
+        user        TEXT NOT NULL,
+        exercise_id INTEGER NOT NULL,
+        PRIMARY KEY (user, exercise_id)
+    );
 
     CREATE TABLE IF NOT EXISTS workouts (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        -- Whose session this is. Every read filters on it; nothing in this app
+        -- ever returns a row belonging to somebody else.
+        user        TEXT NOT NULL DEFAULT '',
         name        TEXT DEFAULT '',
         started_at  TEXT NOT NULL,
         finished_at TEXT DEFAULT '',
@@ -95,7 +133,8 @@ SCHEMA = '''
         notes       TEXT DEFAULT '',
         created_at  TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS workouts_date_idx ON workouts(local_date DESC);
+    CREATE INDEX IF NOT EXISTS workouts_date_idx
+        ON workouts(user, local_date DESC);
 
     CREATE TABLE IF NOT EXISTS sets (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,6 +155,7 @@ SCHEMA = '''
 
     CREATE TABLE IF NOT EXISTS routines (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        user       TEXT NOT NULL DEFAULT '',
         name       TEXT NOT NULL,
         created_at TEXT NOT NULL
     );
@@ -128,8 +168,10 @@ SCHEMA = '''
     CREATE INDEX IF NOT EXISTS routine_items_idx ON routine_items(routine_id, position);
 
     CREATE TABLE IF NOT EXISTS settings (
-        key   TEXT PRIMARY KEY,
-        value TEXT NOT NULL
+        user  TEXT NOT NULL,
+        key   TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (user, key)
     );
 '''
 
@@ -196,13 +238,22 @@ def init_db():
         # Seeded only into an empty library, never merged into a live one: a
         # deleted exercise must stay deleted, or every restart resurrects the
         # machine that is no longer in the gym.
-        if not db.execute('SELECT 1 FROM exercises LIMIT 1').fetchone():
+        # `CREATE TABLE IF NOT EXISTS` only ever describes a fresh database, so
+        # a column added later has to be applied explicitly or it exists on one
+        # laptop and nowhere else.
+        for table, column, ddl in (
+                ('workouts',  'user',  "ALTER TABLE workouts ADD COLUMN user TEXT NOT NULL DEFAULT ''"),
+                ('routines',  'user',  "ALTER TABLE routines ADD COLUMN user TEXT NOT NULL DEFAULT ''"),
+                ('exercises', 'owner', "ALTER TABLE exercises ADD COLUMN owner TEXT DEFAULT ''")):
+            cols = [r['name'] for r in db.execute(f'PRAGMA table_info({table})')]
+            if column not in cols:
+                db.execute(ddl)
+
+        if not db.execute("SELECT 1 FROM exercises WHERE owner='' LIMIT 1").fetchone():
             db.executemany(
                 'INSERT INTO exercises (name, muscle, equipment, is_custom, '
-                'created_at) VALUES (?,?,?,0,?)',
+                "owner, created_at) VALUES (?,?,?,0,'',?)",
                 [(n, m, e, _now()) for n, m, e in SEED_EXERCISES])
-        if not db.execute("SELECT 1 FROM settings WHERE key='unit'").fetchone():
-            db.execute("INSERT INTO settings (key, value) VALUES ('unit','lb')")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -260,13 +311,40 @@ def json_error(message, code=400):
     return jsonify({'error': message}), code
 
 
+def current_user():
+    """Who the shared portal cookie says you are, or None.
+
+    Identity is never owned here: `portal/users.py` is the only user store on
+    this origin, and this app only reads the session the portal wrote.
+    """
+    who = session.get('username')
+    if who:
+        return who
+    # Standalone dev has no portal to sign into. Refused outright once
+    # RAILWAY_ENVIRONMENT is set — the same guard the estimator's DISABLE_AUTH
+    # carries, and for the same reason: without it, one mistyped Railway
+    # variable serves a single shared unauthenticated log to the whole company.
+    dev = os.environ.get('WORKOUT_DEV_USER', '').strip()
+    if dev and not os.environ.get('RAILWAY_ENVIRONMENT'):
+        return dev
+    return None
+
+
 def with_db(f):
-    """Open one connection per request and commit on the way out."""
+    """Require a signed-in user, open one connection, commit on the way out.
+
+    The user is passed to the handler rather than read from the session inside
+    it, so no query can be written that forgets to scope itself — the argument
+    is right there in the signature.
+    """
     @wraps(f)
     def wrapper(*args, **kwargs):
+        user = current_user()
+        if not user:
+            return jsonify({'error': 'authentication required'}), 401
         db = get_db()
         try:
-            result = f(db, *args, **kwargs)
+            result = f(db, user, *args, **kwargs)
             db.commit()
             return result
         finally:
@@ -326,6 +404,17 @@ def _duration_min(started_at, finished_at):
 
 @app.route('/')
 def index():
+    """The app shell, or a bounce to the portal's login.
+
+    app.js also redirects on a 401, which covers a session that expires while
+    the app is open. Doing it here as well is what stops a cold load from
+    painting an empty log for a moment before the bounce — and it carries
+    `next`, so signing in lands back on the training log rather than the
+    launcher. The redirect is to the ORIGIN root: the portal owns /login, and
+    /workout/login is this app's 404.
+    """
+    if not current_user():
+        return redirect('/login?next=' + quote(request.script_root + '/', safe='/'))
     return send_from_directory(STATIC_DIR, 'index.html')
 
 
@@ -347,20 +436,32 @@ def service_worker():
 def manifest():
     """Its own manifest, not the portal's.
 
-    The portal's manifest installs as "Project One" and scopes to `/`. Sharing
-    it would put a second home-screen icon on the reps' tool, which is exactly
-    the confusion this app stays unmounted to avoid.
+    The portal's manifest installs as "Project One" and scopes to `/`. Installing
+    that from here would put a second Project One icon on the home screen that
+    opens the launcher — this one installs as Lift and opens the log.
+
+    Relative `start_url` and `scope` so the installed app stays inside
+    /workout/: an absolute '/' would scope the PWA to the whole site, and every
+    tap on the home-screen icon would land on the portal launcher instead.
     """
     return jsonify({
         'name': 'P1 Lift', 'short_name': 'Lift',
         'start_url': './', 'scope': './', 'display': 'standalone',
+        'orientation': 'portrait',
         'background_color': '#0d1117', 'theme_color': '#0d1117',
-        'icons': [],
+        'icons': [
+            {'src': 'static/icon-192.png', 'sizes': '192x192',
+             'type': 'image/png', 'purpose': 'any'},
+            {'src': 'static/icon-512.png', 'sizes': '512x512',
+             'type': 'image/png', 'purpose': 'any'},
+        ],
     })
 
 
 @app.route('/health')
 def health():
+    """Public on purpose: a health check that needs a cookie is a health check
+    the platform cannot run. It reports nothing about anybody's training."""
     return jsonify({'ok': True, 'app': 'workout'})
 
 
@@ -368,13 +469,17 @@ def health():
 
 @app.route('/api/settings', methods=['GET'])
 @with_db
-def get_settings(db):
-    return jsonify({r['key']: r['value'] for r in db.execute('SELECT * FROM settings')})
+def get_settings(db, user):
+    stored = {r['key']: r['value'] for r in
+              db.execute('SELECT key, value FROM settings WHERE user=?', (user,))}
+    # Defaulted on read rather than seeded on first sign-in: a row written for
+    # somebody the moment they load the page is a row that outlives them.
+    return jsonify({'unit': stored.get('unit', 'lb')})
 
 
 @app.route('/api/settings', methods=['PATCH'])
 @with_db
-def patch_settings(db):
+def patch_settings(db, user):
     """Only `unit` is settable, and it is a LABEL, not a conversion.
 
     Weights are stored exactly as typed. Converting stored history on a unit
@@ -385,8 +490,9 @@ def patch_settings(db):
     unit = str(_json().get('unit', '')).lower()
     if unit not in ('lb', 'kg'):
         return json_error("unit must be 'lb' or 'kg'")
-    db.execute("INSERT INTO settings (key, value) VALUES ('unit', ?) "
-               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (unit,))
+    db.execute("INSERT INTO settings (user, key, value) VALUES (?, 'unit', ?) "
+               'ON CONFLICT(user, key) DO UPDATE SET value=excluded.value',
+               (user, unit))
     return jsonify({'unit': unit})
 
 
@@ -394,10 +500,15 @@ def patch_settings(db):
 
 @app.route('/api/exercises', methods=['GET'])
 @with_db
-def list_exercises(db):
+def list_exercises(db, user):
     q = (request.args.get('q') or '').strip()
     muscle = (request.args.get('muscle') or '').strip()
-    clauses, params = ['archived=0'], []
+    # The shared seed library plus your own movements, minus the ones you have
+    # hidden. Somebody else's custom lift is never in your list, and hiding one
+    # never takes it out of theirs.
+    clauses = ["(owner='' OR owner=?)",
+               'id NOT IN (SELECT exercise_id FROM exercise_hidden WHERE user=?)']
+    params = [user, user]
     if q:
         # Escaped so a typed % or _ stays literal — the same trap the CRM's
         # pipeline search documents.
@@ -415,41 +526,48 @@ def list_exercises(db):
 
 @app.route('/api/exercises', methods=['POST'])
 @with_db
-def create_exercise(db):
+def create_exercise(db, user):
     name = (_json().get('name') or '').strip()
     if not name:
         return json_error('name is required')
-    existing = db.execute('SELECT * FROM exercises WHERE name=? COLLATE NOCASE',
-                          (name,)).fetchone()
+    existing = db.execute(
+        "SELECT * FROM exercises WHERE name=? COLLATE NOCASE AND "
+        "(owner='' OR owner=?) ORDER BY owner DESC LIMIT 1", (name, user)).fetchone()
     if existing:
-        # Returned rather than rejected, and un-archived on the way: the front
+        # Returned rather than rejected, and un-hidden on the way: the front
         # end's "add exercise" is one box, and a lifter re-adding a movement
         # they retired wants that movement WITH its history, not an error.
-        db.execute('UPDATE exercises SET archived=0 WHERE id=?', (existing['id'],))
+        db.execute('DELETE FROM exercise_hidden WHERE user=? AND exercise_id=?',
+                   (user, existing['id']))
         return jsonify(dict(db.execute('SELECT * FROM exercises WHERE id=?',
                                        (existing['id'],)).fetchone())), 200
     cur = db.execute(
-        'INSERT INTO exercises (name, muscle, equipment, is_custom, created_at) '
-        'VALUES (?,?,?,1,?)',
+        'INSERT INTO exercises (name, muscle, equipment, is_custom, owner, '
+        'created_at) VALUES (?,?,?,1,?,?)',
         (name, (_json().get('muscle') or '').strip(),
-         (_json().get('equipment') or '').strip(), _now()))
+         (_json().get('equipment') or '').strip(), user, _now()))
     return jsonify(dict(db.execute('SELECT * FROM exercises WHERE id=?',
                                    (cur.lastrowid,)).fetchone())), 201
 
 
 @app.route('/api/exercises/<int:ex_id>', methods=['DELETE'])
 @with_db
-def archive_exercise(db, ex_id):
-    """Archive, never delete. The sets stay — deleting the exercise row would
-    orphan every set ever logged against it and silently drop that volume out
-    of history."""
-    db.execute('UPDATE exercises SET archived=1 WHERE id=?', (ex_id,))
+def archive_exercise(db, user, ex_id):
+    """Hide, never delete, and only for you.
+
+    The sets stay: deleting the exercise row would orphan every set ever logged
+    against it and silently drop that volume out of history. And the row is
+    written per-user, so retiring a machine your gym no longer has does not
+    remove it from anybody else's list.
+    """
+    db.execute('INSERT OR IGNORE INTO exercise_hidden (user, exercise_id) '
+               'VALUES (?,?)', (user, ex_id))
     return jsonify({'archived': True})
 
 
 @app.route('/api/exercises/<int:ex_id>/history', methods=['GET'])
 @with_db
-def exercise_history(db, ex_id):
+def exercise_history(db, user, ex_id):
     """Every session this movement was worked, newest first.
 
     This is the screen the whole app is for: you cannot progressively overload
@@ -460,8 +578,8 @@ def exercise_history(db, ex_id):
     rows = db.execute(
         'SELECT s.*, w.local_date, w.started_at FROM sets s '
         'JOIN workouts w ON w.id = s.workout_id '
-        'WHERE s.exercise_id=? ORDER BY w.local_date DESC, w.id DESC, '
-        's.position, s.id', (ex_id,)).fetchall()
+        'WHERE s.exercise_id=? AND w.user=? ORDER BY w.local_date DESC, '
+        'w.id DESC, s.position, s.id', (ex_id, user)).fetchall()
     sessions, order = {}, []
     for row in rows:
         key = row['workout_id']
@@ -482,7 +600,7 @@ def exercise_history(db, ex_id):
 
 @app.route('/api/exercises/<int:ex_id>/last', methods=['GET'])
 @with_db
-def exercise_last(db, ex_id):
+def exercise_last(db, user, ex_id):
     """The previous session's work sets for this movement.
 
     `before` (a workout id) excludes the session in progress, so adding an
@@ -490,7 +608,7 @@ def exercise_last(db, ex_id):
     set you just created.
     """
     before = int(_num(request.args.get('before'), 0))
-    params = [ex_id]
+    params = [ex_id, user]
     clause = ''
     if before:
         clause = ' AND s.workout_id != ?'
@@ -498,7 +616,7 @@ def exercise_last(db, ex_id):
     row = db.execute(
         'SELECT s.workout_id, w.local_date FROM sets s '
         'JOIN workouts w ON w.id = s.workout_id '
-        'WHERE s.exercise_id=?' + clause +
+        'WHERE s.exercise_id=? AND w.user=?' + clause +
         ' ORDER BY w.local_date DESC, w.id DESC LIMIT 1', params).fetchone()
     if not row:
         return jsonify(None)
@@ -514,30 +632,35 @@ def exercise_last(db, ex_id):
 
 @app.route('/api/workouts', methods=['GET'])
 @with_db
-def list_workouts(db):
+def list_workouts(db, user):
     limit = min(int(_num(request.args.get('limit'), 50)), 500)
     rows = db.execute(
-        'SELECT * FROM workouts ORDER BY local_date DESC, id DESC LIMIT ?',
-        (limit,)).fetchall()
+        'SELECT * FROM workouts WHERE user=? '
+        'ORDER BY local_date DESC, id DESC LIMIT ?', (user, limit)).fetchall()
     return jsonify([_workout_row(db, r) for r in rows])
 
 
 @app.route('/api/workouts/active', methods=['GET'])
 @with_db
-def active_workout(db):
+def active_workout(db, user):
     """The session in progress, if any.
 
     The app reopens straight into it, because the alternative — a lifter who
     locked their phone between sets coming back to a "start workout" button —
     is how a session gets logged twice or not at all.
     """
-    row = db.execute("SELECT * FROM workouts WHERE finished_at='' "
-                     'ORDER BY id DESC LIMIT 1').fetchone()
-    return jsonify(_workout_detail(db, row['id']) if row else None)
+    row = db.execute("SELECT * FROM workouts WHERE user=? AND finished_at='' "
+                     'ORDER BY id DESC LIMIT 1', (user,)).fetchone()
+    return jsonify(_workout_detail(db, user, row['id']) if row else None)
 
 
-def _workout_detail(db, workout_id):
-    row = db.execute('SELECT * FROM workouts WHERE id=?', (workout_id,)).fetchone()
+def _workout_detail(db, user, workout_id):
+    # The user is part of the lookup, not a check after it: a workout that is
+    # not yours reads as one that does not exist, which is the same 404 an id
+    # off the end of the table gets. Nothing here ever confirms that somebody
+    # else's session is out there.
+    row = db.execute('SELECT * FROM workouts WHERE id=? AND user=?',
+                     (workout_id, user)).fetchone()
     if not row:
         return None
     detail = _workout_row(db, row)
@@ -559,27 +682,27 @@ def _workout_detail(db, workout_id):
 
 @app.route('/api/workouts/<int:workout_id>', methods=['GET'])
 @with_db
-def get_workout(db, workout_id):
-    detail = _workout_detail(db, workout_id)
+def get_workout(db, user, workout_id):
+    detail = _workout_detail(db, user, workout_id)
     return jsonify(detail) if detail else json_error('no such workout', 404)
 
 
 @app.route('/api/workouts', methods=['POST'])
 @with_db
-def create_workout(db):
+def create_workout(db, user):
     body = _json()
-    open_row = db.execute("SELECT id FROM workouts WHERE finished_at='' "
-                          'ORDER BY id DESC LIMIT 1').fetchone()
+    open_row = db.execute("SELECT id FROM workouts WHERE user=? AND finished_at='' "
+                          'ORDER BY id DESC LIMIT 1', (user,)).fetchone()
     if open_row:
         # One open session at a time. Two would split a single gym visit across
         # two records, and every total this app computes would then be wrong in
         # both directions at once.
-        return jsonify(_workout_detail(db, open_row['id'])), 200
+        return jsonify(_workout_detail(db, user, open_row['id'])), 200
     local_date = (body.get('local_date') or '').strip() or _today()
     cur = db.execute(
-        'INSERT INTO workouts (name, started_at, local_date, notes, created_at) '
-        'VALUES (?,?,?,?,?)',
-        ((body.get('name') or '').strip(), _now(), local_date,
+        'INSERT INTO workouts (user, name, started_at, local_date, notes, '
+        'created_at) VALUES (?,?,?,?,?,?)',
+        (user, (body.get('name') or '').strip(), _now(), local_date,
          (body.get('notes') or '').strip(), _now()))
     workout_id = cur.lastrowid
 
@@ -589,26 +712,29 @@ def create_workout(db):
         # sets would put numbers on screen that were never lifted, and the one
         # thing a log must never do is show you a set you did not do.
         items = db.execute(
-            'SELECT exercise_id FROM routine_items WHERE routine_id=? '
-            'ORDER BY position, id', (routine_id,)).fetchall()
+            'SELECT ri.exercise_id FROM routine_items ri '
+            'JOIN routines r ON r.id = ri.routine_id '
+            'WHERE ri.routine_id=? AND r.user=? ORDER BY ri.position, ri.id',
+            (routine_id, user)).fetchall()
         for pos, item in enumerate(items):
             db.execute(
                 'INSERT INTO sets (workout_id, exercise_id, weight, reps, rpe, '
                 "set_type, position, created_at) VALUES (?,?,0,0,0,'work',?,?)",
                 (workout_id, item['exercise_id'], pos * 100, _now()))
         if not (body.get('name') or '').strip():
-            routine = db.execute('SELECT name FROM routines WHERE id=?',
-                                 (routine_id,)).fetchone()
+            routine = db.execute('SELECT name FROM routines WHERE id=? AND user=?',
+                                 (routine_id, user)).fetchone()
             if routine:
                 db.execute('UPDATE workouts SET name=? WHERE id=?',
                            (routine['name'], workout_id))
-    return jsonify(_workout_detail(db, workout_id)), 201
+    return jsonify(_workout_detail(db, user, workout_id)), 201
 
 
 @app.route('/api/workouts/<int:workout_id>', methods=['PATCH'])
 @with_db
-def patch_workout(db, workout_id):
-    row = db.execute('SELECT * FROM workouts WHERE id=?', (workout_id,)).fetchone()
+def patch_workout(db, user, workout_id):
+    row = db.execute('SELECT * FROM workouts WHERE id=? AND user=?',
+                     (workout_id, user)).fetchone()
     if not row:
         return json_error('no such workout', 404)
     body = _json()
@@ -628,12 +754,15 @@ def patch_workout(db, workout_id):
                    (_now(), workout_id))
     if body.get('reopen'):
         db.execute("UPDATE workouts SET finished_at='' WHERE id=?", (workout_id,))
-    return jsonify(_workout_detail(db, workout_id))
+    return jsonify(_workout_detail(db, user, workout_id))
 
 
 @app.route('/api/workouts/<int:workout_id>', methods=['DELETE'])
 @with_db
-def delete_workout(db, workout_id):
+def delete_workout(db, user, workout_id):
+    if not db.execute('SELECT 1 FROM workouts WHERE id=? AND user=?',
+                      (workout_id, user)).fetchone():
+        return json_error('no such workout', 404)
     db.execute('DELETE FROM sets WHERE workout_id=?', (workout_id,))
     db.execute('DELETE FROM workouts WHERE id=?', (workout_id,))
     return jsonify({'deleted': True})
@@ -641,14 +770,25 @@ def delete_workout(db, workout_id):
 
 # ── Sets ─────────────────────────────────────────────────────────────────────
 
+def _owned_set(db, user, set_id):
+    """The set, if it belongs to one of this user's workouts. Sets are
+    addressed by bare id, so this join is the only thing standing between a
+    guessed number and somebody else's log."""
+    return db.execute(
+        'SELECT s.* FROM sets s JOIN workouts w ON w.id = s.workout_id '
+        'WHERE s.id=? AND w.user=?', (set_id, user)).fetchone()
+
+
 @app.route('/api/workouts/<int:workout_id>/sets', methods=['POST'])
 @with_db
-def add_set(db, workout_id):
-    if not db.execute('SELECT 1 FROM workouts WHERE id=?', (workout_id,)).fetchone():
+def add_set(db, user, workout_id):
+    if not db.execute('SELECT 1 FROM workouts WHERE id=? AND user=?',
+                      (workout_id, user)).fetchone():
         return json_error('no such workout', 404)
     body = _json()
     ex_id = int(_num(body.get('exercise_id'), 0))
-    if not db.execute('SELECT 1 FROM exercises WHERE id=?', (ex_id,)).fetchone():
+    if not db.execute("SELECT 1 FROM exercises WHERE id=? AND (owner='' OR owner=?)",
+                      (ex_id, user)).fetchone():
         return json_error('no such exercise', 400)
     set_type = body.get('set_type') if body.get('set_type') in SET_TYPES else 'work'
     # Sorted next to the exercise's existing sets rather than at the end of the
@@ -673,8 +813,8 @@ def add_set(db, workout_id):
 
 @app.route('/api/sets/<int:set_id>', methods=['PATCH'])
 @with_db
-def patch_set(db, set_id):
-    row = db.execute('SELECT * FROM sets WHERE id=?', (set_id,)).fetchone()
+def patch_set(db, user, set_id):
+    row = _owned_set(db, user, set_id)
     if not row:
         return json_error('no such set', 404)
     body = _json()
@@ -695,7 +835,9 @@ def patch_set(db, set_id):
 
 @app.route('/api/sets/<int:set_id>', methods=['DELETE'])
 @with_db
-def delete_set(db, set_id):
+def delete_set(db, user, set_id):
+    if not _owned_set(db, user, set_id):
+        return json_error('no such set', 404)
     db.execute('DELETE FROM sets WHERE id=?', (set_id,))
     return jsonify({'deleted': True})
 
@@ -704,7 +846,7 @@ def delete_set(db, set_id):
 
 @app.route('/api/records', methods=['GET'])
 @with_db
-def records(db):
+def records(db, user):
     """Best e1RM, heaviest weight and best single-set volume per movement.
 
     Computed on read, never stored. A stored PR has to be recomputed every time
@@ -716,7 +858,8 @@ def records(db):
         'w.local_date FROM sets s '
         'JOIN exercises e ON e.id = s.exercise_id '
         'JOIN workouts w ON w.id = s.workout_id '
-        "WHERE s.set_type='work' AND s.reps > 0 AND s.weight > 0").fetchall()
+        "WHERE s.set_type='work' AND s.reps > 0 AND s.weight > 0 "
+        'AND w.user=?', (user,)).fetchall()
     best = {}
     for r in rows:
         rec = best.setdefault(r['exercise_id'], {
@@ -744,7 +887,7 @@ def _week_start(date_str):
 
 @app.route('/api/stats', methods=['GET'])
 @with_db
-def stats(db):
+def stats(db, user):
     """The dashboard numbers: this week, this month, streak, volume trend."""
     today = (request.args.get('today') or '').strip() or _today()
     try:
@@ -758,7 +901,8 @@ def stats(db):
         'AS volume, '
         "COUNT(CASE WHEN s.set_type='work' AND s.reps > 0 THEN 1 END) AS sets "
         'FROM workouts w LEFT JOIN sets s ON s.workout_id = w.id '
-        "WHERE w.finished_at != '' GROUP BY w.id ORDER BY w.local_date").fetchall()
+        "WHERE w.finished_at != '' AND w.user=? "
+        'GROUP BY w.id ORDER BY w.local_date', (user,)).fetchall()
 
     this_week = _week_start(today)
     weeks, days = {}, set()
@@ -816,9 +960,10 @@ def stats(db):
 
 @app.route('/api/routines', methods=['GET'])
 @with_db
-def list_routines(db):
+def list_routines(db, user):
     out = []
-    for r in db.execute('SELECT * FROM routines ORDER BY name COLLATE NOCASE'):
+    for r in db.execute('SELECT * FROM routines WHERE user=? '
+                        'ORDER BY name COLLATE NOCASE', (user,)):
         items = db.execute(
             'SELECT ri.exercise_id, e.name FROM routine_items ri '
             'JOIN exercises e ON e.id = ri.exercise_id '
@@ -830,7 +975,7 @@ def list_routines(db):
 
 @app.route('/api/routines', methods=['POST'])
 @with_db
-def create_routine(db):
+def create_routine(db, user):
     """Save a routine, either from an explicit exercise list or from a workout.
 
     Saving from a finished workout is the path that gets used: the routine you
@@ -845,14 +990,20 @@ def create_routine(db):
     from_workout = int(_num(body.get('from_workout_id'), 0))
     if from_workout and not ex_ids:
         ex_ids = [r['exercise_id'] for r in db.execute(
-            'SELECT DISTINCT exercise_id, MIN(position) AS p FROM sets '
-            'WHERE workout_id=? GROUP BY exercise_id ORDER BY p',
-            (from_workout,))]
+            'SELECT s.exercise_id, MIN(s.position) AS p FROM sets s '
+            'JOIN workouts w ON w.id = s.workout_id '
+            'WHERE s.workout_id=? AND w.user=? '
+            'GROUP BY s.exercise_id ORDER BY p', (from_workout, user))]
     ex_ids = [x for x in ex_ids if x]
+    # A movement you cannot see is a movement you cannot put in a routine —
+    # otherwise a guessed id would seed a session with somebody else's lift.
+    visible = {r['id'] for r in db.execute(
+        "SELECT id FROM exercises WHERE owner='' OR owner=?", (user,))}
+    ex_ids = [x for x in ex_ids if x in visible]
     if not ex_ids:
         return json_error('a routine needs at least one exercise')
-    cur = db.execute('INSERT INTO routines (name, created_at) VALUES (?,?)',
-                     (name, _now()))
+    cur = db.execute('INSERT INTO routines (user, name, created_at) VALUES (?,?,?)',
+                     (user, name, _now()))
     for pos, ex_id in enumerate(ex_ids):
         db.execute('INSERT INTO routine_items (routine_id, exercise_id, position) '
                    'VALUES (?,?,?)', (cur.lastrowid, ex_id, pos))
@@ -862,14 +1013,21 @@ def create_routine(db):
 
 @app.route('/api/routines/<int:routine_id>', methods=['DELETE'])
 @with_db
-def delete_routine(db, routine_id):
+def delete_routine(db, user, routine_id):
+    if not db.execute('SELECT 1 FROM routines WHERE id=? AND user=?',
+                      (routine_id, user)).fetchone():
+        return json_error('no such routine', 404)
     db.execute('DELETE FROM routine_items WHERE routine_id=?', (routine_id,))
     db.execute('DELETE FROM routines WHERE id=?', (routine_id,))
     return jsonify({'deleted': True})
 
 
 if __name__ == '__main__':
-    # 127.0.0.1 by default because there is no login on any of this. See the
-    # module docstring before changing it.
+    # Standalone dev: there is no portal here to sign into, so stand in for one.
+    # current_user() refuses this fallback outright when RAILWAY_ENVIRONMENT is
+    # set, so it cannot follow the code into production.
+    os.environ.setdefault('WORKOUT_DEV_USER', 'dev')
+    # 127.0.0.1 because this mode has no real login. In production the app is
+    # mounted by portal/wsgi.py and gunicorn binds the port, so this never runs.
     host = os.environ.get('WORKOUT_HOST', '127.0.0.1')
     app.run(host=host, port=int(os.environ.get('PORT', 5020)), debug=False)

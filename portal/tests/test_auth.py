@@ -58,7 +58,7 @@ def test_manager_sees_manager_surfaces(client):
 
 def test_anonymous_api_calls_are_rejected(client):
     for path in ('/crm/api/leads', '/canvass/api/pins', '/estimate/api/estimates',
-                 '/api/me'):
+                 '/workout/api/workouts', '/api/me'):
         assert client.get(path).status_code == 401, path
 
 
@@ -215,3 +215,60 @@ def test_only_the_portal_answers_login(client):
     assert client.get('/login').status_code == 200
     for path in ('/estimate/login', '/crm/api/login', '/canvass/api/login'):
         assert client.get(path).status_code != 200, path
+
+
+# ── Hidden mounts ────────────────────────────────────────────────────────────
+# `hidden` in portal/mounts.py means mounted and reachable, but never
+# advertised. It exists for an app that belongs to one person rather than to
+# the company — P1 Lift, the training log. Both halves matter: reachable, or it
+# cannot be used on a phone; unadvertised, or every rep gets a tile for it.
+
+def test_a_hidden_app_is_still_mounted_and_still_shares_the_login(admin):
+    assert admin.get('/workout/api/workouts').status_code == 200
+    assert admin.get('/workout/api/settings').status_code == 200
+
+
+def test_a_hidden_app_bounces_to_the_login_like_every_other_page(client):
+    """Reachable does not mean open: a signed-out visit lands on the portal
+    login and comes back to the log, not to the launcher."""
+    r = client.get('/workout/')
+    assert r.status_code == 302
+    assert r.headers['Location'] == '/login?next=/workout/'
+
+
+def test_a_hidden_app_is_not_advertised_to_anyone(admin):
+    """Not in the launcher grid, and therefore not in the switcher bar either —
+    both render from this list."""
+    keys = [a['key'] for a in admin.get('/api/me').get_json()['apps']]
+    assert keys == ['canvass', 'crm', 'estimate']
+    assert 'workout' not in keys
+
+
+def test_the_switcher_bars_fallback_list_matches_the_advertised_apps(client):
+    """shell.js carries a hardcoded FALLBACK_APPS for when /api/me is
+    unreachable. A hidden app leaking into it would put the tile back on every
+    rep's screen exactly when the network is worst."""
+    shell = client.get('/shell.js').get_data(as_text=True)
+    assert "'/workout'" not in shell and '"/workout"' not in shell
+
+
+def test_every_mount_is_dispatched_including_hidden_ones(admin):
+    """portal/wsgi.py builds its dispatch map from MOUNTS, not VISIBLE — if it
+    ever switched, a hidden app would 404 while still looking configured."""
+    from portal.mounts import MOUNTS
+    for m in MOUNTS:
+        r = admin.get(m['prefix'] + '/')
+        assert r.status_code in (200, 302), f"{m['prefix']} is not mounted"
+
+
+def test_a_hidden_apps_data_is_scoped_to_the_signed_in_rep(admin, client):
+    """The reason a personal app can be mounted on the company site at all: a
+    rep who finds the URL gets their own empty log, never somebody else's."""
+    made = admin.post('/workout/api/workouts',
+                      json={'local_date': '2026-08-24', 'name': 'Push day'})
+    assert made.status_code == 201
+    admin.get('/logout')
+    pusers.create('dalton', password='knockknock1', role='rep')
+    client.post('/login', data={'username': 'dalton', 'password': 'knockknock1'})
+    assert client.get('/workout/api/workouts').get_json() == []
+    assert client.get('/workout/api/workouts/active').get_json() is None

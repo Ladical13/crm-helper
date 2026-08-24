@@ -12,7 +12,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 sys.path.insert(0, REPO_ROOT)
 
 TMP = tempfile.mkdtemp(prefix='portal-tests-')
-for sub in ('estimator', 'canvasser', 'crm'):
+for sub in ('estimator', 'canvasser', 'crm', 'workout'):
     os.makedirs(os.path.join(TMP, sub), exist_ok=True)
 os.makedirs(os.path.join(TMP, 'estimator', 'estimates'), exist_ok=True)
 os.makedirs(os.path.join(TMP, 'estimator', 'uploads'), exist_ok=True)
@@ -21,6 +21,7 @@ os.environ['PORTAL_DATA_DIR'] = TMP
 os.environ['DATA_DIR'] = os.path.join(TMP, 'estimator')
 os.environ['CANVASSER_DATA_DIR'] = os.path.join(TMP, 'canvasser')
 os.environ['SALESCRM_DATA_DIR'] = os.path.join(TMP, 'crm')
+os.environ['WORKOUT_DATA_DIR'] = os.path.join(TMP, 'workout')
 os.environ['SESSION_SECRET'] = 'test-only-secret'
 os.environ['PORTAL_SIGNUP_CODE'] = 'test-only-code'
 os.environ.pop('BASE44_TOKEN', None)
@@ -30,7 +31,7 @@ import pytest  # noqa: E402
 
 from portal import throttle as pthrottle  # noqa: E402
 from portal import users as pusers  # noqa: E402
-from portal.wsgi import application  # noqa: E402  (loads all three sub-apps)
+from portal.wsgi import application  # noqa: E402  (loads every sub-app)
 
 
 SIGNUP_CODE = 'test-only-code'

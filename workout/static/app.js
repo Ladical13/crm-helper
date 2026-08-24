@@ -32,6 +32,13 @@
       opts.headers = { 'Content-Type': 'application/json' };
     }
     return fetch(BASE + path, opts).then(function (r) {
+      // The session expired or was never there. The portal owns login and
+      // lives at the origin root, so the redirect is deliberately NOT prefixed
+      // with BASE — /workout/login is this app's 404, not a sign-in page.
+      if (r.status === 401) {
+        location.href = '/login?next=' + encodeURIComponent(location.pathname);
+        throw new Error('signed out');
+      }
       if (!r.ok) return r.json().catch(function () { return {}; })
                     .then(function (e) { throw new Error(e.error || r.status); });
       return r.status === 204 ? null : r.json();
