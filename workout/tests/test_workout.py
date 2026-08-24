@@ -360,16 +360,14 @@ def test_nothing_is_readable_without_a_session(anon):
     assert anon.post('/api/routines', json={'name': 'x'}).status_code == 401
 
 
-def test_the_page_bounces_to_the_portal_login(anon):
-    """A cold load must not paint an empty log for a moment before bouncing,
-    and signing in must land back here rather than on the launcher."""
+def test_the_page_serves_the_login_when_signed_out(anon):
+    """Served here rather than only bounced by app.js, so a cold load never
+    paints an empty log for a moment first."""
     r = anon.get('/')
-    assert r.status_code == 302
-    # Rooted at the ORIGIN, not the mount: the portal owns /login, and
-    # /workout/login is this app's 404. `next` is the mount prefix, which is ''
-    # here and '/workout' under the portal — portal/tests/test_auth.py pins the
-    # mounted shape.
-    assert r.headers['Location'] == '/login?next=/'
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert 'type="password"' in body
+    assert 'id="tab-lift"' not in body, 'the app shell must not be served signed out'
 
 
 
@@ -384,8 +382,8 @@ def test_two_lifters_have_two_separate_logs(client, app, ex_id):
     log(client, mine['id'], ex_id, 225, 5)
     finish(client, mine['id'])
 
-    from conftest import second_client
-    theirs = second_client(app)
+    from conftest import as_user
+    theirs = as_user(app, 'somebody-else')
     assert theirs.get('/api/workouts').get_json() == []
     assert theirs.get('/api/records').get_json() == []
     assert theirs.get('/api/stats').get_json()['total_workouts'] == 0
@@ -399,8 +397,8 @@ def test_another_lifters_workout_reads_as_one_that_does_not_exist(client, app, e
     mine = start(client)
     s = log(client, mine['id'], ex_id, 225, 5)
 
-    from conftest import second_client
-    theirs = second_client(app)
+    from conftest import as_user
+    theirs = as_user(app, 'somebody-else')
     assert theirs.get(f"/api/workouts/{mine['id']}").status_code == 404
     assert theirs.delete(f"/api/workouts/{mine['id']}").status_code == 404
     assert theirs.patch(f"/api/workouts/{mine['id']}", json={'name': 'x'}).status_code == 404
@@ -416,8 +414,8 @@ def test_an_open_session_is_only_open_for_its_owner(client, app, ex_id):
     """Two people training at once must not be handed each other's session by
     the one-open-workout rule."""
     mine = start(client)
-    from conftest import second_client
-    theirs = second_client(app)
+    from conftest import as_user
+    theirs = as_user(app, 'somebody-else')
     assert theirs.get('/api/workouts/active').get_json() is None
     theirs_workout = theirs.post('/api/workouts',
                                  json={'local_date': '2026-08-24'}).get_json()
@@ -429,8 +427,8 @@ def test_a_custom_movement_belongs_to_the_person_who_made_it(client, app):
     """The seed library is shared; somebody else's invention is not. A library
     full of other people's lifts is one you cannot find your own lift in."""
     mine = client.post('/api/exercises', json={'name': 'Jefferson Curl'}).get_json()
-    from conftest import second_client
-    theirs = second_client(app)
+    from conftest import as_user
+    theirs = as_user(app, 'somebody-else')
     assert 'Jefferson Curl' not in [e['name'] for e in
                                     theirs.get('/api/exercises').get_json()]
     # ...and cannot be logged against by id, either.
@@ -444,8 +442,8 @@ def test_hiding_a_seeded_movement_only_hides_it_for_you(client, app, ex_id):
     """It is one shared library, so a flag on the row would let one person
     delete Back Squat out of everybody's list."""
     client.delete(f'/api/exercises/{ex_id}')
-    from conftest import second_client
-    theirs = second_client(app)
+    from conftest import as_user
+    theirs = as_user(app, 'somebody-else')
     assert ex_id in [e['id'] for e in theirs.get('/api/exercises').get_json()]
     assert ex_id not in [e['id'] for e in client.get('/api/exercises').get_json()]
 
@@ -453,8 +451,8 @@ def test_hiding_a_seeded_movement_only_hides_it_for_you(client, app, ex_id):
 def test_routines_are_private_too(client, app, ex_id):
     routine = client.post('/api/routines', json={'name': 'Lower A',
                                                  'exercise_ids': [ex_id]}).get_json()
-    from conftest import second_client
-    theirs = second_client(app)
+    from conftest import as_user
+    theirs = as_user(app, 'somebody-else')
     assert theirs.get('/api/routines').get_json() == []
     assert theirs.delete(f"/api/routines/{routine['id']}").status_code == 404
     # Starting from somebody else's routine seeds nothing.
@@ -467,8 +465,8 @@ def test_routines_are_private_too(client, app, ex_id):
 def test_a_routine_cannot_be_built_from_someone_elses_workout(client, app, ex_id):
     mine = start(client)
     log(client, mine['id'], ex_id, 225, 5)
-    from conftest import second_client
-    theirs = second_client(app)
+    from conftest import as_user
+    theirs = as_user(app, 'somebody-else')
     r = theirs.post('/api/routines', json={'name': 'Stolen',
                                            'from_workout_id': mine['id']})
     assert r.status_code == 400
@@ -476,19 +474,10 @@ def test_a_routine_cannot_be_built_from_someone_elses_workout(client, app, ex_id
 
 def test_the_unit_is_per_person(client, app):
     client.patch('/api/settings', json={'unit': 'kg'})
-    from conftest import second_client
-    theirs = second_client(app)
+    from conftest import as_user
+    theirs = as_user(app, 'somebody-else')
     assert theirs.get('/api/settings').get_json()['unit'] == 'lb'
     assert client.get('/api/settings').get_json()['unit'] == 'kg'
 
 
-def test_the_standalone_dev_identity_refuses_to_run_on_railway(app, monkeypatch):
-    """It exists so `python workout/app.py` works with no portal to sign into.
-    One fat-fingered Railway variable away from serving one shared,
-    unauthenticated log to the whole company — so it is switched off there, the
-    same guard the estimator's DISABLE_AUTH carries."""
-    monkeypatch.setenv('WORKOUT_DEV_USER', 'dev')
-    with app.app.test_request_context():
-        assert app.current_user() == 'dev'
-        monkeypatch.setenv('RAILWAY_ENVIRONMENT', 'production')
-        assert app.current_user() is None
+

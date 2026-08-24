@@ -90,9 +90,10 @@ jobs:
           set -o pipefail
           python -m pytest -rs | tee "$RUNNER_TEMP/canvasser.log"
 
-      # The standalone workout tracker. It ships with nothing — it is not
-      # mounted by portal/wsgi.py — but it imports portal/dbtune.py, so it runs
-      # here to keep a change there from breaking it unnoticed.
+      # P1 Lift — its own app (own login, own database, own service), sharing
+      # only this repo. It has no import from the rest of the tree, which
+      # tests/test_standalone.py enforces; it runs here because CI is the only
+      # gate on anything that ships from this repo.
       - name: workout
         working-directory: workout
         run: |

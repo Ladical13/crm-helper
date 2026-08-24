@@ -1,90 +1,100 @@
-"""P1 Lift — a workout tracker. Flask + SQLite + PWA, same stack as the rest.
+"""P1 Lift — a workout tracker. Its own app, start to finish.
 
-Mounted by the portal at `/workout`, behind the same one login as the other
-four apps, because it is used on a phone in a gym. It is **deliberately not
-advertised**: its `portal/mounts.py` entry is marked `hidden`, so it is absent
-from the launcher grid and from the app-switcher bar. Reps never see a tile for
-somebody's training log; you reach it by URL and then install it to the home
-screen, where it lives as its own icon.
+Flask + SQLite + PWA, deployed on its own, with its own login, its own cookie
+and its own database. **It imports nothing from this repo outside this
+directory** — no portal, no shared session, no shared user store — so the whole
+app is `workout/` and moving it to a repo of its own is a copy of one folder.
+`tests/test_standalone.py` fails if an outside import ever creeps back in.
 
-    python -m portal.wsgi            # http://localhost:5010/workout/
-    python workout/app.py            # standalone dev, http://127.0.0.1:5020
-    cd workout && pytest             # the suite
+    python app.py                    # http://127.0.0.1:5020
+    pytest                           # the suite
+    gunicorn app:app                 # what the Procfile runs
 
-**Everything is scoped to the signed-in user.** Workouts, routines and custom
-movements carry a `user`, and every read filters on it, so two people using
-this see two separate training logs and neither can reach the other's — the
-same rule as the CRM's per-rep lead visibility. Identity is the portal's
-(`portal/users.py`); there is no user table here and never should be.
+**Login is one password**, `WORKOUT_PASSWORD` (see auth.py). There is no signup
+and no user table: a personal training log has exactly one person who should
+see it. With the variable unset the app **refuses to serve in production** —
+an unset variable must never be the difference between a login and an open
+door — while a laptop with nothing configured opens straight into the app.
 
-Running `python workout/app.py` standalone has no portal to sign into, so it
-falls back to `WORKOUT_DEV_USER` (defaulting to `dev` in __main__). That
-fallback **refuses to engage when RAILWAY_ENVIRONMENT is set**, the same guard
-the estimator's DISABLE_AUTH carries, because it is one fat-fingered Railway
-variable away from serving one shared unauthenticated log to everybody.
+Storage is `WORKOUT_DATA_DIR/workout.db`. On a host with a mounted volume that
+variable has to point INTO the volume: everywhere else is rebuilt on deploy,
+and the app would work perfectly while forgetting every workout each time it
+ships. It says so loudly at startup if it lands somewhere ephemeral.
 
-The front end derives its own prefix from the URL (`BASE` in app.js and sw.js)
-and the static tags here are *relative*, so the same bundle works mounted and
-standalone. That is the one thing the other apps' index files get wrong —
-theirs hardcode `/crm`, `/canvass`, `/estimate` and render unstyled anywhere
-else.
+The front end derives its own prefix from the URL and uses relative asset
+paths, so it serves correctly at the root and would still work if this were
+ever mounted under a prefix.
 """
 import os
-import sys
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from urllib.parse import quote
 
 import sqlite3
 from flask import Flask, jsonify, redirect, request, send_from_directory, session
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-# The portal package lives one directory up. On the path so these resolve both
-# when run from here and when run from the repo root.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from portal import dbtune               # noqa: E402
-from portal import session as psession   # noqa: E402
-from portal import users as pusers       # noqa: E402
+import auth                             # this directory; nothing above it
 
 app = Flask(__name__, static_folder='static')
-# The same secret, ProxyFix, cookie config and security headers as the other
-# four. Mandatory, not optional: the five apps share ONE cookie and each
-# re-saves it whenever it touches `session`, so one mismatched flag here logs
-# reps out of the CRM at random. A body-weight set is a few dozen bytes, so the
-# 32 MB default is replaced with something that fits what this app accepts.
-psession.configure(app, max_content_length=1 * 1024 * 1024)
+# Behind a platform proxy that terminates TLS. Without this Flask believes every
+# request is http:// and marks the Secure cookie unsendable, so signing in
+# appears to do nothing at all.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+auth.configure(app)
+# A body-weight set is a few dozen bytes. This only has to stop a runaway
+# client from buffering something silly into a worker — there are not many.
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024
 
 HERE       = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, 'static')
-# WORKOUT_DATA_DIR first, then the estimator's volume, then beside the code.
-# The DATA_DIR step is what the other apps' notes warn about — it drops the
-# file into the estimator's directory — but on Railway that directory IS the
-# mounted volume, and the alternative is worse: the container's own disk is
-# rebuilt on every deploy, so an unset variable would silently discard the
-# training log every time the site ships. Tidiness loses to durability; set
-# WORKOUT_DATA_DIR explicitly and neither matters.
-DATA_DIR   = (os.environ.get('WORKOUT_DATA_DIR')
-              or os.environ.get('DATA_DIR')
-              or HERE)
+# Its own variable and nothing else's. Beside the code is the right default on
+# a laptop and the wrong one on a host, where the container filesystem is
+# rebuilt on every deploy — hence the warning rather than a silent guess.
+DATA_DIR   = os.environ.get('WORKOUT_DATA_DIR') or HERE
 DB_PATH    = os.path.join(DATA_DIR, 'workout.db')
 
-if DATA_DIR == HERE and os.environ.get('RAILWAY_ENVIRONMENT'):
+if DATA_DIR == HERE and auth.in_production():
     # Loud, because the failure is invisible: the app works perfectly and
     # forgets everything on the next deploy.
-    print('[workout] WARNING: writing workout.db inside the container — set '
-          'WORKOUT_DATA_DIR to a path on the volume or this is lost on deploy.')
+    print('[workout] WARNING: writing workout.db beside the code — set '
+          'WORKOUT_DATA_DIR to a path on the mounted volume or every workout '
+          'is lost the next time this deploys.')
 
 SET_TYPES = ('work', 'warmup')
 
 
 # ── Database ─────────────────────────────────────────────────────────────────
 
+# Long enough to ride out any write this app makes (all of them are single-row
+# statements against small tables), short enough that a genuinely stuck lock
+# surfaces as an error instead of hanging a worker for a minute.
+BUSY_TIMEOUT_MS = 5000
+
+
 def get_db():
+    """A tuned connection.
+
+    Two PRAGMAs, both load-bearing the moment more than one request is in
+    flight. **WAL**: in the default journal mode a writer locks the whole file,
+    so saving a set blocks every read; WAL lets a reader carry on against the
+    last committed snapshot. **busy_timeout**: Python's sqlite3 applies its
+    timeout to connect() only and raises `database is locked` immediately when
+    a *statement* meets a lock, so without this a phone and a laptop hitting the
+    app at once produce a 500 rather than a wait.
+
+    Order matters: the timeout is set first, so the WAL switch itself waits out
+    a contending lock instead of raising on a busy database.
+    """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    # Same WAL + busy_timeout treatment as every other database in the repo.
-    # Overkill for one user on a laptop, but the phone hitting it while a
-    # backup script reads is exactly the contention dbtune exists for.
-    return dbtune.tune(conn)
+    conn.execute(f'PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}')
+    try:
+        conn.execute('PRAGMA journal_mode = WAL')
+    except sqlite3.DatabaseError:
+        # A filesystem that refuses WAL degrades to the old behaviour rather
+        # than failing the request.
+        pass
+    return conn
 
 
 SCHEMA = '''
@@ -249,6 +259,8 @@ def init_db():
             if column not in cols:
                 db.execute(ddl)
 
+        auth.init_throttle(db)
+
         if not db.execute("SELECT 1 FROM exercises WHERE owner='' LIMIT 1").fetchone():
             db.executemany(
                 'INSERT INTO exercises (name, muscle, equipment, is_custom, '
@@ -312,33 +324,22 @@ def json_error(message, code=400):
 
 
 def current_user():
-    """Who the shared portal cookie says you are, or None.
-
-    Identity is never owned here: `portal/users.py` is the only user store on
-    this origin, and this app only reads the session the portal wrote.
-    """
-    who = session.get('username')
-    if who:
-        return who
-    # Standalone dev has no portal to sign into. Refused outright once
-    # RAILWAY_ENVIRONMENT is set — the same guard the estimator's DISABLE_AUTH
-    # carries, and for the same reason: without it, one mistyped Railway
-    # variable serves a single shared unauthenticated log to the whole company.
-    dev = os.environ.get('WORKOUT_DEV_USER', '').strip()
-    if dev and not os.environ.get('RAILWAY_ENVIRONMENT'):
-        return dev
-    return None
+    """The signed-in owner, or None. Identity lives in auth.py."""
+    return auth.current_user(get_db)
 
 
 def with_db(f):
-    """Require a signed-in user, open one connection, commit on the way out.
+    """Require a signed-in owner, open one connection, commit on the way out.
 
-    The user is passed to the handler rather than read from the session inside
-    it, so no query can be written that forgets to scope itself — the argument
-    is right there in the signature.
+    The user is passed to the handler rather than read inside it, so no query
+    can be written that forgets to scope itself — the argument is right there
+    in the signature. Every row this app stores carries a `user`, so a second
+    lifter could be added without a migration.
     """
     @wraps(f)
     def wrapper(*args, **kwargs):
+        if auth.misconfigured():
+            return jsonify({'error': 'WORKOUT_PASSWORD is not set'}), 503
         user = current_user()
         if not user:
             return jsonify({'error': 'authentication required'}), 401
@@ -404,18 +405,66 @@ def _duration_min(started_at, finished_at):
 
 @app.route('/')
 def index():
-    """The app shell, or a bounce to the portal's login.
+    """The app shell, the login page, or the misconfiguration notice.
 
-    app.js also redirects on a 401, which covers a session that expires while
-    the app is open. Doing it here as well is what stops a cold load from
-    painting an empty log for a moment before the bounce — and it carries
-    `next`, so signing in lands back on the training log rather than the
-    launcher. The redirect is to the ORIGIN root: the portal owns /login, and
-    /workout/login is this app's 404.
+    app.js also redirects on a 401, which covers a session expiring while the
+    app is open; serving the login here is what stops a cold load from painting
+    an empty log for a moment first.
     """
+    if auth.misconfigured():
+        return auth.CONFIG_PAGE, 503
     if not current_user():
-        return redirect('/login?next=' + quote(request.script_root + '/', safe='/'))
+        return auth.login_page(action=request.script_root + '/login')
     return send_from_directory(STATIC_DIR, 'index.html')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """One password, throttled per IP, constant-time compared.
+
+    The throttle check runs BEFORE the comparison, so a locked-out caller costs
+    nothing to refuse.
+    """
+    if auth.misconfigured():
+        return auth.CONFIG_PAGE, 503
+    action = request.script_root + '/login'
+    if current_user():
+        return redirect(request.script_root + '/')
+    if request.method == 'GET':
+        return auth.login_page(action=action)
+
+    db = get_db()
+    try:
+        ip = auth.client_ip()
+        locked = auth.locked_for(db, ip)
+        if locked:
+            mins = max(1, locked // 60)
+            return auth.login_page(
+                action=action,
+                error=f'Too many attempts. Try again in {mins} min.'), 429
+        if not auth.check_password(request.form.get('password', '')):
+            auth.record_failure(db, ip)
+            db.commit()
+            return auth.login_page(action=action, error='Wrong password.'), 401
+        auth.clear_failures(db, ip)
+        db.commit()
+    finally:
+        db.close()
+    auth.sign_in(session)
+    return redirect(request.script_root + '/')
+
+
+@app.route('/logout')
+def logout():
+    """Clear the cookie here, and the offline cache in the browser.
+
+    The service worker keeps API responses so history is readable with no
+    signal; without this they would outlive the session on the device. The
+    cookie is already gone by the time the page runs, so a failure in that
+    script costs the cache, never the sign-out.
+    """
+    session.clear()
+    return auth.logout_page(request.script_root + '/login')
 
 
 @app.route('/static/<path:path>')
@@ -434,15 +483,12 @@ def service_worker():
 
 @app.route('/manifest.json')
 def manifest():
-    """Its own manifest, not the portal's.
+    """Installs to a home screen as "Lift".
 
-    The portal's manifest installs as "Project One" and scopes to `/`. Installing
-    that from here would put a second Project One icon on the home screen that
-    opens the launcher — this one installs as Lift and opens the log.
-
-    Relative `start_url` and `scope` so the installed app stays inside
-    /workout/: an absolute '/' would scope the PWA to the whole site, and every
-    tap on the home-screen icon would land on the portal launcher instead.
+    `start_url` and `scope` are relative rather than '/', so the installed app
+    stays inside whatever path it was installed from. At the root of its own
+    domain the two are the same thing; under a prefix they are not, and
+    relative is the one that keeps working.
     """
     return jsonify({
         'name': 'P1 Lift', 'short_name': 'Lift',
@@ -1023,11 +1069,8 @@ def delete_routine(db, user, routine_id):
 
 
 if __name__ == '__main__':
-    # Standalone dev: there is no portal here to sign into, so stand in for one.
-    # current_user() refuses this fallback outright when RAILWAY_ENVIRONMENT is
-    # set, so it cannot follow the code into production.
-    os.environ.setdefault('WORKOUT_DEV_USER', 'dev')
-    # 127.0.0.1 because this mode has no real login. In production the app is
-    # mounted by portal/wsgi.py and gunicorn binds the port, so this never runs.
+    # Local dev only — in production the Procfile runs gunicorn, which binds
+    # the port itself and never executes this. 127.0.0.1 by default because
+    # with no WORKOUT_PASSWORD set this mode opens straight into the app.
     host = os.environ.get('WORKOUT_HOST', '127.0.0.1')
     app.run(host=host, port=int(os.environ.get('PORT', 5020)), debug=False)

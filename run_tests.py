@@ -34,9 +34,10 @@ SUITES = [
     ('prospector', ROOT,               ['prospector/tests']),
     ('agents',     ROOT / 'agents',    []),
     ('canvasser',  ROOT / 'canvasser', []),
-    # `workout` is the standalone training log. Not mounted by the portal and
-    # not part of the deploy, but it shares portal/dbtune.py — so a change
-    # there has to stay green here too.
+    # `workout` is its own app: own login, own database, own Railway service,
+    # and no import from anywhere else in this repo. It runs here because it
+    # ships from this repo and CI is the only gate — not because anything else
+    # depends on it.
     ('workout',    ROOT / 'workout',   []),
 ]
 
