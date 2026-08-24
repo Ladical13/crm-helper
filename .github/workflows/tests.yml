@@ -1,6 +1,6 @@
-# Runs all seven test suites on every push and pull request.
+# Runs all six test suites on every push and pull request.
 #
-# The suites must run as SEPARATE pytest invocations. Each app has its own
+# The six suites must run as SEPARATE pytest invocations. Each app has its own
 # tests/conftest.py, and pytest imports them by bare module name, so collecting
 # two apps in one run collides on the name `conftest` and errors out.
 #
@@ -89,16 +89,6 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -rs | tee "$RUNNER_TEMP/canvasser.log"
-
-      # P1 Lift — its own app (own login, own database, own service), sharing
-      # only this repo. It has no import from the rest of the tree, which
-      # tests/test_standalone.py enforces; it runs here because CI is the only
-      # gate on anything that ships from this repo.
-      - name: workout
-        working-directory: workout
-        run: |
-          set -o pipefail
-          python -m pytest -rs | tee "$RUNNER_TEMP/workout.log"
 
       # A skip means a suite quietly stopped testing something. The likeliest
       # cause is node going missing, which takes pricing parity with it.

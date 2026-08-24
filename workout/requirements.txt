@@ -1,5 +1,0 @@
-# Everything this app needs, and nothing else. It shares no dependency with the
-# rest of the repo on purpose: `workout/` is a complete app, and moving it to a
-# repo of its own is a copy of this folder.
-Flask>=3.0
-gunicorn>=21.2

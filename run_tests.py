@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Run all seven test suites, the same way CI does. Use this before committing.
+"""Run all six test suites, the same way CI does. Use this before committing.
 
     python run_tests.py            # everything
     python run_tests.py estimator  # just one (or several) by name
@@ -34,11 +34,6 @@ SUITES = [
     ('prospector', ROOT,               ['prospector/tests']),
     ('agents',     ROOT / 'agents',    []),
     ('canvasser',  ROOT / 'canvasser', []),
-    # `workout` is its own app: own login, own database, own Railway service,
-    # and no import from anywhere else in this repo. It runs here because it
-    # ships from this repo and CI is the only gate — not because anything else
-    # depends on it.
-    ('workout',    ROOT / 'workout',   []),
 ]
 
 

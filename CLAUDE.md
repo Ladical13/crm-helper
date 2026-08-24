@@ -2,16 +2,14 @@
 
 Four apps in one repo, served as **one site behind one login**: the portal
 (launcher + accounts), the canvasser, the sales CRM, and the estimator. Plus
-`prospector/`, an offline tool that feeds the CRM partner lists. `workout/` is
-in this repo too but is **not part of the site at all** — a separate app with
-its own login and its own deploy; see its section below.
+`prospector/`, an offline tool that feeds the CRM partner lists.
 
 ## Working on this repo
 
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers everything
 python -m portal.wsgi                 # run it all locally on :5010
-python run_tests.py                   # all seven suites, the way CI runs them
+python run_tests.py                   # all six suites, the way CI runs them
 ```
 
 Then open <http://localhost:5010> — canvasser at `/canvass`, CRM at `/crm`,
@@ -23,21 +21,20 @@ estimator at `/estimate`.
 git add -A && git commit -m "what changed" && git push
 ```
 
-Every push runs the seven suites on GitHub (**Actions** tab). Green means the
+Every push runs the six suites on GitHub (**Actions** tab). Green means the
 pricing math, the cache-busters and the per-rep visibility rules all still hold.
 
-**Before committing, run `python run_tests.py`.** It is the same seven commands
+**Before committing, run `python run_tests.py`.** It is the same six commands
 CI runs, and it is much faster to find a break here than in the Actions log.
 Individual suites, when you only touched one app:
 
 ```bash
 cd estimator  && pytest     # 552 — pricing parity, cache-buster, bundles
-cd salescrm   && pytest     # 107 — pipeline, prospecting, queue, drafts, assets
-cd portal     && pytest     # 136 — one login, migration, shell, hardening
+cd salescrm   && pytest     #  90 — pipeline, prospecting, queue, drafts, assets
+cd portal     && pytest     #  90 — one login, migration, shell, hardening
 python -m pytest prospector/tests   # 27 — offline, no network
-cd agents     && pytest     # 219 — spend cap, cache, b2b/content sources
+cd agents     && pytest     # 195 — spend cap, cache, b2b/content sources
 cd canvasser  && pytest     #  15 — vendored Leaflet, cache-buster, sw wiring
-cd workout    && pytest     #  71 — training log; its own app, own login
 ```
 
 **Deploying.** ONE Railway service, whole repo — see the deploy note at the end
@@ -45,7 +42,7 @@ of the portal section. Never deploy a subdirectory. **Pushing to `portal-merge`
 IS deploying**: auto-deploy fires as soon as CI is green, so a push goes
 straight in front of the reps.
 
-**Backups: the estimator has one, the others do not** (audited 2026-08-12;
+**Backups: the estimator has one, the other three do not** (audited 2026-08-12;
 the earlier "nothing is backed up" note was already out of date). Three separate
 things, easy to confuse:
 
@@ -57,11 +54,10 @@ things, easy to confuse:
   admins can pull `/api/backup` for estimates + photos + config on demand. The
   nightly job takes an `O_EXCL` lockfile so two gunicorn workers can't both
   send it.
-- *The other databases are not covered at all.* `salescrm.db` (leads,
+- *The other three databases are not covered at all.* `salescrm.db` (leads,
   activities, prospecting history, documents), `canvasser.db` (pins, GPS) and
   `portal.db` (every password hash and invite) live on the **Railway volume**
-  with nothing copying them anywhere. So does `workout.db`, on its own
-  service's volume. A dead volume, a bad migration or a
+  with nothing copying them anywhere. A dead volume, a bad migration or a
   fat-fingered delete loses them outright, and pushing to GitHub does nothing
   to protect it.
 
@@ -79,7 +75,7 @@ app-switcher bar across the top of all three.
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers all three apps
 python -m portal.wsgi                 # local dev on :5010 (all three mounted)
-cd portal && pytest                   # 136 tests
+cd portal && pytest                   # 90 tests
 ```
 
 `portal/wsgi.py` mounts the three **unchanged** Flask apps with
@@ -220,7 +216,7 @@ Note `_seed_data_dir()` copies `price_book.json`, `tier_defaults.json`,
 long-lived volume the deployed repo copies are inert — editing
 `estimator/price_book.json` and deploying does not change live pricing.
 
-**CI:** `.github/workflows/tests.yml` runs all seven suites on every push and PR.
+**CI:** `.github/workflows/tests.yml` runs all six suites on every push and PR.
 They run as six separate pytest invocations — one run collecting two apps
 collides on the bare module name `conftest`. It installs **node**, because the
 estimator's parity and fastening tests `skipif` it is missing and would
@@ -285,85 +281,6 @@ python -m portal.wsgi                 # dev: run the portal, canvasser is at /ca
   `user-scalable=no` stays — this is a full-screen map and page zoom on a stray
   pinch fights Leaflet's own gestures.
 
-## Workout tracker — "P1 Lift" (`workout/`)
-
-A training log. **Its own app** — its own login, its own cookie, its own
-database, its own Railway service. It lives in this repo for convenience only:
-nothing in it imports anything from outside `workout/`, and nothing in the site
-imports it. Moving it to a repo of its own is a copy of one folder.
-`workout/README.md` is its documentation; this section is the note to whoever
-is working on the *site* and wonders what that folder is.
-
-```bash
-cd workout
-pip install -r requirements.txt
-python app.py                         # http://127.0.0.1:5020
-pytest                                # 71 tests, offline
-```
-
-- **The independence is enforced, not just intended.**
-  `tests/test_standalone.py` walks every import in the folder and fails on
-  anything that is not stdlib, Flask/Werkzeug, or one of its own modules — then
-  boots the app in a subprocess with the repo root off `sys.path`, which is
-  exactly the situation on its own host. It borrowed `portal/dbtune.py`,
-  `portal/session.py` and `portal/users.py` once; the WAL/busy_timeout PRAGMAs
-  are now inlined in `get_db()` and identity is `auth.py`.
-- **Deploy is a SECOND Railway service** with its **root directory set to
-  `workout`**. That is not a contradiction of the "never deploy a subdirectory"
-  rule above — that rule is about the *portal* service, which must always be
-  the whole repo. This is a different service with a different URL, a different
-  volume and a different login. A push to `portal-merge` deploys both, so the
-  workout suite stays in CI.
-- **One password, `WORKOUT_PASSWORD`, and it fails closed.** With the variable
-  unset the app refuses to serve in production (`RAILWAY_ENVIRONMENT` set) and
-  opens freely on a laptop — an unset variable must never be the difference
-  between a login and an open door. Logins are throttled per IP with the
-  counter in SQLite, not memory: two workers would each keep their own and hand
-  out double the allowance.
-- **`WORKOUT_DATA_DIR` must point into the mounted volume.** It defaults to the
-  app directory, which on a host is rebuilt on every deploy — the app would
-  work perfectly and forget everything each time it ships. It says so loudly at
-  startup if it lands there. Same for `WORKOUT_SESSION_SECRET`: unset means
-  each worker signs cookies differently and nobody stays signed in.
-- **Signing out clears the offline cache too.** The service worker keeps API
-  responses so history reads with no signal, and those would otherwise outlive
-  the session on the device.
-- **Every row carries a `user`** and every read filters on it, even though
-  there is one password and one owner today. That is what keeps a second lifter
-  a config change rather than a migration, and the isolation tests hold it.
-- **`index.html` uses RELATIVE asset paths**, so it serves correctly at the root
-  of its own domain and would still work under a prefix. The manifest's
-  `start_url`/`scope` are relative for the same reason.
-- **`local_date` is sent by the browser, not derived from the clock.** Streaks
-  and "this week" are questions about the day you would say you trained on, and
-  a 7pm Sunday session in Colorado is already Monday in UTC — deriving it
-  server-side moves half the evening workouts into the next week.
-- **Warm-ups and empty sets never count.** Volume and set counts filter to
-  `set_type='work' AND reps > 0`: warm-ups inflate volume with however much
-  ramping happened, and the skeleton sets a routine lays down would report work
-  that has not been done yet while the session is still open. Finishing deletes
-  the still-empty ones, so history shows the session that happened.
-- **Records are computed on read, never stored.** A stored PR survives the
-  correction that disproves it — the fat-fingered `2255` stays on the board
-  forever once the set behind it is fixed.
-- **e1RM is Epley, except a single is its own max.** Epley inflates a true 1RM
-  by 3.3%, which would make every heavy single a PR the moment it is logged.
-- **The streak counts WEEKS, not days**, and the current week does not break it
-  until it is over. A daily streak makes a rest day look like a failure, which
-  is a tracker arguing with the training plan.
-- **The weekly series is gap-filled and always reaches the current week**, same
-  rule as the estimator's monthly trends: a chart built only from weeks that
-  have a workout draws a missed week as no bar and reports a block of training
-  that never happened.
-- **`unit` is a label, not a conversion.** Weights are stored exactly as typed;
-  flipping lb/kg changes the suffix and nothing else, because converting stored
-  history would rewrite what was actually lifted.
-- **Cache-buster is `?v=N` in `static/index.html` and `sw.js`** (`CACHE` +
-  every SHELL entry), bumped **by hand** — no `bump_version.py` here, same as
-  the canvasser. Guarded by `tests/test_assets.py`.
-- The icons are generated art, not a downloaded asset; regenerate them from the
-  snippet in the commit that added them rather than hand-editing the PNGs.
-
 ## Sales CRM — "The Pipeline" (`salescrm/`)
 
 A sales-driven CRM that sits at the **top of the funnel** (The Den/Base44 is
@@ -373,7 +290,7 @@ a single SQLite file (`SALESCRM_DATA_DIR/salescrm.db`, gitignored — back it up
 before any migration). No pricing math lives here.
 
 ```bash
-cd salescrm && pytest                 # 107 tests, <15s
+cd salescrm && pytest                 # 90 tests, <2s
 python -m portal.wsgi                 # dev: run the portal, CRM is at /crm
 ```
 
@@ -564,7 +481,7 @@ Per `lead_type`, three steps chosen by prior outreach count (0 → `first`,
 ## Estimator — tests & invariants
 
 ```bash
-cd estimator && pytest                # 731 tests, <30s
+cd estimator && pytest                # 552 tests, <10s
 ```
 
 **Open bug: `company_content.json` is seeded but not shipped.** `app.py`'s
