@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Run all six test suites, the same way CI does. Use this before committing.
+"""Run all seven test suites, the same way CI does. Use this before committing.
 
     python run_tests.py            # everything
     python run_tests.py estimator  # just one (or several) by name
@@ -34,6 +34,10 @@ SUITES = [
     ('prospector', ROOT,               ['prospector/tests']),
     ('agents',     ROOT / 'agents',    []),
     ('canvasser',  ROOT / 'canvasser', []),
+    # `workout` is the standalone training log. Not mounted by the portal and
+    # not part of the deploy, but it shares portal/dbtune.py — so a change
+    # there has to stay green here too.
+    ('workout',    ROOT / 'workout',   []),
 ]
 
 

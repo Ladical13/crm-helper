@@ -1,6 +1,6 @@
-# Runs all six test suites on every push and pull request.
+# Runs all seven test suites on every push and pull request.
 #
-# The six suites must run as SEPARATE pytest invocations. Each app has its own
+# The suites must run as SEPARATE pytest invocations. Each app has its own
 # tests/conftest.py, and pytest imports them by bare module name, so collecting
 # two apps in one run collides on the name `conftest` and errors out.
 #
@@ -89,6 +89,15 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -rs | tee "$RUNNER_TEMP/canvasser.log"
+
+      # The standalone workout tracker. It ships with nothing — it is not
+      # mounted by portal/wsgi.py — but it imports portal/dbtune.py, so it runs
+      # here to keep a change there from breaking it unnoticed.
+      - name: workout
+        working-directory: workout
+        run: |
+          set -o pipefail
+          python -m pytest -rs | tee "$RUNNER_TEMP/workout.log"
 
       # A skip means a suite quietly stopped testing something. The likeliest
       # cause is node going missing, which takes pricing parity with it.

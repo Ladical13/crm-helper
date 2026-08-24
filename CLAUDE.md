@@ -2,14 +2,16 @@
 
 Four apps in one repo, served as **one site behind one login**: the portal
 (launcher + accounts), the canvasser, the sales CRM, and the estimator. Plus
-`prospector/`, an offline tool that feeds the CRM partner lists.
+`prospector/`, an offline tool that feeds the CRM partner lists, and
+`workout/`, a standalone training log that is deliberately not part of the
+site at all.
 
 ## Working on this repo
 
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers everything
 python -m portal.wsgi                 # run it all locally on :5010
-python run_tests.py                   # all six suites, the way CI runs them
+python run_tests.py                   # all seven suites, the way CI runs them
 ```
 
 Then open <http://localhost:5010> — canvasser at `/canvass`, CRM at `/crm`,
@@ -21,20 +23,21 @@ estimator at `/estimate`.
 git add -A && git commit -m "what changed" && git push
 ```
 
-Every push runs the six suites on GitHub (**Actions** tab). Green means the
+Every push runs the seven suites on GitHub (**Actions** tab). Green means the
 pricing math, the cache-busters and the per-rep visibility rules all still hold.
 
-**Before committing, run `python run_tests.py`.** It is the same six commands
+**Before committing, run `python run_tests.py`.** It is the same seven commands
 CI runs, and it is much faster to find a break here than in the Actions log.
 Individual suites, when you only touched one app:
 
 ```bash
 cd estimator  && pytest     # 552 — pricing parity, cache-buster, bundles
-cd salescrm   && pytest     #  90 — pipeline, prospecting, queue, drafts, assets
-cd portal     && pytest     #  90 — one login, migration, shell, hardening
+cd salescrm   && pytest     # 107 — pipeline, prospecting, queue, drafts, assets
+cd portal     && pytest     # 136 — one login, migration, shell, hardening
 python -m pytest prospector/tests   # 27 — offline, no network
-cd agents     && pytest     # 195 — spend cap, cache, b2b/content sources
+cd agents     && pytest     # 219 — spend cap, cache, b2b/content sources
 cd canvasser  && pytest     #  15 — vendored Leaflet, cache-buster, sw wiring
+cd workout    && pytest     #  40 — training log; standalone, ships with nothing
 ```
 
 **Deploying.** ONE Railway service, whole repo — see the deploy note at the end
@@ -75,7 +78,7 @@ app-switcher bar across the top of all three.
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers all three apps
 python -m portal.wsgi                 # local dev on :5010 (all three mounted)
-cd portal && pytest                   # 90 tests
+cd portal && pytest                   # 136 tests
 ```
 
 `portal/wsgi.py` mounts the three **unchanged** Flask apps with
@@ -216,7 +219,7 @@ Note `_seed_data_dir()` copies `price_book.json`, `tier_defaults.json`,
 long-lived volume the deployed repo copies are inert — editing
 `estimator/price_book.json` and deploying does not change live pricing.
 
-**CI:** `.github/workflows/tests.yml` runs all six suites on every push and PR.
+**CI:** `.github/workflows/tests.yml` runs all seven suites on every push and PR.
 They run as six separate pytest invocations — one run collecting two apps
 collides on the bare module name `conftest`. It installs **node**, because the
 estimator's parity and fastening tests `skipif` it is missing and would
@@ -281,6 +284,59 @@ python -m portal.wsgi                 # dev: run the portal, canvasser is at /ca
   `user-scalable=no` stays — this is a full-screen map and page zoom on a stray
   pinch fights Leaflet's own gestures.
 
+## Workout tracker — "P1 Lift" (`workout/`)
+
+A personal training log. Flask + SQLite + PWA like the canvasser, and
+**deliberately standalone**: it is not in `portal/mounts.py`, not mounted by
+`portal/wsgi.py`, and therefore not in the launcher, not in the app-switcher
+bar and not in the deploy. Nothing about it reaches the reps.
+
+```bash
+python workout/app.py                 # http://127.0.0.1:5020
+cd workout && pytest                  # 40 tests, offline
+```
+
+- **It binds to 127.0.0.1 and has no login.** That default IS the security
+  boundary — there is no user table and no password, so `WORKOUT_HOST=0.0.0.0`
+  puts an unauthenticated write API on the network. If it ever needs to be
+  reachable from a phone over the internet, mount it behind the portal (four
+  lines: a `MOUNTS` entry) rather than opening the host; the shared cookie is
+  already the answer to that problem, and the front end is written to work
+  either way.
+- **`index.html` uses RELATIVE asset paths**, unlike the other three, which
+  hardcode their mount prefix and render unstyled anywhere else. That is what
+  lets this one be developed without the portal running, and
+  `test_the_page_does_not_hardcode_a_mount_prefix` keeps it that way.
+- **`local_date` is sent by the browser, not derived from the clock.** Streaks
+  and "this week" are questions about the day you would say you trained on, and
+  a 7pm Sunday session in Colorado is already Monday in UTC — deriving it
+  server-side moves half the evening workouts into the next week.
+- **Warm-ups and empty sets never count.** Volume and set counts filter to
+  `set_type='work' AND reps > 0`: warm-ups inflate volume with however much
+  ramping happened, and the skeleton sets a routine lays down would report work
+  that has not been done yet while the session is still open. Finishing deletes
+  the still-empty ones, so history shows the session that happened.
+- **Records are computed on read, never stored.** A stored PR survives the
+  correction that disproves it — the fat-fingered `2255` stays on the board
+  forever once the set behind it is fixed.
+- **e1RM is Epley, except a single is its own max.** Epley inflates a true 1RM
+  by 3.3%, which would make every heavy single a PR the moment it is logged.
+- **The streak counts WEEKS, not days**, and the current week does not break it
+  until it is over. A daily streak makes a rest day look like a failure, which
+  is a tracker arguing with the training plan.
+- **The weekly series is gap-filled and always reaches the current week**, same
+  rule as the estimator's monthly trends: a chart built only from weeks that
+  have a workout draws a missed week as no bar and reports a block of training
+  that never happened.
+- **`unit` is a label, not a conversion.** Weights are stored exactly as typed;
+  flipping lb/kg changes the suffix and nothing else, because converting stored
+  history would rewrite what was actually lifted.
+- **Cache-buster is `?v=N` in `static/index.html` and `sw.js`** (`CACHE` +
+  every SHELL entry), bumped **by hand** — no `bump_version.py` here, same as
+  the canvasser. Guarded by `tests/test_assets.py`.
+- It shares exactly one thing with the site: `portal/dbtune.py`. That is why
+  its suite runs in CI even though nothing it contains ever deploys.
+
 ## Sales CRM — "The Pipeline" (`salescrm/`)
 
 A sales-driven CRM that sits at the **top of the funnel** (The Den/Base44 is
@@ -290,7 +346,7 @@ a single SQLite file (`SALESCRM_DATA_DIR/salescrm.db`, gitignored — back it up
 before any migration). No pricing math lives here.
 
 ```bash
-cd salescrm && pytest                 # 90 tests, <2s
+cd salescrm && pytest                 # 107 tests, <15s
 python -m portal.wsgi                 # dev: run the portal, CRM is at /crm
 ```
 
@@ -481,7 +537,7 @@ Per `lead_type`, three steps chosen by prior outreach count (0 → `first`,
 ## Estimator — tests & invariants
 
 ```bash
-cd estimator && pytest                # 552 tests, <10s
+cd estimator && pytest                # 731 tests, <30s
 ```
 
 **Open bug: `company_content.json` is seeded but not shipped.** `app.py`'s

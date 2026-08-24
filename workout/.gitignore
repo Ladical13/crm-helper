@@ -1,0 +1,4 @@
+# The training log itself. The repo root already globs *.db*, but naming it here
+# keeps this directory honest on its own.
+workout.db
+workout.db-*
