@@ -235,7 +235,7 @@
       "office": "Adams County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://www.adcogov.org/",
       "permit_template": null,
       "code_points": []
     },
@@ -265,7 +265,7 @@
       "office": "Arapahoe County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://www.arapahoeco.gov/",
       "permit_template": null,
       "code_points": []
     },
@@ -325,7 +325,7 @@
       "office": "Boulder County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://bouldercounty.gov/",
       "permit_template": null,
       "code_points": []
     },
@@ -340,7 +340,7 @@
       "office": "Broomfield County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://www.broomfield.org/",
       "permit_template": null,
       "code_points": []
     },
@@ -475,7 +475,7 @@
       "office": "Denver County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://www.denvergov.org/",
       "permit_template": null,
       "code_points": []
     },
@@ -505,7 +505,7 @@
       "office": "Douglas County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://www.douglas.co.us/",
       "permit_template": null,
       "code_points": []
     },
@@ -535,7 +535,7 @@
       "office": "El Paso County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://elpasoco.com/",
       "permit_template": null,
       "code_points": []
     },
@@ -565,7 +565,7 @@
       "office": "Fremont County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://fremontco.com/",
       "permit_template": null,
       "code_points": []
     },
@@ -685,7 +685,7 @@
       "office": "Jefferson County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://www.jeffco.us/",
       "permit_template": null,
       "code_points": []
     },
@@ -760,7 +760,7 @@
       "office": "Larimer County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://www.larimer.gov/",
       "permit_template": null,
       "code_points": []
     },
@@ -1000,7 +1000,7 @@
       "office": "Pueblo County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://county.pueblo.org/",
       "permit_template": null,
       "code_points": []
     },
@@ -1135,7 +1135,7 @@
       "office": "Teller County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://www.co.teller.co.us/",
       "permit_template": null,
       "code_points": []
     },
@@ -1165,7 +1165,7 @@
       "office": "Weld County Building Department",
       "pull": "",
       "phone": "",
-      "url": "",
+      "url": "https://www.weld.gov/",
       "permit_template": null,
       "code_points": []
     },

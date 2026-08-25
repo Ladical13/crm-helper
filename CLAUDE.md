@@ -29,11 +29,11 @@ CI runs, and it is much faster to find a break here than in the Actions log.
 Individual suites, when you only touched one app:
 
 ```bash
-cd estimator  && pytest     # 552 — pricing parity, cache-buster, bundles
+cd estimator  && pytest     # 756 — pricing parity, cache-buster, bundles
 cd salescrm   && pytest     #  90 — pipeline, prospecting, queue, drafts, assets
-cd portal     && pytest     #  90 — one login, migration, shell, hardening
+cd portal     && pytest     # 136 — one login, migration, shell, hardening
 python -m pytest prospector/tests   # 27 — offline, no network
-cd agents     && pytest     # 195 — spend cap, cache, b2b/content sources
+cd agents     && pytest     # 219 — spend cap, cache, b2b/content sources
 cd canvasser  && pytest     #  15 — vendored Leaflet, cache-buster, sw wiring
 ```
 
@@ -75,7 +75,7 @@ app-switcher bar across the top of all three.
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers all three apps
 python -m portal.wsgi                 # local dev on :5010 (all three mounted)
-cd portal && pytest                   # 90 tests
+cd portal && pytest                   # 136 tests
 ```
 
 `portal/wsgi.py` mounts the three **unchanged** Flask apps with
@@ -481,7 +481,7 @@ Per `lead_type`, three steps chosen by prior outreach count (0 → `first`,
 ## Estimator — tests & invariants
 
 ```bash
-cd estimator && pytest                # 552 tests, <10s
+cd estimator && pytest                # 756 tests, <10s
 ```
 
 **Open bug: `company_content.json` is seeded but not shipped.** `app.py`'s
@@ -627,6 +627,68 @@ Two things behave differently once books are in the wild:
   deleted it" and skips it, so a *new* bundle reaches nobody. List its id in
   `_LATE_BUNDLE_IDS` to have it appended, and drop it once live books have been
   saved past it. Deletion stays sticky for every id not on that list.
+
+### Jurisdiction code lookup (`/api/jurisdictions/<id>/verify`)
+
+Fills the "this is the code your city enforces" block on the customer's sign
+page and the permit packet. **A profile only reaches a customer after a manager
+approves it** (`reviewed_at`) — that gate is the whole reason a model is
+allowed near this at all, and it stays. Tests: `tests/test_jurisdiction_verify.py`.
+
+Audited end-to-end on 2026-08-25 against the live API. It was failing 7 of 16
+real jurisdictions; it now passes 16 of 16. What was wrong, so it does not
+get rebuilt the same way:
+
+- **The allowlist must trust each jurisdiction's OWN domain**
+  (`jurisdiction_prompts.jurisdiction_hosts`). The static list is essentially
+  `.gov`, but only 84 of the 273 Colorado cities in `jurisdictions.json` are on
+  `.gov` — 90 are `.org`, 74 `.com`, 18 `.us`. A bare `.gov` rule rejected 69%
+  of cities' own official sites: Aurora's real building-code page on
+  `auroragov.org` was thrown out as untrustworthy and the verify failed. Do
+  **not** "fix" this by widening the static list to whole TLDs — that admits
+  every contractor blog. One extra domain per jurisdiction, matched at a label
+  boundary so `notauroragov.org` cannot satisfy `auroragov.org`.
+- **All 64 counties shipped with an empty `url`**, so they had no domain at
+  all. `_JX_COUNTY_URL_SEED` backfills the 13 service-area counties **on read**
+  (`_jx_backfill_urls`), never overwriting a manager's edit. It has to be on
+  read: `_seed_data_dir()` copies `jurisdictions.json` to the volume **only if
+  absent**, so a seed-only edit is inert in production — the same trap the
+  price book's bundle catalogs hit.
+- **A delegating jurisdiction has no adopted code of its own and that is a
+  valid answer.** Colorado Springs contracts to the Pikes Peak Regional
+  Building Department; the old rule failed on `adopted_code == 'unknown'` and
+  threw away the correct, useful `delegated_to`. Now a delegation-only profile
+  verifies, approves, and prints as **Permits Issued By** on the packet —
+  getting that wrong costs the office a trip. `delegated_to` alone is the only
+  carve-out; nothing else escapes the unknown check.
+- **A cached rejection is retried once with `force_refresh`.** The 30-day cache
+  stores the model's *answer*, but these rejections are decided downstream of
+  it, so "↻ Re-verify" replayed the same cached answer into the same error for
+  30 days. A *fresh* failure is not retried — that only doubles the spend.
+- **This call uses `sonar-pro` (`_JX_MODEL`), not the global `sonar` default.**
+  `sonar` returned "unknown" for Loveland, Longmont, Boulder and Colorado
+  Springs. It is one lookup per jurisdiction, cached 30 days, read by a human
+  before it ships — worth about a cent.
+- **The direct-fetch tier only tries URLs that are about this jurisdiction**
+  (`code_url`, then `url`, Wayback wrappers unwrapped). The Municode/amlegal
+  slug guesses that used to live here hit **0 times out of 16** and cost a 10s
+  timeout each: Municode serves a ~6 KB JavaScript shell with no code year in
+  the HTML, and amlegal 403s us. City sites 403 a scripted User-Agent, hence
+  `_JX_UA`. Expect Perplexity to answer essentially every verify.
+- **`adopted_code` is tidied, never rewritten** (`_jx_normalize_code`). Only
+  the unambiguous "IRC 2021"/"2021 IRC" pair is canonicalised; "Pikes Peak
+  Regional Building Code 2023" is a genuinely different code and flattening it
+  to an IRC year would state something false. Truncation lands on a word
+  boundary — a hard slice once ended a customer-facing answer at "as part of t".
+- The prompt asks for **one** short code governing a residential re-roof.
+  Loosen it and `sonar-pro` returns 160-character sentences naming the
+  commercial IBC, effective dates and transition plans, all of which land on
+  the "Enforces" line of a customer's estimate.
+
+**What this does not do: confirm the code year is legally correct.** It finds
+and cites an authoritative page; the manager reading it before clicking approve
+is the accuracy check. Answers do move between runs — Windsor came back
+"2024 I-Codes" on one pass and "2018 IRC" on another.
 
 ### Estimate outcome — `lost`, and why the rename was the small half
 
