@@ -1481,8 +1481,20 @@ input.other-price-input { width: 110px; text-align: right; font-size: 12px; }
   .p-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
   /* Repeat the column headers on every page a table spills onto */
   .p-table thead { display: table-header-group; }
-  .p-table tfoot { display: table-footer-group; }
+  /* ...but NOT the footer. table-footer-group repeats the subtotal on every
+     page fragment, so a trade table that spilled onto a second page printed
+     "Roofing Subtotal $10,101.84" at the foot of the first page against a
+     partial item list, then again at the real end - reading like two separate
+     subtotals that happened to match. table-row-group puts it back in normal
+     flow: it prints once, after the last item it sums. */
+  .p-table tfoot { display: table-row-group; }
   .p-table tr { break-inside: avoid; }
+  /* Where a break may land once a table is allowed to split: not between the
+     column headers and the first row, not between a subtotal and the rows it
+     sums, and not directly after a section heading. */
+  .p-table thead { break-after: avoid; }
+  .p-section-row { break-after: avoid; }
+  .p-table tfoot tr, .p-section-sub { break-before: avoid; }
   .p-table th {
     text-align: left; padding: 9pt 8pt 6pt; border-bottom: .75pt solid var(--doc-navy);
     font-size: 6.5pt; text-transform: uppercase; letter-spacing: 1.2pt;
