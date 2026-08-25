@@ -10280,6 +10280,14 @@ def save_signed_contract_attachment(est_id, pdf_bytes):
     return att
 
 
+# The sign route runs the pipeline on a thread with this name. Naming it is
+# what lets a test join it and then assert in the foreground: starting a SECOND
+# pipeline alongside the running one is exactly the concurrent read-modify-write
+# the docstring below exists to prevent, and doing it intermittently wiped the
+# estimate's attachment list on CI.
+POST_SIGN_THREAD = 'post-sign-pipeline'
+
+
 def _post_sign_pipeline(est_id):
     """Post-signature background work, run sequentially in ONE thread so two
     writers never read-modify-write the same estimate concurrently."""
@@ -11885,7 +11893,8 @@ def customer_sign(token):
         threading.Thread(target=send_signature_notification,
                          args=(est,), daemon=True).start()
         threading.Thread(target=_post_sign_pipeline,
-                         args=(est.get('estimate_id'),), daemon=True).start()
+                         args=(est.get('estimate_id'),),
+                         name=POST_SIGN_THREAD, daemon=True).start()
         return build_signed_confirmation(est)
 
     # Already signed — show the confirmation instead of the form
