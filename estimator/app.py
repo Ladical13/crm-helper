@@ -3662,7 +3662,24 @@ body{background:#fff;padding-bottom:0 !important}
 .cert{border-width:1.5pt}
 .cvcontract,.cvcontract[open]{break-inside:auto}
 .cvcontract summary{display:none}
-.cvcontract-body{max-height:none !important;overflow:visible !important;padding:16px 18px}}
+.cvcontract-body{max-height:none !important;overflow:visible !important;padding:16px 18px}
+/* A trade table taller than one page HAS to break, and the browser's default
+   for a split table is to repeat <tfoot> on every fragment — so the customer's
+   PDF printed "Roofing Subtotal $10,101.84" at the foot of the page, then the
+   remaining items, then the same subtotal again, as if there were two of them.
+   table-row-group puts the footer back in normal flow: it prints once, at the
+   real end. <thead> still repeats across pages, which is what we want — the
+   continued rows keep their Description / Qty / Unit headings. */
+.cvt tfoot{display:table-row-group}
+/* Where the break lands, if it must land inside a table: never through the
+   middle of a line item, never between a subtotal and the rows it sums, and
+   never leaving a heading stranded alone at the bottom of a page. */
+.cvt tr{break-inside:avoid}
+.cvt thead{break-after:avoid}
+.cvt tr.cv-section-row{break-after:avoid}
+.cvt tfoot tr,.cvt tr.cv-section-sub{break-before:avoid}
+.cvtrade-hd{break-after:avoid}
+.cvgrand{break-inside:avoid}}
 """
 
 # Shared client-side behavior for every public customer page: scroll-reveal,
