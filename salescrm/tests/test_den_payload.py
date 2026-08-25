@@ -62,22 +62,16 @@ def test_a_won_lead_arrives_as_contracted(client):
     assert project['status'] == 'contracted'
 
 
-def test_an_unwon_lead_enters_at_the_front(client):
-    signup(client)
-    lid = new_lead(client)['id']
-    _, project = _payload(client, lid)
-    assert project['status'] == 'new_lead'
-
-
-def test_no_stage_maps_to_an_invented_production_state(client):
-    """We have no evidence for mid-funnel Base44 states, so everything that is
-    not `won` lands at the front rather than guessing at 'inspected' etc."""
+def test_status_does_not_depend_on_the_stage_the_card_sits_in(client):
+    """The push fires at signature, so `contracted` is unconditionally true —
+    there is no per-stage status map to keep in sync. Pinned because the old
+    code sent `lead`, a value absent from The Den's vocabulary entirely."""
     signup(client)
     for stage in ('contacted', 'appt_set', 'inspected', 'estimate_presented'):
         lid = new_lead(client)['id']
         client.patch(f'/api/leads/{lid}/stage', json={'stage': stage})
         _, project = _payload(client, lid)
-        assert project['status'] == 'new_lead', stage
+        assert project['status'] == 'contracted', stage
 
 
 # ── Attribution: the fields that make partner ROI answerable ─────────────────
@@ -138,21 +132,11 @@ def test_a_plain_homeowner_gets_no_lead_type_noise(client):
 
 # ── Source channel ───────────────────────────────────────────────────────────
 
-def test_known_sources_map_to_base44_vocabulary(client):
-    signup(client)
-    for ours, theirs in (('door_knock', 'canvassing'),
-                         ('website', 'google'),
-                         ('existing_customer', 'repeat')):
-        lid = new_lead(client, source=ours)['id']
-        contact, project = _payload(client, lid)
-        assert contact['source'] == theirs
-        assert project['source'] == theirs
-
-
-def test_an_unmapped_channel_passes_through_intact(client):
-    """Base44's `source` is free text. Flattening an unknown channel into a
-    generic bucket is what destroyed attribution in the first place — an
-    unrecognised campaign name is better preserved than normalised away."""
+def test_the_channel_passes_through_intact(client):
+    """Base44's `source` is free text, so the channel crosses unnormalised.
+    Flattening it into a generic bucket is what destroyed attribution in the
+    first place — an unrecognised campaign name is better preserved than
+    mapped away into something lossy."""
     signup(client)
     lid = new_lead(client, source='storm')['id']
     contact, _ = _payload(client, lid)
@@ -167,16 +151,9 @@ def test_project_carries_every_documented_required_field(client):
     lid = new_lead(client, phone='9705551212', address='123 Oak St',
                    city='Fort Collins', state='CO')['id']
     _, project = _payload(client, lid)
-    for field in ('job_name', 'contact_name', 'contact_phone', 'street_address',
-                  'city', 'state', 'job_category', 'assigned_salesperson', 'status'):
+    for field in ('name', 'client_name', 'client_phone', 'street_address',
+                  'city', 'state', 'assigned_salesperson', 'status'):
         assert project.get(field) not in (None, ''), field
-
-
-def test_commercial_leads_are_categorised_as_commercial(client):
-    signup(client)
-    lid = new_lead(client, lead_type='commercial', company='Acme Warehouse')['id']
-    _, project = _payload(client, lid)
-    assert project['job_category'] == 'commercial'
 
 
 def test_rep_travels_on_the_documented_project_field(client):

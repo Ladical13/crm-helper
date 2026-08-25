@@ -505,7 +505,11 @@ def _siding_gbb_est(**td_kw):
                 'description': '', 'notes': '', 'included': True}
     td = {
         'enabled': True, 'mode': 'gbb', 'selected_tier': 'good',
-        'tier_bundles': {'good': '__custom__', 'better': '', 'best': ''},
+        # NOT __custom__: a custom tier drops its stored bullets on purpose
+        # (see test_package_cards.py). This fixture is about labor staying out
+        # of the customer's row list while staying in their price, so the tier
+        # names no bundle and keeps the promise the estimate was saved with.
+        'tier_bundles': {'good': '', 'better': '', 'best': ''},
         'tier_features': {'good': ['Installed by Project One crews to manufacturer spec'],
                           'better': [], 'best': []},
         'tier_descriptions': {'good': '', 'better': '', 'best': ''},

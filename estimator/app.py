@@ -28,6 +28,7 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, Respo
 # this app works both mounted by portal/wsgi.py and run standalone (its test
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import funnel as pfunnel     # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import throttle as pthrottle  # noqa: E402
 from portal import users as pusers       # noqa: E402
@@ -729,6 +730,25 @@ def service_worker():
 
 # ── Estimates CRUD ─────────────────────────────────────────────────────────
 
+# `declined` was the old name for `lost`. It is still written on every estimate
+# that reached that outcome before the rename, and those are real records on a
+# live volume — so nothing rewrites them. `lost` is what gets written from now
+# on, and everything that reads a status comes through here.
+#
+# Change orders keep `declined`, deliberately: a customer saying no to an
+# add-on is not a lost job, and collapsing the two would lose that distinction.
+LOST_STATUSES = ('lost', 'declined')
+
+
+def _norm_est_status(status):
+    """The canonical name for a stored estimate status."""
+    return 'lost' if (status or '') in LOST_STATUSES else (status or 'draft')
+
+
+def _is_lost(est):
+    return (est.get('status') or '') in LOST_STATUSES
+
+
 def _estimate_total(est):
     """Grand total for any estimate type (insurance sections-aware)."""
     if est.get('estimate_type') == 'insurance':
@@ -739,6 +759,35 @@ def _estimate_total(est):
         return sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
                    for sec in sections for i in sec.get('items', []))
     return calc_selected_total(est)
+
+
+def _funnel_record(est, state, at=''):
+    """Report an estimate's funnel state to the shared join. Never raises.
+
+    This is what lets the CRM answer "of the doors we knocked, where do we
+    lose people" — the estimator is the only system that knows an estimate was
+    sent, opened or signed, and the CRM is the only one that knows which door
+    it started at. Best-effort on purpose: a customer signing a contract must
+    never fail because a reporting table was locked.
+    """
+    try:
+        c = est.get('customer', {}) or {}
+        pfunnel.record(
+            est.get('estimate_id') or '',
+            state,
+            lead_id=c.get('crm_lead_id') or '',
+            contact_id=c.get('crm_contact_id') or '',
+            rep=(est.get('salesperson') or '').strip(),
+            value=round(_estimate_total(est), 2),
+            # Carried so the CRM can file the signed contract in The Den
+            # without reaching back into the estimator: Base44 refuses file
+            # uploads from our token (405), so that Document is a link to the
+            # hosted signing page anyway, and the token is the whole link.
+            share_token=est.get('share_token') or '',
+            at=at or None)
+    except Exception as exc:
+        print(f'[funnel] {state} not recorded for '
+              f'{est.get("estimate_id", "?")}: {exc}')
 
 
 @app.route('/api/estimates', methods=['GET'])
@@ -780,7 +829,9 @@ def list_estimates():
                 'customer_name':   c.get('name', ''),
                 'city':            a.get('city', ''),
                 'estimate_date':   d.get('estimate_date', ''),
-                'status':          d.get('status', 'draft'),
+                # Normalized, so the front end only ever sees one spelling and
+                # a record written before the rename behaves like a new one.
+                'status':          _norm_est_status(d.get('status')),
                 'estimate_type':   d.get('estimate_type', 'retail'),
                 'selected_tier':   d.get('selected_tier', 'better'),
                 'salesperson':     d.get('salesperson', ''),
@@ -977,18 +1028,28 @@ def update_estimate_label(est_id):
 
 @app.route('/api/estimates/<est_id>/status', methods=['PATCH'])
 def update_estimate_status(est_id):
-    VALID = {'draft', 'sent', 'accepted', 'declined'}
+    VALID = {'draft', 'sent', 'accepted', 'lost', 'declined'}
     status = (request.json or {}).get('status')
     if status not in VALID:
         return jsonify({'error': 'Invalid status'}), 400
+    status = _norm_est_status(status)          # `declined` in, `lost` stored
     est = est_load(est_id)
     if est is None:
         return jsonify({'error': 'Not found'}), 404
     if not _can_touch_estimate(est):
         return _forbid()
+    # A signature is a fact about what the customer did, not a status a rep
+    # can retract. Reopening a signed job is a change order, not an edit here.
+    if est.get('signature') and status != 'accepted':
+        return jsonify({'error': 'A signed estimate cannot change status.'}), 400
     est['status'] = status
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     est_save(est)
+    # Tell the CRM. Marking an estimate lost does NOT lose the lead — plenty
+    # get re-quoted, and losing it would close the tasks that win it back — but
+    # the pipeline should say so on the timeline.
+    if status == 'lost':
+        _funnel_record(est, 'lost')
     return jsonify({'ok': True, 'status': status})
 
 
@@ -2431,25 +2492,36 @@ def _tier_bullets_are_stale(pb, est, trade, tier):
     the package by hand, so a customer reads "Architectural laminate shingle
     system - lifetime limited warranty" over a rolled-roofing line item, and
     there is no editor left to correct it. Stale means either the tier is
-    __custom__, or it still names a bundle but none of that bundle's products is
-    priced in the tier any more. A pre-bundle estimate carries no tier_bundles
-    at all; those bullets were curated by hand and are left alone.
+    __custom__ - the rep said so on the dropdown, and that stands on its own -
+    or it still names a bundle but none of that bundle's products is priced in
+    the tier any more. A pre-bundle estimate carries no tier_bundles at all;
+    those bullets were curated by hand and are left alone.
 
     MUST mirror tierBulletsAreStale in app.js."""
     td = (est.get('trades') or {}).get(trade) or {}
     tb = td.get('tier_bundles')
     if not isinstance(tb, dict):
         return False                      # pre-bundle estimate - hand-curated
-    items = td.get('line_items') or []
-    # Only judge a trade the bundles actually built. Items created by
-    # applyBundleToTier carry catalog_id; a hand-shaped trade has none, and
-    # without that evidence there is no bundle whose leftover copy this could
-    # be - the bullets are the rep's own and stay.
-    if not any(it.get('catalog_id') for it in items):
-        return False
     bid = str(tb.get(tier) or '').strip()
+    # Custom is the rep saying, on the Product dropdown, that this tier is not
+    # a package the book sells. Nothing else ever writes __custom__, so it is
+    # evidence on its own and is judged BEFORE the catalog test below.
+    # It used to be judged after, and that cost a real estimate: seeding a new
+    # estimate loads the default shingle bundles, so building a rolled-roofing
+    # job by hand means deleting those rows - which deletes the last catalog_id
+    # in the trade, and a trade with no catalog_id was ruled "never built by a
+    # bundle, bullets are the rep's own". The shingle tagline the bundle wrote
+    # on the way past then printed over the rolled roofing. Evidence the rep
+    # destroyed while doing exactly what the tab asks is not evidence.
     if bid == '__custom__':
         return True
+    items = td.get('line_items') or []
+    # A tier that still NAMES a bundle is judged only on a trade the bundles
+    # actually built. Items created by applyBundleToTier carry catalog_id; a
+    # hand-shaped trade has none, and without that evidence there is no bundle
+    # whose leftover copy this could be - the bullets are the rep's own and stay.
+    if not any(it.get('catalog_id') for it in items):
+        return False
     if not bid:
         return False
     bundle = next((b for b in (pb.get(trade + '_bundles') or [])
@@ -2584,7 +2656,7 @@ def get_analytics():
         })
 
     # ── New aggregations ──────────────────────────────────────────────
-    funnel = {'total': 0, 'sent': 0, 'viewed': 0, 'signed': 0, 'declined': 0}
+    funnel = {'total': 0, 'sent': 0, 'viewed': 0, 'signed': 0, 'lost': 0}
     pipeline_aging = {
         'fresh':  {'count': 0, 'value': 0.0},   # 0–3 days
         'active': {'count': 0, 'value': 0.0},   # 4–14 days
@@ -2614,10 +2686,10 @@ def get_analytics():
         if is_sent:   funnel['sent']    += 1
         if est.get('first_viewed_at'): funnel['viewed'] += 1
         if is_signed: funnel['signed']  += 1
-        if est.get('status') == 'declined': funnel['declined'] += 1
+        if _is_lost(est): funnel['lost'] += 1
 
         # ── Pipeline aging (open, sent estimates only) ────────────────
-        if is_sent and not is_signed and est.get('status') != 'declined':
+        if is_sent and not is_signed and not _is_lost(est):
             sent_dt_str = est.get('sent_at') or ''
             est_total   = _estimate_total(est)
             try:
@@ -2952,9 +3024,38 @@ def _cv_products_block(est):
         for trade, label, value in rows
     )
     return f'''<div class="cvproducts">
-      <h3>Product Selection</h3>
+      <h2 data-eyebrow="Specification">The Materials We&rsquo;ll Use</h2>
       <table class="cvprod-tbl"><tbody>{trs}</tbody></table>
     </div>'''
+
+
+def _est_structures(est):
+    """Buildings on a complex. Each carries its own measurements in the same
+    flat key namespace as est['measurements'], so every calculator that takes a
+    measurements dict runs on one building unchanged.
+
+    Mirrors estStructures() in app.js. Pricing needs none of this - quantities
+    are resolved in the browser and stored on the items - so the server reads
+    structures only where it recalculates from measurements, which today is the
+    fastening schedule on the production packet."""
+    sts = est.get('structures')
+    return [s for s in sts if isinstance(s, dict)] if isinstance(sts, list) else []
+
+
+def _trade_structures(est, trade):
+    return [s for s in _est_structures(est) if (s.get('trade') or 'commercial') == trade]
+
+
+def _measurement_sets(est):
+    """(building name, measurements) pairs the packet reports over: one per
+    building on a complex, or one unnamed set for a single roof. A crew lays out
+    corners from these numbers, so seven roofs need seven fastening schedules
+    and seven sets of measurements, not the first roof's printed once."""
+    sts = _trade_structures(est, 'commercial')
+    if sts:
+        return [(str(s.get('name') or '').strip(), s.get('measurements') or {})
+                for s in sts]
+    return [('', est.get('measurements') or {})]
 
 
 def _with_section(item, name):
@@ -3056,12 +3157,12 @@ def render_line_items(est, tier=None, only_trades=None):
             continue  # nothing priced to show the customer for this trade
         gtotal += sub
         lbl = labels.get(tk, tk.title())
-        lp_ths = '<th class="cvth-r">Unit Price</th><th class="cvth-r">Total</th>' if show_lp else ''
+        lp_ths = '<th scope="col" class="cvth-r">Unit Price</th><th scope="col" class="cvth-r">Total</th>' if show_lp else ''
         parts.append(f'''<div class="cvtrade">
           <div class="cvtrade-hd">{lbl}</div>
           <table class="cvt"><thead><tr>
-            <th>Description</th><th class="cvth-c">Qty</th>
-            <th class="cvth-c">Unit</th>{lp_ths}</tr></thead>
+            <th>Description</th><th scope="col" class="cvth-c">Qty</th>
+            <th scope="col" class="cvth-c">Unit</th>{lp_ths}</tr></thead>
           <tbody>{''.join(rows)}</tbody>
           <tfoot><tr><td colspan="{ncols - 1}" class="cvsub-l">{lbl} Subtotal</td>
             <td class="cvr cvsub">{fc(sub)}</td></tr></tfoot>
@@ -3071,14 +3172,28 @@ def render_line_items(est, tier=None, only_trades=None):
 
 
 _CV_CSS = """
-:root{--navy:#1a3a5c;--navy2:#0e2440;--navy3:#2c5580;--ink:#101a2c;--mut:#5b6b81;--faint:#93a1b5;
---line:#e3e9f1;--bg:#eef2f6;--cyan:#22c7da;--gold:#ffd400;--red:#ee3d42;--green:#16a34a;
---r:16px;--sh:0 1px 2px rgba(15,23,42,.05),0 10px 30px -18px rgba(15,23,42,.22)}
+/* Palette sampled from logo.png, not eyeballed. The page shipped for years on
+   #1a3a5c as "the brand navy" — a slate blue that appears nowhere in the mark,
+   so the letterhead and everything under it were two different colors. --navy
+   is the real one. Cyan is the single accent; gold and red survive only in the
+   one footer stripe (the Colorado nod), and amber marks the selected package
+   and nothing else on the page. */
+:root{--navy:#082878;--navy2:#05184a;--navy3:#1a3f96;--ink:#0c1830;--mut:#5a6478;--faint:#8b93a4;
+--line:#e3e0da;--bg:#faf9f7;--cyan:#00a8b8;--gold:#f8d000;--red:#b81010;--green:#16a34a;--amber:#e88400;
+--serif:'Source Serif 4',Georgia,'Times New Roman',serif;
+--r:10px;--sh:0 1px 2px rgba(12,24,48,.04),0 8px 24px -18px rgba(12,24,48,.18);
+/* type scale — every size in this sheet used to be a bare literal, which is
+   exactly how it drifted out of step with the printed estimate */
+--fz-micro:10px;--fz-fine:12px;--fz-sm:13.5px;--fz-body:15px;--fz-lead:16.5px;
+--fz-h3:19px;--fz-h2:24px;
+/* space scale */
+--sp-1:6px;--sp-2:10px;--sp-3:16px;--sp-4:22px;--sp-5:28px;--sp-6:40px;
+--gut:16px}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
-body{font-family:'Plus Jakarta Sans',system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14.5px;
-color:var(--ink);background:linear-gradient(180deg,#f7f9fc 0%,var(--bg) 320px);min-height:100vh;
--webkit-font-smoothing:antialiased}
+body{font-family:'InterDoc',system-ui,-apple-system,'Segoe UI',sans-serif;font-size:var(--fz-body);
+color:var(--ink);background:var(--bg);min-height:100vh;
+font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
 img{max-width:100%}
 body.cv-has-stick{padding-bottom:96px}
 
@@ -3089,34 +3204,36 @@ display:flex;align-items:center;justify-content:space-between;gap:14px;border-bo
 .cvhdr img{height:50px;width:auto;display:block}
 .cvhdr-contact{display:flex;flex-direction:column;align-items:flex-end;gap:4px;text-align:right}
 .cvhdr-contact a{display:inline-flex;align-items:center;gap:7px;background:var(--navy);color:#fff;
-font-weight:700;font-size:13.5px;text-decoration:none;padding:9px 16px;border-radius:999px;
-box-shadow:0 6px 14px -6px rgba(26,58,92,.55);transition:transform .15s}
+font-weight:600;font-size:var(--fz-sm);text-decoration:none;padding:9px 16px;border-radius:999px;
+transition:transform .15s}
 .cvhdr-contact a:active{transform:scale(.96)}
-.cvhdr-contact span{color:var(--faint);font-size:10.5px;letter-spacing:.3px}
-.cvbrand-stripe{height:4px;background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
+.cvhdr-contact span{color:var(--faint);font-size:var(--fz-micro);letter-spacing:.6px;text-transform:uppercase}
+/* The Colorado tricolor. It used to fire three times on one page — header,
+   signature card and footer — which is two times too many for a device that
+   is supposed to read as a signature. It now appears once, at the footer. */
+.cvbrand-stripe{height:3px;background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
+.cvhdr+.cvbrand-stripe{height:1px;background:var(--line)}
 
 /* ── hero ── */
-.cvhero{position:relative;background:radial-gradient(130% 150% at 88% -30%,var(--navy3) 0%,var(--navy) 48%,var(--navy2) 100%);
-color:#fff;padding:46px 20px 42px;text-align:center;overflow:hidden}
-.cvhero::before{content:'';position:absolute;width:360px;height:360px;border-radius:50%;
-background:radial-gradient(circle,rgba(34,199,218,.16),transparent 65%);top:-150px;left:-110px}
-.cvhero-brand{position:relative;font-size:11px;font-weight:800;letter-spacing:3px;text-transform:uppercase;color:var(--cyan);margin-bottom:12px}
-.cvhero h1{position:relative;font-size:clamp(24px,5.5vw,34px);font-weight:800;letter-spacing:-.6px;margin-bottom:8px}
-.cvhero p{position:relative;font-size:14.5px;opacity:.85;max-width:540px;margin:0 auto;line-height:1.55}
-.cvhero.ok{background:radial-gradient(130% 150% at 88% -30%,#22a558 0%,#178a44 48%,#0d6630 100%)}
-.cvsteps{position:relative;display:flex;justify-content:center;gap:8px;margin-top:22px;flex-wrap:wrap}
-.cvstep{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.09);
-border:1px solid rgba(255,255,255,.22);border-radius:999px;padding:6px 14px 6px 7px;font-size:12px;font-weight:600;color:#fff}
-.cvstep b{display:inline-flex;width:21px;height:21px;border-radius:50%;background:var(--cyan);color:var(--navy2);
-font-size:11px;font-weight:800;align-items:center;justify-content:center}
+.cvhero{position:relative;background:var(--navy2);
+color:#fff;padding:var(--sp-6) 20px;text-align:center;overflow:hidden}
+.cvhero-brand{position:relative;font-size:var(--fz-micro);font-weight:600;letter-spacing:3px;text-transform:uppercase;color:var(--cyan);margin-bottom:14px}
+.cvhero h1{position:relative;font-family:var(--serif);font-size:clamp(26px,5.5vw,38px);font-weight:600;letter-spacing:-.5px;margin-bottom:10px}
+.cvhero p{position:relative;font-size:var(--fz-lead);opacity:.8;max-width:520px;margin:0 auto;line-height:1.6}
+.cvhero.ok{background:#0d5c33}
+.cvsteps{position:relative;display:flex;justify-content:center;gap:8px;margin-top:var(--sp-5);flex-wrap:wrap}
+.cvstep{display:inline-flex;align-items:center;gap:8px;background:transparent;
+border:1px solid rgba(255,255,255,.28);border-radius:999px;padding:6px 15px 6px 7px;font-size:var(--fz-fine);font-weight:500;color:rgba(255,255,255,.88)}
+.cvstep b{display:inline-flex;width:20px;height:20px;border-radius:50%;background:var(--cyan);color:var(--navy2);
+font-size:11px;font-weight:700;align-items:center;justify-content:center}
 
 /* ── cover-photo hero ── */
 .cvcover{position:relative;overflow:hidden;background:var(--navy2)}
 .cvcover img{width:100%;height:min(500px,62vh);object-fit:cover;display:block}
 .cvcover-shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,25,41,.25) 0%,rgba(10,25,41,.05) 40%,rgba(10,25,41,.9) 100%)}
 .cvcover-text{position:absolute;left:0;right:0;bottom:0;padding:34px 20px 30px;text-align:center;color:#fff}
-.cvcover-text h1{font-size:clamp(24px,5.5vw,36px);font-weight:800;letter-spacing:-.6px;margin-bottom:8px;text-shadow:0 2px 14px rgba(0,0,0,.55)}
-.cvcover-text p{font-size:14.5px;opacity:.95;text-shadow:0 1px 6px rgba(0,0,0,.6)}
+.cvcover-text h1{font-family:var(--serif);font-size:clamp(26px,5.5vw,38px);font-weight:600;letter-spacing:-.5px;margin-bottom:8px;text-shadow:0 2px 14px rgba(0,0,0,.55)}
+.cvcover-text p{font-size:var(--fz-lead);opacity:.95;text-shadow:0 1px 6px rgba(0,0,0,.6)}
 @media(max-width:520px){.cvcover img{height:340px}}
 .cv-check{width:76px;height:76px;margin:0 auto 16px;border-radius:50%;background:rgba(255,255,255,.14);
 border:2.5px solid rgba(255,255,255,.9);display:flex;align-items:center;justify-content:center;
@@ -3127,21 +3244,43 @@ color:#fff;padding:11px 24px;border-radius:999px;font-size:14px;font-weight:700;
 .cv-print-btn:hover{background:rgba(255,255,255,.28)}
 
 /* ── layout + cards ── */
-.cvmain{max-width:960px;margin:0 auto;padding:6px 0 46px}
-@media(min-width:720px){.cvmain{padding:14px 22px 60px}}
+/* The gutter lives on .cvmain, not on each card. It used to be per-card
+   `margin:16px 16px 0`, and the three blocks that forgot it — .cvdet, .cvdl,
+   .cvvz — ran edge-to-edge on a phone while every neighbour sat inset. */
+.cvmain{max-width:900px;margin:0 auto;padding:var(--sp-1) var(--gut) var(--sp-6)}
+@media(min-width:720px){.cvmain{--gut:22px;padding:var(--sp-3) var(--gut) 64px}}
 .cvc-card,.cvnotes,.cvproducts,.cvintro,.cvphotos,.cvcond,.cvnext,.cvrep-card{background:#fff;border:1px solid var(--line);
-border-radius:var(--r);box-shadow:var(--sh);margin:16px 16px 0;padding:18px}
-.cvgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px 16px}
-.cvgi label{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--faint);font-weight:700;display:block;margin-bottom:3px}
-.cvgi strong{font-size:14px;font-weight:700;color:var(--ink);line-height:1.4}
-.cvnotes h3,.cvproducts h3,.cvphotos h3,.cvcond>h3,.cvnext h3,.cvrep-card h3{display:flex;align-items:center;gap:9px;
-font-size:11.5px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--navy);margin-bottom:12px}
-.cvnotes h3::before,.cvproducts h3::before,.cvphotos h3::before,.cvcond>h3::before,.cvnext h3::before,.cvrep-card h3::before{
-content:'';width:20px;height:3.5px;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--gold));flex-shrink:0}
-.cvnotes p{font-size:14px;line-height:1.7;color:#33415a;white-space:pre-wrap}
-.cvintro{padding:22px}
-.cvintro-logo{height:40px;width:auto;display:block;margin-bottom:14px}
-.cvintro p{font-size:14.5px;line-height:1.8;color:#33415a;white-space:pre-wrap}
+border-radius:var(--r);box-shadow:var(--sh);margin:var(--sp-3) 0 0;padding:var(--sp-5)}
+.cvgrid{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4) var(--sp-3)}
+.cvgi label{font-size:var(--fz-micro);text-transform:uppercase;letter-spacing:1.2px;color:var(--faint);font-weight:600;display:block;margin-bottom:5px}
+.cvgi strong{font-size:var(--fz-body);font-weight:500;color:var(--ink);line-height:1.4}
+/* Section heading: a small caps teal eyebrow over a serif line. Replaces the
+   11.5px/800 uppercase run-in, which was a SaaS pattern on a document that
+   wants to read like a proposal. */
+.cvnotes h2,.cvproducts h2,.cvphotos h2,.cvcond>h2,.cvnext h2,.cvrep-card h2,.cvtrust h2{display:block;
+font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;text-transform:none;letter-spacing:-.2px;
+color:var(--navy);margin:0 0 var(--sp-3)}
+/* Attribute-gated so a heading without an eyebrow doesn't render an empty box
+   above itself. */
+.cvmain h2[data-eyebrow]::before,.cvmain h3[data-eyebrow]::before{
+content:attr(data-eyebrow);display:block;font-family:'InterDoc',system-ui,sans-serif;font-size:var(--fz-micro);
+font-weight:600;letter-spacing:1.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:var(--sp-1)}
+
+/* ── at a glance ── */
+.cvglance-list{margin:0}
+.cvglance-row{display:grid;grid-template-columns:118px 1fr;gap:var(--sp-3);
+padding:13px 0;border-bottom:1px solid var(--line)}
+.cvglance-row:last-child{border-bottom:none}
+.cvglance-row:first-child{padding-top:0}
+.cvglance-k{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.2px;
+color:var(--faint);padding-top:2px}
+.cvglance-v{font-size:var(--fz-body);line-height:1.55;color:var(--ink);margin:0}
+.cvglance-v strong{font-weight:600;color:var(--navy)}
+@media(max-width:640px){.cvglance-row{grid-template-columns:1fr;gap:var(--sp-1)}}
+.cvnotes p{font-size:var(--fz-body);line-height:1.75;color:var(--mut);white-space:pre-wrap}
+.cvintro{padding:var(--sp-5)}
+.cvintro-logo{height:34px;width:auto;display:block;margin-bottom:var(--sp-4)}
+.cvintro p{font-family:var(--serif);font-size:var(--fz-lead);line-height:1.8;color:var(--ink);white-space:pre-wrap}
 
 /* ── photos + lightbox ── */
 .cvph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
@@ -3172,120 +3311,125 @@ color:#fff;border:none;font-size:24px;line-height:1;cursor:pointer;z-index:2;fon
 @media(max-width:480px){.cvprod-trade,.cvprod-label{width:auto}.cvprod-tbl td{padding:6px 4px;font-size:12.5px}}
 
 /* ── package (tier) cards ── */
-.cv-tier-section{margin:6px 16px 0}
-.cv-tier-heading{display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:800;text-transform:uppercase;
-letter-spacing:1px;color:var(--navy);padding:20px 0 12px}
-.cv-tier-heading::before{content:'';width:20px;height:3.5px;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--gold));flex-shrink:0}
-.cv-tier-cards{display:grid;gap:12px;margin-bottom:6px}
-.cv-tier-card{border:2px solid var(--line);border-radius:var(--r);padding:22px 14px 18px;text-align:center;cursor:pointer;
-transition:transform .18s,box-shadow .18s,background .18s;background:#fff;position:relative;
--webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;box-shadow:0 2px 10px -4px rgba(15,23,42,.12)}
-.cv-tier-card:hover{transform:translateY(-3px);box-shadow:0 14px 30px -14px rgba(15,23,42,.35)}
-.cv-tier-card.cv-tier-selected{transform:translateY(-3px);box-shadow:0 18px 36px -16px rgba(15,23,42,.4)}
-.cv-tier-popular{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1d8a4b,var(--green));
-color:#fff;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;padding:4px 12px;border-radius:999px;
-white-space:nowrap;box-shadow:0 4px 10px -3px rgba(22,163,74,.6)}
-.cv-tier-name{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px}
-.cv-tier-system{font-size:13.5px;font-weight:700;color:var(--ink);margin-bottom:6px;line-height:1.3}
-.cv-tier-price{font-size:27px;font-weight:800;letter-spacing:-.5px;margin-bottom:6px;font-variant-numeric:tabular-nums}
-.cv-tier-desc{font-size:11.5px;color:var(--mut);margin-bottom:8px;line-height:1.5}
-.cv-tier-feats{list-style:none;margin:10px 0 6px;padding:10px 2px 0;border-top:1px dashed var(--line);text-align:left;
-font-size:11.5px;color:#33415a;line-height:1.55}
-.cv-tier-feats li{position:relative;padding:2px 0 2px 18px}
-.cv-tier-feats li::before{content:'✓';position:absolute;left:0;font-weight:800;color:var(--green)}
+/* No hover lift, no pastel fills, no drop shadow bloom. Three cards competing
+   with color and motion made the choice feel like a pricing page; the choice
+   now reads through one amber rule on the selected card and nothing else. */
+.cv-tier-section{margin:var(--sp-1) 0 0}
+.cv-tier-heading{display:block;margin:0;font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;text-transform:none;
+letter-spacing:-.2px;color:var(--navy);padding:var(--sp-5) 0 var(--sp-3)}
+.cv-tier-heading::before{content:attr(data-eyebrow);display:block;font-family:'InterDoc',system-ui,sans-serif;
+font-size:var(--fz-micro);font-weight:600;letter-spacing:1.6px;text-transform:uppercase;color:var(--cyan);margin-bottom:var(--sp-1)}
+.cv-tier-cards{display:grid;gap:var(--sp-2);margin-bottom:var(--sp-1)}
+.cv-tier-card{border:1px solid var(--line);border-top:2px solid var(--line);border-radius:var(--r);
+padding:var(--sp-5) var(--sp-3) var(--sp-4);text-align:left;cursor:pointer;
+transition:border-color .18s,background .18s;background:#fff;position:relative;
+-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+.cv-tier-card:hover{border-color:var(--mut)}
+.cv-tier-card.cv-tier-selected{border-color:var(--line);border-top-color:var(--amber);background:#fff}
+.cv-tier-popular{position:absolute;top:-1px;right:var(--sp-3);background:transparent;
+color:var(--green);font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;padding:var(--sp-1) 0;
+white-space:nowrap}
+.cv-tier-name{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.6px;margin-bottom:var(--sp-2)}
+.cv-tier-system{font-size:var(--fz-sm);font-weight:500;color:var(--ink);margin-bottom:var(--sp-1);line-height:1.4}
+.cv-tier-price{font-family:var(--serif);font-size:30px;font-weight:600;letter-spacing:-.5px;margin-bottom:var(--sp-1);font-variant-numeric:tabular-nums}
+.cv-tier-desc{font-size:var(--fz-fine);color:var(--mut);margin-bottom:var(--sp-2);line-height:1.55}
+.cv-tier-feats{list-style:none;margin:var(--sp-3) 0 var(--sp-1);padding:var(--sp-3) 0 0;border-top:1px solid var(--line);text-align:left;
+font-size:var(--fz-fine);color:var(--mut);line-height:1.6}
+.cv-tier-feats li{position:relative;padding:3px 0 3px 16px}
+.cv-tier-feats li::before{content:'';position:absolute;left:0;top:11px;width:5px;height:1px;background:var(--faint)}
 .cv-tier-feats .cv-tier-more{color:var(--faint);font-style:italic}
-.cv-tier-feats .cv-tier-more::before{content:''}
-.cv-tier-check{font-size:12.5px;font-weight:700;color:var(--mut);border:1.5px solid var(--line);border-radius:999px;
-padding:7px 18px;display:inline-block;margin-top:8px;transition:all .15s;background:#fff}
+.cv-tier-feats .cv-tier-more::before{content:none}
+.cv-tier-check{font-size:var(--fz-fine);font-weight:600;color:var(--mut);border:1px solid var(--line);border-radius:999px;
+padding:8px 18px;display:inline-block;margin-top:var(--sp-3);transition:all .15s;background:#fff;letter-spacing:.3px}
 .cv-tier-selected .cv-tier-check{background:var(--navy);border-color:var(--navy);color:#fff}
 
 /* ── line-item tables ── */
-.cvtrade{margin:16px 16px 0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--sh);background:#fff}
-.cvtrade-hd{background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;padding:12px 18px;font-size:12px;
-font-weight:800;letter-spacing:1px;text-transform:uppercase}
+.cvtrade{margin:var(--sp-3) 0 0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--sh);background:#fff}
+.cvtrade-hd{background:#fff;color:var(--navy);padding:var(--sp-4) var(--sp-4) var(--sp-2);
+font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;letter-spacing:-.2px;text-transform:none}
 .cvt{width:100%;border-collapse:collapse;background:#fff}
-.cvt th{padding:9px 14px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.6px;background:#f8fafc;
-border-bottom:1px solid var(--line);color:var(--mut);font-weight:700}
+.cvt th{padding:var(--sp-2) var(--sp-4);text-align:left;font-size:var(--fz-micro);text-transform:uppercase;letter-spacing:1.2px;background:#fff;
+border-bottom:1px solid var(--navy);color:var(--faint);font-weight:600}
 .cvth-c{width:52px;text-align:center !important}
-.cvth-r{width:92px;text-align:right !important}
-.cvt td{padding:9px 14px;border-bottom:1px solid #f4f7fa;font-size:13px;vertical-align:top}
+.cvth-r{width:96px;text-align:right !important}
+.cvt td{padding:13px var(--sp-4);border-bottom:1px solid var(--line);font-size:var(--fz-sm);vertical-align:top}
 .cvt tbody tr:last-child td{border-bottom:none}
-.cvn{font-weight:600}
+.cvn{font-weight:500;color:var(--ink)}
 /* pre-wrap on both description cells: reps type multi-line line-item
    descriptions on the Pricing tabs, and plain HTML would collapse every one of
    those newlines into a space. */
-.cvd{font-size:11px;color:var(--mut);font-weight:400;margin-top:2px;line-height:1.5;white-space:pre-wrap}
+.cvd{font-size:var(--fz-fine);color:var(--mut);font-weight:400;margin-top:4px;line-height:1.55;white-space:pre-wrap}
 .cvc{text-align:center;color:var(--mut)}
 .cvc-desc{font-weight:400;color:var(--mut);white-space:pre-wrap}
-.cvr{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
-.cvt tfoot td{background:#f8fafc;font-weight:800;padding:11px 14px;border-top:2px solid var(--line);font-size:13px}
-.cvsub-l{text-align:right;color:var(--mut);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding-right:12px}
-.cvsub{color:var(--navy);font-size:14px}
-.cvhidden-note{font-size:10.5px;color:var(--faint);font-style:italic;padding:6px 14px;text-align:left}
-.cv-section-row td{background:#eef4fb!important;color:var(--navy);font-weight:800;font-size:10px;
-text-transform:uppercase;letter-spacing:.6px;padding:7px 14px!important}
-.cv-section-sub td{background:#f8fafc;font-weight:700;font-size:11.5px;color:var(--navy);
-border-bottom:1px solid var(--line);padding:7px 14px}
+.cvr{text-align:right;font-weight:500;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cvt tfoot td{background:#fff;font-weight:600;padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--navy);font-size:var(--fz-sm)}
+.cvsub-l{text-align:right;color:var(--faint);font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.2px;padding-right:12px}
+.cvsub{color:var(--navy);font-size:var(--fz-lead)}
+.cvhidden-note{font-size:var(--fz-fine);color:var(--faint);font-style:italic;padding:var(--sp-2) var(--sp-4);text-align:left}
+/* No tinted band; a rule and small caps carry the grouping just as well and
+   don't stripe the table. */
+.cv-section-row td{background:#fff!important;color:var(--navy);font-weight:600;font-size:var(--fz-micro);
+text-transform:uppercase;letter-spacing:1.4px;padding:var(--sp-4) var(--sp-4) var(--sp-1)!important;border-bottom:1px solid var(--line)}
+.cv-section-sub td{background:#fff;font-weight:600;font-size:var(--fz-fine);color:var(--mut);
+border-bottom:1px solid var(--line);padding:var(--sp-2) var(--sp-4)}
 .cv-section-sub td:first-child{text-align:right}
 
 /* ── grand total ── */
-.cvgrand{margin:16px 16px 0;background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);color:#fff;
-padding:18px 22px;border-radius:var(--r);display:flex;justify-content:space-between;align-items:center;gap:12px;
-box-shadow:0 14px 30px -14px rgba(14,36,64,.55);position:relative;overflow:hidden}
-.cvgrand::before{content:'';position:absolute;left:0;top:0;bottom:0;width:5px;
-background:linear-gradient(180deg,var(--cyan),var(--gold),var(--red))}
-.cvgrand-lbl{font-size:13px;font-weight:600;opacity:.85}
-.cvgrand-amt{font-size:clamp(22px,6vw,30px);font-weight:800;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+/* The one filled element on the page. Everything above it got quieter so this
+   is where the eye stops. */
+.cvgrand{margin:var(--sp-3) 0 0;background:var(--navy);color:#fff;
+padding:var(--sp-5);border-radius:var(--r);display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+position:relative;overflow:hidden;flex-wrap:wrap}
+.cvgrand-lbl{font-size:var(--fz-micro);font-weight:600;letter-spacing:1.8px;text-transform:uppercase;color:rgba(255,255,255,.72)}
+.cvgrand-amt{font-family:var(--serif);font-size:clamp(26px,6vw,34px);font-weight:600;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
 
 /* ── contract / terms ── */
-.cvcontract{margin:16px 16px 0;background:#fff;border-radius:var(--r);border:1px solid var(--line);overflow:hidden;box-shadow:var(--sh)}
+.cvcontract{margin:var(--sp-3) 0 0;background:#fff;border-radius:var(--r);border:1px solid var(--line);overflow:hidden;box-shadow:var(--sh)}
 .cvcontract summary{padding:15px 18px;cursor:pointer;font-weight:700;font-size:13.5px;color:var(--navy);list-style:none;
 display:flex;align-items:center;justify-content:space-between;gap:10px}
 .cvcontract summary::-webkit-details-marker{display:none}
 .cvcontract summary::after{content:'▾';color:var(--faint);transition:transform .2s}
 .cvcontract[open] summary::after{transform:rotate(180deg)}
 .cvcontract[open] summary{border-bottom:1px solid var(--line)}
-.cvcontract-body{padding:16px 18px;font-size:11.5px;line-height:1.75;color:#4b5a72;white-space:pre-wrap;
-max-height:300px;overflow-y:auto;background:#fafbfd}
+.cvcontract-body{padding:var(--sp-3) var(--sp-4);font-size:var(--fz-fine);line-height:1.8;color:var(--mut);white-space:pre-wrap;
+max-height:300px;overflow-y:auto;background:#fff;border-top:1px solid var(--line)}
 
 /* ── signature area ── */
-.cvsig{margin:24px 16px 0;padding:26px 20px 20px;background:#fff;border-radius:var(--r);border:1px solid var(--line);
-box-shadow:0 18px 44px -20px rgba(14,36,64,.35);position:relative;overflow:hidden}
-.cvsig::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;
-background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
-.cvsig h2{font-size:20px;font-weight:800;color:var(--navy);letter-spacing:-.3px;margin-bottom:5px}
-.cvsig .sub{font-size:13px;color:var(--mut);margin-bottom:18px;line-height:1.6}
-.cvfield{display:block;margin-bottom:12px}
-.cvfield>span{display:block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);margin-bottom:6px}
-.cvfield em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--faint);font-weight:500}
-.cvinput{width:100%;border:1.5px solid #d7dfe9;border-radius:11px;padding:13px 15px;font-size:16px;font-family:inherit;
-outline:none;color:var(--ink);background:#fbfcfe;transition:border-color .15s,box-shadow .15s}
-.cvinput:focus{border-color:var(--navy);box-shadow:0 0 0 4px rgba(26,58,92,.1);background:#fff}
-.cv-sigpad{border:1.5px dashed #b9c7d8;border-radius:12px;background:#fbfcfe;padding:16px 16px 10px;text-align:center;margin:4px 0 16px}
+/* Keeps its elevation — this should be the most important object on the page —
+   but loses the tricolor bar (now the footer's alone) and the three differently
+   tinted sub-panels, which made one form look like three unrelated widgets. */
+.cvsig{margin:var(--sp-5) 0 0;padding:var(--sp-5);background:#fff;border-radius:var(--r);border:1px solid var(--line);
+box-shadow:0 18px 44px -22px rgba(12,24,48,.3);position:relative;overflow:hidden}
+.cvsig::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--navy)}
+.cvsig h2{font-family:var(--serif);font-size:var(--fz-h2);font-weight:600;color:var(--navy);letter-spacing:-.4px;margin-bottom:var(--sp-1)}
+.cvsig .sub{font-size:var(--fz-sm);color:var(--mut);margin-bottom:var(--sp-5);line-height:1.65}
+.cvfield{display:block;margin-bottom:var(--sp-3)}
+.cvfield>span{display:block;font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.2px;color:var(--faint);margin-bottom:var(--sp-1)}
+.cvfield em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--faint);font-weight:400}
+/* 16px is deliberate — anything smaller makes iOS zoom the page on focus. */
+.cvinput{width:100%;border:1px solid #d7dfe9;border-radius:8px;padding:13px 15px;font-size:16px;font-family:inherit;
+outline:none;color:var(--ink);background:#fff;transition:border-color .15s,box-shadow .15s}
+.cvinput:focus{border-color:var(--navy);box-shadow:0 0 0 3px rgba(8,40,120,.1);background:#fff}
+.cv-sigpad{border:1px dashed #c3ccda;border-radius:8px;background:#fff;padding:var(--sp-3) var(--sp-3) var(--sp-2);text-align:center;margin:var(--sp-1) 0 var(--sp-3)}
 #cv-sig-script{font-family:'Great Vibes','Segoe Script',cursive;font-size:38px;line-height:1.25;color:var(--navy);
 min-height:48px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cv-sigpad-hint{font-size:10px;color:var(--faint);border-top:1.5px solid #dbe3ee;margin-top:6px;padding-top:8px;
-text-transform:uppercase;letter-spacing:.6px;font-weight:600}
-.cvagree{display:flex;align-items:flex-start;gap:11px;font-size:13px;color:#33415a;margin-bottom:16px;line-height:1.55;
-cursor:pointer;background:#f8fafc;border:1px solid var(--line);border-radius:11px;padding:13px 14px}
+.cv-sigpad-hint{font-size:var(--fz-micro);color:var(--faint);border-top:1px solid var(--line);margin-top:var(--sp-1);padding-top:var(--sp-2);
+text-transform:uppercase;letter-spacing:1.2px;font-weight:600}
+.cvagree{display:flex;align-items:flex-start;gap:11px;font-size:var(--fz-sm);color:var(--mut);margin-bottom:var(--sp-3);line-height:1.6;
+cursor:pointer;background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px}
 .cvagree input{margin-top:1px;flex-shrink:0;width:19px;height:19px;cursor:pointer;accent-color:var(--navy)}
-.cvbtn{width:100%;padding:16px;background:linear-gradient(135deg,#1d8a4b,#16a34a);color:#fff;border:none;border-radius:12px;
-font-size:16.5px;font-weight:800;font-family:inherit;cursor:pointer;margin-bottom:12px;
-box-shadow:0 12px 26px -10px rgba(22,163,74,.55);transition:transform .15s,box-shadow .15s}
-.cvbtn:hover{transform:translateY(-1px);box-shadow:0 16px 30px -10px rgba(22,163,74,.6)}
-.cvbtn:active{transform:scale(.98)}
-.cvlegal{font-size:10.5px;color:var(--faint);text-align:center;line-height:1.6}
-.cv-shingle{background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:14px 15px;margin-bottom:14px}
-.cv-shingle-label{font-size:11px;font-weight:800;color:#0c4a6e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
-.cv-shingle-locked{font-size:17px;font-weight:800;color:var(--navy)}
-.cv-shingle-select{margin-bottom:0;background:#fff}
-.cv-siding{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px 15px;margin-bottom:14px}
-.cv-siding-label{font-size:11px;font-weight:800;color:#166534;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
-.cv-siding-locked{font-size:17px;font-weight:800;color:var(--navy)}
-.cv-siding-select{margin-bottom:0;background:#fff}
-.cv-initials{background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px 15px;margin-bottom:14px}
-.cv-initials-title{font-size:11px;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
-.cv-initial-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid #fef3c7}
+.cvbtn{width:100%;padding:17px;background:var(--navy);color:#fff;border:none;border-radius:8px;
+font-size:var(--fz-lead);font-weight:600;font-family:inherit;cursor:pointer;margin-bottom:var(--sp-3);letter-spacing:.2px;
+transition:background .15s,transform .15s}
+.cvbtn:hover{background:var(--navy3)}
+.cvbtn:active{transform:scale(.99)}
+.cvlegal{font-size:var(--fz-micro);color:var(--faint);text-align:center;line-height:1.7}
+.cv-shingle,.cv-siding,.cv-initials{background:#fff;border:1px solid var(--line);border-radius:8px;padding:var(--sp-3);margin-bottom:var(--sp-3)}
+.cv-shingle-label,.cv-siding-label,.cv-initials-title{font-size:var(--fz-micro);font-weight:600;color:var(--faint);
+text-transform:uppercase;letter-spacing:1.2px;margin-bottom:var(--sp-2)}
+.cv-shingle-locked,.cv-siding-locked{font-size:var(--fz-lead);font-weight:500;color:var(--navy)}
+.cv-shingle-select,.cv-siding-select{margin-bottom:0;background:#fff}
+.cv-initial-row{display:flex;align-items:center;gap:12px;padding:var(--sp-2) 0;border-top:1px solid var(--line)}
 .cv-initial-row:first-of-type{border-top:none}
 .cv-initial-text{flex:1;font-size:13px;color:#33415a;line-height:1.5}
 .cv-initial-box{width:82px;flex-shrink:0;border:2px solid var(--navy);border-radius:9px;padding:10px 8px;font-size:16px;
@@ -3298,52 +3442,54 @@ font-weight:800;text-align:center;text-transform:uppercase;outline:none;color:va
 .cvnext-it:last-child{padding-bottom:2px}
 .cvnext-it::after{content:'';position:absolute;left:15px;top:34px;bottom:4px;width:2px;background:var(--line)}
 .cvnext-it:last-child::after{display:none}
-.cvnext-n{position:absolute;left:0;top:0;width:31px;height:31px;border-radius:50%;
-background:linear-gradient(135deg,var(--navy3),var(--navy2));color:#fff;font-weight:800;font-size:13px;
-display:flex;align-items:center;justify-content:center;box-shadow:0 5px 12px -5px rgba(14,36,64,.6)}
-.cvnext-t{font-weight:800;font-size:14px;color:var(--ink);padding-top:5px;margin-bottom:3px}
-.cvnext-d{font-size:13px;color:var(--mut);line-height:1.6}
+.cvnext-n{position:absolute;left:0;top:0;width:30px;height:30px;border-radius:50%;
+background:#fff;border:1px solid var(--line);color:var(--navy);font-weight:600;font-size:var(--fz-sm);
+display:flex;align-items:center;justify-content:center}
+.cvnext-t{font-weight:600;font-size:var(--fz-body);color:var(--ink);padding-top:4px;margin-bottom:4px}
+.cvnext-d{font-size:var(--fz-sm);color:var(--mut);line-height:1.65}
 
 /* ── your consultant ── */
 .cvrep{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-.cvrep-av{width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,var(--navy3),var(--navy2));color:#fff;
-font-weight:800;font-size:19px;display:flex;align-items:center;justify-content:center;letter-spacing:1px;flex-shrink:0;
-box-shadow:0 6px 14px -6px rgba(14,36,64,.5)}
+.cvrep-av{width:52px;height:52px;border-radius:50%;background:var(--navy);color:#fff;
+font-family:var(--serif);font-weight:600;font-size:19px;display:flex;align-items:center;justify-content:center;letter-spacing:.5px;flex-shrink:0}
 .cvrep-info{min-width:130px}
-.cvrep-name{font-weight:800;font-size:15.5px;color:var(--ink)}
-.cvrep-role{font-size:12px;color:var(--mut);margin-top:1px}
+.cvrep-name{font-weight:600;font-size:var(--fz-lead);color:var(--ink)}
+.cvrep-role{font-size:var(--fz-fine);color:var(--mut);margin-top:2px}
 .cvrep-btns{display:flex;gap:8px;flex:1 1 100%;margin-top:6px}
 @media(min-width:560px){.cvrep-btns{flex:0 0 auto;margin-top:0;margin-left:auto}}
-.cvrep-btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:11px 16px;border-radius:11px;
-font-size:13.5px;font-weight:700;text-decoration:none;border:1.5px solid var(--line);color:var(--navy);background:#fff;
+.cvrep-btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:12px 16px;border-radius:8px;
+font-size:var(--fz-sm);font-weight:600;text-decoration:none;border:1px solid var(--line);color:var(--navy);background:#fff;
 white-space:nowrap;transition:transform .15s,background .15s}
 .cvrep-btn:active{transform:scale(.97)}
-.cvrep-btn.pri{background:var(--navy);border-color:var(--navy);color:#fff;box-shadow:0 8px 16px -8px rgba(26,58,92,.6)}
+.cvrep-btn.pri{background:var(--navy);border-color:var(--navy);color:#fff}
 
 /* ── sticky sign bar ── */
 .cvstick{position:fixed;left:0;right:0;bottom:0;z-index:60;padding:10px 12px calc(10px + env(safe-area-inset-bottom));
 transform:translateY(130%);transition:transform .35s cubic-bezier(.22,.61,.36,1);pointer-events:none}
 .cvstick.on{transform:none;pointer-events:auto}
-.cvstick-in{max-width:660px;margin:0 auto;background:rgba(14,36,64,.97);backdrop-filter:blur(10px);
-border:1px solid rgba(255,255,255,.08);border-radius:16px;box-shadow:0 20px 44px -14px rgba(14,36,64,.65);
+.cvstick-in{max-width:660px;margin:0 auto;background:rgba(5,24,74,.97);backdrop-filter:blur(10px);
+border:1px solid rgba(255,255,255,.1);border-radius:12px;box-shadow:0 20px 44px -16px rgba(5,24,74,.6);
 display:flex;align-items:center;gap:14px;padding:12px 12px 12px 18px;color:#fff}
 .cvstick-t{display:flex;flex-direction:column;min-width:0}
-.cvstick-lbl{font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;opacity:.65;
-white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46vw}
-.cvstick-amt{font-size:20px;font-weight:800;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
-.cvstick-btn{margin-left:auto;background:linear-gradient(135deg,#1d8a4b,#16a34a);color:#fff;border:none;border-radius:12px;
-padding:13px 18px;font-size:14px;font-weight:800;font-family:inherit;cursor:pointer;white-space:nowrap;
-box-shadow:0 10px 20px -8px rgba(22,163,74,.7);transition:transform .15s}
+/* max-width:46vw ellipsised "Roofing: Better - Siding: Best" almost immediately
+   on a 375px phone, and that label is the half that says WHAT is being priced.
+   Two lines cost nothing. */
+.cvstick-lbl{font-size:var(--fz-micro);font-weight:600;letter-spacing:1.2px;text-transform:uppercase;opacity:.62;
+line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cvstick-amt{font-family:var(--serif);font-size:21px;font-weight:600;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
+.cvstick-btn{margin-left:auto;background:#fff;color:var(--navy);border:none;border-radius:8px;
+padding:13px 18px;font-size:var(--fz-sm);font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;
+transition:transform .15s}
 .cvstick-btn:active{transform:scale(.96)}
 
 /* ── attachments ── */
 .cv-att-list{display:flex;flex-direction:column;gap:10px}
-.cv-att{display:inline-flex;align-items:center;gap:9px;background:#f8fafc;border:1px solid var(--line);border-radius:11px;
-padding:13px 16px;font-size:14px;font-weight:700;color:var(--navy);text-decoration:none;transition:border-color .15s,background .15s}
-.cv-att:hover{background:#eef2f7;border-color:var(--faint)}
+.cv-att{display:inline-flex;align-items:center;gap:9px;background:#fff;border:1px solid var(--line);border-radius:8px;
+padding:13px 16px;font-size:var(--fz-sm);font-weight:600;color:var(--navy);text-decoration:none;transition:border-color .15s}
+.cv-att:hover{border-color:var(--mut)}
 .cv-att-doc{display:flex;flex-direction:column;gap:10px;margin-bottom:8px}
-.cv-att-doc-title{font-size:13.5px;font-weight:800;color:var(--navy)}
-.cv-att-page{width:100%;display:block;border:1px solid var(--line);border-radius:10px;box-shadow:0 2px 8px -3px rgba(15,23,42,.15)}
+.cv-att-doc-title{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--navy)}
+.cv-att-page{width:100%;display:block;border:1px solid var(--line);border-radius:6px}
 
 /* ── signed certificate ── */
 .cvinit-tbl td:first-child{width:auto;text-transform:none;letter-spacing:0;font-size:12px;color:#33415a;font-weight:500}
@@ -3359,95 +3505,122 @@ margin-bottom:13px;padding-bottom:10px;border-bottom:2px solid var(--navy)}
 .mono{font-family:ui-monospace,Consolas,monospace;font-size:10px}
 
 /* ── footer ── */
-.cvftr{position:relative;text-align:center;padding:36px 18px 44px;background:var(--navy2);color:rgba(255,255,255,.55);
-line-height:1.7;margin-top:28px}
+.cvftr{position:relative;text-align:center;padding:44px 18px 52px;background:var(--navy2);color:rgba(255,255,255,.55);
+line-height:1.7;margin-top:var(--sp-6)}
 .cvftr::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;
 background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var(--red) 66.6% 100%)}
-.cvftr-logo{height:44px;width:auto;background:#fff;padding:8px 16px;border-radius:12px;margin-bottom:14px}
-.cvftr strong{color:#fff;font-size:15.5px;display:block;margin-bottom:4px;letter-spacing:.3px}
-.cvftr-c{font-size:12.5px}
+.cvftr-logo{height:40px;width:auto;background:#fff;padding:8px 16px;border-radius:8px;margin-bottom:var(--sp-3)}
+.cvftr strong{color:#fff;font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;display:block;margin-bottom:var(--sp-1);letter-spacing:0}
+.cvftr-c{font-size:var(--fz-sm)}
 .cvftr-c a{color:rgba(255,255,255,.78);text-decoration:none;font-weight:600}
 .cvftr-sub{font-size:10.5px;margin-top:10px;opacity:.7}
 
 /* ── condition report ── */
 .cvcond-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;margin-bottom:12px}
-.cvcond-cell{text-align:center;border:1px solid var(--line);border-radius:12px;padding:11px 4px;background:#fbfcfe}
-.cvcond-cell-lbl{font-size:10px;font-weight:700;color:#33415a;margin-bottom:6px;line-height:1.3}
-.cvcond-letter{font-size:22px;font-weight:800;width:44px;height:44px;line-height:44px;border-radius:50%;margin:0 auto 5px}
-.cvcond-word{font-size:10px;font-weight:800}
-.cvcond-exec{font-size:12.5px;line-height:1.65;color:#33415a;background:#f8fafc;border-left:3px solid var(--navy);
-padding:10px 12px;border-radius:0 10px 10px 0;margin-bottom:10px}
+.cvcond-cell{text-align:left;border:none;border-top:1px solid var(--line);border-radius:0;padding:var(--sp-2) 0 0;background:#fff}
+.cvcond-cell-lbl{font-size:var(--fz-micro);font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:var(--sp-1);line-height:1.35}
+.cvcond-letter{font-family:var(--serif);font-size:28px;font-weight:600;width:auto;height:auto;line-height:1.1;border-radius:0;margin:0 0 3px;background:none!important}
+.cvcond-word{font-size:var(--fz-fine);font-weight:500;color:var(--mut)}
+.cvcond-exec{font-family:var(--serif);font-size:var(--fz-body);line-height:1.75;color:var(--ink);background:#fff;border-left:2px solid var(--cyan);
+padding:2px 0 2px var(--sp-3);border-radius:0;margin-bottom:var(--sp-3)}
 .cvcond-sec{margin-top:14px;border-top:1px solid var(--line);padding-top:13px}
 .cvcond-sec-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap}
-.cvcond-sec-hd h4{font-size:13.5px;color:var(--navy);margin:0}
-.cvcond-badge{font-size:11px;font-weight:800;border-radius:999px;padding:4px 11px;white-space:nowrap}
+.cvcond-sec-hd h4{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--navy);margin:0}
+.cvcond-badge{font-size:var(--fz-micro);font-weight:600;border-radius:999px;padding:4px 11px;white-space:nowrap;letter-spacing:1px;text-transform:uppercase;background:none!important;border:1px solid currentColor}
 .cvcond-meta{font-size:11.5px;color:var(--mut);margin-bottom:6px}
 .cvcond-summary{font-size:12.5px;line-height:1.65;color:#33415a;margin-bottom:8px}
-.cvcond-sh{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--navy);margin:9px 0 5px}
+.cvcond-sh{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;color:var(--faint);margin:var(--sp-3) 0 var(--sp-1)}
 .cvcond-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
-.cvcond-tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);
-background:#f8fafc;padding:5px 8px;border-bottom:1px solid var(--line)}
-.cvcond-tbl td{padding:6px 8px;border-bottom:1px solid #f4f7fa;vertical-align:top;line-height:1.5}
+.cvcond-tbl th{text-align:left;font-size:var(--fz-micro);text-transform:uppercase;letter-spacing:1.2px;color:var(--faint);
+background:#fff;padding:var(--sp-1) 8px;border-bottom:1px solid var(--navy)}
+.cvcond-tbl th:first-child,.cvcond-tbl td:first-child{padding-left:0}
+.cvcond-tbl td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.55}
 .cvcond-tbl tr:last-child td{border-bottom:none}
-.cvcond-cost-total td{font-weight:800;border-top:2px solid var(--line);background:#f8fafc}
-.cvcond-foot{font-size:10px;color:var(--faint);line-height:1.6;margin-top:12px;border-top:1px solid #f1f5f9;padding-top:9px}
+.cvcond-cost-total td{font-weight:600;color:var(--navy);border-top:1px solid var(--navy);background:#fff}
+.cvcond-foot{font-size:var(--fz-micro);color:var(--faint);line-height:1.7;margin-top:var(--sp-3);border-top:1px solid var(--line);padding-top:var(--sp-2)}
 .cvcond .cvph-grid{margin-top:10px}
 
 /* ── trust blocks ── */
-.cvtrust-body p{font-size:13.5px;line-height:1.7;color:#33415a;margin-bottom:8px}
+.cvtrust-body p{font-size:var(--fz-body);line-height:1.75;color:var(--mut);margin-bottom:var(--sp-2)}
 .cvtrust-body p:last-child{margin-bottom:0}
 .cvtrust-certs{list-style:none;margin:0;padding:0}
-.cvtrust-certs li{position:relative;padding:5px 0 5px 24px;font-size:13.5px;color:#33415a;line-height:1.55}
-.cvtrust-certs li::before{content:'✓';position:absolute;left:2px;font-weight:800;color:var(--green)}
-.cvtrust-revs{display:grid;gap:10px}
-@media(min-width:640px){.cvtrust-revs{grid-template-columns:1fr 1fr}}
-.cvtrust-rev{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-.cvtrust-rev-stars{color:#f59e0b;font-size:14px;letter-spacing:2px;margin-bottom:5px}
-.cvtrust-rev-text{font-size:13px;line-height:1.65;color:#33415a;font-style:italic}
-.cvtrust-rev-name{font-size:12px;font-weight:800;color:var(--navy);margin-top:7px}
+.cvtrust-certs li{position:relative;padding:var(--sp-2) 0;padding-left:20px;font-size:var(--fz-sm);color:var(--ink);
+line-height:1.6;border-bottom:1px solid var(--line)}
+.cvtrust-certs li:last-child{border-bottom:none}
+.cvtrust-certs li::before{content:'';position:absolute;left:0;top:19px;width:8px;height:1px;background:var(--cyan)}
+.cvtrust-revs{display:grid;gap:var(--sp-4)}
+@media(min-width:640px){.cvtrust-revs{grid-template-columns:1fr 1fr;gap:var(--sp-4) var(--sp-5)}}
+.cvtrust-rev{background:#fff;border:none;border-left:1px solid var(--line);border-radius:0;padding:0 0 0 var(--sp-3)}
+.cvtrust-rev-stars{color:var(--amber);font-size:var(--fz-sm);letter-spacing:2px;margin-bottom:var(--sp-1)}
+.cvtrust-rev-text{font-family:var(--serif);font-size:var(--fz-body);line-height:1.7;color:var(--ink);font-style:normal}
+.cvtrust-rev-name{font-size:var(--fz-micro);font-weight:600;color:var(--faint);margin-top:var(--sp-2);
+text-transform:uppercase;letter-spacing:1.2px}
+
+/* ── permits & code ── */
+.cvperm-name{font-family:var(--serif);font-size:var(--fz-h2);font-weight:600;color:var(--navy);
+line-height:1.25;margin-bottom:var(--sp-1)}
+.cvperm-name.cvperm-unknown{font-size:var(--fz-h3);color:var(--mut)}
+.cvperm-meta{font-size:var(--fz-sm);color:var(--mut);line-height:1.65}
+.cvperm-lead{font-size:var(--fz-sm);color:var(--mut);line-height:1.7;margin-top:var(--sp-3);max-width:56ch}
+.cvperm-meta a{color:var(--navy);text-decoration:none;border-bottom:1px solid var(--line)}
+.cvperm-sub{margin-top:var(--sp-4);padding-top:var(--sp-3);border-top:1px solid var(--line)}
+.cvperm-h{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;
+color:var(--faint);margin:0 0 var(--sp-2)}
+.cvperm-p{font-size:var(--fz-sm);color:var(--ink);line-height:1.7}
+.cvperm-p a,.cvperm-list a{color:var(--navy);font-size:var(--fz-fine)}
+.cvperm-list{list-style:none;margin:0;padding:0}
+.cvperm-list li{position:relative;padding:6px 0 6px 16px;font-size:var(--fz-sm);color:var(--ink);
+line-height:1.6}
+.cvperm-list li::before{content:'';position:absolute;left:0;top:15px;width:7px;height:1px;background:var(--cyan)}
+.cvperm-list.cvperm-muted li{color:var(--mut);font-size:var(--fz-fine)}
+.cvperm-list.cvperm-muted li::before{background:var(--faint)}
+.cvperm-basis{display:block;font-style:normal;color:var(--faint);font-size:var(--fz-fine);margin-top:2px}
+.cvperm-stamp{margin-top:var(--sp-3);font-size:var(--fz-fine);color:var(--mut)}
 
 /* ── estimate details block (AI-readable "About This Estimate") ── */
-.cvdet{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin-top:14px;
-  box-shadow:0 1px 2px rgba(15,23,42,.04)}
-.cvdet-hd{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:800;color:var(--navy);margin-bottom:6px}
-.cvdet-lead{font-size:13.5px;color:var(--faint);line-height:1.6;margin-bottom:14px}
-.cvdet section{border-top:1px solid #f1f5f9;padding-top:14px;margin-top:14px}
+/* Horizontal margin removed on purpose: .cvmain owns the gutter now. This
+   card, .cvdl and .cvvz were the three that ran edge-to-edge on a phone. */
+.cvdet{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:var(--sp-5);margin:var(--sp-3) 0 0;
+  box-shadow:var(--sh)}
+.cvdet-hd{display:block;margin:0 0 var(--sp-1);font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;color:var(--navy)}
+.cvdet-lead{font-size:var(--fz-sm);color:var(--mut);line-height:1.65;margin-bottom:var(--sp-4)}
+.cvdet section{border-top:1px solid var(--line);padding-top:var(--sp-4);margin-top:var(--sp-4)}
 .cvdet section:first-of-type{border-top:none;padding-top:0;margin-top:0}
-.cvdet h4{font-size:12.5px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
-.cvdet p{font-size:13.5px;line-height:1.65;color:#33415a;margin-bottom:6px}
-.cvdet ul{list-style:none;padding:0;margin:4px 0}
-.cvdet ul li{position:relative;padding:4px 0 4px 22px;font-size:13.5px;color:#33415a;line-height:1.55}
-.cvdet ul li::before{content:'•';position:absolute;left:6px;font-weight:800;color:var(--navy);top:3px}
-.cvdet ul.chk li::before{content:'✓';color:var(--green)}
+.cvdet h4{font-size:var(--fz-micro);font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:1.4px;margin-bottom:var(--sp-2)}
+.cvdet p{font-size:var(--fz-sm);line-height:1.7;color:var(--mut);margin-bottom:var(--sp-1)}
+.cvdet ul{list-style:none;padding:0;margin:var(--sp-1) 0}
+.cvdet ul li{position:relative;padding:5px 0 5px 18px;font-size:var(--fz-sm);color:var(--mut);line-height:1.6}
+.cvdet ul li::before{content:'';position:absolute;left:0;top:14px;width:6px;height:1px;background:var(--faint)}
+.cvdet ul.chk li::before{background:var(--cyan)}
 .cvdet .cvdet-tiers{display:grid;gap:10px;margin-top:6px}
 @media(min-width:640px){.cvdet .cvdet-tiers{grid-template-columns:repeat(3,1fr)}}
-.cvdet-tier{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-.cvdet-tier-lbl{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--faint)}
-.cvdet-tier-name{font-size:14px;font-weight:800;color:var(--navy);margin-top:2px}
-.cvdet-tier-tag{font-size:12.5px;line-height:1.5;color:#33415a;margin-top:6px}
+.cvdet-tier{background:#fff;border:none;border-top:1px solid var(--line);border-radius:0;padding:var(--sp-2) 0 0}
+.cvdet-tier-lbl{font-size:var(--fz-micro);font-weight:600;letter-spacing:1.4px;text-transform:uppercase;color:var(--faint)}
+.cvdet-tier-name{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--navy);margin-top:3px}
+.cvdet-tier-tag{font-size:var(--fz-fine);line-height:1.55;color:var(--mut);margin-top:var(--sp-1)}
 .cvdet-tier ul{margin-top:8px}
 .cvdet-tier ul li{font-size:12.5px}
-.cvdet-code{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-top:8px}
-.cvdet-code strong{color:var(--navy)}
-.cvdet-code-item{font-size:12.5px;color:#33415a;padding:3px 0;border-bottom:1px dashed #e2e8f0}
+.cvdet-code{background:#fff;border:1px solid var(--line);border-radius:8px;padding:var(--sp-3);margin-top:var(--sp-2)}
+.cvdet-code strong{color:var(--navy);font-weight:600}
+.cvdet-code-item{font-size:var(--fz-fine);color:var(--mut);padding:var(--sp-1) 0;border-bottom:1px solid var(--line)}
 .cvdet-code-item:last-child{border-bottom:none}
-.cvdet-code-item em{color:var(--faint);font-style:normal;font-size:11.5px;margin-left:6px}
-.cvdet-vent{background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6;color:#0c4a6e}
-.cvdet-vent strong{color:#0c4a6e}
-.cvdet-warr{display:grid;gap:8px;margin-top:4px}
+.cvdet-code-item em{color:var(--faint);font-style:normal;font-size:var(--fz-micro);margin-left:6px}
+.cvdet-vent{background:#fff;border:1px solid var(--line);border-left:2px solid var(--cyan);border-radius:0;padding:var(--sp-2) var(--sp-3);font-size:var(--fz-sm);line-height:1.65;color:var(--mut)}
+.cvdet-vent strong{color:var(--navy);font-weight:600}
+.cvdet-warr{display:grid;gap:var(--sp-3);margin-top:var(--sp-1)}
 @media(min-width:640px){.cvdet-warr{grid-template-columns:repeat(3,1fr)}}
-.cvdet-warr div{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
-.cvdet-warr div b{display:block;font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--faint);margin-bottom:3px}
+.cvdet-warr div{background:#fff;border:none;border-top:1px solid var(--line);border-radius:0;padding:var(--sp-2) 0 0}
+.cvdet-warr div b{display:block;font-size:var(--fz-micro);letter-spacing:1.4px;text-transform:uppercase;color:var(--faint);margin-bottom:var(--sp-1);font-weight:600}
 
 /* ── download PDF card ── */
-.cvdl{background:#f8fafc;border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-top:14px;
-  display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;
-  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.cvdl{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:var(--sp-4);margin:var(--sp-3) 0 0;
+  display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-3);
+  box-shadow:var(--sh)}
 .cvdl-t{flex:1 1 260px;min-width:0}
-.cvdl-h{font-size:14px;font-weight:800;color:var(--navy);margin-bottom:3px}
-.cvdl-d{font-size:13px;color:#33415a;line-height:1.5}
-.cvdl-btn{display:inline-flex;align-items:center;gap:7px;background:#fff;border:1.5px solid var(--navy);color:var(--navy);
-  font-weight:800;font-size:14px;text-decoration:none;padding:10px 18px;border-radius:10px;transition:background .15s,color .15s;
+.cvdl-h{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--navy);margin-bottom:3px}
+.cvdl-d{font-size:var(--fz-sm);color:var(--mut);line-height:1.6}
+.cvdl-btn{display:inline-flex;align-items:center;gap:7px;background:#fff;border:1px solid var(--navy);color:var(--navy);
+  font-weight:600;font-size:var(--fz-sm);text-decoration:none;padding:11px 18px;border-radius:8px;transition:background .15s,color .15s;
   white-space:nowrap}
 .cvdl-btn:hover{background:var(--navy);color:#fff}
 @media print{.cvdl{display:none}}
@@ -3471,8 +3644,8 @@ background:#f8fafc;padding:5px 8px;border-bottom:1px solid var(--line)}
 .cvt td{display:inline-block;border:none !important;padding:0 !important;font-size:13px}
 .cvt td.cvn{flex:1 1 100%;padding-bottom:1px !important}
 .cvt td.cvc-desc{flex:1 1 100%}
-.cvt td[data-l]::before{content:attr(data-l);color:var(--faint);font-weight:700;font-size:9.5px;text-transform:uppercase;
-letter-spacing:.5px;margin-right:5px}
+.cvt td[data-l]::before{content:attr(data-l);color:var(--faint);font-weight:600;font-size:9.5px;text-transform:uppercase;
+letter-spacing:1px;margin-right:5px}
 .cvt td.cvr:last-child{margin-left:auto}
 .cvt tfoot tr{display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border-top:2px solid var(--line);padding:11px 14px}
 .cvt tfoot td{background:transparent;border-top:none !important;padding:0 !important}
@@ -3571,10 +3744,18 @@ document.addEventListener('click',function(e){
 
 
 def _cv_meta_json_ld(manifest):
-    """schema.org JSON-LD for a customer estimate. Kept small on purpose —
-    this is a hint for machine readers (search previews, and Claude/ChatGPT
-    when the customer pastes the /sign link into a chat), not the main
-    payload. The customer-visible details block carries the real story."""
+    """schema.org JSON-LD for a customer estimate.
+
+    This is what a search preview or an assistant reads when the customer
+    pastes the /sign link into a chat and asks whether the bid is any good.
+    It carries the things that actually differentiate the quote — each package
+    priced separately, the workmanship warranty term, certifications, the code
+    basis, and the individual reviews — rather than one bare number, because a
+    single price with no structure around it can only be compared on price.
+
+    Everything here is drawn from _build_estimate_manifest; this function makes
+    no claims the customer-visible page does not already make.
+    """
     if not manifest:
         return ''
     m       = manifest
@@ -3599,41 +3780,128 @@ def _cv_meta_json_ld(manifest):
     if certs:
         seller['hasCredential'] = certs
 
+    is_ins  = bool(m.get('is_insurance'))
+    total   = m.get('grand_total', 0)
+    service = {
+        '@type':      'Service',
+        'serviceType': 'Roof replacement' if not is_ins
+                       else 'Insurance-claim roofing scope',
+        'provider':   {'@type': 'Organization',
+                       'name': company.get('name', 'Project One Roofing')},
+        'areaServed': f'{m.get("customer_city", "")}, {m.get("customer_state", "")}'.strip(', '),
+    }
+
+    # One Offer per package the rep is actually offering, so a reader can see
+    # that this is a choice of three complete jobs rather than a single price.
+    pkg_offers = []
+    for trade in (m.get('trades') or []):
+        for t in (trade.get('tiers') or []):
+            sub = t.get('subtotal') or 0
+            if sub <= 0:
+                continue
+            name = ' — '.join(x for x in (trade.get('label'),
+                                          t.get('tier_label')) if x)
+            desc_bits = [x for x in (t.get('package_name'), t.get('tagline')) if x]
+            offer = {
+                '@type': 'Offer',
+                'name':  name,
+                'price': round(float(sub), 2),
+                'priceCurrency': 'USD',
+                'itemOffered': service,
+            }
+            if desc_bits:
+                offer['description'] = ' — '.join(desc_bits)
+            if t.get('workmanship'):
+                offer['warranty'] = {'@type': 'WarrantyPromise',
+                                     'description': t['workmanship']}
+            if t.get('is_selected'):
+                offer['availability'] = 'https://schema.org/InStock'
+            pkg_offers.append(offer)
+
     graph = {
         '@context':  'https://schema.org',
         '@type':     'Offer',
         'name':      'Roof replacement estimate',
         'description': m.get('summary', ''),
         'seller':    seller,
-        'itemOffered': {
-            '@type':      'Service',
-            'serviceType': 'Roof replacement' if not m.get('is_insurance')
-                           else 'Insurance-claim roofing scope',
-            'provider':   {'@type': 'Organization',
-                           'name': company.get('name', 'Project One Roofing')},
-            'areaServed': f'{m.get("customer_city", "")}, {m.get("customer_state", "")}'.strip(', '),
-        },
+        'itemOffered': service,
         'priceSpecification': {
             '@type':         'PriceSpecification',
-            'price':         m.get('grand_total', 0),
+            'price':         total,
             'priceCurrency': 'USD',
+            'valueAddedTaxIncluded': True,
         },
         'validThrough':   m.get('valid_until', ''),
         'availability':   'https://schema.org/InStock',
     }
+    if m.get('estimate_number'):
+        graph['identifier'] = m['estimate_number']
+
+    if len(pkg_offers) > 1:
+        prices = [o['price'] for o in pkg_offers]
+        graph['addOn'] = {
+            '@type':     'AggregateOffer',
+            'offerCount': len(pkg_offers),
+            'lowPrice':  min(prices),
+            'highPrice': max(prices),
+            'priceCurrency': 'USD',
+            'offers':    pkg_offers,
+        }
+    elif pkg_offers:
+        graph['addOn'] = pkg_offers[0]
+
     revs = (m.get('reviews') or {})
     if revs.get('count'):
-        graph['itemOffered']['aggregateRating'] = {
+        service['aggregateRating'] = {
             '@type':       'AggregateRating',
             'ratingValue': revs.get('average', 5),
             'reviewCount': revs.get('count', 0),
         }
+        # Individual reviews, not just the average — an average alone is a
+        # number anyone can type.
+        items = []
+        for r in (revs.get('items') or [])[:6]:
+            if not (r.get('text') or '').strip():
+                continue
+            rv = {'@type': 'Review',
+                  'reviewBody': r['text'].strip(),
+                  'reviewRating': {'@type': 'Rating',
+                                   'ratingValue': r.get('stars', 5),
+                                   'bestRating': 5}}
+            if r.get('name'):
+                rv['author'] = {'@type': 'Person', 'name': r['name']}
+            items.append(rv)
+        if items:
+            service['review'] = items
+
     warranty_body = (m.get('warranty_body') or '').strip()
     if warranty_body:
         graph['warranty'] = {
             '@type': 'WarrantyPromise',
             'description': warranty_body,
         }
+
+    # Code compliance and ventilation math as additionalProperty — the parts a
+    # competing bid usually cannot answer at all.
+    props = []
+    code = m.get('code') or {}
+    if code.get('jurisdiction_name'):
+        props.append(('Authority having jurisdiction', code['jurisdiction_name']))
+    if code.get('verified'):
+        props.append(('Jurisdiction code profile', 'Verified against the published local amendments'))
+    _n_code = len(code.get('code_items') or [])
+    if _n_code:
+        props.append(('Code line items in scope', f'{_n_code} itemized'))
+    for _v in (m.get('ventilation') or {}).values():
+        if isinstance(_v, dict) and _v.get('code_basis'):
+            props.append(('Ventilation code basis', _v['code_basis']))
+            break
+    if m.get('carrier'):
+        props.append(('Insurance carrier', m['carrier']))
+    if props:
+        service['additionalProperty'] = [
+            {'@type': 'PropertyValue', 'name': k, 'value': v} for k, v in props]
+
     return ('<script type="application/ld+json">'
             + json.dumps(graph, separators=(',', ':'))
             + '</script>')
@@ -3662,12 +3930,25 @@ def _cv_head(title, manifest=None):
         ld = _cv_meta_json_ld(manifest)
     return f'''<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#0e2440">
-<link rel="icon" href="/static/icon-192.png">
+<meta name="theme-color" content="#05184a">
+<link rel="icon" href="{_mount_path('/static/icon-192.png')}">
 {og}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Great+Vibes&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet">
+<style>
+/* Source Serif 4 + Inter are served from our own static dir rather than Google,
+   so this page sets type identically to the printed estimate and the signed
+   PDF — all three now read from estimator/static/fonts. Great Vibes stays on
+   Google: it is decorative (the signature preview only) and degrades to a
+   system cursive if it never loads. */
+@font-face{{font-family:'Source Serif 4';
+  src:url('{_mount_path('/static/fonts/SourceSerif4-var.woff2')}') format('woff2-variations');
+  font-weight:200 900;font-style:normal;font-display:swap}}
+@font-face{{font-family:'InterDoc';
+  src:url('{_mount_path('/static/fonts/Inter-var.woff2')}') format('woff2-variations');
+  font-weight:100 900;font-style:normal;font-display:swap}}
+</style>
 <title>{title}</title>
 {ld}
 <style>{_CV_CSS}</style></head><body>'''
@@ -3676,7 +3957,7 @@ def _cv_head(title, manifest=None):
 def _cv_header():
     """Shared top bar: logo left, tap-to-call pill right, brand stripe."""
     return f'''<header class="cvhdr">
-  <div class="cvhdr-logo-wrap"><img src="/static/logo.png" alt="Project One Roofing"></div>
+  <div class="cvhdr-logo-wrap"><img src="{_mount_path('/static/logo.png')}" alt="Project One Roofing"></div>
   <div class="cvhdr-contact">
     <a href="tel:{COMPANY_PHONE_DIGITS}">&#128222; {COMPANY_PHONE_DISPLAY}</a>
     <span>projectoneroofingcolorado.com</span>
@@ -3688,7 +3969,7 @@ def _cv_header():
 def _cv_footer(extra=''):
     """Shared footer + the shared behavior script. Closes the document."""
     return f'''<div class="cvftr">
-  <img src="/static/logo.png" class="cvftr-logo" alt="Project One Roofing">
+  <img src="{_mount_path('/static/logo.png')}" class="cvftr-logo" alt="Project One Roofing">
   <strong>Project One Roofing</strong>
   <div class="cvftr-c">115 E 5th St &middot; Loveland, CO 80537<br>
     <a href="tel:{COMPANY_PHONE_DIGITS}">{COMPANY_PHONE_DISPLAY}</a> &middot; projectoneroofingcolorado.com</div>
@@ -3759,7 +4040,7 @@ def _cv_next_steps(signed=False, commercial=False):
       <div class="cvnext-t">{t}</div><div class="cvnext-d">{d}</div></li>'''
         for i, (t, d) in enumerate(steps))
     title = 'What Happens Next' if not signed else 'What Happens Next &mdash; You&rsquo;re All Set'
-    return f'<div class="cvnext"><h3>{title}</h3><ol class="cvnext-list">{items}</ol></div>'
+    return f'<div class="cvnext"><h2 data-eyebrow="Your project">{title}</h2><ol class="cvnext-list">{items}</ol></div>'
 
 
 def _cv_contact_card(est):
@@ -3784,7 +4065,7 @@ def _cv_contact_card(est):
     email_btn = (f'<a class="cvrep-btn" href="mailto:{he(email)}">&#9993;&#65039; Email</a>'
                  if email else '')
 
-    return f'''<div class="cvrep-card"><h3>Questions? We&rsquo;re Here to Help</h3>
+    return f'''<div class="cvrep-card"><h2 data-eyebrow="Your consultant">Questions? We&rsquo;re Here to Help</h2>
   <div class="cvrep">
     <div class="cvrep-av">{he(initials)}</div>
     <div class="cvrep-info"><div class="cvrep-name">{he(name)}</div><div class="cvrep-role">{role}</div></div>
@@ -3929,7 +4210,7 @@ def _cv_intro_block(est):
     if not txt or pv.get('intro') is False:
         return ''
     return f'''<div class="cvintro">
-  <img src="/static/logo.png" class="cvintro-logo" alt="Project One Roofing">
+  <img src="{_mount_path('/static/logo.png')}" class="cvintro-logo" alt="Project One Roofing">
   <p>{he(txt)}</p>
 </div>'''
 
@@ -3957,7 +4238,7 @@ def _cv_photos_block(est):
         return ''
     figs = ''.join(_cv_photo_fig(p) for p in photos)
     return f'''<div class="cvphotos">
-  <h3>Photo Report</h3>
+  <h2 data-eyebrow="Inspection">What We Found on Your Roof</h2>
   <div class="cvph-grid">{figs}</div>
 </div>{_CV_ANN_JS}'''
 
@@ -3998,22 +4279,27 @@ def _cv_visualizer_block(est):
                   f'<div class="cvvz-cap">{caption}</div>'
                   f'</figure>')
     return f'''<div class="cvvz">
-  <h3>&#127912; See the look</h3>
+  <h2 data-eyebrow="Visualize">See It on Your Home</h2>
   <p class="cvvz-sub">Your home with the selected options blended onto your
   photo. Colors are indicative &mdash; the real material may look slightly
   different in person.</p>
   <div class="cvvz-grid">{cards}</div>
 </div>
 <style>
-  .cvvz{{margin:24px 0;padding:18px;border:1px solid #e5e7eb;border-radius:12px;background:#fff}}
-  .cvvz h3{{margin:0 0 4px;font-size:18px;color:#1a3a5c}}
-  .cvvz-sub{{margin:0 0 12px;color:#64748b;font-size:13px}}
-  .cvvz-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}}
-  .cvvz-card{{margin:0;padding:10px;border:1px solid #e5e7eb;border-radius:10px;background:#f8fafc;display:flex;flex-direction:column}}
-  .cvvz-tier{{font-weight:700;color:#1a3a5c;text-transform:uppercase;letter-spacing:.06em;font-size:12px;margin-bottom:6px}}
-  .cvvz-card img{{width:100%;height:auto;border-radius:6px;display:block;background:#e5e7eb}}
-  .cvvz-cap{{margin-top:8px;font-size:12px;color:#334155;line-height:1.4}}
-  .cvvz-style{{color:#64748b}}
+  /* This block used to ship its own visual language — hardcoded #1a3a5c and
+     #e5e7eb, an 18px heading, no gutter — so it read as a different product
+     bolted onto the page and ran edge-to-edge on phones. It now uses the
+     page's tokens and inherits .cvmain's gutter like every other card. */
+  .cvvz{{margin:var(--sp-3) 0 0;padding:var(--sp-5);border:1px solid var(--line);
+    border-radius:var(--r);background:#fff;box-shadow:var(--sh)}}
+  .cvvz-sub{{margin:0 0 var(--sp-4);color:var(--mut);font-size:var(--fz-sm);line-height:1.65}}
+  .cvvz-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--sp-3)}}
+  .cvvz-card{{margin:0;padding:0;border:none;background:#fff;display:flex;flex-direction:column}}
+  .cvvz-tier{{font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:1.4px;
+    font-size:var(--fz-micro);margin-bottom:var(--sp-1)}}
+  .cvvz-card img{{width:100%;height:auto;border:1px solid var(--line);border-radius:6px;display:block;background:var(--bg)}}
+  .cvvz-cap{{margin-top:var(--sp-1);font-size:var(--fz-fine);color:var(--mut);line-height:1.5}}
+  .cvvz-style{{color:var(--faint)}}
 </style>'''
 
 
@@ -4144,7 +4430,7 @@ def _cv_condition_block(est):
                           f'<td><span style="color:{sev_c};font-weight:700">{he(sev_lbl)}</span></td>'
                           f'<td>{he(f_.get("description") or "")}</td></tr>')
         find_html = (f'''<div class="cvcond-sh">Findings</div>
-<table class="cvcond-tbl"><thead><tr><th>Area</th><th>Severity</th><th>Description</th></tr></thead>
+<table class="cvcond-tbl"><thead><tr><th scope="col">Area</th><th scope="col">Severity</th><th scope="col">Description</th></tr></thead>
 <tbody>{find_rows}</tbody></table>''' if find_rows else '')
 
         rec_rows = ''
@@ -4155,7 +4441,7 @@ def _cv_condition_block(est):
                          f'<td>{he(rec.get("description") or "")}</td>'
                          f'<td style="white-space:nowrap">{he(rec.get("cost_range") or "—")}</td></tr>')
         rec_html = (f'''<div class="cvcond-sh">Recommendations</div>
-<table class="cvcond-tbl"><thead><tr><th>Priority</th><th>Description</th><th>Est. Cost</th></tr></thead>
+<table class="cvcond-tbl"><thead><tr><th scope="col">Priority</th><th scope="col">Description</th><th scope="col">Est. Cost</th></tr></thead>
 <tbody>{rec_rows}</tbody></table>''' if rec_rows else '')
 
         sec_html += f'''<div class="cvcond-sec">
@@ -4170,7 +4456,7 @@ def _cv_condition_block(est):
     insp_html = f'<div class="cvcond-meta">Inspection Date: <strong>{he(insp_date)}</strong></div>' if insp_date else ''
 
     return f'''<div class="cvcond">
-  <h3>{w_title}</h3>
+  <h2 data-eyebrow="Inspection">{w_title}</h2>
   {insp_html}
   <div class="cvcond-grid">{cells}</div>
   {exec_html}
@@ -4437,7 +4723,7 @@ def _cv_attachments_block(est):
             blocks += f'<div class="cv-att-doc"><div class="cv-att-doc-title">&#128196; {he(label)}</div>{imgs}{link}</div>'
         else:
             blocks += link
-    return f'<div class="cvnotes"><h3>Documents &amp; Reports</h3><div class="cv-att-list">{blocks}</div></div>'
+    return f'<div class="cvnotes"><h2 data-eyebrow="Attached">Documents &amp; Reports</h2><div class="cv-att-list">{blocks}</div></div>'
 
 
 def _load_company_content():
@@ -4451,6 +4737,204 @@ def _load_company_content():
     except Exception:
         pass
     return {}
+
+
+def _cv_glance_block(est, manifest, sel_label='', sel_total=None):
+    """The five-line digest that opens the proposal.
+
+    A homeowner decides whether to read the rest of this page in about ten
+    seconds, and the thing they forward to a spouse is whatever fits in a
+    screenshot. This answers what we're doing, what the choices are, what it
+    costs, what stands behind it and how long the price holds — before any
+    table appears.
+
+    It doubles as the passage an assistant quotes: when a customer pastes this
+    link into a chat and asks "is this a good deal", this is the block that
+    parses cleanly. Mirrors _printGlanceHTML in static/app.js — keep the two
+    saying the same things.
+
+    Rows with no data are dropped rather than rendered empty."""
+    if not manifest:
+        return ''
+    m    = manifest
+    rows = []
+
+    if m.get('is_insurance'):
+        carrier = (m.get('carrier') or '').strip()
+        rows.append(('Your project',
+                     'Insurance claim scope'
+                     + (f' &mdash; <strong>{he(carrier)}</strong>' if carrier else '')))
+    else:
+        labels = [t.get('label', '') for t in (m.get('trades') or []) if t.get('label')]
+        city   = ', '.join(x for x in (m.get('customer_city'), m.get('customer_state')) if x)
+        if labels:
+            scope = ' &middot; '.join(he(x) for x in labels)
+            rows.append(('Your project',
+                         f'<strong>{scope}</strong>'
+                         + (f' at your home in {he(city)}' if city else '')))
+
+        # Only claim a choice where one is actually offered.
+        tiers = []
+        for t in (m.get('trades') or []):
+            for tier in (t.get('tiers') or []):
+                lbl = tier.get('tier_label') or tier.get('tier')
+                if lbl and lbl not in tiers:
+                    tiers.append(lbl)
+        if len(tiers) > 1:
+            rows.append(('Your options',
+                         f'{he(", ".join(tiers))} &mdash; each one a complete job, '
+                         'priced in full further down this page'))
+
+    # Deliberately NO price here. This block sits above the photographs and the
+    # condition report, and a number on the second thing a homeowner reads
+    # invites them to decide before they have seen why the work is needed —
+    # which is the whole reason the page was reordered. The total lives after
+    # the scope, where it can be judged against something.
+
+    # Warranty headline: the selected tier's promise beats the generic body copy.
+    warr = ''
+    wbt  = m.get('warranty_by_tier') or {}
+    sel  = (est.get('selected_tier') or '').strip().lower()
+    if sel and wbt.get(sel):
+        warr = wbt[sel]
+    else:
+        body = (m.get('warranty_body') or '').strip()
+        if body:
+            warr = re.split(r'\n|(?<=\.)\s+', body)[0].strip()
+    if warr:
+        rows.append(('Backed by', he(warr[:190] + '…' if len(warr) > 190 else warr)))
+
+    insp = ((est.get('property_condition') or {}).get('inspection_date') or '').strip()
+    if insp:
+        rows.append(('Inspected',
+                     f'<strong>{he(insp)}</strong> &mdash; full condition report below, '
+                     'with photographs'))
+
+    if m.get('valid_until'):
+        rows.append(('Pricing held until',
+                     f'<strong>{he(m["valid_until"])}</strong>'))
+
+    if not rows:
+        return ''
+    body = ''.join(f'''<div class="cvglance-row">
+        <dt class="cvglance-k">{he(k)}</dt><dd class="cvglance-v">{v}</dd>
+      </div>''' for k, v in rows)
+    return f'''<section class="cvnotes cvglance">
+  <h2 data-eyebrow="Summary">At a Glance</h2>
+  <dl class="cvglance-list">{body}</dl>
+</section>'''
+
+
+def _code_requirements(code, limit=10):
+    """Plain-language install requirements that apply at this address.
+
+    Merged most-specific-first — the jurisdiction's own rules, then its local
+    amendments, then the code line items priced into the scope with their IRC
+    citations stripped. Lightly de-duplicated: the same requirement usually
+    appears in more than one of those sources (a roofing affidavit shows up as
+    both a jurisdiction rule and an amendment), and printing it twice makes the
+    list look padded.
+
+    Returns [] when nothing is known, so the caller can drop the section rather
+    than print a heading over an empty list.
+    """
+    if not code:
+        return []
+    out, seen = [], set()
+
+    def add(text):
+        t = ' '.join(str(text or '').split())
+        if not t:
+            return
+        # Key on the first two significant words. The same requirement reaches
+        # here from up to three sources phrased differently — "Roofing
+        # affidavit required with the reroof permit" and "Roofing affidavit: A
+        # signed roofing affidavit identifying..." are one rule, and a longer
+        # key keeps both. Two words collapses them while leaving genuinely
+        # different rules ("Ice barrier" vs "Ice and water") distinct.
+        key = ' '.join(t.lower().replace('(', ' ').replace(')', ' ')
+                       .replace(':', ' ').replace('—', ' ').split()[:2])
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(t)
+
+    for pt in (code.get('jurisdiction_points') or []):
+        add(pt)
+    for a in ((code.get('verified_profile') or {}).get('amendments') or []):
+        txt = (a.get('text') or '').strip()
+        top = (a.get('topic') or '').strip()
+        if txt:
+            add(f'{top}: {txt}' if top else txt)
+    for ci in (code.get('code_items') or []):
+        # Label only — the IRC section number is documentation, not a
+        # requirement a homeowner can act on.
+        add(ci.get('label'))
+    return out[:limit]
+
+
+def _cv_permit_block(manifest):
+    """Who holds the permit for THIS address, and what that office requires of
+    the roof install.
+
+    Deliberately short. The adopted code edition, amendment source links,
+    submittal mechanics and IRC section numbers all live in the manifest and
+    belong in the production packet — in a proposal they bury the two things a
+    homeowner actually wants, which are the name of the authority and the list
+    of things that authority makes us do.
+
+    When no jurisdiction has been matched to the address the block says so
+    plainly rather than dressing the Colorado statewide baseline up as local:
+    claiming to know a customer's code authority when we don't is the one
+    failure here that would actually cost trust.
+    """
+    if not manifest:
+        return ''
+    code = manifest.get('code') or {}
+    if not code:
+        return ''
+
+    matched = code.get('matched')
+    name    = (code.get('jurisdiction_name') or '').strip()
+    reqs    = _code_requirements(code)
+
+    if matched and name:
+        meta = []
+        if code.get('office'):
+            meta.append(he(code['office']))
+        if code.get('county'):
+            meta.append(he(code['county']) + ' County')
+        if code.get('phone'):
+            meta.append(f'<a href="tel:{he(code["phone"])}">{he(code["phone"])}</a>')
+        head = (f'<p class="cvperm-name">{he(name)}</p>'
+                + (f'<p class="cvperm-meta">{" &middot; ".join(meta)}</p>' if meta else ''))
+        lead = (f'<p class="cvperm-lead">{he(name)} issues the permit for this address and '
+                'inspects the finished roof. Everything below is required there &mdash; it is '
+                'priced into your estimate, not an add-on.</p>')
+    else:
+        if not reqs:
+            return ''
+        head = ('<p class="cvperm-name cvperm-unknown">Permitting authority not yet confirmed</p>')
+        lead = ('<p class="cvperm-lead">Colorado has no statewide residential building code &mdash; '
+                'the city or county adopts and enforces its own. We confirm the authority for this '
+                'address before pulling the permit, and the permit is included in your price '
+                'either way.</p>')
+
+    reqs_html = ''
+    if reqs:
+        reqs_html = (f'<div class="cvperm-sub"><h3 class="cvperm-h">'
+                     + (f'Required on your roof in {he(name)}' if matched and name
+                        else 'Required on your roof')
+                     + '</h3><ul class="cvperm-list">'
+                     + ''.join(f'<li>{he(r)}</li>' for r in reqs)
+                     + '</ul></div>')
+
+    return f'''<section class="cvnotes cvperm">
+  <h2 data-eyebrow="Permits &amp; code">Who Pulls Your Permit</h2>
+  {head}
+  {lead}
+  {reqs_html}
+</section>'''
 
 
 def _cv_trust_blocks(est):
@@ -4469,8 +4953,8 @@ def _cv_trust_blocks(est):
         return blk
 
     out = ''
-    for key, dflt_title, icon in (('about', 'About Us', '&#127968;'),
-                                  ('warranty', 'Our Warranty', '&#128737;&#65039;')):
+    for key, dflt_title, eyebrow in (('about', 'About Us', 'Who you&rsquo;re hiring'),
+                                     ('warranty', 'Our Warranty', 'What backs the work')):
         blk = _blk(key)
         body = (blk.get('body') or '').strip() if blk else ''
         if not body:
@@ -4479,7 +4963,7 @@ def _cv_trust_blocks(est):
                         for p in body.split('\n\n') if p.strip())
         title = (blk.get('title') or '').strip() or dflt_title
         out += f'''<div class="cvnotes cvtrust">
-      <h3>{icon} {he(title)}</h3>
+      <h2 data-eyebrow="{eyebrow}">{he(title)}</h2>
       <div class="cvtrust-body">{paras}</div>
     </div>'''
 
@@ -4490,7 +4974,7 @@ def _cv_trust_blocks(est):
             title = (blk.get('title') or '').strip() or 'Licenses & Certifications'
             lis = ''.join(f'<li>{he(i)}</li>' for i in items)
             out += f'''<div class="cvnotes cvtrust">
-      <h3>&#127942; {he(title)}</h3>
+      <h2 data-eyebrow="Credentials">{he(title)}</h2>
       <ul class="cvtrust-certs">{lis}</ul>
     </div>'''
 
@@ -4514,7 +4998,7 @@ def _cv_trust_blocks(est):
           {who}
         </div>'''
             out += f'''<div class="cvnotes cvtrust">
-      <h3>&#11088; {he(title)}</h3>
+      <h2 data-eyebrow="Your neighbors">{he(title)}</h2>
       <div class="cvtrust-revs">{cards}</div>
     </div>'''
 
@@ -4746,11 +5230,21 @@ def _build_estimate_manifest(est):
     code = None
     if jur or baseline_points or jur_points or code_items or verified_profile:
         code = {
+            # matched is the honest flag: without it the customer view cannot
+            # tell a real address match from the statewide fallback, and would
+            # present generic Colorado guidance as if it were their city's.
+            'matched':           bool(jur),
             'jurisdiction_name': (jur.get('name') if jur else '')
                                  or 'Colorado (statewide baseline)',
             'jurisdiction_kind': (jur.get('kind') if jur else ''),
             'county':            (jur.get('county') if jur else ''),
             'office':            (jur.get('office') if jur else ''),
+            'phone':             (jur.get('phone') if jur else ''),
+            'url':               (jur.get('url') if jur else ''),
+            # Written for the office admin pulling the permit, NOT for the
+            # customer — it names internal tooling. Never render this on a
+            # customer-facing surface; see _cv_permit_block.
+            'permit_process_internal': (jur.get('pull') if jur else ''),
             'baseline_points':   baseline_points,
             'jurisdiction_points': jur_points,
             'code_items':        code_items[:12],
@@ -4982,11 +5476,10 @@ def _cv_estimate_details_block(manifest, est=None):
                 items_html += (f'<div class="cvdet-code-item">{he(lb)}'
                                + (f'<em>{he(bs)}</em>' if bs else '') + '</div>')
             items_html += '</div>'
-        code_html = ('<section><h4>Code Compliance</h4>'
-                     f'<div class="cvdet-code">{header}'
-                     + verified_html
-                     + (f'<ul class="chk" style="margin-top:8px">{pt_list}</ul>' if pt_list else '')
-                     + items_html + '</div></section>')
+        # Rendered by _cv_permit_block now, as its own card ahead of this
+        # one — jurisdiction first, its requirements separated from the
+        # statewide baseline. Kept out of here so the page says it once.
+        code_html = ''
 
     # ── Attic ventilation ──────────────────────────────────────────────
     vent = m.get('ventilation')
@@ -5051,7 +5544,7 @@ def _cv_estimate_details_block(manifest, est=None):
                  + '</section>')
 
     return ('<div class="cvdet">'
-            '<div class="cvdet-hd">&#128220; About This Estimate</div>'
+            '<h2 class="cvdet-hd" data-eyebrow="The details">What&rsquo;s Included and Why</h2>'
             '<div class="cvdet-lead">A concise summary of what&rsquo;s in this bid '
             '&mdash; materials, code compliance, warranties, and our process &mdash; '
             'so you can compare it apples-to-apples with any other quote.</div>'
@@ -5125,9 +5618,9 @@ def _insurance_cv_table(est):
         sections_html += f'''<div class="cvtrade">
           <div class="cvtrade-hd">{hd}</div>
           <table class="cvt cvt-ins"><thead><tr>
-            <th>Item Name</th><th>Description</th>
-            <th class="cvth-r">ACV</th><th class="cvth-r">Depreciation</th>
-            <th class="cvth-r">RCV</th></tr></thead>
+            <th scope="col">Item Name</th><th scope="col">Description</th>
+            <th scope="col" class="cvth-r">ACV</th><th scope="col" class="cvth-r">Depreciation</th>
+            <th scope="col" class="cvth-r">RCV</th></tr></thead>
           <tbody>{rows}</tbody>
           <tfoot><tr><td colspan="4" class="cvsub-l">{(he(sec_name)+' Subtotal') if sec_name else 'Subtotal'}</td>
             <td class="cvr cvsub">{fc(sec_total)}</td></tr></tfoot>
@@ -5162,13 +5655,13 @@ def _build_insurance_cv(est, token):
 
     ins_table, ins_total = _insurance_cv_table(est)
 
-    notes_html  = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    notes_html  = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
     ctext_html  = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     sp_html     = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
     carrier_row = f'<div class="cvgi"><label>Insurance Carrier</label><strong>{he(carrier)}</strong></div>' if carrier else ''
     claim_row   = f'<div class="cvgi"><label>Claim #</label><strong>{he(claim_num)}</strong></div>' if claim_num else ''
-    scope_html  = f'<div class="cvnotes"><h3>Scope of Work</h3><p>{he(scope_notes)}</p></div>' if scope_notes else ''
+    scope_html  = f'<div class="cvnotes"><h2 data-eyebrow="Scope">Scope of Work</h2><p>{he(scope_notes)}</p></div>' if scope_notes else ''
 
     manifest = _build_estimate_manifest(est)
     return _cv_head('Your Insurance Estimate &mdash; Project One Roofing', manifest) + _cv_header() + f'''
@@ -5190,9 +5683,14 @@ def _build_insurance_cv(est, token):
   </div>
 </div>
 
+{_cv_glance_block(est, manifest)}
+
 {_cv_intro_block(est)}
 
+<!-- Evidence before price — see the note in build_customer_view. -->
 {_cv_photos_block(est)}
+
+{_cv_condition_block(est)}
 
 {_cv_visualizer_block(est)}
 
@@ -5201,14 +5699,14 @@ def _build_insurance_cv(est, token):
 {ins_table}
 {scope_html}
 {notes_html}
-{_cv_condition_block(est)}
 {_cv_attachments_block(est)}
+{_cv_permit_block(manifest)}
 {_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
-{ctext_html}
 {_cv_next_steps(commercial=est.get('estimate_type') == 'commercial')}
 {_cv_contact_card(est)}
 {_cv_download_card(token)}
+{ctext_html}
 
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
@@ -5255,7 +5753,7 @@ def _build_simple_retail_cv(est, token):
     sp    = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
     tier  = est.get('selected_tier', 'better')  # passed through for POST; irrelevant for pricing
 
-    notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
     ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     sp_html    = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
@@ -5280,9 +5778,14 @@ def _build_simple_retail_cv(est, token):
   </div>
 </div>
 
+{_cv_glance_block(est, manifest, '', grand_total)}
+
 {_cv_intro_block(est)}
 
+<!-- Evidence before price — see the note in build_customer_view. -->
 {_cv_photos_block(est)}
+
+{_cv_condition_block(est)}
 
 {_cv_visualizer_block(est)}
 
@@ -5290,20 +5793,20 @@ def _build_simple_retail_cv(est, token):
 
 {li_html}
 
-<div class="cvgrand" style="margin-top:14px">
+<div class="cvgrand">
   <span class="cvgrand-lbl">Total</span>
   <span class="cvgrand-amt">{fc(grand_total)}</span>
 </div>
 
 {notes_html}
-{_cv_condition_block(est)}
 {_cv_attachments_block(est)}
+{_cv_permit_block(manifest)}
 {_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
-{ctext_html}
 {_cv_next_steps(commercial=est.get('estimate_type') == 'commercial')}
 {_cv_contact_card(est)}
 {_cv_download_card(token)}
+{ctext_html}
 
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
@@ -5350,13 +5853,11 @@ def build_customer_view(est, token):
     if not enabled_tiers:
         enabled_tiers = ['good', 'better', 'best']
 
-    notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
     ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     sp_html    = f'<div class="cvgi"><label>Salesperson</label><strong>{he(sp)}</strong></div>' if sp else ''
 
-    tier_clrs = dict(good='#2563eb', better='#16a34a', best='#b45309')
-    tier_bgs  = dict(good='#dbeafe', better='#dcfce7', best='#fef3c7')
     tier_lbls = dict(good='Good',    better='Better',  best='Best')
 
     # Each G/B/B product gets its own package choice; simple-mode trades are
@@ -5393,8 +5894,6 @@ def build_customer_view(est, token):
             # Bullets + tagline that actually match this tier's line items —
             # see _tier_card_content.
             feats, desc = _tier_card_content(pb, est, tk, t, tfeat, tdesc)
-            clr    = tier_clrs[t]
-            bg     = tier_bgs[t]
             lbl    = tier_lbls[t]
             is_sel = t == d_tier
             popular_badge = '<div class="cv-tier-popular">Most Popular</div>' if t == 'better' else ''
@@ -5409,12 +5908,11 @@ def build_customer_view(est, token):
                             + '</ul>')
             cards_html += f'''<div class="cv-tier-card {'cv-tier-selected' if is_sel else ''}"
               data-trade="{tk}" data-tier="{t}"
-              style="border-color:{clr};{'background:'+bg if is_sel else ''}"
               onclick="selectCvTier('{tk}','{t}')">
               {popular_badge}
-              <div class="cv-tier-name" style="color:{clr}">{lbl}</div>
+              <div class="cv-tier-name">{lbl}</div>
               {sys_el}
-              <div class="cv-tier-price" style="color:{clr}">{fc(total)}</div>
+              <div class="cv-tier-price">{fc(total)}</div>
               {desc_el}
               {feats_el}
               <div class="cv-tier-check" id="cv-check-{tk}-{t}">{'&#10003; Selected' if is_sel else 'Select'}</div>
@@ -5423,7 +5921,7 @@ def build_customer_view(est, token):
         heading = (f'{trade_lbls.get(tk, tk.title())} &mdash; Choose Your Package'
                    if multi else 'Choose Your Package')
         sections_html += f'''<div class="cv-tier-section">
-  <div class="cv-tier-heading">{heading}</div>
+  <h2 class="cv-tier-heading" data-eyebrow="Your options">{heading}</h2>
   <div class="cv-tier-cards" style="grid-template-columns:repeat({len(enabled_tiers)},1fr)">
     {cards_html}
   </div>
@@ -5465,9 +5963,16 @@ def build_customer_view(est, token):
   </div>
 </div>
 
+{_cv_glance_block(est, manifest, default_lbl, default_total)}
+
 {_cv_intro_block(est)}
 
+<!-- What we found: the photographs and the report that reads them, together
+     and ABOVE the price. They used to sit on opposite sides of the total, so
+     the homeowner met the number before the evidence for it. -->
 {_cv_photos_block(est)}
+
+{_cv_condition_block(est)}
 
 {_cv_visualizer_block(est)}
 
@@ -5477,20 +5982,23 @@ def build_customer_view(est, token):
 
 {simple_html}
 
-<div class="cvgrand" style="margin-top:14px" id="cv-grand-bar">
+<div class="cvgrand" id="cv-grand-bar">
   <span class="cvgrand-lbl" id="cv-grand-lbl">Total &mdash; {default_lbl}</span>
   <span class="cvgrand-amt" id="cv-grand-amt">{fc(default_total)}</span>
 </div>
 
 {notes_html}
-{_cv_condition_block(est)}
 {_cv_attachments_block(est)}
+
+<!-- Reassurance belongs between the number and the signature: that is where
+     the objections are. -->
+{_cv_permit_block(manifest)}
 {_cv_estimate_details_block(manifest, est)}
 {_cv_trust_blocks(est)}
-{ctext_html}
 {_cv_next_steps(commercial=est.get('estimate_type') == 'commercial')}
 {_cv_contact_card(est)}
 {_cv_download_card(token)}
+{ctext_html}
 
 <div class="cvsig" id="sign">
   <h2>Sign to Accept</h2>
@@ -5520,8 +6028,6 @@ var _cv_gbb      = {json.dumps({tk: {'cur': defaults[tk],
 var _cv_simple_total = {simple_total:.2f};
 var _trade_lbls  = {json.dumps(trade_lbls)};
 var _tier_lbls   = {{good:'Good',better:'Better',best:'Best'}};
-var _tier_clrs   = {{good:'#2563eb',better:'#16a34a',best:'#b45309'}};
-var _tier_bgs    = {{good:'#dbeafe',better:'#dcfce7',best:'#fef3c7'}};
 function _fmt(n){{return'$'+Math.abs(n).toFixed(2).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,',');}}
 function selectCvTier(trade,tier){{
   var g=_cv_gbb[trade]; if(!g)return;
@@ -5532,11 +6038,9 @@ function selectCvTier(trade,tier){{
     if(card&&chk){{
       if(t===tier){{
         card.classList.add('cv-tier-selected');
-        card.style.background=_tier_bgs[t];
         chk.innerHTML='&#10003; Selected';
       }}else{{
         card.classList.remove('cv-tier-selected');
-        card.style.background='';
         chk.innerHTML='Select';
       }}
     }}
@@ -6222,7 +6726,7 @@ def build_signed_confirmation(est):
 
     notes  = (est.get('notes_customer') or '').strip()
     ctext  = (est.get('contract_text') or '').strip()
-    notes_html = f'<div class="cvnotes"><h3>Notes</h3><p>{he(notes)}</p></div>' if notes else ''
+    notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
     ctext_html = f'''<details class="cvcontract" open><summary>&#128203; Terms &amp; Conditions</summary>
       <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
     email_row  = f'<tr><td>Email</td><td>{he(semail)}</td></tr>' if semail else ''
@@ -6332,6 +6836,7 @@ def _ensure_share_token(est):
 
     stored = est_update(est.get('estimate_id'), _mark)
     est.update(stored or {})
+    _funnel_record(est, 'sent', at=est.get('sent_at') or '')
     return est['share_token']
 
 
@@ -6657,17 +7162,100 @@ def send_signature_notification(est):
 
 # ── Signed-contract PDF + CRM push ──────────────────────────────────────────
 
+# ── Shared PDF design tokens ────────────────────────────────────────────────
+# Every customer-facing builder draws from this. Before it existed each one
+# re-typed set_fill_color(26, 58, 92) inline, which is how five documents ended
+# up on a navy that appears nowhere in logo.png. NAVY here is sampled from the
+# logo's "ROOFING" wordmark and matches --doc-navy in static/style.css and
+# --navy in _CV_CSS; change it in one place and all three surfaces follow.
+_PDF_STYLE = {
+    'ink':       (12, 24, 48),
+    'navy':      (8, 40, 120),
+    'navy_deep': (5, 24, 74),
+    'mute':      (90, 100, 120),
+    'faint':     (139, 147, 164),
+    'rule':      (227, 224, 218),
+    'paper':     (250, 249, 247),
+    'teal':      (0, 168, 184),
+    'amber':     (232, 132, 0),
+    'white':     (255, 255, 255),
+}
+
+_PDF_FONT_DIR = os.path.join(BASE_DIR, 'static', 'fonts')
+# (family, style, filename) — the same faces the browser surfaces load.
+_PDF_FONT_FILES = [
+    ('P1Sans',  '',  'Inter-Regular.ttf'),
+    ('P1Sans',  'B', 'Inter-SemiBold.ttf'),
+    ('P1Sans',  'I', 'Inter-Italic.ttf'),
+    ('P1Serif', '',  'SourceSerif4-Regular.ttf'),
+    ('P1Serif', 'B', 'SourceSerif4-SemiBold.ttf'),
+]
+_PDF_FONTS_PRESENT = all(
+    os.path.exists(os.path.join(_PDF_FONT_DIR, f)) for _, _, f in _PDF_FONT_FILES)
+
+
+def _pdf_fonts(pdf):
+    """Register the document faces on `pdf` and return (sans, serif) family names.
+
+    Falls back to Helvetica if the vendored TTFs are missing, so a deploy that
+    somehow ships without static/fonts still produces a readable PDF instead of
+    raising. The Inter statics carry tabular figures baked into the cmap, which
+    is what lines the money columns up — fpdf2 only applies OpenType features
+    when uharfbuzz is installed, and it isn't.
+    """
+    if not _PDF_FONTS_PRESENT:
+        return 'Helvetica', 'Helvetica'
+    for fam, style, fname in _PDF_FONT_FILES:
+        try:
+            pdf.add_font(fam, style, os.path.join(_PDF_FONT_DIR, fname))
+        except Exception:
+            return 'Helvetica', 'Helvetica'
+    return 'P1Sans', 'P1Serif'
+
+
 def _pdf_safe(s):
-    """fpdf2 core fonts are latin-1 only; swap common unicode for ASCII."""
+    """Latin-1 transliteration for the core-font (Helvetica) builders.
+
+    fpdf2 raises FPDFUnicodeEncodingException rather than substituting when a
+    core font meets a character it cannot encode, so the internal production
+    and permit packets — which still draw in Helvetica — need this. The
+    customer-facing documents embed real Unicode faces and use _pdf_rich
+    instead, so their en-dashes, curly quotes and bullets survive.
+    """
     if s is None:
         return ''
     s = str(s)
-    for k, v in {'—': '-', '–': '-', '‘': "'", '’': "'",
-                 '“': '"', '”': '"', '•': '*', '·': '-',
-                 '✓': '[x]', '×': 'x', '…': '...',
-                 '→': '->', ' ': ' '}.items():
+    for k, v in {'\u2014': '-', '\u2013': '-', '\u2018': "'", '\u2019': "'",
+                 '\u201c': '"', '\u201d': '"', '\u2022': '*', '\u00b7': '-',
+                 '\u2713': '[x]', '\u00d7': 'x', '\u2026': '...',
+                 '\u2192': '->', '\u00a0': ' '}.items():
         s = s.replace(k, v)
     return s.encode('latin-1', 'replace').decode('latin-1')
+
+
+def _S(pdf):
+    """Sans family registered on this document, or the core font.
+
+    build_signed_pdf stamps _sans on the FPDF instance; the shared page
+    helpers are also called from builders that never registered a face.
+    """
+    return getattr(pdf, '_sans', 'Helvetica')
+
+
+def _pdf_rich(s):
+    """Text for a PDF drawn with the embedded Unicode faces.
+
+    Only normalizes the non-breaking space that Word-pasted scope notes drag
+    in. Everything else is left alone — transliterating an em-dash into a
+    hyphen in a document whose whole job is to look considered is pure loss.
+    Falls back to _pdf_safe when the vendored fonts are missing, so a deploy
+    without static/fonts still renders instead of raising.
+    """
+    if s is None:
+        return ''
+    if not _PDF_FONTS_PRESENT:
+        return _pdf_safe(s)
+    return str(s).replace('\u00a0', ' ')
 
 
 def _pdf_oneline(s):
@@ -6681,6 +7269,11 @@ def _pdf_oneline(s):
     (customer view, browser print) keep the breaks.
     """
     return ' '.join(_pdf_safe(s).split())
+
+
+def _pdf_oneline_rich(s):
+    """_pdf_oneline for the documents that embed Unicode faces."""
+    return ' '.join(_pdf_rich(s).split())
 
 
 _VISUALIZER_TIERS_ORDER = ('good', 'better', 'best')
@@ -6705,13 +7298,13 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
 
     # New page — three thumbnails don't fit alongside the last pricing table.
     pdf.add_page()
-    pdf.set_font('Helvetica', 'B', 12)
-    pdf.set_text_color(26, 58, 92)
-    pdf.cell(0, 7, _pdf_safe('How your home will look'),
+    pdf.set_font(getattr(pdf, '_serif', _S(pdf)), 'B', 13)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(0, 7, _pdf_rich('How your home will look'),
              new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
-    pdf.set_font('Helvetica', '', 8)
-    pdf.multi_cell(W, 4.2, _pdf_safe(
+    pdf.set_font(_S(pdf), '', 8)
+    pdf.multi_cell(W, 4.2, _pdf_rich(
         'These renderings show the selected Good/Better/Best package '
         'options blended onto your home photo. Colors are indicative and '
         'may vary from the manufacturer swatch.'))
@@ -6729,7 +7322,7 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
     for i, tier in enumerate(_VISUALIZER_TIERS_ORDER):
         x = LM + i * (thumb_w + gap)
         pdf.set_xy(x, y_top)
-        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_font(_S(pdf), 'B', 9)
         pdf.cell(thumb_w, 5, _VISUALIZER_TIER_LABELS[tier], align='C',
                  new_x='LMARGIN', new_y='NEXT')
 
@@ -6749,9 +7342,9 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
             pdf.set_fill_color(245, 246, 248)
             pdf.rect(x, img_y, thumb_w, thumb_h, style='DF')
             pdf.set_xy(x, img_y + thumb_h / 2 - 2)
-            pdf.set_font('Helvetica', 'I', 8)
+            pdf.set_font(_S(pdf), 'I', 8)
             pdf.set_text_color(140, 140, 140)
-            pdf.cell(thumb_w, 4, _pdf_safe('(no rendering saved)'),
+            pdf.cell(thumb_w, 4, _pdf_rich('(no rendering saved)'),
                      align='C')
             pdf.set_text_color(0, 0, 0)
 
@@ -6770,9 +7363,9 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
                 side_lbl += f" ({style_bit})"
             caption_parts.append(side_lbl)
         pdf.set_xy(x, img_y + thumb_h + 1.5)
-        pdf.set_font('Helvetica', '', 7)
+        pdf.set_font(_S(pdf), '', 7)
         pdf.multi_cell(thumb_w, 3.2,
-                       _pdf_safe('  |  '.join(caption_parts) or ' '))
+                       _pdf_rich('  |  '.join(caption_parts) or ' '))
 
     # Advance below the row so the signature block doesn't overlap.
     pdf.set_y(y_top + 5.5 + thumb_h + 20)
@@ -6791,31 +7384,35 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
         return
     pdf.add_page()
 
-    def _h1(txt):
-        pdf.set_font('Helvetica', 'B', 12)
-        pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
-        pdf.set_draw_color(220, 220, 220)
-        pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
-        pdf.ln(3)
+    def _h1(eyebrow, txt):
+        pdf.set_font(_S(pdf), '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['teal'])
+        pdf.cell(0, 4, _pdf_rich(eyebrow.upper()), new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.set_font(getattr(pdf, '_serif', _S(pdf)), 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(txt), new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(2)
 
     def _h2(txt):
-        pdf.set_font('Helvetica', 'B', 9.5)
-        pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 5.5, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
+        pdf.ln(2)
+        pdf.set_font(_S(pdf), '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(0, 4.5, _pdf_rich(txt.upper()), new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
 
     def _p(txt):
-        pdf.set_font('Helvetica', '', 8.5)
-        pdf.multi_cell(W, 4.4, _pdf_safe(txt))
+        pdf.set_font(_S(pdf), '', 8.5)
+        pdf.multi_cell(W, 4.4, _pdf_rich(txt),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
 
     def _bullets(items, mark='- '):
-        pdf.set_font('Helvetica', '', 8.5)
+        pdf.set_font(_S(pdf), '', 8.5)
         for it in items:
-            pdf.multi_cell(W, 4.4, _pdf_safe(mark + str(it)))
+            pdf.multi_cell(W, 4.4, _pdf_rich(mark + str(it)),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
 
-    _h1('About This Estimate')
+    _h1('The details', 'What’s Included and Why')
     _p('A concise summary of what is in this bid — materials, code compliance, '
        'ventilation math, and warranties — so you can compare it apples-to-apples '
        'with any other quote.')
@@ -6826,98 +7423,82 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
     if trades:
         _h2('Materials & Packages')
         for tr in trades:
-            pdf.set_font('Helvetica', 'B', 9)
-            pdf.cell(0, 5, _pdf_safe(tr.get('label', '')), new_x='LMARGIN', new_y='NEXT')
+            pdf.set_font(_S(pdf), 'B', 9)
+            pdf.cell(0, 5, _pdf_rich(tr.get('label', '')), new_x='LMARGIN', new_y='NEXT', align='L')
             if tr.get('mode') == 'simple':
                 feats = tr.get('features') or []
                 _bullets(feats[:6])
             else:
                 for ti in tr.get('tiers') or []:
-                    pdf.set_font('Helvetica', 'B', 8.5)
+                    pdf.set_font(_S(pdf), 'B', 8.5)
                     lbl = ti.get('tier_label', '')
                     if ti.get('is_selected'):
                         lbl += '  (Selected)'
                     pkg = ti.get('package_name') or ''
                     hdr = f'  {lbl} - {pkg}' if pkg else f'  {lbl}'
-                    pdf.cell(0, 4.6, _pdf_safe(hdr), new_x='LMARGIN', new_y='NEXT')
+                    pdf.cell(0, 4.6, _pdf_rich(hdr), new_x='LMARGIN', new_y='NEXT', align='L')
                     tag = ti.get('tagline') or ''
                     if tag:
-                        pdf.set_font('Helvetica', 'I', 8)
-                        pdf.multi_cell(W - 6, 4, _pdf_safe('    ' + tag))
+                        pdf.set_font(_S(pdf), 'I', 8)
+                        pdf.multi_cell(W - 6, 4, _pdf_rich('    ' + tag),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
                     bullets = ti.get('material_bullets') or []
                     if bullets:
-                        pdf.set_font('Helvetica', '', 8)
+                        pdf.set_font(_S(pdf), '', 8)
                         for b in bullets[:4]:
-                            pdf.multi_cell(W - 8, 4, _pdf_safe('    - ' + b))
+                            pdf.multi_cell(W - 8, 4, _pdf_rich('    - ' + b),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
                     ws = ti.get('workmanship') or ''
                     if ws:
-                        pdf.set_font('Helvetica', '', 8)
-                        pdf.multi_cell(W - 8, 4, _pdf_safe('    Workmanship: ' + ws))
+                        pdf.set_font(_S(pdf), '', 8)
+                        pdf.multi_cell(W - 8, 4, _pdf_rich('    Workmanship: ' + ws),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
                     pdf.ln(0.8)
         pdf.ln(2)
 
-    # ── Code compliance ─────────────────────────────────────────────────
+    # ── Permits & code ──────────────────────────────────────────────────
+    # Two facts only: who issues the permit for this address, and what that
+    # office requires of the install. The adopted-code citation, amendment
+    # sources, submittal mechanics and IRC section numbers are all still in the
+    # manifest — they belong in the production packet, not in a proposal, where
+    # they bury the part a homeowner can actually act on.
     code = manifest.get('code')
-    if code:
-        _h2('Code Compliance')
-        pdf.set_font('Helvetica', '', 8.5)
-        jname  = code.get('jurisdiction_name') or ''
-        county = code.get('county') or ''
-        jline  = f'Authority having jurisdiction: {jname}'
-        if county and county.lower() not in jname.lower():
-            jline += f'  |  {county} County'
-        pdf.multi_cell(W, 4.4, _pdf_safe(jline))
-        vp = code.get('verified_profile') or {}
-        if vp:
-            ac = (vp.get('adopted_code') or '').strip()
-            if ac:
-                pdf.set_font('Helvetica', 'B', 8.5)
-                pdf.multi_cell(W, 4.4, _pdf_safe(f'Enforces {ac}'))
-                pdf.set_font('Helvetica', '', 8.5)
-            amends = vp.get('amendments') or []
-            if amends:
-                pdf.ln(1)
-                pdf.set_font('Helvetica', 'B', 8)
-                pdf.cell(0, 4.4, _pdf_safe('Local amendments applied to this project:'),
-                         new_x='LMARGIN', new_y='NEXT')
-                pdf.set_font('Helvetica', '', 8)
-                for a in amends[:8]:
-                    tp = (a.get('topic') or '').strip()
-                    tx = (a.get('text')  or '').strip()
-                    line = '  - ' + (f'{tp}: {tx}' if tp else tx)
-                    pdf.multi_cell(W, 4.2, _pdf_safe(line))
-            rp = vp.get('reroof_permit') or {}
-            rp_bits = []
-            if (rp.get('submittal_method') or '').lower() not in ('', 'unknown'):
-                rp_bits.append(f'Submittal: {rp["submittal_method"]}')
-            if (rp.get('portal_url') or '').lower() not in ('', 'unknown'):
-                rp_bits.append(f'Portal: {rp["portal_url"]}')
-            if rp_bits:
-                pdf.set_font('Helvetica', 'I', 8)
-                pdf.multi_cell(W, 4.2, _pdf_safe('  ' + '  |  '.join(rp_bits)))
-                pdf.set_font('Helvetica', '', 8.5)
-            va = (vp.get('verified_at') or '')[:10]
-            via = (vp.get('verified_via') or '').strip()
-            if va or via:
-                tag = 'Code data verified ' + va + (f' (source: {via})' if via else '')
-                pdf.set_font('Helvetica', 'I', 7.5)
-                pdf.multi_cell(W, 4.0, _pdf_safe(tag))
-                pdf.set_font('Helvetica', '', 8.5)
-        pts = (code.get('jurisdiction_points') or []) + (code.get('baseline_points') or [])
-        if pts:
-            _bullets(pts[:6])
-        items = code.get('code_items') or []
-        if items:
+    reqs = _code_requirements(code)
+    if code and (reqs or code.get('matched')):
+        pdf.add_page()
+        matched = code.get('matched')
+        jname   = code.get('jurisdiction_name') or ''
+        _h1('Permits & code', 'Who Pulls Your Permit')
+        if matched and jname:
+            pdf.set_font(getattr(pdf, '_serif', _S(pdf)), 'B', 15)
+            pdf.set_text_color(*_PDF_STYLE['navy'])
+            pdf.multi_cell(W, 7, _pdf_rich(jname),
+                           new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            meta = [x for x in (code.get('office') or '',
+                                (code.get('county') + ' County') if code.get('county') else '',
+                                code.get('phone') or '') if x]
+            if meta:
+                pdf.set_font(_S(pdf), '', 8.5)
+                pdf.set_text_color(*_PDF_STYLE['mute'])
+                pdf.multi_cell(W, 4.4, _pdf_rich('  ·  '.join(meta)),
+                               new_x='LMARGIN', new_y='NEXT', align='L')
+                pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.ln(1.5)
+            _p(f'{jname} issues the permit for this address and inspects the finished '
+               'roof. Everything below is required there — it is priced into your '
+               'estimate, not an add-on.')
+        else:
+            # Never dress the statewide fallback up as the customer's authority.
+            _p('Permitting authority not yet confirmed. Colorado has no statewide '
+               'residential building code — the city or county adopts and enforces its '
+               'own. We confirm the authority for this address before pulling the '
+               'permit, and the permit is included in your price either way.')
+        if reqs:
             pdf.ln(1)
-            pdf.set_font('Helvetica', 'B', 8)
-            pdf.cell(0, 4.4, _pdf_safe('Code line items in this scope:'),
-                     new_x='LMARGIN', new_y='NEXT')
-            pdf.set_font('Helvetica', '', 8)
-            for ci in items[:10]:
-                line = '  - ' + (ci.get('label') or '')
-                if ci.get('basis'):
-                    line += f'  ({ci["basis"]})'
-                pdf.multi_cell(W, 4.2, _pdf_safe(line))
+            _h2(f'Required on your roof in {jname}' if matched and jname
+                else 'Required on your roof')
+            _bullets(reqs)
         pdf.ln(2)
 
     # ── Ventilation ─────────────────────────────────────────────────────
@@ -7001,70 +7582,148 @@ def build_signed_pdf(est, signed=None):
 
     LM = 16
     RM = 16
+    _LOGO = os.path.join(BASE_DIR, 'static', 'logo.png')
+    _W    = 215.9 - LM - RM
 
     class _PDF(FPDF):
+        # `header()` did not exist before, so the letterhead appeared on page 1
+        # only and every page after it started blank at the top margin. On a
+        # document a customer prints and hands to their spouse, page 4 with no
+        # company name on it is the tell.
+        def header(self):
+            if getattr(self, '_no_chrome', False):
+                return
+            y = 11
+            if os.path.exists(_LOGO):
+                try:
+                    self.image(_LOGO, x=LM, y=y, h=6.5)
+                except Exception:
+                    pass
+            self.set_xy(LM, y)
+            self.set_font(self._sans, '', 7)
+            self.set_text_color(*_PDF_STYLE['faint'])
+            self.cell(_W, 4, _pdf_rich(self._eyebrow), align='R',
+                      new_x='LMARGIN', new_y='NEXT')
+            self.set_draw_color(*_PDF_STYLE['rule'])
+            self.set_line_width(0.2)
+            self.line(LM, y + 10.5, self.w - RM, y + 10.5)
+            self.set_text_color(*_PDF_STYLE['ink'])
+            self.set_y(y + 15)
+
         def footer(self):
-            self.set_y(-11)
-            self.set_draw_color(200, 200, 200)
+            if getattr(self, '_no_chrome', False):
+                return
+            self.set_y(-12)
+            self.set_draw_color(*_PDF_STYLE['rule'])
+            self.set_line_width(0.2)
             self.line(LM, self.get_y(), self.w - RM, self.get_y())
-            self.ln(2)
-            self.set_font('Helvetica', '', 6.5)
-            self.set_text_color(140, 140, 140)
-            self.cell(0, 4, 'Project One Roofing  |  970-776-0945  |  '
-                      'projectoneroofingcolorado.com', align='L')
-            self.cell(0, 4, f'Page {self.page_no()}/{{nb}}',
+            self.ln(2.5)
+            self.set_font(self._sans, '', 6.5)
+            self.set_text_color(*_PDF_STYLE['faint'])
+            self.cell(0, 4, _pdf_rich('Project One Roofing  ·  970-776-0945  ·  '
+                                      'projectoneroofingcolorado.com'), align='L')
+            self.cell(0, 4, f'Page {self.page_no()} of {{nb}}',
                       align='R', new_x='LMARGIN', new_y='NEXT')
-            self.set_text_color(0, 0, 0)
+            self.set_text_color(*_PDF_STYLE['ink'])
 
     pdf = _PDF(orientation='P', unit='mm', format='Letter')
+    SANS, SERIF = _pdf_fonts(pdf)
+    pdf._sans = SANS
+    pdf._serif = SERIF
+    pdf._eyebrow = ''
     pdf.alias_nb_pages()
-    pdf.set_auto_page_break(auto=True, margin=18)
-    pdf.set_margins(LM, 14, RM)
+    pdf.set_auto_page_break(auto=True, margin=20)
+    # Top margin leaves room for the running letterhead the header() draws.
+    pdf.set_margins(LM, 26, RM)
     # PDF document metadata — visible in Acrobat's Document Properties and
     # read by tools/AI parsers that inspect PDF metadata separately from the
     # rendered page content. Latin-1 safe: fpdf2's metadata strings are.
     _kind = ('Contract' if signed else 'Estimate')
-    _pdf_meta_title = _pdf_safe(
+    _pdf_meta_title = _pdf_rich(
         (f'Roof Replacement {_kind}' if not is_ins
          else f'Insurance-Claim Roofing {_kind}')
         + (f' - {c.get("name")}' if c.get('name') else '')
         + ' - Project One Roofing')
     pdf.set_title(_pdf_meta_title)
     pdf.set_author('Project One Roofing')
-    pdf.set_subject(_pdf_safe(manifest.get('summary', '')) if manifest else '')
+    pdf.set_subject(_pdf_rich(manifest.get('summary', '')) if manifest else '')
     pdf.set_keywords('roof replacement, Project One Roofing, Colorado licensed insured, '
                      'CertainTeed, IKO, Class 4 impact hail resistant, permit included, '
                      'workmanship warranty, code compliant, IRC R806 ventilation')
     pdf.set_creator('Project One Roofing Estimator')
-    pdf.add_page()
     W = pdf.w - LM - RM
 
-    # Header
-    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
-    if os.path.exists(logo):
+    if signed:
+        title = 'Signed Contract  ·  Insurance Claim' if is_ins else 'Signed Contract'
+    else:
+        title = 'Insurance Claim Estimate' if is_ins else 'Your Project Estimate'
+    pdf._eyebrow = f'{title}  ·  {enum}'
+
+    # ── Cover ───────────────────────────────────────────────────────────────
+    # The document used to open straight into a masthead and a filled navy bar,
+    # which reads like an invoice. A cover costs one page and is the first
+    # thing the customer sees.
+    pdf._no_chrome = True
+    pdf.add_page()
+    pdf._no_chrome = False
+
+    if os.path.exists(_LOGO):
         try:
-            pdf.image(logo, x=LM, y=12, h=14)
+            pdf.image(_LOGO, x=LM, y=26, h=13)
         except Exception:
             pass
-    pdf.set_xy(LM, 12)
-    pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_font('Helvetica', '', 7.5)
-    pdf.cell(W, 3.5, '970-776-0945  |  projectoneroofingcolorado.com',
-             align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.ln(4)
+    pdf.set_xy(LM, 46)
+    pdf.set_font(SANS, '', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['teal'])
+    pdf.cell(W, 4, _pdf_rich(title.upper()), new_x='LMARGIN', new_y='NEXT')
 
-    # Title bar
-    pdf.set_fill_color(26, 58, 92)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font('Helvetica', 'B', 12)
-    if signed:
-        title = 'SIGNED CONTRACT  |  INSURANCE CLAIM' if is_ins else 'SIGNED CONTRACT'
-    else:
-        title = 'INSURANCE CLAIM ESTIMATE' if is_ins else 'ESTIMATE'
-    pdf.cell(W, 9, f'  {title}', fill=True, new_x='LMARGIN', new_y='NEXT')
-    pdf.set_text_color(0, 0, 0)
-    pdf.ln(5)
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.set_line_width(0.2)
+    pdf.line(LM, 56, LM + W, 56)
+
+    pdf.set_xy(LM, 92)
+    pdf.set_font(SERIF, 'B', 27)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W, 12, _pdf_rich(c.get('name') or '—'), new_x='LMARGIN', new_y='NEXT')
+
+    _cover_addr = ', '.join(filter(None, [a.get('street'),
+                                          ', '.join(filter(None, [a.get('city'), a.get('state')]))]))
+    if _cover_addr:
+        pdf.set_x(LM)
+        pdf.set_font(SANS, '', 11)
+        pdf.set_text_color(*_PDF_STYLE['mute'])
+        pdf.cell(W, 6, _pdf_rich(_cover_addr), new_x='LMARGIN', new_y='NEXT')
+
+    # Meta strip — small caps label over value, evenly spaced.
+    _meta = [('Estimate', enum), ('Date', est.get('estimate_date', '')),
+             ('Valid Until', est.get('valid_until', ''))]
+    _sp_cover = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
+    if _sp_cover:
+        _meta.append(('Sales Rep', _sp_cover))
+    _y = 128
+    _cw = W / len(_meta)
+    for i, (lbl, val) in enumerate(_meta):
+        pdf.set_xy(LM + i * _cw, _y)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(_cw, 3.5, _pdf_rich(lbl.upper()), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_xy(LM + i * _cw, _y + 4.5)
+        pdf.set_font(SANS, '', 10.5)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.cell(_cw, 5, _pdf_rich(val or '—'), new_x='LMARGIN', new_y='NEXT')
+
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(LM, 249, LM + W, 249)
+    pdf.set_xy(LM, 253)
+    pdf.set_font(SANS, '', 8.5)
+    pdf.set_text_color(*_PDF_STYLE['faint'])
+    pdf.cell(W, 4, _pdf_rich('115 E 5th St · Loveland, CO 80537 · 970-776-0945 · '
+                             'projectoneroofingcolorado.com'),
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+
+    # ── Estimate detail page ────────────────────────────────────────────────
+    pdf.add_page()
 
     # Info block — two columns
     addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'),
@@ -7117,51 +7776,79 @@ def build_signed_pdf(est, signed=None):
             if not val:
                 continue
             pdf.set_x(LM + x_off)
-            pdf.set_font('Helvetica', '', 7)
-            pdf.set_text_color(120, 120, 120)
-            pdf.cell(col_w, 3.5, _pdf_safe(label.upper()),
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(col_w, 3.5, _pdf_rich(label.upper()),
                      new_x='LMARGIN', new_y='NEXT')
             pdf.set_x(LM + x_off)
-            pdf.set_font('Helvetica', 'B', 9)
-            pdf.set_text_color(0, 0, 0)
-            pdf.cell(col_w, 5, _pdf_safe(val),
+            pdf.set_font(SANS, '', 9.5)
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.cell(col_w, 5, _pdf_rich(val),
                      new_x='LMARGIN', new_y='NEXT')
-            pdf.ln(1.5)
+            pdf.ln(2)
 
     _info_col(left_rows, 0)
     y_after_left = pdf.get_y()
     _info_col(right_rows, col_w)
-    pdf.set_y(max(y_after_left, pdf.get_y()) + 4)
+    pdf.set_y(max(y_after_left, pdf.get_y()) + 5)
 
-    # Thin divider
-    pdf.set_draw_color(220, 220, 220)
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.set_line_width(0.2)
     pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
-    pdf.ln(6)
+    pdf.ln(8)
 
-    # Table helpers
-    ZEBRA_BG = (248, 250, 252)
-    HDR_BG   = (26, 58, 92)
+    # ── Table helpers ───────────────────────────────────────────────────────
+    # Hand-placed cells are gone. pdf.table() wraps long descriptions instead
+    # of clipping them at a character count, and repeats the column headings on
+    # every page a table spills onto — before this, a table that crossed a page
+    # boundary continued with no headings and (with no header()) no letterhead
+    # either. It also drops the '  ' string-padding hack, which is what made the
+    # old PDF extract as ragged text when a customer pasted it into a chat.
+    from fpdf.fonts import FontFace
+    from fpdf.enums import TableCellFillMode
 
-    def table_header(cols):
-        pdf.set_fill_color(*HDR_BG)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font('Helvetica', 'B', 7.5)
-        for txt, w, align in cols:
-            pdf.cell(w, 7, '  ' + _pdf_safe(txt) if align == 'L' else _pdf_safe(txt) + '  ',
-                     fill=True, align=align)
-        pdf.ln()
-        pdf.set_text_color(0, 0, 0)
+    HEAD_FACE = FontFace(family=SANS, size_pt=6.5,
+                         color=_PDF_STYLE['faint'], fill_color=None)
 
-    def trade_title(txt):
-        pdf.set_font('Helvetica', 'B', 10)
-        pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 8, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
+    def section_head(eyebrow, title):
+        # Keep the heading with its table. Without this a trade heading could
+        # land at the bottom of a page with its first row on the next one,
+        # which is the classic orphan that makes a document look generated.
+        if pdf.get_y() > pdf.h - 52:
+            pdf.add_page()
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['teal'])
+        pdf.cell(0, 4, _pdf_rich(eyebrow.upper()), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font(SERIF, 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(title), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(1)
 
-    def trunc(s, n):
-        # _pdf_oneline, not _pdf_safe: these are single-line pdf.cell() values.
-        s = _pdf_oneline(s)
-        return s if len(s) <= n else s[:n - 1] + '...'
+    def subtotal_row(label, amount, amt_w):
+        pdf.set_draw_color(*_PDF_STYLE['navy'])
+        pdf.set_line_width(0.3)
+        pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
+        pdf.set_font(SANS, 'B', 9)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(W - amt_w, 8, _pdf_rich(label), align='R')
+        pdf.cell(amt_w, 8, fc(amount), align='R')
+        pdf.ln(11)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
+
+    def open_table(widths, aligns):
+        pdf.set_font(SANS, '', 8)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
+        return pdf.table(
+            col_widths=widths, text_align=aligns, width=W,
+            borders_layout='HORIZONTAL_LINES',
+            headings_style=HEAD_FACE,
+            cell_fill_mode=TableCellFillMode.NONE,
+            line_height=5, padding=(2.4, 2, 2.4, 0), v_align='T')
 
     grand = 0.0
     row_h = 6.5
@@ -7171,52 +7858,39 @@ def build_signed_pdf(est, signed=None):
             [{'name': '', 'items': ins_td.get('line_items', [])}]
             if ins_td.get('line_items') else [])
         desc_w = W - 22 - 26 - 24
-        c_item = desc_w * 0.38
-        c_desc = desc_w * 0.62
-        cols = [('Item', c_item, 'L'), ('Description', c_desc, 'L'),
-                ('ACV', 22, 'R'), ('Depreciation', 26, 'R'), ('RCV', 24, 'R')]
-        for sec in sections:
+        widths = (desc_w * 0.38, desc_w * 0.62, 22, 26, 24)
+        aligns = ('LEFT', 'LEFT', 'RIGHT', 'RIGHT', 'RIGHT')
+        for si, sec in enumerate(sections):
             items = sec.get('items', [])
             if not items:
                 continue
-            trade_title(sec.get('name') or 'Insurance Estimate Items')
-            table_header(cols)
-            pdf.set_font('Helvetica', '', 8)
+            section_head('Scope', sec.get('name') or 'Insurance Estimate Items')
             sub = 0.0
-            for ri, it in enumerate(items):
-                acv = float(it.get('acv') or 0)
-                dep = float(it.get('depreciation') or 0)
-                tot = acv + dep
-                sub += tot
-                if ri % 2 == 1:
-                    pdf.set_fill_color(*ZEBRA_BG)
-                    fill = True
-                else:
-                    fill = False
-                pdf.cell(c_item, row_h, '  ' + trunc(it.get('name', ''), 38), fill=fill)
-                pdf.cell(c_desc, row_h, '  ' + trunc(it.get('description', ''), 50), fill=fill)
-                pdf.cell(22, row_h, fc(acv) + ' ', fill=fill, align='R')
-                pdf.cell(26, row_h, fc(dep) + ' ', fill=fill, align='R')
-                pdf.cell(24, row_h, fc(tot) + ' ', fill=fill, align='R')
-                pdf.ln()
+            with open_table(widths, aligns) as table:
+                head = table.row()
+                for h in ('Item', 'Description', 'ACV', 'Depreciation', 'RCV'):
+                    head.cell(h)
+                for it in items:
+                    acv = float(it.get('acv') or 0)
+                    dep = float(it.get('depreciation') or 0)
+                    tot = acv + dep
+                    sub += tot
+                    row = table.row()
+                    row.cell(_pdf_rich(it.get('name', '')))
+                    row.cell(_pdf_oneline_rich(it.get('description', '')))
+                    row.cell(fc(acv))
+                    row.cell(fc(dep))
+                    row.cell(fc(tot))
             grand += sub
-            pdf.set_draw_color(26, 58, 92)
-            pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
-            pdf.set_font('Helvetica', 'B', 8.5)
-            pdf.cell(W - 24, 7, _pdf_safe((sec.get('name') or 'Section') + ' Subtotal'),
-                     align='R')
-            pdf.cell(24, 7, fc(sub) + ' ', align='R')
-            pdf.ln(10)
-            pdf.set_draw_color(220, 220, 220)
-        total_label = 'INSURANCE CLAIM TOTAL'
+            subtotal_row((sec.get('name') or 'Section') + ' Subtotal', sub, 24)
+        total_label = 'Insurance Claim Total'
     else:
         pricing = est.get('pricing', {})
         mode    = pricing.get('mode', 'margin')
         labels  = dict(roofing='Roofing', siding='Siding', windows='Windows',
                        gutters='Gutters', other='Other / Misc')
-        c_desc = W - 14 - 14 - 28 - 28
-        cols = [('Description', c_desc, 'L'), ('Qty', 14, 'R'), ('Unit', 14, 'C'),
-                ('Unit Price', 28, 'R'), ('Total', 28, 'R')]
+        widths = (W - 14 - 14 - 28 - 28, 14, 14, 28, 28)
+        aligns = ('LEFT', 'RIGHT', 'CENTER', 'RIGHT', 'RIGHT')
         for tk in GBB_TRADES:
             td = est.get('trades', {}).get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
@@ -7230,92 +7904,92 @@ def build_signed_pdf(est, signed=None):
                      or (it.get('tiers') or {}).get(t_tier, {}).get('included') is not False)
                     for it in td['line_items']):
                 continue
-            trade_title(labels.get(tk, tk.title()))
-            table_header(cols)
-            pdf.set_font('Helvetica', '', 8)
+            _pkg = dict(good='Good', better='Better', best='Best').get(t_tier, '')
+            section_head(f'{_pkg} package' if _pkg and trade_mode != 'simple' else 'Scope',
+                         labels.get(tk, tk.title()))
             sub = 0.0
             hidden = 0
-            ri = 0
-            for it in td['line_items']:
-                qty = float(it.get('quantity') or 0)
-                if qty <= 0:
-                    continue
-                if trade_mode == 'simple':
-                    sp_  = float(it.get('unit_price') or 0)
-                    line = sp_ * qty
-                    desc = (it.get('description') or '').strip()
-                else:
-                    t    = (it.get('tiers') or {}).get(t_tier, {})
-                    if t.get('included') is False:
+            with open_table(widths, aligns) as table:
+                head = table.row()
+                for h in ('Description', 'Qty', 'Unit', 'Unit Price', 'Total'):
+                    head.cell(h)
+                for it in td['line_items']:
+                    qty = float(it.get('quantity') or 0)
+                    if qty <= 0:
                         continue
-                    line = _line_sell_total(it, t_tier, r, mode)
-                    sp_  = line / qty
-                    desc = t.get('description', '')
-                sub += line
-                if not it.get('customer_visible', True):
-                    hidden += 1
-                    continue
-                name = _with_section(it, it.get('name', ''))
-                if desc:
-                    name = f'{name} - {desc}'
-                if ri % 2 == 1:
-                    pdf.set_fill_color(*ZEBRA_BG)
-                    fill = True
-                else:
-                    fill = False
-                pdf.cell(c_desc, row_h, '  ' + trunc(name, 78), fill=fill)
-                pdf.cell(14, row_h, f'{qty:g} ', fill=fill, align='R')
-                pdf.cell(14, row_h, trunc(it.get('unit', ''), 8), fill=fill, align='C')
-                pdf.cell(28, row_h, fc(sp_) + ' ', fill=fill, align='R')
-                pdf.cell(28, row_h, fc(line) + ' ', fill=fill, align='R')
-                pdf.ln()
-                ri += 1
+                    if trade_mode == 'simple':
+                        sp_  = float(it.get('unit_price') or 0)
+                        line = sp_ * qty
+                        desc = (it.get('description') or '').strip()
+                    else:
+                        t    = (it.get('tiers') or {}).get(t_tier, {})
+                        if t.get('included') is False:
+                            continue
+                        line = _line_sell_total(it, t_tier, r, mode)
+                        sp_  = line / qty
+                        desc = t.get('description', '')
+                    sub += line
+                    if not it.get('customer_visible', True):
+                        hidden += 1
+                        continue
+                    name = _with_section(it, it.get('name', ''))
+                    # The description wraps under the name now instead of being
+                    # clipped at 78 characters mid-word.
+                    if desc:
+                        name = f'{name} — {_pdf_oneline_rich(desc)}'
+                    row = table.row()
+                    row.cell(_pdf_rich(name))
+                    row.cell(f'{qty:g}')
+                    row.cell(_pdf_rich(it.get('unit', '')))
+                    row.cell(fc(sp_))
+                    row.cell(fc(line))
             if hidden:
-                pdf.set_font('Helvetica', 'I', 7)
-                pdf.set_text_color(140, 140, 140)
-                pdf.cell(W, 5.5, 'Additional materials & supplies included in total',
-                         align='C')
-                pdf.ln()
-                pdf.set_text_color(0, 0, 0)
-                pdf.set_font('Helvetica', '', 8)
+                pdf.set_font(SANS, 'I', 7)
+                pdf.set_text_color(*_PDF_STYLE['faint'])
+                pdf.cell(W, 5.5, _pdf_rich('Additional materials & supplies included in total'),
+                         align='L', new_x='LMARGIN', new_y='NEXT')
+                pdf.set_text_color(*_PDF_STYLE['ink'])
             grand += sub
-            pdf.set_draw_color(26, 58, 92)
-            pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
-            pdf.set_font('Helvetica', 'B', 8.5)
-            pdf.cell(W - 28, 7, _pdf_safe(labels.get(tk, tk.title()) + ' Subtotal'),
-                     align='R')
-            pdf.cell(28, 7, fc(sub) + ' ', align='R')
-            pdf.ln(10)
-            pdf.set_draw_color(220, 220, 220)
+            subtotal_row(labels.get(tk, tk.title()) + ' Subtotal', sub, 28)
         _sum = _pick_summary_label(est)
-        total_label = (f'TOTAL  |  {_sum.upper()}' if _sum
-                       else f'TOTAL  |  {tier.upper()} PACKAGE')
+        total_label = (f'Total — {_sum}' if _sum
+                       else 'Total — ' + dict(good='Good', better='Better',
+                                              best='Best').get(tier, tier.title()) + ' Package')
 
-    # Grand total bar
-    pdf.set_fill_color(26, 58, 92)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(W - 42, 10, f'  {_pdf_safe(total_label)}', fill=True)
-    pdf.cell(42, 10, fc(grand) + '  ', fill=True, align='R')
-    pdf.ln(12)
-    pdf.set_text_color(0, 0, 0)
+    # Grand total — the one filled element in the document, which is why
+    # everything above it stopped being filled.
+    if pdf.get_y() > pdf.h - 46:
+        pdf.add_page()
+    pdf.ln(2)
+    _gy = pdf.get_y()
+    pdf.set_fill_color(*_PDF_STYLE['navy'])
+    pdf.rect(LM, _gy, W, 18, style='F')
+    pdf.set_xy(LM + 7, _gy + 4)
+    pdf.set_font(SANS, '', 7)
+    pdf.set_text_color(210, 218, 236)
+    pdf.cell(W - 14, 4, _pdf_rich(total_label.upper()), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_xy(LM + 7, _gy + 8)
+    pdf.set_font(SERIF, 'B', 17)
+    pdf.set_text_color(*_PDF_STYLE['white'])
+    pdf.cell(W - 14, 8, fc(grand), align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_y(_gy + 18)
+    pdf.ln(9)
+    pdf.set_text_color(*_PDF_STYLE['ink'])
 
     # Scope of work / notes
     if is_ins:
         scope = (est.get('trades', {}).get('insurance', {}).get('scope_notes') or '').strip()
         if scope:
-            pdf.set_font('Helvetica', 'B', 10)
-            pdf.cell(0, 7, 'Scope of Work', new_x='LMARGIN', new_y='NEXT')
-            pdf.set_font('Helvetica', '', 8.5)
-            pdf.multi_cell(W, 4.6, _pdf_safe(scope))
-            pdf.ln(4)
+            section_head('Scope', 'Scope of Work')
+            pdf.set_font(SANS, '', 9)
+            pdf.multi_cell(W, 5, _pdf_rich(scope), align='L')
+            pdf.ln(6)
     notes = (est.get('notes_customer') or '').strip()
     if notes:
-        pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(0, 7, 'Notes', new_x='LMARGIN', new_y='NEXT')
-        pdf.set_font('Helvetica', '', 8.5)
-        pdf.multi_cell(W, 4.6, _pdf_safe(notes))
-        pdf.ln(4)
+        section_head('Additional', 'Notes')
+        pdf.set_font(SANS, '', 9)
+        pdf.multi_cell(W, 5, _pdf_rich(notes), align='L')
+        pdf.ln(6)
 
     # About This Estimate — the AI-friendly summary, inserted before the T&C
     # so a reader (or an AI reading a customer's uploaded PDF) hits the
@@ -7327,13 +8001,12 @@ def build_signed_pdf(est, signed=None):
     ctext = (est.get('contract_text') or '').strip()
     if ctext:
         pdf.add_page()
-        pdf.set_font('Helvetica', 'B', 11)
-        pdf.cell(0, 7, 'Terms & Conditions', new_x='LMARGIN', new_y='NEXT')
-        pdf.set_draw_color(220, 220, 220)
-        pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
-        pdf.ln(3)
-        pdf.set_font('Helvetica', '', 7.5)
-        pdf.multi_cell(W, 4.0, _pdf_safe(ctext))
+        section_head('Legal', 'Terms & Conditions')
+        pdf.ln(2)
+        pdf.set_font(SANS, '', 7.5)
+        pdf.set_text_color(*_PDF_STYLE['mute'])
+        pdf.multi_cell(W, 4.3, _pdf_rich(ctext), align='L')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.ln(6)
 
     # Initialed acknowledgements — only when this PDF represents an actual
@@ -7344,17 +8017,21 @@ def build_signed_pdf(est, signed=None):
         if inits:
             if pdf.get_y() > pdf.h - 40:
                 pdf.add_page()
-            pdf.set_font('Helvetica', 'B', 10)
-            pdf.cell(0, 7, 'Initialed Acknowledgements', new_x='LMARGIN', new_y='NEXT')
-            pdf.ln(1)
+            section_head('Acknowledged', 'Initialed by the Homeowner')
             for it in inits:
-                pdf.set_fill_color(248, 250, 252)
-                pdf.set_font('Helvetica', 'B', 9)
-                pdf.cell(18, 5.5, _pdf_safe(it['value'].upper()), fill=True)
-                pdf.set_font('Helvetica', '', 8.5)
-                pdf.multi_cell(W - 18, 5.5, _pdf_safe(it['text']),
-                               new_x='LMARGIN', new_y='NEXT')
-                pdf.ln(1)
+                _ry = pdf.get_y()
+                pdf.set_font(SANS, 'B', 9)
+                pdf.set_text_color(*_PDF_STYLE['navy'])
+                pdf.cell(16, 5.5, _pdf_rich(it['value'].upper()))
+                pdf.set_font(SANS, '', 8.5)
+                pdf.set_text_color(*_PDF_STYLE['ink'])
+                pdf.multi_cell(W - 16, 5.5, _pdf_rich(it['text']),
+                               new_x='LMARGIN', new_y='NEXT', align='L')
+                pdf.ln(1.5)
+                pdf.set_draw_color(*_PDF_STYLE['rule'])
+                pdf.set_line_width(0.2)
+                pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
+                pdf.ln(2.5)
             pdf.ln(3)
 
     # ── Visualizer page ────────────────────────────────────────────────
@@ -7368,41 +8045,43 @@ def build_signed_pdf(est, signed=None):
         # E-SIGN certificate. Nothing else changes.
         if pdf.get_y() > pdf.h - 30:
             pdf.add_page()
-        pdf.set_draw_color(14, 116, 144)
-        pdf.set_fill_color(236, 254, 255)
         y0 = pdf.get_y()
-        pdf.rect(LM, y0, W, 20, style='DF')
-        pdf.set_xy(LM + 5, y0 + 4)
-        pdf.set_text_color(6, 78, 95)
-        pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(0, 5.5, _pdf_safe('THIS IS AN UNSIGNED PREVIEW'),
-                 new_x='LMARGIN', new_y='NEXT')
-        pdf.set_x(LM + 5)
-        pdf.set_font('Helvetica', '', 8.5)
-        pdf.multi_cell(W - 10, 4.6, _pdf_safe(
+        pdf.set_draw_color(*_PDF_STYLE['teal'])
+        pdf.set_line_width(0.6)
+        pdf.line(LM, y0, LM, y0 + 19)
+        pdf.set_xy(LM + 6, y0)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['teal'])
+        pdf.cell(0, 4, _pdf_rich('UNSIGNED PREVIEW'), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_xy(LM + 6, y0 + 5)
+        pdf.set_font(SANS, '', 8.5)
+        pdf.set_text_color(*_PDF_STYLE['mute'])
+        pdf.multi_cell(W - 12, 4.8, _pdf_rich(
             'To accept this proposal, return to the online link and sign electronically. '
-            'This preview PDF is for review only and does not constitute a contract.'))
-        pdf.set_text_color(0, 0, 0)
-        pdf.set_draw_color(0, 0, 0)
+            'This preview is for review only and does not constitute a contract.'))
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
         return bytes(pdf.output())
 
     # Signature block
     if pdf.get_y() > pdf.h - 70:
         pdf.add_page()
-    pdf.set_draw_color(22, 163, 74)
-    pdf.set_fill_color(240, 253, 244)
     y0 = pdf.get_y()
-    pdf.rect(LM, y0, W, 50, style='DF')
-    pdf.set_xy(LM + 5, y0 + 4)
+    pdf.set_draw_color(22, 163, 74)
+    pdf.set_line_width(0.6)
+    pdf.line(LM, y0, LM, y0 + 48)
+    pdf.set_line_width(0.2)
+    pdf.set_xy(LM + 6, y0)
     pdf.set_text_color(22, 101, 52)
-    pdf.set_font('Helvetica', 'B', 10)
-    pdf.cell(0, 6, 'ELECTRONICALLY SIGNED', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_x(LM + 5)
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font('Helvetica', 'I', 17)
-    pdf.cell(0, 10, _pdf_safe(sig.get('name', '')), new_x='LMARGIN', new_y='NEXT')
-    pdf.set_x(LM + 5)
-    pdf.set_font('Helvetica', '', 7.5)
+    pdf.set_font(SANS, '', 6.5)
+    pdf.cell(0, 4.5, _pdf_rich('ELECTRONICALLY SIGNED'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_x(LM + 6)
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_font(SERIF, 'B', 19)
+    pdf.cell(0, 11, _pdf_rich(sig.get('name', '')), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_x(LM + 6)
+    pdf.set_font(SANS, '', 7.5)
     sig_lines = [
         f"Signed by: {sig.get('name', '')}"
         + (f"  ({sig.get('email')})" if sig.get('email') else ''),
@@ -7411,9 +8090,9 @@ def build_signed_pdf(est, signed=None):
         f"Document SHA-256: {sig.get('document_hash', '')[:32]}...",
     ]
     for line in sig_lines:
-        pdf.cell(0, 4.4, _pdf_safe(line), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_x(LM + 5)
-    pdf.set_draw_color(0, 0, 0)
+        pdf.cell(0, 4.4, _pdf_rich(line), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_x(LM + 6)
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
 
     return bytes(pdf.output())
 
@@ -7715,6 +8394,134 @@ def commercial_fastening(m, table):
     }
 
 
+# ── Ordering pack sizes ─────────────────────────────────────────────────────
+# The estimate measures in squares and linear feet; a supplier order is placed
+# in bundles, sticks and rolls. The catalog carries a `unit` (SQ / LF / EA) but
+# nothing about packaging, so this table is the bridge.
+#
+# THESE ARE INDUSTRY DEFAULTS, NOT VERIFIED PER SUPPLIER. Pack sizes vary by
+# manufacturer and by what the branch stocks — CertainTeed Shadow Ridge runs
+# 24 LF/bundle where IKO Hip & Ridge runs ~33, and starter varies more than
+# that. Every converted row on the material order prints the arithmetic it
+# used ("33.6 SQ x 3/SQ = 101 bundles") so a wrong factor is visible on the
+# sheet rather than silently mis-ordering. Correct a number here and the sheet
+# follows.
+#
+# Matching is on a lowercase substring of the line-item name, first hit wins,
+# so put the specific keys above the general ones.
+_ORDER_PACK = [
+    # (name fragment, from-unit, per, order-unit, note)
+    # Ridge VENT before ridge CAP: a line named "ridge vent" must not be
+    # caught by the shingle rule and ordered in bundles.
+    ('ridge vent',             'LF', 4.0,   'sticks',  '4 ft sticks'),
+    ('intake vent',            'LF', 4.0,   'sticks',  '4 ft sticks'),
+    ('ridge cap',              'LF', 25.0,  'bundles', 'ridge + hip'),
+    ('ridge shingle',          'LF', 25.0,  'bundles', 'ridge + hip'),
+    ('hip / ridge',            'LF', 25.0,  'bundles', 'ridge + hip'),
+    ('starter strip',          'LF', 105.0, 'bundles', '105 LF / bundle'),
+    ('starter',                'LF', 105.0, 'bundles', '105 LF / bundle'),
+    # Drip edge and gutter apron come in 10 ft sticks but are lapped, so the
+    # usable run is 9 ft — order against that, not the nominal length.
+    ('drip edge',              'LF', 9.0,   'sticks',  '9 ft usable per stick'),
+    ('gutter apron',           'LF', 9.0,   'sticks',  '9 ft usable per stick'),
+    ('downspout',              'LF', 10.0,  'sticks',  '10 ft sticks'),
+    ('ice & water',            'SQ', 2.0,   'rolls',   '36 in x 66.7 ft'),
+    ('ice and water',          'SQ', 2.0,   'rolls',   '36 in x 66.7 ft'),
+    ('synthetic underlayment', 'SQ', 10.0,  'rolls',   '10 SQ rolls'),
+    ('underlayment',           'SQ', 10.0,  'rolls',   '10 SQ rolls'),
+    # Asphalt shingles: 3 bundles to the square on every architectural and
+    # impact-resistant line in the catalog. Metal, steel and rubber are sold by
+    # the square or the panel and are deliberately absent — they fall through
+    # to "order as measured" rather than being converted into a bundle count
+    # that does not exist.
+    ('landmark',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
+    ('northgate',              'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
+    ('nordic',                 'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
+    ('shingles',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
+]
+
+# Named so the material order can print the list it actually used.
+_ORDER_PACK_NOTE = ('Pack sizes are industry defaults, not supplier-verified. '
+                    'Each converted row shows its arithmetic - check it against '
+                    'your branch before ordering.')
+
+
+def _order_pack_for(name, unit):
+    """Pack rule for a line item, or None to order as measured."""
+    n = ' '.join(str(name or '').lower().split())
+    u = str(unit or '').strip().upper()
+    for frag, from_unit, per, order_unit, note in _ORDER_PACK:
+        if frag in n and from_unit == u:
+            return {'per': per, 'order_unit': order_unit, 'note': note,
+                    'from_unit': from_unit}
+    return None
+
+
+def material_order_rows(est):
+    """What to actually buy, per line item, across every enabled trade.
+
+    Returns a list of dicts:
+      trade, name, qty, unit           - as the estimate measures it
+      order_qty, order_unit            - what you place the order in
+      math                             - the arithmetic, for checking
+
+    Rows with no pack rule come back with order_qty None and are ordered as
+    measured. Labor lines and anything with no quantity are dropped: this is a
+    purchase order, not a scope list.
+    """
+    import math as _math
+    trades = est.get('trades') or {}
+    labels = _PRODUCT_TRADE_LABELS if '_PRODUCT_TRADE_LABELS' in globals() else {}
+    out = []
+    for tk in GBB_TRADES:
+        td = trades.get(tk) or {}
+        if not td.get('enabled') or not td.get('line_items'):
+            continue
+        tmode = _trade_mode(tk, td)
+        tier = _trade_tier(est, tk)
+        for it in (td.get('line_items') or []):
+            try:
+                qty = float(it.get('quantity') or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            if qty <= 0:
+                continue
+            if tmode != 'simple':
+                t = (it.get('tiers') or {}).get(tier) or {}
+                if t.get('included') is False:
+                    continue
+            name = (it.get('name') or '').strip()
+            # Labor, fees and REMOVAL lines are not ordered. "Remove existing
+            # gutters & downspouts" is 168 LF of tear-off, not 17 sticks of
+            # downspout to buy — the word match alone would have ordered it.
+            _n = name.lower()
+            if any(w in _n for w in
+                   ('labor', 'permit', 'inspection', 'cleanup', 'site protection',
+                    'dumpster', 'tear off', 'tear-off', 'deck inspection',
+                    'remove', 'removal', 'detach', 'dispose', 'disposal', 'haul')):
+                continue
+            unit = (it.get('unit') or '').strip().upper()
+            rule = _order_pack_for(name, unit)
+            row = {'trade': labels.get(tk, tk.title()), 'name': name,
+                   'qty': qty, 'unit': unit,
+                   'order_qty': None, 'order_unit': '', 'math': ''}
+            if rule:
+                per = rule['per']
+                if rule['order_unit'] == 'bundles' and per < 1:
+                    # squares -> bundles: 3 per square
+                    n_units = _math.ceil(qty / per - 1e-9)
+                    row['math'] = f'{qty:g} {unit} x {round(1 / per)}/{unit}'
+                else:
+                    n_units = _math.ceil(qty / per - 1e-9)
+                    row['math'] = f'{qty:g} {unit} / {per:g} per {rule["order_unit"][:-1]}'
+                row['order_qty'] = n_units
+                row['order_unit'] = rule['order_unit']
+                if rule['note']:
+                    row['math'] += f'  ({rule["note"]})'
+            out.append(row)
+    return out
+
+
 def siding_material_takeoff(est, tier):
     """Supplier-order piece counts for one signed siding tier.
 
@@ -7933,10 +8740,129 @@ def siding_material_takeoff(est, tier):
     return rows
 
 
-def build_production_packet_pdf(est):
-    """Work order + material order for the SIGNED package, for the crew and
-    supplier. Deliberately contains NO pricing anywhere — it leaves the
-    office. v1 reflects the signed contract only (change orders excluded)."""
+def _new_internal_pdf(eyebrow):
+    """An internal document (work order, material order, permit sheet) with the
+    same chrome as the customer PDF.
+
+    These are the sheets that go to a crew on a roof and to a supplier's
+    counter, and they were the last documents still drawing in core Helvetica
+    on the old #1a3a5c navy with no page numbers at all — a three-page packet
+    that gets separated in a truck has no way to be put back in order. Returns
+    (pdf, SANS, SERIF, W).
+    """
+    LM = RM = 14
+    _LOGO = os.path.join(BASE_DIR, 'static', 'logo.png')
+    _W = 215.9 - LM - RM
+
+    class _IntPDF(FPDF):
+        def header(self):
+            if getattr(self, '_no_chrome', False):
+                return
+            y = 11
+            if os.path.exists(_LOGO):
+                try:
+                    self.image(_LOGO, x=LM, y=y, h=6.5)
+                except Exception:
+                    pass
+            self.set_xy(LM, y)
+            self.set_font(self._sans, '', 7)
+            self.set_text_color(*_PDF_STYLE['faint'])
+            self.cell(_W, 4, _pdf_rich(self._eyebrow), align='R',
+                      new_x='LMARGIN', new_y='NEXT')
+            self.set_draw_color(*_PDF_STYLE['rule'])
+            self.set_line_width(0.2)
+            self.line(LM, y + 10.5, self.w - RM, y + 10.5)
+            self.set_text_color(*_PDF_STYLE['ink'])
+            self.set_y(y + 15)
+
+        def footer(self):
+            if getattr(self, '_no_chrome', False):
+                return
+            self.set_y(-12)
+            self.set_draw_color(*_PDF_STYLE['rule'])
+            self.set_line_width(0.2)
+            self.line(LM, self.get_y(), self.w - RM, self.get_y())
+            self.ln(2.5)
+            self.set_font(self._sans, '', 6.5)
+            self.set_text_color(*_PDF_STYLE['faint'])
+            self.cell(0, 4, _pdf_rich('Project One Roofing  ·  Internal document'), align='L')
+            self.cell(0, 4, f'Page {self.page_no()} of {{nb}}',
+                      align='R', new_x='LMARGIN', new_y='NEXT')
+            self.set_text_color(*_PDF_STYLE['ink'])
+
+    pdf = _IntPDF(orientation='P', unit='mm', format='Letter')
+    SANS, SERIF = _pdf_fonts(pdf)
+    pdf._sans, pdf._serif, pdf._eyebrow = SANS, SERIF, eyebrow
+    pdf.alias_nb_pages()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.set_margins(LM, 26, RM)
+    pdf.add_page()
+    return pdf, SANS, SERIF, _W
+
+
+def _int_styles(pdf, SANS, SERIF, W):
+    """Section heading / key-value / table helpers shared by the internal docs."""
+    def section(eyebrow, title):
+        if pdf.get_y() > pdf.h - 46:
+            pdf.add_page()
+        pdf.ln(3)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['teal'])
+        pdf.cell(0, 4, _pdf_rich(eyebrow.upper()), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font(SERIF, 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(title), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(1)
+
+    def kv(rows, label_w=44):
+        """Key/value rows on hairlines. multi_cell for the value so a long
+        address wraps instead of running off the page."""
+        for label, val in rows:
+            if val in (None, ''):
+                continue
+            y0 = pdf.get_y()
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(label_w, 5.6, _pdf_rich(str(label).upper()))
+            pdf.set_font(SANS, '', 9.5)
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.multi_cell(W - label_w, 5.6, _pdf_rich(str(val)),
+                           new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.set_draw_color(*_PDF_STYLE['rule'])
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+            pdf.ln(1.6)
+
+    return section, kv
+
+
+def _tier_items(td, trade_mode, t_tier):
+    """Line items in scope for one trade at one package tier.
+
+    Module level rather than nested because the work order and the material
+    order are separate documents now and both walk the same rows.
+    """
+    for it in td.get('line_items', []):
+        qty = float(it.get('quantity') or 0)
+        if qty <= 0:
+            continue
+        if trade_mode != 'simple':
+            t = (it.get('tiers') or {}).get(t_tier, {})
+            if t.get('included') is False:
+                continue
+            yield it, qty, t
+        else:
+            yield it, qty, {}
+
+
+def build_work_order_pdf(est):
+    """Work order for the SIGNED package — the sheet the crew works from.
+
+    Job card, product selection, a one-line scope summary per trade and the
+    notes. Deliberately contains NO pricing anywhere: it leaves the office.
+    What to buy lives in build_material_order_pdf, which goes to whoever
+    places the supplier order rather than to the roof. v1 reflects the signed
+    contract only (change orders excluded)."""
     if FPDF is None:
         raise RuntimeError('fpdf2 not installed')
 
@@ -7950,53 +8876,51 @@ def build_production_packet_pdf(est):
     labels = dict(roofing='Roofing', siding='Siding', windows='Windows',
                   gutters='Gutters', other='Other / Misc')
 
-    pdf = FPDF(orientation='P', unit='mm', format='Letter')
-    pdf.set_auto_page_break(auto=True, margin=16)
-    pdf.set_margins(14, 14, 14)
-    pdf.add_page()
-    W = pdf.w - 28
-
-    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
-    if os.path.exists(logo):
-        try:
-            pdf.image(logo, x=14, y=12, h=16)
-        except Exception:
-            pass
-    pdf.set_xy(14, 12)
-    pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_font('Helvetica', '', 8)
-    pdf.cell(W, 4, '970-776-0945  -  projectoneroofingcolorado.com', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_y(32)
+    pdf, SANS, SERIF, W = _new_internal_pdf(f'Work order  ·  {enum}')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
 
     def title_bar(txt):
-        pdf.set_fill_color(26, 58, 92)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font('Helvetica', 'B', 13)
-        pdf.cell(W, 10, f'  {txt}', fill=True, new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
-        pdf.ln(4)
+        pdf.set_font(SERIF, 'B', 20)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(W, 10, _pdf_rich(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+        pdf.ln(5)
 
-    def section_title(txt):
-        pdf.set_font('Helvetica', 'B', 10.5)
-        pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
+    def section_title(txt, need=42):
+        # `need` is the vertical room this section wants in mm. The default
+        # carries the heading plus roughly five lines of body, which is what
+        # stops a heading sitting alone at the foot of a page with its text on
+        # the next one. Tables ask for more so they don't strand a stub.
+        if pdf.get_y() > pdf.h - need:
+            pdf.add_page()
+        pdf.ln(3)
+        pdf.set_font(SERIF, 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(1)
 
     def table_header(cols):
-        pdf.set_fill_color(234, 239, 245)
-        pdf.set_font('Helvetica', 'B', 8)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.set_draw_color(*_PDF_STYLE['navy'])
+        pdf.set_line_width(0.3)
         for txt, w, align in cols:
-            pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
+            pdf.cell(w, 7, _pdf_rich(str(txt).upper()), border='B', align=align)
         pdf.ln()
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
 
     def trunc(s, n):
         # _pdf_oneline, not _pdf_safe: these are single-line pdf.cell() values.
-        s = _pdf_oneline(s)
+        s = _pdf_oneline_rich(s)
         return s if len(s) <= n else s[:n - 1] + '...'
 
     # ── Page 1: Work Order ──
-    title_bar('PRODUCTION PACKET  -  WORK ORDER')
+    title_bar('Work Order')
 
     signed_at = sig.get('signed_at', '')
     try:
@@ -8027,10 +8951,10 @@ def build_production_packet_pdf(est):
     for label, val in info_rows:
         if not val:
             continue
-        pdf.set_font('Helvetica', 'B', 9)
-        pdf.cell(40, 5.5, _pdf_safe(label))
-        pdf.set_font('Helvetica', '', 9)
-        pdf.cell(0, 5.5, _pdf_safe(val), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font(SANS, 'B', 9)
+        pdf.cell(40, 5.5, _pdf_rich(label))
+        pdf.set_font(SANS, '', 9)
+        pdf.cell(0, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT')
     pdf.ln(3)
 
     # ── Job Details block ─────────────────────────────────────────────
@@ -8056,9 +8980,17 @@ def build_production_packet_pdf(est):
     # Match squares_waste in app.js/app.py: (roof_sq - low_slope) × (1 + waste)
     installed_sq    = max(roof_sq_total - low_slope_sq, 0.0) * (1 + waste_pct / 100.0)
     roofing_td      = trades.get('roofing') or {}
-    has_ridge_vent  = any(it.get('vent_role') == 'ridge'
-                          for it in (roofing_td.get('line_items') or []))
+    _vent_roles     = {it.get('vent_role') for it in (roofing_td.get('line_items') or [])}
+    has_ridge_vent  = 'ridge' in _vent_roles
+    has_intake_vent = 'intake' in _vent_roles
     vent_cutin0     = est.get('vent_cutin') or {}
+
+    # Blank-line fallback so an unfilled sheet still gives the crew somewhere
+    # to write it down on the roof.
+    def _wo(key, blank):
+        v = wo0.get(key)
+        v = str(v).strip() if v is not None else ''
+        return v or blank
 
     detail_rows = []
     if roof_sq_total > 0:
@@ -8066,177 +8998,255 @@ def build_production_packet_pdf(est):
                             f'{installed_sq:.1f} SQ (roof {roof_sq_total:g} SQ + {waste_pct:g}% waste'
                             + (f', minus {low_slope_sq:g} SQ low-slope' if low_slope_sq else '')
                             + ')'))
-    if steep_sq > 0 or pitch_num > 0:
-        pitch_txt = f' at {int(pitch_num)}/12 pitch' if pitch_num > 0 else ''
-        steep_txt = f'{steep_sq:g} SQ steep{pitch_txt}' if steep_sq > 0 else \
-                    f'Predominant pitch {int(pitch_num)}/12'
-        detail_rows.append(('Steep Area', steep_txt))
-    # Ridge vent — always show it, with an explicit YES/NO
-    detail_rows.append(('Ridge Vent',
-                        'YES - see cut-in map below' if has_ridge_vent else 'NO'))
-    # work_order fields — fall back to "________" so the printed sheet has a
-    # blank line for the crew when nothing was entered
+    detail_rows.append(('Scheduled Date',
+                        _wo('scheduled_date', '____________ (TBD)')))
     detail_rows.append(('Tear-off Layers',
                         (str(wo0.get('tear_off_layers')) + ' layer(s)')
                         if wo0.get('tear_off_layers') is not None
                         else '____ (fill in)'))
-    detail_rows.append(('Scheduled Date',
-                        (wo0.get('scheduled_date') or '').strip() or '____________ (TBD)'))
+    # Steep and height are the two adders that change crew size and day rate,
+    # so they ride at the top rather than being inferred from the line items.
+    if steep_sq > 0 or pitch_num > 0:
+        pitch_txt = f' at {int(pitch_num)}/12 pitch' if pitch_num > 0 else ''
+        steep_txt = f'{steep_sq:g} SQ steep{pitch_txt}' if steep_sq > 0 else \
+                    f'Predominant pitch {int(pitch_num)}/12'
+        detail_rows.append(('Steep Charge', steep_txt))
+    else:
+        detail_rows.append(('Steep Charge', 'None - walkable'))
+    detail_rows.append(('Height / Access',
+                        _wo('height_access', '____________ (1-story / 2-story / high)')))
+    detail_rows.append(('Hand Load',
+                        _wo('hand_load', '____________ (yes / no)')))
+    detail_rows.append(('Ridge Vent',
+                        'YES - see the Ventilation Layout page' if has_ridge_vent else 'NO'))
+    detail_rows.append(('Intake Vent', 'YES' if has_intake_vent else 'NO'))
     detail_rows.append(('Satellite Dish',
-                        (wo0.get('satellite_dish') or '').strip() or '____________ (confirm w/ HO)'))
+                        _wo('satellite_dish', '____________ (confirm w/ HO)')))
 
     section_title('Job Details')
-    pdf.set_font('Helvetica', '', 9)
+    pdf.set_font(SANS, '', 9)
     for label, val in detail_rows:
-        pdf.set_font('Helvetica', 'B', 9)
-        pdf.cell(40, 5.5, _pdf_safe(label))
-        pdf.set_font('Helvetica', '', 9)
-        pdf.multi_cell(W - 40, 5.5, _pdf_safe(val))
+        pdf.set_font(SANS, 'B', 9)
+        pdf.cell(40, 5.5, _pdf_rich(label))
+        pdf.set_font(SANS, '', 9)
+        pdf.multi_cell(W - 40, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT', align='L')
     pdf.ln(2)
 
-    # Ridge-vent cut-in map, inline under Job Details when applicable — the
-    # crew wants the picture right next to the "YES" row, not at the bottom
-    # of the sheet.
-    if has_ridge_vent or vent_cutin0.get('image_filename'):
-        try:
-            ridge_lf = float(m0.get('ridge_lf') or 0)
-        except (TypeError, ValueError):
-            ridge_lf = 0.0
-        vinfo = attic_ventilation(m0)
-        raw_cut = math.ceil(vinfo['ridge_lf_required'])
-        cutin = min(raw_cut, int(ridge_lf)) if ridge_lf > 0 else raw_cut
-        full_sticks = math.ceil(ridge_lf / 4) if ridge_lf > 0 else 0
-        pdf.set_font('Helvetica', '', 8.5)
-        if ridge_lf > 0:
-            pdf.multi_cell(W, 4.6, _pdf_safe(
-                f'Install ridge vent the FULL ridge ({ridge_lf:g} LF, '
-                f'{full_sticks} stick(s)) for a uniform look.'))
-        else:
-            pdf.multi_cell(W, 4.6, _pdf_safe(
-                'Install ridge vent the full ridge for a uniform look.'))
-        pdf.set_font('Helvetica', 'B', 9)
-        if ridge_lf > 0 and cutin >= ridge_lf:
-            pdf.multi_cell(W, 4.8, _pdf_safe(
-                f'CUT IN the full ridge (~{cutin:g} LF) for code ventilation.'))
-        else:
-            pdf.multi_cell(W, 4.8, _pdf_safe(
-                f'CUT IN only ~{cutin:g} LF for code-required ventilation - see map for locations.'))
-        note = (vent_cutin0.get('notes') or '').strip()
-        if note:
-            pdf.set_font('Helvetica', '', 8.5)
-            pdf.multi_cell(W, 4.6, _pdf_safe(note))
-        img_fn = vent_cutin0.get('image_filename')
-        if img_fn:
-            img_path = os.path.join(UPLOADS_DIR, *str(img_fn).split('/'))
-            if os.path.exists(img_path):
-                try:
-                    pdf.ln(2)
-                    pdf.set_font('Helvetica', 'I', 7.5)
-                    pdf.set_text_color(120, 120, 120)
-                    pdf.cell(0, 5, _pdf_safe(
-                        'Cut-In Map (highlighted = cut open for ventilation):'),
-                             new_x='LMARGIN', new_y='NEXT')
-                    pdf.set_text_color(0, 0, 0)
-                    pdf.image(img_path, w=min(W, 150))
-                except Exception:
-                    pass
-        pdf.ln(3)
+    # No Product Selection or Scope of Work here. The colours the crew needs
+    # are already in the header block above (shingle and siding, off the
+    # signature), and the item list is the material order's document — this
+    # sheet is the job card.
 
-    # Product selections (brand/model/color per trade)
-    prod_rows = []
-    for trade, fields in TRADE_COLOR_FIELDS.items():
-        td = trades.get(trade) or {}
-        if not td.get('enabled'):
-            continue
-        colors = td.get('colors') or {}
-        for key, label in fields:
-            v = (colors.get(key) or '').strip()
-            if v:
-                prod_rows.append((_PRODUCT_TRADE_LABELS.get(trade, trade.title()), label, v))
-    if prod_rows:
-        section_title('Product Selection')
-        table_header([('Trade', 30, 'L'), ('Item', 60, 'L'), ('Selection', 92, 'L')])
-        pdf.set_font('Helvetica', '', 8)
-        for trade, label, v in prod_rows:
-            pdf.cell(30, 6, trunc(trade, 18), border=1)
-            pdf.cell(60, 6, trunc(label, 40), border=1)
-            pdf.cell(92, 6, trunc(v, 62), border=1)
-            pdf.ln()
-        pdf.ln(4)
-
-    # Scope of work — every line on the signed package (including items the
-    # customer view hides), no prices. The crew works from this list.
-    def _tier_items(td, trade_mode, t_tier):
-        for it in td.get('line_items', []):
-            qty = float(it.get('quantity') or 0)
-            if qty <= 0:
-                continue
-            if trade_mode != 'simple':
-                t = (it.get('tiers') or {}).get(t_tier, {})
-                if t.get('included') is False:
-                    continue
-                yield it, qty, t
-            else:
-                yield it, qty, {}
-
-    section_title('Scope of Work')
-    if is_ins:
-        table_header([('Item', 70, 'L'), ('Description', 112, 'L')])
-        pdf.set_font('Helvetica', '', 8)
-        for sec in _insurance_sections(est):
-            for it in sec.get('items', []):
-                pdf.cell(70, 6, trunc(it.get('name', ''), 46), border=1)
-                pdf.cell(112, 6, trunc(it.get('description', ''), 76), border=1)
-                pdf.ln()
-        scope = (trades.get('insurance', {}).get('scope_notes') or '').strip()
-        if scope:
-            pdf.ln(2)
-            pdf.set_font('Helvetica', '', 8.5)
-            pdf.multi_cell(W, 4.6, _pdf_safe(scope))
-        pdf.ln(4)
-    else:
-        for tk in GBB_TRADES:
-            td = trades.get(tk, {})
-            if not td.get('enabled') or not td.get('line_items'):
-                continue
-            trade_mode = _trade_mode(tk, td)
-            rows = list(_tier_items(td, trade_mode, _trade_tier(est, tk)))
-            if not rows:
-                continue
-            section_title(labels.get(tk, tk.title()))
-            table_header([('Work Item', 138, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
-            pdf.set_font('Helvetica', '', 8)
-            for it, qty, t in rows:
-                name = _with_section(it, it.get('name', ''))
-                desc = (t.get('description') or it.get('description') or '').strip()
-                if desc:
-                    name = f'{name} - {desc}'
-                pdf.cell(138, 6, trunc(name, 92), border=1)
-                pdf.cell(20, 6, f'{qty:g}', border=1, align='R')
-                pdf.cell(24, 6, trunc(it.get('unit', ''), 10), border=1, align='C')
-                pdf.ln()
-            pdf.ln(4)
-
+    # One Notes section with two labelled blocks rather than two headings. Two
+    # separate section titles cost ~20mm of the sheet between them, which was
+    # enough to push a two-line crew note onto a page of its own.
     notes = (est.get('notes_customer') or '').strip()
-    if notes:
-        section_title('Customer Notes')
-        pdf.set_font('Helvetica', '', 8.5)
-        pdf.multi_cell(W, 4.6, _pdf_safe(notes))
-        pdf.ln(3)
-    crew = (est.get('notes_internal') or '').strip()
-    if crew:
-        section_title('Crew Notes (internal)')
-        pdf.set_font('Helvetica', '', 8.5)
-        pdf.multi_cell(W, 4.6, _pdf_safe(crew))
-        pdf.ln(3)
+    crew  = (est.get('notes_internal') or '').strip()
+    if notes or crew:
+        section_title('Notes')
+        for lbl, body in (('From the estimate', notes), ('Crew only - internal', crew)):
+            if not body:
+                continue
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(0, 4.4, _pdf_rich(lbl.upper()), new_x='LMARGIN', new_y='NEXT')
+            pdf.set_font(SANS, '', 8.5)
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.multi_cell(W, 4.6, _pdf_rich(body), new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.ln(2)
 
     # Ridge-vent cut-in is now printed inline under Job Details on page 1,
     # right next to the "Ridge Vent: YES" row — the crew doesn't have to
     # flip pages to find the picture.
 
-    # ── Page 2: Material Order ──
-    pdf.add_page()
-    title_bar('MATERIAL ORDER')
+    # ── Ventilation layout, on its own sheet ──────────────────────────────
+    # The crew marks the as-installed run here, so it needs the full width. It
+    # used to be a 150mm thumbnail tucked under the "Ridge Vent: YES" row on
+    # the job card. Prints whether or not a map was marked: without one it is
+    # still the sheet the ridge and intake footage gets written on.
+    try:
+        ridge_lf = float(m0.get('ridge_lf') or 0)
+    except (TypeError, ValueError):
+        ridge_lf = 0.0
+    try:
+        eave_lf = float(m0.get('eave_lf') or 0)
+    except (TypeError, ValueError):
+        eave_lf = 0.0
+    img_fn = vent_cutin0.get('image_filename')
+    img_path = os.path.join(UPLOADS_DIR, *str(img_fn).split('/')) if img_fn else ''
+
+    if has_ridge_vent or has_intake_vent or img_fn:
+        pdf.add_page()
+        title_bar('Ventilation Layout')
+
+        vinfo = attic_ventilation(m0)
+        raw_cut = math.ceil(vinfo['ridge_lf_required'])
+        cutin = min(raw_cut, int(ridge_lf)) if ridge_lf > 0 else raw_cut
+
+        vrows = []
+        if has_ridge_vent:
+            full_sticks = math.ceil(ridge_lf / 4) if ridge_lf > 0 else 0
+            vrows.append(('Ridge vent',
+                          (f'Run the FULL ridge - {ridge_lf:g} LF, {full_sticks} stick(s)'
+                           if ridge_lf > 0 else 'Run the full ridge')))
+            vrows.append(('Cut in for code',
+                          (f'~{cutin:g} LF of the ridge cut open'
+                           + (' (the whole ridge)' if ridge_lf and cutin >= ridge_lf
+                              else ' - see the map for locations'))))
+        else:
+            vrows.append(('Ridge vent', 'NOT on this job'))
+        if has_intake_vent:
+            intake_sticks = math.ceil(eave_lf / 4) if eave_lf > 0 else 0
+            vrows.append(('Intake vent',
+                          (f'{eave_lf:g} LF at the eaves, {intake_sticks} stick(s)'
+                           if eave_lf > 0 else 'At the eaves')))
+        else:
+            vrows.append(('Intake vent', 'NOT on this job'))
+        kv(vrows, label_w=42)
+
+        note = (vent_cutin0.get('notes') or '').strip()
+        if note:
+            pdf.ln(1)
+            pdf.set_font(SANS, '', 8.5)
+            pdf.multi_cell(W, 4.6, _pdf_rich(note),
+                           new_x='LMARGIN', new_y='NEXT', align='L')
+
+        pdf.ln(3)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(0, 5, _pdf_rich('AS INSTALLED - FILL IN ON SITE'),
+                 new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_font(SANS, '', 9.5)
+        y0 = pdf.get_y() + 5
+        for k, lbl in enumerate(('Ridge vent installed', 'Intake vent installed')):
+            pdf.set_xy(pdf.l_margin + k * 92, y0)
+            pdf.cell(88, 6, _pdf_rich(lbl + '   ____________ LF'))
+        pdf.set_y(y0 + 12)
+
+        if img_path and os.path.exists(img_path):
+            try:
+                pdf.set_font(SANS, '', 6.5)
+                pdf.set_text_color(*_PDF_STYLE['faint'])
+                pdf.cell(0, 5, _pdf_rich(
+                    'MARKED CUT-IN MAP - HIGHLIGHTED RUNS ARE CUT OPEN FOR VENTILATION'),
+                         new_x='LMARGIN', new_y='NEXT')
+                pdf.set_text_color(*_PDF_STYLE['ink'])
+                pdf.image(img_path, w=W)
+            except Exception:
+                pass
+        else:
+            pdf.set_font(SANS, '', 8)
+            pdf.set_text_color(*_PDF_STYLE['mute'])
+            pdf.multi_cell(W, 4.6, _pdf_rich(
+                'No roof diagram marked for this job. Import the RoofR report, then use '
+                '"Mark cut-in on roof" on the Scope tab to put the overhead here.'),
+                new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+
+    return bytes(pdf.output())
+
+
+def build_material_order_pdf(est):
+    """What to buy for the SIGNED package, in the units it is ordered in.
+
+    Separate document from the work order: the crew does not need the buy list
+    and the person ordering does not need the job card. Quantities are
+    converted from the estimate's squares and linear feet into bundles, sticks
+    and rolls by _ORDER_PACK, and every converted row prints the arithmetic it
+    used so a wrong pack size is visible here rather than at the branch."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+
+    c      = est.get('customer', {})
+    a      = c.get('address', {})
+    sig    = est.get('signature', {}) or {}
+    enum   = _est_number(est)
+    is_ins = est.get('estimate_type') == 'insurance'
+    tier   = sig.get('selected_tier') or est.get('selected_tier', 'better')
+    trades = est.get('trades', {})
+    labels = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                  gutters='Gutters', other='Other / Misc')
+
+    pdf, SANS, SERIF, W = _new_internal_pdf(f'Material order  ·  {enum}')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+
+    def section_title(txt, need=42):
+        if pdf.get_y() > pdf.h - need:
+            pdf.add_page()
+        pdf.ln(3)
+        pdf.set_font(SERIF, 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(1)
+
+    def table_header(cols):
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.set_draw_color(*_PDF_STYLE['navy'])
+        pdf.set_line_width(0.3)
+        for txt, w, align in cols:
+            pdf.cell(w, 7, _pdf_rich(str(txt).upper()), border='B', align=align)
+        pdf.ln()
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
+
+    def trunc(s, n):
+        s = _pdf_oneline_rich(s)
+        return s if len(s) <= n else s[:n - 1] + '...'
+
+    pdf.set_font(SERIF, 'B', 20)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W, 10, _pdf_rich('Material Order'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+    pdf.ln(5)
+
+    addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'),
+                                       a.get('state'), a.get('zip')]))
+    kv([('Customer', c.get('name', '')),
+        ('Job Address', addr_str),
+        ('Estimate #', enum),
+        ('Package', _pick_summary_label(est) or tier.title())])
+    pdf.ln(2)
+
+    # ── What to order ──────────────────────────────────────────────────────
+    order_rows = material_order_rows(est)
+    if order_rows:
+        section_title('Order This', need=70)
+        pdf.set_font(SANS, '', 7.5)
+        pdf.set_text_color(*_PDF_STYLE['mute'])
+        pdf.multi_cell(W, 4.2, _pdf_rich(_ORDER_PACK_NOTE),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(2)
+        table_header([('Trade', 22, 'L'), ('Material', 60, 'L'),
+                      ('Order', 28, 'R'), ('Measured', 22, 'R'),
+                      ('How that was worked out', 56, 'L')])
+        pdf.set_font(SANS, '', 8)
+        for r in order_rows:
+            if r['order_qty']:
+                order_txt = f"{r['order_qty']:g} {r['order_unit']}"
+            else:
+                order_txt = f"{r['qty']:g} {r['unit']}"
+            pdf.cell(22, 6.4, trunc(r['trade'], 12), border='B')
+            pdf.cell(60, 6.4, trunc(r['name'], 40), border='B')
+            pdf.set_font(SANS, 'B', 8)
+            pdf.cell(28, 6.4, trunc(order_txt, 16), border='B', align='R')
+            pdf.set_font(SANS, '', 8)
+            pdf.cell(22, 6.4, f"{r['qty']:g} {r['unit']}", border='B', align='R')
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(56, 6.4, trunc(r['math'] or 'order as measured', 52), border='B')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.set_font(SANS, '', 8)
+            pdf.ln()
+        pdf.ln(3)
+
+    # ── Reference detail: measurements, priced list, labor ────────────────
 
     m = est.get('measurements') or {}
 
@@ -8247,11 +9257,20 @@ def build_production_packet_pdf(est):
             return 0.0
 
     meas_rows = []
-    for group, fields in MEASURE_LABELS:
-        for key, label, unit in fields:
-            v = _mnum(key)
-            if v:
-                meas_rows.append((group, label, v, unit))
+    # A complex carries its numbers per building, so the Area column names the
+    # building rather than repeating "Commercial" seven times - the crew has to
+    # be able to tell Building 3's perimeter from Building 5's. A single-roof
+    # job has one unnamed set and reads exactly as it did.
+    for _bld, _bm in _measurement_sets(est):
+        for group, fields in MEASURE_LABELS:
+            for key, label, unit in fields:
+                try:
+                    v = float(_bm.get(key) or 0)
+                except (TypeError, ValueError):
+                    v = 0.0
+                if v:
+                    meas_rows.append((_bld if (_bld and group == 'Commercial') else group,
+                                      label, v, unit))
     # iw_second_row is a 0/1 toggle, not a MEASURE_LABELS field: a 2nd course of
     # ice & water at the eaves (code). The I&W line qty already includes it —
     # this row tells the crew WHY the footage is doubled.
@@ -8260,23 +9279,25 @@ def build_production_packet_pdf(est):
     # Same idea for commercial: comm_work_type is a 0/1 toggle that decides which
     # labor line carries quantity, so the crew needs to see which job this is.
     if est.get('estimate_type') == 'commercial':
-        meas_rows.append(('Commercial', 'JOB TYPE: NEW CONSTRUCTION (install only)'
-                          if _mnum('comm_work_type') else
-                          'JOB TYPE: RE-ROOF (tear-off & disposal included)', 1, ''))
+        for _bld, _bm in _measurement_sets(est):
+            meas_rows.append((_bld or 'Commercial',
+                              'JOB TYPE: NEW CONSTRUCTION (install only)'
+                              if float(_bm.get('comm_work_type') or 0) else
+                              'JOB TYPE: RE-ROOF (tear-off & disposal included)', 1, ''))
     if meas_rows:
-        section_title('Measurements')
+        section_title('Measurements', need=60)
         table_header([('Area', 30, 'L'), ('Measurement', 92, 'L'), ('Value', 36, 'R'), ('Unit', 24, 'C')])
-        pdf.set_font('Helvetica', '', 8)
+        pdf.set_font(SANS, '', 8)
         for group, label, v, unit in meas_rows:
             pdf.cell(30, 6, trunc(group, 18), border=1)
             pdf.cell(92, 6, trunc(label, 62), border=1)
             pdf.cell(36, 6, f'{v:g}', border=1, align='R')
-            pdf.cell(24, 6, _pdf_safe(unit), border=1, align='C')
+            pdf.cell(24, 6, _pdf_rich(unit), border=1, align='C')
             pdf.ln()
         waste = _mnum('waste_pct')
         if waste:
-            pdf.set_font('Helvetica', 'I', 8)
-            pdf.cell(0, 6, _pdf_safe(f'Roof quantities below already include {waste:g}% waste.'),
+            pdf.set_font(SANS, 'I', 8)
+            pdf.cell(0, 6, _pdf_rich(f'Order quantities above already include {waste:g}% waste.'),
                      new_x='LMARGIN', new_y='NEXT')
         pdf.ln(4)
 
@@ -8287,12 +9308,12 @@ def build_production_packet_pdf(est):
     notes = (comm.get('notes') or '').strip()
     if est.get('estimate_type') == 'commercial' and (flags or notes):
         section_title('Job Complexity')
-        pdf.set_font('Helvetica', '', 9)
+        pdf.set_font(SANS, '', 9)
         for lbl in flags:
-            pdf.cell(0, 5.5, _pdf_safe(f'- {lbl}'), new_x='LMARGIN', new_y='NEXT')
+            pdf.cell(0, 5.5, _pdf_rich(f'- {lbl}'), new_x='LMARGIN', new_y='NEXT')
         if notes:
-            pdf.set_font('Helvetica', 'I', 9)
-            pdf.multi_cell(0, 5, _pdf_safe(notes))
+            pdf.set_font(SANS, 'I', 9)
+            pdf.multi_cell(0, 5, _pdf_rich(notes), new_x='LMARGIN', new_y='NEXT', align='L')
         pdf.ln(4)
 
     # ── Layover / recover requirements ──
@@ -8307,19 +9328,19 @@ def build_production_packet_pdf(est):
     # still gets the requirements printed.
     if est.get('estimate_type') == 'commercial' and _est_is_layover(est):
         section_title('Layover / Recover Requirements')
-        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_font(SANS, 'B', 9)
         pdf.set_text_color(170, 30, 30)
         # new_x/new_y on EVERY multi_cell: without them the cursor stays where
         # the last line ended, and the next call gets a width-0 box and throws
         # "Not enough horizontal space to render a single character".
-        pdf.multi_cell(0, 5, _pdf_safe(
+        pdf.multi_cell(0, 5, _pdf_rich(
             'VERIFY BEFORE THE FIRST BOARD GOES DOWN - a recover that does not '
             'meet these does not pass inspection and does not carry a warranty.'),
             new_x='LMARGIN', new_y='NEXT')
         pdf.set_text_color(0, 0, 0)
-        pdf.set_font('Helvetica', '', 8.5)
+        pdf.set_font(SANS, '', 8.5)
         for rule in COMMERCIAL_LAYOVER_RULES:
-            pdf.multi_cell(0, 4.6, _pdf_safe(f'- {rule}'),
+            pdf.multi_cell(0, 4.6, _pdf_rich(f'- {rule}'),
                            new_x='LMARGIN', new_y='NEXT')
         pdf.ln(4)
 
@@ -8328,103 +9349,80 @@ def build_production_packet_pdf(est):
     # field spacing, and getting it wrong is how a roof leaves in a windstorm.
     if est.get('estimate_type') == 'commercial':
         _ft = _load_commercial_fastening()
-        fz = commercial_fastening(m, _ft)
         section_title('Fastening Schedule')
-        if not fz['ok']:
-            # A silently-absent section is how a crew ends up guessing. Say it loudly.
-            pdf.set_font('Helvetica', 'B', 10)
-            pdf.set_text_color(170, 30, 30)
-            pdf.cell(0, 6, 'NOT CALCULATED - DO NOT ORDER FASTENERS FROM THIS SHEET',
-                     new_x='LMARGIN', new_y='NEXT')
-            pdf.set_text_color(0, 0, 0)
-            pdf.set_font('Helvetica', '', 8.5)
-            _why = {'no_uplift_rating': 'No uplift rating was selected on the estimate.',
-                    'missing_dimensions': 'Building length, width, and height were not entered.',
-                    'no_table': 'No fastening table is configured.'}
-            pdf.multi_cell(0, 4.6, _pdf_safe(
-                _why.get(fz['reason'], 'Required inputs were missing.') +
-                ' Fastener quantities on the Material Order are ZERO. Confirm the fastening '
-                'schedule against the system approval before the crew starts.'))
-        else:
-            pdf.set_font('Helvetica', '', 8.5)
-            _zr = _ft.get('zone_rule') or {}
-            pdf.cell(0, 4.8, _pdf_safe(
-                f"Uplift: {fz['rating_label']}   |   Zone width a = {fz['a']:.1f} ft   |   "
-                f"{_zr.get('standard', '')}"
-                f"{' (L-shaped corners)' if _zr.get('corner_shape') == 'L' else ' (square corners)'}"),
-                new_x='LMARGIN', new_y='NEXT')
-            pdf.ln(1)
-            table_header([('Zone', 26, 'L'), ('Area SF', 24, 'R'), ('Plates/Bd', 22, 'R'),
-                          ('Insul Qty', 24, 'R'), ('Seam Spacing', 34, 'C'), ('Seam Qty', 24, 'R')])
-            pdf.set_font('Helvetica', '', 8)
-            for _z in ('field', 'perimeter', 'corner'):
-                _zi, _in, _se = fz['zones'][_z], fz['insul']['by_zone'][_z], fz['seam']['by_zone'][_z]
-                pdf.cell(26, 6, _z.title(), border=1)
-                pdf.cell(24, 6, f"{_zi['sf']:,.0f}", border=1, align='R')
-                pdf.cell(22, 6, f"{_in['per_board']:g}" if fz['insul']['applies'] else '-', border=1, align='R')
-                pdf.cell(24, 6, f"{math.ceil(_in['count']):,}" if fz['insul']['applies'] else '-', border=1, align='R')
-                pdf.cell(34, 6, (f"{_se['spacing_in']:g}\" o.c. / {_se['sheet_width_ft']:g}ft sheet"
-                                 if fz['seam']['applies'] else '-'), border=1, align='C')
-                pdf.cell(24, 6, f"{math.ceil(_se['count']):,}" if fz['seam']['applies'] else '-', border=1, align='R')
+        for _bld, _bm in _measurement_sets(est):
+            fz = commercial_fastening(_bm, _ft)
+            if _bld:
+                pdf.set_font(SANS, 'B', 9)
+                pdf.cell(0, 5.4, _pdf_rich(_bld), new_x='LMARGIN', new_y='NEXT')
+            if not fz['ok']:
+                # A silently-absent section is how a crew ends up guessing. Say it loudly.
+                pdf.set_font(SANS, 'B', 10)
+                pdf.set_text_color(170, 30, 30)
+                pdf.cell(0, 6, 'NOT CALCULATED - DO NOT ORDER FASTENERS FROM THIS SHEET',
+                         new_x='LMARGIN', new_y='NEXT')
+                pdf.set_text_color(0, 0, 0)
+                pdf.set_font(SANS, '', 8.5)
+                _why = {'no_uplift_rating': 'No uplift rating was selected on the estimate.',
+                        'missing_dimensions': 'Building length, width, and height were not entered.',
+                        'no_table': 'No fastening table is configured.'}
+                pdf.multi_cell(0, 4.6, _pdf_rich(
+                    _why.get(fz['reason'], 'Required inputs were missing.') +
+                    ' Fastener quantities on the Material Order are ZERO. Confirm the fastening '
+                    'schedule against the system approval before the crew starts.'), new_x='LMARGIN', new_y='NEXT', align='L')
+            else:
+                pdf.set_font(SANS, '', 8.5)
+                _zr = _ft.get('zone_rule') or {}
+                pdf.cell(0, 4.8, _pdf_rich(
+                    f"Uplift: {fz['rating_label']}   |   Zone width a = {fz['a']:.1f} ft   |   "
+                    f"{_zr.get('standard', '')}"
+                    f"{' (L-shaped corners)' if _zr.get('corner_shape') == 'L' else ' (square corners)'}"),
+                    new_x='LMARGIN', new_y='NEXT')
+                pdf.ln(1)
+                table_header([('Zone', 26, 'L'), ('Area SF', 24, 'R'), ('Plates/Bd', 22, 'R'),
+                              ('Insul Qty', 24, 'R'), ('Seam Spacing', 34, 'C'), ('Seam Qty', 24, 'R')])
+                pdf.set_font(SANS, '', 8)
+                for _z in ('field', 'perimeter', 'corner'):
+                    _zi, _in, _se = fz['zones'][_z], fz['insul']['by_zone'][_z], fz['seam']['by_zone'][_z]
+                    pdf.cell(26, 6, _z.title(), border=1)
+                    pdf.cell(24, 6, f"{_zi['sf']:,.0f}", border=1, align='R')
+                    pdf.cell(22, 6, f"{_in['per_board']:g}" if fz['insul']['applies'] else '-', border=1, align='R')
+                    pdf.cell(24, 6, f"{math.ceil(_in['count']):,}" if fz['insul']['applies'] else '-', border=1, align='R')
+                    pdf.cell(34, 6, (f"{_se['spacing_in']:g}\" o.c. / {_se['sheet_width_ft']:g}ft sheet"
+                                     if fz['seam']['applies'] else '-'), border=1, align='C')
+                    pdf.cell(24, 6, f"{math.ceil(_se['count']):,}" if fz['seam']['applies'] else '-', border=1, align='R')
+                    pdf.ln()
+                pdf.set_font(SANS, 'B', 8)
+                pdf.cell(96, 6, f"TOTAL (incl. {fz['waste_pct']:g}% waste)", border=1)
+                pdf.cell(24, 6, f"{fz['insul']['total']:,}" if fz['insul']['applies'] else '0', border=1, align='R')
+                pdf.cell(34, 6, '', border=1)
+                pdf.cell(24, 6, f"{fz['seam']['total']:,}" if fz['seam']['applies'] else '0', border=1, align='R')
                 pdf.ln()
-            pdf.set_font('Helvetica', 'B', 8)
-            pdf.cell(96, 6, f"TOTAL (incl. {fz['waste_pct']:g}% waste)", border=1)
-            pdf.cell(24, 6, f"{fz['insul']['total']:,}" if fz['insul']['applies'] else '0', border=1, align='R')
-            pdf.cell(34, 6, '', border=1)
-            pdf.cell(24, 6, f"{fz['seam']['total']:,}" if fz['seam']['applies'] else '0', border=1, align='R')
-            pdf.ln()
-            pdf.set_font('Helvetica', 'I', 7.5)
-            if not fz['seam']['applies']:
-                pdf.cell(0, 4.4, _pdf_safe('Seam fasteners: not applicable for this system.'),
-                         new_x='LMARGIN', new_y='NEXT')
-            if not fz['insul']['applies']:
-                pdf.cell(0, 4.4, _pdf_safe('Insulation fasteners: no fastened layers on this job.'),
-                         new_x='LMARGIN', new_y='NEXT')
-            for _w in fz['warnings']:
-                pdf.multi_cell(0, 4.2, _pdf_safe('! ' + _w))
-            pdf.multi_cell(0, 4.2, _pdf_safe(_ft.get('source_note', '')))
-        pdf.ln(4)
+                pdf.set_font(SANS, 'I', 7.5)
+                if not fz['seam']['applies']:
+                    pdf.cell(0, 4.4, _pdf_rich('Seam fasteners: not applicable for this system.'),
+                             new_x='LMARGIN', new_y='NEXT')
+                if not fz['insul']['applies']:
+                    pdf.cell(0, 4.4, _pdf_rich('Insulation fasteners: no fastened layers on this job.'),
+                             new_x='LMARGIN', new_y='NEXT')
+                # new_x/new_y on every multi_cell, per the note further up: without
+                # them the cursor stays where the last line ended, and the NEXT
+                # building's schedule gets a width-0 box and throws. Harmless
+                # while this ran once; a complex runs it per building.
+                for _w in fz['warnings']:
+                    pdf.multi_cell(0, 4.2, _pdf_rich('! ' + _w),
+                                   new_x='LMARGIN', new_y='NEXT')
+                pdf.multi_cell(0, 4.2, _pdf_rich(_ft.get('source_note', '')),
+                               new_x='LMARGIN', new_y='NEXT')
+            pdf.ln(4)
 
     if not is_ins:
         # Materials: signed-tier lines with a material cost (or simple-mode lines)
-        mat_rows, lab_rows = [], []
-        for tk in GBB_TRADES:
-            td = trades.get(tk, {})
-            if not td.get('enabled') or not td.get('line_items'):
-                continue
-            trade_mode = _trade_mode(tk, td)
-            for it, qty, t in _tier_items(td, trade_mode, _trade_tier(est, tk)):
-                name = _with_section(it, it.get('name', ''))
-                desc = (t.get('description') or it.get('description') or '').strip()
-                unit = it.get('unit', '')
-                trade_lbl = labels.get(tk, tk.title())
-                if trade_mode == 'simple' or float(t.get('material_unit_cost') or 0) > 0:
-                    mat_rows.append((trade_lbl, name, desc, qty, unit))
-                if float(t.get('labor_unit_cost') or 0) > 0:
-                    lab_rows.append((trade_lbl, name, qty, unit))
-        if mat_rows:
-            section_title('Materials')
-            table_header([('Trade', 26, 'L'), ('Material', 112, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
-            pdf.set_font('Helvetica', '', 8)
-            for trade_lbl, name, desc, qty, unit in mat_rows:
-                nm = f'{name} - {desc}' if desc else name
-                pdf.cell(26, 6, trunc(trade_lbl, 15), border=1)
-                pdf.cell(112, 6, trunc(nm, 74), border=1)
-                pdf.cell(20, 6, f'{qty:g}', border=1, align='R')
-                pdf.cell(24, 6, trunc(unit, 10), border=1, align='C')
-                pdf.ln()
-            pdf.ln(4)
-        if lab_rows:
-            section_title('Labor Summary')
-            table_header([('Trade', 26, 'L'), ('Work Item', 112, 'L'), ('Qty', 20, 'R'), ('Unit', 24, 'C')])
-            pdf.set_font('Helvetica', '', 8)
-            for trade_lbl, name, qty, unit in lab_rows:
-                pdf.cell(26, 6, trunc(trade_lbl, 15), border=1)
-                pdf.cell(112, 6, trunc(name, 74), border=1)
-                pdf.cell(20, 6, f'{qty:g}', border=1, align='R')
-                pdf.cell(24, 6, trunc(unit, 10), border=1, align='C')
-                pdf.ln()
-            pdf.ln(4)
+        # The priced "Materials" list and the "Labor Summary" that used to sit
+        # here are gone. Materials showed the same rows as "Order This" in
+        # measured units, which that table already carries as a column; the
+        # work items are what the crew does, so they moved to the work order.
+        # This document is a purchase order.
 
         # ── Siding Material Take-off ─────────────────────────────────────
         # QXO-format supplier order: piece counts per SKU derived from the
@@ -8437,15 +9435,15 @@ def build_production_packet_pdf(est):
             profile = _siding_profile(trades.get('siding') or {}, siding_tier)
             profile_lbl = SIDING_PROFILE_LABELS.get(profile, profile) or profile
             section_title(f'Siding Material Take-off — {profile_lbl}')
-            pdf.set_font('Helvetica', 'I', 8)
-            pdf.multi_cell(W, 4.4, _pdf_safe(
+            pdf.set_font(SANS, 'I', 8)
+            pdf.multi_cell(W, 4.4, _pdf_rich(
                 'Piece counts converted from the signed measurements per the QXO '
                 'take-off sheet. \"Order\" column includes waste (siding +15%, trim +19%) '
-                'and is rounded up to whole units.'))
+                'and is rounded up to whole units.'), new_x='LMARGIN', new_y='NEXT', align='L')
             pdf.ln(1)
             table_header([('Section', 28, 'L'), ('Product', 96, 'L'),
                           ('Size', 32, 'L'), ('Pieces', 16, 'R'), ('Order', 16, 'R')])
-            pdf.set_font('Helvetica', '', 8)
+            pdf.set_font(SANS, '', 8)
             for section, product, size, pieces_base, pieces_order in takeoff_rows:
                 pdf.cell(28, 6, trunc(section, 16), border=1)
                 pdf.cell(96, 6, trunc(product, 64), border=1)
@@ -8460,14 +9458,26 @@ def build_production_packet_pdf(est):
                 pdf.ln()
             pdf.ln(4)
 
-    pdf.set_font('Helvetica', 'I', 7.5)
+    pdf.set_font(SANS, 'I', 7.5)
     pdf.set_text_color(120, 120, 120)
-    pdf.cell(0, 5, _pdf_safe('Generated from the signed contract. Excludes change orders. '
+    pdf.cell(0, 5, _pdf_rich('Generated from the signed contract. Excludes change orders. '
                              'Internal document - no pricing included.'),
              new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
 
     return bytes(pdf.output())
+
+
+
+
+def build_production_packet_pdf(est):
+    """Back-compat: the production packet is now two documents.
+
+    Returns the work order, which is what every existing caller (the CRM push,
+    the Documents tab regenerate) meant by "the packet". The material order is
+    generated alongside it by generate_production_packet.
+    """
+    return build_work_order_pdf(est)
 
 
 def push_contract_to_crm(est_id, pdf_bytes=None):
@@ -8708,35 +9718,48 @@ def generate_production_packet(est_id, push_to_crm=False):
     if not est.get('signature'):
         raise ValueError('estimate is not signed')
 
-    pdf_bytes = build_production_packet_pdf(est)
-    dest_dir = os.path.join(UPLOADS_DIR, est_id)
-    os.makedirs(dest_dir, exist_ok=True)
-    fname = f'packet_{uuid.uuid4().hex[:8]}.pdf'
-    with open(os.path.join(dest_dir, fname), 'wb') as f:
-        f.write(pdf_bytes)
-
+    # Two documents, two audiences: the crew works from the work order, the
+    # buy list goes to whoever places the supplier order. They used to be one
+    # PDF, so the crew carried the ordering sheet and the buyer paged past the
+    # job card.
     sig  = est.get('signature') or {}
     tier = sig.get('selected_tier') or est.get('selected_tier', 'better')
     if est.get('estimate_type') == 'insurance':
-        label = 'Production Packet'
+        pkg = ''
     elif est.get('estimate_type') == 'commercial' and not _pick_summary_label(est):
-        label = 'Production Packet - Commercial'
+        pkg = ' - Commercial'
     else:
-        label = f'Production Packet - {_pick_summary_label(est) or tier.title()}'
-    att = {
-        'id':               uuid.uuid4().hex[:12],
-        'filename':         f'{est_id}/{fname}',
-        'label':            label,
-        'doc_type':         'work_order',
-        'show_in_estimate': False,   # internal — never on the customer page
-        'server_generated': True,
-        'generated_at':     datetime.utcnow().isoformat() + 'Z',
-    }
+        pkg = f' - {_pick_summary_label(est) or tier.title()}'
 
-    # Replace any previous packet (and clean up its file). Only work_order
-    # rows — other server-generated docs (signed change orders) stay put.
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+
+    built = []
+    for builder, doc_type, prefix, name in (
+            (build_work_order_pdf,    'work_order',     'workorder', 'Work Order'),
+            (build_material_order_pdf, 'material_order', 'material',  'Material Order')):
+        body = builder(est)
+        fn = f'{prefix}_{uuid.uuid4().hex[:8]}.pdf'
+        with open(os.path.join(dest_dir, fn), 'wb') as f:
+            f.write(body)
+        built.append({
+            'id':               uuid.uuid4().hex[:12],
+            'filename':         f'{est_id}/{fn}',
+            'label':            f'{name}{pkg}',
+            'doc_type':         doc_type,
+            'show_in_estimate': False,   # internal — never on the customer page
+            'server_generated': True,
+            'generated_at':     datetime.utcnow().isoformat() + 'Z',
+        })
+    att, mat_att = built
+    pdf_bytes = None   # set below for the CRM push (work order)
+    fname = built[0]['filename'].split('/')[-1]
+
+    # Replace any previous packet (and clean up its files). Both packet
+    # doc_types — other server-generated docs (signed change orders) stay put.
     def _is_packet(x):
-        return x.get('server_generated') and x.get('doc_type') == 'work_order'
+        return (x.get('server_generated')
+                and x.get('doc_type') in ('work_order', 'material_order'))
 
     def _swap_packet(doc):
         if doc is None:
@@ -8749,7 +9772,7 @@ def generate_production_packet(est_id, push_to_crm=False):
                 except OSError:
                     pass
         doc['attachments'] = [x for x in doc.get('attachments') or []
-                              if not _is_packet(x)] + [att]
+                              if not _is_packet(x)] + built
         return doc
 
     est = est_update(est_id, _swap_packet) or est
@@ -8761,11 +9784,14 @@ def generate_production_packet(est_id, push_to_crm=False):
     c     = est.get('customer', {})
     cname = (c.get('name') or 'Customer').strip()
     enum  = _est_number(est)
+    with open(os.path.join(dest_dir, fname), 'rb') as f:
+        pdf_bytes = f.read()
     doc_id, err = _crm_file_document(
-        est, pdf_bytes, upload_name=f'Production_Packet_{enum}.pdf',
+        est, pdf_bytes, upload_name=f'Work_Order_{enum}.pdf',
         hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
-        doc_name=f'Production Packet - {cname} ({enum})', doc_type='work_order',
-        description='Work order + material list generated from the signed contract.')
+        doc_name=f'Work Order - {cname} ({enum})', doc_type='work_order',
+        description='Work order generated from the signed contract. The material '
+                    'order is a separate document.')
     if doc_id:
         def _mark_pushed(doc):
             if doc is None:
@@ -8875,53 +9901,53 @@ def build_permit_packet_pdf(est):
     waste_pct = _mnum('waste_pct')
     installed = max(roof_sq - low_slope, 0.0) * (1 + waste_pct / 100.0)
 
-    pdf = FPDF(orientation='P', unit='mm', format='Letter')
-    pdf.set_auto_page_break(auto=True, margin=16)
-    pdf.set_margins(14, 14, 14)
-    pdf.add_page()
-    W = pdf.w - 28
-
-    logo = os.path.join(BASE_DIR, 'static', 'logo.png')
-    if os.path.exists(logo):
-        try:
-            pdf.image(logo, x=14, y=12, h=16)
-        except Exception:
-            pass
-    pdf.set_xy(14, 12)
-    pdf.set_font('Helvetica', 'B', 11)
-    pdf.cell(W, 5, 'PROJECT ONE ROOFING', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_font('Helvetica', '', 8)
-    pdf.cell(W, 4, '970-776-0945  -  projectoneroofingcolorado.com', align='R', new_x='LMARGIN', new_y='NEXT')
-    pdf.set_y(32)
-
-    pdf.set_fill_color(26, 58, 92)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font('Helvetica', 'B', 13)
-    pdf.cell(W, 10, '  PERMIT APPLICATION PACKET', fill=True, new_x='LMARGIN', new_y='NEXT')
-    pdf.set_text_color(0, 0, 0)
-    pdf.ln(4)
+    pdf, SANS, SERIF, W = _new_internal_pdf(f'Permit packet  ·  {enum}')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+    pdf.set_font(SERIF, 'B', 20)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W, 10, _pdf_rich('Permit Application Packet'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+    pdf.ln(5)
 
     def section_title(txt):
-        pdf.set_font('Helvetica', 'B', 10.5)
-        pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 7, _pdf_safe(txt), new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
+        if pdf.get_y() > pdf.h - 46:
+            pdf.add_page()
+        pdf.ln(3)
+        pdf.set_font(SERIF, 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich(txt), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln(1)
+
+    def table_header(cols):
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.set_draw_color(*_PDF_STYLE['navy'])
+        pdf.set_line_width(0.3)
+        for txt, w, align in cols:
+            pdf.cell(w, 7, _pdf_rich(str(txt).upper()), border='B', align=align)
+        pdf.ln()
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
 
     def kv_row(label, val):
         if not val:
             return
-        pdf.set_font('Helvetica', 'B', 9)
-        pdf.cell(50, 5.5, _pdf_safe(label))
-        pdf.set_font('Helvetica', '', 9)
-        pdf.multi_cell(W - 50, 5.5, _pdf_safe(val))
+        pdf.set_font(SANS, 'B', 9)
+        pdf.cell(50, 5.5, _pdf_rich(label))
+        pdf.set_font(SANS, '', 9)
+        pdf.multi_cell(W - 50, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT', align='L')
 
     # Where to apply
     section_title('Apply To')
     kv_row('Jurisdiction',      jur['name'])
     if jur['office']:
         kv_row('Building Office', jur['office'])
-    if jur['county']:
-        kv_row('County',          jur['county'])
+    # County deliberately not shown: the sheet only needs to say where the
+    # permit gets pulled, and the office name already carries the jurisdiction.
     if jur['submittal_method']:
         kv_row('Submittal Method', jur['submittal_method'])
     if jur['portal_url']:
@@ -8932,11 +9958,11 @@ def build_permit_packet_pdf(est):
         kv_row('Adopted Code',    jur['adopted_code'])
     if not jur['verified']:
         pdf.ln(1)
-        pdf.set_font('Helvetica', 'I', 8)
+        pdf.set_font(SANS, 'I', 8)
         pdf.set_text_color(170, 30, 30)
-        pdf.multi_cell(W, 4.4, _pdf_safe(
+        pdf.multi_cell(W, 4.4, _pdf_rich(
             'Jurisdiction has NOT been manager-verified for this address — '
-            'confirm the correct AHJ before submitting.'))
+            'confirm the correct AHJ before submitting.'), new_x='LMARGIN', new_y='NEXT', align='L')
         pdf.set_text_color(0, 0, 0)
     pdf.ln(3)
 
@@ -8968,6 +9994,28 @@ def build_permit_packet_pdf(est):
         pitch_txt = f' at {int(pitch)}/12' if pitch > 0 else ''
         kv_row('Steep Area', (f'{steep:g} SQ steep{pitch_txt}' if steep > 0
                               else f'Predominant pitch {int(pitch)}/12'))
+    # The material actually going on the roof — the permit clerk needs the
+    # covering, not just its color. Pulled from the signed tier's bundle so it
+    # names the product ("CertainTeed Northgate"), which is what the roofing
+    # affidavit and the Class-4 question both turn on.
+    try:
+        _mf = _build_estimate_manifest(est)
+        for _t in (_mf.get('trades') or []):
+            if _t.get('key') != 'roofing':
+                continue
+            for _ti in (_t.get('tiers') or []):
+                if not _ti.get('is_selected'):
+                    continue
+                _name = (_ti.get('material_name') or _ti.get('package_name') or '').strip()
+                if _name:
+                    kv_row('Roof Covering', _name)
+                _wm = (_ti.get('workmanship') or '').strip()
+                if _wm:
+                    kv_row('Workmanship', _wm)
+                break
+            break
+    except Exception:
+        pass
     pdf.ln(2)
 
     # Material brand/color per trade
@@ -8991,16 +10039,16 @@ def build_permit_packet_pdf(est):
         prod_rows.append(('Siding', 'Siding Color', sd_pick))
     if prod_rows:
         section_title('Material Selection')
-        pdf.set_fill_color(234, 239, 245)
-        pdf.set_font('Helvetica', 'B', 8)
+        pdf.set_fill_color(*_PDF_STYLE['paper'])
+        pdf.set_font(SANS, 'B', 8)
         for txt, w, align in [('Trade', 30, 'L'), ('Item', 60, 'L'), ('Selection', 92, 'L')]:
-            pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
+            pdf.cell(w, 6.5, _pdf_rich(txt), border=1, fill=True, align=align)
         pdf.ln()
-        pdf.set_font('Helvetica', '', 8)
+        pdf.set_font(SANS, '', 8)
         for trade, label, v in prod_rows:
-            pdf.cell(30, 6, _pdf_safe(trade[:18]), border=1)
-            pdf.cell(60, 6, _pdf_safe(label[:40]), border=1)
-            pdf.cell(92, 6, _pdf_safe(v[:62]), border=1)
+            pdf.cell(30, 6, _pdf_rich(trade[:18]), border=1)
+            pdf.cell(60, 6, _pdf_rich(label[:40]), border=1)
+            pdf.cell(92, 6, _pdf_rich(v[:62]), border=1)
             pdf.ln()
         pdf.ln(3)
 
@@ -9010,40 +10058,51 @@ def build_permit_packet_pdf(est):
     total_mat = sum(r['materials_cost'] for r in rows)
     total_lab = sum(r['labor_cost']     for r in rows)
     total_sell = _estimate_total(est)
-    pdf.set_fill_color(234, 239, 245)
-    pdf.set_font('Helvetica', 'B', 8)
-    for txt, w, align in [('Trade', 40, 'L'), ('Materials', 44, 'R'),
-                          ('Labor', 44, 'R'), ('Contract Value', 54, 'R')]:
-        pdf.cell(w, 6.5, _pdf_safe(txt), border=1, fill=True, align=align)
-    pdf.ln()
-    pdf.set_font('Helvetica', '', 8)
+    # Materials + Labor with NO margin on it is the number most fee schedules
+    # ask for as job valuation, and it had to be added up by hand off the old
+    # table — the TOTAL row carried the two costs and the contract value, but
+    # never their sum. Contract value stays (some jurisdictions fee on it) but
+    # no longer leads.
+    cw = (38, 40, 40, 42, 40)
+    table_header([('Trade', cw[0], 'L'), ('Materials', cw[1], 'R'),
+                  ('Labor', cw[2], 'R'), ('Cost Total', cw[3], 'R'),
+                  ('Contract Value', cw[4], 'R')])
+    pdf.set_font(SANS, '', 8.5)
     for r in rows:
-        pdf.cell(40, 6, _pdf_safe(_PRODUCT_TRADE_LABELS.get(r['trade'], r['trade'].title())), border=1)
-        pdf.cell(44, 6, f'${r["materials_cost"]:,.2f}', border=1, align='R')
-        pdf.cell(44, 6, f'${r["labor_cost"]:,.2f}',     border=1, align='R')
-        pdf.cell(54, 6, f'${r["sell"]:,.2f}',           border=1, align='R')
+        pdf.cell(cw[0], 7, _pdf_rich(_PRODUCT_TRADE_LABELS.get(r['trade'], r['trade'].title())),
+                 border='B')
+        pdf.cell(cw[1], 7, f'${r["materials_cost"]:,.2f}', border='B', align='R')
+        pdf.cell(cw[2], 7, f'${r["labor_cost"]:,.2f}',     border='B', align='R')
+        pdf.cell(cw[3], 7, f'${r["materials_cost"] + r["labor_cost"]:,.2f}',
+                 border='B', align='R')
+        pdf.cell(cw[4], 7, f'${r["sell"]:,.2f}',           border='B', align='R')
         pdf.ln()
-    pdf.set_font('Helvetica', 'B', 8.5)
-    pdf.cell(40, 6.5, 'TOTAL', border=1)
-    pdf.cell(44, 6.5, f'${total_mat:,.2f}',  border=1, align='R')
-    pdf.cell(44, 6.5, f'${total_lab:,.2f}',  border=1, align='R')
-    pdf.cell(54, 6.5, f'${total_sell:,.2f}', border=1, align='R')
+    pdf.set_draw_color(*_PDF_STYLE['navy'])
+    pdf.set_line_width(0.3)
+    pdf.set_font(SANS, 'B', 9)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(cw[0], 8, _pdf_rich('TOTAL'), border='T')
+    pdf.cell(cw[1], 8, f'${total_mat:,.2f}', border='T', align='R')
+    pdf.cell(cw[2], 8, f'${total_lab:,.2f}', border='T', align='R')
+    pdf.cell(cw[3], 8, f'${total_mat + total_lab:,.2f}', border='T', align='R')
+    pdf.cell(cw[4], 8, f'${total_sell:,.2f}', border='T', align='R')
     pdf.ln()
-    pdf.ln(1)
-    pdf.set_font('Helvetica', 'I', 7.5)
-    pdf.set_text_color(120, 120, 120)
-    pdf.multi_cell(W, 4.2, _pdf_safe(
-        'Materials/Labor columns are Project One Roofing cost basis. Contract '
-        'Value is the customer-facing price and matches the signed contract '
-        'total. Most jurisdictions fee on Contract Value.'))
-    pdf.set_text_color(0, 0, 0)
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.set_line_width(0.2)
+    pdf.ln(2)
+    pdf.set_font(SANS, '', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['mute'])
+    pdf.multi_cell(W, 4.4, _pdf_rich(
+        'Cost Total is materials plus labor at Project One Roofing cost basis, with '
+        'no margin added — this is the job valuation most fee schedules ask for. '
+        'Contract Value is the customer-facing price and matches the signed contract; '
+        'some jurisdictions fee on that instead.'), new_x='LMARGIN', new_y='NEXT', align='L')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
 
-    pdf.ln(4)
-    pdf.set_font('Helvetica', 'I', 7.5)
-    pdf.set_text_color(120, 120, 120)
-    pdf.cell(0, 5, _pdf_safe('Generated from the signed contract. Internal document.'),
-             new_x='LMARGIN', new_y='NEXT')
-    pdf.set_text_color(0, 0, 0)
+    # No trailing "internal document" line — the running footer already says it
+    # on every page, and the duplicate was spilling onto a second, otherwise
+    # empty sheet.
     return bytes(pdf.output())
 
 
@@ -9259,7 +10318,10 @@ def regenerate_production_packet(est_id):
 # details the sales rep didn't know at signing time. They live on the estimate
 # doc so a packet re-generate always pulls the latest, and they're excluded
 # from the signature hash (added after the fact, by design).
-_WORK_ORDER_STR_FIELDS  = ('scheduled_date', 'satellite_dish', 'crew_notes')
+# Whitelist — anything not named here is silently dropped by
+# _sanitize_work_order, so a new field on the form needs a line here too.
+_WORK_ORDER_STR_FIELDS  = ('scheduled_date', 'satellite_dish', 'crew_notes',
+                           'height_access', 'hand_load')
 _WORK_ORDER_INT_FIELDS  = ('tear_off_layers',)
 
 
@@ -10209,8 +11271,8 @@ def build_co_sign_page(est, co, token):
 <div class="cvtrade">
   <div class="cvtrade-hd">Change Order Items</div>
   <table class="cvt"><thead><tr>
-    <th>Description</th><th class="cvth-c">Qty</th>
-    <th class="cvth-c">Unit</th><th class="cvth-r">Total</th></tr></thead>
+    <th>Description</th><th scope="col" class="cvth-c">Qty</th>
+    <th scope="col" class="cvth-c">Unit</th><th scope="col" class="cvth-r">Total</th></tr></thead>
   <tbody>{rows}</tbody></table>
 </div>
 
@@ -10753,6 +11815,12 @@ def customer_sign(token):
                 ('<h2 style="font-family:sans-serif;padding:40px">This estimate is no '
                  'longer available for signing.</h2>', 409)
         est = stored
+        # The funnel gets the signature before any of the background work below:
+        # it is a single local write, and it is what moves the CRM lead to Won
+        # and hands the job to The Den. Recording it inline means a slow SMTP or
+        # Base44 cannot leave the pipeline showing a deal that is already closed.
+        _funnel_record(est, 'signed',
+                       at=(est.get('signature') or {}).get('signed_at') or '')
         # Signature is saved above — everything below is best-effort. Run the rep
         # notification and the CRM/packet pipeline in background threads so a slow
         # or unreachable SMTP/CRM endpoint can never block (or 500) the customer's
@@ -10791,6 +11859,7 @@ def customer_sign(token):
 
         est = est_update(est.get('estimate_id'), _track) or est
         if first_view[0]:
+            _funnel_record(est, 'viewed', at=now_iso)
             threading.Thread(target=send_view_notification, args=(est,), daemon=True).start()
     except Exception as exc:
         print(f'[view-track] failed: {exc}')
@@ -11526,85 +12595,113 @@ def _siding_profile(td, tier):
 #   TPO     mechanically fastened / adhered   mechanically fastened / adhered
 #   EPDM    mechanically fastened / adhered   mechanically fastened / adhered
 #
-# TPO costs come off the GAF sheet Project One was quoted on 2026-05-19 (see
-# COMMERCIAL_PRICE_SHEET). EPDM is NOT on that sheet and is not a GAF product
-# at all — GAF's EverGuard line is TPO and PVC only — so every EPDM line is 0
-# until a second supplier (Johns Manville, Carlisle, Elevate, Versico,
-# Mule-Hide) quotes it.
+# CARLISLE is the priced supplier: the 2026-08-19 quote covers TPO and EPDM
+# from one house, which is what finally made the EPDM half of the matrix real.
+# GAF numbers survive only where Carlisle quoted no equivalent (the 45/80-mil
+# and specialty TPO membranes, the odd polyiso thicknesses, scuppers) — those
+# came off a sheet that EXPIRED 2026-06-30 and need re-quoting before they are
+# sold. Which supplier each cost came from is written on the line.
 #
-# The sheet prices by ROLL / BOX / carton; the catalog prices by SQ / LF / EA.
+# Both sheets price by ROLL / BOX / carton; the catalog prices by SQ / LF / EA.
 # Every conversion is written out on the line that uses it so the next person
 # holding a newer sheet can redo it without guessing what was assumed.
-COMMERCIAL_PRICE_SHEET = {
-    'supplier': 'GAF',
-    'quoted': '2026-05-19',
-    'expires': '2026-06-30',
-    'scope': 'GAF TPO systems only - EPDM is a different manufacturer and is not priced here.',
-    'excludes': 'Manufacturer fuel surcharge and freight. Direct truckload freight $750/load; '
-                'warehouse truckload $200/truck. Tax figured at shipment.',
+COMMERCIAL_PRICE_SHEETS = {
+    'carlisle': {
+        'supplier': 'Carlisle',
+        'quoted': '2026-08-19',
+        'expires': '2026-08-30',
+        'scope': 'Sure-Weld TPO and Sure-Seal EPDM, insulation, fasteners, accessories.',
+        'excludes': 'Freight, fuel and material surcharges, and hazmat fees. Warehouse '
+                    'truckload $200/truck. Tax figured at shipment.',
+        'gaps': 'No REINFORCED EPDM (Sure-Tough) - so a mechanically fastened EPDM roof '
+                'has no priced membrane. No 1/4" cover board. No retrofit drain or scupper.',
+    },
+    'gaf': {
+        'supplier': 'GAF',
+        'quoted': '2026-05-19',
+        'expires': '2026-06-30',
+        'expired': True,
+        'scope': 'EverGuard TPO only. Retained for the membranes Carlisle did not quote.',
+        'excludes': 'Manufacturer fuel surcharge and freight. Direct truckload freight '
+                    '$750/load; warehouse truckload $200/truck. Tax figured at shipment.',
+    },
 }
+# Kept as the "current" sheet for anything that asks for one.
+COMMERCIAL_PRICE_SHEET = COMMERCIAL_PRICE_SHEETS['carlisle']
 
-# Manufacturer + code requirements that decide whether a LAYOVER is even legal
-# on a given building. Surfaced on the Scope tab so the rep checks them on the
-# roof instead of finding out at inspection.
+# What decides whether a LAYOVER is legal on a given building. Split by WHERE
+# the rule comes from, because they carry different weight: the code ones are
+# not negotiable by anybody, the material one is physics, and the manufacturer
+# ones vary by the system actually specified.
 #
-#   IBC 1511.3 / 1512.2 (adopted locally in CO): a recover is NOT permitted
-#   where the existing roof is water-soaked or deteriorated past serving as a
-#   base, or where TWO OR MORE roof coverings are already in place.
-#
-#   GAF EverGuard recover requirements: strip ballast, loose gravel and debris;
-#   cut out blisters and ridges; an existing SINGLE-PLY roof must first be cut
-#   into 10' x 10' sections maximum before the separator/cover board goes down;
-#   pull all existing flashings, metal edge, drain leads, pipe boots and pitch
-#   pockets; remove and replace anything wet. A moisture survey is strongly
-#   recommended and is REQUIRED where perlite or wood-fibre insulation stays in
-#   the assembly. Recover over a coal-tar pitch roof is not allowed at all.
-#   GAF also calls for tear-off outright once more than 25% of the roof is wet.
-#
-#   EPDM additionally cannot touch asphalt: the bitumen's oils migrate into the
-#   rubber and embrittle it, so an EPDM layover over BUR or mod-bit needs the
-#   cover board as a permanent separation layer (or fleece-back membrane).
+# The manufacturer block below is GAF EverGuard's published recover procedure.
+# It is retained because it is the one Project One has actually been working
+# to, and because the steps (relieve trapped vapour, strip the roof back to a
+# sound substrate, survey for moisture) are common to every single-ply recover.
+# Carlisle publishes its own recover requirements for Sure-Weld and Sure-Seal,
+# and THOSE govern on a Carlisle job — the closing line says so rather than
+# quietly re-badging one manufacturer's procedure as another's.
 COMMERCIAL_LAYOVER_RULES = [
-    'Recover is not permitted where the existing roof already carries two or more '
-    'roof coverings, or where it is water-soaked or deteriorated (IBC 1511.3 / 1512.2).',
-    'Existing single-ply must be cut into 10\' x 10\' sections maximum before the cover '
-    'board is installed, per GAF EverGuard recover requirements.',
+    'CODE: a recover is not permitted where the existing roof already carries two or '
+    'more roof coverings, or where it is water-soaked or deteriorated past serving as '
+    'a base (IBC 1511.3 / 1512.2, adopted locally).',
+    'MATERIAL: EPDM cannot contact asphalt - the bitumen migrates into the rubber and '
+    'embrittles it. Over BUR or mod-bit the cover board is the required separation layer.',
     'Strip all ballast, loose gravel and debris; cut out blisters and ridges; remove all '
     'existing flashings, metal edge, drain leads, pipe boots and pitch pans.',
-    'Moisture survey strongly recommended - and required by GAF where perlite or '
-    'wood-fibre insulation stays in the assembly. Wet material must be removed.',
-    'GAF calls for a full tear-off once more than 25% of the roof area is wet.',
-    'Recover over a coal-tar pitch roof is not permitted.',
-    'EPDM cannot contact asphalt - over BUR or mod-bit the cover board is the required '
-    'separation layer.',
+    'Existing single-ply must be cut into 10\' x 10\' sections maximum before the cover '
+    'board is installed, to relieve trapped vapour.',
+    'Moisture survey strongly recommended - and required where perlite or wood-fibre '
+    'insulation stays in the assembly. Wet material must be removed and replaced.',
+    'Full tear-off once more than 25% of the roof area is wet.',
+    'No recover over a coal-tar pitch roof.',
+    'Confirm the above against the published recover requirements for the system '
+    'actually specified - the manufacturer\'s procedure governs the warranty.',
 ]
 
-# Polyiso ships priced BY THE SQUARE on the sheet, so these are lifted straight
+# Polyiso ships priced BY THE SQUARE on both sheets, so these lift straight
 # across. R-value drives which one the spec calls for, so they are all offered
 # rather than folded into one line: ~R-6 per inch of polyiso.
+#
+# Carlisle quoted 2.0" and 2.6" only. The rest are GAF's numbers off the
+# EXPIRED sheet - usable to scope a job, not to sign one. Re-quote before use.
 COMMERCIAL_ISO_SEED = [
-    ("ca_iso_10", '1.0" Polyiso Insulation (~R-6)',   65.34),
-    ("ca_iso_15", '1.5" Polyiso Insulation (~R-9)',   74.15),
-    ("ca_iso_22", '2.2" Polyiso Insulation (~R-13)', 108.75),
-    ("ca_iso_30", '3.0" Polyiso Insulation (~R-17)', 148.30),
-    ("ca_iso_40", '4.0" Polyiso Insulation (~R-23)', 197.73),
+    ("ca_iso_10", '1.0" Polyiso Insulation (~R-6)',   65.34, 'gaf'),
+    ("ca_iso_15", '1.5" Polyiso Insulation (~R-9)',   74.15, 'gaf'),
+    ("ca_iso_20", '2.0" Polyiso Insulation (~R-11)', 100.00, 'carlisle'),
+    ("ca_iso_22", '2.2" Polyiso Insulation (~R-13)', 108.75, 'gaf'),
+    ("ca_iso_30", '3.0" Polyiso Insulation (~R-17)', 148.30, 'gaf'),
+    ("ca_iso_40", '4.0" Polyiso Insulation (~R-23)', 197.73, 'gaf'),
+]
+
+# Tapered polyiso, priced BY THE PANEL on the Carlisle sheet (4'x4'). Left as
+# PC with a manual quantity on purpose: a tapered layout is engineered per roof
+# off the drain locations, so the panel counts come from that layout and not
+# from a square-foot measurement.
+COMMERCIAL_TAPERED_SEED = [
+    ("ca_taper_x", 'Tapered Polyiso - X panel, 1/4"/ft (0.5"-1.5", 4\'x4\')', 11.71),
+    ("ca_taper_y", 'Tapered Polyiso - Y panel, 1/4"/ft (1.5"-2.5", 4\'x4\')', 23.41),
+    ("ca_taper_q", 'Tapered Polyiso - Q panel, 1/2"/ft (0.5"-2.5", 4\'x4\')', 17.56),
 ]
 
 COMMERCIAL_CATALOG_SEED = [
-    # ── TPO membranes. Sheet is priced per roll; a 10'x100' roll is 1,000 sf =
-    # 10 SQ, and the half rolls confirm the math (5'x100' at exactly half).
-    # 60-mil is the default sell on both attachment methods — it is the same
-    # roll either way, and what changes is the attachment line under it. GAF
-    # requires HALF sheets on mechanically attached systems, which is why the
-    # sheet carries both widths at the same price per square.
-    {"id": "cm_tpo_ma", "name": "TPO Membrane 60-mil (Mechanically Fastened)", "unit": "SQ", "cost": 84.66, "measure": "comm_sq_waste", "attach": "mechanical",
-     "bullets": ["60-mil GAF EverGuard TPO single-ply membrane", "Seams hot-air welded into a monolithic sheet - no adhesive, no tape", "Fastened at the wind-zone density the code requires", "Highly reflective white surface cuts cooling load", "20-year manufacturer system warranty available"]},
-    {"id": "cm_tpo_fa", "name": "TPO Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 84.66, "measure": "comm_sq_waste", "attach": "adhered",
-     "bullets": ["60-mil GAF EverGuard TPO single-ply membrane, fully adhered to the substrate", "Seams hot-air welded into a monolithic sheet", "Highest wind uplift rating - built for exposed and high-rise decks", "Smooth, flutter-free finished surface with no fastener pattern showing", "20-year manufacturer system warranty available"]},
-    # Alternate thicknesses and specialty membranes. These are OPTIONS a rep
-    # swaps into a package, not packages of their own — 45-mil where budget
-    # drives it, 80-mil for hail and service traffic, self-adhered where fumes
-    # are a problem, fleece-back to bond over a rough existing substrate.
+    # ── TPO membranes. CARLISLE Sure-Weld 060, priced per roll: a 10'x100'
+    # roll is 1,000 sf = 10 SQ, so 806.82 / 10 = 80.68 per SQ. The 6'x100' roll
+    # confirms it (600 sf, 484.09 -> the same 80.68). Both widths are stocked
+    # because a mechanically fastened roof in a high-wind zone runs narrower
+    # sheets to get more fastening rows; the cost per square is identical.
+    {"id": "cm_tpo_ma", "name": "TPO Membrane 60-mil (Mechanically Fastened)", "unit": "SQ", "cost": 80.68, "measure": "comm_sq_waste", "attach": "mechanical",
+     "bullets": ["60-mil Carlisle Sure-Weld TPO single-ply membrane", "Seams hot-air welded into a monolithic sheet - no adhesive, no tape", "Fastened at the wind-zone density the code requires", "Highly reflective white surface cuts cooling load", "20-year manufacturer system warranty available"]},
+    {"id": "cm_tpo_fa", "name": "TPO Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 80.68, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil Carlisle Sure-Weld TPO single-ply membrane, fully adhered to the substrate", "Seams hot-air welded into a monolithic sheet", "Highest wind uplift rating - built for exposed and high-rise decks", "Smooth, flutter-free finished surface with no fastener pattern showing", "20-year manufacturer system warranty available"]},
+    # Alternate thicknesses and specialty membranes — OPTIONS a rep swaps into
+    # a package, not packages of their own: 45-mil where budget drives it,
+    # 80-mil for hail and service traffic, self-adhered where fumes are a
+    # problem, fleece-back to bond over a rough existing substrate.
+    #
+    # These are GAF EverGuard products at GAF's prices, and Carlisle did not
+    # quote an equivalent. That sheet EXPIRED 2026-06-30 — good enough to scope
+    # a job, not to sign one. Re-quote (from either house) before selling.
     {"id": "cm_tpo45_ma", "name": "TPO Membrane 45-mil (Mechanically Fastened)", "unit": "SQ", "cost": 72.73, "measure": "comm_sq_waste", "attach": "mechanical",
      "bullets": ["45-mil GAF EverGuard TPO single-ply membrane, hot-air welded seams", "The value membrane when budget drives the decision", "Highly reflective white surface cuts cooling load"]},
     {"id": "cm_tpo80_ma", "name": "TPO Membrane 80-mil (Mechanically Fastened)", "unit": "SQ", "cost": 135.23, "measure": "comm_sq_waste", "attach": "mechanical",
@@ -11613,17 +12710,30 @@ COMMERCIAL_CATALOG_SEED = [
      "bullets": ["60-mil self-adhered TPO - factory-applied adhesive, no solvent bonding adhesive on site", "No open flame and no adhesive fumes - the low-disruption option over occupied space", "Highest wind uplift rating with a smooth finished surface"]},
     {"id": "cm_tpo_fb60", "name": "TPO Fleece-Back Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 139.21, "measure": "comm_sq_waste", "attach": "adhered",
      "bullets": ["60-mil fleece-back TPO - laminated fleece backing bonds over rough substrate", "The factory fleece doubles as a separation layer over an asphalt roof", "Extra puncture resistance and a cushioned walking surface"]},
-    # ── EPDM membranes. NOT on the GAF sheet and not a GAF product: EverGuard
-    # is TPO and PVC. These need a Johns Manville / Carlisle / Elevate quote.
+    # ── EPDM membranes. Carlisle quoted 060 FR NON-REINFORCED Sure-Seal:
+    # a 10'x100' roll is 1,000 sf = 10 SQ, so 965.91 / 10 = 96.59 per SQ
+    # (the 10'x50' roll agrees at 482.95 / 5).
     #
-    # The reinforced/non-reinforced split is a real manufacturer requirement,
-    # not a preference: a mechanically fastened system pulls against the sheet
-    # at every plate, so it needs the scrim-REINFORCED membrane. Fully adhered
-    # systems carry the load across the whole surface and run non-reinforced.
+    # The reinforced/non-reinforced split is a manufacturer requirement, not a
+    # preference. A mechanically fastened system loads the sheet at every
+    # plate, so it needs the scrim-REINFORCED membrane — Carlisle's Sure-Tough,
+    # sold specifically for their Reinforced Mechanically Fastened system.
+    # Non-reinforced Sure-Seal is specified for ADHERED and BALLASTED assemblies
+    # only.
+    #
+    # The 2026-08-19 quote has NO Sure-Tough on it. So the fastened EPDM
+    # package still has no membrane price, and putting the non-reinforced
+    # number there would spec a roof the manufacturer does not warrant.
+    # Ask Carlisle to add Sure-Tough reinforced EPDM to the quote.
     {"id": "cm_epdm_mf", "name": "EPDM Membrane 60-mil Reinforced (Mechanically Fastened)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "mechanical",
-     "bullets": ["60-mil scrim-reinforced EPDM rubber membrane", "Reinforced sheet is what a mechanically fastened EPDM system requires", "Seams spliced with primer and factory-applied seam tape", "Decades of proven field performance in freeze-thaw climates"]},
-    {"id": "cm_epdm_fa", "name": "EPDM Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
-     "bullets": ["60-mil EPDM rubber single-ply membrane, fully adhered", "Seams spliced with primer and factory-applied seam tape", "Excellent flexibility and hail resistance in freeze-thaw climates", "Smooth finished surface with no fastener pattern showing"]},
+     "bullets": ["60-mil scrim-reinforced EPDM rubber membrane", "Reinforced sheet is what a mechanically fastened EPDM system requires", "Seams spliced with primer and seam tape", "Decades of proven field performance in freeze-thaw climates"]},
+    {"id": "cm_epdm_fa", "name": "EPDM Membrane 60-mil (Fully Adhered)", "unit": "SQ", "cost": 96.59, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil Carlisle Sure-Seal EPDM rubber single-ply membrane, fully adhered", "Seams spliced with primer and seam tape", "Excellent flexibility and hail resistance in freeze-thaw climates", "Smooth finished surface with no fastener pattern showing"]},
+    # Same sheet with the splice tape factory-applied: 1,045.45 / 10 SQ =
+    # 104.55. Against the plain roll at 96.59 plus 9.22 of SecureTape that is
+    # a wash on material and saves the crew taping in the field.
+    {"id": "cm_epdm_fa_taped", "name": "EPDM Membrane 60-mil, Factory-Taped (Fully Adhered)", "unit": "SQ", "cost": 104.55, "measure": "comm_sq_waste", "attach": "adhered",
+     "bullets": ["60-mil Carlisle Sure-Seal EPDM with factory-applied splice tape", "Factory tape means a cleaner, more consistent seam than taping in the field", "Excellent flexibility and hail resistance in freeze-thaw climates"]},
     # The original generic EPDM line. Kept so estimates written against it still
     # load; new bids should use the reinforced/adhered pair above.
     {"id": "cm_epdm", "name": "EPDM Membrane 60-mil (legacy - use the fastened or adhered line)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste", "attach": "adhered",
@@ -11636,19 +12746,25 @@ COMMERCIAL_CATALOG_SEED = [
     # ── Build-up, tear-off systems
     # Default iso is 2.6" (~R-15), the common single-layer Colorado spec. The
     # other thicknesses ride in the catalog — see COMMERCIAL_ISO_SEED.
-    {"id": "ca_iso", "name": '2.6" Polyiso Insulation (~R-15)', "unit": "SQ", "cost": 128.52, "measure": "comm_sq_waste",
+    {"id": "ca_iso", "name": '2.6" Polyiso Insulation (~R-15)', "unit": "SQ", "cost": 130.00, "measure": "comm_sq_waste",
      "bullets": ["Polyiso insulation to the specified R-value"]},
-    # GAF ISO High Density 0.5" 4'x8', already priced per SQ on the sheet.
-    {"id": "ca_cover", "name": "Cover Board (1/2\" HD)", "unit": "SQ", "cost": 88.64, "measure": "comm_sq_waste",
+    # Carlisle 1/2" SecureShield HD, already priced per SQ on the sheet.
+    {"id": "ca_cover", "name": "Cover Board (1/2\" HD)", "unit": "SQ", "cost": 96.34, "measure": "comm_sq_waste",
      "bullets": ["High-density cover board over the insulation"]},
     # ── Build-up, layover systems
     # The 1/4" board is the whole layover assembly: it is the smooth substrate
     # for the new membrane AND the separation layer the manufacturer requires
     # over an existing roof (mandatory under EPDM over anything asphaltic).
-    # NOT on the GAF sheet — 1/4" recover boards are gypsum (DensDeck Prime,
-    # SecuRock), so this needs its own quote. Note GAF does not allow a perlite
-    # recover board under a FULLY ADHERED single-ply, which is why the layover
-    # packages specify a gypsum board rather than perlite.
+    # STILL not quoted. Carlisle's 2026-08-19 sheet carries 1/2" SecureShield
+    # HD (see ca_cover, 96.34/SQ) but no 1/4" board — the 1/4" entries on that
+    # sheet are TAPERED panels, where 1/4" is the SLOPE PER FOOT, not the
+    # thickness. A true 1/4" recover board is gypsum (DensDeck Prime,
+    # SecuRock) and needs its own quote.
+    #
+    # Two ways to close this: quote a 1/4" gypsum board, or respec the layover
+    # on the 1/2" SecureShield HD that is already priced. Note a perlite
+    # recover board is NOT allowed under a fully adhered single-ply, so the
+    # cheap option is off the table for the two adhered layover packages.
     {"id": "ca_cover_quarter", "name": "Cover Board 1/4\" (Layover / Recover)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
      "bullets": ["1/4\" high-density cover board installed over the existing roof", "Gives the new membrane a smooth, sound substrate without a tear-off", "Acts as the separation layer the membrane manufacturer requires over an existing roof"]},
 
@@ -11659,79 +12775,92 @@ COMMERCIAL_CATALOG_SEED = [
     # $83/SQ on a fastened bid would add thousands of dollars of material that
     # never ships.
     #
-    # GAF publishes the coverage rate this is derived from: solvent-based
-    # bonding adhesive covers 60 sq ft of finished, MATED surface per gallon,
-    # i.e. 300 sq ft (3 SQ) per 5-gallon pail. The sheet's LOW VOC pail is
-    # labelled "3.0 sq" and agrees exactly: 250.00 / 3 = 83.33 per SQ.
-    # Cheaper options on the same sheet, same 3 SQ per pail: the 1121 solvent
-    # pail at 183.75 works out to 61.25/SQ. The water-based WB181 pail covers
-    # 100 sq ft mated per gallon (5 SQ per pail) at 390.00 -> 78.00/SQ, and
-    # 6 SQ per pail under fleece-back -> 65.00/SQ.
-    {"id": "ca_adhesive", "name": "Bonding Adhesive (Fully Adhered Systems)", "unit": "SQ", "cost": 83.33, "measure": "comm_sq_waste",
+    # Carlisle publishes the coverage rate this is derived from: Sure-Weld TPO
+    # Bonding Adhesive covers ~60 sq ft of FINISHED surface per gallon, i.e.
+    # 300 sq ft (3 SQ) per 5-gallon pail. 188.58 / 3 = 62.86 per SQ.
+    # (GAF's equivalent pail worked out to 83.33 — this is the cheaper house.)
+    {"id": "ca_adhesive", "name": "Bonding Adhesive (Fully Adhered Systems)", "unit": "SQ", "cost": 62.86, "measure": "comm_sq_waste",
      "bullets": ["Manufacturer-specified bonding adhesive at the published coverage rate"]},
     # EPDM does not weld. Its seams are spliced with primer and seam tape, so
     # an EPDM system buys a consumable that a TPO system simply does not have.
-    {"id": "ca_epdm_seam", "name": "EPDM Seam Tape & Splice Primer", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
-     "bullets": ["Seams primed and spliced with factory-applied seam tape"]},
-    {"id": "ca_epdm_adhesive", "name": "EPDM Bonding Adhesive (Fully Adhered Systems)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
-     "bullets": ["Manufacturer-specified EPDM bonding adhesive at the published coverage rate"]},
+    # SecureTape 3"x100' at 92.21 is 0.9221 per LF of splice. A 10'-wide sheet
+    # puts a seam every 10 ft, which is ~10 LF of splice per SQ of roof, so
+    # 9.22/SQ of tape. HP-250 primer at 51.26/gal is the ASSUMED part: taken at
+    # 300 LF of 3" splice per gallon -> 1.71/SQ. Check the primer figure
+    # against real usage on the first EPDM job and correct it here.
+    {"id": "ca_epdm_seam", "name": "EPDM Seam Tape & Splice Primer", "unit": "SQ", "cost": 10.93, "measure": "comm_sq_waste",
+     "bullets": ["Seams primed and spliced with Carlisle SecureTape"]},
+    # Carlisle 90-8-30A: ~60 sq ft of finished surface per gallon, so 3 SQ per
+    # 5-gallon pail. 188.58 / 3 = 62.86 per SQ — same rate as the TPO adhesive.
+    {"id": "ca_epdm_adhesive", "name": "EPDM Bonding Adhesive (Fully Adhered Systems)", "unit": "SQ", "cost": 62.86, "measure": "comm_sq_waste",
+     "bullets": ["Carlisle 90-8-30A bonding adhesive at the published coverage rate"]},
     # Superseded by the two zone-calculated fastener lines — it stays in the
     # catalog for old estimates but has nothing left to say on a card.
     {"id": "ca_fasteners", "name": "Plates & Fasteners (legacy - replaced by the zone calculator)", "unit": "SQ", "cost": 0, "measure": "comm_sq_waste",
      "bullets": []},
     # Counts come from commercial_fastening(): zone area x the density table.
-    # TEAR-OFF cost is one fastener + one plate sized for the default 2.6" iso
-    # + 1/2" cover board (about 3.1" of build-up, so a 4" fastener):
-    #   4" #12 fastener  226.70 / 1,000 = 0.2267
-    #   3" DT plate      260.23 / 1,000 = 0.2602
-    {"id": "ca_fast_insul", "name": "Insulation Fasteners & Plates", "unit": "EA", "cost": 0.49, "measure": "comm_fast_insul",
+    # TEAR-OFF, insulation: one fastener + one plate sized for the default 2.6"
+    # iso + 1/2" cover board (about 3.1" of build-up, so a 4" fastener):
+    #   Carlisle 4" InsulFast   240.19 / 1,000 = 0.24019
+    #   Carlisle 3" Insul Plate 263.40 / 1,000 = 0.26340
+    {"id": "ca_fast_insul", "name": "Insulation Fasteners & Plates", "unit": "EA", "cost": 0.50, "measure": "comm_fast_insul",
      "bullets": ["Insulation fastened at the wind-zone density the code requires"]},
-    {"id": "ca_fast_seam", "name": "Membrane Seam Fasteners & Plates", "unit": "EA", "cost": 0.49, "measure": "comm_fast_seam",
+    # TEAR-OFF, membrane seam: the heavy-duty screw and the seam plate, which
+    # cost more than the insulation pair — the seam is what holds the roof on.
+    #   Carlisle 4" HP fastener 311.63 / 1,000 = 0.31163
+    #   Carlisle 2" seam plate  306.27 / 1,000 = 0.30627
+    {"id": "ca_fast_seam", "name": "Membrane Seam Fasteners & Plates", "unit": "EA", "cost": 0.62, "measure": "comm_fast_seam",
      "bullets": ["Membrane seams fastened at the wind-zone density the code requires"]},
-    # LAYOVER fasteners are longer and cost more: they pass through the 1/4"
+    # LAYOVER fasteners are longer and cost more: they pass through the cover
     # board AND the entire existing roof to reach the deck. Priced at a 5"
     # screw, which suits roughly 3-4" of existing build-up:
-    #   5" #12 fastener  288.75 / 1,000 = 0.28875
-    #   3" DT plate      260.23 / 1,000 = 0.2602
-    # A thicker existing assembly needs a longer screw again — the sheet runs
-    # to 10" and the price climbs the whole way, so check the core cut.
-    {"id": "ca_fast_cover", "name": "Cover Board Fasteners & Plates (Layover)", "unit": "EA", "cost": 0.55, "measure": "comm_fast_insul",
+    #   Carlisle 5" InsulFast   294.15 / 1,000 = 0.29415  (+ 3" plate 0.26340)
+    #   Carlisle 5" HP fastener 409.07 / 1,000 = 0.40907  (+ 2" seam plate 0.30627)
+    # A thicker existing assembly needs a longer screw again and the price
+    # climbs the whole way, so check the core cut before ordering.
+    {"id": "ca_fast_cover", "name": "Cover Board Fasteners & Plates (Layover)", "unit": "EA", "cost": 0.56, "measure": "comm_fast_insul",
      "bullets": ["Cover board fastened through the existing roof into the deck at the wind-zone density"]},
-    {"id": "ca_fast_seam_lo", "name": "Membrane Seam Fasteners & Plates (Layover)", "unit": "EA", "cost": 0.55, "measure": "comm_fast_seam",
+    {"id": "ca_fast_seam_lo", "name": "Membrane Seam Fasteners & Plates (Layover)", "unit": "EA", "cost": 0.72, "measure": "comm_fast_seam",
      "bullets": ["Membrane seams fastened through to the deck at the wind-zone density"]},
 
-    # ── Perimeter — both fabricated in-house from GAF coated metal, 4'x10'
-    # white 24ga at $463.06/sheet. Yield depends on the girth of the profile
-    # being bent, which is why these two differ so much:
-    #   edge/drip, ~8" girth  -> 6 strips x 10' = 60 LF/sheet -> 7.72/LF
-    #   coping,   ~18" girth  -> 2 strips x 10' = 20 LF/sheet -> 23.15/LF
-    {"id": "ca_edge", "name": "Edge Metal / Drip", "unit": "LF", "cost": 7.72, "measure": "comm_perimeter",
+    # ── Perimeter — both fabricated in-house from Carlisle TPO coated metal,
+    # 4'x10' at $383.65/sheet. Yield depends on the girth of the profile being
+    # bent, which is why these two differ so much:
+    #   edge/drip, ~8" girth  -> 6 strips x 10' = 60 LF/sheet -> 6.39/LF
+    #   coping,   ~18" girth  -> 2 strips x 10' = 20 LF/sheet -> 19.18/LF
+    # A parapet wider than ~16" needs a bigger girth and a new number.
+    {"id": "ca_edge", "name": "Edge Metal / Drip", "unit": "LF", "cost": 6.39, "measure": "comm_perimeter",
      "bullets": ["New edge metal around the full perimeter"]},
-    {"id": "ca_coping", "name": "Coping Cap", "unit": "LF", "cost": 23.15, "measure": "comm_parapet",
+    {"id": "ca_coping", "name": "Coping Cap", "unit": "LF", "cost": 19.18, "measure": "comm_parapet",
      "bullets": ["New coping cap on the parapet walls"]},
-    # TPO lip term bar, 10' per piece at $17.60 -> 1.76/LF.
-    {"id": "ca_termbar", "name": "Termination Bar / Wall Flashing", "unit": "LF", "cost": 1.76, "measure": "comm_parapet",
+    # Carlisle termination bar 1"x10', 10' per piece at $18.52 -> 1.85/LF.
+    {"id": "ca_termbar", "name": "Termination Bar / Wall Flashing", "unit": "LF", "cost": 1.85, "measure": "comm_parapet",
      "bullets": ["New termination bar and wall flashing"]},
     # ── Details
-    # GAF pre-molded vent boot, 1"-6" pipe, $45.23 each.
-    {"id": "ca_pipe_flash", "name": "Penetration Flashing / Pipe Boot", "unit": "EA", "cost": 45.23, "measure": "comm_penetrations",
+    # Carlisle TPO universal pipe boot, $42.41 each. (The EPDM equivalent, the
+    # 1"-6" PS molded pipe seal, is $56.41 — swap it in on an EPDM job.)
+    {"id": "ca_pipe_flash", "name": "Penetration Flashing / Pipe Boot", "unit": "EA", "cost": 42.41, "measure": "comm_penetrations",
      "bullets": ["Every penetration flashed and sealed"]},
-    # The sheet has no retrofit drain, so this is priced off the TPO scupper it
-    # shares a measurement with (4"x6"x12" at $240.43). A cast retrofit drain
-    # is a different part and a different number — price it per job.
+    # NEITHER sheet has a retrofit drain, and Carlisle quoted no scupper at
+    # all, so this is still the GAF scupper price (4"x6"x12" at $240.43) off
+    # the EXPIRED sheet. A cast retrofit drain is a different part and a
+    # different number — get it quoted, or price it per job.
     {"id": "ca_drain", "name": "Drain Assembly / Retrofit Drain", "unit": "EA", "cost": 240.43, "measure": "comm_drains",
      "bullets": ["Roof drains flashed and tied into the new membrane"]},
     # Curb flashing is fabricated, not bought, so this is built from the
-    # detailing membrane: UN-55 24"x50' at $452.50 = $9.05/LF, times a 24 LF
-    # perimeter (a typical 8'x4' HVAC curb) = $217.20. Big curbs cost more.
-    {"id": "ca_curb", "name": "Curb Flashing (HVAC / Skylight)", "unit": "EA", "cost": 217.20, "measure": "comm_curbs",
+    # flashing membrane: Carlisle 060 24"x50' at $440.40 = $8.81/LF, times a
+    # 24 LF perimeter (a typical 8'x4' HVAC curb) = $211.44. Bigger curbs cost
+    # more — this is a typical-curb allowance, not a measured quantity.
+    {"id": "ca_curb", "name": "Curb Flashing (HVAC / Skylight)", "unit": "EA", "cost": 211.44, "measure": "comm_curbs",
      "bullets": ["HVAC and skylight curbs flashed"]},
-    # Pourable sealant pocket 9"x6"x4" at $60.58, plus one 2-litre pouch of
-    # 1-part pourable sealer (4-pouch carton $87.28 -> $21.82/pouch) = $82.40.
-    {"id": "ca_pitchpan", "name": "Pitch Pan", "unit": "EA", "cost": 82.40, "measure": "comm_pitch_pans",
+    # Carlisle molded sealant pocket at $44.96, plus one pouch of one-part
+    # pourable sealer (4-pouch carton $67.94 -> $16.99/pouch) = $61.95.
+    {"id": "ca_pitchpan", "name": "Pitch Pan", "unit": "EA", "cost": 61.95, "measure": "comm_pitch_pans",
      "bullets": ["Pitch pans set and sealed at odd penetrations"]},
-    # Cut from a 30.25"x50' walkway roll at $734.77 — ten 5' pads per roll.
-    {"id": "ca_walkway", "name": "Walkway Pad", "unit": "EA", "cost": 73.48, "measure": "comm_walkway_pads",
+    # Cut from a Carlisle 34"x50' TPO walkway roll at $650.59 — ten 5' pads
+    # per roll. On an EPDM job the pre-made 30"x30" PS walkpad is $42.27 and
+    # needs no cutting; swap it in there.
+    {"id": "ca_walkway", "name": "Walkway Pad", "unit": "EA", "cost": 65.06, "measure": "comm_walkway_pads",
      "bullets": ["Walkway pads at access points and service areas"]},
 
     # ── Labor. One line per package, because tearing a roof off is not the
@@ -11770,8 +12899,9 @@ COMMERCIAL_CATALOG_SEED = [
      "bullets": []},
 
     # ── Misc — manual quantities, job-specific, so they stay unpriced.
-    # Freight belongs here: the sheet excludes it, at $750 per direct truckload
-    # or $200 per truck out of the warehouse.
+    # Freight belongs here: Carlisle excludes freight, fuel and material
+    # surcharges and hazmat fees, and charges $200 per truck out of the
+    # warehouse.
     {"id": "cx_misc", "name": "Misc Accessories (lap sealant, pitch pans, pads)", "unit": "LS", "cost": 0,
      "bullets": []},
     {"id": "cx_freight", "name": "Material Freight / Delivery", "unit": "LS", "cost": 0,
@@ -11790,7 +12920,12 @@ COMMERCIAL_CATALOG_SEED = [
 COMMERCIAL_CATALOG_SEED.extend(
     {"id": _iid, "name": _iname, "unit": "SQ", "cost": _icost, "measure": "comm_sq_waste",
      "bullets": ["Polyiso insulation to the specified R-value"]}
-    for _iid, _iname, _icost in COMMERCIAL_ISO_SEED)
+    for _iid, _iname, _icost, _isrc in COMMERCIAL_ISO_SEED)
+# Tapered panels carry no measure: the layout decides the count, not the area.
+COMMERCIAL_CATALOG_SEED.extend(
+    {"id": _tid, "name": _tname, "unit": "PC", "cost": _tcost,
+     "bullets": ["Tapered polyiso to the engineered layout, sloping the roof to drain"]}
+    for _tid, _tname, _tcost in COMMERCIAL_TAPERED_SEED)
 
 # ── Package build-ups ───────────────────────────────────────────────────
 # Perimeter, details and the lump sums are the same on all eight.
@@ -13282,7 +14417,7 @@ def _check_reminders():
     for est in est_iter():
         if est.get('signature') or not est.get('share_token'):
             continue
-        if est.get('status') == 'declined':
+        if _is_lost(est):
             continue
         sent_at = est.get('sent_at')
         if not sent_at:

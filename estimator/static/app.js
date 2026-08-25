@@ -33,6 +33,9 @@ const TRADE_LABELS = { roofing:'Roofing', siding:'Siding', windows:'Windows', gu
 const RETAIL_TRADE_KEYS = ['roofing','siding','windows','gutters','commercial','other'];
 const TIERS = ['good','better','best'];
 const TIER_LABELS = { good:'Good', better:'Better', best:'Best' };
+// Letterhead line for every printed page. Mirrors the company block in
+// _cv_header / the PDF masthead in app.py — keep the three in sync.
+const COMPANY_ADDR_LINE = '115 E 5th St · Loveland, CO 80537 · 970-776-0945 · projectoneroofingcolorado.com';
 // Trades built from a flat product catalog + named bundles (the tier dropdown)
 // instead of the per-tier template item list. Mirrored server-side by
 // BUNDLE_SEEDS in app.py — keep the two lists in sync.
@@ -208,14 +211,24 @@ function tierBulletsAreStale(trade, tier) {
   const td = S.trades[trade] || {};
   const tb = td.tier_bundles;
   if (!tb) return false;                 // pre-bundle estimate — hand-curated
-  const items = td.line_items || [];
-  // Only judge a trade the bundles actually built. Items created by
-  // applyBundleToTier carry catalog_id; a hand-shaped trade has none, and
-  // without that evidence there is no bundle whose leftover copy this could
-  // be — the bullets are the rep's own and stay.
-  if (!items.some(it => it.catalog_id)) return false;
   const bid = (tb[tier] || '').trim();
+  /* Custom is the rep saying, on the Product dropdown, that this tier is not
+     a package the book sells. Nothing else ever writes __custom__, so it is
+     evidence on its own and is judged BEFORE the catalog test below.
+     It used to be judged after, and that cost a real estimate: seeding a new
+     estimate loads the default shingle bundles, so building a rolled-roofing
+     job by hand means deleting those rows — which deletes the last catalog_id
+     in the trade, and a trade with no catalog_id was ruled "never built by a
+     bundle, bullets are the rep's own". The shingle tagline the bundle wrote
+     on the way past then printed over the rolled roofing. Evidence the rep
+     destroyed while doing exactly what the tab asks is not evidence. */
   if (bid === '__custom__') return true;
+  const items = td.line_items || [];
+  // A tier that still NAMES a bundle is judged only on a trade the bundles
+  // actually built. Items created by applyBundleToTier carry catalog_id; a
+  // hand-shaped trade has none, and without that evidence there is no bundle
+  // whose leftover copy this could be — the bullets are the rep's own and stay.
+  if (!items.some(it => it.catalog_id)) return false;
   if (!bid) return false;
   const ids = new Set((_tradeBundle(trade, bid) || {}).product_ids || []);
   if (!ids.size) return false;           // bundle deleted from the book — no call to make
@@ -266,6 +279,12 @@ function renameTradeSection(trade, idx) {
   const td = S.trades[trade];
   const old = (td.sections || [])[idx];
   if (old === undefined) return;
+  // A section that names a building is that building. Renaming it here without
+  // moving the structure would leave the roof's measurements joined to a name
+  // nothing carries any more, and every item on it would fall back to the
+  // estimate's numbers. Hand it to the one function that moves all three.
+  const st = structureNamed(old);
+  if (st) { renameStructure(st.id); return; }
   const name = (prompt('Rename section:', old) || '').trim();
   if (!name || name === old) return;
   if (td.sections.includes(name)) { alert('That section already exists.'); return; }
@@ -278,6 +297,10 @@ function deleteTradeSection(trade, idx) {
   const td = S.trades[trade];
   const name = (td.sections || [])[idx];
   if (name === undefined) return;
+  // Same reasoning as the rename above -- and removeStructure asks its own
+  // question, because dropping a building drops its priced work with it.
+  const st = structureNamed(name);
+  if (st) { removeStructure(st.id); return; }
   if (!confirm(`Remove the "${name}" section? Its items stay on the estimate under General.`)) return;
   td.sections.splice(idx, 1);
   (td.line_items || []).forEach(i => { if (itemSection(i) === name) delete i.section; });
@@ -314,6 +337,199 @@ function sectionManagerBar(trade) {
     <button class="est-section-add" onclick="addTradeSection('${trade}')">+ Add Section</button>
   </div>`;
 }
+/* ── Buildings (structures) ───────────────────────────────────
+   An apartment complex is seven roofs on one contract, each with its own square
+   count. The estimate carried ONE `measurements` dict, so every line item on it
+   priced off the same numbers however many buildings the rep typed in.
+
+   A structure is a building: a name, the trade its work lives on, and its own
+   measurements in the SAME flat key namespace as S.measurements. That shared
+   namespace is the whole trick — every MEASURE_DEFS calc is a pure function of a
+   measurements dict, and so is commercialFastening(), so both run unchanged on
+   one building's numbers.
+
+   The structure's NAME is its section name. Sections already group items, print
+   section headers with their own subtotals on the PDF, and do the same on the
+   page the customer signs — so a building is priced, printed and subtotaled by
+   machinery that already exists. structures[] adds the measurements behind the
+   name, nothing else.
+
+   An estimate with no structures is every estimate written before this and every
+   ordinary one-roof job after it: S.measurements stays exactly what it was and
+   stays the fallback, so those price identically. */
+function estStructures() {
+  return Array.isArray(S.structures) ? S.structures.filter(Boolean) : [];
+}
+function findStructure(id) {
+  return estStructures().find(st => st.id === id) || null;
+}
+function structureNamed(name) {
+  const n = String(name || '').trim();
+  if (!n) return null;
+  return estStructures().find(st => String(st.name || '').trim() === n) || null;
+}
+function tradeStructures(trade) {
+  return estStructures().filter(st => (st.trade || 'commercial') === trade);
+}
+/* The measurements ONE item's quantity is computed from. An item tagged to a
+   building reads that building's numbers; an untagged item — mobilization, a
+   dumpster, anything that belongs to the job rather than to a roof — reads the
+   estimate's own, which on a single-building estimate is all of them. */
+function itemMeasurements(item) {
+  const st = structureNamed(itemSection(item));
+  return (st && st.measurements) || S.measurements || {};
+}
+/* The dict a Scope-page field writes into: a building's, or the estimate's. */
+function structureMeasurements(id) {
+  const st = id ? findStructure(id) : null;
+  if (st) return (st.measurements = st.measurements || {});
+  return (S.measurements = S.measurements || {});
+}
+/* Keep the trade's section list carrying every one of its building names.
+   Sections may also be plain roof areas the rep added by hand ("South Slope"),
+   which have no structure behind them and are left exactly where they are. */
+/* One building's subtotal, by exactly the rules tradeTotal() prices a trade
+   with -- zero-qty out, tier exclusions honoured -- so the number on the
+   building card is the number that reaches the customer's section subtotal. */
+function structureTotal(st) {
+  if (!st) return 0;
+  const trade = st.trade || 'commercial';
+  const td = S.trades[trade];
+  if (!td || !td.enabled) return 0;
+  const mode = effectiveTradeMode(trade, td);
+  const tier = tradeTier(trade);
+  const name = String(st.name || '').trim();
+  return (td.line_items || []).reduce((sum, i) => {
+    if (itemSection(i) !== name) return sum;
+    if ((parseFloat(i.quantity) || 0) <= 0) return sum;
+    if (mode === 'simple') return sum + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0);
+    const t = (i.tiers || {})[tier] || {};
+    if (t.included === false) return sum;
+    return sum + lineTotalEffective(i, tier, trade);
+  }, 0);
+}
+
+/* Next free "Building N". Counts by name rather than by list length so
+   removing Building 2 of three doesn't hand the next one a name already taken. */
+function _nextStructureName(trade) {
+  const taken = new Set(estStructures().map(st => String(st.name || '').trim()));
+  for (let n = 1; n < 500; n++) {
+    const name = 'Building ' + n;
+    if (!taken.has(name)) return name;
+  }
+  return 'Building ' + uid();
+}
+/* The first building on an estimate that already has work on it is the work
+   already there. Promote it rather than leaving the rep's typed-in roof
+   untagged beside a shiny empty Building 1: its measurements become Building
+   1's, and every item on the trade takes its name. S.measurements is COPIED,
+   not moved, so any other trade's numbers on this estimate keep working. */
+function _promoteTradeToStructures(trade) {
+  if (tradeStructures(trade).length) return null;
+  const td = S.trades[trade] || {};
+  const first = {
+    id: 'st_' + uid(), name: 'Building 1', trade,
+    measurements: JSON.parse(JSON.stringify(S.measurements || {})),
+  };
+  S.structures = estStructures().concat([first]);
+  (td.line_items || []).forEach(i => { if (!itemSection(i)) i.section = first.name; });
+  syncStructureSections(trade);
+  return first;
+}
+function addStructure(trade) {
+  trade = trade || 'commercial';
+  _promoteTradeToStructures(trade);
+  const st = { id: 'st_' + uid(), name: _nextStructureName(trade), trade, measurements: {} };
+  S.structures = estStructures().concat([st]);
+  syncStructureSections(trade);
+  _structureOpen = st.id;
+  setDirty(); rerender();
+  return st;
+}
+/* The way buildings 2..7 actually get made. A complex is one roof detail
+   repeated with different numbers, so the copy carries the whole priced build-up
+   -- every line item, its costs, its description -- and the rep changes the
+   squares. Items are deep-cloned with fresh ids: sharing them would make
+   editing Building 2 silently edit Building 1. */
+function duplicateStructure(id) {
+  const src = findStructure(id);
+  if (!src) return null;
+  const trade = src.trade || 'commercial';
+  const copy = {
+    id: 'st_' + uid(), name: _nextStructureName(trade), trade,
+    measurements: JSON.parse(JSON.stringify(src.measurements || {})),
+  };
+  S.structures = estStructures().concat([copy]);
+  const td = S.trades[trade] || {};
+  const srcName = String(src.name || '').trim();
+  const clones = (td.line_items || [])
+    .filter(i => itemSection(i) === srcName)
+    .map(i => Object.assign(JSON.parse(JSON.stringify(i)), { id: uid(), section: copy.name }));
+  td.line_items = (td.line_items || []).concat(clones);
+  syncStructureSections(trade);
+  _structureOpen = copy.id;
+  setDirty(); rerender();
+  return copy;
+}
+/* Rename in one move: the structure, the trade's section list and every item
+   tagged to it. The name IS the join between a building and its measurements,
+   so letting any one of the three drift orphans a roof's numbers. */
+function renameStructure(id, name) {
+  const st = findStructure(id);
+  if (!st) return;
+  const next = String(name == null ? (prompt('Rename building:', st.name) || '') : name).trim();
+  if (!next || next === st.name) return;
+  if (estStructures().some(o => o.id !== id && String(o.name || '').trim() === next)) {
+    alert('There is already a building called "' + next + '".');
+    return;
+  }
+  const trade = st.trade || 'commercial';
+  const td = S.trades[trade] || {};
+  const old = String(st.name || '').trim();
+  st.name = next;
+  td.sections = (td.sections || []).map(n => (n === old ? next : n));
+  (td.line_items || []).forEach(i => { if (itemSection(i) === old) i.section = next; });
+  setDirty(); rerender();
+}
+/* Removing a building removes its work. deleteTradeSection() parks a section's
+   items under General, which is right for a roof area but wrong here: 20 items
+   from a deleted building would sit in the estimate pricing off whatever
+   measurements General resolves to. The count is in the prompt so nobody
+   deletes a priced building thinking they are tidying a label. */
+function removeStructure(id) {
+  const st = findStructure(id);
+  if (!st) return;
+  const trade = st.trade || 'commercial';
+  const td = S.trades[trade] || {};
+  const name = String(st.name || '').trim();
+  const doomed = (td.line_items || []).filter(i => itemSection(i) === name);
+  const what = doomed.length
+    ? `Remove ${name} and its ${doomed.length} line item${doomed.length === 1 ? '' : 's'}?`
+    : `Remove ${name}?`;
+  if (!confirm(what)) return;
+  td.line_items = (td.line_items || []).filter(i => itemSection(i) !== name);
+  td.sections   = (td.sections || []).filter(n => n !== name);
+  S.structures  = estStructures().filter(o => o.id !== id);
+  if (_structureOpen === id) _structureOpen = (estStructures()[0] || {}).id || '';
+  setDirty(); rerender();
+}
+/* Which building's card is expanded on the Scope page. View state, not data. */
+let _structureOpen = '';
+function toggleStructureOpen(id) {
+  _structureOpen = (_structureOpen === id) ? '' : id;
+  if (activePage === 'scope') renderScopePage();
+}
+
+function syncStructureSections(trade) {
+  const td = S.trades[trade];
+  if (!td) return;
+  td.sections = td.sections || [];
+  tradeStructures(trade).forEach(st => {
+    const n = String(st.name || '').trim();
+    if (n && !td.sections.includes(n)) td.sections.push(n);
+  });
+}
+
 const TEAM = ['avery','bryan','derik','luke','phil'];
 const TRADE_COLOR_FIELDS = {
   roofing: [{key:'shingle_color',label:'Shingle Color'},{key:'manufacturer',label:'Manufacturer'},{key:'product_line',label:'Product Line'},
@@ -840,7 +1056,13 @@ function _ensureFastenTable() {
       if (activePage === 'scope') renderScopePage();
     });
 }
-function commFastening() { return commercialFastening(S.measurements || {}, _fastenTable); }
+/* Zone geometry is a fact about ONE building -- its length, width, height and
+   uplift rating -- so the panel calculates per structure. The measure keys
+   comm_fast_insul / comm_fast_seam need no such change: they are already pure
+   functions of the dict measuredQty() hands them, which is now the building's. */
+function commFastening(structureId) {
+  return commercialFastening(structureMeasurements(structureId), _fastenTable);
+}
 
 /* ── Fastening panel (Scope page, commercial only) ──────────────────────
    Shows the zone geometry, the density row in force, and the resulting
@@ -853,18 +1075,19 @@ const _FASTEN_BAIL_TEXT = {
   missing_dimensions: 'Enter building length, width, and height below (or type the zone areas in directly).',
   no_table: 'No fastening table is configured. A manager can set one in ⚙ Settings.',
 };
-function setCommUplift(v)          { setMeasurement('comm_uplift', v); if (activePage === 'scope') renderScopePage(); }
-function setCommFastenNum(key, v)  { setMeasurement(key, v); if (activePage === 'scope') renderScopePage(); }
-function fastenPanelMarkup() {
+function setCommUplift(v, sid)          { setMeasurement('comm_uplift', v, sid); if (activePage === 'scope') renderScopePage(); }
+function setCommFastenNum(key, v, sid)  { setMeasurement(key, v, sid); if (activePage === 'scope') renderScopePage(); }
+function fastenPanelMarkup(sid) {
   if (!S.trades.commercial || !S.trades.commercial.enabled) return '';
   _ensureFastenTable();
-  const m = S.measurements || {};
+  const m = structureMeasurements(sid);
+  const sarg = `, '${sid || ''}'`;
   if (_fastenTableLoading || !_fastenTable) {
     return `<div class="measure-panel measure-panel-fasten">
       <div class="measure-panel-head"><h3>🔩 Fastening Schedule</h3>
         <span class="measure-hint">Loading the fastening table…</span></div></div>`;
   }
-  const r = commFastening();
+  const r = commFastening(sid);
   const t = _fastenTable;
   const attach = _commAttachProfile('commercial');
   const num = (k, lbl, unit, ph) => `
@@ -872,7 +1095,7 @@ function fastenPanelMarkup() {
       <label>${lbl}</label>
       <div class="measure-input-wrap">
         <input type="number" min="0" step="0.1" value="${m[k] || ''}" placeholder="${ph || '0'}"
-          onchange="setCommFastenNum('${k}', this.value)">
+          onchange="setCommFastenNum('${k}', this.value${sarg})">
         <span class="measure-unit">${unit}</span>
       </div>
     </div>`;
@@ -883,7 +1106,7 @@ function fastenPanelMarkup() {
   const upliftSel = `
     <div class="measure-field">
       <label>Uplift Rating <span class="fasten-req">required</span></label>
-      <select class="fasten-select ${cur ? '' : 'is-empty'}" onchange="setCommUplift(this.value)">
+      <select class="fasten-select ${cur ? '' : 'is-empty'}" onchange="setCommUplift(this.value${sarg})">
         <option value="0" ${cur ? '' : 'selected'}>Choose…</option>
         ${ratingKeys.map(k => `<option value="${k}" ${cur === k ? 'selected' : ''}>${esc((t.ratings[String(k)] || {}).label || (k + ' psf'))}</option>`).join('')}
       </select>
@@ -1042,7 +1265,7 @@ function evalFormula(formula, m) {
   catch { return 0; }
 }
 function measuredQty(item) {
-  const m = S.measurements || {};
+  const m = itemMeasurements(item);
   let raw;
   if (item.formula) {
     raw = evalFormula(item.formula, m);
@@ -1093,9 +1316,10 @@ const COMMERCIAL_MEAS_KEYS = new Set([
   'comm_seam_attach','comm_insul_attach',
 ]);
 const WINDOWS_MEAS_KEYS = new Set(['windows_count','doors_count']);
-function setMeasurement(key, v) {
-  if (!S.measurements) S.measurements = {};
-  S.measurements[key] = parseFloat(v) || 0;
+/* `structureId` addresses ONE building's numbers; omitted (or '') writes the
+   estimate's own, which is every measurement on a single-building job. */
+function setMeasurement(key, v, structureId) {
+  structureMeasurements(structureId)[key] = parseFloat(v) || 0;
   // Auto-build trade defaults on first measurement entry when trade is enabled + empty.
   const rd = S.trades.roofing;
   let built = false;
@@ -1142,8 +1366,24 @@ function setMeasurement(key, v) {
   if (vp) { const html = ventPanelMarkup(); if (html) vp.outerHTML = html; else vp.remove(); }
   // Same for the fastening panel — its counts change with almost every
   // commercial measurement, so it has to keep up while the rep is typing.
-  const fp = document.querySelector('.measure-panel-fasten');
-  if (fp) { const html = fastenPanelMarkup(); if (html) fp.outerHTML = html; else fp.remove(); }
+  // On a complex there is one panel per building: scope the swap to the card
+  // being typed into, or building 1's schedule gets replaced by whichever
+  // building the rep is actually editing.
+  const card = structureId ? document.querySelector(`.bld-card[data-st="${structureId}"]`) : null;
+  const fp = (card || document).querySelector('.measure-panel-fasten');
+  if (fp) { const html = fastenPanelMarkup(structureId); if (html) fp.outerHTML = html; else fp.remove(); }
+  // The collapsed head carries this building's roof area and price. Leaving it
+  // stale while the rep types the roof area into the box right below it reads
+  // as the number not registering.
+  if (card) {
+    const facts = card.querySelector('.bld-facts');
+    const st = findStructure(structureId);
+    if (facts && st) {
+      const sq = mnum((st.measurements || {}).comm_squares);
+      facts.innerHTML = `<span class="${sq ? '' : 'bld-fact-empty'}">${sq ? sq + ' SQ' : 'no roof area yet'}</span>`
+                      + `<span class="bld-total">${fmtCur(structureTotal(st))}</span>`;
+    }
+  }
 }
 function setIwSecondRow(on) {
   // Stored as 0/1 in measurements so it survives save/load and is available
@@ -1158,8 +1398,8 @@ function setIwSecondRow(on) {
    the same reason iw_second_row does: MEASURE_DEFS and custom formulas can only
    see measurements. It drives which of the two labor lines carries quantity —
    the other goes to 0 and a zero-qty line never prices and never prints. */
-function setCommWorkType(v) {
-  setMeasurement('comm_work_type', v ? 1 : 0);
+function setCommWorkType(v, sid) {
+  setMeasurement('comm_work_type', v ? 1 : 0, sid);
   if (activePage === 'scope') renderScopePage();
 }
 // Rep-facing only — these never touch price. They ride along to the production
@@ -1500,6 +1740,7 @@ function blankEstimate() {
     estimate_id: null, version: 1,
     created_at: null, updated_at: null, status: 'draft',
     customer: { crm_contact_id:null, crm_project_id:null, crm_job_number:'',
+                crm_lead_id:'',
                 name:'', phone:'', email:'',
                 address:{ street:'', city:'', state:'', zip:'' } },
     project_address: '',
@@ -1526,6 +1767,7 @@ function blankEstimate() {
     contract_initials: defaultInitials('retail'),
     shingle_selection: { enabled: true, options: _globalShingleColors(), chosen: '' },
     measurements: { waste_pct: _globalWastePct() },
+    structures: [],            // buildings on a complex; empty = one roof, measured above
     intro_text: '',
     page_visibility: { intro: false, options: true, products: true, pricing: true, report: true },
     roof_health: {
@@ -1838,6 +2080,7 @@ function renderSidebar() {
   renderEstNum();
   renderCrmLinkBadge();
   renderSentLockBanner();
+  renderEstStatusBar();
   // Show "Customer File" button only when a customer name is present
   const cfBtn = document.getElementById('cf-open-btn');
   if (cfBtn) cfBtn.style.display = (S.customer && S.customer.name) ? '' : 'none';
@@ -3449,8 +3692,10 @@ function renderPrintPagesBar() {
     { id:'contract', label:'Contract',     on: S.print_contract !== false,     always: false },
     { id:'report',   label:'Roof Health',  on: pv.report  !== false,           always: false },
   ];
-  // Trust blocks live on the ONLINE signing link (content set in ⚙ Settings),
-  // unlike the print chips above which only gate the printed estimate.
+  // Trust blocks (content set in ⚙ Settings) now appear on BOTH the online
+  // signing link and the printed credibility page, so these chips gate the two
+  // together. They stay out of the signed PDF and the document hash — that
+  // exclusion is deliberate, see _cv_trust_blocks in app.py.
   const trust = [
     { id:'trust_about',          label:'About Us' },
     { id:'trust_warranty',       label:'Warranty' },
@@ -3467,11 +3712,11 @@ function renderPrintPagesBar() {
         title="${p.always ? 'Always included' : (p.on ? 'Click to exclude from print' : 'Click to include in print')}">
         <span class="ppb-dot"></span>${esc(p.label)}
       </button>`).join('') +
-    `<span class="ppb-label" title="Company sections on the customer's online signing page — edit the content in ⚙ Settings">Online:</span>` +
+    `<span class="ppb-label" title="Company sections shown on the printed credibility page and the customer's online signing page — edit the content in ⚙ Settings">Why Us:</span>` +
     trust.map(p => `
       <button class="ppb-btn ${pv[p.id] !== false ? 'on' : 'off'}"
         onclick="togglePagePrint('${p.id}')"
-        title="${pv[p.id] !== false ? 'Shown on the customer signing page — click to hide for this estimate' : 'Hidden from the customer signing page — click to show'}">
+        title="${pv[p.id] !== false ? 'Shown in print and on the signing page — click to hide for this estimate' : 'Hidden from print and the signing page — click to show'}">
         <span class="ppb-dot"></span>${esc(p.label)}
       </button>`).join('');
 }
@@ -4056,7 +4301,12 @@ function renderScopePage() {
     isCommercial ? t === 'commercial' || t === 'other' : t !== 'commercial');
   const m = S.measurements || {};
 
-  const renderMeasureGroup = (groups) => groups.map(g => `
+  // `sid` is the building whose numbers these boxes read and write. Omitted,
+  // they are the estimate's own -- which is every measurement on a one-roof job
+  // and on every trade that does not do buildings.
+  const renderMeasureGroup = (groups, sid) => { const m = structureMeasurements(sid);
+    const sarg = `, '${sid || ''}'`;
+    return groups.map(g => `
     <div class="measure-group">
       <div class="measure-group-title">${g.group}</div>
       <div class="measure-fields">
@@ -4069,7 +4319,7 @@ function renderScopePage() {
             return `<div class="measure-field">
               <label>${f.label}</label>
               <div class="measure-input-wrap">
-                <select class="measure-select" onchange="setMeasurement('${f.key}', this.value)">
+                <select class="measure-select" onchange="setMeasurement('${f.key}', this.value${sarg})">
                   ${f.opts.map(([v,lbl]) => `<option value="${v}" ${cur===v?'selected':''}>${lbl}</option>`).join('')}
                 </select>
               </div>
@@ -4080,13 +4330,13 @@ function renderScopePage() {
             <div class="measure-input-wrap">
               <input type="number" min="0" step="${f.unit==='SQ'?'0.1':f.unit==='%'?'1':'1'}"
                 value="${val}" placeholder="0"
-                onchange="setMeasurement('${f.key}', this.value)">
+                onchange="setMeasurement('${f.key}', this.value${sarg})">
               <span class="measure-unit">${f.unit}</span>
             </div>
           </div>`;
         }).join('')}
       </div>
-    </div>`).join('');
+    </div>`).join(''); };
 
   const measurePanel = `
     <div class="measure-panel">
@@ -4111,29 +4361,80 @@ function renderScopePage() {
   // Commercial low-slope. A flat roof has no attic to ventilate and no ridge or
   // valley to measure, so in commercial mode the steep-slope roof panel and the
   // ventilation calculator are hidden rather than shown full of blanks.
-  const commercialMeasurePanel = S.trades.commercial?.enabled ? `
-    <div class="measure-panel measure-panel-commercial">
-      <div class="measure-panel-head">
-        <h3>🏢 Commercial Roof Measurements</h3>
-        <span class="measure-hint">From the EagleView / Hover report — the system build-up auto-fills from these</span>
-      </div>
+  /* The measurement body one roof gets: the Commercial field group, the job-type
+     switch and the fastening schedule. Rendered once for a single-roof estimate
+     and once per building on a complex -- same markup either way, so the two
+     layouts cannot drift into asking for different numbers. `sid` is '' for the
+     estimate's own measurements. */
+  const commMeasureBody = (sid) => {
+    const cm = structureMeasurements(sid);
+    const sarg = `, '${sid || ''}'`;
+    const rname = 'comm-work-type-' + (sid || 'est');   // radios must not pair across buildings
+    return `
       <div class="measure-groups">
-        ${renderMeasureGroup(MEASURE_FIELDS.filter(g => g.group === 'Commercial'))}
+        ${renderMeasureGroup(MEASURE_FIELDS.filter(g => g.group === 'Commercial'), sid)}
       </div>
       <div class="comm-worktype">
         <span class="comm-worktype-label">Job type</span>
-        <label class="comm-worktype-opt ${!mnum(m.comm_work_type) ? 'enabled' : ''}">
-          <input type="radio" name="comm-work-type" ${!mnum(m.comm_work_type) ? 'checked' : ''}
-            onchange="setCommWorkType(0)">
+        <label class="comm-worktype-opt ${!mnum(cm.comm_work_type) ? 'enabled' : ''}">
+          <input type="radio" name="${rname}" ${!mnum(cm.comm_work_type) ? 'checked' : ''}
+            onchange="setCommWorkType(0${sarg})">
           Re-Roof <span class="comm-worktype-rate">tear-off &amp; disposal included</span>
         </label>
-        <label class="comm-worktype-opt ${mnum(m.comm_work_type) ? 'enabled' : ''}">
-          <input type="radio" name="comm-work-type" ${mnum(m.comm_work_type) ? 'checked' : ''}
-            onchange="setCommWorkType(1)">
+        <label class="comm-worktype-opt ${mnum(cm.comm_work_type) ? 'enabled' : ''}">
+          <input type="radio" name="${rname}" ${mnum(cm.comm_work_type) ? 'checked' : ''}
+            onchange="setCommWorkType(1${sarg})">
           New Construction <span class="comm-worktype-rate">install only</span>
         </label>
         <span class="comm-worktype-hint">Switches which labor line prices — the other drops to zero.</span>
       </div>
+      ${fastenPanelMarkup(sid)}`;
+  };
+
+  /* One collapsible card per building, one open at a time. The head carries the
+     two numbers a rep scans a complex for -- roof area and what that building
+     costs -- so seven buildings can be checked without opening seven cards. */
+  const buildingCard = (st) => {
+    const open = _structureOpen === st.id;
+    const sm   = st.measurements || {};
+    const sq   = mnum(sm.comm_squares);
+    const tot  = structureTotal(st);
+    return `
+      <div class="bld-card ${open ? 'is-open' : ''}" data-st="${st.id}">
+        <div class="bld-head" onclick="toggleStructureOpen('${st.id}')">
+          <span class="bld-caret">${open ? '▾' : '▸'}</span>
+          <span class="bld-name">${esc(st.name || '(unnamed)')}</span>
+          <span class="bld-facts">
+            <span class="${sq ? '' : 'bld-fact-empty'}">${sq ? sq + ' SQ' : 'no roof area yet'}</span>
+            <span class="bld-total">${fmtCur(tot)}</span>
+          </span>
+          <span class="bld-actions">
+            <button class="bld-btn" title="Copy this building — same build-up, new measurements"
+              onclick="event.stopPropagation();duplicateStructure('${st.id}')">⧉ Duplicate</button>
+            <button class="bld-btn" title="Rename"
+              onclick="event.stopPropagation();renameStructure('${st.id}')">✏</button>
+            <button class="bld-btn bld-btn-del" title="Remove this building and its line items"
+              onclick="event.stopPropagation();removeStructure('${st.id}')">×</button>
+          </span>
+        </div>
+        ${open ? `<div class="bld-body">${commMeasureBody(st.id)}</div>` : ''}
+      </div>`;
+  };
+
+  const commStructures = tradeStructures('commercial');
+  const commercialMeasurePanel = S.trades.commercial?.enabled ? `
+    <div class="measure-panel measure-panel-commercial">
+      <div class="measure-panel-head">
+        <h3>🏢 Commercial Roof Measurements</h3>
+        <span class="measure-hint">${commStructures.length
+          ? 'One card per building — each carries its own measurements and prices on its own'
+          : 'From the EagleView / Hover report — the system build-up auto-fills from these'}</span>
+        <button class="btn-add-building" title="A complex is one roof repeated — add a building, then duplicate it"
+          onclick="addStructure('commercial')">+ Add Building</button>
+      </div>
+      ${commStructures.length
+        ? `<div class="bld-list">${commStructures.map(buildingCard).join('')}</div>`
+        : commMeasureBody('')}
       ${commComplexityMarkup()}
     </div>` : '';
 
@@ -4169,8 +4470,6 @@ function renderScopePage() {
     ${isCommercial ? '' : ventPanel}
 
     ${commercialMeasurePanel}
-
-    ${isCommercial ? fastenPanelMarkup() : ''}
 
     ${permitJurisdictionMarkup()}
 
@@ -4626,9 +4925,52 @@ function otherSetDesc(id, v) {
 
    `value` is a PER-UNIT price (the box sits beside Unit Cost and matches the
    Simple tab); price_override stores the line total, so multiply back out. */
+/* Other-tab rows saved before addLineItem started them at qty 1 sit at
+   quantity 0, and a zero-qty line prices at nothing however good the cost and
+   sell price beside it look: tradeTotal and calc_tier_total both drop it, so a
+   $9,548 deck shows 0.00 in the Sell Price column, adds nothing to the subtotal
+   and never prints. Unlike the G/B/B trades this tab has no way to say "not in
+   scope" — no chip row, no include toggle, the quantity box is the only
+   control — so a zero here is never a deliberate exclusion; it is a row nobody
+   ever gave a quantity. Heal the ones that carry money, which are exactly the
+   rows a rep meant to charge for, and leave the empty scaffolding rows alone.
+   A signed estimate is skipped: its total is a number the customer agreed to,
+   and that moves through a change order, never through a migration that runs
+   quietly when the estimate is opened.
+   Returns how many rows changed, so the caller can mark the doc dirty. */
+function healOtherZeroQty(est) {
+  if (!est || est.signature) return 0;
+  const items = ((est.trades || {}).other || {}).line_items || [];
+  let healed = 0;
+  items.forEach(i => {
+    if ((parseFloat(i.quantity) || 0) > 0) return;
+    const carriesMoney = TIERS.some(t => {
+      const c = (i.tiers || {})[t] || {};
+      return (parseFloat(c.material_unit_cost) || 0) > 0
+          || (parseFloat(c.labor_unit_cost)    || 0) > 0
+          || (parseFloat(c.price_override)     || 0) > 0;
+    });
+    if (carriesMoney) { i.quantity = 1; healed++; }
+  });
+  return healed;
+}
+
+/* Quantity is the one number this tab cannot infer — there is no measurement
+   behind a haul-away, an allowance or a deck rebuild — so a rep types the
+   money, sees the "1" the box has shown as a placeholder all along, and ships
+   a line that prices at $0. Entering a cost or a sell price IS the intent to
+   charge, so give the row that 1 for real. Only ever fills a blank or zero,
+   and only when a real number was typed: a quantity the rep set is theirs, and
+   clearing a price must not conjure one. */
+function otherEnsureQty(item, entered) {
+  if ((parseFloat(entered) || 0) > 0 && (parseFloat(item.quantity) || 0) <= 0)
+    item.quantity = 1;
+}
+
 function otherSetPrice(id, value) {
   const item = findItem('other', id);
   if (!item) return;
+  otherEnsureQty(item, value);
   const qty = parseFloat(item.quantity) || 0;
   const unit = parseFloat(value);
   const total = (!value || isNaN(unit)) ? value
@@ -4690,6 +5032,7 @@ function otherApplyPrice(item, tier, value) {
 function otherSetUnitCost(id, cost) {
   const item = findItem('other', id);
   if (!item) return;
+  otherEnsureQty(item, cost);
   // sync the same cost across all tiers so it prints on every package
   TIERS.forEach(tier => {
     if (!item.tiers[tier]) item.tiers[tier] = {material_unit_cost:0,labor_unit_cost:0,description:'',notes:''};
@@ -5661,13 +6004,22 @@ function defaultSimpleBundle(trade) {
    data transform that bundle_runner.js can exercise without the pricing chain.
    Quantities, scope notes, and Manual-measure choices survive a system swap:
    re-picking TPO → EPDM must not wipe the squares the rep already entered. */
-function buildSimpleItemsFromBundle(trade, bundleId) {
+/* `sectionName` builds the system for ONE building: the carry-over map is
+   scoped to that building's rows and the output is tagged to it. Without it
+   every building's rows collide in `prev` on the shared catalog_id, and all
+   seven inherit the quantity and locked price of whichever happened to sit
+   last in line_items. Omitted, this behaves exactly as it did. */
+function buildSimpleItemsFromBundle(trade, bundleId, sectionName) {
   const bundle = _tradeBundle(trade, bundleId);
   if (!bundle) return null;
   const catalog = _tradeCatalog(trade);
   const td = S.trades[trade] || {};
   const prev = new Map();
-  (td.line_items || []).forEach(li => { if (li.catalog_id) prev.set(li.catalog_id, li); });
+  (td.line_items || []).forEach(li => {
+    if (!li.catalog_id) return;
+    if (sectionName !== undefined && itemSection(li) !== sectionName) return;
+    prev.set(li.catalog_id, li);
+  });
 
   const items = [];
   (bundle.product_ids || []).forEach(pid => {
@@ -5691,6 +6043,7 @@ function buildSimpleItemsFromBundle(trade, bundleId) {
       unit_cost: parseFloat(p.cost) || 0,
       unit_price: (old && old.price_locked) ? old.unit_price : 0,
       price_locked: (old && old.price_locked) || undefined,
+      section: sectionName || undefined,
     });
   });
   // Hand-added rows (no catalog_id) belong to the rep, not the bundle — they
@@ -5698,13 +6051,39 @@ function buildSimpleItemsFromBundle(trade, bundleId) {
   (td.line_items || []).forEach(li => { if (!li.catalog_id) items.push(li); });
   return items;
 }
+/* Picking a system rebuilds the trade from the bundle. On a complex that has
+   to happen once PER BUILDING: the old `td.line_items = items` collapsed seven
+   roofs into one set of rows and took six buildings off the estimate. Each
+   building keeps its own quantities and locked prices through the carry-over in
+   buildSimpleItemsFromBundle, and rows filed outside a building are left where
+   the rep put them. */
 function applyBundleToSimple(trade, bundleId) {
   const td = S.trades[trade]; if (!td || !isBundleTrade(trade)) return;
-  const items = buildSimpleItemsFromBundle(trade, bundleId);
-  if (!items) return;
-  td.line_items = items;
+  const structures = tradeStructures(trade);
+  if (!structures.length) {
+    const items = buildSimpleItemsFromBundle(trade, bundleId);
+    if (!items) return;
+    td.line_items = items;
+    items.forEach(it => simpleApplyMargin(trade, it));
+  } else {
+    if (!_tradeBundle(trade, bundleId)) return;
+    if (structures.length > 1 &&
+        !confirm(`Rebuild all ${structures.length} buildings with this system? `
+               + 'Their measurements and quantities are kept.')) return;
+    const names = new Set(structures.map(st => String(st.name || '').trim()));
+    const keep  = (td.line_items || []).filter(i => !names.has(itemSection(i)));
+    // Built against the ORIGINAL line_items -- assigning inside the loop would
+    // let building 2 carry over from building 1's freshly-written rows.
+    const rebuilt = [];
+    structures.forEach(st => {
+      const items = buildSimpleItemsFromBundle(trade, bundleId, String(st.name || '').trim());
+      if (!items) return;
+      items.forEach(it => simpleApplyMargin(trade, it));
+      rebuilt.push(...items);
+    });
+    td.line_items = keep.concat(rebuilt);
+  }
   td.simple_bundle = bundleId;
-  items.forEach(it => simpleApplyMargin(trade, it));
   _syncCommAttachment();          // AFTER the rebuild — the new system decides
   applyMeasurements();
   setDirty();
@@ -5914,14 +6293,27 @@ function renderGBBGrid(trade) {
 }
 
 // Compact per-tier line item row — all three tiers are fully editable.
-// The master name is editable in the Better column (Good/Best show it as a
-// static label); qty + unit are SHARED fields editable from ANY column —
-// changing one updates the item everywhere. Per-tier fields (description,
-// cost, include/exclude) are editable in every column.
+// The master name is normally typed in the Better column (Good/Best show it as
+// a static label) so the rep isn't given three boxes for one value; qty + unit
+// are SHARED fields editable from ANY column — changing one updates the item
+// everywhere. Per-tier fields (description, cost, include/exclude) are editable
+// in every column.
+//
+// Better can't always carry the name, though. A row added from inside a Custom
+// Good or Best belongs to that tier ALONE (see addLineItem), so it never
+// renders in the Better column at all — and a row the rep just added has no
+// name yet, so the static label is blank. Either way the rep was left looking
+// at an empty label with nowhere to type, able to write a description for a
+// line item that has no name. Whichever column actually owns the row gets the
+// name input, and a brand-new unnamed row offers it wherever it shows up.
 function renderLiRow(trade, tier, item) {
   const t        = (item.tiers && item.tiers[tier]) || {material_unit_cost:0,labor_unit_cost:0,description:'',notes:'',included:true};
   const included = t.included !== false;
   const isB      = tier === 'better';
+  // Does Better carry this row? If not, this column is the only place the
+  // master name, ordering and the customer-visible toggle can be reached.
+  const ownsMaster = isB || ((item.tiers || {}).better || {}).included === false;
+  const nameHere   = ownsMaster || !String(item.name || '').trim();
   const UNITS    = ['SQ','LF','EA','HR','LS','SF','BD'];
   const mat  = parseFloat(t.material_unit_cost) || 0;
   const lab  = parseFloat(t.labor_unit_cost)    || 0;
@@ -5932,7 +6324,10 @@ function renderLiRow(trade, tier, item) {
   const isVisible = item.customer_visible !== false;
 
   const sections = tradeSections(trade);
-  const sectionSel = (isB && sections.length) ? `
+  // Same reasoning as the name: a tier-only row has no Better column to be
+  // filed from, and on a multi-building estimate the section IS the building
+  // whose measurements price it — unreachable would mean unpriceable.
+  const sectionSel = (ownsMaster && sections.length) ? `
     <select class="li-section-select" title="Which section this item belongs to"
       onchange="liSetSection('${trade}','${item.id}',this.value)">
       <option value="">General</option>
@@ -5956,13 +6351,13 @@ function renderLiRow(trade, tier, item) {
 
   return `<div class="li-row-card${!included?' li-row-excluded':''}${!isVisible?' li-row-hidden':''}">
     <div class="li-row-top">
-      ${isB
+      ${nameHere
         ? `<input class="li-row-name-input" type="text" value="${esc(item.name)}" list="pb-list-${trade}"
              placeholder="Type to search price book…"
              onchange="liSetNameSmart('${trade}','${item.id}',this.value)">`
         : `<span class="li-row-name-static">${esc(item.name)}</span>`}
       <div class="li-row-actions">
-        ${isB ? `<button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liCanMove(trade,item,-1)?'':'disabled'} title="Move up">↑</button>
+        ${ownsMaster ? `<button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liCanMove(trade,item,-1)?'':'disabled'} title="Move up">↑</button>
         <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${liCanMove(trade,item,1)?'':'disabled'} title="Move down">↓</button>
         <label class="li-vis-toggle${!isVisible?' vis-off':''}" title="${isVisible?'Shown on customer estimate':'Hidden from customer'}">
           <input type="checkbox" ${isVisible?'checked':''} onchange="liSetVisible('${trade}','${item.id}',this.checked)">
@@ -7673,6 +8068,53 @@ function renderSentLockBanner() {
   }
 }
 
+/* Outcome control for the estimate you are looking at.
+   Only appears once an estimate exists and has been saved — there is no
+   outcome to record on something that was never sent. A signature is a fact
+   about what the customer did, so a signed estimate shows the fact and offers
+   no control; the server enforces the same rule. */
+function renderEstStatusBar() {
+  const el = document.getElementById('est-status-bar');
+  if (!el) return;
+  if (!S.estimate_id) { el.style.display = 'none'; return; }
+
+  if (S.signature) {
+    el.className = 'est-status-bar est-status-signed';
+    el.innerHTML = '✓ <strong>Signed</strong> — this job is won and has gone to The Den';
+    el.style.display = 'block';
+    return;
+  }
+
+  const st = S.status || 'draft';
+  const opts = [['draft','Draft'], ['sent','Sent'], ['accepted','Accepted ✓'], ['lost','Lost ✗']];
+  el.className = 'est-status-bar' + (st === 'lost' ? ' est-status-lost' : '');
+  el.innerHTML = `
+    <label for="est-status-select">Outcome</label>
+    <select id="est-status-select" onchange="setEstStatus(this.value)">
+      ${opts.map(([v, l]) => `<option value="${v}" ${st === v ? 'selected' : ''}>${l}</option>`).join('')}
+    </select>
+    ${st === 'lost' ? '<span class="est-status-note">Out of Outstanding and follow-ups. The lead stays open in the Pipeline.</span>' : ''}`;
+  el.style.display = 'flex';
+}
+
+async function setEstStatus(status) {
+  if (!S.estimate_id) return;
+  try {
+    const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ status }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'Could not update the outcome.');
+    S.status = j.status;
+  } catch (e) {
+    alert(e.message);
+  }
+  renderEstStatusBar();
+}
+
 function renderCrmLinkBadge() {
   const el=document.getElementById('crm-link-badge');
   if(!el)return;
@@ -7804,6 +8246,12 @@ function daysAgoLabel(iso) {
 }
 function estStatusOf(e) {
   if (e.signed || e.status === 'accepted') return 'signed';
+  // Lost is checked before viewed/sent, and that ordering is the whole point.
+  // It used to be missing entirely, so a lost estimate still reported itself as
+  // 'viewed' — which left it sitting in Outstanding, counting toward the
+  // outstanding total, and nagging from the follow-up banner forever. Marking
+  // one lost changed nothing a rep could see.
+  if (e.status === 'lost' || e.status === 'declined') return 'lost';
   if (e.first_viewed_at) return 'viewed';
   if (e.sent) return 'sent';
   return 'draft';
@@ -7871,9 +8319,17 @@ async function dashUpdateStatus(id, status, selectEl) {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({status}),
   });
-  if (!r.ok) { alert('Could not update status.'); if (selectEl) selectEl.value = ''; return; }
+  if (!r.ok) {
+    const msg = await r.json().catch(() => ({}));
+    alert(msg.error || 'Could not update status.');
+    return renderDashboard();
+  }
   const est = _dashData.find(e => e.estimate_id === id);
   if (est) est.status = status;
+  // Re-render, so the row actually moves to its new section. Without this the
+  // status changed on the server and the dashboard carried on showing the
+  // estimate exactly where it was, which made marking one lost feel broken.
+  renderDashboard();
 }
 
 function dashRow(e) {
@@ -7884,11 +8340,13 @@ function dashRow(e) {
     viewed: '<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
     sent:   '<span class="dash-chip dash-chip-sent">📤 Sent</span>',
     draft:  '<span class="dash-chip dash-chip-draft">Draft</span>',
+    lost:   '<span class="dash-chip dash-chip-lost">✗ Lost</span>',
   };
   let activity = '';
   if (st === 'signed')      activity = `${e.signed ? 'Signed' : 'Accepted'} ${daysAgoLabel(e.signed_at || e.updated_at)}`;
   else if (st === 'viewed') activity = `Viewed ${daysAgoLabel(e.last_viewed_at)}${e.view_count > 1 ? ` (${e.view_count}×)` : ''}`;
   else if (st === 'sent')   activity = `Sent ${daysAgoLabel(e.sent_at)} — not opened yet`;
+  else if (st === 'lost')   activity = `Marked lost ${daysAgoLabel(e.updated_at)}`;
   else                      activity = `Updated ${daysAgoLabel(e.updated_at)}`;
   const typeLbl = e.estimate_type === 'commercial' ? '🏢 Commercial'
                 : e.estimate_type === 'insurance' ? '🏛 Insurance'
@@ -7901,7 +8359,7 @@ function dashRow(e) {
       <option value="draft"    ${e.status==='draft'?'selected':''}>Draft</option>
       <option value="sent"     ${e.status==='sent'?'selected':''}>Sent</option>
       <option value="accepted" ${e.status==='accepted'?'selected':''}>Accepted ✓</option>
-      <option value="declined" ${e.status==='declined'?'selected':''}>Declined</option>
+      <option value="lost"     ${st==='lost'?'selected':''}>Lost ✗</option>
     </select>`;
   return `<div class="dash-row${st==='viewed'?' dash-row-viewed':''}" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
     <div class="dash-row-main">
@@ -7937,6 +8395,8 @@ function renderDashboard() {
                       .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
   const signed  = list.filter(e => estStatusOf(e) === 'signed')
                       .sort((a, b) => (b.signed_at || '').localeCompare(a.signed_at || ''));
+  const lost    = list.filter(e => estStatusOf(e) === 'lost')
+                      .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
 
   const outstanding   = [...viewed, ...sent];
   const outstandingSum = outstanding.reduce((s, e) => s + (e.total || 0), 0);
@@ -8031,7 +8491,7 @@ function renderDashboard() {
       </div>
     </div>
     ${_dashFilter ? `<div class="dash-filter-bar">
-      Showing: <strong>${{outstanding:'Outstanding',sent:'Sent',signed:'Signed',draft:'Drafts'}[_dashFilter]||_dashFilter}</strong>
+      Showing: <strong>${{outstanding:'Outstanding',sent:'Sent',signed:'Signed',draft:'Drafts',lost:'Lost'}[_dashFilter]||_dashFilter}</strong>
       <button class="dash-filter-clear" onclick="dashSetFilter(null)">× Show all</button>
     </div>` : ''}
     ${(!_dashFilter || _dashFilter==='outstanding') && (viewed.length||sent.length) ?
@@ -8042,6 +8502,8 @@ function renderDashboard() {
         section('📝 Drafts', drafts) : ''}
     ${(!_dashFilter || _dashFilter==='signed') ?
         section('✅ Signed', _dashFilter==='signed' ? signed : signed.slice(0,15), 'dash-h-won') : ''}
+    ${lost.length && (!_dashFilter || _dashFilter==='lost') ?
+        section('✗ Lost', _dashFilter==='lost' ? lost : lost.slice(0,10), 'dash-h-lost') : ''}
     ${!list.length ? '<div class="dash-empty">No estimates yet for this rep.</div>' : ''}
     `}`;
 }
@@ -8074,7 +8536,7 @@ function _clr(rate) {
 }
 
 function renderDashboardAnalytics(filteredList, allData) {
-  const ad  = _analyticsData || { by_trade:{}, by_rep:{}, monthly:[], funnel:{total:0,sent:0,viewed:0,signed:0,declined:0}, pipeline_aging:{}, by_type:{}, top_cities:[], ytd_revenue:0, avg_days_to_close:null };
+  const ad  = _analyticsData || { by_trade:{}, by_rep:{}, monthly:[], funnel:{total:0,sent:0,viewed:0,signed:0,lost:0}, pipeline_aging:{}, by_type:{}, top_cities:[], ytd_revenue:0, avg_days_to_close:null };
   const now = Date.now();
   const ms30 = 30*86400000;
 
@@ -8099,7 +8561,7 @@ function renderDashboardAnalytics(filteredList, allData) {
   const repEntries = Object.entries(ad.by_rep).filter(([,d])=>d.sent>0||d.revenue>0);
 
   // ── Conversion funnel ────────────────────────────────────────────────
-  const fn = ad.funnel||{total:0,sent:0,viewed:0,signed:0,declined:0};
+  const fn = ad.funnel||{total:0,sent:0,viewed:0,signed:0,lost:0};
   const funnelSteps = [
     {label:'Created', val:fn.total, pct:100},
     {label:'Sent',    val:fn.sent,    pct:fn.total?Math.round(fn.sent/fn.total*100):0},
@@ -8117,7 +8579,7 @@ function renderDashboardAnalytics(filteredList, allData) {
         <span class="funnel-pct">${s.pct}%</span>
       </div>
     </div>`).join('');
-  const declinedHtml = fn.declined ? `<div class="funnel-declined">✗ ${fn.declined} declined</div>` : '';
+  const lostHtml = fn.lost ? `<div class="funnel-declined">✗ ${fn.lost} lost</div>` : '';
 
   // ── Pipeline aging ───────────────────────────────────────────────────
   const pa = ad.pipeline_aging||{};
@@ -8257,7 +8719,7 @@ function renderDashboardAnalytics(filteredList, allData) {
       <div class="analytics-section a-card">
         <h4 class="analytics-h">Conversion Funnel</h4>
         ${funnelHtml}
-        ${declinedHtml}
+        ${lostHtml}
       </div>
       <div class="analytics-section a-card">
         <h4 class="analytics-h">Pipeline Health <span class="analytics-pct">${fmtCur(pipelineVal)}</span></h4>
@@ -9385,7 +9847,7 @@ async function shareEstimate() {
     const data = await r.json();
     S.share_token = data.token;
     if (!S.sent_at) S.sent_at = new Date().toISOString();
-    if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); }
+    if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); renderEstStatusBar(); }
     showShareModal(data.full_url || (window.location.origin + data.url), data.url);
   } catch(e) {
     alert('Error: ' + e.message);
@@ -9495,7 +9957,7 @@ async function presentEstimate() {
       if (!token) throw new Error('Could not generate a presentation link');
       S.share_token = token;
       if (!S.sent_at) S.sent_at = new Date().toISOString();
-      if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); }
+      if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); renderEstStatusBar(); }
     }
 
     const url = `${BASE}/present/${token}`;
@@ -9518,7 +9980,7 @@ async function emailEstimateLink() {
       // Server just generated the token as part of sending
       S.share_token = d.full_url.split('/sign/')[1] || S.share_token;
     }
-    if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); }
+    if (!S.status || S.status === 'draft') { S.status = 'sent'; setVal('est-status', 'sent'); renderEstStatusBar(); }
     if (btn) { btn.textContent = `✓ Sent to ${d.sent_to}`; btn.style.background = '#16a34a'; }
   } catch (e) {
     alert('Could not send email: ' + e.message);
@@ -9687,6 +10149,13 @@ async function doLoadEstimate(id) {
     if(!Array.isArray(S.shingle_selection.options)||!S.shingle_selection.options.length)
       S.shingle_selection.options=DEFAULT_SHINGLE_COLORS.slice();
     if(!Array.isArray(S.attachments)) S.attachments=[];
+    // Buildings. An estimate written before this has none, and every path falls
+    // back to S.measurements for it — that is the whole compatibility story.
+    // The section sync is belt-and-braces: a structure whose name went missing
+    // from its trade's section list would still price (items carry the name)
+    // but would stop printing under its own header.
+    if(!Array.isArray(S.structures)) S.structures=[];
+    TRADES.forEach(t => { if (S.trades[t] && tradeStructures(t).length) syncStructureSections(t); });
     if(!S.work_order || typeof S.work_order !== 'object') S.work_order = {};
     if(!S.roof_certificate || typeof S.roof_certificate !== 'object') S.roof_certificate = {};
     // Estimates created outside the UI (API, scripts) may lack these — a
@@ -9710,7 +10179,10 @@ async function doLoadEstimate(id) {
         if(i.measure === 'ridge' || i.measure === 'hip') i.measure = 'ridge_hip';
       });
     });
-    activeTrade='roofing'; closeModal(); setClean(); renderAll(); switchPage('client');
+    const _otherQtyHealed = healOtherZeroQty(S);
+    activeTrade='roofing'; closeModal(); setClean();
+    if (_otherQtyHealed) setDirty();   // let the 60s autosave persist the fix
+    renderAll(); switchPage('client');
     warmPrintPhotos();
     backfillPdfPages();
   }catch(e){alert('Could not load estimate: '+e.message);}
@@ -9803,10 +10275,25 @@ async function preparePrintPhotos() {
   }
 }
 
+/* Company trust content (About / Warranty / Certifications / Reviews), cached
+   for the printed credibility page. buildPrintContent() has to stay fully
+   synchronous — iOS Safari only honors window.print() inside the click's
+   gesture context — so this is warmed alongside the photos and read from the
+   cache at build time. If it never arrived, the page is simply skipped. */
+let _ccCache = null;
+function warmCompanyContent() {
+  return fetch(BASE + '/api/company-content')
+    .then(r => r.ok ? r.json() : null)
+    .then(cc => { if (cc) _ccCache = cc; })
+    .catch(() => {});
+}
+
 /* Warm the cache opportunistically (fire-and-forget) so direct Ctrl+P works too.
    The in-flight promise is kept so doPrint can await it on a cold cache. */
 let _printWarmPromise = null;
 function warmPrintPhotos() {
+  if (!_ccCache) warmCompanyContent();
+  _ensureJurisdictions();   // permit page reads _jurisdictions synchronously
   _printWarmPromise = preparePrintPhotos().catch(()=>{});
   return _printWarmPromise;
 }
@@ -9949,10 +10436,19 @@ function buildPrintContent() {
   const pHeader = `<div class="p-header">
     <div class="p-header-brand">
       <img src="${BASE}/static/logo.png" class="p-header-logo" alt="Project One Roofing">
-      <div class="p-company-sub">115 E 5th St · Loveland, CO 80537 · 970-776-0945 · projectoneroofingcolorado.com</div>
+      <div class="p-company-sub">${esc(COMPANY_ADDR_LINE)}</div>
     </div>
     <div class="p-est-badge"><span class="p-badge-num">${esc(estNum)}</span>${esc(S.estimate_date||'')}</div>
   </div>`;
+
+  /* Section heading: small caps eyebrow over a serif line, with an optional
+     orienting sentence. Headings name what the section answers rather than
+     what the data is called — "What We Found" beats "Photo Report" on a
+     document whose job is to be read by a homeowner, not filed. */
+  const pHead2 = (eyebrow, title, lede) =>
+    `<div class="p-eyebrow">${esc(eyebrow)}</div>
+     <div class="p-h2">${esc(title)}</div>
+     ${lede ? `<div class="p-lede">${esc(lede)}</div>` : ''}`;
 
   // ── Cover page: logo (top) · photo (center) · customer info (bottom) ──
   let html=`<div class="p-cover">
@@ -9974,12 +10470,18 @@ function buildPrintContent() {
         <div><span>Valid Until</span>${esc(S.valid_until||'—')}</div>
         ${S.salesperson?`<div><span>Sales Rep</span>${esc(cap(S.salesperson))}</div>`:''}
       </div>
-      <div class="p-cover-company">115 E 5th St · Loveland, CO 80537 · 970-776-0945 · projectoneroofingcolorado.com</div>
+      <div class="p-cover-company">${esc(COMPANY_ADDR_LINE)}</div>
     </div>
   </div>`;
 
-  // ── Intro letter — always included when text exists ─────────────
   const pv = S.page_visibility || {};
+
+  // ── At a glance — the digest that opens the document ─────────────
+  // Sits above the letter deliberately: this is the page a homeowner reads
+  // before deciding whether to read the rest, and the one they forward.
+  html += _printGlanceHTML(pHeader, estNum);
+
+  // ── Intro letter — always included when text exists ─────────────
   if (S.intro_text?.trim()) {
     html += `<div class="p-intro">
       <div class="p-intro-letterhead">
@@ -9989,12 +10491,13 @@ function buildPrintContent() {
     </div>`;
   }
 
-  // ── Photo Report (its own page, right after the intro) ───────────
+  // ── What we found: photos, then the condition report that reads them ──
   const printPhotos = S.photos.filter(p => p.show_in_estimate && p.id !== S.cover_photo_id);
   if (printPhotos.length)
     html += `<div class="p-photos-page">
       ${pHeader}
-      <h2 class="p-photos-title">Photo Report</h2>
+      ${pHead2('Inspection', 'What We Found',
+               'Photographs taken during your inspection. The report that follows explains what they show.')}
       <div class="p-photo-grid">
         ${printPhotos.map(p=>`<figure class="p-photo-fig">
           <img src="${printPhotoSrc(p)}" alt="${esc(p.caption)}">
@@ -10060,7 +10563,8 @@ function buildPrintContent() {
     });
     if (prodRows.length) {
       ph += `<div class="p-products">
-        <h2>Product Selection</h2>
+        ${pHead2('Specification', 'The Materials We’ll Use',
+                 'The exact products and colors selected for your home.')}
         <table class="p-products-table"><tbody>
           ${prodRows.map(r => `<tr>
             <td class="p-products-trade">${esc(TRADE_LABELS[r.trade])}</td>
@@ -10118,7 +10622,9 @@ function buildPrintContent() {
       const content=tradeTierContent(gt);
       const multi=packageTrades().length>1;
       ph+=`<div class="p-pkg-comparison">
-      <h2>${multi?esc(TRADE_LABELS[gt])+' — ':''}Your Options</h2>
+      ${pHead2(multi ? TRADE_LABELS[gt] : 'Your Options',
+               multi ? 'Choose Your ' + TRADE_LABELS[gt] + ' Package' : 'Choose Your Package',
+               'Every package below is a complete job. They differ in materials and coverage, not in workmanship.')}
       <table class="p-pkg-table"><thead><tr>
         ${enabledTiers().map(t=>`<th class="col-${t} ${t===gtTier?'selected-col':''}">
           ${TIER_LABELS[t]} ${t===gtTier?'<br><span class="p-selected-tag">SELECTED</span>':''}
@@ -10252,17 +10758,32 @@ function buildPrintContent() {
         ph+=`<div class="p-grand-total"><span>Insurance Claim Total</span><span>${fmtCur(insuranceTotal())}</span></div>`;
     }
     if(insTd?.scope_notes?.trim())
-      ph+=`<div class="p-notes" style="margin-top:8pt"><h3>Scope of Work</h3><p>${esc(insTd.scope_notes)}</p></div>`;
+      ph+=`<div class="p-notes">${pHead2('Scope','Scope of Work')}<p>${esc(insTd.scope_notes)}</p></div>`;
   }
   if(S.notes_customer?.trim())
-    ph+=`<div class="p-notes"><h3>Notes</h3><p>${esc(S.notes_customer)}</p></div>`;
+    ph+=`<div class="p-notes">${pHead2('Additional','Notes')}<p>${esc(S.notes_customer)}</p></div>`;
+
+  ph+=`</div>`;   // close p-page — the priced body ends at the notes
+
+  /* Credibility sits between the number and the signature, which is where the
+     objections actually are. Marketing content only, so it stays out of the
+     signed hash and the signed PDF (see _cv_trust_blocks in app.py). */
+  ph += _printPermitHTML(pHeader, pHead2);
+  ph += _printTrustHTML(pHeader, pHead2);
+
+  /* Signing gets its own page. It used to fall wherever the notes happened to
+     end, so on a long estimate the customer signed in the gutter beneath the
+     last line item. */
+  ph+=`<div class="p-page p-sign-page">${pHeader}
+    ${pHead2('Agreement', 'Authorization to Proceed',
+             'Signing below accepts the scope and pricing in this estimate.')}`;
 
   // Per-clause initial lines — same statements the online sign form collects,
   // printed with a blank line so a paper copy works for in-person signing too.
   const printInitials = (S.contract_initials||[]).filter(i => (i.text||'').trim());
   if (printInitials.length) {
     ph+=`<div class="p-initials">
-      <h3>Please Initial Each Item Below</h3>
+      <div class="p-eyebrow">Please initial each item</div>
       ${printInitials.map((it,idx)=>`<div class="p-initial-row">
         <span class="p-initial-num">${idx+1}</span>
         <span class="p-initial-text">${esc(it.text)}</span>
@@ -10276,15 +10797,231 @@ function buildPrintContent() {
       <div class="p-sig-date"><div><div class="p-sig-date-line"></div><span>Date</span></div></div></div>
     <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Project One Roofing Representative</div>
       <div class="p-sig-date"><div><div class="p-sig-date-line"></div><span>Date</span></div></div></div>
-  </div></div>`; // close p-page
+  </div></div>`; // close p-sign-page
   return ph;
   })(); // end pricing IIFE
 
   if(S.print_contract!==false&&S.contract_text?.trim())
-    html+=`<div class="p-contract">${pHeader}<h2>Terms &amp; Conditions</h2>
+    html+=`<div class="p-contract">${pHeader}
+      ${pHead2('Legal', 'Terms & Conditions')}
       <div class="p-contract-body">${esc(S.contract_text)}</div></div>`;
 
   document.getElementById('print-content').innerHTML=html;
+}
+
+/* ── "At a glance" page ───────────────────────────────────────────────
+   Five lines answering what a homeowner asks before reading anything else:
+   what are you doing, what are my choices, what does it cost, what backs it,
+   and how long do I have to decide. Every row is dropped rather than shown
+   empty, so a thin estimate produces a short page instead of a page of
+   dashes. Deliberately defensive — a throw in the print path used to make
+   the Print / PDF button appear to do nothing at all. */
+function _printGlanceHTML(pHeader, estNum) {
+  const rows = [];
+  try {
+    const isIns = (S.estimate_type || 'retail') === 'insurance';
+    const c     = S.customer || {};
+    const addr  = S.project_address ||
+                  [c.address?.street, c.address?.city].filter(Boolean).join(', ');
+
+    if (isIns) {
+      const carrier = S.trades.insurance?.carrier;
+      rows.push(['Your project',
+                 'Insurance claim scope' + (carrier ? ` — <strong>${esc(carrier)}</strong>` : '')]);
+    } else {
+      const scope = RETAIL_TRADE_KEYS
+        .filter(t => { const td = S.trades[t]; return td?.enabled && (td.line_items||[]).length; })
+        .map(t => TRADE_LABELS[t]);
+      if (scope.length)
+        rows.push(['Your project',
+                   `<strong>${esc(scope.join(' · '))}</strong>${addr ? ' at ' + esc(addr) : ''}`]);
+
+      // Only claim a choice when one is actually being offered.
+      const gbb = packageTrades();
+      const tiers = enabledTiers();
+      if (gbb.length && tiers.length > 1)
+        rows.push(['Your options',
+                   `${esc(tiers.map(t => TIER_LABELS[t]).join(', '))} — each one a complete job, `
+                   + 'priced in full on the pages that follow']);
+
+      /* Deliberately NO price here. This page sits ahead of the photographs
+         and the condition report, and a number on page 2 invites a decision
+         before the customer has seen why the work is needed. The total lives
+         after the scope, where it can be judged against something. Mirrors
+         _cv_glance_block in app.py. */
+    }
+
+    // Warranty headline, from the same company content the sign page uses.
+    const wb = (_ccCache?.warranty?.body || '').trim();
+    if (wb && _ccCache?.warranty?.enabled !== false) {
+      const first = wb.split(/\n|(?<=\.)\s+/)[0].trim();
+      if (first) rows.push(['Backed by', first.length > 190 ? first.slice(0, 187) + '…' : first]);
+    }
+
+    const insp = (S.property_condition?.inspection_date || '').trim();
+    if (insp)
+      rows.push(['Inspected',
+                 `<strong>${esc(insp)}</strong> — full condition report follows, with photographs`]);
+
+    if (S.valid_until)
+      rows.push(['Pricing held until', `<strong>${esc(S.valid_until)}</strong>`]);
+  } catch (e) { return ''; }
+
+  if (!rows.length) return '';
+  return `<div class="p-glance">
+    ${pHeader}
+    <div class="p-eyebrow">Summary</div>
+    <div class="p-h2">At a Glance</div>
+    <div class="p-lede">Everything below in five lines. The detail follows.</div>
+    <div class="p-glance-list">
+      ${rows.map(([k, v]) => `<div class="p-glance-row">
+        <div class="p-glance-k">${esc(k)}</div>
+        <div class="p-glance-v">${v}</div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+/* ── Credibility page ─────────────────────────────────────────────────
+   Warranty, certifications, reviews and the company story — the same
+   content the sign link carries, which the printed estimate had no version
+   of at all. The paper copy is the one that sits on the counter for a week
+   while the homeowner collects other bids, so it is the copy that most needs
+   an answer to "why you".
+
+   Reads the cache warmed by warmCompanyContent(); returns '' when it never
+   arrived, so print still works offline. Gated per-block by the same
+   page_visibility.trust_* flags the sign page uses. */
+function _printTrustHTML(pHeader, pHead2) {
+  const cc = _ccCache;
+  if (!cc) return '';
+  const pv = S.page_visibility || {};
+  const on = (key, block) =>
+    pv['trust_' + key] !== false && block && block.enabled !== false;
+
+  let body = '';
+
+  const wr = cc.warranty || {};
+  if (on('warranty', wr) && (wr.body || '').trim())
+    body += `<div class="p-trust-block">
+      <div class="p-trust-h">${esc(wr.title || 'Our Warranty')}</div>
+      <div class="p-trust-body">${wr.body.trim().split(/\n{2,}/)
+        .map(p => `<p>${esc(p.trim())}</p>`).join('')}</div>
+    </div>`;
+
+  const ct = cc.certifications || {};
+  const certs = (ct.items || []).filter(x => (x || '').trim());
+  if (on('certifications', ct) && certs.length)
+    body += `<div class="p-trust-block">
+      <div class="p-trust-h">${esc(ct.title || 'Certifications')}</div>
+      <div class="p-trust-certs">${certs
+        .map(x => `<div class="p-trust-cert">— ${esc(x.trim())}</div>`).join('')}</div>
+    </div>`;
+
+  const rv = cc.reviews || {};
+  // Capped at six for the same reason the sign page caps them: a long review
+  // list swamps the page it is meant to support.
+  const revs = (rv.items || []).filter(r => (r.text || '').trim()).slice(0, 6);
+  if (on('reviews', rv) && revs.length)
+    body += `<div class="p-trust-block">
+      <div class="p-trust-h">${esc(rv.title || 'What Our Customers Say')}</div>
+      <div class="p-trust-revs">${revs.map(r => `<div class="p-trust-rev">
+        <div class="p-trust-rev-stars">${'★'.repeat(Math.max(1, Math.min(5, parseInt(r.stars, 10) || 5)))}</div>
+        <div class="p-trust-rev-text">${esc(r.text.trim())}</div>
+        ${r.name ? `<div class="p-trust-rev-name">${esc(r.name)}</div>` : ''}
+      </div>`).join('')}</div>
+    </div>`;
+
+  const ab = cc.about || {};
+  if (on('about', ab) && (ab.body || '').trim())
+    body += `<div class="p-trust-block">
+      <div class="p-trust-h">${esc(ab.title || 'About Project One Roofing')}</div>
+      <div class="p-trust-body">${ab.body.trim().split(/\n{2,}/)
+        .map(p => `<p>${esc(p.trim())}</p>`).join('')}</div>
+    </div>`;
+
+  if (!body) return '';
+  return `<div class="p-trust">${pHeader}
+    ${pHead2('Why Project One', 'The Company Behind the Work',
+             'Who you are hiring, what stands behind the job, and what your neighbors say.')}
+    ${body}</div>`;
+}
+
+/* ── Permits & code page ──────────────────────────────────────────────
+   Two facts only: who issues the permit for this address, and what that
+   office requires of the roof install. The adopted-code citation, amendment
+   sources, submittal mechanics and IRC section numbers belong in the
+   production packet — in a proposal they bury the part a homeowner can act
+   on. Mirrors _cv_permit_block / _code_requirements in app.py.
+
+   Reads the _jurisdictions cache warmed by warmPrintPhotos(). If no
+   jurisdiction is matched to the address the page says so rather than passing
+   the Colorado statewide baseline off as local. */
+function _codeRequirements(jur, base, shingleScope, limit = 10) {
+  const out = [], seen = new Set();
+  const add = t => {
+    t = String(t || '').split(/\s+/).filter(Boolean).join(' ');
+    if (!t) return;
+    // Key on the first two significant words. The same rule arrives from up
+    // to three sources phrased differently; two words collapses those while
+    // leaving genuinely different rules distinct. Mirrors _code_requirements.
+    const key = t.toLowerCase().replace(/[()::—]/g, ' ')
+      .split(/\s+/).filter(Boolean).slice(0, 2).join(' ');
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(t);
+  };
+  if (!shingleScope) return [];
+  (jur?.code_points || []).forEach(add);
+  const vpRaw = jur?.verified_profile || null;
+  const vp = (vpRaw && String(vpRaw.reviewed_at || '').trim()) ? vpRaw : null;
+  (vp?.amendments || []).forEach(a => {
+    const tx = (a?.text || '').trim();
+    const tp = (a?.topic || '').trim();
+    if (tx) add(tp ? `${tp}: ${tx}` : tx);
+  });
+  // Label only — the IRC section number is documentation, not a requirement
+  // a homeowner can act on.
+  (base?.code_items || []).forEach(ci => add(ci?.label));
+  return out.slice(0, limit);
+}
+
+function _printPermitHTML(pHeader, pHead2) {
+  const pj  = S.permit_jurisdiction || {};
+  const eff = (pj.selected_id && _jxById(pj.selected_id)) ? pj.selected_id : pj.auto_id;
+  const jur = eff ? _jxById(eff) : null;
+  const base = (_jurisdictions && _jurisdictions.colorado_baseline) || {};
+  const shingleScope = !!(S.trades?.roofing?.enabled);
+  const reqs = _codeRequirements(jur, base, shingleScope);
+
+  if (!reqs.length && !jur) return '';
+
+  let head, lead;
+  if (jur) {
+    const meta = [jur.office, jur.county ? jur.county + ' County' : '', jur.phone]
+      .filter(Boolean).map(esc).join(' · ');
+    head = `<div class="p-perm-name">${esc(jur.name)}</div>`
+         + (meta ? `<div class="p-perm-meta">${meta}</div>` : '');
+    lead = `<div class="p-perm-lead">${esc(jur.name)} issues the permit for this address and
+      inspects the finished roof. Everything below is required there — it is priced into your
+      estimate, not an add-on.</div>`;
+  } else {
+    head = `<div class="p-perm-name p-perm-unknown">Permitting authority not yet confirmed</div>`;
+    lead = `<div class="p-perm-lead">Colorado has no statewide residential building code — the
+      city or county adopts and enforces its own. We confirm the authority for this address
+      before pulling the permit, and the permit is included in your price either way.</div>`;
+  }
+
+  const reqsHtml = reqs.length
+    ? `<div class="p-perm-sub"><div class="p-perm-h">${
+        jur ? `Required on your roof in ${esc(jur.name)}` : 'Required on your roof'}</div>
+       <ul class="p-perm-list">${reqs.map(r => `<li>${esc(r)}</li>`).join('')}</ul></div>`
+    : '';
+
+  return `<div class="p-permit">${pHeader}
+    ${pHead2('Permits & code', 'Who Pulls Your Permit',
+             'The office that issues the permit for this address, and what it requires.')}
+    ${head}${lead}${reqsHtml}</div>`;
 }
 
 /* ── Condition report print pages ─────────────────────────────────────
@@ -10329,7 +11066,7 @@ function _printConditionHTML(pHeader){
     const sec=pc.sections[s.key]; const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
     return `<div class="p-cond-grade-cell">
       <div class="p-cond-grade-lbl">${s.icon} ${s.label}</div>
-      <div class="p-cond-grade-letter" style="color:${g.color};background:${g.bg}">${sec.grade}</div>
+      <div class="p-cond-grade-letter" style="color:${g.color}">${sec.grade}</div>
       <div class="p-cond-grade-desc" style="color:${g.color}">${g.label}</div>
     </div>`;
   }).join('');
@@ -10387,7 +11124,7 @@ function _printConditionHTML(pHeader){
       ${pHeader}
       <div class="p-rh-titlebar">
         <h2>${s.icon} ${s.label}</h2>
-        <div class="p-rh-badge" style="color:${g.color};background:${g.bg}">Grade ${sec.grade} — ${g.label}</div>
+        <div class="p-rh-badge" style="color:${g.color}">Grade ${sec.grade} — ${g.label}</div>
       </div>
       ${roofMeta}
       ${sec.summary?`<div class="p-rh-summary">${esc(sec.summary)}</div>`:''}
@@ -10454,6 +11191,7 @@ async function renderHomePage() {
     viewed: '<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
     sent:   '<span class="dash-chip dash-chip-sent">📤 Sent</span>',
     draft:  '<span class="dash-chip dash-chip-draft">Draft</span>',
+    lost:   '<span class="dash-chip dash-chip-lost">✗ Lost</span>',
   };
   el.innerHTML = `
     <img src="${BASE}/static/logo.png" class="home-logo" alt="Project One Roofing">
@@ -10597,8 +11335,14 @@ function captureCrmHandoff() {
   try {
     const q = new URLSearchParams(location.search);
     const contact = (q.get('contact') || '').trim();
-    if (!contact) return;
-    _crmHandoff = { crm_contact_id: contact, name: (q.get('name') || '').trim() };
+    const lead    = (q.get('lead') || '').trim();
+    if (!contact && !lead) return;
+    // The lead id is the half that makes the funnel joinable: without it the
+    // estimator can report sent/viewed/signed but nothing can say which door
+    // those came from. Either id alone is a valid handoff — a lead that has no
+    // Den contact yet still needs its estimate tracked.
+    _crmHandoff = { crm_contact_id: contact, crm_lead_id: lead,
+                    name: (q.get('name') || '').trim() };
     // Drop the params from the address bar so a refresh, a bookmark, or a
     // shared URL cannot re-attach this contact to a different estimate.
     history.replaceState({}, '', location.pathname);
@@ -10613,6 +11357,12 @@ function applyCrmHandoff(est) {
   if (!est.customer.crm_contact_id) {
     est.customer.crm_contact_id = _crmHandoff.crm_contact_id;
     if (!est.customer.name && _crmHandoff.name) est.customer.name = _crmHandoff.name;
+  }
+  // Tracked separately from the contact id: a rep who picked the Den job by
+  // hand has a contact but no lead, and that estimate still belongs to the
+  // lead it was started from.
+  if (!est.customer.crm_lead_id && _crmHandoff.crm_lead_id) {
+    est.customer.crm_lead_id = _crmHandoff.crm_lead_id;
   }
 }
 
@@ -11406,7 +12156,11 @@ function renderDocumentsPage() {
                                                          : '📄';
         // Work orders don't auto-push — the rep fills in scheduled date /
         // dish / tear-off layers first, then clicks "↗ Push to Den".
+        // Two internal packet docs now: the crew's work order carries the
+        // fill-in form and the Push-to-Den button; the material order is just
+        // a file to open.
         const isWO = att.doc_type === 'work_order';
+        const isMO = att.doc_type === 'material_order';
         return `
       <div class="att-row">
         <span class="att-icon">${icon}</span>
@@ -11417,7 +12171,9 @@ function renderDocumentsPage() {
           : (isWO
               ? `<button class="doc-crm-push" onclick="pushWorkOrderToCrm()"
                    title="Regenerate with the latest job details and file in Den">↗ Push to Den</button>`
-              : `<button class="doc-crm-push" onclick="pushDocToCrm('${att.id}')"
+              : isMO
+                ? ''
+                : `<button class="doc-crm-push" onclick="pushDocToCrm('${att.id}')"
                    title="File this PDF in the CRM under the linked job">↗ CRM</button>`)}
         <label class="att-show" title="Show this document to the customer on their estimate">
           <input type="checkbox" ${att.show_in_estimate!==false?'checked':''}
@@ -11453,10 +12209,10 @@ function renderDocumentsPage() {
         ${S.signature ? `
         <button class="doc-card" onclick="generateProductionPacket(this)">
           <span class="doc-card-icon">🛠</span>
-          <span class="doc-card-name">Production Packet</span>
+          <span class="doc-card-name">Work Order + Material Order</span>
           <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'work_order')
-            ? 'Regenerate work order (does not push to Den — use ↗ Push to Den)'
-            : 'Work order + material list from the signed contract'}</span>
+            ? 'Regenerate both (does not push to Den — use ↗ Push to Den)'
+            : 'Two documents: the crew work order and the buy list'}</span>
         </button>
         <button class="doc-card" onclick="generatePermitPacket(this)">
           <span class="doc-card-icon">🏛</span>
@@ -11733,7 +12489,8 @@ async function generateProductionPacket(btn) {
     // Server replaced any previous packet — mirror that in S (packet only;
     // other server-generated docs like signed change orders stay)
     if (!Array.isArray(S.attachments)) S.attachments = [];
-    S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'work_order'));
+    S.attachments = S.attachments.filter(a => !(a.server_generated
+      && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
     S.attachments.push(d.attachment);
   } catch (e) {
     alert('Could not generate the production packet: ' + e.message);
@@ -11763,13 +12520,19 @@ async function generatePermitPacket(btn) {
 }
 
 /* Work-order fields the rep fills in AFTER signing (schedule date, satellite
-   dish, layers to tear off). Save writes to est.work_order without touching
+   dish, layers, height/access, hand load). Save writes to est.work_order without touching
    the packet PDF; Regenerate rebuilds so the numbers land on the sheet;
    Push to Den regenerates then files in Base44. */
 function renderWorkOrderForm() {
   const wo = S.work_order || {};
   const dish = wo.satellite_dish || '';
   const dishOpts = ['', 'Reinstall', 'Remove', 'Leave in place', 'N/A — no dish'];
+  // Height and hand load change crew size and the day rate, so the crew needs
+  // them before they roll — not discovered in the driveway.
+  const height = wo.height_access || '';
+  const heightOpts = ['', '1-story', '2-story', '3-story / high', 'Walkout / split level'];
+  const handLoad = wo.hand_load || '';
+  const loadOpts = ['', 'No — boom/conveyor', 'YES — hand load', 'Partial hand load'];
   return `
   <div class="wo-form">
     <div class="wo-form-title">Work Order Details <span class="pm-hint" style="font-weight:normal">(fill in, then Regenerate — Push to Den when ready)</span></div>
@@ -11787,6 +12550,16 @@ function renderWorkOrderForm() {
           ${dishOpts.map(o => `<option value="${esc(o)}" ${o === dish ? 'selected' : ''}>${esc(o || '— choose —')}</option>`).join('')}
         </select>
       </label>
+      <label>Height / Access
+        <select id="wo-height">
+          ${heightOpts.map(o => `<option value="${esc(o)}" ${o === height ? 'selected' : ''}>${esc(o || '— choose —')}</option>`).join('')}
+        </select>
+      </label>
+      <label>Hand Load
+        <select id="wo-handload">
+          ${loadOpts.map(o => `<option value="${esc(o)}" ${o === handLoad ? 'selected' : ''}>${esc(o || '— choose —')}</option>`).join('')}
+        </select>
+      </label>
     </div>
     <div class="wo-form-btns">
       <button class="doc-crm-push" onclick="saveWorkOrderFields()">💾 Save</button>
@@ -11799,7 +12572,10 @@ function _readWorkOrderForm() {
   const sched  = (document.getElementById('wo-sched')  || {}).value || '';
   const layers = (document.getElementById('wo-layers') || {}).value || '';
   const dish   = (document.getElementById('wo-dish')   || {}).value || '';
-  const out = {scheduled_date: sched, satellite_dish: dish};
+  const height = (document.getElementById('wo-height') || {}).value || '';
+  const hload  = (document.getElementById('wo-handload') || {}).value || '';
+  const out = {scheduled_date: sched, satellite_dish: dish,
+               height_access: height, hand_load: hload};
   if (layers !== '') out.tear_off_layers = parseInt(layers, 10);
   return out;
 }
@@ -11833,7 +12609,8 @@ async function regenerateWorkOrder() {
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Regeneration failed');
     if (!Array.isArray(S.attachments)) S.attachments = [];
-    S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'work_order'));
+    S.attachments = S.attachments.filter(a => !(a.server_generated
+      && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
     S.attachments.push(d.attachment);
   } catch (e) {
     alert('Could not regenerate the work order: ' + e.message);
@@ -11857,7 +12634,8 @@ async function pushWorkOrderToCrm() {
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Push failed');
     if (!Array.isArray(S.attachments)) S.attachments = [];
-    S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'work_order'));
+    S.attachments = S.attachments.filter(a => !(a.server_generated
+      && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
     S.attachments.push(d.attachment);
   } catch (e) {
     alert('Could not push the work order to Den: ' + e.message);

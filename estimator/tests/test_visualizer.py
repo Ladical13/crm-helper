@@ -327,7 +327,7 @@ def test_sign_page_shows_visualizer_img_when_renders_are_saved(client, A):
         html = page.get_data(as_text=True)
         assert render_name in html or f'/uploads/{render_name}' in html
         # And the tier label appears near the render, plus the color caption.
-        assert 'See the look' in html
+        assert 'See It on Your Home' in html
         assert 'Charcoal Black' in html
     finally:
         client.delete(f'/api/estimates/{eid}')
@@ -335,7 +335,7 @@ def test_sign_page_shows_visualizer_img_when_renders_are_saved(client, A):
 
 def test_sign_page_omits_visualizer_when_no_renders(client, A):
     """Empty tier_renders must not emit a stub section — the customer
-    shouldn't see a 'See the look' header pointing at nothing."""
+    shouldn't see a 'See It on Your Home' header pointing at nothing."""
     eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
     try:
         doc = client.get(f'/api/estimates/{eid}').get_json()
@@ -347,6 +347,6 @@ def test_sign_page_omits_visualizer_when_no_renders(client, A):
         token = share.get_json().get('token') or share.get_json().get('share_token')
         page = client.get(f'/sign/{token}')
         assert page.status_code == 200
-        assert 'See the look' not in page.get_data(as_text=True)
+        assert 'See It on Your Home' not in page.get_data(as_text=True)
     finally:
         client.delete(f'/api/estimates/{eid}')

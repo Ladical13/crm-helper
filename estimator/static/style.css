@@ -1,5 +1,40 @@
+/* ── Document typefaces ────────────────────────────────────────────────
+   Vendored locally rather than pulled from Google Fonts: reps print from
+   trucks and driveways, and a printed estimate that silently falls back to
+   Arial because the tethering dropped is not acceptable. The same families
+   are registered with fpdf2 for the downloadable PDF (see _PDF_STYLE in
+   app.py), so all three customer surfaces set type identically.
+   Both are SIL OFL — see static/fonts/OFL.txt. */
+@font-face {
+  font-family: 'Source Serif 4';
+  src: url('/estimate/static/fonts/SourceSerif4-var.woff2') format('woff2-variations');
+  font-weight: 200 900; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'InterDoc';
+  src: url('/estimate/static/fonts/Inter-var.woff2') format('woff2-variations');
+  font-weight: 100 900; font-style: normal; font-display: swap;
+}
+
 /* ── Variables ─────────────────────────────────────────────────────── */
 :root {
+  /* Customer-document palette. These are sampled from logo.png, not eyeballed:
+     the app shipped for years with #1a3a5c as "the brand navy", which appears
+     nowhere in the logo — the letterhead and the bar beneath it were two
+     different blues on every estimate we sent. --doc-navy is the real one. */
+  --doc-ink:       #0c1830;   /* body text — near-black, navy-tinted */
+  --doc-navy:      #082878;   /* headings, rules, the one filled total */
+  --doc-navy-deep: #05184a;   /* footer ground, PDF cover */
+  --doc-mute:      #5a6478;   /* secondary text */
+  --doc-faint:     #8b93a4;   /* micro-labels */
+  --doc-rule:      #e3e0da;   /* hairlines — warm, reads as paper not UI */
+  --doc-paper:     #faf9f7;   /* page ground */
+  --doc-card:      #ffffff;
+  --doc-teal:      #00a8b8;   /* the single accent */
+  --doc-amber:     #e88400;   /* selected-package marker ONLY */
+  --doc-serif:     'Source Serif 4', Georgia, 'Times New Roman', serif;
+  --doc-sans:      'InterDoc', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
   --primary:       #1a3a5c;
   --primary-light: #2563a8;
   --teal:          #00a8b5;
@@ -1291,179 +1326,284 @@ input.other-price-input { width: 110px; text-align: right; font-size: 12px; }
   body > #app-header,
   body > #app-layout,
   body > .modal { display: none !important; }
-  #print-content { display: block !important; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10pt; color: #111; }
-  @page { margin: 1.5cm 1.4cm; }
+  #print-content {
+    display: block !important;
+    font-family: var(--doc-sans); font-size: 9.5pt; color: var(--doc-ink);
+    font-variant-numeric: tabular-nums;
+  }
+  @page { margin: 1.9cm 1.7cm; }
   @page :first { margin: 0; }
 
   /* Paragraph text never strands a single line across a page break */
   #print-content p, .p-intro-body, .p-contract-body { orphans: 3; widows: 3; }
 
-  /* Cover page — logo top · photo center · customer info bottom (all dark-on-white for readability) */
+  /* Shared eyebrow: small caps teal label that sits above a serif heading.
+     Replaces the old 12pt bold navy run-in heading everywhere. */
+  .p-eyebrow {
+    font-size: 7pt; font-weight: 600; letter-spacing: 1.6pt; text-transform: uppercase;
+    color: var(--doc-teal); margin-bottom: 3pt; break-after: avoid;
+  }
+  .p-h2 {
+    font-family: var(--doc-serif); font-size: 16pt; font-weight: 600;
+    color: var(--doc-navy); letter-spacing: -.2pt; margin-bottom: 4pt; break-after: avoid;
+  }
+  .p-lede { font-size: 9pt; color: var(--doc-mute); line-height: 1.55; margin-bottom: 12pt; max-width: 430pt; break-after: avoid; }
+
+  /* Cover — logo top · photo center · customer info bottom.
+     Hairlines instead of the old 3pt navy bands: on paper a heavy rule reads
+     cheap, and the logo already carries the color. */
   .p-cover { page-break-after: always; min-height: 100vh; display: flex; flex-direction: column; }
-  .p-cover-top { text-align: center; padding: 40pt 40pt 20pt; border-bottom: 3pt solid #1a3a5c; }
-  .p-cover-toplogo { height: 64pt; width: auto; display: inline-block; }
-  .p-cover-tagline { font-size: 9pt; letter-spacing: 2pt; text-transform: uppercase; color: #1a3a5c; font-weight: 700; margin-top: 8pt; }
-  .p-cover-mid { flex: 1; display: flex; align-items: center; justify-content: center; padding: 26pt 40pt; }
-  .p-cover-photo { max-width: 100%; max-height: 56vh; object-fit: contain; border: 1pt solid #d1d5db; border-radius: 5pt; }
-  .p-cover-noimg { font-size: 26pt; font-weight: 800; color: #1a3a5c; text-align: center; }
-  .p-cover-noimg span { display: block; font-size: 11pt; font-weight: 600; color: #666; letter-spacing: 1.5pt; text-transform: uppercase; margin-top: 6pt; }
-  .p-cover-bottom { text-align: center; padding: 20pt 40pt 44pt; border-top: 3pt solid #1a3a5c; }
-  .p-cover-cname { font-size: 25pt; font-weight: 800; color: #1a3a5c; margin-bottom: 5pt; }
-  .p-cover-addr { font-size: 12.5pt; color: #222; line-height: 1.5; margin-bottom: 12pt; }
-  .p-cover-metarow { display: flex; justify-content: center; gap: 26pt; flex-wrap: wrap; margin-bottom: 12pt; }
-  .p-cover-metarow > div { font-size: 11pt; color: #1a3a5c; font-weight: 700; }
-  .p-cover-metarow > div span { display: block; font-size: 7.5pt; color: #888; font-weight: 700; text-transform: uppercase; letter-spacing: .6pt; margin-bottom: 1pt; }
-  .p-cover-company { font-size: 9.5pt; color: #555; line-height: 1.6; }
+  .p-cover-top { padding: 54pt 54pt 22pt; border-bottom: .75pt solid var(--doc-rule); }
+  .p-cover-toplogo { height: 46pt; width: auto; display: block; }
+  .p-cover-tagline {
+    font-size: 7.5pt; letter-spacing: 2.4pt; text-transform: uppercase;
+    color: var(--doc-teal); font-weight: 600; margin-top: 14pt;
+  }
+  .p-cover-mid { flex: 1; display: flex; align-items: center; justify-content: center; padding: 34pt 54pt; }
+  .p-cover-photo { max-width: 100%; max-height: 50vh; object-fit: contain; border: .5pt solid var(--doc-rule); }
+  .p-cover-noimg { font-family: var(--doc-serif); font-size: 24pt; font-weight: 600; color: var(--doc-navy); text-align: center; }
+  .p-cover-noimg span { display: block; font-family: var(--doc-sans); font-size: 8pt; font-weight: 600; color: var(--doc-faint); letter-spacing: 1.8pt; text-transform: uppercase; margin-top: 10pt; }
+  .p-cover-bottom { padding: 26pt 54pt 54pt; border-top: .75pt solid var(--doc-rule); }
+  .p-cover-cname {
+    font-family: var(--doc-serif); font-size: 27pt; font-weight: 600;
+    color: var(--doc-navy); letter-spacing: -.4pt; margin-bottom: 6pt;
+  }
+  .p-cover-addr { font-size: 11pt; color: var(--doc-mute); line-height: 1.5; margin-bottom: 22pt; }
+  .p-cover-metarow { display: flex; gap: 34pt; flex-wrap: wrap; margin-bottom: 22pt; }
+  .p-cover-metarow > div { font-size: 10.5pt; color: var(--doc-ink); font-weight: 500; }
+  .p-cover-metarow > div span { display: block; font-size: 6.5pt; color: var(--doc-faint); font-weight: 600; text-transform: uppercase; letter-spacing: 1.2pt; margin-bottom: 3pt; }
+  .p-cover-company { font-size: 8.5pt; color: var(--doc-faint); line-height: 1.6; padding-top: 14pt; border-top: .5pt solid var(--doc-rule); }
+
+  /* At a glance — the five-line digest that opens the document. This is what
+     a skimming homeowner reads and what gets forwarded to a spouse, so it
+     sits above the letter and states scope, money, warranty and expiry in
+     plain language before any table appears. */
+  .p-glance { page-break-after: always; page-break-before: avoid; padding: 26pt 0 0; }
+  .p-glance-list { margin-top: 6pt; }
+  .p-glance-row {
+    display: grid; grid-template-columns: 108pt 1fr; gap: 16pt;
+    padding: 11pt 0; border-bottom: .5pt solid var(--doc-rule); break-inside: avoid;
+  }
+  .p-glance-row:last-child { border-bottom: none; }
+  .p-glance-k { font-size: 7pt; font-weight: 600; text-transform: uppercase; letter-spacing: 1.2pt; color: var(--doc-faint); padding-top: 2pt; }
+  .p-glance-v { font-size: 10.5pt; line-height: 1.5; color: var(--doc-ink); }
+  .p-glance-v strong { font-weight: 600; color: var(--doc-navy); }
 
   /* Intro letter page (no 100vh — that overflowed into a blank page) */
-  .p-intro { page-break-after: always; page-break-before: avoid; padding: 24pt 0 40pt; }
-  .p-intro-letterhead { text-align: center; padding-bottom: 22pt; margin-bottom: 30pt; border-bottom: 2pt solid #1a3a5c; }
-  .p-intro-logo { height: 48pt; width: auto; display: inline-block; }
+  .p-intro { page-break-after: always; page-break-before: avoid; padding: 26pt 0 40pt; }
+  .p-intro-letterhead { padding-bottom: 20pt; margin-bottom: 34pt; border-bottom: .75pt solid var(--doc-rule); }
+  .p-intro-logo { height: 38pt; width: auto; display: block; }
   .p-intro-body {
-    max-width: 480pt; width: 100%; margin: 0 auto;
-    font-family: Georgia, 'Times New Roman', serif;
-    font-size: 11.5pt; line-height: 1.9; color: #222;
+    max-width: 452pt; width: 100%;
+    font-family: var(--doc-serif);
+    font-size: 11pt; line-height: 1.85; color: var(--doc-ink);
     white-space: pre-wrap;
   }
 
   /* Rest of print pages */
   .p-page { padding-top: 0; }
-  .p-header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 12pt; margin-bottom: 14pt; border-bottom: 2.5pt solid #1a3a5c; }
-  .p-header-logo { height: 36pt; width: auto; display: block; margin-bottom: 5pt; }
-  .p-company-name { font-size: 16pt; font-weight: 800; color: #1a3a5c; letter-spacing: 1px; }
-  .p-company-sub { font-size: 8.5pt; color: #555; margin-top: 2pt; }
-  .p-est-badge { text-align: right; font-size: 9pt; color: #555; }
-  .p-badge-num { font-size: 14pt; font-weight: 700; color: #1a3a5c; display: block; }
-  .p-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 18pt; margin-bottom: 16pt; }
-  .p-section-label { font-size: 8pt; text-transform: uppercase; letter-spacing: .8px; color: #888; font-weight: 700; margin-bottom: 4pt; }
-  .p-customer-name { font-size: 13pt; font-weight: 700; margin-bottom: 3pt; }
-  .p-address { font-size: 10pt; line-height: 1.5; color: #333; }
-  .p-meta-table { width: 100%; border-collapse: collapse; font-size: 10pt; }
-  .p-meta-table td { padding: 3pt 0; }
-  .p-meta-table td:first-child { color: #666; width: 100pt; }
-  .p-meta-table td:last-child { font-weight: 600; }
+  /* Signing gets a page to itself rather than starting in the gutter under
+     whatever the priced body ended on. */
+  .p-sign-page { page-break-before: always; }
+  .p-header { display: flex; justify-content: space-between; align-items: flex-end; padding-bottom: 9pt; margin-bottom: 22pt; border-bottom: .75pt solid var(--doc-rule); }
+  .p-header-logo { height: 26pt; width: auto; display: block; margin-bottom: 6pt; }
+  .p-company-name { font-size: 14pt; font-weight: 600; color: var(--doc-navy); letter-spacing: .3pt; }
+  .p-company-sub { font-size: 7pt; color: var(--doc-faint); margin-top: 3pt; letter-spacing: .5pt; text-transform: uppercase; }
+  .p-est-badge { text-align: right; font-size: 7.5pt; color: var(--doc-faint); }
+  .p-badge-num { font-size: 11pt; font-weight: 500; color: var(--doc-navy); display: block; margin-bottom: 2pt; letter-spacing: .3pt; }
+  .p-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 30pt; margin-bottom: 26pt; }
+  .p-section-label { font-size: 7pt; text-transform: uppercase; letter-spacing: 1.4pt; color: var(--doc-faint); font-weight: 600; margin-bottom: 7pt; }
+  .p-customer-name { font-family: var(--doc-serif); font-size: 15pt; font-weight: 600; color: var(--doc-navy); margin-bottom: 5pt; }
+  .p-address { font-size: 9.5pt; line-height: 1.6; color: var(--doc-mute); }
+  .p-meta-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
+  .p-meta-table td { padding: 5pt 0; border-bottom: .5pt solid var(--doc-rule); }
+  .p-meta-table tr:last-child td { border-bottom: none; }
+  .p-meta-table td:first-child { color: var(--doc-faint); width: 104pt; }
+  .p-meta-table td:last-child { font-weight: 500; color: var(--doc-ink); }
 
   /* Product Selection — brand/model/color per trade */
-  .p-products { margin-bottom: 20pt; page-break-inside: avoid; }
-  .p-products h2 { font-size: 12pt; font-weight: 700; color: #1a3a5c; margin-bottom: 8pt; }
+  .p-products { margin-bottom: 28pt; page-break-inside: avoid; }
   .p-products-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
-  .p-products-table tr { border-bottom: .5pt solid #e5e7eb; }
+  .p-products-table tr { border-bottom: .5pt solid var(--doc-rule); }
   .p-products-table tr:last-child { border-bottom: none; }
-  .p-products-table td { padding: 5pt 8pt; vertical-align: top; }
-  .p-products-trade { width: 90pt; font-weight: 700; color: #1a3a5c; text-transform: uppercase; font-size: 8pt; letter-spacing: .4pt; }
-  .p-products-label { width: 130pt; color: #666; }
-  .p-products-value { font-weight: 600; color: #111; }
+  .p-products-table td { padding: 8pt 0; vertical-align: top; }
+  .p-products-trade { width: 96pt; font-weight: 600; color: var(--doc-navy); text-transform: uppercase; font-size: 7pt; letter-spacing: 1.2pt; padding-top: 10pt !important; }
+  .p-products-label { width: 140pt; color: var(--doc-faint); }
+  .p-products-value { font-weight: 500; color: var(--doc-ink); }
 
-  /* Package comparison */
-  .p-pkg-comparison { margin-bottom: 20pt; break-inside: avoid; }
-  .p-pkg-comparison h2 { font-size: 12pt; font-weight: 700; color: #1a3a5c; margin-bottom: 10pt; break-after: avoid; }
+  /* Package comparison. The pastel tier fills are gone — three colored blocks
+     competing for attention made the page look like a pricing grid on a SaaS
+     site. The chosen package is marked once, in amber, and nothing else on
+     the page is amber. */
+  .p-pkg-comparison { margin-bottom: 28pt; break-inside: avoid; }
   .p-pkg-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; table-layout: fixed; }
   .p-pkg-table td { word-wrap: break-word; overflow-wrap: break-word; }
-  .p-pkg-table th { padding: 7pt 10pt; text-align: center; font-size: 11pt; font-weight: 800; text-transform: uppercase; }
-  .p-pkg-table th.col-good   { background: #dbeafe; color: #1d4ed8; }
-  .p-pkg-table th.col-better { background: #dcfce7; color: #15803d; }
-  .p-pkg-table th.col-best   { background: #fef3c7; color: #b45309; }
-  .p-pkg-table th.selected-col { outline: 2.5pt solid #1a3a5c; outline-offset: -2pt; }
-  .p-pkg-table td { padding: 6pt 10pt; vertical-align: top; text-align: center; border-bottom: .5pt solid #e5e7eb; }
-  .p-pkg-price { font-size: 18pt; font-weight: 800; display: block; margin: 4pt 0 6pt; }
-  .p-pkg-desc { font-size: 8.5pt; color: #444; font-style: italic; margin-bottom: 8pt; display: block; }
-  .p-pkg-item { font-size: 8pt; color: #333; display: block; padding: 1.5pt 0; }
-  .p-selected-tag { display: inline-block; background: #1a3a5c; color: #fff; font-size: 7.5pt; padding: 1.5pt 6pt; border-radius: 10pt; margin-top: 6pt; }
+  .p-pkg-table th {
+    padding: 0 12pt 9pt; text-align: left; font-size: 8pt; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 1.4pt; color: var(--doc-mute);
+    border-bottom: .75pt solid var(--doc-rule); border-top: 2pt solid transparent;
+  }
+  .p-pkg-table th:first-child { padding-left: 0; }
+  .p-pkg-table th.selected-col { color: var(--doc-navy); border-top-color: var(--doc-amber); border-bottom-color: var(--doc-navy); }
+  .p-pkg-table td { padding: 14pt 12pt 4pt; vertical-align: top; text-align: left; border-bottom: none; }
+  .p-pkg-table td:first-child { padding-left: 0; }
+  .p-pkg-price { font-family: var(--doc-serif); font-size: 19pt; font-weight: 600; color: var(--doc-navy); display: block; margin-bottom: 8pt; }
+  .p-pkg-desc { font-size: 8.5pt; color: var(--doc-mute); margin-bottom: 9pt; display: block; line-height: 1.5; }
+  .p-pkg-item { font-size: 8pt; color: var(--doc-ink); display: block; padding: 2.5pt 0 2.5pt 8pt; text-indent: -8pt; line-height: 1.45; }
+  .p-selected-tag {
+    display: block; color: var(--doc-amber); font-size: 6.5pt; font-weight: 600;
+    letter-spacing: 1.4pt; margin-top: 4pt;
+  }
 
   /* Trade tables */
-  .p-package-banner { background: #1a3a5c; color: #fff; padding: 6pt 12pt; border-radius: 4pt; font-size: 11pt; font-weight: 700; margin-bottom: 14pt; display: inline-block; }
+  .p-package-banner {
+    color: var(--doc-mute); padding: 0 0 8pt; font-size: 8pt; font-weight: 600;
+    letter-spacing: 1.4pt; text-transform: uppercase; margin-bottom: 20pt;
+    display: block; border-bottom: .75pt solid var(--doc-rule);
+  }
   /* A long trade MUST be allowed to split. `page-break-inside: avoid` here used
      to shove any trade taller than the remaining space onto a fresh page — and
      if it was taller than a whole page it overflowed anyway, leaving a blank
      gap behind it. The thead/tr rules below make a split table still read
      correctly, which is what `avoid` was really trying to buy. */
-  .p-trade { margin-bottom: 18pt; break-inside: auto; }
-  .p-trade-title { font-size: 12pt; font-weight: 700; border-bottom: 1.5pt solid #d1d5db; padding-bottom: 4pt; margin-bottom: 8pt; color: #1a3a5c; break-after: avoid; }
+  .p-trade { margin-bottom: 26pt; break-inside: auto; }
+  .p-trade-title {
+    font-family: var(--doc-serif); font-size: 13pt; font-weight: 600;
+    border-bottom: .75pt solid var(--doc-rule); padding-bottom: 6pt; margin-bottom: 2pt;
+    color: var(--doc-navy); break-after: avoid;
+  }
   /* Every offered package prints its own scope table, so the one the customer
      is being quoted has to be findable at a glance among the others. */
-  .p-trade-chosen .p-trade-title { border-bottom-color: #1a3a5c; border-bottom-width: 2.5pt; }
-  .p-trade-tag { display: inline-block; background: #1a3a5c; color: #fff; font-size: 7.5pt;
-                 font-weight: 700; letter-spacing: .04em; padding: 1.5pt 6pt;
-                 border-radius: 10pt; margin-left: 8pt; vertical-align: middle; }
+  .p-trade-chosen .p-trade-title { border-bottom-color: var(--doc-navy); }
+  .p-trade-tag { display: inline-block; color: var(--doc-amber); font-size: 6.5pt;
+                 font-weight: 600; letter-spacing: 1.4pt; text-transform: uppercase;
+                 margin-left: 9pt; vertical-align: middle; }
   .p-table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
   /* Repeat the column headers on every page a table spills onto */
   .p-table thead { display: table-header-group; }
   .p-table tfoot { display: table-footer-group; }
   .p-table tr { break-inside: avoid; }
-  .p-table th { text-align: left; padding: 5pt 7pt; border-bottom: 1.5pt solid #1a3a5c; font-size: 8pt; text-transform: uppercase; letter-spacing: .5px; color: #555; }
-  .p-table td { padding: 4pt 7pt; border-bottom: .5pt solid #e5e7eb; vertical-align: top; }
-  .p-table tbody tr:nth-child(even) td { background: #f9fafb; }
-  .p-desc-sub { font-size: 8pt; color: #888; margin-top: 1pt; }
+  .p-table th {
+    text-align: left; padding: 9pt 8pt 6pt; border-bottom: .75pt solid var(--doc-navy);
+    font-size: 6.5pt; text-transform: uppercase; letter-spacing: 1.2pt;
+    font-weight: 600; color: var(--doc-faint);
+  }
+  .p-table th:first-child, .p-table td:first-child { padding-left: 0; }
+  .p-table th:last-child, .p-table td:last-child { padding-right: 0; }
+  /* No zebra striping. Alternating gray rows are the clearest "database
+     export" tell there is; hairlines and row height do the same job quietly. */
+  .p-table td { padding: 7pt 8pt; border-bottom: .5pt solid var(--doc-rule); vertical-align: top; }
+  .p-desc-sub { font-size: 8pt; color: var(--doc-mute); margin-top: 2.5pt; line-height: 1.45; }
   .p-right { text-align: right; }
-  .p-table tfoot td { padding: 6pt 7pt; font-weight: 700; font-size: 10pt; border-top: 1.5pt solid #1a3a5c; border-bottom: none; }
+  .p-table tfoot td {
+    padding: 9pt 8pt; font-weight: 600; font-size: 10pt; color: var(--doc-navy);
+    border-top: .75pt solid var(--doc-navy); border-bottom: none;
+  }
   /* Estimate sections (structures / roof areas) inside a trade table */
   .p-section-row td {
-    background: #eef4fb; color: #1a3a5c; font-weight: 800; font-size: 9pt;
-    text-transform: uppercase; letter-spacing: .5pt; padding: 5pt 7pt;
-    border-top: 1pt solid #c6d8ec;
+    color: var(--doc-navy); font-weight: 600; font-size: 7pt;
+    text-transform: uppercase; letter-spacing: 1.4pt; padding: 14pt 8pt 5pt;
+    border-bottom: .5pt solid var(--doc-rule);
   }
-  .p-section-sub td { font-weight: 700; font-size: 9pt; color: #1a3a5c; background: #f8fafc; border-bottom: 1pt solid #e5e7eb; }
+  .p-section-sub td { font-weight: 600; font-size: 9pt; color: var(--doc-mute); border-bottom: .5pt solid var(--doc-rule); }
+  /* The one filled element in the whole document. Everything else got quieter
+     so that this lands. */
   .p-grand-total {
     display: flex; justify-content: space-between; align-items: baseline;
-    border-top: 2.5pt solid #1a3a5c; padding: 10pt 2pt 6pt; margin: 10pt 0 18pt;
+    background: var(--doc-navy); color: #fff;
+    padding: 18pt 20pt; margin: 22pt 0 26pt;
     break-inside: avoid;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
   .p-grand-total span:first-child {
-    font-size: 10pt; font-weight: 800; color: #1a3a5c;
-    text-transform: uppercase; letter-spacing: 1.2pt;
+    font-size: 7.5pt; font-weight: 600; color: rgba(255,255,255,.72);
+    text-transform: uppercase; letter-spacing: 1.8pt;
   }
   .p-grand-total span:last-child {
-    font-size: 22pt; font-weight: 900; color: #1a3a5c;
+    font-family: var(--doc-serif); font-size: 23pt; font-weight: 600; color: #fff;
   }
-  .p-notes { margin-bottom: 16pt; break-inside: avoid; }
-  .p-notes h3 { font-size: 10pt; font-weight: 700; margin-bottom: 4pt; break-after: avoid; }
-  .p-notes p  { font-size: 9.5pt; color: #333; line-height: 1.5; }
-  /* Standalone Photo Report page (after the intro) */
+  .p-notes { margin-bottom: 24pt; break-inside: avoid; }
+  .p-notes p  { font-size: 9.5pt; color: var(--doc-ink); line-height: 1.65; max-width: 430pt; }
+  /* Standalone Photo Report page (sits with the condition report — the images
+     and the diagnosis that reads them belong together) */
   .p-photos-page { page-break-after: always; page-break-before: avoid; }
   .p-photos-title {
-    font-size: 15pt; font-weight: 800; color: var(--primary);
-    margin: 4pt 0 12pt; padding-bottom: 6pt; border-bottom: 2pt solid var(--primary);
+    font-family: var(--doc-serif); font-size: 16pt; font-weight: 600; color: var(--doc-navy);
+    letter-spacing: -.2pt; margin: 0 0 4pt;
   }
-  .p-photos { page-break-before: auto; margin-top: 16pt; }
-  .p-photos h3 { font-size: 10pt; font-weight: 700; margin-bottom: 8pt; }
-  .p-photo-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 12pt; margin-bottom: 16pt; }
+  .p-photos { page-break-before: auto; margin-top: 20pt; }
+  .p-photo-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 16pt 18pt; margin-bottom: 18pt; }
   .p-photo-fig { break-inside: avoid; }
-  .p-photo-fig img { width: 100%; border-radius: 4pt; border: .5pt solid #d1d5db; display: block; }
-  .p-photo-fig figcaption { font-size: 9pt; color: #444; margin-top: 4pt; text-align: center; font-weight: 500; }
+  .p-photo-fig img { width: 100%; border: .5pt solid var(--doc-rule); display: block; }
+  .p-photo-fig figcaption { font-size: 8.5pt; color: var(--doc-mute); margin-top: 6pt; line-height: 1.45; }
   /* Attached PDF documents printed page-by-page */
   .p-att-doc { page-break-before: always; }
   .p-att-page {
-    width: 100%; display: block; border: .5pt solid #d1d5db; border-radius: 3pt;
-    margin-bottom: 10pt; page-break-inside: avoid; max-height: 9.2in; object-fit: contain;
+    width: 100%; display: block; border: .5pt solid var(--doc-rule);
+    margin-bottom: 12pt; page-break-inside: avoid; max-height: 9.2in; object-fit: contain;
   }
+
+  /* Permits & code — the jurisdiction that issues the permit for this
+     address and what it requires, kept visibly separate from the statewide
+     baseline so the page cannot read as boilerplate. */
+  .p-permit { page-break-before: always; }
+  .p-perm-name { font-family: var(--doc-serif); font-size: 19pt; font-weight: 600; color: var(--doc-navy); line-height: 1.2; margin-bottom: 5pt; }
+  .p-perm-name.p-perm-unknown { font-size: 14pt; color: var(--doc-mute); }
+  .p-perm-meta { font-size: 9pt; color: var(--doc-mute); line-height: 1.6; }
+  .p-perm-lead { font-size: 9.5pt; color: var(--doc-mute); line-height: 1.7; margin-top: 12pt; max-width: 430pt; }
+  .p-perm-sub { margin-top: 18pt; padding-top: 12pt; border-top: .5pt solid var(--doc-rule); break-inside: avoid; }
+  .p-perm-h { font-size: 7pt; font-weight: 600; text-transform: uppercase; letter-spacing: 1.4pt; color: var(--doc-faint); margin-bottom: 7pt; break-after: avoid; }
+  .p-perm-p { font-size: 9.5pt; color: var(--doc-ink); line-height: 1.7; max-width: 430pt; }
+  .p-perm-list { list-style: none; margin: 0; padding: 0; }
+  .p-perm-list li { position: relative; padding: 4pt 0 4pt 13pt; font-size: 9.5pt; color: var(--doc-ink); line-height: 1.6; break-inside: avoid; }
+  .p-perm-list li::before { content: ''; position: absolute; left: 0; top: 10.5pt; width: 6pt; height: .75pt; background: var(--doc-teal); }
+  .p-perm-list.p-perm-muted li { color: var(--doc-mute); font-size: 8.5pt; }
+  .p-perm-list.p-perm-muted li::before { background: var(--doc-faint); }
+  .p-perm-basis { display: block; color: var(--doc-faint); font-size: 8pt; margin-top: 1.5pt; }
+  .p-perm-stamp { margin-top: 14pt; font-size: 8pt; color: var(--doc-mute); }
+
+  /* Credibility page — warranty, certifications, reviews, about. The printed
+     estimate is the copy that stays on the kitchen counter for a week; it had
+     no answer at all to "why you" before this. Marketing content only, so it
+     stays out of the signed hash and the signed PDF. */
+  .p-trust { page-break-before: always; }
+  .p-trust-block { margin-bottom: 26pt; break-inside: avoid; }
+  .p-trust-h { font-family: var(--doc-serif); font-size: 13pt; font-weight: 600; color: var(--doc-navy); margin-bottom: 7pt; break-after: avoid; }
+  .p-trust-body { font-size: 9.5pt; line-height: 1.7; color: var(--doc-ink); max-width: 430pt; }
+  .p-trust-body p { margin-bottom: 7pt; }
+  .p-trust-certs { display: grid; grid-template-columns: repeat(2,1fr); gap: 6pt 20pt; margin-top: 4pt; }
+  .p-trust-cert { font-size: 9pt; color: var(--doc-ink); padding-left: 12pt; text-indent: -12pt; line-height: 1.5; }
+  .p-trust-revs { display: grid; grid-template-columns: repeat(2,1fr); gap: 14pt 20pt; margin-top: 4pt; }
+  .p-trust-rev { break-inside: avoid; border-left: 1.5pt solid var(--doc-rule); padding-left: 12pt; }
+  .p-trust-rev-stars { color: var(--doc-amber); font-size: 9pt; letter-spacing: 2pt; }
+  .p-trust-rev-text { font-family: var(--doc-serif); font-size: 9pt; line-height: 1.6; color: var(--doc-ink); margin: 3pt 0 4pt; }
+  .p-trust-rev-name { font-size: 7.5pt; color: var(--doc-faint); text-transform: uppercase; letter-spacing: 1pt; }
 
   /* Per-clause initial lines — printed so a paper copy works for in-person signing */
-  .p-initials { margin-top: 20pt; page-break-inside: avoid; }
-  .p-initials h3 {
-    font-size: 10pt; font-weight: 700; color: #1a3a5c; text-transform: uppercase;
-    letter-spacing: .5pt; margin-bottom: 10pt; padding-bottom: 4pt; border-bottom: 1pt solid #d1d5db;
+  .p-initials { margin-top: 30pt; page-break-inside: avoid; }
+  .p-initial-row {
+    display: flex; align-items: flex-start; gap: 14pt; padding: 11pt 0;
+    border-bottom: .5pt solid var(--doc-rule); page-break-inside: avoid;
   }
-  .p-initial-row { display: flex; align-items: flex-start; gap: 10pt; margin-bottom: 11pt; page-break-inside: avoid; }
   .p-initial-num {
-    flex-shrink: 0; width: 15pt; height: 15pt; margin-top: 1pt; border-radius: 50%;
-    background: #1a3a5c; color: #fff; font-size: 8pt; font-weight: 700;
-    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; width: 14pt; margin-top: 1pt;
+    color: var(--doc-faint); font-size: 8pt; font-weight: 600;
   }
-  .p-initial-text { flex: 1; font-size: 9.5pt; color: #222; line-height: 1.4; }
-  .p-initial-sig { flex-shrink: 0; width: 74pt; display: flex; flex-direction: column; align-items: center; gap: 2pt; }
-  .p-initial-line { width: 100%; border-bottom: 1pt solid #333; height: 15pt; }
-  .p-initial-cap { font-size: 6.5pt; color: #888; text-transform: uppercase; letter-spacing: .4pt; }
+  .p-initial-text { flex: 1; font-size: 9pt; color: var(--doc-ink); line-height: 1.55; }
+  .p-initial-sig { flex-shrink: 0; width: 78pt; display: flex; flex-direction: column; gap: 3pt; }
+  .p-initial-line { width: 100%; border-bottom: .75pt solid var(--doc-mute); height: 16pt; }
+  .p-initial-cap { font-size: 6pt; color: var(--doc-faint); text-transform: uppercase; letter-spacing: 1.2pt; }
 
-  .p-signatures { margin-top: 28pt; display: grid; grid-template-columns: 1fr 1fr; gap: 24pt; page-break-inside: avoid; }
-  .p-sig-block { display: flex; flex-direction: column; gap: 3pt; }
-  .p-sig-line { border-bottom: 1pt solid #333; height: 28pt; }
-  .p-sig-label { font-size: 8.5pt; color: #555; }
-  .p-sig-date { display: flex; gap: 12pt; margin-top: 8pt; }
-  .p-sig-date-line { flex: 1; border-bottom: 1pt solid #333; height: 20pt; }
-  .p-sig-date span { font-size: 8pt; color: #555; margin-top: 4pt; display: block; }
+  .p-signatures { margin-top: 40pt; display: grid; grid-template-columns: 1fr 1fr; gap: 34pt; page-break-inside: avoid; }
+  .p-sig-block { display: flex; flex-direction: column; gap: 5pt; }
+  .p-sig-line { border-bottom: .75pt solid var(--doc-mute); height: 34pt; }
+  .p-sig-label { font-size: 7pt; color: var(--doc-faint); text-transform: uppercase; letter-spacing: 1.2pt; }
+  .p-sig-date { display: flex; gap: 12pt; margin-top: 16pt; }
+  .p-sig-date > div { flex: 1; }
+  .p-sig-date-line { border-bottom: .75pt solid var(--doc-mute); height: 22pt; }
+  .p-sig-date span { font-size: 7pt; color: var(--doc-faint); margin-top: 5pt; display: block; text-transform: uppercase; letter-spacing: 1.2pt; }
   .p-contract { page-break-before: always; }
-  .p-contract h2 { font-size: 12pt; font-weight: 700; color: #1a3a5c; margin-bottom: 10pt; }
-  .p-contract-body { font-size: 8pt; line-height: 1.6; color: #333; border: .5pt solid #d1d5db; border-radius: 4pt; padding: 10pt 14pt; white-space: pre-wrap; }
+  .p-contract-body { font-size: 7.5pt; line-height: 1.7; color: var(--doc-mute); white-space: pre-wrap; column-count: 2; column-gap: 22pt; }
 }
 
 /* ── Insurance tab ─────────────────────────────────────────────────── */
@@ -1584,6 +1724,28 @@ input.other-price-input { width: 110px; text-align: right; font-size: 12px; }
   background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
 }
 .crm-link-badge strong { color: #1a3a5c; }
+
+/* Outcome control, in the estimate itself rather than only on a dashboard row */
+.est-status-bar {
+  align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 11px; line-height: 1.5; padding: 7px 10px;
+  border-radius: 5px; margin-bottom: 10px;
+  background: #f8fafc; border: 1px solid #e2e8f0; color: #475569;
+}
+.est-status-bar label {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: #64748b; margin: 0;
+}
+.est-status-bar select {
+  font-size: 11px; padding: 3px 6px; border-radius: 4px;
+  border: 1px solid #cbd5e1; background: #fff; color: #1e293b; cursor: pointer;
+}
+.est-status-note { flex-basis: 100%; color: #64748b; font-size: 10.5px; }
+.est-status-lost { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
+.est-status-lost label, .est-status-lost .est-status-note { color: #b91c1c; }
+.est-status-signed {
+  display: block; background: #f0fdf4; border: 1px solid #86efac; color: #15803d;
+}
 
 /* Home button */
 .btn-home {
@@ -1794,6 +1956,40 @@ body.is-home #nav-toggle       { display: none; }
   border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,.15);
 }
 .measure-panel-commercial .measure-unit { color: #4338ca; }
+
+/* ── Buildings on a complex ─────────────────────────────────────────
+   One collapsible card per building. The head is scannable at seven cards:
+   name, roof area, what that building costs. The body is the ordinary
+   commercial measurement panel, so a rep types the same boxes either way. */
+.btn-add-building {
+  margin-left: auto; padding: 6px 14px; border-radius: 20px; cursor: pointer;
+  border: 1px dashed #6366f1; background: #fff;
+  font-size: 12px; font-weight: 700; color: #4338ca; transition: all .12s;
+}
+.btn-add-building:hover { background: #e0e7ff; border-style: solid; }
+.bld-list { display: flex; flex-direction: column; gap: 8px; }
+.bld-card { border: 1px solid #c7d2fe; border-radius: 8px; background: #fff; overflow: hidden; }
+.bld-card.is-open { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.12); }
+.bld-head {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  padding: 9px 12px; user-select: none;
+}
+.bld-head:hover { background: #f5f3ff; }
+.bld-caret { color: #6366f1; font-size: 11px; width: 10px; }
+.bld-name { font-size: 13px; font-weight: 800; color: #312e81; }
+.bld-facts { display: flex; align-items: baseline; gap: 12px; margin-left: 8px; }
+.bld-facts > span { font-size: 11.5px; color: #4338ca; }
+.bld-fact-empty { color: #a5b4fc; font-style: italic; }
+.bld-total { font-weight: 800; font-size: 13px; color: #312e81; }
+.bld-actions { margin-left: auto; display: flex; gap: 4px; }
+.bld-btn {
+  padding: 4px 9px; border-radius: 5px; cursor: pointer; font-size: 11px; font-weight: 700;
+  border: 1px solid #c7d2fe; background: #fff; color: #4338ca;
+}
+.bld-btn:hover { background: #e0e7ff; }
+.bld-btn-del { color: var(--danger, #dc2626); border-color: #fecaca; }
+.bld-btn-del:hover { background: #fef2f2; }
+.bld-body { padding: 4px 12px 14px; border-top: 1px solid #e0e7ff; }
 
 .comm-worktype {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -2194,6 +2390,7 @@ a.jx-contact:hover { text-decoration: underline; }
 }
 .dash-section h4.dash-h-hot { color: #ea580c; }
 .dash-section h4.dash-h-won { color: #16a34a; }
+.dash-section h4.dash-h-lost { color: #b91c1c; }
 .dash-count {
   font-size: 10px; background: #e5e7eb; color: #374151;
   border-radius: 10px; padding: 1px 8px;
@@ -2219,6 +2416,7 @@ a.jx-contact:hover { text-decoration: underline; }
 .dash-chip-viewed { background: #ffedd5; color: #c2410c; }
 .dash-chip-sent   { background: #e0f2fe; color: #0369a1; }
 .dash-chip-draft  { background: #f3f4f6; color: #6b7280; }
+.dash-chip-lost   { background: #fee2e2; color: #b91c1c; }
 .dash-activity { font-size: 10.5px; color: var(--text-light); white-space: nowrap; min-width: 130px; text-align: right; }
 .dash-empty { text-align: center; color: var(--text-light); padding: 30px 0; font-size: 13px; }
 
@@ -3245,25 +3443,25 @@ a.jx-contact:hover { text-decoration: underline; }
 .rh-photo-cap { padding:3px 5px; font-size:10px; color:var(--text-light); background:#f8fafc; border-top:1px solid var(--border); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
 /* ── Roof Health Report (print) ──────────────────────────────────────── */
-.p-roof-health { page-break-before:always; padding:12mm 14mm; font-family:Helvetica,Arial,sans-serif; }
-.p-rh-titlebar { display:flex; align-items:center; justify-content:space-between; margin:10mm 0 6mm; border-bottom:2pt solid #1a3a5c; padding-bottom:4mm; }
-.p-rh-titlebar h2 { margin:0; font-size:18pt; color:#1a3a5c; }
-.p-rh-badge { padding:4pt 14pt; border-radius:20pt; font-size:12pt; font-weight:800; border:2pt solid currentColor; }
-.p-rh-meta { display:grid; grid-template-columns:repeat(4,1fr); gap:4pt 10pt; margin-bottom:6mm; }
-.p-rh-meta div { display:flex; flex-direction:column; gap:1pt; }
-.p-rh-meta label { font-size:7pt; font-weight:700; text-transform:uppercase; letter-spacing:.5pt; color:#6b7280; }
-.p-rh-meta span { font-size:9pt; font-weight:600; color:#111; }
-.p-rh-summary { margin:0 0 6mm; padding:6pt 10pt; background:#f8fafc; border-left:4pt solid #1a3a5c; font-size:10pt; line-height:1.5; }
-.p-rh-photos { display:grid; grid-template-columns:repeat(3,1fr); gap:5mm; margin:4mm 0 6mm; }
-.p-rh-photo img { width:100%; aspect-ratio:4/3; object-fit:cover; border:1pt solid #d1d5db; border-radius:3pt; display:block; }
-.p-rh-photo figcaption { font-size:7pt; color:#6b7280; margin-top:2pt; text-align:center; }
-.p-rh-sh { font-size:11pt; color:#1a3a5c; margin:6mm 0 3mm; border-bottom:1pt solid #d1d5db; padding-bottom:2pt; }
-.p-rh-table { width:100%; border-collapse:collapse; font-size:9pt; margin-bottom:6mm; }
-.p-rh-table th { padding:4pt 6pt; background:#1a3a5c; color:#fff; font-size:7.5pt; font-weight:700; text-align:left; }
-.p-rh-table td { padding:5pt 6pt; border-bottom:1pt solid #e5e7eb; vertical-align:top; }
-.p-rh-table tr:nth-child(even) td { background:#f8fafc; }
-.p-rh-sig { display:flex; gap:30mm; margin:10mm 0 4mm; }
-.p-rh-footer { font-size:7pt; color:#9ca3af; font-style:italic; border-top:1pt solid #e5e7eb; padding-top:4pt; line-height:1.4; }
+.p-roof-health { page-break-before:always; font-family:var(--doc-sans); color:var(--doc-ink); }
+.p-rh-titlebar { display:flex; align-items:flex-end; justify-content:space-between; margin:0 0 8mm; border-bottom:.75pt solid var(--doc-rule); padding-bottom:3mm; }
+.p-rh-titlebar h2 { margin:0; font-family:var(--doc-serif); font-size:17pt; font-weight:600; color:var(--doc-navy); letter-spacing:-.2pt; }
+.p-rh-badge { padding:3pt 12pt; font-size:10pt; font-weight:600; border:.75pt solid currentColor; letter-spacing:.5pt; }
+.p-rh-meta { display:grid; grid-template-columns:repeat(4,1fr); gap:4pt 14pt; margin-bottom:7mm; }
+.p-rh-meta div { display:flex; flex-direction:column; gap:3pt; }
+.p-rh-meta label { font-size:6.5pt; font-weight:600; text-transform:uppercase; letter-spacing:1.2pt; color:var(--doc-faint); }
+.p-rh-meta span { font-size:9.5pt; font-weight:500; color:var(--doc-ink); }
+.p-rh-summary { margin:0 0 7mm; padding:0 0 0 12pt; border-left:1.5pt solid var(--doc-teal); font-family:var(--doc-serif); font-size:10.5pt; line-height:1.7; color:var(--doc-ink); }
+.p-rh-photos { display:grid; grid-template-columns:repeat(3,1fr); gap:5mm; margin:4mm 0 7mm; }
+.p-rh-photo img { width:100%; aspect-ratio:4/3; object-fit:cover; border:.5pt solid var(--doc-rule); display:block; }
+.p-rh-photo figcaption { font-size:7pt; color:var(--doc-faint); margin-top:3pt; line-height:1.4; }
+.p-rh-sh { font-family:var(--doc-serif); font-size:12pt; font-weight:600; color:var(--doc-navy); margin:7mm 0 3mm; border-bottom:.75pt solid var(--doc-rule); padding-bottom:3pt; }
+.p-rh-table { width:100%; border-collapse:collapse; font-size:9pt; margin-bottom:7mm; }
+.p-rh-table th { padding:9pt 8pt 5pt; border-bottom:.75pt solid var(--doc-navy); color:var(--doc-faint); font-size:6.5pt; font-weight:600; text-align:left; text-transform:uppercase; letter-spacing:1.2pt; }
+.p-rh-table th:first-child, .p-rh-table td:first-child { padding-left:0; }
+.p-rh-table td { padding:7pt 8pt; border-bottom:.5pt solid var(--doc-rule); vertical-align:top; }
+.p-rh-sig { display:flex; gap:30mm; margin:12mm 0 4mm; }
+.p-rh-footer { font-size:7pt; color:var(--doc-faint); border-top:.5pt solid var(--doc-rule); padding-top:5pt; line-height:1.5; }
 
 /* Header desktop-button group */
 .header-desktop-btns { display: flex; align-items: center; gap: 8px; }
@@ -3708,19 +3906,20 @@ a.jx-contact:hover { text-decoration: underline; }
 
 /* Property Condition Report — print styles */
 .p-cond-cover    { }
-.p-cond-title    { margin-bottom: 14pt; }
-.p-cond-title h2 { font-size: 20pt; font-weight: 900; color: #1a3a5c; margin-bottom: 3pt; }
-.p-cond-prop     { font-size: 13pt; color: #374151; font-weight: 600; }
+.p-cond-title    { margin-bottom: 18pt; }
+.p-cond-title h2 { font-family: var(--doc-serif); font-size: 20pt; font-weight: 600; color: var(--doc-navy); letter-spacing: -.3pt; margin-bottom: 4pt; }
+.p-cond-prop     { font-size: 11.5pt; color: var(--doc-mute); font-weight: 400; }
 .p-cond-grade-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(100pt, 1fr));
-  gap: 8pt; margin: 10pt 0;
+  gap: 14pt; margin: 14pt 0;
 }
-.p-cond-grade-cell { text-align: center; border: 1.5pt solid #e5e7eb; border-radius: 6pt; padding: 10pt 8pt; }
-.p-cond-grade-lbl  { font-size: 9pt; font-weight: 700; color: #374151; margin-bottom: 4pt; }
-.p-cond-grade-letter { font-size: 28pt; font-weight: 900; line-height: 1; padding: 6pt 12pt; border-radius: 6pt; display: inline-block; }
-.p-cond-grade-desc { font-size: 8pt; font-weight: 600; margin-top: 3pt; }
-.p-cond-cost-table td { padding: 4pt 8pt; border: .5pt solid #e5e7eb; }
-.p-cond-total-row td { font-weight: 800; border-top: 2pt solid #1a3a5c; background: #f8fafc; }
+.p-cond-grade-cell { border-top: .75pt solid var(--doc-rule); padding: 10pt 0 0; }
+.p-cond-grade-lbl  { font-size: 6.5pt; font-weight: 600; color: var(--doc-faint); text-transform: uppercase; letter-spacing: 1.2pt; margin-bottom: 7pt; }
+.p-cond-grade-letter { font-family: var(--doc-serif); font-size: 26pt; font-weight: 600; line-height: 1; display: inline-block; }
+.p-cond-grade-desc { font-size: 8pt; font-weight: 500; color: var(--doc-mute); margin-top: 5pt; }
+.p-cond-cost-table td { padding: 7pt 8pt; border: none; border-bottom: .5pt solid var(--doc-rule); }
+.p-cond-cost-table td:first-child { padding-left: 0; }
+.p-cond-total-row td { font-weight: 600; color: var(--doc-navy); border-top: .75pt solid var(--doc-navy); border-bottom: none; }
 
 /* ── Customer File ────────────────────────────────────────────────────── */
 .cf-modal-box { width: min(640px, 96vw); max-height: 88vh; display: flex; flex-direction: column; }

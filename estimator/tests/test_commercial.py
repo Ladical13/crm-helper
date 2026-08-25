@@ -242,31 +242,39 @@ def _cat(client):
     return {p['id']: p for p in client.get('/api/pricebook').get_json()['commercial_catalog']}
 
 
-def test_tpo_membranes_carry_the_sheet_price_per_square(client):
-    """A 10'x100' roll is 10 SQ, so the per-SQ cost is the roll price / 10.
-    The sheet's half rolls are the check: 5'x100' at exactly half."""
+def test_membranes_carry_the_sheet_price_per_square(client):
+    """A 10'x100' roll is 1,000 sf = 10 SQ, so the per-SQ cost is the roll
+    price / 10. Each sheet's narrower roll is the check."""
     cat = _cat(client)
+    # Carlisle, 2026-08-19 — the priced supplier for both membranes.
+    assert cat['cm_tpo_ma']['cost'] == 80.68       # 806.82 / 10 (6'x100' agrees)
+    assert cat['cm_epdm_fa']['cost'] == 96.59      # 965.91 / 10 (10'x50' agrees)
+    assert cat['cm_epdm_fa_taped']['cost'] == 104.55   # 1,045.45 / 10, tape included
+    # Fully adhered is the same roll as mechanically fastened; the difference
+    # is the adhesive line, not the membrane.
+    assert cat['cm_tpo_fa']['cost'] == cat['cm_tpo_ma']['cost']
+    # GAF specialty membranes Carlisle did not quote. Still priced off the
+    # EXPIRED 2026-05-19 sheet — kept to scope with, re-quote before selling.
     assert cat['cm_tpo45_ma']['cost'] == 72.73     # 727.27 / 10
-    assert cat['cm_tpo_ma']['cost'] == 84.66       # 846.59 / 10
     assert cat['cm_tpo80_ma']['cost'] == 135.23    # 1,352.27 / 10
     assert cat['cm_tpo_sa']['cost'] == 172.16      # 1,721.59 / 10
     assert cat['cm_tpo_fb60']['cost'] == 139.21    # 1,392.05 / 10
-    # Fully adhered is the same roll as mechanically attached; the difference
-    # is the adhesive line, not the membrane.
-    assert cat['cm_tpo_fa']['cost'] == cat['cm_tpo_ma']['cost']
 
 
 def test_polyiso_is_priced_at_every_thickness_the_sheet_lists(client):
     """Polyiso is already quoted per SQ, so these are lifted straight across.
     R-value is spec-driven, so a rep has to be able to pick the right board."""
     cat = _cat(client)
+    # Carlisle quoted 2.0" and 2.6" plus the 1/2" HD cover board.
+    assert cat['ca_iso_20']['cost'] == 100.00
+    assert cat['ca_iso']['cost'] == 130.00     # 2.6", the default
+    assert cat['ca_cover']['cost'] == 96.34    # 1/2" SecureShield HD
+    # The rest are GAF thicknesses Carlisle did not quote, off the expired sheet.
     assert cat['ca_iso_10']['cost'] == 65.34
     assert cat['ca_iso_15']['cost'] == 74.15
     assert cat['ca_iso_22']['cost'] == 108.75
-    assert cat['ca_iso']['cost'] == 128.52     # 2.6", the default
     assert cat['ca_iso_30']['cost'] == 148.30
     assert cat['ca_iso_40']['cost'] == 197.73
-    assert cat['ca_cover']['cost'] == 88.64    # HD 0.5" cover board
     for pid in ('ca_iso', 'ca_iso_10', 'ca_iso_40'):
         assert cat[pid]['measure'] == 'comm_sq_waste'
         assert cat[pid]['unit'] == 'SQ'
@@ -285,11 +293,17 @@ def test_every_priced_line_that_drives_a_measurement_actually_has_a_cost(client)
     awaiting_quote = {
         # Superseded by the two zone-calculated fastener lines.
         'ca_fasteners',
-        # Not on the GAF TPO sheet, and EPDM is not a GAF product at all -
-        # these need a Johns Manville / Carlisle / Elevate quote.
-        'cm_epdm', 'cm_epdm_mf', 'cm_epdm_fa', 'ca_epdm_seam', 'ca_epdm_adhesive',
+        # Carlisle's 2026-08-19 quote lists only NON-reinforced EPDM, which is
+        # specified for adhered and ballasted assemblies. A mechanically
+        # fastened EPDM roof needs the reinforced sheet (Sure-Tough), and that
+        # is not on the quote - so this package still has no membrane price.
+        'cm_epdm_mf',
+        # The legacy generic EPDM line, superseded by the fastened/adhered pair.
+        'cm_epdm',
+        # Never quoted by either house.
         'cm_modbit', 'cm_coating',
-        # 1/4" recover boards are gypsum, not GAF polyiso - own quote.
+        # No 1/4" board on the Carlisle sheet either - its 1/4" entries are
+        # TAPERED panels, where 1/4" is the slope per foot, not the thickness.
         'ca_cover_quarter',
         # Layover labor: the four rates Luke is supplying. Until they land, a
         # layover bid prices its materials and none of its work.
@@ -320,7 +334,10 @@ def test_only_adhered_systems_carry_bonding_adhesive(client):
     would add thousands of dollars of material that never ships."""
     pb = client.get('/api/pricebook').get_json()
     cat = {p['id']: p for p in pb['commercial_catalog']}
-    assert cat['ca_adhesive']['cost'] == 83.33     # 250.00 / 3.0 sq per pail
+    # Carlisle publishes ~60 sq ft of finished surface per gallon, so a 5-gal
+    # pail covers 3 SQ: 188.58 / 3 = 62.86. Same rate on the EPDM adhesive.
+    assert cat['ca_adhesive']['cost'] == 62.86
+    assert cat['ca_epdm_adhesive']['cost'] == 62.86
     for b in pb['commercial_bundles']:
         membrane = next((p for p in b['product_ids'] if p.startswith('cm_')), None)
         if membrane is None:
@@ -390,7 +407,7 @@ def test_placeholder_zero_costs_are_filled_but_real_ones_are_left_alone(A):
         'commercial_tier_defaults': dict(A.COMMERCIAL_TIER_DEFAULTS_SEED),
     }
     cat = {p['id']: p for p in A._ensure_bundle_catalogs(saved)['commercial_catalog']}
-    assert cat['cm_tpo_ma']['cost'] == 84.66   # 0 -> the sheet
+    assert cat['cm_tpo_ma']['cost'] == 80.68   # 0 -> the sheet
     assert cat['ca_iso']['cost'] == 99.00      # left alone
     assert cat['cl_labor_reroof']['cost'] == 450
 
@@ -435,7 +452,7 @@ def test_a_mechanically_attached_bid_prices_end_to_end(client, A):
                       'unit_price': round(p['cost'] / (1 - 0.29), 2),
                       'customer_visible': True})
     membrane = cat[next(p for p in bundle['product_ids'] if p.startswith('cm_'))]
-    assert round(membrane['cost'] * sq_waste, 2) == 3725.04   # 44 SQ of 60-mil TPO
+    assert round(membrane['cost'] * sq_waste, 2) == 3549.92   # 44 SQ of 60-mil TPO
     assert cost > 30000, f'a 40 SQ TPO re-roof costed out at only {cost:.2f}'
 
     est = _commercial_est()
@@ -698,3 +715,59 @@ def test_a_layover_bid_does_not_promise_a_tear_off(client, A):
     to_html = client.get(to_share['url']).get_data(as_text=True)
     assert 'Torn off and dried in' in to_html
     assert 'scanned for trapped moisture' not in to_html
+
+
+def test_the_catalog_says_which_sheet_each_price_came_from(A):
+    """Two suppliers are live in one catalog and one of the sheets has expired.
+    Without provenance, nobody can tell a current Carlisle number from a stale
+    GAF one, and 'is this price still good?' becomes unanswerable.
+
+    Deliberately no date arithmetic here - a test that starts failing on its own
+    the day a quote lapses is a time bomb, not a safeguard. The GAF sheet is
+    marked expired explicitly instead.
+    """
+    sheets = A.COMMERCIAL_PRICE_SHEETS
+    assert set(sheets) == {'carlisle', 'gaf'}
+    assert sheets['carlisle']['supplier'] == 'Carlisle'
+    assert sheets['carlisle']['quoted'] == '2026-08-19'
+    # Carlisle is the current sheet and the one the eight packages are built on.
+    assert A.COMMERCIAL_PRICE_SHEET is sheets['carlisle']
+    assert not sheets['carlisle'].get('expired')
+    # GAF survives only for the membranes Carlisle did not quote, and its sheet
+    # lapsed on 2026-06-30 - anything still priced from it needs re-quoting.
+    assert sheets['gaf'].get('expired') is True
+    # The gaps in the current quote are written down, not left to memory.
+    gaps = sheets['carlisle']['gaps'].lower()
+    assert 'reinforced' in gaps
+    assert '1/4' in gaps
+
+
+def test_the_polyiso_seed_records_its_supplier_per_thickness(A):
+    """Carlisle quoted 2.0" and 2.6"; the other thicknesses are GAF's, off the
+    expired sheet. Mixing them without a marker is how a stale number gets
+    quoted as a current one."""
+    by_id = {i[0]: i for i in A.COMMERCIAL_ISO_SEED}
+    assert by_id['ca_iso_20'][3] == 'carlisle'
+    assert by_id['ca_iso_40'][3] == 'gaf'
+    for row in A.COMMERCIAL_ISO_SEED:
+        assert len(row) == 4, row
+        assert row[3] in ('carlisle', 'gaf'), row
+
+
+def test_epdm_fully_adhered_is_now_a_sellable_package(client):
+    """The point of the Carlisle quote. Before it there was no priced EPDM roof
+    at all; this pins the one that is complete so a future edit cannot quietly
+    take it back out."""
+    pb = client.get('/api/pricebook').get_json()
+    cat = {p['id']: p for p in pb['commercial_catalog']}
+    bundle = next(b for b in pb['commercial_bundles'] if b['id'] == 'cb_epdm')
+    for pid in bundle['product_ids']:
+        p = cat[pid]
+        # Lump sums are typed per job; everything measured must carry a price.
+        if p.get('measure'):
+            assert p['cost'] > 0, f'cb_epdm carries an unpriced line: {p["name"]}'
+    # ...and it is genuinely the EPDM build, not TPO wearing a label.
+    assert 'cm_epdm_fa' in bundle['product_ids']
+    assert 'ca_epdm_adhesive' in bundle['product_ids']
+    assert 'ca_epdm_seam' in bundle['product_ids']
+    assert 'ca_adhesive' not in bundle['product_ids']

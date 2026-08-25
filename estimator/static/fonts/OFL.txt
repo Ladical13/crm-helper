@@ -1,0 +1,12 @@
+Source Serif 4 and Inter are licensed under the SIL Open Font License 1.1.
+
+Source Serif 4 — Copyright 2014-2023 Adobe (http://www.adobe.com/)
+  https://github.com/adobe-fonts/source-serif
+Inter — Copyright 2016-2024 The Inter Project Authors
+  https://github.com/rsms/inter
+
+Full license text: https://openfontlicense.org/
+
+The .ttf files here are static instances cut from the upstream variable fonts;
+fpdf2's add_font() requires one file per style. The .woff2 files are the
+latin-subset builds served by the Google Fonts API.

@@ -225,8 +225,25 @@ if any suite reported a skip.
 
 ## Canvasser (`canvasser/`)
 
-The door-knocking app: pins, team GPS, hail overlays, CRM sync. Flask + SQLite +
-Leaflet, mounted at `/canvass`. Storage is `CANVASSER_DATA_DIR/canvasser.db`
+The door-knocking app: pins, team GPS, hail overlays, Pipeline handoff. Flask +
+SQLite + Leaflet, mounted at `/canvass`.
+
+**A knocked door becomes a lead in The Pipeline, not a job in The Den.**
+`PIN_STAGE` maps pin type → CRM stage (`interested`/`come_back` → `contacted`,
+`appointment` → `appt_set`, `inspected` → `inspected`, `closed` → `won`); the
+three types not listed never become leads. The lead is created **by the browser**
+against `/crm/api/leads` — all four apps share one origin and one cookie, so the
+rep's own session authorizes it and the CRM keeps sole ownership of what a lead
+is. `POST /api/pins/<id>/lead` only records the resulting id back onto the pin.
+
+This replaced `crm_sync()`, which POSTed a `Contact` + `Project` straight to
+Base44. Three things were wrong with it: the lead never entered the sales
+pipeline, so nothing followed it up and it reached no leaderboard; the Project
+carried `status: 'lead'`, which is not one of The Den's statuses; and neither
+payload set `location_id`, so every record it made fell outside the Colorado
+filter — the jobs existed and were invisible. It was also gated to `closed`
+pins only, which meant the interested homeowner who needed a follow-up was
+exactly the one the tool ignored. Storage is `CANVASSER_DATA_DIR/canvasser.db`
 (gitignored — **set that variable explicitly**, it falls back to the estimator's
 `DATA_DIR`).
 
@@ -305,47 +322,68 @@ input and drops out-of-order responses, and deliberately does **not** overwrite
 Guarded by `test_search_reaches_past_the_limit_window` and
 `test_search_treats_wildcards_literally`.
 
-**Integrations (the Base44 `contact_id` is the shared join key):**
-- **→ The Den:** moving a lead to **`won`** auto-runs `_push_to_den()` — creates a
-  Base44 `Contact` + `Project` and stores `crm_contact_id`/`crm_project_id` back on the
-  lead (dedups on phone/email first). Adapted from `crm_sync()` in `canvasser/app.py`.
+**Integrations.** The CRM is the **sales system of record**; The Den is the back
+office and receives a job at exactly one moment — signature. Before that,
+nothing is written to Base44 at all.
+
+- **↔ Estimator (`portal/funnel.py`).** The two halves of the funnel are joined
+  by a shared table in `portal.db`: one row per estimate, holding the lead it
+  came from and the furthest state it reached (`draft→sent→viewed→signed`,
+  `declined`). The estimator writes on send, first customer view and signature;
+  the CRM drains on any lead/board/task/leaderboard read.
+  **This is what makes a close rate computable.** Before it, `leads.estimate_id`
+  was a column nothing ever wrote, the CRM knew only its own stages and the
+  estimator only its own, and the question "of the doors we knocked, where do
+  we lose people" had no answer in either app.
+  - **States only move forward** (`_RANK` in `funnel.py`) and signature is
+    terminal. That is what makes draining idempotent and re-runnable.
+  - `POST /api/leads/<id>/start-estimate` writes **nothing** to The Den; it
+    hands back the estimator URL carrying `&lead=<id>`. It used to create a
+    Base44 contact here — see the Won-guard note below for why that was fatal.
+- **Stages move on events, not on memory.** `_auto_advance()` applies them:
+  estimate sent → `estimate_presented`, signed → `won`. **The rep is always
+  allowed to be ahead** — a lead already at or past the target stage is left
+  alone. The single exception is a signature, which outranks even a manual
+  `lost`, because the customer signed.
+- **Cadences enrol themselves.** `_cadence_for()` on lead creation and on stage
+  change: homeowners get `new_lead_7touch`, partners get `partner_nurture`,
+  and reaching `estimate_presented` starts `estimate_followup`. The four
+  cadences existed long before anything enrolled a lead into one, so the
+  follow-up engine only ever ran for reps who remembered to ask for it.
+  Bulk prospect imports bypass `create_lead()` and are deliberately **not**
+  enrolled — 36k open-data rows must not each grow a task.
+- **→ The Den:** `_push_to_den()` fires at signature (or on a manual move to
+  `won`), creating a `Contact` + `Project` and filing the signed contract as a
+  `Document` linking to the estimator's hosted signing page. Not an upload:
+  Base44 refuses `UploadFile` to our token (blanket 405).
+  ⚠️ **The guard is `crm_project_id`, never `crm_contact_id`.** Guarding on the
+  contact is what kept a single job from *ever* reaching The Den: `start-estimate`
+  set that field, so every lead that reached an estimate read as "already
+  pushed" and was skipped silently. Pinned by `tests/test_funnel.py`.
+  ⚠️ **Both payloads carry `location_id`.** The Den scopes Colorado reporting to
+  it and picks it from a dropdown in its own form, so anything created through
+  the API without it is invisible to the estimator's contact search *and* to
+  every executive-team skill. Whether Base44 honours the field on create is
+  **unverified** — the activity log tells whoever picks the job up to check it.
+  Projects land as `contracted`; they used to be pushed as `status: 'lead'`,
+  which is not one of The Den's statuses at all.
   `POST /api/leads/<id>/convert?dry_run=1` returns the payloads without writing.
 
-  **This is the seam where attribution dies if you let it.** Base44 cannot
-  re-derive where a lead came from — this app is the only place that ever held
-  it — so anything not carried across is gone for the executive team forever.
-  Pinned by `tests/test_den_payload.py`; the whole payload was previously
-  unguarded, which is how it drifted. Four rules:
+  **Provenance is the other half, and it dies just as quietly.** The Den can
+  re-derive nothing about where a lead came from — this app is the only place
+  that ever held it — so what the payload omits is gone for the exec team for
+  good. Pinned by `tests/test_den_payload.py`. Two rules:
 
-  - **`location_id` is mandatory on both payloads.** Every executive query
-    filters `?q={"location_id": ...}` and so does the estimator's contact cache
-    (`estimator/app.py` `CO_LOCATION_ID`). A record without it is not
-    hard-to-find, it is **invisible** — to the CEO dashboard, pipeline health,
-    job margin, referral intel *and* to `start-estimate`'s handoff. The two
-    constants are held equal by a test.
-  - **A won lead is `status: 'contracted'`,** not `'lead'` — which was never in
-    Base44's vocabulary at all. Everything not yet won enters at `new_lead`
-    rather than guessing at a production state we have no evidence for.
   - **`referred_by` holds the partner's LEAD ID, not a name.** Resolve it
-    before it crosses (the lead drawer does the same thing for
-    `referred_by_name`); a raw uuid in front of the exec team is worse than
-    nothing. Free text typed by a rep passes through as-is.
-  - **Provenance rides in `notes`** (partner, lead type, campaign, source_ref,
-    lead-created and won dates) because Base44 has no documented field for it.
-    A dedicated field is better and is the follow-up once the schema is
-    confirmed — but notes survive any schema, and *losing the partner entirely
-    is what makes partner ROI unanswerable.*
-
-  ⚠ **The field names and status vocabulary are UNVERIFIED against the live
-  Base44 API** (as of 2026-08-19). They come from the documented field map, not
-  from a response body. Before this ships to `portal-merge`, GET one `Contact`
-  and one `Project` with a real `BASE44_TOKEN` and confirm `job_name`,
-  `assigned_salesperson`, `job_category`, `contract_value` and the `status`
-  list. Each is a one-line constant at the top of `salescrm/app.py` with a
-  failing test to prove any correction.
-- **↔ Estimator:** `POST /api/leads/<id>/start-estimate` ensures a Base44 contact exists,
-  then hands back the estimator URL (the estimator's own contact search picks it up).
-  `GET /api/leads/<id>/estimate` reads job/document status back by `contact_id`.
+    before it crosses (the lead drawer does the same for `referred_by_name`); a
+    raw uuid in front of the exec team is worse than nothing. Free text typed
+    by a rep passes through as-is, and an id matching no lead is dropped rather
+    than shown. Without this, *partner ROI is unanswerable* — referral-intel is
+    told to read a referral-partner field that never arrived.
+  - **The rest of the provenance rides in `notes`** (lead type, campaign,
+    `source_ref`, lead-created and won dates) because Base44 has no documented
+    field for it. A dedicated field is better and is the follow-up once the
+    schema is confirmed — notes merely survive any schema.
 - Reuses the shared `BASE44_TOKEN` env var. Den calls degrade gracefully when unset.
 
 **PWA cache-buster:** any `app.js`/`style.css` change must bump `?v=N` in
@@ -623,6 +661,38 @@ Two things behave differently once books are in the wild:
   deleted it" and skips it, so a *new* bundle reaches nobody. List its id in
   `_LATE_BUNDLE_IDS` to have it appended, and drop it once live books have been
   saved past it. Deletion stays sticky for every id not on that list.
+
+### Estimate outcome — `lost`, and why the rename was the small half
+
+`declined` is now **`lost`**, and the rename was the least of it. `estStatusOf()`
+in `static/app.js` derived an estimate's bucket from `signed / first_viewed_at /
+sent` and **never looked at the status at all**, so a declined estimate reported
+itself as `viewed`: it stayed in Outstanding, kept counting toward the
+outstanding dollar total, and kept appearing in the "⚠ Follow Up Needed" banner
+forever. The only thing the status actually suppressed was the reminder email.
+Marking one declined did nothing a rep could see, which is why the estimate area
+silted up. `estStatusOf` now checks lost **before** viewed/sent, and that
+ordering is the fix.
+
+- **`lost` is canonical; `declined` is accepted forever on the way in and
+  normalized on the way out** (`_norm_est_status`, `_is_lost`, `LOST_STATUSES`).
+  Nothing rewrites stored records — those are real estimates on a live volume,
+  and the read path is what normalizes them. Do not "tidy" this into a
+  migration.
+- **Change orders keep `declined`, deliberately.** A customer saying no to an
+  add-on is not a lost job, and collapsing the two loses that distinction.
+- **A signed estimate cannot change status** — the server rejects it, and the
+  UI shows the fact instead of a control. A signature is what the customer did,
+  not a field a rep can retract.
+- **One control, not two.** The Status select buried at the bottom of *Estimate
+  Details* is gone; `#est-status-bar` sits beside the customer instead. The old
+  one wrote through the whole-estimate save, so it bypassed both the signed
+  guard and the funnel notification — two controls for one field is how they end
+  up disagreeing.
+- Marking an estimate lost **does not lose the CRM lead**. Plenty get re-quoted,
+  and losing the lead would close the tasks that win it back; the Pipeline
+  timeline records it and the rep decides. See the salescrm `_FUNNEL_STAGE` note.
+- Guarded by `tests/test_status.py` and `salescrm/tests/test_funnel.py`.
 
 ### Monthly trends & sales goals
 

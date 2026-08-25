@@ -5,13 +5,18 @@
 // /estimate/ and nothing else.
 const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
 
-const CACHE = 'po-v165';
+const CACHE = 'po-v170';
 const SHELL = [
   BASE + '/',
-  BASE + '/static/style.css?v=165',
-  BASE + '/static/app.js?v=165',
+  BASE + '/static/style.css?v=170',
+  BASE + '/static/app.js?v=170',
   BASE + '/static/logo.png',
   BASE + '/static/icon-192.png',
+  // Document typefaces. Precached deliberately: a rep printing an estimate in
+  // a driveway with no signal must not get a document that silently falls back
+  // to Arial. ~97 KB for both families.
+  BASE + '/static/fonts/Inter-var.woff2',
+  BASE + '/static/fonts/SourceSerif4-var.woff2',
 ];
 
 self.addEventListener('install', e => {

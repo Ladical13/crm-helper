@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=165">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=170">
 </head>
 <body>
 
@@ -85,6 +85,10 @@
           onclick="openCustomerFile(S.customer.name)" title="View customer file">📁 Customer File</button>
       </div>
       <div id="sent-lock-banner" class="sent-lock-banner" style="display:none"></div>
+      <!-- Outcome, settable from the estimate itself. It used to live only in a
+           dropdown on a dashboard row, so marking a job lost meant leaving the
+           thing you were looking at to go and find it in a list. -->
+      <div id="est-status-bar" class="est-status-bar" style="display:none"></div>
       <div class="crm-search-wrap">
         <input type="text" id="crm-search" placeholder="Search CRM jobs — name / job # / address…" autocomplete="off">
         <div id="crm-dropdown" class="crm-dropdown hidden"></div>
@@ -142,15 +146,11 @@
           <option value="">Select…</option>
         </select>
       </div>
-      <div class="field-group">
-        <label>Status</label>
-        <select id="est-status">
-          <option value="draft">Draft</option>
-          <option value="sent">Sent</option>
-          <option value="accepted">Accepted</option>
-          <option value="declined">Declined</option>
-        </select>
-      </div>
+      <!-- The Status select that used to sit here has moved up beside the
+           customer, as #est-status-bar. Two controls for one field is how they
+           end up disagreeing; and this one wrote the status through the
+           whole-estimate save, so it bypassed both the signed-estimate guard
+           and the notification that tells the Pipeline what happened. -->
       <div class="field-group">
         <label>Estimate Type</label>
         <div class="toggle-row toggle-row-3">
@@ -719,6 +719,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=165"></script>
+<script src="/estimate/static/app.js?v=170"></script>
 </body>
 </html>

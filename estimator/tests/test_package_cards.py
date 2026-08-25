@@ -140,13 +140,29 @@ def test_replacing_every_bundle_product_by_hand_also_drops_the_copy(client, A):
 
 
 def test_a_hand_shaped_trade_keeps_its_own_bullets(client, A):
-    """No line item carries a catalog_id, so bundles never built this trade and
-    there is no leftover bundle copy to suspect — even on a Custom tier. Those
-    bullets are the rep's own and are the best copy the estimate will ever have,
-    because the editor that wrote them is gone."""
+    """No line item carries a catalog_id and the tier names no bundle, so
+    bundles never built this trade and there is no leftover bundle copy to
+    suspect. Those bullets are the rep's own and are the best copy the estimate
+    will ever have, because the editor that wrote them is gone."""
+    est = _roof_est(A, {'good': '', 'better': '', 'best': ''}, [_hand_item()])
+    assert STALE_BULLET in _customer_page(client, est)
+
+
+def test_custom_drops_the_copy_even_after_the_bundle_rows_are_deleted(client, A):
+    """The reported bug, second helping. A new estimate seeds the default
+    shingle bundles, so building a rolled-roofing job by hand means deleting
+    those rows first — which takes the last catalog_id in the trade with them.
+    The catalog test used to read that as "bundles never built this trade" and
+    hand the shingle tagline straight to the customer. Picking Custom is the
+    rep's own statement that this tier is not a package the book sells, and it
+    has to outrank evidence the rep destroyed on the way there."""
     est = _roof_est(A, {'good': '', 'better': '__custom__', 'best': ''},
                     [_hand_item()])
-    assert STALE_BULLET in _customer_page(client, est)
+    assert A._tier_bullets_are_stale(_pb(A), est, 'roofing', 'better') is True
+    html = _customer_page(client, est)
+    assert STALE_BULLET not in html
+    assert STALE_TAGLINE not in html
+    assert 'Rolled Roofing' in html, 'the card must list what the tier actually sells'
 
 
 def test_a_pre_bundle_estimate_is_never_judged(A):
@@ -216,6 +232,13 @@ def test_the_browser_mirrors_the_staleness_rule():
     assert "'__custom__'" in body
     assert 'catalog_id' in body, 'the bundle-built guard has to be on both sides'
     assert 'tier_bundles' in body
+    # Order is the rule, not a detail: a rep who deletes the seeded bundle rows
+    # leaves no catalog_id, so a catalog test that runs first answers "not
+    # stale" and prints shingle copy over a hand-built package. See
+    # test_custom_drops_the_copy_even_after_the_bundle_rows_are_deleted.
+    assert body.index("bid === '__custom__'") < body.index('it.catalog_id'), (
+        'app.js checks catalog_id before __custom__ — the server checks '
+        '__custom__ first, so the PDF and the signed page now disagree')
 
 
 def test_print_uses_the_rule_for_both_bullets_and_tagline():

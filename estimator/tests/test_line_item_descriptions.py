@@ -186,14 +186,25 @@ def test_multi_cell_paths_keep_their_newlines():
 
 
 def test_every_single_line_pdf_cell_uses_the_flattening_trunc():
-    """The three PDF builders each define their own local trunc(). All of them
-    feed pdf.cell(), so all of them must flatten — one that slips back to
-    _pdf_safe reintroduces the junk glyph in that document only."""
+    """The core-font PDF builders each define their own local trunc(). All of
+    them feed pdf.cell(), so all of them must flatten — one that slips back to
+    _pdf_safe reintroduces the junk glyph in that document only.
+
+    build_signed_pdf is deliberately NOT in this set: it draws its line items
+    with pdf.table(), which wraps long descriptions instead of clipping them at
+    a character count, so it has no trunc() to guard. Adding one back there
+    would be a regression, not a fix.
+
+    The count tracks the internal builders that still hand-place cells: the
+    work order, the material order and the change order."""
     with open(os.path.join(BASE, 'app.py'), encoding='utf-8') as fh:
         src = fh.read()
     truncs = re.findall(r'    def trunc\(s, n\):\n(.*?)\n\n', src, re.S)
     assert len(truncs) == 3, f'expected 3 local trunc() helpers, found {len(truncs)}'
     for body in truncs:
-        assert '_pdf_oneline(s)' in body, (
+        # Either flattener is fine — _pdf_oneline_rich is the same collapse for
+        # the documents that embed Unicode faces. What must not come back is a
+        # bare _pdf_safe, which leaves the newline in place for pdf.cell().
+        assert ('_pdf_oneline(s)' in body or '_pdf_oneline_rich(s)' in body), (
             'a local trunc() no longer flattens newlines before pdf.cell()'
         )

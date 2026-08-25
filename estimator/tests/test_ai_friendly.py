@@ -1,6 +1,6 @@
 """AI-friendly customer document — the /sign page emits machine-readable
 metadata (schema.org JSON-LD, meta description, OpenGraph) and a human-readable
-'About This Estimate' block; the signed PDF gets the same summary as a
+'What's Included and Why' block; the signed PDF gets the same summary as a
 dedicated page BEFORE the T&C, plus PDF document metadata.
 
 These are the invariants that make the estimate legible to Claude/ChatGPT
@@ -140,7 +140,7 @@ def test_signed_pdf_includes_about_estimate_page(A):
     pdf = A.build_signed_pdf(_signed_estimate())
     assert isinstance(pdf, (bytes, bytearray)) and len(pdf) > 5000
     text = _pdf_text(pdf)
-    assert 'About This Estimate' in text
+    assert 'What’s Included and Why' in text
     # Materials with the specific brand name land in the PDF text
     assert 'Northgate' in text
     # Code + ventilation are cited
@@ -155,10 +155,10 @@ def test_signed_pdf_includes_about_estimate_page(A):
 def test_signed_pdf_details_page_comes_before_terms(A):
     pdf = A.build_signed_pdf(_signed_estimate())
     text = _pdf_text(pdf)
-    a_idx = text.find('About This Estimate')
+    a_idx = text.find('What’s Included and Why')
     t_idx = text.find('Terms & Conditions')
     assert a_idx >= 0 and t_idx > a_idx, \
-        'the About This Estimate page must precede the T&C page'
+        'the What’s Included and Why page must precede the T&C page'
 
 
 def test_unsigned_pdf_uses_estimate_title_and_skips_signature(A):
@@ -173,7 +173,7 @@ def test_unsigned_pdf_uses_estimate_title_and_skips_signature(A):
     assert 'UNSIGNED PREVIEW' in text
     assert 'ELECTRONICALLY SIGNED' not in text
     # Substantive content still lands
-    assert 'About This Estimate' in text
+    assert 'What’s Included and Why' in text
     assert 'Northgate' in text
 
 
