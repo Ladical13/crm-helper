@@ -28,6 +28,24 @@ _YEARS = (2022, 2021, 2020)
 _OPEN = {1, 3, 8}
 
 
+def _district_name(raw):
+    """The useful half of CCD's ``lea_name``.
+
+    NCES stores names like "Academy School District No. 20 in the county of
+    El Paso an" — the county clause is legal boilerplate, and NCES caps the
+    field at about 60 characters, so it routinely arrives truncated mid-word.
+    Cutting at the clause removes both problems at once and leaves the part a
+    rep would actually recognise.
+    """
+    s = _common.clean(raw)
+    for marker in (' in the county of', ' in the County of'):
+        idx = s.find(marker)
+        if idx > 0:
+            s = s[:idx]
+            break
+    return s.strip(' ,&')
+
+
 def _first(*vals):
     for v in vals:
         c = _common.clean(v)
@@ -91,7 +109,7 @@ def schools(city='', county='', state='CO', limit=None):
         except (TypeError, ValueError):
             enrollment = 0
 
-        district = _common.clean(raw.get('lea_name'))
+        district = _district_name(raw.get('lea_name'))
         hook_bits = [b for b in (district,
                                  f'{enrollment} students' if enrollment > 0 else '')
                      if b]

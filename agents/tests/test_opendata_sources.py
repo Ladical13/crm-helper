@@ -205,3 +205,20 @@ def test_already_cased_names_are_left_alone():
     assert _common.title("St. Mary's Academy") == "St. Mary's Academy"
     # Shouting still gets quietened.
     assert _common.title('ROCKY MOUNTAIN HIGH SCHOOL') == 'Rocky Mountain High School'
+
+
+def test_the_district_name_drops_the_county_boilerplate():
+    """NCES stores "Academy School District No. 20 in the county of El Paso
+    an" — legal boilerplate, capped near 60 chars, so it routinely arrives
+    truncated mid-word. The clause is what makes it both ugly and useless."""
+    from agents.b2b.sources.nces import _district_name
+    assert _district_name(
+        'Academy School District No. 20 in the county of El Paso an'
+    ) == 'Academy School District No. 20'
+    assert _district_name(
+        'School District N. 14 in the county of Adams & State of Colo'
+    ) == 'School District N. 14'
+    # A name with no clause is left exactly as it is.
+    assert _district_name('Poudre School District R-1') == 'Poudre School District R-1'
+    assert _district_name('Aguilar Reorganized School District No. 6') == \
+        'Aguilar Reorganized School District No. 6'
