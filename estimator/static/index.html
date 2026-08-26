@@ -24,6 +24,13 @@
     <button id="nav-toggle" class="nav-toggle-btn" onclick="toggleSidebar()">☰</button>
     <img src="/estimate/static/logo.png" alt="Project One Roofing" class="header-logo">
     <div id="estimate-number" class="estimate-number">New Estimate</div>
+    <!-- Which estimate this is, for a customer with more than one — hidden on
+         mobile alongside #estimate-number (not #est-status-badge, which the
+         phone header has always kept: a header row that once genuinely
+         overflowed a 375px phone is why a third badge here does not get the
+         same "never hidden" treatment as signed/sent status). -->
+    <button id="estimate-label-badge" class="estimate-label-badge" style="display:none"
+      onclick="switchPage('documents')"></button>
     <!-- Signed / sent state lives OUTSIDE #estimate-number, which the mobile
          breakpoint hides. A rep on a phone has to be able to see that an
          estimate is already signed; when it is, this opens the signed PDF. -->

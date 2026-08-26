@@ -54,6 +54,30 @@ def _media_block(css, query):
     return _block(css, query)
 
 
+def _media_block_with(css, query, marker):
+    """The `query` media block that actually contains `marker`.
+
+    style.css has THREE separate `@media (max-width: 767px) { ... }` blocks
+    (a KPI-card one, the header one, a third further down) — `_media_block`
+    always grabs the first, so `test_mobile_keeps_the_status_badge` and
+    `test_mobile_keeps_the_save_indicator` were checking the KPI-card block
+    the whole time and passing vacuously (no `.est-status-badge`/
+    `.save-indicator` rule there to find, hidden or not) — they would not
+    have caught either rule actually being hidden in the real header block.
+    This scans every occurrence of `query` and returns the one that mentions
+    `marker`, so a test actually exercises the block it claims to."""
+    start = 0
+    while True:
+        i = css.find(query, start)
+        assert i >= 0, f'no block found containing {marker!r}'
+        # _block() re-searches `query` from the start of its input, so slice
+        # css from `i` forward and let it find the block beginning right here.
+        body = _block(css[i:], query)
+        if marker in body:
+            return body
+        start = i + 1
+
+
 # ── the tab strip is the pitch ─────────────────────────────────────────
 
 EXPECTED_ORDER = ['client', 'cover', 'intro', 'photos', 'report', 'scope',
@@ -128,15 +152,49 @@ def test_signed_badge_is_rendered_outside_the_estimate_number():
 def test_mobile_keeps_the_save_indicator():
     """The only signal telling a rep their work survived — and a phone is
     where the tab is most likely to be killed mid-edit."""
-    mobile = _media_block(_read(CSS), '@media (max-width: 767px)')
+    mobile = _media_block_with(_read(CSS), '@media (max-width: 767px)', '.save-indicator')
     hidden = re.search(r'\.save-indicator\s*\{[^}]*display:\s*none', mobile)
     assert not hidden, 'the save indicator is hidden on mobile again'
 
 
 def test_mobile_keeps_the_status_badge():
-    mobile = _media_block(_read(CSS), '@media (max-width: 767px)')
+    mobile = _media_block_with(_read(CSS), '@media (max-width: 767px)', '.est-status-badge')
     hidden = re.search(r'\.est-status-badge\s*\{[^}]*display:\s*none', mobile)
     assert not hidden, 'the signed/sent badge is hidden on mobile again'
+
+
+# ── which estimate this is, for a customer with more than one ──────────
+
+def test_label_badge_is_not_nested_in_the_hidden_estimate_number():
+    """Same trap as the signed badge above, for the newer label badge that
+    shows which of a customer's several estimates is on screen."""
+    html = _read(INDEX)
+    assert 'id="estimate-label-badge"' in html
+    m = re.search(r'<div id="estimate-number"[^>]*>.*?</div>', html, re.S)
+    assert m, '#estimate-number not found'
+    assert 'estimate-label-badge' not in m.group(0), (
+        'the label badge is nested inside #estimate-number again, which the '
+        'phone layout hides')
+
+
+def test_label_badge_is_rendered_outside_the_estimate_number():
+    js = _read(APPJS)
+    assert "getElementById('estimate-label-badge')" in js
+    body = js[js.index('function renderEstNum'):]
+    body = body[:body.index('\nfunction ', 10)]
+    assert 'estimate-label-badge' not in body, \
+        'renderEstNum must not write the label badge into #estimate-number'
+
+
+def test_mobile_hides_the_label_badge():
+    """Deliberately the OPPOSITE of test_mobile_keeps_the_status_badge: the
+    375px header has already overflowed once from exactly this kind of
+    crowding (see the comment above .header-left in the same media block), so
+    a third, purely informational badge follows #estimate-number's precedent
+    (hidden on mobile) rather than the signed/sent badge's (never hidden)."""
+    mobile = _media_block_with(_read(CSS), '@media (max-width: 767px)', '.estimate-number')
+    hidden = re.search(r'\.estimate-label-badge\s*\{[^}]*display:\s*none', mobile)
+    assert hidden, 'the label badge must be hidden on mobile, like .estimate-number'
 
 
 # ── the signed contract has a door ─────────────────────────────────────

@@ -131,6 +131,29 @@ button { cursor: pointer; font-family: inherit; }
   padding: 2px 7px; border-radius: 10px; margin-left: 6px;
   font-weight: 700; letter-spacing: .3px;
 }
+/* Which estimate this is, for a customer who has more than one — the typed
+   label used to live only on S.estimate_label and was never shown again once
+   a rep left the Customer hub. Styled like #estimate-number (small, muted,
+   monospace-adjacent) and, deliberately unlike #est-status-badge below,
+   HIDDEN on mobile — see the @media (max-width: 767px) block: a header row
+   here has already overflowed a 375px phone once before, from exactly this
+   kind of crowding, and a label is informational rather than the
+   signed/sent state that badge exists to protect. */
+.estimate-label-badge {
+  font-size: 11px; opacity: .85; font-family: inherit; color: #fff;
+  background: rgba(255,255,255,.12); border: none; border-radius: 10px;
+  padding: 3px 9px; max-width: 220px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1;
+}
+.estimate-label-badge:hover { background: rgba(255,255,255,.22); opacity: 1; }
+/* .dash-cf-btn's default colors (light blue pill) are tuned for the white
+   dashboard rows it was built for — reused here for the "N estimates" count
+   rather than inventing a second badge component, but recolored so it reads
+   against the dark header instead of disappearing into it. */
+.estimate-label-badge .dash-cf-btn {
+  pointer-events: none; margin-left: 2px;
+  background: rgba(255,255,255,.25); color: #fff; border-color: transparent;
+}
 /* Signed / sent state in the header. Deliberately NOT nested inside
    #estimate-number: that element is hidden on phones and used to take this
    badge down with it, leaving a rep unable to tell a signed estimate from a
@@ -3556,6 +3579,9 @@ a.jx-contact:hover { text-decoration: underline; }
   .header-right { gap: 6px; }
   .header-logo { height: 28px; }
   .estimate-number { display: none; }
+  /* Joins .estimate-number here rather than staying like .est-status-badge —
+     see the note on .estimate-label-badge's own rule for why. */
+  .estimate-label-badge { display: none; }
   .user-badge { display: none !important; }
 
   /* The save pill STAYS. It is the only thing telling a rep whether their
@@ -3966,6 +3992,18 @@ a.jx-contact:hover { text-decoration: underline; }
 .cf-est-side strong { font-size: 13px; color: #1a3a5c; }
 .cf-dl { font-size: 14px; text-decoration: none; }
 .cf-empty { padding: 24px; text-align: center; color: var(--text-light); font-size: 13px; }
+.cf-empty-hint { padding: 4px 2px 0; text-align: center; color: var(--text-light); font-size: 12px; font-style: italic; }
+/* The estimate already on screen, in a list of its own siblings — not
+   clickable (reloading yourself is a wasted request) and visually pulled out
+   so it reads as "you are here," not just another row. */
+.cf-est-row-current {
+  cursor: default; background: #f0f9ff; border-color: #7dd3fc;
+  border-left: 3px solid var(--primary);
+}
+.cf-est-row-current:hover { background: #f0f9ff; }
+.cf-est-type-ico { display: inline-block; margin-right: 2px; }
+.cf-current-tag { font-size: 11px; font-weight: 400; color: var(--primary); font-style: italic; }
+.cf-goto-docs { width: 100%; }
 
 /* Customer notes */
 .cf-notes-wrap { margin-bottom: 14px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fafbfc; }

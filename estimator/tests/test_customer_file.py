@@ -20,6 +20,14 @@ None of these produced an error when they were broken:
   * Every button in the file passes the customer's name through an inline
     onclick. esc() escapes for HTML but not for the JS string literal, so
     O'Brien's buttons were a syntax error and did nothing at all.
+
+A later pass moved estimate creation out of this modal entirely, into the
+Documents door on the Customer hub — because the modal's "＋ Create New
+Estimate" dropped a rep onto the exact same screen a brand-new customer sees
+("Not saved yet", the typed label shown nowhere) with no sign this was
+estimate #2 for someone who already had one. The Documents door now lists
+every estimate for the loaded customer — including the one on screen right
+now, even before its first save — and is where a new one gets started.
 """
 import json
 import os
@@ -192,14 +200,104 @@ def test_the_create_button_groups_on_the_shared_key():
 def test_the_commercial_type_is_offered_when_creating_the_next_estimate():
     """Commercial reached the sidebar and never reached this dialog, so the
     only way to make a commercial estimate for an existing customer was to
-    start from scratch and retype their details."""
+    start from scratch and retype their details. The dialog lives on the
+    Documents door now, not the modal — this must keep holding there."""
     src = _appjs()
-    i = src.index('cf-create-fields')
-    dialog = src[i:src.index('cf-timeline-hd', i)]
+    dialog = _fn_body(src, 'renderDocumentsPage', code_only=True)
     for t in ('retail', 'insurance', 'commercial'):
-        assert "cfSetType('%s')" % t in dialog, t
-    assert 'ESTIMATE_TYPES' in _fn_body(src, 'cfSetType'), \
+        assert "docSetType('%s')" % t in dialog, t
+    assert 'ESTIMATE_TYPES' in _fn_body(src, 'docSetType'), \
         'drive the active state off ESTIMATE_TYPES so a fourth type cannot be missed here'
+
+
+# ── creation moved into the Documents door ──────────────────────────────
+
+def test_the_create_form_is_gone_from_the_customer_file_modal():
+    """The modal's job narrowed to finding a customer, not creating for one —
+    a leftover copy of the form here would let the two drift out of sync."""
+    src = _appjs()
+    assert 'function cfToggleCreate' not in src
+    assert 'function cfSetType' not in src
+    assert 'function cfCreateEstimate' not in src
+    body = _fn_body(src, 'renderCustomerFile', code_only=True)
+    assert 'cf-create-body' not in body and 'cf-label-input' not in body
+
+
+def test_the_create_form_lives_on_the_documents_door():
+    src = _appjs()
+    assert 'function docToggleCreate' in src
+    assert 'function docSetType' in src
+    assert 'function docCreateEstimate' in src
+    body = _fn_body(src, 'renderDocumentsPage', code_only=True)
+    assert 'doc-create-body' in body and 'doc-label-input' in body
+
+
+def test_the_modal_create_button_hands_off_to_documents():
+    """Clicking "＋ New Estimate for X" in the modal must land the rep on
+    Documents with the right customer's context loaded, not just close and
+    leave them wherever they were."""
+    body = _fn_body(_appjs(), 'cfGotoNewEstimate')
+    assert 'doLoadEstimate' in body
+    assert "switchPage('documents')" in body
+    assert '_docCreatePending = true' in body
+
+
+def test_documents_opens_the_create_form_when_handed_off_from_the_modal():
+    body = _fn_body(_appjs(), 'renderDocumentsPage', code_only=True)
+    assert '_docCreatePending' in body and 'docToggleCreate(true)' in body
+
+
+def test_the_new_estimate_button_is_not_offered_with_zero_estimates():
+    """The modal's 📁 button appears as soon as a customer name is typed —
+    including while a rep is mid-creating that customer's very first, unsaved
+    estimate, when the match list is empty. There is no "most recent
+    estimate" to hand off to in that case, so the button must not render
+    (estimates[0] would be undefined) — the rep is already on the only
+    estimate this customer has."""
+    body = _fn_body(_appjs(), 'renderCustomerFile', code_only=True)
+    m = re.search(r'\$\{estimates\.length \? `(.*?)` : `(.*?)`\}', body, re.S)
+    assert m, 'the create-button section must branch on estimates.length'
+    has_estimates, zero_estimates = m.group(1), m.group(2)
+    assert 'cfGotoNewEstimate' in has_estimates and 'estimates[0]' in has_estimates
+    assert 'cfGotoNewEstimate' not in zero_estimates, \
+        'zero estimates means nothing to hand off to — the button must not appear'
+
+
+# ── the Documents door lists every estimate, including the unsaved one ─────
+
+def test_the_documents_door_groups_on_the_shared_key():
+    body = _fn_body(_appjs(), 'docEstimateListHtml', code_only=True)
+    assert 'custKey' in body
+    assert '.includes(' not in body, \
+        "substring grouping put every Smithson into Jon Smith's estimate list"
+
+
+def test_the_current_row_is_not_clickable():
+    """Reloading the estimate you're already looking at is a wasted request
+    and, worse, a confusing no-op click."""
+    body = _fn_body(_appjs(), 'estRowHtml')
+    assert re.search(r"current \? '' :", body), \
+        'the current row must not carry a doLoadEstimate click handler'
+
+
+def test_an_unsaved_estimate_is_never_filtered_out_of_its_own_list():
+    """The literal bug reported: create estimate #2 for a customer and, before
+    the first autosave, it must already show up here under its typed label —
+    not look indistinguishable from starting a whole new customer."""
+    body = _fn_body(_appjs(), 'docEstimateListHtml', code_only=True)
+    assert 'estimate_id: S.estimate_id || null' in body, \
+        'the current row must be built even when S.estimate_id is still null'
+    assert re.search(r'\[estRowHtml\(currentRow', body), \
+        'the current (possibly unsaved) estimate must always lead the list'
+
+
+def test_every_estimate_type_gets_a_visible_icon_even_with_a_custom_label():
+    """A custom label used to swallow the type entirely — an Insurance
+    estimate with a label like "Storm Claim" looked identical to a Retail
+    one. The icon must render regardless of whether a label is set."""
+    body = _fn_body(_appjs(), 'estRowHtml')
+    assert 'EST_TYPE_ICON[e.estimate_type]' in body
+    assert 'cf-est-label' in body and 'icon' in body
 
 
 # ── the customer file is reachable from the lists reps actually read ───────

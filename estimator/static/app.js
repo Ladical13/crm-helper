@@ -2025,7 +2025,7 @@ function switchPage(page) {
   if (page === 'options')  renderOptionsPage();
   if (page === 'products') renderProductsPage();
   if (page === 'report')   renderConditionPage();
-  if (page === 'documents') renderDocumentsPage();
+  if (page === 'documents') { renderDocumentsPage(); refreshDocCustData(); }
   if (page === 'client')   renderClientPage();
   if (page === 'visualizer') renderVisualizerPage();
 }
@@ -2081,6 +2081,7 @@ function renderSidebar() {
   renderCrmLinkBadge();
   renderSentLockBanner();
   renderEstStatusBar();
+  renderEstLabelBadge();
   // Show "Customer File" button only when a customer name is present
   const cfBtn = document.getElementById('cf-open-btn');
   if (cfBtn) cfBtn.style.display = (S.customer && S.customer.name) ? '' : 'none';
@@ -2123,6 +2124,25 @@ function renderEstNum() {
     el.textContent = '';
     el.title = '';
   }
+}
+
+// Which estimate a rep is actually looking at is otherwise invisible once
+// they leave the Customer hub — the typed label lived only on S.estimate_label
+// and was never shown again, so two estimates for the same customer looked
+// identical from inside the builder. Sibling to #estimate-number, never
+// nested inside it (that element is hidden on mobile — see the note on
+// #est-status-badge above the same trap). Clicking jumps to Documents;
+// switchPage() already autosaves on navigate, so nothing is lost.
+function renderEstLabelBadge() {
+  const el = document.getElementById('estimate-label-badge');
+  if (!el) return;
+  const name = (S.customer && S.customer.name) || '';
+  if (!name) { el.style.display = 'none'; el.textContent = ''; return; }
+  const label = (S.estimate_label || '').trim() || (EST_TYPE_LABEL[S.estimate_type] || EST_TYPE_LABEL.retail);
+  const n = custEstimateCount(name);
+  el.innerHTML = esc(label) + (n > 1 ? ` <span class="dash-cf-btn">📁 ${n}</span>` : '');
+  el.title = 'This customer’s estimates — click to open Documents';
+  el.style.display = '';
 }
 
 /* ── Signed contract, front and centre ──────────────────────────────────
@@ -9308,30 +9328,47 @@ async function saveCustomerNotes(name, text) {
   }
 }
 
-async function cfSaveLabel(estimateId, label) {
-  // Patch the label on the server; also update _dashData so the customer file re-renders correctly
-  try {
-    await fetch(`/api/estimates/${estimateId}/label`, {
-      method:'PATCH', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({label}),
-    });
-    const e = _dashData.find(x=>x.estimate_id===estimateId);
-    if (e) e.estimate_label = label;
-    // If this is the currently open estimate, update S too
-    if (S.estimate_id === estimateId) { S.estimate_label = label; setDirty(); }
-  } catch {}
-}
+const EST_TYPE_ICON  = {insurance:'🏛', commercial:'🏢'};
+const EST_TYPE_LABEL = {retail:'Retail Estimate', insurance:'Insurance Estimate', commercial:'Commercial Estimate'};
+const EST_STATUS_CHIPS = {
+  signed: '<span class="dash-chip dash-chip-signed">✓ Signed</span>',
+  viewed: '<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
+  sent:   '<span class="dash-chip dash-chip-sent">📤 Sent</span>',
+  draft:  '<span class="dash-chip dash-chip-draft">Draft</span>',
+  lost:   '<span class="dash-chip dash-chip-lost">✗ Lost</span>',
+};
 
-let _cfCreateOpen = false;
-function cfToggleCreate() { _cfCreateOpen=!_cfCreateOpen; const el=document.getElementById('cf-create-body'); if(el) el.style.display=_cfCreateOpen?'':'none'; }
+// One row shape for "an estimate belonging to a customer" — shared by the
+// Customer File modal's timeline and the Documents door's estimate list, so
+// the two can't quietly drift into showing different things for the same
+// estimate. `current` marks the row as the one already on screen: non-
+// clickable (reloading yourself is a wasted request), visually distinct.
+// The type icon renders even when a custom label is set — a custom label
+// used to swallow the type entirely, so a rep could not tell an Insurance
+// estimate from a Retail one once either had a label.
+function estRowHtml(e, {current=false, onClickExtra=''}={}) {
+  const st = estStatusOf(e);
+  const enum_ = e.estimate_id ? 'EST-' + e.estimate_id.split('-')[0].toUpperCase() : '';
+  const icon = EST_TYPE_ICON[e.estimate_type] || '🏠';
+  const label = e.estimate_label || EST_TYPE_LABEL[e.estimate_type] || EST_TYPE_LABEL.retail;
+  const rowCls = 'cf-est-row' + (current ? ' cf-est-row-current' : '');
+  const click = current ? '' : ` onclick="doLoadEstimate('${esc(e.estimate_id)}')${onClickExtra}"`;
+  return `<div class="${rowCls}"${click}>
+      <div class="cf-est-main">
+        <div class="cf-est-label"><span class="cf-est-type-ico" title="${esc(label)}">${icon}</span> ${esc(label)}${current ? ' <span class="cf-current-tag">— open now</span>' : ''}</div>
+        <div class="cf-est-id">${esc(enum_ || 'unsaved')} · ${esc(e.estimate_date||'')} · ${esc(cap(e.salesperson||''))}</div>
+      </div>
+      <div class="cf-est-side">
+        <strong>${fmtCur(e.total||0)}</strong>
+        ${EST_STATUS_CHIPS[st]||''}
+        ${e.signed?`<a href="/api/estimates/${esc(e.estimate_id)}/signed" target="_blank" onclick="event.stopPropagation()" class="cf-dl" title="Download signed contract">📄</a>`:''}
+      </div>
+    </div>`;
+}
 
 function renderCustomerFile(name, estimates) {
   const el = document.getElementById('customer-file-body');
   if(!el) return;
-  const chips={signed:'<span class="dash-chip dash-chip-signed">✓ Signed</span>',
-               viewed:'<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
-               sent:'<span class="dash-chip dash-chip-sent">📤 Sent</span>',
-               draft:'<span class="dash-chip dash-chip-draft">Draft</span>'};
   const totalSigned = estimates.filter(e=>estStatusOf(e)==='signed').reduce((s,e)=>s+(e.total||0),0);
   const firstName = name.split(' ')[0]||name;
 
@@ -9354,78 +9391,38 @@ function renderCustomerFile(name, estimates) {
         onblur="saveCustomerNotes('${jsq(name)}',this.value)"></textarea>
     </div>
 
-    <div class="cf-create-section">
-      <button class="cf-create-toggle" onclick="cfToggleCreate()">
-        <span>＋ Create New Estimate</span>
-        <span class="cf-create-arrow">▾</span>
-      </button>
-      <div id="cf-create-body" class="cf-create-body" style="display:none">
-        <div class="cf-create-fields">
-          <div class="field-group">
-            <label>Estimate Label <span style="color:var(--danger)">*</span></label>
-            <input type="text" id="cf-label-input" placeholder="e.g. Roof – Initial, Siding Quote, Re-roof with Gutters"
-              onkeydown="if(event.key==='Enter')cfCreateEstimate('${jsq(name)}')">
-          </div>
-          <div class="field-group">
-            <label>Type</label>
-            <div class="toggle-row">
-              <button class="toggle-btn active" id="cf-type-retail"     onclick="cfSetType('retail')">🏠 Retail</button>
-              <button class="toggle-btn"        id="cf-type-insurance"  onclick="cfSetType('insurance')">🏛 Insurance</button>
-              <button class="toggle-btn"        id="cf-type-commercial" onclick="cfSetType('commercial')">🏢 Commercial</button>
-            </div>
-          </div>
-        </div>
-        <button class="btn-primary" onclick="cfCreateEstimate('${jsq(name)}')">
-          Create Estimate → ${esc(firstName)}
-        </button>
-      </div>
-    </div>
-
     <div class="cf-timeline-hd">All Estimates</div>
     <div class="cf-timeline">
-      ${estimates.length ? estimates.map(e=>{
-        const st=estStatusOf(e);
-        const enum_=e.estimate_id?'EST-'+e.estimate_id.split('-')[0].toUpperCase():'';
-        const label=e.estimate_label||(e.estimate_type==='insurance'?'Insurance Estimate':e.estimate_type==='commercial'?'Commercial Estimate':'');
-        return `<div class="cf-est-row" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeCustomerFile()">
-          <div class="cf-est-main">
-            <div class="cf-est-label">${esc(label||'Untitled estimate')}${!label?` <span class="cf-label-hint">— click to add label</span>`:''}</div>
-            <div class="cf-est-id">${esc(enum_)} · ${esc(e.estimate_date||'')} · ${esc(cap(e.salesperson||''))}</div>
-          </div>
-          <div class="cf-est-side">
-            <strong>${fmtCur(e.total||0)}</strong>
-            ${chips[st]||''}
-            ${e.signature?`<a href="/api/estimates/${esc(e.estimate_id)}/signed" target="_blank" onclick="event.stopPropagation()" class="cf-dl" title="Download signed contract">📄</a>`:''}
-          </div>
-        </div>
-        <div id="cf-atts-${esc(e.estimate_id)}" class="cf-attachments-row"></div>`;
-      }).join('') : '<div class="cf-empty">No estimates yet — create one above.</div>'}
-    </div>`;
-  _cfCreateOpen = false;
-  // The markup above always renders Retail active, so the remembered
-  // choice from the last customer must not outlive it.
-  _cfType = 'retail';
+      ${estimates.length ? estimates.map(e=>
+        estRowHtml(e, {onClickExtra: ";closeCustomerFile();switchPage('documents')"}) +
+        `<div id="cf-atts-${esc(e.estimate_id)}" class="cf-attachments-row"></div>`
+      ).join('') : '<div class="cf-empty">No estimates yet.</div>'}
+    </div>
+
+    ${estimates.length ? `
+    <button class="btn-primary cf-goto-docs" onclick="cfGotoNewEstimate('${jsq(name)}','${esc(estimates[0].estimate_id)}')">
+      ＋ New Estimate for ${esc(firstName)}
+    </button>` : `
+    <p class="cf-empty-hint">You're creating their first estimate now — save it and it will show up here.</p>`}`;
 }
 
-let _cfType = 'retail';
-// Driven off ESTIMATE_TYPES rather than a hand-written pair, so a fourth
-// estimate type cannot reach the sidebar and miss this dialog — which is how
-// Commercial went missing here for the whole life of the customer file.
-function cfSetType(t) {
-  _cfType = ESTIMATE_TYPES.includes(t) ? t : 'retail';
-  ESTIMATE_TYPES.forEach(x => {
-    const el = document.getElementById('cf-type-' + x);
-    if (el) el.classList.toggle('active', x === _cfType);
-  });
-}
-
-async function cfCreateEstimate(name) {
-  const labelInput = document.getElementById('cf-label-input');
-  const label = (labelInput?.value||'').trim();
-  if(!label) { labelInput?.focus(); labelInput?.classList.add('cf-input-error'); return; }
-  labelInput?.classList.remove('cf-input-error');
-  newEstimateForCustomer(name, label, _cfType);
+// The modal's job is finding a customer, not creating for them — creation
+// lives in the Documents door now, alongside the customer's other estimates,
+// so a rep sees what they already have before starting another one. This
+// loads the most recent estimate (which carries the right customer/CRM-link
+// context) then hands off to Documents with the create form already open.
+//
+// Only called with a real `mostRecentId` — renderCustomerFile only renders
+// this button when `estimates.length > 0`. A zero-estimate customer file is
+// reachable (the sidebar's 📁 button shows as soon as a name is typed, even
+// on a brand-new unsaved estimate with nothing to search against yet), but in
+// that case there is no "most recent estimate" to load — the rep is already
+// on the only estimate this customer has, so the button is simply not shown.
+async function cfGotoNewEstimate(name, mostRecentId) {
+  await doLoadEstimate(mostRecentId);
   closeCustomerFile();
+  _docCreatePending = true;
+  switchPage('documents');
 }
 
 // Load and display attachments for each estimate in the customer file
@@ -10261,6 +10258,12 @@ async function doLoadEstimate(id) {
     const _otherQtyHealed = healOtherZeroQty(S);
     activeTrade='roofing'; closeModal(); setClean();
     if (_otherQtyHealed) setDirty();   // let the 60s autosave persist the fix
+    // The label badge's "N other estimates" count reads _custCounts — make
+    // sure it's populated regardless of how a rep got here (e.g. "Open"
+    // without ever visiting Home/Dashboard first this session).
+    if (!_dashData.length) {
+      try { const r = await fetch('/api/estimates'); _dashData = await r.json(); rebuildCustCounts(); } catch {}
+    }
     renderAll(); switchPage('client');
     warmPrintPhotos();
     backfillPdfPages();
@@ -12218,15 +12221,133 @@ function renderClientPage() {
 
 let _docGenerator = null;   // which generator form is open: 'permit' | null
 
+// ── Documents door as the customer's estimate hub ───────────────────────
+// Every estimate for the customer currently loaded, plus the create form
+// that used to live in the Customer File modal. Kept separate from that
+// modal's own (deleted) `_cf*`/`cf*` create state — `doc`-prefixed ids and
+// vars so the modal and this door can never collide if both are mounted.
+let _docCreateOpen = false;
+let _docCreateType = 'retail';
+// Set by cfGotoNewEstimate() right before navigating here, so the create
+// form opens itself on arrival instead of the rep having to find the button.
+let _docCreatePending = false;
+
+function docToggleCreate(forceOpen) {
+  _docCreateOpen = forceOpen === true ? true : !_docCreateOpen;
+  const el = document.getElementById('doc-create-body');
+  if (el) el.style.display = _docCreateOpen ? '' : 'none';
+  if (_docCreateOpen) document.getElementById('doc-label-input')?.focus();
+}
+
+// Driven off ESTIMATE_TYPES, same reason as the modal's old cfSetType: a
+// fourth estimate type must not silently miss this dialog again.
+function docSetType(t) {
+  _docCreateType = ESTIMATE_TYPES.includes(t) ? t : 'retail';
+  ESTIMATE_TYPES.forEach(x => {
+    const el = document.getElementById('doc-type-' + x);
+    if (el) el.classList.toggle('active', x === _docCreateType);
+  });
+}
+
+async function docCreateEstimate() {
+  const labelInput = document.getElementById('doc-label-input');
+  const label = (labelInput?.value || '').trim();
+  if (!label) { labelInput?.focus(); labelInput?.classList.add('cf-input-error'); return; }
+  labelInput?.classList.remove('cf-input-error');
+  const name = (S.customer && S.customer.name) || '';
+  await newEstimateForCustomer(name, label, _docCreateType);
+  _docCreateOpen = false;
+  _docCreateType = 'retail';
+  // newEstimateForCustomer/newEstimateAction land on the client hub — bring
+  // the rep straight back to Documents so the new draft is visible in the
+  // list they were just looking at, distinguished by the label they just typed.
+  switchPage('documents');
+}
+
+// The estimate list panel's content: every estimate for the customer
+// currently loaded, with whichever one is actually on screen marked current
+// and shown FIRST — including when it has never been saved. That unsaved-row
+// case is the literal bug being fixed: create estimate #2 for a customer and,
+// before the first autosave, it must already be visible and distinguishable
+// here, not indistinguishable from a blank new customer.
+function docEstimateListHtml() {
+  const name = (S.customer || {}).name || '';
+  if (!name) return '<p class="pm-hint">Add a customer name to see their estimates here.</p>';
+  const key = custKey(name);
+  const others = _dashData
+    .filter(e => custKey(e.customer_name) === key && e.estimate_id !== S.estimate_id)
+    .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''));
+  const currentRow = {
+    estimate_id: S.estimate_id || null,
+    customer_name: name,
+    estimate_label: S.estimate_label || '',
+    estimate_type: S.estimate_type || 'retail',
+    estimate_date: S.estimate_date || '',
+    salesperson: S.salesperson || '',
+    total: (selectedTotal()||0) + (insuranceTotal()||0),
+    status: S.status || 'draft',
+    signed: !!S.signature,
+    sent: !!S.share_token,
+    first_viewed_at: S.first_viewed_at || '',
+  };
+  const rows = [estRowHtml(currentRow, {current:true})].concat(others.map(e => estRowHtml(e)));
+  return `<div class="cf-timeline">${rows.join('')}</div>`;
+}
+
+// Re-fetches the shared estimate cache and, if the rep is still on Documents
+// when it lands, refreshes just the list panel. Only called on navigation
+// INTO Documents (from switchPage) — renderDocumentsPage() itself stays
+// synchronous off the cache, since it also runs from 11 in-page refresh call
+// sites (upload a file, delete one, generate a document) that must not pay
+// for a network round-trip just to redraw the attachments panel.
+async function refreshDocCustData() {
+  try {
+    const r = await fetch('/api/estimates');
+    _dashData = await r.json();
+  } catch { return; }
+  rebuildCustCounts();
+  if (activePage === 'documents') {
+    const el = document.getElementById('doc-est-list');
+    if (el) el.innerHTML = docEstimateListHtml();
+  }
+}
+
 function renderDocumentsPage() {
   const el = document.getElementById('documents-content');
   if (!el) return;
   const atts = S.attachments || [];
+  const custName = (S.customer||{}).name || '';
   el.innerHTML = `
   <div class="pm-wrap">
-    <button class="doc-back" onclick="switchPage('client')">← ${esc((S.customer||{}).name || 'Customer')}</button>
+    <button class="doc-back" onclick="switchPage('client')">← ${esc(custName || 'Customer')}</button>
+
     <div class="panel">
-      <div class="panel-header"><h3>📁 Documents — ${esc((S.customer||{}).name || 'this job')}</h3>
+      <div class="panel-header"><h3>📁 Estimates — ${esc(custName || 'this job')}</h3>
+        ${custName ? `<button class="doc-upload-btn" onclick="docToggleCreate()">＋ New Estimate</button>` : ''}
+      </div>
+      <div id="doc-est-list">${docEstimateListHtml()}</div>
+      <div id="doc-create-body" class="cf-create-body" style="display:none">
+        <div class="cf-create-fields">
+          <div class="field-group">
+            <label>Estimate Label <span style="color:var(--danger)">*</span></label>
+            <input type="text" id="doc-label-input" placeholder="e.g. Roof – Initial, Siding Quote, Re-roof with Gutters"
+              onkeydown="if(event.key==='Enter')docCreateEstimate()">
+          </div>
+          <div class="field-group">
+            <label>Type</label>
+            <div class="toggle-row">
+              <button class="toggle-btn active" id="doc-type-retail"     onclick="docSetType('retail')">🏠 Retail</button>
+              <button class="toggle-btn"        id="doc-type-insurance"  onclick="docSetType('insurance')">🏛 Insurance</button>
+              <button class="toggle-btn"        id="doc-type-commercial" onclick="docSetType('commercial')">🏢 Commercial</button>
+            </div>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="docCreateEstimate()">Create Estimate</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><h3>📎 Files — ${esc(custName || 'this job')}</h3>
         <button class="doc-upload-btn" onclick="document.getElementById('doc-pdf-input').click()">📎 Upload PDF</button>
         <input type="file" id="doc-pdf-input" accept="application/pdf,.pdf" multiple style="display:none"
           onchange="docUploadPdf(this.files)">
@@ -12325,6 +12446,9 @@ function renderDocumentsPage() {
   if (_docGenerator === 'permit')   renderPermitForm();
   if (_docGenerator === 'roofcert') renderRoofCertForm();
   if (S.signature && S.estimate_id) loadChangeOrders();
+  // cfGotoNewEstimate() sets this right before navigating here, so the
+  // create form opens itself rather than the rep having to find the button.
+  if (_docCreatePending) { _docCreatePending = false; docToggleCreate(true); }
 }
 
 /* ── Change orders (signed addendums on an accepted estimate) ─────────
