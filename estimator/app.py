@@ -929,6 +929,10 @@ def save_estimate(est_id):
         data.pop('change_orders', None)
         if existing and existing.get('change_orders'):
             data['change_orders'] = existing['change_orders']
+        # Paid inference throttling is server-owned, even on a full-doc save.
+        data.pop('_visualizer_detection_attempts', None)
+        if existing and existing.get('_visualizer_detection_attempts'):
+            data['_visualizer_detection_attempts'] = existing['_visualizer_detection_attempts']
         return data
 
     est_update(est_id, _merge)
@@ -1196,8 +1200,8 @@ def delete_photo(est_id, filename):
 
 
 # ── Visualizer ────────────────────────────────────────────────────────────
-# The Visualizer tab lets the rep upload a photo of the house, paint roof and
-# siding masks, then produce a Good/Better/Best rendering with colors picked
+# The Visualizer tab lets the rep upload a photo of the house, paint roof,
+# siding, and door masks, then produce a Good/Better/Best rendering with colors picked
 # from the actual estimate bundles. State lives entirely under `est.visualizer`
 # — a top-level key the server does not whitelist, so it round-trips through
 # the normal PUT unchanged (see SERVER_MANAGED_FIELDS and _merge).
@@ -1225,7 +1229,7 @@ def visualizer_asset(est_id):
     est.visualizer. Body: JSON {kind, tier?, role?, content_b64, ext}.
 
     kind='base'   -> visualizer.base_image
-    kind='mask'   -> visualizer.roof_mask | siding_mask (role required)
+    kind='mask'   -> visualizer.roof_mask | siding_mask | door_mask (role required)
     kind='render' -> visualizer.tier_renders[tier] (tier required)
     """
     if not _safe_path_id(est_id):
@@ -1247,7 +1251,7 @@ def visualizer_asset(est_id):
         return jsonify({'error': 'invalid ext'}), 400
     if kind == 'render' and tier not in ('good', 'better', 'best'):
         return jsonify({'error': 'render requires tier'}), 400
-    if kind == 'mask' and role not in ('roof', 'siding'):
+    if kind == 'mask' and role not in ('roof', 'siding', 'door'):
         return jsonify({'error': 'mask requires role'}), 400
 
     import base64
@@ -1285,6 +1289,9 @@ def visualizer_asset(est_id):
         vz = doc.setdefault('visualizer', {})
         if kind == 'base':
             vz['base_image'] = stored_ref
+            for field in ('roof_mask', 'siding_mask', 'door_mask'):
+                vz.pop(field, None)
+            vz['tier_renders'] = {}
         elif kind == 'mask':
             vz[f'{role}_mask'] = stored_ref
         else:
@@ -1325,6 +1332,82 @@ def visualizer_state(est_id):
     if doc is None:
         return jsonify({'error': 'estimate not found'}), 404
     return jsonify({'visualizer': doc.get('visualizer', {})})
+
+
+# ── Optional automatic exterior surface selection ──────────────────────────
+
+@app.route('/api/visualizer/capabilities')
+def visualizer_capabilities():
+    from estimator import exterior_detection as detection
+    return jsonify({'auto_detect': detection.configured(), 'provider': 'fal / SAM 3'})
+
+
+@app.route('/api/estimates/<est_id>/visualizer/detection', methods=['POST', 'GET'])
+def visualizer_detection(est_id):
+    """Submit/poll one surface without tying up a web worker during inference.
+
+    Tickets expire after ten minutes and bind the upstream job to the current
+    user, estimate, and photo. They carry no credential. This endpoint never
+    publishes the results to the estimate: the rep reviews and saves them.
+    """
+    from itsdangerous import URLSafeTimedSerializer, BadData
+    from estimator import exterior_detection as detection
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Save the estimate before detecting surfaces.'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    if not detection.configured():
+        return jsonify({'error': 'Automatic selection needs setup: enable EXTERIOR_AUTO_DETECT and configure FAL_KEY on the server.'}), 503
+    signer = URLSafeTimedSerializer(app.secret_key, salt='exterior-detection-v1')
+    try:
+        if request.method == 'GET':
+            try:
+                ticket = signer.loads(request.args.get('ticket', ''), max_age=600)
+            except BadData:
+                return jsonify({'error': 'Detection session expired or is invalid.'}), 400
+            if ticket.get('estimate_id') != est_id or ticket.get('user') != _current_user():
+                return _forbid()
+            result = detection.poll(ticket['job'])
+            result.update(role=ticket['role'], photo_key=ticket['photo_key'])
+            return jsonify(result)
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or body.get('role') not in detection.PROMPTS:
+            return jsonify({'error': 'Choose roof, siding, or door.'}), 400
+        role = body['role']
+        photo_key = body.get('photo_key')
+        if not isinstance(photo_key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', photo_key):
+            return jsonify({'error': 'Invalid photo identifier.'}), 400
+        # Validate before consuming a submission slot or contacting fal.
+        detection.decode_image(body.get('image'))
+        limited = False
+        now = time.time()
+
+        def reserve(doc):
+            nonlocal limited
+            if doc is None:
+                limited = True
+                return None
+            attempts = doc.setdefault('_visualizer_detection_attempts', {})
+            if now - attempts.get(role, 0) < 30:
+                limited = True
+            else:
+                attempts[role] = now
+            return doc
+
+        est_update(est_id, reserve)
+        if limited:
+            return jsonify({'error': 'Please wait 30 seconds before detecting this surface again.'}), 429
+        job = detection.submit(role, body['image'])
+        ticket = signer.dumps({'estimate_id': est_id, 'user': _current_user(),
+                               'role': role, 'photo_key': photo_key, 'job': job})
+        return jsonify({'ticket': ticket, 'status': 'pending'}), 202
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except detection.DetectionError as exc:
+        return jsonify({'error': str(exc)}), 502
 
 
 # ── RoofR PDF import ───────────────────────────────────────────────────────
@@ -4305,6 +4388,7 @@ def _cv_visualizer_block(est):
         label = {'good': 'Good', 'better': 'Better', 'best': 'Best'}[t]
         rs = (sels.get('roofing') or {}).get(t) or {}
         ss = (sels.get('siding') or {}).get(t) or {}
+        ds = (sels.get('doors') or {}).get(t) or {}
         cap = []
         if rs.get('color_name'):
             cap.append('Roof: ' + he(str(rs['color_name'])))
@@ -4314,6 +4398,11 @@ def _cv_visualizer_block(est):
             if sname:
                 side_lbl += ' <span class="cvvz-style">(' + he(str(sname)) + ')</span>'
             cap.append(side_lbl)
+        if ds.get('option_name'):
+            door_lbl = 'Door: ' + he(str(ds['option_name']))
+            if ds.get('color_name'):
+                door_lbl += ' <span class="cvvz-style">(' + he(str(ds['color_name'])) + ')</span>'
+            cap.append(door_lbl)
         caption = '<br>'.join(cap) if cap else '&nbsp;'
         src = '/uploads/' + he(renders[t])
         cards += (f'<figure class="cvvz-card">'
@@ -4325,7 +4414,8 @@ def _cv_visualizer_block(est):
   <h2 data-eyebrow="Visualize">See It on Your Home</h2>
   <p class="cvvz-sub">Your home with the selected options blended onto your
   photo. Colors are indicative &mdash; the real material may look slightly
-  different in person.</p>
+  different in person. Door previews show approximate finish only; confirm
+  exact panel, glass, and hardware with your ProVia selection.</p>
   <div class="cvvz-grid">{cards}</div>
 </div>
 <style>
@@ -7381,7 +7471,8 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
     pdf.multi_cell(W, 4.2, _pdf_rich(
         'These renderings show the selected Good/Better/Best package '
         'options blended onto your home photo. Colors are indicative and '
-        'may vary from the manufacturer swatch.'))
+        'may vary from the manufacturer swatch. Door previews show finish only; '
+        'confirm the exact panel, glass and hardware separately.'))
     pdf.ln(3)
 
     # Three side-by-side landscape thumbnails. Sizing keeps the same layout
@@ -7427,6 +7518,7 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
         # saved, so the customer can tie the picture to what they're buying.
         sel = ((vz.get('selections') or {}).get('roofing') or {}).get(tier) or {}
         sel_s = ((vz.get('selections') or {}).get('siding') or {}).get(tier) or {}
+        sel_d = ((vz.get('selections') or {}).get('doors') or {}).get(tier) or {}
         caption_parts = []
         if sel.get('color_name'):
             caption_parts.append(f"Roof: {sel['color_name']}")
@@ -7436,6 +7528,11 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
             if style_bit:
                 side_lbl += f" ({style_bit})"
             caption_parts.append(side_lbl)
+        if sel_d.get('option_name'):
+            door_lbl = 'Door: ' + str(sel_d['option_name'])
+            if sel_d.get('color_name'):
+                door_lbl += f" ({sel_d['color_name']})"
+            caption_parts.append(door_lbl)
         pdf.set_xy(x, img_y + thumb_h + 1.5)
         pdf.set_font(_S(pdf), '', 7)
         pdf.multi_cell(thumb_w, 3.2,
@@ -13308,6 +13405,37 @@ _LATE_BUNDLE_PRODUCTS = {
     'b_edco_8':           ['sa_corner_in', 'sa_kickout', 'sa_sealant', 'sa_edco_fasteners', 'sa_rot_repair'],
 }
 
+# Visual-only exterior-door catalogue. It deliberately sits outside the
+# estimating catalog: choosing a door here changes the customer preview, not
+# scope or pricing. A manager may replace this list in the saved price book
+# with the exact door lines the company carries.
+# Names verified against ProVia's current entry-door and paint-options pages
+# (2026-08-26). Hex values are approximate preview colors, not manufacturer
+# colorimetry. Series choices do NOT specify panel/glass/hardware, so never
+# apply the old generic repeating panel textures as if they were ProVia art.
+# https://www.provia.com/doors/entry-doors/
+# https://www.provia.com/doors/paint-options/
+_PROVIA_PREVIEW_COLORS = [
+    {'name': 'Snow Mist', 'hex': '#e9e7e1'},
+    {'name': 'Coal Black', 'hex': '#242424'},
+    {'name': 'Nightfall', 'hex': '#47494a'},
+    {'name': 'Rustic Bronze', 'hex': '#51463c'},
+    {'name': 'Geneva Blue', 'hex': '#425970'},
+    {'name': 'Forest Green', 'hex': '#334c40'},
+    {'name': 'Autumn Red', 'hex': '#823d36'},
+]
+EXTERIOR_DOOR_OPTIONS_SEED = [
+    {'id': 'provia-signet', 'name': 'ProVia Signet — Fiberglass',
+     'brand': 'ProVia', 'series': 'Signet', 'preview_only': True, 'pattern_id': '',
+     'colors': _PROVIA_PREVIEW_COLORS},
+    {'id': 'provia-ascent', 'name': 'ProVia Ascent — Fiberglass',
+     'brand': 'ProVia', 'series': 'Ascent', 'preview_only': True, 'pattern_id': '',
+     'colors': _PROVIA_PREVIEW_COLORS},
+    {'id': 'provia-legacy', 'name': 'ProVia Legacy — Steel',
+     'brand': 'ProVia', 'series': 'Legacy', 'preview_only': True, 'pattern_id': '',
+     'colors': _PROVIA_PREVIEW_COLORS},
+]
+
 
 def _ensure_bundle_catalogs(pb):
     """Inject each bundle trade's catalog/bundles/defaults into a price book that
@@ -13419,6 +13547,17 @@ def _ensure_bundle_catalogs(pb):
                         live['product_ids'].append(pid)
     for trade, bundle_id in SIMPLE_BUNDLE_DEFAULTS.items():
         pb.setdefault(trade + '_simple_default', bundle_id)
+    # Kept separate from saleable trade catalogs because the designer must
+    # never imply that a visual door choice has been added to an estimate.
+    # Retire the earlier generic placeholders in the menu. Existing estimate
+    # selections remain unchanged; do not silently relabel a saved design.
+    old_ids = {'steel-6-panel', 'fiberglass-3panel', 'fiberglass-glass', 'modern-flush'}
+    if 'exterior_doors' not in pb:
+        pb['exterior_doors'] = copy.deepcopy(EXTERIOR_DOOR_OPTIONS_SEED)
+    elif any(d.get('id') in old_ids for d in pb['exterior_doors']):
+        pb['exterior_doors'] = [d for d in pb['exterior_doors'] if d.get('id') not in old_ids]
+        have = {d.get('id') for d in pb['exterior_doors']}
+        pb['exterior_doors'].extend(copy.deepcopy(d) for d in EXTERIOR_DOOR_OPTIONS_SEED if d['id'] not in have)
     return pb
 
 

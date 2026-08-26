@@ -189,6 +189,248 @@ def test_asset_endpoint_validates_kind_role_tier(client):
         client.delete(f'/api/estimates/{eid}')
 
 
+def test_asset_endpoint_accepts_and_stores_a_door_mask(client):
+    """Doors are a third independent design layer, not a siding workaround."""
+    eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    try:
+        r = client.post(
+            f'/api/estimates/{eid}/visualizer/asset',
+            json={'kind': 'mask', 'role': 'door', 'ext': 'png',
+                  'content_b64': _ONE_PX_JPEG_B64},
+        )
+        assert r.status_code == 201, r.get_data(as_text=True)
+        fresh = client.get(f'/api/estimates/{eid}').get_json()
+        assert fresh['visualizer']['door_mask'] == r.get_json()['filename']
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+
+
+def test_pricebook_exposes_door_options_for_the_designer(client):
+    """Exterior door visual choices must arrive with every live price book."""
+    book = client.get('/api/pricebook').get_json()
+    assert book['exterior_doors']
+    assert all(d.get('name') and d.get('brand') == 'ProVia' and d.get('colors')
+               for d in book['exterior_doors'])
+
+
+def test_provia_replaces_placeholder_menu_without_mutating_custom_or_saved_choices(A):
+    book = {'exterior_doors': [{'id': 'steel-6-panel'}, {'id': 'custom-door', 'name': 'Dealer custom'}]}
+    A._ensure_bundle_catalogs(book)
+    assert {d['id'] for d in book['exterior_doors']} == {
+        'custom-door', 'provia-signet', 'provia-ascent', 'provia-legacy'}
+    assert all(not d.get('pattern_id') for d in book['exterior_doors'] if d.get('brand') == 'ProVia')
+    book['exterior_doors'][1]['colors'][0]['name'] = 'Manager edit'
+    assert A.EXTERIOR_DOOR_OPTIONS_SEED[0]['colors'][0]['name'] == 'Snow Mist'
+    empty = {'exterior_doors': []}
+    A._ensure_bundle_catalogs(empty)
+    assert empty['exterior_doors'] == []
+
+
+@pytest.fixture
+def detector(monkeypatch):
+    from estimator import exterior_detection as d
+    monkeypatch.setenv('EXTERIOR_AUTO_DETECT', '1')
+    monkeypatch.setenv('FAL_KEY', 'test-only-not-a-live-key')
+    # All tests must explicitly stub inference. No real customer image or
+    # billable model call can leave the suite even if local env keys exist.
+    monkeypatch.setattr(d, '_json', lambda *a, **kw: pytest.fail('Unmocked inference call'))
+    return d
+
+
+def _image_uri(image):
+    buf = io.BytesIO()
+    image.save(buf, 'PNG')
+    return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
+
+
+def test_detection_submit_disables_fal_payload_storage(monkeypatch):
+    from estimator import exterior_detection as d
+    monkeypatch.setenv('FAL_KEY', 'test-only-not-a-live-key')
+    captured = {}
+
+    class Response:
+        status_code = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def iter_content(self, _size):
+            yield b'{"request_id":"test"}'
+
+    def fake_request(method, url, **kwargs):
+        captured.update(method=method, url=url, **kwargs)
+        return Response()
+
+    monkeypatch.setattr(d.requests, 'request', fake_request)
+    assert d._json('POST', d.MODEL_URL, {'image_url': 'private'}) == {'request_id': 'test'}
+    assert captured['headers']['X-Fal-Store-IO'] == '0'
+    assert captured['headers']['X-Fal-Object-Lifecycle-Preference'] == (
+        '{"expiration_duration_seconds":3600}')
+    assert captured['headers']['Authorization'] == 'Key test-only-not-a-live-key'
+
+
+def test_detection_converts_binary_masks_to_alpha_and_rejects_low_confidence(detector):
+    from PIL import Image
+    mask = Image.new('L', (3, 2), 0)
+    mask.putpixel((1, 0), 255)
+    uri = _image_uri(mask)
+    result = detector.combine_masks({'masks': [{'url': uri}], 'scores': [0.9]}, (3, 2))
+    image = detector.decode_image(result['mask'])
+    assert image.getpixel((1, 0)) == (255, 255, 255, 255)
+    assert image.getpixel((0, 0))[3] == 0
+    assert detector.combine_masks({'masks': [{'url': uri}], 'scores': [0.1]}, (3, 2))['status'] == 'not_found'
+    assert detector.combine_masks({'masks': []}, (3, 2))['status'] == 'not_found'
+    with pytest.raises(detector.DetectionError):
+        detector.combine_masks({'masks': [{'url': uri}]}, (4, 3))
+    with pytest.raises(detector.DetectionError):
+        detector.combine_masks({'masks': [{'url': 'https://untrusted.invalid/image.png'}]}, (3, 2))
+
+
+def test_detection_requires_explicit_setup_and_existing_authorized_estimate(client, anon, detector, monkeypatch):
+    eid = client.post('/api/estimates', json={'salesperson': 'luke'}).get_json()['estimate_id']
+    endpoint = f'/api/estimates/{eid}/visualizer/detection'
+    try:
+        assert anon.post(endpoint, json={}).status_code == 401
+        with anon.session_transaction() as session:
+            session['user'] = 'someone-else'
+        assert anon.post(endpoint, json={}).status_code == 403
+        assert client.post('/api/estimates/not-real/visualizer/detection', json={}).status_code == 404
+        monkeypatch.delenv('EXTERIOR_AUTO_DETECT')
+        assert client.get('/api/visualizer/capabilities').get_json()['auto_detect'] is False
+        assert client.post(endpoint, json={}).status_code == 503
+        monkeypatch.setenv('EXTERIOR_AUTO_DETECT', '1')
+        assert client.post(endpoint, json={'role': 'other'}).status_code == 400
+        assert client.post(endpoint, json={'role': 'roof', 'photo_key': 'photo1', 'image': 'bad'}).status_code == 400
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+
+
+def test_detection_queue_ticket_scope_throttle_and_mask_round_trip(client, detector, monkeypatch):
+    from PIL import Image
+    uri = _image_uri(Image.new('RGB', (4, 3), 'white'))
+    rid = 'test-request'
+    root = 'https://queue.fal.run/fal-ai/sam-3/requests/' + rid
+    calls = []
+
+    def fake_json(method, url, payload=None):
+        calls.append((method, url, payload))
+        if method == 'POST':
+            assert payload['prompt'] == 'roof'
+            assert payload['sync_mode'] is True and payload['apply_mask'] is False
+            return {'request_id': rid, 'status_url': root + '/status', 'response_url': root}
+        if url.endswith('/status'):
+            return {'status': 'COMPLETED'}
+        return {'masks': [{'url': uri}], 'scores': [0.95]}
+
+    monkeypatch.setattr(detector, '_json', fake_json)
+    eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    other = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    endpoint = f'/api/estimates/{eid}/visualizer/detection'
+    body = {'role': 'roof', 'photo_key': 'photo1', 'image': uri}
+    try:
+        response = client.post(endpoint, json=body)
+        assert response.status_code == 202, response.get_json()
+        ticket = response.get_json()['ticket']
+        assert 'test-only-not-a-live-key' not in ticket
+        assert client.get(endpoint, query_string={'ticket': ticket + 'bad'}).status_code == 400
+        assert client.get(f'/api/estimates/{other}/visualizer/detection', query_string={'ticket': ticket}).status_code == 403
+        result = client.get(endpoint, query_string={'ticket': ticket}).get_json()
+        assert result['status'] == 'complete' and result['photo_key'] == 'photo1' and result['role'] == 'roof'
+        mask = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'mask', 'role': 'roof', 'ext': 'png', 'content_b64': result['mask']})
+        assert mask.status_code == 201
+        # A normal estimate save (or hostile stale client) cannot reset the
+        # submission cooldown and turn a click into unlimited paid requests.
+        client.put(f'/api/estimates/{eid}', json={'_visualizer_detection_attempts': {'roof': 1}})
+        assert client.post(endpoint, json=body).status_code == 429
+        assert len([c for c in calls if c[0] == 'POST']) == 1
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+        client.delete(f'/api/estimates/{other}')
+
+
+def test_detection_never_follows_untrusted_queue_urls(detector, monkeypatch):
+    from PIL import Image
+    monkeypatch.setattr(detector, '_json', lambda *a, **kw: {
+        'request_id': 'test', 'status_url': 'https://evil.invalid/status', 'response_url': 'https://evil.invalid/result'})
+    with pytest.raises(detector.DetectionError):
+        detector.submit('roof', _image_uri(Image.new('RGB', (2, 2), 'white')))
+
+
+def test_dropdowns_use_live_catalog_and_ignore_stale_detection_in_node():
+    import shutil
+    import subprocess
+    from pathlib import Path
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('node is required for designer UI behavior checks')
+    script = r"""
+const fs = require('fs'), vm = require('vm'), assert = require('assert/strict');
+const src = fs.readFileSync(process.argv[1], 'utf8');
+const from = src.indexOf('const _SIDING_PATTERN_SVG =');
+const to = src.indexOf('// ── Service Worker registration', from);
+const picker = {innerHTML: ''};
+const doc = {getElementById: id => id === 'vz-picker-body' ? picker : null, querySelector:()=>null,
+  querySelectorAll: () => [], createElement: () => ({getContext: () => ({drawImage(){}}), toDataURL: () => 'data:image/jpeg;base64,abcd'})};
+const context = vm.createContext({assert, document: doc, setTimeout: fn => fn(),
+  S: {estimate_id:'a', trades:{roofing:{tier_bundles:{better:'chosen'}}}},
+  priceBook: {roofing_tier_defaults:{good:'default',better:'default',best:'default'},
+    roofing_bundles:[{id:'default',name:'Default',product_ids:['m_default']},{id:'chosen',name:'Quoted',product_ids:['m_chosen']}],
+    roofing_catalog:[{id:'m_default', colors:[{name:'White',hex:'#ffffff'}]}, {id:'m_chosen', colors:[{name:'Black',hex:'#222222'}]}],
+    exterior_doors:[{id:'provia-signet',name:'ProVia Signet',preview_only:true,colors:[{name:'Snow Mist',hex:'#eeeeee'}]}]},
+  TIERS:['good','better','best'], setDirty(){}, esc:s=>String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'),
+  confirm:()=>true, alert:()=>{}});
+vm.runInContext(src.slice(from,to),context);
+vm.runInContext(`
+  _vzResetState();
+  assert.equal(_vzBundleFor('roofing','better').id, 'chosen');
+  _vzRenderPicker();
+  assert.equal(_vzGet().selections.roofing.good.color_name, 'White');
+  assert.equal(_vzGet().selections.roofing.better.color_name, 'Black');
+  assert(document.getElementById('vz-picker-body').innerHTML.includes('<select'));
+  assert(document.getElementById('vz-picker-body').innerHTML.includes('ProVia Signet'));
+  _vzChooseBundle('roofing','default');
+  assert.equal(S.trades.roofing.tier_bundles.better, 'chosen'); // no pricing mutation
+  _vzPickDoorOption('provia-signet');
+  assert.equal(_vzGet().selections.doors.better.preview_only, true);
+  assert.equal(_vzGet().selections.doors.better.pattern_id, '');
+  _vzPickDoorOption('');
+  assert.equal(_vzGet().selections.doors.better, undefined);
+  globalThis.oldState = vzState;
+  vzState.photoKey = 'first';
+  assert(_vzIsCurrent(vzState,'first'));
+  vzState.photoKey = 'second';
+  assert(!_vzIsCurrent(vzState,'first'));
+  S = {estimate_id:'b'};
+  assert(!_vzIsCurrent(oldState,'second'));
+  _vzResetState();
+  assert.equal(vzState.roofMask, null);
+`,context);
+// Exercise the asynchronous result boundary: another photo becomes current
+// while the submit request is in flight. No polling or pixel write may follow.
+vm.runInContext(`
+  vzCapabilities = {auto_detect:true};
+  vzState.photoImg = {}; vzState.canvas = {width:10,height:10};
+  vzState.photoKey = 'test-photo';
+  globalThis.submits = 0;
+  _vzDetectionJSON = async () => { submits++; S = {estimate_id:'c'}; return {ticket:'ticket'}; };
+  _vzRedrawAll = () => {};
+  _vzDetectionUI = () => {};
+  globalThis.finished = _vzAutoDetect();
+`,context);
+context.finished.then(() => {
+  assert.equal(context.S.estimate_id,'c');
+  assert.equal(context.submits,3);
+}).catch(e => { console.error(e); process.exitCode=1; });
+"""
+    source = Path(__file__).resolve().parents[1] / 'static' / 'app.js'
+    result = subprocess.run([node, '-e', script, str(source)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_state_endpoint_updates_selections_only(client):
     eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
     try:

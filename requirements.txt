@@ -8,6 +8,7 @@ gunicorn>=21.2
 # Estimator: PDF generation (proposals, contracts) and parsing (RoofR
 # measurements, Xactimate carrier estimates).
 fpdf2>=2.7
+pillow>=10.0
 pypdf>=4.0
 pymupdf>=1.24
 
