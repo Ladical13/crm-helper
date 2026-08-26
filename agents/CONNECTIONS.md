@@ -313,3 +313,44 @@ Adding any of those is a deliberate, separate change — not a config tweak.
 lives in has not been named — spreadsheet, ad account, BI export, something
 else. It appears on the Connections page as an open item so it does not get
 forgotten. Name the system and it becomes a real connector.
+
+---
+
+## B2B lead sources — what actually feeds a rep's queue
+
+Separate from the marketing connections above. These are the sources behind
+**Nimbus → a rep's tab → Run now**, registered in
+`agents/b2b/sources/__init__.py` as *free first, Perplexity last*.
+
+| Segment | Free source | Credential | Gives |
+|---|---|---|---|
+| `church` | IRS Exempt Organizations BMF | none | name, street, city, ZIP, **EIN** |
+| `school` | NCES CCD via the Urban Institute API | none | name, street, **phone**, district, enrollment |
+| `gc` | — (`cdle.py` is still a placeholder) | — | falls through to Perplexity |
+| `realtor`, `insurance_agent`, `hoa`, `property_manager` | the offline `prospector/` open-data path | none | — |
+| `commercial` | — | `PERPLEXITY_API_KEY` | falls through to Perplexity |
+
+Measured on the live files, 2026-08-26: **1,928 Colorado schools, every one
+with a phone number**, and **3,988 active congregations, every one with a
+street address** (PO-box-only rows are dropped — a PO box cannot be roofed).
+
+**Why this replaced a Perplexity call per city.** Before it, every b2b
+candidate came from `perplexity_gap`, and a live sample was 1-in-5 for a phone
+number and 0-in-5 for an email. The model is told not to invent contact
+details and complies by writing "unknown", which used to reach the rep as a
+phone number to dial. The federal identifiers matter as much as the contact
+data: `source_ref` is `irs_bmf:co:<EIN>` and `nces:<NCESSCH>`, so re-running a
+pull is idempotent in a way a model's spelling of an organization's name can
+never be.
+
+Both files are cached on the volume under `AGENTS_DATA_DIR/opendata/` for 30
+days, because they are tens of megabytes and change monthly at most. A failed
+download returns no rows rather than raising, so the run falls through to
+Perplexity and costs one input instead of the segment.
+
+**Known limit: the BMF address is the organization's *mailing* address**,
+which for a small congregation is often the treasurer's house rather than the
+building. A row whose city looks wrong for its name is usually that, not a
+parse error. The BMF carries no phone, no email and no website at all —
+churches arrive as a name and a door, which is how partner development at a
+church starts anyway.

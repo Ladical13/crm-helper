@@ -29,11 +29,11 @@ CI runs, and it is much faster to find a break here than in the Actions log.
 Individual suites, when you only touched one app:
 
 ```bash
-cd estimator  && pytest     # 756 — pricing parity, cache-buster, bundles
-cd salescrm   && pytest     #  90 — pipeline, prospecting, queue, drafts, assets
+cd estimator  && pytest     # 778 — pricing parity, cache-buster, bundles
+cd salescrm   && pytest     # 107 — pipeline, prospecting, queue, drafts, assets
 cd portal     && pytest     # 136 — one login, migration, shell, hardening
 python -m pytest prospector/tests   # 27 — offline, no network
-cd agents     && pytest     # 219 — spend cap, cache, b2b/content sources
+cd agents     && pytest     # 242 — spend cap, cache, b2b/content sources
 cd canvasser  && pytest     #  15 — vendored Leaflet, cache-buster, sw wiring
 ```
 
@@ -481,7 +481,7 @@ Per `lead_type`, three steps chosen by prior outreach count (0 → `first`,
 ## Estimator — tests & invariants
 
 ```bash
-cd estimator && pytest                # 756 tests, <10s
+cd estimator && pytest                # 778 tests, <10s
 ```
 
 **Open bug: `company_content.json` is seeded but not shipped.** `app.py`'s
