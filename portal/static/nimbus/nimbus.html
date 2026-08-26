@@ -214,6 +214,9 @@
   .conn .pill.not_connected { color: var(--dim);    border-color: var(--border-2); background: var(--panel); }
   .conn .pill.error         { color: var(--danger); border-color: var(--danger); background: rgba(239,68,68,.1); }
   .conn .pill.checking      { color: var(--warn);   border-color: var(--warn);   background: rgba(245,158,11,.1); }
+  /* Ours, needs no credential, but the source did not answer this time. Amber,
+     not red: there is nothing here to fix, so it must not read as a fault. */
+  .conn .pill.degraded      { color: var(--warn);   border-color: var(--warn);   background: rgba(245,158,11,.1); }
   /* Owner-gated: deliberately muted, NOT red. Nobody here can fix these, so
      styling them as failures would train people to ignore the whole page. */
   .conn .pill.owner_required { color: var(--dim);   border-color: var(--dim2);   background: transparent; }
@@ -1298,7 +1301,7 @@ async function reviewRec(id, status) {
 const STATUS_LABEL = {
   connected: 'Connected', not_connected: 'Not Connected', error: 'Error',
   owner_required: 'Owner Access Required', unchecked: 'Not Checked',
-  approval_required: 'Approval Required',
+  approval_required: 'Approval Required', degraded: 'Source Unavailable',
 };
 const AUTH_LABEL = {
   service_account: 'read-only service account', oauth: 'Google OAuth login',

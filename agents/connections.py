@@ -56,6 +56,14 @@ OWNER_REQUIRED = 'owner_required'
 # requires it for commercial use — which a roofing company's marketing plainly
 # is. Distinct from "not configured": no amount of setting env vars fixes it.
 APPROVAL_REQUIRED = 'approval_required'
+# The source is ours and needs no credential, but it did not answer this time.
+# GDELT is a free public endpoint with no key, no account and no quota: it
+# rate-limits and times out transiently, and there is nothing on our side to
+# configure when it does. Red is reserved for something a person can act on,
+# so this is amber and says so. Distinct from CONNECTED, which would overclaim
+# — we did not get data — and from ERROR, which would send someone hunting for
+# a fault that is not here.
+DEGRADED      = 'degraded'
 # Config looks complete but nothing has been verified against Google. Only
 # ever produced by status_all(probe=False), which the dashboard does not use —
 # the page always probes, so this never renders as a status. Claiming
@@ -456,7 +464,7 @@ def _probe_website():
 
 
 def _probe_reddit():
-    from ..content.sources import reddit
+    from .content.sources import reddit
     if not reddit.available():
         return NOT_CONNECTED, 'REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET are not set'
     # One cheap subreddit read proves the token exchange and the read scope.
@@ -468,14 +476,16 @@ def _probe_reddit():
 
 
 def _probe_gdelt():
-    from ..content.sources import news_gdelt
+    from .content.sources import news_gdelt
     result = news_gdelt.pull(days=3, limit=5)
     note = result.get('note', '')
-    if 'rate-limited' in note:
-        # Transient and expected on a free public endpoint — not a fault.
-        return CONNECTED, note
     if result.get('articles') or 'no Colorado matches' in note:
         return CONNECTED, note
+    # Rate-limited or unreachable: both are the free endpoint having a moment,
+    # both cost a run one input rather than failing it, and neither is
+    # fixable from here. `pull` never raises, so a timeout arrives as a note.
+    if 'rate-limited' in note or 'unreachable' in note:
+        return DEGRADED, note
     return ERROR, note or 'no response'
 
 

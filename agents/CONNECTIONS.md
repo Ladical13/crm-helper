@@ -86,6 +86,22 @@ Free public endpoint, no key, no account. It rate-limits transiently (HTTP
 failure. One press release syndicated across dozens of outlets collapses to a
 single signal, so nobody with a wire budget can set our content agenda.
 
+**A quiet GDELT shows as amber "Source Unavailable", not a red error.** It
+rate-limits *and* times out — observed unreachable for minutes at a stretch on
+2026-08-26 — and there is no credential on our side to fix when it does, so a
+red row would send someone hunting a fault that is not here. Amber is also not
+"Connected": no data came back, and the run lost that input. A quiet *week*
+(reachable, nothing to report) stays green.
+
+That row was a red `Error` from the day it shipped until 2026-08-26 for an
+unrelated reason: `connections.py` is a top-level module of `agents`, so its
+`from ..content.sources import news_gdelt` reached past the package and every
+probe died on `ImportError`. Only the Connections page was affected — the
+weekly jobs import the same module correctly and always did. The probes import
+their sources lazily, inside the function, which deferred the failure to the
+one moment nobody watches; `test_every_deferred_import_in_connections_actually_resolves`
+now resolves every deferred import in that file with no network and no probe.
+
 **Search Console and GA4 are optional future enhancements, not broken
 connections.** Confirmed 2026-08-10: both consoles show an empty screen for
 `luke@projectoneroofing.com`. Nimbus displays them as *Owner access required*,

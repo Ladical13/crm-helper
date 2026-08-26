@@ -236,3 +236,86 @@ def test_undefined_connector_is_surfaced_rather_than_hidden():
     rows = {r['key']: r for r in connections.status_all(probe=False)}
     assert 'co_marketing_data' in rows
     assert rows['co_marketing_data']['status'] == connections.NOT_CONNECTED
+
+
+def test_every_deferred_import_in_connections_actually_resolves():
+    """The probes import their source modules lazily, inside the function.
+
+    That defers the failure to the one moment nobody is watching — a manager
+    hitting "Re-check all" — and it hid a real one: ``connections`` is a
+    top-level module of ``agents``, so ``from ..content.sources`` reached past
+    the package and every GDELT probe came back as a red ERROR row. GDELT
+    needs no credential, so that row was pure noise, and a dashboard with a
+    permanent red row is one people stop reading.
+
+    Resolving each deferred import here costs no network and no probe.
+    """
+    import importlib
+    import inspect
+    import re
+    from agents import connections
+
+    src = inspect.getsource(connections)
+    deferred = re.findall(r'^\s+from (\.+)(\S*) import', src, re.M)
+    assert deferred, 'expected connections.py to defer its source imports'
+
+    for dots, tail in deferred:
+        name = dots + tail
+        # ``__package__`` is the anchor Python itself uses for a relative
+        # import inside a module, so this resolves exactly as the real one does.
+        importlib.import_module(name, package=connections.__package__)
+
+
+def test_a_transient_gdelt_outage_is_amber_not_a_red_error(monkeypatch):
+    """GDELT needs no key, no account and no quota, so when it times out or
+    rate-limits us there is nothing on our side to configure.
+
+    A red row must mean something a person can act on — the same reasoning
+    that keeps the owner-gated Google rows muted. Reporting it CONNECTED would
+    overclaim in the other direction: no data came back.
+    """
+    from agents import connections
+    from agents.content.sources import news_gdelt
+
+    for note in ('GDELT unreachable (ConnectTimeout)',
+                 'GDELT rate-limited us (HTTP 429) — transient, try again shortly.'):
+        monkeypatch.setattr(news_gdelt, 'pull',
+                            lambda _n=note, **kw: {'articles': [], 'available': True,
+                                                   'note': _n})
+        status, detail = connections._probe_gdelt()
+        assert status == connections.DEGRADED, note
+        assert status not in (connections.ERROR, connections.CONNECTED)
+        assert detail == note
+
+
+def test_gdelt_answering_with_nothing_to_report_is_still_connected(monkeypatch):
+    """A quiet week is a working feed, not a broken one."""
+    from agents import connections
+    from agents.content.sources import news_gdelt
+    monkeypatch.setattr(news_gdelt, 'pull',
+                        lambda **kw: {'articles': [], 'available': True,
+                                      'note': 'no Colorado matches in the window'})
+    assert connections._probe_gdelt()[0] == connections.CONNECTED
+
+
+def test_every_probe_status_has_a_label_and_a_pill_in_the_dashboard():
+    """A status the page has never heard of renders as a bare key in an
+    unstyled pill. The states live in Python and the styling in HTML, so
+    nothing but this test holds the two halves together."""
+    import os
+    import re
+    from agents import connections
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = os.path.join(os.path.dirname(os.path.dirname(here)),
+                        'portal', 'static', 'nimbus', 'nimbus.html')
+    with open(page, encoding='utf-8') as f:
+        html = f.read()
+
+    labels = re.search(r'const STATUS_LABEL = \{(.*?)\}', html, re.S).group(1)
+    for name in ('CONNECTED', 'NOT_CONNECTED', 'ERROR', 'OWNER_REQUIRED',
+                 'APPROVAL_REQUIRED', 'UNCHECKED', 'DEGRADED'):
+        state = getattr(connections, name)
+        assert f'{state}:' in labels, f'{state} has no STATUS_LABEL'
+        if state != connections.UNCHECKED:   # never rendered — page always probes
+            assert f'.pill.{state}' in html, f'{state} has no pill style'
