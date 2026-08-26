@@ -8262,6 +8262,7 @@ async function openDashboard() {
     const r = await fetch('/api/estimates');
     _dashData = await r.json();
   } catch { _dashData = []; }
+  rebuildCustCounts();
   if (_dashRep === null) _dashRep = _loggedInUser || '';
   renderDashboard();
   document.getElementById('dashboard-modal').classList.remove('hidden');
@@ -8311,6 +8312,7 @@ async function dashDeleteEstimate(id, name) {
   const r = await fetch(`/api/estimates/${id}`, { method: 'DELETE' });
   if (!r.ok) { alert('Could not delete estimate.'); return; }
   _dashData = _dashData.filter(e => e.estimate_id !== id);
+  rebuildCustCounts();
   renderDashboard();
 }
 async function dashUpdateStatus(id, status, selectEl) {
@@ -8361,9 +8363,16 @@ function dashRow(e) {
       <option value="accepted" ${e.status==='accepted'?'selected':''}>Accepted ✓</option>
       <option value="lost"     ${st==='lost'?'selected':''}>Lost ✗</option>
     </select>`;
+  // The customer file was reachable only from a home-screen search box and a
+  // sidebar button that appears after a name is typed — so the rep looking at
+  // a list of estimates had no way to see that three of them are one customer.
+  const nEst = custEstimateCount(e.customer_name);
+  const cfBadge = nEst > 1 ? `<button class="dash-cf-btn"
+      title="${nEst} estimates for this customer — open their file"
+      onclick="event.stopPropagation();closeDashboard();openCustomerFile('${jsq(e.customer_name)}')">📁 ${nEst}</button>` : '';
   return `<div class="dash-row${st==='viewed'?' dash-row-viewed':''}" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
     <div class="dash-row-main">
-      <strong>${esc(e.customer_name || '(no customer)')}</strong>
+      <span class="dash-row-name"><strong>${esc(e.customer_name || '(no customer)')}</strong>${cfBadge}</span>
       <small>${esc(enum_)}${e.city ? ' · ' + esc(e.city) : ''} · ${esc(typeLbl)}${e.salesperson ? ' · ' + esc(cap(e.salesperson)) : ''}</small>
     </div>
     <div class="dash-row-side">
@@ -9187,7 +9196,46 @@ function printOrderSheet() {
   w.print();
 }
 
-/* ── Customer File (CRM layer) ───────────────────────────────────────── */
+/* ── Customer File (CRM layer) ─────────────────────────────────────────
+   One customer, many estimates — the roof this spring, the siding in the
+   autumn, the re-quote after the adjuster came back. The file is the place
+   those live together.
+
+   `custKey` is the grouping key, and it exists because there used to be two.
+   openCustomerFile grouped with a substring `.includes()` while
+   newEstimateForCustomer matched with `===`, so the two disagreed about who
+   a customer is: "Jon Smith" dragged "Jon Smithson" into his file, and the
+   follow-on estimate then pre-filled from whichever of them sorted first.
+   Grouping is now an exact match on the normalized name on BOTH sides. The
+   home search box stays a substring search — finding a customer and deciding
+   two estimates belong to the same one are different jobs. */
+function custKey(name) {
+  return (name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/* esc() escapes for HTML but not for the JS string literal an inline onclick
+   drops the value into, so a customer named O'Brien closed the argument early
+   and every button carrying her name was a syntax error — dead, silently.
+   JS-escape first, then HTML-escape: the parser undoes the second before the
+   handler is compiled, leaving the backslashes in place. */
+function jsq(s) {
+  return esc(String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+}
+
+// custKey -> how many estimates that customer has, for the dashboard badge.
+// Rebuilt whenever _dashData is replaced; reps only ever see their own rows,
+// so this counts what they can actually open.
+let _custCounts = {};
+function rebuildCustCounts() {
+  _custCounts = {};
+  (_dashData || []).forEach(e => {
+    const k = custKey(e.customer_name);
+    if (k) _custCounts[k] = (_custCounts[k] || 0) + 1;
+  });
+}
+function custEstimateCount(name) {
+  return _custCounts[custKey(name)] || 0;
+}
 
 // Global customer search from the home screen
 function homeCustomerSearch(q) {
@@ -9199,10 +9247,11 @@ function homeCustomerSearch(q) {
     (e.customer_name||'').toLowerCase().includes(lq) ||
     (e.city||'').toLowerCase().includes(lq)
   );
-  // Group by customer name to show unique customers
+  // Group on custKey, the same key the customer file opens with — a search
+  // result that says "3 estimates" must open a file containing those three.
   const byName = {};
   matches.forEach(e => {
-    const k = (e.customer_name||'(no name)').toLowerCase();
+    const k = custKey(e.customer_name) || '(no name)';
     if (!byName[k]) byName[k] = { name: e.customer_name||'(no name)', count: 0, latest: e };
     byName[k].count++;
   });
@@ -9211,7 +9260,7 @@ function homeCustomerSearch(q) {
     el.innerHTML = '<div class="home-cust-none">No customers found</div>';
   } else {
     el.innerHTML = rows.map(r => `
-      <div class="home-cust-row" onclick="document.getElementById('home-cust-search').value='';document.getElementById('home-cust-results').classList.add('hidden');openCustomerFile('${esc(r.name)}')">
+      <div class="home-cust-row" onclick="document.getElementById('home-cust-search').value='';document.getElementById('home-cust-results').classList.add('hidden');openCustomerFile('${jsq(r.name)}')">
         <strong>${esc(r.name)}</strong>
         <small>${r.count} estimate${r.count!==1?'s':''} · ${esc(r.latest.city||r.latest.estimate_date||'')}</small>
       </div>`).join('');
@@ -9222,10 +9271,12 @@ function homeCustomerSearch(q) {
 async function openCustomerFile(name) {
   if(!name) return;
   if(!_dashData.length) {
-    try{ const r=await fetch('/api/estimates'); _dashData=await r.json(); } catch{}
+    try{ const r=await fetch('/api/estimates'); _dashData=await r.json(); rebuildCustCounts(); } catch{}
   }
+  // Exact key match. This used to be `.includes()`, which put every Smithson
+  // estimate into Jon Smith's file and let one rep's customer absorb another's.
   const matches = _dashData
-    .filter(e=>(e.customer_name||'').toLowerCase().includes(name.toLowerCase()))
+    .filter(e=>custKey(e.customer_name)===custKey(name))
     .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''));
   renderCustomerFile(name, matches);
   document.getElementById('customer-file-modal').classList.remove('hidden');
@@ -9300,7 +9351,7 @@ function renderCustomerFile(name, estimates) {
       </div>
       <textarea id="cf-notes-ta" class="cf-notes-area"
         placeholder="Add notes about this customer — budget, preferences, HOA contact, follow-up reminders…"
-        onblur="saveCustomerNotes('${esc(name)}',this.value)"></textarea>
+        onblur="saveCustomerNotes('${jsq(name)}',this.value)"></textarea>
     </div>
 
     <div class="cf-create-section">
@@ -9313,17 +9364,18 @@ function renderCustomerFile(name, estimates) {
           <div class="field-group">
             <label>Estimate Label <span style="color:var(--danger)">*</span></label>
             <input type="text" id="cf-label-input" placeholder="e.g. Roof – Initial, Siding Quote, Re-roof with Gutters"
-              onkeydown="if(event.key==='Enter')cfCreateEstimate('${esc(name)}')">
+              onkeydown="if(event.key==='Enter')cfCreateEstimate('${jsq(name)}')">
           </div>
           <div class="field-group">
             <label>Type</label>
             <div class="toggle-row">
-              <button class="toggle-btn active" id="cf-type-retail"  onclick="cfSetType('retail')">🏠 Retail</button>
-              <button class="toggle-btn"        id="cf-type-insurance" onclick="cfSetType('insurance')">🏛 Insurance</button>
+              <button class="toggle-btn active" id="cf-type-retail"     onclick="cfSetType('retail')">🏠 Retail</button>
+              <button class="toggle-btn"        id="cf-type-insurance"  onclick="cfSetType('insurance')">🏛 Insurance</button>
+              <button class="toggle-btn"        id="cf-type-commercial" onclick="cfSetType('commercial')">🏢 Commercial</button>
             </div>
           </div>
         </div>
-        <button class="btn-primary" onclick="cfCreateEstimate('${esc(name)}')">
+        <button class="btn-primary" onclick="cfCreateEstimate('${jsq(name)}')">
           Create Estimate → ${esc(firstName)}
         </button>
       </div>
@@ -9350,14 +9402,21 @@ function renderCustomerFile(name, estimates) {
       }).join('') : '<div class="cf-empty">No estimates yet — create one above.</div>'}
     </div>`;
   _cfCreateOpen = false;
+  // The markup above always renders Retail active, so the remembered
+  // choice from the last customer must not outlive it.
+  _cfType = 'retail';
 }
 
 let _cfType = 'retail';
+// Driven off ESTIMATE_TYPES rather than a hand-written pair, so a fourth
+// estimate type cannot reach the sidebar and miss this dialog — which is how
+// Commercial went missing here for the whole life of the customer file.
 function cfSetType(t) {
-  _cfType = t;
-  const r=document.getElementById('cf-type-retail'), i=document.getElementById('cf-type-insurance');
-  if(r){ r.classList.toggle('active',t==='retail'); }
-  if(i){ i.classList.toggle('active',t==='insurance'); }
+  _cfType = ESTIMATE_TYPES.includes(t) ? t : 'retail';
+  ESTIMATE_TYPES.forEach(x => {
+    const el = document.getElementById('cf-type-' + x);
+    if (el) el.classList.toggle('active', x === _cfType);
+  });
 }
 
 async function cfCreateEstimate(name) {
@@ -9388,9 +9447,23 @@ async function loadCustomerAttachments(estimates) {
   }
 }
 
+// The ids that tie an estimate to the rest of the funnel. Copied onto every
+// follow-on estimate for a customer, because a second estimate that lacks them
+// is an orphan in two directions at once: the funnel cannot attribute it to
+// the lead the door-knock came from (so the close rate silently undercounts),
+// and _push_to_den() at signature creates a SECOND Den contact for someone
+// The Den already has — which is exactly how bid-vs-actual ends up confident
+// and wrong.
+const CUSTOMER_LINK_FIELDS = ['crm_contact_id', 'crm_project_id',
+                              'crm_job_number', 'crm_lead_id'];
+
 async function newEstimateForCustomer(name, label, type) {
-  // Pre-fill from the most recent estimate for this customer
-  const existing = _dashData.find(e=>(e.customer_name||'').toLowerCase()===name.toLowerCase());
+  // Pre-fill from the most recently touched estimate for this customer. Keyed
+  // exactly, like the file itself — the two used to disagree, so the estimate
+  // you opened and the one it copied from were not always the same customer.
+  const existing = _dashData
+    .filter(e=>custKey(e.customer_name)===custKey(name))
+    .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''))[0];
   newEstimateAction();
   S.customer.name  = name;
   S.estimate_label = label || '';
@@ -9405,6 +9478,12 @@ async function newEstimateForCustomer(name, label, type) {
         if(c.phone)  { S.customer.phone=c.phone; }
         if(c.email)  { S.customer.email=c.email; }
         if(c.address?.street) { Object.assign(S.customer.address, c.address); }
+        // Only when blank, so a live CRM handoff — the rep arrived from the
+        // Pipeline's "Start estimate" — still wins over the older estimate's
+        // copy of the same ids.
+        CUSTOMER_LINK_FIELDS.forEach(k => {
+          if (!S.customer[k] && c[k]) S.customer[k] = c[k];
+        });
       }
     } catch {}
   }
@@ -11170,7 +11249,7 @@ async function renderHomePage() {
   el.innerHTML = '<div class="home-loading">Loading…</div>';
   // Fetch estimates if not already cached
   if (!_dashData.length) {
-    try { const r = await fetch('/api/estimates'); _dashData = await r.json(); } catch {}
+    try { const r = await fetch('/api/estimates'); _dashData = await r.json(); rebuildCustCounts(); } catch {}
   }
   const myData = _meCanViewAll() ? _dashData : _dashData.filter(e => e.salesperson === _loggedInUser);
   const recent = [...myData]
@@ -11212,9 +11291,13 @@ async function renderHomePage() {
       </div>
       ${recent.length ? recent.map(e=>{
         const st=estStatusOf(e);
+        const nEst = custEstimateCount(e.customer_name);
         return `<div class="home-est-row" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
           <div class="home-est-main">
-            <strong>${esc(e.customer_name||'(no customer)')}</strong>
+            <span class="dash-row-name"><strong>${esc(e.customer_name||'(no customer)')}</strong>${
+              nEst > 1 ? `<button class="dash-cf-btn"
+                title="${nEst} estimates for this customer — open their file"
+                onclick="event.stopPropagation();openCustomerFile('${jsq(e.customer_name)}')">📁 ${nEst}</button>` : ''}</span>
             <small>${[e.estimate_label, [e.city,e.estimate_date].filter(Boolean).join(' · ')].filter(Boolean).map(esc).join(' — ')}</small>
           </div>
           <div class="home-est-side">

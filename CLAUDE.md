@@ -756,6 +756,49 @@ ordering is the fix.
   timeline records it and the rep decides. See the salescrm `_FUNNEL_STAGE` note.
 - Guarded by `tests/test_status.py` and `salescrm/tests/test_funnel.py`.
 
+### The Customer File — many estimates, one customer
+
+A homeowner is rarely one estimate: the roof in spring, the siding in autumn,
+the re-quote after the adjuster comes back. **`openCustomerFile(name)` is where
+those live together** — customer-level notes, every estimate with its
+`estimate_label`, and a **＋ Create New Estimate** that pre-fills from the most
+recently touched one. Reachable from the home search box, the ⋯ menu, the
+sidebar's 📁 button, and a `📁 N` badge on any dashboard/home row whose customer
+has more than one. Tests: `tests/test_customer_file.py` (+ `customer_key_runner.js`).
+
+Audited 2026-08-25. It worked, but four things it did quietly did not:
+
+- **One grouping key, `custKey()`, used on both sides.** The file grouped with
+  a substring `.includes()` while `newEstimateForCustomer` matched with `===`,
+  so "Jon Smith" and "Jon Smithson" were one customer to the file and two to
+  the button that creates the next estimate. Lowercase, trimmed, internal
+  whitespace collapsed. **Mirrored in `app.py` as `_cust_key()`**, which the
+  customer-notes endpoints use — the browser decides whose file this is, and
+  the notes have to land on the same customer. The notes read path falls back
+  to the old `.lower().strip()` spelling rather than migrating: those are real
+  notes on a live volume. The home search box stays a substring *search*;
+  finding a customer and deciding two estimates share one are different jobs.
+- **`CUSTOMER_LINK_FIELDS` rides along to every follow-on estimate**
+  (`crm_contact_id`, `crm_project_id`, `crm_job_number`, `crm_lead_id`).
+  Without them estimate #2 is an orphan in two directions: the funnel cannot
+  attribute it to the lead the door-knock came from, so the close rate
+  undercounts, and `_push_to_den()` files a **second Den contact** for someone
+  The Den already has — confident, wrong bid-vs-actual, the exact failure the
+  `crm_contact_id` note warns about. Copied **only when blank**, so a live CRM
+  handoff (`?contact=…&lead=…`) still wins over an older estimate's copy.
+- **Duplicating keeps the customer.** It used to rename them to `Copy of Jon
+  Smith`, which moved the copy into a customer of its own — while duplicating
+  is precisely how a rep builds the second estimate for someone. The `Copy of`
+  marker lives on `estimate_label` now, which exists to tell one customer's
+  estimates apart.
+- **A customer name reaching an inline handler goes through `jsq()`, never bare
+  `esc()`.** `esc()` escapes for HTML but not for the JS string literal the
+  onclick drops it into, so **Maureen O'Brien's buttons were a syntax error** —
+  dead, with nothing logged. JS-escape first, then HTML-escape.
+- The create dialog drives its type buttons off `ESTIMATE_TYPES`, so a fourth
+  estimate type cannot reach the sidebar and miss this dialog. Commercial did
+  exactly that.
+
 ### Monthly trends & sales goals
 
 The analytics tab's **📈 Monthly Trends & Goals** panel is the "did we make our
