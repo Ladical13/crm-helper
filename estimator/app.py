@@ -954,9 +954,15 @@ def duplicate_estimate(est_id):
     est.pop('change_orders', None)   # signed legal docs — never copied
     est['created_at'] = datetime.utcnow().isoformat() + 'Z'
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-    c = est.get('customer', {})
-    if c.get('name') and not c['name'].startswith('Copy of '):
-        c['name'] = 'Copy of ' + c['name']
+    # The copy stays in the SAME customer's file. This used to rename the
+    # customer to "Copy of Jon Smith", which moved the duplicate into a
+    # customer of its own — the one thing a duplicate must never do, since
+    # duplicating is how a rep builds the second estimate for someone. The
+    # "Copy of" marker belongs on estimate_label, which exists precisely to
+    # tell one customer's estimates apart.
+    label = (est.get('estimate_label') or '').strip()
+    if not label.startswith('Copy of '):
+        est['estimate_label'] = ('Copy of ' + label) if label else 'Copy'
     est_save(est)
     src_dir = os.path.join(UPLOADS_DIR, est_id)
     if os.path.exists(src_dir):
@@ -981,31 +987,51 @@ def delete_estimate(est_id):
     return jsonify({'ok': True})
 
 
-@app.route('/api/customer-notes/<path:name>', methods=['GET'])
-def get_customer_notes(name):
-    """Return the customer-level notes string for a given customer name."""
+def _cust_key(name):
+    """The customer-grouping key. Mirrors `custKey()` in static/app.js — the
+    browser decides which estimates share a customer file, and these notes have
+    to land on the same customer it picked. Lowercase, trimmed, and internal
+    runs of whitespace collapsed, so "Jon  Smith" typed on a phone keyboard is
+    not a second person with his own notes."""
+    return ' '.join((name or '').lower().split())
+
+
+def _read_customer_notes():
     try:
         if os.path.exists(CUSTOMER_NOTES_FILE):
             with open(CUSTOMER_NOTES_FILE, 'r', encoding='utf-8') as f:
-                notes = json.load(f)
-            return jsonify({'notes': notes.get(name.lower().strip(), '')})
+                return json.load(f) or {}
     except Exception:
         pass
-    return jsonify({'notes': ''})
+    return {}
+
+
+@app.route('/api/customer-notes/<path:name>', methods=['GET'])
+def get_customer_notes(name):
+    """Return the customer-level notes string for a given customer name."""
+    notes = _read_customer_notes()
+    key = _cust_key(name)
+    if key in notes:
+        return jsonify({'notes': notes[key]})
+    # Notes written before the key collapsed internal whitespace are still on
+    # the volume under the old spelling. Read through to them rather than
+    # migrating: these are real notes about real customers, and the read path
+    # is the cheap place to be forgiving.
+    return jsonify({'notes': notes.get((name or '').lower().strip(), '')})
 
 
 @app.route('/api/customer-notes/<path:name>', methods=['PUT'])
 def set_customer_notes(name):
     """Persist customer-level notes for a given customer name."""
     text = (request.get_json(force=True) or {}).get('notes', '')
-    notes = {}
-    try:
-        if os.path.exists(CUSTOMER_NOTES_FILE):
-            with open(CUSTOMER_NOTES_FILE, 'r', encoding='utf-8') as f:
-                notes = json.load(f)
-    except Exception:
-        pass
-    notes[name.lower().strip()] = text
+    notes = _read_customer_notes()
+    key = _cust_key(name)
+    notes[key] = text
+    # A save adopts the canonical key, so drop the legacy spelling rather than
+    # leaving a stale copy that a future read could pick up instead.
+    legacy = (name or '').lower().strip()
+    if legacy != key:
+        notes.pop(legacy, None)
     with open(CUSTOMER_NOTES_FILE, 'w', encoding='utf-8') as f:
         json.dump(notes, f, indent=2)
     return jsonify({'ok': True})
