@@ -725,12 +725,52 @@ ordering is the fix.
 ### The Customer File — many estimates, one customer
 
 A homeowner is rarely one estimate: the roof in spring, the siding in autumn,
-the re-quote after the adjuster comes back. **`openCustomerFile(name)` is where
-those live together** — customer-level notes, every estimate with its
-`estimate_label`, and a **＋ Create New Estimate** that pre-fills from the most
-recently touched one. Reachable from the home search box, the ⋯ menu, the
-sidebar's 📁 button, and a `📁 N` badge on any dashboard/home row whose customer
-has more than one. Tests: `tests/test_customer_file.py` (+ `customer_key_runner.js`).
+the re-quote after the adjuster comes back. Two screens share that job, and
+the split is deliberate:
+
+- **The Documents door (`renderDocumentsPage`) is the hub.** Reached from the
+  Customer hub's 📁 door, it lists every estimate for the loaded customer —
+  click one to load it, rename any of them in place, and start a new one from
+  the form on the same page. The current estimate's attachments live below,
+  under *📎 Files*.
+- **The Customer File modal (`openCustomerFile(name)`) finds a customer.** It
+  carries the customer-level notes and a read-only estimate list, and hands
+  off with one **＋ New Estimate for X** button that loads their most recent
+  estimate and jumps to Documents. Reachable from the home search box, the ⋯
+  menu, the sidebar's 📁 button, and a `📁 N` badge on any dashboard/home row
+  whose customer has more than one.
+
+Tests: `tests/test_customer_file.py` (+ `customer_key_runner.js`), plus the
+header-badge/breakpoint guards in `tests/test_ui_wiring.py`.
+
+Creation used to live in the modal, and dropped the rep onto the same Customer
+hub a brand-new customer sees — "Not saved yet", the typed label rendered
+nowhere, nothing saying this was estimate #2 for someone who already had one.
+Moving it to Documents is what makes a second estimate *look* like a second
+estimate. Rules that keep it working:
+
+- **The current row is built from `S`, not from the fetched list.** An estimate
+  that has never been saved has no id and is not in `/api/estimates` yet, so it
+  would vanish from its own list — which was the whole bug. It renders first,
+  marked current, and is not clickable (reloading yourself is a wasted request).
+- **`renderDocumentsPage()` stays synchronous.** It has 11 call sites, most of
+  them refresh-after-an-action (upload a file, delete one, generate a doc), and
+  none should pay for a network round-trip. `refreshDocCustData()` does the
+  fetch and is called only on navigation *into* the page, from `switchPage`.
+- **The estimate name is editable after the fact** (`renameEstimate`). It was
+  write-once for a long time even though `PATCH /api/estimates/<id>/label`
+  existed and worked — the front end simply never called it. Renaming a saved
+  estimate uses that narrow PATCH, never a full-doc save, so it cannot push
+  stale in-memory state over newer server state; an unsaved one just sets
+  `S.estimate_label` and marks the doc dirty. Clearing the name falls back to
+  the type label. The label is **rep-facing only** — list projection, the
+  `Copy of` marker, that endpoint, and no customer-facing page — which is why
+  renaming a *signed* estimate is allowed.
+- **`#estimate-label-badge` is a sibling of `#estimate-number`, never nested
+  inside it** — same trap `#est-status-badge` already documents. It joins
+  `.estimate-number` in being hidden on mobile rather than `.est-status-badge`
+  in surviving: that header row has already overflowed a 375px phone once, and
+  a label is informational where signed/sent state is not.
 
 Audited 2026-08-25. It worked, but four things it did quietly did not:
 
@@ -764,6 +804,15 @@ Audited 2026-08-25. It worked, but four things it did quietly did not:
 - The create dialog drives its type buttons off `ESTIMATE_TYPES`, so a fourth
   estimate type cannot reach the sidebar and miss this dialog. Commercial did
   exactly that.
+- **A row's signed-contract link tests `e.signed`, not `e.signature`.**
+  `/api/estimates` returns the former and has no `signature` key at all, so the
+  📄 download rendered for nobody — a signed contract was quietly unreachable
+  from the one list built to show a customer's whole history.
+- **`_media_block()` in `test_ui_wiring.py` is not what a breakpoint test
+  wants** — `style.css` has three `@media (max-width: 767px)` blocks and it
+  returns the first, a KPI-card block containing no header rules. Two mobile
+  tests passed for years by finding nothing. Use `_media_block_with(css, query,
+  marker)`, which returns the block that actually contains the rule under test.
 
 ### Monthly trends & sales goals
 
