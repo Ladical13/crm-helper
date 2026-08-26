@@ -383,8 +383,8 @@ def list_runs():
     with config.get_cache_db() as db:
         rows = db.execute(
             f'SELECT id, agent, rep, started_at, finished_at, status, '
-            f'leads_found, leads_pushed, leads_deduped, cost_usd, error, summary '
-            f'FROM agent_runs {where} ORDER BY id DESC LIMIT ?',
+            f'leads_found, leads_pushed, leads_deduped, cost_usd, error, summary, '
+            f'dry_run FROM agent_runs {where} ORDER BY id DESC LIMIT ?',
             params + [limit]).fetchall()
     return jsonify([dict(r) for r in rows])
 

@@ -217,6 +217,14 @@
   /* Ours, needs no credential, but the source did not answer this time. Amber,
      not red: there is nothing here to fix, so it must not read as a fault. */
   .conn .pill.degraded      { color: var(--warn);   border-color: var(--warn);   background: rgba(245,158,11,.1); }
+  /* A dry run reports the same found/pushed/deduped numbers as a live one.
+     Without this badge the run history claims leads reached the CRM when
+     nothing was written — which is exactly how four reps looked fed. */
+  .pill.dry {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1px; font-weight: 700;
+    padding: 2px 8px; border-radius: 999px; margin-left: 8px;
+    color: var(--warn); border: 1px solid var(--warn); background: rgba(245,158,11,.1);
+  }
   /* Owner-gated: deliberately muted, NOT red. Nobody here can fix these, so
      styling them as failures would train people to ignore the whole page. */
   .conn .pill.owner_required { color: var(--dim);   border-color: var(--dim2);   background: transparent; }
@@ -447,7 +455,12 @@
 
   <nav id="nav">
     <a href="/nimbus/" data-route="/nimbus/">⚡ Dashboard</a>
-    <a href="/nimbus/supervisor" data-route="/nimbus/supervisor">🧠 Supervisor</a>
+    <!-- Supervisor tab hidden 2026-08-26 at Luke's request. The blueprint,
+         the 21 tools and their tests all stay put; this is the only thing
+         removed, so bringing it back is uncommenting this line. It needs
+         ANTHROPIC_API_KEY, which is not set, so the tab reported that it
+         could not run. Nothing else in Nimbus reads from it — in particular
+         B2B prospecting is driven by the rep tab and POST /api/b2b/run. -->
     <a href="/nimbus/marketing/topics" data-route="/nimbus/marketing/topics">📈 Trending Topics</a>
     <a href="/nimbus/marketing/drafts" data-route="/nimbus/marketing/drafts">📝 Content Drafts</a>
     <a href="/nimbus/marketing/seo" data-route="/nimbus/marketing/seo">🔍 Local SEO</a>
@@ -605,7 +618,9 @@ function pollRun(rep, runId, btn, dry) {
   const statusEl = document.querySelector(`[data-status="${rep}"]`);
   state.activeTimers[rep] = setInterval(async () => {
     const r = await fetch(`${BASE}/api/runs/${runId}`).then(r => r.json());
-    statusEl.textContent = `run #${runId}: ${r.status}  found ${r.leads_found}  pushed ${r.leads_pushed}  deduped ${r.leads_deduped}  $${(r.cost_usd || 0).toFixed(3)}`;
+    statusEl.textContent = `run #${runId}: ${r.status}${r.dry_run ? ' [DRY RUN — nothing written]' : ''}`
+      + `  found ${r.leads_found}  ${r.dry_run ? 'would push' : 'pushed'} ${r.leads_pushed}`
+      + `  deduped ${r.leads_deduped}  $${(r.cost_usd || 0).toFixed(3)}`;
     if (r.status === 'ok' || r.status === 'error') {
       clearInterval(state.activeTimers[rep]);
       delete state.activeTimers[rep];
@@ -1474,7 +1489,10 @@ async function renderRep(username) {
         <div class="stage-row" style="grid-template-columns:100px 130px 1fr auto;padding:8px 0;border-bottom:1px solid var(--border)">
           <span class="mono" style="color:var(--dim)">#${r.id}</span>
           <span class="mono" style="color:var(--dim);font-size:12px">${r.started_at ? r.started_at.slice(0,16) : ''}</span>
-          <span>found <b>${r.leads_found}</b> · pushed <b>${r.leads_pushed}</b> · deduped <b>${r.leads_deduped}</b></span>
+          <span>found <b>${r.leads_found}</b> · ${r.dry_run
+            ? `<b>would have pushed</b> ${r.leads_pushed}`
+            : `pushed <b>${r.leads_pushed}</b>`} · deduped <b>${r.leads_deduped}</b>${
+            r.dry_run ? ' <span class="pill dry">dry run — nothing written</span>' : ''}</span>
           <span class="mono" style="color:${r.status==='ok'?'var(--ok)':r.status==='error'?'var(--danger)':'var(--warn)'}">${r.status}  $${(r.cost_usd||0).toFixed(3)}</span>
         </div>`).join('') : '<div class="empty">no runs yet</div>'}
     </section>

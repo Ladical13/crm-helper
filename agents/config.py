@@ -441,6 +441,11 @@ def _init_cache_db(conn):
     _add_column_if_missing(conn, 'content_drafts', 'package_id', "TEXT DEFAULT ''")
     _add_column_if_missing(conn, 'content_drafts', 'source', "TEXT DEFAULT ''")
     _add_column_if_missing(conn, 'content_drafts', 'review_notes', "TEXT DEFAULT ''")
+    # A dry run and a live run produced identical rows here, so the dashboard
+    # reported "250 leads pushed" for a pass that wrote nothing to the CRM.
+    # `seo_runs` has carried a `mode` column since it shipped; this is the same
+    # fact. Existing rows default to 0 — see the backfill note in dispatcher.
+    _add_column_if_missing(conn, 'agent_runs', 'dry_run', 'INTEGER DEFAULT 0')
     conn.commit()
 
 

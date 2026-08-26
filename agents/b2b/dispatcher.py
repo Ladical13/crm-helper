@@ -5,7 +5,9 @@ Flow (mirrors the plan doc):
   2. For each segment × each city in their territory:
        * Try the free source(s) first via ``sources.pullers_for(segment)``.
        * Fall through to Perplexity gap-fill if free returns nothing.
-  3. Rank by ICP score (already computed in normalization).
+  3. Rank by ICP score. Sources set a reachability base score in
+     normalization; ``enrich`` adds storm/decision-maker nudges afterwards,
+     so this sort decides WHO gets enriched, not the final order.
   4. Enrich the top-N (config: ``enrich_top_n``).
   5. Push in one batch through ``ingest.import_via_test_client(...)`` so
      salescrm's dedupe / suppression / DNC / batch / cadence all fire.
@@ -39,12 +41,12 @@ def _rep_config(rep):
     return cfg
 
 
-def _open_run(agent, rep, summary=''):
+def _open_run(agent, rep, summary='', dry_run=False):
     with config.get_cache_db() as db:
         cur = db.execute(
-            'INSERT INTO agent_runs (agent, rep, started_at, status, summary) '
-            "VALUES (?, ?, ?, 'running', ?)",
-            (agent, rep or '', _now(), summary))
+            'INSERT INTO agent_runs (agent, rep, started_at, status, summary, '
+            "dry_run) VALUES (?, ?, ?, 'running', ?, ?)",
+            (agent, rep or '', _now(), summary, 1 if dry_run else 0))
         run_id = cur.lastrowid
         db.commit()
     return run_id
@@ -91,7 +93,7 @@ def run(rep, *, segments=None, cities=None, per_city_limit=10,
     per_city_limit = int(per_city_limit or 10)
 
     summary = f'{display_name} — {len(segments)} segment(s) x {len(cities)} city/cities'
-    run_id = _open_run('b2b', rep, summary=summary)
+    run_id = _open_run('b2b', rep, summary=summary, dry_run=dry_run)
 
     manifest = {
         'run_id': run_id, 'rep': rep, 'display_name': display_name,

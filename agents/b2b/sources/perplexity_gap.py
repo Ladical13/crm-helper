@@ -98,8 +98,38 @@ def _extract_list(data):
     return []
 
 
+# The model is told not to fabricate contact details, and it obeys — by
+# writing "unknown" into the field. That is the right answer and the wrong
+# value: it survives `.strip()`, lands in the CRM as a phone number, and a rep
+# dials it. It also poisons dedupe, since every such row normalizes to the
+# same phone_norm. Treat a stated non-answer as the empty string it means.
+_PLACEHOLDERS = {
+    'unknown', 'n/a', 'na', 'none', 'null', 'not available', 'not listed',
+    'unlisted', 'not found', 'not provided', 'no phone', 'no email', 'tbd', '-',
+}
+
+
 def _clean(s):
-    return (s or '').strip() if isinstance(s, str) else ''
+    if not isinstance(s, str):
+        return ''
+    s = s.strip()
+    return '' if s.lower().strip('.') in _PLACEHOLDERS else s
+
+
+def _base_icp_score(phone, email, website, address):
+    """What we can rank on BEFORE paying to enrich anything.
+
+    The dispatcher sorts by ``icp_score`` and then enriches the top N, so a
+    score that is always 0 makes that sort collapse to alphabetical by company
+    name — it was enriching the first 40 of 256 by name, not the best 40, and
+    the rep's queue arrived in no meaningful order.
+
+    Reachability is the honest pre-enrichment signal: a partner we cannot call
+    or email is not workable no matter how good a fit they are. ``enrich.py``
+    adds its storm (+2) and decision-maker (+1) nudges on top of this.
+    """
+    return ((2 if phone else 0) + (2 if email else 0)
+            + (1 if website else 0) + (1 if address else 0))
 
 
 def _normalize(raw, segment, state, city):
@@ -139,9 +169,9 @@ def _normalize(raw, segment, state, city):
         'zip':        zip_v,
         'source_ref': source_ref,
         'hook':       _clean(raw.get('note') or raw.get('summary'))[:180],
-        # icp_score is set by the dispatcher after enrichment, once we know
-        # whether the address is in-territory + has recent storm activity.
-        'icp_score':  0,
+        # Ranked on reachability here so the dispatcher's "enrich the top N"
+        # has something to sort by; enrich.py adds storm/decision-maker on top.
+        'icp_score':  _base_icp_score(phone, email, website, address),
     }
 
 

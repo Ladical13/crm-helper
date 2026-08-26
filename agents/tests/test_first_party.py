@@ -250,3 +250,85 @@ def test_a_run_uses_first_party_sources_before_paid_ones(fake_crm, monkeypatch):
              for q in payload['questions']]
     assert any('insurance paperwork' in q.lower() for q in asked)
     assert 'crm' in note or 'field notes' in note
+
+
+def test_a_dry_run_is_recorded_as_a_dry_run(tmp_path, monkeypatch):
+    """A dry run and a live run produce identical found/pushed/deduped counts.
+
+    Avery's 2026-08-13 pass reported "250 leads pushed" in the dashboard and
+    wrote nothing — the manifest on disk said `dry_run: true` and the
+    `agent_runs` row had nowhere to say so. Four reps looked fed for two
+    weeks. The flag has to survive into the row the dashboard reads.
+    """
+    from agents import config
+    from agents.b2b import dispatcher
+
+    for dry in (True, False):
+        run_id = dispatcher._open_run('b2b', 'avery', summary='t', dry_run=dry)
+        with config.get_cache_db() as db:
+            row = db.execute('SELECT dry_run FROM agent_runs WHERE id = ?',
+                             (run_id,)).fetchone()
+        assert bool(row['dry_run']) is dry
+
+
+def test_the_run_history_api_hands_the_dashboard_the_dry_run_flag():
+    """The badge cannot render from a column the endpoint does not select."""
+    import os
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(os.path.dirname(here))
+
+    with open(os.path.join(root, 'portal', 'nimbus_bp.py'), encoding='utf-8') as f:
+        bp = f.read()
+    select = re.search(r"SELECT id, agent, rep.*?FROM agent_runs", bp, re.S).group(0)
+    assert 'dry_run' in select, '/api/runs must select dry_run'
+
+    with open(os.path.join(root, 'portal', 'static', 'nimbus', 'nimbus.html'),
+              encoding='utf-8') as f:
+        page = f.read()
+    assert 'r.dry_run' in page, 'the run list must branch on dry_run'
+    assert '.pill.dry' in page, 'the dry-run badge needs a style'
+
+
+def test_a_stated_unknown_never_reaches_the_crm_as_a_phone_number():
+    """The system prompt forbids fabricating contact details, so the model
+    says "unknown" instead — which `.strip()` happily preserved. It reached
+    the rep as a phone number to dial, and every such row shared one
+    phone_norm, so they deduped against each other."""
+    from agents.b2b.sources import perplexity_gap
+
+    row = perplexity_gap._normalize(
+        {'name': 'Action Team Realty', 'phone': 'unknown',
+         'website': 'Unknown', 'address': 'N/A', 'email': 'not listed'},
+        segment='realtor', state='CO', city='Colorado Springs')
+    assert row['phone'] == ''
+    assert row['website'] == ''
+    assert row['address'] == ''
+    assert row['email'] == ''
+    # A real value still survives untouched.
+    real = perplexity_gap._normalize(
+        {'name': 'The Treasure Davis Team', 'phone': '(719) 249-2020'},
+        segment='realtor', state='CO', city='Colorado Springs')
+    assert real['phone'] == '(719) 249-2020'
+
+
+def test_candidates_are_ranked_by_something_before_we_pay_to_enrich_them():
+    """The dispatcher sorts by icp_score and enriches the top N. Normalization
+    hard-coded 0, so the sort fell through to company name and enrichment
+    bought the alphabetically-first 40 of 256."""
+    from agents.b2b.sources import perplexity_gap
+
+    reachable = perplexity_gap._normalize(
+        {'name': 'Zebra Realty', 'phone': '(719) 555-0100',
+         'email': 'hi@zebra.com', 'website': 'https://zebra.com',
+         'address': '1 Main St'},
+        segment='realtor', state='CO', city='Colorado Springs')
+    unreachable = perplexity_gap._normalize(
+        {'name': 'Aardvark Realty', 'phone': 'unknown'},
+        segment='realtor', state='CO', city='Colorado Springs')
+
+    assert reachable['icp_score'] > unreachable['icp_score']
+    rows = [reachable, unreachable]
+    rows.sort(key=lambda r: (-int(r.get('icp_score') or 0), r.get('company', '')))
+    assert rows[0]['company'] == 'Zebra Realty', \
+        'the reachable lead must outrank the alphabetically-first one'
