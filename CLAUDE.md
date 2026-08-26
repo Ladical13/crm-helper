@@ -368,6 +368,22 @@ nothing is written to Base44 at all.
   Projects land as `contracted`; they used to be pushed as `status: 'lead'`,
   which is not one of The Den's statuses at all.
   `POST /api/leads/<id>/convert?dry_run=1` returns the payloads without writing.
+
+  **Provenance is the other half, and it dies just as quietly.** The Den can
+  re-derive nothing about where a lead came from — this app is the only place
+  that ever held it — so what the payload omits is gone for the exec team for
+  good. Pinned by `tests/test_den_payload.py`. Two rules:
+
+  - **`referred_by` holds the partner's LEAD ID, not a name.** Resolve it
+    before it crosses (the lead drawer does the same for `referred_by_name`); a
+    raw uuid in front of the exec team is worse than nothing. Free text typed
+    by a rep passes through as-is, and an id matching no lead is dropped rather
+    than shown. Without this, *partner ROI is unanswerable* — referral-intel is
+    told to read a referral-partner field that never arrived.
+  - **The rest of the provenance rides in `notes`** (lead type, campaign,
+    `source_ref`, lead-created and won dates) because Base44 has no documented
+    field for it. A dedicated field is better and is the follow-up once the
+    schema is confirmed — notes merely survive any schema.
 - Reuses the shared `BASE44_TOKEN` env var. Den calls degrade gracefully when unset.
 
 **PWA cache-buster:** any `app.js`/`style.css` change must bump `?v=N` in
@@ -412,6 +428,11 @@ python -m pytest prospector/tests                      # 27 tests, offline
   second lead for the same person as a separate deal. Matching on contact details
   there would break it. Guarded by
   `test_cross_sell_still_creates_a_second_lead`.
+- **The importing channel is preserved on the lead.** `/api/prospects/import`
+  writes the caller's `source` (`nimbus`, `dora`, a campaign name) onto every
+  row. It used to hardcode `'prospecting'`, which flattened every channel into
+  one bucket and made agent spend impossible to tie to revenue — the exact
+  failure `agents/MARKETING_PLAN.md` calls decisive.
 - **`source_ref` is the load-bearing dedupe key**, not phone/email. Most open-data
   rows have *no* contact details — a DORA HOA record is a name, a city and a
   licence — so `source_ref` (`dora:4zse-6bnw:51739`) is the only stable thing to
@@ -428,6 +449,19 @@ python -m pytest prospector/tests                      # 27 tests, offline
   manager-only.
 - **Always `--dry-run` first.** It classifies every row, reports intra-batch
   duplicates exactly as the real run would, and writes nothing.
+- **Churches and schools now have free sources.** `agents/b2b/sources/irs_bmf.py`
+  (IRS Exempt Organizations BMF, dedupe key `irs:bmf:<EIN>`) and
+  `agents/b2b/sources/nces.py` (NCES Common Core of Data via the Urban
+  Institute API, key `nces:ccd:<ncessch>`). Both were stubs returning `[]`, so
+  every church/school lead fell through to **paid Perplexity**. The dispatcher
+  stops at the first puller that returns rows, so a free source only saves
+  money if it is listed first in `SEGMENT_SOURCES` — pinned by a test.
+  Both **fail safe**: any network, HTTP or parse error returns `[]` and the run
+  falls through to Perplexity exactly as before, so wiring one can never break
+  a run that used to work. Honest coverage limits, both documented in the
+  modules: the BMF misses churches that never filed (they are exempt
+  automatically), and CCD is **public schools only**. `gc` stays on Perplexity
+  — Colorado has no statewide contractor licence.
 - **`dora:broker` (40,264 individual brokers) is off by default.** DORA publishes
   no contact details, so that segment is the paid-enrichment tier. Work
   `dora:brokerage` — one office visit reaches every agent in it.

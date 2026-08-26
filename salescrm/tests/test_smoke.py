@@ -2,6 +2,7 @@
 stage transitions, cadence/task advancement, and per-rep visibility."""
 import app as appmod
 from conftest import signup, login, logout, new_lead
+import app as appmod
 
 
 def test_first_user_is_admin(client):

@@ -85,7 +85,9 @@ def test_import_creates_leads(client):
     leads = client.get('/api/leads').get_json()
     assert {l['company'] for l in leads} == {'Ridge HOA', 'Vista HOA'}
     assert all(l['lead_type'] == 'hoa' for l in leads)
-    assert all(l['temperature'] == 'cold' and l['source'] == 'prospecting' for l in leads)
+    # The importing CHANNEL is preserved (the helper posts source='dora'), not
+    # flattened to a generic bucket — that is what ties spend to revenue later.
+    assert all(l['temperature'] == 'cold' and l['source'] == 'dora' for l in leads)
 
 
 def test_import_is_idempotent(client):

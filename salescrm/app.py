@@ -103,6 +103,7 @@ PARTNER_TYPES  = [t['key'] for t in LEAD_TYPES if t['partner']]
 
 SOURCES     = ['referral', 'door_knock', 'phone_call', 'website', 'social_media', 'storm',
                'existing_customer', 'other']
+
 TEMPERATURE = ['hot', 'warm', 'cold']
 
 # Service lines. Every lead is a deal for ONE service; pitching a second service
@@ -1078,10 +1079,70 @@ def _reconcile_funnel():
 def _crm_headers():
     return {'Authorization': f'Bearer {BASE44_TOKEN}', 'Content-Type': 'application/json'}
 
+def _looks_like_id(value):
+    """True for a uuid4 as generated for lead ids — i.e. an unresolved pointer
+    rather than something a human typed."""
+    v = str(value or '').strip()
+    return len(v) == 36 and v.count('-') == 4
+
+
+def _den_provenance(lead):
+    """The attribution block that travels with a job into The Den.
+
+    Base44 has no documented field for "which partner referred this", so the
+    provenance rides in `notes` where referral-intel can read it. A dedicated
+    field is better and is the follow-up once the schema is confirmed — but
+    notes survive any schema, and losing the partner entirely is what makes
+    partner ROI unanswerable today.
+    """
+    bits = []
+    if lead.get('referred_by'):
+        # `referred_by` stores the PARTNER'S LEAD ID, not a name. Pushing the
+        # raw uuid would put an opaque string in front of the exec team, so
+        # resolve it the same way the lead drawer does (`referred_by_name`).
+        partner = ''
+        try:
+            with get_db() as db:
+                ref = db.execute(
+                    'SELECT first_name, last_name, company FROM leads WHERE id=?',
+                    (lead['referred_by'],)).fetchone()
+            if ref:
+                partner = (f"{ref['first_name']} {ref['last_name']}".strip()
+                           or ref['company'] or '')
+        except Exception as e:                       # never block a push on this
+            print(f'[Den] referred_by lookup failed: {e}')
+        # The field is normally an id, but the API accepts free text, so a
+        # hand-entered partner name must not vanish just because it never
+        # matched a lead row. Anything that isn't an unresolved uuid is a name.
+        if not partner and not _looks_like_id(lead['referred_by']):
+            partner = lead['referred_by'].strip()
+        if partner:
+            bits.append(f"Referred by: {partner}")
+    if lead.get('lead_type') and lead['lead_type'] != 'homeowner':
+        label = next((t['label'] for t in LEAD_TYPES if t['key'] == lead['lead_type']),
+                     lead['lead_type'])
+        bits.append(f"Lead type: {label}")
+    if lead.get('import_batch'):
+        bits.append(f"Campaign: {lead['import_batch']}")
+    if lead.get('source_ref'):
+        bits.append(f"Source ref: {lead['source_ref']}")
+    if lead.get('created_at'):
+        bits.append(f"Lead created: {lead['created_at']}")
+    if lead.get('won_at'):
+        bits.append(f"Won: {lead['won_at']}")
+    return bits
+
+
 def _den_payloads(lead):
-    """Build the Contact + Project payloads (also used by the dry-run endpoint)."""
+    """Build the Contact + Project payloads (also used by the dry-run endpoint).
+
+    Everything this app knows that Base44 cannot re-derive must cross here.
+    Anything dropped is gone: the CRM is the only place that ever held the
+    lead's origin, and the exec team reports off Base44.
+    """
     name = (f"{lead['first_name']} {lead['last_name']}").strip() or lead['company'] or 'Unknown'
     assigned = f"{lead['rep']}@{EMAIL_DOMAIN}"
+
     contact = {
         'name': name, 'first_name': lead['first_name'], 'last_name': lead['last_name'],
         'phone': lead['phone'], 'email': lead['email'],
@@ -1090,21 +1151,25 @@ def _den_payloads(lead):
         'source': lead['source'] or 'referral', 'assigned_to': assigned,
         'location_id': CO_LOCATION_ID,
     }
+
     service_label = SERVICE_META.get(lead.get('service') or 'roofing', SERVICES[0])['label']
     # Recurring plans carry their plan name + billing cadence into the project name/notes
     # so The Den/production can see it's a maintenance agreement, not a one-time job.
     pname = f"{service_label} - {name}"
-    notes = ''
+    notes_lines = []
     plan = PLAN_BY_ID.get(lead.get('plan') or '')
     if plan:
         pname = f"{plan['name']} ({service_label}) - {name}"
         suffix = BILLING_SUFFIX.get(lead.get('billing') or '', '')
-        notes = f"Recurring maintenance plan: {plan['name']}"
+        line = f"Recurring maintenance plan: {plan['name']}"
         if lead.get('est_value'):
-            notes += f" — {int(lead['est_value'])}{suffix}"
+            line += f" — {int(lead['est_value'])}{suffix}"
+        notes_lines.append(line)
+    notes_lines.extend(_den_provenance(lead))
+
     project = {
         'name': pname, 'source': lead['source'] or 'referral',
-        'assigned_to': assigned, 'notes': notes,
+        'assigned_to': assigned, 'notes': '\n'.join(notes_lines),
         'location_id': CO_LOCATION_ID,
         # 'lead' is not one of The Den's statuses and every job pushed with it
         # sat outside the pipeline reports. A job only reaches this function
@@ -1119,6 +1184,7 @@ def _den_payloads(lead):
     if lead.get('est_value'):
         project['contract_value'] = float(lead['est_value'])
     return contact, project
+
 
 def _find_existing_contact(lead):
     """Dedup: reuse a Base44 contact matching phone/email before creating one."""
@@ -1513,7 +1579,10 @@ def import_prospects():
             fields = dict(row)
             fields.update({
                 'id': lid, 'lead_type': lead_type, 'service': service,
-                'source': 'prospecting', 'temperature': 'cold', 'stage': 'new',
+                # The channel that sourced this row ('prospecting', 'nimbus', a
+                # campaign name). Hardcoding it flattened every channel into one
+                # bucket and made SEO/agent spend impossible to tie to revenue.
+                'source': source, 'temperature': 'cold', 'stage': 'new',
                 'rep': rep, 'import_batch': batch,
                 'est_value': float(raw.get('est_value') or 0),
                 'icp_score': int(raw.get('icp_score') or 0),
