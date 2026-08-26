@@ -116,7 +116,7 @@ def test_direct_fetch_extracts_adopted_code_from_municode_html(A):
         res = A._jx_direct_profile(j)
     assert m.called
     assert res is not None
-    assert res['profile']['adopted_code'] == 'IRC 2021'
+    assert res['profile']['adopted_code'] == '2021 IRC'
     assert res['profile']['adopted_code_source_url'] == j['code_url']
     assert res['source'] == 'municode'
 
@@ -154,7 +154,7 @@ def test_perplexity_only_runs_when_direct_returns_nothing(A):
         res = A._verify_jurisdiction_profile(j)
     pplx.assert_not_called()
     assert res['ok'] is True
-    assert res['profile']['adopted_code'] == 'IRC 2018'
+    assert res['profile']['adopted_code'] == '2018 IRC'
 
 
 def test_perplexity_result_rejected_without_allowlisted_citation(A):
@@ -241,7 +241,7 @@ def test_perplexity_result_accepted_with_allowlisted_citation(A):
         res = A._verify_jurisdiction_profile(j)
     assert res['ok'] is True
     assert res['source'] == 'perplexity'
-    assert res['profile']['adopted_code'] == 'IRC 2018'
+    assert res['profile']['adopted_code'] == '2018 IRC'
     assert res['profile']['amendments'][0]['topic'] == 'ice barrier'
     # Only the allowlisted citations survive.
     for c in res['citations']:
@@ -324,7 +324,7 @@ def test_approved_profile_appears_in_manifest(client, A, jx_snapshot):
     m = A._build_estimate_manifest(_estimate_in_loveland(A))
     vp = (m.get('code') or {}).get('verified_profile')
     assert vp, 'approved profile should appear in the manifest code block'
-    assert vp['adopted_code'] == 'IRC 2021'
+    assert vp['adopted_code'] == '2021 IRC'
     assert vp['amendments'][0]['topic'] == 'fasteners'
     assert vp['verified_at']
     assert vp['reroof_permit']['portal_url'] == 'https://lovgov.org/portal'
@@ -356,3 +356,317 @@ def test_reject_clears_saved_profile(client, A, jx_snapshot):
     assert client.post(f'/api/jurisdictions/{TEST_JID}/reject').status_code == 200
     data = A._load_jurisdictions()
     assert 'verified_profile' not in A._jx_find_by_id(data, TEST_JID)
+
+
+# ── The allowlist trusts each jurisdiction's own domain ──────────────────
+#
+# The original allowlist assumed a Colorado municipality publishes on `.gov`.
+# Measured against the 273 cities in jurisdictions.json the split is .org 90,
+# .gov 84, .com 74, .us 18 — so a bare `.gov` rule threw out 69% of cities'
+# OWN official sites. Aurora's real building-code page on auroragov.org was
+# rejected as untrustworthy, which failed the whole verify.
+
+def test_a_city_on_a_dot_org_domain_is_authoritative_for_its_own_code():
+    aurora = {'id': 'aurora', 'name': 'City of Aurora',
+              'url': 'https://www.auroragov.org/'}
+    hosts = jp.jurisdiction_hosts(aurora)
+    assert 'auroragov.org' in hosts
+    real_page = ('https://www.auroragov.org/business_services/building_division'
+                 '/adopted_building_codes')
+    assert not jp.citation_is_allowed(real_page), 'precondition: fails the static list'
+    assert jp.citation_is_allowed(real_page, hosts)
+
+
+def test_widening_the_allowlist_does_not_admit_contractor_blogs():
+    """The fix trusts ONE extra domain per jurisdiction, not `.org` at large."""
+    hosts = jp.jurisdiction_hosts({'url': 'https://www.auroragov.org/'})
+    for junk in ('https://hailreadycolorado.com/colorado-roofing-codes-by-city/',
+                 'https://roofsbycooper.com/building-codes/',
+                 'https://someroofer.org/aurora-codes'):
+        assert not jp.citation_is_allowed(junk, hosts), junk
+
+
+def test_a_lookalike_domain_does_not_satisfy_the_jurisdiction_host():
+    """Suffix matching must happen at a label boundary, or 'auroragov.org'
+    would be satisfied by 'notauroragov.org'."""
+    hosts = jp.jurisdiction_hosts({'url': 'https://www.auroragov.org/'})
+    assert not jp.citation_is_allowed('https://notauroragov.org/codes', hosts)
+    # A genuine subdomain still counts.
+    assert jp.citation_is_allowed('https://permits.auroragov.org/x', hosts)
+
+
+def test_jurisdiction_hosts_looks_through_a_wayback_snapshot():
+    """30 entries list a 2020 Wayback capture as the town's official site.
+    web.archive.org says nothing about who the town is; the archived URL does."""
+    j = {'url': 'https://web.archive.org/web/20200522064708/'
+                'https://townofbayfield.colorado.gov/'}
+    assert jp.jurisdiction_hosts(j) == ['townofbayfield.colorado.gov']
+
+
+def test_jurisdiction_hosts_refuses_a_bare_public_suffix():
+    """A malformed url must not turn into a wildcard that trusts half the
+    internet."""
+    for bad in ('http://co.us/', 'https://org/', 'https://com/', ''):
+        assert jp.jurisdiction_hosts({'url': bad}) == [], bad
+
+
+def test_a_curated_code_url_also_counts_as_an_authoritative_host():
+    """Both recorded URLs contribute a host. Only a leading `www.` is dropped:
+    a `code_url` on codes.lovgov.net trusts that host and its subdomains, not
+    the whole of lovgov.net, which nobody has vouched for."""
+    j = {'url': 'https://www.lovgov.org/', 'code_url': 'https://codes.lovgov.net/ch5'}
+    hosts = jp.jurisdiction_hosts(j)
+    assert hosts == ['lovgov.org', 'codes.lovgov.net']
+    assert jp.citation_is_allowed('https://codes.lovgov.net/ch5/905', hosts)
+    assert not jp.citation_is_allowed('https://lovgov.net/unrelated', hosts)
+
+
+# ── Delegating jurisdictions ─────────────────────────────────────────────
+
+def _pplx(data, citations, cached=False):
+    return {'answer': '', 'data': data, 'citations': citations,
+            'cost_usd': 0.0 if cached else 0.001, 'cached': cached,
+            'model': 'sonar-pro'}
+
+
+_DELEGATED = {
+    'adopted_code': 'unknown', 'adopted_code_source_url': 'unknown',
+    'amendments': [],
+    'reroof_permit': {'submittal_method': 'unknown',
+                      'portal_url': 'unknown', 'fee_basis': 'unknown'},
+    'issues_permits_for_roofing': True,
+    'delegated_to': 'Pikes Peak Regional Building Department',
+}
+
+
+def test_a_jurisdiction_that_delegates_permits_verifies_instead_of_failing(A):
+    """Colorado Springs sets no code of its own — it contracts to the Pikes
+    Peak Regional Building Department. That answer is correct and is exactly
+    what the office needs, but the old rule failed on adopted_code=='unknown'
+    and threw it away."""
+    j = {'id': 'colorado-springs', 'name': 'City of Colorado Springs',
+         'kind': 'city', 'url': 'https://coloradosprings.gov/'}
+    with patch.object(A.http, 'get',
+                      return_value=_fake_http_response('<html></html>')), \
+         patch('agents.perplexity.search_json',
+               return_value=_pplx(_DELEGATED, ['https://coloradosprings.gov/building'])):
+        res = A._verify_jurisdiction_profile(j)
+    assert res['ok'] is True
+    assert res['profile']['delegated_to'] == 'Pikes Peak Regional Building Department'
+    assert res['profile']['adopted_code'] == ''
+
+
+def test_unknown_code_with_no_delegation_still_fails_closed(A):
+    """The delegation carve-out must not become a general escape hatch: with
+    nothing to say, we still save nothing."""
+    nothing = dict(_DELEGATED, delegated_to=None)
+    j = {'id': 'x', 'name': 'Test', 'kind': 'city', 'url': 'https://t.example.gov'}
+    with patch.object(A.http, 'get',
+                      return_value=_fake_http_response('<html></html>')), \
+         patch('agents.perplexity.search_json',
+               return_value=_pplx(nothing, ['https://t.example.gov/b'])):
+        res = A._verify_jurisdiction_profile(j)
+    assert res['ok'] is False
+
+
+def test_a_delegated_profile_can_be_approved_and_reaches_the_office(client, A, jx_snapshot):
+    """Approve used to require adopted_code, so a delegation-only profile was
+    unapprovable — and 'pull this permit somewhere else' never reached the
+    packet the office works from."""
+    body = {'profile': dict(_DELEGATED, adopted_code=''),
+            'citations': ['https://coloradosprings.gov/building'],
+            'source': 'perplexity'}
+    r = client.post(f'/api/jurisdictions/{TEST_JID}/approve', json=body)
+    assert r.status_code == 200, r.get_data(as_text=True)
+    m = A._build_estimate_manifest(_estimate_in_loveland(A))
+    vp = (m.get('code') or {}).get('verified_profile')
+    assert vp and vp['delegated_to'] == 'Pikes Peak Regional Building Department'
+
+
+# ── A cached rejection must not be a permanent one ───────────────────────
+
+def test_a_cached_bad_answer_is_retried_once_for_real(A):
+    """The 30-day cache stores the model's ANSWER, but these rejections are
+    decided downstream of it — so 'Re-verify' replayed the same cached answer
+    into the same error for 30 days. A cached rejection now spends one call on
+    a genuine retry."""
+    j = {'id': 'x', 'name': 'Test', 'kind': 'city', 'url': 'https://t.example.gov'}
+    good = dict(_DELEGATED, adopted_code='IRC 2021', delegated_to=None)
+    calls = []
+
+    def fake(prompt, **kw):
+        calls.append(kw.get('force_refresh'))
+        if len(calls) == 1:      # the stale cached answer, rejected
+            return _pplx(dict(_DELEGATED, delegated_to=None),
+                         ['https://t.example.gov/b'], cached=True)
+        return _pplx(good, ['https://t.example.gov/b'], cached=False)
+
+    with patch.object(A.http, 'get',
+                      return_value=_fake_http_response('<html></html>')), \
+         patch('agents.perplexity.search_json', side_effect=fake):
+        res = A._verify_jurisdiction_profile(j)
+    assert calls == [False, True], 'the retry must bypass the cache'
+    assert res['ok'] is True and res['retried'] is True
+    assert res['profile']['adopted_code'] == '2021 IRC'
+
+
+def test_a_fresh_bad_answer_is_not_retried(A):
+    """A live call that just failed will not do better a millisecond later —
+    retrying it only doubles the spend."""
+    j = {'id': 'x', 'name': 'Test', 'kind': 'city', 'url': 'https://t.example.gov'}
+    calls = []
+
+    def fake(prompt, **kw):
+        calls.append(kw.get('force_refresh'))
+        return _pplx(dict(_DELEGATED, delegated_to=None),
+                     ['https://t.example.gov/b'], cached=False)
+
+    with patch.object(A.http, 'get',
+                      return_value=_fake_http_response('<html></html>')), \
+         patch('agents.perplexity.search_json', side_effect=fake):
+        res = A._verify_jurisdiction_profile(j)
+    assert calls == [False], 'a fresh failure must cost exactly one call'
+    assert res['ok'] is False
+
+
+# ── adopted_code is tidied, never rewritten ──────────────────────────────
+
+def test_adopted_code_canonicalises_the_two_ways_of_writing_one_year(A):
+    for raw in ('IRC 2021', '2021 IRC', 'irc  2021', 'IRC, 2021',
+                'International Residential Code, 2021 Edition'):
+        assert A._jx_normalize_code(raw) == '2021 IRC', raw
+
+
+def test_adopted_code_leaves_a_code_that_is_not_the_irc_alone(A):
+    """El Paso County really is on the Pikes Peak Regional Building Code.
+    Flattening that to an IRC year would state something false."""
+    for raw in ('Pikes Peak Regional Building Code 2023',
+                '2024 I-Codes',
+                '2024 International Codes (local amendments)'):
+        assert A._jx_normalize_code(raw) == raw, raw
+
+
+def test_adopted_code_keeps_a_multi_clause_answer_whole(A):
+    """Larimer County's answer names the wildfire code AND the IRC year that
+    governs roofing. Truncating to the first clause would drop the half that
+    matters for a re-roof."""
+    raw = ('2025 Colorado Wildfire Resiliency Code; 2021 IRC amendments in '
+           'effect for residential roofing')
+    assert A._jx_normalize_code(raw) == raw
+
+
+def test_adopted_code_is_capped_so_one_runaway_sentence_cannot_break_the_pdf(A):
+    # 160 characters plus the ellipsis that marks the cut.
+    assert len(A._jx_normalize_code('2021 IRC ' + 'x' * 500)) <= 161
+
+
+# ── The direct tier no longer guesses publisher URLs ─────────────────────
+
+def test_direct_fetch_only_tries_urls_that_are_about_this_jurisdiction(A):
+    """The Municode/amlegal slug guesses hit 0 times across a 16-jurisdiction
+    sample and cost a 10s timeout each: Municode serves a JS app shell with no
+    code year in the HTML, and amlegal 403s us. Only the two URLs actually
+    recorded for this jurisdiction are tried now."""
+    j = {'id': 'fort-collins', 'name': 'City of Fort Collins', 'kind': 'city',
+         'url': 'https://www.fcgov.com/', 'code_url': 'https://fcgov.com/building/codes'}
+    urls = A._jx_direct_urls(j)
+    assert urls == ['https://fcgov.com/building/codes', 'https://www.fcgov.com/']
+    for u in urls:
+        assert 'municode.com' not in u and 'amlegal.com' not in u
+
+
+def test_direct_fetch_unwraps_a_wayback_url_before_fetching_it(A):
+    """Fetching web.archive.org returns the 2020 copy of a site — not what we
+    want to quote a customer as current code."""
+    j = {'id': 'x', 'name': 'Town of Bayfield', 'kind': 'city',
+         'url': 'https://web.archive.org/web/20200522064708/https://tob.colorado.gov/'}
+    assert A._jx_direct_urls(j) == ['https://tob.colorado.gov/']
+
+
+def test_a_county_gets_its_colorado_locality_domain():
+    """All 64 counties in jurisdictions.json have no `url`, so they had no
+    domain of their own — Douglas County failed while Perplexity was citing
+    apps.douglas.co.us."""
+    hosts = jp.jurisdiction_hosts({'name': 'Douglas County', 'kind': 'county'})
+    assert hosts == ['douglas.co.us']
+    assert jp.citation_is_allowed(
+        'https://apps.douglas.co.us/building/services/Default.aspx', hosts)
+    # And it is still not a licence to cite anybody.
+    assert not jp.citation_is_allowed(
+        'https://upstreamroof.com/blog/douglas-county-roof', hosts)
+
+
+def test_the_locality_guess_is_name_matched_not_a_wildcard():
+    """`<name>.co.us` must belong to the jurisdiction being verified — Weld
+    County must not accept a citation on douglas.co.us."""
+    weld = jp.jurisdiction_hosts({'name': 'Weld County', 'kind': 'county'})
+    assert not jp.citation_is_allowed('https://apps.douglas.co.us/x', weld)
+    assert jp.citation_is_allowed('https://weld.co.us/building', weld)
+
+
+def test_adopted_code_truncation_lands_on_a_word_boundary(A):
+    """A hard slice ended one real answer mid-word at '...as part of t',
+    which reads as corruption on a customer's estimate."""
+    long = ('2024 International Residential Code (for one- and two-family '
+            'dwellings and townhouses) and 2024 International Building Code '
+            '(for other structures), as part of the 2024 I-Codes')
+    out = A._jx_normalize_code(long)
+    assert len(out) <= 161            # 160 + the ellipsis
+    assert out.endswith('…')
+    assert not out[:-1].endswith(' ')
+    assert long.startswith(out[:-1])  # a prefix, never reworded
+
+
+def test_the_prompt_asks_for_one_short_code_not_an_essay():
+    """sonar-pro answered the looser prompt with 160-character sentences
+    naming the IBC, effective dates and transition plans — all of which land
+    on the 'Enforces' line of a customer's estimate."""
+    text = jp.build_prompt({'name': 'City of Greeley', 'kind': 'city',
+                            'county': 'Weld', 'url': 'https://greeleygov.com/'})
+    assert 'RESIDENTIAL RE-ROOF' in text
+    assert 'Name ONE code' in text
+    assert 'City of Greeley' in text
+
+
+# ── County URLs reach a volume that already has jurisdictions.json ───────
+
+def test_service_area_counties_have_a_domain_of_their_own(A):
+    """El Paso County is elpasoco.com — not .gov and not elpaso.co.us, so
+    neither the static list nor the locality guess reaches it. Without a `url`
+    the county had no authoritative host at all and verify failed."""
+    data = A._load_jurisdictions()
+    by_id = {j['id']: j for j in data['jurisdictions']}
+    el_paso = by_id['el-paso-county']
+    assert el_paso['url'] == 'https://elpasoco.com/'
+    hosts = jp.jurisdiction_hosts(el_paso)
+    assert jp.citation_is_allowed('https://elpasoco.com/regional-building-department', hosts)
+
+
+def test_county_urls_are_backfilled_on_read_not_only_in_the_seed(A):
+    """_seed_data_dir() copies jurisdictions.json to the volume only when it
+    is ABSENT, so on a long-lived volume the repo copy is inert. A seed-only
+    edit would never reach production — the backfill has to run on read."""
+    stale = {'jurisdictions': [
+        {'id': 'el-paso-county', 'name': 'El Paso County', 'kind': 'county', 'url': ''},
+    ]}
+    out = A._jx_backfill_urls(stale)
+    assert out['jurisdictions'][0]['url'] == 'https://elpasoco.com/'
+
+
+def test_backfill_never_overwrites_a_manager_edited_url(A):
+    """A manager who points a county at its building-department page in
+    Settings must not have it reverted to the seed on the next read."""
+    edited = {'jurisdictions': [
+        {'id': 'weld-county', 'name': 'Weld County', 'kind': 'county',
+         'url': 'https://www.weld.gov/Government/Departments/Building-Department'},
+    ]}
+    out = A._jx_backfill_urls(edited)
+    assert out['jurisdictions'][0]['url'].endswith('/Building-Department')
+
+
+def test_backfill_leaves_jurisdictions_it_has_no_seed_for_alone(A):
+    untouched = {'jurisdictions': [
+        {'id': 'gilpin-county', 'name': 'Gilpin County', 'kind': 'county', 'url': ''},
+    ]}
+    out = A._jx_backfill_urls(untouched)
+    assert out['jurisdictions'][0]['url'] == ''

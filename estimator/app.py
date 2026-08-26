@@ -3662,7 +3662,24 @@ body{background:#fff;padding-bottom:0 !important}
 .cert{border-width:1.5pt}
 .cvcontract,.cvcontract[open]{break-inside:auto}
 .cvcontract summary{display:none}
-.cvcontract-body{max-height:none !important;overflow:visible !important;padding:16px 18px}}
+.cvcontract-body{max-height:none !important;overflow:visible !important;padding:16px 18px}
+/* A trade table taller than one page HAS to break, and the browser's default
+   for a split table is to repeat <tfoot> on every fragment — so the customer's
+   PDF printed "Roofing Subtotal $10,101.84" at the foot of the page, then the
+   remaining items, then the same subtotal again, as if there were two of them.
+   table-row-group puts the footer back in normal flow: it prints once, at the
+   real end. <thead> still repeats across pages, which is what we want — the
+   continued rows keep their Description / Qty / Unit headings. */
+.cvt tfoot{display:table-row-group}
+/* Where the break lands, if it must land inside a table: never through the
+   middle of a line item, never between a subtotal and the rows it sums, and
+   never leaving a heading stranded alone at the bottom of a page. */
+.cvt tr{break-inside:avoid}
+.cvt thead{break-after:avoid}
+.cvt tr.cv-section-row{break-after:avoid}
+.cvt tfoot tr,.cvt tr.cv-section-sub{break-before:avoid}
+.cvtrade-hd{break-after:avoid}
+.cvgrand{break-inside:avoid}}
 """
 
 # Shared client-side behavior for every public customer page: scroll-reveal,
@@ -4952,6 +4969,8 @@ def _cv_trust_blocks(est):
             return None
         return blk
 
+    is_comm = est.get('estimate_type') == 'commercial'
+
     out = ''
     for key, dflt_title, eyebrow in (('about', 'About Us', 'Who you&rsquo;re hiring'),
                                      ('warranty', 'Our Warranty', 'What backs the work')):
@@ -4959,6 +4978,8 @@ def _cv_trust_blocks(est):
         body = (blk.get('body') or '').strip() if blk else ''
         if not body:
             continue
+        if is_comm:
+            body = _commercial_voice(body)
         paras = ''.join(f'<p>{he(p.strip())}</p>'
                         for p in body.split('\n\n') if p.strip())
         title = (blk.get('title') or '').strip() or dflt_title
@@ -5019,6 +5040,23 @@ _WARRANTY_BY_TIER = {
 _WARRANTY_BY_TIER_COMMERCIAL = dict(
     _WARRANTY_BY_TIER,
     best='Lifetime Project One workmanship warranty (for as long as you own the building)')
+
+
+def _commercial_voice(text):
+    """Say the same warranty promise to a building owner.
+
+    The per-tier constants above were already switched, but the warranty
+    block in company_content.json is admin-edited free text that says "for as
+    long as you own the home" — and it reaches a commercial bid twice: once
+    in the visible trust block and once inside the JSON-LD the sign page
+    embeds. Rewriting the phrase keeps one editable source of truth instead
+    of asking an admin to maintain a parallel commercial copy."""
+    out = str(text or '')
+    for a, b in (('you own the home', 'you own the building'),
+                 ('your home', 'your building'),
+                 ('the homeowner', 'the building owner')):
+        out = out.replace(a, b).replace(a.capitalize(), b.capitalize())
+    return out
 
 # The seven process steps a customer reads. The residential list talks about
 # landscaping, A/C units and the homeowner; a commercial re-roof is staged
@@ -5223,6 +5261,10 @@ def _build_estimate_manifest(est):
                 'portal_url':       str((vp.get('reroof_permit') or {}).get('portal_url') or '').strip(),
                 'fee_basis':        str((vp.get('reroof_permit') or {}).get('fee_basis') or '').strip(),
             },
+            # Who actually issues the permit, when this jurisdiction
+            # contracts inspections out (Colorado Springs → Pikes Peak
+            # Regional Building Department). Blank for the common case.
+            'delegated_to': str(vp.get('delegated_to') or '').strip(),
             'sources':      [str(s).strip() for s in (vp.get('sources') or []) if str(s).strip()][:6],
             'verified_at':  str(vp.get('verified_at') or '').strip(),
             'verified_via': str(vp.get('verified_via') or '').strip(),
@@ -5296,6 +5338,8 @@ def _build_estimate_manifest(est):
     certs = [str(i).strip() for i in ((cc.get('certifications') or {}).get('items') or [])
              if str(i).strip()]
     warranty_body = ((cc.get('warranty') or {}).get('body') or '').strip()
+    if is_comm:
+        warranty_body = _commercial_voice(warranty_body)
 
     # Grand total (customer's currently selected packages)
     if is_ins:
@@ -5440,6 +5484,10 @@ def _cv_estimate_details_block(manifest, est=None):
                     ac_html += f' &middot; <a href="{he(acu)}" target="_blank" rel="noopener">source</a>'
                 ac_html += '</div>'
                 verified_html += ac_html
+            dele = (vp.get('delegated_to') or '').strip()
+            if dele:
+                verified_html += ('<div class="cvdet-code-adopted"><strong>Permits issued by</strong> '
+                                  f'{he(dele)}</div>')
             amends = vp.get('amendments') or []
             if amends:
                 verified_html += ('<div style="margin-top:8px"><b style="font-size:12px;color:var(--faint)">'
@@ -9869,6 +9917,7 @@ def _selected_permit_jurisdiction(est):
         'submittal_method': ((vp.get('reroof_permit') or {}).get('submittal_method') or '').strip(),
         'portal_url':       ((vp.get('reroof_permit') or {}).get('portal_url') or '').strip(),
         'fee_basis':        ((vp.get('reroof_permit') or {}).get('fee_basis') or '').strip(),
+        'delegated_to':     (vp.get('delegated_to') or '').strip(),
     }
 
 
@@ -9956,6 +10005,12 @@ def build_permit_packet_pdf(est):
         kv_row('Fee Basis',       jur['fee_basis'])
     if jur['adopted_code']:
         kv_row('Adopted Code',    jur['adopted_code'])
+    # When this jurisdiction contracts inspections out, the office admin has
+    # to walk the permit somewhere else entirely — Colorado Springs jobs are
+    # pulled at the Pikes Peak Regional Building Department, not at the city.
+    # Getting this wrong costs a trip.
+    if jur.get('delegated_to'):
+        kv_row('Permits Issued By', jur['delegated_to'])
     if not jur['verified']:
         pdf.ln(1)
         pdf.set_font(SANS, 'I', 8)
@@ -10223,6 +10278,14 @@ def save_signed_contract_attachment(est_id, pdf_bytes):
 
     est_update(est_id, _swap)
     return att
+
+
+# The sign route runs the pipeline on a thread with this name. Naming it is
+# what lets a test join it and then assert in the foreground: starting a SECOND
+# pipeline alongside the running one is exactly the concurrent read-modify-write
+# the docstring below exists to prevent, and doing it intermittently wiped the
+# estimate's attachment list on CI.
+POST_SIGN_THREAD = 'post-sign-pipeline'
 
 
 def _post_sign_pipeline(est_id):
@@ -11830,7 +11893,8 @@ def customer_sign(token):
         threading.Thread(target=send_signature_notification,
                          args=(est,), daemon=True).start()
         threading.Thread(target=_post_sign_pipeline,
-                         args=(est.get('estimate_id'),), daemon=True).start()
+                         args=(est.get('estimate_id'),),
+                         name=POST_SIGN_THREAD, daemon=True).start()
         return build_signed_confirmation(est)
 
     # Already signed — show the confirmation instead of the form
@@ -13776,6 +13840,44 @@ def put_commercial_fastening():
 _JURISDICTIONS_FALLBACK = {'version': 1, 'colorado_baseline': {'code_points': [], 'verify_note': ''},
                            'jurisdictions': []}
 
+# All 64 counties shipped with an empty `url`, which left them with no domain
+# of their own for the citation allowlist — and unlike a city, a county name
+# does not reliably imply its domain (El Paso County is elpasoco.com, not
+# elpaso.co.us). These are the counties the reps actually work, verified live.
+#
+# Backfilled on READ rather than only fixed in the seed file, because
+# _seed_data_dir() copies jurisdictions.json to the volume ONLY when absent:
+# on a long-lived volume the repo copy is inert, so a seed-only edit would
+# never reach production. Same trap the price book's bundle catalogs hit.
+_JX_COUNTY_URL_SEED = {
+    'adams-county':      'https://www.adcogov.org/',
+    'arapahoe-county':   'https://www.arapahoeco.gov/',
+    'boulder-county':    'https://bouldercounty.gov/',
+    'broomfield-county': 'https://www.broomfield.org/',
+    'denver-county':     'https://www.denvergov.org/',
+    'douglas-county':    'https://www.douglas.co.us/',
+    'el-paso-county':    'https://elpasoco.com/',
+    'fremont-county':    'https://fremontco.com/',
+    'jefferson-county':  'https://www.jeffco.us/',
+    'larimer-county':    'https://www.larimer.gov/',
+    'pueblo-county':     'https://county.pueblo.org/',
+    'teller-county':     'https://www.co.teller.co.us/',
+    'weld-county':       'https://www.weld.gov/',
+}
+
+
+def _jx_backfill_urls(data):
+    """Fill a missing county `url` from the seed. Never overwrites a value a
+    manager set in Settings — an empty string is the only thing replaced."""
+    for j in (data.get('jurisdictions') or []):
+        if not isinstance(j, dict) or (j.get('url') or '').strip():
+            continue
+        seeded = _JX_COUNTY_URL_SEED.get(j.get('id'))
+        if seeded:
+            j['url'] = seeded
+    return data
+
+
 def _load_jurisdictions():
     # Prefer the live DATA_DIR copy; fall back to the committed seed beside the
     # app so a fresh checkout still serves the full statewide dataset.
@@ -13783,7 +13885,7 @@ def _load_jurisdictions():
         if os.path.exists(path):
             try:
                 with open(path, encoding='utf-8') as f:
-                    return json.load(f)
+                    return _jx_backfill_urls(json.load(f))
             except Exception:
                 pass
     return dict(_JURISDICTIONS_FALLBACK)
@@ -13960,13 +14062,6 @@ _CODE_YEAR_RE = re.compile(
 )
 
 
-def _jx_slug(name):
-    """'Fort Collins' → 'fortcollins' — the shape Municode / amlegal use in
-    their URL slugs. Not authoritative (both publishers have exceptions); the
-    heuristic is just there to give the direct-fetch tier something to try."""
-    return re.sub(r'[^a-z0-9]+', '', (name or '').lower())
-
-
 def _jx_extract_adopted_code(html, source_url):
     """Loose regex — matches '2021 IRC', 'IRC 2021', 'International Residential
     Code, 2018 Edition'. Never a guess: on no match we return None and the
@@ -13980,18 +14075,26 @@ def _jx_extract_adopted_code(html, source_url):
     if not year:
         return None
     return {
-        'adopted_code':            f'IRC {year}',
+        'adopted_code':            f'{year} IRC',
         'adopted_code_source_url': source_url,
     }
+
+
+# Municipal sites sit behind WAFs that 403 an obviously-scripted User-Agent.
+# A browser UA is not a disguise here — we are fetching one public page the
+# jurisdiction publishes for contractors to read, at the rate of one per
+# manager click. Measured: several CO city sites 403 our old UA.
+_JX_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
 
 
 def _jx_fetch_html(url, timeout=10):
     if not url or http is None:
         return None
     try:
-        r = http.get(url, timeout=timeout,
-                     headers={'User-Agent':
-                              'ProjectOneRoofing-Estimator/1.0 (jurisdiction-verify)'})
+        r = http.get(url, timeout=timeout, allow_redirects=True,
+                     headers={'User-Agent': _JX_UA,
+                              'Accept': 'text/html,application/xhtml+xml'})
     except Exception:
         return None
     if not r.ok:
@@ -14003,11 +14106,24 @@ def _jx_fetch_html(url, timeout=10):
 
 
 def _jx_direct_urls(j):
-    """Order the direct-fetch pipeline tries. First hit wins."""
+    """Order the direct-fetch pipeline tries. First hit wins.
+
+    The Municode/amlegal slug guesses that used to live here were removed
+    after measuring them: they cannot work, and each one cost a 10s timeout
+    on every verify. Municode serves a ~6 KB JavaScript app shell with no
+    code year anywhere in the HTML, so the regex has nothing to match no
+    matter how right the slug is; amlegal 403s us and the guessed slug 404s
+    besides. Across a 16-jurisdiction sample the direct tier hit 0 times.
+
+    What is left is the two URLs that are actually about this jurisdiction: a
+    manager-curated `code_url`, then the building-department page on file.
+    A Wayback snapshot is unwrapped to the page it archived — fetching
+    web.archive.org gives us the 2020 copy of a site, which is not what we
+    want to quote a customer."""
     urls, seen = [], set()
 
     def add(u):
-        u = (u or '').strip()
+        u = _jp._unwrap_archive(u).strip()
         if not u or u in seen:
             return
         seen.add(u)
@@ -14015,13 +14131,6 @@ def _jx_direct_urls(j):
 
     add(j.get('code_url'))
     add(j.get('url'))
-    # Publisher heuristics — cheap to try, harmless when they 404.
-    name = j.get('name') or ''
-    slug = _jx_slug(name.replace('City of ', '').replace('Town of ', '')
-                        .replace('County of ', '').replace(' County', ''))
-    if slug:
-        add(f'https://library.municode.com/co/{slug}')
-        add(f'https://codelibrary.amlegal.com/codes/{slug}co/latest/overview')
     return urls
 
 
@@ -14061,26 +14170,97 @@ def _jx_direct_profile(j):
     return None
 
 
-def _jx_perplexity_profile(j):
+class _JxRetryable(RuntimeError):
+    """A verify failure that a fresh Perplexity call might not repeat.
+
+    `cached` records whether the answer we judged came out of the 30-day
+    cache. That matters because the cache stores the model's ANSWER, while
+    these failures are decided downstream of it — so re-running a failed
+    verify replayed the same cached answer into the same error for 30 days,
+    and the manager's "Re-verify" button was a no-op the whole time. When the
+    bad answer was cached, `_verify_jurisdiction_profile` spends one more call
+    to genuinely retry."""
+
+    def __init__(self, message, cached=False):
+        super().__init__(message)
+        self.cached = bool(cached)
+
+
+_JX_PURE_IRC_RE = re.compile(
+    r'^(?:(?P<yb>(?:19|20)\d{2})\s+(?:IRC|International\s+Residential\s+Code)'
+    r'|(?:IRC|International\s+Residential\s+Code)[\s,]+(?:Edition\s+)?'
+    r'(?P<ya>(?:19|20)\d{2})(?:\s+Edition)?)$',
+    re.IGNORECASE)
+
+
+def _jx_normalize_code(text):
+    """Tidy the model's free-text adopted_code without rewriting it.
+
+    Across a 16-jurisdiction sample this field came back as "IRC 2021",
+    "2021 IRC", "2024 I-Codes", "2024 International Codes with amendments"
+    and "Pikes Peak Regional Building Code 2023" — all headed for the same
+    line on a customer's estimate. We only canonicalise the case that is
+    unambiguously the same fact written two ways ("IRC 2021" → "2021 IRC")
+    and otherwise leave the wording alone: "Pikes Peak Regional Building
+    Code" is a genuinely different code, not an IRC year, and flattening it
+    would state something false. Whitespace is collapsed and the string
+    capped so one runaway sentence cannot blow out the PDF layout."""
+    t = ' '.join(str(text or '').split())
+    if not t:
+        return ''
+    m = _JX_PURE_IRC_RE.match(t)
+    if m:
+        year = m.group('yb') or m.group('ya')
+        if year:
+            return f'{year} IRC'
+    if len(t) <= 160:
+        return t
+    # Cut on a word boundary. A hard slice ended one real answer at
+    # "...and 2024 International Building Code (for other structures), as
+    # part of t", which looks like corruption on a customer's estimate.
+    cut = t[:160].rstrip()
+    space = cut.rfind(' ')
+    if space > 80:
+        cut = cut[:space].rstrip()
+    return cut.rstrip(',;:') + '…'
+
+
+# The verify call is the one place we pay for accuracy rather than speed.
+# `sonar` (the global default in agents/config.py) returned "unknown" for the
+# adopted code on Loveland, Longmont, Boulder and Colorado Springs; this is a
+# once-per-jurisdiction lookup cached for 30 days and then read by a manager
+# before it goes anywhere, so the better model is worth roughly a cent.
+_JX_MODEL = 'sonar-pro'
+
+
+def _jx_perplexity_profile(j, force_refresh=False):
     """Fallback — one Perplexity call, cached inside agents/perplexity.py.
-    Returns {profile, source:'perplexity', citations} or raises."""
+    Returns {profile, source:'perplexity', citations, cached} or raises."""
     try:
         from agents.perplexity import search_json
     except ImportError as e:                       # pragma: no cover
         raise RuntimeError(f'Perplexity fallback unavailable: {e}') from e
     prompt = _jp.build_prompt(j)
     reason = f'jurisdiction verify: {j.get("id") or j.get("name")}'
-    result = search_json(prompt, reason=reason, max_tokens=1200)
+    result = search_json(prompt, reason=reason, max_tokens=1200,
+                         model=_JX_MODEL, force_refresh=force_refresh)
+    cached = bool(result.get('cached'))
     data = result.get('data')
     if not isinstance(data, dict) or 'raw' in data:
-        raise RuntimeError('Perplexity returned an answer we could not parse as JSON.')
-    citations = _jp.filter_allowed_citations(result.get('citations') or [])
+        raise _JxRetryable('Perplexity returned an answer we could not parse '
+                           'as JSON.', cached)
+    # The jurisdiction's OWN domain counts as authoritative for its own code.
+    # Without this the allowlist rejected 69% of Colorado cities' official
+    # sites, because most of them are .org/.com/.us rather than .gov.
+    citations = _jp.filter_allowed_citations(result.get('citations') or [],
+                                             _jp.jurisdiction_hosts(j))
     if not citations:
         # No authoritative source cited — refuse to save it. The prompt asks
         # for real URLs on the allowlist; anything else fails closed rather
         # than reaching a customer.
-        raise RuntimeError('Perplexity did not cite an authoritative source '
-                           '(.gov / municode / amlegal / ecode360 / iccsafe).')
+        raise _JxRetryable('Perplexity did not cite an authoritative source '
+                           '(its own official site, .gov, or a code '
+                           'publisher).', cached)
     # Coerce into the shape the frontend/UI expects, dropping any extra keys
     # the model invented and defaulting missing ones to 'unknown'/[].
     def _s(k):
@@ -14105,13 +14285,24 @@ def _jx_perplexity_profile(j):
             'text':       text,
             'source_url': str(a.get('source_url') or '').strip(),
         })
-    adopted_code = _s('adopted_code')
+    delegated_to = (str(data.get('delegated_to')).strip()
+                    if data.get('delegated_to') and str(data.get('delegated_to')).lower()
+                    not in ('none', 'null', 'unknown', '') else None)
+    adopted_code = _jx_normalize_code(_s('adopted_code'))
     # An 'unknown' adopted_code means the model refused to commit to a year.
     # There is no point saving that: the customer sees nothing useful and the
     # baseline is a better default. Fail closed so the rep re-tries later.
+    #
+    # EXCEPT when the model told us this jurisdiction does not set its own
+    # code because it contracts the work out — Colorado Springs delegates to
+    # the Pikes Peak Regional Building Department, and "who actually issues
+    # your permit" is exactly what the office needs to know. Under the old
+    # rule that answer was correct, useful, and thrown away.
     if not adopted_code or adopted_code.lower() == 'unknown':
-        raise RuntimeError('Perplexity could not determine an adopted code '
-                           'year for this jurisdiction.')
+        if not delegated_to:
+            raise _JxRetryable('Perplexity could not determine an adopted '
+                               'code year for this jurisdiction.', cached)
+        adopted_code = ''
     return {
         'profile': {
             'adopted_code':            adopted_code,
@@ -14123,12 +14314,11 @@ def _jx_perplexity_profile(j):
                 'fee_basis':        _rp('fee_basis'),
             },
             'issues_permits_for_roofing': bool(data.get('issues_permits_for_roofing', True)),
-            'delegated_to': (str(data.get('delegated_to')).strip()
-                             if data.get('delegated_to') and str(data.get('delegated_to')).lower() not in ('none', 'null', 'unknown', '')
-                             else None),
+            'delegated_to': delegated_to,
         },
         'source':    'perplexity',
         'citations': citations,
+        'cached':    cached,
     }
 
 
@@ -14140,6 +14330,18 @@ def _verify_jurisdiction_profile(j):
         return {'ok': True, **direct}
     try:
         pplx = _jx_perplexity_profile(j)
+    except _JxRetryable as e:
+        # The answer we rejected came from cache, so clicking Re-verify would
+        # replay it unchanged. Spend one call on a real retry instead.
+        if not e.cached:
+            return {'ok': False, 'error': str(e), 'kind': type(e).__name__,
+                    'direct': direct}
+        try:
+            pplx = _jx_perplexity_profile(j, force_refresh=True)
+        except Exception as e2:
+            return {'ok': False, 'error': str(e2), 'kind': type(e2).__name__,
+                    'direct': direct, 'retried': True}
+        return {'ok': True, 'retried': True, **pplx}
     except Exception as e:
         # SpendCapReached surfaces here with its class name in the message so
         # the frontend can style it differently.
@@ -14185,7 +14387,11 @@ def approve_jurisdiction_profile(jid):
     body = request.get_json(force=True, silent=True) or {}
     profile = body.get('profile') or {}
     ac = (profile.get('adopted_code') or '').strip() if isinstance(profile, dict) else ''
-    if not ac or ac.lower() == 'unknown':
+    dl = (profile.get('delegated_to') or '').strip() if isinstance(profile, dict) else ''
+    # A delegating jurisdiction has no adopted code of its own — Colorado
+    # Springs contracts to the Pikes Peak Regional Building Department — and
+    # naming who actually issues the permit is worth approving on its own.
+    if (not ac or ac.lower() == 'unknown') and not dl:
         return jsonify({'ok': False, 'error':
                         'Profile is missing adopted_code — nothing to approve.'}), 400
     data = _load_jurisdictions() or {}
@@ -14193,6 +14399,10 @@ def approve_jurisdiction_profile(jid):
     if not j:
         return jsonify({'ok': False, 'error': 'Unknown jurisdiction id.'}), 404
     verified = dict(profile)
+    # Normalise here as well as on the way out of Perplexity: this endpoint
+    # takes whatever the client posts, including a value a manager typed by
+    # hand, and this is the single point where a profile becomes durable.
+    verified['adopted_code'] = _jx_normalize_code(ac)
     verified['sources']     = [str(u).strip() for u in (body.get('citations') or []) if str(u).strip()]
     verified['verified_at'] = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
     verified['verified_via'] = str(body.get('source') or '').strip() or 'unknown'
