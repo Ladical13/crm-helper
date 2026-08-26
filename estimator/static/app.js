@@ -9676,17 +9676,61 @@ async function renameEstimate(estimateId, label) {
   }
 }
 
+// The estimate on screen, shaped like a row from /api/estimates so it can sit
+// in the same list as the saved ones. Until its first save it has NO id and is
+// not in that endpoint's response at all, so anything reading only the fetched
+// list shows a rep "no estimates" while they are actively working on one.
+function currentEstimateRow() {
+  return {
+    estimate_id:     S.estimate_id || null,
+    customer_name:   (S.customer || {}).name || '',
+    estimate_label:  S.estimate_label || '',
+    estimate_type:   S.estimate_type || 'retail',
+    estimate_date:   S.estimate_date || '',
+    salesperson:     S.salesperson || '',
+    total:           (selectedTotal() || 0) + (insuranceTotal() || 0),
+    status:          S.status || 'draft',
+    signed:          !!S.signature,
+    sent:            !!S.share_token,
+    first_viewed_at: S.first_viewed_at || '',
+  };
+}
+
+// Every estimate belonging to `name`, current-first — the one source both the
+// Documents door and the Customer File modal read, so they can never disagree
+// about what a customer has. Each entry is {e, current}.
+//
+// The open estimate is spliced in from S, but ONLY when it is this customer's:
+// the modal opens for any customer (a dashboard row, the home search), and
+// stamping the loaded estimate into a stranger's file would be worse than
+// omitting it.
+function customerEstimateRows(name) {
+  const key = custKey(name);
+  if (!key) return [];
+  const isLoaded = custKey((S.customer || {}).name) === key;
+  const others = _dashData
+    .filter(e => custKey(e.customer_name) === key &&
+                 !(isLoaded && e.estimate_id === S.estimate_id))
+    .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
+    .map(e => ({e, current: false}));
+  return isLoaded ? [{e: currentEstimateRow(), current: true}].concat(others) : others;
+}
+
 function renderCustomerFile(name, estimates) {
   const el = document.getElementById('customer-file-body');
   if(!el) return;
-  const totalSigned = estimates.filter(e=>estStatusOf(e)==='signed').reduce((s,e)=>s+(e.total||0),0);
+  // Includes the estimate being worked on right now, saved or not — a rep who
+  // opens the file mid-estimate used to be told the customer had none.
+  const rows = customerEstimateRows(name);
+  const saved = rows.filter(r => r.e.estimate_id);
+  const totalSigned = rows.filter(r=>estStatusOf(r.e)==='signed').reduce((s,r)=>s+(r.e.total||0),0);
   const firstName = name.split(' ')[0]||name;
 
   el.innerHTML = `
     <div class="cf-header">
       <div class="cf-name">${esc(name)}</div>
       <div class="cf-stats">
-        <span>${estimates.length} estimate${estimates.length!==1?'s':''}</span>
+        <span>${rows.length} estimate${rows.length!==1?'s':''}</span>
         ${totalSigned>0?`<span>• ${fmtCur(totalSigned)} signed</span>`:''}
       </div>
     </div>
@@ -9703,33 +9747,35 @@ function renderCustomerFile(name, estimates) {
 
     <div class="cf-timeline-hd">All Estimates</div>
     <div class="cf-timeline">
-      ${estimates.length ? estimates.map(e=>
-        estRowHtml(e, {onClickExtra: ";closeCustomerFile();switchPage('documents')"}) +
-        `<div id="cf-atts-${esc(e.estimate_id)}" class="cf-attachments-row"></div>`
+      ${rows.length ? rows.map(r=>
+        estRowHtml(r.e, {current: r.current,
+                         onClickExtra: ";closeCustomerFile();switchPage('documents')"}) +
+        (r.e.estimate_id ? `<div id="cf-atts-${esc(r.e.estimate_id)}" class="cf-attachments-row"></div>` : '')
       ).join('') : '<div class="cf-empty">No estimates yet.</div>'}
     </div>
 
-    ${estimates.length ? `
-    <button class="btn-primary cf-goto-docs" onclick="cfGotoNewEstimate('${jsq(name)}','${esc(estimates[0].estimate_id)}')">
+    ${rows.length ? `
+    <button class="btn-primary cf-goto-docs" onclick="cfGotoNewEstimate('${jsq(name)}','${esc((saved[0]||{e:{}}).e.estimate_id || '')}')">
       ＋ New Estimate for ${esc(firstName)}
     </button>` : `
-    <p class="cf-empty-hint">You're creating their first estimate now — save it and it will show up here.</p>`}`;
+    <p class="cf-empty-hint">Nothing saved for them yet — start an estimate and it will show up here.</p>`}`;
 }
 
 // The modal's job is finding a customer, not creating for them — creation
 // lives in the Documents door now, alongside the customer's other estimates,
 // so a rep sees what they already have before starting another one. This
-// loads the most recent estimate (which carries the right customer/CRM-link
-// context) then hands off to Documents with the create form already open.
+// hands off to Documents with the create form already open.
 //
-// Only called with a real `mostRecentId` — renderCustomerFile only renders
-// this button when `estimates.length > 0`. A zero-estimate customer file is
-// reachable (the sidebar's 📁 button shows as soon as a name is typed, even
-// on a brand-new unsaved estimate with nothing to search against yet), but in
-// that case there is no "most recent estimate" to load — the rep is already
-// on the only estimate this customer has, so the button is simply not shown.
+// It loads the customer's most recent estimate first ONLY when the estimate on
+// screen belongs to someone else, because that load is what brings their
+// details and CRM link ids into S. When the rep is already inside this
+// customer's estimate, loading would discard whatever they have typed since
+// the last save to fetch a doc they are arguably already in — so it doesn't.
+// `mostRecentId` is empty when the only thing this customer has is the unsaved
+// estimate on screen; there is nothing to load in that case either.
 async function cfGotoNewEstimate(name, mostRecentId) {
-  await doLoadEstimate(mostRecentId);
+  const alreadyHere = custKey((S.customer || {}).name) === custKey(name);
+  if (mostRecentId && !alreadyHere) await doLoadEstimate(mostRecentId);
   closeCustomerFile();
   _docCreatePending = true;
   switchPage('documents');
@@ -12583,29 +12629,14 @@ async function docCreateEstimate() {
 function docEstimateListHtml() {
   const name = (S.customer || {}).name || '';
   if (!name) return '<p class="pm-hint">Add a customer name to see their estimates here.</p>';
-  const key = custKey(name);
-  const others = _dashData
-    .filter(e => custKey(e.customer_name) === key && e.estimate_id !== S.estimate_id)
-    .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''));
-  const currentRow = {
-    estimate_id: S.estimate_id || null,
-    customer_name: name,
-    estimate_label: S.estimate_label || '',
-    estimate_type: S.estimate_type || 'retail',
-    estimate_date: S.estimate_date || '',
-    salesperson: S.salesperson || '',
-    total: (selectedTotal()||0) + (insuranceTotal()||0),
-    status: S.status || 'draft',
-    signed: !!S.signature,
-    sent: !!S.share_token,
-    first_viewed_at: S.first_viewed_at || '',
-  };
+  // Same source the Customer File modal reads, so the two screens can never
+  // disagree about what this customer has.
+  //
   // Editable here and only here: the Documents door is where a rep manages a
-  // customer's estimates. The Customer File modal stays read-only — its rows
-  // are a click target for loading, and an input inside one would swallow the
-  // click that is the whole point of that list.
-  const rows = [estRowHtml(currentRow, {current:true, editable:true})]
-    .concat(others.map(e => estRowHtml(e, {editable:true})));
+  // customer's estimates. The modal's rows are a click target for loading, and
+  // an input inside one would swallow the click that is the point of that list.
+  const rows = customerEstimateRows(name)
+    .map(r => estRowHtml(r.e, {current: r.current, editable: true}));
   return `<div class="cf-timeline">${rows.join('')}</div>`;
 }
 

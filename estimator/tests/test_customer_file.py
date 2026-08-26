@@ -247,29 +247,58 @@ def test_documents_opens_the_create_form_when_handed_off_from_the_modal():
     assert '_docCreatePending' in body and 'docToggleCreate(true)' in body
 
 
-def test_the_new_estimate_button_is_not_offered_with_zero_estimates():
-    """The modal's 📁 button appears as soon as a customer name is typed —
-    including while a rep is mid-creating that customer's very first, unsaved
-    estimate, when the match list is empty. There is no "most recent
-    estimate" to hand off to in that case, so the button must not render
-    (estimates[0] would be undefined) — the rep is already on the only
-    estimate this customer has."""
+def test_the_handoff_button_only_ever_offers_a_saved_estimate_to_load():
+    """The button hands off by loading the customer's most recent estimate.
+    Only a SAVED one can be loaded — handing it the unsaved estimate on
+    screen would mean fetching an id that does not exist yet."""
     body = _fn_body(_appjs(), 'renderCustomerFile', code_only=True)
-    m = re.search(r'\$\{estimates\.length \? `(.*?)` : `(.*?)`\}', body, re.S)
-    assert m, 'the create-button section must branch on estimates.length'
-    has_estimates, zero_estimates = m.group(1), m.group(2)
-    assert 'cfGotoNewEstimate' in has_estimates and 'estimates[0]' in has_estimates
-    assert 'cfGotoNewEstimate' not in zero_estimates, \
-        'zero estimates means nothing to hand off to — the button must not appear'
+    m = re.search(r'\$\{rows\.length \? `(.*?)` : `(.*?)`\}', body, re.S)
+    assert m, 'the create-button section must branch on rows.length'
+    has_rows, no_rows = m.group(1), m.group(2)
+    assert 'cfGotoNewEstimate' in has_rows and 'saved[0]' in has_rows, \
+        'the id handed to the loader must come from the SAVED rows, not rows[0]'
+    assert 'cfGotoNewEstimate' not in no_rows
+
+
+def test_the_handoff_never_discards_unsaved_work():
+    """When the rep is already inside this customer's estimate there is
+    nothing to fetch, and fetching would throw away everything typed since
+    the last save to load a doc they are arguably already in."""
+    body = _fn_body(_appjs(), 'cfGotoNewEstimate', code_only=True)
+    assert 'alreadyHere' in body and 'custKey' in body
+    assert re.search(r'if \(mostRecentId && !alreadyHere\) await doLoadEstimate', body), \
+        'the load must be skipped for the customer already on screen'
 
 
 # ── the Documents door lists every estimate, including the unsaved one ─────
 
-def test_the_documents_door_groups_on_the_shared_key():
-    body = _fn_body(_appjs(), 'docEstimateListHtml', code_only=True)
+def test_the_estimate_list_groups_on_the_shared_key():
+    body = _fn_body(_appjs(), 'customerEstimateRows', code_only=True)
     assert 'custKey' in body
     assert '.includes(' not in body, \
         "substring grouping put every Smithson into Jon Smith's estimate list"
+
+
+def test_both_screens_read_one_list():
+    """The Documents door and the Customer File modal answer the same
+    question — "what does this customer have?" — and answered it with two
+    separate implementations. Only one of them knew about the estimate being
+    worked on, so opening the modal mid-estimate reported the customer had
+    none. Both go through customerEstimateRows() now."""
+    src = _appjs()
+    assert 'function customerEstimateRows' in src
+    for fn in ('docEstimateListHtml', 'renderCustomerFile'):
+        assert 'customerEstimateRows(' in _fn_body(src, fn, code_only=True), fn
+
+
+def test_the_open_estimate_is_not_stamped_into_a_stranger_s_file():
+    """The modal opens for any customer — a dashboard row, the home search —
+    not just the loaded one. The current estimate may only be spliced into
+    the file of the customer it actually belongs to."""
+    body = _fn_body(_appjs(), 'customerEstimateRows', code_only=True)
+    assert 'isLoaded' in body
+    assert re.search(r'return isLoaded \?', body), \
+        'the current row must be conditional on it being this customer'
 
 
 def test_the_current_row_is_not_clickable():
@@ -281,14 +310,24 @@ def test_the_current_row_is_not_clickable():
 
 
 def test_an_unsaved_estimate_is_never_filtered_out_of_its_own_list():
-    """The literal bug reported: create estimate #2 for a customer and, before
-    the first autosave, it must already show up here under its typed label —
-    not look indistinguishable from starting a whole new customer."""
-    body = _fn_body(_appjs(), 'docEstimateListHtml', code_only=True)
-    assert 'estimate_id: S.estimate_id || null' in body, \
+    """Create estimate #2 for a customer and, before the first autosave, it
+    must already show up under the label just typed — not look
+    indistinguishable from starting a whole new customer. It has no id and is
+    not in /api/estimates at all, so it can only come from S."""
+    src = _appjs()
+    row = _fn_body(src, 'currentEstimateRow', code_only=True)
+    assert 'estimate_id:     S.estimate_id || null' in row, \
         'the current row must be built even when S.estimate_id is still null'
-    assert re.search(r'\[estRowHtml\(currentRow', body), \
-        'the current (possibly unsaved) estimate must always lead the list'
+    body = _fn_body(src, 'customerEstimateRows', code_only=True)
+    assert 'currentEstimateRow()' in body and 'current: true' in body, \
+        'the current (possibly unsaved) estimate must lead the list'
+
+
+def test_the_saved_copy_of_the_open_estimate_is_not_listed_twice():
+    """Once saved, the open estimate is in BOTH S and the fetched list."""
+    body = _fn_body(_appjs(), 'customerEstimateRows', code_only=True)
+    assert re.search(r'!\(isLoaded && e\.estimate_id === S\.estimate_id\)', body), \
+        'the fetched copy of the open estimate must be filtered out of `others`'
 
 
 # ── renaming an estimate after the fact ────────────────────────────────────
