@@ -4002,6 +4002,17 @@ a.jx-contact:hover { text-decoration: underline; }
 }
 .cf-est-row-current:hover { background: #f0f9ff; }
 .cf-est-type-ico { display: inline-block; margin-right: 2px; }
+/* Rename-in-place, styled like .att-label just above it on the same page:
+   invisible until focused, so the list still reads as a list rather than a
+   form, but the name is obviously editable the moment it is clicked. */
+.cf-est-label-input {
+  border: 1px solid transparent; background: transparent; border-radius: 4px;
+  padding: 2px 6px; font-size: 14px; font-weight: 700; color: #1a3a5c;
+  font-family: inherit; outline: none; min-width: 0; width: 60%; max-width: 340px;
+}
+.cf-est-label-input:hover  { border-color: var(--border); }
+.cf-est-label-input:focus  { border-color: var(--primary-light); background: #fff; }
+.cf-est-label-input::placeholder { color: var(--text-light); font-weight: 400; font-style: italic; }
 .cf-current-tag { font-size: 11px; font-weight: 400; color: var(--primary); font-style: italic; }
 .cf-goto-docs { width: 100%; }
 

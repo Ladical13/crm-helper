@@ -291,6 +291,98 @@ def test_an_unsaved_estimate_is_never_filtered_out_of_its_own_list():
         'the current (possibly unsaved) estimate must always lead the list'
 
 
+# ── renaming an estimate after the fact ────────────────────────────────────
+
+def test_the_label_endpoint_renames_without_touching_anything_else(client):
+    """A rep types "Roof" on the doorstep and wants "Roof - Insurance
+    Supplement" once the adjuster has been. The rename must be a narrow
+    patch, never a full-doc save that could push stale in-memory state over
+    newer server state."""
+    eid = client.post('/api/estimates', json={
+        'customer': {'name': 'Jon Smith', 'phone': '970-555-1212'},
+        'estimate_label': 'Roof',
+    }).get_json()['estimate_id']
+
+    r = client.patch('/api/estimates/%s/label' % eid,
+                     json={'label': 'Roof - Insurance Supplement'})
+    assert r.status_code == 200
+
+    back = client.get('/api/estimates/%s' % eid).get_json()
+    assert back['estimate_label'] == 'Roof - Insurance Supplement'
+    assert back['customer']['phone'] == '970-555-1212', \
+        'a rename must not disturb the rest of the estimate'
+
+
+def test_a_renamed_estimate_shows_its_new_name_in_the_list(client):
+    """The Documents door builds its list from /api/estimates, so a rename
+    that never reaches the list projection is a rename the rep cannot see."""
+    eid = client.post('/api/estimates', json={
+        'customer': {'name': 'Jon Smith'}, 'estimate_label': 'Roof',
+    }).get_json()['estimate_id']
+    client.patch('/api/estimates/%s/label' % eid, json={'label': 'Siding'})
+
+    row = next(e for e in client.get('/api/estimates').get_json()
+               if e['estimate_id'] == eid)
+    assert row['estimate_label'] == 'Siding'
+
+
+def test_clearing_the_name_is_allowed(client):
+    """An empty label falls back to the type name in the UI, which is what the
+    row read before it was ever named — so blanking it must not 400."""
+    eid = client.post('/api/estimates', json={
+        'customer': {'name': 'Jon Smith'}, 'estimate_label': 'Roof',
+    }).get_json()['estimate_id']
+    assert client.patch('/api/estimates/%s/label' % eid,
+                        json={'label': ''}).status_code == 200
+    assert client.get('/api/estimates/%s' % eid).get_json()['estimate_label'] == ''
+
+
+def test_the_documents_door_rows_are_renameable():
+    """The endpoint existed for a long time with no caller at all — the only
+    way to name an estimate was at the moment it was created."""
+    src = _appjs()
+    assert 'function renameEstimate' in src
+    body = _fn_body(src, 'docEstimateListHtml', code_only=True)
+    assert 'editable:true' in body.replace(' ', ''), \
+        'the Documents door list must render its rows editable'
+    row = _fn_body(src, 'estRowHtml')
+    assert 'renameEstimate(' in row and 'cf-est-label-input' in row
+
+
+def test_renaming_an_unsaved_estimate_stays_in_memory():
+    """No id yet means nothing on the server to patch — the name rides up with
+    the first save instead, and the estimate must be marked dirty so that
+    save actually happens."""
+    body = _fn_body(_appjs(), 'renameEstimate', code_only=True)
+    assert 'S.estimate_label = label' in body
+    assert 'setDirty()' in body
+    assert re.search(r'if \(estimateId\)', body), \
+        'the server patch must be skipped when there is no id'
+
+
+def test_renaming_patches_rather_than_saving_the_whole_estimate():
+    body = _fn_body(_appjs(), 'renameEstimate', code_only=True)
+    assert "/label" in body and "'PATCH'" in body
+    assert 'saveEstimate(' not in body, \
+        'a rename must not trigger a full-doc save'
+
+
+def test_a_rename_updates_the_cached_row_it_was_typed_into():
+    """_dashData backs the list being looked at; without this the row snaps
+    back to the old name on the next redraw."""
+    body = _fn_body(_appjs(), 'renameEstimate', code_only=True)
+    assert '_dashData.find' in body and 'row.estimate_label = label' in body
+
+
+def test_a_click_in_the_rename_box_does_not_load_a_different_estimate():
+    """Every non-current row is a click target for doLoadEstimate. Clicking
+    into its name box must edit it, not navigate away mid-rename."""
+    row = _fn_body(_appjs(), 'estRowHtml')
+    m = re.search(r'<input type="text" class="cf-est-label-input".*?>', row, re.S)
+    assert m, 'the rename input is not where this test expects it'
+    assert 'event.stopPropagation()' in m.group(0)
+
+
 def test_every_estimate_type_gets_a_visible_icon_even_with_a_custom_label():
     """A custom label used to swallow the type entirely — an Insurance
     estimate with a label like "Storm Claim" looked identical to a Retail

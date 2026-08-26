@@ -9346,16 +9346,28 @@ const EST_STATUS_CHIPS = {
 // The type icon renders even when a custom label is set — a custom label
 // used to swallow the type entirely, so a rep could not tell an Insurance
 // estimate from a Retail one once either had a label.
-function estRowHtml(e, {current=false, onClickExtra=''}={}) {
+function estRowHtml(e, {current=false, onClickExtra='', editable=false}={}) {
   const st = estStatusOf(e);
   const enum_ = e.estimate_id ? 'EST-' + e.estimate_id.split('-')[0].toUpperCase() : '';
   const icon = EST_TYPE_ICON[e.estimate_type] || '🏠';
   const label = e.estimate_label || EST_TYPE_LABEL[e.estimate_type] || EST_TYPE_LABEL.retail;
   const rowCls = 'cf-est-row' + (current ? ' cf-est-row-current' : '');
   const click = current ? '' : ` onclick="doLoadEstimate('${esc(e.estimate_id)}')${onClickExtra}"`;
+  // The name is what tells one of a customer's estimates from another, so it
+  // has to be fixable after the fact — a rep types "Roof" on the doorstep and
+  // wants "Roof – Insurance Supplement" once the adjuster has been. Same
+  // inline-input pattern the attachment labels on this page already use.
+  // stopPropagation keeps a click landing in the box from loading the row.
+  const labelHtml = editable
+    ? `<input type="text" class="cf-est-label-input" value="${esc(e.estimate_label || '')}"
+         placeholder="${esc(label)}" title="Rename this estimate"
+         onclick="event.stopPropagation()"
+         onkeydown="if(event.key==='Enter')this.blur()"
+         onchange="renameEstimate('${esc(e.estimate_id || '')}', this.value)">`
+    : `${esc(label)}`;
   return `<div class="${rowCls}"${click}>
       <div class="cf-est-main">
-        <div class="cf-est-label"><span class="cf-est-type-ico" title="${esc(label)}">${icon}</span> ${esc(label)}${current ? ' <span class="cf-current-tag">— open now</span>' : ''}</div>
+        <div class="cf-est-label"><span class="cf-est-type-ico" title="${esc(label)}">${icon}</span> ${labelHtml}${current ? ' <span class="cf-current-tag">— open now</span>' : ''}</div>
         <div class="cf-est-id">${esc(enum_ || 'unsaved')} · ${esc(e.estimate_date||'')} · ${esc(cap(e.salesperson||''))}</div>
       </div>
       <div class="cf-est-side">
@@ -9364,6 +9376,40 @@ function estRowHtml(e, {current=false, onClickExtra=''}={}) {
         ${e.signed?`<a href="/api/estimates/${esc(e.estimate_id)}/signed" target="_blank" onclick="event.stopPropagation()" class="cf-dl" title="Download signed contract">📄</a>`:''}
       </div>
     </div>`;
+}
+
+// Rename an estimate from the Documents door. Three cases, and the split
+// matters:
+//   * the estimate on screen but never saved — no id yet, so the name lives
+//     only on S until the first save carries it up with everything else;
+//   * the estimate on screen and saved — PATCH just the label rather than a
+//     full-doc save, so renaming can never push the rest of an in-memory doc
+//     over the top of newer server state;
+//   * one of the customer's other estimates — PATCH, and mirror it into
+//     _dashData so the list it was renamed in redraws with the new name.
+// Clearing the box is allowed: an empty label falls back to the type name
+// ("Retail Estimate"), which is what the row showed before it was ever named.
+async function renameEstimate(estimateId, label) {
+  label = (label || '').trim();
+  const isCurrent = !estimateId || estimateId === S.estimate_id;
+  if (isCurrent) S.estimate_label = label;
+  if (estimateId) {
+    try {
+      await fetch(`/api/estimates/${estimateId}/label`, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({label}),
+      });
+      const row = _dashData.find(x => x.estimate_id === estimateId);
+      if (row) row.estimate_label = label;
+    } catch {}
+  } else if (isCurrent) {
+    setDirty();   // nothing on the server to patch yet
+  }
+  if (isCurrent) renderEstLabelBadge();
+  if (activePage === 'documents') {
+    const el = document.getElementById('doc-est-list');
+    if (el) el.innerHTML = docEstimateListHtml();
+  }
 }
 
 function renderCustomerFile(name, estimates) {
@@ -12290,7 +12336,12 @@ function docEstimateListHtml() {
     sent: !!S.share_token,
     first_viewed_at: S.first_viewed_at || '',
   };
-  const rows = [estRowHtml(currentRow, {current:true})].concat(others.map(e => estRowHtml(e)));
+  // Editable here and only here: the Documents door is where a rep manages a
+  // customer's estimates. The Customer File modal stays read-only — its rows
+  // are a click target for loading, and an input inside one would swallow the
+  // click that is the whole point of that list.
+  const rows = [estRowHtml(currentRow, {current:true, editable:true})]
+    .concat(others.map(e => estRowHtml(e, {editable:true})));
   return `<div class="cf-timeline">${rows.join('')}</div>`;
 }
 
