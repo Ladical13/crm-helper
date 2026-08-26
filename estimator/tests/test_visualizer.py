@@ -213,6 +213,81 @@ def test_pricebook_exposes_door_options_for_the_designer(client):
                for d in book['exterior_doors'])
 
 
+def test_pricebook_seeds_the_manager_exterior_catalog(client):
+    """Existing roof/siding/ProVia palettes become uploader rows on first use."""
+    book = client.get('/api/pricebook').get_json()
+    rows = book['exterior_catalog']
+    assert rows
+    assert {row['category'] for row in rows} >= {'roof', 'siding', 'door'}
+    assert all(row.get('product_id', '').startswith('extp_') for row in rows)
+    assert all(repr(row.get('hex', '')).startswith("'#") and len(row['hex']) == 7 for row in rows)
+
+
+def test_manager_can_replace_and_import_exterior_catalog(client, A):
+    original = client.get('/api/exterior-catalog').get_json()['entries']
+    try:
+        rows = [
+            {'category': 'roof', 'brand': 'Test Roofing', 'product': 'Storm 1',
+             'style': 'Architectural', 'color': 'Graphite', 'color_code': 'G1',
+             'hex': '#112233', 'price_book_bundle': 'b_landmark', 'active': True},
+            {'category': 'paint', 'brand': 'Test Paint', 'product': 'Exterior',
+             'style': 'Satin', 'color': 'Night', 'color_code': 'P9',
+             'hex': '#223344', 'applies_to': 'door', 'active': 'yes'},
+        ]
+        saved = client.put('/api/exterior-catalog', json={'entries': rows})
+        assert saved.status_code == 200, saved.get_json()
+        body = saved.get_json()
+        assert body['count'] == 2
+        assert body['entries'][1]['applies_to'] == 'door'
+        assert body['entries'][0]['id'].startswith('ext_')
+
+        imported = client.post('/api/exterior-catalog/import', json={'rows': [
+            dict(rows[0], hex='#334455'),
+            {'category': 'doors', 'brand': 'ProVia', 'product': 'Legacy',
+             'style': '440', 'color': 'Coal Black', 'hex': '#242424'},
+        ]})
+        assert imported.status_code == 200, imported.get_json()
+        result = imported.get_json()
+        assert result['imported'] == 2 and result['added'] == 1 and result['count'] == 3
+        graphite = next(e for e in result['entries'] if e['color'] == 'Graphite')
+        assert graphite['hex'] == '#334455'
+        assert any(e['category'] == 'door' and e['product'] == 'Legacy'
+                   for e in result['entries'])
+    finally:
+        assert client.put('/api/exterior-catalog', json={'entries': original}).status_code == 200
+
+
+def test_exterior_catalog_rejects_bad_rows_and_rep_writes(client, A, monkeypatch):
+    bad = client.put('/api/exterior-catalog', json={'entries': [{
+        'category': 'roof', 'product': 'Test', 'color': 'Black', 'hex': 'black'}]})
+    assert bad.status_code == 400
+    assert 'hex' in bad.get_json()['error']
+    bad_paint = client.post('/api/exterior-catalog/import', json={'rows': [{
+        'category': 'paint', 'product': 'Test', 'color': 'Blue', 'hex': '#112233',
+        'applies_to': 'trim'}]})
+    assert bad_paint.status_code == 400
+    monkeypatch.setattr(A, '_is_manager_up', lambda *a, **kw: False)
+    assert client.put('/api/exterior-catalog', json={'entries': []}).status_code == 403
+    assert client.post('/api/exterior-catalog/import', json={'rows': []}).status_code == 403
+    assert client.get('/api/exterior-catalog/template.csv').status_code == 403
+
+
+def test_exterior_catalog_template_and_frontend_wiring(client):
+    response = client.get('/api/exterior-catalog/template.csv')
+    assert response.status_code == 200
+    text = response.get_data(as_text=True)
+    assert text.startswith('category,brand,product,style,color,color_code,hex')
+    assert 'ProVia' in text and 'Sherwin-Williams' in text
+    js = open(os.path.join(os.path.dirname(__file__), '..', 'static', 'app.js'),
+              encoding='utf-8').read()
+    html = open(os.path.join(os.path.dirname(__file__), '..', 'static', 'index.html'),
+                encoding='utf-8').read()
+    assert 'function exParseCsv' in js
+    assert "fetch('/api/exterior-catalog/import'" in js
+    assert 'function _vzExteriorGroups' in js
+    assert 'exterior-catalog-modal' in html and 'openExteriorCatalog()' in html
+
+
 def test_provia_replaces_placeholder_menu_without_mutating_custom_or_saved_choices(A):
     book = {'exterior_doors': [{'id': 'steel-6-panel'}, {'id': 'custom-door', 'name': 'Dealer custom'}]}
     A._ensure_bundle_catalogs(book)

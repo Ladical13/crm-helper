@@ -38,12 +38,37 @@ Failures and empty/low-confidence detections preserve existing selections.
 Changing the photo or customer invalidates in-flight results in the editor.
 Results are not saved to the customer estimate until **Save Renderings**.
 
+## Manager exterior catalog
+
+Managers open **Price Book → Exterior Catalog**. The editor accepts manual
+rows or a CSV upload; **CSV Template** downloads the supported columns:
+
+```
+category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,active
+```
+
+One row is one product/color combination. Categories are `roof`, `siding`,
+`door`, and `paint`. Paint must use `applies_to=siding` or `applies_to=door`;
+the current detector does not isolate trim as its own surface. Hex values must
+be six-digit CSS colors such as `#292929`. The optional
+`price_book_bundle` links a roof or siding visual product to an existing bundle
+so Design Studio starts on the system already quoted. It never changes scope
+or pricing. CSV imports merge by stable product/color identity and update
+matching rows rather than duplicating them. The catalog is limited to 5,000
+rows and only managers/admins may save or import it.
+
+The catalog lives under `exterior_catalog` in the live `price_book.json` on the
+Railway volume. Existing seeded roof, siding, and ProVia palettes are converted
+to uploader rows the first time a book without this key is read. An explicit
+empty list remains empty.
+
 ## Catalog and preview accuracy
 
-Roof/siding dropdowns start with the estimate's selected bundles, then read
-colors/styles from the live price book. Exploring another product is a design
-choice only: it does **not** change quantities, pricing, or the quoted bundle.
-Update Products/Pricing separately after the customer chooses a look.
+Roof/siding dropdowns read active entries from the manager exterior catalog.
+They start with a catalog product linked to the estimate's selected bundle when
+one exists. Exploring another product is a design choice only: it does **not**
+change quantities, pricing, or the quoted bundle. Update Products/Pricing
+separately after the customer chooses a look.
 
 The door menu now uses ProVia **Signet**, **Ascent**, and **Legacy**, with a
 subset of named ProVia paint finishes. Hex swatches are approximations. The

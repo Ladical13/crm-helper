@@ -2700,6 +2700,270 @@ function maybePBModalClose(e) {
   if (e.target === document.getElementById('pricebook-modal')) closePriceBook();
 }
 
+/* ── Exterior Design Studio catalog (manager+) ───────────────────────
+   One row is one installed product/color combination. The optional bundle
+   link helps the designer start on the system already quoted, but this visual
+   catalog never changes estimate scope or pricing. */
+const EXTERIOR_CATEGORIES = [
+  ['roof','Roof'], ['siding','Siding'], ['door','Doors'], ['paint','Paint']
+];
+let exCatalogItems = [];
+let exCatalogCategory = 'roof';
+let exCatalogSearch = '';
+let exCatalogDirty = false;
+
+async function openExteriorCatalog() {
+  if (!_meCanViewAll()) return;
+  closePriceBook();
+  const modal = document.getElementById('exterior-catalog-modal');
+  const body = document.getElementById('exterior-catalog-body');
+  if (!modal || !body) return;
+  modal.classList.remove('hidden');
+  body.innerHTML = '<div class="ex-empty">Loading exterior catalog…</div>';
+  try {
+    const res = await fetch('/api/exterior-catalog');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load catalog');
+    exCatalogItems = Array.isArray(data.entries) ? data.entries : [];
+    exCatalogDirty = false;
+    renderExteriorCatalog();
+  } catch (error) {
+    body.innerHTML = '<div class="ex-empty">' + esc(error.message) + '</div>';
+  }
+}
+function closeExteriorCatalog(force) {
+  if (!force && exCatalogDirty && !confirm('Close without saving your exterior catalog changes?')) return false;
+  document.getElementById('exterior-catalog-modal')?.classList.add('hidden');
+  exCatalogDirty = false;
+  return true;
+}
+function maybeExteriorCatalogClose(e) {
+  if (e.target === document.getElementById('exterior-catalog-modal')) closeExteriorCatalog();
+}
+function exOpenPriceBook() {
+  if (closeExteriorCatalog()) openPriceBook();
+}
+function exSetCategory(category) {
+  if (!EXTERIOR_CATEGORIES.some(c => c[0] === category)) return;
+  exCatalogCategory = category;
+  renderExteriorCatalog();
+}
+function exSetSearch(value) {
+  exCatalogSearch = (value || '').toLowerCase();
+  renderExteriorCatalog();
+  const input = document.getElementById('ex-catalog-search');
+  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+}
+function exBundleOptions(entry) {
+  let trade = '';
+  if (entry.category === 'roof') trade = 'roofing';
+  if (entry.category === 'siding' || (entry.category === 'paint' && entry.applies_to !== 'door')) trade = 'siding';
+  const bundles = trade ? ((priceBook || {})[trade + '_bundles'] || []) : [];
+  let html = '<option value="">No pricing link</option>';
+  if (entry.price_book_bundle && !bundles.some(b => b.id === entry.price_book_bundle)) {
+    html += '<option value="' + esc(entry.price_book_bundle) + '" selected>Saved link: ' +
+      esc(entry.price_book_bundle) + '</option>';
+  }
+  html += bundles.map(b => '<option value="' + esc(b.id) + '"' +
+    (b.id === entry.price_book_bundle ? ' selected' : '') + '>' + esc(b.name || b.id) + '</option>').join('');
+  return html;
+}
+function exSetField(index, field, value, rerender) {
+  const entry = exCatalogItems[index];
+  if (!entry) return;
+  entry[field] = value;
+  if (field === 'category' && value !== 'paint') {
+    entry.applies_to = value === 'roof' ? 'roof' : value;
+  }
+  exCatalogDirty = true;
+  if (rerender) renderExteriorCatalog();
+}
+function exSetHex(index, value, sibling) {
+  const hex = String(value || '').trim().toLowerCase();
+  exSetField(index, 'hex', hex, false);
+  if (sibling) sibling.value = hex;
+}
+function exAddRow() {
+  exCatalogItems.push({
+    category: exCatalogCategory, brand: '', product: '', style: '',
+    color: '', color_code: '', hex: '#777777',
+    applies_to: exCatalogCategory === 'paint' ? 'siding' : exCatalogCategory,
+    price_book_bundle: '', active: true
+  });
+  exCatalogDirty = true;
+  exCatalogSearch = '';
+  renderExteriorCatalog();
+}
+function exDeleteRow(index) {
+  const entry = exCatalogItems[index];
+  if (!entry) return;
+  if (!confirm('Remove ' + (entry.product || 'this product/color') + ' from the Design Studio catalog?')) return;
+  exCatalogItems.splice(index, 1);
+  exCatalogDirty = true;
+  renderExteriorCatalog();
+}
+function exCatalogStatus(message, kind) {
+  const el = document.getElementById('ex-catalog-status');
+  if (!el) return;
+  el.className = 'ex-status ' + (kind || '');
+  el.textContent = message || '';
+}
+function renderExteriorCatalog() {
+  const body = document.getElementById('exterior-catalog-body');
+  if (!body) return;
+  const counts = Object.fromEntries(EXTERIOR_CATEGORIES.map(c => [
+    c[0], exCatalogItems.filter(e => e.category === c[0]).length
+  ]));
+  const search = exCatalogSearch.trim();
+  const visible = exCatalogItems.map((entry, index) => ({entry, index})).filter(x => {
+    if (x.entry.category !== exCatalogCategory) return false;
+    if (!search) return true;
+    return [x.entry.brand, x.entry.product, x.entry.style, x.entry.color, x.entry.color_code]
+      .join(' ').toLowerCase().includes(search);
+  });
+  const rows = visible.map(x => {
+    const e = x.entry, i = x.index;
+    const applies = e.category === 'paint'
+      ? '<select onchange="exSetField(' + i + ',\'applies_to\',this.value,true)">' +
+          '<option value="siding"' + (e.applies_to !== 'door' ? ' selected' : '') + '>Siding</option>' +
+          '<option value="door"' + (e.applies_to === 'door' ? ' selected' : '') + '>Door</option></select>'
+      : '<span>' + esc(e.category === 'roof' ? 'Roof' : e.category === 'door' ? 'Door' : 'Siding') + '</span>';
+    const safeHex = /^#[0-9a-f]{6}$/i.test(e.hex || '') ? e.hex : '#777777';
+    return '<tr>' +
+      '<td><input type="text" value="' + esc(e.brand || '') + '" placeholder="Manufacturer" oninput="exSetField(' + i + ',\'brand\',this.value)"></td>' +
+      '<td><input type="text" value="' + esc(e.product || '') + '" placeholder="Product / series" oninput="exSetField(' + i + ',\'product\',this.value)"></td>' +
+      '<td><input type="text" value="' + esc(e.style || '') + '" placeholder="Style / profile" oninput="exSetField(' + i + ',\'style\',this.value)"></td>' +
+      '<td><input type="text" value="' + esc(e.color || '') + '" placeholder="Color name" oninput="exSetField(' + i + ',\'color\',this.value)"></td>' +
+      '<td><input type="text" value="' + esc(e.color_code || '') + '" placeholder="Code" oninput="exSetField(' + i + ',\'color_code\',this.value)"></td>' +
+      '<td><div class="ex-color-cell"><input type="color" value="' + safeHex + '" onchange="exSetHex(' + i + ',this.value,this.nextElementSibling)">' +
+        '<input type="text" value="' + esc(e.hex || '') + '" placeholder="#1a2b3c" onchange="exSetHex(' + i + ',this.value,this.previousElementSibling)"></div></td>' +
+      '<td>' + applies + '</td>' +
+      '<td><select class="ex-bundle-select" onchange="exSetField(' + i + ',\'price_book_bundle\',this.value)">' + exBundleOptions(e) + '</select></td>' +
+      '<td style="text-align:center"><input type="checkbox"' + (e.active !== false ? ' checked' : '') +
+        ' onchange="exSetField(' + i + ',\'active\',this.checked)"></td>' +
+      '<td><button class="pb-del-btn" onclick="exDeleteRow(' + i + ')" title="Remove">✕</button></td>' +
+      '</tr>';
+  }).join('');
+  body.innerHTML =
+    '<div class="ex-toolbar"><div class="ex-toolbar-group">' +
+      '<button class="btn-secondary" onclick="exOpenPriceBook()">← Price Book</button>' +
+      '<div class="ex-tabs">' + EXTERIOR_CATEGORIES.map(c =>
+        '<button class="ex-tab ' + (c[0] === exCatalogCategory ? 'active' : '') +
+        '" onclick="exSetCategory(\'' + c[0] + '\')">' + c[1] +
+        '<span class="ex-count">' + counts[c[0]] + '</span></button>').join('') + '</div></div>' +
+      '<div class="ex-toolbar-group"><input id="ex-catalog-search" class="ex-search" value="' + esc(exCatalogSearch) +
+        '" placeholder="Search this category…" oninput="exSetSearch(this.value)">' +
+        '<a class="btn-secondary" href="' + BASE + '/api/exterior-catalog/template.csv">↓ CSV Template</a>' +
+        '<button class="btn-secondary" onclick="document.getElementById(\'ex-csv-input\').click()">↑ Upload CSV</button>' +
+        '<input id="ex-csv-input" type="file" accept=".csv,text/csv" hidden onchange="exImportCsv(this)">' +
+        '<button class="btn-secondary" onclick="exExportCsv()">Export Current</button></div></div>' +
+    '<p class="ex-help"><strong>One row = one product/color.</strong> Roof and siding products may link to an existing Price Book bundle so the matching installed system is selected first. Paint applies to the siding or door mask. Visual choices never alter scope or price.</p>' +
+    '<div class="ex-table-wrap"><table class="ex-table"><thead><tr>' +
+      '<th>Brand</th><th>Product / Series</th><th>Style / Profile</th><th>Color</th><th>Color Code</th><th>Preview Hex</th><th>Applies To</th><th>Price Book Link</th><th>Active</th><th></th>' +
+      '</tr></thead><tbody>' + (rows || '<tr><td colspan="10" class="ex-empty">No matching rows. Add one or upload the CSV template.</td></tr>') +
+      '</tbody></table></div>' +
+    '<div class="ex-footer"><div><button class="btn-secondary" onclick="exAddRow()">+ Add Product / Color</button></div>' +
+      '<div class="ex-toolbar-group"><span id="ex-catalog-status" class="ex-status">' +
+        (exCatalogDirty ? 'Unsaved changes' : exCatalogItems.length + ' catalog rows') + '</span>' +
+        '<button class="btn-primary" id="ex-catalog-save" onclick="exSaveCatalog()">💾 Save Exterior Catalog</button></div></div>';
+}
+
+function exParseCsv(text) {
+  const rows = [], row = [];
+  let field = '', quoted = false;
+  const pushField = () => { row.push(field); field = ''; };
+  const pushRow = () => {
+    pushField();
+    if (row.some(v => String(v).trim())) rows.push(row.splice(0));
+    else row.splice(0);
+  };
+  text = String(text || '').replace(/^\uFEFF/, '');
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else field += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') pushField();
+    else if (ch === '\n') pushRow();
+    else if (ch !== '\r') field += ch;
+  }
+  if (field || row.length) pushRow();
+  if (quoted) throw new Error('CSV has an unclosed quote');
+  if (rows.length < 2) throw new Error('CSV needs a header and at least one product row');
+  const headers = rows.shift().map(h => String(h).trim().toLowerCase().replace(/[\s-]+/g, '_'));
+  return rows.map(values => {
+    const raw = {};
+    headers.forEach((h, i) => { raw[h] = String(values[i] || '').trim(); });
+    return {
+      category: raw.category, brand: raw.brand,
+      product: raw.product || raw.series, style: raw.style || raw.profile,
+      color: raw.color || raw.color_name, color_code: raw.color_code || raw.code,
+      hex: raw.hex || raw.color_hex, applies_to: raw.applies_to,
+      price_book_bundle: raw.price_book_bundle || raw.bundle_id,
+      active: raw.active
+    };
+  });
+}
+async function exImportCsv(input) {
+  const file = input && input.files && input.files[0];
+  if (!file) return;
+  exCatalogStatus('Importing ' + file.name + '…');
+  try {
+    const rows = exParseCsv(await file.text());
+    const res = await fetch('/api/exterior-catalog/import', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({rows: rows})
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Import failed');
+    exCatalogItems = data.entries || [];
+    priceBook.exterior_catalog = exCatalogItems;
+    exCatalogDirty = false;
+    renderExteriorCatalog();
+    exCatalogStatus('Imported ' + data.imported + ' rows; added ' + data.added + '. Catalog saved.', 'ok');
+  } catch (error) {
+    exCatalogStatus(error.message, 'err');
+  } finally {
+    input.value = '';
+  }
+}
+async function exSaveCatalog() {
+  const button = document.getElementById('ex-catalog-save');
+  if (button) { button.disabled = true; button.textContent = 'Saving…'; }
+  try {
+    const res = await fetch('/api/exterior-catalog', {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({entries: exCatalogItems})
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not save catalog');
+    exCatalogItems = data.entries || [];
+    priceBook.exterior_catalog = exCatalogItems;
+    exCatalogDirty = false;
+    renderExteriorCatalog();
+    exCatalogStatus('Saved ' + data.count + ' catalog rows.', 'ok');
+    if (activePage === 'visualizer') renderVisualizerPage();
+  } catch (error) {
+    exCatalogStatus(error.message, 'err');
+    if (button) { button.disabled = false; button.textContent = '💾 Save Exterior Catalog'; }
+  }
+}
+function exCsvCell(value) {
+  const text = String(value == null ? '' : value);
+  return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+}
+function exExportCsv() {
+  const headers = ['category','brand','product','style','color','color_code','hex','applies_to','price_book_bundle','active'];
+  const lines = [headers.join(',')].concat(exCatalogItems.map(e =>
+    headers.map(h => exCsvCell(e[h] === undefined ? '' : e[h])).join(',')));
+  const url = URL.createObjectURL(new Blob([lines.join('\r\n') + '\r\n'], {type:'text/csv'}));
+  const a = document.createElement('a');
+  a.href = url; a.download = 'exterior-catalog.csv'; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 const PB_SUBTABS = [['master','Master Catalog'],['good','Good'],['better','Better'],['best','Best']];
 
 function renderPBModal() {
@@ -13502,23 +13766,23 @@ async function permitGenerate(btn) {
 }
 
 /* ── Visualizer ────────────────────────────────────────────────────────
-   Photo of the house + rep-painted roof/siding masks + product color/style
+   Photo of the house + automatic or refined surface masks + product color/style
    overlay. Stored under S.visualizer (mirrored to est.visualizer server-side)
    and rendered on the customer /sign page and the signed PDF.
 
-   Free/no-AI approach: rep paints masks with a finger (brush + magic-wand
-   flood-fill), we composite the color onto the mask region with
+   Optional fal / SAM 3 detection selects surfaces once per uploaded photo.
+   Brushes and flood-fill remain under Refine selection. We composite colors with
    globalCompositeOperation='multiply' so the base photo's shading is
    preserved. Siding also tiles a style pattern (lap / board-and-batten /
    shingle-style / vertical panel) so a Hardie Statement Iron Gray lap reads
    differently from a Hardie Statement Iron Gray B&B — same color, real
-   visual difference. AI inpainting can layer on later without changing the
-   data shape.
+   visual difference. ProVia choices currently preview finish only, not exact
+   panel/glass geometry. Detection never changes pricing or quoted bundles.
 
    The state lives in three places, in sync:
    - vzState (module-level, live pixels + tool state) — the working copy the
      brush edits, plus the loaded HTMLImageElement of the photo and the two
-     off-screen mask canvases. Not persisted directly.
+     off-screen mask canvases (roof, siding, door). Not persisted directly.
    - S.visualizer (client mirror of the estimate JSON) — filenames, selections,
      tier_renders. Sent to the server on save.
    - est.visualizer (server, in the estimate doc) — same shape as S.visualizer,
@@ -14165,10 +14429,75 @@ function _vzPalette(product) {
   return ((product || {}).colors || []).filter(c => c && typeof c === 'object' &&
     typeof c.name === 'string' && /^#[0-9a-f]{6}$/i.test(c.hex || ''));
 }
+function _vzExteriorGroups(trade) {
+  const entries = Array.isArray((priceBook || {}).exterior_catalog)
+    ? priceBook.exterior_catalog : [];
+  const wanted = trade === 'roofing' ? 'roof' : trade === 'siding' ? 'siding' : 'door';
+  const groups = new Map();
+  for (const entry of entries) {
+    if (!entry || entry.active === false) continue;
+    const applies = entry.category === 'paint' ? entry.applies_to : entry.category;
+    if (applies !== wanted) continue;
+    const id = entry.product_id || [entry.category, entry.brand, entry.product,
+      entry.applies_to, entry.price_book_bundle].join('|');
+    if (!groups.has(id)) {
+      const brand = (entry.brand || '').trim(), productName = (entry.product || '').trim();
+      let label = (brand && !productName.toLowerCase().startsWith(brand.toLowerCase())
+        ? brand + ' ' + productName : productName || brand) || 'Unnamed product';
+      if (entry.category !== 'siding' && (entry.style || '').trim()) label += ' — ' + entry.style.trim();
+      groups.set(id, {
+        id: id, category: entry.category, brand: entry.brand || '',
+        product: entry.product || '', name: (entry.category === 'paint' ? 'Paint · ' : '') + label,
+        bundle_id: entry.price_book_bundle || '', colors: [], styles: []
+      });
+    }
+    const group = groups.get(id);
+    if (!group.bundle_id && entry.price_book_bundle) group.bundle_id = entry.price_book_bundle;
+    const colorLabel = entry.color + (entry.color_code ? ' · ' + entry.color_code : '');
+    if (!group.colors.some(c => c.name === colorLabel && c.hex === entry.hex)) {
+      group.colors.push({name: colorLabel, hex: entry.hex, code: entry.color_code || ''});
+    }
+    const styleName = entry.category === 'siding' ? (entry.style || '').trim() : '';
+    if (styleName && !group.styles.some(s => s.name === styleName)) {
+      group.styles.push({
+        id: (entry.pattern_id || styleName.toLowerCase().replace(/[^a-z0-9]+/g, '_')),
+        name: styleName, pattern_id: entry.pattern_id || ''
+      });
+    }
+  }
+  return Array.from(groups.values()).sort((a, b) => {
+    if (a.category === 'paint' && b.category !== 'paint') return 1;
+    if (b.category === 'paint' && a.category !== 'paint') return -1;
+    return a.name.localeCompare(b.name);
+  });
+}
+function _vzExteriorProductForSelection(trade, selected) {
+  const groups = _vzExteriorGroups(trade);
+  if (!groups.length) return null;
+  return groups.find(p => p.id === selected.exterior_product_id || p.id === selected.option_id) ||
+    groups.find(p => p.bundle_id && p.bundle_id === selected.bundle_id) || null;
+}
+function _vzExteriorSelection(product) {
+  const color = _vzPalette(product)[0] || {};
+  const style = (product.styles || [])[0] || {};
+  return {
+    exterior_product_id: product.id, product_name: product.name,
+    product_category: product.category, bundle_id: product.bundle_id || '',
+    bundle_name: product.name, color_hex: color.hex || '', color_name: color.name || '',
+    style_id: style.id || '', style_name: style.name || '', pattern_id: style.pattern_id || ''
+  };
+}
 function _vzEnsureTier(tier) {
   const vz = _vzGet();
   for (const trade of ['roofing', 'siding']) {
     if (vz.selections[trade][tier]) continue;
+    const products = _vzExteriorGroups(trade);
+    if (products.length) {
+      const bundle = _vzBundleFor(trade, tier);
+      const product = products.find(p => p.bundle_id && p.bundle_id === bundle?.id) || products[0];
+      vz.selections[trade][tier] = _vzExteriorSelection(product);
+      continue;
+    }
     const bundle = _vzBundleFor(trade, tier);
     const material = _vzMaterialForBundle(trade, bundle);
     const color = _vzPalette(material)[0];
@@ -14181,9 +14510,14 @@ function _vzEnsureTier(tier) {
 }
 function _vzSelectedProduct(trade) {
   if (trade === 'doors') {
-    const id = (_vzGet().selections.doors[vzState.activeTier] || {}).option_id;
-    return ((priceBook || {}).exterior_doors || []).find(d => d.id === id);
+    const selected = _vzGet().selections.doors[vzState.activeTier] || {};
+    const exterior = _vzExteriorProductForSelection('doors', selected);
+    if (exterior) return exterior;
+    return ((priceBook || {}).exterior_doors || []).find(d => d.id === selected.option_id);
   }
+  const selected = _vzGet().selections[trade][vzState.activeTier] || {};
+  const exterior = _vzExteriorProductForSelection(trade, selected);
+  if (exterior) return exterior;
   return _vzMaterialForBundle(trade, _vzBundleFor(trade, vzState.activeTier));
 }
 function _vzRenderPicker() {
@@ -14207,30 +14541,40 @@ function _vzRenderPicker() {
   };
   const tradePanel = trade => {
     const bundle = _vzBundleFor(trade, tier);
-    const choices = ((priceBook || {})[trade + '_bundles'] || []).filter(b => _vzPalette(_vzMaterialForBundle(trade, b)).length);
+    const exteriorChoices = _vzExteriorGroups(trade);
+    const legacyChoices = ((priceBook || {})[trade + '_bundles'] || [])
+      .filter(b => _vzPalette(_vzMaterialForBundle(trade, b)).length)
+      .map(b => ({id:b.id, name:b.name, bundle_id:b.id}));
+    const choices = Array.isArray((priceBook || {}).exterior_catalog) ? exteriorChoices : legacyChoices;
     const selected = vz.selections[trade][tier] || {};
     const styles = (_vzSelectedProduct(trade) || {}).styles || [];
+    const selectedId = selected.exterior_product_id ||
+      (choices.find(p => p.bundle_id && p.bundle_id === selected.bundle_id) || {}).id || bundle?.id || '';
     const stylePicker = trade === 'siding' && styles.length
       ? '<label class="vz-field">Siding style<select onchange="_vzChooseStyle(this.value)">' +
         (!styles.some(s => s.id === selected.style_id) ? option('', selected.style_name || 'Choose style', true) : '') +
         styles.map(s => option(s.id, s.name, s.id === selected.style_id)).join('') + '</select></label>' : '';
     return '<section class="vz-picker-section"><h3 class="vz-picker-title">' +
       (trade === 'roofing' ? 'Roof' : 'Siding') + '</h3>' +
-      '<label class="vz-field">Product<select onchange="_vzChooseBundle(\'' + trade + '\', this.value)">' +
-      (!choices.some(b => b.id === bundle?.id) ? option('', 'Choose a product', true) : '') +
-      choices.map(b => option(b.id, b.name, b.id === bundle?.id)).join('') +
+      '<label class="vz-field">Product<select onchange="_vzChooseProduct(\'' + trade + '\', this.value)">' +
+      (!choices.some(p => p.id === selectedId) ? option('', 'Choose a product', true) : '') +
+      choices.map(p => option(p.id, p.name, p.id === selectedId)).join('') +
       '</select></label>' + stylePicker + colors(trade) + '</section>';
   };
-  const doorOptions = (priceBook || {}).exterior_doors || [], ds = vz.selections.doors[tier] || {};
+  const exteriorDoors = _vzExteriorGroups('doors');
+  const doorOptions = Array.isArray((priceBook || {}).exterior_catalog)
+    ? exteriorDoors : ((priceBook || {}).exterior_doors || []);
+  const ds = vz.selections.doors[tier] || {};
+  const selectedDoorId = ds.exterior_product_id || ds.option_id;
   host.innerHTML = '<p class="vz-picker-help">Design choices only. Update Products / Pricing separately to quote this look. Catalog palettes and textures are approximate; verify manufacturer availability.</p>' +
     tradePanel('roofing') + tradePanel('siding') +
-    '<section class="vz-picker-section vz-door-section"><h3 class="vz-picker-title">ProVia entry door</h3>' +
+    '<section class="vz-picker-section vz-door-section"><h3 class="vz-picker-title">Entry door</h3>' +
     '<label class="vz-field">Door series<select onchange="_vzPickDoorOption(this.value)">' +
-    option('', 'Keep existing door', !ds.option_id) +
-    (ds.option_id && !doorOptions.some(d => d.id === ds.option_id) ? option(ds.option_id, ds.option_name + ' (saved selection)', true) : '') +
-    doorOptions.map(d => option(d.id, d.name, d.id === ds.option_id)).join('') + '</select></label>' +
-    (ds.option_id ? colors('doors') : '') +
-    '<p class="vz-picker-help">Series and finish preview only. Panel shape, glass, and hardware are not rendered as an exact ProVia product.</p>' +
+    option('', 'Keep existing door', !selectedDoorId) +
+    (selectedDoorId && !doorOptions.some(d => d.id === selectedDoorId) ? option(selectedDoorId, ds.option_name + ' (saved selection)', true) : '') +
+    doorOptions.map(d => option(d.id, d.name, d.id === selectedDoorId)).join('') + '</select></label>' +
+    (selectedDoorId ? colors('doors') : '') +
+    '<p class="vz-picker-help">Series and finish preview only. Panel shape, glass, and hardware are not rendered as an exact manufacturer product.</p>' +
     '<a class="vz-provia-link" href="https://www.provia.com/design-center/envision/" target="_blank" rel="noopener noreferrer">Choose exact door style in ProVia’s configurator ↗</a></section>';
 }
 function _vzChanged() {
@@ -14247,6 +14591,13 @@ function _vzChooseBundle(trade, id) {
   _vzGet().selections[trade][vzState.activeTier] = {bundle_id: bundle.id, bundle_name: bundle.name,
     color_hex: color.hex, color_name: color.name, style_id: style.id || '',
     style_name: style.name || '', pattern_id: style.pattern_id || ''};
+  _vzChanged();
+}
+function _vzChooseProduct(trade, id) {
+  if (!['roofing', 'siding'].includes(trade) || vzState.saving) return;
+  const product = _vzExteriorGroups(trade).find(p => p.id === id);
+  if (!product) { _vzChooseBundle(trade, id); return; }
+  _vzGet().selections[trade][vzState.activeTier] = _vzExteriorSelection(product);
   _vzChanged();
 }
 function _vzChooseColor(trade, index) {
@@ -14268,6 +14619,15 @@ function _vzPickDoorOption(id) {
   if (vzState.saving) return;
   const vz = _vzGet(), tier = vzState.activeTier;
   if (!id) { delete vz.selections.doors[tier]; _vzChanged(); return; }
+  const exterior = _vzExteriorGroups('doors').find(d => d.id === id);
+  if (exterior) {
+    const selected = _vzExteriorSelection(exterior);
+    vz.selections.doors[tier] = Object.assign(selected, {
+      option_id: exterior.id, option_name: exterior.name, preview_only: true
+    });
+    _vzChanged();
+    return;
+  }
   const door = ((priceBook || {}).exterior_doors || []).find(d => d.id === id);
   if (!door) return;
   const color = _vzPalette(door)[0] || {};

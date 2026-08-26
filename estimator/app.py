@@ -13437,6 +13437,171 @@ EXTERIOR_DOOR_OPTIONS_SEED = [
 ]
 
 
+# Manager-maintained Design Studio catalog.  This deliberately remains a
+# visual catalog instead of pretending that a color swatch is a priced scope
+# item.  `price_book_bundle` is an optional link back to the estimate's real
+# bundle; choosing a look never changes that bundle or its price.
+EXTERIOR_CATALOG_CATEGORIES = {'roof', 'siding', 'door', 'paint'}
+EXTERIOR_CATALOG_SURFACES = {'siding', 'door'}
+EXTERIOR_PATTERN_IDS = {'', 'lap', 'board_batten', 'shake', 'vertical'}
+
+
+def _exterior_text(value, limit):
+    return re.sub(r'\s+', ' ', str(value or '')).strip()[:limit]
+
+
+def _exterior_bool(value, default=True):
+    if isinstance(value, bool):
+        return value
+    text = str(value or '').strip().lower()
+    if not text:
+        return default
+    return text not in {'0', 'false', 'no', 'off', 'inactive'}
+
+
+def _exterior_pattern(style, supplied=''):
+    supplied = _exterior_text(supplied, 32).lower()
+    if supplied in EXTERIOR_PATTERN_IDS:
+        return supplied
+    style_l = _exterior_text(style, 80).lower()
+    if 'board' in style_l and 'batten' in style_l:
+        return 'board_batten'
+    if 'shake' in style_l or 'shingle' in style_l:
+        return 'shake'
+    if 'vertical' in style_l or 'panel' in style_l:
+        return 'vertical'
+    if 'lap' in style_l or 'clapboard' in style_l:
+        return 'lap'
+    return ''
+
+
+def _exterior_ids(entry):
+    product_parts = [entry[k].lower() for k in
+                     ('category', 'brand', 'product', 'applies_to', 'price_book_bundle')]
+    # Siding exposes profile as its own dropdown. Roof type, door model and
+    # paint sheen are part of the product choice, so keep those as distinct
+    # products instead of hiding them in a picker that does not exist.
+    if entry['category'] != 'siding':
+        product_parts.append(entry['style'].lower())
+    product_id = 'extp_' + hashlib.sha1('|'.join(product_parts).encode()).hexdigest()[:14]
+    color_parts = product_parts + [entry['style'].lower(), entry['color'].lower(),
+                                   entry['color_code'].lower()]
+    entry_id = 'ext_' + hashlib.sha1('|'.join(color_parts).encode()).hexdigest()[:16]
+    return product_id, entry_id
+
+
+def _normalize_exterior_entry(raw, row_number=None):
+    if not isinstance(raw, dict):
+        raise ValueError(f'Row {row_number or "?"}: expected an object')
+    aliases = {'roofing': 'roof', 'roofs': 'roof', 'doors': 'door',
+               'paints': 'paint'}
+    category = aliases.get(_exterior_text(raw.get('category'), 20).lower(),
+                           _exterior_text(raw.get('category'), 20).lower())
+    if category not in EXTERIOR_CATALOG_CATEGORIES:
+        raise ValueError(f'Row {row_number or "?"}: category must be roof, siding, door, or paint')
+    product = _exterior_text(raw.get('product') or raw.get('series'), 120)
+    color = _exterior_text(raw.get('color') or raw.get('color_name'), 80)
+    if not product:
+        raise ValueError(f'Row {row_number or "?"}: product is required')
+    if not color:
+        raise ValueError(f'Row {row_number or "?"}: color is required')
+    hex_color = _exterior_text(raw.get('hex') or raw.get('color_hex'), 7).lower()
+    if not re.fullmatch(r'#[0-9a-f]{6}', hex_color):
+        raise ValueError(f'Row {row_number or "?"}: hex must look like #1a2b3c')
+    applies = _exterior_text(raw.get('applies_to'), 20).lower()
+    if category == 'paint':
+        applies = applies or 'siding'
+        if applies not in EXTERIOR_CATALOG_SURFACES:
+            raise ValueError(f'Row {row_number or "?"}: paint applies_to must be siding or door')
+    else:
+        applies = {'roof': 'roof', 'siding': 'siding', 'door': 'door'}[category]
+    entry = {
+        'category': category,
+        'brand': _exterior_text(raw.get('brand'), 80),
+        'product': product,
+        'style': _exterior_text(raw.get('style') or raw.get('profile'), 80),
+        'color': color,
+        'color_code': _exterior_text(raw.get('color_code') or raw.get('code'), 40),
+        'hex': hex_color,
+        'applies_to': applies,
+        'pattern_id': _exterior_pattern(raw.get('style') or raw.get('profile'), raw.get('pattern_id')),
+        'price_book_bundle': _exterior_text(
+            raw.get('price_book_bundle') or raw.get('bundle_id'), 100),
+        'active': _exterior_bool(raw.get('active'), True),
+    }
+    product_id, entry_id = _exterior_ids(entry)
+    # Recompute identities from the editable fields. If a manager renames a
+    # product/style it becomes a new visual choice; old estimates keep their
+    # saved labels and colors instead of silently pointing at a different SKU.
+    entry['product_id'] = product_id
+    entry['id'] = entry_id
+    return entry
+
+
+def _normalize_exterior_catalog(rows):
+    if not isinstance(rows, list):
+        raise ValueError('entries must be a list')
+    if len(rows) > 5000:
+        raise ValueError('Exterior catalog is limited to 5,000 rows')
+    normalized, seen = [], set()
+    for i, raw in enumerate(rows, 1):
+        entry = _normalize_exterior_entry(raw, i)
+        key = (entry['category'], entry['brand'].lower(), entry['product'].lower(),
+               entry['style'].lower(), entry['color'].lower(),
+               entry['color_code'].lower(), entry['applies_to'],
+               entry['price_book_bundle'])
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(entry)
+    return normalized
+
+
+def _legacy_exterior_catalog(pb):
+    """Flatten the shipped visual palettes into the same rows managers edit."""
+    rows = []
+    for trade, category, prefix in (('roofing', 'roof', 'm_'),
+                                    ('siding', 'siding', 's_')):
+        catalog = pb.get(trade + '_catalog') or []
+        by_id = {p.get('id'): p for p in catalog if isinstance(p, dict)}
+        for bundle in pb.get(trade + '_bundles') or []:
+            material = None
+            for pid in bundle.get('product_ids') or []:
+                if not str(pid).startswith(prefix):
+                    continue
+                if trade == 'siding' and str(pid).startswith(('sa_', 'sl_', 'sx_')):
+                    continue
+                material = by_id.get(pid)
+                if material:
+                    break
+            if not material:
+                continue
+            styles = material.get('styles') or [{}]
+            for style in styles:
+                for color in material.get('colors') or []:
+                    if not isinstance(color, dict) or not color.get('name') or not color.get('hex'):
+                        continue
+                    rows.append({
+                        'category': category,
+                        'brand': material.get('group', ''),
+                        'product': bundle.get('name') or material.get('name'),
+                        'style': style.get('name', ''),
+                        'pattern_id': style.get('pattern_id', ''),
+                        'color': color.get('name'), 'hex': color.get('hex'),
+                        'price_book_bundle': bundle.get('id', ''), 'active': True,
+                    })
+    for door in pb.get('exterior_doors') or []:
+        for color in door.get('colors') or []:
+            if isinstance(color, dict) and color.get('name') and color.get('hex'):
+                rows.append({
+                    'category': 'door', 'brand': door.get('brand', ''),
+                    'product': door.get('series') or door.get('name'),
+                    'style': door.get('style', ''), 'color': color.get('name'),
+                    'hex': color.get('hex'), 'active': True,
+                })
+    return _normalize_exterior_catalog(rows)
+
+
 def _ensure_bundle_catalogs(pb):
     """Inject each bundle trade's catalog/bundles/defaults into a price book that
     has none. Non-destructive (mutates the in-memory dict for the response only)."""
@@ -13558,6 +13723,11 @@ def _ensure_bundle_catalogs(pb):
         pb['exterior_doors'] = [d for d in pb['exterior_doors'] if d.get('id') not in old_ids]
         have = {d.get('id') for d in pb['exterior_doors']}
         pb['exterior_doors'].extend(copy.deepcopy(d) for d in EXTERIOR_DOOR_OPTIONS_SEED if d['id'] not in have)
+    # Key absence means this live book has never used the uploader.  An
+    # explicit [] is a manager intentionally clearing the menu and stays
+    # empty, just like deleted Price Book bundles stay deleted.
+    if 'exterior_catalog' not in pb:
+        pb['exterior_catalog'] = _legacy_exterior_catalog(pb)
     return pb
 
 
@@ -13650,6 +13820,74 @@ def put_pricebook():
         return _forbid()
     _save_price_book(request.get_json(force=True))
     return jsonify({'ok': True})
+
+
+@app.route('/api/exterior-catalog', methods=['GET'])
+def get_exterior_catalog():
+    pb = _ensure_bundle_catalogs(_load_price_book())
+    entries = pb.get('exterior_catalog') or []
+    counts = {category: sum(1 for e in entries if e.get('category') == category)
+              for category in sorted(EXTERIOR_CATALOG_CATEGORIES)}
+    return jsonify({'entries': entries, 'counts': counts})
+
+
+@app.route('/api/exterior-catalog', methods=['PUT'])
+def put_exterior_catalog():
+    if not _is_manager_up():
+        return _forbid()
+    body = request.get_json(silent=True) or {}
+    try:
+        entries = _normalize_exterior_catalog(body.get('entries'))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    pb = _load_price_book()
+    _ensure_bundle_catalogs(pb)
+    pb['exterior_catalog'] = entries
+    _save_price_book(pb)
+    return jsonify({'ok': True, 'entries': entries, 'count': len(entries)})
+
+
+@app.route('/api/exterior-catalog/import', methods=['POST'])
+def import_exterior_catalog():
+    """Merge normalized CSV rows without replacing a manager's other lines."""
+    if not _is_manager_up():
+        return _forbid()
+    body = request.get_json(silent=True) or {}
+    try:
+        incoming = _normalize_exterior_catalog(body.get('rows'))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    pb = _load_price_book()
+    _ensure_bundle_catalogs(pb)
+    existing = _normalize_exterior_catalog(pb.get('exterior_catalog') or [])
+    by_id = {e['id']: e for e in existing}
+    before = len(by_id)
+    for entry in incoming:
+        # The normalized id is a stable identity for one product/color row, so
+        # importing an updated sheet changes that row instead of multiplying it.
+        by_id[entry['id']] = entry
+    merged = list(by_id.values())
+    if len(merged) > 5000:
+        return jsonify({'error': 'Exterior catalog is limited to 5,000 rows'}), 400
+    pb['exterior_catalog'] = merged
+    _save_price_book(pb)
+    return jsonify({'ok': True, 'entries': merged, 'imported': len(incoming),
+                    'added': len(merged) - before, 'count': len(merged)})
+
+
+@app.route('/api/exterior-catalog/template.csv')
+def exterior_catalog_template():
+    if not _is_manager_up():
+        return _forbid()
+    csv_text = (
+        'category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,active\r\n'
+        'roof,CertainTeed,Landmark,Architectural,Moire Black,,#292929,,b_landmark,true\r\n'
+        'siding,LP,ExpertFinish,Board & Batten,Deep Ocean,,#263d4c,,b_lp_expert,true\r\n'
+        'door,ProVia,Signet,460 Style,Autumn Red,,#823d36,,,true\r\n'
+        'paint,Sherwin-Williams,Duration,Exterior Satin,Tricorn Black,SW 6258,#2f2f30,siding,,true\r\n'
+    )
+    return Response(csv_text, mimetype='text/csv', headers={
+        'Content-Disposition': 'attachment; filename=exterior-catalog-template.csv'})
 
 
 @app.route('/api/pricebook/intros', methods=['POST'])

@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=178">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=179">
 </head>
 <body>
 
@@ -658,9 +658,26 @@
   <div class="modal-box pb-modal-box">
     <div class="modal-header">
       <h2>📋 Price Book</h2>
-      <button onclick="closePriceBook()" class="modal-close">×</button>
+      <div class="modal-header-actions">
+        <button class="btn-secondary" onclick="openExteriorCatalog()">🎨 Exterior Catalog</button>
+        <button onclick="closePriceBook()" class="modal-close">×</button>
+      </div>
     </div>
     <div id="pb-modal-body" style="overflow:auto;flex:1"></div>
+  </div>
+</div>
+
+<!-- ── Exterior Design Studio catalog (manager+) ───────────────────── -->
+<div id="exterior-catalog-modal" class="modal hidden" onclick="maybeExteriorCatalogClose(event)">
+  <div class="modal-box ex-modal-box">
+    <div class="modal-header">
+      <div>
+        <h2>🎨 Exterior Catalog</h2>
+        <p class="ex-modal-sub">Products, styles, and colors shown in Design Studio. Pricing stays in the Price Book.</p>
+      </div>
+      <button onclick="closeExteriorCatalog()" class="modal-close">×</button>
+    </div>
+    <div id="exterior-catalog-body" class="ex-modal-body"></div>
   </div>
 </div>
 
@@ -726,6 +743,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=178"></script>
+<script src="/estimate/static/app.js?v=179"></script>
 </body>
 </html>
