@@ -16,8 +16,11 @@ FAL_KEY=<server-side fal credential>
 ```
 
 Set a usage allowance in the provider account. Each photo submits three model
-requests (roof, siding, entry door). Changing dropdowns afterwards runs locally
-and does not request more inference. No credential belongs in client code,
+requests (roof, siding, entry door). The siding request asks for both exterior
+wall siding and fascia boards; their returned masks are combined so fascia
+receives the same visual product/color without an additional fal request.
+Changing dropdowns afterwards runs locally and does not request more inference.
+No credential belongs in client code,
 source control, or chat. No customer photo is sent while either variable is
 missing. Setting these variables is an explicit opt-in to sending the resized
 photo to fal. Metadata is stripped before transmission. Review fal's data
@@ -35,6 +38,8 @@ Inference uses the queue so it does not occupy a web worker while the model
 runs. Poll tickets expire after 10 minutes and bind the job to a rep, estimate,
 and photo. Each surface has a 30-second submission cooldown per estimate.
 Failures and empty/low-confidence detections preserve existing selections.
+Fascia detection remains image-dependent, so the rep should review its edges
+and use **Refine selection → Siding** when a board is obscured or missed.
 Changing the photo or customer invalidates in-flight results in the editor.
 Results are not saved to the customer estimate until **Save Renderings**.
 
@@ -49,7 +54,8 @@ category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,a
 
 One row is one product/color combination. Categories are `roof`, `siding`,
 `door`, and `paint`. Paint must use `applies_to=siding` or `applies_to=door`;
-the current detector does not isolate trim as its own surface. Hex values must
+fascia intentionally shares the siding surface, while other trim is not
+isolated as a separate color layer. Hex values must
 be six-digit CSS colors such as `#292929`. The optional
 `price_book_bundle` links a roof or siding visual product to an existing bundle
 so Design Studio starts on the system already quoted. It never changes scope

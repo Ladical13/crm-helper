@@ -364,6 +364,26 @@ def test_detection_converts_binary_masks_to_alpha_and_rejects_low_confidence(det
         detector.combine_masks({'masks': [{'url': 'https://untrusted.invalid/image.png'}]}, (3, 2))
 
 
+def test_siding_detection_requests_fascia_in_the_same_billable_call(detector, monkeypatch):
+    """Fascia uses the siding color and must not require a fourth request."""
+    from PIL import Image
+    captured = {}
+    rid = 'siding-fascia-test'
+    root = 'https://queue.fal.run/fal-ai/sam-3/requests/' + rid
+
+    def fake_json(method, url, payload=None):
+        assert method == 'POST'
+        captured.update(payload)
+        return {'request_id': rid, 'status_url': root + '/status',
+                'response_url': root}
+
+    monkeypatch.setattr(detector, '_json', fake_json)
+    detector.submit('siding', _image_uri(Image.new('RGB', (2, 2), 'white')))
+
+    assert captured['prompt'] == 'exterior wall siding, fascia boards'
+    assert captured['return_multiple_masks'] is True
+
+
 def test_detection_requires_explicit_setup_and_existing_authorized_estimate(client, anon, detector, monkeypatch):
     eid = client.post('/api/estimates', json={'salesperson': 'luke'}).get_json()['estimate_id']
     endpoint = f'/api/estimates/{eid}/visualizer/detection'

@@ -17,7 +17,15 @@ import requests
 from PIL import Image, ImageChops, ImageOps
 
 MODEL_URL = 'https://queue.fal.run/fal-ai/sam-3/image'
-PROMPTS = {'roof': 'roof', 'siding': 'exterior wall siding', 'door': 'entry door'}
+# SAM 3 returns one mask per detected object and ``combine_masks`` unions them
+# into the role's single saved mask. Keep fascia in the siding request so the
+# customer's siding choice also covers the horizontal trim at the roof edge,
+# without creating a fourth billable inference request or a separate UI layer.
+PROMPTS = {
+    'roof': 'roof',
+    'siding': 'exterior wall siding, fascia boards',
+    'door': 'entry door',
+}
 MAX_BYTES = 4 * 1024 * 1024
 MAX_SIDE = 1600
 FAL_PRIVATE_HEADERS = {
