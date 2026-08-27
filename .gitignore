@@ -15,6 +15,10 @@ estimator/estimates/
 estimator/uploads/
 estimator/config.json
 estimator/users.json
+# Customer-level notes — budget, HOA contacts, what a homeowner is like.
+# Sits beside config/users for the same reason: it is customer data, and
+# the documented save routine is `git add -A`.
+estimator/customer_notes.json
 estimator/company_content.json
 estimator/app_settings.json
 

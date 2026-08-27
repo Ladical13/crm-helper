@@ -21,13 +21,16 @@ None of these produced an error when they were broken:
     onclick. esc() escapes for HTML but not for the JS string literal, so
     O'Brien's buttons were a syntax error and did nothing at all.
 
-A later pass moved estimate creation out of this modal entirely, into the
-Documents door on the Customer hub — because the modal's "＋ Create New
-Estimate" dropped a rep onto the exact same screen a brand-new customer sees
-("Not saved yet", the typed label shown nowhere) with no sign this was
-estimate #2 for someone who already had one. The Documents door now lists
-every estimate for the loaded customer — including the one on screen right
-now, even before its first save — and is where a new one gets started.
+Two later passes changed where all this lives. Creation moved off the modal,
+because "＋ Create New Estimate" dropped a rep onto the same screen a
+brand-new customer sees — "Not saved yet", the typed label shown nowhere, no
+sign this was estimate #2 for someone who already had one. Then the modal
+went entirely: it and the Documents page were two views of one question
+("what does this customer have?") that could and did disagree.
+
+There is now ONE customer screen — details, notes, every estimate including
+the unsaved one on screen, and the files — and the estimate tab strip behind
+a single button on it.
 """
 import json
 import os
@@ -40,11 +43,17 @@ import pytest
 HERE   = os.path.dirname(os.path.abspath(__file__))
 EST    = os.path.dirname(HERE)
 APPJS  = os.path.join(EST, 'static', 'app.js')
+INDEX  = os.path.join(EST, 'static', 'index.html')
 RUNNER = os.path.join(HERE, 'customer_key_runner.js')
 
 
 def _appjs():
     with open(APPJS, encoding='utf-8') as f:
+        return f.read()
+
+
+def _read_index():
+    with open(INDEX, encoding='utf-8') as f:
         return f.read()
 
 
@@ -184,8 +193,8 @@ def test_a_link_field_that_exists_on_the_estimate_is_not_forgotten():
 
 # ── one grouping key, used on both sides ───────────────────────────────────
 
-def test_the_customer_file_groups_on_the_shared_key():
-    body = _fn_body(_appjs(), 'openCustomerFile', code_only=True)
+def test_opening_a_customer_groups_on_the_shared_key():
+    body = _fn_body(_appjs(), 'openCustomer', code_only=True)
     assert 'custKey' in body
     assert '.includes(' not in body, \
         "substring grouping put every Smithson into Jon Smith's file"
@@ -203,71 +212,68 @@ def test_the_commercial_type_is_offered_when_creating_the_next_estimate():
     start from scratch and retype their details. The dialog lives on the
     Documents door now, not the modal — this must keep holding there."""
     src = _appjs()
-    dialog = _fn_body(src, 'renderDocumentsPage', code_only=True)
+    dialog = _fn_body(src, 'renderClientPage', code_only=True)
     for t in ('retail', 'insurance', 'commercial'):
         assert "docSetType('%s')" % t in dialog, t
     assert 'ESTIMATE_TYPES' in _fn_body(src, 'docSetType'), \
         'drive the active state off ESTIMATE_TYPES so a fourth type cannot be missed here'
 
 
-# ── creation moved into the Documents door ──────────────────────────────
+# ── one customer screen ─────────────────────────────────────────────────
 
-def test_the_create_form_is_gone_from_the_customer_file_modal():
-    """The modal's job narrowed to finding a customer, not creating for one —
-    a leftover copy of the form here would let the two drift out of sync."""
+def test_the_customer_file_modal_is_gone():
+    """A customer is a place you go, not a thing you peek at over the top of
+    what you were doing. The modal duplicated the estimate list that lives on
+    the customer screen, so the two could disagree — and did."""
+    src, html = _appjs(), _read_index()
+    for dead in ('function renderCustomerFile', 'function openCustomerFile',
+                 'function closeCustomerFile', 'function cfGotoNewEstimate',
+                 'function loadCustomerAttachments', '_docCreatePending'):
+        assert dead not in src, '%s survived the modal removal' % dead
+    assert 'customer-file-modal' not in html
+    assert 'id="page-documents"' not in html,         'Documents is part of the customer screen now, not a page of its own'
+
+
+def test_the_customer_screen_holds_everything_about_the_customer():
+    """Details, notes, every estimate, and the files — one page, one scroll."""
+    body = _fn_body(_appjs(), 'renderClientPage', code_only=True)
+    assert 'docEstimateListHtml()' in body, 'their estimates'
+    assert 'cf-notes-ta' in body and 'saveCustomerNotes' in body, 'their notes'
+    assert 'doc-create-body' in body and 'doc-label-input' in body, 'create form'
+    assert 'renderDocumentsPage()' in body, 'their files and documents'
+
+
+def test_documents_content_lives_inside_the_customer_page():
+    """The container moved rather than being rebuilt, so the 11 in-page
+    refresh callers of renderDocumentsPage() keep working untouched."""
+    html = _read_index()
+    m = re.search(r'<div id="page-client".*?</div>\s*</div>', html, re.S)
+    assert m, '#page-client not found'
+    assert 'id="documents-content"' in m.group(0)
+
+
+def test_documents_still_resolves_as_a_page_name():
+    """Deep links, the header badge and muscle memory all still say
+    'documents'; switchPage aliases rather than breaking them."""
+    body = _fn_body(_appjs(), 'switchPage', code_only=True)
+    assert re.search(r"if \(page === 'documents'\) page = 'client'", body)
+
+
+def test_the_create_form_moved_with_it():
     src = _appjs()
-    assert 'function cfToggleCreate' not in src
-    assert 'function cfSetType' not in src
-    assert 'function cfCreateEstimate' not in src
-    body = _fn_body(src, 'renderCustomerFile', code_only=True)
-    assert 'cf-create-body' not in body and 'cf-label-input' not in body
+    for fn in ('docToggleCreate', 'docSetType', 'docCreateEstimate'):
+        assert 'function %s' % fn in src, fn
+    # and is gone from the page it used to live on
+    assert 'doc-create-body' not in _fn_body(src, 'renderDocumentsPage', code_only=True)
 
 
-def test_the_create_form_lives_on_the_documents_door():
-    src = _appjs()
-    assert 'function docToggleCreate' in src
-    assert 'function docSetType' in src
-    assert 'function docCreateEstimate' in src
-    body = _fn_body(src, 'renderDocumentsPage', code_only=True)
-    assert 'doc-create-body' in body and 'doc-label-input' in body
-
-
-def test_the_modal_create_button_hands_off_to_documents():
-    """Clicking "＋ New Estimate for X" in the modal must land the rep on
-    Documents with the right customer's context loaded, not just close and
-    leave them wherever they were."""
-    body = _fn_body(_appjs(), 'cfGotoNewEstimate')
-    assert 'doLoadEstimate' in body
-    assert "switchPage('documents')" in body
-    assert '_docCreatePending = true' in body
-
-
-def test_documents_opens_the_create_form_when_handed_off_from_the_modal():
-    body = _fn_body(_appjs(), 'renderDocumentsPage', code_only=True)
-    assert '_docCreatePending' in body and 'docToggleCreate(true)' in body
-
-
-def test_the_handoff_button_only_ever_offers_a_saved_estimate_to_load():
-    """The button hands off by loading the customer's most recent estimate.
-    Only a SAVED one can be loaded — handing it the unsaved estimate on
-    screen would mean fetching an id that does not exist yet."""
-    body = _fn_body(_appjs(), 'renderCustomerFile', code_only=True)
-    m = re.search(r'\$\{rows\.length \? `(.*?)` : `(.*?)`\}', body, re.S)
-    assert m, 'the create-button section must branch on rows.length'
-    has_rows, no_rows = m.group(1), m.group(2)
-    assert 'cfGotoNewEstimate' in has_rows and 'saved[0]' in has_rows, \
-        'the id handed to the loader must come from the SAVED rows, not rows[0]'
-    assert 'cfGotoNewEstimate' not in no_rows
-
-
-def test_the_handoff_never_discards_unsaved_work():
-    """When the rep is already inside this customer's estimate there is
-    nothing to fetch, and fetching would throw away everything typed since
-    the last save to load a doc they are arguably already in."""
-    body = _fn_body(_appjs(), 'cfGotoNewEstimate', code_only=True)
-    assert 'alreadyHere' in body and 'custKey' in body
-    assert re.search(r'if \(mostRecentId && !alreadyHere\) await doLoadEstimate', body), \
-        'the load must be skipped for the customer already on screen'
+def test_opening_a_customer_does_not_silently_bin_unsaved_work():
+    """Every other route into a different estimate is a control the rep chose
+    deliberately. A 📁 badge on a dashboard row does not read like "discard my
+    draft", so an unsaved new estimate asks first."""
+    body = _fn_body(_appjs(), 'openCustomer', code_only=True)
+    assert 'confirm(' in body
+    assert re.search(r"custKey\(\(S\.customer \|\| \{\}\)\.name\) === custKey\(name\)", body),         'already inside this customer? navigate, never reload'
 
 
 # ── the Documents door lists every estimate, including the unsaved one ─────
@@ -279,16 +285,16 @@ def test_the_estimate_list_groups_on_the_shared_key():
         "substring grouping put every Smithson into Jon Smith's estimate list"
 
 
-def test_both_screens_read_one_list():
-    """The Documents door and the Customer File modal answer the same
+def test_one_list_answers_what_this_customer_has():
+    """The Documents door and the Customer File modal used to answer the same
     question — "what does this customer have?" — and answered it with two
     separate implementations. Only one of them knew about the estimate being
     worked on, so opening the modal mid-estimate reported the customer had
     none. Both go through customerEstimateRows() now."""
     src = _appjs()
     assert 'function customerEstimateRows' in src
-    for fn in ('docEstimateListHtml', 'renderCustomerFile'):
-        assert 'customerEstimateRows(' in _fn_body(src, fn, code_only=True), fn
+    assert 'customerEstimateRows(' in _fn_body(src, 'docEstimateListHtml', code_only=True)
+    assert 'docEstimateListHtml()' in _fn_body(src, 'renderClientPage', code_only=True)
 
 
 def test_the_open_estimate_is_not_stamped_into_a_stranger_s_file():
@@ -388,6 +394,16 @@ def test_the_documents_door_rows_are_renameable():
     assert 'renameEstimate(' in row and 'cf-est-label-input' in row
 
 
+def test_creating_an_estimate_lands_back_on_the_customer_screen():
+    """newEstimateAction() renders the customer screen from a BLANK estimate,
+    before the name is copied over, so it reads "No estimates yet" for a
+    customer who has several. And setEstimateType('commercial') navigates to
+    Scope on purpose. Either way the create flow has to re-land deliberately
+    rather than assume it never moved."""
+    body = _fn_body(_appjs(), 'docCreateEstimate', code_only=True)
+    assert "switchPage('client')" in body
+
+
 def test_renaming_an_unsaved_estimate_stays_in_memory():
     """No id yet means nothing on the server to patch — the name rides up with
     the first save instead, and the estimate must be marked dirty so that
@@ -433,19 +449,19 @@ def test_every_estimate_type_gets_a_visible_icon_even_with_a_custom_label():
 
 # ── the customer file is reachable from the lists reps actually read ───────
 
-def test_the_dashboard_row_links_to_the_customer_file():
+def test_the_dashboard_row_opens_the_customer():
     """The file used to be reachable only from a home-screen search box and a
     sidebar button that appears once a name is typed, so a rep reading a list
     of estimates had no way to see that three of them are one customer."""
     body = _fn_body(_appjs(), 'dashRow')
-    assert 'custEstimateCount' in body and 'openCustomerFile' in body
+    assert 'custEstimateCount' in body and 'openCustomer(' in body
 
 
-def test_the_home_screen_rows_link_to_the_customer_file():
+def test_the_home_screen_rows_open_the_customer():
     src = _appjs()
     i = src.index('home-recents-hd')
     home = src[i:src.index('home-empty', i)]
-    assert 'custEstimateCount' in home and 'openCustomerFile' in home
+    assert 'custEstimateCount' in home and 'openCustomer(' in home
 
 
 def test_the_count_is_rebuilt_wherever_the_list_is_replaced():

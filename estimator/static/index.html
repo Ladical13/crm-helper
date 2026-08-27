@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=180">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=181">
 </head>
 <body>
 
@@ -30,7 +30,7 @@
          overflowed a 375px phone is why a third badge here does not get the
          same "never hidden" treatment as signed/sent status). -->
     <button id="estimate-label-badge" class="estimate-label-badge" style="display:none"
-      onclick="switchPage('documents')"></button>
+      onclick="switchPage('client')"></button>
     <!-- Signed / sent state lives OUTSIDE #estimate-number, which the mobile
          breakpoint hides. A rep on a phone has to be able to see that an
          estimate is already signed; when it is, this opens the signed PDF. -->
@@ -89,7 +89,7 @@
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
         <h3 style="margin:0">Customer</h3>
         <button class="cf-open-btn" id="cf-open-btn" style="display:none"
-          onclick="openCustomerFile(S.customer.name)" title="View customer file">📁 Customer File</button>
+          onclick="switchPage('client')" title="Customer screen — estimates, notes, files">👤 Customer</button>
       </div>
       <div id="sent-lock-banner" class="sent-lock-banner" style="display:none"></div>
       <!-- Outcome, settable from the estimate itself. It used to live only in a
@@ -265,8 +265,13 @@
     </div>
 
     <!-- ── Customer hub (per-client landing: estimate or documents) ── -->
+    <!-- The customer screen. Identity, notes, every estimate they have, and
+         their files, on one page. Documents used to be a second page behind a
+         door on this one; #documents-content is that same container, moved in
+         here so there is one place a customer lives rather than two. -->
     <div id="page-client" class="page" style="display:none">
       <div id="client-content"></div>
+      <div id="documents-content"></div>
     </div>
 
     <!-- ── Page 1: Cover ──────────────────────────────────────────── -->
@@ -331,11 +336,6 @@
     <!-- ── Page 4: Roof Health Report (Condition) ───────────────────────────────── -->
     <div id="page-report" class="page" style="display:none">
       <div id="roof-health-content"></div>
-    </div>
-
-    <!-- ── Documents (job PDFs + generators) -- opened from the Customer hub ─────── -->
-    <div id="page-documents" class="page" style="display:none">
-      <div id="documents-content"></div>
     </div>
 
     <!-- ── Design Studio: photo of the house + G/B/B exterior overlay ── -->
@@ -696,16 +696,6 @@
 </div>
 
 <!-- ── Customer File modal ───────────────────────────────────────────── -->
-<div id="customer-file-modal" class="modal hidden" onclick="maybeCloseCustomerFile(event)">
-  <div class="modal-box cf-modal-box">
-    <div class="modal-header">
-      <h2>📁 Customer File</h2>
-      <button onclick="closeCustomerFile()" class="modal-close">×</button>
-    </div>
-    <div id="customer-file-body" class="cf-body"></div>
-  </div>
-</div>
-
 <!-- ── Print-only content ────────────────────────────────────────────── -->
 <div id="print-content"></div>
 
@@ -743,6 +733,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=180"></script>
+<script src="/estimate/static/app.js?v=181"></script>
 </body>
 </html>
