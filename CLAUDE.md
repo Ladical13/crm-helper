@@ -722,41 +722,57 @@ ordering is the fix.
   timeline records it and the rep decides. See the salescrm `_FUNNEL_STAGE` note.
 - Guarded by `tests/test_status.py` and `salescrm/tests/test_funnel.py`.
 
-### The Customer File — many estimates, one customer
+### The customer screen — many estimates, one customer
 
 A homeowner is rarely one estimate: the roof in spring, the siding in autumn,
-the re-quote after the adjuster comes back. Two screens share that job, and
-the split is deliberate:
+the re-quote after the adjuster comes back. **`renderClientPage` is where all
+of it lives** — one page carrying their details, their notes, every estimate
+they have (including the one on screen that has never been saved), the create
+form, their files and the document generators. The estimate tab strip sits
+behind a single **📝 Open Estimate →** button on it.
 
-- **The Documents door (`renderDocumentsPage`) is the hub.** Reached from the
-  Customer hub's 📁 door, it lists every estimate for the loaded customer —
-  click one to load it, rename any of them in place, and start a new one from
-  the form on the same page. The current estimate's attachments live below,
-  under *📎 Files*.
-- **The Customer File modal (`openCustomerFile(name)`) finds a customer.** It
-  carries the customer-level notes and a read-only estimate list, and hands
-  off with one **＋ New Estimate for X** button that loads their most recent
-  estimate and jumps to Documents. Reachable from the home search box, the ⋯
-  menu, the sidebar's 📁 button, and a `📁 N` badge on any dashboard/home row
-  whose customer has more than one.
+`openCustomer(name)` is how you get there, from the home search box, the ⋯
+menu, the sidebar's 👤 button, or a `📁 N` badge on any dashboard/home row
+whose customer has more than one.
 
 Tests: `tests/test_customer_file.py` (+ `customer_key_runner.js`), plus the
 header-badge/breakpoint guards in `tests/test_ui_wiring.py`.
 
-Creation used to live in the modal, and dropped the rep onto the same Customer
-hub a brand-new customer sees — "Not saved yet", the typed label rendered
-nowhere, nothing saying this was estimate #2 for someone who already had one.
-Moving it to Documents is what makes a second estimate *look* like a second
-estimate. Rules that keep it working:
+This was three surfaces before. The Customer hub was a waypoint with two
+doors; Documents was a page behind one of them; and a Customer File modal
+listed the same estimates a third time. The modal and the Documents page were
+two views of one question — *what does this customer have?* — and they had
+already disagreed: only one knew about an unsaved estimate, so opening the
+modal mid-estimate reported the customer had none. Rules that keep the merged
+version working:
 
 - **The current row is built from `S`, not from the fetched list.** An estimate
   that has never been saved has no id and is not in `/api/estimates` yet, so it
   would vanish from its own list — which was the whole bug. It renders first,
   marked current, and is not clickable (reloading yourself is a wasted request).
-- **`renderDocumentsPage()` stays synchronous.** It has 11 call sites, most of
-  them refresh-after-an-action (upload a file, delete one, generate a doc), and
-  none should pay for a network round-trip. `refreshDocCustData()` does the
-  fetch and is called only on navigation *into* the page, from `switchPage`.
+  `customerEstimateRows()` is the single builder; it splices the open estimate
+  in **only** for the customer it belongs to, since the screen is reachable for
+  any customer, and drops the fetched copy once saved so it is not listed twice.
+- **`switchPage('documents')` aliases to `'client'`.** Documents is not a page
+  any more, but the header badge, deep links and muscle memory all still say
+  it. `#documents-content` **moved** into `#page-client` rather than being
+  rebuilt, so the 11 in-page callers of `renderDocumentsPage()` — upload a
+  file, delete one, generate a doc — keep working untouched.
+- **`renderDocumentsPage()` stays synchronous** for that same reason: most of
+  those callers are refresh-after-an-action and none should pay for a network
+  round-trip. `refreshDocCustData()` does the fetch, only on navigation *into*
+  the screen, from `switchPage`.
+- **`docCreateEstimate()` re-lands on the customer screen deliberately.** Two
+  things move underfoot: `newEstimateAction()` renders that screen from a
+  BLANK estimate *before* the name is copied across (so it reads "No estimates
+  yet" for a customer who has several), and `setEstimateType('commercial')`
+  navigates to Scope on purpose. Assuming it never moved put a rep on Scope
+  looking at an empty customer.
+- **Opening a customer asks before binning an unsaved new estimate.** Getting
+  there means loading one of their estimates, and every other route into a
+  different estimate is a control the rep clicked deliberately — a `📁` badge
+  on a dashboard row does not read like "discard my draft". Already inside
+  that customer? It navigates instead of reloading.
 - **The estimate name is editable after the fact** (`renameEstimate`). It was
   write-once for a long time even though `PATCH /api/estimates/<id>/label`
   existed and worked — the front end simply never called it. Renaming a saved
