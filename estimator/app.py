@@ -12369,6 +12369,32 @@ _ROOF_ASPHALT_COLORS = [
     {"name": "Colonial Slate",  "hex": "#3c4046"},
     {"name": "Burnt Sienna",    "hex": "#6b3a2a"},
 ]
+_IKO_NORDIC_COLORS = [
+    # Representative values sampled from the photographic shingle swatches
+    # in IKO brochure MR9L350 (02/26). A physical shingle/roof remains the
+    # authority because each color is an enhanced blend, not a flat paint.
+    {"name": "Olde Style Weatherwood", "hex": "#524d46"},
+    {"name": "Summit Grey",            "hex": "#4f5251"},
+    {"name": "Granite Black",          "hex": "#2f3333"},
+    {"name": "Driftshake",             "hex": "#4f493f"},
+    {"name": "Shadow Brown",           "hex": "#534740"},
+    {"name": "Glacier",                "hex": "#34332c"},
+]
+_IKO_NORDIC_LEGACY_BULLETS = [
+    "IKO Nordic impact-resistant shingles",
+    "Class 4 impact rating — the highest hail rating there is",
+    "Built for extreme cold and freeze-thaw cycles",
+    "May qualify for a homeowners insurance premium discount",
+    "Limited lifetime manufacturer warranty",
+]
+_IKO_NORDIC_BULLETS = [
+    "IKO Nordic polymer-modified asphalt shingles",
+    "Class 4 impact resistance rating; hail damage is not covered by the limited warranty",
+    "ArmourZone 1 1/4-inch reinforced woven band expands the nailing surface",
+    "130 mph limited wind warranty",
+    "Limited Lifetime warranty with 15 years of Iron Clad Protection",
+    "10-year limited blue-green algae resistance warranty",
+]
 _ROOF_METAL_COLORS = [
     {"name": "Charcoal Gray", "hex": "#2f2d2b"},
     {"name": "Matte Black",   "hex": "#191919"},
@@ -12398,8 +12424,8 @@ ROOFING_CATALOG_SEED = [
      "bullets": ["CertainTeed Northgate SBS-modified impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "May qualify for a homeowners insurance premium discount", "Lifetime limited manufacturer warranty", "130 mph wind rating"],
      "colors": _ROOF_ASPHALT_COLORS},
     {"id": "m_iko_nordic", "name": "IKO Nordic (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste",
-     "bullets": ["IKO Nordic impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "Built for extreme cold and freeze-thaw cycles", "May qualify for a homeowners insurance premium discount", "Limited lifetime manufacturer warranty"],
-     "colors": _ROOF_ASPHALT_COLORS},
+     "bullets": _IKO_NORDIC_BULLETS,
+     "colors": _IKO_NORDIC_COLORS},
     {"id": "m_edco", "name": "EDCO Steel Shingle", "unit": "SQ", "cost": 300, "measure": "squares_waste",
      "bullets": ["EDCO steel shingles — architectural shingle look in real steel", "Class 4 impact rating, will not crack or lose granules to hail", "Limited lifetime warranty with hail damage coverage", "Baked-on finish that will not chip, peel, or fade"],
      "colors": _ROOF_METAL_COLORS},
@@ -12455,7 +12481,7 @@ ROOFING_BUNDLES_SEED = [
      "extra_features": _RS_EXTRA},
     {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle — hail-country durability, may qualify for an insurance discount.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Class 4 impact-resistant shingle built for extreme cold and hail.",
+    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Polymer-modified Class 4 impact-resistant shingle with ArmourZone reinforcement and a 130 mph limited wind warranty.",
      "extra_features": _RS_EXTRA},
     {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "EDCO steel shingles — the look of architectural shingles in Class 4 impact-rated steel.",
      "extra_features": _RS_EXTRA},
@@ -13477,6 +13503,9 @@ EXTERIOR_PATTERN_IDS = {'', 'lap', 'bnb', 'board_batten', 'shake', 'panel',
                         'vertical', 'nickel_gap'}
 _EXTERIOR_PATTERN_ALIASES = {'board_batten': 'bnb', 'vertical': 'panel'}
 _LP_EXPERTFINISH_EXTERIOR_MIGRATION = 'lp-expertfinish-lpef01884-2025'
+_IKO_NORDIC_EXTERIOR_MIGRATION = 'iko-nordic-mr9l350-2026'
+_IKO_NORDIC_LEGACY_DESCRIPTION = (
+    'Class 4 impact-resistant shingle built for extreme cold and hail.')
 
 
 def _exterior_text(value, limit):
@@ -13644,6 +13673,69 @@ def _migrate_lp_expertfinish_visuals(pb):
     pb['exterior_catalog'] = _normalize_exterior_catalog(
         kept + _lp_expertfinish_exterior_rows())
     versions.append(_LP_EXPERTFINISH_EXTERIOR_MIGRATION)
+    pb['exterior_catalog_seed_versions'] = versions
+
+
+def _iko_nordic_exterior_rows():
+    """The six enhanced color blends shown in IKO brochure MR9L350."""
+    return _normalize_exterior_catalog([
+        {
+            'category': 'roof', 'brand': 'IKO', 'product': 'IKO Nordic',
+            'style': 'Performance Shingle',
+            'color': color['name'], 'hex': color['hex'],
+            'price_book_bundle': 'b_iko_nordic', 'active': True,
+        }
+        for color in _IKO_NORDIC_COLORS
+    ])
+
+
+def _migrate_iko_nordic_visuals(pb):
+    """Replace only shipped Nordic placeholders with brochure MR9L350 data.
+
+    Manager prices, custom rows, and edited product copy survive. The version
+    marker also makes later manager deletion of an official swatch sticky.
+    """
+    versions = pb.get('exterior_catalog_seed_versions')
+    if not isinstance(versions, list):
+        versions = []
+    if _IKO_NORDIC_EXTERIOR_MIGRATION in versions:
+        return
+
+    live_product = next((p for p in pb.get('roofing_catalog') or []
+                         if isinstance(p, dict) and p.get('id') == 'm_iko_nordic'), None)
+    if live_product is not None:
+        if live_product.get('colors') == _ROOF_ASPHALT_COLORS:
+            live_product['colors'] = copy.deepcopy(_IKO_NORDIC_COLORS)
+        if live_product.get('bullets') == _IKO_NORDIC_LEGACY_BULLETS:
+            live_product['bullets'] = copy.deepcopy(_IKO_NORDIC_BULLETS)
+
+    live_bundle = next((b for b in pb.get('roofing_bundles') or []
+                        if isinstance(b, dict) and b.get('id') == 'b_iko_nordic'), None)
+    if (live_bundle is not None
+            and live_bundle.get('description') == _IKO_NORDIC_LEGACY_DESCRIPTION):
+        live_bundle['description'] = next(
+            b['description'] for b in ROOFING_BUNDLES_SEED
+            if b['id'] == 'b_iko_nordic')
+
+    legacy_colors = {
+        c['name'].casefold()
+        for c in _ROOF_ASPHALT_COLORS + _IKO_NORDIC_COLORS
+    }
+    kept = []
+    for row in _normalize_exterior_catalog(pb.get('exterior_catalog') or []):
+        is_legacy = (
+            row['category'] == 'roof'
+            and row['product'].casefold() == 'iko nordic'
+            and row['price_book_bundle'] == 'b_iko_nordic'
+            and not row['brand']
+            and not row['style']
+            and row['color'].casefold() in legacy_colors
+        )
+        if not is_legacy:
+            kept.append(row)
+    pb['exterior_catalog'] = _normalize_exterior_catalog(
+        kept + _iko_nordic_exterior_rows())
+    versions.append(_IKO_NORDIC_EXTERIOR_MIGRATION)
     pb['exterior_catalog_seed_versions'] = versions
 
 
@@ -13819,6 +13911,7 @@ def _ensure_bundle_catalogs(pb):
     if 'exterior_catalog' not in pb:
         pb['exterior_catalog'] = _legacy_exterior_catalog(pb)
     _migrate_lp_expertfinish_visuals(pb)
+    _migrate_iko_nordic_visuals(pb)
     return pb
 
 

@@ -312,6 +312,96 @@ def test_lp_expertfinish_migrates_legacy_visuals_without_touching_price_or_custo
                    for r in pb['exterior_catalog'])
 
 
+def test_iko_nordic_seed_matches_the_2026_brochure(A):
+    product = next(p for p in A.ROOFING_CATALOG_SEED
+                   if p['id'] == 'm_iko_nordic')
+    assert [c['name'] for c in product['colors']] == [
+        'Olde Style Weatherwood', 'Summit Grey', 'Granite Black',
+        'Driftshake', 'Shadow Brown', 'Glacier',
+    ]
+    assert product['colors'][0]['hex'] == '#524d46'
+    assert product['colors'][-1]['hex'] == '#34332c'
+    copy_text = ' '.join(product['bullets'])
+    assert 'polymer-modified asphalt' in copy_text
+    assert 'ArmourZone' in copy_text
+    assert '130 mph limited wind warranty' in copy_text
+    assert '15 years of Iron Clad Protection' in copy_text
+    assert '10-year limited blue-green algae resistance warranty' in copy_text
+    assert 'freeze-thaw' not in copy_text
+
+
+def test_new_pricebook_exposes_one_official_iko_nordic_palette(client):
+    rows = client.get('/api/pricebook').get_json()['exterior_catalog']
+    iko = [r for r in rows if r['price_book_bundle'] == 'b_iko_nordic']
+    assert len(iko) == 6
+    assert {r['brand'] for r in iko} == {'IKO'}
+    assert {r['style'] for r in iko} == {'Performance Shingle'}
+
+
+def test_iko_nordic_migrates_legacy_visuals_without_touching_price_or_custom_rows(A):
+    legacy_product = {
+        'id': 'm_iko_nordic', 'name': 'IKO Nordic (Impact-Resistant Shingle)',
+        'unit': 'SQ', 'cost': 999.99,
+        'colors': copy.deepcopy(A._ROOF_ASPHALT_COLORS),
+        'bullets': copy.deepcopy(A._IKO_NORDIC_LEGACY_BULLETS),
+    }
+    legacy_rows = [
+        {
+            'category': 'roof', 'brand': '', 'product': 'IKO Nordic',
+            'color': color['name'], 'hex': color['hex'],
+            'price_book_bundle': 'b_iko_nordic',
+        }
+        for color in A._ROOF_ASPHALT_COLORS
+    ]
+    custom = {
+        'category': 'roof', 'brand': 'IKO', 'product': 'IKO Nordic',
+        'style': 'Custom Blend', 'color': 'Project One Blend',
+        'hex': '#123456', 'price_book_bundle': 'b_iko_nordic',
+    }
+    pb = {
+        'roofing_catalog': [legacy_product],
+        'roofing_bundles': [{
+            'id': 'b_iko_nordic', 'name': 'IKO Nordic',
+            'product_ids': ['m_iko_nordic'],
+            'description': A._IKO_NORDIC_LEGACY_DESCRIPTION,
+        }],
+        'roofing_tier_defaults': {},
+        'exterior_catalog': A._normalize_exterior_catalog(legacy_rows + [custom]),
+    }
+
+    A._ensure_bundle_catalogs(pb)
+
+    live = next(p for p in pb['roofing_catalog'] if p['id'] == 'm_iko_nordic')
+    assert live['cost'] == 999.99
+    assert live['colors'] == A._IKO_NORDIC_COLORS
+    assert live['bullets'] == A._IKO_NORDIC_BULLETS
+    bundle = next(b for b in pb['roofing_bundles'] if b['id'] == 'b_iko_nordic')
+    assert 'ArmourZone' in bundle['description']
+    official = [r for r in pb['exterior_catalog']
+                if r['product'] == 'IKO Nordic'
+                and r['style'] == 'Performance Shingle']
+    assert len(official) == 6
+    assert {r['brand'] for r in official} == {'IKO'}
+    assert not any(r['product'] == 'IKO Nordic' and not r['style']
+                   and r['color'] == 'Weathered Wood'
+                   for r in pb['exterior_catalog'])
+    assert any(r['style'] == 'Custom Blend'
+               and r['color'] == 'Project One Blend'
+               and r['hex'] == '#123456'
+               for r in pb['exterior_catalog'])
+    assert A._IKO_NORDIC_EXTERIOR_MIGRATION in (
+        pb['exterior_catalog_seed_versions'])
+
+    # A saved version marker means manager deletions remain intentional.
+    pb['exterior_catalog'] = [r for r in pb['exterior_catalog']
+                              if not (r['style'] == 'Performance Shingle'
+                                      and r['color'] == 'Glacier')]
+    A._ensure_bundle_catalogs(pb)
+    assert not any(r['style'] == 'Performance Shingle'
+                   and r['color'] == 'Glacier'
+                   for r in pb['exterior_catalog'])
+
+
 def test_manager_can_replace_and_import_exterior_catalog(client, A):
     original = client.get('/api/exterior-catalog').get_json()['entries']
     try:

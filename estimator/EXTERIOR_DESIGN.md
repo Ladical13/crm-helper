@@ -91,6 +91,27 @@ match, and that not every product is available in every color. The tool retains
 the physical-sample warning. This source updates visual options and product
 copy only; it does not change manager pricing or quantities.
 
+### IKO Nordic 2026
+
+The seeded IKO Nordic visual catalog is based on IKO homeowner brochure
+MR9L350 (02/26). It contains the brochure's six enhanced color blends: Olde
+Style Weatherwood, Summit Grey, Granite Black, Driftshake, Shadow Brown, and
+Glacier. The representative hex values are sampled from the brochure's
+photographic shingle swatches; they cannot reproduce the granule mix, blend
+range, installation pattern, lighting, or sunlight on a real roof. IKO directs
+customers to review several full-size shingles and an actual installation
+before making a final selection, and notes that product/color availability
+varies by region.
+
+Product copy now reflects the supplied sheet: polymer-modified asphalt,
+ArmourZone reinforced nailing surface, a Class 4 impact resistance rating,
+130 mph limited wind warranty, Limited Lifetime warranty with 15 years of Iron
+Clad Protection, and a 10-year limited blue-green algae resistance warranty.
+The Class 4 rating may help a homeowner obtain an insurance-premium reduction
+where available, but it is not a guarantee of impact resistance and hail damage
+is not covered by the limited warranty. This update does not change manager
+pricing, quantities, or the quoted roofing bundle.
+
 The door menu now uses ProVia **Signet**, **Ascent**, and **Legacy**, with a
 subset of named ProVia paint finishes. Hex swatches are approximations. The
 door preview recolors the existing door: it does not render exact panel,

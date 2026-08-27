@@ -48,11 +48,11 @@ def test_bundle_colors_for_tier_resolves_iko_and_certainteed(A):
     iko = A._bundle_colors_for_tier(pb, est, 'roofing', 'good')
     ct  = A._bundle_colors_for_tier(pb, est, 'roofing', 'better')
 
-    # Both seeded palettes are non-empty and share the ASPHALT set today,
-    # but the resolution path itself must run cleanly for both bundles.
+    # Both seeded palettes are non-empty, and IKO resolves its manufacturer
+    # colors rather than inheriting CertainTeed's generic asphalt placeholders.
     assert iko and ct
-    # The core swatches ship on both product lines.
-    assert 'Weathered Wood' in iko
+    assert iko == ['Olde Style Weatherwood', 'Summit Grey', 'Granite Black',
+                   'Driftshake', 'Shadow Brown', 'Glacier']
     assert 'Weathered Wood' in ct
 
 
