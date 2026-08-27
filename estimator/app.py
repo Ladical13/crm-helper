@@ -12506,12 +12506,41 @@ _SIDING_STEEL_COLORS = [
     {"name": "Slate",        "hex": "#4a4d4f"},
     {"name": "Regal Red",    "hex": "#7a1f26"},
 ]
+# LP SmartSide ExpertFinish sales sheet LPEF01884 (01/25), supplied by the
+# company on 2026-08-27. These RGB values are sampled from the solid digital
+# swatches in that PDF; LP itself labels the displayed colors representative,
+# not an exact physical match. Do not reuse this palette for field-painted LP.
+_LP_EXPERTFINISH_COLORS = [
+    {"name": "Snowscape White",  "hex": "#f2f1f1"},
+    {"name": "Sand Dunes",       "hex": "#ece6d8"},
+    {"name": "Desert Stone",     "hex": "#e8e4db"},
+    {"name": "Quarry Gray",      "hex": "#c0c2b8"},
+    {"name": "Prairie Clay",     "hex": "#bfbaa4"},
+    {"name": "Terra Brown",      "hex": "#b6a892"},
+    {"name": "Harvest Honey",    "hex": "#c4a87e"},
+    {"name": "Timberland Suede", "hex": "#8f8673"},
+    {"name": "Garden Sage",      "hex": "#717864"},
+    {"name": "Redwood Red",      "hex": "#794946"},
+    {"name": "Tundra Gray",      "hex": "#8d8681"},
+    {"name": "Summit Blue",      "hex": "#859298"},
+    {"name": "Rapids Blue",      "hex": "#42647d"},
+    {"name": "Cavern Steel",     "hex": "#6b6e71"},
+    {"name": "Midnight Shadow",  "hex": "#505757"},
+    {"name": "Abyss Black",      "hex": "#2b3131"},
+]
 _STYLE_LAP   = {"id": "s_lap",   "name": "Lap Siding",     "pattern_id": "lap"}
 _STYLE_BNB   = {"id": "s_bnb",   "name": "Board & Batten", "pattern_id": "bnb"}
 _STYLE_SHAKE = {"id": "s_shake", "name": "Shingle-Style",  "pattern_id": "shake"}
 _STYLE_PANEL = {"id": "s_panel", "name": "Vertical Panel", "pattern_id": "panel"}
 _HARDIE_STYLES = [_STYLE_LAP, _STYLE_BNB, _STYLE_SHAKE, _STYLE_PANEL]
-_LP_STYLES     = [_STYLE_LAP, _STYLE_BNB, _STYLE_SHAKE]
+_LP_STANDARD_STYLES = [_STYLE_LAP, _STYLE_BNB, _STYLE_SHAKE]
+_LP_EXPERTFINISH_STYLES = [
+    {"id": "s_lp_lap_joint", "name": "Lap Joint Siding", "pattern_id": "lap"},
+    {"id": "s_lp_shakes", "name": "Shakes", "pattern_id": "shake"},
+    {"id": "s_lp_panel", "name": "Panel - NGSE", "pattern_id": "panel"},
+    {"id": "s_lp_nickel_gap", "name": "Nickel Gap", "pattern_id": "nickel_gap"},
+    {"id": "s_lp_vertical", "name": "Vertical Siding", "pattern_id": "panel"},
+]
 _EDCO_STYLES   = [_STYLE_LAP, _STYLE_PANEL]
 _VINYL_STYLES  = [_STYLE_LAP, _STYLE_BNB]
 SIDING_CATALOG_SEED = [
@@ -12522,13 +12551,14 @@ SIDING_CATALOG_SEED = [
                  "Field-painted in the color of your choice",
                  "SmartGuard-treated engineered wood resists rot, hail, and termites",
                  "5/50 year limited manufacturer warranty"],
-     "colors": _SIDING_NEUTRAL_COLORS, "styles": _LP_STYLES},
+     "colors": _SIDING_NEUTRAL_COLORS, "styles": _LP_STANDARD_STYLES},
     {"id": "s_lp_expert", "name": "LP SmartSide Expert Finish 8\" Lap", "group": "LP SmartSide", "unit": "SQ", "cost": 245.14, "measure": "siding_sq_waste",
-     "bullets": ["LP SmartSide Expert Finish engineered wood lap, 8\" exposure",
+     "bullets": ["LP SmartSide ExpertFinish Lap Joint engineered wood siding, 8\" nominal width",
                  "Pre-finished at the factory — no field painting required",
+                 "Available in 16 ExpertFinish colors and cedar or brushed-smooth textures",
                  "SmartGuard-treated engineered wood resists rot, hail, and termites",
-                 "5/50 year limited manufacturer warranty"],
-     "colors": _SIDING_NEUTRAL_COLORS, "styles": _LP_STYLES},
+                 "5/15/50 prorated limited warranty — 5-year labor and materials, 15-year finish, 50-year substrate"],
+     "colors": _LP_EXPERTFINISH_COLORS, "styles": _LP_EXPERTFINISH_STYLES},
     {"id": "sa_lp_standard_trim", "name": "LP SmartSide Trim 5/4×6", "group": "LP SmartSide", "unit": "LF", "cost": 1.83, "measure": "siding_trim",
      "bullets": ["LP SmartSide trim at corners, windows, and doors — painted to match"]},
     {"id": "sa_lp_expert_trim", "name": "LP Expert Finish Trim 5/4×5.5", "group": "LP SmartSide", "unit": "LF", "cost": 2.33, "measure": "siding_trim",
@@ -13443,7 +13473,10 @@ EXTERIOR_DOOR_OPTIONS_SEED = [
 # bundle; choosing a look never changes that bundle or its price.
 EXTERIOR_CATALOG_CATEGORIES = {'roof', 'siding', 'door', 'paint'}
 EXTERIOR_CATALOG_SURFACES = {'siding', 'door'}
-EXTERIOR_PATTERN_IDS = {'', 'lap', 'board_batten', 'shake', 'vertical'}
+EXTERIOR_PATTERN_IDS = {'', 'lap', 'bnb', 'board_batten', 'shake', 'panel',
+                        'vertical', 'nickel_gap'}
+_EXTERIOR_PATTERN_ALIASES = {'board_batten': 'bnb', 'vertical': 'panel'}
+_LP_EXPERTFINISH_EXTERIOR_MIGRATION = 'lp-expertfinish-lpef01884-2025'
 
 
 def _exterior_text(value, limit):
@@ -13462,14 +13495,16 @@ def _exterior_bool(value, default=True):
 def _exterior_pattern(style, supplied=''):
     supplied = _exterior_text(supplied, 32).lower()
     if supplied in EXTERIOR_PATTERN_IDS:
-        return supplied
+        return _EXTERIOR_PATTERN_ALIASES.get(supplied, supplied)
     style_l = _exterior_text(style, 80).lower()
+    if 'nickel' in style_l and 'gap' in style_l:
+        return 'nickel_gap'
     if 'board' in style_l and 'batten' in style_l:
-        return 'board_batten'
+        return 'bnb'
     if 'shake' in style_l or 'shingle' in style_l:
         return 'shake'
     if 'vertical' in style_l or 'panel' in style_l:
-        return 'vertical'
+        return 'panel'
     if 'lap' in style_l or 'clapboard' in style_l:
         return 'lap'
     return ''
@@ -13555,6 +13590,61 @@ def _normalize_exterior_catalog(rows):
         seen.add(key)
         normalized.append(entry)
     return normalized
+
+
+def _lp_expertfinish_exterior_rows():
+    """The 16 colors x five wall profiles shown in LP sheet LPEF01884."""
+    return _normalize_exterior_catalog([
+        {
+            'category': 'siding', 'brand': 'LP SmartSide',
+            'product': 'LP SmartSide ExpertFinish',
+            'style': style['name'], 'pattern_id': style['pattern_id'],
+            'color': color['name'], 'hex': color['hex'],
+            'price_book_bundle': 'b_lp_expert', 'active': True,
+        }
+        for style in _LP_EXPERTFINISH_STYLES
+        for color in _LP_EXPERTFINISH_COLORS
+    ])
+
+
+def _migrate_lp_expertfinish_visuals(pb):
+    """Replace only the shipped generic LP placeholders with the 2025 sheet.
+
+    A version marker makes manager deletions sticky after the updated book is
+    saved. Custom LP rows and custom product metadata survive: only values that
+    still exactly match our old seed are eligible for replacement.
+    """
+    versions = pb.get('exterior_catalog_seed_versions')
+    if not isinstance(versions, list):
+        versions = []
+    if _LP_EXPERTFINISH_EXTERIOR_MIGRATION in versions:
+        return
+
+    live_product = next((p for p in pb.get('siding_catalog') or []
+                         if isinstance(p, dict) and p.get('id') == 's_lp_expert'), None)
+    if live_product is not None:
+        if live_product.get('colors') == _SIDING_NEUTRAL_COLORS:
+            live_product['colors'] = copy.deepcopy(_LP_EXPERTFINISH_COLORS)
+        if live_product.get('styles') == _LP_STANDARD_STYLES:
+            live_product['styles'] = copy.deepcopy(_LP_EXPERTFINISH_STYLES)
+
+    legacy_colors = {c['name'].casefold() for c in _SIDING_NEUTRAL_COLORS}
+    legacy_products = {'lp smartside expert finish', 'lp smartside expertfinish'}
+    kept = []
+    for row in _normalize_exterior_catalog(pb.get('exterior_catalog') or []):
+        is_legacy = (
+            row['category'] == 'siding'
+            and row['brand'].casefold() == 'lp smartside'
+            and row['product'].casefold() in legacy_products
+            and row['price_book_bundle'] == 'b_lp_expert'
+            and row['color'].casefold() in legacy_colors
+        )
+        if not is_legacy:
+            kept.append(row)
+    pb['exterior_catalog'] = _normalize_exterior_catalog(
+        kept + _lp_expertfinish_exterior_rows())
+    versions.append(_LP_EXPERTFINISH_EXTERIOR_MIGRATION)
+    pb['exterior_catalog_seed_versions'] = versions
 
 
 def _legacy_exterior_catalog(pb):
@@ -13728,6 +13818,7 @@ def _ensure_bundle_catalogs(pb):
     # empty, just like deleted Price Book bundles stay deleted.
     if 'exterior_catalog' not in pb:
         pb['exterior_catalog'] = _legacy_exterior_catalog(pb)
+    _migrate_lp_expertfinish_visuals(pb)
     return pb
 
 

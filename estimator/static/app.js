@@ -13786,6 +13786,13 @@ const _SIDING_PATTERN_SVG = {
     <line x1='0' y1='48' x2='64' y2='48' stroke='rgb(60,60,60)' stroke-width='1'/>
     <line x1='0' y1='60' x2='64' y2='60' stroke='rgb(60,60,60)' stroke-width='1'/>
   </svg>`,
+  nickel_gap: `<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'>
+    <rect width='64' height='64' fill='white'/>
+    <rect x='0' y='14' width='64' height='3' fill='rgb(48,48,48)'/>
+    <rect x='0' y='30' width='64' height='3' fill='rgb(48,48,48)'/>
+    <rect x='0' y='46' width='64' height='3' fill='rgb(48,48,48)'/>
+    <rect x='0' y='62' width='64' height='2' fill='rgb(48,48,48)'/>
+  </svg>`,
   bnb: `<svg xmlns='http://www.w3.org/2000/svg' width='96' height='64'>
     <rect width='96' height='64' fill='white'/>
     <rect x='0'  y='0' width='4' height='64' fill='rgb(50,50,50)'/>

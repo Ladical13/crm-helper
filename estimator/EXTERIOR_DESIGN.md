@@ -76,6 +76,21 @@ one exists. Exploring another product is a design choice only: it does **not**
 change quantities, pricing, or the quoted bundle. Update Products/Pricing
 separately after the customer chooses a look.
 
+### LP SmartSide ExpertFinish 2025
+
+The seeded LP ExpertFinish visual catalog is based on LP sales sheet LPEF01884
+(01/25). It contains the sheet's 16 named colors and the five wall profiles that
+can be represented in Design Studio: Lap Joint Siding, Shakes, Panel - NGSE,
+Nickel Gap, and Vertical Siding. Trim, soffit, outside corners, J-blocks, and
+mini-split blocks are accessories rather than separate visual profiles; fascia
+shares the selected siding color.
+
+The hex values are sampled from the solid digital swatches in the supplied PDF.
+LP states that displayed colors are representative and may not be an exact
+match, and that not every product is available in every color. The tool retains
+the physical-sample warning. This source updates visual options and product
+copy only; it does not change manager pricing or quantities.
+
 The door menu now uses ProVia **Signet**, **Ascent**, and **Legacy**, with a
 subset of named ProVia paint finishes. Hex swatches are approximations. The
 door preview recolors the existing door: it does not render exact panel,

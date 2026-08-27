@@ -21,6 +21,7 @@ Invariants worth pinning:
     at /uploads/.
 """
 import base64
+import copy
 import io
 import json
 import os
@@ -223,6 +224,94 @@ def test_pricebook_seeds_the_manager_exterior_catalog(client):
     assert all(repr(row.get('hex', '')).startswith("'#") and len(row['hex']) == 7 for row in rows)
 
 
+def test_lp_expertfinish_seed_matches_the_2025_sales_sheet(A):
+    expected_colors = [
+        'Snowscape White', 'Sand Dunes', 'Desert Stone', 'Quarry Gray',
+        'Prairie Clay', 'Terra Brown', 'Harvest Honey', 'Timberland Suede',
+        'Garden Sage', 'Redwood Red', 'Tundra Gray', 'Summit Blue',
+        'Rapids Blue', 'Cavern Steel', 'Midnight Shadow', 'Abyss Black',
+    ]
+    expected_styles = [
+        'Lap Joint Siding', 'Shakes', 'Panel - NGSE', 'Nickel Gap',
+        'Vertical Siding',
+    ]
+    product = next(p for p in A.SIDING_CATALOG_SEED if p['id'] == 's_lp_expert')
+
+    assert [c['name'] for c in product['colors']] == expected_colors
+    assert product['colors'][0]['hex'] == '#f2f1f1'
+    assert product['colors'][-1]['hex'] == '#2b3131'
+    assert [s['name'] for s in product['styles']] == expected_styles
+    assert {s['pattern_id'] for s in product['styles']} == {
+        'lap', 'shake', 'panel', 'nickel_gap'}
+    assert '5/15/50' in ' '.join(product['bullets'])
+
+
+def test_lp_expertfinish_migrates_legacy_visuals_without_touching_price_or_custom_rows(A):
+    legacy_product = {
+        'id': 's_lp_expert', 'name': 'LP SmartSide Expert Finish 8" Lap',
+        'unit': 'SQ', 'cost': 999.99,
+        'colors': copy.deepcopy(A._SIDING_NEUTRAL_COLORS),
+        'styles': copy.deepcopy(A._LP_STANDARD_STYLES),
+    }
+    legacy_rows = [
+        {
+            'category': 'siding', 'brand': 'LP SmartSide',
+            'product': 'LP SmartSide Expert Finish', 'style': style['name'],
+            'pattern_id': style['pattern_id'], 'color': color['name'],
+            'hex': color['hex'], 'price_book_bundle': 'b_lp_expert',
+        }
+        for style in A._LP_STANDARD_STYLES
+        for color in A._SIDING_NEUTRAL_COLORS
+    ]
+    custom = {
+        'category': 'siding', 'brand': 'LP SmartSide',
+        'product': 'LP SmartSide Expert Finish', 'style': 'Custom Profile',
+        'color': 'Project One Blue', 'hex': '#123456',
+        'price_book_bundle': 'b_lp_expert',
+    }
+    pb = {
+        'siding_catalog': [legacy_product],
+        'siding_bundles': [{
+            'id': 'b_lp_expert', 'name': 'LP SmartSide Expert Finish',
+            'product_ids': ['s_lp_expert'],
+        }],
+        'siding_tier_defaults': {},
+        'exterior_catalog': A._normalize_exterior_catalog(legacy_rows + [custom]),
+    }
+
+    A._ensure_bundle_catalogs(pb)
+
+    live = next(p for p in pb['siding_catalog'] if p['id'] == 's_lp_expert')
+    assert live['cost'] == 999.99
+    assert [c['name'] for c in live['colors']] == [
+        c['name'] for c in A._LP_EXPERTFINISH_COLORS]
+    assert [s['name'] for s in live['styles']] == [
+        s['name'] for s in A._LP_EXPERTFINISH_STYLES]
+    official = [r for r in pb['exterior_catalog']
+                if r['product'] == 'LP SmartSide ExpertFinish']
+    assert len(official) == 16 * 5
+    assert {r['pattern_id'] for r in official} == {
+        'lap', 'shake', 'panel', 'nickel_gap'}
+    assert not any(r['product'] == 'LP SmartSide Expert Finish'
+                   and r['color'] == 'Arctic White'
+                   for r in pb['exterior_catalog'])
+    assert any(r['color'] == 'Project One Blue' and r['hex'] == '#123456'
+               for r in pb['exterior_catalog'])
+    assert A._LP_EXPERTFINISH_EXTERIOR_MIGRATION in (
+        pb['exterior_catalog_seed_versions'])
+
+    # Once the version marker is saved, a manager may delete a seeded row and
+    # it stays deleted on subsequent reads.
+    pb['exterior_catalog'] = [r for r in pb['exterior_catalog']
+                              if not (r['product'] == 'LP SmartSide ExpertFinish'
+                                      and r['style'] == 'Shakes'
+                                      and r['color'] == 'Abyss Black')]
+    A._ensure_bundle_catalogs(pb)
+    assert not any(r['product'] == 'LP SmartSide ExpertFinish'
+                   and r['style'] == 'Shakes' and r['color'] == 'Abyss Black'
+                   for r in pb['exterior_catalog'])
+
+
 def test_manager_can_replace_and_import_exterior_catalog(client, A):
     original = client.get('/api/exterior-catalog').get_json()['entries']
     try:
@@ -284,6 +373,7 @@ def test_exterior_catalog_template_and_frontend_wiring(client):
                 encoding='utf-8').read()
     assert 'function exParseCsv' in js
     assert "fetch('/api/exterior-catalog/import'" in js
+    assert 'nickel_gap:' in js
     assert 'function _vzExteriorGroups' in js
     assert 'exterior-catalog-modal' in html and 'openExteriorCatalog()' in html
 
