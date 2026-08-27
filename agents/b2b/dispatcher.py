@@ -32,6 +32,22 @@ def _now():
     return config.now_iso()
 
 
+def _pushed_this_month(rep):
+    """Leads this rep has actually had pushed since the 1st.
+
+    Counts live runs only. A dry run pushes nothing, so charging it against
+    the cap would let someone exhaust a rep's month by previewing it — the
+    same confusion that made a dry run read as 250 delivered leads.
+    """
+    month = _now()[:7]                          # 'YYYY-MM'
+    with config.get_cache_db() as db:
+        row = db.execute(
+            'SELECT COALESCE(SUM(leads_pushed), 0) AS n FROM agent_runs '
+            "WHERE agent = 'b2b' AND rep = ? AND COALESCE(dry_run, 0) = 0 "
+            'AND substr(started_at, 1, 7) = ?', (rep, month)).fetchone()
+    return int(row['n'] or 0)
+
+
 def _rep_config(rep):
     territories = config.load_territories()
     cfg = territories.get(rep)
@@ -142,6 +158,30 @@ def run(rep, *, segments=None, cities=None, per_city_limit=10,
         # gets a full pipeline; enrichment is a scoring boost, not a filter.
         candidates = enriched + list(all_rows[enrich_top_n:])
         manifest['enriched'] = len(enriched)
+
+        # 4b. Respect the rep's monthly cap.
+        #
+        # `monthly_lead_cap` was stored per rep, shown in the UI and editable
+        # through the API since the day territories shipped, and nothing had
+        # ever read it. It looked like a control and was not one. That was
+        # survivable while every source was free and bounded by how much open
+        # data exists; it is not survivable pointing a Perplexity-backed
+        # segment at a 400-lead run.
+        cap = int(cfg.get('monthly_lead_cap', 0) or 0)
+        if cap > 0 and not dry_run:
+            used = _pushed_this_month(rep)
+            remaining = max(0, cap - used)
+            manifest['monthly_cap'] = {'cap': cap, 'already_pushed': used,
+                                       'remaining': remaining}
+            if len(candidates) > remaining:
+                # candidates is already ranked, so the truncation keeps the
+                # best ones rather than whichever happened to be pulled first.
+                manifest['events'].append({
+                    'phase': 'cap', 'rep': rep, 'cap': cap, 'used': used,
+                    'dropped': len(candidates) - remaining,
+                    'note': f'monthly cap {cap} reached; kept the top '
+                            f'{remaining} of {len(candidates)}'})
+                candidates = candidates[:remaining]
 
         # 5. Push.
         push_results = {}

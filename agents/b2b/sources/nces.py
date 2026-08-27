@@ -147,3 +147,133 @@ def schools(city='', county='', state='CO', limit=None):
     if limit:
         return rows[:int(limit)]
     return rows
+
+
+# ── Districts ────────────────────────────────────────────────────────────────
+
+DISTRICT_API = ('https://educationdata.urban.org/api/v1/school-districts/ccd/'
+                'directory/{year}/')
+
+
+def districts(city='', county='', state='CO', limit=None):
+    """The districts that own roofs in this city — one card each.
+
+    A principal does not buy a roof; the district's facilities director does,
+    and one of them can be responsible for forty buildings. Pulling 116
+    schools for Northern Colorado produced 116 cold cards against 7 real
+    accounts, three of which held 99 of the schools.
+
+    So this rolls schools up by ``leaid`` and returns the district, carrying
+    the count and enrollment **of the schools inside the requested city** —
+    not the district's statewide totals, which would oversell a district that
+    only reaches a little way into our territory.
+
+    The district directory carries a real phone number for the administration
+    office, which is the number a rep should be calling anyway.
+    """
+    st = (state or 'CO').strip().upper()[:2]
+    schools_here = schools(city=city, county=county, state=st)
+    if not schools_here:
+        return []
+
+    # schools() drops its raw payload, so re-read the cache for the linkage.
+    # Note the URL here is the SCHOOL endpoint: this cache key holds schools,
+    # and handing it the district URL would fill the school cache with
+    # district rows the moment it was cold.
+    wanted = {}
+    body = None
+    for year in _YEARS:
+        body = _common.fetch_cached(f'nces_ccd_{st}_{year}.json',
+                                    API.format(year=year),
+                                    params={'state_location': st})
+        if body:
+            break
+    try:
+        rows_raw = (json.loads(body) or {}).get('results') or []
+    except (ValueError, TypeError):
+        return []
+
+    here = {(r.get('company'), r.get('city')) for r in schools_here}
+    for raw in rows_raw:
+        if not isinstance(raw, dict):
+            continue
+        name = _common.title(_common.clean(raw.get('school_name')))
+        if (name, _common.title(_common.clean(
+                _first(raw.get('city_location'), raw.get('city_mailing'))))) not in here:
+            continue
+        leaid = _common.clean(raw.get('leaid'))
+        if not leaid:
+            continue
+        agg = wanted.setdefault(leaid, {'schools': 0, 'students': 0})
+        agg['schools'] += 1
+        try:
+            agg['students'] += int(raw.get('enrollment') or 0)
+        except (TypeError, ValueError):
+            pass
+
+    if not wanted:
+        return []
+
+    dbody = None
+    for year in _YEARS:
+        dbody = _common.fetch_cached(f'nces_ccd_districts_{st}_{year}.json',
+                                     DISTRICT_API.format(year=year),
+                                     params={'state_location': st})
+        if dbody:
+            break
+    if not dbody:
+        return []
+    try:
+        districts_raw = (json.loads(dbody) or {}).get('results') or []
+    except ValueError:
+        return []
+
+    rows = []
+    for raw in districts_raw:
+        if not isinstance(raw, dict):
+            continue
+        leaid = _common.clean(raw.get('leaid'))
+        agg = wanted.get(leaid)
+        if not agg:
+            continue
+        address = _first(raw.get('street_location'), raw.get('street_mailing'))
+        if not address or _common.is_po_box(address):
+            continue
+        name = _district_name(raw.get('lea_name'))
+        if not name:
+            continue
+        phone = _common.clean(raw.get('phone'))
+        bits = [b for b in (
+            f'{agg["schools"]} school{"s" if agg["schools"] != 1 else ""} in '
+            f'{_common.title(city) or "territory"}',
+            f'{agg["students"]:,} students' if agg['students'] else '',
+            'ask for the facilities / operations director',
+        ) if b]
+        rows.append({
+            'company':    name,
+            'first_name': '',
+            'last_name':  '',
+            'phone':      phone,
+            'email':      '',
+            'website':    '',
+            'address':    _common.title(address),
+            'city':       _common.title(_first(raw.get('city_location'),
+                                               raw.get('city_mailing'))),
+            'state':      st,
+            'zip':        _first(raw.get('zip_location'),
+                                 raw.get('zip_mailing')).split('-')[0],
+            'source_ref': f'nces_district:{leaid}',
+            'license_no': leaid,
+            'hook':       _common.clip(' · '.join(bits), 180),
+            # Roofs under one signature is the whole reason this segment
+            # exists, so it outweighs everything except being reachable.
+            'icp_score':  (_common.base_icp_score(phone=phone, address=address)
+                           + min(agg['schools'], 4)),
+            '_schools':   agg['schools'],
+        })
+
+    rows.sort(key=lambda r: (-int(r['icp_score']), -int(r['_schools']),
+                             r['company']))
+    for r in rows:
+        r.pop('_schools', None)
+    return rows[:int(limit)] if limit else rows

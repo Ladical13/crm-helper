@@ -97,6 +97,10 @@ LEAD_TYPES = [
     {'key': 'church',            'label': 'Church',            'partner': False},
     {'key': 'school',            'label': 'School',            'partner': False},
     {'key': 'gc',                'label': 'General Contractor','partner': True},
+    # A principal does not buy a roof — the district facilities director does,
+    # and one of them can be responsible for forty buildings. Rolling schools
+    # up to their district turned 116 cold cards into 7 real accounts.
+    {'key': 'school_district',   'label': 'School District',   'partner': False},
 ]
 LEAD_TYPE_KEYS = [t['key'] for t in LEAD_TYPES]
 PARTNER_TYPES  = [t['key'] for t in LEAD_TYPES if t['partner']]

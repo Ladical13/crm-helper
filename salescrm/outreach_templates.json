@@ -16,9 +16,7 @@
     "Editing this file needs a process restart (loaded at import, like",
     "cadences.json and playbook.json)."
   ],
-
   "signature": "{rep_name}\nProject One Roofing\nprojectoneroofingcolorado.com",
-
   "banned_phrases": [
     "just wanted to follow up",
     "just checking in",
@@ -29,7 +27,6 @@
     "reaching out to see if",
     "per my last email"
   ],
-
   "templates": {
     "hoa": {
       "first": {
@@ -45,7 +42,6 @@
         "body": "{greeting}\n\nI'll stop emailing. If the board ever wants a straight answer on how much life is left in those roofs, my number's below and there's no charge for looking.\n\nGood luck with the season."
       }
     },
-
     "property_manager": {
       "first": {
         "subject": "Roof help across the {company} portfolio",
@@ -60,7 +56,6 @@
         "body": "{greeting}\n\nI'll leave you alone. If a roof ever goes sideways on one of your properties and you need someone out fast, my number's below.\n\nNo hard feelings either way."
       }
     },
-
     "realtor": {
       "first": {
         "subject": "Roof problems that kill closings",
@@ -75,7 +70,6 @@
         "body": "{greeting}\n\nLast note from me. If a roof ever threatens a closing and you need an answer the same week, my number's below.\n\nBest of luck out there."
       }
     },
-
     "insurance_agent": {
       "first": {
         "subject": "The roofer question your clients ask you",
@@ -90,7 +84,6 @@
         "body": "{greeting}\n\nI'll stop here. If your current roofer ever lets a client down, my number's below.\n\nGood luck this storm season."
       }
     },
-
     "adjuster": {
       "first": {
         "subject": "Roof inspections around {city}",
@@ -105,7 +98,6 @@
         "body": "{greeting}\n\nLast one from me. My number's below if a file ever needs a contractor who documents properly.\n\nAll the best."
       }
     },
-
     "referral_partner": {
       "first": {
         "subject": "Someone to send roof problems to",
@@ -120,64 +112,74 @@
         "body": "{greeting}\n\nI'll stop emailing. If a client ever needs a roof looked at around {city}, my number's below.\n\nTake care."
       }
     },
-
     "church": {
       "first": {
-        "subject": "Roof condition report for {company}",
-        "body": "{greeting}\n\nI work with churches around {city} on no-cost roof condition reports - the kind that helps a board plan for maintenance before it becomes a leak over the sanctuary.\n\n{research_hook}\n\n{storm_hook}\n\nWe'll walk the roof, photograph the trouble spots, and write up remaining life so you can plan a capital campaign or just budget honestly. No obligation.\n\nWould that be useful this year?"
+        "subject": "Roof help for {company}",
+        "body": "{greeting}\n\nI work with churches around {city} on roof repairs and replacements.\n\n{storm_hook}\n\nMost congregations we help are trying to make a roof last a few more years without wasting money on patching something that's finished. We'll look at it and tell you honestly which one you're dealing with, at no charge.\n\nWould it help to have someone take a look before winter?"
       },
       "followup": {
-        "subject": "Re: Roof condition report for {company}",
-        "body": "{greeting}\n\nI wrote about a no-cost roof condition report for {company} and haven't heard back.\n\nOften that lands in the wrong inbox - is there someone on the property or trustees committee I should reach out to instead?"
+        "subject": "Re: Roof help for {company}",
+        "body": "{greeting}\n\nI offered to look at the roof at {company} a little while back. If the building's fine, say so and I'll leave you alone.\n\nIf it isn't, we can usually get out within a week and there's no charge for the look."
       },
       "breakup": {
         "subject": "Closing the loop - {company}",
-        "body": "{greeting}\n\nI'll stop emailing. If a leak ever shows up or the trustees want a straight answer on how much roof life is left, my number's below.\n\nGod bless."
+        "body": "{greeting}\n\nI'll stop emailing. If the roof starts leaking, my number's below and there's no charge for an inspection.\n\nAll the best to your congregation."
       }
     },
-
     "school": {
       "first": {
-        "subject": "Roof condition report for {company}",
-        "body": "{greeting}\n\nI work with schools and campuses around {city} on no-cost roof condition reports - the kind facilities directors need before a summer capital request.\n\n{research_hook}\n\n{storm_hook}\n\nWe walk each roof, document what we find, and give you honest remaining-life numbers - not a sales pitch. That way when you present to the board, the numbers are yours.\n\nWorth a short call?"
+        "subject": "Roof check for {company}",
+        "body": "{greeting}\n\nWe inspect school roofs around {city} and give you a written condition report - what's leaking, what's near end of life, what's fine. No charge.\n\n{storm_hook}\n\nIf roofs are handled at the district rather than the building, say so and I'll take it there instead of bothering you again."
       },
       "followup": {
-        "subject": "Re: Roof condition report for {company}",
-        "body": "{greeting}\n\nNo reply to my note on {company}'s roofs - fair, it's a busy season.\n\nOne question: is roof condition already documented for this year's capital planning, or is that still an open item?"
+        "subject": "Re: Roof check for {company}",
+        "body": "{greeting}\n\nFollowing my note about a roof check at {company} - is this something you decide, or does it sit with the district office?\n\nEither answer helps me stop emailing the wrong person."
       },
       "breakup": {
         "subject": "Closing the loop - {company}",
-        "body": "{greeting}\n\nLast note from me. If a roof over a classroom ever needs a straight look, my number's below.\n\nBest of luck with the year."
+        "body": "{greeting}\n\nI'll leave it here. If you get a leak this winter and need someone quickly, my number's below.\n\nGood luck with the year."
       }
     },
-
     "gc": {
       "first": {
-        "subject": "Roofing sub for {city} projects",
-        "body": "{greeting}\n\nI'm looking to be the roofing sub on the next project you don't want to babysit.\n\n{research_hook}\n\n{storm_hook}\n\nWe show up when we say we will, hit deadlines, and don't shave the scope. If that's the kind of trade partner you're short on around {city}, worth a five-minute call.\n\nHappy to bid the next one blind if you want to see how we compare."
+        "subject": "Roofing sub for {city} work",
+        "body": "{greeting}\n\nWe're a roofing contractor working across {city} and I'd like to be on your bid list.\n\n{research_hook}\n\nWe handle commercial and steep-slope, carry our own crews rather than brokering the work out, and we'll turn a bid around in a couple of days rather than a couple of weeks.\n\nWho should I send our licence and insurance to?"
       },
       "followup": {
-        "subject": "Re: Roofing sub for {city} projects",
-        "body": "{greeting}\n\nNo reply on my last note about roofing sub work around {city}.\n\nQuick yes-or-no: are you full up on roofing subs right now, or is that still an open slot?"
-      },
-      "breakup": {
-        "subject": "Closing the loop",
-        "body": "{greeting}\n\nI'll stop emailing. If a roofing sub ever misses a date on you and you need someone reliable, my number's below.\n\nGood building out there."
-      }
-    },
-
-    "commercial": {
-      "first": {
-        "subject": "Roof report for {company}",
-        "body": "{greeting}\n\nMost commercial owners around {city} don't need another roofer knocking - they need documentation for the roof they already have, so budget season isn't guesswork.\n\n{research_hook}\n\n{storm_hook}\n\nWe walk the roofs, write a plain-English condition report, and give honest remaining-life numbers. No obligation. Would that be useful for {company}?"
-      },
-      "followup": {
-        "subject": "Re: Roof report for {company}",
-        "body": "{greeting}\n\nNo reply on my note about a no-cost roof condition report for {company}. Fair.\n\nIs that something the property team has already covered for this year, or still open?"
+        "subject": "Re: Roofing sub for {city} work",
+        "body": "{greeting}\n\nI asked about getting on the bid list at {company}. If you're already covered on roofing, tell me and I'll stop.\n\nIf your current sub is slow to bid, that's usually where we're worth a try."
       },
       "breakup": {
         "subject": "Closing the loop - {company}",
-        "body": "{greeting}\n\nLast note from me. If a roof ever needs an honest look, my number's below.\n\nAll the best."
+        "body": "{greeting}\n\nI'll leave it. If a roofing sub ever falls through on you mid-schedule, my number's below - that's the call we're best at.\n\nGood luck out there."
+      }
+    },
+    "commercial": {
+      "first": {
+        "subject": "The roof at {company}",
+        "body": "{greeting}\n\nI'm trying to reach whoever handles building maintenance for the property.\n\n{storm_hook}\n\nWe re-roof commercial buildings across {city}. Before anything else we'll get on the roof, photograph what's up there, and give you a written remaining-life estimate - free, and useful even if you never hire us, because it tells you whether you're budgeting for next year or five years out.\n\nWorth a look?"
+      },
+      "followup": {
+        "subject": "Re: The roof at {company}",
+        "body": "{greeting}\n\nI wrote about a roof condition report for the property. If you own it but someone else manages it, point me at them and I'll go that way instead.\n\nIf the roof was done recently, tell me when and I'll make a note to stop asking."
+      },
+      "breakup": {
+        "subject": "Closing the loop - {company}",
+        "body": "{greeting}\n\nI'll stop emailing. Commercial roofs tend to announce themselves eventually - when this one does, my number's below.\n\nAll the best."
+      }
+    },
+    "school_district": {
+      "first": {
+        "subject": "Roof condition survey - {company}",
+        "body": "{greeting}\n\nI'm looking for whoever handles facilities for {company}.\n\nWe survey school roofs across Northern Colorado and hand back a written condition report per building - remaining life, active leaks, and what can wait another budget cycle. No charge, and no obligation.\n\n{storm_hook}\n\nFor a district your size that's usually the difference between a planned replacement and an emergency one. Are you the right person, or can you point me to them?"
+      },
+      "followup": {
+        "subject": "Re: Roof condition survey - {company}",
+        "body": "{greeting}\n\nI wrote last week about roof condition surveys for {company}. If capital planning for next year is already closed, tell me and I'll come back in the spring.\n\nIf it isn't, I can walk one building as a sample so you can see what the report looks like before committing anyone's time."
+      },
+      "breakup": {
+        "subject": "Closing the loop - {company}",
+        "body": "{greeting}\n\nI'll stop emailing. If a roof opens up mid-winter and you need someone who can be there the same day, my number's below.\n\nGood luck with the year."
       }
     }
   }

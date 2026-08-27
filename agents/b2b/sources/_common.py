@@ -115,6 +115,47 @@ def fetch_cached(name, url, *, ttl_days=30, params=None, binary=False):
     return body
 
 
+def fetch_cached_path(name, url, *, ttl_days=30, params=None):
+    """Same contract as ``fetch_cached``, but returns the cached file's PATH.
+
+    The county assessor extracts are 30–50 MB each. Handing back a string
+    means holding the whole file in memory and then a parsed copy beside it,
+    inside a container that also runs two gunicorn workers. Callers stream
+    from the path instead and never materialise more than one row.
+
+    Returns ``None`` if the file could not be fetched.
+    """
+    path = os.path.join(_cache_dir(), name)
+    if os.path.exists(path):
+        age_days = (time.time() - os.path.getmtime(path)) / 86400.0
+        if age_days < ttl_days and os.path.getsize(path) > 0:
+            return path
+
+    if requests is None:
+        return None
+    tmp = path + '.tmp'
+    try:
+        with requests.get(url, params=params, timeout=TIMEOUT, stream=True,
+                          headers={'User-Agent': USER_AGENT}) as r:
+            if not r.ok:
+                return None
+            with open(tmp, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1 << 20):
+                    if chunk:
+                        f.write(chunk)
+        os.replace(tmp, path)
+        return path
+    except Exception:                                            # noqa: BLE001
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        # A stale copy still beats no data at all — a month-old owner name is
+        # not wrong, just old, and the alternative is falling through to a
+        # model guessing at who owns a building.
+        return path if os.path.exists(path) else None
+
+
 def title(s):
     """Open data shouts. IRS BMF and NCES CCD are both all upper case, and a
     rep reading a queue of SCREAMING NAMES reads it as machine output.
@@ -139,6 +180,22 @@ def title(s):
     out = re.sub(r'\b([NS][EW])\b', lambda m: m.group(1).upper(), out,
                  flags=re.I)
     return out
+
+
+def clip(s, limit=180):
+    """Trim to ``limit`` on a word boundary.
+
+    A hard slice once ended a customer-facing answer at "as part of t". The
+    same rule applies to anything a rep reads off a card.
+    """
+    s = (s or '').strip()
+    if len(s) <= limit:
+        return s
+    cut = s[:limit]
+    space = cut.rfind(' ')
+    if space > limit * 0.6:
+        cut = cut[:space]
+    return cut.rstrip(' ,;·-') + '…'
 
 
 def matches_city(row_city, wanted):

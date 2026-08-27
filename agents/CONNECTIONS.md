@@ -326,9 +326,64 @@ Separate from the marketing connections above. These are the sources behind
 |---|---|---|---|
 | `church` | IRS Exempt Organizations BMF | none | name, street, city, ZIP, **EIN** |
 | `school` | NCES CCD via the Urban Institute API | none | name, street, **phone**, district, enrollment |
+| `school_district` | NCES CCD district directory | none | district, **phone**, admin office, schools + pupils in territory |
+| `commercial` | Larimer + Weld county assessors, then CO Secretary of State | none | owner, building address, sq ft, year, roof shape, **owner's mailing address**, often a **person's name** |
 | `gc` | — (`cdle.py` is still a placeholder) | — | falls through to Perplexity |
 | `realtor`, `insurance_agent`, `hoa`, `property_manager` | the offline `prospector/` open-data path | none | — |
-| `commercial` | — | `PERPLEXITY_API_KEY` | falls through to Perplexity |
+
+### `commercial` — who owns the building is public record
+
+Larimer publishes eight CSV extracts on Google Cloud Storage; Weld runs an
+ArcGIS FeatureServer that takes a WHERE clause, so that half pulls one city
+instead of a county. Measured 2026-08-26: **10,061 Larimer commercial
+improvements** (2,457 flat-roofed, 837 of those 10,000+ sq ft) and **6,172
+Weld commercial accounts**.
+
+**Read the roof fields carefully.** `ROOFTYPE` is the *shape* (Flat / Gable /
+Shed) and is filled for 68% of Larimer commercial rows — that is the useful
+one, and a flat roof is what makes a building re-roofable. `ROOFCOVER` is the
+*material* and is filled for 98% of **residential** but only **3.6%** of
+commercial, so it is read when present and never depended on. Weld publishes
+neither, nor year built. Absent must never score as old-and-flat, or every
+unknown building floats to the top of a rep's queue — pinned by
+`test_an_unknown_roof_is_not_scored_as_an_old_flat_one`.
+
+Because Weld carries no roof or year data, its rows top out around 4 where a
+Larimer row can reach 8. In a per-city run that is invisible. In a run
+spanning both counties, Larimer cities will take the enrichment budget first.
+
+**The Secretary of State turns the LLC into a person.** The assessor says
+"EJS HOLDINGS LLC" owns it; the state's free business registry (3.1M
+entities, 71% carrying an agent name) says that is Elizabeth Sampson. Looked
+up only for the rows actually being returned — resolving every parcel in a
+county would be thousands of calls to answer a question nobody asked. Three
+traps, all found against live data and all pinned by tests: a prefix LIKE on
+"HARMONY ROAD" returns a vet clinic and a massage therapist, so candidates
+are matched back on a normalised core; the registry never deletes, so a
+dissolved shell with the same name must lose to the live entity; and a
+corporate agent service ("Registered Agents Inc") is a vendor's name, which
+is worse than no name because a rep would ask for it at the front desk.
+
+### `school_district` — the account above the schools
+
+A principal does not buy a roof. Pulling Northern Colorado produced **116
+school cards against 7 real accounts**, three of which held 99 of the schools
+— Poudre alone is 42 buildings and 24,963 pupils under one facilities
+director. The district directory carries the administration office's phone,
+which is the number worth dialling. Counts are of the schools **inside the
+requested city**, not the district's statewide totals, which would oversell a
+district that only reaches a little way into the territory.
+
+### Still falling through to Perplexity
+
+`gc` (general contractors). Colorado has no statewide GC licence, so this
+needs each city's contractor registry or building-permit feed aggregated.
+Fort Collins is the only Northern Colorado city found publishing permits as
+open data, and on 2026-08-26 its whole portal answered HTTP 503 and its
+ArcGIS server reported "Could not access any server machines" — so the
+schema has never been seen and nothing was written against it. Greeley and
+Loveland publish no equivalent feed. Deliberately left unbuilt rather than
+shipped blind.
 
 Measured on the live files, 2026-08-26: **1,928 Colorado schools, every one
 with a phone number**, and **3,988 active congregations, every one with a

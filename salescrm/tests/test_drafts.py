@@ -178,3 +178,58 @@ def test_draft_respects_lead_visibility(client):
     lead = new_lead(client, first_name='A', company='A Co')
     signup(client, 'bryan')
     assert client.get(f"/api/leads/{lead['id']}/draft").status_code == 404
+
+
+def test_every_nimbus_segment_has_its_own_template():
+    """`_render_draft` falls back to the referral_partner template for an
+    unknown lead_type. That is worse than no draft: a church got copy about
+    referring us business, and nothing anywhere said so."""
+    import json
+    import os
+    from salescrm import app as sapp
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, 'outreach_templates.json'), encoding='utf-8') as f:
+        tpls = json.load(f)['templates']
+
+    # Everything Nimbus can put in a queue needs its own voice.
+    for segment in ('church', 'school', 'school_district', 'commercial', 'gc'):
+        assert segment in tpls, f'{segment} would fall back to referral_partner'
+        for step in ('first', 'followup', 'breakup'):
+            assert tpls[segment][step]['subject'].strip()
+            assert tpls[segment][step]['body'].strip()
+
+
+def test_open_data_segments_never_paste_their_hook_into_an_email():
+    """For the partner types {hook} is a researched sentence. For the
+    open-data segments it is a data string — "Office Building · 24,000 sq ft ·
+    built 1994 · Owner mail: PO Box 580, Fort Collins" — and dropping that
+    into a body reads as machine output AND quotes the recipient's own
+    mailing address back at them."""
+    import json
+    import os
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, 'outreach_templates.json'), encoding='utf-8') as f:
+        tpls = json.load(f)['templates']
+
+    for segment in ('church', 'school', 'school_district', 'commercial', 'gc'):
+        for step, tpl in tpls[segment].items():
+            assert '{hook}' not in tpl['body'], \
+                f'{segment}.{step} would paste a data string into an email'
+
+
+def test_a_school_district_draft_renders_without_a_contact_name():
+    """Open data gives an organisation, not a person. Most of these leads have
+    no first name at all and must still read like a real email."""
+    from salescrm import app as sapp
+
+    draft = sapp._render_draft(
+        {'lead_type': 'school_district', 'company': 'Poudre School District R-1',
+         'city': 'Fort Collins', 'first_name': '', 'hook': '42 schools · 24,963 students'},
+        'first', 'Luke Durnbaugh')
+    assert draft is not None
+    assert 'Hi there,' in draft['body']
+    assert 'Poudre School District R-1' in draft['subject']
+    assert '24,963 students' not in draft['body']
+    assert 'Hi ,' not in draft['body']

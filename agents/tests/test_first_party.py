@@ -332,3 +332,53 @@ def test_candidates_are_ranked_by_something_before_we_pay_to_enrich_them():
     rows.sort(key=lambda r: (-int(r.get('icp_score') or 0), r.get('company', '')))
     assert rows[0]['company'] == 'Zebra Realty', \
         'the reachable lead must outrank the alphabetically-first one'
+
+
+def test_the_monthly_lead_cap_is_actually_enforced(monkeypatch):
+    """`monthly_lead_cap` was stored per rep, rendered in the UI and editable
+    through the API since territories shipped, and nothing ever read it. It
+    looked like a control and was not one."""
+    from agents import config
+    from agents.b2b import dispatcher
+
+    monkeypatch.setattr(dispatcher, '_pushed_this_month', lambda rep: 380)
+    pushed = {}
+
+    def fake_import(client, rows, **kw):
+        pushed['n'] = pushed.get('n', 0) + len(rows)
+        return {'counts': {'inserted': len(rows)}, 'batches': [], 'not_inserted': []}
+
+    monkeypatch.setattr(dispatcher.ingest_mod, 'import_via_test_client', fake_import)
+    monkeypatch.setattr(dispatcher, '_lead_ids_from_response', lambda *a, **k: [])
+    monkeypatch.setattr(dispatcher.config, 'load_territories', lambda: {
+        'capped': {'display_name': 'Capped Rep', 'cities': ['Testville'],
+                   'counties': ['Larimer'], 'segments': ['church'],
+                   'enrich_top_n': 0, 'monthly_lead_cap': 400}})
+    monkeypatch.setattr(
+        dispatcher.sources_mod, 'pullers_for',
+        lambda seg: [lambda **kw: [
+            {'company': f'Church {i}', 'address': f'{i} Main St',
+             'city': 'Testville', 'state': 'CO', 'phone': '', 'email': '',
+             'source_ref': f'test:{i}', 'icp_score': 1, 'hook': ''}
+            for i in range(100)]])
+
+    manifest = dispatcher.run('capped', per_city_limit=100, dry_run=False,
+                              client=object())
+    # 400 cap minus 380 already pushed leaves room for 20, not 100.
+    assert manifest['monthly_cap'] == {'cap': 400, 'already_pushed': 380,
+                                       'remaining': 20}
+    assert pushed['n'] == 20
+
+
+def test_a_dry_run_does_not_burn_a_reps_monthly_cap(monkeypatch):
+    """A dry run pushes nothing. Charging it against the cap would let someone
+    exhaust a rep's month by previewing it."""
+    from agents import config
+    from agents.b2b import dispatcher
+
+    run_id = dispatcher._open_run('b2b', 'previewer', summary='t', dry_run=True)
+    with config.get_cache_db() as db:
+        db.execute('UPDATE agent_runs SET leads_pushed = 250 WHERE id = ?',
+                   (run_id,))
+        db.commit()
+    assert dispatcher._pushed_this_month('previewer') == 0
