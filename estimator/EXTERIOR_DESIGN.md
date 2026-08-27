@@ -91,6 +91,30 @@ match, and that not every product is available in every color. The tool retains
 the physical-sample warning. This source updates visual options and product
 copy only; it does not change manager pricing or quantities.
 
+### CertainTeed Landmark 2026
+
+The seeded standard Landmark visual catalog is based on CertainTeed Landmark
+Series brochure 00-00-134-US-EN (03/26). It contains the nine colors under the
+standard **Landmark Color Palette**: Silver Birch, Georgetown Gray, Weathered
+Wood, Heather Blend, Burnt Sienna, Resawn Shake, Driftwood, Moiré Black, and
+Black Walnut. Landmark Solaris, Landmark ClimateFlex, Landmark PRO, NorthGate,
+and Landmark TL are separately identified product lines in the brochure and
+are not folded into the standard Landmark bundle or its pricing.
+
+The representative hex values are sampled from the brochure's photographic
+shingle swatches. They cannot reproduce the granule mix, blend range,
+installation pattern, lighting, or sunlight on a real roof. CertainTeed says
+printed reproductions cannot be guaranteed to match the actual product color,
+so the physical-sample warning remains in the tool.
+
+Product copy now reflects the supplied brochure: dual-layer construction,
+UL 2218 Class 3 impact resistance, NailTrak, QuadraBond, CertaSeal, a lifetime
+limited transferable residential warranty with 10-year SureStart protection,
+a 25-year StreakFighter algae-resistance warranty, and a 15-year 110 mph wind
+warranty. A 160 mph wind-warranty upgrade is available only with the required
+CertainTeed starter and hip-and-ridge products. This update does not change
+manager pricing, quantities, or the quoted roofing bundle.
+
 ### IKO Nordic 2026
 
 The seeded IKO Nordic visual catalog is based on IKO homeowner brochure

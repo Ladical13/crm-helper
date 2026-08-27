@@ -12369,6 +12369,34 @@ _ROOF_ASPHALT_COLORS = [
     {"name": "Colonial Slate",  "hex": "#3c4046"},
     {"name": "Burnt Sienna",    "hex": "#6b3a2a"},
 ]
+_LANDMARK_COLORS = [
+    # Representative values sampled from the standard Landmark photographic
+    # swatches in brochure 00-00-134-US-EN (03/26). Solaris, ClimateFlex, PRO,
+    # NorthGate and TL are separate product lines and intentionally excluded.
+    {"name": "Silver Birch",     "hex": "#a6aaa8"},
+    {"name": "Georgetown Gray",  "hex": "#585550"},
+    {"name": "Weathered Wood",   "hex": "#60584f"},
+    {"name": "Heather Blend",    "hex": "#635445"},
+    {"name": "Burnt Sienna",     "hex": "#554136"},
+    {"name": "Resawn Shake",     "hex": "#8c6447"},
+    {"name": "Driftwood",        "hex": "#5c544d"},
+    {"name": "Moiré Black",      "hex": "#313434"},
+    {"name": "Black Walnut",     "hex": "#383934"},
+]
+_LANDMARK_LEGACY_BULLETS = [
+    "CertainTeed Landmark architectural laminate shingles",
+    "Lifetime limited manufacturer warranty",
+    "130 mph wind rating",
+    "Dimensional shadow lines for depth and curb appeal",
+]
+_LANDMARK_BULLETS = [
+    "CertainTeed Landmark dual-layer architectural shingles",
+    "Classified to meet UL 2218 Class 3 impact resistance",
+    "NailTrak nailing guide, QuadraBond four-point adhesive, and CertaSeal uplift protection",
+    "Lifetime limited transferable residential warranty with 10-year SureStart protection",
+    "25-year StreakFighter algae-resistance warranty",
+    "15-year 110 mph wind-resistance warranty; 160 mph upgrade available with required CertainTeed starter and hip-and-ridge",
+]
 _IKO_NORDIC_COLORS = [
     # Representative values sampled from the photographic shingle swatches
     # in IKO brochure MR9L350 (02/26). A physical shingle/roof remains the
@@ -12418,8 +12446,8 @@ _ROOF_RUBBER_COLORS = [
 ]
 ROOFING_CATALOG_SEED = [
     {"id": "m_landmark", "name": "CertainTeed Landmark (Architectural Shingle)", "unit": "SQ", "cost": 142, "measure": "squares_waste",
-     "bullets": ["CertainTeed Landmark architectural laminate shingles", "Lifetime limited manufacturer warranty", "130 mph wind rating", "Dimensional shadow lines for depth and curb appeal"],
-     "colors": _ROOF_ASPHALT_COLORS},
+     "bullets": _LANDMARK_BULLETS,
+     "colors": _LANDMARK_COLORS},
     {"id": "m_northgate", "name": "CertainTeed Northgate (Impact-Resistant Shingle)", "unit": "SQ", "cost": 175, "measure": "squares_waste",
      "bullets": ["CertainTeed Northgate SBS-modified impact-resistant shingles", "Class 4 impact rating — the highest hail rating there is", "May qualify for a homeowners insurance premium discount", "Lifetime limited manufacturer warranty", "130 mph wind rating"],
      "colors": _ROOF_ASPHALT_COLORS},
@@ -12477,7 +12505,7 @@ _RS = ["a_underlayment", "a_ice_water", "a_drip_edge", "a_ridge_cap", "a_starter
 # so this list stays short — it closes the card, it doesn't describe the scope.
 _RS_EXTRA = ["5-year Project One workmanship warranty"]
 ROOFING_BUNDLES_SEED = [
-    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Architectural laminate shingle system — dimensional shadow lines, lifetime limited warranty.",
+    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Dual-layer architectural shingle with Class 3 impact resistance, StreakFighter protection, and a lifetime limited residential warranty.",
      "extra_features": _RS_EXTRA},
     {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle — hail-country durability, may qualify for an insurance discount.",
      "extra_features": _RS_EXTRA},
@@ -13503,6 +13531,10 @@ EXTERIOR_PATTERN_IDS = {'', 'lap', 'bnb', 'board_batten', 'shake', 'panel',
                         'vertical', 'nickel_gap'}
 _EXTERIOR_PATTERN_ALIASES = {'board_batten': 'bnb', 'vertical': 'panel'}
 _LP_EXPERTFINISH_EXTERIOR_MIGRATION = 'lp-expertfinish-lpef01884-2025'
+_LANDMARK_EXTERIOR_MIGRATION = 'certainteed-landmark-00-00-134-2026'
+_LANDMARK_LEGACY_DESCRIPTION = (
+    'Architectural laminate shingle system — dimensional shadow lines, '
+    'lifetime limited warranty.')
 _IKO_NORDIC_EXTERIOR_MIGRATION = 'iko-nordic-mr9l350-2026'
 _IKO_NORDIC_LEGACY_DESCRIPTION = (
     'Class 4 impact-resistant shingle built for extreme cold and hail.')
@@ -13673,6 +13705,69 @@ def _migrate_lp_expertfinish_visuals(pb):
     pb['exterior_catalog'] = _normalize_exterior_catalog(
         kept + _lp_expertfinish_exterior_rows())
     versions.append(_LP_EXPERTFINISH_EXTERIOR_MIGRATION)
+    pb['exterior_catalog_seed_versions'] = versions
+
+
+def _landmark_exterior_rows():
+    """The nine standard Landmark colors shown in brochure 00-00-134."""
+    return _normalize_exterior_catalog([
+        {
+            'category': 'roof', 'brand': 'CertainTeed',
+            'product': 'Landmark', 'style': 'Architectural Shingle',
+            'color': color['name'], 'hex': color['hex'],
+            'price_book_bundle': 'b_landmark', 'active': True,
+        }
+        for color in _LANDMARK_COLORS
+    ])
+
+
+def _migrate_landmark_visuals(pb):
+    """Replace only shipped Landmark placeholders with the 2026 brochure.
+
+    Manager prices, custom rows, and edited product copy survive. The version
+    marker also makes later manager deletion of an official swatch sticky.
+    """
+    versions = pb.get('exterior_catalog_seed_versions')
+    if not isinstance(versions, list):
+        versions = []
+    if _LANDMARK_EXTERIOR_MIGRATION in versions:
+        return
+
+    live_product = next((p for p in pb.get('roofing_catalog') or []
+                         if isinstance(p, dict) and p.get('id') == 'm_landmark'), None)
+    if live_product is not None:
+        if live_product.get('colors') == _ROOF_ASPHALT_COLORS:
+            live_product['colors'] = copy.deepcopy(_LANDMARK_COLORS)
+        if live_product.get('bullets') == _LANDMARK_LEGACY_BULLETS:
+            live_product['bullets'] = copy.deepcopy(_LANDMARK_BULLETS)
+
+    live_bundle = next((b for b in pb.get('roofing_bundles') or []
+                        if isinstance(b, dict) and b.get('id') == 'b_landmark'), None)
+    if (live_bundle is not None
+            and live_bundle.get('description') == _LANDMARK_LEGACY_DESCRIPTION):
+        live_bundle['description'] = next(
+            b['description'] for b in ROOFING_BUNDLES_SEED
+            if b['id'] == 'b_landmark')
+
+    legacy_colors = {
+        c['name'].casefold()
+        for c in _ROOF_ASPHALT_COLORS + _LANDMARK_COLORS
+    }
+    kept = []
+    for row in _normalize_exterior_catalog(pb.get('exterior_catalog') or []):
+        is_legacy = (
+            row['category'] == 'roof'
+            and row['product'].casefold() == 'certainteed landmark'
+            and row['price_book_bundle'] == 'b_landmark'
+            and not row['brand']
+            and not row['style']
+            and row['color'].casefold() in legacy_colors
+        )
+        if not is_legacy:
+            kept.append(row)
+    pb['exterior_catalog'] = _normalize_exterior_catalog(
+        kept + _landmark_exterior_rows())
+    versions.append(_LANDMARK_EXTERIOR_MIGRATION)
     pb['exterior_catalog_seed_versions'] = versions
 
 
@@ -13911,6 +14006,7 @@ def _ensure_bundle_catalogs(pb):
     if 'exterior_catalog' not in pb:
         pb['exterior_catalog'] = _legacy_exterior_catalog(pb)
     _migrate_lp_expertfinish_visuals(pb)
+    _migrate_landmark_visuals(pb)
     _migrate_iko_nordic_visuals(pb)
     return pb
 

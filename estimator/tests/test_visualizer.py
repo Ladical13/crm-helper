@@ -312,6 +312,101 @@ def test_lp_expertfinish_migrates_legacy_visuals_without_touching_price_or_custo
                    for r in pb['exterior_catalog'])
 
 
+def test_landmark_seed_matches_the_2026_brochure(A):
+    product = next(p for p in A.ROOFING_CATALOG_SEED
+                   if p['id'] == 'm_landmark')
+    assert [c['name'] for c in product['colors']] == [
+        'Silver Birch', 'Georgetown Gray', 'Weathered Wood',
+        'Heather Blend', 'Burnt Sienna', 'Resawn Shake',
+        'Driftwood', 'Moiré Black', 'Black Walnut',
+    ]
+    assert product['colors'][0]['hex'] == '#a6aaa8'
+    assert product['colors'][-1]['hex'] == '#383934'
+    copy_text = ' '.join(product['bullets'])
+    assert 'UL 2218 Class 3' in copy_text
+    assert 'NailTrak' in copy_text
+    assert 'QuadraBond' in copy_text
+    assert 'CertaSeal' in copy_text
+    assert '10-year SureStart' in copy_text
+    assert '25-year StreakFighter' in copy_text
+    assert '15-year 110 mph' in copy_text
+    assert '130 mph' not in copy_text
+
+
+def test_new_pricebook_exposes_one_official_landmark_palette(client):
+    rows = client.get('/api/pricebook').get_json()['exterior_catalog']
+    landmark = [r for r in rows if r['price_book_bundle'] == 'b_landmark']
+    assert len(landmark) == 9
+    assert {r['brand'] for r in landmark} == {'CertainTeed'}
+    assert {r['product'] for r in landmark} == {'Landmark'}
+    assert {r['style'] for r in landmark} == {'Architectural Shingle'}
+
+
+def test_landmark_migrates_legacy_visuals_without_touching_price_or_custom_rows(A):
+    legacy_product = {
+        'id': 'm_landmark', 'name': 'CertainTeed Landmark (Architectural Shingle)',
+        'unit': 'SQ', 'cost': 777.77,
+        'colors': copy.deepcopy(A._ROOF_ASPHALT_COLORS),
+        'bullets': copy.deepcopy(A._LANDMARK_LEGACY_BULLETS),
+    }
+    legacy_rows = [
+        {
+            'category': 'roof', 'brand': '',
+            'product': 'CertainTeed Landmark',
+            'color': color['name'], 'hex': color['hex'],
+            'price_book_bundle': 'b_landmark',
+        }
+        for color in A._ROOF_ASPHALT_COLORS
+    ]
+    custom = {
+        'category': 'roof', 'brand': 'CertainTeed', 'product': 'Landmark',
+        'style': 'Custom Blend', 'color': 'Project One Blend',
+        'hex': '#123456', 'price_book_bundle': 'b_landmark',
+    }
+    pb = {
+        'roofing_catalog': [legacy_product],
+        'roofing_bundles': [{
+            'id': 'b_landmark', 'name': 'CertainTeed Landmark',
+            'product_ids': ['m_landmark'],
+            'description': A._LANDMARK_LEGACY_DESCRIPTION,
+        }],
+        'roofing_tier_defaults': {},
+        'exterior_catalog': A._normalize_exterior_catalog(legacy_rows + [custom]),
+    }
+
+    A._ensure_bundle_catalogs(pb)
+
+    live = next(p for p in pb['roofing_catalog'] if p['id'] == 'm_landmark')
+    assert live['cost'] == 777.77
+    assert live['colors'] == A._LANDMARK_COLORS
+    assert live['bullets'] == A._LANDMARK_BULLETS
+    bundle = next(b for b in pb['roofing_bundles'] if b['id'] == 'b_landmark')
+    assert 'Class 3 impact resistance' in bundle['description']
+    official = [r for r in pb['exterior_catalog']
+                if r['product'] == 'Landmark'
+                and r['style'] == 'Architectural Shingle']
+    assert len(official) == 9
+    assert {r['brand'] for r in official} == {'CertainTeed'}
+    assert not any(r['product'] == 'CertainTeed Landmark' and not r['style']
+                   and r['color'] == 'Charcoal Black'
+                   for r in pb['exterior_catalog'])
+    assert any(r['style'] == 'Custom Blend'
+               and r['color'] == 'Project One Blend'
+               and r['hex'] == '#123456'
+               for r in pb['exterior_catalog'])
+    assert A._LANDMARK_EXTERIOR_MIGRATION in (
+        pb['exterior_catalog_seed_versions'])
+
+    # A saved version marker means manager deletions remain intentional.
+    pb['exterior_catalog'] = [r for r in pb['exterior_catalog']
+                              if not (r['style'] == 'Architectural Shingle'
+                                      and r['color'] == 'Black Walnut')]
+    A._ensure_bundle_catalogs(pb)
+    assert not any(r['style'] == 'Architectural Shingle'
+                   and r['color'] == 'Black Walnut'
+                   for r in pb['exterior_catalog'])
+
+
 def test_iko_nordic_seed_matches_the_2026_brochure(A):
     product = next(p for p in A.ROOFING_CATALOG_SEED
                    if p['id'] == 'm_iko_nordic')

@@ -53,7 +53,9 @@ def test_bundle_colors_for_tier_resolves_iko_and_certainteed(A):
     assert iko and ct
     assert iko == ['Olde Style Weatherwood', 'Summit Grey', 'Granite Black',
                    'Driftshake', 'Shadow Brown', 'Glacier']
-    assert 'Weathered Wood' in ct
+    assert ct == ['Silver Birch', 'Georgetown Gray', 'Weathered Wood',
+                  'Heather Blend', 'Burnt Sienna', 'Resawn Shake',
+                  'Driftwood', 'Moiré Black', 'Black Walnut']
 
 
 def test_bundle_colors_switch_manufacturers_across_siding(A):
