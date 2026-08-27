@@ -29,13 +29,29 @@ CI runs, and it is much faster to find a break here than in the Actions log.
 Individual suites, when you only touched one app:
 
 ```bash
-cd estimator  && pytest     # 778 — pricing parity, cache-buster, bundles
-cd salescrm   && pytest     # 107 — pipeline, prospecting, queue, drafts, assets
-cd portal     && pytest     # 136 — one login, migration, shell, hardening
-python -m pytest prospector/tests   # 27 — offline, no network
-cd agents     && pytest     # 242 — spend cap, cache, b2b/content sources
-cd canvasser  && pytest     #  15 — vendored Leaflet, cache-buster, sw wiring
+cd estimator  && pytest     # pricing parity, cache-buster, bundles
+cd salescrm   && pytest     # pipeline, prospecting, queue, drafts, assets
+cd portal     && pytest     # one login, migration, shell, hardening, these docs
+python -m pytest prospector/tests   # offline, no network
+cd agents     && pytest     # spend cap, cache, b2b/content sources
+cd canvasser  && pytest     # vendored Leaflet, cache-buster, sw wiring
 ```
+
+**This file is tested** (`portal/tests/test_docs.py`). Every `` `foo()` `` it
+names has to resolve in the codebase and every path it points at has to exist,
+because it is the first thing loaded into each session's context — a stale
+line here misleads everyone before they have read a line of code, and twice
+now it has described a screen that had already been deleted. Rename a function
+and this file fails with the rest of the suite, which on this repo means it
+fails *before* the deploy rather than after.
+
+Two things it deliberately does not do. It does not check prose: "a ＋ Create
+New Estimate button that pre-fills from the most recent estimate" was
+every-symbol-correct and simply no longer true. Keep volatile UI detail in
+code comments, where it travels in the same diff as the change, and keep this
+file for invariants and traps that survive a redesign. And it forbids
+hardcoded suite counts — they were wrong by 38 before the test existed, and a
+number that is wrong today is what teaches a reader to distrust the rest.
 
 **Deploying.** ONE Railway service, whole repo — see the deploy note at the end
 of the portal section. Never deploy a subdirectory. **Pushing to `portal-merge`
@@ -75,7 +91,7 @@ app-switcher bar across the top of all three.
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers all three apps
 python -m portal.wsgi                 # local dev on :5010 (all three mounted)
-cd portal && pytest                   # 136 tests
+cd portal && pytest                   # one login, migration, shell, hardening
 ```
 
 `portal/wsgi.py` mounts the three **unchanged** Flask apps with
@@ -248,7 +264,7 @@ exactly the one the tool ignored. Storage is `CANVASSER_DATA_DIR/canvasser.db`
 `DATA_DIR`).
 
 ```bash
-cd canvasser && pytest                # 15 tests
+cd canvasser && pytest                # vendored Leaflet, cache-buster, sw wiring
 python -m portal.wsgi                 # dev: run the portal, canvasser is at /canvass
 ```
 
@@ -290,7 +306,7 @@ a single SQLite file (`SALESCRM_DATA_DIR/salescrm.db`, gitignored — back it up
 before any migration). No pricing math lives here.
 
 ```bash
-cd salescrm && pytest                 # 90 tests, <2s
+cd salescrm && pytest                 # pipeline, prospecting, queue, drafts
 python -m portal.wsgi                 # dev: run the portal, CRM is at /crm
 ```
 
@@ -400,7 +416,7 @@ per-contact credits. `prospector/README.md` has the segment table and counts.
 python -m prospector segments --count                  # live counts
 python -m prospector pull dora:hoa --out prospector/inbox/hoa.json
 python -m prospector push prospector/inbox/hoa.json --user luke --dry-run
-python -m pytest prospector/tests                      # 27 tests, offline
+python -m pytest prospector/tests                      # offline, no network
 ```
 
 - **`prospector/` is deliberately dumb.** It doesn't know what's already in the
@@ -481,7 +497,7 @@ Per `lead_type`, three steps chosen by prior outreach count (0 → `first`,
 ## Estimator — tests & invariants
 
 ```bash
-cd estimator && pytest                # 778 tests, <10s
+cd estimator && pytest                # pricing parity, cache-buster, bundles
 ```
 
 **Open bug: `company_content.json` is seeded but not shipped.** `app.py`'s
