@@ -1,7 +1,8 @@
 """Visualizer — the product-photo overlay that ships with the /sign page and the signed PDF.
 
-The rep uploads a house photo, paints roof + siding masks, picks a color per
-tier (and, for siding, a style), and saves three composites — one per
+The rep uploads a house photo, selects roof, siding, trim/fascia, soffit, and
+door surfaces, picks a product/color per tier (and, for siding, a style), and
+saves three composites — one per
 Good/Better/Best tier. Server-side we store the pointers under
 `est['visualizer']` and embed the renders into the customer-facing PDF and
 sign page.
@@ -190,18 +191,19 @@ def test_asset_endpoint_validates_kind_role_tier(client):
         client.delete(f'/api/estimates/{eid}')
 
 
-def test_asset_endpoint_accepts_and_stores_a_door_mask(client):
-    """Doors are a third independent design layer, not a siding workaround."""
+@pytest.mark.parametrize('role', ['roof', 'siding', 'trim', 'soffit', 'door'])
+def test_asset_endpoint_accepts_and_stores_each_surface_mask(client, role):
+    """Every independently selectable surface has its own stored mask."""
     eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
     try:
         r = client.post(
             f'/api/estimates/{eid}/visualizer/asset',
-            json={'kind': 'mask', 'role': 'door', 'ext': 'png',
+            json={'kind': 'mask', 'role': role, 'ext': 'png',
                   'content_b64': _ONE_PX_JPEG_B64},
         )
         assert r.status_code == 201, r.get_data(as_text=True)
         fresh = client.get(f'/api/estimates/{eid}').get_json()
-        assert fresh['visualizer']['door_mask'] == r.get_json()['filename']
+        assert fresh['visualizer'][f'{role}_mask'] == r.get_json()['filename']
     finally:
         client.delete(f'/api/estimates/{eid}')
 
@@ -232,8 +234,10 @@ def test_lp_expertfinish_seed_matches_the_2025_sales_sheet(A):
         'Rapids Blue', 'Cavern Steel', 'Midnight Shadow', 'Abyss Black',
     ]
     expected_styles = [
-        'Lap Joint Siding', 'Shakes', 'Panel - NGSE', 'Nickel Gap',
-        'Vertical Siding',
+        'Lap Joint Siding - 6 in.', 'Lap Joint Siding - 8 in.',
+        'Shakes - Straight Edge', 'Shakes - Staggered Edge',
+        'Panel - NGSE 4 x 8 ft.', 'Panel - NGSE 4 x 10 ft.',
+        'Nickel Gap - 8 in.', 'Vertical Siding - 16 in.',
     ]
     product = next(p for p in A.SIDING_CATALOG_SEED if p['id'] == 's_lp_expert')
 
@@ -242,7 +246,7 @@ def test_lp_expertfinish_seed_matches_the_2025_sales_sheet(A):
     assert product['colors'][-1]['hex'] == '#2b3131'
     assert [s['name'] for s in product['styles']] == expected_styles
     assert {s['pattern_id'] for s in product['styles']} == {
-        'lap', 'shake', 'panel', 'nickel_gap'}
+        'lap', 'shake_straight', 'shake_staggered', 'panel', 'nickel_gap'}
     assert '5/15/50' in ' '.join(product['bullets'])
 
 
@@ -289,9 +293,9 @@ def test_lp_expertfinish_migrates_legacy_visuals_without_touching_price_or_custo
         s['name'] for s in A._LP_EXPERTFINISH_STYLES]
     official = [r for r in pb['exterior_catalog']
                 if r['product'] == 'LP SmartSide ExpertFinish']
-    assert len(official) == 16 * 5
+    assert len(official) == 16 * 8
     assert {r['pattern_id'] for r in official} == {
-        'lap', 'shake', 'panel', 'nickel_gap'}
+        'lap', 'shake_straight', 'shake_staggered', 'panel', 'nickel_gap'}
     assert not any(r['product'] == 'LP SmartSide Expert Finish'
                    and r['color'] == 'Arctic White'
                    for r in pb['exterior_catalog'])
@@ -304,11 +308,12 @@ def test_lp_expertfinish_migrates_legacy_visuals_without_touching_price_or_custo
     # it stays deleted on subsequent reads.
     pb['exterior_catalog'] = [r for r in pb['exterior_catalog']
                               if not (r['product'] == 'LP SmartSide ExpertFinish'
-                                      and r['style'] == 'Shakes'
+                                      and r['style'] == 'Shakes - Staggered Edge'
                                       and r['color'] == 'Abyss Black')]
     A._ensure_bundle_catalogs(pb)
     assert not any(r['product'] == 'LP SmartSide ExpertFinish'
-                   and r['style'] == 'Shakes' and r['color'] == 'Abyss Black'
+                   and r['style'] == 'Shakes - Staggered Edge'
+                   and r['color'] == 'Abyss Black'
                    for r in pb['exterior_catalog'])
 
 
@@ -325,11 +330,17 @@ def test_hardie_statement_seed_matches_the_2026_regional_catalog(A):
     assert product['colors'][0]['hex'] == '#f0f0e4'
     assert product['colors'][-1]['hex'] == '#713c37'
     assert [s['name'] for s in product['styles']] == [
-        'Hardie Plank', 'Hardie Panel + Hardie Trim Batten',
-        'Hardie Shingle', 'Hardie Panel',
+        'Hardie Plank - Select Cedarmill', 'Hardie Plank - Smooth',
+        'Hardie Panel + Trim Batten - Rustic Grain',
+        'Hardie Panel + Trim Batten - Smooth',
+        'Hardie Shingle - Straight Edge Panel',
+        'Hardie Shingle - Staggered Edge Panel',
+        'Hardie Panel - Select Cedarmill', 'Hardie Panel - Smooth',
+        'Hardie Panel - Sierra 8',
     ]
     assert [s['pattern_id'] for s in product['styles']] == [
-        'lap', 'bnb', 'shake', 'panel']
+        'lap', 'lap', 'bnb', 'bnb', 'shake_straight', 'shake_staggered',
+        'panel', 'panel', 'sierra8']
     copy_text = ' '.join(product['bullets'])
     assert 'HZ5' in copy_text
     assert 'noncombustible and/or Class A' in copy_text
@@ -340,17 +351,98 @@ def test_hardie_statement_seed_matches_the_2026_regional_catalog(A):
 
 def test_new_pricebook_exposes_one_official_hardie_statement_palette(client):
     rows = client.get('/api/pricebook').get_json()['exterior_catalog']
-    hardie = [r for r in rows
-              if r['price_book_bundle'] == 'b_hardie_statement']
-    assert len(hardie) == 17 * 4
+    hardie = [r for r in rows if r['category'] == 'siding'
+              and r['price_book_bundle'] == 'b_hardie_statement']
+    assert len(hardie) == 17 * 9
     assert {r['brand'] for r in hardie} == {'James Hardie'}
     assert {r['product'] for r in hardie} == {
         'James Hardie Statement Collection'}
     assert {r['style'] for r in hardie} == {
-        'Hardie Plank', 'Hardie Panel + Hardie Trim Batten',
-        'Hardie Shingle', 'Hardie Panel'}
+        'Hardie Plank - Select Cedarmill', 'Hardie Plank - Smooth',
+        'Hardie Panel + Trim Batten - Rustic Grain',
+        'Hardie Panel + Trim Batten - Smooth',
+        'Hardie Shingle - Straight Edge Panel',
+        'Hardie Shingle - Staggered Edge Panel',
+        'Hardie Panel - Select Cedarmill', 'Hardie Panel - Smooth',
+        'Hardie Panel - Sierra 8'}
     assert {r['pattern_id'] for r in hardie} == {
-        'lap', 'bnb', 'shake', 'panel'}
+        'lap', 'bnb', 'shake_straight', 'shake_staggered', 'panel', 'sierra8'}
+
+
+def test_hardie_and_lp_component_palettes_follow_the_supplied_sheets(client):
+    rows = client.get('/api/pricebook').get_json()['exterior_catalog']
+
+    def matching(bundle, category):
+        return [r for r in rows if r['price_book_bundle'] == bundle
+                and r['category'] == category]
+
+    lp_trim = matching('b_lp_expert', 'trim')
+    lp_soffit = matching('b_lp_expert', 'soffit')
+    assert len(lp_trim) == 16
+    assert len(lp_soffit) == 16 * 2
+    assert {r['style'] for r in lp_trim} == {'Trim & Fascia'}
+    assert {r['style'] for r in lp_soffit} == {
+        'Closed - 12, 16 or 24 in.', 'Vented - 12, 16 or 24 in.'}
+
+    hardie_trim = matching('b_hardie_statement', 'trim')
+    hardie_soffit = matching('b_hardie_statement', 'soffit')
+    assert len(hardie_trim) == 4 * 2
+    assert {r['color'] for r in hardie_trim} == {
+        'Arctic White', 'Cobble Stone', 'Iron Gray', 'Timber Bark'}
+    assert {r['style'] for r in hardie_trim} == {'Rustic Grain', 'Smooth'}
+    assert len(hardie_soffit) == 4
+    assert {r['color'] for r in hardie_soffit} == {'Arctic White'}
+    assert {r['style'] for r in hardie_soffit} == {
+        'Vented Smooth', 'Non-Vented Smooth',
+        'Non-Vented Select Cedarmill', 'Vented Select Cedarmill'}
+
+
+def test_component_migration_preserves_custom_rows_and_manager_deletions(A):
+    custom = {
+        'category': 'trim', 'brand': 'Local Supplier',
+        'product': 'Custom Aluminum Fascia', 'style': '6 in.',
+        'color': 'Project One Blue', 'hex': '#123456',
+        'price_book_bundle': 'b_lp_expert',
+    }
+    pb = {
+        'siding_catalog': [{
+            'id': 's_lp_expert', 'cost': 777,
+            'styles': copy.deepcopy(A._LP_EXPERTFINISH_LEGACY_STYLES),
+        }, {
+            'id': 's_hardie_statement', 'cost': 888,
+            'styles': copy.deepcopy(A._HARDIE_STATEMENT_LEGACY_STYLES),
+        }],
+        'siding_bundles': [],
+        'siding_tier_defaults': {},
+        'exterior_catalog': A._normalize_exterior_catalog([custom]),
+        'exterior_catalog_seed_versions': [
+            A._LP_EXPERTFINISH_EXTERIOR_MIGRATION,
+            A._HARDIE_STATEMENT_EXTERIOR_MIGRATION,
+        ],
+    }
+
+    A._ensure_bundle_catalogs(pb)
+
+    lp = next(p for p in pb['siding_catalog'] if p['id'] == 's_lp_expert')
+    hardie = next(p for p in pb['siding_catalog']
+                  if p['id'] == 's_hardie_statement')
+    assert lp['cost'] == 777 and lp['styles'] == A._LP_EXPERTFINISH_STYLES
+    assert hardie['cost'] == 888 and hardie['styles'] == A._HARDIE_STATEMENT_STYLES
+    assert any(r['product'] == 'Custom Aluminum Fascia'
+               for r in pb['exterior_catalog'])
+    assert A._SIDING_COMPONENT_EXTERIOR_MIGRATION in (
+        pb['exterior_catalog_seed_versions'])
+
+    pb['exterior_catalog'] = [
+        r for r in pb['exterior_catalog']
+        if not (r['product'] == 'Hardie Trim'
+                and r['style'] == 'Smooth'
+                and r['color'] == 'Iron Gray')]
+    A._ensure_bundle_catalogs(pb)
+    assert not any(r['product'] == 'Hardie Trim'
+                   and r['style'] == 'Smooth'
+                   and r['color'] == 'Iron Gray'
+                   for r in pb['exterior_catalog'])
 
 
 def test_hardie_statement_migrates_legacy_visuals_without_touching_price_or_custom_rows(A):
@@ -405,8 +497,9 @@ def test_hardie_statement_migrates_legacy_visuals_without_touching_price_or_cust
     assert '30-year non-prorated limited coverage' in bundle['description']
     official = [r for r in pb['exterior_catalog']
                 if r['product'] == 'James Hardie Statement Collection'
+                and r['category'] == 'siding'
                 and r['style'] != 'Custom Profile']
-    assert len(official) == 17 * 4
+    assert len(official) == 17 * 9
     assert not any(r['style'] == 'Lap Siding' and r['color'] == 'Sail Cloth'
                    for r in pb['exterior_catalog'])
     assert any(r['style'] == 'Custom Profile'
@@ -419,10 +512,10 @@ def test_hardie_statement_migrates_legacy_visuals_without_touching_price_or_cust
     # A saved version marker means manager deletions remain intentional.
     pb['exterior_catalog'] = [
         r for r in pb['exterior_catalog']
-        if not (r['style'] == 'Hardie Shingle'
+        if not (r['style'] == 'Hardie Shingle - Staggered Edge Panel'
                 and r['color'] == 'Countrylane Red')]
     A._ensure_bundle_catalogs(pb)
-    assert not any(r['style'] == 'Hardie Shingle'
+    assert not any(r['style'] == 'Hardie Shingle - Staggered Edge Panel'
                    and r['color'] == 'Countrylane Red'
                    for r in pb['exterior_catalog'])
 
@@ -653,7 +746,7 @@ def test_exterior_catalog_rejects_bad_rows_and_rep_writes(client, A, monkeypatch
     assert 'hex' in bad.get_json()['error']
     bad_paint = client.post('/api/exterior-catalog/import', json={'rows': [{
         'category': 'paint', 'product': 'Test', 'color': 'Blue', 'hex': '#112233',
-        'applies_to': 'trim'}]})
+        'applies_to': 'roof'}]})
     assert bad_paint.status_code == 400
     monkeypatch.setattr(A, '_is_manager_up', lambda *a, **kw: False)
     assert client.put('/api/exterior-catalog', json={'entries': []}).status_code == 403
@@ -667,6 +760,7 @@ def test_exterior_catalog_template_and_frontend_wiring(client):
     text = response.get_data(as_text=True)
     assert text.startswith('category,brand,product,style,color,color_code,hex')
     assert 'ProVia' in text and 'Sherwin-Williams' in text
+    assert '\r\ntrim,' in text and '\r\nsoffit,' in text
     js = open(os.path.join(os.path.dirname(__file__), '..', 'static', 'app.js'),
               encoding='utf-8').read()
     html = open(os.path.join(os.path.dirname(__file__), '..', 'static', 'index.html'),
@@ -754,11 +848,18 @@ def test_detection_converts_binary_masks_to_alpha_and_rejects_low_confidence(det
         detector.combine_masks({'masks': [{'url': 'https://untrusted.invalid/image.png'}]}, (3, 2))
 
 
-def test_siding_detection_requests_fascia_in_the_same_billable_call(detector, monkeypatch):
-    """Fascia uses the siding color and must not require a fourth request."""
+@pytest.mark.parametrize(('role', 'prompt'), [
+    ('roof', 'roof'),
+    ('siding', 'exterior wall siding'),
+    ('trim', 'fascia boards, window trim, door trim, corner trim'),
+    ('soffit', 'soffit under roof eaves'),
+    ('door', 'entry door'),
+])
+def test_detection_requests_each_independent_surface(detector, monkeypatch,
+                                                     role, prompt):
     from PIL import Image
     captured = {}
-    rid = 'siding-fascia-test'
+    rid = role + '-test'
     root = 'https://queue.fal.run/fal-ai/sam-3/requests/' + rid
 
     def fake_json(method, url, payload=None):
@@ -768,9 +869,9 @@ def test_siding_detection_requests_fascia_in_the_same_billable_call(detector, mo
                 'response_url': root}
 
     monkeypatch.setattr(detector, '_json', fake_json)
-    detector.submit('siding', _image_uri(Image.new('RGB', (2, 2), 'white')))
+    detector.submit(role, _image_uri(Image.new('RGB', (2, 2), 'white')))
 
-    assert captured['prompt'] == 'exterior wall siding, fascia boards'
+    assert captured['prompt'] == prompt
     assert captured['return_multiple_masks'] is True
 
 
@@ -884,6 +985,31 @@ vm.runInContext(`
   assert.equal(_vzGet().selections.doors.better.pattern_id, '');
   _vzPickDoorOption('');
   assert.equal(_vzGet().selections.doors.better, undefined);
+  priceBook.siding_tier_defaults = {good:'b_lp_expert', better:'b_lp_expert', best:'b_lp_expert'};
+  priceBook.siding_bundles = [
+    {id:'b_lp_expert',name:'LP ExpertFinish',product_ids:['s_lp']},
+    {id:'b_hardie_statement',name:'Hardie Statement',product_ids:['s_hardie']}
+  ];
+  priceBook.siding_catalog = [
+    {id:'s_lp',colors:[{name:'LP White',hex:'#eeeeee'}],styles:[{id:'lap',name:'Lap',pattern_id:'lap'}]},
+    {id:'s_hardie',colors:[{name:'Hardie White',hex:'#dddddd'}],styles:[{id:'smooth',name:'Smooth',pattern_id:'lap'}]}
+  ];
+  priceBook.exterior_catalog = [
+    {category:'siding',active:true,product_id:'ext_lp',brand:'LP',product:'ExpertFinish',style:'Lap 8',color:'LP White',hex:'#eeeeee',price_book_bundle:'b_lp_expert',pattern_id:'lap'},
+    {category:'trim',active:true,product_id:'ext_lp_trim',brand:'LP',product:'Trim',style:'Trim',color:'LP White',hex:'#eeeeee',price_book_bundle:'b_lp_expert'},
+    {category:'soffit',active:true,product_id:'ext_lp_soffit',brand:'LP',product:'Soffit',style:'Vented',color:'LP White',hex:'#eeeeee',price_book_bundle:'b_lp_expert'},
+    {category:'siding',active:true,product_id:'ext_hardie',brand:'Hardie',product:'Statement',style:'Smooth',color:'Hardie White',hex:'#dddddd',price_book_bundle:'b_hardie_statement',pattern_id:'lap'},
+    {category:'trim',active:true,product_id:'ext_hardie_trim',brand:'Hardie',product:'Trim',style:'Smooth',color:'Hardie White',hex:'#dddddd',price_book_bundle:'b_hardie_statement'},
+    {category:'soffit',active:true,product_id:'ext_hardie_soffit',brand:'Hardie',product:'Soffit',style:'Vented',color:'Hardie White',hex:'#dddddd',price_book_bundle:'b_hardie_statement'}
+  ];
+  S.trades.siding = {tier_bundles:{better:'b_lp_expert'}};
+  _vzEnsureTier('better');
+  assert.equal(_vzGet().selections.trim.better.bundle_id, 'b_lp_expert');
+  assert.equal(_vzGet().selections.soffit.better.bundle_id, 'b_lp_expert');
+  _vzChooseProduct('siding','ext_hardie');
+  assert.equal(_vzGet().selections.trim.better.bundle_id, 'b_hardie_statement');
+  assert.equal(_vzGet().selections.soffit.better.bundle_id, 'b_hardie_statement');
+  assert.equal(S.trades.siding.tier_bundles.better, 'b_lp_expert'); // visual change never reprices
   globalThis.oldState = vzState;
   vzState.photoKey = 'first';
   assert(_vzIsCurrent(vzState,'first'));
@@ -893,6 +1019,8 @@ vm.runInContext(`
   assert(!_vzIsCurrent(oldState,'second'));
   _vzResetState();
   assert.equal(vzState.roofMask, null);
+  assert.equal(vzState.trimMask, null);
+  assert.equal(vzState.soffitMask, null);
 `,context);
 // Exercise the asynchronous result boundary: another photo becomes current
 // while the submit request is in flight. No polling or pixel write may follow.
@@ -908,7 +1036,7 @@ vm.runInContext(`
 `,context);
 context.finished.then(() => {
   assert.equal(context.S.estimate_id,'c');
-  assert.equal(context.submits,3);
+  assert.equal(context.submits,5);
 }).catch(e => { console.error(e); process.exitCode=1; });
 """
     source = Path(__file__).resolve().parents[1] / 'static' / 'app.js'

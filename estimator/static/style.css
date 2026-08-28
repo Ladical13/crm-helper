@@ -4471,6 +4471,10 @@ body.is-client #nav-toggle      { display: none; }
 .vz-picker-title { font-weight:700; color:#1a3a5c; font-size:14px; }
 .vz-picker-sublabel { margin-top:8px; margin-bottom:4px; font-size:12px; color:#64748b; text-transform:uppercase; letter-spacing:0.05em; }
 .vz-picker-help { margin:4px 0 8px; color:#64748b; font-size:11px; line-height:1.45; }
+.vz-component-section { border-top:1px solid #e5e7eb; padding-top:12px; }
+.vz-component { margin-top:10px; padding:10px; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; }
+.vz-component h4 { margin:0 0 4px; color:#334155; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+.vz-component .vz-field { margin:8px 0; }
 
 .vz-swatch-row { display:grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap:6px; }
 .vz-swatch { position:relative; height:56px; border:2px solid transparent; border-radius:8px; padding:0; cursor:pointer; overflow:hidden; }

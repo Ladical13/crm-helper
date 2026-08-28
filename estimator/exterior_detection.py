@@ -18,12 +18,15 @@ from PIL import Image, ImageChops, ImageOps
 
 MODEL_URL = 'https://queue.fal.run/fal-ai/sam-3/image'
 # SAM 3 returns one mask per detected object and ``combine_masks`` unions them
-# into the role's single saved mask. Keep fascia in the siding request so the
-# customer's siding choice also covers the horizontal trim at the roof edge,
-# without creating a fourth billable inference request or a separate UI layer.
+# into the role's single saved mask. Trim/fascia and soffit are separate roles
+# so the customer can contrast those finishes with the wall siding. That makes
+# a complete automatic pass five billable requests instead of the earlier
+# three-role pass; the UI and setup notes disclose that before submission.
 PROMPTS = {
     'roof': 'roof',
-    'siding': 'exterior wall siding, fascia boards',
+    'siding': 'exterior wall siding',
+    'trim': 'fascia boards, window trim, door trim, corner trim',
+    'soffit': 'soffit under roof eaves',
     'door': 'entry door',
 }
 MAX_BYTES = 4 * 1024 * 1024

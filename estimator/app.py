@@ -1201,7 +1201,8 @@ def delete_photo(est_id, filename):
 
 # ── Visualizer ────────────────────────────────────────────────────────────
 # The Visualizer tab lets the rep upload a photo of the house, paint roof,
-# siding, and door masks, then produce a Good/Better/Best rendering with colors picked
+# siding, trim/fascia, soffit, and door masks, then produce a Good/Better/Best
+# rendering with colors picked
 # from the actual estimate bundles. State lives entirely under `est.visualizer`
 # — a top-level key the server does not whitelist, so it round-trips through
 # the normal PUT unchanged (see SERVER_MANAGED_FIELDS and _merge).
@@ -1229,7 +1230,7 @@ def visualizer_asset(est_id):
     est.visualizer. Body: JSON {kind, tier?, role?, content_b64, ext}.
 
     kind='base'   -> visualizer.base_image
-    kind='mask'   -> visualizer.roof_mask | siding_mask | door_mask (role required)
+    kind='mask'   -> visualizer.<roof|siding|trim|soffit|door>_mask (role required)
     kind='render' -> visualizer.tier_renders[tier] (tier required)
     """
     if not _safe_path_id(est_id):
@@ -1251,7 +1252,7 @@ def visualizer_asset(est_id):
         return jsonify({'error': 'invalid ext'}), 400
     if kind == 'render' and tier not in ('good', 'better', 'best'):
         return jsonify({'error': 'render requires tier'}), 400
-    if kind == 'mask' and role not in ('roof', 'siding', 'door'):
+    if kind == 'mask' and role not in ('roof', 'siding', 'trim', 'soffit', 'door'):
         return jsonify({'error': 'mask requires role'}), 400
 
     import base64
@@ -1289,7 +1290,8 @@ def visualizer_asset(est_id):
         vz = doc.setdefault('visualizer', {})
         if kind == 'base':
             vz['base_image'] = stored_ref
-            for field in ('roof_mask', 'siding_mask', 'door_mask'):
+            for field in ('roof_mask', 'siding_mask', 'trim_mask',
+                          'soffit_mask', 'door_mask'):
                 vz.pop(field, None)
             vz['tier_renders'] = {}
         elif kind == 'mask':
@@ -1375,7 +1377,8 @@ def visualizer_detection(est_id):
             return jsonify(result)
         body = request.get_json(silent=True)
         if not isinstance(body, dict) or body.get('role') not in detection.PROMPTS:
-            return jsonify({'error': 'Choose roof, siding, or door.'}), 400
+            return jsonify(
+                {'error': 'Choose roof, siding, trim/fascia, soffit, or door.'}), 400
         role = body['role']
         photo_key = body.get('photo_key')
         if not isinstance(photo_key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', photo_key):
@@ -4388,6 +4391,8 @@ def _cv_visualizer_block(est):
         label = {'good': 'Good', 'better': 'Better', 'best': 'Best'}[t]
         rs = (sels.get('roofing') or {}).get(t) or {}
         ss = (sels.get('siding') or {}).get(t) or {}
+        ts = (sels.get('trim') or {}).get(t) or {}
+        sos = (sels.get('soffit') or {}).get(t) or {}
         ds = (sels.get('doors') or {}).get(t) or {}
         cap = []
         if rs.get('color_name'):
@@ -4398,6 +4403,10 @@ def _cv_visualizer_block(est):
             if sname:
                 side_lbl += ' <span class="cvvz-style">(' + he(str(sname)) + ')</span>'
             cap.append(side_lbl)
+        if ts.get('color_name'):
+            cap.append('Trim/Fascia: ' + he(str(ts['color_name'])))
+        if sos.get('color_name'):
+            cap.append('Soffit: ' + he(str(sos['color_name'])))
         if ds.get('option_name'):
             door_lbl = 'Door: ' + he(str(ds['option_name']))
             if ds.get('color_name'):
@@ -7518,6 +7527,8 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
         # saved, so the customer can tie the picture to what they're buying.
         sel = ((vz.get('selections') or {}).get('roofing') or {}).get(tier) or {}
         sel_s = ((vz.get('selections') or {}).get('siding') or {}).get(tier) or {}
+        sel_t = ((vz.get('selections') or {}).get('trim') or {}).get(tier) or {}
+        sel_so = ((vz.get('selections') or {}).get('soffit') or {}).get(tier) or {}
         sel_d = ((vz.get('selections') or {}).get('doors') or {}).get(tier) or {}
         caption_parts = []
         if sel.get('color_name'):
@@ -7528,6 +7539,10 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
             if style_bit:
                 side_lbl += f" ({style_bit})"
             caption_parts.append(side_lbl)
+        if sel_t.get('color_name'):
+            caption_parts.append('Trim/Fascia: ' + str(sel_t['color_name']))
+        if sel_so.get('color_name'):
+            caption_parts.append('Soffit: ' + str(sel_so['color_name']))
         if sel_d.get('option_name'):
             door_lbl = 'Door: ' + str(sel_d['option_name'])
             if sel_d.get('color_name'):
@@ -12611,12 +12626,32 @@ _STYLE_BNB   = {"id": "s_bnb",   "name": "Board & Batten", "pattern_id": "bnb"}
 _STYLE_SHAKE = {"id": "s_shake", "name": "Shingle-Style",  "pattern_id": "shake"}
 _STYLE_PANEL = {"id": "s_panel", "name": "Vertical Panel", "pattern_id": "panel"}
 _HARDIE_STYLES = [_STYLE_LAP, _STYLE_BNB, _STYLE_SHAKE, _STYLE_PANEL]
-_HARDIE_STATEMENT_STYLES = [
+_HARDIE_STATEMENT_LEGACY_STYLES = [
     {"id": "s_hardie_plank", "name": "Hardie Plank", "pattern_id": "lap"},
     {"id": "s_hardie_batten", "name": "Hardie Panel + Hardie Trim Batten",
      "pattern_id": "bnb"},
     {"id": "s_hardie_shingle", "name": "Hardie Shingle", "pattern_id": "shake"},
     {"id": "s_hardie_panel", "name": "Hardie Panel", "pattern_id": "panel"},
+]
+_HARDIE_STATEMENT_STYLES = [
+    {"id": "s_hardie_plank_cedarmill", "name": "Hardie Plank - Select Cedarmill",
+     "pattern_id": "lap"},
+    {"id": "s_hardie_plank_smooth", "name": "Hardie Plank - Smooth",
+     "pattern_id": "lap"},
+    {"id": "s_hardie_batten_rustic", "name": "Hardie Panel + Trim Batten - Rustic Grain",
+     "pattern_id": "bnb"},
+    {"id": "s_hardie_batten_smooth", "name": "Hardie Panel + Trim Batten - Smooth",
+     "pattern_id": "bnb"},
+    {"id": "s_hardie_shingle_straight", "name": "Hardie Shingle - Straight Edge Panel",
+     "pattern_id": "shake_straight"},
+    {"id": "s_hardie_shingle_staggered", "name": "Hardie Shingle - Staggered Edge Panel",
+     "pattern_id": "shake_staggered"},
+    {"id": "s_hardie_panel_cedarmill", "name": "Hardie Panel - Select Cedarmill",
+     "pattern_id": "panel"},
+    {"id": "s_hardie_panel_smooth", "name": "Hardie Panel - Smooth",
+     "pattern_id": "panel"},
+    {"id": "s_hardie_panel_sierra8", "name": "Hardie Panel - Sierra 8",
+     "pattern_id": "sierra8"},
 ]
 _HARDIE_STATEMENT_LEGACY_BULLETS = [
     "James Hardie Statement Collection fiber cement lap, 8.25\" exposure",
@@ -12633,12 +12668,24 @@ _HARDIE_STATEMENT_BULLETS = [
     "30-year non-prorated limited substrate warranty and 15-year limited ColorPlus finish warranty",
 ]
 _LP_STANDARD_STYLES = [_STYLE_LAP, _STYLE_BNB, _STYLE_SHAKE]
-_LP_EXPERTFINISH_STYLES = [
+_LP_EXPERTFINISH_LEGACY_STYLES = [
     {"id": "s_lp_lap_joint", "name": "Lap Joint Siding", "pattern_id": "lap"},
     {"id": "s_lp_shakes", "name": "Shakes", "pattern_id": "shake"},
     {"id": "s_lp_panel", "name": "Panel - NGSE", "pattern_id": "panel"},
     {"id": "s_lp_nickel_gap", "name": "Nickel Gap", "pattern_id": "nickel_gap"},
     {"id": "s_lp_vertical", "name": "Vertical Siding", "pattern_id": "panel"},
+]
+_LP_EXPERTFINISH_STYLES = [
+    {"id": "s_lp_lap_joint_6", "name": "Lap Joint Siding - 6 in.", "pattern_id": "lap"},
+    {"id": "s_lp_lap_joint_8", "name": "Lap Joint Siding - 8 in.", "pattern_id": "lap"},
+    {"id": "s_lp_shakes_straight", "name": "Shakes - Straight Edge",
+     "pattern_id": "shake_straight"},
+    {"id": "s_lp_shakes_staggered", "name": "Shakes - Staggered Edge",
+     "pattern_id": "shake_staggered"},
+    {"id": "s_lp_panel_4x8", "name": "Panel - NGSE 4 x 8 ft.", "pattern_id": "panel"},
+    {"id": "s_lp_panel_4x10", "name": "Panel - NGSE 4 x 10 ft.", "pattern_id": "panel"},
+    {"id": "s_lp_nickel_gap_8", "name": "Nickel Gap - 8 in.", "pattern_id": "nickel_gap"},
+    {"id": "s_lp_vertical_16", "name": "Vertical Siding - 16 in.", "pattern_id": "panel"},
 ]
 _EDCO_STYLES   = [_STYLE_LAP, _STYLE_PANEL]
 _VINYL_STYLES  = [_STYLE_LAP, _STYLE_BNB]
@@ -13566,13 +13613,15 @@ EXTERIOR_DOOR_OPTIONS_SEED = [
 # visual catalog instead of pretending that a color swatch is a priced scope
 # item.  `price_book_bundle` is an optional link back to the estimate's real
 # bundle; choosing a look never changes that bundle or its price.
-EXTERIOR_CATALOG_CATEGORIES = {'roof', 'siding', 'door', 'paint'}
-EXTERIOR_CATALOG_SURFACES = {'siding', 'door'}
+EXTERIOR_CATALOG_CATEGORIES = {'roof', 'siding', 'trim', 'soffit', 'door', 'paint'}
+EXTERIOR_CATALOG_SURFACES = {'siding', 'trim', 'soffit', 'door'}
 EXTERIOR_PATTERN_IDS = {'', 'lap', 'bnb', 'board_batten', 'shake', 'panel',
-                        'vertical', 'nickel_gap'}
+                        'vertical', 'nickel_gap', 'shake_straight',
+                        'shake_staggered', 'sierra8'}
 _EXTERIOR_PATTERN_ALIASES = {'board_batten': 'bnb', 'vertical': 'panel'}
 _LP_EXPERTFINISH_EXTERIOR_MIGRATION = 'lp-expertfinish-lpef01884-2025'
 _HARDIE_STATEMENT_EXTERIOR_MIGRATION = 'james-hardie-hs2601-nrd-2026'
+_SIDING_COMPONENT_EXTERIOR_MIGRATION = 'hardie-lp-trim-soffit-profiles-2026'
 _HARDIE_STATEMENT_LEGACY_DESCRIPTION = (
     'Pre-finished fiber cement siding — no painting required, '
     'non-combustible, 15-year ColorPlus finish warranty.')
@@ -13605,8 +13654,14 @@ def _exterior_pattern(style, supplied=''):
     style_l = _exterior_text(style, 80).lower()
     if 'nickel' in style_l and 'gap' in style_l:
         return 'nickel_gap'
+    if 'sierra 8' in style_l:
+        return 'sierra8'
     if 'board' in style_l and 'batten' in style_l:
         return 'bnb'
+    if 'straight' in style_l and ('shake' in style_l or 'shingle' in style_l):
+        return 'shake_straight'
+    if 'staggered' in style_l and ('shake' in style_l or 'shingle' in style_l):
+        return 'shake_staggered'
     if 'shake' in style_l or 'shingle' in style_l:
         return 'shake'
     if 'vertical' in style_l or 'panel' in style_l:
@@ -13635,11 +13690,13 @@ def _normalize_exterior_entry(raw, row_number=None):
     if not isinstance(raw, dict):
         raise ValueError(f'Row {row_number or "?"}: expected an object')
     aliases = {'roofing': 'roof', 'roofs': 'roof', 'doors': 'door',
-               'paints': 'paint'}
+               'paints': 'paint', 'trims': 'trim', 'fascia': 'trim',
+               'fascias': 'trim', 'soffits': 'soffit'}
     category = aliases.get(_exterior_text(raw.get('category'), 20).lower(),
                            _exterior_text(raw.get('category'), 20).lower())
     if category not in EXTERIOR_CATALOG_CATEGORIES:
-        raise ValueError(f'Row {row_number or "?"}: category must be roof, siding, door, or paint')
+        raise ValueError(
+            f'Row {row_number or "?"}: category must be roof, siding, trim, soffit, door, or paint')
     product = _exterior_text(raw.get('product') or raw.get('series'), 120)
     color = _exterior_text(raw.get('color') or raw.get('color_name'), 80)
     if not product:
@@ -13653,9 +13710,11 @@ def _normalize_exterior_entry(raw, row_number=None):
     if category == 'paint':
         applies = applies or 'siding'
         if applies not in EXTERIOR_CATALOG_SURFACES:
-            raise ValueError(f'Row {row_number or "?"}: paint applies_to must be siding or door')
+            raise ValueError(
+                f'Row {row_number or "?"}: paint applies_to must be siding, trim, soffit, or door')
     else:
-        applies = {'roof': 'roof', 'siding': 'siding', 'door': 'door'}[category]
+        applies = {'roof': 'roof', 'siding': 'siding', 'trim': 'trim',
+                   'soffit': 'soffit', 'door': 'door'}[category]
     entry = {
         'category': category,
         'brand': _exterior_text(raw.get('brand'), 80),
@@ -13699,7 +13758,7 @@ def _normalize_exterior_catalog(rows):
 
 
 def _lp_expertfinish_exterior_rows():
-    """The 16 colors x five wall profiles shown in LP sheet LPEF01884."""
+    """The 16 colors x eight exact wall profiles in LP sheet LPEF01884."""
     return _normalize_exterior_catalog([
         {
             'category': 'siding', 'brand': 'LP SmartSide',
@@ -13754,7 +13813,7 @@ def _migrate_lp_expertfinish_visuals(pb):
 
 
 def _hardie_statement_exterior_rows():
-    """The 17 regional colors x four families shown in HS2601-NRD."""
+    """The 17 regional colors x nine exact profiles shown in HS2601-NRD."""
     return _normalize_exterior_catalog([
         {
             'category': 'siding', 'brand': 'James Hardie',
@@ -13824,6 +13883,123 @@ def _migrate_hardie_statement_visuals(pb):
     pb['exterior_catalog'] = _normalize_exterior_catalog(
         kept + _hardie_statement_exterior_rows())
     versions.append(_HARDIE_STATEMENT_EXTERIOR_MIGRATION)
+    pb['exterior_catalog_seed_versions'] = versions
+
+
+def _siding_component_exterior_rows():
+    """Hardie/LP trim, fascia, and soffit choices from the supplied sheets.
+
+    Prefinished palettes follow the manufacturer documents. Primed systems
+    use the existing field-paint preview palette because the finish is chosen
+    after installation. These are visual rows only; bundle prices remain the
+    manager's saved values.
+    """
+    hardie_trim_colors = [
+        color for color in _HARDIE_STATEMENT_COLORS
+        if color['name'] in {'Arctic White', 'Cobble Stone', 'Iron Gray', 'Timber Bark'}
+    ]
+    hardie_soffit_colors = [
+        color for color in _HARDIE_STATEMENT_COLORS
+        if color['name'] == 'Arctic White'
+    ]
+    configs = [
+        ('trim', 'LP SmartSide', 'LP SmartSide Field-Painted Trim & Fascia',
+         ['Trim & Fascia'], _SIDING_NEUTRAL_COLORS, 'b_lp_standard'),
+        ('soffit', 'LP SmartSide', 'LP SmartSide Field-Painted Soffit',
+         ['Closed Soffit', 'Vented Soffit'], _SIDING_NEUTRAL_COLORS, 'b_lp_standard'),
+        ('trim', 'LP SmartSide', 'LP SmartSide ExpertFinish Trim & Fascia',
+         ['Trim & Fascia'], _LP_EXPERTFINISH_COLORS, 'b_lp_expert'),
+        ('soffit', 'LP SmartSide', 'LP SmartSide ExpertFinish Soffit',
+         ['Closed - 12, 16 or 24 in.', 'Vented - 12, 16 or 24 in.'],
+         _LP_EXPERTFINISH_COLORS, 'b_lp_expert'),
+        ('trim', 'James Hardie', 'James Hardie Field-Painted Trim & Fascia',
+         ['Rustic Grain', 'Smooth'], _SIDING_NEUTRAL_COLORS, 'b_hardie_primed'),
+        ('soffit', 'James Hardie', 'James Hardie Field-Painted Soffit',
+         ['Vented Smooth', 'Non-Vented Smooth',
+          'Non-Vented Select Cedarmill', 'Vented Select Cedarmill'],
+         _SIDING_NEUTRAL_COLORS, 'b_hardie_primed'),
+        ('trim', 'James Hardie', 'Hardie Trim',
+         ['Rustic Grain', 'Smooth'], hardie_trim_colors, 'b_hardie_statement'),
+        ('soffit', 'James Hardie', 'Hardie Soffit',
+         ['Vented Smooth', 'Non-Vented Smooth',
+          'Non-Vented Select Cedarmill', 'Vented Select Cedarmill'],
+         hardie_soffit_colors, 'b_hardie_statement'),
+    ]
+    return _normalize_exterior_catalog([
+        {
+            'category': category, 'brand': brand, 'product': product,
+            'style': style, 'color': color['name'], 'hex': color['hex'],
+            'price_book_bundle': bundle_id, 'active': True,
+        }
+        for category, brand, product, styles, colors, bundle_id in configs
+        for style in styles
+        for color in colors
+    ])
+
+
+def _migrate_siding_component_visuals(pb):
+    """Add separate component palettes and replace broad profile labels once."""
+    versions = pb.get('exterior_catalog_seed_versions')
+    if not isinstance(versions, list):
+        versions = []
+    if _SIDING_COMPONENT_EXTERIOR_MIGRATION in versions:
+        return
+
+    live_lp = next((p for p in pb.get('siding_catalog') or []
+                    if isinstance(p, dict) and p.get('id') == 's_lp_expert'), None)
+    if (live_lp is not None
+            and live_lp.get('styles') == _LP_EXPERTFINISH_LEGACY_STYLES):
+        live_lp['styles'] = copy.deepcopy(_LP_EXPERTFINISH_STYLES)
+
+    live_hardie = next((p for p in pb.get('siding_catalog') or []
+                        if isinstance(p, dict)
+                        and p.get('id') == 's_hardie_statement'), None)
+    if (live_hardie is not None
+            and live_hardie.get('styles') == _HARDIE_STATEMENT_LEGACY_STYLES):
+        live_hardie['styles'] = copy.deepcopy(_HARDIE_STATEMENT_STYLES)
+
+    lp_styles = {s['name'].casefold()
+                 for s in _LP_EXPERTFINISH_LEGACY_STYLES + _LP_EXPERTFINISH_STYLES}
+    hardie_styles = {s['name'].casefold()
+                     for s in (_HARDIE_STYLES + _HARDIE_STATEMENT_LEGACY_STYLES
+                               + _HARDIE_STATEMENT_STYLES)}
+    component_products = {
+        row['product'].casefold() for row in _siding_component_exterior_rows()
+    }
+    kept = []
+    for row in _normalize_exterior_catalog(pb.get('exterior_catalog') or []):
+        is_lp_profile = (
+            row['category'] == 'siding'
+            and row['brand'].casefold() == 'lp smartside'
+            and row['product'].casefold() == 'lp smartside expertfinish'
+            and row['price_book_bundle'] == 'b_lp_expert'
+            and row['style'].casefold() in lp_styles
+            and row['color'].casefold()
+            in {c['name'].casefold() for c in _LP_EXPERTFINISH_COLORS}
+        )
+        is_hardie_profile = (
+            row['category'] == 'siding'
+            and row['brand'].casefold() == 'james hardie'
+            and row['product'].casefold() == 'james hardie statement collection'
+            and row['price_book_bundle'] == 'b_hardie_statement'
+            and row['style'].casefold() in hardie_styles
+            and row['color'].casefold()
+            in {c['name'].casefold() for c in _HARDIE_STATEMENT_COLORS}
+        )
+        is_shipped_component = (
+            row['category'] in {'trim', 'soffit'}
+            and row['product'].casefold() in component_products
+            and row['price_book_bundle'] in {
+                'b_lp_standard', 'b_lp_expert',
+                'b_hardie_primed', 'b_hardie_statement'}
+        )
+        if not (is_lp_profile or is_hardie_profile or is_shipped_component):
+            kept.append(row)
+    pb['exterior_catalog'] = _normalize_exterior_catalog(
+        kept + _lp_expertfinish_exterior_rows()
+        + _hardie_statement_exterior_rows()
+        + _siding_component_exterior_rows())
+    versions.append(_SIDING_COMPONENT_EXTERIOR_MIGRATION)
     pb['exterior_catalog_seed_versions'] = versions
 
 
@@ -14126,6 +14302,7 @@ def _ensure_bundle_catalogs(pb):
         pb['exterior_catalog'] = _legacy_exterior_catalog(pb)
     _migrate_lp_expertfinish_visuals(pb)
     _migrate_hardie_statement_visuals(pb)
+    _migrate_siding_component_visuals(pb)
     _migrate_landmark_visuals(pb)
     _migrate_iko_nordic_visuals(pb)
     return pb
@@ -14282,9 +14459,11 @@ def exterior_catalog_template():
     csv_text = (
         'category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,active\r\n'
         'roof,CertainTeed,Landmark,Architectural,Moire Black,,#292929,,b_landmark,true\r\n'
-        'siding,LP,ExpertFinish,Board & Batten,Deep Ocean,,#263d4c,,b_lp_expert,true\r\n'
+        'siding,LP SmartSide,ExpertFinish,Lap Joint Siding - 8 in.,Summit Blue,,#859298,,b_lp_expert,true\r\n'
+        'trim,LP SmartSide,ExpertFinish Trim & Fascia,Trim & Fascia,Snowscape White,,#f2f1f1,,b_lp_expert,true\r\n'
+        'soffit,James Hardie,Hardie Soffit,Vented Smooth,Arctic White,,#f0f0e4,,b_hardie_statement,true\r\n'
         'door,ProVia,Signet,460 Style,Autumn Red,,#823d36,,,true\r\n'
-        'paint,Sherwin-Williams,Duration,Exterior Satin,Tricorn Black,SW 6258,#2f2f30,siding,,true\r\n'
+        'paint,Sherwin-Williams,Duration,Exterior Satin,Tricorn Black,SW 6258,#2f2f30,trim,,true\r\n'
     )
     return Response(csv_text, mimetype='text/csv', headers={
         'Content-Disposition': 'attachment; filename=exterior-catalog-template.csv'})

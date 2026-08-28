@@ -15,10 +15,9 @@ EXTERIOR_AUTO_DETECT=1
 FAL_KEY=<server-side fal credential>
 ```
 
-Set a usage allowance in the provider account. Each photo submits three model
-requests (roof, siding, entry door). The siding request asks for both exterior
-wall siding and fascia boards; their returned masks are combined so fascia
-receives the same visual product/color without an additional fal request.
+Set a usage allowance in the provider account. Each complete automatic pass
+submits five model requests: roof, wall siding, trim/fascia, soffit, and entry
+door. Separate masks let the rep choose contrasting trim and soffit finishes.
 Changing dropdowns afterwards runs locally and does not request more inference.
 No credential belongs in client code,
 source control, or chat. No customer photo is sent while either variable is
@@ -38,8 +37,9 @@ Inference uses the queue so it does not occupy a web worker while the model
 runs. Poll tickets expire after 10 minutes and bind the job to a rep, estimate,
 and photo. Each surface has a 30-second submission cooldown per estimate.
 Failures and empty/low-confidence detections preserve existing selections.
-Fascia detection remains image-dependent, so the rep should review its edges
-and use **Refine selection → Siding** when a board is obscured or missed.
+Trim and soffit detection remain image-dependent, so the rep should review the
+edges and use the matching **Refine selection** tool when boards or eaves are
+obscured or missed.
 Changing the photo or customer invalidates in-flight results in the editor.
 Results are not saved to the customer estimate until **Save Renderings**.
 
@@ -53,10 +53,9 @@ category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,a
 ```
 
 One row is one product/color combination. Categories are `roof`, `siding`,
-`door`, and `paint`. Paint must use `applies_to=siding` or `applies_to=door`;
-fascia intentionally shares the siding surface, while other trim is not
-isolated as a separate color layer. Hex values must
-be six-digit CSS colors such as `#292929`. The optional
+`trim`, `soffit`, `door`, and `paint`. Paint must use `applies_to=siding`,
+`applies_to=trim`, `applies_to=soffit`, or `applies_to=door`. Hex values must be
+six-digit CSS colors such as `#292929`. The optional
 `price_book_bundle` links a roof or siding visual product to an existing bundle
 so Design Studio starts on the system already quoted. It never changes scope
 or pricing. CSV imports merge by stable product/color identity and update
@@ -64,13 +63,13 @@ matching rows rather than duplicating them. The catalog is limited to 5,000
 rows and only managers/admins may save or import it.
 
 The catalog lives under `exterior_catalog` in the live `price_book.json` on the
-Railway volume. Existing seeded roof, siding, and ProVia palettes are converted
-to uploader rows the first time a book without this key is read. An explicit
-empty list remains empty.
+Railway volume. Existing seeded roof, siding, trim/fascia, soffit, and ProVia
+palettes are migrated into uploader rows on first use. Version markers preserve
+later manager edits and intentional row deletions.
 
 ## Catalog and preview accuracy
 
-Roof/siding dropdowns read active entries from the manager exterior catalog.
+All five surface dropdowns read active entries from the manager exterior catalog.
 They start with a catalog product linked to the estimate's selected bundle when
 one exists. Exploring another product is a design choice only: it does **not**
 change quantities, pricing, or the quoted bundle. Update Products/Pricing
@@ -79,11 +78,17 @@ separately after the customer chooses a look.
 ### LP SmartSide ExpertFinish 2025
 
 The seeded LP ExpertFinish visual catalog is based on LP sales sheet LPEF01884
-(01/25). It contains the sheet's 16 named colors and the five wall profiles that
-can be represented in Design Studio: Lap Joint Siding, Shakes, Panel - NGSE,
-Nickel Gap, and Vertical Siding. Trim, soffit, outside corners, J-blocks, and
-mini-split blocks are accessories rather than separate visual profiles; fascia
-shares the selected siding color.
+(01/25). It contains the sheet's 16 named colors and eight selectable wall
+profiles: 6-inch and 8-inch Lap Joint Siding; straight-edge and staggered-edge
+Shakes; 4×8-foot and 4×10-foot Panel - NGSE; 8-inch Nickel Gap; and 16-inch
+Vertical Siding.
+
+Trim/fascia and soffit are independent visual layers. ExpertFinish trim/fascia
+uses the 16 named preview colors. Soffit can be closed or vented, with the sheet's
+12-, 16-, and 24-inch widths represented in the profile label. The sales sheet
+does not provide a per-SKU color availability matrix, so these choices remain a
+visual aid and the rep must verify the exact product/color combination before
+ordering. Field-painted LP systems retain the general paint-preview palette.
 
 The hex values are sampled from the solid digital swatches in the supplied PDF.
 LP states that displayed colors are representative and may not be an exact
@@ -95,12 +100,13 @@ copy only; it does not change manager pricing or quantities.
 
 The seeded James Hardie Statement Collection visual catalog is based on the
 North Rockies & Denver Color & Product Availability catalog HS2601-NRD (01/26).
-It contains the region's 17 Statement Collection colors: Arctic White, Cobble
+It contains the region's 17 Statement Collection siding colors: Arctic White, Cobble
 Stone, Navajo Beige, Khaki Brown, Monterey Taupe, Pearl Gray, Timber Bark, Rich
 Espresso, Mountain Sage, Gray Slate, Light Mist, Boothbay Blue, Night Gray,
-Evening Blue, Aged Pewter, Iron Gray, and Countrylane Red. The four visual
-profiles are Hardie Plank, Hardie Panel + Hardie Trim Batten, Hardie Shingle,
-and Hardie Panel.
+Evening Blue, Aged Pewter, Iron Gray, and Countrylane Red. The exact selectable
+profiles are Hardie Plank in Select Cedarmill or Smooth; Hardie Panel + Trim
+Batten in Rustic Grain or Smooth; Hardie Shingle in Straight Edge Panel or
+Staggered Edge Panel; and Hardie Panel in Select Cedarmill, Smooth, or Sierra 8.
 
 The representative hex values are sampled from the catalog's textured digital
 swatches. James Hardie says printed colors are only as accurate as the printing
@@ -109,12 +115,14 @@ warning remains in the tool. Primed products, the nearly 700 made-to-order
 Dream Collection finishes, and the primed-only Artisan and Architectural Panel
 specialty lines remain separate and are not folded into the Statement bundle.
 
-The catalog shows a narrower regional finish range for separate trim and soffit:
-Hardie Trim is listed in Arctic White, Cobble Stone, Iron Gray, and Timber Bark,
-while Hardie Soffit is listed in Arctic White. Design Studio currently treats
-fascia as part of the siding mask, so a whole-house preview is a visual concept,
-not a promise that every trim or soffit SKU ships in all 17 siding colors. Verify
-the physical specification and regional availability before ordering.
+The catalog shows a narrower regional finish range for separate trim and soffit.
+Hardie Trim has Rustic Grain and Smooth profiles and is limited here to Arctic
+White, Cobble Stone, Iron Gray, and Timber Bark. Hardie Soffit has Vented Smooth,
+Non-Vented Smooth, Non-Vented Select Cedarmill, and Vented Select Cedarmill
+profiles and is limited here to Arctic White. Design Studio enforces those
+separate palettes instead of offering all 17 siding colors. Primed Hardie systems
+retain the general field-paint preview palette. Verify the physical specification
+and regional availability before ordering.
 
 Product copy now reflects the catalog's HZ5 northern-climate positioning,
 resistance to moisture damage, pests, dimensional movement, hail, and impact,
