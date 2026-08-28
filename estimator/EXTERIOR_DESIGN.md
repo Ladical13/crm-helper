@@ -91,6 +91,38 @@ match, and that not every product is available in every color. The tool retains
 the physical-sample warning. This source updates visual options and product
 copy only; it does not change manager pricing or quantities.
 
+### James Hardie Statement Collection 2026
+
+The seeded James Hardie Statement Collection visual catalog is based on the
+North Rockies & Denver Color & Product Availability catalog HS2601-NRD (01/26).
+It contains the region's 17 Statement Collection colors: Arctic White, Cobble
+Stone, Navajo Beige, Khaki Brown, Monterey Taupe, Pearl Gray, Timber Bark, Rich
+Espresso, Mountain Sage, Gray Slate, Light Mist, Boothbay Blue, Night Gray,
+Evening Blue, Aged Pewter, Iron Gray, and Countrylane Red. The four visual
+profiles are Hardie Plank, Hardie Panel + Hardie Trim Batten, Hardie Shingle,
+and Hardie Panel.
+
+The representative hex values are sampled from the catalog's textured digital
+swatches. James Hardie says printed colors are only as accurate as the printing
+method permits and directs customers to order samples, so the physical-sample
+warning remains in the tool. Primed products, the nearly 700 made-to-order
+Dream Collection finishes, and the primed-only Artisan and Architectural Panel
+specialty lines remain separate and are not folded into the Statement bundle.
+
+The catalog shows a narrower regional finish range for separate trim and soffit:
+Hardie Trim is listed in Arctic White, Cobble Stone, Iron Gray, and Timber Bark,
+while Hardie Soffit is listed in Arctic White. Design Studio currently treats
+fascia as part of the siding mask, so a whole-house preview is a visual concept,
+not a promise that every trim or soffit SKU ships in all 17 siding colors. Verify
+the physical specification and regional availability before ordering.
+
+Product copy now reflects the catalog's HZ5 northern-climate positioning,
+resistance to moisture damage, pests, dimensional movement, hail, and impact,
+and its noncombustible/Class A fiber-cement testing language. It also reflects
+the 30-year non-prorated limited substrate warranty and 15-year limited
+ColorPlus finish warranty. This update does not change manager pricing,
+quantities, or the quoted siding bundle.
+
 ### CertainTeed Landmark 2026
 
 The seeded standard Landmark visual catalog is based on CertainTeed Landmark

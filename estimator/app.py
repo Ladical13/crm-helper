@@ -12582,11 +12582,56 @@ _LP_EXPERTFINISH_COLORS = [
     {"name": "Midnight Shadow",  "hex": "#505757"},
     {"name": "Abyss Black",      "hex": "#2b3131"},
 ]
+# James Hardie North Rockies & Denver catalog HS2601-NRD (01/26), supplied
+# by the company on 2026-08-28. These RGB values are sampled from the textured
+# digital swatches in that PDF. James Hardie says printed colors are only as
+# accurate as the printing method permits, so these remain preview colors and
+# do not replace a physical ColorPlus sample.
+_HARDIE_STATEMENT_COLORS = [
+    {"name": "Arctic White",    "hex": "#f0f0e4"},
+    {"name": "Cobble Stone",    "hex": "#cfc7bb"},
+    {"name": "Navajo Beige",    "hex": "#e1d8c1"},
+    {"name": "Khaki Brown",     "hex": "#a3937a"},
+    {"name": "Monterey Taupe", "hex": "#a29c86"},
+    {"name": "Pearl Gray",      "hex": "#b0b1ac"},
+    {"name": "Timber Bark",     "hex": "#7e7161"},
+    {"name": "Rich Espresso",   "hex": "#5f564f"},
+    {"name": "Mountain Sage",   "hex": "#6c6a53"},
+    {"name": "Gray Slate",      "hex": "#888d87"},
+    {"name": "Light Mist",      "hex": "#bdc0bb"},
+    {"name": "Boothbay Blue",   "hex": "#758187"},
+    {"name": "Night Gray",      "hex": "#5f6267"},
+    {"name": "Evening Blue",    "hex": "#5e6a76"},
+    {"name": "Aged Pewter",     "hex": "#7e7f7a"},
+    {"name": "Iron Gray",       "hex": "#444847"},
+    {"name": "Countrylane Red", "hex": "#713c37"},
+]
 _STYLE_LAP   = {"id": "s_lap",   "name": "Lap Siding",     "pattern_id": "lap"}
 _STYLE_BNB   = {"id": "s_bnb",   "name": "Board & Batten", "pattern_id": "bnb"}
 _STYLE_SHAKE = {"id": "s_shake", "name": "Shingle-Style",  "pattern_id": "shake"}
 _STYLE_PANEL = {"id": "s_panel", "name": "Vertical Panel", "pattern_id": "panel"}
 _HARDIE_STYLES = [_STYLE_LAP, _STYLE_BNB, _STYLE_SHAKE, _STYLE_PANEL]
+_HARDIE_STATEMENT_STYLES = [
+    {"id": "s_hardie_plank", "name": "Hardie Plank", "pattern_id": "lap"},
+    {"id": "s_hardie_batten", "name": "Hardie Panel + Hardie Trim Batten",
+     "pattern_id": "bnb"},
+    {"id": "s_hardie_shingle", "name": "Hardie Shingle", "pattern_id": "shake"},
+    {"id": "s_hardie_panel", "name": "Hardie Panel", "pattern_id": "panel"},
+]
+_HARDIE_STATEMENT_LEGACY_BULLETS = [
+    "James Hardie Statement Collection fiber cement lap, 8.25\" exposure",
+    "ColorPlus factory finish — no field painting, backed by a 15-year finish warranty",
+    "Non-combustible fiber cement — will not feed a fire",
+    "Hail, pest, and rot proof; engineered for Colorado freeze-thaw",
+    "30-year limited manufacturer warranty",
+]
+_HARDIE_STATEMENT_BULLETS = [
+    "James Hardie Statement Collection ColorPlus fiber cement siding",
+    "HZ5 products are engineered for northern wet and freezing conditions",
+    "Fiber cement substrate is noncombustible and/or Class A under the cited ASTM E84 testing",
+    "Resists moisture damage, pests, shrinking, swelling, warping, hail, and impact",
+    "30-year non-prorated limited substrate warranty and 15-year limited ColorPlus finish warranty",
+]
 _LP_STANDARD_STYLES = [_STYLE_LAP, _STYLE_BNB, _STYLE_SHAKE]
 _LP_EXPERTFINISH_STYLES = [
     {"id": "s_lp_lap_joint", "name": "Lap Joint Siding", "pattern_id": "lap"},
@@ -12633,12 +12678,8 @@ SIDING_CATALOG_SEED = [
                  "30-year limited manufacturer warranty"],
      "colors": _SIDING_NEUTRAL_COLORS, "styles": _HARDIE_STYLES},
     {"id": "s_hardie_statement", "name": "James Hardie Statement Collection 8.25\" Lap", "group": "James Hardie", "unit": "SQ", "cost": 248.71, "measure": "siding_sq_waste",
-     "bullets": ["James Hardie Statement Collection fiber cement lap, 8.25\" exposure",
-                 "ColorPlus factory finish — no field painting, backed by a 15-year finish warranty",
-                 "Non-combustible fiber cement — will not feed a fire",
-                 "Hail, pest, and rot proof; engineered for Colorado freeze-thaw",
-                 "30-year limited manufacturer warranty"],
-     "colors": _SIDING_NEUTRAL_COLORS, "styles": _HARDIE_STYLES},
+     "bullets": _HARDIE_STATEMENT_BULLETS,
+     "colors": _HARDIE_STATEMENT_COLORS, "styles": _HARDIE_STATEMENT_STYLES},
     {"id": "sa_wrap_hardie", "name": "HardieWrap Weather Barrier", "group": "James Hardie", "unit": "SQ", "cost": 23.46, "measure": "siding_sq_waste",
      "bullets": ["HardieWrap weather-resistant barrier over the full wall area — required for the James Hardie system warranty"]},
     {"id": "sa_hardie_primed_trim", "name": "James Hardie Primed Trim 5/4×6", "group": "James Hardie", "unit": "LF", "cost": 2.51, "measure": "siding_trim",
@@ -12788,7 +12829,7 @@ SIDING_BUNDLES_SEED = [
      "description": "Fiber cement lap siding — field-painted to any color, non-combustible, 30-year limited warranty.",
      "extra_features": _SS_EXTRA},
     {"id": "b_hardie_statement", "name": "James Hardie Statement Collection", "product_ids": ["s_hardie_statement", "sa_wrap_hardie", "sa_starter", "sa_hardie_statement_trim", "sa_hardie_statement_soffit", "sa_fascia", "sa_kickout", "sa_sealant", "sa_touchup", "sa_rot_repair", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
-     "description": "Pre-finished fiber cement siding — no painting required, non-combustible, 15-year ColorPlus finish warranty.",
+     "description": "ColorPlus pre-finished fiber cement siding — HZ5 climate-engineered substrate with 30-year non-prorated limited coverage and a 15-year limited finish warranty.",
      "extra_features": _SS_EXTRA},
     {"id": "b_edco_d4", "name": "EDCO D4\" TimberGrain", "product_ids": ["s_edco_d4", "sa_edco_jchannel", "sa_edco_corner", "sa_corner_in", "sa_edco_starter", "sa_edco_soffit", "sa_fascia", "sa_kickout", "sa_sealant", "sa_edco_fasteners", "sa_rot_repair", "sl_tearoff", "sl_install", "sx_dumpster", "sx_permit"],
      "description": "28ga steel siding — Class 4 impact-rated, TimberGrain wood-look finish, lifetime limited warranty.",
@@ -13531,6 +13572,10 @@ EXTERIOR_PATTERN_IDS = {'', 'lap', 'bnb', 'board_batten', 'shake', 'panel',
                         'vertical', 'nickel_gap'}
 _EXTERIOR_PATTERN_ALIASES = {'board_batten': 'bnb', 'vertical': 'panel'}
 _LP_EXPERTFINISH_EXTERIOR_MIGRATION = 'lp-expertfinish-lpef01884-2025'
+_HARDIE_STATEMENT_EXTERIOR_MIGRATION = 'james-hardie-hs2601-nrd-2026'
+_HARDIE_STATEMENT_LEGACY_DESCRIPTION = (
+    'Pre-finished fiber cement siding — no painting required, '
+    'non-combustible, 15-year ColorPlus finish warranty.')
 _LANDMARK_EXTERIOR_MIGRATION = 'certainteed-landmark-00-00-134-2026'
 _LANDMARK_LEGACY_DESCRIPTION = (
     'Architectural laminate shingle system — dimensional shadow lines, '
@@ -13705,6 +13750,80 @@ def _migrate_lp_expertfinish_visuals(pb):
     pb['exterior_catalog'] = _normalize_exterior_catalog(
         kept + _lp_expertfinish_exterior_rows())
     versions.append(_LP_EXPERTFINISH_EXTERIOR_MIGRATION)
+    pb['exterior_catalog_seed_versions'] = versions
+
+
+def _hardie_statement_exterior_rows():
+    """The 17 regional colors x four families shown in HS2601-NRD."""
+    return _normalize_exterior_catalog([
+        {
+            'category': 'siding', 'brand': 'James Hardie',
+            'product': 'James Hardie Statement Collection',
+            'style': style['name'], 'pattern_id': style['pattern_id'],
+            'color': color['name'], 'hex': color['hex'],
+            'price_book_bundle': 'b_hardie_statement', 'active': True,
+        }
+        for style in _HARDIE_STATEMENT_STYLES
+        for color in _HARDIE_STATEMENT_COLORS
+    ])
+
+
+def _migrate_hardie_statement_visuals(pb):
+    """Replace only shipped Hardie placeholders with regional catalog data.
+
+    Manager prices, custom rows, and edited product copy survive. The version
+    marker also makes later manager deletion of an official swatch sticky.
+    """
+    versions = pb.get('exterior_catalog_seed_versions')
+    if not isinstance(versions, list):
+        versions = []
+    if _HARDIE_STATEMENT_EXTERIOR_MIGRATION in versions:
+        return
+
+    live_product = next((p for p in pb.get('siding_catalog') or []
+                         if isinstance(p, dict)
+                         and p.get('id') == 's_hardie_statement'), None)
+    if live_product is not None:
+        if live_product.get('colors') == _SIDING_NEUTRAL_COLORS:
+            live_product['colors'] = copy.deepcopy(_HARDIE_STATEMENT_COLORS)
+        if live_product.get('styles') == _HARDIE_STYLES:
+            live_product['styles'] = copy.deepcopy(_HARDIE_STATEMENT_STYLES)
+        if live_product.get('bullets') == _HARDIE_STATEMENT_LEGACY_BULLETS:
+            live_product['bullets'] = copy.deepcopy(_HARDIE_STATEMENT_BULLETS)
+
+    live_bundle = next((b for b in pb.get('siding_bundles') or []
+                        if isinstance(b, dict)
+                        and b.get('id') == 'b_hardie_statement'), None)
+    if (live_bundle is not None
+            and live_bundle.get('description')
+            == _HARDIE_STATEMENT_LEGACY_DESCRIPTION):
+        live_bundle['description'] = next(
+            b['description'] for b in SIDING_BUNDLES_SEED
+            if b['id'] == 'b_hardie_statement')
+
+    shipped_colors = {
+        c['name'].casefold()
+        for c in _SIDING_NEUTRAL_COLORS + _HARDIE_STATEMENT_COLORS
+    }
+    shipped_styles = {
+        s['name'].casefold()
+        for s in _HARDIE_STYLES + _HARDIE_STATEMENT_STYLES
+    }
+    kept = []
+    for row in _normalize_exterior_catalog(pb.get('exterior_catalog') or []):
+        is_shipped = (
+            row['category'] == 'siding'
+            and row['brand'].casefold() == 'james hardie'
+            and row['product'].casefold() == 'james hardie statement collection'
+            and row['price_book_bundle'] == 'b_hardie_statement'
+            and row['style'].casefold() in shipped_styles
+            and row['color'].casefold() in shipped_colors
+        )
+        if not is_shipped:
+            kept.append(row)
+    pb['exterior_catalog'] = _normalize_exterior_catalog(
+        kept + _hardie_statement_exterior_rows())
+    versions.append(_HARDIE_STATEMENT_EXTERIOR_MIGRATION)
     pb['exterior_catalog_seed_versions'] = versions
 
 
@@ -14006,6 +14125,7 @@ def _ensure_bundle_catalogs(pb):
     if 'exterior_catalog' not in pb:
         pb['exterior_catalog'] = _legacy_exterior_catalog(pb)
     _migrate_lp_expertfinish_visuals(pb)
+    _migrate_hardie_statement_visuals(pb)
     _migrate_landmark_visuals(pb)
     _migrate_iko_nordic_visuals(pb)
     return pb

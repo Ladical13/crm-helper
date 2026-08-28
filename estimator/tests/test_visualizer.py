@@ -312,6 +312,121 @@ def test_lp_expertfinish_migrates_legacy_visuals_without_touching_price_or_custo
                    for r in pb['exterior_catalog'])
 
 
+def test_hardie_statement_seed_matches_the_2026_regional_catalog(A):
+    product = next(p for p in A.SIDING_CATALOG_SEED
+                   if p['id'] == 's_hardie_statement')
+    assert [c['name'] for c in product['colors']] == [
+        'Arctic White', 'Cobble Stone', 'Navajo Beige', 'Khaki Brown',
+        'Monterey Taupe', 'Pearl Gray', 'Timber Bark', 'Rich Espresso',
+        'Mountain Sage', 'Gray Slate', 'Light Mist', 'Boothbay Blue',
+        'Night Gray', 'Evening Blue', 'Aged Pewter', 'Iron Gray',
+        'Countrylane Red',
+    ]
+    assert product['colors'][0]['hex'] == '#f0f0e4'
+    assert product['colors'][-1]['hex'] == '#713c37'
+    assert [s['name'] for s in product['styles']] == [
+        'Hardie Plank', 'Hardie Panel + Hardie Trim Batten',
+        'Hardie Shingle', 'Hardie Panel',
+    ]
+    assert [s['pattern_id'] for s in product['styles']] == [
+        'lap', 'bnb', 'shake', 'panel']
+    copy_text = ' '.join(product['bullets'])
+    assert 'HZ5' in copy_text
+    assert 'noncombustible and/or Class A' in copy_text
+    assert '30-year non-prorated limited substrate warranty' in copy_text
+    assert '15-year limited ColorPlus finish warranty' in copy_text
+    assert 'rot proof' not in copy_text
+
+
+def test_new_pricebook_exposes_one_official_hardie_statement_palette(client):
+    rows = client.get('/api/pricebook').get_json()['exterior_catalog']
+    hardie = [r for r in rows
+              if r['price_book_bundle'] == 'b_hardie_statement']
+    assert len(hardie) == 17 * 4
+    assert {r['brand'] for r in hardie} == {'James Hardie'}
+    assert {r['product'] for r in hardie} == {
+        'James Hardie Statement Collection'}
+    assert {r['style'] for r in hardie} == {
+        'Hardie Plank', 'Hardie Panel + Hardie Trim Batten',
+        'Hardie Shingle', 'Hardie Panel'}
+    assert {r['pattern_id'] for r in hardie} == {
+        'lap', 'bnb', 'shake', 'panel'}
+
+
+def test_hardie_statement_migrates_legacy_visuals_without_touching_price_or_custom_rows(A):
+    legacy_product = {
+        'id': 's_hardie_statement',
+        'name': 'James Hardie Statement Collection 8.25" Lap',
+        'unit': 'SQ', 'cost': 888.88,
+        'colors': copy.deepcopy(A._SIDING_NEUTRAL_COLORS),
+        'styles': copy.deepcopy(A._HARDIE_STYLES),
+        'bullets': copy.deepcopy(A._HARDIE_STATEMENT_LEGACY_BULLETS),
+    }
+    legacy_rows = [
+        {
+            'category': 'siding', 'brand': 'James Hardie',
+            'product': 'James Hardie Statement Collection',
+            'style': style['name'], 'pattern_id': style['pattern_id'],
+            'color': color['name'], 'hex': color['hex'],
+            'price_book_bundle': 'b_hardie_statement',
+        }
+        for style in A._HARDIE_STYLES
+        for color in A._SIDING_NEUTRAL_COLORS
+    ]
+    custom = {
+        'category': 'siding', 'brand': 'James Hardie',
+        'product': 'James Hardie Statement Collection',
+        'style': 'Custom Profile', 'color': 'Project One Blue',
+        'hex': '#123456', 'price_book_bundle': 'b_hardie_statement',
+    }
+    pb = {
+        'siding_catalog': [legacy_product],
+        'siding_bundles': [{
+            'id': 'b_hardie_statement',
+            'name': 'James Hardie Statement Collection',
+            'product_ids': ['s_hardie_statement'],
+            'description': A._HARDIE_STATEMENT_LEGACY_DESCRIPTION,
+        }],
+        'siding_tier_defaults': {},
+        'exterior_catalog': A._normalize_exterior_catalog(
+            legacy_rows + [custom]),
+    }
+
+    A._ensure_bundle_catalogs(pb)
+
+    live = next(p for p in pb['siding_catalog']
+                if p['id'] == 's_hardie_statement')
+    assert live['cost'] == 888.88
+    assert live['colors'] == A._HARDIE_STATEMENT_COLORS
+    assert live['styles'] == A._HARDIE_STATEMENT_STYLES
+    assert live['bullets'] == A._HARDIE_STATEMENT_BULLETS
+    bundle = next(b for b in pb['siding_bundles']
+                  if b['id'] == 'b_hardie_statement')
+    assert '30-year non-prorated limited coverage' in bundle['description']
+    official = [r for r in pb['exterior_catalog']
+                if r['product'] == 'James Hardie Statement Collection'
+                and r['style'] != 'Custom Profile']
+    assert len(official) == 17 * 4
+    assert not any(r['style'] == 'Lap Siding' and r['color'] == 'Sail Cloth'
+                   for r in pb['exterior_catalog'])
+    assert any(r['style'] == 'Custom Profile'
+               and r['color'] == 'Project One Blue'
+               and r['hex'] == '#123456'
+               for r in pb['exterior_catalog'])
+    assert A._HARDIE_STATEMENT_EXTERIOR_MIGRATION in (
+        pb['exterior_catalog_seed_versions'])
+
+    # A saved version marker means manager deletions remain intentional.
+    pb['exterior_catalog'] = [
+        r for r in pb['exterior_catalog']
+        if not (r['style'] == 'Hardie Shingle'
+                and r['color'] == 'Countrylane Red')]
+    A._ensure_bundle_catalogs(pb)
+    assert not any(r['style'] == 'Hardie Shingle'
+                   and r['color'] == 'Countrylane Red'
+                   for r in pb['exterior_catalog'])
+
+
 def test_landmark_seed_matches_the_2026_brochure(A):
     product = next(p for p in A.ROOFING_CATALOG_SEED
                    if p['id'] == 'm_landmark')
