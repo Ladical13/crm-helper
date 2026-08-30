@@ -2,10 +2,11 @@
 
 ## Automatic selection (optional, off by default)
 
-The intended rep workflow is **upload photo → automatic surface detection →
-product/color dropdowns → review → Save Renderings**. The browser paints no
-regions by default. Open **Refine selection** for optional edge corrections.
-**Show original photo** compares the original with the current preview.
+The intended rep workflow is **choose project surfaces → upload each elevation
+→ automatic surface detection → product/color dropdowns → review → Save
+Renderings → share for approval**. The browser paints no regions by default.
+Open **Refine selection** for optional edge corrections. **Show original photo**
+and the draggable before/after slider compare the original with the preview.
 
 This requires a paid fal account with access to `fal-ai/sam-3/image`. An owner
 must approve provider use and configure these server variables before enabling:
@@ -15,9 +16,12 @@ EXTERIOR_AUTO_DETECT=1
 FAL_KEY=<server-side fal credential>
 ```
 
-Set a usage allowance in the provider account. Each complete automatic pass
+Set a usage allowance in the provider account. The default project scope
 submits five model requests: roof, wall siding, trim/fascia, soffit, and entry
-door. Separate masks let the rep choose contrasting trim and soffit finishes.
+door. Gutters, windows, metal accents, shutters, and stucco are opt-in; each
+checked surface adds one request for the current elevation. The screen shows
+the request count before detection. Separate masks let the rep choose every
+installed finish independently.
 Changing dropdowns afterwards runs locally and does not request more inference.
 No credential belongs in client code,
 source control, or chat. No customer photo is sent while either variable is
@@ -35,7 +39,8 @@ is not connected and keeps the manual refinement tools available.
 
 Inference uses the queue so it does not occupy a web worker while the model
 runs. Poll tickets expire after 10 minutes and bind the job to a rep, estimate,
-and photo. Each surface has a 30-second submission cooldown per estimate.
+and photo. Each surface has a 30-second submission cooldown per photo, so a
+rear elevation does not block the same surface on the front elevation.
 Failures and empty/low-confidence detections preserve existing selections.
 Trim and soffit detection remain image-dependent, so the rep should review the
 edges and use the matching **Refine selection** tool when boards or eaves are
@@ -43,19 +48,40 @@ obscured or missed.
 Changing the photo or customer invalidates in-flight results in the editor.
 Results are not saved to the customer estimate until **Save Renderings**.
 
+## Elevations, concepts, and customer approval
+
+An existing one-photo design migrates automatically to a **Front** elevation.
+Projects can add up to 12 named views (front, rear, sides, garage, or another
+useful label). Each view owns its photo, masks, and saved concept renders;
+product/color selections remain synchronized across all views. If a product or
+color changes, older renders for the other views are invalidated rather than
+shown as if they still match.
+
+Good/Better/Best remain the three storage keys for compatibility, but a rep can
+give each one a customer-facing concept name and mark one preferred. **Share
+for approval** creates a separate, price-free `/design/<token>` link. It does
+not mark the estimate sent and exposes no estimate pricing. A customer types
+their name, checks the material/sample disclaimer, and approves one complete
+concept. The server saves an immutable snapshot hash plus the chosen products,
+all rendered elevations, ProVia specification, timestamp, IP, and user agent.
+Later approvals append to history instead of erasing the audit trail.
+
 ## Manager exterior catalog
 
 Managers open **Price Book → Exterior Catalog**. The editor accepts manual
 rows or a CSV upload; **CSV Template** downloads the supported columns:
 
 ```
-category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,active
+category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,texture_ref,texture_scale,active
 ```
 
 One row is one product/color combination. Categories are `roof`, `siding`,
-`trim`, `soffit`, `door`, and `paint`. Paint must use `applies_to=siding`,
-`applies_to=trim`, `applies_to=soffit`, or `applies_to=door`. Hex values must be
-six-digit CSS colors such as `#292929`. The optional
+`trim`, `soffit`, `door`, `gutter`, `window`, `metal`, `shutter`, `stucco`, and
+`paint`. Paint can target any editable non-roof surface. Hex values must be
+six-digit CSS colors such as `#292929`. Managers can also upload a PNG/JPG/WebP
+manufacturer swatch or close-up; it is metadata-stripped, resized, stored on
+the Railway volume, and referenced by `texture_ref`. `texture_scale` (16–512)
+controls the approximate tile size in the preview. The optional
 `price_book_bundle` links a roof or siding visual product to an existing bundle
 so Design Studio starts on the system already quoted. It never changes scope
 or pricing. CSV imports merge by stable product/color identity and update
@@ -69,7 +95,7 @@ later manager edits and intentional row deletions.
 
 ## Catalog and preview accuracy
 
-All five surface dropdowns read active entries from the manager exterior catalog.
+All enabled surface dropdowns read active entries from the manager exterior catalog.
 They start with a catalog product linked to the estimate's selected bundle when
 one exists. Exploring another product is a design choice only: it does **not**
 change quantities, pricing, or the quoted bundle. Update Products/Pricing
@@ -180,9 +206,11 @@ The door menu now uses ProVia **Signet**, **Ascent**, and **Legacy**, with a
 subset of named ProVia paint finishes. Hex swatches are approximations. The
 door preview recolors the existing door: it does not render exact panel,
 glass, grain, or hardware geometry. Do not use the old generic tiled door
-textures to imply an exact ProVia product. Use the linked ProVia configurator
-to specify exact door style, glass, and hardware until approved product images
-and placement are added. Existing saved designs retain their old choices.
+textures to imply an exact ProVia product. Use the linked ProVia configurator,
+then save its access code, series, model, glass, hardware, swing/handing, notes,
+and optional configured-door screenshot in the concept's **Exact ProVia
+specification handoff**. That exact handoff travels with customer approval and
+the signed PDF. Existing saved designs retain their old choices.
 
 References (verified 2026-08-26):
 

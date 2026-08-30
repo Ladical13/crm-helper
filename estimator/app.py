@@ -135,6 +135,7 @@ def _safe_path_id(s):
 # data APIs leak — a route added without the decorator was silently public).
 PUBLIC_ENDPOINTS = {
     'customer_sign',     # /sign/<token> — public, protected by the 192-bit token
+    'customer_design',   # /design/<token> — public design review/approval token
     'sign_change_order', # /sign-co/<token> — same token protection as /sign
     'serve_upload',      # /uploads/<file> — cover photos shown on the customer view
     'static',            # JS/CSS for the login + app shell (non-sensitive client code)
@@ -419,6 +420,26 @@ def est_find_by_token(token):
             return row[0] if row else None
     for doc in est_iter():
         if doc.get('share_token') == token:
+            return doc
+    return None
+
+
+def est_find_by_design_token(token):
+    """Return the estimate doc matching design_share_token, or None.
+
+    Design-review links are intentionally independent from estimate signing
+    links: opening or approving a design must never mark the estimate sent.
+    """
+    if not token:
+        return None
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT doc FROM estimates WHERE doc->>'design_share_token' = %s "
+                        'LIMIT 1', (str(token),))
+            row = cur.fetchone()
+            return row[0] if row else None
+    for doc in est_iter():
+        if doc.get('design_share_token') == token:
             return doc
     return None
 
@@ -895,6 +916,7 @@ def get_estimate(est_id):
 SERVER_MANAGED_FIELDS = [
     'share_token', 'sent_at', 'first_viewed_at', 'last_viewed_at',
     'view_count', 'signature', 'crm_document_id', 'crm_pushed_at',
+    'design_share_token', 'design_approval', 'design_approval_history',
 ]
 
 @app.route('/api/estimates/<est_id>', methods=['PUT'])
@@ -1223,15 +1245,130 @@ _VISUALIZER_MAX_BYTES = 12 * 1024 * 1024   # 12 MB — comfortably above a
 # camera photo but well under the 30 MB global request cap, so a bad client
 # can't fill the disk with one call.
 
+_VISUALIZER_TIERS = ('good', 'better', 'best')
+_VISUALIZER_ROLES = (
+    'roof', 'siding', 'trim', 'soffit', 'door',
+    'gutter', 'window', 'metal', 'shutter', 'stucco',
+)
+_VISUALIZER_DEFAULT_SCOPE = ('roof', 'siding', 'trim', 'soffit', 'door')
+_VISUALIZER_CONCEPT_DEFAULTS = {
+    'good': 'Good', 'better': 'Better', 'best': 'Best',
+}
+_PROVIA_SPEC_LIMITS = {
+    'access_code': 80, 'series': 120, 'model': 120, 'glass': 120,
+    'hardware': 120, 'swing': 120, 'notes': 1000,
+}
+
+
+def _visualizer_elevation_id(value, default='front'):
+    value = str(value or '').strip().lower()
+    return value if re.fullmatch(r'[a-z0-9_-]{1,40}', value) else default
+
+
+def _visualizer_elevations(vz, create=True):
+    """Return a normalized, migration-safe elevation map.
+
+    The first Visualizer release stored one photo directly on ``visualizer``.
+    That legacy photo is exposed as the Front elevation and mirrored there on
+    future saves, so old customer links/PDFs and in-progress estimates remain
+    readable while new projects can add rear/side views.
+    """
+    raw = vz.get('elevations')
+    elevations = raw if isinstance(raw, dict) else {}
+    legacy_fields = ('base_image', 'tier_renders') + tuple(
+        f'{role}_mask' for role in _VISUALIZER_ROLES)
+    legacy_exists = any(vz.get(field) for field in legacy_fields)
+    if legacy_exists and 'front' not in elevations:
+        masks = {role: vz.get(f'{role}_mask') for role in _VISUALIZER_ROLES
+                 if vz.get(f'{role}_mask')}
+        elevations['front'] = {
+            'id': 'front', 'name': 'Front',
+            'base_image': vz.get('base_image'), 'masks': masks,
+            'tier_renders': copy.deepcopy(vz.get('tier_renders') or {}),
+        }
+    if create and not elevations:
+        elevations['front'] = {
+            'id': 'front', 'name': 'Front', 'base_image': None,
+            'masks': {}, 'tier_renders': {},
+        }
+
+    cleaned = {}
+    for key, value in list(elevations.items())[:12]:
+        eid = _visualizer_elevation_id(key, '')
+        if not eid or not isinstance(value, dict):
+            continue
+        value['id'] = eid
+        value['name'] = _exterior_text(value.get('name') or eid.replace('_', ' ').title(), 60)
+        value['masks'] = value.get('masks') if isinstance(value.get('masks'), dict) else {}
+        value['tier_renders'] = (value.get('tier_renders')
+                                 if isinstance(value.get('tier_renders'), dict) else {})
+        # Accept the short-lived prototype shape with role_mask inside each
+        # elevation, but write only the nested ``masks`` form going forward.
+        for role in _VISUALIZER_ROLES:
+            if value.get(f'{role}_mask') and not value['masks'].get(role):
+                value['masks'][role] = value.pop(f'{role}_mask')
+        cleaned[eid] = value
+    elevations = cleaned
+    if create and not elevations:
+        elevations['front'] = {
+            'id': 'front', 'name': 'Front', 'base_image': None,
+            'masks': {}, 'tier_renders': {},
+        }
+    vz['elevations'] = elevations
+
+    order = vz.get('elevation_order')
+    order = [x for x in order if x in elevations] if isinstance(order, list) else []
+    order += [x for x in elevations if x not in order]
+    vz['elevation_order'] = order
+    active = _visualizer_elevation_id(vz.get('active_elevation_id'), '')
+    vz['active_elevation_id'] = active if active in elevations else (order[0] if order else 'front')
+    return elevations
+
+
+def _visualizer_mirror_front(vz):
+    """Keep the original one-photo fields current for old clients/PDFs."""
+    front = (_visualizer_elevations(vz).get('front') or {})
+    vz['base_image'] = front.get('base_image')
+    vz['tier_renders'] = copy.deepcopy(front.get('tier_renders') or {})
+    masks = front.get('masks') or {}
+    for role in _VISUALIZER_ROLES:
+        if masks.get(role):
+            vz[f'{role}_mask'] = masks[role]
+        else:
+            vz.pop(f'{role}_mask', None)
+
+
+def _normalize_provia_specs(raw, existing=None):
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError('provia_specs must be an object')
+    existing = existing if isinstance(existing, dict) else {}
+    result = {}
+    for tier in _VISUALIZER_TIERS:
+        source = raw.get(tier) or {}
+        if not isinstance(source, dict):
+            raise ValueError(f'ProVia {tier} specification must be an object')
+        spec = {field: _exterior_text(source.get(field), limit)
+                for field, limit in _PROVIA_SPEC_LIMITS.items()
+                if _exterior_text(source.get(field), limit)}
+        saved_image = (existing.get(tier) or {}).get('configured_image')
+        if saved_image:
+            spec['configured_image'] = saved_image
+        if spec:
+            result[tier] = spec
+    return result
+
 
 @app.route('/api/estimates/<est_id>/visualizer/asset', methods=['POST'])
 def visualizer_asset(est_id):
     """Store a Visualizer image blob and update the pointer field in
-    est.visualizer. Body: JSON {kind, tier?, role?, content_b64, ext}.
+    est.visualizer. Body: JSON
+    {kind, tier?, role?, elevation_id?, elevation_name?, content_b64, ext}.
 
-    kind='base'   -> visualizer.base_image
-    kind='mask'   -> visualizer.<roof|siding|trim|soffit|door>_mask (role required)
-    kind='render' -> visualizer.tier_renders[tier] (tier required)
+    Base/mask/render assets belong to one elevation. ``front`` is the default
+    and is mirrored to the original one-photo fields for older clients.
+    kind='provia' stores a configured-door screenshot for one concept.
     """
     if not _safe_path_id(est_id):
         return jsonify({'error': 'invalid estimate id'}), 400
@@ -1245,15 +1382,23 @@ def visualizer_asset(est_id):
     b64  = body.get('content_b64') or ''
     tier = (body.get('tier') or '').strip()
     role = (body.get('role') or '').strip()
+    elevation_id = _visualizer_elevation_id(body.get('elevation_id'))
+    elevation_name = _exterior_text(body.get('elevation_name') or
+                                    elevation_id.replace('_', ' ').title(), 60)
 
-    if kind not in ('base', 'mask', 'render'):
+    if kind not in ('base', 'mask', 'render', 'provia'):
         return jsonify({'error': 'invalid kind'}), 400
     if ext not in ('jpg', 'jpeg', 'png', 'webp'):
         return jsonify({'error': 'invalid ext'}), 400
-    if kind == 'render' and tier not in ('good', 'better', 'best'):
-        return jsonify({'error': 'render requires tier'}), 400
-    if kind == 'mask' and role not in ('roof', 'siding', 'trim', 'soffit', 'door'):
+    if kind in ('render', 'provia') and tier not in _VISUALIZER_TIERS:
+        return jsonify({'error': f'{kind} requires tier'}), 400
+    if kind == 'mask' and role not in _VISUALIZER_ROLES:
         return jsonify({'error': 'mask requires role'}), 400
+    if est is not None and kind in ('base', 'mask', 'render'):
+        vz_existing = est.get('visualizer') if isinstance(est.get('visualizer'), dict) else {}
+        elevations_existing = _visualizer_elevations(vz_existing)
+        if elevation_id not in elevations_existing and len(elevations_existing) >= 12:
+            return jsonify({'error': 'visualizer is limited to 12 elevations'}), 400
 
     import base64
     # Strip a data-URI prefix if the client sent one — cheaper here than
@@ -1272,7 +1417,7 @@ def visualizer_asset(est_id):
 
     if ext == 'jpeg':
         ext = 'jpg'
-    prefix = {'base': 'vb', 'mask': 'vm', 'render': 'vr'}[kind]
+    prefix = {'base': 'vb', 'mask': 'vm', 'render': 'vr', 'provia': 'vp'}[kind]
     safe_name = f'{prefix}_{uuid.uuid4().hex}.{ext}'
     dest_dir = os.path.join(UPLOADS_DIR, est_id)
     os.makedirs(dest_dir, exist_ok=True)
@@ -1288,45 +1433,158 @@ def visualizer_asset(est_id):
             # estimate exists — mirrors upload_photo's no-est allowance.
             return None
         vz = doc.setdefault('visualizer', {})
+        elevations = _visualizer_elevations(vz)
+        elevation = elevations.setdefault(elevation_id, {
+            'id': elevation_id, 'name': elevation_name,
+            'base_image': None, 'masks': {}, 'tier_renders': {},
+        })
+        elevation['name'] = elevation_name or elevation.get('name') or 'Elevation'
+        elevation.setdefault('masks', {})
+        elevation.setdefault('tier_renders', {})
+        if elevation_id not in vz.setdefault('elevation_order', []):
+            vz['elevation_order'].append(elevation_id)
+        vz['active_elevation_id'] = elevation_id
         if kind == 'base':
-            vz['base_image'] = stored_ref
-            for field in ('roof_mask', 'siding_mask', 'trim_mask',
-                          'soffit_mask', 'door_mask'):
-                vz.pop(field, None)
-            vz['tier_renders'] = {}
+            elevation['base_image'] = stored_ref
+            elevation['masks'] = {}
+            elevation['tier_renders'] = {}
         elif kind == 'mask':
-            vz[f'{role}_mask'] = stored_ref
+            elevation['masks'][role] = stored_ref
+        elif kind == 'render':
+            elevation['tier_renders'][tier] = stored_ref
         else:
-            vz.setdefault('tier_renders', {})[tier] = stored_ref
+            vz.setdefault('provia_specs', {}).setdefault(tier, {})[
+                'configured_image'] = stored_ref
+        _visualizer_mirror_front(vz)
         vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
         return doc
 
     est_update(est_id, mutate)
     return jsonify({'filename': stored_ref, 'url': url, 'kind': kind,
-                    'tier': tier or None, 'role': role or None}), 201
+                    'tier': tier or None, 'role': role or None,
+                    'elevation_id': elevation_id if kind != 'provia' else None}), 201
 
 
 @app.route('/api/estimates/<est_id>/visualizer/state', methods=['PUT'])
 def visualizer_state(est_id):
-    """Update the JSON portion of the Visualizer state — selections, notes —
-    without a full-estimate PUT round-trip. Blob pointers stay set by
-    visualizer_asset and are not overwritten here."""
+    """Update bounded Visualizer metadata without overwriting blob pointers."""
     if not _safe_path_id(est_id):
         return jsonify({'error': 'invalid estimate id'}), 400
     est = est_load(est_id)
     if est is not None and not _can_touch_estimate(est):
         return _forbid()
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict) or len(json.dumps(body)) > 500_000:
+        return jsonify({'error': 'visualizer state is too large'}), 400
     selections = body.get('selections')
     if selections is not None and not isinstance(selections, dict):
         return jsonify({'error': 'selections must be an object'}), 400
+    if selections is not None and len(json.dumps(selections)) > 350_000:
+        return jsonify({'error': 'selections are too large'}), 400
+
+    scope = body.get('scope')
+    if scope is not None:
+        if not isinstance(scope, list) or not scope:
+            return jsonify({'error': 'scope must be a non-empty list'}), 400
+        if any(role not in _VISUALIZER_ROLES for role in scope):
+            return jsonify({'error': 'scope contains an unknown surface'}), 400
+        scope = list(dict.fromkeys(scope))
+
+    concept_names = body.get('concept_names')
+    if concept_names is not None:
+        if not isinstance(concept_names, dict):
+            return jsonify({'error': 'concept_names must be an object'}), 400
+        concept_names = {
+            tier: _exterior_text(concept_names.get(tier) or default, 40)
+            for tier, default in _VISUALIZER_CONCEPT_DEFAULTS.items()
+        }
+
+    favorite_tier = body.get('favorite_tier')
+    if favorite_tier is not None and favorite_tier not in ('',) + _VISUALIZER_TIERS:
+        return jsonify({'error': 'favorite_tier is invalid'}), 400
+
+    elevation_names = body.get('elevation_names')
+    if elevation_names is not None:
+        if not isinstance(elevation_names, dict) or len(elevation_names) > 12:
+            return jsonify({'error': 'elevation_names must be an object of at most 12 elevations'}), 400
+        cleaned_names = {}
+        for raw_id, name in elevation_names.items():
+            eid = _visualizer_elevation_id(raw_id, '')
+            if not eid:
+                return jsonify({'error': 'invalid elevation id'}), 400
+            cleaned_names[eid] = _exterior_text(name or eid.replace('_', ' ').title(), 60)
+        elevation_names = cleaned_names
+
+    elevation_order = body.get('elevation_order')
+    if elevation_order is not None:
+        if not isinstance(elevation_order, list) or len(elevation_order) > 12:
+            return jsonify({'error': 'elevation_order must be a list'}), 400
+        elevation_order = [_visualizer_elevation_id(x, '') for x in elevation_order]
+        if any(not x for x in elevation_order) or len(set(elevation_order)) != len(elevation_order):
+            return jsonify({'error': 'elevation_order contains an invalid id'}), 400
+
+    active_elevation_id = body.get('active_elevation_id')
+    if active_elevation_id is not None:
+        active_elevation_id = _visualizer_elevation_id(active_elevation_id, '')
+        if not active_elevation_id:
+            return jsonify({'error': 'invalid active elevation'}), 400
+    delete_elevation_id = body.get('delete_elevation_id')
+    if delete_elevation_id is not None:
+        delete_elevation_id = _visualizer_elevation_id(delete_elevation_id, '')
+        if not delete_elevation_id:
+            return jsonify({'error': 'invalid elevation to remove'}), 400
+    invalidate_other_renders = body.get('invalidate_other_renders') is True
+
+    existing_vz = (est or {}).get('visualizer')
+    existing_vz = existing_vz if isinstance(existing_vz, dict) else {}
+    try:
+        provia_specs = _normalize_provia_specs(body.get('provia_specs'),
+                                               existing_vz.get('provia_specs'))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     def mutate(doc):
         if doc is None:
             return None
         vz = doc.setdefault('visualizer', {})
+        elevations = _visualizer_elevations(vz)
         if selections is not None:
             vz['selections'] = selections
+        if scope is not None:
+            vz['scope'] = scope
+        if concept_names is not None:
+            vz['concept_names'] = concept_names
+        if favorite_tier is not None:
+            if favorite_tier:
+                vz['favorite_tier'] = favorite_tier
+            else:
+                vz.pop('favorite_tier', None)
+        if provia_specs is not None:
+            # Re-read server-owned configured-image refs inside the write lock.
+            vz['provia_specs'] = _normalize_provia_specs(
+                body.get('provia_specs'), vz.get('provia_specs'))
+        if elevation_names is not None:
+            for eid, name in elevation_names.items():
+                if eid not in elevations and len(elevations) < 12:
+                    elevations[eid] = {
+                        'id': eid, 'name': name, 'base_image': None,
+                        'masks': {}, 'tier_renders': {},
+                    }
+                elif eid in elevations:
+                    elevations[eid]['name'] = name
+        if delete_elevation_id in elevations and len(elevations) > 1:
+            elevations.pop(delete_elevation_id, None)
+        if elevation_order is not None:
+            vz['elevation_order'] = [eid for eid in elevation_order if eid in elevations]
+        _visualizer_elevations(vz)
+        if active_elevation_id in elevations:
+            vz['active_elevation_id'] = active_elevation_id
+        if invalidate_other_renders:
+            keep_id = active_elevation_id if active_elevation_id in elevations else vz.get('active_elevation_id')
+            for eid, elevation in elevations.items():
+                if eid != keep_id:
+                    elevation['tier_renders'] = {}
+        _visualizer_mirror_front(vz)
         vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
         return doc
 
@@ -1378,7 +1636,7 @@ def visualizer_detection(est_id):
         body = request.get_json(silent=True)
         if not isinstance(body, dict) or body.get('role') not in detection.PROMPTS:
             return jsonify(
-                {'error': 'Choose roof, siding, trim/fascia, soffit, or door.'}), 400
+                {'error': 'Choose a supported exterior surface.'}), 400
         role = body['role']
         photo_key = body.get('photo_key')
         if not isinstance(photo_key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', photo_key):
@@ -1394,10 +1652,16 @@ def visualizer_detection(est_id):
                 limited = True
                 return None
             attempts = doc.setdefault('_visualizer_detection_attempts', {})
-            if now - attempts.get(role, 0) < 30:
+            attempt_key = f'{photo_key}:{role}'
+            if now - attempts.get(attempt_key, 0) < 30:
                 limited = True
             else:
-                attempts[role] = now
+                attempts[attempt_key] = now
+                # Keep this internal throttle map bounded as elevations/photos
+                # accumulate over a long-lived estimate.
+                for old_key, stamp in list(attempts.items()):
+                    if not isinstance(stamp, (int, float)) or now - stamp > 3600:
+                        attempts.pop(old_key, None)
             return doc
 
         est_update(est_id, reserve)
@@ -4381,44 +4645,34 @@ def _cv_visualizer_block(est):
     with the rest of the customer view — the customer page shell does NOT
     load static/style.css."""
     vz = est.get('visualizer') or {}
-    renders = vz.get('tier_renders') or {}
-    tiers = [t for t in ('good', 'better', 'best') if renders.get(t)]
-    if not tiers:
+    elevations = _visualizer_render_elevations(vz)
+    if not elevations:
         return ''
-    sels = vz.get('selections') or {}
+    names = dict(_VISUALIZER_CONCEPT_DEFAULTS)
+    if isinstance(vz.get('concept_names'), dict):
+        names.update(vz['concept_names'])
+    approved_tier = (_current_design_approval(est) or {}).get('tier')
     cards = ''
-    for t in tiers:
-        label = {'good': 'Good', 'better': 'Better', 'best': 'Best'}[t]
-        rs = (sels.get('roofing') or {}).get(t) or {}
-        ss = (sels.get('siding') or {}).get(t) or {}
-        ts = (sels.get('trim') or {}).get(t) or {}
-        sos = (sels.get('soffit') or {}).get(t) or {}
-        ds = (sels.get('doors') or {}).get(t) or {}
-        cap = []
-        if rs.get('color_name'):
-            cap.append('Roof: ' + he(str(rs['color_name'])))
-        if ss.get('color_name'):
-            sname = ss.get('style_name') or ''
-            side_lbl = 'Siding: ' + he(str(ss['color_name']))
-            if sname:
-                side_lbl += ' <span class="cvvz-style">(' + he(str(sname)) + ')</span>'
-            cap.append(side_lbl)
-        if ts.get('color_name'):
-            cap.append('Trim/Fascia: ' + he(str(ts['color_name'])))
-        if sos.get('color_name'):
-            cap.append('Soffit: ' + he(str(sos['color_name'])))
-        if ds.get('option_name'):
-            door_lbl = 'Door: ' + he(str(ds['option_name']))
-            if ds.get('color_name'):
-                door_lbl += ' <span class="cvvz-style">(' + he(str(ds['color_name'])) + ')</span>'
-            cap.append(door_lbl)
-        caption = '<br>'.join(cap) if cap else '&nbsp;'
-        src = '/uploads/' + he(renders[t])
-        cards += (f'<figure class="cvvz-card">'
-                  f'<figcaption class="cvvz-tier">{he(label)}</figcaption>'
-                  f'<img src="{src}" alt="{he(label)} preview" loading="lazy">'
-                  f'<div class="cvvz-cap">{caption}</div>'
-                  f'</figure>')
+    for elevation in elevations:
+        renders = elevation.get('tier_renders') or {}
+        for tier in _VISUALIZER_TIERS:
+            if not renders.get(tier):
+                continue
+            label = names[tier]
+            cap = [f'{he(name)}: {he(value)}'
+                   for name, value in _design_selection_lines(vz, tier)]
+            provia = (vz.get('provia_specs') or {}).get(tier) or {}
+            if provia.get('access_code'):
+                cap.append('ProVia design code: ' + he(provia['access_code']))
+            caption = '<br>'.join(cap) if cap else '&nbsp;'
+            approved = ' <span class="cvvz-approved">✓ Approved</span>' if approved_tier == tier else ''
+            src = '/uploads/' + he(renders[tier])
+            title = f'{label} · {elevation.get("name") or "Elevation"}'
+            cards += (f'<figure class="cvvz-card">'
+                      f'<figcaption class="cvvz-tier">{he(title)}{approved}</figcaption>'
+                      f'<img src="{src}" alt="{he(title)} preview" loading="lazy">'
+                      f'<div class="cvvz-cap">{caption}</div>'
+                      f'</figure>')
     return f'''<div class="cvvz">
   <h2 data-eyebrow="Visualize">See It on Your Home</h2>
   <p class="cvvz-sub">Your home with the selected options blended onto your
@@ -4442,6 +4696,7 @@ def _cv_visualizer_block(est):
   .cvvz-card img{{width:100%;height:auto;border:1px solid var(--line);border-radius:6px;display:block;background:var(--bg)}}
   .cvvz-cap{{margin-top:var(--sp-1);font-size:var(--fz-fine);color:var(--mut);line-height:1.5}}
   .cvvz-style{{color:var(--faint)}}
+  .cvvz-approved{{color:#14804a;font-weight:700;letter-spacing:0;text-transform:none}}
 </style>'''
 
 
@@ -7013,6 +7268,273 @@ def _ensure_share_token(est):
     return est['share_token']
 
 
+def _visualizer_render_elevations(vz):
+    """Ordered elevations that contain at least one saved concept render."""
+    elevations = _visualizer_elevations(vz, create=False)
+    order = [eid for eid in (vz.get('elevation_order') or []) if eid in elevations]
+    order += [eid for eid in elevations if eid not in order]
+    return [elevations[eid] for eid in order
+            if any((elevations[eid].get('tier_renders') or {}).get(t)
+                   for t in _VISUALIZER_TIERS)]
+
+
+def _ensure_design_share_token(est):
+    """Mint a design-review token without changing estimate funnel status."""
+    fresh_token = secrets.token_urlsafe(24)
+
+    def _mark(doc):
+        if doc is None:
+            return None
+        doc['design_share_token'] = doc.get('design_share_token') or fresh_token
+        doc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        return doc
+
+    stored = est_update(est.get('estimate_id'), _mark)
+    if stored:
+        est.update(stored)
+    return est.get('design_share_token')
+
+
+_DESIGN_SELECTION_META = {
+    'roofing': ('roof', 'Roof'), 'siding': ('siding', 'Siding'),
+    'trim': ('trim', 'Trim / Fascia'), 'soffit': ('soffit', 'Soffit'),
+    'doors': ('door', 'Door'), 'gutter': ('gutter', 'Gutters'),
+    'window': ('window', 'Windows'), 'metal': ('metal', 'Metal accents'),
+    'shutter': ('shutter', 'Shutters'), 'stucco': ('stucco', 'Stucco'),
+}
+
+
+def _design_scope(vz):
+    raw = vz.get('scope') if isinstance(vz, dict) else None
+    scope = [role for role in raw if role in _VISUALIZER_ROLES] if isinstance(raw, list) else []
+    return set(scope or _VISUALIZER_DEFAULT_SCOPE)
+
+
+def _design_selection_lines(vz, tier):
+    selections = vz.get('selections') if isinstance(vz, dict) else {}
+    selections = selections if isinstance(selections, dict) else {}
+    scope = _design_scope(vz)
+    lines = []
+    for key, (role, label) in _DESIGN_SELECTION_META.items():
+        if role not in scope:
+            continue
+        tiers = selections.get(key)
+        tiers = tiers if isinstance(tiers, dict) else {}
+        selected = tiers.get(tier)
+        selected = selected if isinstance(selected, dict) else {}
+        value = _exterior_text(selected.get('option_name') or
+                               selected.get('product_name') or
+                               selected.get('bundle_name'), 240)
+        color = _exterior_text(selected.get('color_name'), 160)
+        style = _exterior_text(selected.get('style_name'), 160)
+        parts = [x for x in (value, color, style) if x]
+        if parts:
+            lines.append((label, ' · '.join(dict.fromkeys(parts))))
+    return lines
+
+
+def _design_tier_snapshot(vz, tier):
+    """Canonical customer-approved material/render snapshot for one concept."""
+    elevations = _visualizer_render_elevations(vz)
+    render_snapshot = [
+        {'id': ev.get('id'), 'name': ev.get('name'),
+         'render': (ev.get('tier_renders') or {}).get(tier)}
+        for ev in elevations if (ev.get('tier_renders') or {}).get(tier)
+    ]
+    names = dict(_VISUALIZER_CONCEPT_DEFAULTS)
+    if isinstance(vz.get('concept_names'), dict):
+        names.update(vz['concept_names'])
+    concept_name = _exterior_text(names.get(tier), 40) or _VISUALIZER_CONCEPT_DEFAULTS[tier]
+    selections = {}
+    raw_selections = vz.get('selections') if isinstance(vz.get('selections'), dict) else {}
+    scope = _design_scope(vz)
+    for surface, (role, _label) in _DESIGN_SELECTION_META.items():
+        tiers = raw_selections.get(surface)
+        selected = tiers.get(tier) if isinstance(tiers, dict) else None
+        if role in scope and isinstance(selected, dict) and selected:
+            selections[surface] = copy.deepcopy(selected)
+    specs = vz.get('provia_specs') if isinstance(vz.get('provia_specs'), dict) else {}
+    provia = (specs.get(tier) if 'door' in scope and
+              isinstance(specs.get(tier), dict) else {})
+    return {
+        'tier': tier, 'concept_name': concept_name, 'selections': selections,
+        'elevations': render_snapshot, 'provia_spec': copy.deepcopy(provia),
+    }
+
+
+def _design_snapshot_hash(snapshot):
+    return hashlib.sha256(json.dumps(
+        snapshot, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def _current_design_approval(est):
+    approval = est.get('design_approval') if isinstance(est.get('design_approval'), dict) else {}
+    tier = approval.get('tier')
+    vz = est.get('visualizer') if isinstance(est.get('visualizer'), dict) else {}
+    if tier not in _VISUALIZER_TIERS or not approval.get('snapshot_hash'):
+        return None
+    snapshot = _design_tier_snapshot(vz, tier)
+    return approval if snapshot['elevations'] and _design_snapshot_hash(snapshot) == approval['snapshot_hash'] else None
+
+
+def _design_review_page(est, token, notice=''):
+    """Standalone, price-free customer design review page."""
+    vz = est.get('visualizer') if isinstance(est.get('visualizer'), dict) else {}
+    elevations = _visualizer_render_elevations(vz)
+    names = dict(_VISUALIZER_CONCEPT_DEFAULTS)
+    names.update(vz.get('concept_names') if isinstance(vz.get('concept_names'), dict) else {})
+    favorite = vz.get('favorite_tier')
+    current = est.get('design_approval') if isinstance(est.get('design_approval'), dict) else {}
+    current_is_live = bool(_current_design_approval(est))
+    customer = est.get('customer') if isinstance(est.get('customer'), dict) else {}
+    address_value = customer.get('address') or customer.get('street_address') or ''
+    if isinstance(address_value, dict):
+        address = ', '.join(str(address_value.get(key) or '').strip()
+                            for key in ('street', 'city', 'state', 'zip')
+                            if str(address_value.get(key) or '').strip())
+    else:
+        address = str(address_value).strip()
+    rendered_tiers = [tier for tier in _VISUALIZER_TIERS
+                      if any((ev.get('tier_renders') or {}).get(tier) for ev in elevations)]
+
+    concept_html = ''
+    for tier in rendered_tiers:
+        cards = ''
+        for ev in elevations:
+            ref = (ev.get('tier_renders') or {}).get(tier)
+            if not ref:
+                continue
+            cards += (f'<figure class="elevation"><img src="/uploads/{he(ref)}" '
+                      f'alt="{he(ev.get("name") or "Elevation")} {he(names[tier])} preview">'
+                      f'<figcaption>{he(ev.get("name") or "Elevation")}</figcaption></figure>')
+        selection_html = ''.join(
+            f'<li><strong>{he(label)}:</strong> {he(value)}</li>'
+            for label, value in _design_selection_lines(vz, tier))
+        specs = vz.get('provia_specs') if isinstance(vz.get('provia_specs'), dict) else {}
+        spec = (specs.get(tier) if 'door' in _design_scope(vz) and
+                isinstance(specs.get(tier), dict) else {})
+        provia_rows = ''.join(
+            f'<li><strong>{he(field.replace("_", " ").title())}:</strong> {he(spec.get(field))}</li>'
+            for field in _PROVIA_SPEC_LIMITS if spec.get(field))
+        provia_img = (f'<img class="door-config" src="/uploads/{he(spec.get("configured_image"))}" '
+                      'alt="Configured ProVia door">' if spec.get('configured_image') else '')
+        checked = ' checked' if current_is_live and current.get('tier') == tier else ''
+        preferred = ' <span class="preferred">Project One preferred</span>' if favorite == tier else ''
+        concept_html += f'''<section class="concept">
+  <div class="concept-title"><label><input type="radio" name="approved_tier" value="{tier}"{checked} required>
+    <span>{he(names[tier])}</span></label>{preferred}</div>
+  <div class="elevations">{cards}</div>
+  <div class="specs">{f'<ul>{selection_html}</ul>' if selection_html else ''}
+    {f'<div class="provia"><h3>Exact ProVia handoff</h3><ul>{provia_rows}</ul>{provia_img}</div>' if provia_rows or provia_img else ''}</div>
+</section>'''
+
+    approved_html = ''
+    if current:
+        if current_is_live:
+            approval_note = '✓ Current design approved'
+        else:
+            approval_note = 'Previous approval recorded — this design has changed and needs approval again'
+        approved_html = (f'<div class="approved"><strong>{he(approval_note)}:</strong> '
+                         f'{he(current.get("concept_name") or names.get(current.get("tier"), "Design"))} '
+                         f'by {he(current.get("approver_name") or "customer")} on {he((current.get("approved_at") or "")[:10])}.</div>')
+    notice_html = f'<div class="notice">{he(notice)}</div>' if notice else ''
+    empty_html = '<div class="empty">No saved design renderings are available yet. Ask your Project One representative to save the concepts and resend this link.</div>'
+    action = _mount_path(f'/design/{token}')
+    form = f'''<form method="POST" action="{action}">
+  {concept_html or empty_html}
+  {'' if not rendered_tiers else '''<div class="approval-form">
+    <label>Your full name<input name="approver_name" maxlength="120" required autocomplete="name"></label>
+    <label class="agree"><input type="checkbox" name="agree" value="yes" required>
+      I approve the selected visual concept for project planning. I understand screens and lighting can vary, physical manufacturer samples control final color, and this approval does not change contract scope or price.</label>
+    <button type="submit">Approve selected design</button>
+  </div>'''}
+</form>'''
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Exterior Design Review</title>
+<style>
+*{{box-sizing:border-box}}body{{margin:0;background:#f3f5f7;color:#172033;font:15px/1.5 system-ui,-apple-system,sans-serif}}
+header{{background:#142f4f;color:white;padding:28px max(20px,calc((100% - 1120px)/2))}}header h1{{margin:0 0 4px;font-size:clamp(24px,4vw,38px)}}header p{{margin:3px 0;color:#dce7f2}}
+main{{max-width:1120px;margin:auto;padding:24px 18px 56px}}.approved,.notice,.empty{{padding:14px 16px;border-radius:10px;margin-bottom:18px}}.approved{{background:#e8f6ee;border:1px solid #93c9a7}}.notice{{background:#fff6dc;border:1px solid #e1c26a}}.empty{{background:white;border:1px solid #d4dbe3}}
+.concept{{background:white;border:1px solid #d4dbe3;border-radius:14px;margin:0 0 20px;overflow:hidden;box-shadow:0 4px 14px #17304c12}}.concept-title{{display:flex;align-items:center;gap:10px;padding:15px 18px;border-bottom:1px solid #e3e7ec;font-size:20px;font-weight:750}}.concept-title label{{display:flex;align-items:center;gap:10px;cursor:pointer}}.concept-title input{{width:20px;height:20px}}.preferred{{font-size:12px;background:#e9f2ff;color:#174e87;padding:3px 8px;border-radius:999px}}
+.elevations{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;padding:15px}}figure{{margin:0}}.elevation img{{display:block;width:100%;aspect-ratio:5/3;object-fit:cover;border-radius:9px;background:#e8edf2}}figcaption{{padding:6px 2px 0;font-weight:650}}.specs{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:15px;padding:0 18px 18px}}.specs ul{{margin:0;padding-left:18px}}.provia{{background:#f5f8fb;padding:12px;border-radius:9px}}.provia h3{{margin:0 0 7px;font-size:15px}}.door-config{{max-width:220px;max-height:240px;object-fit:contain;border-radius:7px;margin-top:8px}}
+.approval-form{{background:white;border:1px solid #cbd4de;border-radius:14px;padding:20px;display:grid;gap:15px}}.approval-form>label:first-child{{font-weight:700}}input[type=text],input[name=approver_name]{{display:block;width:100%;max-width:500px;padding:11px;margin-top:5px;border:1px solid #9daab8;border-radius:7px;font:inherit}}.agree{{display:flex;align-items:flex-start;gap:9px}}.agree input{{width:19px;height:19px;flex:none}}button{{justify-self:start;border:0;border-radius:8px;background:#e87524;color:white;padding:12px 20px;font:700 16px inherit;cursor:pointer}}footer{{text-align:center;color:#657284;padding:25px}}
+</style></head><body><header><h1>Exterior Design Review</h1><p>{he(customer.get('name') or 'Project One Roofing customer')}</p>{f'<p>{he(address)}</p>' if address else ''}</header>
+<main>{notice_html}{approved_html}<p>Select one complete concept below. Each concept stays synchronized across every saved elevation.</p>{form}</main>
+<footer>Project One Roofing · Visual colors are approximate; confirm final products with physical samples.</footer></body></html>'''
+
+
+@app.route('/api/estimates/<est_id>/visualizer/share', methods=['POST'])
+def create_visualizer_share_link(est_id):
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    vz = est.get('visualizer') if isinstance(est.get('visualizer'), dict) else {}
+    if not _visualizer_render_elevations(vz):
+        return jsonify({'error': 'Save at least one design rendering before sharing.'}), 400
+    token = _ensure_design_share_token(est)
+    base = _base_url()
+    approval = est.get('design_approval') or None
+    return jsonify({'token': token, 'url': f'/design/{token}',
+                    'full_url': f'{base}/design/{token}', 'approval': approval})
+
+
+@app.route('/design/<token>', methods=['GET', 'POST'])
+def customer_design(token):
+    est = est_find_by_design_token(token)
+    if est is None:
+        return '<h2 style="font-family:sans-serif;padding:40px">Design link not found or expired.</h2>', 404
+    if request.method == 'GET':
+        return Response(_design_review_page(est, token), mimetype='text/html')
+
+    tier = (request.form.get('approved_tier') or '').strip()
+    approver = _exterior_text(request.form.get('approver_name'), 120)
+    if tier not in _VISUALIZER_TIERS:
+        return Response(_design_review_page(est, token, 'Choose one design concept.'), status=400, mimetype='text/html')
+    if not approver or request.form.get('agree') != 'yes':
+        return Response(_design_review_page(est, token, 'Enter your name and check the approval box.'), status=400, mimetype='text/html')
+
+    now = datetime.utcnow().isoformat() + 'Z'
+    client_ip = request.remote_addr or ''
+    client_ua = request.headers.get('User-Agent', '')[:500]
+    rejected = [False]
+
+    def _approve(doc):
+        if doc is None or doc.get('design_share_token') != token:
+            rejected[0] = True
+            return None
+        vz = doc.get('visualizer') if isinstance(doc.get('visualizer'), dict) else {}
+        rendered = _visualizer_render_elevations(vz)
+        render_snapshot = [
+            {'id': ev.get('id'), 'name': ev.get('name'),
+             'render': (ev.get('tier_renders') or {}).get(tier)}
+            for ev in rendered if (ev.get('tier_renders') or {}).get(tier)
+        ]
+        if not render_snapshot:
+            rejected[0] = True
+            return None
+        snapshot = _design_tier_snapshot(vz, tier)
+        approval = {
+            **snapshot, 'approver_name': approver, 'approved_at': now,
+            'ip_address': client_ip, 'user_agent': client_ua, 'token': token,
+            'snapshot_hash': _design_snapshot_hash(snapshot),
+        }
+        history = doc.get('design_approval_history')
+        history = history if isinstance(history, list) else []
+        history.append(copy.deepcopy(approval))
+        doc['design_approval_history'] = history[-25:]
+        doc['design_approval'] = approval
+        doc['updated_at'] = now
+        return doc
+
+    stored = est_update(est.get('estimate_id'), _approve)
+    if stored is None or rejected[0]:
+        fresh = est_find_by_design_token(token) or est
+        return Response(_design_review_page(fresh, token, 'That concept is no longer available. Ask your representative to resend the design.'), status=409, mimetype='text/html')
+    return Response(_design_review_page(stored, token, 'Thank you — your design approval was recorded.'), mimetype='text/html')
+
+
 @app.route('/api/estimates/<est_id>/share', methods=['POST'])
 def create_share_link(est_id):
     est = est_load(est_id)
@@ -7463,7 +7985,11 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
     Better) still reads clearly.
     """
     vz = est.get('visualizer') or {}
-    renders = vz.get('tier_renders') or {}
+    elevations = _visualizer_render_elevations(vz)
+    if not elevations:
+        return
+    elevation = elevations[0]
+    renders = elevation.get('tier_renders') or {}
     files = [(t, renders.get(t)) for t in _VISUALIZER_TIERS_ORDER
              if renders.get(t)]
     if not files:
@@ -7473,7 +7999,7 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
     pdf.add_page()
     pdf.set_font(getattr(pdf, '_serif', _S(pdf)), 'B', 13)
     pdf.set_text_color(*_PDF_STYLE['navy'])
-    pdf.cell(0, 7, _pdf_rich('How your home will look'),
+    pdf.cell(0, 7, _pdf_rich('How your home will look - ' + str(elevation.get('name') or 'Front')),
              new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
     pdf.set_font(_S(pdf), '', 8)
@@ -7492,12 +8018,15 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
     thumb_w = (W - gap * (n - 1)) / n
     thumb_h = thumb_w * 0.6      # landscape-ish ratio
     y_top = pdf.get_y()
+    concept_names = dict(_VISUALIZER_TIER_LABELS)
+    if isinstance(vz.get('concept_names'), dict):
+        concept_names.update(vz['concept_names'])
 
     for i, tier in enumerate(_VISUALIZER_TIERS_ORDER):
         x = LM + i * (thumb_w + gap)
         pdf.set_xy(x, y_top)
         pdf.set_font(_S(pdf), 'B', 9)
-        pdf.cell(thumb_w, 5, _VISUALIZER_TIER_LABELS[tier], align='C',
+        pdf.cell(thumb_w, 5, _pdf_oneline_rich(concept_names[tier]), align='C',
                  new_x='LMARGIN', new_y='NEXT')
 
         img_y = y_top + 5.5
@@ -7522,32 +8051,10 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
                      align='C')
             pdf.set_text_color(0, 0, 0)
 
-        # Package label under the thumbnail: pull the selected bundle names
-        # and color choice from est.visualizer.selections if they've been
-        # saved, so the customer can tie the picture to what they're buying.
-        sel = ((vz.get('selections') or {}).get('roofing') or {}).get(tier) or {}
-        sel_s = ((vz.get('selections') or {}).get('siding') or {}).get(tier) or {}
-        sel_t = ((vz.get('selections') or {}).get('trim') or {}).get(tier) or {}
-        sel_so = ((vz.get('selections') or {}).get('soffit') or {}).get(tier) or {}
-        sel_d = ((vz.get('selections') or {}).get('doors') or {}).get(tier) or {}
-        caption_parts = []
-        if sel.get('color_name'):
-            caption_parts.append(f"Roof: {sel['color_name']}")
-        if sel_s.get('color_name'):
-            style_bit = sel_s.get('style_name') or ''
-            side_lbl = 'Siding: ' + sel_s['color_name']
-            if style_bit:
-                side_lbl += f" ({style_bit})"
-            caption_parts.append(side_lbl)
-        if sel_t.get('color_name'):
-            caption_parts.append('Trim/Fascia: ' + str(sel_t['color_name']))
-        if sel_so.get('color_name'):
-            caption_parts.append('Soffit: ' + str(sel_so['color_name']))
-        if sel_d.get('option_name'):
-            door_lbl = 'Door: ' + str(sel_d['option_name'])
-            if sel_d.get('color_name'):
-                door_lbl += f" ({sel_d['color_name']})"
-            caption_parts.append(door_lbl)
+        # Pull every in-scope surface from the shared customer-facing helper,
+        # including gutters/windows/accents, so PDF and review link agree.
+        caption_parts = [f'{label}: {value}'
+                         for label, value in _design_selection_lines(vz, tier)]
         pdf.set_xy(x, img_y + thumb_h + 1.5)
         pdf.set_font(_S(pdf), '', 7)
         pdf.multi_cell(thumb_w, 3.2,
@@ -7555,6 +8062,59 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
 
     # Advance below the row so the signature block doesn't overlap.
     pdf.set_y(y_top + 5.5 + thumb_h + 20)
+
+    spec_tier = ((_current_design_approval(est) or {}).get('tier') or
+                 vz.get('favorite_tier') or 'better')
+    provia = (vz.get('provia_specs') or {}).get(spec_tier) or {}
+    spec_parts = [f'{field.replace("_", " ").title()}: {provia[field]}'
+                  for field in _PROVIA_SPEC_LIMITS if provia.get(field)]
+    if spec_parts:
+        pdf.set_font(_S(pdf), 'B', 8)
+        pdf.cell(0, 4, _pdf_rich('ProVia specification handoff'),
+                 new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font(_S(pdf), '', 7.5)
+        pdf.multi_cell(W, 3.6, _pdf_rich('  |  '.join(spec_parts)))
+
+    # Additional elevations receive their own clean comparison page. Keeping
+    # the same three columns makes a customer-selected concept easy to follow
+    # from front to rear/side without shrinking the house photo into a grid.
+    for elevation in elevations[1:]:
+        renders = elevation.get('tier_renders') or {}
+        if not any(renders.get(t) for t in _VISUALIZER_TIERS_ORDER):
+            continue
+        pdf.add_page()
+        pdf.set_font(getattr(pdf, '_serif', _S(pdf)), 'B', 13)
+        pdf.set_text_color(*_PDF_STYLE['navy'])
+        pdf.cell(0, 7, _pdf_rich('How your home will look - ' +
+                                 str(elevation.get('name') or 'Elevation')),
+                 new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font(_S(pdf), '', 8)
+        pdf.multi_cell(W, 4.2, _pdf_rich(
+            'The same design concepts are synchronized across this elevation. '
+            'Colors and uploaded textures are visual approximations; physical '
+            'manufacturer samples control the final selection.'))
+        pdf.ln(3)
+        y_top = pdf.get_y()
+        for i, tier in enumerate(_VISUALIZER_TIERS_ORDER):
+            x = LM + i * (thumb_w + gap)
+            pdf.set_xy(x, y_top)
+            pdf.set_font(_S(pdf), 'B', 9)
+            pdf.cell(thumb_w, 5, _pdf_oneline_rich(concept_names[tier]),
+                     align='C', new_x='LMARGIN', new_y='NEXT')
+            img_y = y_top + 5.5
+            ref = renders.get(tier)
+            path = os.path.join(UPLOADS_DIR, ref) if ref else None
+            if path and os.path.isfile(path):
+                try:
+                    pdf.image(path, x=x, y=img_y, w=thumb_w, h=thumb_h)
+                    continue
+                except Exception:
+                    pass
+            pdf.set_draw_color(200, 200, 200)
+            pdf.set_fill_color(245, 246, 248)
+            pdf.rect(x, img_y, thumb_w, thumb_h, style='DF')
+        pdf.set_y(y_top + 5.5 + thumb_h + 8)
 
 
 def _render_estimate_details_page(pdf, est, manifest, LM, W):
@@ -13613,8 +14173,14 @@ EXTERIOR_DOOR_OPTIONS_SEED = [
 # visual catalog instead of pretending that a color swatch is a priced scope
 # item.  `price_book_bundle` is an optional link back to the estimate's real
 # bundle; choosing a look never changes that bundle or its price.
-EXTERIOR_CATALOG_CATEGORIES = {'roof', 'siding', 'trim', 'soffit', 'door', 'paint'}
-EXTERIOR_CATALOG_SURFACES = {'siding', 'trim', 'soffit', 'door'}
+EXTERIOR_CATALOG_CATEGORIES = {
+    'roof', 'siding', 'trim', 'soffit', 'door', 'gutter', 'window',
+    'metal', 'shutter', 'stucco', 'paint',
+}
+EXTERIOR_CATALOG_SURFACES = {
+    'siding', 'trim', 'soffit', 'door', 'gutter', 'window', 'metal',
+    'shutter', 'stucco',
+}
 EXTERIOR_PATTERN_IDS = {'', 'lap', 'bnb', 'board_batten', 'shake', 'panel',
                         'vertical', 'nickel_gap', 'shake_straight',
                         'shake_staggered', 'sierra8'}
@@ -13691,12 +14257,14 @@ def _normalize_exterior_entry(raw, row_number=None):
         raise ValueError(f'Row {row_number or "?"}: expected an object')
     aliases = {'roofing': 'roof', 'roofs': 'roof', 'doors': 'door',
                'paints': 'paint', 'trims': 'trim', 'fascia': 'trim',
-               'fascias': 'trim', 'soffits': 'soffit'}
+               'fascias': 'trim', 'soffits': 'soffit', 'gutters': 'gutter',
+               'windows': 'window', 'metals': 'metal', 'metal_accents': 'metal',
+               'shutters': 'shutter'}
     category = aliases.get(_exterior_text(raw.get('category'), 20).lower(),
                            _exterior_text(raw.get('category'), 20).lower())
     if category not in EXTERIOR_CATALOG_CATEGORIES:
         raise ValueError(
-            f'Row {row_number or "?"}: category must be roof, siding, trim, soffit, door, or paint')
+            f'Row {row_number or "?"}: unsupported exterior category')
     product = _exterior_text(raw.get('product') or raw.get('series'), 120)
     color = _exterior_text(raw.get('color') or raw.get('color_name'), 80)
     if not product:
@@ -13711,10 +14279,20 @@ def _normalize_exterior_entry(raw, row_number=None):
         applies = applies or 'siding'
         if applies not in EXTERIOR_CATALOG_SURFACES:
             raise ValueError(
-                f'Row {row_number or "?"}: paint applies_to must be siding, trim, soffit, or door')
+                f'Row {row_number or "?"}: paint applies_to is not an editable surface')
     else:
-        applies = {'roof': 'roof', 'siding': 'siding', 'trim': 'trim',
-                   'soffit': 'soffit', 'door': 'door'}[category]
+        applies = category
+
+    texture_ref = _exterior_text(raw.get('texture_ref'), 160)
+    if texture_ref and not re.fullmatch(r'_catalog/et_[0-9a-f]{32}\.png', texture_ref):
+        raise ValueError(f'Row {row_number or "?"}: texture_ref must be an uploaded catalog texture')
+    texture_scale_raw = raw.get('texture_scale')
+    try:
+        texture_scale = int(float(texture_scale_raw)) if str(texture_scale_raw or '').strip() else 96
+    except (TypeError, ValueError):
+        raise ValueError(f'Row {row_number or "?"}: texture_scale must be a number')
+    if not 16 <= texture_scale <= 512:
+        raise ValueError(f'Row {row_number or "?"}: texture_scale must be between 16 and 512')
     entry = {
         'category': category,
         'brand': _exterior_text(raw.get('brand'), 80),
@@ -13727,6 +14305,8 @@ def _normalize_exterior_entry(raw, row_number=None):
         'pattern_id': _exterior_pattern(raw.get('style') or raw.get('profile'), raw.get('pattern_id')),
         'price_book_bundle': _exterior_text(
             raw.get('price_book_bundle') or raw.get('bundle_id'), 100),
+        'texture_ref': texture_ref,
+        'texture_scale': texture_scale,
         'active': _exterior_bool(raw.get('active'), True),
     }
     product_id, entry_id = _exterior_ids(entry)
@@ -14452,18 +15032,72 @@ def import_exterior_catalog():
                     'added': len(merged) - before, 'count': len(merged)})
 
 
+@app.route('/api/exterior-catalog/texture', methods=['POST'])
+def upload_exterior_texture():
+    """Store a manager-supplied manufacturer texture for visual previews.
+
+    Images are decoded, metadata-stripped, bounded, and re-encoded as PNG.
+    The catalog stores only the returned internal reference; external URLs are
+    never accepted, so customer review pages cannot become tracking pixels.
+    """
+    if not _is_manager_up():
+        return _forbid()
+    upload = request.files.get('file')
+    if upload is None:
+        return jsonify({'error': 'Choose a PNG, JPG, or WebP texture image.'}), 400
+    data = upload.read(6 * 1024 * 1024 + 1)
+    if not data or len(data) > 6 * 1024 * 1024:
+        return jsonify({'error': 'Texture image must be between 1 byte and 6 MB.'}), 400
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(data)) as source:
+            if source.format not in ('PNG', 'JPEG', 'WEBP'):
+                raise ValueError('Use a PNG, JPG, or WebP texture image.')
+            source.load()
+            if min(source.size) < 1 or max(source.size) > 6000:
+                raise ValueError('Texture dimensions must be between 1 and 6000 pixels.')
+            image = ImageOps.exif_transpose(source).copy()
+        if max(image.size) > 1024:
+            ratio = 1024 / max(image.size)
+            size = (max(1, round(image.width * ratio)),
+                    max(1, round(image.height * ratio)))
+            resampling = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS')
+            image = image.resize(size, resampling)
+        image = image.convert('RGBA' if 'A' in image.getbands() else 'RGB')
+        encoded = io.BytesIO()
+        image.save(encoded, 'PNG', optimize=True)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception:
+        return jsonify({'error': 'That texture image could not be decoded.'}), 400
+
+    name = f'et_{uuid.uuid4().hex}.png'
+    folder = os.path.join(UPLOADS_DIR, '_catalog')
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, name), 'wb') as handle:
+        handle.write(encoded.getvalue())
+    ref = f'_catalog/{name}'
+    return jsonify({'texture_ref': ref, 'url': f'/uploads/{ref}',
+                    'width': image.width, 'height': image.height}), 201
+
+
 @app.route('/api/exterior-catalog/template.csv')
 def exterior_catalog_template():
     if not _is_manager_up():
         return _forbid()
     csv_text = (
-        'category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,active\r\n'
-        'roof,CertainTeed,Landmark,Architectural,Moire Black,,#292929,,b_landmark,true\r\n'
-        'siding,LP SmartSide,ExpertFinish,Lap Joint Siding - 8 in.,Summit Blue,,#859298,,b_lp_expert,true\r\n'
-        'trim,LP SmartSide,ExpertFinish Trim & Fascia,Trim & Fascia,Snowscape White,,#f2f1f1,,b_lp_expert,true\r\n'
-        'soffit,James Hardie,Hardie Soffit,Vented Smooth,Arctic White,,#f0f0e4,,b_hardie_statement,true\r\n'
-        'door,ProVia,Signet,460 Style,Autumn Red,,#823d36,,,true\r\n'
-        'paint,Sherwin-Williams,Duration,Exterior Satin,Tricorn Black,SW 6258,#2f2f30,trim,,true\r\n'
+        'category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,texture_ref,texture_scale,active\r\n'
+        'roof,CertainTeed,Landmark,Architectural,Moire Black,,#292929,,b_landmark,,96,true\r\n'
+        'siding,LP SmartSide,ExpertFinish,Lap Joint Siding - 8 in.,Summit Blue,,#859298,,b_lp_expert,,96,true\r\n'
+        'trim,LP SmartSide,ExpertFinish Trim & Fascia,Trim & Fascia,Snowscape White,,#f2f1f1,,b_lp_expert,,96,true\r\n'
+        'soffit,James Hardie,Hardie Soffit,Vented Smooth,Arctic White,,#f0f0e4,,b_hardie_statement,,96,true\r\n'
+        'door,ProVia,Signet,460 Style,Autumn Red,,#823d36,,,,96,true\r\n'
+        'gutter,Custom,Seamless Aluminum,K Style,White,,#f2f2ef,,,,64,true\r\n'
+        'window,Custom,Vinyl Window,Frame,Black,,#272727,,,,48,true\r\n'
+        'metal,Custom,Standing Seam Accent,16 in. Panel,Matte Black,,#252525,,,,96,true\r\n'
+        'shutter,Custom,Exterior Shutter,Board and Batten,Black,,#252525,,,,64,true\r\n'
+        'stucco,Custom,Stucco,Sand Finish,Adobe,,#c7aa84,,,,96,true\r\n'
+        'paint,Sherwin-Williams,Duration,Exterior Satin,Tricorn Black,SW 6258,#2f2f30,trim,,,96,true\r\n'
     )
     return Response(csv_text, mimetype='text/csv', headers={
         'Content-Disposition': 'attachment; filename=exterior-catalog-template.csv'})

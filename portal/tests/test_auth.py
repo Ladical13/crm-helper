@@ -130,12 +130,13 @@ def test_old_customer_links_still_resolve(client):
     pointing at the estimator's old root paths. These must never 404."""
     assert client.get('/sign/abc123').headers['Location'] == '/estimate/sign/abc123'
     assert client.get('/sign-co/abc123').headers['Location'] == '/estimate/sign-co/abc123'
+    assert client.get('/design/abc123').headers['Location'] == '/estimate/design/abc123'
     assert client.get('/uploads/photo.jpg').headers['Location'] == '/estimate/uploads/photo.jpg'
 
 
 def test_compat_redirects_do_not_require_a_login(client):
     """The customer signing the contract has no account."""
-    for path in ('/sign/abc123', '/sign-co/abc123', '/uploads/photo.jpg'):
+    for path in ('/sign/abc123', '/sign-co/abc123', '/design/abc123', '/uploads/photo.jpg'):
         assert client.get(path).status_code == 302, path
 
 
@@ -189,7 +190,8 @@ def test_signing_can_be_posted_to_the_old_root_paths(client):
     signature. 307 — not 302 — because only 307 preserves the method and the
     body, so the signature fields survive the hop to /estimate."""
     for path, target in (('/sign/abc123', '/estimate/sign/abc123'),
-                         ('/sign-co/abc123', '/estimate/sign-co/abc123')):
+                         ('/sign-co/abc123', '/estimate/sign-co/abc123'),
+                         ('/design/abc123', '/estimate/design/abc123')):
         r = client.post(path, data={'sig_name': 'Jane Homeowner', 'agree': 'on'})
         assert r.status_code == 307, f'{path} -> {r.status_code}'
         assert r.headers['Location'] == target

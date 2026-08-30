@@ -52,7 +52,7 @@ PUBLIC_ENDPOINTS = {
     'pwa_manifest', 'service_worker',
     # Customer-facing estimator links that predate the merge. See the compat
     # redirects at the bottom of this file.
-    'compat_sign', 'compat_sign_co', 'compat_upload',
+    'compat_sign', 'compat_sign_co', 'compat_design', 'compat_upload',
     # The executive team's token exchange. "Public" only in the sense that it
     # is reachable without a cookie — it authenticates on X-P1-Token, is
     # throttled per IP, and 404s unless P1_READONLY_TOKEN is set. The principal
@@ -476,6 +476,11 @@ def compat_sign(token):
 @app.route('/sign-co/<token>', methods=['GET', 'POST'])
 def compat_sign_co(token):
     return _compat_redirect(f'/estimate/sign-co/{token}')
+
+
+@app.route('/design/<token>', methods=['GET', 'POST'])
+def compat_design(token):
+    return _compat_redirect(f'/estimate/design/{token}')
 
 
 @app.route('/uploads/<path:filename>')

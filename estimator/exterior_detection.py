@@ -20,14 +20,19 @@ MODEL_URL = 'https://queue.fal.run/fal-ai/sam-3/image'
 # SAM 3 returns one mask per detected object and ``combine_masks`` unions them
 # into the role's single saved mask. Trim/fascia and soffit are separate roles
 # so the customer can contrast those finishes with the wall siding. That makes
-# a complete automatic pass five billable requests instead of the earlier
-# three-role pass; the UI and setup notes disclose that before submission.
+# a complete default pass five billable requests. Additional surfaces are
+# opt-in per project so a rep controls both scope and fal request count.
 PROMPTS = {
     'roof': 'roof',
     'siding': 'exterior wall siding',
     'trim': 'fascia boards, window trim, door trim, corner trim',
     'soffit': 'soffit under roof eaves',
     'door': 'entry door',
+    'gutter': 'rain gutters and downspouts',
+    'window': 'exterior window frames and window sashes',
+    'metal': 'metal roof accents, porch roofs, awnings, and metal dormer accents',
+    'shutter': 'exterior window shutters',
+    'stucco': 'stucco exterior wall surfaces',
 }
 MAX_BYTES = 4 * 1024 * 1024
 MAX_SIDE = 1600

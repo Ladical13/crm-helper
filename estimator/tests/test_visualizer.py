@@ -1066,6 +1066,204 @@ def test_state_endpoint_updates_selections_only(client):
         client.delete(f'/api/estimates/{eid}')
 
 
+@pytest.mark.parametrize('role', ['gutter', 'window', 'metal', 'shutter', 'stucco'])
+def test_additional_surface_masks_are_isolated_by_elevation(client, role):
+    eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    try:
+        response = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'mask', 'role': role, 'elevation_id': 'rear',
+            'elevation_name': 'Rear', 'ext': 'png',
+            'content_b64': _ONE_PX_JPEG_B64,
+        })
+        assert response.status_code == 201, response.get_data(as_text=True)
+        fresh = client.get(f'/api/estimates/{eid}').get_json()['visualizer']
+        assert fresh['elevations']['rear']['masks'][role] == response.get_json()['filename']
+        assert fresh['elevations']['rear']['name'] == 'Rear'
+        # Rear assets never leak into the legacy Front pointer fields.
+        assert not fresh.get(f'{role}_mask')
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+
+
+def test_replacing_one_elevation_keeps_the_other_elevation_render(client):
+    eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    try:
+        front = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'render', 'tier': 'better', 'elevation_id': 'front',
+            'elevation_name': 'Front', 'ext': 'jpg', 'content_b64': _ONE_PX_JPEG_B64,
+        }).get_json()['filename']
+        client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'render', 'tier': 'better', 'elevation_id': 'rear',
+            'elevation_name': 'Rear', 'ext': 'jpg', 'content_b64': _ONE_PX_JPEG_B64,
+        })
+        replacement = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'base', 'elevation_id': 'rear', 'elevation_name': 'Rear',
+            'ext': 'jpg', 'content_b64': _ONE_PX_JPEG_B64,
+        })
+        assert replacement.status_code == 201
+        vz = client.get(f'/api/estimates/{eid}').get_json()['visualizer']
+        assert vz['elevations']['front']['tier_renders']['better'] == front
+        assert vz['tier_renders']['better'] == front  # legacy mirror remains Front
+        assert vz['elevations']['rear']['tier_renders'] == {}
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+
+
+def test_visualizer_state_saves_scope_names_provia_and_invalidates_stale_views(client):
+    eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    try:
+        for elevation in ('front', 'rear'):
+            client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+                'kind': 'render', 'tier': 'best', 'elevation_id': elevation,
+                'elevation_name': elevation.title(), 'ext': 'jpg',
+                'content_b64': _ONE_PX_JPEG_B64,
+            })
+        result = client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'scope': ['roof', 'siding', 'gutter', 'window', 'metal', 'shutter', 'stucco'],
+            'concept_names': {'good': 'Classic', 'better': 'Modern', 'best': 'Bold'},
+            'favorite_tier': 'best', 'active_elevation_id': 'rear',
+            'elevation_names': {'front': 'Street', 'rear': 'Back yard'},
+            'elevation_order': ['front', 'rear'], 'invalidate_other_renders': True,
+            'provia_specs': {'best': {'access_code': 'PV-123', 'model': '460',
+                                      'glass': 'Privacy', 'notes': 'Black handleset'}},
+        })
+        assert result.status_code == 200, result.get_json()
+        vz = result.get_json()['visualizer']
+        assert vz['scope'][-5:] == ['gutter', 'window', 'metal', 'shutter', 'stucco']
+        assert vz['concept_names']['best'] == 'Bold' and vz['favorite_tier'] == 'best'
+        assert vz['elevations']['front']['name'] == 'Street'
+        assert vz['elevations']['front']['tier_renders'] == {}
+        assert vz['elevations']['rear']['tier_renders']['best']
+        assert vz['provia_specs']['best']['access_code'] == 'PV-123'
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+
+
+def test_visualizer_state_can_persist_an_empty_new_elevation(client):
+    eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    try:
+        result = client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'elevation_names': {'front': 'Street', 'garage': 'Detached garage'},
+            'elevation_order': ['front', 'garage'],
+            'active_elevation_id': 'garage',
+        })
+        assert result.status_code == 200, result.get_json()
+        vz = result.get_json()['visualizer']
+        assert vz['active_elevation_id'] == 'garage'
+        assert vz['elevation_order'] == ['front', 'garage']
+        assert vz['elevations']['garage'] == {
+            'id': 'garage', 'name': 'Detached garage', 'base_image': None,
+            'masks': {}, 'tier_renders': {},
+        }
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+
+
+def test_manager_texture_upload_and_new_catalog_categories(client):
+    original = client.get('/api/exterior-catalog').get_json()['entries']
+    try:
+        upload = client.post('/api/exterior-catalog/texture', data={
+            'file': (io.BytesIO(base64.b64decode(_ONE_PX_JPEG_B64)), 'swatch.jpg')
+        }, content_type='multipart/form-data')
+        assert upload.status_code == 201, upload.get_json()
+        texture = upload.get_json()['texture_ref']
+        assert texture.startswith('_catalog/et_') and texture.endswith('.png')
+        categories = ['gutter', 'window', 'metal', 'shutter', 'stucco']
+        rows = [{
+            'category': category, 'brand': 'Installed Co',
+            'product': category.title() + ' System', 'style': 'Standard',
+            'color': 'Graphite', 'hex': '#334455', 'texture_ref': texture,
+            'texture_scale': 72,
+        } for category in categories]
+        saved = client.put('/api/exterior-catalog', json={'entries': rows})
+        assert saved.status_code == 200, saved.get_json()
+        assert {row['category'] for row in saved.get_json()['entries']} == set(categories)
+        assert all(row['texture_ref'] == texture and row['texture_scale'] == 72
+                   for row in saved.get_json()['entries'])
+    finally:
+        assert client.put('/api/exterior-catalog', json={'entries': original}).status_code == 200
+
+
+def test_design_share_is_price_free_and_approval_is_server_managed(client, anon):
+    eid = client.post('/api/estimates', json={
+        'customer': {'name': 'Ada Lovelace', 'address': '1 Design Way'},
+        'status': 'draft',
+    }).get_json()['estimate_id']
+    try:
+        client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'render', 'tier': 'better', 'elevation_id': 'front',
+            'elevation_name': 'Front', 'ext': 'jpg', 'content_b64': _ONE_PX_JPEG_B64,
+        })
+        state = client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'scope': ['roof', 'door'],
+            'concept_names': {'good': 'Classic', 'better': 'Modern Farmhouse', 'best': 'Bold'},
+            'selections': {
+                'roofing': {'better': {'product_name': 'Landmark',
+                                        'color_name': 'Moire Black'}},
+                'siding': {'better': {'product_name': 'Hidden unscoped siding',
+                                      'color_name': 'Should not display'}},
+            },
+            'provia_specs': {'better': {'access_code': 'PV-456', 'model': '460'}},
+        })
+        assert state.status_code == 200
+        shared = client.post(f'/api/estimates/{eid}/visualizer/share')
+        assert shared.status_code == 200, shared.get_json()
+        fresh = client.get(f'/api/estimates/{eid}').get_json()
+        assert fresh['status'] == 'draft' and not fresh.get('sent_at')
+
+        token = shared.get_json()['token']
+        page = anon.get(f'/design/{token}')
+        html = page.get_data(as_text=True)
+        assert page.status_code == 200
+        assert 'Modern Farmhouse' in html and 'PV-456' in html
+        assert 'Hidden unscoped siding' not in html
+        assert '$' not in html and 'Approve selected design' in html
+
+        approved = anon.post(f'/design/{token}', data={
+            'approved_tier': 'better', 'approver_name': 'Ada Lovelace', 'agree': 'yes'})
+        assert approved.status_code == 200
+        stored = client.get(f'/api/estimates/{eid}').get_json()
+        assert stored['design_approval']['concept_name'] == 'Modern Farmhouse'
+        assert stored['design_approval']['provia_spec']['access_code'] == 'PV-456'
+        assert 'siding' not in stored['design_approval']['selections']
+        assert stored['design_approval']['snapshot_hash']
+        assert len(stored['design_approval_history']) == 1
+        assert 'Current design approved' in anon.get(f'/design/{token}').get_data(as_text=True)
+
+        changed = client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'concept_names': {'good': 'Classic', 'better': 'Modern Farmhouse Revised',
+                              'best': 'Bold'},
+        })
+        assert changed.status_code == 200
+        changed_html = anon.get(f'/design/{token}').get_data(as_text=True)
+        assert 'needs approval again' in changed_html
+        assert 'value="better" checked' not in changed_html
+
+        stale = copy.deepcopy(stored)
+        stale.pop('design_approval', None)
+        stale.pop('design_approval_history', None)
+        stale.pop('design_share_token', None)
+        assert client.put(f'/api/estimates/{eid}', json=stale).status_code == 200
+        preserved = client.get(f'/api/estimates/{eid}').get_json()
+        assert preserved['design_approval']['concept_name'] == 'Modern Farmhouse'
+        assert preserved['design_share_token'] == token
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+
+
+def test_extended_design_studio_frontend_wiring():
+    source = open(os.path.join(os.path.dirname(__file__), '..', 'static', 'app.js'),
+                  encoding='utf-8').read()
+    for token in ('gutter', 'window', 'metal', 'shutter', 'stucco'):
+        assert token in source
+    assert 'function _vzAddElevation' in source
+    assert 'function _vzShareDesign' in source
+    assert 'function _vzCompositeTexture' in source
+    assert 'Exact ProVia specification handoff' in source
+    assert 'invalidate_other_renders' in source
+    assert 'if (!scope.has(role)) continue;' in source
+
+
 # ── PDF integration ────────────────────────────────────────────────────
 
 def _minimal_signed_estimate(eid):
