@@ -677,6 +677,112 @@ def test_the_crew_packet_states_the_layover_rules_only_on_a_layover(client, A):
     assert 'epdm cannot contact asphalt' in joined
 
 
+def test_a_gbb_bid_reads_the_system_off_the_tier_being_sold(client, A):
+    """THE bug that G/B/B commercial exposes.
+
+    All three tiers share ONE line_items array, so the overlay tier's 1/4"
+    cover board sits in it even when the customer bought a full replacement.
+    Scanning the whole array — which is all this did while commercial was
+    simple-mode only — reports every three-tier bid as a layover, and the
+    customer's process list then promises a roof that is never torn off.
+    """
+    est = _commercial_est()
+    td = est['trades']['commercial']
+    td['mode'] = 'gbb'
+    td.pop('simple_bundle', None)
+    # Better = overlay (carries the cover board), Best = tear-off (does not).
+    td['line_items'] = [
+        {'id': 'i1', 'catalog_id': 'cm_tpo_ma', 'name': 'TPO Membrane 60-mil',
+         'unit': 'SQ', 'quantity': 44, 'customer_visible': True,
+         'tiers': {'good': {'included': False}, 'better': {'included': True},
+                   'best': {'included': True}}},
+        {'id': 'i2', 'catalog_id': 'ca_cover_quarter', 'name': 'Cover Board 1/4 in',
+         'unit': 'SQ', 'quantity': 44, 'customer_visible': True,
+         'tiers': {'good': {'included': False}, 'better': {'included': True},
+                   'best': {'included': False}}},
+        {'id': 'i3', 'catalog_id': 'cm_coating', 'name': 'Silicone Restoration Coating',
+         'unit': 'SQ', 'quantity': 44, 'customer_visible': True,
+         'tiers': {'good': {'included': True}, 'better': {'included': False},
+                   'best': {'included': False}}},
+    ]
+
+    est['selected_tier'] = 'best'
+    assert A._est_comm_system(est) == 'tearoff'
+    assert not A._est_is_layover(est)
+
+    est['selected_tier'] = 'better'
+    assert A._est_comm_system(est) == 'layover'
+    assert A._est_is_layover(est)
+
+    est['selected_tier'] = 'good'
+    assert A._est_comm_system(est) == 'coating'
+    assert not A._est_is_layover(est)
+
+    # Per-trade picks outrank the estimate-level one, same as pricing.
+    est['selected_tiers'] = {'commercial': 'best'}
+    assert A._est_comm_system(est) == 'tearoff'
+
+
+def test_a_simple_bid_reads_the_system_off_every_line(client, A):
+    """Simple mode has no tiers to consult, so the scan stays flat — byte for
+    byte what it did before G/B/B commercial existed."""
+    est = _commercial_est()
+    assert A._est_comm_system(est) == 'tearoff'
+    est['trades']['commercial']['line_items'].append(
+        {'id': 'i5', 'catalog_id': 'ca_cover_quarter', 'name': 'Cover Board 1/4 in',
+         'unit': 'SQ', 'quantity': 44, 'unit_cost': 0, 'unit_price': 0,
+         'customer_visible': True})
+    assert A._est_comm_system(est) == 'layover'
+
+
+def test_a_coating_sale_never_tells_the_customer_it_was_torn_off(client, A):
+    """A coating is neither a tear-off nor a layover. Before this branch
+    existed it fell through to the tear-off copy and promised a property
+    manager we were removing a roof we had not bid removing."""
+    est = _commercial_est()
+    td = est['trades']['commercial']
+    td['simple_bundle'] = 'cb_coating'
+    td['line_items'] = [
+        {'id': 'i1', 'catalog_id': 'cm_coating', 'name': 'Silicone Restoration Coating System',
+         'unit': 'SQ', 'quantity': 44, 'unit_cost': 60, 'unit_price': 84.5,
+         'customer_visible': True},
+        {'id': 'i2', 'catalog_id': 'cl_coating', 'name': 'Coating Prep & Application Labor',
+         'unit': 'SQ', 'quantity': 40, 'unit_cost': 100, 'unit_price': 140.85,
+         'customer_visible': True},
+    ]
+    assert A._est_comm_system(est) == 'coating'
+
+    est_id = _create(client, est)
+    share = client.post(f'/api/estimates/{est_id}/share').get_json()
+    html = client.get(share['url']).get_data(as_text=True)
+    assert 'Torn off and dried in' not in html
+    assert 'scanned for trapped moisture' not in html      # not a layover either
+    assert 'adhesion test' in html
+    assert 'specified mil thickness' in html
+
+    # And the crew gets the coating rules, not the recover ones.
+    packet = A.build_production_packet_pdf(est)
+    assert packet[:4] == b'%PDF'
+    joined = ' '.join(A.COMMERCIAL_COATING_RULES).lower()
+    assert 'wet or saturated insulation' in joined
+    assert 'adhesion test' in joined
+    assert 'mil thickness' in joined
+    assert 'overspray' in joined
+
+
+def test_every_commercial_system_has_its_own_process_list(A):
+    """_PROCESS_COMMERCIAL_BY_SYSTEM is keyed by _est_comm_system's answers, so
+    a fourth system forces a decision here instead of silently reading as a
+    tear-off — which is exactly how the coating bug happened."""
+    assert set(A._PROCESS_COMMERCIAL_BY_SYSTEM) == {'coating', 'layover', 'tearoff'}
+    for steps in A._PROCESS_COMMERCIAL_BY_SYSTEM.values():
+        assert len(steps) == 7
+    # The three lists must actually differ where it counts.
+    assert 'Torn off' in ' '.join(A._PROCESS_COMMERCIAL_BY_SYSTEM['tearoff'])
+    assert 'Torn off' not in ' '.join(A._PROCESS_COMMERCIAL_BY_SYSTEM['layover'])
+    assert 'Torn off' not in ' '.join(A._PROCESS_COMMERCIAL_BY_SYSTEM['coating'])
+
+
 def test_the_two_flag_lists_stay_in_sync(client, A):
     """COMM_FLAG_LABELS is mirrored by hand in app.js. Drift means the rep
     ticks a box the crew packet never prints - and the two flags that rule a

@@ -6443,6 +6443,28 @@ _PROCESS_COMMERCIAL = [
     'Written change orders required before any out-of-scope work — no verbal upsells',
     'Final walkthrough with the owner or property manager, then the manufacturer system warranty registered in your name',
 ]
+# A COATING is neither of the above. Nothing is torn off and nothing is laid
+# over — the existing membrane stays and becomes the substrate, so the steps
+# that matter are the ones that decide whether the silicone will stick and stay
+# stuck: wash, adhesion test, detail reinforcement, verified mil thickness.
+# Without this list a restoration sale reads _PROCESS_COMMERCIAL and promises
+# the customer a tear-off we are not doing and did not bid.
+_PROCESS_COMMERCIAL_COATING = [
+    'Building permit pulled with the local authority having jurisdiction and final inspection scheduled',
+    'Staging, roof access and material handling scheduled with building management before work starts',
+    'Existing roof pressure-washed and dried, then an adhesion test run before any coating goes down',
+    'Seams, penetrations and details reinforced with fabric and base coat',
+    'Silicone applied to the specified mil thickness by Project One crews (not day-labor subs)',
+    'Written change orders required before any out-of-scope work — no verbal upsells',
+    'Final walkthrough with the owner or property manager, then the manufacturer system warranty registered in your name',
+]
+# Keyed by _est_comm_system's three answers, so adding a fourth commercial
+# system forces a decision here rather than silently falling back to tear-off.
+_PROCESS_COMMERCIAL_BY_SYSTEM = {
+    'coating': _PROCESS_COMMERCIAL_COATING,
+    'layover': _PROCESS_COMMERCIAL_LAYOVER,
+    'tearoff': _PROCESS_COMMERCIAL,
+}
 
 
 def _build_estimate_manifest(est):
@@ -6743,8 +6765,13 @@ def _build_estimate_manifest(est):
         },
         'reviews':         reviews,
         'summary':         summary,
-        'process': list(_PROCESS_COMMERCIAL_LAYOVER if is_comm and _est_is_layover(est)
-                        else _PROCESS_COMMERCIAL if is_comm
+        # Before signature the customer sees three packages but ONE process
+        # list, resolved from _trade_tier (the rep's pick, defaulting to
+        # better). Same behavior warranty_by_tier already has, and deliberate:
+        # the steps are a commitment about how we work, not a line item. Do not
+        # "fix" this into three lists without deciding what the /sign page
+        # should show before a tier is chosen.
+        'process': list(_PROCESS_COMMERCIAL_BY_SYSTEM[_est_comm_system(est)] if is_comm
                         else _PROCESS_RESIDENTIAL),
     }
 
@@ -11261,23 +11288,32 @@ def build_material_order_pdf(est):
     # cut into 10' squares, whether anything underneath is wet. The crew needs
     # them on the sheet in their hands, not in a manual back at the office.
     #
-    # Keyed off the 1/4" cover board rather than the bundle id: that product IS
-    # the layover assembly, so a manager who builds a custom recover package
-    # still gets the requirements printed.
-    if est.get('estimate_type') == 'commercial' and _est_is_layover(est):
-        section_title('Layover / Recover Requirements')
+    # Keyed off the catalog id rather than the bundle id: the 1/4" board IS the
+    # layover assembly and the silicone line IS the coating, so a manager who
+    # builds a custom package still gets the right requirements printed. In
+    # G/B/B this follows the tier being SOLD — see _est_comm_system.
+    _comm_sys = (_est_comm_system(est) if est.get('estimate_type') == 'commercial'
+                 else 'tearoff')
+    _comm_rules = {
+        'layover': ('Layover / Recover Requirements', COMMERCIAL_LAYOVER_RULES,
+                    'VERIFY BEFORE THE FIRST BOARD GOES DOWN - a recover that does not '
+                    'meet these does not pass inspection and does not carry a warranty.'),
+        'coating': ('Coating Application Requirements', COMMERCIAL_COATING_RULES,
+                    'VERIFY BEFORE THE SPRAYER COMES OUT - a coating applied over a wet '
+                    'or unsound roof fails as a whole and does not carry a warranty.'),
+    }.get(_comm_sys)
+    if _comm_rules:
+        _rules_title, _rules, _rules_warn = _comm_rules
+        section_title(_rules_title)
         pdf.set_font(SANS, 'B', 9)
         pdf.set_text_color(170, 30, 30)
         # new_x/new_y on EVERY multi_cell: without them the cursor stays where
         # the last line ended, and the next call gets a width-0 box and throws
         # "Not enough horizontal space to render a single character".
-        pdf.multi_cell(0, 5, _pdf_rich(
-            'VERIFY BEFORE THE FIRST BOARD GOES DOWN - a recover that does not '
-            'meet these does not pass inspection and does not carry a warranty.'),
-            new_x='LMARGIN', new_y='NEXT')
+        pdf.multi_cell(0, 5, _pdf_rich(_rules_warn), new_x='LMARGIN', new_y='NEXT')
         pdf.set_text_color(0, 0, 0)
         pdf.set_font(SANS, '', 8.5)
-        for rule in COMMERCIAL_LAYOVER_RULES:
+        for rule in _rules:
             pdf.multi_cell(0, 4.6, _pdf_rich(f'- {rule}'),
                            new_x='LMARGIN', new_y='NEXT')
         pdf.ln(4)
@@ -14770,6 +14806,34 @@ COMMERCIAL_LAYOVER_RULES = [
     'actually specified - the manufacturer\'s procedure governs the warranty.',
 ]
 
+# What decides whether a COATING will stick and stay stuck. Same job as the
+# layover block above and the same reason it is on the sheet: every one of
+# these is settled on the roof, before the sprayer comes out, and a silicone
+# system that fails any of them fails as a whole and is not warranted.
+#
+# A coating is NOT a roof. It restores one that is still sound, and the two
+# rules that rule it out (saturated insulation, standing water) are the two a
+# crew is most tempted to coat over because the roof looks fine from the hatch.
+COMMERCIAL_COATING_RULES = [
+    'A coating restores a SOUND roof - it is not a repair for one that has failed. '
+    'Wet or saturated insulation must be cut out and replaced before any coating '
+    'goes down; coating over it seals the water in and rots the deck.',
+    'Core-cut or infrared/moisture survey the roof first where there is any history '
+    'of leaks. Coating a wet assembly voids the manufacturer system warranty.',
+    'Pressure-wash the full roof and let it dry completely. Adhesion test a mock-up '
+    'section and confirm it before scheduling the main application.',
+    'Reinforce every seam, penetration, drain, curb and termination with fabric and '
+    'base coat. Details are where a coating fails first.',
+    'Correct ponding areas before coating. Silicone tolerates ponding water, but a '
+    'ponding area is still a drainage defect and is excluded from most warranties.',
+    'Verify wet-mil thickness as you go and record it - the warranty is written '
+    'against the specified mil thickness, not against gallons ordered.',
+    'Mask and contain overspray. Silicone on parked cars, HVAC housings or an '
+    'adjacent roof is the single most common callback on a coating job.',
+    'Confirm the above against the published application requirements for the system '
+    'actually specified - the manufacturer\'s procedure governs the warranty.',
+]
+
 # Polyiso ships priced BY THE SQUARE on both sheets, so these lift straight
 # across. R-value drives which one the spec calls for, so they are all offered
 # rather than folded into one line: ~R-6 per inch of polyiso.
@@ -15216,13 +15280,40 @@ BUNDLE_SEEDS = {
 # trade -> bundle id used when the trade prices as a single package.
 SIMPLE_BUNDLE_DEFAULTS = {'commercial': COMMERCIAL_SIMPLE_DEFAULT}
 
+def _est_comm_system(est):
+    """'coating' | 'layover' | 'tearoff' — which commercial system this bid sells.
+
+    Keyed off catalog ids rather than the bundle id, so a manager's custom
+    package answers correctly: the 1/4" cover board IS the layover assembly and
+    the silicone line IS the coating.
+
+    In Good/Better/Best all three tiers share ONE line_items array, so the scan
+    MUST respect tier inclusion. Scanning the whole array — which is what this
+    did while commercial was simple-mode only — makes a full-replacement sale
+    read as a layover, and the customer's process list then promises them a roof
+    that is never torn off. Coating is checked first: a coating package carries
+    no cover board, but a manager who builds one that does is still selling a
+    coating."""
+    td = (est.get('trades') or {}).get('commercial') or {}
+    items = td.get('line_items') or []
+    if _trade_mode('commercial', td) == 'gbb':
+        tier = _trade_tier(est, 'commercial')
+        # `included is not False` is the same idiom the pricing math uses — a
+        # tier cell that has never been written counts as included.
+        items = [it for it in items
+                 if (((it or {}).get('tiers') or {}).get(tier) or {}).get('included') is not False]
+    ids = {(it or {}).get('catalog_id') for it in items}
+    if 'cm_coating' in ids:
+        return 'coating'
+    if 'ca_cover_quarter' in ids:
+        return 'layover'
+    return 'tearoff'
+
+
 def _est_is_layover(est):
     """True when the commercial package being sold is a recover rather than a
-    tear-off. The 1/4" cover board is the layover assembly, so its presence is
-    the test — a manager's custom recover package answers correctly too."""
-    td = (est.get('trades') or {}).get('commercial') or {}
-    return any((it or {}).get('catalog_id') == 'ca_cover_quarter'
-               for it in (td.get('line_items') or []))
+    tear-off. Kept as the name the packet and the customer page already read."""
+    return _est_comm_system(est) == 'layover'
 
 
 # Rep-entered commercial complexity flags. Display only — these never price.
