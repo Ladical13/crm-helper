@@ -14292,7 +14292,7 @@ ROOFING_CATALOG_SEED = [
     {"id": "m_stone", "name": "Stone-Coated Steel", "unit": "SQ", "cost": 330, "measure": "squares_waste",
      "bullets": ["Stone-coated steel panels with a textured shake/shingle profile", "Class 4 impact rating and 120+ mph wind rating", "Steel strength at a fraction of the weight of tile", "50-year limited manufacturer warranty"],
      "colors": _ROOF_STONE_COLORS},
-    {"id": "m_standing_seam", "name": "Standing Seam Metal (24ga)", "unit": "SQ", "cost": 400, "measure": "squares_waste",
+    {"id": "m_standing_seam", "name": "Standing Seam Metal (24ga)", "unit": "SQ", "cost": 320.25, "measure": "squares_waste",
      "bullets": ["24ga standing seam metal panels with concealed fasteners", "No exposed screws to back out or leak over time", "50+ year service life — the last roof this house needs", "Class 4 impact rating and Kynar 500 finish warranty", "Clean modern lines in your choice of color"],
      "colors": _ROOF_METAL_COLORS},
     {"id": "m_euroshield", "name": "Euroshield (Rubber)", "unit": "SQ", "cost": 360, "measure": "squares_waste",
@@ -14322,6 +14322,59 @@ ROOFING_CATALOG_SEED = [
      "bullets": ["Intake venting at the eaves to balance the attic"]},
     {"id": "a_vent_plug", "name": "Vent Plug", "unit": "EA", "cost": 25, "measure": "turtle_vents",
      "bullets": ["Old turtle vents removed and decked over"]},
+    # --- Standing seam metal trim -------------------------------------------
+    # Costs decoded from the Architectural Sheet Metals & Panels quote
+    # EFC31095 (27866 Cragmont, Evergreen, 09/25/2024) — a real 26 SQ job.
+    #
+    # THE LOAD-BEARING CONVERSION: the panel is quoted per LINEAL FOOT off a
+    # 20" coil ("(20 LIN)"), and a 1.5" mechanical seam eats ~4" of that in the
+    # two seam legs, so NET COVERAGE IS 16", not 20". $4.27/LF ÷ (16/12 ft) =
+    # $320.25/SQ. Reading it as 20" coverage instead gives $256/SQ and
+    # under-sells the panel by 25%. The quote settles it: 89 panels at 16"
+    # cover 118.7 ft of eave, which is the 13 Style D sticks that were actually
+    # ordered; at 20" they would cover 148 ft and need 15. Re-derive this ratio
+    # from the coil width whenever the supplier sheet changes — don't nudge the
+    # $/SQ.
+    #
+    # Trim is quoted per 10-ft stick, so it carries bundle_lf:10 and prices per
+    # STICK (cost is the stick, not the foot) — same shape as a_ridge_vent.
+    {"id": "a_ss_clips", "name": "Seam Clips + Pancake Screws (1.5\" Mechanical)", "unit": "SQ", "cost": 23.85, "measure": "squares_waste",
+     # 910 FG-158-24 clips @ $0.42 + 2000 pancake screws @ $0.12 over 26.08 SQ.
+     # Clips run ~24" o.c. along every seam, so this scales with panel area.
+     "bullets": ["Concealed clips and fasteners — no screws through the panel"]},
+    {"id": "a_ss_drip_d", "name": "Metal Drip Edge — Style D (24ga)", "unit": "LF", "cost": 33.82, "measure": "eave", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Style D metal drip edge at every eave"]},
+    {"id": "a_ss_rake", "name": "Metal Rake — 2pc System (24ga)", "unit": "LF", "cost": 23.38, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Two-piece metal rake trim at every gable end"]},
+    {"id": "a_ss_rake_recv", "name": "Metal Rake Receiver (24ga)", "unit": "LF", "cost": 17.16, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
+     # Pairs 1:1 with a_ss_rake — the quote ordered 13 of each.
+     "bullets": []},
+    {"id": "a_ss_sidewall", "name": "Metal Sidewall — 2pc System (24ga)", "unit": "LF", "cost": 32.32, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Two-piece metal sidewall flashing where the roof meets wall"]},
+    {"id": "a_ss_sidewall_recv", "name": "Metal Sidewall Receiver (24ga)", "unit": "LF", "cost": 17.16, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": []},
+    {"id": "a_ss_ridge", "name": "Metal Ridge Cap — 3pc (24ga)", "unit": "LF", "cost": 33.32, "measure": "ridge_hip", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Three-piece vented metal ridge cap"]},
+    {"id": "a_ss_zeecee", "name": "Zee-Cee Ridge Closure (24ga)", "unit": "LF", "cost": 32.82, "measure": "ridge_hip", "bundle_lf": 5, "bundle_unit": "sticks",
+     # bundle_lf 5, not 10: a Zee-Cee runs BOTH sides of the ridge, so it takes
+     # two 10-ft sticks per 10 ft of ridge. The quote's 6 ridge / 12 Zee-Cee
+     # over 60 LF is exactly this.
+     "bullets": []},
+    {"id": "a_ss_pipe_boot", "name": "MasterFlash Pipe Boot (EPDM)", "unit": "EA", "cost": 12.70, "measure": "pipe_boots",
+     # #2 gray EPDM, the common size. #1 is $11.12 and #3 $14.70; a high-temp
+     # silicone (#7) is $91.59 and needs pricing by hand on a flue.
+     "bullets": ["MasterFlash boots on every penetration"]},
+    {"id": "a_ss_sealants", "name": "Butyl Tape, Sealant & Rivets", "unit": "SQ", "cost": 9.6, "measure": "squares_waste",
+     # Butyl tape + Nova Flex + pop rivets + wood screws, $250.24 over 26.08 SQ.
+     "bullets": ["Butyl tape and sealant at every seam and transition"]},
+    {"id": "a_ss_custom_flash", "name": "Custom Flashing (24ga, 4\"x10')", "unit": "LF", "cost": 20.88, "bundle_lf": 10, "bundle_unit": "sticks",
+     # Manual qty on purpose — custom bends are per-roof. The same quote also
+     # carried two large bends at $127.78 each; price those by hand.
+     "bullets": ["Custom-bent flashing fabricated for this roof"]},
+    {"id": "x_ss_delivery", "name": "Metal Delivery & Rollformer Set-Up", "unit": "LS", "cost": 500,
+     # $350 delivery + $150 machine set-up. Per JOB, not per square — the
+     # supplier charges it once to run the panels for this roof.
+     "bullets": ["Panels roll-formed to length for this roof and delivered"]},
     {"id": "l_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
      "bullets": ["Complete tear-off of existing roofing down to the deck"]},
     {"id": "l_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
@@ -14336,6 +14389,16 @@ _RS = ["a_underlayment", "a_ice_water", "a_drip_edge", "a_ridge_cap", "a_starter
 # Bullets no product owns. Everything else on the card comes from the products,
 # so this list stays short — it closes the card, it doesn't describe the scope.
 _RS_EXTRA = ["5-year Project One workmanship warranty"]
+# Standing seam runs its own trim. _RS is the SHINGLE accessory list and four of
+# its entries are simply wrong on a metal roof: a_drip_edge/a_ridge_cap/
+# a_starter/a_step_flash are shingle SKUs sitting at $0, and a_starter has no
+# metal equivalent at all (panels start at the drip edge). Leaving them on
+# b_standing_seam is what let a metal bid price its entire edge detail at zero.
+_SS_METAL = ["a_underlayment", "a_ice_water", "a_ss_clips", "a_ss_drip_d",
+             "a_ss_rake", "a_ss_rake_recv", "a_ss_sidewall", "a_ss_sidewall_recv",
+             "a_ss_ridge", "a_ss_zeecee", "a_ss_pipe_boot", "a_ss_sealants",
+             "a_decking", "l_tearoff", "l_install", "x_ss_delivery",
+             "x_dumpster", "x_permit"]
 ROOFING_BUNDLES_SEED = [
     {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Dual-layer architectural shingle with Class 3 impact resistance, StreakFighter protection, and a lifetime limited residential warranty.",
      "extra_features": _RS_EXTRA},
@@ -14347,7 +14410,7 @@ ROOFING_BUNDLES_SEED = [
      "extra_features": _RS_EXTRA},
     {"id": "b_stone", "name": "Stone-Coated Steel", "product_ids": ["m_stone"] + _RS, "description": "Stone-coated steel panels — steel strength with a textured shake/shingle look, wind-rated 120+ mph.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _RS, "description": "24ga standing seam metal with concealed fasteners — the premium 50+ year system.",
+    {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _SS_METAL, "description": "24ga standing seam metal with concealed fasteners — the premium 50+ year system.",
      "extra_features": _RS_EXTRA},
     {"id": "b_euroshield", "name": "Euroshield", "product_ids": ["m_euroshield"] + _RS, "description": "Recycled-rubber roofing with the look of slate/shake — Class 4 impact, freeze-thaw resistant.",
      "extra_features": _RS_EXTRA},
@@ -15446,6 +15509,16 @@ _PRODUCT_SUPERSEDED = {'ca_fasteners': ['ca_fast_insul', 'ca_fast_seam']}
 _BUNDLE_PRODUCT_SUPERSEDED = {
     'cb_coating': {'cl_labor_reroof': ['cl_coating'],
                    'ca_fast_insul': [], 'ca_fast_seam': []},
+    # b_standing_seam shipped carrying the SHINGLE accessory list (_RS). Four of
+    # those lines are wrong on a metal roof and all four sit at $0, so a metal
+    # bid priced its whole edge detail at nothing. Every replacement list is
+    # EMPTY on purpose: the metal equivalents arrive through
+    # _LATE_BUNDLE_PRODUCTS above, which runs first, so naming them here too
+    # would be a no-op at best (both sides dedupe) and a second source of truth
+    # at worst. a_starter has no replacement at all — a standing seam panel
+    # starts at the drip edge, there is no starter course.
+    'b_standing_seam': {'a_drip_edge': [], 'a_ridge_cap': [], 'a_starter': [],
+                        'a_pipe_boots': [], 'a_step_flash': []},
 }
 
 # _ensure_bundle_catalogs SETDEFAULTS <trade>_tier_defaults, and every live
@@ -15461,6 +15534,25 @@ _TIER_DEFAULT_MIGRATIONS = {
     'commercial': {'good':   ('cb_tpo_lo_mf', 'cb_coating'),
                    'better': ('cb_tpo_ma',    'cb_tpo_lo_mf'),
                    'best':   ('cb_tpo_fa',    'cb_tpo_ma')},
+}
+
+# A seed COST correction for a product that shipped at the wrong number. Cost is
+# otherwise never copied onto a live book — a saved cost is the manager's price
+# and the seed must not fight it on every GET — so without this a corrected
+# number reaches nobody who already has a book, which is everybody.
+#
+# trade -> product id -> (old seed cost, new seed cost). Rewritten ONLY while
+# the live cost still equals the PREVIOUS SEED's number to the cent: that is the
+# signature of a book carrying the default nobody ever touched. A manager who
+# typed their own price is pricing, not lagging, and keeps it — same contract as
+# _TIER_DEFAULT_MIGRATIONS. Drop an entry once live books have saved past it.
+#
+# 2026-09-01: m_standing_seam shipped at a round $400/SQ placeholder meant to
+# cover the whole metal roof. The real panel is $320.25/SQ (Architectural Sheet
+# Metals EFC31095 — $4.27/LF off a 20" coil at 16" net coverage) and its trim is
+# now priced as its own catalog lines, so leaving $400 double-bills the trim.
+_PRODUCT_COST_MIGRATIONS = {
+    'roofing': {'m_standing_seam': (400, 320.25)},
 }
 
 # Seed bundles that shipped AFTER their trade already had saved price books, so
@@ -15504,6 +15596,16 @@ _LATE_BUNDLE_PRODUCTS = {
     'b_hardie_statement': ['sa_starter', 'sa_kickout', 'sa_sealant', 'sa_touchup', 'sa_rot_repair'],
     'b_edco_d4':          ['sa_corner_in', 'sa_kickout', 'sa_sealant', 'sa_edco_fasteners', 'sa_rot_repair'],
     'b_edco_8':           ['sa_corner_in', 'sa_kickout', 'sa_sealant', 'sa_edco_fasteners', 'sa_rot_repair'],
+    # 2026-09-01: standing seam's own trim, priced off Architectural Sheet
+    # Metals quote EFC31095. Roofing has had live books since long before these
+    # products existed, so without this the metal bundle keeps the $0 shingle
+    # trim it shipped with. All of it is required — a standing seam roof with
+    # no rake, ridge, sidewall or clips is not a roof — which is what this list
+    # is for. The matching removals are in _BUNDLE_PRODUCT_SUPERSEDED.
+    'b_standing_seam':    ['a_ss_clips', 'a_ss_drip_d', 'a_ss_rake', 'a_ss_rake_recv',
+                           'a_ss_sidewall', 'a_ss_sidewall_recv', 'a_ss_ridge',
+                           'a_ss_zeecee', 'a_ss_pipe_boot', 'a_ss_sealants',
+                           'x_ss_delivery'],
 }
 
 # Visual-only exterior-door catalogue. It deliberately sits outside the
@@ -16253,6 +16355,15 @@ def _ensure_bundle_catalogs(pb):
                     at = live['product_ids'].index(old)
                     live['product_ids'][at:at + 1] = [
                         n for n in new_ids if n not in live['product_ids']]
+
+            # Same one-directional shape for a corrected seed COST. See
+            # _PRODUCT_COST_MIGRATIONS — the equality test against the previous
+            # seed number is what keeps a manager's own price safe.
+            for pid, (old_cost, new_cost) in _PRODUCT_COST_MIGRATIONS.get(trade, {}).items():
+                p_live = next((p for p in live_cat
+                               if isinstance(p, dict) and p.get('id') == pid), None)
+                if p_live is not None and _mnum(p_live.get('cost')) == old_cost:
+                    p_live['cost'] = new_cost
 
             # The ladder itself. pb.setdefault above cannot deliver a new one to
             # a book that already has the key — which is every live book — so

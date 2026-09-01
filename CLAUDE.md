@@ -652,9 +652,13 @@ only when it is **absent**, so on any long-lived volume the repo's copy is inert
 the seeds on every GET and backfills them into the live book, which is the only
 path that reaches production. Siding data was briefly in both; the copy in
 `price_book.json` was removed and `test_siding_is_seeded_from_app_py_not_price_book_json`
-now fails if it comes back.
+now fails if it comes back. **Roofing followed on 2026-09-01** — its copy had
+gone quietly stale (no bullets, no colors, old bundle copy, and a
+`b_standing_seam` still listing shingle trim), so which source won depended on
+which file someone happened to edit. `test_roofing_is_seeded_from_app_py_not_price_book_json`
+now guards it. `price_book.json` is down to `intros`, `materials` and `presets`.
 
-Four things behave differently once books are in the wild:
+Five things behave differently once books are in the wild:
 
 - **Products** append by id automatically — a new seed product always arrives.
 - **Bundles do not.** The copy-field backfill reads a missing id as "the manager
@@ -672,6 +676,15 @@ Four things behave differently once books are in the wild:
   every live book already has the key — so a new ladder in the seed reaches
   nobody. `_TIER_DEFAULT_MIGRATIONS` rewrites a tier only while it still holds
   the *previous seed's* id, so a manager's own pick survives.
+- **Costs do not either, and deliberately so** — a saved cost is the manager's
+  price and the seed must never fight it on every GET. That protection is also
+  why *correcting* a seed placeholder reaches nobody. `_PRODUCT_COST_MIGRATIONS`
+  is the narrow exception: it rewrites a cost only while the live number still
+  equals the *previous seed's* to the cent, which is the signature of a default
+  nobody ever touched. (`_SEED_COST_BACKFILL_TRADES` is the older, blunter
+  cousin — 0 → seed, commercial only, because that catalog shipped entirely
+  unpriced.) Both are one-directional and both should be dropped once live books
+  have saved past them.
 
 ### Jurisdiction code lookup (`/api/jurisdictions/<id>/verify`)
 
