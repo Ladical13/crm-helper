@@ -308,6 +308,10 @@ def test_every_priced_line_that_drives_a_measurement_actually_has_a_cost(client)
         # Layover labor: the four rates Luke is supplying. Until they land, a
         # layover bid prices its materials and none of its work.
         'cl_tpo_lo_mf', 'cl_tpo_lo_fa', 'cl_epdm_lo_mf', 'cl_epdm_lo_fa',
+        # Coating labor, same story. Split off cl_labor_reroof when coating
+        # became the Good tier: a coating is not a tear-off and must not
+        # inherit the tear-off rate just because both are "re-roof" work.
+        'cl_coating',
     }
     unpriced = {p['id'] for p in cat.values() if p.get('measure') and not p.get('cost')}
     assert unpriced == awaiting_quote, (
@@ -315,17 +319,66 @@ def test_every_priced_line_that_drives_a_measurement_actually_has_a_cost(client)
         f'now priced, remove from the list: {sorted(awaiting_quote - unpriced)}')
 
 
-def test_no_default_tier_sells_a_membrane_that_costs_nothing(client):
-    """EPDM, mod-bit and coating are real bundles a rep can pick, but they are
-    not on this sheet. Pointing a DEFAULT at one ships a bid with no membrane
-    in it and nothing on screen says so."""
+# Tier defaults knowingly shipped with an unpriced membrane, and why. Asserted
+# EXACTLY below, same live-checklist discipline as `awaiting_quote`: a new
+# unpriced default fails, and so does pricing one of these without deleting it
+# here. Luke accepted this trade deliberately when the coating/overlay/
+# replacement ladder shipped — the per-tier red banner on the Pricing tab is
+# what stands between it and a bid that looks priced.
+AWAITING_QUOTE_TIER_DEFAULTS = {
+    'cb_coating': 'silicone restoration coating — never quoted by either house',
+}
+
+
+def test_the_simple_default_is_always_fully_priced(client):
+    """The one place this invariant must never bend.
+
+    A G/B/B bid shows three packages side by side, so an unpriced tier has two
+    priced neighbours and a red banner arguing with it. SIMPLE mode sells one
+    system with nothing beside it — an unpriced line there is invisible, and
+    the bid prints complete and comes in short."""
     pb = client.get('/api/pricebook').get_json()
     cat = {p['id']: p for p in pb['commercial_catalog']}
     bundles = {b['id']: b for b in pb['commercial_bundles']}
-    defaults = list(pb['commercial_tier_defaults'].values()) + [pb['commercial_simple_default']]
+    bid = pb['commercial_simple_default']
+    for pid in bundles[bid]['product_ids']:
+        p = cat[pid]
+        # Lump sums are filled in per job and legitimately ship at 0; a line
+        # wired to a MEASUREMENT prices itself and has no such excuse.
+        if p.get('measure'):
+            assert p['cost'] > 0, f'{bid} ships {pid} unpriced and nothing on screen says so'
+
+
+def test_only_named_tier_defaults_may_sell_an_unpriced_membrane(client):
+    """Pointing a DEFAULT at an unquoted system ships a bid with no membrane in
+    it. That is now allowed for the coating tier and ONLY the coating tier, on
+    Luke's call, so the exception has to be named rather than assumed."""
+    pb = client.get('/api/pricebook').get_json()
+    cat = {p['id']: p for p in pb['commercial_catalog']}
+    bundles = {b['id']: b for b in pb['commercial_bundles']}
+    defaults = set(pb['commercial_tier_defaults'].values()) | {pb['commercial_simple_default']}
+    unpriced = set()
     for bid in defaults:
         membrane = next(p for p in bundles[bid]['product_ids'] if p.startswith('cm_'))
-        assert cat[membrane]['cost'] > 0, f'default bundle {bid} sells an unpriced membrane'
+        if not cat[membrane]['cost']:
+            unpriced.add(bid)
+    assert unpriced == set(AWAITING_QUOTE_TIER_DEFAULTS), (
+        f'newly unpriced defaults: {sorted(unpriced - set(AWAITING_QUOTE_TIER_DEFAULTS))}; '
+        f'now priced, remove from the list: {sorted(set(AWAITING_QUOTE_TIER_DEFAULTS) - unpriced)}')
+
+
+def test_the_ladder_climbs_by_scope_of_work(client):
+    """Coating -> overlay -> full replacement. The axis is what we DO to the
+    building, not how the membrane attaches: a rep walking an owner up this
+    ladder is selling more work each step, and 'fully adhered' is a different
+    question that belongs in the dropdown."""
+    pb = client.get('/api/pricebook').get_json()
+    d = pb['commercial_tier_defaults']
+    bundles = {b['id']: b for b in pb['commercial_bundles']}
+    assert 'cm_coating' in bundles[d['good']]['product_ids']
+    assert 'ca_cover_quarter' in bundles[d['better']]['product_ids']   # layover assembly
+    assert 'ca_iso' in bundles[d['best']]['product_ids']               # new tear-off assembly
+    assert 'ca_cover_quarter' not in bundles[d['best']]['product_ids']
 
 
 def test_only_adhered_systems_carry_bonding_adhesive(client):
@@ -389,6 +442,69 @@ def test_the_new_tpo_systems_reach_a_book_that_already_has_commercial(A):
     saved_tpo = next(b for b in pb['commercial_bundles'] if b['id'] == 'cb_tpo_ma')
     labor = [pid for pid in saved_tpo['product_ids'] if pid.startswith('cl_')]
     assert labor == ['cl_labor_reroof', 'cl_labor_new'], labor
+
+
+def test_the_coating_fix_reaches_a_book_that_already_has_commercial(A):
+    """cb_coating shipped carrying cl_labor_reroof — $400/SQ TEAR-OFF labor on
+    a job where nothing is torn off — plus two fastener lines a coating has no
+    use for. Correcting the seed alone changes nothing on a live volume:
+    _BUNDLE_COPY_FIELDS does not include product_ids, and _LATE_BUNDLE_PRODUCTS
+    can only ADD. Without _BUNDLE_PRODUCT_SUPERSEDED the Good tier reaches reps
+    priced like a tear-off."""
+    saved = {
+        'commercial_catalog': [dict(p) for p in A.COMMERCIAL_CATALOG_SEED],
+        'commercial_bundles': [
+            {'id': 'cb_coating', 'name': 'Silicone Restoration Coating',
+             'product_ids': ['cm_coating', 'ca_fast_insul', 'ca_fast_seam',
+                             'ca_edge', 'cx_misc', 'cl_labor_reroof']},
+            # Mod-bit legitimately tears off, and must keep the same line.
+            {'id': 'cb_modbit', 'name': 'Modified Bitumen (2-Ply)',
+             'product_ids': ['cm_modbit', 'ca_iso', 'ca_edge', 'cl_labor_reroof']},
+        ],
+        'commercial_tier_defaults': dict(A.COMMERCIAL_TIER_DEFAULTS_SEED),
+    }
+    pb = A._ensure_bundle_catalogs(saved)
+    by_id = {b['id']: b for b in pb['commercial_bundles']}
+
+    coating = by_id['cb_coating']['product_ids']
+    assert 'cl_labor_reroof' not in coating, 'a coating is still billing tear-off labor'
+    assert 'ca_fast_insul' not in coating and 'ca_fast_seam' not in coating
+    # Exact, because installed ORDER is what the bundle encodes and a
+    # replacement that appends rather than swapping in place would still pass
+    # a membership check while reordering the crew's build-up.
+    assert coating == ['cm_coating', 'ca_edge', 'cx_misc', 'cl_coating']
+
+    # Scoped to ONE bundle: mod-bit's tear-off labor is correct and untouched.
+    assert 'cl_labor_reroof' in by_id['cb_modbit']['product_ids']
+    assert 'cl_coating' not in by_id['cb_modbit']['product_ids']
+
+
+def test_the_new_ladder_reaches_a_book_that_already_has_tier_defaults(A):
+    """_ensure_bundle_catalogs SETDEFAULTS <trade>_tier_defaults, and every live
+    commercial book already has that key — so editing the seed ships the ladder
+    to nobody. This is the same trap as _LATE_BUNDLE_IDS, one level up."""
+    def _book(defaults):
+        return {'commercial_catalog': [dict(p) for p in A.COMMERCIAL_CATALOG_SEED],
+                'commercial_bundles': [dict(b) for b in A.COMMERCIAL_BUNDLES_SEED],
+                'commercial_tier_defaults': dict(defaults)}
+
+    # A book still holding the PREVIOUS seed's ladder is lagging, and moves.
+    old = A._ensure_bundle_catalogs(_book(
+        {'good': 'cb_tpo_lo_mf', 'better': 'cb_tpo_ma', 'best': 'cb_tpo_fa'}))
+    assert old['commercial_tier_defaults'] == A.COMMERCIAL_TIER_DEFAULTS_SEED
+
+    # A manager who picked their own packages is CHOOSING, not lagging.
+    mine = {'good': 'cb_epdm_lo_mf', 'better': 'cb_epdm', 'best': 'cb_tpo_fa'}
+    kept = A._ensure_bundle_catalogs(_book(mine))['commercial_tier_defaults']
+    assert kept['good'] == 'cb_epdm_lo_mf' and kept['better'] == 'cb_epdm'
+    # ...even where one of their picks happens to match an old seed value: that
+    # tier still migrates, which is the cost of not being able to tell the two
+    # apart. Named here so the trade-off is on the record.
+    assert kept['best'] == 'cb_tpo_ma'
+
+    # A fresh volume takes the seed outright via setdefault.
+    fresh = A._ensure_bundle_catalogs({})['commercial_tier_defaults']
+    assert fresh == A.COMMERCIAL_TIER_DEFAULTS_SEED
 
 
 def test_placeholder_zero_costs_are_filled_but_real_ones_are_left_alone(A):

@@ -15064,6 +15064,12 @@ COMMERCIAL_CATALOG_SEED = [
      "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
     {"id": "cl_epdm_lo_fa", "name": "Layover Prep & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
+    # Coating is its own job again: nothing comes off, nothing is laid over.
+    # The crew washes, tests adhesion, reinforces every detail with fabric and
+    # base coat, then sprays to a verified mil thickness. Priced 0 until a
+    # number lands — see the seeded-cost test, which names it.
+    {"id": "cl_coating", "name": "Coating Prep & Application Labor", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+     "bullets": ["Existing roof cleaned, seams and details reinforced, then the silicone system applied at the specified mil thickness by Project One crews"]},
     # The original single re-roof rate. Kept so estimates written against it
     # still load and still price; new bids use the per-package lines above.
     {"id": "cl_labor_reroof", "name": "Tear-Off, Disposal & Install Labor (Re-Roof)", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
@@ -15146,6 +15152,10 @@ _CS_EXTRA = ["5-year Project One workmanship warranty"]
 _LAYOVER_EXTRA = _CS_EXTRA + [
     "No tear-off - the building stays dry and in operation throughout",
 ]
+_COATING_EXTRA = _CS_EXTRA + [
+    "No tear-off and no disposal - the existing roof stays where it is",
+    "Renewable: recoat at the end of the warranty rather than re-roofing",
+]
 COMMERCIAL_BUNDLES_SEED = [
     # ── TPO, tear-off
     {"id": "cb_tpo_ma", "name": "TPO - Tear-Off, Mechanically Fastened",
@@ -15191,19 +15201,35 @@ COMMERCIAL_BUNDLES_SEED = [
                      + ["cl_labor_reroof", "cl_labor_new"]),
      "description": "Two-ply modified bitumen base and cap sheet - redundant waterproofing for high-traffic roofs.",
      "extra_features": _CS_EXTRA},
+    # A coating fastens NOTHING and tears off NOTHING. It carried the $400/SQ
+    # tear-off labor line and both fastener lines until the coating/overlay/
+    # replacement ladder made it the Good tier — at which point a bid that is
+    # otherwise unpriced would have looked priced, at a tear-off's labor rate,
+    # on the tier reps show first. _BUNDLE_PRODUCT_SUPERSEDED carries the fix
+    # to books that already saved the old list.
     {"id": "cb_coating", "name": "Silicone Restoration Coating",
-     "product_ids": (["cm_coating", "ca_fast_insul", "ca_fast_seam"]
-                     + _C_DETAIL + ["cl_labor_reroof"]),
+     "product_ids": ["cm_coating", "cl_coating"] + _C_DETAIL,
      "description": "Silicone restoration coating over the existing roof - extends service life without a tear-off.",
-     "extra_features": _CS_EXTRA},
+     "extra_features": _COATING_EXTRA},
 ]
-# The honest ladder: layover is the cheapest way to a new roof, tear-off
-# mechanically fastened is the standard, tear-off fully adhered is the top.
-# NOTE the Good tier is a layover, whose LABOR rate is still 0 — Good/Better/
-# Best mode will under-bid until that number lands. Simple mode (the commercial
-# default) sells cb_tpo_ma and is fully priced today.
-COMMERCIAL_TIER_DEFAULTS_SEED = {"good": "cb_tpo_lo_mf", "better": "cb_tpo_ma",
-                                 "best": "cb_tpo_fa"}
+# The ladder a rep walks a building owner up, and its axis is SCOPE OF WORK:
+# restore what is there, cover it, or replace it. Attachment method (fastened
+# vs adhered) is a different question and belongs in the dropdown, not on this
+# ladder — which is why Best is the mechanically fastened tear-off rather than
+# the adhered one. It is also the only package that is fully priced today, so
+# the tier reps steer to is the honest one.
+#
+# These are STARTING POINTS. Every tier's dropdown offers all ten packages and
+# a Custom slot, exactly like roofing, and a manager who picks their own keeps
+# it through every migration.
+#
+# NOTE Good (coating) and Better (layover) both still carry $0 lines — the
+# silicone has no supplier quote and the layover labor rate has never been set.
+# The per-tier red banner on the Pricing tab is what stands between that and a
+# bid that looks priced; see AWAITING_QUOTE_TIER_DEFAULTS in test_commercial.py,
+# which names them so the list shrinks as the numbers land.
+COMMERCIAL_TIER_DEFAULTS_SEED = {"good": "cb_coating", "better": "cb_tpo_lo_mf",
+                                 "best": "cb_tpo_ma"}
 # The system loaded when the trade is in single-price (simple) mode, which is
 # how a commercial bid sells by default.
 COMMERCIAL_SIMPLE_DEFAULT = "cb_tpo_ma"
@@ -15376,6 +15402,37 @@ _SEED_COST_BACKFILL_TRADES = {'commercial'}
 # on read. The old product stays in the catalog: an estimate may reference it and
 # the manager may have priced it.
 _PRODUCT_SUPERSEDED = {'ca_fasteners': ['ca_fast_insul', 'ca_fast_seam']}
+
+# Same idea, scoped to ONE bundle, because a product can be right in one package
+# and wrong in another: cl_labor_reroof is the correct $400/SQ tear-off line on
+# cb_modbit and a flat lie on a coating, so the global map above cannot express
+# it. _LATE_BUNDLE_PRODUCTS can only ADD a product to a live seeded bundle; this
+# is the matching remove-and-replace, and it is what carries a corrected package
+# to a volume that already saved the wrong one.
+#
+# Empty replacement list = remove outright. Fires only on a SEEDED bundle whose
+# live product_ids still carry the old id AND whose seed no longer does, so a
+# manager who re-added the product on purpose keeps it once the seed agrees.
+# Drop an entry once live books have been saved past it.
+_BUNDLE_PRODUCT_SUPERSEDED = {
+    'cb_coating': {'cl_labor_reroof': ['cl_coating'],
+                   'ca_fast_insul': [], 'ca_fast_seam': []},
+}
+
+# _ensure_bundle_catalogs SETDEFAULTS <trade>_tier_defaults, and every live
+# commercial book already has that key — so a new ladder in the seed reaches
+# nobody. Same trap as _LATE_BUNDLE_IDS, one level up, and key-absence is not
+# available as a test here because the key is always present.
+#
+# trade -> tier -> (old seed id, new seed id). A tier is rewritten ONLY while it
+# still holds the exact bundle the PREVIOUS seed put there: a manager who chose
+# their own package is choosing, not lagging, and keeps it. Drop an entry once
+# live books have been saved past it.
+_TIER_DEFAULT_MIGRATIONS = {
+    'commercial': {'good':   ('cb_tpo_lo_mf', 'cb_coating'),
+                   'better': ('cb_tpo_ma',    'cb_tpo_lo_mf'),
+                   'best':   ('cb_tpo_fa',    'cb_tpo_ma')},
+}
 
 # Seed bundles that shipped AFTER their trade already had saved price books, so
 # _ensure_bundle_catalogs must append them by id rather than assume a missing id
@@ -16151,6 +16208,30 @@ def _ensure_bundle_catalogs(pb):
                 for pid in late_ids:
                     if pid not in live['product_ids']:
                         live['product_ids'].append(pid)
+
+            # ...and the matching REMOVAL, for a product that turned out to be
+            # wrong in one specific package. See _BUNDLE_PRODUCT_SUPERSEDED.
+            seed_by_id = {b['id']: b for b in bundles}
+            for bundle_id, swaps in _BUNDLE_PRODUCT_SUPERSEDED.items():
+                live = by_id.get(bundle_id)
+                seed = seed_by_id.get(bundle_id)
+                if (live is None or seed is None
+                        or not isinstance(live.get('product_ids'), list)):
+                    continue
+                for old, new_ids in swaps.items():
+                    if old not in live['product_ids'] or old in (seed.get('product_ids') or []):
+                        continue
+                    at = live['product_ids'].index(old)
+                    live['product_ids'][at:at + 1] = [
+                        n for n in new_ids if n not in live['product_ids']]
+
+            # The ladder itself. pb.setdefault above cannot deliver a new one to
+            # a book that already has the key — which is every live book — so
+            # rewrite a tier while it still holds the previous seed's choice.
+            for tier, (old_id, new_id) in _TIER_DEFAULT_MIGRATIONS.get(trade, {}).items():
+                live_defaults = pb.get(trade + '_tier_defaults')
+                if isinstance(live_defaults, dict) and live_defaults.get(tier) == old_id:
+                    live_defaults[tier] = new_id
     for trade, bundle_id in SIMPLE_BUNDLE_DEFAULTS.items():
         pb.setdefault(trade + '_simple_default', bundle_id)
     # Kept separate from saleable trade catalogs because the designer must

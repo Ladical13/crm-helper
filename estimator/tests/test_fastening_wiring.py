@@ -81,14 +81,29 @@ def test_shipped_bundles_all_carry_the_fastener_lines(client):
     layers. Checked by MEASURE rather than by product id: a tear-off fastens
     insulation (ca_fast_insul) and a layover fastens the cover board through
     the existing roof (ca_fast_cover), and those are different products with
-    different fastener lengths — but both answer comm_fast_insul."""
+    different fastener lengths — but both answer comm_fast_insul.
+
+    COATING systems are exempt, and the exemption is intent rather than a hole:
+    a restoration coating is sprayed over the roof that is already there. It
+    fastens nothing on either layer, which is why _commAttachProfile answers
+    {insulation: false, seam: false} for it — so carrying the lines would put a
+    zero-quantity fastener row on every coating bid and, worse, invite someone
+    to price it."""
     pb = client.get('/api/pricebook').get_json()
     cat = {p['id']: p for p in pb['commercial_catalog']}
     assert {'ca_fast_insul', 'ca_fast_seam'} <= set(cat)
+    exempt = 0
     for b in pb['commercial_bundles']:
+        if any(cat[pid].get('attach') == 'coating' for pid in b['product_ids'] if pid in cat):
+            exempt += 1
+            measures = {cat[pid].get('measure') for pid in b['product_ids'] if pid in cat}
+            assert 'comm_fast_insul' not in measures, b['name'] + ' coats and fastens?'
+            assert 'comm_fast_seam' not in measures, b['name'] + ' coats and fastens?'
+            continue
         measures = {cat[pid].get('measure') for pid in b['product_ids'] if pid in cat}
         assert 'comm_fast_insul' in measures, b['name'] + ' has no insulation/cover fasteners'
         assert 'comm_fast_seam' in measures, b['name'] + ' has no seam fasteners'
+    assert exempt, 'no coating bundle shipped — the exemption above is now dead code'
 
 
 def test_every_membrane_declares_how_it_attaches(client):
