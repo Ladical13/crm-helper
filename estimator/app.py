@@ -5,6 +5,7 @@ import sys
 import copy
 import math
 import json
+import sqlite3
 import calendar
 import time
 import uuid
@@ -203,6 +204,19 @@ TEAM_CONFIG_FILE     = os.path.join(DATA_DIR, 'team.json')
 COMPANY_CONTENT_FILE = os.path.join(DATA_DIR, 'company_content.json')
 SALES_GOALS_FILE     = os.path.join(DATA_DIR, 'sales_goals.json')
 COMM_FASTENING_FILE  = os.path.join(DATA_DIR, 'commercial_fastening.json')
+VISUALIZER_USAGE_DB  = os.path.join(DATA_DIR, 'visualizer_usage.db')
+
+# fal currently lists SAM 3 Image at $0.005 per accepted request. Keep the
+# rate configurable so the usage dashboard can be corrected without a deploy
+# if provider pricing changes; each recorded request snapshots the active rate.
+try:
+    EXTERIOR_FAL_COST_PER_REQUEST = float(
+        os.environ.get('EXTERIOR_FAL_COST_PER_REQUEST', '0.005'))
+except (TypeError, ValueError):
+    EXTERIOR_FAL_COST_PER_REQUEST = 0.005
+EXTERIOR_FAL_COST_PER_REQUEST = max(0.0, EXTERIOR_FAL_COST_PER_REQUEST)
+EXTERIOR_FAL_PRICE_SOURCE = 'https://fal.ai/models/fal-ai/sam-3/image'
+EXTERIOR_FAL_PRICE_VERIFIED = '2026-09-01'
 
 # Optional override for the public-facing base URL (e.g. ngrok or a real domain).
 # Set PUBLIC_URL in environment or in estimator/config.json as {"public_url": "https://..."}
@@ -292,6 +306,30 @@ if DATABASE_URL:
                             'updated_at timestamptz NOT NULL DEFAULT now())')
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_est_share_token "
                             "ON estimates ((doc->>'share_token'))")
+                # Paid Visualizer operations live outside the estimate JSON.
+                # They must survive a normal full-document save, duplication,
+                # and estimate deletion so the manager's cost history remains
+                # an honest ledger.
+                cur.execute(
+                    'CREATE TABLE IF NOT EXISTS visualizer_usage_events ('
+                    'event_id text PRIMARY KEY, estimate_id text NOT NULL, '
+                    'actor text NOT NULL, operation text NOT NULL, '
+                    'surface_role text NOT NULL, elevation_id text NOT NULL, '
+                    'photo_key_hash text NOT NULL, provider text NOT NULL, '
+                    'model text NOT NULL, provider_request_id text NOT NULL, '
+                    'status text NOT NULL, billing_state text NOT NULL, '
+                    'units integer NOT NULL DEFAULT 0, '
+                    'unit_cost_microusd bigint, estimated_cost_microusd bigint, '
+                    'input_width integer, input_height integer, '
+                    'safe_error_code text NOT NULL, price_source text NOT NULL, '
+                    'price_verified text NOT NULL, created_at text NOT NULL, '
+                    'updated_at text NOT NULL, completed_at text NOT NULL)')
+                cur.execute(
+                    'CREATE INDEX IF NOT EXISTS visualizer_usage_created_idx '
+                    'ON visualizer_usage_events (created_at)')
+                cur.execute(
+                    'CREATE INDEX IF NOT EXISTS visualizer_usage_actor_idx '
+                    'ON visualizer_usage_events (actor, created_at)')
                 cur.execute('SELECT count(*) FROM estimates')
                 if cur.fetchone()[0] == 0:
                     n = 0
@@ -469,6 +507,172 @@ def est_update(est_id, mutator):
         return None
     est_save(doc)
     return doc
+
+
+# ── Visualizer paid-usage ledger ──────────────────────────────────────────
+# Production estimate documents live in Postgres while local development uses
+# JSON files. Usage is deliberately separate from those documents: a stale
+# estimate PUT, a duplicate, or a delete must not rewrite historical spend.
+# File mode gets a small WAL-enabled SQLite database; Postgres mode uses the
+# table created in _db_init above.
+
+_VISUALIZER_USAGE_COLUMNS = (
+    'event_id', 'estimate_id', 'actor', 'operation', 'surface_role',
+    'elevation_id', 'photo_key_hash', 'provider', 'model',
+    'provider_request_id', 'status', 'billing_state', 'units',
+    'unit_cost_microusd', 'estimated_cost_microusd', 'input_width',
+    'input_height', 'safe_error_code', 'price_source', 'price_verified',
+    'created_at', 'updated_at', 'completed_at',
+)
+_VISUALIZER_USAGE_STATUSES = {
+    'submitting', 'submitted', 'pending', 'completed', 'not_found',
+    'failed', 'unknown',
+}
+_VISUALIZER_BILLING_STATES = {'not_sent', 'estimated', 'unpriced', 'unknown'}
+
+
+def _utc_iso():
+    return datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+
+
+def _usage_sqlite_conn():
+    """Open the file-mode usage store, creating its schema idempotently."""
+    os.makedirs(os.path.dirname(VISUALIZER_USAGE_DB), exist_ok=True)
+    conn = sqlite3.connect(VISUALIZER_USAGE_DB, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA busy_timeout=10000')
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS visualizer_usage_events (
+            event_id TEXT PRIMARY KEY,
+            estimate_id TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            surface_role TEXT NOT NULL,
+            elevation_id TEXT NOT NULL,
+            photo_key_hash TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            provider_request_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            billing_state TEXT NOT NULL,
+            units INTEGER NOT NULL DEFAULT 0,
+            unit_cost_microusd INTEGER,
+            estimated_cost_microusd INTEGER,
+            input_width INTEGER,
+            input_height INTEGER,
+            safe_error_code TEXT NOT NULL,
+            price_source TEXT NOT NULL,
+            price_verified TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL
+        )
+    ''')
+    conn.execute('CREATE INDEX IF NOT EXISTS visualizer_usage_created_idx '
+                 'ON visualizer_usage_events (created_at)')
+    conn.execute('CREATE INDEX IF NOT EXISTS visualizer_usage_actor_idx '
+                 'ON visualizer_usage_events (actor, created_at)')
+    conn.commit()
+    return conn
+
+
+def _usage_cost_microusd():
+    """The configured request estimate as an exact integer micro-dollar."""
+    return max(0, int(round(EXTERIOR_FAL_COST_PER_REQUEST * 1_000_000)))
+
+
+def _usage_start_event(est_id, actor, role, elevation_id, photo_key):
+    """Create a pre-submission row. Raises before fal is contacted on failure."""
+    event_id = uuid.uuid4().hex
+    now = _utc_iso()
+    values = (
+        event_id, str(est_id), str(actor or '')[:120], 'surface_detection',
+        str(role or '')[:40], str(elevation_id or '')[:40],
+        hashlib.sha256(f'{est_id}:{photo_key}'.encode()).hexdigest(),
+        'fal', 'fal-ai/sam-3/image', '', 'submitting', 'not_sent', 0,
+        None, None, None, None, '', EXTERIOR_FAL_PRICE_SOURCE,
+        EXTERIOR_FAL_PRICE_VERIFIED, now, now, '',
+    )
+    if DATABASE_URL:
+        placeholders = ','.join(['%s'] * len(values))
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f'INSERT INTO visualizer_usage_events '
+                f'({",".join(_VISUALIZER_USAGE_COLUMNS)}) VALUES ({placeholders})',
+                values)
+    else:
+        placeholders = ','.join(['?'] * len(values))
+        conn = _usage_sqlite_conn()
+        try:
+            conn.execute(
+                f'INSERT INTO visualizer_usage_events '
+                f'({",".join(_VISUALIZER_USAGE_COLUMNS)}) VALUES ({placeholders})',
+                values)
+            conn.commit()
+        finally:
+            conn.close()
+    return event_id
+
+
+def _usage_update_event(event_id, **changes):
+    """Update one event without accepting client-selected column names."""
+    if not re.fullmatch(r'[0-9a-f]{32}', str(event_id or '')):
+        return False
+    allowed = {
+        'provider_request_id', 'status', 'billing_state', 'units',
+        'unit_cost_microusd', 'estimated_cost_microusd', 'input_width',
+        'input_height', 'safe_error_code', 'completed_at',
+    }
+    fields = {key: value for key, value in changes.items() if key in allowed}
+    if 'status' in fields and fields['status'] not in _VISUALIZER_USAGE_STATUSES:
+        raise ValueError('invalid usage status')
+    if ('billing_state' in fields
+            and fields['billing_state'] not in _VISUALIZER_BILLING_STATES):
+        raise ValueError('invalid usage billing state')
+    if 'provider_request_id' in fields:
+        fields['provider_request_id'] = str(fields['provider_request_id'] or '')[:160]
+    if 'safe_error_code' in fields:
+        code = str(fields['safe_error_code'] or '')[:80]
+        fields['safe_error_code'] = re.sub(r'[^a-z0-9_.-]', '_', code.lower())
+    fields['updated_at'] = _utc_iso()
+    if DATABASE_URL:
+        assignment = ','.join(f'{key}=%s' for key in fields)
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f'UPDATE visualizer_usage_events SET {assignment} '
+                'WHERE event_id=%s', tuple(fields.values()) + (event_id,))
+            return cur.rowcount == 1
+    conn = _usage_sqlite_conn()
+    try:
+        assignment = ','.join(f'{key}=?' for key in fields)
+        cur = conn.execute(
+            f'UPDATE visualizer_usage_events SET {assignment} WHERE event_id=?',
+            tuple(fields.values()) + (event_id,))
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def _usage_rows(since=''):
+    """Return usage rows for reporting/backup; never includes credentials."""
+    columns = ','.join(_VISUALIZER_USAGE_COLUMNS)
+    where = ' WHERE created_at >= ' + ('%s' if DATABASE_URL else '?') if since else ''
+    params = (since,) if since else ()
+    if DATABASE_URL:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute(f'SELECT {columns} FROM visualizer_usage_events{where} '
+                        'ORDER BY created_at', params)
+            return [dict(zip(_VISUALIZER_USAGE_COLUMNS, row))
+                    for row in cur.fetchall()]
+    conn = _usage_sqlite_conn()
+    try:
+        return [dict(row) for row in conn.execute(
+            f'SELECT {columns} FROM visualizer_usage_events{where} '
+            'ORDER BY created_at', params).fetchall()]
+    finally:
+        conn.close()
 
 
 # Contacts — refreshed every 5 minutes (was cached forever, so new CRM
@@ -1254,10 +1458,239 @@ _VISUALIZER_DEFAULT_SCOPE = ('roof', 'siding', 'trim', 'soffit', 'door')
 _VISUALIZER_CONCEPT_DEFAULTS = {
     'good': 'Good', 'better': 'Better', 'best': 'Best',
 }
+_VISUALIZER_PLACEMENT_ROLES = ('door', 'window', 'shutter')
+_VISUALIZER_PLACEMENT_MAX_SLOTS = 64
+_VISUALIZER_PLACEMENT_MAX_PROJECT = 300
+_VISUALIZER_PLACEMENT_ID_RE = re.compile(r'pl_[a-z0-9_-]{1,60}')
+_VISUALIZER_PLACEMENT_CATALOG_RE = re.compile(
+    r'_catalog/ep_[0-9a-f]{32}\.png')
+_VISUALIZER_PROJECTION_ROLES = ('roof', 'siding', 'stucco', 'metal', 'soffit')
+_VISUALIZER_PROJECTION_MAX_PLANES = 16
+_VISUALIZER_PROJECTION_ID_RE = re.compile(r'[a-z0-9_-]{1,64}')
 _PROVIA_SPEC_LIMITS = {
     'access_code': 80, 'series': 120, 'model': 120, 'glass': 120,
     'hardware': 120, 'swing': 120, 'notes': 1000,
+    # Client-generated binding between a configured image and the exact door
+    # selection/spec it represented. Prevents an old screenshot from being
+    # silently relabelled after the rep changes the dropdown.
+    'configured_for': 200,
 }
+
+
+def _empty_visualizer_placements():
+    return {
+        'version': 1,
+        'slots': {},
+        'concepts': {tier: {} for tier in _VISUALIZER_TIERS},
+    }
+
+
+def _empty_texture_projection():
+    return {'version': 1, 'roles': {}}
+
+
+def _placement_number(value, label):
+    """Parse one bounded placement coordinate without accepting NaN/Inf."""
+    if isinstance(value, bool):
+        raise ValueError(f'{label} must be a number')
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f'{label} must be a number')
+    if not math.isfinite(result):
+        raise ValueError(f'{label} must be finite')
+    return result
+
+
+def _normalize_placement_quad(raw):
+    if not isinstance(raw, list) or len(raw) != 4:
+        raise ValueError('placement quad must contain TL, TR, BR, and BL points')
+    quad = []
+    for point in raw:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError('each placement quad point must contain x and y')
+        x = _placement_number(point[0], 'placement x')
+        y = _placement_number(point[1], 'placement y')
+        if not 0 <= x <= 1 or not 0 <= y <= 1:
+            raise ValueError('placement quad coordinates must be between 0 and 1')
+        quad.append([round(x, 7), round(y, 7)])
+
+    # The four points arrive in perimeter order (TL, TR, BR, BL). Every turn
+    # must have the same sign; mixed signs mean a concave or bow-tie quad.
+    turns = []
+    for index in range(4):
+        a, b, c = quad[index], quad[(index + 1) % 4], quad[(index + 2) % 4]
+        turns.append((b[0] - a[0]) * (c[1] - b[1]) -
+                     (b[1] - a[1]) * (c[0] - b[0]))
+    if any(abs(turn) < 1e-8 for turn in turns) or not (
+            all(turn > 0 for turn in turns) or all(turn < 0 for turn in turns)):
+        raise ValueError('placement quad must be a non-crossing convex shape')
+    twice_area = abs(sum(
+        quad[i][0] * quad[(i + 1) % 4][1] -
+        quad[(i + 1) % 4][0] * quad[i][1]
+        for i in range(4)))
+    if twice_area < 0.00002:
+        raise ValueError('placement quad is too small')
+    return quad
+
+
+def _normalize_placement_crop(raw):
+    if raw in (None, {}):
+        return {'x': 0.0, 'y': 0.0, 'w': 1.0, 'h': 1.0}
+    if not isinstance(raw, dict):
+        raise ValueError('placement source_crop must be an object')
+    crop = {key: _placement_number(raw.get(key), f'placement crop {key}')
+            for key in ('x', 'y', 'w', 'h')}
+    if crop['x'] < 0 or crop['y'] < 0 or crop['w'] <= 0 or crop['h'] <= 0:
+        raise ValueError('placement source_crop must have positive in-bounds dimensions')
+    if crop['x'] + crop['w'] > 1.0000001 or crop['y'] + crop['h'] > 1.0000001:
+        raise ValueError('placement source_crop must stay inside the product image')
+    return {key: round(value, 7) for key, value in crop.items()}
+
+
+def _normalize_placement_asset_ref(value, est_id=None, verify_asset=False):
+    ref = str(value or '').strip()
+    job_match = re.fullmatch(
+        r'([A-Za-z0-9_-]+)/(?:(?:vpl|vp)_[0-9a-f]{32})\.(?:png|jpg|jpeg|webp)',
+        ref)
+    catalog_match = _VISUALIZER_PLACEMENT_CATALOG_RE.fullmatch(ref)
+    if not job_match and not catalog_match:
+        raise ValueError('placement asset_ref must be an uploaded product image')
+    if job_match and est_id is not None and job_match.group(1) != est_id:
+        raise ValueError('placement asset_ref belongs to a different estimate')
+    if verify_asset:
+        path = os.path.join(UPLOADS_DIR, *ref.split('/'))
+        if not os.path.isfile(path):
+            raise ValueError('placement asset_ref does not exist')
+    return ref
+
+
+def _normalize_visualizer_placements(raw, est_id=None, verify_assets=False):
+    """Validate one elevation's shared openings and per-concept products."""
+    if raw in (None, {}):
+        return _empty_visualizer_placements()
+    if not isinstance(raw, dict):
+        raise ValueError('placements must be an object')
+    if set(raw) - {'version', 'slots', 'concepts'}:
+        raise ValueError('placements contains an unknown field')
+    if raw.get('version', 1) != 1:
+        raise ValueError('unsupported placements version')
+    slots_raw = raw.get('slots') or {}
+    if not isinstance(slots_raw, dict) or len(slots_raw) > _VISUALIZER_PLACEMENT_MAX_SLOTS:
+        raise ValueError(
+            f'placements is limited to {_VISUALIZER_PLACEMENT_MAX_SLOTS} openings per elevation')
+    slots = {}
+    for raw_id, raw_slot in slots_raw.items():
+        slot_id = str(raw_id or '').strip().lower()
+        if not _VISUALIZER_PLACEMENT_ID_RE.fullmatch(slot_id):
+            raise ValueError('placement slot id is invalid')
+        if not isinstance(raw_slot, dict):
+            raise ValueError(f'placement slot {slot_id} must be an object')
+        role = str(raw_slot.get('role') or '').strip().lower()
+        if role not in _VISUALIZER_PLACEMENT_ROLES:
+            raise ValueError(f'placement slot {slot_id} has an unsupported role')
+        try:
+            z_index = int(raw_slot.get('z', 0))
+        except (TypeError, ValueError):
+            raise ValueError(f'placement slot {slot_id} z must be an integer')
+        if not -1000 <= z_index <= 1000:
+            raise ValueError(f'placement slot {slot_id} z is out of range')
+        slots[slot_id] = {
+            'id': slot_id,
+            'role': role,
+            'label': _exterior_text(
+                raw_slot.get('label') or role.replace('_', ' ').title(), 80),
+            'quad': _normalize_placement_quad(raw_slot.get('quad')),
+            'z': z_index,
+        }
+
+    concepts_raw = raw.get('concepts') or {}
+    if not isinstance(concepts_raw, dict) or any(
+            tier not in _VISUALIZER_TIERS for tier in concepts_raw):
+        raise ValueError('placement concepts contains an invalid tier')
+    concepts = {tier: {} for tier in _VISUALIZER_TIERS}
+    for tier in _VISUALIZER_TIERS:
+        assignments = concepts_raw.get(tier) or {}
+        if not isinstance(assignments, dict) or len(assignments) > len(slots):
+            raise ValueError(f'{tier} placement assignments are invalid')
+        for raw_id, raw_assignment in assignments.items():
+            slot_id = str(raw_id or '').strip().lower()
+            if slot_id not in slots:
+                raise ValueError(f'{tier} placement references an unknown opening')
+            if not isinstance(raw_assignment, dict):
+                raise ValueError(f'{tier} placement {slot_id} must be an object')
+            assignment = {
+                'asset_ref': _normalize_placement_asset_ref(
+                    raw_assignment.get('asset_ref'), est_id, verify_assets),
+                'source_crop': _normalize_placement_crop(
+                    raw_assignment.get('source_crop')),
+                'mirror_x': raw_assignment.get('mirror_x') is True,
+            }
+            for field, limit in (
+                    ('product_id', 120), ('product_name', 200),
+                    ('color_name', 120), ('style_name', 120),
+                    ('selection_fingerprint', 160)):
+                text = _exterior_text(raw_assignment.get(field), limit)
+                if text:
+                    assignment[field] = text
+            concepts[tier][slot_id] = assignment
+    return {'version': 1, 'slots': slots, 'concepts': concepts}
+
+
+def _normalize_texture_projection(raw):
+    """Validate perspective planes stored for one exterior elevation."""
+    if raw in (None, {}):
+        return _empty_texture_projection()
+    if not isinstance(raw, dict) or set(raw) - {'version', 'roles'}:
+        raise ValueError('texture_projection must contain version and roles')
+    if raw.get('version', 1) != 1:
+        raise ValueError('unsupported texture_projection version')
+    roles_raw = raw.get('roles') or {}
+    if not isinstance(roles_raw, dict) or any(
+            role not in _VISUALIZER_PROJECTION_ROLES for role in roles_raw):
+        raise ValueError('texture_projection contains an unsupported surface')
+    roles = {}
+    for role, raw_role in roles_raw.items():
+        if not isinstance(raw_role, dict) or set(raw_role) - {'mode', 'planes'}:
+            raise ValueError(f'{role} texture projection is invalid')
+        if raw_role.get('mode') != 'perspective':
+            raise ValueError(f'{role} texture projection mode must be perspective')
+        raw_planes = raw_role.get('planes') or []
+        if (not isinstance(raw_planes, list) or
+                len(raw_planes) > _VISUALIZER_PROJECTION_MAX_PLANES):
+            raise ValueError(
+                f'{role} is limited to {_VISUALIZER_PROJECTION_MAX_PLANES} texture planes')
+        planes, seen = [], set()
+        for raw_plane in raw_planes:
+            if not isinstance(raw_plane, dict) or set(raw_plane) - {
+                    'id', 'quad', 'scale', 'quarter_turns'}:
+                raise ValueError(f'{role} texture plane is invalid')
+            plane_id = str(raw_plane.get('id') or '').strip().lower()
+            if (not _VISUALIZER_PROJECTION_ID_RE.fullmatch(plane_id) or
+                    plane_id in seen):
+                raise ValueError(f'{role} texture plane id is invalid')
+            seen.add(plane_id)
+            scale = _placement_number(raw_plane.get('scale', 1),
+                                      f'{role} texture plane scale')
+            if not 0.1 <= scale <= 8:
+                raise ValueError(f'{role} texture plane scale must be between 0.1 and 8')
+            turns = raw_plane.get('quarter_turns', 0)
+            if isinstance(turns, bool):
+                raise ValueError(f'{role} texture plane quarter_turns must be an integer')
+            try:
+                turns = int(turns)
+            except (TypeError, ValueError):
+                raise ValueError(f'{role} texture plane quarter_turns must be an integer')
+            if turns not in (0, 1, 2, 3):
+                raise ValueError(f'{role} texture plane quarter_turns must be 0 through 3')
+            planes.append({
+                'id': plane_id,
+                'quad': _normalize_placement_quad(raw_plane.get('quad')),
+                'scale': round(scale, 5),
+                'quarter_turns': turns,
+            })
+        roles[role] = {'mode': 'perspective', 'planes': planes}
+    return {'version': 1, 'roles': roles}
 
 
 def _visualizer_elevation_id(value, default='front'):
@@ -1285,11 +1718,15 @@ def _visualizer_elevations(vz, create=True):
             'id': 'front', 'name': 'Front',
             'base_image': vz.get('base_image'), 'masks': masks,
             'tier_renders': copy.deepcopy(vz.get('tier_renders') or {}),
+            'placements': _empty_visualizer_placements(),
+            'texture_projection': _empty_texture_projection(),
         }
     if create and not elevations:
         elevations['front'] = {
             'id': 'front', 'name': 'Front', 'base_image': None,
             'masks': {}, 'tier_renders': {},
+            'placements': _empty_visualizer_placements(),
+            'texture_projection': _empty_texture_projection(),
         }
 
     cleaned = {}
@@ -1302,6 +1739,19 @@ def _visualizer_elevations(vz, create=True):
         value['masks'] = value.get('masks') if isinstance(value.get('masks'), dict) else {}
         value['tier_renders'] = (value.get('tier_renders')
                                  if isinstance(value.get('tier_renders'), dict) else {})
+        try:
+            value['placements'] = _normalize_visualizer_placements(
+                value.get('placements'))
+        except ValueError:
+            # Whole-estimate PUTs from older clients preserve unknown fields.
+            # A malformed prototype placement must not break photo/PDF access;
+            # discard it and let the bounded state endpoint write a clean copy.
+            value['placements'] = _empty_visualizer_placements()
+        try:
+            value['texture_projection'] = _normalize_texture_projection(
+                value.get('texture_projection'))
+        except ValueError:
+            value['texture_projection'] = _empty_texture_projection()
         # Accept the short-lived prototype shape with role_mask inside each
         # elevation, but write only the nested ``masks`` form going forward.
         for role in _VISUALIZER_ROLES:
@@ -1313,6 +1763,8 @@ def _visualizer_elevations(vz, create=True):
         elevations['front'] = {
             'id': 'front', 'name': 'Front', 'base_image': None,
             'masks': {}, 'tier_renders': {},
+            'placements': _empty_visualizer_placements(),
+            'texture_projection': _empty_texture_projection(),
         }
     vz['elevations'] = elevations
 
@@ -1360,6 +1812,39 @@ def _normalize_provia_specs(raw, existing=None):
     return result
 
 
+def _decode_product_cutout(data, max_side=2048):
+    """Decode, orient, bound, metadata-strip, and PNG-encode a cutout.
+
+    Placement assets are later drawn into a canvas and exported to customer
+    documents. Re-encoding prevents mislabeled/non-image bytes from entering
+    that trusted path and preserves transparency from manufacturer PNGs.
+    """
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(data)) as source:
+            if source.format not in ('PNG', 'JPEG', 'WEBP'):
+                raise ValueError('Use a PNG, JPG, or WebP product image.')
+            source.load()
+            if min(source.size) < 1 or max(source.size) > 6000:
+                raise ValueError(
+                    'Product image dimensions must be between 1 and 6000 pixels.')
+            image = ImageOps.exif_transpose(source).copy()
+        if max(image.size) > max_side:
+            ratio = max_side / max(image.size)
+            size = (max(1, round(image.width * ratio)),
+                    max(1, round(image.height * ratio)))
+            resampling = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS')
+            image = image.resize(size, resampling)
+        image = image.convert('RGBA' if 'A' in image.getbands() else 'RGB')
+        encoded = io.BytesIO()
+        image.save(encoded, 'PNG', optimize=True)
+        return encoded.getvalue(), image.width, image.height
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError('That product image could not be decoded.')
+
+
 @app.route('/api/estimates/<est_id>/visualizer/asset', methods=['POST'])
 def visualizer_asset(est_id):
     """Store a Visualizer image blob and update the pointer field in
@@ -1369,6 +1854,8 @@ def visualizer_asset(est_id):
     Base/mask/render assets belong to one elevation. ``front`` is the default
     and is mirrored to the original one-photo fields for older clients.
     kind='provia' stores a configured-door screenshot for one concept.
+    kind='placement' stores a decoded product cutout for later placement;
+    placement metadata is written separately through the state endpoint.
     """
     if not _safe_path_id(est_id):
         return jsonify({'error': 'invalid estimate id'}), 400
@@ -1386,7 +1873,7 @@ def visualizer_asset(est_id):
     elevation_name = _exterior_text(body.get('elevation_name') or
                                     elevation_id.replace('_', ' ').title(), 60)
 
-    if kind not in ('base', 'mask', 'render', 'provia'):
+    if kind not in ('base', 'mask', 'render', 'provia', 'placement'):
         return jsonify({'error': 'invalid kind'}), 400
     if ext not in ('jpg', 'jpeg', 'png', 'webp'):
         return jsonify({'error': 'invalid ext'}), 400
@@ -1394,6 +1881,8 @@ def visualizer_asset(est_id):
         return jsonify({'error': f'{kind} requires tier'}), 400
     if kind == 'mask' and role not in _VISUALIZER_ROLES:
         return jsonify({'error': 'mask requires role'}), 400
+    if kind in ('provia', 'placement') and est is None:
+        return jsonify({'error': 'save the estimate before uploading a product image'}), 404
     if est is not None and kind in ('base', 'mask', 'render'):
         vz_existing = est.get('visualizer') if isinstance(est.get('visualizer'), dict) else {}
         elevations_existing = _visualizer_elevations(vz_existing)
@@ -1415,9 +1904,20 @@ def visualizer_asset(est_id):
     if len(data) > _VISUALIZER_MAX_BYTES:
         return jsonify({'error': 'payload too large'}), 400
 
+    image_width = image_height = None
+    if kind in ('provia', 'placement'):
+        try:
+            data, image_width, image_height = _decode_product_cutout(data)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+        ext = 'png'
+
     if ext == 'jpeg':
         ext = 'jpg'
-    prefix = {'base': 'vb', 'mask': 'vm', 'render': 'vr', 'provia': 'vp'}[kind]
+    prefix = {
+        'base': 'vb', 'mask': 'vm', 'render': 'vr', 'provia': 'vp',
+        'placement': 'vpl',
+    }[kind]
     safe_name = f'{prefix}_{uuid.uuid4().hex}.{ext}'
     dest_dir = os.path.join(UPLOADS_DIR, est_id)
     os.makedirs(dest_dir, exist_ok=True)
@@ -1433,10 +1933,17 @@ def visualizer_asset(est_id):
             # estimate exists — mirrors upload_photo's no-est allowance.
             return None
         vz = doc.setdefault('visualizer', {})
+        if kind == 'placement':
+            # The cutout may be assigned to several openings/concepts. Keep
+            # the one asset immutable and let visualizer/state own references.
+            vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            return doc
         elevations = _visualizer_elevations(vz)
         elevation = elevations.setdefault(elevation_id, {
             'id': elevation_id, 'name': elevation_name,
             'base_image': None, 'masks': {}, 'tier_renders': {},
+            'placements': _empty_visualizer_placements(),
+            'texture_projection': _empty_texture_projection(),
         })
         elevation['name'] = elevation_name or elevation.get('name') or 'Elevation'
         elevation.setdefault('masks', {})
@@ -1448,6 +1955,8 @@ def visualizer_asset(est_id):
             elevation['base_image'] = stored_ref
             elevation['masks'] = {}
             elevation['tier_renders'] = {}
+            elevation['placements'] = _empty_visualizer_placements()
+            elevation['texture_projection'] = _empty_texture_projection()
         elif kind == 'mask':
             elevation['masks'][role] = stored_ref
         elif kind == 'render':
@@ -1460,9 +1969,15 @@ def visualizer_asset(est_id):
         return doc
 
     est_update(est_id, mutate)
-    return jsonify({'filename': stored_ref, 'url': url, 'kind': kind,
-                    'tier': tier or None, 'role': role or None,
-                    'elevation_id': elevation_id if kind != 'provia' else None}), 201
+    response = {'filename': stored_ref, 'url': url, 'kind': kind,
+                'tier': tier or None, 'role': role or None,
+                'elevation_id': (elevation_id if kind not in
+                                 ('provia', 'placement') else None)}
+    if kind in ('provia', 'placement'):
+        response.update({'width': image_width, 'height': image_height})
+    if kind == 'placement':
+        response['placement_image_ref'] = stored_ref
+    return jsonify(response), 201
 
 
 @app.route('/api/estimates/<est_id>/visualizer/state', methods=['PUT'])
@@ -1537,6 +2052,57 @@ def visualizer_state(est_id):
 
     existing_vz = (est or {}).get('visualizer')
     existing_vz = existing_vz if isinstance(existing_vz, dict) else {}
+    existing_elevations = _visualizer_elevations(copy.deepcopy(existing_vz))
+    known_elevation_ids = set(existing_elevations)
+    known_elevation_ids.update((elevation_names or {}).keys())
+
+    placement_updates = body.get('placement_updates')
+    normalized_placement_updates = None
+    if placement_updates is not None:
+        if not isinstance(placement_updates, dict) or len(placement_updates) > 12:
+            return jsonify({'error': 'placement_updates must be an elevation object'}), 400
+        normalized_placement_updates = {}
+        try:
+            for raw_id, placements in placement_updates.items():
+                eid = _visualizer_elevation_id(raw_id, '')
+                if not eid or eid not in known_elevation_ids:
+                    raise ValueError('placement update references an unknown elevation')
+                normalized_placement_updates[eid] = _normalize_visualizer_placements(
+                    placements, est_id=est_id, verify_assets=True)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+        projected_total = 0
+        for eid in known_elevation_ids:
+            placement_doc = normalized_placement_updates.get(eid)
+            if placement_doc is None:
+                placement_doc = (existing_elevations.get(eid) or {}).get('placements')
+                try:
+                    placement_doc = _normalize_visualizer_placements(placement_doc)
+                except ValueError:
+                    placement_doc = _empty_visualizer_placements()
+            projected_total += len(placement_doc.get('slots') or {})
+        if projected_total > _VISUALIZER_PLACEMENT_MAX_PROJECT:
+            return jsonify({
+                'error': ('visualizer is limited to '
+                          f'{_VISUALIZER_PLACEMENT_MAX_PROJECT} placed openings')
+            }), 400
+
+    projection_elevation_id = body.get('projection_elevation_id')
+    texture_projection_supplied = 'texture_projection' in body
+    normalized_texture_projection = None
+    if texture_projection_supplied or projection_elevation_id is not None:
+        projection_elevation_id = _visualizer_elevation_id(
+            projection_elevation_id, '')
+        if (not projection_elevation_id or
+                projection_elevation_id not in known_elevation_ids):
+            return jsonify({'error': 'texture projection references an unknown elevation'}), 400
+        if not texture_projection_supplied:
+            return jsonify({'error': 'texture_projection is required'}), 400
+        try:
+            normalized_texture_projection = _normalize_texture_projection(
+                body.get('texture_projection'))
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
     try:
         provia_specs = _normalize_provia_specs(body.get('provia_specs'),
                                                existing_vz.get('provia_specs'))
@@ -1569,9 +2135,19 @@ def visualizer_state(est_id):
                     elevations[eid] = {
                         'id': eid, 'name': name, 'base_image': None,
                         'masks': {}, 'tier_renders': {},
+                        'placements': _empty_visualizer_placements(),
+                        'texture_projection': _empty_texture_projection(),
                     }
                 elif eid in elevations:
                     elevations[eid]['name'] = name
+        if normalized_placement_updates is not None:
+            for eid, placements in normalized_placement_updates.items():
+                if eid in elevations:
+                    elevations[eid]['placements'] = copy.deepcopy(placements)
+        if (normalized_texture_projection is not None and
+                projection_elevation_id in elevations):
+            elevations[projection_elevation_id]['texture_projection'] = copy.deepcopy(
+                normalized_texture_projection)
         if delete_elevation_id in elevations and len(elevations) > 1:
             elevations.pop(delete_elevation_id, None)
         if elevation_order is not None:
@@ -1622,6 +2198,7 @@ def visualizer_detection(est_id):
     if not detection.configured():
         return jsonify({'error': 'Automatic selection needs setup: enable EXTERIOR_AUTO_DETECT and configure FAL_KEY on the server.'}), 503
     signer = URLSafeTimedSerializer(app.secret_key, salt='exterior-detection-v1')
+    usage_event_id = ''
     try:
         if request.method == 'GET':
             try:
@@ -1630,7 +2207,33 @@ def visualizer_detection(est_id):
                 return jsonify({'error': 'Detection session expired or is invalid.'}), 400
             if ticket.get('estimate_id') != est_id or ticket.get('user') != _current_user():
                 return _forbid()
-            result = detection.poll(ticket['job'])
+            usage_event_id = ticket.get('usage_event_id') or ''
+            try:
+                result = detection.poll(ticket['job'])
+            except detection.DetectionError:
+                if usage_event_id:
+                    try:
+                        _usage_update_event(
+                            usage_event_id, status='failed',
+                            safe_error_code='provider_poll_failed',
+                            completed_at=_utc_iso())
+                    except Exception as audit_exc:
+                        print(f'[visualizer-usage] poll failure could not be recorded: {audit_exc}')
+                raise
+            if usage_event_id:
+                try:
+                    final = result.get('status') in ('complete', 'not_found')
+                    ledger_status = ('completed' if result.get('status') == 'complete'
+                                     else result.get('status'))
+                    _usage_update_event(
+                        usage_event_id,
+                        status=(ledger_status if final else 'pending'),
+                        completed_at=_utc_iso() if final else '')
+                except Exception as audit_exc:
+                    # The inference has already been paid for. Do not withhold
+                    # its result just because the operational ledger is briefly
+                    # unavailable.
+                    print(f'[visualizer-usage] poll status could not be recorded: {audit_exc}')
             result.update(role=ticket['role'], photo_key=ticket['photo_key'])
             return jsonify(result)
         body = request.get_json(silent=True)
@@ -1667,14 +2270,368 @@ def visualizer_detection(est_id):
         est_update(est_id, reserve)
         if limited:
             return jsonify({'error': 'Please wait 30 seconds before detecting this surface again.'}), 429
-        job = detection.submit(role, body['image'])
+
+        vz = est.get('visualizer') if isinstance(est.get('visualizer'), dict) else {}
+        elevation_id = _visualizer_elevation_id(vz.get('active_elevation_id'))
+        # Paid calls fail closed when the ledger cannot be opened. It is safer
+        # to ask the rep to retry than to spend invisibly.
+        try:
+            usage_event_id = _usage_start_event(
+                est_id, _current_user(), role, elevation_id, photo_key)
+        except Exception as audit_exc:
+            print(f'[visualizer-usage] refusing untracked submission: {audit_exc}')
+            return jsonify({'error': 'Usage tracking is temporarily unavailable. No detection request was sent.'}), 503
+        try:
+            job = detection.submit(role, body['image'])
+        except detection.DetectionError:
+            try:
+                _usage_update_event(
+                    usage_event_id, status='failed', billing_state='unknown',
+                    safe_error_code='provider_submit_failed',
+                    completed_at=_utc_iso())
+            except Exception as audit_exc:
+                print(f'[visualizer-usage] submit failure could not be recorded: {audit_exc}')
+            raise
+        unit_cost = _usage_cost_microusd()
+        try:
+            _usage_update_event(
+                usage_event_id, provider_request_id=job.get('request_id') or '',
+                status='submitted', billing_state='estimated', units=1,
+                unit_cost_microusd=unit_cost,
+                estimated_cost_microusd=unit_cost,
+                input_width=job.get('width'), input_height=job.get('height'))
+        except Exception as audit_exc:
+            # fal accepted the request, so returning its signed polling ticket
+            # gives the rep the value already purchased. The pre-submit event
+            # remains as evidence that reconciliation is needed.
+            print(f'[visualizer-usage] accepted submission update failed: {audit_exc}')
         ticket = signer.dumps({'estimate_id': est_id, 'user': _current_user(),
-                               'role': role, 'photo_key': photo_key, 'job': job})
+                               'role': role, 'photo_key': photo_key, 'job': job,
+                               'usage_event_id': usage_event_id})
         return jsonify({'ticket': ticket, 'status': 'pending'}), 202
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except detection.DetectionError as exc:
         return jsonify({'error': str(exc)}), 502
+
+
+# ── Manager Visualizer operations report ─────────────────────────────────
+
+def _normalize_upload_ref(value):
+    """Return a safe UPLOADS_DIR-relative reference, or an empty string."""
+    if not isinstance(value, str) or not value or '\x00' in value:
+        return ''
+    ref = value.strip().replace('\\', '/')
+    if ref.startswith('/uploads/'):
+        ref = ref[len('/uploads/'):]
+    elif ref.startswith('uploads/'):
+        ref = ref[len('uploads/'):]
+    if not ref or ref.startswith('/') or ':' in ref:
+        return ''
+    parts = [part for part in ref.split('/') if part not in ('', '.')]
+    if not parts or any(part == '..' for part in parts):
+        return ''
+    full = os.path.abspath(os.path.join(UPLOADS_DIR, *parts))
+    try:
+        if os.path.commonpath((os.path.abspath(UPLOADS_DIR), full)) != os.path.abspath(UPLOADS_DIR):
+            return ''
+    except ValueError:
+        return ''
+    return '/'.join(parts)
+
+
+def _visualizer_upload_references(estimates, catalog):
+    """Map every known referenced upload to one or more logical kinds.
+
+    The final generic walk is intentional. A newly introduced attachment field
+    must make an old file look "unknown but referenced", never orphaned.
+    """
+    refs = {}
+
+    def add(value, kind):
+        ref = _normalize_upload_ref(value)
+        if ref:
+            refs.setdefault(ref, set()).add(kind)
+
+    def generic(value):
+        if isinstance(value, dict):
+            for child in value.values():
+                generic(child)
+        elif isinstance(value, list):
+            for child in value:
+                generic(child)
+        elif isinstance(value, str):
+            ref = _normalize_upload_ref(value)
+            ext = os.path.splitext(ref)[1].lower() if ref else ''
+            if ref and (ext in ALLOWED_EXT or ref.startswith('_catalog/')):
+                refs.setdefault(ref, set()).add('referenced_upload')
+
+    for est in estimates:
+        if not isinstance(est, dict):
+            continue
+        for photo in est.get('photos') or []:
+            if isinstance(photo, dict):
+                add(photo.get('filename'), 'customer_photo')
+        for attachment in est.get('attachments') or []:
+            if not isinstance(attachment, dict):
+                continue
+            kind = ('generated_' + str(attachment.get('doc_type') or 'document')
+                    if attachment.get('server_generated') else 'attachment')
+            add(attachment.get('filename'), kind)
+            for page in attachment.get('pages') or []:
+                add(page, 'pdf_page_cache')
+
+        vz = est.get('visualizer') if isinstance(est.get('visualizer'), dict) else {}
+        add(vz.get('base_image'), 'visualizer_base')
+        for role in _VISUALIZER_ROLES:
+            add(vz.get(f'{role}_mask'), 'visualizer_mask')
+        for ref in (vz.get('tier_renders') or {}).values():
+            add(ref, 'visualizer_render')
+        for elevation in (vz.get('elevations') or {}).values():
+            if not isinstance(elevation, dict):
+                continue
+            add(elevation.get('base_image'), 'visualizer_base')
+            for ref in (elevation.get('masks') or {}).values():
+                add(ref, 'visualizer_mask')
+            for ref in (elevation.get('tier_renders') or {}).values():
+                add(ref, 'visualizer_render')
+        for spec in (vz.get('provia_specs') or {}).values():
+            if isinstance(spec, dict):
+                add(spec.get('configured_image'), 'provia_configuration')
+        generic(est)
+
+    for entry in catalog or []:
+        if isinstance(entry, dict):
+            add(entry.get('texture_ref'), 'catalog_texture')
+            add(entry.get('placement_image_ref'), 'catalog_product_cutout')
+    return refs
+
+
+def _visualizer_asset_kind(ref, known_kinds):
+    """Classify one physical file once, even when several documents use it."""
+    name = ref.rsplit('/', 1)[-1].lower()
+    if ref.startswith('_catalog/et_'):
+        return 'catalog_texture'
+    if ref.startswith('_catalog/ep_'):
+        return 'catalog_product_cutout'
+    for prefix, kind in (
+        ('vb_', 'visualizer_base'), ('vm_', 'visualizer_mask'),
+        ('vr_', 'visualizer_render'), ('vpl_', 'exact_product_cutout'),
+        ('vp_', 'provia_configuration'),
+    ):
+        if name.startswith(prefix):
+            return kind
+    if re.search(r'_p\d+\.jpg$', name):
+        return 'pdf_page_cache'
+    for prefix, kind in (
+        ('permit_', 'generated_permit_packet'),
+        ('signed_', 'generated_signed_contract'),
+        ('signed_contract_', 'generated_signed_contract'),
+        ('roofcert_', 'generated_roof_certificate'),
+        ('co_', 'generated_change_order'),
+    ):
+        if name.startswith(prefix):
+            return kind
+    priority = (
+        'customer_photo', 'attachment', 'catalog_texture',
+        'catalog_product_cutout', 'exact_product_cutout',
+        'provia_configuration', 'visualizer_render', 'visualizer_mask',
+        'visualizer_base', 'pdf_page_cache',
+    )
+    for kind in priority:
+        if kind in known_kinds:
+            return kind
+    generated = sorted(k for k in known_kinds if k.startswith('generated_'))
+    if generated:
+        return generated[0]
+    if name.endswith('.pdf'):
+        return 'attachment'
+    return 'other_upload'
+
+
+def _visualizer_storage_report(estimates, catalog, candidate_age_days):
+    refs = _visualizer_upload_references(estimates, catalog)
+    estimate_ids = {str(est.get('estimate_id')) for est in estimates
+                    if isinstance(est, dict) and est.get('estimate_id')}
+    totals = {
+        'total_files': 0, 'total_bytes': 0,
+        'referenced_files': 0, 'referenced_bytes': 0,
+        'unreferenced_files': 0, 'unreferenced_bytes': 0,
+    }
+    by_kind = {}
+    candidates = []
+    candidate_bytes = 0
+    candidate_files = 0
+    warning_count = 0
+    now = time.time()
+
+    def scan_error(_exc):
+        nonlocal warning_count
+        warning_count += 1
+
+    for dirpath, dirs, files in os.walk(UPLOADS_DIR, topdown=True,
+                                        onerror=scan_error, followlinks=False):
+        # Never descend through a symlink/reparse point into another tree.
+        kept = []
+        for dirname in dirs:
+            path = os.path.join(dirpath, dirname)
+            if os.path.islink(path):
+                warning_count += 1
+            else:
+                kept.append(dirname)
+        dirs[:] = kept
+        for filename in files:
+            full = os.path.join(dirpath, filename)
+            if os.path.islink(full):
+                warning_count += 1
+                continue
+            try:
+                stat = os.stat(full, follow_symlinks=False)
+                if not os.path.isfile(full):
+                    continue
+            except OSError:
+                warning_count += 1
+                continue
+            ref = _normalize_upload_ref(os.path.relpath(full, UPLOADS_DIR))
+            if not ref:
+                warning_count += 1
+                continue
+            known = refs.get(ref, set())
+            kind = _visualizer_asset_kind(ref, known)
+            size = int(stat.st_size)
+            totals['total_files'] += 1
+            totals['total_bytes'] += size
+            bucket = by_kind.setdefault(kind, {'kind': kind, 'files': 0, 'bytes': 0})
+            bucket['files'] += 1
+            bucket['bytes'] += size
+            if known:
+                totals['referenced_files'] += 1
+                totals['referenced_bytes'] += size
+                continue
+            totals['unreferenced_files'] += 1
+            totals['unreferenced_bytes'] += size
+            age_days = max(0, int((now - stat.st_mtime) // 86400))
+            if age_days < candidate_age_days:
+                continue
+            owner = ref.split('/', 1)[0]
+            if owner == '_catalog':
+                reason, confidence = 'catalog asset is not used by the live catalog', 'high'
+            elif owner not in estimate_ids:
+                reason, confidence = 'upload directory has no saved estimate', 'high'
+            elif (kind.startswith('visualizer_') or
+                  kind in ('provia_configuration', 'exact_product_cutout')):
+                reason, confidence = 'superseded visualizer asset is no longer referenced', 'high'
+            elif kind == 'pdf_page_cache':
+                reason, confidence = 'unreferenced PDF preview cache can be regenerated', 'high'
+            else:
+                reason, confidence = 'file is not referenced by any saved estimate', 'review'
+            candidate_files += 1
+            candidate_bytes += size
+            candidates.append({
+                'ref': ref, 'kind': kind, 'bytes': size,
+                'age_days': age_days, 'reason': reason,
+                'confidence': confidence,
+            })
+
+    candidates.sort(key=lambda item: (-item['age_days'], -item['bytes'], item['ref']))
+    shown = candidates[:250]
+    return {
+        **totals,
+        'by_kind': sorted(by_kind.values(), key=lambda row: (-row['bytes'], row['kind'])),
+        'cleanup_candidates': {
+            'minimum_age_days': candidate_age_days,
+            'total_files': candidate_files,
+            'total_bytes': candidate_bytes,
+            'truncated': len(shown) < len(candidates),
+            'items': shown,
+        },
+        'warnings': ([f'{warning_count} filesystem entr' +
+                      ('y was' if warning_count == 1 else 'ies were') +
+                      ' skipped safely during the scan.'] if warning_count else []),
+    }
+
+
+def _usage_operations_report(days):
+    since_dt = datetime.utcnow() - timedelta(days=days)
+    since = since_dt.replace(microsecond=0).isoformat() + 'Z'
+    rows = _usage_rows(since)
+    by_status = {}
+    grouped = {'by_day': {}, 'by_rep': {}, 'by_surface': {}, 'by_project': {}}
+    attempts = len(rows)
+    submitted = 0
+    total_cost = 0
+    unpriced = 0
+    unknown = 0
+
+    def add_group(group, name, units, cost):
+        entry = grouped[group].setdefault(str(name or 'unknown'), {
+            'name': str(name or 'unknown'), 'requests': 0, 'cost_microusd': 0})
+        entry['requests'] += units
+        entry['cost_microusd'] += cost
+
+    for row in rows:
+        status = row.get('status') or 'unknown'
+        by_status[status] = by_status.get(status, 0) + 1
+        units = max(0, int(row.get('units') or 0))
+        cost_raw = row.get('estimated_cost_microusd')
+        cost = int(cost_raw or 0)
+        submitted += units
+        total_cost += cost
+        if units and cost_raw is None:
+            unpriced += units
+        if row.get('billing_state') == 'unknown':
+            unknown += 1
+        add_group('by_day', (row.get('created_at') or '')[:10], units, cost)
+        add_group('by_rep', row.get('actor'), units, cost)
+        add_group('by_surface', row.get('surface_role'), units, cost)
+        add_group('by_project', row.get('estimate_id'), units, cost)
+
+    result = {
+        'window_days': days,
+        'attempts': attempts,
+        'submitted_requests': submitted,
+        'estimated_cost_microusd': total_cost,
+        'estimated_cost_usd': round(total_cost / 1_000_000, 6),
+        'unpriced_requests': unpriced,
+        'billing_unknown_attempts': unknown,
+        'by_status': by_status,
+        'price': {
+            'currency': 'USD', 'basis': 'estimated per fal-accepted request',
+            'unit_cost_microusd': _usage_cost_microusd(),
+            'source': EXTERIOR_FAL_PRICE_SOURCE,
+            'verified': EXTERIOR_FAL_PRICE_VERIFIED,
+        },
+    }
+    for group, values in grouped.items():
+        result[group] = sorted(values.values(), key=lambda row: row['name'])
+    return result
+
+
+@app.route('/api/visualizer/operations')
+def visualizer_operations():
+    """Manager-only paid-usage and visual asset storage dashboard data."""
+    if not _is_manager_up():
+        return _forbid()
+    try:
+        days = max(1, min(3650, int(request.args.get('days', 30))))
+        candidate_age_days = max(
+            7, min(3650, int(request.args.get('candidate_age_days', 30))))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'days must be whole numbers'}), 400
+    estimates = [est for est in est_iter() if isinstance(est, dict)]
+    try:
+        catalog = (_load_price_book().get('exterior_catalog') or [])
+    except Exception:
+        catalog = []
+    return jsonify({
+        'generated_at': _utc_iso(),
+        'usage': _usage_operations_report(days),
+        'storage': _visualizer_storage_report(
+            estimates, catalog, candidate_age_days),
+        # Deliberately no mutation endpoint. A manager reviews these candidates;
+        # the server never turns a heuristic report into automatic deletion.
+        'cleanup_supported': False,
+    })
 
 
 # ── RoofR PDF import ───────────────────────────────────────────────────────
@@ -4661,6 +5618,9 @@ def _cv_visualizer_block(est):
             label = names[tier]
             cap = [f'{he(name)}: {he(value)}'
                    for name, value in _design_selection_lines(vz, tier)]
+            cap.extend(f'{he(name)}: {he(value)}'
+                       for name, value in _design_placement_lines(
+                           vz, tier, elevation.get('id')))
             provia = (vz.get('provia_specs') or {}).get(tier) or {}
             if provia.get('access_code'):
                 cap.append('ProVia design code: ' + he(provia['access_code']))
@@ -7333,21 +8293,68 @@ def _design_selection_lines(vz, tier):
     return lines
 
 
+def _design_placement_items(elevation, tier, scope=None):
+    """Canonical placed-product rows for approval and production handoff."""
+    try:
+        placements = _normalize_visualizer_placements(
+            (elevation or {}).get('placements'))
+    except ValueError:
+        return []
+    assignments = (placements.get('concepts') or {}).get(tier) or {}
+    slots = placements.get('slots') or {}
+    items = []
+    for slot in sorted(slots.values(), key=lambda row: (row.get('z', 0), row['id'])):
+        if scope is not None and slot.get('role') not in scope:
+            continue
+        assignment = assignments.get(slot['id'])
+        if not assignment:
+            continue
+        items.append({
+            'slot': copy.deepcopy(slot),
+            'assignment': copy.deepcopy(assignment),
+        })
+    return items
+
+
+def _design_placement_lines(vz, tier, elevation_id=None):
+    lines = []
+    scope = _design_scope(vz)
+    for elevation in _visualizer_render_elevations(vz):
+        if elevation_id and elevation.get('id') != elevation_id:
+            continue
+        elevation_name = _exterior_text(elevation.get('name'), 60) or 'Elevation'
+        for item in _design_placement_items(elevation, tier, scope):
+            slot, assignment = item['slot'], item['assignment']
+            label = _exterior_text(slot.get('label'), 80) or slot['role'].title()
+            product = _exterior_text(assignment.get('product_name'), 200)
+            details = [product, _exterior_text(assignment.get('style_name'), 120),
+                       _exterior_text(assignment.get('color_name'), 120)]
+            value = ' · '.join(dict.fromkeys(part for part in details if part))
+            if value:
+                lines.append((f'{elevation_name} · {label}', value))
+    return lines
+
+
 def _design_tier_snapshot(vz, tier):
     """Canonical customer-approved material/render snapshot for one concept."""
     elevations = _visualizer_render_elevations(vz)
-    render_snapshot = [
-        {'id': ev.get('id'), 'name': ev.get('name'),
-         'render': (ev.get('tier_renders') or {}).get(tier)}
-        for ev in elevations if (ev.get('tier_renders') or {}).get(tier)
-    ]
+    render_snapshot = []
+    scope = _design_scope(vz)
+    for elevation in elevations:
+        render = (elevation.get('tier_renders') or {}).get(tier)
+        if not render:
+            continue
+        render_snapshot.append({
+            'id': elevation.get('id'), 'name': elevation.get('name'),
+            'render': render,
+            'placements': _design_placement_items(elevation, tier, scope),
+        })
     names = dict(_VISUALIZER_CONCEPT_DEFAULTS)
     if isinstance(vz.get('concept_names'), dict):
         names.update(vz['concept_names'])
     concept_name = _exterior_text(names.get(tier), 40) or _VISUALIZER_CONCEPT_DEFAULTS[tier]
     selections = {}
     raw_selections = vz.get('selections') if isinstance(vz.get('selections'), dict) else {}
-    scope = _design_scope(vz)
     for surface, (role, _label) in _DESIGN_SELECTION_META.items():
         tiers = raw_selections.get(surface)
         selected = tiers.get(tier) if isinstance(tiers, dict) else None
@@ -7409,7 +8416,9 @@ def _design_review_page(est, token, notice=''):
                       f'<figcaption>{he(ev.get("name") or "Elevation")}</figcaption></figure>')
         selection_html = ''.join(
             f'<li><strong>{he(label)}:</strong> {he(value)}</li>'
-            for label, value in _design_selection_lines(vz, tier))
+            for label, value in (
+                _design_selection_lines(vz, tier) +
+                _design_placement_lines(vz, tier)))
         specs = vz.get('provia_specs') if isinstance(vz.get('provia_specs'), dict) else {}
         spec = (specs.get(tier) if 'door' in _design_scope(vz) and
                 isinstance(specs.get(tier), dict) else {})
@@ -8055,6 +9064,9 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
         # including gutters/windows/accents, so PDF and review link agree.
         caption_parts = [f'{label}: {value}'
                          for label, value in _design_selection_lines(vz, tier)]
+        caption_parts.extend(
+            f'{label}: {value}' for label, value in _design_placement_lines(
+                vz, tier, elevation.get('id')))
         pdf.set_xy(x, img_y + thumb_h + 1.5)
         pdf.set_font(_S(pdf), '', 7)
         pdf.multi_cell(thumb_w, 3.2,
@@ -14286,6 +15298,11 @@ def _normalize_exterior_entry(raw, row_number=None):
     texture_ref = _exterior_text(raw.get('texture_ref'), 160)
     if texture_ref and not re.fullmatch(r'_catalog/et_[0-9a-f]{32}\.png', texture_ref):
         raise ValueError(f'Row {row_number or "?"}: texture_ref must be an uploaded catalog texture')
+    placement_image_ref = _exterior_text(raw.get('placement_image_ref'), 160)
+    if (placement_image_ref and
+            not _VISUALIZER_PLACEMENT_CATALOG_RE.fullmatch(placement_image_ref)):
+        raise ValueError(
+            f'Row {row_number or "?"}: placement_image_ref must be an uploaded product image')
     texture_scale_raw = raw.get('texture_scale')
     try:
         texture_scale = int(float(texture_scale_raw)) if str(texture_scale_raw or '').strip() else 96
@@ -14307,6 +15324,7 @@ def _normalize_exterior_entry(raw, row_number=None):
             raw.get('price_book_bundle') or raw.get('bundle_id'), 100),
         'texture_ref': texture_ref,
         'texture_scale': texture_scale,
+        'placement_image_ref': placement_image_ref,
         'active': _exterior_bool(raw.get('active'), True),
     }
     product_id, entry_id = _exterior_ids(entry)
@@ -15081,23 +16099,48 @@ def upload_exterior_texture():
                     'width': image.width, 'height': image.height}), 201
 
 
+@app.route('/api/exterior-catalog/placement-image', methods=['POST'])
+def upload_exterior_placement_image():
+    """Store a transparent-safe catalog cutout for doors/windows/shutters."""
+    if not _is_manager_up():
+        return _forbid()
+    upload = request.files.get('file')
+    if upload is None:
+        return jsonify({'error': 'Choose a PNG, JPG, or WebP product image.'}), 400
+    data = upload.read(6 * 1024 * 1024 + 1)
+    if not data or len(data) > 6 * 1024 * 1024:
+        return jsonify({'error': 'Product image must be between 1 byte and 6 MB.'}), 400
+    try:
+        encoded, width, height = _decode_product_cutout(data)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    name = f'ep_{uuid.uuid4().hex}.png'
+    folder = os.path.join(UPLOADS_DIR, '_catalog')
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, name), 'wb') as handle:
+        handle.write(encoded)
+    ref = f'_catalog/{name}'
+    return jsonify({'placement_image_ref': ref, 'url': f'/uploads/{ref}',
+                    'width': width, 'height': height}), 201
+
+
 @app.route('/api/exterior-catalog/template.csv')
 def exterior_catalog_template():
     if not _is_manager_up():
         return _forbid()
     csv_text = (
-        'category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,texture_ref,texture_scale,active\r\n'
-        'roof,CertainTeed,Landmark,Architectural,Moire Black,,#292929,,b_landmark,,96,true\r\n'
-        'siding,LP SmartSide,ExpertFinish,Lap Joint Siding - 8 in.,Summit Blue,,#859298,,b_lp_expert,,96,true\r\n'
-        'trim,LP SmartSide,ExpertFinish Trim & Fascia,Trim & Fascia,Snowscape White,,#f2f1f1,,b_lp_expert,,96,true\r\n'
-        'soffit,James Hardie,Hardie Soffit,Vented Smooth,Arctic White,,#f0f0e4,,b_hardie_statement,,96,true\r\n'
-        'door,ProVia,Signet,460 Style,Autumn Red,,#823d36,,,,96,true\r\n'
-        'gutter,Custom,Seamless Aluminum,K Style,White,,#f2f2ef,,,,64,true\r\n'
-        'window,Custom,Vinyl Window,Frame,Black,,#272727,,,,48,true\r\n'
-        'metal,Custom,Standing Seam Accent,16 in. Panel,Matte Black,,#252525,,,,96,true\r\n'
-        'shutter,Custom,Exterior Shutter,Board and Batten,Black,,#252525,,,,64,true\r\n'
-        'stucco,Custom,Stucco,Sand Finish,Adobe,,#c7aa84,,,,96,true\r\n'
-        'paint,Sherwin-Williams,Duration,Exterior Satin,Tricorn Black,SW 6258,#2f2f30,trim,,,96,true\r\n'
+        'category,brand,product,style,color,color_code,hex,applies_to,price_book_bundle,texture_ref,texture_scale,placement_image_ref,active\r\n'
+        'roof,CertainTeed,Landmark,Architectural,Moire Black,,#292929,,b_landmark,,96,,true\r\n'
+        'siding,LP SmartSide,ExpertFinish,Lap Joint Siding - 8 in.,Summit Blue,,#859298,,b_lp_expert,,96,,true\r\n'
+        'trim,LP SmartSide,ExpertFinish Trim & Fascia,Trim & Fascia,Snowscape White,,#f2f1f1,,b_lp_expert,,96,,true\r\n'
+        'soffit,James Hardie,Hardie Soffit,Vented Smooth,Arctic White,,#f0f0e4,,b_hardie_statement,,96,,true\r\n'
+        'door,ProVia,Signet,460 Style,Autumn Red,,#823d36,,,,96,,true\r\n'
+        'gutter,Custom,Seamless Aluminum,K Style,White,,#f2f2ef,,,,64,,true\r\n'
+        'window,Custom,Vinyl Window,Frame,Black,,#272727,,,,48,,true\r\n'
+        'metal,Custom,Standing Seam Accent,16 in. Panel,Matte Black,,#252525,,,,96,,true\r\n'
+        'shutter,Custom,Exterior Shutter,Board and Batten,Black,,#252525,,,,64,,true\r\n'
+        'stucco,Custom,Stucco,Sand Finish,Adobe,,#c7aa84,,,,96,,true\r\n'
+        'paint,Sherwin-Williams,Duration,Exterior Satin,Tricorn Black,SW 6258,#2f2f30,trim,,,96,,true\r\n'
     )
     return Response(csv_text, mimetype='text/csv', headers={
         'Content-Disposition': 'attachment; filename=exterior-catalog-template.csv'})
@@ -16299,6 +17342,14 @@ def _build_backup_zip(include_uploads=True):
                 zf.writestr(f'estimates/{est_id}.json', json.dumps(doc, indent=2))
             except Exception:
                 pass
+        # Export the logical ledger rather than copying its SQLite file: a raw
+        # copy can omit committed WAL pages, while this works identically for
+        # the file and Postgres backends and is straightforward to restore.
+        try:
+            zf.writestr('operations/visualizer_usage_events.json',
+                        json.dumps(_usage_rows(), indent=2))
+        except Exception as exc:
+            print(f'[backup] visualizer usage export skipped: {exc}')
         if include_uploads:
             for dirpath, _dirs, files in os.walk(UPLOADS_DIR):
                 for fn in files:

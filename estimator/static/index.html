@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=185">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=186">
 </head>
 <body>
 
@@ -675,9 +675,26 @@
         <h2>🎨 Exterior Catalog</h2>
         <p class="ex-modal-sub">Products, styles, and colors shown in Design Studio. Pricing stays in the Price Book.</p>
       </div>
-      <button onclick="closeExteriorCatalog()" class="modal-close">×</button>
+      <div class="modal-header-actions">
+        <button class="btn-secondary" onclick="openVisualizerOperations()">📊 Usage &amp; Storage</button>
+        <button onclick="closeExteriorCatalog()" class="modal-close">×</button>
+      </div>
     </div>
     <div id="exterior-catalog-body" class="ex-modal-body"></div>
+  </div>
+</div>
+
+<!-- ── Design Studio usage and storage (manager+) ─────────────────── -->
+<div id="visualizer-operations-modal" class="modal hidden" onclick="maybeCloseVisualizerOperations(event)">
+  <div class="modal-box vz-ops-modal-box">
+    <div class="modal-header">
+      <div>
+        <h2>📊 Design Studio Operations</h2>
+        <p class="ex-modal-sub">Estimated fal usage and read-only visual asset storage review.</p>
+      </div>
+      <button onclick="closeVisualizerOperations()" class="modal-close">×</button>
+    </div>
+    <div id="visualizer-operations-body" class="vz-ops-body"></div>
   </div>
 </div>
 
@@ -733,6 +750,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=185"></script>
+<script src="/estimate/static/app.js?v=186"></script>
 </body>
 </html>

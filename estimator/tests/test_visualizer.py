@@ -26,6 +26,7 @@ import copy
 import io
 import json
 import os
+import re
 
 import pytest
 
@@ -134,6 +135,35 @@ _ONE_PX_JPEG_B64 = (
 )
 
 
+def _placement_doc(asset_ref, label='Front entry'):
+    return {
+        'version': 1,
+        'slots': {
+            'pl_front_entry': {
+                'id': 'pl_front_entry', 'role': 'door', 'label': label,
+                'quad': [[0.40, 0.22], [0.58, 0.24],
+                         [0.57, 0.85], [0.41, 0.84]],
+                'z': 2,
+            },
+        },
+        'concepts': {
+            'good': {},
+            'better': {
+                'pl_front_entry': {
+                    'asset_ref': asset_ref,
+                    'source_crop': {'x': 0.05, 'y': 0.02,
+                                    'w': 0.90, 'h': 0.96},
+                    'mirror_x': False,
+                    'product_id': 'provia-signet-460',
+                    'product_name': 'ProVia Signet 460',
+                    'color_name': 'Coal Black',
+                },
+            },
+            'best': {},
+        },
+    }
+
+
 def test_asset_endpoint_writes_the_upload_and_updates_the_pointer(client):
     eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
     try:
@@ -187,6 +217,54 @@ def test_asset_endpoint_validates_kind_role_tier(client):
                         json={'kind': 'garbage', 'ext': 'jpg',
                               'content_b64': _ONE_PX_JPEG_B64})
         assert r.status_code == 400
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+
+
+def test_placement_asset_is_decoded_and_scoped_to_a_saved_estimate(client, A):
+    eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    try:
+        uploaded = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'placement', 'ext': 'jpg',
+            'content_b64': _ONE_PX_JPEG_B64,
+        })
+        assert uploaded.status_code == 201, uploaded.get_json()
+        body = uploaded.get_json()
+        assert body['placement_image_ref'].startswith(f'{eid}/vpl_')
+        assert body['placement_image_ref'].endswith('.png')
+        assert body['width'] == body['height'] == 1
+        with open(os.path.join(A.UPLOADS_DIR, body['placement_image_ref']), 'rb') as image:
+            assert image.read(8) == b'\x89PNG\r\n\x1a\n'
+
+        provia = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'provia', 'tier': 'better', 'ext': 'jpg',
+            'content_b64': _ONE_PX_JPEG_B64,
+        })
+        assert provia.status_code == 201, provia.get_json()
+        assert re.match(rf'{eid}/vp_[0-9a-f]{{32}}\.png$',
+                        provia.get_json()['filename'])
+        with open(os.path.join(A.UPLOADS_DIR, provia.get_json()['filename']), 'rb') as image:
+            assert image.read(8) == b'\x89PNG\r\n\x1a\n'
+        configured = client.get(f'/api/estimates/{eid}').get_json()[
+            'visualizer']['provia_specs']['better']['configured_image']
+        assert configured == provia.get_json()['filename']
+
+        fake = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'placement', 'ext': 'png',
+            'content_b64': base64.b64encode(b'<html>not an image</html>').decode(),
+        })
+        assert fake.status_code == 400
+        assert 'decode' in fake.get_json()['error'].lower()
+        fake_provia = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'provia', 'tier': 'better', 'ext': 'png',
+            'content_b64': base64.b64encode(b'not an image').decode(),
+        })
+        assert fake_provia.status_code == 400
+        missing = client.post('/api/estimates/not-saved/visualizer/asset', json={
+            'kind': 'placement', 'ext': 'jpg',
+            'content_b64': _ONE_PX_JPEG_B64,
+        })
+        assert missing.status_code == 404
     finally:
         client.delete(f'/api/estimates/{eid}')
 
@@ -751,6 +829,7 @@ def test_exterior_catalog_rejects_bad_rows_and_rep_writes(client, A, monkeypatch
     monkeypatch.setattr(A, '_is_manager_up', lambda *a, **kw: False)
     assert client.put('/api/exterior-catalog', json={'entries': []}).status_code == 403
     assert client.post('/api/exterior-catalog/import', json={'rows': []}).status_code == 403
+    assert client.post('/api/exterior-catalog/placement-image').status_code == 403
     assert client.get('/api/exterior-catalog/template.csv').status_code == 403
 
 
@@ -759,6 +838,7 @@ def test_exterior_catalog_template_and_frontend_wiring(client):
     assert response.status_code == 200
     text = response.get_data(as_text=True)
     assert text.startswith('category,brand,product,style,color,color_code,hex')
+    assert 'placement_image_ref' in text.splitlines()[0]
     assert 'ProVia' in text and 'Sherwin-Williams' in text
     assert '\r\ntrim,' in text and '\r\nsoffit,' in text
     js = open(os.path.join(os.path.dirname(__file__), '..', 'static', 'app.js'),
@@ -1010,6 +1090,22 @@ vm.runInContext(`
   assert.equal(_vzGet().selections.trim.better.bundle_id, 'b_hardie_statement');
   assert.equal(_vzGet().selections.soffit.better.bundle_id, 'b_hardie_statement');
   assert.equal(S.trades.siding.tier_bundles.better, 'b_lp_expert'); // visual change never reprices
+  const cutout = '_catalog/ep_' + 'a'.repeat(32) + '.png';
+  priceBook.exterior_catalog.push({category:'door',active:true,product_id:'ext_provia',
+    brand:'ProVia',product:'Signet 460',style:'Entry',color:'Coal Black',hex:'#222222',
+    placement_image_ref:cutout});
+  _vzPickDoorOption('ext_provia');
+  assert.equal(_vzGet().selections.doors.better.placement_image_ref,cutout);
+  _vzAddPlacement('door');
+  const placed=_vzElevation().placements,slotId=Object.keys(placed.slots)[0];
+  assert(slotId.startsWith('pl_door_'));
+  assert.equal(placed.concepts.better[slotId].asset_ref,cutout);
+  assert(_vzQuadIsValid(placed.slots[slotId].quad));
+  assert(_vzPointInQuad(.49,.50,placed.slots[slotId].quad));
+  _vzMirrorPlacement();
+  assert.equal(_vzElevation().placements.concepts.better[slotId].mirror_x,true);
+  _vzDuplicatePlacement();
+  assert.equal(Object.keys(_vzElevation().placements.slots).length,2);
   globalThis.oldState = vzState;
   vzState.photoKey = 'first';
   assert(_vzIsCurrent(vzState,'first'));
@@ -1042,6 +1138,260 @@ context.finished.then(() => {
     source = Path(__file__).resolve().parents[1] / 'static' / 'app.js'
     result = subprocess.run([node, '-e', script, str(source)], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _run_visualizer_ui_node(body):
+    """Run a focused behavior check against the real visualizer functions."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('node is required for exact-placement UI behavior checks')
+    harness = r"""
+const fs = require('fs'), vm = require('vm'), assert = require('assert/strict');
+const src = fs.readFileSync(process.argv[1], 'utf8');
+const from = src.indexOf('const _SIDING_PATTERN_SVG =');
+const to = src.indexOf('// ── Service Worker registration', from);
+if (from < 0 || to < 0) throw new Error('Could not isolate the visualizer source');
+const alerts = [];
+const picker = {innerHTML: ''};
+const document = {
+  getElementById: id => id === 'vz-picker-body' ? picker : null,
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  createElement: () => ({
+    width: 1, height: 1,
+    getContext: () => ({drawImage(){}}),
+    toDataURL: () => 'data:image/png;base64,AAAA'
+  })
+};
+const context = vm.createContext({
+  assert, alerts, document,
+  setTimeout: fn => { fn(); return 1; }, clearTimeout: () => {},
+  requestAnimationFrame: fn => { fn(); return 1; }, cancelAnimationFrame: () => {},
+  fetch: async () => ({ok:true, json:async()=>({})}),
+  Image: function Image(){},
+  S: {estimate_id:'estimate-a', trades:{}},
+  priceBook: {exterior_catalog:[], exterior_doors:[]},
+  TIERS:['good','better','best'],
+  setDirty(){},
+  esc:s=>String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'),
+  confirm:()=>true,
+  alert:message=>alerts.push(String(message))
+});
+vm.runInContext(src.slice(from,to), context);
+(async () => {
+  await vm.runInContext('(async()=>{' + process.argv[2] + '})()', context);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    source = Path(__file__).resolve().parents[1] / 'static' / 'app.js'
+    result = subprocess.run(
+        [node, '-e', harness, str(source), body],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_exact_placement_scope_controls_rendering_and_save_validity_in_node():
+    _run_visualizer_ui_node(r"""
+const cutout = '_catalog/ep_' + 'a'.repeat(32) + '.png';
+function placementDoc(assigned) {
+  return {version:1, slots:{pl_door_one:{id:'pl_door_one',role:'door',label:'Front door',
+    quad:[[.4,.2],[.6,.2],[.6,.85],[.4,.85]],z:0}},
+    concepts:{good:{},better:assigned?{pl_door_one:{asset_ref:cutout,
+      source_crop:{x:0,y:0,w:1,h:1},mirror_x:false,product_name:'Signet'}}:{},best:{}}};
+}
+function loadPlacement(doc, scope) {
+  S = {estimate_id:'estimate-a',trades:{},visualizer:{scope:[...scope],selections:{},
+    elevations:{front:{id:'front',name:'Front',base_image:'estimate-a/vb.jpg',masks:{},
+      tier_renders:{},placements:doc}},elevation_order:['front'],active_elevation_id:'front'}};
+  _vzResetState();
+  vzState.activeTier='better';
+  vzState.photoImg={};
+  vzState.canvas={width:1,height:1};
+}
+const drawCtx={save(){},restore(){},drawImage(){}};
+_vzGetPlacementImg=()=>({complete:true,naturalWidth:10,naturalHeight:10,decode:async()=>{}});
+_vzPlacementSheet=()=>({width:10,height:10});
+let warps=0;
+_vzWarpSheetToQuad=()=>{warps++;return true;};
+
+loadPlacement(placementDoc(true),['roof']);
+_vzCompositePlacements(drawCtx,100,100,'better');
+const outsideScopeWarps=warps;
+warps=0;
+loadPlacement(placementDoc(true),['door']);
+_vzCompositePlacements(drawCtx,100,100,'better');
+const insideScopeWarps=warps;
+
+const zeroMask={width:1,height:1,
+  getContext:()=>({getImageData:()=>({data:new Uint8ClampedArray([0,0,0,0])})}),
+  toDataURL:()=> 'data:image/png;base64,AAAA'};
+const outputCanvas={width:1,height:1,getContext:()=>drawCtx,
+  toDataURL:()=> 'data:image/jpeg;base64,AAAA'};
+_vzEnsureTier=()=>{};
+_vzMakeMaskCanvas=()=>outputCanvas;
+_vzComposeInto=()=>{};
+_vzDetectionUI=()=>{};
+let postCalls=0;
+_vzPostAsset=async()=>{postCalls++;return {filename:'estimate-a/saved.png'};};
+
+loadPlacement(placementDoc(true),['roof']);
+vzState.roofMask=zeroMask;
+alerts.length=0;postCalls=0;
+const outOfScopeSaved=await _vzSaveAll();
+const outOfScopePosts=postCalls;
+const outOfScopeAlert=alerts.at(-1)||'';
+
+loadPlacement(placementDoc(false),['door']);
+vzState.doorMask=zeroMask;
+alerts.length=0;postCalls=0;
+const emptySlotSaved=await _vzSaveAll();
+const emptySlotPosts=postCalls;
+const emptySlotAlert=alerts.at(-1)||'';
+
+assert.deepEqual({outsideScopeWarps,insideScopeWarps,outOfScopeSaved,outOfScopePosts,
+  emptySlotSaved,emptySlotPosts}, {
+  outsideScopeWarps:0,insideScopeWarps:1,outOfScopeSaved:false,outOfScopePosts:0,
+  emptySlotSaved:false,emptySlotPosts:0
+});
+assert.match(outOfScopeAlert,/No project surfaces or exact products/i);
+assert.match(emptySlotAlert,/No project surfaces or exact products/i);
+""")
+
+
+def test_changing_door_selection_invalidates_old_provia_image_in_node():
+    _run_visualizer_ui_node(r"""
+const oldImage='estimate-a/vp_'+'a'.repeat(32)+'.png';
+priceBook={exterior_catalog:[],exterior_doors:[
+  {id:'old-door',name:'Old ProVia door',preview_only:true,colors:[]},
+  {id:'new-door',name:'New ProVia door',preview_only:true,colors:[]}
+]};
+S={estimate_id:'estimate-a',trades:{},visualizer:{scope:['door'],
+  selections:{doors:{better:{option_id:'old-door',option_name:'Old ProVia door'}}},
+  provia_specs:{better:{series:'Signet',model:'460',configured_image:oldImage}},
+  elevations:{front:{id:'front',name:'Front',base_image:null,masks:{},tier_renders:{}}},
+  elevation_order:['front'],active_elevation_id:'front'}};
+_vzResetState();vzState.activeTier='better';
+_vzChanged=()=>{};
+_vzSyncPlacementAssignmentsForTrade=()=>{};
+const before=_vzPlacementSource('door');
+assert.equal(before.asset_ref,oldImage);
+assert.notEqual(_vzGet().provia_specs.better.configured_for,'stale');
+
+_vzPickDoorOption('new-door');
+assert.equal(_vzGet().selections.doors.better.option_id,'new-door');
+assert.equal(_vzGet().provia_specs.better.configured_for,'stale');
+assert.equal(_vzPlacementSource('door'),null,
+  'the configured image for the old door must not be reused for the new selection');
+""")
+
+
+def test_fill_all_uses_active_exact_product_source_in_every_concept_in_node():
+    _run_visualizer_ui_node(r"""
+const refs={good:'_catalog/ep_'+'a'.repeat(32)+'.png',
+  better:'_catalog/ep_'+'b'.repeat(32)+'.png',best:'_catalog/ep_'+'c'.repeat(32)+'.png'};
+S={estimate_id:'estimate-a',trades:{},visualizer:{scope:['door'],selections:{doors:{
+  good:{option_id:'good-door',option_name:'Good door',placement_image_ref:refs.good},
+  better:{option_id:'active-door',option_name:'Active door',placement_image_ref:refs.better},
+  best:{option_id:'best-door',option_name:'Best door',placement_image_ref:refs.best}
+}},elevations:{front:{id:'front',name:'Front',base_image:null,masks:{},tier_renders:{},
+  placements:{version:1,slots:{pl_door_one:{id:'pl_door_one',role:'door',label:'Front door',
+    quad:[[.4,.2],[.6,.2],[.6,.85],[.4,.85]],z:0}},concepts:{good:{},better:{},best:{}}}}},
+  elevation_order:['front'],active_elevation_id:'front'}};
+_vzResetState();vzState.activeTier='better';vzState.placementSlotId='pl_door_one';
+renderVisualizerPage=()=>{};
+const activeSource=_vzPlacementSource('door','better');
+_vzAssignCurrentProduct(true);
+const assignments=_vzPlacementDoc().concepts;
+for(const tier of TIERS){
+  assert.deepEqual(assignments[tier].pl_door_one,activeSource,
+    'Fill all concepts must copy the active concept source into '+tier);
+}
+""")
+
+
+def test_placement_crop_is_bounded_and_locked_during_save_in_node():
+    _run_visualizer_ui_node(r"""
+const cutout='_catalog/ep_'+'a'.repeat(32)+'.png';
+S={estimate_id:'estimate-a',trades:{},visualizer:{scope:['door'],selections:{},
+  elevations:{front:{id:'front',name:'Front',base_image:null,masks:{},tier_renders:{},
+    placements:{version:1,slots:{pl_door_one:{id:'pl_door_one',role:'door',label:'Front door',
+      quad:[[.4,.2],[.6,.2],[.6,.85],[.4,.85]],z:0}},concepts:{good:{},better:{
+      pl_door_one:{asset_ref:cutout,source_crop:{x:0,y:0,w:1,h:1},mirror_x:false}},best:{}}}}},
+  elevation_order:['front'],active_elevation_id:'front'}};
+_vzResetState();vzState.activeTier='better';vzState.placementSlotId='pl_door_one';
+renderVisualizerPage=()=>{};
+_vzSetPlacementCrop('right',45);
+_vzSetPlacementCrop('left',99);
+_vzSetPlacementCrop('bottom',45);
+_vzSetPlacementCrop('top',99);
+let assignment=_vzPlacementDoc().concepts.better.pl_door_one;
+assert.deepEqual(assignment.source_crop,{x:.45,y:.45,w:.1,h:.1});
+const before=JSON.stringify(_vzPlacementDoc());
+vzState.saving=true;
+_vzSetPlacementCrop('left',0);_vzMirrorPlacement();_vzRemovePlacement();
+assert.equal(JSON.stringify(_vzPlacementDoc()),before,
+  'placement controls must not mutate the rendering snapshot while saving');
+""")
+
+
+def test_projected_material_uses_flat_fallback_and_one_target_composite_in_node():
+    _run_visualizer_ui_node(r"""
+const events=[];
+const projected={tag:'projected'},mask={tag:'mask'},image={naturalWidth:96,naturalHeight:64};
+const combinedCtx={
+  _op:'source-over',set globalCompositeOperation(value){this._op=value;events.push('op:'+value);},
+  get globalCompositeOperation(){return this._op;},
+  drawImage(value){events.push('combined:'+value.tag+':'+this._op);}
+};
+const combined={tag:'combined',getContext:()=>combinedCtx};
+const target={_op:'source-over',save(){events.push('save');},restore(){events.push('restore');},
+  set globalCompositeOperation(value){this._op=value;events.push('target-op:'+value);},
+  get globalCompositeOperation(){return this._op;},set globalAlpha(value){events.push('alpha:'+value);},
+  drawImage(value){events.push('target:'+value.tag+':'+this._op);}};
+_vzProjectedLayer=()=>projected;
+_vzMakeMaskCanvas=()=>combined;
+_vzFillCanonicalFlat=()=>{events.push('flat');return true;};
+assert.equal(_vzCompositeProjected(target,400,240,mask,'roof','better',image,96,'texture:x',.72,'square'),true);
+assert.deepEqual(events,[
+  'flat','op:source-over','combined:projected:source-over','op:destination-in',
+  'combined:mask:destination-in','save','target-op:multiply','alpha:0.72',
+  'target:combined:multiply','restore'
+]);
+events.length=0;_vzProjectedLayer=()=>null;
+assert.equal(_vzCompositeProjected(target,400,240,mask,'roof','better',image,96,'texture:x',.72,'square'),false);
+assert.deepEqual(events,[],'invalid or missing planes must leave the legacy flat renderer in control');
+""")
+
+
+def test_save_finalization_ends_drag_and_uses_stable_placement_mesh_in_node():
+    _run_visualizer_ui_node(r"""
+const cutout='_catalog/ep_'+'a'.repeat(32)+'.png';
+S={estimate_id:'estimate-a',trades:{},visualizer:{scope:['door','roof'],selections:{},
+  elevations:{front:{id:'front',name:'Front',base_image:null,masks:{},tier_renders:{},
+    texture_projection:{version:1,roles:{roof:{mode:'perspective',planes:[{id:'plane_1',
+      quad:[[.1,.1],[.9,.1],[.9,.5],[.1,.5]],scale:1,quarter_turns:0}]}}},
+    placements:{version:1,slots:{pl_door_one:{id:'pl_door_one',role:'door',label:'Front door',
+      quad:[[.4000123,.2],[.6000123,.2],[.6000123,.85],[.4000123,.85]],z:0}},concepts:{good:{},better:{
+      pl_door_one:{asset_ref:cutout,source_crop:{x:0,y:0,w:1,h:1},mirror_x:false}},best:{}}}}},
+  elevation_order:['front'],active_elevation_id:'front'}};
+_vzResetState();Object.assign(vzState,{activeTier:'better',placementSlotId:'pl_door_one',
+  placementDragIndex:2,placementMoveWhole:false,placementFrame:9,alignmentRole:'roof',
+  alignmentPlaneId:'plane_1',alignmentDragIndex:1,alignmentFrame:10,painting:true});
+_vzFinalizeVisualizerInteraction();
+assert.equal(vzState.placementDragIndex,-1);assert.equal(vzState.placementMoveWhole,false);
+assert.equal(vzState.alignmentDragIndex,-1);assert.equal(vzState.painting,false);
+assert.equal(vzState.placementFrame,0);assert.equal(vzState.alignmentFrame,0);
+_vzGetPlacementImg=()=>({complete:true,naturalWidth:10,naturalHeight:10});
+_vzPlacementSheet=()=>({width:10,height:10});
+_vzMakeMaskCanvas=()=>({width:100,height:100,getContext:()=>({})});
+let grid=0;_vzWarpSheetToQuad=(ctx,sheet,quad,w,h,value)=>{grid=value;return true;};
+_vzCompositePlacements({save(){},restore(){},drawImage(){}},100,100,'better');
+assert.equal(grid,10,'a saved render must use the stable mesh, not drag-preview quality');
+""")
 
 
 def test_state_endpoint_updates_selections_only(client):
@@ -1125,7 +1475,8 @@ def test_visualizer_state_saves_scope_names_provia_and_invalidates_stale_views(c
             'elevation_names': {'front': 'Street', 'rear': 'Back yard'},
             'elevation_order': ['front', 'rear'], 'invalidate_other_renders': True,
             'provia_specs': {'best': {'access_code': 'PV-123', 'model': '460',
-                                      'glass': 'Privacy', 'notes': 'Black handleset'}},
+                                      'glass': 'Privacy', 'notes': 'Black handleset',
+                                      'configured_for': 'door-460|coal-black|PV-123'}},
         })
         assert result.status_code == 200, result.get_json()
         vz = result.get_json()['visualizer']
@@ -1135,6 +1486,7 @@ def test_visualizer_state_saves_scope_names_provia_and_invalidates_stale_views(c
         assert vz['elevations']['front']['tier_renders'] == {}
         assert vz['elevations']['rear']['tier_renders']['best']
         assert vz['provia_specs']['best']['access_code'] == 'PV-123'
+        assert vz['provia_specs']['best']['configured_for'] == 'door-460|coal-black|PV-123'
     finally:
         client.delete(f'/api/estimates/{eid}')
 
@@ -1154,9 +1506,111 @@ def test_visualizer_state_can_persist_an_empty_new_elevation(client):
         assert vz['elevations']['garage'] == {
             'id': 'garage', 'name': 'Detached garage', 'base_image': None,
             'masks': {}, 'tier_renders': {},
+            'placements': {'version': 1, 'slots': {},
+                           'concepts': {'good': {}, 'better': {}, 'best': {}}},
+            'texture_projection': {'version': 1, 'roles': {}},
         }
     finally:
         client.delete(f'/api/estimates/{eid}')
+
+
+def test_placement_and_projection_state_are_isolated_and_cleared_with_photo(client):
+    eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    other = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    try:
+        asset = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'placement', 'ext': 'jpg',
+            'content_b64': _ONE_PX_JPEG_B64,
+        }).get_json()['placement_image_ref']
+        other_asset = client.post(f'/api/estimates/{other}/visualizer/asset', json={
+            'kind': 'placement', 'ext': 'jpg',
+            'content_b64': _ONE_PX_JPEG_B64,
+        }).get_json()['placement_image_ref']
+        projection = {
+            'version': 1,
+            'roles': {
+                'roof': {'mode': 'perspective', 'planes': [{
+                    'id': 'roof_main',
+                    'quad': [[0.10, 0.20], [0.80, 0.16],
+                             [0.72, 0.52], [0.20, 0.55]],
+                    'scale': 1.25, 'quarter_turns': 1,
+                }]},
+            },
+        }
+        saved = client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'elevation_names': {'front': 'Front', 'rear': 'Rear'},
+            'elevation_order': ['front', 'rear'],
+            'active_elevation_id': 'rear',
+            'placement_updates': {
+                'front': _placement_doc(asset),
+                'rear': _placement_doc(asset, 'Rear entry'),
+            },
+            'projection_elevation_id': 'rear',
+            'texture_projection': projection,
+        })
+        assert saved.status_code == 200, saved.get_json()
+        vz = saved.get_json()['visualizer']
+        assert vz['elevations']['front']['placements']['slots']['pl_front_entry']['label'] == 'Front entry'
+        assert vz['elevations']['rear']['placements']['concepts']['better']['pl_front_entry']['product_name'] == 'ProVia Signet 460'
+        assert vz['elevations']['rear']['texture_projection']['roles']['roof']['planes'][0]['scale'] == 1.25
+
+        # A second projection update targets only Front.
+        front_projection = copy.deepcopy(projection)
+        front_projection['roles']['roof']['planes'][0]['id'] = 'front_roof'
+        assert client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'projection_elevation_id': 'front',
+            'texture_projection': front_projection,
+        }).status_code == 200
+
+        crossed = _placement_doc(asset)
+        crossed['slots']['pl_front_entry']['quad'] = [
+            [0.1, 0.1], [0.9, 0.9], [0.9, 0.1], [0.1, 0.9]]
+        bad_quad = client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'placement_updates': {'front': crossed},
+        })
+        assert bad_quad.status_code == 400
+        assert 'convex' in bad_quad.get_json()['error']
+
+        cross_estimate = client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'placement_updates': {'front': _placement_doc(other_asset)},
+        })
+        assert cross_estimate.status_code == 400
+        assert 'different estimate' in cross_estimate.get_json()['error']
+
+        bad_projection = copy.deepcopy(projection)
+        bad_projection['roles']['roof']['planes'][0]['quarter_turns'] = 4
+        rejected = client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'projection_elevation_id': 'front',
+            'texture_projection': bad_projection,
+        })
+        assert rejected.status_code == 400
+        assert 'quarter_turns' in rejected.get_json()['error']
+
+        # Replacing Rear invalidates only geometry attached to Rear.
+        replacement = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'base', 'elevation_id': 'rear', 'elevation_name': 'Rear',
+            'ext': 'jpg', 'content_b64': _ONE_PX_JPEG_B64,
+        })
+        assert replacement.status_code == 201
+        fresh = client.get(f'/api/estimates/{eid}').get_json()['visualizer']
+        assert fresh['elevations']['rear']['placements']['slots'] == {}
+        assert fresh['elevations']['rear']['texture_projection']['roles'] == {}
+        assert fresh['elevations']['front']['placements']['slots']
+        assert fresh['elevations']['front']['texture_projection']['roles']['roof']
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+        client.delete(f'/api/estimates/{other}')
+
+
+@pytest.mark.parametrize('quad', [
+    [[0, 0], [1, 0], [1, 1]],
+    [[0, 0], [float('nan'), 0], [1, 1], [0, 1]],
+    [[0, 0], [1.1, 0], [1, 1], [0, 1]],
+    [[0.1, 0.1], [0.9, 0.9], [0.9, 0.1], [0.1, 0.9]],
+])
+def test_placement_quad_validation_fails_closed(A, quad):
+    with pytest.raises(ValueError):
+        A._normalize_placement_quad(quad)
 
 
 def test_manager_texture_upload_and_new_catalog_categories(client):
@@ -1180,6 +1634,40 @@ def test_manager_texture_upload_and_new_catalog_categories(client):
         assert {row['category'] for row in saved.get_json()['entries']} == set(categories)
         assert all(row['texture_ref'] == texture and row['texture_scale'] == 72
                    for row in saved.get_json()['entries'])
+    finally:
+        assert client.put('/api/exterior-catalog', json={'entries': original}).status_code == 200
+
+
+def test_manager_product_cutout_upload_round_trips_through_catalog(client, A):
+    original = client.get('/api/exterior-catalog').get_json()['entries']
+    try:
+        upload = client.post('/api/exterior-catalog/placement-image', data={
+            'file': (io.BytesIO(base64.b64decode(_ONE_PX_JPEG_B64)), 'door.jpg')
+        }, content_type='multipart/form-data')
+        assert upload.status_code == 201, upload.get_json()
+        ref = upload.get_json()['placement_image_ref']
+        assert ref.startswith('_catalog/ep_') and ref.endswith('.png')
+        with open(os.path.join(A.UPLOADS_DIR, ref), 'rb') as image:
+            assert image.read(8) == b'\x89PNG\r\n\x1a\n'
+
+        rows = [{
+            'category': 'door', 'brand': 'ProVia', 'product': 'Signet',
+            'style': '460', 'color': 'Coal Black', 'hex': '#242424',
+            'placement_image_ref': ref,
+        }]
+        saved = client.put('/api/exterior-catalog', json={'entries': rows})
+        assert saved.status_code == 200, saved.get_json()
+        assert saved.get_json()['entries'][0]['placement_image_ref'] == ref
+        bad = client.put('/api/exterior-catalog', json={'entries': [
+            dict(rows[0], placement_image_ref='https://tracker.invalid/door.png')
+        ]})
+        assert bad.status_code == 400
+        assert 'placement_image_ref' in bad.get_json()['error']
+
+        invalid = client.post('/api/exterior-catalog/placement-image', data={
+            'file': (io.BytesIO(b'not an image'), 'door.png')
+        }, content_type='multipart/form-data')
+        assert invalid.status_code == 400
     finally:
         assert client.put('/api/exterior-catalog', json={'entries': original}).status_code == 200
 
@@ -1251,6 +1739,84 @@ def test_design_share_is_price_free_and_approval_is_server_managed(client, anon)
         client.delete(f'/api/estimates/{eid}')
 
 
+def test_design_approval_snapshots_exact_product_placement(client, anon):
+    eid = client.post('/api/estimates', json={
+        'customer': {'name': 'Ada Lovelace'},
+    }).get_json()['estimate_id']
+    try:
+        asset = client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'placement', 'ext': 'jpg',
+            'content_b64': _ONE_PX_JPEG_B64,
+        }).get_json()['placement_image_ref']
+        assert client.post(f'/api/estimates/{eid}/visualizer/asset', json={
+            'kind': 'render', 'tier': 'better', 'elevation_id': 'front',
+            'elevation_name': 'Front', 'ext': 'jpg',
+            'content_b64': _ONE_PX_JPEG_B64,
+        }).status_code == 201
+        placement = _placement_doc(asset)
+        state = client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'scope': ['door'],
+            'concept_names': {'good': 'Good', 'better': 'Exact entry', 'best': 'Best'},
+            'placement_updates': {'front': placement},
+        })
+        assert state.status_code == 200, state.get_json()
+        token = client.post(
+            f'/api/estimates/{eid}/visualizer/share').get_json()['token']
+        review = anon.get(f'/design/{token}').get_data(as_text=True)
+        assert 'Front entry' in review and 'ProVia Signet 460' in review
+
+        approved = anon.post(f'/design/{token}', data={
+            'approved_tier': 'better', 'approver_name': 'Ada Lovelace',
+            'agree': 'yes',
+        })
+        assert approved.status_code == 200
+        stored = client.get(f'/api/estimates/{eid}').get_json()
+        items = stored['design_approval']['elevations'][0]['placements']
+        assert items[0]['slot']['quad'][0] == [0.4, 0.22]
+        assert items[0]['assignment']['product_name'] == 'ProVia Signet 460'
+
+        moved = _placement_doc(asset)
+        moved['slots']['pl_front_entry']['quad'][0] = [0.39, 0.21]
+        assert client.put(f'/api/estimates/{eid}/visualizer/state', json={
+            'placement_updates': {'front': moved},
+        }).status_code == 200
+        stale = anon.get(f'/design/{token}').get_data(as_text=True)
+        assert 'needs approval again' in stale
+    finally:
+        client.delete(f'/api/estimates/{eid}')
+
+
+def test_out_of_scope_exact_products_stay_out_of_customer_handoff(A):
+    asset = 'estimate-a/vpl_' + ('a' * 32) + '.png'
+    vz = {
+        'scope': ['roof'],
+        'elevations': {'front': {
+            'id': 'front', 'name': 'Front',
+            'tier_renders': {'better': 'estimate-a/vr_better.jpg'},
+            'placements': _placement_doc(asset),
+        }},
+        'elevation_order': ['front'],
+    }
+    assert A._design_placement_lines(vz, 'better') == []
+    assert A._design_tier_snapshot(vz, 'better')['elevations'][0]['placements'] == []
+    vz['scope'] = ['door']
+    assert A._design_placement_lines(vz, 'better')[0][0] == 'Front · Front entry'
+    assert A._design_tier_snapshot(vz, 'better')['elevations'][0]['placements']
+
+
+def test_visualizer_state_payload_carries_all_elevation_placements_in_node():
+    _run_visualizer_ui_node(r"""
+const empty=()=>({version:1,slots:{},concepts:{good:{},better:{},best:{}}});
+S={estimate_id:'estimate-a',trades:{},visualizer:{scope:['door'],selections:{},
+  elevations:{front:{id:'front',name:'Front',masks:{},tier_renders:{},placements:empty()},
+    rear:{id:'rear',name:'Rear',masks:{},tier_renders:{},placements:empty()}},
+  elevation_order:['front','rear'],active_elevation_id:'front'}};
+_vzResetState();
+const payload=_vzElevationMetaPayload({});
+assert.deepEqual(Object.keys(payload.placement_updates),['front','rear']);
+""")
+
+
 def test_extended_design_studio_frontend_wiring():
     source = open(os.path.join(os.path.dirname(__file__), '..', 'static', 'app.js'),
                   encoding='utf-8').read()
@@ -1259,6 +1825,10 @@ def test_extended_design_studio_frontend_wiring():
     assert 'function _vzAddElevation' in source
     assert 'function _vzShareDesign' in source
     assert 'function _vzCompositeTexture' in source
+    assert 'function _vzCompositePlacements' in source
+    assert 'function _vzPlacementEditorHtml' in source
+    assert 'placement_updates' in source
+    assert 'openVisualizerOperations' in source
     assert 'Exact ProVia specification handoff' in source
     assert 'invalidate_other_renders' in source
     assert 'if (!scope.has(role)) continue;' in source
