@@ -3886,6 +3886,16 @@ def _tier_card_content(pb, est, trade, tier, tfeat, tdesc):
     return feats, (tdesc.get(tier) or '').strip()
 
 
+def _enabled_tiers(est):
+    """The packages this estimate offers. Absent key = enabled, so every
+    pre-existing estimate shows all three. Mirrors tierEnabled in app.js and
+    the customer page's own read of the same field — the PDF must never offer
+    a package the /sign page has turned off."""
+    te = est.get('tiers_enabled') or {}
+    tiers = [t for t in ('good', 'better', 'best') if te.get(t, True) is not False]
+    return tiers or ['good', 'better', 'best']
+
+
 def _pick_summary_label(est):
     """Human label for what was/is selected: 'Better Package' for a single
     G/B/B product, 'Roofing: Better · Siding: Good' for a mix."""
@@ -6454,9 +6464,7 @@ def _build_estimate_manifest(est):
 
     # Which packages the rep is offering — the customer only ever sees the
     # enabled subset, so the manifest must mirror that.
-    te = est.get('tiers_enabled') or {}
-    enabled_tiers = [t for t in ('good', 'better', 'best')
-                     if te.get(t, True) is not False] or ['good', 'better', 'best']
+    enabled_tiers = _enabled_tiers(est)
 
     trades_out = []
     if not is_ins:
@@ -7233,13 +7241,8 @@ def build_customer_view(est, token):
     ctext  = (est.get('contract_text') or '').strip()
     sp     = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
 
-    # Packages the rep chose to offer on this estimate (absent key = enabled,
-    # so every pre-existing estimate shows all three). Mirrors tierEnabled in
-    # app.js. The customer only ever sees the enabled subset.
-    te = est.get('tiers_enabled') or {}
-    enabled_tiers = [t for t in ('good', 'better', 'best') if te.get(t, True) is not False]
-    if not enabled_tiers:
-        enabled_tiers = ['good', 'better', 'best']
+    # The customer only ever sees the enabled subset — see _enabled_tiers.
+    enabled_tiers = _enabled_tiers(est)
 
     notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
     ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
@@ -7725,10 +7728,7 @@ def build_presentation_view(est, token):
     is_insurance = (est.get('estimate_type') == 'insurance') or \
                    (est.get('trades', {}).get('insurance', {}).get('enabled', False))
 
-    te = est.get('tiers_enabled') or {}
-    enabled_tiers = [t for t in ('good', 'better', 'best') if te.get(t, True) is not False]
-    if not enabled_tiers:
-        enabled_tiers = ['good', 'better', 'best']
+    enabled_tiers = _enabled_tiers(est)
 
     tier_clrs = dict(good='#2563eb', better='#16a34a', best='#b45309')
     tier_bgs  = dict(good='#dbeafe', better='#dcfce7', best='#fef3c7')
@@ -8596,6 +8596,9 @@ def email_estimate_link(est_id):
       choose your options, and sign electronically. No app or account needed.</p>
     <a href="{he(sign_url)}" style="display:block;text-align:center;background:#1a3a5c;color:#fff;text-decoration:none;padding:14px 24px;border-radius:6px;font-weight:700;font-size:15px;margin-bottom:18px">
       View &amp; Sign Your Estimate →</a>
+    <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">
+      A PDF copy is attached if you would like to print it or compare it
+      side by side with another bid.</p>
     <p style="font-size:12px;color:#6b7280;line-height:1.6;margin:0">
       Questions? Just reply to this email or call us at 970-776-0945.<br>
       — {he(rep)}, Project One Roofing</p>
@@ -8603,11 +8606,26 @@ def email_estimate_link(est_id):
 </div>
 </body></html>'''
 
+    # Attach the estimate as a PDF so the customer has something to print,
+    # file or forward without clicking through — the link stays the call to
+    # action, since signing only happens there. Best-effort on purpose: a
+    # failed render must not cost them the email, so it degrades to the
+    # link-only message that shipped before this.
+    attachments = None
+    if FPDF is not None:
+        try:
+            attachments = [(f'ProjectOneRoofing-Estimate-{enum}.pdf',
+                            build_signed_pdf(est, signed=False))]
+        except Exception as exc:
+            print(f'[send-email] PDF attach failed for est {est_id}: {exc}')
+
     ok = _send_email(f'Your roofing estimate from Project One Roofing ({enum})',
-                     html_body, to_addr, cc=_salesperson_email(est) or None)
+                     html_body, to_addr, cc=_salesperson_email(est) or None,
+                     attachments=attachments)
     if not ok:
         return jsonify({'error': 'Email could not be sent — check the email settings.'}), 502
-    return jsonify({'ok': True, 'sent_to': to_addr, 'full_url': sign_url})
+    return jsonify({'ok': True, 'sent_to': to_addr, 'full_url': sign_url,
+                    'pdf_attached': bool(attachments)})
 
 
 def _send_email(subject, html_body, to_addr, cc=None, attachments=None, bcc=None):
@@ -9314,6 +9332,162 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
         _p(f'{revs["average"]}/5 average across {revs["count"]} homeowner reviews.')
 
 
+# ── Good/Better/Best comparison page ──────────────────────────────
+_CMP_TIER_LABELS = {'good': 'Good', 'better': 'Better', 'best': 'Best'}
+_CMP_TRADE_LABELS = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                         gutters='Gutters', commercial='Commercial',
+                         other='Other / Misc')
+_CMP_MAX_BULLETS = 7
+
+
+def _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head):
+    """Good/Better/Best side by side, one block per G/B/B trade — the page a
+    customer prints to compare us against another bid.
+
+    Unsigned downloads only (see build_signed_pdf): once they have signed,
+    showing two packages they did not buy is noise at best.
+
+    Every number and bullet here comes from the same helpers the /sign page
+    uses — _trade_subtotal for the money, _tier_card_content for the bullets —
+    so the printed comparison cannot drift from the web one. No pricing math
+    lives in this function, which is why it needs no app.js mirror.
+    """
+    tks = [tk for tk in _gbb_trade_keys(est)
+           if ((est.get('trades') or {}).get(tk) or {}).get('line_items')]
+    if not tks:
+        return
+    tiers = _enabled_tiers(est)
+    if len(tiers) < 2:
+        return                      # nothing to compare
+
+    pb = _ensure_bundle_catalogs(_load_price_book())
+    ncol = len(tiers)
+    colw = W / ncol
+    PAD = 3
+    inner = colw - 2 * PAD
+    tier_totals = {t: 0.0 for t in tiers}
+
+    for tk in tks:
+        tfeat, tdesc = _trade_tier_content(est, tk)
+        tnames = _tier_package_names(est, tk)
+        totals = {t: _trade_subtotal(est, tk, t) for t in tiers}
+        for t in tiers:
+            tier_totals[t] += totals[t]
+        content = {t: _tier_card_content(pb, est, tk, t, tfeat, tdesc) for t in tiers}
+        sel = _trade_tier(est, tk)
+        if sel not in tiers:
+            sel = tiers[0]
+
+        # Measure every column first so all three boxes share one height —
+        # ragged card bottoms are the tell that a layout was not planned.
+        def _col_h(t):
+            feats, desc = content[t]
+            h = 7 + 8
+            if desc:
+                pdf.set_font(SANS, 'I', 7)
+                h += len(pdf.multi_cell(inner, 3.4, _pdf_rich(desc),
+                                        dry_run=True, output='LINES')) * 3.4 + 1.5
+            pdf.set_font(SANS, '', 7)
+            for f in feats[:_CMP_MAX_BULLETS]:
+                h += len(pdf.multi_cell(inner - 2.6, 3.4, _pdf_rich(f),
+                                        dry_run=True, output='LINES')) * 3.4 + 1.0
+            if len(feats) > _CMP_MAX_BULLETS:
+                h += 4.4
+            return h + PAD
+
+        H = max(_col_h(t) for t in tiers)
+        # Keep the heading with its cards, same orphan rule as section_head.
+        if pdf.get_y() + H + 16 > pdf.h - 16:
+            pdf.add_page()
+        section_head('Your options',
+                     f'{_CMP_TRADE_LABELS.get(tk, tk.title())} — Compare Packages')
+        y0 = pdf.get_y()
+
+        for i, t in enumerate(tiers):
+            x = LM + i * colw
+            feats, desc = content[t]
+            is_sel = t == sel
+            pdf.set_draw_color(*(_PDF_STYLE['navy'] if is_sel else _PDF_STYLE['rule']))
+            pdf.set_line_width(0.6 if is_sel else 0.2)
+            pdf.rect(x + 0.6, y0, colw - 1.2, H, style='D')
+            if is_sel:
+                pdf.set_fill_color(*_PDF_STYLE['navy'])
+                pdf.rect(x + 0.6, y0, colw - 1.2, 6, style='F')
+            pdf.set_xy(x + PAD, y0 + 1)
+            pdf.set_font(SANS, 'B', 8)
+            pdf.set_text_color(*(_PDF_STYLE['white'] if is_sel else _PDF_STYLE['mute']))
+            name = _CMP_TIER_LABELS.get(t, t.title())
+            sysname = str(tnames.get(t) or '').strip()
+            if sysname:
+                name = f'{name} · {sysname}'
+            pdf.cell(inner, 4, _pdf_rich(name), align='C')
+            y = y0 + 7
+            pdf.set_xy(x + PAD, y)
+            pdf.set_font(SERIF, 'B', 13)
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.cell(inner, 6, fc(totals[t]), align='C')
+            y += 8
+            if desc:
+                pdf.set_xy(x + PAD, y)
+                pdf.set_font(SANS, 'I', 7)
+                pdf.set_text_color(*_PDF_STYLE['mute'])
+                pdf.multi_cell(inner, 3.4, _pdf_rich(desc), align='C')
+                y = pdf.get_y() + 1.5
+            pdf.set_font(SANS, '', 7)
+            for f in feats[:_CMP_MAX_BULLETS]:
+                pdf.set_xy(x + PAD, y)
+                pdf.set_text_color(*_PDF_STYLE['teal'])
+                pdf.cell(2.6, 3.4, '+')
+                pdf.set_text_color(*_PDF_STYLE['ink'])
+                pdf.set_xy(x + PAD + 2.6, y)
+                pdf.multi_cell(inner - 2.6, 3.4, _pdf_rich(f), align='L')
+                y = pdf.get_y() + 1.0
+            extra = len(feats) - _CMP_MAX_BULLETS
+            if extra > 0:
+                pdf.set_xy(x + PAD + 2.6, y)
+                pdf.set_font(SANS, 'I', 7)
+                pdf.set_text_color(*_PDF_STYLE['faint'])
+                pdf.cell(inner - 2.6, 3.4, _pdf_rich(f'+ {extra} more included'))
+        pdf.set_y(y0 + H)
+        pdf.ln(6)
+
+    # Whole-job total per package. With more than one trade the per-trade
+    # columns are what a customer adds up wrong, so add them up for them.
+    if len(tks) > 1:
+        if pdf.get_y() + 20 > pdf.h - 16:
+            pdf.add_page()
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(W, 4, _pdf_rich('COMPLETE PROJECT — ALL TRADES'),
+                 new_x='LMARGIN', new_y='NEXT')
+        y0 = pdf.get_y()
+        pdf.set_fill_color(*_PDF_STYLE['paper'])
+        pdf.rect(LM, y0, W, 13, style='F')
+        for i, t in enumerate(tiers):
+            x = LM + i * colw
+            pdf.set_xy(x + PAD, y0 + 1.5)
+            pdf.set_font(SANS, 'B', 7)
+            pdf.set_text_color(*_PDF_STYLE['mute'])
+            pdf.cell(inner, 3.5, _pdf_rich(_CMP_TIER_LABELS.get(t, t.title())), align='C')
+            pdf.set_xy(x + PAD, y0 + 5.5)
+            pdf.set_font(SERIF, 'B', 12)
+            pdf.set_text_color(*_PDF_STYLE['navy'])
+            pdf.cell(inner, 6, fc(tier_totals[t]), align='C')
+        pdf.set_y(y0 + 13)
+        pdf.ln(4)
+
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_font(SANS, 'I', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['mute'])
+    pdf.multi_cell(W, 4, _pdf_rich(
+        'Highlighted package is the one your estimate is currently written for. '
+        'The itemized detail that follows covers that package. To switch, open '
+        'your online estimate link and choose a different one — or just ask us.'),
+        align='L')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.ln(6)
+
+
 def build_signed_pdf(est, signed=None):
     """Render the estimate as a PDF (bytes).
 
@@ -9607,6 +9781,12 @@ def build_signed_pdf(est, signed=None):
             headings_style=HEAD_FACE,
             cell_fill_mode=TableCellFillMode.NONE,
             line_height=5, padding=(2.4, 2, 2.4, 0), v_align='T')
+
+    # Compare-packages block — unsigned downloads only. A signed contract is a
+    # record of what they chose; showing the two packages they turned down
+    # invites a renegotiation of a document that is already executed.
+    if not signed and not is_ins:
+        _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head)
 
     grand = 0.0
     row_h = 6.5
