@@ -56,7 +56,7 @@ function grabConst(name) {
   return m[0];
 }
 
-const CONSTS = ['DEFAULT_RATE', 'RETAIL_TRADE_KEYS', 'SIMPLE_MODE_TRADES'];
+const CONSTS = ['DEFAULT_RATE', 'RETAIL_TRADE_KEYS', 'SIMPLE_MODE_TRADES', 'MODE_DEFAULT_FLIPPED'];
 const NAMES = ['_rateValue', '_resolveRate', 'tierRate', 'tradeRate', 'lineTotal',
                'lineTotalEffective', 'effectiveTradeMode', 'tradeTotal', 'grandTotal',
                'selectedTotal', 'tradeTier'];

@@ -88,13 +88,14 @@ function grabConst(name) {
   return src.slice(om.index, i);
 }
 
-const CONSTS = ['TIERS', 'BUNDLE_TRADES', 'SIMPLE_MODE_TRADES', 'DEFAULT_RATE',
+const CONSTS = ['TIERS', 'BUNDLE_TRADES', 'SIMPLE_MODE_TRADES', 'MODE_DEFAULT_FLIPPED', 'DEFAULT_RATE',
                 'SIDING_PROFILE_FACTORS', 'SIDING_BUNDLE_PROFILES', 'SIDING_PROFILE_LABELS'];
 const NAMES = ['isBundleTrade', 'effectiveTradeMode', '_tradeCatalog', '_tradeBundles',
                '_tradeBundle', 'bundleFeatures', 'bundleDescription', '_rateValue', '_resolveRate', 'tradeRate', 'tierRate',
                'tradeTier', 'simpleApplyMargin', 'applyBundleToTier', 'seedTradeBundles',
                'defaultSimpleBundle', 'buildSimpleItemsFromBundle', 'applyBundleToSimple',
                'buildBundleDefaults', '_carryItemIdentity', 'setTradeMode',
+               '_commBundleId', '_commAttachProfileForBundle',
                '_commAttachProfile', '_syncCommAttachment',
                // Buildings on a complex — applyBundleToSimple rebuilds per building.
                'estStructures', 'tradeStructures', 'itemSection'];
@@ -136,6 +137,12 @@ const body = `
     else if (o.op === 'buildDefaults') buildBundleDefaults(o.trade);
     else if (o.op === 'applySimpleBundle') applyBundleToSimple(o.trade, o.id);
     else if (o.op === 'setMode') setTradeMode(o.trade, o.mode);
+    // Resolves which system the estimate is actually selling and writes the
+    // answer into S.measurements, so a test can assert on it.
+    else if (o.op === 'syncAttach') {
+      S._probe = { bundleId: _commBundleId(o.trade || 'commercial'),
+                   profile: _syncCommAttachment() };
+    }
     else throw new Error('unknown op: ' + o.op);
   }
   return S;

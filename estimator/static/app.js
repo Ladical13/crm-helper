@@ -44,7 +44,13 @@ function isBundleTrade(t) { return BUNDLE_TRADES.includes(t); }
 // Trades that sell as one price rather than Good/Better/Best unless the rep
 // says otherwise. Mirrored by SIMPLE_MODE_TRADES in app.py — the two must
 // agree or the server prices a trade the browser didn't.
-const SIMPLE_MODE_TRADES = ['gutters','commercial'];
+//
+// Commercial left this list when the coating/overlay/replacement ladder
+// shipped: a flat roof is sold three ways like a shingle roof is. Gutters
+// stay, because a gutter is one product at one price.
+const SIMPLE_MODE_TRADES = ['gutters'];
+// Trades whose default FLIPPED from simple to gbb — see effectiveTradeMode.
+const MODE_DEFAULT_FLIPPED = ['commercial'];
 
 /* ── Siding profile factors ────────────────────────────────────────────────
    Piece-per-SQ conversions the supplier take-off sheet uses — per manufacturer
@@ -125,8 +131,25 @@ function setSidingProfile(tier, profile) {
   setDirty();
   if (activePage === 'pricing') renderTradeContent();
 }
+/* Effective pricing mode for a trade. MUST mirror _trade_mode in app.py.
+
+   An explicit mode always wins, so every estimate blankEstimate() ever wrote
+   is unaffected by a default changing underneath it. The sniff is for the ones
+   with NO mode key — written before per-trade modes existed, or POSTed by a
+   script. Reading those as gbb hands flat unit_price items to the tiered
+   pricer, which totals $0 while looking completely normal on screen.
+
+   A tier-shaped item is unmistakable (applyBundleToTier always writes all
+   three cells), so no `tiers` key anywhere means this was built and priced as
+   a flat, single-price trade. Empty line_items takes today's default. */
 function effectiveTradeMode(trade, td) {
-  return ((td && td.mode) || (SIMPLE_MODE_TRADES.includes(trade) ? 'simple' : 'gbb'));
+  const mode = td && td.mode;
+  if (mode) return mode;
+  if (MODE_DEFAULT_FLIPPED.includes(trade)) {
+    const items = (td && td.line_items) || [];
+    if (items.length && !items.some(it => it && it.tiers)) return 'simple';
+  }
+  return SIMPLE_MODE_TRADES.includes(trade) ? 'simple' : 'gbb';
 }
 // Per-estimate package toggles: sell just Good/Better, Better/Best, etc.
 // Absent key = enabled (backward compatible with every existing estimate).
@@ -1156,7 +1179,7 @@ function fastenPanelMarkup(sid) {
       ? '⚠️ This system\'s membrane is not tagged mechanical or adhered, so seam fasteners are NOT counted. If it is mechanically attached, tag the membrane product in the Price Book.' : '',
     !r.insul.applies && r.layers === 0
       ? 'Insulation fasteners: 0 — no fastened layers entered (recover over the existing roof).' : '',
-    (S.trades.commercial.simple_bundle || '').indexOf('modbit') > -1
+    _commBundleId('commercial').indexOf('modbit') > -1
       ? 'Mod-bit base sheet fastening is NOT calculated here — it runs at a different density. Add it by hand.' : '',
   ].filter(Boolean).map(s => `<div class="fasten-note">${s}</div>`).join('');
 
@@ -1792,9 +1815,10 @@ function blankEstimate() {
       gutters: { enabled:false, line_items:[], colors:{}, mode:'simple', selected_tier:'better',
                  tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
       // Commercial low-slope. A bundle trade (pick a system, get the build-up)
-      // but defaulting to simple mode — a commercial bid is one system, one
-      // price. The rep can still flip it to G/B/B per estimate.
-      commercial: { enabled:false, line_items:[], colors:{}, mode:'simple', selected_tier:'better',
+      // sold as Good/Better/Best like a shingle roof: coating, overlay, full
+      // replacement. The rep can still flip it to Simple per estimate when the
+      // building owner only wants one number.
+      commercial: { enabled:false, line_items:[], colors:{}, mode:'gbb', selected_tier:'better',
                  simple_bundle:'',
                  tier_bundles:{good:'',better:'',best:''},
                  tier_features:{good:[],better:[],best:[]}, tier_descriptions:{good:'',better:'',best:''} },
@@ -5132,10 +5156,10 @@ function renderTradeContent() {
   const trade = activeTrade;
   const isInsurance = trade === 'insurance';
   const isGutters   = trade === 'gutters';
-  // Gutters is always simple; insurance has its own model
-  const effectiveMode = isInsurance ? 'insurance'
-    : isGutters ? 'simple'
-    : (td.mode || 'gbb');
+  // Insurance has its own model; everything else asks the ONE resolver the
+  // server mirrors. Spelling the default out here instead (`td.mode || 'gbb'`)
+  // rendered a G/B/B grid for trades app.py was pricing as simple.
+  const effectiveMode = isInsurance ? 'insurance' : effectiveTradeMode(trade, td);
   const showModeToggle   = !isInsurance && !isGutters && td.enabled;
   const showLoadDefaults = td.enabled && !isInsurance && trade !== 'other';
 
@@ -5181,27 +5205,49 @@ function renderTradeContent() {
   autoGrowAll(host);
 }
 
+/* ── The $0 guard ───────────────────────────────────────────────────────
+   Commercial ships with placeholder $0 material costs BY DESIGN — they come
+   off the supplier quote per job — and the coating and layover packages have
+   no labor rate yet either. This banner is the only thing standing between a
+   placeholder price book and a bid that looks completely legitimate.
+
+   Count the lines that are still unpriced but WILL be on the bid: a line at
+   qty 0 isn't in scope, and asking "is every line $0" would never fire, since
+   labor usually carries a rate. `tier` null means simple mode (flat unit_cost);
+   a tier means G/B/B, where cost lives in the tier cell and the line has to be
+   included in THAT tier to matter. */
+function unpricedBundleLines(trade, tier) {
+  const items = (S.trades[trade] || {}).line_items || [];
+  return items.filter(i => {
+    if (!i.catalog_id || (parseFloat(i.quantity) || 0) <= 0) return false;
+    if (!tier) return (parseFloat(i.unit_cost) || 0) === 0;
+    const cell = (i.tiers || {})[tier];
+    if (!cell || cell.included === false) return false;
+    return (parseFloat(cell.material_unit_cost) || 0) === 0
+        && (parseFloat(cell.labor_unit_cost) || 0) === 0;
+  });
+}
+function unpricedWarnHtml(trade, unpriced, label, cls, maxNames) {
+  if (!unpriced.length) return '';
+  const names = unpriced.slice(0, maxNames).map(i => i.name).join(', ');
+  return `
+    <div class="${cls}">⚠️ ${label ? esc(label) + ' — ' : ''}${unpriced.length}
+      line${unpriced.length === 1 ? '' : 's'} still cost $0${label ? '' : ' on this bid'} —
+      ${esc(names)}${unpriced.length > maxNames ? `, +${unpriced.length - maxNames} more` : ''}.
+      Set real costs in ⚙ Price Book → ${esc(TRADE_LABELS[trade] || trade)} → Products, or type them
+      into the Cost column below, before sending this bid.</div>`;
+}
+
 /* Single-price system picker for a bundle trade (commercial). The G/B/B grid
    has a hero <select> per tier; in simple mode there is only one system, so one
-   picker sits above the table. Flags a bundle whose membrane still costs $0 —
-   a placeholder price book otherwise yields a bid that looks legitimate. */
+   picker sits above the table. */
 function renderSimpleBundleBar(trade) {
   const td = S.trades[trade];
   const bundles = _tradeBundles(trade);
   if (!bundles.length) return '';
   const cur = td.simple_bundle || '';
-  const items = td.line_items || [];
-  // Commercial ships with placeholder $0 material costs by design (they come
-  // off the supplier quote per job). Count the lines that are still unpriced
-  // but WILL be on the bid — a line at qty 0 isn't in scope, and checking
-  // "every line is $0" would never fire, since labor always carries a rate.
-  const unpriced = items.filter(i => i.catalog_id &&
-    (parseFloat(i.quantity) || 0) > 0 && (parseFloat(i.unit_cost) || 0) === 0);
-  const warn = unpriced.length ? `
-    <div class="simple-bundle-warn">⚠️ ${unpriced.length} line${unpriced.length===1?'':'s'} on this
-      bid still cost $0 — ${esc(unpriced.slice(0,3).map(i=>i.name).join(', '))}${unpriced.length>3?`, +${unpriced.length-3} more`:''}.
-      Set real costs in ⚙ Price Book → ${esc(TRADE_LABELS[trade] || trade)} → Products, or type them
-      into the Cost column below, before sending this bid.</div>` : '';
+  const warn = unpricedWarnHtml(trade, unpricedBundleLines(trade, null), '',
+                                'simple-bundle-warn', 3);
   return `
     <div class="brand-preset-bar simple-bundle-bar">
       <span class="brand-preset-label">🏢 System:</span>
@@ -6557,10 +6603,20 @@ function applyBundleToSimple(trade, bundleId) {
    custom formulas can only see measurements, it persists with the estimate,
    and app.py then gets the same answer for the packet without loading the
    price book. It also keeps commercialFastening(m, table) pure. */
-function _commAttachProfile(trade) {
+/* The bundle this estimate is actually selling. Mode-aware on purpose:
+   setTradeMode does NOT clear simple_bundle, so a gbb→simple→gbb round trip
+   leaves a stale id behind, and an unconditional `td.simple_bundle ||` then
+   resolves the abandoned system instead of the tier the rep is looking at. */
+function _commBundleId(trade) {
   const td = S.trades[trade] || {};
-  const bundleId = td.simple_bundle ||
-    (td.tier_bundles && td.tier_bundles[tradeTier(trade)]) || '';
+  return effectiveTradeMode(trade, td) === 'simple'
+    ? (td.simple_bundle || '')
+    : ((td.tier_bundles || {})[tradeTier(trade)] || '');
+}
+/* The attach profile for ONE bundle id. Split out from _commAttachProfile so
+   the G/B/B grid can ask about a tier the rep has not selected — that is how
+   it warns when two offered packages disagree on how they fasten. */
+function _commAttachProfileForBundle(trade, bundleId) {
   const ov = ((_fastenTable && _fastenTable.bundle_overrides) || {})[bundleId];
   if (ov && (ov.insulation !== undefined || ov.seam !== undefined)) {
     return { insulation: ov.insulation !== false, seam: !!ov.seam, source: 'override' };
@@ -6577,6 +6633,9 @@ function _commAttachProfile(trade) {
   // would put thousands of phantom screws on a bid. The panel says so out loud.
   return { insulation:true, seam:false, source:'unknown' };
 }
+function _commAttachProfile(trade) {
+  return _commAttachProfileForBundle(trade, _commBundleId(trade));
+}
 function _syncCommAttachment() {
   const td = S.trades.commercial;
   if (!td) return;
@@ -6585,6 +6644,41 @@ function _syncCommAttachment() {
   S.measurements.comm_seam_attach  = p.seam ? 1 : 0;
   S.measurements.comm_insul_attach = p.insulation ? 1 : 0;
   return p;
+}
+
+/* Warn when the offered commercial packages disagree on how they fasten.
+
+   Fastener QUANTITY is a shared item field across all three tiers, but
+   comm_seam_attach / comm_insul_attach are estimate-level and follow the
+   SELECTED tier. So offering a mechanically fastened package beside an adhered
+   one means the screw counts on both move when the rep changes the selection —
+   the Better price shifts because they clicked Best.
+
+   The shipped ladder (coating / TPO layover MF / TPO tear-off MF) does not
+   trip this: the coating fastens nothing at all and the other two agree. A rep
+   who swaps a tier to a fully adhered system does, and needs telling. Making
+   the counts genuinely per-tier is a larger change across three mirrored
+   surfaces; until then this is the honest warning. */
+function commFastenMismatchNag(trade, shown) {
+  if (trade !== 'commercial') return '';
+  const td = S.trades[trade] || {};
+  const seen = shown
+    .map(t => ({ tier: t, id: (td.tier_bundles || {})[t] }))
+    .filter(x => x.id && x.id !== '__custom__')
+    .map(x => ({ tier: x.tier, p: _commAttachProfileForBundle(trade, x.id) }))
+    // A coating fastens nothing on either layer, so it cannot disagree with
+    // anything — it is a different kind of job, not a different attachment.
+    .filter(x => x.p.source !== 'coating');
+  if (seen.length < 2) return '';
+  if (new Set(seen.map(x => x.p.seam)).size < 2) return '';
+  const say = kind => seen.filter(x => x.p.seam === kind)
+    .map(x => TIER_LABELS[x.tier] || x.tier).join(' and ');
+  return `
+    <div class="tier-unpriced-warn comm-fasten-nag">⚠️ ${esc(say(true))} ${
+      say(true).includes(' and ') ? 'are' : 'is'} mechanically fastened and ${esc(say(false))} ${
+      say(false).includes(' and ') ? 'are' : 'is'} fully adhered. Seam-fastener counts
+      follow whichever package is SELECTED, so check the fastener lines on each column
+      before sending.</div>`;
 }
 
 function renderGBBGrid(trade) {
@@ -6677,7 +6771,9 @@ function renderGBBGrid(trade) {
           title="What this custom package is called — shown to the customer on the package card"
           onchange="setTierBundleName('${trade}','${t}',this.value)">` : ''}
       </div>
-      ${sidingProfileNag}` : '';
+      ${sidingProfileNag}
+      ${unpricedWarnHtml(trade, unpricedBundleLines(trade, t), TIER_LABELS[t] || t,
+                         'tier-unpriced-warn', 2)}` : '';
 
     const measureNudge = needsMeasure
       ? `<div class="tier-measure-nudge">Bundle loaded — enter ${trade === 'siding' ? 'siding' : 'roof'} measurements on the Scope page to set quantities and price.</div>`
@@ -6737,6 +6833,7 @@ function renderGBBGrid(trade) {
       </label>`).join('')}
     </div>
     ${sectionManagerBar(trade)}
+    ${commFastenMismatchNag(trade, shown)}
     <div class="gbb-grid" style="grid-template-columns:repeat(${shown.length},1fr)">${grid}</div>
     <div class="gbb-swipe-hint">← swipe to see all packages →</div>
     ${pbDatalist(trade)}

@@ -92,16 +92,45 @@ def test_zero_qty_labor_line_never_prices(A):
     assert new_build < reroof
 
 
-def test_commercial_defaults_to_simple_mode(A):
-    """A trade dict with no explicit mode must resolve to simple, not gbb —
-    a gbb-shaped read of flat items prices at $0."""
-    assert A._trade_mode('commercial', {}) == 'simple'
-    assert A._trade_mode('commercial', {'mode': 'gbb'}) == 'gbb'
+def test_commercial_defaults_to_gbb_mode(A):
+    """A flat roof is sold three ways now — coating, overlay, replacement —
+    like a shingle roof is. Gutters keep the single-price default."""
+    assert A._trade_mode('commercial', {}) == 'gbb'
+    assert A._trade_mode('gutters', {}) == 'simple'
     assert A._trade_mode('roofing', {}) == 'gbb'
+    # An explicit mode always wins, in both directions.
+    assert A._trade_mode('commercial', {'mode': 'simple'}) == 'simple'
+    assert A._trade_mode('gutters', {'mode': 'gbb'}) == 'gbb'
 
 
-def test_simple_mode_commercial_is_not_a_gbb_trade(A):
-    est = _commercial_est()
+def test_a_legacy_commercial_estimate_with_flat_items_still_reads_simple(A):
+    """The trap in flipping a default. Every estimate blankEstimate() wrote
+    carries an explicit mode and is safe. The ones with NO mode key predate
+    per-trade modes or came in from a script — read those as gbb and their flat
+    unit_price items go to the tiered pricer, which totals $0 while looking
+    completely normal on screen."""
+    flat = {'line_items': [{'id': 'i1', 'quantity': 44, 'unit_cost': 100,
+                            'unit_price': 140.85}]}
+    assert A._trade_mode('commercial', flat) == 'simple'
+
+    tiered = {'line_items': [{'id': 'i1', 'quantity': 44,
+                              'tiers': {'good': {}, 'better': {}, 'best': {}}}]}
+    assert A._trade_mode('commercial', tiered) == 'gbb'
+
+    # A trade nobody has touched takes today's default, not the legacy one.
+    assert A._trade_mode('commercial', {'line_items': []}) == 'gbb'
+
+    # An explicit mode still outranks the sniff, both ways.
+    assert A._trade_mode('commercial', dict(flat, mode='gbb')) == 'gbb'
+    assert A._trade_mode('commercial', dict(tiered, mode='simple')) == 'simple'
+
+    # The sniff is scoped: it must not start second-guessing other trades.
+    assert A._trade_mode('gutters', flat) == 'simple'
+    assert A._trade_mode('roofing', flat) == 'gbb'
+
+
+def test_a_gbb_commercial_trade_is_offered_as_packages(A):
+    est = _commercial_est()                     # fixture is explicitly simple
     assert 'commercial' not in A._gbb_trade_keys(est)
     est['trades']['commercial']['mode'] = 'gbb'
     assert 'commercial' in A._gbb_trade_keys(est)
@@ -109,16 +138,19 @@ def test_simple_mode_commercial_is_not_a_gbb_trade(A):
 
 def test_js_and_py_agree_on_the_commercial_mode_default():
     """SIMPLE_MODE_TRADES is mirrored by hand; drift means the browser and the
-    server price the same estimate differently."""
+    server price the same estimate differently. _MODE_DEFAULT_FLIPPED drives
+    the legacy sniff and is mirrored the same way, for the same reason."""
     import os
     import re
     here = os.path.dirname(os.path.abspath(__file__))
     js = open(os.path.join(here, '..', 'static', 'app.js'), encoding='utf-8').read()
-    m = re.search(r"^const SIMPLE_MODE_TRADES = \[([^\]]*)\];", js, re.M)
-    assert m, 'SIMPLE_MODE_TRADES not found in app.js'
-    js_list = tuple(x.strip().strip("'\"") for x in m.group(1).split(',') if x.strip())
     import app as A
-    assert js_list == A.SIMPLE_MODE_TRADES
+    for js_name, py_val in (('SIMPLE_MODE_TRADES', A.SIMPLE_MODE_TRADES),
+                            ('MODE_DEFAULT_FLIPPED', A._MODE_DEFAULT_FLIPPED)):
+        m = re.search(r"^const %s = \[([^\]]*)\];" % js_name, js, re.M)
+        assert m, f'{js_name} not found in app.js'
+        js_list = tuple(x.strip().strip("'\"") for x in m.group(1).split(',') if x.strip())
+        assert js_list == py_val, f'{js_name}: js={js_list} py={py_val}'
 
 
 # ── price book ─────────────────────────────────────────────────────────

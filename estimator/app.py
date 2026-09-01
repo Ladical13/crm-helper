@@ -3678,13 +3678,42 @@ GBB_TRADES = ['roofing', 'siding', 'windows', 'gutters', 'commercial', 'other']
 # Trades that sell as one price rather than Good/Better/Best unless the rep
 # says otherwise. MUST mirror SIMPLE_MODE_TRADES in app.js — if the two
 # disagree the server prices a trade differently than the browser showed.
-SIMPLE_MODE_TRADES = ('gutters', 'commercial')
+#
+# Commercial left this list when the coating/overlay/replacement ladder
+# shipped: a flat roof is sold three ways like a shingle roof is. Gutters stay,
+# because a gutter is one product at one price.
+SIMPLE_MODE_TRADES = ('gutters',)
+
+# Trades whose default FLIPPED from simple to gbb, so an estimate saved without
+# an explicit mode has to be read by its shape rather than by today's default.
+_MODE_DEFAULT_FLIPPED = ('commercial',)
 
 
 def _trade_mode(tk, td):
     """Effective pricing mode for a trade. Mirrors effectiveTradeMode in app.js,
-    including treating an empty-string mode as unset."""
-    return (td or {}).get('mode') or ('simple' if tk in SIMPLE_MODE_TRADES else 'gbb')
+    including treating an empty-string mode as unset.
+
+    An explicit mode always wins, so every estimate blankEstimate() ever wrote
+    is unaffected by a default changing underneath it. The sniff below is for
+    the ones with NO mode key — written before per-trade modes existed, or
+    POSTed by a script. Reading those as gbb hands flat unit_price items to the
+    tiered pricer, which totals $0 while looking completely normal on screen:
+    the same failure the simple/gbb split has always been able to cause,
+    arriving from the other direction.
+
+    A tier-shaped item is unmistakable — applyBundleToTier always writes all
+    three cells — so items with no `tiers` key anywhere means this was built
+    and priced as a flat, single-price trade. Empty line_items is a trade
+    nobody has touched yet and takes today's default."""
+    td = td or {}
+    mode = td.get('mode')
+    if mode:
+        return mode
+    if tk in _MODE_DEFAULT_FLIPPED:
+        items = td.get('line_items') or []
+        if items and not any((it or {}).get('tiers') for it in items):
+            return 'simple'
+    return 'simple' if tk in SIMPLE_MODE_TRADES else 'gbb'
 
 
 DEFAULT_RATE = 35.0

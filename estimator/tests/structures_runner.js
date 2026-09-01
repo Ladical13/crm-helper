@@ -87,7 +87,7 @@ function grabConst(name) {
 }
 
 
-const CONSTS = ['TIERS', 'SIMPLE_MODE_TRADES', 'FASTEN_ZONES', 'MEASURE_DEFS'];
+const CONSTS = ['TIERS', 'SIMPLE_MODE_TRADES', 'MODE_DEFAULT_FLIPPED', 'FASTEN_ZONES', 'MEASURE_DEFS'];
 const NAMES = ['mnum', 'itemSection', 'tradeSections', 'effectiveTradeMode', 'tradeTier',
                '_rateValue', '_resolveRate', 'tradeRate', 'tierRate', 'lineTotal',
                'lineTotalEffective',

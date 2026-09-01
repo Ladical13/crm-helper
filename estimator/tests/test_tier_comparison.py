@@ -175,6 +175,37 @@ def test_simple_mode_trades_are_not_offered_as_packages(A):
     assert 'Siding — Compare Packages' not in text
 
 
+def test_a_commercial_bid_is_offered_as_three_packages(A):
+    """Commercial sells coating / overlay / full replacement now, so it earns
+    the comparison block like any other G/B/B trade — and a building owner
+    comparing three flat-roof approaches on one sheet is exactly who it is for.
+
+    It reaches the block through _trade_mode, so this is also the customer-side
+    proof that the default actually flipped."""
+    est = _two_trade_estimate()
+    est['trades'] = {'commercial': {
+        'enabled': True,          # no explicit mode: the DEFAULT must carry it
+        'tier_descriptions': {'good': 'Restore the roof you have.',
+                              'better': 'Cover it without a tear-off.',
+                              'best': 'Full tear-off and replacement.'},
+        'tier_features': {'good': ['Silicone restoration coating'],
+                          'better': ['1/4" cover board and new 60-mil TPO'],
+                          'best': ['Tear-off to the deck, new polyiso and TPO']},
+        'line_items': [_li('Membrane', 44, 'SQ', 60, 100, 130)],
+    }}
+    est['estimate_type'] = 'commercial'
+    text = _text(A.build_signed_pdf(est, signed=False))
+    assert 'Commercial — Compare Packages' in text
+    assert 'Restore the roof you have.' in text
+    assert 'Full tear-off and replacement.' in text
+
+    # ...and a rep who chose to sell one system gets one price, not three.
+    est['trades']['commercial']['mode'] = 'simple'
+    est['trades']['commercial']['line_items'] = [
+        {'name': 'TPO system', 'quantity': 44, 'unit': 'SQ', 'unit_price': 140.85}]
+    assert 'Compare Packages' not in _text(A.build_signed_pdf(est, signed=False))
+
+
 def test_bullets_are_capped_with_an_overflow_line(A):
     """A column that runs past the cap says so, rather than silently implying
     the package stops there."""

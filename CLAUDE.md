@@ -566,13 +566,26 @@ and lands the rep on **Scope** (the bid is driven by the EagleView numbers).
 Tests: `tests/test_commercial.py`, plus commercial fixtures in `test_parity.py`
 and `test_bundles.py`.
 
-- **`commercial` is a bundle trade that defaults to `mode:'simple'`** — one
-  system, one price. The rep can still flip it to G/B/B per estimate.
-  `SIMPLE_MODE_TRADES` (`app.js`) / `SIMPLE_MODE_TRADES` + `_trade_mode()`
-  (`app.py`) are the mirrored pair that decides this. **A bundle trade in
-  simple mode must build FLAT items** (`unit_cost`/`unit_price`) via
+- **`commercial` is a bundle trade that defaults to G/B/B**, selling by scope
+  of work — coating, overlay, full replacement — the way roofing sells by
+  shingle. Any tier's dropdown offers all ten packages plus Custom, so the
+  seeded ladder is a starting point, not a coupling. The rep can still flip the
+  whole trade to Simple for a building owner who wants one number.
+  `effectiveTradeMode()` (`app.js`) / `_trade_mode()` (`app.py`) are the
+  mirrored pair that decides this, along with `SIMPLE_MODE_TRADES` (gutters
+  only now) and `_MODE_DEFAULT_FLIPPED`. **A bundle trade in simple mode must
+  build FLAT items** (`unit_cost`/`unit_price`) via
   `buildSimpleItemsFromBundle`; per-tier items in a simple trade total **$0**
-  while looking completely normal on screen.
+  while looking completely normal on screen — and since the default flipped,
+  the same $0 arrives from the other direction, which is why an estimate with
+  **no `mode` key is resolved by the SHAPE of its items**, not by today's
+  default.
+- **`_est_comm_system()` resolves coating / layover / tearoff against the tier
+  being SOLD.** All three tiers share one `line_items` array, so scanning the
+  whole array reports every three-tier bid as a layover — and the customer's
+  process list then promises a roof that is never torn off. It drives the
+  `/sign` process steps (`_PROCESS_COMMERCIAL_BY_SYSTEM`) and the packet's
+  layover/coating crew rules.
 - **Both labor lines ship in every commercial bundle.**
   `measurements.comm_work_type` (0 = re-roof @ $400/SQ, 1 = new construction @
   $250/SQ) zeroes the one that doesn't apply — zero-qty lines never price and
@@ -581,8 +594,13 @@ and `test_bundles.py`.
   inherit a steep-slope number. Mirrored in `MEASURE_FIELDS` (`app.js`) and
   `MEASURE_LABELS` (`app.py`).
 - **Material costs ship as `0` placeholders on purpose** — commercial pricing
-  comes off the supplier quote per job. Only the two labor rates are real. The
-  pricing tab shows a red banner while every line is still $0.
+  comes off the supplier quote per job — and the coating and layover packages
+  have no labor rate yet either, so two of the three seeded tiers are partly
+  unpriced. `unpricedBundleLines()` finds them and the pricing tab shows a red
+  banner: **per tier** in G/B/B (naming which column), per bid in Simple. That
+  banner is the only thing between a placeholder book and a bid that looks
+  legitimate. `AWAITING_QUOTE_TIER_DEFAULTS` in `tests/test_commercial.py`
+  names the exceptions so a second one cannot arrive silently.
 - **Print gates on `estType !== 'insurance'`, never `=== 'retail'`.** The old
   form printed a blank PDF for any new type.
 - Complexity flags (`S.commercial.flags`) are rep-only and **never price** —
@@ -636,13 +654,24 @@ path that reaches production. Siding data was briefly in both; the copy in
 `price_book.json` was removed and `test_siding_is_seeded_from_app_py_not_price_book_json`
 now fails if it comes back.
 
-Two things behave differently once books are in the wild:
+Four things behave differently once books are in the wild:
 
 - **Products** append by id automatically — a new seed product always arrives.
 - **Bundles do not.** The copy-field backfill reads a missing id as "the manager
   deleted it" and skips it, so a *new* bundle reaches nobody. List its id in
   `_LATE_BUNDLE_IDS` to have it appended, and drop it once live books have been
   saved past it. Deletion stays sticky for every id not on that list.
+- **A bundle's `product_ids` do not either** — managers customize them, so
+  they're not a copy field. `_LATE_BUNDLE_PRODUCTS` forces a product *into* a
+  seeded bundle; `_BUNDLE_PRODUCT_SUPERSEDED` is the matching **removal**,
+  scoped to one bundle because a product can be right in one package and wrong
+  in another (`cl_labor_reroof` is correct tear-off labor on `cb_modbit` and a
+  flat lie on a coating). `_PRODUCT_SUPERSEDED` is the global version.
+- **Tier defaults do not either**, and this one is easy to miss:
+  `_ensure_bundle_catalogs()` **`setdefault`s** `<trade>_tier_defaults`, and
+  every live book already has the key — so a new ladder in the seed reaches
+  nobody. `_TIER_DEFAULT_MIGRATIONS` rewrites a tier only while it still holds
+  the *previous seed's* id, so a manager's own pick survives.
 
 ### Jurisdiction code lookup (`/api/jurisdictions/<id>/verify`)
 

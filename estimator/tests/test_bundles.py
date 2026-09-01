@@ -403,7 +403,7 @@ def _comm(items=None, mode='simple', **kw):
                         'tier_rates': {}, 'trade_rates': {}, 'per_trade_overrides': {}}}
 
 
-def _run_comm(tmp_path, estimate, ops):
+def _run_comm_full(tmp_path, estimate, ops):
     scenario = tmp_path / 'scenario.json'
     out = tmp_path / 'out.json'
     scenario.write_text(json.dumps({
@@ -412,7 +412,11 @@ def _run_comm(tmp_path, estimate, ops):
     r = subprocess.run(['node', RUNNER, str(scenario), str(out)],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    return json.loads(out.read_text(encoding='utf-8'))['trades']['commercial']
+    return json.loads(out.read_text(encoding='utf-8'))
+
+
+def _run_comm(tmp_path, estimate, ops):
+    return _run_comm_full(tmp_path, estimate, ops)['trades']['commercial']
 
 
 def test_simple_bundle_builds_flat_priced_items(tmp_path):
@@ -490,6 +494,83 @@ def test_mode_round_trip_keeps_the_bundle_link(tmp_path):
     names = [i['name'] for i in td2['line_items']]
     assert 'EPDM Membrane' in names
     assert 'TPO Membrane' not in names, 'two membranes in one bid'
+
+
+# ── commercial as a Good/Better/Best trade ─────────────────────────────
+# Commercial sells three packages now — coating, overlay, full replacement —
+# so the per-tier path matters for it the way it always has for roofing. All
+# three tiers share ONE line_items array, which is the invariant everything
+# below is really about.
+
+def test_applying_a_bundle_to_a_commercial_tier_builds_tier_shaped_items(tmp_path):
+    """The mirror image of test_simple_bundle_builds_flat_priced_items: in
+    G/B/B the cost has to live in the tier cell, or the tiered pricer reads a
+    flat item and totals $0."""
+    td = _run_comm(tmp_path, _comm(mode='gbb'), [
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'good', 'id': 'cb_epdm'}])
+    assert td['tier_bundles']['good'] == 'cb_epdm'
+    assert {i['name'] for i in td['line_items']} == {'EPDM Membrane', 'Polyiso', 'Re-Roof Labor'}
+    for i in td['line_items']:
+        assert 'tiers' in i, f"{i['name']} built flat in a G/B/B trade — would price at $0"
+        assert i['tiers']['good']['included'] is True
+    epdm = next(i for i in td['line_items'] if i['name'] == 'EPDM Membrane')
+    assert epdm['tiers']['good']['material_unit_cost'] == 120
+    assert epdm['measure'] == 'comm_sq_waste'
+
+
+def test_swapping_one_commercial_tier_leaves_the_others_alone(tmp_path):
+    """THE invariant behind the whole ladder, and nothing covered it for
+    commercial before. One shared line_items array holds every tier's products
+    at once; membership is per-tier via tiers[t].included. Get this wrong and
+    picking a coating for Good silently strips the membrane out of Best."""
+    td = _run_comm(tmp_path, _comm(mode='gbb'), [
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'better', 'id': 'cb_tpo'},
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'good',   'id': 'cb_epdm'}])
+    by_name = {i['name']: i for i in td['line_items']}
+    assert by_name['TPO Membrane']['tiers']['better']['included'] is True
+    assert by_name['TPO Membrane']['tiers']['good']['included'] is False
+    assert by_name['EPDM Membrane']['tiers']['good']['included'] is True
+    assert by_name['EPDM Membrane']['tiers']['better']['included'] is False
+    # Shared accessories stay in both — they are one row, included twice.
+    assert by_name['Polyiso']['tiers']['good']['included'] is True
+    assert by_name['Polyiso']['tiers']['better']['included'] is True
+    assert td['tier_bundles']['better'] == 'cb_tpo'
+
+
+def test_custom_on_a_commercial_tier_blanks_only_that_tier(tmp_path):
+    td = _run_comm(tmp_path, _comm(mode='gbb'), [
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'better', 'id': 'cb_tpo'},
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'good',   'id': 'cb_tpo'},
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'good',   'id': '__custom__'}])
+    assert td['tier_bundles']['good'] == '__custom__'
+    for i in td['line_items']:
+        assert i['tiers']['good']['included'] is False
+        assert i['tiers']['better']['included'] is True, 'a Custom tier emptied its neighbour'
+
+
+def test_a_mode_round_trip_does_not_resolve_a_stale_system(tmp_path):
+    """setTradeMode never clears simple_bundle, so after gbb -> simple -> gbb
+    the trade carries a leftover id. Resolving `simple_bundle || tier_bundles`
+    unconditionally then reads the ABANDONED system, and the fastening
+    calculator answers for a roof the rep is no longer selling."""
+    st = _run_comm_full(tmp_path, _comm(mode='gbb'), [
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'better', 'id': 'cb_tpo'},
+        {'op': 'setMode', 'trade': 'commercial', 'mode': 'simple'},
+        {'op': 'applySimpleBundle', 'trade': 'commercial', 'id': 'cb_epdm'},
+        {'op': 'setMode', 'trade': 'commercial', 'mode': 'gbb'},
+        {'op': 'syncAttach', 'trade': 'commercial'}])
+    assert st['trades']['commercial'].get('simple_bundle') == 'cb_epdm', \
+        'fixture no longer reproduces the stale id — the test proves nothing'
+    assert st['_probe']['bundleId'] == 'cb_tpo', \
+        'resolved the abandoned simple-mode system instead of the selected tier'
+
+    # ...and in simple mode it still reads simple_bundle, not a tier.
+    st2 = _run_comm_full(tmp_path, _comm(mode='gbb'), [
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'better', 'id': 'cb_tpo'},
+        {'op': 'setMode', 'trade': 'commercial', 'mode': 'simple'},
+        {'op': 'applySimpleBundle', 'trade': 'commercial', 'id': 'cb_epdm'},
+        {'op': 'syncAttach', 'trade': 'commercial'}])
+    assert st2['_probe']['bundleId'] == 'cb_epdm'
 
 
 # ── what the customer actually reads ───────────────────────────────────

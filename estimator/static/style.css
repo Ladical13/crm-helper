@@ -3295,6 +3295,19 @@ a.jx-contact:hover { text-decoration: underline; }
   background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px;
   font-size: 12px; line-height: 1.45; color: #991b1b;
 }
+/* Same warning inside a G/B/B tier column, which is a third of the width —
+   .simple-bundle-warn is sized for a full-width bar and blows the column out.
+   Sits directly under the tier's own Product dropdown, so the red block is
+   attached to the choice that caused it. */
+.tier-unpriced-warn {
+  margin: 4px 10px 6px; padding: 6px 8px;
+  background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px;
+  font-size: 11px; line-height: 1.35; color: #991b1b;
+  overflow-wrap: anywhere;
+}
+/* The fastener-mismatch nag spans the whole grid rather than one column —
+   it is a statement about how two tiers relate. */
+.comm-fasten-nag { margin: 0 0 8px; font-size: 12px; }
 
 /* ── Price book: Master + per-tier tabs ─────────────────────────────── */
 .pb-subtab-bar { display: flex; gap: 4px; margin: 12px 0 4px; border-bottom: 2px solid var(--border); }

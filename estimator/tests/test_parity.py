@@ -163,9 +163,9 @@ FIXTURES = [
         'line_items': [_gbb(10, {'good': (100, 0), 'better': (100, 0), 'best': (100, 0)})]}}}),
 
     # ── commercial ────────────────────────────────────────────────────
-    # Commercial sells single-price, so it must total identically at every
-    # tier. It is also the first trade whose mode DEFAULT is simple — if one
-    # side resolves an unset mode to 'gbb' it reads flat items as tiered and
+    # Commercial can sell single-price, so it must total identically at every
+    # tier when it does. Both sides also have to read an UNSET mode the same
+    # way — if one resolves it to 'gbb' it reads flat items as tiered and
     # totals $0, which is invisible until a bid goes out at nothing.
     ('commercial simple', {'pricing': STD, 'trades': {'commercial': {
         'enabled': True, 'mode': 'simple',
@@ -173,9 +173,18 @@ FIXTURES = [
                        {'name': 'Edge', 'quantity': 500, 'unit_price': 2.82},
                        {'name': 'Labor', 'quantity': 40, 'unit_price': 563.38}]}}}),
 
+    # Commercial's default flipped to gbb, so an unset mode is now resolved by
+    # SHAPE. Flat items must still price as simple on both sides — a legacy
+    # estimate that reads as tiered totals $0.
     ('commercial mode absent defaults to simple', {'pricing': STD, 'trades': {'commercial': {
         'enabled': True,
         'line_items': [{'name': 'TPO', 'quantity': 44, 'unit_price': 140.85}]}}}),
+
+    # ...and the other half of that sniff: tier-shaped items with no mode key
+    # must price as gbb on both sides.
+    ('commercial mode absent with tiered items is gbb', {'pricing': STD, 'trades': {'commercial': {
+        'enabled': True,
+        'line_items': [_gbb(44, {'good': (60, 0), 'better': (100, 400), 'best': (130, 400)})]}}}),
 
     # The labor line that doesn't apply sits at qty 0 and must contribute
     # nothing on either side.
