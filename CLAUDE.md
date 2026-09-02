@@ -58,27 +58,54 @@ of the portal section. Never deploy a subdirectory. **Pushing to `portal-merge`
 IS deploying**: auto-deploy fires as soon as CI is green, so a push goes
 straight in front of the reps.
 
-**Backups: the estimator has one, the other three do not** (audited 2026-08-12;
-the earlier "nothing is backed up" note was already out of date). Three separate
-things, easy to confuse:
+**Backups: all four are covered** — the estimator since day one, the three
+databases since 2026-08-25 (audited 2026-09-01 against the running service).
+*This section claimed the databases had nothing until that audit: the note was
+written 2026-08-12 and the fix landed after it, so it spent a week telling
+everyone to build something that already existed.* Three separate things, easy
+to confuse:
 
 - *On this laptop*, `estimator/estimates/`, every `*.db` (plus the `-wal`/`-shm`
   sidecars), and `prospector/inbox/` are gitignored, so a push never includes
   them. These are mostly **dev scratch** (a few MB) — losing them costs little.
-- *The estimator's real data* **is** covered: `_check_daily_backup()` emails a
-  zip of every estimate nightly to `BACKUP_EMAIL` (defaults to Luke), and
-  admins can pull `/api/backup` for estimates + photos + config on demand. The
-  nightly job takes an `O_EXCL` lockfile so two gunicorn workers can't both
-  send it.
-- *The other three databases are not covered at all.* `salescrm.db` (leads,
-  activities, prospecting history, documents), `canvasser.db` (pins, GPS) and
-  `portal.db` (every password hash and invite) live on the **Railway volume**
-  with nothing copying them anywhere. A dead volume, a bad migration or a
-  fat-fingered delete loses them outright, and pushing to GitHub does nothing
-  to protect it.
+- *The estimator's estimates*: `_check_daily_backup()` emails a zip of every
+  estimate nightly to `BACKUP_EMAIL` (defaults to Luke), and admins can pull
+  `/api/backup` for estimates + photos + config on demand. The nightly job takes
+  an `O_EXCL` lockfile so two gunicorn workers can't both send it.
+- *The three SQLite databases* — `salescrm.db` (leads, activities, prospecting
+  history, documents), `canvasser.db` (pins, GPS) and `portal.db` (every
+  password hash and invite) — are zipped by `portal/backup.py`.
+  `_check_daily_db_backup()` mails that zip nightly and `/api/backup/databases`
+  serves it on demand.
 
-When picking this back up: the shape that fits is a manager-only export
-endpoint plus a scheduled pull into OneDrive (`C:\Users\ldurn\OneDrive` exists).
+Four things about the database backup are load-bearing:
+
+- **It uses SQLite's online backup API, never a file copy.** These databases run
+  WAL (`portal/dbtune.py`), so the `.db` on disk is not the database — committed
+  pages sit in the `-wal` sidecar until a checkpoint folds them in. Copying the
+  `.db` alone can miss committed transactions, and copying the three files
+  separately while a rep saves a lead can catch a checkpoint mid-flight and
+  produce a snapshot that will not open. `snapshot_bytes()` takes a reader's
+  locks and restarts itself if a writer commits underneath, so the result is one
+  consistent point in time with no need to stop the site.
+- **The snapshot is written back as non-WAL**, so restoring is unzip-and-go with
+  no sidecars that have to travel together.
+- **`/api/backup/databases` is admin-only, deliberately not manager-up.**
+  `portal.db` is every password hash in the company, so handing it to the
+  manager tier is a privilege escalation dressed as a backup. This is the one
+  place the usual managers-get-the-reporting rule does not apply, and
+  `portal/tests/test_backup.py` pins it.
+- **`_check_daily_db_backup()` keeps its OWN lockfile**, separate from the
+  estimator's — if one job fails the other still has to run.
+
+Two things it is not. The row counts in the email body are there because *a
+backup nobody reads is a backup nobody notices has gone silently empty* — seeing
+`leads: 0` in an inbox is what catches that, so don't tidy them out. And above
+`MAX_ATTACH_MB` (20) the mail links to the endpoint instead of attaching, at
+which point the copy is no longer off-platform: retention is whatever sits in
+`BACKUP_EMAIL`'s inbox, and there is still no scheduled pull to local storage
+(`C:\Users\ldurn\OneDrive` exists if that is ever wanted).
+
 Back up the volume before any migration regardless, as the estimator and CRM
 notes below already warn.
 
