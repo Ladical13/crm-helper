@@ -369,15 +369,20 @@ def test_lp_expertfinish_migrates_legacy_visuals_without_touching_price_or_custo
         c['name'] for c in A._LP_EXPERTFINISH_COLORS]
     assert [s['name'] for s in live['styles']] == [
         s['name'] for s in A._LP_EXPERTFINISH_STYLES]
-    official = [r for r in pb['exterior_catalog']
-                if r['product'] == 'LP SmartSide ExpertFinish']
+    official = [
+        r for r in pb['exterior_catalog']
+        if r['product'] == 'LP SmartSide ExpertFinish'
+        and r['style'] in {s['name'] for s in A._LP_EXPERTFINISH_STYLES}
+        and r['color'] in {c['name'] for c in A._LP_EXPERTFINISH_COLORS}
+    ]
     assert len(official) == 16 * 8
     assert {r['pattern_id'] for r in official} == {
         'lap', 'shake_straight', 'shake_staggered', 'panel', 'nickel_gap'}
     assert not any(r['product'] == 'LP SmartSide Expert Finish'
                    and r['color'] == 'Arctic White'
                    for r in pb['exterior_catalog'])
-    assert any(r['color'] == 'Project One Blue' and r['hex'] == '#123456'
+    assert any(r['product'] == 'LP SmartSide ExpertFinish'
+               and r['color'] == 'Project One Blue' and r['hex'] == '#123456'
                for r in pb['exterior_catalog'])
     assert A._LP_EXPERTFINISH_EXTERIOR_MIGRATION in (
         pb['exterior_catalog_seed_versions'])
@@ -1192,6 +1197,66 @@ vm.runInContext(src.slice(from,to), context);
         capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_catalog_group_keeps_later_texture_and_resolves_saved_lp_alias_in_node():
+    _run_visualizer_ui_node(r"""
+const texture = '_catalog/et_' + 'a'.repeat(32) + '.png';
+priceBook.exterior_catalog = [
+  {category:'siding',active:true,product_id:'extp_ecb4a2dc0ddd14',
+    brand:'LP SmartSide',product:'LP SmartSide ExpertFinish',style:'Lap 6',
+    color:'Abyss Black',hex:'#2b3131',price_book_bundle:'b_lp_expert',
+    pattern_id:'lap',texture_ref:''},
+  {category:'siding',active:true,product_id:'extp_ecb4a2dc0ddd14',
+    brand:'LP SmartSide',product:'LP SmartSide ExpertFinish',style:'Lap 8',
+    color:'Abyss Black',hex:'#2b3131',price_book_bundle:'b_lp_expert',
+    pattern_id:'lap',texture_ref:texture,texture_scale:144}
+];
+const groups = _vzExteriorGroups('siding');
+assert.equal(groups.length,1);
+assert.equal(groups[0].colors[0].texture_ref,texture);
+assert.equal(groups[0].colors[0].texture_scale,144);
+const saved = {exterior_product_id:'extp_edc4c81d9e23ed',
+  bundle_id:'b_lp_expert',color_name:'Abyss Black',color_hex:'#2b3131'};
+assert.equal(_vzExteriorProductForSelection('siding',saved).id,
+  'extp_ecb4a2dc0ddd14');
+const effective = _vzEffectiveExteriorSelection('siding',saved);
+assert.equal(effective.texture_ref,texture);
+assert.equal(effective.texture_scale,144);
+assert.equal(saved.texture_ref,undefined); // historical snapshot stays untouched
+""")
+
+
+def test_full_color_texture_is_composited_once_without_hex_double_tint_in_node():
+    _run_visualizer_ui_node(r"""
+const texture = '_catalog/et_' + 'b'.repeat(32) + '.png';
+S.visualizer = {scope:['roof'],selections:{roofing:{good:{
+  color_hex:'#313434',color_name:'Granite Black',texture_ref:texture,
+  texture_scale:96}},siding:{},trim:{},soffit:{},doors:{},gutter:{},window:{},
+  metal:{},shutter:{},stucco:{}}};
+_vzResetState();
+vzState.photoImg = {};
+vzState.roofMask = {};
+let colorCalls = 0, projectedCalls = [];
+_vzCompositeColor = () => { colorCalls += 1; };
+_vzGetTextureImg = () => ({complete:true,naturalWidth:64});
+_vzCompositeProjected = (...args) => { projectedCalls.push(args); return true; };
+_vzCompositeTexture = () => { throw new Error('projected path should succeed'); };
+_vzCompositePlacements = () => {};
+_vzGetPatternImg = () => null;
+const ctx = {clearRect(){},drawImage(){}};
+_vzComposeInto({width:20,height:20,getContext:()=>ctx},'good',{});
+assert.equal(colorCalls,0);
+assert.equal(projectedCalls.length,1);
+assert.equal(projectedCalls[0][9],0.82);
+assert.equal(projectedCalls[0][11],'source-over');
+
+projectedCalls = [];
+_vzGetTextureImg = () => null;
+_vzComposeInto({width:20,height:20,getContext:()=>ctx},'good',{});
+assert.equal(colorCalls,1); // hex remains the loading/error fallback
+assert.equal(projectedCalls.length,0);
+""")
 
 
 def test_exact_placement_scope_controls_rendering_and_save_validity_in_node():

@@ -15230,10 +15230,22 @@ function _vzExteriorGroups(trade) {
     const group = groups.get(id);
     if (!group.bundle_id && entry.price_book_bundle) group.bundle_id = entry.price_book_bundle;
     const colorLabel = entry.color + (entry.color_code ? ' · ' + entry.color_code : '');
-    if (!group.colors.some(c => c.name === colorLabel && c.hex === entry.hex)) {
+    const existingColor = group.colors.find(c => c.name === colorLabel && c.hex === entry.hex);
+    if (!existingColor) {
       group.colors.push({name: colorLabel, hex: entry.hex, code: entry.color_code || '',
         texture_ref:entry.texture_ref || '', texture_scale:Number(entry.texture_scale) || 96,
         placement_image_ref:entry.placement_image_ref || ''});
+    } else {
+      // A siding color is repeated once per profile. Older catalogs may only
+      // have an asset on a later row, so do not let the first profile silently
+      // discard that texture/cutout while the rows are folded into one picker.
+      if (!existingColor.texture_ref && entry.texture_ref) {
+        existingColor.texture_ref = entry.texture_ref;
+        existingColor.texture_scale = Number(entry.texture_scale) || 96;
+      }
+      if (!existingColor.placement_image_ref && entry.placement_image_ref) {
+        existingColor.placement_image_ref = entry.placement_image_ref;
+      }
     }
     const styleName = entry.category === 'siding' ? (entry.style || '').trim() : '';
     if (styleName && !group.styles.some(s => s.name === styleName)) {
@@ -15249,11 +15261,44 @@ function _vzExteriorGroups(trade) {
     return a.name.localeCompare(b.name);
   });
 }
+const _VZ_EXTERIOR_PRODUCT_ALIASES = {
+  // The shipped LP bundle used a spaced "Expert Finish" label before the
+  // canonical catalog migration. Saved estimates keep their snapshot id.
+  extp_edc4c81d9e23ed: 'extp_ecb4a2dc0ddd14'
+};
 function _vzExteriorProductForSelection(trade, selected) {
   const groups = _vzExteriorGroups(trade);
   if (!groups.length) return null;
-  return groups.find(p => p.id === selected.exterior_product_id || p.id === selected.option_id) ||
-    groups.find(p => p.bundle_id && p.bundle_id === selected.bundle_id) || null;
+  selected = selected || {};
+  const savedId = selected.exterior_product_id || selected.option_id || '';
+  const resolvedId = _VZ_EXTERIOR_PRODUCT_ALIASES[savedId] || savedId;
+  const direct = groups.find(p => p.id === resolvedId);
+  if (direct) return direct;
+  // More than one visual family may legitimately share a price-book bundle
+  // (for example LP core and Naturals). Use the saved color to disambiguate an
+  // older snapshot before falling back to the first product in that bundle.
+  const colorMatch = groups.find(p => p.bundle_id && p.bundle_id === selected.bundle_id &&
+    _vzPalette(p).some(c => c.name === selected.color_name && c.hex === selected.color_hex));
+  return colorMatch || groups.find(p => p.bundle_id && p.bundle_id === selected.bundle_id) || null;
+}
+function _vzCatalogColorForSelection(trade, selected) {
+  const product = _vzExteriorProductForSelection(trade, selected || {});
+  const palette = _vzPalette(product);
+  if (!palette.length) return null;
+  return palette.find(c => c.name === selected.color_name && c.hex === selected.color_hex) ||
+    palette.find(c => c.name === selected.color_name) ||
+    palette.find(c => c.hex === selected.color_hex) || null;
+}
+function _vzEffectiveExteriorSelection(trade, selected) {
+  if (!selected || selected.texture_ref) return selected || {};
+  const catalogColor = _vzCatalogColorForSelection(trade, selected);
+  if (!catalogColor || !catalogColor.texture_ref) return selected;
+  // Resolve newly delivered catalog assets for rendering without rewriting
+  // the historical selection snapshot stored on the estimate.
+  return Object.assign({}, selected, {
+    texture_ref: catalogColor.texture_ref,
+    texture_scale: catalogColor.texture_scale || selected.texture_scale || 96
+  });
 }
 function _vzExteriorSelection(product) {
   const color = _vzPalette(product)[0] || {};
@@ -15311,7 +15356,9 @@ function _vzAlignmentHtml() {
     vzState.alignmentPlaneId = planes[0]?.id || '';
   }
   const plane = planes.find(candidate => candidate.id === vzState.alignmentPlaneId);
-  const selected = ((_vzGet().selections[_VZ_ROLE_META[role].trade] || {})[vzState.activeTier] || {});
+  const trade = _VZ_ROLE_META[role].trade;
+  const selected = _vzEffectiveExteriorSelection(trade,
+    ((_vzGet().selections[trade] || {})[vzState.activeTier] || {}));
   const hasVisualLayer = !!(selected.texture_ref || selected.pattern_id);
   return `<details class="vz-align" ${vzState.alignmentOpen?'open':''} ontoggle="_vzSetAlignmentOpen(this.open)">
     <summary>Align material perspective <span>Optional realism for roof and wall planes</span></summary>
@@ -15774,7 +15821,8 @@ function _vzRenderPicker() {
     const choices = Array.isArray((priceBook || {}).exterior_catalog) ? exteriorChoices : legacyChoices;
     const selected = vz.selections[trade][tier] || {};
     const styles = (_vzSelectedProduct(trade) || {}).styles || [];
-    const selectedId = selected.exterior_product_id ||
+    const resolvedProduct = _vzExteriorProductForSelection(trade, selected);
+    const selectedId = resolvedProduct?.id || selected.exterior_product_id ||
       (choices.find(p => p.bundle_id && p.bundle_id === selected.bundle_id) || {}).id || bundle?.id || '';
     const stylePicker = trade === 'siding' && styles.length
       ? '<label class="vz-field">Siding style<select onchange="_vzChooseStyle(this.value)">' +
@@ -16147,14 +16195,14 @@ function _vzFillCanonicalFlat(ctx,W,H,image,tileSize,mode) {
   const pattern=ctx.createPattern(tile,'repeat');if(!pattern)return false;
   ctx.fillStyle=pattern;ctx.fillRect(0,0,W,H);return true;
 }
-function _vzCompositeProjected(ctx,W,H,mask,role,tier,image,tileSize,cacheId,alpha,flatMode) {
+function _vzCompositeProjected(ctx,W,H,mask,role,tier,image,tileSize,cacheId,alpha,flatMode,blendMode) {
   const projected=_vzProjectedLayer(role,tier,image,tileSize,cacheId,W,H);
   if (!projected) return false;
   const clipped=_vzMakeMaskCanvas(W,H),clippedCtx=clipped.getContext('2d');
   if(!_vzFillCanonicalFlat(clippedCtx,W,H,image,tileSize,flatMode))return false;
   clippedCtx.globalCompositeOperation='source-over';clippedCtx.drawImage(projected,0,0);
   clippedCtx.globalCompositeOperation='destination-in';clippedCtx.drawImage(mask,0,0,W,H);
-  ctx.save();ctx.globalCompositeOperation='multiply';ctx.globalAlpha=alpha;
+  ctx.save();ctx.globalCompositeOperation=blendMode||'multiply';ctx.globalAlpha=alpha;
   ctx.drawImage(clipped,0,0);ctx.restore();
   return true;
 }
@@ -16174,13 +16222,19 @@ function _vzComposeInto(target, tier, opts) {
   for (const role of _VZ_COMPOSE_ORDER) {
     if (!scope.has(role)) continue;
     const meta = _VZ_ROLE_META[role], mask = vzState[role + 'Mask'];
-    const selected = (vz.selections[meta.trade] || {})[tier] || {};
+    const selected = _vzEffectiveExteriorSelection(meta.trade,
+      (vz.selections[meta.trade] || {})[tier] || {});
     if (!mask || !selected.color_hex) continue;
-    _vzCompositeColor(ctx, W, H, mask, selected.color_hex);
     const texture = selected.texture_ref ? _vzGetTextureImg(selected.texture_ref) : null;
-    if (texture && texture.complete && texture.naturalWidth) {
+    const textureReady = !!(texture && texture.complete && texture.naturalWidth);
+    // Manufacturer swatches already carry the product's color. Applying the
+    // hex multiply first used to tint the same pixels twice and made dark roof
+    // and siding options look nearly black. Keep the hex as a loading/fallback
+    // preview; once the image is ready, composite the full-color swatch once.
+    if (!textureReady) _vzCompositeColor(ctx, W, H, mask, selected.color_hex);
+    if (textureReady) {
       if (!_vzCompositeProjected(ctx,W,H,mask,role,tier,texture,Number(selected.texture_scale)||96,
-        'texture:'+selected.texture_ref,0.72,'square')) {
+        'texture:'+selected.texture_ref,0.82,'square','source-over')) {
         _vzCompositeTexture(ctx, W, H, mask, texture, Number(selected.texture_scale) || 96);
       }
     }
@@ -16250,7 +16304,7 @@ function _vzCompositeTexture(ctx, W, H, mask, texture, tileSize) {
   if (!pattern) return;
   octx.fillStyle = pattern; octx.fillRect(0,0,W,H);
   octx.globalCompositeOperation = 'destination-in'; octx.drawImage(mask,0,0,W,H);
-  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = 0.72;
+  ctx.save(); ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 0.82;
   ctx.drawImage(oc,0,0); ctx.restore();
 }
 
@@ -16422,7 +16476,9 @@ async function _vzSaveAll() {
   try {
     for (const tier of TIERS) _vzEnsureTier(tier);
     const selections = JSON.parse(JSON.stringify(vz.selections));
-    const selectedRows = Object.values(selections).flatMap(tiers => Object.values(tiers || {}));
+    const selectedRows = Object.entries(selections).flatMap(([trade, tiers]) =>
+      Object.values(tiers || {}).map(selected =>
+        _vzEffectiveExteriorSelection(trade, selected)));
     const patterns = new Set(selectedRows.map(s => s.pattern_id).filter(Boolean));
     const textures = new Set(selectedRows.map(s => s.texture_ref).filter(Boolean));
     await Promise.all([...patterns].map(pid => _vzImageReady(_vzGetPatternImg(pid))));

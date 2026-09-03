@@ -194,6 +194,12 @@ DATA_DIR = os.path.abspath(os.environ.get('DATA_DIR', BASE_DIR))
 ESTIMATES_DIR = os.path.join(DATA_DIR, 'estimates')
 UPLOADS_DIR   = os.path.join(DATA_DIR, 'uploads')
 ALLOWED_EXT   = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'}
+EXTERIOR_TEXTURE_ASSET_DIR = os.path.join(BASE_DIR, 'exterior_catalog_assets')
+# Public alias used by integrity tests and future catalog-asset tooling. Product
+# cutouts can share this directory later without changing the texture seeder.
+EXTERIOR_CATALOG_ASSET_DIR = EXTERIOR_TEXTURE_ASSET_DIR
+EXTERIOR_TEXTURE_MANIFEST_FILE = os.path.join(
+    EXTERIOR_TEXTURE_ASSET_DIR, 'manifest.json')
 
 PRICE_BOOK_FILE      = os.path.join(DATA_DIR, 'price_book.json')
 TIER_DEFAULTS_FILE   = os.path.join(DATA_DIR, 'tier_defaults.json')
@@ -261,15 +267,71 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 def _seed_data_dir():
     """On first run with a new DATA_DIR (e.g. Railway persistent volume),
     copy seed files from the app directory so defaults are available."""
-    if DATA_DIR == BASE_DIR:
-        return  # local dev — nothing to seed
-    for fname in ('price_book.json', 'tier_defaults.json', 'permit_defaults.json',
-                  'jurisdictions.json', 'commercial_fastening.json',
-                  'company_content.json'):
-        src = os.path.join(BASE_DIR, fname)
-        dst = os.path.join(DATA_DIR, fname)
-        if os.path.exists(src) and not os.path.exists(dst):
-            shutil.copy2(src, dst)
+    if DATA_DIR != BASE_DIR:
+        for fname in ('price_book.json', 'tier_defaults.json', 'permit_defaults.json',
+                      'jurisdictions.json', 'commercial_fastening.json',
+                      'company_content.json'):
+            src = os.path.join(BASE_DIR, fname)
+            dst = os.path.join(DATA_DIR, fname)
+            if os.path.exists(src) and not os.path.exists(dst):
+                shutil.copy2(src, dst)
+        _seed_exterior_texture_assets()
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _seed_exterior_texture_assets():
+    """Copy immutable manufacturer textures onto a persistent volume safely.
+
+    Content-hashed names make repeated starts idempotent. A private temporary
+    file plus ``os.replace`` keeps two gunicorn workers from exposing a partial
+    image while they initialize at the same time. A corrupt volume copy is
+    repaired, while manager-uploaded textures (different hashes/names) are
+    never touched.
+    """
+    if not os.path.isfile(EXTERIOR_TEXTURE_MANIFEST_FILE):
+        return
+    try:
+        with open(EXTERIOR_TEXTURE_MANIFEST_FILE, encoding='utf-8') as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError):
+        return
+    target_dir = os.path.join(UPLOADS_DIR, '_catalog')
+    os.makedirs(target_dir, exist_ok=True)
+    for entry in manifest.get('textures') or []:
+        filename = str(entry.get('file') or '')
+        expected = str(entry.get('sha256') or '').lower()
+        if (not re.fullmatch(r'et_[0-9a-f]{32}\.png', filename)
+                or not re.fullmatch(r'[0-9a-f]{64}', expected)
+                or filename != f'et_{expected[:32]}.png'):
+            continue
+        source = os.path.join(EXTERIOR_TEXTURE_ASSET_DIR, filename)
+        target = os.path.join(target_dir, filename)
+        if not os.path.isfile(source) or _file_sha256(source) != expected:
+            continue
+        try:
+            if os.path.isfile(target) and _file_sha256(target) == expected:
+                continue
+        except OSError:
+            pass
+        temporary = target + f'.{os.getpid()}.{uuid.uuid4().hex}.tmp'
+        try:
+            shutil.copyfile(source, temporary)
+            if _file_sha256(temporary) != expected:
+                continue
+            os.replace(temporary, target)
+        finally:
+            try:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            except OSError:
+                pass
 
 _seed_data_dir()
 
@@ -933,6 +995,17 @@ def change_own_password():
 
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):
+    # Local development keeps immutable manufacturer textures in the repo
+    # instead of duplicating them under estimator/uploads. Production normally
+    # receives a volume copy at startup, but this fallback also keeps a missing
+    # copy from turning an otherwise valid saved catalog row into a broken URL.
+    if (re.fullmatch(r'_catalog/(et_[0-9a-f]{32}\.png)', filename)
+            and not os.path.isfile(os.path.join(UPLOADS_DIR, filename))):
+        packaged = os.path.join(EXTERIOR_TEXTURE_ASSET_DIR,
+                                os.path.basename(filename))
+        if os.path.isfile(packaged):
+            return send_from_directory(EXTERIOR_TEXTURE_ASSET_DIR,
+                                       os.path.basename(filename))
     return send_from_directory(UPLOADS_DIR, filename)
 
 
@@ -14477,6 +14550,19 @@ _LP_EXPERTFINISH_COLORS = [
     {"name": "Midnight Shadow",  "hex": "#505757"},
     {"name": "Abyss Black",      "hex": "#2b3131"},
 ]
+# LP introduced the ExpertFinish Naturals Collection in 2025. These preview
+# values are sampled from LP's own full-color Cedar Texture swatches, not from
+# the page's embedded form values (several of those are obvious placeholders,
+# including ``#123456``). As with every manufacturer palette in this tool,
+# physical samples remain authoritative.
+_LP_EXPERTFINISH_NATURALS_COLORS = [
+    {"name": "Washed White",     "hex": "#aea69b"},
+    {"name": "Smoky Slate",      "hex": "#86837f"},
+    {"name": "Saffron Cedar",    "hex": "#785131"},
+    {"name": "Weathered Walnut", "hex": "#564434"},
+    {"name": "Aged Amber",       "hex": "#684229"},
+    {"name": "Bonsai Black",     "hex": "#2f2a25"},
+]
 # James Hardie North Rockies & Denver catalog HS2601-NRD (01/26), supplied
 # by the company on 2026-08-28. These RGB values are sampled from the textured
 # digital swatches in that PDF. James Hardie says printed colors are only as
@@ -15657,6 +15743,10 @@ EXTERIOR_PATTERN_IDS = {'', 'lap', 'bnb', 'board_batten', 'shake', 'panel',
                         'shake_staggered', 'sierra8'}
 _EXTERIOR_PATTERN_ALIASES = {'board_batten': 'bnb', 'vertical': 'panel'}
 _LP_EXPERTFINISH_EXTERIOR_MIGRATION = 'lp-expertfinish-lpef01884-2025'
+_LP_EXPERTFINISH_CANONICAL_MIGRATION = (
+    'lp-expertfinish-canonical-product-name-2026')
+_LP_EXPERTFINISH_NATURALS_MIGRATION = (
+    'lp-expertfinish-naturals-collection-2026')
 _HARDIE_STATEMENT_EXTERIOR_MIGRATION = 'james-hardie-hs2601-nrd-2026'
 _SIDING_COMPONENT_EXTERIOR_MIGRATION = 'hardie-lp-trim-soffit-profiles-2026'
 _HARDIE_STATEMENT_LEGACY_DESCRIPTION = (
@@ -15669,6 +15759,7 @@ _LANDMARK_LEGACY_DESCRIPTION = (
 _IKO_NORDIC_EXTERIOR_MIGRATION = 'iko-nordic-mr9l350-2026'
 _IKO_NORDIC_LEGACY_DESCRIPTION = (
     'Class 4 impact-resistant shingle built for extreme cold and hail.')
+_OFFICIAL_EXTERIOR_TEXTURES_MIGRATION = 'official-exterior-textures-2026-09'
 
 
 def _exterior_text(value, limit):
@@ -15866,6 +15957,157 @@ def _migrate_lp_expertfinish_visuals(pb):
     pb['exterior_catalog'] = _normalize_exterior_catalog(
         kept + _lp_expertfinish_exterior_rows())
     versions.append(_LP_EXPERTFINISH_EXTERIOR_MIGRATION)
+    pb['exterior_catalog_seed_versions'] = versions
+
+
+def _lp_expertfinish_catalog_key(row):
+    return (row['category'], row['brand'].casefold(), row['product'].casefold(),
+            row['style'].casefold(), row['color'].casefold(),
+            row['color_code'].casefold(), row['applies_to'],
+            row['price_book_bundle'])
+
+
+def _lp_expertfinish_canonicalize_row(row):
+    canonical = copy.deepcopy(row)
+    canonical['product'] = 'LP SmartSide ExpertFinish'
+    return _normalize_exterior_entry(canonical)
+
+
+def _lp_expertfinish_seed_equivalent(row, official_by_id):
+    canonical = _lp_expertfinish_canonicalize_row(row)
+    seed = official_by_id.get(canonical['id'])
+    if seed is None:
+        return False
+    fields = ('style', 'color', 'color_code', 'hex', 'pattern_id',
+              'texture_ref', 'texture_scale', 'placement_image_ref', 'active')
+    return all(canonical.get(field) == seed.get(field) for field in fields)
+
+
+def _migrate_lp_expertfinish_canonical_product(pb):
+    """Collapse the two shipped ExpertFinish spellings without losing edits.
+
+    Older books can contain a complete product under both ``Expert Finish``
+    and ``ExpertFinish``. Normalization alone would keep an arbitrary first row
+    and could discard an uploaded texture or an explicit inactive flag, so the
+    collision is merged deliberately before the identity is recomputed.
+    """
+    versions = pb.get('exterior_catalog_seed_versions')
+    if not isinstance(versions, list):
+        versions = []
+    if _LP_EXPERTFINISH_CANONICAL_MIGRATION in versions:
+        return
+
+    official_by_id = {row['id']: row for row in _lp_expertfinish_exterior_rows()}
+    official_by_style_color = {
+        (row['style'].casefold(), row['color'].casefold()): row
+        for row in official_by_id.values()
+    }
+    old_visuals_were_delivered = (
+        _LP_EXPERTFINISH_EXTERIOR_MIGRATION in versions)
+    product_names = {
+        'lp smartside expert finish', 'lp smartside expertfinish'}
+    passthrough, grouped = [], {}
+    for row in _normalize_exterior_catalog(pb.get('exterior_catalog') or []):
+        is_target = (
+            row['category'] == 'siding'
+            and row['brand'].casefold() == 'lp smartside'
+            and row['product'].casefold() in product_names
+            and row['price_book_bundle'] == 'b_lp_expert'
+        )
+        if not is_target:
+            passthrough.append(row)
+            continue
+        canonical = _lp_expertfinish_canonicalize_row(row)
+        # color_code is part of the catalog identity. Keeping it in this key
+        # avoids collapsing two manager-created variants that deliberately use
+        # the same display color but different manufacturer/order codes.
+        grouped.setdefault(canonical['id'], []).append((row, canonical))
+
+    merged_rows = []
+    for candidates in grouped.values():
+        canonical_pair = next((pair for pair in candidates
+                               if pair[0]['product'].casefold()
+                               == 'lp smartside expertfinish'), None)
+        if canonical_pair is None:
+            # Once the official canonical row has previously been delivered,
+            # a lone untouched legacy twin means the manager deleted the
+            # canonical choice. Keep that deletion sticky. A customized twin
+            # still carries information and is retained under the new name.
+            if (old_visuals_were_delivered and len(candidates) == 1
+                    and _lp_expertfinish_seed_equivalent(
+                        candidates[0][0], official_by_id)):
+                continue
+            merged = copy.deepcopy(candidates[0][1])
+        else:
+            merged = copy.deepcopy(canonical_pair[1])
+
+        seed = official_by_style_color.get(
+            (merged['style'].casefold(), merged['color'].casefold()))
+        for original, candidate in candidates:
+            if original is (canonical_pair[0] if canonical_pair else None):
+                continue
+            if not candidate.get('active', True):
+                merged['active'] = False
+            if not merged.get('texture_ref') and candidate.get('texture_ref'):
+                merged['texture_ref'] = candidate['texture_ref']
+                merged['texture_scale'] = candidate.get('texture_scale', 96)
+            if (not merged.get('placement_image_ref')
+                    and candidate.get('placement_image_ref')):
+                merged['placement_image_ref'] = candidate['placement_image_ref']
+            if not merged.get('color_code') and candidate.get('color_code'):
+                merged['color_code'] = candidate['color_code']
+            for field in ('hex', 'pattern_id'):
+                if (seed is not None and merged.get(field) == seed.get(field)
+                        and candidate.get(field) != seed.get(field)):
+                    merged[field] = candidate.get(field)
+            if (seed is not None
+                    and merged.get('texture_scale') == seed.get('texture_scale')
+                    and candidate.get('texture_scale') != seed.get('texture_scale')):
+                merged['texture_scale'] = candidate.get('texture_scale')
+        # IDs may have changed after merging color_code or another editable
+        # identity field, so always finish through the normal validator.
+        merged_rows.append(_normalize_exterior_entry(merged))
+
+    pb['exterior_catalog'] = _normalize_exterior_catalog(
+        passthrough + merged_rows)
+    versions.append(_LP_EXPERTFINISH_CANONICAL_MIGRATION)
+    pb['exterior_catalog_seed_versions'] = versions
+
+
+def _lp_expertfinish_naturals_rows():
+    """Six current Naturals colors across the existing visual profiles.
+
+    LP describes the collection as siding in Cedar Texture or Brushed Smooth;
+    profile availability can vary by region. These rows reuse the visual
+    profile menu already shown for ExpertFinish and the UI keeps its physical
+    sample / availability warning visible.
+    """
+    return _normalize_exterior_catalog([
+        {
+            'category': 'siding', 'brand': 'LP SmartSide',
+            'product': 'LP SmartSide ExpertFinish Naturals Collection',
+            'style': style['name'], 'pattern_id': style['pattern_id'],
+            'color': color['name'], 'hex': color['hex'],
+            'price_book_bundle': 'b_lp_expert', 'active': True,
+        }
+        for style in _LP_EXPERTFINISH_STYLES
+        for color in _LP_EXPERTFINISH_NATURALS_COLORS
+    ])
+
+
+def _migrate_lp_expertfinish_naturals(pb):
+    """Add the 2025 Naturals visual family once, preserving later deletion."""
+    versions = pb.get('exterior_catalog_seed_versions')
+    if not isinstance(versions, list):
+        versions = []
+    if _LP_EXPERTFINISH_NATURALS_MIGRATION in versions:
+        return
+    current = _normalize_exterior_catalog(pb.get('exterior_catalog') or [])
+    have = {_lp_expertfinish_catalog_key(row) for row in current}
+    missing = [row for row in _lp_expertfinish_naturals_rows()
+               if _lp_expertfinish_catalog_key(row) not in have]
+    pb['exterior_catalog'] = _normalize_exterior_catalog(current + missing)
+    versions.append(_LP_EXPERTFINISH_NATURALS_MIGRATION)
     pb['exterior_catalog_seed_versions'] = versions
 
 
@@ -16186,6 +16428,134 @@ def _migrate_iko_nordic_visuals(pb):
     pb['exterior_catalog_seed_versions'] = versions
 
 
+_OFFICIAL_TEXTURE_TARGETS = {
+    'iko_nordic': {
+        ('roof', 'iko', 'iko nordic', 'b_iko_nordic'),
+    },
+    'landmark': {
+        ('roof', 'certainteed', 'landmark', 'b_landmark'),
+    },
+    'hardie_statement': {
+        ('siding', 'james hardie', 'james hardie statement collection',
+         'b_hardie_statement'),
+        ('trim', 'james hardie', 'hardie trim', 'b_hardie_statement'),
+        ('soffit', 'james hardie', 'hardie soffit', 'b_hardie_statement'),
+    },
+    'lp_expertfinish': {
+        ('siding', 'lp smartside', 'lp smartside expertfinish', 'b_lp_expert'),
+        ('trim', 'lp smartside', 'lp smartside expertfinish trim & fascia',
+         'b_lp_expert'),
+        ('soffit', 'lp smartside', 'lp smartside expertfinish soffit',
+         'b_lp_expert'),
+    },
+    'lp_expertfinish_naturals': {
+        ('siding', 'lp smartside',
+         'lp smartside expertfinish naturals collection', 'b_lp_expert'),
+    },
+}
+_OFFICIAL_TEXTURE_MANIFEST_CACHE = None
+
+
+def _official_exterior_texture_manifest():
+    """Return only verified, deployable manufacturer texture metadata."""
+    global _OFFICIAL_TEXTURE_MANIFEST_CACHE
+    if _OFFICIAL_TEXTURE_MANIFEST_CACHE is not None:
+        return copy.deepcopy(_OFFICIAL_TEXTURE_MANIFEST_CACHE)
+    try:
+        with open(EXTERIOR_TEXTURE_MANIFEST_FILE, encoding='utf-8') as handle:
+            raw_manifest = json.load(handle)
+    except (OSError, ValueError):
+        return []
+    if raw_manifest.get('version') != 1:
+        return []
+    verified, seen = [], set()
+    for raw in raw_manifest.get('textures') or []:
+        family = _exterior_text(raw.get('family'), 60)
+        category = _exterior_text(raw.get('category'), 20).lower()
+        bundle_id = _exterior_text(raw.get('bundle_id'), 100)
+        color = _exterior_text(raw.get('color'), 80)
+        filename = _exterior_text(raw.get('file'), 80)
+        digest = _exterior_text(raw.get('sha256'), 64).lower()
+        try:
+            scale = int(raw.get('texture_scale'))
+            width = int(raw.get('width'))
+            height = int(raw.get('height'))
+        except (TypeError, ValueError):
+            continue
+        key = (family, color.casefold())
+        source = os.path.join(EXTERIOR_TEXTURE_ASSET_DIR, filename)
+        if (family not in _OFFICIAL_TEXTURE_TARGETS
+                or category not in {'roof', 'siding'}
+                or not bundle_id or not color or key in seen
+                or not re.fullmatch(r'et_[0-9a-f]{32}\.png', filename)
+                or not re.fullmatch(r'[0-9a-f]{64}', digest)
+                or filename != f'et_{digest[:32]}.png'
+                or not any(target[0] == category and target[3] == bundle_id
+                           for target in _OFFICIAL_TEXTURE_TARGETS[family])
+                or not 16 <= scale <= 512
+                or not 1 <= width <= 1024 or not 1 <= height <= 1024
+                or not os.path.isfile(source)):
+            continue
+        try:
+            if _file_sha256(source) != digest:
+                continue
+        except OSError:
+            continue
+        seen.add(key)
+        verified.append({
+            'family': family, 'category': category, 'bundle_id': bundle_id,
+            'color': color, 'file': filename, 'sha256': digest,
+            'texture_ref': '_catalog/' + filename,
+            'texture_scale': scale, 'width': width, 'height': height,
+            'source_document': _exterior_text(
+                raw.get('source_document'), 160),
+            'source_page': _exterior_text(raw.get('source_page'), 20),
+        })
+    try:
+        expected = int(raw_manifest.get('texture_count') or 54)
+    except (TypeError, ValueError):
+        return []
+    if expected != 54 or len(verified) != expected:
+        return []
+    _OFFICIAL_TEXTURE_MANIFEST_CACHE = verified
+    return copy.deepcopy(verified)
+
+
+def _migrate_official_exterior_textures(pb):
+    """Attach packaged textures once without replacing manager uploads."""
+    versions = pb.get('exterior_catalog_seed_versions')
+    if not isinstance(versions, list):
+        versions = []
+    if _OFFICIAL_EXTERIOR_TEXTURES_MIGRATION in versions:
+        return
+    manifest = _official_exterior_texture_manifest()
+    if len(manifest) != 54:
+        # Never make the migration sticky when a deploy is missing assets.
+        return
+    assets = {(entry['family'], entry['color'].casefold()): entry
+              for entry in manifest}
+    target_family = {
+        target: family
+        for family, targets in _OFFICIAL_TEXTURE_TARGETS.items()
+        for target in targets
+    }
+    updated = []
+    for original in _normalize_exterior_catalog(
+            pb.get('exterior_catalog') or []):
+        row = copy.deepcopy(original)
+        target = (row['category'], row['brand'].casefold(),
+                  row['product'].casefold(), row['price_book_bundle'])
+        family = target_family.get(target)
+        asset = assets.get((family, row['color'].casefold())) if family else None
+        if asset is not None and not row.get('texture_ref'):
+            row['texture_ref'] = asset['texture_ref']
+            row['texture_scale'] = asset['texture_scale']
+        updated.append(row)
+    pb['exterior_catalog'] = _normalize_exterior_catalog(updated)
+    versions.append(_OFFICIAL_EXTERIOR_TEXTURES_MIGRATION)
+    pb['exterior_catalog_seed_versions'] = versions
+
+
 def _legacy_exterior_catalog(pb):
     """Flatten the shipped visual palettes into the same rows managers edit."""
     rows = []
@@ -16393,8 +16763,11 @@ def _ensure_bundle_catalogs(pb):
     _migrate_lp_expertfinish_visuals(pb)
     _migrate_hardie_statement_visuals(pb)
     _migrate_siding_component_visuals(pb)
+    _migrate_lp_expertfinish_canonical_product(pb)
+    _migrate_lp_expertfinish_naturals(pb)
     _migrate_landmark_visuals(pb)
     _migrate_iko_nordic_visuals(pb)
+    _migrate_official_exterior_textures(pb)
     return pb
 
 
