@@ -64,3 +64,13 @@ def test_app_bundle_is_syntactically_valid():
     node = subprocess.run(['node', '--check', os.path.join(BASE, 'static', 'app.js')],
                           capture_output=True, text=True)
     assert node.returncode == 0, node.stderr
+
+
+def test_dashboard_backup_link_respects_estimator_mount():
+    """The portal mounts this app at /estimate, so root-relative API links
+    bypass the estimator and land on the portal instead."""
+    with open(os.path.join(BASE, 'static', 'app.js'), encoding='utf-8') as fh:
+        source = fh.read()
+
+    assert 'href="${BASE}/api/backup" class="dash-backup-link"' in source
+    assert 'href="/api/backup" class="dash-backup-link"' not in source

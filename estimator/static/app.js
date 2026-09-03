@@ -8996,7 +8996,7 @@ function renderDashboard() {
         <button class="dash-view-tab ${_dashView==='analytics'?'active':''}" onclick="dashSetView('analytics')">📊 Sales Analytics</button>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
-        ${_meIsAdmin() ? `<a href="/api/backup" class="dash-backup-link" title="Download a zip of all estimates, photos, and settings">💾 Backup</a>` : ''}
+        ${_meIsAdmin() ? `<a href="${BASE}/api/backup" class="dash-backup-link" title="Download a zip of all estimates, photos, and settings">💾 Backup</a>` : ''}
         ${_meCanViewAll() ? `<select onchange="dashSetRep(this.value)" class="dash-rep-select">${repOpts}</select>` : ''}
       </div>
     </div>
