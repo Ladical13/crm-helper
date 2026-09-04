@@ -831,6 +831,12 @@ estimate list, the funnel and the Den push.
   without that every annotation on the page silently fails to draw. It
   self-guards on `window._cvAnnInit`, which is what makes emitting it twice
   safe.
+- **The Condition tab opens the SAME editor** (`pcAnnotate` → the Photos page's
+  `openAnnotationModal`) — one annotation tool, no second implementation to
+  drift. `saveAnnotations()` refreshes whichever page is active: it used to
+  refresh only Photos, which left a rep on the Condition tab looking at the
+  photo they had just marked up, unmarked. The ✏️ on a picker tile must
+  `stopPropagation()` — the tile's own click is what attaches the photo.
 - **The report reads like an estimate: cost per line, subtotal per section,
   one total.** The summary page it used to open with is gone — a Condition
   Snapshot grid restating grades that reappear on every section header, and a

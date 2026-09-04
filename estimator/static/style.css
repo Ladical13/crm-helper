@@ -4053,7 +4053,19 @@ a.jx-contact:hover { text-decoration: underline; }
 .pc-pick-row td { background: #f8fafc; padding: 12px 10px !important; }
 .pc-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
 .pc-pick { position: relative; border: 2px solid transparent; border-radius: 6px; overflow: hidden; cursor: pointer; background: #fff; }
-.pc-pick img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
+/* A canvas, not an <img>, so the tile shows the markup the rep just drew.
+   drawAnnotatedPhoto sizes it to the parent's width at the photo's own aspect
+   ratio, so rows come out slightly ragged — that is the whole photo rather
+   than a crop, which is what you want when picking one. */
+.pc-pick-cv { width: 100%; display: block; background: #eef2f7; min-height: 60px; }
+/* Draw on this photo. Sits on the tile but must not toggle it — the onclick
+   stops propagation. */
+.pc-pick-ann {
+  position: absolute; top: 4px; left: 4px; width: 24px; height: 24px; border-radius: 5px;
+  background: rgba(255,255,255,.92); border: 1px solid var(--border);
+  font-size: 12px; line-height: 1; cursor: pointer; padding: 0;
+}
+.pc-pick-ann.has { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
 .pc-pick.on { border-color: var(--primary); }
 .pc-pick-chk {
   position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border-radius: 50%;

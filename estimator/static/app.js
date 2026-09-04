@@ -7094,6 +7094,11 @@ function pcFindingPhotos(key,id){ const f=pcGetSec(key).findings.find(x=>x.id===
   if(!Array.isArray(f.photo_ids)) f.photo_ids=[];   // pre-2026 findings carry none
   return f.photo_ids; }
 function pcTogglePicker(key,id){ const k=key+':'+id; _pcPhotoPicker=(_pcPhotoPicker===k)?null:k; renderConditionPage(); }
+/* The SAME editor the Photos page opens — one annotation tool, one set of
+   drawing code. Circling the damage and attaching it to the finding is one
+   motion on a roof, and it used to be two screens apart. _pcPhotoPicker is
+   untouched, so saving drops the rep back on the finding they were working. */
+function pcAnnotate(photoId){ openAnnotationModal(photoId); }
 function pcToggleFindingPhoto(key,id,photoId){
   const ids=pcFindingPhotos(key,id); const i=ids.indexOf(photoId);
   if(i>=0) ids.splice(i,1); else ids.push(photoId);
@@ -7283,9 +7288,12 @@ function renderConditionPage() {
           ${S.photos.length ? `<div class="pc-pick-grid">
             ${S.photos.map(p=>{
               const on=(f.photo_ids||[]).includes(p.id);
+              const marked=(p.annotations||[]).length>0;
               return `<div class="pc-pick ${on?'on':''}" onclick="pcToggleFindingPhoto('${_pcActiveSection}','${f.id}','${p.id}')">
-                <img src="${BASE}/uploads/${esc(p.filename)}" alt="${esc(p.caption||'')}">
+                <canvas class="pc-pick-cv" data-photo="${esc(p.id)}"></canvas>
                 <span class="pc-pick-chk">${on?'✓':''}</span>
+                <button class="pc-pick-ann ${marked?'has':''}" title="${marked?'Edit markup':'Draw on this photo'}"
+                  onclick="event.stopPropagation();pcAnnotate('${p.id}')">✏️</button>
                 ${p.caption?`<span class="pc-pick-cap">${esc(p.caption)}</span>`:''}
               </div>`;
             }).join('')}
@@ -7385,7 +7393,15 @@ function renderConditionPage() {
           onchange="pcSet('executive_notes',this.value)">${esc(pc.executive_notes||'')}</textarea>
       </div>
     </div>
-    <p class="pc-photos-hint">📷 Report photos now come from the <strong>Photos</strong> page — everything marked "Print" appears in the Photo Report, right before this condition report.</p>`;
+    <p class="pc-photos-hint">📷 Attach photos to a finding with the camera button on its row, and draw on them with ✏️ — the same markup tool the Photos page uses. An attached photo prints beside its finding and is left out of the Photo Report, so nothing appears twice. Everything still marked "Print" on the Photos page makes up the Photo Report.</p>`;
+
+  // Picker thumbs are canvases so they show the markup a rep just drew. Same
+  // renderer the Photos page uses; a photo with no annotations simply draws
+  // the image.
+  el.querySelectorAll('canvas.pc-pick-cv').forEach(cv => {
+    const ph = S.photos.find(x => x.id === cv.dataset.photo);
+    if (ph) drawAnnotatedPhoto(cv, BASE + '/uploads/' + ph.filename, ph.annotations || []);
+  });
 }
 
 function rhGet()   { if (!S.roof_health) S.roof_health={condition:'',age_years:'',inspection_date:'',material_type:'',pitch:'',summary:'',findings:[],recommendations:[],report_photo_ids:[]}; return S.roof_health; }
@@ -8074,6 +8090,10 @@ function saveAnnotations() {
   closeAnnotationModal();
   renderPhotosPage();
   renderCoverPage(); // refresh cover strip
+  // The modal is reachable from the Condition tab too, where the photo sits
+  // beside the finding it documents. Refreshing only the Photos page left the
+  // rep looking at the version they had just marked up, unmarked.
+  if (activePage === 'report') renderConditionPage();
   warmPrintPhotos();
 }
 

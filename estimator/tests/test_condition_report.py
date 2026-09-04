@@ -460,3 +460,47 @@ def test_the_printed_photo_bakes_its_annotations(A):
     assert 'drawAnn(ctx, ann' in bake
     assert '_printNeededIds()' in bake
     assert 'pcFindingPhotoIds().forEach(id => needed.add(id))' in src
+
+
+# ── The markup tool, on the tab where the photo is used ──────────────
+# Circling the damage and attaching it to the finding is one motion on a roof.
+# It used to be two screens apart: attach on the Condition tab, mark up on the
+# Photos page. The Condition tab opens the SAME editor — one annotation tool,
+# one set of drawing code, no second implementation to drift.
+
+def test_the_condition_tab_opens_the_shared_editor(A):
+    src = _appjs()
+    assert 'function pcAnnotate(photoId){ openAnnotationModal(photoId); }' in src, \
+        'the Condition tab must reuse openAnnotationModal, not grow its own editor'
+    assert src.count('function openAnnotationModal(') == 1, \
+        'one annotation editor, not two'
+
+
+def test_saving_annotations_refreshes_the_condition_tab(A):
+    """The editor is reachable from two pages now. Refreshing only the Photos
+    page left a rep on the Condition tab looking at the photo they had just
+    marked up, unmarked."""
+    src = _appjs()
+    save = src[src.index('function saveAnnotations()'):]
+    save = save[:save.index('\n}')]
+    assert "activePage === 'report'" in save and 'renderConditionPage()' in save
+    # The print bake still has to be invalidated, or the PDF keeps the old art.
+    assert 'delete _printPhotoCache[photo.id]' in save
+    assert 'warmPrintPhotos()' in save
+
+
+def test_the_picker_tile_shows_the_markup_it_has(A):
+    """A rep picking a photo needs to see which ones they have already drawn
+    on — a grid of clean thumbnails hides exactly that."""
+    src = _appjs()
+    assert 'canvas class="pc-pick-cv"' in src
+    assert 'drawAnnotatedPhoto(cv, BASE' in src
+    assert 'pc-pick-ann' in src
+
+
+def test_the_annotate_button_does_not_toggle_the_attachment(A):
+    """It sits on a tile whose click attaches the photo. Without stopping
+    propagation, opening the editor would also detach the photo underneath."""
+    src = _appjs()
+    i = src.index('class="pc-pick-ann')
+    assert 'event.stopPropagation();pcAnnotate(' in src[i:i + 400]
