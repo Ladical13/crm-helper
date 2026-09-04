@@ -775,6 +775,104 @@ and cites an authoritative page; the manager reading it before clicking approve
 is the accuracy check. Answers do move between runs — Windsor came back
 "2024 I-Codes" on one pass and "2018 IRC" on another.
 
+### Report-only estimates — the condition report IS the bid
+
+An estimate with a priced condition report and no trade carrying line items is
+priced by its **recommended repairs**, not by Good/Better/Best. `_is_report_only`
+(`app.py`) / `isReportOnly()` (`app.js`) decide it and the two must agree;
+`tests/report_only_runner.js` holds them to the same numbers, because the browser
+prints this total on the PDF while the server puts it on the sign page, the
+estimate list, the funnel and the Den push.
+
+- **Scope is a line item with a QUANTITY, not an enabled trade and not a row.**
+  Every new estimate ships with Roofing enabled and empty, which is why the
+  customer used to get three $0 package columns and a "Project Total $0"
+  printed under a report that had just quoted thousands. Testing for *rows*
+  fixed only half of it: a rep who tapped "Load Defaults" on Roofing mid-
+  inspection and zeroed the quantities left a trade full of rows that price
+  nothing, and those reports stayed broken. `_has_priced_scope` /
+  `hasPricedScope()` require `quantity > 0`, which is what "not in scope"
+  already means everywhere else (`render_line_items`, `_trade_subtotal` and
+  every printed scope table skip a zero-qty row). Insurance is the one
+  exception and keys on `enabled` alone — `build_customer_view` routes on
+  exactly that, so anything looser would price an estimate off its repairs
+  while showing the customer the insurance page and a different total.
+- **📋 Report is the fourth estimate type**, and it turns every trade OFF so
+  that trap cannot happen at all — plus it lands the rep on the Condition tab
+  and forces the Roof Health print chip on. The shape rule above stays as the
+  rescue for the year of estimates that predate it.
+- **The type is a starting posture, not a lock.** `_has_priced_scope` is tested
+  BEFORE the type, so pricing a trade on a report estimate turns it back into
+  an ordinary one — that is the inspect → report → "yes, replace it" path, and
+  a rep should never have to remember to switch the type back.
+- **Both paths need a report the customer can see** (the Roof Health chip), and
+  on the *inferred* path the recommendations must total above zero. An estimate
+  that is merely empty must keep totalling $0 rather than inventing a price; an
+  explicit Report estimate with nothing priced also totals $0, it just renders
+  as the report it is.
+- **Show the repairs table exactly where the condition report is NOT.** The
+  /sign page and the browser's print view carry the full report already, so a
+  second identical table there is the same lines twice. `build_signed_pdf`,
+  `build_signed_confirmation` and `build_presentation_view` carry no report at
+  all, so `_cv_repairs_block` (or its PDF twin) is their ONLY scope — without
+  it a signed repair contract is a navy total bar over an empty page.
+- **A finding's photos print beside the finding, and the Photo Report drops
+  them.** `finding.photo_ids` is new (the Condition tab's 📷 button per row);
+  `_pc_finding_photo_ids` / `pcFindingPhotoIds()` are the matched pair that
+  subtract those photos from the gallery, so one photograph appears once —
+  beside the sentence explaining it rather than in a gallery pages away with
+  nothing next to it. `_printNeededIds()` must include them or an attached
+  photo prints as a gap: `show_in_estimate` governs the GALLERY, and a rep who
+  attached a photo to a finding has already said they want it shown.
+- **Annotations reach both.** Web overlays a `.cvph-canvas` painted by
+  `_CV_ANN_JS`; print bakes them into the image in `preparePrintPhotos()`. The
+  painter normally rides with the Photo Report, so `_cv_condition_block` emits
+  it too — a report whose photos are ALL on findings has no Photo Report, and
+  without that every annotation on the page silently fails to draw. It
+  self-guards on `window._cvAnnInit`, which is what makes emitting it twice
+  safe.
+- **The Condition tab opens the SAME editor** (`pcAnnotate` → the Photos page's
+  `openAnnotationModal`) — one annotation tool, no second implementation to
+  drift. `saveAnnotations()` refreshes whichever page is active: it used to
+  refresh only Photos, which left a rep on the Condition tab looking at the
+  photo they had just marked up, unmarked. The ✏️ on a picker tile must
+  `stopPropagation()` — the tile's own click is what attaches the photo.
+- **The report reads like an estimate: cost per line, subtotal per section,
+  one total.** The summary page it used to open with is gone — a Condition
+  Snapshot grid restating grades that reappear on every section header, and a
+  priority-bucketed cost table restating costs printed line by line on the
+  next page. The same "where the other thing isn't" rule governs the closing
+  Total: on a report-only estimate the navy bar carries it, so the report
+  stops at subtotals; on a priced estimate nothing else states it, so the
+  report closes with its own Total. Guarded by
+  `tests/test_condition_report.py`.
+- **Five customer-facing surfaces, not one.** The first pass fixed `/sign` and
+  the browser print and stopped there; the download PDF, the executed contract,
+  the post-signature page and presentation mode all still headed a repair bid
+  "Better Package" and totalled it $0. When something must not appear on a
+  report-only estimate, check all five.
+- **The permit card, "What's Included and Why" (web AND
+  `_render_estimate_details_page` in the PDF) and the glance's "Backed by" row
+  are suppressed.** All of them describe a replacement: the permit is "priced
+  into your estimate", the details page walks through package warranties and a
+  complete tear-off, and every source for the glance headline opens "Good and
+  Better packages carry…". On a repair bid that is a claim about work nobody
+  quoted — and the details page is what put "Better Package" back into a PDF
+  the rest of this had already cleaned up.
+- **The trust blocks stay**, warranty included. That is the company's own copy
+  from ⚙ Settings under its own heading, not the estimator choosing to headline
+  a package. If it names packages on a repair bid, that is a Settings edit.
+- **Legacy `roof_health` estimates count too** — both sides migrate on read
+  (`pcGet` / `_cv_condition_pc`), and the runner covers that path. `pageComplete`
+  reads `property_condition` now: it tested only the legacy field, so the
+  Condition tab's ✓ never lit.
+- **A new estimate type must reach three lists**: `ESTIMATE_TYPES` (sidebar +
+  the customer screen's create dialog, both driven off it), `CONTRACT_TYPES`
+  (a type missing there silently inherits retail's terms — `report` does so
+  deliberately), and `isStockContract`. `tests/test_report_only.py` holds every
+  `ESTIMATE_TYPES` entry to having both buttons; commercial once missed one.
+- Guarded by `tests/test_report_only.py`.
+
 ### Estimate outcome — `lost`, and why the rename was the small half
 
 `declined` is now **`lost`**, and the rename was the least of it. `estStatusOf()`

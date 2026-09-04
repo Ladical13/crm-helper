@@ -1056,6 +1056,12 @@ def _estimate_total(est):
         # RCV (price) = ACV + Depreciation
         return sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
                    for sec in sections for i in sec.get('items', []))
+    # A condition report with nothing priced behind it IS the bid — see
+    # _is_report_only. This is the one place the price does not come from
+    # line items, and everything downstream (list, funnel, Den push, sign
+    # page, change orders) reads it from here.
+    if _is_report_only(est):
+        return _pc_repair_totals(est)[3]
     return calc_selected_total(est)
 
 
@@ -5067,30 +5073,92 @@ background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var
 .cvftr-c a{color:rgba(255,255,255,.78);text-decoration:none;font-weight:600}
 .cvftr-sub{font-size:10.5px;margin-top:10px;opacity:.7}
 
-/* ── condition report ── */
-.cvcond-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;margin-bottom:12px}
-.cvcond-cell{text-align:left;border:none;border-top:1px solid var(--line);border-radius:0;padding:var(--sp-2) 0 0;background:#fff}
-.cvcond-cell-lbl{font-size:var(--fz-micro);font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:var(--sp-1);line-height:1.35}
-.cvcond-letter{font-family:var(--serif);font-size:28px;font-weight:600;width:auto;height:auto;line-height:1.1;border-radius:0;margin:0 0 3px;background:none!important}
-.cvcond-word{font-size:var(--fz-fine);font-weight:500;color:var(--mut)}
-.cvcond-exec{font-family:var(--serif);font-size:var(--fz-body);line-height:1.75;color:var(--ink);background:#fff;border-left:2px solid var(--cyan);
-padding:2px 0 2px var(--sp-3);border-radius:0;margin-bottom:var(--sp-3)}
-.cvcond-sec{margin-top:14px;border-top:1px solid var(--line);padding-top:13px}
-.cvcond-sec-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap}
-.cvcond-sec-hd h4{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--navy);margin:0}
-.cvcond-badge{font-size:var(--fz-micro);font-weight:600;border-radius:999px;padding:4px 11px;white-space:nowrap;letter-spacing:1px;text-transform:uppercase;background:none!important;border:1px solid currentColor}
-.cvcond-meta{font-size:11.5px;color:var(--mut);margin-bottom:6px}
-.cvcond-summary{font-size:12.5px;line-height:1.65;color:#33415a;margin-bottom:8px}
-.cvcond-sh{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;color:var(--faint);margin:var(--sp-3) 0 var(--sp-1)}
-.cvcond-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
-.cvcond-tbl th{text-align:left;font-size:var(--fz-micro);text-transform:uppercase;letter-spacing:1.2px;color:var(--faint);
-background:#fff;padding:var(--sp-1) 8px;border-bottom:1px solid var(--navy)}
-.cvcond-tbl th:first-child,.cvcond-tbl td:first-child{padding-left:0}
-.cvcond-tbl td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.55}
-.cvcond-tbl tr:last-child td{border-bottom:none}
-.cvcond-cost-total td{font-weight:600;color:var(--navy);border-top:1px solid var(--navy);background:#fff}
-.cvcond-foot{font-size:var(--fz-micro);color:var(--faint);line-height:1.7;margin-top:var(--sp-3);border-top:1px solid var(--line);padding-top:var(--sp-2)}
+/* ── condition report ──
+   Reads like an estimate, not a spreadsheet: each area graded, what we found,
+   then the work with a price against it. The money is set in the serif at
+   display size because "what does it cost to fix" is the question this
+   document exists to answer. */
+.cvcond-byline{font-size:var(--fz-sm);color:var(--mut);margin:-4px 0 var(--sp-3)}
+.cvcond-exec{font-family:var(--serif);font-size:var(--fz-lead);line-height:1.7;color:var(--ink);
+border-left:2px solid var(--cyan);padding:2px 0 2px var(--sp-3);margin-bottom:var(--sp-5)}
+
+.cvcond-sec{margin-top:var(--sp-5);padding-top:var(--sp-4);border-top:1px solid var(--line)}
+.cvcond-sec:first-of-type{border-top:none;padding-top:0}
+.cvcond-sec-hd{display:flex;align-items:center;gap:var(--sp-3);margin-bottom:var(--sp-2)}
+/* The grade is the emotional hook of a condition report, so it is a mark, not
+   a caption. One per area, and nowhere else in the document. */
+.cvcond-grade{flex:none;width:46px;height:46px;border-radius:var(--r);display:flex;
+align-items:center;justify-content:center;font-family:var(--serif);font-size:26px;
+font-weight:600;line-height:1}
+.cvcond-sec-name{display:flex;flex-direction:column;gap:2px;min-width:0}
+.cvcond-sec-name h4{font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;
+color:var(--navy);margin:0;line-height:1.2}
+/* The icon is a sibling of the name column, NOT the first thing inside the
+   heading — nested, the grade word underneath tucked itself under the emoji
+   and read as a caption on it ("🏠 / FAIR") rather than on "Roofing". */
+.cvcond-ico{flex:none;font-size:30px;line-height:1}
+.cvcond-sec-word{font-size:var(--fz-fine);font-weight:600;text-transform:uppercase;letter-spacing:1.2px}
+.cvcond-meta{font-size:var(--fz-fine);color:var(--mut);margin-bottom:var(--sp-2)}
+.cvcond-summary{font-size:var(--fz-sm);line-height:1.7;color:var(--mut);margin-bottom:var(--sp-2)}
+.cvcond-sh{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;
+color:var(--faint);margin:var(--sp-4) 0 var(--sp-1)}
+
+/* Findings: evidence, deliberately quieter than the priced work below. */
+.cvcond-finds{list-style:none;margin:0;padding:0}
+.cvfind{display:flex;align-items:flex-start;gap:var(--sp-2);padding:10px 0;
+border-bottom:1px solid var(--line);font-size:var(--fz-sm);line-height:1.6}
+.cvfind:last-child{border-bottom:none}
+.cvfind-dot{flex:none;width:7px;height:7px;border-radius:50%;margin-top:7px}
+.cvfind-txt{flex:1;min-width:0;color:var(--ink)}
+/* The photographs of this finding, on the line that describes it. Small on
+   purpose — they are evidence for the sentence, not a gallery. */
+/* Beside the sentence, not under it — a single photo on a full-width line
+   left an empty half-page beside it, and "next to the finding" is the whole
+   point. Big enough to be evidence: at thumbnail size a homeowner squints and
+   takes our word for it anyway. Click opens the lightbox (.cvph-wrap). */
+.cvfind-shots{flex:none;width:190px;display:flex;flex-direction:column;gap:6px;
+margin-right:var(--sp-1)}
+.cvfind-shot{display:block;border-radius:10px}
+.cvfind-shot img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block}
+@media (max-width:560px){
+  .cvfind{flex-wrap:wrap}
+  .cvfind-shots{order:3;width:100%;flex-direction:row;flex-wrap:wrap;margin:8px 0 0 15px}
+  .cvfind-shot{width:calc(50% - 5px)}
+}
+.cvfind-sev{flex:none;font-size:var(--fz-micro);font-weight:700;text-transform:uppercase;letter-spacing:1px}
+
+/* Recommended work: description left, price right, the way an invoice reads. */
+.cvcond-works{list-style:none;margin:0;padding:0}
+.cvwork{display:flex;align-items:baseline;gap:var(--sp-2);padding:12px 0;
+border-bottom:1px solid var(--line)}
+.cvwork-pri{flex:none;min-width:62px;text-align:center;font-size:var(--fz-micro);font-weight:700;
+text-transform:uppercase;letter-spacing:.8px;padding:4px 8px;border-radius:999px;
+border:1px solid currentColor;white-space:nowrap}
+.cvpri-immediate{color:var(--red)}
+.cvpri-soon{color:var(--amber)}
+.cvpri-monitor{color:var(--faint)}
+.cvwork-desc{flex:1;min-width:0;font-size:var(--fz-body);line-height:1.55;color:var(--ink)}
+.cvwork-amt{flex:none;font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;
+color:var(--navy);white-space:nowrap}
+.cvwork-noamt{font-family:inherit;font-size:var(--fz-fine);font-weight:500;color:var(--faint);font-style:italic}
+.cvcond-sub{display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-3);
+padding:11px 0 0;font-size:var(--fz-sm);font-weight:600;color:var(--mut)}
+.cvcond-sub-amt{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--ink)}
+
+.cvcond-total{display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-3);
+margin-top:var(--sp-4);padding-top:var(--sp-3);border-top:2px solid var(--navy);
+font-size:var(--fz-fine);font-weight:600;text-transform:uppercase;letter-spacing:1.6px;color:var(--mut)}
+.cvcond-total-amt{font-family:var(--serif);font-size:26px;font-weight:600;color:var(--navy);
+letter-spacing:0;text-transform:none}
+.cvcond-foot{font-size:var(--fz-micro);color:var(--faint);line-height:1.7;margin-top:var(--sp-4);
+border-top:1px solid var(--line);padding-top:var(--sp-2)}
 .cvcond .cvph-grid{margin-top:10px}
+@media (max-width:520px){
+  .cvwork{flex-wrap:wrap}
+  .cvwork-desc{flex:1 1 100%;order:2}
+  .cvwork-amt{order:3;margin-left:auto}
+  .cvwork-pri{order:1}
+}
 
 /* ── trust blocks ── */
 .cvtrust-body p{font-size:var(--fz-body);line-height:1.75;color:var(--mut);margin-bottom:var(--sp-2)}
@@ -5797,12 +5865,42 @@ def _cv_photo_fig(photo):
 </figure>'''
 
 
+def _cv_finding_photo(photo):
+    """A finding's own photo — small, beside the sentence it illustrates.
+
+    Deliberately NOT _cv_photo_fig: that is a full-width gallery figure with a
+    caption block under it, and three of those inside a bullet would bury the
+    finding. Same .cvph-wrap hook, so the viewer's lightbox still opens it
+    full size, and the caption rides in the alt/title rather than on the page —
+    the finding text IS the caption here.
+
+    It DOES carry the annotation overlay. A rep who circled the split in the
+    collar drew that circle to make one point, and this is the photo that sits
+    beside the sentence making it — showing the clean image here and the marked
+    one only in the gallery would hide the markup exactly where it lands best.
+    The canvas paints at the rendered width (see _CV_ANN_JS), so the strokes
+    scale down with the smaller image rather than overwhelming it."""
+    cap = (photo.get('caption') or '').strip()
+    anns = photo.get('annotations') or []
+    canvas = (f'<canvas class="cvph-canvas" data-ann="{he(json.dumps(anns))}"></canvas>'
+              if anns else '')
+    return (f'<span class="cvph-wrap cvfind-shot" title="{he(cap)}">'
+            f'<img src="/uploads/{he(photo["filename"])}" '
+            f'alt="{he(cap or "Inspection photo")}" loading="lazy">{canvas}</span>')
+
+
 def _cv_photos_block(est):
     """Photo Report — the same show-in-estimate photos the PDF prints, with
     annotations drawn client-side (same math as the app's print bake)."""
+    # Anything attached to a finding is already printed beside that finding —
+    # showing it again in the gallery is the same photograph twice, and the
+    # second time with no explanation next to it. Mirrors pcFindingPhotoIds()
+    # in app.js, which does the same subtraction for the printed report.
+    used = _pc_finding_photo_ids(est)
     photos = [p for p in (est.get('photos') or [])
               if p.get('show_in_estimate') and p.get('filename')
-              and p.get('id') != est.get('cover_photo_id')]
+              and p.get('id') != est.get('cover_photo_id')
+              and p.get('id') not in used]
     if not photos:
         return ''
     figs = ''.join(_cv_photo_fig(p) for p in photos)
@@ -5889,6 +5987,7 @@ _PC_GRADES = {'A': ('Excellent', '#16a34a', '#dcfce7'), 'B': ('Good', '#2563eb',
               'F': ('Critical', '#7c3aed', '#ede9fe')}
 _RH_SEV = {'low': ('Low', '#2563eb'), 'medium': ('Medium', '#d97706'), 'high': ('High', '#dc2626')}
 _RH_PRI = {'immediate': 'Immediate', 'soon': '1–2 Years', 'monitor': 'Monitor'}
+_PC_PRI_SHORT = {'immediate': 'Now', 'soon': '1–2 Yrs', 'monitor': 'Monitor'}
 
 
 def _cv_condition_pc(est):
@@ -5938,6 +6037,152 @@ def _pc_is_range(rec):
     return bool(re.search(r'(?:–|—|-|\bto\b)\s*$', s.strip()))
 
 
+# ── Report-only estimates ───────────────────────────────────────────
+# A rep who inspects a roof and writes up the condition report has produced a
+# bid: the recommendations carry prices and add up. Nothing else on the estimate
+# does — a new estimate ships with Roofing ENABLED and empty, so the customer
+# used to get a Good/Better/Best comparison of three $0 columns and a "Project
+# Total $0" underneath a report that had just quoted $6,400 of repairs.
+#
+# So when no trade carries scope, the recommendations ARE the price. The G/B/B
+# comparison is suppressed (there is nothing to compare) and every place that
+# asks what this estimate is worth — the list, the funnel, the Den push, the
+# sign page, the PDF — gets the repair total. Mirrored in app.js as
+# pcRepairLines() / pcRepairTotals() / isReportOnly(), and held to the same
+# numbers by tests/report_only_runner.js — change both sides together.
+
+
+def _pc_repair_lines(est):
+    """Every recommendation on the enabled, graded sections of the report.
+
+    The one parse behind both the report's own cost summary and the price of a
+    report-only estimate, so the two can never disagree. Section order follows
+    _PC_SECTIONS, the order the report itself prints."""
+    pc = _cv_condition_pc(est)
+    if not pc:
+        return []
+    sections = pc.get('sections') or {}
+    out = []
+    for key, lbl, icon in _PC_SECTIONS:
+        sec = sections.get(key) or {}
+        if not (sec.get('enabled') and sec.get('grade')):
+            continue
+        for rec in (sec.get('recommendations') or []):
+            out.append({
+                'section':     lbl,
+                'icon':        icon,
+                'priority':    rec.get('priority') or 'monitor',
+                'description': (rec.get('description') or '').strip(),
+                'cost_range':  rec.get('cost_range') or '',
+                'amount':      _pc_cost_lo(rec),
+                'is_range':    _pc_is_range(rec),
+            })
+    return out
+
+
+def _pc_repair_totals(est):
+    """(immediate, soon, monitor, total, any_range) over the report.
+
+    Same low-end parse and same '+' rule the condition block already prints —
+    a legacy range totals its low end and keeps the suffix."""
+    imm = soon = mon = 0.0
+    any_range = False
+    for ln in _pc_repair_lines(est):
+        amt = ln['amount']
+        if amt and ln['is_range']:
+            any_range = True
+        if ln['priority'] == 'immediate':
+            imm += amt
+        elif ln['priority'] == 'soon':
+            soon += amt
+        else:
+            mon += amt
+    return imm, soon, mon, imm + soon + mon, any_range
+
+
+def _pc_finding_photo_ids(est):
+    """Every photo id attached to a finding, across every section."""
+    pc = _cv_condition_pc(est)
+    if not pc:
+        return set()
+    sections = pc.get('sections') or {}
+    out = set()
+    for key, _lbl, _icon in _PC_SECTIONS:
+        for f_ in ((sections.get(key) or {}).get('findings') or []):
+            for pid in (f_.get('photo_ids') or []):
+                out.add(pid)
+    return out
+
+
+def _has_priced_scope(est):
+    """True when any trade actually carries scope to price.
+
+    Three things this is NOT, each of which was wrong in turn:
+
+    * `enabled` is not the test. Roofing is enabled on every new estimate.
+    * *Having* line items is not the test either. A rep who tapped "Load
+      Defaults" on Roofing while writing up an inspection, then zeroed the
+      quantities, left a trade full of rows that price nothing — and that was
+      enough to keep the report from pricing itself, so those reports kept
+      showing three $0 package columns.
+    * A zero-quantity item is "not in scope" everywhere else in this app:
+      `render_line_items` skips it, `_trade_subtotal` skips it, the printed
+      scope tables skip it. Scope means at least one row with a quantity.
+
+    Insurance is the exception and keys on `enabled` alone, deliberately:
+    `build_customer_view` routes on exactly that, so anything looser here would
+    let an estimate price itself off its repairs while the customer is shown
+    the insurance page with a different total."""
+    trades = est.get('trades') or {}
+    if (trades.get('insurance') or {}).get('enabled'):
+        return True
+    for tk in GBB_TRADES:
+        td = trades.get(tk) or {}
+        if not td.get('enabled'):
+            continue
+        for item in (td.get('line_items') or []):
+            try:
+                if float(item.get('quantity') or 0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue          # unparseable quantity prices nothing
+    return False
+
+
+def _is_report_only(est):
+    """The condition report is the whole estimate, and its repairs are the price.
+
+    Two ways in, and the order of the tests is the whole design:
+
+    * The rep picked the **Report** estimate type, which turns every trade off
+      so the empty-Roofing trap cannot happen in the first place. That is a
+      starting posture, NOT a lock — `_has_priced_scope` is tested first, so
+      the moment a rep prices a trade on a report estimate (the inspect →
+      report → "yes, replace it" path, which is the whole point of handing a
+      realtor one of these) it goes back to being an ordinary estimate priced
+      by its line items. Nothing has to be switched back by hand.
+    * Or the SHAPE says so on any other type: no trade carries line items and
+      the report is priced. A year of estimates predate the Report type and
+      still have to price correctly.
+
+    Both need a report the customer can actually see: `page_visibility.report`
+    gates the only explanation of where the number came from, so a hidden
+    report is not a bid. And on the inferred path the recommendations must
+    total above zero — an estimate that is merely empty keeps totalling $0
+    rather than inventing a price. An explicit Report estimate with nothing
+    priced yet also totals $0; it just renders as the report it is instead of
+    as three empty package columns."""
+    if est.get('estimate_type') == 'insurance':
+        return False
+    if (est.get('page_visibility') or {}).get('report') is False:
+        return False
+    if _has_priced_scope(est):
+        return False
+    if est.get('estimate_type') == 'report':
+        return True
+    return _pc_repair_totals(est)[3] > 0
+
+
 def _cv_condition_block(est):
     """Condition report — same grades, findings, recommendations and cost
     outlook the printed report shows. Gated by the Roof Health print chip
@@ -5957,110 +6202,136 @@ def _cv_condition_block(est):
     if not enabled:
         return ''
 
-    is_hoa       = pc.get('audience') == 'hoa'
-    w_title      = 'Property Condition Report' if is_hoa else 'Home Condition Report'
-    w_investment = 'Estimated Repair Investment' if is_hoa else 'Estimated Repair Costs'
+    is_hoa  = pc.get('audience') == 'hoa'
+    w_title = 'Property Condition Report' if is_hoa else 'Home Condition Report'
 
-    # Condition snapshot grid
-    cells = ''
-    for _k, lbl, icon, sec in enabled:
-        word, clr, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
-        cells += f'''<div class="cvcond-cell">
-  <div class="cvcond-cell-lbl">{icon} {he(lbl)}</div>
-  <div class="cvcond-letter" style="color:{clr};background:{bg}">{he(sec.get("grade"))}</div>
-  <div class="cvcond-word" style="color:{clr}">{word}</div>
-</div>'''
-
-    exec_html = (f'<div class="cvcond-exec"><strong>Overall Assessment:</strong> {he(pc.get("executive_notes"))}</div>'
+    # No summary block: every grade it gridded reappears on its own section
+    # header, and its priority sums were sums of costs printed line by line
+    # below. The report reads like an estimate instead — each area graded, what
+    # we found, then the work with a price against it and a subtotal.
+    exec_html = (f'<div class="cvcond-exec">{he(pc.get("executive_notes"))}</div>'
                  if (pc.get('executive_notes') or '').strip() else '')
 
-    # Estimated repair investment. Each recommendation now carries ONE price, so
-    # these totals are exact and print without a suffix — that is what lets this
-    # report stand as a bid. The '+' comes back only if some line is still a
-    # legacy range, where the total really is a low-end sum.
-    cost_imm = cost_soon = cost_mon = 0.0
-    any_range = False
-    for _k, _lbl, _icon, sec in enabled:
-        for rec in (sec.get('recommendations') or []):
-            lo = _pc_cost_lo(rec)
-            if lo and _pc_is_range(rec):
-                any_range = True
-            pri = rec.get('priority')
-            if pri == 'immediate':
-                cost_imm += lo
-            elif pri == 'soon':
-                cost_soon += lo
-            else:
-                cost_mon += lo
-    cost_total = cost_imm + cost_soon + cost_mon
-    plus = '+' if any_range else ''
-    cost_html = ''
-    if cost_total > 0:
-        rows = [(lbl, v) for lbl, v in [('Immediate repairs (D/F)', cost_imm),
-                                        ('Short-term (C grades)', cost_soon),
-                                        ('Maintenance (B grades)', cost_mon)] if v > 0]
-        trs = ''.join(f'<tr><td>{lbl}</td><td class="cvr">{fc(v)}{plus}</td></tr>' for lbl, v in rows)
-        cost_html = f'''<div class="cvcond-sh">{w_investment}</div>
-<table class="cvcond-tbl">{trs}
-<tr class="cvcond-cost-total"><td>Estimated Total</td><td class="cvr">{fc(cost_total)}{plus}</td></tr></table>'''
+    plus = '+' if _pc_repair_totals(est)[4] else ''
+    pmap = {p['id']: p for p in (est.get('photos') or [])
+            if p.get('id') and p.get('filename')}
 
-    # Per-section detail
     sec_html = ''
+    report_total = 0.0
     for key, lbl, icon, sec in enabled:
         word, clr, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
+
         meta_bits = []
         if key == 'roof':
-            if sec.get('material_type'):
-                meta_bits.append(f'Material: <strong>{he(sec["material_type"])}</strong>')
-            if sec.get('age_years'):
-                meta_bits.append(f'Est. Age: <strong>{he(sec["age_years"])} years</strong>')
-            if sec.get('pitch'):
-                meta_bits.append(f'Pitch: <strong>{he(sec["pitch"])}</strong>')
-        meta_html = f'<div class="cvcond-meta">{" &middot; ".join(meta_bits)}</div>' if meta_bits else ''
-        summary_html = (f'<div class="cvcond-summary">{he(sec.get("summary"))}</div>'
+            for field, label in (('material_type', ''), ('age_years', ' years old'),
+                                 ('pitch', ' pitch')):
+                if sec.get(field):
+                    meta_bits.append(f'{he(sec[field])}{label}')
+        meta_html = (f'<div class="cvcond-meta">{" &middot; ".join(meta_bits)}</div>'
+                     if meta_bits else '')
+        summary_html = (f'<p class="cvcond-summary">{he(sec.get("summary"))}</p>'
                         if (sec.get('summary') or '').strip() else '')
 
+        # What we found — supporting evidence, deliberately quieter than the
+        # priced work below it. A severity dot carries the urgency so the
+        # reader scans colour rather than reading a column.
         find_rows = ''
         for f_ in (sec.get('findings') or []):
             if not (f_.get('description') or f_.get('area')):
                 continue
             sev_lbl, sev_c = _RH_SEV.get(f_.get('severity'), (f_.get('severity') or '', '#666'))
-            find_rows += (f'<tr><td style="font-weight:600">{he(f_.get("area") or "—")}</td>'
-                          f'<td><span style="color:{sev_c};font-weight:700">{he(sev_lbl)}</span></td>'
-                          f'<td>{he(f_.get("description") or "")}</td></tr>')
-        find_html = (f'''<div class="cvcond-sh">Findings</div>
-<table class="cvcond-tbl"><thead><tr><th scope="col">Area</th><th scope="col">Severity</th><th scope="col">Description</th></tr></thead>
-<tbody>{find_rows}</tbody></table>''' if find_rows else '')
+            area = he(f_.get('area') or '')
+            # The photograph of the damage, beside the sentence describing it.
+            # It used to sit in a gallery pages away, so a homeowner read
+            # "rubber collar has split at the base" and then, much later, met
+            # an unlabelled close-up of a pipe boot and had to join them up.
+            shots = ''.join(_cv_finding_photo(pmap[pid]) for pid in (f_.get('photo_ids') or [])
+                            if pid in pmap)
+            find_rows += (
+                f'<li class="cvfind">'
+                f'{f"<span class=\'cvfind-shots\'>{shots}</span>" if shots else ""}'
+                f'<span class="cvfind-dot" style="background:{sev_c}"></span>'
+                f'<span class="cvfind-txt">'
+                f'{f"<strong>{area}</strong> &mdash; " if area else ""}'
+                f'{he(f_.get("description") or "")}</span>'
+                f'<span class="cvfind-sev" style="color:{sev_c}">{he(sev_lbl)}</span></li>')
+        find_html = (f'<div class="cvcond-sh">What we found</div>'
+                     f'<ul class="cvcond-finds">{find_rows}</ul>' if find_rows else '')
 
+        # Recommended work — the priced half. Each line is description left,
+        # price right, the way an invoice reads; the price is set in the same
+        # serif the estimate totals use so the money is the thing the eye lands
+        # on. Priority is a pill, not a table column.
         rec_rows = ''
+        sec_total = 0.0
         for rec in (sec.get('recommendations') or []):
             if not rec.get('description'):
                 continue
-            rec_rows += (f'<tr><td style="white-space:nowrap"><strong>{he(_RH_PRI.get(rec.get("priority"), rec.get("priority") or ""))}</strong></td>'
-                         f'<td>{he(rec.get("description") or "")}</td>'
-                         f'<td style="white-space:nowrap">{he(rec.get("cost_range") or "—")}</td></tr>')
-        rec_html = (f'''<div class="cvcond-sh">Recommendations</div>
-<table class="cvcond-tbl"><thead><tr><th scope="col">Priority</th><th scope="col">Description</th><th scope="col">Est. Cost</th></tr></thead>
-<tbody>{rec_rows}</tbody></table>''' if rec_rows else '')
+            amount = _pc_cost_lo(rec)
+            sec_total += amount
+            pri = rec.get('priority') or 'monitor'
+            price = he(rec.get('cost_range') or '')
+            # An unpriced line is two different things. On work we are telling
+            # them to do, no price means we still owe them one — say so. On a
+            # Monitor line there is no work yet, so "Quoted separately" would
+            # promise a quote for watching a roof.
+            blank = '&mdash;' if pri == 'monitor' else 'Quoted separately'
+            rec_rows += (
+                f'<li class="cvwork">'
+                f'<span class="cvwork-pri cvpri-{he(pri)}">{he(_PC_PRI_SHORT.get(pri, pri))}</span>'
+                f'<span class="cvwork-desc">{he(rec.get("description"))}</span>'
+                f'<span class="cvwork-amt{"" if price else " cvwork-noamt"}">'
+                f'{price or blank}</span></li>')
+        report_total += sec_total
 
-        sec_html += f'''<div class="cvcond-sec">
-  <div class="cvcond-sec-hd">
-    <h4>{icon} {he(lbl)}</h4>
-    <span class="cvcond-badge" style="color:{clr};background:{bg}">Grade {he(sec.get("grade"))} &mdash; {word}</span>
-  </div>
+        sub_html = (f'<div class="cvcond-sub"><span>{he(lbl)} subtotal</span>'
+                    f'<span class="cvcond-sub-amt">{fc(sec_total)}{plus}</span></div>'
+                    if sec_total > 0 else '')
+        rec_html = (f'<div class="cvcond-sh">Recommended work</div>'
+                    f'<ul class="cvcond-works">{rec_rows}</ul>{sub_html}' if rec_rows else '')
+
+        # The grade is the emotional hook of a condition report, so it gets to
+        # be a mark rather than a caption — one per area, on the header.
+        sec_html += f'''<section class="cvcond-sec">
+  <header class="cvcond-sec-hd">
+    <span class="cvcond-grade" style="color:{clr};background:{bg}">{he(sec.get("grade"))}</span>
+    <span class="cvcond-ico">{icon}</span>
+    <span class="cvcond-sec-name"><h4>{he(lbl)}</h4>
+      <span class="cvcond-sec-word" style="color:{clr}">{word}</span></span>
+  </header>
   {meta_html}{summary_html}{find_html}{rec_html}
-</div>'''
+</section>'''
 
-    insp_date = (pc.get('inspection_date') or '').strip()
-    insp_html = f'<div class="cvcond-meta">Inspection Date: <strong>{he(insp_date)}</strong></div>' if insp_date else ''
+    # One total to close — but ONLY where nothing else is about to state it. On
+    # a report-only estimate the navy total bar sits directly under this block,
+    # and the same figure twice inches apart is how a customer starts wondering
+    # which one they owe.
+    total_html = ''
+    if report_total > 0 and not _is_report_only(est):
+        total_html = (f'<div class="cvcond-total cvcond-cost-total"><span>Total</span>'
+                      f'<span class="cvcond-total-amt">{fc(report_total)}{plus}</span></div>')
+
+    insp = (pc.get('inspection_date') or '').strip()
+    rep  = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
+    line = ' &middot; '.join(x for x in (
+        f'Inspected {he(insp)}' if insp else '',
+        f'{"Inspector" if is_hoa else "Inspected by"} {he(rep)}' if rep else '') if x)
+    insp_html = f'<div class="cvcond-byline">{line}</div>' if line else ''
+
+    # _CV_ANN_JS normally rides with the Photo Report, but a report whose
+    # photos are ALL attached to findings has no Photo Report — the gallery
+    # comes back empty and the painter never ships, so every annotation on the
+    # page silently fails to draw. It self-guards on window._cvAnnInit, so
+    # emitting it from both places costs nothing when both are present.
+    ann_js = _CV_ANN_JS if 'cvph-canvas' in sec_html else ''
 
     return f'''<div class="cvcond">
   <h2 data-eyebrow="Inspection">{w_title}</h2>
   {insp_html}
-  <div class="cvcond-grid">{cells}</div>
   {exec_html}
-  {cost_html}
   {sec_html}
+  {total_html}
+  {ann_js}
   <div class="cvcond-foot">This {w_title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>
 </div>'''
 
@@ -6371,6 +6642,13 @@ def _cv_glance_block(est, manifest, sel_label='', sel_total=None):
             rows.append(('Your project',
                          f'<strong>{scope}</strong>'
                          + (f' at your home in {he(city)}' if city else '')))
+        elif _is_report_only(est):
+            # The manifest builds its trade list from line items, so a
+            # report-only estimate has none — and the row that opens the whole
+            # proposal would simply be missing. Name what it IS selling.
+            rows.append(('Your project',
+                         '<strong>Recommended repairs from your inspection</strong>'
+                         + (f' at your home in {he(city)}' if city else '')))
 
         # Only claim a choice where one is actually offered.
         tiers = []
@@ -6392,14 +6670,22 @@ def _cv_glance_block(est, manifest, sel_label='', sel_total=None):
 
     # Warranty headline: the selected tier's promise beats the generic body copy.
     warr = ''
-    wbt  = m.get('warranty_by_tier') or {}
-    sel  = (est.get('selected_tier') or '').strip().lower()
-    if sel and wbt.get(sel):
-        warr = wbt[sel]
-    else:
-        body = (m.get('warranty_body') or '').strip()
-        if body:
-            warr = re.split(r'\n|(?<=\.)\s+', body)[0].strip()
+    if not _is_report_only(est):
+        # Deliberately no "Backed by" row on a report-only estimate. Every
+        # source for it is written per package — warranty_by_tier names the
+        # tier outright, and the generic body copy opens "Good and Better
+        # packages carry…" — so this row is the estimator EDITORIALLY picking
+        # a package sentence as the headline of a bid that offers no packages.
+        # The warranty still appears in full, in the company's own words, in
+        # the trust block further down the same page.
+        wbt = m.get('warranty_by_tier') or {}
+        sel = (est.get('selected_tier') or '').strip().lower()
+        if sel and wbt.get(sel):
+            warr = wbt[sel]
+        else:
+            body = (m.get('warranty_body') or '').strip()
+            if body:
+                warr = re.split(r'\n|(?<=\.)\s+', body)[0].strip()
     if warr:
         rows.append(('Backed by', he(warr[:190] + '…' if len(warr) > 190 else warr)))
 
@@ -7479,12 +7765,162 @@ def _build_simple_retail_cv(est, token):
 ''' + _cv_footer()
 
 
+REPORT_TOTAL_LABEL = 'Recommended Repairs'
+
+
+def _cv_repairs_block(est):
+    """The recommendations, priced, as an HTML scope table.
+
+    Used ONLY where the condition report itself is absent — the signed
+    confirmation page and presentation mode both jump straight to a total, so
+    without this a repair contract carries a number and no scope at all. The
+    /sign page deliberately does NOT use it: the full condition report sits
+    directly above there, and a second identical table under its own heading is
+    the same lines twice.
+
+    Same _pc_repair_lines as everything else, so the itemization and the total
+    cannot disagree."""
+    lines = [ln for ln in _pc_repair_lines(est) if ln['description'] or ln['amount']]
+    if not lines:
+        return '', 0.0
+    _i, _s, _m, total, any_range = _pc_repair_totals(est)
+    plus = '+' if any_range else ''
+
+    rows = ''
+    for pri in ('immediate', 'soon', 'monitor'):
+        group = [ln for ln in lines if ln['priority'] == pri]
+        if not group:
+            continue
+        rows += (f'<tr class="cv-section-row"><td colspan="3">'
+                 f'{he(_RH_PRI.get(pri, pri.title()))}</td></tr>')
+        for ln in group:
+            # The rep's own cost text prints verbatim — a legacy
+            # "$8,000 - $12,000" stays a range on the page even though the
+            # total sums its low end, which is what the '+' is admitting.
+            price = he(ln['cost_range']) if ln['cost_range'] else '&mdash;'
+            rows += (f'<tr><td class="cvn">{he(ln["description"] or "Recommended repair")}'
+                     f'<div class="cvd">{he(ln["section"])}</div></td>'
+                     f'<td class="cvc" data-l="Priority">{he(_RH_PRI.get(ln["priority"], ""))}</td>'
+                     f'<td class="cvr" data-l="Price">{price}</td></tr>')
+
+    head = (f'<div class="cvtrade"><div class="cvtrade-hd">{REPORT_TOTAL_LABEL}</div>'
+            f'<table class="cvt"><thead><tr>'
+            f'<th>Recommendation</th><th scope="col" class="cvth-c">Priority</th>'
+            f'<th scope="col" class="cvth-r">Price</th></tr></thead>')
+    foot = (f'<tfoot><tr><td colspan="2" class="cvsub-l">Repair Subtotal</td>'
+            f'<td class="cvr cvsub">{fc(total)}{plus}</td></tr></tfoot></table></div>')
+    return head + f'<tbody>{rows}</tbody>' + foot, total
+
+
+def _build_report_only_cv(est, token):
+    """Customer view for an estimate that is a condition report and nothing else.
+
+    No packages, no tier picker, no empty trade tables — the repairs the report
+    recommends are the scope, and their total is the price. See _is_report_only
+    for why an estimate can look empty and still be worth quoting.
+
+    Two blocks are deliberately absent, and both were on this page before:
+
+    * A repairs table. The condition report directly above already lists every
+      recommendation with its price and totals them by priority. A second
+      itemization under its own heading is the same lines twice; the grand
+      total here is the signable number, not a second list.
+    * The permit card and the 'What's Included and Why' card. Both are written
+      for a replacement — one promises the permit is priced into the estimate,
+      the other walks through package warranties and a complete tear-off to the
+      deck. On a repair bid every line of that describes work nobody quoted.
+      The trust blocks stay: they are about the company, not the scope.
+
+    Every string this function emits reaches the customer's page source, so
+    reasoning like the above lives here rather than in an HTML comment."""
+    c     = est.get('customer', {})
+    a     = c.get('address', {})
+    cs    = ', '.join(filter(None, [a.get('city'), a.get('state')]))
+    addr  = ', '.join(filter(None, [a.get('street'), cs]))
+    enum  = _est_number(est)
+    notes = (est.get('notes_customer') or '').strip()
+    ctext = (est.get('contract_text') or '').strip()
+    sp    = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
+    tier  = est.get('selected_tier', 'better')   # passed through for POST only
+
+    total   = _pc_repair_totals(est)[3]
+    pc      = _cv_condition_pc(est) or {}
+    is_hoa  = pc.get('audience') == 'hoa'
+    grand_lbl = 'Estimated Repair Investment' if is_hoa else 'Estimated Repair Total'
+
+    notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
+    ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
+      <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
+    sp_html    = f'<div class="cvgi"><label>Inspected By</label><strong>{he(sp)}</strong></div>' if sp else ''
+
+    manifest = _build_estimate_manifest(est)
+
+    return _cv_head('Your Inspection Report &mdash; Project One Roofing', manifest) + _cv_header() + f'''
+{_cv_hero(est, 'Your Inspection Report is Ready',
+          'Review what we found and the repairs we recommend, then sign to approve the work',
+          steps=['Review the Findings', 'Approve the Repairs'])}
+
+<main class="cvmain">
+<div class="cvc-card">
+  <div class="cvgrid">
+    <div class="cvgi"><label>Prepared For</label><strong>{he(c.get("name","—"))}</strong></div>
+    <div class="cvgi"><label>Report #</label><strong>{he(enum)}</strong></div>
+    <div class="cvgi"><label>Address</label><strong>{he(addr or "—")}</strong></div>
+    <div class="cvgi"><label>Date</label><strong>{he(est.get("estimate_date","—"))}</strong></div>
+    {sp_html}
+    <div class="cvgi"><label>Valid Until</label><strong>{he(est.get("valid_until","—"))}</strong></div>
+  </div>
+</div>
+
+{_cv_glance_block(est, manifest, '', total)}
+
+{_cv_intro_block(est)}
+
+<!-- Evidence before price — see the note in build_customer_view. -->
+{_cv_photos_block(est)}
+
+{_cv_condition_block(est)}
+
+{_cv_attachments_block(est)}
+
+<div class="cvgrand">
+  <span class="cvgrand-lbl">{grand_lbl}</span>
+  <span class="cvgrand-amt">{fc(total)}</span>
+</div>
+
+{notes_html}
+{_cv_trust_blocks(est)}
+{_cv_next_steps()}
+{_cv_contact_card(est)}
+{_cv_download_card(token)}
+{ctext_html}
+
+<div class="cvsig" id="sign">
+  <h2>Approve These Repairs</h2>
+  <p class="sub">Your electronic signature confirms you have reviewed this report and approve the recommended repairs above, along with all terms &amp; conditions.</p>
+  {_cv_sig_form(_mount_path(f'/sign/{he(token)}'),
+                hidden=f'<input type="hidden" name="selected_tier" value="{he(tier)}">',
+                extra_blocks=_cv_initials_block(est),
+                agree_text='I have read this report and I approve the recommended repairs and all terms &amp; conditions.')}
+</div>
+</main>
+
+{_cv_sticky_bar(grand_lbl, fc(total))}
+''' + _cv_footer()
+
+
 def build_customer_view(est, token):
     # Branch: insurance estimates — explicit type OR insurance trade is enabled
     ins_td = est.get('trades', {}).get('insurance', {})
     is_insurance = (est.get('estimate_type') == 'insurance') or ins_td.get('enabled', False)
     if is_insurance:
         return _build_insurance_cv(est, token)
+
+    # Branch: the condition report is the whole estimate — its recommended
+    # repairs are the scope and the price. Sits ahead of the tier branches
+    # because there are no packages to choose between.
+    if _is_report_only(est):
+        return _build_report_only_cv(est, token)
 
     # Branch: all enabled trades are simple mode — skip tier selection
     if _all_trades_simple(est):
@@ -8112,6 +8548,21 @@ def build_presentation_view(est, token):
           {ins_html}
         </div>'''))
 
+    elif _is_report_only(est):
+        # No packages to walk the customer through — the repairs the report
+        # recommends are the whole pitch. Without this the slide read
+        # "Your Estimate / Total $0.00" on the screen the rep is presenting
+        # from, right after the Condition slide priced the repairs.
+        all_html, all_total = _cv_repairs_block(est)
+        slides.append(('Pricing', f'''<div class="ps-items">
+          <h2>{REPORT_TOTAL_LABEL}</h2>
+          {all_html}
+          <div class="ps-total">
+            <div class="ps-total-l">Estimated Repair Total</div>
+            <div class="ps-total-a">{fc(all_total)}</div>
+          </div>
+        </div>'''))
+
     else:
         # Simple-mode-only estimate
         all_html, all_total = render_line_items(est)
@@ -8176,6 +8627,9 @@ def build_presentation_view(est, token):
     elif is_insurance:
         sign_total = ins_total
         sign_lbl   = 'Insurance Claim Total'
+    elif _is_report_only(est):
+        sign_total = all_total
+        sign_lbl   = 'Estimated Repair Total'
     else:
         sign_total = all_total
         sign_lbl   = 'Your Estimate Total'
@@ -8357,6 +8811,18 @@ def build_signed_confirmation(est):
         tlbl = 'Insurance Claim'
         li_html, gtotal = _insurance_cv_table(est)
         total_bar = ''  # the insurance table already ends with its own total bar
+    elif _is_report_only(est):
+        # No package was ever offered, so the tier fallback below would head
+        # this signed contract "Better Package" and total it $0 — over a repair
+        # bid the customer just agreed to. This page carries no condition
+        # report either, so the repairs table is its ONLY scope.
+        li_html, gtotal = _cv_repairs_block(est)
+        tlbl      = REPORT_TOTAL_LABEL
+        total_lbl = f'Total &mdash; {he(tlbl)}'
+        total_bar = f'''<div class="cvgrand" style="margin-top:14px">
+  <span class="cvgrand-lbl">{total_lbl}</span>
+  <span class="cvgrand-amt">{fc(gtotal)}</span>
+</div>'''
     else:
         li_html, gtotal = render_line_items(est)
         if _all_trades_simple(est):
@@ -8417,7 +8883,9 @@ def build_signed_confirmation(est):
     <div class="cvgi"><label>Customer</label><strong>{he(c.get("name","—"))}</strong></div>
     <div class="cvgi"><label>Estimate #</label><strong>{he(enum)}</strong></div>
     <div class="cvgi"><label>Address</label><strong>{he(addr or "—")}</strong></div>
-    {f'<div class="cvgi"><label>Package</label><strong>{he(tlbl)}</strong></div>' if tlbl != 'Estimate' else ''}
+    {'' if tlbl == 'Estimate' else
+      f'<div class="cvgi"><label>{"Scope" if tlbl == REPORT_TOTAL_LABEL else "Package"}</label>'
+      f'<strong>{he(tlbl)}</strong></div>'}
   </div>
 </div>
 
@@ -9085,6 +9553,10 @@ def send_signature_notification(est):
     elif est.get('estimate_type') == 'commercial' and not tlbl:
         # Single-price commercial has no G/B/B pick to name.
         tlbl = 'Commercial Roofing'
+    elif _is_report_only(est):
+        # No package was offered, so the tier fallback would email the rep
+        # "Better" for a repair bid that never had a Better.
+        tlbl = 'Recommended Repairs'
     total = _estimate_total(est)
 
     sname = sig.get('name', 'Unknown')
@@ -9768,6 +10240,10 @@ def build_signed_pdf(est, signed=None):
         signed = bool(sig)
     enum = _est_number(est)
     is_ins = est.get('estimate_type') == 'insurance'
+    # This PDF carries no condition report, so a report-only estimate needs the
+    # repairs printed as its scope — otherwise the signed contract is a navy
+    # total bar over nothing at all.
+    is_report = _is_report_only(est)
     tier = est.get('selected_tier', 'better')
     manifest = _build_estimate_manifest(est)
 
@@ -9947,6 +10423,8 @@ def build_signed_pdf(est, signed=None):
             right_rows.append(('Carrier', ins_td['carrier']))
         if ins_td.get('claim_number'):
             right_rows.append(('Claim #', ins_td['claim_number']))
+    elif is_report:
+        right_rows.append(('Scope', REPORT_TOTAL_LABEL))
     else:
         right_rows.append(('Package', _pick_summary_label(est)
                           or dict(good='Good', better='Better',
@@ -10081,6 +10559,32 @@ def build_signed_pdf(est, signed=None):
             grand += sub
             subtotal_row((sec.get('name') or 'Section') + ' Subtotal', sub, 24)
         total_label = 'Insurance Claim Total'
+    elif is_report:
+        # The recommendations ARE the scope. Same _pc_repair_lines the report
+        # and every other surface use, so the contract cannot itemize one thing
+        # and total another.
+        lines = [ln for ln in _pc_repair_lines(est)
+                 if ln['description'] or ln['amount']]
+        if lines:
+            section_head('Scope', REPORT_TOTAL_LABEL)
+            widths = (W - 30 - 30, 30, 30)
+            aligns = ('LEFT', 'CENTER', 'RIGHT')
+            with open_table(widths, aligns) as table:
+                head = table.row()
+                for h in ('Recommendation', 'Priority', 'Price'):
+                    head.cell(h)
+                for pri in ('immediate', 'soon', 'monitor'):
+                    for ln in [x for x in lines if x['priority'] == pri]:
+                        row = table.row()
+                        row.cell(_pdf_rich(
+                            (ln['description'] or 'Recommended repair')
+                            + f" ({ln['section']})"))
+                        row.cell(_pdf_rich(_RH_PRI.get(pri, '')))
+                        # The rep's own text, verbatim — a legacy range stays a
+                        # range here even though the total sums its low end.
+                        row.cell(_pdf_rich(ln['cost_range'] or '-'))
+        grand = _pc_repair_totals(est)[3]
+        total_label = 'Total - ' + REPORT_TOTAL_LABEL
     else:
         pricing = est.get('pricing', {})
         mode    = pricing.get('mode', 'margin')
@@ -10192,7 +10696,16 @@ def build_signed_pdf(est, signed=None):
     # so a reader (or an AI reading a customer's uploaded PDF) hits the
     # differentiators (materials + warranties, code compliance, ventilation
     # math, workmanship, process) before the boilerplate legal text.
-    _render_estimate_details_page(pdf, est, manifest, LM, W)
+    #
+    # Skipped on a repair bid, exactly as the /sign page skips its web twin:
+    # every one of those differentiators describes a replacement — "Better
+    # Package: 5-year workmanship warranty", a complete tear-off to the deck,
+    # the permit priced in. On a document whose entire scope is "reseal the
+    # step flashing" that is a page of claims about work nobody quoted, and it
+    # is what put "Better Package" back into a PDF the rest of this had just
+    # cleaned up.
+    if not is_report:
+        _render_estimate_details_page(pdf, est, manifest, LM, W)
 
     # Terms & conditions
     ctext = (est.get('contract_text') or '').strip()
@@ -11934,6 +12447,8 @@ def generate_production_packet(est_id, push_to_crm=False):
         pkg = ''
     elif est.get('estimate_type') == 'commercial' and not _pick_summary_label(est):
         pkg = ' - Commercial'
+    elif _is_report_only(est):
+        pkg = ' - Recommended Repairs'
     else:
         pkg = f' - {_pick_summary_label(est) or tier.title()}'
 

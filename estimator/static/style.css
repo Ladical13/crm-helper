@@ -311,6 +311,15 @@ input[type="range"] { padding: 0; border: none; background: none; height: 20px; 
 /* Three-up (Retail / Insurance / Commercial) in the narrow sidebar — tighten
    so the longest label still fits on one line. */
 .toggle-row-3 .toggle-btn { padding: 5px 2px; font-size: 10px; letter-spacing: -.1px; }
+/* Four-up (… / Report) wraps to 2x2 instead of shrinking further — a fourth
+   column in this sidebar puts "Commercial" on two lines. The 1px gap plus a
+   background on the row draws the dividers a single flex row got from
+   overflow:hidden. */
+.toggle-row-4 {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
+  background: var(--border);
+}
+.toggle-row-4 .toggle-btn { padding: 6px 2px; font-size: 10px; letter-spacing: -.1px; }
 
 /* ── Tier selector ─────────────────────────────────────────────────── */
 .tier-selector { display: flex; gap: 6px; }
@@ -3565,12 +3574,24 @@ a.jx-contact:hover { text-decoration: underline; }
 .p-rh-photos { display:grid; grid-template-columns:repeat(3,1fr); gap:5mm; margin:4mm 0 7mm; }
 .p-rh-photo img { width:100%; aspect-ratio:4/3; object-fit:cover; border:.5pt solid var(--doc-rule); display:block; }
 .p-rh-photo figcaption { font-size:7pt; color:var(--doc-faint); margin-top:3pt; line-height:1.4; }
-.p-rh-sh { font-family:var(--doc-serif); font-size:12pt; font-weight:600; color:var(--doc-navy); margin:7mm 0 3mm; border-bottom:.75pt solid var(--doc-rule); padding-bottom:3pt; }
+/* break-after:avoid — "Recommended work" stranded alone at the foot of a page
+   with its first priced line overleaf reads as if the section ended there. */
+.p-rh-sh { font-family:var(--doc-serif); font-size:12pt; font-weight:600; color:var(--doc-navy); margin:7mm 0 3mm; border-bottom:.75pt solid var(--doc-rule); padding-bottom:3pt; break-after:avoid; page-break-after:avoid; }
 .p-rh-table { width:100%; border-collapse:collapse; font-size:9pt; margin-bottom:7mm; }
 .p-rh-table th { padding:9pt 8pt 5pt; border-bottom:.75pt solid var(--doc-navy); color:var(--doc-faint); font-size:6.5pt; font-weight:600; text-align:left; text-transform:uppercase; letter-spacing:1.2pt; }
 .p-rh-table th:first-child, .p-rh-table td:first-child { padding-left:0; }
 .p-rh-table td { padding:7pt 8pt; border-bottom:.5pt solid var(--doc-rule); vertical-align:top; }
-.p-rh-sig { display:flex; gap:30mm; margin:12mm 0 4mm; }
+/* Both parties side by side, each block half the measure with its own date
+   line under it. Without flex:1 the blocks collapsed to their label width and
+   the signature rules came out as short stubs bunched against the left
+   margin — on the one page of this document a person actually signs. */
+.p-rh-sig { display:flex; gap:18mm; margin:18mm 0 4mm; }
+.p-rh-sig .p-sig-block { flex:1; min-width:0; }
+/* Its own class on purpose: .p-sig-date belongs to the estimate's signature
+   page, where it is a flex ROW expecting wrapper divs. Borrowing it here laid
+   the rule and the word "DATE" side by side. */
+.p-rh-sigdate { margin-top:14mm; }
+.p-rh-sigdate .p-sig-line { height:22pt; max-width:52mm; }
 .p-rh-footer { font-size:7pt; color:var(--doc-faint); border-top:.5pt solid var(--doc-rule); padding-top:5pt; line-height:1.5; }
 
 /* Header desktop-button group */
@@ -4021,22 +4042,92 @@ a.jx-contact:hover { text-decoration: underline; }
 .pc-audience-btn.active { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
 .pc-photos-hint { font-size: 12px; color: var(--text-light); margin: 12px 2px 0; line-height: 1.5; }
 
+/* Per-finding photo picker (Condition tab). One picker open at a time — see
+   _pcPhotoPicker in app.js. */
+.pc-photo-btn {
+  border: 1px solid var(--border); background: #fff; border-radius: 5px;
+  padding: 5px 8px; font-size: 12px; font-weight: 700; color: var(--text-light);
+  cursor: pointer; white-space: nowrap;
+}
+.pc-photo-btn.has { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+.pc-pick-row td { background: #f8fafc; padding: 12px 10px !important; }
+.pc-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+.pc-pick { position: relative; border: 2px solid transparent; border-radius: 6px; overflow: hidden; cursor: pointer; background: #fff; }
+/* A canvas, not an <img>, so the tile shows the markup the rep just drew.
+   drawAnnotatedPhoto sizes it to the parent's width at the photo's own aspect
+   ratio, so rows come out slightly ragged — that is the whole photo rather
+   than a crop, which is what you want when picking one. */
+.pc-pick-cv { width: 100%; display: block; background: #eef2f7; min-height: 60px; }
+/* Draw on this photo. Sits on the tile but must not toggle it — the onclick
+   stops propagation. */
+.pc-pick-ann {
+  position: absolute; top: 4px; left: 4px; width: 24px; height: 24px; border-radius: 5px;
+  background: rgba(255,255,255,.92); border: 1px solid var(--border);
+  font-size: 12px; line-height: 1; cursor: pointer; padding: 0;
+}
+.pc-pick-ann.has { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
+.pc-pick.on { border-color: var(--primary); }
+.pc-pick-chk {
+  position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border-radius: 50%;
+  background: rgba(255,255,255,.92); border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: var(--primary);
+}
+.pc-pick.on .pc-pick-chk { background: var(--primary); color: #fff; border-color: var(--primary); }
+.pc-pick-cap { display: block; padding: 3px 5px; font-size: 10px; color: var(--text-light); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-pick-hint { font-size: 11.5px; color: var(--text-light); margin-top: 8px; line-height: 1.5; }
+
 /* Property Condition Report — print styles */
-.p-cond-cover    { }
-.p-cond-title    { margin-bottom: 18pt; }
+/* ── Condition Report (print) — mirrors the .cvcond block in app.py's _CV_CSS.
+   The printed report and the one the customer opens from the link are the same
+   document, so these two sheets move together. */
+/* Only the first section breaks to a new page — see the note in
+   _printConditionHTML. The rest flow and simply refuse to split. */
+.p-roof-health.p-cond-flow { page-break-before: auto; break-inside: avoid; margin-top: 9mm; }
+.p-cond-title    { margin-bottom: 14pt; }
 .p-cond-title h2 { font-family: var(--doc-serif); font-size: 20pt; font-weight: 600; color: var(--doc-navy); letter-spacing: -.3pt; margin-bottom: 4pt; }
 .p-cond-prop     { font-size: 11.5pt; color: var(--doc-mute); font-weight: 400; }
-.p-cond-grade-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(100pt, 1fr));
-  gap: 14pt; margin: 14pt 0;
-}
-.p-cond-grade-cell { border-top: .75pt solid var(--doc-rule); padding: 10pt 0 0; }
-.p-cond-grade-lbl  { font-size: 6.5pt; font-weight: 600; color: var(--doc-faint); text-transform: uppercase; letter-spacing: 1.2pt; margin-bottom: 7pt; }
-.p-cond-grade-letter { font-family: var(--doc-serif); font-size: 26pt; font-weight: 600; line-height: 1; display: inline-block; }
-.p-cond-grade-desc { font-size: 8pt; font-weight: 500; color: var(--doc-mute); margin-top: 5pt; }
-.p-cond-cost-table td { padding: 7pt 8pt; border: none; border-bottom: .5pt solid var(--doc-rule); }
-.p-cond-cost-table td:first-child { padding-left: 0; }
-.p-cond-total-row td { font-weight: 600; color: var(--doc-navy); border-top: .75pt solid var(--doc-navy); border-bottom: none; }
+/* Section header: the grade is a mark, not a caption — one per area. */
+.p-cond-shd      { display: flex; align-items: center; gap: 10pt; margin: 0 0 5mm; padding-bottom: 3mm; border-bottom: .75pt solid var(--doc-rule); }
+.p-cond-grade    { flex: none; width: 34pt; height: 34pt; display: flex; align-items: center; justify-content: center;
+                   font-family: var(--doc-serif); font-size: 20pt; font-weight: 600; line-height: 1;
+                   -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.p-cond-sname    { display: flex; flex-direction: column; gap: 2pt; }
+.p-cond-sname h2 { margin: 0; font-family: var(--doc-serif); font-size: 17pt; font-weight: 600; color: var(--doc-navy); letter-spacing: -.2pt; }
+/* A sibling of the name column, NOT the first thing inside the heading —
+   nested, the grade word underneath tucked itself under the emoji and read as
+   a caption on it ("🏠 / FAIR") rather than on "Roofing". */
+.p-cond-ico      { flex: none; font-size: 22pt; line-height: 1; }
+.p-cond-sword    { font-size: 7.5pt; font-weight: 600; text-transform: uppercase; letter-spacing: 1.2pt; }
+.p-cond-meta     { font-size: 8.5pt; color: var(--doc-mute); margin-bottom: 3mm; }
+.p-cond-sum      { font-size: 9.5pt; line-height: 1.65; color: var(--doc-mute); margin-bottom: 4mm; }
+/* Findings: evidence, quieter than the priced work below it. */
+.p-finds         { list-style: none; margin: 0 0 4mm; padding: 0; }
+.p-find          { display: flex; align-items: flex-start; gap: 7pt; padding: 7pt 0; border-bottom: .5pt solid var(--doc-rule); font-size: 9pt; line-height: 1.55; break-inside: avoid; }
+.p-find-dot      { flex: none; width: 5pt; height: 5pt; border-radius: 50%; margin-top: 4pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.p-find-txt      { flex: 1; }
+/* Evidence for the sentence, not a gallery — small, and never split off the
+   finding it belongs to. */
+/* Beside the sentence, not under it — mirrors .cvfind-shots in app.py. */
+.p-find-shots    { flex: none; width: 42mm; display: flex; flex-direction: column; gap: 3pt; }
+.p-find-shot     { display: block; }
+.p-find-shot img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; border: .5pt solid var(--doc-rule); }
+.p-find-sev      { flex: none; font-size: 6.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 1pt; }
+/* Recommended work: description left, price right, the way an invoice reads. */
+.p-works         { list-style: none; margin: 0; padding: 0; }
+.p-work          { display: flex; align-items: baseline; gap: 8pt; padding: 8pt 0; border-bottom: .5pt solid var(--doc-rule); break-inside: avoid; }
+.p-work-pri      { flex: none; min-width: 42pt; text-align: center; font-size: 6.5pt; font-weight: 700; text-transform: uppercase;
+                   letter-spacing: .7pt; padding: 2.5pt 6pt; border: .75pt solid currentColor; border-radius: 999pt; white-space: nowrap; }
+.p-pri-immediate { color: var(--doc-red, #b81010); }
+.p-pri-soon      { color: #b06000; }
+.p-pri-monitor   { color: var(--doc-faint); }
+.p-work-desc     { flex: 1; font-size: 10pt; line-height: 1.5; color: var(--doc-ink); }
+.p-work-amt      { flex: none; font-family: var(--doc-serif); font-size: 13pt; font-weight: 600; color: var(--doc-navy); white-space: nowrap; }
+.p-work-noamt    { font-family: var(--doc-sans); font-size: 8pt; font-weight: 500; font-style: italic; color: var(--doc-faint); }
+.p-work-sub      { display: flex; justify-content: space-between; align-items: baseline; padding-top: 7pt; font-size: 9pt; font-weight: 600; color: var(--doc-mute); break-inside: avoid; }
+.p-work-sub-amt  { font-family: var(--doc-serif); font-size: 11.5pt; font-weight: 600; color: var(--doc-ink); }
+.p-cond-total    { display: flex; justify-content: space-between; align-items: baseline; margin-top: 8mm; padding-top: 4mm;
+                   border-top: 1.5pt solid var(--doc-navy); font-size: 8pt; font-weight: 600; text-transform: uppercase; letter-spacing: 1.6pt; color: var(--doc-mute); break-inside: avoid; }
+.p-cond-total-amt{ font-family: var(--doc-serif); font-size: 20pt; font-weight: 600; color: var(--doc-navy); text-transform: none; letter-spacing: 0; }
 
 /* ── Customer File ────────────────────────────────────────────────────── */
 .cf-modal-box { width: min(640px, 96vw); max-height: 88vh; display: flex; flex-direction: column; }

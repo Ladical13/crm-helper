@@ -2069,12 +2069,19 @@ function pageComplete(page) {
     case 'intro':    return !!(S.intro_text && S.intro_text.trim());
     case 'photos':   return (S.photos||[]).length > 0;
     case 'scope':    return RETAIL_TRADE_KEYS.some(hasItems);
-    case 'options':  return selectedTotal() > 0 || insuranceTotal() > 0;
+    case 'options':  return selectedTotal() > 0 || insuranceTotal() > 0 || isReportOnly();
     case 'products': return RETAIL_TRADE_KEYS.some(t =>
                         S.trades[t].enabled && Object.values(S.trades[t].colors||{}).some(v => String(v||'').trim()));
-    case 'pricing':  return selectedTotal() > 0 || insuranceTotal() > 0;
+    case 'pricing':  return selectedTotal() > 0 || insuranceTotal() > 0 || isReportOnly();
     case 'contract': return !!(S.contract_text && S.contract_text.trim());
-    case 'report':   return !!(S.roof_health?.condition);
+    // property_condition is what the Condition tab writes; roof_health is the
+    // pre-2026 field it migrates FROM. Testing only the old one meant the ✓
+    // never lit for a report built on the current tab — invisible until the
+    // Report estimate type made this the page a rep starts on.
+    case 'report':   return PC_SECTIONS.some(x => {
+                       const sec = (S.property_condition?.sections || {})[x.key];
+                       return !!(sec && sec.enabled && sec.grade);
+                     }) || !!(S.roof_health?.condition);
     case 'documents': return (S.attachments||[]).length > 0;
     case 'client':   return !!(S.customer && S.customer.name);
     case 'visualizer': {
@@ -2212,7 +2219,12 @@ function renderPricingModeUI() {
   document.getElementById('mode-margin').classList.toggle('active', S.pricing.mode === 'margin');
   document.getElementById('mode-markup').classList.toggle('active', S.pricing.mode === 'markup');
 }
-const ESTIMATE_TYPES = ['retail','insurance','commercial'];
+/* Adding a type? It reaches the sidebar, the customer screen's create dialog
+   and initialsAreStock() from this list — but the contract it gets comes from
+   CONTRACT_TYPES, and a type missing THERE silently inherits retail's terms.
+   'report' inherits them deliberately: a repair bid sells under the same terms
+   as any other retail job. */
+const ESTIMATE_TYPES = ['retail','insurance','commercial','report'];
 function renderEstimateTypeUI() {
   const t = S.estimate_type || 'retail';
   ESTIMATE_TYPES.forEach(k => {
@@ -2247,7 +2259,22 @@ function setEstimateType(type) {
   S.estimate_type = type;
   const only = tk => TRADES.forEach(t => { if (S.trades[t]) S.trades[t].enabled = (t === tk); });
 
-  if (type === 'insurance') {
+  if (type === 'report') {
+    // Every trade OFF. That is the whole point of the type: a new estimate
+    // ships with Roofing enabled and empty, and an inspection written up on
+    // top of that used to print three $0 package columns and a "Project Total
+    // $0" under a report that had just quoted the repairs. With no trade
+    // enabled the estimate is priced by its recommendations (isReportOnly).
+    TRADES.forEach(t => { if (S.trades[t]) S.trades[t].enabled = false; });
+    activeTrade = 'roofing';       // the Pricing tab still opens on something
+    // The report IS the document here — it cannot be the thing the rep hides.
+    if (!S.page_visibility) S.page_visibility = {};
+    S.page_visibility.report = true;
+    // No roof is being sold, so asking the customer to pick a shingle colour
+    // before they can sign is asking about work nobody quoted.
+    if (S.shingle_selection) S.shingle_selection.enabled = false;
+    pcGet();                        // materialize the report the rep is about to fill in
+  } else if (type === 'insurance') {
     only('insurance');
     activeTrade = 'insurance';
   } else if (type === 'commercial') {
@@ -2259,9 +2286,9 @@ function setEstimateType(type) {
     if (S.shingle_selection) S.shingle_selection.enabled = false;
     if (!(S.trades.commercial.line_items || []).length) buildBundleDefaults('commercial');
   } else {
-    // Back to retail: insurance/commercial each turned every other trade off,
-    // so restore roofing — otherwise the estimate lands on an empty tab with
-    // no enabled trade at all.
+    // Back to retail: insurance/commercial/report each turned every other trade
+    // off, so restore roofing — otherwise the estimate lands on an empty tab
+    // with no enabled trade at all.
     S.trades.insurance.enabled = false;
     S.trades.commercial.enabled = false;
     if (!RETAIL_TRADE_KEYS.some(t => S.trades[t].enabled && t !== 'commercial'))
@@ -2285,6 +2312,8 @@ function setEstimateType(type) {
   // numbers); insurance starts at pricing (its line items come from the carrier).
   if (type === 'commercial') switchPage('scope');
   else if (type === 'insurance') switchPage('pricing');
+  // A report estimate is written on the Condition tab and nowhere else.
+  else if (type === 'report') switchPage('report');
   else {
     if (activePage === 'options') renderOptionsPage();
     else if (activePage === 'pricing') { renderTabBar(); renderTradeContent(); }
@@ -2294,6 +2323,13 @@ function setEstimateType(type) {
   if (activePage === 'contract') renderContractPage();
 }
 function renderTierButtons() {
+  // A report-only estimate offers no packages at all, so the Good/Better/Best
+  // picker and its three $0 rows are asking the rep to choose between nothing.
+  const repOnly = isReportOnly();
+  const sel = document.querySelector('.tier-selector');
+  if (sel) sel.style.display = repOnly ? 'none' : '';
+  const title = document.getElementById('section-tier-title');
+  if (title) title.textContent = repOnly ? 'Estimate Total' : 'Active Package';
   document.querySelectorAll('.tier-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.tier === S.selected_tier);
     if (TIERS.includes(b.dataset.tier))
@@ -2303,7 +2339,7 @@ function renderTierButtons() {
     const row = document.getElementById('tr-' + t);
     if (row) {
       row.classList.toggle('is-selected', t === S.selected_tier);
-      row.style.display = tierEnabled(t) ? '' : 'none';
+      row.style.display = (!repOnly && tierEnabled(t)) ? '' : 'none';
     }
   });
 }
@@ -2329,6 +2365,16 @@ function renderTotals() {
   const insRow = document.getElementById('tr-insurance');
   if (insEl)  insEl.textContent = fmtCur(insuranceTotal());
   if (insRow) insRow.style.display = S.trades.insurance?.enabled ? '' : 'none';
+  // Report-only estimate: the three tier rows are all $0 and the repairs are
+  // the price. Show it here rather than leaving the rep to add it up off the
+  // Condition tab. The tier rows' own visibility belongs to renderTierButtons
+  // — two writers for one style property is how they end up disagreeing —
+  // so call it rather than hiding them here.
+  const repEl  = document.getElementById('total-repairs');
+  const repRow = document.getElementById('tr-repairs');
+  if (repEl)  repEl.textContent = fmtCur(pcRepairTotals().total);
+  if (repRow) repRow.style.display = isReportOnly() ? '' : 'none';
+  renderTierButtons();
   renderInternalMargin();
   renderCostProfitPanel();
 }
@@ -6983,6 +7029,8 @@ const RH_CONDITIONS = [
 ];
 const RH_SEVERITIES  = [{v:'low',l:'Low',c:'#2563eb'},{v:'medium',l:'Medium',c:'#d97706'},{v:'high',l:'High',c:'#dc2626'}];
 const RH_PRIORITIES  = [{v:'immediate',l:'Immediate'},{v:'soon',l:'1–2 Years'},{v:'monitor',l:'Monitor'}];
+// Pill-sized labels for the report — MUST mirror _PC_PRI_SHORT in app.py.
+const PC_PRI_SHORT   = {immediate:'Now', soon:'1–2 Yrs', monitor:'Monitor'};
 const RH_MATERIALS   = ['Asphalt Shingles','Metal','Tile','Wood/Cedar','Flat/TPO','Flat/EPDM','Other'];
 
 // ── Property Condition Report constants ─────────────────────────────────────
@@ -7037,7 +7085,39 @@ function pcGet() {
 function pcGetSec(key) { const pc=pcGet(); if(!pc.sections[key])pc.sections[key]=pcBlankSection(key); return pc.sections[key]; }
 function pcSet(field,val)      { pcGet()[field]=val; setDirty(); }
 function pcSecSet(key,field,val){ pcGetSec(key)[field]=val; setDirty(); }
-function pcAddFinding(key) { pcGetSec(key).findings.push({id:uid(),area:'',severity:'medium',description:''}); setDirty(); renderConditionPage(); }
+function pcAddFinding(key) { pcGetSec(key).findings.push({id:uid(),area:'',severity:'medium',description:'',photo_ids:[]}); setDirty(); renderConditionPage(); }
+/* Which finding's photo picker is open, as "<sectionKey>:<findingId>". One at
+   a time — a rep on a driveway is attaching photos to one finding, and every
+   open picker is another full grid of thumbnails on a phone. */
+let _pcPhotoPicker = null;
+function pcFindingPhotos(key,id){ const f=pcGetSec(key).findings.find(x=>x.id===id); if(!f) return [];
+  if(!Array.isArray(f.photo_ids)) f.photo_ids=[];   // pre-2026 findings carry none
+  return f.photo_ids; }
+function pcTogglePicker(key,id){ const k=key+':'+id; _pcPhotoPicker=(_pcPhotoPicker===k)?null:k; renderConditionPage(); }
+/* The SAME editor the Photos page opens — one annotation tool, one set of
+   drawing code. Circling the damage and attaching it to the finding is one
+   motion on a roof, and it used to be two screens apart. _pcPhotoPicker is
+   untouched, so saving drops the rep back on the finding they were working. */
+function pcAnnotate(photoId){ openAnnotationModal(photoId); }
+function pcToggleFindingPhoto(key,id,photoId){
+  const ids=pcFindingPhotos(key,id); const i=ids.indexOf(photoId);
+  if(i>=0) ids.splice(i,1); else ids.push(photoId);
+  setDirty(); renderConditionPage(); warmPrintPhotos();
+}
+/* Every photo attached to any finding, across every section. The Photo Report
+   subtracts these so one photo is never printed twice — once beside the
+   finding it documents and again in a gallery. */
+function pcFindingPhotoIds(){
+  const pc=S.property_condition||(S.roof_health?.condition?pcGet():null);
+  const out=new Set();
+  if(!pc) return out;
+  PC_SECTIONS.forEach(sm=>{
+    const sec=(pc.sections||{})[sm.key];
+    if(!sec) return;
+    (sec.findings||[]).forEach(f=>(f.photo_ids||[]).forEach(id=>out.add(id)));
+  });
+  return out;
+}
 function pcDelFinding(key,id)  { const s=pcGetSec(key); s.findings=s.findings.filter(f=>f.id!==id); setDirty(); renderConditionPage(); }
 function pcSetFinding(key,id,field,val){ const f=pcGetSec(key).findings.find(x=>x.id===id); if(f){f[field]=val;setDirty();} }
 function pcAddRec(key)     { pcGetSec(key).recommendations.push({id:uid(),priority:'monitor',description:'',cost_range:''}); setDirty(); renderConditionPage(); }
@@ -7052,6 +7132,104 @@ function pcIsRange(s) {
   s = (s||'').trim();
   if((s.match(/[\d,]+(\.\d+)?/g)||[]).length > 1) return true;
   return /(?:–|—|-|\bto\b)\s*$/.test(s);   // "$500 to", "$500–" reads open-ended
+}
+
+/* ── Report-only estimates ────────────────────────────────────────────
+   A rep who inspects a roof and writes up the condition report has produced a
+   bid: the recommendations carry prices and they add up. Nothing else on the
+   estimate does — a new estimate ships with Roofing ENABLED and empty, so the
+   customer used to get a Good/Better/Best comparison of three $0 columns and a
+   "Project Total $0" printed underneath a report that had just quoted $6,400 of
+   repairs.
+
+   So when no trade carries scope, the recommendations ARE the price: the G/B/B
+   comparison is suppressed and the report's own recommendation tables stand as
+   the scope. Mirrored in app.py as _pc_repair_lines / _pc_repair_totals /
+   _is_report_only, which is what prices the estimate everywhere the server owns
+   the number (the list, the funnel, the Den push, the sign page). Held to the
+   same numbers by tests/report_only_runner.js. ─────────────────────── */
+
+/* Every recommendation on the enabled, graded sections, in report order — the
+   one parse behind both the report's cost summary and the estimate's price, so
+   the two can never disagree. */
+function pcRepairLines() {
+  const pc = S.property_condition || (S.roof_health?.condition ? pcGet() : null);
+  if (!pc) return [];
+  const out = [];
+  PC_SECTIONS.forEach(s => {
+    const sec = (pc.sections || {})[s.key];
+    if (!sec || !sec.enabled || !sec.grade) return;
+    (sec.recommendations || []).forEach(r => {
+      // Parse only the FIRST number: a single "$1,500" is the price, a legacy
+      // "$500–$1,500" is its low end. Same parse the condition report totals
+      // with, and the reason a legacy range keeps the '+'.
+      const m = (r.cost_range || '').match(/[\d,]+(\.\d+)?/);
+      out.push({
+        section: s.label, icon: s.icon,
+        priority: r.priority || 'monitor',
+        description: (r.description || '').trim(),
+        cost_range: r.cost_range || '',
+        amount: m ? (parseFloat(m[0].replace(/,/g, '')) || 0) : 0,
+        isRange: pcIsRange(r.cost_range),
+      });
+    });
+  });
+  return out;
+}
+
+function pcRepairTotals() {
+  let immediate = 0, soon = 0, monitor = 0, anyRange = false;
+  pcRepairLines().forEach(ln => {
+    if (ln.amount && ln.isRange) anyRange = true;
+    if (ln.priority === 'immediate')  immediate += ln.amount;
+    else if (ln.priority === 'soon')  soon      += ln.amount;
+    else                              monitor   += ln.amount;
+  });
+  return { immediate, soon, monitor, total: immediate + soon + monitor, anyRange };
+}
+
+/* Three things this is NOT, each of which was wrong in turn:
+     * `enabled` is not the test — Roofing is enabled on every new estimate.
+     * HAVING line items is not the test either. A rep who tapped "Load
+       Defaults" on Roofing while writing up an inspection, then zeroed the
+       quantities, left a trade full of rows that price nothing — and that was
+       enough to keep the report from pricing itself.
+     * A zero-quantity item is "not in scope" everywhere else in this app
+       (tradeTotal skips it, the customer page hides it, the printed scope
+       tables skip it). Scope means at least one row with a quantity.
+   Insurance keys on `enabled` alone, deliberately: the server's customer view
+   routes on exactly that.
+   MUST mirror _has_priced_scope in app.py. */
+function hasPricedScope() {
+  if (S.trades?.insurance?.enabled) return true;
+  return RETAIL_TRADE_KEYS.some(t => {
+    const td = S.trades[t];
+    return !!td && td.enabled &&
+      (td.line_items || []).some(it => (parseFloat(it.quantity) || 0) > 0);
+  });
+}
+
+/* Two ways in, and the ORDER of the tests is the whole design:
+
+     * The rep picked the Report estimate type, which turns every trade off so
+       the empty-Roofing trap cannot happen at all. That is a starting posture,
+       NOT a lock — hasPricedScope() is tested first, so the moment a rep prices
+       a trade on a report estimate (inspect → report → "yes, replace it", which
+       is the whole point of handing a realtor one of these) it goes back to
+       being an ordinary estimate priced by its line items.
+     * Or the SHAPE says so on any other type: no trade carries line items and
+       the report is priced. A year of estimates predate the type.
+
+   Both need a report the customer can actually see, and on the inferred path
+   the recommendations must total above zero — an estimate that is merely empty
+   keeps totalling $0 rather than inventing a price.
+   MUST mirror _is_report_only in app.py. */
+function isReportOnly() {
+  if ((S.estimate_type || 'retail') === 'insurance') return false;
+  if ((S.page_visibility || {}).report === false) return false;
+  if (hasPricedScope()) return false;
+  if ((S.estimate_type || 'retail') === 'report') return true;
+  return pcRepairTotals().total > 0;
 }
 
 function renderConditionPage() {
@@ -7090,7 +7268,8 @@ function renderConditionPage() {
         <button class="btn-add" onclick="pcAddFinding('${_pcActiveSection}')">+ Add Finding</button>
       </div>
       ${sec.findings.length ? `<table class="rh-table"><thead><tr>
-          <th>Area / Location</th><th>Severity</th><th>Description</th><th style="width:36px"></th>
+          <th>Area / Location</th><th>Severity</th><th>Description</th>
+          <th style="width:54px">Photos</th><th style="width:36px"></th>
         </tr></thead><tbody>
         ${sec.findings.map(f=>`<tr>
           <td><input type="text" value="${esc(f.area||'')}" placeholder="e.g. North wall, gutters"
@@ -7100,8 +7279,28 @@ function renderConditionPage() {
           </select></td>
           <td><input type="text" value="${esc(f.description||'')}" placeholder="Describe the issue"
             onchange="pcSetFinding('${_pcActiveSection}','${f.id}','description',this.value)"></td>
+          <td><button class="pc-photo-btn ${(f.photo_ids||[]).length?'has':''}"
+            title="Attach photos to this finding"
+            onclick="pcTogglePicker('${_pcActiveSection}','${f.id}')">📷 ${(f.photo_ids||[]).length||''}</button></td>
           <td><button class="li-del" onclick="pcDelFinding('${_pcActiveSection}','${f.id}')">×</button></td>
-        </tr>`).join('')}
+        </tr>
+        ${_pcPhotoPicker===_pcActiveSection+':'+f.id ? `<tr class="pc-pick-row"><td colspan="5">
+          ${S.photos.length ? `<div class="pc-pick-grid">
+            ${S.photos.map(p=>{
+              const on=(f.photo_ids||[]).includes(p.id);
+              const marked=(p.annotations||[]).length>0;
+              return `<div class="pc-pick ${on?'on':''}" onclick="pcToggleFindingPhoto('${_pcActiveSection}','${f.id}','${p.id}')">
+                <canvas class="pc-pick-cv" data-photo="${esc(p.id)}"></canvas>
+                <span class="pc-pick-chk">${on?'✓':''}</span>
+                <button class="pc-pick-ann ${marked?'has':''}" title="${marked?'Edit markup':'Draw on this photo'}"
+                  onclick="event.stopPropagation();pcAnnotate('${p.id}')">✏️</button>
+                ${p.caption?`<span class="pc-pick-cap">${esc(p.caption)}</span>`:''}
+              </div>`;
+            }).join('')}
+          </div>
+          <div class="pc-pick-hint">Tap a photo to show it beside this finding on the report. Photos you attach here are left out of the Photo Report, so nothing prints twice.</div>`
+          : '<div class="rh-empty">No photos uploaded yet — add them on the Photos page first.</div>'}
+        </td></tr>` : ''}`).join('')}
         </tbody></table>` : '<div class="rh-empty">No findings — click + Add Finding.</div>'}
     </div>`;
 
@@ -7194,7 +7393,15 @@ function renderConditionPage() {
           onchange="pcSet('executive_notes',this.value)">${esc(pc.executive_notes||'')}</textarea>
       </div>
     </div>
-    <p class="pc-photos-hint">📷 Report photos now come from the <strong>Photos</strong> page — everything marked "Print" appears in the Photo Report, right before this condition report.</p>`;
+    <p class="pc-photos-hint">📷 Attach photos to a finding with the camera button on its row, and draw on them with ✏️ — the same markup tool the Photos page uses. An attached photo prints beside its finding and is left out of the Photo Report, so nothing appears twice. Everything still marked "Print" on the Photos page makes up the Photo Report.</p>`;
+
+  // Picker thumbs are canvases so they show the markup a rep just drew. Same
+  // renderer the Photos page uses; a photo with no annotations simply draws
+  // the image.
+  el.querySelectorAll('canvas.pc-pick-cv').forEach(cv => {
+    const ph = S.photos.find(x => x.id === cv.dataset.photo);
+    if (ph) drawAnnotatedPhoto(cv, BASE + '/uploads/' + ph.filename, ph.annotations || []);
+  });
 }
 
 function rhGet()   { if (!S.roof_health) S.roof_health={condition:'',age_years:'',inspection_date:'',material_type:'',pitch:'',summary:'',findings:[],recommendations:[],report_photo_ids:[]}; return S.roof_health; }
@@ -7883,6 +8090,10 @@ function saveAnnotations() {
   closeAnnotationModal();
   renderPhotosPage();
   renderCoverPage(); // refresh cover strip
+  // The modal is reachable from the Condition tab too, where the photo sits
+  // beside the finding it documents. Refreshing only the Photos page left the
+  // rep looking at the version they had just marked up, unmarked.
+  if (activePage === 'report') renderConditionPage();
   warmPrintPhotos();
 }
 
@@ -9893,8 +10104,9 @@ async function saveCustomerNotes(name, text) {
   }
 }
 
-const EST_TYPE_ICON  = {insurance:'🏛', commercial:'🏢'};
-const EST_TYPE_LABEL = {retail:'Retail Estimate', insurance:'Insurance Estimate', commercial:'Commercial Estimate'};
+const EST_TYPE_ICON  = {insurance:'🏛', commercial:'🏢', report:'📋'};
+const EST_TYPE_LABEL = {retail:'Retail Estimate', insurance:'Insurance Estimate',
+                        commercial:'Commercial Estimate', report:'Condition Report'};
 const EST_STATUS_CHIPS = {
   signed: '<span class="dash-chip dash-chip-signed">✓ Signed</span>',
   viewed: '<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
@@ -10882,6 +11094,9 @@ function _printNeededIds() {
   const needed = new Set();
   if (S.cover_photo_id) needed.add(S.cover_photo_id);
   (S.photos || []).forEach(p => { if (p.show_in_estimate) needed.add(p.id); });
+  // A photo attached to a finding prints inside the condition report whether
+  // or not it is in the Photo Report, so it has to be baked either way.
+  pcFindingPhotoIds().forEach(id => needed.add(id));
   return needed;
 }
 
@@ -11157,7 +11372,12 @@ function buildPrintContent() {
   }
 
   // ── What we found: photos, then the condition report that reads them ──
-  const printPhotos = S.photos.filter(p => p.show_in_estimate && p.id !== S.cover_photo_id);
+  // Anything attached to a finding prints beside that finding — showing it
+  // again here is the same photograph twice, the second time with nothing
+  // next to it explaining what it is. Mirrors _cv_photos_block in app.py.
+  const _findingShots = pcFindingPhotoIds();
+  const printPhotos = S.photos.filter(p => p.show_in_estimate && p.id !== S.cover_photo_id
+                                        && !_findingShots.has(p.id));
   if (printPhotos.length)
     html += `<div class="p-photos-page">
       ${pHeader}
@@ -11277,10 +11497,17 @@ function buildPrintContent() {
     return effectiveTradeMode(t, td) === 'simple';
   });
 
+  // The condition report is the whole estimate — see isReportOnly(). Its
+  // recommended repairs are the scope AND the price; printing the package
+  // comparison here would offer three $0 columns beside a report that has just
+  // quoted the repairs.
+  if (isReportOnly()) {
+    ph += _printRepairsHTML(pHead2);
+  }
   // Everything that isn't an insurance claim prints the same priced body.
   // This MUST NOT be `=== 'retail'`: a new estimate type would silently print
   // a blank PDF, which is exactly what happened to commercial before this.
-  if (estType !== 'insurance') {
+  else if (estType !== 'insurance') {
     if (pv.options !== false && !isAllSimple) packageTrades().forEach(gt=>{
       const gtTier=tradeTier(gt);
       const disp=tradeDisplayItems(gt);
@@ -11433,7 +11660,12 @@ function buildPrintContent() {
   /* Credibility sits between the number and the signature, which is where the
      objections actually are. Marketing content only, so it stays out of the
      signed hash and the signed PDF (see _cv_trust_blocks in app.py). */
-  ph += _printPermitHTML(pHeader, pHead2);
+  // The permit page is written for a replacement — it promises the permit is
+  // priced into the estimate and lists what a re-roof has to satisfy. On a
+  // repair bid that is a claim about work nobody quoted, so it is dropped the
+  // same way the customer view drops it. Trust content is about the company,
+  // not the scope, and stays.
+  if (!isReportOnly()) ph += _printPermitHTML(pHeader, pHead2);
   ph += _printTrustHTML(pHeader, pHead2);
 
   /* Signing gets its own page. It used to fall wherever the notes happened to
@@ -11500,9 +11732,14 @@ function _printGlanceHTML(pHeader, estNum) {
       if (scope.length)
         rows.push(['Your project',
                    `<strong>${esc(scope.join(' · '))}</strong>${addr ? ' at ' + esc(addr) : ''}`]);
+      else if (isReportOnly())
+        rows.push(['Your project',
+                   `<strong>Recommended repairs from your inspection</strong>${addr ? ' at ' + esc(addr) : ''}`]);
 
-      // Only claim a choice when one is actually being offered.
-      const gbb = packageTrades();
+      // Only claim a choice when one is actually being offered. A report-only
+      // estimate has packageTrades() non-empty (Roofing is enabled and empty on
+      // every new estimate) and nothing to choose between.
+      const gbb = isReportOnly() ? [] : packageTrades();
       const tiers = enabledTiers();
       if (gbb.length && tiers.length > 1)
         rows.push(['Your options',
@@ -11517,7 +11754,12 @@ function _printGlanceHTML(pHeader, estNum) {
     }
 
     // Warranty headline, from the same company content the sign page uses.
-    const wb = (_ccCache?.warranty?.body || '').trim();
+    // Skipped on a report-only estimate: the copy opens "Good and Better
+    // packages carry…", so promoting it to the headline of a bid that offers
+    // no packages is the estimator putting G/B/B back on the page by editorial
+    // choice. The trust page still carries the warranty in full. Mirrors the
+    // same suppression in _cv_glance_block.
+    const wb = isReportOnly() ? '' : (_ccCache?.warranty?.body || '').trim();
     if (wb && _ccCache?.warranty?.enabled !== false) {
       const first = wb.split(/\n|(?<=\.)\s+/)[0].trim();
       if (first) rows.push(['Backed by', first.length > 190 ? first.slice(0, 187) + '…' : first]);
@@ -11689,6 +11931,23 @@ function _printPermitHTML(pHeader, pHead2) {
     ${head}${lead}${reqsHtml}</div>`;
 }
 
+/* ── The priced body of a report-only estimate ────────────────────────
+   Only reached from isReportOnly(). Deliberately just the number: the condition
+   report pages above already list every recommendation with its price and total
+   them by priority, so an itemized table here would be the same lines a second
+   time under a second heading. This is the figure the customer signs against,
+   and it is the same pcRepairTotals() the report printed. */
+function _printRepairsHTML(pHead2) {
+  const t = pcRepairTotals();
+  if (!(t.total > 0)) return '';
+  const plus = t.anyRange ? '+' : '';
+  return `<div class="p-notes">
+    ${pHead2('Scope', 'Recommended Repairs',
+             'The repairs recommended in the condition report above, priced. '
+             + 'Signing below approves that work.')}</div>
+  <div class="p-grand-total"><span>Estimated Repair Total</span><span>${fmtCur(t.total)}${plus}</span></div>`;
+}
+
 /* ── Condition report print pages ─────────────────────────────────────
    Rendered right after the Photo Report (which now carries ALL photos —
    the report itself stays photo-free). Wording flips between the default
@@ -11702,8 +11961,7 @@ function _printConditionHTML(pHeader){
   const isHoa=pc.audience==='hoa';
   const W={  // audience wording
     title:      isHoa?'Property Condition Report':'Home Condition Report',
-    inspector:  isHoa?'Inspector':'Inspected By',
-    investment: isHoa?'Estimated Repair Investment':'Estimated Repair Costs',
+    inspector:  isHoa?'Inspector':'Inspected by',
     signer:     isHoa?'Property Manager / HOA Representative':'Homeowner',
   };
 
@@ -11712,41 +11970,15 @@ function _printConditionHTML(pHeader){
   const addr=[cu.address.street,cityState].filter(Boolean).join(', ');
   const propName=pc.property_name||(cu.name?(isHoa?`${cu.name} — Property Report`:cu.name):addr)||W.title;
 
-  // Cost totals per priority. Each recommendation carries ONE price now, so
-  // these are exact and print without a suffix — that is what lets this report
-  // stand as a bid. anyRange brings the '+' back only for estimates saved
-  // before the change, whose totals really are a low-end sum.
-  let costImmediate=0,costSoon=0,costMonitor=0,anyRange=false;
-  enabledSections.forEach(s=>{
-    (pc.sections[s.key].recommendations||[]).forEach(r=>{
-      // Parse only the FIRST number: a single "$1,500" is the price, a legacy
-      // "$500–$1,500" is its low end. (Stripping all non-digits would read that
-      // second one as 5,001,500.)
-      const loMatch=(r.cost_range||'').match(/[\d,]+(\.\d+)?/);
-      const lo=loMatch?parseFloat(loMatch[0].replace(/,/g,''))||0:0;
-      if(lo && pcIsRange(r.cost_range)) anyRange=true;
-      if(r.priority==='immediate') costImmediate+=lo;
-      else if(r.priority==='soon')  costSoon+=lo;
-      else                          costMonitor+=lo;
-    });
-  });
-  const plus=anyRange?'+':'';
+  /* Mirrors _cv_condition_block in app.py — the printed report and the one the
+     customer opens from the link have to be the same document. No summary
+     page: each area is graded on its own header, what we found sits above the
+     work that fixes it, and every recommendation carries its price on the same
+     line. MUST be changed together with the server's version. */
+  const _rt=pcRepairTotals();
+  const plus=_rt.anyRange?'+':'';
 
-  // Summary page
-  const gradeGrid=enabledSections.map(s=>{
-    const sec=pc.sections[s.key]; const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
-    return `<div class="p-cond-grade-cell">
-      <div class="p-cond-grade-lbl">${s.icon} ${s.label}</div>
-      <div class="p-cond-grade-letter" style="color:${g.color}">${sec.grade}</div>
-      <div class="p-cond-grade-desc" style="color:${g.color}">${g.label}</div>
-    </div>`;
-  }).join('');
-
-  const costTotal=costImmediate+costSoon+costMonitor;
-  const costRows=[[`Immediate repairs (D/F)`,costImmediate],[`Short-term (C grades)`,costSoon],[`Maintenance (B grades)`,costMonitor],[`Estimated Total`,costTotal]];
-
-  let html=`<div class="p-roof-health p-cond-cover">
-    ${pHeader}
+  const reportHead=`
     <div class="p-cond-title">
       <h2>${W.title}</h2>
       <div class="p-cond-prop">${esc(propName)}</div>
@@ -11757,69 +11989,93 @@ function _printConditionHTML(pHeader){
       <div><label>Inspection Date</label><span>${esc(pc.inspection_date||'—')}</span></div>
       ${S.salesperson?`<div><label>${W.inspector}</label><span>${esc(cap(S.salesperson))}</span></div>`:''}
     </div>
-    <h3 class="p-rh-sh" style="margin-top:14pt">Condition Snapshot</h3>
-    <div class="p-cond-grade-grid">${gradeGrid}</div>
-    ${pc.executive_notes?`<div class="p-rh-summary" style="margin-top:12pt"><strong>Overall Assessment:</strong> ${esc(pc.executive_notes)}</div>`:''}
-    ${costTotal>0?`<h3 class="p-rh-sh" style="margin-top:14pt">${W.investment}</h3>
-      <table class="p-rh-table p-cond-cost-table">
-        ${costRows.filter(([,v])=>v>0).map(([l,v],i)=>`<tr${i===costRows.filter(([,v])=>v>0).length-1?' class="p-cond-total-row"':''}>
-          <td>${l}</td><td style="text-align:right;font-weight:${i===costRows.filter(([,v])=>v>0).length-1?800:400}">${fmtCur(v)}${plus}</td>
-        </tr>`).join('')}
-      </table>`:''}
-    <div class="p-rh-footer">This ${W.title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>
-  </div>`;
+    ${pc.executive_notes?`<div class="p-rh-summary">${esc(pc.executive_notes)}</div>`:''}`;
 
-  // Per-section detail pages (photos live in the Photo Report, not here)
-  enabledSections.forEach(s=>{
+  let html='';
+  let reportTotal=0;
+
+  enabledSections.forEach((s,si)=>{
     const sec=pc.sections[s.key];
     const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
+
     const findRows=(sec.findings||[]).filter(f=>f.description||f.area).map(f=>{
       const sev=RH_SEVERITIES.find(sv=>sv.v===f.severity)||{l:f.severity||'',c:'#666'};
-      return `<tr><td style="font-weight:600">${esc(f.area||'—')}</td>
-        <td><span style="color:${sev.c};font-weight:700">${sev.l}</span></td>
-        <td>${esc(f.description||'')}</td></tr>`;
+      // The photograph beside the sentence describing it. It used to sit in a
+      // gallery pages away, so a homeowner read the words and then met an
+      // unlabelled close-up and had to join them up themselves.
+      const shots=(f.photo_ids||[]).map(id=>S.photos.find(p=>p.id===id)).filter(Boolean)
+        .map(p=>`<span class="p-find-shot"><img src="${printPhotoSrc(p)}" alt="${esc(p.caption||'')}"></span>`)
+        .join('');
+      return `<li class="p-find">
+        ${shots?`<span class="p-find-shots">${shots}</span>`:''}
+        <span class="p-find-dot" style="background:${sev.c}"></span>
+        <span class="p-find-txt">${f.area?`<strong>${esc(f.area)}</strong> — `:''}${esc(f.description||'')}</span>
+        <span class="p-find-sev" style="color:${sev.c}">${sev.l}</span></li>`;
     }).join('');
+
+    let secTotal=0;
     const recRows=(sec.recommendations||[]).filter(r=>r.description).map(r=>{
-      const pri=RH_PRIORITIES.find(p=>p.v===r.priority)||{l:r.priority||''};
-      return `<tr><td><strong>${pri.l}</strong></td><td>${esc(r.description||'')}</td>
-        <td style="white-space:nowrap">${esc(r.cost_range||'—')}</td></tr>`;
+      const m=(r.cost_range||'').match(/[\d,]+(\.\d+)?/);
+      secTotal+=m?(parseFloat(m[0].replace(/,/g,''))||0):0;
+      const pri=r.priority||'monitor';
+      const price=esc(r.cost_range||'');
+      // Mirrors app.py: no price on work we're telling them to do means we owe
+      // them a quote; on a Monitor line there is no work yet to quote.
+      const blank=pri==='monitor'?'—':'Quoted separately';
+      return `<li class="p-work">
+        <span class="p-work-pri p-pri-${pri}">${esc(PC_PRI_SHORT[pri]||pri)}</span>
+        <span class="p-work-desc">${esc(r.description||'')}</span>
+        <span class="p-work-amt${price?'':' p-work-noamt'}">${price||blank}</span></li>`;
     }).join('');
-    // Roof-specific meta
-    const roofMeta=s.key==='roof'&&(sec.material_type||sec.age_years)?`
-      <div class="p-rh-meta" style="margin-bottom:10pt">
-        ${sec.material_type?`<div><label>Material</label><span>${esc(sec.material_type)}</span></div>`:''}
-        ${sec.age_years?`<div><label>Est. Age</label><span>${sec.age_years} years</span></div>`:''}
-        ${sec.pitch?`<div><label>Pitch</label><span>${esc(sec.pitch)}</span></div>`:''}
-      </div>`:'';
-    html+=`<div class="p-roof-health">
-      ${pHeader}
-      <div class="p-rh-titlebar">
-        <h2>${s.icon} ${s.label}</h2>
-        <div class="p-rh-badge" style="color:${g.color}">Grade ${sec.grade} — ${g.label}</div>
+    reportTotal+=secTotal;
+
+    const subRow=secTotal>0
+      ? `<div class="p-work-sub"><span>${esc(s.label)} subtotal</span>
+         <span class="p-work-sub-amt">${fmtCur(secTotal)}${plus}</span></div>`
+      : '';
+    const metaBits=s.key==='roof'
+      ? [sec.material_type, sec.age_years?`${sec.age_years} years old`:'', sec.pitch?`${sec.pitch} pitch`:'']
+          .filter(Boolean).map(esc).join(' · ')
+      : '';
+
+    /* Only the FIRST section starts a page. Giving every area its own sheet
+       turned a three-area report into four pages, most of them half empty —
+       and a realtor hands this to a seller, who counts the pages before they
+       read them. The rest flow, with break-inside:avoid keeping a section from
+       splitting across the fold. */
+    html+=`<div class="p-roof-health${si===0?'':' p-cond-flow'}">
+      ${si===0?pHeader:''}
+      ${si===0?reportHead:''}
+      <div class="p-cond-shd">
+        <span class="p-cond-grade" style="color:${g.color};background:${g.bg}">${sec.grade}</span>
+        <span class="p-cond-ico">${s.icon}</span>
+        <span class="p-cond-sname"><h2>${s.label}</h2>
+          <span class="p-cond-sword" style="color:${g.color}">${g.label}</span></span>
       </div>
-      ${roofMeta}
-      ${sec.summary?`<div class="p-rh-summary">${esc(sec.summary)}</div>`:''}
-      ${findRows?`<h3 class="p-rh-sh">Findings</h3>
-        <table class="p-rh-table"><thead><tr><th>Area</th><th>Severity</th><th>Description</th></tr></thead>
-        <tbody>${findRows}</tbody></table>`:''}
-      ${recRows?`<h3 class="p-rh-sh">Repair Options &amp; Recommendations</h3>
-        <table class="p-rh-table"><thead><tr><th>Priority</th><th>Recommendation</th><th>Est. Cost</th></tr></thead>
-        <tbody>${recRows}</tbody></table>`:''}
+      ${metaBits?`<div class="p-cond-meta">${metaBits}</div>`:''}
+      ${sec.summary?`<div class="p-cond-sum">${esc(sec.summary)}</div>`:''}
+      ${findRows?`<h3 class="p-rh-sh">What we found</h3><ul class="p-finds">${findRows}</ul>`:''}
+      ${recRows?`<h3 class="p-rh-sh">Recommended work</h3><ul class="p-works">${recRows}</ul>${subRow}`:''}
+      ${(si===enabledSections.length-1&&reportTotal>0&&!isReportOnly())
+        ? `<div class="p-cond-total"><span>Total</span>
+           <span class="p-cond-total-amt">${fmtCur(reportTotal)}${plus}</span></div>`
+        : ''}
+      ${si===enabledSections.length-1
+        ? `<div class="p-rh-footer">This ${W.title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>`
+        : ''}
     </div>`;
   });
 
   // Signature page
   html+=`<div class="p-roof-health">
     ${pHeader}
-    <h2>Sign-off &amp; Acknowledgment</h2>
+    <div class="p-cond-title"><h2>Sign-off &amp; Acknowledgment</h2></div>
     <div class="p-rh-summary">This report summarizes the visual inspection of the property listed above. It is prepared for informational purposes and to assist in prioritizing maintenance and repair decisions.</div>
-    <div class="p-rh-sig" style="margin-top:40pt">
-      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">${W.signer}</div></div>
-      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Project One Roofing Inspector</div></div>
-    </div>
     <div class="p-rh-sig">
-      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div>
-      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div>
+      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">${W.signer}</div>
+        <div class="p-rh-sigdate"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div></div>
+      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Project One Roofing Inspector</div>
+        <div class="p-rh-sigdate"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div></div>
     </div>
   </div>`;
   return html;
@@ -12811,10 +13067,11 @@ function renderClientPage() {
           </div>
           <div class="field-group">
             <label>Type</label>
-            <div class="toggle-row">
+            <div class="toggle-row toggle-row-4">
               <button class="toggle-btn active" id="doc-type-retail"     onclick="docSetType('retail')">🏠 Retail</button>
               <button class="toggle-btn"        id="doc-type-insurance"  onclick="docSetType('insurance')">🏛 Insurance</button>
               <button class="toggle-btn"        id="doc-type-commercial" onclick="docSetType('commercial')">🏢 Commercial</button>
+              <button class="toggle-btn"        id="doc-type-report"     onclick="docSetType('report')">📋 Report</button>
             </div>
           </div>
         </div>
