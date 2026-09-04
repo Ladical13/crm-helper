@@ -183,10 +183,11 @@ def test_nothing_on_the_page_describes_a_replacement_nobody_quoted(A):
     html = A.build_customer_view(_report(*_RECS), 'tok')
     assert 'Who Pulls Your Permit' not in html
     assert 'tear-off' not in html.lower()
-    # The glance must not quote a package warranty either — there is no package
-    # to have chosen. The company's own warranty line still shows; that is
-    # about the company, not this scope.
-    assert '5-year Project One workmanship warranty' not in html
+    # No "Backed by" headline either: every source for it is written per
+    # package. The company's warranty still appears in full in the trust block
+    # — that is Luke's own copy under his own heading, not the estimator
+    # choosing to headline a package sentence.
+    assert 'cvglance-k">Backed by' not in html
 
 
 def test_that_replacement_language_is_real_on_an_ordinary_estimate(A):
@@ -475,3 +476,130 @@ def test_the_report_type_cases_are_not_all_the_same_answer(js):
     assert (unpriced['reportOnly'], unpriced['total'])  == (True, 0)
     assert hidden['reportOnly'] is False
     assert with_scope['reportOnly'] is False and with_scope['hasScope'] is True
+
+
+# ── Every customer-facing surface, not just the sign page ────────────
+# The first pass fixed the /sign page and the browser's print view and stopped
+# there. Three other surfaces kept quoting Good/Better/Best at a repair bid,
+# and two of them are the ones a customer keeps:
+#
+#   * build_signed_pdf     — the "Download PDF" button on the sign page AND the
+#                            executed contract. It carries NO condition report,
+#                            so it read "Package: Better" over an empty page
+#                            with "TOTAL - BETTER PACKAGE  $0.00" at the bottom.
+#   * build_signed_confirmation — the page they land on after signing. Same
+#                            "Better Package" heading, same $0.00, no scope.
+#   * build_presentation_view  — the slides the rep presents from. "Your
+#                            Estimate / Total $0.00", one slide after the
+#                            Condition slide had priced the repairs.
+
+def _signed(est):
+    est = json.loads(json.dumps(est))
+    est['customer'] = {'name': 'Jon Smith',
+                       'address': {'street': '12 Elm', 'city': 'Fort Collins',
+                                   'state': 'CO', 'zip': '80521'}}
+    est['estimate_id'] = 'abc12345-x'
+    est['signature'] = {'name': 'Jon Smith', 'email': 'jon@example.com',
+                        'signed_at': '2026-09-02T10:00:00Z', 'ip_address': '1.2.3.4',
+                        'document_hash': 'deadbeef' * 8}
+    return est
+
+
+def _pdf_text(A, est, signed=None):
+    """Rendered text of the PDF.
+
+    Read with pymupdf, which is a hard requirement of this app (it rasterizes
+    customer attachments), NOT an optional tool — a skipif here would go green
+    without checking the document a customer actually keeps, and the workflow's
+    "fail if any test was skipped" step exists to stop exactly that.
+    """
+    import fitz
+    data = A.build_signed_pdf(est, signed=signed)
+    assert data, 'no PDF bytes'
+    doc = fitz.open(stream=data, filetype='pdf')
+    try:
+        return '\n'.join(page.get_text() for page in doc)
+    finally:
+        doc.close()
+
+
+def test_the_downloadable_pdf_does_not_name_a_package(A):
+    txt = _pdf_text(A, _typed_report(*_RECS), signed=False)
+    assert 'Better Package' not in txt
+    assert 'BETTER PACKAGE' not in txt.upper()
+
+
+def test_the_downloadable_pdf_carries_the_repairs_as_its_scope(A):
+    """It has no condition report in it, so without this the contract is a
+    total bar over nothing."""
+    txt = _pdf_text(A, _typed_report(*_RECS), signed=False)
+    assert 'Replace cracked pipe boot' in txt
+    assert 'Reseal step flashing' in txt
+
+
+def test_the_downloadable_pdf_totals_the_repairs(A):
+    txt = _pdf_text(A, _typed_report(*_RECS), signed=False)
+    assert '$3,900.00' in txt
+    assert 'RECOMMENDED REPAIRS' in txt.upper()
+
+
+def test_the_signed_contract_pdf_agrees_with_the_estimate_total(A):
+    est = _signed(_typed_report(*_RECS))
+    txt = _pdf_text(A, est, signed=True)
+    assert '$3,900.00' in txt
+    assert 'Better Package' not in txt
+
+
+def test_an_ordinary_estimate_still_names_its_package_in_the_pdf(A):
+    """Guards the three tests above against passing by finding nothing."""
+    est = _report(*_RECS)
+    est['trades']['roofing']['line_items'] = [{
+        'name': 'Architectural shingles', 'quantity': 30, 'unit': 'SQ',
+        'tiers': {t: {'material_unit_cost': 100, 'labor_unit_cost': 50}
+                  for t in ('good', 'better', 'best')},
+    }]
+    est['selected_tier'] = 'better'
+    txt = _pdf_text(A, est, signed=False)
+    assert 'Better Package' in txt
+
+
+def test_the_post_signature_page_does_not_name_a_package(A):
+    html = A.build_signed_confirmation(_signed(_typed_report(*_RECS)))
+    assert 'Better Package' not in html
+    assert 'Recommended Repairs' in html
+
+
+def test_the_post_signature_page_shows_the_repairs_and_the_real_total(A):
+    html = A.build_signed_confirmation(_signed(_typed_report(*_RECS)))
+    assert 'Replace cracked pipe boot' in html
+    assert '$3,900.00' in html
+
+
+def test_the_post_signature_page_still_names_a_package_when_there_is_one(A):
+    est = _signed(_report(*_RECS))
+    est['trades']['roofing']['line_items'] = [{
+        'name': 'Architectural shingles', 'quantity': 30, 'unit': 'SQ',
+        'tiers': {t: {'material_unit_cost': 100, 'labor_unit_cost': 50}
+                  for t in ('good', 'better', 'best')},
+    }]
+    est['selected_tier'] = 'better'
+    html = A.build_signed_confirmation(est)
+    assert 'Better Package' in html
+
+
+def test_presentation_mode_prices_the_repairs(A):
+    html = A.build_presentation_view(_typed_report(*_RECS), 'tok')
+    assert '$3,900.00' in html
+    assert 'Estimated Repair Total' in html
+    assert 'class="cv-tier-cards"' not in html
+
+
+def test_the_glance_headline_is_real_on_an_ordinary_estimate(A):
+    """Guards the assertion above — the row exists when a package does."""
+    est = _report(*_RECS)
+    est['trades']['roofing']['line_items'] = [{
+        'name': 'Architectural shingles', 'quantity': 30, 'unit': 'SQ',
+        'tiers': {t: {'material_unit_cost': 100, 'labor_unit_cost': 50}
+                  for t in ('good', 'better', 'best')},
+    }]
+    assert 'cvglance-k">Backed by' in A.build_customer_view(est, 'tok')

@@ -801,14 +801,28 @@ estimate list, the funnel and the Den push.
   that is merely empty must keep totalling $0 rather than inventing a price; an
   explicit Report estimate with nothing priced also totals $0, it just renders
   as the report it is.
-- **The report is the itemization; the total is the bid.** The condition report
-  already lists every recommendation with its price, so neither the customer
-  view nor the PDF repeats it — they carry the number and the signature.
-- **The permit card and "What's Included and Why" are suppressed**, and the
-  glance never quotes a package warranty. All three describe a replacement:
-  the permit is "priced into your estimate", the details card walks through
-  package warranties and a complete tear-off. On a repair bid that is a claim
-  about work nobody quoted.
+- **Show the repairs table exactly where the condition report is NOT.** The
+  /sign page and the browser's print view carry the full report already, so a
+  second identical table there is the same lines twice. `build_signed_pdf`,
+  `build_signed_confirmation` and `build_presentation_view` carry no report at
+  all, so `_cv_repairs_block` (or its PDF twin) is their ONLY scope — without
+  it a signed repair contract is a navy total bar over an empty page.
+- **Five customer-facing surfaces, not one.** The first pass fixed `/sign` and
+  the browser print and stopped there; the download PDF, the executed contract,
+  the post-signature page and presentation mode all still headed a repair bid
+  "Better Package" and totalled it $0. When something must not appear on a
+  report-only estimate, check all five.
+- **The permit card, "What's Included and Why" (web AND
+  `_render_estimate_details_page` in the PDF) and the glance's "Backed by" row
+  are suppressed.** All of them describe a replacement: the permit is "priced
+  into your estimate", the details page walks through package warranties and a
+  complete tear-off, and every source for the glance headline opens "Good and
+  Better packages carry…". On a repair bid that is a claim about work nobody
+  quoted — and the details page is what put "Better Package" back into a PDF
+  the rest of this had already cleaned up.
+- **The trust blocks stay**, warranty included. That is the company's own copy
+  from ⚙ Settings under its own heading, not the estimator choosing to headline
+  a package. If it names packages on a repair bid, that is a Settings edit.
 - **Legacy `roof_health` estimates count too** — both sides migrate on read
   (`pcGet` / `_cv_condition_pc`), and the runner covers that path. `pageComplete`
   reads `property_condition` now: it tested only the legacy field, so the

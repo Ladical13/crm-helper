@@ -6515,16 +6515,22 @@ def _cv_glance_block(est, manifest, sel_label='', sel_total=None):
 
     # Warranty headline: the selected tier's promise beats the generic body copy.
     warr = ''
-    # A report-only estimate offers no packages, so naming one ("Good and Better
-    # packages carry...") describes something the customer was never shown.
-    wbt  = {} if _is_report_only(est) else (m.get('warranty_by_tier') or {})
-    sel  = (est.get('selected_tier') or '').strip().lower()
-    if sel and wbt.get(sel):
-        warr = wbt[sel]
-    else:
-        body = (m.get('warranty_body') or '').strip()
-        if body:
-            warr = re.split(r'\n|(?<=\.)\s+', body)[0].strip()
+    if not _is_report_only(est):
+        # Deliberately no "Backed by" row on a report-only estimate. Every
+        # source for it is written per package — warranty_by_tier names the
+        # tier outright, and the generic body copy opens "Good and Better
+        # packages carry…" — so this row is the estimator EDITORIALLY picking
+        # a package sentence as the headline of a bid that offers no packages.
+        # The warranty still appears in full, in the company's own words, in
+        # the trust block further down the same page.
+        wbt = m.get('warranty_by_tier') or {}
+        sel = (est.get('selected_tier') or '').strip().lower()
+        if sel and wbt.get(sel):
+            warr = wbt[sel]
+        else:
+            body = (m.get('warranty_body') or '').strip()
+            if body:
+                warr = re.split(r'\n|(?<=\.)\s+', body)[0].strip()
     if warr:
         rows.append(('Backed by', he(warr[:190] + '…' if len(warr) > 190 else warr)))
 
@@ -7604,6 +7610,53 @@ def _build_simple_retail_cv(est, token):
 ''' + _cv_footer()
 
 
+REPORT_TOTAL_LABEL = 'Recommended Repairs'
+
+
+def _cv_repairs_block(est):
+    """The recommendations, priced, as an HTML scope table.
+
+    Used ONLY where the condition report itself is absent — the signed
+    confirmation page and presentation mode both jump straight to a total, so
+    without this a repair contract carries a number and no scope at all. The
+    /sign page deliberately does NOT use it: the full condition report sits
+    directly above there, and a second identical table under its own heading is
+    the same lines twice.
+
+    Same _pc_repair_lines as everything else, so the itemization and the total
+    cannot disagree."""
+    lines = [ln for ln in _pc_repair_lines(est) if ln['description'] or ln['amount']]
+    if not lines:
+        return '', 0.0
+    _i, _s, _m, total, any_range = _pc_repair_totals(est)
+    plus = '+' if any_range else ''
+
+    rows = ''
+    for pri in ('immediate', 'soon', 'monitor'):
+        group = [ln for ln in lines if ln['priority'] == pri]
+        if not group:
+            continue
+        rows += (f'<tr class="cv-section-row"><td colspan="3">'
+                 f'{he(_RH_PRI.get(pri, pri.title()))}</td></tr>')
+        for ln in group:
+            # The rep's own cost text prints verbatim — a legacy
+            # "$8,000 - $12,000" stays a range on the page even though the
+            # total sums its low end, which is what the '+' is admitting.
+            price = he(ln['cost_range']) if ln['cost_range'] else '&mdash;'
+            rows += (f'<tr><td class="cvn">{he(ln["description"] or "Recommended repair")}'
+                     f'<div class="cvd">{he(ln["section"])}</div></td>'
+                     f'<td class="cvc" data-l="Priority">{he(_RH_PRI.get(ln["priority"], ""))}</td>'
+                     f'<td class="cvr" data-l="Price">{price}</td></tr>')
+
+    head = (f'<div class="cvtrade"><div class="cvtrade-hd">{REPORT_TOTAL_LABEL}</div>'
+            f'<table class="cvt"><thead><tr>'
+            f'<th>Recommendation</th><th scope="col" class="cvth-c">Priority</th>'
+            f'<th scope="col" class="cvth-r">Price</th></tr></thead>')
+    foot = (f'<tfoot><tr><td colspan="2" class="cvsub-l">Repair Subtotal</td>'
+            f'<td class="cvr cvsub">{fc(total)}{plus}</td></tr></tfoot></table></div>')
+    return head + f'<tbody>{rows}</tbody>' + foot, total
+
+
 def _build_report_only_cv(est, token):
     """Customer view for an estimate that is a condition report and nothing else.
 
@@ -8340,6 +8393,21 @@ def build_presentation_view(est, token):
           {ins_html}
         </div>'''))
 
+    elif _is_report_only(est):
+        # No packages to walk the customer through — the repairs the report
+        # recommends are the whole pitch. Without this the slide read
+        # "Your Estimate / Total $0.00" on the screen the rep is presenting
+        # from, right after the Condition slide priced the repairs.
+        all_html, all_total = _cv_repairs_block(est)
+        slides.append(('Pricing', f'''<div class="ps-items">
+          <h2>{REPORT_TOTAL_LABEL}</h2>
+          {all_html}
+          <div class="ps-total">
+            <div class="ps-total-l">Estimated Repair Total</div>
+            <div class="ps-total-a">{fc(all_total)}</div>
+          </div>
+        </div>'''))
+
     else:
         # Simple-mode-only estimate
         all_html, all_total = render_line_items(est)
@@ -8404,6 +8472,9 @@ def build_presentation_view(est, token):
     elif is_insurance:
         sign_total = ins_total
         sign_lbl   = 'Insurance Claim Total'
+    elif _is_report_only(est):
+        sign_total = all_total
+        sign_lbl   = 'Estimated Repair Total'
     else:
         sign_total = all_total
         sign_lbl   = 'Your Estimate Total'
@@ -8585,6 +8656,18 @@ def build_signed_confirmation(est):
         tlbl = 'Insurance Claim'
         li_html, gtotal = _insurance_cv_table(est)
         total_bar = ''  # the insurance table already ends with its own total bar
+    elif _is_report_only(est):
+        # No package was ever offered, so the tier fallback below would head
+        # this signed contract "Better Package" and total it $0 — over a repair
+        # bid the customer just agreed to. This page carries no condition
+        # report either, so the repairs table is its ONLY scope.
+        li_html, gtotal = _cv_repairs_block(est)
+        tlbl      = REPORT_TOTAL_LABEL
+        total_lbl = f'Total &mdash; {he(tlbl)}'
+        total_bar = f'''<div class="cvgrand" style="margin-top:14px">
+  <span class="cvgrand-lbl">{total_lbl}</span>
+  <span class="cvgrand-amt">{fc(gtotal)}</span>
+</div>'''
     else:
         li_html, gtotal = render_line_items(est)
         if _all_trades_simple(est):
@@ -8645,7 +8728,9 @@ def build_signed_confirmation(est):
     <div class="cvgi"><label>Customer</label><strong>{he(c.get("name","—"))}</strong></div>
     <div class="cvgi"><label>Estimate #</label><strong>{he(enum)}</strong></div>
     <div class="cvgi"><label>Address</label><strong>{he(addr or "—")}</strong></div>
-    {f'<div class="cvgi"><label>Package</label><strong>{he(tlbl)}</strong></div>' if tlbl != 'Estimate' else ''}
+    {'' if tlbl == 'Estimate' else
+      f'<div class="cvgi"><label>{"Scope" if tlbl == REPORT_TOTAL_LABEL else "Package"}</label>'
+      f'<strong>{he(tlbl)}</strong></div>'}
   </div>
 </div>
 
@@ -10000,6 +10085,10 @@ def build_signed_pdf(est, signed=None):
         signed = bool(sig)
     enum = _est_number(est)
     is_ins = est.get('estimate_type') == 'insurance'
+    # This PDF carries no condition report, so a report-only estimate needs the
+    # repairs printed as its scope — otherwise the signed contract is a navy
+    # total bar over nothing at all.
+    is_report = _is_report_only(est)
     tier = est.get('selected_tier', 'better')
     manifest = _build_estimate_manifest(est)
 
@@ -10179,6 +10268,8 @@ def build_signed_pdf(est, signed=None):
             right_rows.append(('Carrier', ins_td['carrier']))
         if ins_td.get('claim_number'):
             right_rows.append(('Claim #', ins_td['claim_number']))
+    elif is_report:
+        right_rows.append(('Scope', REPORT_TOTAL_LABEL))
     else:
         right_rows.append(('Package', _pick_summary_label(est)
                           or dict(good='Good', better='Better',
@@ -10313,6 +10404,32 @@ def build_signed_pdf(est, signed=None):
             grand += sub
             subtotal_row((sec.get('name') or 'Section') + ' Subtotal', sub, 24)
         total_label = 'Insurance Claim Total'
+    elif is_report:
+        # The recommendations ARE the scope. Same _pc_repair_lines the report
+        # and every other surface use, so the contract cannot itemize one thing
+        # and total another.
+        lines = [ln for ln in _pc_repair_lines(est)
+                 if ln['description'] or ln['amount']]
+        if lines:
+            section_head('Scope', REPORT_TOTAL_LABEL)
+            widths = (W - 30 - 30, 30, 30)
+            aligns = ('LEFT', 'CENTER', 'RIGHT')
+            with open_table(widths, aligns) as table:
+                head = table.row()
+                for h in ('Recommendation', 'Priority', 'Price'):
+                    head.cell(h)
+                for pri in ('immediate', 'soon', 'monitor'):
+                    for ln in [x for x in lines if x['priority'] == pri]:
+                        row = table.row()
+                        row.cell(_pdf_rich(
+                            (ln['description'] or 'Recommended repair')
+                            + f" ({ln['section']})"))
+                        row.cell(_pdf_rich(_RH_PRI.get(pri, '')))
+                        # The rep's own text, verbatim — a legacy range stays a
+                        # range here even though the total sums its low end.
+                        row.cell(_pdf_rich(ln['cost_range'] or '-'))
+        grand = _pc_repair_totals(est)[3]
+        total_label = 'Total - ' + REPORT_TOTAL_LABEL
     else:
         pricing = est.get('pricing', {})
         mode    = pricing.get('mode', 'margin')
@@ -10424,7 +10541,16 @@ def build_signed_pdf(est, signed=None):
     # so a reader (or an AI reading a customer's uploaded PDF) hits the
     # differentiators (materials + warranties, code compliance, ventilation
     # math, workmanship, process) before the boilerplate legal text.
-    _render_estimate_details_page(pdf, est, manifest, LM, W)
+    #
+    # Skipped on a repair bid, exactly as the /sign page skips its web twin:
+    # every one of those differentiators describes a replacement — "Better
+    # Package: 5-year workmanship warranty", a complete tear-off to the deck,
+    # the permit priced in. On a document whose entire scope is "reseal the
+    # step flashing" that is a page of claims about work nobody quoted, and it
+    # is what put "Better Package" back into a PDF the rest of this had just
+    # cleaned up.
+    if not is_report:
+        _render_estimate_details_page(pdf, est, manifest, LM, W)
 
     # Terms & conditions
     ctext = (est.get('contract_text') or '').strip()

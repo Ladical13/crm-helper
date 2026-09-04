@@ -11669,7 +11669,12 @@ function _printGlanceHTML(pHeader, estNum) {
     }
 
     // Warranty headline, from the same company content the sign page uses.
-    const wb = (_ccCache?.warranty?.body || '').trim();
+    // Skipped on a report-only estimate: the copy opens "Good and Better
+    // packages carry…", so promoting it to the headline of a bid that offers
+    // no packages is the estimator putting G/B/B back on the page by editorial
+    // choice. The trust page still carries the warranty in full. Mirrors the
+    // same suppression in _cv_glance_block.
+    const wb = isReportOnly() ? '' : (_ccCache?.warranty?.body || '').trim();
     if (wb && _ccCache?.warranty?.enabled !== false) {
       const first = wb.split(/\n|(?<=\.)\s+/)[0].trim();
       if (first) rows.push(['Backed by', first.length > 190 ? first.slice(0, 187) + '…' : first]);
