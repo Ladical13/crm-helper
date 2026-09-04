@@ -11968,7 +11968,8 @@ function _printConditionHTML(pHeader){
       ${si===0?reportHead:''}
       <div class="p-cond-shd">
         <span class="p-cond-grade" style="color:${g.color};background:${g.bg}">${sec.grade}</span>
-        <span class="p-cond-sname"><h2>${s.icon} ${s.label}</h2>
+        <span class="p-cond-ico">${s.icon}</span>
+        <span class="p-cond-sname"><h2>${s.label}</h2>
           <span class="p-cond-sword" style="color:${g.color}">${g.label}</span></span>
       </div>
       ${metaBits?`<div class="p-cond-meta">${metaBits}</div>`:''}
@@ -11988,15 +11989,13 @@ function _printConditionHTML(pHeader){
   // Signature page
   html+=`<div class="p-roof-health">
     ${pHeader}
-    <h2>Sign-off &amp; Acknowledgment</h2>
+    <div class="p-cond-title"><h2>Sign-off &amp; Acknowledgment</h2></div>
     <div class="p-rh-summary">This report summarizes the visual inspection of the property listed above. It is prepared for informational purposes and to assist in prioritizing maintenance and repair decisions.</div>
-    <div class="p-rh-sig" style="margin-top:40pt">
-      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">${W.signer}</div></div>
-      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Project One Roofing Inspector</div></div>
-    </div>
     <div class="p-rh-sig">
-      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div>
-      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div>
+      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">${W.signer}</div>
+        <div class="p-rh-sigdate"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div></div>
+      <div class="p-sig-block"><div class="p-sig-line"></div><div class="p-sig-label">Project One Roofing Inspector</div>
+        <div class="p-rh-sigdate"><div class="p-sig-line"></div><div class="p-sig-label">Date</div></div></div>
     </div>
   </div>`;
   return html;

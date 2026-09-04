@@ -3579,7 +3579,17 @@ a.jx-contact:hover { text-decoration: underline; }
 .p-rh-table th { padding:9pt 8pt 5pt; border-bottom:.75pt solid var(--doc-navy); color:var(--doc-faint); font-size:6.5pt; font-weight:600; text-align:left; text-transform:uppercase; letter-spacing:1.2pt; }
 .p-rh-table th:first-child, .p-rh-table td:first-child { padding-left:0; }
 .p-rh-table td { padding:7pt 8pt; border-bottom:.5pt solid var(--doc-rule); vertical-align:top; }
-.p-rh-sig { display:flex; gap:30mm; margin:12mm 0 4mm; }
+/* Both parties side by side, each block half the measure with its own date
+   line under it. Without flex:1 the blocks collapsed to their label width and
+   the signature rules came out as short stubs bunched against the left
+   margin — on the one page of this document a person actually signs. */
+.p-rh-sig { display:flex; gap:18mm; margin:18mm 0 4mm; }
+.p-rh-sig .p-sig-block { flex:1; min-width:0; }
+/* Its own class on purpose: .p-sig-date belongs to the estimate's signature
+   page, where it is a flex ROW expecting wrapper divs. Borrowing it here laid
+   the rule and the word "DATE" side by side. */
+.p-rh-sigdate { margin-top:14mm; }
+.p-rh-sigdate .p-sig-line { height:22pt; max-width:52mm; }
 .p-rh-footer { font-size:7pt; color:var(--doc-faint); border-top:.5pt solid var(--doc-rule); padding-top:5pt; line-height:1.5; }
 
 /* Header desktop-button group */
@@ -4047,6 +4057,10 @@ a.jx-contact:hover { text-decoration: underline; }
                    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 .p-cond-sname    { display: flex; flex-direction: column; gap: 2pt; }
 .p-cond-sname h2 { margin: 0; font-family: var(--doc-serif); font-size: 17pt; font-weight: 600; color: var(--doc-navy); letter-spacing: -.2pt; }
+/* A sibling of the name column, NOT the first thing inside the heading —
+   nested, the grade word underneath tucked itself under the emoji and read as
+   a caption on it ("🏠 / FAIR") rather than on "Roofing". */
+.p-cond-ico      { flex: none; font-size: 22pt; line-height: 1; }
 .p-cond-sword    { font-size: 7.5pt; font-weight: 600; text-transform: uppercase; letter-spacing: 1.2pt; }
 .p-cond-meta     { font-size: 8.5pt; color: var(--doc-mute); margin-bottom: 3mm; }
 .p-cond-sum      { font-size: 9.5pt; line-height: 1.65; color: var(--doc-mute); margin-bottom: 4mm; }

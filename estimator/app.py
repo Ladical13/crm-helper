@@ -5093,6 +5093,10 @@ font-weight:600;line-height:1}
 .cvcond-sec-name{display:flex;flex-direction:column;gap:2px;min-width:0}
 .cvcond-sec-name h4{font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;
 color:var(--navy);margin:0;line-height:1.2}
+/* The icon is a sibling of the name column, NOT the first thing inside the
+   heading — nested, the grade word underneath tucked itself under the emoji
+   and read as a caption on it ("🏠 / FAIR") rather than on "Roofing". */
+.cvcond-ico{flex:none;font-size:30px;line-height:1}
 .cvcond-sec-word{font-size:var(--fz-fine);font-weight:600;text-transform:uppercase;letter-spacing:1.2px}
 .cvcond-meta{font-size:var(--fz-fine);color:var(--mut);margin-bottom:var(--sp-2)}
 .cvcond-summary{font-size:var(--fz-sm);line-height:1.7;color:var(--mut);margin-bottom:var(--sp-2)}
@@ -6222,7 +6226,8 @@ def _cv_condition_block(est):
         sec_html += f'''<section class="cvcond-sec">
   <header class="cvcond-sec-hd">
     <span class="cvcond-grade" style="color:{clr};background:{bg}">{he(sec.get("grade"))}</span>
-    <span class="cvcond-sec-name"><h4>{icon} {he(lbl)}</h4>
+    <span class="cvcond-ico">{icon}</span>
+    <span class="cvcond-sec-name"><h4>{he(lbl)}</h4>
       <span class="cvcond-sec-word" style="color:{clr}">{word}</span></span>
   </header>
   {meta_html}{summary_html}{find_html}{rec_html}
