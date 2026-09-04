@@ -807,6 +807,15 @@ estimate list, the funnel and the Den push.
   `build_signed_confirmation` and `build_presentation_view` carry no report at
   all, so `_cv_repairs_block` (or its PDF twin) is their ONLY scope — without
   it a signed repair contract is a navy total bar over an empty page.
+- **The report reads like an estimate: cost per line, subtotal per section,
+  one total.** The summary page it used to open with is gone — a Condition
+  Snapshot grid restating grades that reappear on every section header, and a
+  priority-bucketed cost table restating costs printed line by line on the
+  next page. The same "where the other thing isn't" rule governs the closing
+  Total: on a report-only estimate the navy bar carries it, so the report
+  stops at subtotals; on a priced estimate nothing else states it, so the
+  report closes with its own Total. Guarded by
+  `tests/test_condition_report.py`.
 - **Five customer-facing surfaces, not one.** The first pass fixed `/sign` and
   the browser print and stopped there; the download PDF, the executed contract,
   the post-signature page and presentation mode all still headed a repair bid

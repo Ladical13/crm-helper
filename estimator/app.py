@@ -5074,11 +5074,9 @@ background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var
 .cvftr-sub{font-size:10.5px;margin-top:10px;opacity:.7}
 
 /* ── condition report ── */
-.cvcond-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;margin-bottom:12px}
-.cvcond-cell{text-align:left;border:none;border-top:1px solid var(--line);border-radius:0;padding:var(--sp-2) 0 0;background:#fff}
-.cvcond-cell-lbl{font-size:var(--fz-micro);font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:var(--sp-1);line-height:1.35}
-.cvcond-letter{font-family:var(--serif);font-size:28px;font-weight:600;width:auto;height:auto;line-height:1.1;border-radius:0;margin:0 0 3px;background:none!important}
-.cvcond-word{font-size:var(--fz-fine);font-weight:500;color:var(--mut)}
+/* The condition-snapshot grid these styled was removed with the summary
+   block — every grade it showed is on its own section header a few inches
+   below. Kept out rather than left dead. */
 .cvcond-exec{font-family:var(--serif);font-size:var(--fz-body);line-height:1.75;color:var(--ink);background:#fff;border-left:2px solid var(--cyan);
 padding:2px 0 2px var(--sp-3);border-radius:0;margin-bottom:var(--sp-3)}
 .cvcond-sec{margin-top:14px;border-top:1px solid var(--line);padding-top:13px}
@@ -5095,6 +5093,9 @@ background:#fff;padding:var(--sp-1) 8px;border-bottom:1px solid var(--navy)}
 .cvcond-tbl td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.55}
 .cvcond-tbl tr:last-child td{border-bottom:none}
 .cvcond-cost-total td{font-weight:600;color:var(--navy);border-top:1px solid var(--navy);background:#fff}
+.cvcond-sub td{font-weight:600;color:var(--mut);border-top:1px solid var(--line);border-bottom:none;text-align:right}
+.cvcond-sub td:last-child{color:var(--ink)}
+.cvcond-total-tbl{margin-top:var(--sp-3)}
 .cvcond-foot{font-size:var(--fz-micro);color:var(--faint);line-height:1.7;margin-top:var(--sp-3);border-top:1px solid var(--line);padding-top:var(--sp-2)}
 .cvcond .cvph-grid{margin-top:10px}
 
@@ -6073,55 +6074,26 @@ def _cv_condition_block(est):
     if not enabled:
         return ''
 
-    is_hoa       = pc.get('audience') == 'hoa'
-    w_title      = 'Property Condition Report' if is_hoa else 'Home Condition Report'
-    w_investment = 'Estimated Repair Investment' if is_hoa else 'Estimated Repair Costs'
+    is_hoa  = pc.get('audience') == 'hoa'
+    w_title = 'Property Condition Report' if is_hoa else 'Home Condition Report'
 
-    # Condition snapshot grid
-    cells = ''
-    for _k, lbl, icon, sec in enabled:
-        word, clr, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
-        cells += f'''<div class="cvcond-cell">
-  <div class="cvcond-cell-lbl">{icon} {he(lbl)}</div>
-  <div class="cvcond-letter" style="color:{clr};background:{bg}">{he(sec.get("grade"))}</div>
-  <div class="cvcond-word" style="color:{clr}">{word}</div>
-</div>'''
-
+    # There is deliberately NO summary block here any more — no condition
+    # snapshot grid, no priority-bucketed cost table. Both restated what the
+    # sections below already say: every grade reappears on its own section
+    # header, and every bucket figure is a sum of costs printed line by line a
+    # few inches lower. The report now reads the way an estimate does — the
+    # findings, a cost against each repair, a subtotal per section and one
+    # total — so the customer meets each number beside the thing it pays for.
     exec_html = (f'<div class="cvcond-exec"><strong>Overall Assessment:</strong> {he(pc.get("executive_notes"))}</div>'
                  if (pc.get('executive_notes') or '').strip() else '')
 
-    # Estimated repair investment. Each recommendation now carries ONE price, so
-    # these totals are exact and print without a suffix — that is what lets this
-    # report stand as a bid. The '+' comes back only if some line is still a
-    # legacy range, where the total really is a low-end sum.
-    cost_imm = cost_soon = cost_mon = 0.0
-    any_range = False
-    for _k, _lbl, _icon, sec in enabled:
-        for rec in (sec.get('recommendations') or []):
-            lo = _pc_cost_lo(rec)
-            if lo and _pc_is_range(rec):
-                any_range = True
-            pri = rec.get('priority')
-            if pri == 'immediate':
-                cost_imm += lo
-            elif pri == 'soon':
-                cost_soon += lo
-            else:
-                cost_mon += lo
-    cost_total = cost_imm + cost_soon + cost_mon
-    plus = '+' if any_range else ''
-    cost_html = ''
-    if cost_total > 0:
-        rows = [(lbl, v) for lbl, v in [('Immediate repairs (D/F)', cost_imm),
-                                        ('Short-term (C grades)', cost_soon),
-                                        ('Maintenance (B grades)', cost_mon)] if v > 0]
-        trs = ''.join(f'<tr><td>{lbl}</td><td class="cvr">{fc(v)}{plus}</td></tr>' for lbl, v in rows)
-        cost_html = f'''<div class="cvcond-sh">{w_investment}</div>
-<table class="cvcond-tbl">{trs}
-<tr class="cvcond-cost-total"><td>Estimated Total</td><td class="cvr">{fc(cost_total)}{plus}</td></tr></table>'''
+    # A legacy range ('$8,000 – $12,000') totals its low end, so any report
+    # carrying one keeps the honest '+' on every total it feeds.
+    plus = '+' if _pc_repair_totals(est)[4] else ''
 
     # Per-section detail
     sec_html = ''
+    report_total = 0.0
     for key, lbl, icon, sec in enabled:
         word, clr, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
         meta_bits = []
@@ -6149,15 +6121,21 @@ def _cv_condition_block(est):
 <tbody>{find_rows}</tbody></table>''' if find_rows else '')
 
         rec_rows = ''
+        sec_total = 0.0
         for rec in (sec.get('recommendations') or []):
             if not rec.get('description'):
                 continue
+            sec_total += _pc_cost_lo(rec)
             rec_rows += (f'<tr><td style="white-space:nowrap"><strong>{he(_RH_PRI.get(rec.get("priority"), rec.get("priority") or ""))}</strong></td>'
                          f'<td>{he(rec.get("description") or "")}</td>'
                          f'<td style="white-space:nowrap">{he(rec.get("cost_range") or "—")}</td></tr>')
+        report_total += sec_total
+        # Subtotal per section, the way each trade subtotals on an estimate.
+        sub_html = (f'<tfoot><tr class="cvcond-sub"><td colspan="2">{he(lbl)} Subtotal</td>'
+                    f'<td>{fc(sec_total)}{plus}</td></tr></tfoot>' if sec_total > 0 else '')
         rec_html = (f'''<div class="cvcond-sh">Recommendations</div>
-<table class="cvcond-tbl"><thead><tr><th scope="col">Priority</th><th scope="col">Description</th><th scope="col">Est. Cost</th></tr></thead>
-<tbody>{rec_rows}</tbody></table>''' if rec_rows else '')
+<table class="cvcond-tbl"><thead><tr><th scope="col">Priority</th><th scope="col">Description</th><th scope="col">Cost</th></tr></thead>
+<tbody>{rec_rows}</tbody>{sub_html}</table>''' if rec_rows else '')
 
         sec_html += f'''<div class="cvcond-sec">
   <div class="cvcond-sec-hd">
@@ -6167,16 +6145,25 @@ def _cv_condition_block(est):
   {meta_html}{summary_html}{find_html}{rec_html}
 </div>'''
 
+    # One total to close the report — but ONLY where nothing else is about to
+    # state it. On a report-only estimate the repairs ARE the price, so the
+    # navy total bar sits directly under this block and printing the same
+    # figure twice, inches apart, is how a customer starts wondering which one
+    # they owe. Same rule the repairs table follows.
+    total_html = ''
+    if report_total > 0 and not _is_report_only(est):
+        total_html = (f'<table class="cvcond-tbl cvcond-total-tbl"><tr class="cvcond-cost-total">'
+                      f'<td>Total</td><td class="cvr">{fc(report_total)}{plus}</td></tr></table>')
+
     insp_date = (pc.get('inspection_date') or '').strip()
     insp_html = f'<div class="cvcond-meta">Inspection Date: <strong>{he(insp_date)}</strong></div>' if insp_date else ''
 
     return f'''<div class="cvcond">
   <h2 data-eyebrow="Inspection">{w_title}</h2>
   {insp_html}
-  <div class="cvcond-grid">{cells}</div>
   {exec_html}
-  {cost_html}
   {sec_html}
+  {total_html}
   <div class="cvcond-foot">This {w_title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>
 </div>'''
 

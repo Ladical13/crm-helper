@@ -11877,7 +11877,6 @@ function _printConditionHTML(pHeader){
   const W={  // audience wording
     title:      isHoa?'Property Condition Report':'Home Condition Report',
     inspector:  isHoa?'Inspector':'Inspected By',
-    investment: isHoa?'Estimated Repair Investment':'Estimated Repair Costs',
     signer:     isHoa?'Property Manager / HOA Representative':'Homeowner',
   };
 
@@ -11886,32 +11885,21 @@ function _printConditionHTML(pHeader){
   const addr=[cu.address.street,cityState].filter(Boolean).join(', ');
   const propName=pc.property_name||(cu.name?(isHoa?`${cu.name} — Property Report`:cu.name):addr)||W.title;
 
-  // Cost totals per priority. Each recommendation carries ONE price now, so
-  // these are exact and print without a suffix — that is what lets this report
-  // stand as a bid. anyRange brings the '+' back only for estimates saved
-  // before the change, whose totals really are a low-end sum.
-  // pcRepairTotals() is the one parse (first number only, so a legacy
-  // "$500–$1,500" reads its low end and keeps the '+'). It is also what prices
-  // a report-only estimate, so the report and the bid can never disagree.
+  /* There is deliberately NO summary page any more. It carried a Condition
+     Snapshot grid and a priority-bucketed cost table, and both restated what
+     the section pages below already say: every grade reappears on its own
+     section header, and every bucket figure is a sum of costs printed line by
+     line on the next page. The report now reads the way an estimate does —
+     findings, a cost against each repair, a subtotal per section, one total —
+     so the customer meets each number beside the thing it pays for.
+
+     The title and property block are NOT the summary page. They identify the
+     document, so they ride at the top of the first section page instead of
+     costing a sheet of paper on their own. */
   const _rt=pcRepairTotals();
-  const costImmediate=_rt.immediate, costSoon=_rt.soon, costMonitor=_rt.monitor;
   const plus=_rt.anyRange?'+':'';
 
-  // Summary page
-  const gradeGrid=enabledSections.map(s=>{
-    const sec=pc.sections[s.key]; const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
-    return `<div class="p-cond-grade-cell">
-      <div class="p-cond-grade-lbl">${s.icon} ${s.label}</div>
-      <div class="p-cond-grade-letter" style="color:${g.color}">${sec.grade}</div>
-      <div class="p-cond-grade-desc" style="color:${g.color}">${g.label}</div>
-    </div>`;
-  }).join('');
-
-  const costTotal=costImmediate+costSoon+costMonitor;
-  const costRows=[[`Immediate repairs (D/F)`,costImmediate],[`Short-term (C grades)`,costSoon],[`Maintenance (B grades)`,costMonitor],[`Estimated Total`,costTotal]];
-
-  let html=`<div class="p-roof-health p-cond-cover">
-    ${pHeader}
+  const reportHead=`
     <div class="p-cond-title">
       <h2>${W.title}</h2>
       <div class="p-cond-prop">${esc(propName)}</div>
@@ -11922,20 +11910,13 @@ function _printConditionHTML(pHeader){
       <div><label>Inspection Date</label><span>${esc(pc.inspection_date||'—')}</span></div>
       ${S.salesperson?`<div><label>${W.inspector}</label><span>${esc(cap(S.salesperson))}</span></div>`:''}
     </div>
-    <h3 class="p-rh-sh" style="margin-top:14pt">Condition Snapshot</h3>
-    <div class="p-cond-grade-grid">${gradeGrid}</div>
-    ${pc.executive_notes?`<div class="p-rh-summary" style="margin-top:12pt"><strong>Overall Assessment:</strong> ${esc(pc.executive_notes)}</div>`:''}
-    ${costTotal>0?`<h3 class="p-rh-sh" style="margin-top:14pt">${W.investment}</h3>
-      <table class="p-rh-table p-cond-cost-table">
-        ${costRows.filter(([,v])=>v>0).map(([l,v],i)=>`<tr${i===costRows.filter(([,v])=>v>0).length-1?' class="p-cond-total-row"':''}>
-          <td>${l}</td><td style="text-align:right;font-weight:${i===costRows.filter(([,v])=>v>0).length-1?800:400}">${fmtCur(v)}${plus}</td>
-        </tr>`).join('')}
-      </table>`:''}
-    <div class="p-rh-footer">This ${W.title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>
-  </div>`;
+    ${pc.executive_notes?`<div class="p-rh-summary" style="margin-top:12pt"><strong>Overall Assessment:</strong> ${esc(pc.executive_notes)}</div>`:''}`;
 
-  // Per-section detail pages (photos live in the Photo Report, not here)
-  enabledSections.forEach(s=>{
+  let html='';
+  let reportTotal=0;
+
+  // Per-section pages (photos live in the Photo Report, not here)
+  enabledSections.forEach((s,si)=>{
     const sec=pc.sections[s.key];
     const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
     const findRows=(sec.findings||[]).filter(f=>f.description||f.area).map(f=>{
@@ -11944,11 +11925,20 @@ function _printConditionHTML(pHeader){
         <td><span style="color:${sev.c};font-weight:700">${sev.l}</span></td>
         <td>${esc(f.description||'')}</td></tr>`;
     }).join('');
+    let secTotal=0;
     const recRows=(sec.recommendations||[]).filter(r=>r.description).map(r=>{
       const pri=RH_PRIORITIES.find(p=>p.v===r.priority)||{l:r.priority||''};
+      const m=(r.cost_range||'').match(/[\d,]+(\.\d+)?/);
+      secTotal+=m?(parseFloat(m[0].replace(/,/g,''))||0):0;
       return `<tr><td><strong>${pri.l}</strong></td><td>${esc(r.description||'')}</td>
         <td style="white-space:nowrap">${esc(r.cost_range||'—')}</td></tr>`;
     }).join('');
+    reportTotal+=secTotal;
+    // Subtotal per section, the way each trade subtotals on an estimate.
+    const subRow=secTotal>0
+      ? `<tfoot><tr class="p-rh-sub"><td colspan="2">${esc(s.label)} Subtotal</td>
+         <td style="white-space:nowrap">${fmtCur(secTotal)}${plus}</td></tr></tfoot>`
+      : '';
     // Roof-specific meta
     const roofMeta=s.key==='roof'&&(sec.material_type||sec.age_years)?`
       <div class="p-rh-meta" style="margin-bottom:10pt">
@@ -11958,6 +11948,7 @@ function _printConditionHTML(pHeader){
       </div>`:'';
     html+=`<div class="p-roof-health">
       ${pHeader}
+      ${si===0?reportHead:''}
       <div class="p-rh-titlebar">
         <h2>${s.icon} ${s.label}</h2>
         <div class="p-rh-badge" style="color:${g.color}">Grade ${sec.grade} — ${g.label}</div>
@@ -11968,8 +11959,16 @@ function _printConditionHTML(pHeader){
         <table class="p-rh-table"><thead><tr><th>Area</th><th>Severity</th><th>Description</th></tr></thead>
         <tbody>${findRows}</tbody></table>`:''}
       ${recRows?`<h3 class="p-rh-sh">Repair Options &amp; Recommendations</h3>
-        <table class="p-rh-table"><thead><tr><th>Priority</th><th>Recommendation</th><th>Est. Cost</th></tr></thead>
-        <tbody>${recRows}</tbody></table>`:''}
+        <table class="p-rh-table"><thead><tr><th>Priority</th><th>Recommendation</th><th>Cost</th></tr></thead>
+        <tbody>${recRows}</tbody>${subRow}</table>`:''}
+      ${(si===enabledSections.length-1&&reportTotal>0&&!isReportOnly())
+        ? `<table class="p-rh-table p-cond-cost-table" style="margin-top:14pt">
+             <tr class="p-cond-total-row"><td>Total</td>
+             <td style="text-align:right;font-weight:800">${fmtCur(reportTotal)}${plus}</td></tr></table>`
+        : ''}
+      ${si===enabledSections.length-1
+        ? `<div class="p-rh-footer">This ${W.title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>`
+        : ''}
     </div>`;
   });
 

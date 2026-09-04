@@ -17,17 +17,26 @@ server side, which is what customers see through /sign.
 
 
 def _cost_table(html):
-    """Just the cost summary table.
+    """Every computed total in the report — the per-section subtotal rows plus
+    the closing Total row when there is one.
 
-    NOT locatable by 'cvcond-tbl' — the per-section recommendation table carries
-    that class too, so matching on it picks up a rep's typed text and any '+' in
-    it. The cost table is the one holding the 'cvcond-cost-total' row.
+    The priority-bucketed summary table these tests were written against is
+    gone: it restated, as three sums, costs that are printed line by line a few
+    inches lower, and it sat on a page of its own ahead of the findings. The
+    parsing rules it protected did not go anywhere, so these tests now read the
+    numbers off the rows that survived it.
+
+    NOT locatable by 'cvcond-tbl' alone — the recommendation tables carry that
+    class too, so matching on it would pick up a rep's typed cost text and any
+    '+' inside it, and every one of these tests would pass on the raw input
+    rather than on the sum. Only the computed rows are returned.
     """
-    end = html.find('cvcond-cost-total')
-    if end < 0:
-        return ''
-    start = html.rfind('<table', 0, end)
-    return html[start:html.find('</table>', end)]
+    import re
+    out = []
+    for m in re.finditer(r'<tr class="(cvcond-sub|cvcond-cost-total)".*?</tr>',
+                         html, re.S):
+        out.append(m.group(0))
+    return '\n'.join(out)
 
 
 def _est(*recs, grade='C'):
@@ -69,14 +78,17 @@ def test_a_bare_number_still_counts(A):
     assert '$1,500.00' in costs and '+' not in costs
 
 
-def test_priority_buckets_stay_separate(A):
-    costs = _cost_table(A._cv_condition_block(_est(
+def test_every_priority_counts_toward_the_one_total(A):
+    """Priority is still printed against each recommendation; it no longer
+    splits the money into three sums the customer has to add up."""
+    html = A._cv_condition_block(_est(
         ('immediate', 'Now',   '$1,000'),
         ('soon',      'Later', '$200'),
         ('monitor',   'Watch', '$30'),
-    )))
-    for amount in ('$1,000.00', '$200.00', '$30.00', '$1,230.00'):
-        assert amount in costs
+    ))
+    assert '$1,230.00' in _cost_table(html)
+    for word in ('Immediate', '1&ndash;2 Years', 'Monitor'):
+        assert word in html or word.replace('&ndash;', '–') in html
 
 
 # ── Legacy ranges: unchanged, and still honest ─────────────────────────
@@ -140,6 +152,75 @@ def test_hidden_when_the_print_chip_is_off(A):
     assert A._cv_condition_block(est) == ''
 
 
-def test_no_cost_table_when_nothing_is_priced(A):
+def test_no_totals_at_all_when_nothing_is_priced(A):
     html = A._cv_condition_block(_est(('monitor', 'Keep an eye on it', '')))
-    assert 'cvcond-cost-total' not in html
+    assert _cost_table(html) == ''
+
+
+# ── The summary page is gone ───────────────────────────────────────────
+# It sat ahead of the findings and said nothing the findings do not: every
+# grade it gridded reappears on its own section header, and its three
+# priority sums were sums of costs printed line by line on the next page.
+
+def test_the_condition_snapshot_grid_is_gone(A):
+    html = A._cv_condition_block(_est(('immediate', 'Replace boot', '$1,500')))
+    assert 'cvcond-grid' not in html
+    assert 'cvcond-letter' not in html
+
+
+def test_the_grade_is_still_shown_on_the_section_itself(A):
+    """Removing the grid must not lose the grade — it moves, it does not go."""
+    html = A._cv_condition_block(_est(('immediate', 'Replace boot', '$1,500'),
+                                      grade='D'))
+    assert 'Grade D' in html
+    assert 'Poor' in html
+
+
+def test_the_priority_bucket_summary_is_gone(A):
+    html = A._cv_condition_block(_est(
+        ('immediate', 'Now',   '$1,000'),
+        ('soon',      'Later', '$200'),
+    ))
+    for bucket in ('Immediate repairs (D/F)', 'Short-term (C grades)',
+                   'Maintenance (B grades)'):
+        assert bucket not in html
+
+
+def test_the_cost_column_is_headed_cost_not_estimated_cost(A):
+    """Named the way an estimate names it."""
+    html = A._cv_condition_block(_est(('immediate', 'Replace boot', '$1,500')))
+    assert '<th scope="col">Cost</th>' in html
+    assert 'Est. Cost' not in html
+    assert 'Estimated Repair Costs' not in html
+    assert 'Estimated Total' not in html
+
+
+def test_each_section_subtotals_like_a_trade_does(A):
+    html = A._cv_condition_block(_est(('immediate', 'Replace boot', '$1,500'),
+                                      ('soon', 'Reseal flashing', '$2,000')))
+    assert 'Roofing Subtotal' in html
+    assert '$3,500.00' in _cost_table(html)
+
+
+def test_a_report_only_estimate_does_not_print_the_total_twice(A):
+    """The navy repair-total bar sits directly under this block on a
+    report-only estimate. The same figure inches apart is how a customer
+    starts wondering which one they owe."""
+    est = _est(('immediate', 'Replace boot', '$1,500'))
+    assert A._is_report_only(est) is True
+    assert 'cvcond-cost-total' not in A._cv_condition_block(est)
+    # …but the subtotal, which is per section rather than the bid, stays.
+    assert 'Roofing Subtotal' in A._cv_condition_block(est)
+
+
+def test_a_priced_estimate_closes_its_report_with_a_total(A):
+    """Here nothing else states it — the estimate's own total is for the
+    replacement, not for the repairs the report recommends."""
+    est = _est(('immediate', 'Replace boot', '$1,500'))
+    est['trades'] = {'roofing': {'enabled': True, 'line_items': [{
+        'name': 'Shingles', 'quantity': 30,
+        'tiers': {'better': {'material_unit_cost': 100, 'labor_unit_cost': 50}}}]}}
+    assert A._is_report_only(est) is False
+    html = A._cv_condition_block(est)
+    assert 'cvcond-cost-total' in html
+    assert '>Total<' in html

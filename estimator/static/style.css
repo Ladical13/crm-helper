@@ -4031,18 +4031,18 @@ a.jx-contact:hover { text-decoration: underline; }
 .pc-photos-hint { font-size: 12px; color: var(--text-light); margin: 12px 2px 0; line-height: 1.5; }
 
 /* Property Condition Report — print styles */
-.p-cond-cover    { }
+/* The standalone cover/summary page is gone — the title block below now
+   rides at the top of the FIRST section page. The condition-snapshot grid and
+   the priority-bucketed cost table that lived beside it are gone with it:
+   every grade reappears on its own section header and every bucket figure was
+   a sum of costs printed line by line on the next page. Their rules are kept
+   out rather than left dead. */
 .p-cond-title    { margin-bottom: 18pt; }
 .p-cond-title h2 { font-family: var(--doc-serif); font-size: 20pt; font-weight: 600; color: var(--doc-navy); letter-spacing: -.3pt; margin-bottom: 4pt; }
 .p-cond-prop     { font-size: 11.5pt; color: var(--doc-mute); font-weight: 400; }
-.p-cond-grade-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(100pt, 1fr));
-  gap: 14pt; margin: 14pt 0;
-}
-.p-cond-grade-cell { border-top: .75pt solid var(--doc-rule); padding: 10pt 0 0; }
-.p-cond-grade-lbl  { font-size: 6.5pt; font-weight: 600; color: var(--doc-faint); text-transform: uppercase; letter-spacing: 1.2pt; margin-bottom: 7pt; }
-.p-cond-grade-letter { font-family: var(--doc-serif); font-size: 26pt; font-weight: 600; line-height: 1; display: inline-block; }
-.p-cond-grade-desc { font-size: 8pt; font-weight: 500; color: var(--doc-mute); margin-top: 5pt; }
+/* Section subtotal, mirroring the trade subtotals on a printed estimate. */
+.p-rh-sub td { font-weight: 600; color: var(--doc-navy); border-top: .75pt solid var(--doc-rule); border-bottom: none; }
+.p-rh-sub td:first-child { text-align: right; }
 .p-cond-cost-table td { padding: 7pt 8pt; border: none; border-bottom: .5pt solid var(--doc-rule); }
 .p-cond-cost-table td:first-child { padding-left: 0; }
 .p-cond-total-row td { font-weight: 600; color: var(--doc-navy); border-top: .75pt solid var(--doc-navy); border-bottom: none; }
