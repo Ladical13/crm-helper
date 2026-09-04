@@ -7029,6 +7029,8 @@ const RH_CONDITIONS = [
 ];
 const RH_SEVERITIES  = [{v:'low',l:'Low',c:'#2563eb'},{v:'medium',l:'Medium',c:'#d97706'},{v:'high',l:'High',c:'#dc2626'}];
 const RH_PRIORITIES  = [{v:'immediate',l:'Immediate'},{v:'soon',l:'1–2 Years'},{v:'monitor',l:'Monitor'}];
+// Pill-sized labels for the report — MUST mirror _PC_PRI_SHORT in app.py.
+const PC_PRI_SHORT   = {immediate:'Now', soon:'1–2 Yrs', monitor:'Monitor'};
 const RH_MATERIALS   = ['Asphalt Shingles','Metal','Tile','Wood/Cedar','Flat/TPO','Flat/EPDM','Other'];
 
 // ── Property Condition Report constants ─────────────────────────────────────
@@ -11886,7 +11888,7 @@ function _printConditionHTML(pHeader){
   const isHoa=pc.audience==='hoa';
   const W={  // audience wording
     title:      isHoa?'Property Condition Report':'Home Condition Report',
-    inspector:  isHoa?'Inspector':'Inspected By',
+    inspector:  isHoa?'Inspector':'Inspected by',
     signer:     isHoa?'Property Manager / HOA Representative':'Homeowner',
   };
 
@@ -11895,17 +11897,11 @@ function _printConditionHTML(pHeader){
   const addr=[cu.address.street,cityState].filter(Boolean).join(', ');
   const propName=pc.property_name||(cu.name?(isHoa?`${cu.name} — Property Report`:cu.name):addr)||W.title;
 
-  /* There is deliberately NO summary page any more. It carried a Condition
-     Snapshot grid and a priority-bucketed cost table, and both restated what
-     the section pages below already say: every grade reappears on its own
-     section header, and every bucket figure is a sum of costs printed line by
-     line on the next page. The report now reads the way an estimate does —
-     findings, a cost against each repair, a subtotal per section, one total —
-     so the customer meets each number beside the thing it pays for.
-
-     The title and property block are NOT the summary page. They identify the
-     document, so they ride at the top of the first section page instead of
-     costing a sheet of paper on their own. */
+  /* Mirrors _cv_condition_block in app.py — the printed report and the one the
+     customer opens from the link have to be the same document. No summary
+     page: each area is graded on its own header, what we found sits above the
+     work that fixes it, and every recommendation carries its price on the same
+     line. MUST be changed together with the server's version. */
   const _rt=pcRepairTotals();
   const plus=_rt.anyRange?'+':'';
 
@@ -11920,61 +11916,68 @@ function _printConditionHTML(pHeader){
       <div><label>Inspection Date</label><span>${esc(pc.inspection_date||'—')}</span></div>
       ${S.salesperson?`<div><label>${W.inspector}</label><span>${esc(cap(S.salesperson))}</span></div>`:''}
     </div>
-    ${pc.executive_notes?`<div class="p-rh-summary" style="margin-top:12pt"><strong>Overall Assessment:</strong> ${esc(pc.executive_notes)}</div>`:''}`;
+    ${pc.executive_notes?`<div class="p-rh-summary">${esc(pc.executive_notes)}</div>`:''}`;
 
   let html='';
   let reportTotal=0;
 
-  // Per-section pages (photos live in the Photo Report, not here)
   enabledSections.forEach((s,si)=>{
     const sec=pc.sections[s.key];
     const g=PC_GRADES.find(x=>x.g===sec.grade)||{color:'#333',bg:'#f5f5f5',label:'—'};
+
     const findRows=(sec.findings||[]).filter(f=>f.description||f.area).map(f=>{
       const sev=RH_SEVERITIES.find(sv=>sv.v===f.severity)||{l:f.severity||'',c:'#666'};
-      return `<tr><td style="font-weight:600">${esc(f.area||'—')}</td>
-        <td><span style="color:${sev.c};font-weight:700">${sev.l}</span></td>
-        <td>${esc(f.description||'')}</td></tr>`;
+      return `<li class="p-find">
+        <span class="p-find-dot" style="background:${sev.c}"></span>
+        <span class="p-find-txt">${f.area?`<strong>${esc(f.area)}</strong> — `:''}${esc(f.description||'')}</span>
+        <span class="p-find-sev" style="color:${sev.c}">${sev.l}</span></li>`;
     }).join('');
+
     let secTotal=0;
     const recRows=(sec.recommendations||[]).filter(r=>r.description).map(r=>{
-      const pri=RH_PRIORITIES.find(p=>p.v===r.priority)||{l:r.priority||''};
       const m=(r.cost_range||'').match(/[\d,]+(\.\d+)?/);
       secTotal+=m?(parseFloat(m[0].replace(/,/g,''))||0):0;
-      return `<tr><td><strong>${pri.l}</strong></td><td>${esc(r.description||'')}</td>
-        <td style="white-space:nowrap">${esc(r.cost_range||'—')}</td></tr>`;
+      const pri=r.priority||'monitor';
+      const price=esc(r.cost_range||'');
+      // Mirrors app.py: no price on work we're telling them to do means we owe
+      // them a quote; on a Monitor line there is no work yet to quote.
+      const blank=pri==='monitor'?'—':'Quoted separately';
+      return `<li class="p-work">
+        <span class="p-work-pri p-pri-${pri}">${esc(PC_PRI_SHORT[pri]||pri)}</span>
+        <span class="p-work-desc">${esc(r.description||'')}</span>
+        <span class="p-work-amt${price?'':' p-work-noamt'}">${price||blank}</span></li>`;
     }).join('');
     reportTotal+=secTotal;
-    // Subtotal per section, the way each trade subtotals on an estimate.
+
     const subRow=secTotal>0
-      ? `<tfoot><tr class="p-rh-sub"><td colspan="2">${esc(s.label)} Subtotal</td>
-         <td style="white-space:nowrap">${fmtCur(secTotal)}${plus}</td></tr></tfoot>`
+      ? `<div class="p-work-sub"><span>${esc(s.label)} subtotal</span>
+         <span class="p-work-sub-amt">${fmtCur(secTotal)}${plus}</span></div>`
       : '';
-    // Roof-specific meta
-    const roofMeta=s.key==='roof'&&(sec.material_type||sec.age_years)?`
-      <div class="p-rh-meta" style="margin-bottom:10pt">
-        ${sec.material_type?`<div><label>Material</label><span>${esc(sec.material_type)}</span></div>`:''}
-        ${sec.age_years?`<div><label>Est. Age</label><span>${sec.age_years} years</span></div>`:''}
-        ${sec.pitch?`<div><label>Pitch</label><span>${esc(sec.pitch)}</span></div>`:''}
-      </div>`:'';
-    html+=`<div class="p-roof-health">
-      ${pHeader}
+    const metaBits=s.key==='roof'
+      ? [sec.material_type, sec.age_years?`${sec.age_years} years old`:'', sec.pitch?`${sec.pitch} pitch`:'']
+          .filter(Boolean).map(esc).join(' · ')
+      : '';
+
+    /* Only the FIRST section starts a page. Giving every area its own sheet
+       turned a three-area report into four pages, most of them half empty —
+       and a realtor hands this to a seller, who counts the pages before they
+       read them. The rest flow, with break-inside:avoid keeping a section from
+       splitting across the fold. */
+    html+=`<div class="p-roof-health${si===0?'':' p-cond-flow'}">
+      ${si===0?pHeader:''}
       ${si===0?reportHead:''}
-      <div class="p-rh-titlebar">
-        <h2>${s.icon} ${s.label}</h2>
-        <div class="p-rh-badge" style="color:${g.color}">Grade ${sec.grade} — ${g.label}</div>
+      <div class="p-cond-shd">
+        <span class="p-cond-grade" style="color:${g.color};background:${g.bg}">${sec.grade}</span>
+        <span class="p-cond-sname"><h2>${s.icon} ${s.label}</h2>
+          <span class="p-cond-sword" style="color:${g.color}">${g.label}</span></span>
       </div>
-      ${roofMeta}
-      ${sec.summary?`<div class="p-rh-summary">${esc(sec.summary)}</div>`:''}
-      ${findRows?`<h3 class="p-rh-sh">Findings</h3>
-        <table class="p-rh-table"><thead><tr><th>Area</th><th>Severity</th><th>Description</th></tr></thead>
-        <tbody>${findRows}</tbody></table>`:''}
-      ${recRows?`<h3 class="p-rh-sh">Repair Options &amp; Recommendations</h3>
-        <table class="p-rh-table"><thead><tr><th>Priority</th><th>Recommendation</th><th>Cost</th></tr></thead>
-        <tbody>${recRows}</tbody>${subRow}</table>`:''}
+      ${metaBits?`<div class="p-cond-meta">${metaBits}</div>`:''}
+      ${sec.summary?`<div class="p-cond-sum">${esc(sec.summary)}</div>`:''}
+      ${findRows?`<h3 class="p-rh-sh">What we found</h3><ul class="p-finds">${findRows}</ul>`:''}
+      ${recRows?`<h3 class="p-rh-sh">Recommended work</h3><ul class="p-works">${recRows}</ul>${subRow}`:''}
       ${(si===enabledSections.length-1&&reportTotal>0&&!isReportOnly())
-        ? `<table class="p-rh-table p-cond-cost-table" style="margin-top:14pt">
-             <tr class="p-cond-total-row"><td>Total</td>
-             <td style="text-align:right;font-weight:800">${fmtCur(reportTotal)}${plus}</td></tr></table>`
+        ? `<div class="p-cond-total"><span>Total</span>
+           <span class="p-cond-total-amt">${fmtCur(reportTotal)}${plus}</span></div>`
         : ''}
       ${si===enabledSections.length-1
         ? `<div class="p-rh-footer">This ${W.title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>`

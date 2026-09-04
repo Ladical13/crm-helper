@@ -4031,21 +4031,47 @@ a.jx-contact:hover { text-decoration: underline; }
 .pc-photos-hint { font-size: 12px; color: var(--text-light); margin: 12px 2px 0; line-height: 1.5; }
 
 /* Property Condition Report — print styles */
-/* The standalone cover/summary page is gone — the title block below now
-   rides at the top of the FIRST section page. The condition-snapshot grid and
-   the priority-bucketed cost table that lived beside it are gone with it:
-   every grade reappears on its own section header and every bucket figure was
-   a sum of costs printed line by line on the next page. Their rules are kept
-   out rather than left dead. */
-.p-cond-title    { margin-bottom: 18pt; }
+/* ── Condition Report (print) — mirrors the .cvcond block in app.py's _CV_CSS.
+   The printed report and the one the customer opens from the link are the same
+   document, so these two sheets move together. */
+/* Only the first section breaks to a new page — see the note in
+   _printConditionHTML. The rest flow and simply refuse to split. */
+.p-roof-health.p-cond-flow { page-break-before: auto; break-inside: avoid; margin-top: 9mm; }
+.p-cond-title    { margin-bottom: 14pt; }
 .p-cond-title h2 { font-family: var(--doc-serif); font-size: 20pt; font-weight: 600; color: var(--doc-navy); letter-spacing: -.3pt; margin-bottom: 4pt; }
 .p-cond-prop     { font-size: 11.5pt; color: var(--doc-mute); font-weight: 400; }
-/* Section subtotal, mirroring the trade subtotals on a printed estimate. */
-.p-rh-sub td { font-weight: 600; color: var(--doc-navy); border-top: .75pt solid var(--doc-rule); border-bottom: none; }
-.p-rh-sub td:first-child { text-align: right; }
-.p-cond-cost-table td { padding: 7pt 8pt; border: none; border-bottom: .5pt solid var(--doc-rule); }
-.p-cond-cost-table td:first-child { padding-left: 0; }
-.p-cond-total-row td { font-weight: 600; color: var(--doc-navy); border-top: .75pt solid var(--doc-navy); border-bottom: none; }
+/* Section header: the grade is a mark, not a caption — one per area. */
+.p-cond-shd      { display: flex; align-items: center; gap: 10pt; margin: 0 0 5mm; padding-bottom: 3mm; border-bottom: .75pt solid var(--doc-rule); }
+.p-cond-grade    { flex: none; width: 34pt; height: 34pt; display: flex; align-items: center; justify-content: center;
+                   font-family: var(--doc-serif); font-size: 20pt; font-weight: 600; line-height: 1;
+                   -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.p-cond-sname    { display: flex; flex-direction: column; gap: 2pt; }
+.p-cond-sname h2 { margin: 0; font-family: var(--doc-serif); font-size: 17pt; font-weight: 600; color: var(--doc-navy); letter-spacing: -.2pt; }
+.p-cond-sword    { font-size: 7.5pt; font-weight: 600; text-transform: uppercase; letter-spacing: 1.2pt; }
+.p-cond-meta     { font-size: 8.5pt; color: var(--doc-mute); margin-bottom: 3mm; }
+.p-cond-sum      { font-size: 9.5pt; line-height: 1.65; color: var(--doc-mute); margin-bottom: 4mm; }
+/* Findings: evidence, quieter than the priced work below it. */
+.p-finds         { list-style: none; margin: 0 0 4mm; padding: 0; }
+.p-find          { display: flex; align-items: baseline; gap: 7pt; padding: 5pt 0; border-bottom: .5pt solid var(--doc-rule); font-size: 9pt; line-height: 1.55; break-inside: avoid; }
+.p-find-dot      { flex: none; width: 5pt; height: 5pt; border-radius: 50%; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.p-find-txt      { flex: 1; }
+.p-find-sev      { flex: none; font-size: 6.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 1pt; }
+/* Recommended work: description left, price right, the way an invoice reads. */
+.p-works         { list-style: none; margin: 0; padding: 0; }
+.p-work          { display: flex; align-items: baseline; gap: 8pt; padding: 8pt 0; border-bottom: .5pt solid var(--doc-rule); break-inside: avoid; }
+.p-work-pri      { flex: none; min-width: 42pt; text-align: center; font-size: 6.5pt; font-weight: 700; text-transform: uppercase;
+                   letter-spacing: .7pt; padding: 2.5pt 6pt; border: .75pt solid currentColor; border-radius: 999pt; white-space: nowrap; }
+.p-pri-immediate { color: var(--doc-red, #b81010); }
+.p-pri-soon      { color: #b06000; }
+.p-pri-monitor   { color: var(--doc-faint); }
+.p-work-desc     { flex: 1; font-size: 10pt; line-height: 1.5; color: var(--doc-ink); }
+.p-work-amt      { flex: none; font-family: var(--doc-serif); font-size: 13pt; font-weight: 600; color: var(--doc-navy); white-space: nowrap; }
+.p-work-noamt    { font-family: var(--doc-sans); font-size: 8pt; font-weight: 500; font-style: italic; color: var(--doc-faint); }
+.p-work-sub      { display: flex; justify-content: space-between; align-items: baseline; padding-top: 7pt; font-size: 9pt; font-weight: 600; color: var(--doc-mute); break-inside: avoid; }
+.p-work-sub-amt  { font-family: var(--doc-serif); font-size: 11.5pt; font-weight: 600; color: var(--doc-ink); }
+.p-cond-total    { display: flex; justify-content: space-between; align-items: baseline; margin-top: 8mm; padding-top: 4mm;
+                   border-top: 1.5pt solid var(--doc-navy); font-size: 8pt; font-weight: 600; text-transform: uppercase; letter-spacing: 1.6pt; color: var(--doc-mute); break-inside: avoid; }
+.p-cond-total-amt{ font-family: var(--doc-serif); font-size: 20pt; font-weight: 600; color: var(--doc-navy); text-transform: none; letter-spacing: 0; }
 
 /* ── Customer File ────────────────────────────────────────────────────── */
 .cf-modal-box { width: min(640px, 96vw); max-height: 88vh; display: flex; flex-direction: column; }

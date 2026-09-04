@@ -5073,31 +5073,73 @@ background:linear-gradient(90deg,var(--cyan) 0 33.3%,var(--gold) 33.3% 66.6%,var
 .cvftr-c a{color:rgba(255,255,255,.78);text-decoration:none;font-weight:600}
 .cvftr-sub{font-size:10.5px;margin-top:10px;opacity:.7}
 
-/* ── condition report ── */
-/* The condition-snapshot grid these styled was removed with the summary
-   block — every grade it showed is on its own section header a few inches
-   below. Kept out rather than left dead. */
-.cvcond-exec{font-family:var(--serif);font-size:var(--fz-body);line-height:1.75;color:var(--ink);background:#fff;border-left:2px solid var(--cyan);
-padding:2px 0 2px var(--sp-3);border-radius:0;margin-bottom:var(--sp-3)}
-.cvcond-sec{margin-top:14px;border-top:1px solid var(--line);padding-top:13px}
-.cvcond-sec-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap}
-.cvcond-sec-hd h4{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--navy);margin:0}
-.cvcond-badge{font-size:var(--fz-micro);font-weight:600;border-radius:999px;padding:4px 11px;white-space:nowrap;letter-spacing:1px;text-transform:uppercase;background:none!important;border:1px solid currentColor}
-.cvcond-meta{font-size:11.5px;color:var(--mut);margin-bottom:6px}
-.cvcond-summary{font-size:12.5px;line-height:1.65;color:#33415a;margin-bottom:8px}
-.cvcond-sh{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;color:var(--faint);margin:var(--sp-3) 0 var(--sp-1)}
-.cvcond-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}
-.cvcond-tbl th{text-align:left;font-size:var(--fz-micro);text-transform:uppercase;letter-spacing:1.2px;color:var(--faint);
-background:#fff;padding:var(--sp-1) 8px;border-bottom:1px solid var(--navy)}
-.cvcond-tbl th:first-child,.cvcond-tbl td:first-child{padding-left:0}
-.cvcond-tbl td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.55}
-.cvcond-tbl tr:last-child td{border-bottom:none}
-.cvcond-cost-total td{font-weight:600;color:var(--navy);border-top:1px solid var(--navy);background:#fff}
-.cvcond-sub td{font-weight:600;color:var(--mut);border-top:1px solid var(--line);border-bottom:none;text-align:right}
-.cvcond-sub td:last-child{color:var(--ink)}
-.cvcond-total-tbl{margin-top:var(--sp-3)}
-.cvcond-foot{font-size:var(--fz-micro);color:var(--faint);line-height:1.7;margin-top:var(--sp-3);border-top:1px solid var(--line);padding-top:var(--sp-2)}
+/* ── condition report ──
+   Reads like an estimate, not a spreadsheet: each area graded, what we found,
+   then the work with a price against it. The money is set in the serif at
+   display size because "what does it cost to fix" is the question this
+   document exists to answer. */
+.cvcond-byline{font-size:var(--fz-sm);color:var(--mut);margin:-4px 0 var(--sp-3)}
+.cvcond-exec{font-family:var(--serif);font-size:var(--fz-lead);line-height:1.7;color:var(--ink);
+border-left:2px solid var(--cyan);padding:2px 0 2px var(--sp-3);margin-bottom:var(--sp-5)}
+
+.cvcond-sec{margin-top:var(--sp-5);padding-top:var(--sp-4);border-top:1px solid var(--line)}
+.cvcond-sec:first-of-type{border-top:none;padding-top:0}
+.cvcond-sec-hd{display:flex;align-items:center;gap:var(--sp-3);margin-bottom:var(--sp-2)}
+/* The grade is the emotional hook of a condition report, so it is a mark, not
+   a caption. One per area, and nowhere else in the document. */
+.cvcond-grade{flex:none;width:46px;height:46px;border-radius:var(--r);display:flex;
+align-items:center;justify-content:center;font-family:var(--serif);font-size:26px;
+font-weight:600;line-height:1}
+.cvcond-sec-name{display:flex;flex-direction:column;gap:2px;min-width:0}
+.cvcond-sec-name h4{font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;
+color:var(--navy);margin:0;line-height:1.2}
+.cvcond-sec-word{font-size:var(--fz-fine);font-weight:600;text-transform:uppercase;letter-spacing:1.2px}
+.cvcond-meta{font-size:var(--fz-fine);color:var(--mut);margin-bottom:var(--sp-2)}
+.cvcond-summary{font-size:var(--fz-sm);line-height:1.7;color:var(--mut);margin-bottom:var(--sp-2)}
+.cvcond-sh{font-size:var(--fz-micro);font-weight:600;text-transform:uppercase;letter-spacing:1.4px;
+color:var(--faint);margin:var(--sp-4) 0 var(--sp-1)}
+
+/* Findings: evidence, deliberately quieter than the priced work below. */
+.cvcond-finds{list-style:none;margin:0;padding:0}
+.cvfind{display:flex;align-items:baseline;gap:var(--sp-2);padding:7px 0;
+border-bottom:1px solid var(--line);font-size:var(--fz-sm);line-height:1.6}
+.cvfind:last-child{border-bottom:none}
+.cvfind-dot{flex:none;width:7px;height:7px;border-radius:50%;transform:translateY(-1px)}
+.cvfind-txt{flex:1;min-width:0;color:var(--ink)}
+.cvfind-sev{flex:none;font-size:var(--fz-micro);font-weight:700;text-transform:uppercase;letter-spacing:1px}
+
+/* Recommended work: description left, price right, the way an invoice reads. */
+.cvcond-works{list-style:none;margin:0;padding:0}
+.cvwork{display:flex;align-items:baseline;gap:var(--sp-2);padding:12px 0;
+border-bottom:1px solid var(--line)}
+.cvwork-pri{flex:none;min-width:62px;text-align:center;font-size:var(--fz-micro);font-weight:700;
+text-transform:uppercase;letter-spacing:.8px;padding:4px 8px;border-radius:999px;
+border:1px solid currentColor;white-space:nowrap}
+.cvpri-immediate{color:var(--red)}
+.cvpri-soon{color:var(--amber)}
+.cvpri-monitor{color:var(--faint)}
+.cvwork-desc{flex:1;min-width:0;font-size:var(--fz-body);line-height:1.55;color:var(--ink)}
+.cvwork-amt{flex:none;font-family:var(--serif);font-size:var(--fz-h3);font-weight:600;
+color:var(--navy);white-space:nowrap}
+.cvwork-noamt{font-family:inherit;font-size:var(--fz-fine);font-weight:500;color:var(--faint);font-style:italic}
+.cvcond-sub{display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-3);
+padding:11px 0 0;font-size:var(--fz-sm);font-weight:600;color:var(--mut)}
+.cvcond-sub-amt{font-family:var(--serif);font-size:var(--fz-lead);font-weight:600;color:var(--ink)}
+
+.cvcond-total{display:flex;justify-content:space-between;align-items:baseline;gap:var(--sp-3);
+margin-top:var(--sp-4);padding-top:var(--sp-3);border-top:2px solid var(--navy);
+font-size:var(--fz-fine);font-weight:600;text-transform:uppercase;letter-spacing:1.6px;color:var(--mut)}
+.cvcond-total-amt{font-family:var(--serif);font-size:26px;font-weight:600;color:var(--navy);
+letter-spacing:0;text-transform:none}
+.cvcond-foot{font-size:var(--fz-micro);color:var(--faint);line-height:1.7;margin-top:var(--sp-4);
+border-top:1px solid var(--line);padding-top:var(--sp-2)}
 .cvcond .cvph-grid{margin-top:10px}
+@media (max-width:520px){
+  .cvwork{flex-wrap:wrap}
+  .cvwork-desc{flex:1 1 100%;order:2}
+  .cvwork-amt{order:3;margin-left:auto}
+  .cvwork-pri{order:1}
+}
 
 /* ── trust blocks ── */
 .cvtrust-body p{font-size:var(--fz-body);line-height:1.75;color:var(--mut);margin-bottom:var(--sp-2)}
@@ -5896,6 +5938,7 @@ _PC_GRADES = {'A': ('Excellent', '#16a34a', '#dcfce7'), 'B': ('Good', '#2563eb',
               'F': ('Critical', '#7c3aed', '#ede9fe')}
 _RH_SEV = {'low': ('Low', '#2563eb'), 'medium': ('Medium', '#d97706'), 'high': ('High', '#dc2626')}
 _RH_PRI = {'immediate': 'Immediate', 'soon': '1–2 Years', 'monitor': 'Monitor'}
+_PC_PRI_SHORT = {'immediate': 'Now', 'soon': '1–2 Yrs', 'monitor': 'Monitor'}
 
 
 def _cv_condition_pc(est):
@@ -6099,86 +6142,107 @@ def _cv_condition_block(est):
     is_hoa  = pc.get('audience') == 'hoa'
     w_title = 'Property Condition Report' if is_hoa else 'Home Condition Report'
 
-    # There is deliberately NO summary block here any more — no condition
-    # snapshot grid, no priority-bucketed cost table. Both restated what the
-    # sections below already say: every grade reappears on its own section
-    # header, and every bucket figure is a sum of costs printed line by line a
-    # few inches lower. The report now reads the way an estimate does — the
-    # findings, a cost against each repair, a subtotal per section and one
-    # total — so the customer meets each number beside the thing it pays for.
-    exec_html = (f'<div class="cvcond-exec"><strong>Overall Assessment:</strong> {he(pc.get("executive_notes"))}</div>'
+    # No summary block: every grade it gridded reappears on its own section
+    # header, and its priority sums were sums of costs printed line by line
+    # below. The report reads like an estimate instead — each area graded, what
+    # we found, then the work with a price against it and a subtotal.
+    exec_html = (f'<div class="cvcond-exec">{he(pc.get("executive_notes"))}</div>'
                  if (pc.get('executive_notes') or '').strip() else '')
 
-    # A legacy range ('$8,000 – $12,000') totals its low end, so any report
-    # carrying one keeps the honest '+' on every total it feeds.
     plus = '+' if _pc_repair_totals(est)[4] else ''
 
-    # Per-section detail
     sec_html = ''
     report_total = 0.0
     for key, lbl, icon, sec in enabled:
         word, clr, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
+
         meta_bits = []
         if key == 'roof':
-            if sec.get('material_type'):
-                meta_bits.append(f'Material: <strong>{he(sec["material_type"])}</strong>')
-            if sec.get('age_years'):
-                meta_bits.append(f'Est. Age: <strong>{he(sec["age_years"])} years</strong>')
-            if sec.get('pitch'):
-                meta_bits.append(f'Pitch: <strong>{he(sec["pitch"])}</strong>')
-        meta_html = f'<div class="cvcond-meta">{" &middot; ".join(meta_bits)}</div>' if meta_bits else ''
-        summary_html = (f'<div class="cvcond-summary">{he(sec.get("summary"))}</div>'
+            for field, label in (('material_type', ''), ('age_years', ' years old'),
+                                 ('pitch', ' pitch')):
+                if sec.get(field):
+                    meta_bits.append(f'{he(sec[field])}{label}')
+        meta_html = (f'<div class="cvcond-meta">{" &middot; ".join(meta_bits)}</div>'
+                     if meta_bits else '')
+        summary_html = (f'<p class="cvcond-summary">{he(sec.get("summary"))}</p>'
                         if (sec.get('summary') or '').strip() else '')
 
+        # What we found — supporting evidence, deliberately quieter than the
+        # priced work below it. A severity dot carries the urgency so the
+        # reader scans colour rather than reading a column.
         find_rows = ''
         for f_ in (sec.get('findings') or []):
             if not (f_.get('description') or f_.get('area')):
                 continue
             sev_lbl, sev_c = _RH_SEV.get(f_.get('severity'), (f_.get('severity') or '', '#666'))
-            find_rows += (f'<tr><td style="font-weight:600">{he(f_.get("area") or "—")}</td>'
-                          f'<td><span style="color:{sev_c};font-weight:700">{he(sev_lbl)}</span></td>'
-                          f'<td>{he(f_.get("description") or "")}</td></tr>')
-        find_html = (f'''<div class="cvcond-sh">Findings</div>
-<table class="cvcond-tbl"><thead><tr><th scope="col">Area</th><th scope="col">Severity</th><th scope="col">Description</th></tr></thead>
-<tbody>{find_rows}</tbody></table>''' if find_rows else '')
+            area = he(f_.get('area') or '')
+            find_rows += (
+                f'<li class="cvfind"><span class="cvfind-dot" style="background:{sev_c}"></span>'
+                f'<span class="cvfind-txt">'
+                f'{f"<strong>{area}</strong> &mdash; " if area else ""}'
+                f'{he(f_.get("description") or "")}</span>'
+                f'<span class="cvfind-sev" style="color:{sev_c}">{he(sev_lbl)}</span></li>')
+        find_html = (f'<div class="cvcond-sh">What we found</div>'
+                     f'<ul class="cvcond-finds">{find_rows}</ul>' if find_rows else '')
 
+        # Recommended work — the priced half. Each line is description left,
+        # price right, the way an invoice reads; the price is set in the same
+        # serif the estimate totals use so the money is the thing the eye lands
+        # on. Priority is a pill, not a table column.
         rec_rows = ''
         sec_total = 0.0
         for rec in (sec.get('recommendations') or []):
             if not rec.get('description'):
                 continue
-            sec_total += _pc_cost_lo(rec)
-            rec_rows += (f'<tr><td style="white-space:nowrap"><strong>{he(_RH_PRI.get(rec.get("priority"), rec.get("priority") or ""))}</strong></td>'
-                         f'<td>{he(rec.get("description") or "")}</td>'
-                         f'<td style="white-space:nowrap">{he(rec.get("cost_range") or "—")}</td></tr>')
+            amount = _pc_cost_lo(rec)
+            sec_total += amount
+            pri = rec.get('priority') or 'monitor'
+            price = he(rec.get('cost_range') or '')
+            # An unpriced line is two different things. On work we are telling
+            # them to do, no price means we still owe them one — say so. On a
+            # Monitor line there is no work yet, so "Quoted separately" would
+            # promise a quote for watching a roof.
+            blank = '&mdash;' if pri == 'monitor' else 'Quoted separately'
+            rec_rows += (
+                f'<li class="cvwork">'
+                f'<span class="cvwork-pri cvpri-{he(pri)}">{he(_PC_PRI_SHORT.get(pri, pri))}</span>'
+                f'<span class="cvwork-desc">{he(rec.get("description"))}</span>'
+                f'<span class="cvwork-amt{"" if price else " cvwork-noamt"}">'
+                f'{price or blank}</span></li>')
         report_total += sec_total
-        # Subtotal per section, the way each trade subtotals on an estimate.
-        sub_html = (f'<tfoot><tr class="cvcond-sub"><td colspan="2">{he(lbl)} Subtotal</td>'
-                    f'<td>{fc(sec_total)}{plus}</td></tr></tfoot>' if sec_total > 0 else '')
-        rec_html = (f'''<div class="cvcond-sh">Recommendations</div>
-<table class="cvcond-tbl"><thead><tr><th scope="col">Priority</th><th scope="col">Description</th><th scope="col">Cost</th></tr></thead>
-<tbody>{rec_rows}</tbody>{sub_html}</table>''' if rec_rows else '')
 
-        sec_html += f'''<div class="cvcond-sec">
-  <div class="cvcond-sec-hd">
-    <h4>{icon} {he(lbl)}</h4>
-    <span class="cvcond-badge" style="color:{clr};background:{bg}">Grade {he(sec.get("grade"))} &mdash; {word}</span>
-  </div>
+        sub_html = (f'<div class="cvcond-sub"><span>{he(lbl)} subtotal</span>'
+                    f'<span class="cvcond-sub-amt">{fc(sec_total)}{plus}</span></div>'
+                    if sec_total > 0 else '')
+        rec_html = (f'<div class="cvcond-sh">Recommended work</div>'
+                    f'<ul class="cvcond-works">{rec_rows}</ul>{sub_html}' if rec_rows else '')
+
+        # The grade is the emotional hook of a condition report, so it gets to
+        # be a mark rather than a caption — one per area, on the header.
+        sec_html += f'''<section class="cvcond-sec">
+  <header class="cvcond-sec-hd">
+    <span class="cvcond-grade" style="color:{clr};background:{bg}">{he(sec.get("grade"))}</span>
+    <span class="cvcond-sec-name"><h4>{icon} {he(lbl)}</h4>
+      <span class="cvcond-sec-word" style="color:{clr}">{word}</span></span>
+  </header>
   {meta_html}{summary_html}{find_html}{rec_html}
-</div>'''
+</section>'''
 
-    # One total to close the report — but ONLY where nothing else is about to
-    # state it. On a report-only estimate the repairs ARE the price, so the
-    # navy total bar sits directly under this block and printing the same
-    # figure twice, inches apart, is how a customer starts wondering which one
-    # they owe. Same rule the repairs table follows.
+    # One total to close — but ONLY where nothing else is about to state it. On
+    # a report-only estimate the navy total bar sits directly under this block,
+    # and the same figure twice inches apart is how a customer starts wondering
+    # which one they owe.
     total_html = ''
     if report_total > 0 and not _is_report_only(est):
-        total_html = (f'<table class="cvcond-tbl cvcond-total-tbl"><tr class="cvcond-cost-total">'
-                      f'<td>Total</td><td class="cvr">{fc(report_total)}{plus}</td></tr></table>')
+        total_html = (f'<div class="cvcond-total cvcond-cost-total"><span>Total</span>'
+                      f'<span class="cvcond-total-amt">{fc(report_total)}{plus}</span></div>')
 
-    insp_date = (pc.get('inspection_date') or '').strip()
-    insp_html = f'<div class="cvcond-meta">Inspection Date: <strong>{he(insp_date)}</strong></div>' if insp_date else ''
+    insp = (pc.get('inspection_date') or '').strip()
+    rep  = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
+    line = ' &middot; '.join(x for x in (
+        f'Inspected {he(insp)}' if insp else '',
+        f'{"Inspector" if is_hoa else "Inspected by"} {he(rep)}' if rep else '') if x)
+    insp_html = f'<div class="cvcond-byline">{line}</div>' if line else ''
 
     return f'''<div class="cvcond">
   <h2 data-eyebrow="Inspection">{w_title}</h2>

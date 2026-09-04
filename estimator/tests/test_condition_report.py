@@ -33,8 +33,7 @@ def _cost_table(html):
     """
     import re
     out = []
-    for m in re.finditer(r'<tr class="(cvcond-sub|cvcond-cost-total)".*?</tr>',
-                         html, re.S):
+    for m in re.finditer(r'<div class="cvcond-(?:sub|total)[^"]*">.*?</div>', html, re.S):
         out.append(m.group(0))
     return '\n'.join(out)
 
@@ -87,8 +86,10 @@ def test_every_priority_counts_toward_the_one_total(A):
         ('monitor',   'Watch', '$30'),
     ))
     assert '$1,230.00' in _cost_table(html)
-    for word in ('Immediate', '1&ndash;2 Years', 'Monitor'):
-        assert word in html or word.replace('&ndash;', '–') in html
+    # Priority survives as a pill on each line — see
+    # test_priority_reads_as_a_pill_not_a_column for the labels themselves.
+    for word in ('Now', '1–2 Yrs', 'Monitor'):
+        assert word in html, word
 
 
 # ── Legacy ranges: unchanged, and still honest ─────────────────────────
@@ -169,10 +170,12 @@ def test_the_condition_snapshot_grid_is_gone(A):
 
 
 def test_the_grade_is_still_shown_on_the_section_itself(A):
-    """Removing the grid must not lose the grade — it moves, it does not go."""
+    """Removing the grid must not lose the grade — it moves onto the section
+    header and gets to be a mark rather than a caption."""
     html = A._cv_condition_block(_est(('immediate', 'Replace boot', '$1,500'),
                                       grade='D'))
-    assert 'Grade D' in html
+    assert 'class="cvcond-grade"' in html
+    assert '>D</span>' in html
     assert 'Poor' in html
 
 
@@ -186,19 +189,50 @@ def test_the_priority_bucket_summary_is_gone(A):
         assert bucket not in html
 
 
-def test_the_cost_column_is_headed_cost_not_estimated_cost(A):
-    """Named the way an estimate names it."""
+def test_the_price_sits_on_the_line_it_pays_for(A):
+    """Not a table column three cells away from the work — the price is on the
+    same row as the recommendation, set in the serif the estimate totals use."""
     html = A._cv_condition_block(_est(('immediate', 'Replace boot', '$1,500')))
-    assert '<th scope="col">Cost</th>' in html
-    assert 'Est. Cost' not in html
-    assert 'Estimated Repair Costs' not in html
-    assert 'Estimated Total' not in html
+    assert 'class="cvwork-amt"' in html
+    assert 'Replace boot' in html
+    assert '$1,500' in html
+    # None of the old hedging language survives anywhere in the report.
+    for gone in ('Est. Cost', 'Estimated Repair Costs', 'Estimated Total'):
+        assert gone not in html
+
+
+def test_a_recommendation_with_no_price_says_so_rather_than_showing_a_dash(A):
+    html = A._cv_condition_block(_est(('soon', 'Re-inspect next spring', '')))
+    assert 'Quoted separately' in html
+    assert 'cvwork-noamt' in html
+
+
+def test_priority_reads_as_a_pill_not_a_column(A):
+    html = A._cv_condition_block(_est(('immediate', 'Now',   '$1,000'),
+                                      ('soon',      'Later', '$200'),
+                                      ('monitor',   'Watch', '$30')))
+    for cls, label in (('cvpri-immediate', 'Now'), ('cvpri-soon', '1–2 Yrs'),
+                       ('cvpri-monitor', 'Monitor')):
+        assert cls in html, cls
+        assert label in html, label
+
+
+def test_findings_carry_their_severity(A):
+    est = _est(('immediate', 'Replace boot', '$1,500'))
+    est['property_condition']['sections']['roof']['findings'] = [
+        {'id': '1', 'area': 'North slope', 'severity': 'high',
+         'description': 'Boot cracked through'}]
+    html = A._cv_condition_block(est)
+    assert 'What we found' in html
+    assert 'North slope' in html
+    assert 'cvfind-sev' in html
+    assert 'High' in html
 
 
 def test_each_section_subtotals_like_a_trade_does(A):
     html = A._cv_condition_block(_est(('immediate', 'Replace boot', '$1,500'),
                                       ('soon', 'Reseal flashing', '$2,000')))
-    assert 'Roofing Subtotal' in html
+    assert 'Roofing subtotal' in html
     assert '$3,500.00' in _cost_table(html)
 
 
@@ -208,9 +242,9 @@ def test_a_report_only_estimate_does_not_print_the_total_twice(A):
     starts wondering which one they owe."""
     est = _est(('immediate', 'Replace boot', '$1,500'))
     assert A._is_report_only(est) is True
-    assert 'cvcond-cost-total' not in A._cv_condition_block(est)
+    assert 'cvcond-total' not in A._cv_condition_block(est)
     # …but the subtotal, which is per section rather than the bid, stays.
-    assert 'Roofing Subtotal' in A._cv_condition_block(est)
+    assert 'Roofing subtotal' in A._cv_condition_block(est)
 
 
 def test_a_priced_estimate_closes_its_report_with_a_total(A):
@@ -222,5 +256,45 @@ def test_a_priced_estimate_closes_its_report_with_a_total(A):
         'tiers': {'better': {'material_unit_cost': 100, 'labor_unit_cost': 50}}}]}}
     assert A._is_report_only(est) is False
     html = A._cv_condition_block(est)
-    assert 'cvcond-cost-total' in html
+    assert 'cvcond-total' in html
     assert '>Total<' in html
+
+
+# ── The two renderers have to stay one document ──────────────────────
+# _cv_condition_block (app.py) is what the customer opens from the link;
+# _printConditionHTML (app.js) is what the PDF and the print view produce.
+# They are hand-mirrored with no parity harness, so the pieces that can drift
+# silently are pinned here.
+
+def _appjs():
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(os.path.dirname(here), 'static', 'app.js'),
+              encoding='utf-8') as f:
+        return f.read()
+
+
+def test_the_priority_pill_labels_match_on_both_sides(A):
+    """A pill reading "Now" on screen and "Immediate" on paper is two
+    documents, and the customer has both."""
+    import re
+    src = _appjs()
+    m = re.search(r'const PC_PRI_SHORT\s*=\s*\{([^}]*)\}', src)
+    assert m, 'PC_PRI_SHORT not found in app.js'
+    js = dict(re.findall(r"(\w+)\s*:\s*'([^']*)'", m.group(1)))
+    assert js == A._PC_PRI_SHORT, f'{js!r} != {A._PC_PRI_SHORT!r}'
+
+
+def test_the_print_report_has_no_summary_page_left(A):
+    """The cover page went with the grid and the bucket table. What is left
+    must not quietly grow one back."""
+    src = _appjs()
+    assert 'p-cond-cover' not in src
+    assert 'Condition Snapshot' not in src
+    assert 'p-cond-grade-grid' not in src
+
+
+def test_the_print_report_prices_each_line_and_subtotals(A):
+    src = _appjs()
+    for marker in ('p-work-amt', 'p-work-sub-amt', 'p-cond-grade', 'p-find-sev'):
+        assert marker in src, marker
