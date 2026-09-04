@@ -784,10 +784,19 @@ priced by its **recommended repairs**, not by Good/Better/Best. `_is_report_only
 prints this total on the PDF while the server puts it on the sign page, the
 estimate list, the funnel and the Den push.
 
-- **"Enabled" is not scope.** Every new estimate ships with Roofing enabled and
-  empty, which is why the customer used to get three $0 package columns and a
-  "Project Total $0" printed under a report that had just quoted thousands.
-  `_has_priced_scope` / `hasPricedScope()` test for **line items**.
+- **Scope is a line item with a QUANTITY, not an enabled trade and not a row.**
+  Every new estimate ships with Roofing enabled and empty, which is why the
+  customer used to get three $0 package columns and a "Project Total $0"
+  printed under a report that had just quoted thousands. Testing for *rows*
+  fixed only half of it: a rep who tapped "Load Defaults" on Roofing mid-
+  inspection and zeroed the quantities left a trade full of rows that price
+  nothing, and those reports stayed broken. `_has_priced_scope` /
+  `hasPricedScope()` require `quantity > 0`, which is what "not in scope"
+  already means everywhere else (`render_line_items`, `_trade_subtotal` and
+  every printed scope table skip a zero-qty row). Insurance is the one
+  exception and keys on `enabled` alone — `build_customer_view` routes on
+  exactly that, so anything looser would price an estimate off its repairs
+  while showing the customer the insurance page and a different total.
 - **📋 Report is the fourth estimate type**, and it turns every trade OFF so
   that trap cannot happen at all — plus it lands the rep on the Condition tab
   and forces the Roof Health print chip on. The shape rule above stays as the

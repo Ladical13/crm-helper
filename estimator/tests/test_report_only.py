@@ -312,6 +312,22 @@ _TYPED_WITH_SCOPE['trades']['roofing'].update(enabled=True, line_items=[{
 }])
 CASES.append(_TYPED_WITH_SCOPE)
 
+# Leftover "Load Defaults" rows at qty 0 price nothing, so they are not scope.
+_ZERO_QTY = json.loads(json.dumps(_report(*_RECS)))
+_ZERO_QTY['trades']['roofing']['line_items'] = [
+    {'name': 'Architectural shingles', 'quantity': 0, 'unit': 'SQ',
+     'tiers': {'better': {'material_unit_cost': 100, 'labor_unit_cost': 50}}},
+    {'name': 'Ridge cap', 'quantity': '', 'unit': 'LF', 'tiers': {}},
+]
+CASES.append(_ZERO_QTY)
+
+# One row with a quantity among several without is still scope.
+_ONE_REAL_QTY = json.loads(json.dumps(_ZERO_QTY))
+_ONE_REAL_QTY['trades']['roofing']['line_items'].append(
+    {'name': 'Drip edge', 'quantity': 120, 'unit': 'LF',
+     'tiers': {'better': {'material_unit_cost': 2, 'labor_unit_cost': 1}}})
+CASES.append(_ONE_REAL_QTY)
+
 
 @pytest.fixture(scope='module')
 def js(tmp_path_factory):
@@ -470,8 +486,15 @@ def test_the_report_type_lands_the_rep_on_the_condition_tab():
 
 def test_the_report_type_cases_are_not_all_the_same_answer(js):
     """Guards the mirror above: the four Report-type cases must actually
-    disagree with each other, or 'both sides agree' means nothing."""
-    typed, unpriced, hidden, with_scope = js[-4], js[-3], js[-2], js[-1]
+    disagree with each other, or 'both sides agree' means nothing.
+
+    Indexed by identity, not by position — appending a case to CASES used to
+    slide this window off the four it is about, and the guard then asserted
+    against whatever happened to be last."""
+    typed      = js[CASES.index(_TYPED)]
+    unpriced   = js[CASES.index(_TYPED_UNPRICED)]
+    hidden     = js[CASES.index(_TYPED_HIDDEN)]
+    with_scope = js[CASES.index(_TYPED_WITH_SCOPE)]
     assert (typed['reportOnly'], typed['total'])        == (True, 3900)
     assert (unpriced['reportOnly'], unpriced['total'])  == (True, 0)
     assert hidden['reportOnly'] is False
@@ -603,3 +626,77 @@ def test_the_glance_headline_is_real_on_an_ordinary_estimate(A):
                   for t in ('good', 'better', 'best')},
     }]
     assert 'cvglance-k">Backed by' in A.build_customer_view(est, 'tok')
+
+
+# ── "Load Defaults" leftovers must not block a report from pricing ────
+# This is the case that stayed broken after the first three commits: an old
+# health report where a rep had tapped Load Defaults on Roofing at some point
+# and zeroed the quantities. Every row still sat in line_items, so the estimate
+# read as having scope, kept totalling $0 and kept printing the G/B/B.
+
+def _leftovers(*recs, **kw):
+    est = _report(*recs, **kw)
+    est['trades']['roofing']['line_items'] = [
+        {'name': 'Architectural shingles', 'quantity': 0, 'unit': 'SQ',
+         'tiers': {'better': {'material_unit_cost': 100, 'labor_unit_cost': 50}}},
+        {'name': 'Ridge cap', 'quantity': '', 'unit': 'LF', 'tiers': {}},
+        {'name': 'Starter', 'unit': 'LF', 'tiers': {}},          # no quantity key
+    ]
+    return est
+
+
+def test_zero_quantity_leftovers_are_not_scope(A):
+    est = _leftovers(*_RECS)
+    assert A._has_priced_scope(est) is False
+    assert A._is_report_only(est) is True
+    assert A._estimate_total(est) == 3900
+
+
+def test_an_unparseable_quantity_prices_nothing(A):
+    est = _leftovers(*_RECS)
+    est['trades']['roofing']['line_items'][0]['quantity'] = 'TBD'
+    assert A._has_priced_scope(est) is False
+
+
+def test_one_row_with_a_quantity_is_still_scope(A):
+    """The tightening must not swing the other way and turn a real bid into a
+    report because most of its rows are optional add-ons at qty 0."""
+    est = _leftovers(*_RECS)
+    est['trades']['roofing']['line_items'].append(
+        {'name': 'Drip edge', 'quantity': 120, 'unit': 'LF',
+         'tiers': {'better': {'material_unit_cost': 2, 'labor_unit_cost': 1}}})
+    assert A._has_priced_scope(est) is True
+    assert A._is_report_only(est) is False
+
+
+def test_a_quantity_on_a_disabled_trade_is_not_scope(A):
+    est = _report(*_RECS)
+    est['trades']['siding'].update(enabled=False, line_items=[
+        {'name': 'LP SmartSide', 'quantity': 40, 'tiers': {}}])
+    assert A._has_priced_scope(est) is False
+
+
+def test_the_customer_view_of_a_leftovers_report_has_no_packages(A):
+    html = A.build_customer_view(_leftovers(*_RECS), 'tok')
+    assert 'class="cv-tier-cards"' not in html
+    assert '$3,900.00' in html
+
+
+def test_an_enabled_insurance_trade_still_counts_on_enabled_alone(A):
+    """Deliberately looser than the quantity rule: build_customer_view routes
+    to the insurance page on `enabled` alone, so anything looser here would
+    price an estimate off its repairs while showing the customer a different
+    total on a different page."""
+    est = _report(*_RECS)
+    est['trades']['insurance'] = {'enabled': True, 'sections': []}
+    assert A._has_priced_scope(est) is True
+    assert A._is_report_only(est) is False
+
+
+def test_the_quantity_rule_is_mirrored_on_both_sides(js):
+    """The leftovers case and the one-real-row case must land on opposite
+    sides in the browser too, or the PDF and the sign page disagree."""
+    zero = js[CASES.index(_ZERO_QTY)]
+    real = js[CASES.index(_ONE_REAL_QTY)]
+    assert (zero['hasScope'], zero['reportOnly']) == (False, True)
+    assert (real['hasScope'], real['reportOnly']) == (True, False)

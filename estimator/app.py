@@ -6011,14 +6011,36 @@ def _pc_repair_totals(est):
 def _has_priced_scope(est):
     """True when any trade actually carries scope to price.
 
-    Enabled is NOT the test — Roofing is enabled on every new estimate. Line
-    items are."""
+    Three things this is NOT, each of which was wrong in turn:
+
+    * `enabled` is not the test. Roofing is enabled on every new estimate.
+    * *Having* line items is not the test either. A rep who tapped "Load
+      Defaults" on Roofing while writing up an inspection, then zeroed the
+      quantities, left a trade full of rows that price nothing — and that was
+      enough to keep the report from pricing itself, so those reports kept
+      showing three $0 package columns.
+    * A zero-quantity item is "not in scope" everywhere else in this app:
+      `render_line_items` skips it, `_trade_subtotal` skips it, the printed
+      scope tables skip it. Scope means at least one row with a quantity.
+
+    Insurance is the exception and keys on `enabled` alone, deliberately:
+    `build_customer_view` routes on exactly that, so anything looser here would
+    let an estimate price itself off its repairs while the customer is shown
+    the insurance page with a different total."""
     trades = est.get('trades') or {}
-    ins = trades.get('insurance') or {}
-    if ins.get('enabled') and (ins.get('sections') or ins.get('line_items')):
+    if (trades.get('insurance') or {}).get('enabled'):
         return True
-    return any((trades.get(tk) or {}).get('enabled') and (trades.get(tk) or {}).get('line_items')
-               for tk in GBB_TRADES)
+    for tk in GBB_TRADES:
+        td = trades.get(tk) or {}
+        if not td.get('enabled'):
+            continue
+        for item in (td.get('line_items') or []):
+            try:
+                if float(item.get('quantity') or 0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue          # unparseable quantity prices nothing
+    return False
 
 
 def _is_report_only(est):

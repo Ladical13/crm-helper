@@ -7154,14 +7154,24 @@ function pcRepairTotals() {
   return { immediate, soon, monitor, total: immediate + soon + monitor, anyRange };
 }
 
-/* Enabled is NOT the test — Roofing is enabled on every new estimate. Line
-   items are. MUST mirror _has_priced_scope in app.py. */
+/* Three things this is NOT, each of which was wrong in turn:
+     * `enabled` is not the test — Roofing is enabled on every new estimate.
+     * HAVING line items is not the test either. A rep who tapped "Load
+       Defaults" on Roofing while writing up an inspection, then zeroed the
+       quantities, left a trade full of rows that price nothing — and that was
+       enough to keep the report from pricing itself.
+     * A zero-quantity item is "not in scope" everywhere else in this app
+       (tradeTotal skips it, the customer page hides it, the printed scope
+       tables skip it). Scope means at least one row with a quantity.
+   Insurance keys on `enabled` alone, deliberately: the server's customer view
+   routes on exactly that.
+   MUST mirror _has_priced_scope in app.py. */
 function hasPricedScope() {
-  const ins = S.trades?.insurance;
-  if (ins?.enabled && ((ins.sections || []).length || (ins.line_items || []).length)) return true;
+  if (S.trades?.insurance?.enabled) return true;
   return RETAIL_TRADE_KEYS.some(t => {
     const td = S.trades[t];
-    return !!td && td.enabled && (td.line_items || []).length > 0;
+    return !!td && td.enabled &&
+      (td.line_items || []).some(it => (parseFloat(it.quantity) || 0) > 0);
   });
 }
 
