@@ -2074,7 +2074,14 @@ function pageComplete(page) {
                         S.trades[t].enabled && Object.values(S.trades[t].colors||{}).some(v => String(v||'').trim()));
     case 'pricing':  return selectedTotal() > 0 || insuranceTotal() > 0 || isReportOnly();
     case 'contract': return !!(S.contract_text && S.contract_text.trim());
-    case 'report':   return !!(S.roof_health?.condition);
+    // property_condition is what the Condition tab writes; roof_health is the
+    // pre-2026 field it migrates FROM. Testing only the old one meant the ✓
+    // never lit for a report built on the current tab — invisible until the
+    // Report estimate type made this the page a rep starts on.
+    case 'report':   return PC_SECTIONS.some(x => {
+                       const sec = (S.property_condition?.sections || {})[x.key];
+                       return !!(sec && sec.enabled && sec.grade);
+                     }) || !!(S.roof_health?.condition);
     case 'documents': return (S.attachments||[]).length > 0;
     case 'client':   return !!(S.customer && S.customer.name);
     case 'visualizer': {
@@ -2212,7 +2219,12 @@ function renderPricingModeUI() {
   document.getElementById('mode-margin').classList.toggle('active', S.pricing.mode === 'margin');
   document.getElementById('mode-markup').classList.toggle('active', S.pricing.mode === 'markup');
 }
-const ESTIMATE_TYPES = ['retail','insurance','commercial'];
+/* Adding a type? It reaches the sidebar, the customer screen's create dialog
+   and initialsAreStock() from this list — but the contract it gets comes from
+   CONTRACT_TYPES, and a type missing THERE silently inherits retail's terms.
+   'report' inherits them deliberately: a repair bid sells under the same terms
+   as any other retail job. */
+const ESTIMATE_TYPES = ['retail','insurance','commercial','report'];
 function renderEstimateTypeUI() {
   const t = S.estimate_type || 'retail';
   ESTIMATE_TYPES.forEach(k => {
@@ -2247,7 +2259,22 @@ function setEstimateType(type) {
   S.estimate_type = type;
   const only = tk => TRADES.forEach(t => { if (S.trades[t]) S.trades[t].enabled = (t === tk); });
 
-  if (type === 'insurance') {
+  if (type === 'report') {
+    // Every trade OFF. That is the whole point of the type: a new estimate
+    // ships with Roofing enabled and empty, and an inspection written up on
+    // top of that used to print three $0 package columns and a "Project Total
+    // $0" under a report that had just quoted the repairs. With no trade
+    // enabled the estimate is priced by its recommendations (isReportOnly).
+    TRADES.forEach(t => { if (S.trades[t]) S.trades[t].enabled = false; });
+    activeTrade = 'roofing';       // the Pricing tab still opens on something
+    // The report IS the document here — it cannot be the thing the rep hides.
+    if (!S.page_visibility) S.page_visibility = {};
+    S.page_visibility.report = true;
+    // No roof is being sold, so asking the customer to pick a shingle colour
+    // before they can sign is asking about work nobody quoted.
+    if (S.shingle_selection) S.shingle_selection.enabled = false;
+    pcGet();                        // materialize the report the rep is about to fill in
+  } else if (type === 'insurance') {
     only('insurance');
     activeTrade = 'insurance';
   } else if (type === 'commercial') {
@@ -2259,9 +2286,9 @@ function setEstimateType(type) {
     if (S.shingle_selection) S.shingle_selection.enabled = false;
     if (!(S.trades.commercial.line_items || []).length) buildBundleDefaults('commercial');
   } else {
-    // Back to retail: insurance/commercial each turned every other trade off,
-    // so restore roofing — otherwise the estimate lands on an empty tab with
-    // no enabled trade at all.
+    // Back to retail: insurance/commercial/report each turned every other trade
+    // off, so restore roofing — otherwise the estimate lands on an empty tab
+    // with no enabled trade at all.
     S.trades.insurance.enabled = false;
     S.trades.commercial.enabled = false;
     if (!RETAIL_TRADE_KEYS.some(t => S.trades[t].enabled && t !== 'commercial'))
@@ -2285,6 +2312,8 @@ function setEstimateType(type) {
   // numbers); insurance starts at pricing (its line items come from the carrier).
   if (type === 'commercial') switchPage('scope');
   else if (type === 'insurance') switchPage('pricing');
+  // A report estimate is written on the Condition tab and nowhere else.
+  else if (type === 'report') switchPage('report');
   else {
     if (activePage === 'options') renderOptionsPage();
     else if (activePage === 'pricing') { renderTabBar(); renderTradeContent(); }
@@ -2294,6 +2323,13 @@ function setEstimateType(type) {
   if (activePage === 'contract') renderContractPage();
 }
 function renderTierButtons() {
+  // A report-only estimate offers no packages at all, so the Good/Better/Best
+  // picker and its three $0 rows are asking the rep to choose between nothing.
+  const repOnly = isReportOnly();
+  const sel = document.querySelector('.tier-selector');
+  if (sel) sel.style.display = repOnly ? 'none' : '';
+  const title = document.getElementById('section-tier-title');
+  if (title) title.textContent = repOnly ? 'Estimate Total' : 'Active Package';
   document.querySelectorAll('.tier-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.tier === S.selected_tier);
     if (TIERS.includes(b.dataset.tier))
@@ -2303,7 +2339,7 @@ function renderTierButtons() {
     const row = document.getElementById('tr-' + t);
     if (row) {
       row.classList.toggle('is-selected', t === S.selected_tier);
-      row.style.display = tierEnabled(t) ? '' : 'none';
+      row.style.display = (!repOnly && tierEnabled(t)) ? '' : 'none';
     }
   });
 }
@@ -2331,16 +2367,14 @@ function renderTotals() {
   if (insRow) insRow.style.display = S.trades.insurance?.enabled ? '' : 'none';
   // Report-only estimate: the three tier rows are all $0 and the repairs are
   // the price. Show it here rather than leaving the rep to add it up off the
-  // Condition tab.
-  const repOnly = isReportOnly();
-  const repEl   = document.getElementById('total-repairs');
-  const repRow  = document.getElementById('tr-repairs');
+  // Condition tab. The tier rows' own visibility belongs to renderTierButtons
+  // — two writers for one style property is how they end up disagreeing —
+  // so call it rather than hiding them here.
+  const repEl  = document.getElementById('total-repairs');
+  const repRow = document.getElementById('tr-repairs');
   if (repEl)  repEl.textContent = fmtCur(pcRepairTotals().total);
-  if (repRow) repRow.style.display = repOnly ? '' : 'none';
-  TIERS.forEach(t => {
-    const row = document.getElementById('tr-' + t);
-    if (row) row.style.display = repOnly ? 'none' : '';
-  });
+  if (repRow) repRow.style.display = isReportOnly() ? '' : 'none';
+  renderTierButtons();
   renderInternalMargin();
   renderCostProfitPanel();
 }
@@ -7131,15 +7165,26 @@ function hasPricedScope() {
   });
 }
 
-/* All three are required: not an insurance claim, no trade carrying line items,
-   and a report that is both PRINTED (the Roof Health chip gates the customer's
-   only explanation of the number) and priced above zero. Fail any one and this
-   is an ordinary estimate that happens to be empty — which must keep totalling
-   $0 rather than inventing a price. MUST mirror _is_report_only in app.py. */
+/* Two ways in, and the ORDER of the tests is the whole design:
+
+     * The rep picked the Report estimate type, which turns every trade off so
+       the empty-Roofing trap cannot happen at all. That is a starting posture,
+       NOT a lock — hasPricedScope() is tested first, so the moment a rep prices
+       a trade on a report estimate (inspect → report → "yes, replace it", which
+       is the whole point of handing a realtor one of these) it goes back to
+       being an ordinary estimate priced by its line items.
+     * Or the SHAPE says so on any other type: no trade carries line items and
+       the report is priced. A year of estimates predate the type.
+
+   Both need a report the customer can actually see, and on the inferred path
+   the recommendations must total above zero — an estimate that is merely empty
+   keeps totalling $0 rather than inventing a price.
+   MUST mirror _is_report_only in app.py. */
 function isReportOnly() {
   if ((S.estimate_type || 'retail') === 'insurance') return false;
   if ((S.page_visibility || {}).report === false) return false;
   if (hasPricedScope()) return false;
+  if ((S.estimate_type || 'retail') === 'report') return true;
   return pcRepairTotals().total > 0;
 }
 
@@ -9982,8 +10027,9 @@ async function saveCustomerNotes(name, text) {
   }
 }
 
-const EST_TYPE_ICON  = {insurance:'🏛', commercial:'🏢'};
-const EST_TYPE_LABEL = {retail:'Retail Estimate', insurance:'Insurance Estimate', commercial:'Commercial Estimate'};
+const EST_TYPE_ICON  = {insurance:'🏛', commercial:'🏢', report:'📋'};
+const EST_TYPE_LABEL = {retail:'Retail Estimate', insurance:'Insurance Estimate',
+                        commercial:'Commercial Estimate', report:'Condition Report'};
 const EST_STATUS_CHIPS = {
   signed: '<span class="dash-chip dash-chip-signed">✓ Signed</span>',
   viewed: '<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
@@ -12925,10 +12971,11 @@ function renderClientPage() {
           </div>
           <div class="field-group">
             <label>Type</label>
-            <div class="toggle-row">
+            <div class="toggle-row toggle-row-4">
               <button class="toggle-btn active" id="doc-type-retail"     onclick="docSetType('retail')">🏠 Retail</button>
               <button class="toggle-btn"        id="doc-type-insurance"  onclick="docSetType('insurance')">🏛 Insurance</button>
               <button class="toggle-btn"        id="doc-type-commercial" onclick="docSetType('commercial')">🏢 Commercial</button>
+              <button class="toggle-btn"        id="doc-type-report"     onclick="docSetType('report')">📋 Report</button>
             </div>
           </div>
         </div>

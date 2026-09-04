@@ -286,6 +286,31 @@ _UNGRADED = json.loads(json.dumps(_report(*_RECS)))
 _UNGRADED['property_condition']['sections']['roof']['grade'] = ''
 CASES.append(_UNGRADED)
 
+# The Report type, on both paths: priced, unpriced (still a report), hidden
+# report (not a bid), and one that has since been given scope (not a report any
+# more). The type is read by both sides, so it has to be mirrored like the rest.
+_TYPED = json.loads(json.dumps(_report(*_RECS)))
+_TYPED['estimate_type'] = 'report'
+for _td in _TYPED['trades'].values():
+    _td['enabled'] = False
+CASES.append(_TYPED)
+
+_TYPED_UNPRICED = json.loads(json.dumps(_TYPED))
+for _r in _TYPED_UNPRICED['property_condition']['sections']['roof']['recommendations']:
+    _r['cost_range'] = ''
+CASES.append(_TYPED_UNPRICED)
+
+_TYPED_HIDDEN = json.loads(json.dumps(_TYPED))
+_TYPED_HIDDEN['page_visibility'] = {'report': False}
+CASES.append(_TYPED_HIDDEN)
+
+_TYPED_WITH_SCOPE = json.loads(json.dumps(_TYPED))
+_TYPED_WITH_SCOPE['trades']['roofing'].update(enabled=True, line_items=[{
+    'name': 'Architectural shingles', 'quantity': 30, 'unit': 'SQ',
+    'tiers': {'better': {'material_unit_cost': 100, 'labor_unit_cost': 50}},
+}])
+CASES.append(_TYPED_WITH_SCOPE)
+
 
 @pytest.fixture(scope='module')
 def js(tmp_path_factory):
@@ -330,3 +355,123 @@ def test_the_legacy_roof_health_path_is_actually_exercised(js):
     assert legacy['total'] == 8650
     assert legacy['anyRange'] is True
     assert legacy['reportOnly'] is True
+
+
+# ── The Report estimate type ─────────────────────────────────────────
+# The shape rule above is a rescue: it catches an inspection written on top of
+# the default estimate. The type is the fix — it turns every trade OFF, so the
+# empty-Roofing trap cannot happen in the first place, and it lands the rep on
+# the Condition tab, which is the only page a condition report is written on.
+
+def _typed_report(*recs, **est):
+    """A Report-type estimate: every trade off, which is what the type does."""
+    doc = _report(*recs, **est)
+    doc['estimate_type'] = 'report'
+    for td in doc['trades'].values():
+        td['enabled'] = False
+    return doc
+
+
+def test_the_report_type_is_priced_by_its_repairs(A):
+    est = _typed_report(*_RECS)
+    assert A._is_report_only(est) is True
+    assert A._estimate_total(est) == 3900
+
+
+def test_an_unpriced_report_type_renders_as_a_report_and_still_totals_zero(A):
+    """The type says what this estimate IS, so it must not fall back to three
+    empty package columns — but it must not invent a price either."""
+    est = _typed_report(('immediate', 'Replace cracked pipe boot', ''))
+    assert A._is_report_only(est) is True
+    assert A._estimate_total(est) == 0
+    html = A.build_customer_view(est, 'tok')
+    assert 'class="cv-tier-cards"' not in html
+
+
+def test_pricing_a_trade_on_a_report_estimate_makes_it_an_ordinary_estimate(A):
+    """The inspect → report → 'yes, replace it' path. The type is a starting
+    posture, not a lock: scope is tested BEFORE the type, so the rep never has
+    to remember to switch it back."""
+    est = _typed_report(*_RECS)
+    est['trades']['roofing'].update(enabled=True, line_items=[{
+        'name': 'Architectural shingles', 'quantity': 30, 'unit': 'SQ',
+        'tiers': {'better': {'material_unit_cost': 100, 'labor_unit_cost': 50}},
+    }])
+    est['selected_tier'] = 'better'
+    assert A._is_report_only(est) is False
+    assert A._estimate_total(est) != 3900
+    assert A._estimate_total(est) > 0
+
+
+def test_a_hidden_report_still_wins_over_the_type(A):
+    """Nothing on the page would explain the number."""
+    est = _typed_report(*_RECS, page_visibility={'report': False})
+    assert A._is_report_only(est) is False
+
+
+def test_the_signed_notification_does_not_name_a_package(A):
+    """The tier fallback would email the rep 'Better' for a repair bid that
+    never offered a Better."""
+    est = _typed_report(*_RECS)
+    est['signature'] = {'name': 'Jon Smith', 'signed_at': '2026-09-02T10:00:00Z'}
+    assert A._pick_summary_label(est) == ''      # no package trade to name
+    assert A._is_report_only(est) is True
+
+
+# ── Every type reaches every place that offers a type ────────────────
+
+def _src(name):
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(os.path.dirname(here), 'static', name), encoding='utf-8') as f:
+        return f.read()
+
+
+def _estimate_types():
+    """The real ESTIMATE_TYPES list out of app.js."""
+    import re
+    m = re.search(r'const ESTIMATE_TYPES = \[([^\]]*)\]', _src('app.js'))
+    assert m, 'ESTIMATE_TYPES not found in app.js'
+    return re.findall(r"'([a-z_]+)'", m.group(1))
+
+
+def test_report_is_an_estimate_type():
+    assert 'report' in _estimate_types()
+
+
+def test_every_estimate_type_has_a_sidebar_button():
+    """Commercial once reached the sidebar and missed the create dialog. Both
+    lists are driven off ESTIMATE_TYPES now; these hold the buttons to it."""
+    html = _src('index.html')
+    for t in _estimate_types():
+        assert f'id="type-{t}"' in html, f'no sidebar button for estimate type {t!r}'
+
+
+def test_every_estimate_type_has_a_create_dialog_button():
+    js = _src('app.js')
+    for t in _estimate_types():
+        assert f'id="doc-type-{t}"' in js, f'no create-dialog button for estimate type {t!r}'
+
+
+def test_the_report_type_turns_every_trade_off():
+    """The one thing the type exists to guarantee. Read off setEstimateType's
+    report branch rather than restated, so deleting the line fails here."""
+    js = _src('app.js')
+    branch = js[js.index("if (type === 'report') {"):js.index("} else if (type === 'insurance') {")]
+    assert 'S.trades[t].enabled = false' in branch
+    assert "S.page_visibility.report = true" in branch
+
+
+def test_the_report_type_lands_the_rep_on_the_condition_tab():
+    js = _src('app.js')
+    assert "else if (type === 'report') switchPage('report');" in js
+
+
+def test_the_report_type_cases_are_not_all_the_same_answer(js):
+    """Guards the mirror above: the four Report-type cases must actually
+    disagree with each other, or 'both sides agree' means nothing."""
+    typed, unpriced, hidden, with_scope = js[-4], js[-3], js[-2], js[-1]
+    assert (typed['reportOnly'], typed['total'])        == (True, 3900)
+    assert (unpriced['reportOnly'], unpriced['total'])  == (True, 0)
+    assert hidden['reportOnly'] is False
+    assert with_scope['reportOnly'] is False and with_scope['hasScope'] is True

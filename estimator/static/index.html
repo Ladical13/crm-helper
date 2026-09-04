@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=192">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=193">
 </head>
 <body>
 
@@ -160,10 +160,14 @@
            and the notification that tells the Pipeline what happened. -->
       <div class="field-group">
         <label>Estimate Type</label>
-        <div class="toggle-row toggle-row-3">
+        <!-- Report turns every trade off: an inspection written on top of the
+             default (Roofing enabled and empty) used to print three $0 package
+             columns under a report that had just quoted the repairs. -->
+        <div class="toggle-row toggle-row-4">
           <button class="toggle-btn" id="type-retail" onclick="setEstimateType('retail')">🏠 Retail</button>
           <button class="toggle-btn" id="type-insurance" onclick="setEstimateType('insurance')">🏛 Insurance</button>
           <button class="toggle-btn" id="type-commercial" onclick="setEstimateType('commercial')">🏢 Commercial</button>
+          <button class="toggle-btn" id="type-report" onclick="setEstimateType('report')">📋 Report</button>
         </div>
       </div>
     </section>
@@ -182,7 +186,9 @@
     </section>
 
     <section class="sidebar-section" id="section-tier">
-      <h3>Active Package</h3>
+      <!-- renderTierButtons() retitles this and hides the picker on a
+           report-only estimate: there is no package to be active. -->
+      <h3 id="section-tier-title">Active Package</h3>
       <div class="tier-selector">
         <button class="tier-btn" data-tier="good"   onclick="setTier('good')">Good</button>
         <button class="tier-btn" data-tier="better" onclick="setTier('better')">Better</button>
@@ -756,6 +762,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=192"></script>
+<script src="/estimate/static/app.js?v=193"></script>
 </body>
 </html>

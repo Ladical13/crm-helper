@@ -6023,17 +6023,34 @@ def _has_priced_scope(est):
 def _is_report_only(est):
     """The condition report is the whole estimate, and its repairs are the price.
 
-    Requires all three: not an insurance claim, no trade carrying line items,
-    and a report that is both PRINTED (the Roof Health chip gates the customer's
-    only explanation of the number) and priced above zero. Fail any one and this
-    is an ordinary estimate that happens to be empty — which must keep totalling
-    $0 rather than inventing a price."""
+    Two ways in, and the order of the tests is the whole design:
+
+    * The rep picked the **Report** estimate type, which turns every trade off
+      so the empty-Roofing trap cannot happen in the first place. That is a
+      starting posture, NOT a lock — `_has_priced_scope` is tested first, so
+      the moment a rep prices a trade on a report estimate (the inspect →
+      report → "yes, replace it" path, which is the whole point of handing a
+      realtor one of these) it goes back to being an ordinary estimate priced
+      by its line items. Nothing has to be switched back by hand.
+    * Or the SHAPE says so on any other type: no trade carries line items and
+      the report is priced. A year of estimates predate the Report type and
+      still have to price correctly.
+
+    Both need a report the customer can actually see: `page_visibility.report`
+    gates the only explanation of where the number came from, so a hidden
+    report is not a bid. And on the inferred path the recommendations must
+    total above zero — an estimate that is merely empty keeps totalling $0
+    rather than inventing a price. An explicit Report estimate with nothing
+    priced yet also totals $0; it just renders as the report it is instead of
+    as three empty package columns."""
     if est.get('estimate_type') == 'insurance':
         return False
     if (est.get('page_visibility') or {}).get('report') is False:
         return False
     if _has_priced_scope(est):
         return False
+    if est.get('estimate_type') == 'report':
+        return True
     return _pc_repair_totals(est)[3] > 0
 
 
@@ -9296,6 +9313,10 @@ def send_signature_notification(est):
     elif est.get('estimate_type') == 'commercial' and not tlbl:
         # Single-price commercial has no G/B/B pick to name.
         tlbl = 'Commercial Roofing'
+    elif _is_report_only(est):
+        # No package was offered, so the tier fallback would email the rep
+        # "Better" for a repair bid that never had a Better.
+        tlbl = 'Recommended Repairs'
     total = _estimate_total(est)
 
     sname = sig.get('name', 'Unknown')
@@ -12145,6 +12166,8 @@ def generate_production_packet(est_id, push_to_crm=False):
         pkg = ''
     elif est.get('estimate_type') == 'commercial' and not _pick_summary_label(est):
         pkg = ' - Commercial'
+    elif _is_report_only(est):
+        pkg = ' - Recommended Repairs'
     else:
         pkg = f' - {_pick_summary_label(est) or tier.title()}'
 

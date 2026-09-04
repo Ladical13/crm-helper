@@ -311,6 +311,15 @@ input[type="range"] { padding: 0; border: none; background: none; height: 20px; 
 /* Three-up (Retail / Insurance / Commercial) in the narrow sidebar — tighten
    so the longest label still fits on one line. */
 .toggle-row-3 .toggle-btn { padding: 5px 2px; font-size: 10px; letter-spacing: -.1px; }
+/* Four-up (… / Report) wraps to 2x2 instead of shrinking further — a fourth
+   column in this sidebar puts "Commercial" on two lines. The 1px gap plus a
+   background on the row draws the dividers a single flex row got from
+   overflow:hidden. */
+.toggle-row-4 {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
+  background: var(--border);
+}
+.toggle-row-4 .toggle-btn { padding: 6px 2px; font-size: 10px; letter-spacing: -.1px; }
 
 /* ── Tier selector ─────────────────────────────────────────────────── */
 .tier-selector { display: flex; gap: 6px; }

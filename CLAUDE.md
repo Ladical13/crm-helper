@@ -788,10 +788,19 @@ estimate list, the funnel and the Den push.
   empty, which is why the customer used to get three $0 package columns and a
   "Project Total $0" printed under a report that had just quoted thousands.
   `_has_priced_scope` / `hasPricedScope()` test for **line items**.
-- **Three conditions, all required**: not an insurance claim, no trade with line
-  items, and a report that is both printed (the Roof Health chip) and priced
-  above zero. An estimate that is merely empty must keep totalling $0 rather
-  than inventing a price.
+- **📋 Report is the fourth estimate type**, and it turns every trade OFF so
+  that trap cannot happen at all — plus it lands the rep on the Condition tab
+  and forces the Roof Health print chip on. The shape rule above stays as the
+  rescue for the year of estimates that predate it.
+- **The type is a starting posture, not a lock.** `_has_priced_scope` is tested
+  BEFORE the type, so pricing a trade on a report estimate turns it back into
+  an ordinary one — that is the inspect → report → "yes, replace it" path, and
+  a rep should never have to remember to switch the type back.
+- **Both paths need a report the customer can see** (the Roof Health chip), and
+  on the *inferred* path the recommendations must total above zero. An estimate
+  that is merely empty must keep totalling $0 rather than inventing a price; an
+  explicit Report estimate with nothing priced also totals $0, it just renders
+  as the report it is.
 - **The report is the itemization; the total is the bid.** The condition report
   already lists every recommendation with its price, so neither the customer
   view nor the PDF repeats it — they carry the number and the signature.
@@ -801,7 +810,14 @@ estimate list, the funnel and the Den push.
   package warranties and a complete tear-off. On a repair bid that is a claim
   about work nobody quoted.
 - **Legacy `roof_health` estimates count too** — both sides migrate on read
-  (`pcGet` / `_cv_condition_pc`), and the runner covers that path.
+  (`pcGet` / `_cv_condition_pc`), and the runner covers that path. `pageComplete`
+  reads `property_condition` now: it tested only the legacy field, so the
+  Condition tab's ✓ never lit.
+- **A new estimate type must reach three lists**: `ESTIMATE_TYPES` (sidebar +
+  the customer screen's create dialog, both driven off it), `CONTRACT_TYPES`
+  (a type missing there silently inherits retail's terms — `report` does so
+  deliberately), and `isStockContract`. `tests/test_report_only.py` holds every
+  `ESTIMATE_TYPES` entry to having both buttons; commercial once missed one.
 - Guarded by `tests/test_report_only.py`.
 
 ### Estimate outcome — `lost`, and why the rename was the small half
