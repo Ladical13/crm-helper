@@ -9,6 +9,10 @@
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%}
+/* Rotating to landscape makes iOS Safari inflate font sizes per-block, which
+   breaks the kanban card ellipsis and overflows the KPI tiles. Android Chrome
+   does the same under Accessibility > text scaling. */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   background:var(--bg);color:var(--txt);font-size:15px;line-height:1.4;overscroll-behavior-y:none}
 .hidden{display:none!important}
@@ -266,8 +270,15 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .drawer{position:fixed;inset:0;z-index:50;display:none}
 .drawer.open{display:block}
 .drawer-scrim{position:absolute;inset:0;background:rgba(0,0,0,.55)}
+/* overscroll-behavior:contain stops the scroll chaining to the board behind:
+   flicking past the end of a lead's timeline used to scroll the pipeline
+   underneath, so closing the drawer landed the rep somewhere else entirely.
+   The bottom padding clears the home indicator — the last thing in here is
+   the Convert / Delete button pair, which sat under it on a notched iPhone. */
 .drawer-panel{position:absolute;top:0;right:0;bottom:0;width:100%;max-width:460px;background:var(--bg);
-  border-left:1px solid var(--line);overflow-y:auto;animation:slidein .22s ease;padding-bottom:40px}
+  border-left:1px solid var(--line);overflow-y:auto;overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;animation:slidein .22s ease;
+  padding-bottom:calc(40px + var(--safe-b))}
 @keyframes slidein{from{transform:translateX(100%)}to{transform:translateX(0)}}
 .dh{position:sticky;top:0;background:var(--bg2);border-bottom:1px solid var(--line);
   padding:calc(env(safe-area-inset-top,0px) + 14px) 16px 14px;z-index:2}
@@ -339,7 +350,10 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .modal{position:fixed;inset:0;z-index:60;display:none;place-items:center;padding:18px}
 .modal.open{display:grid}
 .modal-scrim{position:absolute;inset:0;background:rgba(0,0,0,.6)}
-.modal-box{position:relative;width:100%;max-width:440px;max-height:88vh;overflow-y:auto;
+/* dvh, not vh: with the Safari toolbar showing, 88vh is taller than what the
+   rep can actually see, so the modal's buttons sat below the fold. */
+.modal-box{position:relative;width:100%;max-width:440px;max-height:88vh;max-height:88dvh;
+  overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
   background:var(--bg2);border:1px solid var(--line);border-radius:16px;padding:20px}
 .modal-box h3{margin:0 0 14px}
 .modal-actions{display:flex;gap:8px;margin-top:16px}
@@ -352,11 +366,18 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.err{border-color:var(--red);color:#fca5a5}
 
-/* ── iPad / touch tablet polish ─────────────────────────────────────────
- * Bumps sub-44px touch targets that are fine on desktop but too small
- * for reliable finger-tapping. Coarse-pointer gate so laptop widths in
- * this range don't inherit tablet padding. */
-@media (min-width: 768px) and (max-width: 1366px) and (pointer: coarse) {
+/* ── Touch targets ──────────────────────────────────────────────────────
+ * Bumps sub-44px targets that are fine under a mouse but too small for
+ * reliable finger-tapping.
+ *
+ * Gated on the POINTER ALONE. This used to also carry
+ * `(min-width: 768px) and (max-width: 1366px)`, which meant the tablet got
+ * the comfortable sizes and the PHONE — the device reps actually work the
+ * queue on all day — kept the desktop ones. The width bounds are gone; a
+ * coarse pointer is a finger at any width, and the phone needs this more
+ * than the iPad does, not less. Laptops keep the compact layout because
+ * they report `pointer: fine`. */
+@media (pointer: coarse) {
   .icon-btn { width: 44px; height: 44px; font-size: 22px; }
   .tab { padding: 10px 2px 8px; }
   .tab .tab-ico { font-size: 22px; }
@@ -366,6 +387,24 @@ input,select,textarea{font-family:inherit;font-size:16px}
   .contact-actions a { min-height: 48px; }
   .task-check { width: 28px; height: 28px; }
   .log-btn, .stage-select, .field input, .field select { min-height: 44px; }
+
+  /* The script/draft toggle on an outreach card. At 5px padding on an 11.5px
+     label this was a ~27px target that a rep hits ~40 times a day. The pill
+     stays visually small; the tap area is grown with a transparent ::after,
+     the same trick the portal shell bar uses. */
+  .oq-tabs button { position: relative; }
+  .oq-tabs button::after {
+    content:""; position:absolute; left:0; right:0; top:50%;
+    height:44px; transform:translateY(-50%);
+  }
+  .oq-skips button { min-height: 44px; }
+
+  /* Destructive and tiny is the worst pairing: this deletes a customer
+     document and was a bare 15px glyph with no box at all. */
+  .doc-del { min-width: 44px; min-height: 44px; display: grid; place-items: center; }
+
+  .dh-close { width: 44px; height: 44px; }
+  .mini-search, .mini-select { min-height: 44px; }
 }
 
 /* ── Portal shell offset ───────────────────────────────────────────────

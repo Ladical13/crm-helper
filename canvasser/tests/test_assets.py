@@ -183,3 +183,52 @@ def test_form_controls_clear_the_ios_focus_zoom_threshold():
     block = re.search(r'@media \(pointer: coarse\)\s*\{(.*?)\n\}', css, re.S)
     assert block, 'the pointer:coarse font-size rule is gone'
     assert 'font-size: 16px' in block.group(1)
+
+
+def test_touch_targets_clear_the_thumb_minimum():
+    """38px and 34px are comfortable under a mouse and a miss under a thumb —
+    and this app is driven one-handed, outdoors, often in gloves. .icon-btn
+    opens the panels the whole tool runs from; .mini-btn includes the
+    destructive "remove rep" in team admin."""
+    css = _read(STATIC, 'style.css')
+    block = re.search(r'@media \(pointer: coarse\)\s*\{(.*?)\n\}', css, re.S)
+    assert block, 'the pointer:coarse block is gone'
+    # Strip comments: this block's own explanation names some of these
+    # selectors, so a bare substring check passes with the rule deleted.
+    body = re.sub(r'/\*.*?\*/', '', block.group(1), flags=re.S)
+    for sel in ('.icon-btn', '.mini-btn', '.menu-item'):
+        assert re.search(re.escape(sel) + r'\s*\{', body), \
+            f'{sel} lost its coarse-pointer touch target'
+
+
+def test_the_bottom_sheet_measures_the_visible_viewport():
+    """70vh reaches past the bottom of what the rep can see while the Safari
+    toolbar is up, which pushed a pin's Save button off the sheet."""
+    css = _read(STATIC, 'style.css')
+    rule = re.search(r'\.bottom-sheet \{[^}]*\}', css)
+    assert rule, '.bottom-sheet rule not found'
+    # Strip comments first: the explanation inside this rule mentions dvh, so a
+    # bare substring check passes even with the declaration deleted.
+    body = re.sub(r'/\*.*?\*/', '', rule.group(0), flags=re.S)
+    assert re.search(r'max-height:\s*[\d.]+dvh', body), \
+        '.bottom-sheet sizes itself in vh, not dvh — Save falls off screen on iOS'
+
+
+def test_panels_contain_their_scroll():
+    """Without this, flicking past the end of a panel hands the gesture to the
+    Leaflet map behind it, and the rep closes the sheet to find the map has
+    panned off the street they were working."""
+    css = _read(STATIC, 'style.css')
+    rule = re.search(r'\.panel-body \{[^}]*\}', css)
+    assert rule and 'overscroll-behavior: contain' in rule.group(0), \
+        '.panel-body does not contain its scroll — it will chain to the map'
+
+
+def test_text_size_adjust_is_pinned():
+    """This app is held sideways constantly. Landscape on iOS inflates font
+    sizes per-block unless this is pinned, and Android applies its
+    accessibility text scaling here too."""
+    css = _read(STATIC, 'style.css')
+    assert '-webkit-text-size-adjust: 100%' in css
+    assert re.search(r'[^-]text-size-adjust: 100%', css), \
+        'the unprefixed text-size-adjust (Android/Chrome) is gone'

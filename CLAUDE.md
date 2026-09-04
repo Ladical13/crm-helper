@@ -216,6 +216,45 @@ invisible when it stops working.
   turns off the guard on every estimator route; it existed one fat-fingered
   Railway variable away from publishing every estimate and signed contract.
 
+### Mobile — the four rules that hold across all four apps
+
+Every rep runs these on a phone, in a driveway, as an installed PWA; two of
+them also run on an iPad. All four traps below fail *silently* — nothing
+errors, the layout just quietly becomes unusable on the device it is used on —
+so each is pinned by a test.
+
+- **Gate touch rules on the POINTER, never on the width.** This is the one that
+  keeps being got wrong, in both directions. The estimator's iOS focus-zoom
+  guard lived in `@media (max-width: 767px)`, which covers phones and misses
+  the iPad — and the iPad is where estimates get written, on a table full of
+  13px numeric inputs, so tapping one zoomed the estimate to ~115% and left it
+  there for the appointment. The CRM's 44px touch targets had the mirror-image
+  bug: gated `(min-width: 768px) and (max-width: 1366px)`, so the *tablet* got
+  comfortable sizes and the *phone* kept the desktop ones. A width query cannot
+  express "this is a finger". `@media (pointer: coarse)` can, catches every
+  touch device at any width, and leaves laptops (`pointer: fine`) alone.
+- **iOS zooms any focused control under 16px and never zooms back out.**
+  `maximum-scale=1` does not prevent it — iOS has ignored that since iOS 10.
+  16px on every input/textarea/select under a coarse pointer is the only fix.
+  Bumping a control's font size changes how wide it must be: the estimator's
+  tablet money inputs are sized for 16px digits, and at their old 14px widths
+  a five-figure total lost its last two characters.
+- **Size anything full-height in `dvh`, keep `vh` above it as the fallback.**
+  The Safari toolbar overlaps the bottom of `vh`, which is how the CRM's modal
+  buttons, the canvasser's pin Save button and the login card all ended up
+  below the fold. Order matters — `dvh` must come second to win.
+- **Scrollable overlays need `overscroll-behavior: contain`, and anything
+  pinned to the bottom needs `env(safe-area-inset-bottom)`.** Without the
+  first, flicking past the end of the CRM's lead drawer scrolls the pipeline
+  behind it and past the end of a canvasser panel pans the map off the street
+  being worked. Without the second, the drawer's Convert/Delete pair sits under
+  the home indicator.
+
+Also pinned: `-webkit-text-size-adjust: 100%` in all four. Rotating to
+landscape makes iOS inflate font sizes per-block, and Android applies its
+accessibility text scaling the same way — either one overflows a fixed-width
+input or a KPI tile.
+
 **Deploy:** ONE service. Root `Procfile` is
 `gunicorn portal.wsgi:application`; deploy the whole repo, not a subdirectory.
 

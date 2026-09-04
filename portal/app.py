@@ -499,8 +499,16 @@ def _page(title, body):
 <link rel="icon" href="/static/icon-192.png">
 <style>
   * {{ box-sizing: border-box; }}
-  body {{ margin:0; min-height:100vh; display:flex; align-items:center;
-         justify-content:center; padding:24px;
+  /* Pin the text size: iOS inflates it in landscape, Android under its
+     accessibility text scaling, and either overflows this fixed-width card. */
+  html {{ -webkit-text-size-adjust:100%; text-size-adjust:100%; }}
+  /* dvh so the card centres in what is actually visible rather than behind
+     the Safari toolbar, and the safe-area padding keeps it off the notch when
+     the on-screen keyboard shrinks the viewport around it. */
+  body {{ margin:0; min-height:100vh; min-height:100dvh; display:flex; align-items:center;
+         justify-content:center;
+         padding:max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+                 max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
          background:#0d1117; color:#e6edf3;
          font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
   .card {{ width:100%; max-width:380px; background:#161b22; border:1px solid #2d333b;

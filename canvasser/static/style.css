@@ -30,6 +30,11 @@ html, body {
   -webkit-tap-highlight-color: transparent;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Landscape on iOS inflates font sizes per-block unless this is pinned, and
+     this app is held sideways constantly — one hand on the phone, walking a
+     street. Android Chrome applies its accessibility text scaling here too. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 /* ── Screens ── */
@@ -214,7 +219,10 @@ html, body {
 /* ── Bottom sheet (pin detail) ── */
 .bottom-sheet {
   position: absolute; left: 0; right: 0; bottom: 0;
+  /* dvh: with the Safari toolbar up, 70vh reaches past the bottom of what the
+     rep can see, so the pin's Save button fell off the sheet. */
   max-height: 70vh;
+  max-height: 70dvh;
   background: var(--surface);
   border-top: 1px solid var(--border);
   border-radius: 20px 20px 0 0;
@@ -242,6 +250,11 @@ html, body {
 .panel-body {
   flex: 1; overflow-y: auto; padding: 16px;
   scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  /* Without this, flicking past the end of a panel hands the gesture to the
+     Leaflet map behind it — the rep closes the sheet and the map has panned
+     off the street they were working. */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .panel-body::-webkit-scrollbar { width: 4px; }
 .panel-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
@@ -560,6 +573,14 @@ html, body {
   .field-group input, .field-group textarea, .field-group select {
     font-size: 16px;
   }
+
+  /* Touch targets. 38px and 34px are comfortable under a mouse and a miss
+     under a thumb — and these are tapped one-handed, outdoors, often in
+     gloves. The header's icon buttons open the panels this app is driven
+     from; .mini-btn includes the destructive "remove rep" in team admin. */
+  .icon-btn { min-width: 44px; min-height: 44px; }
+  .mini-btn { min-height: 44px; }
+  .menu-item { min-height: 44px; }
 }
 
 /* ── Reduced motion ── */
