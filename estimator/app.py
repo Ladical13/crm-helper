@@ -2787,6 +2787,106 @@ def _parse_roofr_pitches(full_text):
     return list(pitches.items())
 
 
+_ROOFR_WASTE_MAX_DX = 5.0   # pt; the real report matches to the decimal
+_ROOFR_WASTE_MAX_DY = 40.0  # pt; the label sits one row above the ladder
+_ROOFR_WASTE_CEILING = 35   # above this it isn't a roofing waste factor
+
+
+def _parse_roofr_waste(file_bytes):
+    """Roofr's RECOMMENDED waste percentage, or None.
+
+    Roofr prints a waste ladder with the recommended column flagged by a
+    'Recommended' label centred over it:
+
+        Recommended                        <- centred over one column
+        Waste % 0% 10% 12% 13% 15% 17% 20%
+        Pitched area (sqft) 2,170 2,387 ...
+
+    Extracted text loses which column that label belongs to, and pypdf's
+    visitor_text is no help — every table cell on a real Roofr export reports
+    position (0, 0). PyMuPDF recovers the geometry exactly: Roofr centre-aligns
+    the label over its column, and on a real 3-structure report the centres
+    matched to the decimal on all four tables (14%, 9%, 24%, and 13% for the
+    whole-property summary).
+
+    Deliberately NOT done by text: 'the recommended value is the non-standard
+    one inserted into the ladder' looks clever, gets three of those four right,
+    and picks the wrong column on the fourth.
+
+    Returns None on any failure — corrupt PDF, no pymupdf, or a layout whose
+    label doesn't line up. The caller omits the key entirely in that case, which
+    leaves the rep's own waste alone.
+    """
+    try:
+        import fitz  # pymupdf — lazy so the app still boots without it
+    except ImportError:
+        return None
+    try:
+        with fitz.open(stream=file_bytes, filetype='pdf') as doc:
+            page = _roofr_waste_page(doc)
+            return _roofr_waste_on_page(page) if page is not None else None
+    except Exception:
+        return None
+
+
+def _roofr_waste_page(doc):
+    """The page carrying the whole-property waste ladder.
+
+    Prefers the 'Report summary' page — the same whole-property scoping the text
+    parser does — so a multi-structure report doesn't return Structure #1's
+    waste. Falls back to the LAST page holding a ladder, which is where the
+    summary lives when the heading is worded differently.
+    """
+    ladder_pages = [p for p in doc if 'Waste %' in (p.get_text() or '')]
+    if not ladder_pages:
+        return None
+    for page in ladder_pages:
+        if re.search(r'report\s+summary', page.get_text() or '', re.I):
+            return page
+    return ladder_pages[-1]
+
+
+def _roofr_waste_on_page(page):
+    """Match the 'Recommended' label to a column of the waste ladder by centre."""
+    words = page.get_text('words')  # (x0, y0, x1, y1, word, block, line, word_no)
+
+    pcts = [w for w in words if re.fullmatch(r'\d{1,2}%', w[4])]
+    if not pcts:
+        return None
+    # The ladder is the row those percentages share. Rows are flat, so bucket on
+    # rounded y and take the most populated bucket — a stray '10%' in prose
+    # elsewhere on the page can't outvote seven table cells.
+    rows = {}
+    for w in pcts:
+        rows.setdefault(round(w[1]), []).append(w)
+    ladder = max(rows.values(), key=len)
+    if len(ladder) < 2:
+        return None
+    ladder_y = ladder[0][1]
+
+    # The bare word 'Recommended' ABOVE the ladder. The footnote paragraph
+    # ('Recommended waste is based on an asphalt shingle roof...') also starts
+    # with that word but sits BELOW the ladder, so the direction check excludes
+    # it without having to match the sentence.
+    labels = [w for w in words
+              if w[4] == 'Recommended'
+              and 0 < (ladder_y - w[1]) <= _ROOFR_WASTE_MAX_DY]
+    if not labels:
+        return None
+    label = min(labels, key=lambda w: ladder_y - w[1])   # nearest above
+    label_cx = (label[0] + label[2]) / 2
+
+    best = min(ladder, key=lambda w: abs((w[0] + w[2]) / 2 - label_cx))
+    if abs((best[0] + best[2]) / 2 - label_cx) > _ROOFR_WASTE_MAX_DX:
+        return None   # layout changed; no answer beats a confident wrong column
+
+    try:
+        waste = float(best[4].rstrip('%'))
+    except ValueError:
+        return None
+    return waste if 0 <= waste <= _ROOFR_WASTE_CEILING else None
+
+
 def _parse_roofr_pdf(file_bytes):
     if _pypdf is None:
         raise RuntimeError('pypdf not installed')
@@ -2870,9 +2970,16 @@ def _parse_roofr_pdf(file_bytes):
         r'(\d+\s+[^\n,]+),\s+([A-Za-z][A-Za-z\s]+),\s+([A-Z]{2})\s+(\d{5})',
         addr_search_text)
 
+    # Roofr's own recommended waste, read off the ladder's geometry. None when
+    # the report doesn't carry one, which OMITS the key below rather than
+    # defaulting: this used to be a hardcoded 10, and because a literal always
+    # survives the `is not None` filter, every single import quietly reset the
+    # rep's waste — and the company-wide default_waste_pct — back to 10%.
+    waste = _parse_roofr_waste(file_bytes)
+
     meas = {k: v for k, v in {
         'roof_squares':  squares,
-        'waste_pct':     10,
+        'waste_pct':     waste,
         'ridge_hip_lf':  ridge_hip,
         'ridge_lf':      ridge_only,
         'eave_lf':       eave,
@@ -5809,10 +5916,26 @@ def _cv_condition_pc(est):
 
 
 def _pc_cost_lo(rec):
-    """Low end of a recommendation's cost range — first number only, so
-    '$500–$1,500' reads 500 (mirrors the print view's parse)."""
+    """A recommendation's cost — first number only, so a single '$1,500' reads
+    1500 and a legacy '$500–$1,500' reads its low end 500 (mirrors the print
+    view's parse)."""
     m = re.search(r'[\d,]+(?:\.\d+)?', rec.get('cost_range') or '')
     return float(m.group(0).replace(',', '')) if m else 0.0
+
+
+def _pc_is_range(rec):
+    """True when a recommendation still holds a RANGE rather than one price.
+
+    The field is now a single price, but estimates saved before that change hold
+    strings like '$8,000 – $12,000' and are deliberately not rewritten. Totals
+    sum the low end, so those reports keep the honest '+' suffix; a report where
+    every line is one price totals exactly and drops it. Mirrored in app.js as
+    pcIsRange() — no parity test binds the two, so change both together."""
+    s = rec.get('cost_range') or ''
+    if len(re.findall(r'[\d,]+(?:\.\d+)?', s)) > 1:
+        return True
+    # A trailing separator ('$500 to', '$500–') reads as an open-ended range too.
+    return bool(re.search(r'(?:–|—|-|\bto\b)\s*$', s.strip()))
 
 
 def _cv_condition_block(est):
@@ -5851,11 +5974,17 @@ def _cv_condition_block(est):
     exec_html = (f'<div class="cvcond-exec"><strong>Overall Assessment:</strong> {he(pc.get("executive_notes"))}</div>'
                  if (pc.get('executive_notes') or '').strip() else '')
 
-    # Estimated repair investment (low-end totals per priority)
+    # Estimated repair investment. Each recommendation now carries ONE price, so
+    # these totals are exact and print without a suffix — that is what lets this
+    # report stand as a bid. The '+' comes back only if some line is still a
+    # legacy range, where the total really is a low-end sum.
     cost_imm = cost_soon = cost_mon = 0.0
+    any_range = False
     for _k, _lbl, _icon, sec in enabled:
         for rec in (sec.get('recommendations') or []):
             lo = _pc_cost_lo(rec)
+            if lo and _pc_is_range(rec):
+                any_range = True
             pri = rec.get('priority')
             if pri == 'immediate':
                 cost_imm += lo
@@ -5864,15 +5993,16 @@ def _cv_condition_block(est):
             else:
                 cost_mon += lo
     cost_total = cost_imm + cost_soon + cost_mon
+    plus = '+' if any_range else ''
     cost_html = ''
     if cost_total > 0:
         rows = [(lbl, v) for lbl, v in [('Immediate repairs (D/F)', cost_imm),
                                         ('Short-term (C grades)', cost_soon),
                                         ('Maintenance (B grades)', cost_mon)] if v > 0]
-        trs = ''.join(f'<tr><td>{lbl}</td><td class="cvr">{fc(v)}+</td></tr>' for lbl, v in rows)
+        trs = ''.join(f'<tr><td>{lbl}</td><td class="cvr">{fc(v)}{plus}</td></tr>' for lbl, v in rows)
         cost_html = f'''<div class="cvcond-sh">{w_investment}</div>
 <table class="cvcond-tbl">{trs}
-<tr class="cvcond-cost-total"><td>Estimated Total</td><td class="cvr">{fc(cost_total)}+</td></tr></table>'''
+<tr class="cvcond-cost-total"><td>Estimated Total</td><td class="cvr">{fc(cost_total)}{plus}</td></tr></table>'''
 
     # Per-section detail
     sec_html = ''
@@ -5931,7 +6061,7 @@ def _cv_condition_block(est):
   {exec_html}
   {cost_html}
   {sec_html}
-  <div class="cvcond-foot">This {w_title} is a visual inspection summary prepared by Project One Roofing. Cost estimates are approximate ranges and do not constitute a formal bid. Contact us for a full assessment.</div>
+  <div class="cvcond-foot">This {w_title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>
 </div>'''
 
 

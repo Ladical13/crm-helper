@@ -968,12 +968,18 @@ input.scope-qty-input {
 }
 .li-row-variant-select:focus { border-color: var(--primary-light); outline: none; box-shadow: 0 0 0 2px rgba(2,132,199,.15); }
 
-.li-row-numbers { display: flex; align-items: center; gap: 5px; font-size: 11px; }
+/* wrap: this row lives in a repeat(3,1fr) grid column (~330px) and already
+   carries a 52px unit select, a 78px cost input and an 84px total. A wider qty
+   box overflows it otherwise — the mobile block has wrapped for this reason for
+   a while; the desktop row needs it for the same reason. */
+.li-row-numbers { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; row-gap: 6px; font-size: 11px; }
 .li-row-qty-static { color: var(--text-light); min-width: 36px; }
 /* `input.` prefix: beats the global `input[type=number] { width:100% }` rule at
-   line 179 on specificity — a bare `.li-row-qty-input` loses to it and gets
-   sized by the flex parent (~16px on iPad, unusable). */
-input.li-row-qty-input { width: 44px; font-size: 11px; flex-shrink: 0; }
+   the top of this file on specificity — a bare `.li-row-qty-input` loses to it
+   and gets sized by the flex parent (~16px on iPad, unusable).
+   Explicit padding too: without it this inherits the global `5px 7px`, which
+   spent 14px of a 44px box on padding and left ~30px for the digits. */
+input.li-row-qty-input { width: 64px; font-size: 13px; padding: 5px 4px; flex-shrink: 0; }
 select.li-row-unit-select { width: 52px; font-size: 11px; padding: 3px 2px; flex-shrink: 0; }
 .li-row-sep { color: var(--border); }
 .li-row-cost-wrap { display: flex; align-items: center; }
@@ -1071,7 +1077,7 @@ select.li-unit-select { width: 54px; font-size: 11px; padding: 4px 3px; }
   padding: 9px 12px; text-align: left;
   font-size: 11px; text-transform: uppercase; letter-spacing: .5px; font-weight: 700;
 }
-.other-th-num   { width: 62px; text-align: center !important; }
+.other-th-num   { width: 76px; text-align: center !important; }
 .other-th-price { width: 130px; text-align: right !important; }
 .other-table td { padding: 8px 12px; border-bottom: 1px solid var(--border-light); vertical-align: middle; }
 .other-table tfoot td { border-bottom: none; border-top: 2px solid var(--border); background: var(--bg); }
@@ -1088,7 +1094,7 @@ select.li-unit-select { width: 54px; font-size: 11px; padding: 4px 3px; }
 /* The Other tab's one-line "Note" input is gone — it now uses the shared
    .simple-item-desc description textarea, same as every other trade. */
 .other-qty-cell  { text-align: center; }
-input.other-qty-input { width: 54px; text-align: center; font-weight: 600; font-size: 12px; }
+input.other-qty-input { width: 68px; text-align: center; font-weight: 600; font-size: 13px; }
 /* A zero-qty Other row prices at $0 and never prints, however good the sell
    price beside it looks. Say so on the box rather than in the totals. */
 input.other-qty-input.other-qty-zero {
@@ -3834,6 +3840,10 @@ a.jx-contact:hover { text-decoration: underline; }
     width: 84px; min-height: 44px; padding: 8px 4px;
     text-align: center; font-weight: 700;
   }
+  /* The two Pricing-tab qty boxes get the extra width; Scope keeps 84px, where
+     the number sits in its own table column and was never the cramped one. */
+  input.li-row-qty-input,
+  input.other-qty-input { width: 96px; }
   .scope-table thead th.th-qty { width: 92px; }
   .li-row-unit-select, .li-unit-select { width: 72px; min-height: 44px; flex-shrink: 0; }
   /* GBB line rows: wrap instead of crushing the qty/unit/cost inputs */
@@ -3877,9 +3887,9 @@ a.jx-contact:hover { text-decoration: underline; }
     min-height: 40px; padding: 6px 4px;
     font-size: 14px; text-align: center; font-weight: 700;
   }
-  input.li-row-qty-input { width: 54px; }
+  input.li-row-qty-input { width: 68px; }
   input.li-qty-input     { width: 60px; }
-  input.other-qty-input  { width: 58px; }
+  input.other-qty-input  { width: 70px; }
   input.scope-qty-input  { width: 74px; }
 
   /* Price / cost / total: bigger boxes so five figures don't get clipped */
@@ -3904,7 +3914,7 @@ a.jx-contact:hover { text-decoration: underline; }
   input.other-qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
   /* Give the "Other" price column enough header width to match the wider input */
-  .other-th-num   { width: 68px; }
+  .other-th-num   { width: 82px; }
   .other-th-price { width: 148px; }
 
   /* Scope table qty column matches the new input width */
@@ -4161,6 +4171,9 @@ a.jx-contact:hover { text-decoration: underline; }
 .roofr-preview-row { display: contents; }
 .roofr-preview-label { font-size: 12px; color: var(--text-light); }
 .roofr-preview-value { font-size: 12px; font-weight: 700; color: #1a3a5c; text-align: right; }
+/* Says where the waste figure came from. A rep needs to see that an import did
+   NOT change their waste as plainly as they see that it did. */
+.roofr-preview-src { font-size: 11px; font-weight: 400; color: var(--text-light); white-space: nowrap; }
 .roofr-preview-addr {
   font-size: 12px; color: var(--text-light); font-style: italic;
   border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; grid-column: 1 / -1;

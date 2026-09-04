@@ -60,3 +60,9 @@ prospector/inbox/*
 
 # Parked work-in-progress test, deliberately untracked.
 estimator/tests/*.pending
+
+# Scratch output from asset/extraction scripts. Both grew past 25MB while
+# untracked and unignored, which put them one `git add -A` — the documented save
+# routine at the top of CLAUDE.md — away from being committed and deployed.
+output/
+tmp/

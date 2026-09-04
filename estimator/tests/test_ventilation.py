@@ -52,6 +52,124 @@ def test_roofr_omits_ridge_lf_when_absent(A):
     assert 'ridge_lf' not in meas
 
 
+# ── Workstream B: the report's RECOMMENDED waste ───────────────────────
+# Roofr flags the recommended column of its waste ladder with a "Recommended"
+# label centred over it. Plain text loses the column, so the parser matches the
+# label's horizontal centre to a percentage's — verified against a real
+# 3-structure export where all four tables matched to the decimal.
+# These build PDFs with pymupdf rather than the FPDF helper above, because the
+# geometry IS the thing under test.
+
+_LADDER = ['0%', '10%', '12%', '13%', '15%', '17%', '20%']
+_LADDER_Y = 300.0
+_COL_X = {p: 100.0 + 60.0 * i for i, p in enumerate(_LADDER)}   # left edge
+
+
+def _roofr_geo_pdf(recommended=None, label_dx=0.0, label_y=None, footnote=True):
+    """A one-page waste ladder. `recommended` names the column the label is
+    centred over; label_dx nudges it off-centre to test the tolerance."""
+    import fitz
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), 'Report summary', fontsize=11)
+    page.insert_text((72, 120), 'Total roof area 3200 sqft', fontsize=11)
+    page.insert_text((72, _LADDER_Y), 'Waste %', fontsize=11)
+    for pct in _LADDER:
+        page.insert_text((_COL_X[pct], _LADDER_Y), pct, fontsize=11)
+    if recommended:
+        # Centre the label over its column: same centre, minus half the label's
+        # own width. fitz reports y as the BASELINE, so a smaller y is higher.
+        w = fitz.get_text_length('Recommended', fontsize=11)
+        col_w = fitz.get_text_length(recommended, fontsize=11)
+        cx = _COL_X[recommended] + col_w / 2 + label_dx
+        y = _LADDER_Y - 20 if label_y is None else label_y
+        page.insert_text((cx - w / 2, y), 'Recommended', fontsize=11)
+    if footnote:
+        page.insert_text(
+            (72, _LADDER_Y + 60),
+            'Recommended waste is based on an asphalt shingle roof with a closed valley system.',
+            fontsize=8)
+    out = doc.tobytes()
+    doc.close()
+    return out
+
+
+def test_roofr_reads_recommended_waste(A):
+    meas = A._parse_roofr_pdf(_roofr_geo_pdf(recommended='13%'))['measurements']
+    assert meas['waste_pct'] == 13.0
+
+
+def test_roofr_reads_recommended_waste_at_either_end(A):
+    # Nothing may assume the recommendation sits mid-ladder.
+    for pct in ('0%', '20%'):
+        assert A._parse_roofr_waste(_roofr_geo_pdf(recommended=pct)) == float(pct.rstrip('%'))
+
+
+def test_roofr_omits_waste_when_no_recommendation(A):
+    """The regression this replaced: waste_pct was a hardcoded 10, and because a
+    literal always survives the `is not None` filter, EVERY import reset the
+    rep's waste — and the company default — to 10%. Absent means absent."""
+    meas = A._parse_roofr_pdf(_roofr_geo_pdf(recommended=None))['measurements']
+    assert 'waste_pct' not in meas
+
+
+def test_roofr_waste_ignores_the_footnote_paragraph(A):
+    """'Recommended waste is based on...' also starts with the marker word, but
+    sits BELOW the ladder. Reading it would pick a column at random."""
+    assert A._parse_roofr_waste(_roofr_geo_pdf(recommended=None, footnote=True)) is None
+
+
+def test_roofr_waste_rejects_a_loose_match(A):
+    """Off-centre beyond tolerance means the layout changed. No answer beats a
+    confident wrong column — the waste is what the whole roof is ordered on."""
+    assert A._parse_roofr_waste(_roofr_geo_pdf(recommended='13%', label_dx=30)) is None
+
+
+def test_roofr_waste_prefers_the_report_summary_page(A):
+    """A multi-structure property repeats the ladder per structure with DIFFERENT
+    recommendations, then once more for the whole property. Picking the first
+    would bid the garage's waste on the house."""
+    import fitz
+    whole = fitz.open('pdf', _roofr_geo_pdf(recommended='13%'))
+    struct = fitz.open('pdf', _roofr_geo_pdf(recommended='20%'))
+    # Structure page first, without the "Report summary" heading.
+    for pg in struct:
+        for inst in pg.search_for('Report summary'):
+            pg.add_redact_annot(inst)
+        pg.apply_redactions()
+    struct.insert_pdf(whole)
+    data = struct.tobytes()
+    struct.close(); whole.close()
+    assert A._parse_roofr_waste(data) == 13.0
+
+
+# ── The imported ridge_lf has to survive a reload ──────────────────────
+
+def test_the_ridge_migration_is_guarded_against_modern_estimates():
+    """doLoadEstimate carries a legacy migration folding ridge_lf + hip_lf into
+    ridge_hip_lf. ridge_lf was LATER reintroduced as a first-class ridges-only
+    field, so unguarded that migration ran on every load of every modern
+    estimate: it deleted the imported ridge_lf and overwrote ridge_hip_lf with
+    the ridges-only number. Import 40 LF ridges + 20 LF hips, save, reopen, and
+    the Ridge Vent line silently dropped to 0 sticks while ridge+hip under-billed
+    by the hips.
+
+    A present ridge_hip_lf is the exact tell for an already-migrated estimate.
+    Asserted against source because doLoadEstimate is far too large for the
+    *_runner.js extraction the other JS-mirror tests use.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, '..', 'static', 'app.js'), encoding='utf-8') as f:
+        js = f.read()
+    i = js.index('Migrate old separate ridge_lf / hip_lf')
+    block = js[i:i + 2000]
+    guard = block.index('S.measurements.ridge_hip_lf === undefined')
+    combine = block.index('S.measurements.ridge_hip_lf = (parseFloat')
+    delete = block.index('delete S.measurements.ridge_lf')
+    assert guard < combine < delete, \
+        'the ridge_hip_lf guard must gate the migration, not follow it'
+
+
 # ── NFA mirror: the cut-in figure ──────────────────────────────────────
 
 def test_attic_ventilation_cutin_deficit(A):

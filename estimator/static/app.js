@@ -7043,6 +7043,16 @@ function pcSetFinding(key,id,field,val){ const f=pcGetSec(key).findings.find(x=>
 function pcAddRec(key)     { pcGetSec(key).recommendations.push({id:uid(),priority:'monitor',description:'',cost_range:''}); setDirty(); renderConditionPage(); }
 function pcDelRec(key,id)      { const s=pcGetSec(key); s.recommendations=s.recommendations.filter(r=>r.id!==id); setDirty(); renderConditionPage(); }
 function pcSetRec(key,id,field,val){ const r=pcGetSec(key).recommendations.find(x=>x.id===id); if(r){r[field]=val;setDirty();} }
+/* True when a recommendation's cost still holds a RANGE rather than one price.
+   The field is a single price now, but estimates saved before that change hold
+   strings like "$8,000 – $12,000" and are deliberately not rewritten — totals
+   sum the low end, so those keep the honest "+". Mirrored in app.py as
+   _pc_is_range(); no parity test binds the two, so change both together. */
+function pcIsRange(s) {
+  s = (s||'').trim();
+  if((s.match(/[\d,]+(\.\d+)?/g)||[]).length > 1) return true;
+  return /(?:–|—|-|\bto\b)\s*$/.test(s);   // "$500 to", "$500–" reads open-ended
+}
 
 function renderConditionPage() {
   const el = document.getElementById('roof-health-content');
@@ -7103,7 +7113,7 @@ function renderConditionPage() {
         <button class="btn-add" onclick="pcAddRec('${_pcActiveSection}')">+ Add Recommendation</button>
       </div>
       ${sec.recommendations.length ? `<table class="rh-table"><thead><tr>
-          <th>Priority</th><th>Recommendation</th><th>Est. Cost Range</th><th style="width:36px"></th>
+          <th>Priority</th><th>Recommendation</th><th>Est. Cost</th><th style="width:36px"></th>
         </tr></thead><tbody>
         ${sec.recommendations.map(r=>`<tr>
           <td><select onchange="pcSetRec('${_pcActiveSection}','${r.id}','priority',this.value)">
@@ -7111,7 +7121,8 @@ function renderConditionPage() {
           </select></td>
           <td><input type="text" value="${esc(r.description||'')}" placeholder="Describe the action"
             onchange="pcSetRec('${_pcActiveSection}','${r.id}','description',this.value)"></td>
-          <td><input type="text" value="${esc(r.cost_range||'')}" placeholder="e.g. $500–$1,500"
+          <td><input type="text" value="${esc(r.cost_range||'')}" placeholder="e.g. $1,500"
+            title="One price, not a range — the report totals these exactly so it can be handed over as a bid."
             onchange="pcSetRec('${_pcActiveSection}','${r.id}','cost_range',this.value)"></td>
           <td><button class="li-del" onclick="pcDelRec('${_pcActiveSection}','${r.id}')">×</button></td>
         </tr>`).join('')}
@@ -7284,7 +7295,7 @@ function renderRoofHealthPage() {
       ${rh.recommendations.length ? `
         <table class="rh-table">
           <thead><tr>
-            <th>Priority</th><th>Recommendation</th><th>Est. Cost Range</th><th style="width:36px"></th>
+            <th>Priority</th><th>Recommendation</th><th>Est. Cost</th><th style="width:36px"></th>
           </tr></thead>
           <tbody>
             ${rh.recommendations.map(r=>`<tr>
@@ -7295,7 +7306,7 @@ function renderRoofHealthPage() {
               </td>
               <td><input type="text" value="${esc(r.description||'')}" placeholder="Describe the recommendation"
                 onchange="rhSetRec('${r.id}','description',this.value)"></td>
-              <td><input type="text" value="${esc(r.cost_range||'')}" placeholder="e.g. $500–$1,200"
+              <td><input type="text" value="${esc(r.cost_range||'')}" placeholder="e.g. $1,500"
                 onchange="rhSetRec('${r.id}','cost_range',this.value)"></td>
               <td><button class="li-del" onclick="rhDelRec('${r.id}')">×</button></td>
             </tr>`).join('')}
@@ -10803,8 +10814,18 @@ async function doLoadEstimate(id) {
     if(!S.customer.address||typeof S.customer.address!=='object') S.customer.address={};
     if(!S.measurements||typeof S.measurements!=='object') S.measurements={waste_pct:_globalWastePct()};
     if(S.measurements.waste_pct===undefined) S.measurements.waste_pct=_globalWastePct();
-    // Migrate old separate ridge_lf / hip_lf into combined ridge_hip_lf
-    if(S.measurements.ridge_lf !== undefined || S.measurements.hip_lf !== undefined) {
+    // Migrate old separate ridge_lf / hip_lf into combined ridge_hip_lf.
+    // GUARDED on ridge_hip_lf being absent, which is the exact tell for a
+    // pre-migration estimate. ridge_lf was later reintroduced as a first-class
+    // RIDGES-ONLY field (ridge vent orders sticks off it), so without this guard
+    // the migration ran on every single load of every modern estimate: it
+    // deleted the imported ridge_lf and overwrote ridge_hip_lf with the
+    // ridges-only number. Import 40 LF ridges + 20 LF hips, save, reopen, and
+    // the Ridge Vent line silently dropped to 0 sticks while ridge+hip
+    // under-billed by the hip footage. Present ridge_hip_lf => already migrated;
+    // any ridge_lf beside it is the modern field and must be left alone.
+    if(S.measurements.ridge_hip_lf === undefined &&
+       (S.measurements.ridge_lf !== undefined || S.measurements.hip_lf !== undefined)) {
       S.measurements.ridge_hip_lf = (parseFloat(S.measurements.ridge_lf)||0) + (parseFloat(S.measurements.hip_lf)||0);
       delete S.measurements.ridge_lf;
       delete S.measurements.hip_lf;
@@ -11691,19 +11712,25 @@ function _printConditionHTML(pHeader){
   const addr=[cu.address.street,cityState].filter(Boolean).join(', ');
   const propName=pc.property_name||(cu.name?(isHoa?`${cu.name} — Property Report`:cu.name):addr)||W.title;
 
-  // Cost totals per priority
-  let costImmediate=0,costSoon=0,costMonitor=0;
+  // Cost totals per priority. Each recommendation carries ONE price now, so
+  // these are exact and print without a suffix — that is what lets this report
+  // stand as a bid. anyRange brings the '+' back only for estimates saved
+  // before the change, whose totals really are a low-end sum.
+  let costImmediate=0,costSoon=0,costMonitor=0,anyRange=false;
   enabledSections.forEach(s=>{
     (pc.sections[s.key].recommendations||[]).forEach(r=>{
-      // Parse only the FIRST number of a range: "$500–$1,500" → 500
-      // (stripping all non-digits would read it as 5,001,500)
+      // Parse only the FIRST number: a single "$1,500" is the price, a legacy
+      // "$500–$1,500" is its low end. (Stripping all non-digits would read that
+      // second one as 5,001,500.)
       const loMatch=(r.cost_range||'').match(/[\d,]+(\.\d+)?/);
       const lo=loMatch?parseFloat(loMatch[0].replace(/,/g,''))||0:0;
+      if(lo && pcIsRange(r.cost_range)) anyRange=true;
       if(r.priority==='immediate') costImmediate+=lo;
       else if(r.priority==='soon')  costSoon+=lo;
       else                          costMonitor+=lo;
     });
   });
+  const plus=anyRange?'+':'';
 
   // Summary page
   const gradeGrid=enabledSections.map(s=>{
@@ -11736,10 +11763,10 @@ function _printConditionHTML(pHeader){
     ${costTotal>0?`<h3 class="p-rh-sh" style="margin-top:14pt">${W.investment}</h3>
       <table class="p-rh-table p-cond-cost-table">
         ${costRows.filter(([,v])=>v>0).map(([l,v],i)=>`<tr${i===costRows.filter(([,v])=>v>0).length-1?' class="p-cond-total-row"':''}>
-          <td>${l}</td><td style="text-align:right;font-weight:${i===costRows.filter(([,v])=>v>0).length-1?800:400}">${fmtCur(v)}+</td>
+          <td>${l}</td><td style="text-align:right;font-weight:${i===costRows.filter(([,v])=>v>0).length-1?800:400}">${fmtCur(v)}${plus}</td>
         </tr>`).join('')}
       </table>`:''}
-    <div class="p-rh-footer">This ${W.title} is a visual inspection summary prepared by Project One Roofing. Cost estimates are approximate ranges and do not constitute a formal bid. Contact us for a full assessment.</div>
+    <div class="p-rh-footer">This ${W.title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>
   </div>`;
 
   // Per-section detail pages (photos live in the Photo Report, not here)
@@ -12284,7 +12311,9 @@ function openRoofrModal(data) {
       <span class="roofr-preview-label">Roof Squares</span>
       <span class="roofr-preview-value">${fmt(m.roof_squares, 'SQ')}</span>
       <span class="roofr-preview-label">Waste %</span>
-      <span class="roofr-preview-value">${fmt(m.waste_pct, '%')}</span>
+      <span class="roofr-preview-value">${m.waste_pct !== undefined
+        ? `${m.waste_pct}% <span class="roofr-preview-src">recommended by report</span>`
+        : `${mnum(S.measurements.waste_pct, _globalWastePct())}% <span class="roofr-preview-src">not in report — keeping yours</span>`}</span>
       ${m.low_slope_squares !== undefined ? `
       <span class="roofr-preview-label">Low Slope ≤2/12 (rolled)</span>
       <span class="roofr-preview-value">${fmt(m.low_slope_squares, 'SQ')}</span>` : ''}
