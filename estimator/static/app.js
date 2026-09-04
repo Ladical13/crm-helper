@@ -7085,7 +7085,34 @@ function pcGet() {
 function pcGetSec(key) { const pc=pcGet(); if(!pc.sections[key])pc.sections[key]=pcBlankSection(key); return pc.sections[key]; }
 function pcSet(field,val)      { pcGet()[field]=val; setDirty(); }
 function pcSecSet(key,field,val){ pcGetSec(key)[field]=val; setDirty(); }
-function pcAddFinding(key) { pcGetSec(key).findings.push({id:uid(),area:'',severity:'medium',description:''}); setDirty(); renderConditionPage(); }
+function pcAddFinding(key) { pcGetSec(key).findings.push({id:uid(),area:'',severity:'medium',description:'',photo_ids:[]}); setDirty(); renderConditionPage(); }
+/* Which finding's photo picker is open, as "<sectionKey>:<findingId>". One at
+   a time — a rep on a driveway is attaching photos to one finding, and every
+   open picker is another full grid of thumbnails on a phone. */
+let _pcPhotoPicker = null;
+function pcFindingPhotos(key,id){ const f=pcGetSec(key).findings.find(x=>x.id===id); if(!f) return [];
+  if(!Array.isArray(f.photo_ids)) f.photo_ids=[];   // pre-2026 findings carry none
+  return f.photo_ids; }
+function pcTogglePicker(key,id){ const k=key+':'+id; _pcPhotoPicker=(_pcPhotoPicker===k)?null:k; renderConditionPage(); }
+function pcToggleFindingPhoto(key,id,photoId){
+  const ids=pcFindingPhotos(key,id); const i=ids.indexOf(photoId);
+  if(i>=0) ids.splice(i,1); else ids.push(photoId);
+  setDirty(); renderConditionPage(); warmPrintPhotos();
+}
+/* Every photo attached to any finding, across every section. The Photo Report
+   subtracts these so one photo is never printed twice — once beside the
+   finding it documents and again in a gallery. */
+function pcFindingPhotoIds(){
+  const pc=S.property_condition||(S.roof_health?.condition?pcGet():null);
+  const out=new Set();
+  if(!pc) return out;
+  PC_SECTIONS.forEach(sm=>{
+    const sec=(pc.sections||{})[sm.key];
+    if(!sec) return;
+    (sec.findings||[]).forEach(f=>(f.photo_ids||[]).forEach(id=>out.add(id)));
+  });
+  return out;
+}
 function pcDelFinding(key,id)  { const s=pcGetSec(key); s.findings=s.findings.filter(f=>f.id!==id); setDirty(); renderConditionPage(); }
 function pcSetFinding(key,id,field,val){ const f=pcGetSec(key).findings.find(x=>x.id===id); if(f){f[field]=val;setDirty();} }
 function pcAddRec(key)     { pcGetSec(key).recommendations.push({id:uid(),priority:'monitor',description:'',cost_range:''}); setDirty(); renderConditionPage(); }
@@ -7236,7 +7263,8 @@ function renderConditionPage() {
         <button class="btn-add" onclick="pcAddFinding('${_pcActiveSection}')">+ Add Finding</button>
       </div>
       ${sec.findings.length ? `<table class="rh-table"><thead><tr>
-          <th>Area / Location</th><th>Severity</th><th>Description</th><th style="width:36px"></th>
+          <th>Area / Location</th><th>Severity</th><th>Description</th>
+          <th style="width:54px">Photos</th><th style="width:36px"></th>
         </tr></thead><tbody>
         ${sec.findings.map(f=>`<tr>
           <td><input type="text" value="${esc(f.area||'')}" placeholder="e.g. North wall, gutters"
@@ -7246,8 +7274,25 @@ function renderConditionPage() {
           </select></td>
           <td><input type="text" value="${esc(f.description||'')}" placeholder="Describe the issue"
             onchange="pcSetFinding('${_pcActiveSection}','${f.id}','description',this.value)"></td>
+          <td><button class="pc-photo-btn ${(f.photo_ids||[]).length?'has':''}"
+            title="Attach photos to this finding"
+            onclick="pcTogglePicker('${_pcActiveSection}','${f.id}')">📷 ${(f.photo_ids||[]).length||''}</button></td>
           <td><button class="li-del" onclick="pcDelFinding('${_pcActiveSection}','${f.id}')">×</button></td>
-        </tr>`).join('')}
+        </tr>
+        ${_pcPhotoPicker===_pcActiveSection+':'+f.id ? `<tr class="pc-pick-row"><td colspan="5">
+          ${S.photos.length ? `<div class="pc-pick-grid">
+            ${S.photos.map(p=>{
+              const on=(f.photo_ids||[]).includes(p.id);
+              return `<div class="pc-pick ${on?'on':''}" onclick="pcToggleFindingPhoto('${_pcActiveSection}','${f.id}','${p.id}')">
+                <img src="${BASE}/uploads/${esc(p.filename)}" alt="${esc(p.caption||'')}">
+                <span class="pc-pick-chk">${on?'✓':''}</span>
+                ${p.caption?`<span class="pc-pick-cap">${esc(p.caption)}</span>`:''}
+              </div>`;
+            }).join('')}
+          </div>
+          <div class="pc-pick-hint">Tap a photo to show it beside this finding on the report. Photos you attach here are left out of the Photo Report, so nothing prints twice.</div>`
+          : '<div class="rh-empty">No photos uploaded yet — add them on the Photos page first.</div>'}
+        </td></tr>` : ''}`).join('')}
         </tbody></table>` : '<div class="rh-empty">No findings — click + Add Finding.</div>'}
     </div>`;
 
@@ -11029,6 +11074,9 @@ function _printNeededIds() {
   const needed = new Set();
   if (S.cover_photo_id) needed.add(S.cover_photo_id);
   (S.photos || []).forEach(p => { if (p.show_in_estimate) needed.add(p.id); });
+  // A photo attached to a finding prints inside the condition report whether
+  // or not it is in the Photo Report, so it has to be baked either way.
+  pcFindingPhotoIds().forEach(id => needed.add(id));
   return needed;
 }
 
@@ -11304,7 +11352,12 @@ function buildPrintContent() {
   }
 
   // ── What we found: photos, then the condition report that reads them ──
-  const printPhotos = S.photos.filter(p => p.show_in_estimate && p.id !== S.cover_photo_id);
+  // Anything attached to a finding prints beside that finding — showing it
+  // again here is the same photograph twice, the second time with nothing
+  // next to it explaining what it is. Mirrors _cv_photos_block in app.py.
+  const _findingShots = pcFindingPhotoIds();
+  const printPhotos = S.photos.filter(p => p.show_in_estimate && p.id !== S.cover_photo_id
+                                        && !_findingShots.has(p.id));
   if (printPhotos.length)
     html += `<div class="p-photos-page">
       ${pHeader}
@@ -11927,7 +11980,14 @@ function _printConditionHTML(pHeader){
 
     const findRows=(sec.findings||[]).filter(f=>f.description||f.area).map(f=>{
       const sev=RH_SEVERITIES.find(sv=>sv.v===f.severity)||{l:f.severity||'',c:'#666'};
+      // The photograph beside the sentence describing it. It used to sit in a
+      // gallery pages away, so a homeowner read the words and then met an
+      // unlabelled close-up and had to join them up themselves.
+      const shots=(f.photo_ids||[]).map(id=>S.photos.find(p=>p.id===id)).filter(Boolean)
+        .map(p=>`<span class="p-find-shot"><img src="${printPhotoSrc(p)}" alt="${esc(p.caption||'')}"></span>`)
+        .join('');
       return `<li class="p-find">
+        ${shots?`<span class="p-find-shots">${shots}</span>`:''}
         <span class="p-find-dot" style="background:${sev.c}"></span>
         <span class="p-find-txt">${f.area?`<strong>${esc(f.area)}</strong> — `:''}${esc(f.description||'')}</span>
         <span class="p-find-sev" style="color:${sev.c}">${sev.l}</span></li>`;

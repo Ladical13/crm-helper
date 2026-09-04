@@ -3574,7 +3574,9 @@ a.jx-contact:hover { text-decoration: underline; }
 .p-rh-photos { display:grid; grid-template-columns:repeat(3,1fr); gap:5mm; margin:4mm 0 7mm; }
 .p-rh-photo img { width:100%; aspect-ratio:4/3; object-fit:cover; border:.5pt solid var(--doc-rule); display:block; }
 .p-rh-photo figcaption { font-size:7pt; color:var(--doc-faint); margin-top:3pt; line-height:1.4; }
-.p-rh-sh { font-family:var(--doc-serif); font-size:12pt; font-weight:600; color:var(--doc-navy); margin:7mm 0 3mm; border-bottom:.75pt solid var(--doc-rule); padding-bottom:3pt; }
+/* break-after:avoid — "Recommended work" stranded alone at the foot of a page
+   with its first priced line overleaf reads as if the section ended there. */
+.p-rh-sh { font-family:var(--doc-serif); font-size:12pt; font-weight:600; color:var(--doc-navy); margin:7mm 0 3mm; border-bottom:.75pt solid var(--doc-rule); padding-bottom:3pt; break-after:avoid; page-break-after:avoid; }
 .p-rh-table { width:100%; border-collapse:collapse; font-size:9pt; margin-bottom:7mm; }
 .p-rh-table th { padding:9pt 8pt 5pt; border-bottom:.75pt solid var(--doc-navy); color:var(--doc-faint); font-size:6.5pt; font-weight:600; text-align:left; text-transform:uppercase; letter-spacing:1.2pt; }
 .p-rh-table th:first-child, .p-rh-table td:first-child { padding-left:0; }
@@ -4040,6 +4042,28 @@ a.jx-contact:hover { text-decoration: underline; }
 .pc-audience-btn.active { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
 .pc-photos-hint { font-size: 12px; color: var(--text-light); margin: 12px 2px 0; line-height: 1.5; }
 
+/* Per-finding photo picker (Condition tab). One picker open at a time — see
+   _pcPhotoPicker in app.js. */
+.pc-photo-btn {
+  border: 1px solid var(--border); background: #fff; border-radius: 5px;
+  padding: 5px 8px; font-size: 12px; font-weight: 700; color: var(--text-light);
+  cursor: pointer; white-space: nowrap;
+}
+.pc-photo-btn.has { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+.pc-pick-row td { background: #f8fafc; padding: 12px 10px !important; }
+.pc-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+.pc-pick { position: relative; border: 2px solid transparent; border-radius: 6px; overflow: hidden; cursor: pointer; background: #fff; }
+.pc-pick img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
+.pc-pick.on { border-color: var(--primary); }
+.pc-pick-chk {
+  position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border-radius: 50%;
+  background: rgba(255,255,255,.92); border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: var(--primary);
+}
+.pc-pick.on .pc-pick-chk { background: var(--primary); color: #fff; border-color: var(--primary); }
+.pc-pick-cap { display: block; padding: 3px 5px; font-size: 10px; color: var(--text-light); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-pick-hint { font-size: 11.5px; color: var(--text-light); margin-top: 8px; line-height: 1.5; }
+
 /* Property Condition Report — print styles */
 /* ── Condition Report (print) — mirrors the .cvcond block in app.py's _CV_CSS.
    The printed report and the one the customer opens from the link are the same
@@ -4066,9 +4090,15 @@ a.jx-contact:hover { text-decoration: underline; }
 .p-cond-sum      { font-size: 9.5pt; line-height: 1.65; color: var(--doc-mute); margin-bottom: 4mm; }
 /* Findings: evidence, quieter than the priced work below it. */
 .p-finds         { list-style: none; margin: 0 0 4mm; padding: 0; }
-.p-find          { display: flex; align-items: baseline; gap: 7pt; padding: 5pt 0; border-bottom: .5pt solid var(--doc-rule); font-size: 9pt; line-height: 1.55; break-inside: avoid; }
-.p-find-dot      { flex: none; width: 5pt; height: 5pt; border-radius: 50%; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.p-find          { display: flex; align-items: flex-start; gap: 7pt; padding: 7pt 0; border-bottom: .5pt solid var(--doc-rule); font-size: 9pt; line-height: 1.55; break-inside: avoid; }
+.p-find-dot      { flex: none; width: 5pt; height: 5pt; border-radius: 50%; margin-top: 4pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 .p-find-txt      { flex: 1; }
+/* Evidence for the sentence, not a gallery — small, and never split off the
+   finding it belongs to. */
+/* Beside the sentence, not under it — mirrors .cvfind-shots in app.py. */
+.p-find-shots    { flex: none; width: 42mm; display: flex; flex-direction: column; gap: 3pt; }
+.p-find-shot     { display: block; }
+.p-find-shot img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; border: .5pt solid var(--doc-rule); }
 .p-find-sev      { flex: none; font-size: 6.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 1pt; }
 /* Recommended work: description left, price right, the way an invoice reads. */
 .p-works         { list-style: none; margin: 0; padding: 0; }

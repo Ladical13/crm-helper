@@ -816,6 +816,14 @@ estimate list, the funnel and the Den push.
   `build_signed_confirmation` and `build_presentation_view` carry no report at
   all, so `_cv_repairs_block` (or its PDF twin) is their ONLY scope — without
   it a signed repair contract is a navy total bar over an empty page.
+- **A finding's photos print beside the finding, and the Photo Report drops
+  them.** `finding.photo_ids` is new (the Condition tab's 📷 button per row);
+  `_pc_finding_photo_ids` / `pcFindingPhotoIds()` are the matched pair that
+  subtract those photos from the gallery, so one photograph appears once —
+  beside the sentence explaining it rather than in a gallery pages away with
+  nothing next to it. `_printNeededIds()` must include them or an attached
+  photo prints as a gap: `show_in_estimate` governs the GALLERY, and a rep who
+  attached a photo to a finding has already said they want it shown.
 - **The report reads like an estimate: cost per line, subtotal per section,
   one total.** The summary page it used to open with is gone — a Condition
   Snapshot grid restating grades that reappear on every section header, and a

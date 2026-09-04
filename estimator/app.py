@@ -5105,11 +5105,26 @@ color:var(--faint);margin:var(--sp-4) 0 var(--sp-1)}
 
 /* Findings: evidence, deliberately quieter than the priced work below. */
 .cvcond-finds{list-style:none;margin:0;padding:0}
-.cvfind{display:flex;align-items:baseline;gap:var(--sp-2);padding:7px 0;
+.cvfind{display:flex;align-items:flex-start;gap:var(--sp-2);padding:10px 0;
 border-bottom:1px solid var(--line);font-size:var(--fz-sm);line-height:1.6}
 .cvfind:last-child{border-bottom:none}
-.cvfind-dot{flex:none;width:7px;height:7px;border-radius:50%;transform:translateY(-1px)}
+.cvfind-dot{flex:none;width:7px;height:7px;border-radius:50%;margin-top:7px}
 .cvfind-txt{flex:1;min-width:0;color:var(--ink)}
+/* The photographs of this finding, on the line that describes it. Small on
+   purpose — they are evidence for the sentence, not a gallery. */
+/* Beside the sentence, not under it — a single photo on a full-width line
+   left an empty half-page beside it, and "next to the finding" is the whole
+   point. Big enough to be evidence: at thumbnail size a homeowner squints and
+   takes our word for it anyway. Click opens the lightbox (.cvph-wrap). */
+.cvfind-shots{flex:none;width:190px;display:flex;flex-direction:column;gap:6px;
+margin-right:var(--sp-1)}
+.cvfind-shot{display:block;border-radius:10px}
+.cvfind-shot img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block}
+@media (max-width:560px){
+  .cvfind{flex-wrap:wrap}
+  .cvfind-shots{order:3;width:100%;flex-direction:row;flex-wrap:wrap;margin:8px 0 0 15px}
+  .cvfind-shot{width:calc(50% - 5px)}
+}
 .cvfind-sev{flex:none;font-size:var(--fz-micro);font-weight:700;text-transform:uppercase;letter-spacing:1px}
 
 /* Recommended work: description left, price right, the way an invoice reads. */
@@ -5850,12 +5865,32 @@ def _cv_photo_fig(photo):
 </figure>'''
 
 
+def _cv_finding_photo(photo):
+    """A finding's own photo — small, beside the sentence it illustrates.
+
+    Deliberately NOT _cv_photo_fig: that is a full-width gallery figure with a
+    caption block under it, and three of those inside a bullet would bury the
+    finding. Same .cvph-wrap hook, so the viewer's lightbox still opens it
+    full size, and the caption rides in the alt/title rather than on the page —
+    the finding text IS the caption here."""
+    cap = (photo.get('caption') or '').strip()
+    return (f'<span class="cvph-wrap cvfind-shot" title="{he(cap)}">'
+            f'<img src="/uploads/{he(photo["filename"])}" '
+            f'alt="{he(cap or "Inspection photo")}" loading="lazy"></span>')
+
+
 def _cv_photos_block(est):
     """Photo Report — the same show-in-estimate photos the PDF prints, with
     annotations drawn client-side (same math as the app's print bake)."""
+    # Anything attached to a finding is already printed beside that finding —
+    # showing it again in the gallery is the same photograph twice, and the
+    # second time with no explanation next to it. Mirrors pcFindingPhotoIds()
+    # in app.js, which does the same subtraction for the printed report.
+    used = _pc_finding_photo_ids(est)
     photos = [p for p in (est.get('photos') or [])
               if p.get('show_in_estimate') and p.get('filename')
-              and p.get('id') != est.get('cover_photo_id')]
+              and p.get('id') != est.get('cover_photo_id')
+              and p.get('id') not in used]
     if not photos:
         return ''
     figs = ''.join(_cv_photo_fig(p) for p in photos)
@@ -6055,6 +6090,20 @@ def _pc_repair_totals(est):
     return imm, soon, mon, imm + soon + mon, any_range
 
 
+def _pc_finding_photo_ids(est):
+    """Every photo id attached to a finding, across every section."""
+    pc = _cv_condition_pc(est)
+    if not pc:
+        return set()
+    sections = pc.get('sections') or {}
+    out = set()
+    for key, _lbl, _icon in _PC_SECTIONS:
+        for f_ in ((sections.get(key) or {}).get('findings') or []):
+            for pid in (f_.get('photo_ids') or []):
+                out.add(pid)
+    return out
+
+
 def _has_priced_scope(est):
     """True when any trade actually carries scope to price.
 
@@ -6154,6 +6203,8 @@ def _cv_condition_block(est):
                  if (pc.get('executive_notes') or '').strip() else '')
 
     plus = '+' if _pc_repair_totals(est)[4] else ''
+    pmap = {p['id']: p for p in (est.get('photos') or [])
+            if p.get('id') and p.get('filename')}
 
     sec_html = ''
     report_total = 0.0
@@ -6180,8 +6231,16 @@ def _cv_condition_block(est):
                 continue
             sev_lbl, sev_c = _RH_SEV.get(f_.get('severity'), (f_.get('severity') or '', '#666'))
             area = he(f_.get('area') or '')
+            # The photograph of the damage, beside the sentence describing it.
+            # It used to sit in a gallery pages away, so a homeowner read
+            # "rubber collar has split at the base" and then, much later, met
+            # an unlabelled close-up of a pipe boot and had to join them up.
+            shots = ''.join(_cv_finding_photo(pmap[pid]) for pid in (f_.get('photo_ids') or [])
+                            if pid in pmap)
             find_rows += (
-                f'<li class="cvfind"><span class="cvfind-dot" style="background:{sev_c}"></span>'
+                f'<li class="cvfind">'
+                f'{f"<span class=\'cvfind-shots\'>{shots}</span>" if shots else ""}'
+                f'<span class="cvfind-dot" style="background:{sev_c}"></span>'
                 f'<span class="cvfind-txt">'
                 f'{f"<strong>{area}</strong> &mdash; " if area else ""}'
                 f'{he(f_.get("description") or "")}</span>'

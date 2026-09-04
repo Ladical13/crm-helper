@@ -298,3 +298,81 @@ def test_the_print_report_prices_each_line_and_subtotals(A):
     src = _appjs()
     for marker in ('p-work-amt', 'p-work-sub-amt', 'p-cond-grade', 'p-find-sev'):
         assert marker in src, marker
+
+
+# ── Photos beside the finding they document ──────────────────────────
+# A finding used to be a sentence, and the photograph of the damage sat in a
+# gallery pages away. A homeowner read "rubber collar has split at the base"
+# and then, much later, met an unlabelled close-up of a pipe boot and had to
+# join the two up. A finding can carry photo_ids now, and they print on the
+# line that describes them.
+
+def _est_with_photos(*photo_ids, show_in_estimate=True):
+    est = _est(('immediate', 'Replace boot', '$1,500'))
+    est['photos'] = [
+        {'id': 'p1', 'filename': 'a.jpg', 'caption': 'Cracked boot, north slope',
+         'show_in_estimate': show_in_estimate},
+        {'id': 'p2', 'filename': 'b.jpg', 'caption': 'Ridge cap',
+         'show_in_estimate': show_in_estimate},
+    ]
+    est['property_condition']['sections']['roof']['findings'] = [
+        {'id': 'f1', 'area': 'North slope', 'severity': 'high',
+         'description': 'Pipe boot cracked through', 'photo_ids': list(photo_ids)}]
+    return est
+
+
+def test_a_findings_photo_renders_on_the_finding(A):
+    html = A._cv_condition_block(_est_with_photos('p1'))
+    assert 'cvfind-shots' in html
+    assert '/uploads/a.jpg' in html
+    # The finding text is the caption here, so the photo does not carry a
+    # second one under it.
+    assert 'figcaption' not in html
+
+
+def test_the_photo_report_drops_what_a_finding_already_shows(A):
+    """One photograph, one place. The gallery copy had no explanation beside
+    it, so it was the worse of the two."""
+    est = _est_with_photos('p1')
+    gallery = A._cv_photos_block(est)
+    assert '/uploads/a.jpg' not in gallery
+    assert '/uploads/b.jpg' in gallery, 'an unattached photo still belongs in the gallery'
+
+
+def test_a_photo_on_no_finding_is_untouched(A):
+    est = _est_with_photos()
+    gallery = A._cv_photos_block(est)
+    assert '/uploads/a.jpg' in gallery and '/uploads/b.jpg' in gallery
+
+
+def test_an_attached_photo_prints_even_when_it_is_out_of_the_gallery(A):
+    """show_in_estimate governs the GALLERY. A rep who attached a photo to a
+    finding has already said they want it shown."""
+    est = _est_with_photos('p1', show_in_estimate=False)
+    assert '/uploads/a.jpg' in A._cv_condition_block(est)
+
+
+def test_a_dangling_photo_id_is_skipped_not_crashed(A):
+    """Deleting a photo must not take the whole report down with it."""
+    est = _est_with_photos('p1')
+    est['photos'] = [p for p in est['photos'] if p['id'] != 'p1']
+    html = A._cv_condition_block(est)
+    assert 'Pipe boot cracked through' in html
+    assert 'cvfind-shots' not in html
+
+
+def test_findings_from_before_photos_existed_still_render(A):
+    est = _est_with_photos()
+    del est['property_condition']['sections']['roof']['findings'][0]['photo_ids']
+    assert 'Pipe boot cracked through' in A._cv_condition_block(est)
+
+
+def test_the_two_renderers_subtract_the_same_photos(A):
+    """_cv_photos_block (app.py) and buildPrintContent (app.js) each drop the
+    finding photos from the gallery. Different answers means the PDF and the
+    web page show a different number of photographs."""
+    src = _appjs()
+    assert 'function pcFindingPhotoIds()' in src
+    assert '_findingShots.has(p.id)' in src, 'the printed gallery must subtract them too'
+    assert 'pcFindingPhotoIds().forEach(id => needed.add(id))' in src, \
+        'an attached photo must be baked into the print cache or it prints as a gap'
