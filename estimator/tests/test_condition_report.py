@@ -376,3 +376,87 @@ def test_the_two_renderers_subtract_the_same_photos(A):
     assert '_findingShots.has(p.id)' in src, 'the printed gallery must subtract them too'
     assert 'pcFindingPhotoIds().forEach(id => needed.add(id))' in src, \
         'an attached photo must be baked into the print cache or it prints as a gap'
+
+
+# ── Annotations on the finding's photo ───────────────────────────────
+# A rep who circled the split in the collar drew that circle to make one point.
+# The photo beside the sentence making it is exactly where the markup lands
+# best, so it is not the clean image there and the marked one in the gallery.
+
+_ANN = [{'type': 'oval', 'x1': 30, 'y1': 30, 'x2': 70, 'y2': 70,
+         'color': '#ef4444', 'sw': 3}]
+
+
+def _est_annotated(*, attach=True, annotate=True, other_photo=True):
+    est = _est(('immediate', 'Replace boot', '$1,500'))
+    p1 = {'id': 'p1', 'filename': 'a.jpg', 'caption': 'Cracked boot',
+          'show_in_estimate': True}
+    if annotate:
+        p1['annotations'] = list(_ANN)
+    est['photos'] = [p1]
+    if other_photo:
+        est['photos'].append({'id': 'p2', 'filename': 'b.jpg', 'caption': 'Ridge',
+                              'show_in_estimate': True})
+    est['property_condition']['sections']['roof']['findings'] = [
+        {'id': 'f1', 'area': 'North slope', 'severity': 'high',
+         'description': 'Pipe boot cracked through',
+         'photo_ids': ['p1'] if attach else []}]
+    return est
+
+
+def test_an_annotated_finding_photo_carries_its_overlay(A):
+    html = A._cv_condition_block(_est_annotated())
+    assert 'cvph-canvas' in html
+    assert 'data-ann' in html
+    # he() writes &quot; — the same encoding the gallery figure uses, which the
+    # browser un-escapes when the painter reads dataset.ann.
+    assert '&quot;oval&quot;' in html
+
+
+def test_the_overlay_is_encoded_the_same_way_the_gallery_encodes_it(A):
+    """One painter reads both (_CV_ANN_JS / dataset.ann). If the two blocks
+    escaped the JSON differently, one of them would silently draw nothing."""
+    import re
+    est = _est_annotated()
+    grab = lambda h: (re.search(r'data-ann="([^"]*)"', h) or [None, None])[1]
+    assert grab(A._cv_condition_block(est)) == grab(A._cv_photos_block(
+        {**est, 'property_condition': None, 'roof_health': {}}))
+
+
+def test_a_clean_finding_photo_gets_no_canvas(A):
+    """An empty overlay would still cost a canvas element per photo."""
+    html = A._cv_condition_block(_est_annotated(annotate=False))
+    assert 'cvph-canvas' not in html
+
+
+def test_the_painter_ships_when_the_gallery_is_empty(A):
+    """_CV_ANN_JS normally rides with the Photo Report. A report whose photos
+    are ALL attached to findings has no Photo Report, so without this every
+    annotation on the page silently fails to draw."""
+    est = _est_annotated(other_photo=False)
+    assert A._cv_photos_block(est) == '', 'this fixture must leave the gallery empty'
+    assert '_cvAnnInit' in A._cv_condition_block(est)
+
+
+def test_the_painter_is_not_shipped_when_nothing_is_annotated(A):
+    assert '_cvAnnInit' not in A._cv_condition_block(_est_annotated(annotate=False))
+
+
+def test_the_page_never_defines_the_painter_twice_over(A):
+    """It self-guards on window._cvAnnInit, so both blocks may emit it — but
+    the guard is what makes that safe, and it has to still be there."""
+    est = _est_annotated()
+    page = A._cv_photos_block(est) + A._cv_condition_block(est)
+    assert page.count('window._cvAnnInit=1') <= page.count('if(!window._cvAnnInit)')
+
+
+def test_the_printed_photo_bakes_its_annotations(A):
+    """The print path draws annotations onto the image itself rather than
+    overlaying a canvas, and it only bakes ids _printNeededIds() reports — so
+    the finding ids have to be in that set or the PDF prints the clean photo."""
+    src = _appjs()
+    bake = src[src.index('async function preparePrintPhotos()'):]
+    bake = bake[:bake.index('\n}')]
+    assert 'drawAnn(ctx, ann' in bake
+    assert '_printNeededIds()' in bake
+    assert 'pcFindingPhotoIds().forEach(id => needed.add(id))' in src

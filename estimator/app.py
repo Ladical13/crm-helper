@@ -5872,11 +5872,21 @@ def _cv_finding_photo(photo):
     caption block under it, and three of those inside a bullet would bury the
     finding. Same .cvph-wrap hook, so the viewer's lightbox still opens it
     full size, and the caption rides in the alt/title rather than on the page —
-    the finding text IS the caption here."""
+    the finding text IS the caption here.
+
+    It DOES carry the annotation overlay. A rep who circled the split in the
+    collar drew that circle to make one point, and this is the photo that sits
+    beside the sentence making it — showing the clean image here and the marked
+    one only in the gallery would hide the markup exactly where it lands best.
+    The canvas paints at the rendered width (see _CV_ANN_JS), so the strokes
+    scale down with the smaller image rather than overwhelming it."""
     cap = (photo.get('caption') or '').strip()
+    anns = photo.get('annotations') or []
+    canvas = (f'<canvas class="cvph-canvas" data-ann="{he(json.dumps(anns))}"></canvas>'
+              if anns else '')
     return (f'<span class="cvph-wrap cvfind-shot" title="{he(cap)}">'
             f'<img src="/uploads/{he(photo["filename"])}" '
-            f'alt="{he(cap or "Inspection photo")}" loading="lazy"></span>')
+            f'alt="{he(cap or "Inspection photo")}" loading="lazy">{canvas}</span>')
 
 
 def _cv_photos_block(est):
@@ -6308,12 +6318,20 @@ def _cv_condition_block(est):
         f'{"Inspector" if is_hoa else "Inspected by"} {he(rep)}' if rep else '') if x)
     insp_html = f'<div class="cvcond-byline">{line}</div>' if line else ''
 
+    # _CV_ANN_JS normally rides with the Photo Report, but a report whose
+    # photos are ALL attached to findings has no Photo Report — the gallery
+    # comes back empty and the painter never ships, so every annotation on the
+    # page silently fails to draw. It self-guards on window._cvAnnInit, so
+    # emitting it from both places costs nothing when both are present.
+    ann_js = _CV_ANN_JS if 'cvph-canvas' in sec_html else ''
+
     return f'''<div class="cvcond">
   <h2 data-eyebrow="Inspection">{w_title}</h2>
   {insp_html}
   {exec_html}
   {sec_html}
   {total_html}
+  {ann_js}
   <div class="cvcond-foot">This {w_title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>
 </div>'''
 

@@ -824,6 +824,13 @@ estimate list, the funnel and the Den push.
   nothing next to it. `_printNeededIds()` must include them or an attached
   photo prints as a gap: `show_in_estimate` governs the GALLERY, and a rep who
   attached a photo to a finding has already said they want it shown.
+- **Annotations reach both.** Web overlays a `.cvph-canvas` painted by
+  `_CV_ANN_JS`; print bakes them into the image in `preparePrintPhotos()`. The
+  painter normally rides with the Photo Report, so `_cv_condition_block` emits
+  it too — a report whose photos are ALL on findings has no Photo Report, and
+  without that every annotation on the page silently fails to draw. It
+  self-guards on `window._cvAnnInit`, which is what makes emitting it twice
+  safe.
 - **The report reads like an estimate: cost per line, subtotal per section,
   one total.** The summary page it used to open with is gone — a Condition
   Snapshot grid restating grades that reappear on every section header, and a
