@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=191">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=192">
 </head>
 <body>
 
@@ -200,6 +200,12 @@
         </div>
         <div class="total-row" id="tr-insurance" style="display:none;border-top:1px solid var(--border);margin-top:6px;padding-top:6px">
           <span style="color:#0284c7">Insurance</span><strong id="total-insurance" style="color:#0284c7">$0.00</strong>
+        </div>
+        <!-- Report-only estimate: no trade carries scope, so the condition
+             report's recommended repairs are the price. renderTotals() swaps
+             this in for the three $0 tier rows. -->
+        <div class="total-row" id="tr-repairs" style="display:none;border-top:1px solid var(--border);margin-top:6px;padding-top:6px">
+          <span style="color:#d97706">Repairs</span><strong id="total-repairs" style="color:#d97706">$0.00</strong>
         </div>
       </div>
       <div id="internal-margin" class="internal-margin" style="display:none"></div>
@@ -750,6 +756,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=191"></script>
+<script src="/estimate/static/app.js?v=192"></script>
 </body>
 </html>

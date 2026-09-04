@@ -1056,6 +1056,12 @@ def _estimate_total(est):
         # RCV (price) = ACV + Depreciation
         return sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
                    for sec in sections for i in sec.get('items', []))
+    # A condition report with nothing priced behind it IS the bid — see
+    # _is_report_only. This is the one place the price does not come from
+    # line items, and everything downstream (list, funnel, Den push, sign
+    # page, change orders) reads it from here.
+    if _is_report_only(est):
+        return _pc_repair_totals(est)[3]
     return calc_selected_total(est)
 
 
@@ -5938,6 +5944,99 @@ def _pc_is_range(rec):
     return bool(re.search(r'(?:–|—|-|\bto\b)\s*$', s.strip()))
 
 
+# ── Report-only estimates ───────────────────────────────────────────
+# A rep who inspects a roof and writes up the condition report has produced a
+# bid: the recommendations carry prices and add up. Nothing else on the estimate
+# does — a new estimate ships with Roofing ENABLED and empty, so the customer
+# used to get a Good/Better/Best comparison of three $0 columns and a "Project
+# Total $0" underneath a report that had just quoted $6,400 of repairs.
+#
+# So when no trade carries scope, the recommendations ARE the price. The G/B/B
+# comparison is suppressed (there is nothing to compare) and every place that
+# asks what this estimate is worth — the list, the funnel, the Den push, the
+# sign page, the PDF — gets the repair total. Mirrored in app.js as
+# pcRepairLines() / pcRepairTotals() / isReportOnly(), and held to the same
+# numbers by tests/report_only_runner.js — change both sides together.
+
+
+def _pc_repair_lines(est):
+    """Every recommendation on the enabled, graded sections of the report.
+
+    The one parse behind both the report's own cost summary and the price of a
+    report-only estimate, so the two can never disagree. Section order follows
+    _PC_SECTIONS, the order the report itself prints."""
+    pc = _cv_condition_pc(est)
+    if not pc:
+        return []
+    sections = pc.get('sections') or {}
+    out = []
+    for key, lbl, icon in _PC_SECTIONS:
+        sec = sections.get(key) or {}
+        if not (sec.get('enabled') and sec.get('grade')):
+            continue
+        for rec in (sec.get('recommendations') or []):
+            out.append({
+                'section':     lbl,
+                'icon':        icon,
+                'priority':    rec.get('priority') or 'monitor',
+                'description': (rec.get('description') or '').strip(),
+                'cost_range':  rec.get('cost_range') or '',
+                'amount':      _pc_cost_lo(rec),
+                'is_range':    _pc_is_range(rec),
+            })
+    return out
+
+
+def _pc_repair_totals(est):
+    """(immediate, soon, monitor, total, any_range) over the report.
+
+    Same low-end parse and same '+' rule the condition block already prints —
+    a legacy range totals its low end and keeps the suffix."""
+    imm = soon = mon = 0.0
+    any_range = False
+    for ln in _pc_repair_lines(est):
+        amt = ln['amount']
+        if amt and ln['is_range']:
+            any_range = True
+        if ln['priority'] == 'immediate':
+            imm += amt
+        elif ln['priority'] == 'soon':
+            soon += amt
+        else:
+            mon += amt
+    return imm, soon, mon, imm + soon + mon, any_range
+
+
+def _has_priced_scope(est):
+    """True when any trade actually carries scope to price.
+
+    Enabled is NOT the test — Roofing is enabled on every new estimate. Line
+    items are."""
+    trades = est.get('trades') or {}
+    ins = trades.get('insurance') or {}
+    if ins.get('enabled') and (ins.get('sections') or ins.get('line_items')):
+        return True
+    return any((trades.get(tk) or {}).get('enabled') and (trades.get(tk) or {}).get('line_items')
+               for tk in GBB_TRADES)
+
+
+def _is_report_only(est):
+    """The condition report is the whole estimate, and its repairs are the price.
+
+    Requires all three: not an insurance claim, no trade carrying line items,
+    and a report that is both PRINTED (the Roof Health chip gates the customer's
+    only explanation of the number) and priced above zero. Fail any one and this
+    is an ordinary estimate that happens to be empty — which must keep totalling
+    $0 rather than inventing a price."""
+    if est.get('estimate_type') == 'insurance':
+        return False
+    if (est.get('page_visibility') or {}).get('report') is False:
+        return False
+    if _has_priced_scope(est):
+        return False
+    return _pc_repair_totals(est)[3] > 0
+
+
 def _cv_condition_block(est):
     """Condition report — same grades, findings, recommendations and cost
     outlook the printed report shows. Gated by the Roof Health print chip
@@ -6371,6 +6470,13 @@ def _cv_glance_block(est, manifest, sel_label='', sel_total=None):
             rows.append(('Your project',
                          f'<strong>{scope}</strong>'
                          + (f' at your home in {he(city)}' if city else '')))
+        elif _is_report_only(est):
+            # The manifest builds its trade list from line items, so a
+            # report-only estimate has none — and the row that opens the whole
+            # proposal would simply be missing. Name what it IS selling.
+            rows.append(('Your project',
+                         '<strong>Recommended repairs from your inspection</strong>'
+                         + (f' at your home in {he(city)}' if city else '')))
 
         # Only claim a choice where one is actually offered.
         tiers = []
@@ -6392,7 +6498,9 @@ def _cv_glance_block(est, manifest, sel_label='', sel_total=None):
 
     # Warranty headline: the selected tier's promise beats the generic body copy.
     warr = ''
-    wbt  = m.get('warranty_by_tier') or {}
+    # A report-only estimate offers no packages, so naming one ("Good and Better
+    # packages carry...") describes something the customer was never shown.
+    wbt  = {} if _is_report_only(est) else (m.get('warranty_by_tier') or {})
     sel  = (est.get('selected_tier') or '').strip().lower()
     if sel and wbt.get(sel):
         warr = wbt[sel]
@@ -7479,12 +7587,115 @@ def _build_simple_retail_cv(est, token):
 ''' + _cv_footer()
 
 
+def _build_report_only_cv(est, token):
+    """Customer view for an estimate that is a condition report and nothing else.
+
+    No packages, no tier picker, no empty trade tables — the repairs the report
+    recommends are the scope, and their total is the price. See _is_report_only
+    for why an estimate can look empty and still be worth quoting.
+
+    Two blocks are deliberately absent, and both were on this page before:
+
+    * A repairs table. The condition report directly above already lists every
+      recommendation with its price and totals them by priority. A second
+      itemization under its own heading is the same lines twice; the grand
+      total here is the signable number, not a second list.
+    * The permit card and the 'What's Included and Why' card. Both are written
+      for a replacement — one promises the permit is priced into the estimate,
+      the other walks through package warranties and a complete tear-off to the
+      deck. On a repair bid every line of that describes work nobody quoted.
+      The trust blocks stay: they are about the company, not the scope.
+
+    Every string this function emits reaches the customer's page source, so
+    reasoning like the above lives here rather than in an HTML comment."""
+    c     = est.get('customer', {})
+    a     = c.get('address', {})
+    cs    = ', '.join(filter(None, [a.get('city'), a.get('state')]))
+    addr  = ', '.join(filter(None, [a.get('street'), cs]))
+    enum  = _est_number(est)
+    notes = (est.get('notes_customer') or '').strip()
+    ctext = (est.get('contract_text') or '').strip()
+    sp    = (est.get('salesperson') or '').replace('.', ' ').replace('_', ' ').title()
+    tier  = est.get('selected_tier', 'better')   # passed through for POST only
+
+    total   = _pc_repair_totals(est)[3]
+    pc      = _cv_condition_pc(est) or {}
+    is_hoa  = pc.get('audience') == 'hoa'
+    grand_lbl = 'Estimated Repair Investment' if is_hoa else 'Estimated Repair Total'
+
+    notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
+    ctext_html = f'''<details class="cvcontract"><summary>&#128203; View Full Terms &amp; Conditions</summary>
+      <div class="cvcontract-body">{he(ctext)}</div></details>''' if ctext else ''
+    sp_html    = f'<div class="cvgi"><label>Inspected By</label><strong>{he(sp)}</strong></div>' if sp else ''
+
+    manifest = _build_estimate_manifest(est)
+
+    return _cv_head('Your Inspection Report &mdash; Project One Roofing', manifest) + _cv_header() + f'''
+{_cv_hero(est, 'Your Inspection Report is Ready',
+          'Review what we found and the repairs we recommend, then sign to approve the work',
+          steps=['Review the Findings', 'Approve the Repairs'])}
+
+<main class="cvmain">
+<div class="cvc-card">
+  <div class="cvgrid">
+    <div class="cvgi"><label>Prepared For</label><strong>{he(c.get("name","—"))}</strong></div>
+    <div class="cvgi"><label>Report #</label><strong>{he(enum)}</strong></div>
+    <div class="cvgi"><label>Address</label><strong>{he(addr or "—")}</strong></div>
+    <div class="cvgi"><label>Date</label><strong>{he(est.get("estimate_date","—"))}</strong></div>
+    {sp_html}
+    <div class="cvgi"><label>Valid Until</label><strong>{he(est.get("valid_until","—"))}</strong></div>
+  </div>
+</div>
+
+{_cv_glance_block(est, manifest, '', total)}
+
+{_cv_intro_block(est)}
+
+<!-- Evidence before price — see the note in build_customer_view. -->
+{_cv_photos_block(est)}
+
+{_cv_condition_block(est)}
+
+{_cv_attachments_block(est)}
+
+<div class="cvgrand">
+  <span class="cvgrand-lbl">{grand_lbl}</span>
+  <span class="cvgrand-amt">{fc(total)}</span>
+</div>
+
+{notes_html}
+{_cv_trust_blocks(est)}
+{_cv_next_steps()}
+{_cv_contact_card(est)}
+{_cv_download_card(token)}
+{ctext_html}
+
+<div class="cvsig" id="sign">
+  <h2>Approve These Repairs</h2>
+  <p class="sub">Your electronic signature confirms you have reviewed this report and approve the recommended repairs above, along with all terms &amp; conditions.</p>
+  {_cv_sig_form(_mount_path(f'/sign/{he(token)}'),
+                hidden=f'<input type="hidden" name="selected_tier" value="{he(tier)}">',
+                extra_blocks=_cv_initials_block(est),
+                agree_text='I have read this report and I approve the recommended repairs and all terms &amp; conditions.')}
+</div>
+</main>
+
+{_cv_sticky_bar(grand_lbl, fc(total))}
+''' + _cv_footer()
+
+
 def build_customer_view(est, token):
     # Branch: insurance estimates — explicit type OR insurance trade is enabled
     ins_td = est.get('trades', {}).get('insurance', {})
     is_insurance = (est.get('estimate_type') == 'insurance') or ins_td.get('enabled', False)
     if is_insurance:
         return _build_insurance_cv(est, token)
+
+    # Branch: the condition report is the whole estimate — its recommended
+    # repairs are the scope and the price. Sits ahead of the tier branches
+    # because there are no packages to choose between.
+    if _is_report_only(est):
+        return _build_report_only_cv(est, token)
 
     # Branch: all enabled trades are simple mode — skip tier selection
     if _all_trades_simple(est):

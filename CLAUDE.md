@@ -775,6 +775,35 @@ and cites an authoritative page; the manager reading it before clicking approve
 is the accuracy check. Answers do move between runs — Windsor came back
 "2024 I-Codes" on one pass and "2018 IRC" on another.
 
+### Report-only estimates — the condition report IS the bid
+
+An estimate with a priced condition report and no trade carrying line items is
+priced by its **recommended repairs**, not by Good/Better/Best. `_is_report_only`
+(`app.py`) / `isReportOnly()` (`app.js`) decide it and the two must agree;
+`tests/report_only_runner.js` holds them to the same numbers, because the browser
+prints this total on the PDF while the server puts it on the sign page, the
+estimate list, the funnel and the Den push.
+
+- **"Enabled" is not scope.** Every new estimate ships with Roofing enabled and
+  empty, which is why the customer used to get three $0 package columns and a
+  "Project Total $0" printed under a report that had just quoted thousands.
+  `_has_priced_scope` / `hasPricedScope()` test for **line items**.
+- **Three conditions, all required**: not an insurance claim, no trade with line
+  items, and a report that is both printed (the Roof Health chip) and priced
+  above zero. An estimate that is merely empty must keep totalling $0 rather
+  than inventing a price.
+- **The report is the itemization; the total is the bid.** The condition report
+  already lists every recommendation with its price, so neither the customer
+  view nor the PDF repeats it — they carry the number and the signature.
+- **The permit card and "What's Included and Why" are suppressed**, and the
+  glance never quotes a package warranty. All three describe a replacement:
+  the permit is "priced into your estimate", the details card walks through
+  package warranties and a complete tear-off. On a repair bid that is a claim
+  about work nobody quoted.
+- **Legacy `roof_health` estimates count too** — both sides migrate on read
+  (`pcGet` / `_cv_condition_pc`), and the runner covers that path.
+- Guarded by `tests/test_report_only.py`.
+
 ### Estimate outcome — `lost`, and why the rename was the small half
 
 `declined` is now **`lost`**, and the rename was the least of it. `estStatusOf()`

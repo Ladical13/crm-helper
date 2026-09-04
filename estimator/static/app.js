@@ -2069,10 +2069,10 @@ function pageComplete(page) {
     case 'intro':    return !!(S.intro_text && S.intro_text.trim());
     case 'photos':   return (S.photos||[]).length > 0;
     case 'scope':    return RETAIL_TRADE_KEYS.some(hasItems);
-    case 'options':  return selectedTotal() > 0 || insuranceTotal() > 0;
+    case 'options':  return selectedTotal() > 0 || insuranceTotal() > 0 || isReportOnly();
     case 'products': return RETAIL_TRADE_KEYS.some(t =>
                         S.trades[t].enabled && Object.values(S.trades[t].colors||{}).some(v => String(v||'').trim()));
-    case 'pricing':  return selectedTotal() > 0 || insuranceTotal() > 0;
+    case 'pricing':  return selectedTotal() > 0 || insuranceTotal() > 0 || isReportOnly();
     case 'contract': return !!(S.contract_text && S.contract_text.trim());
     case 'report':   return !!(S.roof_health?.condition);
     case 'documents': return (S.attachments||[]).length > 0;
@@ -2329,6 +2329,18 @@ function renderTotals() {
   const insRow = document.getElementById('tr-insurance');
   if (insEl)  insEl.textContent = fmtCur(insuranceTotal());
   if (insRow) insRow.style.display = S.trades.insurance?.enabled ? '' : 'none';
+  // Report-only estimate: the three tier rows are all $0 and the repairs are
+  // the price. Show it here rather than leaving the rep to add it up off the
+  // Condition tab.
+  const repOnly = isReportOnly();
+  const repEl   = document.getElementById('total-repairs');
+  const repRow  = document.getElementById('tr-repairs');
+  if (repEl)  repEl.textContent = fmtCur(pcRepairTotals().total);
+  if (repRow) repRow.style.display = repOnly ? '' : 'none';
+  TIERS.forEach(t => {
+    const row = document.getElementById('tr-' + t);
+    if (row) row.style.display = repOnly ? 'none' : '';
+  });
   renderInternalMargin();
   renderCostProfitPanel();
 }
@@ -7054,6 +7066,83 @@ function pcIsRange(s) {
   return /(?:–|—|-|\bto\b)\s*$/.test(s);   // "$500 to", "$500–" reads open-ended
 }
 
+/* ── Report-only estimates ────────────────────────────────────────────
+   A rep who inspects a roof and writes up the condition report has produced a
+   bid: the recommendations carry prices and they add up. Nothing else on the
+   estimate does — a new estimate ships with Roofing ENABLED and empty, so the
+   customer used to get a Good/Better/Best comparison of three $0 columns and a
+   "Project Total $0" printed underneath a report that had just quoted $6,400 of
+   repairs.
+
+   So when no trade carries scope, the recommendations ARE the price: the G/B/B
+   comparison is suppressed and the report's own recommendation tables stand as
+   the scope. Mirrored in app.py as _pc_repair_lines / _pc_repair_totals /
+   _is_report_only, which is what prices the estimate everywhere the server owns
+   the number (the list, the funnel, the Den push, the sign page). Held to the
+   same numbers by tests/report_only_runner.js. ─────────────────────── */
+
+/* Every recommendation on the enabled, graded sections, in report order — the
+   one parse behind both the report's cost summary and the estimate's price, so
+   the two can never disagree. */
+function pcRepairLines() {
+  const pc = S.property_condition || (S.roof_health?.condition ? pcGet() : null);
+  if (!pc) return [];
+  const out = [];
+  PC_SECTIONS.forEach(s => {
+    const sec = (pc.sections || {})[s.key];
+    if (!sec || !sec.enabled || !sec.grade) return;
+    (sec.recommendations || []).forEach(r => {
+      // Parse only the FIRST number: a single "$1,500" is the price, a legacy
+      // "$500–$1,500" is its low end. Same parse the condition report totals
+      // with, and the reason a legacy range keeps the '+'.
+      const m = (r.cost_range || '').match(/[\d,]+(\.\d+)?/);
+      out.push({
+        section: s.label, icon: s.icon,
+        priority: r.priority || 'monitor',
+        description: (r.description || '').trim(),
+        cost_range: r.cost_range || '',
+        amount: m ? (parseFloat(m[0].replace(/,/g, '')) || 0) : 0,
+        isRange: pcIsRange(r.cost_range),
+      });
+    });
+  });
+  return out;
+}
+
+function pcRepairTotals() {
+  let immediate = 0, soon = 0, monitor = 0, anyRange = false;
+  pcRepairLines().forEach(ln => {
+    if (ln.amount && ln.isRange) anyRange = true;
+    if (ln.priority === 'immediate')  immediate += ln.amount;
+    else if (ln.priority === 'soon')  soon      += ln.amount;
+    else                              monitor   += ln.amount;
+  });
+  return { immediate, soon, monitor, total: immediate + soon + monitor, anyRange };
+}
+
+/* Enabled is NOT the test — Roofing is enabled on every new estimate. Line
+   items are. MUST mirror _has_priced_scope in app.py. */
+function hasPricedScope() {
+  const ins = S.trades?.insurance;
+  if (ins?.enabled && ((ins.sections || []).length || (ins.line_items || []).length)) return true;
+  return RETAIL_TRADE_KEYS.some(t => {
+    const td = S.trades[t];
+    return !!td && td.enabled && (td.line_items || []).length > 0;
+  });
+}
+
+/* All three are required: not an insurance claim, no trade carrying line items,
+   and a report that is both PRINTED (the Roof Health chip gates the customer's
+   only explanation of the number) and priced above zero. Fail any one and this
+   is an ordinary estimate that happens to be empty — which must keep totalling
+   $0 rather than inventing a price. MUST mirror _is_report_only in app.py. */
+function isReportOnly() {
+  if ((S.estimate_type || 'retail') === 'insurance') return false;
+  if ((S.page_visibility || {}).report === false) return false;
+  if (hasPricedScope()) return false;
+  return pcRepairTotals().total > 0;
+}
+
 function renderConditionPage() {
   const el = document.getElementById('roof-health-content');
   if(!el) return;
@@ -11277,10 +11366,17 @@ function buildPrintContent() {
     return effectiveTradeMode(t, td) === 'simple';
   });
 
+  // The condition report is the whole estimate — see isReportOnly(). Its
+  // recommended repairs are the scope AND the price; printing the package
+  // comparison here would offer three $0 columns beside a report that has just
+  // quoted the repairs.
+  if (isReportOnly()) {
+    ph += _printRepairsHTML(pHead2);
+  }
   // Everything that isn't an insurance claim prints the same priced body.
   // This MUST NOT be `=== 'retail'`: a new estimate type would silently print
   // a blank PDF, which is exactly what happened to commercial before this.
-  if (estType !== 'insurance') {
+  else if (estType !== 'insurance') {
     if (pv.options !== false && !isAllSimple) packageTrades().forEach(gt=>{
       const gtTier=tradeTier(gt);
       const disp=tradeDisplayItems(gt);
@@ -11433,7 +11529,12 @@ function buildPrintContent() {
   /* Credibility sits between the number and the signature, which is where the
      objections actually are. Marketing content only, so it stays out of the
      signed hash and the signed PDF (see _cv_trust_blocks in app.py). */
-  ph += _printPermitHTML(pHeader, pHead2);
+  // The permit page is written for a replacement — it promises the permit is
+  // priced into the estimate and lists what a re-roof has to satisfy. On a
+  // repair bid that is a claim about work nobody quoted, so it is dropped the
+  // same way the customer view drops it. Trust content is about the company,
+  // not the scope, and stays.
+  if (!isReportOnly()) ph += _printPermitHTML(pHeader, pHead2);
   ph += _printTrustHTML(pHeader, pHead2);
 
   /* Signing gets its own page. It used to fall wherever the notes happened to
@@ -11500,9 +11601,14 @@ function _printGlanceHTML(pHeader, estNum) {
       if (scope.length)
         rows.push(['Your project',
                    `<strong>${esc(scope.join(' · '))}</strong>${addr ? ' at ' + esc(addr) : ''}`]);
+      else if (isReportOnly())
+        rows.push(['Your project',
+                   `<strong>Recommended repairs from your inspection</strong>${addr ? ' at ' + esc(addr) : ''}`]);
 
-      // Only claim a choice when one is actually being offered.
-      const gbb = packageTrades();
+      // Only claim a choice when one is actually being offered. A report-only
+      // estimate has packageTrades() non-empty (Roofing is enabled and empty on
+      // every new estimate) and nothing to choose between.
+      const gbb = isReportOnly() ? [] : packageTrades();
       const tiers = enabledTiers();
       if (gbb.length && tiers.length > 1)
         rows.push(['Your options',
@@ -11689,6 +11795,23 @@ function _printPermitHTML(pHeader, pHead2) {
     ${head}${lead}${reqsHtml}</div>`;
 }
 
+/* ── The priced body of a report-only estimate ────────────────────────
+   Only reached from isReportOnly(). Deliberately just the number: the condition
+   report pages above already list every recommendation with its price and total
+   them by priority, so an itemized table here would be the same lines a second
+   time under a second heading. This is the figure the customer signs against,
+   and it is the same pcRepairTotals() the report printed. */
+function _printRepairsHTML(pHead2) {
+  const t = pcRepairTotals();
+  if (!(t.total > 0)) return '';
+  const plus = t.anyRange ? '+' : '';
+  return `<div class="p-notes">
+    ${pHead2('Scope', 'Recommended Repairs',
+             'The repairs recommended in the condition report above, priced. '
+             + 'Signing below approves that work.')}</div>
+  <div class="p-grand-total"><span>Estimated Repair Total</span><span>${fmtCur(t.total)}${plus}</span></div>`;
+}
+
 /* ── Condition report print pages ─────────────────────────────────────
    Rendered right after the Photo Report (which now carries ALL photos —
    the report itself stays photo-free). Wording flips between the default
@@ -11716,21 +11839,12 @@ function _printConditionHTML(pHeader){
   // these are exact and print without a suffix — that is what lets this report
   // stand as a bid. anyRange brings the '+' back only for estimates saved
   // before the change, whose totals really are a low-end sum.
-  let costImmediate=0,costSoon=0,costMonitor=0,anyRange=false;
-  enabledSections.forEach(s=>{
-    (pc.sections[s.key].recommendations||[]).forEach(r=>{
-      // Parse only the FIRST number: a single "$1,500" is the price, a legacy
-      // "$500–$1,500" is its low end. (Stripping all non-digits would read that
-      // second one as 5,001,500.)
-      const loMatch=(r.cost_range||'').match(/[\d,]+(\.\d+)?/);
-      const lo=loMatch?parseFloat(loMatch[0].replace(/,/g,''))||0:0;
-      if(lo && pcIsRange(r.cost_range)) anyRange=true;
-      if(r.priority==='immediate') costImmediate+=lo;
-      else if(r.priority==='soon')  costSoon+=lo;
-      else                          costMonitor+=lo;
-    });
-  });
-  const plus=anyRange?'+':'';
+  // pcRepairTotals() is the one parse (first number only, so a legacy
+  // "$500–$1,500" reads its low end and keeps the '+'). It is also what prices
+  // a report-only estimate, so the report and the bid can never disagree.
+  const _rt=pcRepairTotals();
+  const costImmediate=_rt.immediate, costSoon=_rt.soon, costMonitor=_rt.monitor;
+  const plus=_rt.anyRange?'+':'';
 
   // Summary page
   const gradeGrid=enabledSections.map(s=>{
