@@ -64,6 +64,12 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 /* Remove iOS gray tap flash on every touch */
 * { -webkit-tap-highlight-color: rgba(0,0,0,0); }
+/* Hold text at the size we asked for. Rotating an iPhone to landscape makes
+   Safari "helpfully" inflate font sizes on a per-block basis, which pushes the
+   line-item numbers out of their fixed-width inputs and reflows the tier
+   columns — a rep turning the phone sideways to see more of the table got
+   less of it. Android Chrome does the same under Accessibility > text scaling. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* Let our own styles control inputs — prevents iOS rounding/padding overrides.
    Checkboxes/radios are excluded: appearance:none on them removes the native
    box with no replacement drawn in, making every plain checkbox in the app
@@ -3676,10 +3682,8 @@ a.jx-contact:hover { text-decoration: underline; }
     box-shadow: 4px 0 20px rgba(0,0,0,.22);
   }
 
-  /* iOS auto-zoom prevention — Safari zooms any input with font-size < 16px on focus */
-  input[type="text"], input[type="email"], input[type="number"],
-  input[type="tel"], input[type="date"], input[type="password"],
-  textarea, select { font-size: 16px !important; }
+  /* iOS focus-zoom prevention lives in the `pointer: coarse` block further
+     down, NOT here — a width query misses the iPad entirely. */
 
   /* Sidebar toggle buttons: bigger touch targets */
   .toggle-btn { min-height: 40px; padding: 8px 12px; font-size: 13px; }
@@ -3880,25 +3884,31 @@ a.jx-contact:hover { text-decoration: underline; }
    layout stays intact — only input sizing changes.
    `input.*` prefix beats the global `input[type=…] { width:100% }` rule. */
 @media (min-width: 768px) and (max-width: 1366px) and (pointer: coarse) {
+  /* No font-size here, or on the money inputs and unit selects below: the
+     coarse-pointer block forces 16px on every control with !important, so a
+     size stated here has no effect and only misleads the next reader about
+     what these widths are sized for. */
   input.li-row-qty-input,
   input.li-qty-input,
   input.other-qty-input,
   input.scope-qty-input {
     min-height: 40px; padding: 6px 4px;
-    font-size: 14px; text-align: center; font-weight: 700;
+    text-align: center; font-weight: 700;
   }
-  input.li-row-qty-input { width: 68px; }
-  input.li-qty-input     { width: 60px; }
-  input.other-qty-input  { width: 70px; }
-  input.scope-qty-input  { width: 74px; }
+  input.li-row-qty-input { width: 76px; }
+  input.li-qty-input     { width: 68px; }
+  input.other-qty-input  { width: 78px; }
+  input.scope-qty-input  { width: 82px; }
 
-  /* Price / cost / total: bigger boxes so five figures don't get clipped */
-  input.li-row-cost-input   { width: 96px;  min-height: 40px; font-size: 14px; padding: 6px 8px; }
-  input.li-row-total-input  { width: 104px; min-height: 40px; font-size: 14px; padding: 6px 8px; }
-  input.other-price-input   { width: 132px; min-height: 40px; font-size: 14px; padding: 6px 8px; }
+  /* Price / cost / total: bigger boxes so five figures don't get clipped.
+     Sized for the 16px the coarse-pointer block below forces on every control
+     — at the 14px these used to carry, $148,500.00 lost its last two digits. */
+  input.li-row-cost-input   { width: 108px; min-height: 40px; padding: 6px 8px; }
+  input.li-row-total-input  { width: 116px; min-height: 40px; padding: 6px 8px; }
+  input.other-price-input   { width: 146px; min-height: 40px; padding: 6px 8px; }
 
   select.li-row-unit-select, select.li-unit-select, select.other-unit-select {
-    min-height: 40px; font-size: 13px; padding: 6px 4px; width: 68px;
+    min-height: 40px; padding: 6px 4px; width: 76px;
   }
   .li-row-numbers { gap: 8px; font-size: 13px; row-gap: 8px; }
   .li-row-total   { font-size: 13px; }
@@ -3914,16 +3924,43 @@ a.jx-contact:hover { text-decoration: underline; }
   input.other-qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
   /* Give the "Other" price column enough header width to match the wider input */
-  .other-th-num   { width: 82px; }
-  .other-th-price { width: 148px; }
+  .other-th-num   { width: 90px; }
+  .other-th-price { width: 162px; }
 
   /* Scope table qty column matches the new input width */
-  .scope-table thead th.th-qty { width: 84px; }
+  .scope-table thead th.th-qty { width: 92px; }
 
   /* Delete button, reorder arrows, include checkbox — touch targets */
   .li-row-del { min-height: 36px; min-width: 36px; display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; }
   .li-move-btn { width: 32px; height: 36px; font-size: 14px; }
   .li-row-include input[type="checkbox"] { width: 16px; height: 16px; }
+}
+
+/* ── iOS focus zoom ──────────────────────────────────────────────────
+ * Mobile Safari zooms the page in whenever a focused control has a font-size
+ * under 16px, and does NOT zoom back out on blur. `maximum-scale=1` does not
+ * prevent it; iOS has ignored that since iOS 10, and this app's viewport does
+ * not set it anyway.
+ *
+ * This is gated on the POINTER, not on width. It lived inside
+ * `@media (max-width: 767px)` for a long time, which covered phones and missed
+ * the iPad entirely — and the iPad is where estimates actually get written, in
+ * a driveway, on a table full of 13px numeric inputs. Tapping any of them
+ * zoomed the estimate to ~115% and left it there for the rest of the
+ * appointment.
+ *
+ * `pointer: coarse` is the same gate the canvasser uses. It catches every
+ * touch device at any width and leaves desktop alone, so the dense
+ * spreadsheet-style layout is unchanged on the machines it was designed for.
+ *
+ * !important because the per-control rules above are the same specificity
+ * (element+class ties element+attribute) and several of them come later in the
+ * file. The tablet block's input widths are sized for the 16px this forces. */
+@media (pointer: coarse) {
+  input[type="text"], input[type="email"], input[type="number"],
+  input[type="tel"], input[type="date"], input[type="password"],
+  input[type="search"], input[type="url"], input:not([type]),
+  textarea, select { font-size: 16px !important; }
 }
 
 /* ── PWA / iPhone safe area (Dynamic Island, notch, home indicator) ── */

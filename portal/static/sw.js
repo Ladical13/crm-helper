@@ -7,7 +7,7 @@
 // CRM workers both claimed scope '/' with different cache names and whichever
 // registered last won. Passing everything else straight through is what keeps
 // them from fighting again.
-const CACHE = 'p1portal-v2';
+const CACHE = 'p1portal-v3';
 const SHELL = [
   '/',
   '/shell.css',
