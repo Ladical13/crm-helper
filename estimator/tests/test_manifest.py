@@ -135,6 +135,20 @@ def test_warranty_is_tiered_matching_data_source(A):
     assert '5-year' in w['good'] and '5-year' in w['better']
 
 
+def test_insurance_manifest_carries_no_tiered_warranty(A):
+    """A claim sells the one scope the carrier approved — there is no
+    Good/Better/Best to choose between, so a three-package warranty table
+    describes a decision the customer was never offered. Empty here is what
+    removes it from the /sign details block, from the signed PDF's
+    'Workmanship Warranty by Package', and from the glance block's
+    'Backed by' row (which then falls back to warranty_body)."""
+    m = A._build_estimate_manifest(_insurance_estimate())
+    assert m['is_insurance']
+    assert m['warranty_by_tier'] == {}
+    # The company's own warranty copy still travels — it is not tier-specific.
+    assert 'warranty_body' in m
+
+
 def test_company_block_carries_certifications(A):
     m = A._build_estimate_manifest(_retail_estimate())
     comp = m['company']

@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=192">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=194">
 </head>
 <body>
 
@@ -50,7 +50,7 @@
       <button onclick="doPrint()" class="btn-print">Print / PDF</button>
       <button onclick="openSettings()" class="btn-settings" title="Settings">⚙</button>
     </div>
-    <button id="save-btn" onclick="saveEstimate()">Save</button>
+    <button id="save-btn" onclick="saveCurrentWork()">Save</button>
     <button id="more-menu-btn" class="more-menu-btn" onclick="toggleMoreMenu()">⋮</button>
     <div class="user-badge" id="user-badge" style="display:none">
       <span id="user-display-name" class="user-name"></span>
@@ -407,8 +407,13 @@
       <button onclick="closeSettings()" class="modal-close">×</button>
     </div>
     <div class="settings-body">
+      <!-- FALLBACK list, not the master list. A customer signing normally sees
+           the colors of the material actually being installed (the Contract
+           tab's "Material being installed" picker, or the selected package's
+           bundle). This list only fills in when that material carries no
+           palette of its own. See _customer_color_options in app.py. -->
       <div class="field-group">
-        <label>Shingle Color Options <span class="note-tag">one per line — shown to customers at signing</span></label>
+        <label>Shingle Color Options <span class="note-tag">one per line — fallback only, for materials with no colors of their own</span></label>
         <textarea id="settings-colors" rows="12" spellcheck="false"></textarea>
       </div>
       <div class="field-group" style="max-width:220px">
@@ -750,6 +755,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=192"></script>
+<script src="/estimate/static/app.js?v=194"></script>
 </body>
 </html>

@@ -1228,6 +1228,13 @@ def save_estimate(est_id):
         data.pop('change_orders', None)
         if existing and existing.get('change_orders'):
             data['change_orders'] = existing['change_orders']
+        # The Design Studio writes through its focused asset/state endpoints.
+        # Once that server document exists, a whole-estimate save is only a
+        # potentially stale snapshot and must not roll back newer masks,
+        # selections, elevation metadata, or saved-render pointers. An estimate
+        # with no visualizer yet may still create its initial document here.
+        if existing and isinstance(existing.get('visualizer'), dict):
+            data['visualizer'] = copy.deepcopy(existing['visualizer'])
         # Paid inference throttling is server-owned, even on a full-doc save.
         data.pop('_visualizer_detection_attempts', None)
         if existing and existing.get('_visualizer_detection_attempts'):
@@ -6130,10 +6137,10 @@ def _material_product_for_bundle(pb, trade, bundle_id):
     return None
 
 
-def _bundle_colors_for_tier(pb, est, trade, tier):
-    """Color names carried by the material product in est's chosen bundle,
-    for trade+tier. Empty when the bundle has no material with colors[]."""
-    mat = _material_product_for_bundle(pb, trade, _bundle_id_for_tier(pb, est, trade, tier))
+def _color_names(mat):
+    """Color names off one catalog product, accepting both shapes the price
+    book carries: {"name","hex"} dicts (what the seeds ship) and bare strings
+    (what a manager typing into an older book leaves behind)."""
     if not mat:
         return []
     out = []
@@ -6147,15 +6154,89 @@ def _bundle_colors_for_tier(pb, est, trade, tier):
     return out
 
 
+def _bundle_colors_for_tier(pb, est, trade, tier):
+    """Color names carried by the material product in est's chosen bundle,
+    for trade+tier. Empty when the bundle has no material with colors[]."""
+    return _color_names(
+        _material_product_for_bundle(pb, trade, _bundle_id_for_tier(pb, est, trade, tier)))
+
+
+def _settings_color_list(trade):
+    """The company-wide color list from ⚙ Settings, if one is saved.
+
+    Roofing only — the Settings modal has no siding equivalent. Read straight
+    off disk because this is one small file on a customer-page render, and the
+    alternative is threading app settings through six call sites."""
+    if trade != 'roofing':
+        return []
+    try:
+        with open(APP_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    return [str(c).strip() for c in (data.get('shingle_colors') or []) if str(c).strip()]
+
+
+def _options_are_autoseeded(seq, trade):
+    """True when ss['options'] is the list the BROWSER filled in, not one a rep
+    typed.
+
+    Every new estimate has its options pre-filled from _globalShingleColors()
+    in app.js — the ⚙ Settings list, or DEFAULT_SHINGLE_COLORS. Those are
+    manufacturer-agnostic names ("Barkwood", "Hunter Green"), so appending them
+    to a CertainTeed dropdown would offer the customer colors CertainTeed does
+    not make. Matching the whole list exactly is the signature of a default
+    nobody touched — the same test _PRODUCT_COST_MIGRATIONS uses on prices.
+    Newer estimates leave options empty, so this only matters for the ones
+    already saved on the volume."""
+    if not seq:
+        return False
+    norm = [s.casefold() for s in seq]
+    for cand in (DEFAULT_SHINGLE_COLORS if trade == 'roofing' else DEFAULT_SIDING_COLORS,
+                 _settings_color_list(trade)):
+        if cand and norm == [str(c).strip().casefold() for c in cand]:
+            return True
+    return False
+
+
 def _customer_color_options(pb, est, trade, tier, ss):
     """Ordered color names to offer the customer for trade+tier.
-    Bundle colors → rep-typed ss.options → manufacturer-agnostic fallback."""
-    seq = _bundle_colors_for_tier(pb, est, trade, tier)
+
+    Rep-pinned material → the tier's bundle → PLUS any colors the rep typed
+    → manufacturer-agnostic fallback.
+
+    The pin (ss['material_bundle_id'], set on the Contract tab) names the
+    system actually being installed and bypasses the tier lookup entirely, so
+    the palette holds across every package — and works on an insurance claim,
+    where no tier is being sold and the tier lookup would otherwise hand back
+    whatever the 'better' retail default happens to be.
+
+    The rep's list APPENDS rather than losing to the bundle. It used to be a
+    fallback that only fired when the bundle had no colors, which for roofing
+    is never — so the "Extra color options" field on the Contract tab silently
+    did nothing and the customer saw only the short preview palette."""
+    pinned = (ss.get('material_bundle_id') or '').strip()
+    if pinned:
+        seq = _color_names(_material_product_for_bundle(pb, trade, pinned))
+    else:
+        seq = _bundle_colors_for_tier(pb, est, trade, tier)
+
+    typed = [str(o).strip() for o in (ss.get('options') or []) if str(o).strip()]
+    extras = [] if _options_are_autoseeded(typed, trade) else list(typed)
+
     if seq:
+        seen = {c.casefold() for c in seq}
+        for e in extras:
+            if e.casefold() not in seen:
+                seen.add(e.casefold())
+                seq.append(e)
         return seq
-    seq = [str(o).strip() for o in (ss.get('options') or []) if str(o).strip()]
-    if seq:
-        return seq
+    if extras:
+        return extras
+    # No palette and nothing deliberate. The auto-seeded list is still the
+    # company's own list of colors, and it beats an empty <select>.
+    if typed:
+        return typed
     return list(DEFAULT_SHINGLE_COLORS if trade == 'roofing' else DEFAULT_SIDING_COLORS)
 
 
@@ -6981,7 +7062,17 @@ def _build_estimate_manifest(est):
         'trades':          trades_out,
         'code':            code,
         'ventilation':     vent,
-        'warranty_by_tier': dict(_WARRANTY_BY_TIER_COMMERCIAL if is_comm else _WARRANTY_BY_TIER),
+        # EMPTY ON INSURANCE, deliberately. A claim sells the one scope the
+        # carrier approved — there is no Good/Better/Best to choose between, so
+        # a three-package warranty table on that page describes a decision the
+        # customer was never offered. Every consumer guards on truthiness, so
+        # emptying it here is what removes the table from the /sign details
+        # block AND "Workmanship Warranty by Package" from the signed PDF, and
+        # what drops the glance block's "Backed by" row back to warranty_body
+        # (the admin-edited Settings copy). Do not "restore" this for symmetry.
+        'warranty_by_tier': ({} if is_ins else
+                             dict(_WARRANTY_BY_TIER_COMMERCIAL if is_comm
+                                  else _WARRANTY_BY_TIER)),
         'warranty_body':   warranty_body,
         'company': {
             'name':          'Project One Roofing',
@@ -8724,7 +8815,7 @@ def _design_review_page(est, token, notice=''):
 header{{background:#142f4f;color:white;padding:28px max(20px,calc((100% - 1120px)/2))}}header h1{{margin:0 0 4px;font-size:clamp(24px,4vw,38px)}}header p{{margin:3px 0;color:#dce7f2}}
 main{{max-width:1120px;margin:auto;padding:24px 18px 56px}}.approved,.notice,.empty{{padding:14px 16px;border-radius:10px;margin-bottom:18px}}.approved{{background:#e8f6ee;border:1px solid #93c9a7}}.notice{{background:#fff6dc;border:1px solid #e1c26a}}.empty{{background:white;border:1px solid #d4dbe3}}
 .concept{{background:white;border:1px solid #d4dbe3;border-radius:14px;margin:0 0 20px;overflow:hidden;box-shadow:0 4px 14px #17304c12}}.concept-title{{display:flex;align-items:center;gap:10px;padding:15px 18px;border-bottom:1px solid #e3e7ec;font-size:20px;font-weight:750}}.concept-title label{{display:flex;align-items:center;gap:10px;cursor:pointer}}.concept-title input{{width:20px;height:20px}}.preferred{{font-size:12px;background:#e9f2ff;color:#174e87;padding:3px 8px;border-radius:999px}}
-.elevations{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;padding:15px}}figure{{margin:0}}.elevation img{{display:block;width:100%;aspect-ratio:5/3;object-fit:cover;border-radius:9px;background:#e8edf2}}figcaption{{padding:6px 2px 0;font-weight:650}}.specs{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:15px;padding:0 18px 18px}}.specs ul{{margin:0;padding-left:18px}}.provia{{background:#f5f8fb;padding:12px;border-radius:9px}}.provia h3{{margin:0 0 7px;font-size:15px}}.door-config{{max-width:220px;max-height:240px;object-fit:contain;border-radius:7px;margin-top:8px}}
+    .elevations{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;padding:15px}}figure{{margin:0}}.elevation img{{display:block;width:100%;height:auto;object-fit:contain;border-radius:9px;background:#e8edf2}}figcaption{{padding:6px 2px 0;font-weight:650}}.specs{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:15px;padding:0 18px 18px}}.specs ul{{margin:0;padding-left:18px}}.provia{{background:#f5f8fb;padding:12px;border-radius:9px}}.provia h3{{margin:0 0 7px;font-size:15px}}.door-config{{max-width:220px;max-height:240px;object-fit:contain;border-radius:7px;margin-top:8px}}
 .approval-form{{background:white;border:1px solid #cbd4de;border-radius:14px;padding:20px;display:grid;gap:15px}}.approval-form>label:first-child{{font-weight:700}}input[type=text],input[name=approver_name]{{display:block;width:100%;max-width:500px;padding:11px;margin-top:5px;border:1px solid #9daab8;border-radius:7px;font:inherit}}.agree{{display:flex;align-items:flex-start;gap:9px}}.agree input{{width:19px;height:19px;flex:none}}button{{justify-self:start;border:0;border-radius:8px;background:#e87524;color:white;padding:12px 20px;font:700 16px inherit;cursor:pointer}}footer{{text-align:center;color:#657284;padding:25px}}
 </style></head><body><header><h1>Exterior Design Review</h1><p>{he(customer.get('name') or 'Project One Roofing customer')}</p>{f'<p>{he(address)}</p>' if address else ''}</header>
 <main>{notice_html}{approved_html}<p>Select one complete concept below. Each concept stays synchronized across every saved elevation.</p>{form}</main>
@@ -9261,6 +9352,37 @@ _VISUALIZER_TIERS_ORDER = ('good', 'better', 'best')
 _VISUALIZER_TIER_LABELS = {'good': 'Good', 'better': 'Better', 'best': 'Best'}
 
 
+def _pdf_contain_image(pdf, path, x, y, box_w, box_h):
+    """Draw an image centered inside a fixed PDF box without cropping it.
+
+    Visualizer photos can be portrait, 4:3, or wide phone-camera crops. Passing
+    both the box width and height straight to fpdf stretches every non-matching
+    aspect ratio. The neutral box is drawn first so any unused area becomes an
+    intentional letterbox rather than transparent page space. Returns False
+    for a missing/corrupt image so the caller can add its usual placeholder.
+    """
+    pdf.set_draw_color(200, 200, 200)
+    pdf.set_fill_color(245, 246, 248)
+    pdf.rect(x, y, box_w, box_h, style='DF')
+    if not path or not os.path.isfile(path) or box_w <= 0 or box_h <= 0:
+        return False
+    try:
+        from PIL import Image
+        with Image.open(path) as source:
+            image_w, image_h = source.size
+        if image_w <= 0 or image_h <= 0:
+            return False
+        scale = min(box_w / image_w, box_h / image_h)
+        draw_w, draw_h = image_w * scale, image_h * scale
+        draw_x = x + (box_w - draw_w) / 2
+        draw_y = y + (box_h - draw_h) / 2
+        pdf.image(path, x=draw_x, y=draw_y, w=draw_w, h=draw_h)
+        return True
+    except Exception:
+        # A corrupt JPEG should not take the whole signed PDF down.
+        return False
+
+
 def _emit_visualizer_pdf_page(pdf, est, LM, W):
     """Draw the Good/Better/Best visualizer renderings on a fresh PDF page.
 
@@ -9289,9 +9411,18 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
              new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
     pdf.set_font(_S(pdf), '', 8)
+    # An insurance job has no Good/Better/Best to select, so naming packages
+    # here would promise a choice the claim never offered. The renders
+    # themselves are the rep's design concepts either way.
+    _is_ins = (est.get('estimate_type') == 'insurance'
+               or bool((est.get('trades', {}).get('insurance') or {}).get('enabled')))
+    _lead = ('These renderings show the design options blended onto your home photo. '
+             if _is_ins else
+             'These renderings show the selected Good/Better/Best package '
+             'options blended onto your home photo. ')
     pdf.multi_cell(W, 4.2, _pdf_rich(
-        'These renderings show the selected Good/Better/Best package '
-        'options blended onto your home photo. Colors are indicative and '
+        _lead
+        + 'Colors are indicative and '
         'may vary from the manufacturer swatch. Door previews show finish only; '
         'confirm the exact panel, glass and hardware separately.'))
     pdf.ln(3)
@@ -9318,18 +9449,8 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
         img_y = y_top + 5.5
         ref = renders.get(tier)
         path = os.path.join(UPLOADS_DIR, ref) if ref else None
-        drew = False
-        if path and os.path.isfile(path):
-            try:
-                pdf.image(path, x=x, y=img_y, w=thumb_w, h=thumb_h)
-                drew = True
-            except Exception:
-                # A corrupt JPEG shouldn't take the whole PDF down.
-                drew = False
+        drew = _pdf_contain_image(pdf, path, x, img_y, thumb_w, thumb_h)
         if not drew:
-            pdf.set_draw_color(200, 200, 200)
-            pdf.set_fill_color(245, 246, 248)
-            pdf.rect(x, img_y, thumb_w, thumb_h, style='DF')
             pdf.set_xy(x, img_y + thumb_h / 2 - 2)
             pdf.set_font(_S(pdf), 'I', 8)
             pdf.set_text_color(140, 140, 140)
@@ -9394,15 +9515,8 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
             img_y = y_top + 5.5
             ref = renders.get(tier)
             path = os.path.join(UPLOADS_DIR, ref) if ref else None
-            if path and os.path.isfile(path):
-                try:
-                    pdf.image(path, x=x, y=img_y, w=thumb_w, h=thumb_h)
-                    continue
-                except Exception:
-                    pass
-            pdf.set_draw_color(200, 200, 200)
-            pdf.set_fill_color(245, 246, 248)
-            pdf.rect(x, img_y, thumb_w, thumb_h, style='DF')
+            if _pdf_contain_image(pdf, path, x, img_y, thumb_w, thumb_h):
+                continue
         pdf.set_y(y_top + 5.5 + thumb_h + 8)
 
 
@@ -11033,6 +11147,77 @@ def _int_styles(pdf, SANS, SERIF, W):
     return section, kv
 
 
+# Mirrors mnum(m.comm_waste_pct, 10) in app.js MEASURES.comm_sq_waste: a
+# commercial roof measured with no waste entered is priced at 10%, so the
+# packet has to report the same 10% the material was bought at.
+COMM_DEFAULT_WASTE_PCT = 10.0
+
+
+def installed_squares_rows(est):
+    """(area label, squares, how that was worked out) for the roof area actually
+    going on — the first number a crew, a supplier and a permit clerk all ask
+    for.
+
+    Walks every measurement namespace rather than reading `roof_squares` and
+    calling it done. Steep-slope and commercial keep separate `comm_*`
+    measurements on purpose (a flat roof must never inherit a steep-slope
+    number), and a commercial complex carries one set per building — so a
+    flat-roof job printed NO squares line at all, silently, on all three
+    internal documents. Buildings are labelled because seven roofs need seven
+    numbers, not the first roof's printed once.
+
+    Returns [] when nothing has been measured, so callers print a fill-in blank
+    rather than a confident 0.0 SQ.
+    """
+    def _n(src, key, dflt=0.0):
+        v = (src or {}).get(key)
+        if v in (None, ''):
+            return dflt
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return dflt
+
+    rows = []
+    m = est.get('measurements') or {}
+
+    roof_sq = _n(m, 'roof_squares')
+    if roof_sq > 0:
+        low_slope = _n(m, 'low_slope_squares')
+        waste_pct = _n(m, 'waste_pct')
+        detail = f'roof {roof_sq:g} SQ'
+        if low_slope:
+            detail += f', minus {low_slope:g} SQ low-slope'
+        detail += f', + {waste_pct:g}% waste'
+        rows.append(('Roof', max(roof_sq - low_slope, 0.0) * (1 + waste_pct / 100.0),
+                     detail))
+
+    for bld, bm in _measurement_sets(est):
+        comm_sq = _n(bm, 'comm_squares')
+        if comm_sq <= 0:
+            continue
+        waste = _n(bm, 'comm_waste_pct', COMM_DEFAULT_WASTE_PCT)
+        rows.append((bld or 'Flat roof', comm_sq * (1 + waste / 100.0),
+                     f'roof {comm_sq:g} SQ, + {waste:g}% waste'))
+    return rows
+
+
+def installed_squares_kv(est, blank='____________ SQ (measure on site)'):
+    """installed_squares_rows() as (label, value) pairs ready for a key/value
+    block. Always returns at least one row — an unmeasured job gets a line to
+    write the number on rather than no line at all."""
+    rows = installed_squares_rows(est)
+    if not rows:
+        return [('Squares to Install', blank)]
+    if len(rows) == 1:
+        _lbl, sq, detail = rows[0]
+        return [('Squares to Install', f'{sq:.1f} SQ ({detail})')]
+    out = [(f'Squares - {lbl}', f'{sq:.1f} SQ ({detail})') for lbl, sq, detail in rows]
+    out.append(('Squares to Install',
+                f'{sum(r[1] for r in rows):.1f} SQ total'))
+    return out
+
+
 def _tier_items(td, trade_mode, t_tier):
     """Line items in scope for one trade at one package tier.
 
@@ -11169,13 +11354,8 @@ def build_work_order_pdf(est):
         except (TypeError, ValueError):
             return 0.0
 
-    roof_sq_total   = _mnum0('roof_squares')
-    low_slope_sq    = _mnum0('low_slope_squares')
-    waste_pct       = _mnum0('waste_pct')
     steep_sq        = _mnum0('steep_squares')
     pitch_num       = _mnum0('predominant_pitch')
-    # Match squares_waste in app.js/app.py: (roof_sq - low_slope) × (1 + waste)
-    installed_sq    = max(roof_sq_total - low_slope_sq, 0.0) * (1 + waste_pct / 100.0)
     roofing_td      = trades.get('roofing') or {}
     _vent_roles     = {it.get('vent_role') for it in (roofing_td.get('line_items') or [])}
     has_ridge_vent  = 'ridge' in _vent_roles
@@ -11189,12 +11369,10 @@ def build_work_order_pdf(est):
         v = str(v).strip() if v is not None else ''
         return v or blank
 
-    detail_rows = []
-    if roof_sq_total > 0:
-        detail_rows.append(('Squares to Install',
-                            f'{installed_sq:.1f} SQ (roof {roof_sq_total:g} SQ + {waste_pct:g}% waste'
-                            + (f', minus {low_slope_sq:g} SQ low-slope' if low_slope_sq else '')
-                            + ')'))
+    # Squares first, and unconditionally: it is the number the crew reads off
+    # this sheet before anything else, and it used to vanish whenever the job
+    # was measured in the comm_* namespace or never measured at all.
+    detail_rows = list(installed_squares_kv(est))
     detail_rows.append(('Scheduled Date',
                         _wo('scheduled_date', '____________ (TBD)')))
     detail_rows.append(('Tear-off Layers',
@@ -11234,23 +11412,21 @@ def build_work_order_pdf(est):
     # signature), and the item list is the material order's document — this
     # sheet is the job card.
 
-    # One Notes section with two labelled blocks rather than two headings. Two
-    # separate section titles cost ~20mm of the sheet between them, which was
-    # enough to push a two-line crew note onto a page of its own.
-    notes = (est.get('notes_customer') or '').strip()
-    crew  = (est.get('notes_internal') or '').strip()
-    if notes or crew:
+    # Crew notes ONLY. The estimate's customer-facing notes (notes_customer)
+    # deliberately do NOT print here: they are sales copy written for the
+    # homeowner, and on the job card they read as instructions to the crew.
+    # notes_internal is the field a rep writes FOR the crew — that is the one
+    # this sheet carries.
+    crew = (est.get('notes_internal') or '').strip()
+    if crew:
         section_title('Notes')
-        for lbl, body in (('From the estimate', notes), ('Crew only - internal', crew)):
-            if not body:
-                continue
-            pdf.set_font(SANS, '', 6.5)
-            pdf.set_text_color(*_PDF_STYLE['faint'])
-            pdf.cell(0, 4.4, _pdf_rich(lbl.upper()), new_x='LMARGIN', new_y='NEXT')
-            pdf.set_font(SANS, '', 8.5)
-            pdf.set_text_color(*_PDF_STYLE['ink'])
-            pdf.multi_cell(W, 4.6, _pdf_rich(body), new_x='LMARGIN', new_y='NEXT', align='L')
-            pdf.ln(2)
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(0, 4.4, _pdf_rich('CREW ONLY - INTERNAL'), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font(SANS, '', 8.5)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.multi_cell(W, 4.6, _pdf_rich(crew), new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.ln(2)
 
     # Ridge-vent cut-in is now printed inline under Job Details on page 1,
     # right next to the "Ridge Vent: YES" row — the crew doesn't have to
@@ -11404,10 +11580,14 @@ def build_material_order_pdf(est):
 
     addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'),
                                        a.get('state'), a.get('zip')]))
+    # Squares ride on the header alongside the package: the ordering desk
+    # sizes a delivery off it, and the Measurements table further down carries
+    # raw roof area, never the installed figure with waste in it.
     kv([('Customer', c.get('name', '')),
         ('Job Address', addr_str),
         ('Estimate #', enum),
-        ('Package', _pick_summary_label(est) or tier.title())])
+        ('Package', _pick_summary_label(est) or tier.title())]
+       + installed_squares_kv(est))
     pdf.ln(2)
 
     # ── What to order ──────────────────────────────────────────────────────
@@ -11909,15 +12089,27 @@ def push_document_to_crm(est_id):
     return jsonify({'crm_document_id': doc_id})
 
 
-def generate_production_packet(est_id, push_to_crm=False):
-    """Build the production-packet PDF for a signed estimate and store it as a
-    server-generated attachment (replacing any previous packet). By default it
-    does NOT file to the CRM — the packet contains post-signing fields (crew
-    schedule, dish, tear-off layers) that the rep fills in later, so pushing
-    at signing time would ship an unfinished doc. The rep clicks "↗ Push to
-    Den" on the Documents tab when the packet is finalized. Returns the
-    attachment dict. Raises on failure — callers decide whether that's fatal
-    (endpoint) or logged (pipeline)."""
+def generate_production_packet(est_id, push_to_crm=False, push_material=False):
+    """Build the two production PDFs for a signed estimate and store them as
+    server-generated attachments (replacing any previous pair). Returns the
+    WORK ORDER attachment dict. Raises on failure — callers decide whether
+    that's fatal (endpoint) or logged (pipeline).
+
+    The two documents file to the Den on different schedules, and that split is
+    the point:
+
+    - `push_to_crm` pushes the WORK ORDER and defaults to False. The work order
+      carries post-signing fields (crew schedule, dish, tear-off layers) the rep
+      fills in later, so filing it at signing ships an unfinished doc. It stays
+      behind until the rep clicks "↗ Push to Den" on the Documents tab.
+    - `push_material` pushes the MATERIAL ORDER. It is derived entirely from the
+      signed contract — nothing on it waits on the rep — so the post-sign
+      pipeline passes True and the buy list reaches whoever orders without
+      anyone remembering to send it. Same rule the permit packet already runs
+      on. Before this it had no push path at all, in either direction: no
+      button on the Documents tab and no automatic file, so the one document
+      the supplier needs was the one that never left the estimator.
+    """
     est = est_load(est_id)
     if est is None:
         raise ValueError('estimate not found')
@@ -11958,8 +12150,6 @@ def generate_production_packet(est_id, push_to_crm=False):
             'generated_at':     datetime.utcnow().isoformat() + 'Z',
         })
     att, mat_att = built
-    pdf_bytes = None   # set below for the CRM push (work order)
-    fname = built[0]['filename'].split('/')[-1]
 
     # Replace any previous packet (and clean up its files). Both packet
     # doc_types — other server-generated docs (signed change orders) stay put.
@@ -11983,33 +12173,52 @@ def generate_production_packet(est_id, push_to_crm=False):
 
     est = est_update(est_id, _swap_packet) or est
 
-    if not push_to_crm:
-        return att
-
-    # Explicit push (manual "↗ Push to Den" button from the Documents tab)
     c     = est.get('customer', {})
     cname = (c.get('name') or 'Customer').strip()
     enum  = _est_number(est)
-    with open(os.path.join(dest_dir, fname), 'rb') as f:
-        pdf_bytes = f.read()
-    doc_id, err = _crm_file_document(
-        est, pdf_bytes, upload_name=f'Work_Order_{enum}.pdf',
-        hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
-        doc_name=f'Work Order - {cname} ({enum})', doc_type='work_order',
-        description='Work order generated from the signed contract. The material '
-                    'order is a separate document.')
-    if doc_id:
-        def _mark_pushed(doc):
-            if doc is None:
-                return None
-            for x in doc.get('attachments', []):
-                if x.get('id') == att['id']:
-                    x['crm_document_id'] = doc_id
-            return doc
-        est_update(est_id, _mark_pushed)
-        att['crm_document_id'] = doc_id
-    elif err and err != 'not_linked':
-        print(f'[packet] CRM push failed for {est_id}: {err}')
+
+    def _file(target, upload_name, doc_name, doc_type, description):
+        """File one of the pair on the Den job and record the id back on its
+        attachment. Never raises — a Base44 outage must not lose the PDFs that
+        are already saved locally."""
+        local = target['filename'].split('/')[-1]
+        try:
+            with open(os.path.join(dest_dir, local), 'rb') as f:
+                body = f.read()
+            doc_id, err = _crm_file_document(
+                est, body, upload_name=upload_name,
+                hosted_url=f'{_base_url()}/uploads/{est_id}/{local}',
+                doc_name=doc_name, doc_type=doc_type, description=description)
+        except Exception as exc:
+            print(f'[packet] CRM push raised for {est_id}: {exc}')
+            return
+        if doc_id:
+            def _mark_pushed(doc):
+                if doc is None:
+                    return None
+                for x in doc.get('attachments', []):
+                    if x.get('id') == target['id']:
+                        x['crm_document_id'] = doc_id
+                return doc
+            est_update(est_id, _mark_pushed)
+            target['crm_document_id'] = doc_id
+        elif err and err != 'not_linked':
+            print(f'[packet] CRM push failed for {est_id}: {err}')
+
+    # Material order first: it files automatically at signing, so it is the one
+    # that must not be skipped when the work-order push is off.
+    if push_material:
+        _file(mat_att, f'Material_Order_{enum}.pdf',
+              f'Material Order - {cname} ({enum})', 'material_order',
+              'Material order generated from the signed contract. The crew work '
+              'order is a separate document.')
+
+    # Explicit push (manual "↗ Push to Den" button from the Documents tab)
+    if push_to_crm:
+        _file(att, f'Work_Order_{enum}.pdf',
+              f'Work Order - {cname} ({enum})', 'work_order',
+              'Work order generated from the signed contract. The material '
+              'order is a separate document.')
     return att
 
 
@@ -12103,11 +12312,6 @@ def build_permit_packet_pdf(est):
         except (TypeError, ValueError):
             return 0.0
 
-    roof_sq   = _mnum('roof_squares')
-    low_slope = _mnum('low_slope_squares')
-    waste_pct = _mnum('waste_pct')
-    installed = max(roof_sq - low_slope, 0.0) * (1 + waste_pct / 100.0)
-
     pdf, SANS, SERIF, W = _new_internal_pdf(f'Permit packet  ·  {enum}')
     section, kv = _int_styles(pdf, SANS, SERIF, W)
     pdf.set_font(SERIF, 'B', 20)
@@ -12195,12 +12399,12 @@ def build_permit_packet_pdf(est):
         kv_row('Contract Signed', signed_fmt)
     pdf.ln(3)
 
-    # Squares installed
+    # Squares installed. Always prints — a permit application that leaves the
+    # area blank comes straight back from the counter, so an unmeasured job
+    # gets a line to write it on rather than no line.
     section_title('Roofing Scope')
-    if roof_sq > 0:
-        detail = (f'{installed:.1f} SQ (roof {roof_sq:g} SQ + {waste_pct:g}% waste'
-                  + (f', minus {low_slope:g} SQ low-slope' if low_slope else '') + ')')
-        kv_row('Squares to Install', detail)
+    for _lbl, _val in installed_squares_kv(est):
+        kv_row(_lbl, _val)
     steep = _mnum('steep_squares')
     pitch = _mnum('predominant_pitch')
     if steep > 0 or pitch > 0:
@@ -12468,8 +12672,11 @@ def _post_sign_pipeline(est_id):
             print(f'[signed] attachment save failed for {est_id}: {exc}')
 
     push_contract_to_crm(est_id, pdf_bytes=pdf_bytes)
+    # Both internal docs are built here; only the material order files itself.
+    # The work order waits for the rep's post-sign fields and its "↗ Push to
+    # Den" button — see generate_production_packet.
     try:
-        att = generate_production_packet(est_id)
+        att = generate_production_packet(est_id, push_material=True)
         print(f"[packet] generated {att['filename']} for {est_id}")
     except Exception as exc:
         print(f'[packet] generation failed for {est_id}: {exc}')
@@ -12527,12 +12734,26 @@ def regenerate_production_packet(est_id):
                                  'contract — this estimate has not been signed yet.'}), 400
     payload = request.get_json(silent=True) or {}
     push = bool(payload.get('push_to_crm'))
+    # Both pushes are OPT-IN on the manual path even though the material order
+    # files itself at signing. Base44 has no upsert — _crm_file_document creates
+    # a new Document every call — and the rep regenerates repeatedly while
+    # filling in the work-order form, so defaulting this on would leave the job
+    # holding six material orders and no way to tell which one the branch has.
+    push_mat = bool(payload.get('push_material'))
     try:
-        att = generate_production_packet(est_id, push_to_crm=push)
+        att = generate_production_packet(est_id, push_to_crm=push,
+                                         push_material=push_mat)
     except Exception as exc:
         print(f'[packet] manual generation failed for {est_id}: {exc}')
         return jsonify({'error': f'Packet generation failed: {exc}'}), 500
-    return jsonify({'attachment': att})
+    # Both rows, not just the work order: the caller replaces its whole packet
+    # pair in local state, and returning one of the two silently dropped the
+    # material order off the Documents tab until the next reload.
+    fresh = est_load(est_id) or {}
+    packet = [x for x in (fresh.get('attachments') or [])
+              if x.get('server_generated')
+              and x.get('doc_type') in ('work_order', 'material_order')]
+    return jsonify({'attachment': att, 'attachments': packet or [att]})
 
 
 # Fields the rep fills in on the Documents tab AFTER signing — the scheduling
@@ -14468,13 +14689,68 @@ _ROOF_METAL_COLORS = [
     {"name": "Hemlock Green", "hex": "#2e3a2a"},
     {"name": "Bone White",    "hex": "#e6ded0"},
 ]
+# EDCO ArrowLine(R) Shake, read off EDCO's own product page (edcoproducts.com
+# /products/steel-roofing/roofing-arrowline-shake.html, fetched 2026-09-04):
+# twelve solid colors plus six "Enhanced" multi-tone blends. This REPLACES a
+# palette of invented names — Regal Blue, Copper Penny, Bone White, Burgundy
+# and Hemlock Green are not EDCO colors, and a customer was able to sign a
+# contract for one. EDCO's other roofing profile, ArrowLine Slate, carries a
+# SHORTER list (adds Stone, drops Pewter/Sandtone/Cedar/Copper/Classic Blue);
+# if Project One installs Slate rather than Shake, swap this list, do not merge
+# them. Hexes are approximate previews for the visualizer, not colorimetry.
+_EDCO_ROOF_COLORS = [
+    {"name": "Charcoal Gray",           "hex": "#3f4143"},
+    {"name": "Charcoal Gray Enhanced",  "hex": "#45484a"},
+    {"name": "Pewter",                  "hex": "#8b8d8c"},
+    {"name": "Sandtone",                "hex": "#c2b49a"},
+    {"name": "Royal Brown",             "hex": "#4a3428"},
+    {"name": "Royal Brown Enhanced",    "hex": "#523a2c"},
+    {"name": "Statuary Bronze",         "hex": "#4b453c"},
+    {"name": "Statuary Bronze Enhanced","hex": "#524b41"},
+    {"name": "Black",                   "hex": "#1f1f1f"},
+    {"name": "Cedar",                   "hex": "#8a5f3c"},
+    {"name": "Copper",                  "hex": "#a2643a"},
+    {"name": "T-Tone",                  "hex": "#6f6455"},
+    {"name": "T-Tone Enhanced",         "hex": "#776c5c"},
+    {"name": "Classic Blue",            "hex": "#2c3c52"},
+    {"name": "Classic Red",             "hex": "#7a2a26"},
+    {"name": "Classic Red Enhanced",    "hex": "#82322c"},
+    {"name": "Hartford Green",          "hex": "#2b3a2c"},
+    {"name": "Hartford Green Enhanced", "hex": "#324233"},
+]
+# The invented list _EDCO_ROOF_COLORS replaced. Kept ONLY so
+# _migrate_edco_euroshield_visuals can recognise a live book that still holds
+# it — delete once live books have saved past that migration.
+_EDCO_ROOF_COLORS_V1 = [
+    {"name": "Charcoal Gray", "hex": "#2f2d2b"},
+    {"name": "Matte Black",   "hex": "#191919"},
+    {"name": "Regal Blue",    "hex": "#1a3252"},
+    {"name": "Slate Gray",    "hex": "#4a4d4f"},
+    {"name": "Copper Penny",  "hex": "#a65f2a"},
+    {"name": "Burgundy",      "hex": "#5c1f26"},
+    {"name": "Hemlock Green", "hex": "#2e3a2a"},
+    {"name": "Bone White",    "hex": "#e6ded0"},
+]
 _ROOF_STONE_COLORS = [
     {"name": "Charcoal Shake",  "hex": "#2f2d2b"},
     {"name": "Weathered Timber","hex": "#5c4a35"},
     {"name": "Terracotta",      "hex": "#8a3f22"},
     {"name": "Slate Blend",     "hex": "#3c4046"},
 ]
+# Euroshield Beaumont Shake, per euroshieldroofing.com (fetched 2026-09-04):
+# four colors, of which Driftwood is a premium colour at additional cost.
+# The list this replaced named PROFILES, not colors — "Rundle Slate" is a
+# separate product line and "Beaumont Cedar"/"Beaumont Charcoal" were the
+# profile with a colour glued on. Rundle Slate publishes no colour list we
+# could source; if a job is quoted on Slate, confirm with the distributor.
 _ROOF_RUBBER_COLORS = [
+    {"name": "Black",     "hex": "#2a2826"},
+    {"name": "Grey",      "hex": "#4f5153"},
+    {"name": "Brown",     "hex": "#5c4530"},
+    {"name": "Driftwood", "hex": "#8a8175"},   # premium colour, upcharge
+]
+# The pre-2026-09 list, kept only for the migration's equality check.
+_ROOF_RUBBER_COLORS_V1 = [
     {"name": "Beaumont Cedar",   "hex": "#5c4530"},
     {"name": "Beaumont Charcoal","hex": "#2a2826"},
     {"name": "Rundle Slate",     "hex": "#3c4046"},
@@ -14491,7 +14767,10 @@ ROOFING_CATALOG_SEED = [
      "colors": _IKO_NORDIC_COLORS},
     {"id": "m_edco", "name": "EDCO Steel Shingle", "unit": "SQ", "cost": 300, "measure": "squares_waste",
      "bullets": ["EDCO steel shingles — architectural shingle look in real steel", "Class 4 impact rating, will not crack or lose granules to hail", "Limited lifetime warranty with hail damage coverage", "Baked-on finish that will not chip, peel, or fade"],
-     "colors": _ROOF_METAL_COLORS},
+     # EDCO publishes its own colors; standing seam below keeps the generic
+     # metal palette because its color comes off whichever coil the supplier
+     # runs for the job, not off a shingle color card.
+     "colors": _EDCO_ROOF_COLORS},
     {"id": "m_stone", "name": "Stone-Coated Steel", "unit": "SQ", "cost": 330, "measure": "squares_waste",
      "bullets": ["Stone-coated steel panels with a textured shake/shingle profile", "Class 4 impact rating and 120+ mph wind rating", "Steel strength at a fraction of the weight of tile", "50-year limited manufacturer warranty"],
      "colors": _ROOF_STONE_COLORS},
@@ -14650,7 +14929,41 @@ _SIDING_NEUTRAL_COLORS = [
     {"name": "Sail Cloth",    "hex": "#d4cdbf"},
     {"name": "Deep Ocean",    "hex": "#2a2f33"},
 ]
+# EDCO's ENTEX(R) steel siding palette for the lap / dutchlap / board-and-batten
+# profiles, read off edcoproducts.com/products/steel-siding.html (fetched
+# 2026-09-04). Both siding SKUs we sell (D4" TimberGrain, 8" Enduragrain) are
+# lap profiles, so this is their list. It replaces six invented names — Musket
+# Brown, Coastal Sage, Silver Gray and Regal Red are not EDCO colors.
+# EDCO's shiplap profile has a DIFFERENT, shorter list (Hickory, Walnut, Washed
+# Maple, ...); do not merge the two. Hexes are approximate previews.
 _SIDING_STEEL_COLORS = [
+    {"name": "Colonial White", "hex": "#efece2"},
+    {"name": "Glacier White",  "hex": "#e8e8e4"},
+    {"name": "Sand Beige",     "hex": "#d8cbb0"},
+    {"name": "Sandtone",       "hex": "#c9bda4"},
+    {"name": "Desert Tone",    "hex": "#c8b393"},
+    {"name": "Wickertone",     "hex": "#b7a184"},
+    {"name": "Claytone",       "hex": "#a99479"},
+    {"name": "Driftwood Gray", "hex": "#9b998f"},
+    {"name": "Still Harbor",   "hex": "#8e9aa0"},
+    {"name": "Cool Atlantic",  "hex": "#7d8f9c"},
+    {"name": "Sage",           "hex": "#8b9179"},
+    {"name": "Willow",         "hex": "#6f7a5f"},
+    {"name": "Timber",         "hex": "#8a7256"},
+    {"name": "Cedarwood",      "hex": "#8a6141"},
+    {"name": "T-Tone",         "hex": "#6f6455"},
+    {"name": "Rustic Brown",   "hex": "#5b4636"},
+    {"name": "Canyon",         "hex": "#7a4a34"},
+    {"name": "Mahogany",       "hex": "#5d3128"},
+    {"name": "Classic Red",    "hex": "#7a2a26"},
+    {"name": "Classic Blue",   "hex": "#2c3c52"},
+    {"name": "Deep Ocean",     "hex": "#2a3a44"},
+    {"name": "Iron Gray",      "hex": "#4a4d4f"},
+    {"name": "Charcoal Gray",  "hex": "#3f4143"},
+    {"name": "Midnight",       "hex": "#22242a"},
+]
+# The pre-2026-09 invented list, kept only for the migration's equality check.
+_SIDING_STEEL_COLORS_V1 = [
     {"name": "Charcoal",     "hex": "#2f2d2b"},
     {"name": "Silver Gray",  "hex": "#8a8c8d"},
     {"name": "Musket Brown", "hex": "#4a3527"},
@@ -15889,6 +16202,7 @@ _LANDMARK_LEGACY_DESCRIPTION = (
 _IKO_NORDIC_EXTERIOR_MIGRATION = 'iko-nordic-mr9l350-2026'
 _IKO_NORDIC_LEGACY_DESCRIPTION = (
     'Class 4 impact-resistant shingle built for extreme cold and hail.')
+_EDCO_EUROSHIELD_EXTERIOR_MIGRATION = 'edco-arrowline-entex-euroshield-2026-09'
 _OFFICIAL_EXTERIOR_TEXTURES_MIGRATION = 'official-exterior-textures-2026-09'
 
 
@@ -16558,6 +16872,66 @@ def _migrate_iko_nordic_visuals(pb):
     pb['exterior_catalog_seed_versions'] = versions
 
 
+# ── EDCO + Euroshield: replacing invented colors with published ones ────────
+#
+# Three palettes shipped with names nobody at EDCO or Euroshield would
+# recognise — "Copper Penny" on a steel roof, "Musket Brown" on steel siding,
+# "Rundle Slate" (a product line) offered as a colour. Unlike a short palette,
+# which merely under-sells, an invented one puts a colour on a signed contract
+# that cannot be ordered. Same shape as the Landmark/Nordic migrations: swap a
+# live product's colors ONLY while they still equal the shipped placeholder, so
+# a manager who curated their own list keeps it.
+_EDCO_EUROSHIELD_COLOR_SWAPS = (
+    ('roofing', 'm_edco',       '_EDCO_ROOF_COLORS_V1',     '_EDCO_ROOF_COLORS'),
+    ('siding',  's_edco_d4',    '_SIDING_STEEL_COLORS_V1',  '_SIDING_STEEL_COLORS'),
+    ('siding',  's_edco_8',     '_SIDING_STEEL_COLORS_V1',  '_SIDING_STEEL_COLORS'),
+    ('roofing', 'm_euroshield', '_ROOF_RUBBER_COLORS_V1',   '_ROOF_RUBBER_COLORS'),
+)
+_EDCO_EUROSHIELD_BUNDLES = {
+    'b_edco':      ('roof',   'EDCO',       'EDCO'),
+    'b_edco_d4':   ('siding', 'EDCO Steel', 'EDCO D4" TimberGrain'),
+    'b_edco_8':    ('siding', 'EDCO Steel', 'EDCO 8" Enduragrain'),
+    'b_euroshield': ('roof',  'Euroshield', 'Euroshield'),
+}
+
+
+def _migrate_edco_euroshield_visuals(pb):
+    """Swap the invented EDCO/Euroshield palettes for the published ones."""
+    versions = pb.get('exterior_catalog_seed_versions')
+    if not isinstance(versions, list):
+        versions = []
+    if _EDCO_EUROSHIELD_EXTERIOR_MIGRATION in versions:
+        return
+
+    retired = set()
+    for trade, pid, old_name, new_name in _EDCO_EUROSHIELD_COLOR_SWAPS:
+        old_colors = globals()[old_name]
+        new_colors = globals()[new_name]
+        retired.update(c['name'].casefold() for c in old_colors)
+        live = next((p for p in pb.get(trade + '_catalog') or []
+                     if isinstance(p, dict) and p.get('id') == pid), None)
+        if live is not None and live.get('colors') == old_colors:
+            live['colors'] = copy.deepcopy(new_colors)
+
+    # Drop the exterior-catalog rows built from the retired names, then let the
+    # legacy flattener rebuild this trade's rows from the corrected products.
+    kept = []
+    for row in _normalize_exterior_catalog(pb.get('exterior_catalog') or []):
+        if (row['price_book_bundle'] in _EDCO_EUROSHIELD_BUNDLES
+                and row['color'].casefold() in retired):
+            continue
+        kept.append(row)
+    have = {(r['category'], r['product'].casefold(), r['style'].casefold(),
+             r['color'].casefold(), r['price_book_bundle']) for r in kept}
+    fresh = [r for r in _legacy_exterior_catalog(pb)
+             if r['price_book_bundle'] in _EDCO_EUROSHIELD_BUNDLES
+             and (r['category'], r['product'].casefold(), r['style'].casefold(),
+                  r['color'].casefold(), r['price_book_bundle']) not in have]
+    pb['exterior_catalog'] = _normalize_exterior_catalog(kept + fresh)
+    versions.append(_EDCO_EUROSHIELD_EXTERIOR_MIGRATION)
+    pb['exterior_catalog_seed_versions'] = versions
+
+
 _OFFICIAL_TEXTURE_TARGETS = {
     'iko_nordic': {
         ('roof', 'iko', 'iko nordic', 'b_iko_nordic'),
@@ -16897,6 +17271,7 @@ def _ensure_bundle_catalogs(pb):
     _migrate_lp_expertfinish_naturals(pb)
     _migrate_landmark_visuals(pb)
     _migrate_iko_nordic_visuals(pb)
+    _migrate_edco_euroshield_visuals(pb)
     _migrate_official_exterior_textures(pb)
     return pb
 

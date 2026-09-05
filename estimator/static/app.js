@@ -601,6 +601,12 @@ Homeowner has the right to cancel this contract without penalty within 3 busines
 DISPUTE RESOLUTION
 Any dispute arising from this agreement shall first be subject to good-faith mediation. If unsuccessful, disputes shall be resolved by binding arbitration in the county where the project is located.`;
 
+/* Its WARRANTY clause states a FLAT 5-year term, unlike DEFAULT_CONTRACT's
+   tiered one. A claim sells the one scope the carrier approved, so the old
+   "lifetime … when the Best package is selected" named a choice the customer
+   was never offered — and the /sign page no longer shows packages on insurance
+   either (see warranty_by_tier in app.py's _build_estimate_manifest). Upgrades
+   still buy longer coverage; they just are not a package name. */
 const DEFAULT_INSURANCE_CONTRACT = `TERMS AND CONDITIONS — PROJECT ONE ROOFING (INSURANCE CLAIM)
 
 ASSIGNMENT OF BENEFITS / AUTHORIZATION
@@ -622,7 +628,7 @@ MATERIALS
 All materials remain the property of Project One Roofing until paid in full. Contractor reserves the right to substitute materials of equal or greater quality if specified materials are unavailable, with prior notification to Homeowner.
 
 WARRANTY
-Project One Roofing warrants all workmanship against defects for 5 years from the date of project completion on standard scopes, and for the lifetime of the homeowner's ownership of the home when the Best package is selected. Manufacturer warranties will be registered in the homeowner's name upon receipt of final payment.
+Project One Roofing warrants all workmanship against defects for 5 years from the date of project completion. Extended workmanship coverage, including a lifetime workmanship warranty, is available on elected upgrades. Manufacturer warranties will be registered in the homeowner's name upon receipt of final payment.
 
 INSURANCE & LICENSING
 Project One Roofing carries general liability insurance ($1,000,000 per occurrence / $2,000,000 aggregate) and maintains workers' compensation coverage for all employees and subcontractors. Certificates of insurance available upon request.
@@ -1731,6 +1737,9 @@ Project One Roofing — Northern Colorado` },
 
 let S = blankEstimate();
 let dirty = false;
+let _estimateSaveFlight = null;
+let _vzNavigationSave = null;
+let _vzNavigationTarget = '';
 let activePage = 'cover';
 let activeTrade = 'roofing';
 let templates    = null;
@@ -1788,7 +1797,11 @@ function blankEstimate() {
     estimate_type: 'retail',
     print_contract: true, contract_text: globalContract('retail'),
     contract_initials: defaultInitials('retail'),
-    shingle_selection: { enabled: true, options: _globalShingleColors(), chosen: '' },
+    // options starts EMPTY: it is the rep's list of colors to ADD to whatever
+    // the installed material already offers, not a replacement for it. It used
+    // to be pre-filled from ⚙ Settings, which made the Contract tab's field
+    // look meaningful while the server threw it away. See _customer_color_options.
+    shingle_selection: { enabled: true, options: [], chosen: '', material_bundle_id: '' },
     measurements: { waste_pct: _globalWastePct() },
     structures: [],            // buildings on a complex; empty = one roof, measured above
     intro_text: '',
@@ -2031,6 +2044,26 @@ function switchPage(page) {
   // chased through every caller: the header badge, the client hub, deep links
   // and muscle memory all still say 'documents'.
   if (page === 'documents') page = 'client';
+  // Canvas pixels do not live in S until the dedicated visualizer save has
+  // uploaded them. Keep the Studio visible while that save completes; a
+  // generic whole-estimate PUT cannot safely stand in for it.
+  if (activePage === 'visualizer' && page !== activePage && _vzHasUnsavedCanvasWork()) {
+    _vzNavigationTarget = page;
+    if (!_vzNavigationSave) {
+      const state = vzState;
+      _vzNavigationSave = _vzSaveAll().then(saved => {
+        const target = _vzNavigationTarget;
+        _vzNavigationSave = null;
+        _vzNavigationTarget = '';
+        if (saved && state === vzState && state.owner === S) switchPage(target);
+      }).catch(error => {
+        _vzNavigationSave = null;
+        _vzNavigationTarget = '';
+        console.warn('Visualizer navigation save failed:', error);
+      });
+    }
+    return;
+  }
   // Save-on-navigate: switching pages is a natural checkpoint, so unsaved work
   // survives a closed tab / dead battery without waiting for the 60s autosave.
   if (dirty && S.estimate_id && page !== activePage) saveEstimate();
@@ -6160,7 +6193,7 @@ function setTradeColor(trade, key, v) {
   // Keep them in sync so setting it here also locks it for the customer —
   // otherwise the sign page would still prompt for a color already specified.
   if (trade === 'roofing' && key === 'shingle_color') {
-    if (!S.shingle_selection) S.shingle_selection = { enabled: true, options: _globalShingleColors() };
+    if (!S.shingle_selection) S.shingle_selection = { enabled: true, options: [] };
     S.shingle_selection.chosen = (v || '').trim();
   }
   setDirty();
@@ -7426,6 +7459,54 @@ async function saveContractDefaults() {
   } catch (e) { alert('Could not save the company default: ' + e.message); }
 }
 
+/* The named systems a rep can pin as "what we're installing" on the Contract
+   tab. Pinning one locks the customer's color dropdown to that manufacturer's
+   palette on every package — and is the only way to get a sensible palette on
+   an insurance claim, where no G/B/B tier is being sold. Blank keeps the old
+   behavior: follow whatever bundle the selected tier resolves to. Mirrored
+   server-side by _customer_color_options / ss['material_bundle_id']. */
+function _materialBundleChoices(trade) {
+  const bundles = (priceBook && priceBook[trade + '_bundles']) || [];
+  return bundles
+    .filter(b => b && b.id && b.name && _vzPalette(_vzMaterialForBundle(trade, b)).length)
+    .map(b => ({id: b.id, name: b.name}));
+}
+
+/* Colors the customer will actually be offered, as this panel understands it:
+   the pinned system's palette, else the better-tier bundle's. Used for the
+   "Color already chosen?" datalist so the rep picks from the real list rather
+   than from the generic company-wide one. */
+function _signingPalette(trade, sel) {
+  const pinned = (sel.material_bundle_id || '').trim();
+  const bundles = (priceBook && priceBook[trade + '_bundles']) || [];
+  const bundle = pinned ? bundles.find(b => b && b.id === pinned)
+                        : _vzBundleFor(trade, 'better');
+  const names = _vzPalette(_vzMaterialForBundle(trade, bundle)).map(c => c.name);
+  const seen = new Set(names.map(n => n.toLowerCase()));
+  for (const o of (sel.options || [])) {
+    const v = String(o).trim();
+    if (v && !seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); names.push(v); }
+  }
+  return names;
+}
+
+function _materialPickerHTML(trade, sel, setter) {
+  const choices = _materialBundleChoices(trade);
+  if (!choices.length) return '';
+  const cur = (sel.material_bundle_id || '').trim();
+  const opts = choices.map(c =>
+    `<option value="${esc(c.id)}"${c.id === cur ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  return `
+        <div class="field-group">
+          <label>Material being installed
+            <span class="sr-hint">sets the colors the customer can pick from</span></label>
+          <select class="sr-material-select" onchange="${setter}(this.value)">
+            <option value=""${cur ? '' : ' selected'}>Follow the package the customer selects</option>
+            ${opts}
+          </select>
+        </div>`;
+}
+
 function renderSigningRequirements() {
   const ss  = S.shingle_selection || {enabled:true, options:[], chosen:''};
   const sds = S.siding_selection  || {enabled:false, options:[], chosen:''};
@@ -7453,18 +7534,19 @@ function renderSigningRequirements() {
         <span>Ask the customer to confirm a <strong>siding color</strong> at signing</span>
       </label>
       <div class="sr-siding-body" style="${sds.enabled ? '' : 'display:none'}">
+        ${_materialPickerHTML('siding', sds, 'setSidingMaterial')}
         <div class="field-group">
           <label>Color already chosen? <span class="sr-hint">leave blank to let the customer pick</span></label>
           <input type="text" list="siding-color-list" class="sr-chosen-input"
             value="${esc(sds.chosen || '')}" placeholder="e.g. Iron Gray — or leave blank"
             onchange="setSidingChosen(this.value)">
           <datalist id="siding-color-list">
-            ${(sds.options || []).map(o => `<option value="${esc(o)}">`).join('')}
+            ${_signingPalette('siding', sds).map(o => `<option value="${esc(o)}">`).join('')}
           </datalist>
         </div>
         <div class="field-group">
-          <label>Extra siding color options
-            <span class="sr-hint">optional — leave blank to use the picked bundle's colors</span></label>
+          <label>Additional siding colors
+            <span class="sr-hint">optional — added to the material's own colors, not instead of them</span></label>
           <textarea class="sr-options-input" rows="2"
             onchange="setSidingOptions(this.value)"
             placeholder="Arctic White, Iron Gray, Musket Brown…">${esc(sdsOptText)}</textarea>
@@ -7485,18 +7567,19 @@ function renderSigningRequirements() {
         <span>Ask the customer to confirm a <strong>shingle color</strong> at signing</span>
       </label>
       <div class="sr-shingle-body" style="${ss.enabled !== false ? '' : 'display:none'}">
+        ${_materialPickerHTML('roofing', ss, 'setShingleMaterial')}
         <div class="field-group">
           <label>Color already chosen? <span class="sr-hint">leave blank to let the customer pick</span></label>
           <input type="text" list="shingle-color-list" class="sr-chosen-input"
             value="${esc(ss.chosen || '')}" placeholder="e.g. Weathered Wood — or leave blank"
             onchange="setShingleChosen(this.value)">
           <datalist id="shingle-color-list">
-            ${(ss.options || []).map(o => `<option value="${esc(o)}">`).join('')}
+            ${_signingPalette('roofing', ss).map(o => `<option value="${esc(o)}">`).join('')}
           </datalist>
         </div>
         <div class="field-group">
-          <label>Extra shingle color options
-            <span class="sr-hint">optional — leave blank to use the picked bundle's colors (IKO Nordic → IKO, CertainTeed → CertainTeed…)</span></label>
+          <label>Additional shingle colors
+            <span class="sr-hint">optional — added to the material's own colors, not instead of them</span></label>
           <textarea class="sr-options-input" rows="2"
             onchange="setShingleOptions(this.value)"
             placeholder="Charcoal, Weathered Wood, Driftwood…">${esc(ssOptText)}</textarea>
@@ -7529,9 +7612,16 @@ function setShingleChosen(v) {
 }
 function setShingleOptions(v) {
   if (!S.shingle_selection) S.shingle_selection = {enabled:true, chosen:''};
-  // Empty = use bundle colors (IKO/CertainTeed/…); non-empty = rep override
+  // These ADD to the material's own colors — they no longer replace them, so
+  // leaving this blank is the normal case. See _customer_color_options in app.py.
   S.shingle_selection.options = v.split(',').map(s => s.trim()).filter(Boolean);
   setDirty();
+}
+function setShingleMaterial(v) {
+  if (!S.shingle_selection) S.shingle_selection = {enabled:true, options:[], chosen:''};
+  S.shingle_selection.material_bundle_id = (v || '').trim();
+  setDirty();
+  renderContractPage();
 }
 function setSidingEnabled(v) {
   if (!S.siding_selection) S.siding_selection = {options:[], chosen:''};
@@ -7548,6 +7638,12 @@ function setSidingOptions(v) {
   if (!S.siding_selection) S.siding_selection = {enabled:true, chosen:''};
   S.siding_selection.options = v.split(',').map(s => s.trim()).filter(Boolean);
   setDirty();
+}
+function setSidingMaterial(v) {
+  if (!S.siding_selection) S.siding_selection = {enabled:true, options:[], chosen:''};
+  S.siding_selection.material_bundle_id = (v || '').trim();
+  setDirty();
+  renderContractPage();
 }
 function addInitial() {
   if (!Array.isArray(S.contract_initials)) S.contract_initials = [];
@@ -10452,14 +10548,12 @@ async function saveSettings() {
       });
       if (!r2.ok) throw new Error('Company content save failed');
     }
-    // Refresh the current estimate's color options if untouched from defaults
-    if (S.shingle_selection && !S.signature) {
-      S.shingle_selection.options = _globalShingleColors();
-      setDirty();
-      if (activePage === 'contract') renderContractPage();
-    }
+    // The Settings color list is a FALLBACK for materials that carry no palette
+    // of their own — it is not copied onto the estimate any more, so there is
+    // nothing here to refresh. Just redraw, in case the panel is on screen.
+    if (activePage === 'contract') renderContractPage();
     closeSettings();
-    alert('✓ Settings saved! New estimates will use these colors.');
+    alert('✓ Settings saved!');
   } catch (e) { alert('Could not save settings: ' + e.message); }
 }
 
@@ -10694,14 +10788,40 @@ function maybeCloseShareModal(e) { if (e.target === document.getElementById('sha
 /* ── Save / Load ───────────────────────────────────────────────────── */
 
 async function saveEstimate() {
-  if(!S.estimate_id){S.estimate_id=uid();S.created_at=new Date().toISOString();}
-  try{
-    const r=await fetch(`/api/estimates/${S.estimate_id}`,{
-      method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(S),
-    });
-    if(!r.ok)throw new Error('Save failed');
-    setClean(); renderEstNum();
-  }catch(e){alert('Save failed: '+e.message);}
+  const owner = S;
+  if(!owner.estimate_id){owner.estimate_id=uid();owner.created_at=new Date().toISOString();}
+  const snapshot = JSON.stringify(owner);
+  const previous = _estimateSaveFlight?.promise;
+  let flight;
+  const promise = (async () => {
+    if (previous) await previous.catch(() => false);
+    try{
+      const r=await fetch(`/api/estimates/${owner.estimate_id}`,{
+        method:'PUT',headers:{'Content-Type':'application/json'},body:snapshot,
+      });
+      if(!r.ok)throw new Error('Save failed');
+      // A second click may have queued a newer snapshot while this request was
+      // in flight. Only the newest queued save is allowed to clear Unsaved.
+      if (_estimateSaveFlight === flight && S === owner && !_vzBlocksGenericSave()) setClean();
+      if (S === owner) renderEstNum();
+      return true;
+    }catch(e){
+      if (S === owner) alert('Save failed: '+e.message);
+      return false;
+    }
+  })();
+  flight = {owner, promise};
+  _estimateSaveFlight = flight;
+  try { return await promise; }
+  finally { if (_estimateSaveFlight === flight) _estimateSaveFlight = null; }
+}
+
+async function saveCurrentWork() {
+  if (_vzHasUnsavedCanvasWork()) {
+    if (!(await _vzSaveAll())) return false;
+  }
+  if (_vzBlocksGenericSave()) return false;
+  return saveEstimate();
 }
 
 async function newEstimateAction() {
@@ -10794,9 +10914,12 @@ async function doLoadEstimate(id) {
     if(!S.estimate_type) S.estimate_type='retail';
     if(!Array.isArray(S.contract_initials)) S.contract_initials=defaultInitials(S.estimate_type);
     if(!S.shingle_selection||typeof S.shingle_selection!=='object')
-      S.shingle_selection={enabled:true,options:DEFAULT_SHINGLE_COLORS.slice(),chosen:''};
-    if(!Array.isArray(S.shingle_selection.options)||!S.shingle_selection.options.length)
-      S.shingle_selection.options=DEFAULT_SHINGLE_COLORS.slice();
+      S.shingle_selection={enabled:true,options:[],chosen:'',material_bundle_id:''};
+    // An empty options list is now the normal, meaningful state — it means "no
+    // extra colors beyond what the material offers". Refilling it with the
+    // generic defaults, as this used to, put names like Barkwood and Hunter
+    // Green in front of a customer buying CertainTeed.
+    if(!Array.isArray(S.shingle_selection.options)) S.shingle_selection.options=[];
     if(!Array.isArray(S.attachments)) S.attachments=[];
     // Buildings. An estimate written before this has none, and every path falls
     // back to S.measurements for it — that is the whole compatibility story.
@@ -11908,7 +12031,10 @@ function populateSalespersonDropdown() {
   TEAM.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=cap(m);sel.appendChild(o);});
 }
 
-setInterval(()=>{if(dirty&&S.estimate_id)saveEstimate();},60000);
+function _autoSaveTick() {
+  if (dirty && S.estimate_id && !_vzBlocksGenericSave()) saveEstimate();
+}
+setInterval(_autoSaveTick,60000);
 
 document.addEventListener('click', e=>{
   if(!e.target.closest('.crm-search-wrap'))closeCrm();
@@ -11949,7 +12075,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     // Apply global settings to the fresh blank estimate (it was created
     // before /api/settings resolved, so re-seed the settings-driven fields)
     if (!S.estimate_id) {
-      if (S.shingle_selection) S.shingle_selection.options = _globalShingleColors();
       if (S.measurements) S.measurements.waste_pct = _globalWastePct();
       S.contract_text     = globalContract('retail');
       S.contract_initials = defaultInitials('retail');
@@ -12948,11 +13073,12 @@ function renderDocumentsPage() {
                    : att.doc_type === 'roof_certificate' ? '🏅'
                    : att.server_generated                ? '🛠'
                                                          : '📄';
-        // Work orders don't auto-push — the rep fills in scheduled date /
-        // dish / tear-off layers first, then clicks "↗ Push to Den".
-        // Two internal packet docs now: the crew's work order carries the
-        // fill-in form and the Push-to-Den button; the material order is just
-        // a file to open.
+        // Two internal packet docs, filed on different schedules. The MATERIAL
+        // order files itself at signing — it is derived wholly from the signed
+        // contract — so it usually already carries the ✓ CRM chip; its button
+        // is there to re-file after a rebuild. The WORK order never auto-pushes:
+        // the rep fills in scheduled date / dish / tear-off layers first, then
+        // clicks ↗ Push to Den.
         const isWO = att.doc_type === 'work_order';
         const isMO = att.doc_type === 'material_order';
         return `
@@ -12966,7 +13092,8 @@ function renderDocumentsPage() {
               ? `<button class="doc-crm-push" onclick="pushWorkOrderToCrm()"
                    title="Regenerate with the latest job details and file in Den">↗ Push to Den</button>`
               : isMO
-                ? ''
+                ? `<button class="doc-crm-push" onclick="pushMaterialOrderToCrm()"
+                   title="Rebuild the buy list and re-file it in Den">↗ Push to Den</button>`
                 : `<button class="doc-crm-push" onclick="pushDocToCrm('${att.id}')"
                    title="File this PDF in the CRM under the linked job">↗ CRM</button>`)}
         <label class="att-show" title="Show this document to the customer on their estimate">
@@ -13005,7 +13132,7 @@ function renderDocumentsPage() {
           <span class="doc-card-icon">🛠</span>
           <span class="doc-card-name">Work Order + Material Order</span>
           <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'work_order')
-            ? 'Regenerate both (does not push to Den — use ↗ Push to Den)'
+            ? 'Regenerate both (neither pushes to Den — use ↗ Push to Den)'
             : 'Two documents: the crew work order and the buy list'}</span>
         </button>
         <button class="doc-card" onclick="generatePermitPacket(this)">
@@ -13285,7 +13412,9 @@ async function generateProductionPacket(btn) {
     if (!Array.isArray(S.attachments)) S.attachments = [];
     S.attachments = S.attachments.filter(a => !(a.server_generated
       && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
-    S.attachments.push(d.attachment);
+    // Both rows. The endpoint used to hand back only the work order, so every
+    // regenerate dropped the Material Order off the tab until a reload.
+    S.attachments.push(...(d.attachments || [d.attachment]));
   } catch (e) {
     alert('Could not generate the production packet: ' + e.message);
   }
@@ -13405,9 +13534,36 @@ async function regenerateWorkOrder() {
     if (!Array.isArray(S.attachments)) S.attachments = [];
     S.attachments = S.attachments.filter(a => !(a.server_generated
       && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
-    S.attachments.push(d.attachment);
+    // Both rows. The endpoint used to hand back only the work order, so every
+    // regenerate dropped the Material Order off the tab until a reload.
+    S.attachments.push(...(d.attachments || [d.attachment]));
   } catch (e) {
     alert('Could not regenerate the work order: ' + e.message);
+  }
+  renderDocumentsPage();
+}
+
+async function pushMaterialOrderToCrm() {
+  if (!S.estimate_id) return;
+  if (!((S.customer||{}).crm_project_id)) {
+    alert('This estimate is not linked to a CRM job yet — use the customer search to link it, then try again.');
+    return;
+  }
+  // Rebuilds both PDFs and files only the material order. The work order is
+  // rebuilt alongside it (same endpoint) but deliberately stays local.
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/production-packet`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({push_material: true}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Push failed');
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(a => !(a.server_generated
+      && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
+    S.attachments.push(...(d.attachments || [d.attachment]));
+  } catch (e) {
+    alert('Could not push the material order to Den: ' + e.message);
   }
   renderDocumentsPage();
 }
@@ -13430,7 +13586,9 @@ async function pushWorkOrderToCrm() {
     if (!Array.isArray(S.attachments)) S.attachments = [];
     S.attachments = S.attachments.filter(a => !(a.server_generated
       && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
-    S.attachments.push(d.attachment);
+    // Both rows. The endpoint used to hand back only the work order, so every
+    // regenerate dropped the Material Order off the tab until a reload.
+    S.attachments.push(...(d.attachments || [d.attachment]));
   } catch (e) {
     alert('Could not push the work order to Den: ' + e.message);
   }
@@ -14124,7 +14282,7 @@ const _VZ_DEFAULT_SCOPE = ['roof', 'siding', 'trim', 'soffit', 'door'];
 const _VZ_ROLE_META = {
   roof:{label:'Roof',icon:'🏠',trade:'roofing',color:'rgba(220,50,50,0.38)'},
   siding:{label:'Siding',icon:'🏗',trade:'siding',color:'rgba(50,120,220,0.38)'},
-  trim:{label:'Trim / Fascia',icon:'▦',trade:'trim',color:'rgba(168,85,247,0.42)'},
+  trim:{label:'Trim / Fascia / Rakes',icon:'▦',trade:'trim',color:'rgba(168,85,247,0.42)'},
   soffit:{label:'Soffit',icon:'⌂',trade:'soffit',color:'rgba(20,184,166,0.42)'},
   door:{label:'Doors',icon:'🚪',trade:'doors',color:'rgba(234,135,25,0.42)'},
   gutter:{label:'Gutters',icon:'🌧',trade:'gutter',color:'rgba(59,130,246,0.45)'},
@@ -14137,12 +14295,33 @@ const _VZ_COMPOSE_ORDER = ['roof','siding','stucco','soffit','trim','window','sh
 const _VZ_PROJECTABLE_ROLES = ['roof','siding','stucco','metal','soffit'];
 const _VZ_PLACEMENT_ROLES = ['door','window','shutter'];
 const _VZ_MAX_PLANES = 16;
+const _VZ_SOURCE_MAX_SIDE = 2048;
+const _VZ_SOURCE_MAX_PIXELS = 3200000;
+const _VZ_EDITOR_MAX_SIDE = 1400;
+const _VZ_DETECTION_MAX_SIDE = 1200;
+const _VZ_JPEG_QUALITY = 0.94;
 const _vzPatternImg = {};   // pattern_id -> HTMLImageElement (once loaded)
 const _vzTextureImg = {};   // uploaded catalog texture ref -> HTMLImageElement
 const _vzPlacementImg = {}; // catalog/job product cutout ref -> HTMLImageElement
 const _vzPlacementSheetCache = new Map();
 const _vzPlacementLayerCache = new Map();
 const _vzProjectionCache = new Map(); // geometry + material -> unmasked warped layer
+let _vzUploadGeneration = 0;
+
+function _vzFitSize(width,height,maxSide,maxPixels=Infinity) {
+  const w=Math.max(1,Number(width)||1),h=Math.max(1,Number(height)||1);
+  const sideLimit=Math.max(1,Number(maxSide)||Math.max(w,h));
+  const pixelLimit=Number(maxPixels)>0?Number(maxPixels):Infinity;
+  const scale=Math.min(1,sideLimit/Math.max(w,h),Math.sqrt(pixelLimit/(w*h)));
+  return {width:Math.max(1,Math.round(w*scale)),height:Math.max(1,Math.round(h*scale))};
+}
+function _vzHighQuality(ctx) {
+  if (ctx) {
+    ctx.imageSmoothingEnabled=true;
+    try { ctx.imageSmoothingQuality='high'; } catch (_) {}
+  }
+  return ctx;
+}
 
 function _vzCacheCanvas(cache,key,canvas,maxBytes) {
   if (cache.has(key)) cache.delete(key);
@@ -14153,6 +14332,9 @@ function _vzCacheCanvas(cache,key,canvas,maxBytes) {
     const oldest=cache.keys().next().value,removed=cache.get(oldest);
     cache.delete(oldest);
     total-=(removed?.width||0)*(removed?.height||0)*4;
+    // Explicitly release the backing store; Safari otherwise tends to keep
+    // evicted GPU canvases resident until the whole tab is reloaded.
+    if (removed) { removed.width=0; removed.height=0; }
   }
   return canvas;
 }
@@ -14210,6 +14392,10 @@ function _vzGetTextureImg(ref) {
     _vzProjectionCache.clear();
     if (activePage === 'visualizer') _vzRedrawAll();
   };
+  img.onerror = () => {
+    if (_vzTextureImg[ref] === img) delete _vzTextureImg[ref];
+    _vzProjectionCache.clear();
+  };
   return img;
 }
 
@@ -14227,11 +14413,26 @@ function _vzGetPlacementImg(ref) {
     _vzPlacementLayerCache.clear();
     if (activePage === 'visualizer') _vzRedrawAll();
   };
+  img.onerror = () => {
+    if (_vzPlacementImg[ref] === img) delete _vzPlacementImg[ref];
+    _vzPlacementLayerCache.clear();
+  };
   return img;
 }
 
 let vzState = null;
 let vzCapabilities = null;
+
+function _vzCurrentStateOwnsEstimate() {
+  return !!(vzState && vzState.owner === S);
+}
+function _vzHasUnsavedCanvasWork() {
+  return _vzCurrentStateOwnsEstimate() && !!(vzState.dirty && vzState.photoImg);
+}
+function _vzBlocksGenericSave() {
+  return _vzCurrentStateOwnsEstimate() && !!(
+    _vzHasUnsavedCanvasWork() || vzState.saving || vzState.detecting || vzState.proviaUploading);
+}
 
 function _vzResetState() {
   _vzProjectionCache.clear();
@@ -14249,13 +14450,14 @@ function _vzResetState() {
     photoW: 0, photoH: 0,    // native pixel dimensions
     roofMask: null,          // OffscreenCanvas-like <canvas> matching photo size
     sidingMask: null,        // same
-    trimMask: null,          // fascia + window/door/corner trim
+    trimMask: null,          // fascia + rake/bargeboard + window/door/corner trim
     soffitMask: null,        // eave underside, independent finish
     doorMask: null,          // entry/garage door regions — independent layer
     canvas: null,            // visible canvas element
     ctx: null,
     activeTool: 'roof',      // one of _VZ_ROLES | 'erase'
     activeTier: 'better',    // 'good' | 'better' | 'best'
+    openPickerTrade: '',
     brushSize: 30,
     magicWand: false,
     painting: false,
@@ -14535,7 +14737,7 @@ function _vzShellHtml(hasPhoto) {
       </div>
       <div class="vz-header-actions">
         ${_meCanViewAll() ? '<button class="btn" onclick="openVisualizerOperations()">📊 Usage & storage</button>' : ''}
-        <button class="btn" onclick="_vzTriggerUpload()">Replace this photo</button>
+        <button class="btn" onclick="_vzTriggerUpload()">📷 Replace photo</button>
         <button class="btn" onclick="_vzShareDesign()" id="vz-share-btn">🔗 Share for approval</button>
         <button class="btn-primary" onclick="_vzSaveAll()" id="vz-save-btn">💾 Save Renderings</button>
       </div>
@@ -14545,19 +14747,19 @@ function _vzShellHtml(hasPhoto) {
     <div id="vz-share-status" class="vz-share-status"></div>
     <div class="vz-body">
       <div class="vz-canvas-col">
-        <div class="vz-workflow"><span>1 · Upload photo</span><span class="active">2 · Choose a look</span><span>3 · Save previews</span></div>
+        <div class="vz-workflow" aria-label="Design workflow"><span>✓ Photo</span><span class="active">2 · Choose surfaces</span><span>3 · Choose products</span><span>4 · Save & share</span></div>
+        ${_vzScopeHtml()}
         <div class="vz-detection-panel">
           <div><strong>Automatic surface selection</strong><p id="vz-detection-message" role="status" aria-live="polite"></p></div>
           <button class="btn" id="vz-detect-btn" onclick="_vzAutoDetect()" ${vzCapabilities?.auto_detect ? '' : 'disabled'}>Detect surfaces</button>
         </div>
-        ${_vzScopeHtml()}
         <div class="vz-preview-actions">
           <label><input type="checkbox" ${vzState.original?'checked':''} onchange="vzState.original=this.checked;_vzRedrawAll()"> Show original photo</label>
           <label class="vz-before-slider">Before / after <input type="range" min="0" max="100" value="${vzState.beforeSplit}" oninput="_vzSetBeforeSplit(this.value)"></label>
           <span>Approximate preview · confirm physical samples</span>
         </div>
         <div class="vz-canvas-wrap" id="vz-canvas-wrap">
-          <canvas id="vz-canvas" class="vz-canvas"></canvas>
+          <canvas id="vz-canvas" class="vz-canvas" role="img" aria-label="Exterior design preview for the active elevation and concept"></canvas>
           <div class="vz-canvas-legend" id="vz-canvas-legend"></div>
         </div>
         <details class="vz-refine" ${vzState.refine?'open':''} ontoggle="_vzSetRefine(this.open)">
@@ -14581,26 +14783,26 @@ function _vzShellHtml(hasPhoto) {
         ${_vzPlacementEditorHtml()}
       </div>
       <div class="vz-picker-col">
-        <div class="vz-tier-tabs">
+        <div class="vz-tier-tabs" role="tablist" aria-label="Design concepts">
           ${['good','better','best'].map(t => `
-            <button class="vz-tier-tab ${t===tier?'active':''}" data-tier="${t}" onclick="_vzSelectTier('${t}')">${_vzGet().favorite_tier===t?'★ ':''}${esc(_vzConceptName(t))}</button>
+            <button class="vz-tier-tab ${t===tier?'active':''}" role="tab" aria-selected="${t===tier?'true':'false'}" tabindex="${t===tier?'0':'-1'}" data-tier="${t}" onclick="_vzSelectTier('${t}')" onkeydown="_vzTierKey(event,'${t}')">${_vzGet().favorite_tier===t?'★ ':''}${esc(_vzConceptName(t))}</button>
           `).join('')}
         </div>
         <div class="vz-concept-controls"><label>Concept name<input maxlength="40" value="${esc(_vzConceptName(tier))}" onchange="_vzRenameConcept('${tier}',this.value)"></label>
           <button class="btn small" onclick="_vzSetFavorite('${tier}')">${_vzGet().favorite_tier===tier?'★ Preferred':'☆ Mark preferred'}</button></div>
-        <div id="vz-picker-body"></div>
-      </div>
-    </div>
-    <div class="vz-triptych">
-      <h3>Design concepts — side-by-side</h3>
-      <div class="vz-triptych-grid" id="vz-triptych-grid">
-        ${['good','better','best'].map(t => `
-          <div class="vz-triptych-tile">
-            <div class="vz-triptych-lbl">${_vzGet().favorite_tier===t?'★ ':''}${esc(_vzConceptName(t))}</div>
-            <canvas class="vz-triptych-canvas" id="vz-thumb-${t}"></canvas>
-            <div class="vz-triptych-cap" id="vz-thumb-cap-${t}"></div>
+        <div class="vz-triptych vz-triptych-compact">
+          <h3>Compare concepts</h3>
+          <div class="vz-triptych-grid" id="vz-triptych-grid">
+            ${['good','better','best'].map(t => `
+              <button type="button" class="vz-triptych-tile ${t===tier?'active':''}" onclick="_vzSelectTier('${t}')" aria-label="Open ${esc(_vzConceptName(t))} concept" aria-pressed="${t===tier?'true':'false'}">
+                <span class="vz-triptych-lbl">${_vzGet().favorite_tier===t?'★ ':''}${esc(_vzConceptName(t))}</span>
+                <canvas class="vz-triptych-canvas" id="vz-thumb-${t}" aria-hidden="true"></canvas>
+                <span class="vz-triptych-cap" id="vz-thumb-cap-${t}"></span>
+              </button>
+            `).join('')}
           </div>
-        `).join('')}
+        </div>
+        <div id="vz-picker-body"></div>
       </div>
     </div>
   </div>`;
@@ -14759,6 +14961,7 @@ async function _vzHandleFile(file) {
   if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { alert('Choose a JPG, PNG, or WebP photo. Convert HEIC photos to JPG first.'); return; }
   if ((previous.pendingBaseDataUrl || currentElevation.base_image) &&
       !confirm('Replace the ' + currentElevation.name + ' photo? Its surface selections and saved previews will be cleared.')) return;
+  const uploadGeneration = ++_vzUploadGeneration;
   try {
     const source = await new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -14767,12 +14970,13 @@ async function _vzHandleFile(file) {
       reader.readAsDataURL(file);
     });
     const img = await _vzReadImage(source);
-    if (S !== owner || vzState !== previous) return;
-    const scale = Math.min(1, 1200 / Math.max(img.naturalWidth, img.naturalHeight));
-    const photo = _vzMakeMaskCanvas(Math.max(1, Math.round(img.naturalWidth * scale)), Math.max(1, Math.round(img.naturalHeight * scale)));
-    photo.getContext('2d').drawImage(img, 0, 0, photo.width, photo.height);
+    if (S !== owner || vzState !== previous || uploadGeneration !== _vzUploadGeneration) return;
+    const size = _vzFitSize(img.naturalWidth,img.naturalHeight,
+      _VZ_SOURCE_MAX_SIDE,_VZ_SOURCE_MAX_PIXELS);
+    const photo = _vzMakeMaskCanvas(size.width,size.height);
+    _vzHighQuality(photo.getContext('2d')).drawImage(img, 0, 0, photo.width, photo.height);
     _vzResetState(); // invalidates any detection still running for the old photo
-    vzState.pendingBaseDataUrl = photo.toDataURL('image/jpeg', 0.92);
+    vzState.pendingBaseDataUrl = photo.toDataURL('image/jpeg', _VZ_JPEG_QUALITY);
     vzState.pendingBaseExt = 'jpg';
     vzState.photoKey = _vzGet().active_elevation_id + '_' + Date.now() + '_' + Math.random().toString(36).slice(2);
     const vz = _vzGet();
@@ -14788,7 +14992,8 @@ async function _vzHandleFile(file) {
     vzState.dirty = true;
     setDirty();
     await renderVisualizerPage();
-    if (S === owner && vzCapabilities?.auto_detect) await _vzAutoDetect(true);
+    // Detection is deliberately explicit: the rep chooses which project
+    // surfaces apply before any paid fal requests leave the app.
   } catch (error) { alert(error.message || 'This photo could not be opened.'); }
 }
 
@@ -14819,15 +15024,22 @@ function _vzDetectionUI() {
   if (message) message.textContent = statuses.length ? statuses.join(' · ')
     : !vzCapabilities?.auto_detect
     ? 'Not connected. A manager must configure EXTERIOR_AUTO_DETECT and FAL_KEY. No photo is sent until enabled.'
-    : 'Detect ' + _vzScopeRoles().length + ' checked surface' + (_vzScopeRoles().length===1?'':'s') +
+    : 'Ready when you are. Detect ' + _vzScopeRoles().length + ' checked surface' + (_vzScopeRoles().length===1?'':'s') +
       ' using fal / SAM 3: ' + _vzScopeRoles().map(role => _VZ_ROLE_META[role].label).join(', ') + '. The photo is shared with fal once per checked surface; usage charges apply. Review the result before saving.';
   const button = document.getElementById('vz-detect-btn');
   if (button) {
     button.disabled = !vzCapabilities?.auto_detect || vzState.detecting || vzState.saving || vzState.proviaUploading || !vzState.photoImg;
-    button.textContent = vzState.detecting ? 'Finding surfaces…' : 'Detect surfaces';
+    const count = _vzScopeRoles().length;
+    button.textContent = vzState.detecting ? 'Finding surfaces…' :
+      `Detect ${count} surface${count===1?'':'s'}`;
   }
   const save = document.getElementById('vz-save-btn');
-  if (save) save.disabled = vzState.detecting || vzState.saving || vzState.proviaUploading || !vzState.photoImg;
+  if (save) {
+    save.disabled = vzState.detecting || vzState.saving || vzState.proviaUploading || !vzState.photoImg;
+    const hasRender = Object.values(_vzElevation().tier_renders || {}).some(Boolean);
+    save.textContent = vzState.saving ? 'Saving…' : vzState.dirty ? '💾 Save renderings' :
+      hasRender ? '✓ Renderings saved' : '✓ Photo saved';
+  }
 }
 
 async function _vzAutoDetect(initialUpload = false) {
@@ -14835,13 +15047,14 @@ async function _vzAutoDetect(initialUpload = false) {
   const state = vzState;
   if (!state.photoKey) state.photoKey = 'photo_' + Date.now() + '_' + Math.random().toString(36).slice(2);
   const photoKey = state.photoKey;
-  if (state.dirty && !initialUpload && !confirm('Detect again and replace any successfully detected surface selections?')) return;
+  const roles = _vzScopeRoles();
+  const hasExistingMask = roles.some(role => _vzMaskHasContent(state[role + 'Mask']));
+  if (hasExistingMask && !initialUpload && !confirm('Detect again and replace any successfully detected surface selections?')) return;
   state.detecting = true;
   state.refine = false;
   const refinePanel = document.querySelector('.vz-refine');
   if (refinePanel) refinePanel.open = false;
   state.painting = false;
-  const roles = _vzScopeRoles();
   state.detectionStatus = Object.fromEntries(roles.map(role => [role, 'waiting']));
   _vzDetectionUI();
   _vzRedrawAll();
@@ -14850,8 +15063,10 @@ async function _vzAutoDetect(initialUpload = false) {
     if (!_vzIsCurrent(state, photoKey)) return;
     if (!S.estimate_id) throw new Error('Save the estimate before detecting surfaces.');
     const eid = S.estimate_id;
-    const photo = _vzMakeMaskCanvas(state.canvas.width, state.canvas.height);
-    photo.getContext('2d').drawImage(state.photoImg, 0, 0, photo.width, photo.height);
+    const detectionSize = _vzFitSize(state.photoImg.naturalWidth,state.photoImg.naturalHeight,
+      _VZ_DETECTION_MAX_SIDE,_VZ_DETECTION_MAX_SIDE*_VZ_DETECTION_MAX_SIDE);
+    const photo = _vzMakeMaskCanvas(detectionSize.width,detectionSize.height);
+    _vzHighQuality(photo.getContext('2d')).drawImage(state.photoImg, 0, 0, photo.width, photo.height);
     const data = photo.toDataURL('image/jpeg', 0.9);
     await Promise.all(roles.map(async role => {
       try {
@@ -14917,9 +15132,9 @@ async function _vzLoadWorkspacePhoto() {
   try {
     const img = state.photoImg || await _vzReadImage(state.pendingBaseDataUrl || (BASE + '/uploads/' + elevation.base_image));
     if (state !== vzState || state.owner !== S) return;
-    const scale = Math.min(1, 1200 / Math.max(img.naturalWidth, img.naturalHeight));
-    const w = Math.max(1, Math.round(img.naturalWidth * scale));
-    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const editorSize = _vzFitSize(img.naturalWidth,img.naturalHeight,
+      _VZ_EDITOR_MAX_SIDE,2000000);
+    const w = editorSize.width, h = editorSize.height;
     const masks = await Promise.all(_VZ_ROLES.map(role =>
       state[role + 'Mask'] || _vzLoadMask((elevation.masks || {})[role] ||
         (elevation.id === 'front' ? vz[role + '_mask'] : null), w, h)));
@@ -14943,7 +15158,7 @@ async function _vzLoadMask(ref, w, h) {
   const canvas = _vzMakeMaskCanvas(w, h);
   if (ref) {
     const img = await _vzReadImage(BASE + '/uploads/' + ref);
-    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+    _vzHighQuality(canvas.getContext('2d')).drawImage(img, 0, 0, w, h);
   }
   return canvas;
 }
@@ -14952,6 +15167,13 @@ function _vzMakeMaskCanvas(w, h) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   return c;
+}
+
+function _vzMaskHasContent(mask) {
+  if (!mask) return false;
+  const pixels = mask.getContext('2d').getImageData(0,0,mask.width,mask.height).data;
+  for (let i=3;i<pixels.length;i+=4) if (pixels[i]) return true;
+  return false;
 }
 
 function _vzActiveMaskCanvas() {
@@ -15225,8 +15447,17 @@ function _vzClearMask(role) {
   _vzRedrawAll();
 }
 function _vzSelectTier(t) {
+  if (!TIERS.includes(t)) return;
   vzState.activeTier = t;
   renderVisualizerPage();
+}
+function _vzTierKey(event,tier) {
+  if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+  event.preventDefault();
+  const index=TIERS.indexOf(tier);
+  const next=event.key==='Home'?TIERS[0]:event.key==='End'?TIERS[TIERS.length-1]:
+    TIERS[(index+(event.key==='ArrowRight'?1:-1)+TIERS.length)%TIERS.length];
+  _vzSelectTier(next);
 }
 
 function _vzPalette(product) {
@@ -15349,13 +15580,24 @@ function _vzElevationTabsHtml() {
   const vz = _vzGet();
   const tabs = vz.elevation_order.map(id => {
     const ev = vz.elevations[id];
-    return `<button class="vz-elevation-tab ${id===vz.active_elevation_id?'active':''}" onclick="_vzSwitchElevation('${id}')">
-      <span>${esc(ev.name)}</span>${ev.base_image?'<small>saved</small>':'<small>needs photo</small>'}</button>`;
+    const status = ev.base_image ? 'saved'
+      : (id === vz.active_elevation_id && vzState?.pendingBaseDataUrl) ? 'ready to save'
+      : 'needs photo';
+    return `<button class="vz-elevation-tab ${id===vz.active_elevation_id?'active':''}" role="tab" aria-selected="${id===vz.active_elevation_id?'true':'false'}" tabindex="${id===vz.active_elevation_id?'0':'-1'}" onclick="_vzSwitchElevation('${id}')" onkeydown="_vzElevationKey(event,'${id}')">
+      <span>${esc(ev.name)}</span><small id="vz-elevation-status-${id}">${status}</small></button>`;
   }).join('');
-  return `<div class="vz-elevation-bar"><div class="vz-elevation-tabs">${tabs}</div>
+  return `<div class="vz-elevation-bar"><div class="vz-elevation-tabs" role="tablist" aria-label="Exterior elevations">${tabs}</div>
     <div class="vz-elevation-actions"><button class="btn small" onclick="_vzRenameElevation()">Rename</button>
     <button class="btn small" onclick="_vzAddElevation()">+ Elevation</button>
     ${vz.elevation_order.length>1?'<button class="btn small danger" onclick="_vzDeleteElevation()">Remove</button>':''}</div></div>`;
+}
+function _vzElevationKey(event,id) {
+  if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+  event.preventDefault();
+  const order=_vzGet().elevation_order,index=order.indexOf(id);
+  const next=event.key==='Home'?order[0]:event.key==='End'?order[order.length-1]:
+    order[(index+(event.key==='ArrowRight'?1:-1)+order.length)%order.length];
+  if (next) _vzSwitchElevation(next);
 }
 function _vzScopeHtml() {
   const selected = new Set(_vzScopeRoles());
@@ -15827,19 +16069,63 @@ function _vzRenderPicker() {
   if (!host) return;
   for (const tier of TIERS) _vzEnsureTier(tier);
   const tier = vzState.activeTier, vz = _vzGet(), scope = new Set(_vzScopeRoles());
+  const scopedPanelKeys = _vzScopeRoles().map(role => {
+    if (role === 'trim' || role === 'soffit') return 'details';
+    return _VZ_ROLE_META[role].trade;
+  });
+  if (!scopedPanelKeys.includes(vzState.openPickerTrade)) vzState.openPickerTrade=scopedPanelKeys[0] || '';
   const option = (value, label, selected) => '<option value="' + esc(value) + '"' +
     (selected ? ' selected' : '') + '>' + esc(label) + '</option>';
+  const productOptions = (choices,selectedId,placeholder,includePlaceholder=true) => {
+    let html = includePlaceholder && !choices.some(p => p.id === selectedId)
+      ? option('',placeholder || 'Choose a product',true) : '';
+    const groups = new Map();
+    for (const product of choices) {
+      const brand=(product.brand || 'Other products').trim() || 'Other products';
+      if (!groups.has(brand)) groups.set(brand,[]);
+      groups.get(brand).push(product);
+    }
+    for (const [brand,products] of groups) {
+      html += '<optgroup label="' + esc(brand) + '">' +
+        products.map(p => option(p.id,p.name,p.id === selectedId)).join('') + '</optgroup>';
+    }
+    return html;
+  };
+  const textureSrc = ref => /^_catalog\/et_[0-9a-f]{32}\.png$/.test(ref || '')
+    ? (typeof BASE === 'string' ? BASE : '') + '/uploads/' + ref : '';
   const colors = trade => {
     const palette = _vzPalette(_vzSelectedProduct(trade));
     const selected = vz.selections[trade][tier] || {};
     const found = palette.some(c => c.name === selected.color_name && c.hex === selected.color_hex);
     const options = (!found ? option('', selected.color_name || 'Choose a color', true) : '') +
       palette.map((c, i) => option(String(i), c.name, c.name === selected.color_name && c.hex === selected.color_hex)).join('');
-    return '<label class="vz-field">Color <select onchange="_vzChooseColor(\'' + trade + '\', this.value)">' +
-      options + '</select></label>' +
-      '<div class="vz-selected-color"><span style="background:' +
-      (/^#[0-9a-f]{6}$/i.test(selected.color_hex || '') ? selected.color_hex : '#fff') +
-      '"></span>' + esc(selected.color_name || 'No color chosen') + '</div>';
+    const swatches = palette.map((color,index) => {
+      const active=color.name === selected.color_name && color.hex === selected.color_hex;
+      const src=textureSrc(color.texture_ref);
+      return '<button type="button" class="vz-swatch' + (active?' active':'') + '"' +
+        ' aria-pressed="' + (active?'true':'false') + '" aria-label="Choose ' + esc(color.name) +
+        '" title="' + esc(color.name) + '" onclick="_vzChooseColor(\'' + trade + '\',\'' + index + '\')">' +
+        '<span class="vz-swatch-color" style="background:' + color.hex + '"></span>' +
+        (src ? '<img loading="lazy" decoding="async" src="' + esc(src) + '" alt="">' : '') +
+        '<span>' + esc(color.name) + '</span>' + (active?'<i class="vz-swatch-check" aria-hidden="true">✓</i>':'') +
+        '</button>';
+    }).join('');
+    return '<div class="vz-color-picker"><label class="vz-field">Color list <select onchange="_vzChooseColor(\'' + trade + '\', this.value)">' +
+      options + '</select></label><div class="vz-swatch-row" role="group" aria-label="Manufacturer colors">' +
+      swatches + '</div></div>';
+  };
+  const panel = (key,title,body,extraClass='') => {
+    const selectedRows=key==='details'
+      ? ['trim','soffit'].map(trade=>(vz.selections[trade]||{})[tier]||{})
+      : [(vz.selections[key] || {})[tier] || {}];
+    const summary=selectedRows.flatMap(selected => [
+      selected.product_name || selected.option_name || selected.bundle_name,
+      selected.style_name,selected.color_name]).filter(Boolean).join(' · ') || 'Choose product and color';
+    const open=vzState.openPickerTrade === key;
+    return '<details class="vz-picker-section ' + extraClass + '" data-vz-picker="' + esc(key) + '" ' +
+      (open?'open ':'') + 'ontoggle="_vzSetPickerOpen(\'' + key + '\',this.open)">' +
+      '<summary><span class="vz-picker-summary"><strong>' + title + '</strong><small>' + esc(summary) +
+      '</small></span></summary><div class="vz-picker-content">' + body + '</div></details>';
   };
   const tradePanel = trade => {
     const bundle = _vzBundleFor(trade, tier);
@@ -15857,12 +16143,10 @@ function _vzRenderPicker() {
       ? '<label class="vz-field">Siding style<select onchange="_vzChooseStyle(this.value)">' +
         (!styles.some(s => s.id === selected.style_id) ? option('', selected.style_name || 'Choose style', true) : '') +
         styles.map(s => option(s.id, s.name, s.id === selected.style_id)).join('') + '</select></label>' : '';
-    return '<section class="vz-picker-section"><h3 class="vz-picker-title">' +
-      (trade === 'roofing' ? 'Roof' : 'Siding') + '</h3>' +
-      '<label class="vz-field">Product<select onchange="_vzChooseProduct(\'' + trade + '\', this.value)">' +
-      (!choices.some(p => p.id === selectedId) ? option('', 'Choose a product', true) : '') +
-      choices.map(p => option(p.id, p.name, p.id === selectedId)).join('') +
-      '</select></label>' + stylePicker + colors(trade) + '</section>';
+    const title=trade === 'roofing' ? '🏠 Roof' : '🏗 Siding';
+    const body='<label class="vz-field">Product<select onchange="_vzChooseProduct(\'' + trade + '\', this.value)">' +
+      productOptions(choices,selectedId,'Choose a product') + '</select></label>' + stylePicker + colors(trade);
+    return panel(trade,title,body);
   };
   const componentPanel = (trade, title) => {
     const choices = _vzComponentProducts(trade, tier);
@@ -15874,22 +16158,20 @@ function _vzRenderPicker() {
     const selectedId = selected.exterior_product_id || '';
     return '<div class="vz-component"><h4>' + esc(title) + '</h4>' +
       '<label class="vz-field">Product / profile<select onchange="_vzChooseProduct(\'' + trade + '\', this.value)">' +
-      (!choices.some(p => p.id === selectedId) ? option('', 'Choose a product', true) : '') +
-      choices.map(p => option(p.id, p.name, p.id === selectedId)).join('') +
+      productOptions(choices,selectedId,'Choose a product') +
       '</select></label>' + colors(trade) + '</div>';
   };
   const genericPanel = role => {
     const meta = _VZ_ROLE_META[role], trade = meta.trade;
     const choices = _vzExteriorGroups(trade);
     const selected = vz.selections[trade][tier] || {};
-    if (!choices.length) return '<section class="vz-picker-section"><h3 class="vz-picker-title">' +
-      meta.icon + ' ' + esc(meta.label) + '</h3><p class="vz-picker-help">No installed ' +
-      esc(meta.label.toLowerCase()) + ' products are in the Exterior Catalog yet. A manager can add them without changing pricing.</p></section>';
+    if (!choices.length) return panel(trade,meta.icon + ' ' + esc(meta.label),
+      '<p class="vz-picker-help">No installed ' + esc(meta.label.toLowerCase()) +
+      ' products are in the Exterior Catalog yet. A manager can add them without changing pricing.</p>');
     const selectedId = selected.exterior_product_id || '';
-    return '<section class="vz-picker-section"><h3 class="vz-picker-title">' + meta.icon + ' ' + esc(meta.label) + '</h3>' +
-      '<label class="vz-field">Installed product<select onchange="_vzChooseProduct(\'' + trade + '\',this.value)">' +
-      (!choices.some(p => p.id === selectedId) ? option('', selected.product_name || 'Choose a product', true) : '') +
-      choices.map(p => option(p.id,p.name,p.id === selectedId)).join('') + '</select></label>' + colors(trade) + '</section>';
+    const body='<label class="vz-field">Installed product<select onchange="_vzChooseProduct(\'' + trade + '\',this.value)">' +
+      productOptions(choices,selectedId,selected.product_name || 'Choose a product') + '</select></label>' + colors(trade);
+    return panel(trade,meta.icon + ' ' + esc(meta.label),body);
   };
   const exteriorDoors = _vzExteriorGroups('doors');
   const doorOptions = Array.isArray((priceBook || {}).exterior_catalog)
@@ -15901,13 +16183,13 @@ function _vzRenderPicker() {
     (!provia.configured_for || provia.configured_for === _vzDoorConfigurationFingerprint(ds,provia));
   const pf = (field,label,placeholder) => '<label class="vz-field">' + label + '<input value="' +
     esc(provia[field] || '') + '" placeholder="' + esc(placeholder || '') + '" onchange="_vzSetProVia(\'' + field + '\',this.value)"></label>';
-  const doorPanel = '<section class="vz-picker-section vz-door-section"><h3 class="vz-picker-title">Entry door</h3>' +
+  const doorBody =
     '<label class="vz-field">Door series<select onchange="_vzPickDoorOption(this.value)">' +
     option('', 'Keep existing door', !selectedDoorId) +
     (selectedDoorId && !doorOptions.some(d => d.id === selectedDoorId) ? option(selectedDoorId, ds.option_name + ' (saved selection)', true) : '') +
-    doorOptions.map(d => option(d.id, d.name, d.id === selectedDoorId)).join('') + '</select></label>' +
+    productOptions(doorOptions,selectedDoorId,'Choose a door',false) + '</select></label>' +
     (selectedDoorId ? colors('doors') : '') +
-    '<div class="vz-provia-spec"><h4>Exact ProVia specification handoff</h4><div class="vz-provia-grid">' +
+    '<details class="vz-provia-spec"><summary>Exact ProVia specification handoff <span>Optional details</span></summary><div class="vz-provia-spec-body"><div class="vz-provia-grid">' +
       pf('access_code','Envision access code','Paste the ProVia design code') + pf('series','Series','Signet, Embarq, Heritage…') +
       pf('model','Model / style','Door model or style number') + pf('glass','Glass','Glass family / privacy') +
       pf('hardware','Hardware','Finish and handleset') + pf('swing','Swing / handing','Inswing, handing') +
@@ -15915,15 +16197,25 @@ function _vzRenderPicker() {
     (provia.configured_image ? '<img class="vz-provia-preview' + (proviaImageCurrent?'':' stale') + '" src="' + BASE + '/uploads/' + esc(provia.configured_image) + '" alt="Saved ProVia configuration">' +
       (proviaImageCurrent?'':'<p class="vz-provia-stale">This image belongs to the previous door configuration. Re-upload the current ProVia image before placing it.</p>') : '') +
     '<div class="vz-provia-actions"><a class="vz-provia-link" href="https://www.provia.com/design-center/envision/" target="_blank" rel="noopener noreferrer">Open ProVia Envision ↗</a>' +
-    '<label class="btn small">Upload configured door image<input type="file" accept="image/png,image/jpeg,image/webp" hidden onchange="_vzUploadProViaImage(this)"></label></div></div></section>';
+    '<label class="btn small" tabindex="0">Upload configured door image<input type="file" accept="image/png,image/jpeg,image/webp" hidden onchange="_vzUploadProViaImage(this)"></label></div></div></details>';
+  const doorPanel = panel('doors','🚪 Entry door',doorBody,'vz-door-section');
   const primary = (scope.has('roof') ? tradePanel('roofing') : '') + (scope.has('siding') ? tradePanel('siding') : '');
   const details = (scope.has('trim') || scope.has('soffit'))
-    ? '<section class="vz-picker-section vz-component-section"><h3 class="vz-picker-title">Siding details</h3>' +
-      (scope.has('trim') ? componentPanel('trim','Trim & fascia') : '') +
-      (scope.has('soffit') ? componentPanel('soffit','Soffit') : '') + '</section>' : '';
+    ? panel('details','▦ Siding details',
+      (scope.has('trim') ? componentPanel('trim','Trim, fascia & rakes') : '') +
+      (scope.has('soffit') ? componentPanel('soffit','Soffit') : ''),'vz-component-section') : '';
   const additions = ['gutter','window','metal','shutter','stucco'].filter(role => scope.has(role)).map(genericPanel).join('');
   host.innerHTML = '<p class="vz-picker-help">Design choices only. Update Products / Pricing separately to quote this look. Uploaded textures and screen colors are approximate; verify manufacturer availability and physical samples.</p>' +
     primary + details + additions + (scope.has('door') ? doorPanel : '');
+}
+function _vzSetPickerOpen(key,open) {
+  if (!vzState || vzState.owner !== S) return;
+  if (open) {
+    vzState.openPickerTrade=key;
+    document.querySelectorAll('#vz-picker-body details[data-vz-picker]').forEach(details => {
+      if (details.dataset.vzPicker !== key) details.open=false;
+    });
+  } else if (vzState.openPickerTrade === key) vzState.openPickerTrade='';
 }
 function _vzChanged() {
   _vzInvalidateRenders();
@@ -16105,7 +16397,7 @@ function _vzDrawWarpTriangle(ctx,sheet,source,destination) {
   const matrix=_vzAffineTriangle(source,destination);
   if (!matrix) return;
   const clip=_vzExpandTriangle(destination);
-  ctx.save();
+  _vzHighQuality(ctx);ctx.save();
   ctx.beginPath();ctx.moveTo(clip[0].x,clip[0].y);ctx.lineTo(clip[1].x,clip[1].y);ctx.lineTo(clip[2].x,clip[2].y);ctx.closePath();ctx.clip();
   ctx.transform(...matrix);ctx.drawImage(sheet,0,0);ctx.restore();
 }
@@ -16114,13 +16406,21 @@ function _vzRotatedTile(image,quarterTurns) {
   if (!turns) return image;
   const swap=turns%2===1;
   const tile=_vzMakeMaskCanvas(swap?image.naturalHeight:image.naturalWidth,swap?image.naturalWidth:image.naturalHeight);
-  const ctx=tile.getContext('2d');
+  const ctx=_vzHighQuality(tile.getContext('2d'));
   ctx.translate(tile.width/2,tile.height/2);ctx.rotate(turns*Math.PI/2);
   ctx.drawImage(image,-image.naturalWidth/2,-image.naturalHeight/2);
   return tile;
 }
+function _vzTextureFootprint(image,tileWidth,quarterTurns=0) {
+  const sourceW=Math.max(1,Number(image?.naturalWidth || image?.width)||1);
+  const sourceH=Math.max(1,Number(image?.naturalHeight || image?.height)||1);
+  const width=Math.max(1,Number(tileWidth)||1);
+  const height=Math.max(1,width*(sourceH/sourceW));
+  const turns=((quarterTurns||0)%4+4)%4;
+  return turns%2 ? {width:height,height:width} : {width,height};
+}
 function _vzRepeatedSheet(image,repeatX,repeatY,quarterTurns) {
-  const sheet=_vzMakeMaskCanvas(512,512),ctx=sheet.getContext('2d');
+  const sheet=_vzMakeMaskCanvas(512,512),ctx=_vzHighQuality(sheet.getContext('2d'));
   const tile=_vzRotatedTile(image,quarterTurns);
   if (!tile.width || !tile.height) return sheet;
   const pattern=ctx.createPattern(tile,'repeat');
@@ -16156,9 +16456,9 @@ function _vzPlacementSheet(ref,image,assignment) {
   const cached=_vzCachedCanvas(_vzPlacementSheetCache,key);if(cached)return cached;
   const sourceW=Math.max(1,Math.round(image.naturalWidth*crop.w));
   const sourceH=Math.max(1,Math.round(image.naturalHeight*crop.h));
-  const scale=Math.min(1,720/Math.max(sourceW,sourceH));
+  const scale=Math.min(1,1200/Math.max(sourceW,sourceH));
   const sheet=_vzMakeMaskCanvas(Math.max(1,Math.round(sourceW*scale)),Math.max(1,Math.round(sourceH*scale)));
-  const ctx=sheet.getContext('2d');
+  const ctx=_vzHighQuality(sheet.getContext('2d'));
   if(assignment.mirror_x){ctx.translate(sheet.width,0);ctx.scale(-1,1);}
   ctx.drawImage(image,image.naturalWidth*crop.x,image.naturalHeight*crop.y,sourceW,sourceH,0,0,sheet.width,sheet.height);
   return _vzCacheCanvas(_vzPlacementSheetCache,key,sheet,24*1024*1024);
@@ -16176,7 +16476,7 @@ function _vzCompositePlacements(ctx,W,H,tier) {
     const cached=_vzCachedCanvas(_vzPlacementLayerCache,key);
     if(cached){ctx.save();ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;ctx.drawImage(cached,0,0);ctx.restore();return;}
   }
-  const layer=_vzMakeMaskCanvas(W,H),layerCtx=layer.getContext('2d');
+  const layer=_vzMakeMaskCanvas(W,H),layerCtx=_vzHighQuality(layer.getContext('2d'));
   for(const slot of slots){
     const assignment=assignments[slot.id];if(!assignment)continue;
     const image=_vzGetPlacementImg(assignment.asset_ref);
@@ -16197,7 +16497,7 @@ function _vzProjectedLayer(role,tier,image,tileSize,cacheId,width,height) {
   const signature=stablePlanes.map(plane => [plane.id,plane.quad.map(point => point.map(v => Math.round(v*10000)/10000)),plane.scale,plane.quarter_turns]);
   const key=JSON.stringify([_vzElevation().id,role,tier,cacheId,Number(tileSize)||0,width,height,grid,signature]);
   const cached=_vzCachedCanvas(_vzProjectionCache,key);if(cached)return cached;
-  const layer=_vzMakeMaskCanvas(width,height),ctx=layer.getContext('2d');
+  const layer=_vzMakeMaskCanvas(width,height),ctx=_vzHighQuality(layer.getContext('2d'));
   const canonicalWidth=vzState.canvas?.width||width,canonicalHeight=vzState.canvas?.height||height;
   let drawn=false;
   for (const plane of stablePlanes) {
@@ -16205,8 +16505,9 @@ function _vzProjectedLayer(role,tier,image,tileSize,cacheId,width,height) {
     const averageWidth=(Math.hypot(q[1].x-q[0].x,q[1].y-q[0].y)+Math.hypot(q[2].x-q[3].x,q[2].y-q[3].y))/2;
     const averageHeight=(Math.hypot(q[3].x-q[0].x,q[3].y-q[0].y)+Math.hypot(q[2].x-q[1].x,q[2].y-q[1].y))/2;
     const base=Math.max(16,Math.min(512,Number(tileSize)||96))*Math.max(0.25,Math.min(4,Number(plane.scale)||1));
-    const repeatX=Math.max(0.5,Math.min(64,averageWidth/base));
-    const repeatY=Math.max(0.5,Math.min(64,averageHeight/base));
+    const footprint=_vzTextureFootprint(image,base,plane.quarter_turns);
+    const repeatX=Math.max(0.5,Math.min(64,averageWidth/footprint.width));
+    const repeatY=Math.max(0.5,Math.min(64,averageHeight/footprint.height));
     const sheet=_vzRepeatedSheet(image,repeatX,repeatY,plane.quarter_turns);
     drawn=_vzWarpSheetToQuad(ctx,sheet,plane.quad,width,height,grid)||drawn;
   }
@@ -16217,10 +16518,13 @@ function _vzFillCanonicalFlat(ctx,W,H,image,tileSize,mode) {
   const canonicalW=Math.max(1,vzState.canvas?.width||W),canonicalH=Math.max(1,vzState.canvas?.height||H);
   const targetScale=Math.max(0.01,Math.min(W/canonicalW,H/canonicalH));
   const baseSize=Math.max(16,Math.min(512,Number(tileSize)||96));
-  const tileW=Math.max(1,Math.round((mode==='native'?image.naturalWidth:baseSize)*targetScale));
-  const tileH=Math.max(1,Math.round((mode==='native'?image.naturalHeight:baseSize)*targetScale));
+  const footprint=mode==='native'
+    ? {width:image.naturalWidth,height:image.naturalHeight}
+    : _vzTextureFootprint(image,baseSize);
+  const tileW=Math.max(1,Math.round(footprint.width*targetScale));
+  const tileH=Math.max(1,Math.round(footprint.height*targetScale));
   const tile=_vzMakeMaskCanvas(tileW,tileH);
-  tile.getContext('2d').drawImage(image,0,0,tileW,tileH);
+  _vzHighQuality(tile.getContext('2d')).drawImage(image,0,0,tileW,tileH);
   const pattern=ctx.createPattern(tile,'repeat');if(!pattern)return false;
   ctx.fillStyle=pattern;ctx.fillRect(0,0,W,H);return true;
 }
@@ -16241,7 +16545,7 @@ function _vzCompositeProjected(ctx,W,H,mask,role,tier,image,tileSize,cacheId,alp
 function _vzComposeInto(target, tier, opts) {
   const showMaskOverlay = !!(opts && opts.showMaskOverlay);
   if (!vzState || !vzState.photoImg) return;
-  const ctx = target.getContext('2d');
+  const ctx = _vzHighQuality(target.getContext('2d'));
   const W = target.width, H = target.height;
   ctx.clearRect(0, 0, W, H);
   ctx.drawImage(vzState.photoImg, 0, 0, W, H);
@@ -16295,7 +16599,7 @@ function _vzComposeInto(target, tier, opts) {
 function _vzCompositeColor(ctx, W, H, mask, hex) {
   // Off-screen: color-fill clipped to the mask.
   const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
-  const octx = oc.getContext('2d');
+  const octx = _vzHighQuality(oc.getContext('2d'));
   octx.drawImage(mask, 0, 0, W, H);
   octx.globalCompositeOperation = 'source-in';
   octx.fillStyle = hex;
@@ -16308,7 +16612,7 @@ function _vzCompositeColor(ctx, W, H, mask, hex) {
 
 function _vzCompositePattern(ctx, W, H, mask, patImg) {
   const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
-  const octx = oc.getContext('2d');
+  const octx = _vzHighQuality(oc.getContext('2d'));
   const pat = octx.createPattern(patImg, 'repeat');
   if (!pat) return;
   octx.fillStyle = pat;
@@ -16325,10 +16629,13 @@ function _vzCompositePattern(ctx, W, H, mask, patImg) {
 
 function _vzCompositeTexture(ctx, W, H, mask, texture, tileSize) {
   const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
-  const octx = oc.getContext('2d');
+  const octx = _vzHighQuality(oc.getContext('2d'));
   const size = Math.max(16, Math.min(512, tileSize || 96));
-  const tile = document.createElement('canvas'); tile.width = size; tile.height = size;
-  tile.getContext('2d').drawImage(texture, 0, 0, size, size);
+  const footprint=_vzTextureFootprint(texture,size);
+  const tile = document.createElement('canvas');
+  tile.width = Math.max(1,Math.round(footprint.width));
+  tile.height = Math.max(1,Math.round(footprint.height));
+  _vzHighQuality(tile.getContext('2d')).drawImage(texture, 0, 0, tile.width, tile.height);
   const pattern = octx.createPattern(tile, 'repeat');
   if (!pattern) return;
   octx.fillStyle = pattern; octx.fillRect(0,0,W,H);
@@ -16423,9 +16730,12 @@ function _vzRedrawAll(mainOnly = false) {
     const tc = document.getElementById('vz-thumb-' + t);
     if (!tc || !vzState.photoImg) continue;
     const wrap = tc.parentElement;
-    const cw = Math.max(220, wrap.clientWidth || 260);
-    tc.width = cw;
-    tc.height = Math.round(cw * (vzState.photoH / vzState.photoW || 0.6));
+    const cw = Math.max(96, wrap.clientWidth || 220);
+    const dpr = Math.max(1,Math.min(2,typeof window === 'object' ? (window.devicePixelRatio||1) : 1));
+    const backingW=Math.round(cw*dpr);
+    const backingH=Math.round(cw*(vzState.photoH/vzState.photoW||0.6)*dpr);
+    if (tc.width !== backingW) tc.width=backingW;
+    if (tc.height !== backingH) tc.height=backingH;
     _vzComposeInto(tc, t, { showMaskOverlay: false });
     const capEl = document.getElementById('vz-thumb-cap-' + t);
     if (capEl) {
@@ -16481,21 +16791,19 @@ function _vzFinalizeVisualizerInteraction() {
 async function _vzSaveAll() {
   if (!vzState?.photoImg || vzState.owner !== S || vzState.detecting || vzState.saving || vzState.proviaUploading) return false;
   _vzFinalizeVisualizerInteraction();
+  const state = vzState, vz = _vzGet(), elevation = _vzElevation();
   const roles = _vzScopeRoles();
-  const hasSurface = roles.some(role => {
-    const mask = vzState[role + 'Mask'];
-    if (!mask) return false;
-    const pixels = mask.getContext('2d').getImageData(0, 0, mask.width, mask.height).data;
-    for (let i = 3; i < pixels.length; i += 4) if (pixels[i]) return true;
-    return false;
-  });
+  const hasSurface = roles.some(role => _vzMaskHasContent(vzState[role + 'Mask']));
   const placementDoc=_vzPlacementDoc(),scopeSet=new Set(roles);
   const hasPlacement=Object.values(placementDoc.slots).some(slot=>scopeSet.has(slot.role)&&
     TIERS.some(tier=>!!placementDoc.concepts[tier]?.[slot.id]));
-  if (!hasSurface && !hasPlacement) { alert('No project surfaces or exact products are selected yet. Run automatic selection, use Refine selection, or place a product before saving.'); return false; }
-  const eid = S.estimate_id;
-  if (!eid) { alert('Save the estimate first so this design has a customer file.'); return false; }
-  const state = vzState, vz = _vzGet(), elevation = _vzElevation();
+  // A photo is useful project data by itself. Let reps save or leave after an
+  // upload even when fal is disabled or they plan to select surfaces later.
+  // Blank masks and three identical renderings are intentionally not stored.
+  const baseOnly = !!state.pendingBaseDataUrl && !hasSurface && !hasPlacement;
+  if (!hasSurface && !hasPlacement && !baseOnly) { alert('No project surfaces or exact products are selected yet. Run automatic selection, use Refine selection, or place a product before saving.'); return false; }
+  let eid = S.estimate_id;
+  const pendingGenericSave = _estimateSaveFlight?.promise;
   const btn = document.getElementById('vz-save-btn');
   let succeeded = false;
   state.saving = true;
@@ -16503,41 +16811,69 @@ async function _vzSaveAll() {
   _vzDetectionUI();
   if (btn) btn.textContent = 'Saving…';
   try {
+    // A brand-new estimate has no server folder yet. Create its record first,
+    // then continue the same click into the focused visualizer transaction.
+    if (!eid) {
+      if (!(await saveEstimate()) || state !== vzState || state.owner !== S || !S.estimate_id) {
+        throw new Error('The estimate could not be created for this design.');
+      }
+      eid = S.estimate_id;
+    }
+    // A whole-estimate save that began first must finish before the focused
+    // asset/state transaction starts. While state.saving is true, navigation,
+    // header save, and autosave cannot start a new generic PUT behind it.
+    if (pendingGenericSave) await pendingGenericSave;
+    if (state !== vzState || state.owner !== S) throw new Error('Estimate changed before saving the design. Return to it and save again.');
     for (const tier of TIERS) _vzEnsureTier(tier);
     const selections = JSON.parse(JSON.stringify(vz.selections));
-    const selectedRows = Object.entries(selections).flatMap(([trade, tiers]) =>
+    const scopedTrades = new Set(roles.map(role => _VZ_ROLE_META[role].trade));
+    const selectedRows = Object.entries(selections).filter(([trade]) => scopedTrades.has(trade)).flatMap(([trade, tiers]) =>
       Object.values(tiers || {}).map(selected =>
         _vzEffectiveExteriorSelection(trade, selected)));
     const patterns = new Set(selectedRows.map(s => s.pattern_id).filter(Boolean));
     const textures = new Set(selectedRows.map(s => s.texture_ref).filter(Boolean));
-    await Promise.all([...patterns].map(pid => _vzImageReady(_vzGetPatternImg(pid))));
-    await Promise.all([...textures].map(ref => _vzImageReady(_vzGetTextureImg(ref))));
-    const placementRefs=new Set();
-    for(const assignments of Object.values(_vzPlacementDoc().concepts||{}))for(const assignment of Object.values(assignments||{}))if(assignment.asset_ref)placementRefs.add(assignment.asset_ref);
-    await Promise.all([...placementRefs].map(ref=>_vzImageReady(_vzGetPlacementImg(ref))));
-    if (state !== vzState || state.owner !== S) throw new Error('Estimate changed before saving the design. Return to it and save again.');
-    // Snapshot all pixels before the first upload so another estimate/tier
-    // cannot slip into a save while network requests are in flight.
-    const uploads = [];
-    const elevationMeta = {elevation_id:elevation.id,elevation_name:elevation.name};
-    if (state.pendingBaseDataUrl) uploads.push({body: {kind: 'base', ext: state.pendingBaseExt,
-      content_b64: state.pendingBaseDataUrl.split(',')[1], ...elevationMeta}, key: 'base_image'});
-    for (const role of roles) uploads.push({body: {kind: 'mask', role, ext: 'png',
-      content_b64: state[role + 'Mask'].toDataURL('image/png').split(',')[1], ...elevationMeta}, role});
-    for (const tier of TIERS) {
-      const off = _vzMakeMaskCanvas(state.canvas.width, state.canvas.height);
-      _vzComposeInto(off, tier, {showMaskOverlay: false});
-      uploads.push({body: {kind: 'render', tier, ext: 'jpg', content_b64: off.toDataURL('image/jpeg', 0.9).split(',')[1], ...elevationMeta}, tier});
+    if (!baseOnly) {
+      await Promise.all([...patterns].map(pid => _vzImageReady(_vzGetPatternImg(pid))));
+      await Promise.all([...textures].map(ref => _vzImageReady(_vzGetTextureImg(ref))));
     }
-    for (const asset of uploads) {
+    const placementRefs=new Set();
+    const scopedSlotIds=new Set(Object.values(placementDoc.slots).filter(slot=>scopeSet.has(slot.role)).map(slot=>slot.id));
+    for(const assignments of Object.values(placementDoc.concepts||{}))for(const [slotId,assignment] of Object.entries(assignments||{}))if(scopedSlotIds.has(slotId)&&assignment.asset_ref)placementRefs.add(assignment.asset_ref);
+    if (!baseOnly) await Promise.all([...placementRefs].map(ref=>_vzImageReady(_vzGetPlacementImg(ref))));
+    if (state !== vzState || state.owner !== S) throw new Error('Estimate changed before saving the design. Return to it and save again.');
+    const elevationMeta = {elevation_id:elevation.id,elevation_name:elevation.name};
+    const storeAsset = async asset => {
       const result = await _vzPostAsset(eid, asset.body);
       if (asset.tier) elevation.tier_renders[asset.tier] = result.filename;
       else if (asset.role) elevation.masks[asset.role] = result.filename;
-      else if (asset.key === 'base_image') { elevation.base_image = result.filename; state.pendingBaseDataUrl = null; }
+      else if (asset.key === 'base_image') {
+        elevation.base_image = result.filename;
+        state.pendingBaseDataUrl = null;
+        const status = document.getElementById('vz-elevation-status-' + elevation.id);
+        if (status) status.textContent = 'saved';
+      }
       if (elevation.id === 'front') {
         vz.base_image = elevation.base_image;
         vz.tier_renders = Object.assign({},elevation.tier_renders);
         if (asset.role) vz[asset.role + '_mask'] = result.filename;
+      }
+    };
+    if (state.pendingBaseDataUrl) await storeAsset({body:{kind:'base',ext:state.pendingBaseExt,
+      content_b64:state.pendingBaseDataUrl.split(',')[1],...elevationMeta},key:'base_image'});
+    if (!baseOnly) {
+      for (const role of roles) {
+        await storeAsset({body:{kind:'mask',role,ext:'png',
+          content_b64:state[role + 'Mask'].toDataURL('image/png').split(',')[1],...elevationMeta},role});
+      }
+      const renderSize=_vzFitSize(state.photoImg.naturalWidth,state.photoImg.naturalHeight,
+        _VZ_SOURCE_MAX_SIDE,_VZ_SOURCE_MAX_PIXELS);
+      for (const tier of TIERS) {
+        const off=_vzMakeMaskCanvas(renderSize.width,renderSize.height);
+        try {
+          _vzComposeInto(off,tier,{showMaskOverlay:false});
+          await storeAsset({body:{kind:'render',tier,ext:'jpg',
+            content_b64:off.toDataURL('image/jpeg',_VZ_JPEG_QUALITY).split(',')[1],...elevationMeta},tier});
+        } finally { off.width=0;off.height=0; }
       }
     }
     const response = await fetch('/api/estimates/' + encodeURIComponent(eid) + '/visualizer/state', {
@@ -16553,7 +16889,7 @@ async function _vzSaveAll() {
     if (state === vzState && state.owner === S) {
       // The parent estimate can have unsaved work; don't mark the whole file clean.
       setDirty();
-      if (btn) btn.textContent = 'Saved renderings';
+      if (btn) btn.textContent = baseOnly ? 'Photo saved' : 'Saved renderings';
     }
   } catch (error) {
     if (state === vzState && state.owner === S) {

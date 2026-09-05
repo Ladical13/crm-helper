@@ -933,10 +933,30 @@ def test_detection_converts_binary_masks_to_alpha_and_rejects_low_confidence(det
         detector.combine_masks({'masks': [{'url': 'https://untrusted.invalid/image.png'}]}, (3, 2))
 
 
+def test_detection_feathers_only_the_mask_boundary_and_keeps_thin_surfaces(detector):
+    from PIL import Image
+    mask = Image.new('L', (16, 16), 0)
+    # A solid surface plus a one-pixel component exercises both smooth edges
+    # and the fascia/gutter case that must not disappear during cleanup.
+    for y in range(5, 11):
+        for x in range(5, 11):
+            mask.putpixel((x, y), 255)
+    mask.putpixel((2, 8), 255)
+    result = detector.combine_masks(
+        {'masks': [{'url': _image_uri(mask)}], 'scores': [0.95]}, (16, 16))
+    alpha = detector.decode_image(result['mask']).getchannel('A')
+    assert alpha.getpixel((8, 8)) == 255
+    assert alpha.getpixel((2, 8)) == 255
+    assert alpha.getpixel((0, 0)) == 0
+    assert 0 < alpha.getpixel((4, 8)) < 255
+
+
 @pytest.mark.parametrize(('role', 'prompt'), [
     ('roof', 'roof'),
     ('siding', 'exterior wall siding'),
-    ('trim', 'fascia boards, window trim, door trim, corner trim'),
+    ('trim', ('exterior trim boards including fascia at roof eaves, sloped '
+              'gable rake boards and bargeboards, window trim, door trim, '
+              'and corner trim')),
     ('soffit', 'soffit under roof eaves'),
     ('door', 'entry door'),
 ])
@@ -1179,6 +1199,7 @@ const context = vm.createContext({
   fetch: async () => ({ok:true, json:async()=>({})}),
   Image: function Image(){},
   S: {estimate_id:'estimate-a', trades:{}},
+  _estimateSaveFlight: null,
   priceBook: {exterior_catalog:[], exterior_doors:[]},
   TIERS:['good','better','best'],
   setDirty(){},
@@ -1257,6 +1278,111 @@ _vzComposeInto({width:20,height:20,getContext:()=>ctx},'good',{});
 assert.equal(colorCalls,1); // hex remains the loading/error fallback
 assert.equal(projectedCalls.length,0);
 """)
+
+
+def test_visualizer_uses_separate_high_resolution_output_and_preserves_texture_aspect_in_node():
+    _run_visualizer_ui_node(r"""
+assert.deepEqual(_vzFitSize(4032,3024,_VZ_SOURCE_MAX_SIDE,_VZ_SOURCE_MAX_PIXELS),
+  {width:2048,height:1536});
+const square=_vzFitSize(4000,4000,_VZ_SOURCE_MAX_SIDE,_VZ_SOURCE_MAX_PIXELS);
+assert.ok(square.width < _VZ_SOURCE_MAX_SIDE);
+assert.ok(square.width*square.height <= _VZ_SOURCE_MAX_PIXELS+4000);
+const footprint=_vzTextureFootprint({naturalWidth:512,naturalHeight:442},96,0);
+assert.equal(footprint.width,96);
+assert.ok(Math.abs(footprint.height-82.875)<0.001);
+const rotated=_vzTextureFootprint({naturalWidth:512,naturalHeight:442},96,1);
+assert.ok(Math.abs(rotated.width-82.875)<0.001);
+assert.equal(rotated.height,96);
+""")
+
+
+def test_visualizer_picker_exposes_real_manufacturer_texture_swatches_in_node():
+    _run_visualizer_ui_node(r"""
+const texture='_catalog/et_'+'c'.repeat(32)+'.png';
+priceBook.exterior_catalog=[
+  {category:'roof',active:true,product_id:'iko-nordic',brand:'IKO',product:'Nordic',
+   style:'Performance laminate',color:'Granite Black',hex:'#343536',
+   texture_ref:texture,texture_scale:96}
+];
+S={estimate_id:'estimate-a',trades:{},visualizer:{scope:['roof'],selections:{},
+  elevations:{front:{id:'front',name:'Front',base_image:null,masks:{},tier_renders:{}}},
+  elevation_order:['front'],active_elevation_id:'front'}};
+_vzResetState();vzState.activeTier='better';
+_vzRenderPicker();
+const html=document.getElementById('vz-picker-body').innerHTML;
+assert.match(html,/class="vz-swatch active"/);
+assert.match(html,/aria-pressed="true"/);
+assert.match(html,/loading="lazy"/);
+assert.match(html,/uploads\/_catalog\/et_/);
+assert.match(html,/<optgroup label="IKO">/);
+assert.match(html,/Color list/);
+assert.match(html,/data-vz-picker="roofing" open/);
+""")
+
+
+def test_photo_upload_waits_for_explicit_detection_and_keeps_2048_source_in_node():
+    _run_visualizer_ui_node(r"""
+S={estimate_id:'estimate-a',trades:{},visualizer:{}};
+_vzResetState();vzCapabilities={auto_detect:true};
+globalThis.FileReader=function(){
+  this.readAsDataURL=()=>{this.result='data:image/jpeg;base64,AAAA';this.onload();};
+};
+_vzReadImage=async()=>({naturalWidth:4032,naturalHeight:3024});
+let made=[],detectCalls=0;
+_vzMakeMaskCanvas=(width,height)=>{
+  made.push([width,height]);
+  return {width,height,getContext:()=>({drawImage(){}}),
+    toDataURL:()=> 'data:image/jpeg;base64,AAAA'};
+};
+renderVisualizerPage=async()=>{};
+_vzAutoDetect=async()=>{detectCalls++;};
+await _vzHandleFile({size:100,type:'image/jpeg'});
+assert.deepEqual(made[0],[2048,1536]);
+assert.equal(detectCalls,0,'fal detection must wait for the rep to click Detect');
+assert.ok(vzState.pendingBaseDataUrl);
+const tabs=_vzElevationTabsHtml();
+assert.match(tabs,/ready to save/);
+assert.doesNotMatch(tabs,/needs photo/);
+""")
+
+
+def test_visualizer_can_save_a_photo_before_surface_detection_in_node():
+    _run_visualizer_ui_node(r"""
+S={estimate_id:'estimate-a',trades:{},visualizer:{scope:['roof'],selections:{},
+  elevations:{front:{id:'front',name:'Front',base_image:null,masks:{},tier_renders:{},
+    placements:{version:1,slots:{},concepts:{good:{},better:{},best:{}}}}},
+  elevation_order:['front'],active_elevation_id:'front'}};
+_vzResetState();
+vzState.photoImg={naturalWidth:1600,naturalHeight:900};
+vzState.pendingBaseDataUrl='data:image/jpeg;base64,AAAA';
+vzState.pendingBaseExt='jpg';
+vzState.dirty=true;
+const assets=[];
+_vzPostAsset=async(eid,body)=>{assets.push(body);return {filename:eid+'/base.jpg'};};
+const saved=await _vzSaveAll();
+assert.equal(saved,true);
+assert.deepEqual(assets.map(asset=>asset.kind),['base']);
+assert.equal(vzState.pendingBaseDataUrl,null);
+assert.equal(vzState.dirty,false);
+assert.equal(_vzElevation().base_image,'estimate-a/base.jpg');
+""")
+
+
+def test_visualizer_save_guards_are_wired_to_header_navigation_and_autosave():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    source = (root / 'static' / 'app.js').read_text(encoding='utf-8')
+    index = (root / 'static' / 'index.html').read_text(encoding='utf-8')
+    assert 'onclick="saveCurrentWork()"' in index
+    assert "activePage === 'visualizer' && page !== activePage && _vzHasUnsavedCanvasWork()" in source
+    assert 'if (dirty && S.estimate_id && !_vzBlocksGenericSave()) saveEstimate();' in source
+    assert 'if (pendingGenericSave) await pendingGenericSave;' in source
+    assert 'if (_estimateSaveFlight === flight && S === owner && !_vzBlocksGenericSave()) setClean();' in source
+    assert 'const snapshot = JSON.stringify(owner);' in source
+    assert '_estimateSaveFlight === flight' in source
+    assert 'if (_estimateSaveFlight?.owner === owner) return' not in source
+    assert "if (!(await saveEstimate()) || state !== vzState" in source
 
 
 def test_exact_placement_scope_controls_rendering_and_save_validity_in_node():
