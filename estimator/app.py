@@ -136,6 +136,14 @@ def _safe_path_id(s):
 # data APIs leak — a route added without the decorator was silently public).
 PUBLIC_ENDPOINTS = {
     'customer_sign',     # /sign/<token> — public, protected by the 192-bit token
+    # /sign/<token>/download.pdf — the "save a copy before you decide" card on
+    # every /sign variant links here. It was NOT on this list, so the button a
+    # customer sees bounced them to a login page: same token, same estimate,
+    # same 404 on a revoked token, and no way through for the person it is for.
+    'customer_download_pdf',
+    # /sign/<token>/tier-interest — the package-card beacon. Writes only to
+    # tier_interest, never to view counts, status or the funnel.
+    'record_tier_interest',
     'customer_design',   # /design/<token> — public design review/approval token
     'sign_change_order', # /sign-co/<token> — same token protection as /sign
     'serve_upload',      # /uploads/<file> — cover photos shown on the customer view
@@ -1201,6 +1209,12 @@ def save_estimate(est_id):
     if not _safe_path_id(est_id):
         return jsonify({'error': 'invalid estimate id'}), 400
     data = request.get_json(force=True)
+    bad = _invalid_rates(data.get('pricing'))
+    if bad:
+        return jsonify({'error': 'A margin of 100% or more prices every line at $0. '
+                                 'Lower it below 100, or switch to markup mode if you '
+                                 'meant to add 100% on top of cost.',
+                        'fields': bad}), 400
     data['estimate_id'] = est_id
     data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     # Permission check outside the write lock (cheap read; verdict can't change)
@@ -1362,12 +1376,32 @@ def update_estimate_label(est_id):
     return jsonify({'ok': True, 'label': label})
 
 
+# Why we lost, captured at the moment a rep marks an estimate lost. Without it
+# the analytics tab could report a close rate to the decimal and never say what
+# to change: price, timing, a competitor and an insurance denial are four
+# different companies' problems and the tool could not tell them apart.
+LOST_REASONS = {
+    'price':        'Price — we were too expensive',
+    'competitor':   'Went with another contractor',
+    'timing':       'Not doing it now / postponed',
+    'insurance':    'Insurance denied or underpaid the claim',
+    'unresponsive': 'Went quiet — never got an answer',
+    'scope':        'Changed their mind on the work',
+    'other':        'Other',
+}
+
+
 @app.route('/api/estimates/<est_id>/status', methods=['PATCH'])
 def update_estimate_status(est_id):
     VALID = {'draft', 'sent', 'accepted', 'lost', 'declined'}
-    status = (request.json or {}).get('status')
+    body   = request.json or {}
+    status = body.get('status')
     if status not in VALID:
         return jsonify({'error': 'Invalid status'}), 400
+    reason = (body.get('lost_reason') or '').strip()
+    if reason and reason not in LOST_REASONS:
+        return jsonify({'error': 'Unknown loss reason'}), 400
+    reason_note = (body.get('lost_note') or '').strip()[:500]
     status = _norm_est_status(status)          # `declined` in, `lost` stored
     est = est_load(est_id)
     if est is None:
@@ -1379,6 +1413,19 @@ def update_estimate_status(est_id):
     if est.get('signature') and status != 'accepted':
         return jsonify({'error': 'A signed estimate cannot change status.'}), 400
     est['status'] = status
+    if status in LOST_STATUSES:
+        # Recorded only on the way INTO lost. Moving back out clears them, so a
+        # re-quoted job does not carry a stale "went with someone else" into the
+        # month it actually closes.
+        if reason:
+            est['lost_reason'] = reason
+        if reason_note:
+            est['lost_note'] = reason_note
+        est['lost_at'] = datetime.utcnow().isoformat() + 'Z'
+    else:
+        est.pop('lost_reason', None)
+        est.pop('lost_note', None)
+        est.pop('lost_at', None)
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     est_save(est)
     # Tell the CRM. Marking an estimate lost does NOT lose the lead — plenty
@@ -1386,7 +1433,15 @@ def update_estimate_status(est_id):
     # the pipeline should say so on the timeline.
     if status == 'lost':
         _funnel_record(est, 'lost')
-    return jsonify({'ok': True, 'status': status})
+    return jsonify({'ok': True, 'status': status,
+                    'lost_reason': est.get('lost_reason', '')})
+
+
+@app.route('/api/lost-reasons', methods=['GET'])
+def get_lost_reasons():
+    """The picker's options, served rather than mirrored, so the list cannot
+    drift between the dropdown and the validator that accepts its value."""
+    return jsonify(LOST_REASONS)
 
 
 # ── Photo uploads ──────────────────────────────────────────────────────────
@@ -3935,6 +3990,35 @@ def _tier_rate(pricing, trade, tier):
     return DEFAULT_RATE
 
 
+def _invalid_rates(pricing):
+    """Every rate in `pricing` that is >= 100, as ['tier_rates.good', ...].
+
+    A margin of 100% or more has no sell price — _sell_price returns 0.0 rather
+    than dividing by zero — so the failure mode of a fat-fingered `100` is a
+    FREE line item that looks completely normal on screen. The client caps its
+    inputs at 99; this is the check for everything that does not come through
+    them. Markup has no such limit: a 150% markup is perfectly ordinary.
+    """
+    if (pricing or {}).get('mode', 'margin') != 'margin':
+        return []
+    bad = []
+
+    def _check(label, v):
+        r = _rate_value(v)
+        if r is not None and r >= 100:
+            bad.append(label)
+
+    _check('global_rate', (pricing or {}).get('global_rate'))
+    for tier, v in ((pricing or {}).get('tier_rates') or {}).items():
+        _check(f'tier_rates.{tier}', v)
+    for trade, v in ((pricing or {}).get('per_trade_overrides') or {}).items():
+        _check(f'per_trade_overrides.{trade}', v)
+    for trade, tiers in ((pricing or {}).get('trade_rates') or {}).items():
+        for tier, v in (tiers or {}).items():
+            _check(f'trade_rates.{trade}.{tier}', v)
+    return bad
+
+
 def _sell_price(cost, rate, mode):
     """Unit sell price from unit cost. Margin ≥100% is invalid → 0 (matches app.js)."""
     if mode == 'margin':
@@ -3980,6 +4064,133 @@ def _trade_subtotal(est, trade, tier):
                 continue  # item excluded from this package tier
             total += _line_sell_total(item, tier, r, mode)
     return total
+
+
+# ── Margin floor ───────────────────────────────────────────────────────────
+#
+# Realized margin is (sell - cost) / sell, computed from the same inclusion
+# rules _trade_subtotal uses. Deliberately NOT the pricing.mode rate: a 30%
+# markup is a 23% margin, so comparing a markup number against a margin floor
+# would wave through jobs that are actually under it.
+#
+# Two thresholds live in app_settings.json, both optional:
+#   margin_floor_warn   amber banner on the pricing tab   (default 30)
+#   margin_floor_block  sending needs a manager           (default 20)
+#
+# Enforced at SEND, never at save. A rep may draft anything; nothing reaches a
+# customer under the floor without a manager, and a half-built draft must never
+# be un-saveable. Set either to 0 to switch that threshold off.
+
+MARGIN_FLOOR_WARN_DEFAULT  = 30.0
+MARGIN_FLOOR_BLOCK_DEFAULT = 20.0
+
+
+def _app_settings():
+    """app_settings.json as a dict; {} when absent or unreadable."""
+    try:
+        with open(APP_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _margin_floors():
+    """(warn, block) percentages. A value outside 0-99 is junk rather than a
+    floor of its own, so it falls back to the default — a fat-fingered 500 in
+    Settings must not block every send in the company."""
+    s = _app_settings()
+
+    def _pct(key, dflt):
+        v = s.get(key)
+        if v is None or v == '':
+            return dflt
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return dflt
+        return f if 0 <= f < 100 else dflt
+
+    return (_pct('margin_floor_warn',  MARGIN_FLOOR_WARN_DEFAULT),
+            _pct('margin_floor_block', MARGIN_FLOOR_BLOCK_DEFAULT))
+
+
+def _trade_cost_subtotal(est, trade, tier):
+    """Cost subtotal for one trade at one tier. MUST mirror _trade_subtotal's
+    inclusion rules line for line — a cost that counts a line the sell total
+    skipped reports a margin the customer is never actually offered."""
+    td = (est.get('trades') or {}).get(trade, {})
+    if not td.get('enabled'):
+        return 0.0
+    trade_mode = _trade_mode(trade, td)
+    total = 0.0
+    for item in td.get('line_items', []):
+        qty = float(item.get('quantity') or 0)
+        if qty <= 0:
+            continue
+        if trade_mode == 'simple':
+            total += float(item.get('unit_cost') or 0) * qty
+        else:
+            t = (item.get('tiers') or {}).get(tier, {})
+            if t.get('included') is False:
+                continue
+            total += (float(t.get('material_unit_cost') or 0)
+                      + float(t.get('labor_unit_cost') or 0)) * qty
+    return total
+
+
+def estimate_margin_report(est):
+    """Realized margin for every package this estimate actually offers.
+
+    {'tiers': [{'tier','sell','cost','margin_pct'}, ...],
+     'lowest': <the worst entry with a known margin, or None>}
+
+    margin_pct is None when a tier prices at 0 or carries no cost at all. The
+    commercial catalog ships $0 placeholder costs on purpose, so calling those
+    a 100% margin would hand a clean bill of health to exactly the bids that
+    have no pricing yet — unpricedBundleLines already shouts about those.
+    Insurance is excluded throughout: the carrier sets that price, so a margin
+    floor is not a meaningful question to ask of it.
+    """
+    tiers = _enabled_tiers(est)
+    if _all_trades_simple(est):
+        tiers = tiers[:1]          # simple pricing ignores the tier entirely
+    out = []
+    for t in tiers:
+        sell = sum(_trade_subtotal(est, tk, t) for tk in GBB_TRADES)
+        cost = sum(_trade_cost_subtotal(est, tk, t) for tk in GBB_TRADES)
+        out.append({
+            'tier': t,
+            'sell': round(sell, 2),
+            'cost': round(cost, 2),
+            'margin_pct': (round((sell - cost) / sell * 100, 1)
+                           if sell > 0 and cost > 0 else None),
+        })
+    known = [d for d in out if d['margin_pct'] is not None]
+    return {'tiers': out,
+            'lowest': min(known, key=lambda d: d['margin_pct']) if known else None}
+
+
+def _margin_floor_block(est):
+    """(message, worst) when this estimate may not be sent, else (None, None).
+
+    The customer picks the package, so the number that matters is the WORST
+    margin on offer, not the one the rep is looking at.
+    """
+    if (est.get('estimate_type') == 'insurance'
+            or ((est.get('trades') or {}).get('insurance') or {}).get('enabled')):
+        return None, None
+    _warn, block = _margin_floors()
+    if block <= 0:
+        return None, None
+    worst = estimate_margin_report(est).get('lowest')
+    if worst is None or worst['margin_pct'] >= block:
+        return None, None
+    if _is_manager_up():
+        return None, worst          # a manager may send it; the caller logs it
+    return (f"This estimate prices the {worst['tier'].title()} package at "
+            f"{worst['margin_pct']}% margin, below the {block:g}% company floor. "
+            f"A manager has to send it, or raise the margin first."), worst
 
 
 def calc_tier_total(est, tier):
@@ -4216,6 +4427,13 @@ def get_analytics():
 
     # ── New aggregations ──────────────────────────────────────────────
     funnel = {'total': 0, 'sent': 0, 'viewed': 0, 'signed': 0, 'lost': 0}
+    # Estimates with no salesperson, excluded from everything below. Reported
+    # so "our numbers are complete" is a claim the tab can actually support.
+    unassigned  = {'count': 0, 'value': 0.0, 'signed_value': 0.0}
+    # Why we lost, counted for the estimates that carry a reason. Estimates
+    # marked lost before the picker existed have none and land in 'unrecorded',
+    # so the denominator stays honest while the history fills in.
+    lost_reasons = {}
     pipeline_aging = {
         'fresh':  {'count': 0, 'value': 0.0},   # 0–3 days
         'active': {'count': 0, 'value': 0.0},   # 4–14 days
@@ -4238,14 +4456,30 @@ def get_analytics():
         is_sent    = bool(est.get('share_token'))
         sp         = (est.get('salesperson') or '').strip()
         if not sp:
-            continue  # skip unassigned estimates
+            # Still skipped from the per-rep and company aggregates below —
+            # by_rep[sp] is threaded through a dozen sites and a synthetic
+            # "(unassigned)" rep would rank in the leaderboard as if it were a
+            # person. But it is COUNTED now: this used to drop the estimate
+            # from the funnel, revenue, aging, cities and YTD with nothing
+            # anywhere saying how many rows had gone, so the numbers were
+            # incomplete by an unknown amount. A visible number is fixable.
+            unassigned['count'] += 1
+            unassigned['value'] += _estimate_total(est)
+            if is_signed:
+                unassigned['signed_value'] += _estimate_total(est)
+            continue
 
         # ── Funnel counting ───────────────────────────────────────────
         funnel['total'] += 1
         if is_sent:   funnel['sent']    += 1
         if est.get('first_viewed_at'): funnel['viewed'] += 1
         if is_signed: funnel['signed']  += 1
-        if _is_lost(est): funnel['lost'] += 1
+        if _is_lost(est):
+            funnel['lost'] += 1
+            lr = (est.get('lost_reason') or '').strip() or 'unrecorded'
+            d  = lost_reasons.setdefault(lr, {'count': 0, 'value': 0.0})
+            d['count'] += 1
+            d['value'] += _estimate_total(est)
 
         # ── Pipeline aging (open, sent estimates only) ────────────────
         if is_sent and not is_signed and not _is_lost(est):
@@ -4533,6 +4767,9 @@ def get_analytics():
         'benchmarks':     benchmarks,
         'goals':          goals,
         'funnel':         funnel,
+        'unassigned':     unassigned,
+        'lost_reasons':   lost_reasons,
+        'lost_reason_labels': LOST_REASONS,
         'pipeline_aging': pipeline_aging,
         'by_type':        by_type,
         'top_cities':     top_cities_list,
@@ -4983,6 +5220,14 @@ transition:background .15s,transform .15s}
 .cvbtn:hover{background:var(--navy3)}
 .cvbtn:active{transform:scale(.99)}
 .cvlegal{font-size:var(--fz-micro);color:var(--faint);text-align:center;line-height:1.7}
+/* Stands where the signature form would be on an estimate whose held pricing
+   has lapsed. Warm, not a dead end: they came back to look, which is a lead. */
+.cvexpired{background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:var(--sp-3)}
+.cvexpired h2{margin:0 0 var(--sp-2);font-size:var(--fz-h2);color:#78350f}
+.cvexpired p{margin:0 0 var(--sp-2);color:#78350f;line-height:1.65}
+.cvexpired .cvbtn{margin-top:var(--sp-2);margin-bottom:0;background:#b45309;
+display:block;text-align:center;text-decoration:none;box-sizing:border-box}
+.cvexpired .cvbtn:hover{background:#92400e}
 .cv-shingle,.cv-siding,.cv-initials{background:#fff;border:1px solid var(--line);border-radius:8px;padding:var(--sp-3);margin-bottom:var(--sp-3)}
 .cv-shingle-label,.cv-siding-label,.cv-initials-title{font-size:var(--fz-micro);font-weight:600;color:var(--faint);
 text-transform:uppercase;letter-spacing:1.2px;margin-bottom:var(--sp-2)}
@@ -5668,11 +5913,110 @@ def _mount_path(path):
         return path
 
 
+# ── Estimate expiry ────────────────────────────────────────────────────────
+#
+# valid_until defaults to 30 days out and prints on the customer page, the PDF
+# and the signed contract as "Pricing held until <date>". Nothing used to check
+# it: customer_sign validated the name, the initials, the shingle colour, the
+# siding colour and whether a package was still offered, and never looked at
+# the date. A homeowner could open a link from six months ago and sign at six-
+# month-old shingle and OSB pricing, and the tool would file the contract,
+# build the packet and hand the job to production as a normal win.
+#
+# The estimate itself still renders when it expires — they came to look at it,
+# and an expired link is a warm lead, not a dead one. Only the signature block
+# is withdrawn, and the rep gets told someone just tried.
+
+def _est_valid_until(est):
+    """valid_until as a date, or None when it is unset or unparseable.
+    Unparseable is deliberately "no expiry": a typo in that box must not lock a
+    customer out of signing a perfectly good estimate."""
+    raw = (est.get('valid_until') or '').strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw[:10], '%Y-%m-%d').date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _est_expired(est):
+    """True when this estimate's held pricing has lapsed. A signed estimate is
+    never expired — the price was locked by the signature, not by the date."""
+    if est.get('signature'):
+        return False
+    d = _est_valid_until(est)
+    return bool(d and d < datetime.utcnow().date())
+
+
+def _cv_expired_block(est):
+    """What the customer sees where the signature form used to be."""
+    d = _est_valid_until(est)
+    when = d.strftime('%B %d, %Y') if d else 'a while ago'
+    return f'''<div class="cvexpired">
+  <h2>This pricing has expired</h2>
+  <p>The quote below was held until <strong>{he(when)}</strong>. Roofing material
+  prices move, so we would rather re-check the numbers than hold you to a figure
+  we can no longer stand behind.</p>
+  <p><strong>Nothing is lost.</strong> Everything here is still on file — call or
+  text us and we will refresh the pricing on this exact scope, usually the same day.</p>
+  <a class="cvbtn" href="tel:{COMPANY_PHONE_DIGITS}">&#128222; Call {COMPANY_PHONE_DISPLAY}</a>
+</div>'''
+
+
+def _notify_expired_view(est):
+    """Tell the rep a customer just opened an expired estimate. Once per
+    estimate — a customer refreshing five times is one lead, not five."""
+    to_addr = _salesperson_email(est)
+    if not to_addr:
+        return
+    c     = est.get('customer', {})
+    cname = c.get('name', 'A customer')
+    enum  = _est_number(est)
+    total = _estimate_total(est)
+    d     = _est_valid_until(est)
+    when  = d.strftime('%b %d, %Y') if d else 'an earlier date'
+    phone = (c.get('phone') or '').strip()
+    email = (c.get('email') or '').strip()
+    reach = ' &middot; '.join(filter(None, [he(phone), he(email)])) or 'no contact details on file'
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#d97706;padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:22px;font-weight:800">&#128293; Expired estimate just opened</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">{he(cname)} came back to a quote that has lapsed.</p>
+  </div>
+  <div style="padding:22px 26px">
+    <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">
+      They could not sign it &mdash; the pricing expired on {he(when)} and the
+      signature block is withdrawn. Someone opening an expired quote is telling
+      you they are still shopping. Re-price it and call them today.</p>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Customer</td><td style="padding:5px 0;font-size:13px;font-weight:700">{he(cname)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Reach them</td><td style="padding:5px 0;font-size:13px">{reach}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Estimate</td><td style="padding:5px 0;font-size:13px">{he(enum)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Was worth</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#d97706">{fc(total)}</td></tr>
+    </table>
+  </div>
+</div>
+</body></html>'''
+    _send_email(f'🔥 {cname} opened an expired estimate ({enum})', html_body, to_addr)
+
+
 def _cv_sig_form(action, hidden='', extra_blocks='', agree_text='',
-                 btn_text='&#10003; Accept &mdash; Sign Electronically', btn_id=''):
+                 btn_text='&#10003; Accept &mdash; Sign Electronically', btn_id='',
+                 est=None):
     """Shared sign form: labeled fields, live script-font signature preview
     (wired up by the shared JS), agreement checkbox, and the E-SIGN notice.
-    Field names are part of the POST contract — do not rename."""
+    Field names are part of the POST contract — do not rename.
+
+    Pass `est` for an ESTIMATE signing page and an expired one withdraws the
+    form here, at the single choke point all three estimate layouts share.
+    Change orders pass nothing and are unaffected: they carry their own dates
+    and a customer approving an add-on is not re-buying the original job."""
+    if est is not None and _est_expired(est):
+        return _cv_expired_block(est)
     bid = f' id="{btn_id}"' if btn_id else ''
     return f'''<form method="POST" action="{action}">
     {hidden}
@@ -5680,7 +6024,7 @@ def _cv_sig_form(action, hidden='', extra_blocks='', agree_text='',
     <label class="cvfield"><span>Full Legal Name *</span>
       <input class="cvinput" name="sig_name" placeholder="Type your full name" required
         autocomplete="name" autocapitalize="words"></label>
-    <label class="cvfield"><span>Email Address <em>&mdash; optional, for your records</em></span>
+    <label class="cvfield"><span>Email Address <em>&mdash; we email your signed contract here</em></span>
       <input class="cvinput" name="sig_email" placeholder="you@example.com" type="email"
         autocomplete="email" inputmode="email"></label>
     <div class="cv-sigpad" aria-hidden="true"><div id="cv-sig-script">&nbsp;</div>
@@ -7461,7 +7805,8 @@ def _build_insurance_cv(est, token):
                 hidden='<input type="hidden" name="selected_tier" value="insurance">',
                 extra_blocks=(_cv_shingle_block(est) + _cv_siding_block(est)
                               + _cv_initials_block(est)),
-                agree_text='I have read this insurance estimate and I agree to all terms &amp; conditions.')}
+                agree_text='I have read this insurance estimate and I agree to all terms &amp; conditions.',
+                est=est)}
 </div>
 </main>
 
@@ -7562,7 +7907,8 @@ def _build_simple_retail_cv(est, token):
                 extra_blocks=(_cv_shingle_block(est, chosen_tier=tier)
                               + _cv_siding_block(est, chosen_tier=tier)
                               + _cv_initials_block(est)),
-                agree_text='I have read this estimate and I agree to all terms &amp; conditions.')}
+                agree_text='I have read this estimate and I agree to all terms &amp; conditions.',
+                est=est)}
 </div>
 </main>
 
@@ -7753,7 +8099,7 @@ def build_customer_view(est, token):
                               + _cv_siding_block(est, pb=pb, chosen_tier=default_tier)
                               + _cv_initials_block(est)),
                 agree_text='I have read this estimate, selected my package, and I agree to all terms &amp; conditions.',
-                btn_id='cv-sign-btn')}
+                btn_id='cv-sign-btn', est=est)}
 </div>
 </main>
 
@@ -7772,7 +8118,22 @@ var _tier_lbls   = {{good:'Good',better:'Better',best:'Best'}};
 function _fmt(n){{return'$'+Math.abs(n).toFixed(2).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,',');}}
 function selectCvTier(trade,tier){{
   var g=_cv_gbb[trade]; if(!g)return;
+  var changed = g.cur !== tier;
   g.cur=tier;
+  // Buying signal, fire-and-forget. sendBeacon so a slow network can never make
+  // the card feel laggy, and so a tap right before the tab closes still lands.
+  if(changed){{
+    try{{
+      var _b=JSON.stringify({{trade:trade,tier:tier}});
+      var _u='{_mount_path(f'/sign/{he(token)}/tier-interest')}';
+      if(navigator.sendBeacon){{
+        navigator.sendBeacon(_u,new Blob([_b],{{type:'application/json'}}));
+      }}else{{
+        fetch(_u,{{method:'POST',headers:{{'Content-Type':'application/json'}},
+                 body:_b,keepalive:true}}).catch(function(){{}});
+      }}
+    }}catch(e){{}}
+  }}
   _cv_tiers.forEach(function(t){{
     var card=document.querySelector('[data-trade="'+trade+'"][data-tier="'+t+'"]');
     var chk=document.getElementById('cv-check-'+trade+'-'+t);
@@ -8901,6 +9262,12 @@ def create_share_link(est_id):
         return jsonify({'error': 'Not found'}), 404
     if not _can_touch_estimate(est):
         return _forbid()
+    blocked, worst = _margin_floor_block(est)
+    if blocked:
+        return jsonify({'error': blocked, 'margin_floor': worst}), 403
+    if worst:
+        print(f'[margin-floor] {est_id} shared by a manager at '
+              f"{worst['margin_pct']}% ({worst['tier']})")
     token = _ensure_share_token(est)
     base = _base_url()
     return jsonify({'token': token, 'url': f'/sign/{token}', 'full_url': f'{base}/sign/{token}'})
@@ -8915,6 +9282,12 @@ def email_estimate_link(est_id):
         return jsonify({'error': 'Not found'}), 404
     if not _can_touch_estimate(est):
         return _forbid()
+    blocked, worst = _margin_floor_block(est)
+    if blocked:
+        return jsonify({'error': blocked, 'margin_floor': worst}), 403
+    if worst:
+        print(f'[margin-floor] {est_id} emailed by a manager at '
+              f"{worst['margin_pct']}% ({worst['tier']})")
 
     body    = request.get_json(silent=True) or {}
     to_addr = (body.get('email') or est.get('customer', {}).get('email') or '').strip()
@@ -12650,6 +13023,116 @@ def save_signed_contract_attachment(est_id, pdf_bytes):
 POST_SIGN_THREAD = 'post-sign-pipeline'
 
 
+CUSTOMER_COPY_MAX_MB = 15   # above this, link instead of attaching
+
+
+def send_customer_signed_copy(est, pdf_bytes=None):
+    """Email the homeowner their own signed contract.
+
+    Until this existed, sig_email was collected on the signing form, written
+    into the signature certificate, repeated in the rep's notification, and
+    never used to send the customer anything. They signed, saw a confirmation
+    screen, closed the tab and had nothing — a bad first hour of a $30,000
+    relationship, and short of the E-SIGN practice of delivering a copy to the
+    signer, which is what matters the one time a job is disputed.
+
+    Best-effort and never raises: it runs on the post-sign thread, by which
+    point the signature is stored and the funnel already notified.
+    """
+    sig     = est.get('signature') or {}
+    c       = est.get('customer', {})
+    to_addr = (sig.get('email') or c.get('email') or '').strip()
+    if not to_addr or '@' not in to_addr:
+        print('[customer-copy] no customer email on the signature or record — skipping')
+        return False
+
+    enum  = _est_number(est)
+    fname = (sig.get('name') or c.get('name') or '').split(' ')[0] or 'there'
+    total = _estimate_total(est)
+    rep   = _display_name(est.get('salesperson')) if est.get('salesperson') else 'your project manager'
+    base  = _base_url()
+    tok   = est.get('share_token') or ''
+    link  = f'{base}/sign/{tok}' if (base and tok) else ''
+
+    try:
+        stime = datetime.fromisoformat(
+            (sig.get('signed_at') or '').replace('Z', '+00:00')
+        ).strftime('%B %d, %Y')
+    except Exception:
+        stime = (sig.get('signed_at') or '')[:10]
+
+    # A signed PDF carrying photos can run large. Over the cap the mail links to
+    # the signing page (which serves the signed copy) rather than bouncing off
+    # the recipient's attachment limit and delivering nothing at all.
+    attachments = None
+    too_big     = False
+    if pdf_bytes:
+        if len(pdf_bytes) <= CUSTOMER_COPY_MAX_MB * 1024 * 1024:
+            attachments = [(f'{enum}-signed-contract.pdf', pdf_bytes)]
+        else:
+            too_big = True
+
+    if attachments:
+        copy_line = 'Your signed contract is attached to this email as a PDF.'
+    elif link:
+        copy_line = ('Your signed contract is'
+                     + (' too large to attach, so it is ' if too_big else ' ')
+                     + 'available at the link below — it will stay there.')
+    else:
+        copy_line = 'Ask us any time for a copy of your signed contract.'
+
+    link_btn = (f'<a href="{he(link)}" style="display:block;text-align:center;'
+                'background:#1a3a5c;color:#fff;text-decoration:none;padding:13px 24px;'
+                'border-radius:6px;font-weight:700;font-size:14px;margin-bottom:18px">'
+                'View Your Signed Contract &rarr;</a>') if link else ''
+
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#16a34a;padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:22px;font-weight:800">Thank you, {he(fname)}!</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">We have your signed contract &mdash; here is your copy.</p>
+  </div>
+  <div style="padding:22px 26px">
+    <p style="font-size:14px;color:#374151;line-height:1.6;margin:0 0 18px">{he(copy_line)}</p>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Contract</td><td style="padding:5px 0;font-size:13px;font-weight:700">{he(enum)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Signed</td><td style="padding:5px 0;font-size:13px">{he(stime)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Total</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#16a34a">{fc(total)}</td></tr>
+    </table>
+    {link_btn}
+    <div style="border-top:1px solid #e5e7eb;padding-top:16px">
+      <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 10px"><strong>What happens next</strong></p>
+      <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 16px">
+        {he(rep)} will reach out to schedule your project and walk you through
+        materials, timing and what to expect on install day. We handle the
+        permit and the manufacturer paperwork.</p>
+      <p style="font-size:13px;color:#374151;line-height:1.6;margin:0">
+        Questions before then? Call or text
+        <a href="tel:{COMPANY_PHONE_DIGITS}" style="color:#1a3a5c;font-weight:700">{COMPANY_PHONE_DISPLAY}</a>
+        &mdash; a real person answers.</p>
+    </div>
+  </div>
+  <div style="background:#f9fafb;padding:14px 26px;border-top:1px solid #e5e7eb">
+    <p style="font-size:11px;color:#9ca3af;margin:0;line-height:1.5">
+      Project One Roofing &middot; {COMPANY_PHONE_DISPLAY} &middot; projectoneroofingcolorado.com<br>
+      You are receiving this because you signed contract {he(enum)} with us.</p>
+  </div>
+</div>
+</body></html>'''
+
+    try:
+        ok = _send_email(f'Your signed contract — {enum}', html_body, to_addr,
+                         attachments=attachments,
+                         cc=_salesperson_email(est) or None)
+        print(f'[customer-copy] {"sent" if ok else "failed"} to {to_addr} for {enum}')
+        return ok
+    except Exception as exc:
+        print(f'[customer-copy] send failed for {enum}: {exc}')
+        return False
+
+
 def _post_sign_pipeline(est_id):
     """Post-signature background work, run sequentially in ONE thread so two
     writers never read-modify-write the same estimate concurrently."""
@@ -12670,6 +13153,16 @@ def _post_sign_pipeline(est_id):
                 print(f"[signed] filed {att['filename']} in Documents for {est_id}")
         except Exception as exc:
             print(f'[signed] attachment save failed for {est_id}: {exc}')
+
+    # The customer's own copy goes out BEFORE the CRM push and the packets:
+    # those talk to Base44 and can be slow or down, and the homeowner waiting
+    # on the receipt for what they just signed should never be behind a
+    # back-office integration in the queue.
+    try:
+        if est is not None:
+            send_customer_signed_copy(est, pdf_bytes=pdf_bytes)
+    except Exception as exc:
+        print(f'[customer-copy] unexpected failure for {est_id}: {exc}')
 
     push_contract_to_crm(est_id, pdf_bytes=pdf_bytes)
     # Both internal docs are built here; only the material order files itself.
@@ -14144,6 +14637,13 @@ def customer_sign(token):
         selected_tier = (request.form.get('selected_tier') or '').strip()
         shingle_color = (request.form.get('shingle_color') or '').strip()
         siding_color  = (request.form.get('siding_color')  or '').strip()
+        # Held pricing has lapsed. The rendered page already withdrew the form,
+        # so getting here means a tab that was open before it expired, or a
+        # replayed POST — either way this must not become a contract at last
+        # season's material prices.
+        if _est_expired(est):
+            return ('This pricing has expired — please call us at '
+                    f'{COMPANY_PHONE_DISPLAY} for an updated quote on this scope.'), 410
         if not sig_name:
             return 'Full name is required.', 400
 
@@ -14300,14 +14800,117 @@ def customer_sign(token):
             doc['view_count']     = int(doc.get('view_count') or 0) + 1
             return doc
 
+        expired_now = [False]
+
+        def _track_expiry(doc):
+            if doc is None:
+                return None
+            # Once per estimate: a customer refreshing five times is one lead.
+            if _est_expired(doc) and not doc.get('expired_notified_at'):
+                doc['expired_notified_at'] = now_iso
+                expired_now[0] = True
+                return doc
+            return None   # nothing to write
+
         est = est_update(est.get('estimate_id'), _track) or est
+        if _est_expired(est):
+            est = est_update(est.get('estimate_id'), _track_expiry) or est
         if first_view[0]:
             _funnel_record(est, 'viewed', at=now_iso)
-            threading.Thread(target=send_view_notification, args=(est,), daemon=True).start()
+            # The expired notice carries the same facts plus what the rep has to
+            # do about them, so it stands in for the generic first-view email
+            # rather than arriving alongside it.
+            if not expired_now[0]:
+                threading.Thread(target=send_view_notification,
+                                 args=(est,), daemon=True).start()
+        if expired_now[0]:
+            threading.Thread(target=_notify_expired_view, args=(est,), daemon=True).start()
     except Exception as exc:
         print(f'[view-track] failed: {exc}')
 
     return build_customer_view(est, token)
+
+
+# ── Buying-signal telemetry ────────────────────────────────────────────────
+#
+# The customer page already tracked view_count / first_viewed_at, but
+# selectCvTier — the handler that fires every time a homeowner taps a package
+# card — was pure DOM: it swapped a highlight and a line-item block and
+# reported nothing. "Opened four times and kept coming back to Best" and
+# "opened once, never touched a card" are two completely different sales
+# calls, and the page that knows the difference was throwing it away.
+#
+# Deliberately cheap: a sendBeacon, capped, no response the page waits on, and
+# it never touches view counts, status or the funnel. A logged-in team member
+# previewing the link is ignored for the same reason view tracking ignores
+# them — the rep's own tapping is not a buying signal.
+
+TIER_INTEREST_CAP = 60   # per estimate; oldest fall off
+
+
+@app.route('/sign/<token>/tier-interest', methods=['POST'])
+def record_tier_interest(token):
+    est = est_find_by_token(token)
+    if est is None or est.get('signature'):
+        return ('', 204)
+    if session.get('user'):
+        return ('', 204)          # a rep previewing their own estimate
+    body  = request.get_json(silent=True) or {}
+    trade = str(body.get('trade') or '').strip()[:32]
+    tier  = str(body.get('tier') or '').strip()
+    if tier not in ('good', 'better', 'best') or not trade:
+        return ('', 204)
+
+    now_iso = datetime.utcnow().isoformat() + 'Z'
+
+    def _record(doc):
+        if doc is None or doc.get('signature'):
+            return None
+        hist = doc.get('tier_interest')
+        if not isinstance(hist, list):
+            hist = []
+        # A card tapped twice in a row is one thought, not two.
+        if hist and hist[-1].get('trade') == trade and hist[-1].get('tier') == tier:
+            return None
+        hist.append({'trade': trade, 'tier': tier, 'at': now_iso})
+        doc['tier_interest'] = hist[-TIER_INTEREST_CAP:]
+        return doc
+
+    try:
+        est_update(est.get('estimate_id'), _record)
+    except Exception as exc:
+        print(f'[tier-interest] record failed: {exc}')
+    return ('', 204)
+
+
+def _tier_interest_summary(est):
+    """One plain-English line about what the customer kept going back to, or ''.
+
+    Reads the last pick per trade plus the tap counts, because the two answer
+    different questions: what they landed on, and how hard they thought about
+    it.
+    """
+    hist = est.get('tier_interest')
+    if not isinstance(hist, list) or not hist:
+        return ''
+    labels = {'good': 'Good', 'better': 'Better', 'best': 'Best'}
+    trade_lbls = {'roofing': 'Roofing', 'siding': 'Siding', 'windows': 'Windows',
+                  'gutters': 'Gutters', 'commercial': 'Commercial', 'other': 'Other'}
+    last, counts = {}, {}
+    for h in hist:
+        tk, tr = h.get('trade'), h.get('tier')
+        if tr not in labels:
+            continue
+        last[tk] = tr
+        counts[tk] = counts.get(tk, 0) + 1
+    if not last:
+        return ''
+    parts = []
+    for tk, tr in last.items():
+        n = counts.get(tk, 0)
+        parts.append(f'{trade_lbls.get(tk, tk.title())}: landed on {labels[tr]}'
+                     + (f' after {n} taps' if n > 1 else ''))
+    return ' · '.join(parts)
 
 
 @app.route('/sign/<token>/download.pdf')
@@ -17700,9 +18303,31 @@ def put_sales_goals():
 # ── Company trust content (About Us / Warranty / Certifications / Reviews) ──
 # Rendered onto every customer proposal by _cv_trust_blocks(). Admin-edited.
 
+def _company_content_missing():
+    """True when the trust blocks would render EMPTY on a customer proposal.
+
+    company_content.json is gitignored under "Estimator — user data" next to
+    config.json and users.json, which really are sensitive — this is marketing
+    copy that got swept in by proximity. _seed_data_dir() copies it only
+    `if os.path.exists(src)`, so a rebuilt Railway volume comes up with no
+    About Us, no Warranty, no Certifications and no Reviews: the four blocks
+    that exist to justify not being the cheapest bid. The failure is completely
+    silent today — proposals just go out thinner, and nobody finds out until a
+    customer mentions it. Until the real file is tracked, this at least makes
+    the gap say so out loud.
+    """
+    return not any((_load_company_content() or {}).values())
+
+
 @app.route('/api/company-content', methods=['GET'])
 def get_company_content():
-    return jsonify(_load_company_content())
+    content = _load_company_content()
+    if not any(content.values()):
+        print('[company-content] EMPTY — About Us / Warranty / Certifications / '
+              'Reviews will be blank on every customer proposal. An admin needs '
+              'to re-enter them in Settings (this is what a rebuilt volume looks '
+              'like).')
+    return jsonify(content)
 
 
 @app.route('/api/company-content', methods=['PUT'])
@@ -18611,6 +19236,11 @@ def send_followup_reminder(est, days_out):
         except Exception:
             view_line = f'Opened {views} time{"s" if views != 1 else ""}.'
         hint = 'They’ve looked but haven’t signed — a quick call could close this.'
+        # What they actually reached for beats how many times they opened it.
+        picked = _tier_interest_summary(est)
+        if picked:
+            hint = (f'They kept coming back to — {picked}. '
+                    'Lead the call with that package, not with the price.')
     else:
         view_line = 'Never opened.'
         hint = 'They haven’t even opened it yet — worth re-sending the link or following up by phone.'
@@ -18629,6 +19259,7 @@ def send_followup_reminder(est, days_out):
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Estimate</td><td style="padding:5px 0;font-size:13px">{he(enum)}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Value</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#d97706">{fc(total)}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Activity</td><td style="padding:5px 0;font-size:13px">{he(view_line)}</td></tr>
+      {f'<tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Interested in</td><td style="padding:5px 0;font-size:13px;font-weight:700">{he(_tier_interest_summary(est))}</td></tr>' if _tier_interest_summary(est) else ''}
     </table>
     <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">{he(hint)}</p>
     <a href="{he(sign_url)}" style="display:block;text-align:center;background:#1a3a5c;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:700;font-size:14px">

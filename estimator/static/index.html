@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=194">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=195">
 </head>
 <body>
 
@@ -308,6 +308,11 @@
 
     <!-- ── Page 8: Pricing (per-trade line items) ────────────────── -->
     <div id="page-pricing" class="page" style="display:none">
+      <!-- Job-level margin check. Lives ABOVE the tab bar on purpose: the
+           number is for the whole estimate, not the trade tab you happen to
+           have open, and the customer picks the package so the figure shown
+           is the WORST one on offer. Rendered by renderMarginBanner(). -->
+      <div id="margin-floor-banner"></div>
       <div id="trade-tabs">
         <div class="tab-bar" id="tab-bar"></div>
         <div id="trade-content"></div>
@@ -482,6 +487,15 @@
       </div>
       <div id="settings-company" class="field-group hidden">
         <label>Customer Proposal — Company Content <span class="note-tag">admin only — shown on every customer signing page</span></label>
+        <!-- company_content.json lives on the volume and is NOT in the repo, so
+             a rebuilt volume comes up with all four blocks blank and every
+             proposal quietly ships without them. Shown only when that has
+             actually happened. -->
+        <div id="cc-empty-warn" class="cc-empty-warn" style="display:none">
+          ⚠️ <strong>Nothing is set here.</strong> Every customer proposal is going
+          out with no About Us, Warranty, Certifications or Reviews — the sections
+          that justify the price. Fill these in below and save.
+        </div>
         <div class="cc-block">
           <label class="cc-toggle"><input type="checkbox" id="cc-about-on"> 🏠 About Us</label>
           <input type="text" id="cc-about-title" class="cc-title" placeholder="Section title (default: About Us)">
@@ -501,6 +515,17 @@
           <label class="cc-toggle"><input type="checkbox" id="cc-reviews-on"> ⭐ Reviews</label>
           <input type="text" id="cc-reviews-title" class="cc-title" placeholder="Section title (default: What Homeowners Say)">
           <textarea id="cc-reviews-items" rows="5" spellcheck="true" placeholder="One review per line:  stars | name | review text&#10;5 | Sarah M. | Fast, clean, and the roof looks amazing."></textarea>
+        </div>
+      </div>
+      <div id="settings-margin" class="field-group hidden">
+        <label>Margin Floors <span class="note-tag">manager only — checked against realized margin, (sell − cost) ÷ sell, on the LOWEST-margin package the customer is offered</span></label>
+        <div class="cc-block">
+          <label class="cc-toggle">⚠️ Warning threshold <span class="note-tag">amber banner on the Pricing tab; the estimate still sends</span></label>
+          <input type="number" id="set-margin-warn" min="0" max="99" step="1" placeholder="30">
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle">⛔ Hard floor <span class="note-tag">below this, only a manager can send or email the estimate. 0 turns it off. Insurance estimates are exempt — the carrier sets that price.</span></label>
+          <input type="number" id="set-margin-block" min="0" max="99" step="1" placeholder="20">
         </div>
       </div>
       <div id="settings-contract" class="field-group hidden">
@@ -755,6 +780,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=194"></script>
+<script src="/estimate/static/app.js?v=195"></script>
 </body>
 </html>
