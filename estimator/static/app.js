@@ -681,6 +681,7 @@ const MEASURE_FIELDS = [
     {key:'attic_sqft',    label:'Attic Area',     unit:'SF'},
     {key:'low_slope_squares', label:'Low Slope ≤2/12', unit:'SQ'},
     {key:'steep_squares',     label:'Steep 7/12+',     unit:'SQ'},
+    {key:'existing_layers',   label:'Existing Layers', unit:'EA'},
     {key:'predominant_pitch', label:'Predominant Pitch', unit:'/12'},
     {key:'ridge_hip_lf',  label:'Ridge + Hip',    unit:'LF'},
     {key:'ridge_lf',      label:'Ridges',         unit:'LF'},
@@ -779,6 +780,16 @@ const MEASURE_DEFS = {
   low_slope:            { label:'Low Slope SQ (≤2/12)',   calc:m => mnum(m.low_slope_squares) },
   low_slope_waste:      { label:'Low Slope SQ + Waste',   calc:m => mnum(m.low_slope_squares) * (1 + mnum(m.waste_pct, 10)/100) },
   steep:                { label:'Steep SQ (7/12+)',       calc:m => mnum(m.steep_squares) },
+  /* Squares of tear-off BEYOND the first covering: one existing layer is the
+     normal job and carries no adder, two layers charge one extra pass, three
+     charge two. Blank means one layer (mnum's default), so an untouched
+     takeoff never invents an adder; 0 — new construction, nothing to tear —
+     floors at 0 rather than going negative. Excludes low slope for the same
+     reason squares_waste does. */
+  extra_layer_squares:  { label:'Extra-Layer Tear-Off SQ',
+                          calc:m => Math.max(mnum(m.roof_squares) - mnum(m.low_slope_squares), 0)
+                                    * (1 + mnum(m.waste_pct, 10)/100)
+                                    * Math.max(mnum(m.existing_layers, 1) - 1, 0) },
   steep_waste:          { label:'Steep SQ + Waste',       calc:m => mnum(m.steep_squares) * (1 + mnum(m.waste_pct, 10)/100) },
   ridge_hip:            { label:'Ridge + Hip LF',     calc:m => mnum(m.ridge_hip_lf) },
   // Ridges alone (excludes hips) — ridge vent orders the full ridge off this.
@@ -2366,15 +2377,34 @@ function renderTotals() {
   renderCostProfitPanel();
 }
 
+/* Is this line labor or material?
+
+   Labor is a whole catalog LINE here — Labor (Tear-Off & Install), Steep
+   Charge, Additional Layer Tear-Off — never a split on each product, because a
+   catalog product carries a single `cost`. That is why every builder writes
+   `labor_unit_cost: 0`: the field is not where labor lives, so splitting on it
+   reported $0 labor on every bid ever written.
+
+   `kind` on the catalog product is the answer. The id prefix is the fallback,
+   for a product that predates the field or one a manager added by hand
+   following the l_/sl_/wl_/cl_ convention. A hand-added row carries no
+   catalog_id and counts as material — the safer default, and either way the
+   two columns still sum to the same total. */
+const _LABOR_ID_RE = /^(l|sl|wl|cl)_/;
+function isLaborLine(trade, item) {
+  const id = item.catalog_id;
+  if (!id) return false;
+  const prod = ((priceBook || {})[trade + '_catalog'] || []).find(p => p && p.id === id);
+  if (prod && prod.kind) return prod.kind === 'labor';
+  return _LABOR_ID_RE.test(id);
+}
+
 /* ── Internal cost / profit (rep-only — never shown to the customer) ────
-   Cost is reported as ONE number, deliberately. Labor is priced as its own
-   catalog line (Tear-Off Labor, Install Labor) at a per-SQ rate, not as a
-   split on each product — catalog products carry a single `cost` field, so
-   every builder writes labor_unit_cost: 0. A Material/Labor split can
-   therefore only ever report $0 labor, which reads as "labor was left out of
-   this bid" when the labor is in fact sitting in the line items. The field is
-   still summed below so a legacy estimate that carries one keeps totalling
-   correctly; it just isn't shown as its own figure.
+   Material and labor are split by which LINE the cost sits on (isLaborLine
+   above), not by a per-product split — so the Labor column picks up the steep
+   charge and the extra-layer tear-off along with the base labor line.
+   Whichever bucket a line lands in, `cost` is the same sum, so totals and
+   margins do not depend on the classification.
    Simple-mode trades (e.g. gutters) store a sell price with no cost at all,
    so they're reported separately rather than counted as pure profit. */
 function tierProfit(tier) {
@@ -2395,7 +2425,7 @@ function tierProfit(tier) {
       if (c > 0) {
         // Cost is tracked — include in profit calculation
         material += c; gbbSell += s;
-        perTrade.push({trade, mode, cost:c, sell:s, profit:s-c});
+        perTrade.push({trade, mode, material:c, labor:0, cost:c, sell:s, profit:s-c});
       } else {
         simpleSell += s;
         perTrade.push({trade, mode, sell:s});
@@ -2407,20 +2437,23 @@ function tierProfit(tier) {
       const qty = parseFloat(item.quantity)||0; if (qty <= 0) return;
       const t = (item.tiers||{})[tier] || {};
       if (t.included === false) return;
-      m += (parseFloat(t.material_unit_cost)||0) * qty;
-      l += (parseFloat(t.labor_unit_cost)||0) * qty;
+      // The line's whole cost goes to one bucket. labor_unit_cost is still
+      // added in so a legacy estimate carrying one still totals correctly.
+      const c = ((parseFloat(t.material_unit_cost)||0)
+               + (parseFloat(t.labor_unit_cost)||0)) * qty;
+      if (isLaborLine(trade, item)) l += c; else m += c;
     });
     const sell = tradeTotal(trade, tier);
     if (m === 0 && l === 0 && sell === 0) return;
     material += m; labor += l; gbbSell += sell;
-    perTrade.push({trade, mode, cost:m+l, sell, profit:sell-(m+l)});
+    perTrade.push({trade, mode, material:m, labor:l, cost:m+l, sell, profit:sell-(m+l)});
   });
   const cost = material + labor;
   const totalSell = gbbSell + simpleSell;
   const profit = gbbSell - cost;
   const franchise = Math.round(totalSell * FRANCHISE_RATE * 100) / 100;
   const netProfit = profit - franchise;
-  return {cost, sell:gbbSell, profit, franchise, netProfit,
+  return {material, labor, cost, sell:gbbSell, profit, franchise, netProfit,
           margin:    gbbSell   > 0 ? (profit   / gbbSell   * 100) : 0,
           netMargin: totalSell > 0 ? (netProfit / totalSell * 100) : 0,
           simpleSell, perTrade};
@@ -2440,7 +2473,9 @@ function renderInternalMargin() {
   const netClass = p.netProfit >= 0 ? 'im-pos' : 'im-neg';
   el.innerHTML = `
     <div class="im-head">🔒 Internal · ${TIER_LABELS[tier]}</div>
-    <div class="im-row"><span>Total Cost</span><strong>${fmtCur(p.cost)}</strong></div>
+    <div class="im-row"><span>Material</span><strong>${fmtCur(p.material)}</strong></div>
+    <div class="im-row"><span>Labor</span><strong>${fmtCur(p.labor)}</strong></div>
+    <div class="im-row im-cost"><span>Total Cost</span><strong>${fmtCur(p.cost)}</strong></div>
     <div class="im-row"><span>Gross Profit</span><strong>${fmtCur(p.profit)}</strong></div>
     <div class="im-row im-franchise"><span>Franchise (${Math.round(FRANCHISE_RATE*100)}%)</span><strong>−${fmtCur(p.franchise)}</strong></div>
     <div class="im-row ${netClass} im-net"><span>Net Profit</span><strong>${fmtCur(p.netProfit)}</strong></div>
@@ -2476,6 +2511,8 @@ function renderCostProfitPanel() {
       <table class="cpp-table">
         <thead><tr><th></th>${TIERS.map(t=>`<th class="${t===selTier?'cpp-sel':''}">${TIER_LABELS[t]}</th>`).join('')}</tr></thead>
         <tbody>
+          ${moneyRow('Material','material')}
+          ${moneyRow('Labor','labor')}
           ${moneyRow('Total Cost','cost','cpp-cost')}
           ${moneyRow('Sell Price','sell','cpp-sell')}
           ${row('Gross Profit', d=>`<span class="${d.profit>=0?'cpp-pos':'cpp-neg'}">${fmtCur(d.profit)}</span>`,'cpp-profit')}
@@ -2489,10 +2526,12 @@ function renderCostProfitPanel() {
       <details class="cpp-bytrade">
         <summary>Per-trade breakdown — ${TIER_LABELS[selTier]}</summary>
         <div class="cpp-trade-wrap"><table class="cpp-table cpp-table-trade">
-          <thead><tr><th>Trade</th><th>Cost</th><th>Sell</th><th>Profit</th><th>Margin</th></tr></thead>
+          <thead><tr><th>Trade</th><th>Material</th><th>Labor</th><th>Cost</th><th>Sell</th><th>Profit</th><th>Margin</th></tr></thead>
           <tbody>
             ${pt.map(x=>`<tr>
               <td>${TRADE_LABELS[x.trade]}</td>
+              <td>${fmtCur(x.material)}</td>
+              <td>${fmtCur(x.labor)}</td>
               <td>${fmtCur(x.cost)}</td>
               <td>${fmtCur(x.sell)}</td>
               <td class="${x.profit>=0?'cpp-pos':'cpp-neg'}">${fmtCur(x.profit)}</td>
@@ -2500,7 +2539,7 @@ function renderCostProfitPanel() {
             </tr>`).join('')}
             ${simpleRows.map(x=>`<tr class="cpp-trade-simple">
               <td>${TRADE_LABELS[x.trade]}</td>
-              <td>simple pricing — cost not tracked</td>
+              <td colspan="3">simple pricing — cost not tracked</td>
               <td>${fmtCur(x.sell)}</td>
               <td>—</td><td>—</td>
             </tr>`).join('')}
@@ -4052,7 +4091,7 @@ function pbMeasureCell(item, i) {
   const formulaInput = isFormula ? `
     <input class="pb-formula-input" type="text" value="${esc(item.formula||'')}"
       placeholder="eave_lf + valley_lf"
-      title="Variables: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1)"
+      title="Variables: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, existing_layers, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1)"
       oninput="pbItems['${pbActiveTrade}'][${i}].formula=this.value;pbItems['${pbActiveTrade}'][${i}].measure=''">` : '';
   const bundleInput = `
     <div class="pb-bundle-wrap">

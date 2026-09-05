@@ -10414,6 +10414,7 @@ MEASURE_LABELS = [
               ('attic_sqft', 'Attic Area', 'SF'),
               ('low_slope_squares', 'Low Slope Area (2/12 or less) - rolled roofing', 'SQ'),
               ('steep_squares', 'Steep Area (7/12 and up)', 'SQ'),
+              ('existing_layers', 'Existing Layers', 'EA'),
               ('predominant_pitch', 'Predominant Pitch', '/12'),
               ('ridge_hip_lf', 'Ridge + Hip', 'LF'),
               # Ridges alone — ridge vent ORDERS the full ridge off this, so the
@@ -14857,9 +14858,38 @@ ROOFING_CATALOG_SEED = [
      # $350 delivery + $150 machine set-up. Per JOB, not per square — the
      # supplier charges it once to run the panels for this roof.
      "bullets": ["Panels roll-formed to length for this roof and delivered"]},
+    # ONE generic labor line covering tear-off AND install, flat per square.
+    # We do not price labor per product — a catalog product carries a single
+    # `cost` — so labor is its own line, and `kind: labor` is what lands it in
+    # the Labor column of the Cost & Profit panel instead of Material. Without
+    # that field the panel can only report labor as $0, which reads as though
+    # the bid forgot it. l_tearoff/l_install are superseded by this
+    # (_PRODUCT_SUPERSEDED) but stay in the catalog — live estimates cite them.
+    {"id": "l_labor", "name": "Labor (Tear-Off & Install)", "unit": "SQ", "cost": 145,
+     "measure": "squares_waste", "kind": "labor",
+     "bullets": ["Complete tear-off of existing roofing down to the deck",
+                 "Installed by Project One crews to manufacturer spec"]},
+    # The two labor ADDERS. Each rides its own measurement, so it prices itself
+    # off the takeoff and sits at 0 qty on a roof that needs neither — and a
+    # zero-qty line never prices and never prints.
+    #
+    # Both ship UNPRICED deliberately. The rate is the manager's to set, and a
+    # steep or multi-layer roof whose rate is still $0 trips the red
+    # unpriced-line banner (unpricedBundleLines) rather than quietly bidding
+    # the extra work at nothing. Do NOT invent a placeholder rate here: a
+    # plausible-looking wrong number is worse than a banner, because nothing
+    # ever flags it again.
+    {"id": "l_steep", "name": "Steep Charge (7/12 and up)", "unit": "SQ", "cost": 0,
+     "measure": "steep_waste", "kind": "labor",
+     "bullets": ["Additional labor for steep-pitch access and staging"]},
+    {"id": "l_extra_layer", "name": "Additional Layer Tear-Off", "unit": "SQ", "cost": 0,
+     "measure": "extra_layer_squares", "kind": "labor",
+     "bullets": ["Additional tear-off labor for each existing layer beyond the first"]},
     {"id": "l_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
+     "kind": "labor",
      "bullets": ["Complete tear-off of existing roofing down to the deck"]},
     {"id": "l_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
+     "kind": "labor",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
     {"id": "x_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
      "bullets": ["Dumpster and full magnetic nail sweep"]},
@@ -14867,7 +14897,8 @@ ROOFING_CATALOG_SEED = [
      "bullets": ["Permit pulled and final inspection scheduled"]},
 ]
 _RS = ["a_underlayment", "a_ice_water", "a_drip_edge", "a_ridge_cap", "a_starter",
-       "a_pipe_boots", "a_step_flash", "a_decking", "l_tearoff", "l_install", "x_dumpster", "x_permit"]
+       "a_pipe_boots", "a_step_flash", "a_decking", "l_labor", "l_steep",
+       "l_extra_layer", "x_dumpster", "x_permit"]
 # Bullets no product owns. Everything else on the card comes from the products,
 # so this list stays short — it closes the card, it doesn't describe the scope.
 _RS_EXTRA = ["5-year Project One workmanship warranty"]
@@ -14879,7 +14910,7 @@ _RS_EXTRA = ["5-year Project One workmanship warranty"]
 _SS_METAL = ["a_underlayment", "a_ice_water", "a_ss_clips", "a_ss_drip_d",
              "a_ss_rake", "a_ss_rake_recv", "a_ss_sidewall", "a_ss_sidewall_recv",
              "a_ss_ridge", "a_ss_zeecee", "a_ss_pipe_boot", "a_ss_sealants",
-             "a_decking", "l_tearoff", "l_install", "x_ss_delivery",
+             "a_decking", "l_labor", "l_steep", "l_extra_layer", "x_ss_delivery",
              "x_dumpster", "x_permit"]
 ROOFING_BUNDLES_SEED = [
     {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Dual-layer architectural shingle with Class 3 impact resistance, StreakFighter protection, and a lifetime limited residential warranty.",
@@ -16010,8 +16041,12 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 # product predates the measurement and should adopt the seed's. Without it the
 # live Fascia product — seeded long before a fascia measurement existed — keeps
 # no measure and the Scope field it was added for silently fills nothing.
+#
+# `kind` is here for the same reason: it is what sorts a line into the Material
+# or the Labor column, and every live book's labor products predate the field.
+# Without the backfill the split would only ever be right on a fresh volume.
 _PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure',
-                            'group', 'colors', 'styles')
+                            'group', 'colors', 'styles', 'kind')
 
 # Trades whose seeded costs are allowed to fill a live book's ZERO cost. See the
 # backfill in _ensure_bundle_catalogs for why this is narrow and one-directional.
@@ -16022,7 +16057,12 @@ _SEED_COST_BACKFILL_TRADES = {'commercial'}
 # old product id -> the product(s) that replaced it, swapped into SEEDED bundles
 # on read. The old product stays in the catalog: an estimate may reference it and
 # the manager may have priced it.
-_PRODUCT_SUPERSEDED = {'ca_fasteners': ['ca_fast_insul', 'ca_fast_seam']}
+_PRODUCT_SUPERSEDED = {'ca_fasteners': ['ca_fast_insul', 'ca_fast_seam'],
+                       # Tear-Off + Install collapse into one generic Labor
+                       # line. Both entries name l_labor and the swap loop
+                       # skips an id already present, so a bundle carrying
+                       # both ends up with exactly one l_labor, not two.
+                       'l_tearoff': ['l_labor'], 'l_install': ['l_labor']}
 
 # Same idea, scoped to ONE bundle, because a product can be right in one package
 # and wrong in another: cl_labor_reroof is the correct $400/SQ tear-off line on
@@ -16118,7 +16158,16 @@ _LATE_BUNDLE_IDS = {'b_lp_standard', 'b_lp_expert', 'b_hardie_primed',
 # 2026-07-31: the QXO siding bundles shipped missing the accessories the
 # manufacturer warranty depends on. This backfills them onto the six existing
 # seeded bundles in production.
+# The generic labor line and its two adders, forced onto every seeded roofing
+# bundle. A roof bundle that ships without labor is not a roof, which is exactly
+# what this list is for. l_steep and l_extra_layer are new products with no
+# predecessor to supersede, so this is their only route onto a live book.
+_ROOF_LABOR = ['l_labor', 'l_steep', 'l_extra_layer']
+
 _LATE_BUNDLE_PRODUCTS = {
+    'b_landmark':    _ROOF_LABOR, 'b_northgate': _ROOF_LABOR,
+    'b_iko_nordic':  _ROOF_LABOR, 'b_edco':      _ROOF_LABOR,
+    'b_stone':       _ROOF_LABOR, 'b_euroshield': _ROOF_LABOR,
     'b_lp_standard':      ['sa_starter', 'sa_kickout', 'sa_sealant', 'sa_paint', 'sa_rot_repair'],
     'b_lp_expert':        ['sa_starter', 'sa_kickout', 'sa_sealant', 'sa_touchup', 'sa_rot_repair'],
     'b_hardie_primed':    ['sa_starter', 'sa_kickout', 'sa_sealant', 'sa_paint', 'sa_rot_repair'],
@@ -16134,7 +16183,7 @@ _LATE_BUNDLE_PRODUCTS = {
     'b_standing_seam':    ['a_ss_clips', 'a_ss_drip_d', 'a_ss_rake', 'a_ss_rake_recv',
                            'a_ss_sidewall', 'a_ss_sidewall_recv', 'a_ss_ridge',
                            'a_ss_zeecee', 'a_ss_pipe_boot', 'a_ss_sealants',
-                           'x_ss_delivery'],
+                           'x_ss_delivery'] + _ROOF_LABOR,
 }
 
 # Visual-only exterior-door catalogue. It deliberately sits outside the

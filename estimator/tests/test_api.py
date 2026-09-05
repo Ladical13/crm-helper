@@ -244,7 +244,11 @@ def test_copy_backfills_onto_a_book_that_already_has_a_catalog(A):
     got = next(b for b in pb['roofing_bundles'] if b['id'] == seed['id'])
     assert got['extra_features'] == seed['extra_features']
     assert got['description'] == seed['description']
-    assert got['product_ids'] == ['m_landmark']    # the manager's product list, untouched
+    # product_ids is NOT a copy field — a manager's list survives a backfill.
+    # The one thing that is added is _LATE_BUNDLE_PRODUCTS' required labor: a
+    # roofing bundle that ships without a labor line bids the roof with no
+    # labour cost at all. Everything else the manager chose is left alone.
+    assert got['product_ids'] == ['m_landmark'] + A._ROOF_LABOR
     landmark = next(p for p in pb['roofing_catalog'] if p['id'] == 'm_landmark')
     seed_p = next(p for p in A.ROOFING_CATALOG_SEED if p['id'] == 'm_landmark')
     assert landmark['bullets'] == seed_p['bullets']
