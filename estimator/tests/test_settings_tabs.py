@@ -150,9 +150,9 @@ def test_the_tab_strip_cannot_be_squeezed(css):
 
 
 def test_the_lost_modal_is_sized_in_dvh(css):
-    """.modal-box caps at 80vh only, and the Safari toolbar overlaps the bottom
-    of vh — which is where the Mark Lost button is. This is the one modal a rep
-    opens standing in a driveway. dvh must come SECOND to win."""
+    """The app-wide rule is pinned by test_modal_viewport.py. This keeps the
+    narrowed .lost-modal-box from quietly dropping the pair when someone edits
+    its width — a rep marks a job lost standing in a driveway."""
     i = css.index('.lost-modal-box {')
     block = css[i:css.index('}', i)]
     assert 'max-height: 80vh' in block and 'max-height: 80dvh' in block

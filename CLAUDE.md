@@ -243,6 +243,16 @@ so each is pinned by a test.
   The Safari toolbar overlaps the bottom of `vh`, which is how the CRM's modal
   buttons, the canvasser's pin Save button and the login card all ended up
   below the fold. Order matters — `dvh` must come second to win.
+  **And the pair belongs on the base rule, never inside a width query.** The
+  estimator's modals had the fix gated behind `@media (max-width: 767px)`, so
+  every phone was covered and every iPad was not — and the iPad is where
+  estimates get written, with a Save button on the bottom row of a modal.
+  That is the pointer-vs-width trap above arriving a third time, through a
+  height query instead of a touch rule. `dvh` costs nothing on a desktop (no
+  dynamic toolbar, so it equals `vh`), which is why gating it buys nothing and
+  loses the device that needed it. Fixed app-wide 2026-09-05 and pinned by
+  `estimator/tests/test_modal_viewport.py`, which walks every `*-modal-box`
+  rule rather than naming them, so a new modal is covered on arrival.
 - **Scrollable overlays need `overscroll-behavior: contain`, and anything
   pinned to the bottom needs `env(safe-area-inset-bottom)`.** Without the
   first, flicking past the end of the CRM's lead drawer scrolls the pipeline
