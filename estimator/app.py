@@ -2716,15 +2716,27 @@ def visualizer_operations():
 
 # ── RoofR PDF import ───────────────────────────────────────────────────────
 
-def _parse_roofr_lf(s):
-    """Convert RoofR linear-foot string ('358ft 4in') to decimal feet."""
-    m = re.match(r'(\d+)ft\s+(\d+)in', s.strip())
-    if m:
-        return round(int(m.group(1)) + int(m.group(2)) / 12, 2)
-    m = re.match(r'(\d[\d,]*)ft', s.replace(',', ''))
-    return float(m.group(1)) if m else 0.0
+# One linear-foot value as RoofR prints it. Thousands separators are real —
+# Roofr commas any four-digit figure, so eaves on a big or multi-structure
+# property arrive as "1,204ft 3in" — and the inches half is optional. Both
+# halves of that matter to the CALLER's regex too, which is why find_lf()
+# below shares this pattern instead of spelling its own: it used to demand
+# `\d+ft\s+\d+in`, so "1,204ft 3in" matched nothing at all and the key was
+# dropped, quietly pricing zero eaves, zero gutters and zero valleys on the
+# largest jobs we bid. A bare-feet branch existed here but was unreachable
+# for the same reason.
+_ROOFR_LF_RE = r'\d[\d,]*\s*ft(?:\s+\d+\s*in)?'
 
-def _parse_roofr_pitches(full_text):
+
+def _parse_roofr_lf(s):
+    """Convert RoofR linear-foot string ('358ft 4in', '1,204ft 3in', '421ft')
+    to decimal feet. Inches are optional; a missing inches half is 0."""
+    m = re.match(r'(\d+)\s*ft(?:\s+(\d+)\s*in)?', s.replace(',', '').strip())
+    if not m:
+        return 0.0
+    return round(int(m.group(1)) + int(m.group(2) or 0) / 12, 2)
+
+def _parse_roofr_pitches(full_text, prefer_first=False):
     """Extract (rise, area_sqft) pairs from RoofR's pitch table.
 
     Real RoofR exports print a columnar block, not a row per pitch:
@@ -2732,11 +2744,21 @@ def _parse_roofr_pitches(full_text):
         Area (sqft) 514 106 4,675
         Squares 5.2 1.1 46.8
     Multi-structure properties (garage, shed, addition) repeat this block once
-    per structure, then once more for the whole-property 'Report summary' —
-    the LAST such block in the document is that total, so it wins. Flat
-    facets are already folded into the low-rise buckets here (0/12 area plus
-    2/12 area lines up with the report's separately-stated flat-area total,
-    within rounding) — nothing needs adding back on top.
+    per structure, plus once for the whole-property 'Report summary'. Which
+    copy is the total depends on where that summary sits, so the CALLER says:
+    `prefer_first` when the text has already been scoped to a Report summary
+    (the first block in that window belongs to the summary itself), and the
+    LAST block otherwise. The two coincide on a report whose summary comes
+    last, which is the layout this was verified against — but with the summary
+    FIRST, taking the last block read the pitches off the final structure while
+    every other measurement came from the whole property. A detached garage
+    then decided the low-slope, steep-charge and predominant-pitch numbers for
+    the whole house: rolled roofing billed for area that isn't flat, steep
+    charge dropped for area that is.
+
+    Flat facets are already folded into the low-rise buckets here (0/12 area
+    plus 2/12 area lines up with the report's separately-stated flat-area
+    total, within rounding) — nothing needs adding back on top.
 
     Falls back to an older row-per-pitch layout ('4/12  1,551.7 ft²  79.6%')
     if the columnar table isn't found, in case some export differs."""
@@ -2746,7 +2768,7 @@ def _parse_roofr_pitches(full_text):
         re.I | re.M)
     matches = list(table_re.finditer(full_text))
     if matches:
-        m     = matches[-1]
+        m     = matches[0] if prefer_first else matches[-1]
         rises = [int(r) for r in re.findall(r'(\d{1,2})\s*/\s*12', m.group(1))]
         areas = [float(a.replace(',', '')) for a in re.findall(r'[\d,]+(?:\.\d+)?', m.group(2))]
         if rises and len(rises) == len(areas):
@@ -2913,8 +2935,10 @@ def _parse_roofr_pdf(file_bytes):
     search_text = full_text[rs_matches[0].start():] if rs_matches else full_text
 
     def find_lf(label):
-        # [\s:]+ handles both "Label 358ft 4in" and "Label: 358ft 4in" formats
-        m = re.search(rf'{re.escape(label)}[\s:]+(\d+ft\s+\d+in)', search_text)
+        # [\s:]+ handles both "Label 358ft 4in" and "Label: 358ft 4in" formats.
+        # The value pattern is shared with _parse_roofr_lf so the two can't
+        # drift: a figure this can't match is a measurement silently dropped.
+        m = re.search(rf'{re.escape(label)}[\s:]+({_ROOFR_LF_RE})', search_text)
         return _parse_roofr_lf(m.group(1)) if m else None
 
     # Prefer the whole-property "Total roof area <N> sqft" over a bare
@@ -2929,7 +2953,7 @@ def _parse_roofr_pdf(file_bytes):
         squares = float(sq.group(1)) if sq else None
 
     # "Hips + ridges" is the precomputed combined value in the Report Summary
-    ridge_hip_m = re.search(r'Hips\s*\+\s*ridges[\s:]+(\d+ft\s+\d+in)', search_text)
+    ridge_hip_m = re.search(rf'Hips\s*\+\s*ridges[\s:]+({_ROOFR_LF_RE})', search_text)
     ridge_hip = _parse_roofr_lf(ridge_hip_m.group(1)) if ridge_hip_m else None
     if ridge_hip is None:
         h = find_lf('Total hips') or 0
@@ -2951,7 +2975,9 @@ def _parse_roofr_pdf(file_bytes):
     # report has a pitch table so a re-import clears stale values; omitted
     # entirely when it doesn't, leaving manual entries alone.
     low_slope_sq = steep_sq = None
-    pitch_rows = _parse_roofr_pitches(search_text)
+    # search_text is scoped to the Report summary whenever the report has one,
+    # so the summary's own pitch table is the FIRST in that window.
+    pitch_rows = _parse_roofr_pitches(search_text, prefer_first=bool(rs_matches))
     if pitch_rows:
         low_slope_sq = round(sum(a for p, a in pitch_rows if p <= 2) / 100, 1)
         steep_sq     = round(sum(a for p, a in pitch_rows if p >= 7) / 100, 1)

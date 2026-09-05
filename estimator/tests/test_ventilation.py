@@ -235,3 +235,81 @@ def test_packet_survives_missing_cutin_image(A):
     est = _signed_est(vent_cutin={'image_filename': 'vent-test/nope.jpg', 'notes': ''})
     out = A.build_production_packet_pdf(est)
     assert isinstance(out, bytes) and len(out) > 500
+
+
+# ── Workstream C: the shapes a real report prints that the parser missed ──
+# Three defects found by feeding the parser report shapes it hadn't been tried
+# against. All three fail the same way — silently, with a plausible number or
+# no number at all, on an estimate that otherwise looks finished.
+
+def test_roofr_reads_linear_feet_past_a_thousand(A):
+    """Roofr commas any four-digit figure, so a big or multi-structure property
+    prints "1,204ft 3in". The finder demanded `\\d+ft\\s+\\d+in`, which matches
+    nothing in that string, so the key was DROPPED — and because apply does an
+    Object.assign of only the keys present, the estimate kept its zeros. Eaves,
+    valleys, rakes and gutters all priced at 0 LF on exactly the largest jobs,
+    with no error anywhere."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Report summary',
+        'Total roof area 12,480 sqft',
+        'Total eaves 1,204ft 3in',
+        'Total valleys 1,032ft 0in',
+        'Hips + ridges 1,110ft 6in',
+    ]))['measurements']
+    assert meas['eave_lf'] == 1204.25
+    assert meas['valley_lf'] == 1032.0
+    assert meas['ridge_hip_lf'] == 1110.5
+    # Gutters are ordered off the eave run, so they inherit the same fix.
+    assert meas['gutter_lf'] == 1204.25
+
+
+def test_roofr_reads_a_bare_feet_value(A):
+    """Inches are optional. _parse_roofr_lf always carried a bare-feet branch,
+    but the finder's regex could never produce a string that reached it, so a
+    "Total eaves 210ft" line parsed as nothing at all."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Report summary', 'Total roof area 2500 sqft',
+        'Total eaves 210ft', 'Total valleys 60ft',
+    ]))['measurements']
+    assert meas['eave_lf'] == 210.0
+    assert meas['valley_lf'] == 60.0
+
+
+def test_roofr_pitches_come_from_the_summary_not_the_last_structure(A):
+    """Every other measurement is read from the first match at or after the
+    "Report summary" heading; the pitch table was independently read from the
+    LAST table in that same text. Those two rules cannot both be right, and on
+    a report whose summary leads the structure detail they disagree — the
+    detached garage decided low-slope, steep and predominant pitch for the whole
+    house. Here the property is 4,000 sqft (3,000 at 4/12 + 1,000 at 8/12) and
+    the garage is 600 sqft of 2/12: taking the last table billed 6 SQ of rolled
+    roofing that isn't flat and dropped the 10 SQ steep charge entirely."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Report summary',
+        'Total roof area 4,000 sqft',
+        'Total eaves 400ft 0in',
+        'Pitch 4/12 8/12',
+        'Area (sqft) 3000 1000',
+        'Structure 2 - Detached garage',
+        'Total roof area 600 sqft',
+        'Pitch 2/12',
+        'Area (sqft) 600',
+    ]))['measurements']
+    assert meas['roof_squares'] == 40.0        # whole property, as before
+    assert meas['steep_squares'] == 10.0       # the 8/12 area, not the garage's 0
+    assert meas['low_slope_squares'] == 0.0    # the garage's 2/12 is not the house
+    assert meas['predominant_pitch'] == 4      # largest area on the summary table
+
+
+def test_roofr_pitches_still_take_the_last_table_without_a_summary(A):
+    """With no "Report summary" to scope to there is no first-block rule to
+    apply, so the older last-table behaviour has to stay exactly as it was."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Total roof area 4,000 sqft',
+        'Pitch 2/12',
+        'Area (sqft) 600',
+        'Pitch 4/12 8/12',
+        'Area (sqft) 3000 1000',
+    ]))['measurements']
+    assert meas['steep_squares'] == 10.0
+    assert meas['low_slope_squares'] == 0.0
