@@ -2367,8 +2367,15 @@ function renderTotals() {
 }
 
 /* ── Internal cost / profit (rep-only — never shown to the customer) ────
-   GBB trades track material + labor cost, so profit is computed from them.
-   Simple-mode trades (e.g. gutters) store a sell price with no cost split,
+   Cost is reported as ONE number, deliberately. Labor is priced as its own
+   catalog line (Tear-Off Labor, Install Labor) at a per-SQ rate, not as a
+   split on each product — catalog products carry a single `cost` field, so
+   every builder writes labor_unit_cost: 0. A Material/Labor split can
+   therefore only ever report $0 labor, which reads as "labor was left out of
+   this bid" when the labor is in fact sitting in the line items. The field is
+   still summed below so a legacy estimate that carries one keeps totalling
+   correctly; it just isn't shown as its own figure.
+   Simple-mode trades (e.g. gutters) store a sell price with no cost at all,
    so they're reported separately rather than counted as pure profit. */
 function tierProfit(tier) {
   let material = 0, labor = 0, gbbSell = 0, simpleSell = 0;
@@ -2388,7 +2395,7 @@ function tierProfit(tier) {
       if (c > 0) {
         // Cost is tracked — include in profit calculation
         material += c; gbbSell += s;
-        perTrade.push({trade, mode, material:c, labor:0, cost:c, sell:s, profit:s-c});
+        perTrade.push({trade, mode, cost:c, sell:s, profit:s-c});
       } else {
         simpleSell += s;
         perTrade.push({trade, mode, sell:s});
@@ -2406,14 +2413,14 @@ function tierProfit(tier) {
     const sell = tradeTotal(trade, tier);
     if (m === 0 && l === 0 && sell === 0) return;
     material += m; labor += l; gbbSell += sell;
-    perTrade.push({trade, mode, material:m, labor:l, cost:m+l, sell, profit:sell-(m+l)});
+    perTrade.push({trade, mode, cost:m+l, sell, profit:sell-(m+l)});
   });
   const cost = material + labor;
   const totalSell = gbbSell + simpleSell;
   const profit = gbbSell - cost;
   const franchise = Math.round(totalSell * FRANCHISE_RATE * 100) / 100;
   const netProfit = profit - franchise;
-  return {material, labor, cost, sell:gbbSell, profit, franchise, netProfit,
+  return {cost, sell:gbbSell, profit, franchise, netProfit,
           margin:    gbbSell   > 0 ? (profit   / gbbSell   * 100) : 0,
           netMargin: totalSell > 0 ? (netProfit / totalSell * 100) : 0,
           simpleSell, perTrade};
@@ -2433,9 +2440,7 @@ function renderInternalMargin() {
   const netClass = p.netProfit >= 0 ? 'im-pos' : 'im-neg';
   el.innerHTML = `
     <div class="im-head">🔒 Internal · ${TIER_LABELS[tier]}</div>
-    <div class="im-row"><span>Material</span><strong>${fmtCur(p.material)}</strong></div>
-    <div class="im-row"><span>Labor</span><strong>${fmtCur(p.labor)}</strong></div>
-    <div class="im-row im-cost"><span>Total Cost</span><strong>${fmtCur(p.cost)}</strong></div>
+    <div class="im-row"><span>Total Cost</span><strong>${fmtCur(p.cost)}</strong></div>
     <div class="im-row"><span>Gross Profit</span><strong>${fmtCur(p.profit)}</strong></div>
     <div class="im-row im-franchise"><span>Franchise (${Math.round(FRANCHISE_RATE*100)}%)</span><strong>−${fmtCur(p.franchise)}</strong></div>
     <div class="im-row ${netClass} im-net"><span>Net Profit</span><strong>${fmtCur(p.netProfit)}</strong></div>
@@ -2471,8 +2476,6 @@ function renderCostProfitPanel() {
       <table class="cpp-table">
         <thead><tr><th></th>${TIERS.map(t=>`<th class="${t===selTier?'cpp-sel':''}">${TIER_LABELS[t]}</th>`).join('')}</tr></thead>
         <tbody>
-          ${moneyRow('Material','material')}
-          ${moneyRow('Labor','labor')}
           ${moneyRow('Total Cost','cost','cpp-cost')}
           ${moneyRow('Sell Price','sell','cpp-sell')}
           ${row('Gross Profit', d=>`<span class="${d.profit>=0?'cpp-pos':'cpp-neg'}">${fmtCur(d.profit)}</span>`,'cpp-profit')}
@@ -2486,12 +2489,10 @@ function renderCostProfitPanel() {
       <details class="cpp-bytrade">
         <summary>Per-trade breakdown — ${TIER_LABELS[selTier]}</summary>
         <div class="cpp-trade-wrap"><table class="cpp-table cpp-table-trade">
-          <thead><tr><th>Trade</th><th>Material</th><th>Labor</th><th>Cost</th><th>Sell</th><th>Profit</th><th>Margin</th></tr></thead>
+          <thead><tr><th>Trade</th><th>Cost</th><th>Sell</th><th>Profit</th><th>Margin</th></tr></thead>
           <tbody>
             ${pt.map(x=>`<tr>
               <td>${TRADE_LABELS[x.trade]}</td>
-              <td>${fmtCur(x.material)}</td>
-              <td>${fmtCur(x.labor)}</td>
               <td>${fmtCur(x.cost)}</td>
               <td>${fmtCur(x.sell)}</td>
               <td class="${x.profit>=0?'cpp-pos':'cpp-neg'}">${fmtCur(x.profit)}</td>
@@ -2499,7 +2500,7 @@ function renderCostProfitPanel() {
             </tr>`).join('')}
             ${simpleRows.map(x=>`<tr class="cpp-trade-simple">
               <td>${TRADE_LABELS[x.trade]}</td>
-              <td colspan="3">simple pricing — cost not tracked</td>
+              <td>simple pricing — cost not tracked</td>
               <td>${fmtCur(x.sell)}</td>
               <td>—</td><td>—</td>
             </tr>`).join('')}
