@@ -128,7 +128,7 @@ def test_the_floor_reads_the_worst_package_on_offer(monkeypatch):
 
 
 def test_a_below_floor_estimate_cannot_be_shared_by_a_rep(client, monkeypatch, app):
-    monkeypatch.setattr(A, '_margin_floors', lambda: (30.0, 20.0))
+    monkeypatch.setattr(A, '_margin_floors', lambda: (35.0, 30.0))
     monkeypatch.setattr(A, '_is_manager_up', lambda *a, **k: False)
     est = _est(10000.0, 9000.0)          # 10% margin
     est['estimate_id'] = 'floor-block'
@@ -140,7 +140,7 @@ def test_a_below_floor_estimate_cannot_be_shared_by_a_rep(client, monkeypatch, a
 
 
 def test_a_manager_may_send_it_anyway(client, monkeypatch):
-    monkeypatch.setattr(A, '_margin_floors', lambda: (30.0, 20.0))
+    monkeypatch.setattr(A, '_margin_floors', lambda: (35.0, 30.0))
     monkeypatch.setattr(A, '_is_manager_up', lambda *a, **k: True)
     est = _est(10000.0, 9000.0)
     est['estimate_id'] = 'floor-mgr'
@@ -149,8 +149,21 @@ def test_a_manager_may_send_it_anyway(client, monkeypatch):
     A.est_delete('floor-mgr')
 
 
+def test_an_estimate_between_the_two_floors_warns_but_still_sends(client, monkeypatch):
+    """32% is under the 35 target and over the 30 floor: the rep sees an amber
+    banner, and the send is not the place that argues about it."""
+    monkeypatch.setattr(A, '_margin_floors', lambda: (35.0, 30.0))
+    monkeypatch.setattr(A, '_is_manager_up', lambda *a, **k: False)
+    est = _est(10000.0, 6800.0)          # 32%
+    est['estimate_id'] = 'floor-mid'
+    A.est_save(est)
+    assert A.estimate_margin_report(est)['lowest']['margin_pct'] == 32.0
+    assert client.post('/api/estimates/floor-mid/share').status_code == 200
+    A.est_delete('floor-mid')
+
+
 def test_a_healthy_margin_sends_without_comment(client, monkeypatch):
-    monkeypatch.setattr(A, '_margin_floors', lambda: (30.0, 20.0))
+    monkeypatch.setattr(A, '_margin_floors', lambda: (35.0, 30.0))
     monkeypatch.setattr(A, '_is_manager_up', lambda *a, **k: False)
     est = _est(10000.0, 5000.0)          # 50%
     est['estimate_id'] = 'floor-ok'
@@ -159,13 +172,45 @@ def test_a_healthy_margin_sends_without_comment(client, monkeypatch):
     A.est_delete('floor-ok')
 
 
-def test_insurance_is_exempt(monkeypatch):
-    """The carrier sets that price, so a margin floor is not a meaningful
-    question to ask of it."""
-    monkeypatch.setattr(A, '_margin_floors', lambda: (30.0, 20.0))
+@pytest.mark.parametrize('est_type', ['insurance', 'commercial'])
+def test_the_floor_is_residential_only(est_type, monkeypatch):
+    """Insurance: the carrier sets that price. Commercial: its pricing comes
+    off a per-job supplier quote and the catalog ships $0 placeholder costs, so
+    a floor would be measuring the placeholders rather than the job."""
+    monkeypatch.setattr(A, '_margin_floors', lambda: (35.0, 30.0))
     monkeypatch.setattr(A, '_is_manager_up', lambda *a, **k: False)
-    est = _est(10000.0, 9900.0, est_type='insurance')
+    est = _est(10000.0, 9900.0, est_type=est_type)
     assert A._margin_floor_block(est) == (None, None)
+
+
+def test_an_insurance_trade_on_a_retail_estimate_is_also_exempt(monkeypatch):
+    monkeypatch.setattr(A, '_margin_floors', lambda: (35.0, 30.0))
+    monkeypatch.setattr(A, '_is_manager_up', lambda *a, **k: False)
+    est = _est(10000.0, 9900.0)
+    est['trades']['insurance'] = {'enabled': True}
+    assert A._margin_floor_block(est) == (None, None)
+
+
+def test_retail_is_not_exempt(monkeypatch):
+    monkeypatch.setattr(A, '_margin_floors', lambda: (35.0, 30.0))
+    monkeypatch.setattr(A, '_is_manager_up', lambda *a, **k: False)
+    msg, worst = A._margin_floor_block(_est(10000.0, 9900.0))
+    assert msg and worst['margin_pct'] == 1.0
+
+
+def test_the_shipped_floors_are_the_agreed_numbers():
+    """Warn deliberately equals DEFAULT_RATE: a rep who never touches the
+    margin box sits exactly on target, so the banner only appears because
+    someone moved it down."""
+    assert A.MARGIN_FLOOR_WARN_DEFAULT == 35.0 == A.DEFAULT_RATE
+    assert A.MARGIN_FLOOR_BLOCK_DEFAULT == 30.0
+
+
+def test_the_front_end_mirrors_the_shipped_floors():
+    src = open(APP_JS, encoding='utf-8').read()
+    body = _fn('marginFloors')
+    assert 'margin_floor_warn,  35' in body
+    assert 'margin_floor_block, 30' in body
 
 
 def test_a_junk_floor_setting_falls_back_rather_than_blocking_everything(monkeypatch, tmp_path):

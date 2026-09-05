@@ -4880,3 +4880,73 @@ body.is-client #nav-toggle      { display: none; }
   border-radius:6px;padding:11px 14px;margin-bottom:10px;
   font-size:13px;line-height:1.55;
 }
+
+/* ── Lost-reason modal ──────────────────────────────────────────────────
+   Replaces a stack of browser prompt() dialogs. One screen: pick a reason,
+   optional note, done. */
+.lost-modal-box {
+  width: min(460px, 92vw);
+  /* .modal-box caps at 80vh only. This is the one modal a rep opens standing
+     in a driveway, and the Safari toolbar overlaps the bottom of vh — which is
+     where the Mark Lost button is. dvh second so it wins where supported. */
+  max-height: 80vh;
+  max-height: 80dvh;
+}
+.lost-lede { margin: 0; font-size: 13px; color: var(--text-light); line-height: 1.55; }
+.lost-reason-list { display: flex; flex-direction: column; gap: 7px; }
+.lost-reason {
+  text-align: left; padding: 12px 14px; font-size: 14px; font-family: inherit;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: #fff; cursor: pointer; color: var(--text);
+  transition: background .12s, border-color .12s;
+}
+.lost-reason:hover { background: var(--bg); }
+.lost-reason.selected {
+  border-color: #dc2626; background: #fee2e2; color: #7f1d1d; font-weight: 600;
+}
+.lost-reason:focus-visible { outline: 2px solid #0284c7; outline-offset: 2px; }
+@media (pointer: coarse) {
+  /* A rep marks a job lost standing in a driveway, not at a desk. */
+  .lost-reason { padding: 14px; font-size: 15px; }
+}
+
+/* ── Settings tabs ──────────────────────────────────────────────────────
+   Panes are shown only when BOTH conditions hold: this is the active tab,
+   AND the role gating did not mark the pane hidden. The second half is not
+   belt-and-braces — it is the whole gate. `.field-group.hidden` matched no
+   rule in this stylesheet (see the note at .gap-note.hidden), so every rep
+   had been seeing the admin-only contract editor. */
+.settings-pane { display: none; }
+/* No `gap` here on purpose: the gated panes are also .field-group and carry its
+   3px label-to-control spacing. Setting a gap on this higher-specificity
+   selector would silently re-space the inside of every one of them. */
+.settings-pane.is-active:not(.hidden) { display: flex; flex-direction: column; }
+/* #settings-general is the exception — it holds two unrelated field groups
+   rather than one label and its control, so it wants section spacing. */
+#settings-general.settings-pane.is-active { gap: 14px; }
+
+.settings-tabs {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  padding: 12px 22px 0; border-bottom: 1px solid var(--border);
+  /* .modal-box is a flex column with a max-height; without this the strip is
+     a shrinkable child and seven wrapped tabs get squeezed instead of the
+     body scrolling. */
+  flex-shrink: 0;
+}
+.settings-tab {
+  padding: 7px 13px; font-size: 12px; font-weight: 600; font-family: inherit;
+  border: 1px solid transparent; border-bottom: none;
+  border-radius: 6px 6px 0 0; margin-bottom: -1px;
+  background: none; cursor: pointer; color: var(--text-light);
+  white-space: nowrap; transition: background .12s, color .12s;
+}
+.settings-tab:hover { background: var(--bg); color: var(--text); }
+.settings-tab.active {
+  background: #fff; color: var(--primary);
+  border-color: var(--border); border-bottom-color: #fff;
+}
+.settings-tab:focus-visible { outline: 2px solid #0284c7; outline-offset: -2px; }
+@media (pointer: coarse) {
+  /* Same rule as everywhere else in this app: a finger, not a width. */
+  .settings-tab { padding: 10px 14px; font-size: 13px; }
+}

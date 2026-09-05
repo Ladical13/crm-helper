@@ -651,9 +651,14 @@ in a comment, and then had nothing that acted on it.
 - **The margin floor is checked at SEND, never at save.** `_margin_floor_block`
   guards `/api/estimates/<id>/share` and `/api/estimates/<id>/send-email`; a rep
   may draft anything, and a half-built estimate must never be un-saveable. Two
-  settings, both manager-up: `margin_floor_warn` (amber banner, default 30) and
-  `margin_floor_block` (manager-only send, default 20). Three things are
-  load-bearing. It reads **realized** margin, `(sell − cost) / sell`, via
+  settings, both manager-up: `margin_floor_warn` (amber banner, default 35) and
+  `margin_floor_block` (manager-only send, default 30). Warn deliberately equals
+  `DEFAULT_RATE`, so a rep who never touches the margin box sits exactly on
+  target and the banner only ever appears because someone moved it down.
+  **Residential only** — `_margin_floor_exempt` excludes insurance (the carrier
+  sets that price) and commercial (its pricing comes off a per-job supplier
+  quote and the catalog ships $0 placeholder costs, so a floor would be
+  measuring the placeholders). Three things are load-bearing. It reads **realized** margin, `(sell − cost) / sell`, via
   `estimate_margin_report` — not the `pricing.mode` rate, because a 30% markup
   is a 23% margin and comparing one against the other waves jobs through. It
   reads the **worst package on offer**, because the customer picks, not the rep.
@@ -682,6 +687,23 @@ in a comment, and then had nothing that acted on it.
   much as `beforeunload`: iOS never fires the latter when it reclaims a
   backgrounded tab, which is the exact case this exists for. The draft
   deliberately drops `visualizer` — megabytes, server-owned, and not at risk.
+
+**Settings is tabbed, and its role gating finally does something.** Eight
+unrelated editors sat in one scrolling column, and each gated section carried a
+`hidden` class that matched **no rule in `style.css`** — which says so itself
+next to `.gap-note.hidden`: there is no global `.hidden` utility, every use is
+scoped. So `.field-group.hidden` styled nothing and the gate did nothing, and
+every **manager** was seeing the admin-only contract and proposal editors.
+(Reps were never affected — `applyRoleGates()` hides the Settings button from
+them outright — and it was never a data leak, since the server refused the
+writes. But the gate a reader would assume was working was not.) Panes now
+need **both** the active tab and the absence of `hidden`:
+`.settings-pane.is-active:not(.hidden)`. `renderSettingsTabs()` runs last in
+`openSettings`, after the role checks, and builds the strip from whatever they
+unhid — so a new section needs an entry in `SETTINGS_TABS` *and* the
+`settings-pane` class, or it is unreachable / always-on. Guarded by
+`tests/test_settings_tabs.py`, which also pins the loss-reason picker being a
+modal rather than the stack of browser `prompt()` dialogs it shipped as.
 
 Also landed with these, each pinned by a test:
 

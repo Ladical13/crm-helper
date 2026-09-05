@@ -4081,8 +4081,12 @@ def _trade_subtotal(est, trade, tier):
 # customer under the floor without a manager, and a half-built draft must never
 # be un-saveable. Set either to 0 to switch that threshold off.
 
-MARGIN_FLOOR_WARN_DEFAULT  = 30.0
-MARGIN_FLOOR_BLOCK_DEFAULT = 20.0
+# Luke's numbers, 2026-09-05: warn at 35, hard floor at 30. The warn threshold
+# is deliberately the same as DEFAULT_RATE — a rep who never touches the margin
+# box is sitting exactly on target, so the banner only ever appears because
+# someone moved it down.
+MARGIN_FLOOR_WARN_DEFAULT  = 35.0
+MARGIN_FLOOR_BLOCK_DEFAULT = 30.0
 
 
 def _app_settings():
@@ -4171,14 +4175,30 @@ def estimate_margin_report(est):
             'lowest': min(known, key=lambda d: d['margin_pct']) if known else None}
 
 
+def _margin_floor_exempt(est):
+    """Estimate types the floor does not apply to.
+
+    Insurance: the carrier sets the price, so a margin floor is not a
+    meaningful question to ask of it.
+
+    Commercial: residential-only by decision (2026-09-05). Commercial pricing
+    comes off a per-job supplier quote and the catalog ships $0 placeholder
+    costs, so a floor read against it would be measuring the placeholders, not
+    the job. `unpricedBundleLines` is what guards a commercial bid.
+    """
+    et = est.get('estimate_type')
+    trades = est.get('trades') or {}
+    return (et in ('insurance', 'commercial')
+            or bool((trades.get('insurance') or {}).get('enabled')))
+
+
 def _margin_floor_block(est):
     """(message, worst) when this estimate may not be sent, else (None, None).
 
     The customer picks the package, so the number that matters is the WORST
     margin on offer, not the one the rep is looking at.
     """
-    if (est.get('estimate_type') == 'insurance'
-            or ((est.get('trades') or {}).get('insurance') or {}).get('enabled')):
+    if _margin_floor_exempt(est):
         return None, None
     _warn, block = _margin_floors()
     if block <= 0:

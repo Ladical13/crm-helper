@@ -2025,13 +2025,19 @@ function marginFloors() {
     const n = parseFloat(v);
     return (isNaN(n) || n < 0 || n >= 100) ? dflt : n;
   };
-  return { warn:  pct(appSettings.margin_floor_warn,  30),
-           block: pct(appSettings.margin_floor_block, 20) };
+  // MUST mirror MARGIN_FLOOR_*_DEFAULT (app.py). Warn matches DEFAULT_RATE, so
+  // a rep who never touches the margin box sits exactly on target.
+  return { warn:  pct(appSettings.margin_floor_warn,  35),
+           block: pct(appSettings.margin_floor_block, 30) };
 }
-// Insurance is exempt end to end: the carrier sets that price, so a margin
-// floor is not a meaningful question to ask of it.
+// Residential only. Insurance is exempt because the carrier sets that price;
+// commercial because its pricing comes off a per-job supplier quote and the
+// catalog ships $0 placeholder costs, so a floor would be measuring the
+// placeholders. MUST mirror _margin_floor_exempt (app.py).
 function marginFloorExempt() {
-  return S.estimate_type === 'insurance' || !!S.trades?.insurance?.enabled;
+  return S.estimate_type === 'insurance'
+      || S.estimate_type === 'commercial'
+      || !!S.trades?.insurance?.enabled;
 }
 function renderMarginBanner() {
   const el = document.getElementById('margin-floor-banner');
@@ -8987,26 +8993,67 @@ async function _loadLostReasons() {
   return _lostReasons;
 }
 
+/* ── Lost-reason modal ───────────────────────────────────────────────────
+   Marking an estimate lost is the one moment the rep knows why, so it is the
+   only moment worth asking. Kept to one screen: pick a reason, optional note,
+   done. Cancelling leaves the outcome unchanged rather than recording a loss
+   with no reason — the dropdown springs back to what it was. */
+let _lostPick = '';
+
+async function openLostModal() {
+  const reasons = await _loadLostReasons();
+  const keys = Object.keys(reasons);
+  if (!keys.length) return false;   // API unreachable — caller falls through
+  _lostPick = '';
+  document.getElementById('lost-note').value = '';
+  document.getElementById('lost-save-btn').disabled = true;
+  document.getElementById('lost-reason-list').innerHTML = keys.map(k => `
+    <button type="button" class="lost-reason" data-reason="${esc(k)}"
+      onclick="pickLostReason('${jsq(k)}')">${esc(reasons[k])}</button>`).join('');
+  document.getElementById('lost-modal').classList.remove('hidden');
+  return true;
+}
+
+function pickLostReason(key) {
+  _lostPick = key;
+  document.querySelectorAll('#lost-reason-list .lost-reason').forEach(b => {
+    b.classList.toggle('selected', b.dataset.reason === key);
+  });
+  document.getElementById('lost-save-btn').disabled = false;
+}
+
+function closeLostModal() {
+  document.getElementById('lost-modal').classList.add('hidden');
+  _lostPick = '';
+  // The select still shows 'lost' from the click that opened this. Put it back.
+  renderEstStatusBar();
+}
+
+function maybeCloseLostModal(e) {
+  if (e.target === document.getElementById('lost-modal')) closeLostModal();
+}
+
+function confirmLostReason() {
+  if (!_lostPick) return;
+  const reason = _lostPick;
+  const note = (document.getElementById('lost-note').value || '').trim();
+  document.getElementById('lost-modal').classList.add('hidden');
+  _lostPick = '';
+  _patchEstStatus('lost', reason, note);
+}
+
 async function setEstStatus(status) {
   if (!S.estimate_id) return;
-  let lost_reason = '', lost_note = '';
   if (status === 'lost') {
-    // Thirty seconds a loss, and it is the difference between knowing the
-    // close rate and knowing what to change about it.
-    const reasons = await _loadLostReasons();
-    const keys = Object.keys(reasons);
-    if (keys.length) {
-      const menu = keys.map((k, i) => `${i + 1}. ${reasons[k]}`).join('\n');
-      const pick = prompt(`Why did we lose this one?\n\n${menu}\n\n` +
-                          `Enter a number 1-${keys.length}:`, '');
-      if (pick === null) { renderEstStatusBar(); return; }   // cancelled — no change
-      const idx = parseInt(pick, 10) - 1;
-      if (idx >= 0 && idx < keys.length) {
-        lost_reason = keys[idx];
-        lost_note = (prompt('Anything worth remembering? (optional)', '') || '').trim();
-      }
-    }
+    // The modal drives the PATCH itself once a reason is picked. If the
+    // options cannot be loaded, fall through and record the loss anyway — the
+    // reason must never become a reason not to record the outcome.
+    if (await openLostModal()) return;
   }
+  return _patchEstStatus(status, '', '');
+}
+
+async function _patchEstStatus(status, lost_reason, lost_note) {
   try {
     const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/status`, {
       method: 'PATCH',
@@ -10445,6 +10492,54 @@ async function newEstimateForCustomer(name, label, type) {
 
 /* ── Settings ───────────────────────────────────────────────────────── */
 
+/* Settings was one long scroll of eight unrelated editors — shingle colours
+   above permit jurisdictions above ASCE fastener densities above the contract
+   text. Tabs, in the order a person actually reaches for them.
+
+   This is also what makes the role gating real. Each gated pane carried a
+   `hidden` class, but style.css has no global `.hidden` utility (it says so at
+   line 2397 — every use there is scoped to a specific component), so
+   `.field-group.hidden` matched nothing and every rep had been looking at the
+   admin-only contract editor. Panes are now shown by an explicit rule that
+   requires BOTH the active tab and the absence of `hidden`. */
+const SETTINGS_TABS = [
+  ['settings-general',       '🎨 General'],
+  ['settings-margin',        '💰 Margin'],
+  ['settings-gbb',           '📦 Packages'],
+  ['settings-company',       '🏠 Proposal'],
+  ['settings-contract',      '📜 Contract'],
+  ['settings-jurisdictions', '🏛 Permits'],
+  ['settings-fastening',     '🔩 Fastening'],
+];
+
+function renderSettingsTabs() {
+  const strip = document.getElementById('settings-tabs');
+  if (!strip) return;
+  // Role gating has already run and removed `hidden` from what this user may
+  // see, so the panes still carrying it are the ones with no tab.
+  const shown = SETTINGS_TABS.filter(([id]) => {
+    const el = document.getElementById(id);
+    return el && !el.classList.contains('hidden');
+  });
+  strip.innerHTML = shown.map(([id, label]) =>
+    `<button type="button" class="settings-tab" data-pane="${id}"
+       onclick="showSettingsTab('${id}')">${label}</button>`).join('');
+  strip.style.display = shown.length > 1 ? '' : 'none';
+  if (shown.length) showSettingsTab(shown[0][0]);
+}
+
+function showSettingsTab(paneId) {
+  SETTINGS_TABS.forEach(([id]) => {
+    document.getElementById(id)?.classList.toggle('is-active', id === paneId);
+  });
+  document.querySelectorAll('#settings-tabs .settings-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.pane === paneId);
+  });
+  // A tab switch is a new screen, not a scroll position on the old one.
+  const body = document.querySelector('#settings-modal .settings-body');
+  if (body) body.scrollTop = 0;
+}
+
 async function openSettings() {
   try {
     const r = await fetch('/api/settings');
@@ -10495,6 +10590,8 @@ async function openSettings() {
     document.getElementById('set-contract-comm').value   = appSettings.contract_commercial || '';
     document.getElementById('set-initials-comm').value   = (appSettings.initials_commercial || []).join('\n');
   }
+  // Last: the strip is built from whichever panes the gating above unhid.
+  renderSettingsTabs();
   document.getElementById('settings-modal').classList.remove('hidden');
 }
 
