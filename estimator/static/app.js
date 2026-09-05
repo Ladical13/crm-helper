@@ -681,6 +681,7 @@ const MEASURE_FIELDS = [
     {key:'attic_sqft',    label:'Attic Area',     unit:'SF'},
     {key:'low_slope_squares', label:'Low Slope ≤2/12', unit:'SQ'},
     {key:'steep_squares',     label:'Steep 7/12+',     unit:'SQ'},
+    {key:'existing_layers',   label:'Existing Layers', unit:'EA'},
     {key:'predominant_pitch', label:'Predominant Pitch', unit:'/12'},
     {key:'ridge_hip_lf',  label:'Ridge + Hip',    unit:'LF'},
     {key:'ridge_lf',      label:'Ridges',         unit:'LF'},
@@ -779,6 +780,16 @@ const MEASURE_DEFS = {
   low_slope:            { label:'Low Slope SQ (≤2/12)',   calc:m => mnum(m.low_slope_squares) },
   low_slope_waste:      { label:'Low Slope SQ + Waste',   calc:m => mnum(m.low_slope_squares) * (1 + mnum(m.waste_pct, 10)/100) },
   steep:                { label:'Steep SQ (7/12+)',       calc:m => mnum(m.steep_squares) },
+  /* Squares of tear-off BEYOND the first covering: one existing layer is the
+     normal job and carries no adder, two layers charge one extra pass, three
+     charge two. Blank means one layer (mnum's default), so an untouched
+     takeoff never invents an adder; 0 — new construction, nothing to tear —
+     floors at 0 rather than going negative. Excludes low slope for the same
+     reason squares_waste does. */
+  extra_layer_squares:  { label:'Extra-Layer Tear-Off SQ',
+                          calc:m => Math.max(mnum(m.roof_squares) - mnum(m.low_slope_squares), 0)
+                                    * (1 + mnum(m.waste_pct, 10)/100)
+                                    * Math.max(mnum(m.existing_layers, 1) - 1, 0) },
   steep_waste:          { label:'Steep SQ + Waste',       calc:m => mnum(m.steep_squares) * (1 + mnum(m.waste_pct, 10)/100) },
   ridge_hip:            { label:'Ridge + Hip LF',     calc:m => mnum(m.ridge_hip_lf) },
   // Ridges alone (excludes hips) — ridge vent orders the full ridge off this.
@@ -2366,9 +2377,35 @@ function renderTotals() {
   renderCostProfitPanel();
 }
 
+/* Is this line labor or material?
+
+   Labor is a whole catalog LINE here — Labor (Tear-Off & Install), Steep
+   Charge, Additional Layer Tear-Off — never a split on each product, because a
+   catalog product carries a single `cost`. That is why every builder writes
+   `labor_unit_cost: 0`: the field is not where labor lives, so splitting on it
+   reported $0 labor on every bid ever written.
+
+   `kind` on the catalog product is the answer. The id prefix is the fallback,
+   for a product that predates the field or one a manager added by hand
+   following the l_/sl_/wl_/cl_ convention. A hand-added row carries no
+   catalog_id and counts as material — the safer default, and either way the
+   two columns still sum to the same total. */
+const _LABOR_ID_RE = /^(l|sl|wl|cl)_/;
+function isLaborLine(trade, item) {
+  const id = item.catalog_id;
+  if (!id) return false;
+  const prod = ((priceBook || {})[trade + '_catalog'] || []).find(p => p && p.id === id);
+  if (prod && prod.kind) return prod.kind === 'labor';
+  return _LABOR_ID_RE.test(id);
+}
+
 /* ── Internal cost / profit (rep-only — never shown to the customer) ────
-   GBB trades track material + labor cost, so profit is computed from them.
-   Simple-mode trades (e.g. gutters) store a sell price with no cost split,
+   Material and labor are split by which LINE the cost sits on (isLaborLine
+   above), not by a per-product split — so the Labor column picks up the steep
+   charge and the extra-layer tear-off along with the base labor line.
+   Whichever bucket a line lands in, `cost` is the same sum, so totals and
+   margins do not depend on the classification.
+   Simple-mode trades (e.g. gutters) store a sell price with no cost at all,
    so they're reported separately rather than counted as pure profit. */
 function tierProfit(tier) {
   let material = 0, labor = 0, gbbSell = 0, simpleSell = 0;
@@ -2400,8 +2437,11 @@ function tierProfit(tier) {
       const qty = parseFloat(item.quantity)||0; if (qty <= 0) return;
       const t = (item.tiers||{})[tier] || {};
       if (t.included === false) return;
-      m += (parseFloat(t.material_unit_cost)||0) * qty;
-      l += (parseFloat(t.labor_unit_cost)||0) * qty;
+      // The line's whole cost goes to one bucket. labor_unit_cost is still
+      // added in so a legacy estimate carrying one still totals correctly.
+      const c = ((parseFloat(t.material_unit_cost)||0)
+               + (parseFloat(t.labor_unit_cost)||0)) * qty;
+      if (isLaborLine(trade, item)) l += c; else m += c;
     });
     const sell = tradeTotal(trade, tier);
     if (m === 0 && l === 0 && sell === 0) return;
@@ -4051,7 +4091,7 @@ function pbMeasureCell(item, i) {
   const formulaInput = isFormula ? `
     <input class="pb-formula-input" type="text" value="${esc(item.formula||'')}"
       placeholder="eave_lf + valley_lf"
-      title="Variables: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1)"
+      title="Variables: roof_squares, waste_pct, attic_sqft, low_slope_squares, steep_squares, existing_layers, ridge_hip_lf, valley_lf, eave_lf, rake_lf, step_flash_lf, pipe_boots, skylights, turtle_vents, broan_4in, broan_8in, iw_second_row (0/1)"
       oninput="pbItems['${pbActiveTrade}'][${i}].formula=this.value;pbItems['${pbActiveTrade}'][${i}].measure=''">` : '';
   const bundleInput = `
     <div class="pb-bundle-wrap">
