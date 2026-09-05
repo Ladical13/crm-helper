@@ -3036,17 +3036,72 @@ def _parse_roofr_pdf(file_bytes):
 
     return {'measurements': meas, 'address': addr}
 
+def _and_list(items):
+    """'eaves', 'roof area and eaves', 'roof area, eaves and valleys'."""
+    items = [str(i) for i in items]
+    if len(items) <= 1:
+        return items[0] if items else ''
+    return ', '.join(items[:-1]) + ' and ' + items[-1]
+
+
+# Every PDF opens with "%PDF-". Some writers leave junk ahead of it and every
+# reader tolerates that, so scan a window rather than demanding byte 0.
+_PDF_MAGIC_WINDOW = 1024
+
+
+def _looks_like_pdf(raw):
+    return b'%PDF-' in raw[:_PDF_MAGIC_WINDOW]
+
+
+# Measurements a roof cannot actually be missing. Absent (or zero) means the
+# PARSE failed, not that the building has none of it — so the import refuses
+# rather than handing back a payload whose gaps apply as silent zeros.
+_ROOFR_REQUIRED = [('roof_squares', 'roof area'), ('eave_lf', 'eaves')]
+
+# Measurements a real roof genuinely might not have — a simple gable has no
+# valleys and no hips. Reported to the rep as unread when the label was absent
+# ENTIRELY (`is None`); an explicit "0ft 0in" in the report is an answer, not a
+# gap, and must not cry wolf.
+_ROOFR_EXPECTED = [
+    ('valley_lf',     'valleys'),
+    ('rake_lf',       'rakes'),
+    ('ridge_hip_lf',  'ridges + hips'),
+    ('step_flash_lf', 'step flashing'),
+]
+
+
 @app.route('/api/parse-roofr', methods=['POST'])
 def parse_roofr():
     f = request.files.get('file')
-    if not f or not f.filename.lower().endswith('.pdf'):
-        return jsonify({'error': 'Please upload a PDF file.'}), 400
+    if f is None:
+        return jsonify({'error': 'No file came through. Pick the RoofR PDF and try again.'}), 400
+    raw = f.read()
+    if not raw:
+        return jsonify({'error': 'That file arrived empty. Download the report from RoofR again.'}), 400
+    # Judge the FILE, not its name. This used to require a filename ending in
+    # '.pdf', so a genuine RoofR report picked from iOS Files, a share sheet or
+    # a messaging app — any source that hands over 'document' or drops the
+    # extension — was rejected with a message that was simply untrue. The name
+    # is decoration; the magic bytes are the fact.
+    if not _looks_like_pdf(raw):
+        return jsonify({'error': 'That file is not a PDF. Export the report from RoofR as a PDF, then upload it.'}), 400
     try:
-        data = _parse_roofr_pdf(f.read())
+        data = _parse_roofr_pdf(raw)
     except Exception as e:
         return jsonify({'error': f'Could not read PDF: {e}'}), 400
-    if not data['measurements'].get('roof_squares'):
-        return jsonify({'error': "Couldn’t find RoofR measurements in this PDF. Make sure it’s a RoofR report."}), 422
+
+    meas = data['measurements']
+    missing = [label for key, label in _ROOFR_REQUIRED if not meas.get(key)]
+    if missing:
+        return jsonify({'error':
+            'Couldn’t read the ' + _and_list(missing) + ' from this PDF. '
+            'Nothing was applied — an import that lands with gaps prices them as zero. '
+            'Check it’s the RoofR report (not the invoice or a scan), or enter the '
+            'measurements by hand.'}), 422
+
+    # Everything else the report didn't yield, named so the rep can eyeball it
+    # against the PDF before applying instead of hunting for a blank field.
+    data['unread'] = [label for key, label in _ROOFR_EXPECTED if meas.get(key) is None]
     return jsonify(data)
 
 

@@ -313,3 +313,85 @@ def test_roofr_pitches_still_take_the_last_table_without_a_summary(A):
     ]))['measurements']
     assert meas['steep_squares'] == 10.0
     assert meas['low_slope_squares'] == 0.0
+
+
+# ── Workstream D: the import refuses rather than applying gaps as zeros ──
+# Two failures a rep actually hit. A genuine RoofR PDF was rejected as "not a
+# PDF" because the check read the filename; and a parse that came back missing
+# measurements applied anyway, because apply Object.assigns the keys present and
+# leaves the rest at zero — which then prices as zero.
+
+import io as _io
+
+
+def test_a_pdf_without_a_pdf_filename_is_still_a_pdf(A, client):
+    """The endpoint used to require a filename ending in '.pdf'. Any source that
+    drops the extension — iOS Files, a share sheet, a messaging app handing over
+    'document' — got told its RoofR report was not a PDF. The bytes decide."""
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total eaves 200ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'document')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 200, r.get_json()
+    assert r.get_json()['measurements']['roof_squares'] == 30.0
+
+
+def test_a_file_that_is_not_a_pdf_is_refused(A, client):
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(b'this is not a pdf'), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 400
+    assert 'not a PDF' in r.get_json()['error']
+
+
+def test_import_refuses_when_a_core_measurement_did_not_parse(A, client):
+    """A roof always has eaves. Coming back without them means the PARSE failed,
+    and applying that leaves the estimate's eaves — and its gutters, drip edge
+    and starter, all ordered off the eave run — at zero, priced and printed as
+    if measured. Refuse, and say which figure is missing."""
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total valleys 60ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 422
+    err = r.get_json()['error']
+    assert 'eaves' in err
+    assert 'Nothing was applied' in err
+
+
+def test_import_names_the_measurements_the_report_did_not_carry(A, client):
+    """Non-core gaps don't block — a simple gable really has no valleys — but
+    they are named, because the alternative is a quiet '—' on a preview a rep
+    is scanning for numbers, not for absences."""
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total eaves 200ft 0in', 'Total rakes 90ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 200
+    unread = r.get_json()['unread']
+    assert 'valleys' in unread and 'step flashing' in unread
+    assert 'rakes' not in unread            # present in the report
+    assert 'roof area' not in unread        # required keys never land here
+
+
+def test_a_measured_zero_is_an_answer_not_a_gap(A, client):
+    """A report that explicitly states 0ft 0in of valleys has ANSWERED the
+    question. Flagging that as unread trains reps to ignore the banner."""
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total eaves 200ft 0in', 'Total valleys 0ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 200
+    assert r.get_json()['measurements']['valley_lf'] == 0.0
+    assert 'valleys' not in r.get_json()['unread']
+
+
+def test_and_list_reads_like_a_sentence(A):
+    assert A._and_list([]) == ''
+    assert A._and_list(['eaves']) == 'eaves'
+    assert A._and_list(['roof area', 'eaves']) == 'roof area and eaves'
+    assert A._and_list(['roof area', 'eaves', 'valleys']) == 'roof area, eaves and valleys'
