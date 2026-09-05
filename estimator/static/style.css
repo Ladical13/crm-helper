@@ -4220,6 +4220,14 @@ a.jx-contact:hover { text-decoration: underline; }
   border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; grid-column: 1 / -1;
 }
 .roofr-modal-footer { display: flex; justify-content: flex-end; gap: 10px; }
+/* The gaps banner. Same red as the unpriced-bundle warning on the pricing tab,
+   and for the same reason: a measurement the report didn't carry applies as a
+   zero, and a zero prices as legitimately as any other number. */
+.roofr-unread {
+  background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px;
+  padding: 10px 12px; font-size: 12px; line-height: 1.45; color: #991b1b;
+}
+.roofr-missing { color: #b91c1c; font-weight: 600; }
 
 /* ── Insurance (Xactimate) carrier-estimate import modal ───────────── */
 .xact-modal-box { width: min(760px, 96vw); }

@@ -2716,15 +2716,27 @@ def visualizer_operations():
 
 # ── RoofR PDF import ───────────────────────────────────────────────────────
 
-def _parse_roofr_lf(s):
-    """Convert RoofR linear-foot string ('358ft 4in') to decimal feet."""
-    m = re.match(r'(\d+)ft\s+(\d+)in', s.strip())
-    if m:
-        return round(int(m.group(1)) + int(m.group(2)) / 12, 2)
-    m = re.match(r'(\d[\d,]*)ft', s.replace(',', ''))
-    return float(m.group(1)) if m else 0.0
+# One linear-foot value as RoofR prints it. Thousands separators are real —
+# Roofr commas any four-digit figure, so eaves on a big or multi-structure
+# property arrive as "1,204ft 3in" — and the inches half is optional. Both
+# halves of that matter to the CALLER's regex too, which is why find_lf()
+# below shares this pattern instead of spelling its own: it used to demand
+# `\d+ft\s+\d+in`, so "1,204ft 3in" matched nothing at all and the key was
+# dropped, quietly pricing zero eaves, zero gutters and zero valleys on the
+# largest jobs we bid. A bare-feet branch existed here but was unreachable
+# for the same reason.
+_ROOFR_LF_RE = r'\d[\d,]*\s*ft(?:\s+\d+\s*in)?'
 
-def _parse_roofr_pitches(full_text):
+
+def _parse_roofr_lf(s):
+    """Convert RoofR linear-foot string ('358ft 4in', '1,204ft 3in', '421ft')
+    to decimal feet. Inches are optional; a missing inches half is 0."""
+    m = re.match(r'(\d+)\s*ft(?:\s+(\d+)\s*in)?', s.replace(',', '').strip())
+    if not m:
+        return 0.0
+    return round(int(m.group(1)) + int(m.group(2) or 0) / 12, 2)
+
+def _parse_roofr_pitches(full_text, prefer_first=False):
     """Extract (rise, area_sqft) pairs from RoofR's pitch table.
 
     Real RoofR exports print a columnar block, not a row per pitch:
@@ -2732,11 +2744,21 @@ def _parse_roofr_pitches(full_text):
         Area (sqft) 514 106 4,675
         Squares 5.2 1.1 46.8
     Multi-structure properties (garage, shed, addition) repeat this block once
-    per structure, then once more for the whole-property 'Report summary' —
-    the LAST such block in the document is that total, so it wins. Flat
-    facets are already folded into the low-rise buckets here (0/12 area plus
-    2/12 area lines up with the report's separately-stated flat-area total,
-    within rounding) — nothing needs adding back on top.
+    per structure, plus once for the whole-property 'Report summary'. Which
+    copy is the total depends on where that summary sits, so the CALLER says:
+    `prefer_first` when the text has already been scoped to a Report summary
+    (the first block in that window belongs to the summary itself), and the
+    LAST block otherwise. The two coincide on a report whose summary comes
+    last, which is the layout this was verified against — but with the summary
+    FIRST, taking the last block read the pitches off the final structure while
+    every other measurement came from the whole property. A detached garage
+    then decided the low-slope, steep-charge and predominant-pitch numbers for
+    the whole house: rolled roofing billed for area that isn't flat, steep
+    charge dropped for area that is.
+
+    Flat facets are already folded into the low-rise buckets here (0/12 area
+    plus 2/12 area lines up with the report's separately-stated flat-area
+    total, within rounding) — nothing needs adding back on top.
 
     Falls back to an older row-per-pitch layout ('4/12  1,551.7 ft²  79.6%')
     if the columnar table isn't found, in case some export differs."""
@@ -2746,7 +2768,7 @@ def _parse_roofr_pitches(full_text):
         re.I | re.M)
     matches = list(table_re.finditer(full_text))
     if matches:
-        m     = matches[-1]
+        m     = matches[0] if prefer_first else matches[-1]
         rises = [int(r) for r in re.findall(r'(\d{1,2})\s*/\s*12', m.group(1))]
         areas = [float(a.replace(',', '')) for a in re.findall(r'[\d,]+(?:\.\d+)?', m.group(2))]
         if rises and len(rises) == len(areas):
@@ -2913,8 +2935,10 @@ def _parse_roofr_pdf(file_bytes):
     search_text = full_text[rs_matches[0].start():] if rs_matches else full_text
 
     def find_lf(label):
-        # [\s:]+ handles both "Label 358ft 4in" and "Label: 358ft 4in" formats
-        m = re.search(rf'{re.escape(label)}[\s:]+(\d+ft\s+\d+in)', search_text)
+        # [\s:]+ handles both "Label 358ft 4in" and "Label: 358ft 4in" formats.
+        # The value pattern is shared with _parse_roofr_lf so the two can't
+        # drift: a figure this can't match is a measurement silently dropped.
+        m = re.search(rf'{re.escape(label)}[\s:]+({_ROOFR_LF_RE})', search_text)
         return _parse_roofr_lf(m.group(1)) if m else None
 
     # Prefer the whole-property "Total roof area <N> sqft" over a bare
@@ -2929,7 +2953,7 @@ def _parse_roofr_pdf(file_bytes):
         squares = float(sq.group(1)) if sq else None
 
     # "Hips + ridges" is the precomputed combined value in the Report Summary
-    ridge_hip_m = re.search(r'Hips\s*\+\s*ridges[\s:]+(\d+ft\s+\d+in)', search_text)
+    ridge_hip_m = re.search(rf'Hips\s*\+\s*ridges[\s:]+({_ROOFR_LF_RE})', search_text)
     ridge_hip = _parse_roofr_lf(ridge_hip_m.group(1)) if ridge_hip_m else None
     if ridge_hip is None:
         h = find_lf('Total hips') or 0
@@ -2951,7 +2975,9 @@ def _parse_roofr_pdf(file_bytes):
     # report has a pitch table so a re-import clears stale values; omitted
     # entirely when it doesn't, leaving manual entries alone.
     low_slope_sq = steep_sq = None
-    pitch_rows = _parse_roofr_pitches(search_text)
+    # search_text is scoped to the Report summary whenever the report has one,
+    # so the summary's own pitch table is the FIRST in that window.
+    pitch_rows = _parse_roofr_pitches(search_text, prefer_first=bool(rs_matches))
     if pitch_rows:
         low_slope_sq = round(sum(a for p, a in pitch_rows if p <= 2) / 100, 1)
         steep_sq     = round(sum(a for p, a in pitch_rows if p >= 7) / 100, 1)
@@ -3010,17 +3036,72 @@ def _parse_roofr_pdf(file_bytes):
 
     return {'measurements': meas, 'address': addr}
 
+def _and_list(items):
+    """'eaves', 'roof area and eaves', 'roof area, eaves and valleys'."""
+    items = [str(i) for i in items]
+    if len(items) <= 1:
+        return items[0] if items else ''
+    return ', '.join(items[:-1]) + ' and ' + items[-1]
+
+
+# Every PDF opens with "%PDF-". Some writers leave junk ahead of it and every
+# reader tolerates that, so scan a window rather than demanding byte 0.
+_PDF_MAGIC_WINDOW = 1024
+
+
+def _looks_like_pdf(raw):
+    return b'%PDF-' in raw[:_PDF_MAGIC_WINDOW]
+
+
+# Measurements a roof cannot actually be missing. Absent (or zero) means the
+# PARSE failed, not that the building has none of it — so the import refuses
+# rather than handing back a payload whose gaps apply as silent zeros.
+_ROOFR_REQUIRED = [('roof_squares', 'roof area'), ('eave_lf', 'eaves')]
+
+# Measurements a real roof genuinely might not have — a simple gable has no
+# valleys and no hips. Reported to the rep as unread when the label was absent
+# ENTIRELY (`is None`); an explicit "0ft 0in" in the report is an answer, not a
+# gap, and must not cry wolf.
+_ROOFR_EXPECTED = [
+    ('valley_lf',     'valleys'),
+    ('rake_lf',       'rakes'),
+    ('ridge_hip_lf',  'ridges + hips'),
+    ('step_flash_lf', 'step flashing'),
+]
+
+
 @app.route('/api/parse-roofr', methods=['POST'])
 def parse_roofr():
     f = request.files.get('file')
-    if not f or not f.filename.lower().endswith('.pdf'):
-        return jsonify({'error': 'Please upload a PDF file.'}), 400
+    if f is None:
+        return jsonify({'error': 'No file came through. Pick the RoofR PDF and try again.'}), 400
+    raw = f.read()
+    if not raw:
+        return jsonify({'error': 'That file arrived empty. Download the report from RoofR again.'}), 400
+    # Judge the FILE, not its name. This used to require a filename ending in
+    # '.pdf', so a genuine RoofR report picked from iOS Files, a share sheet or
+    # a messaging app — any source that hands over 'document' or drops the
+    # extension — was rejected with a message that was simply untrue. The name
+    # is decoration; the magic bytes are the fact.
+    if not _looks_like_pdf(raw):
+        return jsonify({'error': 'That file is not a PDF. Export the report from RoofR as a PDF, then upload it.'}), 400
     try:
-        data = _parse_roofr_pdf(f.read())
+        data = _parse_roofr_pdf(raw)
     except Exception as e:
         return jsonify({'error': f'Could not read PDF: {e}'}), 400
-    if not data['measurements'].get('roof_squares'):
-        return jsonify({'error': "Couldn’t find RoofR measurements in this PDF. Make sure it’s a RoofR report."}), 422
+
+    meas = data['measurements']
+    missing = [label for key, label in _ROOFR_REQUIRED if not meas.get(key)]
+    if missing:
+        return jsonify({'error':
+            'Couldn’t read the ' + _and_list(missing) + ' from this PDF. '
+            'Nothing was applied — an import that lands with gaps prices them as zero. '
+            'Check it’s the RoofR report (not the invoice or a scan), or enter the '
+            'measurements by hand.'}), 422
+
+    # Everything else the report didn't yield, named so the rep can eyeball it
+    # against the PDF before applying instead of hunting for a blank field.
+    data['unread'] = [label for key, label in _ROOFR_EXPECTED if meas.get(key) is None]
     return jsonify(data)
 
 

@@ -235,3 +235,163 @@ def test_packet_survives_missing_cutin_image(A):
     est = _signed_est(vent_cutin={'image_filename': 'vent-test/nope.jpg', 'notes': ''})
     out = A.build_production_packet_pdf(est)
     assert isinstance(out, bytes) and len(out) > 500
+
+
+# ── Workstream C: the shapes a real report prints that the parser missed ──
+# Three defects found by feeding the parser report shapes it hadn't been tried
+# against. All three fail the same way — silently, with a plausible number or
+# no number at all, on an estimate that otherwise looks finished.
+
+def test_roofr_reads_linear_feet_past_a_thousand(A):
+    """Roofr commas any four-digit figure, so a big or multi-structure property
+    prints "1,204ft 3in". The finder demanded `\\d+ft\\s+\\d+in`, which matches
+    nothing in that string, so the key was DROPPED — and because apply does an
+    Object.assign of only the keys present, the estimate kept its zeros. Eaves,
+    valleys, rakes and gutters all priced at 0 LF on exactly the largest jobs,
+    with no error anywhere."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Report summary',
+        'Total roof area 12,480 sqft',
+        'Total eaves 1,204ft 3in',
+        'Total valleys 1,032ft 0in',
+        'Hips + ridges 1,110ft 6in',
+    ]))['measurements']
+    assert meas['eave_lf'] == 1204.25
+    assert meas['valley_lf'] == 1032.0
+    assert meas['ridge_hip_lf'] == 1110.5
+    # Gutters are ordered off the eave run, so they inherit the same fix.
+    assert meas['gutter_lf'] == 1204.25
+
+
+def test_roofr_reads_a_bare_feet_value(A):
+    """Inches are optional. _parse_roofr_lf always carried a bare-feet branch,
+    but the finder's regex could never produce a string that reached it, so a
+    "Total eaves 210ft" line parsed as nothing at all."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Report summary', 'Total roof area 2500 sqft',
+        'Total eaves 210ft', 'Total valleys 60ft',
+    ]))['measurements']
+    assert meas['eave_lf'] == 210.0
+    assert meas['valley_lf'] == 60.0
+
+
+def test_roofr_pitches_come_from_the_summary_not_the_last_structure(A):
+    """Every other measurement is read from the first match at or after the
+    "Report summary" heading; the pitch table was independently read from the
+    LAST table in that same text. Those two rules cannot both be right, and on
+    a report whose summary leads the structure detail they disagree — the
+    detached garage decided low-slope, steep and predominant pitch for the whole
+    house. Here the property is 4,000 sqft (3,000 at 4/12 + 1,000 at 8/12) and
+    the garage is 600 sqft of 2/12: taking the last table billed 6 SQ of rolled
+    roofing that isn't flat and dropped the 10 SQ steep charge entirely."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Report summary',
+        'Total roof area 4,000 sqft',
+        'Total eaves 400ft 0in',
+        'Pitch 4/12 8/12',
+        'Area (sqft) 3000 1000',
+        'Structure 2 - Detached garage',
+        'Total roof area 600 sqft',
+        'Pitch 2/12',
+        'Area (sqft) 600',
+    ]))['measurements']
+    assert meas['roof_squares'] == 40.0        # whole property, as before
+    assert meas['steep_squares'] == 10.0       # the 8/12 area, not the garage's 0
+    assert meas['low_slope_squares'] == 0.0    # the garage's 2/12 is not the house
+    assert meas['predominant_pitch'] == 4      # largest area on the summary table
+
+
+def test_roofr_pitches_still_take_the_last_table_without_a_summary(A):
+    """With no "Report summary" to scope to there is no first-block rule to
+    apply, so the older last-table behaviour has to stay exactly as it was."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Total roof area 4,000 sqft',
+        'Pitch 2/12',
+        'Area (sqft) 600',
+        'Pitch 4/12 8/12',
+        'Area (sqft) 3000 1000',
+    ]))['measurements']
+    assert meas['steep_squares'] == 10.0
+    assert meas['low_slope_squares'] == 0.0
+
+
+# ── Workstream D: the import refuses rather than applying gaps as zeros ──
+# Two failures a rep actually hit. A genuine RoofR PDF was rejected as "not a
+# PDF" because the check read the filename; and a parse that came back missing
+# measurements applied anyway, because apply Object.assigns the keys present and
+# leaves the rest at zero — which then prices as zero.
+
+import io as _io
+
+
+def test_a_pdf_without_a_pdf_filename_is_still_a_pdf(A, client):
+    """The endpoint used to require a filename ending in '.pdf'. Any source that
+    drops the extension — iOS Files, a share sheet, a messaging app handing over
+    'document' — got told its RoofR report was not a PDF. The bytes decide."""
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total eaves 200ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'document')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 200, r.get_json()
+    assert r.get_json()['measurements']['roof_squares'] == 30.0
+
+
+def test_a_file_that_is_not_a_pdf_is_refused(A, client):
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(b'this is not a pdf'), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 400
+    assert 'not a PDF' in r.get_json()['error']
+
+
+def test_import_refuses_when_a_core_measurement_did_not_parse(A, client):
+    """A roof always has eaves. Coming back without them means the PARSE failed,
+    and applying that leaves the estimate's eaves — and its gutters, drip edge
+    and starter, all ordered off the eave run — at zero, priced and printed as
+    if measured. Refuse, and say which figure is missing."""
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total valleys 60ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 422
+    err = r.get_json()['error']
+    assert 'eaves' in err
+    assert 'Nothing was applied' in err
+
+
+def test_import_names_the_measurements_the_report_did_not_carry(A, client):
+    """Non-core gaps don't block — a simple gable really has no valleys — but
+    they are named, because the alternative is a quiet '—' on a preview a rep
+    is scanning for numbers, not for absences."""
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total eaves 200ft 0in', 'Total rakes 90ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 200
+    unread = r.get_json()['unread']
+    assert 'valleys' in unread and 'step flashing' in unread
+    assert 'rakes' not in unread            # present in the report
+    assert 'roof area' not in unread        # required keys never land here
+
+
+def test_a_measured_zero_is_an_answer_not_a_gap(A, client):
+    """A report that explicitly states 0ft 0in of valleys has ANSWERED the
+    question. Flagging that as unread trains reps to ignore the banner."""
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total eaves 200ft 0in', 'Total valleys 0ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 200
+    assert r.get_json()['measurements']['valley_lf'] == 0.0
+    assert 'valleys' not in r.get_json()['unread']
+
+
+def test_and_list_reads_like_a_sentence(A):
+    assert A._and_list([]) == ''
+    assert A._and_list(['eaves']) == 'eaves'
+    assert A._and_list(['roof area', 'eaves']) == 'roof area and eaves'
+    assert A._and_list(['roof area', 'eaves', 'valleys']) == 'roof area, eaves and valleys'
