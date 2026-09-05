@@ -1978,6 +1978,90 @@ function tradeTotal(trade, tier) {
 function grandTotal(tier) {
   return RETAIL_TRADE_KEYS.reduce((s,tr)=>s+tradeTotal(tr,tier),0);
 }
+// ── Margin floor ─────────────────────────────────────────────────────────
+// Realized margin, (sell - cost) / sell, NOT the pricing.mode rate: a 30%
+// markup is a 23% margin, so reading the rate straight off the box would call
+// jobs safe that are under the floor. MUST mirror _trade_cost_subtotal and
+// estimate_margin_report (app.py) — the banner and the server's send block
+// have to be talking about the same number.
+function tradeCostTotal(trade, tier) {
+  if (trade === 'insurance') return 0;
+  const td = S.trades[trade];
+  if (!td || !td.enabled) return 0;
+  const effectiveMode = effectiveTradeMode(trade, td);
+  if (effectiveMode === 'simple') {
+    return (td.line_items || []).reduce((sum, item) =>
+      sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_cost)||0), 0);
+  }
+  return (td.line_items || []).reduce((sum, item) => {
+    if ((parseFloat(item.quantity) || 0) <= 0) return sum;   // not in scope
+    const t = (item.tiers && item.tiers[tier]) || {};
+    if (t.included === false) return sum;                     // not in this package
+    return sum + ((parseFloat(t.material_unit_cost)||0)
+                + (parseFloat(t.labor_unit_cost)||0)) * (parseFloat(item.quantity)||0);
+  }, 0);
+}
+// Every package the customer is actually offered. margin_pct is null when a
+// tier has no cost at all — the commercial catalog ships $0 placeholder costs
+// on purpose, and reporting those as a 100% margin would hand a clean bill of
+// health to exactly the bids that have no supplier pricing yet.
+function marginReport() {
+  const allSimple = RETAIL_TRADE_KEYS.every(tr =>
+    !S.trades[tr]?.enabled || effectiveTradeMode(tr, S.trades[tr]) === 'simple');
+  const tiers = allSimple ? enabledTiers().slice(0, 1) : enabledTiers();
+  const rows = tiers.map(t => {
+    const sell = RETAIL_TRADE_KEYS.reduce((a,tr)=>a+tradeTotal(tr,t),0);
+    const cost = RETAIL_TRADE_KEYS.reduce((a,tr)=>a+tradeCostTotal(tr,t),0);
+    return { tier:t, sell, cost,
+             margin_pct: (sell > 0 && cost > 0) ? (sell-cost)/sell*100 : null };
+  });
+  const known = rows.filter(r => r.margin_pct !== null);
+  return { tiers: rows,
+           lowest: known.length ? known.reduce((a,b)=>b.margin_pct<a.margin_pct?b:a) : null };
+}
+function marginFloors() {
+  const pct = (v, dflt) => {
+    if (v === null || v === undefined || v === '') return dflt;
+    const n = parseFloat(v);
+    return (isNaN(n) || n < 0 || n >= 100) ? dflt : n;
+  };
+  // MUST mirror MARGIN_FLOOR_*_DEFAULT (app.py). Warn matches DEFAULT_RATE, so
+  // a rep who never touches the margin box sits exactly on target.
+  return { warn:  pct(appSettings.margin_floor_warn,  35),
+           block: pct(appSettings.margin_floor_block, 30) };
+}
+// Residential only. Insurance is exempt because the carrier sets that price;
+// commercial because its pricing comes off a per-job supplier quote and the
+// catalog ships $0 placeholder costs, so a floor would be measuring the
+// placeholders. MUST mirror _margin_floor_exempt (app.py).
+function marginFloorExempt() {
+  return S.estimate_type === 'insurance'
+      || S.estimate_type === 'commercial'
+      || !!S.trades?.insurance?.enabled;
+}
+function renderMarginBanner() {
+  const el = document.getElementById('margin-floor-banner');
+  if (!el) return;
+  if (marginFloorExempt()) { el.innerHTML = ''; return; }
+  const { warn, block } = marginFloors();
+  const worst = marginReport().lowest;
+  if (!worst || (warn <= 0 && block <= 0)) { el.innerHTML = ''; return; }
+  const m = worst.margin_pct;
+  if (block > 0 && m < block) {
+    el.innerHTML = `<div class="margin-banner margin-banner-block">
+      <strong>⛔ ${m.toFixed(1)}% margin — below the ${block}% floor.</strong>
+      The ${TIER_LABELS[worst.tier] || worst.tier} package sells at
+      ${fmtCur(worst.sell)} on ${fmtCur(worst.cost)} of cost. A manager has to
+      send this, or the margin needs to come up first.</div>`;
+  } else if (warn > 0 && m < warn) {
+    el.innerHTML = `<div class="margin-banner margin-banner-warn">
+      <strong>⚠️ ${m.toFixed(1)}% margin on the ${TIER_LABELS[worst.tier] || worst.tier} package</strong>
+      — under the ${warn}% target. ${fmtCur(worst.sell)} sell on
+      ${fmtCur(worst.cost)} cost. Still sendable.</div>`;
+  } else {
+    el.innerHTML = '';
+  }
+}
 // Mix-and-match total: every trade priced at ITS OWN selected tier.
 // MUST mirror calc_selected_total in app.py.
 function selectedTotal() {
@@ -1999,12 +2083,140 @@ function setDirty() {
   dirty = true;
   const el = document.getElementById('save-indicator');
   el.textContent = '● Unsaved'; el.className = 'save-indicator unsaved';
+  // Every edit in the app funnels through here, which makes it the one honest
+  // place to hang recovery off. Both are debounced timers, not writes.
+  scheduleDraftSave();
+  scheduleAutosave();
 }
 function setClean() {
   dirty = false;
   const el = document.getElementById('save-indicator');
   el.textContent = '✓ Saved'; el.className = 'save-indicator saved';
+  // On the server now, so the local copy is only a chance to restore something
+  // older than what is stored.
+  clearLocalDraft();
 }
+
+/* ── Crash recovery ──────────────────────────────────────────────────────
+   setDirty used to change a label and nothing else — no unload guard, no
+   local copy, no autosave. An iPad on a kitchen table, an hour of takeoff in
+   memory, the rep switches apps to answer a text and iOS reclaims the tab:
+   the estimate was gone with no warning and nothing to restore from, and the
+   rep re-keyed it assuming they had done something wrong.
+
+   Three independent layers, deliberately not chained — each one still works
+   when the other two fail:
+     1. beforeunload  the browser asks before a close or reload discards work
+     2. local draft   a copy in localStorage, offered back on the next load
+     3. autosave      a real PUT, but only for estimates the server already
+                      knows about: autosaving a brand-new one would put
+                      half-built records in everyone's Open list.
+*/
+const DRAFT_KEY_PREFIX = 'p1est:draft:';
+const DRAFT_SAVE_MS    = 15000;
+const AUTOSAVE_MS      = 45000;
+let _draftTimer = null;
+let _autosaveTimer = null;
+
+function _draftKey(id) { return DRAFT_KEY_PREFIX + (id || 'new'); }
+
+function _draftPayload() {
+  // The visualizer's masks and renders run to megabytes and are server-owned
+  // anyway — they write through their own endpoints and a whole-doc save is
+  // explicitly told to leave them alone. Storing them would spend the whole
+  // quota protecting the one part of the document that is not at risk.
+  const { visualizer, ...rest } = S;
+  return JSON.stringify({ saved_at: new Date().toISOString(),
+                          customer: (S.customer || {}).name || '',
+                          estimate: rest });
+}
+
+function saveDraftLocally() {
+  if (!dirty) return;
+  try {
+    localStorage.setItem(_draftKey(S.estimate_id), _draftPayload());
+  } catch (e) {
+    // Quota exceeded, private mode, or site data blocked. Never throw — the
+    // unload guard and autosave are separate layers and both still stand.
+    console.warn('[draft] local snapshot failed:', e && e.name);
+  }
+}
+
+function clearLocalDraft(id) {
+  try { localStorage.removeItem(_draftKey(id === undefined ? S.estimate_id : id)); }
+  catch {}
+}
+
+function _listLocalDrafts() {
+  const out = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(DRAFT_KEY_PREFIX)) continue;
+      try {
+        const d = JSON.parse(localStorage.getItem(k));
+        if (d && d.estimate) out.push({ key: k, ...d });
+      } catch { try { localStorage.removeItem(k); } catch {} }
+    }
+  } catch {}
+  return out.sort((a, b) => String(b.saved_at).localeCompare(String(a.saved_at)));
+}
+
+// Called once at boot, after the price book and settings have landed so the
+// restored estimate renders against the same data a fresh one would.
+function offerDraftRecovery() {
+  const drafts = _listLocalDrafts();
+  if (!drafts.length) return;
+  const d = drafts[0];
+  let when = d.saved_at;
+  try { when = new Date(d.saved_at).toLocaleString('en-US',
+              { dateStyle: 'medium', timeStyle: 'short' }); } catch {}
+  const who = d.customer ? `for ${d.customer}` : 'with no customer name yet';
+  const go = confirm(
+    `Unsaved work found.\n\nAn estimate ${who} was open and unsaved on this ` +
+    `device as of ${when}.\n\nRestore it?\n\n` +
+    `(Cancel discards it — this prompt will not come back.)`);
+  // Either way the draft is consumed. Leaving it would re-prompt on every load
+  // forever, which is how people learn to click through prompts without
+  // reading them.
+  drafts.forEach(x => { try { localStorage.removeItem(x.key); } catch {} });
+  if (!go) return;
+  S = d.estimate;
+  renderAll();
+  switchPage('client');
+  setDirty();   // it is still not on the server
+}
+
+function scheduleDraftSave() {
+  clearTimeout(_draftTimer);
+  _draftTimer = setTimeout(saveDraftLocally, DRAFT_SAVE_MS);
+}
+
+function scheduleAutosave() {
+  clearTimeout(_autosaveTimer);
+  _autosaveTimer = setTimeout(() => {
+    // Only estimates the server already has, never a signed one (its document
+    // hash covers exactly what is stored), and never over a save in flight or
+    // while the Design Studio owns the document.
+    if (!dirty || !S.estimate_id || S.signature) return;
+    if (_estimateSaveFlight || _vzBlocksGenericSave()) return;
+    saveEstimate();
+  }, AUTOSAVE_MS);
+}
+
+window.addEventListener('beforeunload', e => {
+  if (!dirty) return;
+  saveDraftLocally();   // last chance, synchronous, before the tab goes
+  e.preventDefault();
+  e.returnValue = '';   // Safari and older Chrome still want this
+});
+
+// iOS never fires beforeunload when the system reclaims a backgrounded tab —
+// which is the exact case this whole section exists for. visibilitychange is
+// the last event that reliably arrives.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') saveDraftLocally();
+});
 
 /* ── Full render ───────────────────────────────────────────────────── */
 
@@ -2347,7 +2559,7 @@ function renderTradeOverrides() {
       const ov = S.pricing.per_trade_overrides[trade];
       return `<div class="override-row">
         <label>${TRADE_LABELS[trade]}</label>
-        <input type="number" min="0" max="100" step="0.5" placeholder="Global"
+        <input type="number" min="0" max="99" step="0.5" placeholder="Global"
           value="${esc(ov !== null && ov !== undefined ? ov : '')}"
           onchange="setTradeOverride('${trade}',this.value)">
         <span style="font-size:10px;color:var(--text-light)">%</span>
@@ -5163,6 +5375,7 @@ async function saveTierDefaults(trade) {
 /* ── Page 4: Pricing (trade tabs + GBB) ────────────────────────────── */
 
 function renderPricingPage() {
+  renderMarginBanner();
   renderTabBar();
   renderTradeContent();
 }
@@ -5185,6 +5398,9 @@ function switchTrade(trade) {
 }
 
 function renderTradeContent() {
+  // A margin edit re-renders only the trade tab, so the job-level banner has to
+  // be refreshed from here too or it reports the margin from before the edit.
+  renderMarginBanner();
   const td    = S.trades[activeTrade];
   const trade = activeTrade;
   const isInsurance = trade === 'insurance';
@@ -8594,7 +8810,14 @@ function renderTierRates() {
 }
 function setTierRate(tier, v) {
   if (!S.pricing.tier_rates) S.pricing.tier_rates = { good:35, better:35, best:35 };
-  S.pricing.tier_rates[tier] = parseFloat(v) || 0;
+  // Blank means INHERIT (fall through to global_rate, then DEFAULT_RATE) — never 0.
+  // This was `parseFloat(v) || 0`, which turned a cleared box into a real 0 that
+  // _resolveRate then honoured exactly as designed: the roof priced at cost, the
+  // screen looked normal, and parity passed because both sides agreed. That is the
+  // trap _resolveRate's own comment warns about. setTradeOverride and
+  // setTradeTierRate have always mapped blank -> null; this is the third setter
+  // finally agreeing with them.
+  S.pricing.tier_rates[tier] = _rateValue(v);
   recalcSimpleItems();
   setDirty();
   renderTierRates();   // keep the sidebar inputs in sync with the grid inputs
@@ -8626,15 +8849,14 @@ function setTier(tier) {
   if(activePage==='pricing')renderTradeContent();
   if(activePage==='options')renderOptionsPage();
 }
-function setTradeOverride(trade,v) { S.pricing.per_trade_overrides[trade]=v===''?null:parseFloat(v); setDirty(); rerender(); if(activePage==='pricing')renderTradeContent(); }
+function setTradeOverride(trade,v) { S.pricing.per_trade_overrides[trade]=_rateValue(v); setDirty(); rerender(); if(activePage==='pricing')renderTradeContent(); }
 // Per-trade, per-tier margin. tier is 'good'|'better'|'best' (GBB tabs) or
 // 'simple' (a simple-mode trade's single margin). Blank clears the override so
 // the trade falls back to the sidebar default.
 function setTradeTierRate(trade, tier, v) {
   if (!S.pricing.trade_rates) S.pricing.trade_rates = {};
   if (!S.pricing.trade_rates[trade]) S.pricing.trade_rates[trade] = {};
-  const n = parseFloat(v);
-  S.pricing.trade_rates[trade][tier] = (v === '' || v === null || isNaN(n)) ? null : n;
+  S.pricing.trade_rates[trade][tier] = _rateValue(v);
   if (tier === 'simple') recalcSimpleItems();  // re-bake simple sell prices
   setDirty();
   rerender();
@@ -8752,22 +8974,97 @@ function renderEstStatusBar() {
     <select id="est-status-select" onchange="setEstStatus(this.value)">
       ${opts.map(([v, l]) => `<option value="${v}" ${st === v ? 'selected' : ''}>${l}</option>`).join('')}
     </select>
-    ${st === 'lost' ? '<span class="est-status-note">Out of Outstanding and follow-ups. The lead stays open in the Pipeline.</span>' : ''}`;
+    ${st === 'lost' ? `<span class="est-status-note">${
+      S.lost_reason && _lostReasons && _lostReasons[S.lost_reason]
+        ? esc(_lostReasons[S.lost_reason]) + ' — '
+        : ''}Out of Outstanding and follow-ups. The lead stays open in the Pipeline.</span>` : ''}`;
   el.style.display = 'flex';
+}
+
+// Served by the API rather than mirrored here, so the dropdown and the
+// validator that accepts its value cannot drift apart.
+let _lostReasons = null;
+async function _loadLostReasons() {
+  if (_lostReasons) return _lostReasons;
+  try {
+    const r = await fetch(`${BASE}/api/lost-reasons`, { credentials: 'same-origin' });
+    _lostReasons = await r.json();
+  } catch { _lostReasons = {}; }
+  return _lostReasons;
+}
+
+/* ── Lost-reason modal ───────────────────────────────────────────────────
+   Marking an estimate lost is the one moment the rep knows why, so it is the
+   only moment worth asking. Kept to one screen: pick a reason, optional note,
+   done. Cancelling leaves the outcome unchanged rather than recording a loss
+   with no reason — the dropdown springs back to what it was. */
+let _lostPick = '';
+
+async function openLostModal() {
+  const reasons = await _loadLostReasons();
+  const keys = Object.keys(reasons);
+  if (!keys.length) return false;   // API unreachable — caller falls through
+  _lostPick = '';
+  document.getElementById('lost-note').value = '';
+  document.getElementById('lost-save-btn').disabled = true;
+  document.getElementById('lost-reason-list').innerHTML = keys.map(k => `
+    <button type="button" class="lost-reason" data-reason="${esc(k)}"
+      onclick="pickLostReason('${jsq(k)}')">${esc(reasons[k])}</button>`).join('');
+  document.getElementById('lost-modal').classList.remove('hidden');
+  return true;
+}
+
+function pickLostReason(key) {
+  _lostPick = key;
+  document.querySelectorAll('#lost-reason-list .lost-reason').forEach(b => {
+    b.classList.toggle('selected', b.dataset.reason === key);
+  });
+  document.getElementById('lost-save-btn').disabled = false;
+}
+
+function closeLostModal() {
+  document.getElementById('lost-modal').classList.add('hidden');
+  _lostPick = '';
+  // The select still shows 'lost' from the click that opened this. Put it back.
+  renderEstStatusBar();
+}
+
+function maybeCloseLostModal(e) {
+  if (e.target === document.getElementById('lost-modal')) closeLostModal();
+}
+
+function confirmLostReason() {
+  if (!_lostPick) return;
+  const reason = _lostPick;
+  const note = (document.getElementById('lost-note').value || '').trim();
+  document.getElementById('lost-modal').classList.add('hidden');
+  _lostPick = '';
+  _patchEstStatus('lost', reason, note);
 }
 
 async function setEstStatus(status) {
   if (!S.estimate_id) return;
+  if (status === 'lost') {
+    // The modal drives the PATCH itself once a reason is picked. If the
+    // options cannot be loaded, fall through and record the loss anyway — the
+    // reason must never become a reason not to record the outcome.
+    if (await openLostModal()) return;
+  }
+  return _patchEstStatus(status, '', '');
+}
+
+async function _patchEstStatus(status, lost_reason, lost_note) {
   try {
     const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/status`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, lost_reason, lost_note }),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || 'Could not update the outcome.');
     S.status = j.status;
+    S.lost_reason = j.lost_reason || '';
   } catch (e) {
     alert(e.message);
   }
@@ -9249,6 +9546,39 @@ function renderDashboardAnalytics(filteredList, allData) {
     </div>`).join('');
   const lostHtml = fn.lost ? `<div class="funnel-declined">✗ ${fn.lost} lost</div>` : '';
 
+  // ── Why we lost ──────────────────────────────────────────────────────
+  // A close rate with no loss reasons is a thermometer with no thermostat.
+  // 'unrecorded' is shown rather than hidden: estimates marked lost before the
+  // picker existed have no reason, and dropping them would quietly inflate the
+  // share of every reason that IS recorded.
+  const lrLabels = ad.lost_reason_labels || {};
+  const lrRows = Object.entries(ad.lost_reasons || {})
+    .sort((a,b) => b[1].count - a[1].count);
+  const lrTotal = lrRows.reduce((s,[,d]) => s + d.count, 0);
+  const lostReasonHtml = lrRows.length ? `
+      <h4 class="analytics-h" style="margin-top:14px">Why We Lost</h4>
+      ${lrRows.map(([k,d]) => {
+        const pct = lrTotal > 0 ? Math.round(d.count / lrTotal * 100) : 0;
+        const label = k === 'unrecorded' ? 'No reason recorded' : (lrLabels[k] || k);
+        return `<div class="aging-row">
+          <span class="aging-label">${esc(label)}</span>
+          <span class="aging-count">${d.count}</span>
+          <div class="aging-bar-wrap"><div class="aging-bar" style="width:${pct}%;background:#dc2626"></div></div>
+          <span class="aging-val">${fmtCur(d.value)}</span>
+        </div>`;
+      }).join('')}` : '';
+
+  // Estimates with no salesperson are excluded from every number on this tab.
+  // Saying so is the whole point — the figure used to vanish silently.
+  const un = ad.unassigned || {count:0, value:0};
+  const unassignedHtml = un.count ? `
+    <div class="analytics-section a-card analytics-unassigned">
+      ⚠️ <strong>${un.count} estimate${un.count!==1?'s':''} worth ${fmtCur(un.value)}</strong>
+      ${un.count!==1?'are':'is'} missing a salesperson and ${un.count!==1?'are':'is'}
+      excluded from everything on this tab. Assign ${un.count!==1?'them':'it'} and these
+      numbers get more accurate.
+    </div>` : '';
+
   // ── Pipeline aging ───────────────────────────────────────────────────
   const pa = ad.pipeline_aging||{};
   const agingBuckets = [
@@ -9382,12 +9712,15 @@ function renderDashboardAnalytics(filteredList, allData) {
       </div>
     </div>
 
+    ${unassignedHtml}
+
     <!-- ── Row 2: Funnel + Pipeline + Type ───────────────── -->
     <div class="a-row-3">
       <div class="analytics-section a-card">
         <h4 class="analytics-h">Conversion Funnel</h4>
         ${funnelHtml}
         ${lostHtml}
+        ${lostReasonHtml}
       </div>
       <div class="analytics-section a-card">
         <h4 class="analytics-h">Pipeline Health <span class="analytics-pct">${fmtCur(pipelineVal)}</span></h4>
@@ -10159,6 +10492,54 @@ async function newEstimateForCustomer(name, label, type) {
 
 /* ── Settings ───────────────────────────────────────────────────────── */
 
+/* Settings was one long scroll of eight unrelated editors — shingle colours
+   above permit jurisdictions above ASCE fastener densities above the contract
+   text. Tabs, in the order a person actually reaches for them.
+
+   This is also what makes the role gating real. Each gated pane carried a
+   `hidden` class, but style.css has no global `.hidden` utility (it says so at
+   line 2397 — every use there is scoped to a specific component), so
+   `.field-group.hidden` matched nothing and every rep had been looking at the
+   admin-only contract editor. Panes are now shown by an explicit rule that
+   requires BOTH the active tab and the absence of `hidden`. */
+const SETTINGS_TABS = [
+  ['settings-general',       '🎨 General'],
+  ['settings-margin',        '💰 Margin'],
+  ['settings-gbb',           '📦 Packages'],
+  ['settings-company',       '🏠 Proposal'],
+  ['settings-contract',      '📜 Contract'],
+  ['settings-jurisdictions', '🏛 Permits'],
+  ['settings-fastening',     '🔩 Fastening'],
+];
+
+function renderSettingsTabs() {
+  const strip = document.getElementById('settings-tabs');
+  if (!strip) return;
+  // Role gating has already run and removed `hidden` from what this user may
+  // see, so the panes still carrying it are the ones with no tab.
+  const shown = SETTINGS_TABS.filter(([id]) => {
+    const el = document.getElementById(id);
+    return el && !el.classList.contains('hidden');
+  });
+  strip.innerHTML = shown.map(([id, label]) =>
+    `<button type="button" class="settings-tab" data-pane="${id}"
+       onclick="showSettingsTab('${id}')">${label}</button>`).join('');
+  strip.style.display = shown.length > 1 ? '' : 'none';
+  if (shown.length) showSettingsTab(shown[0][0]);
+}
+
+function showSettingsTab(paneId) {
+  SETTINGS_TABS.forEach(([id]) => {
+    document.getElementById(id)?.classList.toggle('is-active', id === paneId);
+  });
+  document.querySelectorAll('#settings-tabs .settings-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.pane === paneId);
+  });
+  // A tab switch is a new screen, not a scroll position on the old one.
+  const body = document.querySelector('#settings-modal .settings-body');
+  if (body) body.scrollTop = 0;
+}
+
 async function openSettings() {
   try {
     const r = await fetch('/api/settings');
@@ -10167,6 +10548,13 @@ async function openSettings() {
   document.getElementById('settings-colors').value = _globalShingleColors().join('\n');
   document.getElementById('settings-waste').value  = _globalWastePct();
   if (_meCanViewAll()) {
+    // Margin floors are manager-up, matching PUT /api/settings' own gate — a
+    // rep must not be able to lower the floor that constrains them.
+    document.getElementById('settings-margin').classList.remove('hidden');
+    document.getElementById('set-margin-warn').value =
+      appSettings.margin_floor_warn ?? '';
+    document.getElementById('set-margin-block').value =
+      appSettings.margin_floor_block ?? '';
     document.getElementById('settings-gbb').classList.remove('hidden');
     try {
       const r = await fetch('/api/tier-defaults');
@@ -10181,7 +10569,13 @@ async function openSettings() {
     document.getElementById('settings-company').classList.remove('hidden');
     try {
       const r = await fetch('/api/company-content');
-      _fillCompanyContent(await r.json() || {});
+      const cc = await r.json() || {};
+      _fillCompanyContent(cc);
+      // A rebuilt volume comes up with these empty and nothing says so — the
+      // proposals just go out thinner. Say so, here, where it gets fixed.
+      const warn = document.getElementById('cc-empty-warn');
+      if (warn) warn.style.display =
+        Object.values(cc).some(v => v && Object.keys(v).length) ? 'none' : 'block';
     } catch { _fillCompanyContent({}); }
     // Contract & initials defaults — prefill with the effective text (saved
     // global default or, before one exists, the built-in stock text) so the
@@ -10196,6 +10590,8 @@ async function openSettings() {
     document.getElementById('set-contract-comm').value   = appSettings.contract_commercial || '';
     document.getElementById('set-initials-comm').value   = (appSettings.initials_commercial || []).join('\n');
   }
+  // Last: the strip is built from whichever panes the gating above unhid.
+  renderSettingsTabs();
   document.getElementById('settings-modal').classList.remove('hidden');
 }
 
@@ -10492,6 +10888,18 @@ async function saveSettings() {
     shingle_colors: colors,
     default_waste_pct: isNaN(waste) ? 10 : waste,
   };
+  if (_meCanViewAll()) {
+    // Blank means "use the built-in default" (30 / 20), which is why these are
+    // stored as null rather than 0 — 0 is a real value meaning "switched off".
+    const floor = id => {
+      const raw = (document.getElementById(id).value || '').trim();
+      if (raw === '') return null;
+      const n = parseFloat(raw);
+      return (isNaN(n) || n < 0 || n >= 100) ? null : n;
+    };
+    appSettings.margin_floor_warn  = floor('set-margin-warn');
+    appSettings.margin_floor_block = floor('set-margin-block');
+  }
   if (_meIsAdmin()) {
     const lines = id => document.getElementById(id).value.split('\n').map(s => s.trim()).filter(Boolean);
     appSettings.contract_retail    = document.getElementById('set-contract-retail').value.trim();
@@ -10586,6 +10994,15 @@ async function shareEstimate() {
 
   try {
     const r = await fetch(`/api/estimates/${S.estimate_id}/share`, { method: 'POST' });
+    if (r.status === 403) {
+      // Margin floor. Say the actual number and what to do about it — a bare
+      // "forbidden" on the Send button is the kind of thing a rep works around
+      // by texting the customer a screenshot instead.
+      const d = await r.json().catch(() => ({}));
+      alert(d.error || 'You do not have permission to send this estimate.');
+      switchPage('pricing');
+      return;
+    }
     if (!r.ok) throw new Error('Could not generate share link');
     const data = await r.json();
     S.share_token = data.token;
@@ -10826,11 +11243,16 @@ async function saveCurrentWork() {
 
 async function newEstimateAction() {
   if(dirty&&!confirm('You have unsaved changes. Start a new estimate anyway?'))return;
+  // The rep has just confirmed they are abandoning this one, so its local draft
+  // must not outlive that decision and re-offer itself at the next boot.
+  const _abandoned = S.estimate_id;
   S=blankEstimate();
   applyTierDefaults(S); // pre-fill from global admin defaults
   applyCrmHandoff(S);   // carry the CRM's contact id onto this estimate
   seedTradeBundles('roofing', false); // load the default roofing bundles into the tiers
   activeTrade='roofing'; dirty=false;
+  clearTimeout(_draftTimer); clearTimeout(_autosaveTimer);
+  clearLocalDraft(_abandoned); clearLocalDraft(undefined);
   document.getElementById('save-indicator').textContent='';
   document.getElementById('save-indicator').className='save-indicator';
   renderAll(); switchPage('client');
@@ -12111,6 +12533,10 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   // never came from the CRM.
   applyCrmHandoff(S);
   switchPage('home');   // home screen first — rep must choose New or open existing
+  // Last, so a restored estimate renders against the price book and settings
+  // that have now loaded, and so switchPage('home') cannot navigate away from
+  // the estimate the rep just chose to restore.
+  offerDraftRecovery();
 });
 
 /* ── CRM handoff ────────────────────────────────────────────────────────

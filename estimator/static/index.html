@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=194">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=197">
 </head>
 <body>
 
@@ -308,6 +308,11 @@
 
     <!-- ── Page 8: Pricing (per-trade line items) ────────────────── -->
     <div id="page-pricing" class="page" style="display:none">
+      <!-- Job-level margin check. Lives ABOVE the tab bar on purpose: the
+           number is for the whole estimate, not the trade tab you happen to
+           have open, and the customer picks the package so the figure shown
+           is the WORST one on offer. Rendered by renderMarginBanner(). -->
+      <div id="margin-floor-banner"></div>
       <div id="trade-tabs">
         <div class="tab-bar" id="tab-bar"></div>
         <div id="trade-content"></div>
@@ -406,26 +411,36 @@
       <h2>⚙ Settings</h2>
       <button onclick="closeSettings()" class="modal-close">×</button>
     </div>
+    <!-- Settings was one long scroll of eight unrelated editors. Tabs, built by
+         renderSettingsTabs() from whichever panes this user's role actually
+         permits — which is also what finally makes the role gating real: the
+         `hidden` class these panes carried matched no rule in style.css, so
+         every MANAGER had been seeing the admin-only contract and proposal
+         editors. (Reps never reach here — applyRoleGates hides the Settings
+         button from them outright.) -->
+    <div class="settings-tabs" id="settings-tabs"></div>
     <div class="settings-body">
       <!-- FALLBACK list, not the master list. A customer signing normally sees
            the colors of the material actually being installed (the Contract
            tab's "Material being installed" picker, or the selected package's
            bundle). This list only fills in when that material carries no
            palette of its own. See _customer_color_options in app.py. -->
-      <div class="field-group">
-        <label>Shingle Color Options <span class="note-tag">one per line — fallback only, for materials with no colors of their own</span></label>
-        <textarea id="settings-colors" rows="12" spellcheck="false"></textarea>
+      <div id="settings-general" class="settings-pane">
+        <div class="field-group">
+          <label>Shingle Color Options <span class="note-tag">one per line — fallback only, for materials with no colors of their own</span></label>
+          <textarea id="settings-colors" rows="12" spellcheck="false"></textarea>
+        </div>
+        <div class="field-group" style="max-width:220px">
+          <label>Default Waste % <span class="note-tag">applied to new estimates</span></label>
+          <input type="number" id="settings-waste" min="0" max="50" step="1">
+        </div>
       </div>
-      <div class="field-group" style="max-width:220px">
-        <label>Default Waste % <span class="note-tag">applied to new estimates</span></label>
-        <input type="number" id="settings-waste" min="0" max="50" step="1">
-      </div>
-      <div id="settings-gbb" class="field-group hidden">
+      <div id="settings-gbb" class="field-group settings-pane hidden">
         <label>📦 Good / Better / Best Package Content <span class="note-tag">per product — pre-fills the Options tab whenever a product is offered as G/B/B</span></label>
         <div class="gbb-set-tabs" id="gbb-set-tabs"></div>
         <div id="gbb-set-body"></div>
       </div>
-      <div id="settings-jurisdictions" class="field-group hidden">
+      <div id="settings-jurisdictions" class="field-group settings-pane hidden">
         <label>🏛 Permit Jurisdictions &amp; Code <span class="note-tag">manager only — powers the Scope-page jurisdiction panel (statewide Colorado)</span></label>
         <label class="jxset-sub">Colorado code baseline <span class="note-tag">shown for every jurisdiction — one code point per line</span></label>
         <textarea id="jxset-baseline-points" rows="6" spellcheck="true"></textarea>
@@ -450,7 +465,7 @@
           <div class="field-group"><label>Extra scope-gap items <span class="note-tag">same format as the baseline checklist — reusing a baseline label overrides it here</span></label><textarea id="jxset-items" rows="4" spellcheck="false"></textarea></div>
         </div>
       </div>
-      <div id="settings-fastening" class="field-group hidden">
+      <div id="settings-fastening" class="field-group settings-pane hidden">
         <label>🔩 Commercial Fastening Table <span class="note-tag">manager only — drives the fastener counts on every commercial estimate</span></label>
         <div class="jxset-help" id="fastenset-note"></div>
         <div class="field-row">
@@ -480,8 +495,17 @@
         <textarea id="fastenset-rows" rows="8" spellcheck="false"
           placeholder="90 | FM 1-90 | 5,8,12 | 8,12 | 5,12 | 5,6"></textarea>
       </div>
-      <div id="settings-company" class="field-group hidden">
+      <div id="settings-company" class="field-group settings-pane hidden">
         <label>Customer Proposal — Company Content <span class="note-tag">admin only — shown on every customer signing page</span></label>
+        <!-- company_content.json lives on the volume and is NOT in the repo, so
+             a rebuilt volume comes up with all four blocks blank and every
+             proposal quietly ships without them. Shown only when that has
+             actually happened. -->
+        <div id="cc-empty-warn" class="cc-empty-warn" style="display:none">
+          ⚠️ <strong>Nothing is set here.</strong> Every customer proposal is going
+          out with no About Us, Warranty, Certifications or Reviews — the sections
+          that justify the price. Fill these in below and save.
+        </div>
         <div class="cc-block">
           <label class="cc-toggle"><input type="checkbox" id="cc-about-on"> 🏠 About Us</label>
           <input type="text" id="cc-about-title" class="cc-title" placeholder="Section title (default: About Us)">
@@ -503,7 +527,18 @@
           <textarea id="cc-reviews-items" rows="5" spellcheck="true" placeholder="One review per line:  stars | name | review text&#10;5 | Sarah M. | Fast, clean, and the roof looks amazing."></textarea>
         </div>
       </div>
-      <div id="settings-contract" class="field-group hidden">
+      <div id="settings-margin" class="field-group settings-pane hidden">
+        <label>Margin Floors <span class="note-tag">manager only — checked against realized margin, (sell − cost) ÷ sell, on the LOWEST-margin package the customer is offered</span></label>
+        <div class="cc-block">
+          <label class="cc-toggle">⚠️ Warning threshold <span class="note-tag">amber banner on the Pricing tab; the estimate still sends</span></label>
+          <input type="number" id="set-margin-warn" min="0" max="99" step="1" placeholder="35">
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle">⛔ Hard floor <span class="note-tag">below this, only a manager can send or email the estimate. 0 turns it off. Residential only — insurance and commercial are exempt.</span></label>
+          <input type="number" id="set-margin-block" min="0" max="99" step="1" placeholder="30">
+        </div>
+      </div>
+      <div id="settings-contract" class="field-group settings-pane hidden">
         <label>Contract &amp; Customer Initials <span class="note-tag">admin only — applied to every NEW estimate anyone creates (existing estimates keep their own text)</span></label>
         <div class="cc-block">
           <label class="cc-toggle">📜 Retail Contract — Terms &amp; Conditions</label>
@@ -561,6 +596,33 @@
     <div class="settings-footer">
       <button class="btn-secondary" onclick="closeGoalEditor()">Cancel</button>
       <button class="btn-primary" onclick="saveGoals()">✓ Save Goals</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Lost-reason modal ────────────────────────────────────────────── -->
+<!-- Asked once, when a rep marks an estimate lost. Options are rendered from
+     /api/lost-reasons so the picker cannot drift from the validator that
+     accepts its value. Cancelling leaves the outcome unchanged. -->
+<div id="lost-modal" class="modal hidden" onclick="maybeCloseLostModal(event)">
+  <div class="modal-box lost-modal-box">
+    <div class="modal-header">
+      <h2>Why did we lose this one?</h2>
+      <button onclick="closeLostModal()" class="modal-close">×</button>
+    </div>
+    <div class="settings-body">
+      <p class="lost-lede">Thirty seconds here is the difference between knowing
+        our close rate and knowing what to do about it.</p>
+      <div id="lost-reason-list" class="lost-reason-list"></div>
+      <div class="field-group">
+        <label>Anything worth remembering? <span class="note-tag">optional — who we lost to, how far apart we were</span></label>
+        <textarea id="lost-note" rows="3" spellcheck="true"
+          placeholder="Beat us by $2,400 on a 24sq tear-off…"></textarea>
+      </div>
+    </div>
+    <div class="settings-footer">
+      <button class="btn-secondary" onclick="closeLostModal()">Cancel</button>
+      <button class="btn-primary" id="lost-save-btn" onclick="confirmLostReason()" disabled>Mark Lost</button>
     </div>
   </div>
 </div>
@@ -755,6 +817,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=194"></script>
+<script src="/estimate/static/app.js?v=197"></script>
 </body>
 </html>

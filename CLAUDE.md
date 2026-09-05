@@ -243,6 +243,16 @@ so each is pinned by a test.
   The Safari toolbar overlaps the bottom of `vh`, which is how the CRM's modal
   buttons, the canvasser's pin Save button and the login card all ended up
   below the fold. Order matters — `dvh` must come second to win.
+  **And the pair belongs on the base rule, never inside a width query.** The
+  estimator's modals had the fix gated behind `@media (max-width: 767px)`, so
+  every phone was covered and every iPad was not — and the iPad is where
+  estimates get written, with a Save button on the bottom row of a modal.
+  That is the pointer-vs-width trap above arriving a third time, through a
+  height query instead of a touch rule. `dvh` costs nothing on a desktop (no
+  dynamic toolbar, so it equals `vh`), which is why gating it buys nothing and
+  loses the device that needed it. Fixed app-wide 2026-09-05 and pinned by
+  `estimator/tests/test_modal_viewport.py`, which walks every `*-modal-box`
+  rule rather than naming them, so a new modal is covered on arrival.
 - **Scrollable overlays need `overscroll-behavior: contain`, and anything
   pinned to the bottom needs `env(safe-area-inset-bottom)`.** Without the
   first, flicking past the end of the CRM's lead drawer scrolls the pipeline
@@ -588,6 +598,15 @@ delete the fixture fallback. Do **not** fix by making the tests skip — the
 workflow's final *"Fail if any test was skipped"* step exists precisely to
 stop that, and would fail the build anyway.
 
+**Still open, but it is no longer silent** (2026-09-05). The real fix needs the
+live file, which only the volume has. Until then `get_company_content` logs
+loudly when the content is empty and Settings shows an admin a banner saying
+every proposal is currently going out with no About Us, Warranty,
+Certifications or Reviews. `_company_content_missing()` is the shared check.
+That turns a failure nobody would notice until a customer mentioned it into one
+that is visible in the place where it gets fixed — it does not make the
+proposals correct.
+
 **Run `pytest` before every estimator commit.** Two invariants it guards, both
 of which have already broken once:
 
@@ -623,6 +642,109 @@ of which have already broken once:
 Tests run against a temp `DATA_DIR`, so they never touch real estimates.
 `estimator/estimates/` is gitignored — there is no git safety net for that data;
 back it up before any migration.
+
+### Margin, expiry, and the safety net (2026-09-05)
+
+Four traps that all shared one shape: the tool knew the right answer, said so
+in a comment, and then had nothing that acted on it.
+
+- **A blank margin box means INHERIT, never 0.** `setTierRate` wrote
+  `parseFloat(v) || 0`, so clearing a Good/Better/Best margin stored a real `0`
+  that the rate chain then honoured exactly as designed — the roof priced at
+  cost, the screen looked completely normal, and `tests/test_parity.py` stayed
+  green because `app.py` and `app.js` agreed perfectly about the wrong number.
+  That is the trap `_resolveRate`'s own comment had warned about for months.
+  All three setters (`setTierRate`, `setTradeOverride`, `setTradeTierRate`) now
+  route through `_rateValue`, and `tests/test_margin_floor.py` fails if any of
+  them stops. **An explicit `0` still sells at cost** — that is a real choice a
+  rep can make and it is unchanged.
+- **The margin floor is checked at SEND, never at save.** `_margin_floor_block`
+  guards `/api/estimates/<id>/share` and `/api/estimates/<id>/send-email`; a rep
+  may draft anything, and a half-built estimate must never be un-saveable. Two
+  settings, both manager-up: `margin_floor_warn` (amber banner, default 35) and
+  `margin_floor_block` (manager-only send, default 30). Warn deliberately equals
+  `DEFAULT_RATE`, so a rep who never touches the margin box sits exactly on
+  target and the banner only ever appears because someone moved it down.
+  **Residential only** — `_margin_floor_exempt` excludes insurance (the carrier
+  sets that price) and commercial (its pricing comes off a per-job supplier
+  quote and the catalog ships $0 placeholder costs, so a floor would be
+  measuring the placeholders). Three things are load-bearing. It reads **realized** margin, `(sell − cost) / sell`, via
+  `estimate_margin_report` — not the `pricing.mode` rate, because a 30% markup
+  is a 23% margin and comparing one against the other waves jobs through. It
+  reads the **worst package on offer**, because the customer picks, not the rep.
+  And a tier with **no cost reports an unknown margin, not a perfect one** — the
+  commercial catalog ships $0 placeholder costs on purpose, and calling those
+  100% would clear exactly the bids that have no supplier pricing yet.
+  `_trade_cost_subtotal` MUST mirror `_trade_subtotal`'s inclusion rules line
+  for line, and `tradeCostTotal` (`app.js`) mirrors both.
+- **`valid_until` is enforced now.** It printed on the customer page, the PDF
+  and the signed contract as "Pricing held until <date>" and nothing ever
+  checked it, so a six-month-old link could still become a contract at
+  six-month-old material prices. `_est_expired` withdraws the signature block
+  at the one choke point all three layouts share (`_cv_sig_form`, which takes
+  `est` for estimates and nothing for change orders), and the POST returns 410.
+  The estimate itself still renders — someone reopening an expired quote is a
+  warm lead, and `_notify_expired_view` tells the rep, once per estimate.
+  An unparseable date means **no** expiry: a typo must not lock a customer out.
+- **`setDirty()` is where crash recovery hangs.** It used to change a label and
+  nothing else — no unload guard, no local copy, no autosave — so an iPad
+  reclaimed by iOS took an hour of takeoff with it. Three layers now, kept
+  independent so one failing never blocks the others: a `beforeunload` guard,
+  a `localStorage` snapshot (`saveDraftLocally`, offered back by
+  `offerDraftRecovery` at boot), and a debounced autosave that runs **only for
+  estimates the server already has** — autosaving a brand-new one would put
+  half-built records in everyone's Open list. `visibilitychange` matters as
+  much as `beforeunload`: iOS never fires the latter when it reclaims a
+  backgrounded tab, which is the exact case this exists for. The draft
+  deliberately drops `visualizer` — megabytes, server-owned, and not at risk.
+
+**Settings is tabbed, and its role gating finally does something.** Eight
+unrelated editors sat in one scrolling column, and each gated section carried a
+`hidden` class that matched **no rule in `style.css`** — which says so itself
+next to `.gap-note.hidden`: there is no global `.hidden` utility, every use is
+scoped. So `.field-group.hidden` styled nothing and the gate did nothing, and
+every **manager** was seeing the admin-only contract and proposal editors.
+(Reps were never affected — `applyRoleGates()` hides the Settings button from
+them outright — and it was never a data leak, since the server refused the
+writes. But the gate a reader would assume was working was not.) Panes now
+need **both** the active tab and the absence of `hidden`:
+`.settings-pane.is-active:not(.hidden)`. `renderSettingsTabs()` runs last in
+`openSettings`, after the role checks, and builds the strip from whatever they
+unhid — so a new section needs an entry in `SETTINGS_TABS` *and* the
+`settings-pane` class, or it is unreachable / always-on. Guarded by
+`tests/test_settings_tabs.py`, which also pins the loss-reason picker being a
+modal rather than the stack of browser `prompt()` dialogs it shipped as.
+
+Also landed with these, each pinned by a test:
+
+- **The customer gets their own signed contract.** `send_customer_signed_copy`
+  runs first in `_post_sign_pipeline`, ahead of the Base44 push and the packets,
+  because the homeowner waiting on a receipt should not queue behind a back
+  office integration. `sig_email` had been collected, stored in the certificate,
+  echoed to the rep, and never used to send the customer anything.
+- **`/sign/<token>/download.pdf` was NOT on `PUBLIC_ENDPOINTS`.** The "save a
+  copy before you decide" card is on every `/sign` variant, and the button a
+  *customer* clicked bounced them to a login page. Public does not mean
+  unguarded — the token is still the whole protection, and a bad one still 404s.
+- **Marking an estimate lost records why.** `LOST_REASONS` is served by
+  `/api/lost-reasons` rather than mirrored in the front end, so the picker and
+  the validator that accepts its value cannot drift. Moving back out of lost
+  clears the reason — plenty get re-quoted, and a job that closes in March must
+  not carry "went with someone else" into the month it was won. Estimates
+  marked lost before the picker existed count as `unrecorded` rather than being
+  dropped, which would inflate the share of every reason that *is* recorded.
+- **Unassigned estimates are counted, not vanished.** `/api/analytics` still
+  skips them from the per-rep math (`by_rep[sp]` is threaded through a dozen
+  sites and a synthetic "(unassigned)" rep would rank as if it were a person),
+  but the count and the dollars now come back in `unassigned` and show on the
+  tab. The old bare `continue` dropped them from the funnel, revenue, aging,
+  cities and YTD with nothing anywhere saying how many rows had gone.
+- **The customer's package taps are recorded.** `selectCvTier` was pure DOM;
+  `/sign/<token>/tier-interest` now takes a `sendBeacon` and
+  `_tier_interest_summary` puts it in the rep's follow-up email. Capped
+  (`TIER_INTEREST_CAP`), de-duplicated for a card tapped twice running, and
+  ignored entirely for a logged-in team member previewing the link — the rep's
+  own tapping is not a buying signal.
 
 ### Commercial estimates (third estimate type)
 
