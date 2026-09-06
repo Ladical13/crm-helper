@@ -945,6 +945,65 @@ def add_activity(lead_id):
 
 # ── Tasks (the "next action" engine) ──────────────────────────────────────────
 
+@app.route('/api/myday')
+@login_required
+def myday():
+    """The rep's own standing: counts, money, and the two lists worth acting on.
+
+    My Day used to fetch /api/leads?limit=1000 and count the page in the
+    browser. Two things were wrong with that and both get worse as the business
+    grows: the totals were a count of the page rather than of the pipeline, so
+    "Open leads" and "Pipeline $" quietly capped at 1,000 — and a rep carrying
+    imported prospects passes 1,000 on the first batch — and every load of the
+    first screen of the morning pulled a thousand rows over a phone connection
+    in a driveway to compute five numbers SQL can return.
+    """
+    rep = request.args.get('rep') if is_manager() else current_rep()
+    where, params = [], []
+    if rep:
+        where.append('rep=?'); params.append(rep)
+    openq = ' AND '.join(where + ['stage IN (%s)' % ','.join('?' * len(OPEN_STAGES))])
+    openp = params + OPEN_STAGES
+
+    with get_db() as db:
+        agg = db.execute(f'SELECT COUNT(*) c, COALESCE(SUM(est_value),0) v '
+                         f'FROM leads WHERE {openq}', openp).fetchone()
+        hot_rows = db.execute(
+            f'SELECT * FROM leads WHERE {openq} AND temperature=? '
+            f'ORDER BY updated_at DESC LIMIT 25', openp + ['hot']).fetchall()
+        # Stalled is a date rule, so it is applied in SQL rather than by
+        # filtering a page: the stalled lead a rep most needs to see is an old
+        # one, which is exactly what a recency-ordered page drops first.
+        cutoff = _iso(_now_dt() - timedelta(days=STALL_DAYS))
+        stalled_rows = db.execute(
+            f"SELECT * FROM leads WHERE {openq} "
+            f"AND (CASE WHEN last_activity_at != '' THEN last_activity_at "
+            f"          ELSE created_at END) < ? "
+            f"ORDER BY (CASE WHEN last_activity_at != '' THEN last_activity_at "
+            f"               ELSE created_at END) LIMIT 25", openp + [cutoff]).fetchall()
+        stalled_total = db.execute(
+            f"SELECT COUNT(*) c FROM leads WHERE {openq} "
+            f"AND (CASE WHEN last_activity_at != '' THEN last_activity_at "
+            f"          ELSE created_at END) < ?", openp + [cutoff]).fetchone()['c']
+        hot_total = db.execute(f'SELECT COUNT(*) c FROM leads WHERE {openq} '
+                               f'AND temperature=?', openp + ['hot']).fetchone()['c']
+        # Sidebar stage counts, for the same reason: they read the cached page
+        # and so reported "New 1,000" for a rep holding 36,000.
+        stage_counts = {k: 0 for k in STAGE_KEYS}
+        sw = ('WHERE ' + ' AND '.join(where)) if where else ''
+        for r in db.execute(f'SELECT stage, COUNT(*) c FROM leads {sw} GROUP BY stage',
+                            params):
+            stage_counts[r['stage']] = r['c']
+
+    return jsonify({
+        'open_count': agg['c'], 'pipeline_value': agg['v'],
+        'hot_count': hot_total, 'stalled_count': stalled_total,
+        'hot': [_lead_row(r) for r in hot_rows],
+        'stalled': [_lead_row(r) for r in stalled_rows],
+        'stage_counts': stage_counts,
+    })
+
+
 @app.route('/api/appointments')
 @login_required
 def appointments():
@@ -1575,30 +1634,90 @@ def lead_estimate(lead_id):
 
 # ── Partners ──────────────────────────────────────────────────────────────────
 
+PARTNER_PAGE = 200
+
+
 @app.route('/api/partners')
 @login_required
 def list_partners():
-    """Referral sources (realtors/HOAs/etc.) with how many leads they've sent."""
+    """The partner BOOK — the people who send you business, not every record.
+
+    This returned every partner-type lead with no limit and no search, which was
+    right for a book of twenty realtors and became a way to hang a phone the
+    moment prospecting started importing HOAs and brokerages by the thousand:
+    one DOM card per row, tens of thousands of rows. The Pipeline board already
+    learned this lesson and moved its search to the server; this tab was left
+    rendering the whole table.
+
+    So the default is a relationship, not a lead type: somebody you have
+    actually touched, or who has sent you something. A cold open-data row nobody
+    has ever called is a *prospect*, and prospects are already worked in the ⚡
+    Outreach queue — listing them here as "partners" both drowns the real book
+    and overstates it. They are counted (`cold_prospects`) so they are visibly
+    excluded rather than missing, and `?q=` searches every partner record,
+    relationship or not, so nothing is unreachable.
+    """
+    q = (request.args.get('q') or '').strip().lower()
+    limit = min(int(request.args.get('limit') or PARTNER_PAGE), 1000)
+
     clauses = ['lead_type IN (%s)' % ','.join('?' * len(PARTNER_TYPES))]
     params = list(PARTNER_TYPES)
     if not is_manager():
         clauses.append('rep=?'); params.append(current_rep())
+    if q:
+        esc = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        clauses.append(
+            "LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'') || ' ' ||"
+            "      COALESCE(company,'')    || ' ' || COALESCE(email,'')     || ' ' ||"
+            "      COALESCE(phone,'')      || ' ' || COALESCE(city,''))"
+            " LIKE ? ESCAPE '\\'")
+        params.append(f'%{esc}%')
+    else:
+        # The relationship test. `referred_by` is indexed by leads_rep_idx only
+        # incidentally, but this subquery is over a table of partners' children,
+        # which is small even when the partner list is not.
+        clauses.append("(last_activity_at != '' OR "
+                       " id IN (SELECT referred_by FROM leads WHERE referred_by != ''))")
     where = 'WHERE ' + ' AND '.join(clauses)
+
     with get_db() as db:
-        rows = db.execute(f'SELECT * FROM leads {where} ORDER BY updated_at DESC', params).fetchall()
         counts = {r['referred_by']: r['c'] for r in db.execute(
             "SELECT referred_by, COUNT(*) c FROM leads WHERE referred_by != '' GROUP BY referred_by"
         ).fetchall()}
         won = {r['referred_by']: r['c'] for r in db.execute(
-            "SELECT referred_by, COUNT(*) c FROM leads WHERE referred_by != '' AND stage='won' GROUP BY referred_by"
-        ).fetchall()}
+            "SELECT referred_by, COUNT(*) c FROM leads WHERE referred_by != '' "
+            "AND stage='won' GROUP BY referred_by").fetchall()}
+        rows = db.execute(
+            f'SELECT * FROM leads {where} ORDER BY last_activity_at DESC, updated_at DESC '
+            f'LIMIT ?', params + [limit]).fetchall()
+        total = db.execute(f'SELECT COUNT(*) c FROM leads {where}', params).fetchone()['c']
+
+        cold_clauses = ['lead_type IN (%s)' % ','.join('?' * len(PARTNER_TYPES)),
+                        "last_activity_at = ''",
+                        "id NOT IN (SELECT referred_by FROM leads WHERE referred_by != '')"]
+        cold_params = list(PARTNER_TYPES)
+        if not is_manager():
+            cold_clauses.append('rep=?'); cold_params.append(current_rep())
+        cold = db.execute('SELECT COUNT(*) c FROM leads WHERE ' + ' AND '.join(cold_clauses),
+                          cold_params).fetchone()['c']
+
+    # Projected, not the whole lead row. A book of 200 shipped 204 KB of
+    # research notes, citations and storm summaries to draw a card showing a
+    # name, a type and three numbers -- over a phone connection, on a screen
+    # whose whole job is "who should I call".
     out = []
     for r in rows:
         d = _lead_row(r)
-        d['referrals_total'] = counts.get(r['id'], 0)
-        d['referrals_won']   = won.get(r['id'], 0)
-        out.append(d)
-    return jsonify(out)
+        out.append({k: d[k] for k in ('id', 'name', 'lead_type', 'company',
+                                      'phone', 'email', 'city', 'stage',
+                                      'stage_label', 'stage_color')}
+                   | {'referrals_total': counts.get(r['id'], 0),
+                      'referrals_won': won.get(r['id'], 0)})
+    # Most referrals first: the book is read to decide who to call, and the
+    # partner who has sent four jobs is not the one to scroll past.
+    out.sort(key=lambda d: (-d['referrals_total'], -d['referrals_won']))
+    return jsonify({'partners': out, 'total': total, 'cold_prospects': cold,
+                    'limit': limit, 'searching': bool(q)})
 
 # ── Prospecting: bulk import, dedupe, suppression ─────────────────────────────
 #

@@ -457,3 +457,4 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .funnel-conv{flex:0 0 auto;width:48px;font-size:12px;color:var(--txt2);text-align:right}
 .funnel-conv.leak{color:var(--amber);font-weight:600}
 .funnel-note{color:var(--txt3);opacity:.8}
+.view-note{font-size:12px;color:var(--txt3);margin:8px 0 4px;line-height:1.45}

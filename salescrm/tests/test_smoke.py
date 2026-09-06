@@ -142,7 +142,9 @@ def test_partners_referral_counts(client):
     new_lead(client, first_name='A', referred_by=realtor['id'])
     won = new_lead(client, first_name='B', referred_by=realtor['id'])
     client.patch(f"/api/leads/{won['id']}/stage", json={'stage': 'won'})
-    partners = client.get('/api/partners').get_json()
+    # Sara qualifies for the book on referrals alone -- she has sent two, which
+    # is a relationship whether or not anyone has logged a call with her.
+    partners = client.get('/api/partners').get_json()['partners']
     sara = next(p for p in partners if p['id'] == realtor['id'])
     assert sara['referrals_total'] == 2
     assert sara['referrals_won'] == 1

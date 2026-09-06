@@ -569,6 +569,36 @@ the Numbers/Coaching tabs. Enrollment is the portal's job — there is no signup
 login route left in this app, and `SALESCRM_SIGNUP_CODE` is gone (`PORTAL_SIGNUP_CODE`
 bootstraps the first admin; after that, admin-created invite links).
 
+### Nothing counts a page and calls it the pipeline
+
+Two screens tallied a fetched page in the browser, which was right at a few
+hundred leads and became wrong the day prospecting imported partners by the
+thousand. Pinned by `salescrm/tests/test_myday.py` and `test_partner_book.py`.
+
+- **`/api/myday` counts in SQL.** My Day fetched `/api/leads?limit=1000` and
+  counted it, so "Open leads" and "Pipeline $" capped at 1,000 — which a rep
+  passes on their first imported batch — and the first screen of the morning
+  pulled a thousand rows over a phone connection in a driveway to compute five
+  numbers. It also returns the **sidebar stage counts**, which had the same bug
+  and showed "New 1,000" for a rep holding 36,000, and the hot/stalled lists.
+  Counts are of everything; the lists are capped at 25, because a count has to
+  be true and a list only has to be actionable. Stalled is applied as a date
+  rule **in SQL** — filtering a recency-ordered page drops the oldest first,
+  which is exactly the lead a rep needs to see.
+- **`/api/partners` is a relationship book, not every partner-type row.** It had
+  no limit, no pagination and no search: one DOM card per imported HOA. The
+  default is now somebody you have touched or who has sent you something; a cold
+  open-data row nobody has called is a *prospect* and is already worked in ⚡
+  Outreach. They come back as `cold_prospects` so they are visibly excluded
+  rather than missing, and `?q=` searches every partner record so nothing is
+  unreachable. Ordered by referrals sent — the book is read to decide who to
+  call.
+- **`S.leadCache` is gone.** Both its consumers were scale bugs: the sidebar
+  counts above, and the drawer's "referred by" `<select>`, which listed every
+  partner on the cached page. That now reads the partner book, and unions in the
+  lead's current partner if they sit outside it — otherwise opening the drawer
+  silently blanks the field and the next save wipes the attribution.
+
 **Pipeline search runs on the server** (`?q=` → SQL `LIKE`, escaped so a typed
 `%` stays literal). It used to filter the fetched page in the browser, which
 silently searched only the most recently updated 1000 leads — invisible with a

@@ -3,7 +3,7 @@
 'use strict';
 
 // ── State & helpers ──────────────────────────────────────────────────────────
-const S = { me:null, cfg:null, view:'myday', users:[], leadCache:[] };
+const S = { me:null, cfg:null, view:'myday', users:[], stageCounts:{}, partnerBook:null };
 const $  = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const el = (t, c, h) => { const e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e; };
@@ -125,8 +125,10 @@ $$('.side-item').forEach(t=>t.onclick=()=>go(t.dataset.view));
 function updateSidebar(){
   const box=$('#side-stages');
   if(!box||!S.cfg) return;
-  const counts={};
-  S.leadCache.forEach(l=>counts[l.stage]=(counts[l.stage]||0)+1);
+  // Server-counted. Tallying the fetched page reported "New 1,000" for a rep
+  // holding 36,000 — and the sidebar is the one place a rep looks to see how
+  // much work is in front of them.
+  const counts=S.stageCounts||{};
   box.innerHTML=S.cfg.stages.map(s=>`
     <div class="side-stage" data-stage="${s.key}">
       <span class="kcol-dot" style="background:${s.color}"></span>${esc(s.label)}
@@ -292,23 +294,22 @@ async function renderMyDay(){
   const hour=new Date().getHours();
   const greet=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
   $('#myday-greeting').textContent=`${greet}, ${esc(S.me.full_name||S.me.username)} 👋`;
-  const [tasks, leads, sched] = await Promise.all([
+  const [tasks, mine, sched] = await Promise.all([
     api('/tasks?scope=today'),
-    api('/leads?limit=1000'),
+    api('/myday'),
     api('/appointments'),
   ]);
-  S.leadCache=leads;
-  const open=leads.filter(l=>['won','lost'].indexOf(l.stage)<0);
-  const hot=open.filter(l=>l.temperature==='hot');
-  const stalled=open.filter(l=>l.stalled);
+  S.stageCounts=mine.stage_counts;
   const overdue=tasks.filter(t=>t.overdue).length;
-  // Each chip is a shortcut: tasks scroll to the list, the rest jump to the board.
+  // Counted in SQL, not by filtering a fetched page: these used to cap at the
+  // 1,000-lead page they were computed from, which a rep passes on their first
+  // imported batch.
   $('#myday-stats').innerHTML=[
     ['Tasks today', tasks.length, 'tasks'],
     ['Overdue', overdue, 'tasks'],
-    ['Open leads', open.length, 'pipeline'],
-    ['Hot', hot.length, 'pipeline'],
-    ['Pipeline', money(open.reduce((s,l)=>s+(l.est_value||0),0)), 'pipeline'],
+    ['Open leads', mine.open_count, 'pipeline'],
+    ['Hot', mine.hot_count, 'pipeline'],
+    ['Pipeline', money(mine.pipeline_value), 'pipeline'],
   ].map(([l,n,nav])=>`<div class="stat-chip" data-nav="${nav}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
   $$('#myday-stats .stat-chip').forEach(c=>c.onclick=()=>{
     if(c.dataset.nav==='pipeline') go('pipeline');
@@ -325,8 +326,8 @@ async function renderMyDay(){
     '<div class="empty">All caught up. Add a follow-up so nothing goes cold. 🎯</div>';
   tasks.forEach(t=>$('#myday-tasks').appendChild(taskRow(t)));
 
-  renderMini($('#myday-hot'), hot, 'No hot leads right now.');
-  renderMini($('#myday-stalled'), stalled, 'Nothing stalled — nice.');
+  renderMini($('#myday-hot'), mine.hot, 'No hot leads right now.');
+  renderMini($('#myday-stalled'), mine.stalled, 'Nothing stalled — nice.');
 }
 // The day's appointments. A commitment to a customer, so it gets the address
 // and one tap each to call or drive -- this is read in a truck, not at a desk.
@@ -414,6 +415,11 @@ $('#pipeline-search').oninput=e=>{
   clearTimeout(searchTimer);
   searchTimer=setTimeout(renderPipeline, 200);
 };
+$('#partners-search').oninput=e=>{
+  partnerSearch=e.target.value.trim();
+  clearTimeout(partnerTimer);
+  partnerTimer=setTimeout(renderPartners, 200);   // a query now, not an array filter
+};
 $('#pipeline-rep').onchange=()=>renderPipeline();
 $('#pipeline-service').onchange=()=>renderPipeline();
 function buildServiceSelect(){
@@ -432,10 +438,9 @@ async function renderPipeline(){
   const token=++pipeReq;
   let leads=await api('/leads'+(qs.length?'?'+qs.join('&'):''));
   if(token!==pipeReq) return;            // a newer search already answered
-  // Only cache an UNsearched load: the sidebar stage counts and the drawer's
-  // "referred by" partner list read this and both want the whole pipeline, not
-  // whatever the box currently matches.
-  if(!pipeSearch) S.leadCache=leads;
+  // The sidebar's counts are the server's, refreshed alongside the board rather
+  // than tallied from it — a searched or capped page is not the pipeline.
+  if(!pipeSearch) api('/myday').then(m=>{ S.stageCounts=m.stage_counts; updateSidebar(); });
   if(svc) leads=leads.filter(l=>l.service===svc);
   const board=$('#kanban'); board.innerHTML='';
   S.cfg.stages.forEach(st=>{
@@ -770,6 +775,7 @@ function renderDrawer(l){
           temperature:'warm',referred_by:l.referred_by};
         if(S.me.is_manager) body.rep=l.rep;
         const nw=await api('/leads',{method:'POST',body});
+        S.partnerBook=null;   // a new lead can change the book; re-read it on next use
         await api('/leads/'+nw.id+'/activities',{method:'POST',
           body:{kind:'system',body:`${s.label} pitch — spun off from the ${l.service_label} deal`}});
         toast(`${s.icon} ${s.label} deal created`);
@@ -928,12 +934,27 @@ function renderTimeline(l){
     box.appendChild(row);
   });
 }
-function renderFields(l){
+async function renderFields(l){
   const cfg=S.cfg;
+  // The partner book, not a page of the lead table: a referral comes from
+  // someone you have a relationship with, and a <select> holding a thousand
+  // imported HOAs is not a control a rep can use. Cached for the session --
+  // the book changes rarely and this renders on every drawer open.
+  if(!S.partnerBook){
+    try{ S.partnerBook=(await api('/partners')).partners; }
+    catch(e){ S.partnerBook=[]; }
+  }
   const typeSel=cfg.lead_types.map(t=>`<option value="${t.key}" ${t.key===l.lead_type?'selected':''}>${esc(t.label)}</option>`).join('');
   const srcSel='<option value="">—</option>'+cfg.sources.map(s=>`<option ${s===l.source?'selected':''}>${esc(s)}</option>`).join('');
   const tempSel=cfg.temperature.map(t=>`<option value="${t}" ${t===l.temperature?'selected':''}>${esc(t)}</option>`).join('');
-  const partnerOpts='<option value="">—</option>'+S.leadCache.filter(x=>cfg.partner_types.includes(x.lead_type)&&x.id!==l.id)
+  // The lead's current partner may sit outside the book (a cold prospect who
+  // sent one referral before anyone logged a touch), so it is unioned in --
+  // otherwise opening the drawer silently blanks the field and the next save
+  // wipes the attribution.
+  const book=S.partnerBook.filter(x=>x.id!==l.id);
+  if(l.referred_by && !book.some(x=>x.id===l.referred_by))
+    book.unshift({id:l.referred_by, name:l.referred_by_name||'(current)'});
+  const partnerOpts='<option value="">—</option>'+book
     .map(x=>`<option value="${x.id}" ${x.id===l.referred_by?'selected':''}>${esc(x.name)}</option>`).join('');
   $('#d-fields').innerHTML=`
     <div class="field-row"><div class="field"><label>First</label><input id="f-first" value="${esc(l.first_name)}"></div>
@@ -980,10 +1001,22 @@ function addTaskModal(l){
 }
 
 // ── Partners ─────────────────────────────────────────────────────────────────
+let partnerSearch='', partnerTimer=null, partnerReq=0;
 async function renderPartners(){
-  const list=await api('/partners');
-  const box=$('#partners-list');
-  if(!list.length){ box.innerHTML='<div class="empty">No partners yet. Add a realtor, HOA, or insurance agent as a lead type to track referrals.</div>'; return; }
+  const token=++partnerReq;
+  const res=await api('/partners'+(partnerSearch?'?q='+encodeURIComponent(partnerSearch):''));
+  if(token!==partnerReq) return;              // a newer search already answered
+  if(!partnerSearch) S.partnerBook=res.partners;
+  const list=res.partners, box=$('#partners-list');
+  $('#partners-note').innerHTML = res.cold_prospects && !partnerSearch
+    ? `${res.cold_prospects.toLocaleString()} imported prospect${res.cold_prospects===1?'':'s'} not shown — nobody has spoken to them yet. Work them in <b>⚡ Outreach</b>, or search above to find one.`
+    : '';
+  if(!list.length){
+    box.innerHTML=partnerSearch
+      ? '<div class="empty">No partner matches that.</div>'
+      : '<div class="empty">No partners yet. Log a call with a realtor, HOA or insurance agent and they show up here.</div>';
+    return;
+  }
   box.innerHTML='';
   list.forEach(p=>{
     const typeMeta=S.cfg.lead_types.find(t=>t.key===p.lead_type);
@@ -1215,6 +1248,7 @@ function newLeadModal(preset={}){
       if(preset.referred_by) body.referred_by=preset.referred_by;
       if(S.me.is_manager&&$('#nl-rep')) body.rep=$('#nl-rep').value;
       const lead=await api('/leads',{method:'POST',body});
+      S.partnerBook=null;
       toast(preset.referred_by?'Referred project added':'Lead added'); closeModal();
       if(S.view==='pipeline')renderPipeline(); else if(S.view==='myday')renderMyDay();
       // From a partner: land back on the partner so the new project shows underneath.
