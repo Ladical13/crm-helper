@@ -4,7 +4,7 @@
     python run_tests.py            # everything
     python run_tests.py estimator  # just one (or several) by name
 
-Why six separate pytest runs rather than one: each app has its own
+Why seven separate pytest runs rather than one: each app has its own
 tests/conftest.py, and pytest imports them by the bare module name `conftest`,
 so collecting two apps together collides and errors out.
 
@@ -27,6 +27,12 @@ ROOT = Path(__file__).resolve().parent
 #
 # `canvasser` had no suite at all until Leaflet was vendored; it now guards the
 # vendoring, its cache-buster and its service-worker wiring.
+#
+# `hail` is the storm archive the whole system reads. Its arithmetic is the
+# kind that fails by producing a confident wrong answer rather than an error —
+# a swath one cell off, or every storm 25x too big because millimetres were
+# read as inches — so it is listed here from its first commit rather than
+# after something goes out to a customer.
 SUITES = [
     ('salescrm',   ROOT / 'salescrm',  []),
     ('portal',     ROOT / 'portal',    []),
@@ -34,6 +40,7 @@ SUITES = [
     ('prospector', ROOT,               ['prospector/tests']),
     ('agents',     ROOT / 'agents',    []),
     ('canvasser',  ROOT / 'canvasser', []),
+    ('hail',       ROOT / 'hail',      []),
 ]
 
 

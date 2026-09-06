@@ -70,7 +70,22 @@ PIN_STAGE = {
     'interested':  'contacted',
     'appointment': 'appt_set',
     'inspected':   'inspected',
-    'closed':      'won',
+    # `closed` deliberately does NOT map to `won`.
+    #
+    # Everywhere else in this system `won` means a customer signed: the
+    # estimator's funnel sets it on signature, and CLAUDE.md records that a
+    # signature outranks even a manual `lost`. A rep tapping "Deal Closed" on a
+    # doorstep has agreed to move forward with somebody — real, and worth
+    # recording — but there is no contract, no price and nothing signed. Let it
+    # write `won` and a tap on a phone lands in the same bucket as a signed
+    # $28k roof: close rate, revenue forecast and the leaderboard all inflate,
+    # and nobody can tell the two apart afterwards.
+    #
+    # `inspected` is the honest ceiling from the door. The funnel promotes it
+    # to `won` by itself the moment an estimate is actually signed, so nothing
+    # is lost — the win just has to be earned by a signature rather than
+    # asserted by a tap.
+    'closed':      'inspected',
 }
 
 # ── Database ─────────────────────────────────────────────────────────────────
@@ -229,24 +244,67 @@ def _row_to_pin(row):
     d['pin_meta'] = PIN_TYPES.get(d['pin_type'], {'label': d['pin_type'], 'color': '#6B7280'})
     return d
 
+# How much history the map shows by default. A door knocked two years ago
+# tells a rep nothing about today's street, and every pin past this window is
+# weight on a phone that has to draw them all.
+PIN_WINDOW_DAYS = 180
+PIN_LIMIT = 2000
+PIN_LIMIT_MAX = 5000
+
 @app.route('/api/pins', methods=['GET'])
 @login_required
 def list_pins():
-    rep    = request.args.get('rep')
-    ptype  = request.args.get('type')
-    limit  = min(int(request.args.get('limit', 2000)), 5000)
+    """Pins for the map, windowed by date and honest about hitting the cap.
+
+    This used to take the most recent 2000 pins with no date filter and return
+    a bare array. Past 2000 the map silently showed a subset — so a street that
+    was worked hard last month came back looking unknocked, and a rep would
+    knock it again. Nothing in the response said anything had been left out.
+    That is the same silent-truncation shape the CRM's pipeline search already
+    hit, and it is worse here because the missing rows look like an opportunity
+    rather than like an error.
+
+    Two changes. A date window means the cap is now very hard to reach at all.
+    And when it IS reached the response says so, so the front end can tell the
+    rep the map is partial instead of quietly lying to them.
+    """
+    rep   = request.args.get('rep')
+    ptype = request.args.get('type')
+    try:
+        limit = min(int(request.args.get('limit', PIN_LIMIT)), PIN_LIMIT_MAX)
+    except (TypeError, ValueError):
+        limit = PIN_LIMIT
+    # days=0 is an explicit "everything", for an admin auditing the archive.
+    try:
+        days = int(request.args.get('days', PIN_WINDOW_DAYS))
+    except (TypeError, ValueError):
+        days = PIN_WINDOW_DAYS
+
     clauses, params = [], []
     if rep:
         clauses.append('rep=?'); params.append(rep)
     if ptype:
         clauses.append('pin_type=?'); params.append(ptype)
+    if days > 0:
+        since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        clauses.append('created_at >= ?'); params.append(since)
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+
     with get_db() as db:
+        # One row past the limit, purely to learn whether there are more. Cheaper
+        # than a second COUNT(*) over the same window.
         rows = db.execute(
             f'SELECT * FROM pins {where} ORDER BY created_at DESC LIMIT ?',
-            params + [limit]
+            params + [limit + 1]
         ).fetchall()
-    return jsonify([_row_to_pin(r) for r in rows])
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    return jsonify({
+        'pins': [_row_to_pin(r) for r in rows],
+        'truncated': truncated,
+        'window_days': days,
+        'limit': limit,
+    })
 
 @app.route('/api/pins', methods=['POST'])
 @login_required
@@ -341,23 +399,63 @@ def delete_pin(pin_id):
 
 # ── Leaderboard ───────────────────────────────────────────────────────────────
 
+# How far back the leaderboard looks by default. A week is short enough that
+# this season's effort is what shows and long enough to survive a rained-out
+# Tuesday.
+LEADERBOARD_DAYS = 7
+
 @app.route('/api/leaderboard')
 @login_required
 def leaderboard():
+    """Who is setting appointments, over a window that can actually be won.
+
+    Two things were wrong with the all-time version, and both changed rep
+    behaviour in the wrong direction.
+
+    It had no date filter, so whoever knocked most last season was permanently
+    first and a new hire could never move. A leaderboard nobody can win stops
+    being a leaderboard in about three weeks.
+
+    And it ranked on `total_doors`, which is the single easiest number in the
+    company to game: a rep can tap "Not Home" fifteen times walking down a
+    sidewalk and top the board without speaking to anyone. Doors are the
+    denominator of the job, not the score. Ranking runs on appointments set,
+    then inspections, and doors ride along as the volume the rates are built
+    from — so the board rewards the conversation, not the tapping.
+    """
+    try:
+        days = max(1, min(int(request.args.get('days', LEADERBOARD_DAYS)), 365))
+    except (TypeError, ValueError):
+        days = LEADERBOARD_DAYS
+    since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
     with get_db() as db:
-        rows = db.execute('''
+        rows = db.execute("""
             SELECT rep,
                    COUNT(*) as total_doors,
                    SUM(CASE WHEN pin_type='appointment'   THEN 1 ELSE 0 END) as appointments,
                    SUM(CASE WHEN pin_type='inspected'     THEN 1 ELSE 0 END) as inspections,
                    SUM(CASE WHEN pin_type='closed'        THEN 1 ELSE 0 END) as closed,
                    SUM(CASE WHEN pin_type='interested'    THEN 1 ELSE 0 END) as interested,
+                   SUM(CASE WHEN pin_type='not_home'      THEN 1 ELSE 0 END) as not_home,
                    MAX(created_at) as last_activity
             FROM pins
+            WHERE created_at >= ?
             GROUP BY rep
-            ORDER BY total_doors DESC
-        ''').fetchall()
-    return jsonify([dict(r) for r in rows])
+            ORDER BY appointments DESC, inspections DESC, total_doors DESC
+        """, (since,)).fetchall()
+
+    out = []
+    for r in rows:
+        d = dict(r)
+        doors = d['total_doors'] or 0
+        # Contacts, not doors: a "Not Home" is a walk, not a conversation, and
+        # dividing by it makes a rep who knocks empty streets look efficient.
+        contacts = doors - (d.pop('not_home') or 0)
+        d['contacts'] = contacts
+        d['contact_rate'] = round(contacts / doors, 3) if doors else 0.0
+        d['set_rate'] = round(d['appointments'] / contacts, 3) if contacts else 0.0
+        out.append(d)
+    return jsonify({'days': days, 'since': since, 'reps': out})
 
 # ── Live team locations ───────────────────────────────────────────────────────
 
@@ -376,6 +474,21 @@ def update_location():
                         heading=excluded.heading, updated_at=excluded.updated_at''',
                    (session['username'], float(lat), float(lng),
                     float(data.get('accuracy') or 0), float(data.get('heading') or -1), _now()))
+    return jsonify({'ok': True})
+
+@app.route('/api/location', methods=['DELETE'])
+@login_required
+def clear_location():
+    """Stop appearing on the team map, now rather than in fifteen minutes.
+
+    The front end's "Team Locations: Off" toggle used to gate only the *pull*,
+    so a rep who switched it off kept broadcasting. Both halves are fixed: the
+    browser stops pushing, and this drops the position already stored so it
+    does not linger on everyone else's map for the rest of the live window.
+    """
+    with get_db() as db:
+        db.execute('DELETE FROM rep_locations WHERE username=?',
+                   (session['username'],))
     return jsonify({'ok': True})
 
 @app.route('/api/team-locations')

@@ -594,3 +594,30 @@ html, body {
  * positioned absolutely inside it, so dropping the screen's top edge moves
  * everything at once. Inert without .p1-has-shell, i.e. when served standalone. */
 .p1-has-shell .screen { top: var(--p1-shell-h); }
+
+/* Map notice — says the map is showing a subset, without a dialog a rep in a
+   driveway has to dismiss. Sits under the app-switcher bar and the header, and
+   clears the notch via --safe-top like every other fixed element here. */
+.map-notice {
+  position: fixed;
+  left: 12px; right: 12px;
+  top: calc(var(--p1-shell-h, 44px) + var(--safe-top, 0px) + 96px);
+  z-index: 900;
+  background: rgba(180, 83, 9, .95);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.35;
+  padding: 10px 12px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .35);
+}
+
+/* Which window the leaderboard is showing. Without it a rep reads the board as
+   all-time and cannot tell why yesterday's push is not on it. */
+.lb-window {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: #94A3B8;
+  padding: 4px 2px 10px;
+}
