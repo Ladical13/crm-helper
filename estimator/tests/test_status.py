@@ -113,3 +113,14 @@ def test_a_lost_estimate_is_skipped_by_the_reminder_sweep(client):
     assert A._is_lost(A.est_load('e-quiet'))
     assert A._is_lost({'status': 'declined'})
     assert not A._is_lost({'status': 'sent'})
+
+
+def test_lost_reasons_come_from_the_shared_vocabulary():
+    """The CRM records the losses that happen before an estimate exists -- at
+    the door, on the phone -- and that is the bigger half of "why do we lose".
+    Two separate lists could never be added together, so there is one, in
+    portal/lost_reasons.py, and both apps read it.
+    """
+    from portal import lost_reasons as plost
+    import app as est
+    assert est.LOST_REASONS is plost.REASONS

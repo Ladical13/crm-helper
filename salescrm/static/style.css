@@ -420,3 +420,31 @@ input,select,textarea{font-family:inherit;font-size:16px}
     height: calc(100dvh - var(--p1-shell-h));
   }
 }
+
+/* ── My Day: the day's schedule ──────────────────────────────────────────────
+   Read in a truck, at arm's length, one-handed. Time is the anchor and the
+   call/directions buttons are 44px targets under a coarse pointer, same rule
+   as everything else touch-facing here. */
+.appt-list{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.appt{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;
+  background:var(--bg2);border:1px solid var(--line)}
+.appt.past{opacity:.55}
+.appt-time{font-weight:700;font-size:15px;min-width:72px;color:var(--brand)}
+.appt-body{flex:1;min-width:0;cursor:pointer}
+.appt-name{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.appt-noaddr{color:var(--amber)}
+.appt-actions{display:flex;gap:6px}
+.appt-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;
+  border-radius:9px;background:var(--bg3);text-decoration:none;font-size:17px}
+.appt-warn{padding:9px 12px;border-radius:9px;font-size:13px;cursor:pointer;
+  background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);color:var(--amber)}
+.appt-warn.inline{margin-top:8px;cursor:default}
+.appt-edit-label{display:block;font-size:12px;color:var(--txt3);margin:10px 0 4px}
+#d-appt input{width:100%;padding:9px 10px;border-radius:9px;
+  background:var(--bg3);border:1px solid var(--line);color:var(--txt)}
+@media (pointer: coarse){
+  /* iOS zooms any focused control under 16px and never zooms back out, and a
+     datetime picker is a control a rep opens in a driveway. */
+  .appt-btn{width:44px;height:44px}
+  #d-appt input,#stage-appt,#stage-lost{font-size:16px;min-height:44px}
+}

@@ -292,9 +292,10 @@ async function renderMyDay(){
   const hour=new Date().getHours();
   const greet=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
   $('#myday-greeting').textContent=`${greet}, ${esc(S.me.full_name||S.me.username)} 👋`;
-  const [tasks, leads] = await Promise.all([
+  const [tasks, leads, sched] = await Promise.all([
     api('/tasks?scope=today'),
     api('/leads?limit=1000'),
+    api('/appointments'),
   ]);
   S.leadCache=leads;
   const open=leads.filter(l=>['won','lost'].indexOf(l.stage)<0);
@@ -318,12 +319,49 @@ async function renderMyDay(){
   if(badge){ badge.textContent=overdue; badge.classList.toggle('hidden', !overdue); }
   updateSidebar();
 
+  renderSchedule(sched);
+
   $('#myday-tasks').innerHTML = tasks.length ? '' :
     '<div class="empty">All caught up. Add a follow-up so nothing goes cold. 🎯</div>';
   tasks.forEach(t=>$('#myday-tasks').appendChild(taskRow(t)));
 
   renderMini($('#myday-hot'), hot, 'No hot leads right now.');
   renderMini($('#myday-stalled'), stalled, 'Nothing stalled — nice.');
+}
+// The day's appointments. A commitment to a customer, so it gets the address
+// and one tap each to call or drive -- this is read in a truck, not at a desk.
+function renderSchedule(sched){
+  const box=$('#myday-appts'), appts=sched.appointments||[];
+  $('#appt-count').textContent=appts.length;
+  box.innerHTML='';
+  if(sched.missing_time){
+    const warn=el('div','appt-warn');
+    warn.innerHTML=`⚠ ${sched.missing_time} appointment${sched.missing_time>1?'s':''} with no time set — nobody can be anywhere at "sometime".`;
+    warn.onclick=()=>{ S.stageFocus='appt_set'; go('pipeline'); };
+    box.appendChild(warn);
+  }
+  if(!appts.length){
+    box.appendChild(el('div','empty','Nothing booked today.'));
+    return;
+  }
+  appts.forEach(a=>{
+    const row=el('div','appt'+(a.appt_past?' past':''));
+    const where=[a.address,a.city].filter(Boolean).join(', ');
+    const phone=(a.phone||'').replace(/[^0-9+]/g,'');
+    row.innerHTML=`<div class="appt-time">${esc(a.appt_label.split(', ').pop())}</div>
+      <div class="appt-body"><div class="appt-name">${esc(a.name)}</div>
+        <div class="task-meta"><span>${esc(a.stage_label)}</span>
+        ${where?`<span>${esc(where)}</span>`:'<span class="appt-noaddr">no address</span>'}</div></div>
+      <div class="appt-actions">
+        ${phone?`<a class="appt-btn" href="tel:${esc(phone)}" title="Call">📞</a>`:''}
+        ${where?`<a class="appt-btn" target="_blank" rel="noopener"
+           href="https://maps.google.com/?q=${encodeURIComponent(where)}" title="Directions">🧭</a>`:''}
+      </div>`;
+    // The buttons are the actions; the rest of the row opens the lead.
+    row.querySelectorAll('.appt-btn').forEach(b=>b.onclick=e=>e.stopPropagation());
+    row.querySelector('.appt-body').onclick=()=>gotoLead(a.id, a.stage);
+    box.appendChild(row);
+  });
 }
 function taskRow(t){
   const row=el('div','task'+(t.overdue?' overdue':''));
@@ -432,7 +470,10 @@ function kcard(l){
   const c=el('div','kcard'); c.dataset.id=l.id;
   const typeMeta=S.cfg.lead_types.find(t=>t.key===l.lead_type);
   let nextChip='';
-  if(l.overdue) nextChip=`<div class="chip next overdue">⏰ ${esc(dueLabel(l.next_action_at))}</div>`;
+  if(l.appt_missing) nextChip=`<div class="chip stall">📅 no time set</div>`;
+  else if(l.appt_at && l.stage==='appt_set')
+    nextChip=`<div class="chip next${l.overdue?' overdue':''}">📅 ${esc(dueLabel(l.appt_at))}</div>`;
+  else if(l.overdue) nextChip=`<div class="chip next overdue">⏰ ${esc(dueLabel(l.next_action_at))}</div>`;
   else if(l.next_action_at) nextChip=`<div class="chip next">Next: ${esc(dueLabel(l.next_action_at))}</div>`;
   else if(l.stalled) nextChip=`<div class="chip stall">⚠ no next step</div>`;
   const svcBadge=l.service!=='roofing'?`<span class="svc-badge" title="${esc(l.service_label)}">${l.service_icon}</span>`:'';
@@ -486,10 +527,57 @@ function attachDrag(card, lead){
     if(target && target!==lead.stage) await moveStage(lead, target);
   }
 }
-async function moveStage(lead, stage){
+// Two stages need one more fact before the move means anything: an appointment
+// needs a time, and a loss needs a reason. Both used to be a browser prompt()
+// (the loss) or nothing at all (the appointment). One asker, so a third stage
+// with a required fact has somewhere to go.
+function stageNeeds(stage, lead){
+  if(stage==='appt_set') return {
+    title:'When is the appointment?',
+    body:`<div class="field"><label>Date &amp; time</label>
+      <input type="datetime-local" id="stage-appt" value="${esc(toLocalInput(lead.appt_at)||defaultApptSlot())}"></div>
+      <div class="field-note">Shows on My Day as the day's schedule, and becomes this lead's next action.</div>`,
+    read:()=>({appt_at: fromLocalInput($('#stage-appt').value)}),
+  };
+  if(stage==='lost') return {
+    title:'Why did we lose it?',
+    // Same seven reasons the estimator records, fetched from it rather than
+    // restated here -- two lists of loss reasons cannot be added together, and
+    // most losses happen in the CRM before an estimate exists at all.
+    body:`<div class="field"><label>Reason</label><select id="stage-lost">
+      ${(S.cfg.lost_reasons||[]).map(([k,v])=>`<option value="${esc(k)}">${esc(v)}</option>`).join('')}
+      </select></div>`,
+    read:()=>({lost_reason: $('#stage-lost').value}),
+  };
+  return null;
+}
+// <input type="datetime-local"> speaks local time with no zone; the API speaks
+// UTC with a Z. Converting in one pair of functions is what stops an
+// appointment drifting by the offset every time it round-trips.
+function toLocalInput(iso){
+  if(!iso) return '';
+  const d=new Date(iso); if(isNaN(d)) return '';
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function fromLocalInput(v){
+  if(!v) return '';
+  const d=new Date(v); if(isNaN(d)) return '';
+  return d.toISOString().replace(/\.\d{3}Z$/,'Z');
+}
+function defaultApptSlot(){
+  const d=new Date(); d.setDate(d.getDate()+1); d.setHours(10,0,0,0);
+  return toLocalInput(d.toISOString());
+}
+
+async function moveStage(lead, stage, extra){
+  const need = extra ? null : stageNeeds(stage, lead);
+  if(need){
+    return openModal(need.title, need.body,
+      ()=>moveStage(lead, stage, need.read()), {okText:'Save'});
+  }
   try{
-    let body={stage};
-    if(stage==='lost'){ const reason=prompt('Lost reason (optional):','')||''; body.lost_reason=reason; }
+    let body=Object.assign({stage}, extra||{});
     const res=await api('/leads/'+lead.id+'/stage',{method:'PATCH',body});
     if(stage==='won'){
       if(res.den&&res.den.ok) toast('🎉 Won! Customer + job created in The Den');
@@ -569,7 +657,8 @@ function renderDrawer(l){
     <div class="dgrid">
     ${referralsHtml}
     <div class="dsec"><h5>Stage</h5>
-      <select class="stage-select" id="d-stage">${stageOpts}</select></div>
+      <select class="stage-select" id="d-stage">${stageOpts}</select>
+      <div id="d-appt"></div></div>
     <div class="dsec"><h5>Reach out</h5>
       <div class="contact-actions">
         <a class="call" href="${phone?'tel:'+phone:'#'}" data-log="call">📞 Call</a>
@@ -644,6 +733,7 @@ function renderDrawer(l){
       toast('Logged'); const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
     };
   });
+  renderAppointment(l);
   renderCadences(l);
   renderTasks(l);
   renderTimeline(l);
@@ -695,6 +785,23 @@ function renderDrawer(l){
     if(!confirm('Delete this lead and its history?')) return;
     await api('/leads/'+l.id,{method:'DELETE'}); closeDetail(); toast('Deleted');
     if(S.view==='pipeline')renderPipeline(); else if(S.view==='myday')renderMyDay();
+  };
+}
+// Rescheduling without walking the lead back through the stage select. Only
+// shown once an appointment exists or is owed -- there is nothing to say about
+// a date for a lead nobody has spoken to.
+function renderAppointment(l){
+  const box=$('#d-appt');
+  if(l.stage!=='appt_set' && !l.appt_at){ box.innerHTML=''; return; }
+  box.innerHTML=`<label class="appt-edit-label">📅 Appointment</label>
+    <input type="datetime-local" id="d-appt-at" value="${esc(toLocalInput(l.appt_at))}">
+    ${l.appt_missing?'<div class="appt-warn inline">No time set — this is the one thing an appointment needs.</div>':''}`;
+  $('#d-appt-at').onchange=async e=>{
+    try{
+      await api('/leads/'+l.id,{method:'PUT',body:{appt_at:fromLocalInput(e.target.value)}});
+      toast('Appointment updated');
+      renderDrawer(await api('/leads/'+l.id));
+    }catch(err){ toast(err.message,true); }
   };
 }
 async function renderCadences(l){

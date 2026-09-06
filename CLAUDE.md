@@ -468,6 +468,62 @@ against the portal.
 (realtors/HOAs/insurance agents/property managers — the **Partners** view tracks
 referrals via `referred_by`). Objection/script library is `playbook.json`.
 
+### The day, and the numbers the day is judged by
+
+Four things here were wrong in the same way: the work happened, the tool
+recorded something, and the something it recorded was not what the number
+counted. All four were invisible from the screen. Pinned by
+`salescrm/tests/test_accounting.py` and `test_appointments.py`.
+
+- **Completing a task logs the WORK, not a note about the work.** It logged
+  `kind='note'`, and `note` is not in `OUTREACH_KINDS` — so ticking off
+  "Call #2" from My Day did not touch `last_activity_at`, did not count toward
+  the daily target, and did not reach the leaderboard, while the lead went on
+  showing as stalled. The identical call logged from the ⚡ Outreach tab counted
+  in full. One behaviour, two sets of books, and the rep working the follow-up
+  engine was the one who looked idle. A task whose kind is not a way of
+  reaching a human still logs a note, which is what it is.
+- **Nothing may read a stage LABEL to get a count.** The leaderboard counted
+  appointments with `body LIKE '%→ Appt Set%'`, so renaming a label in `STAGES`
+  — cosmetic, with nothing anywhere to warn you — silently zeroed every rep's
+  appointment count forever. `_log_stage_change()` writes the destination stage
+  **key** into `activities.outcome` and the human sentence into `body`; they are
+  two different jobs. `_backfill_stage_keys()` recovers the key from log lines
+  written before the column carried it, because those are the only record of
+  when each appointment was set.
+- **Open tasks follow the lead to its new owner** (`_move_open_tasks()`).
+  `tasks.rep` is a separate column and nothing kept it in step, so a handed-over
+  deal left every follow-up on the old rep's My Day and gave the new owner a
+  lead with no next action. **Done** tasks keep their original rep — they record
+  who did the work.
+- **`appt_set` now has a clock.** `leads.appt_at` is when the appointment
+  actually is; it drives `_refresh_next_action()`, `/api/appointments` serves
+  the day's schedule, and My Day renders it above the task list with one tap to
+  call and one to drive. Three rules: the appointment counts toward the next
+  action **only while the lead is still in `appt_set`** (after `inspected` it
+  has happened, and leaving it would mark every inspected lead permanently
+  overdue); a booking with **no** time is flagged (`appt_missing`) rather than
+  refused, because the canvasser creates leads straight into `appt_set` from a
+  doorstep and refusing those breaks the handoff the tool exists for; and moving
+  one is logged as an event, since "we rescheduled them twice" is the story a
+  bare overwritten column cannot tell.
+
+Also fixed here: the dashboard's `by_source`/`by_state` ignored the date filter
+entirely, so "Last 7 days" left an all-time chart sitting beside 7-day KPIs on
+the one screen someone reads to decide where the marketing money goes. Stage
+counts stay current-state on purpose — they are a snapshot of the board, not a
+flow.
+
+**Loss reasons are one vocabulary, in `portal/lost_reasons.py`.** The estimator
+owned a controlled list and the CRM took free text from a browser `prompt()`, so
+the two could never be added together — and the CRM holds the bigger half of
+"why do we lose", because most deals die at the door or on the phone before
+anyone builds an estimate. It lives in `portal/` for the same reason `funnel.py`
+and `geo.py` do. `/api/config` serves it rather than the front end restating it,
+both write paths validate against it, and moving back out of `lost` clears the
+reason. **Renaming a key orphans every record already carrying it** — change the
+label, leave the key.
+
 **Visibility:** reps see only their own leads; `is_admin` (manager) sees everyone +
 the Numbers/Coaching tabs. Enrollment is the portal's job — there is no signup or
 login route left in this app, and `SALESCRM_SIGNUP_CODE` is gone (`PORTAL_SIGNUP_CODE`

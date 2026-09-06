@@ -30,6 +30,7 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, Respo
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from portal import funnel as pfunnel     # noqa: E402
+from portal import lost_reasons as plost  # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import throttle as pthrottle  # noqa: E402
 from portal import users as pusers       # noqa: E402
@@ -1380,15 +1381,10 @@ def update_estimate_label(est_id):
 # the analytics tab could report a close rate to the decimal and never say what
 # to change: price, timing, a competitor and an insurance denial are four
 # different companies' problems and the tool could not tell them apart.
-LOST_REASONS = {
-    'price':        'Price — we were too expensive',
-    'competitor':   'Went with another contractor',
-    'timing':       'Not doing it now / postponed',
-    'insurance':    'Insurance denied or underpaid the claim',
-    'unresponsive': 'Went quiet — never got an answer',
-    'scope':        'Changed their mind on the work',
-    'other':        'Other',
-}
+# Shared with the CRM, which records the losses that happen before an estimate
+# exists at all -- at the door, on the phone. Two lists could not be added
+# together, and the CRM's half is the bigger one. See portal/lost_reasons.py.
+LOST_REASONS = plost.REASONS
 
 
 @app.route('/api/estimates/<est_id>/status', methods=['PATCH'])

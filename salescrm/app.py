@@ -30,6 +30,7 @@ from flask import Flask, request, jsonify, send_from_directory, session
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from portal import dbtune                # noqa: E402
 from portal import funnel as pfunnel     # noqa: E402
+from portal import lost_reasons as plost  # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
 
@@ -286,6 +287,14 @@ _PROSPECT_COLS = [
     ('research_citations', "TEXT DEFAULT '[]'"), # JSON array of source URLs; reps verify before calling
     ('recent_storm',       "TEXT DEFAULT ''"),   # canvasser hail-cache summary at this address
     ('enriched_at',        "TEXT DEFAULT ''"),   # ISO timestamp of last enrichment pass
+    # When the appointment actually is. `appt_set` was a stage with no clock:
+    # a rep booked Thursday at 2pm and the CRM had nowhere to put it, so the
+    # commitment lived in the rep's head or in a task title. Deliberately NOT
+    # required to enter the stage -- the canvasser creates leads straight into
+    # `appt_set` from a doorstep, and rejecting those would break the handoff
+    # the tool exists for. A missing time is surfaced instead (see
+    # `appt_missing`), which is what gets it filled in.
+    ('appt_at',            "TEXT DEFAULT ''"),
 ]
 
 def migrate_db():
@@ -338,8 +347,44 @@ def migrate_db():
             -- the temp B-tree sort over the whole candidate set.
             CREATE INDEX IF NOT EXISTS leads_queue_idx
                 ON leads(rep, stage, icp_score DESC, created_at);
+
+            -- Stage history. The leaderboard and the funnel both ask "who
+            -- reached stage X in this window", which is four equalities and a
+            -- date range; without this it is a scan of every activity ever
+            -- logged, and activities is the fastest-growing table here.
+            CREATE INDEX IF NOT EXISTS act_stage_idx
+                ON activities(kind, outcome, rep, created_at);
+
+            CREATE INDEX IF NOT EXISTS leads_appt_idx ON leads(rep, appt_at);
         ''')
         _backfill_norms(db)
+        _backfill_stage_keys(db)
+
+# Reverse of STAGE_META, for reading a stage back out of a pre-existing log line.
+_LABEL_TO_STAGE = {m['label']: k for k, m in STAGE_META.items()}
+
+
+def _backfill_stage_keys(db):
+    """Fill `outcome` on stage_change rows written before it carried the key.
+
+    These are real deal histories on a live volume -- the only record of when
+    each appointment was set -- so they are parsed and kept, not dropped. The
+    body reads "Contacted → Appt Set" or "Contacted → Won (contract signed)";
+    the destination label is what sits after the arrow, minus any reason.
+    Idempotent: only rows still missing a key are touched, so every run after
+    the first is a no-op.
+    """
+    rows = db.execute(
+        "SELECT id, body FROM activities WHERE kind='stage_change' AND outcome=''"
+    ).fetchall()
+    for r in rows:
+        label = (r['body'] or '').split('→')[-1].strip()
+        if label.endswith(')') and '(' in label:
+            label = label[:label.rindex('(')].strip()
+        stage = _LABEL_TO_STAGE.get(label)
+        if stage:
+            db.execute('UPDATE activities SET outcome=? WHERE id=?', (stage, r['id']))
+
 
 def _backfill_norms(db):
     """Populate phone_norm/email_norm for rows written before they existed.
@@ -496,6 +541,10 @@ def _lead_row(row):
     # Days since last activity (stall detector). Empty = never touched.
     d['stalled'] = _is_stalled(d)
     d['overdue'] = bool(d['next_action_at']) and d['next_action_at'] <= _now()
+    # A booked appointment with no time is a real defect in the data, not an
+    # empty field: nobody can be anywhere at "sometime". Surfaced so the board
+    # and My Day can nag rather than letting it sit there looking complete.
+    d['appt_missing'] = d['stage'] == 'appt_set' and not d.get('appt_at')
     return d
 
 def _is_stalled(d):
@@ -525,11 +574,73 @@ def _log_activity(db, lead_id, kind, body='', outcome='', rep=None):
         db.execute('UPDATE leads SET last_activity_at=?, updated_at=? WHERE id=?',
                    (_now(), _now(), lead_id))
 
+# Every stage change is logged with the destination stage's KEY in `outcome`,
+# and the human sentence in `body`. Those are two different jobs and they used
+# to be done by one string: the leaderboard counted appointments with
+# `body LIKE '%→ Appt Set%'`, so renaming a stage's label in STAGES -- a
+# cosmetic edit with nothing anywhere to warn you -- silently zeroed every
+# rep's appointment count forever. A key never changes for cosmetic reasons,
+# and it is what the cohort funnel counts too.
+def _log_stage_change(db, lead_id, old_stage, new_stage, rep=None, reason=''):
+    body = f'{STAGE_META[old_stage]["label"]} → {STAGE_META[new_stage]["label"]}'
+    if reason:
+        body += f' ({reason})'
+    _log_activity(db, lead_id, 'stage_change', body=body, outcome=new_stage, rep=rep)
+
+
+def _log_appointment(db, lead_id, before, after, rep=None):
+    """Record a booking, a reschedule or a cancellation on the timeline.
+
+    An appointment is a promise to a customer, not a field. When it moves, the
+    fact that it moved is what a manager needs on Monday -- "we rescheduled
+    them twice" is the story, and a bare overwritten column cannot tell it.
+    """
+    if before == after:
+        return
+    if after and not before:
+        body = f'📅 Appointment set for {_appt_label(after)}'
+    elif after:
+        body = f'📅 Appointment moved: {_appt_label(before)} → {_appt_label(after)}'
+    else:
+        body = f'📅 Appointment cleared (was {_appt_label(before)})'
+    _log_activity(db, lead_id, 'system', body=body, rep=rep)
+
+
+def _appt_label(iso):
+    """'Thu 11 Sep, 2:00 PM' — what a human would say out loud."""
+    try:
+        return datetime.strptime(iso, '%Y-%m-%dT%H:%M:%SZ').strftime('%a %-d %b, %-I:%M %p')
+    except Exception:
+        return iso or '(no time)'
+
+
+def _move_open_tasks(db, lead_id, new_rep):
+    """Follow-ups belong to whoever owns the lead now.
+
+    `tasks.rep` is a separate column from `leads.rep`, and nothing used to keep
+    them in step -- so handing a deal to another rep left every open follow-up
+    on the previous owner's My Day while the new owner saw a lead with no next
+    action. The task the cadence engine scheduled was then worked by nobody.
+    Done tasks keep their original rep: they are a record of who did the work.
+    """
+    db.execute('UPDATE tasks SET rep=? WHERE lead_id=? AND done=0', (new_rep, lead_id))
+
+
 def _refresh_next_action(db, lead_id):
-    """leads.next_action_at = the soonest incomplete task's due date (or '')."""
-    row = db.execute('SELECT MIN(due_at) m FROM tasks WHERE lead_id=? AND done=0', (lead_id,)).fetchone()
+    """The soonest thing this lead needs: an open task, or the appointment.
+
+    The appointment counts only while the lead is still IN `appt_set`. Once the
+    rep has moved them on to `inspected`, the appointment happened -- leaving it
+    driving the next action would mark every inspected lead permanently overdue.
+    """
+    row = db.execute('SELECT MIN(due_at) m FROM tasks WHERE lead_id=? AND done=0',
+                     (lead_id,)).fetchone()
+    lead = db.execute('SELECT stage, appt_at FROM leads WHERE id=?', (lead_id,)).fetchone()
+    candidates = [c for c in (row['m'],
+                              lead['appt_at'] if lead and lead['stage'] == 'appt_set' else '')
+                  if c]
     db.execute('UPDATE leads SET next_action_at=?, updated_at=? WHERE id=?',
-               (row['m'] or '', _now(), lead_id))
+               (min(candidates) if candidates else '', _now(), lead_id))
 
 # ── Leads ─────────────────────────────────────────────────────────────────────
 
@@ -603,6 +714,7 @@ def create_lead():
         'source': data.get('source', ''), 'temperature': data.get('temperature', 'warm'),
         'stage': stage, 'rep': rep, 'est_value': float(data.get('est_value') or 0),
         'referred_by': data.get('referred_by', ''),
+        'appt_at': data.get('appt_at', ''),
         'phone_norm': _norm_phone(data.get('phone', '')),
         'email_norm': _norm_email(data.get('email', '')),
         'created_at': _now(), 'updated_at': _now(),
@@ -659,6 +771,7 @@ def get_lead(lead_id):
 LEAD_EDITABLE = ['lead_type', 'service', 'plan', 'billing', 'first_name', 'last_name',
                  'company', 'phone', 'email', 'address', 'city', 'state', 'zip', 'source',
                  'temperature', 'est_value', 'referred_by', 'lost_reason', 'estimate_id', 'rep',
+                 'appt_at',
                  'website', 'license_no', 'icp_score', 'dnc', 'hook']
 
 @app.route('/api/leads/<lead_id>', methods=['PUT'])
@@ -680,6 +793,8 @@ def update_lead(lead_id):
                     return jsonify({'error': 'Invalid service'}), 400
                 if f == 'billing' and data[f] not in BILLING_KEYS:
                     return jsonify({'error': 'Invalid billing'}), 400
+                if f == 'lost_reason' and not plost.valid(data[f]):
+                    return jsonify({'error': 'Invalid lost reason'}), 400
                 if f == 'est_value':
                     sets.append('est_value=?'); params.append(float(data[f] or 0)); continue
                 if f in ('icp_score', 'dnc'):
@@ -694,7 +809,19 @@ def update_lead(lead_id):
         if not sets:
             return jsonify({'error': 'Nothing to update'}), 400
         sets.append('updated_at=?'); params.append(_now()); params.append(lead_id)
+        old_rep, old_appt = row['rep'], row['appt_at']
         db.execute(f'UPDATE leads SET {", ".join(sets)} WHERE id=?', params)
+        row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
+        if row['appt_at'] != old_appt:
+            _log_appointment(db, lead_id, old_appt, row['appt_at'])
+            _refresh_next_action(db, lead_id)
+        if row['rep'] != old_rep:
+            _move_open_tasks(db, lead_id, row['rep'])
+            _log_activity(db, lead_id, 'system',
+                          body=f'Reassigned: {pusers.display_name(old_rep)} → '
+                               f'{pusers.display_name(row["rep"])}')
+        # Re-read last: _refresh_next_action writes, and returning the row from
+        # before it hands the caller a next action that is already wrong.
         row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
     return jsonify(_lead_row(row))
 
@@ -715,10 +842,23 @@ def set_stage(lead_id):
             return jsonify(_lead_row(row))
         won_at = _now() if new_stage == 'won' else (row['won_at'] or '')
         lost_reason = data.get('lost_reason', row['lost_reason'])
-        db.execute('UPDATE leads SET stage=?, won_at=?, lost_reason=?, updated_at=? WHERE id=?',
-                   (new_stage, won_at, lost_reason, _now(), lead_id))
-        _log_activity(db, lead_id, 'stage_change',
-                      body=f'{STAGE_META[old]["label"]} → {STAGE_META[new_stage]["label"]}')
+        if not plost.valid(lost_reason):
+            return jsonify({'error': 'Invalid lost reason'}), 400
+        # Moving back out of lost clears the reason. Plenty of deals get
+        # re-quoted, and a job that closes in March must not carry "went with
+        # someone else" into the month it was won. Same rule as the estimator's.
+        if new_stage != 'lost':
+            lost_reason = ''
+        # Moving INTO appt_set is where a time gets captured, because that is
+        # the moment the rep has one. Anything else leaves it alone -- a lead
+        # walked forward to `inspected` keeps the appointment it was seen on.
+        appt_at = data.get('appt_at', row['appt_at']) if new_stage == 'appt_set' \
+            else row['appt_at']
+        db.execute('UPDATE leads SET stage=?, won_at=?, lost_reason=?, appt_at=?, '
+                   'updated_at=? WHERE id=?',
+                   (new_stage, won_at, lost_reason, appt_at, _now(), lead_id))
+        _log_stage_change(db, lead_id, old, new_stage)
+        _log_appointment(db, lead_id, row['appt_at'], appt_at)
         # Terminal stages close out any pending follow-up tasks + cadences.
         if new_stage in ('won', 'lost'):
             db.execute("UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0",
@@ -776,6 +916,55 @@ def add_activity(lead_id):
     return jsonify(acts), 201
 
 # ── Tasks (the "next action" engine) ──────────────────────────────────────────
+
+@app.route('/api/appointments')
+@login_required
+def appointments():
+    """The rep's booked appointments in a window — the day's actual schedule.
+
+    This is its own query rather than a filter over /api/leads on the client,
+    for the reason the pipeline search already learned the hard way: the lead
+    list is capped, and once prospecting has imported partners by the thousand
+    the cap is most of the table. An appointment that falls outside the most
+    recently updated page is the one a rep misses.
+
+    Terminal leads drop out — a won or lost deal's appointment is history — but
+    everything still in play stays, including leads already walked on to
+    `inspected`, so a rep can still see what their day was.
+    """
+    # Always somebody's schedule, never everybody's: My Day asks this question
+    # about the person reading it. A manager can name another rep; passing no
+    # rep at all used to mean "the entire company", which put twenty other
+    # people's appointments on their own morning screen.
+    rep = (request.args.get('rep') or current_rep()) if is_manager() else current_rep()
+    days = max(0, min(int(request.args.get('days') or 0), 60))
+    start = _start_of_today()
+    end = _iso((_now_dt() + timedelta(days=days)).replace(hour=23, minute=59, second=59))
+
+    clauses = ["appt_at != ''", 'appt_at >= ?', 'appt_at <= ?',
+               'stage NOT IN (%s)' % ','.join('?' * len(TERMINAL_STAGES))]
+    params = [start, end] + list(TERMINAL_STAGES)
+    if rep:
+        clauses.append('rep=?'); params.append(rep)
+    with get_db() as db:
+        rows = db.execute('SELECT * FROM leads WHERE %s ORDER BY appt_at'
+                          % ' AND '.join(clauses), params).fetchall()
+        # The other half of the same question: booked, but nobody knows when.
+        # Counted rather than listed, because the fix is per-lead on the board.
+        mclauses = ["stage='appt_set'", "appt_at=''"]
+        mparams = []
+        if rep:
+            mclauses.append('rep=?'); mparams.append(rep)
+        missing = db.execute('SELECT COUNT(*) c FROM leads WHERE %s'
+                             % ' AND '.join(mclauses), mparams).fetchone()['c']
+    out = []
+    for r in rows:
+        d = _lead_row(r)
+        d['appt_label'] = _appt_label(d['appt_at'])
+        d['appt_past'] = d['appt_at'] < _now()
+        out.append(d)
+    return jsonify({'appointments': out, 'missing_time': missing, 'days': days})
+
 
 @app.route('/api/tasks', methods=['GET'])
 @login_required
@@ -837,9 +1026,23 @@ def update_task(task_id):
             done = 1 if data['done'] else 0
             db.execute('UPDATE tasks SET done=?, done_at=? WHERE id=?',
                        (done, _now() if done else '', task_id))
-            if done:
-                # Completing a task logs it and advances any cadence it belongs to.
-                _log_activity(db, t['lead_id'], 'note',
+            # Only on the not-done -> done edge. Re-checking an already-finished
+            # task must not log the call twice.
+            if done and not t['done']:
+                # Completing a task logs the WORK, not a note about the work.
+                #
+                # This logged kind='note' for every task, and `note` is not in
+                # OUTREACH_KINDS -- so ticking off "Call #2" from My Day did not
+                # touch last_activity_at, did not count toward the daily target,
+                # and did not reach the leaderboard. The lead then went on
+                # showing as stalled. The same call logged from the Outreach tab
+                # counted fully: one behaviour, two sets of books, and the rep
+                # working the follow-up engine we built was the one who looked
+                # idle. Every cadence step's kind is already a real outreach
+                # kind; a task that is genuinely just a reminder still logs a
+                # note, which is what it is.
+                kind = t['kind'] if t['kind'] in OUTREACH_KINDS else 'note'
+                _log_activity(db, t['lead_id'], kind,
                               body=f'✓ Completed: {t["title"] or t["kind"]}', rep=t['rep'])
                 if t['enrollment_id']:
                     _advance_cadence(db, t['enrollment_id'])
@@ -990,8 +1193,7 @@ def _auto_advance(db, lead_id, target, reason):
     won_at = _now() if target == 'won' else ''
     db.execute('UPDATE leads SET stage=?, won_at=?, updated_at=? WHERE id=?',
                (target, won_at, _now(), lead_id))
-    _log_activity(db, lead_id, 'stage_change', rep=row['rep'],
-                  body=f'{STAGE_META[old]["label"]} → {STAGE_META[target]["label"]} ({reason})')
+    _log_stage_change(db, lead_id, old, target, rep=row['rep'], reason=reason)
     if target in TERMINAL_STAGES:
         db.execute('UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0',
                    (_now(), lead_id))
@@ -1849,8 +2051,14 @@ def queue_assign():
             (from_rep, limit)).fetchall()
         if not data.get('dry_run'):
             for i, r in enumerate(rows):
+                to = reps[i % len(reps)]
                 db.execute('UPDATE leads SET rep = ?, updated_at = ? WHERE id = ?',
-                           (reps[i % len(reps)], _now(), r['id']))
+                           (to, _now(), r['id']))
+                # No activity logged here, unlike the manual path: these are
+                # untouched imported rows with no history to annotate, and a
+                # 5,000-row batch would write 5,000 timeline entries nobody
+                # reads. The tasks still have to follow the lead.
+                _move_open_tasks(db, r['id'], to)
 
     per = {}
     for i in range(len(rows)):
@@ -1914,10 +2122,17 @@ def dashboard():
             act_params)}
 
         # Source attribution + location split.
+        # Windowed, like every other figure on this screen. These read
+        # `new_where` rather than `lw`: they answer "where did the leads we
+        # picked up in this window come from", and an all-time answer sitting
+        # beside a 7-day KPI is the kind of number that quietly misdirects a
+        # marketing budget. Stage counts below stay current-state on purpose --
+        # they are a snapshot of the board, not a flow.
+        nw_sql = ' AND '.join(new_where)
         by_source = {r['source'] or 'unknown': r['c'] for r in db.execute(
-            f'SELECT source, COUNT(*) c FROM leads {lw} GROUP BY source', lead_params)}
+            f'SELECT source, COUNT(*) c FROM leads WHERE {nw_sql} GROUP BY source', np)}
         by_state = {(r['state'] or '??').upper(): r['c'] for r in db.execute(
-            f'SELECT state, COUNT(*) c FROM leads {lw} GROUP BY state', lead_params)}
+            f'SELECT state, COUNT(*) c FROM leads WHERE {nw_sql} GROUP BY state', np)}
         # Service-line split: open pipeline + won revenue per service.
         by_service = {}
         for s in SERVICES:
@@ -1983,7 +2198,7 @@ def leaderboard():
             won = db.execute("SELECT COUNT(*) c, COALESCE(SUM(est_value),0) v FROM leads "
                              "WHERE rep=? AND stage='won' AND won_at >= ?", (rep, since)).fetchone()
             appts = db.execute("SELECT COUNT(*) c FROM activities WHERE rep=? AND created_at >= ? "
-                               "AND kind='stage_change' AND body LIKE '%→ Appt Set%'",
+                               "AND kind='stage_change' AND outcome='appt_set'",
                                (rep, since)).fetchone()['c']
             board.append({'rep': rep, 'outreach': acts, 'appts_set': appts,
                           'won': won['c'], 'won_value': won['v']})
@@ -2011,13 +2226,11 @@ def scorecard(rep):
                                'WHERE rep=? AND stage IN (%s)' % ','.join('?' * len(OPEN_STAGES)),
                                [rep] + OPEN_STAGES).fetchone()
         estimates = db.execute("SELECT COUNT(*) c FROM activities WHERE rep=? AND created_at >= ? "
-                               "AND kind='stage_change' AND body LIKE '%→ Estimate Presented%'",
+                               "AND kind='stage_change' AND outcome='estimate_presented'",
                                (rep, since)).fetchone()['c']
         # Avg sales cycle (days) for won deals in window.
         cyc = db.execute("SELECT created_at, won_at FROM leads WHERE rep=? AND stage='won' AND won_at >= ?",
                          (rep, since)).fetchall()
-        stalled = db.execute('SELECT COUNT(*) c FROM leads WHERE rep=? AND stage IN (%s)'
-                             % ','.join('?' * len(OPEN_STAGES)), [rep] + OPEN_STAGES).fetchall()
         goals = [dict(g) for g in db.execute('SELECT * FROM goals WHERE rep=?', (rep,)).fetchall()]
     cycles = []
     for c in cyc:
@@ -2202,6 +2415,9 @@ def config():
             {'key': 'quarterly', 'label': 'Quarterly'},
             {'key': 'annual',    'label': 'Annual'},
         ],
+        # Served rather than mirrored in the front end, so the picker and the
+        # validator that accepts its value cannot drift apart.
+        'lost_reasons': sorted(plost.REASONS.items()),
         'stall_days': STALL_DAYS,
         'daily_target': DAILY_TARGET,
         'cooldown_days': COOLDOWN_DAYS,
