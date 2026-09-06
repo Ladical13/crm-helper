@@ -611,6 +611,46 @@ the Numbers/Coaching tabs. Enrollment is the portal's job — there is no signup
 login route left in this app, and `SALESCRM_SIGNUP_CODE` is gone (`PORTAL_SIGNUP_CODE`
 bootstraps the first admin; after that, admin-created invite links).
 
+### Offline: the outbox
+
+**A write made with no signal is not a write that did not happen.** Every
+mutation used to be dropped the moment the network went — `sw.js` returned early
+on any non-GET — so the door knock a rep logged in a driveway simply vanished,
+with a red toast as the only trace. The canvasser has had an offline shell since
+day one; the CRM, which is where the knock is actually *recorded*, had none.
+
+Failed `/api/` writes now go to an IndexedDB outbox and replay when the phone
+finds a bar. Guarded by `salescrm/tests/test_offline.py` (the server half) and
+`test_outbox.py`, which runs `static/sw.js` itself under node against a fake
+IndexedDB rather than restating it.
+
+- **Replay is what makes queueing safe.** Every write carries an
+  `Idempotency-Key` minted by the page, and the `idempotency` table records what
+  that key answered so the retry answers identically. This matters because the
+  duplicate is not hypothetical: the phone gives up on a request whose
+  *response* was lost, and the row is already written. Applied to the two
+  endpoints that INSERT — `POST /api/leads` and `POST .../activities`. Stage
+  moves and task completions are naturally idempotent and are left alone.
+  **The guard is the key, never the contact details**: `POST /api/leads` stays
+  duplicate-friendly on purpose for the cross-sell Pitch button.
+- **A key matches until it is PRUNED, not until it notionally expires.**
+  Matching longer only ever suppresses a duplicate; expiring eagerly risks
+  writing one. That is the safe direction to get wrong.
+- **The page is told, in 202, that the write is only on the phone.** Dressing it
+  up as a 200 is how a rep finds out on Monday that Thursday never happened.
+- **A 4xx drops out of the queue; a 5xx stays.** A rejection is an answer, and
+  retrying it on every reconnect for the life of the install helps nobody. A
+  server stumble is not an answer and the rep's work has to outlast it.
+- **Only same-origin `/api/` writes are queued.** A queued cross-origin POST
+  would be replayed at somebody else's server.
+- **API GETs are still network-FIRST** — a rep acting on a stale lead list calls
+  someone a teammate already closed. The cache is strictly the last resort when
+  there is no network at all, it lives in its own `p1pipeline-api` cache that
+  survives activation (a deploy is exactly when a rep is least likely to have
+  bars), and a cached answer carries `X-P1-Stale` so the page can raise the
+  offline banner. **The banner is driven by what happened to a request, never by
+  `navigator.onLine`** — a phone on a captive portal reports itself online.
+
 ### Nothing counts a page and calls it the pipeline
 
 Two screens tallied a fetched page in the browser, which was right at a few
@@ -665,6 +705,15 @@ nothing is written to Base44 at all.
   was a column nothing ever wrote, the CRM knew only its own stages and the
   estimator only its own, and the question "of the doors we knocked, where do
   we lose people" had no answer in either app.
+  - **The quoted number lands when the estimate is SENT, not at signature**
+    (`_apply_quoted_value()`). `est_value` is a figure a rep types before anyone
+    has measured anything, and it used to stay that guess right up to the moment
+    a contract was signed — so "Pipeline $", the forecast the company is run
+    against, was a column of estimates about estimates while the real number sat
+    in the estimator the whole time. The change is **logged on the timeline**
+    rather than silently swapped: a rep who guessed $30k and quoted $12k should
+    see their number move and know why, and it is the only record that the two
+    ever differed.
   - **States only move forward** (`_RANK` in `funnel.py`) and signature is
     terminal. That is what makes draining idempotent and re-runnable.
   - `POST /api/leads/<id>/start-estimate` writes **nothing** to The Den; it

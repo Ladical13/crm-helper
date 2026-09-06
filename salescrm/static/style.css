@@ -460,3 +460,12 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .view-note{font-size:12px;color:var(--txt3);margin:8px 0 4px;line-height:1.45}
 .appt-ok{margin-top:8px;padding:8px 11px;border-radius:9px;font-size:12px;
   background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.32);color:var(--green)}
+
+/* ── Offline ─────────────────────────────────────────────────────────────────
+   Pinned under the app-switcher bar, above everything else, and sized in the
+   shell variable so it never hides beneath the notch. */
+.offline-bar{position:fixed;top:var(--p1-shell-h,44px);left:0;right:0;z-index:60;
+  padding:9px 14px;font-size:12px;line-height:1.4;text-align:center;
+  background:rgba(245,158,11,.16);color:var(--amber);
+  border-bottom:1px solid rgba(245,158,11,.4);backdrop-filter:blur(6px)}
+.offline-bar.hidden{display:none}

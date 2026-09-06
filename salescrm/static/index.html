@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <title>Project One — Pipeline</title>
-  <link rel="stylesheet" href="/crm/static/style.css?v=19">
+  <link rel="stylesheet" href="/crm/static/style.css?v=20">
 </head>
 <body>
 
@@ -181,9 +181,16 @@
   <div class="modal-box" id="modal-box"></div>
 </div>
 
+<!-- Offline banner. Shown when a request actually failed or came back from
+     cache, not from navigator.onLine — a phone on a captive portal or a tower
+     it cannot reach reports itself as online. -->
+<div id="offline-bar" class="offline-bar hidden">
+  📥 Offline — showing the last synced data. Anything you log is saved on this phone and syncs when you get a signal.
+</div>
+
 <div id="toast" class="toast"></div>
 
 <script src="/shell.js"></script>
-<script src="/crm/static/app.js?v=19"></script>
+<script src="/crm/static/app.js?v=20"></script>
 </body>
 </html>

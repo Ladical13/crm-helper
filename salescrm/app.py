@@ -372,6 +372,21 @@ def migrate_db():
                 ON activities(kind, outcome, rep, created_at);
 
             CREATE INDEX IF NOT EXISTS leads_appt_idx ON leads(rep, appt_at);
+
+            -- Replayed writes. A rep logs a door knock with no signal, the
+            -- service worker queues it, and it arrives when the phone finds a
+            -- bar -- possibly twice, because the first attempt may have
+            -- reached the server and only the RESPONSE got lost. Without this
+            -- the retry is a second call on the timeline and a second point on
+            -- the leaderboard. The stored response is replayed verbatim so a
+            -- retry is indistinguishable from the original success.
+            CREATE TABLE IF NOT EXISTS idempotency (
+                key        TEXT PRIMARY KEY,
+                response   TEXT NOT NULL,
+                status     INTEGER DEFAULT 200,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idem_age_idx ON idempotency(created_at);
         ''')
         _backfill_norms(db)
         _backfill_stage_keys(db)
@@ -691,6 +706,54 @@ def _refresh_next_action(db, lead_id):
     db.execute('UPDATE leads SET next_action_at=?, updated_at=? WHERE id=?',
                (min(candidates) if candidates else '', _now(), lead_id))
 
+# ── Replay safety ────────────────────────────────────────────────────────────
+#
+# Anything that INSERTS needs this, because the offline queue can deliver the
+# same write twice: the phone gives up on a request whose response was lost in
+# transit, and the row was already written. Stage moves and task completions do
+# not -- setting a stage to `won` twice is the same as once -- so they are left
+# alone rather than given ceremony they do not need.
+#
+# Keys are minted by the browser (`Idempotency-Key`), because only the browser
+# knows that the retry IS the original request.
+
+IDEMPOTENCY_TTL_DAYS = int(os.environ.get('SALESCRM_IDEMPOTENCY_TTL_DAYS', '14'))
+
+
+def _idem_key():
+    """The request's replay key, or '' when the caller did not mint one."""
+    return (request.headers.get('Idempotency-Key') or '').strip()[:120]
+
+
+def _idem_replay(db, key):
+    """The original response for `key`, or None.
+
+    A key matches until it is PRUNED, not until it is notionally expired --
+    matching for longer than necessary only ever suppresses a duplicate, while
+    expiring eagerly risks writing one. The TTL is enforced by the sweep in
+    `_idem_remember`, which is the safe direction to get wrong.
+    """
+    if not key:
+        return None
+    row = db.execute('SELECT response, status FROM idempotency WHERE key=?',
+                     (key,)).fetchone()
+    if not row:
+        return None
+    return json.loads(row['response']), row['status']
+
+
+def _idem_remember(db, key, payload, status=200):
+    """Record what this key answered, so the retry answers the same thing."""
+    if not key:
+        return
+    db.execute('INSERT OR REPLACE INTO idempotency (key, response, status, created_at) '
+               'VALUES (?,?,?,?)', (key, json.dumps(payload), status, _now()))
+    # Opportunistic prune. A queue that never drains is a bug elsewhere; keys
+    # older than the window cannot still be in flight.
+    db.execute('DELETE FROM idempotency WHERE created_at < ?',
+               (_iso(_now_dt() - timedelta(days=IDEMPOTENCY_TTL_DAYS)),))
+
+
 # ── Leads ─────────────────────────────────────────────────────────────────────
 
 @app.route('/api/leads', methods=['GET'])
@@ -771,7 +834,15 @@ def create_lead():
     }
     cols = ','.join(fields.keys())
     ph   = ','.join('?' * len(fields))
+    key = _idem_key()
     with get_db() as db:
+        # A replayed create must return the ORIGINAL lead, not make a second
+        # one. This endpoint is deliberately duplicate-friendly otherwise -- the
+        # cross-sell "Pitch" button creates a second deal for the same person on
+        # purpose -- so the replay guard is the key, never the contact details.
+        prior = _idem_replay(db, key)
+        if prior:
+            return jsonify(prior[0]), prior[1]
         db.execute(f'INSERT INTO leads ({cols}) VALUES ({ph})', list(fields.values()))
         _log_activity(db, lid, 'system', body=f'Lead created in stage "{STAGE_META[stage]["label"]}"')
         # A new lead starts following itself up. The cadence engine and its four
@@ -781,7 +852,9 @@ def create_lead():
         if auto:
             _enroll(db, lid, rep, auto)
         row = db.execute('SELECT * FROM leads WHERE id=?', (lid,)).fetchone()
-    return jsonify(_lead_row(row)), 201
+        payload = _lead_row(row)
+        _idem_remember(db, key, payload, 201)
+    return jsonify(payload), 201
 
 @app.route('/api/leads/<lead_id>', methods=['GET'])
 @login_required
@@ -959,14 +1032,21 @@ def delete_lead(lead_id):
 def add_activity(lead_id):
     data = request.get_json(force=True)
     kind = data.get('kind', 'note')
+    key = _idem_key()
     with get_db() as db:
         row = _lead_visible(db, lead_id)
         if not row:
             return jsonify({'error': 'Not found'}), 404
+        # A door knock queued with no signal and delivered twice is two calls on
+        # the timeline and two points on the leaderboard.
+        prior = _idem_replay(db, key)
+        if prior:
+            return jsonify(prior[0]), prior[1]
         _log_activity(db, lead_id, kind, body=data.get('body', ''), outcome=data.get('outcome', ''))
         acts = [dict(a) for a in db.execute(
             'SELECT * FROM activities WHERE lead_id=? ORDER BY created_at DESC LIMIT 200',
             (lead_id,)).fetchall()]
+        _idem_remember(db, key, acts, 201)
     return jsonify(acts), 201
 
 # ── Tasks (the "next action" engine) ──────────────────────────────────────────
@@ -1365,6 +1445,27 @@ _FUNNEL_STAGE = {
 }
 
 
+def _apply_quoted_value(db, lead_id, ev):
+    """Put the estimate's real total on the lead, and say so on the timeline.
+
+    Logged rather than silently swapped: a rep who guessed $30k and quoted $12k
+    should see their own number move and know why. The note is also the only
+    record that the two ever differed, which is the raw material for finding out
+    whether this team forecasts high.
+    """
+    value = ev.get('value') or 0
+    if not value:
+        return
+    row = db.execute('SELECT est_value FROM leads WHERE id=?', (lead_id,)).fetchone()
+    if not row or round(row['est_value'] or 0, 2) == round(value, 2):
+        return
+    was = row['est_value'] or 0
+    db.execute('UPDATE leads SET est_value=?, updated_at=? WHERE id=?',
+               (value, _now(), lead_id))
+    _log_activity(db, lead_id, 'system',
+                  body=f'Value updated from the estimate: ${was:,.0f} → ${value:,.0f}')
+
+
 def _reconcile_funnel():
     """Apply the estimator's funnel events to their leads. Safe to call often.
 
@@ -1389,6 +1490,15 @@ def _reconcile_funnel():
                 continue
             db.execute('UPDATE leads SET estimate_id=?, updated_at=? WHERE id=?',
                        (ev['estimate_id'], _now(), lead_id))
+            # The quoted number lands as soon as it EXISTS, not at signature.
+            #
+            # est_value is a rep's guess typed before anyone measured anything,
+            # and it used to stay that guess right up to the moment a contract
+            # was signed -- so "Pipeline $", the forecast the whole company is
+            # run against, was a column of estimates about estimates while the
+            # real figure sat in the estimator the entire time. Once a customer
+            # has been quoted, the quote is what the deal is worth.
+            _apply_quoted_value(db, lead_id, ev)
             if ev['state'] in ('lost', 'declined'):
                 _log_activity(db, lead_id, 'system',
                               body='Estimate marked lost — the lead is still open')
@@ -1396,9 +1506,6 @@ def _reconcile_funnel():
             target = _FUNNEL_STAGE.get(ev['state'], '')
             if not target:
                 continue
-            if ev['state'] == 'signed' and ev['value']:
-                db.execute('UPDATE leads SET est_value=? WHERE id=?',
-                           (ev['value'], lead_id))
             reason = {'sent': 'estimate sent', 'viewed': 'customer opened the estimate',
                       'signed': 'contract signed'}[ev['state']]
             if _auto_advance(db, lead_id, target, reason) and target == 'won':

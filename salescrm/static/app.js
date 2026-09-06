@@ -3,7 +3,8 @@
 'use strict';
 
 // ── State & helpers ──────────────────────────────────────────────────────────
-const S = { me:null, cfg:null, view:'myday', users:[], stageCounts:{}, partnerBook:null };
+const S = { me:null, cfg:null, view:'myday', users:[], stageCounts:{},
+            partnerBook:null, offline:false };
 const $  = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const el = (t, c, h) => { const e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e; };
@@ -15,10 +16,22 @@ const money = n => '$' + Math.round(n||0).toLocaleString();
 // is served standalone. Derived from the URL so one bundle works both ways.
 const BASE = location.pathname.startsWith('/crm') ? '/crm' : '';
 
+// Minted here, per call, because only this side knows that a retry IS the
+// original request. The service worker replays a queued write verbatim, key
+// included, so a request whose response was lost in transit -- the row already
+// written -- cannot log the same door knock twice.
+function idemKey(){
+  if(crypto.randomUUID) return crypto.randomUUID();
+  return 'k'+Date.now()+'-'+Math.random().toString(36).slice(2);
+}
+
 async function api(path, opts={}) {
+  const method = opts.method||'GET';
+  const headers = opts.body ? {'Content-Type':'application/json'} : {};
+  if(method !== 'GET') headers['Idempotency-Key'] = opts.idemKey || idemKey();
   const r = await fetch(BASE+'/api'+path, {
-    method: opts.method||'GET',
-    headers: opts.body ? {'Content-Type':'application/json'} : {},
+    method,
+    headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   // Session expired or never signed in: the portal owns login, so hand off
@@ -26,8 +39,47 @@ async function api(path, opts={}) {
   if (r.status === 401) { window.location = '/login'; throw new Error('Unauthorized'); }
   let data = null;
   try { data = await r.json(); } catch(e) {}
+  // 202: the worker took it because the network would not. Deliberately NOT
+  // dressed up as success -- the rep needs to know it is on this phone and not
+  // yet on the server, or they find out on Monday that Thursday never happened.
+  if (r.status === 202 && data && data.queued) {
+    setOffline(true);
+    toast('📥 No signal — saved on this phone, will sync');
+    return {queued:true};
+  }
+  if (r.headers.get('X-P1-Stale')) setOffline(true);
+  else if (method === 'GET' && r.ok) setOffline(false);
   if (!r.ok) throw new Error((data && data.error) || ('HTTP '+r.status));
   return data;
+}
+
+// ── Offline state ────────────────────────────────────────────────────────────
+// One banner, driven by what actually happened to a request rather than by
+// navigator.onLine, which reports "online" for a phone attached to a captive
+// portal or a tower it cannot actually reach.
+function setOffline(on){
+  if(S.offline === on) return;
+  S.offline = on;
+  document.body.classList.toggle('is-offline', on);
+  const bar = $('#offline-bar');
+  if(bar) bar.classList.toggle('hidden', !on);
+}
+function syncNow(){
+  if(navigator.serviceWorker && navigator.serviceWorker.controller)
+    navigator.serviceWorker.controller.postMessage({type:'drain-outbox'});
+}
+window.addEventListener('online', syncNow);
+if(navigator.serviceWorker){
+  navigator.serviceWorker.addEventListener('message', e=>{
+    if(!e.data || e.data.type !== 'outbox-drained') return;
+    setOffline(false);
+    toast(`✅ Synced ${e.data.count} change${e.data.count===1?'':'s'}`);
+    // Re-render from the server: what drained was written from a stale view.
+    const fn={myday:renderMyDay,outreach:renderOutreach,pipeline:renderPipeline,
+              partners:renderPartners,dashboard:renderDashboard,
+              coaching:renderCoaching,playbook:renderPlaybook}[S.view];
+    if(fn) fn();
+  });
 }
 
 // Calls the PORTAL's API rather than this app's — note the missing BASE. Team
