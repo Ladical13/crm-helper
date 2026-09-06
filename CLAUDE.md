@@ -554,6 +554,48 @@ Also fixed here: the dashboard's `by_source` ignored the date filter
 entirely, so "Last 7 days" left an all-time chart sitting beside 7-day KPIs on
 the one screen someone reads to decide where the marketing money goes.
 
+### The customer channel (`portal/mail.py` + appointment comms)
+
+**The CRM owned a homeowner from the door knock to the signature and sent them
+nothing.** Not a decision — the only mailer in the repo lived inside
+`estimator/app.py`, so the estimator could email a customer and this app could
+not. `portal/mail.py` is that mailer, moved to the shared home for the same
+reason `funnel.py`, `geo.py` and `lost_reasons.py` are there. Two properties
+callers depend on: **`send()` never raises** (delivery is somebody else's
+network, and every caller is doing something more important — signing a
+contract, saving a lead), and **it prefers the SendGrid HTTP API over SMTP**,
+because Railway blocks outbound SMTP ports.
+
+The boundary is deliberately narrow. The estimator already covers
+estimate → signature; The Den owns everything after it. What nobody covered is
+the middle: an appointment gets booked and the customer hears nothing until
+somebody knocks. `_send_appt_mail()` sends a confirmation on booking and
+`_check_appt_reminders()` a day-before reminder, on the CRM's **own** hourly
+thread (`SALESCRM_DISABLE_JOBS=1` turns it off; the tests set it). Four rules:
+
+- **These SEND, and that does not weaken the draft-only rule in the ⚡ Outreach
+  queue.** That rule is about cold outreach at volume, where 1:1 mail from a
+  rep's own Gmail is what avoids needing a sending domain, SPF/DKIM and warmup.
+  A confirmation for an appointment the customer just booked is transactional —
+  expected, one recipient, no volume — and the estimator has always sent this
+  class of mail through the same infrastructure.
+- **`appt_confirmed_for`/`appt_reminded_for` store the appointment TIME, not a
+  flag.** A reschedule then invalidates itself and the customer is re-told; a
+  boolean would have confirmed the first time forever and left them holding the
+  wrong one.
+- **The claim is a conditional UPDATE, not a read-then-write.** Two gunicorn
+  workers run this loop and would both pass the same check and mail twice. A
+  send that then fails **releases** the claim — a customer who never got the
+  confirmation must not be recorded as having had one.
+- **Silence is the failure mode, so the drawer names which silence it is:**
+  confirmed, no email on file, or sending unavailable. `/health` reports `mail`.
+
+`_now()` derives from `_now_dt()` so the app has **one clock**. Two independent
+`utcnow()` calls can straddle a second boundary, and they made the clock
+impossible to hold still — which is why the appointment window's "today"
+behaviour was only ever tested by accident, passing or failing on what time of
+day the suite ran. `conftest.frozen_morning` holds it.
+
 **Loss reasons are one vocabulary, in `portal/lost_reasons.py`.** The estimator
 owned a controlled list and the CRM took free text from a browser `prompt()`, so
 the two could never be added together — and the CRM holds the bigger half of

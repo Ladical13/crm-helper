@@ -18,6 +18,8 @@ import sys
 import json
 import uuid
 import sqlite3
+import threading
+import time
 from datetime import datetime, timedelta, date
 from functools import wraps
 from urllib.parse import quote
@@ -31,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from portal import dbtune                # noqa: E402
 from portal import funnel as pfunnel     # noqa: E402
 from portal import lost_reasons as plost  # noqa: E402
+from portal import mail as pmail          # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
 
@@ -301,6 +304,13 @@ _PROSPECT_COLS = [
     # "started past there" -- it would under-report conversion on exactly the
     # leads the door-knocking exists to produce.
     ('entry_stage',        "TEXT DEFAULT ''"),
+    # Which appointment time the customer has been told about, and reminded of.
+    # They store the `appt_at` VALUE rather than a flag or a timestamp, so a
+    # reschedule invalidates itself: the moment appt_at differs from these, the
+    # customer is holding the wrong time and is owed a fresh message. A boolean
+    # would have quietly confirmed the first time forever.
+    ('appt_confirmed_for', "TEXT DEFAULT ''"),
+    ('appt_reminded_for',  "TEXT DEFAULT ''"),
 ]
 
 def migrate_db():
@@ -450,14 +460,19 @@ PLAN_BY_ID    = {p['id']: p for p in PLANS}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _now():
-    return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-
 def _now_dt():
     return datetime.utcnow()
 
 def _iso(dt):
     return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+# Derived from _now_dt() rather than reading the clock again, so the app has
+# ONE clock. Two independent utcnow() calls can straddle a second boundary --
+# and they made the clock impossible to hold still under test, which is why
+# the appointment window's "today" behaviour was only ever tested by accident,
+# passing or failing on what time of day the suite happened to run.
+def _now():
+    return _iso(_now_dt())
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -572,6 +587,13 @@ def _lead_row(row):
     # empty field: nobody can be anywhere at "sometime". Surfaced so the board
     # and My Day can nag rather than letting it sit there looking complete.
     d['appt_missing'] = d['stage'] == 'appt_set' and not d.get('appt_at')
+    # Whether the CUSTOMER knows. Surfaced rather than assumed: mail can be
+    # unconfigured and a lead can have no email address, and either way an
+    # appointment nobody confirmed is a no-show waiting to happen. Silence here
+    # is the failure mode, so the drawer says which of the three it is.
+    if d.get('appt_at'):
+        d['appt_confirmed'] = d.get('appt_confirmed_for') == d['appt_at']
+        d['appt_reachable'] = bool((d.get('email') or '').strip()) and not d.get('dnc')
     return d
 
 def _is_stalled(d):
@@ -843,6 +865,8 @@ def update_lead(lead_id):
         if row['appt_at'] != old_appt:
             _log_appointment(db, lead_id, old_appt, row['appt_at'])
             _refresh_next_action(db, lead_id)
+            if row['appt_at']:
+                _send_appt_mail(db, lead_id, 'confirm')
         if row['rep'] != old_rep:
             _move_open_tasks(db, lead_id, row['rep'])
             _log_activity(db, lead_id, 'system',
@@ -887,6 +911,8 @@ def set_stage(lead_id):
                    (new_stage, won_at, lost_reason, appt_at, _now(), lead_id))
         _log_stage_change(db, lead_id, old, new_stage)
         _log_appointment(db, lead_id, row['appt_at'], appt_at)
+        if appt_at and appt_at != row['appt_at']:
+            _send_appt_mail(db, lead_id, 'confirm')
         # Terminal stages close out any pending follow-up tasks + cadences.
         if new_stage in ('won', 'lost'):
             db.execute("UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0",
@@ -1383,6 +1409,148 @@ def _reconcile_funnel():
     for lead_id, ev in signed:
         _push_to_den(lead_id, estimate=ev)
     return events
+
+
+# ── The customer channel ─────────────────────────────────────────────────────
+#
+# The CRM owned a homeowner from the door knock to the signature and sent them
+# NOTHING in that whole window. Not a decision -- the only mailer in the repo
+# lived inside estimator/app.py, so the estimator could email a customer and
+# this app could not. It now shares portal/mail.py.
+#
+# The boundary is deliberate and narrow. The estimator already covers
+# estimate -> signature (it sends the estimate, notifies on first view, chases
+# unsigned ones, mails the signed copy). The Den owns everything after the
+# signature. What nobody covered is the middle: an appointment gets booked and
+# the customer hears nothing until somebody knocks on their door. In home
+# services that is the single largest cause of a no-show, and a no-show is a
+# wasted drive plus a dead lead.
+#
+# These SEND rather than draft, and that does not weaken the draft-only rule in
+# the Outreach queue. That rule is about cold outreach at volume, where 1:1 mail
+# from a rep's own Gmail is what avoids needing a sending domain, SPF/DKIM and
+# warmup. A confirmation for an appointment the customer just booked is
+# transactional: expected, one recipient, no volume. The estimator has always
+# sent this class of mail through the same infrastructure.
+
+APPT_REMIND_HOURS = int(os.environ.get('SALESCRM_APPT_REMIND_HOURS', '24'))
+
+
+def _appt_email(lead, rep, kind):
+    """(subject, html) for a customer's appointment mail, or None if unsendable.
+
+    Plain, short and useful: when, who, where, and how to move it. A homeowner
+    reading this on a phone wants four facts, not a brochure.
+    """
+    to = (lead.get('email') or '').strip()
+    if not to or not lead.get('appt_at'):
+        return None
+    when = _appt_label(lead['appt_at'])
+    who = pusers.display_name(rep)
+    reply = pusers.email_of(rep)
+    first = (lead.get('first_name') or '').strip()
+    greeting = f'Hi {first},' if first else 'Hi,'
+    where = ', '.join(x for x in (lead.get('address'), lead.get('city')) if x)
+    head = ('Your roof inspection is confirmed' if kind == 'confirm'
+            else 'Reminder: your roof inspection')
+    lead_in = ("Thanks for setting this up — here are the details."
+               if kind == 'confirm' else "Just so it is on your radar:")
+    html = f"""<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+        font-size:15px;line-height:1.55;color:#1f2937;max-width:520px">
+      <p>{_esc_html(greeting)}</p>
+      <p>{_esc_html(lead_in)}</p>
+      <table style="border-collapse:collapse;margin:16px 0">
+        <tr><td style="padding:4px 14px 4px 0;color:#6b7280">When</td>
+            <td style="padding:4px 0"><b>{_esc_html(when)}</b></td></tr>
+        <tr><td style="padding:4px 14px 4px 0;color:#6b7280">Who</td>
+            <td style="padding:4px 0">{_esc_html(who)}, Project One Roofing</td></tr>
+        {f'<tr><td style="padding:4px 14px 4px 0;color:#6b7280">Where</td><td style="padding:4px 0">{_esc_html(where)}</td></tr>' if where else ''}
+      </table>
+      <p>It takes about 45 minutes. You do not need to be home for the roof
+         itself, but it helps if we can talk through what we find afterwards.</p>
+      <p>If that time no longer works, just reply to this email and we will
+         move it — no problem at all.</p>
+      <p style="margin-top:22px">{_esc_html(who)}<br>
+         Project One Roofing<br>
+         <a href="https://projectoneroofingcolorado.com">projectoneroofingcolorado.com</a></p>
+    </div>"""
+    return (f'{head} — {when}', html, to, reply)
+
+
+def _esc_html(text):
+    return (str(text or '').replace('&', '&amp;').replace('<', '&lt;')
+            .replace('>', '&gt;').replace('"', '&quot;'))
+
+
+def _send_appt_mail(db, lead_id, kind):
+    """Send a confirmation or reminder, once per appointment TIME. Never raises.
+
+    The claim is a conditional UPDATE rather than a read-then-write: two
+    gunicorn workers run this loop and both would otherwise pass the same check
+    and mail the customer twice. Whoever's UPDATE changes a row owns the send.
+    """
+    col = 'appt_confirmed_for' if kind == 'confirm' else 'appt_reminded_for'
+    row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
+    if not row:
+        return False
+    lead = dict(row)
+    appt = lead.get('appt_at') or ''
+    if not appt or appt <= _now() or lead.get('dnc'):
+        return False
+    if lead.get(col) == appt or not pmail.configured():
+        return False
+    built = _appt_email(lead, lead['rep'], kind)
+    if not built:
+        return False
+
+    claimed = db.execute(f'UPDATE leads SET {col}=? WHERE id=? AND {col} IS NOT ?',
+                         (appt, lead_id, appt)).rowcount
+    if not claimed:
+        return False
+
+    subject, html, to, reply = built
+    try:
+        sent = pmail.send(subject, html, to, bcc=reply)
+    except Exception as exc:          # pmail.send does not raise; belt and braces
+        print(f'[appt] send failed for {lead_id}: {exc}')
+        sent = False
+    if not sent:
+        # Release the claim so the next pass retries. A customer who never got
+        # the confirmation must not be recorded as having had one.
+        db.execute(f'UPDATE leads SET {col}=? WHERE id=?', ('', lead_id))
+        return False
+    word = 'Confirmation' if kind == 'confirm' else 'Reminder'
+    _log_activity(db, lead_id, 'email', rep=lead['rep'],
+                  body=f'✉️ {word} emailed to {to} — {_appt_label(appt)}')
+    return True
+
+
+def _check_appt_reminders():
+    """Day-before reminders. Runs on the hourly loop; safe to call often."""
+    if not pmail.configured():
+        return 0
+    until = _iso(_now_dt() + timedelta(hours=APPT_REMIND_HOURS))
+    sent = 0
+    with get_db() as db:
+        due = db.execute(
+            "SELECT id FROM leads WHERE appt_at != '' AND appt_at > ? AND appt_at <= ? "
+            "AND email != '' AND dnc = 0 AND appt_reminded_for != appt_at "
+            "AND stage NOT IN (%s)" % ','.join('?' * len(TERMINAL_STAGES)),
+            [_now(), until] + list(TERMINAL_STAGES)).fetchall()
+        for r in due:
+            if _send_appt_mail(db, r['id'], 'remind'):
+                sent += 1
+    return sent
+
+
+def _appt_loop():
+    time.sleep(45)                    # let the app finish booting
+    while True:
+        try:
+            _check_appt_reminders()
+        except Exception as exc:
+            print(f'[appt] reminder check failed: {exc}')
+        time.sleep(1800)
 
 
 # ── The Den (Base44) handoff ──────────────────────────────────────────────────
@@ -2675,7 +2843,15 @@ def config():
 @app.route('/health')
 def health():
     return jsonify({'status': 'ok', 'db': DB_PATH, 'den': bool(BASE44_TOKEN),
-                    'plans': len(PLANS)})
+                    'mail': pmail.configured(), 'plans': len(PLANS)})
+
+
+# Its OWN loop and its own interval, not a branch inside the estimator's --
+# same rule as the two nightly backups: if one job fails the other still runs.
+# Reminders are idempotent per appointment time, so a missed pass costs nothing
+# but lateness and a double-started thread cannot double-send.
+if os.environ.get('SALESCRM_DISABLE_JOBS') != '1':
+    threading.Thread(target=_appt_loop, daemon=True).start()
 
 if __name__ == '__main__':
     app.run(debug=True, port=5002)

@@ -9,6 +9,9 @@ os.environ.setdefault('SALESCRM_DATA_DIR', _TMP)
 # Accounts live in the portal's shared store now, not salescrm.db.
 os.environ.setdefault('PORTAL_DATA_DIR', _TMP)
 os.environ.pop('BASE44_TOKEN', None)   # ensure Den calls degrade gracefully
+# No background threads under test: the appointment reminder loop would race
+# the per-test wipe and mail whatever a test happened to leave behind.
+os.environ['SALESCRM_DISABLE_JOBS'] = '1'
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as appmod  # noqa: E402
@@ -81,3 +84,18 @@ def new_lead(client, **kw):
             'source': 'referral', 'est_value': 10000, 'temperature': 'warm'}
     body.update(kw)
     return client.post('/api/leads', json=body).get_json()
+
+
+@pytest.fixture
+def frozen_morning(monkeypatch):
+    """Hold the clock at 09:00 UTC so "today" means today.
+
+    Anything asserting on the appointment window needs this: "two hours from
+    now" is tomorrow if the suite runs after 22:00, so those tests passed or
+    failed on the wall clock rather than on the behaviour. The app reads one
+    clock (`_now_dt`), which is what makes freezing it enough.
+    """
+    from datetime import datetime as _dt
+    fixed = _dt.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(appmod, '_now_dt', lambda: fixed)
+    return fixed

@@ -799,9 +799,20 @@ function renderDrawer(l){
 function renderAppointment(l){
   const box=$('#d-appt');
   if(l.stage!=='appt_set' && !l.appt_at){ box.innerHTML=''; return; }
+  // Whether the CUSTOMER knows is the point of an appointment, and silence is
+  // the failure mode — so the three cases are named rather than left blank.
+  let told='';
+  if(l.appt_at){
+    told = l.appt_confirmed
+      ? '<div class="appt-ok">✓ Customer emailed the details</div>'
+      : (l.appt_reachable
+          ? '<div class="appt-warn inline">Not emailed yet — sending is off or the last attempt failed.</div>'
+          : '<div class="appt-warn inline">No email on file, so they have not been told. Add one and they get a confirmation.</div>');
+  }
   box.innerHTML=`<label class="appt-edit-label">📅 Appointment</label>
     <input type="datetime-local" id="d-appt-at" value="${esc(toLocalInput(l.appt_at))}">
-    ${l.appt_missing?'<div class="appt-warn inline">No time set — this is the one thing an appointment needs.</div>':''}`;
+    ${l.appt_missing?'<div class="appt-warn inline">No time set — this is the one thing an appointment needs.</div>':''}
+    ${told}`;
   $('#d-appt-at').onchange=async e=>{
     try{
       await api('/leads/'+l.id,{method:'PUT',body:{appt_at:fromLocalInput(e.target.value)}});

@@ -49,7 +49,7 @@ def test_an_inspected_lead_is_not_permanently_overdue(client):
     assert got['next_action_at'] != got['appt_at']
 
 
-def test_a_booking_with_no_time_is_flagged_not_rejected(client):
+def test_a_booking_with_no_time_is_flagged_not_rejected(client, frozen_morning):
     """The canvasser creates leads straight into appt_set from a doorstep, so
     rejecting an untimed booking would break the handoff the tool exists for.
     It is surfaced instead."""
@@ -69,7 +69,7 @@ def test_a_timed_booking_is_not_flagged(client):
 
 # ── The day's schedule ───────────────────────────────────────────────────────
 
-def test_appointments_come_back_in_time_order(client):
+def test_appointments_come_back_in_time_order(client, frozen_morning):
     signup(client)
     late, early = new_lead(client), new_lead(client)
     _book(client, late['id'], _at(6))
@@ -78,7 +78,7 @@ def test_appointments_come_back_in_time_order(client):
     assert [a['id'] for a in got] == [early['id'], late['id']]
 
 
-def test_todays_schedule_excludes_tomorrow(client):
+def test_todays_schedule_excludes_tomorrow(client, frozen_morning):
     signup(client)
     today, tomorrow = new_lead(client), new_lead(client)
     _book(client, today['id'], _at(2))
@@ -106,7 +106,7 @@ def test_a_rep_only_sees_their_own_schedule(client):
     assert client.get('/api/appointments?rep=luke').get_json()['appointments'] == []
 
 
-def test_the_schedule_reaches_past_the_lead_list_cap(client):
+def test_the_schedule_reaches_past_the_lead_list_cap(client, frozen_morning):
     """The reason this is its own endpoint. /api/leads is capped, and once
     prospecting has imported partners by the thousand the cap is most of the
     table -- the appointment outside that page is the one a rep misses."""
@@ -158,7 +158,7 @@ def test_clearing_an_appointment_is_recorded(client):
     assert any('Appointment cleared' in b for b in bodies)
 
 
-def test_a_managers_own_schedule_is_their_own(client):
+def test_a_managers_own_schedule_is_their_own(client, frozen_morning):
     """Passing no rep used to mean "every rep", so a manager's My Day showed
     twenty other people's appointments as their morning."""
     signup(client, 'luke')                       # manager
