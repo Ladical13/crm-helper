@@ -920,14 +920,13 @@ $('menu-btn').addEventListener('click', () => {
   show('side-menu');
 });
 
-$('logout-btn').addEventListener('click', async () => {
+// The portal owns sign-out (`/logout` in portal/app.py) — this app has had no
+// /api/logout since the three tools merged onto one cookie, and no login screen
+// to fall back to. Stop the GPS timers first so the last thing this tab does on
+// the way out is not a location push.
+$('logout-btn').addEventListener('click', () => {
   stopTeamTracking();
-  await api('/api/logout', 'POST', {});
-  currentUser = null;
-  allPins = [];
-  pinLayer.clearLayers();
-  markers = {};
-  showLogin();
+  window.location = '/logout';
 });
 
 // Close overlays
@@ -1038,7 +1037,7 @@ function timeAgo(isoStr) {
 // ── Start ──────────────────────────────────────────────────────────────────
 
 window.openEditPin    = openEditPin;
-window.syncToCRM      = syncToCRM;
+window.addToPipeline  = addToPipeline;
 window.jumpToPin      = jumpToPin;
 window.copyInviteLink = copyInviteLink;
 window.revokeInvite   = revokeInvite;

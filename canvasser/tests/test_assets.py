@@ -232,3 +232,49 @@ def test_text_size_adjust_is_pinned():
     assert '-webkit-text-size-adjust: 100%' in css
     assert re.search(r'[^-]text-size-adjust: 100%', css), \
         'the unprefixed text-size-adjust (Android/Chrome) is gone'
+
+
+# ── The bundle actually runs ────────────────────────────────────────────────
+
+def _inline_handler_names():
+    """Every function name an inline onclick=/onchange= expects to be global.
+
+    Read out of the source rather than listed here, so a new handler is covered
+    the day it is written instead of the day someone remembers this test.
+    """
+    names = set()
+    for src in (INDEX, _read(STATIC, 'app.js')):
+        names.update(re.findall(r'on(?:click|change|input|submit)="(\w+)\(', src))
+    return sorted(names)
+
+
+def test_the_bundle_boots_and_every_inline_handler_resolves():
+    """node --check parses; it does not execute, and this app shipped broken
+    behind exactly that gap.
+
+    `window.syncToCRM = syncToCRM` outlived the function by three weeks. It sits
+    at the bottom of the bundle, one line above `boot()`, so the ReferenceError
+    it threw stopped boot() from ever running — and boot() is the only caller of
+    showApp(), which is the only thing that removes `hidden` from #app. Every
+    rep opened the canvasser to a blank screen, and all 19 tests here passed the
+    whole time.
+
+    So: load app.js the way a browser does and assert two things it could not
+    have survived — that nothing throws on the way through, and that every name
+    an inline handler calls is really there.
+    """
+    runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'boot_runner.js')
+    handlers = _inline_handler_names()
+    assert handlers, 'no inline handlers found — did the markup change shape?'
+    proc = subprocess.run(['node', runner] + handlers,
+                          capture_output=True, text=True, timeout=60)
+    if 'not found' in (proc.stderr or '') and proc.returncode not in (0, 1):
+        pytest.skip('node not installed')
+    assert proc.stdout.strip(), f'runner produced no output: {proc.stderr}'
+    import json
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert not result.get('threw'), f"app.js threw while loading: {result['threw']}"
+    assert not result['missing'], (
+        'inline handlers call these, but they are not defined at global scope: '
+        + ', '.join(result['missing'])
+    )
