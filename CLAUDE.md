@@ -9,7 +9,7 @@ Four apps in one repo, served as **one site behind one login**: the portal
 ```bash
 pip install -r requirements-dev.txt   # one-time, covers everything
 python -m portal.wsgi                 # run it all locally on :5010
-python run_tests.py                   # all six suites, the way CI runs them
+python run_tests.py                   # all seven suites, the way CI runs them
 ```
 
 Then open <http://localhost:5010> — canvasser at `/canvass`, CRM at `/crm`,
@@ -21,7 +21,7 @@ estimator at `/estimate`.
 git add -A && git commit -m "what changed" && git push
 ```
 
-Every push runs the six suites on GitHub (**Actions** tab). Green means the
+Every push runs the seven suites on GitHub (**Actions** tab). Green means the
 pricing math, the cache-busters and the per-rep visibility rules all still hold.
 
 **Before committing, run `python run_tests.py`.** It is the same six commands
@@ -35,6 +35,7 @@ cd portal     && pytest     # one login, migration, shell, hardening, these docs
 python -m pytest prospector/tests   # offline, no network
 cd agents     && pytest     # spend cap, cache, b2b/content sources
 cd canvasser  && pytest     # vendored Leaflet, cache-buster, sw wiring
+cd hail       && pytest     # grid quantization, units, re-ingest, the join
 ```
 
 **This file is tested** (`portal/tests/test_docs.py`). Every `` `foo()` `` it
@@ -308,8 +309,8 @@ Note `_seed_data_dir()` copies `price_book.json`, `tier_defaults.json`,
 long-lived volume the deployed repo copies are inert — editing
 `estimator/price_book.json` and deploying does not change live pricing.
 
-**CI:** `.github/workflows/tests.yml` runs all six suites on every push and PR.
-They run as six separate pytest invocations — one run collecting two apps
+**CI:** `.github/workflows/tests.yml` runs all seven suites on every push and PR.
+They run as seven separate pytest invocations — one run collecting two apps
 collides on the bare module name `conftest`. It installs **node**, because the
 estimator's parity and fastening tests `skipif` it is missing and would
 otherwise go green without checking pricing at all; a final step fails the run
@@ -372,6 +373,75 @@ python -m portal.wsgi                 # dev: run the portal, canvasser is at /ca
   with the translucent status bar, the header sits under the notch.
   `user-scalable=no` stays — this is a full-screen map and page zoom on a stray
   pinch fights Leaflet's own gestures.
+
+## Hail (`hail/`) — the storm archive every tool reads
+
+Hail is **not a canvasser feature**. It is the company's primary data product,
+so it lives in its own package with its own database (`HAIL_DATA_DIR/hail.db`,
+falling back to `PORTAL_DATA_DIR` — never to `DATA_DIR`, which is the
+estimator's volume). The canvasser renders it, Nimbus joins against it,
+storm-scout reports it, the CRM segments on it.
+
+```bash
+cd hail && pytest          # grid quantization, units, re-ingest, the join
+```
+
+**Why this exists at all: the canvasser's hail engine reads the wrong data
+product.** NOAA SPC filtered storm reports (`canvasser/app.py`) are
+*human-called-in points* — a spotter phoned it in — so they are sparse and
+biased toward where people are. A subdivision can be shelled at 2am and produce
+zero reports. MRMS **MESH** (Maximum Estimated Size of Hail) is radar-derived
+over a continuous ~1km grid, every cell, whether or not anyone was standing
+there. SPC answers "did anybody report hail near here"; MESH answers "what size
+hail did radar estimate over this roof, on this date". Only the second one
+closes a homeowner. `docs/storm-to-contract.html` is the full build plan.
+
+- **There are no polygons, deliberately.** The question the business asks is a
+  *cell lookup*, not point-in-polygon. Contouring would need shapely and numpy,
+  add interpolation error between the data and what a customer is told, and buy
+  nothing. `cell_rects()` serves rendering at the data's real resolution. The
+  package therefore has **no third-party dependencies** — worth keeping on a
+  two-worker box.
+- **Three units live in this system.** MRMS MESH is **millimetres**, the SPC
+  CSV is **hundredths of an inch**, everything a human sees is **inches**.
+  Conversion happens once on the way in and `MM_PER_INCH` is the only spelling.
+  Getting it backwards is a 25.4x error: every storm either always or never
+  clears the 1" threshold.
+- **Quantization floors, and rounds before flooring.** `int()` truncates toward
+  zero, which puts every western-hemisphere cell one index off — Colorado is
+  entirely west of the meridian. And `151.2 / 0.01` is `15119.999999999998`, so
+  a point exactly on a cell edge floors into the wrong cell and then reports
+  bounds that do not contain it. Both are pinned in `hail/tests/test_grid.py`.
+- **Cells are anchored to the GLOBAL 0.01° lattice**, not to a clip box, so a
+  cell id means the same ground forever. Anchor to a bounding box and every
+  stored id becomes meaningless the first time someone widens the service area.
+- **Re-ingesting a date replaces its cells, never merges them.** A day's MESH
+  is finalized hours later and the real-time product is a rolling maximum, so
+  the same date is pulled repeatedly. Merging would let a partial early read
+  leave phantom cells behind — hail on a street that never got any, and a rep
+  knocking it for nothing.
+- **A day with no qualifying hail is still recorded.** Otherwise "no hail" and
+  "the ingest never ran" are the same absence, and a backfill can never tell
+  which days it still owes.
+- **`join.affected()` counts records it could not place** and callers must
+  report that number. Silently dropping un-geocoded customers makes a storm
+  brief say "40 affected" when the truth is 400 — which reads as a small storm,
+  and nobody investigates a small storm.
+- **Tier order is a business rule, not a sort key.** A Roof Care Plan
+  subscriber is a contractual obligation and outranks bigger hail on a cold
+  address. It lives in `join.TIERS` so the map, the drafts and the canvassing
+  zones cannot disagree.
+
+**Not built yet: the ingest itself.** `grid`, `storms` and `join` are complete
+and tested; fetching MRMS GRIB2 and decoding it is not written, because the dev
+sandbox cannot reach `mrms.ncep.noaa.gov` or the Iowa State archive and
+untested network code is worse than none. The decoder choice is also open —
+eccodes/cfgrib needs system libraries on Railway. Whatever reads GRIB2 only has
+to yield `(lat, lng, size)` triples into `swath_from_points()`.
+
+⚠️ **`MM_PER_INCH` is from the product documentation, not from a message we
+have decoded.** Confirm it against a real GRIB2 file before any number reaches
+a customer.
 
 ## Sales CRM — "The Pipeline" (`salescrm/`)
 
