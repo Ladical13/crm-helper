@@ -27,9 +27,9 @@
        thing between a canvasser and a working map. Local also means the
        service worker can precache it. Upgrading is a deliberate re-download:
        see the vendor pinning note in CLAUDE.md. -->
-  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=4">
-  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=4">
-  <link rel="stylesheet" href="/canvass/static/style.css?v=4">
+  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=5">
+  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=5">
+  <link rel="stylesheet" href="/canvass/static/style.css?v=5">
   <!-- The portal's manifest: one "Project One" icon for all three tools. -->
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -57,6 +57,7 @@
 
   <!-- Map -->
   <div id="map"></div>
+  <div id="map-notice" class="map-notice hidden"></div>
 
   <!-- Bottom bar -->
   <div id="bottom-bar">
@@ -289,10 +290,10 @@
 
 </div>
 
-<script src="/canvass/static/vendor/leaflet.js?v=4"></script>
-<script src="/canvass/static/vendor/leaflet.markercluster.js?v=4"></script>
+<script src="/canvass/static/vendor/leaflet.js?v=5"></script>
+<script src="/canvass/static/vendor/leaflet.markercluster.js?v=5"></script>
 <script src="/shell.js"></script>
-<script src="/canvass/static/app.js?v=4"></script>
+<script src="/canvass/static/app.js?v=5"></script>
 <script>
   // Registered from the page rather than app.js so a JS error in the app still
   // leaves the offline shell installed.

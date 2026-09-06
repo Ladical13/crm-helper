@@ -15,6 +15,7 @@ let pendingLatLng = null;   // where the next pin will land
 let selectedPinType = 'not_home';
 let editingPinId = null;
 let activeFilters = new Set();  // empty = show all
+const TEAM_PREF_KEY = 'p1canvass.teamLocations';
 let allPins = [];
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────
@@ -44,6 +45,7 @@ function showApp() {
   buildRepFilters();
   initMap();
   loadPins();
+  loadTeamPref();
   startTeamTracking();
   if (currentUser.is_admin) show('team-admin-btn');
 }
@@ -133,9 +135,28 @@ function locateMe() {
 
 async function loadPins() {
   try {
-    allPins = await api('/api/pins?limit=2000');
+    // The endpoint returns {pins, truncated, window_days} rather than a bare
+    // array, because a map that has quietly dropped pins looks exactly like a
+    // street nobody has knocked.
+    const res = await api('/api/pins');
+    allPins = res.pins || [];
     renderPins();
+    updateRepFilters();
+    if (res.truncated) {
+      showMapNotice(`Showing the most recent ${allPins.length} pins of the last `
+        + `${res.window_days} days — some are not on the map.`);
+    }
   } catch(e) { console.error('Failed to load pins', e); }
+}
+
+// A one-line banner over the map. Deliberately not an alert(): a rep in a
+// driveway should not have to dismiss a dialog to see the street.
+function showMapNotice(text) {
+  const el = $('map-notice');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove('hidden');
+  setTimeout(() => el.classList.add('hidden'), 8000);
 }
 
 function renderPins() {
@@ -193,20 +214,30 @@ function makeClusterIcon(cluster) {
 
 // ── Live team tracking ─────────────────────────────────────────────────────
 
+async function pushLocationNow() {
+  if (!teamEnabled) return;
+  try {
+    const pos = await getGPS();
+    await api('/api/location', 'POST', {
+      lat: pos.coords.latitude, lng: pos.coords.longitude,
+      accuracy: pos.coords.accuracy || 0, heading: pos.coords.heading ?? -1,
+    });
+  } catch(e) { /* no GPS permission or offline — skip this ping */ }
+}
+
 function startTeamTracking() {
   stopTeamTracking();
-  // Push my location every 30s (silently — only if permission already granted)
-  const pushLocation = async () => {
-    try {
-      const pos = await getGPS();
-      await api('/api/location', 'POST', {
-        lat: pos.coords.latitude, lng: pos.coords.longitude,
-        accuracy: pos.coords.accuracy || 0, heading: pos.coords.heading ?? -1,
-      });
-    } catch(e) { /* no GPS permission or offline — skip this ping */ }
-  };
-  pushLocation();
-  locationTimer = setInterval(pushLocation, 30000);
+  // Push my location every 30s (silently — only if permission already granted).
+  //
+  // The teamEnabled check here is the whole point of the toggle. It used to
+  // gate only the PULL below, so a rep who switched "Team Locations" off
+  // stopped seeing their teammates and kept broadcasting their own position to
+  // everyone else — including from their kitchen table at 9pm, because the
+  // timer runs as long as the tab is open. A switch that says Off and does not
+  // stop is worse than no switch: the rep believes something about their own
+  // phone that is not true.
+  pushLocationNow();
+  locationTimer = setInterval(pushLocationNow, 30000);
 
   // Pull teammates every 30s
   const pullTeam = async () => {
@@ -249,11 +280,31 @@ function renderTeamMarkers(team) {
   });
 }
 
-$('team-toggle-btn').addEventListener('click', () => {
+$('team-toggle-btn').addEventListener('click', async () => {
   teamEnabled = !teamEnabled;
   $('team-toggle-state').textContent = teamEnabled ? 'On' : 'Off';
-  if (!teamEnabled) clearTeamMarkers();
+  try { localStorage.setItem(TEAM_PREF_KEY, teamEnabled ? '1' : '0'); } catch(e) {}
+  if (!teamEnabled) {
+    clearTeamMarkers();
+    // Drop the position already on the server rather than letting it sit on
+    // everyone else's map for the 15 minutes it stays "live". Off should mean
+    // off now, not off soon.
+    try { await api('/api/location', 'DELETE', null); } catch(e) {}
+  } else {
+    pushLocationNow();
+  }
 });
+
+// Read the saved preference before the first push, so a rep who turned
+// tracking off does not get one more broadcast on every app launch.
+function loadTeamPref() {
+  try {
+    const saved = localStorage.getItem(TEAM_PREF_KEY);
+    if (saved !== null) teamEnabled = saved === '1';
+  } catch(e) { /* private mode or blocked storage — default stays On */ }
+  const state = $('team-toggle-state');
+  if (state) state.textContent = teamEnabled ? 'On' : 'Off';
+}
 
 // ── Drop pin modal ─────────────────────────────────────────────────────────
 
@@ -552,31 +603,38 @@ $('show-leaderboard-btn').addEventListener('click', async () => {
   $('leaderboard-body').innerHTML = '<div class="loading-msg">Loading...</div>';
   show('leaderboard-panel');
   try {
-    const rows = await api('/api/leaderboard');
-    renderLeaderboard(rows);
+    const res = await api('/api/leaderboard');
+    renderLeaderboard(res.reps || [], res.days);
   } catch(e) {
     $('leaderboard-body').innerHTML = '<div class="loading-msg">Failed to load.</div>';
   }
 });
 
-function renderLeaderboard(rows) {
+// The headline number is APPOINTMENTS, not doors. Doors moved to the small
+// print as the volume the rates are built from — a rep can tap "Not Home"
+// fifteen times walking down a sidewalk, and whatever sits in the big bold
+// position is what they will optimise for.
+function renderLeaderboard(rows, days) {
+  const body = $('leaderboard-body');
   if (!rows.length) {
-    $('leaderboard-body').innerHTML = '<div class="loading-msg">No data yet — start knocking!</div>';
+    body.innerHTML = `<div class="loading-msg">No doors knocked in the last `
+      + `${days || 7} days.</div>`;
     return;
   }
   const rankClass = (i) => i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
-  $('leaderboard-body').innerHTML = rows.map((r, i) => `
+  const pct = (v) => `${Math.round((v || 0) * 100)}%`;
+  body.innerHTML = `<div class="lb-window">Last ${days || 7} days</div>` + rows.map((r, i) => `
     <div class="lb-row">
       <div class="lb-rank ${rankClass(i)}">${i < 3 ? ['🥇','🥈','🥉'][i] : i+1}</div>
       <div class="lb-rep">
         <div class="lb-rep-name">${displayName(r.rep)}</div>
         <div class="lb-stats">
-          ${r.appointments} appts · ${r.inspections} inspections · ${r.closed} closed
+          ${r.total_doors} doors · ${r.contacts} contacts · ${pct(r.set_rate)} set rate
         </div>
       </div>
       <div>
-        <div class="lb-doors">${r.total_doors}</div>
-        <div class="lb-doors-label">doors</div>
+        <div class="lb-doors">${r.appointments}</div>
+        <div class="lb-doors-label">appts</div>
       </div>
     </div>
   `).join('');
@@ -589,8 +647,8 @@ $('show-my-pins-btn').addEventListener('click', async () => {
   $('my-pins-body').innerHTML = '<div class="loading-msg">Loading...</div>';
   show('my-pins-panel');
   try {
-    const pins = await api(`/api/pins?rep=${currentUser.username}&limit=200`);
-    renderMyPins(pins);
+    const res = await api(`/api/pins?rep=${currentUser.username}&limit=200`);
+    renderMyPins(res.pins || []);
   } catch(e) {
     $('my-pins-body').innerHTML = '<div class="loading-msg">Failed to load.</div>';
   }
