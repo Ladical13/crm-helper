@@ -374,6 +374,55 @@ python -m portal.wsgi                 # dev: run the portal, canvasser is at /ca
   `user-scalable=no` stays — this is a full-screen map and page zoom on a stray
   pinch fights Leaflet's own gestures.
 
+### Known gaps, from the 2026-09-06 review
+
+Found by reading the whole app, deliberately NOT fixed in the same pass, and
+listed here because otherwise they live only in a chat log. Roughly in the
+order they cost the business something.
+
+- **A failed pin save is lost.** The service worker gives an offline app
+  *shell* and `/api/*` is network-first, but a pin POST that fails just
+  `alert()`s. This tool exists for driveways on one bar of signal and then
+  throws away the one write that matters. Needs an IndexedDB outbox and
+  Background Sync.
+- **No voice notes.** Typing at a door in February with gloves on does not
+  happen, which makes this the highest-adoption feature available.
+- **No photos on a pin**, so a rep at an `inspected` door has nowhere to put
+  the hail strike on the downspout — the photo that is the whole adjuster
+  conversation later. Per the customer-identity note below, those belong on
+  the CUSTOMER rather than on an estimate: the photo exists before an estimate
+  does and must survive one being marked lost.
+- **An `appointment` pin carries no date or time**, so it maps to `appt_set`
+  and nothing can remind anyone. Door-set no-shows are the standard killer.
+- **"Add to Pipeline" is a second button a rep has to remember**, and it needs
+  a contact name. An appointment with neither gets no lead, no cadence, no
+  task and no leaderboard credit.
+- **Nominatim is used against its usage policy.** Every pin drop reverse
+  geocodes and every hail search forward geocodes, with no cache and no rate
+  limit, from one Railway IP; OSM's policy is 1 req/sec and forbids bulk use.
+  When it is cut off, address autofill dies **silently** (`.catch(() => {})`)
+  and hail-by-address 502s. `portal/geo.py` now exists to cache these.
+- **`no_soliciting` is only a pin colour.** Fort Collins, Loveland and Greeley
+  all run solicitation permits and no-knock lists; nothing warns the next rep
+  walking up to one.
+- **Nothing comes back from the CRM.** A pin gets `crm_lead_id` and then goes
+  stale forever, so a door that became a signed roof still reads "Interested".
+  That loop is the motivational payload of the whole tool.
+- **No territory assignment and no re-knock protection**, so two reps can work
+  the same street on the same day.
+- **Every rep sees every rep's pins, including contact name, phone and email**
+  — the opposite of the CRM's "reps see only their own leads". Worth being a
+  decision rather than an accident of two codebases.
+- **Map attribution is switched off** (`attributionControl: false`) while using
+  Esri World Imagery and CARTO basemaps, both of which require it.
+- **`hail_cache` grows forever** and nothing purges it.
+
+Customer-facing, where the honest summary is that there is **nothing**: no
+leave-behind for the 60–70% of doors that are Not Home, no way to text a
+homeowner the storm report the tool already computes, no self-scheduling, and
+no legitimacy artifact (rep photo, licence number, review link) for the
+homeowner whose first question is whether this person is real.
+
 ## Hail (`hail/`) — the storm archive every tool reads
 
 Hail is **not a canvasser feature**. It is the company's primary data product,
