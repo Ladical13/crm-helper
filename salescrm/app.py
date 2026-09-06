@@ -295,6 +295,12 @@ _PROSPECT_COLS = [
     # the tool exists for. A missing time is surfaced instead (see
     # `appt_missing`), which is what gets it filled in.
     ('appt_at',            "TEXT DEFAULT ''"),
+    # The rung a lead entered on. Most start at `new`, but the canvasser hands
+    # over doorstep leads straight into `contacted`/`appt_set`/`inspected`, and
+    # without this a cohort funnel cannot tell "never got that far" from
+    # "started past there" -- it would under-report conversion on exactly the
+    # leads the door-knocking exists to produce.
+    ('entry_stage',        "TEXT DEFAULT ''"),
 ]
 
 def migrate_db():
@@ -359,6 +365,7 @@ def migrate_db():
         ''')
         _backfill_norms(db)
         _backfill_stage_keys(db)
+        _backfill_entry_stage(db)
 
 # Reverse of STAGE_META, for reading a stage back out of a pre-existing log line.
 _LABEL_TO_STAGE = {m['label']: k for k, m in STAGE_META.items()}
@@ -384,6 +391,26 @@ def _backfill_stage_keys(db):
         stage = _LABEL_TO_STAGE.get(label)
         if stage:
             db.execute('UPDATE activities SET outcome=? WHERE id=?', (stage, r['id']))
+
+
+def _backfill_entry_stage(db):
+    """Where each pre-existing lead entered the pipeline.
+
+    The earliest stage_change records the move OUT of the entry stage, and its
+    body names it on the left of the arrow -- the one place that fact survives
+    for rows written before the column existed. A lead that has never changed
+    stage is still sitting on the rung it entered on. Idempotent.
+    """
+    rows = db.execute("SELECT id, stage FROM leads WHERE entry_stage=''").fetchall()
+    for r in rows:
+        first = db.execute(
+            "SELECT body FROM activities WHERE lead_id=? AND kind='stage_change' "
+            "ORDER BY created_at LIMIT 1", (r['id'],)).fetchone()
+        entry = ''
+        if first:
+            entry = _LABEL_TO_STAGE.get((first['body'] or '').split('→')[0].strip(), '')
+        db.execute('UPDATE leads SET entry_stage=? WHERE id=?',
+                   (entry or r['stage'] or 'new', r['id']))
 
 
 def _backfill_norms(db):
@@ -712,7 +739,8 @@ def create_lead():
         'email': data.get('email', ''), 'address': data.get('address', ''),
         'city': data.get('city', ''), 'state': data.get('state', ''), 'zip': data.get('zip', ''),
         'source': data.get('source', ''), 'temperature': data.get('temperature', 'warm'),
-        'stage': stage, 'rep': rep, 'est_value': float(data.get('est_value') or 0),
+        'stage': stage, 'entry_stage': stage, 'rep': rep,
+        'est_value': float(data.get('est_value') or 0),
         'referred_by': data.get('referred_by', ''),
         'appt_at': data.get('appt_at', ''),
         'phone_norm': _norm_phone(data.get('phone', '')),
@@ -1158,6 +1186,25 @@ def _cadence_for(stage, lead_type):
     return STAGE_CADENCE.get(stage, '')
 
 TERMINAL_STAGES = ('won', 'lost')
+
+# The progression a deal makes, in order, ending in the sale. Two stages are
+# deliberately NOT rungs on it:
+#
+#   `lost` is an exit. It sits last in STAGES so the board reads left to right,
+#   which makes its raw index 7 -- above `won`'s 6. Any rank comparison over raw
+#   STAGE_KEYS scores every dead deal as having got further than a signed one.
+#
+#   `follow_up` is a holding state, not a step forward: it is where a quoted
+#   deal waits. On the ladder it sat between "quoted" and "won", so every deal
+#   that closed straight off the estimate was credited with a follow-up that
+#   never happened, and the row became "whichever is larger". A lead sitting in
+#   follow-up HAS been quoted, so it ranks as `estimate_presented` -- which is
+#   the true statement about how far it got.
+LADDER = [k for k in OPEN_STAGES if k != 'follow_up'] + ['won']
+LADDER_RANK = {k: i for i, k in enumerate(LADDER)}
+# Every stage -> the rung it counts as. Off the ladder is -1.
+STAGE_RUNG = dict(LADDER_RANK)
+STAGE_RUNG['follow_up'] = LADDER_RANK['estimate_presented']
 
 
 def _stage_rank(stage):
@@ -2073,6 +2120,85 @@ def _date_bounds(days):
     start = _iso((_now_dt() - timedelta(days=days)).replace(hour=0, minute=0, second=0))
     return start
 
+def _ladder_case(col):
+    """SQL CASE mapping a stage column to its rung index, -1 off the ladder.
+
+    Built from LADDER, which is our own constant -- no request data reaches
+    this string.
+    """
+    whens = ' '.join(f"WHEN '{k}' THEN {i}" for k, i in STAGE_RUNG.items())
+    return f'CASE {col} {whens} ELSE -1 END'
+
+
+def _cohort_funnel(db, since, rep):
+    """Of the leads picked up since `since`, how far did each one get?
+
+    THIS is the question the dashboard's "Funnel" was pretending to answer. It
+    showed current stage counts, so a lead that went new -> won appeared only
+    under Won and the ladder above it read as empty. "Of the doors we knocked,
+    where do we lose people" had no answer in the tool, even though every
+    stage_change has been on the timeline the whole time.
+
+    A lead's furthest rung is the highest of: where it entered, where it is
+    now, and every stage it was ever moved to. Reaching a rung implies every
+    rung below it, so the counts are monotonic and read as a funnel.
+
+    Leads that ended `lost` stay in the cohort at whatever rung they reached --
+    dropping them would flatter every conversion rate on the screen.
+    """
+    clauses, params = ['created_at >= ?'], [since]
+    if rep:
+        clauses.append('rep = ?'); params.append(rep)
+    # Bulk-imported prospects are excluded, and counted separately rather than
+    # silently dropped. One open-data pull adds tens of thousands of rows that
+    # nobody sourced and most of which will never be worked; mixed into the
+    # cohort they drown the few hundred real doorstep and referral leads, and
+    # the panel reports on the size of the last import instead of on the sales
+    # process. Measured at 36k imported against 400 worked: every conversion
+    # rate on the screen read about 1%.
+    clauses.append("import_batch = ''")
+    where = ' AND '.join(clauses)
+
+    rows = db.execute(f"""
+        SELECT MAX({_ladder_case('l.entry_stage')},
+                   {_ladder_case('l.stage')},
+                   COALESCE((SELECT MAX({_ladder_case('a.outcome')})
+                             FROM activities a
+                             WHERE a.lead_id = l.id AND a.kind = 'stage_change'), -1)
+               ) AS furthest,
+               COUNT(*) AS c
+        FROM leads l WHERE {where} GROUP BY furthest""", params).fetchall()
+
+    bclauses, bparams = ['created_at >= ?', "import_batch != ''"], [since]
+    if rep:
+        bclauses.append('rep = ?'); bparams.append(rep)
+    bulk = db.execute('SELECT COUNT(*) c FROM leads WHERE ' + ' AND '.join(bclauses),
+                      bparams).fetchone()['c']
+
+    reached = {k: 0 for k in LADDER}
+    cohort = 0
+    for r in rows:
+        cohort += r['c']
+        if r['furthest'] < 0:
+            continue
+        for k in LADDER[:r['furthest'] + 1]:
+            reached[k] += r['c']
+
+    out, prev = [], None
+    for k in LADDER:
+        n = reached[k]
+        out.append({
+            'key': k, 'label': STAGE_META[k]['label'], 'color': STAGE_META[k]['color'],
+            'reached': n,
+            # Share of the whole cohort, and of the rung immediately before --
+            # the second is where a leak actually shows up.
+            'pct_of_cohort': round(100 * n / cohort, 1) if cohort else 0.0,
+            'pct_of_prev': round(100 * n / prev, 1) if prev else None,
+        })
+        prev = n
+    return {'cohort': cohort, 'bulk_imported': bulk, 'rungs': out}
+
+
 @app.route('/api/dashboard')
 @login_required
 def dashboard():
@@ -2131,8 +2257,7 @@ def dashboard():
         nw_sql = ' AND '.join(new_where)
         by_source = {r['source'] or 'unknown': r['c'] for r in db.execute(
             f'SELECT source, COUNT(*) c FROM leads WHERE {nw_sql} GROUP BY source', np)}
-        by_state = {(r['state'] or '??').upper(): r['c'] for r in db.execute(
-            f'SELECT state, COUNT(*) c FROM leads WHERE {nw_sql} GROUP BY state', np)}
+        funnel = _cohort_funnel(db, since, rep)
         # Service-line split: open pipeline + won revenue per service.
         by_service = {}
         for s in SERVICES:
@@ -2178,7 +2303,12 @@ def dashboard():
         'lost_count': lost_count, 'win_rate': win_rate, 'avg_deal': avg_deal,
         'pipeline_count': pipe['c'], 'pipeline_value': pipe['v'],
         'activity': act_rows, 'outreach_total': outreach,
-        'by_source': by_source, 'by_state': by_state, 'by_service': by_service,
+        'by_source': by_source, 'by_service': by_service,
+        # Two different questions, deliberately both here and named apart:
+        # `funnel` is the cohort's progression (a flow), `stage_counts` is
+        # where the board stands right now (a snapshot). They were one number
+        # doing both jobs badly.
+        'funnel': funnel,
         'mrr': mrr, 'arr': round(mrr * 12, 0), 'active_plans': active_plans, 'plan_mix': plan_mix,
     })
 

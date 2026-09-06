@@ -1031,13 +1031,25 @@ async function renderDashboard(){
     $('#dash-services').after(wrap);
     barList(wrap, Object.fromEntries(mix));
   }
-  // funnel
-  const maxC=Math.max(1,...d.stages.map(s=>d.stage_counts[s.key]||0));
-  $('#dash-funnel').innerHTML=d.stages.map(s=>{
-    const c=d.stage_counts[s.key]||0;
-    return `<div class="funnel-row" data-stage="${s.key}" title="Open in pipeline"><div class="funnel-label">${esc(s.label)}</div>
-      <div class="funnel-bar" style="width:${Math.max(8,100*c/maxC)}%;background:${s.color}">${c}</div></div>`;
-  }).join('');
+  // Funnel: how the leads picked up in this window PROGRESSED. This used to
+  // draw current stage counts, so a lead that went new -> won showed only under
+  // Won and the ladder above it read as empty -- the panel answered a question
+  // nobody was asking and none of the one it was named for.
+  const f=d.funnel||{cohort:0,rungs:[]};
+  const top=f.rungs.length?f.rungs[0].reached:0;
+  $('#dash-funnel').innerHTML=
+    `<div class="funnel-head">${f.cohort} sourced lead${f.cohort===1?'':'s'} in ${d.days}d — how far they got${
+       f.bulk_imported?` <span class="funnel-note">(${f.bulk_imported} bulk-imported prospect${f.bulk_imported===1?'':'s'} counted separately)</span>`:''}</div>`+
+    f.rungs.map(r=>{
+      // The drop from the rung before is the number worth looking at: it says
+      // WHERE people are lost, not just that the bottom is small.
+      const drop=r.pct_of_prev===null?'':
+        `<span class="funnel-conv${r.pct_of_prev<50?' leak':''}">${r.pct_of_prev}%</span>`;
+      return `<div class="funnel-row" data-stage="${r.key}" title="Open in pipeline">
+        <div class="funnel-label">${esc(r.label)}</div>
+        <div class="funnel-bar" style="width:${Math.max(8,100*r.reached/(top||1))}%;background:${r.color}">${r.reached}</div>
+        ${drop}</div>`;
+    }).join('')||'<div class="empty">No leads in this window.</div>';
   $$('#dash-funnel .funnel-row').forEach(r=>r.onclick=()=>{
     S.stageFocus=r.dataset.stage; go('pipeline');
   });

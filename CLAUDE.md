@@ -508,11 +508,51 @@ counted. All four were invisible from the screen. Pinned by
   one is logged as an event, since "we rescheduled them twice" is the story a
   bare overwritten column cannot tell.
 
-Also fixed here: the dashboard's `by_source`/`by_state` ignored the date filter
+**The funnel is a cohort now, not a snapshot.** `/api/dashboard`'s "Funnel"
+drew *current stage counts*, so a lead that went `new → won` appeared only under
+Won and the whole ladder above it read as empty — the panel answered a question
+nobody asked, and none of the one it was named for. `_cohort_funnel()` asks the
+real one: of the leads picked up in this window, how far did each get. A lead's
+furthest rung is the highest of where it **entered** (`leads.entry_stage`),
+where it is now, and every stage it was ever moved to — so reaching a rung
+implies every rung below it and the counts read as a funnel. Three things are
+load-bearing:
+
+- **Two stages are deliberately not rungs.** `lost` sits last in `STAGES` so
+  the board reads left to right, which makes its raw index **7 — above `won`'s
+  6**; any rank comparison over `STAGE_KEYS` scores every dead deal as having
+  got further than a signed one. And `follow_up` is a *holding state*, not a
+  step forward — on the ladder it sat between "quoted" and "won", so every deal
+  that closed straight off the estimate was credited with a follow-up that never
+  happened. `STAGE_RUNG` maps it to `estimate_presented` instead, because a lead
+  waiting in follow-up genuinely has been quoted.
+- **A lost deal stays in the cohort**, at whatever rung it reached. Dropping it
+  would flatter every conversion rate on the screen.
+- **`entry_stage` exists because the canvasser hands doorstep leads straight
+  into `contacted`/`appt_set`/`inspected`.** Without it those read as "never got
+  past new", under-reporting conversion on exactly the leads door-knocking
+  exists to produce. `_backfill_entry_stage()` recovers it for older rows from
+  the left-hand side of the earliest `stage_change` body.
+
+- **The cohort is leads somebody sourced** — `import_batch = ''`. One
+  open-data pull adds tens of thousands of rows nobody sourced and most of which
+  will never be worked; mixed in they drown the few hundred real doorstep and
+  referral leads, and the panel reports on the size of the last import instead
+  of on the sales process. Measured at 36k imported against 400 worked, every
+  conversion rate on the screen read about 1%. They come back as
+  `bulk_imported` and show on the panel, so they are counted rather than
+  silently dropped.
+
+`stage_counts` still ships beside it and still means the snapshot. They are two
+questions — a flow and a standing — and one number was doing both badly.
+
+**Removed: `by_state`.** Computed on every dashboard load and rendered nowhere.
+This is one Northern Colorado market; the chart nobody drew was a chart of one
+bar.
+
+Also fixed here: the dashboard's `by_source` ignored the date filter
 entirely, so "Last 7 days" left an all-time chart sitting beside 7-day KPIs on
-the one screen someone reads to decide where the marketing money goes. Stage
-counts stay current-state on purpose — they are a snapshot of the board, not a
-flow.
+the one screen someone reads to decide where the marketing money goes.
 
 **Loss reasons are one vocabulary, in `portal/lost_reasons.py`.** The estimator
 owned a controlled list and the CRM took free text from a browser `prompt()`, so

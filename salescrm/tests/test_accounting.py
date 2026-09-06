@@ -203,6 +203,12 @@ def test_source_attribution_respects_the_date_window(client):
         db.execute("UPDATE leads SET created_at='2020-01-01T00:00:00Z' WHERE id=?",
                    (old['id'],))
 
-    dash = client.get('/api/dashboard?days=7').get_json()
-    assert dash['by_source'] == {'referral': 1}
-    assert dash['by_state'] == {'??': 1}
+    assert client.get('/api/dashboard?days=7').get_json()['by_source'] == {'referral': 1}
+
+
+def test_by_state_is_gone(client):
+    """Computed on every dashboard load and rendered nowhere. This is a single
+    Northern Colorado market -- CO_LOCATION_ID is not even configurable per
+    lead -- so the chart nobody drew was a chart of one bar."""
+    signup(client)
+    assert 'by_state' not in client.get('/api/dashboard').get_json()
