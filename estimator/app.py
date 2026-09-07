@@ -944,6 +944,57 @@ def enter_demo(token):
     return redirect((request.script_root or '') + '/')
 
 
+# ── The demo link, as an admin control ─────────────────────────────────────
+# These live on the estimator because ⚙ Settings is where an admin actually
+# is when they want the link, which is the same reason the Team Logins panel
+# is here and writes portal.users — one store, two apps able to edit it.
+#
+# ADMIN ONLY, not manager-up. Handing out this link is a decision about what
+# leaves the company, and a demo session created from it can be capped at
+# manager (P1_DEMO_ROLE) — a manager minting one could raise their own
+# audience's reach past their own.
+#
+# Deliberately absent from demo_store.ALLOWED_ENDPOINTS: a guest reading this
+# would hold the key to their own session and could rotate it out from under
+# the person who invited them.
+
+@app.route('/api/demo-link', methods=['GET'])
+def get_demo_link():
+    if not _is_admin(_current_user()):
+        return _forbid()
+    return jsonify({
+        'enabled': pdemo.enabled(),
+        'url': pdemo.link(_base_url()),
+        # The UI has to distinguish "no link yet" from "a link exists that this
+        # button cannot revoke", or Revoke silently does nothing.
+        'env_override': pdemo.env_override(),
+        'role': pdemo.role(),
+    })
+
+
+@app.route('/api/demo-link', methods=['POST'])
+def create_demo_link():
+    """Create the link, or rotate it. Rotating invalidates the old URL at once."""
+    if not _is_admin(_current_user()):
+        return _forbid()
+    if pdemo.env_override():
+        return jsonify({'error': 'P1_DEMO_TOKEN is set in the environment and '
+                                 'overrides any link created here. Clear it first.'}), 409
+    pdemo.create()
+    return jsonify({'enabled': True, 'url': pdemo.link(_base_url()),
+                    'env_override': False, 'role': pdemo.role()})
+
+
+@app.route('/api/demo-link', methods=['DELETE'])
+def revoke_demo_link():
+    if not _is_admin(_current_user()):
+        return _forbid()
+    if not pdemo.revoke():
+        return jsonify({'error': 'P1_DEMO_TOKEN is set in the environment — '
+                                 'clear that variable to switch the demo off.'}), 409
+    return jsonify({'enabled': False, 'url': '', 'env_override': False})
+
+
 @app.route('/api/me')
 def me():
     if demo.active():

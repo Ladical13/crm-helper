@@ -116,3 +116,55 @@ def test_ending_the_demo_clears_the_session(guest):
     guest.get('/logout')
     r = guest.get('/estimate/')
     assert r.status_code == 302 and '/login' in r.headers['Location']
+
+
+# ── The admin control ──────────────────────────────────────────────────────
+
+def test_the_stored_token_works_with_no_environment_variable(client, monkeypatch):
+    """The whole reason this exists: an admin can switch the demo on without a
+    Railway variable and a redeploy."""
+    monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+    assert not demo.enabled()
+    tok = demo.create()
+    try:
+        assert demo.enabled() and demo.matches(tok)
+        assert client.get(f'/estimate/demo/{tok}').status_code == 302
+        assert client.get('/api/me').get_json()['demo'] is True
+    finally:
+        demo.revoke()
+
+
+def test_the_environment_variable_beats_the_stored_token(monkeypatch):
+    """P1_DEMO_TOKEN is the override and the emergency kill: setting it to a
+    value nobody has switches every stored link off at the next boot."""
+    stored = demo.create()
+    try:
+        monkeypatch.setenv('P1_DEMO_TOKEN', 'from-the-environment')
+        assert demo.token() == 'from-the-environment'
+        assert not demo.matches(stored)
+        assert demo.env_override()
+        # ...and the button cannot pretend to clear what it does not control.
+        assert demo.revoke() is False
+        assert demo.token() == 'from-the-environment'
+    finally:
+        monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+        demo.revoke()
+
+
+def test_revoke_is_idempotent(monkeypatch):
+    monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+    demo.create()
+    assert demo.revoke() is True
+    assert demo.revoke() is True
+    assert not demo.enabled()
+
+
+def test_the_token_is_not_stored_on_the_estimators_volume(monkeypatch, tmp_path):
+    """PORTAL_DATA_DIR, never DATA_DIR — the same rule portal.db follows, and
+    for the same reason: DATA_DIR is the estimator's volume."""
+    monkeypatch.setenv('PORTAL_DATA_DIR', str(tmp_path))
+    monkeypatch.setenv('DATA_DIR', str(tmp_path / 'estimator'))
+    monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+    demo.create()
+    assert (tmp_path / demo.TOKEN_FILE).exists()
+    assert not (tmp_path / 'estimator' / demo.TOKEN_FILE).exists()

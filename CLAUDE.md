@@ -1008,12 +1008,26 @@ is the accuracy check. Answers do move between runs — Windsor came back
 
 ### Demo mode — one link, no company data
 
-`P1_DEMO_TOKEN=<secret>` turns on `/estimate/demo/<token>`: a guest session for
-showing the estimate tool to someone outside the company. Off unless that
-variable is set — no token, no route, no session key honoured, the same
-fail-closed shape as `DISABLE_AUTH` refusing to engage on Railway. Add
-`?reset=1` to put the seeded estimates back before the next audience. Tests:
+`/estimate/demo/<token>` is a guest session for showing the estimate tool to
+someone outside the company. **An admin creates the link in ⚙ Settings →
+🎬 Demo Link**, which writes a 256-bit token to `PORTAL_DATA_DIR/demo_token.txt`;
+`P1_DEMO_TOKEN` overrides the file and is the emergency kill. With neither
+there is no route and no session key honoured. Add `?reset=1` to put the
+seeded estimates back before the next audience. Tests:
 `estimator/tests/test_demo.py`, `portal/tests/test_demo.py`.
+
+*It was env-var-only first, and that was wrong in a specific way worth
+remembering: the admin who needs the link is the one who cannot restart the
+service to get it, so "off by default" meant "off, and the only way on is a
+redeploy". The protection is identical either way — the token is the whole
+thing, exactly as it is for `/sign/<token>` — and revoking is now a button
+rather than a variable somebody has to remember the name of.* `POST` rotates
+(the old URL dies on the spot, including for sessions already open, because
+`active()` re-checks the token on every request); `DELETE` switches it off.
+`/api/demo-link` is **admin-only, not manager-up** — a demo can be capped at
+manager via `P1_DEMO_ROLE`, so a manager minting one could out-reach
+themselves — and it is deliberately absent from `ALLOWED_ENDPOINTS`, or a
+guest would hold the key to their own session.
 
 Two modules because two different things are being decided. `portal/demo.py`
 owns the guest IDENTITY, and has to: all four apps share one cookie and the

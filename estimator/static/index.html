@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=198">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=199">
 </head>
 <body>
 
@@ -573,6 +573,29 @@
           <textarea id="set-initials-comm" rows="4" spellcheck="true"></textarea>
         </div>
       </div>
+      <!-- Acts immediately on its own buttons — nothing here waits for
+           ✓ Save Settings, because creating a link that only exists after a
+           second click somewhere else is how you hand out a dead URL. -->
+      <div id="settings-demo" class="field-group settings-pane hidden">
+        <label>Demo Link <span class="note-tag">admin only — one link that opens this tool with sample data for someone outside the company</span></label>
+        <div class="cc-block">
+          <p class="note-tag" style="margin:0 0 8px">
+            Sample customers, sample estimates, and material costs shifted off
+            the real book. No customer, team or account data is reachable, and
+            nothing the guest does sends email or reaches the CRM. Anyone with
+            the link can open it — treat it like a signing link.
+          </p>
+          <div id="demo-link-state"></div>
+          <div class="cc-block" style="margin-top:10px">
+            <button type="button" class="btn-secondary" id="demo-link-create"
+              onclick="createDemoLink()">🔗 Create demo link</button>
+            <button type="button" class="btn-secondary" id="demo-link-copy"
+              onclick="copyDemoLink()" style="display:none">📋 Copy</button>
+            <button type="button" class="btn-secondary" id="demo-link-revoke"
+              onclick="revokeDemoLink()" style="display:none">⛔ Revoke</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="settings-footer">
       <button id="test-notif-btn" class="btn-secondary" onclick="testSignatureNotification()" style="margin-right:auto">📧 Test Email Notification</button>
@@ -825,6 +848,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=198"></script>
+<script src="/estimate/static/app.js?v=199"></script>
 </body>
 </html>

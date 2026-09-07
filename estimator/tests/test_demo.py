@@ -22,7 +22,21 @@ TOKEN = 'demo-token-for-tests-only'
 
 
 @pytest.fixture(autouse=True)
-def demo_on(monkeypatch):
+def no_stored_token():
+    """No token file, so the env var below is what is in force.
+
+    Without this the admin-control tests below and the session tests fight over
+    the same file: one creates a token, the next reads it and passes for the
+    wrong reason.
+    """
+    pdemo.revoke()
+    yield
+    if not pdemo.env_override():
+        pdemo.revoke()
+
+
+@pytest.fixture(autouse=True)
+def demo_on(monkeypatch, no_stored_token):
     """Turn demo mode on for the duration of a test, and reset the store.
 
     The store is process-global (one dict shared by every request a worker
@@ -362,3 +376,101 @@ def test_the_seed_carries_no_real_contact_details():
         assert c.get('email', '').endswith('@example.com')
         assert '555-' in c.get('phone', '')
         assert 'projectoneroofing' not in str(c).lower()
+
+
+# ── The admin control ──────────────────────────────────────────────────────
+# The link has to be creatable by the person who wants it. Making this
+# environment-only was the first design and it was wrong in a specific way: the
+# admin who needs the link is the one who cannot restart the service to get it,
+# so "off by default" meant "off, and the only way on is a redeploy".
+
+def test_an_admin_can_create_the_link_without_touching_the_environment(
+        client, monkeypatch):
+    monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+    assert client.get('/api/demo-link').get_json()['enabled'] is False
+
+    d = client.post('/api/demo-link').get_json()
+    assert d['enabled'] is True and '/estimate/demo/' in d['url']
+    assert client.get('/api/demo-link').get_json()['url'] == d['url']
+
+
+def test_a_created_link_actually_opens_the_demo(app, client, monkeypatch):
+    """The end-to-end the first design could not do: create the link in
+    Settings, paste it into another browser, and land in the demo."""
+    monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+    url = client.post('/api/demo-link').get_json()['url']
+    guest = app.test_client()
+    assert guest.get(url.split('/estimate', 1)[1]).status_code == 302
+    assert guest.get('/api/me').get_json()['demo'] is True
+
+
+def test_rotating_kills_the_old_url_at_once(app, client, monkeypatch):
+    """The reason to rotate is that the old link is somewhere it should not be,
+    so it has to stop working on the spot — not at the next restart."""
+    monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+    old = client.post('/api/demo-link').get_json()['url']
+    new = client.post('/api/demo-link').get_json()['url']
+    assert old != new
+    assert app.test_client().get(old.split('/estimate', 1)[1]).status_code == 404
+    assert app.test_client().get(new.split('/estimate', 1)[1]).status_code == 302
+
+
+def test_revoking_switches_the_demo_off(app, client, monkeypatch):
+    monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+    url = client.post('/api/demo-link').get_json()['url']
+    assert client.delete('/api/demo-link').get_json()['enabled'] is False
+    assert app.test_client().get(url.split('/estimate', 1)[1]).status_code == 404
+
+
+def test_a_live_guest_session_dies_with_the_link(app, client, monkeypatch):
+    """Revoking has to reach sessions already open, not just new ones — the
+    token is re-checked on every request for exactly this."""
+    monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+    url = client.post('/api/demo-link').get_json()['url']
+    guest = app.test_client()
+    guest.get(url.split('/estimate', 1)[1])
+    assert guest.get('/api/estimates').status_code == 200
+    client.delete('/api/demo-link')
+    assert guest.get('/api/estimates').status_code == 401
+
+
+def test_the_environment_variable_still_wins(client):
+    """P1_DEMO_TOKEN is the override and the emergency kill, so the buttons
+    must report that they cannot fight it rather than appearing to work."""
+    d = client.get('/api/demo-link').get_json()
+    assert d['enabled'] is True and d['env_override'] is True
+    assert client.post('/api/demo-link').status_code == 409
+    assert client.delete('/api/demo-link').status_code == 409
+    # ...and the variable's token is what the link carries.
+    assert d['url'].endswith(f'/estimate/demo/{TOKEN}')
+
+
+def test_the_link_is_admin_only(app, monkeypatch):
+    """Not manager-up. Handing out this link decides what leaves the company,
+    and a demo session can be capped at manager (P1_DEMO_ROLE) — a manager
+    minting one could out-reach themselves."""
+    from portal import users as pusers
+    monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+    if not pusers.get('a-manager'):
+        pusers.create('a-manager', password='test-only-password', role='manager')
+    mgr = app.test_client()
+    with mgr.session_transaction() as s:
+        s['user'] = 'a-manager'
+        s['username'] = 'a-manager'
+    assert mgr.get('/api/demo-link').status_code == 403
+    assert mgr.post('/api/demo-link').status_code == 403
+    assert mgr.delete('/api/demo-link').status_code == 403
+
+
+@pytest.mark.parametrize('method', ['get', 'post', 'delete'])
+def test_a_guest_cannot_read_or_rotate_its_own_key(guest, method):
+    """A guest holding this endpoint holds the key to their own session, and
+    could rotate it out from under the person who invited them."""
+    assert getattr(guest, method)('/api/demo-link').status_code == 403
+
+
+def test_the_stored_token_is_not_world_readable(client, monkeypatch):
+    monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
+    client.post('/api/demo-link')
+    mode = os.stat(pdemo._token_path()).st_mode & 0o777
+    assert mode == 0o600, f'demo token file is mode {mode:o}'

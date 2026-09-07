@@ -10510,6 +10510,7 @@ const SETTINGS_TABS = [
   ['settings-contract',      '📜 Contract'],
   ['settings-jurisdictions', '🏛 Permits'],
   ['settings-fastening',     '🔩 Fastening'],
+  ['settings-demo',          '🎬 Demo Link'],
 ];
 
 function renderSettingsTabs() {
@@ -10589,10 +10590,101 @@ async function openSettings() {
     // leave it blank when nothing is, so "blank = use retail" stays honest.
     document.getElementById('set-contract-comm').value   = appSettings.contract_commercial || '';
     document.getElementById('set-initials-comm').value   = (appSettings.initials_commercial || []).join('\n');
+    document.getElementById('settings-demo').classList.remove('hidden');
+    await refreshDemoLink();
   }
   // Last: the strip is built from whichever panes the gating above unhid.
   renderSettingsTabs();
   document.getElementById('settings-modal').classList.remove('hidden');
+}
+
+/* ── Demo link (⚙ Settings → 🎬 Demo Link, admin only) ──────────────────
+   The link that opens this tool with sample data for someone outside the
+   company. See portal/demo.py and estimator/demo_store.py.
+
+   Every button here acts immediately against /api/demo-link rather than
+   staging into appSettings for ✓ Save Settings: a Create that only takes
+   effect after a second click somewhere else is how you copy a URL that does
+   not work yet, and a Revoke that waits is worse — the whole reason to press
+   it is that the link is already somewhere it should not be. */
+let _demoLinkUrl = '';
+
+function _renderDemoLink(d) {
+  _demoLinkUrl = (d && d.url) || '';
+  const state  = document.getElementById('demo-link-state');
+  const create = document.getElementById('demo-link-create');
+  const copy   = document.getElementById('demo-link-copy');
+  const revoke = document.getElementById('demo-link-revoke');
+  if (!state) return;
+
+  if (!d || !d.enabled) {
+    state.innerHTML = '<span class="note-tag">No demo link yet — nobody can '
+      + 'open the demo.</span>';
+    create.textContent = '🔗 Create demo link';
+    create.style.display = '';
+    copy.style.display = revoke.style.display = 'none';
+    return;
+  }
+  // The URL is shown in full and selectable: the point of this pane is to get
+  // it into a text message, and Copy can fail outright on a non-secure origin.
+  state.innerHTML =
+    `<input type="text" readonly id="demo-link-url" value="${esc(_demoLinkUrl)}"
+       onclick="this.select()" style="width:100%;font-family:monospace;font-size:12px">
+     <span class="note-tag">Live now, opens as a ${esc(d.role || 'rep')}. `
+    + (d.env_override
+        ? 'Set by the P1_DEMO_TOKEN environment variable — Revoke cannot clear it.'
+        : 'Creating a new one immediately kills this URL.')
+    + '</span>';
+  create.textContent = '♻ Rotate link';
+  create.style.display = d.env_override ? 'none' : '';
+  copy.style.display = '';
+  revoke.style.display = d.env_override ? 'none' : '';
+}
+
+async function refreshDemoLink() {
+  try {
+    const r = await fetch('/api/demo-link');
+    _renderDemoLink(r.ok ? await r.json() : null);
+  } catch { _renderDemoLink(null); }
+}
+
+async function createDemoLink() {
+  // Rotating is destructive to a URL that may already be in somebody's inbox,
+  // so it asks; creating the first one is not.
+  if (_demoLinkUrl &&
+      !confirm('Create a new demo link?\n\nThe current one stops working immediately, '
+               + 'including for anyone you have already sent it to.')) return;
+  try {
+    const r = await fetch('/api/demo-link', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not create the link');
+    _renderDemoLink(d);
+    toast('✓ Demo link ready — copy it below');
+  } catch (e) { alert(e.message); }
+}
+
+async function revokeDemoLink() {
+  if (!confirm('Switch the demo off?\n\nThe link stops working for everyone.')) return;
+  try {
+    const r = await fetch('/api/demo-link', { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not revoke the link');
+    _renderDemoLink(d);
+    toast('✓ Demo switched off');
+  } catch (e) { alert(e.message); }
+}
+
+async function copyDemoLink() {
+  const input = document.getElementById('demo-link-url');
+  try {
+    await navigator.clipboard.writeText(_demoLinkUrl);
+    toast('✓ Link copied');
+  } catch {
+    // clipboard is unavailable on http:// origins and in some in-app browsers —
+    // select it so the admin can copy by hand rather than getting nothing.
+    if (input) { input.focus(); input.select(); }
+    toast('Select the link above and copy it');
+  }
 }
 
 /* Global G/B/B package content editor (⚙ Settings, manager+). Edits a working

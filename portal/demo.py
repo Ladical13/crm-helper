@@ -23,12 +23,26 @@ portal's own guard read, so a guest holding a demo cookie is anonymous to all
 three and gets the login page — the estimator is the only app that asks this
 module anything.
 
-OFF unless P1_DEMO_TOKEN is set. No token, no route, no session key honoured:
-an unset variable must never leave a door open, which is the same reason
-DISABLE_AUTH refuses to engage on Railway.
+OFF until somebody turns it on, and there are two ways to do that:
+
+  * an admin clicks "Create demo link" in ⚙ Settings, which writes a random
+    token to PORTAL_DATA_DIR/demo_token.txt; or
+  * P1_DEMO_TOKEN is set in the environment, which wins over the file.
+
+The button is the intended path and the variable is the override. Making this
+env-only was the first design and it was wrong in a specific way: the person
+who needs the link is the person who cannot restart the service to get it, so
+"off by default" turned into "off, and the only way on is a redeploy". A
+feature nobody can switch on is not a safe feature, it is an unused one. The
+token is the whole protection either way — 256 bits, exactly like the /sign
+links this app already trusts with signed contracts — and revoking is now a
+button rather than a variable somebody has to remember the name of.
+
+With neither source set there is no route, no link and no session key honoured.
 """
 import hmac
 import os
+import secrets
 
 # Session key. Namespaced so it cannot collide with anything portal/session.py
 # writes, and so `session.clear()` on sign-out takes it with everything else.
@@ -41,14 +55,81 @@ USERNAME = 'demo'
 DISPLAY_NAME = 'Demo Guest'
 
 
+#: Where a button-created token lives. Beside portal.db on the same volume,
+#: because it is the same kind of thing: portal-owned session state that has to
+#: survive a deploy and be the same in both gunicorn workers. NOT in DATA_DIR —
+#: that is the estimator's volume (see users.db_path).
+TOKEN_FILE = 'demo_token.txt'
+
+
+def _token_path():
+    """Resolved per call, not frozen at import — same reason as users.db_path:
+    freezing it forces every test to set the env var before the import."""
+    return os.path.join(os.environ.get('PORTAL_DATA_DIR') or
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        TOKEN_FILE)
+
+
 def token():
     """The shared secret in the demo link, or '' when demo mode is off.
 
-    Read on every call rather than captured at import so a test can turn the
-    feature on and off, and so rotating the variable takes effect on restart
-    without anything else having cached the old value.
+    Environment first so P1_DEMO_TOKEN stays an override that beats whatever is
+    on the volume — the emergency kill is to set it to a value nobody has.
+
+    Read from disk on every call rather than cached, so a link created in one
+    gunicorn worker works on the very next request in the other, and a revoke
+    takes effect immediately rather than at the next restart. It is a tiny read
+    on a warm page cache, and a stale cached token here would be a demo link
+    that keeps working after somebody deliberately revoked it.
     """
-    return (os.environ.get('P1_DEMO_TOKEN') or '').strip()
+    env = (os.environ.get('P1_DEMO_TOKEN') or '').strip()
+    if env:
+        return env
+    try:
+        with open(_token_path(), 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
+def env_override():
+    """True when P1_DEMO_TOKEN is what is in force — the button cannot revoke
+    it, and the UI has to say so rather than appearing to fail."""
+    return bool((os.environ.get('P1_DEMO_TOKEN') or '').strip())
+
+
+def create():
+    """Mint a new demo token, replacing any existing one. Returns it.
+
+    Creating a second time is how the link is ROTATED: the old URL stops
+    working the moment this returns, which is what you want after handing it to
+    someone you have since thought better of.
+    """
+    tok = secrets.token_urlsafe(32)
+    path = _token_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # 0600 before anything is written to it, so the secret is never briefly
+    # world-readable on a shared volume.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(tok)
+    return tok
+
+
+def revoke():
+    """Delete the stored token. Idempotent.
+
+    Returns False when P1_DEMO_TOKEN is set, because the file is then not what
+    is in force and deleting it would report success while every live demo link
+    kept working.
+    """
+    if env_override():
+        return False
+    try:
+        os.remove(_token_path())
+    except OSError:
+        pass
+    return True
 
 
 def enabled():
