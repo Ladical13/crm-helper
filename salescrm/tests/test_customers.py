@@ -231,3 +231,37 @@ def test_the_backfill_does_not_re_examine_rows_that_name_nobody(client, monkeypa
         seen.clear()
         appmod._backfill_customers(db)
     assert seen == [], 'and nothing is reconsidered on the next boot'
+
+
+def test_a_manager_can_open_an_imported_contact_with_no_job(client):
+    """The Den import creates exactly this: somebody we hold who never became a
+    job here. Without it they show up in customer search and 404 when clicked."""
+    signup(client, 'luke')                       # manager
+    signup(client, 'casey')
+    login(client, 'luke')
+    client.post('/api/customers/import', json={'contacts': [
+        {'id': 'c1', 'first_name': 'Dana', 'last_name': 'Reed',
+         'phone': '9705551212', 'projects': []}]})
+    listed = client.get('/api/customers').get_json()
+    assert [c['name'] for c in listed] == ['Dana Reed']
+    got = client.get(f'/api/customers/{listed[0]["id"]}')
+    assert got.status_code == 200
+    assert got.get_json()['leads'] == []
+
+    login(client, 'casey')                       # a rep still cannot
+    assert client.get(f'/api/customers/{listed[0]["id"]}').status_code == 404
+
+
+def test_coordinates_are_fetched_in_one_query_not_one_per_lead(client, monkeypatch):
+    """pgeo.lookup() opens a connection per address. The storm join asks about
+    every customer we have: at 40,000 leads that was 8.5 seconds to assemble the
+    records, against 11ms for the geometry they feed."""
+    signup(client)
+    for i in range(5):
+        new_lead(client, last_name='Reed', address=f'{i} Elm St', city='Fort Collins')
+    calls = []
+    monkeypatch.setattr(appmod.pgeo, 'lookup',
+                        lambda *a, **k: calls.append(a) or None)
+    with appmod.get_db() as db:
+        appmod._storm_records(db)
+    assert calls == [], 'per-lead lookups are back'

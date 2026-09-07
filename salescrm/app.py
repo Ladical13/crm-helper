@@ -1988,28 +1988,46 @@ def _storm_records(db, rep=None):
     clauses, params = ["address != ''"], []
     if rep:
         clauses.append('rep=?'); params.append(rep)
-    rows = db.execute('SELECT * FROM leads WHERE ' + ' AND '.join(clauses),
-                      params).fetchall()
+    rows = db.execute(
+        'SELECT id, first_name, last_name, company, address, city, state, zip, '
+        'phone, email, stage, rep, plan, billing, customer_id, import_batch, '
+        'last_activity_at FROM leads WHERE ' + ' AND '.join(clauses),
+        params).fetchall()
     # Customers we have decided not to work for again drop out here rather than
     # at the email, so they are absent from every consumer of this join at once
     # -- the alert, the storm brief, anything built on it later. A `caution`
     # customer stays: that is a warning for the rep, not an exclusion.
     banned = {r['id'] for r in db.execute(
         "SELECT id FROM customers WHERE flag='do_not_serve'")}   # cf NOT_BANNED_SQL
+    # The whole cache in one query. Asking `pgeo.lookup()` per lead is a round
+    # trip each: measured at 40,000 leads that was 8.5 SECONDS to assemble the
+    # records, against 11ms for the geometry they were being assembled for --
+    # and this runs inside a request, on a box with two workers.
+    points = pgeo.all_points()
     records, unplaced = [], 0
     for r in rows:
         if r['customer_id'] in banned:
             continue
-        hit = pgeo.lookup(r['address'], r['city'], r['state'], r['zip'])
+        hit = points.get(pgeo.norm_address(r['address'], r['city'],
+                                           r['state'], r['zip']))
         if not hit:
             unplaced += 1
             continue
-        d = _lead_row(r)
-        records.append({'id': d['id'], 'name': d['name'], 'address': d['address'],
-                        'city': d['city'], 'phone': d['phone'], 'email': d['email'],
-                        'stage': d['stage'], 'stage_label': d['stage_label'],
-                        'rep': d['rep'], 'tier': _lead_tier(d),
-                        'lat': hit['lat'], 'lng': hit['lng']})
+        # Built straight from the row rather than through _lead_row(): that
+        # parses timestamps for the stall detector and resolves plan and
+        # service metadata, none of which a storm join reads, and it does it
+        # once per customer we own.
+        d = dict(r)
+        records.append({
+            'id': d['id'],
+            'name': (f"{d['first_name']} {d['last_name']}").strip()
+                    or d['company'] or '(no name)',
+            'address': d['address'], 'city': d['city'],
+            'phone': d['phone'], 'email': d['email'],
+            'stage': d['stage'],
+            'stage_label': STAGE_META.get(d['stage'], {}).get('label', d['stage']),
+            'rep': d['rep'], 'tier': _lead_tier(d),
+            'lat': hit[0], 'lng': hit[1]})
     return records, unplaced
 
 
@@ -3396,10 +3414,14 @@ def get_customer(customer_id):
             q += ' AND rep=?'
             params.append(current_rep())
         leads = db.execute(q + ' ORDER BY created_at DESC', params).fetchall()
-        if not leads:
+        # A customer with no leads is normally invisible -- a rep reaches people
+        # through their own deals. But the Den import creates exactly this: a
+        # contact we hold who never became a job here. Managers can open those,
+        # or they would show up in search and 404 when clicked.
+        if not leads and not is_manager():
             return jsonify({'error': 'Not found'}), 404
         lead_ids = [l['id'] for l in leads]
-        marks = ','.join('?' * len(lead_ids))
+        marks = ','.join('?' * len(lead_ids)) or "''"
         docs = db.execute(
             'SELECT * FROM documents WHERE customer_id=? OR lead_id IN (%s) '
             'ORDER BY created_at DESC' % marks, [customer_id] + lead_ids).fetchall()

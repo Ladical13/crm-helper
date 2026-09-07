@@ -191,6 +191,21 @@ def lookup(*parts):
             'matched': row['matched'], 'source': row['source']}
 
 
+def all_points():
+    """Every cached hit as {addr_key: (lat, lng)} — one query, not N.
+
+    `lookup()` opens a connection per address, which is right for the one-off
+    question "where is this lead" and catastrophic for the bulk one. The hail
+    join asks about every customer we have: at 40,000 leads that was 40,000
+    round trips and 8.5 seconds, against 11ms for the geometry it was feeding.
+    The cache has one row per address, so holding it in memory for the length
+    of one join is cheap and bounded.
+    """
+    with get_db() as db:
+        return {r['addr_key']: (r['lat'], r['lng']) for r in db.execute(
+            "SELECT addr_key, lat, lng FROM geocoded_addresses WHERE status='ok'")}
+
+
 def put(raw, lat=None, lng=None, matched='', source='census', status='ok',
         key=None):
     """Write one address into the cache. Returns the key it was stored under."""

@@ -469,6 +469,14 @@ backfill. Two rules:
 - **The tier rule lives in the CRM, the geometry lives here.** `join` refuses to
   learn what a lead stage is on purpose — coupling the storm archive to that
   schema guarantees it breaks the next time a stage is renamed.
+- **Coordinates come from `geo.all_points()`, one query for the whole cache.**
+  `geo.lookup()` opens a connection per address, which is right for "where is
+  this one lead" and catastrophic for "where is everyone": at 40,000 leads it
+  was **8.5 seconds** to assemble the records against 11ms for the geometry they
+  feed, inside a request, on a two-worker box. Building the records straight
+  from the row rather than through `_lead_row()` took the rest — that parses
+  timestamps for the stall detector and resolves plan metadata the join never
+  reads. 8.45s → 0.83s, pinned by a test that fails if per-lead lookups return.
 - **Both halves must build the address key the same way.** The lookup uses
   street + city + state + zip because that is what `geocode_backfill` writes. A
   mismatch is invisible — no error, no log, just a storm that appears to have
