@@ -29,10 +29,21 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, Respo
 # this app works both mounted by portal/wsgi.py and run standalone (its test
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import demo as pdemo         # noqa: E402
 from portal import funnel as pfunnel     # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import throttle as pthrottle  # noqa: E402
 from portal import users as pusers       # noqa: E402
+
+# Demo mode. Two halves for one reason: portal/demo.py owns the guest IDENTITY
+# because the cookie and the app-switcher bar are the portal's, and this module
+# owns what that identity may reach and on what data. Imported both ways for
+# the same reason permit_coords is — this app is imported as `estimator.app`
+# under the portal mount and as bare `app` by its own test suite.
+try:
+    from . import demo_store as demo     # noqa: E402
+except ImportError:
+    import demo_store as demo            # noqa: E402
 
 try:
     import requests as http
@@ -103,12 +114,22 @@ def save_team(team):
 
 def _get_role(username):
     """Return 'admin', 'manager', or 'rep' for the given username."""
+    # 'demo' is not an account in the portal store and never will be — nothing
+    # authenticates as it. Its role comes from P1_DEMO_ROLE, capped at manager.
+    if username == pdemo.USERNAME and demo.active():
+        return pdemo.role()
     return pusers.role_of(username)
 
 def _is_admin(username):
     return pusers.is_admin(username)
 
 def _current_user():
+    # A demo guest has no session['user'] on purpose — that key is what the
+    # canvasser, the CRM and the portal read, and a guest must stay anonymous
+    # to all three. They still need a non-empty name here so the demo
+    # estimates have an owner and _can_touch_estimate resolves.
+    if demo.active():
+        return pdemo.USERNAME
     return session.get('user', '')
 
 def _is_manager_up(username=None):
@@ -150,6 +171,10 @@ PUBLIC_ENDPOINTS = {
     'static',            # JS/CSS for the login + app shell (non-sensitive client code)
     'pwa_manifest',      # /manifest.json — needed for PWA install before login
     'service_worker',    # /sw.js — service worker scope must be public
+    # /demo/<token> — the demo link itself. "Public" only in the sense that it
+    # takes no cookie: it authenticates on the token in the URL and 404s unless
+    # P1_DEMO_TOKEN is set. See portal/demo.py and demo_store.py.
+    'enter_demo',
 }
 
 DISABLE_AUTH = os.environ.get('DISABLE_AUTH', '').strip().lower() in ('1', 'true', 'yes')
@@ -170,6 +195,14 @@ if DISABLE_AUTH and os.environ.get('RAILWAY_ENVIRONMENT'):
 def _require_login():
     if DISABLE_AUTH or request.endpoint in PUBLIC_ENDPOINTS or session.get('user'):
         return
+    # A demo guest gets in, but only as far as demo_store.ALLOWED_ENDPOINTS
+    # reaches. Default-deny for exactly the reason the outer guard is: a route
+    # added tomorrow must be closed to a guest until somebody opens it on
+    # purpose, rather than open until somebody notices.
+    if demo.active():
+        if demo.endpoint_allowed(request.endpoint):
+            return
+        return jsonify(demo.DENIED), 403
     # Unauthenticated: JSON 401 for API calls (the SPA redirects), else to login.
     if request.path.startswith('/api/'):
         return jsonify({'error': 'authentication required'}), 401
@@ -433,8 +466,41 @@ def _est_path(est_id):
     return os.path.join(ESTIMATES_DIR, f"{est_id}.json")
 
 
+# ── Demo isolation ─────────────────────────────────────────────────────────
+# Every helper below asks `demo.active()` first. This is THE choke point: 98
+# routes read and write estimates through these nine functions, so one check
+# here fences the whole app off from the real store for a demo guest, and a
+# route added tomorrow inherits it without anybody remembering to. The
+# alternative — auditing each route for what it touches — is the bookkeeping
+# that let the data APIs leak before PUBLIC_ENDPOINTS replaced it.
+#
+# The demo store is a plain dict in demo_store.py. Docs are returned by
+# reference exactly as the file/Postgres paths return fresh objects that
+# callers then mutate and save back, so a caller that mutates without saving
+# leaves the change in place; harmless on throwaway data, and est_update()
+# still behaves correctly.
+#
+# TWO conditions, not one, and the difference is load-bearing:
+#
+#   demo.active()   — this request belongs to a demo guest. Routes the LIST
+#                     operations, which have no id to go on: a guest's home
+#                     screen must show demo estimates only, and a rep's must
+#                     never show them at all.
+#   demo.owns(id)   — this id lives in the demo store. Routes the BY-ID
+#                     operations, because the customer signing a demo estimate
+#                     and the thread that runs afterwards hold the id but carry
+#                     no demo session (see demo_store.owns).
+
+
+def _demo_est(est_id):
+    """True when this estimate read/write should go to the demo store."""
+    return demo.active() or demo.owns(est_id)
+
+
 def est_load(est_id):
     """Return the estimate doc, or None when missing/unreadable."""
+    if _demo_est(est_id):
+        return demo.store().get(str(est_id))
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('SELECT doc FROM estimates WHERE id = %s', (str(est_id),))
@@ -452,6 +518,13 @@ def est_save(doc):
     est_id = doc.get('estimate_id')
     if not est_id:
         raise ValueError('estimate doc missing estimate_id')
+    if _demo_est(est_id):
+        # Stamped on the way in, so anything a guest creates is recognisable as
+        # demo data by is_demo_doc() later — including on the public /sign
+        # path, where there is no session to ask.
+        doc['demo'] = True
+        demo.store()[str(est_id)] = doc
+        return
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('INSERT INTO estimates (id, doc) VALUES (%s, %s) '
@@ -463,6 +536,8 @@ def est_save(doc):
 
 
 def est_exists(est_id):
+    if _demo_est(est_id):
+        return str(est_id) in demo.store()
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('SELECT 1 FROM estimates WHERE id = %s', (str(est_id),))
@@ -471,6 +546,9 @@ def est_exists(est_id):
 
 
 def est_delete(est_id):
+    if _demo_est(est_id):
+        demo.store().pop(str(est_id), None)
+        return
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('DELETE FROM estimates WHERE id = %s', (str(est_id),))
@@ -483,6 +561,8 @@ def est_delete(est_id):
 
 def est_ids():
     """All estimate ids, ascending."""
+    if demo.active():
+        return sorted(demo.store())
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('SELECT id FROM estimates ORDER BY id')
@@ -495,6 +575,8 @@ def est_ids():
 
 
 def est_count():
+    if demo.active():
+        return len(demo.store())
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('SELECT count(*) FROM estimates')
@@ -504,6 +586,12 @@ def est_count():
 
 def est_iter(reverse=False):
     """Yield every readable estimate doc; unreadable files are skipped."""
+    if demo.active():
+        for est_id in sorted(demo.store(), reverse=reverse):
+            doc = demo.store().get(est_id)
+            if doc is not None:
+                yield doc
+        return
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute(f"SELECT doc FROM estimates ORDER BY id {'DESC' if reverse else 'ASC'}")
@@ -520,16 +608,24 @@ def est_find_by_token(token):
     """Return the estimate doc matching share_token, or None."""
     if not token:
         return None
-    if DATABASE_URL:
-        with _db_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT doc FROM estimates WHERE doc->>'share_token' = %s "
-                        'LIMIT 1', (str(token),))
-            row = cur.fetchone()
-            return row[0] if row else None
-    for doc in est_iter():
-        if doc.get('share_token') == token:
-            return doc
-    return None
+    # Checked for EVERY caller, not just demo sessions: the point of generating
+    # a customer link inside the demo is that it opens, and it gets opened in
+    # another tab, on a phone, by whoever the guest forwarded it to — none of
+    # which carry the demo cookie. Real estimates are searched first, and demo
+    # tokens are 128-bit like any other, so this cannot shadow a live link.
+    if not demo.active():
+        if DATABASE_URL:
+            with _db_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT doc FROM estimates WHERE doc->>'share_token' = %s "
+                            'LIMIT 1', (str(token),))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+        else:
+            for doc in est_iter():
+                if doc.get('share_token') == token:
+                    return doc
+    return demo.find_by('share_token', token)
 
 
 def est_find_by_design_token(token):
@@ -540,16 +636,21 @@ def est_find_by_design_token(token):
     """
     if not token:
         return None
-    if DATABASE_URL:
-        with _db_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT doc FROM estimates WHERE doc->>'design_share_token' = %s "
-                        'LIMIT 1', (str(token),))
-            row = cur.fetchone()
-            return row[0] if row else None
-    for doc in est_iter():
-        if doc.get('design_share_token') == token:
-            return doc
-    return None
+    # Demo fallback for the same reason as est_find_by_token above: a design
+    # review link is given to somebody without a session.
+    if not demo.active():
+        if DATABASE_URL:
+            with _db_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT doc FROM estimates WHERE doc->>'design_share_token' = %s "
+                            'LIMIT 1', (str(token),))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+        else:
+            for doc in est_iter():
+                if doc.get('design_share_token') == token:
+                    return doc
+    return demo.find_by('design_share_token', token)
 
 
 def est_update(est_id, mutator):
@@ -560,6 +661,14 @@ def est_update(est_id, mutator):
     writers (2 gunicorn workers: sign POST vs rep save vs CRM write-back)
     serialize instead of losing updates. File mode is plain load-mutate-save —
     fine for single-user local dev."""
+    if _demo_est(est_id):
+        # One process, one dict, and the GIL between them — the serialization
+        # the DB branch needs is not a concern here.
+        doc = mutator(est_load(est_id))
+        if doc is None:
+            return None
+        est_save(doc)
+        return doc
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('SELECT doc FROM estimates WHERE id = %s FOR UPDATE',
@@ -813,8 +922,44 @@ def index():
 # read and write portal.users instead of users.json, so there is exactly one
 # user store even though two apps expose an editor for it.
 
+@app.route('/demo/<token>')
+def enter_demo(token):
+    """Turn this browser into a demo guest. THE link Luke hands out.
+
+    Takes no cookie and creates no account: the token in the URL is the whole
+    protection, exactly like /sign/<token>. 404 (not 403) when demo mode is off
+    or the token is wrong, so a wrong guess cannot tell you whether the feature
+    exists at all.
+
+    `?reset=1` puts the seeded estimates back — the demo is shown more than
+    once, and the second audience should not open it onto whatever the first
+    one left half-edited.
+    """
+    if not pdemo.matches(token):
+        return jsonify({'error': 'Not found'}), 404
+    pdemo.activate(session)
+    if request.args.get('reset'):
+        demo.reset()
+    # script_root is '/estimate' under the portal mount and '' standalone.
+    return redirect((request.script_root or '') + '/')
+
+
 @app.route('/api/me')
 def me():
+    if demo.active():
+        return jsonify({
+            'username': pdemo.USERNAME,
+            'display_name': pdemo.DISPLAY_NAME,
+            'email': '',
+            'is_admin': False,
+            'role': pdemo.role(),
+            'must_change': False,
+            # Drives the DEMO banner in the header. The guest must be able to
+            # tell at a glance that these customers are invented and these
+            # prices are not ours — an unlabelled demo of a real-looking tool
+            # is how a fictional number ends up quoted back at us.
+            'demo': True,
+        })
     user = session.get('user', '')
     rec  = pusers.get(user) if user else None
     return jsonify({
@@ -1076,6 +1221,12 @@ def _funnel_record(est, state, at=''):
     it started at. Best-effort on purpose: a customer signing a contract must
     never fail because a reporting table was locked.
     """
+    # A demo estimate is not a deal. Recording one would put a fictional
+    # customer and a fictional dollar value into portal.db's funnel table,
+    # which the CRM drains on every board read — so it would show up in the
+    # pipeline, in close rates, and on a leaderboard.
+    if demo.is_demo_doc(est):
+        return
     try:
         c = est.get('customer', {}) or {}
         pfunnel.record(
@@ -1321,6 +1472,12 @@ def _cust_key(name):
 
 
 def _read_customer_notes():
+    # Demo-scoped rather than blocked: the customer screen has a notes box on
+    # it, and a guest typing in one that silently refuses to save reads as a
+    # broken tool. These are also real notes about real people, so a guest
+    # must not be able to read them by guessing a name.
+    if demo.active():
+        return demo.notes()
     try:
         if os.path.exists(CUSTOMER_NOTES_FILE):
             with open(CUSTOMER_NOTES_FILE, 'r', encoding='utf-8') as f:
@@ -1356,6 +1513,10 @@ def set_customer_notes(name):
     legacy = (name or '').lower().strip()
     if legacy != key:
         notes.pop(legacy, None)
+    # _read_customer_notes() handed back the demo dict itself, so the two lines
+    # above have already stored the note; the file must not be touched.
+    if demo.active():
+        return jsonify({'ok': True})
     with open(CUSTOMER_NOTES_FILE, 'w', encoding='utf-8') as f:
         json.dump(notes, f, indent=2)
     return jsonify({'ok': True})
@@ -5987,6 +6148,10 @@ def _cv_expired_block(est):
 def _notify_expired_view(est):
     """Tell the rep a customer just opened an expired estimate. Once per
     estimate — a customer refreshing five times is one lead, not five."""
+    # Same reason as send_signature_notification: reached from the public /sign
+    # GET, so the document is the only thing that knows this is a demo.
+    if demo.is_demo_doc(est):
+        return
     to_addr = _salesperson_email(est)
     if not to_addr:
         return
@@ -9379,6 +9544,17 @@ def _send_email(subject, html_body, to_addr, cc=None, attachments=None, bcc=None
     if not to_addr:
         return False
 
+    # Backstop for demo mode. demo_store.ALLOWED_ENDPOINTS already keeps a
+    # guest off every route that sends mail, so nothing should reach here — but
+    # "should" is doing a lot of work in a function that puts the company's
+    # name on a message to a stranger, and this is the single place all of
+    # them funnel through. The doc-driven paths (signature notification,
+    # customer copy) are guarded separately at their callers, because those run
+    # from the customer's browser where there is no demo session to read.
+    if demo.active():
+        print(f'[demo] email suppressed: {subject!r} -> {to_addr}')
+        return False
+
     # Don't BCC the primary recipient — SendGrid would silently drop the duplicate,
     # but the intent ("I'm already getting this") is clearer this way.
     if bcc and to_addr and bcc.strip().lower() == to_addr.strip().lower():
@@ -9539,6 +9715,13 @@ def send_view_notification(est):
 
 def send_signature_notification(est):
     """Email the salesperson when a customer signs."""
+    # Runs in a background thread off the PUBLIC /sign POST, so there is no
+    # demo session to read — the document is what says this is a demo. Without
+    # this, signing the demo estimate mails demo@projectoneroofing.com, which
+    # is nobody, from an address that has a sending reputation to protect.
+    if demo.is_demo_doc(est):
+        print('[demo] signature notification suppressed')
+        return
     notify_cc = os.environ.get('NOTIFY_CC', '').strip()  # optional extra CC
 
     sp = (est.get('salesperson') or '').strip()
@@ -13156,6 +13339,20 @@ def send_customer_signed_copy(est, pdf_bytes=None):
 def _post_sign_pipeline(est_id):
     """Post-signature background work, run sequentially in ONE thread so two
     writers never read-modify-write the same estimate concurrently."""
+    # Everything below this line has a side effect outside the estimate
+    # document: it writes a PDF into UPLOADS_DIR, mails the customer, creates a
+    # Contact and a Project in The Den, and files packets against them. A demo
+    # signature must do none of it. The whole pipeline is skipped rather than
+    # each step guarded, because a step added later would otherwise arrive
+    # unguarded — and this thread starts from the PUBLIC /sign POST, so there
+    # is no demo session here to fall back on.
+    #
+    # The customer still sees the signed confirmation page: that is rendered by
+    # the request, not by this thread, and it is the part worth demonstrating.
+    if demo.is_demo_doc(est_load(est_id)):
+        print(f'[demo] post-sign pipeline skipped for {est_id}')
+        return
+
     # Build the signed PDF once, then reuse it for the local Documents-tab
     # attachment and the CRM push.
     pdf_bytes = None
@@ -17979,6 +18176,11 @@ def get_pricebook():
     pb.setdefault('materials', {})
     pb.setdefault('presets', {})   # brand preset bundles, keyed by trade
     _ensure_bundle_catalogs(pb)    # roofing/siding product catalogs + bundles (seed if absent)
+    if demo.active():
+        # The one genuinely competitive thing in this app. Structure, products
+        # and margins are real so the tool prices a real-looking job; the
+        # per-square numbers underneath are shifted. See demo_store.scrub_costs.
+        pb = demo.scrub_costs(pb)
     return jsonify(pb)
 
 

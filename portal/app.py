@@ -12,6 +12,7 @@ from markupsafe import escape
 
 from portal import session as psession
 from portal import apibot
+from portal import demo
 from portal import throttle
 from portal import users
 from portal.mounts import MOUNTS
@@ -64,6 +65,15 @@ PUBLIC_ENDPOINTS = {
 @app.before_request
 def _require_login():
     if request.endpoint in PUBLIC_ENDPOINTS or session.get('username'):
+        return
+    # A demo guest (portal/demo.py) is anonymous everywhere in this app except
+    # /api/me. That one endpoint is what the app-switcher bar renders from on
+    # the estimator's own pages, and without this it would 401 — which sends
+    # /api/me down its "row deleted out from under a live cookie" branch,
+    # clearing the guest's session and bouncing them to the login page a second
+    # after the demo loaded. Nothing else opens up: the launcher, user admin and
+    # Nimbus all still see a session with no username.
+    if request.endpoint == 'me' and demo.active(session):
         return
     # Any /api/ path (root portal API or a blueprint's API namespace such as
     # /nimbus/api/*) returns JSON 401 so the fetch client can react instead of
@@ -209,6 +219,10 @@ def change_password():
 
 @app.route('/api/me')
 def me():
+    # Checked before the store lookup: a demo guest has no username, so the
+    # lookup below would fail and sign them out. See portal/demo.py.
+    if not session.get('username') and demo.active(session):
+        return jsonify(demo.identity(MOUNTS))
     user = users.get(session.get('username'))
     if not user:
         # Row deleted out from under a live cookie — sign them out rather than

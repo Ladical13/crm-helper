@@ -1006,6 +1006,60 @@ and cites an authoritative page; the manager reading it before clicking approve
 is the accuracy check. Answers do move between runs — Windsor came back
 "2024 I-Codes" on one pass and "2018 IRC" on another.
 
+### Demo mode — one link, no company data
+
+`P1_DEMO_TOKEN=<secret>` turns on `/estimate/demo/<token>`: a guest session for
+showing the estimate tool to someone outside the company. Off unless that
+variable is set — no token, no route, no session key honoured, the same
+fail-closed shape as `DISABLE_AUTH` refusing to engage on Railway. Add
+`?reset=1` to put the seeded estimates back before the next audience. Tests:
+`estimator/tests/test_demo.py`, `portal/tests/test_demo.py`.
+
+Two modules because two different things are being decided. `portal/demo.py`
+owns the guest IDENTITY, and has to: all four apps share one cookie and the
+app-switcher bar renders from the PORTAL's `/api/me`, which would otherwise
+take a demo session down its "row deleted out from under a live cookie" branch,
+call `sign_out()` and bounce the guest to a login page a second after the app
+loaded. `estimator/demo_store.py` owns what that guest may then do.
+
+Four things are load-bearing:
+
+- **A demo session sets neither `session['username']` nor `session['user']`.**
+  Those two keys are what the canvasser, the CRM and the portal's own guard
+  read, so a guest holding the shared cookie is anonymous to all three. The
+  estimator is the only app that asks `demo.active()` anything.
+- **`demo.active()` routes the LIST operations; `demo.owns(id)` routes the
+  BY-ID ones**, and conflating them breaks the demo's best screen. Two paths
+  reach a demo estimate with no demo cookie in sight — the customer's browser
+  POSTing a signature to the public `/sign` link, and the background thread it
+  starts. Routed by session, those go to the real store, where the id does not
+  exist, and signing the demo estimate fails with "no longer available for
+  signing". Every `est_*` helper in `app.py` therefore checks `_demo_est()`,
+  which is either.
+- **`ALLOWED_ENDPOINTS` is default-deny**, same shape and same reason as
+  `PUBLIC_ENDPOINTS`: a route added tomorrow is closed to a guest until someone
+  opens it on purpose. Config GETs are open and every matching write is not —
+  one guest saving the price book changes what every rep quotes.
+- **The document, not the session, is what says "demo" on the way out.**
+  `_post_sign_pipeline`, `send_signature_notification`, `_notify_expired_view`
+  and `_funnel_record` all run from the public `/sign` route or a thread it
+  spawned, so they check `is_demo_doc()`. Without that, signing the demo mails
+  a real address, files a Contact and a Project in The Den, and puts a
+  fictional dollar value into the CRM funnel — which the CRM drains on every
+  board read, so it would land in the pipeline and on a leaderboard.
+
+**Costs are shifted, not zeroed** (`scrub_costs`, `P1_DEMO_REAL_COSTS=1` to
+turn it off). The price book is the one genuinely competitive thing in this
+app and a demo link gets forwarded. Zeroing was the obvious alternative and
+does not work: in margin mode sell is derived FROM cost, so a zeroed book
+prices every package at $0. The factor is a hash of the product's own id — so
+it is stable across workers and reloads — and is never exactly 1, because "most
+of these are wrong" is not a property anyone can rely on.
+
+Deliberately NOT in the demo: photo upload, the visualizer (metered fal API),
+the RoofR and Xactimate parsers (arbitrary file upload from a stranger),
+jurisdiction verify (metered Perplexity), and everything that sends mail.
+
 ### Estimate outcome — `lost`, and why the rename was the small half
 
 `declined` is now **`lost`**, and the rename was the least of it. `estStatusOf()`

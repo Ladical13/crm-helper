@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=197">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=198">
 </head>
 <body>
 
@@ -53,8 +53,13 @@
     <button id="save-btn" onclick="saveCurrentWork()">Save</button>
     <button id="more-menu-btn" class="more-menu-btn" onclick="toggleMoreMenu()">⋮</button>
     <div class="user-badge" id="user-badge" style="display:none">
+      <!-- Shown only for a demo guest (portal/demo.py). Not decoration: the
+           customers in a demo are invented and the costs are shifted, and an
+           unlabelled demo of a real-looking tool is how a made-up number gets
+           quoted back at us as if it were a real one. -->
+      <span id="demo-badge" class="demo-badge" style="display:none" title="Sample data — invented customers, shifted costs">DEMO</span>
       <span id="user-display-name" class="user-name"></span>
-      <button class="btn-logins" onclick="openLoginsModal()" title="Passwords & team logins">🔑</button>
+      <button class="btn-logins" data-demo-hide onclick="openLoginsModal()" title="Passwords & team logins">🔑</button>
       <!-- Sign Out lives in the portal's switcher bar now (portal/static/shell.js),
            so it is not duplicated here. -->
     </div>
@@ -70,9 +75,12 @@
     <button onclick="shareEstimate();closeMoreMenu()">Send / Sign</button>
     <button onclick="doPrint();closeMoreMenu()">Print / PDF</button>
     <button id="mm-settings" onclick="openSettings();closeMoreMenu()">⚙ Settings</button>
-    <button onclick="openLoginsModal();closeMoreMenu()">🔑 Passwords &amp; Logins</button>
-    <button onclick="document.getElementById('roofr-pdf-input').click();closeMoreMenu()">📐 RoofR Import</button>
-    <button onclick="document.getElementById('xact-pdf-input').click();closeMoreMenu()">🏛 Insurance PDF Import</button>
+    <!-- data-demo-hide: reaches an endpoint a demo guest is refused (the team
+         list, the two import parsers). Hidden rather than left to fail, so the
+         guest never clicks something that looks broken. -->
+    <button data-demo-hide onclick="openLoginsModal();closeMoreMenu()">🔑 Passwords &amp; Logins</button>
+    <button data-demo-hide onclick="document.getElementById('roofr-pdf-input').click();closeMoreMenu()">📐 RoofR Import</button>
+    <button data-demo-hide onclick="document.getElementById('xact-pdf-input').click();closeMoreMenu()">🏛 Insurance PDF Import</button>
     <button onclick="openOrderSheet();closeMoreMenu()">📋 Order Sheet</button>
   </div>
 </header>
@@ -817,6 +825,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=197"></script>
+<script src="/estimate/static/app.js?v=198"></script>
 </body>
 </html>

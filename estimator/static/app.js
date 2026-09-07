@@ -12472,6 +12472,15 @@ function _meCanViewAll() { return _meRole() !== 'rep'; }
 
 function applyRoleGates() {
   const isRep = _meRole() === 'rep';
+  // Demo guests (portal/demo.py). Two jobs: label the session so nobody mistakes
+  // invented customers and shifted costs for the real book, and hide the
+  // controls whose endpoints the demo allowlist refuses — a button that always
+  // errors reads as a broken tool, which is the opposite of the point.
+  if (_meInfo && _meInfo.demo) {
+    const badge = document.getElementById('demo-badge');
+    if (badge) badge.style.display = '';
+    document.querySelectorAll('[data-demo-hide]').forEach(el => el.style.display = 'none');
+  }
   // Hide Price Book and app Settings from reps — they just scope and quote
   document.querySelectorAll('.btn-pricebook').forEach(b => b.style.display = isRep ? 'none' : '');
   document.querySelectorAll('.btn-settings').forEach(b => b.style.display = isRep ? 'none' : '');
