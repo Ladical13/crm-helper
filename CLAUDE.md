@@ -816,6 +816,64 @@ Also landed with these, each pinned by a test:
   ignored entirely for a logged-in team member previewing the link — the rep's
   own tapping is not a buying signal.
 
+### Insurance job margin (2026-09-05)
+
+On a retail job the rep sets the price and the margin follows. On an insurance
+job **the carrier sets the price and the margin is whatever is left after we
+build the roof** — and the tool could not see it at all. Insurance line items
+carry the carrier's `unit_price` and never our cost, so an insurance estimate
+reported no margin, was excluded from every margin figure on the analytics tab,
+and the question "is insurance work worth doing" had no answer here. Most of
+this company's work is insurance.
+
+The cost side is **derived, not typed**: a carrier export runs 30-80 lines and
+nobody was ever going to cost them by hand. Picking the roofing system being
+installed builds cost lines from the price book, sized by `measuredQty` off the
+same `S.measurements` the retail side uses — which is why importing the
+measurement report matters on an insurance job. `insurance_cost_report`
+(app.py) and `insuranceCostReport` (app.js) are the mirrored pair; the runner
+`tests/insurance_cost_runner.js` holds them to the same numbers, the same way
+`parity_runner.js` does for retail pricing.
+
+Five things are load-bearing:
+
+- **The cost items live OUTSIDE `trades`**, under `insurance_cost`. Nothing
+  that builds a customer-facing document can reach them, which is the only
+  thing standing between an internal cost sheet and a homeowner reading our
+  labor rate off their own proposal.
+- **A job with no cost entered has an UNKNOWN margin, not a 100% one.** The
+  same rule the retail floor already follows — otherwise every un-costed claim
+  sorts to the top of the profitability table.
+- **A cost line priced at $0 makes the margin a fiction, and it is named.** A
+  freshly seeded roofing bundle ships Tear-Off Labor, Install Labor, drip edge,
+  ridge cap and starter at `0`, so an uncorrected book reports a roof that
+  costs only its shingles and the margin lands 20-30 points high — in the
+  direction that makes a bad job look good. `unpricedInsuranceCostLines` finds
+  them, the panel names them in red and labels the figure *overstated*, and
+  **`/api/analytics` leaves that job out of the margin entirely** rather than
+  banking a number the price book cannot support. Same trap and the same answer
+  as `unpricedBundleLines` on the commercial side.
+- **Supplements are revenue, and they are the only lever.** A rep cannot raise
+  a carrier's price by editing the estimate, so `supplements` adds to the
+  revenue side and is where a thin claim gets fixed. This is also why the
+  margin floor deliberately does **not** gate an insurance send — a block there
+  would be a wall with no door.
+- **`refreshInsuranceCostQuantities` runs from `applyMeasurements`.** A
+  measurement report is imported *after* the system is picked as often as
+  before it; without this the margin quietly reports the cost of a zero-square
+  roof. Hand-edited quantities set `qty_locked` and are never recomputed.
+
+Guarded by `tests/test_insurance_margin.py`.
+
+**Still open: Xactimate exports carry no measurements.** `_parse_symbility_pdf`
+returns `roof_squares`; `_parse_xactimate_pdf` returns no `measurements` key at
+all, despite the comment claiming both parsers return the same shape. It fails
+safely — the front end reads `data.measurements || {}` — but it means an
+Xactimate import leaves the rep to key the squares by hand, and Xactimate is
+the majority of this company's volume. The carrier's own `SQ` line quantities
+are a candidate source; picking between the tear-off line and the install line
+(which carries waste) is the part that needs deciding.
+
 ### Commercial estimates (third estimate type)
 
 `🏠 Retail | 🏛 Insurance | 🏢 Commercial` in the sidebar. Commercial mode turns

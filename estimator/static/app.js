@@ -1315,6 +1315,11 @@ function displayUnit(item) {
   return (item.bundle_lf && item.bundle_unit) ? item.bundle_unit : (item.unit || '');
 }
 function applyMeasurements() {
+  // An insurance job's cost lines are sized from the same measurements, and a
+  // measurement report is imported after the system is picked as often as
+  // before it — so they have to re-size here too or the margin silently
+  // reports the cost of a zero-square roof.
+  try { refreshInsuranceCostQuantities(); } catch {}
   const applyTrade = td => (td && td.line_items || []).forEach(item => {
     const q = measuredQty(item);
     if (q !== null) item.quantity = q;
@@ -2068,6 +2073,141 @@ function selectedTotal() {
   return RETAIL_TRADE_KEYS
     .reduce((s,tr)=>s+tradeTotal(tr, tradeTier(tr)),0);
 }
+/* ── Insurance job margin ─────────────────────────────────────────────────
+   On a retail job the rep sets the price and the margin follows. On an
+   insurance job the carrier sets the price and the margin is whatever is left
+   after we build the roof — which this tool could not see at all, because
+   insurance line items carry the carrier's unit_price and never our cost.
+
+   The cost side is DERIVED from the measurement report plus the price book,
+   not typed: a carrier export runs 30-80 lines and nobody was ever going to
+   cost them by hand. Cost items live outside S.trades on purpose, so nothing
+   that builds a customer-facing document can pick them up and print them.
+   MUST mirror insurance_cost_report (app.py). */
+const INSURANCE_ADDERS = ['dumpster', 'permit', 'subs', 'other'];
+
+function insCost() {
+  if (!S.insurance_cost) S.insurance_cost = {};
+  const ic = S.insurance_cost;
+  if (!ic.items)  ic.items  = [];
+  if (!ic.adders) ic.adders = {};
+  return ic;
+}
+/* Cost lines that are IN the job but carry no cost in the price book.
+
+   This is the difference between a margin and a fiction. A freshly seeded
+   roofing bundle ships Tear-Off Labor, Install Labor, drip edge, ridge cap and
+   starter at $0 — so an uncorrected book reports a roof that costs only its
+   shingles, and the margin comes out 20-30 points high in the direction that
+   makes a bad job look good. Same trap, and the same answer, as
+   unpricedBundleLines() on the commercial side. */
+function unpricedInsuranceCostLines() {
+  return (insCost().items || []).filter(
+    i => (parseFloat(i.quantity) || 0) > 0 && (parseFloat(i.unit_cost) || 0) <= 0);
+}
+
+function insuranceCostReport() {
+  const ic = insCost();
+  const n = v => { const f = parseFloat(v); return isNaN(f) ? 0 : f; };
+  const revenue = insuranceTotal() + n(ic.supplements);
+  const build = (ic.items || []).reduce(
+    (a, i) => a + n(i.quantity) * n(i.unit_cost), 0);
+  const adders = {};
+  INSURANCE_ADDERS.forEach(k => { adders[k] = n((ic.adders || {})[k]); });
+  const addTot = INSURANCE_ADDERS.reduce((a, k) => a + adders[k], 0);
+  const cost = build + addTot;
+  const profit = revenue - cost;
+  return {
+    revenue, supplements: n(ic.supplements), build_cost: build,
+    adders, adders_total: addTot, cost, gross_profit: profit,
+    // No cost entered yet means the margin is UNKNOWN, never 100% — otherwise
+    // every un-costed claim sorts to the top of the profitability table.
+    margin_pct: (revenue > 0 && cost > 0) ? (profit / revenue * 100) : null,
+    costed: cost > 0,
+    // The margin is only as honest as the price book behind it.
+    unpriced: unpricedInsuranceCostLines().map(i => i.name),
+  };
+}
+
+/* Build the cost side from the roofing system actually being installed.
+
+   Every product in the bundle carries our real cost and, usually, an auto-qty
+   link (`measure`) or formula — the same two fields the retail side uses — so
+   the measurement report is what sizes the job. Items with no measure land at
+   quantity 0 for the rep to fill in rather than being dropped, because a
+   silently missing cost line reads as a better margin than the job has.
+
+   Rebuilt wholesale on every bundle change: these are derived figures, and a
+   merge would leave last system's accessories costed into this one. */
+function buildInsuranceCostItems(bundleId) {
+  const bundle = _tradeBundle('roofing', bundleId);
+  if (!bundle) return [];
+  const catalog = _tradeCatalog('roofing');
+  const out = [];
+  (bundle.product_ids || []).forEach(pid => {
+    const p = catalog.find(x => x.id === pid);
+    if (!p) return;
+    const item = {
+      catalog_id: pid, name: p.name, unit: p.unit || 'EA',
+      measure: p.measure || undefined, formula: p.formula || undefined,
+      bundle_lf: p.bundle_lf || undefined, bundle_unit: p.bundle_unit || undefined,
+      unit_cost: parseFloat(p.cost) || 0,
+      quantity: 0,
+    };
+    const q = measuredQty(item);
+    item.quantity = (q === null) ? 0 : q;
+    out.push(item);
+  });
+  return out;
+}
+
+function setInsuranceBundle(bundleId) {
+  const ic = insCost();
+  ic.bundle_id = bundleId || '';
+  ic.items = bundleId ? buildInsuranceCostItems(bundleId) : [];
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+
+/* Re-size the derived cost lines after the measurements move — importing a
+   measurement report is the whole point, and it lands AFTER the system was
+   picked as often as before it. Hand-edited quantities and unit costs are the
+   rep's, so only auto-qty rows are recomputed. */
+function refreshInsuranceCostQuantities() {
+  const ic = insCost();
+  (ic.items || []).forEach(item => {
+    if (item.qty_locked) return;
+    const q = measuredQty(item);
+    if (q !== null) item.quantity = q;
+  });
+}
+
+function setInsuranceAdder(key, v) {
+  const ic = insCost();
+  ic.adders = ic.adders || {};
+  ic.adders[key] = (v === '' ? 0 : parseFloat(v) || 0);
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function setInsuranceSupplements(v) {
+  insCost().supplements = (v === '' ? 0 : parseFloat(v) || 0);
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function setInsuranceCostQty(idx, v) {
+  const it = (insCost().items || [])[idx]; if (!it) return;
+  it.quantity = parseFloat(v) || 0;
+  it.qty_locked = true;   // the rep's number now; stop auto-resizing it
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function setInsuranceCostUnit(idx, v) {
+  const it = (insCost().items || [])[idx]; if (!it) return;
+  it.unit_cost = parseFloat(v) || 0;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+
 function insuranceTotal() {
   const td = S.trades.insurance;
   if (!td || !td.enabled) return 0;
@@ -6198,6 +6338,112 @@ function renderInsuranceFreeform() {
         oninput="S.trades.insurance.scope_notes=this.value;setDirty()"
         placeholder="E.g. Complete tear-off and replacement of existing roofing system per insurance claim…"
       >${esc(td.scope_notes||'')}</textarea>
+    </div>
+    ${insuranceMarginMarkup()}`;
+}
+
+/* ── Job Margin panel (insurance only, rep-facing) ───────────────────────
+   Never printed and never on the customer page: it is the answer to "what
+   does this claim actually pay us", which is nobody's business but ours.
+   The cost side is derived from the measurement report + the price book, so
+   the rep picks the system and the numbers follow. */
+function insuranceMarginMarkup() {
+  const ic  = insCost();
+  const rep = insuranceCostReport();
+  const m   = S.measurements || {};
+  const sq  = parseFloat(m.roof_squares) || 0;
+  const bundles = _tradeBundles('roofing');
+
+  const noMeasure = sq <= 0;
+  const bundleOpts = ['<option value="">— pick the system being installed —</option>']
+    .concat(bundles.map(b =>
+      `<option value="${esc(b.id)}" ${ic.bundle_id === b.id ? 'selected' : ''}>${esc(b.name)}</option>`))
+    .join('');
+
+  const rows = (ic.items || []).map((it, i) => `
+    <tr>
+      <td>${esc(it.name)}${it.qty_locked ? ' <span class="note-tag">edited</span>' : ''}</td>
+      <td><input type="number" step="0.1" min="0" value="${it.quantity}"
+            onchange="setInsuranceCostQty(${i}, this.value)"></td>
+      <td class="ins-mg-unit">${esc(displayUnit(it) || it.unit || '')}</td>
+      <td><input type="number" step="0.01" min="0" value="${it.unit_cost}"
+            onchange="setInsuranceCostUnit(${i}, this.value)"></td>
+      <td class="ins-mg-money">${fmtCur((parseFloat(it.quantity)||0) * (parseFloat(it.unit_cost)||0))}</td>
+    </tr>`).join('');
+
+  const adderLabels = { dumpster:'Dumpster', permit:'Permit', subs:'Subcontractor', other:'Other' };
+  const adderRows = INSURANCE_ADDERS.map(k => `
+    <label class="ins-mg-adder">
+      <span>${adderLabels[k]}</span>
+      <input type="number" step="0.01" min="0" value="${(ic.adders||{})[k] || ''}"
+        placeholder="0.00" onchange="setInsuranceAdder('${k}', this.value)">
+    </label>`).join('');
+
+  // A price book with $0 on the labor lines reports a roof that costs only its
+  // shingles. Naming the lines is what makes it fixable — the manager fills
+  // them in the price book, or the rep types the cost straight into the table.
+  const unpricedWarn = rep.unpriced.length ? `
+    <div class="ins-mg-unpriced">
+      <strong>⛔ ${rep.unpriced.length} cost line${rep.unpriced.length > 1 ? 's have' : ' has'} no price.</strong>
+      This margin is overstated until ${rep.unpriced.length > 1 ? 'they are' : 'it is'} filled in:
+      ${esc(rep.unpriced.join(', '))}.
+      Fix the cost in the Price Book, or type it in the table above.
+    </div>` : '';
+
+  // A margin nobody has costed is UNKNOWN, not 100%. Say which it is.
+  const verdict = rep.margin_pct === null
+    ? `<div class="ins-mg-empty">Pick the system above (and import a measurement
+         report if you have not) to see this claim's margin.</div>`
+    : `<div class="ins-mg-result ${rep.margin_pct < 25 ? 'is-thin' : ''}">
+         <div><span>Carrier RCV</span><strong>${fmtCur(rep.revenue - rep.supplements)}</strong></div>
+         ${rep.supplements ? `<div><span>Supplements</span><strong>${fmtCur(rep.supplements)}</strong></div>` : ''}
+         <div><span>Our cost</span><strong>${fmtCur(rep.cost)}</strong></div>
+         <div class="ins-mg-profit"><span>Gross profit</span><strong>${fmtCur(rep.gross_profit)}</strong></div>
+         <div class="ins-mg-pct">
+           <span>Margin${rep.unpriced.length ? ' <em>(overstated)</em>' : ''}</span>
+           <strong>${rep.margin_pct.toFixed(1)}%</strong></div>
+       </div>`;
+
+  return `
+    <div class="ins-margin-panel">
+      <div class="panel-header">
+        <h3>Job Margin <span class="note-tag">internal only — never shown to the customer</span></h3>
+      </div>
+      <p class="ins-mg-hint">The carrier sets the price, so the margin is whatever is
+        left after we build it. Pick the system going on the house and the cost is
+        derived from your measurements and the price book.</p>
+
+      ${noMeasure ? `<div class="ins-mg-warn">
+        No roof measurements on this estimate yet, so quantities will come out at zero.
+        Import the measurement report (⋮ → 📐 RoofR Import) or type the squares on Scope.
+      </div>` : `<div class="ins-mg-meas">Sized from <strong>${sq} squares</strong> of roof.</div>`}
+
+      <label class="ins-mg-bundle">
+        <span>Roofing system being installed</span>
+        <select onchange="setInsuranceBundle(this.value)">${bundleOpts}</select>
+      </label>
+
+      ${(ic.items || []).length ? `
+        <table class="ins-mg-table">
+          <thead><tr><th>Cost line</th><th>Qty</th><th>Unit</th><th>Unit cost</th><th>Cost</th></tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr><td colspan="4">Build cost</td>
+            <td class="ins-mg-money">${fmtCur(rep.build_cost)}</td></tr></tfoot>
+        </table>` : ''}
+
+      <div class="ins-mg-adders">
+        <div class="ins-mg-adders-title">Costs the measurements can't know</div>
+        ${adderRows}
+      </div>
+
+      <label class="ins-mg-supp">
+        <span>Approved supplements <span class="note-tag">adds to what the carrier pays</span></span>
+        <input type="number" step="0.01" value="${ic.supplements || ''}" placeholder="0.00"
+          onchange="setInsuranceSupplements(this.value)">
+      </label>
+
+      ${unpricedWarn}
+      ${verdict}
     </div>`;
 }
 

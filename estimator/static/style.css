@@ -4976,3 +4976,65 @@ body.is-client #nav-toggle      { display: none; }
   /* Same rule as everywhere else in this app: a finger, not a width. */
   .settings-tab { padding: 10px 14px; font-size: 13px; }
 }
+
+/* ── Insurance job margin panel ─────────────────────────────────────────
+   Rep-facing only. Never printed, never on the customer page — it answers
+   "what does this claim actually pay us", which is nobody's business but
+   ours. Deliberately plain: this is a worksheet, not a sales surface. */
+.ins-margin-panel{
+  margin-top:18px;padding:16px;border:1px solid var(--border);
+  border-radius:var(--radius);background:#f8fafc;
+}
+.ins-mg-hint{margin:0 0 12px;font-size:12.5px;color:var(--text-light);line-height:1.55;max-width:70ch}
+.ins-mg-warn{
+  background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
+  border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;line-height:1.5;
+}
+.ins-mg-meas{font-size:12.5px;color:var(--text-light);margin-bottom:12px}
+.ins-mg-bundle{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-width:420px}
+.ins-mg-bundle>span{font-size:10px;font-weight:600;color:var(--text-light);text-transform:uppercase;letter-spacing:.04em}
+
+.ins-mg-table{width:100%;border-collapse:collapse;margin-bottom:14px;background:#fff}
+.ins-mg-table th{
+  text-align:left;font-size:10px;font-weight:600;color:var(--text-light);
+  text-transform:uppercase;letter-spacing:.05em;padding:7px 8px;
+  border-bottom:1px solid var(--border);
+}
+.ins-mg-table td{padding:5px 8px;border-bottom:1px solid #eef1f5;font-size:12.5px;vertical-align:middle}
+.ins-mg-table input{width:100%;max-width:110px}
+.ins-mg-table tfoot td{font-weight:700;border-top:1px solid var(--border);border-bottom:none}
+.ins-mg-money{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ins-mg-unit{color:var(--text-light);font-size:11.5px}
+
+.ins-mg-adders{margin-bottom:14px}
+.ins-mg-adders-title{font-size:10px;font-weight:600;color:var(--text-light);
+  text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.ins-mg-adder{display:inline-flex;flex-direction:column;gap:3px;margin:0 12px 8px 0;width:130px}
+.ins-mg-adder>span{font-size:11.5px;color:var(--text)}
+.ins-mg-supp{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-width:320px}
+.ins-mg-supp>span{font-size:11.5px;color:var(--text)}
+
+.ins-mg-empty{font-size:12.5px;color:var(--text-light);font-style:italic;
+  padding:12px;background:#fff;border:1px dashed var(--border);border-radius:6px}
+.ins-mg-result{background:#fff;border:1px solid var(--border);border-radius:6px;padding:12px 14px}
+.ins-mg-result>div{display:flex;justify-content:space-between;align-items:baseline;
+  padding:4px 0;font-size:13px}
+.ins-mg-result>div>span{color:var(--text-light)}
+.ins-mg-result>div>strong{font-variant-numeric:tabular-nums}
+.ins-mg-profit{border-top:1px solid var(--border);margin-top:4px;padding-top:8px!important}
+.ins-mg-pct>strong{font-size:20px;color:#16a34a}
+.ins-mg-result.is-thin .ins-mg-pct>strong{color:#b45309}
+@media (pointer: coarse){
+  /* An office manager costs these on an iPad as often as at a desk. */
+  .ins-mg-table input,.ins-mg-adder input,.ins-mg-supp input{font-size:16px}
+  .ins-mg-table td{padding:8px}
+}
+/* A cost line with no price in the book. Same weight as the commercial
+   unpriced-bundle banner, and for the same reason: it is the only thing
+   between a placeholder book and a margin that looks legitimate. */
+.ins-mg-unpriced{
+  background:#fee2e2;border:1px solid #dc2626;color:#7f1d1d;
+  border-radius:6px;padding:11px 13px;margin-bottom:12px;font-size:12.5px;line-height:1.55;
+}
+.ins-mg-unpriced strong{display:block;margin-bottom:2px}
+.ins-mg-pct em{font-style:normal;color:#b45309;font-size:11px}
