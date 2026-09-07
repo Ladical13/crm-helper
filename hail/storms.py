@@ -190,14 +190,22 @@ def history_at(lat, lng, since=None, source='mrms_mesh'):
     five years of daily NOAA CSVs, takes up to a minute on a cold area, and can
     still only answer "somebody reported hail a few miles away". This is one
     indexed query and answers about the roof itself.
+
+    `source=None` returns every source we hold. Each row carries its own
+    `source`, and callers must keep it attached to anything a human reads: a
+    radar estimate over this cell and a spotter's phone call from down the road
+    are different claims about the same roof, and flattening them into one
+    number is how a customer ends up being told something we cannot support.
     """
     ri, ci = hgrid.cell_index(lat, lng)
-    clauses, params = ['c.ri=?', 'c.ci=?', 'e.source=?'], [ri, ci, source]
+    clauses, params = ['c.ri=?', 'c.ci=?'], [ri, ci]
+    if source is not None:
+        clauses.append('e.source=?'); params.append(source)
     if since:
         clauses.append('e.event_date >= ?'); params.append(since)
     with get_db() as db:
         rows = db.execute(
-            f'''SELECT e.event_date, e.event_id, c.size_in
+            f'''SELECT e.event_date, e.event_id, e.source, c.size_in
                 FROM storm_cells c JOIN storm_events e ON e.event_id = c.event_id
                 WHERE {' AND '.join(clauses)}
                 ORDER BY e.event_date DESC''', params).fetchall()

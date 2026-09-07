@@ -432,12 +432,39 @@ closes a homeowner. `docs/storm-to-contract.html` is the full build plan.
   address. It lives in `join.TIERS` so the map, the drafts and the canvassing
   zones cannot disagree.
 
+**The join has a caller now.** `salescrm`'s `/api/storm/<event_id>` is the wire
+this package was built for — `_lead_tier()` maps a lead's state onto
+`join.TIERS`, `portal.geo.lookup` supplies the coordinates, and `join.affected()`
+does the geometry. Three finished, tested pieces that had nothing connecting
+them: `hail/` had no caller at all and `portal/geo.py` had none outside its own
+backfill. Two rules:
+
+- **The tier rule lives in the CRM, the geometry lives here.** `join` refuses to
+  learn what a lead stage is on purpose — coupling the storm archive to that
+  schema guarantees it breaks the next time a stage is renamed.
+- **Both halves must build the address key the same way.** The lookup uses
+  street + city + state + zip because that is what `geocode_backfill` writes. A
+  mismatch is invisible — no error, no log, just a storm that appears to have
+  missed everybody — which is the failure `norm_address` warns about in its own
+  docstring. Pinned by `test_the_lookup_key_matches_what_the_backfill_writes`.
+
+`history_at(source=None)` returns every source we hold, each row labelled.
+Keep that label attached to anything a human reads: **a radar estimate over a
+cell and a spotter's phone call from down the road are different claims about
+the same roof**, and a customer must never be told the weaker one as though it
+were the stronger. `/api/storm/<id>` carries `source` out for that reason.
+
 **Not built yet: the ingest itself.** `grid`, `storms` and `join` are complete
 and tested; fetching MRMS GRIB2 and decoding it is not written, because the dev
 sandbox cannot reach `mrms.ncep.noaa.gov` or the Iowa State archive and
 untested network code is worse than none. The decoder choice is also open —
 eccodes/cfgrib needs system libraries on Railway. Whatever reads GRIB2 only has
 to yield `(lat, lng, size)` triples into `swath_from_points()`.
+
+*Until it lands `hail.db` is empty, so `/api/storm/<id>` has nothing to answer
+about. That is why it reports `placed`, `skipped` and `unplaced` rather than a
+bare count: "the storm missed us" and "the data never arrived" must not look
+the same.*
 
 ⚠️ **`MM_PER_INCH` is from the product documentation, not from a message we
 have decoded.** Confirm it against a real GRIB2 file before any number reaches

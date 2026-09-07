@@ -117,3 +117,17 @@ def test_load_swath_of_an_unknown_event_is_none():
 def test_event_ids_are_derived_so_two_pulls_are_one_event():
     assert storms.event_id('2026-06-12') == storms.event_id('2026-06-12')
     assert storms.event_id('2026-06-12') != storms.event_id('2026-06-13')
+
+
+def test_history_can_span_every_source():
+    """A radar estimate over this cell and a spotter's phone call from down the
+    road are different claims about the same roof. Both are worth holding; what
+    must never happen is flattening them into one number, so every row carries
+    the source that produced it."""
+    lat, lng = FOCO
+    storms.record('2026-06-12', _swath((lat, lng, 1.75)), source='mrms_mesh')
+    storms.record('2026-06-12', _swath((lat, lng, 1.00)), source='spc_reports')
+
+    assert [h['source'] for h in storms.history_at(lat, lng)] == ['mrms_mesh']
+    both = storms.history_at(lat, lng, source=None)
+    assert sorted(h['source'] for h in both) == ['mrms_mesh', 'spc_reports']

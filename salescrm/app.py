@@ -34,6 +34,9 @@ from portal import dbtune                # noqa: E402
 from portal import funnel as pfunnel     # noqa: E402
 from portal import lost_reasons as plost  # noqa: E402
 from portal import mail as pmail          # noqa: E402
+from portal import geo as pgeo            # noqa: E402
+from hail import join as hjoin            # noqa: E402
+from hail import storms as hstorms        # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
 
@@ -1658,6 +1661,119 @@ def _appt_loop():
         except Exception as exc:
             print(f'[appt] reminder check failed: {exc}')
         time.sleep(1800)
+
+
+# ── Storms: which of OUR people are under it ─────────────────────────────────
+#
+# `hail/join.affected()` is the module CLAUDE.md calls the reason for building
+# any of the storm work -- "a hail map is a commodity; what no vendor can sell
+# us is the swath against our own customers" -- and until now it had NO CALLER.
+# Nor did portal/geo.py, outside its own backfill. Three finished, tested pieces
+# with no wire between them.
+#
+# This is the wire. It is deliberately the only part of it that knows what a
+# lead is: `join` refuses to learn about stages on purpose, because coupling the
+# storm archive to this schema guarantees it breaks the next time one is
+# renamed. So the tier rule lives here and the geometry lives there.
+#
+# NOTE ON DATA: hail.db is filled by an ingest that is not written yet (the dev
+# sandbox cannot reach NOAA, and untested network code is worse than none). This
+# endpoint therefore returns an empty affected list until that lands -- which is
+# the honest answer, and is why it reports `geocoded` and `skipped` rather than
+# just a count that would read the same whether the storm missed us or the data
+# never arrived.
+
+
+def _lead_tier(lead):
+    """Which priority band a lead belongs to, in `hail.join.TIERS` terms.
+
+    Order is a business rule that lives in `join.TIERS`: a Roof Care Plan
+    subscriber is a contractual obligation and is contacted first, always, even
+    when a past customer took bigger hail.
+    """
+    stage = lead.get('stage')
+    if stage == 'won':
+        return 'rcp' if (lead.get('plan') and lead.get('billing')) else 'past_customer'
+    if stage == 'lost':
+        return 'lost_estimate'
+    if stage in OPEN_STAGES:
+        # A bulk-imported row nobody has ever spoken to is not an "open lead"
+        # in any sense a rep would recognise -- it is a cold address.
+        return 'cold' if lead.get('import_batch') and not lead.get('last_activity_at') \
+            else 'open_lead'
+    return 'cold'
+
+
+def _storm_records(db, rep=None):
+    """Every lead we could place on the map, plus the count we could not.
+
+    Coordinates come from the shared geocode cache and NEVER from the network:
+    this runs inside a request, and a storm brief that waits on a geocoder is a
+    storm brief nobody reads.
+    """
+    clauses, params = ["address != ''"], []
+    if rep:
+        clauses.append('rep=?'); params.append(rep)
+    rows = db.execute('SELECT * FROM leads WHERE ' + ' AND '.join(clauses),
+                      params).fetchall()
+    records, unplaced = [], 0
+    for r in rows:
+        hit = pgeo.lookup(r['address'], r['city'], r['state'], r['zip'])
+        if not hit:
+            unplaced += 1
+            continue
+        d = _lead_row(r)
+        records.append({'id': d['id'], 'name': d['name'], 'address': d['address'],
+                        'city': d['city'], 'phone': d['phone'], 'email': d['email'],
+                        'stage': d['stage'], 'stage_label': d['stage_label'],
+                        'rep': d['rep'], 'tier': _lead_tier(d),
+                        'lat': hit['lat'], 'lng': hit['lng']})
+    return records, unplaced
+
+
+@app.route('/api/storm/<path:event_id>')
+@login_required
+def storm_affected(event_id):
+    """Who of ours sits under one stored storm, worst-hit first, by tier.
+
+    Every number that could be understated is reported rather than implied.
+    `skipped` and `unplaced` are the customers we could not place at all --
+    dropping them silently is how a storm brief says "40 affected" when the
+    truth is 400, which reads as a small storm and gets nobody out of bed.
+    """
+    swath = hstorms.load_swath(event_id)
+    if swath is None:
+        return jsonify({'error': 'Unknown storm'}), 404
+    event = hstorms.get_event(event_id)
+    rep = request.args.get('rep') if is_manager() else current_rep()
+    min_size = request.args.get('min_size')
+
+    with get_db() as db:
+        records, unplaced = _storm_records(db, rep)
+    hits, skipped = hjoin.affected(swath, records,
+                                   min_size=float(min_size) if min_size else None)
+    summary = hjoin.summarize(swath, hits, skipped)
+    return jsonify({
+        'event': event,
+        # Carried out to the caller so nothing downstream has to guess whether
+        # this is radar over the roof or somebody's phone call from down the
+        # road. They are different claims and a customer must never be told the
+        # weaker one as though it were the stronger.
+        'source': (event or {}).get('source'),
+        'summary': summary,
+        'by_tier': hjoin.by_tier(hits),
+        'placed': len(records), 'skipped': skipped, 'unplaced': unplaced,
+    })
+
+
+@app.route('/api/storms')
+@login_required
+def storm_list():
+    """Stored storms, newest first — what /api/storm/<id> can be asked about."""
+    return jsonify(hstorms.events(since=request.args.get('since'),
+                                  min_size=float(request.args['min_size'])
+                                  if request.args.get('min_size') else None,
+                                  limit=min(int(request.args.get('limit') or 50), 200)))
 
 
 # ── The Den (Base44) handoff ──────────────────────────────────────────────────
