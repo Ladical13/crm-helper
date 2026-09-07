@@ -429,6 +429,17 @@ def migrate_db():
                 addr_key       TEXT DEFAULT '',
                 crm_contact_id TEXT DEFAULT '',
                 notes          TEXT DEFAULT '',
+                -- How we feel about working for this person again. Two levels,
+                -- because "difficult" and "never again" behave differently: a
+                -- caution still gets storm alerts and outreach (they may still
+                -- be a good job, the rep just wants warning), while do_not_serve
+                -- is excluded from everything that would put us in front of
+                -- them. Distinct from `leads.dnc`, which is the customer's
+                -- choice not to hear from us; this one is ours.
+                flag           TEXT DEFAULT '',
+                flag_reason    TEXT DEFAULT '',
+                flag_by        TEXT DEFAULT '',
+                flag_at        TEXT DEFAULT '',
                 created_at     TEXT NOT NULL,
                 updated_at     TEXT NOT NULL
             );
@@ -590,6 +601,22 @@ def _identifiable(row):
 
 CUSTOMER_FIELDS = ('first_name', 'last_name', 'company', 'phone', 'email',
                    'address', 'city', 'state', 'zip')
+
+# '' is the normal state. `caution` warns the rep and changes nothing else --
+# a difficult customer can still be a job worth doing, and burying that decision
+# in a suppression list takes it away from the person best placed to make it.
+# `do_not_serve` is the one that actually stops things happening.
+CUSTOMER_FLAGS = ('', 'caution', 'do_not_serve')
+# Spelled once and reused: three separate queries have to honour this, and
+# three hand-copied subqueries are three chances for one to drift and quietly
+# start putting a customer we refuse to serve back in front of a rep.
+NOT_BANNED_SQL = ("customer_id NOT IN (SELECT id FROM customers "
+                  "WHERE flag='do_not_serve')")
+
+CUSTOMER_FLAG_LABELS = {
+    'caution': '⚠ Difficult customer — read the note before engaging',
+    'do_not_serve': '⛔ Do not work with again',
+}
 
 
 def _link_customer(db, lead_id, row):
@@ -1080,8 +1107,8 @@ def get_lead(lead_id):
         # a roof from us in 2023 -- which changes the conversation entirely.
         d['customer'] = None
         if d.get('customer_id'):
-            c = db.execute('SELECT id, first_name, last_name, company FROM customers '
-                           'WHERE id=?', (d['customer_id'],)).fetchone()
+            c = db.execute('SELECT * FROM customers WHERE id=?',
+                           (d['customer_id'],)).fetchone()
             if c:
                 q = "SELECT COUNT(*) c FROM leads WHERE customer_id=? AND id!=?"
                 p = [d['customer_id'], lead_id]
@@ -1092,6 +1119,10 @@ def get_lead(lead_id):
                     'name': (f"{c['first_name']} {c['last_name']}").strip()
                             or c['company'] or '(no name)',
                     'other_deals': db.execute(q, p).fetchone()['c'],
+                    'flag': c['flag'],
+                    'flag_label': CUSTOMER_FLAG_LABELS.get(c['flag'], ''),
+                    'flag_reason': c['flag_reason'],
+                    'flag_by': c['flag_by'],
                 }
         if d['referred_by']:
             ref = db.execute('SELECT first_name,last_name,company FROM leads WHERE id=?',
@@ -1959,8 +1990,16 @@ def _storm_records(db, rep=None):
         clauses.append('rep=?'); params.append(rep)
     rows = db.execute('SELECT * FROM leads WHERE ' + ' AND '.join(clauses),
                       params).fetchall()
+    # Customers we have decided not to work for again drop out here rather than
+    # at the email, so they are absent from every consumer of this join at once
+    # -- the alert, the storm brief, anything built on it later. A `caution`
+    # customer stays: that is a warning for the rep, not an exclusion.
+    banned = {r['id'] for r in db.execute(
+        "SELECT id FROM customers WHERE flag='do_not_serve'")}   # cf NOT_BANNED_SQL
     records, unplaced = [], 0
     for r in rows:
+        if r['customer_id'] in banned:
+            continue
         hit = pgeo.lookup(r['address'], r['city'], r['state'], r['zip'])
         if not hit:
             unplaced += 1
@@ -2893,6 +2932,7 @@ def queue_today():
             '       l.website, l.city, l.stage, l.lead_type, l.icp_score, l.hook '
             'FROM tasks t JOIN leads l ON l.id = t.lead_id '
             'WHERE t.rep = ? AND t.done = 0 AND t.due_at <= ? AND l.dnc = 0 '
+            '  AND l.' + NOT_BANNED_SQL + ' '
             'ORDER BY t.due_at LIMIT ?', (rep, _end_of_today(), target)).fetchall()]
         for d in due:
             d['name'] = (f"{d['first_name']} {d['last_name']}").strip() or d['company']
@@ -2911,6 +2951,7 @@ def queue_today():
             rows = db.execute(
                 "SELECT * FROM leads "
                 "WHERE rep = ? AND stage = 'new' AND dnc = 0 "
+                "  AND " + NOT_BANNED_SQL + " "
                 "  AND (last_activity_at = '' OR last_activity_at < ?) "
                 "  AND id NOT IN (SELECT lead_id FROM tasks WHERE done = 0) "
                 "ORDER BY icp_score DESC, created_at ASC LIMIT ?",
@@ -3401,6 +3442,16 @@ def update_customer(customer_id):
             if f in data:
                 sets.append(f'{f}=?')
                 params.append(data[f])
+        if 'flag' in data:
+            if data['flag'] not in CUSTOMER_FLAGS:
+                return jsonify({'error': 'Invalid flag'}), 400
+            # Who and when, because this is a judgement about a person that
+            # other reps will act on. An unattributed "difficult customer" is
+            # a rumour; one with a name and a date is information.
+            sets += ['flag=?', 'flag_reason=?', 'flag_by=?', 'flag_at=?']
+            params += [data['flag'], data.get('flag_reason', ''),
+                       current_rep() if data['flag'] else '',
+                       _now() if data['flag'] else '']
         if not sets:
             return jsonify({'error': 'Nothing to update'}), 400
         merged = dict(cust)
@@ -3411,6 +3462,161 @@ def update_customer(customer_id):
         db.execute('UPDATE customers SET %s WHERE id=?' % ', '.join(sets), params)
         cust = db.execute('SELECT * FROM customers WHERE id=?', (customer_id,)).fetchone()
     return jsonify(dict(cust))
+
+
+# ── Importing the history that lives in The Den ──────────────────────────────
+#
+# "Past customer" meant "past customer of THIS CRM" -- a fraction of the real
+# history, because anyone who bought before this tool existed, or was entered
+# straight into Base44, has no `won` lead here. Every consumer of that idea was
+# quietly understating: the storm alert, lifetime value, past-customer mining.
+#
+# Shaped like `prospector/`: pull to a file where there is network, push the
+# file in here. That keeps the fetch out of the request path, makes the import
+# testable without a token, and means a run that died halfway is safe to retry.
+#
+# `crm_contact_id` is the dedupe key, not contact details. It is the one stable
+# identifier Base44 gives us, and it survives a customer changing their phone
+# number -- which contact-detail matching would read as a different person.
+
+IMPORT_MAX_ROWS = 20000
+# Base44 project statuses that mean work actually happened for this person.
+# Anything else is a deal that never became a job, and importing those as `won`
+# would inflate every close rate and revenue figure on the board.
+DEN_DONE_STATUSES = {'contracted', 'in_progress', 'completed', 'installed', 'paid',
+                     'invoiced', 'closed'}
+
+
+def _den_row_to_lead(row, rep):
+    """One Base44 Contact (+ its projects) as CRM fields."""
+    first = (row.get('first_name') or '').strip()
+    last = (row.get('last_name') or '').strip()
+    if not (first or last) and (row.get('name') or '').strip():
+        parts = row['name'].strip().split()
+        first, last = parts[0], ' '.join(parts[1:])
+    phone = (row.get('phone') or '').strip()
+    email = (row.get('email') or '').strip()
+    return {
+        'first_name': first, 'last_name': last,
+        'company': (row.get('company') or '').strip(),
+        'phone': phone, 'email': email,
+        'address': (row.get('street_address') or row.get('address') or '').strip(),
+        'city': (row.get('city') or '').strip(),
+        'state': (row.get('state') or '').strip(),
+        'zip': (row.get('zip_code') or row.get('zip') or '').strip(),
+        'phone_norm': _norm_phone(phone), 'email_norm': _norm_email(email),
+        'rep': rep,
+    }
+
+
+@app.route('/api/customers/import', methods=['POST'])
+@admin_required
+def import_customers():
+    """Load Base44 contacts and their completed jobs as customers + won leads.
+
+    Idempotent on `crm_contact_id`: re-running inserts nothing and re-flags
+    nothing, so a half-finished run is always safe to repeat.
+
+    `is_red_flag_customer` comes across as a `caution` flag rather than
+    `do_not_serve`. The two are different decisions and only one of them is
+    recorded in Base44 -- promoting a red flag straight to "never work with
+    them again" would silently make a call nobody made, on people we may well
+    still want. A human upgrades it.
+    """
+    data = request.get_json(force=True)
+    rows = data.get('contacts') or []
+    if len(rows) > IMPORT_MAX_ROWS:
+        return jsonify({'error': f'Too many rows (max {IMPORT_MAX_ROWS})'}), 400
+    dry = bool(data.get('dry_run'))
+    default_rep = (data.get('rep') or current_rep()).strip()
+
+    created = linked = skipped = flagged = jobs = 0
+    problems = []
+    with get_db() as db:
+        known = {r['crm_contact_id'] for r in db.execute(
+            "SELECT DISTINCT crm_contact_id FROM customers WHERE crm_contact_id != ''")}
+        for row in rows:
+            cid = (row.get('id') or row.get('crm_contact_id') or '').strip()
+            if not cid:
+                problems.append('contact with no id skipped')
+                continue
+            if cid in known:
+                skipped += 1
+                continue
+            fields = _den_row_to_lead(row, default_rep)
+            if not _identifiable(fields):
+                problems.append(f'{cid}: not enough detail to identify a person')
+                continue
+            known.add(cid)
+            if dry:
+                created += 1
+                continue
+
+            # Every completed job becomes a `won` lead, so the history reads as
+            # what it was: three roofs over nine years, not one row.
+            projects = [p for p in (row.get('projects') or [])
+                        if (p.get('status') or '').lower() in DEN_DONE_STATUSES]
+            made_lead = False
+            for proj in projects or [None]:
+                if proj is None and not row.get('import_as_customer_only'):
+                    break
+                lid = str(uuid.uuid4())
+                fields2 = dict(fields)
+                won_at = (proj or {}).get('completed_date') or \
+                         (proj or {}).get('created_date') or ''
+                value = float((proj or {}).get('contract_value') or 0)
+                db.execute(
+                    'INSERT INTO leads (id, lead_type, service, stage, entry_stage, '
+                    'rep, source, temperature, est_value, won_at, crm_contact_id, '
+                    'crm_project_id, import_batch, created_at, updated_at, '
+                    'first_name, last_name, company, phone, email, address, city, '
+                    'state, zip, phone_norm, email_norm) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (lid, 'homeowner', 'roofing', 'won', 'new', default_rep,
+                     'existing_customer', 'cold', value, won_at or _now(), cid,
+                     (proj or {}).get('id') or '', '',
+                     won_at or _now(), _now(),
+                     fields2['first_name'], fields2['last_name'], fields2['company'],
+                     fields2['phone'], fields2['email'], fields2['address'],
+                     fields2['city'], fields2['state'], fields2['zip'],
+                     fields2['phone_norm'], fields2['email_norm']))
+                _link_customer(db, lid, fields2)
+                made_lead = True
+                jobs += 1
+
+            if not made_lead:
+                # A contact with no completed job is still a person worth
+                # holding -- they just are not a past customer, and inventing a
+                # `won` lead for them would put work on the board that never
+                # happened.
+                cust_id = str(uuid.uuid4())
+                db.execute(
+                    'INSERT INTO customers (id, first_name, last_name, company, '
+                    'phone, email, address, city, state, zip, phone_norm, '
+                    'email_norm, addr_key, crm_contact_id, created_at, updated_at) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (cust_id, fields['first_name'], fields['last_name'],
+                     fields['company'], fields['phone'], fields['email'],
+                     fields['address'], fields['city'], fields['state'],
+                     fields['zip'], fields['phone_norm'], fields['email_norm'],
+                     _addr_key(fields), cid, _now(), _now()))
+            created += 1
+
+            # Stamp the Den id onto whichever customer this landed on, so the
+            # next run recognises them.
+            db.execute(
+                "UPDATE customers SET crm_contact_id=? WHERE crm_contact_id='' AND id IN "
+                "(SELECT customer_id FROM leads WHERE crm_contact_id=?)", (cid, cid))
+            if row.get('is_red_flag_customer'):
+                db.execute(
+                    "UPDATE customers SET flag='caution', flag_reason=?, flag_by=?, "
+                    "flag_at=? WHERE crm_contact_id=? AND flag=''",
+                    ('Flagged in The Den', 'import', _now(), cid))
+                flagged += 1
+
+    return jsonify({'created': created, 'skipped_already_here': skipped,
+                    'jobs': jobs, 'flagged': flagged, 'problems': problems[:50],
+                    'dry_run': dry})
 
 
 @app.route('/api/customers')

@@ -475,3 +475,13 @@ input,select,textarea{font-family:inherit;font-size:16px}
   background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.35);color:var(--blue)}
 .cust-h{margin:16px 0 6px;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;
   color:var(--txt3)}
+
+/* ── Customer flags ──────────────────────────────────────────────────────────
+   A rep has to see this BEFORE they pick up the phone, so it sits at the top
+   of the drawer with the stall banner, not buried in the details. */
+.flag-banner{margin:10px 0;padding:9px 12px;border-radius:9px;font-size:13px;line-height:1.45}
+.flag-caution{background:rgba(245,158,11,.14);border:1px solid rgba(245,158,11,.4);
+  color:var(--amber)}
+.flag-do_not_serve{background:rgba(239,68,68,.14);border:1px solid rgba(239,68,68,.45);
+  color:var(--red);font-weight:600}
+.flag-by{opacity:.75;font-weight:400}

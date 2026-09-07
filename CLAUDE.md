@@ -697,9 +697,43 @@ holds that would be hardest to re-create — identity, address, history. Pinned 
 - **Visibility follows the LEADS, not the customer.** A rep sees the person only
   if they own one of their deals, and then sees only their own — otherwise the
   record is a way to read another rep's pipeline sideways.
+- **Two flag levels, because they behave differently.** `caution` warns the rep
+  and changes nothing else — a difficult customer can still be a job worth
+  doing, and burying that in a suppression list takes the decision away from the
+  person best placed to make it. `do_not_serve` drops them from storm alerts and
+  both halves of the ⚡ Outreach queue. `NOT_BANNED_SQL` is spelled once because
+  three hand-copied subqueries are three chances for one to drift and put
+  somebody back in front of a rep. Distinct from `leads.dnc`, which is the
+  customer's choice not to hear from us; this one is ours, and it records **who
+  set it and when** — an unattributed "difficult customer" is a rumour.
 - **Documents are filed against the person as well as the deal.** An insurance
   letter uploaded on the roof lead is the same customer's letter when they come
   back for siding, and the deal is the wrong thing for it to die with.
+
+**Importing the history that lives in The Den** (`POST /api/customers/import`,
+fed by `python -m salescrm.den_export`). "Past customer" meant "past customer of
+*this* CRM" — a fraction of the real history, because anyone who bought before
+this tool existed has no `won` lead here, and every consumer of that idea was
+quietly understating: the storm alert, lifetime value, past-customer mining.
+Shaped like `prospector/` — pull to a file where there is a token and a network,
+push the file in here — which keeps the fetch out of the request path and makes
+the import testable without either. Four rules:
+
+- **`crm_contact_id` is the dedupe key, not contact details.** It is the one
+  stable identifier Base44 gives us and it survives a customer changing their
+  phone number, which contact-detail matching would read as a different person.
+- **One `won` lead per completed job**, so three roofs over nine years read as
+  what they were. A project that never became a job is *not* imported as won —
+  that would inflate every close rate and revenue figure on the board — but the
+  person is still kept as a customer.
+- **`is_red_flag_customer` arrives as `caution`, never `do_not_serve`.** Those
+  are different decisions and only one of them is recorded in Base44; promoting
+  it would silently make a call nobody made. A human upgrades it.
+- **The other market is left behind.** The Den holds Tyler/Longview too, and
+  importing those into a Northern Colorado pipeline would put every one of them
+  under the next Front Range hail swath. A contact with *no* location is kept —
+  older Den rows predate the field, and those are the oldest customers, which is
+  who this import is for.
 
 ### Offline: the outbox
 

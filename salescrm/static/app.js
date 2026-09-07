@@ -711,6 +711,10 @@ function renderDrawer(l){
       ${l.referred_by_name?'<span>via '+esc(l.referred_by_name)+'</span>':''}</div>
     </div>
     ${l.stalled?'<div class="stalled-banner">⚠ No activity in a while. Reach out or schedule a next step.</div>':''}
+    ${l.customer&&l.customer.flag?
+      `<div class="flag-banner flag-${esc(l.customer.flag)}">${esc(l.customer.flag_label)}${
+        l.customer.flag_reason?` — ${esc(l.customer.flag_reason)}`:''}${
+        l.customer.flag_by?` <span class="flag-by">(${esc(repName(l.customer.flag_by))})</span>`:''}</div>`:''}
     ${l.customer&&l.customer.other_deals?
       `<div class="cust-banner" id="d-cust">👤 ${esc(l.customer.name)} has ${l.customer.other_deals} other deal${l.customer.other_deals===1?'':'s'} with us — open their file</div>`:''}
     <div class="dgrid">
@@ -896,8 +900,13 @@ async function openCustomer(id){
     : '<div class="empty">No documents yet.</div>';
   const contact=[c.phone,c.email,[c.address,c.city].filter(Boolean).join(', ')]
     .filter(Boolean).map(esc).join(' · ');
+  const flagOpts=[['','No flag'],['caution','⚠ Difficult — warn the rep'],
+                  ['do_not_serve','⛔ Do not work with again']]
+    .map(([k,v])=>`<option value="${k}" ${k===(c.flag||'')?'selected':''}>${esc(v)}</option>`).join('');
   openModal(c.name, `
     <div class="task-meta" style="margin-bottom:12px">${contact||'No contact details'}</div>
+    ${c.flag?`<div class="flag-banner flag-${esc(c.flag)}">${esc(c.flag_reason||'Flagged')}${
+       c.flag_by?` <span class="flag-by">— ${esc(repName(c.flag_by))}</span>`:''}</div>`:''}
     <div class="partner-stat">
       <div><b>${c.leads.length}</b><span class="l">Deals</span></div>
       <div><b>${c.won_count}</b><span class="l">Won</span></div>
@@ -906,6 +915,11 @@ async function openCustomer(id){
     </div>
     <h5 class="cust-h">Deals</h5><div class="mini-lead-list" id="cust-leads">${rows}</div>
     <h5 class="cust-h">Documents</h5><div id="cust-docs">${docs}</div>
+    <h5 class="cust-h">Working with them</h5>
+    <div class="field"><select id="cust-flag">${flagOpts}</select></div>
+    <div class="field"><input id="cust-flag-why" placeholder="Why? (the next rep reads this)"
+      value="${esc(c.flag_reason||'')}"></div>
+    <button class="btn-ghost small" id="cust-flag-save">Save</button>
     <h5 class="cust-h">History</h5>
     <div class="timeline" id="cust-timeline">${c.activities.slice(0,40).map(a=>
       `<div class="tl"><div class="tl-ico">${KIND_ICO[a.kind]||'•'}</div>
@@ -914,6 +928,15 @@ async function openCustomer(id){
   `, null, {hideOk:true});
   $('#cust-leads').querySelectorAll('[data-lead]').forEach(r=>
     r.onclick=()=>{ closeModal(); openLead(r.dataset.lead); });
+  $('#cust-flag-save').onclick=async()=>{
+    try{
+      await api('/customers/'+c.id,{method:'PUT',body:{
+        flag:$('#cust-flag').value, flag_reason:$('#cust-flag-why').value}});
+      toast('Saved');
+      closeModal();
+      if(S.openLeadId) openLead(S.openLeadId);   // the banner changes
+    }catch(e){ toast(e.message,true); }
+  };
 }
 async function renderCadences(l){
   const cads=await api('/cadences');
