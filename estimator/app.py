@@ -4423,6 +4423,30 @@ def _num(v):
         return 0.0
 
 
+NON_ROOF_SCOPE_CLASSES = ('gutter', 'siding', 'interior', 'detach')
+
+
+def _roof_only_rcv(est):
+    """(roof RCV, non-roof RCV) from the stored per-line scope classification.
+
+    A line with no `scope_class` counts as roof, which is exactly what the tool
+    did before any of this existed — so an estimate nobody has classified
+    reports the same number it always did rather than quietly dropping to zero.
+    """
+    ins = (est.get('trades') or {}).get('insurance') or {}
+    sections = ins.get('sections') or (
+        [{'items': ins.get('line_items', [])}] if ins.get('line_items') else [])
+    roof = other = 0.0
+    for sec in sections:
+        for it in sec.get('items', []):
+            rcv = _num(it.get('acv')) + _num(it.get('depreciation'))
+            if it.get('scope_class') in NON_ROOF_SCOPE_CLASSES:
+                other += rcv
+            else:
+                roof += rcv
+    return roof, other
+
+
 def insurance_cost_report(est):
     """Revenue, cost and realized margin for an insurance job.
 
@@ -4444,7 +4468,14 @@ def insurance_cost_report(est):
     # unpricedInsuranceCostLines (app.js).
     unpriced = [str(i.get('name') or '') for i in (ic.get('items') or [])
                 if _num(i.get('quantity')) > 0 and _num(i.get('unit_cost')) <= 0]
-    revenue  = _estimate_total(est) + _num(ic.get('supplements'))
+    # Roof-only revenue where the scope has been classified, the whole claim
+    # where it has not. Adjusters file gutters, fascia and interior work under
+    # a roof plan, and those dollars have no matching cost on our side — every
+    # one of them would read as pure profit. The classification is a stored
+    # DECISION (the browser's keyword guess, or the rep's correction), never
+    # re-derived here: a second classifier would be a second thing to drift.
+    roof_rcv, non_roof = _roof_only_rcv(est)
+    revenue  = roof_rcv + _num(ic.get('supplements'))
     build    = sum(_num(i.get('quantity')) * _num(i.get('unit_cost'))
                    for i in (ic.get('items') or []))
     adders   = {k: _num((ic.get('adders') or {}).get(k)) for k in INSURANCE_ADDERS}
@@ -4462,6 +4493,8 @@ def insurance_cost_report(est):
                          if revenue > 0 and cost > 0 else None),
         'costed':       cost > 0,
         'unpriced':     unpriced,
+        'claim_total':  round(_estimate_total(est), 2),
+        'non_roof':     round(non_roof, 2),
     }
 
 

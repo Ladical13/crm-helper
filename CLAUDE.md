@@ -835,7 +835,31 @@ measurement report matters on an insurance job. `insurance_cost_report`
 `tests/insurance_cost_runner.js` holds them to the same numbers, the same way
 `parity_runner.js` does for retail pricing.
 
-Five things are load-bearing:
+**RoofR is the source of truth; the carrier's numbers are a claim about it.**
+The Claim Check panel above the margin does two jobs the margin cannot do
+alone. It splits the carrier's lines into roof and not-roof, because adjusters
+routinely file gutters, fascia and interior drywall under a roof plan and
+those dollars have **no matching cost on our side** — counting them reads as
+pure profit, and flatters exactly the claims where the adjuster bundled in the
+most. And it compares `S.measurements` against the carrier's approved
+quantities, because a shortfall there is a supplement, which is the only lever
+an insurance job's margin has.
+
+Three rules keep that honest:
+
+- **Classification is a stored DECISION, never re-derived.**
+  `classifyCarrierItem` (app.js) guesses from keywords and the rep can
+  override; `_roof_only_rcv` (app.py) reads whatever is stored. A second
+  classifier would be a second thing to drift. A line with no `scope_class`
+  counts as roof — what the tool did before any of this existed.
+- **An unrecognised line is `review`, not a guess.** It counts toward roof so
+  the total never silently shrinks, and it is listed for the rep to confirm.
+- **A measure takes the LARGEST matching carrier line, not the sum.** A
+  tear-off and an install of the same roof are two lines describing one
+  surface; adding them reports double the roof and invents a supplement that
+  is not there.
+
+Five more things are load-bearing:
 
 - **The cost items live OUTSIDE `trades`**, under `insurance_cost`. Nothing
   that builds a customer-facing document can reach them, which is the only
@@ -865,14 +889,28 @@ Five things are load-bearing:
 
 Guarded by `tests/test_insurance_margin.py`.
 
+⚠️ **The seeded Ice & Water Shield product is mis-configured, and it costs
+retail too.** `a_ice_water` carries `unit: 'SQ'` and `cost: 46.46`, but its
+`measure` is `eave_valley`, which returns LINEAR FEET, and it has no
+`bundle_lf` conversion — so 220 LF of eave+valley bills as 220 × $46.46 =
+$10,221 on a 32-square roof. Contrast `a_ss_drip_d`, which converts LF to
+sticks with `bundle_lf: 10`. This is **not** an insurance-only fault: the
+insurance cost sheet was measured against the retail builder and both produce
+$15,539.92 for the same bundle and measurements, which is what proves the
+derivation faithful and the price book wrong. In margin mode sell is derived
+FROM cost, so on a fresh volume this inflates the retail *quote* too. The right
+value depends on roll coverage and supplier, so it is reported rather than
+guessed — `_PRODUCT_COST_MIGRATIONS` is the mechanism once someone decides it.
+
 **Still open: Xactimate exports carry no measurements.** `_parse_symbility_pdf`
 returns `roof_squares`; `_parse_xactimate_pdf` returns no `measurements` key at
 all, despite the comment claiming both parsers return the same shape. It fails
 safely — the front end reads `data.measurements || {}` — but it means an
 Xactimate import leaves the rep to key the squares by hand, and Xactimate is
-the majority of this company's volume. The carrier's own `SQ` line quantities
-are a candidate source; picking between the tear-off line and the install line
-(which carries waste) is the part that needs deciding.
+the majority of this company's volume. Deliberately NOT fixed by deriving squares from the
+carrier's own `SQ` lines: RoofR is the source of truth by decision, and the
+Claim Check exists precisely to catch the carrier being short. Importing the
+RoofR report is the step that makes an insurance job costable.
 
 ### Commercial estimates (third estimate type)
 

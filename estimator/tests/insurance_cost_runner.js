@@ -40,6 +40,11 @@ function grabConst(decl, endMarker) {
 // restated — a change to how a claim totals must move both sides at once.
 const bundle = [
   grabConst('const INSURANCE_ADDERS =', '];'),
+  // Revenue is roof-only now, so the scope split is part of the money math and
+  // has to be lifted with it.
+  grabConst('const CARRIER_SCOPE_RULES =', '];'),
+  grabFn('classifyCarrierItem'),
+  grabFn('carrierScopeReport'),
   grabFn('insCost'),
   grabFn('unpricedInsuranceCostLines'),
   grabFn('insuranceCostReport'),

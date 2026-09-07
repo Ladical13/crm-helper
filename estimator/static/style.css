@@ -5038,3 +5038,27 @@ body.is-client #nav-toggle      { display: none; }
 }
 .ins-mg-unpriced strong{display:block;margin-bottom:2px}
 .ins-mg-pct em{font-style:normal;color:#b45309;font-size:11px}
+
+/* ── Claim check (insurance scope + supplement finder) ──────────────────
+   Adjusters file gutters and interior work under a roof plan. Costing our
+   roof against that whole total reports profit we are not earning. */
+.ins-scope-flag{
+  background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
+  border-radius:6px;padding:11px 13px;margin-bottom:12px;font-size:12.5px;line-height:1.55;
+}
+.ins-scope-flag strong{display:block;margin-bottom:4px}
+.ins-scope-grp{display:flex;gap:10px;align-items:baseline;margin-top:5px;font-size:12px}
+.ins-scope-grp>span{font-weight:600;white-space:nowrap}
+.ins-scope-grp>em{flex:1;font-style:normal;opacity:.85;overflow-wrap:anywhere}
+.ins-scope-grp>b{font-variant-numeric:tabular-nums;white-space:nowrap}
+.ins-scope-review{margin-bottom:12px}
+.ins-scope-review-title{font-size:12.5px;color:var(--text-light);margin-bottom:6px;line-height:1.5}
+.ins-cmp-title{font-size:10px;font-weight:600;color:var(--text-light);
+  text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px}
+.ins-cmp-table tr.is-short td{background:#fff7ed}
+.ins-cmp-supp{background:#e0f2fe;border:1px solid #0284c7;color:#075985;
+  border-radius:6px;padding:10px 12px;font-size:12.5px;line-height:1.55}
+.ins-cmp-supp strong{display:block;margin-bottom:2px}
+.ins-cmp-ok{font-size:12.5px;color:#15803d}
+.ins-mg-excl>strong{color:#b45309}
+.ins-mg-result>div>span>em{font-style:normal;color:#b45309;font-size:11px}

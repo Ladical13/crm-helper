@@ -132,6 +132,10 @@ def test_the_browser_and_the_server_compute_the_same_margin(tmp_path):
         ('uncosted', _est()),
         ('underwater', _est(items=[{'name': 'S', 'quantity': 30, 'unit_cost': 400.0}])),
         ('no_revenue', _est(rcv=0.0, items=[{'name': 'S', 'quantity': 1, 'unit_cost': 5.0}])),
+        # The gutters case: both sides must exclude the same non-roof dollars,
+        # or the banner and the analytics disagree about what the job earned.
+        ('mixed_scope', _mixed_claim(
+            items=[{'name': 'S', 'quantity': 30, 'unit_cost': 200.0}])),
     ]
     fx = tmp_path / 'fx.json'
     out = tmp_path / 'out.json'
@@ -146,6 +150,7 @@ def test_the_browser_and_the_server_compute_the_same_margin(tmp_path):
         assert round(j['revenue'], 2) == py['revenue'], f'{name}: revenue'
         assert round(j['cost'], 2) == py['cost'], f'{name}: cost'
         assert round(j['gross_profit'], 2) == py['gross_profit'], f'{name}: profit'
+        assert round(j['non_roof'], 2) == py['non_roof'], f'{name}: non-roof split'
         if py['margin_pct'] is None:
             assert j['margin_pct'] is None, f'{name}: margin should be unknown'
         else:
@@ -249,3 +254,106 @@ def test_the_front_end_flags_the_same_lines(tmp_path):
                    capture_output=True, text=True)
     js = json.loads(out.read_text())[0]['report']
     assert js['unpriced'] == A.insurance_cost_report(est)['unpriced']
+
+
+# ── Roof-only revenue ─────────────────────────────────────────────────────
+
+def _mixed_claim(**cost):
+    """A claim whose roof section carries the non-roof work adjusters routinely
+    file under it."""
+    est = _est(**cost)
+    est['trades']['insurance']['sections'] = [{'name': 'Dwelling Roof', 'items': [
+        {'description': 'Laminated comp. shingle rfg', 'qty': 30, 'unit': 'SQ',
+         'acv': 7000.0, 'depreciation': 3000.0, 'scope_class': 'roof'},
+        {'description': 'R&R Gutter / downspout - aluminum', 'qty': 120, 'unit': 'LF',
+         'acv': 900.0, 'depreciation': 300.0, 'scope_class': 'gutter'},
+        {'description': 'Drywall patch - ceiling', 'qty': 1, 'unit': 'EA',
+         'acv': 400.0, 'depreciation': 100.0, 'scope_class': 'interior'},
+    ]}]
+    return est
+
+
+def test_non_roof_work_is_excluded_from_the_margin():
+    """Gutters and interior drywall in a roof section have no matching cost on
+    our side, so counting them would read as pure profit — and would flatter
+    exactly the claims where the adjuster bundled the most in."""
+    est = _mixed_claim(items=[{'name': 'Shingles', 'quantity': 30, 'unit_cost': 200.0}])
+    r = A.insurance_cost_report(est)
+    assert r['claim_total'] == 11700.0     # everything the carrier approved
+    assert r['non_roof'] == 1700.0         # gutters 1200 + drywall 500
+    assert r['revenue'] == 10000.0         # roof only
+    assert r['margin_pct'] == 40.0         # 6000 profit on 10000, not on 11700
+
+
+def test_an_unclassified_line_still_counts_as_roof():
+    """Today's behaviour. An estimate nobody has classified must report the
+    number it always did rather than quietly dropping to zero."""
+    est = _est(items=[{'name': 'S', 'quantity': 30, 'unit_cost': 100.0}])
+    for sec in est['trades']['insurance']['sections']:
+        for it in sec['items']:
+            it.pop('scope_class', None)
+    assert A.insurance_cost_report(est)['revenue'] == 10000.0
+
+
+def test_the_scope_classes_the_server_excludes_are_the_ones_the_browser_sets():
+    """The browser classifies and the server reads the stored decision — a
+    second classifier would be a second thing to drift. This pins the shared
+    vocabulary."""
+    src = open(APP_JS_PATH, encoding='utf-8').read()
+    for cls in A.NON_ROOF_SCOPE_CLASSES:
+        assert f"['{cls}'," in src, f'{cls} is excluded server-side but never set client-side'
+
+
+APP_JS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           'static', 'app.js')
+
+
+def test_the_classifier_knows_a_gutter_from_a_ridge():
+    """The rules are a starting point, not a verdict — but they have to get the
+    common cases right or the rep confirms every line by hand."""
+    src = open(APP_JS_PATH, encoding='utf-8').read()
+    i = src.index('const CARRIER_SCOPE_RULES')
+    block = src[i:src.index('];', i)]
+    for word in ('gutter', 'downspout', 'siding', 'soffit', 'fascia', 'drywall'):
+        assert word in block, f'{word} is not classified as non-roof'
+    for word in ('shingle', 'ridge', 'drip', 'valley', 'starter', 'underlayment'):
+        assert word in block, f'{word} is not classified as roofing'
+
+
+def test_an_unmatched_line_is_flagged_for_review_not_guessed():
+    """A classifier that guessed on the unfamiliar line would be wrong
+    silently, which is the failure this whole check exists to prevent."""
+    src = open(APP_JS_PATH, encoding='utf-8').read()
+    i = src.index('function classifyCarrierItem')
+    assert "return 'review'" in src[i:src.index('\n}', i)]
+
+
+def test_the_measure_comparison_takes_the_largest_line_not_the_sum():
+    """A tear-off and an install of the same roof are two lines describing one
+    surface. Summing them reports double the roof and invents a supplement
+    that is not there."""
+    src = open(APP_JS_PATH, encoding='utf-8').read()
+    i = src.index('function carrierMeasureComparison')
+    body = src[i:src.index('\n}\n', i)]
+    assert 'Math.max' in body
+
+
+def test_the_derived_cost_carries_every_field_that_decides_a_quantity():
+    """The insurance cost sheet must size a bundle exactly the way the retail
+    side does — verified live at $15,539.92 both ways on a 32-square roof.
+
+    That equivalence is the whole reason this is trustworthy: it means a wrong
+    number here is a price-book problem, diagnosable against retail, rather
+    than a second costing engine with its own bugs. Dropping any one of these
+    fields breaks it silently — `bundle_lf` in particular, which is what turns
+    linear feet into sticks or rolls, and without it a 220 LF run bills as 220
+    units of a product sold by the box.
+    """
+    src = open(APP_JS_PATH, encoding='utf-8').read()
+    i = src.index('function buildInsuranceCostItems')
+    body = src[i:src.index('\n}\n', i)]
+    for field in ('measure', 'formula', 'bundle_lf', 'bundle_unit', 'unit', 'cost'):
+        assert field in body, (
+            f'{field} is not carried onto the derived cost line, so insurance '
+            f'quantities will diverge from what retail computes for the same bundle')
+    assert 'measuredQty(' in body, 'quantities must come from the shared resolver'

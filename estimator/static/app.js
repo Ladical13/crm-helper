@@ -2109,7 +2109,11 @@ function unpricedInsuranceCostLines() {
 function insuranceCostReport() {
   const ic = insCost();
   const n = v => { const f = parseFloat(v); return isNaN(f) ? 0 : f; };
-  const revenue = insuranceTotal() + n(ic.supplements);
+  // Roof-only revenue, not the whole claim. Non-roof lines the adjuster filed
+  // under the roof plan (gutters is the usual one) have no matching cost on
+  // our side, so counting them would read as pure profit.
+  const scope = carrierScopeReport();
+  const revenue = scope.roof_rcv + n(ic.supplements);
   const build = (ic.items || []).reduce(
     (a, i) => a + n(i.quantity) * n(i.unit_cost), 0);
   const adders = {};
@@ -2122,11 +2126,115 @@ function insuranceCostReport() {
     adders, adders_total: addTot, cost, gross_profit: profit,
     // No cost entered yet means the margin is UNKNOWN, never 100% — otherwise
     // every un-costed claim sorts to the top of the profitability table.
+    claim_total: insuranceTotal(),
+    non_roof: scope.other_rcv,
+    review_count: scope.review_count,
     margin_pct: (revenue > 0 && cost > 0) ? (profit / revenue * 100) : null,
     costed: cost > 0,
     // The margin is only as honest as the price book behind it.
     unpriced: unpricedInsuranceCostLines().map(i => i.name),
   };
+}
+
+/* ── What in the carrier's "roof" section is actually roofing ─────────────
+   Adjusters file whatever they inspected under a roof plan, so a Dwelling
+   Roof section routinely carries gutters, downspouts, fascia wrap, even
+   interior drywall from the leak. Costing our roof against that whole total
+   reports a margin we are not earning — the non-roof dollars have no matching
+   cost on our side, so every one of them reads as pure profit.
+
+   Deliberately three-way, not two: `roof` and a named non-roof class are the
+   confident answers, and everything else is `review`. A classifier that
+   guessed on the unfamiliar line would be wrong silently, which is the whole
+   failure this exists to prevent. `review` lines count as roof (today's
+   behaviour) but are listed for the rep to confirm. */
+const CARRIER_SCOPE_RULES = [
+  ['gutter',   /\b(gutter|downspout|leader|splash\s*block|gutter\s*guard)\b/i],
+  ['siding',   /\b(siding|soffit|fascia|house\s*wrap|shutter|corner\s*post)\b/i],
+  ['interior', /\b(drywall|ceiling|paint|texture|carpet|baseboard|insulation\s*-\s*batt)\b/i],
+  ['detach',   /\b(detach|reset|satellite|solar\s*panel|a\/?c\s*unit|swamp\s*cooler)\b/i],
+  ['roof',     /\b(shingle|felt|underlayment|ice\s*&?\s*water|ice\s*and\s*water|drip\s*edge|ridge|hip\b|starter|valley|step\s*flash|pipe\s*(jack|boot)|roof\s*vent|turtle|turbine|sheathing|decking|osb|tear\s*-?\s*off|roofing|flashing|counterflash|chimney\s*flash|skylight\s*flash)\b/i],
+];
+
+function classifyCarrierItem(desc) {
+  const d = String(desc || '');
+  for (const [cls, re] of CARRIER_SCOPE_RULES) if (re.test(d)) return cls;
+  return 'review';
+}
+
+/* Every carrier line split by what it actually is. A rep override
+   (`scope_class` set by hand) always wins over the keyword guess — the rules
+   are a starting point, not a verdict, and the one line they get wrong must
+   be correctable in place. */
+function carrierScopeReport() {
+  const td = (S.trades || {}).insurance || {};
+  const sections = td.sections || (td.line_items ? [{ items: td.line_items }] : []);
+  const groups = { roof: [], gutter: [], siding: [], interior: [], detach: [], review: [] };
+  let roofRcv = 0, otherRcv = 0, reviewRcv = 0;
+  sections.forEach(sec => (sec.items || []).forEach(it => {
+    const rcv = (parseFloat(it.acv) || 0) + (parseFloat(it.depreciation) || 0);
+    const cls = it.scope_class || classifyCarrierItem(it.description);
+    (groups[cls] || groups.review).push({ item: it, rcv, cls, section: sec.name || '' });
+    // `review` counts as roof so the total never silently shrinks; it is
+    // reported separately so the rep knows the number is provisional.
+    if (cls === 'roof') roofRcv += rcv;
+    else if (cls === 'review') { roofRcv += rcv; reviewRcv += rcv; }
+    else otherRcv += rcv;
+  }));
+  return { groups, roof_rcv: roofRcv, other_rcv: otherRcv, review_rcv: reviewRcv,
+           review_count: groups.review.length };
+}
+
+function setCarrierItemScope(secIdx, itemIdx, cls) {
+  const td = (S.trades || {}).insurance || {};
+  const sections = td.sections || [];
+  const it = ((sections[secIdx] || {}).items || [])[itemIdx];
+  if (!it) return;
+  it.scope_class = cls;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+
+/* ── RoofR against what the carrier approved ─────────────────────────────
+   The supplement finder. RoofR is the source of truth for what is on the
+   house; the carrier's quantities are a claim about it. Where the carrier is
+   short, that gap is a supplement — and it is the only lever on an insurance
+   job's margin, so it is worth naming in dollars rather than leaving the rep
+   to eyeball two documents side by side. */
+const CARRIER_MEASURE_CHECKS = [
+  { key:'roof_squares', label:'Roof area',      unit:'SQ',
+    re:/\b(shingle|roofing|tear\s*-?\s*off|felt|underlayment)\b/i },
+  { key:'ridge_hip_lf', label:'Ridge & hip',    unit:'LF', re:/\b(ridge|hip)\b/i },
+  { key:'eave_lf',      label:'Eaves',          unit:'LF', re:/\b(drip\s*edge|starter|eave)\b/i },
+  { key:'valley_lf',    label:'Valleys',        unit:'LF', re:/\bvalley\b/i },
+  { key:'step_flash_lf',label:'Step flashing',  unit:'LF', re:/\bstep\s*flash/i },
+];
+
+function carrierMeasureComparison() {
+  const m = S.measurements || {};
+  const rep = carrierScopeReport();
+  const roofLines = rep.groups.roof.concat(rep.groups.review);
+  return CARRIER_MEASURE_CHECKS.map(chk => {
+    const ours = parseFloat(m[chk.key]) || 0;
+    // The carrier's figure for a measure is the LARGEST matching line, not the
+    // sum: a tear-off and an install of the same roof are two lines describing
+    // one surface, and adding them would report double the roof and invent a
+    // supplement that isn't there.
+    let carrier = 0, matched = 0;
+    roofLines.forEach(({ item }) => {
+      if ((item.unit || '').toUpperCase() !== chk.unit) return;
+      if (!chk.re.test(String(item.description || ''))) return;
+      matched++;
+      carrier = Math.max(carrier, parseFloat(item.qty) || 0);
+    });
+    const short = ours > 0 && carrier > 0 && carrier < ours;
+    return { ...chk, ours, carrier, matched,
+             delta: carrier - ours,
+             short,
+             // No matching line at all is a different problem from a short one:
+             // the carrier may simply not have paid for it.
+             missing: ours > 0 && matched === 0 };
+  });
 }
 
 /* Build the cost side from the roofing system actually being installed.
@@ -6339,7 +6447,98 @@ function renderInsuranceFreeform() {
         placeholder="E.g. Complete tear-off and replacement of existing roofing system per insurance claim…"
       >${esc(td.scope_notes||'')}</textarea>
     </div>
+    ${insuranceScopeMarkup()}
     ${insuranceMarginMarkup()}`;
+}
+
+/* Scope check + supplement finder, above the cost sheet: is the carrier
+   paying for the right work, and for enough of it. */
+function insuranceScopeMarkup() {
+  const rep = carrierScopeReport();
+  const CLS = { gutter:'Gutters', siding:'Siding / soffit / fascia',
+                interior:'Interior', detach:'Detach & reset' };
+  const nonRoof = Object.keys(CLS)
+    .map(k => ({ k, rows: rep.groups[k] }))
+    .filter(g => g.rows.length);
+
+  const nonRoofBlock = nonRoof.length ? `
+    <div class="ins-scope-flag">
+      <strong>⚠️ ${fmtCur(rep.other_rcv)} in this claim is not roofing.</strong>
+      Excluded from the margin below, because our roof cost does not cover it.
+      ${nonRoof.map(g => `<div class="ins-scope-grp"><span>${CLS[g.k]}</span>
+        <em>${g.rows.map(r => esc(r.item.description || '')).join(' · ')}</em>
+        <b>${fmtCur(g.rows.reduce((a, r) => a + r.rcv, 0))}</b></div>`).join('')}
+    </div>` : '';
+
+  // Anything the keyword rules could not place. Counted as roof so the total
+  // never silently shrinks, but named so the rep decides rather than the
+  // classifier guessing.
+  const reviewRows = rep.groups.review.map(r => {
+    const td = (S.trades || {}).insurance || {};
+    const secs = td.sections || [];
+    let si = -1, ii = -1;
+    secs.forEach((sec, a) => (sec.items || []).forEach((it, b) => {
+      if (it === r.item) { si = a; ii = b; }
+    }));
+    return `<tr>
+      <td>${esc(r.item.description || '')}</td>
+      <td class="ins-mg-money">${fmtCur(r.rcv)}</td>
+      <td><select onchange="setCarrierItemScope(${si},${ii},this.value)">
+        <option value="roof">Roofing — count it</option>
+        <option value="gutter">Gutters</option>
+        <option value="siding">Siding / soffit / fascia</option>
+        <option value="interior">Interior</option>
+        <option value="detach">Detach &amp; reset</option>
+      </select></td></tr>`;
+  }).join('');
+
+  const reviewBlock = rep.review_count ? `
+    <div class="ins-scope-review">
+      <div class="ins-scope-review-title">
+        ${rep.review_count} line${rep.review_count > 1 ? 's' : ''} worth
+        ${fmtCur(rep.review_rcv)} could not be classified — counted as roofing
+        for now. Confirm each:
+      </div>
+      <table class="ins-mg-table"><tbody>${reviewRows}</tbody></table>
+    </div>` : '';
+
+  // RoofR against what the carrier approved. Short quantities are supplements.
+  const cmp = carrierMeasureComparison().filter(c => c.ours > 0);
+  const shorts = cmp.filter(c => c.short || c.missing);
+  const cmpBlock = cmp.length ? `
+    <table class="ins-mg-table ins-cmp-table">
+      <thead><tr><th>Measure</th><th>RoofR</th><th>Carrier approved</th><th>Difference</th></tr></thead>
+      <tbody>${cmp.map(c => `
+        <tr class="${c.short || c.missing ? 'is-short' : ''}">
+          <td>${c.label}</td>
+          <td class="ins-mg-money">${c.ours} ${c.unit}</td>
+          <td class="ins-mg-money">${c.missing ? '<em>not in claim</em>'
+                                     : c.carrier + ' ' + c.unit}</td>
+          <td class="ins-mg-money">${c.missing ? '—'
+              : (c.delta === 0 ? 'matches'
+                 : (c.delta > 0 ? '+' : '') + c.delta.toFixed(1) + ' ' + c.unit)}</td>
+        </tr>`).join('')}</tbody>
+    </table>
+    ${shorts.length ? `<div class="ins-cmp-supp">
+      <strong>📄 Supplement candidate.</strong> RoofR measures more than the carrier
+      approved on: ${esc(shorts.map(c => c.label).join(', '))}. Worth documenting
+      before production — a supplement is the only way this claim's margin moves.
+    </div>` : `<div class="ins-cmp-ok">✓ Carrier quantities match the RoofR report.</div>`}` : `
+    <div class="ins-mg-empty">Import the RoofR measurement report to check the
+      carrier's quantities against what is actually on the house.</div>`;
+
+  return `
+    <div class="ins-margin-panel">
+      <div class="panel-header">
+        <h3>Claim Check <span class="note-tag">internal only — never shown to the customer</span></h3>
+      </div>
+      <p class="ins-mg-hint">RoofR is the source of truth for what is on the house.
+        The carrier's numbers are a claim about it — this is where the two get compared.</p>
+      ${nonRoofBlock}
+      ${reviewBlock}
+      <div class="ins-cmp-title">RoofR vs. carrier quantities</div>
+      ${cmpBlock}
+    </div>`;
 }
 
 /* ── Job Margin panel (insurance only, rep-facing) ───────────────────────
@@ -6395,7 +6594,9 @@ function insuranceMarginMarkup() {
     ? `<div class="ins-mg-empty">Pick the system above (and import a measurement
          report if you have not) to see this claim's margin.</div>`
     : `<div class="ins-mg-result ${rep.margin_pct < 25 ? 'is-thin' : ''}">
-         <div><span>Carrier RCV</span><strong>${fmtCur(rep.revenue - rep.supplements)}</strong></div>
+         ${rep.non_roof ? `<div><span>Claim total</span><strong>${fmtCur(rep.claim_total)}</strong></div>
+         <div class="ins-mg-excl"><span>Less non-roof work</span><strong>−${fmtCur(rep.non_roof)}</strong></div>` : ''}
+         <div><span>Roof RCV${rep.review_count ? ' <em>(incl. unconfirmed)</em>' : ''}</span><strong>${fmtCur(rep.revenue - rep.supplements)}</strong></div>
          ${rep.supplements ? `<div><span>Supplements</span><strong>${fmtCur(rep.supplements)}</strong></div>` : ''}
          <div><span>Our cost</span><strong>${fmtCur(rep.cost)}</strong></div>
          <div class="ins-mg-profit"><span>Gross profit</span><strong>${fmtCur(rep.gross_profit)}</strong></div>
