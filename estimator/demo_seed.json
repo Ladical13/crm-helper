@@ -1,0 +1,455 @@
+{
+  "_readme": [
+    "Seed estimates for demo mode (estimator/demo_store.py). Every customer,",
+    "address, phone and email here is invented — do NOT replace any of them",
+    "with a real one, and do not copy a real estimate in here to make the demo",
+    "look better. This file is in the repo, and the demo link is given to",
+    "people outside the company.",
+    "",
+    "Dates are written as offsets in days ({{TODAY-6}}, {{NOW-5}}) and",
+    "materialized on load, so the demo never ages into an expired quote.",
+    "Costs are the seeded catalog's own order of magnitude, but they are not",
+    "the live price book — the live one is scrambled on its way out by",
+    "demo_store.scrub_costs().",
+    "",
+    "Share tokens are fixed rather than random so the customer link stays the",
+    "same across restarts: a demo where the link you just pasted into a text",
+    "message has stopped working is worse than a predictable token on data",
+    "that is fictional anyway."
+  ],
+
+  "estimates": [
+    {
+      "estimate_id": "demo0001-0000-4000-8000-000000000001",
+      "estimate_label": "Roof replacement",
+      "estimate_type": "retail",
+      "estimate_date": "{{TODAY-6}}",
+      "valid_until": "{{TODAY+24}}",
+      "created_at": "{{NOW-6}}",
+      "updated_at": "{{NOW-5}}",
+      "salesperson": "demo",
+      "status": "sent",
+      "selected_tier": "better",
+      "share_token": "d3m0a1b2c3d4e5f60718293a4b5c6d7e",
+      "sent_at": "{{NOW-5}}",
+      "first_viewed_at": "{{NOW-4}}",
+      "last_viewed_at": "{{NOW-2}}",
+      "view_count": 3,
+      "customer": {
+        "name": "Dana Whitfield",
+        "phone": "970-555-0142",
+        "email": "dana.whitfield@example.com",
+        "address": {
+          "street": "1420 Aspen Ridge Ct",
+          "city": "Loveland",
+          "state": "CO",
+          "zip": "80538"
+        }
+      },
+      "measurements": {
+        "roof_squares": 31.5,
+        "waste_pct": 12,
+        "pitch": "6/12",
+        "stories": 1,
+        "ridge_hip_lf": 168,
+        "valley_lf": 44,
+        "eave_lf": 212,
+        "rake_lf": 96,
+        "penetrations": 7
+      },
+      "pricing": {
+        "mode": "margin",
+        "global_rate": 35,
+        "tier_rates": { "good": 32, "better": 35, "best": 40 },
+        "per_trade_overrides": {}
+      },
+      "notes_customer": "Two skylights to be reflashed. Homeowner asked about the Class 4 discount her carrier offers — worth a call to her agent either way.",
+      "trades": {
+        "roofing": {
+          "enabled": true,
+          "mode": "gbb",
+          "selected_tier": "better",
+          "line_items": [
+            {
+              "name": "Shingles",
+              "description": "Primary roofing material",
+              "quantity": 35.3,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 142, "labor_unit_cost": 0 },
+                "better": { "material_unit_cost": 175, "labor_unit_cost": 0 },
+                "best": { "material_unit_cost": 320, "labor_unit_cost": 0 }
+              }
+            },
+            {
+              "name": "Tear-off & disposal",
+              "description": "Remove existing layers, haul and dump",
+              "quantity": 31.5,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 0, "labor_unit_cost": 48 },
+                "better": { "material_unit_cost": 0, "labor_unit_cost": 48 },
+                "best": { "material_unit_cost": 0, "labor_unit_cost": 62 }
+              }
+            },
+            {
+              "name": "Installation labor",
+              "description": "Full-crew install to manufacturer spec",
+              "quantity": 31.5,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 0, "labor_unit_cost": 95 },
+                "better": { "material_unit_cost": 0, "labor_unit_cost": 105 },
+                "best": { "material_unit_cost": 0, "labor_unit_cost": 190 }
+              }
+            },
+            {
+              "name": "Synthetic underlayment",
+              "quantity": 31.5,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 17, "labor_unit_cost": 0 },
+                "better": { "material_unit_cost": 21, "labor_unit_cost": 0 },
+                "best": { "material_unit_cost": 21, "labor_unit_cost": 0 }
+              }
+            },
+            {
+              "name": "Ice & water shield",
+              "description": "Valleys, eaves and every penetration",
+              "quantity": 256,
+              "unit": "LF",
+              "tiers": {
+                "good": { "material_unit_cost": 1.85, "labor_unit_cost": 0.9 },
+                "better": { "material_unit_cost": 1.85, "labor_unit_cost": 0.9 },
+                "best": { "material_unit_cost": 2.4, "labor_unit_cost": 0.9 }
+              }
+            },
+            {
+              "name": "Ridge vent",
+              "quantity": 168,
+              "unit": "LF",
+              "tiers": {
+                "good": { "material_unit_cost": 4.2, "labor_unit_cost": 2.1 },
+                "better": { "material_unit_cost": 4.2, "labor_unit_cost": 2.1 },
+                "best": { "material_unit_cost": 5.6, "labor_unit_cost": 2.1 }
+              }
+            },
+            {
+              "name": "Drip edge",
+              "quantity": 308,
+              "unit": "LF",
+              "tiers": {
+                "good": { "material_unit_cost": 1.4, "labor_unit_cost": 0.85 },
+                "better": { "material_unit_cost": 1.9, "labor_unit_cost": 0.85 },
+                "best": { "material_unit_cost": 2.6, "labor_unit_cost": 0.85 }
+              }
+            },
+            {
+              "name": "Pipe boots & flashing",
+              "quantity": 7,
+              "unit": "EA",
+              "tiers": {
+                "good": { "material_unit_cost": 22, "labor_unit_cost": 18 },
+                "better": { "material_unit_cost": 34, "labor_unit_cost": 18 },
+                "best": { "material_unit_cost": 48, "labor_unit_cost": 18 }
+              }
+            },
+            {
+              "name": "Permit & final inspection",
+              "quantity": 1,
+              "unit": "EA",
+              "tiers": {
+                "good": { "material_unit_cost": 385, "labor_unit_cost": 0 },
+                "better": { "material_unit_cost": 385, "labor_unit_cost": 0 },
+                "best": { "material_unit_cost": 385, "labor_unit_cost": 0 }
+              }
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "estimate_id": "demo0002-0000-4000-8000-000000000002",
+      "estimate_label": "Roof + gutters",
+      "estimate_type": "retail",
+      "estimate_date": "{{TODAY-21}}",
+      "valid_until": "{{TODAY+9}}",
+      "created_at": "{{NOW-21}}",
+      "updated_at": "{{NOW-14}}",
+      "salesperson": "demo",
+      "status": "sent",
+      "selected_tier": "best",
+      "share_token": "d3m0f0e1d2c3b4a5968778695a4b3c2d",
+      "sent_at": "{{NOW-19}}",
+      "first_viewed_at": "{{NOW-19}}",
+      "last_viewed_at": "{{NOW-14}}",
+      "view_count": 6,
+      "signature": {
+        "name": "Marcus Reyes",
+        "signed_at": "{{NOW-14}}",
+        "ip": "198.51.100.24",
+        "sig_email": "m.reyes@example.com",
+        "tier": "best"
+      },
+      "customer": {
+        "name": "Marcus & Elena Reyes",
+        "phone": "970-555-0198",
+        "email": "m.reyes@example.com",
+        "address": {
+          "street": "812 Sagebrush Ln",
+          "city": "Windsor",
+          "state": "CO",
+          "zip": "80550"
+        }
+      },
+      "measurements": {
+        "roof_squares": 24.0,
+        "waste_pct": 10,
+        "pitch": "8/12",
+        "stories": 2,
+        "ridge_hip_lf": 132,
+        "valley_lf": 62,
+        "eave_lf": 164,
+        "rake_lf": 120,
+        "penetrations": 5
+      },
+      "pricing": {
+        "mode": "margin",
+        "global_rate": 35,
+        "tier_rates": { "good": 32, "better": 35, "best": 40 },
+        "per_trade_overrides": {}
+      },
+      "notes_customer": "Storm damage on the north and west elevations. Class 4 shingle chosen; gutters replaced on the same mobilization.",
+      "trades": {
+        "roofing": {
+          "enabled": true,
+          "mode": "gbb",
+          "selected_tier": "best",
+          "line_items": [
+            {
+              "name": "Shingles",
+              "description": "Primary roofing material",
+              "quantity": 26.4,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 142, "labor_unit_cost": 0 },
+                "better": { "material_unit_cost": 175, "labor_unit_cost": 0 },
+                "best": { "material_unit_cost": 330, "labor_unit_cost": 0 }
+              }
+            },
+            {
+              "name": "Tear-off & disposal",
+              "quantity": 24.0,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 0, "labor_unit_cost": 55 },
+                "better": { "material_unit_cost": 0, "labor_unit_cost": 55 },
+                "best": { "material_unit_cost": 0, "labor_unit_cost": 68 }
+              }
+            },
+            {
+              "name": "Installation labor",
+              "description": "Steep-slope crew rate (8/12, two-story)",
+              "quantity": 24.0,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 0, "labor_unit_cost": 118 },
+                "better": { "material_unit_cost": 0, "labor_unit_cost": 128 },
+                "best": { "material_unit_cost": 0, "labor_unit_cost": 205 }
+              }
+            },
+            {
+              "name": "Synthetic underlayment",
+              "quantity": 24.0,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 17, "labor_unit_cost": 0 },
+                "better": { "material_unit_cost": 21, "labor_unit_cost": 0 },
+                "best": { "material_unit_cost": 21, "labor_unit_cost": 0 }
+              }
+            },
+            {
+              "name": "Ice & water shield",
+              "quantity": 226,
+              "unit": "LF",
+              "tiers": {
+                "good": { "material_unit_cost": 1.85, "labor_unit_cost": 0.9 },
+                "better": { "material_unit_cost": 1.85, "labor_unit_cost": 0.9 },
+                "best": { "material_unit_cost": 2.4, "labor_unit_cost": 0.9 }
+              }
+            },
+            {
+              "name": "Ridge vent",
+              "quantity": 132,
+              "unit": "LF",
+              "tiers": {
+                "good": { "material_unit_cost": 4.2, "labor_unit_cost": 2.1 },
+                "better": { "material_unit_cost": 4.2, "labor_unit_cost": 2.1 },
+                "best": { "material_unit_cost": 5.6, "labor_unit_cost": 2.1 }
+              }
+            },
+            {
+              "name": "Drip edge",
+              "quantity": 284,
+              "unit": "LF",
+              "tiers": {
+                "good": { "material_unit_cost": 1.4, "labor_unit_cost": 0.85 },
+                "better": { "material_unit_cost": 1.9, "labor_unit_cost": 0.85 },
+                "best": { "material_unit_cost": 2.6, "labor_unit_cost": 0.85 }
+              }
+            },
+            {
+              "name": "Permit & final inspection",
+              "quantity": 1,
+              "unit": "EA",
+              "tiers": {
+                "good": { "material_unit_cost": 410, "labor_unit_cost": 0 },
+                "better": { "material_unit_cost": 410, "labor_unit_cost": 0 },
+                "best": { "material_unit_cost": 410, "labor_unit_cost": 0 }
+              }
+            }
+          ]
+        },
+        "gutters": {
+          "enabled": true,
+          "mode": "simple",
+          "line_items": [
+            {
+              "name": "5\" seamless aluminum gutter",
+              "quantity": 164,
+              "unit": "LF",
+              "unit_cost": 4.1,
+              "unit_price": 8.75
+            },
+            {
+              "name": "3x4 downspouts",
+              "quantity": 68,
+              "unit": "LF",
+              "unit_cost": 4.6,
+              "unit_price": 9.5
+            },
+            {
+              "name": "Gutter guard",
+              "quantity": 164,
+              "unit": "LF",
+              "unit_cost": 3.2,
+              "unit_price": 7.25
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "estimate_id": "demo0003-0000-4000-8000-000000000003",
+      "estimate_label": "TPO recover — Building C",
+      "estimate_type": "commercial",
+      "estimate_date": "{{TODAY-2}}",
+      "valid_until": "{{TODAY+28}}",
+      "created_at": "{{NOW-2}}",
+      "updated_at": "{{NOW-1}}",
+      "salesperson": "demo",
+      "status": "draft",
+      "selected_tier": "better",
+      "customer": {
+        "name": "Willow Creek Business Park",
+        "phone": "970-555-0110",
+        "email": "facilities@example.com",
+        "address": {
+          "street": "3300 Corporate Cir",
+          "city": "Greeley",
+          "state": "CO",
+          "zip": "80634"
+        }
+      },
+      "measurements": {
+        "comm_squares": 186,
+        "comm_work_type": 0,
+        "comm_perimeter_lf": 640,
+        "comm_building_height_ft": 22,
+        "comm_insul_layers": 1,
+        "comm_uplift": 60,
+        "comm_drains": 6,
+        "comm_curbs": 11
+      },
+      "pricing": {
+        "mode": "margin",
+        "global_rate": 35,
+        "tier_rates": { "good": 30, "better": 35, "best": 38 },
+        "per_trade_overrides": {}
+      },
+      "notes_customer": "Tenant occupied throughout — night work on the loading-dock elevation only.",
+      "trades": {
+        "commercial": {
+          "enabled": true,
+          "mode": "gbb",
+          "selected_tier": "better",
+          "line_items": [
+            {
+              "name": "Membrane",
+              "description": "Single-ply roof system",
+              "quantity": 186,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 118, "labor_unit_cost": 0 },
+                "better": { "material_unit_cost": 152, "labor_unit_cost": 0 },
+                "best": { "material_unit_cost": 196, "labor_unit_cost": 0 }
+              }
+            },
+            {
+              "name": "Polyiso insulation",
+              "quantity": 186,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 96, "labor_unit_cost": 0 },
+                "better": { "material_unit_cost": 132, "labor_unit_cost": 0 },
+                "best": { "material_unit_cost": 178, "labor_unit_cost": 0 }
+              }
+            },
+            {
+              "name": "Re-roof labor",
+              "quantity": 186,
+              "unit": "SQ",
+              "tiers": {
+                "good": { "material_unit_cost": 0, "labor_unit_cost": 400 },
+                "better": { "material_unit_cost": 0, "labor_unit_cost": 400 },
+                "best": { "material_unit_cost": 0, "labor_unit_cost": 400 }
+              }
+            },
+            {
+              "name": "Perimeter edge metal",
+              "quantity": 640,
+              "unit": "LF",
+              "tiers": {
+                "good": { "material_unit_cost": 6.4, "labor_unit_cost": 3.2 },
+                "better": { "material_unit_cost": 8.1, "labor_unit_cost": 3.2 },
+                "best": { "material_unit_cost": 11.5, "labor_unit_cost": 3.2 }
+              }
+            },
+            {
+              "name": "Drain retrofit",
+              "quantity": 6,
+              "unit": "EA",
+              "tiers": {
+                "good": { "material_unit_cost": 240, "labor_unit_cost": 180 },
+                "better": { "material_unit_cost": 240, "labor_unit_cost": 180 },
+                "best": { "material_unit_cost": 310, "labor_unit_cost": 180 }
+              }
+            },
+            {
+              "name": "Curb & penetration flashing",
+              "quantity": 11,
+              "unit": "EA",
+              "tiers": {
+                "good": { "material_unit_cost": 130, "labor_unit_cost": 145 },
+                "better": { "material_unit_cost": 130, "labor_unit_cost": 145 },
+                "best": { "material_unit_cost": 165, "labor_unit_cost": 145 }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
