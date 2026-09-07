@@ -107,6 +107,21 @@ which point the copy is no longer off-platform: retention is whatever sits in
 `BACKUP_EMAIL`'s inbox, and there is still no scheduled pull to local storage
 (`C:\Users\ldurn\OneDrive` exists if that is ever wanted).
 
+**Uploaded CRM documents are the one thing NOT in a backup.** The rows in
+`documents` live in `salescrm.db` and travel with the nightly zip; the *files*
+sit on the volume and do not. That is the worst shape a backup gap can take — a
+restore looks like it worked and every attachment 404s the first time somebody
+opens a lead. They are excluded on purpose (one job's photos can be hundreds of
+MB, and folding them in would push the one unattended backup past every mail
+limit), so instead: `backup.document_store()` counts them, the nightly email
+**names the number it is not carrying**, and `/api/backup/documents` serves them
+on demand — **admin-only**, like the database dump, because it is every signed
+contract and adjuster letter in the company in one file. Its manifest is what
+makes it a backup rather than a folder: on disk a document is a UUID, and
+without the rows naming the lead and the customer's own filename a restore is
+several hundred unidentifiable files. **There is still no automated off-volume
+copy of them.**
+
 Back up the volume before any migration regardless, as the estimator and CRM
 notes below already warn.
 
@@ -432,12 +447,51 @@ closes a homeowner. `docs/storm-to-contract.html` is the full build plan.
   address. It lives in `join.TIERS` so the map, the drafts and the canvassing
   zones cannot disagree.
 
+**Storm alerts go to the REP, never to the customer** (`_notify_storm()` in
+`salescrm`). The obvious version mails the homeowner — "hail hit your street,
+book an inspection" — and is deliberately not built: Northern Colorado gets a
+lot of qualifying hail, and a list that hears from you on every swath stops
+being a list by the third season, burning the people who already chose you
+first. The rep gets *their* affected customers, worst-hit first inside
+`join.TIERS`, and decides who is worth a call. Cold imported addresses are
+excluded — those are canvassing leads for the map, not names to phone. The
+email states whether the size is **radar-estimated or a nearby report**, because
+only one of those survives a customer asking how we know. Claimed per
+(storm, rep) so two workers cannot both mail; a failed send releases the claim.
+
+**The join has a caller now.** `salescrm`'s `/api/storm/<event_id>` is the wire
+this package was built for — `_lead_tier()` maps a lead's state onto
+`join.TIERS`, `portal.geo.lookup` supplies the coordinates, and `join.affected()`
+does the geometry. Three finished, tested pieces that had nothing connecting
+them: `hail/` had no caller at all and `portal/geo.py` had none outside its own
+backfill. Two rules:
+
+- **The tier rule lives in the CRM, the geometry lives here.** `join` refuses to
+  learn what a lead stage is on purpose — coupling the storm archive to that
+  schema guarantees it breaks the next time a stage is renamed.
+- **Both halves must build the address key the same way.** The lookup uses
+  street + city + state + zip because that is what `geocode_backfill` writes. A
+  mismatch is invisible — no error, no log, just a storm that appears to have
+  missed everybody — which is the failure `norm_address` warns about in its own
+  docstring. Pinned by `test_the_lookup_key_matches_what_the_backfill_writes`.
+
+`history_at(source=None)` returns every source we hold, each row labelled.
+Keep that label attached to anything a human reads: **a radar estimate over a
+cell and a spotter's phone call from down the road are different claims about
+the same roof**, and a customer must never be told the weaker one as though it
+were the stronger. `/api/storm/<id>` carries `source` out for that reason.
+
 **Not built yet: the ingest itself.** `grid`, `storms` and `join` are complete
 and tested; fetching MRMS GRIB2 and decoding it is not written, because the dev
 sandbox cannot reach `mrms.ncep.noaa.gov` or the Iowa State archive and
 untested network code is worse than none. The decoder choice is also open —
 eccodes/cfgrib needs system libraries on Railway. Whatever reads GRIB2 only has
 to yield `(lat, lng, size)` triples into `swath_from_points()`.
+
+*Until it lands `hail.db` is empty, so `/api/storm/<id>` has nothing to answer
+about. That is why it reports `placed`, `skipped` and `unplaced` rather than a
+bare count: "the storm missed us" and "the data never arrived" must not look
+the same.*
 
 ⚠️ **`MM_PER_INCH` is from the product documentation, not from a message we
 have decoded.** Confirm it against a real GRIB2 file before any number reaches
@@ -468,10 +522,254 @@ against the portal.
 (realtors/HOAs/insurance agents/property managers — the **Partners** view tracks
 referrals via `referred_by`). Objection/script library is `playbook.json`.
 
+### The day, and the numbers the day is judged by
+
+Four things here were wrong in the same way: the work happened, the tool
+recorded something, and the something it recorded was not what the number
+counted. All four were invisible from the screen. Pinned by
+`salescrm/tests/test_accounting.py` and `test_appointments.py`.
+
+- **Completing a task logs the WORK, not a note about the work.** It logged
+  `kind='note'`, and `note` is not in `OUTREACH_KINDS` — so ticking off
+  "Call #2" from My Day did not touch `last_activity_at`, did not count toward
+  the daily target, and did not reach the leaderboard, while the lead went on
+  showing as stalled. The identical call logged from the ⚡ Outreach tab counted
+  in full. One behaviour, two sets of books, and the rep working the follow-up
+  engine was the one who looked idle. A task whose kind is not a way of
+  reaching a human still logs a note, which is what it is.
+- **Nothing may read a stage LABEL to get a count.** The leaderboard counted
+  appointments with `body LIKE '%→ Appt Set%'`, so renaming a label in `STAGES`
+  — cosmetic, with nothing anywhere to warn you — silently zeroed every rep's
+  appointment count forever. `_log_stage_change()` writes the destination stage
+  **key** into `activities.outcome` and the human sentence into `body`; they are
+  two different jobs. `_backfill_stage_keys()` recovers the key from log lines
+  written before the column carried it, because those are the only record of
+  when each appointment was set.
+- **Open tasks follow the lead to its new owner** (`_move_open_tasks()`).
+  `tasks.rep` is a separate column and nothing kept it in step, so a handed-over
+  deal left every follow-up on the old rep's My Day and gave the new owner a
+  lead with no next action. **Done** tasks keep their original rep — they record
+  who did the work.
+- **`appt_set` now has a clock.** `leads.appt_at` is when the appointment
+  actually is; it drives `_refresh_next_action()`, `/api/appointments` serves
+  the day's schedule, and My Day renders it above the task list with one tap to
+  call and one to drive. Three rules: the appointment counts toward the next
+  action **only while the lead is still in `appt_set`** (after `inspected` it
+  has happened, and leaving it would mark every inspected lead permanently
+  overdue); a booking with **no** time is flagged (`appt_missing`) rather than
+  refused, because the canvasser creates leads straight into `appt_set` from a
+  doorstep and refusing those breaks the handoff the tool exists for; and moving
+  one is logged as an event, since "we rescheduled them twice" is the story a
+  bare overwritten column cannot tell.
+
+**The funnel is a cohort now, not a snapshot.** `/api/dashboard`'s "Funnel"
+drew *current stage counts*, so a lead that went `new → won` appeared only under
+Won and the whole ladder above it read as empty — the panel answered a question
+nobody asked, and none of the one it was named for. `_cohort_funnel()` asks the
+real one: of the leads picked up in this window, how far did each get. A lead's
+furthest rung is the highest of where it **entered** (`leads.entry_stage`),
+where it is now, and every stage it was ever moved to — so reaching a rung
+implies every rung below it and the counts read as a funnel. Three things are
+load-bearing:
+
+- **Two stages are deliberately not rungs.** `lost` sits last in `STAGES` so
+  the board reads left to right, which makes its raw index **7 — above `won`'s
+  6**; any rank comparison over `STAGE_KEYS` scores every dead deal as having
+  got further than a signed one. And `follow_up` is a *holding state*, not a
+  step forward — on the ladder it sat between "quoted" and "won", so every deal
+  that closed straight off the estimate was credited with a follow-up that never
+  happened. `STAGE_RUNG` maps it to `estimate_presented` instead, because a lead
+  waiting in follow-up genuinely has been quoted.
+- **A lost deal stays in the cohort**, at whatever rung it reached. Dropping it
+  would flatter every conversion rate on the screen.
+- **`entry_stage` exists because the canvasser hands doorstep leads straight
+  into `contacted`/`appt_set`/`inspected`.** Without it those read as "never got
+  past new", under-reporting conversion on exactly the leads door-knocking
+  exists to produce. `_backfill_entry_stage()` recovers it for older rows from
+  the left-hand side of the earliest `stage_change` body.
+
+- **The cohort is leads somebody sourced** — `import_batch = ''`. One
+  open-data pull adds tens of thousands of rows nobody sourced and most of which
+  will never be worked; mixed in they drown the few hundred real doorstep and
+  referral leads, and the panel reports on the size of the last import instead
+  of on the sales process. Measured at 36k imported against 400 worked, every
+  conversion rate on the screen read about 1%. They come back as
+  `bulk_imported` and show on the panel, so they are counted rather than
+  silently dropped.
+
+`stage_counts` still ships beside it and still means the snapshot. They are two
+questions — a flow and a standing — and one number was doing both badly.
+
+**Removed: `by_state`.** Computed on every dashboard load and rendered nowhere.
+This is one Northern Colorado market; the chart nobody drew was a chart of one
+bar.
+
+Also fixed here: the dashboard's `by_source` ignored the date filter
+entirely, so "Last 7 days" left an all-time chart sitting beside 7-day KPIs on
+the one screen someone reads to decide where the marketing money goes.
+
+### The customer channel (`portal/mail.py` + appointment comms)
+
+**The CRM owned a homeowner from the door knock to the signature and sent them
+nothing.** Not a decision — the only mailer in the repo lived inside
+`estimator/app.py`, so the estimator could email a customer and this app could
+not. `portal/mail.py` is that mailer, moved to the shared home for the same
+reason `funnel.py`, `geo.py` and `lost_reasons.py` are there. Two properties
+callers depend on: **`send()` never raises** (delivery is somebody else's
+network, and every caller is doing something more important — signing a
+contract, saving a lead), and **it prefers the SendGrid HTTP API over SMTP**,
+because Railway blocks outbound SMTP ports.
+
+The boundary is deliberately narrow. The estimator already covers
+estimate → signature; The Den owns everything after it. What nobody covered is
+the middle: an appointment gets booked and the customer hears nothing until
+somebody knocks. `_send_appt_mail()` sends a confirmation on booking and
+`_check_appt_reminders()` a day-before reminder, on the CRM's **own** hourly
+thread (`SALESCRM_DISABLE_JOBS=1` turns it off; the tests set it). Four rules:
+
+- **These SEND, and that does not weaken the draft-only rule in the ⚡ Outreach
+  queue.** That rule is about cold outreach at volume, where 1:1 mail from a
+  rep's own Gmail is what avoids needing a sending domain, SPF/DKIM and warmup.
+  A confirmation for an appointment the customer just booked is transactional —
+  expected, one recipient, no volume — and the estimator has always sent this
+  class of mail through the same infrastructure.
+- **`appt_confirmed_for`/`appt_reminded_for` store the appointment TIME, not a
+  flag.** A reschedule then invalidates itself and the customer is re-told; a
+  boolean would have confirmed the first time forever and left them holding the
+  wrong one.
+- **The claim is a conditional UPDATE, not a read-then-write.** Two gunicorn
+  workers run this loop and would both pass the same check and mail twice. A
+  send that then fails **releases** the claim — a customer who never got the
+  confirmation must not be recorded as having had one.
+- **Silence is the failure mode, so the drawer names which silence it is:**
+  confirmed, no email on file, or sending unavailable. `/health` reports `mail`.
+
+`_now()` derives from `_now_dt()` so the app has **one clock**. Two independent
+`utcnow()` calls can straddle a second boundary, and they made the clock
+impossible to hold still — which is why the appointment window's "today"
+behaviour was only ever tested by accident, passing or failing on what time of
+day the suite ran. `conftest.frozen_morning` holds it.
+
+**Loss reasons are one vocabulary, in `portal/lost_reasons.py`.** The estimator
+owned a controlled list and the CRM took free text from a browser `prompt()`, so
+the two could never be added together — and the CRM holds the bigger half of
+"why do we lose", because most deals die at the door or on the phone before
+anyone builds an estimate. It lives in `portal/` for the same reason `funnel.py`
+and `geo.py` do. `/api/config` serves it rather than the front end restating it,
+both write paths validate against it, and moving back out of `lost` clears the
+reason. **Renaming a key orphans every record already carrying it** — change the
+label, leave the key.
+
 **Visibility:** reps see only their own leads; `is_admin` (manager) sees everyone +
 the Numbers/Coaching tabs. Enrollment is the portal's job — there is no signup or
 login route left in this app, and `SALESCRM_SIGNUP_CODE` is gone (`PORTAL_SIGNUP_CODE`
 bootstraps the first admin; after that, admin-created invite links).
+
+### The customer, as distinct from the deal
+
+`leads` is one row per **deal**, deliberately — the cross-sell Pitch button
+creates a second lead for the same homeowner on purpose, and `POST /api/leads`
+stays duplicate-friendly for it. That is right at the deal level, and it left
+nothing at the **person** level: a homeowner with a roof in spring and siding in
+autumn was two unrelated rows, their documents split across both, and "what has
+this customer ever had from us" had no answer anywhere. `customers` +
+`leads.customer_id` is that answer, and it is also the half of the record Base44
+holds that would be hardest to re-create — identity, address, history. Pinned by
+`salescrm/tests/test_customers.py`.
+
+- **Matching is on contact details, never on a name.** Two Jon Smiths in one
+  county are two people, and a name-only key files one homeowner's signed
+  contract under another's. Order is phone → email → address **plus surname**.
+  The estimator's `custKey()` stays name-based: grouping estimates a rep is
+  already looking at is a far more forgiving job than deciding who somebody is.
+- **An address counts only with a surname**, because a roof outlives its owner —
+  the address alone merges whoever we sold to in 2019 with whoever lives there
+  now. `_addr_key()` reuses `portal.geo.norm_address`, so the key that groups two
+  leads is the same key that places them under a hail swath.
+- **A row that identifies nobody gets no customer** (`_identifiable()`). An
+  open-data record with a company name and a city is not a person, and minting
+  one each would put tens of thousands of rows in the table naming nobody.
+- **Later deals fill blanks, never overwrite.** A doorstep lead with only an
+  address, then a phone number three days later, is one person learned about
+  twice; the newest typing is not automatically the most correct.
+- **An existing link is never re-pointed on an edit.** Correcting a typo must
+  not move a deal onto a different person and split the history in two.
+- **Visibility follows the LEADS, not the customer.** A rep sees the person only
+  if they own one of their deals, and then sees only their own — otherwise the
+  record is a way to read another rep's pipeline sideways.
+- **Documents are filed against the person as well as the deal.** An insurance
+  letter uploaded on the roof lead is the same customer's letter when they come
+  back for siding, and the deal is the wrong thing for it to die with.
+
+### Offline: the outbox
+
+**A write made with no signal is not a write that did not happen.** Every
+mutation used to be dropped the moment the network went — `sw.js` returned early
+on any non-GET — so the door knock a rep logged in a driveway simply vanished,
+with a red toast as the only trace. The canvasser has had an offline shell since
+day one; the CRM, which is where the knock is actually *recorded*, had none.
+
+Failed `/api/` writes now go to an IndexedDB outbox and replay when the phone
+finds a bar. Guarded by `salescrm/tests/test_offline.py` (the server half) and
+`test_outbox.py`, which runs `static/sw.js` itself under node against a fake
+IndexedDB rather than restating it.
+
+- **Replay is what makes queueing safe.** Every write carries an
+  `Idempotency-Key` minted by the page, and the `idempotency` table records what
+  that key answered so the retry answers identically. This matters because the
+  duplicate is not hypothetical: the phone gives up on a request whose
+  *response* was lost, and the row is already written. Applied to the two
+  endpoints that INSERT — `POST /api/leads` and `POST .../activities`. Stage
+  moves and task completions are naturally idempotent and are left alone.
+  **The guard is the key, never the contact details**: `POST /api/leads` stays
+  duplicate-friendly on purpose for the cross-sell Pitch button.
+- **A key matches until it is PRUNED, not until it notionally expires.**
+  Matching longer only ever suppresses a duplicate; expiring eagerly risks
+  writing one. That is the safe direction to get wrong.
+- **The page is told, in 202, that the write is only on the phone.** Dressing it
+  up as a 200 is how a rep finds out on Monday that Thursday never happened.
+- **A 4xx drops out of the queue; a 5xx stays.** A rejection is an answer, and
+  retrying it on every reconnect for the life of the install helps nobody. A
+  server stumble is not an answer and the rep's work has to outlast it.
+- **Only same-origin `/api/` writes are queued.** A queued cross-origin POST
+  would be replayed at somebody else's server.
+- **API GETs are still network-FIRST** — a rep acting on a stale lead list calls
+  someone a teammate already closed. The cache is strictly the last resort when
+  there is no network at all, it lives in its own `p1pipeline-api` cache that
+  survives activation (a deploy is exactly when a rep is least likely to have
+  bars), and a cached answer carries `X-P1-Stale` so the page can raise the
+  offline banner. **The banner is driven by what happened to a request, never by
+  `navigator.onLine`** — a phone on a captive portal reports itself online.
+
+### Nothing counts a page and calls it the pipeline
+
+Two screens tallied a fetched page in the browser, which was right at a few
+hundred leads and became wrong the day prospecting imported partners by the
+thousand. Pinned by `salescrm/tests/test_myday.py` and `test_partner_book.py`.
+
+- **`/api/myday` counts in SQL.** My Day fetched `/api/leads?limit=1000` and
+  counted it, so "Open leads" and "Pipeline $" capped at 1,000 — which a rep
+  passes on their first imported batch — and the first screen of the morning
+  pulled a thousand rows over a phone connection in a driveway to compute five
+  numbers. It also returns the **sidebar stage counts**, which had the same bug
+  and showed "New 1,000" for a rep holding 36,000, and the hot/stalled lists.
+  Counts are of everything; the lists are capped at 25, because a count has to
+  be true and a list only has to be actionable. Stalled is applied as a date
+  rule **in SQL** — filtering a recency-ordered page drops the oldest first,
+  which is exactly the lead a rep needs to see.
+- **`/api/partners` is a relationship book, not every partner-type row.** It had
+  no limit, no pagination and no search: one DOM card per imported HOA. The
+  default is now somebody you have touched or who has sent you something; a cold
+  open-data row nobody has called is a *prospect* and is already worked in ⚡
+  Outreach. They come back as `cold_prospects` so they are visibly excluded
+  rather than missing, and `?q=` searches every partner record so nothing is
+  unreachable. Ordered by referrals sent — the book is read to decide who to
+  call.
+- **`S.leadCache` is gone.** Both its consumers were scale bugs: the sidebar
+  counts above, and the drawer's "referred by" `<select>`, which listed every
+  partner on the cached page. That now reads the partner book, and unions in the
+  lead's current partner if they sit outside it — otherwise opening the drawer
+  silently blanks the field and the next save wipes the attribution.
 
 **Pipeline search runs on the server** (`?q=` → SQL `LIKE`, escaped so a typed
 `%` stays literal). It used to filter the fetched page in the browser, which
@@ -497,6 +795,15 @@ nothing is written to Base44 at all.
   was a column nothing ever wrote, the CRM knew only its own stages and the
   estimator only its own, and the question "of the doors we knocked, where do
   we lose people" had no answer in either app.
+  - **The quoted number lands when the estimate is SENT, not at signature**
+    (`_apply_quoted_value()`). `est_value` is a figure a rep types before anyone
+    has measured anything, and it used to stay that guess right up to the moment
+    a contract was signed — so "Pipeline $", the forecast the company is run
+    against, was a column of estimates about estimates while the real number sat
+    in the estimator the whole time. The change is **logged on the timeline**
+    rather than silently swapped: a rep who guessed $30k and quoted $12k should
+    see their number move and know why, and it is the only record that the two
+    ever differed.
   - **States only move forward** (`_RANK` in `funnel.py`) and signature is
     terminal. That is what makes draining idempotent and re-runnable.
   - `POST /api/leads/<id>/start-estimate` writes **nothing** to The Den; it

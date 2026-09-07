@@ -206,6 +206,98 @@ def _summary_rows(manifest):
     return ''.join(rows)
 
 
+def document_store():
+    """(path, file_count, total_bytes) for the CRM's uploaded files.
+
+    These are NOT in the nightly zip and deliberately so: a single job's photos
+    can be hundreds of megabytes, and one big upload would push the database
+    backup past every mail limit and silently stop the ONE backup that does run
+    every night. So the databases stay small and mailable, and the files are
+    pulled separately.
+
+    What this function exists for is to stop that being invisible. The rows in
+    `documents` are backed up (they live in salescrm.db) while the files they
+    point at are not, which is the worst shape a backup gap can take: the
+    restore looks like it worked and every attachment 404s. The count goes in
+    the nightly email for the same reason the row counts do.
+    """
+    data_dir = (os.environ.get('SALESCRM_DATA_DIR')
+                or os.environ.get('DATA_DIR') or '')
+    if not data_dir:
+        return '', 0, 0
+    docs = os.path.join(data_dir, 'documents')
+    if not os.path.isdir(docs):
+        return docs, 0, 0
+    count = total = 0
+    for entry in os.scandir(docs):
+        if entry.is_file():
+            count += 1
+            total += entry.stat().st_size
+    return docs, count, total
+
+
+def build_documents_zip():
+    """Every uploaded CRM document, plus a manifest naming what it belongs to.
+
+    The manifest matters more than it looks: on disk a document is a UUID with
+    an extension, so a bare zip of the folder restores as several hundred files
+    nobody can identify. It is written from `documents` so the restore knows
+    which lead each file belonged to and what the customer called it.
+    """
+    docs, count, total = document_store()
+    manifest = {'created_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'path': docs, 'files': count, 'bytes': total, 'documents': []}
+
+    salescrm_dir = os.environ.get('SALESCRM_DATA_DIR') or os.environ.get('DATA_DIR') or ''
+    db_path = os.path.join(salescrm_dir, 'salescrm.db') if salescrm_dir else ''
+    rows = []
+    if db_path and os.path.exists(db_path):
+        conn = dbtune.tune(sqlite3.connect(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                'SELECT id, lead_id, filename, orig_name, size, uploaded_by, created_at '
+                'FROM documents').fetchall()
+        except sqlite3.DatabaseError:
+            rows = []
+        finally:
+            conn.close()
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for r in rows:
+            src = os.path.join(docs, r['filename'])
+            entry = dict(r)
+            entry['present'] = os.path.exists(src)
+            manifest['documents'].append(entry)
+            if entry['present']:
+                zf.write(src, arcname=os.path.join('documents', r['filename']))
+        zf.writestr('manifest.json', json.dumps(manifest, indent=2))
+    return buf.getvalue(), manifest
+
+
+def _documents_note(count, total_bytes, base_url=''):
+    """Say plainly that the uploaded files are not in this zip.
+
+    The rows in `documents` ARE backed up -- they live in salescrm.db -- while
+    the files they point at are not, and that is the worst shape a backup gap
+    can take: a restore that looks like it worked, with every attachment 404ing
+    the first time somebody opens a lead. Naming it in the one email a human
+    reads every day is what stops that being discovered by a customer.
+    """
+    if not count:
+        return ('<p style="font-size:12px;color:#6b7280;margin:0 0 12px">'
+                'No uploaded CRM documents yet.</p>')
+    mb = total_bytes / 1048576
+    link = (f'<a href="{base_url}/api/backup/documents">/api/backup/documents</a>'
+            if base_url else '<code>/api/backup/documents</code>')
+    return (f'<p style="font-size:13px;color:#b45309;line-height:1.55;margin:0 0 12px">'
+            f'<b>{count} uploaded document{"s" if count != 1 else ""} '
+            f'({mb:.1f} MB) are NOT in this zip.</b> Their database rows are, so '
+            f'a restore from this file alone gives you a CRM whose attachments '
+            f'all 404. Pull them separately from {link} (admin sign-in).</p>')
+
+
 def nightly_email(send_email, to_addr, base_url=''):
     """Build the zip and mail it. Returns True when the send was attempted.
 
@@ -219,6 +311,7 @@ def nightly_email(send_email, to_addr, base_url=''):
     data, manifest = build_zip()
     size_mb = len(data) / 1048576
     name = filename()
+    _docs_path, doc_count, doc_bytes = document_store()
 
     if size_mb > MAX_ATTACH_MB:
         attachments = None
@@ -242,6 +335,7 @@ def nightly_email(send_email, to_addr, base_url=''):
       Attached is tonight&rsquo;s snapshot of the CRM, the canvasser and the
       account store ({size_mb:.1f} MB zipped).</p>
     <table style="border-collapse:collapse;margin:0 0 12px">{_summary_rows(manifest)}</table>
+    {_documents_note(doc_count, doc_bytes, base_url)}
     {extra}
     <p style="font-size:11px;color:#9ca3af;margin:14px 0 0">
       Unzip and drop each .db back into its data directory to restore — no

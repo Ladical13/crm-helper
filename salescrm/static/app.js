@@ -3,7 +3,8 @@
 'use strict';
 
 // ── State & helpers ──────────────────────────────────────────────────────────
-const S = { me:null, cfg:null, view:'myday', users:[], leadCache:[] };
+const S = { me:null, cfg:null, view:'myday', users:[], stageCounts:{},
+            partnerBook:null, offline:false };
 const $  = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const el = (t, c, h) => { const e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e; };
@@ -15,10 +16,22 @@ const money = n => '$' + Math.round(n||0).toLocaleString();
 // is served standalone. Derived from the URL so one bundle works both ways.
 const BASE = location.pathname.startsWith('/crm') ? '/crm' : '';
 
+// Minted here, per call, because only this side knows that a retry IS the
+// original request. The service worker replays a queued write verbatim, key
+// included, so a request whose response was lost in transit -- the row already
+// written -- cannot log the same door knock twice.
+function idemKey(){
+  if(crypto.randomUUID) return crypto.randomUUID();
+  return 'k'+Date.now()+'-'+Math.random().toString(36).slice(2);
+}
+
 async function api(path, opts={}) {
+  const method = opts.method||'GET';
+  const headers = opts.body ? {'Content-Type':'application/json'} : {};
+  if(method !== 'GET') headers['Idempotency-Key'] = opts.idemKey || idemKey();
   const r = await fetch(BASE+'/api'+path, {
-    method: opts.method||'GET',
-    headers: opts.body ? {'Content-Type':'application/json'} : {},
+    method,
+    headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   // Session expired or never signed in: the portal owns login, so hand off
@@ -26,8 +39,47 @@ async function api(path, opts={}) {
   if (r.status === 401) { window.location = '/login'; throw new Error('Unauthorized'); }
   let data = null;
   try { data = await r.json(); } catch(e) {}
+  // 202: the worker took it because the network would not. Deliberately NOT
+  // dressed up as success -- the rep needs to know it is on this phone and not
+  // yet on the server, or they find out on Monday that Thursday never happened.
+  if (r.status === 202 && data && data.queued) {
+    setOffline(true);
+    toast('📥 No signal — saved on this phone, will sync');
+    return {queued:true};
+  }
+  if (r.headers.get('X-P1-Stale')) setOffline(true);
+  else if (method === 'GET' && r.ok) setOffline(false);
   if (!r.ok) throw new Error((data && data.error) || ('HTTP '+r.status));
   return data;
+}
+
+// ── Offline state ────────────────────────────────────────────────────────────
+// One banner, driven by what actually happened to a request rather than by
+// navigator.onLine, which reports "online" for a phone attached to a captive
+// portal or a tower it cannot actually reach.
+function setOffline(on){
+  if(S.offline === on) return;
+  S.offline = on;
+  document.body.classList.toggle('is-offline', on);
+  const bar = $('#offline-bar');
+  if(bar) bar.classList.toggle('hidden', !on);
+}
+function syncNow(){
+  if(navigator.serviceWorker && navigator.serviceWorker.controller)
+    navigator.serviceWorker.controller.postMessage({type:'drain-outbox'});
+}
+window.addEventListener('online', syncNow);
+if(navigator.serviceWorker){
+  navigator.serviceWorker.addEventListener('message', e=>{
+    if(!e.data || e.data.type !== 'outbox-drained') return;
+    setOffline(false);
+    toast(`✅ Synced ${e.data.count} change${e.data.count===1?'':'s'}`);
+    // Re-render from the server: what drained was written from a stale view.
+    const fn={myday:renderMyDay,outreach:renderOutreach,pipeline:renderPipeline,
+              partners:renderPartners,dashboard:renderDashboard,
+              coaching:renderCoaching,playbook:renderPlaybook}[S.view];
+    if(fn) fn();
+  });
 }
 
 // Calls the PORTAL's API rather than this app's — note the missing BASE. Team
@@ -125,8 +177,10 @@ $$('.side-item').forEach(t=>t.onclick=()=>go(t.dataset.view));
 function updateSidebar(){
   const box=$('#side-stages');
   if(!box||!S.cfg) return;
-  const counts={};
-  S.leadCache.forEach(l=>counts[l.stage]=(counts[l.stage]||0)+1);
+  // Server-counted. Tallying the fetched page reported "New 1,000" for a rep
+  // holding 36,000 — and the sidebar is the one place a rep looks to see how
+  // much work is in front of them.
+  const counts=S.stageCounts||{};
   box.innerHTML=S.cfg.stages.map(s=>`
     <div class="side-stage" data-stage="${s.key}">
       <span class="kcol-dot" style="background:${s.color}"></span>${esc(s.label)}
@@ -292,22 +346,22 @@ async function renderMyDay(){
   const hour=new Date().getHours();
   const greet=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
   $('#myday-greeting').textContent=`${greet}, ${esc(S.me.full_name||S.me.username)} 👋`;
-  const [tasks, leads] = await Promise.all([
+  const [tasks, mine, sched] = await Promise.all([
     api('/tasks?scope=today'),
-    api('/leads?limit=1000'),
+    api('/myday'),
+    api('/appointments'),
   ]);
-  S.leadCache=leads;
-  const open=leads.filter(l=>['won','lost'].indexOf(l.stage)<0);
-  const hot=open.filter(l=>l.temperature==='hot');
-  const stalled=open.filter(l=>l.stalled);
+  S.stageCounts=mine.stage_counts;
   const overdue=tasks.filter(t=>t.overdue).length;
-  // Each chip is a shortcut: tasks scroll to the list, the rest jump to the board.
+  // Counted in SQL, not by filtering a fetched page: these used to cap at the
+  // 1,000-lead page they were computed from, which a rep passes on their first
+  // imported batch.
   $('#myday-stats').innerHTML=[
     ['Tasks today', tasks.length, 'tasks'],
     ['Overdue', overdue, 'tasks'],
-    ['Open leads', open.length, 'pipeline'],
-    ['Hot', hot.length, 'pipeline'],
-    ['Pipeline', money(open.reduce((s,l)=>s+(l.est_value||0),0)), 'pipeline'],
+    ['Open leads', mine.open_count, 'pipeline'],
+    ['Hot', mine.hot_count, 'pipeline'],
+    ['Pipeline', money(mine.pipeline_value), 'pipeline'],
   ].map(([l,n,nav])=>`<div class="stat-chip" data-nav="${nav}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
   $$('#myday-stats .stat-chip').forEach(c=>c.onclick=()=>{
     if(c.dataset.nav==='pipeline') go('pipeline');
@@ -318,12 +372,49 @@ async function renderMyDay(){
   if(badge){ badge.textContent=overdue; badge.classList.toggle('hidden', !overdue); }
   updateSidebar();
 
+  renderSchedule(sched);
+
   $('#myday-tasks').innerHTML = tasks.length ? '' :
     '<div class="empty">All caught up. Add a follow-up so nothing goes cold. 🎯</div>';
   tasks.forEach(t=>$('#myday-tasks').appendChild(taskRow(t)));
 
-  renderMini($('#myday-hot'), hot, 'No hot leads right now.');
-  renderMini($('#myday-stalled'), stalled, 'Nothing stalled — nice.');
+  renderMini($('#myday-hot'), mine.hot, 'No hot leads right now.');
+  renderMini($('#myday-stalled'), mine.stalled, 'Nothing stalled — nice.');
+}
+// The day's appointments. A commitment to a customer, so it gets the address
+// and one tap each to call or drive -- this is read in a truck, not at a desk.
+function renderSchedule(sched){
+  const box=$('#myday-appts'), appts=sched.appointments||[];
+  $('#appt-count').textContent=appts.length;
+  box.innerHTML='';
+  if(sched.missing_time){
+    const warn=el('div','appt-warn');
+    warn.innerHTML=`⚠ ${sched.missing_time} appointment${sched.missing_time>1?'s':''} with no time set — nobody can be anywhere at "sometime".`;
+    warn.onclick=()=>{ S.stageFocus='appt_set'; go('pipeline'); };
+    box.appendChild(warn);
+  }
+  if(!appts.length){
+    box.appendChild(el('div','empty','Nothing booked today.'));
+    return;
+  }
+  appts.forEach(a=>{
+    const row=el('div','appt'+(a.appt_past?' past':''));
+    const where=[a.address,a.city].filter(Boolean).join(', ');
+    const phone=(a.phone||'').replace(/[^0-9+]/g,'');
+    row.innerHTML=`<div class="appt-time">${esc(a.appt_label.split(', ').pop())}</div>
+      <div class="appt-body"><div class="appt-name">${esc(a.name)}</div>
+        <div class="task-meta"><span>${esc(a.stage_label)}</span>
+        ${where?`<span>${esc(where)}</span>`:'<span class="appt-noaddr">no address</span>'}</div></div>
+      <div class="appt-actions">
+        ${phone?`<a class="appt-btn" href="tel:${esc(phone)}" title="Call">📞</a>`:''}
+        ${where?`<a class="appt-btn" target="_blank" rel="noopener"
+           href="https://maps.google.com/?q=${encodeURIComponent(where)}" title="Directions">🧭</a>`:''}
+      </div>`;
+    // The buttons are the actions; the rest of the row opens the lead.
+    row.querySelectorAll('.appt-btn').forEach(b=>b.onclick=e=>e.stopPropagation());
+    row.querySelector('.appt-body').onclick=()=>gotoLead(a.id, a.stage);
+    box.appendChild(row);
+  });
 }
 function taskRow(t){
   const row=el('div','task'+(t.overdue?' overdue':''));
@@ -376,6 +467,11 @@ $('#pipeline-search').oninput=e=>{
   clearTimeout(searchTimer);
   searchTimer=setTimeout(renderPipeline, 200);
 };
+$('#partners-search').oninput=e=>{
+  partnerSearch=e.target.value.trim();
+  clearTimeout(partnerTimer);
+  partnerTimer=setTimeout(renderPartners, 200);   // a query now, not an array filter
+};
 $('#pipeline-rep').onchange=()=>renderPipeline();
 $('#pipeline-service').onchange=()=>renderPipeline();
 function buildServiceSelect(){
@@ -394,10 +490,9 @@ async function renderPipeline(){
   const token=++pipeReq;
   let leads=await api('/leads'+(qs.length?'?'+qs.join('&'):''));
   if(token!==pipeReq) return;            // a newer search already answered
-  // Only cache an UNsearched load: the sidebar stage counts and the drawer's
-  // "referred by" partner list read this and both want the whole pipeline, not
-  // whatever the box currently matches.
-  if(!pipeSearch) S.leadCache=leads;
+  // The sidebar's counts are the server's, refreshed alongside the board rather
+  // than tallied from it — a searched or capped page is not the pipeline.
+  if(!pipeSearch) api('/myday').then(m=>{ S.stageCounts=m.stage_counts; updateSidebar(); });
   if(svc) leads=leads.filter(l=>l.service===svc);
   const board=$('#kanban'); board.innerHTML='';
   S.cfg.stages.forEach(st=>{
@@ -432,7 +527,10 @@ function kcard(l){
   const c=el('div','kcard'); c.dataset.id=l.id;
   const typeMeta=S.cfg.lead_types.find(t=>t.key===l.lead_type);
   let nextChip='';
-  if(l.overdue) nextChip=`<div class="chip next overdue">⏰ ${esc(dueLabel(l.next_action_at))}</div>`;
+  if(l.appt_missing) nextChip=`<div class="chip stall">📅 no time set</div>`;
+  else if(l.appt_at && l.stage==='appt_set')
+    nextChip=`<div class="chip next${l.overdue?' overdue':''}">📅 ${esc(dueLabel(l.appt_at))}</div>`;
+  else if(l.overdue) nextChip=`<div class="chip next overdue">⏰ ${esc(dueLabel(l.next_action_at))}</div>`;
   else if(l.next_action_at) nextChip=`<div class="chip next">Next: ${esc(dueLabel(l.next_action_at))}</div>`;
   else if(l.stalled) nextChip=`<div class="chip stall">⚠ no next step</div>`;
   const svcBadge=l.service!=='roofing'?`<span class="svc-badge" title="${esc(l.service_label)}">${l.service_icon}</span>`:'';
@@ -486,10 +584,57 @@ function attachDrag(card, lead){
     if(target && target!==lead.stage) await moveStage(lead, target);
   }
 }
-async function moveStage(lead, stage){
+// Two stages need one more fact before the move means anything: an appointment
+// needs a time, and a loss needs a reason. Both used to be a browser prompt()
+// (the loss) or nothing at all (the appointment). One asker, so a third stage
+// with a required fact has somewhere to go.
+function stageNeeds(stage, lead){
+  if(stage==='appt_set') return {
+    title:'When is the appointment?',
+    body:`<div class="field"><label>Date &amp; time</label>
+      <input type="datetime-local" id="stage-appt" value="${esc(toLocalInput(lead.appt_at)||defaultApptSlot())}"></div>
+      <div class="field-note">Shows on My Day as the day's schedule, and becomes this lead's next action.</div>`,
+    read:()=>({appt_at: fromLocalInput($('#stage-appt').value)}),
+  };
+  if(stage==='lost') return {
+    title:'Why did we lose it?',
+    // Same seven reasons the estimator records, fetched from it rather than
+    // restated here -- two lists of loss reasons cannot be added together, and
+    // most losses happen in the CRM before an estimate exists at all.
+    body:`<div class="field"><label>Reason</label><select id="stage-lost">
+      ${(S.cfg.lost_reasons||[]).map(([k,v])=>`<option value="${esc(k)}">${esc(v)}</option>`).join('')}
+      </select></div>`,
+    read:()=>({lost_reason: $('#stage-lost').value}),
+  };
+  return null;
+}
+// <input type="datetime-local"> speaks local time with no zone; the API speaks
+// UTC with a Z. Converting in one pair of functions is what stops an
+// appointment drifting by the offset every time it round-trips.
+function toLocalInput(iso){
+  if(!iso) return '';
+  const d=new Date(iso); if(isNaN(d)) return '';
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function fromLocalInput(v){
+  if(!v) return '';
+  const d=new Date(v); if(isNaN(d)) return '';
+  return d.toISOString().replace(/\.\d{3}Z$/,'Z');
+}
+function defaultApptSlot(){
+  const d=new Date(); d.setDate(d.getDate()+1); d.setHours(10,0,0,0);
+  return toLocalInput(d.toISOString());
+}
+
+async function moveStage(lead, stage, extra){
+  const need = extra ? null : stageNeeds(stage, lead);
+  if(need){
+    return openModal(need.title, need.body,
+      ()=>moveStage(lead, stage, need.read()), {okText:'Save'});
+  }
   try{
-    let body={stage};
-    if(stage==='lost'){ const reason=prompt('Lost reason (optional):','')||''; body.lost_reason=reason; }
+    let body=Object.assign({stage}, extra||{});
     const res=await api('/leads/'+lead.id+'/stage',{method:'PATCH',body});
     if(stage==='won'){
       if(res.den&&res.den.ok) toast('🎉 Won! Customer + job created in The Den');
@@ -566,10 +711,13 @@ function renderDrawer(l){
       ${l.referred_by_name?'<span>via '+esc(l.referred_by_name)+'</span>':''}</div>
     </div>
     ${l.stalled?'<div class="stalled-banner">⚠ No activity in a while. Reach out or schedule a next step.</div>':''}
+    ${l.customer&&l.customer.other_deals?
+      `<div class="cust-banner" id="d-cust">👤 ${esc(l.customer.name)} has ${l.customer.other_deals} other deal${l.customer.other_deals===1?'':'s'} with us — open their file</div>`:''}
     <div class="dgrid">
     ${referralsHtml}
     <div class="dsec"><h5>Stage</h5>
-      <select class="stage-select" id="d-stage">${stageOpts}</select></div>
+      <select class="stage-select" id="d-stage">${stageOpts}</select>
+      <div id="d-appt"></div></div>
     <div class="dsec"><h5>Reach out</h5>
       <div class="contact-actions">
         <a class="call" href="${phone?'tel:'+phone:'#'}" data-log="call">📞 Call</a>
@@ -603,6 +751,8 @@ function renderDrawer(l){
     </div><!-- /dgrid -->
   `;
   p.querySelector('[data-x]').onclick=closeDetail;
+  const custBanner=p.querySelector('#d-cust');
+  if(custBanner) custBanner.onclick=()=>openCustomer(l.customer.id);
   // Referred projects list (partners only)
   if(referralsHtml){
     const box=p.querySelector('#d-referrals');
@@ -644,6 +794,7 @@ function renderDrawer(l){
       toast('Logged'); const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
     };
   });
+  renderAppointment(l);
   renderCadences(l);
   renderTasks(l);
   renderTimeline(l);
@@ -680,6 +831,7 @@ function renderDrawer(l){
           temperature:'warm',referred_by:l.referred_by};
         if(S.me.is_manager) body.rep=l.rep;
         const nw=await api('/leads',{method:'POST',body});
+        S.partnerBook=null;   // a new lead can change the book; re-read it on next use
         await api('/leads/'+nw.id+'/activities',{method:'POST',
           body:{kind:'system',body:`${s.label} pitch — spun off from the ${l.service_label} deal`}});
         toast(`${s.icon} ${s.label} deal created`);
@@ -696,6 +848,72 @@ function renderDrawer(l){
     await api('/leads/'+l.id,{method:'DELETE'}); closeDetail(); toast('Deleted');
     if(S.view==='pipeline')renderPipeline(); else if(S.view==='myday')renderMyDay();
   };
+}
+// Rescheduling without walking the lead back through the stage select. Only
+// shown once an appointment exists or is owed -- there is nothing to say about
+// a date for a lead nobody has spoken to.
+function renderAppointment(l){
+  const box=$('#d-appt');
+  if(l.stage!=='appt_set' && !l.appt_at){ box.innerHTML=''; return; }
+  // Whether the CUSTOMER knows is the point of an appointment, and silence is
+  // the failure mode — so the three cases are named rather than left blank.
+  let told='';
+  if(l.appt_at){
+    told = l.appt_confirmed
+      ? '<div class="appt-ok">✓ Customer emailed the details</div>'
+      : (l.appt_reachable
+          ? '<div class="appt-warn inline">Not emailed yet — sending is off or the last attempt failed.</div>'
+          : '<div class="appt-warn inline">No email on file, so they have not been told. Add one and they get a confirmation.</div>');
+  }
+  box.innerHTML=`<label class="appt-edit-label">📅 Appointment</label>
+    <input type="datetime-local" id="d-appt-at" value="${esc(toLocalInput(l.appt_at))}">
+    ${l.appt_missing?'<div class="appt-warn inline">No time set — this is the one thing an appointment needs.</div>':''}
+    ${told}`;
+  $('#d-appt-at').onchange=async e=>{
+    try{
+      await api('/leads/'+l.id,{method:'PUT',body:{appt_at:fromLocalInput(e.target.value)}});
+      toast('Appointment updated');
+      renderDrawer(await api('/leads/'+l.id));
+    }catch(err){ toast(err.message,true); }
+  };
+}
+// One person's whole history: every deal, every document, one timeline. The
+// question `leads` alone could never answer, because a homeowner is rarely one
+// deal -- the roof in spring, the siding in autumn, the re-quote after the
+// adjuster comes back.
+async function openCustomer(id){
+  let c;
+  try{ c=await api('/customers/'+id); }catch(e){ return toast(e.message,true); }
+  const rows=c.leads.map(l=>`<div class="mini-lead" data-lead="${l.id}">
+      <span class="kcol-dot" style="background:${l.stage_color}"></span>
+      <div class="nm">${l.service!=='roofing'?l.service_icon+' ':''}${esc(l.stage_label)}</div>
+      <div class="sub">${esc(l.service_label)}${l.est_value?' · '+money(l.est_value):''} · ${timeAgo(l.created_at)}</div>
+    </div>`).join('');
+  const docs=c.documents.length?c.documents.map(d=>
+      `<div class="doc-row"><span>${docIcon(d.orig_name)}</span>
+       <a href="${esc(d.url)}" class="doc-name">${esc(d.orig_name)}</a>
+       <span class="doc-meta">${fmtBytes(d.size)}</span></div>`).join('')
+    : '<div class="empty">No documents yet.</div>';
+  const contact=[c.phone,c.email,[c.address,c.city].filter(Boolean).join(', ')]
+    .filter(Boolean).map(esc).join(' · ');
+  openModal(c.name, `
+    <div class="task-meta" style="margin-bottom:12px">${contact||'No contact details'}</div>
+    <div class="partner-stat">
+      <div><b>${c.leads.length}</b><span class="l">Deals</span></div>
+      <div><b>${c.won_count}</b><span class="l">Won</span></div>
+      <div><b>${c.open_count}</b><span class="l">Open</span></div>
+      <div><b>${money(c.lifetime_value)}</b><span class="l">Lifetime</span></div>
+    </div>
+    <h5 class="cust-h">Deals</h5><div class="mini-lead-list" id="cust-leads">${rows}</div>
+    <h5 class="cust-h">Documents</h5><div id="cust-docs">${docs}</div>
+    <h5 class="cust-h">History</h5>
+    <div class="timeline" id="cust-timeline">${c.activities.slice(0,40).map(a=>
+      `<div class="tl"><div class="tl-ico">${KIND_ICO[a.kind]||'•'}</div>
+       <div class="tl-body"><div class="tl-txt">${esc(a.body||a.kind)}</div>
+       <div class="tl-time">${esc(a.kind)} · ${timeAgo(a.created_at)}</div></div></div>`).join('')}</div>
+  `, null, {hideOk:true});
+  $('#cust-leads').querySelectorAll('[data-lead]').forEach(r=>
+    r.onclick=()=>{ closeModal(); openLead(r.dataset.lead); });
 }
 async function renderCadences(l){
   const cads=await api('/cadences');
@@ -821,12 +1039,27 @@ function renderTimeline(l){
     box.appendChild(row);
   });
 }
-function renderFields(l){
+async function renderFields(l){
   const cfg=S.cfg;
+  // The partner book, not a page of the lead table: a referral comes from
+  // someone you have a relationship with, and a <select> holding a thousand
+  // imported HOAs is not a control a rep can use. Cached for the session --
+  // the book changes rarely and this renders on every drawer open.
+  if(!S.partnerBook){
+    try{ S.partnerBook=(await api('/partners')).partners; }
+    catch(e){ S.partnerBook=[]; }
+  }
   const typeSel=cfg.lead_types.map(t=>`<option value="${t.key}" ${t.key===l.lead_type?'selected':''}>${esc(t.label)}</option>`).join('');
   const srcSel='<option value="">—</option>'+cfg.sources.map(s=>`<option ${s===l.source?'selected':''}>${esc(s)}</option>`).join('');
   const tempSel=cfg.temperature.map(t=>`<option value="${t}" ${t===l.temperature?'selected':''}>${esc(t)}</option>`).join('');
-  const partnerOpts='<option value="">—</option>'+S.leadCache.filter(x=>cfg.partner_types.includes(x.lead_type)&&x.id!==l.id)
+  // The lead's current partner may sit outside the book (a cold prospect who
+  // sent one referral before anyone logged a touch), so it is unioned in --
+  // otherwise opening the drawer silently blanks the field and the next save
+  // wipes the attribution.
+  const book=S.partnerBook.filter(x=>x.id!==l.id);
+  if(l.referred_by && !book.some(x=>x.id===l.referred_by))
+    book.unshift({id:l.referred_by, name:l.referred_by_name||'(current)'});
+  const partnerOpts='<option value="">—</option>'+book
     .map(x=>`<option value="${x.id}" ${x.id===l.referred_by?'selected':''}>${esc(x.name)}</option>`).join('');
   $('#d-fields').innerHTML=`
     <div class="field-row"><div class="field"><label>First</label><input id="f-first" value="${esc(l.first_name)}"></div>
@@ -873,10 +1106,22 @@ function addTaskModal(l){
 }
 
 // ── Partners ─────────────────────────────────────────────────────────────────
+let partnerSearch='', partnerTimer=null, partnerReq=0;
 async function renderPartners(){
-  const list=await api('/partners');
-  const box=$('#partners-list');
-  if(!list.length){ box.innerHTML='<div class="empty">No partners yet. Add a realtor, HOA, or insurance agent as a lead type to track referrals.</div>'; return; }
+  const token=++partnerReq;
+  const res=await api('/partners'+(partnerSearch?'?q='+encodeURIComponent(partnerSearch):''));
+  if(token!==partnerReq) return;              // a newer search already answered
+  if(!partnerSearch) S.partnerBook=res.partners;
+  const list=res.partners, box=$('#partners-list');
+  $('#partners-note').innerHTML = res.cold_prospects && !partnerSearch
+    ? `${res.cold_prospects.toLocaleString()} imported prospect${res.cold_prospects===1?'':'s'} not shown — nobody has spoken to them yet. Work them in <b>⚡ Outreach</b>, or search above to find one.`
+    : '';
+  if(!list.length){
+    box.innerHTML=partnerSearch
+      ? '<div class="empty">No partner matches that.</div>'
+      : '<div class="empty">No partners yet. Log a call with a realtor, HOA or insurance agent and they show up here.</div>';
+    return;
+  }
   box.innerHTML='';
   list.forEach(p=>{
     const typeMeta=S.cfg.lead_types.find(t=>t.key===p.lead_type);
@@ -924,13 +1169,25 @@ async function renderDashboard(){
     $('#dash-services').after(wrap);
     barList(wrap, Object.fromEntries(mix));
   }
-  // funnel
-  const maxC=Math.max(1,...d.stages.map(s=>d.stage_counts[s.key]||0));
-  $('#dash-funnel').innerHTML=d.stages.map(s=>{
-    const c=d.stage_counts[s.key]||0;
-    return `<div class="funnel-row" data-stage="${s.key}" title="Open in pipeline"><div class="funnel-label">${esc(s.label)}</div>
-      <div class="funnel-bar" style="width:${Math.max(8,100*c/maxC)}%;background:${s.color}">${c}</div></div>`;
-  }).join('');
+  // Funnel: how the leads picked up in this window PROGRESSED. This used to
+  // draw current stage counts, so a lead that went new -> won showed only under
+  // Won and the ladder above it read as empty -- the panel answered a question
+  // nobody was asking and none of the one it was named for.
+  const f=d.funnel||{cohort:0,rungs:[]};
+  const top=f.rungs.length?f.rungs[0].reached:0;
+  $('#dash-funnel').innerHTML=
+    `<div class="funnel-head">${f.cohort} sourced lead${f.cohort===1?'':'s'} in ${d.days}d — how far they got${
+       f.bulk_imported?` <span class="funnel-note">(${f.bulk_imported} bulk-imported prospect${f.bulk_imported===1?'':'s'} counted separately)</span>`:''}</div>`+
+    f.rungs.map(r=>{
+      // The drop from the rung before is the number worth looking at: it says
+      // WHERE people are lost, not just that the bottom is small.
+      const drop=r.pct_of_prev===null?'':
+        `<span class="funnel-conv${r.pct_of_prev<50?' leak':''}">${r.pct_of_prev}%</span>`;
+      return `<div class="funnel-row" data-stage="${r.key}" title="Open in pipeline">
+        <div class="funnel-label">${esc(r.label)}</div>
+        <div class="funnel-bar" style="width:${Math.max(8,100*r.reached/(top||1))}%;background:${r.color}">${r.reached}</div>
+        ${drop}</div>`;
+    }).join('')||'<div class="empty">No leads in this window.</div>';
   $$('#dash-funnel .funnel-row').forEach(r=>r.onclick=()=>{
     S.stageFocus=r.dataset.stage; go('pipeline');
   });
@@ -1096,6 +1353,7 @@ function newLeadModal(preset={}){
       if(preset.referred_by) body.referred_by=preset.referred_by;
       if(S.me.is_manager&&$('#nl-rep')) body.rep=$('#nl-rep').value;
       const lead=await api('/leads',{method:'POST',body});
+      S.partnerBook=null;
       toast(preset.referred_by?'Referred project added':'Lead added'); closeModal();
       if(S.view==='pipeline')renderPipeline(); else if(S.view==='myday')renderMyDay();
       // From a partner: land back on the partner so the new project shows underneath.

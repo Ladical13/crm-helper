@@ -30,6 +30,8 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, Respo
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from portal import funnel as pfunnel     # noqa: E402
+from portal import lost_reasons as plost  # noqa: E402
+from portal import mail as pmail          # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import throttle as pthrottle  # noqa: E402
 from portal import users as pusers       # noqa: E402
@@ -1380,15 +1382,10 @@ def update_estimate_label(est_id):
 # the analytics tab could report a close rate to the decimal and never say what
 # to change: price, timing, a competitor and an insurance denial are four
 # different companies' problems and the tool could not tell them apart.
-LOST_REASONS = {
-    'price':        'Price — we were too expensive',
-    'competitor':   'Went with another contractor',
-    'timing':       'Not doing it now / postponed',
-    'insurance':    'Insurance denied or underpaid the claim',
-    'unresponsive': 'Went quiet — never got an answer',
-    'scope':        'Changed their mind on the work',
-    'other':        'Other',
-}
+# Shared with the CRM, which records the losses that happen before an estimate
+# exists at all -- at the door, on the phone. Two lists could not be added
+# together, and the CRM's half is the bigger one. See portal/lost_reasons.py.
+LOST_REASONS = plost.REASONS
 
 
 @app.route('/api/estimates/<est_id>/status', methods=['PATCH'])
@@ -9371,123 +9368,11 @@ def email_estimate_link(est_id):
                     'pdf_attached': bool(attachments)})
 
 
-def _send_email(subject, html_body, to_addr, cc=None, attachments=None, bcc=None):
-    """Send an HTML email. Prefers the SendGrid HTTP API (HTTPS/443), which works
-    on hosts that block outbound SMTP ports like Railway; falls back to SMTP when
-    no API key is available. Logs errors, never raises.
-    attachments: list of (filename, bytes) tuples."""
-    if not to_addr:
-        return False
-
-    # Don't BCC the primary recipient — SendGrid would silently drop the duplicate,
-    # but the intent ("I'm already getting this") is clearer this way.
-    if bcc and to_addr and bcc.strip().lower() == to_addr.strip().lower():
-        bcc = None
-
-    # Prefer the SendGrid Web API when we have a key. SendGrid's SMTP login uses
-    # the literal username "apikey" and the API key as the password, so we can
-    # reuse SMTP_PASS as the API key when SENDGRID_API_KEY isn't set explicitly.
-    api_key = os.environ.get('SENDGRID_API_KEY', '').strip()
-    if not api_key and os.environ.get('SMTP_USER', '').strip() == 'apikey':
-        api_key = os.environ.get('SMTP_PASS', '').strip()
-    if api_key and http is not None:
-        if _send_via_sendgrid_api(api_key, subject, html_body, to_addr, cc, attachments, bcc):
-            return True
-        # API failed — try SMTP as a last resort (may also be blocked)
-    return _send_via_smtp(subject, html_body, to_addr, cc, attachments, bcc)
-
-
-def _send_via_sendgrid_api(api_key, subject, html_body, to_addr, cc=None, attachments=None, bcc=None):
-    """Send through SendGrid's v3 HTTP API over HTTPS. Returns True on success."""
-    from email.utils import parseaddr
-    smtp_from = (os.environ.get('SMTP_FROM') or os.environ.get('SMTP_USER') or '').strip()
-    from_name, from_email = parseaddr(smtp_from)
-    if not from_email:
-        # Fallback so SendGrid doesn't reject the request due to missing sender
-        from_email = 'noreply@projectoneroofing.com'
-        from_name  = 'Project One Roofing'
-
-    personalization = {'to': [{'email': to_addr}]}
-    if cc:
-        cc_list = [{'email': x.strip()} for x in cc.split(',') if x.strip()]
-        if cc_list:
-            personalization['cc'] = cc_list
-    if bcc:
-        bcc_list = [{'email': x.strip()} for x in bcc.split(',') if x.strip()]
-        if bcc_list:
-            personalization['bcc'] = bcc_list
-
-    payload = {
-        'personalizations': [personalization],
-        'from': {'email': from_email, 'name': from_name or 'Project One Roofing'},
-        'subject': subject,
-        'content': [{'type': 'text/html', 'value': html_body}],
-    }
-    if attachments:
-        import base64
-        payload['attachments'] = [{
-            'content':     base64.b64encode(data).decode('ascii'),
-            'filename':    fname,
-            'type':        'application/pdf',
-            'disposition': 'attachment',
-        } for fname, data in attachments]
-
-    try:
-        resp = http.post('https://api.sendgrid.com/v3/mail/send',
-                         json=payload,
-                         headers={'Authorization': f'Bearer {api_key}',
-                                  'Content-Type': 'application/json'},
-                         timeout=15)
-        if resp.status_code in (200, 201, 202):
-            print(f'[email] Sent "{subject}" to {to_addr} via SendGrid API')
-            return True
-        print(f'[email] SendGrid API rejected "{subject}" to {to_addr}: '
-              f'{resp.status_code} {resp.text[:300]}')
-        return False
-    except Exception as exc:
-        print(f'[email] SendGrid API error for "{subject}" to {to_addr}: {exc}')
-        return False
-
-
-def _send_via_smtp(subject, html_body, to_addr, cc=None, attachments=None, bcc=None):
-    """Send an HTML email via configured SMTP. Logs errors, never raises."""
-    smtp_host = os.environ.get('SMTP_HOST', '').strip()
-    if not smtp_host or not to_addr:
-        return False
-    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
-    smtp_user = os.environ.get('SMTP_USER', '').strip()
-    smtp_pass = os.environ.get('SMTP_PASS', '').strip()
-    smtp_from = os.environ.get('SMTP_FROM', smtp_user).strip() or smtp_user
-
-    msg = MIMEMultipart('mixed' if attachments else 'alternative')
-    msg['Subject'] = subject
-    msg['From']    = smtp_from
-    msg['To']      = to_addr
-    recipients     = [to_addr]
-    if cc:
-        msg['Cc'] = cc
-        recipients += [x.strip() for x in cc.split(',') if x.strip()]
-    if bcc:
-        # Deliberately NOT setting msg['Bcc'] — the whole point is that other
-        # recipients can't see it. Just add to the envelope.
-        recipients += [x.strip() for x in bcc.split(',') if x.strip()]
-    msg.attach(MIMEText(html_body, 'html'))
-    for fname, data in (attachments or []):
-        part = MIMEApplication(data, Name=fname)
-        part['Content-Disposition'] = f'attachment; filename="{fname}"'
-        msg.attach(part)
-    try:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as srv:
-            srv.ehlo()
-            srv.starttls()
-            if smtp_user and smtp_pass:
-                srv.login(smtp_user, smtp_pass)
-            srv.sendmail(smtp_from, recipients, msg.as_string())
-        print(f'[email] Sent "{subject}" to {to_addr} via SMTP')
-        return True
-    except Exception as exc:
-        print(f'[email] Failed to send "{subject}" to {to_addr} via SMTP: {exc}')
-        return False
+# Moved to portal/mail.py, where the CRM can reach it too — the estimator
+# owning the only mailer in the repo is the reason the CRM has never been able
+# to email a customer. The contract is unchanged: never raises, returns False
+# on failure, prefers the SendGrid HTTP API because Railway blocks SMTP ports.
+_send_email = pmail.send
 
 
 def _est_number(est):
@@ -19291,13 +19176,7 @@ def send_followup_reminder(est, days_out):
                 html_body, to_addr)
 
 
-def _email_configured():
-    """True when any email path is configured — SendGrid API or SMTP.
-    (Delivery prefers the SendGrid HTTP API; SMTP_HOST alone is not required.)"""
-    return bool(os.environ.get('SENDGRID_API_KEY', '').strip()
-                or os.environ.get('SMTP_HOST', '').strip()
-                or (os.environ.get('SMTP_USER', '').strip() == 'apikey'
-                    and os.environ.get('SMTP_PASS', '').strip()))
+_email_configured = pmail.configured
 
 
 def _check_reminders():

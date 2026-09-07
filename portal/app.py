@@ -418,6 +418,38 @@ def backup_databases():
                      as_attachment=True, download_name=pbackup.filename())
 
 
+@app.route('/api/backup/documents')
+def backup_documents():
+    """Every file a rep uploaded to a lead, with a manifest naming its owner.
+
+    Separate from the database backup on purpose. One job's photos can be
+    hundreds of megabytes, and folding them into the nightly zip would push the
+    one backup that runs unattended past every mail limit -- so the databases
+    stay small and mailable, and this is pulled by hand.
+
+    **Admin, not manager**, for the same reason as the database dump: this is
+    every signed document, insurance letter and adjuster report in the company
+    in one file.
+
+    The manifest is what makes it a backup rather than a folder. On disk a
+    document is a UUID with an extension; without the rows from `documents`
+    naming the lead and the customer's own filename, a restore is several
+    hundred unidentifiable files.
+    """
+    denied = _admin_only()
+    if denied:
+        return denied
+    from flask import send_file
+
+    from portal import backup as pbackup
+
+    data, manifest = pbackup.build_documents_zip()
+    stamp = pbackup.filename().replace('p1-databases-', '').replace('.zip', '')
+    return send_file(io.BytesIO(data), mimetype='application/zip',
+                     as_attachment=True,
+                     download_name=f'p1-documents-{stamp}.zip')
+
+
 # ── Launcher + shell assets ──────────────────────────────────────────────────
 
 @app.route('/')

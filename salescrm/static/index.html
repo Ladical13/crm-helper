@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <title>Project One — Pipeline</title>
-  <link rel="stylesheet" href="/crm/static/style.css?v=15">
+  <link rel="stylesheet" href="/crm/static/style.css?v=21">
 </head>
 <body>
 
@@ -55,6 +55,8 @@
     <section class="view" id="view-myday">
       <div class="myday-greeting" id="myday-greeting"></div>
       <div class="stat-row" id="myday-stats"></div>
+      <h3 class="section-h">📅 Today's schedule <span class="count-badge" id="appt-count">0</span></h3>
+      <div id="myday-appts" class="appt-list"></div>
       <h3 class="section-h">Today &amp; overdue <span class="count-badge" id="tasks-count">0</span></h3>
       <div id="myday-tasks" class="task-list"></div>
       <h3 class="section-h">🔥 Hot leads</h3>
@@ -88,6 +90,8 @@
     <!-- Partners -->
     <section class="view" id="view-partners">
       <p class="view-intro">Realtors, HOAs, insurance agents &amp; property managers — and the business they send you.</p>
+      <input id="partners-search" class="mini-search full" placeholder="Search every partner record…">
+      <div id="partners-note" class="view-note"></div>
       <div id="partners-list" class="card-list"></div>
       <div id="partners-detail" class="inline-detail hidden"></div>
     </section>
@@ -177,9 +181,16 @@
   <div class="modal-box" id="modal-box"></div>
 </div>
 
+<!-- Offline banner. Shown when a request actually failed or came back from
+     cache, not from navigator.onLine — a phone on a captive portal or a tower
+     it cannot reach reports itself as online. -->
+<div id="offline-bar" class="offline-bar hidden">
+  📥 Offline — showing the last synced data. Anything you log is saved on this phone and syncs when you get a signal.
+</div>
+
 <div id="toast" class="toast"></div>
 
 <script src="/shell.js"></script>
-<script src="/crm/static/app.js?v=15"></script>
+<script src="/crm/static/app.js?v=21"></script>
 </body>
 </html>

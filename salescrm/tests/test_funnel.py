@@ -204,3 +204,66 @@ def test_the_den_payload_carries_the_colorado_location(client):
     assert j['contact']['location_id'] == appmod.CO_LOCATION_ID
     assert j['project']['location_id'] == appmod.CO_LOCATION_ID
     assert j['project']['status'] == 'contracted'
+
+
+# ── The forecast stops being a guess ────────────────────────────────────────
+
+def test_the_quote_lands_when_the_estimate_is_SENT(client):
+    """est_value is a number a rep types before anyone has measured anything,
+    and it used to stay that guess right up to signature — so "Pipeline $", the
+    forecast the company is run against, was a column of estimates about
+    estimates while the real figure sat in the estimator the whole time."""
+    signup(client)
+    lid = new_lead(client, est_value=30000)['id']
+    _estimate(lid, 'sent', value=12450.0)
+    assert client.get(f'/api/leads/{lid}').get_json()['est_value'] == 12450.0
+
+
+def test_the_open_pipeline_total_uses_the_quote(client):
+    signup(client)
+    lid = new_lead(client, est_value=30000)['id']
+    _estimate(lid, 'sent', value=12450.0)
+    client.get('/api/leads')                       # drains the funnel
+    assert client.get('/api/myday').get_json()['pipeline_value'] == 12450.0
+
+
+def test_the_change_is_on_the_timeline(client):
+    """A rep who guessed $30k and quoted $12k should see their number move and
+    know why — and it is the only record the two ever differed."""
+    signup(client)
+    lid = new_lead(client, est_value=30000)['id']
+    _estimate(lid, 'sent', value=12450.0)
+    bodies = [a['body'] for a in client.get(f'/api/leads/{lid}').get_json()['activities']]
+    assert any('30,000' in b and '12,450' in b for b in bodies)
+
+
+def test_an_unchanged_value_is_not_re_logged(client):
+    """Every read drains the funnel; a note per read would bury the timeline."""
+    signup(client)
+    lid = new_lead(client, est_value=12450)['id']
+    _estimate(lid, 'sent', value=12450.0)
+    for _ in range(3):
+        client.get(f'/api/leads/{lid}')
+    bodies = [a['body'] for a in client.get(f'/api/leads/{lid}').get_json()['activities']]
+    assert not any('Value updated' in b for b in bodies)
+
+
+def test_a_revised_quote_replaces_the_first(client):
+    """The live quote is the most recent one the customer was given."""
+    signup(client)
+    lid = new_lead(client, est_value=0)['id']
+    _estimate(lid, 'sent', est_id='e1', value=12000.0)
+    client.get(f'/api/leads/{lid}')
+    _estimate(lid, 'sent', est_id='e2', value=28000.0)
+    assert client.get(f'/api/leads/{lid}').get_json()['est_value'] == 28000.0
+
+
+def test_a_lost_estimate_still_records_what_was_quoted(client):
+    """The lead stays open and gets re-quoted; what they were offered is the
+    number that conversation resumes from."""
+    signup(client)
+    lid = new_lead(client, est_value=0)['id']
+    _estimate(lid, 'lost', value=9500.0)
+    got = client.get(f'/api/leads/{lid}').get_json()
+    assert got['est_value'] == 9500.0
+    assert got['stage'] != 'lost', 'the LEAD is not lost, only the estimate'
