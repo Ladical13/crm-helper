@@ -665,6 +665,42 @@ the Numbers/Coaching tabs. Enrollment is the portal's job — there is no signup
 login route left in this app, and `SALESCRM_SIGNUP_CODE` is gone (`PORTAL_SIGNUP_CODE`
 bootstraps the first admin; after that, admin-created invite links).
 
+### The customer, as distinct from the deal
+
+`leads` is one row per **deal**, deliberately — the cross-sell Pitch button
+creates a second lead for the same homeowner on purpose, and `POST /api/leads`
+stays duplicate-friendly for it. That is right at the deal level, and it left
+nothing at the **person** level: a homeowner with a roof in spring and siding in
+autumn was two unrelated rows, their documents split across both, and "what has
+this customer ever had from us" had no answer anywhere. `customers` +
+`leads.customer_id` is that answer, and it is also the half of the record Base44
+holds that would be hardest to re-create — identity, address, history. Pinned by
+`salescrm/tests/test_customers.py`.
+
+- **Matching is on contact details, never on a name.** Two Jon Smiths in one
+  county are two people, and a name-only key files one homeowner's signed
+  contract under another's. Order is phone → email → address **plus surname**.
+  The estimator's `custKey()` stays name-based: grouping estimates a rep is
+  already looking at is a far more forgiving job than deciding who somebody is.
+- **An address counts only with a surname**, because a roof outlives its owner —
+  the address alone merges whoever we sold to in 2019 with whoever lives there
+  now. `_addr_key()` reuses `portal.geo.norm_address`, so the key that groups two
+  leads is the same key that places them under a hail swath.
+- **A row that identifies nobody gets no customer** (`_identifiable()`). An
+  open-data record with a company name and a city is not a person, and minting
+  one each would put tens of thousands of rows in the table naming nobody.
+- **Later deals fill blanks, never overwrite.** A doorstep lead with only an
+  address, then a phone number three days later, is one person learned about
+  twice; the newest typing is not automatically the most correct.
+- **An existing link is never re-pointed on an edit.** Correcting a typo must
+  not move a deal onto a different person and split the history in two.
+- **Visibility follows the LEADS, not the customer.** A rep sees the person only
+  if they own one of their deals, and then sees only their own — otherwise the
+  record is a way to read another rep's pipeline sideways.
+- **Documents are filed against the person as well as the deal.** An insurance
+  letter uploaded on the roof lead is the same customer's letter when they come
+  back for siding, and the deal is the wrong thing for it to die with.
+
 ### Offline: the outbox
 
 **A write made with no signal is not a write that did not happen.** Every

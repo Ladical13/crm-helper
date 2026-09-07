@@ -307,6 +307,7 @@ _PROSPECT_COLS = [
     # "started past there" -- it would under-report conversion on exactly the
     # leads the door-knocking exists to produce.
     ('entry_stage',        "TEXT DEFAULT ''"),
+    ('customer_id',        "TEXT DEFAULT ''"),   # the person this deal is for
     # Which appointment time the customer has been told about, and reminded of.
     # They store the `appt_at` VALUE rather than a flag or a timestamp, so a
     # reschedule invalidates itself: the moment appt_at differs from these, the
@@ -329,6 +330,9 @@ def migrate_db():
         for name, decl in _PROSPECT_COLS:
             if name not in cols:
                 db.execute(f'ALTER TABLE leads ADD COLUMN {name} {decl}')
+        doc_cols = [r['name'] for r in db.execute('PRAGMA table_info(documents)')]
+        if doc_cols and 'customer_id' not in doc_cols:
+            db.execute("ALTER TABLE documents ADD COLUMN customer_id TEXT DEFAULT ''")
         db.executescript('''
             CREATE TABLE IF NOT EXISTS documents (
                 id          TEXT PRIMARY KEY,
@@ -337,6 +341,7 @@ def migrate_db():
                 orig_name   TEXT NOT NULL,
                 size        INTEGER DEFAULT 0,
                 uploaded_by TEXT NOT NULL,
+                customer_id TEXT DEFAULT '',
                 created_at  TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS doc_lead_idx ON documents(lead_id);
@@ -395,6 +400,44 @@ def migrate_db():
             -- (storm, rep): a rep must not get the same swath again every time
             -- the loop comes round, and a swath that arrives while a rep is on
             -- holiday still has to reach them once when it is re-checked.
+            -- The PERSON, as distinct from the deal.
+            --
+            -- `leads` is one row per deal, deliberately: the cross-sell Pitch
+            -- button creates a second lead for the same homeowner on purpose,
+            -- and POST /api/leads stays duplicate-friendly for it. That is
+            -- right at the deal level and it left nothing at the person level
+            -- -- so a homeowner with a roof in spring and siding in autumn was
+            -- two unrelated rows, their documents were split across both, and
+            -- "what has this customer ever had from us" had no answer.
+            --
+            -- This is also the half of the record Base44 holds that would be
+            -- hardest to re-create: identity, address and history. Production
+            -- and money stay in The Den; the customer lives here.
+            CREATE TABLE IF NOT EXISTS customers (
+                id             TEXT PRIMARY KEY,
+                first_name     TEXT DEFAULT '',
+                last_name      TEXT DEFAULT '',
+                company        TEXT DEFAULT '',
+                phone          TEXT DEFAULT '',
+                email          TEXT DEFAULT '',
+                address        TEXT DEFAULT '',
+                city           TEXT DEFAULT '',
+                state          TEXT DEFAULT '',
+                zip            TEXT DEFAULT '',
+                phone_norm     TEXT DEFAULT '',
+                email_norm     TEXT DEFAULT '',
+                addr_key       TEXT DEFAULT '',
+                crm_contact_id TEXT DEFAULT '',
+                notes          TEXT DEFAULT '',
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS cust_phone_idx ON customers(phone_norm);
+            CREATE INDEX IF NOT EXISTS cust_email_idx ON customers(email_norm);
+            CREATE INDEX IF NOT EXISTS cust_addr_idx  ON customers(addr_key);
+            CREATE INDEX IF NOT EXISTS leads_cust_idx ON leads(customer_id);
+            CREATE INDEX IF NOT EXISTS doc_cust_idx   ON documents(customer_id);
+
             CREATE TABLE IF NOT EXISTS storm_notices (
                 event_id TEXT NOT NULL,
                 rep      TEXT NOT NULL,
@@ -406,6 +449,7 @@ def migrate_db():
         _backfill_norms(db)
         _backfill_stage_keys(db)
         _backfill_entry_stage(db)
+        _backfill_customers(db)
 
 # Reverse of STAGE_META, for reading a stage back out of a pre-existing log line.
 _LABEL_TO_STAGE = {m['label']: k for k, m in STAGE_META.items()}
@@ -453,6 +497,162 @@ def _backfill_entry_stage(db):
                    (entry or r['stage'] or 'new', r['id']))
 
 
+# Defined up here with the other pre-migration helpers, for the reason
+# _norm_phone already documents: migrate_db() runs at import time and its
+# backfills need these bound before anything else in the file is.
+def _now_dt():
+    return datetime.utcnow()
+
+def _iso(dt):
+    return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+# Derived from _now_dt() rather than reading the clock again, so the app has
+# ONE clock. Two independent utcnow() calls can straddle a second boundary --
+# and they made the clock impossible to hold still under test, which is why
+# the appointment window's "today" behaviour was only ever tested by accident,
+# passing or failing on what time of day the suite happened to run.
+def _now():
+    return _iso(_now_dt())
+
+
+# ── The customer, as distinct from the deal ──────────────────────────────────
+#
+# Matching is on CONTACT DETAILS, never on name alone. Two Jon Smiths in one
+# county are two people, and a name-only key merges their files -- which in this
+# business means one homeowner's signed contract filed under another's. The
+# estimator's custKey() is name-based and stays that way; it groups estimates a
+# rep is already looking at, which is a much more forgiving job than deciding
+# who somebody is.
+#
+# Address counts only WITH a surname, because a roof outlives its owner: the
+# address alone would merge whoever we sold to in 2019 with whoever lives there
+# now, and quietly attribute one family's history to another.
+#
+# This does NOT change the rule that leads are duplicate-friendly. That rule was
+# always about deals -- the cross-sell Pitch button deliberately creates a
+# second lead for the same homeowner -- and it was being asked to stand in for a
+# person-level identity it could never provide. Deals stay separate; the person
+# is what joins them.
+
+
+def _addr_key(row):
+    """Normalized address, or '' when there isn't enough to key on.
+
+    Reuses portal.geo's normalizer rather than inventing a second one: it
+    already collapses street suffixes and directions and strips a trailing zip,
+    and the coordinates cache is keyed the same way, so an address that groups
+    two leads here is the same address that places them under a hail swath.
+    """
+    if not (row.get('address') or '').strip():
+        return ''
+    return pgeo.norm_address(row.get('address'), row.get('city'),
+                             row.get('state'), row.get('zip'))
+
+
+def _match_customer(db, row):
+    """The existing customer this lead belongs to, or None.
+
+    Ordered strongest first. A phone number is the closest thing to an identity
+    a homeowner gives us; an address plus a surname is the weakest thing still
+    worth trusting.
+    """
+    phone, email = row.get('phone_norm') or '', row.get('email_norm') or ''
+    if phone:
+        hit = db.execute('SELECT * FROM customers WHERE phone_norm=?', (phone,)).fetchone()
+        if hit:
+            return hit
+    if email:
+        hit = db.execute('SELECT * FROM customers WHERE email_norm=?', (email,)).fetchone()
+        if hit:
+            return hit
+    akey, last = _addr_key(row), (row.get('last_name') or '').strip().lower()
+    if akey and last:
+        hit = db.execute(
+            'SELECT * FROM customers WHERE addr_key=? AND LOWER(last_name)=?',
+            (akey, last)).fetchone()
+        if hit:
+            return hit
+    return None
+
+
+def _identifiable(row):
+    """Whether there is enough here to say who this is.
+
+    An open-data row with a company name, a city and a licence number is not a
+    person -- it is a record we might one day call. Minting a customer for each
+    would put tens of thousands of rows in the table that name nobody, and the
+    first one with a blank key would swallow all the others.
+    """
+    return bool((row.get('phone_norm') or '').strip()
+                or (row.get('email_norm') or '').strip()
+                or (_addr_key(row) and (row.get('last_name') or '').strip()))
+
+
+CUSTOMER_FIELDS = ('first_name', 'last_name', 'company', 'phone', 'email',
+                   'address', 'city', 'state', 'zip')
+
+
+def _link_customer(db, lead_id, row):
+    """Attach a lead to its customer, creating one if this person is new.
+
+    Returns the customer id, or '' when the row identifies nobody. Filling in
+    blanks on an existing customer as later deals learn more -- a doorstep lead
+    with only an address, then a phone number three days later -- is deliberate;
+    overwriting a value that is already there is not, because the newest typing
+    is not automatically the most correct.
+    """
+    if not _identifiable(row):
+        return ''
+    hit = _match_customer(db, row)
+    if hit:
+        fill = {f: row.get(f) for f in CUSTOMER_FIELDS
+                if (row.get(f) or '').strip() and not (hit[f] or '').strip()}
+        if fill:
+            sets = ', '.join(f'{f}=?' for f in fill)
+            db.execute(f'UPDATE customers SET {sets}, phone_norm=?, email_norm=?, '
+                       f'addr_key=?, updated_at=? WHERE id=?',
+                       list(fill.values())
+                       + [hit['phone_norm'] or row.get('phone_norm') or '',
+                          hit['email_norm'] or row.get('email_norm') or '',
+                          hit['addr_key'] or _addr_key(row), _now(), hit['id']])
+        cid = hit['id']
+    else:
+        cid = str(uuid.uuid4())
+        db.execute(
+            'INSERT INTO customers (id, first_name, last_name, company, phone, email, '
+            'address, city, state, zip, phone_norm, email_norm, addr_key, '
+            'created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            [cid] + [row.get(f) or '' for f in CUSTOMER_FIELDS]
+            + [row.get('phone_norm') or '', row.get('email_norm') or '',
+               _addr_key(row), _now(), _now()])
+    db.execute('UPDATE leads SET customer_id=? WHERE id=?', (cid, lead_id))
+    return cid
+
+
+def _backfill_customers(db):
+    """Group the leads already here into people. Idempotent, and cheap after
+    the first run.
+
+    Oldest first, so the customer record is created from the earliest deal and
+    later ones fill in what it was missing rather than the other way round.
+
+    The identifiability test is repeated IN SQL rather than left to
+    `_identifiable()` alone. This runs at import, on every gunicorn boot, and a
+    prospecting table is mostly rows that will never name anybody -- they keep
+    `customer_id=''` forever, so a bare scan re-examines all 36,000 of them on
+    every deploy and runs the address normalizer over each. Measured at 40,000
+    leads that was 650ms a boot, growing with every import; filtering here makes
+    it 6ms.
+    """
+    rows = db.execute(
+        "SELECT * FROM leads WHERE customer_id='' AND ("
+        "  phone_norm != '' OR email_norm != ''"
+        "  OR (address != '' AND last_name != ''))"
+        " ORDER BY created_at").fetchall()
+    for r in rows:
+        _link_customer(db, r['id'], dict(r))
+
+
 def _backfill_norms(db):
     """Populate phone_norm/email_norm for rows written before they existed.
 
@@ -490,19 +690,6 @@ PLAN_BY_ID    = {p['id']: p for p in PLANS}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _now_dt():
-    return datetime.utcnow()
-
-def _iso(dt):
-    return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-
-# Derived from _now_dt() rather than reading the clock again, so the app has
-# ONE clock. Two independent utcnow() calls can straddle a second boundary --
-# and they made the clock impossible to hold still under test, which is why
-# the appointment window's "today" behaviour was only ever tested by accident,
-# passing or failing on what time of day the suite happened to run.
-def _now():
-    return _iso(_now_dt())
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -866,6 +1053,7 @@ def create_lead():
         auto = _cadence_for(stage, lead_type)
         if auto:
             _enroll(db, lid, rep, auto)
+        _link_customer(db, lid, fields)
         row = db.execute('SELECT * FROM leads WHERE id=?', (lid,)).fetchone()
         payload = _lead_row(row)
         _idem_remember(db, key, payload, 201)
@@ -887,6 +1075,24 @@ def get_lead(lead_id):
             'SELECT * FROM tasks WHERE lead_id=? ORDER BY done, due_at', (lead_id,)).fetchall()]
         d['enrollments'] = [dict(e) for e in db.execute(
             'SELECT * FROM cadence_enrollments WHERE lead_id=? AND active=1', (lead_id,)).fetchall()]
+        # The person, and how many other deals they have. A rep opening a lead
+        # should be able to see at a glance that this homeowner already bought
+        # a roof from us in 2023 -- which changes the conversation entirely.
+        d['customer'] = None
+        if d.get('customer_id'):
+            c = db.execute('SELECT id, first_name, last_name, company FROM customers '
+                           'WHERE id=?', (d['customer_id'],)).fetchone()
+            if c:
+                q = "SELECT COUNT(*) c FROM leads WHERE customer_id=? AND id!=?"
+                p = [d['customer_id'], lead_id]
+                if not is_manager():
+                    q += ' AND rep=?'; p.append(current_rep())
+                d['customer'] = {
+                    'id': c['id'],
+                    'name': (f"{c['first_name']} {c['last_name']}").strip()
+                            or c['company'] or '(no name)',
+                    'other_deals': db.execute(q, p).fetchone()['c'],
+                }
         if d['referred_by']:
             ref = db.execute('SELECT first_name,last_name,company FROM leads WHERE id=?',
                              (d['referred_by'],)).fetchone()
@@ -960,6 +1166,12 @@ def update_lead(lead_id):
             _log_activity(db, lead_id, 'system',
                           body=f'Reassigned: {pusers.display_name(old_rep)} → '
                                f'{pusers.display_name(row["rep"])}')
+        # A corrected phone number or address can identify a lead that was
+        # anonymous when it arrived, so linking is retried on every edit. An
+        # existing link is left alone: re-pointing a deal at a different person
+        # because somebody fixed a typo is how a customer's history splits.
+        if not row['customer_id']:
+            _link_customer(db, lead_id, dict(row))
         # Re-read last: _refresh_next_action writes, and returning the row from
         # before it hands the caller a next action that is already wrong.
         row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
@@ -3119,6 +3331,121 @@ def delete_goal(goal_id):
 # ── Documents (per-lead files on the persistent volume) ───────────────────────
 
 # Absolute so send_from_directory resolves regardless of the process CWD.
+@app.route('/api/customers/<customer_id>')
+@login_required
+def get_customer(customer_id):
+    """Everything we have ever done for one person.
+
+    The question `leads` alone could not answer. A homeowner is rarely one deal
+    -- the roof in spring, the siding in autumn, the re-quote after the adjuster
+    comes back -- and each of those was an unrelated row with its own documents
+    and its own half of the story.
+
+    Visibility follows the LEADS, not the customer: a rep sees this person only
+    if they own at least one of their deals, and then sees only their own.
+    Otherwise the record becomes a way to read another rep's pipeline sideways.
+    """
+    with get_db() as db:
+        cust = db.execute('SELECT * FROM customers WHERE id=?', (customer_id,)).fetchone()
+        if not cust:
+            return jsonify({'error': 'Not found'}), 404
+        q = 'SELECT * FROM leads WHERE customer_id=?'
+        params = [customer_id]
+        if not is_manager():
+            q += ' AND rep=?'
+            params.append(current_rep())
+        leads = db.execute(q + ' ORDER BY created_at DESC', params).fetchall()
+        if not leads:
+            return jsonify({'error': 'Not found'}), 404
+        lead_ids = [l['id'] for l in leads]
+        marks = ','.join('?' * len(lead_ids))
+        docs = db.execute(
+            'SELECT * FROM documents WHERE customer_id=? OR lead_id IN (%s) '
+            'ORDER BY created_at DESC' % marks, [customer_id] + lead_ids).fetchall()
+        acts = db.execute(
+            'SELECT * FROM activities WHERE lead_id IN (%s) '
+            'ORDER BY created_at DESC LIMIT 200' % marks, lead_ids).fetchall()
+
+    d = dict(cust)
+    d['name'] = (f"{d['first_name']} {d['last_name']}").strip() or d['company'] or '(no name)'
+    d['leads'] = [_lead_row(l) for l in leads]
+    d['documents'] = [_doc_row(x) for x in docs]
+    # One timeline across every deal, which is the point: "we quoted them in
+    # March, lost it on price, and they called back in October" is a single
+    # story that lived in two places and could not be read as one.
+    d['activities'] = [dict(a) for a in acts]
+    d['lifetime_value'] = sum(l['est_value'] or 0 for l in leads if l['stage'] == 'won')
+    d['won_count'] = sum(1 for l in leads if l['stage'] == 'won')
+    d['open_count'] = sum(1 for l in leads if l['stage'] in OPEN_STAGES)
+    return jsonify(d)
+
+
+@app.route('/api/customers/<customer_id>', methods=['PUT'])
+@login_required
+def update_customer(customer_id):
+    """Correct the person's details. Never re-keys them onto somebody else."""
+    data = request.get_json(force=True)
+    with get_db() as db:
+        cust = db.execute('SELECT * FROM customers WHERE id=?', (customer_id,)).fetchone()
+        if not cust:
+            return jsonify({'error': 'Not found'}), 404
+        owned_q = 'SELECT COUNT(*) c FROM leads WHERE customer_id=?'
+        owned_p = [customer_id]
+        if not is_manager():
+            owned_q += ' AND rep=?'
+            owned_p.append(current_rep())
+        if not db.execute(owned_q, owned_p).fetchone()['c']:
+            return jsonify({'error': 'Not found'}), 404
+        sets, params = [], []
+        for f in CUSTOMER_FIELDS + ('notes',):
+            if f in data:
+                sets.append(f'{f}=?')
+                params.append(data[f])
+        if not sets:
+            return jsonify({'error': 'Nothing to update'}), 400
+        merged = dict(cust)
+        merged.update({f: data[f] for f in data if f in CUSTOMER_FIELDS})
+        sets += ['phone_norm=?', 'email_norm=?', 'addr_key=?', 'updated_at=?']
+        params += [_norm_phone(merged.get('phone')), _norm_email(merged.get('email')),
+                   _addr_key(merged), _now(), customer_id]
+        db.execute('UPDATE customers SET %s WHERE id=?' % ', '.join(sets), params)
+        cust = db.execute('SELECT * FROM customers WHERE id=?', (customer_id,)).fetchone()
+    return jsonify(dict(cust))
+
+
+@app.route('/api/customers')
+@login_required
+def list_customers():
+    """Search people, not deals. `?q=` over name, company, phone and email."""
+    q = (request.args.get('q') or '').strip().lower()
+    limit = min(int(request.args.get('limit') or 100), 500)
+    clauses, params = [], []
+    if not is_manager():
+        clauses.append("c.id IN (SELECT customer_id FROM leads WHERE rep=?)")
+        params.append(current_rep())
+    if q:
+        esc = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        clauses.append(
+            "LOWER(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'') || ' ' ||"
+            "      COALESCE(c.company,'')    || ' ' || COALESCE(c.phone,'')     || ' ' ||"
+            "      COALESCE(c.email,'')      || ' ' || COALESCE(c.address,''))"
+            " LIKE ? ESCAPE '\\'")
+        params.append('%' + esc + '%')
+    where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+    sql = ('SELECT c.*, COUNT(l.id) deals, '
+           "SUM(CASE WHEN l.stage='won' THEN 1 ELSE 0 END) won "
+           'FROM customers c LEFT JOIN leads l ON l.customer_id = c.id '
+           + where + ' GROUP BY c.id ORDER BY c.updated_at DESC LIMIT ?')
+    with get_db() as db:
+        rows = db.execute(sql, params + [limit]).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['name'] = (f"{d['first_name']} {d['last_name']}").strip() or d['company'] or '(no name)'
+        out.append(d)
+    return jsonify(out)
+
+
 DOCS_DIR = os.path.abspath(os.path.join(DATA_DIR, 'documents'))
 ALLOWED_DOC_EXT = {'pdf', 'png', 'jpg', 'jpeg', 'gif', 'heic', 'webp', 'doc', 'docx',
                    'xls', 'xlsx', 'csv', 'txt', 'zip'}
@@ -3154,9 +3481,16 @@ def lead_documents(lead_id):
             out.write(blob)
         orig = os.path.basename(f.filename)
         with get_db() as db:
-            db.execute('INSERT INTO documents (id, lead_id, filename, orig_name, size, '
-                       'uploaded_by, created_at) VALUES (?,?,?,?,?,?,?)',
-                       (did, lead_id, stored, orig, len(blob), current_rep(), _now()))
+            # Filed against the PERSON as well as the deal. An insurance letter
+            # uploaded on the roof lead is the same customer's letter when they
+            # come back for siding, and the deal it arrived on is the wrong
+            # thing for it to live and die with.
+            cust = db.execute('SELECT customer_id FROM leads WHERE id=?',
+                              (lead_id,)).fetchone()
+            db.execute('INSERT INTO documents (id, lead_id, customer_id, filename, '
+                       'orig_name, size, uploaded_by, created_at) VALUES (?,?,?,?,?,?,?,?)',
+                       (did, lead_id, (cust['customer_id'] if cust else ''), stored,
+                        orig, len(blob), current_rep(), _now()))
             _log_activity(db, lead_id, 'system', body=f'📎 Uploaded document: {orig}')
         return jsonify({'ok': True, 'id': did}), 201
     with get_db() as db:

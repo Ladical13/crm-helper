@@ -711,6 +711,8 @@ function renderDrawer(l){
       ${l.referred_by_name?'<span>via '+esc(l.referred_by_name)+'</span>':''}</div>
     </div>
     ${l.stalled?'<div class="stalled-banner">⚠ No activity in a while. Reach out or schedule a next step.</div>':''}
+    ${l.customer&&l.customer.other_deals?
+      `<div class="cust-banner" id="d-cust">👤 ${esc(l.customer.name)} has ${l.customer.other_deals} other deal${l.customer.other_deals===1?'':'s'} with us — open their file</div>`:''}
     <div class="dgrid">
     ${referralsHtml}
     <div class="dsec"><h5>Stage</h5>
@@ -749,6 +751,8 @@ function renderDrawer(l){
     </div><!-- /dgrid -->
   `;
   p.querySelector('[data-x]').onclick=closeDetail;
+  const custBanner=p.querySelector('#d-cust');
+  if(custBanner) custBanner.onclick=()=>openCustomer(l.customer.id);
   // Referred projects list (partners only)
   if(referralsHtml){
     const box=p.querySelector('#d-referrals');
@@ -872,6 +876,44 @@ function renderAppointment(l){
       renderDrawer(await api('/leads/'+l.id));
     }catch(err){ toast(err.message,true); }
   };
+}
+// One person's whole history: every deal, every document, one timeline. The
+// question `leads` alone could never answer, because a homeowner is rarely one
+// deal -- the roof in spring, the siding in autumn, the re-quote after the
+// adjuster comes back.
+async function openCustomer(id){
+  let c;
+  try{ c=await api('/customers/'+id); }catch(e){ return toast(e.message,true); }
+  const rows=c.leads.map(l=>`<div class="mini-lead" data-lead="${l.id}">
+      <span class="kcol-dot" style="background:${l.stage_color}"></span>
+      <div class="nm">${l.service!=='roofing'?l.service_icon+' ':''}${esc(l.stage_label)}</div>
+      <div class="sub">${esc(l.service_label)}${l.est_value?' · '+money(l.est_value):''} · ${timeAgo(l.created_at)}</div>
+    </div>`).join('');
+  const docs=c.documents.length?c.documents.map(d=>
+      `<div class="doc-row"><span>${docIcon(d.orig_name)}</span>
+       <a href="${esc(d.url)}" class="doc-name">${esc(d.orig_name)}</a>
+       <span class="doc-meta">${fmtBytes(d.size)}</span></div>`).join('')
+    : '<div class="empty">No documents yet.</div>';
+  const contact=[c.phone,c.email,[c.address,c.city].filter(Boolean).join(', ')]
+    .filter(Boolean).map(esc).join(' · ');
+  openModal(c.name, `
+    <div class="task-meta" style="margin-bottom:12px">${contact||'No contact details'}</div>
+    <div class="partner-stat">
+      <div><b>${c.leads.length}</b><span class="l">Deals</span></div>
+      <div><b>${c.won_count}</b><span class="l">Won</span></div>
+      <div><b>${c.open_count}</b><span class="l">Open</span></div>
+      <div><b>${money(c.lifetime_value)}</b><span class="l">Lifetime</span></div>
+    </div>
+    <h5 class="cust-h">Deals</h5><div class="mini-lead-list" id="cust-leads">${rows}</div>
+    <h5 class="cust-h">Documents</h5><div id="cust-docs">${docs}</div>
+    <h5 class="cust-h">History</h5>
+    <div class="timeline" id="cust-timeline">${c.activities.slice(0,40).map(a=>
+      `<div class="tl"><div class="tl-ico">${KIND_ICO[a.kind]||'•'}</div>
+       <div class="tl-body"><div class="tl-txt">${esc(a.body||a.kind)}</div>
+       <div class="tl-time">${esc(a.kind)} · ${timeAgo(a.created_at)}</div></div></div>`).join('')}</div>
+  `, null, {hideOk:true});
+  $('#cust-leads').querySelectorAll('[data-lead]').forEach(r=>
+    r.onclick=()=>{ closeModal(); openLead(r.dataset.lead); });
 }
 async function renderCadences(l){
   const cads=await api('/cadences');

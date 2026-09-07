@@ -26,7 +26,7 @@ from portal import users as pusers      # noqa: E402
 # test, so a table missing here leaks state between tests.
 TABLES = ['leads', 'activities', 'tasks', 'cadence_enrollments',
           'coaching_notes', 'goals', 'documents', 'suppressions',
-          'idempotency', 'storm_notices']
+          'idempotency', 'storm_notices', 'customers']
 
 
 def _wipe():

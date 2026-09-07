@@ -469,3 +469,9 @@ input,select,textarea{font-family:inherit;font-size:16px}
   background:rgba(245,158,11,.16);color:var(--amber);
   border-bottom:1px solid rgba(245,158,11,.4);backdrop-filter:blur(6px)}
 .offline-bar.hidden{display:none}
+
+/* ── The customer file ───────────────────────────────────────────────────── */
+.cust-banner{margin:10px 0;padding:9px 12px;border-radius:9px;font-size:13px;cursor:pointer;
+  background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.35);color:var(--blue)}
+.cust-h{margin:16px 0 6px;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;
+  color:var(--txt3)}
