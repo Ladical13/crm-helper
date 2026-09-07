@@ -26,13 +26,19 @@ from portal import users as pusers      # noqa: E402
 # test, so a table missing here leaks state between tests.
 TABLES = ['leads', 'activities', 'tasks', 'cadence_enrollments',
           'coaching_notes', 'goals', 'documents', 'suppressions',
-          'idempotency']
+          'idempotency', 'storm_notices']
 
 
 def _wipe():
     with appmod.get_db() as db:
         for t in TABLES:
             db.execute(f'DELETE FROM {t}')
+    # Uploaded files live on disk, not in a table, so clearing `documents`
+    # leaves them behind and the document store grows across the whole session.
+    if os.path.isdir(appmod.DOCS_DIR):
+        for entry in os.scandir(appmod.DOCS_DIR):
+            if entry.is_file():
+                os.remove(entry.path)
     # Identity lives in the portal store, so it has to be reset here too or
     # the "first user bootstraps as admin" rule leaks across tests.
     with pusers.get_db() as db:

@@ -390,6 +390,18 @@ def migrate_db():
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idem_age_idx ON idempotency(created_at);
+
+            -- Which reps have already been told about which storm. One row per
+            -- (storm, rep): a rep must not get the same swath again every time
+            -- the loop comes round, and a swath that arrives while a rep is on
+            -- holiday still has to reach them once when it is re-checked.
+            CREATE TABLE IF NOT EXISTS storm_notices (
+                event_id TEXT NOT NULL,
+                rep      TEXT NOT NULL,
+                affected INTEGER DEFAULT 0,
+                sent_at  TEXT NOT NULL,
+                PRIMARY KEY (event_id, rep)
+            );
         ''')
         _backfill_norms(db)
         _backfill_stage_keys(db)
@@ -1022,10 +1034,25 @@ def delete_lead(lead_id):
         row = _lead_visible(db, lead_id)
         if not row:
             return jsonify({'error': 'Not found'}), 404
+        # Uploaded files go too, rows AND bytes. They used to be left behind:
+        # the rows pointed at a lead that no longer existed and the files sat on
+        # the volume forever, counting against the disk and appearing in every
+        # backup as documents belonging to nobody.
+        docs = db.execute('SELECT filename FROM documents WHERE lead_id=?',
+                          (lead_id,)).fetchall()
+        db.execute('DELETE FROM documents WHERE lead_id=?', (lead_id,))
         db.execute('DELETE FROM leads WHERE id=?', (lead_id,))
         db.execute('DELETE FROM activities WHERE lead_id=?', (lead_id,))
         db.execute('DELETE FROM tasks WHERE lead_id=?', (lead_id,))
         db.execute('DELETE FROM cadence_enrollments WHERE lead_id=?', (lead_id,))
+        # A partner's referrals outlive the partner. Clearing the pointer keeps
+        # them findable instead of attributed to a lead that is gone.
+        db.execute("UPDATE leads SET referred_by='' WHERE referred_by=?", (lead_id,))
+    for d in docs:
+        try:
+            os.remove(os.path.join(DOCS_DIR, d['filename']))
+        except OSError:
+            pass
     return jsonify({'ok': True})
 
 # ── Activities ────────────────────────────────────────────────────────────────
@@ -1660,6 +1687,10 @@ def _appt_loop():
             _check_appt_reminders()
         except Exception as exc:
             print(f'[appt] reminder check failed: {exc}')
+        try:
+            _check_storm_alerts()
+        except Exception as exc:
+            print(f'[storm] alert check failed: {exc}')
         time.sleep(1800)
 
 
@@ -1774,6 +1805,136 @@ def storm_list():
                                   min_size=float(request.args['min_size'])
                                   if request.args.get('min_size') else None,
                                   limit=min(int(request.args.get('limit') or 50), 200)))
+
+
+# ── Storm alerts: to the REP, never to the customer ──────────────────────────
+#
+# The obvious version of this mails the homeowner: "hail hit your street, book
+# an inspection". Deliberately not built, because Northern Colorado gets a lot
+# of qualifying hail and a list that hears from you on every swath stops being
+# a list by the third season -- and the people it burns first are the ones who
+# already chose you. Worse, it makes the company sound like the storm chasers
+# everyone is tired of.
+#
+# So the alert goes to the REP: here are YOUR people under this storm, worst-hit
+# first, in the order the business works them. A human decides who is worth a
+# call and what to say. That is slower and it is the point.
+
+STORM_ALERT_MIN_IN = float(os.environ.get('SALESCRM_STORM_ALERT_MIN_IN', '1.0'))
+# Tiers a rep is told about. A cold imported address is a canvassing lead, not
+# somebody to phone -- it belongs on the map, not in an inbox.
+STORM_ALERT_TIERS = ('rcp', 'past_customer', 'open_lead', 'lost_estimate')
+
+
+def _storm_alert_html(rep, event, by_tier, total):
+    who = pusers.display_name(rep)
+    size = (event or {}).get('max_size_in') or 0
+    date = (event or {}).get('event_date') or ''
+    src = (event or {}).get('source') or ''
+    # The source rides along because it changes what the rep may claim. Radar
+    # over the roof and a spotter's phone call from down the road are different
+    # facts, and only one of them survives a customer asking "how do you know?"
+    src_note = ('Radar-estimated hail size over each address.'
+                if src == 'mrms_mesh' else
+                'From storm reports called in near these addresses — treat the '
+                'size as nearby, not measured at the roof.')
+    rows = []
+    for tier in STORM_ALERT_TIERS:
+        hits = by_tier.get(tier) or []
+        if not hits:
+            continue
+        rows.append(f'<tr><td colspan="3" style="padding:14px 0 4px;font-size:11px;'
+                    f'letter-spacing:1.2px;text-transform:uppercase;color:#6b7280">'
+                    f'{_esc_html(TIER_LABELS[tier])} ({len(hits)})</td></tr>')
+        for h in hits[:40]:
+            where = ', '.join(x for x in (h.get('address'), h.get('city')) if x)
+            rows.append(
+                f'<tr>'
+                f'<td style="padding:3px 12px 3px 0"><b>{_esc_html(h.get("name"))}</b><br>'
+                f'<span style="color:#6b7280;font-size:12px">{_esc_html(where)}</span></td>'
+                f'<td style="padding:3px 12px 3px 0;white-space:nowrap">'
+                f'{h.get("hail_size_in", 0):.2f}"</td>'
+                f'<td style="padding:3px 0;white-space:nowrap;color:#6b7280">'
+                f'{_esc_html(h.get("phone") or "")}</td></tr>')
+    return f"""<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+        font-size:14px;line-height:1.5;color:#1f2937;max-width:640px">
+      <p>{_esc_html(who)} — <b>{total} of your customers</b> are under the hail
+         from {_esc_html(date)} (up to {size:.2f}").</p>
+      <p style="font-size:12px;color:#6b7280">{_esc_html(src_note)}</p>
+      <table style="border-collapse:collapse;width:100%">{''.join(rows)}</table>
+      <p style="margin-top:20px;font-size:12px;color:#6b7280">
+        Worst-hit first within each group. Roof Care Plan members come first
+        regardless of hail size — we owe them the call.</p>
+    </div>"""
+
+
+TIER_LABELS = {
+    'rcp':           'Roof Care Plan members',
+    'past_customer': 'Past customers',
+    'open_lead':     'Open leads',
+    'lost_estimate': 'Estimates we lost',
+    'cold':          'Cold addresses',
+}
+
+
+def _notify_storm(event_id):
+    """Mail each rep the list of THEIR people under one storm. Returns count.
+
+    Claimed per (storm, rep) with an INSERT that fails on the primary key, so
+    two workers running this loop cannot both mail the same rep -- the same
+    guard shape as the appointment confirmations.
+    """
+    swath = hstorms.load_swath(event_id)
+    if swath is None or not swath.cells:
+        return 0
+    event = hstorms.get_event(event_id)
+    sent = 0
+    with get_db() as db:
+        records, _unplaced = _storm_records(db)
+        hits, _skipped = hjoin.affected(swath, records, min_size=STORM_ALERT_MIN_IN)
+        by_rep = {}
+        for h in hits:
+            if h.get('tier') in STORM_ALERT_TIERS:
+                by_rep.setdefault(h['rep'], []).append(h)
+
+        for rep, rep_hits in by_rep.items():
+            to = pusers.email_of(rep)
+            if not to:
+                continue
+            try:
+                db.execute('INSERT INTO storm_notices (event_id, rep, affected, sent_at) '
+                           'VALUES (?,?,?,?)', (event_id, rep, len(rep_hits), _now()))
+            except sqlite3.IntegrityError:
+                continue                      # already told, or another worker won
+            html = _storm_alert_html(rep, event, hjoin.by_tier(rep_hits), len(rep_hits))
+            date = (event or {}).get('event_date') or ''
+            if pmail.send(f'🌩 {len(rep_hits)} of your customers were under the '
+                          f'{date} hail', html, to):
+                sent += 1
+            else:
+                db.execute('DELETE FROM storm_notices WHERE event_id=? AND rep=?',
+                           (event_id, rep))
+    return sent
+
+
+def _check_storm_alerts():
+    """Alert on storms nobody has been told about yet. Safe to call often."""
+    if not pmail.configured():
+        return 0
+    try:
+        events = hstorms.events(min_size=STORM_ALERT_MIN_IN, limit=20)
+    except Exception as exc:
+        print(f'[storm] could not read the archive: {exc}')
+        return 0
+    if not events:
+        return 0
+    with get_db() as db:
+        told = {r['event_id'] for r in db.execute('SELECT DISTINCT event_id FROM storm_notices')}
+    sent = 0
+    for ev in events:
+        if ev['event_id'] not in told:
+            sent += _notify_storm(ev['event_id'])
+    return sent
 
 
 # ── The Den (Base44) handoff ──────────────────────────────────────────────────

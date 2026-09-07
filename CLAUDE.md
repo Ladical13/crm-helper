@@ -107,6 +107,21 @@ which point the copy is no longer off-platform: retention is whatever sits in
 `BACKUP_EMAIL`'s inbox, and there is still no scheduled pull to local storage
 (`C:\Users\ldurn\OneDrive` exists if that is ever wanted).
 
+**Uploaded CRM documents are the one thing NOT in a backup.** The rows in
+`documents` live in `salescrm.db` and travel with the nightly zip; the *files*
+sit on the volume and do not. That is the worst shape a backup gap can take — a
+restore looks like it worked and every attachment 404s the first time somebody
+opens a lead. They are excluded on purpose (one job's photos can be hundreds of
+MB, and folding them in would push the one unattended backup past every mail
+limit), so instead: `backup.document_store()` counts them, the nightly email
+**names the number it is not carrying**, and `/api/backup/documents` serves them
+on demand — **admin-only**, like the database dump, because it is every signed
+contract and adjuster letter in the company in one file. Its manifest is what
+makes it a backup rather than a folder: on disk a document is a UUID, and
+without the rows naming the lead and the customer's own filename a restore is
+several hundred unidentifiable files. **There is still no automated off-volume
+copy of them.**
+
 Back up the volume before any migration regardless, as the estimator and CRM
 notes below already warn.
 
@@ -431,6 +446,18 @@ closes a homeowner. `docs/storm-to-contract.html` is the full build plan.
   subscriber is a contractual obligation and outranks bigger hail on a cold
   address. It lives in `join.TIERS` so the map, the drafts and the canvassing
   zones cannot disagree.
+
+**Storm alerts go to the REP, never to the customer** (`_notify_storm()` in
+`salescrm`). The obvious version mails the homeowner — "hail hit your street,
+book an inspection" — and is deliberately not built: Northern Colorado gets a
+lot of qualifying hail, and a list that hears from you on every swath stops
+being a list by the third season, burning the people who already chose you
+first. The rep gets *their* affected customers, worst-hit first inside
+`join.TIERS`, and decides who is worth a call. Cold imported addresses are
+excluded — those are canvassing leads for the map, not names to phone. The
+email states whether the size is **radar-estimated or a nearby report**, because
+only one of those survives a customer asking how we know. Claimed per
+(storm, rep) so two workers cannot both mail; a failed send releases the claim.
 
 **The join has a caller now.** `salescrm`'s `/api/storm/<event_id>` is the wire
 this package was built for — `_lead_tier()` maps a lead's state onto
