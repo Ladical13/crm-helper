@@ -15986,7 +15986,14 @@ ROOFING_CATALOG_SEED = [
      "colors": _ROOF_RUBBER_COLORS},
     {"id": "a_underlayment", "name": "Synthetic Underlayment", "unit": "SQ", "cost": 9.1, "measure": "squares_waste",
      "bullets": ["Synthetic underlayment over the full roof deck"]},
-    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "SQ", "cost": 46.46, "measure": "eave_valley",
+    # `eave_valley` returns LINEAR FEET (and already doubles the eave run when
+    # iw_second_row is on). A 2-square roll is 200 SF of 36"-wide membrane, so
+    # it covers 200/3 = 66.67 LF — and you buy whole rolls, which is what
+    # bundle_lf's ceil is for. Priced per SQ with no conversion, this billed
+    # 400 LF as 400 units of a per-square price: a 33x overcharge that also
+    # inflated the RETAIL quote, since in margin mode sell derives from cost.
+    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "LF", "cost": 95.0,
+     "measure": "eave_valley", "bundle_lf": 66.67, "bundle_unit": "rolls",
      "bullets": ["Ice & water shield at eaves and valleys"]},
     {"id": "a_drip_edge", "name": "Drip Edge", "unit": "LF", "cost": 0, "measure": "eave_rake",
      "bullets": ["New drip edge at eaves and rakes"]},
@@ -17214,8 +17221,12 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 # product predates the measurement and should adopt the seed's. Without it the
 # live Fascia product — seeded long before a fascia measurement existed — keeps
 # no measure and the Scope field it was added for silently fills nothing.
+# `bundle_lf`/`bundle_unit` are here because a live book saved before a product
+# gained its pack conversion prices the raw measure instead — a_ice_water billed
+# linear feet at a per-roll price until it got one. Absence is still the test, so
+# a manager who set their own pack size keeps it.
 _PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure',
-                            'group', 'colors', 'styles')
+                            'group', 'colors', 'styles', 'bundle_lf', 'bundle_unit')
 
 # Trades whose seeded costs are allowed to fill a live book's ZERO cost. See the
 # backfill in _ensure_bundle_catalogs for why this is narrow and one-directional.
@@ -17284,8 +17295,16 @@ _TIER_DEFAULT_MIGRATIONS = {
 # cover the whole metal roof. The real panel is $320.25/SQ (Architectural Sheet
 # Metals EFC31095 — $4.27/LF off a 20" coil at 16" net coverage) and its trim is
 # now priced as its own catalog lines, so leaving $400 double-bills the trim.
+#
+# 2026-09-08: a_ice_water was priced $46.46 per SQUARE while its quantity came
+# from a measure returning LINEAR FEET, so it billed 400 LF as 400 squares. The
+# unit is now the roll it is actually bought in ($95, confirmed off a supplier
+# invoice) and bundle_lf does the conversion. The cost MUST move with the unit:
+# a live book that gained only the conversion would price 6 rolls at $46.46 and
+# be wrong by half in the other direction.
 _PRODUCT_COST_MIGRATIONS = {
-    'roofing': {'m_standing_seam': (400, 320.25)},
+    'roofing': {'m_standing_seam': (400, 320.25),
+                'a_ice_water': (46.46, 95.0)},
 }
 
 # Seed bundles that shipped AFTER their trade already had saved price books, so

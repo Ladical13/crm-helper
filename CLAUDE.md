@@ -889,18 +889,28 @@ Five more things are load-bearing:
 
 Guarded by `tests/test_insurance_margin.py`.
 
-⚠️ **The seeded Ice & Water Shield product is mis-configured, and it costs
-retail too.** `a_ice_water` carries `unit: 'SQ'` and `cost: 46.46`, but its
-`measure` is `eave_valley`, which returns LINEAR FEET, and it has no
-`bundle_lf` conversion — so 220 LF of eave+valley bills as 220 × $46.46 =
-$10,221 on a 32-square roof. Contrast `a_ss_drip_d`, which converts LF to
-sticks with `bundle_lf: 10`. This is **not** an insurance-only fault: the
-insurance cost sheet was measured against the retail builder and both produce
-$15,539.92 for the same bundle and measurements, which is what proves the
-derivation faithful and the price book wrong. In margin mode sell is derived
-FROM cost, so on a fresh volume this inflates the retail *quote* too. The right
-value depends on roll coverage and supplier, so it is reported rather than
-guessed — `_PRODUCT_COST_MIGRATIONS` is the mechanism once someone decides it.
+**Ice & Water was billing linear feet at a per-square price** (fixed
+2026-09-08). `a_ice_water` carried `unit: 'SQ'`, `cost: 46.46` and
+`measure: 'eave_valley'` — which returns LINEAR FEET — with no `bundle_lf`, so
+400 LF of eave+valley billed as 400 squares: **$18,584** of membrane on a
+32-square roof, a 33× overcharge. Not an insurance-only fault: the insurance
+cost sheet was measured against the retail builder and both produced
+$15,539.92, which is what proved the derivation faithful and the price book
+wrong. In margin mode sell derives FROM cost, so it inflated the retail *quote*
+too. Now `unit: 'LF'`, `bundle_lf: 66.67` (a 2-SQ roll is 200 SF of 36" membrane
+= 66.7 LF), `bundle_unit: 'rolls'`, `cost: 95` per roll — so 400 LF is 6 rolls
+and $570. Three things had to move together, and the pair is why:
+
+- The **cost migration and the conversion ship as one change.** A live book that
+  gained only `bundle_lf` would price 6 rolls at $46.46 and be wrong by half in
+  the other direction. `_PRODUCT_COST_MIGRATIONS` rewrites 46.46 → 95 only while
+  the live number is still the untouched default.
+- **`bundle_lf`/`bundle_unit` are in `_PRODUCT_BACKFILL_FIELDS`** now, or the
+  seed reaches nobody: a book saved before a product had a pack size keeps
+  pricing the raw measure. Absence is still the test, so a manager's own pack
+  size survives.
+- `tests/test_ice_water_fix.py` pins all of it, including the $18,584 figure as
+  the thing that must never come back.
 
 **Still open: Xactimate exports carry no measurements.** `_parse_symbility_pdf`
 returns `roof_squares`; `_parse_xactimate_pdf` returns no `measurements` key at
