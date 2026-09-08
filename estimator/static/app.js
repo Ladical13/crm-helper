@@ -13457,18 +13457,48 @@ async function adminUnlockUser(u) {
   if (r.ok) renderTeamLogins();
 }
 
+/* ── Picking a PDF on iOS ─────────────────────────────────────────────────
+   Both PDF importers used to do `_file = input.files[0]; input.value = '';`
+   and then hold that File until the rep taps Apply — a minute later, across a
+   saveEstimate() round-trip — to upload it as the attachment the customer
+   file keeps.
+
+   On a desktop browser a File carries its own backing store and that is fine.
+   On iOS the File is a handle into WebKit's temp storage that clearing the
+   input is allowed to release, so the later read comes back empty: the parse
+   appears to work and the report silently never lands as an attachment — and
+   the rasterized pages the ridge-vent markup tool reads come with it.
+
+   Reading the bytes here removes the question. The input can then be cleared
+   immediately (which is what lets a rep re-pick the SAME file after a failed
+   parse — the `change` event does not fire twice for one value), and what the
+   caller holds is a Blob we own rather than a handle iOS can take back. */
+async function snapshotPickedFile(input) {
+  const f = input && input.files && input.files[0];
+  if (!f) return null;
+  const name = f.name || 'report.pdf';
+  const type = f.type || 'application/pdf';
+  try {
+    const buf = await f.arrayBuffer();
+    input.value = '';
+    return { blob: new Blob([buf], { type }), name };
+  } catch {
+    input.value = '';
+    return null;
+  }
+}
+
 // ── RoofR PDF import ─────────────────────────────────────────────────────
 
 let _roofrData = null;
 let _roofrFile = null;  // keep reference so we can save it as an attachment on apply
 
 async function importRoofrPdf(input) {
-  const file = input.files[0];
-  if (!file) return;
-  _roofrFile = file;
-  input.value = '';
+  const picked = await snapshotPickedFile(input);
+  if (!picked) return;
+  _roofrFile = picked;
   const fd = new FormData();
-  fd.append('file', file);
+  fd.append('file', picked.blob, picked.name);
   let data;
   try {
     const r = await fetch('/api/parse-roofr', { method: 'POST', body: fd });
@@ -13577,7 +13607,7 @@ async function applyRoofrImport() {
       await saveEstimate();
       if (S.estimate_id) {
         const ufd = new FormData();
-        ufd.append('file', file);
+        ufd.append('file', file.blob, file.name);
         const ur = await fetch(`/api/uploads/${S.estimate_id}`, { method: 'POST', body: ufd });
         if (ur.ok) {
           const ures = await ur.json();
@@ -13606,12 +13636,11 @@ let _xactFile = null;      // saved as an attachment on apply
 let _xactExcluded = new Set();   // "si:ii" keys of excluded lines
 
 async function importXactPdf(input) {
-  const file = input.files[0];
-  if (!file) return;
-  _xactFile = file;
-  input.value = '';
+  const picked = await snapshotPickedFile(input);
+  if (!picked) return;
+  _xactFile = picked;
   const fd = new FormData();
-  fd.append('file', file);
+  fd.append('file', picked.blob, picked.name);
   let data;
   try {
     const r = await fetch('/api/parse-xactimate', { method: 'POST', body: fd });
@@ -13857,7 +13886,7 @@ async function applyXactImport() {
       await saveEstimate();
       if (S.estimate_id) {
         const ufd = new FormData();
-        ufd.append('file', file);
+        ufd.append('file', file.blob, file.name);
         const ur = await fetch(`/api/uploads/${S.estimate_id}`, { method: 'POST', body: ufd });
         if (ur.ok) {
           const ures = await ur.json();

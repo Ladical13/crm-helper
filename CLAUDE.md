@@ -912,6 +912,41 @@ and $570. Three things had to move together, and the pair is why:
 - `tests/test_ice_water_fix.py` pins all of it, including the $18,584 figure as
   the thing that must never come back.
 
+**The PDF import did not work on an iPhone** (fixed 2026-09-08). Three separate
+things in that path were true of a desktop browser and not of iOS, none of them
+errored, and together they meant a rep tapped their RoofR report and nothing
+happened. All three applied equally to the Xactimate import and are fixed in
+both. `tests/test_pdf_upload_ios.py` pins each against the behaviour that
+breaks it.
+
+- **`accept=".pdf"` is not enough.** iOS resolves `accept` to UTIs to decide
+  what is selectable in the Files picker, and a bare extension is handled
+  inconsistently across versions where the MIME type is not — so the picker
+  opens and every PDF in it is unselectable. Both inputs now say
+  `application/pdf,.pdf`, which is what the photo input on the same page has
+  always said. That input was the clue: whoever wrote it spelled both
+  deliberately.
+- **A `File` from `<input type=file>` is a handle iOS can take back.** Both
+  importers did `_file = input.files[0]; input.value = ''` and then held that
+  File until the rep tapped Apply — a minute later, across a `saveEstimate()`
+  round-trip — to upload it as the attachment the customer file keeps. Clearing
+  the input releases WebKit's backing store, so the later read comes back
+  empty: the parse looks fine and the report silently never lands, taking the
+  rasterized pages the ridge-vent markup tool reads with it.
+  `snapshotPickedFile()` reads the bytes into a Blob we own and clears the
+  input *after*, which still lets a rep re-pick the same file after a failed
+  parse (`change` does not fire twice for one value).
+- **The server gated on the filename.** `f.filename.lower().endswith('.pdf')`
+  is a claim about what iOS chose to call the file rather than about the file,
+  and a report picked from iCloud Drive or handed over by a share sheet does
+  not reliably carry its extension. `_read_pdf_upload()` checks `%PDF-` and
+  treats the name as a hint. An empty upload gets its own message, because
+  that is what a released iOS file handle looks like on this end and
+  "Could not read PDF: EOF" sends the next reader into the parser.
+
+⚠️ **Not reproduced on a physical iPhone** — the fixes are all sound
+independently, but which of the three was Luke's actual symptom is unconfirmed.
+
 **Still open: Xactimate exports carry no measurements.** `_parse_symbility_pdf`
 returns `roof_squares`; `_parse_xactimate_pdf` returns no `measurements` key at
 all, despite the comment claiming both parsers return the same shape. It fails

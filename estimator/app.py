@@ -3277,13 +3277,40 @@ def _parse_roofr_pdf(file_bytes):
 
     return {'measurements': meas, 'address': addr}
 
+def _read_pdf_upload(f):
+    """`(bytes, None)` for an uploaded PDF, or `(None, message)`.
+
+    The filename is a HINT and must never be the gate. Both PDF importers used
+    to reject on `not f.filename.lower().endswith('.pdf')`, which is a claim
+    about what iOS chose to call the file rather than about the file: a report
+    picked out of iCloud Drive or handed over by a share sheet does not
+    reliably arrive with its extension, and the rep gets "Please upload a PDF
+    file" while holding an obviously valid PDF.
+
+    `%PDF-` is the thing that is actually true about it. An empty upload gets
+    its own message because that one is not the rep's fault either -- it is
+    what a released iOS file handle looks like on this end, and "could not read
+    PDF: EOF" sends whoever reads it hunting through the parser instead.
+    """
+    if f is None:
+        return None, 'Please choose a PDF file.'
+    raw = f.read()
+    if not raw:
+        return None, ('That file arrived empty. Pick it again — if it keeps '
+                      'happening, open the PDF once in Files first.')
+    if not raw[:1024].lstrip().startswith(b'%PDF-'):
+        name = (f.filename or '').strip()
+        return None, (f'“{name}” is not a PDF.' if name else 'That file is not a PDF.')
+    return raw, None
+
+
 @app.route('/api/parse-roofr', methods=['POST'])
 def parse_roofr():
-    f = request.files.get('file')
-    if not f or not f.filename.lower().endswith('.pdf'):
-        return jsonify({'error': 'Please upload a PDF file.'}), 400
+    raw, err = _read_pdf_upload(request.files.get('file'))
+    if err:
+        return jsonify({'error': err}), 400
     try:
-        data = _parse_roofr_pdf(f.read())
+        data = _parse_roofr_pdf(raw)
     except Exception as e:
         return jsonify({'error': f'Could not read PDF: {e}'}), 400
     if not data['measurements'].get('roof_squares'):
@@ -4025,10 +4052,9 @@ def parse_xactimate():
     modal renders either one; the route stays parse-only and persists nothing.
     The path keeps its original name because the browser posts here.
     """
-    f = request.files.get('file')
-    if not f or not f.filename.lower().endswith('.pdf'):
-        return jsonify({'error': 'Please upload a PDF file.'}), 400
-    raw = f.read()
+    raw, err = _read_pdf_upload(request.files.get('file'))
+    if err:
+        return jsonify({'error': err}), 400
     try:
         fmt = _detect_carrier_format(raw)
         data = (_parse_symbility_pdf if fmt == 'symbility'
