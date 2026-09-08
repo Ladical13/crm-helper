@@ -4278,6 +4278,197 @@ def _trade_subtotal(est, trade, tier):
     return total
 
 
+# ── Price book audit ───────────────────────────────────────────────────────
+#
+# Everything this tool says about money is derived from the price book: retail
+# quotes (in margin mode sell is derived FROM cost), the margin floors, the
+# insurance job margin, and every margin figure on the analytics tab. A wrong
+# cost is not one wrong number, it is four — and the more the tool is trusted,
+# the more confidently wrong it gets.
+#
+# Two real faults found by hand in the first bundle anyone looked at:
+#   * Tear-Off Labor and Install Labor at $0, so a roof "cost" only its shingles
+#   * a_ice_water priced per SQ but driven by `eave_valley`, which returns
+#     LINEAR FEET, with no bundle_lf conversion — 220 LF billed as 220 × $46.46
+#
+# Both are mechanically detectable, which is what this is. It finds the shape of
+# the error, never the right number: what a bundle of shingles costs is between
+# the manager and the supplier invoice.
+#
+# MEASURE_DIMENSIONS mirrors what each MEASURE_DEF in app.js RETURNS, taken from
+# its own label ("Eave + Valley LF" is linear feet). It is not pricing math and
+# is not mirrored back — but a measure missing here would silently escape the
+# audit, so tests/test_pricebook_audit.py parses app.js and fails if one is.
+MEASURE_DIMENSIONS = {
+    'squares': 'SQ',
+    'attic_sqft': 'SF',
+    'ridge_vent_code': 'LF',
+    'squares_waste': 'SQ',
+    'low_slope': 'SQ',
+    'low_slope_waste': 'SQ',
+    'steep': 'SQ',
+    'steep_waste': 'SQ',
+    'ridge_hip': 'LF',
+    'ridge_lf': 'LF',
+    'valley': 'LF',
+    'eave': 'LF',
+    'rake': 'LF',
+    'eave_rake': 'LF',
+    'eave_valley': 'LF',
+    'step': 'LF',
+    'pipe_boots': 'EA',
+    'skylights': 'EA',
+    'turtle_vents': 'EA',
+    'broan_4in': 'EA',
+    'broan_8in': 'EA',
+    'gutter': 'LF',
+    'downspout': 'LF',
+    'siding_squares': 'SQ',
+    'siding_squares_waste': 'SQ',
+    'siding_sq': 'SQ',
+    'siding_sq_waste': 'SQ',
+    'corners_out': 'LF',
+    'corners_in': 'LF',
+    'j_channel': 'LF',
+    'siding_trim_sloped': 'LF',
+    'siding_trim_vertical': 'LF',
+    'siding_trim': 'LF',
+    'siding_starter': 'LF',
+    'siding_fascia_eaves': 'LF',
+    'siding_fascia_rakes': 'LF',
+    'siding_fascia': 'LF',
+    'siding_frieze_eaves': 'LF',
+    'siding_frieze_level': 'LF',
+    'siding_frieze': 'LF',
+    'siding_openings': 'EA',
+    'siding_soffit': 'LF',
+    'siding_soffit_vented': 'LF',
+    'siding_soffit_solid': 'LF',
+    'siding_soffit_sf': 'SF',
+    'siding_soffit_sq': 'SQ',
+    'siding_zflash': 'EA',
+    'windows': 'EA',
+    'doors': 'EA',
+    'comm_sq': 'SQ',
+    'comm_sq_waste': 'SQ',
+    'comm_perimeter': 'LF',
+    'comm_parapet': 'LF',
+    'comm_penetrations': 'EA',
+    'comm_drains': 'EA',
+    'comm_curbs': 'EA',
+    'comm_pitch_pans': 'EA',
+    'comm_walkway_pads': 'EA',
+    'comm_labor_reroof': 'SQ',
+    'comm_labor_new': 'SQ',
+    'comm_fast_insul': 'EA',
+    'comm_fast_seam': 'EA',
+}
+
+# Units that legitimately satisfy a dimension. LF→unit conversion is expressed
+# by `bundle_lf` (a stick, a roll, a box) and is checked separately.
+_UNIT_OK = {
+    'SQ': {'SQ', 'SF'},
+    'SF': {'SF', 'SQ'},
+    'LF': {'LF', 'FT'},
+    'EA': {'EA', 'EACH', 'PC', 'PCS'},
+}
+
+
+# Commercial ships $0 material costs on purpose — its pricing comes off a
+# per-job supplier quote, and unpricedBundleLines already warns per bid. Listing
+# 40 intentional placeholders here would bury the faults that ARE faults.
+_AUDIT_UNPRICED_EXEMPT_TRADES = ('commercial',)
+
+
+def _audit_product(p, in_bundle, trade):
+    """Findings for one catalog product. `in_bundle` says whether anything
+    actually sells it — an unpriced product nobody uses is not a problem."""
+    issues = []
+    unit    = str(p.get('unit') or '').strip().upper()
+    measure = p.get('measure') or ''
+    blf     = p.get('bundle_lf')
+    try:
+        cost = float(p.get('cost') or 0)
+    except (TypeError, ValueError):
+        cost = 0.0
+
+    if cost <= 0 and in_bundle and trade not in _AUDIT_UNPRICED_EXEMPT_TRADES:
+        issues.append({
+            'code': 'unpriced', 'severity': 'high',
+            'what': 'Sold by a bundle with no cost, so every job carrying it is '
+                    'costed as if this line were free.',
+        })
+
+    dim = MEASURE_DIMENSIONS.get(measure) if measure else None
+    if dim and unit:
+        ok = _UNIT_OK.get(dim, set())
+        # bundle_lf IS the LF→unit conversion, so a linear measure feeding a
+        # boxed product is correct exactly when it is present.
+        if dim == 'LF' and blf:
+            pass
+        elif unit not in ok:
+            issues.append({
+                'code': 'unit_mismatch', 'severity': 'high',
+                'what': (f'Priced per {unit}, but its quantity comes from '
+                         f'"{measure}", which returns {dim}. '
+                         + ('Needs a bundle_lf conversion.' if dim == 'LF'
+                            else 'The unit or the measure is wrong.')),
+            })
+
+    if blf and not p.get('bundle_unit'):
+        issues.append({'code': 'conversion_unlabelled', 'severity': 'low',
+                       'what': 'Converts to a pack size with no name for it.'})
+    return issues
+
+
+def pricebook_audit(pb):
+    """Every catalog product with something mechanically wrong, per trade.
+
+    Reports the shape of the error only. What a square of shingles costs is
+    between the manager and the supplier invoice.
+    """
+    out, totals = [], {'high': 0, 'low': 0, 'products': 0, 'orphans': 0}
+    for key in sorted(k for k in pb if k.endswith('_catalog')):
+        trade   = key[:-len('_catalog')]
+        catalog = pb.get(key) or []
+        bundles = pb.get(f'{trade}_bundles') or []
+        used = {}
+        for b in bundles:
+            for pid in (b.get('product_ids') or []):
+                used.setdefault(pid, []).append(b.get('name') or b.get('id') or '')
+        by_id = {p.get('id'): p for p in catalog}
+
+        for pid, names in sorted(used.items()):
+            if pid not in by_id:
+                out.append({'trade': trade, 'product_id': pid, 'name': '(missing)',
+                            'unit': '', 'cost': None, 'measure': '',
+                            'bundles': names,
+                            'issues': [{'code': 'orphan', 'severity': 'high',
+                                        'what': 'Sold by a bundle but not in the '
+                                                'catalog, so the line never appears.'}]})
+                totals['high'] += 1
+                totals['orphans'] += 1
+
+        for p in catalog:
+            pid = p.get('id')
+            issues = _audit_product(p, pid in used, trade)
+            if not issues:
+                continue
+            totals['products'] += 1
+            for i in issues:
+                totals[i['severity']] = totals.get(i['severity'], 0) + 1
+            out.append({
+                'trade': trade, 'product_id': pid, 'name': p.get('name') or pid,
+                'unit': p.get('unit') or '', 'cost': p.get('cost'),
+                'measure': p.get('measure') or '', 'bundle_lf': p.get('bundle_lf'),
+                'bundles': used.get(pid, []), 'issues': issues,
+            })
+    # Worst first, then by trade, so the list is a work queue.
+    out.sort(key=lambda r: (0 if any(i['severity'] == 'high' for i in r['issues'])
+                            else 1, r['trade'], r['name']))
+    return {'findings': out, 'totals': totals}
+
+
 # ── Margin floor ───────────────────────────────────────────────────────────
 #
 # Realized margin is (sell - cost) / sell, computed from the same inclusion
@@ -15795,7 +15986,14 @@ ROOFING_CATALOG_SEED = [
      "colors": _ROOF_RUBBER_COLORS},
     {"id": "a_underlayment", "name": "Synthetic Underlayment", "unit": "SQ", "cost": 9.1, "measure": "squares_waste",
      "bullets": ["Synthetic underlayment over the full roof deck"]},
-    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "SQ", "cost": 46.46, "measure": "eave_valley",
+    # `eave_valley` returns LINEAR FEET (and already doubles the eave run when
+    # iw_second_row is on). A 2-square roll is 200 SF of 36"-wide membrane, so
+    # it covers 200/3 = 66.67 LF — and you buy whole rolls, which is what
+    # bundle_lf's ceil is for. Priced per SQ with no conversion, this billed
+    # 400 LF as 400 units of a per-square price: a 33x overcharge that also
+    # inflated the RETAIL quote, since in margin mode sell derives from cost.
+    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "LF", "cost": 95.0,
+     "measure": "eave_valley", "bundle_lf": 66.67, "bundle_unit": "rolls",
      "bullets": ["Ice & water shield at eaves and valleys"]},
     {"id": "a_drip_edge", "name": "Drip Edge", "unit": "LF", "cost": 0, "measure": "eave_rake",
      "bullets": ["New drip edge at eaves and rakes"]},
@@ -17023,8 +17221,12 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 # product predates the measurement and should adopt the seed's. Without it the
 # live Fascia product — seeded long before a fascia measurement existed — keeps
 # no measure and the Scope field it was added for silently fills nothing.
+# `bundle_lf`/`bundle_unit` are here because a live book saved before a product
+# gained its pack conversion prices the raw measure instead — a_ice_water billed
+# linear feet at a per-roll price until it got one. Absence is still the test, so
+# a manager who set their own pack size keeps it.
 _PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure',
-                            'group', 'colors', 'styles')
+                            'group', 'colors', 'styles', 'bundle_lf', 'bundle_unit')
 
 # Trades whose seeded costs are allowed to fill a live book's ZERO cost. See the
 # backfill in _ensure_bundle_catalogs for why this is narrow and one-directional.
@@ -17093,8 +17295,16 @@ _TIER_DEFAULT_MIGRATIONS = {
 # cover the whole metal roof. The real panel is $320.25/SQ (Architectural Sheet
 # Metals EFC31095 — $4.27/LF off a 20" coil at 16" net coverage) and its trim is
 # now priced as its own catalog lines, so leaving $400 double-bills the trim.
+#
+# 2026-09-08: a_ice_water was priced $46.46 per SQUARE while its quantity came
+# from a measure returning LINEAR FEET, so it billed 400 LF as 400 squares. The
+# unit is now the roll it is actually bought in ($95, confirmed off a supplier
+# invoice) and bundle_lf does the conversion. The cost MUST move with the unit:
+# a live book that gained only the conversion would price 6 rolls at $46.46 and
+# be wrong by half in the other direction.
 _PRODUCT_COST_MIGRATIONS = {
-    'roofing': {'m_standing_seam': (400, 320.25)},
+    'roofing': {'m_standing_seam': (400, 320.25),
+                'a_ice_water': (46.46, 95.0)},
 }
 
 # Seed bundles that shipped AFTER their trade already had saved price books, so
@@ -18360,6 +18570,20 @@ def get_templates():
             result[trade] = pb_items
 
     return jsonify(result)
+
+
+@app.route('/api/pricebook/audit', methods=['GET'])
+def get_pricebook_audit():
+    """Mechanically detectable faults in the live price book.
+
+    Manager-up: it exposes cost structure, and it is the manager who fixes what
+    it finds. Reads the SAME book estimates price against — the seeds backfilled
+    into whatever is on the volume — so it reports the book in use, not the one
+    in the repo.
+    """
+    if not _is_manager_up():
+        return _forbid()
+    return jsonify(pricebook_audit(_ensure_bundle_catalogs(_load_price_book())))
 
 
 @app.route('/api/pricebook', methods=['GET'])

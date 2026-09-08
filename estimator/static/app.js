@@ -3177,6 +3177,88 @@ async function deleteIntroTemplate(id) {
 
 const PB_TRADES = TRADES.filter(t => t !== 'insurance');
 
+/* ── Price book audit ────────────────────────────────────────────────────
+   A work queue, not a dashboard. Every row is one thing to check against a
+   supplier invoice, grouped by trade so a manager and an installer can go
+   through it in one sitting. It reports the shape of an error and never the
+   right number — what a square of shingles costs is not something a tool can
+   know. Printable on purpose: this gets worked through on paper. */
+async function openPriceBookAudit() {
+  const body = document.getElementById('pbaudit-body');
+  document.getElementById('pbaudit-modal').classList.remove('hidden');
+  body.innerHTML = '<p class="pbaudit-hint">Reading the price book…</p>';
+  let data;
+  try {
+    const r = await fetch(`${BASE}/api/pricebook/audit`, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(r.status === 403
+      ? 'Managers and admins only.' : 'Could not read the price book.');
+    data = await r.json();
+  } catch (e) {
+    body.innerHTML = `<p class="pbaudit-hint">${esc(e.message)}</p>`;
+    return;
+  }
+  body.innerHTML = renderPbAudit(data);
+}
+
+function renderPbAudit(data) {
+  const t = data.totals || {};
+  const rows = data.findings || [];
+  if (!rows.length) {
+    return `<div class="pbaudit-clean">✓ Nothing mechanically wrong in the price
+      book. Every product a bundle sells has a cost, and every unit agrees with
+      the measure driving it.
+      <p class="pbaudit-hint">This does not say the costs are <em>right</em> —
+      only that none of them are structurally broken. Comparing them to supplier
+      invoices is still a human job.</p></div>`;
+  }
+  const byTrade = {};
+  rows.forEach(r => (byTrade[r.trade] = byTrade[r.trade] || []).push(r));
+
+  const CODE_LABEL = {
+    unpriced: 'No cost',
+    unit_mismatch: 'Unit disagrees with its measure',
+    orphan: 'Missing from the catalog',
+    conversion_unlabelled: 'Unnamed pack size',
+  };
+
+  return `
+    <div class="pbaudit-lede">
+      <strong>${t.high || 0} thing${(t.high || 0) === 1 ? '' : 's'} to fix</strong>
+      across ${Object.keys(byTrade).length} trade${Object.keys(byTrade).length === 1 ? '' : 's'}.
+      Everything this tool says about money comes from these numbers — retail
+      quotes, the margin floors, insurance job margin, and the analytics tab —
+      so a wrong cost here is wrong in four places at once.
+      <p class="pbaudit-hint">Commercial is excluded from the no-cost check: its
+      pricing comes off a per-job supplier quote and the $0 placeholders are
+      deliberate. Each bid warns on its own.</p>
+    </div>
+    ${Object.keys(byTrade).sort().map(trade => `
+      <div class="pbaudit-trade">
+        <h4>${esc(trade)} <span class="note-tag">${byTrade[trade].length} product${byTrade[trade].length === 1 ? '' : 's'}</span></h4>
+        <table class="pbaudit-table">
+          <thead><tr><th>Product</th><th>Unit</th><th>Cost</th><th>Sized by</th><th>What's wrong</th></tr></thead>
+          <tbody>${byTrade[trade].map(r => `
+            <tr class="${r.issues.some(i => i.severity === 'high') ? 'is-high' : ''}">
+              <td>
+                <div class="pbaudit-name">${esc(r.name)}</div>
+                ${r.bundles.length ? `<div class="pbaudit-bundles">in ${esc(r.bundles.join(', '))}</div>` : ''}
+              </td>
+              <td class="pbaudit-unit">${esc(r.unit || '—')}</td>
+              <td class="ins-mg-money">${r.cost === null || r.cost === undefined
+                  ? '—' : (parseFloat(r.cost) > 0 ? fmtCur(parseFloat(r.cost)) : '$0')}</td>
+              <td class="pbaudit-unit">${esc(r.measure || 'manual')}</td>
+              <td>${r.issues.map(i => `<div class="pbaudit-issue">
+                    <b>${esc(CODE_LABEL[i.code] || i.code)}</b> ${esc(i.what)}</div>`).join('')}</td>
+            </tr>`).join('')}</tbody>
+        </table>
+      </div>`).join('')}`;
+}
+
+function closePbAudit() { document.getElementById('pbaudit-modal').classList.add('hidden'); }
+function maybeClosePbAudit(e) {
+  if (e.target === document.getElementById('pbaudit-modal')) closePbAudit();
+}
+
 function openPriceBook() {
   // Seed the editor from /api/templates: when a price book is saved it is the
   // authoritative list, and the server backfills rich descriptions, notes, and
