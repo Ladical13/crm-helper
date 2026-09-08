@@ -1040,6 +1040,36 @@ Five things behave differently once books are in the wild:
   unpriced.) Both are one-directional and both should be dropped once live books
   have saved past them.
 
+### Price book audit (`/api/pricebook/audit`)
+
+Everything this tool says about money is derived from the price book: retail
+quotes (in margin mode sell is derived FROM cost), the margin floors, the
+insurance job margin, and every margin figure on the analytics tab. A wrong
+cost is not one wrong number, it is four — and the more the tool is trusted the
+more confidently wrong it gets. Two real faults were found *by hand* in the
+first bundle anyone opened, which is what this exists to stop.
+
+`pricebook_audit()` reports the SHAPE of an error and never the right value —
+what a square of shingles costs is between the manager and the supplier
+invoice. 🔍 Audit in the Price Book modal, manager-up. What it looks for:
+
+- **`unpriced`** — a product a bundle actually sells, with no cost. Products
+  nobody sells are ignored: 780 products and 744 findings is noise, and a
+  noisy audit is one nobody finishes.
+- **`unit_mismatch`** — the fault that motivated this. A product priced per
+  `unit` whose quantity comes from a `measure` returning a different dimension,
+  with no `bundle_lf` conversion. `MEASURE_DIMENSIONS` records what each
+  MEASURE_DEF returns, read off its own on-screen label ("Eave + Valley LF" is
+  linear feet), and `tests/test_pricebook_audit.py` parses `app.js` and fails
+  if a measure is missing from it or its label stops agreeing — a measure that
+  escaped the map would make the audit go quiet rather than fail.
+- **`orphan`** — a bundle selling a product id the catalog does not have.
+
+**Commercial is exempt from the no-cost check.** Its $0 material costs are
+deliberate — pricing comes off a per-job supplier quote and
+`unpricedBundleLines` already warns per bid. Listing ~40 intentional
+placeholders would bury the faults that are faults.
+
 ### Jurisdiction code lookup (`/api/jurisdictions/<id>/verify`)
 
 Fills the "this is the code your city enforces" block on the customer's sign

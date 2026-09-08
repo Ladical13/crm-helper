@@ -5062,3 +5062,34 @@ body.is-client #nav-toggle      { display: none; }
 .ins-cmp-ok{font-size:12.5px;color:#15803d}
 .ins-mg-excl>strong{color:#b45309}
 .ins-mg-result>div>span>em{font-style:normal;color:#b45309;font-size:11px}
+
+/* ── Price book audit ───────────────────────────────────────────────────
+   A work queue worked through against supplier invoices, often on paper. */
+.pbaudit-modal-box{width:min(900px,96vw);max-height:88vh;max-height:88dvh;
+  display:flex;flex-direction:column}
+.pbaudit-lede{background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
+  border-radius:6px;padding:12px 14px;font-size:13px;line-height:1.55;margin-bottom:14px}
+.pbaudit-lede strong{font-size:14px}
+.pbaudit-hint{margin:6px 0 0;font-size:12px;opacity:.85;line-height:1.5}
+.pbaudit-clean{background:#dcfce7;border:1px solid #16a34a;color:#14532d;
+  border-radius:6px;padding:14px;font-size:13.5px;line-height:1.55}
+.pbaudit-trade{margin-bottom:18px}
+.pbaudit-trade h4{font-size:13px;text-transform:capitalize;margin:0 0 6px}
+.pbaudit-table{width:100%;border-collapse:collapse;background:#fff}
+.pbaudit-table th{text-align:left;font-size:10px;font-weight:600;color:var(--text-light);
+  text-transform:uppercase;letter-spacing:.05em;padding:7px 8px;
+  border-bottom:1px solid var(--border)}
+.pbaudit-table td{padding:7px 8px;border-bottom:1px solid #eef1f5;font-size:12.5px;
+  vertical-align:top}
+.pbaudit-table tr.is-high{background:#fffbfa}
+.pbaudit-name{font-weight:600}
+.pbaudit-bundles{font-size:11px;color:var(--text-light);margin-top:2px}
+.pbaudit-unit{color:var(--text-light);font-size:11.5px;white-space:nowrap}
+.pbaudit-issue{line-height:1.45;margin-bottom:3px}
+.pbaudit-issue b{color:#b42318}
+@media print{
+  /* The whole point is working through it away from the screen. */
+  #pbaudit-modal{position:static;background:none}
+  .pbaudit-modal-box{max-height:none;width:100%;box-shadow:none}
+  .modal-header-actions,.modal-close{display:none}
+}
