@@ -4387,6 +4387,122 @@ def estimate_margin_report(est):
             'lowest': min(known, key=lambda d: d['margin_pct']) if known else None}
 
 
+# ── Insurance job margin ───────────────────────────────────────────────────
+#
+# On a retail job the rep sets the price and the margin follows. On an
+# insurance job the carrier sets the price and the margin is whatever is left
+# after we build the roof — which the tool could not see at all: insurance line
+# items carry the carrier's unit_price, never our cost, so an insurance
+# estimate reported no margin and was excluded from every margin figure on the
+# analytics tab.
+#
+# The cost side is DERIVED, not typed. The measurement report (RoofR/EagleView)
+# already parses into est['measurements'], and the price book already carries
+# our real material and labor costs per unit, so picking the system actually
+# being installed is enough to cost the job. A carrier export runs 30-80 lines;
+# nobody was ever going to cost them by hand.
+#
+# Shape on the estimate:
+#   insurance_cost = {
+#     'bundle_id':   <roofing bundle actually being installed>,
+#     'items':       [{'name','unit','quantity','unit_cost'}, ...],  # derived
+#     'adders':      {'dumpster','permit','subs','other'},           # typed
+#     'supplements': <approved supplement dollars, adds to revenue>,
+#   }
+#
+# These items are COST ONLY and deliberately live outside `trades`, so nothing
+# that builds a customer-facing document can ever pick them up and print them.
+
+INSURANCE_ADDERS = ('dumpster', 'permit', 'subs', 'other')
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+NON_ROOF_SCOPE_CLASSES = ('gutter', 'siding', 'interior', 'detach')
+
+
+def _roof_only_rcv(est):
+    """(roof RCV, non-roof RCV) from the stored per-line scope classification.
+
+    A line with no `scope_class` counts as roof, which is exactly what the tool
+    did before any of this existed — so an estimate nobody has classified
+    reports the same number it always did rather than quietly dropping to zero.
+    """
+    ins = (est.get('trades') or {}).get('insurance') or {}
+    sections = ins.get('sections') or (
+        [{'items': ins.get('line_items', [])}] if ins.get('line_items') else [])
+    roof = other = 0.0
+    for sec in sections:
+        for it in sec.get('items', []):
+            rcv = _num(it.get('acv')) + _num(it.get('depreciation'))
+            if it.get('scope_class') in NON_ROOF_SCOPE_CLASSES:
+                other += rcv
+            else:
+                roof += rcv
+    return roof, other
+
+
+def insurance_cost_report(est):
+    """Revenue, cost and realized margin for an insurance job.
+
+    Revenue is the carrier's RCV (what the estimate already totals) plus any
+    approved supplements. Cost is the derived build cost plus the adders a
+    measurement report cannot know about.
+
+    margin_pct is None when there is no revenue, or when no cost has been
+    entered yet — a job with no cost recorded has an UNKNOWN margin, not a
+    100% one, and reporting the latter would put every un-costed claim at the
+    top of the profitability table. MUST mirror insuranceCostReport (app.js).
+    """
+    ic       = est.get('insurance_cost') or {}
+    # Lines that are in the job but carry no cost. A freshly seeded roofing
+    # bundle ships Tear-Off Labor, Install Labor, drip edge, ridge cap and
+    # starter at $0, so an uncorrected price book reports a roof that costs
+    # only its shingles and the margin lands 20-30 points high — in the
+    # direction that makes a bad job look good. MUST mirror
+    # unpricedInsuranceCostLines (app.js).
+    unpriced = [str(i.get('name') or '') for i in (ic.get('items') or [])
+                if _num(i.get('quantity')) > 0 and _num(i.get('unit_cost')) <= 0]
+    # Roof-only revenue where the scope has been classified, the whole claim
+    # where it has not. Adjusters file gutters, fascia and interior work under
+    # a roof plan, and those dollars have no matching cost on our side — every
+    # one of them would read as pure profit. The classification is a stored
+    # DECISION (the browser's keyword guess, or the rep's correction), never
+    # re-derived here: a second classifier would be a second thing to drift.
+    roof_rcv, non_roof = _roof_only_rcv(est)
+    revenue  = roof_rcv + _num(ic.get('supplements'))
+    build    = sum(_num(i.get('quantity')) * _num(i.get('unit_cost'))
+                   for i in (ic.get('items') or []))
+    adders   = {k: _num((ic.get('adders') or {}).get(k)) for k in INSURANCE_ADDERS}
+    cost     = build + sum(adders.values())
+    profit   = revenue - cost
+    return {
+        'revenue':      round(revenue, 2),
+        'supplements':  round(_num(ic.get('supplements')), 2),
+        'build_cost':   round(build, 2),
+        'adders':       {k: round(v, 2) for k, v in adders.items()},
+        'adders_total': round(sum(adders.values()), 2),
+        'cost':         round(cost, 2),
+        'gross_profit': round(profit, 2),
+        'margin_pct':   (round(profit / revenue * 100, 1)
+                         if revenue > 0 and cost > 0 else None),
+        'costed':       cost > 0,
+        'unpriced':     unpriced,
+        'claim_total':  round(_estimate_total(est), 2),
+        'non_roof':     round(non_roof, 2),
+    }
+
+
+def _is_insurance(est):
+    return (est.get('estimate_type') == 'insurance'
+            or bool((est.get('trades') or {}).get('insurance', {}).get('enabled')))
+
+
 def _margin_floor_exempt(est):
     """Estimate types the floor does not apply to.
 
@@ -4849,6 +4965,32 @@ def get_analytics():
                 by_trade[tk]['pipeline_count'] += 1
                 by_rep[sp]['pipeline']         += tsell
                 by_rep[sp]['pipeline_count']   += 1
+
+        # Insurance sits outside GBB_TRADES, so it contributed revenue to
+        # by_type and nothing at all to any margin — the carrier sets the price
+        # and the tool had nowhere to record what the job cost us. It does now.
+        # Counted ONLY when a cost has actually been entered: a claim nobody
+        # costed would otherwise arrive as pure profit and drag every margin
+        # figure on this tab upward.
+        if _is_insurance(est) and is_signed:
+            icr = insurance_cost_report(est)
+            # An overstated margin is worse than none: it would pull the
+            # company average up and make insurance work look like the thing
+            # to chase. Costed-but-unpriced jobs stay out until the book is fixed.
+            if icr['costed'] and not icr['unpriced']:
+                d = by_trade.setdefault('insurance', {
+                    'revenue': 0, 'cost': 0, 'pipeline': 0,
+                    'job_count': 0, 'pipeline_count': 0})
+                d['revenue']   += icr['revenue']
+                d['cost']      += icr['cost']
+                d['job_count'] += 1
+                by_rep[sp]['revenue'] += icr['revenue']
+                by_rep[sp]['cost']    += icr['cost']
+                month_key = ((est.get('signature') or {}).get('signed_at') or '')[:7]
+                if _GOAL_MONTH_RE.match(month_key):
+                    m = _mo(month_key)
+                    m['trade_revenue'] += icr['revenue']
+                    m['trade_cost']    += icr['cost']
 
     def _margin(rev, cost):
         return round((rev - cost) / rev * 100, 1) if rev > 0 and cost > 0 else None
