@@ -481,16 +481,51 @@ closes a homeowner. `docs/storm-to-contract.html` is the full build plan.
   address. It lives in `join.TIERS` so the map, the drafts and the canvassing
   zones cannot disagree.
 
-**Not built yet: the ingest itself.** `grid`, `storms` and `join` are complete
-and tested; fetching MRMS GRIB2 and decoding it is not written, because the dev
-sandbox cannot reach `mrms.ncep.noaa.gov` or the Iowa State archive and
-untested network code is worse than none. The decoder choice is also open —
-eccodes/cfgrib needs system libraries on Railway. Whatever reads GRIB2 only has
-to yield `(lat, lng, size)` triples into `swath_from_points()`.
+### The ingest (`hail/ingest.py`) — AWS, not the NOAA site
 
-⚠️ **`MM_PER_INCH` is from the product documentation, not from a message we
-have decoded.** Confirm it against a real GRIB2 file before any number reaches
-a customer.
+```bash
+python -m hail.backfill --days 1        # what a nightly job runs
+python -m hail.backfill --season 2026   # Mar-Oct of one year
+python -m hail.backfill --dry-run --days 30
+```
+
+**`mrms.ncep.noaa.gov` and the Iowa State archive are both refused by the
+egress proxy** as an organization policy denial, and re-testing them is a waste
+of a turn. **NOAA mirrors MRMS to AWS Open Data and S3 is reachable**, so the
+ingest runs against `noaa-mrms-pds.s3.amazonaws.com`. Everything here was
+verified against a real message rather than read from documentation:
+
+- **Coverage starts 2020-10-14** (`ingest.EARLIEST`), not 2014. Still years
+  past Colorado's one-year claim window. Deeper history would need MTArchive,
+  which this environment cannot reach.
+- **One file per day, not 48.** The bucket publishes every 30 minutes, but
+  `MESH_Max_1440min` is a rolling 24-hour maximum, so the 23:30 file already
+  holds the day's peak everywhere. `DAY_STAMP` is that choice; taking 00:00
+  would report the *previous* day.
+- **Section 7 is a PNG** (Data Representation Template 41), which is why this
+  needs no eccodes and no new system package: **Pillow already ships** for the
+  estimator's proposals. Any other template raises rather than being decoded as
+  PNG, because a misread grid is a confident wrong answer about a real roof.
+- **The scan flags are read, not assumed.** The product scans west→east then
+  north→south; a file that ever shipped south-to-north would otherwise decode
+  upside down and still look like a plausible map.
+- **Flag values are dropped by the threshold, not by a list.** MRMS encodes
+  "no coverage" and "no hail" as negatives (−3.0 and −1.0), and every threshold
+  a roofer cares about is far above zero — so a new flag cannot slip past a
+  list nobody updated.
+- Clipping to `COLORADO` happens **before** any value is unpacked: CONUS is
+  24.5M cells, Colorado is ~283k. About a second and a megabyte per day.
+
+✅ **`MM_PER_INCH = 25.4` is confirmed against real data**, replacing the
+warning that used to sit here. The observed CONUS daily maximum was 125.5,
+which is 4.9 inches of hail — extreme but real; read as inches it would be 125
+inches. The grid is also confirmed as the 0.01° lattice `CELL_DEG` assumes.
+
+`hail/tests/test_ingest.py` builds its own GRIB2 messages rather than committing a
+megabyte fixture. `test_the_live_product_still_decodes` is marked `live` and
+**deselected by default** (`addopts = -m "not live"`) so the suite stays
+offline; run it deliberately with `pytest -m live` to catch the day NOAA
+changes the packing, the grid or the units.
 
 ## Sales CRM — "The Pipeline" (`salescrm/`)
 
