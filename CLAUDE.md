@@ -1167,7 +1167,30 @@ Five things behave differently once books are in the wild:
   nobody ever touched. (`_SEED_COST_BACKFILL_TRADES` is the older, blunter
   cousin — 0 → seed, commercial only, because that catalog shipped entirely
   unpriced.) Both are one-directional and both should be dropped once live books
-  have saved past them.
+  have saved past them. A cost migration's value is a **list of steps**, because
+  one product can need to reach today's number from more than one previous seed
+  — `m_standing_seam` has to arrive from the original $400 placeholder *and*
+  from the $320.25 that replaced it, or a book that never saw the first
+  correction is stranded on it. The first matching step wins and stops.
+- **Nor does anything else `_PRODUCT_BACKFILL_FIELDS` covers, once it is
+  present.** That backfill fires only on ABSENCE, which is right for a field a
+  manager may have cleared and useless for one that needs *correcting*:
+  `a_ss_zeecee` has had a `measure` in every live book since the day it
+  shipped, so fixing the seed reached nobody. `_PRODUCT_FIELD_MIGRATIONS` is
+  the non-cost twin of the cost migration and applies the same equality test —
+  rewrite only while the live value is still the previous seed's.
+
+**Where a deliberate cost buffer belongs.** Standing seam costs are stored
+DELIVERED — supplier pre-tax price × `_SS_UPLIFT` (`_SS_TAX` × `_SS_BUFFER`),
+with `_SS_PRETAX` holding what the sheet actually said. Two reasons to keep it
+that shape. Material sales tax is a real cost the book has no line for
+anywhere, so every trade's cost is ~4% light. And a cushion put in *one factor*
+is the same cushion on every roof; when it was instead an accident of which
+unit prices happened to be stale, it measured +5.3% on a simple gable and
+−3.6% on a wall-heavy one — the cut-up roofs that most need a cushion were the
+ones without it. `tests/test_standing_seam.py` holds every literal to
+`_SS_PRETAX × _SS_UPLIFT`, which is what keeps the buffer a decision rather
+than a residue.
 
 ### Price book audit (`/api/pricebook/audit`)
 

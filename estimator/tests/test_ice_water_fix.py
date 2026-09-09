@@ -74,7 +74,7 @@ def test_the_cost_moves_with_the_unit():
     conversion would price 6 rolls at $46.46 and be wrong by half in the OTHER
     direction. The migration only fires while the live number is still the
     untouched old default."""
-    assert A._PRODUCT_COST_MIGRATIONS['roofing']['a_ice_water'] == (46.46, 95.0)
+    assert A._PRODUCT_COST_MIGRATIONS['roofing']['a_ice_water'] == [(46.46, 95.0)]
 
 
 def test_a_manager_who_repriced_it_is_left_alone():

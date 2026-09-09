@@ -3267,6 +3267,19 @@ def _parse_roofr_pdf(file_bytes):
     valley = find_lf('Total valleys')
     rake   = find_lf('Total rakes')
     step   = find_lf('Total step flashing')
+    # Roofr reports these three on every report and we read past all of them
+    # until 2026-09-09, which is why a standing seam bid priced its headwall
+    # and its transitions at nothing and the rep had to know to add them.
+    # Shingle roofs never needed them, so nothing complained.
+    #
+    # "Unspecified" is Roofr's bucket for edges its classifier could not name.
+    # It is carried as its own field and folded into the headwall measure (see
+    # MEASURE_DEFS in app.js) rather than being silently added to wall
+    # flashing here — a rep who finds it is really rake can zero it without
+    # having to reverse-engineer where the number went.
+    wall_flash  = find_lf('Total wall flashing')
+    transition  = find_lf('Total transitions')
+    unspecified = find_lf('Total unspecified')
 
     # Pitch breakdown → low-slope (≤2/12, rolled roofing) and steep (≥7/12,
     # steep charge) areas in squares. Set explicitly (even 0) whenever the
@@ -3315,6 +3328,9 @@ def _parse_roofr_pdf(file_bytes):
         'valley_lf':     valley,
         'rake_lf':       rake,
         'step_flash_lf': step,
+        'wall_flash_lf':  wall_flash,
+        'transition_lf':  transition,
+        'unspecified_lf': unspecified,
         'gutter_lf':     eave,
         'low_slope_squares': low_slope_sq,
         'steep_squares':     steep_sq,
@@ -4397,6 +4413,9 @@ MEASURE_DIMENSIONS = {
     'eave_rake': 'LF',
     'eave_valley': 'LF',
     'step': 'LF',
+    'headwall': 'LF',
+    'transition': 'LF',
+    'ridge_valley_2x': 'LF',
     'pipe_boots': 'EA',
     'skylights': 'EA',
     'turtle_vents': 'EA',
@@ -11472,7 +11491,11 @@ MEASURE_LABELS = [
               ('ridge_lf', 'Ridges', 'LF'),
               ('valley_lf', 'Valley', 'LF'),
               ('eave_lf', 'Eaves', 'LF'), ('rake_lf', 'Rakes', 'LF'),
-              ('step_flash_lf', 'Step Flashing', 'LF'), ('pipe_boots', 'Pipe Boots', 'EA'),
+              ('step_flash_lf', 'Step Flashing', 'LF'),
+              ('wall_flash_lf', 'Wall Flashing', 'LF'),
+              ('transition_lf', 'Transitions', 'LF'),
+              ('unspecified_lf', 'Unspecified', 'LF'),
+              ('pipe_boots', 'Pipe Boots', 'EA'),
               ('turtle_vents', 'Turtle Vents', 'EA'), ('broan_4in', '4" Broan Vent', 'EA'),
               ('broan_8in', '8" Broan Vent', 'EA')]),
     ('Gutters', [('gutter_lf', 'Gutter', 'LF'), ('downspout_lf', 'Downspouts', 'LF')]),
@@ -16068,7 +16091,7 @@ ROOFING_CATALOG_SEED = [
     {"id": "m_stone", "name": "Stone-Coated Steel", "unit": "SQ", "cost": 330, "measure": "squares_waste",
      "bullets": ["Stone-coated steel panels with a textured shake/shingle profile", "Class 4 impact rating and 120+ mph wind rating", "Steel strength at a fraction of the weight of tile", "50-year limited manufacturer warranty"],
      "colors": _ROOF_STONE_COLORS},
-    {"id": "m_standing_seam", "name": "Standing Seam Metal (24ga)", "unit": "SQ", "cost": 320.25, "measure": "squares_waste",
+    {"id": "m_standing_seam", "name": "Standing Seam Metal (24ga)", "unit": "SQ", "cost": 325.21, "measure": "squares_waste",
      "bullets": ["24ga standing seam metal panels with concealed fasteners", "No exposed screws to back out or leak over time", "50+ year service life — the last roof this house needs", "Class 4 impact rating and Kynar 500 finish warranty", "Clean modern lines in your choice of color"],
      "colors": _ROOF_METAL_COLORS},
     {"id": "m_euroshield", "name": "Euroshield (Rubber)", "unit": "SQ", "cost": 360, "measure": "squares_waste",
@@ -16107,56 +16130,80 @@ ROOFING_CATALOG_SEED = [
      "bullets": ["Old turtle vents removed and decked over"]},
     # --- Standing seam metal trim -------------------------------------------
     # Costs decoded from the Architectural Sheet Metals & Panels quote
-    # EFC31095 (27866 Cragmont, Evergreen, 09/25/2024) — a real 26 SQ job.
+    # EFC38421 (195 J J Kelly Rd, Lyons, 09/09/2026) - a real 49.45 SQ,
+    # 13-facet job, checked line for line against its Roofr report. It
+    # supersedes EFC31095 (09/2024), which quoted a MECHANICAL SEAM system;
+    # we sell snap-lock (SS450), and the clip and panel prices differ by
+    # system, not only by date.
     #
     # THE LOAD-BEARING CONVERSION: the panel is quoted per LINEAL FOOT off a
-    # 20" coil ("(20 LIN)"), and a 1.5" mechanical seam eats ~4" of that in the
-    # two seam legs, so NET COVERAGE IS 16", not 20". $4.27/LF ÷ (16/12 ft) =
-    # $320.25/SQ. Reading it as 20" coverage instead gives $256/SQ and
-    # under-sells the panel by 25%. The quote settles it: 89 panels at 16"
-    # cover 118.7 ft of eave, which is the 13 Style D sticks that were actually
-    # ordered; at 20" they would cover 148 ft and need 15. Re-derive this ratio
-    # from the coil width whenever the supplier sheet changes — don't nudge the
-    # $/SQ.
+    # 20" coil ("(20 LIN)"), and a 1.5" seam eats ~4" of that in the two seam
+    # legs, so NET COVERAGE IS 16", not 20". $4.13/LF / (16/12 ft) =
+    # $309.75/SQ. Reading it as 20" coverage instead gives $247.80/SQ and
+    # under-sells the panel by 25%. Re-derive this ratio from the coil width
+    # whenever the supplier sheet changes - don't nudge the $/SQ.
+    #
+    # COSTS ARE STORED DELIVERED, not at the supplier's pre-tax unit price.
+    # _SS_PRETAX below holds what the sheet actually says, and the reason.
     #
     # Trim is quoted per 10-ft stick, so it carries bundle_lf:10 and prices per
-    # STICK (cost is the stick, not the foot) — same shape as a_ridge_vent.
-    {"id": "a_ss_clips", "name": "Seam Clips + Pancake Screws (1.5\" Mechanical)", "unit": "SQ", "cost": 23.85, "measure": "squares_waste",
-     # 910 FG-158-24 clips @ $0.42 + 2000 pancake screws @ $0.12 over 26.08 SQ.
-     # Clips run ~24" o.c. along every seam, so this scales with panel area.
-     "bullets": ["Concealed clips and fasteners — no screws through the panel"]},
-    {"id": "a_ss_drip_d", "name": "Metal Drip Edge — Style D (24ga)", "unit": "LF", "cost": 33.82, "measure": "eave", "bundle_lf": 10, "bundle_unit": "sticks",
+    # STICK (cost is the stick, not the foot) - same shape as a_ridge_vent.
+    {"id": "a_ss_clips", "name": "Seam Clips + Pancake Screws (1.5\" Snap-Lock)", "unit": "SQ", "cost": 14.87, "measure": "squares_waste",
+     # 1750 SG-114-24 clips @ $0.27 + 3500 pancake screws @ $0.07 over the
+     # job's 50.7 SQ of panel. Clips run ~26" o.c. along every seam, so this
+     # scales with panel area - and that spacing is the supplier's standard,
+     # unchanged from EFC31095 (910 clips over 1,956 LF is the same 26").
+     "bullets": ["Concealed clips and fasteners - no screws through the panel"]},
+    {"id": "a_ss_drip_d", "name": "Metal Drip Edge - Style D (24ga)", "unit": "LF", "cost": 24.88, "measure": "eave", "bundle_lf": 10, "bundle_unit": "sticks",
      "bullets": ["Style D metal drip edge at every eave"]},
-    {"id": "a_ss_rake", "name": "Metal Rake — 2pc System (24ga)", "unit": "LF", "cost": 23.38, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
+    {"id": "a_ss_rake", "name": "Metal Rake Cap - 2pc System (24ga)", "unit": "LF", "cost": 34.44, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
+     # Pairs 1:1 with a_ss_rake_recv. EFC38421 ordered the 28 receivers for its
+     # 275 LF of rake and NO cap - the half of a 2pc assembly that actually
+     # sheds water. Priced at the $32.80 the other 2pc caps carry.
      "bullets": ["Two-piece metal rake trim at every gable end"]},
-    {"id": "a_ss_rake_recv", "name": "Metal Rake Receiver (24ga)", "unit": "LF", "cost": 17.16, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
-     # Pairs 1:1 with a_ss_rake — the quote ordered 13 of each.
+    {"id": "a_ss_rake_recv", "name": "Metal Rake Receiver (24ga)", "unit": "LF", "cost": 18.27, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
      "bullets": []},
-    {"id": "a_ss_sidewall", "name": "Metal Sidewall — 2pc System (24ga)", "unit": "LF", "cost": 32.32, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
+    {"id": "a_ss_sidewall", "name": "Metal Sidewall - 2pc System (24ga)", "unit": "LF", "cost": 34.44, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
      "bullets": ["Two-piece metal sidewall flashing where the roof meets wall"]},
-    {"id": "a_ss_sidewall_recv", "name": "Metal Sidewall Receiver (24ga)", "unit": "LF", "cost": 17.16, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
+    {"id": "a_ss_sidewall_recv", "name": "Metal Sidewall Receiver (24ga)", "unit": "LF", "cost": 18.27, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
      "bullets": []},
-    {"id": "a_ss_ridge", "name": "Metal Ridge Cap — 3pc (24ga)", "unit": "LF", "cost": 33.32, "measure": "ridge_hip", "bundle_lf": 10, "bundle_unit": "sticks",
+    {"id": "a_ss_headwall", "name": "Metal Headwall w/ Z-Closure (24ga)", "unit": "LF", "cost": 34.44, "measure": "headwall", "bundle_lf": 10, "bundle_unit": "sticks",
+     # Roofr reports this as "Wall flashing" and the parser used to drop it, so
+     # a metal roof's headwall priced at nothing. The measure folds in Roofr's
+     # "Unspecified" bucket - see the MEASURE_DEFS comment in app.js.
+     "bullets": ["Metal headwall flashing with Z-closure where the roof meets a wall"]},
+    {"id": "a_ss_ridge", "name": "Metal Ridge Cap - 3pc (24ga)", "unit": "LF", "cost": 35.49, "measure": "ridge_hip", "bundle_lf": 10, "bundle_unit": "sticks",
      "bullets": ["Three-piece vented metal ridge cap"]},
-    {"id": "a_ss_zeecee", "name": "Zee-Cee Ridge Closure (24ga)", "unit": "LF", "cost": 32.82, "measure": "ridge_hip", "bundle_lf": 5, "bundle_unit": "sticks",
-     # bundle_lf 5, not 10: a Zee-Cee runs BOTH sides of the ridge, so it takes
-     # two 10-ft sticks per 10 ft of ridge. The quote's 6 ridge / 12 Zee-Cee
-     # over 60 LF is exactly this.
-     "bullets": []},
-    {"id": "a_ss_pipe_boot", "name": "MasterFlash Pipe Boot (EPDM)", "unit": "EA", "cost": 12.70, "measure": "pipe_boots",
-     # #2 gray EPDM, the common size. #1 is $11.12 and #3 $14.70; a high-temp
-     # silicone (#7) is $91.59 and needs pricing by hand on a flue.
+    {"id": "a_ss_zeecee", "name": "Z-Flash Ridge & Valley Closure (24ga)", "unit": "LF", "cost": 11.65, "measure": "ridge_valley_2x", "bundle_lf": 10, "bundle_unit": "sticks",
+     # Runs both sides of every ridge/hip AND both sides of every valley -
+     # Z-Flash IS our valley detail on snap-lock, so no separate valley pan is
+     # ordered. The old (ridge_hip, bundle_lf 5) spelling expressed "two sticks
+     # per 10 ft of ridge" and could not reach the valley at all, which left
+     # 93.83 LF of valley on this roof buying nothing.
+     "bullets": ["Z-closure at every ridge, hip and valley"]},
+    {"id": "a_ss_transition", "name": "Metal Transition Flashing (24ga)", "unit": "LF", "cost": 51.13, "measure": "transition", "bundle_lf": 10, "bundle_unit": "sticks",
+     # Roofr reports "Transitions" (a change of pitch) and the parser used to
+     # drop it, the same way it dropped the headwall above.
+     "bullets": ["Transition flashing at every change of pitch"]},
+    {"id": "a_ss_pipe_boot", "name": "MasterFlash Pipe Boot (EPDM)", "unit": "EA", "cost": 13.33, "measure": "pipe_boots",
+     # #2 gray EPDM, the common size. The pre-tax price is still EFC31095's
+     # $12.70 - this part is not on EFC38421 and the boot is the same on either
+     # system. A high-temp silicone (#7) needs pricing by hand on a flue.
      "bullets": ["MasterFlash boots on every penetration"]},
-    {"id": "a_ss_sealants", "name": "Butyl Tape, Sealant & Rivets", "unit": "SQ", "cost": 9.6, "measure": "squares_waste",
-     # Butyl tape + Nova Flex + pop rivets + wood screws, $250.24 over 26.08 SQ.
+    {"id": "a_ss_sealants", "name": "Butyl Tape, Sealant & Rivets", "unit": "SQ", "cost": 10.08, "measure": "squares_waste",
+     # Butyl tape + Nova Flex + pop rivets + wood screws, $250.24 over 26.08 SQ
+     # on EFC31095. Not on EFC38421 - bought elsewhere - so the pre-tax rate is
+     # still the older quote's.
      "bullets": ["Butyl tape and sealant at every seam and transition"]},
-    {"id": "a_ss_custom_flash", "name": "Custom Flashing (24ga, 4\"x10')", "unit": "LF", "cost": 20.88, "bundle_lf": 10, "bundle_unit": "sticks",
-     # Manual qty on purpose — custom bends are per-roof. The same quote also
-     # carried two large bends at $127.78 each; price those by hand.
+    {"id": "a_ss_custom_flash", "name": "Custom Flashing (24ga, 4\"x10')", "unit": "LF", "cost": 21.92, "bundle_lf": 10, "bundle_unit": "sticks",
+     # Manual qty on purpose - custom bends are per-roof. EFC31095 also carried
+     # two large bends at $127.78 each; price those by hand.
      "bullets": ["Custom-bent flashing fabricated for this roof"]},
-    {"id": "x_ss_delivery", "name": "Metal Delivery & Rollformer Set-Up", "unit": "LS", "cost": 500,
-     # $350 delivery + $150 machine set-up. Per JOB, not per square — the
-     # supplier charges it once to run the panels for this roof.
+    {"id": "x_ss_delivery", "name": "Metal Delivery & Rollformer Set-Up", "unit": "LS", "cost": 368.65,
+     # $215 delivery + $150 machine set-up on EFC38421. Per JOB, not per square
+     # - the supplier charges it once to run the panels for this roof. The
+     # quote does NOT tax delivery or set-up, so this line carries the buffer
+     # only and not _SS_TAX.
      "bullets": ["Panels roll-formed to length for this roof and delivered"]},
     {"id": "l_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
      "bullets": ["Complete tear-off of existing roofing down to the deck"]},
@@ -16177,9 +16224,55 @@ _RS_EXTRA = ["5-year Project One workmanship warranty"]
 # a_starter/a_step_flash are shingle SKUs sitting at $0, and a_starter has no
 # metal equivalent at all (panels start at the drip edge). Leaving them on
 # b_standing_seam is what let a metal bid price its entire edge detail at zero.
+# Standing seam costs are stored DELIVERED: the supplier's pre-tax unit price
+# times _SS_UPLIFT. Two separate reasons, both worth keeping.
+#
+# The tax is a real cost the book had no line for anywhere. On EFC38421 that is
+# $764 on a $19.4k order — money the margin never saw.
+#
+# The small cushion is deliberate. An Architectural Sheet Metals quote is
+# "valid for 15 days from the date stated" and we sign jobs well after that.
+# Putting the cushion HERE — one factor, on every line — keeps it identical on
+# a simple gable and on a wall-heavy addition. It used to fall out of whichever
+# unit prices happened to be stale, which made it swing from +5.3% to -3.6%
+# with roof geometry: that is not a buffer, it is noise that happened to point
+# the right way on the roofs anybody checked.
+#
+# To change the cushion, move _SS_BUFFER and run tests/test_standing_seam.py —
+# it fails with the corrected literal for every product.
+_SS_TAX    = 1.0395   # material sales tax on EFC38421 (3.95%)
+_SS_BUFFER = 1.01     # deliberate cushion; supplier quotes are valid 15 days
+_SS_UPLIFT = round(_SS_TAX * _SS_BUFFER, 4)
+
+# What the supplier sheet actually says, in its own units. The catalog stores
+# these times _SS_UPLIFT, and tests/test_standing_seam.py holds the two in
+# agreement so a hand-edited literal cannot drift away from its source. Keep
+# this table honest: it is the only record of what was really quoted.
+_SS_PRETAX = {
+    'm_standing_seam':    309.75,  # $4.13/LF off a 20" coil at 16" net coverage
+    'a_ss_clips':          14.16,  # 1750 clips @ $.27 + 3500 screws @ $.07 / 50.7 SQ
+    'a_ss_drip_d':         23.70,
+    'a_ss_rake':           32.80,  # not on EFC38421; the rate its other 2pc caps carry
+    'a_ss_rake_recv':      17.40,
+    'a_ss_sidewall':       32.80,
+    'a_ss_sidewall_recv':  17.40,
+    'a_ss_headwall':       32.80,
+    'a_ss_ridge':          33.80,
+    'a_ss_zeecee':         11.10,
+    'a_ss_transition':     48.70,
+    'a_ss_pipe_boot':      12.70,  # EFC31095 — same part on either seam system
+    'a_ss_sealants':        9.60,  # EFC31095
+    'a_ss_custom_flash':   20.88,  # EFC31095
+}
+# Delivery and machine set-up are NOT taxed on the quote, so this one takes
+# _SS_BUFFER alone. Keeping it in its own table is what stops a later reader
+# "fixing" the inconsistency by taxing a line the supplier does not tax.
+_SS_PRETAX_UNTAXED = {'x_ss_delivery': 365.00}   # $215 delivery + $150 set-up
+
 _SS_METAL = ["a_underlayment", "a_ice_water", "a_ss_clips", "a_ss_drip_d",
              "a_ss_rake", "a_ss_rake_recv", "a_ss_sidewall", "a_ss_sidewall_recv",
-             "a_ss_ridge", "a_ss_zeecee", "a_ss_pipe_boot", "a_ss_sealants",
+             "a_ss_headwall", "a_ss_ridge", "a_ss_zeecee", "a_ss_transition",
+             "a_ss_pipe_boot", "a_ss_sealants",
              "a_decking", "l_tearoff", "l_install", "x_ss_delivery",
              "x_dumpster", "x_permit"]
 ROOFING_BUNDLES_SEED = [
@@ -17392,9 +17485,43 @@ _TIER_DEFAULT_MIGRATIONS = {
 # invoice) and bundle_lf does the conversion. The cost MUST move with the unit:
 # a live book that gained only the conversion would price 6 rolls at $46.46 and
 # be wrong by half in the other direction.
+#
+# 2026-09-09: the whole standing seam trim was decoded from EFC31095, a
+# MECHANICAL SEAM quote. We sell snap-lock, and the clip in particular is a
+# different part at a different price ($0.42 -> $0.27), not two years of
+# drift. Repriced off EFC38421 and stored delivered — see _SS_PRETAX.
+#
+# The value is a LIST of steps because one product can need more than one:
+# m_standing_seam has to reach the same place from the original $400
+# placeholder AND from EFC31095's $320.25. The first matching step wins and
+# stops, so a chain can never apply twice in one pass.
 _PRODUCT_COST_MIGRATIONS = {
-    'roofing': {'m_standing_seam': (400, 320.25),
-                'a_ice_water': (46.46, 95.0)},
+    'roofing': {'m_standing_seam':    [(400, 325.21), (320.25, 325.21)],
+                'a_ice_water':        [(46.46, 95.0)],
+                'a_ss_clips':         [(23.85, 14.87)],
+                'a_ss_drip_d':        [(33.82, 24.88)],
+                'a_ss_rake':          [(23.38, 34.44)],
+                'a_ss_rake_recv':     [(17.16, 18.27)],
+                'a_ss_sidewall':      [(32.32, 34.44)],
+                'a_ss_sidewall_recv': [(17.16, 18.27)],
+                'a_ss_ridge':         [(33.32, 35.49)],
+                'a_ss_zeecee':        [(32.82, 11.65)],
+                'a_ss_pipe_boot':     [(12.70, 13.33)],
+                'a_ss_sealants':      [(9.6, 10.08)],
+                'a_ss_custom_flash':  [(20.88, 21.92)],
+                'x_ss_delivery':      [(500, 368.65)]},
+}
+
+# The same equality test, for the non-cost fields _PRODUCT_BACKFILL_FIELDS can
+# only fill when they are ABSENT. Every live book already has a measure for
+# a_ss_zeecee, so correcting the seed alone reaches nobody — and the correction
+# is the entire point: (ridge_hip, bundle_lf 5) spelled "two sticks per 10 ft of
+# ridge" and could not see a valley at all, so on a roof with 93 LF of valley
+# the Z-Flash line bought nothing for it. Rewrites only while the live value is
+# still the previous seed's, exactly like a cost migration.
+_PRODUCT_FIELD_MIGRATIONS = {
+    'roofing': {'a_ss_zeecee': {'measure':   ('ridge_hip', 'ridge_valley_2x'),
+                                'bundle_lf': (5, 10)}},
 }
 
 # Seed bundles that shipped AFTER their trade already had saved price books, so
@@ -17444,9 +17571,13 @@ _LATE_BUNDLE_PRODUCTS = {
     # trim it shipped with. All of it is required — a standing seam roof with
     # no rake, ridge, sidewall or clips is not a roof — which is what this list
     # is for. The matching removals are in _BUNDLE_PRODUCT_SUPERSEDED.
+    # 2026-09-09: a_ss_headwall and a_ss_transition joined them. Roofr has
+    # always reported the footage for both and the parser dropped it, so every
+    # metal bid priced its headwall and its transitions at nothing.
     'b_standing_seam':    ['a_ss_clips', 'a_ss_drip_d', 'a_ss_rake', 'a_ss_rake_recv',
-                           'a_ss_sidewall', 'a_ss_sidewall_recv', 'a_ss_ridge',
-                           'a_ss_zeecee', 'a_ss_pipe_boot', 'a_ss_sealants',
+                           'a_ss_sidewall', 'a_ss_sidewall_recv', 'a_ss_headwall',
+                           'a_ss_ridge', 'a_ss_zeecee', 'a_ss_transition',
+                           'a_ss_pipe_boot', 'a_ss_sealants',
                            'x_ss_delivery'],
 }
 
@@ -18546,11 +18677,24 @@ def _ensure_bundle_catalogs(pb):
             # Same one-directional shape for a corrected seed COST. See
             # _PRODUCT_COST_MIGRATIONS — the equality test against the previous
             # seed number is what keeps a manager's own price safe.
-            for pid, (old_cost, new_cost) in _PRODUCT_COST_MIGRATIONS.get(trade, {}).items():
+            for pid, steps in _PRODUCT_COST_MIGRATIONS.get(trade, {}).items():
                 p_live = next((p for p in live_cat
                                if isinstance(p, dict) and p.get('id') == pid), None)
-                if p_live is not None and _mnum(p_live.get('cost')) == old_cost:
-                    p_live['cost'] = new_cost
+                if p_live is None:
+                    continue
+                for old_cost, new_cost in steps:
+                    if _mnum(p_live.get('cost')) == old_cost:
+                        p_live['cost'] = new_cost
+                        break   # a chain must never apply twice in one pass
+
+            for pid, fields in _PRODUCT_FIELD_MIGRATIONS.get(trade, {}).items():
+                p_live = next((p for p in live_cat
+                               if isinstance(p, dict) and p.get('id') == pid), None)
+                if p_live is None:
+                    continue
+                for field, (old_val, new_val) in fields.items():
+                    if p_live.get(field) == old_val:
+                        p_live[field] = new_val
 
             # The ladder itself. pb.setdefault above cannot deliver a new one to
             # a book that already has the key — which is every live book — so

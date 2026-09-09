@@ -688,6 +688,9 @@ const MEASURE_FIELDS = [
     {key:'eave_lf',       label:'Eaves',          unit:'LF'},
     {key:'rake_lf',       label:'Rakes',          unit:'LF'},
     {key:'step_flash_lf', label:'Step Flashing',  unit:'LF'},
+    {key:'wall_flash_lf', label:'Wall Flashing',  unit:'LF'},
+    {key:'transition_lf', label:'Transitions',    unit:'LF'},
+    {key:'unspecified_lf', label:'Unspecified',   unit:'LF'},
     {key:'pipe_boots',    label:'Pipe Boots',     unit:'EA'},
     {key:'turtle_vents',  label:'Turtle Vents',   unit:'EA'},
     {key:'broan_4in',     label:'4" Broan Vent',  unit:'EA'},
@@ -791,6 +794,24 @@ const MEASURE_DEFS = {
   // barrier at the eaves where code requires it. Valleys are unaffected.
   eave_valley:          { label:'Eave + Valley LF',   calc:m => mnum(m.eave_lf) * (mnum(m.iw_second_row) ? 2 : 1) + mnum(m.valley_lf) },
   step:                 { label:'Step Flashing LF',   calc:m => mnum(m.step_flash_lf) },
+  // --- Standing seam trim -------------------------------------------------
+  // Roofr reports Wall flashing, Transitions and Unspecified on every report
+  // and the shingle catalog never needed any of them, so the parser dropped
+  // all three. A metal bid then priced its headwall and transition at nothing
+  // and the rep had to know from experience to add them by hand.
+  //
+  // headwall folds Unspecified in with wall flashing: on this company's metal
+  // work that footage IS headwall in practice. Confirmed against Architectural
+  // Sheet Metals EFC38421 (195 J J Kelly Rd) — 29'6" wall + 106'1" unspecified
+  // is exactly the 14 sticks ordered. Both fields stay separately editable, so
+  // a rep can split them when a report classifies its edges differently.
+  headwall:             { label:'Headwall + Unspecified LF', calc:m => mnum(m.wall_flash_lf) + mnum(m.unspecified_lf) },
+  transition:           { label:'Transition LF',     calc:m => mnum(m.transition_lf) },
+  // The Z-closure runs BOTH sides of every ridge and hip AND both sides of
+  // every valley — Z-Flash is our valley detail on snap-lock, so there is no
+  // separate valley pan to order. 2x(160 ridge) + 2x(93.83 valley) = 507.67 LF
+  // is the 51 sticks EFC38421 ordered, exactly.
+  ridge_valley_2x:      { label:'Ridge + Valley LF, both sides', calc:m => 2 * (mnum(m.ridge_hip_lf) + mnum(m.valley_lf)) },
   pipe_boots:           { label:'# Pipe Boots',       calc:m => mnum(m.pipe_boots) },
   skylights:            { label:'# Skylights',        calc:m => mnum(m.skylights) },
   turtle_vents:         { label:'# Turtle Vents',     calc:m => mnum(m.turtle_vents) },
