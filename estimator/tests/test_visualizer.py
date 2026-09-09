@@ -1368,17 +1368,54 @@ assert.equal(_vzElevation().base_image,'estimate-a/base.jpg');
 """)
 
 
+def _squash(source):
+    """app.js with every run of whitespace collapsed to one space.
+
+    These assertions pin WIRING — which guard sits in front of which save —
+    and they used to match the source line for line. That made them fail on
+    a reformat: adding `_vzMetaPending(S)` to the navigation guard wrapped
+    the condition across two lines and the test reported the guard missing
+    when it had just been strengthened. A line break is not a regression;
+    match on the squashed text so only a real change to the condition can
+    fail these."""
+    return re.sub(r'\s+', ' ', source)
+
+
 def test_visualizer_save_guards_are_wired_to_header_navigation_and_autosave():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
     source = (root / 'static' / 'app.js').read_text(encoding='utf-8')
     index = (root / 'static' / 'index.html').read_text(encoding='utf-8')
+    flat = _squash(source)
+
+    # The header's Save is the one button that must flush canvas pixels too.
     assert 'onclick="saveCurrentWork()"' in index
-    assert "activePage === 'visualizer' && page !== activePage && _vzHasUnsavedCanvasWork()" in source
-    assert 'if (dirty && S.estimate_id && !_vzBlocksGenericSave()) saveEstimate();' in source
-    assert 'if (pendingGenericSave) await pendingGenericSave;' in source
-    assert 'if (_estimateSaveFlight === flight && S === owner && !_vzBlocksGenericSave()) setClean();' in source
+
+    # Leaving the Studio waits for the dedicated save. Canvas pixels are not
+    # in S yet, and a pending-or-failed meta save is unsaved work just the
+    # same, so both hold navigation.
+    assert ("activePage === 'visualizer' && page !== activePage && "
+            "(_vzHasUnsavedCanvasWork() || _vzMetaPending(S))") in flat
+
+    # Save-on-navigate must not stand in for the visualizer's own save. The
+    # guard above only covers leaving the Studio; this covers navigating
+    # anywhere while a canvas or meta save is still in flight.
+    assert ('if (dirty && S.estimate_id && page !== activePage && '
+            '!_vzBlocksGenericSave()) saveEstimate();') in flat
+
+    # Autosave routes through saveCurrentWork(), which re-checks the block,
+    # and stands down entirely while a canvas operation is running.
+    assert ('if (dirty && S.estimate_id && !_vzHasUnsavedCanvasWork() && '
+            '!(_vzCurrentStateOwnsEstimate() && (vzState.saving || '
+            'vzState.detecting || vzState.proviaUploading))) { '
+            'saveCurrentWork(); }') in flat
+
+    # Only the newest queued save may clear Unsaved, and never while the
+    # visualizer still holds work a generic PUT does not carry.
+    assert ('if (_estimateSaveFlight === flight && S === owner && '
+            '_estimateRevision === revision && !_vzBlocksGenericSave()) '
+            'setClean();') in flat
     assert 'const snapshot = JSON.stringify(owner);' in source
     assert '_estimateSaveFlight === flight' in source
     assert 'if (_estimateSaveFlight?.owner === owner) return' not in source
@@ -1899,7 +1936,9 @@ def test_design_share_is_price_free_and_approval_is_server_managed(client, anon)
         assert '$' not in html and 'Approve selected design' in html
 
         approved = anon.post(f'/design/{token}', data={
-            'approved_tier': 'better', 'approver_name': 'Ada Lovelace', 'agree': 'yes'})
+            'approved_tier': 'better', 'approver_name': 'Ada Lovelace', 'agree': 'yes',
+            'design_hash_better': re.search(
+                r'name="design_hash_better" value="([0-9a-f]+)"', html).group(1)})
         assert approved.status_code == 200
         stored = client.get(f'/api/estimates/{eid}').get_json()
         assert stored['design_approval']['concept_name'] == 'Modern Farmhouse'
@@ -1959,6 +1998,8 @@ def test_design_approval_snapshots_exact_product_placement(client, anon):
         approved = anon.post(f'/design/{token}', data={
             'approved_tier': 'better', 'approver_name': 'Ada Lovelace',
             'agree': 'yes',
+            'design_hash_better': re.search(
+                r'name="design_hash_better" value="([0-9a-f]+)"', review).group(1),
         })
         assert approved.status_code == 200
         stored = client.get(f'/api/estimates/{eid}').get_json()

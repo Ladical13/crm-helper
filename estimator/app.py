@@ -1777,8 +1777,8 @@ def delete_photo(est_id, filename):
 # siding, trim/fascia, soffit, and door masks, then produce a Good/Better/Best
 # rendering with colors picked
 # from the actual estimate bundles. State lives entirely under `est.visualizer`
-# — a top-level key the server does not whitelist, so it round-trips through
-# the normal PUT unchanged (see SERVER_MANAGED_FIELDS and _merge).
+# — focused endpoints own updates once it exists; normal estimate saves
+# preserve the latest server copy so an autosave cannot undo design edits.
 #
 # Two endpoints:
 #  - POST .../visualizer/asset stores an image blob (base image, mask, or tier
@@ -2171,10 +2171,12 @@ def _decode_product_cutout(data, max_side=2048):
         with Image.open(io.BytesIO(data)) as source:
             if source.format not in ('PNG', 'JPEG', 'WEBP'):
                 raise ValueError('Use a PNG, JPG, or WebP product image.')
-            source.load()
             if min(source.size) < 1 or max(source.size) > 6000:
                 raise ValueError(
                     'Product image dimensions must be between 1 and 6000 pixels.')
+            if source.width * source.height > 20_000_000:
+                raise ValueError('Product images must not exceed 20 megapixels.')
+            source.load()
             image = ImageOps.exif_transpose(source).copy()
         if max(image.size) > max_side:
             ratio = max_side / max(image.size)
@@ -2190,6 +2192,32 @@ def _decode_product_cutout(data, max_side=2048):
         raise
     except Exception:
         raise ValueError('That product image could not be decoded.')
+
+
+def _decode_visualizer_image(data, ext):
+    """Store only decoded, bounded images in the customer-rendering path."""
+    from PIL import Image, ImageOps
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            if source.format not in ('PNG', 'JPEG', 'WEBP'):
+                raise ValueError('Use a PNG, JPG, or WebP image.')
+            if (min(source.size) < 1 or max(source.size) > 6000 or
+                    source.width * source.height > 20_000_000):
+                raise ValueError('Images must not exceed 6000 pixels per side or 20 megapixels.')
+            source.load()
+            image = ImageOps.exif_transpose(source).convert(
+                'RGB' if ext in ('jpg', 'jpeg') else 'RGBA')
+        # Re-encoding also strips camera metadata and makes the stored format
+        # match its extension, even if an older client mislabeled the upload.
+        image.info.clear()
+        encoded = io.BytesIO()
+        image.save(encoded, {'jpg': 'JPEG', 'jpeg': 'JPEG', 'png': 'PNG',
+                             'webp': 'WEBP'}[ext], quality=95)
+        if encoded.tell() > _VISUALIZER_MAX_BYTES:
+            raise ValueError('The decoded image is too large to save.')
+        return encoded.getvalue()
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError('That image could not be decoded.') from exc
 
 
 @app.route('/api/estimates/<est_id>/visualizer/asset', methods=['POST'])
@@ -2211,6 +2239,11 @@ def visualizer_asset(est_id):
         return _forbid()
 
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({'error': 'image upload must be an object'}), 400
+    if any(not isinstance(body.get(key, ''), str) for key in
+           ('kind', 'ext', 'content_b64', 'tier', 'role')):
+        return jsonify({'error': 'image upload fields must be text'}), 400
     kind = (body.get('kind') or '').strip()
     ext  = (body.get('ext') or '').strip().lower().lstrip('.')
     b64  = body.get('content_b64') or ''
@@ -2258,6 +2291,11 @@ def visualizer_asset(est_id):
         except ValueError as exc:
             return jsonify({'error': str(exc)}), 400
         ext = 'png'
+    else:
+        try:
+            data = _decode_visualizer_image(data, ext)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
 
     if ext == 'jpeg':
         ext = 'jpg'
@@ -2285,6 +2323,13 @@ def visualizer_asset(est_id):
             # the one asset immutable and let visualizer/state own references.
             vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
             return doc
+        if kind == 'provia':
+            # A configured door belongs to a concept, not an elevation. In
+            # particular, uploading it from Rear must not rename/select Front.
+            vz.setdefault('provia_specs', {}).setdefault(tier, {})[
+                'configured_image'] = stored_ref
+            vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            return doc
         elevations = _visualizer_elevations(vz)
         elevation = elevations.setdefault(elevation_id, {
             'id': elevation_id, 'name': elevation_name,
@@ -2306,11 +2351,12 @@ def visualizer_asset(est_id):
             elevation['texture_projection'] = _empty_texture_projection()
         elif kind == 'mask':
             elevation['masks'][role] = stored_ref
+            # A replaced selection changes every concept on this elevation.
+            # If the following render upload fails, customer links must not
+            # continue showing composites built with the previous selection.
+            elevation['tier_renders'] = {}
         elif kind == 'render':
             elevation['tier_renders'][tier] = stored_ref
-        else:
-            vz.setdefault('provia_specs', {}).setdefault(tier, {})[
-                'configured_image'] = stored_ref
         _visualizer_mirror_front(vz)
         vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
         return doc
@@ -2497,6 +2543,12 @@ def visualizer_state(est_id):
                 normalized_texture_projection)
         if delete_elevation_id in elevations and len(elevations) > 1:
             elevations.pop(delete_elevation_id, None)
+            if delete_elevation_id == 'front':
+                # Legacy mirrors are import sources during normalization.
+                # Clear them before normalizing or Front is resurrected.
+                for field in ('base_image', 'tier_renders') + tuple(
+                        f'{role}_mask' for role in _VISUALIZER_ROLES):
+                    vz.pop(field, None)
         if elevation_order is not None:
             vz['elevation_order'] = [eid for eid in elevation_order if eid in elevations]
         _visualizer_elevations(vz)
@@ -2584,7 +2636,8 @@ def visualizer_detection(est_id):
             result.update(role=ticket['role'], photo_key=ticket['photo_key'])
             return jsonify(result)
         body = request.get_json(silent=True)
-        if not isinstance(body, dict) or body.get('role') not in detection.PROMPTS:
+        if (not isinstance(body, dict) or not isinstance(body.get('role'), str)
+                or body.get('role') not in detection.PROMPTS):
             return jsonify(
                 {'error': 'Choose a supported exterior surface.'}), 400
         role = body['role']
@@ -9735,7 +9788,9 @@ def _design_review_page(est, token, notice=''):
                       'alt="Configured ProVia door">' if spec.get('configured_image') else '')
         checked = ' checked' if current_is_live and current.get('tier') == tier else ''
         preferred = ' <span class="preferred">Project One preferred</span>' if favorite == tier else ''
+        snapshot_hash = _design_snapshot_hash(_design_tier_snapshot(vz, tier))
         concept_html += f'''<section class="concept">
+  <input type="hidden" name="design_hash_{tier}" value="{snapshot_hash}">
   <div class="concept-title"><label><input type="radio" name="approved_tier" value="{tier}"{checked} required>
     <span>{he(names[tier])}</span></label>{preferred}</div>
   <div class="elevations">{cards}</div>
@@ -9830,6 +9885,13 @@ def customer_design(token):
             rejected[0] = True
             return None
         snapshot = _design_tier_snapshot(vz, tier)
+        # Bind approval to the images and materials the customer actually saw.
+        # A rep may save a revision while this browser tab remains open.
+        viewed_hash = request.form.get(f'design_hash_{tier}', '')
+        if (not re.fullmatch(r'[0-9a-f]{64}', viewed_hash) or
+                not secrets.compare_digest(viewed_hash, _design_snapshot_hash(snapshot))):
+            rejected[0] = True
+            return None
         approval = {
             **snapshot, 'approver_name': approver, 'approved_at': now,
             'ip_address': client_ip, 'user_agent': client_ua, 'token': token,
@@ -9846,7 +9908,7 @@ def customer_design(token):
     stored = est_update(est.get('estimate_id'), _approve)
     if stored is None or rejected[0]:
         fresh = est_find_by_design_token(token) or est
-        return Response(_design_review_page(fresh, token, 'That concept is no longer available. Ask your representative to resend the design.'), status=409, mimetype='text/html')
+        return Response(_design_review_page(fresh, token, 'This design has changed or needs to be refreshed. Review the current images and selections below before approving.'), status=409, mimetype='text/html')
     return Response(_design_review_page(stored, token, 'Thank you — your design approval was recorded.'), mimetype='text/html')
 
 

@@ -267,3 +267,21 @@ def test_text_size_adjust_is_pinned():
         'the -webkit-text-size-adjust guard on html is gone'
     assert re.search(r'html\s*\{[^}]*[^-]text-size-adjust:\s*100%', css), \
         'the unprefixed text-size-adjust (Android/Chrome) is gone'
+
+
+def test_the_roofr_report_is_not_shown_to_the_customer_automatically():
+    """Importing a RoofR PDF files it on the estimate as an attachment. That
+    attachment must go in HIDDEN: the measurement report is a rep/production
+    document — pitch tables, waste ladders, per-facet areas — and nobody
+    chose to publish it. `show_in_estimate: true` put it straight onto the
+    customer's estimate and into the printed PDF the moment the rep imported
+    measurements, which is not a decision an auto-import gets to make. The
+    rep flips "Show" on the attachment row when they want the customer to
+    see it, exactly like the carrier's Xactimate estimate beside it."""
+    js = _read(APPJS)
+    m = re.search(r"label:\s*'RoofR Measurement Report',\s*show_in_estimate:\s*(\w+)", js)
+    assert m, 'the RoofR attachment no longer sets show_in_estimate explicitly'
+    assert m.group(1) == 'false', (
+        'the RoofR measurement report is being attached visible to the '
+        'customer on import'
+    )

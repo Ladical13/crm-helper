@@ -1742,6 +1742,8 @@ Project One Roofing — Northern Colorado` },
 
 let S = blankEstimate();
 let dirty = false;
+let _estimateRevision = 0;
+let _estimateLoadGeneration = 0;
 let _estimateSaveFlight = null;
 let _vzNavigationSave = null;
 let _vzNavigationTarget = '';
@@ -2329,6 +2331,7 @@ function insuranceTotal() {
 
 function setDirty() {
   dirty = true;
+  _estimateRevision += 1;
   const el = document.getElementById('save-indicator');
   el.textContent = '● Unsaved'; el.className = 'save-indicator unsaved';
   // Every edit in the app funnels through here, which makes it the one honest
@@ -2507,11 +2510,12 @@ function switchPage(page) {
   // Canvas pixels do not live in S until the dedicated visualizer save has
   // uploaded them. Keep the Studio visible while that save completes; a
   // generic whole-estimate PUT cannot safely stand in for it.
-  if (activePage === 'visualizer' && page !== activePage && _vzHasUnsavedCanvasWork()) {
+  if (activePage === 'visualizer' && page !== activePage &&
+      (_vzHasUnsavedCanvasWork() || _vzMetaPending(S))) {
     _vzNavigationTarget = page;
     if (!_vzNavigationSave) {
       const state = vzState;
-      _vzNavigationSave = _vzSaveAll().then(saved => {
+      _vzNavigationSave = saveCurrentWork().then(saved => {
         const target = _vzNavigationTarget;
         _vzNavigationSave = null;
         _vzNavigationTarget = '';
@@ -2526,7 +2530,13 @@ function switchPage(page) {
   }
   // Save-on-navigate: switching pages is a natural checkpoint, so unsaved work
   // survives a closed tab / dead battery without waiting for the 60s autosave.
-  if (dirty && S.estimate_id && page !== activePage) saveEstimate();
+  // Still gated on _vzBlocksGenericSave(): the early return above only covers
+  // leaving the Studio itself, so a navigation elsewhere while a canvas save
+  // or a meta save is in flight would otherwise PUT an S that does not have
+  // that work in it yet. Nothing is lost by skipping — dirty stays set and
+  // the next saveCurrentWork() picks it up.
+  if (dirty && S.estimate_id && page !== activePage && !_vzBlocksGenericSave())
+    saveEstimate();
   activePage = page;
   document.querySelectorAll('.page').forEach(el => el.style.display = 'none');
   const target = document.getElementById('page-' + page);
@@ -10992,7 +11002,8 @@ async function newEstimateForCustomer(name, label, type) {
   const existing = _dashData
     .filter(e=>custKey(e.customer_name)===custKey(name))
     .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''))[0];
-  newEstimateAction();
+  if (!(await newEstimateAction())) return;
+  const owner = S;
   S.customer.name  = name;
   S.estimate_label = label || '';
   if (type) setEstimateType(type);
@@ -11000,8 +11011,9 @@ async function newEstimateForCustomer(name, label, type) {
   if (existing) {
     try {
       const r = await fetch(`/api/estimates/${existing.estimate_id}`);
-      if (r.ok) {
+      if (r.ok && S === owner) {
         const full = await r.json();
+        if (S !== owner) return;
         const c = full.customer || {};
         if(c.phone)  { S.customer.phone=c.phone; }
         if(c.email)  { S.customer.email=c.email; }
@@ -11015,6 +11027,7 @@ async function newEstimateForCustomer(name, label, type) {
       }
     } catch {}
   }
+  if (S !== owner) return;
   setVal('cust-name', name);
   setDirty(); renderSidebar(); renderCoverPage();
 }
@@ -11829,6 +11842,7 @@ async function saveEstimate() {
   const owner = S;
   if(!owner.estimate_id){owner.estimate_id=uid();owner.created_at=new Date().toISOString();}
   const snapshot = JSON.stringify(owner);
+  const revision = _estimateRevision;
   const previous = _estimateSaveFlight?.promise;
   let flight;
   const promise = (async () => {
@@ -11840,7 +11854,8 @@ async function saveEstimate() {
       if(!r.ok)throw new Error('Save failed');
       // A second click may have queued a newer snapshot while this request was
       // in flight. Only the newest queued save is allowed to clear Unsaved.
-      if (_estimateSaveFlight === flight && S === owner && !_vzBlocksGenericSave()) setClean();
+      if (_estimateSaveFlight === flight && S === owner &&
+          _estimateRevision === revision && !_vzBlocksGenericSave()) setClean();
       if (S === owner) renderEstNum();
       return true;
     }catch(e){
@@ -11855,17 +11870,45 @@ async function saveEstimate() {
 }
 
 async function saveCurrentWork() {
+  const owner = S;
   if (_vzHasUnsavedCanvasWork()) {
     if (!(await _vzSaveAll())) return false;
   }
+  if (S !== owner) return false;
+  if (_vzMetaPending(owner)) {
+    try { await _vzPersistMeta(); }
+    catch (error) { _vzReportMetaFailure(error); return false; }
+  }
+  if (S !== owner) return false;
   if (_vzBlocksGenericSave()) return false;
   return saveEstimate();
 }
 
+async function _prepareEstimateChange() {
+  const owner = S;
+  if (_vzCurrentStateOwnsEstimate() &&
+      (vzState.saving || vzState.detecting || vzState.proviaUploading)) {
+    alert('Please wait for the current design operation to finish before changing estimates.');
+    return false;
+  }
+  if (dirty || _vzHasUnsavedCanvasWork() || _vzMetaPending(owner)) {
+    if (!(await saveCurrentWork()) || S !== owner) return false;
+    // Edits made while a save was in flight are still local. Keep them on
+    // screen instead of replacing the estimate with an older saved snapshot.
+    if (dirty || _vzMetaPending(owner)) return false;
+  }
+  if (_estimateSaveFlight?.owner === owner) await _estimateSaveFlight.promise;
+  return S === owner && !dirty && !_vzMetaPending(owner);
+}
+
 async function newEstimateAction() {
-  if(dirty&&!confirm('You have unsaved changes. Start a new estimate anyway?'))return;
-  // The rep has just confirmed they are abandoning this one, so its local draft
-  // must not outlive that decision and re-offer itself at the next boot.
+  // _prepareEstimateChange() supersedes the old discard-confirm: it SAVES the
+  // estimate being left — canvas pixels and design meta included — and refuses
+  // to move if that save cannot land, so nothing is abandoned to confirm about.
+  if (!(await _prepareEstimateChange())) return false;
+  // Captured after that save and before blankEstimate(): the local
+  // crash-recovery draft is redundant once the work is on the server, and must
+  // not outlive it and re-offer itself at the next boot.
   const _abandoned = S.estimate_id;
   S=blankEstimate();
   applyTierDefaults(S); // pre-fill from global admin defaults
@@ -11877,6 +11920,7 @@ async function newEstimateAction() {
   document.getElementById('save-indicator').textContent='';
   document.getElementById('save-indicator').className='save-indicator';
   renderAll(); switchPage('client');
+  return true;
 }
 
 async function openEstimate() {
@@ -11901,10 +11945,16 @@ function showOpenModal(list) {
   document.getElementById('open-modal').classList.remove('hidden');
 }
 async function doLoadEstimate(id) {
+  const generation = ++_estimateLoadGeneration;
+  if (!(await _prepareEstimateChange()) || generation !== _estimateLoadGeneration) return;
+  const owner = S;
   try{
     const r=await fetch(`/api/estimates/${id}`);
     if(!r.ok)throw new Error('Not found');
-    S=await r.json();
+    const loaded = await r.json();
+    if (generation !== _estimateLoadGeneration || S !== owner) return;
+    if (!(await _prepareEstimateChange()) || generation !== _estimateLoadGeneration || S !== owner) return;
+    S=loaded;
     if(!S.tier_descriptions) S.tier_descriptions={good:'',better:'',best:''};
     if(S.print_contract===undefined) S.print_contract=true;
     if(!S.contract_text) S.contract_text=globalContract(_ctype(S.estimate_type));
@@ -13075,7 +13125,10 @@ function populateSalespersonDropdown() {
 }
 
 function _autoSaveTick() {
-  if (dirty && S.estimate_id && !_vzBlocksGenericSave()) saveEstimate();
+  if (dirty && S.estimate_id && !_vzHasUnsavedCanvasWork() &&
+      !(_vzCurrentStateOwnsEstimate() && (vzState.saving || vzState.detecting || vzState.proviaUploading))) {
+    saveCurrentWork();
+  }
 }
 setInterval(_autoSaveTick,60000);
 
@@ -13600,6 +13653,9 @@ async function applyRoofrImport() {
 
   // Save the RoofR PDF as an attachment so it lives in the customer file.
   // We save the estimate first (gets an ID), then upload the PDF.
+  // It goes in hidden: the report is a rep/production document, and nobody
+  // chose to show it — an auto-import must not decide what the customer
+  // reads. The rep flips "Show" on the attachment row when they want it.
   if (_roofrFile) {
     const file = _roofrFile;
     _roofrFile = null;
@@ -13614,7 +13670,7 @@ async function applyRoofrImport() {
           if (!Array.isArray(S.attachments)) S.attachments = [];
           S.attachments.push({
             id: uid(), filename: ures.filename, original_name: file.name,
-            label: 'RoofR Measurement Report', show_in_estimate: true,
+            label: 'RoofR Measurement Report', show_in_estimate: false,
             pages: ures.pages || undefined,
           });
           setDirty();
@@ -15515,8 +15571,8 @@ function _vzHasUnsavedCanvasWork() {
   return _vzCurrentStateOwnsEstimate() && !!(vzState.dirty && vzState.photoImg);
 }
 function _vzBlocksGenericSave() {
-  return _vzCurrentStateOwnsEstimate() && !!(
-    _vzHasUnsavedCanvasWork() || vzState.saving || vzState.detecting || vzState.proviaUploading);
+  return _vzMetaPending(S) || (_vzCurrentStateOwnsEstimate() && !!(
+    _vzHasUnsavedCanvasWork() || vzState.saving || vzState.detecting || vzState.proviaUploading));
 }
 
 function _vzResetState() {
@@ -15918,12 +15974,42 @@ function _vzElevationMetaPayload(extra) {
       ? JSON.parse(JSON.stringify(elevation.texture_projection)) : null
   }, extra || {});
 }
+const _vzMetaSaves = new WeakMap();
+function _vzMetaPending(owner) {
+  const meta = owner && _vzMetaSaves.get(owner);
+  return !!(meta && (meta.pending || meta.failed));
+}
+function _vzReportMetaFailure(error) {
+  alert((error?.message || 'Could not save design settings.') + ' Your changes are still here. Use Save to retry before leaving.');
+}
 async function _vzPersistMeta(extra) {
-  if (!S.estimate_id) return;
-  const res = await fetch('/api/estimates/' + encodeURIComponent(S.estimate_id) + '/visualizer/state', {
-    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(_vzElevationMetaPayload(extra))
-  });
-  if (!res.ok) throw new Error((await res.json().catch(()=>({}))).error || 'Could not save design settings.');
+  const owner = S;
+  const body = JSON.stringify(_vzElevationMetaPayload(extra));
+  let meta = _vzMetaSaves.get(owner);
+  if (!meta) { meta = {tail:Promise.resolve(), pending:0, failed:false}; _vzMetaSaves.set(owner,meta); }
+  meta.pending += 1;
+  const previous = meta.tail;
+  const promise = (async () => {
+    // Each request captures its own estimate and payload. A slow earlier
+    // response must never overwrite a later concept name or preference.
+    await previous.catch(() => {});
+    if (!owner.estimate_id) {
+      if (S !== owner || !(await saveEstimate())) throw new Error('Could not create the estimate for these design settings.');
+    }
+    const res = await fetch('/api/estimates/' + encodeURIComponent(owner.estimate_id) + '/visualizer/state', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body
+    });
+    if (!res.ok) throw new Error((await res.json().catch(()=>({}))).error || 'Could not save design settings.');
+    meta.failed = false;
+    return true;
+  })();
+  meta.tail = promise;
+  try { return await promise; }
+  catch (error) {
+    meta.failed = true;
+    if (S === owner) setDirty();
+    throw error;
+  } finally { meta.pending -= 1; }
 }
 function _vzInvalidateRenders() {
   const vz = _vzGet();
@@ -15945,17 +16031,17 @@ function _vzToggleScope(role, enabled) {
   renderVisualizerPage();
 }
 function _vzRenameConcept(tier, value) {
-  if (!TIERS.includes(tier)) return;
+  if (!TIERS.includes(tier) || _vzVisualizerEditLocked()) return;
   _vzGet().concept_names[tier] = String(value || '').trim().slice(0,40) || TIER_LABELS[tier];
   setDirty(); renderVisualizerPage();
-  _vzPersistMeta().catch(error => console.warn(error.message));
+  _vzPersistMeta().catch(_vzReportMetaFailure);
 }
 function _vzSetFavorite(tier) {
-  if (!TIERS.includes(tier)) return;
+  if (!TIERS.includes(tier) || _vzVisualizerEditLocked()) return;
   const vz = _vzGet();
   vz.favorite_tier = vz.favorite_tier === tier ? '' : tier;
   setDirty(); renderVisualizerPage();
-  _vzPersistMeta().catch(error => console.warn(error.message));
+  _vzPersistMeta().catch(_vzReportMetaFailure);
 }
 function _vzSetBeforeSplit(value) {
   vzState.beforeSplit = Math.max(0, Math.min(100, parseInt(value,10) || 0));
@@ -15970,15 +16056,18 @@ function _vzNewElevationId(name) {
   return id;
 }
 async function _vzSwitchElevation(id) {
+  if (_vzVisualizerEditLocked()) return;
   const vz = _vzGet();
   if (!vz.elevations[id] || id === vz.active_elevation_id) return;
   if (vzState.dirty) { alert('Save the current elevation renderings before switching.'); return; }
   vz.active_elevation_id = id;
+  setDirty();
   _vzResetState();
   await renderVisualizerPage();
-  _vzPersistMeta().catch(error => console.warn(error.message));
+  _vzPersistMeta().catch(_vzReportMetaFailure);
 }
 async function _vzAddElevation() {
+  if (_vzVisualizerEditLocked()) return;
   if (vzState.dirty) { alert('Save the current elevation renderings before adding another view.'); return; }
   if (_vzGet().elevation_order.length >= 12) { alert('A design project can contain up to 12 elevations.'); return; }
   const name = prompt('Name this view (for example Rear, Left side, or Garage):', 'Rear');
@@ -15989,19 +16078,22 @@ async function _vzAddElevation() {
   vz.elevation_order.push(id); vz.active_elevation_id = id;
   _vzResetState();
   setDirty();
-  await _vzPersistMeta().catch(error => console.warn(error.message));
+  try { await _vzPersistMeta(); }
+  catch (error) { _vzReportMetaFailure(error); await renderVisualizerPage(); return; }
   await renderVisualizerPage();
   _vzTriggerUpload();
 }
 function _vzRenameElevation() {
+  if (_vzVisualizerEditLocked()) return;
   const ev = _vzElevation();
   const name = prompt('Elevation name:', ev.name);
   if (!name || !name.trim()) return;
   ev.name = name.trim().slice(0,60);
   setDirty(); renderVisualizerPage();
-  _vzPersistMeta().catch(error => console.warn(error.message));
+  _vzPersistMeta().catch(_vzReportMetaFailure);
 }
 async function _vzDeleteElevation() {
+  if (_vzVisualizerEditLocked()) return;
   const vz = _vzGet(), ev = _vzElevation();
   if (vz.elevation_order.length < 2 || vzState.dirty) {
     if (vzState.dirty) alert('Save the current elevation before removing a view.');
@@ -16009,11 +16101,22 @@ async function _vzDeleteElevation() {
   }
   if (!confirm('Remove ' + ev.name + ' from this design? Saved files remain on the server, but this view will no longer be shown.')) return;
   const removed = ev.id;
+  const previousOrder = [...vz.elevation_order];
   delete vz.elevations[removed];
   vz.elevation_order = vz.elevation_order.filter(id => id !== removed);
   vz.active_elevation_id = vz.elevation_order[0];
   _vzResetState();
-  await _vzPersistMeta({delete_elevation_id:removed});
+  setDirty();
+  try { await _vzPersistMeta({delete_elevation_id:removed}); }
+  catch (error) {
+    // The deletion is an explicit server operation, so restore its local view
+    // on failure instead of making a later ordinary metadata save hide it.
+    vz.elevations[removed] = ev;
+    vz.elevation_order = previousOrder;
+    vz.active_elevation_id = removed;
+    _vzResetState();
+    _vzReportMetaFailure(error);
+  }
   await renderVisualizerPage();
 }
 async function _vzShareDesign() {
