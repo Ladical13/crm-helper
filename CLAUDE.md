@@ -374,6 +374,55 @@ python -m portal.wsgi                 # dev: run the portal, canvasser is at /ca
   `user-scalable=no` stays — this is a full-screen map and page zoom on a stray
   pinch fights Leaflet's own gestures.
 
+### Known gaps, from the 2026-09-06 review
+
+Found by reading the whole app, deliberately NOT fixed in the same pass, and
+listed here because otherwise they live only in a chat log. Roughly in the
+order they cost the business something.
+
+- **A failed pin save is lost.** The service worker gives an offline app
+  *shell* and `/api/*` is network-first, but a pin POST that fails just
+  `alert()`s. This tool exists for driveways on one bar of signal and then
+  throws away the one write that matters. Needs an IndexedDB outbox and
+  Background Sync.
+- **No voice notes.** Typing at a door in February with gloves on does not
+  happen, which makes this the highest-adoption feature available.
+- **No photos on a pin**, so a rep at an `inspected` door has nowhere to put
+  the hail strike on the downspout — the photo that is the whole adjuster
+  conversation later. Per the customer-identity note below, those belong on
+  the CUSTOMER rather than on an estimate: the photo exists before an estimate
+  does and must survive one being marked lost.
+- **An `appointment` pin carries no date or time**, so it maps to `appt_set`
+  and nothing can remind anyone. Door-set no-shows are the standard killer.
+- **"Add to Pipeline" is a second button a rep has to remember**, and it needs
+  a contact name. An appointment with neither gets no lead, no cadence, no
+  task and no leaderboard credit.
+- **Nominatim is used against its usage policy.** Every pin drop reverse
+  geocodes and every hail search forward geocodes, with no cache and no rate
+  limit, from one Railway IP; OSM's policy is 1 req/sec and forbids bulk use.
+  When it is cut off, address autofill dies **silently** (`.catch(() => {})`)
+  and hail-by-address 502s. `portal/geo.py` now exists to cache these.
+- **`no_soliciting` is only a pin colour.** Fort Collins, Loveland and Greeley
+  all run solicitation permits and no-knock lists; nothing warns the next rep
+  walking up to one.
+- **Nothing comes back from the CRM.** A pin gets `crm_lead_id` and then goes
+  stale forever, so a door that became a signed roof still reads "Interested".
+  That loop is the motivational payload of the whole tool.
+- **No territory assignment and no re-knock protection**, so two reps can work
+  the same street on the same day.
+- **Every rep sees every rep's pins, including contact name, phone and email**
+  — the opposite of the CRM's "reps see only their own leads". Worth being a
+  decision rather than an accident of two codebases.
+- **Map attribution is switched off** (`attributionControl: false`) while using
+  Esri World Imagery and CARTO basemaps, both of which require it.
+- **`hail_cache` grows forever** and nothing purges it.
+
+Customer-facing, where the honest summary is that there is **nothing**: no
+leave-behind for the 60–70% of doors that are Not Home, no way to text a
+homeowner the storm report the tool already computes, no self-scheduling, and
+no legitimacy artifact (rep photo, licence number, review link) for the
+homeowner whose first question is whether this person is real.
+
 ## Hail (`hail/`) — the storm archive every tool reads
 
 Hail is **not a canvasser feature**. It is the company's primary data product,
@@ -432,16 +481,51 @@ closes a homeowner. `docs/storm-to-contract.html` is the full build plan.
   address. It lives in `join.TIERS` so the map, the drafts and the canvassing
   zones cannot disagree.
 
-**Not built yet: the ingest itself.** `grid`, `storms` and `join` are complete
-and tested; fetching MRMS GRIB2 and decoding it is not written, because the dev
-sandbox cannot reach `mrms.ncep.noaa.gov` or the Iowa State archive and
-untested network code is worse than none. The decoder choice is also open —
-eccodes/cfgrib needs system libraries on Railway. Whatever reads GRIB2 only has
-to yield `(lat, lng, size)` triples into `swath_from_points()`.
+### The ingest (`hail/ingest.py`) — AWS, not the NOAA site
 
-⚠️ **`MM_PER_INCH` is from the product documentation, not from a message we
-have decoded.** Confirm it against a real GRIB2 file before any number reaches
-a customer.
+```bash
+python -m hail.backfill --days 1        # what a nightly job runs
+python -m hail.backfill --season 2026   # Mar-Oct of one year
+python -m hail.backfill --dry-run --days 30
+```
+
+**`mrms.ncep.noaa.gov` and the Iowa State archive are both refused by the
+egress proxy** as an organization policy denial, and re-testing them is a waste
+of a turn. **NOAA mirrors MRMS to AWS Open Data and S3 is reachable**, so the
+ingest runs against `noaa-mrms-pds.s3.amazonaws.com`. Everything here was
+verified against a real message rather than read from documentation:
+
+- **Coverage starts 2020-10-14** (`ingest.EARLIEST`), not 2014. Still years
+  past Colorado's one-year claim window. Deeper history would need MTArchive,
+  which this environment cannot reach.
+- **One file per day, not 48.** The bucket publishes every 30 minutes, but
+  `MESH_Max_1440min` is a rolling 24-hour maximum, so the 23:30 file already
+  holds the day's peak everywhere. `DAY_STAMP` is that choice; taking 00:00
+  would report the *previous* day.
+- **Section 7 is a PNG** (Data Representation Template 41), which is why this
+  needs no eccodes and no new system package: **Pillow already ships** for the
+  estimator's proposals. Any other template raises rather than being decoded as
+  PNG, because a misread grid is a confident wrong answer about a real roof.
+- **The scan flags are read, not assumed.** The product scans west→east then
+  north→south; a file that ever shipped south-to-north would otherwise decode
+  upside down and still look like a plausible map.
+- **Flag values are dropped by the threshold, not by a list.** MRMS encodes
+  "no coverage" and "no hail" as negatives (−3.0 and −1.0), and every threshold
+  a roofer cares about is far above zero — so a new flag cannot slip past a
+  list nobody updated.
+- Clipping to `COLORADO` happens **before** any value is unpacked: CONUS is
+  24.5M cells, Colorado is ~283k. About a second and a megabyte per day.
+
+✅ **`MM_PER_INCH = 25.4` is confirmed against real data**, replacing the
+warning that used to sit here. The observed CONUS daily maximum was 125.5,
+which is 4.9 inches of hail — extreme but real; read as inches it would be 125
+inches. The grid is also confirmed as the 0.01° lattice `CELL_DEG` assumes.
+
+`hail/tests/test_ingest.py` builds its own GRIB2 messages rather than committing a
+megabyte fixture. `test_the_live_product_still_decodes` is marked `live` and
+**deselected by default** (`addopts = -m "not live"`) so the suite stays
+offline; run it deliberately with `pytest -m live` to catch the day NOAA
+changes the packing, the grid or the units.
 
 ## Sales CRM — "The Pipeline" (`salescrm/`)
 
