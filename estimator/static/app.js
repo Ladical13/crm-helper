@@ -15486,14 +15486,15 @@ function _vzCachedCanvas(cache,key) {
   return value;
 }
 function _vzImageReady(img) {
-  if (!img) return Promise.resolve();
+  if (!img) return Promise.reject(new Error('A selected design image is unavailable. Choose the product again before saving.'));
   if (img.complete) return img.naturalWidth
     ? Promise.resolve(img)
     : Promise.reject(new Error('A design image could not be loaded.'));
   return new Promise((resolve,reject) => {
-    let settled=false;
+    let settled=false, timer;
     const finish=(error) => {
       if(settled)return;settled=true;
+      clearTimeout(timer);
       img.removeEventListener?.('load',onLoad);img.removeEventListener?.('error',onError);
       error?reject(error):resolve(img);
     };
@@ -15501,6 +15502,7 @@ function _vzImageReady(img) {
     const onError=()=>finish(new Error('A design image could not be loaded.'));
     img.addEventListener?.('load',onLoad,{once:true});
     img.addEventListener?.('error',onError,{once:true});
+    timer=setTimeout(()=>finish(new Error('A design image timed out. Check your connection and retry Save.')),20000);
     if(typeof img.decode==='function')img.decode().then(onLoad).catch(()=>{});
   });
 }
@@ -16102,6 +16104,9 @@ async function _vzDeleteElevation() {
   if (!confirm('Remove ' + ev.name + ' from this design? Saved files remain on the server, but this view will no longer be shown.')) return;
   const removed = ev.id;
   const previousOrder = [...vz.elevation_order];
+  const legacyFields = ['base_image','tier_renders',..._VZ_ROLES.map(role=>role+'_mask')];
+  const previousLegacy = Object.fromEntries(legacyFields.map(key=>[key,vz[key]]));
+  if (removed === 'front') for (const key of legacyFields) delete vz[key];
   delete vz.elevations[removed];
   vz.elevation_order = vz.elevation_order.filter(id => id !== removed);
   vz.active_elevation_id = vz.elevation_order[0];
@@ -16114,6 +16119,7 @@ async function _vzDeleteElevation() {
     vz.elevations[removed] = ev;
     vz.elevation_order = previousOrder;
     vz.active_elevation_id = removed;
+    if (removed === 'front') Object.assign(vz,previousLegacy);
     _vzResetState();
     _vzReportMetaFailure(error);
   }
@@ -17785,15 +17791,21 @@ function _vzComposeInto(target, tier, opts) {
 }
 
 function _vzCompositeColor(ctx, W, H, mask, hex) {
-  // Off-screen: color-fill clipped to the mask.
+  // Start with the requested finish, retaining some original-photo lighting.
+  // Multiplying against the previous composite could never lighten dark rake
+  // boards, and let siding textures bleed through overlapping trim masks.
   const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
   const octx = _vzHighQuality(oc.getContext('2d'));
-  octx.drawImage(mask, 0, 0, W, H);
-  octx.globalCompositeOperation = 'source-in';
   octx.fillStyle = hex;
   octx.fillRect(0, 0, W, H);
+  octx.globalCompositeOperation = 'luminosity';
+  octx.globalAlpha = 0.24;
+  octx.drawImage(vzState.photoImg, 0, 0, W, H);
+  octx.globalAlpha = 1;
+  octx.globalCompositeOperation = 'destination-in';
+  octx.drawImage(mask, 0, 0, W, H);
   ctx.save();
-  ctx.globalCompositeOperation = 'multiply';
+  ctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(oc, 0, 0);
   ctx.restore();
 }
@@ -17801,10 +17813,7 @@ function _vzCompositeColor(ctx, W, H, mask, hex) {
 function _vzCompositePattern(ctx, W, H, mask, patImg) {
   const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
   const octx = _vzHighQuality(oc.getContext('2d'));
-  const pat = octx.createPattern(patImg, 'repeat');
-  if (!pat) return;
-  octx.fillStyle = pat;
-  octx.fillRect(0, 0, W, H);
+  if (!_vzFillCanonicalFlat(octx,W,H,patImg,patImg.naturalWidth,'native')) return;
   // Clip to mask.
   octx.globalCompositeOperation = 'destination-in';
   octx.drawImage(mask, 0, 0, W, H);
@@ -17818,15 +17827,7 @@ function _vzCompositePattern(ctx, W, H, mask, patImg) {
 function _vzCompositeTexture(ctx, W, H, mask, texture, tileSize) {
   const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
   const octx = _vzHighQuality(oc.getContext('2d'));
-  const size = Math.max(16, Math.min(512, tileSize || 96));
-  const footprint=_vzTextureFootprint(texture,size);
-  const tile = document.createElement('canvas');
-  tile.width = Math.max(1,Math.round(footprint.width));
-  tile.height = Math.max(1,Math.round(footprint.height));
-  _vzHighQuality(tile.getContext('2d')).drawImage(texture, 0, 0, tile.width, tile.height);
-  const pattern = octx.createPattern(tile, 'repeat');
-  if (!pattern) return;
-  octx.fillStyle = pattern; octx.fillRect(0,0,W,H);
+  if (!_vzFillCanonicalFlat(octx,W,H,texture,tileSize,'square')) return;
   octx.globalCompositeOperation = 'destination-in'; octx.drawImage(mask,0,0,W,H);
   ctx.save(); ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 0.82;
   ctx.drawImage(oc,0,0); ctx.restore();
@@ -17988,8 +17989,9 @@ async function _vzSaveAll() {
   // A photo is useful project data by itself. Let reps save or leave after an
   // upload even when fal is disabled or they plan to select surfaces later.
   // Blank masks and three identical renderings are intentionally not stored.
-  const baseOnly = !!state.pendingBaseDataUrl && !hasSurface && !hasPlacement;
-  if (!hasSurface && !hasPlacement && !baseOnly) { alert('No project surfaces or exact products are selected yet. Run automatic selection, use Refine selection, or place a product before saving.'); return false; }
+  // An already-uploaded photo must remain saveable after a failed metadata
+  // request, or after the rep clears every selection to start over.
+  const baseOnly = !hasSurface && !hasPlacement;
   let eid = S.estimate_id;
   const pendingGenericSave = _estimateSaveFlight?.promise;
   const btn = document.getElementById('vz-save-btn');
@@ -18033,9 +18035,14 @@ async function _vzSaveAll() {
     const storeAsset = async asset => {
       const result = await _vzPostAsset(eid, asset.body);
       if (asset.tier) elevation.tier_renders[asset.tier] = result.filename;
-      else if (asset.role) elevation.masks[asset.role] = result.filename;
+      else if (asset.role) {
+        elevation.masks[asset.role] = result.filename;
+        elevation.tier_renders = {};
+      }
       else if (asset.key === 'base_image') {
         elevation.base_image = result.filename;
+        elevation.masks = {};
+        elevation.tier_renders = {};
         state.pendingBaseDataUrl = null;
         const status = document.getElementById('vz-elevation-status-' + elevation.id);
         if (status) status.textContent = 'saved';
@@ -18048,11 +18055,13 @@ async function _vzSaveAll() {
     };
     if (state.pendingBaseDataUrl) await storeAsset({body:{kind:'base',ext:state.pendingBaseExt,
       content_b64:state.pendingBaseDataUrl.split(',')[1],...elevationMeta},key:'base_image'});
-    if (!baseOnly) {
+    if (!baseOnly || roles.some(role=>elevation.masks[role])) {
       for (const role of roles) {
         await storeAsset({body:{kind:'mask',role,ext:'png',
           content_b64:state[role + 'Mask'].toDataURL('image/png').split(',')[1],...elevationMeta},role});
       }
+    }
+    if (!baseOnly) {
       const renderSize=_vzFitSize(state.photoImg.naturalWidth,state.photoImg.naturalHeight,
         _VZ_SOURCE_MAX_SIDE,_VZ_SOURCE_MAX_PIXELS);
       for (const tier of TIERS) {
@@ -18064,11 +18073,13 @@ async function _vzSaveAll() {
         } finally { off.width=0;off.height=0; }
       }
     }
-    const response = await fetch('/api/estimates/' + encodeURIComponent(eid) + '/visualizer/state', {
-      method: 'PUT', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(_vzElevationMetaPayload({selections,
-        invalidate_other_renders:state.selectionsChanged}))});
-    if (!response.ok) throw new Error('Images uploaded, but design choices were not saved. Please retry Save Renderings.');
+    await _vzPersistMeta({selections,
+      invalidate_other_renders:state.selectionsChanged,
+      ...(baseOnly ? {invalidate_current_renders:true} : {})});
+    if (baseOnly) {
+      elevation.tier_renders = {};
+      if (elevation.id === 'front') vz.tier_renders = {};
+    }
     state.dirty = false;
     state.selectionsChanged = false;
     state.projectionChanged = false;

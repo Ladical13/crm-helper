@@ -2442,6 +2442,7 @@ def visualizer_state(est_id):
         if not delete_elevation_id:
             return jsonify({'error': 'invalid elevation to remove'}), 400
     invalidate_other_renders = body.get('invalidate_other_renders') is True
+    invalidate_current_renders = body.get('invalidate_current_renders') is True
 
     existing_vz = (est or {}).get('visualizer')
     existing_vz = existing_vz if isinstance(existing_vz, dict) else {}
@@ -2554,10 +2555,11 @@ def visualizer_state(est_id):
         _visualizer_elevations(vz)
         if active_elevation_id in elevations:
             vz['active_elevation_id'] = active_elevation_id
-        if invalidate_other_renders:
+        if invalidate_other_renders or invalidate_current_renders:
             keep_id = active_elevation_id if active_elevation_id in elevations else vz.get('active_elevation_id')
             for eid, elevation in elevations.items():
-                if eid != keep_id:
+                if ((eid != keep_id and invalidate_other_renders) or
+                        (eid == keep_id and invalidate_current_renders)):
                     elevation['tier_renders'] = {}
         _visualizer_mirror_front(vz)
         vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'

@@ -1482,11 +1482,13 @@ const emptySlotAlert=alerts.at(-1)||'';
 
 assert.deepEqual({outsideScopeWarps,insideScopeWarps,outOfScopeSaved,outOfScopePosts,
   emptySlotSaved,emptySlotPosts}, {
-  outsideScopeWarps:0,insideScopeWarps:1,outOfScopeSaved:false,outOfScopePosts:0,
-  emptySlotSaved:false,emptySlotPosts:0
+  outsideScopeWarps:0,insideScopeWarps:1,outOfScopeSaved:true,outOfScopePosts:0,
+  emptySlotSaved:true,emptySlotPosts:0
 });
-assert.match(outOfScopeAlert,/No project surfaces or exact products/i);
-assert.match(emptySlotAlert,/No project surfaces or exact products/i);
+// The photo/metadata can be saved, but out-of-scope and unassigned openings
+// must not produce rendered assets or block leaving this elevation.
+assert.equal(outOfScopeAlert,'');
+assert.equal(emptySlotAlert,'');
 """)
 
 

@@ -121,6 +121,20 @@ def test_provia_upload_keeps_current_elevation_and_its_name(client, design_id):
     assert after['provia_specs']['better']['configured_image'] == result.get_json()['filename']
 
 
+def test_photo_only_save_invalidates_only_current_elevation(client, design_id):
+    assert _upload(client, design_id, 'render', tier='better').status_code == 201
+    rear = _upload(client, design_id, 'render', tier='better',
+                   elevation_id='rear').get_json()['filename']
+    response = client.put(f'/api/estimates/{design_id}/visualizer/state', json={
+        'active_elevation_id': 'front', 'invalidate_current_renders': True,
+    })
+    assert response.status_code == 200
+    vz = response.get_json()['visualizer']
+    assert vz['elevations']['front']['tier_renders'] == {}
+    assert vz['tier_renders'] == {}
+    assert vz['elevations']['rear']['tier_renders']['better'] == rear
+
+
 def _review_hash(anon, token):
     page = anon.get(f'/design/{token}')
     assert page.status_code == 200
