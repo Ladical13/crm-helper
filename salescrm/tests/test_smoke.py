@@ -300,3 +300,50 @@ def test_service_migration_adds_column(app, client):
     assert 'service' in cols
     signup(client)
     assert new_lead(client)['service'] == 'roofing'
+
+
+def test_documents_accept_an_ios_upload_with_no_extension(client):
+    """A rep attaching a carrier estimate from their phone: iOS hands over
+    'document' with no extension from Files, a share sheet or a mail
+    attachment, and the extension-only gate refused it with the memorable
+    'File type . not allowed'. The bytes decide when the name can't."""
+    import io
+    signup(client)
+    lid = new_lead(client)['id']
+    up = client.post(f'/api/leads/{lid}/documents',
+                     data={'file': (io.BytesIO(b'%PDF-1.4 carrier estimate'), 'document')},
+                     content_type='multipart/form-data')
+    assert up.status_code == 201, up.get_data(as_text=True)
+
+    doc = client.get(f'/api/leads/{lid}/documents').get_json()[0]
+    # orig_name is handed back as the download filename and drives docIcon(),
+    # so it has to carry the extension the bytes proved.
+    assert doc['orig_name'] == 'document.pdf'
+    dl = client.get(f"/api/documents/{doc['id']}/download")
+    assert dl.status_code == 200 and dl.data.startswith(b'%PDF')
+
+
+def test_documents_still_take_office_files_on_their_filename(client):
+    """.docx and .xlsx are both a bare zip header — nothing in the bytes tells
+    them apart, so the filename stays authoritative there. If sniffing ever
+    starts overriding the name, this is what breaks first."""
+    import io
+    signup(client)
+    lid = new_lead(client)['id']
+    for name in ('scope.docx', 'costs.xlsx'):
+        up = client.post(f'/api/leads/{lid}/documents',
+                         data={'file': (io.BytesIO(b'PK\x03\x04\x14\x00'), name)},
+                         content_type='multipart/form-data')
+        assert up.status_code == 201, name
+    names = {d['orig_name'] for d in client.get(f'/api/leads/{lid}/documents').get_json()}
+    assert names == {'scope.docx', 'costs.xlsx'}
+
+
+def test_documents_refuse_an_unnamed_file_of_an_unknown_type(client):
+    import io
+    signup(client)
+    lid = new_lead(client)['id']
+    bad = client.post(f'/api/leads/{lid}/documents',
+                      data={'file': (io.BytesIO(b'MZ\x90\x00'), 'payload')},
+                      content_type='multipart/form-data')
+    assert bad.status_code == 400

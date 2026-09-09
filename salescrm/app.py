@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify, send_from_directory, session
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from portal import dbtune                # noqa: E402
+from portal import filetype as pfiletype  # noqa: E402
 from portal import funnel as pfunnel     # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
@@ -2108,6 +2109,8 @@ def delete_goal(goal_id):
 DOCS_DIR = os.path.abspath(os.path.join(DATA_DIR, 'documents'))
 ALLOWED_DOC_EXT = {'pdf', 'png', 'jpg', 'jpeg', 'gif', 'heic', 'webp', 'doc', 'docx',
                    'xls', 'xlsx', 'csv', 'txt', 'zip'}
+# Dotted view for portal.filetype, which speaks '.pdf' rather than 'pdf'.
+_ALLOWED_DOC_DOTTED = {'.' + e for e in ALLOWED_DOC_EXT}
 MAX_DOC_BYTES = 25 * 1024 * 1024   # 25 MB per file
 
 def _doc_row(r):
@@ -2125,20 +2128,35 @@ def lead_documents(lead_id):
             return jsonify({'error': 'Not found'}), 404
     if request.method == 'POST':
         f = request.files.get('file')
-        if not f or not f.filename:
+        if f is None:
             return jsonify({'error': 'No file'}), 400
-        ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in f.filename else ''
-        if ext not in ALLOWED_DOC_EXT:
-            return jsonify({'error': f'File type .{ext} not allowed'}), 400
         blob = f.read()
+        if not blob:
+            return jsonify({'error': 'That file arrived empty.'}), 400
         if len(blob) > MAX_DOC_BYTES:
             return jsonify({'error': 'File too large (25 MB max)'}), 400
+        # Filename first, bytes as the fallback. Gating on the extension alone
+        # meant a rep attaching a carrier estimate from their phone — iOS hands
+        # over 'document' with no extension from Files, a share sheet or a mail
+        # attachment — was refused with 'File type . not allowed'. The filename
+        # still decides for the office formats: .docx and .xlsx are both a zip
+        # header and nothing in the bytes tells them apart.
+        dotted = pfiletype.resolve_ext(f.filename, blob, _ALLOWED_DOC_DOTTED)
+        if not dotted:
+            return jsonify({'error': "That file type isn't allowed, and its "
+                                     "contents aren't one we recognise."}), 400
+        ext = dotted.lstrip('.')
         os.makedirs(DOCS_DIR, exist_ok=True)
         did = str(uuid.uuid4())
         stored = f'{did}.{ext}'
         with open(os.path.join(DOCS_DIR, stored), 'wb') as out:
             out.write(blob)
-        orig = os.path.basename(f.filename)
+        # download_document hands orig_name back as the download filename, and
+        # docIcon() picks the row's icon from it, so an extensionless upload
+        # would download without one and show the generic clip.
+        orig = os.path.basename(f.filename or '') or f'document{dotted}'
+        if not orig.lower().endswith(dotted):
+            orig += dotted
         with get_db() as db:
             db.execute('INSERT INTO documents (id, lead_id, filename, orig_name, size, '
                        'uploaded_by, created_at) VALUES (?,?,?,?,?,?,?)',

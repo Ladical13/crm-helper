@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, Respo
 # this app works both mounted by portal/wsgi.py and run standalone (its test
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import filetype as pfiletype  # noqa: E402
 from portal import funnel as pfunnel     # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import throttle as pthrottle  # noqa: E402
@@ -1451,15 +1452,22 @@ def upload_photo(est_id):
     if 'file' not in request.files:
         return jsonify({'error': 'No file field'}), 400
     f = request.files['file']
-    if not f.filename:
-        return jsonify({'error': 'Empty filename'}), 400
-    ext = os.path.splitext(f.filename)[1].lower()
-    if ext not in ALLOWED_EXT:
+    raw = f.read()
+    if not raw:
+        return jsonify({'error': 'That file arrived empty.'}), 400
+    # Filename first, bytes as the fallback. Both PDF imports POST the report
+    # here afterwards to file it in the customer record, and this gated on the
+    # extension too — so on an iOS pick with no extension the import parsed,
+    # applied, reported success, and the PDF never landed. Silently: the
+    # callers wrap this in a catch that only console.warns.
+    ext = pfiletype.resolve_ext(f.filename, raw, ALLOWED_EXT)
+    if not ext:
         return jsonify({'error': 'File type not allowed'}), 400
     dest_dir = os.path.join(UPLOADS_DIR, est_id)
     os.makedirs(dest_dir, exist_ok=True)
     safe_name = str(uuid.uuid4()) + ext
-    f.save(os.path.join(dest_dir, safe_name))
+    with open(os.path.join(dest_dir, safe_name), 'wb') as out:
+        out.write(raw)
     resp = {'filename': f"{est_id}/{safe_name}", 'url': f"/uploads/{est_id}/{safe_name}"}
     if ext == '.pdf':
         # Page images let attachments render as full documents in the
@@ -3044,15 +3052,6 @@ def _and_list(items):
     return ', '.join(items[:-1]) + ' and ' + items[-1]
 
 
-# Every PDF opens with "%PDF-". Some writers leave junk ahead of it and every
-# reader tolerates that, so scan a window rather than demanding byte 0.
-_PDF_MAGIC_WINDOW = 1024
-
-
-def _looks_like_pdf(raw):
-    return b'%PDF-' in raw[:_PDF_MAGIC_WINDOW]
-
-
 # Measurements a roof cannot actually be missing. Absent (or zero) means the
 # PARSE failed, not that the building has none of it — so the import refuses
 # rather than handing back a payload whose gaps apply as silent zeros.
@@ -3083,7 +3082,7 @@ def parse_roofr():
     # a messaging app — any source that hands over 'document' or drops the
     # extension — was rejected with a message that was simply untrue. The name
     # is decoration; the magic bytes are the fact.
-    if not _looks_like_pdf(raw):
+    if not pfiletype.looks_like_pdf(raw):
         return jsonify({'error': 'That file is not a PDF. Export the report from RoofR as a PDF, then upload it.'}), 400
     try:
         data = _parse_roofr_pdf(raw)
@@ -3840,9 +3839,18 @@ def parse_xactimate():
     The path keeps its original name because the browser posts here.
     """
     f = request.files.get('file')
-    if not f or not f.filename.lower().endswith('.pdf'):
-        return jsonify({'error': 'Please upload a PDF file.'}), 400
+    if f is None:
+        return jsonify({'error': 'No file came through. Pick the carrier’s estimate PDF and try again.'}), 400
     raw = f.read()
+    if not raw:
+        return jsonify({'error': 'That file arrived empty. Download the estimate from the carrier again.'}), 400
+    # Judge the FILE, not its name — same fix as /api/parse-roofr, same reason.
+    # This required a filename ending in '.pdf', so a real carrier estimate
+    # opened from iOS Files, a share sheet or an email attachment — anything
+    # that hands over 'document' or drops the extension — was refused as "not
+    # a PDF", which was both untrue and unactionable.
+    if not pfiletype.looks_like_pdf(raw):
+        return jsonify({'error': 'That file is not a PDF. Save the carrier’s estimate as a PDF, then upload it.'}), 400
     try:
         fmt = _detect_carrier_format(raw)
         data = (_parse_symbility_pdf if fmt == 'symbility'

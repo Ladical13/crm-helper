@@ -527,3 +527,36 @@ def test_modal_says_nothing_about_measurements_for_xactimate(tmp_path):
     payload = {'format': 'xactimate', 'meta': {}, 'address': {}, 'warnings': [],
                'summary': {}, 'sections': [{'name': 'Roof', 'items': []}]}
     assert 'Roof measurements in this PDF' not in _render(payload, tmp_path)['modal']
+
+
+# ── iOS hands over files without a usable extension ────────────────────────
+# The endpoint used to require a filename ending in '.pdf'. A carrier estimate
+# opened from iOS Files, a share sheet or an email attachment arrives as
+# 'document' with no extension, and was refused as "not a PDF" — untrue, and
+# nothing the rep could act on. The bytes decide now.
+
+def test_a_carrier_pdf_without_a_pdf_filename_is_accepted(client):
+    import io as _io
+    r = client.post('/api/parse-xactimate',
+                    data={'file': (_io.BytesIO(_pdf(PAGES)), 'document')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert r.get_json()['format'] == 'symbility'
+
+
+def test_a_file_that_is_not_a_pdf_is_refused_honestly(client):
+    import io as _io
+    r = client.post('/api/parse-xactimate',
+                    data={'file': (_io.BytesIO(b'not a pdf'), 'estimate.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 400
+    assert 'not a PDF' in r.get_json()['error']
+
+
+def test_an_empty_upload_says_so(client):
+    import io as _io
+    r = client.post('/api/parse-xactimate',
+                    data={'file': (_io.BytesIO(b''), 'estimate.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 400
+    assert 'empty' in r.get_json()['error'].lower()

@@ -12579,7 +12579,16 @@ async function importXactPdf(input) {
   let data;
   try {
     const r = await fetch('/api/parse-xactimate', { method: 'POST', body: fd });
-    data = await r.json();
+    // Body separate from transport — see importRoofrPdf. A 413 on a big
+    // carrier estimate, or an HTML 502, is not a network failure and must not
+    // send the rep off to check their signal.
+    try { data = await r.json(); }
+    catch {
+      alert(r.status === 413
+        ? 'That PDF is too large to upload. Ask the carrier for a smaller export.'
+        : `The server couldn't handle that upload (error ${r.status}).`);
+      return;
+    }
     if (!r.ok) { alert(data.error || 'Could not parse PDF.'); return; }
   } catch { alert('Network error — could not reach server.'); return; }
   openXactModal(data);

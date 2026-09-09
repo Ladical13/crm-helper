@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=195">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=196">
 </head>
 <body>
 
@@ -725,7 +725,7 @@
 <input type="file" id="cover-photo-input" accept="image/*" style="display:none">
 
 <!-- hidden input for RoofR PDF import -->
-<input type="file" id="roofr-pdf-input" accept=".pdf" style="display:none" onchange="importRoofrPdf(this)">
+<input type="file" id="roofr-pdf-input" accept="application/pdf,.pdf" style="display:none" onchange="importRoofrPdf(this)">
 
 <!-- ── RoofR Import preview modal ────────────────────────────────────── -->
 <div id="roofr-modal" class="modal hidden" onclick="maybeCloseRoofrModal(event)">
@@ -739,7 +739,7 @@
 </div>
 
 <!-- hidden input for insurance (Xactimate / Symbility) PDF import -->
-<input type="file" id="xact-pdf-input" accept=".pdf" style="display:none" onchange="importXactPdf(this)">
+<input type="file" id="xact-pdf-input" accept="application/pdf,.pdf" style="display:none" onchange="importXactPdf(this)">
 
 <!-- ── Insurance estimate import review modal ────────────────────────── -->
 <div id="xact-modal" class="modal hidden" onclick="maybeCloseXactModal(event)">
@@ -755,6 +755,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=195"></script>
+<script src="/estimate/static/app.js?v=196"></script>
 </body>
 </html>
