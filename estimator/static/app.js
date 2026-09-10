@@ -3008,8 +3008,33 @@ function renderInternalMargin() {
     <div class="im-row im-franchise"><span>Franchise (${Math.round(FRANCHISE_RATE*100)}%)</span><strong>−${fmtCur(p.franchise)}</strong></div>
     <div class="im-row ${netClass} im-net"><span>Net Profit</span><strong>${fmtCur(p.netProfit)}</strong></div>
     <div class="im-row im-margin"><span>Net Margin</span><strong>${_pct(p.netMargin)}</strong></div>
+    ${p.allTierBlind?`<div class="im-note">Priced flat — same for every package</div>`:''}
     ${p.simpleSell>0?`<div class="im-note">+${fmtCur(p.simpleSell)} simple-priced included in franchise fee</div>`:''}
     ${(()=>{const sq=parseFloat((S.measurements||{}).roof_squares)||0;const tot=p.sell+p.simpleSell;return sq>0&&tot>0?`<div class="im-note im-persq">${fmtCur(Math.round(tot/sq))} / SQ</div>`:''})()}`;
+}
+
+/* A trade priced FLAT that still carries three different packages is a
+   contradiction the rep cannot see: the customer is being shown Good/Better/Best
+   while every package costs and sells the same. It happens because setTradeMode
+   GBB->Simple folds the three tiers into one flat unit_cost but leaves
+   tier_bundles pointing at whatever three bundles were picked.
+
+   The per-tier costs are genuinely gone once that happens — nothing can recover
+   them — so this names the contradiction and offers the one action that fixes
+   it going forward, rather than pretending to three numbers it does not have. */
+function simpleTradeTierConflicts() {
+  const out = [];
+  RETAIL_TRADE_KEYS.forEach(trade => {
+    const td = S.trades[trade];
+    if (!td || !td.enabled) return;
+    if (effectiveTradeMode(trade, td) !== 'simple') return;
+    const ids = [...new Set(Object.values(td.tier_bundles || {})
+                                  .filter(id => id && id !== '__custom__'))];
+    if (ids.length > 1) {
+      out.push({trade, names: ids.map(id => (_tradeBundle(trade, id) || {}).name || id)});
+    }
+  });
+  return out;
 }
 
 // Full all-tiers breakdown panel on the Pricing page (rep-only).
@@ -3020,9 +3045,18 @@ function renderCostProfitPanel() {
   const anything = TIERS.some(t => data[t].sell !== 0 || data[t].cost !== 0 || data[t].simpleSell !== 0);
   if (!anything) { el.innerHTML = ''; return; }
   const selTier = S.selected_tier;
+  // Every trade priced flat means the three columns are three copies of one
+  // number. Printing them anyway reads as three findings and hides the fact
+  // that the packages are not actually priced apart. Same test marginReport()
+  // already uses. enabledTiers() rather than TIERS, so a rep who turned Best
+  // off stops seeing a Best column here when they see it nowhere else.
+  const flat = data[selTier].allTierBlind;
+  const cols = flat ? [selTier] : enabledTiers();
+  const colLabel = t => flat ? 'Flat priced' : TIER_LABELS[t];
   const row = (label, fn, cls='') => `<tr class="${cls}"><td>${label}</td>${
-    TIERS.map(t=>`<td>${fn(data[t])}</td>`).join('')}</tr>`;
+    cols.map(t=>`<td>${fn(data[t])}</td>`).join('')}</tr>`;
   const moneyRow = (label, key, cls='') => row(label, d=>fmtCur(d[key]), cls);
+  const conflicts = simpleTradeTierConflicts();
   // Split by whether cost is actually tracked, not by mode — a Simple-mode
   // trade with unit costs entered IS in the profit math and belongs in the
   // per-trade table, not the "cost not tracked" bucket.
@@ -3036,8 +3070,16 @@ function renderCostProfitPanel() {
         <h3>Cost &amp; Profit</h3>
         <span class="cpp-note">Never shown to the customer</span>
       </div>
+      ${conflicts.map(c=>`
+        <div class="cpp-conflict">⚠️ <strong>${esc(TRADE_LABELS[c.trade])}</strong> is priced flat
+          but still carries ${c.names.length} different packages
+          (${c.names.map(n=>esc(n)).join(' / ')}). Every package costs the same below.
+          <button class="cpp-conflict-btn" onclick="setTradeMode('${c.trade}','gbb')">Switch to Good / Better / Best</button>
+        </div>`).join('')}
+      ${flat?`<div class="cpp-flat-note">Priced flat, so every package costs the same.
+        Switch a trade to Good/Better/Best to price the packages apart.</div>`:''}
       <table class="cpp-table">
-        <thead><tr><th></th>${TIERS.map(t=>`<th class="${t===selTier?'cpp-sel':''}">${TIER_LABELS[t]}</th>`).join('')}</tr></thead>
+        <thead><tr><th></th>${cols.map(t=>`<th class="${(!flat && t===selTier)?'cpp-sel':''}">${colLabel(t)}</th>`).join('')}</tr></thead>
         <tbody>
           ${moneyRow('Material','material')}
           ${moneyRow('Labor','labor')}

@@ -138,6 +138,22 @@ FIXTURES = [
     })),
 ]
 
+# The production shape this was reported from: 6528-45ec-a82f is roofing in
+# Simple mode carrying tier_bundles for three DIFFERENT bundles, so the panel
+# printed three identical columns as if they were three findings.
+CONFLICT_EST = _est({'roofing': {
+    'enabled': True, 'mode': 'simple',
+    'tier_bundles': {'good': 'b_iko_nordic', 'better': 'b_landmark',
+                     'best': 'b_northgate'},
+    'line_items': [
+        {'name': 'Shingles', 'quantity': 30, 'unit_cost': 137, 'unit_price': 210,
+         'catalog_id': 'm_shingle'},
+        {'name': 'Install Labor', 'quantity': 30, 'unit_cost': 145,
+         'unit_price': 223, 'catalog_id': 'l_install'},
+    ]}})
+
+FIXTURES.append(('flat priced but carrying three packages', CONFLICT_EST))
+
 IDS = [n for n, _ in FIXTURES]
 
 
@@ -331,3 +347,84 @@ def test_the_runner_uses_the_real_bundle():
     for name in ('costClassOf', 'lineCostSplit', 'simpleCostSplit', 'tierProfit',
                  'COST_CLASS_LABOR_WORDS'):
         assert name in src, f'{name} is no longer lifted from app.js'
+
+
+# ── The Simple-mode tier collapse ─────────────────────────────────────────
+
+APP_JS = os.path.join(os.path.dirname(HERE), 'static', 'app.js')
+
+
+def _app_js():
+    return open(APP_JS, encoding='utf-8').read()
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node not installed')
+def test_a_flat_priced_estimate_is_reported_as_tier_blind(js):
+    """Simple pricing has no tier dimension, so the three package columns are
+    three copies of one number. allTierBlind is what lets the panel say so
+    instead of printing them as if they were three findings."""
+    assert js['flat priced but carrying three packages']['all_tier_blind'] is True
+    t = js['flat priced but carrying three packages']['tiers']
+    assert t['good'] == t['better'] == t['best'], (
+        'a flat-priced trade must cost the same in every package')
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node not installed')
+def test_a_gbb_estimate_is_not_reported_as_tier_blind(js):
+    assert js['labor line joined by catalog_id']['all_tier_blind'] is False
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node not installed')
+def test_labor_is_still_recovered_from_a_flat_priced_trade(js):
+    """The reported estimate is Simple mode, so the labor fix has to survive
+    the collapse or the screen the bug was reported from stays wrong."""
+    t = js['flat priced but carrying three packages']['tiers']['better']
+    assert t['labor'] == 4350.0
+    assert t['material'] == 4110.0
+    assert t['cost'] == 8460.0, 'the total must not move'
+
+
+def test_the_panel_collapses_the_columns_when_everything_is_flat():
+    """Three identical columns read as three findings. One column headed
+    "Flat priced" reads as what it is."""
+    src = _app_js()
+    assert 'const flat = data[selTier].allTierBlind;' in src
+    assert "const cols = flat ? [selTier] : enabledTiers();" in src
+    assert "'Flat priced'" in src
+
+
+def test_the_panel_uses_enabled_tiers_not_all_three():
+    """marginReport already uses enabledTiers(). This panel iterated the
+    hard-coded TIERS, so a rep who turned Best off still saw a Best column
+    here when they saw it nowhere else."""
+    src = _app_js()
+    i = src.index('function renderCostProfitPanel')
+    block = src[i:src.index('\n/* ', i)] if '\n/* ' in src[i:] else src[i:i + 4000]
+    assert 'TIERS.map' not in block, (
+        'renderCostProfitPanel still iterates all three tiers')
+
+
+def test_the_conflict_between_flat_pricing_and_three_bundles_is_named():
+    """setTradeMode GBB->Simple folds three tiers into one flat unit_cost but
+    leaves tier_bundles pointing at three bundles. The rep is then showing a
+    customer three packages priced identically and cannot see why."""
+    src = _app_js()
+    assert 'function simpleTradeTierConflicts()' in src
+    assert 'cpp-conflict' in src
+
+
+def test_the_conflict_offers_the_action_that_fixes_it():
+    """The per-tier costs are genuinely gone; nothing recovers them. What this
+    can do is hand the rep the one control that prices the packages apart
+    again — setTradeMode already restores _gbb_tiers or seeds from the flat
+    cost, so nothing lands blank or at $0."""
+    src = _app_js()
+    assert """onclick="setTradeMode('${c.trade}','gbb')\"""" in src
+
+
+def test_the_conflict_styles_exist():
+    """style.css has no global utility classes — a class with no rule styles
+    nothing and looks like it works."""
+    css = open(os.path.join(os.path.dirname(APP_JS), 'style.css'), encoding='utf-8').read()
+    for cls in ('.cpp-conflict', '.cpp-conflict-btn', '.cpp-flat-note'):
+        assert cls in css, f'{cls} has no rule'

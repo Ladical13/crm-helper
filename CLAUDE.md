@@ -1126,6 +1126,65 @@ migration, packet).
   superseded ones (`_PRODUCT_SUPERSEDED`) into **seeded** bundles only — a price
   book saved before a product existed would otherwise never get it.
 
+### The internal cost split — Material vs Labor
+
+The rep-only **Cost & Profit** panel reported `Labor $0.00` on every estimate
+ever written, and the permit packet printed $0 in the Labor column beside it.
+Labor was priced the whole time — `l_install` has been $145/SQ on production,
+`sl_install` $450, `cl_labor_reroof` $400 — it was just filed as material,
+because a catalog product carries ONE `cost` and every seeding path drops all
+of it into `material_unit_cost` and hard-writes `labor_unit_cost: 0`.
+
+Nothing about the money was wrong. material + labor was always the same number,
+which is exactly why it survived so long. The split was the lie.
+
+- **`cost_class` on a catalog product is `'material'` or `'labor'`, and ABSENCE
+  MEANS MATERIAL** — which is what the tool did before the field existed, so an
+  unclassified product moves no number anywhere.
+- **It may only ever influence the SPLIT.** Never a total, a sell price, a
+  customer-visible gate, a margin floor or a quantity. If that ever stops being
+  true, a manager reclassifying a product retroactively changes what a customer
+  was charged. `tests/test_cost_split.py` pins it.
+- **Derived at READ time; nothing stored is ever rewritten.** Same house rule as
+  `_norm_est_status`. This is the whole reason it could be applied to every old
+  estimate: in margin mode sell derives FROM cost, so a pass that rewrote saved
+  costs would move prices on estimates customers already hold links to.
+- **A whole-line bucket assignment, never a ratio**, so material + labor equals
+  the stored cost BY CONSTRUCTION rather than by arithmetic that rounds well.
+- **One classifier, and it only ever WRITES.** `_guess_cost_class` /
+  `guessCostClass` run at seed time, at backfill time and in the Price Book
+  editor; `_cost_class_of` / `costClassOf` read `cost_class` and stop. Same
+  contract as `classifyCarrierItem` — the guess is a starting point, the stored
+  decision is the answer. `cost_split_runner.js` holds the two to the same
+  decision on the same row.
+- **The exclusion list runs FIRST**, and that ordering is the trick:
+  `x_ss_delivery` is "Metal Delivery & Rollformer Set-Up", a supplier charge a
+  keyword match on "Set-Up" files as crew time. And **`crew` is deliberately not
+  a labor word** — `a_ss_clips` is "Seam Clips + Pancake Sc**rew**s".
+- **Job extras are material, not a third bucket.** The permit packet prints
+  `Cost Total = materials + labor`, so an `'other'` bucket either drops out of
+  that column or gets folded back in anyway. Two values is the decision.
+- **`_PRODUCT_BACKFILL_FIELDS` only walks SEED ids**, so a second loop in
+  `_ensure_bundle_catalogs` classifies every live product the seed has never
+  heard of. Six of the labor products actually sold on production are
+  manager-created `p_<uid>` rows — between them the labor on every metal and
+  painted-siding job.
+- **Build-time routing was considered and rejected.** Writing the catalog cost
+  into `cell.labor_unit_cost` cannot replace the read-time rule (old estimates
+  still need it), freezes a misclassification where read-time self-heals on the
+  next open, creates a permanent third data state, and `setTradeMode` destroys
+  it on one mode toggle anyway. The `lab > 0` branch keeps the door open.
+
+**The Simple-mode tier collapse is diagnosed, not repaired.** `setTradeMode`
+GBB→Simple folds three tiers into one flat `unit_cost` but leaves
+`tier_bundles` pointing at three bundles — so the rep shows a customer three
+packages priced identically and cannot see why. The per-tier costs are
+genuinely gone and nothing can recover them. `simpleTradeTierConflicts()` names
+the contradiction and offers `setTradeMode(trade,'gbb')`, and the panel renders
+ONE column headed *Flat priced* rather than three identical ones. It also uses
+`enabledTiers()` now, so a rep who turned Best off stops seeing a Best column
+here when they see it nowhere else.
+
 ### Where catalog/bundle data must live
 
 **Bundle-trade data belongs in the `*_SEED` constants in `app.py`, not in
@@ -1215,6 +1274,16 @@ invoice. 🔍 Audit in the Price Book modal, manager-up. What it looks for:
   linear feet), and `tests/test_pricebook_audit.py` parses `app.js` and fails
   if a measure is missing from it or its label stops agreeing — a measure that
   escaped the map would make the audit go quiet rather than fail.
+- **`pack_cost_unconverted`** — a product bought in packs whose cost looks like
+  the per-foot price. `bundle_lf` is a DIVISOR, so the quantity is a count of
+  packs and `cost` has to be the price of one pack; `a_ice_water` went live at
+  `1.55` with `bundle_lf: 66.67`, which is $1.55 a roll where a roll is ~$95 —
+  400 LF of eave+valley costed at $9.30 instead of $570, and in margin mode
+  under-quoted the customer too. The test is `cost < bundle_lf`, i.e. "the
+  implied rate is under a dollar a foot": a SHAPE, never a value. Nothing
+  rewrites the number — `_PRODUCT_COST_MIGRATIONS` fires only on the exact
+  previous seed, and a live `1.55` is a manager-typed value, so the audit is
+  the only honest mechanism for it.
 - **`orphan`** — a bundle selling a product id the catalog does not have.
 
 **Commercial is exempt from the no-cost check.** Its $0 material costs are
