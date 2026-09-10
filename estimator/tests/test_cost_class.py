@@ -15,6 +15,8 @@ quantity. If that ever stops being true, a manager reclassifying a product
 retroactively changes what a customer was charged.
 """
 import copy
+import os
+import re
 
 import pytest
 
@@ -198,3 +200,50 @@ def test_every_live_product_ends_up_classified():
         for p in pb[key]:
             if isinstance(p, dict) and p.get('id'):
                 assert A._norm_cost_class(p.get('cost_class')) in ('material', 'labor')
+
+
+# ── The Price Book control ────────────────────────────────────────────────
+
+APP_JS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      'static', 'app.js')
+
+
+def _app_js():
+    return open(APP_JS, encoding='utf-8').read()
+
+
+def test_the_price_book_offers_a_material_or_labor_control():
+    """The guess ships to production as a default. Without somewhere to
+    override it, a product it gets wrong is wrong forever."""
+    src = _app_js()
+    assert "pbRoofCatSet(${i},'cost_class',this.value)" in src
+    assert 'pb-costclass-select' in src
+
+
+def test_the_setter_coerces_to_the_two_allowed_values():
+    """Anything but 'labor' has to read as material, or a typo in the DOM
+    becomes a third state that every reader has to reason about."""
+    assert "else if (field === 'cost_class') it.cost_class = normCostClass(val);" in _app_js()
+
+
+def test_the_catalog_table_columns_and_colspans_agree():
+    """The group subheader and the empty-state row span the whole table. Add a
+    column and forget these and every grouped catalog renders misaligned —
+    silently, and only for managers who grouped their products."""
+    src = _app_js()
+    i = src.index('function pbRenderRoofCatalog')
+    block = src[i:src.index('\nfunction ', i + 10)]
+    # `<th[ >]` and not a bare `<th` prefix — otherwise `<thead>` counts as a
+    # column and the expected span is always one too many.
+    n_cols = len(re.findall(r'<th[ >]', block))
+    for span in ('<td colspan="%d">${esc(grp' % n_cols,
+                 '<td colspan="%d" class="pb-empty"' % n_cols):
+        assert span in block, f'expected a colspan of {n_cols}: {span}'
+
+
+def test_the_control_has_a_style_rule():
+    """style.css has no global utility classes — every class is scoped, so a
+    class with no rule styles nothing and looks like it works."""
+    css = open(os.path.join(os.path.dirname(APP_JS), 'style.css'), encoding='utf-8').read()
+    assert '.pb-costclass-select' in css
+    assert '.pb-th-costclass' in css

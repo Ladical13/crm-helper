@@ -3373,6 +3373,12 @@ a.jx-contact:hover { text-decoration: underline; }
 .pb-subtab.pb-subtab-best.active   .pb-subtab-count { background: var(--best); }
 
 .pb-th-basecost { width: 92px; text-align: right !important; }
+/* Which side of the internal Cost & Profit split a product's price lands on.
+   Rep/manager-facing only — nothing here ever reaches a customer document. */
+.pb-th-costclass { width: 88px; text-align: center !important; }
+.pb-costclass-select { width: 82px; border: 1px solid var(--border); border-radius: 3px;
+  font-size: 12px; padding: 2px 4px; background: #fff; color: var(--text); }
+.pb-costclass-select:focus { outline: none; border-color: var(--primary-light); }
 .pb-th-mem { width: 132px; text-align: center !important; }
 .pb-th-hint { font-weight: 400; color: var(--text-light); font-size: 10px; }
 .pb-mem-cell { white-space: nowrap; text-align: center; }

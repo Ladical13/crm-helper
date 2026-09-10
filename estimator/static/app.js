@@ -3954,6 +3954,7 @@ function pbRenderRoofCatalog() {
         <th class="pb-th-unit">Unit</th>
         <th class="pb-th-auto">Auto Qty From</th>
         <th class="pb-th-basecost">Price</th>
+        <th class="pb-th-costclass" title="Which side of the internal Cost &amp; Profit split this price lands on. Never shown to the customer.">Cost is</th>
         <th class="pb-th-vis" title="Show on the customer estimate">Show</th>
         <th></th>
       </tr></thead>
@@ -3973,7 +3974,7 @@ function pbRenderRoofCatalog() {
             const prevGrp = visI > 0 ? ((items[visI - 1].group || '').trim()) : '__none__';
             const headerRow = anyGrouped && grp !== prevGrp ? `
               <tr class="pb-group-hd">
-                <td colspan="7">${esc(grp || 'Ungrouped')}</td>
+                <td colspan="8">${esc(grp || 'Ungrouped')}</td>
               </tr>` : '';
             const rawLen = rawItems.length;
             return headerRow + `
@@ -3987,6 +3988,11 @@ function pbRenderRoofCatalog() {
               <td class="pb-auto-cell"><select class="pb-measure-select" onchange="pbRoofCatSet(${i},'measure',this.value)">${measOpts(it.measure||'')}</select></td>
               <td><div class="pb-tier-cost-wrap"><span class="pb-tier-dollar">$</span>
                 <input class="pb-tier-cost" type="number" min="0" step="0.01" value="${it.cost!==undefined&&it.cost!==''?it.cost:''}" placeholder="0.00" onchange="pbRoofCatSet(${i},'cost',this.value)"></div></td>
+              <td><select class="pb-costclass-select" onchange="pbRoofCatSet(${i},'cost_class',this.value)"
+                    title="Material or crew time. Only ever changes the internal split — never a price.">
+                <option value="material" ${normCostClass(it.cost_class)!=='labor'?'selected':''}>Material</option>
+                <option value="labor" ${normCostClass(it.cost_class)==='labor'?'selected':''}>Labor</option>
+              </select></td>
               <td style="text-align:center"><input type="checkbox" ${it.customer_visible!==false?'checked':''} onchange="pbRoofCatSet(${i},'customer_visible',this.checked)"></td>
               <td class="pb-cat-actions">
                 <button class="pb-order-btn ${_pbBulletsOpen[it.id]?'on':''}" onclick="pbToggleBullets('${it.id}')"
@@ -3995,7 +4001,7 @@ function pbRenderRoofCatalog() {
               </td>
             </tr>
             ${_pbBulletsOpen[it.id] ? `
-            <tr class="pb-bullets-row"><td></td><td colspan="6">
+            <tr class="pb-bullets-row"><td></td><td colspan="7">
               <label class="pb-variant-field-label">Tagline <small>one line under the package price when this product is the primary material — overrides the bundle's default</small></label>
               <input class="pb-bullets-ta" type="text"
                 value="${esc(it.desc||'')}"
@@ -4021,7 +4027,7 @@ function pbRenderRoofCatalog() {
                   : `Not set — the card falls back to the product name, “${esc(it.name||'')}”.`}</div>
             </td></tr>` : ''}`;
           }).join('');
-        })() : `<tr><td colspan="7" class="pb-empty">No products yet — add your first below.</td></tr>`}
+        })() : `<tr><td colspan="8" class="pb-empty">No products yet — add your first below.</td></tr>`}
       </tbody>
     </table>
     </div>
