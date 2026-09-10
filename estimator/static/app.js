@@ -3250,6 +3250,7 @@ function renderPbAudit(data) {
     unit_mismatch: 'Unit disagrees with its measure',
     orphan: 'Missing from the catalog',
     conversion_unlabelled: 'Unnamed pack size',
+    pack_cost_unconverted: 'Pack price looks like the per-foot price',
   };
 
   return `

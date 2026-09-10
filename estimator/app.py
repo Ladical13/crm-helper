@@ -4499,6 +4499,34 @@ def _audit_product(p, in_bundle, trade):
                     'costed as if this line were free.',
         })
 
+    # `bundle_lf` is a DIVISOR — measuredQty returns ceil(raw / bundle_lf), so the
+    # quantity is a count of packs and `cost` has to be the price of ONE pack. Type
+    # the per-foot price into that box and the line bills pennies: a_ice_water went
+    # live at 1.55 with bundle_lf 66.67, which is $1.55 a roll where a roll is ~$95
+    # — 400 LF of eave+valley costed at $9.30 instead of $570.
+    #
+    # The test is a SHAPE, never a value: cost < bundle_lf says the implied rate is
+    # under a dollar per foot, which is what a raw per-measure price looks like
+    # sitting in a pack-priced field. What a roll actually costs stays between the
+    # manager and the supplier invoice.
+    #
+    # cost > 0 keeps a $0 pack from being reported twice for one root cause (it is
+    # already `unpriced`), and incidentally exempts commercial's deliberately
+    # unpriced catalog without needing a second exempt list. bundle_lf > 1 skips a
+    # no-op conversion, where the test degenerates. There is deliberately no
+    # in_bundle gate — a wrong pack price is wrong whether or not anything sells it
+    # yet, and only about a dozen products carry a bundle_lf at all.
+    blf_n = _mnum(blf)
+    if cost > 0 and blf_n > 1 and cost < blf_n:
+        issues.append({
+            'code': 'pack_cost_unconverted', 'severity': 'high',
+            'what': (f'Bought in {p.get("bundle_unit") or "packs"} of {blf_n:g} '
+                     f'{unit or "units"}, so the cost should be the price of one '
+                     f'pack. At ${cost:,.2f} that works out to under a dollar per '
+                     f'{unit or "unit"} — the shape of a per-{unit or "unit"} price '
+                     f'typed into a pack-priced line.'),
+        })
+
     dim = MEASURE_DIMENSIONS.get(measure) if measure else None
     if dim and unit:
         ok = _UNIT_OK.get(dim, set())

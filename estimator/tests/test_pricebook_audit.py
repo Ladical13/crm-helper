@@ -32,11 +32,16 @@ def _pb(**over):
              'measure': 'eave_valley'},
             {'id': 'p_conv',  'name': 'Drip D',  'unit': 'LF', 'cost': 33.82,
              'measure': 'eave', 'bundle_lf': 10, 'bundle_unit': 'sticks'},
+            {'id': 'p_raw',   'name': 'Ice & Water (pack)', 'unit': 'LF', 'cost': 1.55,
+             'measure': 'eave_valley', 'bundle_lf': 66.67, 'bundle_unit': 'rolls'},
+            {'id': 'p_rawfree', 'name': 'Unpriced pack', 'unit': 'LF', 'cost': 0,
+             'measure': 'eave', 'bundle_lf': 10, 'bundle_unit': 'sticks'},
             {'id': 'p_unused', 'name': 'Nobody sells this', 'unit': 'EA', 'cost': 0},
         ],
         'roofing_bundles': [
             {'id': 'b1', 'name': 'Landmark',
-             'product_ids': ['p_ok', 'p_free', 'p_mixed', 'p_conv']},
+             'product_ids': ['p_ok', 'p_free', 'p_mixed', 'p_conv',
+                             'p_raw', 'p_rawfree']},
         ],
     }
     pb.update(over)
@@ -67,6 +72,80 @@ def test_a_linear_measure_with_a_conversion_is_fine():
     """bundle_lf IS the LF-to-pack conversion, so this is the correct shape and
     must not be reported — a noisy audit is one nobody finishes."""
     assert _codes(A.pricebook_audit(_pb()), 'p_conv') == set()
+
+
+def test_a_pack_priced_product_costed_per_foot_is_flagged():
+    """The live a_ice_water fault: cost 1.55 with bundle_lf 66.67. The quantity
+    is a count of ROLLS, so that is $1.55 a roll where a roll is about $95 —
+    400 LF of eave+valley costed at $9.30 instead of $570. The old audit only
+    tested cost <= 0, so it could not see a number that was merely absurd."""
+    assert 'pack_cost_unconverted' in _codes(A.pricebook_audit(_pb()), 'p_raw')
+
+
+def test_a_pack_price_above_its_conversion_is_fine():
+    """p_conv is $33.82 a 10-foot stick — $3.38/LF, the correct shape. Flagging
+    it would make this finding noise, and a noisy audit is one nobody finishes.
+    The tightest real seed product is a_ss_zeecee at $11.65 per 10 LF."""
+    assert 'pack_cost_unconverted' not in _codes(A.pricebook_audit(_pb()), 'p_conv')
+
+
+def test_a_pack_product_with_no_cost_is_reported_once_not_twice():
+    """A $0 pack is already `unpriced`; reporting the same root cause twice
+    inflates the fix-list and teaches the reader to skim it."""
+    codes = _codes(A.pricebook_audit(_pb()), 'p_rawfree')
+    assert 'unpriced' in codes
+    assert 'pack_cost_unconverted' not in codes
+
+
+def test_a_no_op_conversion_is_not_flagged():
+    """bundle_lf of 1 converts nothing, so `cost < bundle_lf` degenerates into
+    "costs less than a dollar" and would fire on every cheap per-foot line."""
+    pb = _pb()
+    pb['roofing_catalog'].append(
+        {'id': 'p_one', 'name': 'Cheap trim', 'unit': 'LF', 'cost': 0.58,
+         'measure': 'eave_rake', 'bundle_lf': 1, 'bundle_unit': 'ea'})
+    assert 'pack_cost_unconverted' not in _codes(A.pricebook_audit(pb), 'p_one')
+
+
+def test_the_pack_finding_names_the_shape_and_never_the_right_number():
+    """This section's whole contract: what a roll costs is between the manager
+    and the supplier invoice. Naming a price here would be the tool guessing."""
+    r = A.pricebook_audit(_pb())
+    what = next(i['what'] for f in r['findings'] if f['product_id'] == 'p_raw'
+                for i in f['issues'] if i['code'] == 'pack_cost_unconverted')
+    assert 'rolls' in what and '66.67' in what
+    assert '95' not in what
+
+
+def test_every_seeded_pack_product_survives_the_check():
+    """Run the real seeds through it. A finding that fires on correct data is
+    worse than no finding — it is the one that gets the whole report ignored."""
+    pb = A._ensure_bundle_catalogs({})
+    bad = []
+    for key in (k for k in pb if k.endswith('_catalog')):
+        for p in pb[key]:
+            if not isinstance(p, dict):
+                continue
+            if 'pack_cost_unconverted' in {i['code'] for i in
+                                           A._audit_product(p, True, key[:-8])}:
+                bad.append((key, p.get('id'), p.get('cost'), p.get('bundle_lf')))
+    assert not bad, f'seed products wrongly flagged: {bad}'
+
+
+def _code_labels():
+    """Every audit code the modal knows how to name, read out of app.js."""
+    src = open(APP_JS, encoding='utf-8').read()
+    i = src.index('const CODE_LABEL')
+    j = src.index('{', i)
+    return set(re.findall(r'^\s{4}([a-z_0-9]+):', src[j:src.index('};', j)], re.M))
+
+
+def test_every_audit_code_has_a_label_in_app_js():
+    """Without one the modal prints the raw snake_case code at a manager, which
+    reads like a bug in the report rather than a fault in the book."""
+    codes = {'unpriced', 'unit_mismatch', 'orphan', 'conversion_unlabelled',
+             'pack_cost_unconverted'}
+    assert codes <= _code_labels(), f'unlabelled: {sorted(codes - _code_labels())}'
 
 
 def test_a_correctly_priced_product_is_not_reported():
