@@ -13330,33 +13330,105 @@ def generate_production_packet(est_id, push_to_crm=False, push_material=False):
     return att
 
 
-def _cost_split_by_trade(est):
+def _catalog_class_by_name(pb, trade):
+    """name -> cost_class, for line items that predate `catalog_id`. About half
+    of the older estimates on the volume have none, and template-built lines
+    carry the exact seed names, so this recovers nearly all of them.
+
+    MUST mirror _catalogClassByName (app.js)."""
+    out = {}
+    for p in (pb.get(trade + '_catalog') or []):
+        if not isinstance(p, dict):
+            continue
+        k = str(p.get('name') or '').strip().lower()
+        if k and k not in out:
+            out[k] = _norm_cost_class(p.get('cost_class'))
+    return out
+
+
+def _cost_class_of(pb, trade, item, by_name=None):
+    """Which side of the split one line item lands on. Four tiers of linkage,
+    strongest first; giving up lands on 'material', which is exactly what this
+    reported before cost_class existed — so an unclassifiable line is the
+    status quo rather than a regression.
+
+    MUST mirror costClassOf (app.js)."""
+    if not isinstance(item, dict):
+        return 'material'
+    if 'cost_class' in item:
+        return _norm_cost_class(item.get('cost_class'))
+    cid = item.get('catalog_id')
+    if cid:
+        for p in (pb.get(trade + '_catalog') or []):
+            if isinstance(p, dict) and p.get('id') == cid:
+                return _norm_cost_class(p.get('cost_class'))
+    if by_name is None:
+        by_name = _catalog_class_by_name(pb, trade)
+    return by_name.get(str(item.get('name') or '').strip().lower(), 'material')
+
+
+def _line_cost_split(pb, trade, item, cell, qty, by_name=None):
+    """(material, labor) for one line, where material + labor is EXACTLY the
+    cost already stored. A whole-line bucket assignment, never a ratio — that
+    is what makes the total invariant by construction rather than by rounding.
+
+    `cell` is the tier cell in GBB mode. MUST mirror lineCostSplit (app.js)."""
+    mat = _mnum((cell or {}).get('material_unit_cost')) * qty
+    lab = _mnum((cell or {}).get('labor_unit_cost')) * qty
+    if lab > 0:
+        return mat, lab          # an explicit split always wins
+    if _cost_class_of(pb, trade, item, by_name) == 'labor':
+        return 0.0, mat
+    return mat, 0.0
+
+
+def _simple_cost_split(pb, trade, item, qty, by_name=None):
+    """Same, for a simple-mode line: one flat unit_cost, no tier dimension.
+
+    MUST mirror simpleCostSplit (app.js)."""
+    c = _mnum(item.get('unit_cost')) * qty
+    if _cost_class_of(pb, trade, item, by_name) == 'labor':
+        return 0.0, c
+    return c, 0.0
+
+
+def _cost_split_by_trade(est, pb=None):
     """(materials_cost, labor_cost, sell_total) per enabled non-insurance trade
     at its selected tier, for the permit packet's cost-breakdown table. Skips
-    excluded lines and zero-qty items — same rules the priced totals use."""
+    excluded lines and zero-qty items — same rules the priced totals use.
+
+    Which side of the split a line lands on comes from its catalog product's
+    `cost_class`, resolved at read time. materials_cost + labor_cost is
+    unchanged by that, so the packet's Cost Total and TOTAL columns are
+    identical to what they printed before — only the two columns beside them
+    stop being a lie."""
     rows = []
     trades = est.get('trades') or {}
+    if pb is None:
+        pb = _ensure_bundle_catalogs(_load_price_book())
     for tk in GBB_TRADES:
         td = trades.get(tk) or {}
         if not td.get('enabled'):
             continue
         tier = _trade_tier(est, tk)
         trade_mode = _trade_mode(tk, td)
+        by_name = _catalog_class_by_name(pb, tk)
         mat_cost = lab_cost = 0.0
         for item in td.get('line_items') or []:
             qty = float(item.get('quantity') or 0)
             if qty <= 0:
                 continue
             if trade_mode == 'simple':
-                mat_cost += float(item.get('unit_cost') or 0) * qty
-                # simple-mode carries no labor line — the material_cost/unit_cost
-                # is already the all-in cost basis. Nothing to add to lab_cost.
+                # Simple mode stores one flat unit_cost, so the split comes
+                # entirely from the product's class.
+                m, l = _simple_cost_split(pb, tk, item, qty, by_name)
             else:
                 t = (item.get('tiers') or {}).get(tier) or {}
                 if t.get('included') is False:
                     continue
-                mat_cost += float(t.get('material_unit_cost') or 0) * qty
-                lab_cost += float(t.get('labor_unit_cost') or 0) * qty
+                m, l = _line_cost_split(pb, tk, item, t, qty, by_name)
+            mat_cost += m
+            lab_cost += l
         sell = _trade_subtotal(est, tk, tier)
         if mat_cost > 0 or lab_cost > 0 or sell > 0:
             rows.append({'trade': tk, 'materials_cost': mat_cost,

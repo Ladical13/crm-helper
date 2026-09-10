@@ -2857,6 +2857,72 @@ function renderTotals() {
   renderCostProfitPanel();
 }
 
+/* ── The material / labor split ──────────────────────────────────
+   Derived at RENDER time, never stored. Nothing rewrites a saved estimate, so
+   every estimate ever written reports a real split the moment it is opened and
+   not one price can move — which is the only reason this could be applied
+   retroactively at all.
+
+   The split is a WHOLE-LINE bucket assignment, never a ratio. That is the
+   load-bearing property: material + labor equals the stored cost by
+   construction, not by arithmetic that happens to round well. Total Cost, Sell
+   Price, the margin floors and every customer-facing number read the SUM, and
+   the sum cannot move.
+
+   MUST mirror _line_cost_split / _cost_class_of (app.py). Held to it by
+   tests/cost_split_runner.js. */
+
+// name -> cost_class, for the ~half of older estimates whose line items predate
+// catalog_id. Template-built lines carry the exact seed names ('Install Labor',
+// 'Tear-Off Labor'), so this recovers nearly all of them.
+//
+// Built fresh every call on purpose: pbSave() mutates priceBook in place, so a
+// memo goes stale silently, and ~150 string compares per renderTotals() is
+// invisible next to the DOM work that follows it.
+function _catalogClassByName(trade) {
+  const out = {};
+  _tradeCatalog(trade).forEach(p => {
+    const k = String(p && p.name || '').trim().toLowerCase();
+    if (k && !(k in out)) out[k] = normCostClass(p.cost_class);
+  });
+  return out;
+}
+
+// Four tiers of linkage, strongest first. Giving up lands on 'material', which
+// is exactly what the tool reported before any of this existed — so a line
+// this cannot classify is not a regression, it is the status quo.
+function costClassOf(trade, item, byName) {
+  if (!item) return 'material';
+  if (item.cost_class !== undefined) return normCostClass(item.cost_class);
+  if (item.catalog_id) {
+    const p = _tradeCatalog(trade).find(x => x && x.id === item.catalog_id);
+    if (p) return normCostClass(p.cost_class);
+  }
+  const k = String(item.name || '').trim().toLowerCase();
+  const hit = (byName || _catalogClassByName(trade))[k];
+  return hit === undefined ? 'material' : hit;
+}
+
+// {material, labor} for one line, where material + labor === the cost already
+// stored. `cell` is the tier cell in GBB mode and the item itself in simple.
+function lineCostSplit(trade, item, cell, qty, byName) {
+  const mat = (parseFloat(cell && cell.material_unit_cost) || 0) * qty;
+  const lab = (parseFloat(cell && cell.labor_unit_cost) || 0) * qty;
+  // An explicit split always wins — same idiom as effectiveTradeMode's
+  // `if (mode) return mode`. Nothing writes this today; change-order items
+  // carry the shape, and this is what would honour it.
+  if (lab > 0) return {material: mat, labor: lab};
+  if (costClassOf(trade, item, byName) === 'labor') return {material: 0, labor: mat};
+  return {material: mat, labor: 0};
+}
+
+// Same, for a simple-mode line: one flat unit_cost with no tier dimension.
+function simpleCostSplit(trade, item, qty, byName) {
+  const c = (parseFloat(item.unit_cost) || 0) * qty;
+  if (costClassOf(trade, item, byName) === 'labor') return {material: 0, labor: c};
+  return {material: c, labor: 0};
+}
+
 /* ── Internal cost / profit (rep-only — never shown to the customer) ────
    GBB trades track material + labor cost, so profit is computed from them.
    Simple-mode trades (e.g. gutters) store a sell price with no cost split,
@@ -2868,21 +2934,28 @@ function tierProfit(tier) {
     const td = S.trades[trade];
     if (!td || !td.enabled) return;
     const mode = effectiveTradeMode(trade, td);
+    const byName = _catalogClassByName(trade);
     if (mode === 'simple') {
-      let s = 0, c = 0;
+      // Simple pricing has no tier dimension, so this trade costs the same in
+      // every package. tier_blind is what lets the panel say so out loud
+      // rather than printing three identical columns.
+      let s = 0, sm = 0, sl = 0;
       (td.line_items||[]).forEach(item => {
         const qty = parseFloat(item.quantity)||0; if (qty <= 0) return;
         s += qty * (parseFloat(item.unit_price)||0);
-        c += qty * (parseFloat(item.unit_cost)||0);
+        const sp = simpleCostSplit(trade, item, qty, byName);
+        sm += sp.material; sl += sp.labor;
       });
+      const c = sm + sl;
       if (s === 0 && c === 0) return;
       if (c > 0) {
         // Cost is tracked — include in profit calculation
-        material += c; gbbSell += s;
-        perTrade.push({trade, mode, material:c, labor:0, cost:c, sell:s, profit:s-c});
+        material += sm; labor += sl; gbbSell += s;
+        perTrade.push({trade, mode, tier_blind:true,
+                       material:sm, labor:sl, cost:c, sell:s, profit:s-c});
       } else {
         simpleSell += s;
-        perTrade.push({trade, mode, sell:s});
+        perTrade.push({trade, mode, tier_blind:true, sell:s});
       }
       return;
     }
@@ -2891,23 +2964,27 @@ function tierProfit(tier) {
       const qty = parseFloat(item.quantity)||0; if (qty <= 0) return;
       const t = (item.tiers||{})[tier] || {};
       if (t.included === false) return;
-      m += (parseFloat(t.material_unit_cost)||0) * qty;
-      l += (parseFloat(t.labor_unit_cost)||0) * qty;
+      const sp = lineCostSplit(trade, item, t, qty, byName);
+      m += sp.material; l += sp.labor;
     });
     const sell = tradeTotal(trade, tier);
     if (m === 0 && l === 0 && sell === 0) return;
     material += m; labor += l; gbbSell += sell;
-    perTrade.push({trade, mode, material:m, labor:l, cost:m+l, sell, profit:sell-(m+l)});
+    perTrade.push({trade, mode, tier_blind:false,
+                   material:m, labor:l, cost:m+l, sell, profit:sell-(m+l)});
   });
   const cost = material + labor;
   const totalSell = gbbSell + simpleSell;
   const profit = gbbSell - cost;
   const franchise = Math.round(totalSell * FRANCHISE_RATE * 100) / 100;
   const netProfit = profit - franchise;
+  // Every trade priced flat means the three package columns are three copies
+  // of one number. Same test marginReport() already uses.
+  const allTierBlind = perTrade.length > 0 && perTrade.every(x => x.tier_blind);
   return {material, labor, cost, sell:gbbSell, profit, franchise, netProfit,
           margin:    gbbSell   > 0 ? (profit   / gbbSell   * 100) : 0,
           netMargin: totalSell > 0 ? (netProfit / totalSell * 100) : 0,
-          simpleSell, perTrade};
+          simpleSell, perTrade, allTierBlind};
 }
 
 const FRANCHISE_RATE = 0.08; // 8% of contract price taken off profit
