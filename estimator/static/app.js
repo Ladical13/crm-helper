@@ -3978,12 +3978,60 @@ function pbRoofCatSilence(i, on) {
   if (on) it.bullets = []; else delete it.bullets;
   renderPBModal();
 }
+/* ── Material vs labor ──────────────────────────────────────────────────
+   A catalog product carries ONE `cost`, and every seeding path used to drop
+   all of it into material_unit_cost — which is why the Cost & Profit panel
+   reported Labor $0.00 forever while l_install sat in the book at $145/SQ.
+
+   `cost_class` is 'material' or 'labor', and ABSENCE MEANS MATERIAL: exactly
+   what the tool did before the field existed, so an unclassified product
+   moves no number. It may only ever influence the SPLIT — never a total, a
+   sell price, a customer-visible gate or a margin floor. See _guess_cost_class
+   in app.py, which this mirrors. */
+const COST_CLASS_NEVER_LABOR = ['delivery','set-up','setup','freight','crane',
+  'dumpster','permit','inspection','survey','allowance','moisture'];
+const COST_CLASS_LABOR_WORDS = ['labor','install','tear-off','tear off','removal',
+  'remove','detach','demolition','haul-off'];
+// 'crew' is NOT here: a_ss_clips is "Seam Clips + Pancake ScREWs".
+const COST_CLASS_LABOR_PREFIXES = ['l_','sl_','wl_','cl_'];
+const COST_CLASS_EXTRA_PREFIXES = ['x_','sx_','wx_','cx_'];
+
+// MUST mirror _guess_cost_class (app.py). Only ever used to WRITE a class —
+// the read path takes cost_class off the catalog and never guesses, so there
+// is one classifier and nothing to drift.
+function guessCostClass(pid, name) {
+  const id = String(pid || '').trim().toLowerCase();
+  const nm = String(name || '').trim().toLowerCase();
+  // The exclusion list runs FIRST: x_ss_delivery is "Metal Delivery &
+  // Rollformer Set-Up", a supplier charge a match on "Set-Up" would call crew.
+  if (COST_CLASS_NEVER_LABOR.some(w => nm.includes(w))) return 'material';
+  if (COST_CLASS_LABOR_PREFIXES.some(x => id.startsWith(x))) return 'labor';
+  if (COST_CLASS_EXTRA_PREFIXES.some(x => id.startsWith(x))) return 'material';
+  if (COST_CLASS_LABOR_WORDS.some(w => nm.includes(w))) return 'labor';
+  return 'material';
+}
+// Anything that is not exactly 'labor' reads as material — today's behavior.
+function normCostClass(v) {
+  return String(v || '').trim().toLowerCase() === 'labor' ? 'labor' : 'material';
+}
+
 function pbRoofCatSet(i, field, val) {
   const it = pbCat()[i]; if (!it) return;
   if (field === 'cost') it.cost = val === '' ? 0 : (parseFloat(val)||0);
   else if (field === 'customer_visible') it.customer_visible = val;
   else if (field === 'measure') { if (val) it.measure = val; else delete it.measure; }
-  else it[field] = val;
+  // An explicit 'material' is the manager CHOOSING, and it has to be sticky —
+  // otherwise a later improvement to the guess would silently overrule them.
+  else if (field === 'cost_class') it.cost_class = normCostClass(val);
+  else {
+    it[field] = val;
+    // Snap the dropdown as they type a name, but only while nobody has set the
+    // class. The moment they touch the control it stops guessing, for good.
+    if (field === 'name' && it.cost_class === undefined) {
+      const g = guessCostClass(it.id, val);
+      if (g === 'labor') it.cost_class = 'labor';
+    }
+  }
 }
 function pbRoofCatAdd() {
   pbCat().push({ id: 'p_'+uid(), name:'', unit:'SQ', cost:0 });

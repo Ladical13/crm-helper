@@ -11906,6 +11906,13 @@ def material_order_rows(est):
             # Labor, fees and REMOVAL lines are not ordered. "Remove existing
             # gutters & downspouts" is 168 LF of tear-off, not 17 sticks of
             # downspout to buy — the word match alone would have ordered it.
+            #
+            # NOT the same list as _guess_cost_class's, and they must not be
+            # merged. This one answers "is this ordered from a supplier", so it
+            # correctly drops permits and dumpsters; cost_class answers "which
+            # side of the internal split", where those are material. They have
+            # to agree about the word LABOR and nothing else, which
+            # test_cost_class.py pins.
             _n = name.lower()
             if any(w in _n for w in
                    ('labor', 'permit', 'inspection', 'cleanup', 'site protection',
@@ -16233,9 +16240,9 @@ ROOFING_CATALOG_SEED = [
      # quote does NOT tax delivery or set-up, so this line carries the buffer
      # only and not _SS_TAX.
      "bullets": ["Panels roll-formed to length for this roof and delivered"]},
-    {"id": "l_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
+    {"id": "l_tearoff", "cost_class": "labor", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
      "bullets": ["Complete tear-off of existing roofing down to the deck"]},
-    {"id": "l_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
+    {"id": "l_install", "cost_class": "labor", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
     {"id": "x_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
      "bullets": ["Dumpster and full magnetic nail sweep"]},
@@ -16624,10 +16631,10 @@ SIDING_CATALOG_SEED = [
     # number that is really the crew, while the bullets keep promising the work.
     # `customer_visible: False` hides the ROW, not the promise — see
     # bundleFeatures() in app.js.
-    {"id": "sl_tearoff", "name": "Tear-Off Labor", "group": "Labor & Misc", "unit": "SQ", "cost": 0, "measure": "siding_squares",
+    {"id": "sl_tearoff", "cost_class": "labor", "name": "Tear-Off Labor", "group": "Labor & Misc", "unit": "SQ", "cost": 0, "measure": "siding_squares",
      "customer_visible": False,
      "bullets": ["Complete tear-off of existing siding"]},
-    {"id": "sl_install", "name": "Install Labor", "group": "Labor & Misc", "unit": "SQ", "cost": 0, "measure": "siding_squares",
+    {"id": "sl_install", "cost_class": "labor", "name": "Install Labor", "group": "Labor & Misc", "unit": "SQ", "cost": 0, "measure": "siding_squares",
      "customer_visible": False,
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
     {"id": "sx_dumpster", "name": "Dumpster", "group": "Labor & Misc", "unit": "LS", "cost": 0,
@@ -17091,35 +17098,35 @@ COMMERCIAL_CATALOG_SEED = [
     # is the status quo rather than a new guess. The four LAYOVER lines are 0
     # and MUST be filled in before a layover is quoted; see the seeded-cost
     # test, which names them explicitly so the list shrinks as they land.
-    {"id": "cl_tpo_to_mf", "name": "Tear-Off, Disposal & Install Labor - TPO Mechanically Fastened", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+    {"id": "cl_tpo_to_mf", "cost_class": "labor", "name": "Tear-Off, Disposal & Install Labor - TPO Mechanically Fastened", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
-    {"id": "cl_tpo_to_fa", "name": "Tear-Off, Disposal & Install Labor - TPO Fully Adhered", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+    {"id": "cl_tpo_to_fa", "cost_class": "labor", "name": "Tear-Off, Disposal & Install Labor - TPO Fully Adhered", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
-    {"id": "cl_epdm_to_mf", "name": "Tear-Off, Disposal & Install Labor - EPDM Mechanically Fastened", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+    {"id": "cl_epdm_to_mf", "cost_class": "labor", "name": "Tear-Off, Disposal & Install Labor - EPDM Mechanically Fastened", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
-    {"id": "cl_epdm_to_fa", "name": "Tear-Off, Disposal & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+    {"id": "cl_epdm_to_fa", "cost_class": "labor", "name": "Tear-Off, Disposal & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
-    {"id": "cl_tpo_lo_mf", "name": "Layover Prep & Install Labor - TPO Mechanically Fastened", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+    {"id": "cl_tpo_lo_mf", "cost_class": "labor", "name": "Layover Prep & Install Labor - TPO Mechanically Fastened", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
-    {"id": "cl_tpo_lo_fa", "name": "Layover Prep & Install Labor - TPO Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+    {"id": "cl_tpo_lo_fa", "cost_class": "labor", "name": "Layover Prep & Install Labor - TPO Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
-    {"id": "cl_epdm_lo_mf", "name": "Layover Prep & Install Labor - EPDM Mechanically Fastened", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+    {"id": "cl_epdm_lo_mf", "cost_class": "labor", "name": "Layover Prep & Install Labor - EPDM Mechanically Fastened", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
-    {"id": "cl_epdm_lo_fa", "name": "Layover Prep & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+    {"id": "cl_epdm_lo_fa", "cost_class": "labor", "name": "Layover Prep & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
     # Coating is its own job again: nothing comes off, nothing is laid over.
     # The crew washes, tests adhesion, reinforces every detail with fabric and
     # base coat, then sprays to a verified mil thickness. Priced 0 until a
     # number lands — see the seeded-cost test, which names it.
-    {"id": "cl_coating", "name": "Coating Prep & Application Labor", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+    {"id": "cl_coating", "cost_class": "labor", "name": "Coating Prep & Application Labor", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof cleaned, seams and details reinforced, then the silicone system applied at the specified mil thickness by Project One crews"]},
     # The original single re-roof rate. Kept so estimates written against it
     # still load and still price; new bids use the per-package lines above.
-    {"id": "cl_labor_reroof", "name": "Tear-Off, Disposal & Install Labor (Re-Roof)", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+    {"id": "cl_labor_reroof", "cost_class": "labor", "name": "Tear-Off, Disposal & Install Labor (Re-Roof)", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
     # New construction rides in the tear-off packages only — there is nothing
     # to lay over on a building that has never been roofed.
-    {"id": "cl_labor_new", "name": "Install Labor (New Construction)", "unit": "SQ", "cost": 250, "measure": "comm_labor_new",
+    {"id": "cl_labor_new", "cost_class": "labor", "name": "Install Labor (New Construction)", "unit": "SQ", "cost": 250, "measure": "comm_labor_new",
      "bullets": []},
 
     # ── Misc — manual quantities, job-specific, so they stay unpriced.
@@ -17310,10 +17317,10 @@ WINDOWS_CATALOG_SEED = [
      "bullets": ["Full insect screens on every operable window"]},
     # Labor prices into the package but is NOT broken out for the customer,
     # same rule as siding labor — the ROW is hidden but the promise is not.
-    {"id": "wl_removal", "name": "Removal & Disposal Labor", "unit": "EA", "cost": 0, "measure": "windows",
+    {"id": "wl_removal", "cost_class": "labor", "name": "Removal & Disposal Labor", "unit": "EA", "cost": 0, "measure": "windows",
      "customer_visible": False,
      "bullets": ["Careful removal and disposal of the existing windows"]},
-    {"id": "wl_install", "name": "Install Labor", "unit": "EA", "cost": 0, "measure": "windows",
+    {"id": "wl_install", "cost_class": "labor", "name": "Install Labor", "unit": "EA", "cost": 0, "measure": "windows",
      "customer_visible": False,
      "bullets": ["Installed level, plumb, and square with full foam insulation and air sealing per manufacturer spec"]},
     {"id": "wx_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
@@ -17437,7 +17444,81 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 # linear feet at a per-roll price until it got one. Absence is still the test, so
 # a manager who set their own pack size keeps it.
 _PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure',
-                            'group', 'colors', 'styles', 'bundle_lf', 'bundle_unit')
+                            'group', 'colors', 'styles', 'bundle_lf', 'bundle_unit',
+                            'cost_class')
+
+# ── Material vs labor ─────────────────────────────────────────────────────
+#
+# A catalog product carries ONE `cost`, and until this existed every seeding
+# path dropped the whole of it into `material_unit_cost` — so the rep-only Cost
+# & Profit panel reported Labor $0.00 on every estimate ever written, while
+# l_install sat in the book at $145/SQ being counted as material.
+#
+# `cost_class` says which side of that split a product lands on. Two values,
+# 'material' and 'labor', and ABSENCE MEANS MATERIAL — which is exactly what
+# the tool did before this field existed, so an unclassified product moves no
+# number anywhere.
+#
+# The load-bearing rule, and the reason this is safe to apply to estimates
+# written months ago: `cost_class` may only ever influence the SPLIT. Never a
+# total, never a sell price, never a customer-visible gate, never a margin
+# floor, never a quantity. Material + labor always equals the cost that was
+# already there. If that ever stops being true, a manager reclassifying a
+# product retroactively changes what a customer was charged.
+#
+# Job extras (dumpster, permit, delivery, freight) are deliberately MATERIAL
+# rather than a third bucket. The permit packet prints
+# `Cost Total = materials + labor`, so a third bucket either drops out of that
+# column or gets folded back into materials anyway — and the panel has two rows
+# and a total that has to reconcile. Two values is the decision, not an
+# oversight.
+
+_COST_CLASS_NEVER_LABOR = (
+    'delivery', 'set-up', 'setup', 'freight', 'crane', 'dumpster', 'permit',
+    'inspection', 'survey', 'allowance', 'moisture',
+)
+_COST_CLASS_LABOR_WORDS = (
+    'labor', 'install', 'tear-off', 'tear off', 'removal', 'remove', 'detach',
+    'demolition', 'haul-off',
+    # 'crew' is NOT here on purpose: a_ss_clips is "Seam Clips + Pancake
+    # ScREWs". It is the obvious word to reach for and it matches hardware.
+)
+_COST_CLASS_LABOR_PREFIXES = ('l_', 'sl_', 'wl_', 'cl_')
+_COST_CLASS_EXTRA_PREFIXES = ('x_', 'sx_', 'wx_', 'cx_')
+
+
+def _guess_cost_class(pid, name):
+    """Best guess at whether a product is material or labor, from its id and
+    name. MUST mirror guessCostClass() in app.js.
+
+    Only ever used to WRITE a class — at seed time, at backfill time, and in
+    the Price Book editor. Nothing that reads a split calls this: the read path
+    takes `cost_class` off the catalog and stops, so there is exactly one
+    classifier and nothing to drift. Same contract as classifyCarrierItem on
+    the insurance side, where the guess is a starting point and the stored
+    decision is the answer.
+
+    The exclusion list runs FIRST, and that ordering is the whole trick:
+    x_ss_delivery is "Metal Delivery & Rollformer Set-Up", a $368 supplier
+    charge that a keyword match on "Set-Up" would file as crew time.
+    """
+    pid  = str(pid or '').strip().lower()
+    name = str(name or '').strip().lower()
+    if any(w in name for w in _COST_CLASS_NEVER_LABOR):
+        return 'material'
+    if pid.startswith(_COST_CLASS_LABOR_PREFIXES):
+        return 'labor'
+    if pid.startswith(_COST_CLASS_EXTRA_PREFIXES):
+        return 'material'
+    if any(w in name for w in _COST_CLASS_LABOR_WORDS):
+        return 'labor'
+    return 'material'
+
+
+def _norm_cost_class(v):
+    """The canonical name for a stored cost class. Absence, junk and anything
+    that is not exactly 'labor' all read as material — today's behaviour."""
+    return 'labor' if str(v or '').strip().lower() == 'labor' else 'material'
 
 # Trades whose seeded costs are allowed to fill a live book's ZERO cost. See the
 # backfill in _ensure_bundle_catalogs for why this is narrow and one-directional.
@@ -18723,6 +18804,25 @@ def _ensure_bundle_catalogs(pb):
                 for field, (old_val, new_val) in fields.items():
                     if p_live.get(field) == old_val:
                         p_live[field] = new_val
+
+            # Every live product with no cost_class gets the guess — seed or
+            # not. _PRODUCT_BACKFILL_FIELDS above only walks SEED ids, so it
+            # cannot reach a product the manager made, and six of the labor
+            # products actually being sold on production are exactly that
+            # ("Standing Seam Install Labor", "Install Labor Hardie Painted"
+            # and friends). Without this loop those six stay filed as material
+            # and the panel keeps under-reporting labor on the metal and
+            # painted-siding jobs.
+            #
+            # This is a read-time default, not a migration: _ensure_bundle_catalogs
+            # mutates the response only. It becomes the manager's stored decision
+            # the first time they save the Price Book, and the dropdown there
+            # overrides it either way. Absence stays the test, so a class they
+            # set is never touched.
+            for p_live in live_cat:
+                if isinstance(p_live, dict) and 'cost_class' not in p_live:
+                    p_live['cost_class'] = _guess_cost_class(p_live.get('id'),
+                                                             p_live.get('name'))
 
             # The ladder itself. pb.setdefault above cannot deliver a new one to
             # a book that already has the key — which is every live book — so
