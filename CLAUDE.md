@@ -1251,6 +1251,15 @@ ones without it. `tests/test_standing_seam.py` holds every literal to
 `_SS_PRETAX × _SS_UPLIFT`, which is what keeps the buffer a decision rather
 than a residue.
 
+**PBR exposed-fastener metal (`b_pbr`) is the same supplier on the same
+roof** (EFC38429 vs EFC38421), so `_PBR_PRETAX` takes the same `_SS_UPLIFT`.
+One trap between the two sheets: the `(N LIN)` on a panel line means
+**different things per profile**. On snap-lock `20 LIN` is the coil and a 16"
+panel comes off it; on PBR `36 LIN` is the net coverage. Check which by
+multiplying the ordered LF by the coverage — it has to cover the roof, and on
+EFC38429 anything under 36" does not. `tests/test_pbr_metal.py` reprices the
+whole quote off its Roofr report to within 0.5%.
+
 ### Price book audit (`/api/pricebook/audit`)
 
 Everything this tool says about money is derived from the price book: retail

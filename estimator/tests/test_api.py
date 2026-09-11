@@ -279,7 +279,10 @@ def test_backfill_leaves_manager_bundles_and_deletions_alone(A):
         'roofing_catalog': [{'id': 'm_x', 'name': 'X', 'unit': 'SQ', 'cost': 1}],
         'roofing_bundles': [{'id': 'b_custom', 'name': 'Mine', 'product_ids': ['m_x']}],
     })
-    assert [b['id'] for b in pb['roofing_bundles']] == ['b_custom']   # no seeds re-added
+    # No seeds re-added — except the late arrivals, which are appended on
+    # purpose until live books have been saved past them (_LATE_BUNDLE_IDS).
+    ids = [b['id'] for b in pb['roofing_bundles']]
+    assert [i for i in ids if i not in A._LATE_BUNDLE_IDS] == ['b_custom']
     assert 'extra_features' not in pb['roofing_bundles'][0]
 
 

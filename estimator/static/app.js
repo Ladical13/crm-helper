@@ -812,6 +812,12 @@ const MEASURE_DEFS = {
   // separate valley pan to order. 2x(160 ridge) + 2x(93.83 valley) = 507.67 LF
   // is the 51 sticks EFC38421 ordered, exactly.
   ridge_valley_2x:      { label:'Ridge + Valley LF, both sides', calc:m => 2 * (mnum(m.ridge_hip_lf) + mnum(m.valley_lf)) },
+  // PBR outside foam closures: both sides of every ridge and hip, plus under
+  // every headwall (with Unspecified folded in, as `headwall` does). No valley
+  // and no transition — Architectural Sheet Metals EFC38429 ordered 160
+  // closures for 2x160 ridge + 135.58 headwall = 455.58 LF (152 pieces plus
+  // their usual ~5%); adding the 42 LF of transition would put them SHORT.
+  ridge_2x_headwall:    { label:'Ridge both sides + Headwall LF', calc:m => 2 * mnum(m.ridge_hip_lf) + mnum(m.wall_flash_lf) + mnum(m.unspecified_lf) },
   pipe_boots:           { label:'# Pipe Boots',       calc:m => mnum(m.pipe_boots) },
   skylights:            { label:'# Skylights',        calc:m => mnum(m.skylights) },
   turtle_vents:         { label:'# Turtle Vents',     calc:m => mnum(m.turtle_vents) },

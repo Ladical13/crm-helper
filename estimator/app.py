@@ -4416,6 +4416,7 @@ MEASURE_DIMENSIONS = {
     'headwall': 'LF',
     'transition': 'LF',
     'ridge_valley_2x': 'LF',
+    'ridge_2x_headwall': 'LF',
     'pipe_boots': 'EA',
     'skylights': 'EA',
     'turtle_vents': 'EA',
@@ -16312,6 +16313,68 @@ ROOFING_CATALOG_SEED = [
      # quote does NOT tax delivery or set-up, so this line carries the buffer
      # only and not _SS_TAX.
      "bullets": ["Panels roll-formed to length for this roof and delivered"]},
+    # --- Exposed fastener metal (PBR) ----------------------------------------
+    # Architectural Sheet Metals & Panels quote EFC38429 — the SAME roof as
+    # EFC38421 above (195 J J Kelly Rd, Lyons, 09/10/2026), quoted as 26ga PBR,
+    # so the two metal systems are priced off one Roofr report. Every trim
+    # count on it is ceil(Roofr footage / 10) exactly, which is what confirms
+    # each measure below. Pre-tax prices and the reasoning are in _PBR_PRETAX.
+    #
+    # THE LOAD-BEARING CONVERSION: "(36 LIN)" is the panel's NET COVERAGE, so
+    # one lineal foot covers 3 SF and $5.15/LF / 3 = $171.67/SQ. The quote
+    # proves it: 1667 LF x 3 ft = 50.01 SQ over a 49.45 SQ roof. Read 36" as
+    # the coil width instead (the way standing seam's "20 LIN" reads) and
+    # 1667 LF would not cover the roof at all.
+    {"id": "m_pbr", "name": "PBR Exposed Fastener Metal (26ga)", "unit": "SQ", "cost": 180.24, "measure": "squares_waste",
+     "bullets": ["26ga PBR steel panels with exposed fasteners", "Painted steel that will not crack, curl or shed granules", "Clean ribbed profile in your choice of color"],
+     "colors": _ROOF_METAL_COLORS},
+    {"id": "a_pbr_fasteners", "name": "PBR Wood Screws + Stitch Screws", "unit": "SQ", "cost": 18.37, "measure": "squares_waste",
+     # 5000 1.5" wood screws @ $.10 + 2500 7/8" stitch screws @ $.15 over the
+     # job's 50.01 SQ of panel — the supplier's 100 + 50 per square. Scales
+     # with panel area, same shape as a_ss_clips.
+     "bullets": ["Color-matched fasteners throughout"]},
+    {"id": "a_pbr_drip", "name": "PBR Drip Edge w/ Hem (26ga)", "unit": "LF", "cost": 13.35, "measure": "eave", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Metal drip edge at every eave"]},
+    {"id": "a_pbr_rake", "name": "PBR Rake Trim (26ga)", "unit": "LF", "cost": 27.23, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
+     # One piece on PBR — no receiver, unlike standing seam's 2pc rake.
+     "bullets": ["Metal rake trim at every gable end"]},
+    {"id": "a_pbr_sidewall", "name": "PBR Sidewall Flashing (26ga)", "unit": "LF", "cost": 25.66, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Metal sidewall flashing where the roof runs along a wall"]},
+    {"id": "a_pbr_headwall", "name": "PBR Headwall Flashing (26ga)", "unit": "LF", "cost": 24.61, "measure": "headwall", "bundle_lf": 10, "bundle_unit": "sticks",
+     # 14 sticks for 29'6" wall + 106'1" unspecified — the second supplier
+     # quote to confirm that `headwall` folds Unspecified in.
+     "bullets": ["Metal headwall flashing where the roof meets a wall"]},
+    {"id": "a_pbr_ridge", "name": "PBR Hip/Ridge Cover (26ga)", "unit": "LF", "cost": 25.66, "measure": "ridge_hip", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Metal ridge cap over every ridge and hip"]},
+    {"id": "a_pbr_valley", "name": "PBR W-Valley (26ga)", "unit": "LF", "cost": 48.17, "measure": "valley", "bundle_lf": 10, "bundle_unit": "sticks",
+     # A real valley pan, one per valley run. Standing seam has none because
+     # its Z-Flash doubles as the valley detail; PBR has no Z-Flash.
+     "bullets": ["W-profile metal valley in every valley"]},
+    {"id": "a_pbr_transition", "name": "PBR Transition Flashing (26ga)", "unit": "LF", "cost": 36.39, "measure": "transition", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Transition flashing at every change of pitch"]},
+    # Closures are quoted per 3-ft piece but priced here per LINEAL FOOT, with
+    # no bundle_lf. At $1.77 and $2.32 a piece they are genuinely under a dollar
+    # a foot, and pricebook_audit reads "pack cost under a dollar a foot" as a
+    # per-foot price typed into a pack line — a finding that fires on correct
+    # data is the one that gets the whole audit ignored. Per-LF also skips the
+    # piece rounding: the supplier's counts (77 and 160) run ~4-5% over the
+    # raw footage, which is ~$24 on this roof and inside _SS_BUFFER.
+    {"id": "a_pbr_closure_in", "name": "PBR Inside Foam Closure", "unit": "LF", "cost": 0.62, "measure": "eave",
+     # Under the panel at the eave.
+     "bullets": ["Foam closures sealing the panel ribs at every eave, ridge and wall"]},
+    {"id": "a_pbr_closure_out", "name": "PBR Outside Foam Closure (Glued)", "unit": "LF", "cost": 0.81, "measure": "ridge_2x_headwall",
+     # Both sides of every ridge and under every headwall — see the measure.
+     "bullets": []},
+    {"id": "a_pbr_sealants", "name": "PBR Butyl Tape & Sealant", "unit": "SQ", "cost": 10.14, "measure": "squares_waste",
+     # 67 rolls of 7/8" butyl @ $6.47 + 5 tubes Nova Flex @ $9.90 over 50.01
+     # SQ. $9.66/SQ pre-tax, against the $9.60 EFC31095 gave standing seam's
+     # sealant line — two systems, two years apart, landing on the same rate.
+     "bullets": ["Butyl tape and sealant at every lap and flashing"]},
+    {"id": "x_pbr_delivery", "name": "PBR Metal Delivery", "unit": "LS", "cost": 217.15,
+     # $215 delivery, and NO machine set-up — EFC38429 charges $0 for it where
+     # EFC38421 charges $150 to set the snap-lock rollformer. Untaxed, so it
+     # carries _SS_BUFFER only, like x_ss_delivery.
+     "bullets": ["Panels roll-formed to length for this roof and delivered"]},
     {"id": "l_tearoff", "cost_class": "labor", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
      "bullets": ["Complete tear-off of existing roofing down to the deck"]},
     {"id": "l_install", "cost_class": "labor", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
@@ -16376,12 +16439,41 @@ _SS_PRETAX = {
 # "fixing" the inconsistency by taxing a line the supplier does not tax.
 _SS_PRETAX_UNTAXED = {'x_ss_delivery': 365.00}   # $215 delivery + $150 set-up
 
+# PBR exposed fastener, off EFC38429 — same supplier, same 3.95% tax, same
+# 15-day validity as EFC38421, so it takes the same _SS_UPLIFT rather than a
+# second pair of factors that could drift apart for no reason. Held to the
+# catalog by tests/test_pbr_metal.py exactly as _SS_PRETAX is.
+_PBR_PANEL_SQ = 50.01   # 1667 LF x 3 ft of coverage / 100 — what the per-SQ lines divide by
+_PBR_PRETAX = {
+    'm_pbr':             171.67,  # $5.15/LF at 36" net coverage
+    'a_pbr_fasteners':    17.50,  # 5000 wood @ $.10 + 2500 stitch @ $.15 / 50.01 SQ
+    'a_pbr_drip':         12.72,
+    'a_pbr_rake':         25.94,
+    'a_pbr_sidewall':     24.44,
+    'a_pbr_headwall':     23.44,
+    'a_pbr_ridge':        24.44,
+    'a_pbr_valley':       45.88,
+    'a_pbr_transition':   34.66,
+    'a_pbr_closure_in':    0.59,  # $1.77 per 3-ft piece
+    'a_pbr_closure_out':   0.7733,  # $2.32 per 3-ft piece
+    'a_pbr_sealants':      9.66,  # 67 butyl @ $6.47 + 5 Nova Flex @ $9.90 / 50.01 SQ
+}
+_PBR_PRETAX_UNTAXED = {'x_pbr_delivery': 215.00}  # delivery; set-up is $0 on PBR
+
 _SS_METAL = ["a_underlayment", "a_ice_water", "a_ss_clips", "a_ss_drip_d",
              "a_ss_rake", "a_ss_rake_recv", "a_ss_sidewall", "a_ss_sidewall_recv",
              "a_ss_headwall", "a_ss_ridge", "a_ss_zeecee", "a_ss_transition",
              "a_ss_pipe_boot", "a_ss_sealants",
              "a_decking", "l_tearoff", "l_install", "x_ss_delivery",
              "x_dumpster", "x_permit"]
+# PBR runs its own trim for the same reason standing seam does, and shares only
+# the pipe boot: a MasterFlash boot is the same part on either metal system.
+_PBR_METAL = ["a_underlayment", "a_ice_water", "a_pbr_fasteners", "a_pbr_drip",
+              "a_pbr_rake", "a_pbr_sidewall", "a_pbr_headwall", "a_pbr_ridge",
+              "a_pbr_valley", "a_pbr_transition", "a_pbr_closure_in",
+              "a_pbr_closure_out", "a_pbr_sealants", "a_ss_pipe_boot",
+              "a_decking", "l_tearoff", "l_install", "x_pbr_delivery",
+              "x_dumpster", "x_permit"]
 ROOFING_BUNDLES_SEED = [
     {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Dual-layer architectural shingle with Class 3 impact resistance, StreakFighter protection, and a lifetime limited residential warranty.",
      "extra_features": _RS_EXTRA},
@@ -16392,6 +16484,8 @@ ROOFING_BUNDLES_SEED = [
     {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "EDCO steel shingles — the look of architectural shingles in Class 4 impact-rated steel.",
      "extra_features": _RS_EXTRA},
     {"id": "b_stone", "name": "Stone-Coated Steel", "product_ids": ["m_stone"] + _RS, "description": "Stone-coated steel panels — steel strength with a textured shake/shingle look, wind-rated 120+ mph.",
+     "extra_features": _RS_EXTRA},
+    {"id": "b_pbr", "name": "Exposed Fastener Metal (PBR)", "product_ids": ["m_pbr"] + _PBR_METAL, "description": "26ga PBR ribbed steel panels with exposed fasteners — a durable metal roof at a lower price point.",
      "extra_features": _RS_EXTRA},
     {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _SS_METAL, "description": "24ga standing seam metal with concealed fasteners — the premium 50+ year system.",
      "extra_features": _RS_EXTRA},
@@ -17722,7 +17816,10 @@ _LATE_BUNDLE_IDS = {'b_lp_standard', 'b_lp_expert', 'b_hardie_primed',
                     # old cl_labor_reroof, and appending cl_tpo_to_mf next to it
                     # would bill the tear-off twice.
                     'cb_tpo_lo_mf', 'cb_tpo_lo_fa',
-                    'cb_epdm_mf', 'cb_epdm_lo_mf', 'cb_epdm_lo_fa'}
+                    'cb_epdm_mf', 'cb_epdm_lo_mf', 'cb_epdm_lo_fa',
+                    # 2026-09-11: PBR exposed fastener metal, off EFC38429.
+                    # Roofing has had live books for months.
+                    'b_pbr'}
 
 # Product ids added to a SEEDED bundle after the trade already had live books.
 # Same trap as _LATE_BUNDLE_IDS but one level down: _BUNDLE_COPY_FIELDS does
