@@ -1183,6 +1183,40 @@ def remove_team_member(username):
     return jsonify({'ok': True, 'removed': username})
 
 
+def _roster():
+    """Everyone an estimate can be assigned to: the team.json roster plus any
+    portal account it has not heard of (a rep enrolled by invite is a real
+    login without necessarily being on the roster). Usernames lowercase, since
+    `_can_touch_estimate` compares the salesperson to the session user exactly."""
+    seen, out = set(), []
+    for m in load_team():
+        u = (m.get('username') or '').strip().lower()
+        if u and u not in seen:
+            seen.add(u)
+            out.append({'username': u,
+                        'display_name': m.get('display_name') or _display_name(u)})
+    try:
+        accounts = pusers.all_users()
+    except Exception as exc:
+        print(f'[team] portal accounts unreadable, roster is team.json only: {exc}')
+        accounts = []
+    for a in accounts:
+        u = (a.get('username') or '').strip().lower()
+        if u and u not in seen:
+            seen.add(u)
+            out.append({'username': u, 'display_name': _display_name(u)})
+    return out
+
+
+@app.route('/api/team', methods=['GET'])
+def team_roster():
+    """Any signed-in user: who can be picked as a salesperson. Names only — the
+    phone/email overrides and enrollment state stay behind admin-only
+    /api/users. The front end used to hardcode this list, so a rep added in
+    Team Logins could never be picked."""
+    return jsonify(_roster())
+
+
 @app.route('/api/account/password', methods=['POST'])
 def change_own_password():
     """Any signed-in user sets/replaces their own password."""
@@ -1429,6 +1463,18 @@ def save_estimate(est_id):
             for field in SERVER_MANAGED_FIELDS:
                 if not data.get(field) and existing.get(field):
                     data[field] = existing[field]
+            # Who owns an estimate moves ONLY through PATCH .../salesperson.
+            # A whole-doc save is a snapshot from whenever the tab loaded, so
+            # a rep's open tab autosaving a minute after a manager reassigned
+            # the job would hand it straight back, with nothing on screen to
+            # say so. An unassigned estimate may still be claimed by a save.
+            prev_sp = existing.get('salesperson')
+            if isinstance(prev_sp, str) and prev_sp.strip():
+                data['salesperson'] = prev_sp
+            if existing.get('assignment_history'):
+                data['assignment_history'] = existing['assignment_history']
+            else:
+                data.pop('assignment_history', None)
             # A signed estimate stays accepted even if a stale tab says draft
             if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
                 data['status'] = existing.get('status', 'accepted')
@@ -1586,6 +1632,55 @@ def update_estimate_label(est_id):
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     est_save(est)
     return jsonify({'ok': True, 'label': label})
+
+
+@app.route('/api/estimates/<est_id>/salesperson', methods=['PATCH'])
+def reassign_estimate(est_id):
+    """Hand an estimate to another rep — the only path that changes its owner.
+
+    Manager-up, because ownership is visibility: reps see only their own
+    estimates, so this moves a job off one rep's dashboard and onto another's.
+    A rep may do exactly one thing here, which a save could already do: claim
+    an unassigned estimate for themselves. `""` unassigns (manager-up)."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    raw = (request.get_json(force=True, silent=True) or {}).get('salesperson')
+    if not isinstance(raw, str):
+        return jsonify({'error': 'salesperson required'}), 400
+    target = raw.strip().lower()
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    user = _current_user()
+    prev_raw = est.get('salesperson')
+    if not _is_manager_up():
+        # An unreadable owner is not "unassigned" — fails closed, like the list.
+        unassigned = prev_raw is None or (isinstance(prev_raw, str) and not prev_raw.strip())
+        if not (unassigned and target and target == user):
+            return _forbid()
+    if target and target not in {m['username'] for m in _roster()}:
+        return jsonify({'error': f'{raw.strip()} is not on the team roster.'}), 400
+    prev = prev_raw.strip() if isinstance(prev_raw, str) else ''
+    if target == prev and isinstance(prev_raw, str):
+        return jsonify({'ok': True, 'salesperson': target, 'changed': False})
+    now = datetime.utcnow().isoformat() + 'Z'
+    hist = est.get('assignment_history')
+    hist = hist if isinstance(hist, list) else []
+    hist.append({'from': prev, 'to': target, 'by': user, 'at': now})
+    est['assignment_history'] = hist[-50:]
+    est['salesperson'] = target
+    est['updated_at'] = now
+    est_save(est)
+    # The funnel row carries the rep too. Left alone, the CRM keeps attributing
+    # this estimate to whoever handed it off. Only an EXISTING row is updated —
+    # record() would otherwise create one for an estimate no lead ever linked.
+    if not demo.is_demo_doc(est):
+        try:
+            if pfunnel.get(est_id):
+                pfunnel.record(est_id, 'draft', rep=target)
+        except Exception as exc:
+            print(f'[funnel] reassignment not recorded for {est_id}: {exc}')
+    return jsonify({'ok': True, 'salesperson': target, 'changed': True})
 
 
 # Why we lost, captured at the moment a rep marks an estimate lost. Without it

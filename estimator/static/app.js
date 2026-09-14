@@ -625,7 +625,10 @@ function syncStructureSections(trade) {
   });
 }
 
-const TEAM = ['avery','bryan','derik','luke','phil'];
+// Starts hardcoded so the salesperson picker is never empty offline, then is
+// replaced by the server roster (loadTeamRoster) — team.json plus portal
+// accounts — so a rep added in Team Logins can actually be picked.
+let TEAM = ['avery','bryan','derik','luke','phil'];
 const TRADE_COLOR_FIELDS = {
   roofing: [{key:'shingle_color',label:'Shingle Color'},{key:'manufacturer',label:'Manufacturer'},{key:'product_line',label:'Product Line'},
             {key:'drip_edge_color',label:'Drip Edge Color'},{key:'ridge_cap_color',label:'Ridge Cap Color'}],
@@ -2710,7 +2713,7 @@ function renderSidebar() {
   setVal('project-address', S.project_address);
   setVal('estimate-date',   S.estimate_date);
   setVal('valid-until',     S.valid_until);
-  setVal('salesperson',     S.salesperson);
+  syncSalespersonSelect();
   setVal('est-status',      S.status);
   renderTierRates();
   renderPricingModeUI();
@@ -9599,7 +9602,10 @@ function bindSidebarEvents() {
   bind('project-address', v=>S.project_address=v);
   bind('estimate-date',   v=>S.estimate_date=v,           'change', ()=>renderCoverPage());
   bind('valid-until',     v=>S.valid_until=v);
-  bind('salesperson',     v=>S.salesperson=v,             'change', ()=>renderCoverPage());
+  // Not bind(): on a saved estimate this is a reassignment, which goes through
+  // its own PATCH — a whole-doc save no longer moves ownership at all.
+  document.getElementById('salesperson')
+    ?.addEventListener('change', e => onSalespersonChange(e.target.value));
   bind('est-status',      v=>S.status=v);
   bind('notes-internal',  v=>S.notes_internal=v, 'input');
   bind('notes-customer',  v=>S.notes_customer=v, 'input');
@@ -9759,7 +9765,9 @@ function selectJob(p) {
   // Prefer the job's assigned salesperson when it's a known team member
   if(p.assigned_salesperson){
     const u=p.assigned_salesperson.split('@')[0].toLowerCase();
-    if(TEAM.includes(u)){S.salesperson=u;setVal('salesperson',u);}
+    // Only where a save can still set it; a saved, owned estimate is
+    // reassigned deliberately, not by picking a contact.
+    if(TEAM.includes(u) && (!S.estimate_id || !S.salesperson)){S.salesperson=u;syncSalespersonSelect();}
   }
   document.getElementById('crm-search').value='';
   closeCrm(); setDirty(); renderSidebar(); renderCoverPage(); renderCrmLinkBadge();
@@ -10152,6 +10160,16 @@ function dashRow(e) {
       <option value="accepted" ${e.status==='accepted'?'selected':''}>Accepted ✓</option>
       <option value="lost"     ${st==='lost'?'selected':''}>Lost ✗</option>
     </select>`;
+  // Managers reassign straight from the list. Reps get nothing here: the
+  // server refuses them anyway, and a control that always errors reads broken.
+  const sp = typeof e.salesperson === 'string' ? e.salesperson : '';
+  const repSelect = _meCanViewAll() ? `
+    <select class="dash-status-select dash-rep-select" title="Reassign to another rep"
+      onclick="event.stopPropagation()"
+      onchange="reassignEstimate('${esc(e.estimate_id)}',this.value)">
+      <option value="">Unassigned</option>
+      ${_teamWith(sp).map(m => `<option value="${esc(m)}" ${m === sp ? 'selected' : ''}>${esc(cap(m))}</option>`).join('')}
+    </select>` : '';
   // The customer file was reachable only from a home-screen search box and a
   // sidebar button that appears after a name is typed — so the rep looking at
   // a list of estimates had no way to see that three of them are one customer.
@@ -10167,6 +10185,7 @@ function dashRow(e) {
     <div class="dash-row-side">
       <span class="dash-total">${fmtCur((e.total || 0) + (e.co_total || 0))}</span>
       ${e.co_count ? `<span class="dash-chip dash-chip-co" title="${e.co_count} change order${e.co_count!==1?'s':''}${e.co_pending ? ` (${e.co_pending} awaiting signature)` : ''}${e.co_total ? ` — ${fmtCur(e.co_total)} signed` : ''}">±${e.co_count} CO${e.co_pending ? ' ⏳' : ''}</span>` : ''}
+      ${repSelect}
       ${statusSelect}
       <small class="dash-activity">${esc(activity)}</small>
       ${e.share_token ? `<button class="dash-send-btn" title="Resend customer link"
@@ -13447,8 +13466,75 @@ async function renderHomePage() {
 /* ── Init ──────────────────────────────────────────────────────────── */
 
 function populateSalespersonDropdown() {
-  const sel=document.getElementById('salesperson');
-  TEAM.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=cap(m);sel.appendChild(o);});
+  syncSalespersonSelect();
+}
+
+async function loadTeamRoster() {
+  try {
+    const r = await fetch('/api/team');
+    if (!r.ok) return;                    // demo guests, offline: keep the fallback
+    const rows = await r.json();
+    const names = (Array.isArray(rows) ? rows : []).map(m => m && m.username).filter(Boolean);
+    if (!names.length) return;
+    TEAM = names;
+  } catch { return; }
+  syncSalespersonSelect();
+  const dash = document.getElementById('dashboard-modal');
+  if (dash && !dash.classList.contains('hidden')) renderDashboard();
+}
+
+// A former rep who is off the roster must still show as the owner rather than
+// the select silently reading "Select…".
+function _teamWith(current) {
+  return current && !TEAM.includes(current) ? [...TEAM, current] : TEAM;
+}
+
+// Reps may pick on an unsaved or unassigned estimate; once one is saved with
+// an owner only a manager can move it. The server enforces this — the lock
+// just stops a rep making a change that is about to be refused.
+function salespersonLocked() {
+  return !!S.estimate_id && !!S.salesperson && !_meCanViewAll();
+}
+
+function syncSalespersonSelect() {
+  const sel = document.getElementById('salesperson');
+  if (!sel) return;
+  const cur = typeof S.salesperson === 'string' ? S.salesperson : '';
+  sel.innerHTML = '<option value="">Select…</option>' +
+    _teamWith(cur).map(m => `<option value="${esc(m)}">${esc(cap(m))}</option>`).join('');
+  sel.value = cur;
+  sel.disabled = salespersonLocked();
+  sel.title = sel.disabled ? 'Ask a manager to reassign this estimate' : '';
+}
+
+async function onSalespersonChange(v) {
+  if (!S.estimate_id) {                   // nothing on the server yet — rides the first save
+    S.salesperson = v; setDirty(); renderCoverPage();
+    return;
+  }
+  await reassignEstimate(S.estimate_id, v);
+}
+
+async function reassignEstimate(id, rep) {
+  const row = _dashData.find(e => e.estimate_id === id);
+  let ok = false, msg = '';
+  try {
+    const r = await fetch(`/api/estimates/${id}/salesperson`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({salesperson: rep}),
+    });
+    ok = r.ok;
+    if (!ok) msg = (await r.json().catch(() => ({}))).error || '';
+  } catch {}
+  if (!ok) {
+    alert(msg || 'Could not reassign this estimate.');
+  } else {
+    if (row) row.salesperson = rep;
+    if (id === S.estimate_id) { S.salesperson = rep; renderCoverPage(); }
+  }
+  if (id === S.estimate_id) syncSalespersonSelect();   // also reverts it on failure
+  const dash = document.getElementById('dashboard-modal');
+  if (dash && !dash.classList.contains('hidden')) renderDashboard();
 }
 
 function _autoSaveTick() {
@@ -13531,6 +13617,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       // Admin set a temporary password — force them to choose their own now.
       if (me.must_change) openLoginsModal(true);
       applyRoleGates();
+      syncSalespersonSelect();   // the lock depends on the role just learned
+      loadTeamRoster();          // not awaited: the fallback list covers boot
     }
   } catch {}
   // Apply any saved defaults to the initial blank estimate

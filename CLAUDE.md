@@ -1488,6 +1488,16 @@ ordering is the fix.
   timeline records it and the rep decides. See the salescrm `_FUNNEL_STAGE` note.
 - Guarded by `tests/test_status.py` and `salescrm/tests/test_funnel.py`.
 
+### Reassigning an estimate
+
+Ownership is visibility — reps see only their own estimates — so who owns one
+is not an ordinary field. `PATCH /api/estimates/<id>/salesperson` is the only
+path that changes it: manager-up, except that a rep may claim an unassigned
+estimate for themselves. **A whole-estimate save keeps the stored owner**, or a
+tab opened before a reassignment autosaves the job straight back. The picker
+reads `_roster()` (team.json plus portal accounts) instead of a hardcoded list,
+and the funnel row's rep is moved with it. Guarded by `tests/test_reassign.py`.
+
 ### The customer screen — many estimates, one customer
 
 A homeowner is rarely one estimate: the roof in spring, the siding in autumn,
