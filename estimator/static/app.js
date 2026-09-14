@@ -288,6 +288,47 @@ function groupedTradeItems(trade, items) {
   sections.forEach(name => groups.push({ name, items: items.filter(i => itemSection(i) === name) }));
   return groups;
 }
+/* ── Supplements ──────────────────────────────────────────────────────────
+   A section whose name says "supplement" holds the "if needed" work — extra
+   decking by the sheet, a second layer, rotted fascia — that nobody can
+   measure until the roof is open. Those lines sit at quantity 0, and a
+   zero-qty line is "not in scope" everywhere, so they priced at nothing and
+   never reached the customer at all.
+
+   They are their own block now: kept OUT of the package total, the cost and
+   the margin (the customer has not bought them), and printed separately with
+   their own subtotal. A blank quantity prices as one unit, so the customer
+   sees what a sheet or a foot costs. Membership follows groupedTradeItems — a
+   tag naming a section the trade no longer lists is General, not a supplement.
+   MUST mirror _is_supplement_item / trade_supplements in app.py. */
+function isSupplementSectionName(name) {
+  return /supplement/i.test(String(name || ''));
+}
+function isSupplementItem(td, item) {
+  const s = String((item && item.section) || '').trim();
+  return !!s && isSupplementSectionName(s) && ((td && td.sections) || []).includes(s);
+}
+function supplementLineTotal(trade, item, tier) {
+  const td = S.trades[trade] || {};
+  const q = parseFloat(item.quantity) || 0;
+  const qty = q > 0 ? q : 1;
+  if (effectiveTradeMode(trade, td) === 'simple') return qty * (parseFloat(item.unit_price) || 0);
+  const t = (item.tiers && item.tiers[tier]) || {};
+  if (t.price_override !== undefined && t.price_override !== null && t.price_override !== '') {
+    return parseFloat(t.price_override) || 0;
+  }
+  return lineTotal(qty, t.material_unit_cost, t.labor_unit_cost, trade, tier);
+}
+function supplementItems(trade, tier) {
+  const td = S.trades[trade];
+  if (!td || !td.enabled) return [];
+  const simple = effectiveTradeMode(trade, td) === 'simple';
+  return (td.line_items || []).filter(i =>
+    isSupplementItem(td, i) && (simple || ((i.tiers || {})[tier] || {}).included !== false));
+}
+function supplementsTotal(trade, tier) {
+  return supplementItems(trade, tier).reduce((s, i) => s + supplementLineTotal(trade, i, tier), 0);
+}
 function addTradeSection(trade) {
   const name = (prompt('Section name (e.g. Main House, Detached Garage, South Slope):') || '').trim();
   if (!name) return;
@@ -358,7 +399,37 @@ function sectionManagerBar(trade) {
       <button class="est-section-del" onclick="deleteTradeSection('${trade}',${i})" title="Remove section (items stay)">×</button>
     </span>`).join('')}
     <button class="est-section-add" onclick="addTradeSection('${trade}')">+ Add Section</button>
+    ${sections.some(isSupplementSectionName) ? '' : `<button class="est-section-add"
+      onclick="addSupplementsSection('${trade}')"
+      title="Add a Supplements section with a starter line. It prints after the total as work that may be needed. Leave the price blank for a plain notice, or price lines to show what they would cost.">+ Supplements</button>`}
   </div>`;
+}
+/* One click to "there may be supplements": the section plus a starter line
+   with no price, which prints as a notice rather than a $0.00 charge. The
+   rep edits the wording or prices the line; nothing here touches the total. */
+function addSupplementsSection(trade) {
+  const td = S.trades[trade];
+  td.sections = td.sections || [];
+  if (td.sections.some(isSupplementSectionName)) return;
+  const name = 'Supplements';
+  td.sections.push(name);
+  const line = {
+    id: uid(), name: 'Possible supplements', unit: 'EA', quantity: 0, section: name,
+    customer_visible: true,
+  };
+  const desc = 'Additional work, such as damaged decking, may be found once the old roof is removed. It is not included in the total above.';
+  if (effectiveTradeMode(trade, td) === 'simple') {
+    Object.assign(line, { description: desc, unit_cost: 0, unit_price: 0 });
+  } else {
+    line.tiers = {};
+    TIERS.forEach(t => {
+      line.tiers[t] = { material_unit_cost: 0, labor_unit_cost: 0, description: desc, notes: '', included: true };
+    });
+  }
+  td.line_items = td.line_items || [];
+  td.line_items.push(line);
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
 }
 /* ── Buildings (structures) ───────────────────────────────────
    An apartment complex is seven roofs on one contract, each with its own square
@@ -424,6 +495,7 @@ function structureTotal(st) {
   const name = String(st.name || '').trim();
   return (td.line_items || []).reduce((sum, i) => {
     if (itemSection(i) !== name) return sum;
+    if (isSupplementItem(td, i)) return sum;
     if ((parseFloat(i.quantity) || 0) <= 0) return sum;
     if (mode === 'simple') return sum + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0);
     const t = (i.tiers || {})[tier] || {};
@@ -1997,9 +2069,12 @@ function tradeTotal(trade, tier) {
   const effectiveMode = effectiveTradeMode(trade, td);
   if (effectiveMode === 'simple') {
     return (td.line_items || []).reduce((sum, item) =>
-      sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0), 0);
+      isSupplementItem(td, item) ? sum
+        : sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0), 0);
   }
   return td.line_items.reduce((sum, item) => {
+    // Supplements price in their own block, never in the package.
+    if (isSupplementItem(td, item)) return sum;
     // Zero-qty items are "not in scope" (the grid parks them in a chip row and
     // the customer page hides them) — they must not price, even with a locked
     // price_override. MUST mirror calc_tier_total in app.py.
@@ -2025,9 +2100,11 @@ function tradeCostTotal(trade, tier) {
   const effectiveMode = effectiveTradeMode(trade, td);
   if (effectiveMode === 'simple') {
     return (td.line_items || []).reduce((sum, item) =>
-      sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_cost)||0), 0);
+      isSupplementItem(td, item) ? sum
+        : sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_cost)||0), 0);
   }
   return (td.line_items || []).reduce((sum, item) => {
+    if (isSupplementItem(td, item)) return sum;               // priced separately
     if ((parseFloat(item.quantity) || 0) <= 0) return sum;   // not in scope
     const t = (item.tiers && item.tiers[tier]) || {};
     if (t.included === false) return sum;                     // not in this package
@@ -2944,6 +3021,7 @@ function tierProfit(tier) {
       // rather than printing three identical columns.
       let s = 0, sm = 0, sl = 0;
       (td.line_items||[]).forEach(item => {
+        if (isSupplementItem(td, item)) return;
         const qty = parseFloat(item.quantity)||0; if (qty <= 0) return;
         s += qty * (parseFloat(item.unit_price)||0);
         const sp = simpleCostSplit(trade, item, qty, byName);
@@ -2964,6 +3042,7 @@ function tierProfit(tier) {
     }
     let m = 0, l = 0;
     (td.line_items||[]).forEach(item => {
+      if (isSupplementItem(td, item)) return;
       const qty = parseFloat(item.quantity)||0; if (qty <= 0) return;
       const t = (item.tiers||{})[tier] || {};
       if (t.included === false) return;
@@ -6343,7 +6422,9 @@ function renderSimpleFreeform(trade) {
     const qty   = parseFloat(item.quantity)   || 0;
     const cost  = parseFloat(item.unit_cost)  || 0;
     const price = parseFloat(item.unit_price) || 0;
-    const total = qty * price;
+    // A supplement prices outside the subtotal, a blank quantity as one unit.
+    const isSupp = isSupplementItem(td, item);
+    const total = isSupp ? supplementLineTotal(trade, item, S.selected_tier) : qty * price;
     const descLines = descRows(item.description);
     const sectionSel = sections.length ? `
       <select class="li-section-select" title="Which section this item belongs to"
@@ -6451,7 +6532,14 @@ function renderSimpleFreeform(trade) {
             <td colspan="6" style="text-align:right;padding-right:12px;font-weight:600">${TRADE_LABELS[trade]} Subtotal</td>
             <td class="other-total-cell" id="simple-grand-${trade}" style="font-weight:700;font-size:14px">${fmtCur(grandTot)}</td>
             <td></td>
-          </tr></tfoot>
+          </tr>
+          ${supplementItems(trade, S.selected_tier).length ? `<tr class="simple-supp-foot">
+            <td colspan="6" style="text-align:right;padding-right:12px;color:#6b7280"
+              title="Supplement lines print in their own block after the subtotal. They are never added to it, and a blank quantity prices as one unit.">
+              + Supplements <span style="font-weight:400">(not in total)</span></td>
+            <td class="other-total-cell" id="simple-supp-${trade}" style="color:#6b7280">${fmtCur(supplementsTotal(trade, S.selected_tier))}</td>
+            <td></td>
+          </tr>` : ''}</tfoot>
         </table>
       </div>` : `<div class="scope-empty"><p>No items yet. Click <strong>+ Add Item</strong> below.</p></div>`}
     ${pbDatalist(trade)}
@@ -6588,13 +6676,18 @@ function simpleSetCost(trade, id, cost) {
   else renderTotals();
 }
 function simpleUpdateTotals(trade) {
-  (S.trades[trade].line_items || []).forEach(item => {
-    const total = (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
+  const td = S.trades[trade];
+  (td.line_items || []).forEach(item => {
+    const total = isSupplementItem(td, item)
+      ? supplementLineTotal(trade, item, S.selected_tier)
+      : (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
     const cell  = document.querySelector(`.simple-line-total[data-strade="${trade}"][data-sid="${item.id}"]`);
     if (cell) cell.textContent = fmtCur(total);
   });
   const gt = document.getElementById(`simple-grand-${trade}`);
   if (gt) gt.textContent = fmtCur(tradeTotal(trade, S.selected_tier));
+  const st = document.getElementById(`simple-supp-${trade}`);
+  if (st) st.textContent = fmtCur(supplementsTotal(trade, S.selected_tier));
   renderTotals();
 }
 function simpleAddItem(trade) {
@@ -7796,6 +7889,9 @@ function renderGBBGrid(trade) {
     <div class="tier-column col-${t} ${t===tier?'selected-tier':''}">
       <div class="tier-col-header">
         ${TIER_LABELS[t]} <span class="tier-col-total">${fmtCur(tradeTotal(trade,t))}</span>
+        ${supplementItems(trade, t).length ? `<div class="tier-col-supp"
+          title="Supplement lines print in their own block with their own subtotal. They are not in the package total, and a blank quantity prices as one unit.">
+          + Supplements <strong>${fmtCur(supplementsTotal(trade, t))}</strong> (not in total)</div>` : ''}
       </div>
       <div class="tier-col-rate" title="${rateLbl} for ${TRADE_LABELS[trade]} · ${TIER_LABELS[t]}. Blank uses the ${dflt}% default set in the sidebar.">
         <span class="tier-col-rate-lbl">${rateLbl}</span>
@@ -12457,6 +12553,7 @@ function printTradeBody(trade, tier, o) {
   const td = S.trades[trade] || {};
   const { showLP, tradeMode } = o;
   const inTier = (td.line_items || []).filter(item => {
+    if (isSupplementItem(td, item)) return false;   // printed in its own block
     if ((parseFloat(item.quantity) || 0) <= 0) return false;
     if (tradeMode === 'simple') return true;
     return (item.tiers?.[tier]?.included) !== false;
@@ -12671,6 +12768,7 @@ function buildPrintContent() {
       const items=[];
       const tradeMode=effectiveTradeMode(trade, td);
       (td.line_items||[]).forEach(item=>{
+        if(isSupplementItem(td,item))return;  // "if needed", not in the package
         if((parseFloat(item.quantity)||0)<=0)return;
         if(tradeMode==='simple'){
           items.push(item.description?`${item.name} — ${item.description}`:item.name);
@@ -12759,7 +12857,33 @@ function buildPrintContent() {
 
       const built=tiers.map(t=>Object.assign({tier:t},
         printTradeBody(trade,t,{showLP,tradeMode}))).filter(b=>b.body);
-      if(!built.length)return;
+      // Supplements print after the package table(s) at the SELECTED package,
+      // with a price column whatever the Line Prices chip says — an "if needed"
+      // line without its price tells the customer nothing.
+      const supp=supplementItems(trade,selTier)
+        .filter(i=>i.customer_visible!==false&&String(i.name||'').trim());
+      const suppHtml=supp.length?`<div class="p-trade p-trade-supp">
+        <div class="p-trade-title">${esc(TRADE_LABELS[trade])} Supplements</div>
+        <table class="p-table"><thead><tr>
+          <th>Description</th><th class="p-right">Qty</th><th>Unit</th><th class="p-right">Price</th>
+        </tr></thead><tbody>${supp.map(i=>{
+          const desc=(tradeMode==='simple'?(i.description||''):(((i.tiers||{})[selTier]||{}).description||'')).trim();
+          const q=parseFloat(i.quantity)||0;
+          return `<tr>
+            <td>${esc(i.name)}${desc?`<div class="p-desc-sub">${esc(desc).replace(/\n/g,'<br>')}</div>`:''}</td>
+            <td class="p-right">${q>0?q:'If needed'}</td>
+            <td>${esc(displayUnit(i))}</td>
+            <td class="p-right">${(()=>{const v=supplementLineTotal(trade,i,selTier);return v?fmtCur(v):'Quoted if needed';})()}</td>
+          </tr>`;
+        }).join('')}</tbody><tfoot><tr>${(()=>{
+          // No price anywhere = a notice, never a $0.00 subtotal.
+          const st=supplementsTotal(trade,selTier);
+          return st
+            ? `<td colspan="3">Supplements Subtotal — not included in the total</td><td class="p-right">${fmtCur(st)}</td>`
+            : `<td colspan="4">Supplements may be needed once work begins. They are not included in the total.</td>`;
+        })()}</tr></tfoot></table>
+      </div>`:'';
+      if(!built.length){ ph+=suppHtml; return; }
       // Collapse packages whose scope AND pricing are identical — three copies
       // of one table is not a comparison, it is three pages of noise.
       const groups=[];
@@ -12795,6 +12919,7 @@ function buildPrintContent() {
         </tr></tfoot></table>
       </div>`;
       });
+      ph+=suppHtml;
     });
     // With several packages laid out, an unqualified "Project Total" beside a
     // Best subtotal reads as arithmetic that doesn't add up. Name the package
