@@ -8923,7 +8923,9 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:#0e2440;
 .pd button{width:9px;height:9px;border-radius:9px;background:rgba(255,255,255,.2);
   border:none;cursor:pointer;padding:0;transition:all .2s}
 .pd button.act{background:#0ea5e9;width:24px}
-.pctr{color:rgba(255,255,255,.45);font-size:12px;margin:0 10px}
+.pctr{color:rgba(255,255,255,.45);font-size:12px;margin:0 10px;white-space:nowrap}
+@media(max-width:600px){.pn{padding:10px 12px}.pn-b{min-width:80px;padding:10px 14px}.pctr{margin:0 6px}}
+@media(max-width:380px){.pd{display:none}}
 /* hero */
 .ps-hero{text-align:center;padding:48px 32px}
 .ps-hero-cover{width:100%;max-height:320px;object-fit:cover;border-radius:12px;margin-bottom:28px}
@@ -9044,11 +9046,24 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:#0e2440;
 .ps-steps li span{font-size:12px;color:#64748b}
 /* condition */
 .ps-cond h2{font-size:22px;font-weight:800;color:#0e2440;margin-bottom:16px}
-.ps-cond-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
-.ps-cond-it{background:#f8fafc;padding:14px;border-radius:10px}
-.ps-cond-it label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;display:block;margin-bottom:2px}
-.ps-cond-it strong{font-size:14px;color:#1e293b}
-.ps-cond-notes{margin-top:14px;font-size:13px;color:#475569;line-height:1.6;white-space:pre-wrap}
+.ps-cond{min-width:0;overflow-wrap:anywhere}
+.ps-cond .cvcond-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:12px;margin:16px 0}
+.ps-cond .cvcond-cell{background:#f8fafc;padding:14px;border-radius:10px;text-align:center}
+.ps-cond .cvcond-cell-lbl{font-size:12px;font-weight:700}
+.ps-cond .cvcond-letter{font-size:28px;font-weight:800;border-radius:8px;margin:8px auto;padding:6px;max-width:64px}
+.ps-cond .cvcond-word,.ps-cond .cvcond-badge{font-size:12px;font-weight:700}
+.ps-cond .cvcond-exec,.ps-cond .cvcond-summary{font-size:14px;line-height:1.6;white-space:pre-wrap;margin:12px 0}
+.ps-cond .cvcond-meta,.ps-cond .cvcond-foot{font-size:12px;color:#64748b;line-height:1.6;margin:12px 0}
+.ps-cond .cvcond-sec{margin-top:24px;padding-top:18px;border-top:1px solid #e2e8f0}
+.ps-cond .cvcond-sec-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.ps-cond .cvcond-sec-hd h4{font-size:16px;color:#0e2440}
+.ps-cond .cvcond-badge{padding:5px 10px;border-radius:8px}
+.ps-cond .cvcond-sh{font-size:14px;font-weight:700;margin:18px 0 8px}
+.ps-cond .cvcond-tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}
+.ps-cond .cvcond-tbl th,.ps-cond .cvcond-tbl td{padding:10px 6px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top;white-space:normal!important}
+.ps-cond .cvcond-tbl th{background:#f8fafc;font-size:11px;color:#64748b}
+.ps-cond .cvcond-tbl .cvr{text-align:right}
+.ps-cond .cvcond-cost-total{font-weight:700;background:#f0fdf4}
 """
 
 
@@ -9118,20 +9133,12 @@ def build_presentation_view(est, token):
         </div>{_CV_ANN_JS}'''))
 
     # ── Slide: Property Condition ──────────────────────────────────────
-    cond = est.get('property_condition') or est.get('roof_health') or {}
-    cond_items = [(k.replace('_', ' ').title(), str(v).strip())
-                  for k, v in cond.items()
-                  if k != 'notes' and str(v).strip() and str(v).strip().lower() != 'n/a']
-    cond_notes = (cond.get('notes') or '').strip()
-    if cond_items:
-        ci_html = ''.join(f'<div class="ps-cond-it"><label>{he(l)}</label><strong>{he(v)}</strong></div>'
-                          for l, v in cond_items)
-        notes_h = f'<div class="ps-cond-notes">{he(cond_notes)}</div>' if cond_notes else ''
-        slides.append(('Condition', f'''<div class="ps-cond">
-          <h2>Property Condition Report</h2>
-          <div class="ps-cond-grid">{ci_html}</div>
-          {notes_h}
-        </div>'''))
+    # Use the customer report renderer so empty reports stay out, the report
+    # visibility setting is respected, and structured fields never print as
+    # Python lists/dicts or expose internal photo IDs to the customer.
+    condition_html = _cv_condition_block(est)
+    if condition_html:
+        slides.append(('Condition', f'<div class="ps-cond">{condition_html}</div>'))
 
     # ── Slide: Package Selection (GBB, interactive) ────────────────────
     is_insurance = (est.get('estimate_type') == 'insurance') or \

@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=210">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=212">
 </head>
 <body>
 
@@ -70,6 +70,7 @@
     <button onclick="switchPage('home');closeMoreMenu();setTimeout(()=>document.getElementById('home-cust-search')?.focus(),200)">📁 Customer Search</button>
     <button onclick="newEstimateAction();closeMoreMenu()">New Estimate</button>
     <button onclick="openEstimate();closeMoreMenu()">Open</button>
+    <button onclick="closeMoreMenu();offerDraftRecovery()">Recover Unsaved Work</button>
     <button id="mm-pricebook" onclick="openPriceBook();closeMoreMenu()">📋 Price Book</button>
     <button onclick="presentEstimate();closeMoreMenu()">📊 Present on Tablet</button>
     <button onclick="shareEstimate();closeMoreMenu()">Send / Sign</button>
@@ -867,6 +868,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=210"></script>
+<script src="/estimate/static/app.js?v=212"></script>
 </body>
 </html>

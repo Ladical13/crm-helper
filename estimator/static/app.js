@@ -2385,7 +2385,7 @@ function setClean() {
    Three independent layers, deliberately not chained — each one still works
    when the other two fail:
      1. beforeunload  the browser asks before a close or reload discards work
-     2. local draft   a copy in localStorage, offered back on the next load
+     2. local draft   a copy in localStorage, recoverable from the More menu
      3. autosave      a real PUT, but only for estimates the server already
                       knows about: autosaving a brand-new one would put
                       half-built records in everyone's Open list.
@@ -2440,11 +2440,10 @@ function _listLocalDrafts() {
   return out.sort((a, b) => String(b.saved_at).localeCompare(String(a.saved_at)));
 }
 
-// Called once at boot, after the price book and settings have landed so the
-// restored estimate renders against the same data a fresh one would.
-function offerDraftRecovery() {
+// Recovery is an explicit More-menu action, never a startup interruption.
+async function offerDraftRecovery() {
   const drafts = _listLocalDrafts();
-  if (!drafts.length) return;
+  if (!drafts.length) { toast('No unsaved work to recover on this device.'); return; }
   const d = drafts[0];
   let when = d.saved_at;
   try { when = new Date(d.saved_at).toLocaleString('en-US',
@@ -2453,12 +2452,10 @@ function offerDraftRecovery() {
   const go = confirm(
     `Unsaved work found.\n\nAn estimate ${who} was open and unsaved on this ` +
     `device as of ${when}.\n\nRestore it?\n\n` +
-    `(Cancel discards it — this prompt will not come back.)`);
-  // Either way the draft is consumed. Leaving it would re-prompt on every load
-  // forever, which is how people learn to click through prompts without
-  // reading them.
-  drafts.forEach(x => { try { localStorage.removeItem(x.key); } catch {} });
+    `(Cancel leaves it saved on this device.)`);
   if (!go) return;
+  if (!(await _prepareEstimateChange())) return;
+  try { localStorage.removeItem(d.key); } catch {}
   S = d.estimate;
   renderAll();
   switchPage('client');
@@ -12109,7 +12106,7 @@ async function newEstimateAction() {
   if (!(await _prepareEstimateChange())) return false;
   // Captured after that save and before blankEstimate(): the local
   // crash-recovery draft is redundant once the work is on the server, and must
-  // not outlive it and re-offer itself at the next boot.
+  // not outlive it and appear as recoverable work later.
   const _abandoned = S.estimate_id;
   S=blankEstimate();
   applyTierDefaults(S); // pre-fill from global admin defaults
@@ -13416,11 +13413,13 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   // silently lost — and a missing link is indistinguishable from a job that
   // never came from the CRM.
   applyCrmHandoff(S);
+  // Loading default bundles is setup, not a user edit. Don't turn the blank
+  // startup state into another unnamed recovery file or an unload warning.
+  dirty = false;
+  clearTimeout(_draftTimer); clearTimeout(_autosaveTimer);
+  const saveIndicator = document.getElementById('save-indicator');
+  saveIndicator.textContent = ''; saveIndicator.className = 'save-indicator';
   switchPage('home');   // home screen first — rep must choose New or open existing
-  // Last, so a restored estimate renders against the price book and settings
-  // that have now loaded, and so switchPage('home') cannot navigate away from
-  // the estimate the rep just chose to restore.
-  offerDraftRecovery();
 });
 
 /* ── CRM handoff ────────────────────────────────────────────────────────

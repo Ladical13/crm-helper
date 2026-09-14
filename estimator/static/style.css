@@ -96,13 +96,17 @@ button { cursor: pointer; font-family: inherit; }
   padding: 0 16px; z-index: 200;
   box-shadow: 0 2px 8px rgba(0,0,0,.25);
 }
-.header-left { display: flex; align-items: center; gap: 14px; }
+.header-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .header-logo {
   height: 38px; width: auto;
+  flex-shrink: 0;
   background: #fff; padding: 3px 8px; border-radius: 5px;
 }
-.estimate-number { font-size: 11px; opacity: .6; font-family: monospace; }
-.header-right { display: flex; align-items: center; gap: 8px; }
+.estimate-number {
+  font-size: 11px; opacity: .6; font-family: monospace;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .save-indicator {
   font-size: 11px; padding: 3px 9px; border-radius: 10px; min-width: 64px; text-align: center;
 }
@@ -112,6 +116,7 @@ button { cursor: pointer; font-family: inherit; }
   padding: 6px 14px; border: 1px solid rgba(255,255,255,.25); border-radius: 4px;
   background: rgba(255,255,255,.1); color: #fff; font-size: 12px; font-weight: 500;
   transition: background .15s;
+  white-space: nowrap;
 }
 .header-right button:hover { background: rgba(255,255,255,.2); }
 .header-right .btn-print { background: var(--orange); border-color: transparent; }
@@ -125,7 +130,10 @@ button { cursor: pointer; font-family: inherit; }
   padding: 4px 10px; background: rgba(255,255,255,.12);
   border-radius: 6px; border: 1px solid rgba(255,255,255,.2);
 }
-.user-name { font-size: 13px; font-weight: 600; color: #fff; white-space: nowrap; }
+.user-name {
+  font-size: 13px; font-weight: 600; color: #fff; white-space: nowrap;
+  max-width: 120px; overflow: hidden; text-overflow: ellipsis;
+}
 /* Demo-session marker. Loud on purpose — it has to survive being glanced past
    on a phone in a meeting, because everything behind it is invented. */
 .demo-badge {
@@ -1933,13 +1941,18 @@ body.is-home #nav-toggle       { display: none; }
 }
 .home-est-row {
   display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
   padding: 12px 16px; border-bottom: 1px solid #f1f5f9;
   cursor: pointer; transition: background .1s;
 }
 .home-est-row:last-child { border-bottom: none; }
 .home-est-row:hover      { background: #f8fafc; }
+.home-est-main { flex: 1; min-width: 0; }
 .home-est-main strong { display: block; font-size: 14px; font-weight: 600; }
-.home-est-main small  { font-size: 11px; color: var(--text-light); margin-top: 1px; }
+.home-est-main small {
+  display: block; font-size: 11px; color: var(--text-light); margin-top: 1px;
+  overflow-wrap: anywhere;
+}
 .home-est-side { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .home-est-total { font-size: 13px; font-weight: 700; color: #1a3a5c; }
 .home-empty { padding: 28px 16px; text-align: center; color: var(--text-light); font-size: 13px; }
@@ -3627,6 +3640,19 @@ a.jx-contact:hover { text-decoration: underline; }
 /* Header desktop-button group */
 .header-desktop-btns { display: flex; align-items: center; gap: 8px; }
 
+/* Keep customer actions on laptops, and move the duplicate utility actions
+   into More. Narrow tablets use More for the full set; Save stays visible. */
+@media (max-width: 1599px) {
+  .header-desktop-btns button:not(.btn-present):not(.btn-share):not(.btn-print) { display: none; }
+}
+@media (max-width: 1023px) {
+  .header-desktop-btns { display: none; }
+}
+@media (min-width: 768px) {
+  .header-left { flex: 1; margin-right: 12px; }
+  .estimate-label-badge { min-width: 0; }
+}
+
 /* More-menu button — shown at EVERY width.
    It used to be phone-only, which quietly made the menu's four exclusive
    entries unreachable on a laptop: Order Sheet had no other caller anywhere
@@ -3643,8 +3669,12 @@ a.jx-contact:hover { text-decoration: underline; }
 
 /* Overflow menu */
 .header-overflow-menu {
+  --menu-top: var(--header-h);
   display: none; position: fixed;
-  top: var(--header-h); right: 8px;
+  top: var(--menu-top); right: 8px;
+  max-height: calc(100vh - var(--menu-top) - env(safe-area-inset-bottom, 0px) - 8px);
+  max-height: calc(100dvh - var(--menu-top) - env(safe-area-inset-bottom, 0px) - 8px);
+  overflow-y: auto; overscroll-behavior: contain;
   background: var(--primary); border-radius: 0 0 8px 8px;
   box-shadow: 0 8px 24px rgba(0,0,0,.35);
   z-index: 500; flex-direction: column; min-width: 210px;
@@ -3652,6 +3682,7 @@ a.jx-contact:hover { text-decoration: underline; }
 }
 .header-overflow-menu.open { display: flex; }
 .header-overflow-menu button {
+  flex-shrink: 0;
   padding: 13px 18px; border: none; border-radius: 0;
   background: none; color: #fff; font-size: 14px; font-weight: 500;
   text-align: left; border-bottom: 1px solid rgba(255,255,255,.1);
@@ -4788,7 +4819,7 @@ body.is-client #nav-toggle      { display: none; }
  * Every offset below already keyed off --header-h; this only adds the bar. */
 .p1-has-shell #app-header { top: var(--p1-shell-h); }
 .p1-has-shell #app-layout { padding-top: calc(var(--header-h) + var(--p1-shell-h)); }
-.p1-has-shell .header-overflow-menu { top: calc(var(--header-h) + var(--p1-shell-h)); }
+.p1-has-shell .header-overflow-menu { --menu-top: calc(var(--header-h) + var(--p1-shell-h)); }
 
 /* Matches the drawer breakpoint above, where #sidebar becomes a fixed overlay. */
 @media (max-width: 767px) {
