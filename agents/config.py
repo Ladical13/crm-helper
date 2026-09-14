@@ -273,6 +273,21 @@ def _init_cache_db(conn):
         );
         CREATE INDEX IF NOT EXISTS runs_rep_idx ON agent_runs(rep, started_at DESC);
 
+        -- Shared progress and leases for manual and scheduled marketing jobs.
+        -- Preview results are kept here too, without saving generated content.
+        CREATE TABLE IF NOT EXISTS background_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            dry_run INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            finished_at TEXT DEFAULT '',
+            manifest TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS one_marketing_job
+            ON background_jobs(status) WHERE status = 'running';
+
         CREATE TABLE IF NOT EXISTS content_drafts (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at    TEXT NOT NULL,

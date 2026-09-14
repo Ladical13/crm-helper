@@ -74,8 +74,18 @@ def shell(**_kw):
 
 # ── Local SEO strategist (public research only, read-only) ───────────────────
 
-_seo_lock = threading.Lock()
-_seo_active = {'running': False, 'stage': '', 'manifest': None}
+def _marketing_state(job_id=None):
+    from agents import jobs
+    return jobs.get(job_id) or {'running': False, 'stage': '', 'manifest': None}
+
+
+def _start_marketing(kind, work, dry_run):
+    from agents import jobs
+    try:
+        job_id = jobs.start(kind, work, dry_run)
+    except jobs.Busy as exc:
+        return jsonify({'error': str(exc)}), 409
+    return jsonify({'started': True, 'dry_run': dry_run, 'job_id': job_id}), 202
 
 
 @nimbus_bp.route('/api/seo/runs', methods=['GET'])
@@ -90,46 +100,33 @@ def seo_runs():
             'SELECT id, started_at, finished_at, status, mode, pages_crawled, '
             'recs_created, cost_usd, error, summary FROM seo_runs '
             'ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
-    with _seo_lock:
-        active = dict(_seo_active)
+    active = _marketing_state()
     return jsonify({'runs': [dict(r) for r in rows], 'active': active})
 
 
 @nimbus_bp.route('/api/seo/run', methods=['POST'])
 def seo_run():
-    """Kick off a strategist pass. ``dry_run`` writes nothing at all."""
+    """Kick off a strategist pass; previews save only job progress/results."""
     data = request.get_json(force=True, silent=True) or {}
     dry_run = bool(data.get('dry_run'))
     max_pages = int(data.get('max_pages') or 40)
 
-    with _seo_lock:
-        if _seo_active['running']:
-            return jsonify({'error': 'a run is already in progress'}), 409
-        _seo_active.update({'running': True, 'stage': 'crawling', 'manifest': None})
-
     def worker():
         from agents.seo import run as seo
-        try:
-            manifest = seo.run(dry_run=dry_run, max_pages=max_pages)
-        except Exception as e:                                   # noqa: BLE001
-            manifest = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
-        with _seo_lock:
-            _seo_active.update({'running': False, 'stage': 'done',
-                                'manifest': manifest})
+        return seo.run(dry_run=dry_run, max_pages=max_pages)
 
-    threading.Thread(target=worker, daemon=True).start()
-    return jsonify({'started': True, 'dry_run': dry_run}), 202
+    return _start_marketing('seo', worker, dry_run)
 
 
 @nimbus_bp.route('/api/seo/result', methods=['GET'])
 def seo_result():
-    """The last finished run's manifest — how a dry run is read back.
-
-    A dry run persists nothing, so this in-process handoff is the only place
-    its output exists.
-    """
-    with _seo_lock:
-        return jsonify(dict(_seo_active))
+    """Shared run progress. An ID keeps polls tied to the requested job."""
+    job_id = request.args.get('job_id', type=int)
+    from agents import jobs
+    state = jobs.get(job_id)
+    if job_id is not None and state is None:
+        return jsonify({'error': 'run not found'}), 404
+    return jsonify(state or _marketing_state())
 
 
 @nimbus_bp.route('/api/seo/report', methods=['GET'])
@@ -550,24 +547,11 @@ def social_run():
     dry_run = bool(data.get('dry_run'))
     max_topics = int(data.get('max_topics') or 2)
 
-    with _seo_lock:
-        if _seo_active['running']:
-            return jsonify({'error': 'a run is already in progress'}), 409
-        _seo_active.update({'running': True, 'stage': 'writing posts',
-                            'manifest': None})
-
     def worker():
         from agents.content import posts
-        try:
-            out = posts.weekly_run(max_topics=max_topics, dry_run=dry_run)
-            out['ok'] = True
-        except Exception as e:                                   # noqa: BLE001
-            out = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
-        with _seo_lock:
-            _seo_active.update({'running': False, 'stage': 'done', 'manifest': out})
+        return posts.weekly_run(max_topics=max_topics, dry_run=dry_run)
 
-    threading.Thread(target=worker, daemon=True).start()
-    return jsonify({'started': True, 'dry_run': dry_run}), 202
+    return _start_marketing('social', worker, dry_run)
 
 
 @nimbus_bp.route('/api/social/drafts/<int:draft_id>', methods=['POST'])
@@ -766,7 +750,10 @@ def supervisor_message(thread_id):
     if ctx is None:
         return jsonify({'error': 'no session cookie to forward'}), 400
 
-    chat.start_turn(thread_id, text, ctx)
+    try:
+        chat.start_turn(thread_id, text, ctx)
+    except chat.Busy as exc:
+        return jsonify({'error': str(exc)}), 409
     return jsonify({'started': True, 'thread_id': thread_id}), 202
 
 
@@ -795,7 +782,7 @@ def supervisor_status():
 
 @nimbus_bp.route('/api/pipeline')
 def pipeline_pulse():
-    """Aggregate open-pipeline + this-week-signed for the dashboard center panel.
+    """All-time pipeline totals for the dashboard center panel.
 
     Calls salescrm's own endpoints via the in-process test client so this
     stays a thin adapter — no duplicated stage/revenue math.
@@ -807,25 +794,7 @@ def pipeline_pulse():
         return jsonify({'error': 'no session cookie'}), 400
     c = Client(application)
     c.set_cookie('p1session', caller_cookie, domain='localhost')
-    r = c.get('/crm/api/leads')
+    r = c.get('/crm/api/pipeline/summary')
     if r.status_code != 200:
-        # Surface an empty pulse rather than a red 500 in the corner of the
-        # dashboard — the CRM might just be empty in a fresh dev environment.
-        return jsonify({'stage_counts': {}, 'open_leads': 0,
-                        'won_this_period': 0, 'won_value': 0, 'open_value': 0})
-    leads = r.get_json() or []
-    stage_counts = {}
-    for l in leads:
-        stage_counts[l.get('stage', 'new')] = stage_counts.get(l.get('stage', 'new'), 0) + 1
-    total_open = sum(v for k, v in stage_counts.items() if k not in ('won', 'lost'))
-    won_leads  = [l for l in leads if l.get('stage') == 'won']
-    won_value  = sum(float(l.get('est_value') or 0) for l in won_leads)
-    open_value = sum(float(l.get('est_value') or 0) for l in leads
-                     if l.get('stage') not in ('won', 'lost'))
-    return jsonify({
-        'stage_counts': stage_counts,
-        'open_leads':   total_open,
-        'won_this_period': len(won_leads),
-        'won_value':    won_value,
-        'open_value':   open_value,
-    })
+        return jsonify({'error': 'Pipeline data is temporarily unavailable'}), 502
+    return jsonify(r.get_json())

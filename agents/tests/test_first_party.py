@@ -349,7 +349,6 @@ def test_the_monthly_lead_cap_is_actually_enforced(monkeypatch):
         return {'counts': {'inserted': len(rows)}, 'batches': [], 'not_inserted': []}
 
     monkeypatch.setattr(dispatcher.ingest_mod, 'import_via_test_client', fake_import)
-    monkeypatch.setattr(dispatcher, '_lead_ids_from_response', lambda *a, **k: [])
     monkeypatch.setattr(dispatcher.config, 'load_territories', lambda: {
         'capped': {'display_name': 'Capped Rep', 'cities': ['Testville'],
                    'counties': ['Larimer'], 'segments': ['church'],

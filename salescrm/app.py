@@ -574,6 +574,30 @@ def list_leads():
                           params + [limit]).fetchall()
     return jsonify([_lead_row(r) for r in rows])
 
+@app.route('/api/pipeline/summary')
+@login_required
+def pipeline_summary():
+    """Whole-pipeline totals, independent of the paginated lead list."""
+    _reconcile_funnel()
+    where, params = '', []
+    if not is_manager():
+        where, params = 'WHERE rep=?', [current_rep()]
+    with get_db() as db:
+        rows = db.execute(
+            f'SELECT stage, COUNT(*) AS n, COALESCE(SUM(est_value),0) AS value '
+            f'FROM leads {where} GROUP BY stage', params).fetchall()
+    counts = {r['stage']: r['n'] for r in rows}
+    values = {r['stage']: r['value'] for r in rows}
+    return jsonify({
+        'stage_counts': counts,
+        'open_leads': sum(n for stage, n in counts.items() if stage not in ('won', 'lost')),
+        'open_value': sum(v for stage, v in values.items() if stage not in ('won', 'lost')),
+        'won_this_period': counts.get('won', 0),
+        'won_value': values.get('won', 0),
+        'period': 'all_time',
+    })
+
+
 @app.route('/api/leads', methods=['POST'])
 @login_required
 def create_lead():

@@ -150,10 +150,25 @@ def run_due(now=None):
         name = job['name']
         if name not in JOBS or not _due(job, now):
             continue
+        from . import jobs as progress
+        job_id = None
+        if name in ('seo_weekly', 'social_weekly'):
+            try:
+                job_id = progress.claim('seo' if name == 'seo_weekly' else 'social')
+            except progress.Busy:
+                continue  # retry on the next tick; do not consume this week's run
         if not _claim(name, now):
+            if job_id is not None:
+                progress.finish(job_id, {'ok': True, 'note': 'Schedule already handled.'})
             continue        # another worker got there first
         try:
-            summary = JOBS[name]()
+            if job_id is None:
+                summary = JOBS[name]()
+            else:
+                result = progress.execute(job_id, JOBS[name])
+                if not result.get('ok'):
+                    raise RuntimeError(result.get('error', 'Job failed'))
+                summary = result.get('note', '')
             _finish(name, 'ok', summary)
             ran.append(name)
         except Exception as e:                                   # noqa: BLE001
