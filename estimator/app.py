@@ -3405,13 +3405,14 @@ def _xact_num(s):
 # "Abv. Avg.", and guide-style glued qty+unit ("685.47SF").
 #
 # The columns are the ADJUSTER's choice in Xactimate, not a fixed layout.
-# Auto-Owners prints "QTY UNIT PRICE TAX RCV (DEPREC) ACV": an extra TAX
-# column and no AGE/LIFE, COND or DEP% at all. A pattern that required the
-# Allstate columns matched zero lines on that export and the import refused
-# the whole estimate. So up to two money columns (TAX, O&P) may sit between
-# PRICE and RCV, and the age/condition/dep% block is optional. RCV is always
-# the last figure before the block or the "(DEPREC)", which is what keeps the
-# extras from being misread as it.
+# Allstate prints the shape above; Auto-Owners prints "QTY UNIT PRICE TAX RCV
+# (DEPREC) ACV" with no age, condition or dep% at all, and a pattern written
+# for one matched zero lines of the other. So the layout is READ rather than
+# assumed: every export prints its column header, `_xact_columns` turns that
+# row into a column list and `_xact_item_rx` into the pattern its lines must
+# match. This tolerant pattern is only the fallback -- for lines before any
+# header, or under a header naming a column nobody has taught it yet.
+_XACT_MONEY = r'[\d,]+\.\d{2}'
 _XACT_ITEM_RE = re.compile(
     r'^(?P<no>\d{1,3})\.\s+(?P<desc>.+?)\s+'
     r'(?P<qty>[\d,]+\.\d{2})\s*(?P<unit>[A-Z]{2,3})\s+'
@@ -3419,17 +3420,153 @@ _XACT_ITEM_RE = re.compile(
     r'(?:(?P<age>\d+/(?:\d+|NA))\s*(?:yrs)?\s+'
     r'(?P<cond>New|Avg\.|Abv\.\s*Avg\.|Bel\.\s*Avg\.)\s+'
     r'(?P<dep_pct>NA|<?[\d.]+\s*%)\s*(?:\[[A-Z%]\])?\s*)?'
-    r'\((?P<deprec>[\d,]+\.\d{2})\)\s+(?P<acv>[\d,]+\.\d{2})\s*$')
+    r'(?P<dep_open>[(<])(?P<deprec>[\d,]+\.\d{2})[)>]\s+(?P<acv>[\d,]+\.\d{2})\s*$')
+
+# Header words -> column key. Within one entry the longer spelling comes first
+# (UNIT PRICE before UNIT, RCV before RC).
+_XACT_COLUMN_WORDS = (
+    ('qty',     r'QUANTITY|QTY'),
+    ('price',   r'UNIT\s*(?:PRICE|COST)|UNIT|PRICE'),
+    ('remove',  r'REMOVE'),
+    ('replace', r'REPLACE'),
+    ('tax',     r'TAX'),
+    ('op',      r'O\s*&\s*P'),
+    ('rcv',     r'RCV|TOTAL|RC'),
+    ('age',     r'AGE\s*/\s*LIFE'),
+    ('cond',    r'COND\.?'),
+    ('dep_pct', r'DEP\s*%'),
+    ('deprec',  r'DEPREC\.?|DEPRECIATION'),
+    ('acv',     r'ACV'),
+)
+
+# The cell each column prints. Depreciation in <angle brackets> is Xactimate's
+# mark for NON-recoverable depreciation (the homeowner never gets it back);
+# (parentheses) is recoverable. Both come off ACV the same way.
+_XACT_CELLS = {
+    'qty':     r'(?P<qty>[\d,]+\.\d{2})\s*(?P<unit>[A-Z]{2,3})',
+    'price':   rf'(?P<price>{_XACT_MONEY})',
+    'remove':  rf'(?P<remove>{_XACT_MONEY})',
+    'replace': rf'(?P<replace>{_XACT_MONEY})',
+    'tax':     rf'(?P<tax>{_XACT_MONEY})',
+    'op':      rf'(?P<op>{_XACT_MONEY})',
+    'rcv':     rf'(?P<rcv>{_XACT_MONEY})',
+    'age':     r'(?P<age>\d+/(?:\d+|NA))(?:\s*yrs)?',
+    'cond':    r'(?P<cond>New|Avg\.|Abv\.\s*Avg\.|Bel\.\s*Avg\.)',
+    'dep_pct': r'(?P<dep_pct>NA|<?[\d.]+\s*%)(?:\s*\[[A-Z%]\])?',
+    'deprec':  rf'(?P<dep_open>[(<])(?P<deprec>{_XACT_MONEY})[)>]',
+    'acv':     rf'(?P<acv>{_XACT_MONEY})',
+}
+# The columns a Totals / Line Item Totals row prints: the ones that add up.
+_XACT_SUMMED = ('tax', 'op', 'rcv', 'deprec', 'acv')
 
 _XACT_ITEM_START_RE = re.compile(r'^\d{1,3}\.\s+\S')
-_XACT_HEADER_RE     = re.compile(r'^DESCRIPTION\s+QUANTITY\s+UNIT\b.*\bRCV\b', re.I | re.M)
-# Totals rows carry the same optional TAX/O&P figures ahead of RCV DEP ACV.
+_XACT_HEADER_RE     = re.compile(
+    r'^DESCRIPTION\s+(?:QUANTITY|QTY)\b.*\b(?:RCV|ACV|TOTAL)\b', re.I | re.M)
+# Totals rows print a run of figures whose meaning comes from the header
+# (`_xact_totals`), so the patterns only find the run.
 _XACT_TOTALS_RE     = re.compile(
-    r'^Totals?:\s+(?P<name>.+?)\s+(?:[\d,]+\.\d{2}\s+){0,2}(?P<rcv>[\d,]+\.\d{2})\s+'
-    r'(?P<dep>[\d,]+\.\d{2})\s+(?P<acv>[\d,]+\.\d{2})\s*$')
+    r'^Totals?:\s+(?P<name>.+?)\s+(?P<nums>(?:[(<]?[\d,]+\.\d{2}[)>]?\s*)+)$')
 _XACT_GRAND_RE      = re.compile(
-    r'Line Item Totals:\s*\S+\s+(?:[\d,]+\.\d{2}\s+){0,2}'
-    r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})[ \t]*$', re.M)
+    r'Line Item Totals:[ \t]*(?P<name>.+?)[ \t]+'
+    r'(?P<nums>(?:[(<]?[\d,]+\.\d{2}[)>]?[ \t]*)+)$', re.M)
+
+
+def _xact_columns(header):
+    """Column keys for a line-item header row, or None.
+
+    None when the row names a column this parser has not been taught, and that
+    is deliberate: guessing at an unknown column is exactly how a TAX figure
+    gets read as an RCV. Lines under it still get the tolerant fallback, and
+    the import is flagged so the PDF is kept for whoever teaches it.
+    """
+    m = re.match(r'\s*DESCRIPTION\s+', header, re.I)
+    if not m:
+        return None
+    rest, cols = header[m.end():].strip(), []
+    while rest:
+        for key, words in _XACT_COLUMN_WORDS:
+            wm = re.match(rf'(?:{words})(?=\s|$)', rest, re.I)
+            if wm:
+                cols.append(key)
+                rest = rest[wm.end():].lstrip()
+                break
+        else:
+            return None
+    if (len(set(cols)) != len(cols) or 'qty' not in cols
+            or not {'rcv', 'acv'} & set(cols)):
+        return None
+    return cols
+
+
+def _xact_item_rx(cols):
+    parts = [r'^(?P<no>\d{1,3})\.\s+(?P<desc>.+?)\s+']
+    for i, col in enumerate(cols):
+        if i:
+            # A bracket is its own delimiter; every other cell needs a gap.
+            parts.append(r'\s*' if col == 'deprec' else r'\s+')
+        parts.append(_XACT_CELLS[col])
+    parts.append(r'\s*$')
+    return re.compile(''.join(parts))
+
+
+def _xact_item(m):
+    """Item dict from a match of either pattern.
+
+    The shape the review modal and applyXactImport read is unchanged; `tax`,
+    `op` and `nonrecoverable` are extra. A layout with no RCV column derives
+    it, one with no ACV derives that, and one with no depreciation has none.
+    """
+    g = m.groupdict()
+
+    def num(key):
+        return _xact_num(g[key]) if g.get(key) else None
+
+    price = num('price')
+    if price is None:
+        price = (num('remove') or 0.0) + (num('replace') or 0.0)
+    dep = num('deprec') or 0.0
+    rcv, acv = num('rcv'), num('acv')
+    if rcv is None:
+        rcv = round((acv or 0.0) + dep, 2)
+    if acv is None:
+        acv = round(rcv - dep, 2)
+    return {
+        'line_no':      int(g['no']),
+        'description':  re.sub(r'\s+', ' ', g['desc']).strip(),
+        'qty':          _xact_num(g['qty']),
+        'unit':         g['unit'],
+        'unit_price':   round(price, 2),
+        'rcv':          rcv,
+        'age_life':     g.get('age') or '',
+        'dep_pct':      (g.get('dep_pct') or '').replace(' ', ''),
+        'depreciation': dep,
+        'acv':          acv,
+        'tax':          num('tax') or 0.0,
+        'op':           num('op') or 0.0,
+        'nonrecoverable': g.get('dep_open') == '<',
+    }
+
+
+def _xact_totals(nums, cols):
+    """(rcv, dep, acv) from the run of figures on a Totals row, or None.
+
+    Those rows print only the columns that add up, in header order, so the
+    header says which figure is which. Read right-aligned: Auto-Owners'
+    "211.00 24,436.17 2,525.45 21,910.72" is TAX RCV DEP ACV, and reading the
+    first three put the tax in the RCV. With no known header the last three
+    are RCV DEP ACV, which is what every export seen so far has printed.
+    """
+    figures = [_xact_num(n) for n in re.findall(_XACT_MONEY, nums)]
+    summed = [c for c in (cols or ()) if c in _XACT_SUMMED] or ['rcv', 'deprec', 'acv']
+    vals = dict(zip(reversed(summed), reversed(figures)))
+    rcv, acv, dep = vals.get('rcv'), vals.get('acv'), vals.get('deprec', 0.0)
+    if rcv is None and acv is None:
+        return None
+    if rcv is None:
+        rcv = round(acv + dep, 2)
+    if acv is None:
+        acv = round(rcv - dep, 2)
+    return rcv, dep, acv
 _XACT_NOISE_RES = [re.compile(p, re.I) for p in (
     r'^Options?:', r'^Auto Calculated Waste', r'^This line item include',
     r'^The above line item', r'^Bundle Rounding', r'^CONTINUED\s*-',
@@ -3461,28 +3598,30 @@ def _xact_is_noise(line, extra_noise=()):
     return any(rx.search(line) for rx in _XACT_NOISE_RES)
 
 
-def _parse_xactimate_items(lines, extra_noise=()):
-    """State machine over the document's lines → flat [(line_no, section, item)]."""
+def _parse_xactimate_items(lines, extra_noise=(), headers=None):
+    """State machine over the document's lines → flat [(line_no, section, item)].
+
+    `headers`, when given, collects (header row, column list or None) for
+    every column header seen, so the caller can say which layout it read.
+    """
     out = []
     current_section = None
     recent = []          # raw non-item lines, for section-name lookback
     pending = None       # buffered numbered line whose numeric tail wrapped
     pending_count = 0
     open_item = None     # last emitted item, may take ONE description continuation
+    item_rx = _XACT_ITEM_RE   # replaced by each column header's own layout
+
+    def match(s):
+        # The header's pattern first; the tolerant one only when that misses,
+        # so one oddly printed line cannot sink an otherwise known layout.
+        m = item_rx.match(s)
+        if m is None and item_rx is not _XACT_ITEM_RE:
+            m = _XACT_ITEM_RE.match(s)
+        return m
 
     def emit(m):
-        item = {
-            'line_no':     int(m.group('no')),
-            'description': re.sub(r'\s+', ' ', m.group('desc')).strip(),
-            'qty':         _xact_num(m.group('qty')),
-            'unit':        m.group('unit'),
-            'unit_price':  _xact_num(m.group('price')),
-            'rcv':         _xact_num(m.group('rcv')),
-            'age_life':    m.group('age') or '',
-            'dep_pct':     (m.group('dep_pct') or '').replace(' ', ''),
-            'depreciation': _xact_num(m.group('deprec')),
-            'acv':         _xact_num(m.group('acv')),
-        }
+        item = _xact_item(m)
         out.append([item['line_no'], current_section, item])
 
     for raw in lines:
@@ -3497,6 +3636,11 @@ def _parse_xactimate_items(lines, extra_noise=()):
             continue
 
         if _XACT_HEADER_RE.search(line):
+            # The layout can change at any header, so each one is re-read.
+            cols = _xact_columns(line)
+            item_rx = _xact_item_rx(cols) if cols else _XACT_ITEM_RE
+            if headers is not None:
+                headers.append((line, cols))
             # Section name = nearest preceding line that isn't noise, isn't a
             # measurement row ("270.38 Total Perimeter Length" starts with a
             # digit), and isn't itself an item.
@@ -3521,7 +3665,7 @@ def _parse_xactimate_items(lines, extra_noise=()):
             open_item = pending = None
             continue
 
-        m = _XACT_ITEM_RE.match(line)
+        m = match(line)
         if m:
             emit(m)
             open_item = out[-1][2]
@@ -3534,7 +3678,7 @@ def _parse_xactimate_items(lines, extra_noise=()):
 
         if pending is not None:
             joined = pending + ' ' + line
-            m = _XACT_ITEM_RE.match(joined)
+            m = match(joined)
             if m:
                 emit(m)
                 open_item = out[-1][2]
@@ -3629,7 +3773,11 @@ def _parse_xactimate_pdf(file_bytes):
                 extra_noise.update(s for s in top if s)
                 break
             top.append(ln.strip())
-    flat = _parse_xactimate_items(text.split('\n'), extra_noise)
+    headers = []
+    flat = _parse_xactimate_items(text.split('\n'), extra_noise, headers)
+    # The document's layout, for reading its Totals rows. The first header the
+    # parser recognised; an unrecognised one leaves the last-three fallback.
+    doc_cols = next((c for _, c in headers if c), None)
 
     # Split into runs of strictly-increasing line numbers, then pick the run
     # whose RCV sum matches the document's "Line Item Totals" checksum. Any
@@ -3644,7 +3792,7 @@ def _parse_xactimate_pdf(file_bytes):
     grand = None
     gm = list(_XACT_GRAND_RE.finditer(text))
     if gm:
-        grand = tuple(_xact_num(g) for g in gm[-1].groups())
+        grand = _xact_totals(gm[-1].group('nums'), doc_cols)
     chosen = None
     if grand is not None:
         for run in runs:
@@ -3675,11 +3823,10 @@ def _parse_xactimate_pdf(file_bytes):
     for ln in text.split('\n'):
         tm = _XACT_TOTALS_RE.match(ln.strip())
         if tm and tm.group('name').strip() in by_name:
-            by_name[tm.group('name').strip()]['totals'] = {
-                'rcv': _xact_num(tm.group('rcv')),
-                'dep': _xact_num(tm.group('dep')),
-                'acv': _xact_num(tm.group('acv')),
-            }
+            t = _xact_totals(tm.group('nums'), doc_cols)
+            if t:
+                by_name[tm.group('name').strip()]['totals'] = {
+                    'rcv': t[0], 'dep': t[1], 'acv': t[2]}
 
     # ── claim summary: sum each label across the per-coverage blocks ──
     summary = {}
@@ -3706,8 +3853,13 @@ def _parse_xactimate_pdf(file_bytes):
         summary['line_items_depreciation'] = grand[1]
         summary['line_items_acv'] = grand[2]
 
+    layout = {
+        'header':  headers[0][0] if headers else '',
+        'columns': doc_cols or [],
+        'unknown_headers': sorted({h for h, c in headers if c is None}),
+    }
     return {'meta': meta, 'address': addr, 'sections': sections,
-            'summary': summary, 'warnings': warnings}
+            'summary': summary, 'warnings': warnings, 'layout': layout}
 
 
 # ── Symbility (insurance carrier estimate) PDF import ──────────────────────
@@ -4127,7 +4279,10 @@ def _detect_carrier_format(file_bytes):
     reader = _pypdf.PdfReader(io.BytesIO(file_bytes))
     for p in reader.pages:
         flat = p.extract_text() or ''
-        if _SYM_HEADER_FLAT_RE.search(flat):
+        # Symbility's header in reading order also satisfies the (wider)
+        # Xactimate header test — it has a Quantity and an ACV — so it must
+        # be ruled out first, not after.
+        if _SYM_HEADER_FLAT_RE.search(flat) or _SYM_HEADER_RE.search(flat):
             return 'symbility'
         if _XACT_HEADER_RE.search(flat):
             return 'xactimate'
@@ -4147,22 +4302,199 @@ def parse_xactimate():
     sniffed and dispatched. Both parsers return the same shape, so the review
     modal renders either one; the route stays parse-only and persists nothing.
     The path keeps its original name because the browser posts here.
+
+    Every response that parsed carries `reconcile`, and anything that did not
+    read cleanly keeps a copy of the PDF for an admin. Carriers keep printing
+    layouts nobody has seen yet; the copy is what turns "the import errored"
+    into the file needed to fix it.
     """
-    raw, err = _read_pdf_upload(request.files.get('file'))
+    upload = request.files.get('file')
+    raw, err = _read_pdf_upload(upload)
     if err:
         return jsonify({'error': err}), 400
+    filename = (upload.filename or '') if upload else ''
     try:
         fmt = _detect_carrier_format(raw)
         data = (_parse_symbility_pdf if fmt == 'symbility'
                 else _parse_xactimate_pdf)(raw)
     except Exception as e:
-        return jsonify({'error': f'Could not read PDF: {e}'}), 400
+        kept = _keep_failed_carrier_pdf(raw, 'error', filename, {'error': str(e)})
+        return jsonify({'error': _CARRIER_KEPT_MSG if kept
+                        else f'Could not read PDF: {e}'}), 400
     data.setdefault('format', 'xactimate')
     if not any(s.get('items') for s in data['sections']):
         label = 'Symbility' if data['format'] == 'symbility' else 'Xactimate'
-        return jsonify({'error': f"Couldn’t find {label} line items in this PDF. "
-                                 "Make sure it’s the carrier’s estimate export."}), 422
+        kept = _keep_failed_carrier_pdf(raw, 'no_items', filename,
+                                        _carrier_failure_detail(data))
+        return jsonify({'error': _CARRIER_KEPT_MSG if kept else
+                        f"Couldn’t find {label} line items in this PDF. "
+                        "Make sure it’s the carrier’s estimate export."}), 422
+    rec = _carrier_reconcile(data)
+    if not rec['ok']:
+        rec['kept'] = bool(_keep_failed_carrier_pdf(
+            raw, rec['status'], filename, _carrier_failure_detail(data, rec)))
+    data['reconcile'] = rec
     return jsonify(data)
+
+
+_CARRIER_KEPT_MSG = ('Couldn’t read this as a carrier estimate. If it is one, a copy '
+                     'was saved for an admin to teach the importer its layout — '
+                     'enter the lines by hand for now.')
+
+
+def _carrier_reconcile(data):
+    """Whether the parsed lines ARE the carrier's lines, as one verdict.
+
+    A carrier prints its own arithmetic -- RCV = ACV + depreciation on every
+    line, and a document total -- so a correct read can be PROVEN against the
+    PDF rather than eyeballed. `ok` needs the document total and every line to
+    agree. Section subtotals are reported to say WHERE a miss is, but do not
+    decide it: two rooms sharing a name ("Roof" on two elevations) merge into
+    one section here, and would read as wrong while being right.
+
+    An unrecognised column header is its own status even when the total
+    agrees, because the figures that do not reach the total (unit price, tax)
+    may still have been read as the wrong column.
+    """
+    sections = data.get('sections') or []
+    items = [it for s in sections for it in (s.get('items') or [])]
+    parsed = round(sum(it.get('rcv') or 0 for it in items), 2)
+    carrier = (data.get('summary') or {}).get('line_items_rcv')
+    lines_off = [it.get('line_no') for it in items
+                 if abs((it.get('rcv') or 0)
+                        - ((it.get('acv') or 0) + (it.get('depreciation') or 0))) > 0.02]
+    sections_off = []
+    for s in sections:
+        want = (s.get('totals') or {}).get('rcv')
+        if want is None:
+            continue
+        got = round(sum(it.get('rcv') or 0 for it in (s.get('items') or [])), 2)
+        if abs(got - want) > 0.05:
+            sections_off.append({'name': s.get('name') or '', 'carrier_rcv': want,
+                                 'parsed_rcv': got})
+    unknown = (data.get('layout') or {}).get('unknown_headers') or []
+    total_matches = carrier is not None and abs(parsed - carrier) <= 0.05
+    if unknown:
+        status = 'unknown_layout'
+    elif carrier is None:
+        status = 'unverified'
+    elif not total_matches or lines_off:
+        status = 'mismatch'
+    else:
+        status = 'ok'
+    return {'ok': status == 'ok', 'status': status, 'total_matches': total_matches,
+            'carrier_rcv': carrier, 'parsed_rcv': parsed, 'lines_off': lines_off,
+            'sections_off': sections_off, 'unknown_headers': unknown, 'kept': False}
+
+
+def _carrier_failure_detail(data, rec=None):
+    layout = data.get('layout') or {}
+    detail = {'format': data.get('format', ''),
+              'carrier': (data.get('meta') or {}).get('carrier', ''),
+              'header': layout.get('header', '')}
+    if rec:
+        detail.update({k: rec[k] for k in ('carrier_rcv', 'parsed_rcv', 'lines_off',
+                                           'sections_off', 'unknown_headers')})
+    return detail
+
+
+# Carrier PDFs that did not read cleanly. On the volume beside the estimates,
+# admin-only, and capped, because each one is a homeowner's name, address and
+# claim number.
+CARRIER_FAILURES_DIR  = os.path.join(DATA_DIR, 'carrier_import_failures')
+CARRIER_FAILURES_KEEP = 50
+
+
+def _carrier_failure_names():
+    try:
+        return sorted(fn[:-4] for fn in os.listdir(CARRIER_FAILURES_DIR)
+                      if fn.endswith('.pdf'))
+    except OSError:
+        return []
+
+
+def _keep_failed_carrier_pdf(raw, reason, filename='', detail=None):
+    """Save a carrier PDF that did not read cleanly; the saved name, or None.
+
+    Never raises -- a full disk must not turn a parse warning into a 500. The
+    same bytes are kept once, however many times a rep retries them. Names
+    lead with a strictly increasing number so the newest sort last and the
+    cap removes the oldest, even for two uploads inside one clock tick.
+    """
+    if demo.active():
+        return None
+    try:
+        os.makedirs(CARRIER_FAILURES_DIR, exist_ok=True)
+        digest = hashlib.sha256(raw).hexdigest()[:12]
+        names = _carrier_failure_names()
+        for existing in names:
+            if existing.endswith('_' + digest):
+                return existing
+        seq = int(datetime.utcnow().strftime('%Y%m%d%H%M%S%f'))
+        if names:
+            seq = max(seq, int(names[-1].split('_')[0]) + 1)
+        name = f'{seq}_{digest}'
+        base = os.path.join(CARRIER_FAILURES_DIR, name)
+        with open(base + '.pdf', 'wb') as f:
+            f.write(raw)
+        with open(base + '.json', 'w', encoding='utf-8') as f:
+            json.dump({'name': name, 'reason': reason, 'filename': filename,
+                       'user': _current_user(),
+                       'at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+                       'detail': detail or {}}, f, indent=2, default=str)
+        for old in _carrier_failure_names()[:-CARRIER_FAILURES_KEEP]:
+            for ext in ('.pdf', '.json'):
+                try:
+                    os.remove(os.path.join(CARRIER_FAILURES_DIR, old + ext))
+                except OSError:
+                    pass
+        return name
+    except Exception as e:
+        print(f'[carrier-import] could not keep a failed PDF: {e}')
+        return None
+
+
+@app.route('/api/carrier-import-failures')
+def list_carrier_import_failures():
+    """Admin-only, not manager-up: every row is a homeowner's claim."""
+    if not _is_admin(_current_user()):
+        return _forbid()
+    rows = []
+    for name in reversed(_carrier_failure_names()):
+        try:
+            with open(os.path.join(CARRIER_FAILURES_DIR, name + '.json'),
+                      encoding='utf-8') as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            meta = {}
+        detail = meta.get('detail') or {}
+        rows.append({
+            'name': name, 'reason': meta.get('reason', ''),
+            'filename': meta.get('filename', ''), 'user': meta.get('user', ''),
+            'at': meta.get('at', ''), 'carrier': detail.get('carrier', ''),
+            'header': detail.get('header', ''), 'error': detail.get('error', ''),
+            'carrier_rcv': detail.get('carrier_rcv'),
+            'parsed_rcv': detail.get('parsed_rcv'),
+        })
+    return jsonify(rows)
+
+
+@app.route('/api/carrier-import-failures/<name>', methods=['GET', 'DELETE'])
+def carrier_import_failure(name):
+    if not _is_admin(_current_user()):
+        return _forbid()
+    base = os.path.join(CARRIER_FAILURES_DIR, name)
+    if not _safe_path_id(name) or not os.path.isfile(base + '.pdf'):
+        return jsonify({'error': 'not found'}), 404
+    if request.method == 'DELETE':
+        for ext in ('.pdf', '.json'):
+            try:
+                os.remove(base + ext)
+            except OSError:
+                pass
+        return jsonify({'ok': True})
+    return send_file(base + '.pdf', mimetype='application/pdf', as_attachment=True,
+                     download_name=f'carrier_import_{name}.pdf')
 
 
 # ── CRM proxy ──────────────────────────────────────────────────────────────

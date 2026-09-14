@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=212">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=213">
 </head>
 <body>
 
@@ -597,6 +597,13 @@
           </div>
         </div>
       </div>
+      <div id="settings-import-failures" class="field-group settings-pane hidden">
+        <label>📥 Carrier Import Failures <span class="note-tag">admin only — carrier PDFs that would not parse or did not add up to the carrier's own total; the newest 50 are kept</span></label>
+        <div class="jxset-help">Each one is a column layout the importer still has to learn. Download it,
+          add it to the local <code>carrier_samples</code> folder, fix the importer until
+          <code>scripts/check_carrier_pdfs.py</code> passes, then delete it here.</div>
+        <div id="cif-list"></div>
+      </div>
     </div>
     <div class="settings-footer">
       <button id="test-notif-btn" class="btn-secondary" onclick="testSignatureNotification()" style="margin-right:auto">📧 Test Email Notification</button>
@@ -868,6 +875,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=212"></script>
+<script src="/estimate/static/app.js?v=213"></script>
 </body>
 </html>

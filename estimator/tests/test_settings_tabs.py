@@ -46,6 +46,7 @@ def js():
 PANES = [
     'settings-general', 'settings-margin', 'settings-gbb', 'settings-company',
     'settings-contract', 'settings-jurisdictions', 'settings-fastening',
+    'settings-import-failures',
 ]
 
 
@@ -81,7 +82,8 @@ def test_the_gated_panes_still_carry_hidden_in_the_markup(html):
     editor to everyone the gate does not unhide — which is exactly the state
     this replaced."""
     for pane in ('settings-margin', 'settings-gbb', 'settings-company',
-                 'settings-contract', 'settings-jurisdictions', 'settings-fastening'):
+                 'settings-contract', 'settings-jurisdictions', 'settings-fastening',
+                 'settings-import-failures'):
         m = re.search(rf'<div id="{pane}"[^>]*class="([^"]*)"', html)
         assert 'hidden' in m.group(1), f'{pane} ships visible to everyone'
 

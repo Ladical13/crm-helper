@@ -10,6 +10,11 @@ mid-section, per-coverage summary blocks, a 3-number recap row that must not
 double-count, and an instructional "sample guide" page with FAKE example
 items (no running "Page: N" header) that must never be imported.
 """
+import os
+import shutil
+
+import pytest
+
 from conftest import TEST_DATA_DIR  # noqa: F401  (forces DATA_DIR env setup)
 
 
@@ -389,3 +394,179 @@ def test_endpoint_accepts_the_tax_column_export(client):
     r = _post(client, _pdf(TAX_DOC))
     assert r.status_code == 200
     assert sum(len(s['items']) for s in r.get_json()['sections']) == 4
+
+
+# ── layouts are READ from the column header ────────────────────────────
+# Each of these is a column set the importer must read with nobody editing a
+# pattern first. They are SHAPES, not carriers — as real samples arrive, swap
+# in that carrier's actual header row and keep the numbers reconciling.
+
+def _layout_doc(header, lines):
+    return [PAGE1, ['Acme Insurance Company', 'FIX4 9/4/2026 Page: 2', 'Roof', header] + lines]
+
+
+OP_DOC = _layout_doc('DESCRIPTION QUANTITY UNIT PRICE TAX O&P RCV DEPREC. ACV', [
+    '1. Laminated - comp. shingle rfg. - w/out felt 10.00 SQ 300.00 90.00 618.00 3,708.00 (370.80) 3,337.20',
+    '2. Drip edge 100.00 LF 3.00 9.00 61.80 370.80 (37.08) 333.72',
+    'Totals: Roof 99.00 679.80 4,078.80 407.88 3,670.92',
+    'Line Item Totals: FIX4 99.00 679.80 4,078.80 407.88 3,670.92',
+])
+
+REMOVE_REPLACE_DOC = _layout_doc('DESCRIPTION QUANTITY REMOVE REPLACE TAX TOTAL', [
+    '1. R&R Gutter / downspout - aluminum 100.00 LF 1.00 10.00 5.00 1,105.00',
+    '2. R&R Drip edge 50.00 LF 0.50 3.00 2.00 177.00',
+    'Totals: Roof 7.00 1,282.00',
+    'Line Item Totals: FIX4 7.00 1,282.00',
+])
+
+NONRECOVERABLE_DOC = _layout_doc(
+    'DESCRIPTION QUANTITY UNIT PRICE TAX RCV AGE/LIFE COND. DEP % DEPREC. ACV', [
+        '1. Laminated - comp. shingle rfg. - w/out felt 10.00 SQ 300.00 30.00 3,030.00 '
+        '15/25 yrs Avg. 60% <1,818.00> 1,212.00',
+        '2. Drip edge 100.00 LF 3.00 3.00 303.00 15/35 yrs Avg. 42.86% (129.86) 173.14',
+        'Totals: Roof 33.00 3,333.00 1,947.86 1,385.14',
+        'Line Item Totals: FIX4 33.00 3,333.00 1,947.86 1,385.14',
+    ])
+
+
+def test_the_column_header_is_read(A):
+    assert A._xact_columns('DESCRIPTION QUANTITY UNIT PRICE TAX RCV DEPREC. ACV') == \
+        ['qty', 'price', 'tax', 'rcv', 'deprec', 'acv']
+    assert A._xact_columns('DESCRIPTION QUANTITY UNIT RCV AGE/LIFE COND. DEP % DEPREC. ACV') == \
+        ['qty', 'price', 'rcv', 'age', 'cond', 'dep_pct', 'deprec', 'acv']
+    # A column nobody has taught it is not guessed at.
+    assert A._xact_columns('DESCRIPTION QUANTITY UNIT PRICE RESET RCV DEPREC. ACV') is None
+
+
+def test_tax_and_op_are_never_read_as_the_rcv(A):
+    data = _parse(A, OP_DOC)
+    it = data['sections'][0]['items'][0]
+    assert (it['unit_price'], it['tax'], it['op'], it['rcv']) == (300.00, 90.00, 618.00, 3708.00)
+    assert it['depreciation'] == 370.80 and it['acv'] == 3337.20
+    assert data['sections'][0]['totals'] == {'rcv': 4078.80, 'dep': 407.88, 'acv': 3670.92}
+    assert data['summary']['line_items_rcv'] == 4078.80
+    assert data['warnings'] == []
+
+
+def test_remove_replace_layout_with_no_depreciation_columns(A):
+    data = _parse(A, REMOVE_REPLACE_DOC)
+    first, second = data['sections'][0]['items']
+    assert first['unit_price'] == 11.00 and first['rcv'] == 1105.00
+    assert first['depreciation'] == 0.0 and first['acv'] == 1105.00
+    assert second['rcv'] == 177.00
+    assert data['sections'][0]['totals'] == {'rcv': 1282.00, 'dep': 0.0, 'acv': 1282.00}
+    assert data['summary']['line_items_rcv'] == 1282.00
+
+
+def test_nonrecoverable_depreciation_in_angle_brackets(A):
+    first, second = _parse(A, NONRECOVERABLE_DOC)['sections'][0]['items']
+    assert first['nonrecoverable'] is True
+    assert first['depreciation'] == 1818.00 and first['acv'] == 1212.00
+    assert second['nonrecoverable'] is False and second['depreciation'] == 129.86
+
+
+# ── reconcile, and what happens when it does not ───────────────────────
+
+@pytest.fixture
+def failures(A):
+    shutil.rmtree(A.CARRIER_FAILURES_DIR, ignore_errors=True)
+    yield A.CARRIER_FAILURES_DIR
+    shutil.rmtree(A.CARRIER_FAILURES_DIR, ignore_errors=True)
+
+
+@pytest.mark.parametrize('doc', [FULL_DOC, TAX_DOC, OP_DOC, REMOVE_REPLACE_DOC, NONRECOVERABLE_DOC],
+                         ids=['allstate', 'auto-owners', 'tax-and-op', 'remove-replace',
+                              'nonrecoverable'])
+def test_every_layout_reconciles_to_the_carrier_total(client, failures, doc):
+    r = _post(client, _pdf(doc))
+    assert r.status_code == 200
+    rec = r.get_json()['reconcile']
+    assert rec['ok'] and rec['status'] == 'ok', rec
+    assert abs(rec['parsed_rcv'] - rec['carrier_rcv']) <= 0.05
+    # A clean read keeps nothing.
+    assert client.get('/api/carrier-import-failures').get_json() == []
+
+
+def _mismatched_doc():
+    page = list(TAX_PAGE3)
+    page[-1] = 'Line Item Totals: FIXTURE3 159.00 99,999.99 1,035.90 11,323.10'
+    return [TAX_COVER, TAX_PAGE2, page]
+
+
+def test_a_mismatch_is_flagged_and_the_pdf_kept(client, failures):
+    r = _post(client, _pdf(_mismatched_doc()), name='smith claim.pdf')
+    assert r.status_code == 200          # never blocks: the rep may fix a line by hand
+    rec = r.get_json()['reconcile']
+    assert rec['status'] == 'mismatch' and not rec['ok'] and rec['kept']
+    rows = client.get('/api/carrier-import-failures').get_json()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['reason'] == 'mismatch' and row['filename'] == 'smith claim.pdf'
+    assert row['carrier_rcv'] == 99999.99 and row['parsed_rcv'] == 12359.00
+    assert row['user'] == 'luke'
+
+
+def test_no_line_items_keeps_the_pdf(client, failures):
+    r = _post(client, _pdf([['FIXTURE2 Page: 1', 'Just some text', 'No items here']]))
+    assert r.status_code == 422
+    assert 'saved for an admin' in r.get_json()['error']
+    reasons = [f['reason'] for f in client.get('/api/carrier-import-failures').get_json()]
+    assert reasons == ['no_items']
+
+
+def test_an_unknown_column_is_flagged_even_when_it_adds_up(client, failures):
+    header = 'DESCRIPTION QUANTITY UNIT PRICE RESET RCV DEPREC. ACV'
+    doc = _layout_doc(header, [
+        '1. Detach & Reset Satellite dish 1.00 EA 50.00 25.00 75.00 (0.00) 75.00',
+        'Line Item Totals: FIX4 25.00 75.00 0.00 75.00',
+    ])
+    body = _post(client, _pdf(doc)).get_json()
+    assert len(body['sections'][0]['items']) == 1     # the fallback still reads it
+    rec = body['reconcile']
+    assert rec['status'] == 'unknown_layout' and not rec['ok']
+    assert rec['total_matches'] and rec['kept']
+    assert rec['unknown_headers'] == [header]
+
+
+def test_the_same_pdf_is_kept_once(client, failures):
+    pdf = _pdf(_mismatched_doc())
+    _post(client, pdf)
+    _post(client, pdf)
+    assert len(client.get('/api/carrier-import-failures').get_json()) == 1
+
+
+def test_download_and_delete(client, failures):
+    pdf = _pdf(_mismatched_doc())
+    _post(client, pdf)
+    name = client.get('/api/carrier-import-failures').get_json()[0]['name']
+    r = client.get(f'/api/carrier-import-failures/{name}')
+    assert r.status_code == 200 and r.get_data() == pdf
+    r.close()
+    assert client.delete(f'/api/carrier-import-failures/{name}').status_code == 200
+    assert client.get('/api/carrier-import-failures').get_json() == []
+    assert client.get(f'/api/carrier-import-failures/{name}').status_code == 404
+
+
+def test_kept_pdfs_are_admin_only(app, client, failures):
+    """Every kept PDF is a homeowner's name, address and claim number."""
+    _post(client, _pdf(_mismatched_doc()))
+    name = client.get('/api/carrier-import-failures').get_json()[0]['name']
+    rep = app.test_client()
+    with rep.session_transaction() as s:
+        s['user'] = 'not-an-admin'
+    assert rep.get('/api/carrier-import-failures').status_code == 403
+    assert rep.get(f'/api/carrier-import-failures/{name}').status_code == 403
+    assert rep.delete(f'/api/carrier-import-failures/{name}').status_code == 403
+
+
+def test_a_name_is_never_a_path(client, failures):
+    assert client.get('/api/carrier-import-failures/x..y').status_code == 404
+
+
+def test_only_the_newest_are_kept(A, failures, monkeypatch):
+    monkeypatch.setattr(A, 'CARRIER_FAILURES_KEEP', 3)
+    with A.app.test_request_context():
+        names = [A._keep_failed_carrier_pdf(b'%%PDF-1.4 sample %d' % i, 'mismatch')
+                 for i in range(5)]
+    kept = sorted(fn[:-4] for fn in os.listdir(failures) if fn.endswith('.pdf'))
+    assert kept == names[-3:]

@@ -1031,6 +1031,32 @@ breaks it.
 ⚠️ **Not reproduced on a physical iPhone** — the fixes are all sound
 independently, but which of the three was Luke's actual symptom is unconfirmed.
 
+**Carrier imports: the layout is read, the result is proven, a miss is kept**
+(2026-09-14). Xactimate's columns are the adjuster's choice, not a fixed
+layout — Allstate prints AGE/LIFE, COND and DEP% with no TAX; Auto-Owners
+prints TAX and none of the three — and a parser written for one matched zero
+lines of the other. Three layers, and each one exists because the others can
+fail silently:
+
+- **Read the header.** `_xact_columns()` turns the PDF's own column row into a
+  column list and each line is matched against THAT. An unrecognised column
+  returns `None` rather than a guess: guessing is how a TAX figure becomes an
+  RCV. Totals rows print only the columns that add up, so they are read
+  against the header too, right-aligned. A new layout is one entry in
+  `_XACT_COLUMN_WORDS`, never a new regex.
+- **Prove it.** `_carrier_reconcile()` holds the lines to the carrier's own
+  arithmetic: RCV = ACV + depreciation per line, and the document's Line Item
+  Totals. The review modal shows the verdict green or red; a miss never blocks
+  Load, it just cannot look clean. Section subtotals say where a miss is but
+  do not decide one — two rooms sharing a name merge into one section.
+- **Keep the miss.** Anything that did not reconcile, did not parse or named
+  an unknown column is saved by `_keep_failed_carrier_pdf()` to
+  `DATA_DIR/carrier_import_failures/`, newest 50, and listed in ⚙ Settings →
+  📥 Import Failures. **Admin-only, not manager-up**: each one is a homeowner's
+  claim. Real sample PDFs live in a gitignored `carrier_samples` folder beside
+  the estimator and `estimator/scripts/check_carrier_pdfs.py` must pass on all
+  of them before a parser change ships; the committed fixtures are synthetic.
+
 **Still open: Xactimate exports carry no measurements.** `_parse_symbility_pdf`
 returns `roof_squares`; `_parse_xactimate_pdf` returns no `measurements` key at
 all, despite the comment claiming both parsers return the same shape. It fails

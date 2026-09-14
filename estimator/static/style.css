@@ -4309,6 +4309,12 @@ a.jx-contact:hover { text-decoration: underline; }
   background: #fef3c7; border: 1px solid #f59e0b; color: #92400e;
   border-radius: 8px; padding: 10px 12px; font-size: 12px;
 }
+/* Carrier import reconcile verdict — see xactReconcileBanner in app.js */
+.xact-reconcile-ok {
+  background: #dcfce7; border: 1px solid #16a34a; color: #166534;
+  border-radius: 8px; padding: 10px 12px; font-size: 12px; font-weight: 600;
+}
+.xact-warn.xact-reconcile-bad { background: #fee2e2; border-color: #dc2626; color: #991b1b; }
 .xact-hint { font-size: 13px; color: var(--text-light); margin: 0; }
 .xact-section-hd { display: flex; align-items: center; gap: 8px; margin: 6px 0 6px; }
 .xact-section-hd input[type="checkbox"] { width: 16px; height: 16px; flex: none; }

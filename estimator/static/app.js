@@ -11251,6 +11251,7 @@ const SETTINGS_TABS = [
   ['settings-jurisdictions', '🏛 Permits'],
   ['settings-fastening',     '🔩 Fastening'],
   ['settings-demo',          '🎬 Demo Link'],
+  ['settings-import-failures', '📥 Import Failures'],
 ];
 
 function renderSettingsTabs() {
@@ -11332,6 +11333,9 @@ async function openSettings() {
     document.getElementById('set-initials-comm').value   = (appSettings.initials_commercial || []).join('\n');
     document.getElementById('settings-demo').classList.remove('hidden');
     await refreshDemoLink();
+    // Admin, not manager-up: every kept PDF is a homeowner's claim.
+    document.getElementById('settings-import-failures').classList.remove('hidden');
+    await refreshCarrierFailures();
   }
   // Last: the strip is built from whichever panes the gating above unhid.
   renderSettingsTabs();
@@ -13906,6 +13910,83 @@ async function importXactPdf(input) {
   openXactModal(data);
 }
 
+/* Whether the parsed lines ARE the carrier's lines. Decided server-side
+   (_carrier_reconcile) so this banner and the copy an admin is sent agree.
+   A miss never blocks Load: the rep may need to fix one line by hand, but it
+   must not look like a clean import while they do — a carrier line read as
+   the wrong column is money on a contract. */
+function xactReconcileBanner(rec) {
+  if (!rec) return '';
+  if (rec.ok) {
+    return `<div class="xact-reconcile-ok">✓ Every line adds up to the carrier's own total — RCV ${fmtCur(rec.carrier_rcv)}</div>`;
+  }
+  const kept = rec.kept ? ' A copy of this PDF was saved for an admin.' : '';
+  if (rec.status === 'unverified') {
+    return `<div class="xact-warn">⚠ This PDF has no carrier total to check the lines against (${fmtCur(rec.parsed_rcv)} read). Compare them with the PDF before loading.${kept}</div>`;
+  }
+  const where = (rec.sections_off || []).map(s =>
+    `${esc(s.name)}: read ${fmtCur(s.parsed_rcv)} of ${fmtCur(s.carrier_rcv)}`).join('<br>');
+  const lines = (rec.lines_off || []).length
+    ? `<br>Lines where RCV ≠ ACV + depreciation: ${rec.lines_off.map(esc).join(', ')}` : '';
+  const head = rec.status === 'unknown_layout'
+    ? `✗ This carrier prints columns the importer hasn't been taught (${esc((rec.unknown_headers || []).join(' / '))}). ${
+        rec.total_matches ? 'The total adds up, but' : 'The total does not add up, and'} every line needs checking against the PDF.`
+    : `✗ Read ${fmtCur(rec.parsed_rcv)} of the carrier's ${fmtCur(rec.carrier_rcv)} — lines may be missing or misread. Check them against the PDF before loading.`;
+  return `<div class="xact-warn xact-reconcile-bad">${head}${kept}${where ? '<br>' + where : ''}${lines}</div>`;
+}
+
+/* ── Carrier import failures (⚙ Settings, admin) ──────────────────────────
+   Carrier PDFs that would not parse or did not reconcile. Each row is a layout
+   the importer still has to learn: download it, add it to the local sample
+   folder and a synthetic fixture, fix, then delete it here. */
+const CARRIER_FAILURE_REASONS = {
+  error: 'Could not open', no_items: 'No line items found',
+  unknown_layout: 'Unknown columns', mismatch: "Didn't add up",
+  unverified: 'No carrier total',
+};
+
+async function refreshCarrierFailures() {
+  const box = document.getElementById('cif-list');
+  if (!box) return;
+  let rows;
+  try {
+    const r = await fetch('/api/carrier-import-failures');
+    rows = r.ok ? await r.json() : null;
+  } catch { rows = null; }
+  // A failed load must not read as "nothing failed" — that is the one wrong
+  // answer this list exists to prevent.
+  if (rows === null) {
+    box.innerHTML = '<div class="xact-warn">Couldn’t load the saved carrier PDFs — reopen Settings to try again.</div>';
+    return;
+  }
+  if (!rows.length) {
+    box.innerHTML = '<div class="jxset-help">None kept — every carrier PDF uploaded since the last clear-out read cleanly.</div>';
+    return;
+  }
+  const sub = s => `<div class="note-tag">${s}</div>`;
+  box.innerHTML = `<div class="other-table-wrap"><table class="other-table">
+    <thead><tr><th>When</th><th>Rep</th><th>File</th><th>Problem</th><th></th></tr></thead>
+    <tbody>${rows.map(f => `<tr>
+      <td>${esc((f.at || '').replace('T', ' ').slice(0, 16))}</td>
+      <td>${esc(f.user || '')}</td>
+      <td>${esc(f.filename || f.name)}${f.carrier ? sub(esc(f.carrier)) : ''}</td>
+      <td>${esc(CARRIER_FAILURE_REASONS[f.reason] || f.reason)}${
+        f.carrier_rcv != null ? sub(`read ${fmtCur(f.parsed_rcv)} of ${fmtCur(f.carrier_rcv)}`) : ''}${
+        f.header ? sub(esc(f.header)) : ''}${f.error ? sub(esc(f.error)) : ''}</td>
+      <td style="white-space:nowrap">
+        <a class="btn-secondary" href="${BASE}/api/carrier-import-failures/${encodeURIComponent(f.name)}">⬇ PDF</a>
+        <button type="button" class="btn-secondary" onclick="deleteCarrierFailure('${jsq(f.name)}')">🗑</button>
+      </td></tr>`).join('')}</tbody></table></div>`;
+}
+
+async function deleteCarrierFailure(name) {
+  if (!confirm('Delete this saved carrier PDF?')) return;
+  try {
+    await fetch(`/api/carrier-import-failures/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  } catch { /* the refresh below shows whether it went */ }
+  refreshCarrierFailures();
+}
+
 function openXactModal(data) {
   _xactData = data;
   _xactExcluded = new Set();
@@ -13976,6 +14057,7 @@ function openXactModal(data) {
       ${metaRow('Adjuster', meta.adjuster)}
       ${metaRow(isSym ? 'Pricing Database' : 'Price List', meta.price_list)}
     </div>
+    ${xactReconcileBanner(data.reconcile)}
     ${(data.warnings || []).length ? `<div class="xact-warn">⚠ ${data.warnings.map(esc).join('<br>')}</div>` : ''}
     ${measBits ? `<div class="xact-claim-note">📐 Roof measurements in this PDF: ${esc(measBits)} — ${
       measHeld
