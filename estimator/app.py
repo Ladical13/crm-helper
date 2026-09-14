@@ -3403,25 +3403,37 @@ def _xact_num(s):
 # Verified shapes: "28.74 SQ 75.56 2,171.59 23/30 yrs Avg. NA (0.00) 2,171.59",
 # "... 76.67% (7,397.88) ...", "... 90% [M] (97.65) ...", "0/NA Avg.",
 # "Abv. Avg.", and guide-style glued qty+unit ("685.47SF").
+#
+# The columns are the ADJUSTER's choice in Xactimate, not a fixed layout.
+# Auto-Owners prints "QTY UNIT PRICE TAX RCV (DEPREC) ACV": an extra TAX
+# column and no AGE/LIFE, COND or DEP% at all. A pattern that required the
+# Allstate columns matched zero lines on that export and the import refused
+# the whole estimate. So up to two money columns (TAX, O&P) may sit between
+# PRICE and RCV, and the age/condition/dep% block is optional. RCV is always
+# the last figure before the block or the "(DEPREC)", which is what keeps the
+# extras from being misread as it.
 _XACT_ITEM_RE = re.compile(
     r'^(?P<no>\d{1,3})\.\s+(?P<desc>.+?)\s+'
     r'(?P<qty>[\d,]+\.\d{2})\s*(?P<unit>[A-Z]{2,3})\s+'
-    r'(?P<price>[\d,]+\.\d{2})\s+(?P<rcv>[\d,]+\.\d{2})\s+'
-    r'(?P<age>\d+/(?:\d+|NA))\s*(?:yrs)?\s+'
+    r'(?P<price>[\d,]+\.\d{2})\s+(?:[\d,]+\.\d{2}\s+){0,2}(?P<rcv>[\d,]+\.\d{2})\s+'
+    r'(?:(?P<age>\d+/(?:\d+|NA))\s*(?:yrs)?\s+'
     r'(?P<cond>New|Avg\.|Abv\.\s*Avg\.|Bel\.\s*Avg\.)\s+'
-    r'(?P<dep_pct>NA|<?[\d.]+\s*%)\s*(?:\[[A-Z%]\])?\s*'
+    r'(?P<dep_pct>NA|<?[\d.]+\s*%)\s*(?:\[[A-Z%]\])?\s*)?'
     r'\((?P<deprec>[\d,]+\.\d{2})\)\s+(?P<acv>[\d,]+\.\d{2})\s*$')
 
 _XACT_ITEM_START_RE = re.compile(r'^\d{1,3}\.\s+\S')
-_XACT_HEADER_RE     = re.compile(r'^DESCRIPTION\s+QUANTITY\s+UNIT\s+RCV', re.I)
+_XACT_HEADER_RE     = re.compile(r'^DESCRIPTION\s+QUANTITY\s+UNIT\b.*\bRCV\b', re.I | re.M)
+# Totals rows carry the same optional TAX/O&P figures ahead of RCV DEP ACV.
 _XACT_TOTALS_RE     = re.compile(
-    r'^Totals?:\s+(?P<name>.+?)\s+(?P<rcv>[\d,]+\.\d{2})\s+'
+    r'^Totals?:\s+(?P<name>.+?)\s+(?:[\d,]+\.\d{2}\s+){0,2}(?P<rcv>[\d,]+\.\d{2})\s+'
     r'(?P<dep>[\d,]+\.\d{2})\s+(?P<acv>[\d,]+\.\d{2})\s*$')
 _XACT_GRAND_RE      = re.compile(
-    r'Line Item Totals:\s*\S+\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})')
+    r'Line Item Totals:\s*\S+\s+(?:[\d,]+\.\d{2}\s+){0,2}'
+    r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})[ \t]*$', re.M)
 _XACT_NOISE_RES = [re.compile(p, re.I) for p in (
     r'^Options?:', r'^Auto Calculated Waste', r'^This line item include',
     r'^The above line item', r'^Bundle Rounding', r'^CONTINUED\s*-',
+    r'^Pricing from\b',
     r'^Page:\s*\d+\s*$', r'Page:\s*\d+\s*$',
     r'^\d+\s*$', r'^P\.?O\.? Box', r'^Fax:', r'^www\.', r'^Exposure\b',
     r'^[A-Za-z .]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\s*$',  # carrier address line
@@ -3466,8 +3478,8 @@ def _parse_xactimate_items(lines, extra_noise=()):
             'unit':        m.group('unit'),
             'unit_price':  _xact_num(m.group('price')),
             'rcv':         _xact_num(m.group('rcv')),
-            'age_life':    m.group('age'),
-            'dep_pct':     m.group('dep_pct').replace(' ', ''),
+            'age_life':    m.group('age') or '',
+            'dep_pct':     (m.group('dep_pct') or '').replace(' ', ''),
             'depreciation': _xact_num(m.group('deprec')),
             'acv':         _xact_num(m.group('acv')),
         }
@@ -3566,7 +3578,10 @@ def _parse_xactimate_pdf(file_bytes):
     if not real_pages:
         real_pages = pages
     text = '\n'.join(real_pages)
-    page1 = real_pages[0]
+    # The cover page carries the claim block but not always the running
+    # header: Auto-Owners starts "Page: N" on page 2, so taking the first
+    # header-bearing page lost the claim number, insured and address.
+    page1 = next((t for t in real_pages + pages if 'Claim Number:' in t), real_pages[0])
 
     # ── metadata (page 1) ──
     meta = {}
@@ -3604,6 +3619,16 @@ def _parse_xactimate_pdf(file_bytes):
     # (name + address) are filtered as noise so they can't pose as sections.
     warnings = []
     extra_noise = {meta['carrier']} if meta.get('carrier') else set()
+    # Everything above a page's "Page: N" line is the carrier's letterhead.
+    # Auto-Owners' runs five company names deep, and any of them could pose
+    # as a section name for a header that follows a page break.
+    for t in real_pages:
+        top = []
+        for ln in t.split('\n'):
+            if re.search(r'Page:\s*\d+', ln):
+                extra_noise.update(s for s in top if s)
+                break
+            top.append(ln.strip())
     flat = _parse_xactimate_items(text.split('\n'), extra_noise)
 
     # Split into runs of strictly-increasing line numbers, then pick the run

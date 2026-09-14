@@ -291,3 +291,101 @@ def test_endpoint_422_when_no_items(client):
 def test_endpoint_requires_auth(anon):
     r = _post(anon, _pdf(FULL_DOC))
     assert r.status_code in (302, 401, 403)
+
+
+# ── the TAX-column layout (Auto-Owners) ────────────────────────────────
+# Xactimate columns are the adjuster's choice. This shape, from a real
+# Auto-Owners export, has a TAX column and NO age/life, condition or dep%,
+# and the running "Page: N" header only starts on page 2. The old parser
+# matched zero lines and the endpoint refused the estimate outright.
+
+TAX_LETTERHEAD = [
+    'Acme Mutual Insurance Company',
+    'Home-Acme Insurance Company',
+    'Southern-Acme Insurance Company',
+]
+TAX_HEADER = 'DESCRIPTION QUANTITY UNIT PRICE TAX RCV DEPREC. ACV'
+
+TAX_COVER = ['1'] + TAX_LETTERHEAD + [
+    'Insured: JANE FIXTURE',
+    'Property: 34 SAMPLE DR',
+    'BERTHOUD, CO 80513-0000',
+    'Claim Number: 300-0000000-2026 Policy Number: 5600000000 Type of Loss: HAIL',
+    'Date of Loss: 6/24/2026 Date Received: 8/25/2026',
+    'Price List: COFC8X_SEP26',
+]
+
+TAX_PAGE2 = ['2'] + TAX_LETTERHEAD + [
+    'FIXTURE3 9/4/2026 Page: 2',
+    'Main Dwelling',
+    '3000.00 Surface Area',
+    TAX_HEADER,
+    '1. Dumpster load - Approx. 20 yards 1.00 EA 500.00 0.00 500.00 (0.00) 500.00',
+    '2. Tear off composition shingles - Laminated (no haul 30.00 SQ 50.00 0.00 1,500.00 (0.00) 1,500.00',
+    'off)',
+    '3. Laminated - comp. shingle rfg. - w/out felt 33.00 SQ 300.00 150.00 10,050.00 (1,005.00) 9,045.00',
+    'Pricing from ITEL Asphalt Shingle Pricing (ASP) applied to RFG300 on 4 Sep 2026.',
+    'Auto Calculated Waste: 10.0%, 3.00SQ',
+    'Totals: Main Dwelling 150.00 12,050.00 1,005.00 11,045.00',
+    # the next section's name is the last line of this page...
+    'Detached Garage',
+]
+
+TAX_PAGE3 = ['3'] + TAX_LETTERHEAD + [
+    # ...so the letterhead sits between it and its column header.
+    'FIXTURE3 9/4/2026 Page: 3',
+    TAX_HEADER,
+    '4. Drip edge 100.00 LF 3.00 9.00 309.00 (30.90) 278.10',
+    'Totals: Detached Garage 9.00 309.00 30.90 278.10',
+    'Line Item Totals: FIXTURE3 159.00 12,359.00 1,035.90 11,323.10',
+]
+
+TAX_DOC = [TAX_COVER, TAX_PAGE2, TAX_PAGE3]
+
+
+def test_tax_column_export_parses(A):
+    data = _parse(A, TAX_DOC)
+    assert [s['name'] for s in data['sections']] == ['Main Dwelling', 'Detached Garage']
+    main, garage = data['sections']
+    assert [it['line_no'] for it in main['items']] == [1, 2, 3]
+    it = main['items'][2]
+    # the TAX figure is neither the price nor the RCV
+    assert it['unit_price'] == 300.00 and it['rcv'] == 10050.00
+    assert it['depreciation'] == 1005.00 and it['acv'] == 9045.00
+    assert it['age_life'] == '' and it['dep_pct'] == ''
+    assert main['items'][1]['description'] == \
+        'Tear off composition shingles - Laminated (no haul off)'
+    assert 'Pricing from' not in it['description']
+    assert data['warnings'] == []
+
+
+def test_tax_column_totals_skip_the_tax_figure(A):
+    data = _parse(A, TAX_DOC)
+    main, garage = data['sections']
+    assert main['totals'] == {'rcv': 12050.00, 'dep': 1005.00, 'acv': 11045.00}
+    assert garage['totals'] == {'rcv': 309.00, 'dep': 30.90, 'acv': 278.10}
+    s = data['summary']
+    assert s['line_items_rcv'] == 12359.00
+    assert s['line_items_depreciation'] == 1035.90
+    assert s['line_items_acv'] == 11323.10
+
+
+def test_letterhead_never_becomes_a_section_name(A):
+    names = [s['name'] for s in _parse(A, TAX_DOC)['sections']]
+    assert not any('Insurance Company' in n for n in names)
+
+
+def test_claim_block_read_from_a_cover_page_without_a_page_header(A):
+    data = _parse(A, TAX_DOC)
+    m = data['meta']
+    assert m['carrier'] == 'Acme Mutual Insurance Company'
+    assert m['claim_number'] == '300-0000000-2026'
+    assert m['insured'] == 'JANE FIXTURE'
+    assert data['address'] == {'street': '34 SAMPLE DR', 'city': 'Berthoud',
+                               'state': 'CO', 'zip': '80513'}
+
+
+def test_endpoint_accepts_the_tax_column_export(client):
+    r = _post(client, _pdf(TAX_DOC))
+    assert r.status_code == 200
+    assert sum(len(s['items']) for s in r.get_json()['sections']) == 4
