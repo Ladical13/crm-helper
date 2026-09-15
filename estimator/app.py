@@ -12483,66 +12483,220 @@ def commercial_fastening(m, table):
 # Matching is on a lowercase substring of the line-item name, first hit wins,
 # so put the specific keys above the general ones.
 _ORDER_PACK = [
-    # (name fragment, from-unit, per, order-unit, note)
+    # (name fragment, from-unit, per, order-unit, note, waste %)
     # Ridge VENT before ridge CAP: a line named "ridge vent" must not be
     # caught by the shingle rule and ordered in bundles.
-    ('ridge vent',             'LF', 4.0,   'sticks',  '4 ft sticks'),
-    ('intake vent',            'LF', 4.0,   'sticks',  '4 ft sticks'),
-    ('ridge cap',              'LF', 25.0,  'bundles', 'ridge + hip'),
-    ('ridge shingle',          'LF', 25.0,  'bundles', 'ridge + hip'),
-    ('hip / ridge',            'LF', 25.0,  'bundles', 'ridge + hip'),
-    ('starter strip',          'LF', 105.0, 'bundles', '105 LF / bundle'),
-    ('starter',                'LF', 105.0, 'bundles', '105 LF / bundle'),
+    ('ridge vent',             'LF', 4.0,   'sticks',  '4 ft sticks', 0),
+    ('intake vent',            'LF', 4.0,   'sticks',  '4 ft sticks', 0),
+    # Hip & ridge by BRAND - confirmed with the supplier by Luke, 2026-09-15.
+    # Brands sit above the generic rows because "IKO Hip & Ridge Cap" also
+    # contains "ridge cap", and the generic 25 would order IKO ~40% heavy.
+    # 10% covers hip ends, ridge-vent overlap and breakage.
+    ('shadow ridge',           'LF', 30.0,  'bundles', 'CertainTeed', 10),
+    ('oc flex',                'LF', 33.0,  'bundles', 'Owens Corning', 10),
+    ('iko hip',                'LF', 36.0,  'bundles', 'IKO', 10),
+    # Unbranded hip & ridge. 25 is NOT confirmed for anything we sell - name
+    # the brand in the product (or set its Order pack) to get a real number.
+    # The sheet prints these rows as UNCONFIRMED.
+    ('ridge cap',              'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    ('ridge shingle',          'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    ('hip / ridge',            'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    ('hip & ridge',            'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    ('hip and ridge',          'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    ('starter strip',          'LF', 105.0, 'bundles', '105 LF / bundle', 0),
+    ('starter',                'LF', 105.0, 'bundles', '105 LF / bundle', 0),
     # Drip edge and gutter apron come in 10 ft sticks but are lapped, so the
     # usable run is 9 ft — order against that, not the nominal length.
-    ('drip edge',              'LF', 9.0,   'sticks',  '9 ft usable per stick'),
-    ('gutter apron',           'LF', 9.0,   'sticks',  '9 ft usable per stick'),
-    ('downspout',              'LF', 10.0,  'sticks',  '10 ft sticks'),
-    ('ice & water',            'SQ', 2.0,   'rolls',   '36 in x 66.7 ft'),
-    ('ice and water',          'SQ', 2.0,   'rolls',   '36 in x 66.7 ft'),
-    ('synthetic underlayment', 'SQ', 10.0,  'rolls',   '10 SQ rolls'),
-    ('underlayment',           'SQ', 10.0,  'rolls',   '10 SQ rolls'),
+    ('drip edge',              'LF', 9.0,   'sticks',  '9 ft usable per stick', 0),
+    ('gutter apron',           'LF', 9.0,   'sticks',  '9 ft usable per stick', 0),
+    ('downspout',              'LF', 10.0,  'sticks',  '10 ft sticks', 0),
+    # Ice & water by the FOOT: a 36" x 66.7 ft roll (2 SQ), confirmed
+    # 2026-09-15. 10% covers the 6" end laps and valley cut-offs, and it goes
+    # on the footage - see _order_measured.
+    ('ice & water',            'LF', 66.67, 'rolls',   '36 in x 66.7 ft', 10),
+    ('ice and water',          'LF', 66.67, 'rolls',   '36 in x 66.7 ft', 10),
+    # By the SQUARE (full-deck high-temp under metal) the quantity comes off
+    # squares_waste, which already carries the roof's waste. 10% more would
+    # count it twice.
+    ('ice & water',            'SQ', 2.0,   'rolls',   '36 in x 66.7 ft', 0),
+    ('ice and water',          'SQ', 2.0,   'rolls',   '36 in x 66.7 ft', 0),
+    ('synthetic underlayment', 'SQ', 10.0,  'rolls',   '10 SQ rolls', 0),
+    ('underlayment',           'SQ', 10.0,  'rolls',   '10 SQ rolls', 0),
     # Asphalt shingles: 3 bundles to the square on every architectural and
     # impact-resistant line in the catalog. Metal, steel and rubber are sold by
     # the square or the panel and are deliberately absent — they fall through
     # to "order as measured" rather than being converted into a bundle count
     # that does not exist.
-    ('landmark',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
-    ('northgate',              'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
-    ('nordic',                 'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
-    ('shingles',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
+    ('landmark',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ', 0),
+    ('northgate',              'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ', 0),
+    ('nordic',                 'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ', 0),
+    ('shingles',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ', 0),
 ]
 
 # Named so the material order can print the list it actually used.
-_ORDER_PACK_NOTE = ('Pack sizes are industry defaults, not supplier-verified. '
-                    'Each converted row shows its arithmetic - check it against '
-                    'your branch before ordering.')
+_ORDER_PACK_NOTE = ('Pack sizes are defaults unless set on the product in the '
+                    'Price Book (Order pack). Each converted row shows its '
+                    'arithmetic - check it against your branch before ordering.')
+
+# The note on a pack size nobody has confirmed. Printed as a prefix, not a note.
+_ORDER_UNCONFIRMED = 'unconfirmed'
 
 
-def _order_pack_for(name, unit):
-    """Pack rule for a line item, or None to order as measured."""
-    n = ' '.join(str(name or '').lower().split())
-    u = str(unit or '').strip().upper()
-    for frag, from_unit, per, order_unit, note in _ORDER_PACK:
-        if frag in n and from_unit == u:
-            return {'per': per, 'order_unit': order_unit, 'note': note,
-                    'from_unit': from_unit}
-    return None
+def _order_num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
 
 
-def material_order_rows(est):
+def _order_rule_for(item, product=None):
+    """How one line is bought - {per, from_unit, order_unit, note, waste} - or
+    None to order it as measured.
+
+    Three sources, most specific first:
+      1. The catalog product's own Order pack (Price Book): `order_pack`,
+         `order_unit`, `order_waste_pct`. What a manager dials in beats every
+         default. An explicit 0% waste is a choice and is kept.
+      2. The line's PRICING pack, `bundle_lf`/`bundle_unit`. measuredQty has
+         already divided the footage by it, so the stored quantity is a count
+         of those - it is the only pack size that cannot double-convert. That
+         is why it outranks the name table: "Metal Ridge Cap - 3pc" is priced
+         in 10 ft sticks, and matching "ridge cap" printed 6 sticks as
+         "1 bundles". The name table still supplies the waste, but only when it
+         agrees about the unit (ice & water: rolls and rolls).
+      3. _ORDER_PACK by name.
+
+    Never read by pricing - this decides what is ordered, not what is charged.
+    """
+    name = ' '.join(str(item.get('name') or '').lower().split())
+    unit = str(item.get('unit') or '').strip().upper()
+    blf = _order_num(item.get('bundle_lf')) or 0.0
+    bunit = str(item.get('bundle_unit') or '').strip()
+    base = 'LF' if blf > 0 else unit
+
+    rule = None
+    for frag, from_unit, per, order_unit, note, waste in _ORDER_PACK:
+        if frag in name and from_unit == base:
+            rule = {'per': per, 'from_unit': base, 'order_unit': order_unit,
+                    'note': note, 'waste': float(waste)}
+            break
+    if blf > 0:
+        agrees = bool(rule) and rule['order_unit'] == bunit.lower()
+        rule = {'per': blf, 'from_unit': 'LF',
+                'order_unit': bunit or (rule['order_unit'] if rule else 'units'),
+                'note': rule['note'] if agrees else '',
+                'waste': rule['waste'] if agrees else 0.0}
+
+    p = product or {}
+    pack = _order_num(p.get('order_pack'))
+    if pack and pack > 0:
+        rule = {'per': pack, 'from_unit': base,
+                'order_unit': (str(p.get('order_unit') or '').strip()
+                               or (rule['order_unit'] if rule else 'units')),
+                'note': 'Price Book',
+                'waste': rule['waste'] if rule else 0.0}
+    waste = _order_num(p.get('order_waste_pct'))
+    if rule and waste is not None and waste >= 0:
+        rule['waste'] = waste
+    return rule
+
+
+# Mirrors the LINEAR-FOOT entries of MEASURE_DEFS in app.js, and only those a
+# pack-sold product is sized by. The browser never stores the raw footage, so
+# this is the one place the server recomputes it. Held to the real JS by
+# tests/test_material_order.py under node.
+def _order_mnum(m, key):
+    try:
+        v = float(m.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if math.isfinite(v) else 0.0
+
+
+_ORDER_MEASURES = {
+    'ridge_hip':       lambda m: _order_mnum(m, 'ridge_hip_lf'),
+    'ridge_lf':        lambda m: _order_mnum(m, 'ridge_lf'),
+    'valley':          lambda m: _order_mnum(m, 'valley_lf'),
+    'eave':            lambda m: _order_mnum(m, 'eave_lf'),
+    'rake':            lambda m: _order_mnum(m, 'rake_lf'),
+    'eave_rake':       lambda m: _order_mnum(m, 'eave_lf') + _order_mnum(m, 'rake_lf'),
+    'eave_valley':     lambda m: (_order_mnum(m, 'eave_lf')
+                                  * (2 if _order_mnum(m, 'iw_second_row') else 1)
+                                  + _order_mnum(m, 'valley_lf')),
+    'step':            lambda m: _order_mnum(m, 'step_flash_lf'),
+    'headwall':        lambda m: _order_mnum(m, 'wall_flash_lf') + _order_mnum(m, 'unspecified_lf'),
+    'transition':      lambda m: _order_mnum(m, 'transition_lf'),
+    'ridge_valley_2x': lambda m: 2 * (_order_mnum(m, 'ridge_hip_lf') + _order_mnum(m, 'valley_lf')),
+}
+
+
+def _order_item_measurements(est, item):
+    """itemMeasurements() in app.js: the named building's set, else the
+    estimate's. A building whose dict exists but is empty stays empty, as in JS."""
+    sec = str(item.get('section') or '').strip()
+    if sec:
+        for st in _est_structures(est):
+            if str(st.get('name') or '').strip() == sec:
+                if isinstance(st.get('measurements'), dict):
+                    return st['measurements']
+                break
+    return est.get('measurements') or {}
+
+
+def _order_measured(est, item, qty, blf):
+    """(amount measured in the rule's base unit, backed_out_of_count).
+
+    A line sold by pack stores the COUNT - 6 rolls - and waste has to go on
+    the footage, not the count. Backing footage out of the count (6 x 66.67 =
+    400 LF) overstates every roof that did not land on a whole roll, and 10%
+    then compounds it: 340 LF of ice & water needs 6 rolls with waste, but
+    "6 rolls + 10%" orders 7. So the footage is recomputed from measurements,
+    and trusted only while it still rounds to the stored count. A rep who typed
+    9 rolls meant 9 rolls, and gets 9 rolls' worth of footage."""
+    if blf <= 0:
+        return qty, False
+    calc = _ORDER_MEASURES.get(item.get('measure') or '')
+    if calc and not item.get('formula'):
+        raw = calc(_order_item_measurements(est, item))
+        if raw > 0 and math.ceil(raw / blf - 1e-9) == math.ceil(qty - 1e-9):
+            return raw, False
+    return qty * blf, True
+
+
+def _order_catalogs():
+    """trade -> {product id: product} from the live Price Book. Read at build
+    time, so an Order pack a manager sets reaches the next sheet without anyone
+    re-saving an estimate. {} if the book cannot be read: a price book problem
+    must never stop a material order printing, and every row keeps its default."""
+    try:
+        pb = _ensure_bundle_catalogs(_load_price_book())
+    except Exception:
+        return {}
+    out = {}
+    for tk in GBB_TRADES:
+        rows = pb.get(f'{tk}_catalog')
+        if isinstance(rows, list):
+            out[tk] = {p['id']: p for p in rows if isinstance(p, dict) and p.get('id')}
+    return out
+
+
+def material_order_rows(est, catalogs=None):
     """What to actually buy, per line item, across every enabled trade.
 
     Returns a list of dicts:
-      trade, name, qty, unit           - as the estimate measures it
+      trade, name, qty, unit           - as measured, before pack rounding
       order_qty, order_unit            - what you place the order in
       math                             - the arithmetic, for checking
 
     Rows with no pack rule come back with order_qty None and are ordered as
     measured. Labor lines and anything with no quantity are dropped: this is a
-    purchase order, not a scope list.
+    purchase order, not a scope list. `catalogs` (trade -> {id: product}) is
+    for tests; None reads the live Price Book.
     """
     import math as _math
+    if catalogs is None:
+        catalogs = _order_catalogs()
     trades = est.get('trades') or {}
     labels = _PRODUCT_TRADE_LABELS if '_PRODUCT_TRADE_LABELS' in globals() else {}
     out = []
@@ -12581,23 +12735,44 @@ def material_order_rows(est):
                     'remove', 'removal', 'detach', 'dispose', 'disposal', 'haul')):
                 continue
             unit = (it.get('unit') or '').strip().upper()
-            rule = _order_pack_for(name, unit)
+            product = (catalogs.get(tk) or {}).get(it.get('catalog_id') or '')
+            rule = _order_rule_for(it, product)
             row = {'trade': labels.get(tk, tk.title()), 'name': name,
                    'qty': qty, 'unit': unit,
                    'order_qty': None, 'order_unit': '', 'math': ''}
             if rule:
-                per = rule['per']
-                if rule['order_unit'] == 'bundles' and per < 1:
+                blf = _order_num(it.get('bundle_lf')) or 0.0
+                measured, from_count = _order_measured(est, it, qty, blf)
+                per, waste, base = rule['per'], rule['waste'], rule['from_unit']
+                need = measured * (1 + waste / 100.0)
+                n_units = _math.ceil(need / per - 1e-9)
+                ou = rule['order_unit']
+                if per < 1:
                     # squares -> bundles: 3 per square
-                    n_units = _math.ceil(qty / per - 1e-9)
-                    row['math'] = f'{qty:g} {unit} x {round(1 / per)}/{unit}'
+                    math_s = f'{measured:g} {base} x {round(1 / per)}/{base}'
                 else:
-                    n_units = _math.ceil(qty / per - 1e-9)
-                    row['math'] = f'{qty:g} {unit} / {per:g} per {rule["order_unit"][:-1]}'
+                    one = ou[:-1] if ou.endswith('s') else ou
+                    math_s = f'{round(measured, 1):g} {base}'
+                    if waste:
+                        math_s += f' + {waste:g}% = {round(need, 1):g}'
+                    math_s += f' / {per:g} per {one}'
+                if from_count:
+                    # The count was set by hand, so this footage is inferred.
+                    math_s = '~' + math_s
+                note = 'count set by hand' if from_count else rule['note']
+                if note == _ORDER_UNCONFIRMED:
+                    # A guessed pack size must survive the column width, so it
+                    # goes FIRST - truncation eats the tail, never the warning.
+                    math_s = f'UNCONFIRMED: {math_s}'
+                # The PDF column holds ~52 characters; the arithmetic wins over
+                # an informational note.
+                elif note and len(math_s) + len(note) + 4 <= 52:
+                    math_s += f'  ({note})'
+                row['qty'] = round(measured, 2)
+                row['unit'] = base
                 row['order_qty'] = n_units
-                row['order_unit'] = rule['order_unit']
-                if rule['note']:
-                    row['math'] += f'  ({rule["note"]})'
+                row['order_unit'] = ou
+                row['math'] = math_s
             out.append(row)
     return out
 

@@ -4122,6 +4122,8 @@ function pbRenderRoofCatalog() {
               </select></td>
               <td style="text-align:center"><input type="checkbox" ${it.customer_visible!==false?'checked':''} onchange="pbRoofCatSet(${i},'customer_visible',this.checked)"></td>
               <td class="pb-cat-actions">
+                <button class="pb-order-btn ${_pbOrderOpen[it.id]?'on':''}" onclick="pbToggleOrder('${it.id}')"
+                  title="Order pack — how the material order sheet buys this product">📦</button>
                 <button class="pb-order-btn ${_pbBulletsOpen[it.id]?'on':''}" onclick="pbToggleBullets('${it.id}')"
                   title="What this product says on the Good/Better/Best card">💬</button>
                 <button class="pb-del-btn" onclick="pbRoofCatDel(${i})" title="Delete product">✕</button>
@@ -4152,6 +4154,26 @@ function pbRenderRoofCatalog() {
                 : (it.customer_visible === false)
                   ? 'Not set, and Show is off — this product says nothing on the card. Write the wording above to promise the work without showing its price.'
                   : `Not set — the card falls back to the product name, “${esc(it.name||'')}”.`}</div>
+            </td></tr>` : ''}
+            ${_pbOrderOpen[it.id] ? `
+            <tr class="pb-bullets-row"><td></td><td colspan="7">
+              <label class="pb-variant-field-label">Order pack <small>material order sheet only — never changes a price</small></label>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <span>1</span>
+                <input class="pb-input-unit" type="text" value="${esc(it.order_unit||'')}"
+                  placeholder="${esc(it.bundle_unit||'bundle')}"
+                  onchange="pbRoofCatSetOrder(${i},'order_unit',this.value)">
+                <span>covers</span>
+                <input class="pb-tier-cost" type="number" min="0" step="0.01"
+                  value="${it.order_pack!==undefined?it.order_pack:''}" placeholder="${it.bundle_lf||'default'}"
+                  onchange="pbRoofCatSetOrder(${i},'order_pack',this.value)">
+                <span>${esc(it.bundle_lf ? 'LF' : (it.unit||''))}, plus</span>
+                <input class="pb-tier-cost" type="number" min="0" step="1"
+                  value="${it.order_waste_pct!==undefined?it.order_waste_pct:''}" placeholder="default"
+                  onchange="pbRoofCatSetOrder(${i},'order_waste_pct',this.value)">
+                <span>% waste</span>
+              </div>
+              <div class="pb-bundle-copy-hint">Blank uses the sheet's default for this product name (Shadow Ridge 30 LF, OC Flex 33, IKO 36, ice &amp; water 66.7 LF rolls — all +10%). Every row on the sheet prints the math it used.</div>
             </td></tr>` : ''}`;
           }).join('');
         })() : `<tr><td colspan="8" class="pb-empty">No products yet — add your first below.</td></tr>`}
@@ -4163,6 +4185,21 @@ function pbRenderRoofCatalog() {
 // Which products have their customer-wording editor expanded, by product id.
 let _pbBulletsOpen = {};
 function pbToggleBullets(pid) { _pbBulletsOpen[pid] = !_pbBulletsOpen[pid]; renderPBModal(); }
+// Which products have their Order pack editor expanded, by product id.
+let _pbOrderOpen = {};
+function pbToggleOrder(pid) { _pbOrderOpen[pid] = !_pbOrderOpen[pid]; renderPBModal(); }
+/* Order pack: how the material order sheet buys this product (see
+   _order_rule_for in app.py). Blank DELETES the key so the sheet falls back to
+   its default for the name; an explicit 0% waste is a real choice and is kept.
+   Pricing never reads these three fields. */
+function pbRoofCatSetOrder(i, field, val) {
+  const it = pbCat()[i]; if (!it) return;
+  const s = String(val == null ? '' : val).trim();
+  if (field === 'order_unit') { if (s) it.order_unit = s; else delete it.order_unit; return; }
+  const n = parseFloat(s);
+  const ok = field === 'order_pack' ? n > 0 : n >= 0;
+  if (s !== '' && isFinite(n) && ok) it[field] = n; else delete it[field];
+}
 /* Empty box DELETES the key rather than saving [] — absence means "fall back to
    the product name", which is what a manager who never touched this wants.
    Deliberate silence is the checkbox below (an explicit []), NOT the Show
