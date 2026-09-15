@@ -482,6 +482,10 @@ const state = { settings: {}, territories: [], runs: {}, activeTimers: {} };
 /* ── router ────────────────────────────────────────────────────────────── */
 
 function route() {
+  clearInterval(seoPoll);
+  clearInterval(socialPoll);
+  seoPoll = socialPoll = null;
+  clearSupPoll();
   const path = location.pathname.replace(/\/$/, '') || '/nimbus';
   document.querySelectorAll('#nav a').forEach(a => {
     a.classList.toggle('on', a.dataset.route.replace(/\/$/, '') === path);
@@ -655,8 +659,8 @@ async function loadPipeline() {
   box.innerHTML = `
     <div class="stages">${rows}</div>
     <div class="kv"><span class="k">$ open pipeline</span><span class="v">$${Number(pl.open_value).toLocaleString(undefined,{maximumFractionDigits:0})}</span></div>
-    <div class="kv"><span class="k">$ won</span><span class="v hot">$${Number(pl.won_value).toLocaleString(undefined,{maximumFractionDigits:0})}</span></div>
-    <div class="kv"><span class="k">won deals</span><span class="v">${pl.won_this_period}</span></div>
+    <div class="kv"><span class="k">$ won · all time</span><span class="v hot">$${Number(pl.won_value).toLocaleString(undefined,{maximumFractionDigits:0})}</span></div>
+    <div class="kv"><span class="k">won deals · all time</span><span class="v">${pl.won_this_period}</span></div>
   `;
 }
 
@@ -869,9 +873,10 @@ const PLAT = {
 async function renderSocial() {
   const main = document.getElementById('main');
   main.innerHTML = '<div class="empty"><span class="spin"></span> loading</div>';
-  const [drafts, sched] = await Promise.all([
+  const [drafts, sched, active] = await Promise.all([
     fetch(`${BASE}/api/social/drafts?status=draft`).then(r => r.json()).catch(() => []),
     fetch(`${BASE}/api/schedule`).then(r => r.json()).catch(() => ({jobs: [], enabled: false})),
+    fetch(`${BASE}/api/seo/result`).then(r => r.json()).catch(() => null),
   ]);
 
   const byPkg = {};
@@ -888,8 +893,8 @@ async function renderSocial() {
     </div>
 
     <div class="seo-bar">
-      <button onclick="startSocial(false)">Write this week's posts</button>
-      <button class="ghost" onclick="startSocial(true)">Dry run</button>
+      <button onclick="startSocial(false)" ${active?.running ? 'disabled' : ''}>Write this week's posts</button>
+      <button class="ghost" onclick="startSocial(true)" ${active?.running ? 'disabled' : ''}>Dry run</button>
       <span style="color:var(--dim2);font-size:12px">
         ${social ? `scheduled: ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][social.weekday]}
           ${String(social.hour_utc).padStart(2,'0')}:00 UTC ·
@@ -916,6 +921,10 @@ async function renderSocial() {
         : '<div class="empty">No drafts yet. Write this week\'s posts to fill the queue.</div>'}
     </section>
   `;
+  if (active?.running) {
+    document.getElementById('social-live').textContent = 'A marketing run is in progress…';
+    pollSocial(active.job_id, active.dry_run);
+  }
 }
 
 function postCard(d) {
@@ -963,21 +972,32 @@ async function reviewDraft(id, status) {
   flash(status === 'posted' ? 'Marked as posted' : `Marked ${status}`);
 }
 
+let socialPoll = null;
 async function startSocial(dryRun) {
   const r = await fetch(`${BASE}/api/social/run`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({dry_run: !!dryRun}),
   });
   if (r.status === 409) { flash('A run is already in progress', true); return; }
-  flash(dryRun ? 'Dry run started — nothing saved' : 'Writing posts…');
+  if (!r.ok) { flash('Could not start the run', true); return; }
+  const started = await r.json();
+  flash(dryRun ? 'Preview started — no drafts will be saved' : 'Writing posts…');
   document.getElementById('social-live').innerHTML =
     '<div class="conn"><div class="detail"><span class="spin"></span> writing…</div></div>';
+  pollSocial(started.job_id, dryRun);
+}
+
+function pollSocial(jobId, dryRun) {
+  clearInterval(socialPoll);
   const poll = setInterval(async () => {
-    const s = await fetch(`${BASE}/api/seo/result`).then(x => x.json()).catch(() => null);
+    const s = await fetch(`${BASE}/api/seo/result?job_id=${jobId}`).then(x => x.ok ? x.json() : null).catch(() => null);
+    if (socialPoll !== poll) return;
+    if (!document.getElementById('social-live')) { clearInterval(socialPoll); return; }
     if (!s || s.running) return;
-    clearInterval(poll);
+    clearInterval(socialPoll);
     const m = s.manifest || {};
     if (!m.ok) {
+      document.querySelectorAll('.seo-bar button').forEach(b => b.disabled = false);
       document.getElementById('social-live').innerHTML =
         `<div class="conn" style="border-color:var(--danger)"><div class="detail"
           style="color:var(--danger)">${escapeHtml(m.error || 'run failed')}</div></div>`;
@@ -990,8 +1010,10 @@ async function startSocial(dryRun) {
           honesty check: ${escapeHtml(rejected.map(x => x.platform + ' — ' + x.reason).join(' · '))}</div></div>`
       : '';
     flash(m.note || 'Done');
+    document.querySelectorAll('.seo-bar button').forEach(b => b.disabled = false);
     if (!dryRun) renderSocial();
   }, 2000);
+  socialPoll = poll;
 }
 
 /* ── local SEO strategist ──────────────────────────────────────────────── */
@@ -1091,7 +1113,9 @@ async function renderSeo() {
         : '<div class="empty">No report saved yet.</div>'}
     </section>
   `;
-  if (busy) pollSeo();
+  if (busy || (runs.active?.dry_run && runs.active.kind === 'seo')) {
+    pollSeo(runs.active.dry_run, runs.active.job_id);
+  }
   loadFieldNotes();
   loadCrmQuestions();
 }
@@ -1225,23 +1249,29 @@ async function startSeo(dryRun) {
   });
   if (r.status === 409) { flash('A run is already in progress', true); return; }
   if (!r.ok) { flash('Could not start the run', true); return; }
-  flash(dryRun ? 'Dry run started — nothing will be saved' : 'Analysis started');
+  const started = await r.json();
+  flash(dryRun ? 'Preview started — no recommendations will be saved' : 'Analysis started');
   document.getElementById('seo-run').disabled = true;
   document.getElementById('seo-live').innerHTML =
     '<div class="conn"><div class="detail"><span class="spin"></span> '
-    + (dryRun ? 'Dry run in progress — crawling, no writes' : 'Crawling and researching…')
+    + (dryRun ? 'Preview in progress — crawling and checking pages' : 'Crawling and researching…')
     + '</div></div>';
-  pollSeo(dryRun);
+  pollSeo(dryRun, started.job_id);
 }
 
-function pollSeo(dryRun) {
+function pollSeo(dryRun, jobId) {
   clearInterval(seoPoll);
-  seoPoll = setInterval(async () => {
-    const s = await fetch(`${BASE}/api/seo/result`).then(r => r.json()).catch(() => null);
+  const poll = setInterval(async () => {
+    const s = await fetch(`${BASE}/api/seo/result?job_id=${jobId}`).then(r => r.ok ? r.json() : null).catch(() => null);
+    if (seoPoll !== poll) return;
+    if (!document.getElementById('seo-live')) { clearInterval(seoPoll); return; }
     if (!s || s.running) return;
     clearInterval(seoPoll);
+    document.querySelectorAll('.seo-bar button').forEach(b => b.disabled = false);
+    if (s.kind !== 'seo') { renderSeo(); return; }
     const m = s.manifest || {};
     if (!m.ok) {
+      document.getElementById('seo-run').disabled = false;
       document.getElementById('seo-live').innerHTML =
         `<div class="conn" style="border-color:var(--danger)">
            <div class="detail" style="color:var(--danger)">Run failed: ${escapeHtml(m.error || 'unknown error')}</div>
@@ -1250,10 +1280,10 @@ function pollSeo(dryRun) {
       return;
     }
     if (dryRun) {
-      // A dry run saves nothing, so this in-memory manifest is the only copy.
+      // Only job progress is retained; preview content is not saved as drafts.
       document.getElementById('seo-live').innerHTML = `
         <section class="panel" style="margin-bottom:18px;border-color:var(--violet)">
-          <h2>Dry run — nothing was saved
+          <h2>Preview — no recommendations were saved
             <span class="count">${(m.recommendations || []).length} would be created</span></h2>
           <div style="color:var(--dim);font-size:13px;margin-bottom:12px">
             ${m.pages_crawled} pages crawled · ${m.skipped_by_robots} skipped by robots.txt ·
@@ -1264,12 +1294,13 @@ function pollSeo(dryRun) {
             ${m.dropped.length} dropped by the honesty checks:
             ${m.dropped.slice(0, 5).map(d => escapeHtml(d.reason)).join(' · ')}</div>` : ''}
         </section>`;
-      flash('Dry run complete — nothing saved');
+      flash('Preview complete — no recommendations saved');
     } else {
       flash('Analysis complete');
       renderSeo();
     }
   }, 2000);
+  seoPoll = poll;
 }
 
 async function makeBrief(id) {

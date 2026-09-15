@@ -66,7 +66,7 @@ const NAMES = ['_rateValue', '_resolveRate', 'tierRate', 'tradeRate', 'lineTotal
                'lineTotalEffective', 'effectiveTradeMode', 'tradeTotal', 'tradeTier',
                'guessCostClass', 'normCostClass', '_tradeCatalog',
                '_catalogClassByName', 'costClassOf', 'lineCostSplit',
-               'simpleCostSplit', 'tierProfit'];
+               'simpleCostSplit', 'tierProfit', 'isSupplementSectionName', 'isSupplementItem'];
 
 // Globals the extracted functions close over in the real bundle. `priceBook`
 // matters as much as `S` here — _tradeCatalog reads it, and without it every

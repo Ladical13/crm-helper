@@ -65,6 +65,8 @@ def import_via_test_client(client, rows, *, lead_type, source, rep,
     totals  = {'inserted': 0, 'duplicate': 0, 'suppressed': 0, 'invalid': 0}
     batches = []
     details = []
+    matches = []
+    offset = 0
     for chunk in _chunks(list(rows), CHUNK):
         r = client.post('/crm/api/prospects/import',
                         json=_payload(chunk, lead_type, source, rep, batch, dry_run, service))
@@ -76,10 +78,14 @@ def import_via_test_client(client, rows, *, lead_type, source, rep,
         if body.get('batch'):
             batches.append(body['batch'])
         for d in (body.get('details') or []):
+            if d.get('status') in ('inserted', 'duplicate') and d.get('lead_id'):
+                matches.append({'row': offset + d['row'], 'lead_id': d['lead_id'],
+                                'status': d['status']})
             if d.get('status') != 'inserted':
                 details.append(d)
+        offset += len(chunk)
     return {'counts': totals, 'batches': sorted(set(batches)),
-            'not_inserted': details[:200]}
+            'not_inserted': details[:200], 'matches': matches}
 
 
 def import_via_http(rows, *, base_url, username, password=None,

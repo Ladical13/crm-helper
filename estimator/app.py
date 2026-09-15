@@ -1183,6 +1183,40 @@ def remove_team_member(username):
     return jsonify({'ok': True, 'removed': username})
 
 
+def _roster():
+    """Everyone an estimate can be assigned to: the team.json roster plus any
+    portal account it has not heard of (a rep enrolled by invite is a real
+    login without necessarily being on the roster). Usernames lowercase, since
+    `_can_touch_estimate` compares the salesperson to the session user exactly."""
+    seen, out = set(), []
+    for m in load_team():
+        u = (m.get('username') or '').strip().lower()
+        if u and u not in seen:
+            seen.add(u)
+            out.append({'username': u,
+                        'display_name': m.get('display_name') or _display_name(u)})
+    try:
+        accounts = pusers.all_users()
+    except Exception as exc:
+        print(f'[team] portal accounts unreadable, roster is team.json only: {exc}')
+        accounts = []
+    for a in accounts:
+        u = (a.get('username') or '').strip().lower()
+        if u and u not in seen:
+            seen.add(u)
+            out.append({'username': u, 'display_name': _display_name(u)})
+    return out
+
+
+@app.route('/api/team', methods=['GET'])
+def team_roster():
+    """Any signed-in user: who can be picked as a salesperson. Names only — the
+    phone/email overrides and enrollment state stay behind admin-only
+    /api/users. The front end used to hardcode this list, so a rep added in
+    Team Logins could never be picked."""
+    return jsonify(_roster())
+
+
 @app.route('/api/account/password', methods=['POST'])
 def change_own_password():
     """Any signed-in user sets/replaces their own password."""
@@ -1429,6 +1463,18 @@ def save_estimate(est_id):
             for field in SERVER_MANAGED_FIELDS:
                 if not data.get(field) and existing.get(field):
                     data[field] = existing[field]
+            # Who owns an estimate moves ONLY through PATCH .../salesperson.
+            # A whole-doc save is a snapshot from whenever the tab loaded, so
+            # a rep's open tab autosaving a minute after a manager reassigned
+            # the job would hand it straight back, with nothing on screen to
+            # say so. An unassigned estimate may still be claimed by a save.
+            prev_sp = existing.get('salesperson')
+            if isinstance(prev_sp, str) and prev_sp.strip():
+                data['salesperson'] = prev_sp
+            if existing.get('assignment_history'):
+                data['assignment_history'] = existing['assignment_history']
+            else:
+                data.pop('assignment_history', None)
             # A signed estimate stays accepted even if a stale tab says draft
             if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
                 data['status'] = existing.get('status', 'accepted')
@@ -1586,6 +1632,55 @@ def update_estimate_label(est_id):
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     est_save(est)
     return jsonify({'ok': True, 'label': label})
+
+
+@app.route('/api/estimates/<est_id>/salesperson', methods=['PATCH'])
+def reassign_estimate(est_id):
+    """Hand an estimate to another rep — the only path that changes its owner.
+
+    Manager-up, because ownership is visibility: reps see only their own
+    estimates, so this moves a job off one rep's dashboard and onto another's.
+    A rep may do exactly one thing here, which a save could already do: claim
+    an unassigned estimate for themselves. `""` unassigns (manager-up)."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    raw = (request.get_json(force=True, silent=True) or {}).get('salesperson')
+    if not isinstance(raw, str):
+        return jsonify({'error': 'salesperson required'}), 400
+    target = raw.strip().lower()
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    user = _current_user()
+    prev_raw = est.get('salesperson')
+    if not _is_manager_up():
+        # An unreadable owner is not "unassigned" — fails closed, like the list.
+        unassigned = prev_raw is None or (isinstance(prev_raw, str) and not prev_raw.strip())
+        if not (unassigned and target and target == user):
+            return _forbid()
+    if target and target not in {m['username'] for m in _roster()}:
+        return jsonify({'error': f'{raw.strip()} is not on the team roster.'}), 400
+    prev = prev_raw.strip() if isinstance(prev_raw, str) else ''
+    if target == prev and isinstance(prev_raw, str):
+        return jsonify({'ok': True, 'salesperson': target, 'changed': False})
+    now = datetime.utcnow().isoformat() + 'Z'
+    hist = est.get('assignment_history')
+    hist = hist if isinstance(hist, list) else []
+    hist.append({'from': prev, 'to': target, 'by': user, 'at': now})
+    est['assignment_history'] = hist[-50:]
+    est['salesperson'] = target
+    est['updated_at'] = now
+    est_save(est)
+    # The funnel row carries the rep too. Left alone, the CRM keeps attributing
+    # this estimate to whoever handed it off. Only an EXISTING row is updated —
+    # record() would otherwise create one for an estimate no lead ever linked.
+    if not demo.is_demo_doc(est):
+        try:
+            if pfunnel.get(est_id):
+                pfunnel.record(est_id, 'draft', rep=target)
+        except Exception as exc:
+            print(f'[funnel] reassignment not recorded for {est_id}: {exc}')
+    return jsonify({'ok': True, 'salesperson': target, 'changed': True})
 
 
 # Why we lost, captured at the moment a rep marks an estimate lost. Without it
@@ -4771,6 +4866,53 @@ def _line_sell_total(item, tier, rate, mode):
     return _sell_price(cost, rate, mode) * qty
 
 
+def _is_supplement_item(td, item):
+    """Does this line live in a Supplements section?
+
+    A section whose name says "supplement" holds the "if needed" work (extra
+    decking by the sheet, a second layer) that sits at quantity 0 until the
+    roof is open. Those lines are priced in their own block with their own
+    subtotal and kept OUT of the package total, cost and margin — the customer
+    has not bought them. A tag naming a section the trade no longer lists is
+    General, same as the grouping. MUST mirror isSupplementItem (app.js)."""
+    s = (item.get('section') or '').strip()
+    return (bool(s) and 'supplement' in s.lower()
+            and s in (td.get('sections') or []))
+
+
+def trade_supplements(est, trade, tier):
+    """([(item, qty, line_total, desc), ...], total) for one trade's supplements.
+
+    A blank quantity prices as ONE unit so the customer sees what a sheet or a
+    foot costs; `qty` is returned as stored (0 = "if needed"). Tier exclusions
+    and a locked price_override are honoured like any other line.
+    MUST mirror supplementItems / supplementLineTotal (app.js)."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    if not td.get('enabled'):
+        return [], 0.0
+    pricing = est.get('pricing', {})
+    mode = pricing.get('mode', 'margin')
+    simple = _trade_mode(trade, td) == 'simple'
+    r = _tier_rate(pricing, trade, tier)
+    rows = []
+    for item in td.get('line_items') or []:
+        if not _is_supplement_item(td, item):
+            continue
+        qty = float(item.get('quantity') or 0)
+        priced_qty = qty if qty > 0 else 1.0
+        if simple:
+            line = float(item.get('unit_price') or 0) * priced_qty
+            desc = (item.get('description') or '').strip()
+        else:
+            t = (item.get('tiers') or {}).get(tier) or {}
+            if t.get('included') is False:
+                continue
+            line = _line_sell_total(dict(item, quantity=priced_qty), tier, r, mode)
+            desc = (t.get('description') or '').strip()
+        rows.append((item, qty, line, desc))
+    return rows, sum(line for _i, _q, line, _d in rows)
+
+
 def _trade_subtotal(est, trade, tier):
     """Sell subtotal for one trade at one tier (simple trades ignore the tier)."""
     pricing = est.get('pricing', {})
@@ -4782,6 +4924,9 @@ def _trade_subtotal(est, trade, tier):
     r     = _tier_rate(pricing, trade, tier)
     total = 0.0
     for item in td.get('line_items', []):
+        # Supplements are priced in their own block, never in the package.
+        if _is_supplement_item(td, item):
+            continue
         # Zero-qty items are "not in scope" — never priced, even when a
         # price_override is set (the customer view and signed PDF already
         # hide them; the total must agree). MUST mirror tradeTotal (app.js).
@@ -5083,6 +5228,8 @@ def _trade_cost_subtotal(est, trade, tier):
     trade_mode = _trade_mode(trade, td)
     total = 0.0
     for item in td.get('line_items', []):
+        if _is_supplement_item(td, item):
+            continue
         qty = float(item.get('quantity') or 0)
         if qty <= 0:
             continue
@@ -5456,6 +5603,8 @@ def _autofill_tier_features(est, trade, tier):
     for item in td.get('line_items', []) or []:
         if item.get('customer_visible') is False:
             continue
+        if _is_supplement_item(td, item):
+            continue  # "if needed" work is not what the package includes
         name = (item.get('name') or '').strip()
         if not name:
             continue
@@ -5671,6 +5820,8 @@ def get_analytics():
             tcost = 0.0
 
             for item in td['line_items']:
+                if _is_supplement_item(td, item):
+                    continue  # not part of what was sold
                 qty = float(item.get('quantity') or 0)
                 if qty <= 0:
                     continue
@@ -5978,6 +6129,41 @@ def _with_section(item, name):
     return f'{name} [{s}]' if s else name
 
 
+def _supplements_cv_table(est, trade, tier, label):
+    """One trade's Supplements block for the customer page, or '' if none.
+
+    Always prints a price column whatever the Line Prices chip says: an "if
+    needed" line with no price tells the customer nothing. The subtotal is
+    labelled as outside the total because it is — the grand total above it
+    never includes these."""
+    rows, total = trade_supplements(est, trade, tier)
+    shown = [(it, q, line, d) for it, q, line, d in rows
+             if it.get('customer_visible', True) and (it.get('name') or '').strip()]
+    if not shown:
+        return ''
+    # A line with no price is a notice ("decking may need replacing"), not a
+    # $0.00 charge — and a block that is ALL notice says so instead of
+    # printing a $0.00 subtotal.
+    body = ''.join(f'''<tr>
+              <td class="cvn">{he(it.get("name", ""))}
+                {'<div class="cvd">' + he(d) + '</div>' if d else ''}</td>
+              <td class="cvc" data-l="Qty">{f"{q:g}" if q > 0 else "If needed"}</td>
+              <td class="cvc">{he(it.get("unit", ""))}</td>
+              <td class="cvr" data-l="Price">{fc(line) if line else "Quoted if needed"}</td></tr>''' for it, q, line, d in shown)
+    foot = (f'<td colspan="3" class="cvsub-l">Supplements Subtotal &mdash; not included in the total</td>'
+            f'<td class="cvr cvsub">{fc(total)}</td>') if total else (
+            '<td colspan="4" class="cvsub-l">Supplements may be needed once work begins. '
+            'They are not included in the total.</td>')
+    return f'''<div class="cvtrade cvtrade-supp">
+          <div class="cvtrade-hd">{label} Supplements</div>
+          <table class="cvt"><thead><tr>
+            <th>Description</th><th scope="col" class="cvth-c">Qty</th>
+            <th scope="col" class="cvth-c">Unit</th><th scope="col" class="cvth-r">Price</th></tr></thead>
+          <tbody>{body}</tbody>
+          <tfoot><tr>{foot}</tr></tfoot>
+          </table></div>'''
+
+
 def render_line_items(est, tier=None, only_trades=None):
     """Build trade line-item tables for customer view. Returns (html, grand_total).
     tier=None prices each trade at its own selected tier (mix-and-match; legacy
@@ -6010,6 +6196,8 @@ def render_line_items(est, tier=None, only_trades=None):
         # section (structures / roof areas; mirrors groupedTradeItems in app.js)
         priced = []
         for item in td['line_items']:
+            if _is_supplement_item(td, item):
+                continue  # priced in the Supplements block below, not the package
             qty  = float(item.get('quantity') or 0)
             if qty <= 0:
                 continue  # zero-quantity items are hidden from the customer
@@ -6065,12 +6253,14 @@ def render_line_items(est, tier=None, only_trades=None):
                             f'<td class="cvr">{fc(sec_tot)}</td></tr>')
         if hidden_count:
             rows.append(f'<tr><td colspan="{ncols}" class="cvhidden-note">Additional materials &amp; supplies included in total</td></tr>')
-        if not rows:
+        lbl = labels.get(tk, tk.title())
+        supp_html = _supplements_cv_table(est, tk, t_tier, lbl)
+        if not rows and not supp_html:
             continue  # nothing priced to show the customer for this trade
         gtotal += sub
-        lbl = labels.get(tk, tk.title())
-        lp_ths = '<th scope="col" class="cvth-r">Unit Price</th><th scope="col" class="cvth-r">Total</th>' if show_lp else ''
-        parts.append(f'''<div class="cvtrade">
+        if rows:
+            lp_ths = '<th scope="col" class="cvth-r">Unit Price</th><th scope="col" class="cvth-r">Total</th>' if show_lp else ''
+            parts.append(f'''<div class="cvtrade">
           <div class="cvtrade-hd">{lbl}</div>
           <table class="cvt"><thead><tr>
             <th>Description</th><th scope="col" class="cvth-c">Qty</th>
@@ -6079,6 +6269,8 @@ def render_line_items(est, tier=None, only_trades=None):
           <tfoot><tr><td colspan="{ncols - 1}" class="cvsub-l">{lbl} Subtotal</td>
             <td class="cvr cvsub">{fc(sub)}</td></tr></tfoot>
           </table></div>''')
+        if supp_html:
+            parts.append(supp_html)
 
     return '\n'.join(parts), gtotal
 
@@ -8284,6 +8476,8 @@ def _build_estimate_manifest(est):
                 seen  = set()
                 for it in (td.get('line_items') or []):
                     if it.get('customer_visible') is False:
+                        continue
+                    if _is_supplement_item(td, it):
                         continue
                     if float(it.get('quantity') or 0) <= 0:
                         continue
@@ -11736,11 +11930,48 @@ def build_signed_pdf(est, signed=None):
             trade_mode = _trade_mode(tk, td)
             t_tier = _trade_tier(est, tk)
             r = _tier_rate(pricing, tk, t_tier)
+
+            # "If needed" lines in their own table, AFTER the trade subtotal and
+            # never added to `grand` — the signature covers the package only.
+            def _supplements_block(tk=tk, t_tier=t_tier):
+                s_rows, s_tot = trade_supplements(est, tk, t_tier)
+                s_rows = [x for x in s_rows if x[0].get('customer_visible', True)
+                          and (x[0].get('name') or '').strip()]
+                if not s_rows:
+                    return
+                section_head('If needed', labels.get(tk, tk.title()) + ' Supplements')
+                with open_table(widths, aligns) as table:
+                    head = table.row()
+                    for h in ('Description', 'Qty', 'Unit', 'Unit Price', 'Total'):
+                        head.cell(h)
+                    for it, q, line, desc in s_rows:
+                        name = it.get('name', '')
+                        if desc:
+                            name = f'{name} — {_pdf_oneline_rich(desc)}'
+                        row = table.row()
+                        row.cell(_pdf_rich(name))
+                        row.cell(f'{q:g}' if q > 0 else 'If needed')
+                        row.cell(_pdf_rich(it.get('unit', '')))
+                        # No price = a notice, never a $0.00 charge.
+                        row.cell(fc(line / q if q > 0 else line) if line else '')
+                        row.cell(fc(line) if line else 'Quoted if needed')
+                if s_tot:
+                    subtotal_row('Supplements Subtotal (not included in total)', s_tot, 28)
+                else:
+                    pdf.set_font(SANS, 'I', 7.5)
+                    pdf.set_text_color(*_PDF_STYLE['faint'])
+                    pdf.cell(W, 5.5, _pdf_rich('Supplements may be needed once work begins. '
+                                               'They are not included in the total.'),
+                             align='L', new_x='LMARGIN', new_y='NEXT')
+                    pdf.set_text_color(*_PDF_STYLE['ink'])
+
             if not any(
+                    not _is_supplement_item(td, it) and
                     float(it.get('quantity') or 0) > 0 and
                     (trade_mode == 'simple'
                      or (it.get('tiers') or {}).get(t_tier, {}).get('included') is not False)
                     for it in td['line_items']):
+                _supplements_block()
                 continue
             _pkg = dict(good='Good', better='Better', best='Best').get(t_tier, '')
             section_head(f'{_pkg} package' if _pkg and trade_mode != 'simple' else 'Scope',
@@ -13845,6 +14076,8 @@ def _cost_split_by_trade(est, pb=None):
         by_name = _catalog_class_by_name(pb, tk)
         mat_cost = lab_cost = 0.0
         for item in td.get('line_items') or []:
+            if _is_supplement_item(td, item):
+                continue  # mirrors _trade_subtotal: not in the sell either
             qty = float(item.get('quantity') or 0)
             if qty <= 0:
                 continue

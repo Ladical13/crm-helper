@@ -249,3 +249,27 @@ def test_cache_breakpoint_ignores_string_content():
     messages = [{'role': 'user', 'content': 'plain string'}]
     chat._mark_cache_breakpoint(messages)
     assert messages[0]['content'] == 'plain string'
+
+
+def test_only_one_concurrent_turn_claim_wins():
+    from concurrent.futures import ThreadPoolExecutor
+    tid = chat.create_thread('luke')
+    def claim():
+        try:
+            chat._claim_turn(tid)
+            return True
+        except chat.Busy:
+            return False
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(lambda _: claim(), range(2))) == [False, True]
+
+
+def test_failed_thread_start_leaves_conversation_retryable(monkeypatch):
+    tid = chat.create_thread('luke')
+    def fail(*a, **kw):
+        raise RuntimeError('thread unavailable')
+    monkeypatch.setattr(chat.threading.Thread, 'start', fail)
+    with pytest.raises(RuntimeError, match='thread unavailable'):
+        chat.start_turn(tid, 'hello', {})
+    assert chat.get_thread(tid)['status'] == 'error'
+    chat._claim_turn(tid)

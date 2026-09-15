@@ -915,6 +915,9 @@ input.scope-qty-input {
 .col-better .tier-col-header { background: var(--better-bg); color: var(--better); }
 .col-best   .tier-col-header { background: var(--best-bg);   color: var(--best); }
 .tier-col-total { font-size: 14px; }
+/* Supplements priced beside, not inside, the package total */
+.tier-col-supp { font-size: 11px; font-weight: 500; color: #6b7280; margin-top: 2px; }
+.tier-col-supp strong { color: #374151; font-weight: 600; }
 .tier-items { flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 7px; }
 .empty-items {
   padding: 28px; text-align: center; color: var(--text-light);
