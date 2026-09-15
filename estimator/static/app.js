@@ -4326,41 +4326,79 @@ e.g. 5-year Project One workmanship warranty"
         </label>`).join('') : '<div class="pb-empty">Add products in the Products tab first.</div>'}
     </div>`;
 }
-/* The exact card the customer will see, built the same way an estimate builds
-   it. It reads off the WORKING copies (pbCat/pbBundles), so ticking a product
-   chip updates the preview — which is the whole point: the manager can see
-   that dropping soffit drops the soffit bullet. */
+/* What's Included, EDITABLE where the manager is looking at it. The bullets
+   belong to each product (bundleFeatures), and they used to be editable only on
+   the Products tab behind a 💬 per row — so fixing one line on this card meant
+   leaving the bundle, hunting the product out of ~50 and coming back. Each
+   product in the bundle now gets its own wording box here, writing the same
+   `bullets` field the Products tab does, followed by the finished card. It all
+   reads the WORKING copies (pbCat/pbBundles), so ticking a chip updates it. */
 function pbRenderBundleFeaturePreview(b) {
-  const feats = pbBundleFeatures(b);
-  const silent = (b.product_ids || []).filter(pid => {
-    const p = pbCat().find(x => x.id === pid);
-    return p && (p.customer_visible === false ||
-                 (Array.isArray(p.bullets) && !p.bullets.length));
-  }).length;
-  return `
-    <label class="pb-variant-field-label">What's Included <small>built from the products below</small></label>
-    ${feats.length ? `<ul class="pb-bundle-feat-preview">${feats.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`
-      : `<div class="pb-empty">No bullets yet — add products, or give them customer wording in the Products tab.</div>`}
-    <div class="pb-bundle-copy-hint">Edit this wording on each <strong>product</strong> (Products tab → 💬). Picking this
-      bundle on an estimate replaces that package's tagline and bullets with what you see here${
-      silent ? `; ${silent} product${silent===1?' is':'s are'} set to say nothing` : ''}.</div>`;
-}
-// Same rule as bundleFeatures(), against the Price Book's unsaved working copies.
-function pbBundleFeatures(b) {
   const cat = pbCat();
-  const out = [], seen = new Set();
-  const push = s => {
-    const t = String(s == null ? '' : s).trim();
-    if (t && !seen.has(t)) { seen.add(t); out.push(t); }
-  };
-  (b.product_ids || []).forEach(pid => {
-    const p = cat.find(x => x.id === pid);
-    if (!p || p.customer_visible === false) return;
-    if (Array.isArray(p.bullets)) p.bullets.forEach(push);
-    else push(p.name);
-  });
-  (b.extra_features || []).forEach(push);
-  return out;
+  const rows = (b.product_ids || []).map(pid => cat.find(x => x.id === pid)).filter(Boolean);
+  return `
+    <label class="pb-variant-field-label">What's Included <small>each product's customer wording — one bullet per line, edit it right here</small></label>
+    ${rows.length ? `<div class="pb-wording-list">${rows.map(p => pbRenderWordingRow(b, p)).join('')}</div>`
+      : `<div class="pb-empty">No products yet — tick products below and their wording appears here.</div>`}
+    <div id="pb-bundle-card-box">${pbRenderBundleCard(b)}</div>`;
+}
+/* One product's wording. The three states are the bundleFeatures() contract:
+   lines typed -> exactly those; box left empty -> the product's name (or
+   nothing, if Show is off), which is what the placeholder says; "Say nothing"
+   -> an explicit []. Wording lives on the PRODUCT, so the row says when the
+   edit will also change other bundles. */
+function pbRenderWordingRow(b, p) {
+  const silent = Array.isArray(p.bullets) && !p.bullets.length;
+  const lines = Array.isArray(p.bullets) ? p.bullets : [];
+  const others = pbBundles().filter(x => x.id !== b.id && (x.product_ids || []).includes(p.id)).length;
+  const fallback = p.customer_visible === false
+    ? 'Says nothing (Show is off) — type a line to promise this work'
+    : `Shows as “${p.name || ''}” — type to reword`;
+  return `
+    <div class="pb-wording-row${silent ? ' is-silent' : ''}">
+      <div class="pb-wording-hd">
+        <strong>${esc(p.name || '(unnamed)')}</strong>
+        <label class="pb-bullet-silence"><input type="checkbox" ${silent ? 'checked' : ''}
+          onchange="pbSetProductSilence('${b.id}','${p.id}',this.checked)"> Say nothing</label>
+      </div>
+      ${silent ? '' : `<textarea class="pb-bullets-ta pb-wording-ta" rows="${Math.max(1, lines.length)}"
+        placeholder="${esc(fallback)}"
+        oninput="this.rows=Math.max(1,this.value.split('\\n').length)"
+        onchange="pbSetProductBullets('${b.id}','${p.id}',this.value)">${esc(lines.join('\n'))}</textarea>`}
+      ${others ? `<div class="pb-bundle-copy-hint">Also in ${others} other bundle${others === 1 ? '' : 's'} — this wording changes there too.</div>` : ''}
+    </div>`;
+}
+// The finished card, duplicates removed — exactly what an estimate will print.
+function pbRenderBundleCard(b) {
+  const feats = pbBundleFeatures(b);
+  return `
+    <label class="pb-variant-field-label pb-card-label">Customer sees <small>the finished list, duplicates removed</small></label>
+    ${feats.length ? `<ul class="pb-bundle-feat-preview">${feats.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`
+      : `<div class="pb-empty">Nothing on the card yet — type wording above, or add closing bullets.</div>`}
+    <div class="pb-bundle-copy-hint">Picking this bundle on an estimate replaces that package's tagline and bullets with this list.</div>`;
+}
+/* The SAME rule the estimate uses (featuresFromCatalog), against the Price
+   Book's unsaved working copies. This used to be a restatement, and it had
+   drifted: it dropped every hidden product, so a labor line's "Installed by
+   Project One crews" promise was on the customer's card and missing here. */
+function pbBundleFeatures(b) {
+  return featuresFromCatalog(pbCat(), b);
+}
+// Same semantics as pbRoofCatSetBullets: an emptied box DELETES the key (fall
+// back to the name); silence is the explicit []. Only the card repaints — the
+// wording boxes stay put, so tabbing to the next product keeps focus.
+function pbSetProductBullets(bid, pid, text) {
+  const p = pbCat().find(x => x.id === pid); if (!p) return;
+  const lines = String(text || '').split('\n').map(s => s.trim()).filter(Boolean);
+  if (lines.length) p.bullets = lines; else delete p.bullets;
+  const b = pbBundles().find(x => x.id === bid);
+  const box = document.getElementById('pb-bundle-card-box');
+  if (box && b) box.innerHTML = pbRenderBundleCard(b);
+}
+function pbSetProductSilence(bid, pid, on) {
+  const p = pbCat().find(x => x.id === pid); if (!p) return;
+  if (on) p.bullets = []; else delete p.bullets;
+  pbRefreshBundlePreview(pbBundles().find(x => x.id === bid));
 }
 function pbRoofSetDefault(tier, val) { pbDefs()[tier] = val; }
 function pbOpenBundle(id) { pbEditBundleId = id; renderPBModal(); }
@@ -7366,8 +7404,13 @@ function _tradeBundle(trade, id) { return _tradeBundles(trade).find(b => b.id ==
    `bundle.extra_features` closes the list with the bullets no product owns —
    the workmanship warranty. Order follows product_ids so the material leads. */
 function bundleFeatures(trade, bundle) {
+  return featuresFromCatalog(_tradeCatalog(trade), bundle);
+}
+// The rule itself, catalog passed in — so the Price Book's bundle editor runs it
+// against its unsaved working copies instead of keeping a second copy of it.
+function featuresFromCatalog(catalog, bundle) {
   if (!bundle) return [];
-  const catalog = _tradeCatalog(trade);
+  catalog = catalog || [];
   const out = [];
   const seen = new Set();
   const push = s => {

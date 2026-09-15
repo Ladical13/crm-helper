@@ -3254,12 +3254,23 @@ a.jx-contact:hover { text-decoration: underline; }
 .pb-bullet-silence { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-light); margin: 6px 0 6px; cursor: pointer; }
 .pb-bullet-silence input { margin: 0; }
 .pb-variant-field-label small { font-weight: 500; text-transform: none; letter-spacing: 0; margin-left: 5px; }
-/* Read-only: the bullets are built from the bundle's products, so this shows
-   the finished card rather than offering a box to type a different story into. */
+/* "Customer sees": the finished card, read-only — the wording itself is edited
+   per product in .pb-wording-list above it. No max-height: same trap as
+   .pb-bundle-picker — a scroll box inside the scrolling modal body clipped the
+   last bullets out of sight. */
 .pb-bundle-feat-preview { margin: 0 0 8px; padding: 8px 10px 8px 26px; list-style: disc;
-  background: #f8fafc; border: 1px solid var(--border); border-radius: 6px;
-  max-height: 30vh; overflow-y: auto; }
+  background: #f8fafc; border: 1px solid var(--border); border-radius: 6px; }
 .pb-bundle-feat-preview li { font-size: 12.5px; line-height: 1.5; color: var(--text); }
+/* Per-product wording editors in the bundle editor. */
+.pb-wording-list { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
+.pb-wording-row { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: #fff; }
+.pb-wording-row.is-silent { background: #f8fafc; }
+.pb-wording-row.is-silent .pb-wording-hd strong { color: var(--text-light); font-weight: 600; }
+.pb-wording-hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.pb-wording-hd strong { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-wording-hd .pb-bullet-silence { margin: 0; flex: none; }
+.pb-wording-ta { display: block; margin-top: 4px; resize: vertical; }
+.pb-card-label { margin-top: 10px; }
 .pb-cat-actions { text-align: center; white-space: nowrap; }
 .pb-cat-actions .pb-order-btn.on { background: #f0f9ff; border-color: #7dd3fc; }
 .pb-bullets-row > td { padding: 0 8px 10px; background: #f8fafc; }
@@ -3269,11 +3280,13 @@ a.jx-contact:hover { text-decoration: underline; }
 .pb-bullets-ta:focus { outline: none; border-color: var(--primary-light); }
 .pb-bundle-pick-hd { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--text); margin-bottom: 8px; }
 .pb-bundle-pick-hd small { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--text-light); margin-left: 6px; }
-/* Self-contained, always-scrollable list of EVERY catalog product, so the full
-   product set is reachable no matter how many products exist or the screen size
-   (the modal body scroll alone hid products below the fold on phones). */
+/* Full height, NO scroll of its own — #pb-modal-body is the one scroller.
+   This used to be capped at 46vh with its own overflow, a scroll box inside a
+   scroll box: on a tall monitor the cap came out a row short, the last row sat
+   clipped under a box that looked finished, the thumb was nearly full length
+   and the wheel scrolled the modal instead — so products were unreachable. */
 .pb-bundle-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px;
-  max-height: 46vh; overflow-y: auto; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; }
+  padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; }
 .pb-bundle-chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; background: #fff; cursor: pointer; transition: border-color .12s, background .12s; }
 .pb-bundle-chip:hover { border-color: var(--primary-light); }
 .pb-bundle-chip.on { border-color: var(--primary, #0284c7); background: #f0f9ff; }
