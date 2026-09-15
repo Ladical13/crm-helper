@@ -96,7 +96,7 @@ const NAMES = ['mnum', 'itemSection', 'tradeSections', 'effectiveTradeMode', 'tr
                'structureTotal', '_nextStructureName', '_promoteTradeToStructures',
                'addStructure', 'duplicateStructure', 'renameStructure', 'removeStructure',
                '_asceZoneWidth', 'commercialFastening', 'atticVentilation',
-               'measuredQty', 'displayUnit', 'applyMeasurements'];
+               'measuredQty', 'displayUnit', '_tradeCatalog', 'applyMeasurements'];
 
 const NL = String.fromCharCode(10);   // keeps this builder free of escapes
 const scenario = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));

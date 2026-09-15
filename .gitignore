@@ -73,3 +73,6 @@ estimator/tests/*.pending
 # routine at the top of CLAUDE.md — away from being committed and deployed.
 output/
 tmp/
+
+# Private, paid AI preview candidates and their local job ledger.
+estimator/realistic_previews/

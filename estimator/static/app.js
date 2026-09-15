@@ -260,6 +260,69 @@ function tierBulletsAreStale(trade, tier) {
     (parseFloat(it.quantity) || 0) > 0 &&
     ((it.tiers || {})[tier] || {}).included !== false);
 }
+
+/* ── The package tagline — the one line under the price on the card ──────
+   A bundle pick copies the price book's tagline INTO the estimate, so editing
+   the book later never reaches an estimate that already picked it, and with
+   the Options tab retired there was nowhere to change it per estimate. The
+   Pricing tab now has a box per package column.
+
+   What the rep types there is flagged in td.tier_tagline_edited, and that flag
+   is the difference between the two kinds of copy: bundle copy goes stale with
+   the bundle (tierBulletsAreStale), the rep's own line does not — it is what
+   they want THIS package to say, Custom tier included. Re-picking a bundle
+   clears the flag, same as it always replaced the copy.
+   MUST mirror _tier_tagline_edited / _tier_card_content in app.py. */
+function tierTaglineEdited(trade, tier) {
+  return ((S.trades[trade] || {}).tier_tagline_edited || {})[tier] === true;
+}
+function tierTagline(trade, tier) {
+  const d = String((tradeTierContent(trade).descriptions || {})[tier] || '').trim();
+  return (tierBulletsAreStale(trade, tier) && !tierTaglineEdited(trade, tier)) ? '' : d;
+}
+// What the price book would put on this tier today — '' for Custom/no bundle.
+function priceBookTagline(trade, tier) {
+  if (!isBundleTrade(trade)) return '';
+  const bid = ((S.trades[trade] || {}).tier_bundles || {})[tier];
+  if (!bid || bid === '__custom__') return '';
+  return String(bundleDescription(trade, _tradeBundle(trade, bid)) || '').trim();
+}
+function setTierTagline(trade, tier, v) {
+  const td = S.trades[trade]; if (!td) return;
+  const text = String(v || '').trim();
+  tradeTierContent(trade).descriptions[tier] = text;
+  td.tier_tagline_edited = td.tier_tagline_edited || {};
+  // Blank is "no tagline", and a blank line is nothing worth protecting.
+  td.tier_tagline_edited[tier] = !!text;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function resetTierTagline(trade, tier) {
+  const td = S.trades[trade]; if (!td) return;
+  tradeTierContent(trade).descriptions[tier] = priceBookTagline(trade, tier);
+  if (td.tier_tagline_edited) td.tier_tagline_edited[tier] = false;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function tierTaglineEditorHtml(trade, tier) {
+  if (!packageTrades().includes(trade)) return '';
+  const cur  = tierTagline(trade, tier);
+  const book = priceBookTagline(trade, tier);
+  const differs = book && cur !== book;
+  return `
+      <div class="tier-tagline">
+        <div class="tier-tagline-row">
+          <input class="tier-tagline-input" type="text" maxlength="90"
+            value="${esc(cur)}" placeholder="Tagline — one short line (optional)"
+            title="Shown under the price on the customer's ${esc(TIER_LABELS[tier])} package card"
+            onchange="setTierTagline('${trade}','${tier}',this.value)">
+          ${differs ? `<button type="button" class="tier-tagline-reset"
+            title="Use the price book's tagline: ${esc(book)}"
+            onclick="resetTierTagline('${trade}','${tier}')">↺ Price book</button>` : ''}
+        </div>
+        ${differs && !tierTaglineEdited(trade, tier) ? `<div class="tier-tagline-hint">Price book now says: “${esc(book)}”</div>` : ''}
+      </div>`;
+}
 /* Trades that print as a Good/Better/Best package choice. `other` is a G/B/B
    trade by data shape only: its tab shows one tier at a time and writes cost
    and description to ALL THREE (otherSetUnitCost / otherSetDesc), so offering
@@ -851,6 +914,10 @@ const MEASURE_DEFS = {
   // NOT the physical ridge length. bundle_lf:4 on the item then rounds this raw
   // LF up to whole 4-ft ridge-vent sticks. Returns 0 when venting already meets code.
   ridge_vent_code:      { label:'Ridge Vent — code required', calc:m => { const v = atticVentilation(m); return v.needs_ridge ? v.ridge_lf_required : 0; } },
+  // Intake is CODE-driven too: half the 1/300 area ÷ NFA per LF — capped at the
+  // eave run, since you cannot install more eave intake than there is eave. It
+  // used to be the whole eave, which billed 150 LF where the attic needed ~50.
+  intake_vent_code:     { label:'Intake Vent LF — code required', calc:m => { const v = atticVentilation(m); const e = mnum(m.eave_lf); return e > 0 ? Math.min(v.intake_lf_required, e) : v.intake_lf_required; } },
   // Low-slope area is covered by rolled roofing, not shingles — the shingle/
   // underlayment quantity excludes it so the two lines never double-count.
   squares_waste:        { label:'Roof SQ + Waste (excl. low-slope)', calc:m => Math.max(mnum(m.roof_squares) - mnum(m.low_slope_squares), 0) * (1 + mnum(m.waste_pct, 10)/100) },
@@ -991,9 +1058,13 @@ function atticVentilation(m) {
   const ridge_lf_required   = needs_ridge  ? deficit_exhaust / NFA_RIDGE_SQIN_LF : 0; // raw LF
   const ridge_sticks        = Math.ceil(ridge_lf_required / 4);                        // 4-ft sticks
   const intake_lf_suggested = needs_intake ? Math.ceil(required_intake / NFA_INTAKE_SQIN_LF) : 0;
+  // Raw intake footage the rule calls for, NOT gated on needs_ridge: turtle
+  // vents covering exhaust say nothing about intake. intake_vent_code caps it
+  // at the eaves.
+  const intake_lf_required  = required_intake / NFA_INTAKE_SQIN_LF;
   return { attic_sqft:attic, required_total, required_exhaust, required_intake,
            provided_exhaust, deficit_exhaust, needs_ridge, needs_intake,
-           ridge_lf_required, ridge_sticks, intake_lf_suggested };
+           ridge_lf_required, ridge_sticks, intake_lf_suggested, intake_lf_required };
 }
 
 /* ── Commercial fastener calculator ─────────────────────────────────────
@@ -1422,7 +1493,18 @@ function applyMeasurements() {
   // before it — so they have to re-size here too or the margin silently
   // reports the cost of a zero-square roof.
   try { refreshInsuranceCostQuantities(); } catch {}
+  // Ice & water moved from priced-per-roll to priced-per-FOOT (2026-09-15), but
+  // a line built before that still carries bundle_lf 66.67 and keeps dividing
+  // the footage into rolls - a 200 LF roof read "3 LF" at a per-foot price.
+  // Follow the Price Book: once the product has no pack size, neither does the
+  // line, so re-importing the Roofr heals the estimate. Ice & water only; a
+  // pack size a rep's line carries for any other product is left alone.
+  const iw = (_tradeCatalog('roofing') || []).find(p => p.id === 'a_ice_water');
   const applyTrade = td => (td && td.line_items || []).forEach(item => {
+    if (iw && !iw.bundle_lf && item.catalog_id === 'a_ice_water' && item.bundle_lf) {
+      delete item.bundle_lf;
+      delete item.bundle_unit;
+    }
     const q = measuredQty(item);
     if (q !== null) item.quantity = q;
   });
@@ -1602,11 +1684,12 @@ function commComplexityMarkup() {
               code-required footage (ridge_vent_code / atticVentilation) is cut in
               for ventilation, and that "cut-in" figure rides the work order.
      plugs  → qty = turtle vent count (measure turtle_vents)
-     intake → qty = eave LF (measure eave) */
+     intake → qty = code-required intake LF, capped at the eaves (measure
+              intake_vent_code). It used to be the whole eave run. */
 const VENT_SPECS = {
   ridge:  { name:'Ridge Vent',  measure:'ridge_lf', bundle_lf:4, bundle_unit:'sticks' },
   plugs:  { name:'Vent Plug',   measure:'turtle_vents' },
-  intake: { name:'Intake Vent', measure:'eave' },
+  intake: { name:'Intake Vent', measure:'intake_vent_code' },
 };
 function roofHasVentRole(role) {
   return ((S.trades.roofing && S.trades.roofing.line_items) || []).some(i => i.vent_role === role);
@@ -1628,6 +1711,10 @@ function ventPanelMarkup() {
   const rawCutin   = Math.ceil(vent.ridge_lf_required);
   const fullCut    = ridgeLF > 0 && rawCutin >= ridgeLF;   // deficit needs the whole ridge
   const cutinLF    = ridgeLF > 0 ? Math.min(rawCutin, ridgeLF) : rawCutin;
+  // Intake is sized to code as well (intake_vent_code), capped at the eaves.
+  const eaveLF       = mnum(m.eave_lf);
+  const codeIntake   = Math.ceil(vent.intake_lf_required - 1e-9);
+  const intakeCapped = eaveLF > 0 && codeIntake > eaveLF;
   // Three states: meets code / short & ridge added / short & no ridge (loud CTA).
   const statusClass = !vent.needs_ridge ? 'ok' : (hasRidge ? 'ok' : 'below');
   const statusHtml = !vent.needs_ridge
@@ -1661,17 +1748,21 @@ function ventPanelMarkup() {
           <label class="iw-second-row-toggle ${roofHasVentRole('intake') ? 'enabled' : ''}">
             <input type="checkbox" ${roofHasVentRole('intake') ? 'checked' : ''}
               onchange="setVentRole('intake', this.checked)">
-            ✔️ Install Intake Vent <span class="iw-toggle-hint">— continuous soffit intake along the eaves</span>
+            ✔️ Install Intake Vent <span class="iw-toggle-hint">— sized to code: <strong>~${ventRound(intakeCapped ? eaveLF : codeIntake)} LF</strong> (${ventRound(vent.required_intake)} sq in ÷ ${NFA_INTAKE_SQIN_LF} sq in per LF)</span>
           </label>
         </div>
         ${hasRidge ? `
-          <button type="button" class="vent-cutin-btn" onclick="openVentCutinEditor()">🖍️ Mark cut-in on roof <span class="vent-cutin-sub">${(S.vent_cutin && S.vent_cutin.image_filename) ? 'edit map' : '~' + ventRound(cutinLF) + ' LF to cut'}</span></button>` : ''}
+          <button type="button" class="vent-cutin-btn" onclick="openVentCutinEditor('ridge')">🖍️ Mark cut-in on roof <span class="vent-cutin-sub">${(S.vent_cutin && S.vent_cutin.image_filename) ? 'edit map' : '~' + ventRound(cutinLF) + ' LF to cut'}</span></button>` : ''}
+        ${roofHasVentRole('intake') ? `
+          <button type="button" class="vent-cutin-btn" onclick="openVentCutinEditor('intake')">🖍️ Mark intake on roof <span class="vent-cutin-sub">${(S.vent_intake && S.vent_intake.image_filename) ? 'edit map' : '~' + ventRound(_ventIntakeLF()) + ' LF of eave'}</span></button>` : ''}
         ${hasRidge && ridgeLF === 0 ? `
           <div class="vent-warn">⚠️ Ridge Vent added but <strong>Ridges (LF)</strong> is 0 — enter ridge footage above so it orders.</div>` : ''}
         ${hasRidge && fullCut && ridgeLF > 0 ? `
           <div class="vent-warn">⚠️ Code needs ~${ventRound(rawCutin)} LF of exhaust but the ridge is only ${ventRound(ridgeLF)} LF — cutting the full ridge; add box vents to cover the gap.</div>` : ''}
-        ${roofHasVentRole('intake') && mnum(m.eave_lf) === 0 ? `
-          <div class="vent-warn">⚠️ Intake Vent added but Eave LF is 0 — enter eave footage so it prices.</div>` : ''}
+        ${roofHasVentRole('intake') && intakeCapped ? `
+          <div class="vent-warn">⚠️ Code needs ~${ventRound(codeIntake)} LF of intake but the eaves are only ${ventRound(eaveLF)} LF — intake is capped at the eaves; add soffit vents to cover the gap.</div>` : ''}
+        ${roofHasVentRole('intake') && eaveLF === 0 ? `
+          <div class="vent-warn">⚠️ Eave LF is 0 — intake is priced at the code figure; enter eave footage to confirm it fits.</div>` : ''}
       ` : `
         <div class="measure-hint" style="padding:6px 0">Enter Roof Area above to calculate required ventilation.</div>`}
     </div>`;
@@ -4134,7 +4225,7 @@ function pbRenderRoofCatalog() {
               <label class="pb-variant-field-label">Tagline <small>one line under the package price when this product is the primary material — overrides the bundle's default</small></label>
               <input class="pb-bullets-ta" type="text"
                 value="${esc(it.desc||'')}"
-                placeholder="Short customer-facing tagline for this product"
+                maxlength="90" placeholder="Short customer-facing tagline for this product"
                 onchange="pbRoofCatSetDesc(${i},this.value)">
               <label class="pb-variant-field-label" style="margin-top:10px">Customer wording <small>one bullet per line</small></label>
               <textarea class="pb-bullets-ta" rows="3"
@@ -4343,9 +4434,17 @@ function pbRenderBundleEditor(b) {
         placeholder="Bundle name (e.g. ${pbActiveTrade==='siding'?'James Hardie - Cedarmill Lap':'IKO Nordic'})" oninput="pbSetBundleField('${b.id}','name',this.value)">
     </div>
     <div class="pb-bundle-copy">
-      <label class="pb-variant-field-label">Customer tagline</label>
-      <textarea class="pb-bundle-desc" rows="2" placeholder="One line under the price on the Good/Better/Best card…"
-        onchange="pbSetBundleField('${b.id}','description',this.value)">${esc(b.description||'')}</textarea>
+      <label class="pb-variant-field-label">Customer tagline <small>one short line under the price — reaches an estimate when this bundle is picked; an estimate already using it keeps its own until the rep taps ↺ Price book</small></label>
+      <input class="pb-bundle-desc" type="text" maxlength="90" value="${esc(b.description||'')}"
+        placeholder="e.g. Class 4 impact-resistant shingle"
+        onchange="pbSetBundleField('${b.id}','description',this.value.trim());renderPBModal()">
+      ${(() => {
+        // bundleDescription() lets the first product with its own tagline beat
+        // this box, so a manager editing here would see nothing change.
+        const winner = (b.product_ids || []).map(pid => catalog.find(x => x.id === pid))
+          .find(p => p && typeof p.desc === 'string' && p.desc.trim());
+        return winner ? `<div class="pb-bundle-copy-hint">⚠ Estimates show <strong>${esc(winner.name || 'a product')}</strong>'s own tagline instead: “${esc(winner.desc.trim())}”. Clear it on that product (💬) to use this line.</div>` : '';
+      })()}
       <label class="pb-variant-field-label">Closing bullets <small>things no product covers</small></label>
       <textarea class="pb-bundle-feats" rows="2"
         placeholder="One per line, added after the product bullets…
@@ -5110,6 +5209,9 @@ function renderPrintPagesBar() {
     { id:'allPackages', label:'All Packages', on: pv.allPackages !== false,     always: false },
     { id:'contract', label:'Contract',     on: S.print_contract !== false,     always: false },
     { id:'report',   label:'Roof Health',  on: pv.report  !== false,           always: false },
+    // Default OFF, unlike the rest: the studio is still being built, so an
+    // estimate shows its renderings to the customer only once this is on.
+    { id:'design',   label:'🎨 Design Studio', on: pv.design === true,       always: false },
   ];
   // Trust blocks (content set in ⚙ Settings) now appear on BOTH the online
   // signing link and the printed credibility page, so these chips gate the two
@@ -5140,11 +5242,16 @@ function renderPrintPagesBar() {
       </button>`).join('');
 }
 
+// Chips whose ABSENT key means off. The default-on flip below reads a missing
+// key as on and writes false, so one of these needed two taps to turn on.
+const PAGE_DEFAULT_OFF = ['linePrices', 'design'];
 function togglePagePrint(page) {
   if (page === 'cover') return;
   if (!S.page_visibility) S.page_visibility = {};
   if (page === 'contract') {
     S.print_contract = !(S.print_contract !== false);
+  } else if (PAGE_DEFAULT_OFF.includes(page)) {
+    S.page_visibility[page] = S.page_visibility[page] !== true;
   } else {
     S.page_visibility[page] = !(S.page_visibility[page] !== false);
   }
@@ -7501,6 +7608,9 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
         if (item.tiers && item.tiers[tier]) item.tiers[tier].included = false;
       });
       td.tier_bundles[tier] = '__custom__';
+      // A tagline typed for the bundle this tier just left describes THAT
+      // bundle; it must not ride onto the hand-built package as the rep's own.
+      if (td.tier_tagline_edited) td.tier_tagline_edited[tier] = false;
     }
     if (autoOpen) _tierDetailsOpen[trade + ':' + tier] = true;
     setDirty();
@@ -7590,7 +7700,10 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   const desc  = bundleDescription(trade, bundle);
   if (desc || feats.length) {
     const content = tradeTierContent(trade);
-    if (desc) content.descriptions[tier] = desc;
+    if (desc) {
+      content.descriptions[tier] = desc;
+      if (td.tier_tagline_edited) td.tier_tagline_edited[tier] = false;
+    }
     if (feats.length) content.features[tier] = feats;
   }
 
@@ -7985,6 +8098,7 @@ function renderGBBGrid(trade) {
         ${hasTradeRate ? `<span class="tier-col-rate-ovr" title="Custom ${rateLbl.toLowerCase()} for this trade — clear to fall back to the ${dflt}% default">custom</span>` : ''}
       </div>
       ${heroSel}
+      ${tierTaglineEditorHtml(trade, t)}
       ${bodyBlock}
     </div>`;
   }).join('');
@@ -9129,10 +9243,41 @@ function getPhotoDataUrl(photo) {
    renderer; strokes persist on S.vent_cutin (re-editable) and a flattened JPG
    is uploaded for the production packet. */
 const vc = {
+  kind: 'ridge',
   pages: [], pageIdx: 0, img: null, canvas: null, ctx: null,
   tool: 'line', color: '#dc2626', sw: 6,
   annotations: [], drawing: false, sx: 0, sy: 0, preview: null, history: [],
 };
+/* The same editor marks two different things. The ridge map (S.vent_cutin)
+   shows which runs get CUT OPEN; the intake map (S.vent_intake) shows which
+   eaves get intake vent, since code intake is usually a fraction of the eave
+   run and the crew has to know which fraction. Separate keys, separate images:
+   one flattened JPG per map, so re-marking one never repaints the other. */
+const VENT_MAP_MODES = {
+  ridge: {
+    key: 'vent_cutin', lfKey: 'cutin_lf', color: '#dc2626', file: 'vent-cutin.jpg',
+    title: '🖍️ Mark Ridge-Vent Cut-In', save: '✓ Save Cut-In Map',
+    help: 'Highlight the ridge segments the crew cuts open for ventilation, then stamp the linear footage. Ridge vent still runs the full ridge — this marks only what gets cut in.',
+    label: lf => `~${lf} LF cut-in`, stamp: lf => `Cut in ~${lf} LF ridge vent`,
+    lf: () => _ventCutinLF(),
+  },
+  intake: {
+    key: 'vent_intake', lfKey: 'intake_lf', color: '#2563eb', file: 'vent-intake.jpg',
+    title: '🖍️ Mark Intake Vent', save: '✓ Save Intake Map',
+    help: 'Highlight the eaves that get intake vent, then stamp the linear footage. Code intake is usually less than the whole eave run — this marks where the crew installs it.',
+    label: lf => `~${lf} LF intake`, stamp: lf => `Intake ~${lf} LF at the eaves`,
+    lf: () => _ventIntakeLF(),
+  },
+};
+function _ventMode() { return VENT_MAP_MODES[vc.kind] || VENT_MAP_MODES.ridge; }
+// The intake footage that is PRICED: the code figure, capped at the eaves.
+// Same rule as intake_vent_code and the Scope panel's hint.
+function _ventIntakeLF() {
+  const m = S.measurements || {};
+  const code = Math.ceil(atticVentilation(m).intake_lf_required - 1e-9);
+  const eaveLF = mnum(m.eave_lf);
+  return eaveLF > 0 ? Math.min(code, eaveLF) : code;
+}
 // The RoofR report's rasterized page images, in page order (or [] if none).
 function _roofrPageImages() {
   const atts = S.attachments || [];
@@ -9147,21 +9292,28 @@ function _ventCutinLF() {
   const raw = Math.ceil(vent.ridge_lf_required);
   return ridgeLF > 0 ? Math.min(raw, ridgeLF) : raw;
 }
-function openVentCutinEditor() {
+function openVentCutinEditor(kind) {
   const pages = _roofrPageImages();
   if (!pages.length) {
     alert('Import the RoofR PDF first so there is a roof diagram to mark up.');
     return;
   }
+  vc.kind = VENT_MAP_MODES[kind] ? kind : 'ridge';
+  const mode = _ventMode();
   vc.pages = pages;
-  const saved = S.vent_cutin || {};
+  const saved = S[mode.key] || {};
   vc.annotations = (saved.strokes || []).map(a => Object.assign({}, a));
   vc.history = []; vc.drawing = false; vc.preview = null;
   // Reopen on the saved page, else default to page 2 (the overview) when present.
   let idx = saved.source_page ? pages.indexOf(saved.source_page) : -1;
   if (idx < 0) idx = pages.length > 1 ? 1 : 0;
   vc.pageIdx = idx;
-  setVentTool(vc.tool); setVentColor(vc.color);
+  const setText = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+  setText('vent-cutin-title', mode.title);
+  setText('vent-cutin-help', mode.help);
+  setText('vent-cutin-save', mode.save);
+  // Red for cuts, blue for intake, so the two maps never read alike on paper.
+  setVentTool(vc.tool); setVentColor(mode.color);
   document.getElementById('vent-cutin-modal').classList.remove('hidden');
   _ventLoadPage();
 }
@@ -9233,7 +9385,7 @@ function _ventBindCanvas(canvas) {
   const onStart = (e) => {
     if (vc.tool === 'text') {
       const { x, y } = pct(e);
-      const txt = prompt('Label text:', `~${_ventCutinLF()} LF cut-in`);
+      const txt = prompt('Label text:', _ventMode().label(_ventMode().lf()));
       if (txt && txt.trim()) {
         vc.history.push(vc.annotations.map(a => Object.assign({}, a)));
         vc.annotations.push({ id: 'vc_' + Date.now().toString(36), type: 'text',
@@ -9290,23 +9442,25 @@ function ventCutinClear() {
   _ventRedraw();
 }
 function ventCutinStampLF() {
+  const mode = _ventMode();
   vc.history.push(vc.annotations.map(a => Object.assign({}, a)));
   vc.annotations.push({ id: 'vc_' + Date.now().toString(36), type: 'text',
                         color: vc.color, sw: 5, x: 4, y: 5,
-                        text: `Cut in ~${_ventCutinLF()} LF ridge vent` });
+                        text: mode.stamp(mode.lf()) });
   _ventRedraw();
 }
 async function saveVentCutin() {
   if (!vc.canvas) { closeVentCutinEditor(); return; }
+  const mode = _ventMode();
   // Need a saved estimate to hang the upload + attachment on.
   if (!S.estimate_id) { await saveEstimate(); }
-  if (!S.estimate_id) { alert('Save the estimate first, then mark the cut-in map.'); return; }
-  const prev = (S.vent_cutin || {}).image_filename;
+  if (!S.estimate_id) { alert('Save the estimate first, then mark the map.'); return; }
+  const prev = (S[mode.key] || {}).image_filename;
   const blob = await new Promise(res => vc.canvas.toBlob(res, 'image/jpeg', 0.9));
   let image_filename = prev;
   if (blob) {
     const fd = new FormData();
-    fd.append('file', new File([blob], 'vent-cutin.jpg', { type: 'image/jpeg' }));
+    fd.append('file', new File([blob], mode.file, { type: 'image/jpeg' }));
     try {
       const r = await fetch(`/api/uploads/${S.estimate_id}`, { method: 'POST', body: fd });
       if (r.ok) {
@@ -9319,11 +9473,11 @@ async function saveVentCutin() {
       }
     } catch { /* keep strokes even if the image upload fails */ }
   }
-  S.vent_cutin = {
+  S[mode.key] = {
     source_page: vc.pages[vc.pageIdx],
     strokes: vc.annotations.map(a => Object.assign({}, a)),
-    cutin_lf: _ventCutinLF(),
-    notes: (S.vent_cutin || {}).notes || '',
+    [mode.lfKey]: mode.lf(),
+    notes: (S[mode.key] || {}).notes || '',
     image_filename,
   };
   setDirty();
@@ -12914,8 +13068,9 @@ function buildPrintContent() {
           const tot=tradeTotal(gt,t);
           // The tagline goes stale with the bullets it sits above — it names a
           // system ("Architectural laminate shingle system"), so printing it
-          // over a hand-built package is the same lie in one line.
-          const desc=tierBulletsAreStale(gt,t)?'':((content.descriptions||{})[t]||'');
+          // over a hand-built package is the same lie in one line. Unless the
+          // rep typed it for this package: tierTagline holds both rules.
+          const desc=tierTagline(gt,t);
           return `<td>
             <span class="p-pkg-price">${fmtCur(tot)}</span>
             ${desc?`<span class="p-pkg-desc">${esc(desc)}</span>`:''}
@@ -16410,6 +16565,103 @@ function _bundleColorsForTradeTier(trade, tier) {
     .filter(c => (c.name || '').trim());
 }
 
+// Realistic edits are separate from the instant canvas. Generation is explicit,
+// candidates are private, and only a reviewed candidate becomes a saved render.
+const _vzRealisticRequests = new Map();
+let _vzRealisticTimer = null;
+let _vzRealisticBusy = false;
+function _vzRealisticSelectionSummary(tier) {
+  return _vzScopeRoles().map(role=>{
+    const meta=_VZ_ROLE_META[role], row=_vzGet().selections?.[meta.trade]?.[tier] || {};
+    return `${meta.label}: ${[row.product_name||row.bundle_name||row.option_name,row.style_name,row.color_name||row.color_hex].filter(Boolean).join(' · ') || 'no product selected'}`;
+  }).join('\n');
+}
+async function _vzRealisticApi(path, body) {
+  const response = await fetch(path, body === undefined ? {} : {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'The preview request could not be completed.');
+  return data;
+}
+async function _vzRealisticRefresh() {
+  clearTimeout(_vzRealisticTimer);
+  const owner=S, state=vzState, panel=document.getElementById('vz-realistic');
+  if (!panel || !state || state.owner!==owner) return;
+  const eid=owner.estimate_id, elevation=_vzElevation().id, tier=state.activeTier;
+  try {
+    const [cap, result] = await Promise.all([
+      _vzRealisticApi('/api/visualizer/realistic-capabilities'),
+      eid ? _vzRealisticApi(`/api/estimates/${encodeURIComponent(eid)}/realistic-previews`) : Promise.resolve({jobs:[]})
+    ]);
+    if (S!==owner || vzState!==state || document.getElementById('vz-realistic')!==panel || _vzElevation().id!==elevation || state.activeTier!==tier) return;
+    const job=result.jobs.find(j=>j.elevation===elevation && j.tier===tier);
+    const running=result.jobs.some(j=>j.status==='running');
+    const accepted=job && _vzElevation().tier_renders?.[tier]===`${eid}/vr_ai_${job.id}.png`;
+    const key=`${eid}:${elevation}:${tier}`, retry=_vzRealisticRequests.has(key);
+    panel.innerHTML=`<h3>Realistic AI preview · ${esc(_vzConceptName(tier))}</h3>
+      <p>Uses the original photo and selected product references—not the painted surface masks. Roof requests exclude fascia, rake boards, soffits and gutters unless separately selected.</p>
+      <p>AI can alter details or approximate a manufacturer’s color. Review the result and confirm physical samples before presenting it.</p>
+      <p><strong>Selected surfaces</strong><br>${esc(_vzRealisticSelectionSummary(tier)).replace(/\n/g,'<br>')}<br>For a roof-only edit, uncheck the other surfaces above.</p>
+      ${!cap.enabled?'<p>Setup needed: a manager must configure OpenAI API access and enable realistic previews on Railway.</p>':''}
+      <button class="btn-primary" onclick="_vzRealisticGenerate()" ${!cap.enabled||running||_vzRealisticBusy?'disabled':''}>${retry?'Check previous request':'Generate realistic preview'}</button>
+      <span> One paid image · up to ${cap.user_daily_limit} attempts per rep per day</span>
+      ${running && job?.status!=='running'?'<p>A different concept or elevation is generating. Wait for it to finish before starting another.</p>':''}
+      ${job?`<p role="status">${accepted?'Reviewed preview saved for this concept.':job.status==='running'?'Generating… You can leave this page and return later.':job.status==='failed'?esc(job.error):'Ready for review.'} ${job.stale?'Photo or product choices have changed; this result cannot be applied.':''}</p>`:''}
+      ${job?.status==='ready'?`<div class="vz-realistic-comparison">
+        <figure><figcaption>Original</figcaption><img src="${BASE}/uploads/${esc(_vzElevation().base_image)}" alt="Original house photograph"></figure>
+        <figure><figcaption>AI concept—not a guaranteed product match</figcaption><img src="${BASE}/api/estimates/${encodeURIComponent(eid)}/realistic-previews/${job.id}/image" alt="Generated renovation concept"></figure>
+      </div>${!accepted?`<label><input id="vz-realistic-reviewed" type="checkbox"> I checked the roof geometry, fascia/rake, unchanged surfaces and product appearance.</label>
+      <button class="btn" onclick="_vzRealisticAccept('${job.id}')" ${job.stale||_vzRealisticBusy?'disabled':''}>Use reviewed preview</button>`:''}`:''}
+      <p class="vz-picker-help">The canvas above remains the instant preview. Only “Use reviewed preview” puts the AI image in the saved concept. Saving new instant renderings replaces it; rejected candidates need not be used.</p>`;
+    if (running) _vzRealisticTimer=setTimeout(_vzRealisticRefresh,4000);
+  } catch (error) {
+    if (S===owner && document.getElementById('vz-realistic')===panel)
+      panel.innerHTML=`<p>${esc(error.message)}</p><button class="btn" onclick="_vzRealisticRefresh()">Refresh preview status</button>`;
+  }
+}
+async function _vzRealisticGenerate() {
+  if (_vzRealisticBusy) return;
+  const owner=S, state=vzState, elevation=_vzElevation().id, tier=state.activeTier;
+  if (!confirm('Generate one paid AI image? The original house photo and selected product references will be sent to OpenAI. Review the result before using it. This does not publish anything to the customer.\n\n'+_vzRealisticSelectionSummary(tier))) return;
+  _vzRealisticBusy=true;
+  try {
+    if (!(await saveCurrentWork())) throw new Error('Save the design successfully before generating.');
+    if (S!==owner || vzState!==state || _vzElevation().id!==elevation || state.activeTier!==tier) return;
+    if (dirty || _vzHasUnsavedCanvasWork() || _vzMetaPending(owner)) throw new Error('The design changed while saving. Save again before generating.');
+    const eid=owner.estimate_id, key=`${eid}:${elevation}:${tier}`;
+    let nonce=_vzRealisticRequests.get(key);
+    if (!nonce) { nonce=crypto.randomUUID(); _vzRealisticRequests.set(key,nonce); }
+    await _vzRealisticApi(`/api/estimates/${encodeURIComponent(eid)}/realistic-previews`,{confirm:true,elevation,tier,nonce});
+    _vzRealisticRequests.delete(key);
+  } catch (error) {
+    alert(error.message+' If the connection failed, check preview status before generating again.');
+  } finally { _vzRealisticBusy=false; _vzRealisticRefresh(); }
+}
+async function _vzRealisticAccept(jid) {
+  if (_vzRealisticBusy) return;
+  if (!document.getElementById('vz-realistic-reviewed')?.checked) {
+    alert('Review the result and check the confirmation box first.'); return;
+  }
+  const owner=S, state=vzState, elevation=_vzElevation().id, tier=state.activeTier;
+  _vzRealisticBusy=true;
+  try {
+    if (!(await saveCurrentWork())) throw new Error('Save your current design before accepting a preview.');
+    if (S!==owner || vzState!==state || _vzElevation().id!==elevation || state.activeTier!==tier) return;
+    if (dirty || _vzHasUnsavedCanvasWork() || _vzMetaPending(owner)) throw new Error('The design changed while saving. Save again before accepting.');
+    state.saving=true;
+    const result=await _vzRealisticApi(`/api/estimates/${encodeURIComponent(owner.estimate_id)}/realistic-previews/${jid}/accept`,{reviewed:true});
+    if (S===owner && vzState===state) {
+      const saved=result.visualizer.elevations[elevation], current=_vzElevation();
+      current.tier_renders[tier]=saved.tier_renders[tier];
+      current.realistic_previews=saved.realistic_previews;
+      if (elevation==='front') _vzGet().tier_renders={...current.tier_renders};
+      setDirty();
+    }
+  } catch (error) { alert(error.message); }
+  finally { state.saving=false; _vzRealisticBusy=false; _vzRealisticRefresh(); }
+}
+
 async function renderVisualizerPage() {
   const container = document.getElementById('visualizer-content');
   if (!container) return;
@@ -16427,6 +16679,7 @@ async function renderVisualizerPage() {
   const hasPhoto = !!(_vzElevation().base_image || vzState.pendingBaseDataUrl);
   container.innerHTML = _vzShellHtml(hasPhoto);
   _vzWireInputs();
+  if (hasPhoto) _vzRealisticRefresh();
   if (hasPhoto) {
     await _vzLoadWorkspacePhoto();
     _vzRenderPicker();
@@ -16466,7 +16719,9 @@ function _vzShellHtml(hasPhoto) {
       <div class="vz-header-actions">
         ${_meCanViewAll() ? '<button class="btn" onclick="openVisualizerOperations()">📊 Usage & storage</button>' : ''}
         <button class="btn" onclick="_vzTriggerUpload()">📷 Replace photo</button>
-        <button class="btn" onclick="_vzShareDesign()" id="vz-share-btn">🔗 Share for approval</button>
+        <button class="btn" onclick="document.getElementById('vz-realistic')?.scrollIntoView({behavior:'smooth',block:'start'})">Realistic AI preview</button>
+        <button class="btn" onclick="toggleDesignForCustomer()" title="The 🎨 Design Studio section of THIS estimate — off keeps the renderings off the signing page, the signed PDF and approval links">${(S.page_visibility || {}).design === true ? '👁 Shown to customer' : '🙈 Hidden from customer'}</button>
+        ${(S.page_visibility || {}).design === true ? '<button class="btn" onclick="_vzShareDesign()" id="vz-share-btn">🔗 Share for approval</button>' : ''}
         <button class="btn-primary" onclick="_vzSaveAll()" id="vz-save-btn">💾 Save Renderings</button>
       </div>
     </div>
@@ -16490,6 +16745,7 @@ function _vzShellHtml(hasPhoto) {
           <canvas id="vz-canvas" class="vz-canvas" role="img" aria-label="Exterior design preview for the active elevation and concept"></canvas>
           <div class="vz-canvas-legend" id="vz-canvas-legend"></div>
         </div>
+        <section id="vz-realistic" class="vz-realistic" aria-live="polite">Loading realistic preview options…</section>
         <details class="vz-refine" ${vzState.refine?'open':''} ontoggle="_vzSetRefine(this.open)">
         <summary>Refine selection <span>Optional edge touch-ups</span></summary>
         <div class="vz-tools">
@@ -16710,9 +16966,17 @@ async function _vzDeleteElevation() {
   }
   await renderVisualizerPage();
 }
+/* The Design Studio header's one-tap version of the 🎨 Design Studio chip. */
+function toggleDesignForCustomer() {
+  togglePagePrint('design');
+  if (activePage === 'visualizer') renderVisualizerPage();
+}
 async function _vzShareDesign() {
   if (vzState?.dirty && !(await _vzSaveAll())) return;
   if (!S.estimate_id) { alert('Save the estimate and its design renderings first.'); return; }
+  // The server checks the SAVED page_visibility.design, so a toggle flipped a
+  // moment ago has to reach it before a link can be minted.
+  if (dirty && !(await saveCurrentWork())) return;
   const button = document.getElementById('vz-share-btn');
   if (button) { button.disabled = true; button.textContent = 'Preparing link…'; }
   try {

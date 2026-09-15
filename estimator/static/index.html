@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=220">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=225">
 </head>
 <body>
 
@@ -742,10 +742,12 @@
 <div id="vent-cutin-modal" class="modal hidden" onclick="maybeCloseVentCutin(event)">
   <div class="modal-box ann-modal-box">
     <div class="modal-header">
-      <h2>🖍️ Mark Ridge-Vent Cut-In</h2>
+      <!-- One editor, two maps: openVentCutinEditor('ridge'|'intake') rewrites
+           the title, help and save label from VENT_MAP_MODES. -->
+      <h2 id="vent-cutin-title">🖍️ Mark Ridge-Vent Cut-In</h2>
       <button onclick="closeVentCutinEditor()" class="modal-close">×</button>
     </div>
-    <p class="vent-cutin-help">Highlight the ridge segments the crew cuts open for ventilation, then stamp the linear footage. Ridge vent still runs the full ridge — this marks only what gets cut in.</p>
+    <p class="vent-cutin-help" id="vent-cutin-help">Highlight the ridge segments the crew cuts open for ventilation, then stamp the linear footage. Ridge vent still runs the full ridge — this marks only what gets cut in.</p>
     <div class="ann-toolbar">
       <div class="ann-tool-group">
         <button class="ann-tool-btn active" id="vent-tool-line"  onclick="setVentTool('line')"  title="Highlighter">🖍️ Highlight</button>
@@ -772,7 +774,7 @@
     </div>
     <div class="ann-modal-footer">
       <button class="btn-secondary" onclick="closeVentCutinEditor()">Cancel</button>
-      <button class="btn-primary"   onclick="saveVentCutin()">✓ Save Cut-In Map</button>
+      <button class="btn-primary"   onclick="saveVentCutin()" id="vent-cutin-save">✓ Save Cut-In Map</button>
     </div>
   </div>
 </div>
@@ -875,6 +877,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=220"></script>
+<script src="/estimate/static/app.js?v=225"></script>
 </body>
 </html>

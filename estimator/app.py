@@ -4967,6 +4967,7 @@ MEASURE_DIMENSIONS = {
     'squares': 'SQ',
     'attic_sqft': 'SF',
     'ridge_vent_code': 'LF',
+    'intake_vent_code': 'LF',
     'squares_waste': 'SQ',
     'low_slope': 'SQ',
     'low_slope_waste': 'SQ',
@@ -5196,6 +5197,23 @@ def _app_settings():
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _design_studio_customer_on(est):
+    """Does THIS estimate show its Design Studio renderings to the customer?
+
+    A section toggle like any other — `page_visibility.design`, the 🎨 Design
+    Studio chip in the estimate's Print Pages bar — except that it defaults OFF
+    where the others default on: the studio is still being built, and a
+    half-finished rendering on a signing link is a promise about how a real
+    house will look. Only a literal True turns it on, so every existing
+    estimate starts hidden. It gates every place a customer can meet a
+    rendering — the /sign block, the signed PDF page, the /design review link
+    and minting that link — and nothing a rep uses: the studio tab, saving
+    renders and the production packet are untouched, and switching the chip on
+    brings every saved rendering straight back."""
+    pv = (est or {}).get('page_visibility') or {}
+    return isinstance(pv, dict) and pv.get('design') is True
 
 
 def _margin_floors():
@@ -5537,17 +5555,31 @@ def _tier_bullets_are_stale(pb, est, trade, tier):
     return True
 
 
+def _tier_tagline_edited(est, trade, tier):
+    """Did the rep type this tier's tagline on the estimate itself?
+
+    A bundle pick writes tier_descriptions too, and that copy goes stale with
+    the bundle. A tagline the rep typed on the Pricing tab does not: it is a
+    statement about THIS package, so the staleness rule must not throw it away
+    — that is what made the card impossible to correct on a Custom tier.
+    MUST mirror tierTaglineEdited in app.js."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    return ((td.get('tier_tagline_edited') or {}).get(tier)) is True
+
+
 def _tier_card_content(pb, est, trade, tier, tfeat, tdesc):
     """(bullets, tagline) for one package card — the stored pair when it still
     matches the tier's line items, the autofill built from those line items
     when it doesn't. One helper so the customer page, the presentation and the
     AI feed can never disagree about what a package includes."""
+    tagline = (tdesc.get(tier) or '').strip()
     if _tier_bullets_are_stale(pb, est, trade, tier):
-        return _autofill_tier_features(est, trade, tier), ''
+        return (_autofill_tier_features(est, trade, tier),
+                tagline if _tier_tagline_edited(est, trade, tier) else '')
     feats = [str(f).strip() for f in (tfeat.get(tier) or []) if str(f).strip()]
     if not feats:
         feats = _autofill_tier_features(est, trade, tier)
-    return feats, (tdesc.get(tier) or '').strip()
+    return feats, tagline
 
 
 def _enabled_tiers(est):
@@ -7483,6 +7515,8 @@ def _cv_visualizer_block(est):
     strip. Silent no-op when no renders are saved yet. Inline CSS lives
     with the rest of the customer view — the customer page shell does NOT
     load static/style.css."""
+    if not _design_studio_customer_on(est):
+        return ''
     vz = est.get('visualizer') or {}
     elevations = _visualizer_render_elevations(vz)
     if not elevations:
@@ -8523,13 +8557,13 @@ def _build_estimate_manifest(est):
                             or ('' if stale_by_tier[t]
                                 else (bundle_rec.get('name') if bundle_rec else ''))
                             or '')
-                # A hand-built tier gets no tagline at all — neither the stored
-                # one nor the bundle's, since the bundle is no longer what this
-                # package sells.
-                tagline  = '' if stale_by_tier[t] else (
-                    tag_stored
-                    or (bundle_rec.get('description') if bundle_rec else '')
-                    or '')
+                # A hand-built tier gets no BUNDLE tagline — neither the stored
+                # copy the bundle wrote nor the book's, since the bundle is no
+                # longer what this package sells. A tagline the rep typed on
+                # the estimate survives; _tier_card_content already decided.
+                tagline  = tag_stored or ('' if stale_by_tier[t] else (
+                    (bundle_rec.get('description') if bundle_rec else '')
+                    or ''))
                 tiers_info.append({
                     'tier':          t,
                     'tier_label':    dict(good='Good', better='Better', best='Best')[t],
@@ -10513,6 +10547,9 @@ def create_visualizer_share_link(est_id):
         return jsonify({'error': 'Not found'}), 404
     if not _can_touch_estimate(est):
         return _forbid()
+    if not _design_studio_customer_on(est):
+        return jsonify({'error': 'This estimate\'s 🎨 Design Studio section is off. Turn it '
+                                 'on in the Print Pages bar and save, then share.'}), 403
     vz = est.get('visualizer') if isinstance(est.get('visualizer'), dict) else {}
     if not _visualizer_render_elevations(vz):
         return jsonify({'error': 'Save at least one design rendering before sharing.'}), 400
@@ -10526,6 +10563,12 @@ def create_visualizer_share_link(est_id):
 @app.route('/design/<token>', methods=['GET', 'POST'])
 def customer_design(token):
     est = est_find_by_design_token(token)
+    # While this estimate's Design Studio section is off, a link already in the
+    # customer's inbox answers 404 like one that never existed.
+    if est is not None and not _design_studio_customer_on(est):
+        return ('<h2 style="font-family:sans-serif;padding:40px">This design review is '
+                'not available right now. Please contact your Project One '
+                'representative.</h2>', 404)
     if est is None:
         return '<h2 style="font-family:sans-serif;padding:40px">Design link not found or expired.</h2>', 404
     if request.method == 'GET':
@@ -11111,8 +11154,11 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
     no-op when no renders exist — the tool is optional. Draws whichever
     tiers actually have a file; missing tiers get an empty slot with the
     label rather than a broken layout, so a partial save (rep only rendered
-    Better) still reads clearly.
+    Better) still reads clearly. Skipped entirely while customers are not
+    shown the Design Studio — the signed PDF is the customer's copy.
     """
+    if not _design_studio_customer_on(est):
+        return
     vz = est.get('visualizer') or {}
     elevations = _visualizer_render_elevations(vz)
     if not elevations:
@@ -12269,6 +12315,11 @@ def attic_ventilation(m):
     ridge_lf_required   = deficit_exhaust / NFA_RIDGE_SQIN_LF if needs_ridge else 0
     ridge_sticks        = math.ceil(ridge_lf_required / 4)
     intake_lf_suggested = math.ceil(required_intake / NFA_INTAKE_SQIN_LF) if needs_intake else 0
+    # Raw intake footage the 1/300 rule calls for, NOT gated on needs_ridge:
+    # turtle vents covering the exhaust say nothing about the intake side, and a
+    # rep who installs intake installs the code amount. intake_vent_code caps it
+    # at the eaves.
+    intake_lf_required  = required_intake / NFA_INTAKE_SQIN_LF
     return {
         'attic_sqft': attic, 'required_total': required_total,
         'required_exhaust': required_exhaust, 'required_intake': required_intake,
@@ -12276,6 +12327,7 @@ def attic_ventilation(m):
         'needs_ridge': needs_ridge, 'needs_intake': needs_intake,
         'ridge_lf_required': ridge_lf_required, 'ridge_sticks': ridge_sticks,
         'intake_lf_suggested': intake_lf_suggested,
+        'intake_lf_required': intake_lf_required,
     }
 
 
@@ -13303,7 +13355,20 @@ def build_work_order_pdf(est):
     roofing_td      = trades.get('roofing') or {}
     _vent_roles     = {it.get('vent_role') for it in (roofing_td.get('line_items') or [])}
     has_ridge_vent  = 'ridge' in _vent_roles
-    has_intake_vent = 'intake' in _vent_roles
+
+    def _qty(it):
+        try:
+            return float(it.get('quantity') or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    # Landmark and IKO Nordic carry Intake Vent inside the bundle itself, with
+    # no vent_role, so the checkbox is not the only way intake reaches a job.
+    # The checkbox row wins when both exist, or the footage would count twice.
+    _intake_items   = ([it for it in (roofing_td.get('line_items') or [])
+                        if it.get('vent_role') == 'intake']
+                       or [it for it in (roofing_td.get('line_items') or [])
+                           if it.get('catalog_id') == 'a_intake_vent' and _qty(it) > 0])
+    has_intake_vent = bool(_intake_items)
     vent_cutin0     = est.get('vent_cutin') or {}
 
     # Blank-line fallback so an unfilled sheet still gives the crew somewhere
@@ -13385,14 +13450,14 @@ def build_work_order_pdf(est):
         ridge_lf = float(m0.get('ridge_lf') or 0)
     except (TypeError, ValueError):
         ridge_lf = 0.0
-    try:
-        eave_lf = float(m0.get('eave_lf') or 0)
-    except (TypeError, ValueError):
-        eave_lf = 0.0
     img_fn = vent_cutin0.get('image_filename')
     img_path = os.path.join(UPLOADS_DIR, *str(img_fn).split('/')) if img_fn else ''
+    # The intake map, marked in the same editor's intake mode (S.vent_intake).
+    intake_img_fn = (est.get('vent_intake') or {}).get('image_filename')
+    intake_img_path = (os.path.join(UPLOADS_DIR, *str(intake_img_fn).split('/'))
+                       if intake_img_fn else '')
 
-    if has_ridge_vent or has_intake_vent or img_fn:
+    if has_ridge_vent or has_intake_vent or img_fn or intake_img_fn:
         pdf.add_page()
         title_bar('Ventilation Layout')
 
@@ -13413,10 +13478,17 @@ def build_work_order_pdf(est):
         else:
             vrows.append(('Ridge vent', 'NOT on this job'))
         if has_intake_vent:
-            intake_sticks = math.ceil(eave_lf / 4) if eave_lf > 0 else 0
+            # The footage that was PRICED, not the eave run. This used to print
+            # every foot of eave while the attic needed a fraction of it.
+            intake_lf = sum(_qty(it) for it in _intake_items)
+            intake_sticks = math.ceil(intake_lf / 4 - 1e-9) if intake_lf > 0 else 0
             vrows.append(('Intake vent',
-                          (f'{eave_lf:g} LF at the eaves, {intake_sticks} stick(s)'
-                           if eave_lf > 0 else 'At the eaves')))
+                          (f'{intake_lf:g} LF at the eaves, {intake_sticks} stick(s)'
+                           if intake_lf > 0 else 'At the eaves')))
+            vrows.append(('Intake for code',
+                          f'~{math.ceil(vinfo["intake_lf_required"] - 1e-9)} LF '
+                          f'({vinfo["required_intake"]:.0f} sq in at '
+                          f'{NFA_INTAKE_SQIN_LF} sq in per LF)'))
         else:
             vrows.append(('Intake vent', 'NOT on this job'))
         kv(vrows, label_w=42)
@@ -13441,23 +13513,32 @@ def build_work_order_pdf(est):
             pdf.cell(88, 6, _pdf_rich(lbl + '   ____________ LF'))
         pdf.set_y(y0 + 12)
 
-        if img_path and os.path.exists(img_path):
+        # Two maps, one per vent, each marked in its own editor mode. The intake
+        # map gets a fresh page when the ridge map already filled this one — a
+        # full-width roof diagram does not fit twice on a sheet.
+        maps = [(p, caption) for p, caption in (
+            (img_path, 'MARKED CUT-IN MAP - HIGHLIGHTED RUNS ARE CUT OPEN FOR VENTILATION'),
+            (intake_img_path, 'MARKED INTAKE MAP - HIGHLIGHTED EAVES GET INTAKE VENT'),
+        ) if p and os.path.exists(p)]
+        for n, (path, caption) in enumerate(maps):
             try:
+                if n:
+                    pdf.add_page()
+                    title_bar('Ventilation Layout - Intake')
                 pdf.set_font(SANS, '', 6.5)
                 pdf.set_text_color(*_PDF_STYLE['faint'])
-                pdf.cell(0, 5, _pdf_rich(
-                    'MARKED CUT-IN MAP - HIGHLIGHTED RUNS ARE CUT OPEN FOR VENTILATION'),
-                         new_x='LMARGIN', new_y='NEXT')
+                pdf.cell(0, 5, _pdf_rich(caption), new_x='LMARGIN', new_y='NEXT')
                 pdf.set_text_color(*_PDF_STYLE['ink'])
-                pdf.image(img_path, w=W)
+                pdf.image(path, w=W)
             except Exception:
                 pass
-        else:
+        if not maps:
             pdf.set_font(SANS, '', 8)
             pdf.set_text_color(*_PDF_STYLE['mute'])
             pdf.multi_cell(W, 4.6, _pdf_rich(
                 'No roof diagram marked for this job. Import the RoofR report, then use '
-                '"Mark cut-in on roof" on the Scope tab to put the overhead here.'),
+                '"Mark cut-in on roof" or "Mark intake on roof" on the Scope tab to put '
+                'the overhead here.'),
                 new_x='LMARGIN', new_y='NEXT', align='L')
             pdf.set_text_color(*_PDF_STYLE['ink'])
 
@@ -16738,7 +16819,7 @@ TEMPLATES = {
          "notes_good":   "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
          "notes_better": "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
          "notes_best":   "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings."},
-        {"name": "Intake Vent", "unit": "LF", "measure": "eave",
+        {"name": "Intake Vent", "unit": "LF", "measure": "intake_vent_code",
          "is_default": False,
          "desc_good":   "Continuous Soffit Intake Vent",
          "desc_better": "Vented Soffit + Baffles",
@@ -17044,14 +17125,15 @@ ROOFING_CATALOG_SEED = [
      "colors": _ROOF_RUBBER_COLORS},
     {"id": "a_underlayment", "name": "Synthetic Underlayment", "unit": "SQ", "cost": 9.1, "measure": "squares_waste",
      "bullets": ["Synthetic underlayment over the full roof deck"]},
-    # `eave_valley` returns LINEAR FEET (and already doubles the eave run when
-    # iw_second_row is on). A 2-square roll is 200 SF of 36"-wide membrane, so
-    # it covers 200/3 = 66.67 LF — and you buy whole rolls, which is what
-    # bundle_lf's ceil is for. Priced per SQ with no conversion, this billed
-    # 400 LF as 400 units of a per-square price: a 33x overcharge that also
-    # inflated the RETAIL quote, since in margin mode sell derives from cost.
-    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "LF", "cost": 95.0,
-     "measure": "eave_valley", "bundle_lf": 66.67, "bundle_unit": "rolls",
+    # Priced by the LINEAR FOOT off `eave_valley` (which already doubles the
+    # eave run when iw_second_row is on). A 2-SQ roll is 200 SF of 36"-wide
+    # membrane = 66.67 LF, so $95 a roll is $1.43 a foot. Per foot rather than
+    # per roll (2026-09-15) so the price follows the roof instead of jumping $95
+    # at every roll boundary; the material order sheet buys the rolls, with
+    # waste (_ORDER_PACK). History: priced per SQ with no conversion, this once
+    # billed 400 LF as 400 squares - a 33x overcharge.
+    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "LF", "cost": 1.43,
+     "measure": "eave_valley",
      "bullets": ["Ice & water shield at eaves and valleys"]},
     {"id": "a_drip_edge", "name": "Drip Edge", "unit": "LF", "cost": 0, "measure": "eave_rake",
      "bullets": ["New drip edge at eaves and rakes"]},
@@ -17069,7 +17151,9 @@ ROOFING_CATALOG_SEED = [
      "bullets": ["Damaged decking replaced sheet for sheet"]},
     {"id": "a_ridge_vent", "name": "Ridge Vent", "unit": "LF", "cost": 34, "measure": "ridge_vent_code", "bundle_lf": 4, "bundle_unit": "sticks",
      "bullets": ["Continuous ridge vent cut in along the ridge"]},
-    {"id": "a_intake_vent", "name": "Intake Vent", "unit": "LF", "cost": 4.5, "measure": "eave",
+    # Sized by the 1/300 code rule and capped at the eaves (intake_vent_code),
+    # never the whole eave run.
+    {"id": "a_intake_vent", "name": "Intake Vent", "unit": "LF", "cost": 4.5, "measure": "intake_vent_code",
      "bullets": ["Intake venting at the eaves to balance the attic"]},
     {"id": "a_vent_plug", "name": "Vent Plug", "unit": "EA", "cost": 25, "measure": "turtle_vents",
      "bullets": ["Old turtle vents removed and decked over"]},
@@ -17311,24 +17395,46 @@ _PBR_METAL = ["a_underlayment", "a_ice_water", "a_pbr_fasteners", "a_pbr_drip",
               "a_pbr_closure_out", "a_pbr_sealants", "a_ss_pipe_boot",
               "a_decking", "l_tearoff", "l_install", "x_pbr_delivery",
               "x_dumpster", "x_permit"]
+# Taglines are ONE short, basic line — the bullets under them carry the detail.
+# The old sentence-long ones wrapped to four lines on a phone and restated the
+# bullets, and one (Landmark's "Class 3") outlived the product it described.
+# Changing a line here needs its old wording in _BUNDLE_DESCRIPTION_MIGRATIONS,
+# or it reaches no live book.
 ROOFING_BUNDLES_SEED = [
-    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Dual-layer architectural shingle with Class 3 impact resistance, StreakFighter protection, and a lifetime limited residential warranty.",
+    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Architectural shingle with a lifetime limited warranty.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle — hail-country durability, may qualify for an insurance discount.",
+    {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Polymer-modified Class 4 impact-resistant shingle with ArmourZone reinforcement and a 130 mph limited wind warranty.",
+    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Class 4 impact-resistant shingle with a 130 mph wind warranty.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "EDCO steel shingles — the look of architectural shingles in Class 4 impact-rated steel.",
+    {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "Class 4 impact-rated steel shingles.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_stone", "name": "Stone-Coated Steel", "product_ids": ["m_stone"] + _RS, "description": "Stone-coated steel panels — steel strength with a textured shake/shingle look, wind-rated 120+ mph.",
+    {"id": "b_stone", "name": "Stone-Coated Steel", "product_ids": ["m_stone"] + _RS, "description": "Stone-coated steel with a shake or shingle look.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_pbr", "name": "Exposed Fastener Metal (PBR)", "product_ids": ["m_pbr"] + _PBR_METAL, "description": "26ga PBR ribbed steel panels with exposed fasteners — a durable metal roof at a lower price point.",
+    {"id": "b_pbr", "name": "Exposed Fastener Metal (PBR)", "product_ids": ["m_pbr"] + _PBR_METAL, "description": "Ribbed steel panels — a durable metal roof for less.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _SS_METAL, "description": "24ga standing seam metal with concealed fasteners — the premium 50+ year system.",
+    {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _SS_METAL, "description": "Premium standing seam metal with hidden fasteners.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_euroshield", "name": "Euroshield", "product_ids": ["m_euroshield"] + _RS, "description": "Recycled-rubber roofing with the look of slate/shake — Class 4 impact, freeze-thaw resistant.",
+    {"id": "b_euroshield", "name": "Euroshield", "product_ids": ["m_euroshield"] + _RS, "description": "Recycled-rubber roofing with a slate or shake look, Class 4 impact rated.",
      "extra_features": _RS_EXTRA},
 ]
+
+# A bundle's tagline is a copy field, which the server only fills while it is
+# ABSENT — so shortening a seed line reaches nobody whose book already has one.
+# Rewrite it only while the live wording is still an earlier SEED's, exactly
+# like _PRODUCT_COST_MIGRATIONS: a line a manager typed is never touched.
+_BUNDLE_DESCRIPTION_MIGRATIONS = {
+    'roofing': {
+        'b_landmark': ("Dual-layer architectural shingle with Class 3 impact resistance, StreakFighter protection, and a lifetime limited residential warranty.",),
+        'b_northgate': ("Class 4 impact-resistant SBS shingle — hail-country durability, may qualify for an insurance discount.",),
+        'b_iko_nordic': ("Polymer-modified Class 4 impact-resistant shingle with ArmourZone reinforcement and a 130 mph limited wind warranty.",),
+        'b_edco': ("EDCO steel shingles — the look of architectural shingles in Class 4 impact-rated steel.",),
+        'b_stone': ("Stone-coated steel panels — steel strength with a textured shake/shingle look, wind-rated 120+ mph.",),
+        'b_pbr': ("26ga PBR ribbed steel panels with exposed fasteners — a durable metal roof at a lower price point.",),
+        'b_standing_seam': ("24ga standing seam metal with concealed fasteners — the premium 50+ year system.",),
+        'b_euroshield': ("Recycled-rubber roofing with the look of slate/shake — Class 4 impact, freeze-thaw resistant.",),
+    },
+}
 ROOFING_TIER_DEFAULTS_SEED = {"good": "b_landmark", "better": "b_northgate", "best": "b_standing_seam"}
 
 # Siding catalog: one price per product, accessories named to MATCH the old
@@ -18609,7 +18715,9 @@ _TIER_DEFAULT_MIGRATIONS = {
 # stops, so a chain can never apply twice in one pass.
 _PRODUCT_COST_MIGRATIONS = {
     'roofing': {'m_standing_seam':    [(400, 325.21), (320.25, 325.21)],
-                'a_ice_water':        [(46.46, 95.0)],
+                # 46.46/SQ -> 95/roll -> 1.43/LF (2026-09-15, see
+                # _PER_FOOT_CONVERSIONS for the pack size that leaves with it).
+                'a_ice_water':        [(46.46, 1.43), (95.0, 1.43)],
                 'a_ss_clips':         [(23.85, 14.87)],
                 'a_ss_drip_d':        [(33.82, 24.88)],
                 'a_ss_rake':          [(23.38, 34.44)],
@@ -18633,7 +18741,21 @@ _PRODUCT_COST_MIGRATIONS = {
 # still the previous seed's, exactly like a cost migration.
 _PRODUCT_FIELD_MIGRATIONS = {
     'roofing': {'a_ss_zeecee': {'measure':   ('ridge_hip', 'ridge_valley_2x'),
-                                'bundle_lf': (5, 10)}},
+                                'bundle_lf': (5, 10)},
+                # 2026-09-15: intake is sized by the 1/300 code rule, capped at
+                # the eaves - not the whole eave run.
+                'a_intake_vent': {'measure': ('eave', 'intake_vent_code')}},
+}
+
+# Products that moved from priced-per-PACK to priced-per-FOOT. Dropping the pack
+# size cannot be a plain field migration, because the cost has to be a per-foot
+# number when it goes: a manager who repriced the roll at $98 and then lost
+# bundle_lf would bill $98 a foot, 69x the membrane. So the pack size is removed
+# only while it is still the seed's AND the cost already reads as per-foot
+# (under the pack size - the audit's own test). An untouched $95 default gets
+# there first, through _PRODUCT_COST_MIGRATIONS, which runs before this.
+_PER_FOOT_CONVERSIONS = {
+    'roofing': {'a_ice_water': 66.67},
 }
 
 # Seed bundles that shipped AFTER their trade already had saved price books, so
@@ -19692,6 +19814,12 @@ def _ensure_bundle_catalogs(pb):
                     if field not in live and field in seed:
                         val = seed[field]
                         live[field] = copy.deepcopy(val) if isinstance(val, list) else val
+                # ...and a tagline still worded as an EARLIER seed follows the
+                # seed forward. Equality with a known old seed is the only
+                # test; a manager's own wording never matches one.
+                old = _BUNDLE_DESCRIPTION_MIGRATIONS.get(trade, {}).get(seed['id'])
+                if old and live.get('description') in old:
+                    live['description'] = seed.get('description', '')
 
             # ...but "absent" also covers a bundle the book has NEVER seen, and
             # the loop above cannot tell that apart from a deletion, so it skips
@@ -19810,6 +19938,14 @@ def _ensure_bundle_catalogs(pb):
                 for field, (old_val, new_val) in fields.items():
                     if p_live.get(field) == old_val:
                         p_live[field] = new_val
+
+            for pid, pack in _PER_FOOT_CONVERSIONS.get(trade, {}).items():
+                p_live = next((p for p in live_cat
+                               if isinstance(p, dict) and p.get('id') == pid), None)
+                if (p_live is not None and p_live.get('bundle_lf') == pack
+                        and _mnum(p_live.get('cost')) < pack):
+                    p_live.pop('bundle_lf', None)
+                    p_live.pop('bundle_unit', None)
 
             # Every live product with no cost_class gets the guess — seed or
             # not. _PRODUCT_BACKFILL_FIELDS above only walks SEED ids, so it
@@ -21582,6 +21718,10 @@ threading.Thread(target=_reminder_loop, daemon=True).start()
 
 
 # ── Launch ─────────────────────────────────────────────────────────────────
+
+# Isolated, opt-in image-editing workflow. Existing instant previews stay intact.
+from estimator.exterior_rendering import register as _register_realistic_previews
+_register_realistic_previews(sys.modules[__name__])
 
 if __name__ == '__main__':
     import threading, webbrowser

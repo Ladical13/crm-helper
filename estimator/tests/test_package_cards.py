@@ -246,9 +246,11 @@ def test_print_uses_the_rule_for_both_bullets_and_tagline():
     assert re.search(r'if\(f&&f\.length&&!tierBulletsAreStale\(trade,t\)\)', js), (
         'the print cards went back to preferring the stored bullets outright'
     )
-    assert 'tierBulletsAreStale(gt,t)?\'\':' in js, (
+    assert 'const desc=tierTagline(gt,t);' in js, (
         'the printed tagline names a system — it must follow the same rule'
     )
+    m = re.search(r'function tierTagline\(trade, tier\).*?\n\}', js, re.S)
+    assert m and 'tierBulletsAreStale(trade, tier) && !tierTaglineEdited(trade, tier)' in m.group(0)
 
 
 def test_print_leaves_other_out_of_the_options_comparison():

@@ -101,6 +101,15 @@ def test_each_building_uses_its_own_measurements(A):
     assert (r['qty'], r['order_qty']) == (100, 2)
 
 
+def test_ice_and_water_priced_by_the_foot_orders_the_same_rolls(A):
+    """Since 2026-09-15 the line is priced per LF, so the quantity IS the
+    footage. The sheet has to land on the same rolls either way."""
+    it = {'name': 'Ice & Water Shield', 'unit': 'LF', 'quantity': 400,
+          'measure': 'eave_valley', 'catalog_id': 'a_ice_water'}
+    r = _row(A, _est([it]))
+    assert (r['order_qty'], r['order_unit'], r['qty']) == (7, 'rolls', 400)
+
+
 def test_full_deck_high_temp_membrane_is_not_wasted_twice(A):
     """Sold by the square off squares_waste, which already carries waste."""
     it = {'name': 'High Temp Ice and Water barrier (metal roof)', 'unit': 'SQ',

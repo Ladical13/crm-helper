@@ -981,20 +981,32 @@ Guarded by `tests/test_insurance_margin.py`.
 cost sheet was measured against the retail builder and both produced
 $15,539.92, which is what proved the derivation faithful and the price book
 wrong. In margin mode sell derives FROM cost, so it inflated the retail *quote*
-too. Now `unit: 'LF'`, `bundle_lf: 66.67` (a 2-SQ roll is 200 SF of 36" membrane
-= 66.7 LF), `bundle_unit: 'rolls'`, `cost: 95` per roll — so 400 LF is 6 rolls
-and $570. Three things had to move together, and the pair is why:
+too. It was first fixed as $95 a roll (`bundle_lf: 66.67`); **since 2026-09-15
+it is priced per LINEAR FOOT** — `unit: 'LF'`, no pack size, `cost: 1.43`
+($95 ÷ 66.67) — so the price follows the roof instead of jumping $95 at every
+roll boundary. Whole rolls, with waste, are the material order sheet's job
+(`_ORDER_PACK`), not the price's. Two things are load-bearing:
 
-- The **cost migration and the conversion ship as one change.** A live book that
-  gained only `bundle_lf` would price 6 rolls at $46.46 and be wrong by half in
-  the other direction. `_PRODUCT_COST_MIGRATIONS` rewrites 46.46 → 95 only while
-  the live number is still the untouched default.
-- **`bundle_lf`/`bundle_unit` are in `_PRODUCT_BACKFILL_FIELDS`** now, or the
-  seed reaches nobody: a book saved before a product had a pack size keeps
-  pricing the raw measure. Absence is still the test, so a manager's own pack
-  size survives.
+- **The unit and the cost always move together.** Per-SQ cost on LF footage was
+  the 33× overcharge; the live book then carried the roll size with a per-FOOT
+  price ($1.55), which quoted 400 LF as 6 × $1.55 = $9.30. `_PER_FOOT_CONVERSIONS`
+  drops the roll size only while the cost already reads per-foot (under the pack
+  size) — a manager's $98 roll keeps its roll, or it would bill $98 a foot.
+  `_PRODUCT_COST_MIGRATIONS` walks an untouched 46.46 or 95 default to 1.43
+  first. Line items already on estimates keep their stored roll count until the
+  roofing package is re-picked.
 - `tests/test_ice_water_fix.py` pins all of it, including the $18,584 figure as
   the thing that must never come back.
+
+**Intake vent is sized by code, not by the eave** (2026-09-15). The checkbox and
+the `a_intake_vent` product both used `measure: 'eave'`, so a 250 LF eave billed
+250 LF of intake where a 3,000 SF attic needs 80 (720 sq in ÷ 9 per LF) — and
+Landmark and IKO Nordic carry the product inside the bundle, so that was every
+job on those packages. `intake_vent_code` is half the 1/300 area ÷
+`NFA_INTAKE_SQIN_LF`, **capped at the eave run**, and deliberately not gated on
+the exhaust side: turtle vents say nothing about intake. Mirrored as
+`intake_lf_required` in both `atticVentilation` copies; the work order prints the
+priced footage. Pinned by `tests/test_intake_vent.py`.
 
 **The PDF import did not work on an iPhone** (fixed 2026-09-08). Three separate
 things in that path were true of a desktop browser and not of iOS, none of them
@@ -1487,6 +1499,40 @@ ordering is the fix.
   and losing the lead would close the tasks that win it back; the Pipeline
   timeline records it and the rep decides. See the salescrm `_FUNNEL_STAGE` note.
 - Guarded by `tests/test_status.py` and `salescrm/tests/test_funnel.py`.
+
+### The package tagline, and the Design Studio customer switch (2026-09-15)
+
+**A bundle pick COPIES the price book's tagline into the estimate.** Editing
+the book afterwards never reaches an estimate that already picked it, which is
+why "I changed it and it didn't update" kept happening. The Pricing tab has a
+tagline box per package column; ↺ Price book pulls the book's current line.
+What the rep types is flagged in `tier_tagline_edited`, and that flag is the
+whole rule: bundle copy goes stale with its bundle (Custom tier, gutted tier),
+the rep's own line does not. Re-picking a bundle clears it. `_tier_tagline_edited`
+(app.py) and `tierTaglineEdited` (app.js) are the mirrored pair. Two more traps:
+a product's own tagline beats its bundle's (the bundle editor now says so), and
+seed taglines are copy fields filled only on absence — shortening one needs its
+old wording in `_BUNDLE_DESCRIPTION_MIGRATIONS` or it reaches no live book.
+
+**Customers do not see an estimate's Design Studio unless that estimate says
+so.** It is a section toggle like the others — the 🎨 Design Studio chip in the
+Print Pages bar, `page_visibility.design` — except it defaults OFF (only a
+literal `true` shows it), because the studio is unfinished and every existing
+estimate must start hidden. That inversion is why `togglePagePrint` has a
+default-off list: the default-on flip formula needs two clicks to turn such a
+chip on. `_design_studio_customer_on()` gates every customer surface — the
+/sign block, the signed PDF page, the `/design/<token>` link (which 404s,
+including links already sent) and minting that link — and nothing reps use.
+Tests about the renderings themselves take the `design_studio_on` fixture.
+Guarded by `tests/test_tagline_and_design_switch.py`.
+
+**The ventilation markup marks two maps with one editor.** `VENT_MAP_MODES`
+(app.js) switches `openVentCutinEditor` between the ridge cut-in
+(`S.vent_cutin`, red) and the intake run (`S.vent_intake`, blue). Separate keys
+and separate flattened images, so re-marking one never erases the other; the
+work order prints each on its own sheet. Intake needs a map for the same reason
+the ridge does: code footage is a fraction of the run, and the crew has to know
+which fraction. Guarded by `tests/test_intake_vent.py`.
 
 ### Reassigning an estimate
 

@@ -86,3 +86,13 @@ def client(app):
 def A():
     """The app module itself, for unit-testing pricing helpers."""
     return estimator_app
+
+
+@pytest.fixture
+def design_studio_on(monkeypatch):
+    """Customers only see an estimate's Design Studio renderings once its 🎨
+    Design Studio section is switched on (page_visibility.design, default OFF).
+    Tests about the renderings themselves turn it on for every estimate here;
+    tests about the toggle live in test_tagline_and_design_switch.py and set
+    the real field instead."""
+    monkeypatch.setattr(estimator_app, '_design_studio_customer_on', lambda est: True)

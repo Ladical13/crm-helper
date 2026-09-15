@@ -672,7 +672,8 @@ def test_landmark_migrates_legacy_visuals_without_touching_price_or_custom_rows(
     assert live['colors'] == A._LANDMARK_COLORS
     assert live['bullets'] == A._LANDMARK_BULLETS
     bundle = next(b for b in pb['roofing_bundles'] if b['id'] == 'b_landmark')
-    assert 'Class 3 impact resistance' in bundle['description']
+    assert bundle['description'] == next(
+        b['description'] for b in A.ROOFING_BUNDLES_SEED if b['id'] == 'b_landmark')
     official = [r for r in pb['exterior_catalog']
                 if r['product'] == 'Landmark'
                 and r['style'] == 'Architectural Shingle']
@@ -762,7 +763,8 @@ def test_iko_nordic_migrates_legacy_visuals_without_touching_price_or_custom_row
     assert live['colors'] == A._IKO_NORDIC_COLORS
     assert live['bullets'] == A._IKO_NORDIC_BULLETS
     bundle = next(b for b in pb['roofing_bundles'] if b['id'] == 'b_iko_nordic')
-    assert 'ArmourZone' in bundle['description']
+    assert bundle['description'] == next(
+        b['description'] for b in A.ROOFING_BUNDLES_SEED if b['id'] == 'b_iko_nordic')
     official = [r for r in pb['exterior_catalog']
                 if r['product'] == 'IKO Nordic'
                 and r['style'] == 'Performance Shingle']
@@ -1902,7 +1904,7 @@ def test_manager_product_cutout_upload_round_trips_through_catalog(client, A):
         assert client.put('/api/exterior-catalog', json={'entries': original}).status_code == 200
 
 
-def test_design_share_is_price_free_and_approval_is_server_managed(client, anon):
+def test_design_share_is_price_free_and_approval_is_server_managed(client, anon, design_studio_on):
     eid = client.post('/api/estimates', json={
         'customer': {'name': 'Ada Lovelace', 'address': '1 Design Way'},
         'status': 'draft',
@@ -1971,7 +1973,7 @@ def test_design_share_is_price_free_and_approval_is_server_managed(client, anon)
         client.delete(f'/api/estimates/{eid}')
 
 
-def test_design_approval_snapshots_exact_product_placement(client, anon):
+def test_design_approval_snapshots_exact_product_placement(client, anon, design_studio_on):
     eid = client.post('/api/estimates', json={
         'customer': {'name': 'Ada Lovelace'},
     }).get_json()['estimate_id']
@@ -2095,7 +2097,7 @@ def _minimal_signed_estimate(eid):
     }
 
 
-def test_signed_pdf_embeds_the_render_when_present(client, A):
+def test_signed_pdf_embeds_the_render_when_present(client, A, design_studio_on):
     """A tier render on the estimate must add a page to the signed PDF —
     the whole point of the feature is that it prints on the contract."""
     eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
@@ -2135,7 +2137,7 @@ def test_signed_pdf_skips_visualizer_page_when_no_renders(A):
 
 # ── /sign page integration ─────────────────────────────────────────────
 
-def test_sign_page_shows_visualizer_img_when_renders_are_saved(client, A):
+def test_sign_page_shows_visualizer_img_when_renders_are_saved(client, A, design_studio_on):
     """When the estimate carries tier_renders, the customer's /sign page
     embeds an <img> tag pointing at /uploads/... so the customer sees the
     rendering before signing."""

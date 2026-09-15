@@ -143,7 +143,8 @@ def _review_hash(anon, token):
 
 
 @pytest.mark.parametrize('change', ['image', 'selection', 'name'])
-def test_customer_cannot_approve_a_revision_they_have_not_seen(client, anon, design_id, change):
+def test_customer_cannot_approve_a_revision_they_have_not_seen(client, anon, design_id, change,
+                                                                design_studio_on):
     assert _upload(client, design_id, 'render', tier='better').status_code == 201
     token = client.post(f'/api/estimates/{design_id}/visualizer/share').get_json()['token']
     old_hash = _review_hash(anon, token)
@@ -167,7 +168,8 @@ def test_customer_cannot_approve_a_revision_they_have_not_seen(client, anon, des
     assert approval['snapshot_hash'] == form['design_hash_better']
 
 
-def test_old_approval_forms_without_snapshot_require_refresh(client, anon, design_id):
+def test_old_approval_forms_without_snapshot_require_refresh(client, anon, design_id,
+                                                             design_studio_on):
     assert _upload(client, design_id, 'render', tier='better').status_code == 201
     token = client.post(f'/api/estimates/{design_id}/visualizer/share').get_json()['token']
     response = anon.post(f'/design/{token}', data={
