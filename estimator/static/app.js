@@ -13981,13 +13981,23 @@ async function importRoofrPdf(input) {
 function openRoofrModal(data) {
   _roofrData = data;
   const m = data.measurements;
-  const fmt = (v, unit) => v !== undefined ? `${v} ${unit}` : '—';
+  const fmt = (v, unit) => v !== undefined ? `${v} ${unit}` : '<span class="roofr-missing">not found</span>';
   const addrLine = data.address?.street
     ? `${data.address.street}, ${data.address.city}, ${data.address.state} ${data.address.zip}`
     : null;
 
+  // Anything the report didn't yield, named up front. A missing measurement
+  // applies as zero and prices as zero — a rep scanning for a blank row will
+  // not catch that, so the gaps get stated rather than shown as a quiet '—'.
+  const unread = (data.unread || []);
+  const unreadHtml = unread.length ? `
+    <div class="roofr-unread">⚠ Not found in this report: <strong>${esc(unread.join(', '))}</strong>.
+    Applying leaves ${unread.length > 1 ? 'these' : 'this'} at zero — check the PDF and enter
+    ${unread.length > 1 ? 'them' : 'it'} by hand if the roof has ${unread.length > 1 ? 'them' : 'it'}.</div>` : '';
+
   document.getElementById('roofr-modal-body').innerHTML = `
     <p style="font-size:13px;color:var(--text-light);margin:0">Review the extracted measurements, then click <strong>Apply</strong> to fill the estimate.</p>
+    ${unreadHtml}
     <div class="roofr-preview">
       <span class="roofr-preview-label">Roof Squares</span>
       <span class="roofr-preview-value">${fmt(m.roof_squares, 'SQ')}</span>
