@@ -35,6 +35,8 @@ def test_full_manual_workflow_and_legacy_routes_cannot_bypass_review(admin, monk
     assert admin.post(prefix+f'/ideas/{idea["id"]}', json={'status': 'selected'}).status_code == 200
     assert admin.post(prefix+'/generate', json={'manual': True}).status_code == 202
     p = admin.get(prefix).get_json()['posts'][0]
+    legacy = admin.get('/nimbus/api/content/drafts').get_json()
+    assert next(d for d in legacy if d['id'] == p['id'])['source'] == 'studio'
     for old in ('social', 'content'):
         assert admin.post(f'/nimbus/api/{old}/drafts/{p["id"]}', json={'status': 'posted'}).status_code == 409
     response = admin.post(f'/nimbus/api/studio/posts/{p["id"]}', json={'revision': 1, 'draft_text': 'Ask about materials and scope.'})

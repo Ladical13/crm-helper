@@ -615,7 +615,7 @@ def list_drafts():
     with config.get_cache_db() as db:
         rows = db.execute(
             f'SELECT id, created_at, platform, topic, draft_text, citations, '
-            f'status, approved_by, approved_at, posted_at '
+            f'status, approved_by, approved_at, posted_at, source '
             f'FROM content_drafts {where} ORDER BY id DESC LIMIT 100',
             params).fetchall()
     out = []

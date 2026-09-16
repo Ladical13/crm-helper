@@ -1,14 +1,7 @@
-"""Cross-platform trending-topic synthesis via Perplexity.
+"""Public-research discussion opportunities, not measured social trends.
 
-The paid tier of the listening stack. Asks Perplexity to check what's
-trending across public Facebook, Instagram, LinkedIn, X, TikTok, Reddit, and
-news for Colorado homeowners around roofing / hail / insurance topics —
-without needing Meta/LinkedIn API approvals.
-
-Returns a list of topics with citation URLs. Combined with the free
-listening sources by ``content.listen`` (once those are wired), Perplexity
-provides the synthesis layer that turns raw signal into "here's what to
-talk about this week."
+Perplexity supplies citable public sources for Colorado homeowner concerns.
+It cannot measure private-group discussions, social frequency or velocity.
 """
 from ... import perplexity
 
@@ -17,7 +10,8 @@ _SYSTEM = (
     'You track what Colorado homeowners are discussing publicly about their '
     'roofs, hail damage, insurance claims, HOAs, and property maintenance. '
     'Answer only from public posts you can cite. Never invent quotes or '
-    'authors. Every trending topic must include at least one source URL.'
+    'authors. Every proposed topic must include at least one source URL. '
+    'Never claim measured popularity or access to private groups.'
 )
 
 

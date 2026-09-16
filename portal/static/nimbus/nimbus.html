@@ -782,9 +782,11 @@ async function filterDrafts(status) {
       <div class="cite-row">${(d.citations || []).map(c => `<a href="${escapeHtml(c)}" target="_blank" rel="noopener">${escapeHtml(hostname(c))}</a>`).join('')}</div>
       <div class="actions">
         <button class="btn" onclick="copyDraft(this)">📋 Copy</button>
+        ${d.source === 'studio' ? `<a class="btn" href="/nimbus/marketing/social" data-route="/nimbus/marketing/social">Open Marketing Studio to review</a>` : `
         <button class="btn primary" onclick="setDraftStatus(${d.id}, 'approved')">✓ Approve</button>
         <button class="btn" onclick="setDraftStatus(${d.id}, 'posted')">Posted</button>
         <button class="btn" onclick="setDraftStatus(${d.id}, 'rejected')">✕ Reject</button>
+        `}
       </div>
     </div>
   `).join('');
