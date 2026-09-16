@@ -453,6 +453,32 @@ def _init_cache_db(conn):
     ''')
     # Columns added after the tables shipped. Live volumes already have the
     # tables, so these are the only way the new fields arrive.
+    conn.executescript('''
+        CREATE TABLE IF NOT EXISTS marketing_campaigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL, brief TEXT NOT NULL,
+            research_note TEXT DEFAULT '', researched_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS marketing_ideas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_id INTEGER NOT NULL, fingerprint TEXT NOT NULL,
+            detail TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'idea',
+            UNIQUE(campaign_id, fingerprint)
+        );
+        CREATE TABLE IF NOT EXISTS marketing_posts (
+            draft_id INTEGER PRIMARY KEY, campaign_id INTEGER NOT NULL,
+            idea_id INTEGER NOT NULL, planned_date TEXT DEFAULT '',
+            owner TEXT DEFAULT '', asset_url TEXT DEFAULT '',
+            asset_ready INTEGER DEFAULT 0, posted_url TEXT DEFAULT '',
+            metrics TEXT DEFAULT '{}', revision INTEGER DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS marketing_posts_campaign ON marketing_posts(campaign_id);
+        CREATE TABLE IF NOT EXISTS marketing_post_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, draft_id INTEGER NOT NULL,
+            saved_at TEXT NOT NULL, username TEXT NOT NULL, snapshot TEXT NOT NULL
+        );
+    ''')
+    _add_column_if_missing(conn, 'content_drafts', 'creative_json', "TEXT DEFAULT '{}'")
     _add_column_if_missing(conn, 'content_drafts', 'package_id', "TEXT DEFAULT ''")
     _add_column_if_missing(conn, 'content_drafts', 'source', "TEXT DEFAULT ''")
     _add_column_if_missing(conn, 'content_drafts', 'review_notes', "TEXT DEFAULT ''")

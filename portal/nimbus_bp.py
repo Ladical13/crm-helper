@@ -67,6 +67,7 @@ def _shell():
 @nimbus_bp.route('/marketing/connections')
 @nimbus_bp.route('/marketing/seo')
 @nimbus_bp.route('/marketing/social')
+@nimbus_bp.route('/marketing/studio')
 @nimbus_bp.route('/settings')
 def shell(**_kw):
     return _shell()
@@ -560,6 +561,9 @@ def social_review(draft_id):
     posted it — nothing here publishes anything."""
     from agents import config
     data = request.get_json(force=True, silent=True) or {}
+    from agents.content import studio
+    if studio.is_studio_post(draft_id):
+        return jsonify({'error': 'Review this post in Marketing Studio so its revision and assets are checked.'}), 409
     status = data.get('status')
     if status not in ('draft', 'approved', 'rejected', 'posted'):
         return jsonify({'error': 'unknown status'}), 400
@@ -630,6 +634,9 @@ def update_draft(draft_id):
     """Approve, mark posted, reject, or edit."""
     from agents import config
     data = request.get_json(force=True, silent=True) or {}
+    from agents.content import studio
+    if studio.is_studio_post(draft_id):
+        return jsonify({'error': 'Review this post in Marketing Studio so its revision and assets are checked.'}), 409
     status = data.get('status')
     if status not in ('draft', 'approved', 'posted', 'rejected'):
         return jsonify({'error': 'unknown status'}), 400
@@ -657,7 +664,10 @@ def draft_from_topic(topic_id):
     """Draft posts for one saved topic."""
     from agents import config
     data = request.get_json(force=True, silent=True) or {}
-    platforms = data.get('platforms') or ['facebook', 'instagram', 'linkedin']
+    from agents.content import posts
+    platforms = data.get('platforms') or list(posts.DEFAULT_PLATFORMS)
+    if not isinstance(platforms, list) or len(platforms) > len(posts.PLATFORMS) or any(p not in posts.PLATFORMS for p in platforms):
+        return jsonify({'error': 'Choose supported platforms'}), 400
 
     with config.get_cache_db() as db:
         row = db.execute('SELECT * FROM trending_topics WHERE id = ?',
@@ -669,13 +679,9 @@ def draft_from_topic(topic_id):
 
     def wrapped():
         from agents.content import draft
-        try:
-            draft.draft_topic(topic, platforms=tuple(platforms))
-        except Exception:                                            # noqa: BLE001
-            pass
+        return draft.draft_topic(topic, platforms=tuple(dict.fromkeys(platforms)))
 
-    threading.Thread(target=wrapped, daemon=True).start()
-    return jsonify({'started': True}), 202
+    return _start_marketing('topic-drafts', wrapped, False)
 
 
 # ── Supervisor ───────────────────────────────────────────────────────────────
@@ -798,3 +804,7 @@ def pipeline_pulse():
     if r.status_code != 200:
         return jsonify({'error': 'Pipeline data is temporarily unavailable'}), 502
     return jsonify(r.get_json())
+
+
+from portal.studio_routes import register as _register_studio
+_register_studio(nimbus_bp, _start_marketing)

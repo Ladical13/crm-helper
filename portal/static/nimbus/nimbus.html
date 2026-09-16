@@ -431,6 +431,7 @@
   }
   .sup-starter:hover { color: var(--accent); border-color: var(--accent); }
 </style>
+<link rel="stylesheet" href="/nimbus/assets/studio.css?v=1">
 </head>
 <body>
 
@@ -464,7 +465,7 @@
     <a href="/nimbus/marketing/topics" data-route="/nimbus/marketing/topics">📈 Trending Topics</a>
     <a href="/nimbus/marketing/drafts" data-route="/nimbus/marketing/drafts">📝 Content Drafts</a>
     <a href="/nimbus/marketing/seo" data-route="/nimbus/marketing/seo">🔍 Local SEO</a>
-    <a href="/nimbus/marketing/social" data-route="/nimbus/marketing/social">📣 Social &amp; GBP</a>
+    <a href="/nimbus/marketing/social" data-route="/nimbus/marketing/social">📣 Marketing Studio</a>
     <a href="/nimbus/marketing/connections" data-route="/nimbus/marketing/connections">🔌 Connections</a>
     <a href="/nimbus/settings" data-route="/nimbus/settings">⚙️ Settings</a>
   </nav>
@@ -473,6 +474,7 @@
 
   <div id="flash" class="flash"></div>
 
+<script src="/nimbus/assets/studio.js?v=1"></script>
 <script>
 'use strict';
 
@@ -482,6 +484,7 @@ const state = { settings: {}, territories: [], runs: {}, activeTimers: {} };
 /* ── router ────────────────────────────────────────────────────────────── */
 
 function route() {
+  if (window.MarketingStudio) window.MarketingStudio.leave();
   clearInterval(seoPoll);
   clearInterval(socialPoll);
   seoPoll = socialPoll = null;
@@ -495,7 +498,7 @@ function route() {
   if (path.startsWith('/nimbus/marketing/drafts')) return renderDrafts();
   if (path.startsWith('/nimbus/marketing/connections')) return renderConnections();
   if (path.startsWith('/nimbus/marketing/seo')) return renderSeo();
-  if (path.startsWith('/nimbus/marketing/social')) return renderSocial();
+  if (path.startsWith('/nimbus/marketing/social') || path.startsWith('/nimbus/marketing/studio')) return window.MarketingStudio.open();
   if (path.startsWith('/nimbus/settings'))          return renderSettings();
   if (path.startsWith('/nimbus/rep/'))              return renderRep(path.split('/').pop());
   return renderDashboard();
@@ -728,9 +731,10 @@ async function renderTopics() {
 
 async function draftTopic(id) {
   try {
-    await fetch(`${BASE}/api/content/topics/${id}/draft`, {
+    const response = await fetch(`${BASE}/api/content/topics/${id}/draft`, {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
     });
+    if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Unable to start drafting'); }
     flash('Drafting posts... check the Drafts tab in ~30s');
   } catch (e) { flash(e.message, true); }
 }
@@ -944,7 +948,7 @@ function postCard(d) {
         d.citations.slice(0,4).map(u => `<a href="${escapeHtml(u)}" target="_blank"
           rel="noopener noreferrer">${escapeHtml(hostname(u))}</a>`).join('')}</div>` : ''}
       <div class="acts">
-        <button onclick="copyDraft(${d.id})">Copy text</button>
+        <button onclick="copySocialDraft(${d.id})">Copy text</button>
         ${d.platform_link ? `<button onclick="window.open('${escapeHtml(d.platform_link)}','_blank','noopener')">Open ${escapeHtml(p.label)}</button>` : ''}
         <button class="ok" onclick="reviewDraft(${d.id}, 'approved')">Approve</button>
         <button class="no" onclick="reviewDraft(${d.id}, 'rejected')">Reject</button>
@@ -953,7 +957,7 @@ function postCard(d) {
     </div>`;
 }
 
-function copyDraft(id) {
+function copySocialDraft(id) {
   const el = document.querySelector(`.rec[data-draft="${id}"] .body`);
   if (!el) return;
   navigator.clipboard.writeText(el.innerText)

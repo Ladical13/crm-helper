@@ -23,9 +23,9 @@ _SYSTEM = (
 
 def _prompt(market='Colorado', n=10):
     return (
-        f'Identify the top {n} trending discussion topics from THIS PAST '
-        f'WEEK among {market} homeowners on public social media (Reddit, '
-        f'Facebook, Instagram, LinkedIn) and local news, related to any of: '
+        f'Identify up to {n} useful, source-supported discussion opportunities from THIS PAST '
+        f'WEEK for {market} homeowners in publicly accessible sources '
+        f'and local news, related to any of: '
         f'roof condition, hail damage, insurance claims, insurance '
         f'depreciation and deductibles, HOA roof rules, roofing contractors, '
         f'storm season prep, roof financing.\n\n'
@@ -33,8 +33,10 @@ def _prompt(market='Colorado', n=10):
         f'{{ "topic": "<short name>", "summary": "<1-2 sentences>", '
         f'"why_now": "<what changed this week>", "audience": "<who cares>", '
         f'"citations": ["<url>", ...] }}, ... ] }}\n\n'
-        f'Rank the topics by combined signal strength (frequency × velocity '
-        f'× relevance to a roofing contractor).'
+        f'Order by relevance to homeowner decisions and source support. Do not '
+        f'claim measured popularity, frequency, velocity or access to private '
+        f'social groups. Cite dated primary sources and say when timeliness '
+        f'cannot be established.'
     )
 
 

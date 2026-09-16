@@ -78,7 +78,8 @@ def test_instagram_posts_ask_for_a_real_photograph(monkeypatch):
     from agents.content import posts
     _fake_perplexity(monkeypatch)
     pkg = posts.build_package(TOPIC, platforms=('instagram',), dry_run=True)
-    assert 'Photo to shoot' in pkg['posts'][0]['draft_text']
+    assert 'Photo to shoot' not in pkg['posts'][0]['draft_text']
+    assert pkg['posts'][0]['creative']['image_prompt'] == 'A finished roof at dusk'
     assert 'not stock' in pkg['posts'][0]['review_notes']
 
 
