@@ -462,6 +462,74 @@ function groupedTradeItems(trade, items) {
   sections.forEach(name => groups.push({ name, items: items.filter(i => itemSection(i) === name) }));
   return groups;
 }
+
+/* ── Standard order ──────────────────────────────────────────────────────
+   All three packages share ONE line_items array, and a bundle pick used to
+   APPEND whatever products it added. Pick Landmark for Good and standing seam
+   for Best and the metal panel lands after Good's drip edge — so the Best card
+   led with shingle accessories and named its own roof last, and no two
+   estimates matched, because the order was really "which package did the rep
+   pick first".
+
+   The order is the PRICE BOOK's: a product sorts to where the manager put it
+   in the catalog (arranged with ↑↓ there), which runs materials, accessories,
+   then labor and extras. A hand-added row has no catalog_id and keeps its
+   place at the end of its section — nobody else knows where it belongs.
+   Sorting happens WITHIN a section so a building's block stays its own block,
+   the same rule liMove already follows.
+
+   This is the STORED order, not a display filter: ↑↓ still moves a row and it
+   stays moved. New rows simply arrive in the right place. */
+const CATALOG_RANK_LAST = Number.MAX_SAFE_INTEGER;
+function catalogRank(trade, item) {
+  const cid = item && item.catalog_id;
+  if (!cid) return CATALOG_RANK_LAST;
+  const i = _tradeCatalog(trade).findIndex(p => p.id === cid);
+  return i < 0 ? CATALOG_RANK_LAST : i;
+}
+function _itemGroupName(trade, item) {
+  const known = new Set(tradeSections(trade));
+  return known.has(itemSection(item)) ? itemSection(item) : '';
+}
+// Where a new bundle row belongs: after the last row of its own section that
+// the price book puts at or before it. Appending is what shuffled the cards.
+function insertByCatalogOrder(trade, items, item) {
+  const rank = catalogRank(trade, item);
+  const grp = _itemGroupName(trade, item);
+  let at = -1;
+  items.forEach((x, i) => {
+    if (_itemGroupName(trade, x) !== grp) return;
+    if (catalogRank(trade, x) <= rank) at = i;
+  });
+  items.splice(at + 1, 0, item);
+  return item;
+}
+// One click to tidy an estimate whose rows predate this (or that has been
+// shuffled). Stable: equal ranks keep their relative order, so hand-added rows
+// stay in the order the rep added them, at the end of their section.
+function sortTradeItemsStandard(trade) {
+  const td = S.trades[trade];
+  if (!td || !(td.line_items || []).length) return;
+  const groups = [];
+  const seen = new Map();
+  td.line_items.forEach((it, i) => {
+    const g = _itemGroupName(trade, it);
+    if (!seen.has(g)) { seen.set(g, groups.length); groups.push([]); }
+    groups[seen.get(g)].push({ it, i });
+  });
+  const out = [];
+  groups.forEach(rows => {
+    rows.sort((a, b) => {
+      const ra = catalogRank(trade, a.it), rb = catalogRank(trade, b.it);
+      return ra === rb ? a.i - b.i : (ra < rb ? -1 : 1);
+    });
+    rows.forEach(r => out.push(r.it));
+  });
+  td.line_items = out;
+  setDirty(); renderTotals();
+  if (activePage === 'pricing') renderTradeContent();
+  if (activePage === 'scope') renderScopePage();
+}
 /* ── Supplements ──────────────────────────────────────────────────────────
    A section whose name says "supplement" holds the "if needed" work — extra
    decking by the sheet, a second layer, rotted fascia — that nobody can
@@ -573,6 +641,8 @@ function sectionManagerBar(trade) {
       <button class="est-section-del" onclick="deleteTradeSection('${trade}',${i})" title="Remove section (items stay)">×</button>
     </span>`).join('')}
     <button class="est-section-add" onclick="addTradeSection('${trade}')">+ Add Section</button>
+    <button class="est-section-add" onclick="sortTradeItemsStandard('${trade}')"
+      title="Put every line back in price book order — materials, then accessories, labor and extras. Changes the order only, never a price or a quantity.">↕ Standard order</button>
     ${sections.some(isSupplementSectionName) ? '' : `<button class="est-section-add"
       onclick="addSupplementsSection('${trade}')"
       title="Add a Supplements section with a starter line. It prints after the total as work that may be needed. Leave the price blank for a plain notice, or price lines to show what they would cost.">+ Supplements</button>`}
@@ -7760,7 +7830,8 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
           best:   { material_unit_cost:0, labor_unit_cost:0, description:'', notes:'', included:false },
         },
       };
-      td.line_items.push(item);
+      // Into its price-book position, not onto the end — see catalogRank.
+      insertByCatalogOrder(trade, td.line_items, item);
     } else if (item.measure === undefined && !item.formula && p.measure) {
       // Adopted item that never had an Auto-Qty link: inherit the catalog's.
       // An explicit '' (Manual) is left alone — see the manual-measure contract.
