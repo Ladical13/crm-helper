@@ -12349,7 +12349,14 @@ def attic_ventilation(m):
     deficit_exhaust  = max(required_exhaust - provided_exhaust, 0)
     needs_ridge  = deficit_exhaust > 0
     needs_intake = needs_ridge
-    ridge_lf_required   = deficit_exhaust / NFA_RIDGE_SQIN_LF if needs_ridge else 0
+    # Sized for the FULL code exhaust, never the shortfall. Ticking Install
+    # Ridge Vent also decks over every existing box vent (injectVentItem adds
+    # the Vent Plug line), so that NFA leaves the roof with them — crediting it
+    # AND removing it counted the same vents twice. A 30 SQ attic with six
+    # turtles was ordered 6 sticks, 432 sq in against 720 required: 40% short,
+    # and the more vents the house already had the shorter it came out.
+    # needs_ridge stays the DEFICIT question — is this roof short as it stands.
+    ridge_lf_required   = required_exhaust / NFA_RIDGE_SQIN_LF
     ridge_sticks        = math.ceil(ridge_lf_required / 4)
     intake_lf_suggested = math.ceil(required_intake / NFA_INTAKE_SQIN_LF) if needs_intake else 0
     # Raw intake footage the 1/300 rule calls for, NOT gated on needs_ridge:

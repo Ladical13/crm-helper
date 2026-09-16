@@ -1003,6 +1003,22 @@ roll boundary. Whole rolls, with waste, are the material order sheet's job
 - `tests/test_ice_water_fix.py` pins all of it, including the $18,584 figure as
   the thing that must never come back.
 
+**Ridge vent is sized for the FULL code exhaust, never the shortfall**
+(2026-09-16). Ticking Install Ridge Vent also decks over every existing box
+vent — `injectVentItem` adds the Vent Plug line — and the ridge footage was
+sized on what was left *after* crediting those same vents. A 30 SQ attic with
+six turtles ordered 6 sticks: 432 sq in against 720 required, **40% short**,
+and the more vents the house already had the shorter it came out. The vents
+being removed cannot pay for the ones being installed. `needs_ridge` is still
+the deficit question — *is this roof short as it stands* — and that is what the
+below-code banner reads; only the SIZING changed. `ridge_vent_code` is
+ungated for the same reason: a roof whose box vents already met code ordered
+0 LF and then lost them. NFA constants are `NFA_RIDGE_SQIN_LF` 18 per LF (72 a
+4-ft stick, confirmed by Luke 2026-09-16), `NFA_TURTLE_SQIN` 50 and
+`NFA_INTAKE_SQIN_LF` 9. Attic area still falls back to roof squares × 100 when
+Attic Area is blank — the sloped area, so ~12% high on a 6/12, which
+over-vents rather than under-vents. Pinned by `tests/test_ventilation.py`.
+
 **Intake vent is sized by code, not by the eave** (2026-09-15). The checkbox and
 the `a_intake_vent` product both used `measure: 'eave'`, so a 250 LF eave billed
 250 LF of intake where a 3,000 SF attic needs 80 (720 sq in ÷ 9 per LF) — and

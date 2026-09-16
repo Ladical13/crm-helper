@@ -221,8 +221,8 @@ def test_every_measure_is_covered():
 # Measures whose on-screen label does not name a unit. Each needs a reason, so
 # "add it to the list" stays a decision rather than a way to silence the check.
 _LABEL_HAS_NO_UNIT = {
-    'ridge_vent_code': ('"Ridge Vent — code required" — its calc is the exhaust '
-                        'shortfall divided by NFA per LF, so it returns LF'),
+    'ridge_vent_code': ('"Ridge Vent — code required" — its calc is the code '
+                        'exhaust divided by NFA per LF, so it returns LF'),
 }
 
 

@@ -1094,7 +1094,10 @@ const MEASURE_DEFS = {
   // Ridge vent quantity is CODE-driven (the exhaust shortfall ÷ NFA per LF),
   // NOT the physical ridge length. bundle_lf:4 on the item then rounds this raw
   // LF up to whole 4-ft ridge-vent sticks. Returns 0 when venting already meets code.
-  ridge_vent_code:      { label:'Ridge Vent — code required', calc:m => { const v = atticVentilation(m); return v.needs_ridge ? v.ridge_lf_required : 0; } },
+  // Not gated on needs_ridge: a rep only gets this line by adding ridge vent,
+  // and adding it plugs the box vents that were meeting code. Gated, a roof
+  // whose turtles already satisfied exhaust ordered 0 LF and then lost them.
+  ridge_vent_code:      { label:'Ridge Vent — code required', calc:m => atticVentilation(m).ridge_lf_required },
   // Intake is CODE-driven too: half the 1/300 area ÷ NFA per LF — capped at the
   // eave run, since you cannot install more eave intake than there is eave. It
   // used to be the whole eave, which billed 150 LF where the attic needed ~50.
@@ -1236,7 +1239,12 @@ function atticVentilation(m) {
   const deficit_exhaust  = Math.max(required_exhaust - provided_exhaust, 0);
   const needs_ridge  = deficit_exhaust > 0;
   const needs_intake = needs_ridge; // balanced rule: add intake whenever adding exhaust
-  const ridge_lf_required   = needs_ridge  ? deficit_exhaust / NFA_RIDGE_SQIN_LF : 0; // raw LF
+  // FULL code exhaust, never the shortfall: adding ridge vent decks over every
+  // existing box vent (injectVentItem adds the Vent Plug line), so crediting
+  // their NFA and then removing it counted the same vents twice — a 30 SQ attic
+  // with six turtles ordered 432 sq in against 720 required. needs_ridge stays
+  // the deficit question: is the roof short as it stands today.
+  const ridge_lf_required   = required_exhaust / NFA_RIDGE_SQIN_LF;                    // raw LF
   const ridge_sticks        = Math.ceil(ridge_lf_required / 4);                        // 4-ft sticks
   const intake_lf_suggested = needs_intake ? Math.ceil(required_intake / NFA_INTAKE_SQIN_LF) : 0;
   // Raw intake footage the rule calls for, NOT gated on needs_ridge: turtle
@@ -1901,7 +1909,7 @@ function ventPanelMarkup() {
   const statusHtml = !vent.needs_ridge
     ? `✅ Meets code`
     : (hasRidge
-        ? `✅ Ridge Vent added — covers the ${ventRound(vent.deficit_exhaust)} sq in exhaust shortfall`
+        ? `✅ Ridge Vent added — sized for the full ${ventRound(vent.required_exhaust)} sq in of exhaust${turtleN ? `, since your ${turtleN} box vent(s) get decked over` : ''}`
         : `⚠️ Below code — <strong>add Ridge Vent</strong> to bring this roof to code <span class="vent-status-sub">(short ${ventRound(vent.deficit_exhaust)} sq in of exhaust)</span>`);
   const ridgeHint = ridgeLF > 0
     ? `— orders <strong>${fullSticks} stick(s)</strong> for the full ridge (${ventRound(ridgeLF)} LF) · cuts in <strong>~${ventRound(cutinLF)} LF</strong> for code${fullCut ? ' (full ridge cut)' : ''}; also plugs your ${turtleN} turtle vent(s)`

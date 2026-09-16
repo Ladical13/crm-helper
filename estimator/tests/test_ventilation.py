@@ -174,17 +174,33 @@ def test_the_ridge_migration_is_guarded_against_modern_estimates():
 
 def test_attic_ventilation_cutin_deficit(A):
     # attic 3000 sf -> required total 1440 sq in, exhaust 720; no turtle vents
-    # -> deficit 720 sq in -> cut-in 720/18 = 40 LF of ridge vent.
+    # -> cut-in 720/18 = 40 LF of ridge vent, 10 four-foot sticks at 72 each.
     v = A.attic_ventilation({'roof_squares': 30, 'turtle_vents': 0})
     assert v['needs_ridge'] is True
     assert round(v['ridge_lf_required'], 2) == 40.0
+    assert v['ridge_sticks'] == 10
 
 
-def test_attic_ventilation_meets_code_with_turtles(A):
-    # Enough turtle vents to cover exhaust -> nothing to cut in.
+def test_existing_box_vents_do_not_shrink_the_ridge(A):
+    """The bug this replaced. Ticking Install Ridge Vent ALSO decks over every
+    turtle vent on the roof, and the ridge was sized on what was left after
+    crediting those same vents: six turtles on a 30 SQ attic ordered 6 sticks —
+    432 sq in against 720 required, 40% short — and ten turtles ordered 288.
+    The vents being removed cannot pay for the ones being installed."""
+    for turtles in (0, 6, 10):
+        v = A.attic_ventilation({'roof_squares': 30, 'turtle_vents': turtles})
+        assert round(v['ridge_lf_required'], 2) == 40.0, turtles
+        assert v['ridge_sticks'] * 72 >= v['required_exhaust'], turtles
+
+
+def test_meeting_code_today_is_still_reported(A):
+    """needs_ridge answers a different question — is the roof short AS IT
+    STANDS — and the banner reads it. Sizing is what changed, not that."""
     v = A.attic_ventilation({'roof_squares': 6, 'turtle_vents': 10})
     assert v['needs_ridge'] is False
-    assert v['ridge_lf_required'] == 0
+    # 600 sf -> 288 sq in total, 144 exhaust -> 8 LF if ridge vent is added
+    # anyway, because those ten turtles would be decked over.
+    assert round(v['ridge_lf_required'], 2) == 8.0
 
 
 # ── Workstream E: production packet cut-in section ─────────────────────
