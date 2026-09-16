@@ -18891,6 +18891,10 @@ _PRODUCT_FIELD_MIGRATIONS = {
                 # 2026-09-15: intake is sized by the 1/300 code rule, capped at
                 # the eaves - not the whole eave run.
                 'a_intake_vent': {'measure': ('eave', 'intake_vent_code')}},
+    # 2026-09-16: the default polyiso shipped as a bare "Polyiso Insulation",
+    # which says nothing next to the 1.0"-4.0" it now swaps between on a row.
+    'commercial': {'ca_iso': {'name': ('Polyiso Insulation',
+                                       '2.6" Polyiso Insulation (~R-15)')}},
 }
 
 # Products that moved from priced-per-PACK to priced-per-FOOT. Dropping the pack

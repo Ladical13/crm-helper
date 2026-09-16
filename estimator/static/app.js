@@ -6860,6 +6860,7 @@ function renderSimpleFreeform(trade) {
         <input class="other-name-input" type="text" value="${esc(item.name||'')}" list="pb-list-${trade}"
           placeholder="Type to search price book…"
           onchange="liSetNameSmart('${trade}','${item.id}',this.value)">
+        ${variantPicker(trade, item)}
         <textarea class="simple-item-desc desc-ta" rows="${descLines}"
           placeholder="Description (optional — prints on PDF, Enter for new line)"
           oninput="autoGrow(this);simpleSetField('${trade}','${item.id}','description',this.value)"
@@ -7756,6 +7757,92 @@ function _tradeCatalog(trade) { return (priceBook && priceBook[trade + '_catalog
 function _tradeBundles(trade) { return (priceBook && priceBook[trade + '_bundles']) || []; }
 function _tradeBundle(trade, id) { return _tradeBundles(trade).find(b => b.id === id) || null; }
 
+/* ── Swappable products: one bundle slot, several interchangeable products ──
+   A package lists ONE polyiso line (ca_iso, 2.6"), but the spec decides the
+   thickness, so the row offers every thickness the catalog carries. The key is
+   the id the bundles name; the list is what may stand in for it.
+
+   The choice is the BUILDING's, not the package's, so it survives a system
+   swap: re-picking TPO -> EPDM keeps the 4" the rep chose. Both builders find
+   the slot's row through variantRowFor() and price it from the product the row
+   actually carries. Re-picking the same system does not reset it either — the
+   dropdown is the only thing that changes it. */
+const PRODUCT_VARIANTS = {
+  ca_iso: ['ca_iso_10', 'ca_iso_15', 'ca_iso_20', 'ca_iso_22', 'ca_iso_30', 'ca_iso_40'],
+};
+// The bundle slot a product fills: itself, or the id it stands in for.
+function variantSlot(pid) {
+  if (!pid) return '';
+  if (PRODUCT_VARIANTS[pid]) return pid;
+  for (const base in PRODUCT_VARIANTS) {
+    if (PRODUCT_VARIANTS[base].includes(pid)) return base;
+  }
+  return pid;
+}
+// A row already filling bundle slot `pid` with a stand-in product.
+function variantRowFor(items, pid) {
+  if (!PRODUCT_VARIANTS[pid]) return null;
+  return (items || []).find(li => li.catalog_id && li.catalog_id !== pid
+    && variantSlot(li.catalog_id) === pid) || null;
+}
+// Catalog products this row may switch between, thinnest first. Empty when the
+// row has nothing to swap to, which is what hides the picker.
+function variantChoices(trade, pid) {
+  const base = variantSlot(pid);
+  if (!PRODUCT_VARIANTS[base]) return [];
+  const cat = _tradeCatalog(trade);
+  const out = [base, ...PRODUCT_VARIANTS[base]]
+    .map(id => cat.find(p => p && p.id === id)).filter(Boolean);
+  const size = p => { const n = parseFloat(p.name); return isNaN(n) ? Infinity : n; };
+  out.sort((a, b) => size(a) - size(b));
+  return out.length > 1 ? out : [];
+}
+function variantPicker(trade, item, cls) {
+  const opts = variantChoices(trade, item.catalog_id);
+  if (!opts.length) return '';
+  return `<div class="li-row-variant-row">
+      <select class="li-row-variant-select ${cls || ''}" title="Which product this line quotes"
+        onchange="liSwapVariant('${trade}','${item.id}',this.value)">
+        ${opts.map(p => `<option value="${esc(p.id)}" ${p.id === item.catalog_id ? 'selected' : ''}>${esc(p.name)} — ${fmtCur(parseFloat(p.cost) || 0)}/${esc(p.unit || '')}</option>`).join('')}
+      </select>
+    </div>`;
+}
+/* Swap the row to another product in its slot. Cost follows the product, and a
+   locked sell price is released — a price typed for 2.6" is not a price for 4".
+   Descriptions the rep wrote are kept; one that just echoed the old product's
+   name follows the new one. */
+function liSwapVariant(trade, id, pid) {
+  const td = S.trades[trade];
+  const item = (td.line_items || []).find(it => it.id === id);
+  const p = _tradeCatalog(trade).find(x => x && x.id === pid);
+  if (!item || !p || variantSlot(pid) !== variantSlot(item.catalog_id)) return;
+  const oldName = item.name;
+  const cost = parseFloat(p.cost) || 0;
+  item.catalog_id = pid;
+  item.name = p.name;
+  item.unit = p.unit || item.unit;
+  if (item.measure === undefined && !item.formula && p.measure) item.measure = p.measure;
+  const follow = d => (!d || d === oldName) ? p.name : d;
+  if (item.tiers) {
+    Object.values(item.tiers).forEach(cell => {
+      if (!cell) return;
+      cell.material_unit_cost = cost;
+      cell.labor_unit_cost = 0;
+      cell.description = follow(cell.description);
+      delete cell.price_override;
+    });
+  } else {
+    item.unit_cost = cost;
+    item.description = follow(item.description);
+    delete item._gbb_tiers;
+    delete item.price_locked;
+    simpleApplyMargin(trade, item);
+  }
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+  else renderTotals();
+}
+
 /* ── A package card describes the products actually in the bundle ─────────
    The What's Included bullets are BUILT from the bundle's product_ids, not
    stored as a blob on the bundle. The blob was one list per bundle, so every
@@ -7861,9 +7948,16 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   const norm = s => String(s || '').trim().toLowerCase();
 
   (bundle.product_ids || []).forEach(pid => {
-    const p = catalog.find(x => x.id === pid);
+    let p = catalog.find(x => x.id === pid);
     if (!p) return;
     let item = td.line_items.find(li => li.catalog_id === pid);
+    // The slot is already filled by a stand-in (a 4" in the 2.6" slot): keep
+    // the rep's product and price the tier from it.
+    if (!item) {
+      const swapped = variantRowFor(td.line_items, pid);
+      const sp = swapped && catalog.find(x => x.id === swapped.catalog_id);
+      if (sp) { item = swapped; p = sp; }
+    }
     // Adopt a legacy same-named item (built before this trade moved to bundles,
     // so it has no catalog_id) instead of adding a duplicate beside it.
     if (!item) {
@@ -7904,7 +7998,8 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   // for other tiers that include them). Hand-added items are left untouched.
   td.line_items.forEach(item => {
     if (!item.catalog_id) return;
-    if (!wantIds.has(item.catalog_id) && item.tiers && item.tiers[tier]) {
+    if (!wantIds.has(item.catalog_id) && !wantIds.has(variantSlot(item.catalog_id))
+        && item.tiers && item.tiers[tier]) {
       item.tiers[tier].included = false;
     }
   });
@@ -8039,12 +8134,19 @@ function buildSimpleItemsFromBundle(trade, bundleId, sectionName) {
 
   const items = [];
   (bundle.product_ids || []).forEach(pid => {
-    const p = catalog.find(x => x.id === pid);
+    let p = catalog.find(x => x.id === pid);
     if (!p) return;
-    const old = prev.get(pid);
+    let old = prev.get(pid);
+    // A stand-in already fills this slot (a 4" in the 2.6" slot) — carry the
+    // rep's product through the system swap, priced as itself.
+    if (!old && PRODUCT_VARIANTS[pid]) {
+      const swapped = variantRowFor([...prev.values()], pid);
+      const sp = swapped && catalog.find(x => x.id === swapped.catalog_id);
+      if (sp) { old = swapped; p = sp; }
+    }
     items.push({
       id: old ? old.id : uid(),
-      catalog_id: pid,
+      catalog_id: p.id,
       name: p.name,
       unit: p.unit || 'EA',
       quantity: old ? old.quantity : 0,
@@ -8440,6 +8542,7 @@ function renderLiRow(trade, tier, item) {
     </div>
     ${sectionSel}
     ${variantSel}
+    ${ownsMaster ? variantPicker(trade, item) : ''}
     <div class="li-row-desc-row">
       <textarea class="li-row-desc-input desc-ta" rows="${descRows(t.description)}"
         placeholder="${tier==='good'?'e.g. 3-Tab':tier==='better'?'e.g. Architectural':'e.g. Designer'}"
