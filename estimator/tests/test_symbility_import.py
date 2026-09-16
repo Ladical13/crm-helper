@@ -734,12 +734,16 @@ def _scanned_pdf():
     return bytes(pdf.output())
 
 
-def test_a_scanned_estimate_says_it_is_a_scan_and_is_not_kept(client):
+def test_a_scanned_estimate_says_it_is_a_scan_and_is_not_kept(client, monkeypatch):
     """A printed estimate run through a scanner has no text for any parser.
-    The rep needs to be told to get the emailed PDF -- not that the layout is
-    unknown -- and an admin has nothing to teach from a picture."""
+    On a server that cannot read scans (no ANTHROPIC_API_KEY), the rep needs
+    to be told to get the emailed PDF -- not that the layout is unknown -- and
+    an admin has nothing to teach from a picture. test_carrier_scan.py covers
+    a server that can."""
     import io as _io
     import app as A
+    import carrier_scan
+    monkeypatch.setattr(carrier_scan, 'available', lambda: False)
     before = A._carrier_failure_names()
     r = client.post('/api/parse-xactimate',
                     data={'file': (_io.BytesIO(_scanned_pdf()), 'scan.pdf')},

@@ -1108,10 +1108,29 @@ them: Liberty Mutual nests areas inside a plan and closes on the *plan's*
 subtotal with no bare `Subtotal` row, so the plan subtotals are the checksum
 (only when every plan with work printed one). It also rewords every claim-totals
 label and itemises the tax per authority. A new wording is one more spelling
-on a key in `_SYM_SUMMARY_LABELS`, never a second key. **A scanned estimate has
-no text for any parser**: `_pdf_has_text()` catches it before detection, tells
-the rep to get the carrier's emailed PDF, and does not keep it — there is no
-layout in a picture to teach.
+on a key in `_SYM_SUMMARY_LABELS`, never a second key.
+
+**A scanned estimate is read off its page images** (`estimator/carrier_scan.py`,
+2026-09-16). `_pdf_has_text()` catches a PDF with no text layer before format
+detection, and Claude transcribes the pages into the same shape the two
+parsers return, so the review modal and `_carrier_reconcile()` run unchanged.
+Four things are load-bearing:
+
+- **Transcribe, never calculate.** The prompt forbids correcting a figure, so a
+  misread surfaces as a line that fails its own arithmetic instead of being
+  quietly made to agree. That is also why `math_off` exists: a misread unit
+  price or quantity leaves RCV, ACV and the carrier total untouched, so only
+  qty × price + tax + O&P = RCV can see it, and it counts as a line off.
+- **It runs as a job the browser polls** (`/api/parse-xactimate/scan/<id>`),
+  because a vision read runs past gunicorn's 60s worker timeout. Job files sit
+  on the volume, not in memory, since the poll can land on the other worker;
+  each is a homeowner's claim, so it is deleted on collection, readable only
+  by the rep who started it, and swept after `CARRIER_SCAN_STALE_S`.
+- **No `ANTHROPIC_API_KEY`, no scan reading** — `carrier_scan.available()` is
+  false and the rep is asked for the carrier's emailed PDF instead, exactly as
+  before this existed.
+- **An Xactimate scan still returns no measurements**, matching its parser:
+  RoofR is the source of truth for those.
 
 **Still open: Xactimate exports carry no measurements.** `_parse_symbility_pdf`
 returns `roof_squares`; `_parse_xactimate_pdf` returns no `measurements` key at

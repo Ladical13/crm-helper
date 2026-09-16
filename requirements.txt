@@ -25,7 +25,9 @@ google-auth>=2.28
 # Nimbus supervisor: the conversational layer over the other agents
 # (agents/supervisor/). Imported lazily, so a missing install shows up as the
 # Supervisor tab reporting itself unavailable rather than a boot failure.
-anthropic>=0.69
+# Also reads scanned carrier estimates (estimator/carrier_scan.py), whose
+# server-side refusal fallback (`fallbacks=`) needs 1.1.
+anthropic>=1.1
 
 # Nimbus (AI agents): only stdlib + `requests` are required at runtime; the
 # Reddit / YouTube / Google Trends listeners are wired as optional and pull

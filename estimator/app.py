@@ -45,6 +45,12 @@ try:
 except ImportError:
     import demo_store as demo            # noqa: E402
 
+# Scanned carrier estimates (no text layer) are read off the page images.
+try:
+    from . import carrier_scan           # noqa: E402
+except ImportError:
+    import carrier_scan                  # noqa: E402
+
 try:
     import requests as http
 except ImportError:
@@ -4478,10 +4484,115 @@ def _pdf_has_text(file_bytes):
     return any((p.extract_text() or '').strip() for p in reader.pages)
 
 
+# Only shown when this server cannot read scans (no ANTHROPIC_API_KEY).
 _CARRIER_SCAN_MSG = ('This PDF is a scan — pictures of the pages, with no text in it '
                      'to read. Ask the adjuster or the homeowner for the estimate '
                      'PDF the carrier emailed (or download it from the carrier’s '
                      'portal), and import that instead.')
+
+# A scan is read in a background thread and the browser polls for it: a
+# vision read of a few pages runs past gunicorn's 60s worker timeout, which
+# would kill the worker mid-request. Jobs live on the volume, not in memory,
+# because the poll can land on the other worker. Each job file holds a
+# homeowner's claim, so it is deleted the moment its result is collected, and
+# a job nobody collects is swept.
+CARRIER_SCAN_DIR = os.path.join(DATA_DIR, 'carrier_scan_jobs')
+CARRIER_SCAN_STALE_S = 15 * 60
+
+
+def _scan_job_path(job_id):
+    return os.path.join(CARRIER_SCAN_DIR, job_id + '.json')
+
+
+def _write_scan_job(job_id, doc):
+    os.makedirs(CARRIER_SCAN_DIR, exist_ok=True)
+    tmp = _scan_job_path(job_id) + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(doc, f, default=str)
+    os.replace(tmp, _scan_job_path(job_id))
+
+
+def _sweep_scan_jobs():
+    try:
+        names = os.listdir(CARRIER_SCAN_DIR)
+    except OSError:
+        return
+    cutoff = time.time() - CARRIER_SCAN_STALE_S
+    for fn in names:
+        p = os.path.join(CARRIER_SCAN_DIR, fn)
+        try:
+            if os.path.getmtime(p) < cutoff:
+                os.remove(p)
+        except OSError:
+            pass
+
+
+def _spawn(target, *args):
+    """Seam for tests, which run the scan inline instead of on a thread."""
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _run_carrier_scan(job_id, raw, filename, user):
+    """The background half of a scanned import. Always leaves the job file in
+    a finished state, whatever happens, so the browser's poll ends."""
+    started = time.time()
+    try:
+        data = carrier_scan.read(raw)
+        if not any(s.get('items') for s in data['sections']):
+            _keep_failed_carrier_pdf(raw, 'scan_no_items', filename,
+                                     _carrier_failure_detail(data), user=user)
+            doc = {'status': 'error', 'error':
+                   'No line items could be read off this scan. Enter the lines by hand.'}
+        else:
+            rec = _carrier_reconcile(data)
+            if not rec['ok']:
+                rec['kept'] = bool(_keep_failed_carrier_pdf(
+                    raw, 'scan_' + rec['status'], filename,
+                    _carrier_failure_detail(data, rec), user=user))
+            data['reconcile'] = rec
+            doc = {'status': 'done', 'data': data}
+    except carrier_scan.ScanError as e:
+        doc = {'status': 'error', 'error': str(e)}
+    except Exception as e:
+        print(f'[carrier-scan] job {job_id} failed: {e!r}')
+        _keep_failed_carrier_pdf(raw, 'scan_error', filename, {'error': str(e)}, user=user)
+        doc = {'status': 'error', 'error': _CARRIER_KEPT_MSG}
+    doc.update({'user': user, 'seconds': round(time.time() - started, 1)})
+    try:
+        _write_scan_job(job_id, doc)
+    except OSError as e:
+        print(f'[carrier-scan] could not record job {job_id}: {e}')
+
+
+@app.route('/api/parse-xactimate/scan/<job_id>')
+def carrier_scan_job(job_id):
+    """Poll a scanned import. 202 while it reads; the result exactly once."""
+    if not re.fullmatch(r'[A-Za-z0-9_-]{16,64}', job_id or ''):
+        return jsonify({'error': 'not found'}), 404
+    path = _scan_job_path(job_id)
+    try:
+        with open(path, encoding='utf-8') as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return jsonify({'error': 'This scan read has expired. Import the PDF again.'}), 404
+    # The job is the rep's claim document: only whoever started it may collect it.
+    if doc.get('user') != _current_user():
+        return jsonify({'error': 'not found'}), 404
+    if doc.get('status') == 'running':
+        if time.time() - float(doc.get('started') or 0) > CARRIER_SCAN_STALE_S:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return jsonify({'error': 'Reading this scan took too long. Try the import again.'}), 504
+        return jsonify({'status': 'running'}), 202
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    if doc.get('status') == 'done':
+        return jsonify(doc['data'])
+    return jsonify({'error': doc.get('error') or 'Could not read this scan.'}), 422
 
 
 def _detect_carrier_format(file_bytes):
@@ -4527,9 +4638,16 @@ def parse_xactimate():
         return jsonify({'error': err}), 400
     filename = (upload.filename or '') if upload else ''
     try:
-        # Not kept for an admin: there is no layout in a scan to teach.
         if not _pdf_has_text(raw):
-            return jsonify({'error': _CARRIER_SCAN_MSG, 'scanned': True}), 422
+            if not carrier_scan.available():
+                return jsonify({'error': _CARRIER_SCAN_MSG, 'scanned': True}), 422
+            _sweep_scan_jobs()
+            job_id = secrets.token_urlsafe(18)
+            user = _current_user()
+            _write_scan_job(job_id, {'status': 'running', 'user': user,
+                                     'started': time.time()})
+            _spawn(_run_carrier_scan, job_id, raw, filename, user)
+            return jsonify({'scan_job': job_id, 'scanned': True}), 202
         fmt = _detect_carrier_format(raw)
         data = (_parse_symbility_pdf if fmt == 'symbility'
                 else _parse_xactimate_pdf)(raw)
@@ -4576,8 +4694,11 @@ def _carrier_reconcile(data):
     items = [it for s in sections for it in (s.get('items') or [])]
     parsed = round(sum(it.get('rcv') or 0 for it in items), 2)
     carrier = (data.get('summary') or {}).get('line_items_rcv')
+    # `math_off` is set only by the scan reader: a line whose quantity x unit
+    # price does not reach its RCV, which is how a misread digit shows up.
     lines_off = [it.get('line_no') for it in items
-                 if abs((it.get('rcv') or 0)
+                 if it.get('math_off')
+                 or abs((it.get('rcv') or 0)
                         - ((it.get('acv') or 0) + (it.get('depreciation') or 0))) > 0.02]
     sections_off = []
     for s in sections:
@@ -4629,16 +4750,21 @@ def _carrier_failure_names():
         return []
 
 
-def _keep_failed_carrier_pdf(raw, reason, filename='', detail=None):
+def _keep_failed_carrier_pdf(raw, reason, filename='', detail=None, user=None):
     """Save a carrier PDF that did not read cleanly; the saved name, or None.
 
     Never raises -- a full disk must not turn a parse warning into a 500. The
     same bytes are kept once, however many times a rep retries them. Names
     lead with a strictly increasing number so the newest sort last and the
     cap removes the oldest, even for two uploads inside one clock tick.
+
+    `user` is passed by the scan thread, which has no request to read the
+    session from; a demo guest never reaches that thread.
     """
-    if demo.active():
-        return None
+    if user is None:
+        if demo.active():
+            return None
+        user = _current_user()
     try:
         os.makedirs(CARRIER_FAILURES_DIR, exist_ok=True)
         digest = hashlib.sha256(raw).hexdigest()[:12]
@@ -4655,7 +4781,7 @@ def _keep_failed_carrier_pdf(raw, reason, filename='', detail=None):
             f.write(raw)
         with open(base + '.json', 'w', encoding='utf-8') as f:
             json.dump({'name': name, 'reason': reason, 'filename': filename,
-                       'user': _current_user(),
+                       'user': user,
                        'at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
                        'detail': detail or {}}, f, indent=2, default=str)
         for old in _carrier_failure_names()[:-CARRIER_FAILURES_KEEP]:

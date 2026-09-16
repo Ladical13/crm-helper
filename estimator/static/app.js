@@ -14711,8 +14711,39 @@ async function importXactPdf(input) {
     const r = await fetch('/api/parse-xactimate', { method: 'POST', body: fd });
     data = await r.json();
     if (!r.ok) { alert(data.error || 'Could not parse PDF.'); return; }
-  } catch { alert('Network error — could not reach server.'); return; }
+    // 202 = a scanned PDF, read off its page images in the background.
+    if (r.status === 202 && data.scan_job) {
+      data = await waitForCarrierScan(data.scan_job);
+      if (!data) return;
+    }
+  } catch { hideToast(); alert('Network error — could not reach server.'); return; }
   openXactModal(data);
+}
+
+/* A scan takes a minute or two to read, longer than one request may run, so
+   the server hands back a job and this polls it. The result arrives exactly
+   once (the server deletes it on collection), then the ordinary review modal
+   opens on it. */
+async function waitForCarrierScan(jobId) {
+  toast('📄 This PDF is a scan — reading it page by page. This can take a minute or two…', 0);
+  const deadline = Date.now() + 16 * 60 * 1000;
+  try {
+    while (Date.now() < deadline) {
+      await new Promise(res => setTimeout(res, 4000));
+      let r;
+      try {
+        r = await fetch(`/api/parse-xactimate/scan/${encodeURIComponent(jobId)}`);
+      } catch { continue; }   // one dropped poll on bad signal is not a failure
+      if (r.status === 202) continue;
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(body.error || 'Could not read this scan.'); return null; }
+      return body;
+    }
+    alert('Reading this scan took too long. Try the import again.');
+    return null;
+  } finally {
+    hideToast();
+  }
 }
 
 /* Whether the parsed lines ARE the carrier's lines. Decided server-side
