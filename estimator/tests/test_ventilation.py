@@ -193,6 +193,90 @@ def test_existing_box_vents_do_not_shrink_the_ridge(A):
         assert v['ridge_sticks'] * 72 >= v['required_exhaust'], turtles
 
 
+def _vent_est(items, **meas):
+    m = {'roof_squares': 30, 'turtle_vents': 6, 'ridge_lf': 60, 'eave_lf': 250}
+    m.update(meas)
+    return {'estimate_id': 'nfa-test', 'estimate_type': 'retail',
+            'selected_tier': 'better',
+            'customer': {'name': 'Nina NFA', 'phone': '555-0000',
+                         'address': {'street': '1 A St', 'city': 'Loveland',
+                                     'state': 'CO', 'zip': '80537'}},
+            'signature': {'signed_at': '2026-09-16T00:00:00Z', 'selected_tier': 'better'},
+            'measurements': m,
+            'trades': {'roofing': {'enabled': True, 'mode': 'simple',
+                                   'line_items': items}}}
+
+
+_RIDGE = {'name': 'Ridge Vent', 'unit': 'LF', 'quantity': 10, 'bundle_lf': 4,
+          'bundle_unit': 'sticks', 'vent_role': 'ridge'}
+_PLUGS = {'name': 'Vent Plug', 'unit': 'EA', 'quantity': 6, 'vent_role': 'plugs'}
+_INTAKE = {'name': 'Intake Vent', 'unit': 'LF', 'quantity': 80, 'vent_role': 'intake'}
+
+
+# ── the readout: what this roof ends up with ──────────────────────────────
+
+def test_the_readout_counts_sticks_as_footage(A):
+    """The ridge line is a count of 4-ft STICKS and the NFA is per foot: 10
+    sticks is 40 LF is 720 sq in. Reading the quantity raw would report 180."""
+    n = A._vent_nfa_report(_vent_est([_RIDGE, _PLUGS, _INTAKE]))
+    assert n['ridge_lf'] == 40
+    assert n['exhaust_installed'] == 720
+    assert n['exhaust_required'] == 720
+    assert n['exhaust_short'] == 0
+    assert n['intake_installed'] == 720   # 80 LF x 9
+
+
+def test_plugged_box_vents_do_not_count_toward_exhaust(A):
+    """The Vent Plug line IS the roof losing them — the whole bug in one rule."""
+    plugged = A._vent_nfa_report(_vent_est([_RIDGE, _PLUGS]))
+    kept    = A._vent_nfa_report(_vent_est([_RIDGE]))
+    assert plugged['exhaust_installed'] == 720
+    assert kept['exhaust_installed'] == 720 + 6 * A.NFA_TURTLE_SQIN
+    assert kept['turtles_kept'] == 6
+
+
+def test_the_readout_names_a_shortfall(A):
+    short = A._vent_nfa_report(_vent_est([dict(_RIDGE, quantity=4), _PLUGS]))
+    assert short['exhaust_installed'] == 288      # what the old sizing ordered
+    assert short['exhaust_short'] == 432
+
+
+def test_the_work_order_prints_installed_against_required(A):
+    """A test only fails when someone runs it. This figure fails in front of
+    whoever is standing on the roof."""
+    text = _pdf_text(A.build_production_packet_pdf(
+        _vent_est([_RIDGE, _PLUGS, _INTAKE])))
+    assert 'EXHAUST NFA' in text.upper()
+    assert '720 sq in installed' in text
+    assert 'meets code' in text
+
+
+def test_the_work_order_says_short_when_it_is(A):
+    text = _pdf_text(A.build_production_packet_pdf(
+        _vent_est([dict(_RIDGE, quantity=4), _PLUGS])))
+    assert 'SHORT by 432 sq in' in text
+
+
+def test_the_panel_shows_the_same_figure():
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, '..', 'static', 'app.js'), encoding='utf-8') as fh:
+        js = fh.read()
+    assert 'function ventNfaReport()' in js
+    assert 'ventNfaReport();' in js, 'the Scope panel does not render the readout'
+    assert 'vent-nfa' in js
+
+
+def _pdf_text(raw):
+    import io
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        import pytest as _pt
+        _pt.skip('pypdf not installed')
+    return '\n'.join(p.extract_text() or '' for p in PdfReader(io.BytesIO(raw)).pages)
+
+
 def test_meeting_code_today_is_still_reported(A):
     """needs_ridge answers a different question — is the roof short AS IT
     STANDS — and the banner reads it. Sizing is what changed, not that."""

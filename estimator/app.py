@@ -7336,6 +7336,47 @@ def _est_expired(est):
     return bool(d and d < _company_today())
 
 
+def _vent_nfa_report(est):
+    """What the scope actually INSTALLS against what code asks for.
+
+    The ridge sizing shipped wrong for two months and every test agreed with it,
+    because the tests were written from the code. A number a human reads on
+    every job fails in front of someone; a test only fails when it is run. Same
+    reason the backup email prints its row counts.
+
+    Box vents count only while they stay on the roof: the Vent Plug line means
+    they are being decked over. A ridge line carries its pack size, so its
+    quantity is sticks — the NFA is per FOOT, so the pack has to come off first.
+    MUST mirror ventNfaReport() in app.js."""
+    m0 = est.get('measurements') or {}
+    v  = attic_ventilation(m0)
+    items = ((est.get('trades') or {}).get('roofing') or {}).get('line_items') or []
+
+    def _lf(it):
+        qty  = _mnum(it.get('quantity'))
+        pack = _mnum(it.get('bundle_lf'))
+        return qty * (pack if pack > 0 else 1)
+
+    def _is(it, role, pid):
+        return it.get('vent_role') == role or it.get('catalog_id') == pid
+
+    ridge_lf  = sum(_lf(it) for it in items if _is(it, 'ridge', 'a_ridge_vent'))
+    intake_lf = sum(_lf(it) for it in items if _is(it, 'intake', 'a_intake_vent'))
+    plugged   = any(_is(it, 'plugs', 'a_vent_plug') for it in items)
+    turtles   = 0.0 if plugged else _mnum(m0.get('turtle_vents'))
+
+    exhaust = ridge_lf * NFA_RIDGE_SQIN_LF + turtles * NFA_TURTLE_SQIN
+    intake  = intake_lf * NFA_INTAKE_SQIN_LF
+    return {
+        'ridge_lf': ridge_lf, 'intake_lf': intake_lf,
+        'turtles_kept': turtles, 'plugged': plugged,
+        'exhaust_installed': exhaust, 'exhaust_required': v['required_exhaust'],
+        'intake_installed': intake,  'intake_required':  v['required_intake'],
+        'exhaust_short': max(v['required_exhaust'] - exhaust, 0),
+        'intake_short':  max(v['required_intake'] - intake, 0),
+    }
+
+
 def _cv_expired_block(est):
     """What the customer sees where the signature form used to be."""
     d = _est_valid_until(est)
@@ -13535,6 +13576,17 @@ def build_work_order_pdf(est):
                           f'{NFA_INTAKE_SQIN_LF} sq in per LF)'))
         else:
             vrows.append(('Intake vent', 'NOT on this job'))
+        # What this roof ends up with, against what code asks for. Printed for
+        # the crew because a wrong calculation that nobody reads stays wrong.
+        nfa = _vent_nfa_report(est)
+        for lbl, got, want, short in (
+                ('Exhaust NFA', nfa['exhaust_installed'], nfa['exhaust_required'],
+                 nfa['exhaust_short']),
+                ('Intake NFA', nfa['intake_installed'], nfa['intake_required'],
+                 nfa['intake_short'])):
+            state = f'SHORT by {short:.0f} sq in' if short > 0.5 else 'meets code'
+            vrows.append((lbl, f'{got:.0f} sq in installed / {want:.0f} required'
+                               f'  -  {state}'))
         kv(vrows, label_w=42)
 
         note = (vent_cutin0.get('notes') or '').strip()

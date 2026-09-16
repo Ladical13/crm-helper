@@ -1256,6 +1256,33 @@ function atticVentilation(m) {
            ridge_lf_required, ridge_sticks, intake_lf_suggested, intake_lf_required };
 }
 
+/* What the scope actually INSTALLS against what code asks for. The ridge
+   sizing shipped wrong for two months with every test agreeing, because the
+   tests were written from the code — so the panel and the work order print the
+   number a human can check. Box vents count only while they stay on the roof;
+   a Vent Plug line means they are decked over. A ridge line's quantity is
+   STICKS (it carries a pack size) and the NFA is per foot, so the pack comes
+   off first. MUST mirror _vent_nfa_report() in app.py. */
+function ventNfaReport() {
+  const m = S.measurements || {};
+  const v = atticVentilation(m);
+  const items = ((S.trades.roofing || {}).line_items) || [];
+  const lf = it => (parseFloat(it.quantity) || 0) * ((parseFloat(it.bundle_lf) || 0) > 0 ? parseFloat(it.bundle_lf) : 1);
+  const is = (it, role, pid) => it.vent_role === role || it.catalog_id === pid;
+  const sum = (role, pid) => items.filter(it => is(it, role, pid)).reduce((n, it) => n + lf(it), 0);
+  const ridgeLf  = sum('ridge', 'a_ridge_vent');
+  const intakeLf = sum('intake', 'a_intake_vent');
+  const plugged  = items.some(it => is(it, 'plugs', 'a_vent_plug'));
+  const turtles  = plugged ? 0 : mnum(m.turtle_vents);
+  const exhaust  = ridgeLf * NFA_RIDGE_SQIN_LF + turtles * NFA_TURTLE_SQIN;
+  const intake   = intakeLf * NFA_INTAKE_SQIN_LF;
+  return { ridgeLf, intakeLf, turtlesKept: turtles, plugged,
+           exhaustInstalled: exhaust, exhaustRequired: v.required_exhaust,
+           intakeInstalled: intake,   intakeRequired:  v.required_intake,
+           exhaustShort: Math.max(v.required_exhaust - exhaust, 0),
+           intakeShort:  Math.max(v.required_intake - intake, 0) };
+}
+
 /* ── Commercial fastener calculator ─────────────────────────────────────
    Fastener density on a low-slope roof is set by WHERE on the roof you are
    (ASCE 7 field / perimeter / corner), by how much uplift the roof must
@@ -1928,6 +1955,24 @@ function ventPanelMarkup() {
           <div><span class="vf-label">Intake needed</span><span class="vf-val">${ventRound(vent.required_intake)} sq in</span></div>
           <div><span class="vf-label">Exhaust provided</span><span class="vf-val">${ventRound(vent.provided_exhaust)} sq in <span class="vf-sub">(${turtleN} turtle × ${NFA_TURTLE_SQIN})</span></span></div>
         </div>
+        ${(() => {
+          // What this estimate INSTALLS, checkable against the line above it.
+          const n = ventNfaReport();
+          if (!n.exhaustInstalled && !n.intakeInstalled) return '';
+          const row = (lbl, got, want, short, detail) => `
+            <div class="vent-nfa-row ${short > 0.5 ? 'short' : 'ok'}">
+              <span class="vent-nfa-lbl">${lbl}</span>
+              <span class="vent-nfa-val">${ventRound(got)} / ${ventRound(want)} sq in</span>
+              <span class="vent-nfa-note">${short > 0.5
+                ? `⚠ short ${ventRound(short)} sq in` : '✅ meets code'}${detail ? ' · ' + detail : ''}</span>
+            </div>`;
+          return `<div class="vent-nfa">
+            ${row('Exhaust installed', n.exhaustInstalled, n.exhaustRequired, n.exhaustShort,
+                  `${ventRound(n.ridgeLf)} LF ridge × ${NFA_RIDGE_SQIN_LF}${n.turtlesKept ? ` + ${n.turtlesKept} box vent(s) kept` : ''}`)}
+            ${row('Intake installed', n.intakeInstalled, n.intakeRequired, n.intakeShort,
+                  `${ventRound(n.intakeLf)} LF × ${NFA_INTAKE_SQIN_LF}`)}
+          </div>`;
+        })()}
         <div class="vent-actions">
           <label class="iw-second-row-toggle ${hasRidge ? 'enabled' : ''}">
             <input type="checkbox" ${hasRidge ? 'checked' : ''}

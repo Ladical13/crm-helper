@@ -1019,6 +1019,18 @@ ungated for the same reason: a roof whose box vents already met code ordered
 Attic Area is blank — the sloped area, so ~12% high on a 6/12, which
 over-vents rather than under-vents. Pinned by `tests/test_ventilation.py`.
 
+**The vent math prints itself** (`_vent_nfa_report` / `ventNfaReport`). The
+sizing above was wrong for two months and every test agreed with it, because
+the tests were written from the code: the example used a roof with no box
+vents, where both rules give the same answer, and the other test pinned the bug
+as correct. Parity tests did not help either — both copies agreed perfectly
+about the wrong number. So the Scope panel and the work order print **installed
+sq in against required**, per side, and say *SHORT by N* when they are. A test
+fails when someone runs it; this fails in front of whoever is on the roof. The
+ridge line's quantity is STICKS (it carries `bundle_lf`), so the pack comes off
+before multiplying by NFA per foot, and box vents count only while no Vent Plug
+line is decking them over.
+
 **Intake vent is sized by code, not by the eave** (2026-09-15). The checkbox and
 the `a_intake_vent` product both used `measure: 'eave'`, so a 250 LF eave billed
 250 LF of intake where a 3,000 SF attic needs 80 (720 sq in ÷ 9 per LF) — and
