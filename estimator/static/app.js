@@ -12584,7 +12584,7 @@ function showShareModal(fullUrl, relUrl) {
     </button>` : ''}
     ${!sig ? `
     <button class="share-preview-link" style="border:0;background:none;cursor:pointer;text-align:left;padding:0"
-      onclick="openInvoiceFromShare()">🧾 Sending to a GC? Send a plain invoice or quote instead →</button>` : ''}
+      onclick="openInvoice()">🧾 Need a plain invoice or quote instead? →</button>` : ''}
     ${navigator.share ? `
     <button class="share-native-btn" onclick="doNativeShare('${esc(fullUrl)}','${esc((S.customer&&S.customer.name)||'')}')">
       📤 Send Link — Text, Email, AirDrop…
@@ -15302,7 +15302,7 @@ function docEstimateListHtml() {
 // sites (upload a file, delete one, generate a document) that must not pay
 // for a network round-trip just to redraw the attachments panel.
 async function refreshDocCustData() {
-  _invFor = null;   // the GC invoice totals track the saved estimate
+  _invFor = null;   // the invoice totals track the saved estimate
   try {
     const r = await fetch('/api/estimates');
     _dashData = await r.json();
@@ -15390,10 +15390,10 @@ function renderDocumentsPage() {
         </button>
         <button class="doc-card ${_docGenerator==='invoice'?'doc-card-active':''}" onclick="docToggleGenerator('invoice')">
           <span class="doc-card-icon">🧾</span>
-          <span class="doc-card-name">GC Invoice / Quote</span>
+          <span class="doc-card-name">Invoice / Quote</span>
           <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'invoice')
             ? 'Saved — reopen to edit, re-save or email'
-            : 'Plain itemized numbers for a general contractor'}</span>
+            : 'Plain itemized numbers for a GC or homeowner'}</span>
         </button>
         ${S.signature ? `
         <button class="doc-card" onclick="generateProductionPacket(this)">
@@ -16102,9 +16102,10 @@ async function issueRoofCert(pushToCrm) {
   renderDocumentsPage();
 }
 
-/* ── GC invoice / quote ─────────────────────────────────────────────────
-   A plain, itemized PDF for general contractors. It has no signing link and no
-   proposal pages. All the money comes from the SERVER (GET/PUT return
+/* ── Invoice / quote ────────────────────────────────────────────────────
+   A plain, itemized PDF for a GC or a homeowner. It has no signing link and no
+   proposal pages. Reached from the customer screen's Create a document cards,
+   the 🧾 Invoice header button, the ⋯ menu and the Send modal (openInvoice). All the money comes from the SERVER (GET/PUT return
    invoice_rows totals), so no pricing math is mirrored here. The form only
    collects the fields and shows what the server says the document will bill.
    See the "GC invoice / quote" block in app.py. */
@@ -16130,19 +16131,19 @@ function renderInvoiceForm() {
   const el = document.getElementById('invoice-form-container');
   if (!el) return;
   if (!S.estimate_id) {
-    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 GC Invoice / Quote</h3></div>
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 Invoice / Quote</h3></div>
       <p class="pm-hint">Save the estimate first. The invoice lists what the saved estimate bills.</p>
       <div class="rc-btns"><button class="btn-primary" onclick="saveEstimate().then(loadInvoice)">💾 Save estimate</button></div></div>`;
     return;
   }
   if (_invData && _invData.error && _invFor === S.estimate_id) {
-    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 GC Invoice / Quote</h3></div>
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 Invoice / Quote</h3></div>
       <p class="pm-hint">⚠ Could not load: ${esc(_invData.error)}</p>
       <div class="rc-btns"><button class="doc-crm-push" onclick="loadInvoice()">↻ Retry</button></div></div>`;
     return;
   }
   if (!_invData || _invFor !== S.estimate_id) {
-    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 GC Invoice / Quote</h3></div>
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 Invoice / Quote</h3></div>
       <p class="pm-hint">Loading…</p></div>`;
     if (_invFor !== S.estimate_id) { _invFor = S.estimate_id; loadInvoice(); }
     return;
@@ -16160,13 +16161,12 @@ function renderInvoiceForm() {
   el.innerHTML = `
   <div class="panel rc-panel">
     <div class="panel-header">
-      <h3>🧾 GC ${isInv ? 'Invoice' : 'Quote'} — ${esc(c.name || 'this job')}</h3>
+      <h3>🧾 ${isInv ? 'Invoice' : 'Quote'} — ${esc(c.name || 'this job')}</h3>
       ${inv.sent_at ? `<span class="rc-issued-chip" title="${esc(inv.sent_to || '')}">Sent ${esc(String(inv.sent_at).slice(0, 10))}</span>` : ''}
     </div>
-    <p class="pm-hint rc-lede">A plain, itemized document for a general contractor.
-      It lists <strong>every</strong> billed line with its price, including lines the homeowner
-      proposal folds into the total. It has no signing link and no proposal pages.
-      Change the line items on the estimate itself.</p>
+    <p class="pm-hint rc-lede">A plain, itemized document for a GC or a homeowner.
+      It has no signing link and no proposal pages. Change the line items on the
+      estimate itself.</p>
 
     <div class="rc-term-row">
       <div class="rc-term-btns">
@@ -16192,6 +16192,13 @@ function renderInvoiceForm() {
       </label>
     </div>
 
+    <label class="inv-itemize">
+      <input type="checkbox" id="inv-itemize" ${inv.itemize !== false ? 'checked' : ''}>
+      <span><strong>List every line</strong> with its own price. Untick for a homeowner:
+        lines the proposal hides (like install labor) fold into the subtotal instead.
+        The total is the same either way.</span>
+    </label>
+
     <div class="rc-sec">Payments received <span class="note-tag">deposits, progress payments</span></div>
     <div id="inv-payments">
       ${pays.map((p, i) => `
@@ -16210,7 +16217,7 @@ function renderInvoiceForm() {
 
     <div class="rc-sec">What it will bill</div>
     <div class="inv-summary">
-      <div>${nLines} line item${nLines === 1 ? '' : 's'}${(tot.sections || []).length ? ` across ${(tot.sections || []).map(s => esc(s.title)).join(', ')}` : ''}</div>
+      <div>${nLines} line item${nLines === 1 ? '' : 's'}${(tot.sections || []).reduce((n, s) => n + (s.folded || 0), 0) ? ` listed (+${(tot.sections || []).reduce((n, s) => n + (s.folded || 0), 0)} folded into subtotals)` : ''}${(tot.sections || []).length ? ` across ${(tot.sections || []).map(s => esc(s.title)).join(', ')}` : ''}</div>
       ${(tot.change_orders || []).length ? `<div>Original scope <strong>${fmtCur(tot.subtotal)}</strong> · Change orders <strong>${fmtCur(tot.co_total)}</strong></div>` : ''}
       <div>Total <strong>${fmtCur(tot.total)}</strong>${tot.payments_total ? ` · Payments <strong>−${fmtCur(tot.payments_total)}</strong>` : ''}</div>
       ${isInv || tot.payments_total ? `<div class="inv-balance">Balance due <strong>${fmtCur(tot.balance_due)}</strong></div>` : ''}
@@ -16219,7 +16226,7 @@ function renderInvoiceForm() {
     </div>
 
     <label class="rc-f rc-wide">${lab('Email to')}
-      <input type="email" id="inv-email" value="${esc(c.email || '')}" placeholder="gc@example.com">
+      <input type="email" id="inv-email" value="${esc(c.email || '')}" placeholder="name@example.com">
     </label>
 
     <div class="rc-btns">
@@ -16229,7 +16236,7 @@ function renderInvoiceForm() {
       <span class="rc-saved" id="inv-saved"></span>
     </div>
   </div>`;
-  ['inv-issue', 'inv-due', 'inv-valid', 'inv-po', 'inv-number', 'inv-notes'].forEach(id => {
+  ['inv-issue', 'inv-due', 'inv-valid', 'inv-po', 'inv-number', 'inv-notes', 'inv-itemize'].forEach(id => {
     const x = document.getElementById(id);
     if (x) x.onchange = () => saveInvoiceFields(true, true);
   });
@@ -16241,6 +16248,8 @@ function renderInvoiceForm() {
 function _readInvoiceForm() {
   const v = id => { const x = document.getElementById(id); return x ? x.value.trim() : undefined; };
   const out = { kind: (_invData && _invData.invoice && _invData.invoice.kind) || 'invoice' };
+  const itemize = document.getElementById('inv-itemize');
+  if (itemize) out.itemize = itemize.checked;
   const map = {number: 'inv-number', issue_date: 'inv-issue', due_date: 'inv-due',
                valid_until: 'inv-valid', po_ref: 'inv-po', notes: 'inv-notes'};
   for (const [k, id] of Object.entries(map)) {
@@ -16364,11 +16373,14 @@ function _invAttach(att) {
   S.attachments.push(att);
 }
 
-/* From the Send modal: a GC gets the plain document, not a signing link. */
-function openInvoiceFromShare() {
+/* Straight to the invoice panel from anywhere: the 🧾 Invoice header button,
+   the ⋯ menu and the Send modal. Always opens it (never toggles it shut) and
+   always refetches, since the estimate may have changed since last time. */
+function openInvoice() {
   const m = document.getElementById('share-modal');
   if (m) m.classList.add('hidden');
   _docGenerator = 'invoice';
+  _invFor = null;
   switchPage('client');
   renderDocumentsPage();
   const el = document.getElementById('invoice-form-container');

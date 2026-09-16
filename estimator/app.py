@@ -15812,20 +15812,23 @@ def regenerate_roof_certificate(est_id):
     return jsonify({'attachment': att})
 
 
-# ── GC invoice / quote ───────────────────────────────────────────────────────
-# A plain, itemized document for general contractors, who need the numbers and
-# nothing else. No cover, no package cards, no warranty pages and no /sign link.
-# The rep picks whether it goes out as a QUOTE (before the work) or an INVOICE
-# (after).
+# ── Invoice / quote ─────────────────────────────────────────────────────────
+# A plain, itemized document: numbers and nothing else. No cover, no package
+# cards, no warranty pages and no /sign link. Built for general contractors
+# first and used for homeowners too. The rep picks whether it goes out as a
+# QUOTE (before the work) or an INVOICE (after).
 #
 # Three rules keep it honest:
 #
 # * invoice_rows() walks the SAME rows _trade_subtotal prices, so its subtotal
 #   equals _estimate_total to the cent. It is not a second pricing engine. It
 #   is a listing of the first one, and tests/test_invoice.py pins the equality.
-# * It lists EVERY billed line, including customer_visible:false ones. The
-#   homeowner PDF folds those into the total. A GC is checking the bill line by
-#   line, and a total the lines don't add up to is the first thing they query.
+# * By default it lists EVERY billed line, including customer_visible:false
+#   ones the homeowner proposal folds into the total. A GC checks the bill line
+#   by line, and a total the lines don't add up to is the first thing they
+#   query. Unticking "List every line" (`itemize: False`, for a homeowner)
+#   folds those rows back into the total the way the proposal does. That
+#   changes which rows PRINT, never what the subtotal is.
 # * Supplements are listed and never totalled, the same as on every other
 #   document. Only ACCEPTED change orders bill.
 #
@@ -15855,6 +15858,8 @@ def _sanitize_invoice(payload):
     kind = payload.get('kind')
     if kind in _INVOICE_KINDS:
         out['kind'] = kind
+    if isinstance(payload.get('itemize'), bool):
+        out['itemize'] = payload['itemize']
     for k, cap in (('number', 40), ('po_ref', 100), ('notes', 2000)):
         if k in payload and payload[k] is not None:
             out[k] = str(payload[k]).strip()[:cap]
@@ -15893,6 +15898,7 @@ def invoice_fields(est):
         inv['issue_date'] = _company_today().isoformat()
     if not inv.get('valid_until'):
         inv['valid_until'] = str(est.get('valid_until') or '')[:10]
+    inv['itemize'] = inv.get('itemize') is not False
     inv.setdefault('due_date', '')
     inv.setdefault('po_ref', '')
     inv.setdefault('notes', '')
@@ -15911,6 +15917,8 @@ def _invoice_line_name(name, desc):
 def invoice_rows(est):
     """Everything the invoice bills, as data. The single source for the PDF and
     for the summary the rep sees. Each row is (name, qty, unit, unit_price, line)."""
+    inv = invoice_fields(est)
+    itemize = inv['itemize']
     sections, supplements = [], []
     if est.get('estimate_type') == 'insurance':
         ins_td = (est.get('trades') or {}).get('insurance') or {}
@@ -15940,7 +15948,7 @@ def invoice_rows(est):
             tier = _trade_tier(est, tk)
             r = _tier_rate(pricing, tk, tier)
             label = _INVOICE_TRADE_LABELS.get(tk, tk.title())
-            rows = []
+            rows, subtotal, folded = [], 0.0, 0
             for it in td.get('line_items') or []:
                 # The exact skip rules of _trade_subtotal, and nothing more:
                 # customer_visible is deliberately NOT a skip here.
@@ -15961,13 +15969,19 @@ def invoice_rows(est):
                     unit_price = line / qty
                     desc = t.get('description')
                 name = _invoice_line_name(_with_section(it, it.get('name', '')), desc)
+                subtotal += line
+                if not itemize and it.get('customer_visible') is False:
+                    folded += 1         # still billed, just not broken out
+                    continue
                 rows.append((name, qty, str(it.get('unit') or ''), unit_price, line))
-            if rows:
-                sections.append({'title': label, 'rows': rows,
-                                 'subtotal': sum(x[4] for x in rows)})
+            if rows or folded:
+                sections.append({'title': label, 'rows': rows, 'subtotal': subtotal,
+                                 'folded': folded})
             s_rows, _s_tot = trade_supplements(est, tk, tier)
             for it, q, line, desc in s_rows:
                 if not (it.get('name') or '').strip():
+                    continue
+                if not itemize and it.get('customer_visible') is False:
                     continue
                 supplements.append((f"{label}: {_invoice_line_name(it.get('name'), desc)}",
                                     q, str(it.get('unit') or ''),
@@ -15988,7 +16002,6 @@ def invoice_rows(est):
         change_orders.append({'title': co.get('title') or 'Change Order',
                               'rows': rows, 'subtotal': _co_total(co)})
 
-    inv = invoice_fields(est)
     subtotal = sum(s['subtotal'] for s in sections)
     co_total = sum(c['subtotal'] for c in change_orders)
     total = subtotal + co_total
@@ -16105,7 +16118,14 @@ def build_invoice_pdf(est):
         section('Scope', 'No billable line items')
     for sec in data['sections']:
         section('Scope', sec['title'])
-        table(sec['rows'])
+        if sec['rows']:
+            table(sec['rows'])
+        if sec.get('folded'):
+            pdf.set_font(SANS, 'I', 7.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(W, 5.5, _pdf_rich('Additional materials, supplies & labor included in subtotal'),
+                     align='L', new_x='LMARGIN', new_y='NEXT')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
         money_row(f"{sec['title']} Subtotal", sec['subtotal'])
 
     for co in data['change_orders']:
@@ -16206,7 +16226,7 @@ def generate_invoice(est_id, push_to_crm=False):
             est, pdf_bytes, upload_name=_invoice_filename(est),
             hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
             doc_name=att['label'], doc_type='other',
-            description=f'{kind_label} sent to the general contractor.')
+            description=f'{kind_label} for this job.')
         if doc_id:
             def _mark(doc):
                 if doc is None:

@@ -3680,7 +3680,7 @@ a.jx-contact:hover { text-decoration: underline; }
 /* Keep customer actions on laptops, and move the duplicate utility actions
    into More. Narrow tablets use More for the full set; Save stays visible. */
 @media (max-width: 1599px) {
-  .header-desktop-btns button:not(.btn-present):not(.btn-share):not(.btn-print) { display: none; }
+  .header-desktop-btns button:not(.btn-present):not(.btn-share):not(.btn-print):not(.btn-invoice) { display: none; }
 }
 @media (max-width: 1023px) {
   .header-desktop-btns { display: none; }
@@ -4944,7 +4944,12 @@ body.is-client #nav-toggle      { display: none; }
 .rc-issue { font-weight: 700; }
 .rc-saved { font-size: 12px; font-weight: 700; color: #16a34a; }
 
-/* GC invoice / quote: payment rows and the what-it-bills summary. */
+/* Invoice / quote: the itemize switch, payment rows and the what-it-bills summary. */
+.inv-itemize {
+  display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: #384b63;
+  background: #f8fafc; border: 1px solid var(--border-light); border-radius: 6px; padding: 8px 10px;
+}
+.inv-itemize input { margin-top: 2px; width: 18px; height: 18px; flex: none; }
 .inv-pay-row { grid-template-columns: 150px 130px 1fr auto; align-items: end; margin-bottom: 6px; }
 .inv-summary {
   display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #1a2740;

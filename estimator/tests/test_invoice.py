@@ -249,3 +249,53 @@ def test_no_invoice_route_is_open_to_a_demo_guest():
         assert ep in A.app.view_functions
         assert ep not in demo_store.ALLOWED_ENDPOINTS
         assert ep not in A.PUBLIC_ENDPOINTS
+
+
+# ── homeowner mode: "List every line" unticked ─────────────────────────────
+
+def test_unticking_list_every_line_folds_hidden_rows_but_not_the_money():
+    itemized = A.invoice_rows(_est())
+    folded = A.invoice_rows(_est(invoice={'itemize': False}))
+    names = [r[0] for s in folded['sections'] for r in s['rows']]
+    assert 'Install Labor' not in names and 'Shingles' in names
+    roof = next(s for s in folded['sections'] if s['title'] == 'Roofing')
+    assert roof['folded'] == 1
+    assert folded['subtotal'] == itemized['subtotal'] == pytest.approx(
+        A._estimate_total(_est()), abs=0.005)
+
+
+def test_a_trade_whose_every_line_is_hidden_still_bills():
+    est = _est(invoice={'itemize': False})
+    for it in est['trades']['gutters']['line_items']:
+        it['customer_visible'] = False
+    rows = A.invoice_rows(est)
+    gut = next(s for s in rows['sections'] if s['title'] == 'Gutters')
+    assert gut['rows'] == [] and gut['subtotal'] == 1500
+    assert rows['subtotal'] == pytest.approx(A._estimate_total(est), abs=0.005)
+
+
+def test_itemize_defaults_on_and_only_takes_a_real_boolean():
+    assert A.invoice_fields(_est())['itemize'] is True
+    assert 'itemize' not in A._sanitize_invoice({'itemize': 'no'})
+    assert A._sanitize_invoice({'itemize': False}) == {'itemize': False}
+
+
+def test_the_folded_pdf_renders(client):
+    A.est_save(_est('inv-folded', invoice={'itemize': False}))
+    r = client.get('/api/estimates/inv-folded/invoice.pdf')
+    assert r.status_code == 200 and r.data[:5] == b'%PDF-'
+
+
+# ── the ways in ────────────────────────────────────────────────────────────
+
+def test_invoice_is_reachable_from_the_header_and_the_more_menu():
+    import os
+    html = open(os.path.join(os.path.dirname(A.__file__), 'static', 'index.html'),
+                encoding='utf-8').read()
+    css = open(os.path.join(os.path.dirname(A.__file__), 'static', 'style.css'),
+               encoding='utf-8').read()
+    assert 'class="btn-invoice"' in html and 'onclick="openInvoice()"' in html
+    assert 'openInvoice();closeMoreMenu()' in html
+    # The laptop breakpoint hides every header button not named here, so the
+    # invoice button has to be on the keep list or it vanishes below 1600px.
+    assert ':not(.btn-invoice)' in css
