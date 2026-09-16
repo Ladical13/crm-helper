@@ -4944,8 +4944,17 @@ body.is-client #nav-toggle      { display: none; }
 .rc-issue { font-weight: 700; }
 .rc-saved { font-size: 12px; font-weight: 700; color: #16a34a; }
 
+/* GC invoice / quote: payment rows and the what-it-bills summary. */
+.inv-pay-row { grid-template-columns: 150px 130px 1fr auto; align-items: end; margin-bottom: 6px; }
+.inv-summary {
+  display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #1a2740;
+  background: #f8fafc; border: 1px solid var(--border-light); border-radius: 6px; padding: 8px 10px;
+}
+.inv-balance { font-size: 14px; color: var(--primary); }
+
 @media (max-width: 640px) {
   .rc-grid { grid-template-columns: 1fr; }
+  .inv-pay-row { grid-template-columns: 1fr 1fr; }
   .rc-term-btns { width: 100%; }
   .rc-term-btn { flex: 1; min-height: 42px; padding: 8px 6px; }
   .rc-price { max-width: none; width: 100%; }

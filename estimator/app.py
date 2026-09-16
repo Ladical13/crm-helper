@@ -1490,6 +1490,11 @@ def save_estimate(est_id):
         data.pop('change_orders', None)
         if existing and existing.get('change_orders'):
             data['change_orders'] = existing['change_orders']
+        # The GC invoice/quote is saved through its own endpoint too — it holds
+        # payments received, and a stale tab must not roll a balance back.
+        data.pop('invoice', None)
+        if existing and existing.get('invoice'):
+            data['invoice'] = existing['invoice']
         # The Design Studio writes through its focused asset/state endpoints.
         # Once that server document exists, a whole-estimate save is only a
         # potentially stale snapshot and must not roll back newer masks,
@@ -1524,6 +1529,7 @@ def duplicate_estimate(est_id):
     est['last_viewed_at'] = None
     est['view_count'] = 0
     est.pop('change_orders', None)   # signed legal docs — never copied
+    est.pop('invoice', None)         # its number and payments belong to the original
     est['created_at'] = datetime.utcnow().isoformat() + 'Z'
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     # The copy stays in the SAME customer's file. This used to rename the
@@ -13182,7 +13188,7 @@ def siding_material_takeoff(est, tier):
     return rows
 
 
-def _new_internal_pdf(eyebrow):
+def _new_internal_pdf(eyebrow, footer='Project One Roofing  ·  Internal document'):
     """An internal document (work order, material order, permit sheet) with the
     same chrome as the customer PDF.
 
@@ -13227,7 +13233,7 @@ def _new_internal_pdf(eyebrow):
             self.ln(2.5)
             self.set_font(self._sans, '', 6.5)
             self.set_text_color(*_PDF_STYLE['faint'])
-            self.cell(0, 4, _pdf_rich('Project One Roofing  ·  Internal document'), align='L')
+            self.cell(0, 4, _pdf_rich(self._footer), align='L')
             self.cell(0, 4, f'Page {self.page_no()} of {{nb}}',
                       align='R', new_x='LMARGIN', new_y='NEXT')
             self.set_text_color(*_PDF_STYLE['ink'])
@@ -13235,6 +13241,7 @@ def _new_internal_pdf(eyebrow):
     pdf = _IntPDF(orientation='P', unit='mm', format='Letter')
     SANS, SERIF = _pdf_fonts(pdf)
     pdf._sans, pdf._serif, pdf._eyebrow = SANS, SERIF, eyebrow
+    pdf._footer = footer
     pdf.alias_nb_pages()
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.set_margins(LM, 26, RM)
@@ -15677,6 +15684,566 @@ def regenerate_roof_certificate(est_id):
         print(f'[roofcert] generation failed for {est_id}: {exc}')
         return jsonify({'error': f'Certificate generation failed: {exc}'}), 500
     return jsonify({'attachment': att})
+
+
+# ── GC invoice / quote ───────────────────────────────────────────────────────
+# A plain, itemized document for general contractors, who need the numbers and
+# nothing else. No cover, no package cards, no warranty pages and no /sign link.
+# The rep picks whether it goes out as a QUOTE (before the work) or an INVOICE
+# (after).
+#
+# Three rules keep it honest:
+#
+# * invoice_rows() walks the SAME rows _trade_subtotal prices, so its subtotal
+#   equals _estimate_total to the cent. It is not a second pricing engine. It
+#   is a listing of the first one, and tests/test_invoice.py pins the equality.
+# * It lists EVERY billed line, including customer_visible:false ones. The
+#   homeowner PDF folds those into the total. A GC is checking the bill line by
+#   line, and a total the lines don't add up to is the first thing they query.
+# * Supplements are listed and never totalled, the same as on every other
+#   document. Only ACCEPTED change orders bill.
+#
+# Stored as est['invoice'] and written only through its own endpoint, because
+# it holds payments received. The whole-doc save carries the stored copy
+# forward, so a stale tab cannot roll a balance back.
+_INVOICE_KINDS = ('invoice', 'quote')
+_INVOICE_TRADE_LABELS = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                             gutters='Gutters', commercial='Commercial Roofing',
+                             other='Other / Misc')
+
+
+def _invoice_date(v):
+    """An ISO date string, '' for blank, or None for junk. None drops the
+    field, so a typo never overwrites a good date."""
+    s = str(v or '').strip()[:10]
+    if not s:
+        return ''
+    try:
+        return date.fromisoformat(s).isoformat()
+    except ValueError:
+        return None
+
+
+def _sanitize_invoice(payload):
+    out = {}
+    kind = payload.get('kind')
+    if kind in _INVOICE_KINDS:
+        out['kind'] = kind
+    for k, cap in (('number', 40), ('po_ref', 100), ('notes', 2000)):
+        if k in payload and payload[k] is not None:
+            out[k] = str(payload[k]).strip()[:cap]
+    for k in ('issue_date', 'due_date', 'valid_until'):
+        if k in payload:
+            d = _invoice_date(payload[k])
+            if d is not None:
+                out[k] = d
+    if isinstance(payload.get('payments'), list):
+        pays = []
+        for p in payload['payments'][:50]:
+            if not isinstance(p, dict):
+                continue
+            amt = _f(p.get('amount'))
+            if not math.isfinite(amt) or amt == 0 or abs(amt) > 10_000_000:
+                continue
+            pays.append({'date': _invoice_date(p.get('date')) or '',
+                         'amount': round(amt, 2),
+                         'note': str(p.get('note') or '').strip()[:200]})
+        out['payments'] = pays
+    return out
+
+
+def invoice_fields(est):
+    """The stored invoice with defaults filled in. The defaults are derived and
+    never written, so the number stays the same across rebuilds without anyone
+    saving first."""
+    inv = dict(est.get('invoice') or {})
+    kind = inv.get('kind') if inv.get('kind') in _INVOICE_KINDS else 'invoice'
+    inv['kind'] = kind
+    if not (inv.get('number') or '').strip():
+        base = _est_number(est)
+        base = base[4:] if base.startswith('EST-') else base
+        inv['number'] = ('INV-' if kind == 'invoice' else 'Q-') + base
+    if not inv.get('issue_date'):
+        inv['issue_date'] = _company_today().isoformat()
+    if not inv.get('valid_until'):
+        inv['valid_until'] = str(est.get('valid_until') or '')[:10]
+    inv.setdefault('due_date', '')
+    inv.setdefault('po_ref', '')
+    inv.setdefault('notes', '')
+    inv['payments'] = list(inv.get('payments') or [])
+    return inv
+
+
+def _invoice_line_name(name, desc):
+    name = str(name or '').strip()
+    desc = str(desc or '').strip()
+    if desc and desc != name:
+        return f'{name} — {desc}' if name else desc
+    return name or 'Item'
+
+
+def invoice_rows(est):
+    """Everything the invoice bills, as data. The single source for the PDF and
+    for the summary the rep sees. Each row is (name, qty, unit, unit_price, line)."""
+    sections, supplements = [], []
+    if est.get('estimate_type') == 'insurance':
+        ins_td = (est.get('trades') or {}).get('insurance') or {}
+        secs = ins_td.get('sections') or (
+            [{'name': '', 'items': ins_td.get('line_items', [])}]
+            if ins_td.get('line_items') else [])
+        for sec in secs:
+            rows = []
+            for it in sec.get('items') or []:
+                line = float(it.get('acv') or 0) + float(it.get('depreciation') or 0)
+                qty = _f(it.get('quantity'))
+                name = _invoice_line_name(it.get('name'), it.get('description'))
+                rows.append((name, qty, str(it.get('unit') or ''),
+                             line / qty if qty > 0 else line, line))
+            if rows:
+                sections.append({'title': sec.get('name') or 'Insurance Scope',
+                                 'rows': rows,
+                                 'subtotal': sum(r[4] for r in rows)})
+    else:
+        pricing = est.get('pricing') or {}
+        mode = pricing.get('mode', 'margin')
+        for tk in GBB_TRADES:
+            td = (est.get('trades') or {}).get(tk) or {}
+            if not td.get('enabled'):
+                continue
+            trade_mode = _trade_mode(tk, td)
+            tier = _trade_tier(est, tk)
+            r = _tier_rate(pricing, tk, tier)
+            label = _INVOICE_TRADE_LABELS.get(tk, tk.title())
+            rows = []
+            for it in td.get('line_items') or []:
+                # The exact skip rules of _trade_subtotal, and nothing more:
+                # customer_visible is deliberately NOT a skip here.
+                if _is_supplement_item(td, it):
+                    continue
+                qty = float(it.get('quantity') or 0)
+                if qty <= 0:
+                    continue
+                if trade_mode == 'simple':
+                    unit_price = float(it.get('unit_price') or 0)
+                    line = unit_price * qty
+                    desc = it.get('description')
+                else:
+                    t = (it.get('tiers') or {}).get(tier) or {}
+                    if t.get('included') is False:
+                        continue
+                    line = _line_sell_total(it, tier, r, mode)
+                    unit_price = line / qty
+                    desc = t.get('description')
+                name = _invoice_line_name(_with_section(it, it.get('name', '')), desc)
+                rows.append((name, qty, str(it.get('unit') or ''), unit_price, line))
+            if rows:
+                sections.append({'title': label, 'rows': rows,
+                                 'subtotal': sum(x[4] for x in rows)})
+            s_rows, _s_tot = trade_supplements(est, tk, tier)
+            for it, q, line, desc in s_rows:
+                if not (it.get('name') or '').strip():
+                    continue
+                supplements.append((f"{label}: {_invoice_line_name(it.get('name'), desc)}",
+                                    q, str(it.get('unit') or ''),
+                                    line / q if q > 0 else line, line))
+
+    change_orders = []
+    for co in est.get('change_orders') or []:
+        if co.get('status') != 'accepted':
+            continue
+        pricing = co.get('pricing') or {}
+        rows = []
+        for it in co.get('line_items') or []:
+            line = _co_line_total(it, pricing)
+            qty = _f(it.get('quantity'))
+            rows.append((_invoice_line_name(it.get('name'), it.get('description')),
+                         qty, str(it.get('unit') or ''),
+                         line / qty if qty else line, line))
+        change_orders.append({'title': co.get('title') or 'Change Order',
+                              'rows': rows, 'subtotal': _co_total(co)})
+
+    inv = invoice_fields(est)
+    subtotal = sum(s['subtotal'] for s in sections)
+    co_total = sum(c['subtotal'] for c in change_orders)
+    total = subtotal + co_total
+    payments_total = sum(_f(p.get('amount')) for p in inv['payments'])
+    return {
+        'sections': sections, 'supplements': supplements,
+        'change_orders': change_orders, 'payments': inv['payments'],
+        'subtotal': round(subtotal, 2), 'co_total': round(co_total, 2),
+        'total': round(total, 2), 'payments_total': round(payments_total, 2),
+        'balance_due': round(total - payments_total, 2),
+    }
+
+
+def _invoice_fmt_date(iso):
+    try:
+        return date.fromisoformat(str(iso)[:10]).strftime('%b %d, %Y')
+    except ValueError:
+        return ''
+
+
+def build_invoice_pdf(est):
+    """The GC invoice/quote PDF. See the block comment above."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+    from fpdf.fonts import FontFace
+    from fpdf.enums import TableCellFillMode
+
+    inv  = invoice_fields(est)
+    data = invoice_rows(est)
+    is_inv = inv['kind'] == 'invoice'
+    kind_label = 'Invoice' if is_inv else 'Quote'
+    pdf, SANS, SERIF, W = _new_internal_pdf(
+        f'{kind_label}  ·  {inv["number"]}',
+        footer=f'Project One Roofing  ·  {COMPANY_PHONE_DISPLAY}  ·  '
+               f'{kind_label} {inv["number"]}')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+    LM = pdf.l_margin
+
+    # Title row: the document kind large on the left, the number on the right.
+    pdf.set_font(SERIF, 'B', 24)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W / 2, 11, kind_label.upper())
+    pdf.set_font(SANS, 'B', 11)
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.cell(W / 2, 11, _pdf_rich(inv['number']), align='R',
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.ln(2)
+
+    c = est.get('customer') or {}
+    a = c.get('address') or {}
+    state_zip = ' '.join(y for y in (a.get('state'), a.get('zip')) if y)
+    city_line = ', '.join(x for x in (a.get('city'), state_zip) if x)
+    bill_addr = '\n'.join(x for x in (a.get('street'), city_line) if x)
+    site = (est.get('project_address') or '').strip()
+    if site and (a.get('street') or '').strip().lower() in site.lower() and a.get('street'):
+        site = ''                       # same place as the bill-to — don't repeat it
+    rep = _display_name(est.get('salesperson')) if est.get('salesperson') else ''
+
+    kv([
+        ('Date', _invoice_fmt_date(inv['issue_date'])),
+        ('Due date' if is_inv else 'Valid until',
+         _invoice_fmt_date(inv['due_date'] if is_inv else inv['valid_until'])),
+        ('PO / Reference', inv['po_ref']),
+        ('Estimate #', _est_number(est)),
+    ])
+    section('Bill to', c.get('name') or 'Customer')
+    kv([
+        ('Address', bill_addr),
+        ('Job site', site),
+        ('Phone', c.get('phone')),
+        ('Email', c.get('email')),
+    ])
+
+    head_face = FontFace(family=SANS, size_pt=6.5,
+                         color=_PDF_STYLE['faint'], fill_color=None)
+    TW = min(W, pdf.epw)      # W can exceed epw by a float hair, which fpdf rejects
+    widths = (TW - 16 - 14 - 28 - 28, 16, 14, 28, 28)
+    aligns = ('LEFT', 'RIGHT', 'CENTER', 'RIGHT', 'RIGHT')
+
+    def table(rows, blank_total='', blank_qty=''):
+        pdf.set_font(SANS, '', 8)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
+        with pdf.table(col_widths=widths, text_align=aligns, width=TW,
+                       borders_layout='HORIZONTAL_LINES', headings_style=head_face,
+                       cell_fill_mode=TableCellFillMode.NONE, line_height=5,
+                       padding=(2.4, 2, 2.4, 0), v_align='T') as t:
+            h = t.row()
+            for x in ('Description', 'Qty', 'Unit', 'Unit Price', 'Total'):
+                h.cell(x)
+            for name, qty, unit, unit_price, line in rows:
+                row = t.row()
+                row.cell(_pdf_rich(name))
+                row.cell(f'{qty:g}' if qty else blank_qty)
+                row.cell(_pdf_rich(unit))
+                row.cell(fc(unit_price) if line else '')
+                row.cell(fc(line) if line else blank_total)
+
+    def money_row(label, amount, bold=False, rule=False):
+        if rule:
+            pdf.set_draw_color(*_PDF_STYLE['navy'])
+            pdf.set_line_width(0.3)
+            pdf.line(LM + W - 90, pdf.get_y(), LM + W, pdf.get_y())
+            pdf.set_line_width(0.2)
+        pdf.set_font(SANS, 'B' if bold else '', 10 if bold else 9)
+        pdf.set_text_color(*(_PDF_STYLE['navy'] if bold else _PDF_STYLE['ink']))
+        pdf.cell(W - 32, 7, _pdf_rich(label), align='R')
+        money = ('-' + fc(-amount)) if amount < 0 else fc(amount)
+        pdf.cell(32, 7, money, align='R', new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+
+    if not data['sections']:
+        section('Scope', 'No billable line items')
+    for sec in data['sections']:
+        section('Scope', sec['title'])
+        table(sec['rows'])
+        money_row(f"{sec['title']} Subtotal", sec['subtotal'])
+
+    for co in data['change_orders']:
+        section('Change order', co['title'])
+        table(co['rows'])
+        money_row('Change Order Subtotal', co['subtotal'])
+
+    section('Summary', f'{kind_label} Total')
+    if data['change_orders']:
+        money_row('Original scope', data['subtotal'])
+        money_row('Change orders', data['co_total'])
+    money_row('Total', data['total'], bold=True, rule=True)
+    if data['payments']:
+        for p in data['payments']:
+            label = 'Payment received'
+            if p.get('date'):
+                label += f" {_invoice_fmt_date(p['date'])}"
+            if p.get('note'):
+                label += f" ({p['note']})"
+            money_row(label, -_f(p.get('amount')))
+        money_row('Balance Due', data['balance_due'], bold=True, rule=True)
+    elif is_inv:
+        money_row('Balance Due', data['balance_due'], bold=True)
+
+    if data['supplements']:
+        section('If needed', 'Supplements - not included in the total')
+        table(data['supplements'], blank_total='Quoted if needed', blank_qty='If needed')
+
+    if inv['notes']:
+        section('Notes', 'Notes & terms')
+        pdf.set_font(SANS, '', 9)
+        pdf.multi_cell(W, 5, _pdf_rich(inv['notes']), new_x='LMARGIN', new_y='NEXT')
+
+    pdf.ln(4)
+    pdf.set_font(SANS, '', 8)
+    pdf.set_text_color(*_PDF_STYLE['mute'])
+    contact = f'Questions? Call {COMPANY_PHONE_DISPLAY}'
+    if rep:
+        contact += f' or contact {rep} at {_salesperson_email(est)}'
+    pdf.multi_cell(W, 4.5, _pdf_rich(contact + '.'), new_x='LMARGIN', new_y='NEXT')
+    return bytes(pdf.output())
+
+
+def _invoice_filename(est):
+    inv = invoice_fields(est)
+    kind = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    num = re.sub(r'[^A-Za-z0-9_.-]+', '-', inv['number']).strip('-') or 'draft'
+    return f'ProjectOneRoofing-{kind}-{num}.pdf'
+
+
+def generate_invoice(est_id, push_to_crm=False):
+    """Build the PDF, file it as a server-generated attachment (replacing any
+    previous one), and optionally file it on the CRM job. Returns
+    (attachment, pdf_bytes)."""
+    est = est_load(est_id)
+    if est is None:
+        raise ValueError('estimate not found')
+    pdf_bytes = build_invoice_pdf(est)
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'invoice_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+
+    inv = invoice_fields(est)
+    kind_label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    cname = ((est.get('customer') or {}).get('name') or 'Customer').strip()
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            f'{kind_label} {inv["number"]} - {cname}',
+        'doc_type':         'invoice',
+        'show_in_estimate': False,
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+    }
+
+    def _is_inv(x):
+        return x.get('server_generated') and x.get('doc_type') == 'invoice'
+
+    def _swap(doc):
+        if doc is None:
+            return None
+        for old in filter(_is_inv, doc.get('attachments') or []):
+            parts = (old.get('filename') or '').split('/')
+            if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+                try:
+                    os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+                except OSError:
+                    pass
+        doc['attachments'] = [x for x in doc.get('attachments') or []
+                              if not _is_inv(x)] + [att]
+        return doc
+
+    est = est_update(est_id, _swap) or est
+    if push_to_crm:
+        doc_id, err = _crm_file_document(
+            est, pdf_bytes, upload_name=_invoice_filename(est),
+            hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
+            doc_name=att['label'], doc_type='other',
+            description=f'{kind_label} sent to the general contractor.')
+        if doc_id:
+            def _mark(doc):
+                if doc is None:
+                    return None
+                for x in doc.get('attachments', []):
+                    if x.get('id') == att['id']:
+                        x['crm_document_id'] = doc_id
+                return doc
+            est_update(est_id, _mark)
+            att['crm_document_id'] = doc_id
+        elif err and err != 'not_linked':
+            print(f'[invoice] CRM push failed for {est_id}: {err}')
+    return att, pdf_bytes
+
+
+def _invoice_est_or_error(est_id):
+    if not _safe_path_id(est_id):
+        return None, (jsonify({'error': 'invalid estimate id'}), 400)
+    est = est_load(est_id)
+    if est is None:
+        return None, (jsonify({'error': 'Not found'}), 404)
+    if not _can_touch_estimate(est):
+        return None, _forbid()
+    return est, None
+
+
+def _invoice_payload(est):
+    return {'invoice': invoice_fields(est), 'totals': invoice_rows(est)}
+
+
+@app.route('/api/estimates/<est_id>/invoice', methods=['GET'])
+def get_invoice(est_id):
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    return jsonify(_invoice_payload(est))
+
+
+@app.route('/api/estimates/<est_id>/invoice', methods=['PUT'])
+def save_invoice_fields(est_id):
+    """Save the fields. Never builds a PDF."""
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    cleaned = _sanitize_invoice(request.get_json(silent=True) or {})
+
+    def _apply(doc):
+        if doc is None:
+            return None
+        inv = dict(doc.get('invoice') or {})
+        inv.update(cleaned)
+        # Store only a number the rep actually chose. The derived INV-/Q-
+        # default is recomputed on read, so switching Quote <-> Invoice flips
+        # the prefix, and a number the rep typed survives the switch.
+        defaults = {invoice_fields(dict(doc, invoice={'kind': k}))['number']
+                    for k in _INVOICE_KINDS}
+        if (inv.get('number') or '') in defaults | {''}:
+            inv.pop('number', None)
+        inv['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        doc['invoice'] = inv
+        return doc
+
+    est = est_update(est_id, _apply) or est
+    return jsonify(_invoice_payload(est))
+
+
+@app.route('/api/estimates/<est_id>/invoice.pdf', methods=['GET'])
+def download_invoice_pdf(est_id):
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    try:
+        pdf_bytes = build_invoice_pdf(est)
+    except Exception as exc:
+        print(f'[invoice] PDF build failed for {est_id}: {exc}')
+        return jsonify({'error': f'Invoice PDF failed: {exc}'}), 500
+    return send_file(io.BytesIO(pdf_bytes), mimetype='application/pdf',
+                     as_attachment=request.args.get('download') == '1',
+                     download_name=_invoice_filename(est))
+
+
+@app.route('/api/estimates/<est_id>/invoice', methods=['POST'])
+def file_invoice(est_id):
+    """Build the PDF and save it to the customer's Files."""
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    push = bool((request.get_json(silent=True) or {}).get('push_to_crm'))
+    try:
+        att, _pdf = generate_invoice(est_id, push_to_crm=push)
+    except Exception as exc:
+        print(f'[invoice] generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Invoice generation failed: {exc}'}), 500
+    return jsonify({'attachment': att})
+
+
+@app.route('/api/estimates/<est_id>/invoice/send-email', methods=['POST'])
+def email_invoice(est_id):
+    """Email the invoice/quote PDF as an attachment. A QUOTE is a price going
+    out, so it goes through the margin floor like any other send. An INVOICE
+    bills a price that was already agreed, and blocking it would stop the
+    company from collecting on work it has done."""
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    if demo.is_demo_doc(est):
+        return jsonify({'error': 'Demo estimates cannot be emailed.'}), 403
+    inv = invoice_fields(est)
+    if inv['kind'] == 'quote':
+        blocked, worst = _margin_floor_block(est)
+        if blocked:
+            return jsonify({'error': blocked, 'margin_floor': worst}), 403
+    body = request.get_json(silent=True) or {}
+    to_addr = (body.get('email') or (est.get('customer') or {}).get('email') or '').strip()
+    if not to_addr or '@' not in to_addr:
+        return jsonify({'error': 'No email address to send to.'}), 400
+
+    totals = invoice_rows(est)
+    kind_label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    rep = _display_name(est.get('salesperson')) if est.get('salesperson') else 'Project One Roofing'
+    cname = ((est.get('customer') or {}).get('name') or '').strip()
+    if inv['kind'] == 'invoice' or totals['payments']:
+        amount_line = f'Balance due: <strong>{fc(totals["balance_due"])}</strong>'
+    else:
+        amount_line = f'Total: <strong>{fc(totals["total"])}</strong>'
+    extra = ''
+    if inv['kind'] == 'invoice' and inv['due_date']:
+        extra = f' &middot; Due {he(_invoice_fmt_date(inv["due_date"]))}'
+    elif inv['kind'] == 'quote' and inv['valid_until']:
+        extra = f' &middot; Valid until {he(_invoice_fmt_date(inv["valid_until"]))}'
+    po = f' &middot; PO {he(inv["po_ref"])}' if inv['po_ref'] else ''
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;padding:22px 26px">
+  <div style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#6b7280">Project One Roofing</div>
+  <h1 style="margin:6px 0 4px;font-size:20px;color:#082878">{kind_label} {he(inv["number"])}</h1>
+  <p style="margin:0 0 14px;font-size:13px;color:#374151">{he(cname)}{po}</p>
+  <p style="margin:0 0 14px;font-size:15px;color:#111827">{amount_line}{extra}</p>
+  <p style="margin:0 0 14px;font-size:13px;color:#374151;line-height:1.6">The itemized {kind_label.lower()} is attached as a PDF.</p>
+  <p style="margin:0;font-size:12px;color:#6b7280;line-height:1.6">Questions? Reply to this email or call {COMPANY_PHONE_DISPLAY}.<br>— {he(rep)}, Project One Roofing</p>
+</div></body></html>'''
+
+    try:
+        att, pdf_bytes = generate_invoice(est_id)
+    except Exception as exc:
+        print(f'[invoice] generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Invoice generation failed: {exc}'}), 500
+    ok = _send_email(f'{kind_label} {inv["number"]} from Project One Roofing',
+                     html_body, to_addr, cc=_salesperson_email(est) or None,
+                     attachments=[(_invoice_filename(est), pdf_bytes)])
+    if not ok:
+        return jsonify({'error': 'Email could not be sent — check the email settings.'}), 502
+
+    def _mark(doc):
+        if doc is None:
+            return None
+        doc_inv = dict(doc.get('invoice') or {})
+        doc_inv['sent_at'] = datetime.utcnow().isoformat() + 'Z'
+        doc_inv['sent_to'] = to_addr[:200]
+        doc['invoice'] = doc_inv
+        return doc
+    est_update(est_id, _mark)
+    return jsonify({'ok': True, 'sent_to': to_addr, 'attachment': att})
 
 
 # ── Change orders ────────────────────────────────────────────────────────────

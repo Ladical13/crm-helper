@@ -12582,6 +12582,9 @@ function showShareModal(fullUrl, relUrl) {
       onclick="emailEstimateLink()">
       ✉️ Email link to ${esc(custEmail)}
     </button>` : ''}
+    ${!sig ? `
+    <button class="share-preview-link" style="border:0;background:none;cursor:pointer;text-align:left;padding:0"
+      onclick="openInvoiceFromShare()">🧾 Sending to a GC? Send a plain invoice or quote instead →</button>` : ''}
     ${navigator.share ? `
     <button class="share-native-btn" onclick="doNativeShare('${esc(fullUrl)}','${esc((S.customer&&S.customer.name)||'')}')">
       📤 Send Link — Text, Email, AirDrop…
@@ -15194,7 +15197,7 @@ function renderClientPage() {
    it. Work orders and material order sheets slot in here later as new
    cards — add a card + a form renderer, nothing else changes. */
 
-let _docGenerator = null;   // which generator form is open: 'permit' | null
+let _docGenerator = null;   // which generator form is open: 'permit' | 'roofcert' | 'invoice' | null
 
 // ── Documents door as the customer's estimate hub ───────────────────────
 // Every estimate for the customer currently loaded, plus the create form
@@ -15268,6 +15271,7 @@ function docEstimateListHtml() {
 // sites (upload a file, delete one, generate a document) that must not pay
 // for a network round-trip just to redraw the attachments panel.
 async function refreshDocCustData() {
+  _invFor = null;   // the GC invoice totals track the saved estimate
   try {
     const r = await fetch('/api/estimates');
     _dashData = await r.json();
@@ -15296,6 +15300,7 @@ function renderDocumentsPage() {
         const icon = att.doc_type === 'signed_contract'  ? '🖊'
                    : att.doc_type === 'permit_packet'    ? '🏛'
                    : att.doc_type === 'roof_certificate' ? '🏅'
+                   : att.doc_type === 'invoice'          ? '🧾'
                    : att.server_generated                ? '🛠'
                                                          : '📄';
         // Two internal packet docs, filed on different schedules. The MATERIAL
@@ -15352,6 +15357,13 @@ function renderDocumentsPage() {
             ? 'Issued — reopen to edit and re-issue'
             : 'Realtor certification + short labor-only warranty'}</span>
         </button>
+        <button class="doc-card ${_docGenerator==='invoice'?'doc-card-active':''}" onclick="docToggleGenerator('invoice')">
+          <span class="doc-card-icon">🧾</span>
+          <span class="doc-card-name">GC Invoice / Quote</span>
+          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'invoice')
+            ? 'Saved — reopen to edit, re-save or email'
+            : 'Plain itemized numbers for a general contractor'}</span>
+        </button>
         ${S.signature ? `
         <button class="doc-card" onclick="generateProductionPacket(this)">
           <span class="doc-card-icon">🛠</span>
@@ -15384,9 +15396,11 @@ function renderDocumentsPage() {
 
     <div id="permit-form-container"></div>
     <div id="roofcert-form-container"></div>
+    <div id="invoice-form-container"></div>
   </div>`;
   if (_docGenerator === 'permit')   renderPermitForm();
   if (_docGenerator === 'roofcert') renderRoofCertForm();
+  if (_docGenerator === 'invoice')  renderInvoiceForm();
   if (S.signature && S.estimate_id) loadChangeOrders();
 }
 
@@ -16057,8 +16071,284 @@ async function issueRoofCert(pushToCrm) {
   renderDocumentsPage();
 }
 
+/* ── GC invoice / quote ─────────────────────────────────────────────────
+   A plain, itemized PDF for general contractors. It has no signing link and no
+   proposal pages. All the money comes from the SERVER (GET/PUT return
+   invoice_rows totals), so no pricing math is mirrored here. The form only
+   collects the fields and shows what the server says the document will bill.
+   See the "GC invoice / quote" block in app.py. */
+
+let _invData = null;   // {invoice, totals} from the server, for the open estimate
+let _invFor  = null;   // estimate id _invData belongs to
+
+async function loadInvoice() {
+  if (!S.estimate_id) { _invData = null; _invFor = null; return; }
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/invoice`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Load failed');
+    _invData = await r.json();
+    _invFor = S.estimate_id;
+  } catch (e) {
+    _invData = {error: e.message};
+    _invFor = S.estimate_id;
+  }
+  renderInvoiceForm();
+}
+
+function renderInvoiceForm() {
+  const el = document.getElementById('invoice-form-container');
+  if (!el) return;
+  if (!S.estimate_id) {
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 GC Invoice / Quote</h3></div>
+      <p class="pm-hint">Save the estimate first. The invoice lists what the saved estimate bills.</p>
+      <div class="rc-btns"><button class="btn-primary" onclick="saveEstimate().then(loadInvoice)">💾 Save estimate</button></div></div>`;
+    return;
+  }
+  if (_invData && _invData.error && _invFor === S.estimate_id) {
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 GC Invoice / Quote</h3></div>
+      <p class="pm-hint">⚠ Could not load: ${esc(_invData.error)}</p>
+      <div class="rc-btns"><button class="doc-crm-push" onclick="loadInvoice()">↻ Retry</button></div></div>`;
+    return;
+  }
+  if (!_invData || _invFor !== S.estimate_id) {
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 GC Invoice / Quote</h3></div>
+      <p class="pm-hint">Loading…</p></div>`;
+    if (_invFor !== S.estimate_id) { _invFor = S.estimate_id; loadInvoice(); }
+    return;
+  }
+  const inv = _invData.invoice || {};
+  const tot = _invData.totals || {};
+  const isInv = inv.kind !== 'quote';
+  const c = S.customer || {};
+  const filed = (S.attachments || []).some(a => a.server_generated && a.doc_type === 'invoice');
+  const lab = (text, note) =>
+    `<span class="rc-lab">${text}${note ? ` <span class="note-tag">${note}</span>` : ''}</span>`;
+  const pays = inv.payments || [];
+  const nLines = (tot.sections || []).reduce((n, s) => n + (s.rows || []).length, 0);
+
+  el.innerHTML = `
+  <div class="panel rc-panel">
+    <div class="panel-header">
+      <h3>🧾 GC ${isInv ? 'Invoice' : 'Quote'} — ${esc(c.name || 'this job')}</h3>
+      ${inv.sent_at ? `<span class="rc-issued-chip" title="${esc(inv.sent_to || '')}">Sent ${esc(String(inv.sent_at).slice(0, 10))}</span>` : ''}
+    </div>
+    <p class="pm-hint rc-lede">A plain, itemized document for a general contractor.
+      It lists <strong>every</strong> billed line with its price, including lines the homeowner
+      proposal folds into the total. It has no signing link and no proposal pages.
+      Change the line items on the estimate itself.</p>
+
+    <div class="rc-term-row">
+      <div class="rc-term-btns">
+        <button type="button" class="rc-term-btn ${!isInv ? 'active' : ''}" onclick="invSetKind('quote')">Quote</button>
+        <button type="button" class="rc-term-btn ${isInv ? 'active' : ''}" onclick="invSetKind('invoice')">Invoice</button>
+      </div>
+    </div>
+
+    <div class="rc-grid">
+      <label class="rc-f">${lab(isInv ? 'Invoice #' : 'Quote #')}
+        <input type="text" id="inv-number" value="${esc(inv.number || '')}">
+      </label>
+      <label class="rc-f">${lab('Date')}
+        <input type="date" id="inv-issue" value="${esc(inv.issue_date || '')}">
+      </label>
+      ${isInv
+        ? `<label class="rc-f">${lab('Due Date', 'optional')}
+             <input type="date" id="inv-due" value="${esc(inv.due_date || '')}"></label>`
+        : `<label class="rc-f">${lab('Valid Until', 'optional')}
+             <input type="date" id="inv-valid" value="${esc(inv.valid_until || '')}"></label>`}
+      <label class="rc-f">${lab('PO / Reference', 'optional')}
+        <input type="text" id="inv-po" value="${esc(inv.po_ref || '')}" placeholder="GC's PO or job number">
+      </label>
+    </div>
+
+    <div class="rc-sec">Payments received <span class="note-tag">deposits, progress payments</span></div>
+    <div id="inv-payments">
+      ${pays.map((p, i) => `
+      <div class="rc-grid inv-pay-row" data-i="${i}">
+        <label class="rc-f">${lab('Date')}<input type="date" class="inv-pay-date" value="${esc(p.date || '')}"></label>
+        <label class="rc-f">${lab('Amount')}<input type="number" step="0.01" class="inv-pay-amt" value="${esc(String(p.amount ?? ''))}"></label>
+        <label class="rc-f">${lab('Note')}<input type="text" class="inv-pay-note" value="${esc(p.note || '')}" placeholder="e.g. Check #1042"></label>
+        <button type="button" class="att-del" onclick="invRemovePayment(${i})" title="Remove">×</button>
+      </div>`).join('')}
+    </div>
+    <button class="rc-load-std" type="button" onclick="invAddPayment()">＋ Add a payment</button>
+
+    <label class="rc-f rc-wide">${lab('Notes', 'prints at the bottom')}
+      <textarea id="inv-notes" rows="2" placeholder="Payment terms, remit-to, lien waiver note…">${esc(inv.notes || '')}</textarea>
+    </label>
+
+    <div class="rc-sec">What it will bill</div>
+    <div class="inv-summary">
+      <div>${nLines} line item${nLines === 1 ? '' : 's'}${(tot.sections || []).length ? ` across ${(tot.sections || []).map(s => esc(s.title)).join(', ')}` : ''}</div>
+      ${(tot.change_orders || []).length ? `<div>Original scope <strong>${fmtCur(tot.subtotal)}</strong> · Change orders <strong>${fmtCur(tot.co_total)}</strong></div>` : ''}
+      <div>Total <strong>${fmtCur(tot.total)}</strong>${tot.payments_total ? ` · Payments <strong>−${fmtCur(tot.payments_total)}</strong>` : ''}</div>
+      ${isInv || tot.payments_total ? `<div class="inv-balance">Balance due <strong>${fmtCur(tot.balance_due)}</strong></div>` : ''}
+      ${(tot.supplements || []).length ? `<div class="pm-hint">${tot.supplements.length} supplement line(s) listed separately, not in the total.</div>` : ''}
+      ${!nLines ? '<div class="pm-hint">⚠ No billable line items. Save the estimate after adding them.</div>' : ''}
+    </div>
+
+    <label class="rc-f rc-wide">${lab('Email to')}
+      <input type="email" id="inv-email" value="${esc(c.email || '')}" placeholder="gc@example.com">
+    </label>
+
+    <div class="rc-btns">
+      <button class="doc-crm-push" onclick="invPreview()">👁 Preview PDF</button>
+      <button class="doc-crm-push" onclick="invFile()">📎 ${filed ? 'Update in Files' : 'Save to Files'}</button>
+      <button class="btn-primary rc-issue" onclick="invEmail()">✉️ Email ${isInv ? 'Invoice' : 'Quote'}</button>
+      <span class="rc-saved" id="inv-saved"></span>
+    </div>
+  </div>`;
+  ['inv-issue', 'inv-due', 'inv-valid', 'inv-po', 'inv-number', 'inv-notes'].forEach(id => {
+    const x = document.getElementById(id);
+    if (x) x.onchange = () => saveInvoiceFields(true, true);
+  });
+  document.querySelectorAll('#inv-payments input').forEach(x => {
+    x.onchange = () => saveInvoiceFields(true, true);
+  });
+}
+
+function _readInvoiceForm() {
+  const v = id => { const x = document.getElementById(id); return x ? x.value.trim() : undefined; };
+  const out = { kind: (_invData && _invData.invoice && _invData.invoice.kind) || 'invoice' };
+  const map = {number: 'inv-number', issue_date: 'inv-issue', due_date: 'inv-due',
+               valid_until: 'inv-valid', po_ref: 'inv-po', notes: 'inv-notes'};
+  for (const [k, id] of Object.entries(map)) {
+    const val = v(id);
+    if (val !== undefined) out[k] = val;
+  }
+  out.payments = Array.from(document.querySelectorAll('#inv-payments .inv-pay-row')).map(row => ({
+    date:   row.querySelector('.inv-pay-date').value,
+    amount: row.querySelector('.inv-pay-amt').value,
+    note:   row.querySelector('.inv-pay-note').value,
+  }));
+  return out;
+}
+
+async function saveInvoiceFields(quiet, rerender, overrides) {
+  if (!S.estimate_id) await saveEstimate();
+  if (!S.estimate_id) return null;
+  // The invoice lists the SAVED estimate, so unsaved line-item edits go first.
+  if (dirty) await saveEstimate();
+  const payload = Object.assign(_readInvoiceForm(), overrides || {});
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/invoice`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    _invData = d; _invFor = S.estimate_id;
+    S.invoice = d.invoice;
+    if (rerender) renderInvoiceForm();
+    const flag = document.getElementById('inv-saved');
+    if (flag && !quiet) {
+      flag.textContent = '✓ Saved';
+      setTimeout(() => { if (flag.textContent === '✓ Saved') flag.textContent = ''; }, 2500);
+    }
+    return d;
+  } catch (e) {
+    alert('Could not save the invoice: ' + e.message);
+    return null;
+  }
+}
+
+function invSetKind(kind) {
+  // The server drops a number that is just the INV-/Q- default, so the prefix
+  // follows the kind; a number the rep typed is kept.
+  saveInvoiceFields(true, true, {kind});
+}
+
+function invAddPayment() {
+  const form = _readInvoiceForm();
+  const today = fmtDate(new Date());
+  const d = Object.assign({}, _invData);
+  d.invoice = Object.assign({}, d.invoice, form, {
+    payments: form.payments.concat([{date: today, amount: '', note: ''}])});
+  _invData = d;
+  renderInvoiceForm();
+  // Not saved yet: an empty amount would be dropped. Saving happens on change.
+  const rows = document.querySelectorAll('#inv-payments .inv-pay-amt');
+  if (rows.length) rows[rows.length - 1].focus();
+}
+
+function invRemovePayment(i) {
+  const form = _readInvoiceForm();
+  form.payments.splice(i, 1);
+  saveInvoiceFields(true, true, {payments: form.payments});
+}
+
+async function invPreview() {
+  // Open the window synchronously so a popup blocker lets it through, then
+  // point it at the PDF once the fields are saved.
+  const w = window.open('', '_blank');
+  const saved = await saveInvoiceFields(true, true);
+  if (!saved) { if (w) w.close(); return; }
+  const url = `${BASE}/api/estimates/${S.estimate_id}/invoice.pdf`;
+  if (w) w.location = url; else window.open(url, '_blank');
+}
+
+async function invFile() {
+  const saved = await saveInvoiceFields(true, false);
+  if (!saved) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/invoice`, {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not save the invoice PDF');
+    _invAttach(d.attachment);
+  } catch (e) {
+    alert(e.message);
+  }
+  renderDocumentsPage();
+}
+
+async function invEmail() {
+  const to = ((document.getElementById('inv-email') || {}).value || '').trim();
+  if (!to || !to.includes('@')) { alert('Enter the email address to send it to.'); return; }
+  const saved = await saveInvoiceFields(true, false);
+  if (!saved) return;
+  const inv = saved.invoice, tot = saved.totals;
+  const kind = inv.kind === 'quote' ? 'quote' : 'invoice';
+  const amt = kind === 'invoice' || tot.payments_total ? `balance due ${fmtCur(tot.balance_due)}` : `total ${fmtCur(tot.total)}`;
+  if (!confirm(`Email ${kind} ${inv.number} (${amt}) to ${to}?`)) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/invoice/send-email`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email: to}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'Email could not be sent');
+    if (d.attachment) _invAttach(d.attachment);
+    alert(`✓ Sent to ${d.sent_to}`);
+  } catch (e) {
+    alert(e.message);
+  }
+  _invFor = null;   // reload so the Sent chip shows
+  renderDocumentsPage();
+}
+
+function _invAttach(att) {
+  if (!att) return;
+  if (!Array.isArray(S.attachments)) S.attachments = [];
+  S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'invoice'));
+  S.attachments.push(att);
+}
+
+/* From the Send modal: a GC gets the plain document, not a signing link. */
+function openInvoiceFromShare() {
+  const m = document.getElementById('share-modal');
+  if (m) m.classList.add('hidden');
+  _docGenerator = 'invoice';
+  switchPage('client');
+  renderDocumentsPage();
+  const el = document.getElementById('invoice-form-container');
+  if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
 function docToggleGenerator(which) {
   _docGenerator = (_docGenerator === which) ? null : which;
+  // Totals come from the saved estimate, which may have changed since the last
+  // open, so the invoice always refetches.
+  if (_docGenerator === 'invoice') _invFor = null;
   if (_docGenerator === 'permit') {
     // Fresh open on a job: prefill from the estimate once per estimate
     if (!PermitState || PermitState.linked_estimate !== (S.estimate_id || '__none__')) {
