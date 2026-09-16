@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <title>Project One — Pipeline</title>
-  <link rel="stylesheet" href="/crm/static/style.css?v=15">
+  <link rel="stylesheet" href="/crm/static/style.css?v=17">
 </head>
 <body>
 
@@ -54,17 +54,20 @@
     <!-- My Day -->
     <section class="view" id="view-myday">
       <div class="myday-greeting" id="myday-greeting"></div>
+      <div class="day-start"><div><h2>Your next move</h2><p id="myday-direction">Start with your scheduled follow-ups, then work today's outreach.</p></div><button class="btn-brand" id="start-outreach">Start outreach</button></div>
       <div class="stat-row" id="myday-stats"></div>
       <h3 class="section-h">Today &amp; overdue <span class="count-badge" id="tasks-count">0</span></h3>
       <div id="myday-tasks" class="task-list"></div>
-      <h3 class="section-h">🔥 Hot leads</h3>
+      <h3 class="section-h">🔥 Hot leads <button class="btn-ghost small section-more" id="all-hot">View all</button></h3>
       <div id="myday-hot" class="mini-lead-list"></div>
-      <h3 class="section-h">⚠ Stalled — no touch in a while</h3>
+      <h3 class="section-h">Conversations needing a next step <button class="btn-ghost small section-more" id="all-needs-step">View all</button></h3>
       <div id="myday-stalled" class="mini-lead-list"></div>
     </section>
 
     <!-- Outreach: one partner at a time, until the day's number is done -->
     <section class="view" id="view-outreach">
+      <div class="view-actions"><div class="view-toggle" aria-label="Outreach queue"><button id="queue-ready" aria-pressed="true">Today's outreach</button><button id="queue-research" aria-pressed="false">Needs research</button></div><button class="btn-ghost small" id="queue-refresh">Refresh queue</button></div>
+      <p class="view-intro" id="queue-intro"></p>
       <div class="oq-head">
         <div class="oq-bar"><div class="oq-fill" id="oq-fill"></div></div>
         <div class="oq-label" id="oq-label"></div>
@@ -77,17 +80,26 @@
     <!-- Pipeline -->
     <section class="view" id="view-pipeline">
       <div class="pipeline-toolbar">
-        <select id="pipeline-service" class="mini-select"></select>
+        <select id="pipeline-service" class="mini-select" aria-label="Service"></select>
         <select id="pipeline-rep" class="mini-select hidden"></select>
-        <input id="pipeline-search" class="mini-search" placeholder="Search leads…">
+        <input id="pipeline-search" class="mini-search" aria-label="Search leads" placeholder="Search name, company, city…">
+        <select id="pipeline-type" class="mini-select" aria-label="Lead type"></select>
+        <select id="pipeline-contact" class="mini-select" aria-label="Contact information"><option value="">Any contact information</option><option value="ready">Has phone or email</option><option value="research">Needs phone or email</option></select>
+        <select id="pipeline-attention" class="mini-select" aria-label="Priority"><option value="">All priorities</option><option value="hot">Hot leads</option><option value="needs_step">Needs next step</option></select>
+        <select id="pipeline-stage" class="mini-select" aria-label="Stage"></select>
       </div>
+      <div class="view-actions"><div class="view-toggle" aria-label="Pipeline view"><button id="pipe-list" aria-pressed="true">List</button><button id="pipe-board" aria-pressed="false">Board</button></div><button class="btn-ghost small" id="pipeline-reset">Clear filters</button></div>
+      <p class="view-intro" id="pipeline-count" aria-live="polite"></p>
+      <div id="pipeline-list" class="lead-list"></div>
       <div id="kanban" class="kanban"></div>
+      <button class="btn-ghost hidden" id="pipeline-more">Show more leads</button>
       <div id="pipeline-detail" class="inline-detail hidden"></div>
     </section>
 
     <!-- Partners -->
     <section class="view" id="view-partners">
       <p class="view-intro">Realtors, HOAs, insurance agents &amp; property managers — and the business they send you.</p>
+      <button class="btn-brand" id="add-partner">+ Add partner</button>
       <div id="partners-list" class="card-list"></div>
       <div id="partners-detail" class="inline-detail hidden"></div>
     </section>
@@ -141,13 +153,14 @@
     <!-- Playbook -->
     <section class="view" id="view-playbook">
       <input id="playbook-search" class="mini-search full" placeholder="Search plans, objections &amp; scripts…">
-      <h3 class="section-h">🏡 Maintenance plans</h3>
-      <div id="playbook-plans" class="card-list"></div>
       <div id="playbook-principles" class="principles"></div>
       <h3 class="section-h">Objection handling</h3>
       <div id="playbook-objections" class="card-list"></div>
       <h3 class="section-h">Scripts &amp; talk tracks</h3>
       <div id="playbook-scripts" class="card-list"></div>
+      <h3 class="section-h">🏡 Maintenance plans</h3>
+      <div id="playbook-plans" class="card-list"></div>
+
     </section>
   </main>
   </div><!-- /app-main -->
@@ -168,7 +181,7 @@
 <!-- ── Lead detail drawer ── -->
 <div id="lead-drawer" class="drawer">
   <div class="drawer-scrim" data-close-drawer></div>
-  <div class="drawer-panel" id="lead-panel"></div>
+  <div class="drawer-panel" id="lead-panel" role="dialog" aria-modal="true" aria-label="Lead details"></div>
 </div>
 
 <!-- ── Generic modal ── -->
@@ -180,6 +193,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="/shell.js"></script>
-<script src="/crm/static/app.js?v=15"></script>
+<script src="/crm/static/app.js?v=17"></script>
 </body>
 </html>

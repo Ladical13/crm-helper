@@ -323,6 +323,117 @@ function tierTaglineEditorHtml(trade, tier) {
         ${differs && !tierTaglineEdited(trade, tier) ? `<div class="tier-tagline-hint">Price book now says: “${esc(book)}”</div>` : ''}
       </div>`;
 }
+
+/* ── What's Included: the bullets on a package card ─────────────────────
+   Same shape as the tagline above and for the same reason — a bundle pick
+   copies the price book's bullets into the estimate, so editing the book later
+   never reaches an estimate that already picked it.
+
+   A card is a PROMISE list, not a parts list. A roofing bundle carries ~11
+   products, and the card used to print the first ten and then "+ 11 more
+   items", which reads as an inventory to a homeowner holding two bids side by
+   side. An untouched card now shows the first CARD_BULLET_DEFAULT; the rep
+   rewrites the list in the box on the Pricing tab and from then on the card
+   shows exactly what they left, however many that is. Nothing is truncated
+   with a "+ N more" line anywhere.
+   MUST mirror _card_bullets / _tier_features_edited / _tier_card_content in
+   app.py — the browser prints the PDF and the server renders /sign. */
+const CARD_BULLET_DEFAULT = 6;
+function cardBullets(list, edited) {
+  const out = (list || []).map(s => String(s == null ? '' : s).trim()).filter(Boolean);
+  return edited ? out : out.slice(0, CARD_BULLET_DEFAULT);
+}
+function tierFeaturesEdited(trade, tier) {
+  return ((S.trades[trade] || {}).tier_features_edited || {})[tier] === true;
+}
+/* Bullets built from the tier's own priced, customer-visible line items — what
+   a card falls back to when its stored copy describes a package this tier no
+   longer sells. MUST mirror _autofill_tier_features in app.py. */
+function autofillTierBullets(trade, tier) {
+  const td = S.trades[trade] || {};
+  if (!td.enabled) return [];
+  const mode = effectiveTradeMode(trade, td);
+  const out = [], seen = new Set();
+  (td.line_items || []).forEach(item => {
+    if (item.customer_visible === false) return;
+    if (isSupplementItem(td, item)) return;   // "if needed", not the package
+    const name = String(item.name || '').trim();
+    if (!name) return;
+    const qty = parseFloat(item.quantity) || 0;
+    let desc = '';
+    if (mode === 'simple') {
+      if (qty <= 0 && (parseFloat(item.unit_price) || 0) <= 0) return;
+      desc = String(item.description || '').trim();
+    } else {
+      const ti = (item.tiers || {})[tier] || {};
+      if (ti.included === false) return;
+      const cost = (parseFloat(ti.material_unit_cost) || 0) + (parseFloat(ti.labor_unit_cost) || 0);
+      if (qty <= 0 && cost <= 0) return;
+      desc = String(ti.description || '').trim();
+    }
+    const line = (desc && desc !== name) ? `${name} — ${desc}` : name;
+    if (!seen.has(line)) { seen.add(line); out.push(line); }
+  });
+  return out;
+}
+// The bullets this tier's card shows today. MUST mirror _tier_card_content.
+function tierCardBullets(trade, tier) {
+  const edited = tierFeaturesEdited(trade, tier);
+  const stored = (tradeTierContent(trade).features || {})[tier] || [];
+  if (stored.length && (edited || !tierBulletsAreStale(trade, tier))) {
+    return cardBullets(stored, edited);
+  }
+  return cardBullets(autofillTierBullets(trade, tier), false);
+}
+// What the price book would put on this tier today — [] for Custom/no bundle.
+function priceBookBullets(trade, tier) {
+  if (!isBundleTrade(trade)) return [];
+  const bid = ((S.trades[trade] || {}).tier_bundles || {})[tier];
+  if (!bid || bid === '__custom__') return [];
+  return bundleFeatures(trade, _tradeBundle(trade, bid)) || [];
+}
+function setTierBullets(trade, tier, text) {
+  const td = S.trades[trade]; if (!td) return;
+  const lines = String(text || '').split('\n').map(s => s.trim()).filter(Boolean);
+  tradeTierContent(trade).features[tier] = lines;
+  td.tier_features_edited = td.tier_features_edited || {};
+  // Emptying the box is "go back to the default", not "promise nothing" — an
+  // empty card is never what a rep meant, and the autofill still has the
+  // tier's own line items to fall back on.
+  td.tier_features_edited[tier] = lines.length > 0;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function resetTierBullets(trade, tier) {
+  const td = S.trades[trade]; if (!td) return;
+  tradeTierContent(trade).features[tier] = priceBookBullets(trade, tier);
+  if (td.tier_features_edited) td.tier_features_edited[tier] = false;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function tierBulletsEditorHtml(trade, tier) {
+  if (!packageTrades().includes(trade)) return '';
+  const edited = tierFeaturesEdited(trade, tier);
+  const shown  = tierCardBullets(trade, tier);
+  const book   = priceBookBullets(trade, tier);
+  const differs = book.length && book.join('\n') !== shown.join('\n');
+  return `
+      <div class="tier-bullets">
+        <div class="tier-bullets-head">
+          <span class="tier-bullets-lbl">What's Included</span>
+          ${differs ? `<button type="button" class="tier-tagline-reset"
+            title="Use the price book's bullets for this package"
+            onclick="resetTierBullets('${trade}','${tier}')">↺ Price book</button>` : ''}
+        </div>
+        <textarea class="tier-bullets-input" rows="${Math.min(Math.max(shown.length, 3), 8)}"
+          placeholder="One bullet per line — what this package promises"
+          title="These are the lines under the price on the customer's ${esc(TIER_LABELS[tier])} card"
+          onchange="setTierBullets('${trade}','${tier}',this.value)">${esc(shown.join('\n'))}</textarea>
+        <div class="tier-tagline-hint">${edited
+          ? 'Your wording — shown exactly as written.'
+          : `Default: the first ${CARD_BULLET_DEFAULT} from the package. Edit to say it your way.`}</div>
+      </div>`;
+}
 /* Trades that print as a Good/Better/Best package choice. `other` is a G/B/B
    trade by data shape only: its tab shows one tier at a time and writes cost
    and description to ALL THREE (otherSetUnitCost / otherSetDesc), so offering
@@ -7704,7 +7815,12 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
       content.descriptions[tier] = desc;
       if (td.tier_tagline_edited) td.tier_tagline_edited[tier] = false;
     }
-    if (feats.length) content.features[tier] = feats;
+    if (feats.length) {
+      content.features[tier] = feats;
+      // The bundle's bullets are not the rep's, so the card goes back to
+      // showing the default few — same reset the tagline gets above.
+      if (td.tier_features_edited) td.tier_features_edited[tier] = false;
+    }
   }
 
   // When the rep explicitly picks a bundle, open this tier's details so the
@@ -8099,6 +8215,7 @@ function renderGBBGrid(trade) {
       </div>
       ${heroSel}
       ${tierTaglineEditorHtml(trade, t)}
+      ${tierBulletsEditorHtml(trade, t)}
       ${bodyBlock}
     </div>`;
   }).join('');
@@ -13017,7 +13134,8 @@ function buildPrintContent() {
     const out={};
     TIERS.forEach(t=>{
       const f=(content.features||{})[t];
-      if(f&&f.length&&!tierBulletsAreStale(trade,t)){out[t]=f;return;}
+      const fEdited=tierFeaturesEdited(trade,t);
+      if(f&&f.length&&(fEdited||!tierBulletsAreStale(trade,t))){out[t]=cardBullets(f,fEdited);return;}
       const items=[];
       const tradeMode=effectiveTradeMode(trade, td);
       (td.line_items||[]).forEach(item=>{
@@ -13074,8 +13192,7 @@ function buildPrintContent() {
           return `<td>
             <span class="p-pkg-price">${fmtCur(tot)}</span>
             ${desc?`<span class="p-pkg-desc">${esc(desc)}</span>`:''}
-            ${disp[t].slice(0,10).map(i=>`<span class="p-pkg-item">· ${esc(i)}</span>`).join('')}
-            ${disp[t].length>10?`<span class="p-pkg-item" style="color:#aaa">+ ${disp[t].length-10} more…</span>`:''}
+            ${disp[t].map(i=>`<span class="p-pkg-item">· ${esc(i)}</span>`).join('')}
           </td>`;
         }).join('')}
       </tr></tbody></table>

@@ -17,7 +17,7 @@ import smtplib
 import zipfile
 import threading
 import html as _html
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
@@ -5567,19 +5567,49 @@ def _tier_tagline_edited(est, trade, tier):
     return ((td.get('tier_tagline_edited') or {}).get(tier)) is True
 
 
+def _tier_features_edited(est, trade, tier):
+    """Did the rep write this card's bullets themselves?
+
+    Same flag shape and the same reason as _tier_tagline_edited: bundle copy
+    goes stale with its bundle, the rep's own wording does not.
+    MUST mirror tierFeaturesEdited in app.js."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    return ((td.get('tier_features_edited') or {}).get(tier)) is True
+
+
+# A package card is a PROMISE list, not a parts list. A roofing bundle carries
+# ~11 products, and a card that ran "· item · item … + 11 more items" was
+# reading as an inventory to a homeowner comparing two bids. An untouched card
+# shows the first few bullets of whatever built it; the rep rewrites the list in
+# the Pricing tab's box, and from then on the card shows exactly what they left,
+# however many that is. Nothing is truncated with a "+ N more" line anywhere —
+# the bullets past the default are not hidden, they are simply not the promise.
+_CARD_BULLET_DEFAULT = 6
+
+
+def _card_bullets(feats, edited):
+    """The bullets a card prints: all of them once the rep has curated the
+    list, the default few while it is still whatever a bundle pick copied in."""
+    out = [str(f).strip() for f in (feats or []) if str(f).strip()]
+    return out if edited else out[:_CARD_BULLET_DEFAULT]
+
+
 def _tier_card_content(pb, est, trade, tier, tfeat, tdesc):
     """(bullets, tagline) for one package card — the stored pair when it still
     matches the tier's line items, the autofill built from those line items
     when it doesn't. One helper so the customer page, the presentation and the
     AI feed can never disagree about what a package includes."""
     tagline = (tdesc.get(tier) or '').strip()
-    if _tier_bullets_are_stale(pb, est, trade, tier):
-        return (_autofill_tier_features(est, trade, tier),
-                tagline if _tier_tagline_edited(est, trade, tier) else '')
+    edited  = _tier_features_edited(est, trade, tier)
+    stale   = _tier_bullets_are_stale(pb, est, trade, tier)
+    if stale and not _tier_tagline_edited(est, trade, tier):
+        tagline = ''
     feats = [str(f).strip() for f in (tfeat.get(tier) or []) if str(f).strip()]
-    if not feats:
-        feats = _autofill_tier_features(est, trade, tier)
-    return feats, tagline
+    # Bundle copy on a tier that no longer sells that bundle is thrown away; the
+    # rep's own bullets are not, exactly as the tagline rule works.
+    if feats and (edited or not stale):
+        return _card_bullets(feats, edited), tagline
+    return _card_bullets(_autofill_tier_features(est, trade, tier), False), tagline
 
 
 def _enabled_tiers(est):
@@ -6473,8 +6503,6 @@ white-space:nowrap}
 font-size:var(--fz-fine);color:var(--mut);line-height:1.6}
 .cv-tier-feats li{position:relative;padding:3px 0 3px 16px}
 .cv-tier-feats li::before{content:'';position:absolute;left:0;top:11px;width:5px;height:1px;background:var(--faint)}
-.cv-tier-feats .cv-tier-more{color:var(--faint);font-style:italic}
-.cv-tier-feats .cv-tier-more::before{content:none}
 .cv-tier-check{font-size:var(--fz-fine);font-weight:600;color:var(--mut);border:1px solid var(--line);border-radius:999px;
 padding:8px 18px;display:inline-block;margin-top:var(--sp-3);transition:all .15s;background:#fff;letter-spacing:.3px}
 .cv-tier-selected .cv-tier-check{background:var(--navy);border-color:var(--navy);color:#fff}
@@ -7280,13 +7308,32 @@ def _est_valid_until(est):
         return None
 
 
+# The office is in Colorado; the server runs in UTC. From 6pm Mountain, UTC is
+# already tomorrow — so an estimate held until today expired for the last six
+# hours of its own last day, showing the customer the expired card and 410ing
+# the signature they came to give. "Pricing held until the 14th" is a promise
+# about a business day, so it lapses when the date has passed IN COLORADO.
+_COMPANY_TZ = 'America/Denver'
+
+
+def _company_today():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(timezone.utc).astimezone(ZoneInfo(_COMPANY_TZ)).date()
+    except Exception:
+        # No tz database in the image. UTC is never EARLIER than Denver, so this
+        # can only expire a quote early — which is what it did before this
+        # existed, and never the other way round.
+        return datetime.now(timezone.utc).date()
+
+
 def _est_expired(est):
     """True when this estimate's held pricing has lapsed. A signed estimate is
     never expired — the price was locked by the signature, not by the date."""
     if est.get('signature'):
         return False
     d = _est_valid_until(est)
-    return bool(d and d < datetime.utcnow().date())
+    return bool(d and d < _company_today())
 
 
 def _cv_expired_block(est):
@@ -9338,8 +9385,7 @@ def build_customer_view(est, token):
             feats_el = ''
             if feats:
                 feats_el = ('<ul class="cv-tier-feats">'
-                            + ''.join(f'<li>{he(f)}</li>' for f in feats[:8])
-                            + (f'<li class="cv-tier-more">+ {len(feats) - 8} more included</li>' if len(feats) > 8 else '')
+                            + ''.join(f'<li>{he(f)}</li>' for f in feats)
                             + '</ul>')
             cards_html += f'''<div class="cv-tier-card {'cv-tier-selected' if is_sel else ''}"
               data-trade="{tk}" data-tier="{t}"
@@ -11477,7 +11523,6 @@ _CMP_TIER_LABELS = {'good': 'Good', 'better': 'Better', 'best': 'Best'}
 _CMP_TRADE_LABELS = dict(roofing='Roofing', siding='Siding', windows='Windows',
                          gutters='Gutters', commercial='Commercial',
                          other='Other / Misc')
-_CMP_MAX_BULLETS = 7
 
 
 def _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head):
@@ -11528,11 +11573,9 @@ def _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head):
                 h += len(pdf.multi_cell(inner, 3.4, _pdf_rich(desc),
                                         dry_run=True, output='LINES')) * 3.4 + 1.5
             pdf.set_font(SANS, '', 7)
-            for f in feats[:_CMP_MAX_BULLETS]:
+            for f in feats:
                 h += len(pdf.multi_cell(inner - 2.6, 3.4, _pdf_rich(f),
                                         dry_run=True, output='LINES')) * 3.4 + 1.0
-            if len(feats) > _CMP_MAX_BULLETS:
-                h += 4.4
             return h + PAD
 
         H = max(_col_h(t) for t in tiers)
@@ -11574,7 +11617,7 @@ def _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head):
                 pdf.multi_cell(inner, 3.4, _pdf_rich(desc), align='C')
                 y = pdf.get_y() + 1.5
             pdf.set_font(SANS, '', 7)
-            for f in feats[:_CMP_MAX_BULLETS]:
+            for f in feats:
                 pdf.set_xy(x + PAD, y)
                 pdf.set_text_color(*_PDF_STYLE['teal'])
                 pdf.cell(2.6, 3.4, '+')
@@ -11582,12 +11625,6 @@ def _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head):
                 pdf.set_xy(x + PAD + 2.6, y)
                 pdf.multi_cell(inner - 2.6, 3.4, _pdf_rich(f), align='L')
                 y = pdf.get_y() + 1.0
-            extra = len(feats) - _CMP_MAX_BULLETS
-            if extra > 0:
-                pdf.set_xy(x + PAD + 2.6, y)
-                pdf.set_font(SANS, 'I', 7)
-                pdf.set_text_color(*_PDF_STYLE['faint'])
-                pdf.cell(inner - 2.6, 3.4, _pdf_rich(f'+ {extra} more included'))
         pdf.set_y(y0 + H)
         pdf.ln(6)
 

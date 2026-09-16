@@ -27,6 +27,7 @@ async function api(path, opts={}) {
   let data = null;
   try { data = await r.json(); } catch(e) {}
   if (!r.ok) throw new Error((data && data.error) || ('HTTP '+r.status));
+  if(opts.method&&opts.method!=='GET'&&S.openLeadId) S.detailDirty=true;
   return data;
 }
 
@@ -125,26 +126,27 @@ $$('.side-item').forEach(t=>t.onclick=()=>go(t.dataset.view));
 function updateSidebar(){
   const box=$('#side-stages');
   if(!box||!S.cfg) return;
-  const counts={};
-  S.leadCache.forEach(l=>counts[l.stage]=(counts[l.stage]||0)+1);
+  const counts=S.summary?.stage_counts||{};
   box.innerHTML=S.cfg.stages.map(s=>`
     <div class="side-stage" data-stage="${s.key}">
       <span class="kcol-dot" style="background:${s.color}"></span>${esc(s.label)}
       <span class="n">${counts[s.key]||0}</span>
     </div>`).join('');
   box.querySelectorAll('.side-stage').forEach(r=>r.onclick=()=>{
-    S.stageFocus=r.dataset.stage;
-    go('pipeline');
+    pipelineFocus({stage:r.dataset.stage});
   });
 }
 
 function buildRepSelects(){
   const opts='<option value="">All reps</option>'+
-    S.users.map(u=>`<option value="${esc(u.username)}">${esc(u.full_name||u.username)}</option>`).join('');
+    S.users.filter(u=>u.username!=='apibot').map(u=>`<option value="${esc(u.username)}">${esc(u.full_name||u.username)}</option>`).join('');
   ['#pipeline-rep','#dash-rep'].forEach(sel=>{ const e=$(sel); if(e){e.innerHTML=opts;
     e.classList.toggle('hidden', !S.me.is_manager);} });
   const coach=$('#coach-rep');
-  if(coach) coach.innerHTML=S.users.map(u=>`<option value="${esc(u.username)}">${esc(u.full_name||u.username)}</option>`).join('');
+  if(coach){
+    coach.innerHTML=S.users.filter(u=>u.username!=='apibot').map(u=>`<option value="${esc(u.username)}">${esc(u.full_name||u.username)}</option>`).join('');
+    if([...coach.options].some(o=>o.value===S.me.username)) coach.value=S.me.username;
+  }
 }
 function repName(u){ const x=S.users.find(z=>z.username===u); return x&&x.full_name?x.full_name:u; }
 
@@ -152,7 +154,11 @@ function repName(u){ const x=S.users.find(z=>z.username===u); return x&&x.full_n
 // One partner at a time until the day's number is done. Every action logs an
 // activity through the normal endpoint, which is what makes the leaderboard
 // count the day without any new reporting code.
-const Q={items:[],idx:0,target:0,done:0};
+const Q={items:[],idx:0,target:0,done:0,mode:'ready'};
+let queueReq=0;
+$('#queue-ready').onclick=()=>{Q.mode='ready';renderOutreach();};
+$('#queue-research').onclick=()=>{Q.mode='research';renderOutreach();};
+$('#queue-refresh').onclick=()=>renderOutreach();
 
 // Openers come from playbook.json rather than being written here, so the words
 // reps use stay in one place. Partner types get the referral ask.
@@ -161,7 +167,14 @@ const SCRIPT_FOR={realtor:'Asking for the referral',hoa:'Asking for the referral
   adjuster:'Asking for the referral',referral_partner:'Asking for the referral'};
 
 async function renderOutreach(){
-  const q=await api('/queue/today');
+  const token=++queueReq;
+  const q=await api('/queue/today?contact='+Q.mode);
+  if(token!==queueReq) return;
+  $('#queue-ready').setAttribute('aria-pressed',Q.mode==='ready');
+  $('#queue-research').setAttribute('aria-pressed',Q.mode==='research');
+  $('#queue-intro').textContent=Q.mode==='research'
+    ? 'Find and save a phone or email, or plan an in-person visit. Research does not count as a sales touch.'
+    : 'Scheduled follow-ups first, then new prospects with a phone or email. Open a lead to log a visit or schedule the next step.';
   Q.target=q.target; Q.done=q.done_today; Q.idx=0;
   // Re-touches lead. A partner who already knows you converts better than a
   // cold name, so they must never sit behind thirty fresh cards.
@@ -169,11 +182,11 @@ async function renderOutreach(){
     ...q.due.map(d=>({lead_id:d.lead_id,task_id:d.id,kind:d.kind||'call',retouch:true,
       why:d.title||'Follow-up due',name:d.name,company:d.company,phone:d.phone,
       email:d.email,city:d.city,lead_type:d.lead_type,overdue:d.overdue,
-      draft:d.draft,hook:d.hook})),
+      draft:d.draft,hook:d.hook,address:d.address,website:d.website})),
     ...q.new.map(l=>({lead_id:l.id,kind:'call',retouch:false,
       why:'New — first touch',name:l.name,company:l.company,phone:l.phone,
       email:l.email,city:l.city,lead_type:l.lead_type,score:l.icp_score,
-      draft:l.draft,hook:l.hook})),
+      draft:l.draft,hook:l.hook,address:l.address,website:l.website})),
   ];
   if(!PB){ try{ PB=await api('/playbook'); }catch(e){} }
   drawQueue();
@@ -184,7 +197,7 @@ function drawQueue(){
   const fill=$('#oq-fill');
   fill.style.width=pct+'%';
   fill.classList.toggle('done',Q.done>=Q.target);
-  $('#oq-label').textContent=`${Q.done} of ${Q.target} touches today`+
+  $('#oq-label').textContent=Q.mode==='research' ? `${Q.items.length} prospects to research` : `${Q.done} of ${Q.target} touches today`+
     (Q.done>=Q.target?' — target hit 🎉':'');
   const badge=$('#side-queue-badge');
   if(badge){ const left=Q.items.length-Q.idx;
@@ -197,11 +210,12 @@ function drawQueue(){
       <span class="sub">${esc(i.city||'')}</span></div>`).join('')||
     '<div class="empty">Nothing else queued.</div>';
 
+  $('#view-outreach .oq-bar').classList.toggle('hidden',Q.mode==='research');
   const it=Q.items[Q.idx];
   if(!it){
-    $('#oq-card').innerHTML=Q.done>=Q.target
+    $('#oq-card').innerHTML=Q.mode==='research' ? '<div class="empty">No untouched prospects need contact research right now.</div>' : Q.done>=Q.target
       ? '<div class="empty">Day\'s number is done. 🎯</div>'
-      : '<div class="empty">Queue is empty. Ask your manager to assign more prospects.</div>';
+      : '<div class="empty">No outreach is ready right now. Open Needs research to complete contact details, or ask your manager for more prospects.</div>';
     return;
   }
 
@@ -217,21 +231,22 @@ function drawQueue(){
     <h3 class="oq-name">${esc(it.name||it.company||'(no name)')}</h3>
     <div class="oq-sub">${esc(it.company&&it.company!==it.name?it.company+' · ':'')}${esc(it.city||'')}</div>
     <div class="oq-meta"><span class="chip">${esc(type)}</span>
-      ${it.score?`<span class="chip">fit ${it.score}/6</span>`:''}
+      ${it.score?`<span class="chip" title="Higher scores are prioritized within this queue">Priority score ${it.score}</span>`:''}
       ${tel?'':'<span class="chip">no phone</span>'}
       ${it.email?'':'<span class="chip">no email</span>'}
       ${it.hook?'':'<span class="chip">not researched</span>'}</div>
-    ${(script||draft)?`<div class="oq-tabs">
+    ${!tel&&!it.email?'<p class="research-notice">Add contact details before calling or emailing. You can also schedule a visit from the lead.</p>':''}
+    <div class="view-actions"><button class="btn-brand" data-open-lead>${!tel&&!it.email?'Research / edit contact':'Open lead / next step'}</button></div>
+    ${Q.mode!=='research'&&(script||draft)?`<div class="oq-tabs">
       ${script?`<button data-tab="call" class="${it.tab==='call'?'on':''}">Call script</button>`:''}
       ${draft?`<button data-tab="email" class="${it.tab==='email'?'on':''}">Email draft</button>`:''}
     </div>`:''}
-    ${it.tab==='email'&&draft
+    ${Q.mode==='research'?'':it.tab==='email'&&draft
       ? `<div class="oq-script"><b>${esc(draft.subject)}</b>\n\n${esc(draft.body)}</div>`
       : (script?`<div class="oq-script">${esc(script.body)}</div>`:'')}
     <div class="oq-actions">
-      <a class="call${tel?'':' disabled'}" href="${tel?'tel:'+tel:'#'}" data-log="call">📞 Call</a>
-      <a class="email${(it.email&&draft)?'':' disabled'}" target="_blank" rel="noopener"
-         href="${(it.email&&draft)?gmailUrl(it.email,draft):'#'}" data-log="email">✉️ Open in Gmail</a>
+      ${tel?`<a class="call" href="tel:${tel}" data-log="call">📞 Call</a>`:'<button disabled>Phone needed</button>'}
+      ${it.email&&draft?`<a class="email" target="_blank" rel="noopener" href="${gmailUrl(it.email,draft)}" data-log="email">✉️ Open in Gmail</a>`:'<button disabled>Email needed</button>'}
     </div>
     <div class="oq-skips">
       <button data-act="skip">Skip</button>
@@ -240,6 +255,7 @@ function drawQueue(){
     </div>`;
   // The href does the dialling / opens the compose window; we only record that
   // it happened. Nothing is ever sent from here.
+  card.querySelector('[data-open-lead]').onclick=()=>openLead(it.lead_id);
   card.querySelectorAll('[data-log]').forEach(a=>a.onclick=()=>qLog(a.dataset.log));
   card.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>qSkip(b.dataset.act));
   card.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ it.tab=b.dataset.tab; drawQueue(); });
@@ -288,42 +304,41 @@ async function qSkip(act){
 function qNext(){ Q.idx++; drawQueue(); }
 
 // ── My Day ───────────────────────────────────────────────────────────────────
+$('#start-outreach').onclick=()=>{Q.mode='ready';go('outreach');};
+$('#all-hot').onclick=()=>pipelineFocus({attention:'hot',rep:S.me.username});
+$('#all-needs-step').onclick=()=>pipelineFocus({attention:'needs_step',rep:S.me.username});
 async function renderMyDay(){
   const hour=new Date().getHours();
   const greet=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
-  $('#myday-greeting').textContent=`${greet}, ${esc(S.me.full_name||S.me.username)} 👋`;
-  const [tasks, leads] = await Promise.all([
-    api('/tasks?scope=today'),
-    api('/leads?limit=1000'),
+  $('#myday-greeting').textContent=`${greet}, ${S.me.full_name||S.me.username}`;
+  const rep=encodeURIComponent(S.me.username);
+  const [tasks, summary, hot, needsStep, globalSummary] = await Promise.all([
+    api('/tasks?scope=today&rep='+rep), api('/pipeline/summary?rep='+rep),
+    api('/leads?attention=hot&limit=6&rep='+rep),
+    api('/leads?attention=needs_step&limit=6&rep='+rep), api('/pipeline/summary'),
   ]);
-  S.leadCache=leads;
-  const open=leads.filter(l=>['won','lost'].indexOf(l.stage)<0);
-  const hot=open.filter(l=>l.temperature==='hot');
-  const stalled=open.filter(l=>l.stalled);
+  S.summary=globalSummary;
   const overdue=tasks.filter(t=>t.overdue).length;
-  // Each chip is a shortcut: tasks scroll to the list, the rest jump to the board.
+  $('#myday-direction').textContent=tasks.length
+    ? `${tasks.length} scheduled follow-ups need attention. Work these first, then start outreach.`
+    : 'No follow-ups scheduled for today. Start outreach or set the next step on an active conversation.';
   $('#myday-stats').innerHTML=[
-    ['Tasks today', tasks.length, 'tasks'],
-    ['Overdue', overdue, 'tasks'],
-    ['Open leads', open.length, 'pipeline'],
-    ['Hot', hot.length, 'pipeline'],
-    ['Pipeline', money(open.reduce((s,l)=>s+(l.est_value||0),0)), 'pipeline'],
-  ].map(([l,n,nav])=>`<div class="stat-chip" data-nav="${nav}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+    ['Tasks due', tasks.length, 'tasks'], ['Overdue', overdue, 'tasks'],
+    ['My open leads', summary.open_leads, 'pipeline'],
+    ['My pipeline', money(summary.open_value), 'pipeline'],
+  ].map(([l,n,nav])=>`<button class="stat-chip" data-nav="${nav}"><span class="n">${n}</span><span class="l">${l}</span></button>`).join('');
   $$('#myday-stats .stat-chip').forEach(c=>c.onclick=()=>{
-    if(c.dataset.nav==='pipeline') go('pipeline');
+    if(c.dataset.nav==='pipeline') pipelineFocus({rep:S.me.username});
     else $('#myday-tasks').scrollIntoView({behavior:'smooth',block:'start'});
   });
   $('#tasks-count').textContent=tasks.length;
   const badge=$('#side-task-badge');
-  if(badge){ badge.textContent=overdue; badge.classList.toggle('hidden', !overdue); }
+  if(badge){ badge.textContent=overdue; badge.classList.toggle('hidden',!overdue); }
   updateSidebar();
-
-  $('#myday-tasks').innerHTML = tasks.length ? '' :
-    '<div class="empty">All caught up. Add a follow-up so nothing goes cold. 🎯</div>';
+  $('#myday-tasks').innerHTML=tasks.length?'':'<div class="empty">No scheduled follow-ups today. Your outreach queue is ready to review.</div>';
   tasks.forEach(t=>$('#myday-tasks').appendChild(taskRow(t)));
-
-  renderMini($('#myday-hot'), hot, 'No hot leads right now.');
-  renderMini($('#myday-stalled'), stalled, 'Nothing stalled — nice.');
+  renderMini($('#myday-hot'),hot,'No hot leads right now.');
+  renderMini($('#myday-stalled'),needsStep,'Every active conversation has a next step, or you have not started one yet.');
 }
 function taskRow(t){
   const row=el('div','task'+(t.overdue?' overdue':''));
@@ -342,8 +357,6 @@ function taskRow(t){
 }
 // Jump straight to a lead: pipeline view, its column pulsed, detail open inline.
 function gotoLead(id, stage){
-  S.stageFocus=stage||null;
-  go('pipeline');
   openLead(id);
 }
 function renderMini(container, leads, emptyMsg){
@@ -384,49 +397,69 @@ function buildServiceSelect(){
     sel.innerHTML='<option value="">All services</option>'+
       S.cfg.services.map(s=>`<option value="${s.key}">${s.icon} ${esc(s.label)}</option>`).join('');
 }
-async function renderPipeline(){
+let pipeMode='list', pipeRows=[];
+function pipelineFocus(filters={}){
+  buildPipelineFilters();
+  pipeSearch=''; $('#pipeline-search').value='';
+  for(const key of ['rep','service','type','contact','attention','stage']) $('#pipeline-'+key).value=filters[key]||'';
+  go('pipeline');
+}
+function buildPipelineFilters(){
   buildServiceSelect();
-  const rep=S.me.is_manager ? $('#pipeline-rep').value : '';
-  const svc=$('#pipeline-service').value;
+  const type=$('#pipeline-type'), stage=$('#pipeline-stage');
+  if(!type.options.length) type.innerHTML='<option value="">All lead types</option>'+S.cfg.lead_types.map(t=>`<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
+  if(!stage.options.length) stage.innerHTML='<option value="">All stages</option>'+S.cfg.stages.map(t=>`<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
+}
+for(const key of ['type','contact','attention','stage']) $('#pipeline-'+key).onchange=()=>renderPipeline();
+$('#pipeline-reset').onclick=()=>pipelineFocus();
+$('#pipe-list').onclick=()=>{pipeMode='list';renderPipeline();};
+$('#pipe-board').onclick=()=>{pipeMode='board';renderPipeline();};
+$('#pipeline-more').onclick=()=>renderPipeline(true);
+async function renderPipeline(more=false){
+  buildPipelineFilters();
+  const offset=more===true?pipeRows.length:0;
   const qs=[];
-  if(rep) qs.push('rep='+encodeURIComponent(rep));
+  for(const key of ['rep','service','type','contact','attention','stage']){
+    const value=$('#pipeline-'+key).value;
+    if(value&&(key!=='rep'||S.me.is_manager)) qs.push(key+'='+encodeURIComponent(value));
+  }
   if(pipeSearch) qs.push('q='+encodeURIComponent(pipeSearch));
+  qs.push('limit=101&offset='+offset);
   const token=++pipeReq;
-  let leads=await api('/leads'+(qs.length?'?'+qs.join('&'):''));
-  if(token!==pipeReq) return;            // a newer search already answered
-  // Only cache an UNsearched load: the sidebar stage counts and the drawer's
-  // "referred by" partner list read this and both want the whole pipeline, not
-  // whatever the box currently matches.
-  if(!pipeSearch) S.leadCache=leads;
-  if(svc) leads=leads.filter(l=>l.service===svc);
-  const board=$('#kanban'); board.innerHTML='';
-  S.cfg.stages.forEach(st=>{
-    const col=el('div','kcol'); col.dataset.stage=st.key;
-    const items=leads.filter(l=>l.stage===st.key);
-    const val=items.reduce((s,l)=>s+(l.est_value||0),0);
-    col.innerHTML=`<div class="kcol-head"><span class="kcol-dot" style="background:${st.color}"></span>
-      ${esc(st.label)}<span class="kcol-count">${items.length}${val?' · '+money(val):''}</span></div>
-      <div class="kcol-body"></div>`;
-    const body=col.querySelector('.kcol-body');
-    items.forEach(l=>body.appendChild(kcard(l)));
-    board.appendChild(col);
-  });
+  const [page,summary]=await Promise.all([api('/leads?'+qs.join('&')),api('/pipeline/summary')]);
+  if(token!==pipeReq) return;
+  const leads=offset?pipeRows.concat(page.slice(0,100)):page.slice(0,100);
+  pipeRows=leads;
+  S.summary=summary;
+  // A filtered page must never replace the unfiltered cache used by referrals.
+  if(qs.length===1) S.leadCache=leads;
+  const list=$('#pipeline-list'), board=$('#kanban');
+  list.innerHTML=''; board.innerHTML='';
+  list.classList.toggle('hidden',pipeMode!=='list');
+  board.classList.toggle('hidden',pipeMode!=='board');
+  $('#pipe-list').setAttribute('aria-pressed',pipeMode==='list');
+  $('#pipe-board').setAttribute('aria-pressed',pipeMode==='board');
+  $('#pipeline-count').textContent=leads.length?`Showing ${leads.length} leads${page.length>100?' · show more to continue':''}. Sidebar totals include the whole pipeline.`:'No leads match these filters.';
+  $('#pipeline-more').classList.toggle('hidden',page.length<=100);
+  if(pipeMode==='list'){
+    leads.forEach(l=>{
+      const row=el('button','lead-list-row'); row.dataset.id=l.id;
+      row.innerHTML=`<span><b>${esc(l.name)}</b><span class="lead-context">${esc([l.company!==l.name?l.company:'',l.city].filter(Boolean).join(' · '))}</span></span>
+        <span>${esc(l.stage_label)}<span class="lead-context">${esc((S.cfg.lead_types.find(t=>t.key===l.lead_type)||{}).label||l.lead_type)}</span></span>
+        <span>${l.phone||l.email?'Contact details available':'Needs contact research'}<span class="lead-context">${esc(l.phone||l.email||'Open to add phone or email')}</span></span>
+        <span>${l.next_action_at?esc(dueLabel(l.next_action_at)):['won','lost'].includes(l.stage)?'Closed':'No next step'}<span class="lead-context">${esc(repName(l.rep))}${l.est_value?' · '+money(l.est_value):''}</span></span>`;
+      row.onclick=()=>openLead(l.id); list.appendChild(row);
+    });
+  }else{
+    S.cfg.stages.forEach(st=>{
+      const col=el('div','kcol'); col.dataset.stage=st.key;
+      const items=leads.filter(l=>l.stage===st.key);
+      col.innerHTML=`<div class="kcol-head"><span class="kcol-dot" style="background:${st.color}"></span>${esc(st.label)}<span class="kcol-count">${items.length}</span></div><div class="kcol-body"></div>`;
+      items.forEach(l=>col.querySelector('.kcol-body').appendChild(kcard(l)));
+      board.appendChild(col);
+    });
+  }
   updateSidebar();
-  // Keep the open lead's card highlighted across board re-renders.
-  if(S.openLeadId){
-    const sel=board.querySelector(`.kcard[data-id="${S.openLeadId}"]`);
-    if(sel) sel.classList.add('selected');
-  }
-  // Sidebar/funnel quick-jump: scroll the requested column into view and pulse it.
-  if(S.stageFocus){
-    const col=board.querySelector(`.kcol[data-stage="${S.stageFocus}"]`);
-    S.stageFocus=null;
-    if(col){
-      col.scrollIntoView({behavior:'smooth',inline:'center',block:'nearest'});
-      col.classList.add('pulse');
-      setTimeout(()=>col.classList.remove('pulse'),1500);
-    }
-  }
 }
 function kcard(l){
   const c=el('div','kcard'); c.dataset.id=l.id;
@@ -500,46 +533,60 @@ async function moveStage(lead, stage){
   }catch(e){ toast(e.message,true); renderPipeline(); }
 }
 
-// ── Lead detail (inline under Pipeline/Partners; drawer elsewhere) ───────────
-// On the Pipeline and Partners views the detail renders in a full-width panel
-// UNDER the content (better snapshot of board + lead together); other views
-// (My Day mini-lists, task rows) keep the slide-over drawer.
-function detailTargetFor(view){
-  if(view==='pipeline') return $('#pipeline-detail');
-  if(view==='partners') return $('#partners-detail');
-  return null; // drawer
-}
+// ── Lead detail: one drawer from every screen ───────────────────────────────
+let detailReq=0;
 async function openLead(id){
+  const token=++detailReq;
   S.openLeadId=id;
-  S.detailEl=detailTargetFor(S.view);
-  if(S.detailEl){
-    closeDrawer();
-    $('#lead-panel').innerHTML='';           // avoid duplicate #d-* ids lingering in the drawer
-    S.detailEl.classList.remove('hidden');
-    S.detailEl.innerHTML='<div class="dsec">Loading…</div>';
-  }else{
-    $$('.inline-detail').forEach(d=>{d.classList.add('hidden');d.innerHTML='';});  // ...or in inline panels
-    $('#lead-drawer').classList.add('open');
-    $('#lead-panel').innerHTML='<div class="dsec">Loading…</div>';
+  if(!$('#lead-drawer').classList.contains('open')){
+    S.detailTrigger=document.activeElement; S.detailDirty=false;
   }
+  $('#lead-drawer').classList.add('open');
+  document.body.classList.add('detail-open');
+  $('#lead-panel').innerHTML='<div class="dsec">Loading…</div>';
   let l;
   try{ l=await api('/leads/'+id); }catch(e){ toast(e.message,true); return; }
+  if(token!==detailReq) return;
   renderDrawer(l);
+  $('#lead-panel').scrollTop=0;
+  $('#lead-panel [data-x]').focus({preventScroll:true});
 }
-function closeDrawer(){ $('#lead-drawer').classList.remove('open'); }
 function closeDetail(){
-  if(S.detailEl){ S.detailEl.classList.add('hidden'); S.detailEl.innerHTML=''; S.detailEl=null; }
-  else closeDrawer();
+  detailReq++;
+  $('#lead-drawer').classList.remove('open');
+  document.body.classList.remove('detail-open');
+  S.detailTrigger?.focus({preventScroll:true});
+  if(S.detailDirty){
+    if(S.view==='outreach') renderOutreach();
+    else if(S.view==='myday') renderMyDay();
+    else if(S.view==='pipeline') renderPipeline();
+    else if(S.view==='partners') renderPartners();
+  }
   S.openLeadId=null;
   $$('.kcard.selected').forEach(c=>c.classList.remove('selected'));
 }
 $$('[data-close-drawer]').forEach(x=>x.onclick=closeDetail);
+document.addEventListener('keydown',e=>{
+  const panel=$('#modal').classList.contains('open')?$('#modal-box'):
+    $('#lead-drawer').classList.contains('open')?$('#lead-panel'):null;
+  if(!panel) return;
+  if(e.key==='Escape'){
+    e.preventDefault();
+    if(panel.id==='modal-box') closeModal(); else closeDetail();
+  }
+  if(e.key==='Tab'){
+    const focusable=$$('button:not(:disabled),a[href],input,select,textarea,summary',panel).filter(x=>x.getClientRects().length);
+    const first=focusable[0], last=focusable[focusable.length-1];
+    if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}
+    else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}
+  }
+});
 
 function renderDrawer(l){
   const typeMeta=S.cfg.lead_types.find(t=>t.key===l.lead_type);
   const phone=(l.phone||'').replace(/[^0-9+]/g,'');
   const stageOpts=S.cfg.stages.map(s=>`<option value="${s.key}" ${s.key===l.stage?'selected':''}>${esc(s.label)}</option>`).join('');
-  const p=S.detailEl||$('#lead-panel');
+  const p=$('#lead-panel');
   // Partners get a "Referred projects" block: their referral book + one-tap add.
   let referralsHtml='';
   if(S.cfg.partner_types.includes(l.lead_type)){
@@ -557,8 +604,8 @@ function renderDrawer(l){
       <button class="btn-brand" id="d-add-referral" style="margin-top:10px">＋ Add referred project</button></div>`;
   }
   p.innerHTML=`
-    <div class="dh"><button class="dh-close" data-x>✕</button>
-      <div class="dh-name">${esc(l.name)}</div>
+    <div class="dh"><button class="dh-close" aria-label="Close lead" data-x>✕</button>
+      <div class="dh-name">${esc(l.name)}</div><p class="lead-context">${esc([l.company!==l.name?l.company:"",l.address,l.city].filter(Boolean).join(" · "))}</p>
       <div class="task-meta"><span class="type-badge">${l.service_icon} ${esc(l.service_label)}</span>
       <span class="type-badge">${esc(typeMeta?typeMeta.label:l.lead_type)}</span>
       ${l.plan_name?`<span class="type-badge plan">♻ ${esc(l.plan_name)}</span>`:''}
@@ -571,6 +618,10 @@ function renderDrawer(l){
     <div class="dsec"><h5>Stage</h5>
       <select class="stage-select" id="d-stage">${stageOpts}</select></div>
     <div class="dsec"><h5>Reach out</h5>
+      <p class="lead-context">${esc(l.phone||'No phone')} · ${esc(l.email||'No email')}</p>
+      <button class="btn-ghost small" id="edit-contact">Edit contact details</button>
+      ${l.company?`<a class="research-link" target="_blank" rel="noopener noreferrer" href="https://www.google.com/search?q=${encodeURIComponent(l.company+' '+(l.city||'')+' contact')}">Search business contact ↗</a>`:''}
+      ${l.hook?`<details class="research-notes"><summary>Research notes</summary><p>${esc(l.hook)}</p></details>`:''}
       <div class="contact-actions">
         <a class="call" href="${phone?'tel:'+phone:'#'}" data-log="call">📞 Call</a>
         <a class="text" href="${phone?'sms:'+phone:'#'}" data-log="text">💬 Text</a>
@@ -582,16 +633,8 @@ function renderDrawer(l){
       </div>
       <div id="d-log-form"></div>
     </div>
-    <div class="dsec"><h5>Maintenance plan</h5><div id="d-plan"></div></div>
-    <div class="dsec"><h5>Follow-up cadence</h5>
-      <div id="d-cadences"></div></div>
     <div class="dsec"><h5>Tasks</h5><div id="d-tasks"></div>
       <button class="btn-ghost small" id="d-add-task">+ Add task</button></div>
-    <div class="dsec dsec-wide"><h5>Documents</h5><div id="d-documents"></div>
-      <label class="btn-ghost small doc-upload">＋ Upload document
-        <input type="file" id="d-doc-file" hidden></label></div>
-    <div class="dsec"><h5>Timeline</h5><div class="timeline" id="d-timeline"></div></div>
-    <div class="dsec"><h5>Details</h5><div id="d-fields"></div></div>
     <div class="dsec"><h5>Handoff &amp; cross-sell</h5>
       <div class="drawer-btns">
         <button class="btn-brand" id="d-estimate">📄 Start estimate</button>
@@ -599,10 +642,26 @@ function renderDrawer(l){
         <div id="d-pitch-row"></div>
         <div class="est-status" id="d-est-status"></div>
       </div></div>
+    <details class="dsec"><summary>Maintenance plan</summary><div id="d-plan"></div></details>
+    <div class="dsec"><h5>Follow-up cadence</h5>
+      <div id="d-cadences"></div></div>
+    <div class="dsec dsec-wide"><h5>Documents</h5><div id="d-documents"></div>
+      <label class="btn-ghost small doc-upload">＋ Upload document
+        <input type="file" id="d-doc-file" hidden></label></div>
+    <div class="dsec"><h5>Timeline</h5><div class="timeline" id="d-timeline"></div></div>
+    <details class="dsec" id="lead-details"><summary>Edit contact &amp; lead details</summary><div id="d-fields"></div></details>
     <div class="dsec"><button class="btn-danger" id="d-delete">Delete lead</button></div>
     </div><!-- /dgrid -->
   `;
   p.querySelector('[data-x]').onclick=closeDetail;
+  $('#edit-contact').onclick=()=>{
+    $('#lead-details').open=true;
+    $('#lead-details').scrollIntoView({behavior:'smooth',block:'start'});
+    $('#f-phone')?.focus({preventScroll:true});
+  };
+  p.querySelectorAll('.contact-actions a[href="#"]').forEach(a=>{
+    a.removeAttribute('href');a.setAttribute('aria-disabled','true');a.classList.add('disabled');
+  });
   // Referred projects list (partners only)
   if(referralsHtml){
     const box=p.querySelector('#d-referrals');
@@ -618,20 +677,13 @@ function renderDrawer(l){
     });
     p.querySelector('#d-add-referral').onclick=()=>newLeadModal({referred_by:l.id, source:'referral', returnTo:l.id});
   }
-  // Inline mode: highlight the open card and bring the panel into view.
-  if(S.detailEl){
-    $$('.kcard.selected').forEach(c=>c.classList.remove('selected'));
-    const card=document.querySelector(`.kcard[data-id="${l.id}"]`);
-    if(card) card.classList.add('selected');
-    S.detailEl.scrollIntoView({behavior:'smooth',block:'nearest'});
-  }
   $('#d-stage').onchange=async e=>{
     await moveStage(l, e.target.value);
     const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
   };
   // contact action logging
   p.querySelectorAll('[data-log]').forEach(a=>a.addEventListener('click',()=>{
-    if(a.getAttribute('href')==='#') return;
+    if(!a.getAttribute('href')) return;
     api('/leads/'+l.id+'/activities',{method:'POST',body:{kind:a.dataset.log}}).then(()=>toast('Logged'));
   }));
   // log kind buttons -> inline note form
@@ -821,12 +873,17 @@ function renderTimeline(l){
     box.appendChild(row);
   });
 }
-function renderFields(l){
+async function renderFields(l){
   const cfg=S.cfg;
   const typeSel=cfg.lead_types.map(t=>`<option value="${t.key}" ${t.key===l.lead_type?'selected':''}>${esc(t.label)}</option>`).join('');
-  const srcSel='<option value="">—</option>'+cfg.sources.map(s=>`<option ${s===l.source?'selected':''}>${esc(s)}</option>`).join('');
+  const sources=[...new Set([...cfg.sources,l.source].filter(Boolean))];
+  const srcSel='<option value="">—</option>'+sources.map(s=>`<option value="${esc(s)}" ${s===l.source?'selected':''}>${esc(s)}</option>`).join('');
   const tempSel=cfg.temperature.map(t=>`<option value="${t}" ${t===l.temperature?'selected':''}>${esc(t)}</option>`).join('');
-  const partnerOpts='<option value="">—</option>'+S.leadCache.filter(x=>cfg.partner_types.includes(x.lead_type)&&x.id!==l.id)
+  let partners=[];
+  try{ partners=await api('/partners'); }catch(e){ toast('Could not load referral partners',true); }
+  if(S.openLeadId!==l.id) return;
+  if(l.referred_by&&!partners.some(x=>x.id===l.referred_by)) partners.push({id:l.referred_by,name:l.referred_by_name||'Current partner'});
+  const partnerOpts='<option value="">—</option>'+partners.filter(x=>x.id!==l.id)
     .map(x=>`<option value="${x.id}" ${x.id===l.referred_by?'selected':''}>${esc(x.name)}</option>`).join('');
   $('#d-fields').innerHTML=`
     <div class="field-row"><div class="field"><label>First</label><input id="f-first" value="${esc(l.first_name)}"></div>
@@ -858,7 +915,8 @@ function renderFields(l){
   };
 }
 function addTaskModal(l){
-  const tomorrow=new Date(Date.now()+86400000).toISOString().slice(0,16);
+  const date=new Date(Date.now()+86400000);
+  const tomorrow=new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16);
   openModal('Add task',`
     <div class="field"><label>What</label><input id="m-title" placeholder="e.g. Call to confirm appointment"></div>
     <div class="field"><label>Type</label><select id="m-kind">
@@ -902,14 +960,14 @@ async function renderDashboard(){
   const qs=`?days=${days}`+(rep?`&rep=${encodeURIComponent(rep)}`:'');
   const [d,lb]=await Promise.all([api('/dashboard'+qs), api('/leaderboard?days='+days)]);
   $('#dash-kpis').innerHTML=[
-    ['MRR', money(d.mrr), money(d.arr)+'/yr recurring'],
-    ['Active plans', d.active_plans, 'on maintenance'],
     ['Won', d.won_count, money(d.won_value)],
     ['Win rate', d.win_rate+'%', d.lost_count+' lost'],
     ['Pipeline', money(d.pipeline_value), d.pipeline_count+' open'],
     ['Avg deal', money(d.avg_deal), ''],
     ['New leads', d.new_leads, 'in '+d.days+'d'],
     ['Outreach', d.outreach_total, 'calls/texts/etc'],
+    ['Active plans', d.active_plans, 'on maintenance'],
+    ['Monthly recurring revenue', money(d.mrr), money(d.arr)+'/yr recurring'],
   ].map(([l,n,s])=>`<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div>${s?`<div class="sub">${s}</div>`:''}</div>`).join('');
   // service-line split
   $('#dash-services').innerHTML=Object.values(d.by_service||{}).map(s=>
@@ -932,9 +990,9 @@ async function renderDashboard(){
       <div class="funnel-bar" style="width:${Math.max(8,100*c/maxC)}%;background:${s.color}">${c}</div></div>`;
   }).join('');
   $$('#dash-funnel .funnel-row').forEach(r=>r.onclick=()=>{
-    S.stageFocus=r.dataset.stage; go('pipeline');
+    pipelineFocus({stage:r.dataset.stage,rep});
   });
-  barList($('#dash-activity'), d.activity);
+  barList($('#dash-activity'), Object.fromEntries(Object.entries(d.activity||{}).filter(([kind])=>kind!=='system')));
   barList($('#dash-source'), d.by_source);
   // leaderboard
   $('#dash-leaderboard').innerHTML=lb.length?'':'<div class="empty">No data yet.</div>';
@@ -1051,7 +1109,7 @@ function renderPlaybookLists(){
       <div class="a">${esc(o.rebuttal)}</div><div class="coach">🎯 ${esc(o.coach_note)}</div></div>`).join('')
     ||'<div class="empty">No matches.</div>';
   $('#playbook-scripts').innerHTML=(PB.scripts||[]).filter(s=>match(s.name+s.body)).map(s=>
-    `<div class="card"><h4>${esc(s.name)}</h4><div class="a">${esc(s.body)}</div></div>`).join('')
+    `<div class="card"><h4>${esc(s.name)}</h4><div class="a">${esc(s.body.replaceAll('[name]',S.me.full_name||S.me.username))}</div></div>`).join('')
     ||'<div class="empty">No matches.</div>';
 }
 
@@ -1059,11 +1117,11 @@ function renderPlaybookLists(){
 // preset: {referred_by, source, returnTo} — used by a partner's "add referred project".
 function newLeadModal(preset={}){
   const cfg=S.cfg;
-  const typeSel=cfg.lead_types.map(t=>`<option value="${t.key}">${esc(t.label)}</option>`).join('');
+  const typeSel=cfg.lead_types.map(t=>`<option value="${t.key}" ${t.key===preset.lead_type?'selected':''}>${esc(t.label)}</option>`).join('');
   const srcSel='<option value="">Source…</option>'+cfg.sources.map(s=>
     `<option ${s===preset.source?'selected':''}>${esc(s)}</option>`).join('');
   const repSel=S.me.is_manager?`<div class="field"><label>Assign to</label><select id="nl-rep">
-    ${S.users.map(u=>`<option value="${esc(u.username)}" ${u.username===S.me.username?'selected':''}>${esc(u.full_name||u.username)}</option>`).join('')}</select></div>`:'';
+    ${S.users.filter(u=>u.username!=='apibot').map(u=>`<option value="${esc(u.username)}" ${u.username===S.me.username?'selected':''}>${esc(u.full_name||u.username)}</option>`).join('')}</select></div>`:'';
   openModal(preset.referred_by?'New referred project':'New lead',`
     <div class="field-row"><div class="field"><label>First</label><input id="nl-first"></div>
       <div class="field"><label>Last</label><input id="nl-last"></div></div>
@@ -1097,7 +1155,7 @@ function newLeadModal(preset={}){
       if(S.me.is_manager&&$('#nl-rep')) body.rep=$('#nl-rep').value;
       const lead=await api('/leads',{method:'POST',body});
       toast(preset.referred_by?'Referred project added':'Lead added'); closeModal();
-      if(S.view==='pipeline')renderPipeline(); else if(S.view==='myday')renderMyDay();
+      if(S.view==='pipeline')renderPipeline(); else if(S.view==='myday')renderMyDay(); else if(S.view==='partners')renderPartners();
       // From a partner: land back on the partner so the new project shows underneath.
       openLead(preset.returnTo||lead.id);
     }, {noAutoClose:true});
@@ -1112,6 +1170,7 @@ function newLeadModal(preset={}){
   };
 }
 $('#add-lead-btn').onclick=()=>newLeadModal();
+$('#add-partner').onclick=()=>newLeadModal({lead_type:'referral_partner'});
 
 // ── Menu (admin/account) ─────────────────────────────────────────────────────
 $('#menu-btn').onclick=async()=>{

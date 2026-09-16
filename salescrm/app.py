@@ -542,7 +542,8 @@ def list_leads():
     ltype   = request.args.get('type')
     service = request.args.get('service')
     q       = (request.args.get('q') or '').strip().lower()
-    limit   = min(int(request.args.get('limit', 1000)), 5000)
+    limit   = max(1, min(request.args.get('limit', 1000, type=int), 5000))
+    offset  = max(0, request.args.get('offset', 0, type=int))
 
     clauses, params = [], []
     if not is_manager():
@@ -555,6 +556,16 @@ def list_leads():
         clauses.append('lead_type=?'); params.append(ltype)
     if service:
         clauses.append('service=?'); params.append(service)
+    contact = request.args.get('contact')
+    if contact in ('ready', 'research'):
+        clauses.append(_contact_clause(contact))
+    attention = request.args.get('attention')
+    if attention in ('hot', 'needs_step'):
+        clauses.append("stage NOT IN ('won','lost') AND dnc=0")
+        if attention == 'hot':
+            clauses.append("temperature='hot'")
+        else:
+            clauses.append("next_action_at='' AND last_activity_at!=''")
     if q:
         # Matched in SQL, not in Python afterwards: filtering the page the LIMIT
         # already returned would search only the most recently updated `limit`
@@ -565,13 +576,14 @@ def list_leads():
         clauses.append(
             "LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'') || ' ' ||"
             "      COALESCE(phone,'')      || ' ' || COALESCE(email,'')     || ' ' ||"
-            "      COALESCE(address,'')    || ' ' || COALESCE(company,''))"
+            "      COALESCE(address,'')    || ' ' || COALESCE(company,'') || ' ' || COALESCE(city,''))"
             " LIKE ? ESCAPE '\\'")
         params.append(f'%{esc}%')
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
     with get_db() as db:
-        rows = db.execute(f'SELECT * FROM leads {where} ORDER BY updated_at DESC LIMIT ?',
-                          params + [limit]).fetchall()
+        order = "CASE temperature WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END, last_activity_at, id" if attention else 'updated_at DESC, id'
+        rows = db.execute(f'SELECT * FROM leads {where} ORDER BY {order} LIMIT ? OFFSET ?',
+                          params + [limit, offset]).fetchall()
     return jsonify([_lead_row(r) for r in rows])
 
 @app.route('/api/pipeline/summary')
@@ -582,6 +594,8 @@ def pipeline_summary():
     where, params = '', []
     if not is_manager():
         where, params = 'WHERE rep=?', [current_rep()]
+    elif request.args.get('rep'):
+        where, params = 'WHERE rep=?', [request.args['rep']]
     with get_db() as db:
         rows = db.execute(
             f'SELECT stage, COUNT(*) AS n, COALESCE(SUM(est_value),0) AS value '
@@ -596,6 +610,12 @@ def pipeline_summary():
         'won_value': values.get('won', 0),
         'period': 'all_time',
     })
+
+
+def _contact_clause(mode):
+    """Contact availability, shared by list filters and the outreach queue."""
+    present = "(TRIM(COALESCE(phone,''))!='' OR TRIM(COALESCE(email,''))!='')"
+    return present if mode == 'ready' else 'NOT ' + present
 
 
 @app.route('/api/leads', methods=['POST'])
@@ -1772,6 +1792,7 @@ def queue_today():
     if rep != current_rep() and not is_manager():
         return jsonify({'error': 'Forbidden'}), 403
     target = max(1, min(int(request.args.get('target') or DAILY_TARGET), 200))
+    contact = request.args.get('contact', '')
     cooldown = _iso(_now_dt() - timedelta(days=COOLDOWN_DAYS))
 
     with get_db() as db:
@@ -1782,10 +1803,14 @@ def queue_today():
         due = [dict(r) for r in db.execute(
             'SELECT t.id, t.kind, t.title, t.due_at, t.lead_id, '
             '       l.first_name, l.last_name, l.company, l.phone, l.email, '
-            '       l.website, l.city, l.stage, l.lead_type, l.icp_score, l.hook '
+            '       l.website, l.address, l.city, l.stage, l.lead_type, l.icp_score, l.hook '
             'FROM tasks t JOIN leads l ON l.id = t.lead_id '
             'WHERE t.rep = ? AND t.done = 0 AND t.due_at <= ? AND l.dnc = 0 '
-            'ORDER BY t.due_at LIMIT ?', (rep, _end_of_today(), target)).fetchall()]
+            'ORDER BY t.due_at', (rep, _end_of_today())).fetchall()]
+        due = [d for d in due if not _suppressed_by(
+            supp, _norm_phone(d['phone']), _norm_email(d['email']), d['website'])][:target]
+        if contact == 'research':
+            due = []  # scheduled commitments remain in the daily outreach view
         for d in due:
             d['name'] = (f"{d['first_name']} {d['last_name']}").strip() or d['company']
             d['overdue'] = d['due_at'] < _now()
@@ -1797,16 +1822,17 @@ def queue_today():
 
         # Top up with net-new. Anything with an open task is already in `due`,
         # and anything touched inside the cooldown is deliberately left alone.
-        room = max(0, target - len(due) - done_today)
+        room = target if contact == 'research' else max(0, target - len(due) - done_today)
         fresh = []
         if room:
+            contact_sql = ' AND ' + _contact_clause(contact) if contact in ('ready', 'research') else ''
             rows = db.execute(
                 "SELECT * FROM leads "
                 "WHERE rep = ? AND stage = 'new' AND dnc = 0 "
                 "  AND (last_activity_at = '' OR last_activity_at < ?) "
                 "  AND id NOT IN (SELECT lead_id FROM tasks WHERE done = 0) "
-                "ORDER BY icp_score DESC, created_at ASC LIMIT ?",
-                (rep, cooldown, room * 3)).fetchall()
+                + contact_sql + " ORDER BY icp_score DESC, created_at ASC",
+                (rep, cooldown))
             for r in rows:
                 # Re-check suppression here, not just at import: a domain added
                 # to the list this morning has to drop rows imported last week.

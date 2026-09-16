@@ -206,16 +206,29 @@ def test_a_commercial_bid_is_offered_as_three_packages(A):
     assert 'Compare Packages' not in _text(A.build_signed_pdf(est, signed=False))
 
 
-def test_bullets_are_capped_with_an_overflow_line(A):
-    """A column that runs past the cap says so, rather than silently implying
-    the package stops there."""
+def test_an_untouched_card_shows_the_default_few_and_says_nothing_about_the_rest(A):
+    """A card is a promise list, not a parts list. It used to print ten bullets
+    and "+ 11 more items", which reads as an inventory to a homeowner holding
+    two bids side by side — and there was no overflow line to trust anyway,
+    because the rep had no way to choose which bullets mattered."""
     est = _two_trade_estimate()
     est['trades']['roofing']['tier_features']['better'] = [
         f'Included item number {i}' for i in range(1, 12)]
     text = _text(A.build_signed_pdf(est, signed=False))
-    assert 'Included item number 7' in text
-    assert 'Included item number 8' not in text
-    assert f'+ {11 - A._CMP_MAX_BULLETS} more included' in text
+    assert f'Included item number {A._CARD_BULLET_DEFAULT}' in text
+    assert f'Included item number {A._CARD_BULLET_DEFAULT + 1}' not in text
+    assert 'more included' not in text
+
+
+def test_the_reps_own_bullets_are_printed_in_full(A):
+    """Once the rep has curated the list it IS the promise, however long."""
+    est = _two_trade_estimate()
+    est['trades']['roofing']['tier_features']['better'] = [
+        f'Included item number {i}' for i in range(1, 12)]
+    est['trades']['roofing']['tier_features_edited'] = {'better': True}
+    text = _text(A.build_signed_pdf(est, signed=False))
+    assert 'Included item number 11' in text
+    assert 'more included' not in text
 
 
 def test_comparison_matches_the_customer_pages_own_numbers(A, client):

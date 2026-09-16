@@ -59,6 +59,26 @@ def test_todays_expiry_still_signs():
     assert not A._est_expired(_seed('e2', _days(0)))
 
 
+def test_the_last_day_lasts_until_colorado_midnight(monkeypatch):
+    """The server runs in UTC and the office is in Colorado, so from 6pm
+    Mountain "today" was already tomorrow in UTC: an estimate held until today
+    showed the customer the expired card — and 410'd their signature — for the
+    last six hours of its last day. Expiry is a promise about a business day."""
+    from datetime import date as _date
+    # 2026-09-16 00:12 UTC is 6:12pm on the 15th in Denver.
+    monkeypatch.setattr(A, '_company_today', lambda: _date(2026, 9, 15))
+    assert not A._est_expired(_seed('e4', '2026-09-15'))
+    monkeypatch.setattr(A, '_company_today', lambda: _date(2026, 9, 16))
+    assert A._est_expired(_seed('e5', '2026-09-15'))
+
+
+def test_company_today_is_colorados_date():
+    from datetime import datetime as _dt, timezone as _tz
+    from zoneinfo import ZoneInfo
+    assert A._company_today() == _dt.now(_tz.utc).astimezone(
+        ZoneInfo('America/Denver')).date()
+
+
 def test_a_future_date_is_not_expired():
     assert not A._est_expired(_seed('e3', _days(30)))
 

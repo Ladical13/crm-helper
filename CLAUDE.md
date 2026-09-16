@@ -840,6 +840,11 @@ in a comment, and then had nothing that acted on it.
   The estimate itself still renders — someone reopening an expired quote is a
   warm lead, and `_notify_expired_view` tells the rep, once per estimate.
   An unparseable date means **no** expiry: a typo must not lock a customer out.
+  **Expiry is measured in Colorado, not UTC** (`_company_today`, 2026-09-15).
+  The server runs in UTC, so from 6pm Mountain "today" is already tomorrow
+  there: an estimate held until today showed the expired card, and 410'd the
+  signature, for the last six hours of its own last day. No tz database falls
+  back to UTC, which can only expire a quote early — never late.
 - **`setDirty()` is where crash recovery hangs.** It used to change a label and
   nothing else — no unload guard, no local copy, no autosave — so an iPad
   reclaimed by iOS took an hour of takeoff with it. Three layers now, kept
@@ -1513,6 +1518,20 @@ the rep's own line does not. Re-picking a bundle clears it. `_tier_tagline_edite
 a product's own tagline beats its bundle's (the bundle editor now says so), and
 seed taglines are copy fields filled only on absence — shortening one needs its
 old wording in `_BUNDLE_DESCRIPTION_MIGRATIONS` or it reaches no live book.
+
+**A card is a promise list, not a parts list** (2026-09-15). It printed ten
+bullets and then "+ 11 more items" — an inventory, to a homeowner holding two
+bids side by side. An untouched card now shows the first `_CARD_BULLET_DEFAULT`
+(6) bullets of whatever built it, and the Pricing tab has a What's Included box
+per package; once the rep writes the list it prints exactly as typed, however
+long. `tier_features_edited` is that flag and, like the tagline's, it survives
+the staleness rule — a bundle pick clears it, because those bullets are the
+bundle's. **Nothing truncates with a "+ N more" line any more**, on the /sign
+card, the comparison PDF or the printed card. `_card_bullets` (app.py) and
+`cardBullets`/`tierCardBullets` (app.js) are the mirrored set, with
+`autofillTierBullets` mirroring `_autofill_tier_features` so the PDF the
+browser builds and the page the server renders describe one package.
+Pinned by `tests/test_package_bullets.py`.
 
 **Customers do not see an estimate's Design Studio unless that estimate says
 so.** It is a section toggle like the others — the 🎨 Design Studio chip in the

@@ -5,11 +5,11 @@
 // /estimate/ and nothing else.
 const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
 
-const CACHE = 'po-v225';
+const CACHE = 'po-v226';
 const SHELL = [
   BASE + '/',
-  BASE + '/static/style.css?v=225',
-  BASE + '/static/app.js?v=225',
+  BASE + '/static/style.css?v=226',
+  BASE + '/static/app.js?v=226',
   BASE + '/static/logo.png',
   BASE + '/static/icon-192.png',
   // Document typefaces. Precached deliberately: a rep printing an estimate in
