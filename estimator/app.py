@@ -4085,25 +4085,39 @@ _SYM_NOISE_RES = [re.compile(p, re.I) for p in (
     r'^For more information', r'^verified by ITEL',
     r'^ESTIMATE:', r'^Completed$', r'^Description\s+Quantity',
     r'^Claim\s+\S+\s+Page', r'^Page\s+\d+', r'^P\.?O\.? Box', r'^Fax:',
+    # Liberty Mutual hangs a unit conversion under a line ("Conversion: 0.03 SQ
+    # per LF"), which otherwise reads as a plan measurement called Conversion.
+    r'^Conversion:',
     r'^www\.', r'^[A-Za-z .]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\s*$',
 )]
 
 # Claim-totals labels (last page). One occurrence each and unambiguous — unlike
-# Xactimate these need no per-coverage summing.
+# Xactimate these need no per-coverage summing. Carriers word the same figure
+# differently, so a key may carry one spelling per carrier seen (Safeco first,
+# then Liberty Mutual). Add a spelling here; never a second key for one figure.
 _SYM_SUMMARY_LABELS = {
     'line_item_total':          r'^Subtotal:',
     'material_sales_tax':       r'^Total taxes:',
     'rcv_total':                r'^Replacement cost value:',
-    'paid_when_incurred':       r'^Less costs payable when incurred:',
+    'paid_when_incurred':       r'^Less costs payable when incurred:|^Paid When Incurred\b',
+    # Liberty Mutual prints no plain ACV line. Its "Net Actual Cash Value on
+    # Coverage Building" also takes out the paid-when-incurred costs, which
+    # Safeco's "Actual cash value" does not, so it is deliberately not mapped.
     'acv_total':                r'^Actual cash value:',
-    'deductible':               r'^Applied deductible:',
-    'net_claim':                r'^Net actual cash value:',
+    # "Deductible ($5,000.00):" -- anchored on the bracket, because page 1's
+    # "Deductible:" is the policy's figure, not the one applied to this claim.
+    'deductible':               r'^Applied deductible:|^Deductible\s*\(',
+    'net_claim':                r'^Net actual cash value:|^Net Estimate:',
     # These two run long enough that a carrier's page width can wrap the label
     # onto a second line, stranding the colon away from the figure, so neither
     # is anchored on one.
     'recoverable_depreciation': r'^Less Recoverable depreciation',
-    'net_claim_if_recovered':   r'^Amount payable if depreciation is recovered',
+    'net_claim_if_recovered':   (r'^Amount payable if depreciation is recovered'
+                                 r'|^Net Estimate if Depreciation Is Recovered'),
 }
+# Liberty Mutual itemises the tax instead of printing "Total taxes:" —
+# "State 2.900% (applies to materials only):  $163.41", one row per authority.
+_SYM_TAX_RATE_RE = re.compile(r'^[A-Za-z][\w ]*?\s[\d.]+%\s*\(applies to', re.I)
 # Carrier accounting writes money coming off the claim as negatives; the
 # estimate's claim card wants magnitudes, matching the Xactimate importer.
 _SYM_ABS_KEYS = {'deductible', 'recoverable_depreciation', 'paid_when_incurred'}
@@ -4352,6 +4366,17 @@ def _parse_symbility_items(layout_pages):
                 f"{sum(i['rcv'] for i in sec['items']):,.2f} but the section subtotal "
                 f"says {t['rcv']:,.2f} — review carefully.")
 
+    # Safeco closes the estimate with a bare "Subtotal" row. Liberty Mutual
+    # prints none: it nests areas inside a plan ("General Items", "Windows",
+    # "Roof", each with its own subtotal) and closes on the PLAN's subtotal.
+    # Those plan rows are already each section's totals, so together they are
+    # the checksum -- but only when every plan with work printed one, or a
+    # missing plan would make a short read look like a match.
+    priced = [s for s in sections if s['items']]
+    if grand is None and priced and all(s['totals'] for s in priced):
+        grand = tuple(round(sum(s['totals'][k] for s in priced), 2)
+                      for k in ('rcv', 'dep', 'acv'))
+
     total_rcv = sum(i['rcv'] for s in sections for i in s['items'])
     if grand is not None and abs(total_rcv - grand[0]) > 0.05:
         warnings.append(
@@ -4374,6 +4399,11 @@ def _parse_symbility_summary(flat_text, grand):
                 v = _sym_num(nums[-1])
                 summary[key] = round(abs(v) if key in _SYM_ABS_KEYS else v, 2)
                 break
+    if 'material_sales_tax' not in summary:
+        rates = [re.findall(r'\$\(?-?[\d,]+\.\d{2}\)?', ln.strip())
+                 for ln in flat_text.split('\n') if _SYM_TAX_RATE_RE.match(ln.strip())]
+        if rates and all(rates):
+            summary['material_sales_tax'] = round(sum(_sym_num(r[-1]) for r in rates), 2)
     if 'recoverable_depreciation' in summary:
         summary.setdefault('depreciation_total', summary['recoverable_depreciation'])
     if grand is not None:
@@ -4431,6 +4461,23 @@ def _parse_symbility_pdf(file_bytes):
             'measurements': _symbility_measurements(sections)}
 
 
+def _pdf_has_text(file_bytes):
+    """False for a PDF with no text layer at all -- a scan or a phone photo of
+    the printed estimate. Reps get these when a homeowner hands over the paper
+    copy, and every parser reads text, so the honest answer is to say so
+    rather than report a layout nobody can teach."""
+    if _pypdf is None:
+        raise RuntimeError('pypdf not installed')
+    reader = _pypdf.PdfReader(io.BytesIO(file_bytes))
+    return any((p.extract_text() or '').strip() for p in reader.pages)
+
+
+_CARRIER_SCAN_MSG = ('This PDF is a scan — pictures of the pages, with no text in it '
+                     'to read. Ask the adjuster or the homeowner for the estimate '
+                     'PDF the carrier emailed (or download it from the carrier’s '
+                     'portal), and import that instead.')
+
+
 def _detect_carrier_format(file_bytes):
     """'symbility' or 'xactimate'. Neither product stamps its own name on the
     export, so this goes by the column header, which differs completely."""
@@ -4474,6 +4521,9 @@ def parse_xactimate():
         return jsonify({'error': err}), 400
     filename = (upload.filename or '') if upload else ''
     try:
+        # Not kept for an admin: there is no layout in a scan to teach.
+        if not _pdf_has_text(raw):
+            return jsonify({'error': _CARRIER_SCAN_MSG, 'scanned': True}), 422
         fmt = _detect_carrier_format(raw)
         data = (_parse_symbility_pdf if fmt == 'symbility'
                 else _parse_xactimate_pdf)(raw)

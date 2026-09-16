@@ -1102,6 +1102,17 @@ fail silently:
   the estimator and `estimator/scripts/check_carrier_pdfs.py` must pass on all
   of them before a parser change ships; the committed fixtures are synthetic.
 
+**Symbility varies by carrier too, just not in its columns** (2026-09-16). Safeco
+and Liberty Mutual print the same nine columns and differ in everything around
+them: Liberty Mutual nests areas inside a plan and closes on the *plan's*
+subtotal with no bare `Subtotal` row, so the plan subtotals are the checksum
+(only when every plan with work printed one). It also rewords every claim-totals
+label and itemises the tax per authority. A new wording is one more spelling
+on a key in `_SYM_SUMMARY_LABELS`, never a second key. **A scanned estimate has
+no text for any parser**: `_pdf_has_text()` catches it before detection, tells
+the rep to get the carrier's emailed PDF, and does not keep it — there is no
+layout in a picture to teach.
+
 **Still open: Xactimate exports carry no measurements.** `_parse_symbility_pdf`
 returns `roof_squares`; `_parse_xactimate_pdf` returns no `measurements` key at
 all, despite the comment claiming both parsers return the same shape. It fails
