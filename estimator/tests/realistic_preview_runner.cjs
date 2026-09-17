@@ -11,6 +11,7 @@ const ctx={console,Map,Promise,encodeURIComponent,JSON,crypto:require('crypto').
   S:owner,vzState:{owner,activeTier:'good',saving:false},BASE:'/estimate',
   clearTimeout(){},setTimeout(){},esc:v=>String(v),_vzConceptName:t=>t,
   _vzElevation:()=>elevation,_vzGet:()=>owner.visualizer,setDirty(){},
+  _vzMaterialPanelUpdate(){},_vzVisualizerEditLocked:()=>false,
   _vzScopeRoles:()=>[],_VZ_ROLE_META:{},
   dirty:false,_vzHasUnsavedCanvasWork:()=>false,_vzMetaPending:()=>false,
   confirm:()=>true,alert(){},saveCurrentWork:async()=>true,
