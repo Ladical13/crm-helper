@@ -3601,7 +3601,6 @@ function renderCostProfitPanel() {
     </div>`;
 }
 
-
 /* Optional upgrades on the printed estimate. Two different documents share
    this: an unsigned proposal prints the MENU, with no subtotal and a line
    saying it is not in the total — a customer laying two bids side by side must
@@ -3625,6 +3624,7 @@ function _printUpgradesHtml() {
         <tbody>${body}</tbody><tfoot>${foot}</tfoot></table>
     </div>`;
 }
+
 
 /* ── Optional upgrades panel (Pricing page) ───────────────────────────────
    Where a rep builds the tick list the homeowner works at signing. Job-level
@@ -17555,135 +17555,6 @@ function _bundleColorsForTradeTier(trade, tier) {
     .filter(c => (c.name || '').trim());
 }
 
-// Reusable material layers: image/style work once, color work only in the browser.
-// Keep identity fields in sync with exterior_rendering.MATERIAL_FIELDS.
-const _VZ_MATERIAL_FIELDS = ['exterior_product_id','product_name','bundle_id','bundle_name','style_id','style_name','pattern_id'];
-const _vzMaterialImages = new Map();
-const _vzMaterialColors = new Map();
-const _vzLinearRGB = Array.from({length:256},(_,v)=>v<=10?v/255/12.92:((v/255+.055)/1.055)**2.4);
-let _vzMaterialEnabled = false;
-function _vzMaterialIdentity(row) {
-  return Object.fromEntries(_VZ_MATERIAL_FIELDS.map(key=>[key,String(row?.[key]||'').slice(0,200)]));
-}
-function _vzMaterialEligible(role, row) {
-  const name=Object.values(_vzMaterialIdentity(row)).join(' ');
-  return /^#[0-9a-f]{6}$/i.test(row?.color_hex||'') && name.trim() &&
-    (role==='roof' ? /standing[\s_-]*seam/i.test(name) : role==='siding' && !/\b(stain|stained|unpainted|natural wood)\b/i.test(name));
-}
-function _vzMaterialFor(role,tier) {
-  const ev=_vzElevation(),row=_vzGet().selections?.[_VZ_ROLE_META[role].trade]?.[tier];
-  if (vzState.pendingBaseDataUrl || !_vzMaterialEligible(role,row)) return null;
-  const identity=_vzMaterialIdentity(row);
-  return (ev.material_layers||[]).find(layer=>layer.version===1 && layer.role===role && layer.base_image===ev.base_image &&
-    _VZ_MATERIAL_FIELDS.every(key=>layer.identity?.[key]===identity[key])) || null;
-}
-function _vzMaterialImage(layer) {
-  if (!layer || typeof layer.image_ref!=='string' || !layer.image_ref.startsWith(S.estimate_id+'/') ||
-      !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\.(png|jpe?g|webp)$/.test(layer.image_ref)) return null;
-  if (_vzMaterialImages.has(layer.image_ref)) return _vzMaterialImages.get(layer.image_ref);
-  const img=new Image();
-  _vzMaterialImages.set(layer.image_ref,img);
-  while (_vzMaterialImages.size>16) _vzMaterialImages.delete(_vzMaterialImages.keys().next().value);
-  img.onload=img.onerror=()=>{if(activePage==='visualizer')_vzRedrawAll();};
-  img.src=BASE+'/uploads/'+layer.image_ref;
-  return img;
-}
-function _vzProtectedMaterialMask(role,W,H) {
-  const mask=vzState[role+'Mask'];
-  if (!mask) return null;
-  const protectedRoles=role==='roof'?['trim','soffit','gutter','window','door']:
-    role==='siding'?['trim','soffit','gutter','window','door','shutter']:[];
-  if (!protectedRoles.length) return mask;
-  const clipped=_vzMakeMaskCanvas(W,H),ctx=clipped.getContext('2d');
-  ctx.drawImage(mask,0,0,W,H);
-  ctx.globalCompositeOperation='destination-out';
-  for (const other of protectedRoles) if(vzState[other+'Mask'])ctx.drawImage(vzState[other+'Mask'],0,0,W,H);
-  return clipped;
-}
-function _vzRecolorMaterialPixels(pixels,hex,referenceLuma) {
-  if (!/^#[0-9a-f]{6}$/i.test(hex) || !Number.isFinite(referenceLuma) || referenceLuma<=0) return false;
-  const rgb=[1,3,5].map(offset=>_vzLinearRGB[parseInt(hex.slice(offset,offset+2),16)]);
-  for (let i=0;i<pixels.length;i+=4) {
-    const lum=.2126*_vzLinearRGB[pixels[i]]+.7152*_vzLinearRGB[pixels[i+1]]+.0722*_vzLinearRGB[pixels[i+2]];
-    const light=Math.min(4,lum/referenceLuma);
-    // Preserve small neutral highlights instead of tinting every reflection.
-    const highlight=Math.max(0,lum-referenceLuma)*.08;
-    for(let c=0;c<3;c++) {
-      const linear=Math.max(0,Math.min(1,rgb[c]*light+highlight));
-      pixels[i+c]=Math.round(255*(linear<=.0031308?12.92*linear:1.055*linear**(1/2.4)-.055));
-    }
-  }
-  return true;
-}
-function _vzCompositeMaterial(ctx,W,H,mask,role,tier,hex) {
-  const layer=_vzMaterialFor(role,tier);
-  if (!layer) return false;
-  const img=_vzMaterialImage(layer);
-  // Never silently substitute flat swatches for a prepared layer that failed
-  // to load. The panel explains it and Save waits/fails explicitly.
-  if (!img?.complete || !img.naturalWidth) return true;
-  const key=JSON.stringify([layer.image_ref,layer.reference_luma,hex,W,H]);
-  let colored=_vzCachedCanvas(_vzMaterialColors,key);
-  if (!colored) {
-    colored=_vzMakeMaskCanvas(W,H);
-    const cc=colored.getContext('2d');
-    _vzHighQuality(cc).drawImage(img,0,0,W,H);
-    const data=cc.getImageData(0,0,W,H);
-    if (!_vzRecolorMaterialPixels(data.data,hex,Number(layer.reference_luma))) return true;
-    cc.putImageData(data,0,0);
-    _vzCacheCanvas(_vzMaterialColors,key,colored,48*1024*1024);
-  }
-  const clipped=_vzMakeMaskCanvas(W,H),cc=clipped.getContext('2d');
-  cc.drawImage(colored,0,0);cc.globalCompositeOperation='destination-in';cc.drawImage(mask,0,0,W,H);
-  ctx.save();ctx.globalCompositeOperation='source-over';ctx.drawImage(clipped,0,0);ctx.restore();
-  clipped.width=0;clipped.height=0;
-  return true;
-}
-function _vzMaterialPanelUpdate() {
-  const panel=document.getElementById('vz-materials');
-  if (!panel || !vzState) return;
-  const tier=vzState.activeTier,scope=_vzScopeRoles();
-  const html=`<h3>Instant color comparison <span class="vz-material-badge">Reusable layers · beta</span></h3>
-    <p>Prepare a material style once, then click its colors without another AI image charge. Shadows, seams and texture come from the same saved image.</p>
-    ${['roof','siding'].filter(role=>scope.includes(role)).map(role=>{
-      const row=_vzGet().selections?.[_VZ_ROLE_META[role].trade]?.[tier]||{},layer=_vzMaterialFor(role,tier);
-      const eligible=_vzMaterialEligible(role,row),img=layer?_vzMaterialImage(layer):null;
-      const status=layer?(img?.complete?(img.naturalWidth?'Ready — color changes run locally':'Image unavailable — reload or remove this layer'):'Loading prepared material…'):
-        eligible?'Not prepared for this product/style':'Choose standing-seam metal or solid-color siding to use this prototype';
-      return `<div class="vz-material-row"><strong>${esc(_VZ_ROLE_META[role].label)}</strong><span role="status">${esc(status)}</span>
-        <div class="vz-material-actions"><button class="btn small" onclick="_vzMaterialUseOriginal('${role}')" ${!eligible||_vzRealisticBusy?'disabled':''}>Use existing photo style · no AI charge</button>
-        <button class="btn small" onclick="_vzRealisticGenerate('${role}')" ${!eligible||!_vzMaterialEnabled||_vzRealisticBusy?'disabled':''}>Prepare new style · paid AI</button>
-        ${(_vzElevation().material_layers||[]).some(l=>l.role===role)?`<button class="btn small" onclick="_vzMaterialUseOriginal('${role}',true)" ${_vzRealisticBusy?'disabled':''}>Remove reusable ${role} layers</button>`:''}</div></div>`;
-    }).join('')}
-    <p class="vz-picker-help">Review the surface selection first. Detected trim/fascia, soffits, gutters and openings are protected even when unchecked. Missing or incorrect boundaries still need correction under Refine selection. “Existing photo style” cannot turn shingles into metal or change siding layout.</p>
-    <p class="vz-picker-help">Solid painted finishes only; blended shingle colors still use individual product textures. Colors are approximate, not calibrated manufacturer matches. Confirm physical samples. New AI styles require OpenAI setup; fal is used only for surface detection.</p>`;
-  if (panel.innerHTML!==html) panel.innerHTML=html;
-}
-function _vzAdoptMaterialLayers(saved) {
-  const current=_vzElevation();
-  current.material_layers=saved.material_layers||[];
-  current.tier_renders={};
-  if(current.id==='front')_vzGet().tier_renders={};
-  vzState.dirty=true;setDirty();_vzRedrawAll();
-}
-async function _vzMaterialUseOriginal(role,remove=false) {
-  if (_vzRealisticBusy || _vzVisualizerEditLocked()) return;
-  const owner=S,state=vzState,elevation=_vzElevation().id,tier=state.activeTier;
-  if (!confirm(remove?'Remove reusable layers for this surface? Saved previews will need to be saved again.':
-    'Use the existing '+role+' style in this photograph? Confirm it ALREADY matches the selected material/style and that the surface selection excludes fascia, trim and openings. This only changes color, not material shape. No AI call will be made.')) return;
-  _vzRealisticBusy=true;_vzMaterialPanelUpdate();
-  try {
-    if (!(await saveCurrentWork())) throw new Error('Save your design first.');
-    if (S!==owner||vzState!==state||_vzElevation().id!==elevation||state.activeTier!==tier) return;
-    if(dirty||_vzHasUnsavedCanvasWork()||_vzMetaPending(owner))throw new Error('The design changed during saving. Save and try again.');
-    state.saving=true;
-    const result=await _vzRealisticApi(`/api/estimates/${encodeURIComponent(owner.estimate_id)}/material-layers`,
-      {role,tier,elevation,action:remove?'remove':'original',reviewed:true});
-    if(S===owner&&vzState===state)_vzAdoptMaterialLayers(result.visualizer.elevations[elevation]);
-  } catch(error) {alert(error.message);}
-  finally {state.saving=false;_vzRealisticBusy=false;_vzMaterialPanelUpdate();}
-}
-
 // Realistic edits are separate from the instant canvas. Generation is explicit,
 // candidates are private, and only a reviewed candidate becomes a saved render.
 const _vzRealisticRequests = new Map();
@@ -17714,13 +17585,11 @@ async function _vzRealisticRefresh() {
       eid ? _vzRealisticApi(`/api/estimates/${encodeURIComponent(eid)}/realistic-previews`) : Promise.resolve({jobs:[]})
     ]);
     if (S!==owner || vzState!==state || document.getElementById('vz-realistic')!==panel || _vzElevation().id!==elevation || state.activeTier!==tier) return;
-    _vzMaterialEnabled=cap.enabled;_vzMaterialPanelUpdate();
     const job=result.jobs.find(j=>j.elevation===elevation && j.tier===tier);
     const running=result.jobs.some(j=>j.status==='running');
-    const accepted=job && (job.material_role?(_vzElevation().material_layers||[]).some(layer=>layer.job_id===job.id):_vzElevation().tier_renders?.[tier]===`${eid}/vr_ai_${job.id}.png`);
+    const accepted=job && _vzElevation().tier_renders?.[tier]===`${eid}/vr_ai_${job.id}.png`;
     const key=`${eid}:${elevation}:${tier}`, retry=_vzRealisticRequests.has(key);
-    panel.innerHTML=`<h3>${job?.material_role?'Reusable '+esc(job.material_role)+' layer review':'Optional final AI preview'} · ${esc(_vzConceptName(tier))}</h3>
-      ${job?.material_role?'<p>The neutral-gray candidate is a material base. After review, its colors can be changed instantly in the canvas above. Check that seams and edges align with the original; reject any shifted geometry.</p>':''}
+    panel.innerHTML=`<h3>Realistic AI preview · ${esc(_vzConceptName(tier))}</h3>
       <p>Uses the original photo and selected product references—not the painted surface masks. Roof requests exclude fascia, rake boards, soffits and gutters unless separately selected.</p>
       <p>AI can alter details or approximate a manufacturer’s color. Review the result and confirm physical samples before presenting it.</p>
       <p><strong>Selected surfaces</strong><br>${esc(_vzRealisticSelectionSummary(tier)).replace(/\n/g,'<br>')}<br>For a roof-only edit, uncheck the other surfaces above.</p>
@@ -17733,7 +17602,7 @@ async function _vzRealisticRefresh() {
         <figure><figcaption>Original</figcaption><img src="${BASE}/uploads/${esc(_vzElevation().base_image)}" alt="Original house photograph"></figure>
         <figure><figcaption>AI concept—not a guaranteed product match</figcaption><img src="${BASE}/api/estimates/${encodeURIComponent(eid)}/realistic-previews/${job.id}/image" alt="Generated renovation concept"></figure>
       </div>${!accepted?`<label><input id="vz-realistic-reviewed" type="checkbox"> I checked the roof geometry, fascia/rake, unchanged surfaces and product appearance.</label>
-      <button class="btn" onclick="_vzRealisticAccept('${job.id}')" ${job.stale||_vzRealisticBusy?'disabled':''}>${job.material_role?'Use reusable material layer':'Use reviewed preview'}</button>`:''}`:''}
+      <button class="btn" onclick="_vzRealisticAccept('${job.id}')" ${job.stale||_vzRealisticBusy?'disabled':''}>Use reviewed preview</button>`:''}`:''}
       <p class="vz-picker-help">The canvas above remains the instant preview. Only “Use reviewed preview” puts the AI image in the saved concept. Saving new instant renderings replaces it; rejected candidates need not be used.</p>`;
     if (running) _vzRealisticTimer=setTimeout(_vzRealisticRefresh,4000);
   } catch (error) {
@@ -17741,23 +17610,20 @@ async function _vzRealisticRefresh() {
       panel.innerHTML=`<p>${esc(error.message)}</p><button class="btn" onclick="_vzRealisticRefresh()">Refresh preview status</button>`;
   }
 }
-async function _vzRealisticGenerate(materialRole=null) {
-  if (_vzRealisticBusy || _vzVisualizerEditLocked()) return;
+async function _vzRealisticGenerate() {
+  if (_vzRealisticBusy) return;
   const owner=S, state=vzState, elevation=_vzElevation().id, tier=state.activeTier;
-  if (!confirm(materialRole?
-    `Prepare one paid reusable ${materialRole} style? Review the surface boundaries first. The original photo and selected material/style will be sent to OpenAI. You can reuse an accepted layer for this style’s colors; retries or new styles cost extra. Review alignment before using it.`:
-    'Generate one paid AI image? The original house photo and selected product references will be sent to OpenAI. Review the result before using it. This does not publish anything to the customer.\n\n'+_vzRealisticSelectionSummary(tier))) return;
+  if (!confirm('Generate one paid AI image? The original house photo and selected product references will be sent to OpenAI. Review the result before using it. This does not publish anything to the customer.\n\n'+_vzRealisticSelectionSummary(tier))) return;
   _vzRealisticBusy=true;
   try {
     if (!(await saveCurrentWork())) throw new Error('Save the design successfully before generating.');
     if (S!==owner || vzState!==state || _vzElevation().id!==elevation || state.activeTier!==tier) return;
     if (dirty || _vzHasUnsavedCanvasWork() || _vzMetaPending(owner)) throw new Error('The design changed while saving. Save again before generating.');
-    const eid=owner.estimate_id, key=`${eid}:${elevation}:${tier}${materialRole?':'+materialRole:''}`;
+    const eid=owner.estimate_id, key=`${eid}:${elevation}:${tier}`;
     let nonce=_vzRealisticRequests.get(key);
     if (!nonce) { nonce=crypto.randomUUID(); _vzRealisticRequests.set(key,nonce); }
-    await _vzRealisticApi(`/api/estimates/${encodeURIComponent(eid)}/realistic-previews`,{confirm:true,elevation,tier,nonce,...(materialRole?{material_role:materialRole}:{})});
+    await _vzRealisticApi(`/api/estimates/${encodeURIComponent(eid)}/realistic-previews`,{confirm:true,elevation,tier,nonce});
     _vzRealisticRequests.delete(key);
-    if(materialRole)document.getElementById('vz-realistic')?.scrollIntoView({behavior:'smooth',block:'start'});
   } catch (error) {
     alert(error.message+' If the connection failed, check preview status before generating again.');
   } finally { _vzRealisticBusy=false; _vzRealisticRefresh(); }
@@ -17777,10 +17643,6 @@ async function _vzRealisticAccept(jid) {
     const result=await _vzRealisticApi(`/api/estimates/${encodeURIComponent(owner.estimate_id)}/realistic-previews/${jid}/accept`,{reviewed:true});
     if (S===owner && vzState===state) {
       const saved=result.visualizer.elevations[elevation], current=_vzElevation();
-      if (saved.material_layers?.some(layer=>layer.job_id===jid)) {
-        _vzAdoptMaterialLayers(saved);
-        return;
-      }
       current.tier_renders[tier]=saved.tier_renders[tier];
       current.realistic_previews=saved.realistic_previews;
       if (elevation==='front') _vzGet().tier_renders={...current.tier_renders};
@@ -17873,7 +17735,6 @@ function _vzShellHtml(hasPhoto) {
           <canvas id="vz-canvas" class="vz-canvas" role="img" aria-label="Exterior design preview for the active elevation and concept"></canvas>
           <div class="vz-canvas-legend" id="vz-canvas-legend"></div>
         </div>
-        <section id="vz-materials" class="vz-realistic vz-materials" aria-label="Reusable material colors"></section>
         <section id="vz-realistic" class="vz-realistic" aria-live="polite">Loading realistic preview options…</section>
         <details class="vz-refine" ${vzState.refine?'open':''} ontoggle="_vzSetRefine(this.open)">
         <summary>Refine selection <span>Optional edge touch-ups</span></summary>
@@ -19726,11 +19587,10 @@ function _vzComposeInto(target, tier, opts) {
   const scope = new Set(vz.scope || []);
   for (const role of _VZ_COMPOSE_ORDER) {
     if (!scope.has(role)) continue;
-    const meta = _VZ_ROLE_META[role], mask = _vzProtectedMaterialMask(role,W,H);
+    const meta = _VZ_ROLE_META[role], mask = vzState[role + 'Mask'];
     const selected = _vzEffectiveExteriorSelection(meta.trade,
       (vz.selections[meta.trade] || {})[tier] || {});
     if (!mask || !selected.color_hex) continue;
-    if (_vzCompositeMaterial(ctx,W,H,mask,role,tier,selected.color_hex)) continue;
     const texture = selected.texture_ref ? _vzGetTextureImg(selected.texture_ref) : null;
     const textureReady = !!(texture && texture.complete && texture.naturalWidth);
     // Manufacturer swatches already carry the product's color. Applying the
@@ -19872,7 +19732,6 @@ function _vzQueueAlignmentRedraw() {
 
 function _vzRedrawAll(mainOnly = false) {
   if (!vzState || !vzState.canvas) return;
-  if (!mainOnly) _vzMaterialPanelUpdate();
   vzState.canvas.classList.toggle('vz-editing',!!(vzState.placementOpen||vzState.alignmentOpen||
     (vzState.refine&&!vzState.original&&!vzState.detecting)));
   if (vzState.original && vzState.photoImg) {
@@ -19998,13 +19857,11 @@ async function _vzSaveAll() {
     const selections = JSON.parse(JSON.stringify(vz.selections));
     const scopedTrades = new Set(roles.map(role => _VZ_ROLE_META[role].trade));
     const selectedRows = Object.entries(selections).filter(([trade]) => scopedTrades.has(trade)).flatMap(([trade, tiers]) =>
-      Object.entries(tiers || {}).filter(([tier])=>!_vzMaterialFor(_VZ_ROLES.find(role=>_VZ_ROLE_META[role].trade===trade),tier)).map(([,selected]) =>
+      Object.values(tiers || {}).map(selected =>
         _vzEffectiveExteriorSelection(trade, selected)));
     const patterns = new Set(selectedRows.map(s => s.pattern_id).filter(Boolean));
     const textures = new Set(selectedRows.map(s => s.texture_ref).filter(Boolean));
     if (!baseOnly) {
-      await Promise.all(roles.flatMap(role=>TIERS.map(tier=>_vzMaterialFor(role,tier))).filter(Boolean)
-        .map(layer=>_vzImageReady(_vzMaterialImage(layer))));
       await Promise.all([...patterns].map(pid => _vzImageReady(_vzGetPatternImg(pid))));
       await Promise.all([...textures].map(ref => _vzImageReady(_vzGetTextureImg(ref))));
     }
