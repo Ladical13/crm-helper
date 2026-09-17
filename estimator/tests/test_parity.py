@@ -250,6 +250,38 @@ FIXTURES = [
         'enabled': True, 'mode': 'simple', 'sections': ['Supplements'],
         'line_items': [{'name': 'g', 'quantity': 100, 'unit_price': 9},
                        {'name': 'downspout', 'quantity': 0, 'unit_price': 120, 'section': 'Supplements'}]}}}),
+
+    # ── optional upgrades ─────────────────────────────────────────────
+    # An OFFERED upgrade is worth nothing: the price only joins the total once
+    # the customer has ticked it. Both sides have to agree about that, or one
+    # of them quotes a roof the customer never agreed to buy.
+    ('upgrades offered, none elected', {'pricing': STD, 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)})]}},
+        'upgrades': {'enabled': True, 'items': [
+            {'id': 'u_a', 'name': 'Gutter guards', 'price': 1450, 'cost': 820},
+            {'id': 'u_b', 'name': 'Skylight', 'price': 2200, 'cost': 1400}]}}),
+
+    ('upgrades elected', {'pricing': STD, 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)})]}},
+        'upgrades': {'enabled': True, 'items': [
+            {'id': 'u_a', 'name': 'Gutter guards', 'price': 1450, 'cost': 820,
+             'accepted': True},
+            {'id': 'u_b', 'name': 'Skylight', 'price': 2200, 'cost': 1400},
+            # Elected but unpriced, and elected but nameless: neither is an
+            # offer, so neither may reach the total on either side.
+            {'id': 'u_c', 'name': 'Ridge vent', 'price': 0, 'accepted': True},
+            {'id': 'u_d', 'name': '', 'price': 900, 'accepted': True}]}}),
+
+    # The block switched off withdraws the offer, election and all — the same
+    # rule on both sides, so a rep un-offering upgrades cannot leave a total
+    # that only one half of the app agrees with.
+    ('upgrades elected but not offered', {'pricing': STD, 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)})]}},
+        'upgrades': {'enabled': False, 'items': [
+            {'id': 'u_a', 'name': 'Gutter guards', 'price': 1450, 'accepted': True}]}}),
 ]
 
 
@@ -282,6 +314,14 @@ def test_tier_total_matches_js(A, js_totals, name, est, tier):
     assert py == pytest.approx(js, abs=0.01), (
         f'{name} @ {tier}: app.py={py:.2f} but app.js={js:.2f} — '
         'pricing changed in one file and not the other')
+
+
+@pytest.mark.parametrize('name,est', FIXTURES, ids=[n for n, _ in FIXTURES])
+def test_upgrades_total_matches_js(A, js_totals, name, est):
+    py = A.upgrades_total(est)
+    js = js_totals[name]['upgrades']
+    assert py == pytest.approx(js, abs=0.01), (
+        f'{name} upgrades: app.py={py:.2f} but app.js={js:.2f}')
 
 
 @pytest.mark.parametrize('name,est', FIXTURES, ids=[n for n, _ in FIXTURES])

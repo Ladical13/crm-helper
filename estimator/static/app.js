@@ -2236,6 +2236,10 @@ function blankEstimate() {
     // to be pre-filled from ⚙ Settings, which made the Contract tab's field
     // look meaningful while the server threw it away. See _customer_color_options.
     shingle_selection: { enabled: true, options: [], chosen: '', material_bundle_id: '' },
+    // Optional upgrades the customer elects at signing. `enabled` gates the
+    // block on the /sign page; the rep's Upgrades panel is the one control for
+    // it, so there is deliberately no Print Pages chip competing with it.
+    upgrades: { enabled: true, items: [] },
     measurements: { waste_pct: _globalWastePct() },
     structures: [],            // buildings on a complex; empty = one roof, measured above
     intro_text: '',
@@ -2503,9 +2507,57 @@ function renderMarginBanner() {
 }
 // Mix-and-match total: every trade priced at ITS OWN selected tier.
 // MUST mirror calc_selected_total in app.py.
+/* ── Optional upgrades — the homeowner's own add-ons ───────────────────────
+   Priced extras the rep offers but does not include: gutter guards, an
+   impact-rated shingle, a second run of ice & water. The homeowner ticks the
+   ones they want on the /sign page and they join the contract they sign.
+
+   The three rules that carry this live in app.py above upgrade_items(), and
+   the two that matter most here are: the PRICE IS STORED, never re-derived
+   from the price book (so it cannot move under a customer who already ticked
+   it), and NOTHING COUNTS UNTIL THE CUSTOMER TICKS IT — `accepted` is written
+   by the /sign POST and by nothing else, which is why adding upgradesTotal()
+   to selectedTotal() moves no unsigned estimate.
+
+   MUST mirror upgrade_items / upgrade_price / upgrade_cost / upgrades_offered
+   / accepted_upgrades / upgrades_total / upgrades_cost_total (app.py). */
+function upgradeItems() {
+  return (((S.upgrades || {}).items) || [])
+    .filter(u => u && String(u.name || '').trim());
+}
+function upgradePrice(u) { return parseFloat((u || {}).price) || 0; }
+/* A blank AND a 0 both mean "not costed", which is the opposite of the rate
+   chain's rule where an explicit 0 is a real choice. Selling a roof at cost is
+   a decision; an upgrade whose cost box reads 0 has simply never been filled
+   in, and treating that as free reports a 100% margin nobody earned. */
+function upgradeCost(u) {
+  const v = (u || {}).cost;
+  if (v === undefined || v === null || v === '') return null;
+  const c = parseFloat(v);
+  return (isFinite(c) && c > 0) ? c : null;
+}
+function upgradesOffered() {
+  if ((S.upgrades || {}).enabled === false) return [];
+  return upgradeItems().filter(u => upgradePrice(u) > 0);
+}
+function acceptedUpgrades() {
+  return upgradesOffered().filter(u => u.accepted === true);
+}
+function upgradesTotal() {
+  return acceptedUpgrades().reduce((s, u) => s + upgradePrice(u), 0);
+}
+function upgradesCostTotal() {
+  let cost = 0;
+  const uncosted = [];
+  acceptedUpgrades().forEach(u => {
+    const c = upgradeCost(u);
+    if (c === null) uncosted.push(u); else cost += c;
+  });
+  return { cost, uncosted };
+}
 function selectedTotal() {
   return RETAIL_TRADE_KEYS
-    .reduce((s,tr)=>s+tradeTotal(tr, tradeTier(tr)),0);
+    .reduce((s,tr)=>s+tradeTotal(tr, tradeTier(tr)),0) + upgradesTotal();
 }
 /* ── Insurance job margin ─────────────────────────────────────────────────
    On a retail job the rep sets the price and the margin follows. On an
@@ -2547,16 +2599,22 @@ function insuranceCostReport() {
   // under the roof plan (gutters is the usual one) have no matching cost on
   // our side, so counting them would read as pure profit.
   const scope = carrierScopeReport();
-  const revenue = scope.roof_rcv + n(ic.supplements);
+  // Non-covered upgrades the homeowner elected out of pocket are revenue on
+  // this job like any other, and they are the one line on an insurance
+  // estimate whose price we set rather than the carrier's.
+  const upSell = upgradesTotal();
+  const upCost = upgradesCostTotal();
+  const revenue = scope.roof_rcv + n(ic.supplements) + upSell;
   const build = (ic.items || []).reduce(
     (a, i) => a + n(i.quantity) * n(i.unit_cost), 0);
   const adders = {};
   INSURANCE_ADDERS.forEach(k => { adders[k] = n((ic.adders || {})[k]); });
   const addTot = INSURANCE_ADDERS.reduce((a, k) => a + adders[k], 0);
-  const cost = build + addTot;
+  const cost = build + addTot + upCost.cost;
   const profit = revenue - cost;
   return {
     revenue, supplements: n(ic.supplements), build_cost: build,
+    upgrades: upSell, upgrades_cost: upCost.cost,
     adders, adders_total: addTot, cost, gross_profit: profit,
     // No cost entered yet means the margin is UNKNOWN, never 100% — otherwise
     // every un-costed claim sorts to the top of the profitability table.
@@ -2565,8 +2623,10 @@ function insuranceCostReport() {
     review_count: scope.review_count,
     margin_pct: (revenue > 0 && cost > 0) ? (profit / revenue * 100) : null,
     costed: cost > 0,
-    // The margin is only as honest as the price book behind it.
-    unpriced: unpricedInsuranceCostLines().map(i => i.name),
+    // The margin is only as honest as the price book behind it — and an
+    // elected upgrade with no cost is the same fault arriving by hand.
+    unpriced: unpricedInsuranceCostLines().map(i => i.name)
+      .concat(upCost.uncosted.map(u => String(u.name || ''))),
   };
 }
 
@@ -3502,6 +3562,18 @@ function renderCostProfitPanel() {
         </tbody>
       </table>
       ${data[selTier].simpleSell>0?`<div class="cpp-simple-note">Simple-priced trades (e.g. Gutters): ${fmtCur(data[selTier].simpleSell)} sell — cost not tracked, excluded from profit above.</div>`:''}
+      ${/* Elected upgrades are contract dollars in every column's total but in
+            none of the package costs above, which are per-package and per-trade.
+            Stated separately rather than folded in, so material + labor keeps
+            equalling Total Cost — the permit packet fees on that sum. */
+        (()=>{
+        const el=acceptedUpgrades(); if(!el.length) return '';
+        const sell=upgradesTotal(), uc=upgradesCostTotal();
+        const known=uc.uncosted.length===0&&sell>0;
+        return `<div class="cpp-simple-note">Elected upgrades: ${fmtCur(sell)} sell${
+          known?` · ${fmtCur(uc.cost)} cost · ${_pct((sell-uc.cost)/sell*100)} margin`
+               :` · no cost entered on ${uc.uncosted.length}, so the margin on them is unknown`
+        } — on top of whichever package above the customer picked.</div>`;})()}
       ${pt.length?`
       <details class="cpp-bytrade">
         <summary>Per-trade breakdown — ${TIER_LABELS[selTier]}</summary>
@@ -3526,6 +3598,239 @@ function renderCostProfitPanel() {
           </tbody>
         </table></div>
       </details>`:''}
+    </div>`;
+}
+
+
+/* Optional upgrades on the printed estimate. Two different documents share
+   this: an unsigned proposal prints the MENU, with no subtotal and a line
+   saying it is not in the total — a customer laying two bids side by side must
+   not read an optional extra as part of the price. A signed one prints what
+   they elected, with a subtotal, because selectedTotal() now includes it. */
+function _printUpgradesHtml() {
+  const signed = !!S.signature;
+  const ups = (signed ? acceptedUpgrades() : upgradesOffered())
+    .filter(u => String(u.name || '').trim());
+  if (!ups.length) return '';
+  const body = ups.map(u => `<tr>
+      <td>${esc(u.name)}${u.description ? `<div style="font-size:8.5pt;color:#555">${esc(u.description)}</div>` : ''}</td>
+      <td class="p-right">${fmtCur(upgradePrice(u))}</td>
+    </tr>`).join('');
+  const foot = signed
+    ? `<tr><td>Upgrades Subtotal</td><td class="p-right">${fmtCur(upgradesTotal())}</td></tr>`
+    : `<tr><td colspan="2">Optional &mdash; choose any of these when you sign. Not included in the total below.</td></tr>`;
+  return `<div class="p-trade">
+      <div class="p-trade-title">${signed ? 'Optional Upgrades You Selected' : 'Optional Upgrades Available'}</div>
+      <table class="p-table"><thead><tr><th>Description</th><th class="p-right">Price</th></tr></thead>
+        <tbody>${body}</tbody><tfoot>${foot}</tfoot></table>
+    </div>`;
+}
+
+/* ── Optional upgrades panel (Pricing page) ───────────────────────────────
+   Where a rep builds the tick list the homeowner works at signing. Job-level
+   like the margin banner, not per-trade, so it sits below the tab strip
+   rather than inside one tab: an upgrade is not owned by a trade, and a rep
+   should not have to guess which tab is hiding it.
+
+   The `Offer to customer` switch is the ONE control for whether the block
+   appears on the /sign page. There is deliberately no Print Pages chip beside
+   it — two controls for one field is how they end up disagreeing, which the
+   estimate status bar already learned the hard way. */
+
+function upgradesState() {
+  if (!S.upgrades || typeof S.upgrades !== 'object') S.upgrades = { enabled: true, items: [] };
+  if (!Array.isArray(S.upgrades.items)) S.upgrades.items = [];
+  return S.upgrades;
+}
+
+function _newUpgradeId() {
+  return 'u_' + Math.random().toString(16).slice(2, 10);
+}
+
+function addUpgrade(seed) {
+  const u = Object.assign({ id: _newUpgradeId(), name: '', description: '',
+                            price: '', cost: '' }, seed || {});
+  if (!u.id) u.id = _newUpgradeId();
+  upgradesState().items.push(u);
+  setDirty();
+  renderUpgradesPanel();
+}
+
+function setUpgradeField(id, field, value) {
+  const u = upgradesState().items.find(x => x && x.id === id);
+  if (!u) return;
+  u[field] = value;
+  setDirty();
+  _refreshUpgradeDerived();
+}
+
+function removeUpgrade(id) {
+  const st = upgradesState();
+  const u = st.items.find(x => x && x.id === id);
+  // An elected upgrade is part of a signed contract. Deleting the row does not
+  // un-sign it — the document hash on the certificate simply stops matching —
+  // so this says so rather than quietly dropping a line the customer bought.
+  if (u && u.accepted === true &&
+      !confirm('The customer elected this upgrade when they signed. Removing it takes it '
+               + 'off the contract total and off the work order. Remove it anyway?')) {
+    return;
+  }
+  st.items = st.items.filter(x => x && x.id !== id);
+  setDirty();
+  renderUpgradesPanel();
+}
+
+function toggleUpgradesOffered(on) {
+  upgradesState().enabled = !!on;
+  setDirty();
+  renderUpgradesPanel();
+}
+
+/* A price-book pick prices the upgrade ONCE and writes the number down — the
+   same margin chain as any other line, resolved against the package currently
+   selected. From then on the number is the rep's: editing the book later must
+   never reprice an upgrade a customer has already been shown. */
+function addUpgradeFromPriceBook() {
+  const sel = document.getElementById('upg-pb-pick');
+  if (!sel || !sel.value) { alert('Pick a product first.'); return; }
+  const parts = sel.value.split('|');
+  const trade = parts[0], pid = parts[1];
+  const p = _tradeCatalog(trade).find(x => x && x.id === pid);
+  if (!p) { alert('That product is no longer in the price book.'); return; }
+  // Sized off the measurement report when the product knows how, exactly as a
+  // bundle line would; 1 when it does not, which the rep can then edit.
+  const q = measuredQty({ measure: p.measure, unit: p.unit,
+                          bundle_lf: p.bundle_lf, formula: p.formula }) || 1;
+  const unitCost = parseFloat(p.cost) || 0;
+  const cost  = unitCost * q;
+  const price = lineTotal(q, unitCost, 0, trade, S.selected_tier);
+  addUpgrade({
+    name: p.name || 'Upgrade',
+    description: String(p.description || '').trim(),
+    price: Math.round(price * 100) / 100,
+    cost:  cost > 0 ? Math.round(cost * 100) / 100 : '',
+    unit: displayUnit(p) || (p.unit || ''),
+    quantity: q,
+    product_id: p.id,
+    trade: trade,
+  });
+  sel.value = '';
+}
+
+function _upgradeRowMargin(u) {
+  const price = upgradePrice(u);
+  const cost  = upgradeCost(u);
+  if (price <= 0) return '—';
+  if (cost === null) return '<span class="upg-warn">no cost</span>';
+  return _pct((price - cost) / price * 100);
+}
+
+/* Rewrites only the derived cells, never the inputs — a full re-render on
+   every keystroke takes the cursor out of the box being typed into. */
+function _refreshUpgradeDerived() {
+  upgradesState().items.forEach(u => {
+    if (!u || !u.id) return;
+    const cell = document.getElementById('upg-m-' + u.id);
+    if (cell) cell.innerHTML = _upgradeRowMargin(u);
+  });
+  const foot = document.getElementById('upg-foot');
+  if (foot) foot.innerHTML = _upgradeFootHtml();
+}
+
+function _upgradeFootHtml() {
+  const offered  = upgradesOffered();
+  const elected  = acceptedUpgrades();
+  const offTot   = offered.reduce((s, u) => s + upgradePrice(u), 0);
+  const unpriced = upgradeItems().filter(u => upgradePrice(u) <= 0).length;
+  const uc       = upgradesCostTotal();
+  let html = '<span class="upg-foot-l">' + offered.length + ' offered · '
+           + fmtCur(offTot) + ' on the table</span>';
+  if (elected.length) {
+    const sell = upgradesTotal();
+    const margin = (uc.uncosted.length === 0 && sell > 0)
+      ? ' · ' + _pct((sell - uc.cost) / sell * 100) + ' margin' : '';
+    html += '<span class="upg-foot-r">✓ ' + elected.length + ' elected · <strong>'
+          + fmtCur(sell) + '</strong>' + margin + ' — in the contract total</span>';
+  } else {
+    html += '<span class="upg-foot-r">Nothing elected yet — none of this is in the total</span>';
+  }
+  if (unpriced) {
+    html += '<div class="upg-note upg-note-warn">' + unpriced + ' upgrade'
+          + (unpriced > 1 ? 's carry' : ' carries') + ' no price, so '
+          + (unpriced > 1 ? 'they are' : 'it is') + ' not shown to the customer at all — '
+          + 'an unpriced offer would render as a tickable $0.00.</div>';
+  }
+  if (uc.uncosted.length) {
+    html += '<div class="upg-note upg-note-warn">No cost entered on '
+          + uc.uncosted.map(u => esc(u.name)).join(', ')
+          + '. The margin on those is unknown, not 100% — they are left out of the '
+          + 'margin figures rather than flattering them.</div>';
+  }
+  return html;
+}
+
+function renderUpgradesPanel() {
+  const el = document.getElementById('upgrades-panel');
+  if (!el) return;
+  const st = upgradesState();
+  const items = st.items.filter(Boolean);
+  const on = st.enabled !== false;
+
+  const pbOpts = BUNDLE_TRADES.map(trade => {
+    const prods = _tradeCatalog(trade)
+      .filter(p => p && p.name)
+      .map(p => `<option value="${esc(trade)}|${esc(p.id)}">${esc(p.name)}</option>`)
+      .join('');
+    return prods ? `<optgroup label="${esc(TRADE_LABELS[trade] || trade)}">${prods}</optgroup>` : '';
+  }).join('');
+
+  const rows = items.map(u => `<tr>
+      <td><input class="upg-in" value="${esc(u.name || '')}" placeholder="Gutter guards"
+        oninput="setUpgradeField('${u.id}','name',this.value)"></td>
+      <td><input class="upg-in" value="${esc(u.description || '')}" placeholder="Micro-mesh, full perimeter"
+        oninput="setUpgradeField('${u.id}','description',this.value)"></td>
+      <td><input class="upg-in upg-num" type="number" step="0.01" min="0"
+        value="${esc(u.price === 0 ? '0' : (u.price || ''))}" placeholder="0.00"
+        oninput="setUpgradeField('${u.id}','price',this.value)"></td>
+      <td><input class="upg-in upg-num" type="number" step="0.01" min="0"
+        value="${esc(u.cost === 0 ? '0' : (u.cost || ''))}" placeholder="—"
+        oninput="setUpgradeField('${u.id}','cost',this.value)"></td>
+      <td class="upg-m" id="upg-m-${u.id}">${_upgradeRowMargin(u)}</td>
+      <td class="upg-el">${u.accepted === true
+        ? '<span class="upg-yes" title="Elected by the customer at signing">✓</span>' : ''}</td>
+      <td><button class="upg-x" onclick="removeUpgrade('${u.id}')" title="Remove">✕</button></td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div class="upg-panel">
+      <div class="upg-head">
+        <h3>🎁 Optional Upgrades</h3>
+        <label class="checkbox-label upg-toggle">
+          <input type="checkbox" ${on ? 'checked' : ''}
+            onchange="toggleUpgradesOffered(this.checked)"> Offer to customer
+        </label>
+      </div>
+      <div class="upg-sub">Priced extras the homeowner ticks on the signing page. Nothing here is in
+        any total until they do &mdash; and the price they are shown is the price they get, so editing
+        the price book later never moves it.</div>
+      ${!on ? `<div class="upg-note">Switched off &mdash; the signing page shows no upgrades block.</div>` : ''}
+      ${items.length ? `
+      <div class="upg-wrap"><table class="upg-table">
+        <thead><tr><th>Upgrade</th><th>Description</th><th class="upg-num-h">Price</th>
+          <th class="upg-num-h">Our cost</th><th>Margin</th>
+          <th title="Elected by the customer">&#10003;</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>` : `<div class="upg-empty">No upgrades offered yet.</div>`}
+      <div class="upg-actions">
+        <button class="upg-add" onclick="addUpgrade()">+ Add upgrade</button>
+        ${pbOpts ? `<span class="upg-pb">
+          <select id="upg-pb-pick" class="upg-pb-sel">
+            <option value="">From the price book&hellip;</option>${pbOpts}
+          </select>
+          <button class="upg-add upg-add-2" onclick="addUpgradeFromPriceBook()">+ Add priced</button>
+        </span>` : ''}
+      </div>
+      <div class="upg-foot" id="upg-foot">${_upgradeFootHtml()}</div>
     </div>`;
 }
 
@@ -6437,6 +6742,9 @@ function renderTradeContent() {
   // A margin edit re-renders only the trade tab, so the job-level banner has to
   // be refreshed from here too or it reports the margin from before the edit.
   renderMarginBanner();
+  // Same reason: the upgrades panel prints a margin per row off the current
+  // rate chain, so a rate edit in a trade tab has to reach it.
+  renderUpgradesPanel();
   const td    = S.trades[activeTrade];
   const trade = activeTrade;
   const isInsurance = trade === 'insurance';
@@ -13530,6 +13838,7 @@ function buildPrintContent() {
           ? packageTrades().map(gt=>`${TRADE_LABELS[gt]} ${TIER_LABELS[tradeTier(gt)]}`).join(' · ')
           : TIER_LABELS[tradeTier(packageTrades()[0]||'roofing')]+' Package')
       : 'Project Total';
+    ph+=_printUpgradesHtml();
     ph+=`<div class="p-grand-total"><span>${esc(totalLbl)}</span><span>${fmtCur(selectedTotal())}</span></div>`;
   } else {
     const insTd=S.trades.insurance;
@@ -13564,6 +13873,10 @@ function buildPrintContent() {
         </tr></tfoot></table></div>`;
       });
       if(activeSections.length)
+        ph+=_printUpgradesHtml();
+        // The claim stays the claim: elected upgrades are the homeowner's own
+        // out-of-pocket and are totalled separately, never folded into a
+        // number a customer may repeat to their adjuster.
         ph+=`<div class="p-grand-total"><span>Insurance Claim Total</span><span>${fmtCur(insuranceTotal())}</span></div>`;
     }
     if(insTd?.scope_notes?.trim())
@@ -17242,6 +17555,135 @@ function _bundleColorsForTradeTier(trade, tier) {
     .filter(c => (c.name || '').trim());
 }
 
+// Reusable material layers: image/style work once, color work only in the browser.
+// Keep identity fields in sync with exterior_rendering.MATERIAL_FIELDS.
+const _VZ_MATERIAL_FIELDS = ['exterior_product_id','product_name','bundle_id','bundle_name','style_id','style_name','pattern_id'];
+const _vzMaterialImages = new Map();
+const _vzMaterialColors = new Map();
+const _vzLinearRGB = Array.from({length:256},(_,v)=>v<=10?v/255/12.92:((v/255+.055)/1.055)**2.4);
+let _vzMaterialEnabled = false;
+function _vzMaterialIdentity(row) {
+  return Object.fromEntries(_VZ_MATERIAL_FIELDS.map(key=>[key,String(row?.[key]||'').slice(0,200)]));
+}
+function _vzMaterialEligible(role, row) {
+  const name=Object.values(_vzMaterialIdentity(row)).join(' ');
+  return /^#[0-9a-f]{6}$/i.test(row?.color_hex||'') && name.trim() &&
+    (role==='roof' ? /standing[\s_-]*seam/i.test(name) : role==='siding' && !/\b(stain|stained|unpainted|natural wood)\b/i.test(name));
+}
+function _vzMaterialFor(role,tier) {
+  const ev=_vzElevation(),row=_vzGet().selections?.[_VZ_ROLE_META[role].trade]?.[tier];
+  if (vzState.pendingBaseDataUrl || !_vzMaterialEligible(role,row)) return null;
+  const identity=_vzMaterialIdentity(row);
+  return (ev.material_layers||[]).find(layer=>layer.version===1 && layer.role===role && layer.base_image===ev.base_image &&
+    _VZ_MATERIAL_FIELDS.every(key=>layer.identity?.[key]===identity[key])) || null;
+}
+function _vzMaterialImage(layer) {
+  if (!layer || typeof layer.image_ref!=='string' || !layer.image_ref.startsWith(S.estimate_id+'/') ||
+      !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\.(png|jpe?g|webp)$/.test(layer.image_ref)) return null;
+  if (_vzMaterialImages.has(layer.image_ref)) return _vzMaterialImages.get(layer.image_ref);
+  const img=new Image();
+  _vzMaterialImages.set(layer.image_ref,img);
+  while (_vzMaterialImages.size>16) _vzMaterialImages.delete(_vzMaterialImages.keys().next().value);
+  img.onload=img.onerror=()=>{if(activePage==='visualizer')_vzRedrawAll();};
+  img.src=BASE+'/uploads/'+layer.image_ref;
+  return img;
+}
+function _vzProtectedMaterialMask(role,W,H) {
+  const mask=vzState[role+'Mask'];
+  if (!mask) return null;
+  const protectedRoles=role==='roof'?['trim','soffit','gutter','window','door']:
+    role==='siding'?['trim','soffit','gutter','window','door','shutter']:[];
+  if (!protectedRoles.length) return mask;
+  const clipped=_vzMakeMaskCanvas(W,H),ctx=clipped.getContext('2d');
+  ctx.drawImage(mask,0,0,W,H);
+  ctx.globalCompositeOperation='destination-out';
+  for (const other of protectedRoles) if(vzState[other+'Mask'])ctx.drawImage(vzState[other+'Mask'],0,0,W,H);
+  return clipped;
+}
+function _vzRecolorMaterialPixels(pixels,hex,referenceLuma) {
+  if (!/^#[0-9a-f]{6}$/i.test(hex) || !Number.isFinite(referenceLuma) || referenceLuma<=0) return false;
+  const rgb=[1,3,5].map(offset=>_vzLinearRGB[parseInt(hex.slice(offset,offset+2),16)]);
+  for (let i=0;i<pixels.length;i+=4) {
+    const lum=.2126*_vzLinearRGB[pixels[i]]+.7152*_vzLinearRGB[pixels[i+1]]+.0722*_vzLinearRGB[pixels[i+2]];
+    const light=Math.min(4,lum/referenceLuma);
+    // Preserve small neutral highlights instead of tinting every reflection.
+    const highlight=Math.max(0,lum-referenceLuma)*.08;
+    for(let c=0;c<3;c++) {
+      const linear=Math.max(0,Math.min(1,rgb[c]*light+highlight));
+      pixels[i+c]=Math.round(255*(linear<=.0031308?12.92*linear:1.055*linear**(1/2.4)-.055));
+    }
+  }
+  return true;
+}
+function _vzCompositeMaterial(ctx,W,H,mask,role,tier,hex) {
+  const layer=_vzMaterialFor(role,tier);
+  if (!layer) return false;
+  const img=_vzMaterialImage(layer);
+  // Never silently substitute flat swatches for a prepared layer that failed
+  // to load. The panel explains it and Save waits/fails explicitly.
+  if (!img?.complete || !img.naturalWidth) return true;
+  const key=JSON.stringify([layer.image_ref,layer.reference_luma,hex,W,H]);
+  let colored=_vzCachedCanvas(_vzMaterialColors,key);
+  if (!colored) {
+    colored=_vzMakeMaskCanvas(W,H);
+    const cc=colored.getContext('2d');
+    _vzHighQuality(cc).drawImage(img,0,0,W,H);
+    const data=cc.getImageData(0,0,W,H);
+    if (!_vzRecolorMaterialPixels(data.data,hex,Number(layer.reference_luma))) return true;
+    cc.putImageData(data,0,0);
+    _vzCacheCanvas(_vzMaterialColors,key,colored,48*1024*1024);
+  }
+  const clipped=_vzMakeMaskCanvas(W,H),cc=clipped.getContext('2d');
+  cc.drawImage(colored,0,0);cc.globalCompositeOperation='destination-in';cc.drawImage(mask,0,0,W,H);
+  ctx.save();ctx.globalCompositeOperation='source-over';ctx.drawImage(clipped,0,0);ctx.restore();
+  clipped.width=0;clipped.height=0;
+  return true;
+}
+function _vzMaterialPanelUpdate() {
+  const panel=document.getElementById('vz-materials');
+  if (!panel || !vzState) return;
+  const tier=vzState.activeTier,scope=_vzScopeRoles();
+  const html=`<h3>Instant color comparison <span class="vz-material-badge">Reusable layers · beta</span></h3>
+    <p>Prepare a material style once, then click its colors without another AI image charge. Shadows, seams and texture come from the same saved image.</p>
+    ${['roof','siding'].filter(role=>scope.includes(role)).map(role=>{
+      const row=_vzGet().selections?.[_VZ_ROLE_META[role].trade]?.[tier]||{},layer=_vzMaterialFor(role,tier);
+      const eligible=_vzMaterialEligible(role,row),img=layer?_vzMaterialImage(layer):null;
+      const status=layer?(img?.complete?(img.naturalWidth?'Ready — color changes run locally':'Image unavailable — reload or remove this layer'):'Loading prepared material…'):
+        eligible?'Not prepared for this product/style':'Choose standing-seam metal or solid-color siding to use this prototype';
+      return `<div class="vz-material-row"><strong>${esc(_VZ_ROLE_META[role].label)}</strong><span role="status">${esc(status)}</span>
+        <div class="vz-material-actions"><button class="btn small" onclick="_vzMaterialUseOriginal('${role}')" ${!eligible||_vzRealisticBusy?'disabled':''}>Use existing photo style · no AI charge</button>
+        <button class="btn small" onclick="_vzRealisticGenerate('${role}')" ${!eligible||!_vzMaterialEnabled||_vzRealisticBusy?'disabled':''}>Prepare new style · paid AI</button>
+        ${(_vzElevation().material_layers||[]).some(l=>l.role===role)?`<button class="btn small" onclick="_vzMaterialUseOriginal('${role}',true)" ${_vzRealisticBusy?'disabled':''}>Remove reusable ${role} layers</button>`:''}</div></div>`;
+    }).join('')}
+    <p class="vz-picker-help">Review the surface selection first. Detected trim/fascia, soffits, gutters and openings are protected even when unchecked. Missing or incorrect boundaries still need correction under Refine selection. “Existing photo style” cannot turn shingles into metal or change siding layout.</p>
+    <p class="vz-picker-help">Solid painted finishes only; blended shingle colors still use individual product textures. Colors are approximate, not calibrated manufacturer matches. Confirm physical samples. New AI styles require OpenAI setup; fal is used only for surface detection.</p>`;
+  if (panel.innerHTML!==html) panel.innerHTML=html;
+}
+function _vzAdoptMaterialLayers(saved) {
+  const current=_vzElevation();
+  current.material_layers=saved.material_layers||[];
+  current.tier_renders={};
+  if(current.id==='front')_vzGet().tier_renders={};
+  vzState.dirty=true;setDirty();_vzRedrawAll();
+}
+async function _vzMaterialUseOriginal(role,remove=false) {
+  if (_vzRealisticBusy || _vzVisualizerEditLocked()) return;
+  const owner=S,state=vzState,elevation=_vzElevation().id,tier=state.activeTier;
+  if (!confirm(remove?'Remove reusable layers for this surface? Saved previews will need to be saved again.':
+    'Use the existing '+role+' style in this photograph? Confirm it ALREADY matches the selected material/style and that the surface selection excludes fascia, trim and openings. This only changes color, not material shape. No AI call will be made.')) return;
+  _vzRealisticBusy=true;_vzMaterialPanelUpdate();
+  try {
+    if (!(await saveCurrentWork())) throw new Error('Save your design first.');
+    if (S!==owner||vzState!==state||_vzElevation().id!==elevation||state.activeTier!==tier) return;
+    if(dirty||_vzHasUnsavedCanvasWork()||_vzMetaPending(owner))throw new Error('The design changed during saving. Save and try again.');
+    state.saving=true;
+    const result=await _vzRealisticApi(`/api/estimates/${encodeURIComponent(owner.estimate_id)}/material-layers`,
+      {role,tier,elevation,action:remove?'remove':'original',reviewed:true});
+    if(S===owner&&vzState===state)_vzAdoptMaterialLayers(result.visualizer.elevations[elevation]);
+  } catch(error) {alert(error.message);}
+  finally {state.saving=false;_vzRealisticBusy=false;_vzMaterialPanelUpdate();}
+}
+
 // Realistic edits are separate from the instant canvas. Generation is explicit,
 // candidates are private, and only a reviewed candidate becomes a saved render.
 const _vzRealisticRequests = new Map();
@@ -17272,11 +17714,13 @@ async function _vzRealisticRefresh() {
       eid ? _vzRealisticApi(`/api/estimates/${encodeURIComponent(eid)}/realistic-previews`) : Promise.resolve({jobs:[]})
     ]);
     if (S!==owner || vzState!==state || document.getElementById('vz-realistic')!==panel || _vzElevation().id!==elevation || state.activeTier!==tier) return;
+    _vzMaterialEnabled=cap.enabled;_vzMaterialPanelUpdate();
     const job=result.jobs.find(j=>j.elevation===elevation && j.tier===tier);
     const running=result.jobs.some(j=>j.status==='running');
-    const accepted=job && _vzElevation().tier_renders?.[tier]===`${eid}/vr_ai_${job.id}.png`;
+    const accepted=job && (job.material_role?(_vzElevation().material_layers||[]).some(layer=>layer.job_id===job.id):_vzElevation().tier_renders?.[tier]===`${eid}/vr_ai_${job.id}.png`);
     const key=`${eid}:${elevation}:${tier}`, retry=_vzRealisticRequests.has(key);
-    panel.innerHTML=`<h3>Realistic AI preview · ${esc(_vzConceptName(tier))}</h3>
+    panel.innerHTML=`<h3>${job?.material_role?'Reusable '+esc(job.material_role)+' layer review':'Optional final AI preview'} · ${esc(_vzConceptName(tier))}</h3>
+      ${job?.material_role?'<p>The neutral-gray candidate is a material base. After review, its colors can be changed instantly in the canvas above. Check that seams and edges align with the original; reject any shifted geometry.</p>':''}
       <p>Uses the original photo and selected product references—not the painted surface masks. Roof requests exclude fascia, rake boards, soffits and gutters unless separately selected.</p>
       <p>AI can alter details or approximate a manufacturer’s color. Review the result and confirm physical samples before presenting it.</p>
       <p><strong>Selected surfaces</strong><br>${esc(_vzRealisticSelectionSummary(tier)).replace(/\n/g,'<br>')}<br>For a roof-only edit, uncheck the other surfaces above.</p>
@@ -17289,7 +17733,7 @@ async function _vzRealisticRefresh() {
         <figure><figcaption>Original</figcaption><img src="${BASE}/uploads/${esc(_vzElevation().base_image)}" alt="Original house photograph"></figure>
         <figure><figcaption>AI concept—not a guaranteed product match</figcaption><img src="${BASE}/api/estimates/${encodeURIComponent(eid)}/realistic-previews/${job.id}/image" alt="Generated renovation concept"></figure>
       </div>${!accepted?`<label><input id="vz-realistic-reviewed" type="checkbox"> I checked the roof geometry, fascia/rake, unchanged surfaces and product appearance.</label>
-      <button class="btn" onclick="_vzRealisticAccept('${job.id}')" ${job.stale||_vzRealisticBusy?'disabled':''}>Use reviewed preview</button>`:''}`:''}
+      <button class="btn" onclick="_vzRealisticAccept('${job.id}')" ${job.stale||_vzRealisticBusy?'disabled':''}>${job.material_role?'Use reusable material layer':'Use reviewed preview'}</button>`:''}`:''}
       <p class="vz-picker-help">The canvas above remains the instant preview. Only “Use reviewed preview” puts the AI image in the saved concept. Saving new instant renderings replaces it; rejected candidates need not be used.</p>`;
     if (running) _vzRealisticTimer=setTimeout(_vzRealisticRefresh,4000);
   } catch (error) {
@@ -17297,20 +17741,23 @@ async function _vzRealisticRefresh() {
       panel.innerHTML=`<p>${esc(error.message)}</p><button class="btn" onclick="_vzRealisticRefresh()">Refresh preview status</button>`;
   }
 }
-async function _vzRealisticGenerate() {
-  if (_vzRealisticBusy) return;
+async function _vzRealisticGenerate(materialRole=null) {
+  if (_vzRealisticBusy || _vzVisualizerEditLocked()) return;
   const owner=S, state=vzState, elevation=_vzElevation().id, tier=state.activeTier;
-  if (!confirm('Generate one paid AI image? The original house photo and selected product references will be sent to OpenAI. Review the result before using it. This does not publish anything to the customer.\n\n'+_vzRealisticSelectionSummary(tier))) return;
+  if (!confirm(materialRole?
+    `Prepare one paid reusable ${materialRole} style? Review the surface boundaries first. The original photo and selected material/style will be sent to OpenAI. You can reuse an accepted layer for this style’s colors; retries or new styles cost extra. Review alignment before using it.`:
+    'Generate one paid AI image? The original house photo and selected product references will be sent to OpenAI. Review the result before using it. This does not publish anything to the customer.\n\n'+_vzRealisticSelectionSummary(tier))) return;
   _vzRealisticBusy=true;
   try {
     if (!(await saveCurrentWork())) throw new Error('Save the design successfully before generating.');
     if (S!==owner || vzState!==state || _vzElevation().id!==elevation || state.activeTier!==tier) return;
     if (dirty || _vzHasUnsavedCanvasWork() || _vzMetaPending(owner)) throw new Error('The design changed while saving. Save again before generating.');
-    const eid=owner.estimate_id, key=`${eid}:${elevation}:${tier}`;
+    const eid=owner.estimate_id, key=`${eid}:${elevation}:${tier}${materialRole?':'+materialRole:''}`;
     let nonce=_vzRealisticRequests.get(key);
     if (!nonce) { nonce=crypto.randomUUID(); _vzRealisticRequests.set(key,nonce); }
-    await _vzRealisticApi(`/api/estimates/${encodeURIComponent(eid)}/realistic-previews`,{confirm:true,elevation,tier,nonce});
+    await _vzRealisticApi(`/api/estimates/${encodeURIComponent(eid)}/realistic-previews`,{confirm:true,elevation,tier,nonce,...(materialRole?{material_role:materialRole}:{})});
     _vzRealisticRequests.delete(key);
+    if(materialRole)document.getElementById('vz-realistic')?.scrollIntoView({behavior:'smooth',block:'start'});
   } catch (error) {
     alert(error.message+' If the connection failed, check preview status before generating again.');
   } finally { _vzRealisticBusy=false; _vzRealisticRefresh(); }
@@ -17330,6 +17777,10 @@ async function _vzRealisticAccept(jid) {
     const result=await _vzRealisticApi(`/api/estimates/${encodeURIComponent(owner.estimate_id)}/realistic-previews/${jid}/accept`,{reviewed:true});
     if (S===owner && vzState===state) {
       const saved=result.visualizer.elevations[elevation], current=_vzElevation();
+      if (saved.material_layers?.some(layer=>layer.job_id===jid)) {
+        _vzAdoptMaterialLayers(saved);
+        return;
+      }
       current.tier_renders[tier]=saved.tier_renders[tier];
       current.realistic_previews=saved.realistic_previews;
       if (elevation==='front') _vzGet().tier_renders={...current.tier_renders};
@@ -17422,6 +17873,7 @@ function _vzShellHtml(hasPhoto) {
           <canvas id="vz-canvas" class="vz-canvas" role="img" aria-label="Exterior design preview for the active elevation and concept"></canvas>
           <div class="vz-canvas-legend" id="vz-canvas-legend"></div>
         </div>
+        <section id="vz-materials" class="vz-realistic vz-materials" aria-label="Reusable material colors"></section>
         <section id="vz-realistic" class="vz-realistic" aria-live="polite">Loading realistic preview options…</section>
         <details class="vz-refine" ${vzState.refine?'open':''} ontoggle="_vzSetRefine(this.open)">
         <summary>Refine selection <span>Optional edge touch-ups</span></summary>
@@ -19274,10 +19726,11 @@ function _vzComposeInto(target, tier, opts) {
   const scope = new Set(vz.scope || []);
   for (const role of _VZ_COMPOSE_ORDER) {
     if (!scope.has(role)) continue;
-    const meta = _VZ_ROLE_META[role], mask = vzState[role + 'Mask'];
+    const meta = _VZ_ROLE_META[role], mask = _vzProtectedMaterialMask(role,W,H);
     const selected = _vzEffectiveExteriorSelection(meta.trade,
       (vz.selections[meta.trade] || {})[tier] || {});
     if (!mask || !selected.color_hex) continue;
+    if (_vzCompositeMaterial(ctx,W,H,mask,role,tier,selected.color_hex)) continue;
     const texture = selected.texture_ref ? _vzGetTextureImg(selected.texture_ref) : null;
     const textureReady = !!(texture && texture.complete && texture.naturalWidth);
     // Manufacturer swatches already carry the product's color. Applying the
@@ -19419,6 +19872,7 @@ function _vzQueueAlignmentRedraw() {
 
 function _vzRedrawAll(mainOnly = false) {
   if (!vzState || !vzState.canvas) return;
+  if (!mainOnly) _vzMaterialPanelUpdate();
   vzState.canvas.classList.toggle('vz-editing',!!(vzState.placementOpen||vzState.alignmentOpen||
     (vzState.refine&&!vzState.original&&!vzState.detecting)));
   if (vzState.original && vzState.photoImg) {
@@ -19544,11 +19998,13 @@ async function _vzSaveAll() {
     const selections = JSON.parse(JSON.stringify(vz.selections));
     const scopedTrades = new Set(roles.map(role => _VZ_ROLE_META[role].trade));
     const selectedRows = Object.entries(selections).filter(([trade]) => scopedTrades.has(trade)).flatMap(([trade, tiers]) =>
-      Object.values(tiers || {}).map(selected =>
+      Object.entries(tiers || {}).filter(([tier])=>!_vzMaterialFor(_VZ_ROLES.find(role=>_VZ_ROLE_META[role].trade===trade),tier)).map(([,selected]) =>
         _vzEffectiveExteriorSelection(trade, selected)));
     const patterns = new Set(selectedRows.map(s => s.pattern_id).filter(Boolean));
     const textures = new Set(selectedRows.map(s => s.texture_ref).filter(Boolean));
     if (!baseOnly) {
+      await Promise.all(roles.flatMap(role=>TIERS.map(tier=>_vzMaterialFor(role,tier))).filter(Boolean)
+        .map(layer=>_vzImageReady(_vzMaterialImage(layer))));
       await Promise.all([...patterns].map(pid => _vzImageReady(_vzGetPatternImg(pid))));
       await Promise.all([...textures].map(ref => _vzImageReady(_vzGetTextureImg(ref))));
     }

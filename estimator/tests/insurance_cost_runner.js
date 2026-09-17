@@ -47,6 +47,15 @@ const bundle = [
   grabFn('carrierScopeReport'),
   grabFn('insCost'),
   grabFn('unpricedInsuranceCostLines'),
+  // A non-covered upgrade the homeowner elected is revenue with a cost of its
+  // own, so the upgrade helpers are part of this report's money math too.
+  grabFn('upgradeItems'),
+  grabFn('upgradePrice'),
+  grabFn('upgradeCost'),
+  grabFn('upgradesOffered'),
+  grabFn('acceptedUpgrades'),
+  grabFn('upgradesTotal'),
+  grabFn('upgradesCostTotal'),
   grabFn('insuranceCostReport'),
   grabFn('insuranceTotal'),
 ].join('\n');

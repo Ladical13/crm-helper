@@ -905,6 +905,96 @@ Also landed with these, each pinned by a test:
   ignored entirely for a logged-in team member previewing the link — the rep's
   own tapping is not a buying signal.
 
+### Optional upgrades — what the homeowner elects for themselves (2026-09-17)
+
+Priced extras the rep offers but does not include: gutter guards, an
+impact-rated shingle, a second run of ice & water. The homeowner ticks the ones
+they want on the /sign page, next to the color picker and the initials, and
+what they ticked joins the contract they sign. The insurance T&C had promised
+this for as long as it existed — *"plus the cost of any non-covered upgrades
+elected by the Homeowner"* — with nowhere in the tool to record one, so every
+upgrade a rep actually sold was a verbal agreement and a change order later.
+
+The rep builds the list in 🎁 **Optional Upgrades** on the Pricing tab
+(`renderUpgradesPanel()`), typing a row or pricing one off the price book. The
+data lives in `est['upgrades']` — `{enabled, items:[{id, name, description,
+price, cost, accepted}]}` — outside `trades`, because an upgrade belongs to the
+job rather than to one trade's tab.
+
+Three rules carry it, all pinned by `estimator/tests/test_optional_upgrades.py`:
+
+- **The price is STORED, never derived.** A price-book pick prices the upgrade
+  once, through the same margin chain as any other line, and writes the number
+  down. Deriving it on read would tie an upgrade's price to whichever package
+  the customer happens to be looking at, so a homeowner who ticked $1,450 of
+  gutter guards and then tapped Good would watch the number move under them —
+  and next week's price book would silently reprice a contract somebody already
+  holds a link to. Same rule, and the same reason, as a bundle pick COPYING its
+  tagline onto the estimate.
+- **Nothing counts until the customer ticks it.** `accepted` is written by the
+  /sign POST and by nothing else, so an offered upgrade is worth $0 in every
+  total, in the margin floor and in the funnel until a homeowner elects one.
+  That is what keeps an upgrade an option rather than a quiet price rise, and
+  it is why adding `upgrades_total()` to `calc_selected_total()` moved not one
+  unsigned estimate. `upgrades_offered()` is also the gate on `accepted_upgrades()`,
+  so switching the block off or blanking a price withdraws the election with it
+  rather than leaving a total nothing on screen explains.
+- **An elected upgrade with no cost reports an UNKNOWN margin, not a perfect
+  one.** `upgrade_cost()` treats a blank *and* a 0 as "not costed" — deliberately
+  the opposite of the rate chain, where an explicit 0 is a real choice a rep can
+  make. `estimate_margin_report()` then leaves the upgrades out of both sell and
+  cost rather than adding price to one side and nothing to the other, which
+  would raise the reported margin in exactly the flattering direction, and names
+  them in `upgrades_uncosted` instead.
+
+Four more things are load-bearing:
+
+- **A signature is a price agreement.** Every tick row carries the price the
+  page showed it in a hidden `upgrade_price_<id>` field, and the POST 409s
+  ("refresh and choose again") when it no longer matches — the same answer a
+  stale package pick already gets. Without it a homeowner ticks $1,450 and signs
+  an $1,850 contract. A tick with no price echoed back is refused for the same
+  reason: fail closed. So is a tick on an upgrade the rep has since withdrawn,
+  because the customer believed they were buying it and signing them up for the
+  job without it is the one outcome nobody would notice.
+- **The election is the customer's, and a whole-doc save may not undo it.**
+  `SERVER_MANAGED_FIELDS` cannot cover `accepted` — that rule restores a key
+  only when the save omits it, and a rep editing the panel always sends one — so
+  `save_estimate()` re-applies it by id. A rep with the estimate open from before
+  the signature would otherwise autosave the election straight off the contract
+  and take the total with it. Adding, editing and deleting rows still works;
+  only the tick is not theirs to set.
+- **An insurance claim total is never inflated by an upgrade.** `_estimate_total()`
+  is the CONTRACT (claim + elected upgrades, which is what the funnel and the
+  leaderboard should see); `_insurance_rcv_total()` is the carrier's own number
+  and is what `insurance_cost_report()`'s `claim_total`, the /sign sticky bar and
+  the printed claim total read. A customer may repeat that figure to their
+  adjuster. The PDF relabels its total bar to *Claim + Upgrades* rather than
+  quietly restating the claim as a bigger number.
+- **The cost of an elected upgrade files as MATERIAL in the permit packet**, for
+  the same reason job extras do — the packet prints Cost Total = materials +
+  labor. The row lives in `_packet_cost_rows()` rather than
+  `_cost_split_by_trade()`, whose every row is walked back into `est['trades']`
+  by `tests/test_cost_split.py`; without it the packet's rows stopped adding up
+  to its own TOTAL line, which prints `_estimate_total()`. `_packet_upgrade_note()`
+  says so when an elected upgrade has no cost to contribute.
+
+Mirrored pairs: `upgrades_total()` / `upgradesTotal()`, `upgrade_cost()` /
+`upgradeCost()`, `upgrades_offered()` / `upgradesOffered()`, `accepted_upgrades()`
+/ `acceptedUpgrades()`, `upgrades_cost_total()` / `upgradesCostTotal()`. They are
+part of the money math `selectedTotal()` prices with, so `tests/parity_runner.js`
+lifts them and `tests/test_parity.py` carries elected-upgrade fixtures;
+`tests/insurance_cost_runner.js` lifts them too.
+
+The customer-facing renderers are `_cv_upgrades_block()` (the tick list, in the
+sign form), `_upgrades_cv_table()` (the signed page) and `_printUpgradesHtml()`
+(the browser-built PDF). The last two print the MENU with no subtotal on an
+unsigned document and the ELECTION with one on a signed document: a customer
+laying two bids side by side must not read an optional extra as part of the
+price. The `Offer to customer` switch in the panel is the one control for
+whether the block appears — deliberately no Print Pages chip beside it, because
+two controls for one field is how they end up disagreeing.
+
 ### Insurance job margin (2026-09-05)
 
 On a retail job the rep sets the price and the margin follows. On an insurance

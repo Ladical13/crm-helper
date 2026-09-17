@@ -1291,15 +1291,26 @@ def _is_lost(est):
     return (est.get('status') or '') in LOST_STATUSES
 
 
+def _insurance_rcv_total(est):
+    """The carrier's own number: RCV (= ACV + depreciation) across every
+    section. This is the CLAIM, so nothing the homeowner elects out of pocket
+    belongs in it — see _estimate_total, which adds those on top."""
+    ins_td   = est.get('trades', {}).get('insurance', {})
+    sections = ins_td.get('sections') or (
+        [{'items': ins_td.get('line_items', [])}] if ins_td.get('line_items') else [])
+    return sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
+               for sec in sections for i in sec.get('items', []))
+
+
 def _estimate_total(est):
-    """Grand total for any estimate type (insurance sections-aware)."""
+    """Grand total for any estimate type (insurance sections-aware).
+
+    Elected optional upgrades ride on top of every type: they are part of the
+    contract the homeowner signed, so they are part of what the job is worth
+    to the funnel, the leaderboard and the analytics tab. Nothing is elected
+    until a customer ticks it, so this moves no unsigned estimate."""
     if est.get('estimate_type') == 'insurance':
-        ins_td   = est.get('trades', {}).get('insurance', {})
-        sections = ins_td.get('sections') or (
-            [{'items': ins_td.get('line_items', [])}] if ins_td.get('line_items') else [])
-        # RCV (price) = ACV + Depreciation
-        return sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
-                   for sec in sections for i in sec.get('items', []))
+        return _insurance_rcv_total(est) + upgrades_total(est)
     return calc_selected_total(est)
 
 
@@ -1459,6 +1470,13 @@ def save_estimate(est_id):
                         'fields': bad}), 400
     data['estimate_id'] = est_id
     data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+    # Every optional-upgrade row needs a stable id: it is the /sign form's
+    # field name, so a row without one can never be ticked — and it fails
+    # silently, as a priced offer sitting there that the customer cannot
+    # select. Backfilled here so a row from any client gets one.
+    for _u in ((data.get('upgrades') or {}).get('items') or []):
+        if isinstance(_u, dict) and not str(_u.get('id') or '').strip():
+            _u['id'] = 'u_' + uuid.uuid4().hex[:8]
     # Permission check outside the write lock (cheap read; verdict can't change)
     existing_pre = est_load(est_id)
     if existing_pre and not _can_touch_estimate(existing_pre):
@@ -1474,6 +1492,24 @@ def save_estimate(est_id):
             # a rep's open tab autosaving a minute after a manager reassigned
             # the job would hand it straight back, with nothing on screen to
             # say so. An unassigned estimate may still be claimed by a save.
+            # `accepted` on an optional upgrade is the CUSTOMER'S tick, not a
+            # field a rep's tab may carry. SERVER_MANAGED_FIELDS cannot cover
+            # it — that rule restores a key only when the save omits it, and a
+            # rep editing the upgrades panel always sends one — so it is
+            # re-applied by id. Without this a rep who had the estimate open
+            # before the signature landed would autosave the election straight
+            # back off the contract, and the total with it. Adding, editing and
+            # deleting rows still works; only the tick is not theirs to set.
+            _prev_acc = {str(u.get('id') or ''): u.get('accepted')
+                         for u in ((existing.get('upgrades') or {}).get('items') or [])
+                         if isinstance(u, dict)}
+            for _u in ((data.get('upgrades') or {}).get('items') or []):
+                if not isinstance(_u, dict):
+                    continue
+                if _prev_acc.get(str(_u.get('id') or '')) is True:
+                    _u['accepted'] = True
+                else:
+                    _u.pop('accepted', None)
             prev_sp = existing.get('salesperson')
             if isinstance(prev_sp, str) and prev_sp.strip():
                 data['salesperson'] = prev_sp
@@ -2454,6 +2490,7 @@ def visualizer_asset(est_id):
             elevation['base_image'] = stored_ref
             elevation['masks'] = {}
             elevation['tier_renders'] = {}
+            elevation.pop('material_layers', None)
             elevation['placements'] = _empty_visualizer_placements()
             elevation['texture_projection'] = _empty_texture_projection()
         elif kind == 'mask':
@@ -5460,10 +5497,21 @@ def estimate_margin_report(est):
     tiers = _enabled_tiers(est)
     if _all_trades_simple(est):
         tiers = tiers[:1]          # simple pricing ignores the tier entirely
+    # Elected optional upgrades are contract dollars with a cost of their own,
+    # so they belong in the realized margin — but only when every one of them
+    # HAS a cost. An uncosted upgrade would add its whole price to sell and
+    # nothing to cost, raising the reported margin in exactly the flattering
+    # direction this function exists to refuse. When one shows up the upgrades
+    # sit out of the math altogether and are named instead.
+    u_sell = upgrades_total(est)
+    u_cost, u_uncosted = upgrades_cost_total(est)
+    if u_uncosted:
+        u_sell = u_cost = 0.0
+
     out = []
     for t in tiers:
-        sell = sum(_trade_subtotal(est, tk, t) for tk in GBB_TRADES)
-        cost = sum(_trade_cost_subtotal(est, tk, t) for tk in GBB_TRADES)
+        sell = sum(_trade_subtotal(est, tk, t) for tk in GBB_TRADES) + u_sell
+        cost = sum(_trade_cost_subtotal(est, tk, t) for tk in GBB_TRADES) + u_cost
         out.append({
             'tier': t,
             'sell': round(sell, 2),
@@ -5473,7 +5521,10 @@ def estimate_margin_report(est):
         })
     known = [d for d in out if d['margin_pct'] is not None]
     return {'tiers': out,
-            'lowest': min(known, key=lambda d: d['margin_pct']) if known else None}
+            'lowest': min(known, key=lambda d: d['margin_pct']) if known else None,
+            'upgrades_sell': round(u_sell, 2),
+            'upgrades_cost': round(u_cost, 2),
+            'upgrades_uncosted': [(u.get('name') or '').strip() for u in u_uncosted]}
 
 
 # ── Insurance job margin ───────────────────────────────────────────────────
@@ -5564,14 +5615,23 @@ def insurance_cost_report(est):
     # DECISION (the browser's keyword guess, or the rep's correction), never
     # re-derived here: a second classifier would be a second thing to drift.
     roof_rcv, non_roof = _roof_only_rcv(est)
-    revenue  = roof_rcv + _num(ic.get('supplements'))
+    # Non-covered upgrades the homeowner elected out of pocket are revenue on
+    # this job like any other, and they are the one line on an insurance
+    # estimate whose price we set rather than the carrier. An uncosted one
+    # joins `unpriced` for the same reason a $0 bundle line does.
+    up_sell  = upgrades_total(est)
+    up_cost, up_uncosted = upgrades_cost_total(est)
+    unpriced = unpriced + [str(u.get('name') or '') for u in up_uncosted]
+    revenue  = roof_rcv + _num(ic.get('supplements')) + up_sell
     build    = sum(_num(i.get('quantity')) * _num(i.get('unit_cost'))
                    for i in (ic.get('items') or []))
     adders   = {k: _num((ic.get('adders') or {}).get(k)) for k in INSURANCE_ADDERS}
-    cost     = build + sum(adders.values())
+    cost     = build + sum(adders.values()) + up_cost
     profit   = revenue - cost
     return {
         'revenue':      round(revenue, 2),
+        'upgrades':     round(up_sell, 2),
+        'upgrades_cost': round(up_cost, 2),
         'supplements':  round(_num(ic.get('supplements')), 2),
         'build_cost':   round(build, 2),
         'adders':       {k: round(v, 2) for k, v in adders.items()},
@@ -5582,7 +5642,9 @@ def insurance_cost_report(est):
                          if revenue > 0 and cost > 0 else None),
         'costed':       cost > 0,
         'unpriced':     unpriced,
-        'claim_total':  round(_estimate_total(est), 2),
+        # The CLAIM, not the contract: what the carrier approved, with nothing
+        # the homeowner elected out of pocket folded into it.
+        'claim_total':  round(_insurance_rcv_total(est), 2),
         'non_roof':     round(non_roof, 2),
     }
 
@@ -5652,10 +5714,133 @@ def _trade_tier(est, trade):
     return t if t in ('good', 'better', 'best') else 'better'
 
 
+# ── Optional upgrades — the homeowner's own add-ons ────────────────────────
+#
+# A spot for the things a rep offers but does not include in the package:
+# gutter guards, an impact-rated shingle, a second run of ice & water, a
+# skylight. The homeowner ticks the ones they want on the /sign page and they
+# become part of the contract they sign. The insurance T&C has promised this
+# for as long as it has existed - "plus the cost of any non-covered upgrades
+# elected by the Homeowner" - with nowhere in the tool to record one.
+#
+# Shape on the estimate:
+#   upgrades = {
+#     'enabled': True,                    # offer the block at all
+#     'items': [{
+#        'id':          'u_ab12cd34',     # stable; the POST field name
+#        'name':        'Gutter Guards',
+#        'description': 'Micro-mesh, full perimeter',
+#        'price':       1450.0,           # what the customer sees and buys
+#        'cost':        820.0,            # ours; '' or 0 = nobody entered one
+#        'unit': 'LF', 'quantity': 214,   # provenance only, never re-priced
+#        'product_id':  'a_gutter_guard', # where it came from, or ''
+#        'trade':       'roofing',
+#        'accepted':    False,            # written ONLY by the signature POST
+#     }, ...]
+#   }
+#
+# Three rules carry the weight:
+#
+# * THE PRICE IS STORED, NEVER DERIVED. A price-book pick prices the upgrade
+#   once, through the same margin chain as any other line, and writes the
+#   number down. Deriving it on every read would tie an upgrade's price to
+#   whichever package the customer happens to be looking at, so a homeowner
+#   who ticked $1,450 of gutter guards and then tapped Good would watch the
+#   number move under them - and next week's price book would silently reprice
+#   a contract somebody already holds a link to. Same rule, and the same
+#   reason, as a bundle pick COPYING its tagline onto the estimate.
+#
+# * NOTHING COUNTS UNTIL THE CUSTOMER TICKS IT. `accepted` is written by the
+#   /sign POST and by nothing else, so an offered upgrade is worth $0 in every
+#   total, in the margin floor and in the funnel until a homeowner elects it.
+#   That is what keeps an upgrade a genuine option rather than a quiet price
+#   rise, and it is why adding upgrades to the grand total below moves not one
+#   unsigned estimate.
+#
+# * AN ELECTED UPGRADE WITH NO COST REPORTS AN UNKNOWN MARGIN, NOT A PERFECT
+#   ONE. Same house rule as the commercial $0 placeholders and the insurance
+#   cost sheet: $1,450 of revenue against a cost of nothing lands as 100%
+#   margin and flatters exactly the upgrades nobody has costed.
+
+
+def upgrade_items(est):
+    """Offered upgrades, in the rep's order. A row with no name is a
+    half-typed line, not an offer. MUST mirror upgradeItems (app.js)."""
+    up = est.get('upgrades') or {}
+    return [u for u in (up.get('items') or [])
+            if isinstance(u, dict) and (u.get('name') or '').strip()]
+
+
+def upgrade_price(u):
+    """An upgrade's stored sell price. MUST mirror upgradePrice (app.js)."""
+    return _num((u or {}).get('price'))
+
+
+def upgrade_cost(u):
+    """Our cost for one upgrade, or None when nobody has entered one.
+
+    A blank and a 0 both mean "not costed" here. That is deliberate and it is
+    the opposite of the rate chain's rule, where an explicit 0 is a real
+    choice a rep can make: selling a roof at cost is a decision, whereas an
+    upgrade whose cost box reads 0 has simply never been filled in - and
+    treating it as free is what produces a 100% margin nobody earned.
+    MUST mirror upgradeCost (app.js)."""
+    v = (u or {}).get('cost')
+    if v is None or v == '':
+        return None
+    try:
+        c = float(v)
+    except (TypeError, ValueError):
+        return None
+    return c if c > 0 else None
+
+
+def upgrades_offered(est):
+    """The upgrades a customer is actually shown: the block is on and the line
+    carries a price. An unpriced offer is not an offer - it would render as a
+    tickable $0.00. MUST mirror upgradesOffered (app.js)."""
+    if (est.get('upgrades') or {}).get('enabled') is False:
+        return []
+    return [u for u in upgrade_items(est) if upgrade_price(u) > 0]
+
+
+def accepted_upgrades(est):
+    """The upgrades the homeowner elected. Set by the signature POST only.
+
+    Read from the offered list rather than the raw one, so a rep who switched
+    the block off or blanked a price after signing cannot leave an accepted
+    flag behind on a line the customer can no longer be shown.
+    MUST mirror acceptedUpgrades (app.js)."""
+    return [u for u in upgrades_offered(est) if u.get('accepted') is True]
+
+
+def upgrades_total(est):
+    """Sell total of the ELECTED upgrades. MUST mirror upgradesTotal (app.js)."""
+    return sum(upgrade_price(u) for u in accepted_upgrades(est))
+
+
+def upgrades_cost_total(est):
+    """(cost, uncosted) for the elected upgrades.
+
+    `uncosted` is the elected upgrades with no cost entered - the reason a
+    margin including them is OVERSTATED rather than merely imprecise, which is
+    what callers have to say out loud. MUST mirror upgradesCostTotal (app.js)."""
+    cost, uncosted = 0.0, []
+    for u in accepted_upgrades(est):
+        c = upgrade_cost(u)
+        if c is None:
+            uncosted.append(u)
+        else:
+            cost += c
+    return cost, uncosted
+
+
 def calc_selected_total(est):
-    """Grand sell total honoring each trade's own selected tier (mix-and-match).
+    """Grand sell total honoring each trade's own selected tier (mix-and-match),
+    plus whatever optional upgrades the customer elected.
     MUST mirror selectedTotal in app.js."""
-    return sum(_trade_subtotal(est, tk, _trade_tier(est, tk)) for tk in GBB_TRADES)
+    return (sum(_trade_subtotal(est, tk, _trade_tier(est, tk)) for tk in GBB_TRADES)
+            + upgrades_total(est))
 
 
 def _gbb_trade_keys(est):
@@ -6408,6 +6593,41 @@ def _supplements_cv_table(est, trade, tier, label):
           </table></div>'''
 
 
+def _upgrades_cv_table(est, elected_only=True):
+    """Optional-upgrades table for a customer-facing page, or ''.
+
+    `elected_only` is the signed view: what the homeowner actually bought.
+    Pass False to print the menu as offered (an unsigned estimate's PDF), where
+    the subtotal is meaningless and is replaced by a line saying these are
+    chosen at signing."""
+    ups = accepted_upgrades(est) if elected_only else upgrades_offered(est)
+    ups = [u for u in ups if (u.get('name') or '').strip()]
+    if not ups:
+        return ''
+    body = ''
+    for u in ups:
+        desc = (u.get('description') or '').strip()
+        body += (f'<tr><td class="cvn">{he(u.get("name", ""))}'
+                 + (f'<div class="cvd">{he(desc)}</div>' if desc else '')
+                 + f'</td><td class="cvr" data-l="Price">{fc(upgrade_price(u))}</td></tr>')
+    if elected_only:
+        total = sum(upgrade_price(u) for u in ups)
+        foot = ('<td class="cvsub-l">Upgrades Subtotal &mdash; included in your total</td>'
+                f'<td class="cvr cvsub">{fc(total)}</td>')
+        head = 'Optional Upgrades You Selected'
+    else:
+        foot = ('<td colspan="2" class="cvsub-l">Optional &mdash; choose any of these '
+                'when you sign. Nothing here is in the total above.</td>')
+        head = 'Optional Upgrades Available'
+    return f'''<div class="cvtrade cvtrade-supp">
+          <div class="cvtrade-hd">{head}</div>
+          <table class="cvt"><thead><tr>
+            <th>Description</th><th scope="col" class="cvth-r">Price</th></tr></thead>
+          <tbody>{body}</tbody>
+          <tfoot><tr>{foot}</tr></tfoot>
+          </table></div>'''
+
+
 def render_line_items(est, tier=None, only_trades=None):
     """Build trade line-item tables for customer view. Returns (html, grand_total).
     tier=None prices each trade at its own selected tier (mix-and-match; legacy
@@ -6789,6 +7009,27 @@ text-transform:uppercase;letter-spacing:1.2px;margin-bottom:var(--sp-2)}
 .cv-initial-box{width:82px;flex-shrink:0;border:2px solid var(--navy);border-radius:9px;padding:10px 8px;font-size:16px;
 font-weight:800;text-align:center;text-transform:uppercase;outline:none;color:var(--navy);background:#fff;font-family:inherit}
 .cv-initial-box:focus{box-shadow:0 0 0 4px rgba(26,58,92,.14)}
+
+/* Optional upgrades. Rows are finger-sized unconditionally rather than behind
+   a pointer query: a 44px tick row costs a desktop nothing, and the one thing
+   a width query cannot express is "this is a finger". */
+.cv-upg{background:#fff;border:1px solid var(--line);border-radius:8px;
+padding:var(--sp-3);margin-bottom:var(--sp-3)}
+.cv-upg.cv-upg-on{border-color:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.10)}
+.cv-upg-title{font-size:var(--fz-micro);font-weight:600;color:var(--faint);
+text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px}
+.cv-upg-sub{font-size:12.5px;color:var(--faint);line-height:1.55;margin-bottom:var(--sp-2)}
+.cv-upg-row{display:flex;align-items:center;gap:12px;min-height:44px;
+padding:var(--sp-2) 0;border-top:1px solid var(--line);cursor:pointer}
+.cv-upg-box{width:22px;height:22px;flex-shrink:0;accent-color:#16a34a;margin:0}
+.cv-upg-n{flex:1;font-size:14px;font-weight:600;color:var(--navy);line-height:1.45}
+.cv-upg-d{display:block;font-size:12.5px;font-weight:400;color:var(--faint);
+line-height:1.5;margin-top:2px}
+.cv-upg-p{flex-shrink:0;font-size:14px;font-weight:700;color:#15803d;white-space:nowrap}
+.cv-upg-foot{display:flex;justify-content:space-between;align-items:center;
+margin-top:var(--sp-2);padding-top:var(--sp-2);border-top:2px solid var(--line);
+font-size:13px;font-weight:600;color:var(--navy)}
+.cv-upg-sum{font-size:15px;font-weight:800;color:#15803d}
 
 /* ── what happens next ── */
 .cvnext-list{list-style:none;margin:2px 0 0;padding:0}
@@ -8337,6 +8578,97 @@ def _cv_initials_block(est):
     </div>'''
 
 
+def _cv_upgrades_block(est, base_total=None, claim_label=False):
+    """The optional-upgrades step of the sign form, or '' when none is offered.
+
+    A tick list the homeowner works before they sign, sitting with the color
+    picker and the initials because that is where the total has to be right.
+    Each row carries the price the page showed in a hidden field: the POST
+    compares it and refuses a signature against a price the rep has since
+    changed, the same way a stale package pick is refused. Without it a
+    homeowner could tick $1,450 of gutter guards and sign an $1,850 contract.
+
+    `base_total` is the package total this page is showing, so a layout with no
+    live package recalc can still add the ticked upgrades to the number in the
+    sticky bar. Pass nothing to leave that number alone: the G/B/B layout
+    already owns it, and on an insurance page the figure beside it is the
+    CARRIER'S CLAIM - folding a homeowner's own upgrade into it would misstate
+    what the carrier approved, which is the one number on that page a customer
+    may well repeat to their adjuster. `claim_label` says so in words."""
+    ups = upgrades_offered(est)
+    if not ups:
+        return ''
+    rows = ''
+    for u in ups:
+        uid = (u.get('id') or '').strip()
+        if not uid:
+            continue
+        price = upgrade_price(u)
+        desc  = (u.get('description') or '').strip()
+        desc_html = f'<span class="cv-upg-d">{he(desc)}</span>' if desc else ''
+        rows += f'''<label class="cv-upg-row">
+          <input class="cv-upg-box" type="checkbox" name="upgrade_{he(uid)}" value="1"
+            data-price="{price:.2f}" onchange="_cvUpgChange()">
+          <input type="hidden" name="upgrade_price_{he(uid)}" value="{price:.2f}">
+          <span class="cv-upg-n">{he(u.get("name", ""))}{desc_html}</span>
+          <span class="cv-upg-p">+{fc(price)}</span>
+        </label>'''
+    if not rows:
+        return ''
+    sub = ('These upgrades are yours to choose and are not part of the insurance '
+           'claim. Tick any you would like added &mdash; leave them unticked and '
+           'nothing changes.'
+           if claim_label else
+           'Tick any you would like added to your project. Leave them unticked and '
+           'your total stays exactly as quoted above.')
+    base_attr = '' if base_total is None else f' data-base="{base_total:.2f}"'
+    return f'''<div class="cv-upg" id="cv-upg"{base_attr}>
+      <div class="cv-upg-title">&#10024; Optional Upgrades</div>
+      <div class="cv-upg-sub">{sub}</div>
+      {rows}
+      <div class="cv-upg-foot"><span>Upgrades selected</span>
+        <span class="cv-upg-sum" id="cv-upg-sum">{fc(0)}</span></div>
+    </div>'''
+
+
+# The ticked upgrades are added to whatever total the page is already showing.
+# On the G/B/B layout _cvRefreshTotal owns that number (and has to relabel the
+# bar besides), so this hands off to it rather than fighting it for the same two
+# spans; on the single-price and insurance layouts nothing else recalculates, so
+# it rewrites them itself off `data-base`. Emitted only when there is a block.
+# Raw string: the thousands-separator regex below is JS, not Python escapes.
+_CV_UPGRADES_JS = r"""<script>
+function _cvUpgTotal(){
+  var n=0;
+  document.querySelectorAll('.cv-upg-box').forEach(function(b){
+    if(b.checked)n+=parseFloat(b.dataset.price||'0')||0;
+  });
+  return n;
+}
+function _cvUpgChange(){
+  var n=_cvUpgTotal();
+  var f=function(v){return'$'+Math.abs(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',');};
+  var el=document.getElementById('cv-upg-sum');
+  if(el)el.textContent=f(n);
+  var box=document.getElementById('cv-upg');
+  if(box)box.classList.toggle('cv-upg-on',n>0);
+  if(typeof _cvRefreshTotal==='function'){_cvRefreshTotal();return;}
+  // No data-base means this page's headline number is not ours to move.
+  if(!box||box.dataset.base===undefined)return;
+  var base=parseFloat(box.dataset.base)||0;
+  var amt=document.getElementById('cv-grand-amt');
+  var st=document.getElementById('cvstick-amt');
+  if(amt)amt.textContent=f(base+n);
+  if(st)st.textContent=f(base+n);
+}
+</script>"""
+
+
+def _cv_upgrades_script(est):
+    """Emit the upgrades JS only when the page actually offers upgrades."""
+    return _CV_UPGRADES_JS if upgrades_offered(est) else ''
+
+
 def _cv_attachments_block(est):
     """Customer-visible PDF documents, rendered as full-page images so the
     customer reads the whole document inline (with an open-original link).
@@ -9422,6 +9754,7 @@ def _build_insurance_cv(est, token):
   {_cv_sig_form(_mount_path(f'/sign/{he(token)}'),
                 hidden='<input type="hidden" name="selected_tier" value="insurance">',
                 extra_blocks=(_cv_shingle_block(est) + _cv_siding_block(est)
+                              + _cv_upgrades_block(est, claim_label=True)
                               + _cv_initials_block(est)),
                 agree_text='I have read this insurance estimate and I agree to all terms &amp; conditions.',
                 est=est)}
@@ -9429,6 +9762,7 @@ def _build_insurance_cv(est, token):
 </main>
 
 {_cv_sticky_bar('Insurance Claim Total', fc(ins_total))}
+{_cv_upgrades_script(est)}
 ''' + _cv_footer()
 
 
@@ -9504,7 +9838,7 @@ def _build_simple_retail_cv(est, token):
 
 <div class="cvgrand">
   <span class="cvgrand-lbl">Total</span>
-  <span class="cvgrand-amt">{fc(grand_total)}</span>
+  <span class="cvgrand-amt" id="cv-grand-amt">{fc(grand_total)}</span>
 </div>
 
 {notes_html}
@@ -9524,6 +9858,7 @@ def _build_simple_retail_cv(est, token):
                 hidden=f'<input type="hidden" name="selected_tier" value="{he(tier)}">',
                 extra_blocks=(_cv_shingle_block(est, chosen_tier=tier)
                               + _cv_siding_block(est, chosen_tier=tier)
+                              + _cv_upgrades_block(est, grand_total)
                               + _cv_initials_block(est)),
                 agree_text='I have read this estimate and I agree to all terms &amp; conditions.',
                 est=est)}
@@ -9531,6 +9866,7 @@ def _build_simple_retail_cv(est, token):
 </main>
 
 {_cv_sticky_bar('Your Estimate Total', fc(grand_total))}
+{_cv_upgrades_script(est)}
 ''' + _cv_footer()
 
 
@@ -9714,6 +10050,7 @@ def build_customer_view(est, token):
                                   for tk in gbb_tks)),
                 extra_blocks=(_cv_shingle_block(est, pb=pb, chosen_tier=default_tier)
                               + _cv_siding_block(est, pb=pb, chosen_tier=default_tier)
+                              + _cv_upgrades_block(est)
                               + _cv_initials_block(est)),
                 agree_text='I have read this estimate, selected my package, and I agree to all terms &amp; conditions.',
                 btn_id='cv-sign-btn', est=est)}
@@ -9771,7 +10108,10 @@ function selectCvTier(trade,tier){{
   _cvRefreshTotal();
 }}
 function _cvRefreshTotal(){{
-  var sum=_cv_simple_total, parts=[], first=null;
+  // Elected upgrades sit on top of the package, not inside it — a customer can
+  // switch Good/Better/Best all day and keep the gutter guards they ticked.
+  var sum=_cv_simple_total+(typeof _cvUpgTotal==='function'?_cvUpgTotal():0);
+  var parts=[], first=null;
   _cv_trades.forEach(function(tr){{
     var g=_cv_gbb[tr];
     sum+=(g.totals[g.cur]||0);
@@ -9801,6 +10141,7 @@ function _cvRefreshTotal(){{
   }});
 }})();
 </script>
+{_cv_upgrades_script(est)}
 {_cv_tier_color_script(est, pb=pb)}
 ''' + _cv_footer()
 
@@ -10447,6 +10788,18 @@ def build_signed_confirmation(est):
   <span class="cvgrand-amt">{fc(gtotal)}</span>
 </div>'''
 
+    # Elected upgrades print after the package and are then totalled WITH it.
+    # The package bar above keeps saying what the package cost — a homeowner
+    # comparing this against the estimate they were sent has to be able to find
+    # that number — and the contract total is the one they owe.
+    upg_html = _upgrades_cv_table(est)
+    upg_tot  = upgrades_total(est)
+    if upg_tot:
+        total_bar += f'''<div class="cvgrand" style="margin-top:10px">
+  <span class="cvgrand-lbl">Contract Total &mdash; incl. upgrades</span>
+  <span class="cvgrand-amt">{fc(gtotal + upg_tot)}</span>
+</div>'''
+
     notes  = (est.get('notes_customer') or '').strip()
     ctext  = (est.get('contract_text') or '').strip()
     notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
@@ -10502,6 +10855,8 @@ def build_signed_confirmation(est):
 {_cv_products_block(est)}
 
 {li_html}
+
+{upg_html}
 
 {total_bar}
 
@@ -11231,6 +11586,18 @@ def send_signature_notification(est):
     email_row = (f'<tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Customer Email</td>'
                  f'<td style="padding:5px 0;font-size:13px">{he(semail)}</td></tr>') if semail else ''
 
+    # Which optional upgrades they took. The dollars are already inside Total,
+    # but WHICH ones is what the rep has to hand the crew and the supplier —
+    # and an upgrade nobody reads about is an upgrade nobody installs.
+    _elected = accepted_upgrades(est)
+    upg_row  = ''
+    if _elected:
+        _names = ', '.join((u.get('name') or '').strip() for u in _elected)
+        _utot  = sum(upgrade_price(u) for u in _elected)
+        upg_row = ('<tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">'
+                   'Upgrades</td><td style="padding:5px 0;font-size:13px">'
+                   f'{he(_names)} &mdash; <strong>{fc(_utot)}</strong></td></tr>')
+
     html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
 <body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
 <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
@@ -11246,6 +11613,7 @@ def send_signature_notification(est):
       {email_row}
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Address</td><td style="padding:5px 0;font-size:13px">{he(addr_str or "—")}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Package</td><td style="padding:5px 0;font-size:13px">{he(tlbl)}</td></tr>
+      {upg_row}
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Total</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#16a34a">{fc(total)}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Signed By</td><td style="padding:5px 0;font-size:13px">{he(sname)}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Signed At</td><td style="padding:5px 0;font-size:13px">{he(stime_fmt)}</td></tr>
@@ -12330,6 +12698,46 @@ def build_signed_pdf(est, signed=None):
         total_label = (f'Total — {_sum}' if _sum
                        else 'Total — ' + dict(good='Good', better='Better',
                                               best='Best').get(tier, tier.title()) + ' Package')
+
+    # Optional upgrades. On a signed contract these are what the homeowner
+    # elected, and they are IN the grand total below — the total has to be the
+    # number they owe. On an unsigned download the same block is the menu, so
+    # it prints with no subtotal and adds nothing: a customer comparing bids
+    # must not read an optional extra as part of the price.
+    _ups = accepted_upgrades(est) if signed else upgrades_offered(est)
+    _ups = [u for u in _ups if (u.get('name') or '').strip()]
+    if _ups:
+        _uw = (W - 34, 34)
+        section_head('Optional', 'Upgrades You Selected' if signed
+                                 else 'Optional Upgrades Available')
+        with open_table(_uw, ('LEFT', 'RIGHT')) as _ut:
+            _uh = _ut.row()
+            for h in ('Description', 'Price'):
+                _uh.cell(h)
+            for u in _ups:
+                nm = (u.get('name') or '').strip()
+                d  = (u.get('description') or '').strip()
+                if d:
+                    nm = f'{nm} — {_pdf_oneline_rich(d)}'
+                _ur = _ut.row()
+                _ur.cell(_pdf_rich(nm))
+                _ur.cell(fc(upgrade_price(u)))
+        if signed:
+            _utot = sum(upgrade_price(u) for u in _ups)
+            subtotal_row('Upgrades Subtotal', _utot, 34)
+            grand += _utot
+            if is_ins:
+                # The bar below can no longer be called the claim: it now also
+                # carries what the homeowner elected out of their own pocket.
+                total_label = 'Contract Total — Claim + Upgrades'
+        else:
+            pdf.set_font(SANS, 'I', 7.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(W, 5.5, _pdf_rich('Optional — choose any of these when you sign. '
+                                       'Not included in the total below.'),
+                     align='L', new_x='LMARGIN', new_y='NEXT')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.ln(4)
 
     # Grand total — the one filled element in the document, which is why
     # everything above it stopped being filled.
@@ -14634,6 +15042,29 @@ def _cost_split_by_trade(est, pb=None):
     return rows
 
 
+def _packet_cost_rows(est, pb=None):
+    """The packet's cost table: one row per trade, plus the elected optional
+    upgrades.
+
+    The upgrades row exists because without it the table's rows stopped adding
+    up to its own TOTAL line — Contract Value there is _estimate_total, which
+    includes what the homeowner elected. Their cost files as MATERIAL, for the
+    same reason job extras do: the packet prints Cost Total = materials +
+    labor, so a third bucket either drops out of that column or gets folded
+    back into it anyway.
+
+    Kept separate from _cost_split_by_trade, which is about trades and whose
+    every row is walked back into est['trades'] by tests/test_cost_split.py."""
+    rows   = _cost_split_by_trade(est, pb)
+    u_sell = upgrades_total(est)
+    u_cost, _uncosted = upgrades_cost_total(est)
+    if u_sell > 0 or u_cost > 0:
+        rows = rows + [{'trade': 'upgrades', 'label': 'Optional Upgrades',
+                        'materials_cost': u_cost, 'labor_cost': 0.0,
+                        'sell': u_sell}]
+    return rows
+
+
 def _selected_permit_jurisdiction(est):
     """Return the manager-approved jurisdiction dict (from jurisdictions.json)
     the estimate points at — or the Colorado baseline when none is selected.
@@ -14664,6 +15095,18 @@ def _selected_permit_jurisdiction(est):
         'fee_basis':        ((vp.get('reroof_permit') or {}).get('fee_basis') or '').strip(),
         'delegated_to':     (vp.get('delegated_to') or '').strip(),
     }
+
+
+def _packet_upgrade_note(est):
+    """A sentence for the packet's cost footnote when an elected upgrade has no
+    cost entered. Without it the valuation is quietly light by whatever that
+    upgrade costs, and a fee schedule that reads Cost Total is fee'd light too."""
+    _c, uncosted = upgrades_cost_total(est)
+    if not uncosted:
+        return ''
+    names = ', '.join((u.get('name') or '').strip() for u in uncosted)
+    return (' Note: the elected upgrade(s) ' + names + ' carry no cost in the '
+            'price book, so the Cost Total above excludes them.')
 
 
 def build_permit_packet_pdf(est):
@@ -14849,7 +15292,7 @@ def build_permit_packet_pdf(est):
 
     # Cost breakdown
     section_title('Cost Breakdown')
-    rows = _cost_split_by_trade(est)
+    rows = _packet_cost_rows(est)
     total_mat = sum(r['materials_cost'] for r in rows)
     total_lab = sum(r['labor_cost']     for r in rows)
     total_sell = _estimate_total(est)
@@ -14864,7 +15307,9 @@ def build_permit_packet_pdf(est):
                   ('Contract Value', cw[4], 'R')])
     pdf.set_font(SANS, '', 8.5)
     for r in rows:
-        pdf.cell(cw[0], 7, _pdf_rich(_PRODUCT_TRADE_LABELS.get(r['trade'], r['trade'].title())),
+        pdf.cell(cw[0], 7, _pdf_rich(r.get('label')
+                                     or _PRODUCT_TRADE_LABELS.get(r['trade'],
+                                                                  r['trade'].title())),
                  border='B')
         pdf.cell(cw[1], 7, f'${r["materials_cost"]:,.2f}', border='B', align='R')
         pdf.cell(cw[2], 7, f'${r["labor_cost"]:,.2f}',     border='B', align='R')
@@ -14892,7 +15337,8 @@ def build_permit_packet_pdf(est):
         'Cost Total is materials plus labor at Project One Roofing cost basis, with '
         'no margin added — this is the job valuation most fee schedules ask for. '
         'Contract Value is the customer-facing price and matches the signed contract; '
-        'some jurisdictions fee on that instead.'), new_x='LMARGIN', new_y='NEXT', align='L')
+        'some jurisdictions fee on that instead.'
+        + _packet_upgrade_note(est)), new_x='LMARGIN', new_y='NEXT', align='L')
     pdf.set_text_color(*_PDF_STYLE['ink'])
 
     # No trailing "internal document" line — the running footer already says it
@@ -15986,6 +16432,17 @@ def invoice_rows(est):
                 supplements.append((f"{label}: {_invoice_line_name(it.get('name'), desc)}",
                                     q, str(it.get('unit') or ''),
                                     line / q if q > 0 else line, line))
+
+    # Elected optional upgrades bill as their own section. They are part of the
+    # contract, so they are inside `subtotal` — not bolted on beside it like a
+    # change order, which is a separate agreement signed separately.
+    _elected = [u for u in accepted_upgrades(est) if (u.get('name') or '').strip()]
+    if _elected:
+        _rows = [(_invoice_line_name(u.get('name'), u.get('description')),
+                  1.0, '', upgrade_price(u), upgrade_price(u)) for u in _elected]
+        sections.append({'title': 'Optional Upgrades',
+                         'rows': _rows,
+                         'subtotal': sum(r[4] for r in _rows)})
 
     change_orders = []
     for co in est.get('change_orders') or []:
@@ -17278,6 +17735,34 @@ def customer_sign(token):
             if v:
                 tier_picks[tk] = v
 
+        # Optional upgrades the customer ticked. Read from the FORM's own keys
+        # rather than from the estimate, so an upgrade the rep has since pulled
+        # is still visible here as something the customer believed they were
+        # buying — and earns a "refresh and choose again" instead of a silent
+        # drop off the contract they are about to sign.
+        upg_ticked = {k[len('upgrade_'):] for k, v in request.form.items()
+                      if k.startswith('upgrade_')
+                      and not k.startswith('upgrade_price_')
+                      and (v or '').strip()}
+        upg_shown  = {k[len('upgrade_price_'):]: _num(v)
+                      for k, v in request.form.items()
+                      if k.startswith('upgrade_price_')}
+        offered_now = {(u.get('id') or '').strip(): u for u in upgrades_offered(est)}
+        upg_stale = []
+        for uid in sorted(upg_ticked):
+            u = offered_now.get(uid)
+            if u is None:
+                upg_stale.append(uid)          # withdrawn, or the block went off
+                continue
+            # A signature is a price agreement. An upgrade whose price moved
+            # after this page rendered — or one that echoes back no price at
+            # all — must never quietly become the new number on the contract.
+            if uid not in upg_shown or abs(upg_shown[uid] - upgrade_price(u)) >= 0.01:
+                upg_stale.append(uid)
+        if upg_stale:
+            return ('An optional upgrade you selected has changed price or is no '
+                    'longer offered — please refresh the page and choose again.'), 409
+
         # A stale sign page can submit a package the rep has since toggled
         # off — make the customer refresh and choose from what's offered now.
         te_now = est.get('tiers_enabled') or {}
@@ -17314,6 +17799,25 @@ def customer_sign(token):
             elif (selected_tier in ('good', 'better', 'best')
                     and te_doc.get(selected_tier, True) is not False):
                 doc['selected_tier'] = selected_tier
+            # The election lands on the items themselves, so every total, PDF
+            # and invoice reads it from one place. Re-resolved against the
+            # FRESH doc, because a rep saving between the page load and this
+            # POST is the one race the pre-check above cannot close. A price
+            # that moved inside that window declines to be charged rather than
+            # charging the new number: the customer gets the job without the
+            # upgrade, which a change order can fix, where overcharging them
+            # cannot be.
+            elected = []
+            for u in upgrades_offered(doc):
+                uid = (u.get('id') or '').strip()
+                ok  = (uid and uid in upg_ticked and uid in upg_shown
+                       and abs(upg_shown[uid] - upgrade_price(u)) < 0.01)
+                u['accepted'] = bool(ok)
+                if ok:
+                    elected.append({'id': uid,
+                                    'name': (u.get('name') or '').strip(),
+                                    'price': upgrade_price(u)})
+
             # Chosen shingle color becomes part of the hashed document
             if shingle_color:
                 doc.setdefault('shingle_selection', {})['chosen'] = shingle_color
@@ -17343,6 +17847,10 @@ def customer_sign(token):
                 'shingle_color': shingle_color or (ss.get('chosen') or '').strip(),
                 'siding_color':  siding_color  or (sds.get('chosen') or '').strip(),
                 'initials':      initials_captured,
+                # What they elected, at the price they were shown, so the
+                # certificate describes the contract without re-deriving it.
+                'upgrades':       elected,
+                'upgrades_total': round(sum(e['price'] for e in elected), 2),
             }
             doc['status']     = 'accepted'
             doc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
