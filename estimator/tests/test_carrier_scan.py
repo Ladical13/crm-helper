@@ -39,6 +39,11 @@ LM_LINES = [
 ]
 
 
+def _s(v):
+    """A figure as the model returns it: a bare string, "" when not printed."""
+    return '' if v is None else f'{v:.2f}'
+
+
 def transcription(lines=LM_LINES, subtotal=True, grand=None, **over):
     raw = {
         'format': 'symbility',
@@ -50,19 +55,25 @@ def transcription(lines=LM_LINES, subtotal=True, grand=None, **over):
         'address': {'street': '12 TEST AVE', 'city': 'ARVADA', 'state': 'CO', 'zip': '80004'},
         'sections': [{
             'name': 'Hover XML 1 - 23788523',
-            'items': [{'line_no': n, 'description': d, 'qty': q, 'qty_calculated': qc,
-                       'unit': u, 'unit_price': p, 'tax': t, 'overhead_profit': 0,
-                       'rcv': rc, 'depreciation': dep, 'nonrecoverable': False, 'acv': acv}
+            'items': [{'line_no': str(n), 'description': d, 'qty': _s(q),
+                       'qty_calculated': _s(qc), 'unit': u, 'unit_price': _s(p),
+                       'tax': _s(t), 'overhead_profit': '0.00', 'rcv': _s(rc),
+                       'depreciation': _s(dep), 'nonrecoverable': '', 'acv': _s(acv)}
                       for n, d, q, qc, u, p, t, rc, dep, acv in lines],
-            'subtotal': ({'rcv': 22379.73, 'depreciation': 5305.72, 'acv': 17074.01}
-                         if subtotal else None),
+            'subtotal_rcv': _s(22379.73) if subtotal else '',
+            'subtotal_depreciation': _s(5305.72) if subtotal else '',
+            'subtotal_acv': _s(17074.01) if subtotal else '',
         }],
-        'line_item_totals': grand,
-        'summary': {'line_item_total': 21931.24, 'material_sales_tax': 448.49,
-                    'rcv_total': 22379.73, 'acv_total': None, 'deductible': 5000.00,
-                    'net_claim': 11559.28, 'recoverable_depreciation': 5305.72,
-                    'net_claim_if_recovered': 17379.73, 'paid_when_incurred': 514.73},
-        'measurements': {'roof_squares': 22.6, 'eave_lf': 210.53, 'ridge_lf': 35.33},
+        'total_rcv': _s(grand[0]) if grand else '',
+        'total_depreciation': _s(grand[1]) if grand else '',
+        'total_acv': _s(grand[2]) if grand else '',
+        'summary': {'line_item_total': _s(21931.24), 'material_sales_tax': _s(448.49),
+                    'rcv_total': _s(22379.73), 'acv_total': '', 'deductible': _s(5000.00),
+                    'net_claim': _s(11559.28), 'recoverable_depreciation': _s(5305.72),
+                    'net_claim_if_recovered': _s(17379.73),
+                    'paid_when_incurred': _s(514.73)},
+        'measurements': {'roof_squares': _s(22.6), 'eave_lf': _s(210.53),
+                         'ridge_lf': _s(35.33)},
         'unreadable': [],
         'missing_pages': [],
     }
@@ -170,8 +181,9 @@ def test_plan_subtotal_stands_in_for_a_missing_grand_total_only_when_every_plan_
 
 def test_printed_grand_total_wins_over_section_subtotals():
     import carrier_scan as cs
-    raw = transcription(grand={'rcv': 22379.73, 'depreciation': 5305.72, 'acv': 17074.01})
-    raw['sections'][0]['subtotal'] = {'rcv': 1.0, 'depreciation': 0, 'acv': 1.0}
+    raw = transcription(grand=(22379.73, 5305.72, 17074.01))
+    raw['sections'][0].update({'subtotal_rcv': '1.00', 'subtotal_depreciation': '0.00',
+                               'subtotal_acv': '1.00'})
     d = cs.read(scanned_pdf(), client=FakeClient(raw))
     assert d['summary']['line_items_rcv'] == 22379.73
 
@@ -298,3 +310,83 @@ def test_the_browser_waits_on_a_scan_job_rather_than_opening_an_empty_modal():
     assert 'r.status === 202 && data.scan_job' in body
     assert 'waitForCarrierScan(' in body
     assert '/api/parse-xactimate/scan/' in js
+
+
+# ── the schema itself ──────────────────────────────────────────────────────
+# The first version of it typed figures as numbers and made the optional ones
+# `anyOf [number, null]`. The API refused the request outright -- "the compiled
+# grammar is too large, which would cause performance issues" -- so every scan
+# came back "the scan reader is unavailable" and nothing could be imported.
+
+def test_the_schema_stays_simple_enough_to_compile():
+    import carrier_scan as cs
+    blob = json.dumps(cs.SCHEMA)
+    assert 'anyOf' not in blob and 'null' not in blob
+    assert len(blob) < 6000, f'schema is {len(blob)} chars — it grew'
+
+
+def test_every_figure_is_a_string_so_a_blank_needs_no_union():
+    import carrier_scan as cs
+    item = cs.SCHEMA['properties']['sections']['items']['properties']['items']['items']
+    assert {v['type'] for v in item['properties'].values()} == {'string'}
+
+
+def test_a_refused_schema_falls_back_to_asking_for_plain_json():
+    """A schema the API will not compile must not take the whole import down."""
+    import carrier_scan as cs
+
+    class Refused(Exception):
+        status_code = 400
+
+    class RefusesSchema(FakeClient):
+        def _stream(self, **kw):
+            if 'output_config' in kw:
+                raise Refused('the compiled grammar is too large')
+            return super()._stream(**kw)
+
+    fake = RefusesSchema(transcription())
+    d = cs.read(scanned_pdf(), client=fake)
+    assert len(d['sections'][0]['items']) == 17
+    assert 'output_config' not in fake.calls[-1]
+    assert 'JSON object' in fake.calls[-1]['system']
+
+
+def test_an_error_that_is_not_the_schema_is_not_retried():
+    """A rate limit or an auth failure must surface, not burn a second read."""
+    import carrier_scan as cs
+
+    class RateLimited(Exception):
+        status_code = 429
+
+    class Limited(FakeClient):
+        def _stream(self, **kw):
+            raise RateLimited('slow down')
+
+    fake = Limited(transcription())
+    with pytest.raises(RateLimited):
+        cs.read(scanned_pdf(), client=fake)
+
+
+def test_json_wrapped_in_a_code_fence_still_parses():
+    import carrier_scan as cs
+    assert json.loads(cs._json_text('Here you go:\n```json\n{"a": 1}\n```')) == {'a': 1}
+    assert json.loads(cs._json_text('{"a": 1}')) == {'a': 1}
+
+
+def test_a_figure_the_page_does_not_print_stays_absent():
+    """"" means not printed. Read as 0 it would report a $0 deductible and a
+    zero-square roof as though the carrier had printed them."""
+    import carrier_scan as cs
+    raw = transcription()
+    raw['summary']['deductible'] = ''
+    raw['measurements']['ridge_lf'] = ''
+    d = cs.read(scanned_pdf(), client=FakeClient(raw))
+    assert 'deductible' not in d['summary']
+    assert 'ridge_lf' not in d['measurements']
+
+
+def test_a_carrier_symbol_or_bracket_never_loses_a_figure():
+    import carrier_scan as cs
+    assert cs._num('$1,234.56') == 1234.56
+    assert cs._num('(514.73)') == -514.73
+    assert cs._num('') is None and cs._num(None) is None

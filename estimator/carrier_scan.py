@@ -22,6 +22,7 @@ which the first and third cannot see.
 import base64
 import json
 import os
+import re
 
 try:
     import anthropic
@@ -76,18 +77,18 @@ def render_pages(file_bytes):
 
 # ── what the model is asked for ────────────────────────────────────────────
 
-def _nullable(schema):
-    return {'anyOf': [schema, {'type': 'null'}]}
-
-
 def _obj(props):
     return {'type': 'object', 'properties': props,
             'required': list(props), 'additionalProperties': False}
 
 
-_NUM = {'type': 'number'}
+# EVERY figure is a string, and that is not laziness. The first version of this
+# schema typed figures as numbers and made the optional ones `anyOf [number,
+# null]`; the API refused the whole request with "the compiled grammar is too
+# large", so no scan could be read at all. One type per field and "" for a
+# figure the page does not print keeps the grammar small, and the parsing was
+# needed anyway -- a carrier prints "$1,234.56" and "(514.73)".
 _STR = {'type': 'string'}
-_TOTALS = _nullable(_obj({'rcv': _NUM, 'depreciation': _NUM, 'acv': _NUM}))
 
 SCHEMA = _obj({
     'format': {'type': 'string', 'enum': ['xactimate', 'symbility', 'other']},
@@ -98,27 +99,31 @@ SCHEMA = _obj({
     'sections': {'type': 'array', 'items': _obj({
         'name': _STR,
         'items': {'type': 'array', 'items': _obj({
-            'line_no': {'type': 'integer'},
+            'line_no': _STR,
             'description': _STR,
-            'qty': _NUM,
-            'qty_calculated': _nullable(_NUM),
+            'qty': _STR,
+            'qty_calculated': _STR,
             'unit': _STR,
-            'unit_price': _NUM,
-            'tax': _NUM,
-            'overhead_profit': _NUM,
-            'rcv': _NUM,
-            'depreciation': _NUM,
-            'nonrecoverable': {'type': 'boolean'},
-            'acv': _NUM,
+            'unit_price': _STR,
+            'tax': _STR,
+            'overhead_profit': _STR,
+            'rcv': _STR,
+            'depreciation': _STR,
+            'nonrecoverable': _STR,
+            'acv': _STR,
         })},
-        'subtotal': _TOTALS,
+        'subtotal_rcv': _STR,
+        'subtotal_depreciation': _STR,
+        'subtotal_acv': _STR,
     })},
-    'line_item_totals': _TOTALS,
-    'summary': _obj({k: _nullable(_NUM) for k in (
+    'total_rcv': _STR,
+    'total_depreciation': _STR,
+    'total_acv': _STR,
+    'summary': _obj({k: _STR for k in (
         'line_item_total', 'material_sales_tax', 'rcv_total', 'acv_total',
         'deductible', 'net_claim', 'recoverable_depreciation',
         'net_claim_if_recovered', 'paid_when_incurred')}),
-    'measurements': _obj({k: _nullable(_NUM) for k in (
+    'measurements': _obj({k: _STR for k in (
         'roof_squares', 'eave_lf', 'ridge_lf')}),
     'unreadable': {'type': 'array', 'items': _STR},
     'missing_pages': {'type': 'array', 'items': _STR},
@@ -129,21 +134,22 @@ You transcribe scanned insurance carrier estimates (Xactimate or Symbility/Cotal
 
 Transcribe; never calculate or correct. If a figure disagrees with the rest of its line, keep it as printed: a mismatch is how a misread gets caught downstream. If a character is hard to read, give your best reading and name the line and field in `unreadable`.
 
+EVERY field is a string. A figure is its digits with no currency symbol and no thousands separators ("2323.32", "21.39", "4"). **A figure the page does not print is an empty string** — never a guess, never "0" unless a zero is printed.
+
 Line items:
 - Include every numbered line that carries figures, including lines printed with a strikethrough; the carrier's subtotals still count them. Skip numbered notes that carry no figures.
 - `description` is the full description, with wrapped lines joined. Leave out notes printed under a line ("Includes 8% waste on quantity.").
-- Symbility prints a bundle-rounded quantity as "21.39 (21.67)": `qty` is the figure in parentheses and `qty_calculated` the one before it. Otherwise `qty_calculated` is null.
-- Xactimate REMOVE and REPLACE columns: `unit_price` is their sum. Columns a layout does not print (tax, O&P, depreciation) are 0.
-- Depreciation printed in <angle brackets> is non-recoverable: `nonrecoverable` true. Depreciation in (parentheses) is recoverable: false.
-- Money is a positive number with no symbols or commas.
+- Symbility prints a bundle-rounded quantity as "21.39 (21.67)": `qty` is the figure in parentheses and `qty_calculated` the one before it. When there is only one quantity, `qty_calculated` is "".
+- Xactimate REMOVE and REPLACE columns: `unit_price` is their sum.
+- `nonrecoverable` is "yes" when the depreciation is printed in <angle brackets>, otherwise "".
 
-Sections are the grouping level the carrier prints a subtotal for: an Xactimate room or area; a Symbility plan (for example "ROOFPLAN: DWELLING ROOF"). When a Symbility plan nests areas inside it, the section is the plan and `subtotal` is the plan's subtotal row, not the areas'. `subtotal` is null when none is printed.
+Sections are the grouping level the carrier prints a subtotal for: an Xactimate room or area; a Symbility plan (for example "ROOFPLAN: DWELLING ROOF"). When a Symbility plan nests areas inside it, the section is the plan and `subtotal_rcv`/`subtotal_depreciation`/`subtotal_acv` come from the plan's subtotal row, not the areas'. All three are "" when no subtotal is printed for that section.
 
-`line_item_totals` is the carrier's printed total of all line items: Xactimate's "Line Item Totals" row, or the last Symbility "Subtotal" row across the columns. If Symbility prints no such row but a single plan covers the estimate, use that plan's subtotal. Null when nothing like it is printed.
+`total_rcv`/`total_depreciation`/`total_acv` are the carrier's printed total of all line items: Xactimate's "Line Item Totals" row, or the last Symbility "Subtotal" row across the columns. If Symbility prints no such row but a single plan covers the estimate, use that plan's subtotal. "" when nothing like it is printed.
 
-`summary` comes from the claim-totals page, as positive magnitudes even where a deduction is printed in parentheses. Null for any figure not printed. `acv_total` only when a plain actual cash value line is printed; not a "net" figure that has also deducted costs payable when incurred.
+`summary` comes from the claim-totals page, as positive magnitudes even where a deduction is printed in parentheses. `acv_total` only when a plain actual cash value line is printed; not a "net" figure that has also deducted costs payable when incurred.
 
-`measurements`: roof squares, eave and ridge lengths as printed in a roof plan's measurement block, summed across roof plans that carry line items. Null when not printed.
+`measurements`: roof squares, eave and ridge lengths as printed in a roof plan's measurement block, summed across roof plans that carry line items.
 
 `meta` and `address`: empty strings for anything not printed. The address is the loss/property address, not the insured's mailing address.
 
@@ -151,6 +157,17 @@ Sections are the grouping level the carrier prints a subtotal for: an Xactimate 
 
 `format` is "symbility" for the nine-column Description/Quantity/Unit Price/Per/Total O&P/Total Taxes/RC/Depreciation/ACV grid, "xactimate" for an Xactimate grid, otherwise "other".
 """
+
+
+def _json_text(text):
+    """The JSON object in a reply. With the schema on, the reply IS the object;
+    the no-schema fallback can wrap it in a code fence or a sentence."""
+    s = (text or '').strip()
+    fence = re.search(r'```(?:json)?\s*(.+?)```', s, re.S)
+    if fence:
+        s = fence.group(1).strip()
+    start, end = s.find('{'), s.rfind('}')
+    return s[start:end + 1] if 0 <= start < end else s
 
 
 def _request(pages):
@@ -164,24 +181,44 @@ def _request(pages):
     return [{'role': 'user', 'content': content}]
 
 
+_JSON_ONLY = ('\n\nReply with one JSON object of exactly the fields described '
+              'above and nothing else: no prose, no code fence.')
+
+
+def _stream(client, pages, schema=True):
+    kw = dict(model=MODEL, max_tokens=64000,
+              betas=['server-side-fallback-2026-07-01'], fallbacks='default',
+              system=SYSTEM if schema else SYSTEM + _JSON_ONLY,
+              messages=_request(pages))
+    if schema:
+        kw['output_config'] = {'format': {'type': 'json_schema', 'schema': SCHEMA}}
+    with client.beta.messages.stream(**kw) as stream:
+        return stream.get_final_message()
+
+
 def _call(client, pages):
-    with client.beta.messages.stream(
-            model=MODEL,
-            max_tokens=64000,
-            betas=['server-side-fallback-2026-07-01'],
-            fallbacks='default',
-            system=SYSTEM,
-            messages=_request(pages),
-            output_config={'format': {'type': 'json_schema', 'schema': SCHEMA}},
-    ) as stream:
-        msg = stream.get_final_message()
+    # The schema is what guarantees a parseable answer, but it is also a thing
+    # the API can refuse on its own terms -- it rejected the first version of
+    # this one outright ("the compiled grammar is too large"), and every scan
+    # failed with it. So a 400 falls back to asking for the same JSON in the
+    # prompt: a worse guarantee, and far better than no import at all.
+    try:
+        msg = _stream(client, pages)
+    except Exception as e:
+        # Keyed on the status, not an SDK class: 400 is the API saying this
+        # request is malformed, and the schema is the only part of it that can
+        # be. Anything else (401, 429, a network drop) is not ours to retry.
+        if getattr(e, 'status_code', None) != 400:
+            raise
+        print(f'[carrier-scan] schema refused, retrying without it: {e}')
+        msg = _stream(client, pages, schema=False)
     if msg.stop_reason == 'refusal':
         raise ScanError('The scan reader declined this document. Enter the lines by hand.')
     if msg.stop_reason == 'max_tokens':
         raise ScanError('This scan is too long to read in one pass. Enter the lines by hand.')
     text = next((b.text for b in msg.content if getattr(b, 'type', '') == 'text'), '')
     try:
-        raw = json.loads(text)
+        raw = json.loads(_json_text(text))
     except ValueError:
         raise ScanError('The scan reader returned something unreadable. Try again.')
     usage = getattr(msg, 'usage', None)
@@ -193,8 +230,29 @@ def _call(client, pages):
 
 # ── into the parsers' shape ────────────────────────────────────────────────
 
-def _round(v):
-    return round(float(v or 0), 2)
+def _num(v):
+    """A transcribed figure → float, or None for one the page did not print.
+
+    Tolerant on purpose: the schema asks for bare digits, but a carrier prints
+    "$1,234.56" and "(514.73)", and a stray symbol must not lose a real figure.
+    """
+    s = str(v if v is not None else '').strip()
+    if not s:
+        return None
+    neg = s.startswith('-') or s.lstrip('$').startswith('(')
+    digits = re.sub(r'[^\d.]', '', s)
+    if not digits or digits == '.':
+        return None
+    try:
+        n = float(digits)
+    except ValueError:
+        return None
+    return -n if neg else n
+
+
+def _round(v, default=0.0):
+    n = _num(v)
+    return default if n is None else round(n, 2)
 
 
 def _line_math_off(item):
@@ -215,9 +273,9 @@ def normalize(raw):
         items = []
         for it in sec.get('items') or []:
             item = {
-                'line_no':      int(it.get('line_no') or 0),
+                'line_no':      int(_round(it.get('line_no'))),
                 'description':  ' '.join(str(it.get('description') or '').split()),
-                'qty':          float(it.get('qty') or 0),
+                'qty':          _round(it.get('qty')),
                 'unit':         str(it.get('unit') or '').strip(),
                 'unit_price':   _round(it.get('unit_price')),
                 'rcv':          _round(it.get('rcv')),
@@ -226,13 +284,15 @@ def normalize(raw):
                 'tax':          _round(it.get('tax')),
                 '_op':          _round(it.get('overhead_profit')),
             }
+            nonrec = str(it.get('nonrecoverable') or '').strip().lower()
             if fmt == 'symbility':
                 item['overhead_profit'] = item['_op']
-                if it.get('qty_calculated') is not None:
-                    item['qty_calculated'] = float(it['qty_calculated'])
+                calc = _num(it.get('qty_calculated'))
+                if calc is not None:
+                    item['qty_calculated'] = calc
             else:
                 item.update({'op': item['_op'], 'age_life': '', 'dep_pct': '',
-                             'nonrecoverable': bool(it.get('nonrecoverable'))})
+                             'nonrecoverable': nonrec in ('yes', 'true', '1')})
             if _line_math_off(item):
                 item['math_off'] = True
                 warnings.append(
@@ -243,21 +303,29 @@ def normalize(raw):
             items.append(item)
         if not items:
             continue
-        sub = sec.get('subtotal')
+        sub = [_num(sec.get('subtotal_' + k)) for k in ('rcv', 'depreciation', 'acv')]
         sections.append({
             'name': ' '.join(str(sec.get('name') or 'Estimate').split()) or 'Estimate',
             'items': items,
-            'totals': ({'rcv': _round(sub['rcv']), 'dep': _round(sub['depreciation']),
-                        'acv': _round(sub['acv'])} if sub else None),
+            # A subtotal needs its RCV; depreciation and ACV blank read as zero,
+            # which is what a section with nothing depreciated prints.
+            'totals': ({'rcv': round(sub[0], 2), 'dep': round(sub[1] or 0, 2),
+                        'acv': round(sub[2] if sub[2] is not None else sub[0], 2)}
+                       if sub[0] is not None else None),
         })
 
-    summary = {k: _round(v) for k, v in (raw.get('summary') or {}).items()
-               if v is not None}
+    summary = {}
+    for k, v in (raw.get('summary') or {}).items():
+        n = _num(v)
+        if n is not None:
+            summary[k] = round(n, 2)
     if 'recoverable_depreciation' in summary:
         summary.setdefault('depreciation_total', summary['recoverable_depreciation'])
-    grand = raw.get('line_item_totals')
-    if grand:
-        grand = (_round(grand['rcv']), _round(grand['depreciation']), _round(grand['acv']))
+    total = [_num(raw.get('total_' + k)) for k in ('rcv', 'depreciation', 'acv')]
+    grand = None
+    if total[0] is not None:
+        grand = (round(total[0], 2), round(total[1] or 0, 2),
+                 round(total[2] if total[2] is not None else total[0], 2))
     elif sections and all(s['totals'] for s in sections):
         # Same rule the Symbility parser follows: section subtotals stand in
         # for a missing grand total only when every section printed one.
@@ -281,8 +349,11 @@ def normalize(raw):
         addr['city'] = addr['city'].title()
     if not (addr.get('street') and addr.get('city')):
         addr = {}
-    measurements = {k: _round(v) for k, v in (raw.get('measurements') or {}).items()
-                    if v is not None}
+    measurements = {}
+    for k, v in (raw.get('measurements') or {}).items():
+        n = _num(v)
+        if n is not None:
+            measurements[k] = round(n, 2)
 
     out = {'format': fmt, 'scanned': True, 'meta': meta, 'address': addr,
            'sections': sections, 'summary': summary, 'warnings': warnings,
