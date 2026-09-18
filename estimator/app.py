@@ -23949,6 +23949,27 @@ def _check_daily_db_backup():
         print(f'[backup] nightly database backup failed: {exc}')
 
 
+def _check_crm_digest():
+    """Each rep's morning follow-up email (portal/crm_digest.py). Once per
+    Colorado day, after 7am, never Sunday; an O_EXCL lockfile like the backups
+    so two gunicorn workers cannot both send it."""
+    from portal import crm_digest
+    if not (_email_configured() and crm_digest.enabled() and crm_digest.due_now()):
+        return
+    stamp = crm_digest.local_now().strftime('%Y-%m-%d')
+    lock = os.path.join(REMINDER_LOCKS_DIR, f'crmdigest_{stamp}.lock')
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except (FileExistsError, OSError):
+        return
+    try:
+        n = crm_digest.send_all(_send_email, _base_url())
+        print(f'[crm-digest] sent {n} morning email(s)')
+    except Exception as exc:
+        print(f'[crm-digest] failed: {exc}')
+
+
 def _reminder_loop():
     time.sleep(30)  # let the app finish booting
     while True:
@@ -23960,6 +23981,10 @@ def _reminder_loop():
             _check_daily_backup()
         except Exception as exc:
             print(f'[backup] check failed: {exc}')
+        try:
+            _check_crm_digest()
+        except Exception as exc:
+            print(f'[crm-digest] check failed: {exc}')
         try:
             _check_daily_db_backup()
         except Exception as exc:
