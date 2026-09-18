@@ -469,3 +469,48 @@ def _dupe_no_drop(seed_key):
         r['id'] = 'dupe2'
         db.execute(f'INSERT INTO templates ({",".join(r)}) VALUES ({",".join("?" * len(r))})',
                    list(r.values()))
+
+
+# ── Which template earned the conversation ──────────────────────────────────
+
+def _tid(client, seed_key):
+    return next(t['id'] for t in client.get('/api/templates').get_json() if t['seed_key'] == seed_key)
+
+
+def test_an_outcome_records_the_template_behind_it(client):
+    signup(client)
+    lid = _cold(client)
+    tid = _tid(client, 'text:homeowner:first')
+    _outcome(client, lid, 'texted', template_id=tid)
+    with appmod.get_db() as db:
+        assert db.execute("SELECT template_id FROM activities WHERE outcome='texted'").fetchone()[0] == tid
+
+
+def test_an_unknown_template_id_is_dropped_not_stored(client):
+    signup(client)
+    lid = _cold(client)
+    _outcome(client, lid, 'texted', template_id='not-a-template')
+    with appmod.get_db() as db:
+        assert db.execute("SELECT template_id FROM activities WHERE outcome='texted'").fetchone()[0] == ''
+
+
+def test_the_library_reports_how_each_template_does(client):
+    signup(client)
+    tid = _tid(client, 'call:homeowner:first')
+    a = _cold(client)
+    b = _cold(client, source_ref='test:2', phone='970-555-0102')
+    _outcome(client, a, 'interested', template_id=tid)
+    _outcome(client, b, 'no_answer', template_id=tid)
+    t = next(t for t in client.get('/api/templates').get_json() if t['id'] == tid)
+    assert (t['used'], t['good']) == (2, 1)
+
+
+def test_a_drop_by_books_a_call_three_days_later(client):
+    signup(client)
+    lid = _cold(client, lead_type='church')
+    r = _outcome(client, lid, 'dropped_by').get_json()
+    assert r['lead']['outreach_status'] == 'visited'
+    due = appmod._now_dt() + timedelta(days=3)
+    assert r['follow_up']['due_at'][:10] == appmod._iso(due)[:10]
+    with appmod.get_db() as db:
+        assert db.execute("SELECT kind FROM activities WHERE outcome='dropped_by'").fetchone()[0] == 'door'

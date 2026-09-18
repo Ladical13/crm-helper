@@ -183,6 +183,7 @@ OUTREACH_STATUSES = [
     {'key': 'attempted',      'label': 'No answer',          'color': '#94A3B8', 'open': True},
     {'key': 'left_vm',        'label': 'Left voicemail',     'color': '#60A5FA', 'open': True},
     {'key': 'messaged',       'label': 'Texted / emailed',   'color': '#3B82F6', 'open': True},
+    {'key': 'visited',        'label': 'Dropped by',         'color': '#0EA5E9', 'open': True},
     {'key': 'connected',      'label': 'Talked',             'color': '#6366F1', 'open': True},
     {'key': 'callback',       'label': 'Call back',          'color': '#F59E0B', 'open': True},
     {'key': 'interested',     'label': 'Interested',         'color': '#10B981', 'open': True},
@@ -215,6 +216,10 @@ OUTCOMES = [
      'status': 'messaged', 'follow': (3, 'call', 'Call - did they see the text?'), 'cadence': True},
     {'key': 'emailed',        'label': 'Emailed',           'icon': '✉️', 'kind': 'email',
      'status': 'messaged', 'follow': (3, 'call', 'Call - follow up on the email'), 'cadence': True},
+    # Churches, schools and businesses are often worked in person: walk in,
+    # leave a card or a sample report, call a few days later.
+    {'key': 'dropped_by',     'label': 'Dropped by',        'icon': '🚪', 'kind': 'door',
+     'status': 'visited', 'follow': (3, 'call', 'Call - after the drop-by'), 'cadence': True},
     {'key': 'talked',         'label': 'Talked',            'icon': '🗣', 'kind': 'call',
      'status': 'connected', 'follow': (3, 'call', 'Follow up on the conversation'),
      'cadence': True, 'stage': 'contacted'},
@@ -236,6 +241,8 @@ OUTCOMES = [
      'stop': True},
 ]
 OUTCOME_BY_KEY = {o['key']: o for o in OUTCOMES}
+# The outcomes that mean a template worked: somebody engaged.
+GOOD_OUTCOMES = ('talked', 'callback', 'interested', 'appt_set')
 # Four unanswered touches in a row and the fifth is not the one that lands.
 # Past this, "no answer" parks the lead for a month instead of two days.
 NO_ANSWER_PARK_AFTER = 4
@@ -414,6 +421,11 @@ def migrate_db():
         for name, decl in _PROSPECT_COLS:
             if name not in cols:
                 db.execute(f'ALTER TABLE leads ADD COLUMN {name} {decl}')
+        acols = [r['name'] for r in db.execute('PRAGMA table_info(activities)')]
+        if 'template_id' not in acols:
+            # Which library template a touch used, so a manager can see which
+            # HOA text books meetings and which one gets ignored.
+            db.execute("ALTER TABLE activities ADD COLUMN template_id TEXT DEFAULT ''")
         if 'outreach_status' not in cols:
             db.execute("ALTER TABLE leads ADD COLUMN outreach_status TEXT DEFAULT 'not_contacted'")
             db.execute("ALTER TABLE leads ADD COLUMN outreach_status_at TEXT DEFAULT ''")
@@ -771,10 +783,11 @@ def _lead_visible(db, lead_id):
         return None
     return row
 
-def _log_activity(db, lead_id, kind, body='', outcome='', rep=None):
-    db.execute('INSERT INTO activities (id, lead_id, rep, kind, outcome, body, created_at) '
-               'VALUES (?,?,?,?,?,?,?)',
-               (str(uuid.uuid4()), lead_id, rep or current_rep(), kind, outcome, body, _now()))
+def _log_activity(db, lead_id, kind, body='', outcome='', rep=None, template_id=''):
+    db.execute('INSERT INTO activities (id, lead_id, rep, kind, outcome, body, template_id, created_at) '
+               'VALUES (?,?,?,?,?,?,?,?)',
+               (str(uuid.uuid4()), lead_id, rep or current_rep(), kind, outcome, body,
+                template_id or '', _now()))
     if kind in OUTREACH_KINDS:
         db.execute('UPDATE leads SET last_activity_at=?, updated_at=? WHERE id=?',
                    (_now(), _now(), lead_id))
@@ -2151,6 +2164,18 @@ def list_templates():
         rows = [dict(r) for r in db.execute(
             'SELECT * FROM templates ' + ('' if show_archived else 'WHERE archived=0 ')
             + 'ORDER BY audience, channel, sort, name')]
+        # How each one is doing: times used, and how many of those touches
+        # ended in a real conversation. "Won" is too far downstream to credit
+        # to one text; these are the outcomes a template can actually earn.
+        stats = {r['template_id']: dict(r) for r in db.execute(
+            "SELECT template_id, COUNT(*) used, "
+            "SUM(CASE WHEN outcome IN (%s) THEN 1 ELSE 0 END) good "
+            "FROM activities WHERE template_id != '' GROUP BY template_id"
+            % ','.join('?' * len(GOOD_OUTCOMES)), list(GOOD_OUTCOMES))}
+    for r in rows:
+        st = stats.get(r['id']) or {}
+        r['used'] = st.get('used', 0)
+        r['good'] = st.get('good', 0) or 0
     return jsonify(rows)
 
 
@@ -2291,8 +2316,11 @@ def log_outcome(lead_id):
             return jsonify({'error': 'Not found'}), 404
         lead = dict(row)
         now = _now()
+        tpl = (data.get('template_id') or '').strip()
+        if tpl and not db.execute('SELECT 1 FROM templates WHERE id=?', (tpl,)).fetchone():
+            tpl = ''
         _log_activity(db, lead_id, kind, body=(data.get('body') or '').strip(),
-                      outcome=o['key'])
+                      outcome=o['key'], template_id=tpl)
 
         # The task being worked (from the queue card) is done. Completing it the
         # normal way advances its cadence, whose next step may be the follow-up.

@@ -170,6 +170,17 @@ function outcomeHtml(touched){
       <button class="btn-brand small" data-ocok>Book it</button></div>`;
 }
 
+// The template behind an outcome: the one open on the channel the outcome is
+// about (texted -> the text picked, left voicemail -> the voicemail read, a
+// call outcome -> the call script on screen). '' when the rep never opened one.
+function templateFor(st, outcome){
+  if(!st||!st.sel) return '';
+  const ch={texted:'text',emailed:'email',left_vm:'voicemail'}[outcome]
+    ||(['dropped_by'].includes(outcome)?'':'call');
+  if(ch==='call'&&st.tab!=='call') return '';
+  return (ch&&st.sel[ch])||'';
+}
+
 // POST the outcome; resolves to the server's reply or null. Asks for the day
 // when the outcome needs one (a callback the person agreed to).
 function wireOutcomes(root, leadId, getCtx, done){
@@ -191,6 +202,7 @@ function wireOutcomes(root, leadId, getCtx, done){
     const body={outcome:key};
     if(ctx.kind) body.kind=ctx.kind;
     if(ctx.task_id) body.task_id=ctx.task_id;
+    const tid=templateFor(ctx.cmp,key); if(tid) body.template_id=tid;
     if(when) body.follow_up_at=new Date(when).toISOString().slice(0,16);
     try{
       const r=await api('/leads/'+leadId+'/outcome',{method:'POST',body});
@@ -405,7 +417,7 @@ function drawQueue(){
       b.dataset.outcome==={text:'texted',email:'emailed'}[kind]));
   };
   card.querySelectorAll('.oq-actions [data-touch="call"]').forEach(a=>a.addEventListener('click',()=>touched('call')));
-  wireOutcomes(card, it.lead_id, ()=>({kind:it.touched, task_id:it.task_id}), ()=>{ Q.done++; qNext(); renderStatusBoard(); });
+  wireOutcomes(card, it.lead_id, ()=>({kind:it.touched, task_id:it.task_id, cmp:it.cmp}), ()=>{ Q.done++; qNext(); renderStatusBoard(); });
   if(it.msgs){ wireComposer(card, it, it.msgs, script, it.cmp, touched); return; }
   const idx=Q.idx;
   api('/leads/'+it.lead_id+'/messages').then(m=>{
@@ -867,7 +879,7 @@ function renderDrawer(l){
     wireComposer(p, l, m, dScript, dSt, kind=>p.querySelectorAll('[data-outcome]').forEach(b=>
       b.classList.toggle('hint', b.dataset.outcome==={text:'texted',email:'emailed'}[kind])));
   }).catch(()=>{ const b=p.querySelector('[data-composer]'); if(b) b.innerHTML=''; });
-  wireOutcomes(p, l.id, ()=>({}), async()=>{ const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
+  wireOutcomes(p, l.id, ()=>({cmp:dSt}), async()=>{ const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
     if(S.view==='pipeline') renderPipeline(); });
   $('#d-os').onchange=async e=>{
     try{ await api('/leads/'+l.id+'/outreach-status',{method:'PATCH',body:{status:e.target.value}});
@@ -1294,7 +1306,8 @@ async function renderTemplates(){
   box.innerHTML=rows.map(t=>`<div class="card tpl-card">
       <h4>${{email:'✉️',text:'💬',voicemail:'📼',call:'📞'}[t.channel]} ${esc(t.name)}
         <span class="type-badge">${esc(audLabel(t.audience))}</span>
-        <span class="type-badge">${esc(t.step==='any'?'any touch':t.step)}</span></h4>
+        <span class="type-badge">${esc(t.step==='any'?'any touch':t.step)}</span>
+        ${t.used?`<span class="type-badge tpl-stat" title="Touches that used it, and how many became a conversation">used ${t.used} · ${t.good} engaged (${Math.round(100*t.good/t.used)}%)</span>`:''}</h4>
       ${t.subject?`<div class="tpl-subj">${esc(t.subject)}</div>`:''}
       <div class="a tpl-body">${esc(t.body)}</div>
       <div class="drawer-btns"><button class="btn-ghost small" data-copy="${t.id}">Copy</button>
