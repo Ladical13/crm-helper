@@ -702,6 +702,30 @@
       "step": "any",
       "stage": "lost",
       "body": "OPEN: Hi, it's {rep_first} from Project One Roofing. We gave you a roof estimate a while back - is the project still on your mind?\n\nIF YES: Pricing and our schedule have both moved, so let me refresh the numbers at no charge.\n\nIF THEY WENT WITH SOMEONE ELSE: Totally fair - how did it go? If you ever need anything, you have my number.\n\nIF NOT NOW: No problem. Would it help if I checked back after the next storm season?\n\nCLOSE: Can I come by for 20 minutes this week to update it?"
+    },
+    {
+      "key": "text:homeowner:storm",
+      "name": "After a storm (uses the hail line)",
+      "channel": "text",
+      "audience": "homeowner",
+      "step": "any",
+      "body": "{greeting} {rep_first} with Project One Roofing. {storm_hook} Want a free 20-minute inspection this week so you know where you stand? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:commercial:storm",
+      "name": "After a storm (uses the hail line)",
+      "channel": "text",
+      "audience": "commercial",
+      "step": "any",
+      "body": "{greeting} {rep_first} with Project One Roofing. {storm_hook} Worth a free roof check for {company} before a leak finds it first? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:partner:storm",
+      "name": "After a storm in their area",
+      "channel": "text",
+      "audience": "partner",
+      "step": "any",
+      "body": "{greeting} {rep_first} with Project One Roofing. After this week's hail around {city}, if any of your clients or properties were in it, send them my way - I'll get out fast and put it in writing."
     }
   ]
 }

@@ -23970,6 +23970,39 @@ def _check_crm_digest():
         print(f'[crm-digest] failed: {exc}')
 
 
+def _check_hail_nightly():
+    """Pull the last two days of radar hail and queue follow-ups for any storm.
+
+    Once per UTC date, after 12:00 UTC: NOAA's day file is a rolling 24-hour
+    maximum stamped 23:30, so yesterday is final by then. `--refetch` re-pulls
+    both days because today's read is still partial and re-ingesting a date
+    REPLACES its cells (hail/storms.py). Then the CRM books a follow-up for
+    every open lead under a storm of 1"+ (salescrm storm_nightly). Its own
+    O_EXCL lockfile, like the backups, so two workers cannot both run it."""
+    now = datetime.utcnow()
+    if now.hour < 12 or os.environ.get('HAIL_NIGHTLY', '1').strip() in ('0', 'false', 'no'):
+        return
+    lock = os.path.join(REMINDER_LOCKS_DIR, f'hail_{now.strftime("%Y-%m-%d")}.lock')
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except (FileExistsError, OSError):
+        return
+    try:
+        from hail import backfill as hbackfill
+        hbackfill.main(['--days', '2', '--refetch'])
+    except SystemExit:
+        pass
+    except Exception as exc:
+        print(f'[hail] nightly ingest failed: {exc}')
+    crm = sys.modules.get('p1_crm_app')
+    if crm is not None and hasattr(crm, 'storm_nightly'):
+        try:
+            print(f'[hail] storm follow-ups: {crm.storm_nightly()}')
+        except Exception as exc:
+            print(f'[hail] storm follow-ups failed: {exc}')
+
+
 def _reminder_loop():
     time.sleep(30)  # let the app finish booting
     while True:
@@ -23981,6 +24014,10 @@ def _reminder_loop():
             _check_daily_backup()
         except Exception as exc:
             print(f'[backup] check failed: {exc}')
+        try:
+            _check_hail_nightly()
+        except Exception as exc:
+            print(f'[hail] check failed: {exc}')
         try:
             _check_crm_digest()
         except Exception as exc:

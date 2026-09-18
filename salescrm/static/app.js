@@ -333,6 +333,27 @@ async function renderOutreach(){
   renderStatusBoard();
 }
 
+// Managers: recent storms from the radar hail archive, and the follow-ups
+// each one booked. The nightly job queues them on its own; the button is for
+// a storm that landed before a lead was imported or geocoded.
+async function renderStorms(){
+  const box=$('#storm-panel'); if(!box) return;
+  let st; try{ st=await api('/storms?days=60'); }catch(e){ return; }
+  if(!st.events.length){ box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  box.innerHTML=`<div class="storm-h">⛈ Storms in the last 60 days (${st.min_size_in}"+ hail) · ${st.leads_tagged} leads carry a hail line</div>`+
+    st.events.slice(0,6).map(e=>`<div class="storm-row"><span><b>${esc(e.event_date)}</b> · up to ${Number(e.max_size_in).toFixed(2)}"</span>
+      <span class="lead-context">${e.queued} queued</span>
+      <button class="btn-ghost small" data-storm="${esc(e.event_id)}">Queue follow-ups</button></div>`).join('');
+  box.querySelectorAll('[data-storm]').forEach(b=>b.onclick=async()=>{
+    b.disabled=true;
+    try{ const r=await api('/storms/'+encodeURIComponent(b.dataset.storm)+'/queue',{method:'POST'});
+      toast(`${r.queued} follow-ups queued`+(r.already_queued?`, ${r.already_queued} already were`:'')+(r.no_coords?` · ${r.no_coords} leads had no location to check`:''));
+      renderStorms(); renderOutreach();
+    }catch(e){ toast(e.message,true); b.disabled=false; }
+  });
+}
+
 // Managers: the Do Not Call registry has to be re-loaded every 31 days. The
 // notice appears only when it matters - homeowner leads exist and the
 // registry is missing or stale.
@@ -367,7 +388,7 @@ function dncModal(){
 // are left off the strip — they are answers, not work.
 async function renderStatusBoard(){
   const box=$('#oq-status'); if(!box) return;
-  if(S.me.is_manager) renderDncNotice();
+  if(S.me.is_manager){ renderDncNotice(); renderStorms(); }
   let rows=[]; try{ rows=await api('/outreach/summary'); }catch(e){ return; }
   box.innerHTML=rows.filter(r=>r.open&&r.count).map(r=>
     `<button class="os-chip" data-os="${r.key}" style="--c:${r.color}"><span class="n">${r.count}</span>${esc(r.label)}${r.due?`<span class="due">${r.due} due</span>`:''}</button>`).join('')

@@ -2179,6 +2179,182 @@ def load_dnc_registry():
     return jsonify({'loaded': len(nums), 'areas': areas})
 
 
+# ── Storms: the hail archive, joined to the pipeline ─────────────────────────
+#
+# The hail package (hail/) holds NOAA's radar hail estimate (MRMS MESH) for
+# every ~1 km cell of Colorado, day by day. Two things come out of it here:
+#
+#   * storm_tag_leads() writes each lead's worst hail of the past year into
+#     leads.recent_storm, which is what the {storm_hook} fill-in reads. That
+#     is the strongest opening line there is, and until now it was always
+#     blank.
+#   * storm_queue(event_id) books a follow-up for every open lead under one
+#     storm's swath: past customers first, then open deals, then lost quotes,
+#     then cold prospects - the order hail/join.TIERS fixes as a business rule.
+#
+# A lead with no coordinate is SKIPPED and COUNTED, never treated as "no hail":
+# silently dropping un-geocoded leads is how a storm report reads as a small
+# storm (CLAUDE.md, hail section).
+
+STORM_MIN_IN = 1.0            # hail a roofer can sell on; below it, no follow-up
+STORM_LOOKBACK_DAYS = 365
+STORM_CLOSED_STATUSES = ('not_interested', 'dnc', 'bad_contact')
+# Due times inside the day, by tier, so the queue (ordered by due_at) works
+# past customers first. Minutes after the start of the Colorado morning.
+_STORM_TIER_OFFSET = {'past_customer': 0, 'open_lead': 5, 'lost_estimate': 10, 'cold': 15}
+
+
+def _storm_tier(lead):
+    if lead.get('stage') == 'won' or lead.get('source') == 'existing_customer':
+        return 'past_customer'
+    if lead.get('stage') == 'lost':
+        return 'lost_estimate'
+    if lead.get('stage') != 'new':
+        return 'open_lead'
+    return 'cold'
+
+
+def _lead_point(lead):
+    from portal import geo
+    hit = geo.lookup(lead.get('address', ''), lead.get('city', ''),
+                     lead.get('state', ''), lead.get('zip', ''))
+    return (hit['lat'], hit['lng']) if hit else None
+
+
+def _storm_line(size_in, event_date):
+    """The {storm_hook} sentence. Says what it is — a radar estimate — because a
+    homeowner will repeat it, and an adjuster will check it."""
+    try:
+        d = datetime.strptime(event_date, '%Y-%m-%d')
+        when = f'{d.strftime("%B")} {d.day}, {d.year}'
+    except ValueError:
+        when = event_date
+    return (f'NOAA radar estimated {size_in:.2f}-inch hail at your address on {when}, '
+            f'which is large enough to damage a roof.')
+
+
+def storm_tag_leads(since_days=STORM_LOOKBACK_DAYS):
+    """Write each lead's worst hail (>= STORM_MIN_IN) of the past year into
+    recent_storm. Returns {'checked', 'tagged', 'no_coords'}."""
+    from hail import storms
+    since = (_now_dt() - timedelta(days=since_days)).strftime('%Y-%m-%d')
+    checked = tagged = no_coords = 0
+    with get_db() as db:
+        leads = [dict(r) for r in db.execute(
+            "SELECT id, address, city, state, zip, recent_storm FROM leads "
+            "WHERE dnc = 0 AND address != ''")]
+        for lead in leads:
+            pt = _lead_point(lead)
+            if not pt:
+                no_coords += 1
+                continue
+            checked += 1
+            hits = [h for h in storms.history_at(pt[0], pt[1], since=since)
+                    if (h.get('size_in') or 0) >= STORM_MIN_IN]
+            line = ''
+            if hits:
+                worst = max(hits, key=lambda h: (h['size_in'], h['event_date']))
+                line = _storm_line(worst['size_in'], worst['event_date'])
+                tagged += 1
+            if line != (lead.get('recent_storm') or ''):
+                db.execute('UPDATE leads SET recent_storm=? WHERE id=?', (line, lead['id']))
+    return {'checked': checked, 'tagged': tagged, 'no_coords': no_coords}
+
+
+def _storm_marker(event_id):
+    return f'[storm:{event_id}]'
+
+
+def storm_queue(event_id, min_size=STORM_MIN_IN):
+    """Book a follow-up for every open lead under one storm. Idempotent: a lead
+    already queued for this event is not queued again."""
+    from hail import join as hjoin, storms
+    ev = storms.get_event(event_id)
+    if not ev:
+        return {'error': 'Unknown storm'}
+    swath = storms.load_swath(event_id)
+    dnc_sql, dnc_params = _dnc_clause()
+    marker = _storm_marker(event_id)
+    with get_db() as db:
+        leads = [dict(r) for r in db.execute(
+            f"SELECT * FROM leads WHERE dnc = 0 "
+            f"AND outreach_status NOT IN ({','.join('?' * len(STORM_CLOSED_STATUSES))}) "
+            f"AND NOT {dnc_sql}", list(STORM_CLOSED_STATUSES) + dnc_params)]
+        for lead in leads:
+            lead['tier'] = _storm_tier(lead)
+        hits, skipped = hjoin.affected(swath, leads, resolve=_lead_point, min_size=min_size)
+        done = {r['lead_id'] for r in db.execute(
+            'SELECT lead_id FROM activities WHERE body LIKE ?', (f'%{marker}%',))}
+        start = _now_dt().replace(hour=13, minute=0, second=0, microsecond=0)  # ~7am Denver
+        queued, already = 0, 0
+        by_tier = {}
+        for h in hits:
+            if h['id'] in done:
+                already += 1
+                continue
+            size = h['hail_size_in']
+            when = ev['event_date']
+            due = _iso(start + timedelta(minutes=_STORM_TIER_OFFSET.get(h['tier'], 15)))
+            db.execute('INSERT INTO tasks (id, lead_id, rep, kind, title, due_at, created_at) '
+                       'VALUES (?,?,?,?,?,?,?)',
+                       (str(uuid.uuid4()), h['id'], h['rep'], 'call',
+                        f'Storm: {size:.2f}" hail on {when}', due, _now()))
+            _log_activity(db, h['id'], 'system', rep=h['rep'],
+                          body=f'Storm follow-up queued: radar estimated {size:.2f}" hail '
+                               f'here on {when}. {marker}')
+            db.execute('UPDATE leads SET recent_storm=? WHERE id=?',
+                       (_storm_line(size, when), h['id']))
+            _refresh_next_action(db, h['id'])
+            queued += 1
+            by_tier[h['tier']] = by_tier.get(h['tier'], 0) + 1
+    return {'event_id': event_id, 'date': ev['event_date'], 'max_size_in': ev.get('max_size_in'),
+            'queued': queued, 'already_queued': already, 'no_coords': skipped,
+            'by_tier': by_tier}
+
+
+def storm_nightly():
+    """What the nightly job runs after the hail ingest: queue every new storm
+    of the last few days that reached STORM_MIN_IN, then re-tag leads."""
+    from hail import storms
+    since = (_now_dt() - timedelta(days=3)).strftime('%Y-%m-%d')
+    out = [storm_queue(e['event_id']) for e in storms.events(since=since, min_size=STORM_MIN_IN)]
+    out.append(storm_tag_leads())
+    return out
+
+
+@app.route('/api/storms')
+@login_required
+def list_storms():
+    """Recent storms that reached STORM_MIN_IN, with how many leads were queued."""
+    days = max(1, min(request.args.get('days', 60, type=int), 400))
+    try:
+        from hail import storms
+        since = (_now_dt() - timedelta(days=days)).strftime('%Y-%m-%d')
+        evs = storms.events(since=since, min_size=STORM_MIN_IN, limit=50)
+    except Exception as e:
+        return jsonify({'events': [], 'error': f'Hail archive unavailable: {e}'})
+    with get_db() as db:
+        for ev in evs:
+            ev['queued'] = db.execute(
+                'SELECT COUNT(DISTINCT lead_id) FROM activities WHERE body LIKE ?',
+                (f'%{_storm_marker(ev["event_id"])}%',)).fetchone()[0]
+        tagged = db.execute("SELECT COUNT(*) FROM leads WHERE recent_storm != ''").fetchone()[0]
+    return jsonify({'events': evs, 'min_size_in': STORM_MIN_IN, 'leads_tagged': tagged})
+
+
+@app.route('/api/storms/<event_id>/queue', methods=['POST'])
+@admin_required
+def queue_storm(event_id):
+    r = storm_queue(event_id)
+    return jsonify(r), (404 if r.get('error') else 200)
+
+
+@app.route('/api/storms/tag', methods=['POST'])
+@admin_required
+def tag_storms():
+    return jsonify(storm_tag_leads())
+
+
 # ── Template library ──────────────────────────────────────────────────────────
 #
 # Emails, texts and voicemail scripts, editable by managers on the Playbook tab
