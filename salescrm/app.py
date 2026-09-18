@@ -566,25 +566,64 @@ def _seed_rows():
     return rows
 
 
+def _dedupe_seeded_templates(db):
+    """Collapse seed rows that were inserted twice.
+
+    Two gunicorn workers import this module at the same moment on every
+    deploy, and both used to read "not seeded yet" before either had written,
+    so every new starter template landed twice. This keeps ONE row per
+    seed_key: an edited copy if a manager has touched one (never throw away
+    their words), otherwise the oldest. Only untouched copies are removed; if
+    two copies were both edited, both stay and the unique index below is
+    simply not created until a manager archives one.
+    """
+    dup_keys = [r['seed_key'] for r in db.execute(
+        "SELECT seed_key FROM templates WHERE seed_key != '' "
+        "GROUP BY seed_key HAVING COUNT(*) > 1")]
+    removed = 0
+    for key in dup_keys:
+        rows = [dict(r) for r in db.execute(
+            'SELECT id, updated_by, created_at FROM templates WHERE seed_key=? '
+            'ORDER BY created_at, id', (key,))]
+        edited = [r for r in rows if r['updated_by'] != 'seed']
+        keep = {r['id'] for r in edited} or {rows[0]['id']}
+        for r in rows:
+            if r['id'] not in keep and r['updated_by'] == 'seed':
+                db.execute('DELETE FROM templates WHERE id=?', (r['id'],))
+                removed += 1
+    if removed:
+        print(f'[templates] removed {removed} duplicate starter template(s)')
+
+
 def seed_templates():
     """Insert any starter template whose seed_key has never been seeded.
 
     Never updates an existing row: once a template is in the database it is
     the managers', and a restart must not put the old wording back over their
-    edit. Same rule, and the same reason, as the estimator's price-book seeds."""
+    edit. Same rule, and the same reason, as the estimator's price-book seeds.
+
+    Safe under two workers starting at once: a UNIQUE index on seed_key plus
+    INSERT OR IGNORE, rather than a read-then-insert that both workers can
+    pass before either writes."""
     with get_db() as db:
-        have = {r['seed_key'] for r in db.execute(
-            "SELECT seed_key FROM templates WHERE seed_key != ''")}
+        _dedupe_seeded_templates(db)
+        try:
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS tpl_seed_idx "
+                       "ON templates(seed_key) WHERE seed_key != ''")
+        except sqlite3.IntegrityError:
+            print('[templates] two edited copies share a seed_key; '
+                  'archive one to restore the unique index')
         now = _now()
         for r in _seed_rows():
-            if r['seed_key'] in have:
-                continue
-            db.execute('INSERT INTO templates (id, seed_key, name, channel, audience, '
-                       'lead_type, step, stage, subject, body, sort, updated_by, '
-                       'created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            db.execute('INSERT OR IGNORE INTO templates (id, seed_key, name, channel, '
+                       'audience, lead_type, step, stage, subject, body, sort, updated_by, '
+                       'created_at, updated_at) '
+                       'SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,? '
+                       'WHERE NOT EXISTS (SELECT 1 FROM templates WHERE seed_key=?)',
                        (str(uuid.uuid4()), r['seed_key'], r['name'], r['channel'],
                         r['audience'], r['lead_type'], r['step'], r['stage'],
-                        r['subject'], r['body'], r['sort'], 'seed', now, now))
+                        r['subject'], r['body'], r['sort'], 'seed', now, now,
+                        r['seed_key']))
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

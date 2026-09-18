@@ -420,3 +420,52 @@ def test_a_cold_partner_is_never_read_the_past_customer_referral_script():
     for t in _library():
         if t['channel'] == 'call' and t['audience'] != 'past_customer':
             assert "happy with how it turned out" not in t['body'].lower(), t['key']
+
+
+# ── Two workers, one seed ───────────────────────────────────────────────────
+
+def _dupe(seed_key, updated_by='seed'):
+    with appmod.get_db() as db:
+        db.execute('DROP INDEX IF EXISTS tpl_seed_idx')
+        r = dict(db.execute('SELECT * FROM templates WHERE seed_key=?', (seed_key,)).fetchone())
+        r['id'] = 'dupe-' + seed_key
+        r['updated_by'] = updated_by
+        r['created_at'] = '2099-01-01T00:00:00Z'
+        cols = ','.join(r)
+        db.execute(f'INSERT INTO templates ({cols}) VALUES ({",".join("?" * len(r))})',
+                   list(r.values()))
+
+
+def _copies(seed_key):
+    with appmod.get_db() as db:
+        return [dict(x) for x in db.execute(
+            'SELECT id, updated_by FROM templates WHERE seed_key=?', (seed_key,))]
+
+
+def test_a_template_seeded_twice_is_collapsed_to_one(client):
+    """What two gunicorn workers starting together did on the 2026-09-18 deploy."""
+    _dupe('text:type:hoa:first')
+    assert len(_copies('text:type:hoa:first')) == 2
+    appmod.seed_templates()
+    assert len(_copies('text:type:hoa:first')) == 1
+
+
+def test_the_collapse_keeps_a_managers_edited_copy(client):
+    _dupe('text:type:hoa:first', updated_by='luke')
+    appmod.seed_templates()
+    assert [c['id'] for c in _copies('text:type:hoa:first')] == ['dupe-text:type:hoa:first']
+
+
+def test_the_seed_key_is_unique_once_seeded(client):
+    import sqlite3
+    appmod.seed_templates()
+    with pytest.raises(sqlite3.IntegrityError):
+        _dupe_no_drop('text:type:hoa:first')
+
+
+def _dupe_no_drop(seed_key):
+    with appmod.get_db() as db:
+        r = dict(db.execute('SELECT * FROM templates WHERE seed_key=?', (seed_key,)).fetchone())
+        r['id'] = 'dupe2'
+        db.execute(f'INSERT INTO templates ({",".join(r)}) VALUES ({",".join("?" * len(r))})',
+                   list(r.values()))
