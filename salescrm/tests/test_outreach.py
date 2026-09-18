@@ -73,7 +73,7 @@ def test_every_audience_has_texts_voicemails_and_emails(client, audience):
     with appmod.get_db() as db:
         chans = {r['channel'] for r in db.execute(
             'SELECT channel FROM templates WHERE audience=? AND archived=0', (audience,))}
-    assert chans == {'email', 'text', 'voicemail'}
+    assert chans == {'email', 'text', 'voicemail', 'call'}
 
 
 def test_first_cold_texts_offer_a_way_out():
@@ -366,3 +366,57 @@ def test_the_backfill_tells_the_truth_about_existing_leads(client):
         appmod._backfill_outreach_status(db)
     assert _lead(touched['id'])['outreach_status'] == 'attempted'
     assert _lead(lost['id'])['outreach_status'] == 'not_interested'
+
+
+# ── Every partner and commercial type gets its own outreach ──────────────────
+
+TYPED = ('realtor', 'hoa', 'insurance_agent', 'property_manager', 'adjuster',
+         'referral_partner', 'gc', 'church', 'school', 'school_district', 'commercial')
+
+
+@pytest.mark.parametrize('lead_type', TYPED)
+def test_each_type_has_its_own_text_voicemail_and_call_script(client, lead_type):
+    with appmod.get_db() as db:
+        chans = {r['channel'] for r in db.execute(
+            'SELECT channel FROM templates WHERE lead_type=? AND archived=0', (lead_type,))}
+    assert {'email', 'text', 'voicemail', 'call'} <= chans
+
+
+def test_no_two_types_share_a_first_text():
+    firsts = [t['body'] for t in _library()
+              if t['channel'] == 'text' and t['step'] == 'first' and t.get('lead_type')]
+    assert len(firsts) == len(set(firsts)) == len(TYPED)
+
+
+@pytest.mark.parametrize('lead_type', TYPED)
+def test_a_types_own_template_is_the_one_recommended(client, lead_type):
+    """The HOA's own voicemail, not the generic partner one - even though the
+    generic one is marked for this exact touch and the HOA's for any touch."""
+    signup(client)
+    lead = new_lead(client, lead_type=lead_type, company='Acme', first_name='')
+    m = client.get(f'/api/leads/{lead["id"]}/messages').get_json()
+    for ch in ('text', 'voicemail', 'call', 'email'):
+        rec = next(t for t in m[ch]['templates'] if t['id'] == m[ch]['recommended'])
+        with appmod.get_db() as db:
+            lt = db.execute('SELECT lead_type FROM templates WHERE id=?', (rec['id'],)).fetchone()[0]
+        assert lt == lead_type, (ch, rec['name'])
+
+
+def test_a_type_without_a_last_text_falls_back_to_the_audiences(client):
+    """Three touches in, an HOA with no breakup text of its own gets the
+    partner one rather than its own first text again."""
+    signup(client)
+    lead = new_lead(client, lead_type='hoa', company='Acme HOA', first_name='')
+    with appmod.get_db() as db:
+        fit = appmod._templates_for(db, dict(_lead(lead['id'])), 'text')
+    assert appmod._pick(fit, 'breakup')['name'] == 'Last text'
+
+
+def test_a_cold_partner_is_never_read_the_past_customer_referral_script():
+    """The old SCRIPT_FOR map sent every partner "Glad you're happy with how it
+    turned out" - a script for a customer we already served."""
+    src = open(os.path.join(HERE, 'static', 'app.js'), encoding='utf-8').read()
+    assert 'SCRIPT_FOR[' not in src
+    for t in _library():
+        if t['channel'] == 'call' and t['audience'] != 'past_customer':
+            assert "happy with how it turned out" not in t['body'].lower(), t['key']

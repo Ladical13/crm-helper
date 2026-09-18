@@ -147,7 +147,8 @@ AUDIENCES = [
 ]
 AUDIENCE_KEYS = [a['key'] for a in AUDIENCES]
 COMMERCIAL_TYPES = ('commercial', 'church', 'school', 'school_district')
-TEMPLATE_CHANNELS = ('email', 'text', 'voicemail')
+# 'call' is a call script: read live, so no length rule and no signature.
+TEMPLATE_CHANNELS = ('email', 'text', 'voicemail', 'call')
 TEMPLATE_STEPS = ('first', 'followup', 'breakup', 'any')
 # Slots the renderer fills. A template naming anything else is refused on save:
 # an unknown slot would reach a customer as a literal "{rep_phone}".
@@ -1991,11 +1992,22 @@ def _templates_for(db, lead, channel):
 
 
 def _pick(fit, step):
-    """The recommended template for this touch: exact step, else 'any', else
-    the first that fits."""
-    return (next((r for r in fit if r['step'] == step), None)
-            or next((r for r in fit if r['step'] == 'any'), None)
-            or (fit[0] if fit else None))
+    """The recommended template for this touch.
+
+    A template written for this lead TYPE beats one written for its whole
+    audience, even when the audience-wide one names this exact touch: an HOA
+    voicemail for "any touch" is a better first voicemail to an HOA than the
+    generic partner one marked "first". So: the type's own for this step, the
+    type's own for any step, the audience's for this step, the audience's for
+    any step, and only then whatever fits.
+    """
+    own = [r for r in fit if r['lead_type']]
+    gen = [r for r in fit if not r['lead_type']]
+    for group, want in ((own, step), (own, 'any'), (gen, step), (gen, 'any')):
+        hit = next((r for r in group if r['step'] == want), None)
+        if hit:
+            return hit
+    return fit[0] if fit else None
 
 
 def _render_draft(lead, step, rep_name, db=None):

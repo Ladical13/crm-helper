@@ -88,10 +88,13 @@ function smsUrl(phone, body){
   return 'sms:'+phone+(ios?'&':'?')+'body='+encodeURIComponent(body);
 }
 
+// `script` is a playbook fallback, used only when the library has no call
+// script for this lead — every audience has one, so in practice it never is.
 function composerTabs(msgs, script, st){
   const tabs=[];
-  if(script) tabs.push('call');
-  for(const ch of ['voicemail','text','email']) if(msgs&&msgs[ch]&&msgs[ch].templates.length) tabs.push(ch);
+  if(script&&!(msgs&&msgs.call&&msgs.call.templates.length)) tabs.push('call');
+  for(const ch of ['call','voicemail','text','email'])
+    if(msgs&&msgs[ch]&&msgs[ch].templates.length&&!tabs.includes(ch)) tabs.push(ch);
   if(!tabs.includes(st.tab)) st.tab=tabs[0]||'';
   return tabs;
 }
@@ -100,7 +103,8 @@ function composerHtml(lead, msgs, script, st){
   const tabs=composerTabs(msgs, script, st);
   if(!tabs.length) return '';
   const head=`<div class="oq-tabs">${tabs.map(t=>`<button data-ctab="${t}" class="${st.tab===t?'on':''}">${CH_LABEL[t]}</button>`).join('')}</div>`;
-  if(st.tab==='call') return head+`<div class="oq-script">${esc(script.body)}</div>`;
+  if(st.tab==='call'&&!(msgs&&msgs.call&&msgs.call.templates.length))
+    return head+`<div class="oq-script">${esc(script.body)}</div>`;
   const box=msgs[st.tab];
   st.sel=st.sel||{};
   if(!box.templates.find(t=>t.id===st.sel[st.tab])) st.sel[st.tab]=box.recommended||box.templates[0].id;
@@ -121,7 +125,9 @@ function composerHtml(lead, msgs, script, st){
   return head+`<div class="cmp">
     <select class="mini-select cmp-pick" data-cpick aria-label="Template">${opts}</select>
     ${st.tab==='email'?`<input class="cmp-subj" data-csubj value="${esc(ed.subject)}" aria-label="Subject">`:''}
-    ${st.tab==='voicemail'
+    ${st.tab==='call'
+      ? `<div class="oq-script">${esc(ed.body)}</div><p class="cmp-hint">The beats, not a script to read word for word. Tap how it went below.</p>`
+      : st.tab==='voicemail'
       ? `<div class="oq-script">${esc(ed.body)}</div><p class="cmp-hint">Read this if it goes to voicemail, then tap <b>Left voicemail</b>.</p>`
       : `<textarea class="cmp-body" data-cbody rows="${st.tab==='text'?4:8}" aria-label="Message">${esc(ed.body)}</textarea>
          <div class="cmp-foot">${chars}<span class="cmp-hint">Edit freely - it opens as a draft, you press send.</span></div>
@@ -281,11 +287,10 @@ $('#queue-ready').onclick=()=>{Q.mode='ready';renderOutreach();};
 $('#queue-research').onclick=()=>{Q.mode='research';renderOutreach();};
 $('#queue-refresh').onclick=()=>renderOutreach();
 
-// Openers come from playbook.json rather than being written here, so the words
-// reps use stay in one place. Partner types get the referral ask.
-const SCRIPT_FOR={realtor:'Asking for the referral',hoa:'Asking for the referral',
-  insurance_agent:'Asking for the referral',property_manager:'Asking for the referral',
-  adjuster:'Asking for the referral',referral_partner:'Asking for the referral'};
+// Call scripts come from the template library, one per lead type. The old
+// SCRIPT_FOR map sent every partner type the playbook's referral ask - a
+// script for a HAPPY PAST CUSTOMER ("Glad you're happy with how it turned
+// out") - which is the wrong opener to read to a cold HOA board.
 
 async function renderOutreach(){
   const token=++queueReq;
@@ -355,7 +360,7 @@ function drawQueue(){
   }
 
   const tel=(it.phone||'').replace(/[^0-9+]/g,'');
-  const script=PB&&PB.scripts?PB.scripts.find(s=>s.name===SCRIPT_FOR[it.lead_type]):null;
+  const script=null;
   const type=(S.cfg.lead_types.find(t=>t.key===it.lead_type)||{}).label||it.lead_type;
   const draft=it.draft;
   // Default to whichever channel this partner can actually be reached on.
@@ -404,7 +409,7 @@ function drawQueue(){
   if(it.msgs){ wireComposer(card, it, it.msgs, script, it.cmp, touched); return; }
   const idx=Q.idx;
   api('/leads/'+it.lead_id+'/messages').then(m=>{
-    it.msgs=m; it.cmp=it.cmp||{tab:tel?(script?'call':'voicemail'):(m.email.templates.length?'email':'text')};
+    it.msgs=m; it.cmp=it.cmp||{tab:tel?(m.call.templates.length?'call':'voicemail'):(m.email.templates.length?'email':'text')};
     if(Q.idx===idx) drawQueue();
   }).catch(()=>{ it.msgs={voicemail:{templates:[]},text:{templates:[]},email:{templates:[]}}; it.cmp={}; if(Q.idx===idx) drawQueue(); });
 }
@@ -854,7 +859,7 @@ function renderDrawer(l){
   });
   // Outreach: templates, outcomes, and a manual status fix.
   const dSt={};
-  const dScript=PB&&PB.scripts?PB.scripts.find(s=>s.name===SCRIPT_FOR[l.lead_type]):null;
+  const dScript=null;
   api('/leads/'+l.id+'/messages').then(m=>{
     if(S.openLeadId&&S.openLeadId!==l.id) return;
     const box=p.querySelector('[data-composer]'); if(!box) return;
@@ -1287,7 +1292,7 @@ async function renderTemplates(){
   $('#tf-audience').onchange=e=>{TF.audience=e.target.value;renderTemplates();};
   if($('#tpl-new')) $('#tpl-new').onclick=()=>templateModal({channel:TF.channel||'text',audience:TF.audience||'homeowner',step:'first'});
   box.innerHTML=rows.map(t=>`<div class="card tpl-card">
-      <h4>${{email:'✉️',text:'💬',voicemail:'📼'}[t.channel]} ${esc(t.name)}
+      <h4>${{email:'✉️',text:'💬',voicemail:'📼',call:'📞'}[t.channel]} ${esc(t.name)}
         <span class="type-badge">${esc(audLabel(t.audience))}</span>
         <span class="type-badge">${esc(t.step==='any'?'any touch':t.step)}</span></h4>
       ${t.subject?`<div class="tpl-subj">${esc(t.subject)}</div>`:''}
