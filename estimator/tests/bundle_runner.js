@@ -103,6 +103,9 @@ const NAMES = ['isBundleTrade', 'effectiveTradeMode', '_tradeCatalog', '_tradeBu
                // Standard order: a bundle row lands in its price-book position.
                'tradeSections', 'catalogRank', '_itemGroupName',
                'insertByCatalogOrder', 'sortTradeItemsStandard',
+               // Moving a section moves its block of line items with it.
+               'groupedTradeItems', 'structureNamed',
+               'canMoveTradeSection', 'moveTradeSection',
                // Swappable products (polyiso thickness) — survive a system swap.
                'variantSlot', 'variantRowFor', 'liSwapVariant'];
 
@@ -123,6 +126,7 @@ const harness = `
   // for _commAttachProfile to fall through to the product attach tags.
   // (No backticks in this harness string - it is itself a template literal.)
   let _fastenTable = null;
+  function rerender() {}
   function renderTabBar() {}
   function renderScopePage() {}
   function seedTradeFromDefaults() {}
@@ -146,6 +150,9 @@ const body = `
     else if (o.op === 'setMode') setTradeMode(o.trade, o.mode);
     else if (o.op === 'swapVariant') liSwapVariant(o.trade, o.item, o.pid);
     else if (o.op === 'sortStandard') sortTradeItemsStandard(o.trade);
+    else if (o.op === 'moveSection') moveTradeSection(o.trade, o.idx, o.dir);
+    // Whether the arrow should be live at all, for asserting on the ends.
+    else if (o.op === 'canMoveSection') S._probe = canMoveTradeSection(o.trade, o.idx, o.dir);
     // The What's Included list a bundle builds, for asserting on the rule.
     else if (o.op === 'features') S._probe = bundleFeatures(o.trade, _tradeBundle(o.trade, o.id));
     // Resolves which system the estimate is actually selling and writes the

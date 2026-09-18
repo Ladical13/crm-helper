@@ -512,3 +512,114 @@ def test_jsq_escapes_the_apostrophe_and_the_backslash(js):
     assert plain == 'Plain Name', 'an ordinary name must pass through untouched'
     assert slash == 'back\\\\slash', 'a lone backslash would escape the closing quote'
     assert quote == 'quote&quot;mark', 'still HTML-escaped for the attribute'
+
+
+# ── The customer's files, across all their estimates ─────────────────────
+#
+# The Files panel is headed with the customer's name and used to list only the
+# OPEN estimate's attachments, so a roof certificate filed on the spring
+# estimate was invisible from the autumn one.
+
+def _file_doc(client, name, label, doc_type='condition_report', salesperson=None):
+    est_id = client.post('/api/estimates', json={}).get_json()['estimate_id']
+    doc = client.get(f'/api/estimates/{est_id}').get_json()
+    doc['customer'] = {'name': name}
+    doc['estimate_label'] = label
+    doc['attachments'] = [{'id': 'a' + est_id[:6], 'filename': f'{est_id}/x.pdf',
+                           'label': label + ' doc', 'doc_type': doc_type,
+                           'server_generated': True}]
+    if salesperson is not None:
+        doc['salesperson'] = salesperson
+    client.put(f'/api/estimates/{est_id}', json=doc)
+    return est_id
+
+
+def test_the_customer_documents_span_every_estimate(client):
+    a = _file_doc(client, 'Quinn Harlow', 'Roof')
+    b = _file_doc(client, 'Quinn  harlow', 'Siding', doc_type='roof_certificate')
+    rows = client.get('/api/customer-documents/Quinn Harlow').get_json()
+    ids = {r['estimate_id'] for r in rows}
+    assert {a, b} <= ids
+    types = {d['doc_type'] for r in rows for d in r['documents']}
+    assert {'condition_report', 'roof_certificate'} <= types
+
+
+def test_customer_documents_do_not_leak_between_similar_names(client):
+    _file_doc(client, 'Jon Smithson', 'Other person')
+    rows = client.get('/api/customer-documents/Jon Smith').get_json()
+    assert all(r['estimate_label'] != 'Other person' for r in rows)
+
+
+def test_a_rep_does_not_see_another_reps_documents(app, client):
+    from portal import users as portal_users
+    for u in ('casey', 'jacob'):
+        if not portal_users.get(u):
+            portal_users.create(u, password='test-only-password', role='rep',
+                                full_name=u.title())
+    mine = _file_doc(client, 'Reese Alder', 'Mine', salesperson='casey')
+    theirs = _file_doc(client, 'Reese Alder', 'Theirs', salesperson='jacob')
+    rep = app.test_client()
+    with rep.session_transaction() as s:
+        s['user'] = 'casey'
+    ids = {r['estimate_id'] for r in rep.get('/api/customer-documents/Reese Alder').get_json()}
+    assert mine in ids and theirs not in ids
+
+
+def test_the_list_and_the_documents_share_one_ownership_rule():
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            'app.py'), encoding='utf-8').read()
+    for fn in ('list_estimates', 'get_customer_documents'):
+        body = src[src.index(f'def {fn}('):]
+        body = body[:body.index('\n@app.route')]
+        assert '_est_owner_visible(' in body, fn
+
+
+def test_an_unreadable_salesperson_hides_the_documents(A):
+    assert A._est_owner_visible({'salesperson': ['x']}, True, 'casey') is False
+    assert A._est_owner_visible({'salesperson': None}, True, 'casey') is True
+
+
+def test_customer_documents_are_closed_to_a_demo_guest():
+    import demo_store
+    assert 'get_customer_documents' not in demo_store.ALLOWED_ENDPOINTS
+
+
+def test_the_open_estimate_s_documents_come_from_memory_not_the_fetch():
+    """A PDF generated seconds ago, or one on an estimate never saved, is not
+    in the fetched list yet. customerDocumentRows is the ONE builder and takes
+    the open estimate's group from S, then drops the fetched copy."""
+    body = _fn_body(_appjs(), 'customerDocumentRows', code_only=True)
+    assert 'S.attachments' in body
+    assert 'r.estimate_id === S.estimate_id' in body
+    assert '_docCustDocs.key === custKey(name)' in body
+
+
+def test_other_estimates_documents_have_no_delete_or_rename():
+    body = _fn_body(_appjs(), 'foreignDocRowHtml', code_only=True)
+    assert 'attDelete' not in body and 'attSetLabel' not in body
+    assert '/uploads/' in body
+
+
+def test_filing_another_estimate_s_document_does_not_dirty_this_one():
+    body = _fn_body(_appjs(), 'pushDocToCrm', code_only=True)
+    assert body.index('if (foreign)') < body.index('setDirty()')
+
+
+def test_the_files_panel_is_fed_by_the_customer_documents_endpoint():
+    src = _appjs()
+    assert '/api/customer-documents/' in _fn_body(src, 'refreshDocCustData', code_only=True)
+    assert 'otherEstimateDocsHtml(' in _fn_body(src, 'renderDocumentsPage', code_only=True)
+
+
+def test_the_report_document_does_not_reuse_the_editor_page_id():
+    """'report' is the Roof Health editor page's nav id; the document's
+    generator key is 'condition', or the two would fight."""
+    body = _fn_body(_appjs(), 'renderDocumentsPage', code_only=True)
+    assert "docToggleGenerator('condition')" in body
+    assert "docToggleGenerator('report')" not in body
+
+
+def test_the_warranty_certificate_waits_for_a_signature():
+    body = _fn_body(_appjs(), 'renderDocumentsPage', code_only=True)
+    signed_branch = body[body.index('${S.signature ? `'):]
+    assert signed_branch.index("docToggleGenerator('warranty')") < signed_branch.index('` : `')

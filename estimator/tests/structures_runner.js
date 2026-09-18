@@ -96,7 +96,9 @@ const NAMES = ['mnum', 'itemSection', 'tradeSections', 'effectiveTradeMode', 'tr
                'structureTotal', '_nextStructureName', '_promoteTradeToStructures',
                'addStructure', 'duplicateStructure', 'renameStructure', 'removeStructure',
                '_asceZoneWidth', 'commercialFastening', 'atticVentilation',
-               'measuredQty', 'displayUnit', '_tradeCatalog', 'applyMeasurements'];
+               'measuredQty', 'displayUnit', '_tradeCatalog', 'applyMeasurements',
+               // Moving a section moves the building it names.
+               'groupedTradeItems', 'canMoveTradeSection', 'moveTradeSection'];
 
 const NL = String.fromCharCode(10);   // keeps this builder free of escapes
 const scenario = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
@@ -111,6 +113,7 @@ const harness = `
   function setDirty() {}
   function rerender() {}
   function renderTotals() {}
+  function renderTradeContent() {}
   function renderScopePage() {}
   function alert() {}
   function prompt(_q, d) { return __rename; }
@@ -128,6 +131,7 @@ const code = `
     else if (o.op === 'duplicate')         duplicateStructure(o.id);
     else if (o.op === 'rename')            renameStructure(o.id, o.name);
     else if (o.op === 'remove')            removeStructure(o.id);
+    else if (o.op === 'moveSection')       moveTradeSection(o.trade, o.idx, o.dir);
     else throw new Error('unknown op: ' + o.op);
   }
   return {

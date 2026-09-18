@@ -55,7 +55,9 @@ def _estimate(items=None, sections=None):
     return {'trades': {'roofing': td}}
 
 
-def _run(tmp_path, estimate, ops, price_book=None):
+def _run_all(tmp_path, estimate, ops, price_book=None):
+    """The whole estimate back, for the ops that answer a question (S._probe)
+    rather than rearranging one trade."""
     scenario = tmp_path / 'scenario.json'
     out = tmp_path / 'out.json'
     scenario.write_text(json.dumps({
@@ -64,7 +66,11 @@ def _run(tmp_path, estimate, ops, price_book=None):
     proc = subprocess.run(['node', RUNNER, str(scenario), str(out)],
                           capture_output=True, text=True)
     assert proc.returncode == 0, f'bundle_runner.js failed:\n{proc.stderr}'
-    return json.loads(out.read_text(encoding='utf-8'))['trades']['roofing']
+    return json.loads(out.read_text(encoding='utf-8'))
+
+
+def _run(tmp_path, estimate, ops, price_book=None):
+    return _run_all(tmp_path, estimate, ops, price_book)['trades']['roofing']
 
 
 def _ids(td):
@@ -163,3 +169,81 @@ def test_the_button_is_on_the_pricing_tab():
         js = fh.read()
     assert "onclick=\"sortTradeItemsStandard('${trade}')\"" in js
     assert 'Standard order' in js
+
+# ── Moving a section ───────────────────────────────────────────
+
+def _two_sections():
+    """Two named blocks plus an untagged row, in section order Garage, Shed."""
+    return [
+        {'id': 'g1', 'catalog_id': 'm_shingle', 'name': 'Shingles', 'section': 'Garage'},
+        {'id': 'g2', 'catalog_id': 'a_drip', 'name': 'Drip Edge', 'section': 'Garage'},
+        {'id': 's1', 'catalog_id': 'm_metal', 'name': 'Standing Seam', 'section': 'Shed'},
+        {'id': 'x1', 'catalog_id': 'l_install', 'name': 'Install Labor'},
+    ]
+
+
+def test_moving_a_section_swaps_it_with_its_neighbour(tmp_path):
+    td = _run(tmp_path, _estimate(_two_sections(), sections=['Garage', 'Shed']),
+              [{'op': 'moveSection', 'trade': 'roofing', 'idx': 0, 'dir': 1}])
+    assert td['sections'] == ['Shed', 'Garage']
+
+
+def test_the_line_item_block_moves_with_the_section(tmp_path):
+    """The reason this is not a one-line name swap. The signed contract PDF and
+    the invoice print line_items FLAT in stored order with the section name
+    suffixed, so reordering only the names would leave those two documents
+    describing the old order — one job, two answers."""
+    td = _run(tmp_path, _estimate(_two_sections(), sections=['Garage', 'Shed']),
+              [{'op': 'moveSection', 'trade': 'roofing', 'idx': 0, 'dir': 1}])
+    assert [i.get('section', '') for i in td['line_items']] ==         ['', 'Shed', 'Garage', 'Garage']
+
+
+def test_a_sections_own_items_keep_their_order_through_a_move(tmp_path):
+    td = _run(tmp_path, _estimate(_two_sections(), sections=['Garage', 'Shed']),
+              [{'op': 'moveSection', 'trade': 'roofing', 'idx': 0, 'dir': 1}])
+    garage = [i['id'] for i in td['line_items'] if i.get('section') == 'Garage']
+    assert garage == ['g1', 'g2']
+
+
+def test_untagged_rows_stay_in_the_general_block_at_the_front(tmp_path):
+    """General is hardcoded first in both groupers (app.js and app.py). A move
+    must not smuggle an untagged row into a named section."""
+    td = _run(tmp_path, _estimate(_two_sections(), sections=['Garage', 'Shed']),
+              [{'op': 'moveSection', 'trade': 'roofing', 'idx': 1, 'dir': -1}])
+    assert td['line_items'][0]['id'] == 'x1'
+    assert 'section' not in td['line_items'][0]
+
+
+def test_moving_a_section_changes_no_price_and_no_quantity(tmp_path):
+    rows = [{'id': 'a1', 'catalog_id': 'm_shingle', 'name': 'Shingles', 'section': 'Garage',
+             'quantity': 32, 'tiers': {'good': {'material_unit_cost': 150, 'included': True}}},
+            {'id': 'b1', 'catalog_id': 'l_install', 'name': 'Install Labor', 'section': 'Shed',
+             'quantity': 30, 'tiers': {'good': {'material_unit_cost': 145, 'included': True}}}]
+    td = _run(tmp_path, _estimate(rows, sections=['Garage', 'Shed']),
+              [{'op': 'moveSection', 'trade': 'roofing', 'idx': 0, 'dir': 1}])
+    by_id = {i['id']: i for i in td['line_items']}
+    assert by_id['a1']['quantity'] == 32
+    assert by_id['b1']['tiers']['good']['material_unit_cost'] == 145
+
+
+@pytest.mark.parametrize('idx,dir_', [(0, -1), (1, 1)])
+def test_the_arrow_is_dead_at_either_end(tmp_path, idx, dir_):
+    out = _run_all(tmp_path, _estimate(_two_sections(), sections=['Garage', 'Shed']),
+                   [{'op': 'canMoveSection', 'trade': 'roofing', 'idx': idx, 'dir': dir_}])
+    assert out['_probe'] is False
+
+
+def test_a_move_off_the_end_rearranges_nothing(tmp_path):
+    td = _run(tmp_path, _estimate(_two_sections(), sections=['Garage', 'Shed']),
+              [{'op': 'moveSection', 'trade': 'roofing', 'idx': 0, 'dir': -1}])
+    assert td['sections'] == ['Garage', 'Shed']
+    assert [i['id'] for i in td['line_items']] == ['g1', 'g2', 's1', 'x1']
+
+
+def test_the_arrows_are_on_the_pricing_tab():
+    with open(os.path.join(os.path.dirname(HERE), 'static', 'app.js'),
+              encoding='utf-8') as fh:
+        js = fh.read()
+    assert "moveTradeSection('${trade}',${i},-1)" in js
+    assert "moveTradeSection('${trade}',${i},1)" in js
+    assert 'canMoveTradeSection(trade, i, -1)' in js

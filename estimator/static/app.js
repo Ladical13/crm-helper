@@ -630,6 +630,55 @@ function liCanMove(trade, item, dir) {
   while (j >= 0 && j < items.length && groupOf(items[j]) !== groupOf(items[i])) j += dir;
   return j >= 0 && j < items.length;
 }
+/* ── Moving a section ─────────────────────────────────────────────
+   Sections could be added, renamed and deleted but never moved, so the order a
+   customer reads was the order the rep happened to think of the buildings in.
+   Fixing it meant deleting and re-adding, which drops every item onto General.
+
+   A move carries THREE things, because three arrays describe one section and
+   only the first of them is grouped:
+
+   - td.sections, the name list. The chips, both pricing grids, the browser's
+     print HTML and the server's render_line_items all group through it, so
+     they follow a swap on their own.
+   - td.line_items, which the signed contract PDF and the invoice print FLAT in
+     stored array order with the section name suffixed (_with_section in
+     app.py). Swap only the names and those two keep describing the old order —
+     one job, two answers. Reflowing through groupedTradeItems, the same
+     grouper the screen uses, is what stops the stored order and the shown
+     order drifting apart.
+   - S.structures, which the Scope page's building cards render from. A section
+     that names a building IS that building — rename and delete both hand off
+     to renameStructure / removeStructure for exactly that reason — so the card
+     has to move with the chip or the two screens disagree. */
+function canMoveTradeSection(trade, idx, dir) {
+  const j = idx + dir;
+  return j >= 0 && j < tradeSections(trade).length;
+}
+function moveTradeSection(trade, idx, dir) {
+  const td = S.trades[trade];
+  if (!td || !canMoveTradeSection(trade, idx, dir)) return;
+  const shown = tradeSections(trade);
+  const a = shown[idx], b = shown[idx + dir];
+  // Indexed by NAME, not position: the chips render the FILTERED list, so a
+  // position in it is not a position in td.sections once a blank has ever
+  // crept in.
+  const names = td.sections || [];
+  const ia = names.indexOf(a), ib = names.indexOf(b);
+  if (ia < 0 || ib < 0) return;
+  names[ia] = b; names[ib] = a;
+  td.line_items = groupedTradeItems(trade, td.line_items || [])
+    .reduce((out, g) => out.concat(g.items), []);
+  const sa = structureNamed(a), sb = structureNamed(b);
+  // estStructures() hands back a filtered COPY, so the swap has to land on
+  // S.structures itself.
+  if (sa && sb && Array.isArray(S.structures)) {
+    const pa = S.structures.indexOf(sa), pb = S.structures.indexOf(sb);
+    if (pa >= 0 && pb >= 0) { S.structures[pa] = sb; S.structures[pb] = sa; }
+  }
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
 /* Section chips + add button, shown above GBB grids and simple tables. */
 function sectionManagerBar(trade) {
   const sections = tradeSections(trade);
@@ -637,6 +686,10 @@ function sectionManagerBar(trade) {
     <span class="est-sections-lbl" title="Group items by structure or roof area — sections show as headers with their own subtotals on the estimate">Sections:</span>
     ${sections.map((name, i) => `<span class="est-section-chip">
       ${esc(name)}
+      <button class="est-section-move" onclick="moveTradeSection('${trade}',${i},-1)"
+        ${canMoveTradeSection(trade, i, -1) ? '' : 'disabled'} title="Move section earlier">◀</button>
+      <button class="est-section-move" onclick="moveTradeSection('${trade}',${i},1)"
+        ${canMoveTradeSection(trade, i, 1) ? '' : 'disabled'} title="Move section later">▶</button>
       <button class="est-section-edit" onclick="renameTradeSection('${trade}',${i})" title="Rename section">✏</button>
       <button class="est-section-del" onclick="deleteTradeSection('${trade}',${i})" title="Remove section (items stay)">×</button>
     </span>`).join('')}
@@ -15541,7 +15594,9 @@ function renderClientPage() {
    it. Work orders and material order sheets slot in here later as new
    cards — add a card + a form renderer, nothing else changes. */
 
-let _docGenerator = null;   // which generator form is open: 'permit' | 'roofcert' | 'invoice' | null
+// Which generator form is open. 'condition' is the Roof Health Report
+// DOCUMENT — not 'report', which is already the editor page's nav id.
+let _docGenerator = null;   // 'permit' | 'roofcert' | 'condition' | 'warranty' | 'invoice' | null
 
 // ── Documents door as the customer's estimate hub ───────────────────────
 // Every estimate for the customer currently loaded, plus the create form
@@ -15616,15 +15671,109 @@ function docEstimateListHtml() {
 // for a network round-trip just to redraw the attachments panel.
 async function refreshDocCustData() {
   _invFor = null;   // the invoice totals track the saved estimate
-  try {
-    const r = await fetch('/api/estimates');
-    _dashData = await r.json();
-  } catch { return; }
+  _crFor = null;    // so do the report summary and the warranty derivation
+  _wcFor = null;
+  const name = (S.customer || {}).name || '';
+  // Both lists in parallel — one navigation, one wait.
+  const [est, docs] = await Promise.all([
+    fetch('/api/estimates').then(r => r.json()).catch(() => null),
+    name ? fetch('/api/customer-documents/' + encodeURIComponent(name))
+             .then(r => r.ok ? r.json() : []).catch(() => [])
+         : Promise.resolve([]),
+  ]);
+  if (name && Array.isArray(docs)) _docCustDocs = {key: custKey(name), rows: docs};
+  if (!est) return;
+  _dashData = est;
   rebuildCustCounts();
   if (activePage === 'client') {
     const el = document.getElementById('doc-est-list');
     if (el) el.innerHTML = docEstimateListHtml();
+    renderDocumentsPage();
   }
+}
+
+/* ── The customer's files, across every estimate they have ──────────────
+   The Files panel is headed with the customer's name and used to list only
+   the OPEN estimate's attachments, so a certificate filed on the spring roof
+   was invisible from the autumn siding quote. customerDocumentRows() is the
+   ONE builder, the same way customerEstimateRows() is for estimates:
+
+   * The open estimate's group is built from S.attachments, never from the
+     fetched rows. A document generated seconds ago — or one on an estimate
+     that has never been saved and has no id — is not in the fetch yet.
+   * The fetched copy of the open estimate is dropped so nothing lists twice.
+   * The cache is keyed on custKey(); a stale key renders nothing rather than
+     another customer's files for one frame (same guard as _custNotes). */
+let _docCustDocs = {key: '', rows: []};
+
+function customerDocumentRows(name) {
+  const groups = [{
+    current: true,
+    estimate_id: S.estimate_id || '',
+    label: S.estimate_label || EST_TYPE_LABEL[S.estimate_type] || 'This estimate',
+    crm_project_id: (S.customer || {}).crm_project_id || '',
+    documents: S.attachments || [],
+  }];
+  if (name && _docCustDocs.key === custKey(name)) {
+    for (const r of _docCustDocs.rows || []) {
+      if (r.estimate_id && r.estimate_id === S.estimate_id) continue;
+      if (!(r.documents || []).length) continue;
+      groups.push({
+        current: false,
+        estimate_id: r.estimate_id,
+        label: r.estimate_label || EST_TYPE_LABEL[r.estimate_type] || r.estimate_number,
+        number: r.estimate_number,
+        crm_project_id: r.crm_project_id || '',
+        documents: r.documents,
+      });
+    }
+  }
+  return groups;
+}
+
+function docTypeIcon(att) {
+  return att.doc_type === 'signed_contract'      ? '🖊'
+       : att.doc_type === 'permit_packet'        ? '🏛'
+       : att.doc_type === 'roof_certificate'     ? '🏅'
+       : att.doc_type === 'condition_report'     ? '🩺'
+       : att.doc_type === 'warranty_certificate' ? '🛡'
+       : att.doc_type === 'invoice'              ? '🧾'
+       : att.server_generated                    ? '🛠'
+                                                 : '📄';
+}
+
+/* A document owned by ANOTHER estimate of this customer: View and CRM only.
+   Renaming or deleting it would have to write through that estimate, from a
+   screen that is about this one — a surprise nobody asked for. */
+function foreignDocRowHtml(att, g) {
+  return `
+      <div class="att-row att-row-foreign">
+        <span class="att-icon">${docTypeIcon(att)}</span>
+        <span class="att-label att-label-ro">${esc(att.label || 'Document')}</span>
+        ${att.crm_document_id
+          ? '<span class="doc-crm-chip" title="Filed in the CRM under that job">✓ CRM</span>'
+          : (g.crm_project_id
+              ? `<button class="doc-crm-push" onclick="pushDocToCrm('${esc(att.id)}',{estId:'${esc(g.estimate_id)}'})"
+                   title="File this PDF in the CRM under that estimate's job">↗ CRM</button>`
+              : '')}
+        <a class="att-view" href="${BASE}/uploads/${esc(att.filename)}" target="_blank" rel="noopener">View</a>
+      </div>`;
+}
+
+function otherEstimateDocsHtml(name) {
+  const others = customerDocumentRows(name).filter(g => !g.current);
+  if (!others.length) return '';
+  return `
+    <div class="panel">
+      <div class="panel-header"><h3>📂 Other estimates for ${esc(name)}</h3></div>
+      ${others.map(g => `
+        <div class="doc-group-hd">
+          <span>${esc(g.label || '')}${g.number ? ` <span class="note-tag">${esc(g.number)}</span>` : ''}</span>
+          <button class="doc-open-est" onclick="doLoadEstimate('${esc(g.estimate_id)}')">Open →</button>
+        </div>
+        ${g.documents.map(att => foreignDocRowHtml(att, g)).join('')}
+        ${g.crm_project_id ? '' : '<p class="pm-hint">Not linked to a CRM job — these stay local.</p>'}`).join('')}
+    </div>`;
 }
 
 function renderDocumentsPage() {
@@ -15635,18 +15784,13 @@ function renderDocumentsPage() {
   el.innerHTML = `
   <div class="pm-wrap">
     <div class="panel">
-      <div class="panel-header"><h3>📎 Files — ${esc(custName || 'this job')}</h3>
+      <div class="panel-header"><h3>📎 Files — ${esc(S.estimate_label || EST_TYPE_LABEL[S.estimate_type] || 'this estimate')}${custName ? ` <span class="note-tag">${esc(custName)}</span>` : ''}</h3>
         <button class="doc-upload-btn" onclick="document.getElementById('doc-pdf-input').click()">📎 Upload PDF</button>
         <input type="file" id="doc-pdf-input" accept="application/pdf,.pdf" multiple style="display:none"
           onchange="docUploadPdf(this.files)">
       </div>
       ${atts.length ? atts.map(att => {
-        const icon = att.doc_type === 'signed_contract'  ? '🖊'
-                   : att.doc_type === 'permit_packet'    ? '🏛'
-                   : att.doc_type === 'roof_certificate' ? '🏅'
-                   : att.doc_type === 'invoice'          ? '🧾'
-                   : att.server_generated                ? '🛠'
-                                                         : '📄';
+        const icon = docTypeIcon(att);
         // Two internal packet docs, filed on different schedules. The MATERIAL
         // order files itself at signing — it is derived wholly from the signed
         // contract — so it usually already carries the ✓ CRM chip; its button
@@ -15701,6 +15845,13 @@ function renderDocumentsPage() {
             ? 'Issued — reopen to edit and re-issue'
             : 'Realtor certification + short labor-only warranty'}</span>
         </button>
+        <button class="doc-card ${_docGenerator==='condition'?'doc-card-active':''}" onclick="docToggleGenerator('condition')">
+          <span class="doc-card-icon">🩺</span>
+          <span class="doc-card-name">Roof Health Report</span>
+          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'condition_report')
+            ? 'Issued — reopen to edit and re-issue'
+            : 'The condition report as its own PDF, certificate optional'}</span>
+        </button>
         <button class="doc-card ${_docGenerator==='invoice'?'doc-card-active':''}" onclick="docToggleGenerator('invoice')">
           <span class="doc-card-icon">🧾</span>
           <span class="doc-card-name">Invoice / Quote</span>
@@ -15722,6 +15873,13 @@ function renderDocumentsPage() {
           <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'permit_packet')
             ? 'Regenerate + push to Den'
             : 'Jurisdiction + squares + materials + cost split'}</span>
+        </button>
+        <button class="doc-card ${_docGenerator==='warranty'?'doc-card-active':''}" onclick="docToggleGenerator('warranty')">
+          <span class="doc-card-icon">🛡</span>
+          <span class="doc-card-name">Warranty Certificate</span>
+          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'warranty_certificate')
+            ? 'Issued — reopen to edit and re-issue'
+            : 'After the job: product, completion date, warranty'}</span>
         </button>` : `
         <div class="doc-card doc-card-soon" title="Generated from the signed contract once the customer signs">
           <span class="doc-card-icon">🛠</span>
@@ -15732,6 +15890,11 @@ function renderDocumentsPage() {
           <span class="doc-card-icon">🏛</span>
           <span class="doc-card-name">Permit Application Packet</span>
           <span class="doc-card-sub">Available after signing</span>
+        </div>
+        <div class="doc-card doc-card-soon" title="Certifies completed work, so it waits for a signature">
+          <span class="doc-card-icon">🛡</span>
+          <span class="doc-card-name">Warranty Certificate</span>
+          <span class="doc-card-sub">Available after signing</span>
         </div>`}
       </div>
     </div>
@@ -15740,11 +15903,17 @@ function renderDocumentsPage() {
 
     <div id="permit-form-container"></div>
     <div id="roofcert-form-container"></div>
+    <div id="condition-form-container"></div>
+    <div id="warranty-form-container"></div>
     <div id="invoice-form-container"></div>
+
+    ${otherEstimateDocsHtml(custName)}
   </div>`;
-  if (_docGenerator === 'permit')   renderPermitForm();
-  if (_docGenerator === 'roofcert') renderRoofCertForm();
-  if (_docGenerator === 'invoice')  renderInvoiceForm();
+  if (_docGenerator === 'permit')    renderPermitForm();
+  if (_docGenerator === 'roofcert')  renderRoofCertForm();
+  if (_docGenerator === 'condition') renderConditionReportForm();
+  if (_docGenerator === 'warranty')  renderWarrantyCertForm();
+  if (_docGenerator === 'invoice')   renderInvoiceForm();
   if (S.signature && S.estimate_id) loadChangeOrders();
 }
 
@@ -16415,6 +16584,352 @@ async function issueRoofCert(pushToCrm) {
   renderDocumentsPage();
 }
 
+/* ── Roof Health Report (the condition report as its own document) ─────
+   The report BODY is S.property_condition, edited on the Roof Health page and
+   saved with the estimate — this form never re-edits it, because a body that
+   is editable in two places is two bodies. What lives here is what is true of
+   the DOCUMENT: who it is prepared for, the covering note, and whether the
+   roof certificate rides along as its last page.
+
+   Everything the form shows about the report (sections, grades, total) comes
+   from the server's condition_report_view(), so the summary cannot disagree
+   with the PDF. Save writes the fields; Issue builds the PDF. */
+let _crData = null;   // GET /condition-report for the open estimate
+let _crFor  = null;   // which estimate _crData belongs to
+
+async function loadConditionReport() {
+  _crFor = S.estimate_id;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/condition-report`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    _crData = d;
+  } catch (e) {
+    _crData = {error: e.message};
+  }
+  if (_docGenerator === 'condition') renderConditionReportForm();
+}
+
+function renderConditionReportForm() {
+  const el = document.getElementById('condition-form-container');
+  if (!el) return;
+  const c = S.customer || {};
+  if (!S.estimate_id) {
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🩺 Roof Health Report</h3></div>
+      <p class="pm-hint">Save the estimate first — the report files against it.</p>
+      <div class="rc-btns"><button class="btn-primary" onclick="saveEstimate().then(renderDocumentsPage)">💾 Save estimate</button></div></div>`;
+    return;
+  }
+  if (_crFor !== S.estimate_id) {
+    el.innerHTML = '<div class="panel rc-panel"><p class="pm-hint">Loading…</p></div>';
+    loadConditionReport();
+    return;
+  }
+  if (!_crData || _crData.error) {
+    el.innerHTML = `<div class="panel rc-panel"><p class="pm-hint">Could not load the report: ${esc((_crData||{}).error || '')}</p>
+      <button class="doc-crm-push" onclick="_crFor=null;renderConditionReportForm()">Retry</button></div>`;
+    return;
+  }
+  const cr  = Object.assign({}, _crData.condition_report || {}, S.condition_report || {});
+  const sum = _crData.summary;
+  const issued = (S.attachments || []).some(a => a.server_generated && a.doc_type === 'condition_report');
+  const lab = (text, note) =>
+    `<span class="rc-lab">${text}${note ? ` <span class="note-tag">${note}</span>` : ''}</span>`;
+  const certOn  = cr.include_certificate === true;
+  const certBad = _crData.certificate_problem;
+
+  const summaryHtml = sum ? `
+    <div class="cr-summary">
+      <strong>${esc(sum.title)}</strong>${sum.inspection_date ? ` · inspected ${esc(sum.inspection_date)}` : ''}
+      <ul>${sum.sections.map(s => `<li>${esc(s.label)} — grade <strong>${esc(s.grade)}</strong> (${esc(s.grade_word)}) ·
+        ${s.findings} finding${s.findings === 1 ? '' : 's'} · ${s.recommendations} recommendation${s.recommendations === 1 ? '' : 's'}</li>`).join('')}</ul>
+      ${sum.cost_total > 0 ? `<div>Estimated repairs: <strong>${fmtCur(sum.cost_total)}${esc(sum.cost_plus)}</strong></div>` : ''}
+    </div>`
+    : `<p class="pm-hint">⚠ Nothing to report yet — grade at least one area on the Roof Health page.</p>`;
+
+  el.innerHTML = `
+  <div class="panel rc-panel">
+    <div class="panel-header">
+      <h3>🩺 Roof Health Report — ${esc(c.name || 'this property')}</h3>
+      ${issued ? '<span class="rc-issued-chip">Issued</span>' : ''}
+    </div>
+    <p class="pm-hint rc-lede">The condition report from the Roof Health page, as a PDF of its
+      own — for a realtor, or a homeowner who booked an inspection and is not buying a roof today.</p>
+    ${summaryHtml}
+    <button class="rc-load-std" type="button" onclick="switchPage('report')">✎ Edit the report on the Roof Health page</button>
+
+    <div class="rc-sec">Document</div>
+    <div class="rc-grid">
+      <label class="rc-f">${lab('Prepared For', 'blank = the customer')}
+        <input type="text" id="cr-prepared" value="${esc(cr.prepared_for || '')}" placeholder="e.g. Sandy Ruiz, Coldwell Banker">
+      </label>
+      <label class="rc-f">${lab('Inspected By')}
+        <input type="text" id="cr-inspector" value="${esc(cr.inspected_by || '')}" placeholder="${esc(cap(S.salesperson || _loggedInUser || ''))}">
+      </label>
+    </div>
+    <label class="rc-f rc-wide">${lab('Cover Note', 'optional')}
+      <textarea id="cr-note" rows="3" placeholder="A line or two above the grades">${esc(cr.cover_note || '')}</textarea>
+    </label>
+
+    <div class="rc-sec">Roof Certificate</div>
+    <label class="cr-toggle">
+      <input type="checkbox" id="cr-cert" ${certOn ? 'checked' : ''} onchange="crToggleCert(this.checked)">
+      Include the roof certificate as the last page <span class="note-tag">${esc(_crData.certificate_number || '')}</span>
+    </label>
+    <p class="pm-hint">Off by default: it adds a labor-only leak warranty to the report. It is the same
+      certificate the 🏅 card issues — same number, same term, running from its inspection date.</p>
+    ${certOn && certBad ? `<p class="pm-hint cr-warn">⚠ ${esc(certBad)} Fill it in on the 🏅 Roof Certificate card, or the report cannot be issued.</p>` : ''}
+    <div class="rc-btns">
+      <button class="doc-crm-push" onclick="crPullFindings()" ${_crData.findings_text ? '' : 'disabled'}
+        title="Copy this report's findings into the certificate's Findings box">↙ Pull report findings into the certificate</button>
+      <button class="doc-crm-push" onclick="docToggleGenerator('roofcert')">🏅 Open the certificate</button>
+    </div>
+
+    <div class="rc-btns">
+      <button class="doc-crm-push" onclick="saveConditionReportFields()">💾 Save</button>
+      <button class="btn-primary rc-issue" onclick="issueConditionReport()" ${sum ? '' : 'disabled'}>
+        🩺 ${issued ? 'Save + Re-issue' : 'Save + Issue Report'}</button>
+      ${issued ? `<button class="doc-crm-push" onclick="issueConditionReport(true)">↗ Issue + File in Den</button>` : ''}
+      <span class="rc-saved" id="cr-saved"></span>
+    </div>
+  </div>`;
+}
+
+function _readConditionReportForm() {
+  const v = id => (document.getElementById(id) || {}).value;
+  const out = {prepared_for: v('cr-prepared') || '', inspected_by: v('cr-inspector') || '',
+               cover_note: v('cr-note') || ''};
+  const cb = document.getElementById('cr-cert');
+  if (cb) out.include_certificate = cb.checked === true;
+  return out;
+}
+
+async function saveConditionReportFields(quiet) {
+  if (!S.estimate_id) await saveEstimate();
+  if (!S.estimate_id) return null;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/condition-report`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_readConditionReportForm()),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    // Keep S in step so the next whole-estimate save carries the new fields
+    // rather than the ones this tab loaded with.
+    S.condition_report = Object.assign({}, S.condition_report || {}, d.condition_report || {});
+    const flag = document.getElementById('cr-saved');
+    if (flag && !quiet) {
+      flag.textContent = '✓ Saved';
+      setTimeout(() => { if (flag.textContent === '✓ Saved') flag.textContent = ''; }, 2500);
+    }
+    return d.condition_report;
+  } catch (e) {
+    alert('Could not save the report: ' + e.message);
+    return null;
+  }
+}
+
+async function crToggleCert(on) {
+  await saveConditionReportFields(true);
+  _crFor = null;             // re-read whether the certificate can be issued
+  renderConditionReportForm();
+}
+
+/* One-way copy into the certificate's free-text Findings — a button, never a
+   sync. Once it is in the certificate it is the rep's text, and the
+   certificate is what gets signed. */
+async function crPullFindings() {
+  const text = (_crData || {}).findings_text || '';
+  if (!text) return;
+  const cur = ((S.roof_certificate || {}).findings || '').trim();
+  if (cur && !confirm('Replace the certificate\'s current Findings with this report\'s?')) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/roof-certificate`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({findings: text}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    S.roof_certificate = Object.assign({}, S.roof_certificate || {}, d.roof_certificate || {});
+    const flag = document.getElementById('cr-saved');
+    if (flag) flag.textContent = '✓ Copied into the certificate';
+  } catch (e) {
+    alert('Could not copy the findings: ' + e.message);
+  }
+}
+
+async function issueConditionReport(pushToCrm) {
+  const saved = await saveConditionReportFields(true);
+  if (saved === null) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/condition-report`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({push_to_crm: !!pushToCrm}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not issue the report');
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(
+      a => !(a.server_generated && a.doc_type === 'condition_report'));
+    S.attachments.push(d.attachment);
+  } catch (e) {
+    alert(e.message);
+  }
+  renderDocumentsPage();
+}
+
+/* ── Warranty certificate (after the job) ────────────────────────────────
+   Server-only by design: the workmanship term is already written in five
+   places, so this form never states one — it shows what the server derived
+   from the signed package (or the flat insurance term) and refuses to issue
+   when it cannot tell. The COMPLETION date is never defaulted: the contract
+   date is weeks early on nearly every job, so the scheduled and contract
+   dates are offered as one-tap fills, not stored answers. */
+let _wcData = null;
+let _wcFor  = null;
+
+async function loadWarrantyCert() {
+  _wcFor = S.estimate_id;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/warranty-certificate`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    _wcData = d;
+  } catch (e) {
+    _wcData = {error: e.message};
+  }
+  if (_docGenerator === 'warranty') renderWarrantyCertForm();
+}
+
+function renderWarrantyCertForm() {
+  const el = document.getElementById('warranty-form-container');
+  if (!el) return;
+  if (!S.estimate_id || !S.signature) {
+    el.innerHTML = '<div class="panel rc-panel"><p class="pm-hint">The warranty certificate is issued for signed work only.</p></div>';
+    return;
+  }
+  if (_wcFor !== S.estimate_id) {
+    el.innerHTML = '<div class="panel rc-panel"><p class="pm-hint">Loading…</p></div>';
+    loadWarrantyCert();
+    return;
+  }
+  if (!_wcData || _wcData.error) {
+    el.innerHTML = `<div class="panel rc-panel"><p class="pm-hint">Could not load: ${esc((_wcData||{}).error || '')}</p>
+      <button class="doc-crm-push" onclick="_wcFor=null;renderWarrantyCertForm()">Retry</button></div>`;
+    return;
+  }
+  const wc  = Object.assign({}, _wcData.warranty_certificate || {}, S.warranty_certificate || {});
+  const sug = _wcData.suggested || {};
+  const issued = (S.attachments || []).some(a => a.server_generated && a.doc_type === 'warranty_certificate');
+  const lab = (text, note) =>
+    `<span class="rc-lab">${text}${note ? ` <span class="note-tag">${note}</span>` : ''}</span>`;
+  const t = (id, label, val, ph, note) => `
+    <label class="rc-f">${lab(label, note)}
+      <input type="text" id="${id}" value="${esc(val || '')}" placeholder="${esc(ph || '')}">
+    </label>`;
+  const fill = (d, label) => d
+    ? `<button type="button" class="rc-load-std" onclick="document.getElementById('wc-date').value='${esc(d.slice(0,10))}'">${label} (${esc(d.slice(0,10))})</button>`
+    : '';
+  const basisNote = _wcData.basis === 'insurance'
+    ? 'Insurance claim — the flat term from the insurance contract, no package named.'
+    : _wcData.basis === 'tier' ? 'From the package the customer signed.'
+    : 'Could not tell which warranty this job was sold with.';
+
+  el.innerHTML = `
+  <div class="panel rc-panel">
+    <div class="panel-header">
+      <h3>🛡 Warranty Certificate — ${esc((S.customer || {}).name || 'this property')}</h3>
+      ${issued ? '<span class="rc-issued-chip">Issued</span>' : ''}
+    </div>
+    <p class="pm-hint rc-lede">What the homeowner keeps once the roof is on: the system installed,
+      when, and the workmanship warranty behind it. <span class="note-tag">${esc(_wcData.number || '')}</span></p>
+
+    <div class="rc-sec">Warranty</div>
+    <div class="cr-summary">
+      <strong>${esc(_wcData.term || '—')}</strong>
+      <div class="pm-hint">${esc(basisNote)}</div>
+    </div>
+
+    <div class="rc-sec">Completed Work</div>
+    <div class="rc-grid">
+      <label class="rc-f">${lab('Completion Date', 'term starts here')}
+        <input type="date" id="wc-date" value="${esc((wc.completion_date || '').slice(0,10))}">
+      </label>
+      ${t('wc-product', 'Product Installed', wc.product_installed || sug.product_installed,
+          'e.g. CertainTeed Landmark Pro', sug.product_installed && !wc.product_installed ? 'from the signed package' : '')}
+      ${t('wc-color', 'Color', wc.color || sug.color, '')}
+      ${t('wc-crew', 'Crew Lead', wc.crew_lead, 'optional')}
+    </div>
+    <div class="rc-btns">${fill(sug.scheduled_date, 'Use the scheduled date')}${fill(sug.contract_date, 'Use the contract date')}</div>
+
+    <div class="rc-sec">Manufacturer <span class="note-tag">optional</span></div>
+    <div class="rc-grid">
+      ${t('wc-mfr', 'Manufacturer Warranty', wc.manufacturer_warranty, 'e.g. GAF System Plus — 50-yr limited')}
+      ${t('wc-reg', 'Registration #', wc.registration_number, '')}
+    </div>
+    <label class="rc-f rc-wide">${lab('Notes', 'prints on the certificate')}
+      <textarea id="wc-notes" rows="2">${esc(wc.notes || '')}</textarea>
+    </label>
+
+    <div class="rc-btns">
+      <button class="doc-crm-push" onclick="saveWarrantyCertFields()">💾 Save</button>
+      <button class="btn-primary rc-issue" onclick="issueWarrantyCert()">
+        🛡 ${issued ? 'Save + Re-issue' : 'Save + Issue Certificate'}</button>
+      ${issued ? `<button class="doc-crm-push" onclick="issueWarrantyCert(true)">↗ Issue + File in Den</button>` : ''}
+      <span class="rc-saved" id="wc-saved"></span>
+    </div>
+  </div>`;
+}
+
+function _readWarrantyCertForm() {
+  const v = id => ((document.getElementById(id) || {}).value || '').trim();
+  return {completion_date: v('wc-date'), product_installed: v('wc-product'), color: v('wc-color'),
+          crew_lead: v('wc-crew'), manufacturer_warranty: v('wc-mfr'),
+          registration_number: v('wc-reg'), notes: v('wc-notes')};
+}
+
+async function saveWarrantyCertFields(quiet) {
+  if (!S.estimate_id) return null;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/warranty-certificate`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_readWarrantyCertForm()),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    S.warranty_certificate = Object.assign({}, S.warranty_certificate || {}, d.warranty_certificate || {});
+    const flag = document.getElementById('wc-saved');
+    if (flag && !quiet) {
+      flag.textContent = '✓ Saved';
+      setTimeout(() => { if (flag.textContent === '✓ Saved') flag.textContent = ''; }, 2500);
+    }
+    return d.warranty_certificate;
+  } catch (e) {
+    alert('Could not save the certificate: ' + e.message);
+    return null;
+  }
+}
+
+async function issueWarrantyCert(pushToCrm) {
+  const saved = await saveWarrantyCertFields(true);
+  if (saved === null) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/warranty-certificate`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({push_to_crm: !!pushToCrm}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not issue the certificate');
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(
+      a => !(a.server_generated && a.doc_type === 'warranty_certificate'));
+    S.attachments.push(d.attachment);
+  } catch (e) {
+    alert(e.message);
+  }
+  renderDocumentsPage();
+}
+
 /* ── Invoice / quote ────────────────────────────────────────────────────
    A plain, itemized PDF for a GC or a homeowner. It has no signing link and no
    proposal pages. Reached from the customer screen's Create a document cards,
@@ -16705,6 +17220,8 @@ function docToggleGenerator(which) {
   // Totals come from the saved estimate, which may have changed since the last
   // open, so the invoice always refetches.
   if (_docGenerator === 'invoice') _invFor = null;
+  if (_docGenerator === 'condition') _crFor = null;
+  if (_docGenerator === 'warranty') _wcFor = null;
   if (_docGenerator === 'permit') {
     // Fresh open on a job: prefill from the estimate once per estimate
     if (!PermitState || PermitState.linked_estimate !== (S.estimate_id || '__none__')) {
@@ -16740,11 +17257,19 @@ async function docUploadPdf(files) {
    on the linked job. Auto-runs on upload/generation (silent — skips when
    the estimate isn't CRM-linked); the ↗ CRM button retries manually. */
 async function pushDocToCrm(attId, opts = {}) {
-  const att = (S.attachments || []).find(a => a.id === attId);
-  if (!att || att.crm_document_id || !S.estimate_id) return;
+  // opts.estId: a document on ANOTHER of this customer's estimates. Filed
+  // against that estimate, and it must NOT setDirty() this one — that would
+  // start the autosave on an estimate nobody touched.
+  const foreign = !!(opts.estId && opts.estId !== S.estimate_id);
+  const estId = foreign ? opts.estId : S.estimate_id;
+  const att = foreign
+    ? ((_docCustDocs.rows || []).find(r => r.estimate_id === estId)?.documents || [])
+        .find(a => a.id === attId)
+    : (S.attachments || []).find(a => a.id === attId);
+  if (!att || att.crm_document_id || !estId) return;
   const docType = att.doc_type || (/permit/i.test(att.label || '') ? 'permit' : 'other');
   try {
-    const r = await fetch(`/api/estimates/${S.estimate_id}/push-document`, {
+    const r = await fetch(`/api/estimates/${estId}/push-document`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({filename: att.filename, label: att.label || att.original_name, doc_type: docType}),
     });
@@ -16755,6 +17280,7 @@ async function pushDocToCrm(attId, opts = {}) {
       return;
     }
     att.crm_document_id = res.crm_document_id;
+    if (foreign) { renderDocumentsPage(); return; }
     setDirty();
     if (activePage === 'documents') renderDocumentsPage();
   } catch(e) {

@@ -1349,6 +1349,25 @@ def _funnel_record(est, state, at=''):
               f'{est.get("estimate_id", "?")}: {exc}')
 
 
+def _est_owner_visible(d, only_own, user):
+    """Whether this raw estimate doc is visible to `user`. The estimate list
+    and the customer-documents list ask the same question, so they must not be
+    able to disagree about who owns a record — least of all an unreadable one.
+
+    Fails closed: an unreadable salesperson means "not yours", never a raised
+    exception and never "everyone's"."""
+    if not only_own:
+        return True
+    sp = d.get('salesperson')
+    if sp is None:
+        owner = ''                      # unassigned — any rep may claim it
+    elif isinstance(sp, str):
+        owner = sp.strip()
+    else:
+        owner = None                    # unreadable — nobody owns it
+    return owner in ('', user)
+
+
 @app.route('/api/estimates', methods=['GET'])
 def list_estimates():
     result = []
@@ -1365,14 +1384,7 @@ def list_estimates():
         if not isinstance(d, dict):
             print(f'[list] skipping non-object estimate document: {type(d).__name__}')
             continue
-        sp = d.get('salesperson')
-        if sp is None:
-            owner = ''                      # unassigned — any rep may claim it
-        elif isinstance(sp, str):
-            owner = sp.strip()
-        else:
-            owner = None                    # unreadable — nobody owns it
-        if only_own and owner not in ('', user):
+        if not _est_owner_visible(d, only_own, user):
             continue
         try:
             c = d.get('customer', {})
@@ -1665,6 +1677,60 @@ def set_customer_notes(name):
     with open(CUSTOMER_NOTES_FILE, 'w', encoding='utf-8') as f:
         json.dump(notes, f, indent=2)
     return jsonify({'ok': True})
+
+
+@app.route('/api/customer-documents/<path:name>', methods=['GET'])
+def get_customer_documents(name):
+    """Every document on every estimate this customer has, grouped by estimate.
+
+    The customer screen's Files panel used to render the OPEN estimate's
+    attachments under the customer's name, so a customer with three estimates
+    had their documents on three screens and the panel said otherwise. This is
+    the other half of that list; the browser splices the open estimate's live
+    attachments in ahead of it (customerDocumentRows), because a document made
+    seconds ago — or on an estimate never saved — is not in here yet.
+
+    Groups on _cust_key, the same key the file, the notes and the create button
+    use, and filters through _est_owner_visible, the same rule as the estimate
+    list. Deliberately thin: no totals, no change-order math.
+
+    Closed to demo guests (not in demo_store.ALLOWED_ENDPOINTS): it reads the
+    real store, and a guest must not list real customers' files by guessing a
+    name. The screen shows no other estimates for them, which is true."""
+    key = _cust_key(name)
+    if not key:
+        return jsonify([])
+    only_own = not _is_manager_up()
+    user = _current_user()
+    out = []
+    for d in est_iter(reverse=True):
+        if not isinstance(d, dict) or not _est_owner_visible(d, only_own, user):
+            continue
+        try:
+            c = d.get('customer') or {}
+            if _cust_key(c.get('name')) != key:
+                continue
+            docs = [{'id': x.get('id'), 'filename': x.get('filename'),
+                     'label': x.get('label') or x.get('original_name') or 'Document',
+                     'doc_type': x.get('doc_type') or '',
+                     'server_generated': bool(x.get('server_generated')),
+                     'generated_at': x.get('generated_at') or '',
+                     'crm_document_id': x.get('crm_document_id') or ''}
+                    for x in (d.get('attachments') or [])
+                    if isinstance(x, dict) and x.get('filename')]
+            out.append({
+                'estimate_id':    d.get('estimate_id', ''),
+                'estimate_label': d.get('estimate_label', ''),
+                'estimate_type':  d.get('estimate_type', 'retail'),
+                'estimate_number': _est_number(d),
+                'signed':         bool(d.get('signature')),
+                'updated_at':     d.get('updated_at', ''),
+                'crm_project_id': (c.get('crm_project_id') or d.get('crm_project_id') or ''),
+                'documents':      docs,
+            })
+        except Exception as e:
+            print(f'[customer-docs] skipping {d.get("estimate_id")}: {e!r}')
+    return jsonify(out)
 
 
 @app.route('/api/estimates/<est_id>/label', methods=['PATCH'])
@@ -8146,130 +8212,199 @@ def _pc_is_range(rec):
     return bool(re.search(r'(?:–|—|-|\bto\b)\s*$', s.strip()))
 
 
+def condition_report_view(est):
+    """Everything the condition report's renderers need decided ONCE.
+
+    Three surfaces print this report — the /sign page (_cv_condition_block),
+    the standalone PDF (build_condition_report_pdf) and the rep's browser
+    print (_printConditionHTML in app.js) — and the ARITHMETIC is the part
+    that has already been wrong. Totals sum the LOW end of each legacy range,
+    so the '+' suffix is honest only while some line still holds one; deciding
+    that in three places is how two of them end up disagreeing about what a
+    homeowner owes.
+
+    Returns None when there is nothing to print — no report at all, or no
+    section both enabled and graded. That is what keeps an empty report off
+    the customer's page, out of the presentation deck, and out of the document
+    list, all from one rule.
+
+    Raw values only: no HTML escaping and no currency formatting, because one
+    caller builds a PDF and neither belongs there.
+
+    page_visibility.report is deliberately NOT applied here. That chip means
+    "include this in the proposal", and a rep who unticks it must still be
+    able to issue the standalone report; _cv_condition_block applies it
+    itself, before calling.
+
+    Mirrored in app.js by _printConditionHTML, which computes the same totals
+    inline. No parity runner binds the two — change them together.
+    """
+    pc = _cv_condition_pc(est)
+    if not pc:
+        return None
+    raw = pc.get('sections') or {}
+    # One enabled+graded list, used for BOTH the rendered sections and the
+    # totals. The totals deliberately walk every recommendation in an enabled
+    # section, including one with no description that never prints a row — it
+    # still carries a price the homeowner is being quoted.
+    enabled = [(key, label, icon, raw.get(key) or {})
+               for key, label, icon in _PC_SECTIONS
+               if (raw.get(key) or {}).get('enabled') and (raw.get(key) or {}).get('grade')]
+    if not enabled:
+        return None
+
+    sections = []
+    for key, label, icon, sec in enabled:
+        word, color, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
+        meta = []
+        if key == 'roof':
+            if sec.get('material_type'):
+                meta.append(('Material', str(sec['material_type'])))
+            if sec.get('age_years'):
+                meta.append(('Est. Age', f'{sec["age_years"]} years'))
+            if sec.get('pitch'):
+                meta.append(('Pitch', str(sec['pitch'])))
+        findings = []
+        for f_ in (sec.get('findings') or []):
+            if not (f_.get('description') or f_.get('area')):
+                continue
+            sev_lbl, sev_c = _RH_SEV.get(f_.get('severity'), (f_.get('severity') or '', '#666'))
+            findings.append({'area': f_.get('area') or '—', 'severity': sev_lbl,
+                             'severity_color': sev_c,
+                             'description': f_.get('description') or ''})
+        recs = []
+        for rec in (sec.get('recommendations') or []):
+            if not rec.get('description'):
+                continue
+            recs.append({'priority': _RH_PRI.get(rec.get('priority'),
+                                                 rec.get('priority') or ''),
+                         'description': rec.get('description') or '',
+                         'cost': rec.get('cost_range') or '—'})
+        sections.append({'key': key, 'label': label, 'icon': icon,
+                         'grade': sec.get('grade') or '', 'grade_word': word,
+                         'color': color, 'bg': bg,
+                         'summary': (sec.get('summary') or '').strip(),
+                         'meta': meta, 'findings': findings,
+                         'recommendations': recs})
+
+    buckets = {'immediate': 0.0, 'soon': 0.0, 'monitor': 0.0}
+    any_range = False
+    for _key, _label, _icon, sec in enabled:
+        for rec in (sec.get('recommendations') or []):
+            lo = _pc_cost_lo(rec)
+            if lo and _pc_is_range(rec):
+                any_range = True
+            pri = rec.get('priority')
+            buckets['immediate' if pri == 'immediate'
+                    else 'soon' if pri == 'soon' else 'monitor'] += lo
+    rows = [(lbl, buckets[k]) for k, lbl in
+            (('immediate', 'Immediate repairs (D/F)'),
+             ('soon', 'Short-term (C grades)'),
+             ('monitor', 'Maintenance (B grades)')) if buckets[k] > 0]
+
+    is_hoa = pc.get('audience') == 'hoa'
+    return {
+        'pc':               pc,
+        'is_hoa':           is_hoa,
+        'title':            'Property Condition Report' if is_hoa else 'Home Condition Report',
+        'investment_label': ('Estimated Repair Investment' if is_hoa
+                             else 'Estimated Repair Costs'),
+        'inspection_date':  (pc.get('inspection_date') or '').strip(),
+        'property_name':    (pc.get('property_name') or '').strip(),
+        'executive_notes':  (pc.get('executive_notes') or '').strip(),
+        'sections':         sections,
+        'costs':            {'buckets': buckets, 'rows': rows,
+                             'total': sum(buckets.values()),
+                             'plus': '+' if any_range else ''},
+    }
+
+
 def _cv_condition_block(est):
     """Condition report — same grades, findings, recommendations and cost
     outlook the printed report shows. Gated by the Roof Health print chip
     (page_visibility.report), same as the PDF. Photos are NOT repeated here —
     they already appear in the Photo Report block above. Wording follows
     pc.audience ('homeowner' default | 'hoa'), mirroring _printConditionHTML
-    in app.js."""
+    in app.js.
+
+    Every decision here — which sections print, their grade words, the cost
+    totals and the '+' — comes from condition_report_view(). This function
+    only lays them out, so the standalone PDF cannot disagree with it."""
     pv = est.get('page_visibility') or {}
     if pv.get('report') is False:
         return ''
-    pc = _cv_condition_pc(est)
-    if not pc:
+    v = condition_report_view(est)
+    if not v:
         return ''
-    sections = pc.get('sections') or {}
-    enabled = [(k, lbl, icon, sections.get(k)) for k, lbl, icon in _PC_SECTIONS
-               if (sections.get(k) or {}).get('enabled') and (sections.get(k) or {}).get('grade')]
-    if not enabled:
-        return ''
-
-    is_hoa       = pc.get('audience') == 'hoa'
-    w_title      = 'Property Condition Report' if is_hoa else 'Home Condition Report'
-    w_investment = 'Estimated Repair Investment' if is_hoa else 'Estimated Repair Costs'
 
     # Condition snapshot grid
     cells = ''
-    for _k, lbl, icon, sec in enabled:
-        word, clr, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
+    for sec in v['sections']:
         cells += f'''<div class="cvcond-cell">
-  <div class="cvcond-cell-lbl">{icon} {he(lbl)}</div>
-  <div class="cvcond-letter" style="color:{clr};background:{bg}">{he(sec.get("grade"))}</div>
-  <div class="cvcond-word" style="color:{clr}">{word}</div>
+  <div class="cvcond-cell-lbl">{sec['icon']} {he(sec['label'])}</div>
+  <div class="cvcond-letter" style="color:{sec['color']};background:{sec['bg']}">{he(sec['grade'])}</div>
+  <div class="cvcond-word" style="color:{sec['color']}">{sec['grade_word']}</div>
 </div>'''
 
-    exec_html = (f'<div class="cvcond-exec"><strong>Overall Assessment:</strong> {he(pc.get("executive_notes"))}</div>'
-                 if (pc.get('executive_notes') or '').strip() else '')
+    exec_html = (f'<div class="cvcond-exec"><strong>Overall Assessment:</strong> {he(v["executive_notes"])}</div>'
+                 if v['executive_notes'] else '')
 
-    # Estimated repair investment. Each recommendation now carries ONE price, so
-    # these totals are exact and print without a suffix — that is what lets this
-    # report stand as a bid. The '+' comes back only if some line is still a
-    # legacy range, where the total really is a low-end sum.
-    cost_imm = cost_soon = cost_mon = 0.0
-    any_range = False
-    for _k, _lbl, _icon, sec in enabled:
-        for rec in (sec.get('recommendations') or []):
-            lo = _pc_cost_lo(rec)
-            if lo and _pc_is_range(rec):
-                any_range = True
-            pri = rec.get('priority')
-            if pri == 'immediate':
-                cost_imm += lo
-            elif pri == 'soon':
-                cost_soon += lo
-            else:
-                cost_mon += lo
-    cost_total = cost_imm + cost_soon + cost_mon
-    plus = '+' if any_range else ''
+    costs = v['costs']
+    plus  = costs['plus']
     cost_html = ''
-    if cost_total > 0:
-        rows = [(lbl, v) for lbl, v in [('Immediate repairs (D/F)', cost_imm),
-                                        ('Short-term (C grades)', cost_soon),
-                                        ('Maintenance (B grades)', cost_mon)] if v > 0]
-        trs = ''.join(f'<tr><td>{lbl}</td><td class="cvr">{fc(v)}{plus}</td></tr>' for lbl, v in rows)
-        cost_html = f'''<div class="cvcond-sh">{w_investment}</div>
+    if costs['total'] > 0:
+        trs = ''.join(f'<tr><td>{lbl}</td><td class="cvr">{fc(val)}{plus}</td></tr>'
+                      for lbl, val in costs['rows'])
+        cost_html = f'''<div class="cvcond-sh">{v['investment_label']}</div>
 <table class="cvcond-tbl">{trs}
-<tr class="cvcond-cost-total"><td>Estimated Total</td><td class="cvr">{fc(cost_total)}{plus}</td></tr></table>'''
+<tr class="cvcond-cost-total"><td>Estimated Total</td><td class="cvr">{fc(costs['total'])}{plus}</td></tr></table>'''
 
     # Per-section detail
     sec_html = ''
-    for key, lbl, icon, sec in enabled:
-        word, clr, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
-        meta_bits = []
-        if key == 'roof':
-            if sec.get('material_type'):
-                meta_bits.append(f'Material: <strong>{he(sec["material_type"])}</strong>')
-            if sec.get('age_years'):
-                meta_bits.append(f'Est. Age: <strong>{he(sec["age_years"])} years</strong>')
-            if sec.get('pitch'):
-                meta_bits.append(f'Pitch: <strong>{he(sec["pitch"])}</strong>')
-        meta_html = f'<div class="cvcond-meta">{" &middot; ".join(meta_bits)}</div>' if meta_bits else ''
-        summary_html = (f'<div class="cvcond-summary">{he(sec.get("summary"))}</div>'
-                        if (sec.get('summary') or '').strip() else '')
+    for sec in v['sections']:
+        meta_bits = ' &middot; '.join(f'{he(lbl)}: <strong>{he(val)}</strong>'
+                                      for lbl, val in sec['meta'])
+        meta_html = f'<div class="cvcond-meta">{meta_bits}</div>' if meta_bits else ''
+        summary_html = (f'<div class="cvcond-summary">{he(sec["summary"])}</div>'
+                        if sec['summary'] else '')
 
-        find_rows = ''
-        for f_ in (sec.get('findings') or []):
-            if not (f_.get('description') or f_.get('area')):
-                continue
-            sev_lbl, sev_c = _RH_SEV.get(f_.get('severity'), (f_.get('severity') or '', '#666'))
-            find_rows += (f'<tr><td style="font-weight:600">{he(f_.get("area") or "—")}</td>'
-                          f'<td><span style="color:{sev_c};font-weight:700">{he(sev_lbl)}</span></td>'
-                          f'<td>{he(f_.get("description") or "")}</td></tr>')
+        find_rows = ''.join(
+            f'<tr><td style="font-weight:600">{he(f_["area"])}</td>'
+            f'<td><span style="color:{f_["severity_color"]};font-weight:700">{he(f_["severity"])}</span></td>'
+            f'<td>{he(f_["description"])}</td></tr>'
+            for f_ in sec['findings'])
         find_html = (f'''<div class="cvcond-sh">Findings</div>
 <table class="cvcond-tbl"><thead><tr><th scope="col">Area</th><th scope="col">Severity</th><th scope="col">Description</th></tr></thead>
 <tbody>{find_rows}</tbody></table>''' if find_rows else '')
 
-        rec_rows = ''
-        for rec in (sec.get('recommendations') or []):
-            if not rec.get('description'):
-                continue
-            rec_rows += (f'<tr><td style="white-space:nowrap"><strong>{he(_RH_PRI.get(rec.get("priority"), rec.get("priority") or ""))}</strong></td>'
-                         f'<td>{he(rec.get("description") or "")}</td>'
-                         f'<td style="white-space:nowrap">{he(rec.get("cost_range") or "—")}</td></tr>')
+        rec_rows = ''.join(
+            f'<tr><td style="white-space:nowrap"><strong>{he(r["priority"])}</strong></td>'
+            f'<td>{he(r["description"])}</td>'
+            f'<td style="white-space:nowrap">{he(r["cost"])}</td></tr>'
+            for r in sec['recommendations'])
         rec_html = (f'''<div class="cvcond-sh">Recommendations</div>
 <table class="cvcond-tbl"><thead><tr><th scope="col">Priority</th><th scope="col">Description</th><th scope="col">Est. Cost</th></tr></thead>
 <tbody>{rec_rows}</tbody></table>''' if rec_rows else '')
 
         sec_html += f'''<div class="cvcond-sec">
   <div class="cvcond-sec-hd">
-    <h4>{icon} {he(lbl)}</h4>
-    <span class="cvcond-badge" style="color:{clr};background:{bg}">Grade {he(sec.get("grade"))} &mdash; {word}</span>
+    <h4>{sec['icon']} {he(sec['label'])}</h4>
+    <span class="cvcond-badge" style="color:{sec['color']};background:{sec['bg']}">Grade {he(sec['grade'])} &mdash; {sec['grade_word']}</span>
   </div>
   {meta_html}{summary_html}{find_html}{rec_html}
 </div>'''
 
-    insp_date = (pc.get('inspection_date') or '').strip()
-    insp_html = f'<div class="cvcond-meta">Inspection Date: <strong>{he(insp_date)}</strong></div>' if insp_date else ''
+    insp_html = (f'<div class="cvcond-meta">Inspection Date: <strong>{he(v["inspection_date"])}</strong></div>'
+                 if v['inspection_date'] else '')
 
     return f'''<div class="cvcond">
-  <h2 data-eyebrow="Inspection">{w_title}</h2>
+  <h2 data-eyebrow="Inspection">{v['title']}</h2>
   {insp_html}
   <div class="cvcond-grid">{cells}</div>
   {exec_html}
   {cost_html}
   {sec_html}
-  <div class="cvcond-foot">This {w_title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>
+  <div class="cvcond-foot">This {v['title']} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>
 </div>'''
 
 
@@ -13737,8 +13872,17 @@ def _new_internal_pdf(eyebrow, footer='Project One Roofing  ·  Internal documen
     _W = 215.9 - LM - RM
 
     class _IntPDF(FPDF):
+        def _past_chrome(self):
+            # A document can hand its last pages to a renderer that draws its
+            # own letterhead (the roof certificate appended to the condition
+            # report). A flag flipped around add_page() cannot do that: fpdf2
+            # runs the PREVIOUS page's footer inside add_page(), so the flag
+            # would strip it too. A page threshold closes exactly the pages
+            # after it and no others.
+            return self.page_no() > getattr(self, '_chrome_until', 10 ** 9)
+
         def header(self):
-            if getattr(self, '_no_chrome', False):
+            if getattr(self, '_no_chrome', False) or self._past_chrome():
                 return
             y = 11
             if os.path.exists(_LOGO):
@@ -13758,7 +13902,7 @@ def _new_internal_pdf(eyebrow, footer='Project One Roofing  ·  Internal documen
             self.set_y(y + 15)
 
         def footer(self):
-            if getattr(self, '_no_chrome', False):
+            if getattr(self, '_no_chrome', False) or self._past_chrome():
                 return
             self.set_y(-12)
             self.set_draw_color(*_PDF_STYLE['rule'])
@@ -15226,12 +15370,22 @@ def build_permit_packet_pdf(est):
     section_title('Roofing Scope')
     for _lbl, _val in installed_squares_kv(est):
         kv_row(_lbl, _val)
-    steep = _mnum('steep_squares')
+    # Pitch gets its OWN row. The clerk asks for slope before almost anything
+    # else — it is what the ice-barrier and underlayment questions on the
+    # application turn on — and it printed here only as a suffix on the Steep
+    # Area row: a walkable roof carried no pitch at all, and a steep one filed
+    # it under a label nobody reads for pitch. Always prints, for the same
+    # reason the squares line above it does — an unmeasured job gets a line to
+    # write it on rather than no line, and never a confident 0/12.
     pitch = _mnum('predominant_pitch')
-    if steep > 0 or pitch > 0:
-        pitch_txt = f' at {int(pitch)}/12' if pitch > 0 else ''
-        kv_row('Steep Area', (f'{steep:g} SQ steep{pitch_txt}' if steep > 0
-                              else f'Predominant pitch {int(pitch)}/12'))
+    kv_row('Roof Pitch', f'{pitch:g}/12' if pitch > 0
+                         else '______ / 12  (measure on site)')
+    # Steep is the charge question, not the slope question, so it stays its own
+    # row and no longer restates the pitch — two places for one number is how
+    # they end up disagreeing.
+    steep = _mnum('steep_squares')
+    if steep > 0:
+        kv_row('Steep Area', f'{steep:g} SQ steep')
     # The material actually going on the roof — the permit clerk needs the
     # covering, not just its color. Pulled from the signed tier's bundle so it
     # names the product ("CertainTeed Northgate"), which is what the roofing
@@ -15886,6 +16040,20 @@ def _sanitize_roof_cert(payload):
     return out
 
 
+def _roof_cert_invalid(est):
+    """Why this estimate's certificate cannot be issued, or None.
+
+    Both the certificate's own POST and the condition report's (when the
+    certificate rides along as its last page) ask this, so the two can never
+    disagree about what a valid certificate is."""
+    cert = est.get('roof_certificate') or {}
+    if not (cert.get('inspection_date') or '').strip():
+        return 'Set the inspection date first — the warranty term runs from it.'
+    if cert.get('term_months') not in _ROOF_CERT_TERMS:
+        return 'Choose a warranty term (6, 12, or 24 months).'
+    return None
+
+
 def build_roof_certificate_pdf(est):
     """One-page roof certification + limited labor warranty, signed by the
     inspecting rep. Written to be handed to a realtor and dropped straight into
@@ -15894,7 +16062,22 @@ def build_roof_certificate_pdf(est):
     expires) is on the single page."""
     if FPDF is None:
         raise RuntimeError('fpdf2 not installed')
+    pdf = FPDF(orientation='P', unit='mm', format='Letter')
+    _roof_cert_render(pdf, est)
+    out = pdf.output()
+    return bytes(out) if not isinstance(out, bytes) else out
 
+
+def _roof_cert_render(pdf, est):
+    """Draw the certificate onto `pdf`, starting a NEW page.
+
+    The one spelling of the certificate: the standalone PDF and the condition
+    report's optional last page both come through here, so the cert number,
+    the term and the warranty language cannot differ between them.
+
+    Contract: sets its own margins and page-break and does NOT restore them,
+    because it is always the LAST thing drawn. Letter portrait only — the
+    signature block's page-break guard is an absolute y in mm."""
     c    = est.get('customer', {})
     a    = c.get('address', {})
     cert = est.get('roof_certificate') or {}
@@ -15905,7 +16088,6 @@ def build_roof_certificate_pdf(est):
     def _fmt(d):
         return d.strftime('%B %d, %Y') if d else '________________'
 
-    pdf = FPDF(orientation='P', unit='mm', format='Letter')
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.set_margins(14, 14, 14)
     pdf.add_page()
@@ -16118,8 +16300,6 @@ def build_roof_certificate_pdf(est):
              new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
 
-    out = pdf.output()
-    return bytes(out) if not isinstance(out, bytes) else out
 
 
 def generate_roof_certificate(est_id, push_to_crm=True):
@@ -16243,17 +16423,719 @@ def regenerate_roof_certificate(est_id):
         return jsonify({'error': 'Not found'}), 404
     if not _can_touch_estimate(est):
         return _forbid()
-    cert = est.get('roof_certificate') or {}
-    if not (cert.get('inspection_date') or '').strip():
-        return jsonify({'error': 'Set the inspection date first — the warranty '
-                                 'term runs from it.'}), 400
-    if cert.get('term_months') not in _ROOF_CERT_TERMS:
-        return jsonify({'error': 'Choose a warranty term (6, 12, or 24 months).'}), 400
+    msg = _roof_cert_invalid(est)
+    if msg:
+        return jsonify({'error': msg}), 400
     push = bool((request.get_json(silent=True) or {}).get('push_to_crm'))
     try:
         att = generate_roof_certificate(est_id, push_to_crm=push)
     except Exception as exc:
         print(f'[roofcert] generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Certificate generation failed: {exc}'}), 500
+    return jsonify({'attachment': att})
+
+
+# ── Roof health report (the condition report as its own document) ───────────
+# The report has always existed as a PAGE of the proposal, gated by the Roof
+# Health print chip. That is the wrong altitude for what reps actually do with
+# it: hand it to a realtor, or to a homeowner who booked an inspection and is
+# not buying a roof today. Neither of those people should have to be sent an
+# estimate to receive a report.
+#
+# So it files like every other server-generated document — its own PDF, its own
+# row in Files, its own push to the Den — while the BODY stays exactly where it
+# was, on est['property_condition'], edited on the Report page and saved by the
+# whole-doc save. est['condition_report'] holds only what is true of the
+# DOCUMENT rather than of the inspection: who it is being prepared for, and the
+# covering note.
+#
+# Two rules it shares with the roof certificate, for the same reasons:
+#   * No signature gate. There is no contract here; the inspection is the
+#     product.
+#   * PUT saves the fields and POST builds the PDF, so a half-filled report is
+#     never the thing that reaches a realtor.
+_COND_REPORT_STR_FIELDS = ('prepared_for', 'cover_note', 'inspected_by')
+
+
+def _sanitize_condition_report(payload):
+    """Same cap discipline as _sanitize_roof_cert: the note is a paragraph,
+    the rest are one-liners."""
+    out = {}
+    for k in _COND_REPORT_STR_FIELDS:
+        v = payload.get(k)
+        if v is None:
+            continue
+        out[k] = str(v).strip()[:4000 if k == 'cover_note' else 300]
+    # Appending the certificate staples a LEGAL WARRANTY PROMISE to a document
+    # the rep may have generated for a different reason, so it is on only when
+    # somebody said so: a literal True, never a truthy string or a 1.
+    if 'include_certificate' in payload:
+        out['include_certificate'] = payload.get('include_certificate') is True
+    return out
+
+
+def _report_findings_text(est):
+    """The report's findings as plain sentences, for the certificate's
+    free-text findings box. Offered by a button, never synced: once the rep
+    has the text in the certificate it is theirs, and the certificate is what
+    gets signed. Sentences rather than bullets, because the certificate prints
+    Findings as one paragraph and a list's dashes read as stray hyphens."""
+    v = condition_report_view(est)
+    if not v:
+        return ''
+
+    def _sentence(t):
+        t = ' '.join(str(t).split())
+        return t if t.endswith(('.', '!', '?')) else t + '.'
+
+    parts = []
+    for s in v['sections']:
+        if s['summary']:
+            parts.append(_sentence(f"{s['label']} (grade {s['grade']}, {s['grade_word']}): {s['summary']}"))
+        for f in s['findings']:
+            parts.append(_sentence(f"{f['area']}: {f['description']}".rstrip(': ')))
+        for r in s['recommendations']:
+            if r['priority'] in ('Immediate', '1–2 Years'):
+                parts.append(_sentence(f"Recommended ({r['priority']}): {r['description']}"))
+    return ' '.join(parts)
+
+
+def build_condition_report_pdf(est):
+    """The roof health report as a standalone PDF.
+
+    Renders condition_report_view(est) — the same decisions the /sign block
+    lays out, so the document a realtor holds and the page a homeowner reads
+    cannot disagree about a grade or a total.
+
+    Raises when there is nothing to report. A PDF with no graded section is an
+    empty promise with a logo on it, and the caller turns that into a message
+    the rep can act on.
+
+    Deliberately no section ICONS: _PC_SECTIONS carries emoji for the screen,
+    and the vendored Inter/serif faces have no glyphs for them — they would
+    render as tofu on the one document that has to look considered.
+    """
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+    v = condition_report_view(est)
+    if not v:
+        raise ValueError('This estimate has no graded condition report yet — '
+                         'fill in the Roof Health page first.')
+
+    from fpdf.fonts import FontFace
+    from fpdf.enums import TableCellFillMode
+
+    c   = est.get('customer', {}) or {}
+    a   = c.get('address', {}) or {}
+    doc = est.get('condition_report') or {}
+
+    pdf, SANS, SERIF, W = _new_internal_pdf(
+        v['title'], footer='Project One Roofing  ·  projectoneroofingcolorado.com')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+    TW = min(W, pdf.epw)      # W can exceed epw by a float hair, which fpdf rejects
+
+    def para(text, size=9, gap=2.0):
+        if not (text or '').strip():
+            return
+        pdf.set_font(SANS, '', size)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.multi_cell(TW, 4.6, _pdf_rich(text), new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(gap)
+
+    def head_face():
+        return FontFace(family=SANS, size_pt=6.5,
+                        color=_PDF_STYLE['faint'], fill_color=None)
+
+    def table(headings, rows, widths, aligns):
+        if not rows:
+            return
+        pdf.set_font(SANS, '', 8)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
+        with pdf.table(col_widths=widths, text_align=aligns, width=TW,
+                       borders_layout='HORIZONTAL_LINES', headings_style=head_face(),
+                       cell_fill_mode=TableCellFillMode.NONE, line_height=5,
+                       padding=(2.4, 2, 2.4, 0), v_align='T') as t:
+            h = t.row()
+            for x in headings:
+                h.cell(x)
+            for cells in rows:
+                r = t.row()
+                for x in cells:
+                    r.cell(_pdf_rich(str(x)))
+        pdf.ln(2)
+
+    street = (a.get('street') or '').strip()
+    csz = ' '.join(x for x in [(a.get('city') or '').strip(),
+                               (a.get('state') or '').strip(),
+                               (a.get('zip') or '').strip()] if x).strip()
+    prop = ', '.join(x for x in (street, csz) if x)
+
+    section('Inspection', v['title'])
+    kv([
+        ('Property name', v['property_name']),
+        ('Property',   prop),
+        ('Prepared for', (doc.get('prepared_for') or '').strip() or (c.get('name') or '')),
+        ('Inspection date', v['inspection_date']),
+        ('Inspected by', ((doc.get('inspected_by') or '').strip()
+                          or (_display_name(est.get('salesperson'))
+                              if est.get('salesperson') else ''))),
+        ('Report #', _est_number(est)),
+    ])
+    para((doc.get('cover_note') or '').strip())
+
+    # Condition snapshot — the grades, which is the first and often only thing
+    # a realtor reads.
+    table(('Area', 'Grade', 'Condition'),
+          [(s['label'], s['grade'], s['grade_word']) for s in v['sections']],
+          (TW - 26 - 44, 26, 44), ('LEFT', 'CENTER', 'LEFT'))
+
+    if v['executive_notes']:
+        section('Summary', 'Overall Assessment')
+        para(v['executive_notes'])
+
+    costs = v['costs']
+    if costs['total'] > 0:
+        plus = costs['plus']
+        section('Outlook', v['investment_label'])
+        table(('', 'Estimated'),
+              [(lbl, fc(val) + plus) for lbl, val in costs['rows']]
+              + [('Estimated Total', fc(costs['total']) + plus)],
+              (TW - 40, 40), ('LEFT', 'RIGHT'))
+
+    for s in v['sections']:
+        section(s['label'], f'Grade {s["grade"]} — {s["grade_word"]}')
+        if s['meta']:
+            kv([(lbl, val) for lbl, val in s['meta']])
+        para(s['summary'])
+        if s['findings']:
+            table(('Area', 'Severity', 'Description'),
+                  [(f['area'], f['severity'], f['description']) for f in s['findings']],
+                  (44, 24, TW - 68), ('LEFT', 'LEFT', 'LEFT'))
+        if s['recommendations']:
+            table(('Priority', 'Recommendation', 'Est. Cost'),
+                  [(r['priority'], r['description'], r['cost'])
+                   for r in s['recommendations']],
+                  (26, TW - 26 - 30, 30), ('LEFT', 'LEFT', 'RIGHT'))
+
+    pdf.ln(2)
+    pdf.set_font(SANS, '', 7)
+    pdf.set_text_color(*_PDF_STYLE['mute'])
+    pdf.multi_cell(TW, 3.8, _pdf_rich(
+        f'This {v["title"]} was prepared by Project One Roofing following a visual '
+        'inspection. Pricing is valid for 30 days from the inspection date. '
+        'Concealed damage discovered once work begins may require a change order.'),
+        new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+
+    if doc.get('include_certificate') is True:
+        # The certificate draws its own letterhead; stop the report's header
+        # and footer after the page we are on. Same renderer as the standalone
+        # certificate, so the number, the term and the exclusions are one
+        # spelling — and the term still runs from the inspection date, so
+        # re-issuing the report can never extend coverage.
+        pdf._chrome_until = pdf.page_no()
+        _roof_cert_render(pdf, est)
+
+    return bytes(pdf.output())
+
+
+def generate_condition_report(est_id, push_to_crm=True):
+    """Build the report PDF, file it as a server-generated attachment (swapping
+    any prior one), and optionally push it to the linked CRM job. Returns the
+    attachment dict. No signature gate — see the note above."""
+    est = est_load(est_id)
+    if est is None:
+        raise ValueError('estimate not found')
+
+    pdf_bytes = build_condition_report_pdf(est)
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'condrpt_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+
+    c     = est.get('customer', {})
+    cname = (c.get('name') or 'Customer').strip()
+    title = (condition_report_view(est) or {}).get('title', 'Condition Report')
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            f'{title} - {cname}',
+        'doc_type':         'condition_report',
+        # A deliverable in its own right, not a proposal insert — the report
+        # already prints inside the estimate under its own print chip, and
+        # attaching it there too would print it twice.
+        'show_in_estimate': False,
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+    }
+
+    def _is_report(x):
+        return x.get('server_generated') and x.get('doc_type') == 'condition_report'
+
+    def _swap(doc):
+        if doc is None:
+            return None
+        for old in filter(_is_report, doc.get('attachments') or []):
+            parts = (old.get('filename') or '').split('/')
+            if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+                try:
+                    os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+                except OSError:
+                    pass
+        doc['attachments'] = [x for x in (doc.get('attachments') or [])
+                              if not _is_report(x)] + [att]
+        return doc
+
+    est_update(est_id, _swap)
+
+    if push_to_crm:
+        doc_id, err = _crm_file_document(
+            est, pdf_bytes, f'{title}-{cname}.pdf'.replace(' ', ''),
+            hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
+            doc_name=att['label'], doc_type='other',
+            description=f'{title} prepared following a visual inspection.')
+        if doc_id:
+            def _mark(doc):
+                if doc is None:
+                    return None
+                for x in doc.get('attachments', []):
+                    if x.get('id') == att['id']:
+                        x['crm_document_id'] = doc_id
+                return doc
+            est_update(est_id, _mark)
+            att['crm_document_id'] = doc_id
+        elif err and err != 'not_linked':
+            print(f'[condreport] CRM push failed for {est_id}: {err}')
+    return att
+
+
+def _condition_report_est_or_error(est_id):
+    if not _safe_path_id(est_id):
+        return None, (jsonify({'error': 'invalid estimate id'}), 400)
+    est = est_load(est_id)
+    if est is None:
+        return None, (jsonify({'error': 'Not found'}), 404)
+    if not _can_touch_estimate(est):
+        return None, _forbid()
+    return est, None
+
+
+@app.route('/api/estimates/<est_id>/condition-report', methods=['GET'])
+def get_condition_report(est_id):
+    """The document fields, plus a summary of what the PDF would contain — the
+    form shows that rather than re-editing the body, which lives on the Roof
+    Health page and must not be editable in two places."""
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    v = condition_report_view(est)
+    summary = None
+    if v:
+        summary = {
+            'title':    v['title'],
+            'sections': [{'label': s['label'], 'grade': s['grade'],
+                          'grade_word': s['grade_word'],
+                          'findings': len(s['findings']),
+                          'recommendations': len(s['recommendations'])}
+                         for s in v['sections']],
+            'inspection_date': v['inspection_date'],
+            'cost_total':      v['costs']['total'],
+            'cost_plus':       v['costs']['plus'],
+        }
+    return jsonify({'condition_report': est.get('condition_report') or {},
+                    'summary': summary,
+                    'findings_text': _report_findings_text(est),
+                    'certificate_problem': _roof_cert_invalid(est),
+                    'certificate_number': _roof_cert_number(est)})
+
+
+@app.route('/api/estimates/<est_id>/condition-report', methods=['PUT'])
+def save_condition_report_fields(est_id):
+    """Save the document fields. Never builds a PDF."""
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    cleaned = _sanitize_condition_report(request.get_json(silent=True) or {})
+
+    def _apply(doc):
+        if doc is None:
+            return None
+        cr = dict(doc.get('condition_report') or {})
+        cr.update(cleaned)
+        cr['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        doc['condition_report'] = cr
+        return doc
+
+    est_update(est_id, _apply)
+    return jsonify({'condition_report': cleaned})
+
+
+@app.route('/api/estimates/<est_id>/condition-report', methods=['POST'])
+def regenerate_condition_report(est_id):
+    """(Re)generate the report PDF. Optional {"push_to_crm": true}; defaults to
+    false so the rep can eyeball the PDF before it lands in the job file."""
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    if not condition_report_view(est):
+        return jsonify({'error': 'Nothing to report yet — grade at least one '
+                                 'area on the Roof Health page first.'}), 400
+    if (est.get('condition_report') or {}).get('include_certificate') is True:
+        msg = _roof_cert_invalid(est)
+        if msg:
+            return jsonify({'error': 'The roof certificate is switched on for this '
+                                     'report but cannot be issued yet. ' + msg}), 400
+    push = bool((request.get_json(silent=True) or {}).get('push_to_crm'))
+    try:
+        att = generate_condition_report(est_id, push_to_crm=push)
+    except Exception as exc:
+        print(f'[condreport] generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Report generation failed: {exc}'}), 500
+    return jsonify({'attachment': att})
+
+
+# ── Warranty certificate (after the job) ────────────────────────────────────
+# What the homeowner keeps once the roof is on: the system installed, when,
+# and the workmanship warranty that backs it. It certifies completed work, so
+# it is gated on a signature like the production and permit packets.
+#
+# The workmanship term is already written in five places and
+# tests/test_warranty_consistency.py holds them together — disagreement between
+# them "is an actual customer complaint, not a docs nit." This document must
+# not be a sixth spelling, so it never states a term of its own:
+#   * retail / commercial read warranty_by_tier off _build_estimate_manifest(),
+#     at the tier _trade_tier() says was signed — the same promise the /sign
+#     page made;
+#   * insurance reads WARRANTY_INSURANCE_FLAT, because a claim sells the one
+#     scope the carrier approved and warranty_by_tier is deliberately EMPTY
+#     there ("Do not 'restore' this for symmetry");
+#   * anything else is 'unknown', and the POST refuses rather than print a
+#     warranty certificate with a blank warranty on it.
+#
+# Two things are the rep's, never a default:
+#   * The COMPLETION date. The term runs from completion, and the contract date
+#     is weeks earlier on essentially every job — a plausible wrong default is
+#     worse than an empty box. The form offers the work order's scheduled date
+#     and the contract date as one-tap fills.
+#   * The PRODUCT. On retail it is prefilled from the signed package. On
+#     insurance nothing customer-facing may read est['insurance_cost'] — that
+#     structure lives outside `trades` precisely so no document can print our
+#     costs — so the rep types it.
+
+# The insurance workmanship term. DEFAULT_INSURANCE_CONTRACT in static/app.js
+# is the customer-facing spelling of the same promise ("5 years from the date
+# of project completion"); test_warranty_consistency.py holds the two together.
+WARRANTY_INSURANCE_FLAT = '5-year Project One workmanship warranty'
+
+_WARRANTY_CERT_STR_FIELDS = ('completion_date', 'product_installed', 'color',
+                             'manufacturer_warranty', 'registration_number',
+                             'crew_lead', 'notes')
+
+WARRANTY_CERT_TERMS = (
+    'Project One Roofing warrants the workmanship of the installation described '
+    'above against defects for the term shown, beginning on the completion date. '
+    'Coverage is subject to the terms and exclusions of the signed contract for '
+    'this job, which govern.\n\n'
+    'This certificate does not itself grant a manufacturer warranty. Manufacturer '
+    'coverage is as registered with the manufacturer and subject to its own terms; '
+    'any registration number shown is provided for the owner\'s records.\n\n'
+    'To make a claim, contact Project One Roofing and give us reasonable access to '
+    'inspect and repair. Keep this certificate with the property records — it is '
+    'useful to a future buyer.'
+)
+
+
+def _warranty_cert_number(est):
+    """Stable across regenerations, like _roof_cert_number."""
+    eid = est.get('estimate_id', '')
+    return 'WC-' + eid.split('-')[0].upper() if eid else 'WC-DRAFT'
+
+
+def _warranty_manifest(est):
+    """(term, product_suggestion, basis) for the job that was SOLD.
+
+    basis is 'tier' | 'insurance' | 'unknown'. 'unknown' means the tool cannot
+    tell what was promised, and the caller must say so rather than print a
+    certificate with an empty term. Never raises: a manifest failure is
+    'unknown', which refuses loudly, not a bare except that prints nothing."""
+    try:
+        m = _build_estimate_manifest(est)
+    except Exception as exc:
+        print(f'[warranty] manifest failed: {exc!r}')
+        return '', '', 'unknown'
+    wbt = m.get('warranty_by_tier') or {}
+    is_ins = ((est.get('estimate_type') == 'insurance')
+              or (((est.get('trades') or {}).get('insurance') or {}).get('enabled')))
+    if is_ins:
+        return WARRANTY_INSURANCE_FLAT, '', 'insurance'
+    trades = m.get('trades') or []
+    if not (wbt and trades):
+        return '', '', 'unknown'
+    # The roof is what this certificate is about; the first trade otherwise.
+    trade = next((t for t in trades if t.get('key') in ('roofing', 'commercial')),
+                 trades[0])
+    term = wbt.get(_trade_tier(est, trade.get('key')), '')
+    product = ''
+    for ti in (trade.get('tiers') or []):
+        if ti.get('is_selected'):
+            product = (ti.get('material_name') or ti.get('package_name') or '').strip()
+            break
+    return term, product, ('tier' if term else 'unknown')
+
+
+def _warranty_cert_expiry(term, completed):
+    """(expiry_date | None, lifetime: bool) from the term's own wording, so the
+    certificate cannot hold a number the term does not say. 'Lifetime' has no
+    expiry date to print; a term with no 'N-year' in it prints none either
+    rather than a guess."""
+    if 'lifetime' in (term or '').lower():
+        return None, True
+    mt = re.search(r'(\d+)\s*-?\s*year', term or '', re.I)
+    if not (mt and completed):
+        return None, False
+    return _add_months(completed, int(mt.group(1)) * 12), False
+
+
+def _sanitize_warranty_cert(payload):
+    out = {}
+    for k in _WARRANTY_CERT_STR_FIELDS:
+        v = payload.get(k)
+        if v is None:
+            continue
+        out[k] = str(v).strip()[:2000 if k == 'notes' else 300]
+    return out
+
+
+def _warranty_cert_problem(est):
+    """Why the warranty certificate cannot be issued, or None."""
+    if not est.get('signature'):
+        return 'The warranty certificate is issued for signed work only.'
+    wc = est.get('warranty_certificate') or {}
+    term, _product, basis = _warranty_manifest(est)
+    if basis == 'unknown' or not term:
+        return ('Could not tell which warranty this job was sold with — '
+                'check the signed package on the Pricing tab.')
+    raw = (wc.get('completion_date') or '').strip()
+    try:
+        date.fromisoformat(raw[:10])
+    except ValueError:
+        return 'Set the completion date — the warranty term runs from it.'
+    if not (wc.get('product_installed') or '').strip():
+        return 'Name the product installed.'
+    return None
+
+
+def build_warranty_certificate_pdf(est):
+    """One page the homeowner keeps: what went on the roof, when, and what
+    backs it."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+    problem = _warranty_cert_problem(est)
+    if problem:
+        raise ValueError(problem)
+
+    c  = est.get('customer', {}) or {}
+    a  = c.get('address', {}) or {}
+    wc = est.get('warranty_certificate') or {}
+    term, _p, basis = _warranty_manifest(est)
+    completed = date.fromisoformat(wc['completion_date'][:10])
+    expiry, lifetime = _warranty_cert_expiry(term, completed)
+
+    def _fmt(d):
+        return d.strftime('%B %d, %Y') if d else ''
+
+    pdf, SANS, SERIF, W = _new_internal_pdf(
+        'Certificate of Completion',
+        footer=f'Project One Roofing  ·  Certificate {_warranty_cert_number(est)}')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+    TW = min(W, pdf.epw)
+
+    street = (a.get('street') or '').strip()
+    csz = ' '.join(x for x in [(a.get('city') or '').strip(),
+                               (a.get('state') or '').strip(),
+                               (a.get('zip') or '').strip()] if x).strip()
+
+    section('Certificate of completion', 'Workmanship Warranty')
+    kv([
+        ('Certificate #', _warranty_cert_number(est)),
+        ('Owner',         c.get('name') or ''),
+        ('Property',      ', '.join(x for x in (street, csz) if x)),
+        ('Completed',     _fmt(completed)),
+    ])
+
+    section('Installed', 'The system on this roof')
+    kv([
+        ('Product',       wc.get('product_installed')),
+        ('Color',         wc.get('color')),
+        ('Crew lead',     wc.get('crew_lead')),
+    ])
+
+    section('Coverage', 'What backs it')
+    if lifetime:
+        through = ('For as long as you own the building' if 'building' in term.lower()
+                   else 'For as long as you own the home')
+    elif expiry:
+        through = _fmt(expiry)
+    else:
+        through = ''
+    kv([
+        ('Workmanship',   term),
+        ('Covered through', through),
+        ('Manufacturer',  wc.get('manufacturer_warranty')),
+        ('Registration #', wc.get('registration_number')),
+    ])
+    if (wc.get('notes') or '').strip():
+        pdf.set_font(SANS, '', 9)
+        pdf.multi_cell(TW, 4.6, _pdf_rich(wc['notes']), new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(2)
+
+    section('Terms', 'Warranty terms')
+    pdf.set_font(SANS, '', 8)
+    pdf.set_text_color(*_PDF_STYLE['mute'])
+    pdf.multi_cell(TW, 4.2, _pdf_rich(WARRANTY_CERT_TERMS), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+
+    pdf.ln(8)
+    pdf.set_font(SANS, '', 9)
+    pdf.cell(TW / 2, 6, _pdf_rich('Project One Roofing'))
+    pdf.cell(TW / 2, 6, _pdf_rich(_fmt(completed)), new_x='LMARGIN', new_y='NEXT')
+    y = pdf.get_y()
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(pdf.l_margin, y, pdf.l_margin + TW / 2 - 6, y)
+    pdf.line(pdf.l_margin + TW / 2, y, pdf.l_margin + TW, y)
+    pdf.set_font(SANS, '', 6.5)
+    pdf.set_text_color(*_PDF_STYLE['faint'])
+    pdf.cell(TW / 2, 4, 'AUTHORIZED, PROJECT ONE ROOFING')
+    pdf.cell(TW / 2, 4, 'COMPLETION DATE', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    return bytes(pdf.output())
+
+
+def generate_warranty_certificate(est_id, push_to_crm=True):
+    """Build, file (swapping any prior copy) and optionally push to the Den."""
+    est = est_load(est_id)
+    if est is None:
+        raise ValueError('estimate not found')
+    pdf_bytes = build_warranty_certificate_pdf(est)
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'warranty_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+
+    cname = ((est.get('customer') or {}).get('name') or 'Customer').strip()
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            f'Warranty Certificate - {cname}',
+        'doc_type':         'warranty_certificate',
+        'show_in_estimate': False,
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+    }
+
+    def _is_wc(x):
+        return x.get('server_generated') and x.get('doc_type') == 'warranty_certificate'
+
+    def _swap(doc):
+        if doc is None:
+            return None
+        for old in filter(_is_wc, doc.get('attachments') or []):
+            parts = (old.get('filename') or '').split('/')
+            if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+                try:
+                    os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+                except OSError:
+                    pass
+        doc['attachments'] = [x for x in (doc.get('attachments') or [])
+                              if not _is_wc(x)] + [att]
+        return doc
+
+    est_update(est_id, _swap)
+
+    if push_to_crm:
+        doc_id, err = _crm_file_document(
+            est, pdf_bytes, f'WarrantyCertificate-{cname}.pdf'.replace(' ', ''),
+            hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
+            doc_name=att['label'], doc_type='other',
+            description='Certificate of completion and workmanship warranty.')
+        if doc_id:
+            def _mark(doc):
+                if doc is None:
+                    return None
+                for x in doc.get('attachments', []):
+                    if x.get('id') == att['id']:
+                        x['crm_document_id'] = doc_id
+                return doc
+            est_update(est_id, _mark)
+            att['crm_document_id'] = doc_id
+        elif err and err != 'not_linked':
+            print(f'[warranty] CRM push failed for {est_id}: {err}')
+    return att
+
+
+@app.route('/api/estimates/<est_id>/warranty-certificate', methods=['GET'])
+def get_warranty_certificate(est_id):
+    """The fields, plus what the tool derives (term, product suggestion) and
+    the fills the form offers for the completion date."""
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    term, product, basis = _warranty_manifest(est)
+    wc = est.get('warranty_certificate') or {}
+    sig = est.get('signature') or {}
+    return jsonify({
+        'warranty_certificate': wc,
+        'term':      term,
+        'basis':     basis,
+        'suggested': {
+            'product_installed': product,
+            'color': (sig.get('shingle_color') or '').strip(),
+            'scheduled_date': ((est.get('work_order') or {}).get('scheduled_date') or '').strip(),
+            'contract_date': (sig.get('signed_at') or '')[:10],
+        },
+        'number':    _warranty_cert_number(est),
+        'problem':   _warranty_cert_problem(est),
+    })
+
+
+@app.route('/api/estimates/<est_id>/warranty-certificate', methods=['PUT'])
+def save_warranty_certificate_fields(est_id):
+    """Save the fields. Never builds a PDF."""
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    cleaned = _sanitize_warranty_cert(request.get_json(silent=True) or {})
+
+    def _apply(doc):
+        if doc is None:
+            return None
+        wc = dict(doc.get('warranty_certificate') or {})
+        wc.update(cleaned)
+        wc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        doc['warranty_certificate'] = wc
+        return doc
+
+    est_update(est_id, _apply)
+    return jsonify({'warranty_certificate': cleaned})
+
+
+@app.route('/api/estimates/<est_id>/warranty-certificate', methods=['POST'])
+def regenerate_warranty_certificate(est_id):
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    problem = _warranty_cert_problem(est)
+    if problem:
+        return jsonify({'error': problem}), 400
+    push = bool((request.get_json(silent=True) or {}).get('push_to_crm'))
+    try:
+        att = generate_warranty_certificate(est_id, push_to_crm=push)
+    except Exception as exc:
+        print(f'[warranty] generation failed for {est_id}: {exc}')
         return jsonify({'error': f'Certificate generation failed: {exc}'}), 500
     return jsonify({'attachment': att})
 

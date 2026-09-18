@@ -106,6 +106,47 @@ def test_an_unmeasured_job_gets_a_blank_not_a_confident_zero(A, builder):
     assert '0.0 SQ' not in text
 
 
+# ── Pitch ────────────────────────────────────────────────────────────
+
+def test_the_permit_packet_prints_the_pitch_on_its_own_row(A):
+    """The clerk asks for slope before almost anything else. It used to print
+    only as a suffix on the Steep Area row."""
+    text = _pdf_text(A.build_permit_packet_pdf(
+        _signed(measurements={'roof_squares': 30, 'predominant_pitch': 6}))).upper()
+    assert 'ROOF PITCH' in text
+    assert '6/12' in text
+
+
+def test_a_walkable_roof_still_prints_its_pitch(A):
+    """The case that printed nothing at all: no steep area, so the row the
+    pitch was riding on never fired, and the permit application went to the
+    counter with no slope on it."""
+    est = _signed(measurements={'roof_squares': 30, 'predominant_pitch': 4})
+    text = _pdf_text(A.build_permit_packet_pdf(est)).upper()
+    assert 'ROOF PITCH' in text
+    assert '4/12' in text
+    assert 'STEEP AREA' not in text
+
+
+def test_an_unpitched_job_gets_a_blank_not_a_confident_zero(A):
+    """Same rule as the squares line above it: somewhere to write the number,
+    never a measured-looking 0/12."""
+    text = _pdf_text(A.build_permit_packet_pdf(_signed(measurements={}))).upper()
+    assert 'ROOF PITCH' in text
+    assert '0/12' not in text
+
+
+def test_a_steep_roof_names_the_pitch_once(A):
+    """Steep is the charge question, pitch is the slope question. Printing the
+    pitch in both places is how the two end up disagreeing."""
+    est = _signed(measurements={'roof_squares': 30, 'steep_squares': 12,
+                                'predominant_pitch': 9})
+    text = _pdf_text(A.build_permit_packet_pdf(est)).upper()
+    assert 'ROOF PITCH' in text
+    assert '12 SQ STEEP' in text
+    assert text.count('9/12') == 1
+
+
 # ── Notes ─────────────────────────────────────────────────────────────────
 
 def test_the_work_order_carries_crew_notes_and_not_the_customers(A):

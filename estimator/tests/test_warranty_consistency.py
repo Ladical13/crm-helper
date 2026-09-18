@@ -4,6 +4,8 @@
     3. DEFAULT_INSURANCE_CONTRACT in static/app.js (insurance T&C)
     4. tier_defaults.json (per-tier feature bullets)
     5. _WARRANTY_BY_TIER in app.py (structured manifest → JSON-LD + PDF)
+    6. the post-job warranty certificate — which states NO term of its own:
+       it reads (5) at the signed tier, or WARRANTY_INSURANCE_FLAT on a claim
 
 The RETAIL/COMMERCIAL side must describe one tiered structure everywhere:
 5-year on Good/Better, Lifetime on Best. Because the customer sees more than
@@ -76,3 +78,15 @@ def test_manifest_warranty_matches_data_files(A):
     assert '5-year' in w['good']
     assert '5-year' in w['better']
     assert 'lifetime' in w['best'].lower()
+
+
+def test_the_insurance_flat_term_matches_the_insurance_contract(A):
+    """WARRANTY_INSURANCE_FLAT is what the warranty certificate prints on a
+    claim; DEFAULT_INSURANCE_CONTRACT is what the homeowner signed. Same years,
+    and neither names a package."""
+    with open(APP_JS, encoding='utf-8') as f:
+        js = f.read()
+    block = re.search(r'DEFAULT_INSURANCE_CONTRACT\s*=\s*`([\s\S]*?)`;', js).group(1)
+    years = re.search(r'(\d+)-year', A.WARRANTY_INSURANCE_FLAT).group(1)
+    assert re.search(r'\b' + years + r'[ -]years?\b', block.lower())
+    assert 'lifetime' not in A.WARRANTY_INSURANCE_FLAT.lower()

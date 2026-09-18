@@ -865,12 +865,24 @@ input.scope-qty-input {
   border: 1px solid #c6d8ec; background: #eef4fb; color: #1a3a5c;
   font-size: 11.5px; font-weight: 700;
 }
-.est-section-edit, .est-section-del {
+.est-section-edit, .est-section-del, .est-section-move {
   border: none; background: transparent; cursor: pointer; padding: 2px 4px;
   font-size: 11px; color: #64748b; border-radius: 4px; line-height: 1;
 }
 .est-section-edit:hover { color: var(--primary); background: #dbeafe; }
 .est-section-del:hover  { color: #dc2626; background: #fee2e2; }
+.est-section-move:hover:not(:disabled) { color: var(--primary); background: #dbeafe; }
+.est-section-move:disabled { opacity: .3; cursor: default; }
+/* A finger cannot hit an 11px chip button. Gated on the POINTER, never on a
+   width: the pricing tab is worked on the iPad as much as on a phone, and a
+   width query cannot express "this is a finger". */
+@media (pointer: coarse) {
+  .est-section-edit, .est-section-del, .est-section-move {
+    min-width: 30px; min-height: 30px; font-size: 14px; padding: 4px 6px;
+  }
+  .est-section-chip { padding: 2px 4px 2px 12px; }
+}
+
 .est-section-add {
   border: 1px dashed var(--border); background: #fff; color: var(--text-light);
   border-radius: 20px; padding: 5px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer;
@@ -4991,6 +5003,28 @@ body.is-client #nav-toggle      { display: none; }
 .rc-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
 .rc-issue { font-weight: 700; }
 .rc-saved { font-size: 12px; font-weight: 700; color: #16a34a; }
+
+/* Roof Health Report + warranty certificate: the read-only summary of what the
+   document will say, and the certificate switch. */
+.cr-summary {
+  font-size: 12.5px; color: #384b63; background: #f8fafc;
+  border: 1px solid var(--border-light); border-radius: 6px; padding: 8px 10px;
+}
+.cr-summary ul { margin: 4px 0; padding-left: 18px; }
+.cr-toggle { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 600; }
+.cr-warn { color: #b45309; font-weight: 600; }
+
+/* Files on this customer's OTHER estimates: view + CRM only. */
+.doc-group-hd {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; font-weight: 700; color: #1a3a5c;
+  border-bottom: 1px solid var(--border-light); padding: 6px 0 4px; margin-top: 6px;
+}
+.doc-open-est {
+  font-size: 11px; font-weight: 600; color: var(--primary-light);
+  background: none; border: none; text-decoration: underline; padding: 0;
+}
+.att-label-ro { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
 
 /* Invoice / quote: the itemize switch, payment rows and the what-it-bills summary. */
 .inv-itemize {

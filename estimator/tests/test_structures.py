@@ -197,6 +197,38 @@ def test_removing_a_building_takes_its_work_with_it():
     assert res['estimate']['trades']['commercial']['sections'] == ['Building 1']
 
 
+def test_moving_a_section_moves_the_building_card_with_it():
+    """Three arrays describe one building: td.sections (the chips and every
+    grouped document), td.line_items (the flat contract and invoice lists) and
+    S.structures (the Scope page's cards). Move the chip without the card and
+    the two screens list the same complex in two different orders."""
+    est = _est(
+        structures=[_bld('st1', 'Building 1', 42), _bld('st2', 'Building 2', 38)],
+        items=[_item('TPO Membrane', 'Building 1', 'i1'),
+               _item('TPO Membrane', 'Building 2', 'i2')],
+    )
+    res = _run(est, [{'op': 'moveSection', 'trade': 'commercial', 'idx': 0, 'dir': 1},
+                     {'op': 'applyMeasurements'}])
+    assert res['estimate']['trades']['commercial']['sections'] == ['Building 2', 'Building 1']
+    assert [s['name'] for s in res['estimate']['structures']] == ['Building 2', 'Building 1']
+    assert [r['section'] for r in res['items']] == ['Building 2', 'Building 1']
+
+
+def test_a_moved_building_keeps_its_own_measurements():
+    """The name is the join. A move must not shuffle a roof onto another
+    roof's square count."""
+    est = _est(
+        structures=[_bld('st1', 'Building 1', 42), _bld('st2', 'Building 2', 38)],
+        items=[_item('TPO Membrane', 'Building 1', 'i1'),
+               _item('TPO Membrane', 'Building 2', 'i2')],
+    )
+    res = _run(est, [{'op': 'moveSection', 'trade': 'commercial', 'idx': 0, 'dir': 1},
+                     {'op': 'applyMeasurements'}])
+    by_section = {r['section']: r for r in res['items']}
+    assert by_section['Building 1']['quantity'] == 42
+    assert by_section['Building 2']['quantity'] == 38
+
+
 # ── Money and fasteners, per building ───────────────────────────────────────
 
 def test_each_building_carries_its_own_subtotal():
