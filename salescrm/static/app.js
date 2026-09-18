@@ -333,10 +333,41 @@ async function renderOutreach(){
   renderStatusBoard();
 }
 
+// Managers: the Do Not Call registry has to be re-loaded every 31 days. The
+// notice appears only when it matters - homeowner leads exist and the
+// registry is missing or stale.
+async function renderDncNotice(){
+  const n=$('#dnc-notice'); if(!n) return;
+  let st; try{ st=await api('/dnc-registry'); }catch(e){ return; }
+  const need=st.open_homeowner_leads>0&&(!st.areas.length||st.stale);
+  n.classList.toggle('hidden',!need&&!st.areas.length);
+  n.innerHTML=need
+    ? `📵 ${st.areas.length?'The Do Not Call registry is over '+st.refresh_days+' days old':'No Do Not Call registry loaded'} - homeowner numbers can't be checked. <button class="btn-ghost small" id="dnc-load">Load registry file</button>`
+    : `📵 Do Not Call registry: ${st.areas.map(a=>a.area).join(', ')} loaded. <button class="btn-ghost small" id="dnc-load">Refresh</button>`;
+  n.classList.toggle('warn',need);
+  const b=$('#dnc-load'); if(b) b.onclick=dncModal;
+}
+function dncModal(){
+  openModal('Do Not Call registry',`
+    <p class="lead-context">Download your area codes from telemarketing.donotcall.gov, then pick the file here.
+    Each area code in the file replaces what was loaded before. Homeowners on it drop out of the call queue
+    and show a warning; business numbers are not affected.</p>
+    <div class="field"><input type="file" id="dnc-file" accept=".txt,.csv,text/plain,text/csv"></div>
+    <div id="dnc-result" class="lead-context"></div>`,
+  async()=>{
+    const f=$('#dnc-file').files[0]; if(!f){ toast('Pick the registry file first',true); throw new Error('name'); }
+    const text=await f.text();
+    try{ const r=await api('/dnc-registry',{method:'POST',body:{text}});
+      toast(`Loaded ${r.loaded.toLocaleString()} numbers (${r.areas.join(', ')})`); renderDncNotice();
+    }catch(e){ toast(e.message,true); throw e; }
+  },{okText:'Load'});
+}
+
 // Where every contact stands, one tap from the list of them. Closed statuses
 // are left off the strip — they are answers, not work.
 async function renderStatusBoard(){
   const box=$('#oq-status'); if(!box) return;
+  if(S.me.is_manager) renderDncNotice();
   let rows=[]; try{ rows=await api('/outreach/summary'); }catch(e){ return; }
   box.innerHTML=rows.filter(r=>r.open&&r.count).map(r=>
     `<button class="os-chip" data-os="${r.key}" style="--c:${r.color}"><span class="n">${r.count}</span>${esc(r.label)}${r.due?`<span class="due">${r.due} due</span>`:''}</button>`).join('')
@@ -779,6 +810,7 @@ function renderDrawer(l){
       ${l.referred_by_name?'<span>via '+esc(l.referred_by_name)+'</span>':''}</div>
     </div>
     ${l.stalled?'<div class="stalled-banner">⚠ No activity in a while. Reach out or schedule a next step.</div>':''}
+    ${l.dnc_registry?'<div class="stalled-banner dnc-banner">📵 On the National Do Not Call Registry. Don\'t cold call or text this number. Exempt only if they bought from us in the last 18 months or contacted us in the last 3.</div>':''}
     <div class="dgrid">
     ${referralsHtml}
     <div class="dsec"><h5>Stage</h5>

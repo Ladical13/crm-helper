@@ -241,6 +241,35 @@ OUTCOMES = [
      'stop': True},
 ]
 OUTCOME_BY_KEY = {o['key']: o for o in OUTCOMES}
+
+# ── National Do Not Call Registry ─────────────────────────────────────────────
+# The registry covers residential numbers, so it governs HOMEOWNER leads only;
+# business lines (churches, schools, companies, partners) are generally exempt.
+# An existing business relationship exempts a number too: a customer for 18
+# months after they bought, an inquirer for 3 months after they contacted us.
+# This is a guard rail, not legal advice - the thresholds come from the FTC's
+# Telemarketing Sales Rule and should be confirmed with counsel.
+DNC_TYPES          = ('homeowner',)
+DNC_REFRESH_DAYS   = 31
+DNC_EBR_SALE_DAYS  = 548
+DNC_EBR_INQ_DAYS   = 90
+DNC_INQUIRY_SOURCES = ('website', 'phone_call')
+
+
+def _dnc_clause(alias=''):
+    """SQL (and params) that is TRUE for a lead we may not cold call or text
+    because its number is on the registry and no exemption applies."""
+    a = alias + '.' if alias else ''
+    now = _now_dt()
+    sale = _iso(now - timedelta(days=DNC_EBR_SALE_DAYS))
+    inq = _iso(now - timedelta(days=DNC_EBR_INQ_DAYS))
+    sql = (f"({a}lead_type IN ({','.join('?' * len(DNC_TYPES))}) "
+           f"AND {a}phone_norm != '' "
+           f"AND {a}phone_norm IN (SELECT phone_norm FROM dnc_registry) "
+           f"AND NOT ({a}won_at != '' AND {a}won_at >= ?) "
+           f"AND NOT ({a}source IN ({','.join('?' * len(DNC_INQUIRY_SOURCES))}) "
+           f"AND {a}created_at >= ?))")
+    return sql, list(DNC_TYPES) + [sale] + list(DNC_INQUIRY_SOURCES) + [inq]
 # The outcomes that mean a template worked: somebody engaged.
 GOOD_OUTCOMES = ('talked', 'callback', 'interested', 'appt_set')
 # Four unanswered touches in a row and the fifth is not the one that lands.
@@ -493,6 +522,18 @@ def migrate_db():
                 updated_at  TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS tpl_chan_idx ON templates(channel, audience);
+
+            -- The National Do Not Call Registry, as downloaded by area code.
+            -- NOT the suppression list: that is people who asked US to stop,
+            -- forever. This is a residential registry that must be re-loaded
+            -- at least every 31 days and only governs cold calls and texts to
+            -- homes. Kept apart so a refresh can replace an area code whole.
+            CREATE TABLE IF NOT EXISTS dnc_registry (
+                phone_norm TEXT PRIMARY KEY,
+                area       TEXT NOT NULL,
+                loaded_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS dnc_area_idx ON dnc_registry(area);
         ''')
         _backfill_norms(db)
 
@@ -944,6 +985,9 @@ def get_lead(lead_id):
         if not row:
             return jsonify({'error': 'Not found'}), 404
         d = _lead_row(row)
+        clause, cparams = _dnc_clause()
+        d['dnc_registry'] = bool(db.execute(
+            f'SELECT 1 FROM leads WHERE id=? AND {clause}', [lead_id] + cparams).fetchone())
         d['activities'] = [dict(a) for a in db.execute(
             'SELECT * FROM activities WHERE lead_id=? ORDER BY created_at DESC LIMIT 200',
             (lead_id,)).fetchall()]
@@ -2091,6 +2135,50 @@ def lead_draft(lead_id):
         return jsonify({'error': 'No template for this lead type'}), 404
     return jsonify(draft)
 
+@app.route('/api/dnc-registry', methods=['GET'])
+@login_required
+def dnc_registry_status():
+    """Which area codes are loaded, when, and whether they are past the 31-day
+    refresh the rule requires."""
+    cutoff = _iso(_now_dt() - timedelta(days=DNC_REFRESH_DAYS))
+    with get_db() as db:
+        rows = [dict(r) for r in db.execute(
+            'SELECT area, COUNT(*) numbers, MIN(loaded_at) loaded_at FROM dnc_registry '
+            'GROUP BY area ORDER BY area')]
+        homeowners = db.execute(
+            f"SELECT COUNT(*) FROM leads WHERE lead_type IN ({','.join('?' * len(DNC_TYPES))}) "
+            "AND stage NOT IN ('won','lost')", list(DNC_TYPES)).fetchone()[0]
+    for r in rows:
+        r['stale'] = r['loaded_at'] < cutoff
+    return jsonify({'areas': rows, 'refresh_days': DNC_REFRESH_DAYS,
+                    'open_homeowner_leads': homeowners,
+                    'stale': any(r['stale'] for r in rows)})
+
+
+@app.route('/api/dnc-registry', methods=['POST'])
+@admin_required
+def load_dnc_registry():
+    """Load a registry download. Any text works: every 10-digit number in it is
+    read, so the FTC's 'area,number' lines and plain lists both parse. Each
+    area code present is REPLACED whole, since a refresh must drop numbers
+    that have left the registry as well as add new ones."""
+    text = (request.get_json(force=True) or {}).get('text') or ''
+    nums = set()
+    for line in text.splitlines():
+        n = _norm_phone(line)
+        if n:
+            nums.add(n)
+    if not nums:
+        return jsonify({'error': 'No 10-digit phone numbers found in that file.'}), 400
+    areas = sorted({n[:3] for n in nums})
+    now = _now()
+    with get_db() as db:
+        db.execute(f"DELETE FROM dnc_registry WHERE area IN ({','.join('?' * len(areas))})", areas)
+        db.executemany('INSERT OR REPLACE INTO dnc_registry (phone_norm, area, loaded_at) '
+                       'VALUES (?,?,?)', [(n, n[:3], now) for n in nums])
+    return jsonify({'loaded': len(nums), 'areas': areas})
+
+
 # ── Template library ──────────────────────────────────────────────────────────
 #
 # Emails, texts and voicemail scripts, editable by managers on the Playbook tab
@@ -2468,6 +2556,9 @@ def queue_today():
     contact = request.args.get('contact', '')
     cooldown = _iso(_now_dt() - timedelta(days=COOLDOWN_DAYS))
 
+    # Homeowners on the Do Not Call Registry never reach a cold-call queue.
+    dnc_l, dnc_lp = _dnc_clause('l')
+    dnc_f, dnc_fp = _dnc_clause()
     with get_db() as db:
         supp = _suppression_index(db)
 
@@ -2480,7 +2571,8 @@ def queue_today():
             '       l.source, l.outreach_status '
             'FROM tasks t JOIN leads l ON l.id = t.lead_id '
             'WHERE t.rep = ? AND t.done = 0 AND t.due_at <= ? AND l.dnc = 0 '
-            'ORDER BY t.due_at', (rep, _end_of_today())).fetchall()]
+            f'AND NOT {dnc_l} '
+            'ORDER BY t.due_at', [rep, _end_of_today()] + dnc_lp).fetchall()]
         due = [d for d in due if not _suppressed_by(
             supp, _norm_phone(d['phone']), _norm_email(d['email']), d['website'])][:target]
         if contact == 'research':
@@ -2506,8 +2598,9 @@ def queue_today():
                 "  AND outreach_status NOT IN ('bad_contact','nurture','not_interested','dnc','appt_set') "
                 "  AND (last_activity_at = '' OR last_activity_at < ?) "
                 "  AND id NOT IN (SELECT lead_id FROM tasks WHERE done = 0) "
+                f"  AND NOT {dnc_f} "
                 + contact_sql + " ORDER BY icp_score DESC, created_at ASC",
-                (rep, cooldown))
+                [rep, cooldown] + dnc_fp)
             for r in rows:
                 # Re-check suppression here, not just at import: a domain added
                 # to the list this morning has to drop rows imported last week.

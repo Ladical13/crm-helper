@@ -22,7 +22,8 @@ from portal import users as pusers      # noqa: E402
 # Every table the app writes. The temp DB is created once per session, not per
 # test, so a table missing here leaks state between tests.
 TABLES = ['leads', 'activities', 'tasks', 'cadence_enrollments',
-          'coaching_notes', 'goals', 'documents', 'suppressions', 'templates']
+          'coaching_notes', 'goals', 'documents', 'suppressions', 'templates',
+          'dnc_registry']
 
 
 def _wipe():
