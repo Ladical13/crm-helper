@@ -22,13 +22,16 @@ from portal import users as pusers      # noqa: E402
 # Every table the app writes. The temp DB is created once per session, not per
 # test, so a table missing here leaks state between tests.
 TABLES = ['leads', 'activities', 'tasks', 'cadence_enrollments',
-          'coaching_notes', 'goals', 'documents', 'suppressions']
+          'coaching_notes', 'goals', 'documents', 'suppressions', 'templates']
 
 
 def _wipe():
     with appmod.get_db() as db:
         for t in TABLES:
             db.execute(f'DELETE FROM {t}')
+    # The template library is seeded, not written by tests — put the starter
+    # set back so every test sees what a fresh install has.
+    appmod.seed_templates()
     # Identity lives in the portal store, so it has to be reset here too or
     # the "first user bootstraps as admin" rule leaks across tests.
     with pusers.get_db() as db:

@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <title>Project One — Pipeline</title>
-  <link rel="stylesheet" href="/crm/static/style.css?v=17">
+  <link rel="stylesheet" href="/crm/static/style.css?v=18">
 </head>
 <body>
 
@@ -68,6 +68,7 @@
     <section class="view" id="view-outreach">
       <div class="view-actions"><div class="view-toggle" aria-label="Outreach queue"><button id="queue-ready" aria-pressed="true">Today's outreach</button><button id="queue-research" aria-pressed="false">Needs research</button></div><button class="btn-ghost small" id="queue-refresh">Refresh queue</button></div>
       <p class="view-intro" id="queue-intro"></p>
+      <div class="os-board" id="oq-status" aria-label="Where your contacts stand"></div>
       <div class="oq-head">
         <div class="oq-bar"><div class="oq-fill" id="oq-fill"></div></div>
         <div class="oq-label" id="oq-label"></div>
@@ -87,6 +88,7 @@
         <select id="pipeline-contact" class="mini-select" aria-label="Contact information"><option value="">Any contact information</option><option value="ready">Has phone or email</option><option value="research">Needs phone or email</option></select>
         <select id="pipeline-attention" class="mini-select" aria-label="Priority"><option value="">All priorities</option><option value="hot">Hot leads</option><option value="needs_step">Needs next step</option></select>
         <select id="pipeline-stage" class="mini-select" aria-label="Stage"></select>
+        <select id="pipeline-outreach" class="mini-select" aria-label="Outreach status"></select>
       </div>
       <div class="view-actions"><div class="view-toggle" aria-label="Pipeline view"><button id="pipe-list" aria-pressed="true">List</button><button id="pipe-board" aria-pressed="false">Board</button></div><button class="btn-ghost small" id="pipeline-reset">Clear filters</button></div>
       <p class="view-intro" id="pipeline-count" aria-live="polite"></p>
@@ -154,6 +156,9 @@
     <section class="view" id="view-playbook">
       <input id="playbook-search" class="mini-search full" placeholder="Search plans, objections &amp; scripts…">
       <div id="playbook-principles" class="principles"></div>
+      <h3 class="section-h">✉️ Email, text &amp; voicemail templates</h3>
+      <div class="tpl-filters" id="tpl-filters"></div>
+      <div id="playbook-templates" class="card-list"></div>
       <h3 class="section-h">Objection handling</h3>
       <div id="playbook-objections" class="card-list"></div>
       <h3 class="section-h">Scripts &amp; talk tracks</h3>
@@ -193,6 +198,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="/shell.js"></script>
-<script src="/crm/static/app.js?v=17"></script>
+<script src="/crm/static/app.js?v=18"></script>
 </body>
 </html>

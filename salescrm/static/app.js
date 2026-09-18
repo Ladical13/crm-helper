@@ -72,7 +72,128 @@ function dueLabel(iso) {
   return 'in '+Math.round(diff)+'d';
 }
 const KIND_ICO={call:'📞',text:'💬',email:'✉️',door:'🚪',meeting:'🤝',note:'📝',
-  stage_change:'↔️',system:'⚙️'};
+  stage_change:'↔️',system:'⚙️',research:'🔎'};
+
+// ── Outreach composer: templates → a draft in the rep's own phone or Gmail ──
+// Shared by the queue card and the lead drawer. The templates come rendered
+// from the server (/leads/<id>/messages); the rep may pick another one and edit
+// the words before opening it. Nothing is ever sent from here: a text opens
+// the phone's Messages app pre-filled, an email opens the rep's own Gmail.
+const CH_LABEL={call:'Call script',voicemail:'Voicemail',text:'Text',email:'Email'};
+
+// iOS wants `sms:NUMBER&body=`, everything else `sms:NUMBER?body=`. An iPad
+// reports itself as a Mac, hence the touch check.
+function smsUrl(phone, body){
+  const ios=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  return 'sms:'+phone+(ios?'&':'?')+'body='+encodeURIComponent(body);
+}
+
+function composerTabs(msgs, script, st){
+  const tabs=[];
+  if(script) tabs.push('call');
+  for(const ch of ['voicemail','text','email']) if(msgs&&msgs[ch]&&msgs[ch].templates.length) tabs.push(ch);
+  if(!tabs.includes(st.tab)) st.tab=tabs[0]||'';
+  return tabs;
+}
+
+function composerHtml(lead, msgs, script, st){
+  const tabs=composerTabs(msgs, script, st);
+  if(!tabs.length) return '';
+  const head=`<div class="oq-tabs">${tabs.map(t=>`<button data-ctab="${t}" class="${st.tab===t?'on':''}">${CH_LABEL[t]}</button>`).join('')}</div>`;
+  if(st.tab==='call') return head+`<div class="oq-script">${esc(script.body)}</div>`;
+  const box=msgs[st.tab];
+  st.sel=st.sel||{};
+  if(!box.templates.find(t=>t.id===st.sel[st.tab])) st.sel[st.tab]=box.recommended||box.templates[0].id;
+  const tpl=box.templates.find(t=>t.id===st.sel[st.tab]);
+  st.edit=st.edit||{};
+  const ed=st.edit[st.tab+':'+tpl.id]||{subject:tpl.subject,body:tpl.body};
+  st.edit[st.tab+':'+tpl.id]=ed;
+  const opts=box.templates.map(t=>`<option value="${esc(t.id)}" ${t.id===tpl.id?'selected':''}>${t.id===box.recommended?'★ ':''}${esc(t.name)}</option>`).join('');
+  const phone=(lead.phone||'').replace(/[^0-9+]/g,'');
+  let action='';
+  if(st.tab==='text') action=phone
+    ? `<a class="text" href="${esc(smsUrl(phone,ed.body))}" data-touch="text">💬 Open in Messages</a>`
+    : '<button disabled>Phone needed</button>';
+  if(st.tab==='email') action=lead.email
+    ? `<a class="email" target="_blank" rel="noopener" href="${esc(gmailUrl(lead.email,ed))}" data-touch="email">✉️ Open in Gmail</a>`
+    : '<button disabled>Email needed</button>';
+  const chars=st.tab==='text'?`<span class="cmp-count ${ed.body.length>(S.cfg.text_max_chars||320)?'over':''}">${ed.body.length} chars</span>`:'';
+  return head+`<div class="cmp">
+    <select class="mini-select cmp-pick" data-cpick aria-label="Template">${opts}</select>
+    ${st.tab==='email'?`<input class="cmp-subj" data-csubj value="${esc(ed.subject)}" aria-label="Subject">`:''}
+    ${st.tab==='voicemail'
+      ? `<div class="oq-script">${esc(ed.body)}</div><p class="cmp-hint">Read this if it goes to voicemail, then tap <b>Left voicemail</b>.</p>`
+      : `<textarea class="cmp-body" data-cbody rows="${st.tab==='text'?4:8}" aria-label="Message">${esc(ed.body)}</textarea>
+         <div class="cmp-foot">${chars}<span class="cmp-hint">Edit freely - it opens as a draft, you press send.</span></div>
+         <div class="oq-actions">${action}</div>`}
+  </div>`;
+}
+
+// Re-render just the composer when the rep switches tab/template, and keep
+// their edits; typing updates the link in place so focus is never lost.
+function wireComposer(root, lead, msgs, script, st, onTouch){
+  const redraw=()=>{ root.querySelector('[data-composer]').innerHTML=composerHtml(lead,msgs,script,st); wire(); };
+  const wire=()=>{
+    root.querySelectorAll('[data-ctab]').forEach(b=>b.onclick=()=>{st.tab=b.dataset.ctab;redraw();});
+    const pick=root.querySelector('[data-cpick]'); if(pick) pick.onchange=()=>{st.sel[st.tab]=pick.value;redraw();};
+    const key=()=>st.tab+':'+st.sel[st.tab];
+    const body=root.querySelector('[data-cbody]'), subj=root.querySelector('[data-csubj]');
+    const refresh=()=>{
+      const ed=st.edit[key()];
+      const a=root.querySelector('[data-touch]');
+      if(a&&a.dataset.touch==='text') a.href=smsUrl((lead.phone||'').replace(/[^0-9+]/g,''),ed.body);
+      if(a&&a.dataset.touch==='email') a.href=gmailUrl(lead.email,ed);
+      const c=root.querySelector('.cmp-count');
+      if(c){ c.textContent=ed.body.length+' chars'; c.classList.toggle('over',ed.body.length>(S.cfg.text_max_chars||320)); }
+    };
+    if(body) body.oninput=()=>{ st.edit[key()].body=body.value; refresh(); };
+    if(subj) subj.oninput=()=>{ st.edit[key()].subject=subj.value; refresh(); };
+    root.querySelectorAll('[data-touch]').forEach(a=>a.addEventListener('click',()=>onTouch&&onTouch(a.dataset.touch)));
+  };
+  wire();
+}
+
+// The outcome buttons. `touched` pre-highlights the one that matches what the
+// rep just did (opened Messages → Texted).
+function outcomeHtml(touched){
+  const hint={text:'texted',email:'emailed'}[touched]||'';
+  return `<div class="oc-grid">${S.cfg.outcomes.map(o=>
+    `<button class="oc-btn ${o.key===hint?'hint':''} ${['not_interested','wrong_number'].includes(o.key)?'neg':''}" data-outcome="${o.key}">${o.icon} ${esc(o.label)}</button>`).join('')}</div>
+    <div class="oc-date hidden" data-ocdate>
+      <label>Call back on <input type="datetime-local" data-ocwhen></label>
+      <button class="btn-brand small" data-ocok>Book it</button></div>`;
+}
+
+// POST the outcome; resolves to the server's reply or null. Asks for the day
+// when the outcome needs one (a callback the person agreed to).
+function wireOutcomes(root, leadId, getCtx, done){
+  root.querySelectorAll('[data-outcome]').forEach(b=>b.onclick=async()=>{
+    const key=b.dataset.outcome;
+    const o=S.cfg.outcomes.find(x=>x.key===key);
+    if(o.ask_date){
+      const box=root.querySelector('[data-ocdate]'); box.classList.remove('hidden');
+      const when=box.querySelector('[data-ocwhen]');
+      if(!when.value){ const d=new Date(Date.now()+86400000); d.setHours(10,0,0,0);
+        when.value=new Date(d-d.getTimezoneOffset()*60000).toISOString().slice(0,16); }
+      box.querySelector('[data-ocok]').onclick=()=>send(key, when.value);
+      when.focus(); return;
+    }
+    send(key);
+  });
+  async function send(key, when){
+    const ctx=getCtx()||{};
+    const body={outcome:key};
+    if(ctx.kind) body.kind=ctx.kind;
+    if(ctx.task_id) body.task_id=ctx.task_id;
+    if(when) body.follow_up_at=new Date(when).toISOString().slice(0,16);
+    try{
+      const r=await api('/leads/'+leadId+'/outcome',{method:'POST',body});
+      const o=S.cfg.outcomes.find(x=>x.key===key);
+      toast(`${o.icon} ${o.label}`+(r.follow_up?` · next: ${dueLabel(r.follow_up.due_at)}`:''));
+      done&&done(r);
+    }catch(e){ toast(e.message,true); }
+  }
+}
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 // There is no sign-in screen here any more: the portal owns login, and api()
@@ -182,14 +303,28 @@ async function renderOutreach(){
     ...q.due.map(d=>({lead_id:d.lead_id,task_id:d.id,kind:d.kind||'call',retouch:true,
       why:d.title||'Follow-up due',name:d.name,company:d.company,phone:d.phone,
       email:d.email,city:d.city,lead_type:d.lead_type,overdue:d.overdue,
-      draft:d.draft,hook:d.hook,address:d.address,website:d.website})),
+      draft:d.draft,hook:d.hook,address:d.address,website:d.website,
+      touches:d.touches,outreach_label:d.outreach_label,outreach_color:d.outreach_color})),
     ...q.new.map(l=>({lead_id:l.id,kind:'call',retouch:false,
       why:'New — first touch',name:l.name,company:l.company,phone:l.phone,
       email:l.email,city:l.city,lead_type:l.lead_type,score:l.icp_score,
-      draft:l.draft,hook:l.hook,address:l.address,website:l.website})),
+      draft:l.draft,hook:l.hook,address:l.address,website:l.website,
+      touches:l.touches,outreach_label:l.outreach_label,outreach_color:l.outreach_color})),
   ];
   if(!PB){ try{ PB=await api('/playbook'); }catch(e){} }
   drawQueue();
+  renderStatusBoard();
+}
+
+// Where every contact stands, one tap from the list of them. Closed statuses
+// are left off the strip — they are answers, not work.
+async function renderStatusBoard(){
+  const box=$('#oq-status'); if(!box) return;
+  let rows=[]; try{ rows=await api('/outreach/summary'); }catch(e){ return; }
+  box.innerHTML=rows.filter(r=>r.open&&r.count).map(r=>
+    `<button class="os-chip" data-os="${r.key}" style="--c:${r.color}"><span class="n">${r.count}</span>${esc(r.label)}${r.due?`<span class="due">${r.due} due</span>`:''}</button>`).join('')
+    ||'<span class="lead-context">No contacts yet.</span>';
+  box.querySelectorAll('[data-os]').forEach(b=>b.onclick=()=>pipelineFocus({outreach:b.dataset.os,rep:S.me.username}));
 }
 
 function drawQueue(){
@@ -230,24 +365,22 @@ function drawQueue(){
     <div class="oq-why">${it.retouch?'↻ ':''}${esc(it.why)}${it.overdue?' · overdue':''}</div>
     <h3 class="oq-name">${esc(it.name||it.company||'(no name)')}</h3>
     <div class="oq-sub">${esc(it.company&&it.company!==it.name?it.company+' · ':'')}${esc(it.city||'')}</div>
-    <div class="oq-meta"><span class="chip">${esc(type)}</span>
+    <div class="oq-meta"><span class="chip os" style="--c:${it.outreach_color||'#6B7280'}">${esc(it.outreach_label||'Not contacted')}</span>
+      ${it.touches?`<span class="chip">Touch ${it.touches+1}</span>`:''}
+      <span class="chip">${esc(type)}</span>
       ${it.score?`<span class="chip" title="Higher scores are prioritized within this queue">Priority score ${it.score}</span>`:''}
       ${tel?'':'<span class="chip">no phone</span>'}
       ${it.email?'':'<span class="chip">no email</span>'}
       ${it.hook?'':'<span class="chip">not researched</span>'}</div>
     ${!tel&&!it.email?'<p class="research-notice">Add contact details before calling or emailing. You can also schedule a visit from the lead.</p>':''}
     <div class="view-actions"><button class="btn-brand" data-open-lead>${!tel&&!it.email?'Research / edit contact':'Open lead / next step'}</button></div>
-    ${Q.mode!=='research'&&(script||draft)?`<div class="oq-tabs">
-      ${script?`<button data-tab="call" class="${it.tab==='call'?'on':''}">Call script</button>`:''}
-      ${draft?`<button data-tab="email" class="${it.tab==='email'?'on':''}">Email draft</button>`:''}
-    </div>`:''}
-    ${Q.mode==='research'?'':it.tab==='email'&&draft
-      ? `<div class="oq-script"><b>${esc(draft.subject)}</b>\n\n${esc(draft.body)}</div>`
-      : (script?`<div class="oq-script">${esc(script.body)}</div>`:'')}
+    ${Q.mode==='research'?'':`
     <div class="oq-actions">
-      ${tel?`<a class="call" href="tel:${tel}" data-log="call">📞 Call</a>`:'<button disabled>Phone needed</button>'}
-      ${it.email&&draft?`<a class="email" target="_blank" rel="noopener" href="${gmailUrl(it.email,draft)}" data-log="email">✉️ Open in Gmail</a>`:'<button disabled>Email needed</button>'}
+      ${tel?`<a class="call" href="tel:${tel}" data-touch="call">📞 Call</a>`:'<button disabled>Phone needed</button>'}
     </div>
+    <div data-composer>${it.msgs?composerHtml(it,it.msgs,script,it.cmp):'<div class="lead-context">Loading templates…</div>'}</div>
+    <h4 class="oc-h">How did it go?</h4>
+    ${outcomeHtml(it.touched)}`}
     <div class="oq-skips">
       <button data-act="skip">Skip</button>
       <button data-act="lost">Not a fit</button>
@@ -256,10 +389,24 @@ function drawQueue(){
   // The href does the dialling / opens the compose window; we only record that
   // it happened. Nothing is ever sent from here.
   card.querySelector('[data-open-lead]').onclick=()=>openLead(it.lead_id);
-  card.querySelectorAll('[data-log]').forEach(a=>a.onclick=()=>qLog(a.dataset.log));
   card.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>qSkip(b.dataset.act));
-  card.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ it.tab=b.dataset.tab; drawQueue(); });
   $('#oq-card').innerHTML=''; $('#oq-card').appendChild(card);
+  if(Q.mode==='research') return;
+  // Opening the dialler / Messages / Gmail records nothing by itself — the
+  // outcome does, because "I tapped Call" says nothing about who to call back.
+  const touched=kind=>{
+    it.touched=kind;
+    card.querySelectorAll('[data-outcome]').forEach(b=>b.classList.toggle('hint',
+      b.dataset.outcome==={text:'texted',email:'emailed'}[kind]));
+  };
+  card.querySelectorAll('.oq-actions [data-touch="call"]').forEach(a=>a.addEventListener('click',()=>touched('call')));
+  wireOutcomes(card, it.lead_id, ()=>({kind:it.touched, task_id:it.task_id}), ()=>{ Q.done++; qNext(); renderStatusBoard(); });
+  if(it.msgs){ wireComposer(card, it, it.msgs, script, it.cmp, touched); return; }
+  const idx=Q.idx;
+  api('/leads/'+it.lead_id+'/messages').then(m=>{
+    it.msgs=m; it.cmp=it.cmp||{tab:tel?(script?'call':'voicemail'):(m.email.templates.length?'email':'text')};
+    if(Q.idx===idx) drawQueue();
+  }).catch(()=>{ it.msgs={voicemail:{templates:[]},text:{templates:[]},email:{templates:[]}}; it.cmp={}; if(Q.idx===idx) drawQueue(); });
 }
 
 // Prefills a compose window in the rep's OWN Google account. Draft-only by
@@ -401,7 +548,7 @@ let pipeMode='list', pipeRows=[];
 function pipelineFocus(filters={}){
   buildPipelineFilters();
   pipeSearch=''; $('#pipeline-search').value='';
-  for(const key of ['rep','service','type','contact','attention','stage']) $('#pipeline-'+key).value=filters[key]||'';
+  for(const key of ['rep','service','type','contact','attention','stage','outreach']) $('#pipeline-'+key).value=filters[key]||'';
   go('pipeline');
 }
 function buildPipelineFilters(){
@@ -409,8 +556,10 @@ function buildPipelineFilters(){
   const type=$('#pipeline-type'), stage=$('#pipeline-stage');
   if(!type.options.length) type.innerHTML='<option value="">All lead types</option>'+S.cfg.lead_types.map(t=>`<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
   if(!stage.options.length) stage.innerHTML='<option value="">All stages</option>'+S.cfg.stages.map(t=>`<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
+  const os=$('#pipeline-outreach');
+  if(!os.options.length) os.innerHTML='<option value="">Any outreach status</option>'+S.cfg.outreach_statuses.map(t=>`<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
 }
-for(const key of ['type','contact','attention','stage']) $('#pipeline-'+key).onchange=()=>renderPipeline();
+for(const key of ['type','contact','attention','stage','outreach']) $('#pipeline-'+key).onchange=()=>renderPipeline();
 $('#pipeline-reset').onclick=()=>pipelineFocus();
 $('#pipe-list').onclick=()=>{pipeMode='list';renderPipeline();};
 $('#pipe-board').onclick=()=>{pipeMode='board';renderPipeline();};
@@ -419,7 +568,7 @@ async function renderPipeline(more=false){
   buildPipelineFilters();
   const offset=more===true?pipeRows.length:0;
   const qs=[];
-  for(const key of ['rep','service','type','contact','attention','stage']){
+  for(const key of ['rep','service','type','contact','attention','stage','outreach']){
     const value=$('#pipeline-'+key).value;
     if(value&&(key!=='rep'||S.me.is_manager)) qs.push(key+'='+encodeURIComponent(value));
   }
@@ -445,7 +594,7 @@ async function renderPipeline(more=false){
     leads.forEach(l=>{
       const row=el('button','lead-list-row'); row.dataset.id=l.id;
       row.innerHTML=`<span><b>${esc(l.name)}</b><span class="lead-context">${esc([l.company!==l.name?l.company:'',l.city].filter(Boolean).join(' · '))}</span></span>
-        <span>${esc(l.stage_label)}<span class="lead-context">${esc((S.cfg.lead_types.find(t=>t.key===l.lead_type)||{}).label||l.lead_type)}</span></span>
+        <span>${esc(l.stage_label)}<span class="lead-context"><span class="os-dot" style="background:${l.outreach_color}"></span>${esc(l.outreach_label)} · ${esc((S.cfg.lead_types.find(t=>t.key===l.lead_type)||{}).label||l.lead_type)}</span></span>
         <span>${l.phone||l.email?'Contact details available':'Needs contact research'}<span class="lead-context">${esc(l.phone||l.email||'Open to add phone or email')}</span></span>
         <span>${l.next_action_at?esc(dueLabel(l.next_action_at)):['won','lost'].includes(l.stage)?'Closed':'No next step'}<span class="lead-context">${esc(repName(l.rep))}${l.est_value?' · '+money(l.est_value):''}</span></span>`;
       row.onclick=()=>openLead(l.id); list.appendChild(row);
@@ -627,6 +776,13 @@ function renderDrawer(l){
         <a class="text" href="${phone?'sms:'+phone:'#'}" data-log="text">💬 Text</a>
         <a class="email" href="${l.email?'mailto:'+esc(l.email):'#'}" data-log="email">✉️ Email</a>
       </div></div>
+    <div class="dsec dsec-wide"><h5>Outreach <span class="chip os" style="--c:${l.outreach_color}">${esc(l.outreach_label)}</span></h5>
+      <div data-composer><div class="lead-context">Loading templates…</div></div>
+      <h5 class="oc-h">Log what happened</h5>
+      <div data-outcomes>${outcomeHtml('')}</div>
+      <label class="os-set">Set status manually
+        <select class="mini-select" id="d-os">${S.cfg.outreach_statuses.map(s=>`<option value="${s.key}" ${s.key===l.outreach_status?'selected':''}>${esc(s.label)}</option>`).join('')}</select></label>
+    </div>
     <div class="dsec"><h5>Log activity</h5>
       <div class="log-row">
         ${['call','text','email','door','meeting','note'].map(k=>`<button class="log-btn" data-logkind="${k}">${KIND_ICO[k]} ${k}</button>`).join('')}
@@ -696,6 +852,23 @@ function renderDrawer(l){
       toast('Logged'); const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
     };
   });
+  // Outreach: templates, outcomes, and a manual status fix.
+  const dSt={};
+  const dScript=PB&&PB.scripts?PB.scripts.find(s=>s.name===SCRIPT_FOR[l.lead_type]):null;
+  api('/leads/'+l.id+'/messages').then(m=>{
+    if(S.openLeadId&&S.openLeadId!==l.id) return;
+    const box=p.querySelector('[data-composer]'); if(!box) return;
+    box.innerHTML=composerHtml(l,m,dScript,dSt);
+    wireComposer(p, l, m, dScript, dSt, kind=>p.querySelectorAll('[data-outcome]').forEach(b=>
+      b.classList.toggle('hint', b.dataset.outcome==={text:'texted',email:'emailed'}[kind])));
+  }).catch(()=>{ const b=p.querySelector('[data-composer]'); if(b) b.innerHTML=''; });
+  wireOutcomes(p, l.id, ()=>({}), async()=>{ const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
+    if(S.view==='pipeline') renderPipeline(); });
+  $('#d-os').onchange=async e=>{
+    try{ await api('/leads/'+l.id+'/outreach-status',{method:'PATCH',body:{status:e.target.value}});
+      toast('Status updated'); const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
+    }catch(err){ toast(err.message,true); }
+  };
   renderCadences(l);
   renderTasks(l);
   renderTimeline(l);
@@ -1093,7 +1266,91 @@ async function renderPlaybook(){
   $('#playbook-principles').innerHTML=(PB.principles||[]).map(p=>`<div class="principle">💡 ${esc(p)}</div>`).join('');
   renderPlaybookLists();
 }
+// ── Template library (Playbook) ─────────────────────────────────────────────
+// Everyone reads it and can copy from it; managers add, edit and archive.
+// The server enforces the rules (banned openers, known fill-ins, length) and
+// the editor previews against a sample contact as the manager types.
+let TPL=null;
+const TF={channel:'',audience:''};
+async function renderTemplates(){
+  if(!TPL) TPL=await api('/templates');
+  const box=$('#playbook-templates'); if(!box) return;
+  const q=($('#playbook-search').value||'').toLowerCase();
+  const aud=S.cfg.audiences, audLabel=k=>(aud.find(a=>a.key===k)||{}).label||k;
+  const rows=TPL.filter(t=>(!TF.channel||t.channel===TF.channel)&&(!TF.audience||t.audience===TF.audience)
+    &&(!q||(t.name+' '+t.subject+' '+t.body).toLowerCase().includes(q)));
+  $('#tpl-filters').innerHTML=`
+    <select class="mini-select" id="tf-channel"><option value="">All channels</option>${S.cfg.template_channels.map(c=>`<option value="${c}" ${TF.channel===c?'selected':''}>${esc(CH_LABEL[c])}</option>`).join('')}</select>
+    <select class="mini-select" id="tf-audience"><option value="">Everyone</option>${aud.map(a=>`<option value="${a.key}" ${TF.audience===a.key?'selected':''}>${esc(a.label)}</option>`).join('')}</select>
+    ${S.me.is_manager?'<button class="btn-brand small" id="tpl-new">＋ New template</button>':''}`;
+  $('#tf-channel').onchange=e=>{TF.channel=e.target.value;renderTemplates();};
+  $('#tf-audience').onchange=e=>{TF.audience=e.target.value;renderTemplates();};
+  if($('#tpl-new')) $('#tpl-new').onclick=()=>templateModal({channel:TF.channel||'text',audience:TF.audience||'homeowner',step:'first'});
+  box.innerHTML=rows.map(t=>`<div class="card tpl-card">
+      <h4>${{email:'✉️',text:'💬',voicemail:'📼'}[t.channel]} ${esc(t.name)}
+        <span class="type-badge">${esc(audLabel(t.audience))}</span>
+        <span class="type-badge">${esc(t.step==='any'?'any touch':t.step)}</span></h4>
+      ${t.subject?`<div class="tpl-subj">${esc(t.subject)}</div>`:''}
+      <div class="a tpl-body">${esc(t.body)}</div>
+      <div class="drawer-btns"><button class="btn-ghost small" data-copy="${t.id}">Copy</button>
+      ${S.me.is_manager?`<button class="btn-ghost small" data-edit="${t.id}">Edit</button>`:''}</div></div>`).join('')
+    ||'<div class="empty">No templates match.</div>';
+  box.querySelectorAll('[data-copy]').forEach(b=>b.onclick=async()=>{
+    const t=TPL.find(x=>x.id===b.dataset.copy);
+    try{ await navigator.clipboard.writeText((t.subject?t.subject+'\n\n':'')+t.body); toast('Copied'); }
+    catch(e){ toast('Copy not allowed here',true); }
+  });
+  box.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>templateModal(TPL.find(x=>x.id===b.dataset.edit)));
+}
+
+function templateModal(t){
+  const isNew=!t.id;
+  const opt=(list,val,lab)=>list.map(k=>`<option value="${k}" ${k===val?'selected':''}>${esc(lab(k))}</option>`).join('');
+  const steps={first:'First touch',followup:'Follow-up',breakup:'Last touch',any:'Any touch'};
+  openModal(isNew?'New template':'Edit template', `
+    <div class="field"><label>Name</label><input id="tm-name" value="${esc(t.name||'')}"></div>
+    <div class="tm-row">
+      <div class="field"><label>Channel</label><select id="tm-channel">${opt(S.cfg.template_channels,t.channel,c=>CH_LABEL[c])}</select></div>
+      <div class="field"><label>For</label><select id="tm-audience">${opt(S.cfg.audiences.map(a=>a.key),t.audience,k=>S.cfg.audiences.find(a=>a.key===k).label)}</select></div>
+      <div class="field"><label>Touch</label><select id="tm-step">${opt(S.cfg.template_steps,t.step,s=>steps[s])}</select></div>
+    </div>
+    <div class="field" id="tm-subj-wrap"><label>Subject</label><input id="tm-subject" value="${esc(t.subject||'')}"></div>
+    <div class="field"><label>Message</label><textarea id="tm-body" rows="7">${esc(t.body||'')}</textarea>
+      <div class="cmp-hint">Fill-ins: ${S.cfg.template_slots.map(s=>`<code>{${s}}</code>`).join(' ')}</div></div>
+    <div class="tm-preview"><b>Preview</b> <span class="cmp-hint" id="tm-stats"></span><div id="tm-out" class="oq-script"></div>
+      <div id="tm-problems" class="tm-problems"></div></div>
+    ${isNew?'':'<button class="btn-danger small" id="tm-archive">Archive this template</button>'}`,
+  async()=>{
+    const body=tmRead();
+    try{
+      if(isNew) await api('/templates',{method:'POST',body});
+      else await api('/templates/'+t.id,{method:'PUT',body});
+      TPL=null; toast('Template saved'); renderTemplates();
+    }catch(e){ toast(e.message,true); throw e; }
+  });
+  const tmRead=()=>({name:$('#tm-name').value,channel:$('#tm-channel').value,audience:$('#tm-audience').value,
+    step:$('#tm-step').value,subject:$('#tm-subject').value,body:$('#tm-body').value});
+  let pt;
+  const preview=()=>{ clearTimeout(pt); pt=setTimeout(async()=>{
+    const b=tmRead();
+    $('#tm-subj-wrap').classList.toggle('hidden',b.channel!=='email');
+    try{
+      const r=await api('/templates/preview',{method:'POST',body:b});
+      $('#tm-out').textContent=(r.rendered.subject?r.rendered.subject+'\n\n':'')+r.rendered.body;
+      $('#tm-stats').textContent=b.channel==='text'?`${r.chars} characters`:`${r.words} words`;
+      $('#tm-problems').innerHTML=r.problems.map(p=>`<div>⚠ ${esc(p)}</div>`).join('');
+    }catch(e){}
+  },250); };
+  ['tm-name','tm-channel','tm-audience','tm-step','tm-subject','tm-body'].forEach(id=>$('#'+id).addEventListener('input',preview));
+  preview();
+  if(!isNew) $('#tm-archive').onclick=async()=>{
+    if(!confirm('Archive this template? Reps will stop seeing it.')) return;
+    await api('/templates/'+t.id,{method:'DELETE'}); TPL=null; closeModal(); toast('Archived'); renderTemplates();
+  };
+}
+
 function renderPlaybookLists(){
+  renderTemplates();
   const q=($('#playbook-search').value||'').toLowerCase();
   const match=s=>!q||s.toLowerCase().includes(q);
   const plans=S.cfg.plans||[];

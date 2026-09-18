@@ -14,6 +14,7 @@ either — the portal owns login and the user table (see portal/users.py); this
 app only reads who the session says you are.
 """
 import os
+import re
 import sys
 import json
 import uuid
@@ -127,6 +128,117 @@ BILLING_SUFFIX = {'monthly': '/mo', 'quarterly': '/qtr', 'annual': '/yr'}
 
 # Which local activity kinds count as "outreach" for scorecards.
 OUTREACH_KINDS = ('call', 'text', 'email', 'door', 'meeting')
+
+# ── Cold outreach: who a message is for, and where each contact stands ───────
+#
+# The pipeline STAGE answers "how far is this deal"; it has nothing to say about
+# the eleven calls before a deal exists. OUTREACH STATUS is that missing half —
+# no answer, left a voicemail, call back Tuesday, wrong number — and it is set
+# by the OUTCOME a rep taps after a touch, never typed. Each outcome also books
+# the follow-up that belongs to it, so "who do I call back, and when" is a list
+# the CRM keeps rather than a thing a rep remembers.
+
+# Templates are written for an audience, not for all twelve lead types.
+AUDIENCES = [
+    {'key': 'homeowner',     'label': 'Homeowners'},
+    {'key': 'partner',       'label': 'Partners'},
+    {'key': 'commercial',    'label': 'Commercial'},
+    {'key': 'past_customer', 'label': 'Past customers & old leads'},
+]
+AUDIENCE_KEYS = [a['key'] for a in AUDIENCES]
+COMMERCIAL_TYPES = ('commercial', 'church', 'school', 'school_district')
+TEMPLATE_CHANNELS = ('email', 'text', 'voicemail')
+TEMPLATE_STEPS = ('first', 'followup', 'breakup', 'any')
+# Slots the renderer fills. A template naming anything else is refused on save:
+# an unknown slot would reach a customer as a literal "{rep_phone}".
+TEMPLATE_SLOTS = ('greeting', 'first_name', 'company', 'city', 'hook',
+                  'research_hook', 'storm_hook', 'rep_name', 'rep_first')
+# Two SMS segments. Past that some phones split the message and deliver the
+# halves out of order.
+TEXT_MAX_CHARS = 320
+EMAIL_MAX_WORDS = 100
+
+
+def _audience_for(lead):
+    """Which audience's templates fit this lead.
+
+    A partner stays a partner even when lost. A homeowner or building owner who
+    bought from us, or got a quote and went quiet, is a past customer: the right
+    message is a review, a referral or a refreshed number, not a cold opener to
+    someone who already knows us."""
+    ltype = lead.get('lead_type') or 'homeowner'
+    if ltype in PARTNER_TYPES:
+        return 'partner'
+    if lead.get('source') == 'existing_customer' or lead.get('stage') in ('won', 'lost'):
+        return 'past_customer'
+    if ltype in COMMERCIAL_TYPES:
+        return 'commercial'
+    return 'homeowner'
+
+
+# Where a contact stands. `open` = still worth another touch.
+OUTREACH_STATUSES = [
+    {'key': 'not_contacted',  'label': 'Not contacted',      'color': '#6B7280', 'open': True},
+    {'key': 'attempted',      'label': 'No answer',          'color': '#94A3B8', 'open': True},
+    {'key': 'left_vm',        'label': 'Left voicemail',     'color': '#60A5FA', 'open': True},
+    {'key': 'messaged',       'label': 'Texted / emailed',   'color': '#3B82F6', 'open': True},
+    {'key': 'connected',      'label': 'Talked',             'color': '#6366F1', 'open': True},
+    {'key': 'callback',       'label': 'Call back',          'color': '#F59E0B', 'open': True},
+    {'key': 'interested',     'label': 'Interested',         'color': '#10B981', 'open': True},
+    {'key': 'appt_set',       'label': 'Appointment set',    'color': '#059669', 'open': False},
+    {'key': 'nurture',        'label': 'Not now',            'color': '#A78BFA', 'open': True},
+    {'key': 'not_interested', 'label': 'Not interested',     'color': '#EF4444', 'open': False},
+    {'key': 'bad_contact',    'label': 'Bad contact info',   'color': '#F97316', 'open': False},
+    {'key': 'dnc',            'label': 'Do not contact',     'color': '#7F1D1D', 'open': False},
+]
+OUTREACH_STATUS_KEYS = [s['key'] for s in OUTREACH_STATUSES]
+OUTREACH_STATUS_META = {s['key']: s for s in OUTREACH_STATUSES}
+
+# What a rep taps after a touch. Each one sets a status and books (or cancels)
+# the follow-up that belongs to it:
+#   follow  (days, task kind, title) — the next touch; None = no new task
+#   stop    close open tasks and cadences: nobody should call this person on
+#           autopilot any more
+#   ask_date  the rep picks the follow-up date (a callback they agreed to)
+#   stage   the pipeline stage this outcome proves, applied only forward
+#   kind    the activity logged when the rep did not say which channel
+#   cadence True = a lead in a running cadence keeps it; the cadence's next step
+#           IS the follow-up, and booking another task would double-book them
+OUTCOMES = [
+    {'key': 'no_answer',      'label': 'No answer',         'icon': '📵', 'kind': 'call',
+     'status': 'attempted', 'follow': (2, 'call', 'Try again - a different time of day'),
+     'cadence': True},
+    {'key': 'left_vm',        'label': 'Left voicemail',    'icon': '📼', 'kind': 'call',
+     'status': 'left_vm', 'follow': (1, 'text', 'Text after the voicemail'), 'cadence': True},
+    {'key': 'texted',         'label': 'Texted',            'icon': '💬', 'kind': 'text',
+     'status': 'messaged', 'follow': (3, 'call', 'Call - did they see the text?'), 'cadence': True},
+    {'key': 'emailed',        'label': 'Emailed',           'icon': '✉️', 'kind': 'email',
+     'status': 'messaged', 'follow': (3, 'call', 'Call - follow up on the email'), 'cadence': True},
+    {'key': 'talked',         'label': 'Talked',            'icon': '🗣', 'kind': 'call',
+     'status': 'connected', 'follow': (3, 'call', 'Follow up on the conversation'),
+     'cadence': True, 'stage': 'contacted'},
+    {'key': 'callback',       'label': 'Call back…',        'icon': '📅', 'kind': 'call',
+     'status': 'callback', 'follow': (1, 'call', 'Call back - they asked for this time'),
+     'ask_date': True, 'stop': True, 'stage': 'contacted'},
+    {'key': 'interested',     'label': 'Interested',        'icon': '👍', 'kind': 'call',
+     'status': 'interested', 'follow': (0, 'call', 'Book the appointment'),
+     'stop': True, 'stage': 'contacted'},
+    {'key': 'appt_set',       'label': 'Appointment set',   'icon': '📆', 'kind': 'call',
+     'status': 'appt_set', 'follow': None, 'stop': True, 'stage': 'appt_set'},
+    {'key': 'not_now',        'label': 'Not now',           'icon': '⏸', 'kind': 'call',
+     'status': 'nurture', 'follow': (90, 'call', 'Check back in - they said not now'),
+     'stop': True},
+    {'key': 'not_interested', 'label': 'Not interested',    'icon': '👎', 'kind': 'call',
+     'status': 'not_interested', 'follow': None, 'stop': True, 'lose': 'Not interested'},
+    {'key': 'wrong_number',   'label': 'Wrong number',      'icon': '❌', 'kind': 'call',
+     'status': 'bad_contact', 'follow': (1, 'research', 'Find the right phone or email'),
+     'stop': True},
+]
+OUTCOME_BY_KEY = {o['key']: o for o in OUTCOMES}
+# Four unanswered touches in a row and the fifth is not the one that lands.
+# Past this, "no answer" parks the lead for a month instead of two days.
+NO_ANSWER_PARK_AFTER = 4
+NO_ANSWER_PARK_DAYS  = 30
 
 # ── Contact normalization ─────────────────────────────────────────────────────
 # Defined up here rather than beside the other lead helpers because migrate_db()
@@ -301,6 +413,10 @@ def migrate_db():
         for name, decl in _PROSPECT_COLS:
             if name not in cols:
                 db.execute(f'ALTER TABLE leads ADD COLUMN {name} {decl}')
+        if 'outreach_status' not in cols:
+            db.execute("ALTER TABLE leads ADD COLUMN outreach_status TEXT DEFAULT 'not_contacted'")
+            db.execute("ALTER TABLE leads ADD COLUMN outreach_status_at TEXT DEFAULT ''")
+            _backfill_outreach_status(db)
         db.executescript('''
             CREATE TABLE IF NOT EXISTS documents (
                 id          TEXT PRIMARY KEY,
@@ -338,8 +454,54 @@ def migrate_db():
             -- the temp B-tree sort over the whole candidate set.
             CREATE INDEX IF NOT EXISTS leads_queue_idx
                 ON leads(rep, stage, icp_score DESC, created_at);
+
+            CREATE INDEX IF NOT EXISTS leads_outreach_idx ON leads(rep, outreach_status);
+
+            -- The template library. Seeded from outreach_library.json and
+            -- outreach_templates.json by seed_templates(), then owned by the
+            -- managers who edit it. `seed_key` is how a seed is recognised on
+            -- the next start, and an archived row keeps it, so archiving a
+            -- seeded template is permanent rather than undone by a restart.
+            CREATE TABLE IF NOT EXISTS templates (
+                id          TEXT PRIMARY KEY,
+                seed_key    TEXT DEFAULT '',
+                name        TEXT NOT NULL,
+                channel     TEXT NOT NULL,
+                audience    TEXT NOT NULL,
+                lead_type   TEXT DEFAULT '',
+                step        TEXT DEFAULT 'any',
+                stage       TEXT DEFAULT '',
+                subject     TEXT DEFAULT '',
+                body        TEXT NOT NULL,
+                archived    INTEGER DEFAULT 0,
+                sort        INTEGER DEFAULT 0,
+                updated_by  TEXT DEFAULT '',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS tpl_chan_idx ON templates(channel, audience);
         ''')
         _backfill_norms(db)
+
+
+def _backfill_outreach_status(db):
+    """Give leads that existed before outreach status a status that is true.
+
+    Runs once, when the column is added. Every lead defaulted to
+    'not_contacted', which would put people a rep has already spoken to back
+    at the top of the cold queue and tell the status board nobody had been
+    reached. Runs at import, before _now() is defined further down."""
+    now = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    db.execute("UPDATE leads SET outreach_status='dnc', outreach_status_at=? WHERE dnc=1", (now,))
+    db.execute("UPDATE leads SET outreach_status='not_interested', outreach_status_at=? "
+               "WHERE dnc=0 AND stage='lost'", (now,))
+    db.execute("UPDATE leads SET outreach_status='appt_set', outreach_status_at=? "
+               "WHERE dnc=0 AND stage IN ('appt_set','inspected','estimate_presented','won')",
+               (now,))
+    db.execute("UPDATE leads SET outreach_status='connected', outreach_status_at=? "
+               "WHERE dnc=0 AND stage IN ('contacted','follow_up')", (now,))
+    db.execute("UPDATE leads SET outreach_status='attempted', outreach_status_at=? "
+               "WHERE dnc=0 AND stage='new' AND last_activity_at != ''", (now,))
 
 def _backfill_norms(db):
     """Populate phone_norm/email_norm for rows written before they existed.
@@ -373,8 +535,55 @@ PLAYBOOK = _load_json('playbook.json', {'objections': [], 'scripts': [], 'princi
 PLANS    = _load_json('plans.json', [])
 TEMPLATES = _load_json('outreach_templates.json',
                        {'signature': '', 'banned_phrases': [], 'templates': {}})
+LIBRARY  = _load_json('outreach_library.json', {'templates': []})
 CADENCE_BY_ID = {c['id']: c for c in CADENCES}
 PLAN_BY_ID    = {p['id']: p for p in PLANS}
+
+
+def _seed_rows():
+    """Every starter template as a row dict, keyed for idempotent seeding.
+
+    The partner/commercial emails still live in outreach_templates.json (their
+    voice tests read that file), so they are converted here rather than copied
+    into the library file a second time."""
+    rows = []
+    for ltype, steps in (TEMPLATES.get('templates') or {}).items():
+        aud = 'partner' if ltype in PARTNER_TYPES else (
+              'commercial' if ltype in COMMERCIAL_TYPES else 'homeowner')
+        label = next((t['label'] for t in LEAD_TYPES if t['key'] == ltype), ltype)
+        for i, (step, tpl) in enumerate(steps.items()):
+            rows.append({'seed_key': f'email:{ltype}:{step}',
+                         'name': f'{label} - {step}', 'channel': 'email',
+                         'audience': aud, 'lead_type': ltype, 'step': step, 'stage': '',
+                         'subject': tpl.get('subject', ''), 'body': tpl.get('body', ''),
+                         'sort': i})
+    for i, t in enumerate(LIBRARY.get('templates') or []):
+        rows.append({'seed_key': t['key'], 'name': t['name'], 'channel': t['channel'],
+                     'audience': t['audience'], 'lead_type': t.get('lead_type', ''),
+                     'step': t.get('step', 'any'), 'stage': t.get('stage', ''),
+                     'subject': t.get('subject', ''), 'body': t['body'], 'sort': 100 + i})
+    return rows
+
+
+def seed_templates():
+    """Insert any starter template whose seed_key has never been seeded.
+
+    Never updates an existing row: once a template is in the database it is
+    the managers', and a restart must not put the old wording back over their
+    edit. Same rule, and the same reason, as the estimator's price-book seeds."""
+    with get_db() as db:
+        have = {r['seed_key'] for r in db.execute(
+            "SELECT seed_key FROM templates WHERE seed_key != ''")}
+        now = _now()
+        for r in _seed_rows():
+            if r['seed_key'] in have:
+                continue
+            db.execute('INSERT INTO templates (id, seed_key, name, channel, audience, '
+                       'lead_type, step, stage, subject, body, sort, updated_by, '
+                       'created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       (str(uuid.uuid4()), r['seed_key'], r['name'], r['channel'],
+                        r['audience'], r['lead_type'], r['step'], r['stage'],
+                        r['subject'], r['body'], r['sort'], 'seed', now, now))
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -496,6 +705,11 @@ def _lead_row(row):
     # Days since last activity (stall detector). Empty = never touched.
     d['stalled'] = _is_stalled(d)
     d['overdue'] = bool(d['next_action_at']) and d['next_action_at'] <= _now()
+    ometa = OUTREACH_STATUS_META.get(d.get('outreach_status') or 'not_contacted',
+                                     OUTREACH_STATUSES[0])
+    d['outreach_label'] = ometa['label']
+    d['outreach_color'] = ometa['color']
+    d['audience'] = _audience_for(d)
     return d
 
 def _is_stalled(d):
@@ -556,6 +770,9 @@ def list_leads():
         clauses.append('lead_type=?'); params.append(ltype)
     if service:
         clauses.append('service=?'); params.append(service)
+    outreach = request.args.get('outreach')
+    if outreach in OUTREACH_STATUS_KEYS:
+        clauses.append('outreach_status=?'); params.append(outreach)
     contact = request.args.get('contact')
     if contact in ('ready', 'research'):
         clauses.append(_contact_clause(contact))
@@ -1647,10 +1864,14 @@ def add_suppression():
                     current_rep(), _now()))
         # Flag the matching leads so they drop out of any queue built from here
         # on, not just out of future imports.
+        # The status says so too, so the follow-up board never lists someone
+        # who asked to be left alone as "no answer".
         if kind == 'email':
-            db.execute('UPDATE leads SET dnc=1, updated_at=? WHERE email_norm=?', (_now(), value))
+            db.execute("UPDATE leads SET dnc=1, outreach_status='dnc', outreach_status_at=?, "
+                       "updated_at=? WHERE email_norm=?", (_now(), _now(), value))
         elif kind == 'phone':
-            db.execute('UPDATE leads SET dnc=1, updated_at=? WHERE phone_norm=?', (_now(), value))
+            db.execute("UPDATE leads SET dnc=1, outreach_status='dnc', outreach_status_at=?, "
+                       "updated_at=? WHERE phone_norm=?", (_now(), _now(), value))
         row = db.execute('SELECT * FROM suppressions WHERE id=?', (sid,)).fetchone()
     return jsonify(dict(row)), 201
 
@@ -1716,16 +1937,11 @@ def _first_line(text):
             pass
     return s.split('\n', 1)[0][:200]
 
-def _render_draft(lead, step, rep_name):
-    """{'subject','body','step'} for a lead, or None if no template applies."""
-    tpls = TEMPLATES.get('templates', {})
-    tpl = tpls.get(lead.get('lead_type')) or tpls.get('referral_partner')
-    if not tpl or step not in tpl:
-        return None
+def _template_ctx(lead, rep_name):
     first = (lead.get('first_name') or '').strip()
     # research_hook / storm_hook are optional and safe to leave blank; _fill()
     # drops paragraphs an empty slot left blank, matching the {hook} pattern.
-    ctx = {
+    return {
         'greeting':      f'Hi {first},' if first else 'Hi there,',
         'first_name':    first,
         'company':       (lead.get('company') or '').strip(),
@@ -1736,11 +1952,65 @@ def _render_draft(lead, step, rep_name):
         'rep_name':      rep_name,
         'rep_first':     rep_name.split(' ')[0] if rep_name else '',
     }
-    sig = TEMPLATES.get('signature', '')
-    body = _fill(tpl[step]['body'], ctx)
-    if sig:
-        body += '\n\n' + _fill(sig, ctx)
-    return {'subject': _fill(tpl[step]['subject'], ctx), 'body': body, 'step': step}
+
+
+def _render_template(tpl, lead, rep_name):
+    """One library row rendered for one lead. Emails get the signature; texts
+    and voicemails do not — a text signed with a web address reads as bulk, and
+    a voicemail script is read aloud."""
+    ctx = _template_ctx(lead, rep_name)
+    body = _fill(tpl['body'], ctx)
+    if tpl['channel'] == 'email':
+        sig = TEMPLATES.get('signature', '')
+        if sig:
+            body += '\n\n' + _fill(sig, ctx)
+    elif tpl['channel'] == 'text':
+        # _fill joins paragraphs with blank lines; a text is one paragraph.
+        body = ' '.join(body.split())
+    return {'id': tpl['id'], 'name': tpl['name'], 'channel': tpl['channel'],
+            'audience': tpl['audience'], 'step': tpl['step'], 'stage': tpl['stage'],
+            'subject': _fill(tpl['subject'] or '', ctx), 'body': body}
+
+
+def _templates_for(db, lead, channel):
+    """This lead's templates on one channel, best fit first: its own lead
+    type, then its audience, then (email only) the generic partner opener that
+    has always been the fallback for an unmapped type."""
+    rows = [dict(r) for r in db.execute(
+        'SELECT * FROM templates WHERE channel=? AND archived=0 ORDER BY sort, name',
+        (channel,))]
+    ltype, aud, stage = lead.get('lead_type') or '', _audience_for(lead), lead.get('stage') or ''
+    fit = [r for r in rows if r['lead_type'] == ltype and ltype]
+    fit += [r for r in rows if not r['lead_type'] and r['audience'] == aud]
+    if aud == 'past_customer':
+        # A review ask to someone who never bought is worse than no template.
+        fit = [r for r in fit if not r['stage'] or r['stage'] == stage]
+    if not fit and channel == 'email' and aud != 'past_customer':
+        fit = [r for r in rows if r['lead_type'] == 'referral_partner']
+    return fit
+
+
+def _pick(fit, step):
+    """The recommended template for this touch: exact step, else 'any', else
+    the first that fits."""
+    return (next((r for r in fit if r['step'] == step), None)
+            or next((r for r in fit if r['step'] == 'any'), None)
+            or (fit[0] if fit else None))
+
+
+def _render_draft(lead, step, rep_name, db=None):
+    """{'subject','body','step'} for a lead's recommended email, or None."""
+    def _go(conn):
+        tpl = _pick(_templates_for(conn, lead, 'email'), step)
+        if not tpl:
+            return None
+        out = _render_template(tpl, lead, rep_name)
+        return {'subject': out['subject'], 'body': out['body'], 'step': step,
+                'template_id': tpl['id']}
+    if db is not None:
+        return _go(db)
+    with get_db() as conn:
+        return _go(conn)
 
 @app.route('/api/leads/<lead_id>/draft')
 @login_required
@@ -1750,15 +2020,339 @@ def lead_draft(lead_id):
         row = _lead_visible(db, lead_id)
         if not row:
             return jsonify({'error': 'Not found'}), 404
-        touches = db.execute(
-            'SELECT COUNT(*) c FROM activities WHERE lead_id = ? AND kind IN (%s)'
-            % ','.join('?' * len(OUTREACH_KINDS)),
-            [lead_id] + list(OUTREACH_KINDS)).fetchone()['c']
-    step = request.args.get('step') or _draft_step(touches)
-    draft = _render_draft(dict(row), step, pusers.display_name(current_rep()))
+        touches = _touch_count(db, lead_id)
+        step = request.args.get('step') or _draft_step(touches)
+        draft = _render_draft(dict(row), step, pusers.display_name(current_rep()), db=db)
     if not draft:
         return jsonify({'error': 'No template for this lead type'}), 404
     return jsonify(draft)
+
+# ── Template library ──────────────────────────────────────────────────────────
+#
+# Emails, texts and voicemail scripts, editable by managers on the Playbook tab
+# and picked from on every outreach card. Everything stays a DRAFT: an email
+# opens in the rep's own Gmail and a text opens in the phone's own Messages app
+# with the words filled in. Nothing here sends, which is what keeps this 1:1
+# outreach from a real person rather than a bulk sender that would need carrier
+# registration and opt-out plumbing.
+
+_SLOT_RE = re.compile(r'\{([a-z_]+)\}')
+
+
+def _template_problems(t):
+    """What would stop this template from being saved, as sentences a manager
+    can act on. The same rules the seed file is tested against."""
+    out = []
+    if t.get('channel') not in TEMPLATE_CHANNELS:
+        out.append('Pick a channel: email, text or voicemail.')
+    if t.get('audience') not in AUDIENCE_KEYS:
+        out.append('Pick who the template is for.')
+    if t.get('step') not in TEMPLATE_STEPS:
+        out.append('Pick which touch it is for.')
+    if t.get('lead_type') and t['lead_type'] not in LEAD_TYPE_KEYS:
+        out.append('Unknown lead type.')
+    if not (t.get('name') or '').strip():
+        out.append('Give it a name.')
+    body = t.get('body') or ''
+    if not body.strip():
+        out.append('The message is empty.')
+    if t.get('channel') == 'email' and not (t.get('subject') or '').strip():
+        out.append('An email needs a subject line.')
+    text = (t.get('subject') or '') + ' ' + body
+    unknown = sorted(set(_SLOT_RE.findall(text)) - set(TEMPLATE_SLOTS))
+    if unknown:
+        out.append('Unknown fill-in field: ' + ', '.join('{' + u + '}' for u in unknown)
+                   + '. Allowed: ' + ', '.join('{' + s + '}' for s in TEMPLATE_SLOTS) + '.')
+    low = text.lower()
+    banned = [p for p in (TEMPLATES.get('banned_phrases') or []) if p in low]
+    if banned:
+        out.append('Reads like bulk mail: "' + '", "'.join(banned) + '". Say the thing instead.')
+    if t.get('channel') == 'text':
+        sample = ' '.join(_fill(body, _template_ctx(
+            {'first_name': 'Alexandra', 'city': 'Fort Collins', 'company': ''},
+            'Firstname Lastname')).split())
+        if len(sample) > TEXT_MAX_CHARS:
+            out.append(f'Too long for a text ({len(sample)} characters filled in; '
+                       f'keep it under {TEXT_MAX_CHARS}).')
+    if t.get('channel') == 'email' and len(body.split()) > EMAIL_MAX_WORDS:
+        out.append(f'Keep emails under {EMAIL_MAX_WORDS} words - it has {len(body.split())}.')
+    return out
+
+
+def _template_payload(data, existing=None):
+    base = dict(existing or {})
+    for k in ('name', 'channel', 'audience', 'lead_type', 'step', 'stage', 'subject', 'body'):
+        if k in data:
+            base[k] = str(data.get(k) or '').strip() if k != 'body' else str(data.get(k) or '').strip('\n ')
+    base.setdefault('lead_type', ''); base.setdefault('stage', '')
+    base.setdefault('step', 'any'); base.setdefault('subject', '')
+    if base.get('stage') not in ('', 'won', 'lost'):
+        base['stage'] = ''
+    return base
+
+
+@app.route('/api/templates', methods=['GET'])
+@login_required
+def list_templates():
+    """The library. Archived rows only for a manager who asks for them."""
+    show_archived = request.args.get('archived') == '1' and is_manager()
+    with get_db() as db:
+        rows = [dict(r) for r in db.execute(
+            'SELECT * FROM templates ' + ('' if show_archived else 'WHERE archived=0 ')
+            + 'ORDER BY audience, channel, sort, name')]
+    return jsonify(rows)
+
+
+@app.route('/api/templates', methods=['POST'])
+@admin_required
+def create_template():
+    t = _template_payload(request.get_json(force=True) or {})
+    problems = _template_problems(t)
+    if problems:
+        return jsonify({'error': ' '.join(problems), 'problems': problems}), 400
+    tid, now = str(uuid.uuid4()), _now()
+    with get_db() as db:
+        db.execute('INSERT INTO templates (id, seed_key, name, channel, audience, lead_type, '
+                   'step, stage, subject, body, sort, updated_by, created_at, updated_at) '
+                   "VALUES (?,'',?,?,?,?,?,?,?,?,1000,?,?,?)",
+                   (tid, t['name'], t['channel'], t['audience'], t['lead_type'], t['step'],
+                    t['stage'], t['subject'], t['body'], current_rep(), now, now))
+        row = db.execute('SELECT * FROM templates WHERE id=?', (tid,)).fetchone()
+    return jsonify(dict(row)), 201
+
+
+@app.route('/api/templates/<tid>', methods=['PUT'])
+@admin_required
+def update_template(tid):
+    with get_db() as db:
+        row = db.execute('SELECT * FROM templates WHERE id=?', (tid,)).fetchone()
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        data = request.get_json(force=True) or {}
+        t = _template_payload(data, dict(row))
+        if 'archived' in data:
+            t['archived'] = 1 if data.get('archived') else 0
+        problems = [] if t.get('archived') else _template_problems(t)
+        if problems:
+            return jsonify({'error': ' '.join(problems), 'problems': problems}), 400
+        db.execute('UPDATE templates SET name=?, channel=?, audience=?, lead_type=?, step=?, '
+                   'stage=?, subject=?, body=?, archived=?, updated_by=?, updated_at=? WHERE id=?',
+                   (t['name'], t['channel'], t['audience'], t['lead_type'], t['step'],
+                    t['stage'], t['subject'], t['body'], int(t.get('archived') or 0),
+                    current_rep(), _now(), tid))
+        row = db.execute('SELECT * FROM templates WHERE id=?', (tid,)).fetchone()
+    return jsonify(dict(row))
+
+
+@app.route('/api/templates/<tid>', methods=['DELETE'])
+@admin_required
+def archive_template(tid):
+    """Archive, never delete. A seeded row keeps its seed_key, which is what
+    stops the next restart from seeding it straight back."""
+    with get_db() as db:
+        cur = db.execute('UPDATE templates SET archived=1, updated_by=?, updated_at=? WHERE id=?',
+                         (current_rep(), _now(), tid))
+        if not cur.rowcount:
+            return jsonify({'error': 'Not found'}), 404
+    return jsonify({'ok': True})
+
+
+@app.route('/api/templates/preview', methods=['POST'])
+@login_required
+def preview_template():
+    """Render an unsaved template against a real lead (or a sample), and say
+    what would stop it saving — the editor shows both as the manager types."""
+    data = request.get_json(force=True) or {}
+    t = _template_payload(data)
+    t.setdefault('id', ''); t.setdefault('name', '')
+    lead = {'first_name': 'Dana', 'company': 'Sycamore Court HOA', 'city': 'Loveland',
+            'lead_type': 'homeowner', 'hook': '', 'stage': 'new'}
+    if data.get('lead_id'):
+        with get_db() as db:
+            row = _lead_visible(db, data['lead_id'])
+            if row:
+                lead = dict(row)
+    t.setdefault('channel', 'text')
+    out = _render_template(t, lead, pusers.display_name(current_rep()))
+    return jsonify({'rendered': out, 'problems': _template_problems(t),
+                    'chars': len(out['body']), 'words': len(out['body'].split())})
+
+
+def _touch_count(db, lead_id):
+    return db.execute(
+        'SELECT COUNT(*) c FROM activities WHERE lead_id = ? AND kind IN (%s)'
+        % ','.join('?' * len(OUTREACH_KINDS)),
+        [lead_id] + list(OUTREACH_KINDS)).fetchone()['c']
+
+
+@app.route('/api/leads/<lead_id>/messages')
+@login_required
+def lead_messages(lead_id):
+    """Every template that fits this lead, rendered, per channel — with the
+    one recommended for this touch named. What an outreach card offers."""
+    rep_name = pusers.display_name(current_rep())
+    with get_db() as db:
+        row = _lead_visible(db, lead_id)
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        lead = dict(row)
+        touches = _touch_count(db, lead_id)
+        step = _draft_step(touches)
+        out = {'step': step, 'touches': touches, 'audience': _audience_for(lead)}
+        for ch in TEMPLATE_CHANNELS:
+            fit = _templates_for(db, lead, ch)
+            best = _pick(fit, step)
+            out[ch] = {'recommended': best['id'] if best else '',
+                       'templates': [_render_template(t, lead, rep_name) for t in fit]}
+    return jsonify(out)
+
+
+# ── Outcomes: what happened on a touch, and what that books next ─────────────
+
+@app.route('/api/leads/<lead_id>/outcome', methods=['POST'])
+@login_required
+def log_outcome(lead_id):
+    """Record a touch and what came of it, in one step.
+
+    Logs the activity (with its outcome), completes the task being worked,
+    sets the outreach status, and books the follow-up that outcome calls for —
+    or, for the final outcomes, closes the lead's open tasks and cadences so
+    nobody is dialled on autopilot after asking us to stop.
+    """
+    data = request.get_json(force=True) or {}
+    o = OUTCOME_BY_KEY.get(data.get('outcome'))
+    if not o:
+        return jsonify({'error': 'Unknown outcome'}), 400
+    kind = data.get('kind') if data.get('kind') in OUTREACH_KINDS else o['kind']
+    follow_at = None
+    if o.get('ask_date'):
+        raw = (data.get('follow_up_at') or '').strip()
+        try:
+            follow_at = _iso(datetime.strptime(raw[:16], '%Y-%m-%dT%H:%M'))
+        except ValueError:
+            try:
+                follow_at = _iso(datetime.strptime(raw[:10], '%Y-%m-%d').replace(hour=15))
+            except ValueError:
+                return jsonify({'error': 'Pick the day they asked you to call back.'}), 400
+    with get_db() as db:
+        row = _lead_visible(db, lead_id)
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        lead = dict(row)
+        now = _now()
+        _log_activity(db, lead_id, kind, body=(data.get('body') or '').strip(),
+                      outcome=o['key'])
+
+        # The task being worked (from the queue card) is done. Completing it the
+        # normal way advances its cadence, whose next step may be the follow-up.
+        task_id = data.get('task_id')
+        advanced = False
+        if task_id:
+            t = db.execute('SELECT * FROM tasks WHERE id=? AND lead_id=? AND done=0',
+                           (task_id, lead_id)).fetchone()
+            if t:
+                db.execute('UPDATE tasks SET done=1, done_at=? WHERE id=?', (now, task_id))
+                if t['enrollment_id'] and o.get('cadence') and not o.get('stop'):
+                    _advance_cadence(db, t['enrollment_id'])
+                    advanced = True
+
+        if o.get('stop'):
+            db.execute('UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0',
+                       (now, lead_id))
+            db.execute('UPDATE cadence_enrollments SET active=0 WHERE lead_id=? AND active=1',
+                       (lead_id,))
+
+        status = o['status']
+        follow = o.get('follow')
+        if o['key'] == 'no_answer':
+            misses = db.execute(
+                "SELECT outcome FROM activities WHERE lead_id=? AND outcome != '' "
+                "ORDER BY created_at DESC LIMIT ?", (lead_id, NO_ANSWER_PARK_AFTER)).fetchall()
+            if (len(misses) >= NO_ANSWER_PARK_AFTER
+                    and all(m['outcome'] == 'no_answer' for m in misses)):
+                status = 'nurture'
+                follow = (NO_ANSWER_PARK_DAYS, 'call',
+                          f'Try again - {NO_ANSWER_PARK_AFTER} unanswered in a row')
+                db.execute('UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0',
+                           (now, lead_id))
+                db.execute('UPDATE cadence_enrollments SET active=0 WHERE lead_id=? AND active=1',
+                           (lead_id,))
+                advanced = False
+
+        db.execute('UPDATE leads SET outreach_status=?, outreach_status_at=?, updated_at=? '
+                   'WHERE id=?', (status, now, now, lead_id))
+
+        # A running cadence's next step already IS the follow-up. Booking a
+        # second task would put the lead in front of the rep twice.
+        in_cadence = db.execute('SELECT 1 FROM cadence_enrollments WHERE lead_id=? AND active=1',
+                                (lead_id,)).fetchone()
+        new_task = None
+        if follow and not (advanced or (o.get('cadence') and in_cadence
+                                        and status != 'nurture')):
+            days, tkind, title = follow
+            due = follow_at or _iso(_now_dt() + timedelta(days=days))
+            new_task = str(uuid.uuid4())
+            db.execute('INSERT INTO tasks (id, lead_id, rep, kind, title, due_at, created_at) '
+                       'VALUES (?,?,?,?,?,?,?)',
+                       (new_task, lead_id, lead['rep'], tkind, title, due, now))
+
+        # The pipeline stage this outcome proves — forward only; the rep is
+        # always allowed to be ahead. 'Not interested' closes a cold lead.
+        target = o.get('stage')
+        if target and lead['stage'] not in TERMINAL_STAGES \
+                and _stage_rank(target) > _stage_rank(lead['stage']):
+            db.execute('UPDATE leads SET stage=?, updated_at=? WHERE id=?', (target, now, lead_id))
+            _log_activity(db, lead_id, 'stage_change',
+                          body=f'{STAGE_META[lead["stage"]]["label"]} → {STAGE_META[target]["label"]}')
+        if o.get('lose') and lead['stage'] not in TERMINAL_STAGES:
+            db.execute("UPDATE leads SET stage='lost', lost_reason=?, updated_at=? WHERE id=?",
+                       (o['lose'], now, lead_id))
+            _log_activity(db, lead_id, 'stage_change',
+                          body=f'{STAGE_META[lead["stage"]]["label"]} → Lost ({o["lose"]})')
+        _refresh_next_action(db, lead_id)
+        row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
+        task = (dict(db.execute('SELECT * FROM tasks WHERE id=?', (new_task,)).fetchone())
+                if new_task else None)
+    return jsonify({'lead': _lead_row(row), 'follow_up': task})
+
+
+@app.route('/api/leads/<lead_id>/outreach-status', methods=['PATCH'])
+@login_required
+def set_outreach_status(lead_id):
+    """Manual correction from the lead drawer. Books nothing — outcomes do that."""
+    status = (request.get_json(force=True) or {}).get('status')
+    if status not in OUTREACH_STATUS_KEYS:
+        return jsonify({'error': 'Unknown status'}), 400
+    with get_db() as db:
+        row = _lead_visible(db, lead_id)
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        db.execute('UPDATE leads SET outreach_status=?, outreach_status_at=?, updated_at=? '
+                   'WHERE id=?', (status, _now(), _now(), lead_id))
+        _log_activity(db, lead_id, 'system',
+                      body=f'Outreach status set to {OUTREACH_STATUS_META[status]["label"]}')
+        row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
+    return jsonify(_lead_row(row))
+
+
+@app.route('/api/outreach/summary')
+@login_required
+def outreach_summary():
+    """How many of this rep's contacts sit in each status, and how many of
+    them have a follow-up due today. The board at the top of the Outreach tab."""
+    rep = request.args.get('rep') if is_manager() else current_rep()
+    clause, params = ('WHERE rep=?', [rep]) if rep else ('', [])
+    with get_db() as db:
+        counts = {r['s']: r['c'] for r in db.execute(
+            f"SELECT COALESCE(outreach_status,'not_contacted') s, COUNT(*) c FROM leads "
+            f"{clause} GROUP BY s", params)}
+        due = {r['s']: r['c'] for r in db.execute(
+            f"SELECT COALESCE(outreach_status,'not_contacted') s, COUNT(*) c FROM leads "
+            f"{clause + (' AND ' if clause else 'WHERE ')} next_action_at != '' "
+            f"AND next_action_at <= ? GROUP BY s", params + [_end_of_today()])}
+    return jsonify([dict(s, count=counts.get(s['key'], 0), due=due.get(s['key'], 0))
+                    for s in OUTREACH_STATUSES])
+
 
 # ── Outreach queue ────────────────────────────────────────────────────────────
 #
@@ -1803,7 +2397,8 @@ def queue_today():
         due = [dict(r) for r in db.execute(
             'SELECT t.id, t.kind, t.title, t.due_at, t.lead_id, '
             '       l.first_name, l.last_name, l.company, l.phone, l.email, '
-            '       l.website, l.address, l.city, l.stage, l.lead_type, l.icp_score, l.hook '
+            '       l.website, l.address, l.city, l.stage, l.lead_type, l.icp_score, l.hook, '
+            '       l.source, l.outreach_status '
             'FROM tasks t JOIN leads l ON l.id = t.lead_id '
             'WHERE t.rep = ? AND t.done = 0 AND t.due_at <= ? AND l.dnc = 0 '
             'ORDER BY t.due_at', (rep, _end_of_today())).fetchall()]
@@ -1829,6 +2424,7 @@ def queue_today():
             rows = db.execute(
                 "SELECT * FROM leads "
                 "WHERE rep = ? AND stage = 'new' AND dnc = 0 "
+                "  AND outreach_status NOT IN ('bad_contact','nurture','not_interested','dnc','appt_set') "
                 "  AND (last_activity_at = '' OR last_activity_at < ?) "
                 "  AND id NOT IN (SELECT lead_id FROM tasks WHERE done = 0) "
                 + contact_sql + " ORDER BY icp_score DESC, created_at ASC",
@@ -1855,8 +2451,14 @@ def queue_today():
             touches = {r['lead_id']: r['c'] for r in rows}
 
     rep_name = pusers.display_name(rep)
-    for item, lid in ([(d, d['lead_id']) for d in due] + [(f, f['id']) for f in fresh]):
-        item['draft'] = _render_draft(item, _draft_step(touches.get(lid, 0)), rep_name)
+    with get_db() as db:
+        for item, lid in ([(d, d['lead_id']) for d in due] + [(f, f['id']) for f in fresh]):
+            item['touches'] = touches.get(lid, 0)
+            item['draft'] = _render_draft(item, _draft_step(item['touches']), rep_name, db=db)
+            ometa = OUTREACH_STATUS_META.get(item.get('outreach_status') or 'not_contacted',
+                                             OUTREACH_STATUSES[0])
+            item['outreach_label'] = ometa['label']
+            item['outreach_color'] = ometa['color']
 
     return jsonify({
         'rep': rep, 'target': target, 'done_today': done_today,
@@ -2253,6 +2855,15 @@ def config():
             {'key': 'annual',    'label': 'Annual'},
         ],
         'stall_days': STALL_DAYS,
+        'audiences': AUDIENCES,
+        'outreach_statuses': OUTREACH_STATUSES,
+        'outcomes': [{k: v for k, v in o.items() if k != 'follow'}
+                     | {'follow_days': o['follow'][0] if o.get('follow') else None}
+                     for o in OUTCOMES],
+        'template_channels': list(TEMPLATE_CHANNELS),
+        'template_steps': list(TEMPLATE_STEPS),
+        'template_slots': list(TEMPLATE_SLOTS),
+        'text_max_chars': TEXT_MAX_CHARS,
         'daily_target': DAILY_TARGET,
         'cooldown_days': COOLDOWN_DAYS,
     })
@@ -2261,6 +2872,8 @@ def config():
 def health():
     return jsonify({'status': 'ok', 'db': DB_PATH, 'den': bool(BASE44_TOKEN),
                     'plans': len(PLANS)})
+
+seed_templates()
 
 if __name__ == '__main__':
     app.run(debug=True, port=5002)
