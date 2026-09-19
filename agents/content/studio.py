@@ -19,7 +19,8 @@ from . import posts
 from .score import _similar
 
 FORMATS = ('photo', 'carousel', 'reel')
-SERVICES = ('roofing', 'windows', 'doors', 'siding', 'paint')
+# Mirrors agents/marketing_profile.json approved_services (the test pins the two together).
+SERVICES = ('roofing', 'siding', 'windows', 'paint', 'decks', 'gutters', 'gutter_cleaning')
 AUDIENCES = ('homeowner', 'property_manager', 'hoa', 'commercial', 'realtor')
 METRICS = ('reach', 'impressions', 'saves', 'shares', 'comments', 'clicks', 'inquiries')
 
@@ -66,7 +67,7 @@ def create_campaign(data):
         'goal': _text(data.get('goal', 'Build local awareness through useful answers'), 500, True),
         'start_date': _date(data.get('start_date') or date.today().isoformat()),
         'audience': _choices(data.get('audience', ['homeowner']), AUDIENCES),
-        'services': _choices(data.get('services', ['roofing', 'windows', 'doors', 'siding', 'paint']), SERVICES),
+        'services': _choices(data.get('services', list(SERVICES)), SERVICES),
         'platforms': _choices(data.get('platforms', list(posts.DEFAULT_PLATFORMS)), posts.PLATFORMS),
     }
     with closing(config.get_cache_db()) as db, db:
@@ -132,7 +133,7 @@ def research(campaign_id, live=False):
             'Use public primary sources such as Colorado agencies, universities, local government and manufacturers. '
             'Do not claim social trend counts, search volumes or access to private groups. No quotes or personal data. '
             'Return JSON {"ideas":[{"question":"...","why_care":"...","angle":"...",'
-            '"pillar":"...","service":"roofing|windows|doors|siding|paint",'
+            '"pillar":"...","service":"' + '|'.join(SERVICES) + '",'
             '"audience":"homeowner|property_manager|hoa|commercial|realtor",'
             '"format":"photo|carousel|reel","evidence":[{"title":"...","url":"https://...",'
             '"finding":"brief supported takeaway"}]}]}. Include sources for every idea. '

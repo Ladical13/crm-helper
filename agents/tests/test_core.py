@@ -222,3 +222,12 @@ def test_annotate_leads_serializes_citations_list():
     # params order: research_notes, research_citations, recent_storm,
     #               enriched_at, updated_at, lead_id
     assert params[1] == '["https://a", "https://b"]'
+
+
+def test_the_studio_offers_exactly_the_approved_services():
+    """One list of what the company sells. The Marketing Studio keeps its own
+    tuple for validation; it must never drift from the profile's."""
+    from agents import config
+    from agents.content import studio
+    profile = config.load_marketing_profile()
+    assert set(studio.SERVICES) == {c['key'] for c in profile['approved_services']['categories']}

@@ -104,3 +104,24 @@ def test_only_a_manager_edits_offers(client):
     signup(client, 'casey')
     assert client.put('/api/offers/realtor_partner', json={'name': 'x'}).status_code == 403
     assert all(o['status'] == 'live' for o in client.get('/api/offers').get_json())
+
+
+def test_an_untouched_seeded_offer_follows_the_starter_file(client):
+    signup(client)
+    with appmod.get_db() as db:
+        db.execute("UPDATE offers SET headline='old wording' WHERE key='realtor_partner'")
+    appmod.seed_offers()
+    assert _offer(client, 'realtor_partner')['headline'] != 'old wording'
+
+
+def test_a_managers_edit_is_never_overwritten_by_the_starter_file(client):
+    signup(client)
+    client.put('/api/offers/realtor_partner', json={'headline': 'Our own headline'})
+    appmod.seed_offers()
+    assert _offer(client, 'realtor_partner')['headline'] == 'Our own headline'
+
+
+def test_no_offer_mentions_a_service_we_do_not_sell():
+    for o in _seed():
+        text = json.dumps(o).lower()
+        assert 'doors' not in text, o['key']

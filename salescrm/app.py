@@ -112,10 +112,19 @@ TEMPERATURE = ['hot', 'warm', 'cold']
 
 # Service lines. Every lead is a deal for ONE service; pitching a second service
 # to the same customer creates a second lead (see the clone flow in app.js).
+# The list is the company's (2026-09-19) and mirrors approved_services in
+# agents/marketing_profile.json, plus the care-plan line that recurring Home
+# Shield / Community Shield deals are tracked on (key kept as
+# exterior_maintenance so existing plan deals keep their line).
 SERVICES = [
-    {'key': 'roofing',              'label': 'Roofing',              'icon': '🏠'},
-    {'key': 'window_cleaning',      'label': 'Window Cleaning',      'icon': '🪟'},
-    {'key': 'exterior_maintenance', 'label': 'Exterior Maintenance', 'icon': '🏡'},
+    {'key': 'roofing',              'label': 'Roofing',         'icon': '🏠'},
+    {'key': 'siding',               'label': 'Siding',          'icon': '🧱'},
+    {'key': 'windows',              'label': 'Windows',         'icon': '🪟'},
+    {'key': 'paint',                'label': 'Paint',           'icon': '🎨'},
+    {'key': 'decks',                'label': 'Decks',           'icon': '🪵'},
+    {'key': 'gutters',              'label': 'Gutters',         'icon': '🌧'},
+    {'key': 'gutter_cleaning',      'label': 'Gutter cleaning', 'icon': '🧹'},
+    {'key': 'exterior_maintenance', 'label': 'Care plan',       'icon': '🏡'},
 ]
 SERVICE_KEYS = [s['key'] for s in SERVICES]
 SERVICE_META = {s['key']: s for s in SERVICES}
@@ -2592,11 +2601,23 @@ def _offer_problems(o, going_live=False):
 
 
 def seed_offers():
-    """Insert any starter offer whose key has never been seeded. Never updates."""
+    """Insert any starter offer whose key has never been seeded, and refresh an
+    offer from offers.json only while it is still exactly as seeded
+    (updated_by = 'seed'). The moment a manager saves an offer it is theirs and
+    no deploy touches it again - but a correction to the starter text (a
+    service the company stopped offering) still reaches offers nobody edited."""
     lib = _load_json('offers.json', {'offers': []})
     now = _now()
     with get_db() as db:
         for o in lib.get('offers') or []:
+            db.execute(
+                "UPDATE offers SET name=?, for_json=?, headline=?, intro=?, bullets_json=?, "
+                "fine_print=?, cta=?, email_subject=?, email_body=?, text_body=? "
+                "WHERE key=? AND updated_by='seed'",
+                (o['name'], json.dumps(o.get('for') or []), o.get('headline', ''),
+                 o.get('intro', ''), json.dumps(o.get('bullets') or []), o.get('fine_print', ''),
+                 o.get('cta', ''), o.get('email_subject', ''), o.get('email_body', ''),
+                 o.get('text_body', ''), o['key']))
             db.execute(
                 'INSERT OR IGNORE INTO offers (key, name, for_json, status, headline, intro, '
                 'bullets_json, fine_print, cta, email_subject, email_body, text_body, '

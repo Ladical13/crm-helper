@@ -21,7 +21,9 @@
     {
       "key": "realtor_partner",
       "name": "Realtor Partner Program",
-      "for": ["realtor"],
+      "for": [
+        "realtor"
+      ],
       "status": "live",
       "headline": "Protect your listings. Close with confidence.",
       "intro": "A roof is one of the first things buyers ask about and one of the last things you want to negotiate. We get you answers fast, in writing, so your deals stay on track.",
@@ -42,7 +44,9 @@
     {
       "key": "pm_preferred_vendor",
       "name": "Preferred Vendor for Property Managers",
-      "for": ["property_manager"],
+      "for": [
+        "property_manager"
+      ],
       "status": "live",
       "headline": "Roof problems shouldn't delay your owners.",
       "intro": "We respond fast, document everything, and keep your owners and your tenants informed - so a roof call is one less thing on your plate.",
@@ -63,7 +67,9 @@
     {
       "key": "hoa_community_shield",
       "name": "Community Shield for HOAs",
-      "for": ["hoa"],
+      "for": [
+        "hoa"
+      ],
       "status": "live",
       "headline": "One vendor. One invoice. Board-ready reports.",
       "intro": "We keep the whole community's roofs and exteriors on a published schedule, and give the board the documentation it needs to plan reserves instead of reacting to leaks.",
@@ -83,7 +89,13 @@
     {
       "key": "commercial_exterior_care",
       "name": "Commercial Exterior Care",
-      "for": ["commercial", "church", "school", "school_district", "gc"],
+      "for": [
+        "commercial",
+        "church",
+        "school",
+        "school_district",
+        "gc"
+      ],
       "status": "live",
       "headline": "Know what your roof needs before it leaks.",
       "intro": "A free roof condition assessment gives you photos and a remaining-life estimate you can budget from. If you want it handled from there, we keep the building on a maintenance schedule without a work order every time.",
@@ -103,7 +115,9 @@
     {
       "key": "home_shield",
       "name": "Home Shield",
-      "for": ["homeowner"],
+      "for": [
+        "homeowner"
+      ],
       "status": "live",
       "headline": "Your home's exterior, handled.",
       "intro": "One flat monthly plan and the outside of your home is looked after on a schedule - you never climb a ladder again.",
@@ -122,7 +136,10 @@
     {
       "key": "insurance_agent_partner",
       "name": "Insurance Agent Partner",
-      "for": ["insurance_agent", "adjuster"],
+      "for": [
+        "insurance_agent",
+        "adjuster"
+      ],
       "status": "draft",
       "headline": "A roofer your clients can trust after a storm.",
       "intro": "When a client calls you after hail, the contractor they pick decides whether the claim goes smoothly. We inspect honestly, document properly, and tell your client plainly when there's no claim.",
@@ -142,7 +159,9 @@
     {
       "key": "past_storm_check",
       "name": "Free Storm Check for Our Customers",
-      "for": ["past_customer"],
+      "for": [
+        "past_customer"
+      ],
       "status": "draft",
       "headline": "You're a Project One customer. After any hail, we'll check your roof free.",
       "intro": "Hail damage usually can't be seen from the ground. As one of our customers, you can have your roof checked after any storm at no cost - just call or text.",
@@ -160,7 +179,9 @@
     {
       "key": "past_home_shield",
       "name": "Home Shield for Our Roof Customers",
-      "for": ["past_customer"],
+      "for": [
+        "past_customer"
+      ],
       "status": "draft",
       "headline": "Keep your new roof looking after itself.",
       "intro": "You invested in a new roof. Home Shield keeps it - and the rest of the exterior - on a maintenance schedule, and our roof customers get [AMOUNT] when they join.",
@@ -179,7 +200,9 @@
     {
       "key": "past_referral",
       "name": "Referral Thank-You",
-      "for": ["past_customer"],
+      "for": [
+        "past_customer"
+      ],
       "status": "draft",
       "headline": "Know someone who needs a roofer? We'll say thank you.",
       "intro": "Most of our work comes from neighbors and friends of customers like you. When someone you refer signs with us, we'll send you [AMOUNT] as a thank-you.",
@@ -197,20 +220,22 @@
     {
       "key": "past_next_project",
       "name": "Your Next Exterior Project",
-      "for": ["past_customer"],
+      "for": [
+        "past_customer"
+      ],
       "status": "draft",
       "headline": "You trusted us with your roof. Let's talk about the rest of the exterior.",
-      "intro": "We also do windows, doors, siding and paint - and as a past customer you get [AMOUNT] on your next project with us.",
+      "intro": "We also do siding, windows, paint, decks and gutters - and as a past customer you get [AMOUNT] on your next project with us.",
       "bullets": [
-        "Windows, doors, siding and exterior paint, from the same crew you already know.",
+        "Siding, windows, exterior paint, decks and gutters, from the same crew you already know.",
         "The same written, itemized estimate you got for your roof.",
         "Past-customer savings: [AMOUNT] on your next project."
       ],
       "fine_print": "For homes where Project One has completed work. One use per home, on a project signed within the offer period. Not combinable with other offers.",
       "cta": "Get an estimate for your next project",
       "email_subject": "The rest of your home's exterior",
-      "email_body": "{greeting}\n\nThanks again for trusting us with your roof. We also do windows, doors, siding and exterior paint, and as a past customer you get [AMOUNT] on your next project.\n\nThe details: {offer_link}\n\nAnything on your list this year?",
-      "text_body": "{greeting} {rep_first} from Project One Roofing. We also do windows, doors, siding and paint - past customers get [AMOUNT] on the next project: {offer_link}"
+      "email_body": "{greeting}\n\nThanks again for trusting us with your roof. We also do siding, windows, paint, decks and gutters, and as a past customer you get [AMOUNT] on your next project.\n\nThe details: {offer_link}\n\nAnything on your list this year?",
+      "text_body": "{greeting} {rep_first} from Project One Roofing. We also do siding, windows, paint, decks and gutters - past customers get [AMOUNT] on the next project: {offer_link}"
     }
   ]
 }
