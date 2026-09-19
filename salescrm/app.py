@@ -301,6 +301,53 @@ def _norm_email(s):
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
+# ── Contact quality: how good a way in do we have? ────────────────────────────
+#
+# A rep handed "Grace Church, (970) 555-0100" is calling a front desk. Handed
+# "Pastor John Smith, john@grace.org, confirmed by Casey" they are calling the
+# person who decides. The grade is what lets the queue put the second kind in
+# front of reps first, and it is STORED (leads.contact_quality) so the queue
+# can order by it in SQL. _refresh_contact_quality() is the only writer.
+CONTACT_QUALITY = [
+    {'key': 3, 'label': 'Verified',      'hint': 'A rep confirmed this is the right person'},
+    {'key': 2, 'label': 'Named contact', 'hint': 'A named person with a direct way to reach them'},
+    {'key': 1, 'label': 'General line',  'hint': 'Only a main number or a shared inbox'},
+    {'key': 0, 'label': 'No contact',    'hint': 'No phone or email yet'},
+]
+CONTACT_QUALITY_LABEL = {q['key']: q['label'] for q in CONTACT_QUALITY}
+# Shared inboxes. Mail to info@ reaches whoever checks it this week, which for
+# a church is often a volunteer; it is a way in, not a contact.
+ROLE_MAILBOXES = {'info', 'office', 'admin', 'administrator', 'contact', 'hello', 'church',
+                  'frontdesk', 'front.desk', 'reception', 'mail', 'support', 'sales',
+                  'secretary', 'welcome', 'parish', 'general', 'team', 'inquiries',
+                  'enquiries', 'connect', 'communications', 'media', 'webmaster', 'events'}
+
+
+def _contact_quality(lead):
+    """0-3, per CONTACT_QUALITY. Pure, so the import path can grade a row
+    before it exists."""
+    if (lead.get('contact_verified_at') or '').strip():
+        return 3
+    email = (lead.get('email') or '').strip().lower()
+    phone = (lead.get('phone') or '').strip()
+    if not (email or phone):
+        return 0
+    named = bool((lead.get('first_name') or '').strip())
+    personal_email = bool(email) and email.split('@')[0] not in ROLE_MAILBOXES
+    # A homeowner's phone is their own; an organisation's listed number is a
+    # switchboard. So a named homeowner with any contact is a direct line.
+    if named and (personal_email or (lead.get('lead_type') == 'homeowner' and phone)):
+        return 2
+    return 1
+
+
+def _refresh_contact_quality(db, lead_id):
+    row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
+    if row:
+        db.execute('UPDATE leads SET contact_quality=? WHERE id=?',
+                   (_contact_quality(dict(row)), lead_id))
+
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -455,6 +502,20 @@ def migrate_db():
             # Which library template a touch used, so a manager can see which
             # HOA text books meetings and which one gets ignored.
             db.execute("ALTER TABLE activities ADD COLUMN template_id TEXT DEFAULT ''")
+        if 'contact_quality' not in cols:
+            db.execute('ALTER TABLE leads ADD COLUMN contact_quality INTEGER DEFAULT 0')
+            db.execute("ALTER TABLE leads ADD COLUMN contact_source TEXT DEFAULT ''")
+            db.execute("ALTER TABLE leads ADD COLUMN contact_verified_at TEXT DEFAULT ''")
+            db.execute("ALTER TABLE leads ADD COLUMN contact_verified_by TEXT DEFAULT ''")
+            # Contacts filled by the research run before this column existed.
+            # Only where the timeline says research found them, so a rep's own
+            # typing is never marked as clearable.
+            db.execute("UPDATE leads SET contact_source='research' WHERE enriched_at != '' "
+                       "AND (first_name != '' OR email != '') AND id IN (SELECT lead_id FROM "
+                       "activities WHERE kind='system' AND body LIKE 'Researched: found%')")
+            for r in db.execute('SELECT * FROM leads').fetchall():
+                db.execute('UPDATE leads SET contact_quality=? WHERE id=?',
+                           (_contact_quality(dict(r)), r['id']))
         if 'outreach_status' not in cols:
             db.execute("ALTER TABLE leads ADD COLUMN outreach_status TEXT DEFAULT 'not_contacted'")
             db.execute("ALTER TABLE leads ADD COLUMN outreach_status_at TEXT DEFAULT ''")
@@ -498,6 +559,10 @@ def migrate_db():
                 ON leads(rep, stage, icp_score DESC, created_at);
 
             CREATE INDEX IF NOT EXISTS leads_outreach_idx ON leads(rep, outreach_status);
+            -- The cold queue works the best contacts first. Same shape and
+            -- reason as leads_queue_idx, with the grade in front of the score.
+            CREATE INDEX IF NOT EXISTS leads_queue_cq_idx
+                ON leads(rep, stage, contact_quality DESC, icp_score DESC, created_at);
 
             -- The template library. Seeded from outreach_library.json and
             -- outreach_templates.json by seed_templates(), then owned by the
@@ -803,6 +868,7 @@ def _lead_row(row):
     d['outreach_label'] = ometa['label']
     d['outreach_color'] = ometa['color']
     d['audience'] = _audience_for(d)
+    d['contact_quality_label'] = CONTACT_QUALITY_LABEL.get(d.get('contact_quality') or 0, '')
     return d
 
 def _is_stalled(d):
@@ -864,6 +930,9 @@ def list_leads():
         clauses.append('lead_type=?'); params.append(ltype)
     if service:
         clauses.append('service=?'); params.append(service)
+    cq = request.args.get('contact_quality')
+    if cq in ('0', '1', '2', '3'):
+        clauses.append('contact_quality=?'); params.append(int(cq))
     outreach = request.args.get('outreach')
     if outreach in OUTREACH_STATUS_KEYS:
         clauses.append('outreach_status=?'); params.append(outreach)
@@ -966,6 +1035,7 @@ def create_lead():
     ph   = ','.join('?' * len(fields))
     with get_db() as db:
         db.execute(f'INSERT INTO leads ({cols}) VALUES ({ph})', list(fields.values()))
+        _refresh_contact_quality(db, lid)
         _log_activity(db, lid, 'system', body=f'Lead created in stage "{STAGE_META[stage]["label"]}"')
         # A new lead starts following itself up. The cadence engine and its four
         # cadences already existed; nothing ever enrolled anyone, so the whole
@@ -1053,6 +1123,7 @@ def update_lead(lead_id):
             return jsonify({'error': 'Nothing to update'}), 400
         sets.append('updated_at=?'); params.append(_now()); params.append(lead_id)
         db.execute(f'UPDATE leads SET {", ".join(sets)} WHERE id=?', params)
+        _refresh_contact_quality(db, lead_id)
         row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
     return jsonify(_lead_row(row))
 
@@ -1885,6 +1956,7 @@ def import_prospects():
                 cols = ','.join(fields.keys())
                 ph   = ','.join('?' * len(fields))
                 db.execute(f'INSERT INTO leads ({cols}) VALUES ({ph})', list(fields.values()))
+                _refresh_contact_quality(db, lid)
                 _log_activity(db, lid, 'system', rep=rep,
                               body=f'Imported from {source} (batch {batch})')
             # Index it either way, so a dry run reports intra-batch duplicates
@@ -2683,6 +2755,82 @@ def log_outcome(lead_id):
     return jsonify({'lead': _lead_row(row), 'follow_up': task})
 
 
+@app.route('/api/leads/<lead_id>/contact/verify', methods=['POST'])
+@login_required
+def verify_contact(lead_id):
+    """A rep confirms the contact on file is the right person. The strongest
+    signal there is, and what puts the lead at the top of everyone's queue."""
+    with get_db() as db:
+        row = _lead_visible(db, lead_id)
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        if not ((row['email'] or '').strip() or (row['phone'] or '').strip()):
+            return jsonify({'error': 'Add a phone or email before confirming a contact.'}), 400
+        db.execute('UPDATE leads SET contact_verified_at=?, contact_verified_by=?, updated_at=? '
+                   'WHERE id=?', (_now(), current_rep(), _now(), lead_id))
+        _refresh_contact_quality(db, lead_id)
+        name = f"{row['first_name']} {row['last_name']}".strip() or 'the contact'
+        _log_activity(db, lead_id, 'system', body=f'✓ Contact confirmed: {name}')
+        row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
+    return jsonify(_lead_row(row))
+
+
+@app.route('/api/leads/<lead_id>/contact/wrong', methods=['POST'])
+@login_required
+def wrong_contact(lead_id):
+    """The researched contact is wrong. Clears ONLY what research put there -
+    never a name or email a rep typed - and records the note, which a
+    re-research then uses as its hint."""
+    note = ((request.get_json(silent=True) or {}).get('note') or '').strip()[:300]
+    with get_db() as db:
+        row = _lead_visible(db, lead_id)
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        sets = {'contact_verified_at': '', 'contact_verified_by': '', 'updated_at': _now()}
+        was = f"{row['first_name']} {row['last_name']}".strip()
+        if row['contact_source'] == 'research':
+            sets.update(first_name='', last_name='', email='', email_norm='', contact_source='')
+        db.execute('UPDATE leads SET ' + ', '.join(f'{k}=?' for k in sets) + ' WHERE id=?',
+                   list(sets.values()) + [lead_id])
+        _refresh_contact_quality(db, lead_id)
+        _log_activity(db, lead_id, 'system',
+                      body=f'✗ Contact marked wrong{": " + was if was else ""}'
+                           + (f' - {note}' if note else ''))
+        row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
+    return jsonify(_lead_row(row))
+
+
+@app.route('/api/leads/<lead_id>/research', methods=['POST'])
+@login_required
+def research_lead(lead_id):
+    """Research one lead now, optionally with a rep's hint ("they said talk to
+    Mike in facilities"). Same rules as the batch run: fills only empty fields,
+    only with a cited answer. About a cent, under the monthly spend cap."""
+    hint = ((request.get_json(silent=True) or {}).get('hint') or '').strip()[:300]
+    with get_db() as db:
+        row = _lead_visible(db, lead_id)
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        lead = dict(row)
+    try:
+        from agents import perplexity
+        from agents.b2b import reenrich
+    except Exception as e:
+        return jsonify({'error': f'Research is not available here: {e}'}), 503
+    try:
+        data, cites, _cost = reenrich.research(lead, hint=hint)
+    except perplexity.SpendCapReached:
+        return jsonify({'error': 'The monthly research budget is used up.'}), 429
+    except Exception as e:
+        return jsonify({'error': f'Research failed: {e}'}), 502
+    filled = reenrich.apply(sys.modules[__name__], lead, data, cites)
+    with get_db() as db:
+        row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
+    out = _lead_row(row)
+    out['filled'] = filled
+    return jsonify(out)
+
+
 @app.route('/api/leads/<lead_id>/outreach-status', methods=['PATCH'])
 @login_required
 def set_outreach_status(lead_id):
@@ -2768,7 +2916,7 @@ def queue_today():
             'SELECT t.id, t.kind, t.title, t.due_at, t.lead_id, '
             '       l.first_name, l.last_name, l.company, l.phone, l.email, '
             '       l.website, l.address, l.city, l.stage, l.lead_type, l.icp_score, l.hook, '
-            '       l.source, l.outreach_status '
+            '       l.source, l.outreach_status, l.research_notes, l.contact_quality '
             'FROM tasks t JOIN leads l ON l.id = t.lead_id '
             'WHERE t.rep = ? AND t.done = 0 AND t.due_at <= ? AND l.dnc = 0 '
             f'AND NOT {dnc_l} '
@@ -2799,7 +2947,7 @@ def queue_today():
                 "  AND (last_activity_at = '' OR last_activity_at < ?) "
                 "  AND id NOT IN (SELECT lead_id FROM tasks WHERE done = 0) "
                 f"  AND NOT {dnc_f} "
-                + contact_sql + " ORDER BY icp_score DESC, created_at ASC",
+                + contact_sql + " ORDER BY contact_quality DESC, icp_score DESC, created_at ASC",
                 [rep, cooldown] + dnc_fp)
             for r in rows:
                 # Re-check suppression here, not just at import: a domain added
@@ -3228,6 +3376,7 @@ def config():
         ],
         'stall_days': STALL_DAYS,
         'audiences': AUDIENCES,
+        'contact_quality': CONTACT_QUALITY,
         'outreach_statuses': OUTREACH_STATUSES,
         'outcomes': [{k: v for k, v in o.items() if k != 'follow'}
                      | {'follow_days': o['follow'][0] if o.get('follow') else None}

@@ -38,7 +38,7 @@ _HONORIFICS = {'rev', 'rev.', 'reverend', 'pastor', 'fr', 'fr.', 'father', 'dr',
                'elder', 'deacon', 'msgr', 'msgr.'}
 
 
-def _prompt(row):
+def _prompt(row, hint=''):
     kind = _kind_for(row.get('lead_type') or '')
     return (
         f'Research this {kind} for a first call from a local roofing contractor. '
@@ -57,7 +57,9 @@ def _prompt(row):
         f'Address: {row.get("address", "")}, {row.get("city", "")} '
         f'{row.get("state", "")} {row.get("zip", "")}\n'
         f'Website: {row.get("website") or "unknown"}\n\n'
-        f'Return JSON with exactly these keys: '
+        + (f'A sales rep who called them noted: "{hint}". Use it to find the right person.\n\n'
+           if hint else '')
+        + f'Return JSON with exactly these keys: '
         f'decision_maker, org_email, news, summary, citations'
     )
 
@@ -94,9 +96,9 @@ def contact_fields(data, citations):
     return out
 
 
-def research(row, model=None):
+def research(row, model=None, hint=''):
     """(data, citations, cost) for one lead. Raises SpendCapReached."""
-    result = perplexity.search_json(_prompt(row), system=_SYSTEM, model=model,
+    result = perplexity.search_json(_prompt(row, hint), system=_SYSTEM, model=model,
                                     max_tokens=1500, reason='b2b-reenrich')
     data = result.get('data') or {}
     citations = (data.get('citations') if isinstance(data, dict) else None) \
@@ -126,12 +128,18 @@ def apply(crm, lead, data, citations, dry_run=False):
                 'research_citations': json.dumps(citations),
                 'enriched_at': now, 'updated_at': now}
         sets.update(fill)
+        if fill and 'contact_source' in lead:
+            # Recorded so "wrong contact" can clear what research put there
+            # without touching anything a rep typed.
+            sets['contact_source'] = 'research'
         if 'email' in fill:
             sets['email_norm'] = crm._norm_email(fill['email'])
         if isinstance(data, dict) and _looks_promising(data):
             sets['icp_score'] = int(lead.get('icp_score') or 0) + 1
         db.execute('UPDATE leads SET ' + ', '.join(f'{k}=?' for k in sets) + ' WHERE id=?',
                    list(sets.values()) + [lead['id']])
+        if hasattr(crm, '_refresh_contact_quality'):
+            crm._refresh_contact_quality(db, lead['id'])
         found = []
         if 'first_name' in fill:
             found.append(f"contact {fill['first_name']} {fill.get('last_name', '')}".strip())

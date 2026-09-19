@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <title>Project One — Pipeline</title>
-  <link rel="stylesheet" href="/crm/static/style.css?v=23">
+  <link rel="stylesheet" href="/crm/static/style.css?v=24">
 </head>
 <body>
 
@@ -91,6 +91,7 @@
         <select id="pipeline-attention" class="mini-select" aria-label="Priority"><option value="">All priorities</option><option value="hot">Hot leads</option><option value="needs_step">Needs next step</option></select>
         <select id="pipeline-stage" class="mini-select" aria-label="Stage"></select>
         <select id="pipeline-outreach" class="mini-select" aria-label="Outreach status"></select>
+        <select id="pipeline-contact_quality" class="mini-select" aria-label="Contact quality"></select>
       </div>
       <div class="view-actions"><div class="view-toggle" aria-label="Pipeline view"><button id="pipe-list" aria-pressed="true">List</button><button id="pipe-board" aria-pressed="false">Board</button></div><button class="btn-ghost small" id="pipeline-reset">Clear filters</button></div>
       <p class="view-intro" id="pipeline-count" aria-live="polite"></p>
@@ -200,6 +201,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="/shell.js"></script>
-<script src="/crm/static/app.js?v=23"></script>
+<script src="/crm/static/app.js?v=24"></script>
 </body>
 </html>

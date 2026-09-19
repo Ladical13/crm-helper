@@ -74,6 +74,77 @@ function dueLabel(iso) {
 const KIND_ICO={call:'📞',text:'💬',email:'✉️',door:'🚪',meeting:'🤝',note:'📝',
   stage_change:'↔️',system:'⚙️',research:'🔎'};
 
+// ── Research: who was found, from where, and how much to trust it ─────────
+// research_notes is the JSON the research run stored. Old rows (the import-
+// time enrichment) have a slightly different shape; both are read here.
+function researchOf(l){
+  let d={}; try{ d=JSON.parse(l.research_notes||'{}')||{}; }catch(e){ d={}; }
+  const known=v=>{ v=(typeof v==='string'?v:'').trim(); return /^(unknown|n\/a|none|null)$/i.test(v)?'':v; };
+  const dm=(d.decision_maker&&typeof d.decision_maker==='object')?d.decision_maker:{};
+  let cites=d.citations||[]; if(typeof cites==='string'){ try{cites=JSON.parse(cites);}catch(e){cites=[];} }
+  return {name:known(dm.name), title:known(dm.title), email:known(dm.email), phone:known(dm.phone),
+    org_email:known(d.org_email), news:known(typeof d.news==='string'?d.news:''),
+    summary:known(d.summary), cites:(cites||[]).filter(c=>typeof c==='string'&&/^https?:/.test(c))};
+}
+const CQ_CLASS={3:'cq-3',2:'cq-2',1:'cq-1',0:'cq-0'};
+function cqChip(l){
+  const q=l.contact_quality||0, lab=l.contact_quality_label||(S.cfg.contact_quality.find(x=>x.key===q)||{}).label||'';
+  return `<span class="chip cq ${CQ_CLASS[q]}" title="${esc((S.cfg.contact_quality.find(x=>x.key===q)||{}).hint||'')}">${q===3?'✓ ':''}${esc(lab)}</span>`;
+}
+// "Ask for: Pastor John Smith (Senior Pastor)" - the line a rep needs before
+// the phone is answered.
+function askFor(l){
+  const r=researchOf(l);
+  const name=(`${l.first_name||''} ${l.last_name||''}`).trim()||r.name;
+  if(!name) return '';
+  return `<div class="ask-for">Ask for <b>${esc(name)}</b>${r.title?` · ${esc(r.title)}`:''}</div>`;
+}
+function researchPanelHtml(l){
+  const r=researchOf(l);
+  const host=u=>{ try{ return new URL(u).hostname.replace(/^www\./,''); }catch(e){ return u; } };
+  const researched=!!l.enriched_at;
+  return `<div class="dsec dsec-wide"><h5>Research ${cqChip(l)}</h5>
+    ${researched?`
+      ${r.name?`<div class="rs-row"><b>${esc(r.name)}</b>${r.title?` · ${esc(r.title)}`:''}</div>`:'<div class="rs-row lead-context">No named decision-maker published.</div>'}
+      ${r.email||r.phone?`<div class="rs-row">${r.email?`✉️ ${esc(r.email)} `:''}${r.phone?` 📞 ${esc(r.phone)}`:''}</div>`:''}
+      ${r.org_email?`<div class="rs-row lead-context">General inbox: ${esc(r.org_email)}</div>`:''}
+      ${r.summary?`<div class="rs-row">${esc(r.summary)}</div>`:''}
+      ${r.news?`<div class="rs-row"><span class="lead-context">News:</span> ${esc(r.news)}</div>`:''}
+      ${r.cites.length?`<div class="rs-row rs-cites">Sources: ${r.cites.slice(0,5).map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(host(u))}</a>`).join(' · ')}</div>`:'<div class="rs-row lead-context">No sources were cited, so nothing was filled in from this.</div>'}
+      <div class="rs-row lead-context">Researched ${esc(timeAgo(l.enriched_at))}${l.contact_source==='research'?' · the name/email above were filled in from this':''}</div>`
+    :'<div class="rs-row lead-context">Not researched yet.</div>'}
+    ${l.contact_verified_at?`<div class="rs-row rs-ok">✓ Confirmed by ${esc(repName(l.contact_verified_by))} ${esc(timeAgo(l.contact_verified_at))}</div>`:''}
+    <div class="drawer-btns rs-btns">
+      ${(l.phone||l.email)&&!l.contact_verified_at?'<button class="btn-ghost small" id="rs-ok">✓ Contact is right</button>':''}
+      ${(l.first_name||l.email)?'<button class="btn-ghost small" id="rs-wrong">✗ Wrong contact</button>':''}
+      <button class="btn-ghost small" id="rs-again">↻ ${researched?'Research again':'Research now'}</button>
+    </div>
+    <div id="rs-form"></div></div>`;
+}
+function wireResearch(p,l){
+  const reload=async()=>{ const fresh=await api('/leads/'+l.id); renderDrawer(fresh); };
+  const ok=p.querySelector('#rs-ok');
+  if(ok) ok.onclick=async()=>{ try{ await api('/leads/'+l.id+'/contact/verify',{method:'POST'}); toast('Contact confirmed ✓'); reload(); }catch(e){ toast(e.message,true); } };
+  const form=(label,btn,go)=>{
+    p.querySelector('#rs-form').innerHTML=`<div class="field"><input id="rs-note" placeholder="${esc(label)}"></div><button class="btn-brand small" id="rs-go">${esc(btn)}</button>`;
+    p.querySelector('#rs-note').focus();
+    p.querySelector('#rs-go').onclick=()=>go(p.querySelector('#rs-note').value.trim());
+  };
+  const research=async hint=>{
+    const b=p.querySelector('#rs-go')||p.querySelector('#rs-again'); if(b){ b.disabled=true; b.textContent='Researching… (~15s)'; }
+    try{ const r=await api('/leads/'+l.id+'/research',{method:'POST',body:{hint}});
+      const f=r.filled||{}; toast(Object.keys(f).length?'Found: '+Object.values(f).join(' '):'No new contact found - notes updated');
+      reload();
+    }catch(e){ toast(e.message,true); if(b) b.disabled=false; }
+  };
+  const wrong=p.querySelector('#rs-wrong');
+  if(wrong) wrong.onclick=()=>form('What did they say? e.g. "Mike Ross runs facilities"','Clear it and research again',async note=>{
+    try{ await api('/leads/'+l.id+'/contact/wrong',{method:'POST',body:{note}}); }catch(e){ toast(e.message,true); return; }
+    research(note);
+  });
+  p.querySelector('#rs-again').onclick=()=>form('Optional hint for the search, e.g. "ask for facilities"','Research',research);
+}
+
 // ── Outreach composer: templates → a draft in the rep's own phone or Gmail ──
 // Shared by the queue card and the lead drawer. The templates come rendered
 // from the server (/leads/<id>/messages); the rep may pick another one and edit
@@ -321,12 +392,16 @@ async function renderOutreach(){
       why:d.title||'Follow-up due',name:d.name,company:d.company,phone:d.phone,
       email:d.email,city:d.city,lead_type:d.lead_type,overdue:d.overdue,
       draft:d.draft,hook:d.hook,address:d.address,website:d.website,
-      touches:d.touches,outreach_label:d.outreach_label,outreach_color:d.outreach_color})),
+      touches:d.touches,outreach_label:d.outreach_label,outreach_color:d.outreach_color,
+      first_name:d.first_name,last_name:d.last_name,research_notes:d.research_notes,
+      contact_quality:d.contact_quality})),
     ...q.new.map(l=>({lead_id:l.id,kind:'call',retouch:false,
       why:'New — first touch',name:l.name,company:l.company,phone:l.phone,
       email:l.email,city:l.city,lead_type:l.lead_type,score:l.icp_score,
       draft:l.draft,hook:l.hook,address:l.address,website:l.website,
-      touches:l.touches,outreach_label:l.outreach_label,outreach_color:l.outreach_color})),
+      touches:l.touches,outreach_label:l.outreach_label,outreach_color:l.outreach_color,
+      first_name:l.first_name,last_name:l.last_name,research_notes:l.research_notes,
+      contact_quality:l.contact_quality,contact_quality_label:l.contact_quality_label})),
   ];
   if(!PB){ try{ PB=await api('/playbook'); }catch(e){} }
   drawQueue();
@@ -434,7 +509,8 @@ function drawQueue(){
     <div class="oq-why">${it.retouch?'↻ ':''}${esc(it.why)}${it.overdue?' · overdue':''}</div>
     <h3 class="oq-name">${esc(it.name||it.company||'(no name)')}</h3>
     <div class="oq-sub">${esc(it.company&&it.company!==it.name?it.company+' · ':'')}${esc(it.city||'')}</div>
-    <div class="oq-meta"><span class="chip os" style="--c:${it.outreach_color||'#6B7280'}">${esc(it.outreach_label||'Not contacted')}</span>
+    ${askFor(it)}
+    <div class="oq-meta">${cqChip(it)}<span class="chip os" style="--c:${it.outreach_color||'#6B7280'}">${esc(it.outreach_label||'Not contacted')}</span>
       ${it.touches?`<span class="chip">Touch ${it.touches+1}</span>`:''}
       <span class="chip">${esc(type)}</span>
       ${it.score?`<span class="chip" title="Higher scores are prioritized within this queue">Priority score ${it.score}</span>`:''}
@@ -617,7 +693,7 @@ let pipeMode='list', pipeRows=[];
 function pipelineFocus(filters={}){
   buildPipelineFilters();
   pipeSearch=''; $('#pipeline-search').value='';
-  for(const key of ['rep','service','type','contact','attention','stage','outreach']) $('#pipeline-'+key).value=filters[key]||'';
+  for(const key of ['rep','service','type','contact','attention','stage','outreach','contact_quality']) $('#pipeline-'+key).value=filters[key]||'';
   go('pipeline');
 }
 function buildPipelineFilters(){
@@ -626,9 +702,11 @@ function buildPipelineFilters(){
   if(!type.options.length) type.innerHTML='<option value="">All lead types</option>'+S.cfg.lead_types.map(t=>`<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
   if(!stage.options.length) stage.innerHTML='<option value="">All stages</option>'+S.cfg.stages.map(t=>`<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
   const os=$('#pipeline-outreach');
+  const cq=$('#pipeline-contact_quality');
+  if(!cq.options.length) cq.innerHTML='<option value="">Any contact quality</option>'+S.cfg.contact_quality.map(q=>`<option value="${q.key}">${esc(q.label)}</option>`).join('');
   if(!os.options.length) os.innerHTML='<option value="">Any outreach status</option>'+S.cfg.outreach_statuses.map(t=>`<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
 }
-for(const key of ['type','contact','attention','stage','outreach']) $('#pipeline-'+key).onchange=()=>renderPipeline();
+for(const key of ['type','contact','attention','stage','outreach','contact_quality']) $('#pipeline-'+key).onchange=()=>renderPipeline();
 $('#pipeline-reset').onclick=()=>pipelineFocus();
 $('#pipe-list').onclick=()=>{pipeMode='list';renderPipeline();};
 $('#pipe-board').onclick=()=>{pipeMode='board';renderPipeline();};
@@ -637,7 +715,7 @@ async function renderPipeline(more=false){
   buildPipelineFilters();
   const offset=more===true?pipeRows.length:0;
   const qs=[];
-  for(const key of ['rep','service','type','contact','attention','stage','outreach']){
+  for(const key of ['rep','service','type','contact','attention','stage','outreach','contact_quality']){
     const value=$('#pipeline-'+key).value;
     if(value&&(key!=='rep'||S.me.is_manager)) qs.push(key+'='+encodeURIComponent(value));
   }
@@ -853,6 +931,7 @@ function renderDrawer(l){
       <label class="os-set">Set status manually
         <select class="mini-select" id="d-os">${S.cfg.outreach_statuses.map(s=>`<option value="${s.key}" ${s.key===l.outreach_status?'selected':''}>${esc(s.label)}</option>`).join('')}</select></label>
     </div>
+    ${researchPanelHtml(l)}
     <div class="dsec"><h5>Log activity</h5>
       <div class="log-row">
         ${['call','text','email','door','meeting','note'].map(k=>`<button class="log-btn" data-logkind="${k}">${KIND_ICO[k]} ${k}</button>`).join('')}
@@ -922,6 +1001,7 @@ function renderDrawer(l){
       toast('Logged'); const fresh=await api('/leads/'+l.id); renderDrawer(fresh);
     };
   });
+  wireResearch(p,l);
   // Outreach: templates, outcomes, and a manual status fix.
   const dSt={};
   const dScript=null;
