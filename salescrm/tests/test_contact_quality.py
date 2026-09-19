@@ -96,3 +96,21 @@ def test_an_edit_regrades_the_lead(client):
     lid = _org(client, 'e1', phone='970-555-0101')
     client.put(f'/api/leads/{lid}', json={'first_name': 'John', 'email': 'john@grace.org'})
     assert _get(client, lid)['contact_quality'] == 2
+
+
+def test_research_accuracy_counts_the_reps_verdicts_by_type(client):
+    signup(client)
+    ok = _org(client, 'a1', phone='970-555-0101', first_name='John', email='john@grace.org')
+    bad = _org(client, 'a2', phone='970-555-0102', first_name='Jim', email='jim@grace.org')
+    with appmod.get_db() as db:
+        db.execute("UPDATE leads SET contact_source='research'")
+    client.post(f'/api/leads/{ok}/contact/verify')
+    client.post(f'/api/leads/{bad}/contact/wrong', json={})
+    row = next(r for r in client.get('/api/research/accuracy').get_json() if r['lead_type'] == 'church')
+    assert (row['confirmed'], row['wrong'], row['rate']) == (1, 1, 50)
+
+
+def test_research_accuracy_is_manager_only(client):
+    signup(client)
+    signup(client, 'casey')
+    assert client.get('/api/research/accuracy').status_code == 403

@@ -24004,7 +24004,9 @@ def _check_hail_nightly():
 
 
 def _check_research_nightly():
-    """Research new, unresearched CRM prospects every night (agents.b2b.reenrich).
+    """Research new CRM prospects every night, refresh old research, read the
+    websites research found (agents.b2b.site_contacts) and name LLCs from the
+    Secretary of State (agents.b2b.sos_backfill).
 
     The Nimbus importer only researches its top picks, so every other imported
     row arrived as a front desk with no name. Up to RESEARCH_NIGHTLY_LIMIT
@@ -24026,12 +24028,19 @@ def _check_research_nightly():
         return
 
     def _go():
-        try:
-            from agents.b2b import reenrich
-            limit = int(os.environ.get('RESEARCH_NIGHTLY_LIMIT', '100') or 100)
-            print(f'[research] nightly: {reenrich.run(crm, limit=limit, log=lambda *_: None)}')
-        except Exception as exc:
-            print(f'[research] nightly failed: {exc}')
+        # Each step on its own: a failure in one must never stop the others.
+        from agents.b2b import reenrich, site_contacts, sos_backfill
+        limit = int(os.environ.get('RESEARCH_NIGHTLY_LIMIT', '100') or 100)
+        quiet = lambda *_: None
+        for name, step in (
+                ('new', lambda: reenrich.run(crm, limit=limit, log=quiet)),
+                ('stale', lambda: reenrich.run(crm, limit=max(10, limit // 5), log=quiet, mode='stale')),
+                ('websites', lambda: site_contacts.run(crm, limit=limit * 2, log=quiet)),
+                ('sos', lambda: sos_backfill.run(crm, log=quiet))):
+            try:
+                print(f'[research] nightly {name}: {step()}')
+            except Exception as exc:
+                print(f'[research] nightly {name} failed: {exc}')
     threading.Thread(target=_go, daemon=True).start()
 
 

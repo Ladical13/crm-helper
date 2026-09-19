@@ -502,6 +502,9 @@ def migrate_db():
             # Which library template a touch used, so a manager can see which
             # HOA text books meetings and which one gets ignored.
             db.execute("ALTER TABLE activities ADD COLUMN template_id TEXT DEFAULT ''")
+        if 'site_checked_at' not in cols:
+            # When agents/b2b/site_contacts last read this lead's website.
+            db.execute("ALTER TABLE leads ADD COLUMN site_checked_at TEXT DEFAULT ''")
         if 'contact_quality' not in cols:
             db.execute('ALTER TABLE leads ADD COLUMN contact_quality INTEGER DEFAULT 0')
             db.execute("ALTER TABLE leads ADD COLUMN contact_source TEXT DEFAULT ''")
@@ -2833,6 +2836,40 @@ def wrong_contact(lead_id):
                            + (f' - {note}' if note else ''))
         row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
     return jsonify(_lead_row(row))
+
+
+@app.route('/api/research/accuracy')
+@admin_required
+def research_accuracy():
+    """How often reps confirm what research found, by lead type - the number
+    that says where research is worth the spend and where it is guessing.
+    Counted from the reps' own taps: '✓ Contact confirmed' and '✗ Contact
+    marked wrong' on the timeline."""
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT l.lead_type, "
+            "  SUM(a.body LIKE '✓ Contact confirmed%') ok, "
+            "  SUM(a.body LIKE '✗ Contact marked wrong%') bad "
+            "FROM activities a JOIN leads l ON l.id = a.lead_id "
+            "WHERE a.kind = 'system' AND (a.body LIKE '✓ Contact confirmed%' "
+            "  OR a.body LIKE '✗ Contact marked wrong%') "
+            "GROUP BY l.lead_type").fetchall()
+        found = {r['lead_type']: r['n'] for r in db.execute(
+            "SELECT lead_type, COUNT(*) n FROM leads WHERE contact_source = 'research' "
+            "GROUP BY lead_type")}
+    label = {t['key']: t['label'] for t in LEAD_TYPES}
+    out = []
+    for r in rows:
+        judged = (r['ok'] or 0) + (r['bad'] or 0)
+        out.append({'lead_type': r['lead_type'], 'label': label.get(r['lead_type'], r['lead_type']),
+                    'confirmed': r['ok'] or 0, 'wrong': r['bad'] or 0,
+                    'rate': round(100 * (r['ok'] or 0) / judged) if judged else None,
+                    'found': found.get(r['lead_type'], 0)})
+    for lt, n in found.items():
+        if not any(o['lead_type'] == lt for o in out):
+            out.append({'lead_type': lt, 'label': label.get(lt, lt), 'confirmed': 0,
+                        'wrong': 0, 'rate': None, 'found': n})
+    return jsonify(sorted(out, key=lambda o: -o['found']))
 
 
 @app.route('/api/leads/<lead_id>/research', methods=['POST'])

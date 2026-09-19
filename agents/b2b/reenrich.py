@@ -50,6 +50,9 @@ def _prompt(row, hint=''):
         f'- decision_maker: {{name, title, email, phone}} — email and phone only '
         f'if published on a public page; otherwise "unknown"\n'
         f'- org_email: a general contact email published by the organization, or "unknown"\n'
+        f'- org_phone: the organization\'s main published phone number, or "unknown"\n'
+        f'- website: the organization\'s own official website URL (not a directory '
+        f'or social media page), or "unknown"\n'
         f'- news: public news in the last 24 months about roof, storm, hail, '
         f'insurance claim, construction, capital campaign or bond\n'
         f'- summary: ONE plain-English sentence a rep can use in a cold email\n\n'
@@ -60,7 +63,7 @@ def _prompt(row, hint=''):
         + (f'A sales rep who called them noted: "{hint}". Use it to find the right person.\n\n'
            if hint else '')
         + f'Return JSON with exactly these keys: '
-        f'decision_maker, org_email, news, summary, citations'
+        f'decision_maker, org_email, org_phone, website, news, summary, citations'
     )
 
 
@@ -79,8 +82,38 @@ def split_name(full):
     return parts[0], ' '.join(parts[1:])
 
 
+# Directories and social pages are not an organisation's website: reading a
+# Facebook page or a Yelp listing for staff emails finds nothing and teaches
+# the website reader nothing it can use.
+_NOT_A_SITE = ('facebook.com', 'instagram.com', 'yelp.com', 'linkedin.com', 'twitter.com',
+               'x.com', 'youtube.com', 'google.com', 'mapquest.com', 'yellowpages.com',
+               'bbb.org', 'guidestar.org', 'churchfinder.com', 'greatschools.org',
+               'niche.com', 'nextdoor.com', 'manta.com', 'bizapedia.com', 'opencorporates.com')
+
+
+def _website(v):
+    v = _known(v)
+    if not v:
+        return ''
+    if not re.match(r'^https?://', v, re.I):
+        v = 'https://' + v
+    m = re.match(r'^https?://([^/\s]+)', v, re.I)
+    host = (m.group(1).lower() if m else '').split(':')[0]
+    if not host or '.' not in host or any(host == d or host.endswith('.' + d) for d in _NOT_A_SITE):
+        return ''
+    return v.split('#')[0].rstrip('/')
+
+
+def _phone(v):
+    digits = re.sub(r'\D', '', _known(v))
+    if len(digits) == 11 and digits.startswith('1'):
+        digits = digits[1:]
+    return f'({digits[:3]}) {digits[3:6]}-{digits[6:]}' if len(digits) == 10 else ''
+
+
 def contact_fields(data, citations):
-    """The contact fields research may fill: {'first_name','last_name','email'}.
+    """The contact fields research may fill: first_name, last_name, email,
+    phone, website.
 
     Empty unless the answer came with at least one citation."""
     if not citations or not isinstance(data, dict):
@@ -93,6 +126,13 @@ def contact_fields(data, citations):
     email = _known(dm.get('email')) or _known(data.get('org_email'))
     if email and _EMAIL_RE.match(email):
         out['email'] = email.lower()
+    # A direct line beats the switchboard; the switchboard beats nothing.
+    phone = _phone(dm.get('phone')) or _phone(data.get('org_phone'))
+    if phone:
+        out['phone'] = phone
+    site = _website(data.get('website'))
+    if site:
+        out['website'] = site
     return out
 
 
@@ -117,10 +157,11 @@ def apply(crm, lead, data, citations, dry_run=False):
     if 'first_name' in fill and (lead.get('last_name') or '').strip():
         fill.pop('last_name', None)
     with crm.get_db() as db:
-        if 'email' in fill:
-            supp = crm._suppression_index(db)
-            if crm._suppressed_by(supp, '', crm._norm_email(fill['email']), ''):
-                fill.pop('email')
+        supp = crm._suppression_index(db)
+        if 'email' in fill and crm._suppressed_by(supp, '', crm._norm_email(fill['email']), ''):
+            fill.pop('email')
+        if 'phone' in fill and crm._suppressed_by(supp, crm._norm_phone(fill['phone']), '', ''):
+            fill.pop('phone')
         if dry_run:
             return fill
         now = crm._now()
@@ -134,6 +175,8 @@ def apply(crm, lead, data, citations, dry_run=False):
             sets['contact_source'] = 'research'
         if 'email' in fill:
             sets['email_norm'] = crm._norm_email(fill['email'])
+        if 'phone' in fill:
+            sets['phone_norm'] = crm._norm_phone(fill['phone'])
         if isinstance(data, dict) and _looks_promising(data):
             sets['icp_score'] = int(lead.get('icp_score') or 0) + 1
         db.execute('UPDATE leads SET ' + ', '.join(f'{k}=?' for k in sets) + ' WHERE id=?',
@@ -145,6 +188,10 @@ def apply(crm, lead, data, citations, dry_run=False):
             found.append(f"contact {fill['first_name']} {fill.get('last_name', '')}".strip())
         if 'email' in fill:
             found.append(f"email {fill['email']}")
+        if 'phone' in fill:
+            found.append(f"phone {fill['phone']}")
+        if 'website' in fill:
+            found.append(f"website {fill['website']}")
         crm._log_activity(
             db, lead['id'], 'system', rep=lead['rep'],
             body=('Researched: found ' + ', '.join(found) + '. From public sources - verify '
@@ -153,9 +200,28 @@ def apply(crm, lead, data, citations, dry_run=False):
     return fill
 
 
-def candidates(crm, limit, lead_type=None):
-    q = ("SELECT * FROM leads WHERE enriched_at = '' AND dnc = 0 AND stage = 'new' "
-         "AND company != ''")
+# People change jobs: a researched contact older than this is looked up again.
+STALE_DAYS = 365
+
+
+def candidates(crm, limit, lead_type=None, mode='new'):
+    """Leads to research.
+
+    new      never researched
+    missing  researched, but still no website or no way to reach anyone -
+             for re-running leads researched before phone and website were asked for
+    stale    researched more than STALE_DAYS ago and never confirmed by a rep
+    """
+    base = "SELECT * FROM leads WHERE dnc = 0 AND stage = 'new' AND company != '' AND "
+    if mode == 'missing':
+        q = base + ("enriched_at != '' AND (website = '' OR (phone = '' AND email = '')) "
+                    "AND contact_verified_at = ''")
+    elif mode == 'stale':
+        from datetime import datetime, timedelta
+        cutoff = (datetime.utcnow() - timedelta(days=STALE_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        q = base + f"enriched_at != '' AND enriched_at < '{cutoff}' AND contact_verified_at = ''"
+    else:
+        q = base + "enriched_at = ''"
     params = []
     if lead_type:
         q += ' AND lead_type = ?'
@@ -165,10 +231,10 @@ def candidates(crm, limit, lead_type=None):
         return [dict(r) for r in db.execute(q, params + [limit])]
 
 
-def run(crm, limit=50, lead_type=None, dry_run=False, log=print):
-    rows = candidates(crm, limit, lead_type)
-    log(f'{len(rows)} unresearched leads; month spend so far ${perplexity.month_spend_usd():.2f}')
-    names = emails = spent = 0
+def run(crm, limit=50, lead_type=None, dry_run=False, log=print, mode='new'):
+    rows = candidates(crm, limit, lead_type, mode=mode)
+    log(f'{len(rows)} leads ({mode}); month spend so far ${perplexity.month_spend_usd():.2f}')
+    names = emails = phones = sites = spent = 0
     for i, lead in enumerate(rows, 1):
         try:
             data, cites, cost = research(lead)
@@ -182,11 +248,14 @@ def run(crm, limit=50, lead_type=None, dry_run=False, log=print):
         fill = apply(crm, lead, data, cites, dry_run=dry_run)
         names += 'first_name' in fill
         emails += 'email' in fill
+        phones += 'phone' in fill
+        sites += 'website' in fill
         log(f'  [{i}/{len(rows)}] {lead.get("company")}: '
             + (', '.join(f'{k}={v}' for k, v in fill.items()) or 'no contact found'))
-    log(f'Done: {names} names, {emails} emails filled; ${spent:.2f} this run'
-        + (' (dry run - nothing written)' if dry_run else ''))
-    return {'names': names, 'emails': emails, 'spent': spent, 'seen': len(rows)}
+    log(f'Done: {names} names, {emails} emails, {phones} phones, {sites} websites filled; '
+        f'${spent:.2f} this run' + (' (dry run - nothing written)' if dry_run else ''))
+    return {'names': names, 'emails': emails, 'phones': phones, 'websites': sites,
+            'spent': spent, 'seen': len(rows)}
 
 
 def main(argv=None):
@@ -194,10 +263,11 @@ def main(argv=None):
     ap.add_argument('--limit', type=int, default=50)
     ap.add_argument('--type', dest='lead_type')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--mode', choices=('new', 'missing', 'stale'), default='new')
     args = ap.parse_args(argv)
     import portal.wsgi  # noqa: F401  — loads the CRM as p1_crm_app
     crm = sys.modules['p1_crm_app']
-    run(crm, limit=args.limit, lead_type=args.lead_type, dry_run=args.dry_run)
+    run(crm, limit=args.limit, lead_type=args.lead_type, dry_run=args.dry_run, mode=args.mode)
     return 0
 
 

@@ -430,6 +430,18 @@ async function renderStorms(){
   });
 }
 
+// Managers: how often reps confirm what research found, per lead type. Hidden
+// until reps have judged at least one contact.
+async function renderAccuracy(){
+  const box=$('#research-accuracy'); if(!box) return;
+  let rows=[]; try{ rows=await api('/research/accuracy'); }catch(e){ return; }
+  const judged=rows.filter(r=>r.confirmed+r.wrong>0);
+  box.classList.toggle('hidden',!judged.length);
+  box.innerHTML=`<div class="storm-h">🔎 Research accuracy (reps' ✓ / ✗)</div>`+judged.map(r=>
+    `<div class="storm-row"><span><b>${esc(r.label)}</b> · ${r.rate}% right</span>
+      <span class="lead-context">${r.confirmed} confirmed · ${r.wrong} wrong · ${r.found} found</span></div>`).join('');
+}
+
 // Leads whose address the geocoder could not place: no storm can be checked
 // against them. Open one, correct the address, and saving re-locates it.
 async function fixAddressesModal(){
@@ -477,7 +489,7 @@ function dncModal(){
 // are left off the strip — they are answers, not work.
 async function renderStatusBoard(){
   const box=$('#oq-status'); if(!box) return;
-  if(S.me.is_manager){ renderDncNotice(); renderStorms(); }
+  if(S.me.is_manager){ renderDncNotice(); renderStorms(); renderAccuracy(); }
   let rows=[]; try{ rows=await api('/outreach/summary'); }catch(e){ return; }
   box.innerHTML=rows.filter(r=>r.open&&r.count).map(r=>
     `<button class="os-chip" data-os="${r.key}" style="--c:${r.color}"><span class="n">${r.count}</span>${esc(r.label)}${r.due?`<span class="due">${r.due} due</span>`:''}</button>`).join('')
