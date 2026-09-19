@@ -150,7 +150,7 @@ function wireResearch(p,l){
 // from the server (/leads/<id>/messages); the rep may pick another one and edit
 // the words before opening it. Nothing is ever sent from here: a text opens
 // the phone's Messages app pre-filled, an email opens the rep's own Gmail.
-const CH_LABEL={call:'Call script',voicemail:'Voicemail',text:'Text',email:'Email'};
+const CH_LABEL={call:'Call script',voicemail:'Voicemail',text:'Text',email:'Email',offer:'🎁 Offer'};
 
 // iOS wants `sms:NUMBER&body=`, everything else `sms:NUMBER?body=`. An iPad
 // reports itself as a Mac, hence the touch check.
@@ -166,8 +166,17 @@ function composerTabs(msgs, script, st){
   if(script&&!(msgs&&msgs.call&&msgs.call.templates.length)) tabs.push('call');
   for(const ch of ['call','voicemail','text','email'])
     if(msgs&&msgs[ch]&&msgs[ch].templates.length&&!tabs.includes(ch)) tabs.push(ch);
+  if(msgs&&msgs.offers&&msgs.offers.length) tabs.push('offer');
   if(!tabs.includes(st.tab)) st.tab=tabs[0]||'';
   return tabs;
+}
+
+// The Offer tab reuses the email/text editing below: each live offer that fits
+// this lead becomes a "template" for whichever way it is being sent.
+function offerBox(msgs, via){
+  const t=(msgs.offers||[]).map(o=>({id:o.key, name:o.name, link:o.link,
+    subject:via==='email'?o.email.subject:'', body:via==='email'?o.email.body:o.text}));
+  return {recommended:t.length?t[0].id:'', templates:t};
 }
 
 function composerHtml(lead, msgs, script, st){
@@ -176,32 +185,41 @@ function composerHtml(lead, msgs, script, st){
   const head=`<div class="oq-tabs">${tabs.map(t=>`<button data-ctab="${t}" class="${st.tab===t?'on':''}">${CH_LABEL[t]}</button>`).join('')}</div>`;
   if(st.tab==='call'&&!(msgs&&msgs.call&&msgs.call.templates.length))
     return head+`<div class="oq-script">${esc(script.body)}</div>`;
-  const box=msgs[st.tab];
+  const isOffer=st.tab==='offer';
+  st.via=st.via||(lead.email?'email':'text');
+  const ch=isOffer?st.via:st.tab;                 // how it is actually being sent
+  const box=isOffer?offerBox(msgs,st.via):msgs[st.tab];
   st.sel=st.sel||{};
   if(!box.templates.find(t=>t.id===st.sel[st.tab])) st.sel[st.tab]=box.recommended||box.templates[0].id;
   const tpl=box.templates.find(t=>t.id===st.sel[st.tab]);
   st.edit=st.edit||{};
-  const ed=st.edit[st.tab+':'+tpl.id]||{subject:tpl.subject,body:tpl.body};
-  st.edit[st.tab+':'+tpl.id]=ed;
-  const opts=box.templates.map(t=>`<option value="${esc(t.id)}" ${t.id===tpl.id?'selected':''}>${t.id===box.recommended?'★ ':''}${esc(t.name)}</option>`).join('');
+  const ekey=(isOffer?'offer:'+st.via:st.tab)+':'+tpl.id;
+  const ed=st.edit[ekey]||{subject:tpl.subject,body:tpl.body};
+  st.edit[ekey]=ed;
+  const opts=box.templates.map(t=>`<option value="${esc(t.id)}" ${t.id===tpl.id?'selected':''}>${t.id===box.recommended&&!isOffer?'★ ':''}${esc(t.name)}</option>`).join('');
   const phone=(lead.phone||'').replace(/[^0-9+]/g,'');
   let action='';
-  if(st.tab==='text') action=phone
+  if(ch==='text') action=phone
     ? `<a class="text" href="${esc(smsUrl(phone,ed.body))}" data-touch="text">💬 Open in Messages</a>`
     : '<button disabled>Phone needed</button>';
-  if(st.tab==='email') action=lead.email
+  if(ch==='email') action=lead.email
     ? `<a class="email" target="_blank" rel="noopener" href="${esc(gmailUrl(lead.email,ed))}" data-touch="email">✉️ Open in Gmail</a>`
     : '<button disabled>Email needed</button>';
-  const chars=st.tab==='text'?`<span class="cmp-count ${ed.body.length>(S.cfg.text_max_chars||320)?'over':''}">${ed.body.length} chars</span>`:'';
+  const chars=ch==='text'?`<span class="cmp-count ${ed.body.length>(S.cfg.text_max_chars||320)?'over':''}">${ed.body.length} chars</span>`:'';
+  const offerBar=isOffer?`<div class="cmp-via">
+      <button data-via="email" class="${st.via==='email'?'on':''}">By email</button>
+      <button data-via="text" class="${st.via==='text'?'on':''}">By text</button>
+      <a class="linkish" href="${esc(tpl.link)}" target="_blank" rel="noopener">👁 See the offer page</a></div>`:'';
   return head+`<div class="cmp">
-    <select class="mini-select cmp-pick" data-cpick aria-label="Template">${opts}</select>
-    ${st.tab==='email'?`<input class="cmp-subj" data-csubj value="${esc(ed.subject)}" aria-label="Subject">`:''}
-    ${st.tab==='call'
+    <select class="mini-select cmp-pick" data-cpick aria-label="${isOffer?'Offer':'Template'}">${opts}</select>
+    ${offerBar}
+    ${ch==='email'?`<input class="cmp-subj" data-csubj value="${esc(ed.subject)}" aria-label="Subject">`:''}
+    ${ch==='call'
       ? `<div class="oq-script">${esc(ed.body)}</div><p class="cmp-hint">The beats, not a script to read word for word. Tap how it went below.</p>`
-      : st.tab==='voicemail'
+      : ch==='voicemail'
       ? `<div class="oq-script">${esc(ed.body)}</div><p class="cmp-hint">Read this if it goes to voicemail, then tap <b>Left voicemail</b>.</p>`
-      : `<textarea class="cmp-body" data-cbody rows="${st.tab==='text'?4:8}" aria-label="Message">${esc(ed.body)}</textarea>
-         <div class="cmp-foot">${chars}<span class="cmp-hint">Edit freely - it opens as a draft, you press send.</span></div>
+      : `<textarea class="cmp-body" data-cbody rows="${ch==='text'?4:8}" aria-label="Message">${esc(ed.body)}</textarea>
+         <div class="cmp-foot">${chars}<span class="cmp-hint">${isOffer?'The link opens the offer page with your name on it. ':''}Edit freely - it opens as a draft, you press send.</span></div>
          <div class="oq-actions">${action}</div>`}
   </div>`;
 }
@@ -212,12 +230,13 @@ function wireComposer(root, lead, msgs, script, st, onTouch){
   const redraw=()=>{ root.querySelector('[data-composer]').innerHTML=composerHtml(lead,msgs,script,st); wire(); };
   const wire=()=>{
     root.querySelectorAll('[data-ctab]').forEach(b=>b.onclick=()=>{st.tab=b.dataset.ctab;redraw();});
+    root.querySelectorAll('[data-via]').forEach(b=>b.onclick=()=>{st.via=b.dataset.via;redraw();});
     const pick=root.querySelector('[data-cpick]'); if(pick) pick.onchange=()=>{st.sel[st.tab]=pick.value;redraw();};
-    const key=()=>st.tab+':'+st.sel[st.tab];
+    const key=()=>(st.tab==='offer'?'offer:'+st.via:st.tab)+':'+st.sel[st.tab];
     const body=root.querySelector('[data-cbody]'), subj=root.querySelector('[data-csubj]');
     const refresh=()=>{
       const ed=st.edit[key()];
-      const a=root.querySelector('[data-touch]');
+      const a=root.querySelector('[data-composer] [data-touch]');
       if(a&&a.dataset.touch==='text') a.href=smsUrl((lead.phone||'').replace(/[^0-9+]/g,''),ed.body);
       if(a&&a.dataset.touch==='email') a.href=gmailUrl(lead.email,ed);
       const c=root.querySelector('.cmp-count');
@@ -225,7 +244,7 @@ function wireComposer(root, lead, msgs, script, st, onTouch){
     };
     if(body) body.oninput=()=>{ st.edit[key()].body=body.value; refresh(); };
     if(subj) subj.oninput=()=>{ st.edit[key()].subject=subj.value; refresh(); };
-    root.querySelectorAll('[data-touch]').forEach(a=>a.addEventListener('click',()=>onTouch&&onTouch(a.dataset.touch)));
+    root.querySelectorAll('[data-composer] [data-touch]').forEach(a=>a.addEventListener('click',()=>onTouch&&onTouch(a.dataset.touch)));
   };
   wire();
 }
@@ -273,7 +292,9 @@ function wireOutcomes(root, leadId, getCtx, done){
     const body={outcome:key};
     if(ctx.kind) body.kind=ctx.kind;
     if(ctx.task_id) body.task_id=ctx.task_id;
-    const tid=templateFor(ctx.cmp,key); if(tid) body.template_id=tid;
+    // Sent from the Offer tab: record which offer, so the library can count it.
+    if(ctx.cmp&&ctx.cmp.tab==='offer'&&['texted','emailed'].includes(key)) body.offer=(ctx.cmp.sel||{}).offer;
+    else { const tid=templateFor(ctx.cmp,key); if(tid) body.template_id=tid; }
     if(when) body.follow_up_at=new Date(when).toISOString().slice(0,16);
     try{
       const r=await api('/leads/'+leadId+'/outcome',{method:'POST',body});
@@ -1526,7 +1547,65 @@ function templateModal(t){
   };
 }
 
+// ── Offers (Playbook) ───────────────────────────────────────────────────────
+// Each offer is a public page (/crm/offer/<key>?r=<rep>) plus an email and a
+// text that link to it; reps send them from the 🎁 Offer tab on a lead. Going
+// live is gated on the server: no [AMOUNT]-style blanks left, no claim we
+// cannot back up, and the link in both messages.
+let OFFERS=null;
+async function renderOffers(){
+  const box=$('#playbook-offers'); if(!box) return;
+  if(!OFFERS) OFFERS=await api('/offers');
+  const forLabel=f=>f==='past_customer'?'Past customers':((S.cfg.lead_types.find(t=>t.key===f)||{}).label||f);
+  box.innerHTML=OFFERS.filter(o=>o.status!=='archived'||S.me.is_manager).map(o=>`<div class="card tpl-card">
+    <h4>🎁 ${esc(o.name)} <span class="chip ${o.status==='live'?'cq-3':'cq-1'}">${esc(o.status)}</span>
+      ${o.sent?`<span class="type-badge">sent ${o.sent}</span>`:''}</h4>
+    <div class="lead-context">For: ${o.for.map(forLabel).map(esc).join(', ')}</div>
+    <div class="tpl-subj">${esc(o.headline)}</div>
+    <ul class="plan-ul">${o.bullets.map(b=>`<li>${esc(b)}</li>`).join('')}</ul>
+    ${o.placeholders.length?`<div class="cr-warn">Needs: ${o.placeholders.map(esc).join(', ')}</div>`:''}
+    <div class="drawer-btns">
+      <a class="btn-ghost small" href="${BASE}/offer/${esc(o.key)}?r=${encodeURIComponent(S.me.username)}" target="_blank" rel="noopener">👁 Page</a>
+      ${S.me.is_manager?`<button class="btn-ghost small" data-oedit="${esc(o.key)}">Edit</button>`:''}</div></div>`).join('')
+    ||'<div class="empty">No offers yet.</div>';
+  box.querySelectorAll('[data-oedit]').forEach(b=>b.onclick=()=>offerModal(OFFERS.find(o=>o.key===b.dataset.oedit)));
+}
+
+function offerModal(o){
+  const types=[...S.cfg.lead_types.map(t=>[t.key,t.label]),['past_customer','Past customers']];
+  openModal('Edit offer: '+o.name,`
+    <div class="tm-row">
+      <div class="field"><label>Name</label><input id="om-name" value="${esc(o.name)}"></div>
+      <div class="field"><label>Status</label><select id="om-status">${['draft','live','archived'].map(s=>`<option ${s===o.status?'selected':''}>${s}</option>`).join('')}</select></div>
+    </div>
+    <div class="field"><label>For</label><div class="om-for">${types.map(([k,l])=>`<label><input type="checkbox" value="${k}" ${o.for.includes(k)?'checked':''}> ${esc(l)}</label>`).join('')}</div></div>
+    <div class="field"><label>Headline</label><input id="om-headline" value="${esc(o.headline)}"></div>
+    <div class="field"><label>Intro</label><textarea id="om-intro" rows="3">${esc(o.intro)}</textarea></div>
+    <div class="field"><label>What they get (one per line)</label><textarea id="om-bullets" rows="6">${esc(o.bullets.join('\n'))}</textarea></div>
+    <div class="field"><label>Call to action</label><input id="om-cta" value="${esc(o.cta)}"></div>
+    <div class="field"><label>Fine print</label><textarea id="om-fine" rows="3">${esc(o.fine_print)}</textarea></div>
+    <div class="field"><label>Email subject</label><input id="om-subj" value="${esc(o.email_subject)}"></div>
+    <div class="field"><label>Email</label><textarea id="om-email" rows="7">${esc(o.email_body)}</textarea></div>
+    <div class="field"><label>Text</label><textarea id="om-text" rows="3">${esc(o.text_body)}</textarea>
+      <div class="cmp-hint">Fill-ins: ${[...S.cfg.template_slots,'offer_link'].map(s=>`<code>{${s}}</code>`).join(' ')}. Put amounts in brackets, e.g. [AMOUNT], until they're decided - it can't go live until they're filled.</div></div>
+    <div id="om-problems" class="tm-problems"></div>
+    <button class="btn-ghost small" id="om-check">Check it's ready to go live</button>`,
+  async()=>{
+    try{ await api('/offers/'+o.key,{method:'PUT',body:omRead()}); OFFERS=null; toast('Offer saved'); renderOffers(); }
+    catch(e){ $('#om-problems').innerHTML=esc(e.message); throw e; }
+  },{noAutoClose:false});
+  const omRead=()=>({name:$('#om-name').value,status:$('#om-status').value,headline:$('#om-headline').value,
+    intro:$('#om-intro').value,bullets:$('#om-bullets').value.split('\n'),cta:$('#om-cta').value,
+    fine_print:$('#om-fine').value,email_subject:$('#om-subj').value,email_body:$('#om-email').value,
+    text_body:$('#om-text').value,for:$$('.om-for input:checked').map(i=>i.value)});
+  $('#om-check').onclick=async()=>{
+    const r=await api('/offers/'+o.key+'/check',{method:'POST',body:omRead()});
+    $('#om-problems').innerHTML=r.problems.length?r.problems.map(p=>`<div>⚠ ${esc(p)}</div>`).join(''):'<div class="rs-ok">✓ Ready to go live.</div>';
+  };
+}
+
 function renderPlaybookLists(){
+  renderOffers();
   renderTemplates();
   const q=($('#playbook-search').value||'').toLowerCase();
   const match=s=>!q||s.toLowerCase().includes(q);

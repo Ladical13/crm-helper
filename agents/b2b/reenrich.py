@@ -128,7 +128,9 @@ def contact_fields(data, citations):
         out['email'] = email.lower()
     # A direct line beats the switchboard; the switchboard beats nothing.
     phone = _phone(dm.get('phone')) or _phone(data.get('org_phone'))
-    if phone:
+    # Only a Colorado number: an out-of-state one means research matched a
+    # same-named organisation somewhere else.
+    if phone and phone[1:4] in ('303', '719', '720', '970', '983'):
         out['phone'] = phone
     site = _website(data.get('website'))
     if site:

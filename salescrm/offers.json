@@ -1,0 +1,216 @@
+{
+  "_readme": [
+    "Starter offers for the CRM's offer library (Playbook -> Offers). Seeded into",
+    "salescrm.db by seed_offers() only when a key has never been seeded, so a",
+    "manager's edit is never overwritten by a deploy - same rule as the templates.",
+    "",
+    "for: lead types the offer is for, and/or 'past_customer'.",
+    "status: 'live' (reps can send it) or 'draft' (managers only). An offer cannot",
+    "go live while any [BRACKETED] placeholder remains, while it makes a claim on",
+    "the unprovable-claims list, or without {offer_link} in its email and text.",
+    "",
+    "Written 2026-09-19 from the Drive sheets (realtor partner sheet, property",
+    "manager sheet, Exterior Care Plan) and tightened: numbers and superiority",
+    "claims that agents/marketing_profile.json cannot back up were removed",
+    "(\"Premium\", \"500+ roofs\", \"A+ BBB\", \"10+ years\"), \"guaranteed\" response",
+    "became \"within 24 hours, weather permitting\", and the unattributed",
+    "property-manager testimonial was dropped. Credentials are only those in the",
+    "marketing profile. New offers (insurance agents, past clients) start as drafts."
+  ],
+  "offers": [
+    {
+      "key": "realtor_partner",
+      "name": "Realtor Partner Program",
+      "for": ["realtor"],
+      "status": "live",
+      "headline": "Protect your listings. Close with confidence.",
+      "intro": "A roof is one of the first things buyers ask about and one of the last things you want to negotiate. We get you answers fast, in writing, so your deals stay on track.",
+      "bullets": [
+        "Free pre-listing roof inspection, with a written roof health report - know what to disclose or fix before a buyer asks.",
+        "Inspection requests answered within 24 hours, weather permitting, with written documentation for your file.",
+        "Itemized repair or replacement estimates when a buyer's inspector flags the roof, so you negotiate from facts, not guesses.",
+        "A roof certification for the closing file when a lender or buyer asks for one.",
+        "We are your resource, not a sales pitch to your clients - we do not chase your buyers.",
+        "One direct line to your rep. No call center."
+      ],
+      "fine_print": "Free inspections are for listings in our service area along the Front Range. Roof certifications and repairs are quoted separately. Response times depend on weather and roof access.",
+      "cta": "Schedule a free roof inspection for your next listing",
+      "email_subject": "Roof answers for your listings",
+      "email_body": "{greeting}\n\nWhen a roof comes up on a listing, you need an answer in writing before it stalls the deal. That is the whole point of our realtor partner program - free pre-listing inspections, reports inside your deadlines, and itemized estimates when an inspector flags something.\n\nThe details are here: {offer_link}\n\nWant me on your list for the next one?",
+      "text_body": "{greeting} {rep_first} with Project One Roofing. Here's our realtor partner program - free pre-listing roof inspections and written reports inside your deadlines: {offer_link}"
+    },
+    {
+      "key": "pm_preferred_vendor",
+      "name": "Preferred Vendor for Property Managers",
+      "for": ["property_manager"],
+      "status": "live",
+      "headline": "Roof problems shouldn't delay your owners.",
+      "intro": "We respond fast, document everything, and keep your owners and your tenants informed - so a roof call is one less thing on your plate.",
+      "bullets": [
+        "On site within 24 hours of your call, weather permitting - the tenant is taken care of and the owner is informed.",
+        "Written, owner-ready reports on every job: photos, scope, cost and warranty.",
+        "Preferred-vendor pricing agreed up front - no surprise line items on owner invoices.",
+        "One direct rep whose cell reaches the person doing the work.",
+        "Local code and HOA know-how across Northern Colorado.",
+        "Manufacturer-accredited with IKO, CertainTeed, GAF and Carlisle."
+      ],
+      "fine_print": "Response times depend on weather and roof access. Preferred-vendor pricing is set in a written agreement with each management company.",
+      "cta": "Become a preferred vendor partner",
+      "email_subject": "A roofer your owners won't have to ask about",
+      "email_body": "{greeting}\n\nWhen a tenant calls about a leak, you need someone on site fast and a report you can forward to the owner as-is. That is what our preferred-vendor program is built around: 24-hour response, owner-ready documentation on every job, and pricing agreed up front.\n\nThe details: {offer_link}\n\nWould it help to have us on your vendor list?",
+      "text_body": "{greeting} {rep_first} with Project One Roofing. Here's our preferred-vendor program for property managers - 24-hour response and owner-ready reports on every job: {offer_link}"
+    },
+    {
+      "key": "hoa_community_shield",
+      "name": "Community Shield for HOAs",
+      "for": ["hoa"],
+      "status": "live",
+      "headline": "One vendor. One invoice. Board-ready reports.",
+      "intro": "We keep the whole community's roofs and exteriors on a published schedule, and give the board the documentation it needs to plan reserves instead of reacting to leaks.",
+      "bullets": [
+        "A free roof condition report for your community to start: every building photographed, with a remaining-life estimate your reserve study can use.",
+        "An annual roof condition report per building once you're on the plan.",
+        "Board-ready photo documentation after every visit.",
+        "A dedicated account manager and priority response after storms.",
+        "Scheduled exterior care on one invoice, priced for your community by door count."
+      ],
+      "fine_print": "Plan pricing is custom per community and set in a written agreement. The free starter report covers a visual inspection of accessible roofs.",
+      "cta": "Request your community's free roof condition report",
+      "email_subject": "A roof report your board can budget from - {company}",
+      "email_body": "{greeting}\n\nBoards get asked how long the roofs have left, usually right before a special assessment. Our Community Shield program starts with a free roof condition report for the community - every building photographed, with a remaining-life estimate - and keeps it current every year.\n\nThe details: {offer_link}\n\nWould that be useful to your board this year?",
+      "text_body": "{greeting} {rep_first} with Project One Roofing. For {company}: a free roof condition report for your board, then one vendor for the exteriors. Details: {offer_link}"
+    },
+    {
+      "key": "commercial_exterior_care",
+      "name": "Commercial Exterior Care",
+      "for": ["commercial", "church", "school", "school_district", "gc"],
+      "status": "live",
+      "headline": "Know what your roof needs before it leaks.",
+      "intro": "A free roof condition assessment gives you photos and a remaining-life estimate you can budget from. If you want it handled from there, we keep the building on a maintenance schedule without a work order every time.",
+      "bullets": [
+        "A free roof condition assessment with a written report and photos.",
+        "A remaining-life estimate you can put in next year's budget.",
+        "An annual roof inspection and maintenance report on the care plan.",
+        "Work scheduled around your hours, including after-hours windows.",
+        "Fortified Roofing Certified; manufacturer-accredited with IKO, CertainTeed, GAF and Carlisle."
+      ],
+      "fine_print": "The free assessment is a visual inspection of accessible roof areas. Care plan pricing is custom per property.",
+      "cta": "Request a free roof condition assessment",
+      "email_subject": "A free roof report for {company}",
+      "email_body": "{greeting}\n\nMost roof budgets get set after the leak. A free condition assessment - photos and a remaining-life estimate - lets you set it before. If you'd like it handled from there, we keep the building on a maintenance schedule.\n\nThe details: {offer_link}\n\nWho is the right person to set up a walk-through with?",
+      "text_body": "{greeting} {rep_first} with Project One Roofing. Free roof condition assessment for {company} - photos and a remaining-life estimate you can budget from: {offer_link}"
+    },
+    {
+      "key": "home_shield",
+      "name": "Home Shield",
+      "for": ["homeowner"],
+      "status": "live",
+      "headline": "Your home's exterior, handled.",
+      "intro": "One flat monthly plan and the outside of your home is looked after on a schedule - you never climb a ladder again.",
+      "bullets": [
+        "An annual roof inspection with a photo report.",
+        "Priority storm response - you're at the front of the line after hail.",
+        "A discount on any repair work while you're on the plan.",
+        "Scheduled exterior care, so small problems are caught before they're big ones."
+      ],
+      "fine_print": "Plan price, included services and the repair discount are set out in the plan agreement.",
+      "cta": "Ask about Home Shield",
+      "email_subject": "Your home's exterior, handled",
+      "email_body": "{greeting}\n\nHome Shield is one monthly plan that keeps the outside of your home looked after: an annual roof inspection with photos, priority response after hail, and a discount on repairs.\n\nThe details: {offer_link}\n\nWant me to walk you through it?",
+      "text_body": "{greeting} {rep_first} with Project One Roofing. Here's Home Shield - annual roof inspection, priority storm response and repair savings in one plan: {offer_link}"
+    },
+    {
+      "key": "insurance_agent_partner",
+      "name": "Insurance Agent Partner",
+      "for": ["insurance_agent", "adjuster"],
+      "status": "draft",
+      "headline": "A roofer your clients can trust after a storm.",
+      "intro": "When a client calls you after hail, the contractor they pick decides whether the claim goes smoothly. We inspect honestly, document properly, and tell your client plainly when there's no claim.",
+      "bullets": [
+        "Honest inspections - if there's no damage worth a claim, we say so.",
+        "Complete documentation: measured roofs and dated photos the adjuster can use.",
+        "We meet the adjuster on site when your client wants us there.",
+        "Roof condition certificates when a carrier asks about a roof's age or condition.",
+        "Licensed in every jurisdiction we serve, and local to Loveland - not a storm crew passing through."
+      ],
+      "fine_print": "We never waive, pay or rebate an insurance deductible, and we don't promise any claim outcome - that is the carrier's decision. Roof condition certificates are quoted separately.",
+      "cta": "Add us to your list of trusted contractors",
+      "email_subject": "A roofer you can refer after a storm",
+      "email_body": "{greeting}\n\nAfter hail, the roofer your client picks decides whether their claim goes smoothly. We inspect honestly, document properly for the adjuster, and tell people plainly when there's no claim - which keeps everyone's loss history clean.\n\nThe details: {offer_link}\n\nCould we be one of the names you give clients?",
+      "text_body": "{greeting} {rep_first} with Project One Roofing. For your clients after a storm: honest inspections, full documentation for the adjuster, no pushed claims. Details: {offer_link}"
+    },
+    {
+      "key": "past_storm_check",
+      "name": "Free Storm Check for Our Customers",
+      "for": ["past_customer"],
+      "status": "draft",
+      "headline": "You're a Project One customer. After any hail, we'll check your roof free.",
+      "intro": "Hail damage usually can't be seen from the ground. As one of our customers, you can have your roof checked after any storm at no cost - just call or text.",
+      "bullets": [
+        "A free roof check after any hail storm, for as long as you own the home.",
+        "Photos of anything we find, and a straight answer on whether it needs attention.",
+        "Priority scheduling ahead of new customers after a storm."
+      ],
+      "fine_print": "For homes where Project One has completed work. A check is a visual inspection; any repair is quoted separately.",
+      "cta": "Book your free storm check",
+      "email_subject": "Checking on your roof after the storm",
+      "email_body": "{greeting}\n\nWith the recent storms around {city}, a reminder: as one of our customers, your roof check after any hail is free. It takes about 20 minutes and you get photos of anything we find.\n\nThe details: {offer_link}\n\nReply with a day that works and I'll set it up.",
+      "text_body": "{greeting} {rep_first} from Project One Roofing. As our customer, your roof check after any hail is free - photos included. Details: {offer_link}"
+    },
+    {
+      "key": "past_home_shield",
+      "name": "Home Shield for Our Roof Customers",
+      "for": ["past_customer"],
+      "status": "draft",
+      "headline": "Keep your new roof looking after itself.",
+      "intro": "You invested in a new roof. Home Shield keeps it - and the rest of the exterior - on a maintenance schedule, and our roof customers get [AMOUNT] when they join.",
+      "bullets": [
+        "An annual roof inspection with a photo report, to keep small issues small.",
+        "Priority storm response - front of the line after hail.",
+        "A discount on any repair work while you're on the plan.",
+        "Joining perk for our roof customers: [AMOUNT]."
+      ],
+      "fine_print": "For homes where Project One installed the roof. Plan price, services and discount are set out in the plan agreement. The joining perk applies once per home.",
+      "cta": "Join Home Shield",
+      "email_subject": "Keep your new roof looking after itself",
+      "email_body": "{greeting}\n\nNow that your roof is done, Home Shield keeps it - and the rest of the exterior - on a schedule: an annual inspection with photos, priority response after hail, and savings on repairs. As a roof customer you also get [AMOUNT] when you join.\n\nThe details: {offer_link}\n\nWant me to set it up?",
+      "text_body": "{greeting} {rep_first} from Project One Roofing. Home Shield keeps your new roof maintained - and roof customers get [AMOUNT] to join: {offer_link}"
+    },
+    {
+      "key": "past_referral",
+      "name": "Referral Thank-You",
+      "for": ["past_customer"],
+      "status": "draft",
+      "headline": "Know someone who needs a roofer? We'll say thank you.",
+      "intro": "Most of our work comes from neighbors and friends of customers like you. When someone you refer signs with us, we'll send you [AMOUNT] as a thank-you.",
+      "bullets": [
+        "Send them our way, or send us their name and number and we'll reach out.",
+        "They get the same honest inspection and written estimate you did.",
+        "When their project is signed, you get [AMOUNT] as a thank-you."
+      ],
+      "fine_print": "Paid once per referred household, after the referred project is signed and completed. The thank-you is not a payment, waiver or rebate of any insurance deductible and is not conditioned on any insurance claim. Referrals must be new customers. Program terms may change.",
+      "cta": "Refer a neighbor",
+      "email_subject": "A thank-you for sending neighbors our way",
+      "email_body": "{greeting}\n\nMost of our work comes from customers like you telling a neighbor. If you know someone with roof trouble, send them our way - and when their project is signed, we'll send you [AMOUNT] as a thank-you.\n\nThe details: {offer_link}\n\nThanks for trusting us with your home.",
+      "text_body": "{greeting} {rep_first} from Project One Roofing. Know someone who needs a roofer? When they sign, we'll send you [AMOUNT] as a thank-you: {offer_link}"
+    },
+    {
+      "key": "past_next_project",
+      "name": "Your Next Exterior Project",
+      "for": ["past_customer"],
+      "status": "draft",
+      "headline": "You trusted us with your roof. Let's talk about the rest of the exterior.",
+      "intro": "We also do windows, doors, siding and paint - and as a past customer you get [AMOUNT] on your next project with us.",
+      "bullets": [
+        "Windows, doors, siding and exterior paint, from the same crew you already know.",
+        "The same written, itemized estimate you got for your roof.",
+        "Past-customer savings: [AMOUNT] on your next project."
+      ],
+      "fine_print": "For homes where Project One has completed work. One use per home, on a project signed within the offer period. Not combinable with other offers.",
+      "cta": "Get an estimate for your next project",
+      "email_subject": "The rest of your home's exterior",
+      "email_body": "{greeting}\n\nThanks again for trusting us with your roof. We also do windows, doors, siding and exterior paint, and as a past customer you get [AMOUNT] on your next project.\n\nThe details: {offer_link}\n\nAnything on your list this year?",
+      "text_body": "{greeting} {rep_first} from Project One Roofing. We also do windows, doors, siding and paint - past customers get [AMOUNT] on the next project: {offer_link}"
+    }
+  ]
+}

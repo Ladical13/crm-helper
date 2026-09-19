@@ -52,7 +52,7 @@ def _get(crm, lid):
 
 HOME = '''<html><body><a href="/about-us">About</a> <a href="/staff">Our Staff</a>
 <a href="https://facebook.com/grace">fb</a> <a href="/sermons">Sermons</a>
-<p>Call us: (970) 555-0100</p></body></html>'''
+<p>Call us: (970) 555-0100 &middot; 1418 Sycamore Ct, Loveland</p></body></html>'''
 STAFF = '''<html><body>
 <p>Pastor John Smith - <a href="mailto:jsmith@grace.org">email</a></p>
 <p>Youth: Kyle Brown kbrown@grace.org</p>
@@ -158,3 +158,30 @@ def test_missing_mode_revisits_researched_leads_without_a_way_in(crm):
                  phone='970', email='a@done.org')
     ids = [c['id'] for c in reenrich.candidates(crm, 500, mode='missing')]
     assert lead['id'] in ids and done['id'] not in ids
+
+
+def test_a_same_named_organisation_in_another_state_is_not_used(crm):
+    """Shepherd of the Hills, Austin TX - not the Fort Collins church research
+    was looking for. Nothing is taken, and the rep is told to check."""
+    texas = {'https://grace.org': '<p>Grace Church, Austin, Texas. (512) 327-3370 '
+                                  '<a href="mailto:office@grace.org">x</a></p>'}
+    lead = _lead(crm, company='Texas Grace')
+    found = sc.read_site('https://grace.org', fetch=texas.get, sleep=lambda *_: None)
+    assert sc.apply(crm, lead, found) == {}
+    got = _get(crm, lead['id'])
+    assert got['email'] == '' and got['phone'] == '' and got['site_checked_at']
+    with crm.get_db() as db:
+        note = db.execute("SELECT body FROM activities WHERE lead_id=?", (lead['id'],)).fetchone()[0]
+    assert 'different organisation' in note
+
+
+def test_an_out_of_state_number_is_never_filled(crm):
+    page = {'https://grace.org': '<p>Loveland, Colorado. Call (512) 327-3370</p>'}
+    lead = _lead(crm, company='Area Code Church')
+    found = sc.read_site('https://grace.org', fetch=page.get, sleep=lambda *_: None)
+    assert 'phone' not in sc.apply(crm, lead, found)
+
+
+def test_research_ignores_an_out_of_state_phone():
+    out = reenrich.contact_fields({'org_phone': '(512) 327-3370'}, ['https://x.org'])
+    assert 'phone' not in out

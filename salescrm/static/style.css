@@ -510,3 +510,8 @@ details.dsec[open] summary{margin-bottom:14px}#lead-details{scroll-margin-top:16
 .rs-ok{color:#86efac;font-weight:600}
 .rs-btns{margin-top:8px}
 .linkish{background:none;border:none;padding:0;color:var(--brand2);text-decoration:underline;font:inherit;cursor:pointer}
+.cmp-via{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.cmp-via button{padding:5px 11px;border-radius:20px;background:transparent;border:1px solid var(--line);color:var(--txt2);font-size:12px}
+.cmp-via button.on{background:var(--bg3);color:var(--txt);border-color:var(--brand)}
+.om-for{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px}
+@media (pointer: coarse){ .cmp-via button{min-height:44px} }

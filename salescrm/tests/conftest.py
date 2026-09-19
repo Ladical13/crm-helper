@@ -24,7 +24,7 @@ from portal import users as pusers      # noqa: E402
 # test, so a table missing here leaks state between tests.
 TABLES = ['leads', 'activities', 'tasks', 'cadence_enrollments',
           'coaching_notes', 'goals', 'documents', 'suppressions', 'templates',
-          'dnc_registry']
+          'dnc_registry', 'offers']
 
 
 def _wipe():
@@ -34,6 +34,7 @@ def _wipe():
     # The template library is seeded, not written by tests — put the starter
     # set back so every test sees what a fresh install has.
     appmod.seed_templates()
+    appmod.seed_offers()
     # Identity lives in the portal store, so it has to be reset here too or
     # the "first user bootstraps as admin" rule leaks across tests.
     with pusers.get_db() as db:

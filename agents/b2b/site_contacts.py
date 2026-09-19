@@ -41,6 +41,11 @@ _EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 _PHONE_RE = re.compile(r'(?<!\d)(?:\+?1[\s.-]?)?\(?([2-9]\d{2})\)?[\s.-]?([2-9]\d{2})[\s.-]?(\d{4})(?!\d)')
 _JUNK_EMAIL = ('example.com', 'sentry', 'wixpress', 'domain.com', 'email.com', 'yourname',
                '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg')
+# Colorado area codes. A number outside them on a "Colorado church" site means
+# research found a same-named organisation somewhere else - Shepherd of the
+# Hills in Austin (512), not Fort Collins - and dialling it is worse than
+# having no number at all.
+CO_AREA_CODES = ('303', '719', '720', '970', '983')
 _ROLE = {'info', 'office', 'admin', 'contact', 'hello', 'church', 'frontdesk', 'reception',
          'mail', 'secretary', 'welcome', 'parish', 'general', 'inquiries', 'connect'}
 
@@ -133,7 +138,7 @@ def read_site(website, fetch=None, sleep=time.sleep):
     """{'emails','phones','pages'} for one website. `fetch(url) -> html|None`
     is injectable for tests; the default honours robots.txt."""
     fetch = fetch or _fetcher(website)
-    emails, phones, pages, seen = [], [], [], set()
+    emails, phones, pages, seen, texts = [], [], [], set(), []
     queue = [website]
     while queue and len(pages) < MAX_PAGES:
         url = queue.pop(0)
@@ -146,12 +151,28 @@ def read_site(website, fetch=None, sleep=time.sleep):
         if not html:
             continue
         pages.append(url)
+        texts.append(html)
         e, ph, links = parse(html, url)
         emails += e
         phones += ph
         queue += [l for l in links if l not in seen]
     return {'emails': list(dict.fromkeys(emails)), 'phones': list(dict.fromkeys(phones)),
-            'pages': pages}
+            'pages': pages, 'text': ' '.join(texts)[:3_000_000]}
+
+
+def same_org(found, lead):
+    """Does this website look like it belongs to THIS lead? It must mention the
+    lead's city or Colorado somewhere. Research can land on a same-named
+    organisation in another state, and nothing else here would notice."""
+    text = (found.get('text') or '').lower()
+    city = (lead.get('city') or '').strip().lower()
+    return bool(text) and ((city and city in text) or 'colorado' in text
+                           or re.search(r'\bco\s+8\d{4}\b', text) is not None)
+
+
+def co_phone(p):
+    d = re.sub(r'\D', '', p or '')
+    return len(d) == 10 and d[:3] in CO_AREA_CODES
 
 
 def _fetcher(website):
@@ -181,12 +202,25 @@ def apply(crm, lead, found, dry_run=False):
     """Fill empty email/phone from what the site says. Returns what was filled."""
     host = urlparse(lead['website']).netloc
     fill = {}
+    if not same_org(found, lead):
+        # Probably a different organisation with the same name: fill nothing,
+        # and tell the rep, so they check the website research picked.
+        with crm.get_db() as db:
+            if not dry_run:
+                db.execute('UPDATE leads SET site_checked_at=? WHERE id=?', (crm._now(), lead['id']))
+                if found.get('pages'):
+                    crm._log_activity(db, lead['id'], 'system', rep=lead['rep'],
+                                      body=f"Website {lead['website']} never mentions "
+                                           f"{lead.get('city') or 'Colorado'} - it may be a different "
+                                           f"organisation. Nothing was taken from it; check it.")
+        return {}
     if not (lead.get('email') or '').strip():
         e = pick_email(found['emails'], _root(host), lead.get('first_name'), lead.get('last_name'))
         if e:
             fill['email'] = e
-    if not (lead.get('phone') or '').strip() and found['phones']:
-        fill['phone'] = found['phones'][0]
+    co = [p for p in found['phones'] if co_phone(p)]
+    if not (lead.get('phone') or '').strip() and co:
+        fill['phone'] = co[0]
     with crm.get_db() as db:
         supp = crm._suppression_index(db)
         if 'email' in fill and crm._suppressed_by(supp, '', crm._norm_email(fill['email']), ''):

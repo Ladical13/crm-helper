@@ -591,6 +591,25 @@ def migrate_db():
             );
             CREATE INDEX IF NOT EXISTS tpl_chan_idx ON templates(channel, audience);
 
+            -- The offer library (seeded from offers.json by seed_offers()).
+            CREATE TABLE IF NOT EXISTS offers (
+                key           TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                for_json      TEXT DEFAULT '[]',
+                status        TEXT DEFAULT 'draft',
+                headline      TEXT DEFAULT '',
+                intro         TEXT DEFAULT '',
+                bullets_json  TEXT DEFAULT '[]',
+                fine_print    TEXT DEFAULT '',
+                cta           TEXT DEFAULT '',
+                email_subject TEXT DEFAULT '',
+                email_body    TEXT DEFAULT '',
+                text_body     TEXT DEFAULT '',
+                updated_by    TEXT DEFAULT '',
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            );
+
             -- The National Do Not Call Registry, as downloaded by area code.
             -- NOT the suppression list: that is people who asked US to stop,
             -- forever. This is a residential registry that must be re-loaded
@@ -2489,6 +2508,249 @@ def tag_storms():
     return jsonify(storm_tag_leads())
 
 
+# ── Offers: the programs each kind of client is offered ───────────────────────
+#
+# A realtor gets the partner program, a property manager the preferred-vendor
+# terms, an HOA Community Shield, a past customer a storm check or a referral
+# thank-you. Each offer is a public one-page link (/crm/offer/<key>?r=<rep>)
+# carrying the sending rep's name, and a short email + text that link to it,
+# sent from the rep's own Gmail / phone like every other draft here.
+#
+# Offers are customer-facing promises, so going LIVE is gated, not just saved:
+# no [BRACKETED] placeholder left (an amount the owner has not set), no claim
+# on the unprovable list, and an {offer_link} in both the email and the text.
+# Seeded from offers.json by key, never overwriting a manager's edit.
+
+OFFER_FOR = LEAD_TYPE_KEYS + ['past_customer']
+OFFER_STATUSES = ('draft', 'live', 'archived')
+OFFER_SLOTS = TEMPLATE_SLOTS + ('offer_link',)
+COMPANY_PHONE = '970-776-0945'
+COMPANY_ADDRESS = '115 E 5th St, Loveland, CO 80537'
+COMPANY_SITE = 'projectoneroofingcolorado.com'
+# Claims a customer-facing offer may not make unless the company can prove
+# them - agents/marketing_profile.json lists no provable differentiators yet.
+# A guarantee is a promise the business is on the hook for; say what you do.
+_OFFER_CLAIM_RE = re.compile(
+    r"\b(best|#\s?1|number one|premier|premium|top[- ]rated|leading|guarantee[ds]?|"
+    r"lowest|cheapest|unbeatable|a\+ (?:bbb )?rating|\d[\d,]*\+ (?:roofs|years|homes|jobs))\b", re.I)
+_PLACEHOLDER_RE = re.compile(r'\[[A-Z][A-Z _]*\]')
+
+
+def _offer_row(r):
+    d = dict(r)
+    d['for'] = json.loads(d.pop('for_json') or '[]')
+    d['bullets'] = json.loads(d.get('bullets_json') or '[]')
+    d.pop('bullets_json', None)
+    d['placeholders'] = sorted(set(_PLACEHOLDER_RE.findall(' '.join(
+        str(d.get(k) or '') for k in ('headline', 'intro', 'fine_print', 'cta', 'email_subject',
+                                      'email_body', 'text_body')) + ' ' + ' '.join(d['bullets']))))
+    return d
+
+
+def _offer_problems(o, going_live=False):
+    """What stops this offer from being saved (or, going live, from being sent)."""
+    out = []
+    if not (o.get('name') or '').strip():
+        out.append('Give the offer a name.')
+    if not (o.get('headline') or '').strip():
+        out.append('Add a headline.')
+    if not [b for b in (o.get('bullets') or []) if str(b).strip()]:
+        out.append('List at least one thing the client gets.')
+    bad_for = [f for f in (o.get('for') or []) if f not in OFFER_FOR]
+    if bad_for or not o.get('for'):
+        out.append('Pick who the offer is for.')
+    if o.get('status') not in OFFER_STATUSES:
+        out.append('Unknown status.')
+    msg = ' '.join(str(o.get(k) or '') for k in ('email_subject', 'email_body', 'text_body'))
+    unknown = sorted(set(_SLOT_RE.findall(msg)) - set(OFFER_SLOTS))
+    if unknown:
+        out.append('Unknown fill-in field: ' + ', '.join('{' + u + '}' for u in unknown) + '.')
+    low = msg.lower()
+    banned = [p for p in (TEMPLATES.get('banned_phrases') or []) if p in low]
+    if banned:
+        out.append('Reads like bulk mail: "' + '", "'.join(banned) + '".')
+    if going_live:
+        page = ' '.join(str(o.get(k) or '') for k in ('headline', 'intro', 'fine_print', 'cta')) \
+            + ' ' + ' '.join(o.get('bullets') or []) + ' ' + msg
+        holes = sorted(set(_PLACEHOLDER_RE.findall(page)))
+        if holes:
+            out.append('Fill in ' + ', '.join(holes) + ' before this goes live.')
+        claims = sorted({m.group(0) for m in _OFFER_CLAIM_RE.finditer(page)})
+        if claims:
+            out.append('Claims we cannot back up yet: ' + ', '.join(f'"{c}"' for c in claims)
+                       + '. Say what we do instead.')
+        for k in ('email_body', 'text_body'):
+            if '{offer_link}' not in (o.get(k) or ''):
+                out.append(f'The {"email" if k == "email_body" else "text"} needs {{offer_link}} '
+                           'so the client can see the offer.')
+        sample = ' '.join(_fill(o.get('text_body') or '', dict(_template_ctx(
+            {'first_name': 'Alexandra', 'city': 'Fort Collins', 'company': 'Sycamore Court HOA'},
+            'Firstname Lastname'), offer_link='https://x.co/crm/offer/abcdefghij?r=abcdefgh')).split())
+        if len(sample) > TEXT_MAX_CHARS:
+            out.append(f'The text is too long ({len(sample)} characters filled in).')
+    return out
+
+
+def seed_offers():
+    """Insert any starter offer whose key has never been seeded. Never updates."""
+    lib = _load_json('offers.json', {'offers': []})
+    now = _now()
+    with get_db() as db:
+        for o in lib.get('offers') or []:
+            db.execute(
+                'INSERT OR IGNORE INTO offers (key, name, for_json, status, headline, intro, '
+                'bullets_json, fine_print, cta, email_subject, email_body, text_body, '
+                'updated_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (o['key'], o['name'], json.dumps(o.get('for') or []), o.get('status', 'draft'),
+                 o.get('headline', ''), o.get('intro', ''), json.dumps(o.get('bullets') or []),
+                 o.get('fine_print', ''), o.get('cta', ''), o.get('email_subject', ''),
+                 o.get('email_body', ''), o.get('text_body', ''), 'seed', now, now))
+
+
+def _offers_for(db, lead):
+    """Live offers that fit this lead: its own type, or past_customer."""
+    targets = {lead.get('lead_type') or 'homeowner'}
+    if _audience_for(lead) == 'past_customer':
+        targets.add('past_customer')
+    rows = [_offer_row(r) for r in db.execute(
+        "SELECT * FROM offers WHERE status = 'live' ORDER BY name")]
+    return [o for o in rows if targets & set(o['for'])]
+
+
+def _offer_link(key, rep):
+    root = (request.url_root if request else '/').rstrip('/')
+    return f'{root}/offer/{key}' + (f'?r={quote(rep)}' if rep else '')
+
+
+def _render_offer(o, lead, rep):
+    ctx = dict(_template_ctx(lead, pusers.display_name(rep)), offer_link=_offer_link(o['key'], rep))
+    body = _fill(o['email_body'], ctx)
+    sig = TEMPLATES.get('signature', '')
+    if sig:
+        body += '\n\n' + _fill(sig, ctx)
+    return {'key': o['key'], 'name': o['name'], 'link': ctx['offer_link'],
+            'email': {'subject': _fill(o['email_subject'], ctx), 'body': body},
+            'text': ' '.join(_fill(o['text_body'], ctx).split())}
+
+
+@app.route('/api/offers', methods=['GET'])
+@login_required
+def list_offers():
+    """Every offer for a manager; live ones for a rep."""
+    with get_db() as db:
+        q = 'SELECT * FROM offers ' + ('' if is_manager() else "WHERE status = 'live' ") + 'ORDER BY name'
+        rows = [_offer_row(r) for r in db.execute(q)]
+        sends = {r['k']: r['n'] for r in db.execute(
+            "SELECT substr(body, 8, instr(substr(body, 8), ']') - 1) k, COUNT(*) n "
+            "FROM activities WHERE body LIKE '[offer:%' GROUP BY k")}
+    for o in rows:
+        o['sent'] = sends.get(o['key'], 0)
+    return jsonify(rows)
+
+
+@app.route('/api/offers/<key>', methods=['PUT'])
+@admin_required
+def update_offer(key):
+    data = request.get_json(force=True) or {}
+    with get_db() as db:
+        row = db.execute('SELECT * FROM offers WHERE key=?', (key,)).fetchone()
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        o = _offer_row(row)
+        for k in ('name', 'status', 'headline', 'intro', 'fine_print', 'cta',
+                  'email_subject', 'email_body', 'text_body'):
+            if k in data:
+                o[k] = str(data.get(k) or '').strip()
+        if 'bullets' in data:
+            o['bullets'] = [str(b).strip() for b in (data.get('bullets') or []) if str(b).strip()]
+        if 'for' in data:
+            o['for'] = [f for f in (data.get('for') or []) if isinstance(f, str)]
+        problems = _offer_problems(o, going_live=o['status'] == 'live')
+        if problems:
+            return jsonify({'error': ' '.join(problems), 'problems': problems}), 400
+        db.execute('UPDATE offers SET name=?, for_json=?, status=?, headline=?, intro=?, '
+                   'bullets_json=?, fine_print=?, cta=?, email_subject=?, email_body=?, '
+                   'text_body=?, updated_by=?, updated_at=? WHERE key=?',
+                   (o['name'], json.dumps(o['for']), o['status'], o['headline'], o['intro'],
+                    json.dumps(o['bullets']), o['fine_print'], o['cta'], o['email_subject'],
+                    o['email_body'], o['text_body'], current_rep(), _now(), key))
+        row = db.execute('SELECT * FROM offers WHERE key=?', (key,)).fetchone()
+    return jsonify(_offer_row(row))
+
+
+@app.route('/api/offers/<key>/check', methods=['POST'])
+@admin_required
+def check_offer(key):
+    """What would stop this offer going live, without saving anything."""
+    with get_db() as db:
+        row = db.execute('SELECT * FROM offers WHERE key=?', (key,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    o = dict(_offer_row(row), **{k: v for k, v in (request.get_json(silent=True) or {}).items()
+                                 if k in ('name', 'headline', 'intro', 'fine_print', 'cta',
+                                          'email_subject', 'email_body', 'text_body', 'bullets', 'for')})
+    return jsonify({'problems': _offer_problems(dict(o, status='live'), going_live=True)})
+
+
+def _he(s):
+    return (str(s or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            .replace('"', '&quot;'))
+
+
+@app.route('/offer/<key>')
+def offer_page(key):
+    """The public one-page version of an offer, carrying the sending rep's name.
+
+    Public by design - it is marketing a client was sent - but only for a LIVE
+    offer. A manager signed in may preview a draft (marked as such). The rep
+    shown must be a real account; anything else shows the company's own line.
+    """
+    with get_db() as db:
+        row = db.execute('SELECT * FROM offers WHERE key=?', (key,)).fetchone()
+    if not row:
+        return 'Not found', 404
+    o = _offer_row(row)
+    preview = o['status'] != 'live'
+    if preview and not (session.get('username') and is_manager()):
+        return 'This offer is not available.', 404
+    rep = pusers.get((request.args.get('r') or '').strip().lower())
+    rep_name = pusers.display_name(rep['username']) if rep else ''
+    rep_email = pusers.email_of(rep['username']) if rep else ''
+    bullets = ''.join(f'<li>{_he(b)}</li>' for b in o['bullets'])
+    contact = (f'<div class="rep"><b>{_he(rep_name)}</b><br>'
+               f'<a href="mailto:{_he(rep_email)}">{_he(rep_email)}</a><br>'
+               f'<a href="tel:{COMPANY_PHONE}">{COMPANY_PHONE}</a></div>') if rep else \
+              (f'<div class="rep"><b>Project One Roofing</b><br>'
+               f'<a href="tel:{COMPANY_PHONE}">{COMPANY_PHONE}</a></div>')
+    reply = (f'mailto:{_he(rep_email)}?subject=' + quote(o['name'])) if rep else f'tel:{COMPANY_PHONE}'
+    html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>{_he(o['name'])} · Project One Roofing</title><style>
+:root{{--navy:#0f2a4a;--orange:#f97316;--ink:#1f2937;--mute:#6b7280;--line:#e5e7eb}}
+*{{box-sizing:border-box}}body{{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--ink);background:#f6f7f9;-webkit-text-size-adjust:100%}}
+.wrap{{max-width:720px;margin:0 auto;padding:16px}}.card{{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden}}
+.top{{background:var(--navy);color:#fff;padding:22px 24px}}.brand{{font-size:12px;letter-spacing:.14em;text-transform:uppercase;opacity:.8}}
+h1{{margin:8px 0 6px;font-size:26px;line-height:1.2}}.intro{{margin:0;opacity:.92;font-size:15px;line-height:1.5}}
+.body{{padding:22px 24px}}h2{{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);margin:0 0 10px}}
+ul{{margin:0 0 18px;padding-left:20px;line-height:1.55;font-size:15px}}li{{margin-bottom:6px}}
+.cta{{display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between;background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:16px}}
+.cta a.btn{{background:var(--orange);color:#fff;text-decoration:none;font-weight:700;padding:12px 16px;border-radius:10px}}
+.rep{{font-size:14px;line-height:1.5}}.rep a{{color:var(--navy)}}.fine{{font-size:12px;color:var(--mute);margin-top:18px;line-height:1.5}}
+.foot{{font-size:12px;color:var(--mute);padding:14px 24px;border-top:1px solid var(--line)}}
+.draft{{background:#fef3c7;color:#92400e;padding:8px 24px;font-size:13px;font-weight:600}}
+@media print{{body{{background:#fff}}.wrap{{padding:0}}.card{{border:none}}.cta a.btn{{display:none}}}}
+</style></head><body><div class="wrap"><div class="card">
+{'<div class="draft">Draft preview - not visible to clients until it goes live.</div>' if preview else ''}
+<div class="top"><div class="brand">Project One Roofing · Colorado</div><h1>{_he(o['headline'])}</h1>
+<p class="intro">{_he(o['intro'])}</p></div>
+<div class="body"><h2>What you get</h2><ul>{bullets}</ul>
+<div class="cta"><div>{_he(o['cta'])}</div>{contact}<a class="btn" href="{reply}">Get in touch</a></div>
+{f'<p class="fine">{_he(o["fine_print"])}</p>' if o['fine_print'] else ''}</div>
+<div class="foot">Project One Roofing · {COMPANY_ADDRESS} · {COMPANY_PHONE} · {COMPANY_SITE}<br>
+Licensed in all local jurisdictions we serve.</div></div></div></body></html>"""
+    return html
+
+
 # ── Template library ──────────────────────────────────────────────────────────
 #
 # Emails, texts and voicemail scripts, editable by managers on the Playbook tab
@@ -2672,7 +2934,8 @@ def lead_messages(lead_id):
         lead = dict(row)
         touches = _touch_count(db, lead_id)
         step = _draft_step(touches)
-        out = {'step': step, 'touches': touches, 'audience': _audience_for(lead)}
+        out = {'step': step, 'touches': touches, 'audience': _audience_for(lead),
+               'offers': [_render_offer(o, lead, current_rep()) for o in _offers_for(db, lead)]}
         for ch in TEMPLATE_CHANNELS:
             fit = _templates_for(db, lead, ch)
             best = _pick(fit, step)
@@ -2714,6 +2977,12 @@ def log_outcome(lead_id):
             return jsonify({'error': 'Not found'}), 404
         lead = dict(row)
         now = _now()
+        offer_key = (data.get('offer') or '').strip()
+        if offer_key and db.execute("SELECT 1 FROM offers WHERE key=? AND status='live'",
+                                    (offer_key,)).fetchone():
+            # A tagged note, so the offer library can count what was sent.
+            data['body'] = (f'[offer:{offer_key}] Sent the offer. '
+                            + (data.get('body') or '')).strip()
         tpl = (data.get('template_id') or '').strip()
         if tpl and not db.execute('SELECT 1 FROM templates WHERE id=?', (tpl,)).fetchone():
             tpl = ''
@@ -3467,6 +3736,7 @@ def health():
                     'plans': len(PLANS)})
 
 seed_templates()
+seed_offers()
 
 if __name__ == '__main__':
     app.run(debug=True, port=5002)
