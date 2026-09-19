@@ -1125,7 +1125,28 @@ def update_lead(lead_id):
         db.execute(f'UPDATE leads SET {", ".join(sets)} WHERE id=?', params)
         _refresh_contact_quality(db, lead_id)
         row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
+    if any(k in data for k in ('address', 'city', 'state', 'zip')):
+        _relocate(dict(row))
     return jsonify(_lead_row(row))
+
+
+def _relocate(lead):
+    """Geocode one lead's address now, so a fixed address is back in the
+    storm join immediately instead of waiting for the next backfill. One
+    Census call, free; a failure is logged and never fails the save."""
+    if os.environ.get('SALESCRM_GEOCODE_ON_EDIT', '1').strip() in ('0', 'false', 'no'):
+        return None
+    if not (lead.get('address') or '').strip():
+        return None
+    try:
+        from portal import geo
+        geo.geocode([(lead.get('address', ''), lead.get('city', ''),
+                      lead.get('state', ''), lead.get('zip', ''))])
+        return geo.lookup(lead.get('address', ''), lead.get('city', ''),
+                          lead.get('state', ''), lead.get('zip', ''))
+    except Exception as e:
+        print(f'[geo] relocate failed for {lead.get("id")}: {e}')
+        return None
 
 @app.route('/api/leads/<lead_id>/stage', methods=['PATCH'])
 @login_required
@@ -2436,6 +2457,20 @@ def list_storms():
         tagged = db.execute("SELECT COUNT(*) FROM leads WHERE recent_storm != ''").fetchone()[0]
     return jsonify({'events': shown, 'statewide': len(evs), 'min_size_in': STORM_MIN_IN,
                     'leads_tagged': tagged, 'leads_unplaced': len(leads) - len(placed)})
+
+
+@app.route('/api/leads/unplaced')
+@login_required
+def unplaced_leads():
+    """Leads whose address could not be located, so no storm can be checked
+    against them. Fixing the address on the lead re-locates it on save."""
+    clause, params = ("rep=? AND ", [current_rep()]) if not is_manager() else ('', [])
+    with get_db() as db:
+        rows = [dict(r) for r in db.execute(
+            f"SELECT * FROM leads WHERE {clause}dnc = 0 AND address != '' "
+            "ORDER BY company, last_name", params)]
+    out = [_lead_row(r) for r in rows if not _lead_point(r)]
+    return jsonify(out)
 
 
 @app.route('/api/storms/<event_id>/queue', methods=['POST'])

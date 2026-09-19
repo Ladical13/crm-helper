@@ -159,3 +159,27 @@ def test_the_storm_list_shows_only_storms_over_our_leads(client):
     evs = {e['event_id']: e for e in client.get('/api/storms?days=60').get_json()['events']}
     assert evs[over['event_id']]['affected'] == 1
     assert plains['event_id'] not in evs
+
+
+def test_leads_that_cannot_be_located_are_listed_for_fixing(client):
+    signup(client)
+    lost = _lead(client, '13 Nowhere Rd')
+    placed = _lead(client, '14 Hail Way')
+    _place(placed, *FOCO)
+    ids = [l['id'] for l in client.get('/api/leads/unplaced').get_json()]
+    assert lost['id'] in ids and placed['id'] not in ids
+
+
+def test_fixing_the_address_locates_it_on_save(client, monkeypatch):
+    signup(client)
+    a = _lead(client, 'PO Box 12')
+    monkeypatch.setenv('SALESCRM_GEOCODE_ON_EDIT', '1')
+
+    def fake_geocode(addresses, post=None):
+        for addr in addresses:
+            geo.put(' '.join(p for p in addr if p), *FOCO)
+        return {'ok': len(addresses)}
+    monkeypatch.setattr(geo, 'geocode', fake_geocode)
+    client.put(f'/api/leads/{a["id"]}', json={'address': '15 Hail Way'})
+    ids = [l['id'] for l in client.get('/api/leads/unplaced').get_json()]
+    assert a['id'] not in ids

@@ -9,6 +9,7 @@ os.environ.setdefault('SALESCRM_DATA_DIR', _TMP)
 # Accounts live in the portal's shared store now, not salescrm.db.
 os.environ.setdefault('PORTAL_DATA_DIR', _TMP)
 os.environ.pop('BASE44_TOKEN', None)   # ensure Den calls degrade gracefully
+os.environ.setdefault('SALESCRM_GEOCODE_ON_EDIT', '0')   # no Census calls from tests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as appmod  # noqa: E402

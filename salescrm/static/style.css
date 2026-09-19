@@ -509,3 +509,4 @@ details.dsec[open] summary{margin-bottom:14px}#lead-details{scroll-margin-top:16
 .rs-cites a{color:var(--brand2)}
 .rs-ok{color:#86efac;font-weight:600}
 .rs-btns{margin-top:8px}
+.linkish{background:none;border:none;padding:0;color:var(--brand2);text-decoration:underline;font:inherit;cursor:pointer}

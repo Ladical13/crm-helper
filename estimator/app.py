@@ -24003,6 +24003,38 @@ def _check_hail_nightly():
             print(f'[hail] storm follow-ups failed: {exc}')
 
 
+def _check_research_nightly():
+    """Research new, unresearched CRM prospects every night (agents.b2b.reenrich).
+
+    The Nimbus importer only researches its top picks, so every other imported
+    row arrived as a front desk with no name. Up to RESEARCH_NIGHTLY_LIMIT
+    (default 100) a night, after 13:00 UTC, under the Perplexity spend cap.
+    Runs in its own thread - a hundred searches take minutes and must not hold
+    up the backups and reminders on this loop. RESEARCH_NIGHTLY=0 to stop."""
+    if os.environ.get('RESEARCH_NIGHTLY', '1').strip() in ('0', 'false', 'no'):
+        return
+    if not os.environ.get('PERPLEXITY_API_KEY') or datetime.utcnow().hour < 13:
+        return
+    lock = os.path.join(REMINDER_LOCKS_DIR, f'research_{datetime.utcnow().strftime("%Y-%m-%d")}.lock')
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except (FileExistsError, OSError):
+        return
+    crm = sys.modules.get('p1_crm_app')
+    if crm is None:
+        return
+
+    def _go():
+        try:
+            from agents.b2b import reenrich
+            limit = int(os.environ.get('RESEARCH_NIGHTLY_LIMIT', '100') or 100)
+            print(f'[research] nightly: {reenrich.run(crm, limit=limit, log=lambda *_: None)}')
+        except Exception as exc:
+            print(f'[research] nightly failed: {exc}')
+    threading.Thread(target=_go, daemon=True).start()
+
+
 def _reminder_loop():
     time.sleep(30)  # let the app finish booting
     while True:
@@ -24014,6 +24046,10 @@ def _reminder_loop():
             _check_daily_backup()
         except Exception as exc:
             print(f'[backup] check failed: {exc}')
+        try:
+            _check_research_nightly()
+        except Exception as exc:
+            print(f'[research] check failed: {exc}')
         try:
             _check_hail_nightly()
         except Exception as exc:

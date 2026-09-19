@@ -416,10 +416,11 @@ async function renderStorms(){
   let st; try{ st=await api('/storms?days=60'); }catch(e){ return; }
   if(!st.events.length){ box.classList.add('hidden'); return; }
   box.classList.remove('hidden');
-  box.innerHTML=`<div class="storm-h">⛈ Storms over your leads, last 60 days (${st.min_size_in}"+ hail) · ${st.leads_tagged} leads carry a hail line${st.leads_unplaced?` · ${st.leads_unplaced} leads have no location and can't be checked`:''}</div>`+
+  box.innerHTML=`<div class="storm-h">⛈ Storms over your leads, last 60 days (${st.min_size_in}"+ hail) · ${st.leads_tagged} leads carry a hail line${st.leads_unplaced?` · <button class="linkish" id="fix-addr">${st.leads_unplaced} leads can't be located - fix addresses</button>`:''}</div>`+
     st.events.slice(0,6).map(e=>`<div class="storm-row"><span><b>${esc(e.event_date)}</b> · ${e.affected} lead${e.affected===1?'':'s'} under it</span>
       <span class="lead-context">${e.queued} queued</span>
       <button class="btn-ghost small" data-storm="${esc(e.event_id)}">Queue follow-ups</button></div>`).join('');
+  const fx=box.querySelector('#fix-addr'); if(fx) fx.onclick=fixAddressesModal;
   box.querySelectorAll('[data-storm]').forEach(b=>b.onclick=async()=>{
     b.disabled=true;
     try{ const r=await api('/storms/'+encodeURIComponent(b.dataset.storm)+'/queue',{method:'POST'});
@@ -427,6 +428,19 @@ async function renderStorms(){
       renderStorms(); renderOutreach();
     }catch(e){ toast(e.message,true); b.disabled=false; }
   });
+}
+
+// Leads whose address the geocoder could not place: no storm can be checked
+// against them. Open one, correct the address, and saving re-locates it.
+async function fixAddressesModal(){
+  let rows=[]; try{ rows=await api('/leads/unplaced'); }catch(e){ toast(e.message,true); return; }
+  openModal(`Addresses to fix (${rows.length})`,`
+    <p class="lead-context">These couldn't be placed on a map - usually a PO box, a typo or a new street.
+    Open one and correct the street address; saving locates it again.</p>
+    <div class="mini-lead-list">${rows.map(l=>`<div class="mini-lead" data-fix="${esc(l.id)}">
+      <div class="nm">${esc(l.name)}</div><div class="sub">${esc([l.address,l.city,l.zip].filter(Boolean).join(', '))}</div></div>`).join('')
+      ||'<div class="empty">Every address is located.</div>'}</div>`,null,{hideOk:true});
+  $$('#modal-box [data-fix]').forEach(r=>r.onclick=()=>{ closeModal(); openLead(r.dataset.fix); });
 }
 
 // Managers: the Do Not Call registry has to be re-loaded every 31 days. The
