@@ -129,9 +129,15 @@ def _job_content_listen():
 
 
 def _job_social_weekly():
-    from .content import posts
+    from .content import posts, fun
     out = posts.weekly_run()
-    return out.get('note', '')
+    note = out.get('note', '')
+    try:
+        # The fun lineup rides along: Friday Funnies plus one rotating series.
+        note += ' · ' + fun.weekly_run().get('note', '')
+    except Exception as e:                       # fun must never sink the real posts
+        note += f' · fun posts failed: {e}'
+    return note
 
 
 JOBS = {

@@ -659,6 +659,23 @@ def update_draft(draft_id):
     return jsonify({'ok': True})
 
 
+@nimbus_bp.route('/api/content/fun', methods=['GET'])
+def fun_series():
+    from agents.content import fun
+    return jsonify([{'key': k, 'name': s['name'], 'day': s['day'], 'needs_photo': s['needs_photo']}
+                    for k, s in fun.SERIES.items()])
+
+
+@nimbus_bp.route('/api/content/fun', methods=['POST'])
+def draft_fun():
+    """Draft one fun series post now (Facebook + Instagram), for review."""
+    from agents.content import fun
+    key = (request.get_json(force=True, silent=True) or {}).get('series', '')
+    if key not in fun.SERIES:
+        return jsonify({'error': 'Choose a series'}), 400
+    return _start_marketing('fun-post', lambda: fun.build(key), False)
+
+
 @nimbus_bp.route('/api/content/topics/<int:topic_id>/draft', methods=['POST'])
 def draft_from_topic(topic_id):
     """Draft posts for one saved topic."""

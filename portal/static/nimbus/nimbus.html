@@ -746,6 +746,8 @@ async function renderDrafts() {
     <section class="panel">
       <h2>Content drafts
         <span>
+          <select id="fun-series" style="font-family:inherit;font-size:12px;padding:5px;border-radius:7px;margin-right:6px"></select>
+          <button class="btn" onclick="makeFunPost()" style="padding:6px 12px;border-radius:7px;background:var(--gradient);color:#001;border:none;font-weight:700;font-family:inherit;font-size:12px;cursor:pointer;margin-right:12px">🎉 Make a fun post</button>
           <label style="color:var(--dim);font-size:11px;margin-right:8px">
             <input type="radio" name="fs" value="" checked onchange="filterDrafts('')"> all
           </label>
@@ -764,6 +766,23 @@ async function renderDrafts() {
     </section>
   `;
   filterDrafts('');
+  fetch(`${BASE}/api/content/fun`).then(r => r.json()).then(list => {
+    const sel = document.getElementById('fun-series');
+    if (sel) sel.innerHTML = list.map(s => `<option value="${escapeHtml(s.key)}">${escapeHtml(s.name)} (${escapeHtml(s.day)})</option>`).join('');
+  }).catch(() => {});
+}
+
+// Fun series (agents/content/fun.py): drafted for Facebook + Instagram, into
+// this same review queue. Nothing posts until someone approves it.
+async function makeFunPost() {
+  const series = (document.getElementById('fun-series') || {}).value;
+  if (!series) return;
+  const r = await fetch(`${BASE}/api/content/fun`, {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({series})});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { flash(d.error || 'Could not start'); return; }
+  flash('Writing it - it will show up here in a minute');
+  setTimeout(() => filterDrafts(''), 45000);
 }
 
 async function filterDrafts(status) {
