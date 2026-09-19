@@ -341,8 +341,8 @@ async function renderStorms(){
   let st; try{ st=await api('/storms?days=60'); }catch(e){ return; }
   if(!st.events.length){ box.classList.add('hidden'); return; }
   box.classList.remove('hidden');
-  box.innerHTML=`<div class="storm-h">⛈ Storms in the last 60 days (${st.min_size_in}"+ hail) · ${st.leads_tagged} leads carry a hail line</div>`+
-    st.events.slice(0,6).map(e=>`<div class="storm-row"><span><b>${esc(e.event_date)}</b> · up to ${Number(e.max_size_in).toFixed(2)}"</span>
+  box.innerHTML=`<div class="storm-h">⛈ Storms over your leads, last 60 days (${st.min_size_in}"+ hail) · ${st.leads_tagged} leads carry a hail line${st.leads_unplaced?` · ${st.leads_unplaced} leads have no location and can't be checked`:''}</div>`+
+    st.events.slice(0,6).map(e=>`<div class="storm-row"><span><b>${esc(e.event_date)}</b> · ${e.affected} lead${e.affected===1?'':'s'} under it</span>
       <span class="lead-context">${e.queued} queued</span>
       <button class="btn-ghost small" data-storm="${esc(e.event_id)}">Queue follow-ups</button></div>`).join('');
   box.querySelectorAll('[data-storm]').forEach(b=>b.onclick=async()=>{

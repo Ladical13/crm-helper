@@ -2325,21 +2325,45 @@ def storm_nightly():
 @app.route('/api/storms')
 @login_required
 def list_storms():
-    """Recent storms that reached STORM_MIN_IN, with how many leads were queued."""
+    """Recent 1"+ storms that actually put hail over one of our leads.
+
+    The archive covers all of Colorado, where somewhere gets 1"+ hail most days
+    of the season - fifty "storms" in sixty days, mostly on the eastern plains.
+    Listing them all buried the few that matter, so each is joined to the open
+    leads first and only storms over at least one lead are shown, with how
+    many. Lead coordinates are resolved once, not once per storm.
+    """
     days = max(1, min(request.args.get('days', 60, type=int), 400))
     try:
-        from hail import storms
+        from hail import join as hjoin, storms
         since = (_now_dt() - timedelta(days=days)).strftime('%Y-%m-%d')
-        evs = storms.events(since=since, min_size=STORM_MIN_IN, limit=50)
+        evs = storms.events(since=since, min_size=STORM_MIN_IN, limit=100)
     except Exception as e:
         return jsonify({'events': [], 'error': f'Hail archive unavailable: {e}'})
     with get_db() as db:
+        leads = [dict(r) for r in db.execute(
+            "SELECT id, address, city, state, zip FROM leads WHERE dnc = 0 AND address != '' "
+            f"AND outreach_status NOT IN ({','.join('?' * len(STORM_CLOSED_STATUSES))})",
+            list(STORM_CLOSED_STATUSES))]
+        placed = []
+        for l in leads:
+            pt = _lead_point(l)
+            if pt:
+                l['lat'], l['lng'] = pt
+                placed.append(l)
+        shown = []
         for ev in evs:
+            hits, _ = hjoin.affected(storms.load_swath(ev['event_id']), placed,
+                                     min_size=STORM_MIN_IN)
+            ev['affected'] = len(hits)
             ev['queued'] = db.execute(
                 'SELECT COUNT(DISTINCT lead_id) FROM activities WHERE body LIKE ?',
                 (f'%{_storm_marker(ev["event_id"])}%',)).fetchone()[0]
+            if ev['affected'] or ev['queued']:
+                shown.append(ev)
         tagged = db.execute("SELECT COUNT(*) FROM leads WHERE recent_storm != ''").fetchone()[0]
-    return jsonify({'events': evs, 'min_size_in': STORM_MIN_IN, 'leads_tagged': tagged})
+    return jsonify({'events': shown, 'statewide': len(evs), 'min_size_in': STORM_MIN_IN,
+                    'leads_tagged': tagged, 'leads_unplaced': len(leads) - len(placed)})
 
 
 @app.route('/api/storms/<event_id>/queue', methods=['POST'])

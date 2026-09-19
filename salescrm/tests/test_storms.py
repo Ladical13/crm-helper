@@ -146,3 +146,16 @@ def test_a_rep_cannot_trigger_a_storm_queue(client):
     ev = _storm('2026-06-10', (*FOCO, 1.5))
     signup(client, 'casey')
     assert client.post(f'/api/storms/{ev["event_id"]}/queue').status_code == 403
+
+
+def test_the_storm_list_shows_only_storms_over_our_leads(client):
+    """Colorado gets 1"+ hail somewhere most days; the list is for ours."""
+    signup(client)
+    a = _lead(client, '12 Hail Way')
+    here = (40.5101, -105.0203)
+    _place(a, *here)
+    over = _storm(_ago(5), (*here, 1.5))
+    plains = _storm(_ago(6), (39.2001, -102.3002, 3.0))       # Kit Carson County
+    evs = {e['event_id']: e for e in client.get('/api/storms?days=60').get_json()['events']}
+    assert evs[over['event_id']]['affected'] == 1
+    assert plains['event_id'] not in evs
