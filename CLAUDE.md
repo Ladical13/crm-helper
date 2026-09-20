@@ -569,16 +569,17 @@ Hail is **not a canvasser feature**. It is the company's primary data product,
 so it lives in its own package with its own database (`HAIL_DATA_DIR/hail.db`,
 falling back to `PORTAL_DATA_DIR` — never to `DATA_DIR`, which is the
 estimator's volume). The canvasser looks addresses up in it
-(`/api/hail/address`), Nimbus joins against it, storm-scout reports it, the CRM
-segments on it.
+(`/api/hail/address`) and draws it (`/api/hail/cells`), Nimbus joins against
+it, storm-scout reports it, the CRM segments on it.
 
 ```bash
 cd hail && pytest          # grid quantization, units, re-ingest, the join
 ```
 
 **Why this exists at all: the canvasser's hail engine read the wrong data
-product.** (Half-fixed 2026-09-20 — `/api/hail/address` now reads this archive;
-the map overlay is the part still on SPC.) NOAA SPC filtered storm reports
+product.** (Fixed 2026-09-20, both halves — the address lookup and the map
+overlay now read this archive; the SPC routes stay as the fallback for dates
+nobody has backfilled.) NOAA SPC filtered storm reports
 (`canvasser/app.py`) are *human-called-in points* — a spotter phoned it in — so
 they are sparse and biased toward where people are. A subdivision can be shelled at 2am and produce
 zero reports. MRMS **MESH** (Maximum Estimated Size of Hail) is radar-derived
