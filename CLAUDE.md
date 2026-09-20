@@ -374,17 +374,87 @@ python -m portal.wsgi                 # dev: run the portal, canvasser is at /ca
   `user-scalable=no` stays — this is a full-screen map and page zoom on a stray
   pinch fights Leaflet's own gestures.
 
+### Hail by Address reads the radar archive (2026-09-20)
+
+`hail/storms.py` was written to replace this endpoint — `history_at`'s own
+docstring says so — and then nothing ever pointed at it, so the archive filled
+while the tool the reps hold went on scanning five years of NOAA CSVs to answer
+a weaker question slowly. `/api/hail/address` is that wiring.
+
+- **SPC and MESH answer different questions and the response says which one
+  answered.** SPC filtered reports are human call-ins, so the most they support
+  is "a spotter reported 1.75 inch hail four miles from here"; MESH is radar
+  over a continuous ~1km grid and answers "what size hail did radar estimate
+  over THIS roof". The payload carries `source` (`mrms_mesh` / `noaa_spc`) and
+  `renderHailAddressResults` branches on it rather than on the shape of the
+  rows — presenting a call-in four miles off in the radar's language is the
+  overclaim the archive exists to stop.
+- **An empty archive falls back to SPC rather than to a blank screen**, and
+  `_mesh_history()` returns `None` — never an empty result — to say so. This is
+  the load-bearing distinction: a day with no qualifying hail IS recorded
+  (`storms.record`), so "radar checked this roof and never saw hail" and
+  "nobody ingested this period" are different answers, and only the first is
+  safe to repeat on a doorstep. `ingested_dates()` is what tells them apart and
+  `coverage` is what puts it on screen.
+- **The reported size is this roof's own cell**, never a neighbour's and never
+  interpolated — `Swath.size_at()`'s rule, and the whole reason MESH beats a
+  radius search.
+- **A lat/lng lookup touches no third-party service at all.** No geocoder, no
+  NOAA. That is what makes "Hail here" answer instantly on the tapped
+  structure. `_geocode_one()` reads `portal.geo`'s cache before Nominatim and
+  writes hits back; misses are not cached, because `pgeo.lookup()` cannot tell
+  a stored `nomatch` from an address it has never seen.
+- Pinned by `canvasser/tests/test_hail_archive.py`.
+
+### The offline outbox — a door saved in a dead zone is not a door lost
+
+A pin POST that failed used to `alert()` and drop the pin: the one write this
+tool exists to capture, thrown away at the exact moment it exists for. A rep
+who loses a door once stops trusting the app.
+
+- **Every queued save carries a `client_id` and `create_pin` is idempotent on
+  it.** The common case is not a save that failed but a save that SUCCEEDED
+  whose response never made it back, and the queue cannot tell those apart. A
+  replay returns the stored row with **200** rather than 201. A duplicate is
+  worse than a loss: a lost pin is a door nobody recorded, a duplicated one is
+  a door two reps each believe the other knocked, and it inflates the
+  leaderboard they are paid on.
+- **The unique index is PARTIAL** (`WHERE client_id != ''`), because every pin
+  written before this existed carries an empty string and a plain unique index
+  would make the whole table one row. It is scoped `(rep, client_id)` — the id
+  comes from a browser, so it is only unique per rep by construction, and an
+  unscoped replay could hand one rep another rep's contact details.
+- **The queue is IndexedDB.** iOS reclaiming a backgrounded tab is the normal
+  end of a canvassing session, not an edge case.
+- **No Background Sync, deliberately.** It is the textbook answer and it is the
+  wrong one here: WebKit has never shipped it, and every rep runs this as an
+  installed PWA on an iPhone. A `sync` handler would be dead code on precisely
+  the devices the feature exists for, while reading as though the problem were
+  solved. `flushOutbox()` is driven by the page instead — boot, `online`, and
+  `visibilitychange`, which is what actually fires when a phone goes back in a
+  pocket between streets.
+- **A 4xx leaves the queue, a 5xx and a dead network stay in it.** A bad pin
+  type will never succeed however often it is retried, and an outbox that never
+  drains is invisible. A 401 stops the flush without dropping anything —
+  `postPinRaw()` exists so a background flush reports instead of redirecting,
+  because `api()` would throw a rep out of the app mid-street.
+- **A queued pin is drawn for its own rep** (`pendingPinFrom`,
+  `restorePendingPins`), dimmed and pulsing, and tapping it does NOT open the
+  detail panel — it has no server id, so edit, delete and Add to Pipeline would
+  all address a row that does not exist. Everything storage-related degrades to
+  a no-op rather than throwing: private browsing and blocked site data are real
+  states, and failing to drop a pin at all would be worse than losing the queue.
+- Pinned by `canvasser/tests/test_outbox.py`.
+
 ### Known gaps, from the 2026-09-06 review
 
 Found by reading the whole app, deliberately NOT fixed in the same pass, and
 listed here because otherwise they live only in a chat log. Roughly in the
 order they cost the business something.
 
-- **A failed pin save is lost.** The service worker gives an offline app
-  *shell* and `/api/*` is network-first, but a pin POST that fails just
-  `alert()`s. This tool exists for driveways on one bar of signal and then
-  throws away the one write that matters. Needs an IndexedDB outbox and
-  Background Sync.
+- ~~A failed pin save is lost.~~ **Fixed 2026-09-20** — see the outbox note
+  above. Left here because it was the top item for a reason: it was the gate
+  on rolling this tool out to anyone.
 - **No voice notes.** Typing at a door in February with gloves on does not
   happen, which makes this the highest-adoption feature available.
 - **No photos on a pin**, so a rep at an `inspected` door has nowhere to put
@@ -397,14 +467,23 @@ order they cost the business something.
 - **"Add to Pipeline" is a second button a rep has to remember**, and it needs
   a contact name. An appointment with neither gets no lead, no cadence, no
   task and no leaderboard credit.
-- **Nominatim is used against its usage policy.** Every pin drop reverse
-  geocodes and every hail search forward geocodes, with no cache and no rate
-  limit, from one Railway IP; OSM's policy is 1 req/sec and forbids bulk use.
-  When it is cut off, address autofill dies **silently** (`.catch(() => {})`)
-  and hail-by-address 502s. `portal/geo.py` now exists to cache these.
+- **Nominatim is still used against its usage policy on the pin-drop path.**
+  OSM's policy is 1 req/sec and forbids bulk use, and this runs from one
+  Railway IP. Half-closed as of 2026-09-20: the hail-by-address *forward*
+  geocode now goes through `portal.geo`'s cache first (`_geocode_one`), so a
+  repeat lookup of the same street never leaves the box. Every **pin drop**
+  still reverse-geocodes uncached, which is the higher-volume path of the two.
+  When it is cut off, address autofill dies **silently** (`.catch(() => {})`).
 - **`no_soliciting` is only a pin colour.** Fort Collins, Loveland and Greeley
   all run solicitation permits and no-knock lists; nothing warns the next rep
   walking up to one.
+- **The map OVERLAY still draws NOAA SPC spotter reports**, even though the
+  address lookup beside it now reads radar. `/api/hail` and `/api/hail/range`
+  are the two routes left on the old product, and they draw
+  `max(400, size * 800)`-metre circles around each call-in — a damage footprint
+  that exists nowhere in the data. `Swath.cell_rects()` already returns the
+  real cells for drawing; what is missing is a route to serve them and a
+  rectangle layer to replace the circles.
 - **Nothing comes back from the CRM.** A pin gets `crm_lead_id` and then goes
   stale forever, so a door that became a signed roof still reads "Interested".
   That loop is the motivational payload of the whole tool.
@@ -428,17 +507,19 @@ homeowner whose first question is whether this person is real.
 Hail is **not a canvasser feature**. It is the company's primary data product,
 so it lives in its own package with its own database (`HAIL_DATA_DIR/hail.db`,
 falling back to `PORTAL_DATA_DIR` — never to `DATA_DIR`, which is the
-estimator's volume). The canvasser renders it, Nimbus joins against it,
-storm-scout reports it, the CRM segments on it.
+estimator's volume). The canvasser looks addresses up in it
+(`/api/hail/address`), Nimbus joins against it, storm-scout reports it, the CRM
+segments on it.
 
 ```bash
 cd hail && pytest          # grid quantization, units, re-ingest, the join
 ```
 
-**Why this exists at all: the canvasser's hail engine reads the wrong data
-product.** NOAA SPC filtered storm reports (`canvasser/app.py`) are
-*human-called-in points* — a spotter phoned it in — so they are sparse and
-biased toward where people are. A subdivision can be shelled at 2am and produce
+**Why this exists at all: the canvasser's hail engine read the wrong data
+product.** (Half-fixed 2026-09-20 — `/api/hail/address` now reads this archive;
+the map overlay is the part still on SPC.) NOAA SPC filtered storm reports
+(`canvasser/app.py`) are *human-called-in points* — a spotter phoned it in — so
+they are sparse and biased toward where people are. A subdivision can be shelled at 2am and produce
 zero reports. MRMS **MESH** (Maximum Estimated Size of Hail) is radar-derived
 over a continuous ~1km grid, every cell, whether or not anyone was standing
 there. SPC answers "did anybody report hail near here"; MESH answers "what size

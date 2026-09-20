@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from portal import dbtune                # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
+from portal import geo as pgeo          # noqa: E402
 
 try:
     import requests as http
@@ -43,6 +44,10 @@ BASE44_URL   = 'https://base44.app/api/apps/69320ef0c647fee442697971'
 DATA_DIR     = os.environ.get('CANVASSER_DATA_DIR',
                os.environ.get('DATA_DIR', HERE))
 DB_PATH      = os.path.join(DATA_DIR, 'canvasser.db')
+
+# Nominatim asks every caller to identify itself. One spelling, because three
+# copies of a contact string is three things to forget when it changes.
+NOMINATIM_UA = 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'
 
 PIN_TYPES = {
     'not_home':      {'label': 'Not Home',       'color': '#6B7280'},
@@ -119,6 +124,7 @@ def init_db():
                 crm_contact_id TEXT DEFAULT '',
                 crm_project_id TEXT DEFAULT '',
                 crm_lead_id   TEXT DEFAULT '',
+                client_id     TEXT DEFAULT '',
                 created_at    TEXT NOT NULL,
                 updated_at    TEXT NOT NULL
             );
@@ -153,6 +159,16 @@ def init_db():
         cols = [r['name'] for r in db.execute('PRAGMA table_info(pins)')]
         if 'crm_lead_id' not in cols:
             db.execute("ALTER TABLE pins ADD COLUMN crm_lead_id TEXT DEFAULT ''")
+        if 'client_id' not in cols:
+            db.execute("ALTER TABLE pins ADD COLUMN client_id TEXT DEFAULT ''")
+        # The offline outbox retries a pin it could not confirm, so the same
+        # save can arrive twice — and a duplicated door is worse than a lost
+        # one, because two reps then work a street each believing the other
+        # knocked it. The index is PARTIAL so that every pin written before
+        # this existed, and every pin from a client that sends no id, keeps
+        # its empty string without colliding with all the others.
+        db.execute('CREATE UNIQUE INDEX IF NOT EXISTS pins_client_id_idx '
+                   "ON pins(rep, client_id) WHERE client_id != ''")
 
 init_db()
 
@@ -309,14 +325,35 @@ def list_pins():
 @app.route('/api/pins', methods=['POST'])
 @login_required
 def create_pin():
+    """Create a pin. Idempotent when the client supplies a `client_id`.
+
+    A rep knocks doors in a driveway on one bar of signal, so the browser
+    queues a save it could not complete and retries it later — and a retry
+    whose first attempt actually landed (the row was written, the response was
+    lost on the way back) must not write a second door. The client stamps each
+    save with a UUID it keeps in its outbox; a replay of that id returns the
+    pin already stored, with 200 rather than 201 so the caller can tell the
+    difference, and the outbox drops the entry either way.
+
+    A duplicate is worse than a failure here: a lost pin is a door nobody
+    recorded, but a duplicated one is a door two reps each believe the other
+    knocked, and it inflates every count on the leaderboard that pays them.
+    """
     data = request.get_json(force=True)
     lat  = data.get('lat')
     lng  = data.get('lng')
     pin_type = data.get('pin_type', 'not_home')
+    client_id = str(data.get('client_id') or '').strip()[:64]
     if lat is None or lng is None:
         return jsonify({'error': 'lat/lng required'}), 400
     if pin_type not in PIN_TYPES:
         return jsonify({'error': 'Invalid pin type'}), 400
+    if client_id:
+        with get_db() as db:
+            seen = db.execute('SELECT * FROM pins WHERE rep=? AND client_id=?',
+                              (session['username'], client_id)).fetchone()
+        if seen:
+            return jsonify(_row_to_pin(seen)), 200
     pin = {
         'id':            str(uuid.uuid4()),
         'lat':           float(lat),
@@ -331,18 +368,32 @@ def create_pin():
         'crm_contact_id': '',
         'crm_project_id': '',
         'crm_lead_id':   '',
+        'client_id':     client_id,
         'created_at':    _now(),
         'updated_at':    _now(),
     }
-    with get_db() as db:
-        db.execute('''INSERT INTO pins
-            (id,lat,lng,address,pin_type,rep,notes,contact_name,contact_phone,
-             contact_email,crm_contact_id,crm_project_id,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (pin['id'], pin['lat'], pin['lng'], pin['address'], pin['pin_type'],
-             pin['rep'], pin['notes'], pin['contact_name'], pin['contact_phone'],
-             pin['contact_email'], '', '', pin['created_at'], pin['updated_at'])
-        )
+    try:
+        with get_db() as db:
+            db.execute('''INSERT INTO pins
+                (id,lat,lng,address,pin_type,rep,notes,contact_name,contact_phone,
+                 contact_email,crm_contact_id,crm_project_id,client_id,
+                 created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (pin['id'], pin['lat'], pin['lng'], pin['address'], pin['pin_type'],
+                 pin['rep'], pin['notes'], pin['contact_name'], pin['contact_phone'],
+                 pin['contact_email'], '', '', pin['client_id'],
+                 pin['created_at'], pin['updated_at'])
+            )
+    except sqlite3.IntegrityError:
+        # Two retries of the same queued pin raced each other. The unique index
+        # is the authority rather than the SELECT above, which cannot hold a
+        # lock across the gap; whichever lost reads back the winner's row.
+        with get_db() as db:
+            seen = db.execute('SELECT * FROM pins WHERE rep=? AND client_id=?',
+                              (session['username'], client_id)).fetchone()
+        if seen:
+            return jsonify(_row_to_pin(seen)), 200
+        raise
     pin['pin_meta'] = PIN_TYPES[pin_type]
     return jsonify(pin), 201
 
@@ -633,7 +684,7 @@ def geocode():
     try:
         r = http.get('https://nominatim.openstreetmap.org/search',
                      params={'q': q, 'format': 'json', 'limit': 3, 'countrycodes': 'us'},
-                     headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'},
+                     headers={'User-Agent': NOMINATIM_UA},
                      timeout=10)
         r.raise_for_status()
         results = [{'display_name': x['display_name'],
@@ -655,7 +706,7 @@ def reverse_geocode():
     try:
         r = http.get('https://nominatim.openstreetmap.org/reverse',
                      params={'lat': lat, 'lon': lng, 'format': 'json', 'zoom': 18},
-                     headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'},
+                     headers={'User-Agent': NOMINATIM_UA},
                      timeout=10)
         r.raise_for_status()
         data = r.json()
@@ -671,43 +722,106 @@ def reverse_geocode():
     except Exception as e:
         return jsonify({'error': str(e)}), 502
 
-@app.route('/api/hail/address')
-@login_required
-def hail_at_address():
-    """Hail history near an address (or lat/lng) over a lookback window.
+# ── Hail history at one address ───────────────────────────────────────────────
+#
+# MRMS MESH first; NOAA SPC only when the archive has nothing to say.
+#
+# The two data products answer different questions and only one of them closes
+# a homeowner. SPC filtered reports are human call-ins — a spotter phoned it in
+# — so they are sparse, biased toward where somebody happened to be standing,
+# and the most they can support is "a spotter reported 1.75 inch hail four
+# miles from here". A subdivision can be shelled at 2am and produce no reports
+# at all. MESH is radar-derived over a continuous ~1km grid, every cell,
+# whether or not anyone was outside: it answers "what size hail did radar
+# estimate over THIS roof, on this date".
+#
+# `hail/storms.py` was built to replace this endpoint — `history_at`'s own
+# docstring says so — and then nothing ever pointed at it, so the archive sat
+# full while the reps' tool went on scanning five years of daily CSVs. This is
+# that wiring. The SPC path is kept rather than deleted: `/api/hail` and
+# `/api/hail/range` still draw the map overlay from it, and an empty archive
+# has to degrade to the old answer rather than to a blank screen.
 
-    Params: q=<address> OR lat=&lng=, days=<lookback, default 1825, max 1825>,
-            radius=<miles, default 10>
-    Scans NOAA SPC daily CSVs; to keep it fast we only fetch days, so we cap
-    the scan by sampling: full scan for <=90 days, else the monthly summaries.
+MESH_SOURCE   = 'mrms_mesh'
+MESH_MAX_DAYS = 3650      # the archive starts 2020-10-14; asking past it is free
+SPC_MAX_DAYS  = 1825      # a full SPC scan is ~1200 CSVs, so this stays capped
+
+
+def _geocode_one(q):
+    """(lat, lng, display_name) for free text, or None. Cache before network.
+
+    Every pin drop and every hail search in this app geocodes, all from one
+    Railway IP, against a service whose stated policy is one request a second
+    and no bulk use. `portal.geo` is read first and written back after, so the
+    second rep to look up the same street never leaves the box. A miss still
+    falls through to Nominatim — one interactive lookup for one rep is exactly
+    what that policy allows.
+
+    Only hits are cached. `pgeo.lookup()` returns None for a stored `nomatch`
+    as well as for an address it has never seen, so caching a miss here would
+    save nothing; telling those two apart is the geocode backfill's job.
     """
+    hit = pgeo.lookup(q)
+    if hit:
+        return hit['lat'], hit['lng'], (hit.get('matched') or q)
     if not http:
-        return jsonify({'error': 'requests library not available'}), 500
-    q = (request.args.get('q') or '').strip()
-    lat = request.args.get('lat', type=float)
-    lng = request.args.get('lng', type=float)
-    resolved_name = ''
-    if lat is None or lng is None:
-        if not q:
-            return jsonify({'error': 'q (address) or lat/lng required'}), 400
-        try:
-            r = http.get('https://nominatim.openstreetmap.org/search',
-                         params={'q': q, 'format': 'json', 'limit': 1, 'countrycodes': 'us'},
-                         headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'},
-                         timeout=10)
-            r.raise_for_status()
-            hits = r.json()
-        except Exception as e:
-            return jsonify({'error': f'Geocoding failed: {e}'}), 502
-        if not hits:
-            return jsonify({'error': 'Address not found'}), 404
-        lat, lng = float(hits[0]['lat']), float(hits[0]['lon'])
-        resolved_name = hits[0]['display_name']
+        return None
+    r = http.get('https://nominatim.openstreetmap.org/search',
+                 params={'q': q, 'format': 'json', 'limit': 1, 'countrycodes': 'us'},
+                 headers={'User-Agent': NOMINATIM_UA}, timeout=10)
+    r.raise_for_status()
+    found = r.json()
+    if not found:
+        return None
+    lat, lng = float(found[0]['lat']), float(found[0]['lon'])
+    display = found[0].get('display_name', '')
+    pgeo.put(q, lat=lat, lng=lng, matched=display, source='nominatim')
+    return lat, lng, display
 
-    radius = min(float(request.args.get('radius', 10)), 50)
-    days   = min(int(request.args.get('days', 1825)), 1825)
 
-    # Severe-weather season heuristic: scan Mar–Oct days plus the last 45 days
+def _mesh_history(lat, lng, days, min_size=0.0):
+    """Radar-estimated hail over one point, newest first — or None.
+
+    None means the archive holds NO day inside the window, which is "nobody has
+    ingested that period", not "no hail fell there". Those two must stay
+    distinguishable or the tool tells a homeowner their roof is clean on the
+    strength of a database nobody ever filled — and a rep repeats it on a
+    doorstep. `record()` stores a day with zero cells for this same reason, and
+    `ingested_dates()` is the question's other half.
+
+    An empty `storms` list with coverage attached is therefore a real and
+    useful answer: radar looked at this roof on N days and it was never hit.
+    """
+    from hail import storms
+    since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
+    held = sorted(d for d in storms.ingested_dates(MESH_SOURCE) if d >= since)
+    if not held:
+        return None
+    hits = [h for h in storms.history_at(lat, lng, since=since, source=MESH_SOURCE)
+            if (h.get('size_in') or 0) >= min_size]
+    rows = [{'date': h['event_date'], 'size': round(h['size_in'], 2),
+             'event_id': h['event_id']} for h in hits]
+    return {
+        'storms':      rows,
+        'storm_count': len(rows),
+        'max_size':    max((r['size'] for r in rows), default=0),
+        'coverage': {'days_held': len(held), 'first': held[0], 'last': held[-1]},
+    }
+
+
+def _spc_at_point(lat, lng, q, resolved_name, days):
+    """The old answer: spotter call-ins within a radius. Fallback only."""
+    if not http:
+        return jsonify({'error': 'No hail archive for this period, and the '
+                                 'requests library is unavailable for the '
+                                 'NOAA fallback.'}), 503
+    try:
+        radius = min(float(request.args.get('radius', 10)), 50)
+    except (TypeError, ValueError):
+        radius = 10.0
+    days = min(days, SPC_MAX_DAYS)
+
+    # Severe-weather season heuristic: scan Mar-Oct days plus the last 45 days
     # fully; deep-winter hail in CO/TX is rare enough to skip. NOAA has no free
     # point-history API, so we scan daily CSVs (cached + parallel).
     now = datetime.utcnow()
@@ -734,11 +848,67 @@ def hail_at_address():
     reports.sort(key=lambda r: (r['date'], -r['size']), reverse=True)
     max_size = max((r['size'] for r in reports), default=0)
     return jsonify({
+        'source': 'noaa_spc', 'archive_empty': True,
         'query': q, 'resolved': resolved_name, 'lat': lat, 'lng': lng,
         'radius_miles': radius, 'lookback_days': days, 'days_scanned': scanned,
         'report_count': len(reports), 'max_size': max_size,
         'reports': reports[:100],
     })
+
+
+@app.route('/api/hail/address')
+@login_required
+def hail_at_address():
+    """Hail history at one address (or lat/lng), newest first.
+
+    Params: q=<address> OR lat=&lng=, days=<lookback, default 1825>,
+            min_size=<inches, default 0>, radius=<miles, SPC fallback only>.
+
+    The response always names its `source`, and the front end branches on that
+    rather than guessing. On `mrms_mesh` every number is about the roof itself
+    and `radius` means nothing at all; on `noaa_spc` they are call-ins some
+    distance away. Showing a spotter report four miles off as though it were
+    this house is the overclaim the archive exists to stop, so the two shapes
+    are never blended into one.
+
+    A lat/lng lookup on the MESH path touches no third-party service — no
+    geocoder, no NOAA — which is what makes "Hail here" answer instantly on the
+    tapped structure instead of after a minute of CSV scanning.
+    """
+    q = (request.args.get('q') or '').strip()
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+    resolved_name = ''
+    if lat is None or lng is None:
+        if not q:
+            return jsonify({'error': 'q (address) or lat/lng required'}), 400
+        try:
+            found = _geocode_one(q)
+        except Exception as e:
+            return jsonify({'error': f'Geocoding failed: {e}'}), 502
+        if not found:
+            return jsonify({'error': 'Address not found'}), 404
+        lat, lng, resolved_name = found
+
+    try:
+        days = min(int(request.args.get('days', 1825)), MESH_MAX_DAYS)
+    except (TypeError, ValueError):
+        days = 1825
+    days = max(days, 1)
+    try:
+        min_size = max(float(request.args.get('min_size', 0)), 0.0)
+    except (TypeError, ValueError):
+        min_size = 0.0
+
+    mesh = _mesh_history(lat, lng, days, min_size)
+    if mesh is not None:
+        return jsonify({
+            'source': MESH_SOURCE, 'query': q, 'resolved': resolved_name,
+            'lat': lat, 'lng': lng, 'lookback_days': days, 'min_size': min_size,
+            **mesh,
+        })
+    return _spc_at_point(lat, lng, q, resolved_name, days)
+
 
 # ── Pipeline handoff ──────────────────────────────────────────────────────────
 #
