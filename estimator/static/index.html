@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=239">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=240">
 </head>
 <body>
 
@@ -655,10 +655,13 @@
     <div class="modal-header">
       <h2>🔍 Price Book Audit</h2>
       <div class="modal-header-actions">
+        <button class="btn-secondary" onclick="reviewCostClasses()"
+                id="ccr-btn" title="Check which costs are filed as materials and which as labor">⚖️ Check Material/Labor</button>
         <button class="btn-secondary" onclick="window.print()">🖨 Print</button>
         <button onclick="closePbAudit()" class="modal-close">×</button>
       </div>
     </div>
+    <div id="ccr-body"></div>
     <div id="pbaudit-body" class="settings-body"></div>
   </div>
 </div>
@@ -883,6 +886,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=239"></script>
+<script src="/estimate/static/app.js?v=240"></script>
 </body>
 </html>

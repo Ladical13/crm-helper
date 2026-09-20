@@ -51,6 +51,13 @@ try:
 except ImportError:
     import carrier_scan                  # noqa: E402
 
+# A second reader for the price book's material/labor split. Proposals only —
+# it never writes, and it is never in the request path.
+try:
+    from . import cost_class_review      # noqa: E402
+except ImportError:
+    import cost_class_review             # noqa: E402
+
 try:
     import requests as http
 except ImportError:
@@ -22327,6 +22334,62 @@ def get_templates():
             result[trade] = pb_items
 
     return jsonify(result)
+
+
+@app.route('/api/pricebook/cost-class-review', methods=['POST'])
+def post_cost_class_review():
+    """Ask a second reader to check the material/labor split. Proposals only.
+
+    Manager-up, like the audit beside it, and for the same reason: it exposes
+    cost structure and it is the manager who acts on what it finds.
+
+    Nothing is written here. The response is a diff — current class, proposed
+    class, and a sentence of reasoning per row — and a manager approves rows
+    one at a time through `/api/pricebook/cost-class-apply`. That split is the
+    whole safety model, and it is the same one the jurisdiction verifier uses:
+    a model may find the thing, a human decides it.
+    """
+    if not _is_manager_up():
+        return _forbid()
+    if not cost_class_review.available():
+        return jsonify({'error': 'Cost-class review needs ANTHROPIC_API_KEY.',
+                        'available': False}), 503
+    pb = _ensure_bundle_catalogs(_load_price_book())
+    # The product's OWN stored class. `_cost_class_of` resolves a line ITEM
+    # through four tiers of linkage and is a different question entirely.
+    rows = cost_class_review.products_for_review(
+        pb, lambda p: _norm_cost_class(p.get('cost_class')))
+    try:
+        proposals = cost_class_review.review(rows)
+    except cost_class_review.ReviewError as e:
+        return jsonify({'error': str(e)}), 502
+    return jsonify({'reviewed': len(rows), 'proposals': proposals})
+
+
+@app.route('/api/pricebook/cost-class-apply', methods=['POST'])
+def post_cost_class_apply():
+    """Write the classes a manager ticked. Takes ids, never a whole review.
+
+    Deliberately not "apply the last review": the request carries the exact
+    rows approved, so a manager who reviewed forty and ticked three writes
+    three. There is nothing stored between the two calls that could go stale
+    or be replayed.
+
+    This can only ever move a cost between the two internal columns. It cannot
+    change a total, a sell price, a margin floor or a quantity — that is the
+    contract `tests/test_cost_split.py` holds down — so it is safe in the one
+    way that matters: no customer's price moves.
+    """
+    if not _is_manager_up():
+        return _forbid()
+    data = request.get_json(force=True) or {}
+    pb = _load_price_book()
+    changed = cost_class_review.apply(pb, data.get('approved'))
+    if changed:
+        _save_price_book(pb)
+        print(f'[cost-class] {len(changed)} product(s) reclassified by '
+              f'{session.get("user", "?")}')
+    return jsonify({'changed': changed, 'count': len(changed)})
 
 
 @app.route('/api/pricebook/audit', methods=['GET'])

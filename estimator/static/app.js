@@ -4118,6 +4118,97 @@ async function openPriceBookAudit() {
   body.innerHTML = renderPbAudit(data);
 }
 
+/* ── Material vs labor review ─────────────────────────────────────────────
+   Every product carries one cost, and nothing in the data says whether that
+   money buys a thing or buys an hour. `_guess_cost_class` writes the first
+   draft from the product name, and keyword matching is wrong in specific
+   ways — "Pancake ScREWs" contains "crew", "Metal Delivery & Rollformer
+   Set-Up" reads like crew time and is a supplier invoice.
+
+   This is a second reader over that draft. It PROPOSES; the manager ticks
+   what they agree with and nothing else is written. A reclassification can
+   only ever move which of two internal columns a cost is reported in — it
+   cannot move a total, a sell price, a margin floor or a quantity — so the
+   worst an approved mistake does is misreport the split it was fixing. */
+let _ccrProposals = [];
+
+async function reviewCostClasses() {
+  const box = document.getElementById('ccr-body');
+  const btn = document.getElementById('ccr-btn');
+  if (btn) btn.disabled = true;
+  box.innerHTML = '<div class="ccr-panel"><p class="pbaudit-hint">Reading every ' +
+                  'product name…</p></div>';
+  try {
+    const r = await fetch(`${BASE}/api/pricebook/cost-class-review`,
+                          { method: 'POST', credentials: 'same-origin' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not run the review.');
+    _ccrProposals = data.proposals || [];
+    box.innerHTML = renderCostClassReview(data);
+  } catch (e) {
+    box.innerHTML = `<div class="ccr-panel"><p class="pbaudit-hint">${esc(e.message)}</p></div>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderCostClassReview(data) {
+  const rows = _ccrProposals;
+  if (!rows.length) {
+    return `<div class="ccr-panel"><strong>✓ Nothing looks mis-filed.</strong>
+      <p class="pbaudit-hint">${data.reviewed || 0} products read. This checks
+      which SIDE of the internal split a cost sits on — it says nothing about
+      whether the cost itself is right.</p></div>`;
+  }
+  return `
+    <div class="ccr-panel">
+      <strong>${rows.length} product${rows.length === 1 ? '' : 's'} may be filed on the wrong side.</strong>
+      <p class="pbaudit-hint">Every line is a suggestion. Tick the ones you
+      agree with — nothing is saved until you do. This moves a cost between the
+      Material and Labor columns on the internal cost sheet and the permit
+      packet; it cannot change a total, a price or a margin.</p>
+      <table class="pbaudit-table">
+        <thead><tr><th></th><th>Product</th><th>Now</th><th>Suggested</th><th>Why</th></tr></thead>
+        <tbody>${rows.map((r, i) => `
+          <tr>
+            <td><input type="checkbox" class="ccr-tick" data-i="${i}"></td>
+            <td><div class="pbaudit-name">${esc(r.name)}</div>
+                <div class="note-tag">${esc(r.trade)} · ${esc(r.product_id)}</div></td>
+            <td>${esc(r.current)}</td>
+            <td><b>${esc(r.proposed)}</b></td>
+            <td>${esc(r.reason)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <button class="btn-primary" onclick="applyCostClasses()">Apply ticked</button>
+    </div>`;
+}
+
+async function applyCostClasses() {
+  const approved = [...document.querySelectorAll('.ccr-tick')]
+    .filter(el => el.checked)
+    .map(el => _ccrProposals[Number(el.dataset.i)])
+    .filter(Boolean)
+    .map(r => ({ product_id: r.product_id, cost_class: r.proposed }));
+  if (!approved.length) { alert('Tick the ones you agree with first.'); return; }
+  try {
+    const r = await fetch(`${BASE}/api/pricebook/cost-class-apply`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not save.');
+    document.getElementById('ccr-body').innerHTML =
+      `<div class="ccr-panel"><strong>✓ ${data.count} product${data.count === 1 ? '' : 's'} reclassified.</strong>
+       <p class="pbaudit-hint">Estimates pick this up on the next open — the
+       split is worked out at read time, so nothing already saved was rewritten
+       and no price moved.</p></div>`;
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 function renderPbAudit(data) {
   const t = data.totals || {};
   const rows = data.findings || [];

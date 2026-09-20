@@ -326,7 +326,8 @@ function openDropPinModal(latlng, defaultType) {
   updateContactFieldsVisibility();
 
   // Clear fields
-  ['pin-address','pin-contact-name','pin-contact-phone','pin-contact-email','pin-notes'].forEach(id => {
+  ['pin-address','pin-contact-name','pin-contact-phone','pin-contact-email',
+   'pin-notes','pin-appointment-at'].forEach(id => {
     const el = $(id);
     if (el) el.value = '';
   });
@@ -347,6 +348,46 @@ function openDropPinModal(latlng, defaultType) {
 function updateContactFieldsVisibility() {
   const contactTypes = ['interested','appointment','inspected','closed'];
   $('contact-fields').style.display = contactTypes.includes(selectedPinType) ? 'block' : 'none';
+
+  // An appointment pin is the only one that has a time, and it is the whole
+  // reason this field exists: the pin used to map to `appt_set` carrying no
+  // date at all, so nothing downstream could remind anybody and a door-set
+  // appointment lived only in the rep's head.
+  const appt = $('appointment-fields');
+  if (!appt) return;
+  const isAppt = selectedPinType === 'appointment';
+  appt.classList.toggle('hidden', !isAppt);
+  const box = $('pin-appointment-at');
+  // A default the rep can accept with one tap beats an empty box they skip
+  // past. Tomorrow at 5pm is the ordinary shape of a door-set appointment;
+  // it is a starting point, not a guess about their day.
+  if (isAppt && box && !box.value) box.value = defaultApptLocal();
+}
+
+function defaultApptLocal() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(17, 0, 0, 0);
+  // datetime-local wants LOCAL wall-clock text. toISOString() would convert to
+  // UTC and hand a Colorado rep a time six or seven hours off their own field.
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}` +
+         `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function prettyAppt(v) {
+  if (!v) return '';
+  const [d, t] = String(v).split('T');
+  const [y, m, day] = (d || '').split('-').map(Number);
+  const [hh, mm] = (t || '').split(':').map(Number);
+  if (!y || hh == null) return v;
+  // Built from the parts, never `new Date(v)`: Safari and Chrome disagree about
+  // whether a bare 'YYYY-MM-DDTHH:MM' is local or UTC, and the wrong branch
+  // shifts a 6pm appointment by the offset.
+  return new Date(y, m - 1, day, hh, mm).toLocaleString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
 }
 
 $('close-drop-modal').addEventListener('click', () => hide('drop-pin-modal'));
@@ -409,7 +450,22 @@ $('save-pin-btn').addEventListener('click', async () => {
     contact_name:  $v('pin-contact-name'),
     contact_phone: $v('pin-contact-phone'),
     contact_email: $v('pin-contact-email'),
+    appointment_at: selectedPinType === 'appointment' ? $v('pin-appointment-at') : '',
   };
+
+  // The one required field in this app, and only on this one pin type.
+  //
+  // An appointment with no name cannot become a lead: the Pipeline needs
+  // somebody to follow up with, so it gets no cadence, no task, no reminder
+  // and no leaderboard credit — the rep did the hardest work of the day and
+  // the system recorded a coloured dot. If you set an appointment you spoke
+  // to someone, so the name exists; it just was not being asked for.
+  if (selectedPinType === 'appointment' && !payload.contact_name.trim()) {
+    alert('An appointment needs a name — without one it cannot become a lead, ' +
+          'so nothing will remind you about it.');
+    $('pin-contact-name').focus();
+    return;
+  }
 
   try {
     const result = await savePinThroughOutbox(payload);
@@ -420,6 +476,10 @@ $('save-pin-btn').addEventListener('click', async () => {
     map.panTo([pin.lat, pin.lng]);
     if (result.queued) {
       showMapNotice('No signal — saved on this phone. It will sync by itself.');
+    } else {
+      // Hand off on the spot rather than behind a second button the rep has to
+      // remember, on a screen they have already walked away from.
+      await autoHandoff(pin);
     }
   } catch(e) {
     // Everything retryable was queued rather than thrown, so reaching here
@@ -566,6 +626,11 @@ async function flushOutbox() {
       if (out.ok) {
         await outboxDelete(entry.client_id);
         replacePendingPin(entry.client_id, out.json);
+        // A door queued in a dead zone still owes the Pipeline a lead. Doing it
+        // here rather than at save time is the only place it can happen: there
+        // was no network when the rep tapped Save, and the CRM — not this app —
+        // owns what a lead is, so it cannot be queued offline alongside the pin.
+        await autoHandoff(out.json);
         landed++;
       } else if (out.status < 500) {
         // The server understood it and said no — a bad pin type, a malformed
@@ -663,6 +728,10 @@ function showPinDetail(pin) {
     pin.contact_name  ? ['Contact', pin.contact_name] : null,
     pin.contact_phone ? ['Phone',   `<a href="tel:${pin.contact_phone}" style="color:#10B981">${pin.contact_phone}</a>`] : null,
     pin.contact_email ? ['Email',   pin.contact_email] : null,
+    // Above the notes on purpose: this is the only row on the panel that is a
+    // commitment the rep has to keep, rather than a record of what happened.
+    pin.appointment_at ? ['Appointment',
+      `<b style="color:#8B5CF6">${escHtml(prettyAppt(pin.appointment_at))}</b>`] : null,
     pin.notes         ? ['Notes',   pin.notes] : null,
     ['When',   timeAgo(pin.created_at)],
   ].filter(Boolean);
@@ -702,44 +771,109 @@ $('close-pin-detail').addEventListener('click', () => hide('pin-detail'));
 // canvasser endpoint: all four apps share one origin and one cookie, so the
 // rep's session already authorizes it, and the CRM stays the only thing that
 // decides what a lead is — stage rules, dedupe, and which cadence starts.
+
+// A pin's appointment time is LOCAL wall clock ("Thursday at six" means six in
+// that driveway); the CRM's `due_at` is UTC and is compared as text against
+// UTC. The browser is the only party that knows the rep's offset, so the
+// conversion happens here. Seconds are trimmed to the CRM's own spelling: a
+// stored '...:00.000Z' sorts before '...:00Z' as text and would read as due
+// fractionally earlier than every other task in the system.
+function apptToUtc(local) {
+  const [d, t] = String(local || '').split('T');
+  const [y, m, day] = (d || '').split('-').map(Number);
+  const [hh, mm] = (t || '').split(':').map(Number);
+  if (!y || hh == null || isNaN(hh)) return '';
+  return new Date(y, m - 1, day, hh, mm).toISOString().slice(0, 19) + 'Z';
+}
+
+async function crmPost(path, body) {
+  const res = await fetch('/crm' + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+// Creates the lead and everything that hangs off it. Shared by the automatic
+// handoff on save and by the manual button, so the two can never drift into
+// producing different leads from the same door.
+async function handoffToPipeline(pin) {
+  const stage = PIN_STAGE[pin.pin_type];
+  if (!stage) return null;
+  const parts = (pin.contact_name || '').trim().split(/\s+/);
+
+  const lead = await crmPost('/api/leads', {
+    first_name: parts[0] || '',
+    last_name:  parts.slice(1).join(' '),
+    phone:   pin.contact_phone || '',
+    email:   pin.contact_email || '',
+    address: pin.address || '',
+    source:  'door_knock',
+    stage,
+    lead_type: 'homeowner',
+  });
+
+  // Leads have no notes column, so what the rep wrote at the door goes on the
+  // timeline instead of being quietly dropped.
+  if (pin.notes) {
+    await crmPost(`/api/leads/${lead.id}/activities`,
+                  { kind: 'note', body: `At the door: ${pin.notes}` }).catch(() => {});
+  }
+
+  // The appointment itself, as a task the rep will actually see. This is the
+  // point of the whole change: the pin used to map to `appt_set` carrying no
+  // date, so the stage said an appointment existed and nothing anywhere knew
+  // when — which is how a door-set appointment becomes a no-show.
+  const dueUtc = apptToUtc(pin.appointment_at);
+  if (dueUtc) {
+    await crmPost(`/api/leads/${lead.id}/tasks`, {
+      kind: 'meeting',
+      title: `Appointment${pin.address ? ' — ' + pin.address : ''}`,
+      due_at: dueUtc,
+    }).catch(() => {});
+    await crmPost(`/api/leads/${lead.id}/activities`, {
+      kind: 'note', body: `Appointment set at the door for ${prettyAppt(pin.appointment_at)}`,
+    }).catch(() => {});
+  }
+
+  await api(`/api/pins/${pin.id}/lead`, 'POST', { lead_id: lead.id });
+  pin.crm_lead_id = lead.id;
+  return lead;
+}
+
+function canHandoff(pin) {
+  return !!(pin && !pin.pending && pin.id && PIN_STAGE[pin.pin_type]
+            && (pin.contact_name || '').trim() && !pin.crm_lead_id);
+}
+
+// Fires by itself when a pin that should become a lead is saved. Never fatal:
+// the door is already recorded, and a rep whose handoff failed still has the
+// manual button on the pin. It is also why `handoffToPipeline` records the
+// lead id back onto the pin — that is what stops a retry making a second lead.
+async function autoHandoff(pin) {
+  if (!canHandoff(pin)) return;
+  try {
+    await handoffToPipeline(pin);
+    showMapNotice(pin.appointment_at
+      ? `✓ In the Pipeline — appointment ${prettyAppt(pin.appointment_at)} is on your list.`
+      : '✓ In the Pipeline. The first follow-up is already on your list.');
+  } catch(e) {
+    showMapNotice('Saved. Could not add to the Pipeline yet — use the pin\'s ' +
+                  'Add to Pipeline button: ' + e.message);
+  }
+}
+
 async function addToPipeline(pinId) {
   const pin = allPins.find(p => p.id === pinId);
   if (!pin) return;
-  const stage = PIN_STAGE[pin.pin_type];
-  if (!stage) return;
+  if (!PIN_STAGE[pin.pin_type]) return;
   if (!confirm(`Add ${pin.contact_name} to the Pipeline? Follow-up starts automatically.`)) return;
-
-  const parts = (pin.contact_name || '').trim().split(/\s+/);
   try {
-    const res = await fetch('/crm/api/leads', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({
-        first_name: parts[0] || '',
-        last_name:  parts.slice(1).join(' '),
-        phone:   pin.contact_phone || '',
-        email:   pin.contact_email || '',
-        address: pin.address || '',
-        source:  'door_knock',
-        stage,
-        lead_type: 'homeowner',
-      }),
-    });
-    const lead = await res.json();
-    if (!res.ok) throw new Error(lead.error || `HTTP ${res.status}`);
-    // Leads have no notes column, so what the rep wrote at the door goes on
-    // the timeline instead of being quietly dropped.
-    if (pin.notes) {
-      await fetch(`/crm/api/leads/${lead.id}/activities`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ kind: 'note', body: `At the door: ${pin.notes}` }),
-      }).catch(() => {});
-    }
-    await api(`/api/pins/${pinId}/lead`, 'POST', { lead_id: lead.id });
-    pin.crm_lead_id = lead.id;
+    await handoffToPipeline(pin);
     alert('✓ In the Pipeline. The first follow-up is already on your list.');
     hide('pin-detail');
   } catch(e) {
@@ -755,8 +889,19 @@ async function openEditPin(pinId) {
   const pin = allPins.find(p => p.id === pinId);
   if (!pin) return;
 
-  buildTypeSelector('edit-type-selector', (type) => {});
+  // Rescheduling is the common edit on an appointment pin, so the type
+  // selector has to move the field too — a rep who taps Appt Set here and
+  // cannot enter a time is back to the pin that knows nothing about when.
+  const syncEditAppt = (type) => {
+    $('edit-appointment-fields').classList.toggle('hidden', type !== 'appointment');
+    const box = $('edit-appointment-at');
+    if (type === 'appointment' && box && !box.value) box.value = defaultApptLocal();
+  };
+  buildTypeSelector('edit-type-selector', syncEditAppt);
   setSelectedType('edit-type-selector', pin.pin_type);
+
+  $('edit-appointment-at').value = pin.appointment_at || '';
+  syncEditAppt(pin.pin_type);
 
   $('edit-address').value       = pin.address       || '';
   $('edit-contact-name').value  = pin.contact_name  || '';
@@ -780,6 +925,8 @@ $('update-pin-btn').addEventListener('click', async () => {
     contact_phone: $('edit-contact-phone').value,
     contact_email: $('edit-contact-email').value,
     notes:         $('edit-notes').value,
+    appointment_at: selectedType === 'appointment'
+      ? $('edit-appointment-at').value : '',
   };
 
   try {
@@ -792,6 +939,11 @@ $('update-pin-btn').addEventListener('click', async () => {
     delete markers[editingPinId];
     addPinMarker(updated);
     hide('edit-pin-modal');
+    // A door upgraded after the fact — Not Home becomes Appt Set, or a name
+    // finally gets typed — is the same event as setting it that way at the
+    // door, so it takes the same automatic path. `canHandoff` already refuses
+    // a pin that has a lead, so this cannot make a second one.
+    await autoHandoff(updated);
   } catch(e) {
     alert('Update failed: ' + e.message);
   }

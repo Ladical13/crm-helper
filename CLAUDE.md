@@ -406,6 +406,41 @@ a weaker question slowly. `/api/hail/address` is that wiring.
   a stored `nomatch` from an address it has never seen.
 - Pinned by `canvasser/tests/test_hail_archive.py`.
 
+### An appointment knows when it is, and books itself (2026-09-20)
+
+Two gaps that were only worth closing together. An `appointment` pin mapped to
+the `appt_set` stage carrying **no date at all**, so the pipeline asserted an
+appointment existed and nothing anywhere knew when — and reaching the Pipeline
+was a SECOND button, on a panel the rep had already walked away from, that only
+appeared if a name happened to have been typed.
+
+- **`pins.appointment_at` is LOCAL wall clock, stored without a timezone.**
+  "Thursday at six" means six o'clock in that driveway. Converting on the way
+  in is how 6pm becomes Friday for the six hours a day Colorado is behind UTC —
+  the same trap `_company_today` exists for on the estimator side. The CRM's
+  `due_at` IS UTC and is compared as text against UTC, so `apptToUtc()`
+  converts once, in the browser, which is the only party that knows the rep's
+  offset. It trims to the CRM's own second-precision spelling, because
+  `...:00.000Z` sorts before `...:00Z` as text.
+- **A mistyped time costs the rep the time, never the door.**
+  `_clean_appointment_at()` returns `''` rather than raising: the knock is
+  worth more than the field that was fumbled. Create and update both go
+  through it, or the two paths store two different shapes.
+- **A name is required on an appointment pin, and only on that one.** Without
+  one the door cannot become a lead — no cadence, no task, no reminder, no
+  leaderboard credit — so the rep does the hardest work of the day and the
+  system records a coloured dot.
+- **The handoff fires on save.** `handoffToPipeline()` is the single builder;
+  `autoHandoff()` wraps it for the automatic path and the ✏️ Edit path, and the
+  manual 📋 button calls the same function so the two can never produce
+  different leads from one door. It is never fatal — the pin is already saved
+  and the manual button is still there.
+- **It runs again when a queued pin lands.** There was no network when the rep
+  tapped Save, and the CRM — not the canvasser — owns what a lead is, so the
+  lead cannot be queued beside the pin. `canHandoff()` refuses a pin that
+  already carries `crm_lead_id`, which is what stops a retry making a second.
+- Pinned by `canvasser/tests/test_appointments.py`.
+
 ### The offline outbox — a door saved in a dead zone is not a door lost
 
 A pin POST that failed used to `alert()` and drop the pin: the one write this
@@ -462,11 +497,9 @@ order they cost the business something.
   conversation later. Per the customer-identity note below, those belong on
   the CUSTOMER rather than on an estimate: the photo exists before an estimate
   does and must survive one being marked lost.
-- **An `appointment` pin carries no date or time**, so it maps to `appt_set`
-  and nothing can remind anyone. Door-set no-shows are the standard killer.
-- **"Add to Pipeline" is a second button a rep has to remember**, and it needs
-  a contact name. An appointment with neither gets no lead, no cadence, no
-  task and no leaderboard credit.
+- ~~An `appointment` pin carries no date or time.~~ ~~"Add to Pipeline" is a
+  second button a rep has to remember.~~ **Both fixed 2026-09-20** — see the
+  appointment note above.
 - **Nominatim is still used against its usage policy on the pin-drop path.**
   OSM's policy is 1 req/sec and forbids bulk use, and this runs from one
   Railway IP. Half-closed as of 2026-09-20: the hail-by-address *forward*
@@ -1446,6 +1479,38 @@ which is exactly why it survived so long. The split was the lie.
   still need it), freezes a misclassification where read-time self-heals on the
   next open, creates a permanent third data state, and `setTradeMode` destroys
   it on one mode toggle anyway. The `lab > 0` branch keeps the door open.
+
+**A second reader checks the split** (`estimator/cost_class_review.py`,
+2026-09-20). `_guess_cost_class` is a keyword match, and its carve-outs are a
+record of the traps somebody already hit rather than of the traps that exist —
+`crew` is not a labor word because `a_ss_clips` is "Seam Clips + Pancake
+ScREWs", and the exclusion list runs first because `x_ss_delivery` is a $368
+supplier charge that reads like crew time. ⚖️ Check Material/Labor in the Price
+Book Audit modal asks something that reads a name the way a person would.
+
+Four things keep it safe, and all four are the house rules rather than new ones:
+
+- **It only ever PROPOSES.** `review()` returns a diff; `apply()` takes only the
+  ids a manager ticked. Same contract as `classifyCarrierItem` and the
+  jurisdiction verifier — the guess is a starting point, the stored decision is
+  the answer.
+- **It is never in the request path.** `_ensure_bundle_catalogs()` runs on every
+  price-book GET, so a model call there would put money and latency on a screen
+  a rep opens all day.
+- **`_guess_cost_class` stays, and stays first.** Free, instant, no API key and
+  no network, and it classifies every new product the moment it is created.
+  With no `ANTHROPIC_API_KEY` the review reports unavailable and the price book
+  behaves exactly as it did before the module existed.
+- **A proposal is checked back against what was sent.** An id the book does not
+  have, a class that is not one of the two, and a "change" to the class already
+  stored are all dropped before a manager sees them: the model is a second
+  reader, not a second source of ids.
+
+Both endpoints are manager-up, like the audit beside them. `apply()` can only
+move a cost between the two internal columns — never a total, a sell price, a
+margin floor or a quantity, which is the contract `tests/test_cost_split.py`
+already holds down — so the worst an approved mistake does is misreport the
+split it was meant to fix. Guarded by `tests/test_cost_class_review.py`.
 
 **The Simple-mode tier collapse is diagnosed, not repaired.** `setTradeMode`
 GBB→Simple folds three tiers into one flat `unit_cost` but leaves

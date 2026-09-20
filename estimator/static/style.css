@@ -5264,6 +5264,20 @@ body.is-client #nav-toggle      { display: none; }
 .pbaudit-lede{background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
   border-radius:6px;padding:12px 14px;font-size:13px;line-height:1.55;margin-bottom:14px}
 .pbaudit-lede strong{font-size:14px}
+/* The material/labor review panel. Sits above the audit's own findings in the
+   same modal: both answer "what is wrong with the price book", and a manager
+   working through one is the person who should see the other. */
+.ccr-panel {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border, #d8dee4);
+  border-left: 3px solid #8B5CF6;
+  border-radius: 0 8px 8px 0;
+  background: var(--surface2, #f6f8fa);
+}
+.ccr-panel table { margin-top: 10px; }
+.ccr-tick { width: 18px; height: 18px; }
+
 .pbaudit-hint{margin:6px 0 0;font-size:12px;opacity:.85;line-height:1.5}
 .pbaudit-clean{background:#dcfce7;border:1px solid #16a34a;color:#14532d;
   border-radius:6px;padding:14px;font-size:13.5px;line-height:1.55}

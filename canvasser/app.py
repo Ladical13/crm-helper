@@ -60,6 +60,30 @@ PIN_TYPES = {
     'no_soliciting': {'label': 'No Soliciting',   'color': '#1F2937'},
 }
 
+def _clean_appointment_at(v):
+    """A local wall-clock appointment as 'YYYY-MM-DDTHH:MM', or ''.
+
+    Stored WITHOUT a timezone and deliberately so. This is a time a rep agreed
+    with a homeowner standing on their porch — "Thursday at six" means six
+    o'clock in that driveway. Everything that reads it (the rep's task list,
+    the reminder) is in the same market, and converting to UTC on the way in
+    is how "6pm Thursday" becomes "Friday" for the six hours a day that
+    `_company_today` already exists to handle on the estimator side.
+
+    Anything unparseable returns '' rather than raising: a mistyped time must
+    not cost the rep the door they just knocked.
+    """
+    v = str(v or '').strip()
+    if not v:
+        return ''
+    v = v.replace(' ', 'T')[:16]
+    try:
+        datetime.strptime(v, '%Y-%m-%dT%H:%M')
+    except ValueError:
+        return ''
+    return v
+
+
 # Which Pipeline stage a knocked door becomes.
 #
 # Pins used to sync straight to The Den, which meant a door-knocked lead
@@ -125,6 +149,7 @@ def init_db():
                 crm_project_id TEXT DEFAULT '',
                 crm_lead_id   TEXT DEFAULT '',
                 client_id     TEXT DEFAULT '',
+                appointment_at TEXT DEFAULT '',
                 created_at    TEXT NOT NULL,
                 updated_at    TEXT NOT NULL
             );
@@ -161,6 +186,8 @@ def init_db():
             db.execute("ALTER TABLE pins ADD COLUMN crm_lead_id TEXT DEFAULT ''")
         if 'client_id' not in cols:
             db.execute("ALTER TABLE pins ADD COLUMN client_id TEXT DEFAULT ''")
+        if 'appointment_at' not in cols:
+            db.execute("ALTER TABLE pins ADD COLUMN appointment_at TEXT DEFAULT ''")
         # The offline outbox retries a pin it could not confirm, so the same
         # save can arrive twice — and a duplicated door is worse than a lost
         # one, because two reps then work a street each believing the other
@@ -344,6 +371,7 @@ def create_pin():
     lng  = data.get('lng')
     pin_type = data.get('pin_type', 'not_home')
     client_id = str(data.get('client_id') or '').strip()[:64]
+    appointment_at = _clean_appointment_at(data.get('appointment_at'))
     if lat is None or lng is None:
         return jsonify({'error': 'lat/lng required'}), 400
     if pin_type not in PIN_TYPES:
@@ -369,6 +397,7 @@ def create_pin():
         'crm_project_id': '',
         'crm_lead_id':   '',
         'client_id':     client_id,
+        'appointment_at': appointment_at if pin_type == 'appointment' else '',
         'created_at':    _now(),
         'updated_at':    _now(),
     }
@@ -377,12 +406,12 @@ def create_pin():
             db.execute('''INSERT INTO pins
                 (id,lat,lng,address,pin_type,rep,notes,contact_name,contact_phone,
                  contact_email,crm_contact_id,crm_project_id,client_id,
-                 created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                 appointment_at,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (pin['id'], pin['lat'], pin['lng'], pin['address'], pin['pin_type'],
                  pin['rep'], pin['notes'], pin['contact_name'], pin['contact_phone'],
                  pin['contact_email'], '', '', pin['client_id'],
-                 pin['created_at'], pin['updated_at'])
+                 pin['appointment_at'], pin['created_at'], pin['updated_at'])
             )
     except sqlite3.IntegrityError:
         # Two retries of the same queued pin raced each other. The unique index
@@ -417,14 +446,21 @@ def update_pin(pin_id):
     if row['rep'] != session['username'] and not session.get('is_admin'):
         return jsonify({'error': 'Forbidden'}), 403
     data = request.get_json(force=True)
-    allowed = ['pin_type', 'address', 'notes', 'contact_name', 'contact_phone', 'contact_email']
+    allowed = ['pin_type', 'address', 'notes', 'contact_name', 'contact_phone',
+               'contact_email', 'appointment_at']
     sets, params = [], []
     for field in allowed:
         if field in data:
             if field == 'pin_type' and data[field] not in PIN_TYPES:
                 return jsonify({'error': 'Invalid pin type'}), 400
+            value = data[field]
+            if field == 'appointment_at':
+                # A rescheduled door is the common edit here, so this has to be
+                # editable — but it is cleaned on the way in exactly as it is on
+                # create, or the two paths disagree about what a time is.
+                value = _clean_appointment_at(value)
             sets.append(f'{field}=?')
-            params.append(data[field])
+            params.append(value)
     if not sets:
         return jsonify({'error': 'Nothing to update'}), 400
     sets.append('updated_at=?')
