@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=240">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=241">
 </head>
 <body>
 
@@ -46,6 +46,8 @@
       <button onclick="openEstimate()">Open</button>
       <button onclick="openPriceBook()" class="btn-pricebook">📋 Price Book</button>
       <button id="present-btn" onclick="presentEstimate()" class="btn-present">📊 Present</button>
+      <button id="review-btn" onclick="openEstimateReview()" class="btn-secondary"
+              data-demo-hide title="A second estimator reads this job before it goes out">🔍 Review</button>
       <button id="share-btn" onclick="shareEstimate()" class="btn-share">Send / Sign</button>
       <button onclick="doPrint()" class="btn-print">Print / PDF</button>
       <button onclick="openInvoice()" class="btn-invoice" data-demo-hide title="Plain itemized invoice or quote">🧾 Invoice</button>
@@ -650,6 +652,23 @@
      wrong cost is not one wrong number. This finds the SHAPE of an error (no
      cost, a unit that disagrees with its measure) and never the right value —
      what a square of shingles costs is between the manager and the invoice. -->
+<!-- ── Estimate review ──────────────────────────────────────────────────
+     Informs, never blocks. `_margin_floor_block` is the one thing that stops
+     an estimate leaving; a second gate that disagreed with the first is how a
+     rep ends up unable to send a job neither of them can explain. -->
+<div id="review-modal" class="modal hidden" onclick="maybeCloseReview(event)">
+  <div class="modal-box pbaudit-modal-box">
+    <div class="modal-header">
+      <h2>🔍 Review Before Sending</h2>
+      <div class="modal-header-actions">
+        <button class="btn-secondary" onclick="window.print()">🖨 Print</button>
+        <button onclick="closeEstimateReview()" class="modal-close">×</button>
+      </div>
+    </div>
+    <div id="review-body" class="settings-body"></div>
+  </div>
+</div>
+
 <div id="pbaudit-modal" class="modal hidden" onclick="maybeClosePbAudit(event)">
   <div class="modal-box pbaudit-modal-box">
     <div class="modal-header">
@@ -886,6 +905,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=240"></script>
+<script src="/estimate/static/app.js?v=241"></script>
 </body>
 </html>

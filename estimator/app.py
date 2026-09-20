@@ -58,6 +58,12 @@ try:
 except ImportError:
     import cost_class_review             # noqa: E402
 
+# A second estimator reading a job before it is sent. Informs, never blocks.
+try:
+    from . import estimate_review        # noqa: E402
+except ImportError:
+    import estimate_review               # noqa: E402
+
 try:
     import requests as http
 except ImportError:
@@ -22334,6 +22340,107 @@ def get_templates():
             result[trade] = pb_items
 
     return jsonify(result)
+
+
+def _review_facts(est):
+    """Everything the review reads, computed by the functions that own it.
+
+    Nothing in here is worked out for the first time. The ventilation numbers
+    come from `_vent_nfa_report`, the margin from `estimate_margin_report`, the
+    expiry from `_est_expired` — the same functions the Scope panel, the
+    analytics tab and the /sign page read. A review that re-derived any of them
+    would be a third implementation of money math in a codebase that keeps
+    exactly two and holds them to the cent.
+    """
+    m    = est.get('measurements') or {}
+    etype = est.get('estimate_type') or 'retail'
+    report = estimate_margin_report(est)
+    warn, _block = _margin_floors()
+    valid = _est_valid_until(est)
+    days_left = (valid - _company_today()).days if valid else None
+
+    unknown = [t['tier'] for t in (report.get('tiers') or [])
+               if t.get('margin_pct') is None]
+    _ucost, uncosted = upgrades_cost_total(est)
+    ic = est.get('insurance_cost') or {}
+    review_lines = sum(
+        1 for it in (est.get('carrier_items') or est.get('insurance_items') or [])
+        if str((it or {}).get('scope_class') or '').lower() == 'review')
+
+    facts = {
+        'estimate_type': etype,
+        'customer_city': ((est.get('customer') or {}).get('address') or {}).get('city', ''),
+        'customer_email': bool((est.get('customer') or {}).get('email')),
+        'valid_until': est.get('valid_until') or '',
+        'expired': bool(_est_expired(est)),
+        'days_to_expiry': days_left,
+        'has_measurements': bool(m.get('roof_squares') or m.get('comm_sqft')),
+        'measurements': {k: v for k, v in m.items() if v not in ('', None)},
+        'margin_worst': report.get('lowest'),
+        'margin_tiers': report.get('tiers') or [],
+        'margin_unknown_tiers': unknown,
+        'margin_warn_floor': warn,
+        'margin_exempt': bool(_margin_floor_exempt(est)),
+        'upgrades_uncosted': uncosted,
+        'carrier_review_lines': review_lines,
+        'supplements': _num(ic.get('supplements')) if ic else 0,
+        'company_content_missing': bool(_company_content_missing()),
+        'jurisdiction': _selected_permit_jurisdiction(est) or {},
+        'trades': _review_trade_summary(est),
+    }
+    if etype != 'commercial':
+        vent = _vent_nfa_report(est)
+        vent['attic_area_assumed'] = not _mnum(m.get('attic_sqft'))
+        facts['vent'] = vent
+    return facts
+
+
+def _review_trade_summary(est):
+    """Line names and quantities per enabled trade — no costs, no prices.
+
+    The reader is asked what is MISSING from a scope and whether the quantities
+    fit the house, which needs the names. It is never asked whether a price is
+    right, so it is not given one: what a roof should sell for is between this
+    company and its market, and a number that is not in the payload cannot end
+    up in a finding.
+    """
+    out = {}
+    for tk, td in (est.get('trades') or {}).items():
+        if not (td or {}).get('enabled'):
+            continue
+        rows = []
+        for it in (td.get('line_items') or [])[:120]:
+            name = str(it.get('name') or '').strip()
+            if not name:
+                continue
+            rows.append({'name': name,
+                         'qty': _mnum(it.get('quantity')),
+                         'unit': str(it.get('unit') or ''),
+                         'tier': str(it.get('tier') or '')})
+        if rows:
+            out[tk] = rows
+    return out
+
+
+@app.route('/api/estimates/<est_id>/review', methods=['POST'])
+def post_estimate_review(est_id):
+    """What a second estimator would say about this job before it goes out.
+
+    Rep-level on purpose — it is their estimate and their send — and it is the
+    rep who fixes what it finds. Deliberately NOT a gate: `_margin_floor_block`
+    is the one thing in this system that stops an estimate leaving, it has its
+    own settings and its own tests, and a second gate that disagreed with the
+    first is how a rep ends up unable to send a job neither of them can
+    explain. This informs; the rep decides.
+    """
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    out = estimate_review.run(_review_facts(est))
+    out['reviewer_available'] = estimate_review.available()
+    return jsonify(out)
 
 
 @app.route('/api/pricebook/cost-class-review', methods=['POST'])

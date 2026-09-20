@@ -911,6 +911,43 @@ Tests run against a temp `DATA_DIR`, so they never touch real estimates.
 `estimator/estimates/` is gitignored — there is no git safety net for that data;
 back it up before any migration.
 
+### Review before sending (`estimator/estimate_review.py`, 2026-09-20)
+
+A second estimator reading the job before it reaches a homeowner — the pass a
+two-rep company cannot staff. 🔍 Review beside Send / Sign;
+`POST /api/estimates/<id>/review`, rep-level, because it is their estimate and
+their send.
+
+Everything it checks, the tool already knew. `_vent_nfa_report` prints
+installed square inches against required, `estimate_margin_report` knows the
+worst package on offer and which tiers have no cost behind them, `_est_expired`
+knows whether the pricing still stands. What did not exist was anything reading
+all of it AT ONCE, at the one moment it matters.
+
+- **It computes NOTHING.** `_review_facts()` assembles numbers from the
+  functions that already own them. In margin mode sell derives FROM cost, so a
+  review that re-derived a margin would be a third implementation of the money
+  math this repo keeps exactly two of and holds to the cent.
+- **Two independent layers.** `deterministic_findings()` is rules over those
+  numbers — free, offline, no API key — and it is the layer worth acting on: an
+  expired quote, ventilation short of code, a tier with no cost, an insurance
+  job with no measurement report. `ai_findings()` is a reader for what no rule
+  expresses. A reader that is down, rate-limited or unconfigured never costs
+  the rule findings, and `reviewer_error` says so out loud, because a review
+  that quietly half-ran reads exactly like a clean estimate.
+- **It informs; it never gates.** `_margin_floor_block` is the one thing in
+  this system that stops an estimate leaving, with its own settings and its own
+  tests. A second gate that disagreed with the first is how a rep ends up
+  unable to send a job neither of them can explain.
+  `test_no_send_path_consults_the_review` walks every send route rather than
+  naming one, so a new one cannot quietly acquire a gate.
+- **The reader is never shown a price.** `_review_trade_summary()` passes line
+  names, quantities and units and no money at all. It is asked what is MISSING
+  from a scope, never whether a price is right — what a roof should sell for is
+  between this company and its market, and a number absent from the payload
+  cannot reach a finding.
+- Guarded by `tests/test_estimate_review.py`.
+
 ### Margin, expiry, and the safety net (2026-09-05)
 
 Four traps that all shared one shape: the tool knew the right answer, said so

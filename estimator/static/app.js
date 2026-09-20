@@ -4118,6 +4118,85 @@ async function openPriceBookAudit() {
   body.innerHTML = renderPbAudit(data);
 }
 
+/* ── Estimate review ──────────────────────────────────────────────────────
+   A second estimator reading the job before it goes to a homeowner. Two
+   layers: rules over numbers the tool already computed, which need no API key
+   and are the ones worth acting on, and a reader for the combinations no rule
+   expresses. Deliberately not a gate — the margin floor is the only thing that
+   stops a send, and a second gate disagreeing with the first is how a rep ends
+   up unable to ship a job neither of them can explain. */
+const REVIEW_SEV = {
+  high:   { label: 'Fix before sending', cls: 'rev-high'   },
+  medium: { label: 'Worth fixing',       cls: 'rev-medium' },
+  low:    { label: 'Worth knowing',      cls: 'rev-low'    },
+};
+
+async function openEstimateReview() {
+  if (!S.estimate_id) {
+    alert('Save the estimate first — the review reads what is on the server.');
+    return;
+  }
+  const box = document.getElementById('review-body');
+  document.getElementById('review-modal').classList.remove('hidden');
+  box.innerHTML = '<p class="pbaudit-hint">Reading the job…</p>';
+  try {
+    const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/review`,
+                          { method: 'POST', credentials: 'same-origin' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not run the review.');
+    box.innerHTML = renderEstimateReview(data);
+  } catch (e) {
+    box.innerHTML = `<p class="pbaudit-hint">${esc(e.message)}</p>`;
+  }
+}
+
+function closeEstimateReview() {
+  document.getElementById('review-modal').classList.add('hidden');
+}
+function maybeCloseReview(ev) {
+  if (ev.target === document.getElementById('review-modal')) closeEstimateReview();
+}
+
+function renderEstimateReview(data) {
+  const rows = data.findings || [];
+  // Said out loud rather than left as an absence: a review that quietly
+  // half-ran reads exactly like a clean estimate.
+  const note = data.reviewer_error
+    ? `<p class="pbaudit-hint">The second reader could not run
+       (${esc(data.reviewer_error)}). The checks below still ran.</p>`
+    : (!data.reviewer_available
+        ? `<p class="pbaudit-hint">Rule checks only — the second reader needs
+           ANTHROPIC_API_KEY configured.</p>` : '');
+
+  if (!rows.length) {
+    return `<div class="pbaudit-clean">✓ Nothing found.
+      <p class="pbaudit-hint">This checks the scope, the code numbers, the
+      margin and the dates against each other. It does not say the price is
+      right — that is still yours.</p></div>${note}`;
+  }
+  const high = rows.filter(r => r.severity === 'high').length;
+  return `
+    <div class="pbaudit-lede">
+      <strong>${rows.length} thing${rows.length === 1 ? '' : 's'} to look at</strong>${
+        high ? `, ${high} before this goes out` : ''}.
+      <p class="pbaudit-hint">Nothing here blocks the send. It is a second pair
+      of eyes on the job, not a gate.</p>
+    </div>
+    ${note}
+    ${rows.map(r => {
+      const sev = REVIEW_SEV[r.severity] || REVIEW_SEV.low;
+      return `
+      <div class="rev-item ${sev.cls}">
+        <div class="rev-head">
+          <span class="rev-sev">${sev.label}</span>
+          ${r.source === 'reviewer' ? '<span class="note-tag">reader</span>' : ''}
+        </div>
+        <div class="rev-what">${esc(r.what)}</div>
+        ${r.fix ? `<div class="rev-fix">${esc(r.fix)}</div>` : ''}
+      </div>`;
+    }).join('')}`;
+}
+
 /* ── Material vs labor review ─────────────────────────────────────────────
    Every product carries one cost, and nothing in the data says whether that
    money buys a thing or buys an hour. `_guess_cost_class` writes the first
