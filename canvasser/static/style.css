@@ -450,6 +450,21 @@ html, body {
   text-shadow: 0 1px 2px rgba(0,0,0,.45);
   pointer-events: none;
 }
+/* A door saved on the phone but not yet on the server. It has to be visible
+   as a real pin — it is the rep's work and they need to see the street they
+   covered — while never looking identical to one the team can see, because a
+   teammate's map does not have it yet. Hence drawn, but drawn as unfinished. */
+.pin-marker.pending { opacity: .62; animation: pinPulse 1.8s ease-in-out infinite; }
+.pin-marker.pending::after {
+  content: '';
+  position: absolute; right: -1px; top: -1px;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: #F59E0B; border: 2px solid #fff;
+}
+@keyframes pinPulse {
+  0%, 100% { opacity: .62; }
+  50%      { opacity: 1; }
+}
 .pin-marker.drop { animation: pinDrop .4s var(--ease-pop); }
 @keyframes pinDrop {
   0%   { transform: translateY(-18px) scale(.6); opacity: 0; }
@@ -547,6 +562,23 @@ html, body {
 .hail-report-loc { flex: 1; color: var(--text); }
 .hail-report-dist { color: var(--muted); font-size: 12px; flex-shrink: 0; }
 
+/* The radar answer is one number about one roof, so it gets to be the size of
+   a headline rather than a row in a list — the SPC fallback stays at .hail-
+   summary-big's original 19px because "6 reports, max 1.75"" is a sentence,
+   not a number. */
+.hail-summary-big.is-headline { font-size: 38px; line-height: 1.1; }
+.hail-day-list { margin-top: 4px; }
+/* Where the number came from and what it does not cover. Deliberately always
+   rendered, including on the no-hail answer: "radar checked this roof on 412
+   days and never saw hail" and "nobody ingested this period" look identical
+   on screen without it, and only one of them is safe to repeat on a doorstep. */
+.hail-coverage {
+  font-size: 12px; color: var(--muted); line-height: 1.5;
+  padding: 8px 10px; margin: 10px 0;
+  border-left: 3px solid var(--border); background: var(--surface2);
+  border-radius: 0 8px 8px 0;
+}
+
 /* ── Hail circle legend ── */
 .hail-legend {
   position: absolute; bottom: calc(var(--bottom-h) + 10px); right: 10px;
@@ -610,6 +642,23 @@ html, body {
   padding: 10px 12px;
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, .35);
+}
+
+/* How many doors are still only on this phone. Deliberately persistent rather
+   than a timed notice: a queue that cannot drain is something a rep needs to
+   be able to look down and check, not something that scrolled past once. */
+#outbox-badge {
+  position: fixed;
+  left: 12px;
+  bottom: calc(var(--bottom-h) + 10px + env(safe-area-inset-bottom, 0px));
+  z-index: 900;
+  background: rgba(180, 83, 9, .95);
+  color: #fff;
+  font-size: 12px; font-weight: 700;
+  padding: 6px 11px;
+  border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .35);
+  pointer-events: none;
 }
 
 /* Which window the leaderboard is showing. Without it a rep reads the board as

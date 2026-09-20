@@ -4118,6 +4118,176 @@ async function openPriceBookAudit() {
   body.innerHTML = renderPbAudit(data);
 }
 
+/* ── Estimate review ──────────────────────────────────────────────────────
+   A second estimator reading the job before it goes to a homeowner. Two
+   layers: rules over numbers the tool already computed, which need no API key
+   and are the ones worth acting on, and a reader for the combinations no rule
+   expresses. Deliberately not a gate — the margin floor is the only thing that
+   stops a send, and a second gate disagreeing with the first is how a rep ends
+   up unable to ship a job neither of them can explain. */
+const REVIEW_SEV = {
+  high:   { label: 'Fix before sending', cls: 'rev-high'   },
+  medium: { label: 'Worth fixing',       cls: 'rev-medium' },
+  low:    { label: 'Worth knowing',      cls: 'rev-low'    },
+};
+
+async function openEstimateReview() {
+  if (!S.estimate_id) {
+    alert('Save the estimate first — the review reads what is on the server.');
+    return;
+  }
+  const box = document.getElementById('review-body');
+  document.getElementById('review-modal').classList.remove('hidden');
+  box.innerHTML = '<p class="pbaudit-hint">Reading the job…</p>';
+  try {
+    const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/review`,
+                          { method: 'POST', credentials: 'same-origin' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not run the review.');
+    box.innerHTML = renderEstimateReview(data);
+  } catch (e) {
+    box.innerHTML = `<p class="pbaudit-hint">${esc(e.message)}</p>`;
+  }
+}
+
+function closeEstimateReview() {
+  document.getElementById('review-modal').classList.add('hidden');
+}
+function maybeCloseReview(ev) {
+  if (ev.target === document.getElementById('review-modal')) closeEstimateReview();
+}
+
+function renderEstimateReview(data) {
+  const rows = data.findings || [];
+  // Said out loud rather than left as an absence: a review that quietly
+  // half-ran reads exactly like a clean estimate.
+  const note = data.reviewer_error
+    ? `<p class="pbaudit-hint">The second reader could not run
+       (${esc(data.reviewer_error)}). The checks below still ran.</p>`
+    : (!data.reviewer_available
+        ? `<p class="pbaudit-hint">Rule checks only — the second reader needs
+           ANTHROPIC_API_KEY configured.</p>` : '');
+
+  if (!rows.length) {
+    return `<div class="pbaudit-clean">✓ Nothing found.
+      <p class="pbaudit-hint">This checks the scope, the code numbers, the
+      margin and the dates against each other. It does not say the price is
+      right — that is still yours.</p></div>${note}`;
+  }
+  const high = rows.filter(r => r.severity === 'high').length;
+  return `
+    <div class="pbaudit-lede">
+      <strong>${rows.length} thing${rows.length === 1 ? '' : 's'} to look at</strong>${
+        high ? `, ${high} before this goes out` : ''}.
+      <p class="pbaudit-hint">Nothing here blocks the send. It is a second pair
+      of eyes on the job, not a gate.</p>
+    </div>
+    ${note}
+    ${rows.map(r => {
+      const sev = REVIEW_SEV[r.severity] || REVIEW_SEV.low;
+      return `
+      <div class="rev-item ${sev.cls}">
+        <div class="rev-head">
+          <span class="rev-sev">${sev.label}</span>
+          ${r.source === 'reviewer' ? '<span class="note-tag">reader</span>' : ''}
+        </div>
+        <div class="rev-what">${esc(r.what)}</div>
+        ${r.fix ? `<div class="rev-fix">${esc(r.fix)}</div>` : ''}
+      </div>`;
+    }).join('')}`;
+}
+
+/* ── Material vs labor review ─────────────────────────────────────────────
+   Every product carries one cost, and nothing in the data says whether that
+   money buys a thing or buys an hour. `_guess_cost_class` writes the first
+   draft from the product name, and keyword matching is wrong in specific
+   ways — "Pancake ScREWs" contains "crew", "Metal Delivery & Rollformer
+   Set-Up" reads like crew time and is a supplier invoice.
+
+   This is a second reader over that draft. It PROPOSES; the manager ticks
+   what they agree with and nothing else is written. A reclassification can
+   only ever move which of two internal columns a cost is reported in — it
+   cannot move a total, a sell price, a margin floor or a quantity — so the
+   worst an approved mistake does is misreport the split it was fixing. */
+let _ccrProposals = [];
+
+async function reviewCostClasses() {
+  const box = document.getElementById('ccr-body');
+  const btn = document.getElementById('ccr-btn');
+  if (btn) btn.disabled = true;
+  box.innerHTML = '<div class="ccr-panel"><p class="pbaudit-hint">Reading every ' +
+                  'product name…</p></div>';
+  try {
+    const r = await fetch(`${BASE}/api/pricebook/cost-class-review`,
+                          { method: 'POST', credentials: 'same-origin' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not run the review.');
+    _ccrProposals = data.proposals || [];
+    box.innerHTML = renderCostClassReview(data);
+  } catch (e) {
+    box.innerHTML = `<div class="ccr-panel"><p class="pbaudit-hint">${esc(e.message)}</p></div>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderCostClassReview(data) {
+  const rows = _ccrProposals;
+  if (!rows.length) {
+    return `<div class="ccr-panel"><strong>✓ Nothing looks mis-filed.</strong>
+      <p class="pbaudit-hint">${data.reviewed || 0} products read. This checks
+      which SIDE of the internal split a cost sits on — it says nothing about
+      whether the cost itself is right.</p></div>`;
+  }
+  return `
+    <div class="ccr-panel">
+      <strong>${rows.length} product${rows.length === 1 ? '' : 's'} may be filed on the wrong side.</strong>
+      <p class="pbaudit-hint">Every line is a suggestion. Tick the ones you
+      agree with — nothing is saved until you do. This moves a cost between the
+      Material and Labor columns on the internal cost sheet and the permit
+      packet; it cannot change a total, a price or a margin.</p>
+      <table class="pbaudit-table">
+        <thead><tr><th></th><th>Product</th><th>Now</th><th>Suggested</th><th>Why</th></tr></thead>
+        <tbody>${rows.map((r, i) => `
+          <tr>
+            <td><input type="checkbox" class="ccr-tick" data-i="${i}"></td>
+            <td><div class="pbaudit-name">${esc(r.name)}</div>
+                <div class="note-tag">${esc(r.trade)} · ${esc(r.product_id)}</div></td>
+            <td>${esc(r.current)}</td>
+            <td><b>${esc(r.proposed)}</b></td>
+            <td>${esc(r.reason)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <button class="btn-primary" onclick="applyCostClasses()">Apply ticked</button>
+    </div>`;
+}
+
+async function applyCostClasses() {
+  const approved = [...document.querySelectorAll('.ccr-tick')]
+    .filter(el => el.checked)
+    .map(el => _ccrProposals[Number(el.dataset.i)])
+    .filter(Boolean)
+    .map(r => ({ product_id: r.product_id, cost_class: r.proposed }));
+  if (!approved.length) { alert('Tick the ones you agree with first.'); return; }
+  try {
+    const r = await fetch(`${BASE}/api/pricebook/cost-class-apply`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not save.');
+    document.getElementById('ccr-body').innerHTML =
+      `<div class="ccr-panel"><strong>✓ ${data.count} product${data.count === 1 ? '' : 's'} reclassified.</strong>
+       <p class="pbaudit-hint">Estimates pick this up on the next open — the
+       split is worked out at read time, so nothing already saved was rewritten
+       and no price moved.</p></div>`;
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 function renderPbAudit(data) {
   const t = data.totals || {};
   const rows = data.findings || [];
@@ -6844,11 +7014,63 @@ function renderTradeContent() {
                <p class="ins-tab-empty-title">Insurance Claim Estimate</p>
                <p class="ins-tab-empty-body">Import the carrier's estimate PDF to load the line items automatically, or enable this trade to enter them by hand.</p>
                <button class="btn-primary ins-tab-import-btn" onclick="document.getElementById('xact-pdf-input').click()">📥 Import Carrier Estimate PDF</button>
-               <p class="ins-tab-empty-hint">Importing turns on Insurance mode for you.</p>
+               ${roofrImportBtn('btn-secondary ins-tab-import-btn')}
+               <p class="ins-tab-empty-hint">Importing turns on Insurance mode for you.
+               An insurance job needs both: the carrier's estimate is the claim,
+               the RoofR report is what the roof actually measures.</p>
              </div>`
           : `<div class="trade-disabled">Enable this trade to add line items.</div>`)}`;
   // Every tab's description boxes are sized after the markup lands — see autoGrow.
   autoGrowAll(host);
+}
+
+/* ── The homeowner's claim, explained ────────────────────────────────────
+   We parse every line of their carrier's estimate and have never told them any
+   of it. "Why is the check smaller than the estimate?" is the question every
+   insurance customer asks, the answer is recoverable depreciation, and a
+   homeowner who does not understand it concludes either that their carrier is
+   cheating them or that we are. Opens in a tab so the rep can read it before
+   anyone else does. */
+async function openClaimExplainer() {
+  if (!S.estimate_id) {
+    alert('Save the estimate first — the sheet is built from what is on the server.');
+    return;
+  }
+  try {
+    const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/claim-explainer`,
+                          { method: 'POST', credentials: 'same-origin' });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(data.error || 'Could not build the sheet.');
+    }
+    const url = URL.createObjectURL(await r.blob());
+    window.open(url, '_blank');
+    // Revoked on a timer rather than immediately: the new tab has to finish
+    // fetching from the object URL before it stops existing.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+/* ── RoofR, beside the carrier import ────────────────────────────────────
+   An insurance job needs BOTH documents and they were in different places:
+   the carrier PDF had a button on the Insurance tab, and the measurement
+   report was three levels into the ⋮ menu. They are two halves of one task —
+   the carrier's estimate is a claim ABOUT a roof, and RoofR is what that roof
+   actually measures. Without the measurements the cost side is sized off
+   nothing, the margin is unknowable, and the Claim Check that finds a
+   supplement has nothing to compare against. Xactimate exports carry no
+   measurements at all, and Xactimate is most of this company's volume.
+
+   The button says whether the report is already in, because "do I still need
+   to do this?" is the only question a rep has when they look at it. */
+function roofrImportBtn(cls) {
+  const sq = Number((S.measurements || {}).roof_squares || 0);
+  return sq > 0
+    ? `<button class="${cls} roofr-loaded" onclick="document.getElementById('roofr-pdf-input').click()"
+         title="Import a different measurement report">✓ ${sq.toLocaleString(undefined,{maximumFractionDigits:1})} SQ measured — replace</button>`
+    : `<button class="${cls}" onclick="document.getElementById('roofr-pdf-input').click()">📐 Import RoofR Measurements</button>`;
 }
 
 /* ── The $0 guard ───────────────────────────────────────────────────────
@@ -7583,8 +7805,11 @@ function renderInsuranceFreeform() {
           placeholder="e.g. CLM-2026-12345"
           oninput="S.trades.insurance.claim_number=this.value;setDirty()">
       </div>
-      <div class="field-group" style="align-self:flex-end">
+      <div class="field-group" style="align-self:flex-end;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn-secondary" onclick="document.getElementById('xact-pdf-input').click()">📥 Import Carrier PDF</button>
+        ${roofrImportBtn('btn-secondary')}
+        ${S.insurance_claim ? `<button class="btn-secondary" onclick="openClaimExplainer()"
+          title="A one-page plain-English explanation of this claim, for the homeowner">📄 Explain This Claim</button>` : ''}
       </div>
     </div>
     ${_insClaimCard()}
@@ -12299,6 +12524,7 @@ async function newEstimateForCustomer(name, label, type) {
 const SETTINGS_TABS = [
   ['settings-general',       '🎨 General'],
   ['settings-margin',        '💰 Margin'],
+  ['settings-crew',          '👷 Crew Docs'],
   ['settings-gbb',           '📦 Packages'],
   ['settings-company',       '🏠 Proposal'],
   ['settings-contract',      '📜 Contract'],
@@ -12347,6 +12573,12 @@ async function openSettings() {
     // Margin floors are manager-up, matching PUT /api/settings' own gate — a
     // rep must not be able to lower the floor that constrains them.
     document.getElementById('settings-margin').classList.remove('hidden');
+    document.getElementById('settings-crew').classList.remove('hidden');
+    // Absent means ON: the crew that cannot read the English sheet is the
+    // reason this exists, so it has to be the default rather than something
+    // somebody remembers to switch on.
+    document.getElementById('set-wo-bilingual').checked =
+      appSettings.work_order_bilingual !== false;
     document.getElementById('set-margin-warn').value =
       appSettings.margin_floor_warn ?? '';
     document.getElementById('set-margin-block').value =
@@ -12789,6 +13021,8 @@ async function saveSettings() {
     };
     appSettings.margin_floor_warn  = floor('set-margin-warn');
     appSettings.margin_floor_block = floor('set-margin-block');
+    appSettings.work_order_bilingual =
+      document.getElementById('set-wo-bilingual').checked;
   }
   if (_meIsAdmin()) {
     const lines = id => document.getElementById(id).value.split('\n').map(s => s.trim()).filter(Boolean);

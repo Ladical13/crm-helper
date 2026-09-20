@@ -51,6 +51,31 @@ try:
 except ImportError:
     import carrier_scan                  # noqa: E402
 
+# A second reader for the price book's material/labor split. Proposals only —
+# it never writes, and it is never in the request path.
+try:
+    from . import cost_class_review      # noqa: E402
+except ImportError:
+    import cost_class_review             # noqa: E402
+
+# A second estimator reading a job before it is sent. Informs, never blocks.
+try:
+    from . import estimate_review        # noqa: E402
+except ImportError:
+    import estimate_review               # noqa: E402
+
+# The work order, in Spanish beside the English, for the crew on the roof.
+try:
+    from . import crew_spanish           # noqa: E402
+except ImportError:
+    import crew_spanish                  # noqa: E402
+
+# The homeowner's own claim, explained back to them in plain English.
+try:
+    from . import claim_explainer        # noqa: E402
+except ImportError:
+    import claim_explainer               # noqa: E402
+
 try:
     import requests as http
 except ImportError:
@@ -14053,6 +14078,58 @@ def _tier_items(td, trade_mode, t_tier):
             yield it, qty, {}
 
 
+def _bilingual_work_order():
+    """Whether the work order prints Spanish beside the English.
+
+    On by default. The English is unchanged and still first, so the worst a
+    bad translation can do is add a confusing line next to a correct one — and
+    the crew that cannot read the correct one is the reason this exists.
+    `work_order_bilingual: false` in Settings turns it off.
+    """
+    v = _app_settings().get('work_order_bilingual')
+    return True if v is None or v == '' else bool(v)
+
+
+# Translating the same crew note twice for one job would spend twice and, worse,
+# could print two different Spanish paragraphs on two copies of one work order.
+# Keyed on the note itself, so an edited note re-translates and an unchanged one
+# never does. Process-local and bounded: this is a cache, not a store, and
+# losing it costs one call.
+_WO_NOTES_ES = {}
+_WO_NOTES_ES_MAX = 200
+
+
+def _work_order_notes_es(text):
+    """Spanish for the rep's crew notes, or '' if it could not be produced.
+
+    Returns '' on every failure — no key, no network, a refusal, an empty
+    answer — because the English has already printed and a work order that
+    refuses to build over a translation is a crew on a roof with no sheet.
+
+    The one automated check: every figure in the English has to appear in the
+    Spanish. Nobody in this office reads Spanish well enough to catch a
+    changed quantity, and a changed quantity is what the crew would build to.
+    """
+    text = (text or '').strip()
+    if not text:
+        return ''
+    if text in _WO_NOTES_ES:
+        return _WO_NOTES_ES[text]
+    try:
+        out = crew_spanish.translate_notes(text)
+    except crew_spanish.TranslateError as e:
+        print(f'[crew-es] notes not translated: {e}')
+        return ''
+    if not crew_spanish.numbers_survived(text, out):
+        print('[crew-es] REFUSED: a figure changed in translation — '
+              'printing English only')
+        return ''
+    if len(_WO_NOTES_ES) >= _WO_NOTES_ES_MAX:
+        _WO_NOTES_ES.clear()
+    _WO_NOTES_ES[text] = out
+    return out
+
+
 def build_work_order_pdf(est):
     """Work order for the SIGNED package — the sheet the crew works from.
 
@@ -14117,8 +14194,49 @@ def build_work_order_pdf(est):
         s = _pdf_oneline_rich(s)
         return s if len(s) <= n else s[:n - 1] + '...'
 
+    # ── Spanish, beside the English ───────────────────────────────────────
+    #
+    # The crews that build these roofs are substantially Spanish-speaking and
+    # this sheet has always been English-only. That matters most at the one
+    # place the document is designed to catch an error: the ventilation block
+    # prints installed square inches against required and says SHORT by N
+    # precisely so a wrong calculation fails in front of whoever is on the
+    # roof. In a language the crew does not read, it fails silently anyway.
+    #
+    # English stays FIRST and stays the authority — it is what the contract,
+    # the inspector and the office speak, and a translation nobody in the
+    # office can check is one nobody should trust. Printed side by side, a bad
+    # line is visible to anyone who glances at the sheet.
+    es_on = _bilingual_work_order()
+
+    def L(txt):
+        """A fixed label, bilingual. Static table — no model, no network."""
+        return crew_spanish.label(txt) if es_on else txt
+
+    def SL(txt):
+        """A generated verdict ('SHORT by 420 sq in'), whose number is carried
+        across by formatting rather than by translation."""
+        return crew_spanish.state_line(txt) if es_on else txt
+
+    def sub_es(txt, w=40):
+        """The Spanish half of a key/value label, on its own line.
+
+        Two lines rather than one: the label column is 40mm and
+        'Dirección del Trabajo' does not fit beside its English.
+        """
+        if not es_on:
+            return
+        es = crew_spanish.LABELS.get(txt)
+        if not es:
+            return
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(w, 4, _pdf_rich(es))
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln()
+
     # ── Page 1: Work Order ──
-    title_bar('Work Order')
+    title_bar(L('Work Order'))
 
     signed_at = sig.get('signed_at', '')
     try:
@@ -14153,6 +14271,7 @@ def build_work_order_pdf(est):
         pdf.cell(40, 5.5, _pdf_rich(label))
         pdf.set_font(SANS, '', 9)
         pdf.cell(0, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT')
+        sub_es(label)
     pdf.ln(3)
 
     # ── Job Details block ─────────────────────────────────────────────
@@ -14227,13 +14346,17 @@ def build_work_order_pdf(est):
     detail_rows.append(('Satellite Dish',
                         _wo('satellite_dish', '____________ (confirm w/ HO)')))
 
-    section_title('Job Details')
+    section_title(L('Job Details'))
     pdf.set_font(SANS, '', 9)
     for label, val in detail_rows:
         pdf.set_font(SANS, 'B', 9)
         pdf.cell(40, 5.5, _pdf_rich(label))
         pdf.set_font(SANS, '', 9)
-        pdf.multi_cell(W - 40, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT', align='L')
+        # A value that is itself a fixed word (YES / NO / NOT on this job)
+        # translates; a name, a date or a figure passes straight through.
+        pdf.multi_cell(W - 40, 5.5, _pdf_rich(L(val) if crew_spanish.has_label(val) else val),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+        sub_es(label)
     pdf.ln(2)
 
     # No Product Selection or Scope of Work here. The colours the crew needs
@@ -14248,13 +14371,24 @@ def build_work_order_pdf(est):
     # this sheet carries.
     crew = (est.get('notes_internal') or '').strip()
     if crew:
-        section_title('Notes')
+        section_title(L('Notes'))
         pdf.set_font(SANS, '', 6.5)
         pdf.set_text_color(*_PDF_STYLE['faint'])
-        pdf.cell(0, 4.4, _pdf_rich('CREW ONLY - INTERNAL'), new_x='LMARGIN', new_y='NEXT')
+        pdf.cell(0, 4.4, _pdf_rich(L('CREW ONLY - INTERNAL')), new_x='LMARGIN', new_y='NEXT')
         pdf.set_font(SANS, '', 8.5)
         pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.multi_cell(W, 4.6, _pdf_rich(crew), new_x='LMARGIN', new_y='NEXT', align='L')
+        # The one part of this sheet a table cannot cover: what the rep typed.
+        # Never fatal — a work order that refused to build over a translation
+        # is a crew on a roof with no sheet at all.
+        crew_es = _work_order_notes_es(crew) if es_on else ''
+        if crew_es:
+            pdf.ln(1)
+            pdf.set_font(SANS, '', 8.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.multi_cell(W, 4.6, _pdf_rich(crew_es),
+                           new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.ln(2)
 
     # Ridge-vent cut-in is now printed inline under Job Details on page 1,
@@ -14310,7 +14444,7 @@ def build_work_order_pdf(est):
                           f'({vinfo["required_intake"]:.0f} sq in at '
                           f'{NFA_INTAKE_SQIN_LF} sq in per LF)'))
         else:
-            vrows.append(('Intake vent', 'NOT on this job'))
+            vrows.append((L('Intake Vent'), L('NOT on this job')))
         # What this roof ends up with, against what code asks for. Printed for
         # the crew because a wrong calculation that nobody reads stays wrong.
         nfa = _vent_nfa_report(est)
@@ -14319,9 +14453,11 @@ def build_work_order_pdf(est):
                  nfa['exhaust_short']),
                 ('Intake NFA', nfa['intake_installed'], nfa['intake_required'],
                  nfa['intake_short'])):
+            # The most important sentence on the sheet, so it is the one that
+            # most needs to be readable by the person standing on the roof.
             state = f'SHORT by {short:.0f} sq in' if short > 0.5 else 'meets code'
-            vrows.append((lbl, f'{got:.0f} sq in installed / {want:.0f} required'
-                               f'  -  {state}'))
+            vrows.append((L(lbl), f'{got:.0f} sq in installed / {want:.0f} required'
+                                  f'  -  {SL(state)}'))
         kv(vrows, label_w=42)
 
         note = (vent_cutin0.get('notes') or '').strip()
@@ -14334,7 +14470,7 @@ def build_work_order_pdf(est):
         pdf.ln(3)
         pdf.set_font(SANS, '', 6.5)
         pdf.set_text_color(*_PDF_STYLE['faint'])
-        pdf.cell(0, 5, _pdf_rich('AS INSTALLED - FILL IN ON SITE'),
+        pdf.cell(0, 5, _pdf_rich(L('AS INSTALLED - FILL IN ON SITE')),
                  new_x='LMARGIN', new_y='NEXT')
         pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.set_font(SANS, '', 9.5)
@@ -16498,6 +16634,129 @@ def _report_findings_text(est):
             if r['priority'] in ('Immediate', '1–2 Years'):
                 parts.append(_sentence(f"Recommended ({r['priority']}): {r['description']}"))
     return ' '.join(parts)
+
+
+def build_claim_explainer_pdf(est):
+    """"Your Insurance Claim, Explained" — one page, for the homeowner.
+
+    Every figure on it is the carrier's own, copied across. The only
+    arithmetic shown is the carrier's own identity (ACV + depreciation = RCV),
+    and it is CHECKED rather than performed: when their numbers do not tie out
+    — legitimately, for non-recoverable depreciation or pay-when-incurred lines
+    — the sheet says so instead of printing a subtraction a homeowner can catch
+    being wrong.
+
+    Nothing about our pricing, our margin or what the job costs to build
+    appears here. This page is about their claim.
+    """
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+    facts = claim_explainer.claim_facts(est)
+    if not claim_explainer.has_enough(facts):
+        raise ValueError('No carrier figures on this estimate yet — import the '
+                         "carrier's estimate PDF first.")
+
+    c = est.get('customer', {}) or {}
+    a = c.get('address', {}) or {}
+    pdf, SANS, SERIF, W = _new_internal_pdf(
+        'Your Insurance Claim, Explained',
+        footer='Project One Roofing  ·  projectoneroofingcolorado.com')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+
+    pdf.set_font(SERIF, 'B', 22)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W, 11, _pdf_rich('Your Insurance Claim, Explained'),
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+    pdf.ln(5)
+
+    head = [('Prepared for', (c.get('name') or '').strip()),
+            ('Property', ', '.join(filter(None, [a.get('street'), a.get('city'),
+                                                 a.get('state')]))),
+            ('Insurance carrier', facts['carrier']),
+            ('Claim number', facts['claim_number']),
+            ('Date of loss', facts['date_of_loss'])]
+    kv([(k, v) for k, v in head if v], label_w=42)
+    pdf.ln(4)
+
+    section_rows = [
+        ('What your carrier approved in total', facts['rcv_total']),
+        ('Held back until the work is done', facts['depreciation']),
+        ('Your first payment', facts['acv_total']),
+        ('Your deductible', facts['deductible']),
+        ('Paid when the work is incurred', facts['paid_when_incurred']),
+    ]
+    section('The numbers', "Your carrier's figures")
+    for label, val in section_rows:
+        if val is None:
+            continue
+        pdf.set_font(SANS, '', 9.5)
+        pdf.cell(W - 38, 6.4, _pdf_rich(label))
+        pdf.set_font(SANS, 'B', 10.5)
+        pdf.cell(38, 6.4, _pdf_rich(f'${val:,.2f}'), align='R',
+                 new_x='LMARGIN', new_y='NEXT')
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+        pdf.ln(1.2)
+    pdf.ln(2)
+
+    ties = claim_explainer.reconciles(facts)
+    pdf.set_font(SANS, '', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['faint'])
+    if ties:
+        pdf.multi_cell(W, 4.2, _pdf_rich(
+            'Your first payment plus the amount held back equals the approved '
+            'total. Every figure above is copied from your own claim documents.'),
+            new_x='LMARGIN', new_y='NEXT')
+    else:
+        # A homeowner who checks the subtraction and finds it wrong stops
+        # believing the rest of the page. Say it first.
+        pdf.multi_cell(W, 4.2, _pdf_rich(
+            'These figures are copied from your own claim documents. Some '
+            'carriers list amounts that sit outside this subtotal, so the '
+            'figures above may not subtract evenly — ask us and we will walk '
+            'through it with you.'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.ln(4)
+
+    text, _source = claim_explainer.explanation(facts)
+    section('What it means', 'In plain English')
+    pdf.set_font(SANS, '', 10)
+    for para in [p for p in text.split('\n') if p.strip()]:
+        pdf.multi_cell(W, 5.2, _pdf_rich(para.strip()),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.ln(2.2)
+
+    pdf.ln(2)
+    pdf.set_font(SANS, '', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['faint'])
+    pdf.multi_cell(W, 4.2, _pdf_rich(
+        'This page explains figures your insurance carrier produced. It is not '
+        'legal, tax or insurance advice, and it does not change your policy or '
+        'what your carrier has agreed to pay. Your own claim documents are the '
+        'authority — if anything here does not match them, tell us.'),
+        new_x='LMARGIN', new_y='NEXT')
+    return bytes(pdf.output())
+
+
+@app.route('/api/estimates/<est_id>/claim-explainer', methods=['POST'])
+def post_claim_explainer(est_id):
+    """Build the homeowner's claim explainer and hand it back as a PDF."""
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    try:
+        raw = build_claim_explainer_pdf(est)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    cname = (est.get('customer', {}).get('name') or 'Customer').strip()
+    return Response(raw, mimetype='application/pdf', headers={
+        'Content-Disposition':
+            f'inline; filename="Claim Explained - {cname}.pdf"'})
 
 
 def build_condition_report_pdf(est):
@@ -22327,6 +22586,163 @@ def get_templates():
             result[trade] = pb_items
 
     return jsonify(result)
+
+
+def _review_facts(est):
+    """Everything the review reads, computed by the functions that own it.
+
+    Nothing in here is worked out for the first time. The ventilation numbers
+    come from `_vent_nfa_report`, the margin from `estimate_margin_report`, the
+    expiry from `_est_expired` — the same functions the Scope panel, the
+    analytics tab and the /sign page read. A review that re-derived any of them
+    would be a third implementation of money math in a codebase that keeps
+    exactly two and holds them to the cent.
+    """
+    m    = est.get('measurements') or {}
+    etype = est.get('estimate_type') or 'retail'
+    report = estimate_margin_report(est)
+    warn, _block = _margin_floors()
+    valid = _est_valid_until(est)
+    days_left = (valid - _company_today()).days if valid else None
+
+    unknown = [t['tier'] for t in (report.get('tiers') or [])
+               if t.get('margin_pct') is None]
+    _ucost, uncosted = upgrades_cost_total(est)
+    ic = est.get('insurance_cost') or {}
+    review_lines = sum(
+        1 for it in (est.get('carrier_items') or est.get('insurance_items') or [])
+        if str((it or {}).get('scope_class') or '').lower() == 'review')
+
+    facts = {
+        'estimate_type': etype,
+        'customer_city': ((est.get('customer') or {}).get('address') or {}).get('city', ''),
+        'customer_email': bool((est.get('customer') or {}).get('email')),
+        'valid_until': est.get('valid_until') or '',
+        'expired': bool(_est_expired(est)),
+        'days_to_expiry': days_left,
+        'has_measurements': bool(m.get('roof_squares') or m.get('comm_sqft')),
+        'measurements': {k: v for k, v in m.items() if v not in ('', None)},
+        'margin_worst': report.get('lowest'),
+        'margin_tiers': report.get('tiers') or [],
+        'margin_unknown_tiers': unknown,
+        'margin_warn_floor': warn,
+        'margin_exempt': bool(_margin_floor_exempt(est)),
+        'upgrades_uncosted': uncosted,
+        'carrier_review_lines': review_lines,
+        'supplements': _num(ic.get('supplements')) if ic else 0,
+        'company_content_missing': bool(_company_content_missing()),
+        'jurisdiction': _selected_permit_jurisdiction(est) or {},
+        'trades': _review_trade_summary(est),
+    }
+    if etype != 'commercial':
+        vent = _vent_nfa_report(est)
+        vent['attic_area_assumed'] = not _mnum(m.get('attic_sqft'))
+        facts['vent'] = vent
+    return facts
+
+
+def _review_trade_summary(est):
+    """Line names and quantities per enabled trade — no costs, no prices.
+
+    The reader is asked what is MISSING from a scope and whether the quantities
+    fit the house, which needs the names. It is never asked whether a price is
+    right, so it is not given one: what a roof should sell for is between this
+    company and its market, and a number that is not in the payload cannot end
+    up in a finding.
+    """
+    out = {}
+    for tk, td in (est.get('trades') or {}).items():
+        if not (td or {}).get('enabled'):
+            continue
+        rows = []
+        for it in (td.get('line_items') or [])[:120]:
+            name = str(it.get('name') or '').strip()
+            if not name:
+                continue
+            rows.append({'name': name,
+                         'qty': _mnum(it.get('quantity')),
+                         'unit': str(it.get('unit') or ''),
+                         'tier': str(it.get('tier') or '')})
+        if rows:
+            out[tk] = rows
+    return out
+
+
+@app.route('/api/estimates/<est_id>/review', methods=['POST'])
+def post_estimate_review(est_id):
+    """What a second estimator would say about this job before it goes out.
+
+    Rep-level on purpose — it is their estimate and their send — and it is the
+    rep who fixes what it finds. Deliberately NOT a gate: `_margin_floor_block`
+    is the one thing in this system that stops an estimate leaving, it has its
+    own settings and its own tests, and a second gate that disagreed with the
+    first is how a rep ends up unable to send a job neither of them can
+    explain. This informs; the rep decides.
+    """
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    out = estimate_review.run(_review_facts(est))
+    out['reviewer_available'] = estimate_review.available()
+    return jsonify(out)
+
+
+@app.route('/api/pricebook/cost-class-review', methods=['POST'])
+def post_cost_class_review():
+    """Ask a second reader to check the material/labor split. Proposals only.
+
+    Manager-up, like the audit beside it, and for the same reason: it exposes
+    cost structure and it is the manager who acts on what it finds.
+
+    Nothing is written here. The response is a diff — current class, proposed
+    class, and a sentence of reasoning per row — and a manager approves rows
+    one at a time through `/api/pricebook/cost-class-apply`. That split is the
+    whole safety model, and it is the same one the jurisdiction verifier uses:
+    a model may find the thing, a human decides it.
+    """
+    if not _is_manager_up():
+        return _forbid()
+    if not cost_class_review.available():
+        return jsonify({'error': 'Cost-class review needs ANTHROPIC_API_KEY.',
+                        'available': False}), 503
+    pb = _ensure_bundle_catalogs(_load_price_book())
+    # The product's OWN stored class. `_cost_class_of` resolves a line ITEM
+    # through four tiers of linkage and is a different question entirely.
+    rows = cost_class_review.products_for_review(
+        pb, lambda p: _norm_cost_class(p.get('cost_class')))
+    try:
+        proposals = cost_class_review.review(rows)
+    except cost_class_review.ReviewError as e:
+        return jsonify({'error': str(e)}), 502
+    return jsonify({'reviewed': len(rows), 'proposals': proposals})
+
+
+@app.route('/api/pricebook/cost-class-apply', methods=['POST'])
+def post_cost_class_apply():
+    """Write the classes a manager ticked. Takes ids, never a whole review.
+
+    Deliberately not "apply the last review": the request carries the exact
+    rows approved, so a manager who reviewed forty and ticked three writes
+    three. There is nothing stored between the two calls that could go stale
+    or be replayed.
+
+    This can only ever move a cost between the two internal columns. It cannot
+    change a total, a sell price, a margin floor or a quantity — that is the
+    contract `tests/test_cost_split.py` holds down — so it is safe in the one
+    way that matters: no customer's price moves.
+    """
+    if not _is_manager_up():
+        return _forbid()
+    data = request.get_json(force=True) or {}
+    pb = _load_price_book()
+    changed = cost_class_review.apply(pb, data.get('approved'))
+    if changed:
+        _save_price_book(pb)
+        print(f'[cost-class] {len(changed)} product(s) reclassified by '
+              f'{session.get("user", "?")}')
+    return jsonify({'changed': changed, 'count': len(changed)})
 
 
 @app.route('/api/pricebook/audit', methods=['GET'])

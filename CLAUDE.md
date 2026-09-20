@@ -374,17 +374,122 @@ python -m portal.wsgi                 # dev: run the portal, canvasser is at /ca
   `user-scalable=no` stays — this is a full-screen map and page zoom on a stray
   pinch fights Leaflet's own gestures.
 
+### Hail by Address reads the radar archive (2026-09-20)
+
+`hail/storms.py` was written to replace this endpoint — `history_at`'s own
+docstring says so — and then nothing ever pointed at it, so the archive filled
+while the tool the reps hold went on scanning five years of NOAA CSVs to answer
+a weaker question slowly. `/api/hail/address` is that wiring.
+
+- **SPC and MESH answer different questions and the response says which one
+  answered.** SPC filtered reports are human call-ins, so the most they support
+  is "a spotter reported 1.75 inch hail four miles from here"; MESH is radar
+  over a continuous ~1km grid and answers "what size hail did radar estimate
+  over THIS roof". The payload carries `source` (`mrms_mesh` / `noaa_spc`) and
+  `renderHailAddressResults` branches on it rather than on the shape of the
+  rows — presenting a call-in four miles off in the radar's language is the
+  overclaim the archive exists to stop.
+- **An empty archive falls back to SPC rather than to a blank screen**, and
+  `_mesh_history()` returns `None` — never an empty result — to say so. This is
+  the load-bearing distinction: a day with no qualifying hail IS recorded
+  (`storms.record`), so "radar checked this roof and never saw hail" and
+  "nobody ingested this period" are different answers, and only the first is
+  safe to repeat on a doorstep. `ingested_dates()` is what tells them apart and
+  `coverage` is what puts it on screen.
+- **The reported size is this roof's own cell**, never a neighbour's and never
+  interpolated — `Swath.size_at()`'s rule, and the whole reason MESH beats a
+  radius search.
+- **A lat/lng lookup touches no third-party service at all.** No geocoder, no
+  NOAA. That is what makes "Hail here" answer instantly on the tapped
+  structure. `_geocode_one()` reads `portal.geo`'s cache before Nominatim and
+  writes hits back; misses are not cached, because `pgeo.lookup()` cannot tell
+  a stored `nomatch` from an address it has never seen.
+- Pinned by `canvasser/tests/test_hail_archive.py`.
+
+### An appointment knows when it is, and books itself (2026-09-20)
+
+Two gaps that were only worth closing together. An `appointment` pin mapped to
+the `appt_set` stage carrying **no date at all**, so the pipeline asserted an
+appointment existed and nothing anywhere knew when — and reaching the Pipeline
+was a SECOND button, on a panel the rep had already walked away from, that only
+appeared if a name happened to have been typed.
+
+- **`pins.appointment_at` is LOCAL wall clock, stored without a timezone.**
+  "Thursday at six" means six o'clock in that driveway. Converting on the way
+  in is how 6pm becomes Friday for the six hours a day Colorado is behind UTC —
+  the same trap `_company_today` exists for on the estimator side. The CRM's
+  `due_at` IS UTC and is compared as text against UTC, so `apptToUtc()`
+  converts once, in the browser, which is the only party that knows the rep's
+  offset. It trims to the CRM's own second-precision spelling, because
+  `...:00.000Z` sorts before `...:00Z` as text.
+- **A mistyped time costs the rep the time, never the door.**
+  `_clean_appointment_at()` returns `''` rather than raising: the knock is
+  worth more than the field that was fumbled. Create and update both go
+  through it, or the two paths store two different shapes.
+- **A name is required on an appointment pin, and only on that one.** Without
+  one the door cannot become a lead — no cadence, no task, no reminder, no
+  leaderboard credit — so the rep does the hardest work of the day and the
+  system records a coloured dot.
+- **The handoff fires on save.** `handoffToPipeline()` is the single builder;
+  `autoHandoff()` wraps it for the automatic path and the ✏️ Edit path, and the
+  manual 📋 button calls the same function so the two can never produce
+  different leads from one door. It is never fatal — the pin is already saved
+  and the manual button is still there.
+- **It runs again when a queued pin lands.** There was no network when the rep
+  tapped Save, and the CRM — not the canvasser — owns what a lead is, so the
+  lead cannot be queued beside the pin. `canHandoff()` refuses a pin that
+  already carries `crm_lead_id`, which is what stops a retry making a second.
+- Pinned by `canvasser/tests/test_appointments.py`.
+
+### The offline outbox — a door saved in a dead zone is not a door lost
+
+A pin POST that failed used to `alert()` and drop the pin: the one write this
+tool exists to capture, thrown away at the exact moment it exists for. A rep
+who loses a door once stops trusting the app.
+
+- **Every queued save carries a `client_id` and `create_pin` is idempotent on
+  it.** The common case is not a save that failed but a save that SUCCEEDED
+  whose response never made it back, and the queue cannot tell those apart. A
+  replay returns the stored row with **200** rather than 201. A duplicate is
+  worse than a loss: a lost pin is a door nobody recorded, a duplicated one is
+  a door two reps each believe the other knocked, and it inflates the
+  leaderboard they are paid on.
+- **The unique index is PARTIAL** (`WHERE client_id != ''`), because every pin
+  written before this existed carries an empty string and a plain unique index
+  would make the whole table one row. It is scoped `(rep, client_id)` — the id
+  comes from a browser, so it is only unique per rep by construction, and an
+  unscoped replay could hand one rep another rep's contact details.
+- **The queue is IndexedDB.** iOS reclaiming a backgrounded tab is the normal
+  end of a canvassing session, not an edge case.
+- **No Background Sync, deliberately.** It is the textbook answer and it is the
+  wrong one here: WebKit has never shipped it, and every rep runs this as an
+  installed PWA on an iPhone. A `sync` handler would be dead code on precisely
+  the devices the feature exists for, while reading as though the problem were
+  solved. `flushOutbox()` is driven by the page instead — boot, `online`, and
+  `visibilitychange`, which is what actually fires when a phone goes back in a
+  pocket between streets.
+- **A 4xx leaves the queue, a 5xx and a dead network stay in it.** A bad pin
+  type will never succeed however often it is retried, and an outbox that never
+  drains is invisible. A 401 stops the flush without dropping anything —
+  `postPinRaw()` exists so a background flush reports instead of redirecting,
+  because `api()` would throw a rep out of the app mid-street.
+- **A queued pin is drawn for its own rep** (`pendingPinFrom`,
+  `restorePendingPins`), dimmed and pulsing, and tapping it does NOT open the
+  detail panel — it has no server id, so edit, delete and Add to Pipeline would
+  all address a row that does not exist. Everything storage-related degrades to
+  a no-op rather than throwing: private browsing and blocked site data are real
+  states, and failing to drop a pin at all would be worse than losing the queue.
+- Pinned by `canvasser/tests/test_outbox.py`.
+
 ### Known gaps, from the 2026-09-06 review
 
 Found by reading the whole app, deliberately NOT fixed in the same pass, and
 listed here because otherwise they live only in a chat log. Roughly in the
 order they cost the business something.
 
-- **A failed pin save is lost.** The service worker gives an offline app
-  *shell* and `/api/*` is network-first, but a pin POST that fails just
-  `alert()`s. This tool exists for driveways on one bar of signal and then
-  throws away the one write that matters. Needs an IndexedDB outbox and
-  Background Sync.
+- ~~A failed pin save is lost.~~ **Fixed 2026-09-20** — see the outbox note
+  above. Left here because it was the top item for a reason: it was the gate
+  on rolling this tool out to anyone.
 - **No voice notes.** Typing at a door in February with gloves on does not
   happen, which makes this the highest-adoption feature available.
 - **No photos on a pin**, so a rep at an `inspected` door has nowhere to put
@@ -392,19 +497,26 @@ order they cost the business something.
   conversation later. Per the customer-identity note below, those belong on
   the CUSTOMER rather than on an estimate: the photo exists before an estimate
   does and must survive one being marked lost.
-- **An `appointment` pin carries no date or time**, so it maps to `appt_set`
-  and nothing can remind anyone. Door-set no-shows are the standard killer.
-- **"Add to Pipeline" is a second button a rep has to remember**, and it needs
-  a contact name. An appointment with neither gets no lead, no cadence, no
-  task and no leaderboard credit.
-- **Nominatim is used against its usage policy.** Every pin drop reverse
-  geocodes and every hail search forward geocodes, with no cache and no rate
-  limit, from one Railway IP; OSM's policy is 1 req/sec and forbids bulk use.
-  When it is cut off, address autofill dies **silently** (`.catch(() => {})`)
-  and hail-by-address 502s. `portal/geo.py` now exists to cache these.
+- ~~An `appointment` pin carries no date or time.~~ ~~"Add to Pipeline" is a
+  second button a rep has to remember.~~ **Both fixed 2026-09-20** — see the
+  appointment note above.
+- **Nominatim is still used against its usage policy on the pin-drop path.**
+  OSM's policy is 1 req/sec and forbids bulk use, and this runs from one
+  Railway IP. Half-closed as of 2026-09-20: the hail-by-address *forward*
+  geocode now goes through `portal.geo`'s cache first (`_geocode_one`), so a
+  repeat lookup of the same street never leaves the box. Every **pin drop**
+  still reverse-geocodes uncached, which is the higher-volume path of the two.
+  When it is cut off, address autofill dies **silently** (`.catch(() => {})`).
 - **`no_soliciting` is only a pin colour.** Fort Collins, Loveland and Greeley
   all run solicitation permits and no-knock lists; nothing warns the next rep
   walking up to one.
+- **The map OVERLAY still draws NOAA SPC spotter reports**, even though the
+  address lookup beside it now reads radar. `/api/hail` and `/api/hail/range`
+  are the two routes left on the old product, and they draw
+  `max(400, size * 800)`-metre circles around each call-in — a damage footprint
+  that exists nowhere in the data. `Swath.cell_rects()` already returns the
+  real cells for drawing; what is missing is a route to serve them and a
+  rectangle layer to replace the circles.
 - **Nothing comes back from the CRM.** A pin gets `crm_lead_id` and then goes
   stale forever, so a door that became a signed roof still reads "Interested".
   That loop is the motivational payload of the whole tool.
@@ -428,17 +540,19 @@ homeowner whose first question is whether this person is real.
 Hail is **not a canvasser feature**. It is the company's primary data product,
 so it lives in its own package with its own database (`HAIL_DATA_DIR/hail.db`,
 falling back to `PORTAL_DATA_DIR` — never to `DATA_DIR`, which is the
-estimator's volume). The canvasser renders it, Nimbus joins against it,
-storm-scout reports it, the CRM segments on it.
+estimator's volume). The canvasser looks addresses up in it
+(`/api/hail/address`), Nimbus joins against it, storm-scout reports it, the CRM
+segments on it.
 
 ```bash
 cd hail && pytest          # grid quantization, units, re-ingest, the join
 ```
 
-**Why this exists at all: the canvasser's hail engine reads the wrong data
-product.** NOAA SPC filtered storm reports (`canvasser/app.py`) are
-*human-called-in points* — a spotter phoned it in — so they are sparse and
-biased toward where people are. A subdivision can be shelled at 2am and produce
+**Why this exists at all: the canvasser's hail engine read the wrong data
+product.** (Half-fixed 2026-09-20 — `/api/hail/address` now reads this archive;
+the map overlay is the part still on SPC.) NOAA SPC filtered storm reports
+(`canvasser/app.py`) are *human-called-in points* — a spotter phoned it in — so
+they are sparse and biased toward where people are. A subdivision can be shelled at 2am and produce
 zero reports. MRMS **MESH** (Maximum Estimated Size of Hail) is radar-derived
 over a continuous ~1km grid, every cell, whether or not anyone was standing
 there. SPC answers "did anybody report hail near here"; MESH answers "what size
@@ -796,6 +910,130 @@ of which have already broken once:
 Tests run against a temp `DATA_DIR`, so they never touch real estimates.
 `estimator/estimates/` is gitignored — there is no git safety net for that data;
 back it up before any migration.
+
+### The homeowner's claim, explained (2026-09-20)
+
+`estimator/claim_explainer.py` + `build_claim_explainer_pdf()`. 📄 Explain This
+Claim on the Insurance tab; `POST /api/estimates/<id>/claim-explainer` hands
+back a one-page PDF.
+
+We parse every line of a carrier estimate — RCV, ACV, depreciation split
+recoverable from non-recoverable, deductible, O&P, tax per authority — and had
+never told the homeowner any of it. *"Why is the check smaller than the
+estimate?"* is the question every insurance customer asks, the answer is
+recoverable depreciation, and a homeowner who does not understand it concludes
+either that their carrier is cheating them or that we are.
+
+- **Explain, never recalculate.** Every figure is one the carrier already
+  wrote, copied across. A homeowner may repeat any of them to their adjuster,
+  so a number this page produced would be a number we invented. Same boundary
+  as `carrier_scan`'s "transcribe, never calculate", and the reason
+  `_insurance_rcv_total` exists on the other side of it.
+- **The carrier's own arithmetic is CHECKED, not performed.** `reconciles()`
+  tests ACV + depreciation = RCV against their figures. When it does not hold —
+  legitimately, for non-recoverable depreciation or pay-when-incurred lines —
+  the page says the figures may not subtract evenly instead of printing a
+  subtraction the homeowner can catch being wrong, which is what would stop
+  them believing the rest of it.
+- **A missing figure stays missing.** `_num()` returns None rather than 0, the
+  row is skipped, and the writer is handed only the keys that exist: "your
+  carrier withheld $0.00" is a sentence about a claim nobody imported, and a
+  None in the payload is an invitation to invent one.
+- **`has_enough()` refuses to build a page with nothing to say** — RCV plus a
+  depreciation or a deductible is the floor. A logo over a paragraph of
+  generalities is worse than not offering the document.
+- **Nothing of ours is on their page**: no pricing, no margin, no build cost.
+  Pinned by a test that puts our figures on the estimate and checks none of
+  them reach the PDF.
+- **It builds with no API key.** `fallback_narrative()` is a template over the
+  same figures — less warm, equally correct, and it carries the one paragraph
+  that answers their actual question. A homeowner waiting to understand their
+  claim should not be held up by a key.
+- Guarded by `tests/test_claim_explainer.py`.
+
+### The work order in Spanish, beside the English (2026-09-20)
+
+`estimator/crew_spanish.py`. The crews building these roofs are substantially
+Spanish-speaking and this sheet was English-only. That matters most at the one
+place the document is designed to catch an error: the ventilation block prints
+installed square inches against required and says *SHORT by N*, a number put
+there so a wrong calculation fails in front of whoever is on the roof rather
+than silently in a test. In a language the crew does not read, it fails
+silently anyway.
+
+- **English prints FIRST and stays the authority.** It is what the contract,
+  the inspector and the office speak, and a translation nobody in the office
+  can check is one nobody should trust. Side by side, a bad line is visible to
+  anyone who glances at the sheet.
+- **Fixed labels are a STATIC TABLE, not a model call.** `LABELS` is closed and
+  finite — free, offline, instant, reviewable in a diff, and incapable of
+  drifting between two printings of one sheet. Asking a model to translate the
+  word "Customer" on every build would buy latency and variance for a worse
+  answer. `test_crew_spanish.py` reads every `L('…')` call and every
+  `detail_rows.append` label out of `app.py` and fails on one the table has
+  never heard of, so the two cannot drift.
+- **Only the rep's free-text crew notes reach a model**, because they are the
+  one part of the sheet nobody can know in advance.
+- **A figure that changed in translation is REFUSED.** `numbers_survived()`
+  compares the numeric tokens as a multiset and `_work_order_notes_es()` throws
+  the translation away and prints English only when one went missing. Nobody
+  here reads Spanish well enough to catch a changed quantity, and a changed
+  quantity is what the crew would build to. The ventilation verdict never goes
+  near a model at all — `state_line()` carries its figure across by formatting.
+- **Nothing about this can break a work order.** No key, no network, a refusal
+  or an empty answer all return `''` and the English prints. Most of the sheet
+  is labels, so the bulk of the value costs nothing and works offline.
+- `work_order_bilingual` in ⚙ Settings → 👷 Crew Docs, **default ON** (absence
+  means on). A new pane needs its `SETTINGS_TABS` entry as well as the
+  `settings-pane` class, or it is unreachable.
+
+**RoofR sits beside the carrier import now.** Same shape of problem, no
+translation involved: an insurance job needs two documents and they were in
+different places — the carrier PDF had a button on the Insurance tab, the
+measurement report was three levels into the ⋮ menu. Without the measurements
+the cost side is sized off nothing, the margin is unknowable, and the Claim
+Check that finds a supplement has nothing to compare against; Xactimate exports
+carry no measurements at all and Xactimate is most of this company's volume.
+`roofrImportBtn()` is one builder serving both sites, and it says whether the
+report is already in — "do I still need to do this?" is the only question a rep
+has when they look at it.
+
+### Review before sending (`estimator/estimate_review.py`, 2026-09-20)
+
+A second estimator reading the job before it reaches a homeowner — the pass a
+two-rep company cannot staff. 🔍 Review beside Send / Sign;
+`POST /api/estimates/<id>/review`, rep-level, because it is their estimate and
+their send.
+
+Everything it checks, the tool already knew. `_vent_nfa_report` prints
+installed square inches against required, `estimate_margin_report` knows the
+worst package on offer and which tiers have no cost behind them, `_est_expired`
+knows whether the pricing still stands. What did not exist was anything reading
+all of it AT ONCE, at the one moment it matters.
+
+- **It computes NOTHING.** `_review_facts()` assembles numbers from the
+  functions that already own them. In margin mode sell derives FROM cost, so a
+  review that re-derived a margin would be a third implementation of the money
+  math this repo keeps exactly two of and holds to the cent.
+- **Two independent layers.** `deterministic_findings()` is rules over those
+  numbers — free, offline, no API key — and it is the layer worth acting on: an
+  expired quote, ventilation short of code, a tier with no cost, an insurance
+  job with no measurement report. `ai_findings()` is a reader for what no rule
+  expresses. A reader that is down, rate-limited or unconfigured never costs
+  the rule findings, and `reviewer_error` says so out loud, because a review
+  that quietly half-ran reads exactly like a clean estimate.
+- **It informs; it never gates.** `_margin_floor_block` is the one thing in
+  this system that stops an estimate leaving, with its own settings and its own
+  tests. A second gate that disagreed with the first is how a rep ends up
+  unable to send a job neither of them can explain.
+  `test_no_send_path_consults_the_review` walks every send route rather than
+  naming one, so a new one cannot quietly acquire a gate.
+- **The reader is never shown a price.** `_review_trade_summary()` passes line
+  names, quantities and units and no money at all. It is asked what is MISSING
+  from a scope, never whether a price is right — what a roof should sell for is
+  between this company and its market, and a number absent from the payload
+  cannot reach a finding.
+- Guarded by `tests/test_estimate_review.py`.
 
 ### Margin, expiry, and the safety net (2026-09-05)
 
@@ -1365,6 +1603,38 @@ which is exactly why it survived so long. The split was the lie.
   still need it), freezes a misclassification where read-time self-heals on the
   next open, creates a permanent third data state, and `setTradeMode` destroys
   it on one mode toggle anyway. The `lab > 0` branch keeps the door open.
+
+**A second reader checks the split** (`estimator/cost_class_review.py`,
+2026-09-20). `_guess_cost_class` is a keyword match, and its carve-outs are a
+record of the traps somebody already hit rather than of the traps that exist —
+`crew` is not a labor word because `a_ss_clips` is "Seam Clips + Pancake
+ScREWs", and the exclusion list runs first because `x_ss_delivery` is a $368
+supplier charge that reads like crew time. ⚖️ Check Material/Labor in the Price
+Book Audit modal asks something that reads a name the way a person would.
+
+Four things keep it safe, and all four are the house rules rather than new ones:
+
+- **It only ever PROPOSES.** `review()` returns a diff; `apply()` takes only the
+  ids a manager ticked. Same contract as `classifyCarrierItem` and the
+  jurisdiction verifier — the guess is a starting point, the stored decision is
+  the answer.
+- **It is never in the request path.** `_ensure_bundle_catalogs()` runs on every
+  price-book GET, so a model call there would put money and latency on a screen
+  a rep opens all day.
+- **`_guess_cost_class` stays, and stays first.** Free, instant, no API key and
+  no network, and it classifies every new product the moment it is created.
+  With no `ANTHROPIC_API_KEY` the review reports unavailable and the price book
+  behaves exactly as it did before the module existed.
+- **A proposal is checked back against what was sent.** An id the book does not
+  have, a class that is not one of the two, and a "change" to the class already
+  stored are all dropped before a manager sees them: the model is a second
+  reader, not a second source of ids.
+
+Both endpoints are manager-up, like the audit beside them. `apply()` can only
+move a cost between the two internal columns — never a total, a sell price, a
+margin floor or a quantity, which is the contract `tests/test_cost_split.py`
+already holds down — so the worst an approved mistake does is misreport the
+split it was meant to fix. Guarded by `tests/test_cost_class_review.py`.
 
 **The Simple-mode tier collapse is diagnosed, not repaired.** `setTradeMode`
 GBB→Simple folds three tiers into one flat `unit_cost` but leaves

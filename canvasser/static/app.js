@@ -44,7 +44,7 @@ function showApp() {
   buildQuickBtns();
   buildRepFilters();
   initMap();
-  loadPins();
+  loadPins().then(restorePendingPins).then(flushOutbox);
   loadTeamPref();
   startTeamTracking();
   if (currentUser.is_admin) show('team-admin-btn');
@@ -179,7 +179,7 @@ function buildPinMarker(pin, animate = false) {
 
   const icon = L.divIcon({
     className: '',
-    html: `<div class="pin-marker${animate ? ' drop' : ''}" title="${meta.label} — ${displayName(pin.rep)}">
+    html: `<div class="pin-marker${animate ? ' drop' : ''}${pin.pending ? ' pending' : ''}" title="${pin.pending ? 'Waiting to sync — ' : ''}${meta.label} — ${displayName(pin.rep)}">
       <svg viewBox="0 0 30 40" width="30" height="40">
         <path d="M15 39C15 39 27 22.5 27 13.5 27 6.6 21.6 1.5 15 1.5 8.4 1.5 3 6.6 3 13.5 3 22.5 15 39 15 39Z"
               fill="${meta.color}" stroke="rgba(255,255,255,.95)" stroke-width="1.8"/>
@@ -193,6 +193,13 @@ function buildPinMarker(pin, animate = false) {
   const marker = L.marker([pin.lat, pin.lng], { icon });
   marker.on('click', (e) => {
     e.originalEvent._markerClick = true;
+    // A queued pin has no server id yet, so every control on the detail panel
+    // (edit, delete, add to Pipeline) would address a row that does not exist.
+    // Say what it is instead of opening a panel that cannot work.
+    if (pin.pending) {
+      showMapNotice('This door is saved on your phone and will sync when you have signal.');
+      return;
+    }
     showPinDetail(pin);
   });
   markers[pin.id] = marker;
@@ -319,7 +326,8 @@ function openDropPinModal(latlng, defaultType) {
   updateContactFieldsVisibility();
 
   // Clear fields
-  ['pin-address','pin-contact-name','pin-contact-phone','pin-contact-email','pin-notes'].forEach(id => {
+  ['pin-address','pin-contact-name','pin-contact-phone','pin-contact-email',
+   'pin-notes','pin-appointment-at'].forEach(id => {
     const el = $(id);
     if (el) el.value = '';
   });
@@ -340,6 +348,46 @@ function openDropPinModal(latlng, defaultType) {
 function updateContactFieldsVisibility() {
   const contactTypes = ['interested','appointment','inspected','closed'];
   $('contact-fields').style.display = contactTypes.includes(selectedPinType) ? 'block' : 'none';
+
+  // An appointment pin is the only one that has a time, and it is the whole
+  // reason this field exists: the pin used to map to `appt_set` carrying no
+  // date at all, so nothing downstream could remind anybody and a door-set
+  // appointment lived only in the rep's head.
+  const appt = $('appointment-fields');
+  if (!appt) return;
+  const isAppt = selectedPinType === 'appointment';
+  appt.classList.toggle('hidden', !isAppt);
+  const box = $('pin-appointment-at');
+  // A default the rep can accept with one tap beats an empty box they skip
+  // past. Tomorrow at 5pm is the ordinary shape of a door-set appointment;
+  // it is a starting point, not a guess about their day.
+  if (isAppt && box && !box.value) box.value = defaultApptLocal();
+}
+
+function defaultApptLocal() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(17, 0, 0, 0);
+  // datetime-local wants LOCAL wall-clock text. toISOString() would convert to
+  // UTC and hand a Colorado rep a time six or seven hours off their own field.
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}` +
+         `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function prettyAppt(v) {
+  if (!v) return '';
+  const [d, t] = String(v).split('T');
+  const [y, m, day] = (d || '').split('-').map(Number);
+  const [hh, mm] = (t || '').split(':').map(Number);
+  if (!y || hh == null) return v;
+  // Built from the parts, never `new Date(v)`: Safari and Chrome disagree about
+  // whether a bare 'YYYY-MM-DDTHH:MM' is local or UTC, and the wrong branch
+  // shifts a 6pm appointment by the offset.
+  return new Date(y, m - 1, day, hh, mm).toLocaleString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
 }
 
 $('close-drop-modal').addEventListener('click', () => hide('drop-pin-modal'));
@@ -360,7 +408,7 @@ $('hail-here-btn').addEventListener('click', async () => {
   hide('drop-pin-modal');
   $('hail-address-input').value = $('pin-address').value || '';
   $('hail-address-results').innerHTML = '';
-  $('hail-address-status').textContent = 'Checking hail history at this spot... (first search on a new area can take up to a minute; repeat searches are instant)';
+  $('hail-address-status').textContent = 'Checking radar hail history for this spot...';
   show('hail-address-modal');
   try {
     const days   = $v('hail-address-days')   || 1825;
@@ -402,18 +450,249 @@ $('save-pin-btn').addEventListener('click', async () => {
     contact_name:  $v('pin-contact-name'),
     contact_phone: $v('pin-contact-phone'),
     contact_email: $v('pin-contact-email'),
+    appointment_at: selectedPinType === 'appointment' ? $v('pin-appointment-at') : '',
   };
 
+  // The one required field in this app, and only on this one pin type.
+  //
+  // An appointment with no name cannot become a lead: the Pipeline needs
+  // somebody to follow up with, so it gets no cadence, no task, no reminder
+  // and no leaderboard credit — the rep did the hardest work of the day and
+  // the system recorded a coloured dot. If you set an appointment you spoke
+  // to someone, so the name exists; it just was not being asked for.
+  if (selectedPinType === 'appointment' && !payload.contact_name.trim()) {
+    alert('An appointment needs a name — without one it cannot become a lead, ' +
+          'so nothing will remind you about it.');
+    $('pin-contact-name').focus();
+    return;
+  }
+
   try {
-    const pin = await api('/api/pins', 'POST', payload);
+    const result = await savePinThroughOutbox(payload);
     hide('drop-pin-modal');
+    const pin = result.pin;
     allPins.unshift(pin);
     addPinMarker(pin, true);
-    // Flash the map to the pin
     map.panTo([pin.lat, pin.lng]);
+    if (result.queued) {
+      showMapNotice('No signal — saved on this phone. It will sync by itself.');
+    } else {
+      // Hand off on the spot rather than behind a second button the rep has to
+      // remember, on a screen they have already walked away from.
+      await autoHandoff(pin);
+    }
   } catch(e) {
+    // Everything retryable was queued rather than thrown, so reaching here
+    // means the server understood the pin and refused it. That is worth an
+    // alert: it will not fix itself, and it is the rep's to correct.
     alert('Failed to save pin: ' + e.message);
   }
+});
+
+// ── Offline outbox ─────────────────────────────────────────────────────────
+//
+// This tool exists for driveways on one bar of signal, and until now a pin
+// POST that failed was shown in an `alert()` and thrown away — the one write
+// that matters, lost, at the exact moment the app was built for. A rep who
+// loses a door once stops trusting the app and goes back to a notepad, so
+// this is the gate on rolling the canvasser out at all.
+//
+// Three decisions worth keeping:
+//
+// **IndexedDB, not memory and not localStorage.** The queue has to survive iOS
+// reclaiming a backgrounded tab, which is the normal end of a canvassing
+// session, not an edge case. localStorage would survive too but it is
+// synchronous on the main thread and shares one string budget with everything
+// else; a queue belongs in a store built for records.
+//
+// **No Background Sync, deliberately.** It is the textbook answer and it does
+// not work here: WebKit has never shipped it, and every rep on this team runs
+// the app as an installed PWA on an iPhone. A `sync` handler would be dead
+// code on precisely the devices this exists for, while reading as though the
+// problem were handled. The flush is driven by the page instead — on boot, on
+// `online`, and on `visibilitychange`, which is what actually fires when a rep
+// pockets the phone in a dead zone and pulls it out two streets later.
+//
+// **Every queued save carries a `client_id`.** A retry whose first attempt
+// actually landed must not write a second door: two reps then each believe the
+// other knocked that street, and the leaderboard that pays them inflates. The
+// server dedupes on it (`create_pin`), so a replay is free.
+
+const OUTBOX_DB    = 'p1canvass';
+const OUTBOX_STORE = 'outbox';
+let outboxFlushing = false;
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) return reject(new Error('no indexedDB'));
+    const req = indexedDB.open(OUTBOX_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
+        db.createObjectStore(OUTBOX_STORE, { keyPath: 'client_id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+function idbDo(mode, fn) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(OUTBOX_STORE, mode);
+    const req = fn(tx.objectStore(OUTBOX_STORE));
+    tx.oncomplete = () => resolve(req ? req.result : undefined);
+    tx.onerror    = () => reject(tx.error);
+    tx.onabort    = () => reject(tx.error);
+  }));
+}
+
+// Private browsing, a blocked-storage setting and a quota refusal all throw
+// here. A rep losing the queue is bad; a rep unable to drop a pin at all
+// because the queue would not open is worse, so every caller degrades.
+const outboxAll    = () => idbDo('readonly',  st => st.getAll()).catch(() => []);
+const outboxPut    = e  => idbDo('readwrite', st => st.put(e)).catch(() => null);
+const outboxDelete = id => idbDo('readwrite', st => st.delete(id)).catch(() => null);
+
+function newClientId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'c-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+}
+
+// A POST that reports rather than redirects. api() bounces to /login on a 401,
+// which is right for a tap the rep is watching and wrong for a background
+// flush: it would throw a rep out of the app mid-street to re-authenticate a
+// queue that was going to wait anyway.
+async function postPinRaw(payload) {
+  const res = await fetch(BASE + '/api/pins', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(payload),
+  });
+  let json = null;
+  try { json = await res.json(); } catch(e) { /* an HTML error page */ }
+  return { ok: res.ok, status: res.status, json };
+}
+
+function pendingPinFrom(payload) {
+  return {
+    ...payload,
+    id:         'pending:' + payload.client_id,
+    rep:        (currentUser && currentUser.username) || '',
+    created_at: new Date().toISOString(),
+    pending:    true,
+  };
+}
+
+// Returns { pin, queued }. `pin` is always something to draw, so the rep sees
+// their door either way; `queued` says whether the server has it yet.
+async function savePinThroughOutbox(payload) {
+  payload.client_id = payload.client_id || newClientId();
+  let out;
+  try {
+    out = await postPinRaw(payload);
+  } catch(e) {
+    await outboxPut({ ...payload, queued_at: Date.now() });
+    updateOutboxBadge();
+    return { pin: pendingPinFrom(payload), queued: true };
+  }
+  if (out.ok) return { pin: out.json, queued: false };
+  if (out.status === 401) { window.location = '/login'; throw new Error('Unauthorized'); }
+  if (out.status >= 500) {
+    // The server is up but broken. That is temporary in a way a 400 is not.
+    await outboxPut({ ...payload, queued_at: Date.now() });
+    updateOutboxBadge();
+    return { pin: pendingPinFrom(payload), queued: true };
+  }
+  throw new Error((out.json && out.json.error) || `HTTP ${out.status}`);
+}
+
+async function flushOutbox() {
+  if (outboxFlushing || !navigator.onLine) return;
+  outboxFlushing = true;
+  let landed = 0;
+  try {
+    const queued = await outboxAll();
+    for (const entry of queued) {
+      const { queued_at, ...payload } = entry;
+      let out;
+      try {
+        out = await postPinRaw(payload);
+      } catch(e) {
+        break;   // still offline; leave this and everything after it queued
+      }
+      if (out.status === 401) break;              // session expired: it waits
+      if (out.ok) {
+        await outboxDelete(entry.client_id);
+        replacePendingPin(entry.client_id, out.json);
+        // A door queued in a dead zone still owes the Pipeline a lead. Doing it
+        // here rather than at save time is the only place it can happen: there
+        // was no network when the rep tapped Save, and the CRM — not this app —
+        // owns what a lead is, so it cannot be queued offline alongside the pin.
+        await autoHandoff(out.json);
+        landed++;
+      } else if (out.status < 500) {
+        // The server understood it and said no — a bad pin type, a malformed
+        // address. Retrying that forever is an invisible queue that never
+        // drains, so it comes out and the rep is told once.
+        await outboxDelete(entry.client_id);
+        dropPendingPin(entry.client_id);
+        showMapNotice('A saved door could not be synced and was removed: ' +
+                      ((out.json && out.json.error) || `HTTP ${out.status}`));
+      } else {
+        break;   // 5xx: the server is having a bad time, try again later
+      }
+    }
+  } finally {
+    outboxFlushing = false;
+    updateOutboxBadge();
+  }
+  if (landed) {
+    renderPins();
+    showMapNotice(`${landed} door${landed > 1 ? 's' : ''} synced.`);
+  }
+}
+
+function replacePendingPin(clientId, pin) {
+  const i = allPins.findIndex(p => p.id === 'pending:' + clientId);
+  if (i >= 0) allPins[i] = pin; else allPins.unshift(pin);
+}
+
+function dropPendingPin(clientId) {
+  const i = allPins.findIndex(p => p.id === 'pending:' + clientId);
+  if (i >= 0) { allPins.splice(i, 1); renderPins(); }
+}
+
+async function updateOutboxBadge() {
+  const el = $('outbox-badge');
+  if (!el) return;
+  const n = (await outboxAll()).length;
+  el.textContent = `${n} waiting to sync`;
+  el.classList.toggle('hidden', n === 0);
+}
+
+// Restore queued doors onto the map so a rep who force-quit the app in a dead
+// zone still sees the street they worked, rather than an empty map plus a
+// badge telling them something exists somewhere.
+async function restorePendingPins() {
+  const queued = await outboxAll();
+  if (!queued.length) return;
+  queued.forEach(e => {
+    const { queued_at, ...payload } = e;
+    if (!allPins.some(p => p.id === 'pending:' + payload.client_id)) {
+      allPins.unshift(pendingPinFrom(payload));
+    }
+  });
+  renderPins();
+}
+
+window.addEventListener('online', flushOutbox);
+// The one that actually fires on iOS. `online` is unreliable when the app was
+// backgrounded through the change of signal, which is the normal case here:
+// phone in pocket between streets.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') flushOutbox();
 });
 
 async function getGPS() {
@@ -449,6 +728,10 @@ function showPinDetail(pin) {
     pin.contact_name  ? ['Contact', pin.contact_name] : null,
     pin.contact_phone ? ['Phone',   `<a href="tel:${pin.contact_phone}" style="color:#10B981">${pin.contact_phone}</a>`] : null,
     pin.contact_email ? ['Email',   pin.contact_email] : null,
+    // Above the notes on purpose: this is the only row on the panel that is a
+    // commitment the rep has to keep, rather than a record of what happened.
+    pin.appointment_at ? ['Appointment',
+      `<b style="color:#8B5CF6">${escHtml(prettyAppt(pin.appointment_at))}</b>`] : null,
     pin.notes         ? ['Notes',   pin.notes] : null,
     ['When',   timeAgo(pin.created_at)],
   ].filter(Boolean);
@@ -488,44 +771,109 @@ $('close-pin-detail').addEventListener('click', () => hide('pin-detail'));
 // canvasser endpoint: all four apps share one origin and one cookie, so the
 // rep's session already authorizes it, and the CRM stays the only thing that
 // decides what a lead is — stage rules, dedupe, and which cadence starts.
+
+// A pin's appointment time is LOCAL wall clock ("Thursday at six" means six in
+// that driveway); the CRM's `due_at` is UTC and is compared as text against
+// UTC. The browser is the only party that knows the rep's offset, so the
+// conversion happens here. Seconds are trimmed to the CRM's own spelling: a
+// stored '...:00.000Z' sorts before '...:00Z' as text and would read as due
+// fractionally earlier than every other task in the system.
+function apptToUtc(local) {
+  const [d, t] = String(local || '').split('T');
+  const [y, m, day] = (d || '').split('-').map(Number);
+  const [hh, mm] = (t || '').split(':').map(Number);
+  if (!y || hh == null || isNaN(hh)) return '';
+  return new Date(y, m - 1, day, hh, mm).toISOString().slice(0, 19) + 'Z';
+}
+
+async function crmPost(path, body) {
+  const res = await fetch('/crm' + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+// Creates the lead and everything that hangs off it. Shared by the automatic
+// handoff on save and by the manual button, so the two can never drift into
+// producing different leads from the same door.
+async function handoffToPipeline(pin) {
+  const stage = PIN_STAGE[pin.pin_type];
+  if (!stage) return null;
+  const parts = (pin.contact_name || '').trim().split(/\s+/);
+
+  const lead = await crmPost('/api/leads', {
+    first_name: parts[0] || '',
+    last_name:  parts.slice(1).join(' '),
+    phone:   pin.contact_phone || '',
+    email:   pin.contact_email || '',
+    address: pin.address || '',
+    source:  'door_knock',
+    stage,
+    lead_type: 'homeowner',
+  });
+
+  // Leads have no notes column, so what the rep wrote at the door goes on the
+  // timeline instead of being quietly dropped.
+  if (pin.notes) {
+    await crmPost(`/api/leads/${lead.id}/activities`,
+                  { kind: 'note', body: `At the door: ${pin.notes}` }).catch(() => {});
+  }
+
+  // The appointment itself, as a task the rep will actually see. This is the
+  // point of the whole change: the pin used to map to `appt_set` carrying no
+  // date, so the stage said an appointment existed and nothing anywhere knew
+  // when — which is how a door-set appointment becomes a no-show.
+  const dueUtc = apptToUtc(pin.appointment_at);
+  if (dueUtc) {
+    await crmPost(`/api/leads/${lead.id}/tasks`, {
+      kind: 'meeting',
+      title: `Appointment${pin.address ? ' — ' + pin.address : ''}`,
+      due_at: dueUtc,
+    }).catch(() => {});
+    await crmPost(`/api/leads/${lead.id}/activities`, {
+      kind: 'note', body: `Appointment set at the door for ${prettyAppt(pin.appointment_at)}`,
+    }).catch(() => {});
+  }
+
+  await api(`/api/pins/${pin.id}/lead`, 'POST', { lead_id: lead.id });
+  pin.crm_lead_id = lead.id;
+  return lead;
+}
+
+function canHandoff(pin) {
+  return !!(pin && !pin.pending && pin.id && PIN_STAGE[pin.pin_type]
+            && (pin.contact_name || '').trim() && !pin.crm_lead_id);
+}
+
+// Fires by itself when a pin that should become a lead is saved. Never fatal:
+// the door is already recorded, and a rep whose handoff failed still has the
+// manual button on the pin. It is also why `handoffToPipeline` records the
+// lead id back onto the pin — that is what stops a retry making a second lead.
+async function autoHandoff(pin) {
+  if (!canHandoff(pin)) return;
+  try {
+    await handoffToPipeline(pin);
+    showMapNotice(pin.appointment_at
+      ? `✓ In the Pipeline — appointment ${prettyAppt(pin.appointment_at)} is on your list.`
+      : '✓ In the Pipeline. The first follow-up is already on your list.');
+  } catch(e) {
+    showMapNotice('Saved. Could not add to the Pipeline yet — use the pin\'s ' +
+                  'Add to Pipeline button: ' + e.message);
+  }
+}
+
 async function addToPipeline(pinId) {
   const pin = allPins.find(p => p.id === pinId);
   if (!pin) return;
-  const stage = PIN_STAGE[pin.pin_type];
-  if (!stage) return;
+  if (!PIN_STAGE[pin.pin_type]) return;
   if (!confirm(`Add ${pin.contact_name} to the Pipeline? Follow-up starts automatically.`)) return;
-
-  const parts = (pin.contact_name || '').trim().split(/\s+/);
   try {
-    const res = await fetch('/crm/api/leads', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({
-        first_name: parts[0] || '',
-        last_name:  parts.slice(1).join(' '),
-        phone:   pin.contact_phone || '',
-        email:   pin.contact_email || '',
-        address: pin.address || '',
-        source:  'door_knock',
-        stage,
-        lead_type: 'homeowner',
-      }),
-    });
-    const lead = await res.json();
-    if (!res.ok) throw new Error(lead.error || `HTTP ${res.status}`);
-    // Leads have no notes column, so what the rep wrote at the door goes on
-    // the timeline instead of being quietly dropped.
-    if (pin.notes) {
-      await fetch(`/crm/api/leads/${lead.id}/activities`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ kind: 'note', body: `At the door: ${pin.notes}` }),
-      }).catch(() => {});
-    }
-    await api(`/api/pins/${pinId}/lead`, 'POST', { lead_id: lead.id });
-    pin.crm_lead_id = lead.id;
+    await handoffToPipeline(pin);
     alert('✓ In the Pipeline. The first follow-up is already on your list.');
     hide('pin-detail');
   } catch(e) {
@@ -541,8 +889,19 @@ async function openEditPin(pinId) {
   const pin = allPins.find(p => p.id === pinId);
   if (!pin) return;
 
-  buildTypeSelector('edit-type-selector', (type) => {});
+  // Rescheduling is the common edit on an appointment pin, so the type
+  // selector has to move the field too — a rep who taps Appt Set here and
+  // cannot enter a time is back to the pin that knows nothing about when.
+  const syncEditAppt = (type) => {
+    $('edit-appointment-fields').classList.toggle('hidden', type !== 'appointment');
+    const box = $('edit-appointment-at');
+    if (type === 'appointment' && box && !box.value) box.value = defaultApptLocal();
+  };
+  buildTypeSelector('edit-type-selector', syncEditAppt);
   setSelectedType('edit-type-selector', pin.pin_type);
+
+  $('edit-appointment-at').value = pin.appointment_at || '';
+  syncEditAppt(pin.pin_type);
 
   $('edit-address').value       = pin.address       || '';
   $('edit-contact-name').value  = pin.contact_name  || '';
@@ -566,6 +925,8 @@ $('update-pin-btn').addEventListener('click', async () => {
     contact_phone: $('edit-contact-phone').value,
     contact_email: $('edit-contact-email').value,
     notes:         $('edit-notes').value,
+    appointment_at: selectedType === 'appointment'
+      ? $('edit-appointment-at').value : '',
   };
 
   try {
@@ -578,6 +939,11 @@ $('update-pin-btn').addEventListener('click', async () => {
     delete markers[editingPinId];
     addPinMarker(updated);
     hide('edit-pin-modal');
+    // A door upgraded after the fact — Not Home becomes Appt Set, or a name
+    // finally gets typed — is the same event as setting it that way at the
+    // door, so it takes the same automatic path. `canHandoff` already refuses
+    // a pin that has a lead, so this cannot make a second one.
+    await autoHandoff(updated);
   } catch(e) {
     alert('Update failed: ' + e.message);
   }
@@ -792,7 +1158,7 @@ $('hail-address-search-btn').addEventListener('click', async () => {
   if (!q) { $('hail-address-status').textContent = 'Enter an address first.'; return; }
   const days   = $v('hail-address-days');
   const radius = $v('hail-address-radius');
-  $('hail-address-status').textContent = 'Searching NOAA hail history... (first search on a new area can take up to a minute; repeat searches are instant)';
+  $('hail-address-status').textContent = 'Checking radar hail history...';
   $('hail-address-results').innerHTML = '';
   try {
     const data = await api(`/api/hail/address?q=${encodeURIComponent(q)}&days=${days}&radius=${radius}`);
@@ -802,36 +1168,127 @@ $('hail-address-search-btn').addEventListener('click', async () => {
   }
 });
 
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function prettyDate(iso) {
+  const [y, m, d] = String(iso).split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+// Two data products reach this renderer and they support very different
+// sentences, so it branches on data.source rather than on the shape of the
+// rows. MESH is the radar estimate over THIS roof; SPC is somebody's call-in
+// some miles away. Rendering the second one in the first one's language is how
+// a rep ends up telling a homeowner their house took 1.75" when what actually
+// happened is that a spotter four miles off phoned something in.
 function renderHailAddressResults(data) {
+  if (data.source === 'mrms_mesh') return renderMeshHistory(data);
+  return renderSpcReports(data);
+}
+
+function renderMeshHistory(data) {
+  const st    = $('hail-address-status');
+  const where = escHtml(data.resolved || data.query || 'this location');
+  const cov   = data.coverage || {};
+  const covLine = cov.days_held
+    ? `${cov.days_held} radar day${cov.days_held > 1 ? 's' : ''} on file, ${prettyDate(cov.first)} to ${prettyDate(cov.last)}`
+    : '';
+
+  if (!data.storm_count) {
+    // Not the same sentence as "we have no data" — the server already refused
+    // to return this shape unless the archive actually covered the window.
+    st.textContent = '';
+    $('hail-address-results').innerHTML = `
+      <div class="hail-summary">
+        <div class="hail-summary-big">No hail on record</div>
+        <div class="hail-summary-sub">over ${where}</div>
+      </div>
+      <div class="hail-coverage">Radar checked this roof directly. ${escHtml(covLine)}.</div>`;
+    return;
+  }
+
+  st.textContent = '';
+  // The headline is the worst hail this roof ever took, and the date beside it
+  // has to be that storm's date rather than the newest one, or the big number
+  // and the line under it describe two different days.
+  const worst = data.storms.find(s => s.size === data.max_size) || data.storms[0];
+  $('hail-address-results').innerHTML = `
+    <div class="hail-summary">
+      <div class="hail-summary-big is-headline" style="color:${hailColorHex(data.max_size)}">${data.max_size}"</div>
+      <div class="hail-summary-sub">
+        radar-estimated over this roof &middot; ${escHtml(prettyDate(worst.date))}<br>${where}
+      </div>
+    </div>
+    <div class="hail-day-list">
+      ${data.storms.map(s => `
+        <div class="hail-report-row">
+          <span class="hail-size-chip" style="background:${hailColorHex(s.size)}">${s.size}"</span>
+          <span class="hail-report-loc">${escHtml(prettyDate(s.date))}</span>
+        </div>`).join('')}
+    </div>
+    <div class="hail-coverage">${escHtml(covLine)}.</div>
+    <button class="btn-secondary" id="hail-show-on-map-btn">Show on Map</button>
+  `;
+
+  $('hail-show-on-map-btn').addEventListener('click', () => {
+    hide('hail-address-modal');
+    if (hailResultLayer) map.removeLayer(hailResultLayer);
+    hailResultLayer = L.layerGroup();
+    // A marker on the address and nothing else. The old SPC view drew
+    // max(400, size * 800)-metre circles around each report, a damage
+    // footprint that exists nowhere in the data; MESH knows one cell, and
+    // drawing anything wider than the address would be inventing the rest.
+    L.marker([data.lat, data.lng]).bindPopup(
+      `<b>${data.max_size}" hail</b><br>${escHtml(where)}<br>` +
+      data.storms.map(s => `${escHtml(prettyDate(s.date))} — ${s.size}"`).join('<br>')
+    ).addTo(hailResultLayer);
+    hailResultLayer.addTo(map);
+    map.setView([data.lat, data.lng], 16);
+  });
+}
+
+function renderSpcReports(data) {
   const st = $('hail-address-status');
+  // The archive had nothing for this window, so these are call-ins near the
+  // address rather than the roof itself. Say so, in the result, every time.
+  const fallbackNote = `
+    <div class="hail-coverage">No radar archive for this period — these are
+    NOAA spotter reports near the address, not measurements of this roof.</div>`;
+
   if (!data.report_count) {
     st.textContent = `No hail reports within ${data.radius_miles} mi in the last ${data.lookback_days} days.`;
+    $('hail-address-results').innerHTML = fallbackNote;
     return;
   }
   st.textContent = '';
-  // Group by date
   const byDate = {};
   data.reports.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r); });
   const dates = Object.keys(byDate).sort().reverse();
 
   $('hail-address-results').innerHTML = `
     <div class="hail-summary">
-      <div class="hail-summary-big">${data.report_count} report${data.report_count>1?'s':''} · max ${data.max_size}"</div>
-      <div class="hail-summary-sub">${dates.length} storm day${dates.length>1?'s':''} within ${data.radius_miles} mi of<br>${data.resolved || data.query}</div>
+      <div class="hail-summary-big">${data.report_count} report${data.report_count>1?'s':''} &middot; max ${data.max_size}"</div>
+      <div class="hail-summary-sub">${dates.length} storm day${dates.length>1?'s':''} within ${data.radius_miles} mi of<br>${escHtml(data.resolved || data.query)}</div>
     </div>
+    ${fallbackNote}
     ${dates.map(d => {
       const rows = byDate[d].sort((a,b) => a.distance_miles - b.distance_miles);
       const max = Math.max(...rows.map(r => r.size));
       return `
         <div class="hail-day">
           <div class="hail-day-header">
-            <span>${d}</span>
+            <span>${escHtml(d)}</span>
             <span class="hail-day-max" style="color:${hailColorHex(max)}">${max}" max</span>
           </div>
           ${rows.slice(0,5).map(r => `
             <div class="hail-report-row">
               <span class="hail-size-chip" style="background:${hailColorHex(r.size)}">${r.size}"</span>
-              <span class="hail-report-loc">${r.location}, ${r.state}</span>
+              <span class="hail-report-loc">${escHtml(r.location)}, ${escHtml(r.state)}</span>
               <span class="hail-report-dist">${r.distance_miles} mi</span>
             </div>`).join('')}
         </div>`;
@@ -843,14 +1300,13 @@ function renderHailAddressResults(data) {
     hide('hail-address-modal');
     if (hailResultLayer) map.removeLayer(hailResultLayer);
     hailResultLayer = L.layerGroup();
-    // Target address marker
-    L.marker([data.lat, data.lng]).bindPopup(`<b>${data.query}</b>`).addTo(hailResultLayer);
+    L.marker([data.lat, data.lng]).bindPopup(`<b>${escHtml(data.query)}</b>`).addTo(hailResultLayer);
     data.reports.forEach(r => {
       L.circle([r.lat, r.lng], {
         radius: Math.max(400, r.size * 800),
         color: hailColorHex(r.size), fillColor: hailColorHex(r.size),
         fillOpacity: .3, weight: 1,
-      }).bindPopup(`<b>${r.size}" hail</b><br>${r.date}<br>${r.location}, ${r.state} (${r.distance_miles} mi away)`)
+      }).bindPopup(`<b>${r.size}" hail</b><br>${escHtml(r.date)}<br>${escHtml(r.location)}, ${escHtml(r.state)} (${r.distance_miles} mi away)`)
         .addTo(hailResultLayer);
     });
     hailResultLayer.addTo(map);

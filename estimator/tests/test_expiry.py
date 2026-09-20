@@ -25,7 +25,20 @@ def clean_slate():
 
 
 def _days(n):
-    return (date.today() + timedelta(days=n)).isoformat()
+    """n days from the company's today, not the server's.
+
+    These dates have to be built on the same clock `_est_expired` reads or the
+    tests measure something else. The server runs in UTC and the company is in
+    Colorado, so from 6pm Mountain the two disagree about the date: anchored on
+    `date.today()`, `_days(-1)` was "yesterday in UTC", which is TODAY in
+    Denver, and an estimate held until today is correctly not expired — so
+    `test_a_lapsed_estimate_is_expired` failed every evening between 6pm and
+    midnight Mountain and passed again overnight.
+
+    That is the same UTC-vs-Colorado trap `_company_today` was added to fix,
+    arriving a second time through the fixtures instead of the code.
+    """
+    return (A._company_today() + timedelta(days=n)).isoformat()
 
 
 def _seed(eid, valid_until, *, signed=False):
@@ -52,6 +65,21 @@ def _seed(eid, valid_until, *, signed=False):
 
 def test_a_lapsed_estimate_is_expired():
     assert A._est_expired(_seed('e1', _days(-1)))
+
+
+def test_expiry_is_measured_in_colorado_whatever_the_server_clock_says(monkeypatch):
+    """The boundary, pinned without reference to the wall clock.
+
+    Every other test here builds its dates off `_company_today()`, so none of
+    them would notice if that function started answering in UTC. This one fixes
+    the company's today and checks both sides of the edge, which is the whole
+    behaviour: an estimate is live through the last day it was held for, and
+    dead the morning after.
+    """
+    held = date(2026, 6, 14)
+    monkeypatch.setattr(A, '_company_today', lambda: held)
+    assert not A._est_expired(_seed('tz1', held.isoformat()))
+    assert A._est_expired(_seed('tz2', (held - timedelta(days=1)).isoformat()))
 
 
 def test_todays_expiry_still_signs():

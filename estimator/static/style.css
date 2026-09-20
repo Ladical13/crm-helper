@@ -5264,6 +5264,57 @@ body.is-client #nav-toggle      { display: none; }
 .pbaudit-lede{background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
   border-radius:6px;padding:12px 14px;font-size:13px;line-height:1.55;margin-bottom:14px}
 .pbaudit-lede strong{font-size:14px}
+/* The RoofR button once the report is in. Reads as done rather than as
+   another thing to do — "do I still need this?" is the only question a rep
+   has when they look at it. */
+.roofr-loaded {
+  color: #047857;
+  border-color: #A7F3D0;
+  background: #ECFDF5;
+}
+
+/* Estimate review findings. One card per finding, colour-keyed by severity,
+   because a rep reads this in a truck with the engine running and the only
+   question they have is which of these stops the send. */
+.rev-item {
+  margin: 0 0 10px;
+  padding: 11px 13px;
+  border-radius: 0 8px 8px 0;
+  border: 1px solid var(--border, #d8dee4);
+  border-left-width: 4px;
+  background: var(--surface2, #f6f8fa);
+}
+.rev-item.rev-high   { border-left-color: #DC2626; }
+.rev-item.rev-medium { border-left-color: #F59E0B; }
+.rev-item.rev-low    { border-left-color: #6B7280; }
+.rev-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 4px;
+}
+.rev-sev {
+  font-size: 11px; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.rev-high .rev-sev   { color: #DC2626; }
+.rev-medium .rev-sev { color: #B45309; }
+.rev-low .rev-sev    { color: #6B7280; }
+.rev-what { font-size: 14px; font-weight: 600; line-height: 1.4; }
+.rev-fix  { font-size: 13px; margin-top: 4px; line-height: 1.45; opacity: .82; }
+
+/* The material/labor review panel. Sits above the audit's own findings in the
+   same modal: both answer "what is wrong with the price book", and a manager
+   working through one is the person who should see the other. */
+.ccr-panel {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border, #d8dee4);
+  border-left: 3px solid #8B5CF6;
+  border-radius: 0 8px 8px 0;
+  background: var(--surface2, #f6f8fa);
+}
+.ccr-panel table { margin-top: 10px; }
+.ccr-tick { width: 18px; height: 18px; }
+
 .pbaudit-hint{margin:6px 0 0;font-size:12px;opacity:.85;line-height:1.5}
 .pbaudit-clean{background:#dcfce7;border:1px solid #16a34a;color:#14532d;
   border-radius:6px;padding:14px;font-size:13.5px;line-height:1.55}

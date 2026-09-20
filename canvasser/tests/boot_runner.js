@@ -67,7 +67,15 @@ const sandbox = {
     addEventListener: () => {},
   },
   location: { pathname: '/canvass/', href: '' },
-  navigator: { geolocation: null, permissions: null, clipboard: null },
+  navigator: { geolocation: null, permissions: null, clipboard: null, onLine: true },
+  // sandbox.window is the sandbox itself, so a window-level listener resolves
+  // here. The offline outbox registers one for `online`.
+  addEventListener: () => {},
+  // Absent, not stubbed: private browsing and blocked site data are real
+  // states on the devices this runs on, and the bundle has to boot in them.
+  // Every outbox call degrades to a no-op rather than throwing, and this is
+  // what holds that promise.
+  indexedDB: null,
   devicePixelRatio: 1,
   alert: () => {}, confirm: () => true, prompt: () => null,
   fetch: (url) => {

@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=239">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=244">
 </head>
 <body>
 
@@ -46,6 +46,8 @@
       <button onclick="openEstimate()">Open</button>
       <button onclick="openPriceBook()" class="btn-pricebook">📋 Price Book</button>
       <button id="present-btn" onclick="presentEstimate()" class="btn-present">📊 Present</button>
+      <button id="review-btn" onclick="openEstimateReview()" class="btn-secondary"
+              data-demo-hide title="A second estimator reads this job before it goes out">🔍 Review</button>
       <button id="share-btn" onclick="shareEstimate()" class="btn-share">Send / Sign</button>
       <button onclick="doPrint()" class="btn-print">Print / PDF</button>
       <button onclick="openInvoice()" class="btn-invoice" data-demo-hide title="Plain itemized invoice or quote">🧾 Invoice</button>
@@ -542,6 +544,20 @@
           <textarea id="cc-reviews-items" rows="5" spellcheck="true" placeholder="One review per line:  stars | name | review text&#10;5 | Sarah M. | Fast, clean, and the roof looks amazing."></textarea>
         </div>
       </div>
+      <div id="settings-crew" class="field-group settings-pane hidden">
+        <label>Crew Documents <span class="note-tag">manager only — what the work order prints for the crew on the roof</span></label>
+        <div class="cc-block">
+          <label class="cc-toggle">
+            <input type="checkbox" id="set-wo-bilingual">
+            🇲🇽 Spanish beside the English on the work order
+          </label>
+          <div class="note-tag">English stays first and stays the authority — it is what the
+          contract, the inspector and the office speak. Printing both means a bad line is
+          visible to anyone who glances at the sheet. Labels come from a fixed table; only
+          the rep's crew notes are translated, and a translation that changed a figure is
+          refused and prints English only.</div>
+        </div>
+      </div>
       <div id="settings-margin" class="field-group settings-pane hidden">
         <label>Margin Floors <span class="note-tag">manager only — checked against realized margin, (sell − cost) ÷ sell, on the LOWEST-margin package the customer is offered</span></label>
         <div class="cc-block">
@@ -650,15 +666,35 @@
      wrong cost is not one wrong number. This finds the SHAPE of an error (no
      cost, a unit that disagrees with its measure) and never the right value —
      what a square of shingles costs is between the manager and the invoice. -->
+<!-- ── Estimate review ──────────────────────────────────────────────────
+     Informs, never blocks. `_margin_floor_block` is the one thing that stops
+     an estimate leaving; a second gate that disagreed with the first is how a
+     rep ends up unable to send a job neither of them can explain. -->
+<div id="review-modal" class="modal hidden" onclick="maybeCloseReview(event)">
+  <div class="modal-box pbaudit-modal-box">
+    <div class="modal-header">
+      <h2>🔍 Review Before Sending</h2>
+      <div class="modal-header-actions">
+        <button class="btn-secondary" onclick="window.print()">🖨 Print</button>
+        <button onclick="closeEstimateReview()" class="modal-close">×</button>
+      </div>
+    </div>
+    <div id="review-body" class="settings-body"></div>
+  </div>
+</div>
+
 <div id="pbaudit-modal" class="modal hidden" onclick="maybeClosePbAudit(event)">
   <div class="modal-box pbaudit-modal-box">
     <div class="modal-header">
       <h2>🔍 Price Book Audit</h2>
       <div class="modal-header-actions">
+        <button class="btn-secondary" onclick="reviewCostClasses()"
+                id="ccr-btn" title="Check which costs are filed as materials and which as labor">⚖️ Check Material/Labor</button>
         <button class="btn-secondary" onclick="window.print()">🖨 Print</button>
         <button onclick="closePbAudit()" class="modal-close">×</button>
       </div>
     </div>
+    <div id="ccr-body"></div>
     <div id="pbaudit-body" class="settings-body"></div>
   </div>
 </div>
@@ -883,6 +919,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=239"></script>
+<script src="/estimate/static/app.js?v=244"></script>
 </body>
 </html>
