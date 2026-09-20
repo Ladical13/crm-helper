@@ -406,6 +406,38 @@ a weaker question slowly. `/api/hail/address` is that wiring.
   a stored `nomatch` from an address it has never seen.
 - Pinned by `canvasser/tests/test_hail_archive.py`.
 
+### The overlay draws radar cells, not invented circles (2026-09-20)
+
+The address lookup read MESH and the map beside it still drew SPC spotter
+reports as `max(500, size * 800)`-metre circles — a damage footprint that
+exists nowhere in the data, around points that are call-ins rather than
+measurements. Two views of "where did it hail" on one screen, disagreeing
+about both the data and the geometry.
+
+`GET /api/hail/storms` lists the archive's own storm days (the picker, so a
+rep chooses a storm instead of already having to know when it was) and
+`GET /api/hail/cells` serves `hail.storms.cells_in()`.
+
+- **Rectangles at the data's own resolution.** A cell is the only ground the
+  radar made a claim about; a radius is a footprint somebody invented.
+- **A cell hit on more than one day takes the MAXIMUM**, never a sum or a
+  mean. MESH is already a maximum over its own window, and a mean shaves the
+  peak off every multi-day range — the number that decides whether a street is
+  worth knocking.
+- **The viewport is filtered in SQL on the cell INDICES.** `cell_index()` turns
+  the map bounds into an ri/ci range, so the database returns the screen rather
+  than the state. All four sides or none: three sides of a box is not a box,
+  and guessing the fourth returns the wrong ground.
+- **Truncation keeps the BIGGEST hail and says so.** An arbitrary slice would
+  hide the cells a rep most needs behind ones they do not. Same honesty rule as
+  `list_pins`.
+- **Three outcomes, never conflated**: cells drawn; no cells *with* coverage
+  (radar looked at this ground and saw nothing — a useful fact); and no
+  coverage at all, which falls through to the SPC reports, drawn as the circles
+  they have always been and labelled in the popup as a call-in near there
+  rather than a measurement of it.
+- Pinned by `canvasser/tests/test_hail_overlay.py`.
+
 ### An appointment knows when it is, and books itself (2026-09-20)
 
 Two gaps that were only worth closing together. An `appointment` pin mapped to
@@ -510,13 +542,9 @@ order they cost the business something.
 - **`no_soliciting` is only a pin colour.** Fort Collins, Loveland and Greeley
   all run solicitation permits and no-knock lists; nothing warns the next rep
   walking up to one.
-- **The map OVERLAY still draws NOAA SPC spotter reports**, even though the
-  address lookup beside it now reads radar. `/api/hail` and `/api/hail/range`
-  are the two routes left on the old product, and they draw
-  `max(400, size * 800)`-metre circles around each call-in — a damage footprint
-  that exists nowhere in the data. `Swath.cell_rects()` already returns the
-  real cells for drawing; what is missing is a route to serve them and a
-  rectangle layer to replace the circles.
+- ~~The map OVERLAY still draws NOAA SPC spotter reports.~~ **Fixed
+  2026-09-20** — see the overlay note above. The SPC routes remain as the
+  fallback for dates nobody has backfilled.
 - **Nothing comes back from the CRM.** A pin gets `crm_lead_id` and then goes
   stale forever, so a door that became a signed roof still reads "Interested".
   That loop is the motivational payload of the whole tool.

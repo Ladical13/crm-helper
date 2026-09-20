@@ -202,3 +202,86 @@ def history_at(lat, lng, since=None, source='mrms_mesh'):
                 WHERE {' AND '.join(clauses)}
                 ORDER BY e.event_date DESC''', params).fetchall()
     return [dict(r) for r in rows]
+
+
+def storm_days(since=None, until=None, min_size=None, limit=200, source='mrms_mesh'):
+    """Days the archive HOLDS, newest first, for a picker.
+
+    Days with no qualifying hail are dropped here even though `record()` keeps
+    them: this list is "which storms can I look at", and a row that draws
+    nothing on the map is a row that reads as a broken link. The fact that the
+    day was looked at still lives in `ingested_dates()`, which is what
+    distinguishes "no hail" from "never ingested".
+    """
+    clauses, params = ['source=?', 'cell_count > 0'], [source]
+    if since:
+        clauses.append('event_date >= ?'); params.append(since)
+    if until:
+        clauses.append('event_date <= ?'); params.append(until)
+    if min_size is not None:
+        clauses.append('max_size_in >= ?'); params.append(min_size)
+    with get_db() as db:
+        rows = db.execute(
+            f'''SELECT event_id, event_date, max_size_in, cell_count
+                FROM storm_events WHERE {' AND '.join(clauses)}
+                ORDER BY event_date DESC LIMIT ?''', params + [limit]).fetchall()
+    return [dict(r) for r in rows]
+
+
+def cells_in(bounds=None, since=None, until=None, min_size=None,
+             limit=20000, source='mrms_mesh'):
+    """Merged cells over a date range, for drawing. (rows, truncated).
+
+    Each row is (south, west, north, east, size_in) — the cell's real extent,
+    not a radius. The canvasser's old overlay drew `max(500, size * 800)`-metre
+    circles around each spotter report, a damage footprint that exists nowhere
+    in the data; these claim nothing beyond the ground the radar estimated
+    over.
+
+    Three things are load-bearing:
+
+    **A cell hit on more than one day takes the MAXIMUM, never a sum or a
+    mean.** MESH is already a maximum over its own window, and a mean would
+    quietly shave the peak off every multi-day range — which is exactly the
+    number that decides whether a neighbourhood is worth knocking.
+
+    **The bounds filter runs in SQL on the cell INDICES**, not in Python after
+    loading. A day's swath is thousands of cells and a season is millions;
+    `cell_index` turns the viewport into an ri/ci range so the database returns
+    the screen and nothing else.
+
+    **Truncation keeps the BIGGEST hail.** A cap that returned an arbitrary
+    slice would hide the cells the rep most needs to see behind ones they do
+    not, so the order is by size descending and the caller is told it happened.
+    Same honesty rule as the canvasser's pin list.
+    """
+    clauses, params = ['e.source=?'], [source]
+    if since:
+        clauses.append('e.event_date >= ?'); params.append(since)
+    if until:
+        clauses.append('e.event_date <= ?'); params.append(until)
+    if min_size is not None:
+        clauses.append('c.size_in >= ?'); params.append(min_size)
+    if bounds:
+        south, west, north, east = bounds
+        # Built from the grid's own indexer so the filter and the stored ids
+        # can never disagree about which cell a coordinate falls in.
+        r0, c0 = hgrid.cell_index(south, west)
+        r1, c1 = hgrid.cell_index(north, east)
+        clauses.append('c.ri BETWEEN ? AND ?'); params += [min(r0, r1), max(r0, r1)]
+        clauses.append('c.ci BETWEEN ? AND ?'); params += [min(c0, c1), max(c0, c1)]
+    with get_db() as db:
+        rows = db.execute(
+            f'''SELECT c.ri, c.ci, e.cell_deg, MAX(c.size_in) AS size_in
+                FROM storm_cells c JOIN storm_events e ON e.event_id = c.event_id
+                WHERE {' AND '.join(clauses)}
+                GROUP BY c.ri, c.ci, e.cell_deg
+                ORDER BY size_in DESC
+                LIMIT ?''', params + [limit + 1]).fetchall()
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    # cell_deg comes from each row's own event rather than from a constant: a
+    # cell id only means anything against the lattice it was indexed on, so a
+    # future ingest at a different resolution still draws in the right place.
+    return ([hgrid.cell_bounds(r['ri'], r['ci'], r['cell_deg']) + (r['size_in'],)
+             for r in rows], truncated)
