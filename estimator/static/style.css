@@ -5264,6 +5264,15 @@ body.is-client #nav-toggle      { display: none; }
 .pbaudit-lede{background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
   border-radius:6px;padding:12px 14px;font-size:13px;line-height:1.55;margin-bottom:14px}
 .pbaudit-lede strong{font-size:14px}
+/* The RoofR button once the report is in. Reads as done rather than as
+   another thing to do — "do I still need this?" is the only question a rep
+   has when they look at it. */
+.roofr-loaded {
+  color: #047857;
+  border-color: #A7F3D0;
+  background: #ECFDF5;
+}
+
 /* Estimate review findings. One card per finding, colour-keyed by severity,
    because a rep reads this in a truck with the engine running and the only
    question they have is which of these stops the send. */

@@ -64,6 +64,12 @@ try:
 except ImportError:
     import estimate_review               # noqa: E402
 
+# The work order, in Spanish beside the English, for the crew on the roof.
+try:
+    from . import crew_spanish           # noqa: E402
+except ImportError:
+    import crew_spanish                  # noqa: E402
+
 try:
     import requests as http
 except ImportError:
@@ -14066,6 +14072,58 @@ def _tier_items(td, trade_mode, t_tier):
             yield it, qty, {}
 
 
+def _bilingual_work_order():
+    """Whether the work order prints Spanish beside the English.
+
+    On by default. The English is unchanged and still first, so the worst a
+    bad translation can do is add a confusing line next to a correct one — and
+    the crew that cannot read the correct one is the reason this exists.
+    `work_order_bilingual: false` in Settings turns it off.
+    """
+    v = _app_settings().get('work_order_bilingual')
+    return True if v is None or v == '' else bool(v)
+
+
+# Translating the same crew note twice for one job would spend twice and, worse,
+# could print two different Spanish paragraphs on two copies of one work order.
+# Keyed on the note itself, so an edited note re-translates and an unchanged one
+# never does. Process-local and bounded: this is a cache, not a store, and
+# losing it costs one call.
+_WO_NOTES_ES = {}
+_WO_NOTES_ES_MAX = 200
+
+
+def _work_order_notes_es(text):
+    """Spanish for the rep's crew notes, or '' if it could not be produced.
+
+    Returns '' on every failure — no key, no network, a refusal, an empty
+    answer — because the English has already printed and a work order that
+    refuses to build over a translation is a crew on a roof with no sheet.
+
+    The one automated check: every figure in the English has to appear in the
+    Spanish. Nobody in this office reads Spanish well enough to catch a
+    changed quantity, and a changed quantity is what the crew would build to.
+    """
+    text = (text or '').strip()
+    if not text:
+        return ''
+    if text in _WO_NOTES_ES:
+        return _WO_NOTES_ES[text]
+    try:
+        out = crew_spanish.translate_notes(text)
+    except crew_spanish.TranslateError as e:
+        print(f'[crew-es] notes not translated: {e}')
+        return ''
+    if not crew_spanish.numbers_survived(text, out):
+        print('[crew-es] REFUSED: a figure changed in translation — '
+              'printing English only')
+        return ''
+    if len(_WO_NOTES_ES) >= _WO_NOTES_ES_MAX:
+        _WO_NOTES_ES.clear()
+    _WO_NOTES_ES[text] = out
+    return out
+
+
 def build_work_order_pdf(est):
     """Work order for the SIGNED package — the sheet the crew works from.
 
@@ -14130,8 +14188,49 @@ def build_work_order_pdf(est):
         s = _pdf_oneline_rich(s)
         return s if len(s) <= n else s[:n - 1] + '...'
 
+    # ── Spanish, beside the English ───────────────────────────────────────
+    #
+    # The crews that build these roofs are substantially Spanish-speaking and
+    # this sheet has always been English-only. That matters most at the one
+    # place the document is designed to catch an error: the ventilation block
+    # prints installed square inches against required and says SHORT by N
+    # precisely so a wrong calculation fails in front of whoever is on the
+    # roof. In a language the crew does not read, it fails silently anyway.
+    #
+    # English stays FIRST and stays the authority — it is what the contract,
+    # the inspector and the office speak, and a translation nobody in the
+    # office can check is one nobody should trust. Printed side by side, a bad
+    # line is visible to anyone who glances at the sheet.
+    es_on = _bilingual_work_order()
+
+    def L(txt):
+        """A fixed label, bilingual. Static table — no model, no network."""
+        return crew_spanish.label(txt) if es_on else txt
+
+    def SL(txt):
+        """A generated verdict ('SHORT by 420 sq in'), whose number is carried
+        across by formatting rather than by translation."""
+        return crew_spanish.state_line(txt) if es_on else txt
+
+    def sub_es(txt, w=40):
+        """The Spanish half of a key/value label, on its own line.
+
+        Two lines rather than one: the label column is 40mm and
+        'Dirección del Trabajo' does not fit beside its English.
+        """
+        if not es_on:
+            return
+        es = crew_spanish.LABELS.get(txt)
+        if not es:
+            return
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(w, 4, _pdf_rich(es))
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln()
+
     # ── Page 1: Work Order ──
-    title_bar('Work Order')
+    title_bar(L('Work Order'))
 
     signed_at = sig.get('signed_at', '')
     try:
@@ -14166,6 +14265,7 @@ def build_work_order_pdf(est):
         pdf.cell(40, 5.5, _pdf_rich(label))
         pdf.set_font(SANS, '', 9)
         pdf.cell(0, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT')
+        sub_es(label)
     pdf.ln(3)
 
     # ── Job Details block ─────────────────────────────────────────────
@@ -14240,13 +14340,17 @@ def build_work_order_pdf(est):
     detail_rows.append(('Satellite Dish',
                         _wo('satellite_dish', '____________ (confirm w/ HO)')))
 
-    section_title('Job Details')
+    section_title(L('Job Details'))
     pdf.set_font(SANS, '', 9)
     for label, val in detail_rows:
         pdf.set_font(SANS, 'B', 9)
         pdf.cell(40, 5.5, _pdf_rich(label))
         pdf.set_font(SANS, '', 9)
-        pdf.multi_cell(W - 40, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT', align='L')
+        # A value that is itself a fixed word (YES / NO / NOT on this job)
+        # translates; a name, a date or a figure passes straight through.
+        pdf.multi_cell(W - 40, 5.5, _pdf_rich(L(val) if crew_spanish.has_label(val) else val),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+        sub_es(label)
     pdf.ln(2)
 
     # No Product Selection or Scope of Work here. The colours the crew needs
@@ -14261,13 +14365,24 @@ def build_work_order_pdf(est):
     # this sheet carries.
     crew = (est.get('notes_internal') or '').strip()
     if crew:
-        section_title('Notes')
+        section_title(L('Notes'))
         pdf.set_font(SANS, '', 6.5)
         pdf.set_text_color(*_PDF_STYLE['faint'])
-        pdf.cell(0, 4.4, _pdf_rich('CREW ONLY - INTERNAL'), new_x='LMARGIN', new_y='NEXT')
+        pdf.cell(0, 4.4, _pdf_rich(L('CREW ONLY - INTERNAL')), new_x='LMARGIN', new_y='NEXT')
         pdf.set_font(SANS, '', 8.5)
         pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.multi_cell(W, 4.6, _pdf_rich(crew), new_x='LMARGIN', new_y='NEXT', align='L')
+        # The one part of this sheet a table cannot cover: what the rep typed.
+        # Never fatal — a work order that refused to build over a translation
+        # is a crew on a roof with no sheet at all.
+        crew_es = _work_order_notes_es(crew) if es_on else ''
+        if crew_es:
+            pdf.ln(1)
+            pdf.set_font(SANS, '', 8.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.multi_cell(W, 4.6, _pdf_rich(crew_es),
+                           new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.ln(2)
 
     # Ridge-vent cut-in is now printed inline under Job Details on page 1,
@@ -14323,7 +14438,7 @@ def build_work_order_pdf(est):
                           f'({vinfo["required_intake"]:.0f} sq in at '
                           f'{NFA_INTAKE_SQIN_LF} sq in per LF)'))
         else:
-            vrows.append(('Intake vent', 'NOT on this job'))
+            vrows.append((L('Intake Vent'), L('NOT on this job')))
         # What this roof ends up with, against what code asks for. Printed for
         # the crew because a wrong calculation that nobody reads stays wrong.
         nfa = _vent_nfa_report(est)
@@ -14332,9 +14447,11 @@ def build_work_order_pdf(est):
                  nfa['exhaust_short']),
                 ('Intake NFA', nfa['intake_installed'], nfa['intake_required'],
                  nfa['intake_short'])):
+            # The most important sentence on the sheet, so it is the one that
+            # most needs to be readable by the person standing on the roof.
             state = f'SHORT by {short:.0f} sq in' if short > 0.5 else 'meets code'
-            vrows.append((lbl, f'{got:.0f} sq in installed / {want:.0f} required'
-                               f'  -  {state}'))
+            vrows.append((L(lbl), f'{got:.0f} sq in installed / {want:.0f} required'
+                                  f'  -  {SL(state)}'))
         kv(vrows, label_w=42)
 
         note = (vent_cutin0.get('notes') or '').strip()
@@ -14347,7 +14464,7 @@ def build_work_order_pdf(est):
         pdf.ln(3)
         pdf.set_font(SANS, '', 6.5)
         pdf.set_text_color(*_PDF_STYLE['faint'])
-        pdf.cell(0, 5, _pdf_rich('AS INSTALLED - FILL IN ON SITE'),
+        pdf.cell(0, 5, _pdf_rich(L('AS INSTALLED - FILL IN ON SITE')),
                  new_x='LMARGIN', new_y='NEXT')
         pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.set_font(SANS, '', 9.5)

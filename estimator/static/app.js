@@ -7014,11 +7014,34 @@ function renderTradeContent() {
                <p class="ins-tab-empty-title">Insurance Claim Estimate</p>
                <p class="ins-tab-empty-body">Import the carrier's estimate PDF to load the line items automatically, or enable this trade to enter them by hand.</p>
                <button class="btn-primary ins-tab-import-btn" onclick="document.getElementById('xact-pdf-input').click()">📥 Import Carrier Estimate PDF</button>
-               <p class="ins-tab-empty-hint">Importing turns on Insurance mode for you.</p>
+               ${roofrImportBtn('btn-secondary ins-tab-import-btn')}
+               <p class="ins-tab-empty-hint">Importing turns on Insurance mode for you.
+               An insurance job needs both: the carrier's estimate is the claim,
+               the RoofR report is what the roof actually measures.</p>
              </div>`
           : `<div class="trade-disabled">Enable this trade to add line items.</div>`)}`;
   // Every tab's description boxes are sized after the markup lands — see autoGrow.
   autoGrowAll(host);
+}
+
+/* ── RoofR, beside the carrier import ────────────────────────────────────
+   An insurance job needs BOTH documents and they were in different places:
+   the carrier PDF had a button on the Insurance tab, and the measurement
+   report was three levels into the ⋮ menu. They are two halves of one task —
+   the carrier's estimate is a claim ABOUT a roof, and RoofR is what that roof
+   actually measures. Without the measurements the cost side is sized off
+   nothing, the margin is unknowable, and the Claim Check that finds a
+   supplement has nothing to compare against. Xactimate exports carry no
+   measurements at all, and Xactimate is most of this company's volume.
+
+   The button says whether the report is already in, because "do I still need
+   to do this?" is the only question a rep has when they look at it. */
+function roofrImportBtn(cls) {
+  const sq = Number((S.measurements || {}).roof_squares || 0);
+  return sq > 0
+    ? `<button class="${cls} roofr-loaded" onclick="document.getElementById('roofr-pdf-input').click()"
+         title="Import a different measurement report">✓ ${sq.toLocaleString(undefined,{maximumFractionDigits:1})} SQ measured — replace</button>`
+    : `<button class="${cls}" onclick="document.getElementById('roofr-pdf-input').click()">📐 Import RoofR Measurements</button>`;
 }
 
 /* ── The $0 guard ───────────────────────────────────────────────────────
@@ -7753,8 +7776,9 @@ function renderInsuranceFreeform() {
           placeholder="e.g. CLM-2026-12345"
           oninput="S.trades.insurance.claim_number=this.value;setDirty()">
       </div>
-      <div class="field-group" style="align-self:flex-end">
+      <div class="field-group" style="align-self:flex-end;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn-secondary" onclick="document.getElementById('xact-pdf-input').click()">📥 Import Carrier PDF</button>
+        ${roofrImportBtn('btn-secondary')}
       </div>
     </div>
     ${_insClaimCard()}
@@ -12469,6 +12493,7 @@ async function newEstimateForCustomer(name, label, type) {
 const SETTINGS_TABS = [
   ['settings-general',       '🎨 General'],
   ['settings-margin',        '💰 Margin'],
+  ['settings-crew',          '👷 Crew Docs'],
   ['settings-gbb',           '📦 Packages'],
   ['settings-company',       '🏠 Proposal'],
   ['settings-contract',      '📜 Contract'],
@@ -12517,6 +12542,12 @@ async function openSettings() {
     // Margin floors are manager-up, matching PUT /api/settings' own gate — a
     // rep must not be able to lower the floor that constrains them.
     document.getElementById('settings-margin').classList.remove('hidden');
+    document.getElementById('settings-crew').classList.remove('hidden');
+    // Absent means ON: the crew that cannot read the English sheet is the
+    // reason this exists, so it has to be the default rather than something
+    // somebody remembers to switch on.
+    document.getElementById('set-wo-bilingual').checked =
+      appSettings.work_order_bilingual !== false;
     document.getElementById('set-margin-warn').value =
       appSettings.margin_floor_warn ?? '';
     document.getElementById('set-margin-block').value =
@@ -12959,6 +12990,8 @@ async function saveSettings() {
     };
     appSettings.margin_floor_warn  = floor('set-margin-warn');
     appSettings.margin_floor_block = floor('set-margin-block');
+    appSettings.work_order_bilingual =
+      document.getElementById('set-wo-bilingual').checked;
   }
   if (_meIsAdmin()) {
     const lines = id => document.getElementById(id).value.split('\n').map(s => s.trim()).filter(Boolean);

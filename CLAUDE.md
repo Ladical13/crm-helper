@@ -911,6 +911,53 @@ Tests run against a temp `DATA_DIR`, so they never touch real estimates.
 `estimator/estimates/` is gitignored — there is no git safety net for that data;
 back it up before any migration.
 
+### The work order in Spanish, beside the English (2026-09-20)
+
+`estimator/crew_spanish.py`. The crews building these roofs are substantially
+Spanish-speaking and this sheet was English-only. That matters most at the one
+place the document is designed to catch an error: the ventilation block prints
+installed square inches against required and says *SHORT by N*, a number put
+there so a wrong calculation fails in front of whoever is on the roof rather
+than silently in a test. In a language the crew does not read, it fails
+silently anyway.
+
+- **English prints FIRST and stays the authority.** It is what the contract,
+  the inspector and the office speak, and a translation nobody in the office
+  can check is one nobody should trust. Side by side, a bad line is visible to
+  anyone who glances at the sheet.
+- **Fixed labels are a STATIC TABLE, not a model call.** `LABELS` is closed and
+  finite — free, offline, instant, reviewable in a diff, and incapable of
+  drifting between two printings of one sheet. Asking a model to translate the
+  word "Customer" on every build would buy latency and variance for a worse
+  answer. `test_crew_spanish.py` reads every `L('…')` call and every
+  `detail_rows.append` label out of `app.py` and fails on one the table has
+  never heard of, so the two cannot drift.
+- **Only the rep's free-text crew notes reach a model**, because they are the
+  one part of the sheet nobody can know in advance.
+- **A figure that changed in translation is REFUSED.** `numbers_survived()`
+  compares the numeric tokens as a multiset and `_work_order_notes_es()` throws
+  the translation away and prints English only when one went missing. Nobody
+  here reads Spanish well enough to catch a changed quantity, and a changed
+  quantity is what the crew would build to. The ventilation verdict never goes
+  near a model at all — `state_line()` carries its figure across by formatting.
+- **Nothing about this can break a work order.** No key, no network, a refusal
+  or an empty answer all return `''` and the English prints. Most of the sheet
+  is labels, so the bulk of the value costs nothing and works offline.
+- `work_order_bilingual` in ⚙ Settings → 👷 Crew Docs, **default ON** (absence
+  means on). A new pane needs its `SETTINGS_TABS` entry as well as the
+  `settings-pane` class, or it is unreachable.
+
+**RoofR sits beside the carrier import now.** Same shape of problem, no
+translation involved: an insurance job needs two documents and they were in
+different places — the carrier PDF had a button on the Insurance tab, the
+measurement report was three levels into the ⋮ menu. Without the measurements
+the cost side is sized off nothing, the margin is unknowable, and the Claim
+Check that finds a supplement has nothing to compare against; Xactimate exports
+carry no measurements at all and Xactimate is most of this company's volume.
+`roofrImportBtn()` is one builder serving both sites, and it says whether the
+report is already in — "do I still need to do this?" is the only question a rep
+has when they look at it.
+
 ### Review before sending (`estimator/estimate_review.py`, 2026-09-20)
 
 A second estimator reading the job before it reaches a homeowner — the pass a

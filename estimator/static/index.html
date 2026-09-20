@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=241">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=243">
 </head>
 <body>
 
@@ -544,6 +544,20 @@
           <textarea id="cc-reviews-items" rows="5" spellcheck="true" placeholder="One review per line:  stars | name | review text&#10;5 | Sarah M. | Fast, clean, and the roof looks amazing."></textarea>
         </div>
       </div>
+      <div id="settings-crew" class="field-group settings-pane hidden">
+        <label>Crew Documents <span class="note-tag">manager only — what the work order prints for the crew on the roof</span></label>
+        <div class="cc-block">
+          <label class="cc-toggle">
+            <input type="checkbox" id="set-wo-bilingual">
+            🇲🇽 Spanish beside the English on the work order
+          </label>
+          <div class="note-tag">English stays first and stays the authority — it is what the
+          contract, the inspector and the office speak. Printing both means a bad line is
+          visible to anyone who glances at the sheet. Labels come from a fixed table; only
+          the rep's crew notes are translated, and a translation that changed a figure is
+          refused and prints English only.</div>
+        </div>
+      </div>
       <div id="settings-margin" class="field-group settings-pane hidden">
         <label>Margin Floors <span class="note-tag">manager only — checked against realized margin, (sell − cost) ÷ sell, on the LOWEST-margin package the customer is offered</span></label>
         <div class="cc-block">
@@ -905,6 +919,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=241"></script>
+<script src="/estimate/static/app.js?v=243"></script>
 </body>
 </html>
