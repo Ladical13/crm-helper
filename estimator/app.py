@@ -70,6 +70,12 @@ try:
 except ImportError:
     import crew_spanish                  # noqa: E402
 
+# The homeowner's own claim, explained back to them in plain English.
+try:
+    from . import claim_explainer        # noqa: E402
+except ImportError:
+    import claim_explainer               # noqa: E402
+
 try:
     import requests as http
 except ImportError:
@@ -16628,6 +16634,129 @@ def _report_findings_text(est):
             if r['priority'] in ('Immediate', '1–2 Years'):
                 parts.append(_sentence(f"Recommended ({r['priority']}): {r['description']}"))
     return ' '.join(parts)
+
+
+def build_claim_explainer_pdf(est):
+    """"Your Insurance Claim, Explained" — one page, for the homeowner.
+
+    Every figure on it is the carrier's own, copied across. The only
+    arithmetic shown is the carrier's own identity (ACV + depreciation = RCV),
+    and it is CHECKED rather than performed: when their numbers do not tie out
+    — legitimately, for non-recoverable depreciation or pay-when-incurred lines
+    — the sheet says so instead of printing a subtraction a homeowner can catch
+    being wrong.
+
+    Nothing about our pricing, our margin or what the job costs to build
+    appears here. This page is about their claim.
+    """
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+    facts = claim_explainer.claim_facts(est)
+    if not claim_explainer.has_enough(facts):
+        raise ValueError('No carrier figures on this estimate yet — import the '
+                         "carrier's estimate PDF first.")
+
+    c = est.get('customer', {}) or {}
+    a = c.get('address', {}) or {}
+    pdf, SANS, SERIF, W = _new_internal_pdf(
+        'Your Insurance Claim, Explained',
+        footer='Project One Roofing  ·  projectoneroofingcolorado.com')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+
+    pdf.set_font(SERIF, 'B', 22)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W, 11, _pdf_rich('Your Insurance Claim, Explained'),
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+    pdf.ln(5)
+
+    head = [('Prepared for', (c.get('name') or '').strip()),
+            ('Property', ', '.join(filter(None, [a.get('street'), a.get('city'),
+                                                 a.get('state')]))),
+            ('Insurance carrier', facts['carrier']),
+            ('Claim number', facts['claim_number']),
+            ('Date of loss', facts['date_of_loss'])]
+    kv([(k, v) for k, v in head if v], label_w=42)
+    pdf.ln(4)
+
+    section_rows = [
+        ('What your carrier approved in total', facts['rcv_total']),
+        ('Held back until the work is done', facts['depreciation']),
+        ('Your first payment', facts['acv_total']),
+        ('Your deductible', facts['deductible']),
+        ('Paid when the work is incurred', facts['paid_when_incurred']),
+    ]
+    section('The numbers', "Your carrier's figures")
+    for label, val in section_rows:
+        if val is None:
+            continue
+        pdf.set_font(SANS, '', 9.5)
+        pdf.cell(W - 38, 6.4, _pdf_rich(label))
+        pdf.set_font(SANS, 'B', 10.5)
+        pdf.cell(38, 6.4, _pdf_rich(f'${val:,.2f}'), align='R',
+                 new_x='LMARGIN', new_y='NEXT')
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+        pdf.ln(1.2)
+    pdf.ln(2)
+
+    ties = claim_explainer.reconciles(facts)
+    pdf.set_font(SANS, '', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['faint'])
+    if ties:
+        pdf.multi_cell(W, 4.2, _pdf_rich(
+            'Your first payment plus the amount held back equals the approved '
+            'total. Every figure above is copied from your own claim documents.'),
+            new_x='LMARGIN', new_y='NEXT')
+    else:
+        # A homeowner who checks the subtraction and finds it wrong stops
+        # believing the rest of the page. Say it first.
+        pdf.multi_cell(W, 4.2, _pdf_rich(
+            'These figures are copied from your own claim documents. Some '
+            'carriers list amounts that sit outside this subtotal, so the '
+            'figures above may not subtract evenly — ask us and we will walk '
+            'through it with you.'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.ln(4)
+
+    text, _source = claim_explainer.explanation(facts)
+    section('What it means', 'In plain English')
+    pdf.set_font(SANS, '', 10)
+    for para in [p for p in text.split('\n') if p.strip()]:
+        pdf.multi_cell(W, 5.2, _pdf_rich(para.strip()),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.ln(2.2)
+
+    pdf.ln(2)
+    pdf.set_font(SANS, '', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['faint'])
+    pdf.multi_cell(W, 4.2, _pdf_rich(
+        'This page explains figures your insurance carrier produced. It is not '
+        'legal, tax or insurance advice, and it does not change your policy or '
+        'what your carrier has agreed to pay. Your own claim documents are the '
+        'authority — if anything here does not match them, tell us.'),
+        new_x='LMARGIN', new_y='NEXT')
+    return bytes(pdf.output())
+
+
+@app.route('/api/estimates/<est_id>/claim-explainer', methods=['POST'])
+def post_claim_explainer(est_id):
+    """Build the homeowner's claim explainer and hand it back as a PDF."""
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    try:
+        raw = build_claim_explainer_pdf(est)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    cname = (est.get('customer', {}).get('name') or 'Customer').strip()
+    return Response(raw, mimetype='application/pdf', headers={
+        'Content-Disposition':
+            f'inline; filename="Claim Explained - {cname}.pdf"'})
 
 
 def build_condition_report_pdf(est):

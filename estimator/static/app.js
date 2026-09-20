@@ -7024,6 +7024,35 @@ function renderTradeContent() {
   autoGrowAll(host);
 }
 
+/* ── The homeowner's claim, explained ────────────────────────────────────
+   We parse every line of their carrier's estimate and have never told them any
+   of it. "Why is the check smaller than the estimate?" is the question every
+   insurance customer asks, the answer is recoverable depreciation, and a
+   homeowner who does not understand it concludes either that their carrier is
+   cheating them or that we are. Opens in a tab so the rep can read it before
+   anyone else does. */
+async function openClaimExplainer() {
+  if (!S.estimate_id) {
+    alert('Save the estimate first — the sheet is built from what is on the server.');
+    return;
+  }
+  try {
+    const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/claim-explainer`,
+                          { method: 'POST', credentials: 'same-origin' });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(data.error || 'Could not build the sheet.');
+    }
+    const url = URL.createObjectURL(await r.blob());
+    window.open(url, '_blank');
+    // Revoked on a timer rather than immediately: the new tab has to finish
+    // fetching from the object URL before it stops existing.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 /* ── RoofR, beside the carrier import ────────────────────────────────────
    An insurance job needs BOTH documents and they were in different places:
    the carrier PDF had a button on the Insurance tab, and the measurement
@@ -7779,6 +7808,8 @@ function renderInsuranceFreeform() {
       <div class="field-group" style="align-self:flex-end;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn-secondary" onclick="document.getElementById('xact-pdf-input').click()">📥 Import Carrier PDF</button>
         ${roofrImportBtn('btn-secondary')}
+        ${S.insurance_claim ? `<button class="btn-secondary" onclick="openClaimExplainer()"
+          title="A one-page plain-English explanation of this claim, for the homeowner">📄 Explain This Claim</button>` : ''}
       </div>
     </div>
     ${_insClaimCard()}

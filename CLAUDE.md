@@ -911,6 +911,46 @@ Tests run against a temp `DATA_DIR`, so they never touch real estimates.
 `estimator/estimates/` is gitignored — there is no git safety net for that data;
 back it up before any migration.
 
+### The homeowner's claim, explained (2026-09-20)
+
+`estimator/claim_explainer.py` + `build_claim_explainer_pdf()`. 📄 Explain This
+Claim on the Insurance tab; `POST /api/estimates/<id>/claim-explainer` hands
+back a one-page PDF.
+
+We parse every line of a carrier estimate — RCV, ACV, depreciation split
+recoverable from non-recoverable, deductible, O&P, tax per authority — and had
+never told the homeowner any of it. *"Why is the check smaller than the
+estimate?"* is the question every insurance customer asks, the answer is
+recoverable depreciation, and a homeowner who does not understand it concludes
+either that their carrier is cheating them or that we are.
+
+- **Explain, never recalculate.** Every figure is one the carrier already
+  wrote, copied across. A homeowner may repeat any of them to their adjuster,
+  so a number this page produced would be a number we invented. Same boundary
+  as `carrier_scan`'s "transcribe, never calculate", and the reason
+  `_insurance_rcv_total` exists on the other side of it.
+- **The carrier's own arithmetic is CHECKED, not performed.** `reconciles()`
+  tests ACV + depreciation = RCV against their figures. When it does not hold —
+  legitimately, for non-recoverable depreciation or pay-when-incurred lines —
+  the page says the figures may not subtract evenly instead of printing a
+  subtraction the homeowner can catch being wrong, which is what would stop
+  them believing the rest of it.
+- **A missing figure stays missing.** `_num()` returns None rather than 0, the
+  row is skipped, and the writer is handed only the keys that exist: "your
+  carrier withheld $0.00" is a sentence about a claim nobody imported, and a
+  None in the payload is an invitation to invent one.
+- **`has_enough()` refuses to build a page with nothing to say** — RCV plus a
+  depreciation or a deductible is the floor. A logo over a paragraph of
+  generalities is worse than not offering the document.
+- **Nothing of ours is on their page**: no pricing, no margin, no build cost.
+  Pinned by a test that puts our figures on the estimate and checks none of
+  them reach the PDF.
+- **It builds with no API key.** `fallback_narrative()` is a template over the
+  same figures — less warm, equally correct, and it carries the one paragraph
+  that answers their actual question. A homeowner waiting to understand their
+  claim should not be held up by a key.
+- Guarded by `tests/test_claim_explainer.py`.
+
 ### The work order in Spanish, beside the English (2026-09-20)
 
 `estimator/crew_spanish.py`. The crews building these roofs are substantially
