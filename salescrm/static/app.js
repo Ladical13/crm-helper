@@ -330,7 +330,7 @@ async function afterLogin() {
       <div class="side-sub">${esc(S.me.role)} · tap for menu</div>`;
     foot.onclick=()=>$('#menu-btn').click();
   }
-  go('myday');
+  routeFromUrl();
   // Scoped to the mount prefix. Before the merge this worker and the
   // estimator's both claimed root scope with different cache names, so on one
   // origin whichever registered last would win and serve the other app's shell.
@@ -340,16 +340,37 @@ async function afterLogin() {
 // ── Router ───────────────────────────────────────────────────────────────────
 const TITLES={myday:'My Day',outreach:'Outreach',pipeline:'Pipeline',partners:'Partners',
   dashboard:'Numbers',coaching:'Coaching',playbook:'Playbook'};
-function go(view){
+function go(view, push=true){
+  const returning=!!S.openLeadId&&S.view===view;
+  const refresh=!returning||S.detailDirty||S.detailNeedsRefresh;
+  detailReq++;
+  S.openLeadId=null;
+  if(push) history.pushState({},'', '#'+view);
   S.view=view;
   $$('.view').forEach(v=>v.classList.remove('active'));
   $('#view-'+view).classList.add('active');
   $$('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
   $$('.side-item').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
   $('#view-title').textContent=TITLES[view];
-  ({myday:renderMyDay,outreach:renderOutreach,pipeline:renderPipeline,partners:renderPartners,
+  document.title='Project One — Pipeline';
+  if(refresh) ({myday:renderMyDay,outreach:renderOutreach,pipeline:renderPipeline,partners:renderPartners,
     dashboard:renderDashboard,coaching:renderCoaching,playbook:renderPlaybook}[view])();
+  if(returning){
+    window.scrollTo(0,S.detailScroll||0);
+    S.detailTrigger?.focus({preventScroll:true});
+  }else window.scrollTo(0,0);
 }
+function routeFromUrl(){
+  if(!S.cfg) return;
+  const route=location.hash.slice(1);
+  if(route.startsWith('lead/')){
+    S.view=history.state?.returnView||'pipeline';
+    let id=route.slice(5);
+    try{ id=decodeURIComponent(id); }catch(e){}
+    openLead(id,false);
+  }else go(Object.hasOwn(TITLES,route)?route:'myday',false);
+}
+window.addEventListener('popstate',routeFromUrl);
 $$('.tab').forEach(t=>t.onclick=()=>go(t.dataset.view));
 $$('.side-item').forEach(t=>t.onclick=()=>go(t.dataset.view));
 
@@ -876,42 +897,42 @@ async function moveStage(lead, stage){
   }catch(e){ toast(e.message,true); renderPipeline(); }
 }
 
-// ── Lead detail: one drawer from every screen ───────────────────────────────
+// ── Lead detail: a full page with its own URL from every screen ────────────
 let detailReq=0;
-async function openLead(id){
+async function openLead(id, push=true){
   const token=++detailReq;
-  S.openLeadId=id;
-  if(!$('#lead-drawer').classList.contains('open')){
+  if(!S.openLeadId){
     S.detailTrigger=document.activeElement; S.detailDirty=false;
+    S.detailScroll=window.scrollY;
+    S.detailNeedsRefresh=!$('#view-'+S.view).classList.contains('active');
+    // Give the page underneath an explicit route for browser Back.
+    if(push) history.replaceState(history.state,'','#'+S.view);
   }
-  $('#lead-drawer').classList.add('open');
-  document.body.classList.add('detail-open');
-  $('#lead-panel').innerHTML='<div class="dsec">Loading…</div>';
+  if(push) history.pushState({returnView:S.view},'','#lead/'+encodeURIComponent(id));
+  S.openLeadId=id;
+  $$('.view').forEach(v=>v.classList.remove('active'));
+  $('#view-lead').classList.add('active');
+  $('#view-title').textContent='Contact details';
+  $('#lead-back').textContent='← Back to '+TITLES[S.view];
+  $('#lead-panel').innerHTML='<div class="dsec" role="status">Loading…</div>';
+  window.scrollTo(0,0);
+  $('#lead-back').focus({preventScroll:true});
   let l;
-  try{ l=await api('/leads/'+id); }catch(e){ toast(e.message,true); return; }
+  try{ l=await api('/leads/'+encodeURIComponent(id)); }catch(e){
+    if(token===detailReq) $('#lead-panel').innerHTML=`<div class="dsec" role="alert">Unable to load this contact: ${esc(e.message)}. Use Back to return to your list.</div>`;
+    return;
+  }
   if(token!==detailReq) return;
   renderDrawer(l);
-  $('#lead-panel').scrollTop=0;
-  $('#lead-panel [data-x]').focus({preventScroll:true});
 }
 function closeDetail(){
-  detailReq++;
-  $('#lead-drawer').classList.remove('open');
-  document.body.classList.remove('detail-open');
-  S.detailTrigger?.focus({preventScroll:true});
-  if(S.detailDirty){
-    if(S.view==='outreach') renderOutreach();
-    else if(S.view==='myday') renderMyDay();
-    else if(S.view==='pipeline') renderPipeline();
-    else if(S.view==='partners') renderPartners();
-  }
-  S.openLeadId=null;
-  $$('.kcard.selected').forEach(c=>c.classList.remove('selected'));
+  history.replaceState({},'','#'+S.view);
+  go(S.view,false);
 }
-$$('[data-close-drawer]').forEach(x=>x.onclick=closeDetail);
+$('#lead-back').onclick=closeDetail;
 document.addEventListener('keydown',e=>{
-  const panel=$('#modal').classList.contains('open')?$('#modal-box'):
-    $('#lead-drawer').classList.contains('open')?$('#lead-panel'):null;
+  const panel=$('#modal').classList.contains('open')?$('#modal-box'):null;
+  if(!panel&&e.key==='Escape'&&S.openLeadId){e.preventDefault();closeDetail();}
   if(!panel) return;
   if(e.key==='Escape'){
     e.preventDefault();
@@ -926,8 +947,11 @@ document.addEventListener('keydown',e=>{
 });
 
 function renderDrawer(l){
+  if(S.openLeadId!==l.id) return;
+  document.title=l.name+' — Pipeline';
   const typeMeta=S.cfg.lead_types.find(t=>t.key===l.lead_type);
   const phone=(l.phone||'').replace(/[^0-9+]/g,'');
+  const fullAddress=[l.address,l.city,[l.state,l.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   const stageOpts=S.cfg.stages.map(s=>`<option value="${s.key}" ${s.key===l.stage?'selected':''}>${esc(s.label)}</option>`).join('');
   const p=$('#lead-panel');
   // Partners get a "Referred projects" block: their referral book + one-tap add.
@@ -947,8 +971,16 @@ function renderDrawer(l){
       <button class="btn-brand" id="d-add-referral" style="margin-top:10px">＋ Add referred project</button></div>`;
   }
   p.innerHTML=`
-    <div class="dh"><button class="dh-close" aria-label="Close lead" data-x>✕</button>
-      <div class="dh-name">${esc(l.name)}</div><p class="lead-context">${esc([l.company!==l.name?l.company:"",l.address,l.city].filter(Boolean).join(" · "))}</p>
+    <div class="dh">
+      <h1 class="dh-name">${esc(l.name)}</h1>
+      ${l.company&&l.company!==l.name?`<p class="lead-context">${esc(l.company)}</p>`:''}
+      <div class="lead-address"><span class="lead-address-label">Address</span>
+        <div class="lead-address-text">${esc(fullAddress||'No address added')}</div>
+        <div class="lead-address-actions">
+          ${fullAddress?`<a class="btn-ghost small" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(fullAddress)}" target="_blank" rel="noopener noreferrer">Open in Maps ↗</a>`:''}
+          <button class="btn-ghost small" id="edit-address">${fullAddress?'Edit address':'Add address'}</button>
+        </div>
+      </div>
       <div class="task-meta"><span class="type-badge">${l.service_icon} ${esc(l.service_label)}</span>
       <span class="type-badge">${esc(typeMeta?typeMeta.label:l.lead_type)}</span>
       ${l.plan_name?`<span class="type-badge plan">♻ ${esc(l.plan_name)}</span>`:''}
@@ -1005,7 +1037,11 @@ function renderDrawer(l){
     <div class="dsec"><button class="btn-danger" id="d-delete">Delete lead</button></div>
     </div><!-- /dgrid -->
   `;
-  p.querySelector('[data-x]').onclick=closeDetail;
+  $('#edit-address').onclick=()=>{
+    $('#lead-details').open=true;
+    $('#lead-details').scrollIntoView({behavior:'smooth',block:'start'});
+    $('#f-address')?.focus({preventScroll:true});
+  };
   $('#edit-contact').onclick=()=>{
     $('#lead-details').open=true;
     $('#lead-details').scrollIntoView({behavior:'smooth',block:'start'});

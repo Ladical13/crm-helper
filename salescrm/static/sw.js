@@ -6,11 +6,11 @@
 // from fighting now that they share an origin.
 const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
 
-const CACHE = 'p1pipeline-v27';
+const CACHE = 'p1pipeline-v28';
 const SHELL = [
   BASE + '/',
-  BASE + '/static/style.css?v=27',
-  BASE + '/static/app.js?v=27',
+  BASE + '/static/style.css?v=28',
+  BASE + '/static/app.js?v=28',
   BASE + '/static/icon-192.png',
   BASE + '/static/icon-512.png',
 ];

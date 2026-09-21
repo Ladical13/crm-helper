@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <title>Project One — Pipeline</title>
-  <link rel="stylesheet" href="/crm/static/style.css?v=27">
+  <link rel="stylesheet" href="/crm/static/style.css?v=28">
 </head>
 <body>
 
@@ -51,6 +51,10 @@
   </header>
 
   <main id="views">
+    <section class="view lead-page" id="view-lead" aria-label="Contact details">
+      <button class="btn-ghost lead-back" id="lead-back">← Back to Pipeline</button>
+      <div id="lead-panel"></div>
+    </section>
     <!-- My Day -->
     <section class="view" id="view-myday">
       <div class="myday-greeting" id="myday-greeting"></div>
@@ -189,12 +193,6 @@
   </nav>
 </div>
 
-<!-- ── Lead detail drawer ── -->
-<div id="lead-drawer" class="drawer">
-  <div class="drawer-scrim" data-close-drawer></div>
-  <div class="drawer-panel" id="lead-panel" role="dialog" aria-modal="true" aria-label="Lead details"></div>
-</div>
-
 <!-- ── Generic modal ── -->
 <div id="modal" class="modal">
   <div class="modal-scrim" data-close-modal></div>
@@ -204,6 +202,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="/shell.js"></script>
-<script src="/crm/static/app.js?v=27"></script>
+<script src="/crm/static/app.js?v=28"></script>
 </body>
 </html>
