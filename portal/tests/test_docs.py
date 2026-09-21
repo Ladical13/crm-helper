@@ -161,14 +161,81 @@ def test_every_directory_the_docs_point_at_exists(doc):
 
 # ── numbers that cannot help drifting ──────────────────────────────────
 
-def test_the_docs_do_not_hardcode_suite_counts(doc):
+# The three files that tell a reader how to run the tests. They drift apart
+# because a new suite is added in one place and described in the other two.
+ONBOARDING_FILES = (
+    'CLAUDE.md',
+    'run_tests.py',
+    os.path.join('.github', 'workflows', 'tests.yml'),
+)
+
+
+def test_the_docs_do_not_hardcode_suite_counts():
     """The per-suite test counts were wrong by 38 before this test existed.
 
     They drift on every commit that adds a test, and nobody notices, because
     nothing reads them. A number that is wrong today is worse than no number:
     it is the first thing a reader checks and the first thing that teaches
-    them the file cannot be trusted. Describe what a suite guards instead."""
-    offenders = re.findall(r'pytest[^\n]*#\s*~?\d{2,}', doc)
+    them the file cannot be trusted. Describe what a suite guards instead.
+
+    This used to read CLAUDE.md alone, which is how the same habit survived in
+    `requirements-dev.txt` — `# 220`, `# 18`, `# 28` beside three of the seven
+    suites, against real counts of 2008, 256 and 228. The lesson had been
+    learned and applied to exactly one file. So it reads every file that tells
+    someone how to run the tests.
+    """
+    offenders = []
+    for rel in ONBOARDING_FILES + ('requirements-dev.txt',):
+        for hit in re.findall(r'pytest[^\n]*#\s*~?\d{2,}', _read(os.path.join(ROOT, rel))):
+            offenders.append('%s: %s' % (rel, hit))
     assert not offenders, (
-        'CLAUDE.md hardcodes test counts that will silently drift: %s\n'
+        'a hardcoded test count will silently drift: %s\n'
         'Say what the suite guards, not how many tests it has.' % offenders)
+
+
+def _declared_suite_count():
+    """How many suites `run_tests.py` actually runs — read, never restated."""
+    src = _read(os.path.join(ROOT, 'run_tests.py'))
+    block = re.search(r'SUITES = \[(.*?)\n\]', src, re.S)
+    assert block, 'run_tests.py no longer has a SUITES list this test can read'
+    return len(re.findall(r'^\s*\(', block.group(1), re.M))
+
+
+# 'seven suites', 'all six test suites', 'the same six commands CI runs' …
+_SPELLED = {'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7,
+            'eight': 8, 'nine': 9, 'ten': 10}
+#
+# The number, then at most three ordinary lowercase words, then the noun. That
+# middle group is deliberately `[a-z]+` and nothing else: a looser pattern
+# matched `[0] for s in SUITES` in run_tests.py's own code and failed on it,
+# which is a test that cries wolf about the file it is meant to protect.
+_COUNT_CLAIM = re.compile(
+    r'\b(%s|\d+)\s+(?:[a-z]+\s+){0,3}(suites?|commands|invocations)\b'
+    % '|'.join(_SPELLED))
+
+
+def test_nothing_miscounts_the_test_suites():
+    """Every "N suites" claim must match the number `run_tests.py` runs.
+
+    `hail` was added as the seventh suite. CLAUDE.md said "seven" in three
+    places and "six" in a fourth; `run_tests.py`'s own docstring said six while
+    listing seven; the workflow said six on line 1 and seven on line 3. Nothing
+    failed, because a prose number is not executable — which is the whole
+    reason this file has a test at all.
+
+    The count is DERIVED from the SUITES list, never restated here: a number
+    written into this test would be one more thing to drift, and it would drift
+    silently for exactly the same reason.
+    """
+    n = _declared_suite_count()
+    wrong = []
+    for rel in ONBOARDING_FILES:
+        for m in _COUNT_CLAIM.finditer(_read(os.path.join(ROOT, rel))):
+            word = m.group(1).lower()
+            said = _SPELLED.get(word, int(word) if word.isdigit() else None)
+            if said is not None and said != n:
+                wrong.append('%s: "%s" (there are %d)' % (rel, m.group(0).strip(), n))
+    assert not wrong, (
+        'the suite count has drifted out of the files that onboard a reader: '
+        '%s\nAdd the suite everywhere, or describe the set without counting '
+        'it.' % wrong)

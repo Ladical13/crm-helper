@@ -24,7 +24,7 @@ git add -A && git commit -m "what changed" && git push
 Every push runs the seven suites on GitHub (**Actions** tab). Green means the
 pricing math, the cache-busters and the per-rep visibility rules all still hold.
 
-**Before committing, run `python run_tests.py`.** It is the same six commands
+**Before committing, run `python run_tests.py`.** It is the same commands
 CI runs, and it is much faster to find a break here than in the Actions log.
 Individual suites, when you only touched one app:
 

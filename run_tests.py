@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Run all six test suites, the same way CI does. Use this before committing.
+"""Run every test suite, the same way CI does. Use this before committing.
 
     python run_tests.py            # everything
     python run_tests.py estimator  # just one (or several) by name
