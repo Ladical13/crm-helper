@@ -11,6 +11,7 @@ const PIN_STAGE = {};  // pin type → Pipeline stage, same source
 let map, currentUser, markers = {}, hailLayer = null, pinLayer = null;
 let teamMarkers = {}, teamTimer = null, locationTimer = null, teamEnabled = true;
 let hailResultLayer = null;
+let archiveStorms = [];   // the radar archive's own storm days, for the picker
 let pendingLatLng = null;   // where the next pin will land
 let selectedPinType = 'not_home';
 let editingPinId = null;
@@ -1076,55 +1077,140 @@ function updateRepFilters() {
 
 // ── Hail overlay ───────────────────────────────────────────────────────────
 
-$('hail-overlay-btn').addEventListener('click', () => {
+$('hail-overlay-btn').addEventListener('click', async () => {
   hide('side-menu');
-  // Default date to today
   const today = new Date().toISOString().split('T')[0];
   $('hail-date').value = today;
   $('hail-status').textContent = '';
   show('hail-modal');
+  await loadStormPicker();
 });
 
 $('close-hail-modal').addEventListener('click', () => hide('hail-modal'));
 
+// The archive's own storm days, so a rep picks a storm instead of guessing a
+// date. Without this the only way to find a storm is to already know when it
+// was — which is the thing the tool is supposed to tell them.
+async function loadStormPicker() {
+  const sel = $('hail-storm-picker');
+  const group = $('hail-storm-picker-group');
+  sel.innerHTML = '<option value="">Loading…</option>';
+  let data;
+  try {
+    data = await api('/api/hail/storms');
+  } catch(e) {
+    data = { storms: [] };
+  }
+  archiveStorms = data.storms || [];
+  if (!archiveStorms.length) {
+    // No archive for this period: the date boxes still work and fall through
+    // to the NOAA spotter reports, which is what this screen did before.
+    group.classList.add('hidden');
+    $('hail-modal-hint').textContent =
+      'No radar archive loaded yet, so this falls back to NOAA spotter ' +
+      'reports — call-ins near a place, not measurements of it.';
+    return;
+  }
+  group.classList.remove('hidden');
+  sel.innerHTML = '<option value="">— pick a storm, or use the dates below —</option>'
+    + archiveStorms.map(st =>
+        `<option value="${escHtml(st.event_date)}">${escHtml(prettyDate(st.event_date))}` +
+        ` — up to ${st.max_size_in.toFixed(2)}"</option>`).join('');
+  sel.onchange = () => {
+    if (!sel.value) return;
+    $('hail-date').value = sel.value;
+    $('hail-date-end').value = sel.value;
+  };
+}
+
 $('load-hail-btn').addEventListener('click', async () => {
   const startVal = $v('hail-date');
-  const endVal   = $v('hail-date-end');
-  let url;
-  if (endVal && endVal !== startVal) {
-    url = `/api/hail/range?start=${startVal.replace(/-/g,'')}&end=${endVal.replace(/-/g,'')}`;
-  } else {
-    url = `/api/hail?date=${startVal ? startVal.replace(/-/g,'') : 'today'}`;
-  }
-  $('hail-status').textContent = 'Loading NOAA hail data...';
+  const endVal   = $v('hail-date-end') || startVal;
+  const minSize  = $v('hail-min-size');
+  if (!startVal) { $('hail-status').textContent = 'Pick a storm or a date first.'; return; }
+  $('hail-status').textContent = 'Reading the radar archive…';
   try {
-    const data = await api(url);
-    clearHailLayer();
-    if (!data.features || data.features.length === 0) {
-      $('hail-status').textContent = 'No hail reports found for this date.';
+    // The viewport, so the server returns the screen rather than the state.
+    const b = map.getBounds();
+    const box = `south=${b.getSouth()}&west=${b.getWest()}` +
+                `&north=${b.getNorth()}&east=${b.getEast()}`;
+    const data = await api(`/api/hail/cells?start=${startVal}&end=${endVal}` +
+                           `&${box}${minSize ? `&min_size=${minSize}` : ''}`);
+    if (data.count) { drawHailCells(data, startVal, endVal); return; }
+    if (data.days_held) {
+      // The distinction the whole feature turns on: radar looked here and saw
+      // nothing, which is a fact about this ground and a useful one.
+      clearHailLayer();
+      $('hail-status').textContent =
+        `Radar covered ${data.days_held} day${data.days_held > 1 ? 's' : ''} in that ` +
+        `range and found no hail over the area on screen.`;
       return;
     }
-    hailLayer = L.layerGroup();
-    data.features.forEach(f => {
-      const [lon, lat] = f.geometry.coordinates;
-      const size = f.properties.size || 0.5;
-      const radius = Math.max(500, size * 800);  // meters
-      const color  = hailColor(size);
-      L.circle([lat, lon], {
-        radius, color, fillColor: color, fillOpacity: .35, weight: 1,
-      }).bindPopup(`
-        <b>${size}" hail</b><br>
-        ${f.properties.location}, ${f.properties.state}<br>
-        ${f.properties.time} UTC
-      `).addTo(hailLayer);
-    });
-    hailLayer.addTo(map);
-    const extra = data.days_with_hail != null ? ` across ${data.days_with_hail} storm days` : '';
-    $('hail-status').textContent = `✓ ${data.features.length} hail reports loaded${extra}.`;
+    // Nothing ingested for those dates — not the same answer at all.
+    await loadSpcReports(startVal, endVal);
   } catch(e) {
     $('hail-status').textContent = 'Failed to load: ' + e.message;
   }
 });
+
+function drawHailCells(data, startVal, endVal) {
+  clearHailLayer();
+  hailLayer = L.layerGroup();
+  data.cells.forEach(c => {
+    const color = hailColor(c.size);
+    // A rectangle at the cell's real extent. The old overlay drew
+    // max(500, size * 800)-metre circles around spotter points — a damage
+    // footprint that exists nowhere in the data. These claim nothing beyond
+    // the ground the radar estimated over.
+    L.rectangle([[c.s, c.w], [c.n, c.e]], {
+      color, fillColor: color, fillOpacity: .45, weight: 0, stroke: false,
+    }).bindPopup(`<b>${c.size}" hail</b><br>Radar-estimated over this cell`)
+      .addTo(hailLayer);
+  });
+  hailLayer.addTo(map);
+  const span = startVal === endVal ? prettyDate(startVal)
+             : `${prettyDate(startVal)} – ${prettyDate(endVal)}`;
+  // Truncation is said out loud rather than left as a quietly thinner map,
+  // which is the same failure the pin list already refuses to have.
+  const cut = data.truncated
+    ? ` Showing the ${data.count} largest on screen — zoom in for the rest.`
+    : '';
+  $('hail-status').textContent =
+    `✓ ${span} · up to ${data.max_size}" · ${data.count} radar cells.${cut}`;
+}
+
+// The old behaviour, kept: NOAA spotter reports, drawn as the circles they
+// have always been drawn as, and labelled as call-ins rather than
+// measurements so the two views cannot be confused for each other.
+async function loadSpcReports(startVal, endVal) {
+  const url = (endVal && endVal !== startVal)
+    ? `/api/hail/range?start=${startVal.replace(/-/g,'')}&end=${endVal.replace(/-/g,'')}`
+    : `/api/hail?date=${startVal.replace(/-/g,'')}`;
+  const data = await api(url);
+  clearHailLayer();
+  if (!data.features || !data.features.length) {
+    $('hail-status').textContent =
+      'No radar archive for those dates, and no NOAA spotter reports either.';
+    return;
+  }
+  hailLayer = L.layerGroup();
+  data.features.forEach(f => {
+    const [lon, lat] = f.geometry.coordinates;
+    const size = f.properties.size || 0.5;
+    const color = hailColor(size);
+    L.circle([lat, lon], {
+      radius: Math.max(500, size * 800), color, fillColor: color,
+      fillOpacity: .35, weight: 1,
+    }).bindPopup(`<b>${size}" hail</b><br>${escHtml(f.properties.location)}, ` +
+                 `${escHtml(f.properties.state)}<br>${escHtml(f.properties.time)} UTC` +
+                 `<br><i>Spotter report — a call-in near here, not a measurement ` +
+                 `of this spot.</i>`).addTo(hailLayer);
+  });
+  hailLayer.addTo(map);
+  $('hail-status').textContent =
+    `No radar archive for those dates. Showing ${data.features.length} NOAA ` +
+    `spotter reports instead — call-ins near a place, not measurements of it.`;
+}
 
 $('clear-hail-btn').addEventListener('click', () => {
   clearHailLayer();

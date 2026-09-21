@@ -27,9 +27,9 @@
        thing between a canvasser and a working map. Local also means the
        service worker can precache it. Upgrading is a deliberate re-download:
        see the vendor pinning note in CLAUDE.md. -->
-  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=7">
-  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=7">
-  <link rel="stylesheet" href="/canvass/static/style.css?v=7">
+  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=8">
+  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=8">
+  <link rel="stylesheet" href="/canvass/static/style.css?v=8">
   <!-- The portal's manifest: one "Project One" icon for all three tools. -->
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -171,17 +171,25 @@
         <button class="icon-btn" id="close-hail-modal">✕</button>
       </div>
       <div class="modal-body">
-        <p class="modal-hint">Load NOAA hail reports for a single storm date or a date range to see where hail has hit.</p>
+        <p class="modal-hint" id="hail-modal-hint">Draw radar-estimated hail on the map. Each square is one radar cell — the actual ground the radar made a claim about.</p>
+        <div class="field-group" id="hail-storm-picker-group">
+          <label>Storm <span class="optional">(from the radar archive)</span></label>
+          <select id="hail-storm-picker"></select>
+        </div>
         <div class="field-group">
           <label>From</label>
           <input type="date" id="hail-date">
         </div>
         <div class="field-group">
-          <label>To <span class="optional">(leave same for one day, max 31 days)</span></label>
+          <label>To <span class="optional">(leave same for one day)</span></label>
           <input type="date" id="hail-date-end">
         </div>
+        <div class="field-group">
+          <label>Only show hail at least <span class="optional">(inches)</span></label>
+          <input type="number" id="hail-min-size" min="0" max="6" step="0.25" placeholder="0">
+        </div>
         <div class="btn-row">
-          <button class="btn-primary" id="load-hail-btn">Load Hail Reports</button>
+          <button class="btn-primary" id="load-hail-btn">Show on Map</button>
           <button class="btn-secondary" id="clear-hail-btn">Clear Overlay</button>
         </div>
         <div id="hail-status" class="status-msg"></div>
@@ -303,10 +311,10 @@
 
 </div>
 
-<script src="/canvass/static/vendor/leaflet.js?v=7"></script>
-<script src="/canvass/static/vendor/leaflet.markercluster.js?v=7"></script>
+<script src="/canvass/static/vendor/leaflet.js?v=8"></script>
+<script src="/canvass/static/vendor/leaflet.markercluster.js?v=8"></script>
 <script src="/shell.js"></script>
-<script src="/canvass/static/app.js?v=7"></script>
+<script src="/canvass/static/app.js?v=8"></script>
 <script>
   // Registered from the page rather than app.js so a JS error in the app still
   // leaves the offline shell installed.

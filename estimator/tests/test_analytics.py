@@ -7,11 +7,10 @@ is only part-way through.
 """
 import json
 import os
-from datetime import datetime
-
 import pytest
 
 from conftest import TEST_DATA_DIR
+from portal import clock
 
 
 GOALS_FILE = os.path.join(TEST_DATA_DIR, 'sales_goals.json')
@@ -57,8 +56,15 @@ def _seed(A, eid, *, signed_at=None, sent_at=None, total=10000.0, rep='luke',
 
 
 def _month(n=0):
-    """'YYYY-MM', n months from now — tests must not break when the year rolls."""
-    now = datetime.utcnow()
+    """'YYYY-MM', n months from now — tests must not break when the year rolls.
+
+    Anchored on the COMPANY's clock, because that is what `/api/analytics` now
+    buckets by. A UTC `now` here would agree with it for eighteen hours a day
+    and disagree for the six after 6pm Mountain on the last of the month —
+    a test that fails one evening a month and passes if you run it again is
+    worse than no test.
+    """
+    now = clock.company_today()
     i = now.year * 12 + now.month - 1 + n
     return '%04d-%02d' % (i // 12, i % 12 + 1)
 
@@ -234,7 +240,9 @@ def test_an_unknown_estimate_type_still_lands_in_the_split(client, A):
 
 def test_current_month_pace(client, A):
     import calendar
-    now = datetime.utcnow()
+    # The company's clock, the same one `cur_month` and the pace read. A UTC
+    # `now` here would ask for day 1 of a month that is ending.
+    now = clock.company_today()
     dim = calendar.monthrange(now.year, now.month)[1]
     _seed(A, 'a1', signed_at=_month() + '-01T12:00:00', total=50000.0)
     client.put('/api/goals', json={'company': {'default': {'revenue': 100000}}})
@@ -309,3 +317,46 @@ def test_trailing_averages_exclude_the_partial_current_month(client, A):
 def test_best_month_is_none_with_no_revenue(client, A):
     _seed(A, 'a1', sent_at=_month() + '-01T12:00:00')
     assert client.get('/api/analytics').get_json()['benchmarks']['best_month'] is None
+
+
+# ── The month a roof was sold in ───────────────────────────────────────
+
+def test_a_roof_signed_after_6pm_mountain_counts_for_the_month_it_was_sold(client):
+    """The fix `portal/clock.py` exists for, in the place it costs money.
+
+    01:00Z on the 1st is 7pm Mountain on the last day of the month before —
+    6pm in winter, either way the previous month here and the current one by
+    the string. Bucketing on the first seven characters of that stamp moved the
+    job, that month's revenue and the rep's number into a month they had not
+    started selling. Month end is exactly when reps push to close, so this was
+    never a rare row.
+    """
+    import app as A
+    _seed(A, 'lastminute', signed_at=_month() + '-01T01:00:00Z', total=80000.0)
+    p = client.get('/api/analytics').get_json()
+
+    sold_in = _row(p, _month(-1))
+    filed_in = _row(p, _month())
+    assert sold_in and sold_in['revenue'] == 80000.0, 'left the month it sold in'
+    assert sold_in['jobs'] == 1
+    assert not filed_in or filed_in['revenue'] == 0.0
+
+
+def test_new_years_eve_revenue_counts_for_the_year_it_was_signed(client):
+    """Same boundary, one night a year, and the one night it is worst.
+
+    A roof signed at 7pm Mountain on 31 December is stored in the next year.
+    YTD compared that stored value against 1 January and banked the job against
+    a year that had not started — so January opened having already booked
+    December's last evening, and the year that earned it closed short.
+    """
+    import app as A
+    year = clock.company_today().year
+    # 01:00Z on 1 January is 6pm Mountain on 31 December of the year before.
+    _seed(A, 'nye', signed_at=f'{year}-01-01T01:00:00Z', total=90000.0)
+    p = client.get('/api/analytics').get_json()
+    assert p['ytd_revenue'] == 0.0, 'last year\'s job landed in this year\'s YTD'
+
+    _seed(A, 'thisyear', signed_at=f'{year}-06-15T18:00:00Z', total=10000.0)
+    p = client.get('/api/analytics').get_json()
+    assert p['ytd_revenue'] == 10000.0

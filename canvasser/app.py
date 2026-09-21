@@ -18,6 +18,7 @@ from flask import Flask, request, jsonify, send_from_directory, session
 # The portal package lives one directory up. Put the repo root on the path so
 # this app works both mounted by portal/wsgi.py and run standalone.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import clock as pclock       # noqa: E402
 from portal import dbtune                # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
@@ -329,8 +330,10 @@ def list_pins():
     if ptype:
         clauses.append('pin_type=?'); params.append(ptype)
     if days > 0:
-        since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
-        clauses.append('created_at >= ?'); params.append(since)
+        # Whole Colorado days, not a rolling N×24 hours from whenever the
+        # request landed. "The last 7 days" on a map a rep opens all day should
+        # not quietly drop this time last Tuesday as the afternoon goes on.
+        clauses.append('created_at >= ?'); params.append(pclock.days_ago_utc(days))
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
 
     with get_db() as db:
@@ -514,7 +517,10 @@ def leaderboard():
         days = max(1, min(int(request.args.get('days', LEADERBOARD_DAYS)), 365))
     except (TypeError, ValueError):
         days = LEADERBOARD_DAYS
-    since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    # Whole Colorado days. This one is the leaderboard reps are paid on, so a
+    # window whose far edge slides through the day is a rank that changes for
+    # reasons nobody standing on a doorstep can see.
+    since = pclock.days_ago_utc(days)
     with get_db() as db:
         rows = db.execute("""
             SELECT rep,
@@ -758,6 +764,101 @@ def reverse_geocode():
     except Exception as e:
         return jsonify({'error': str(e)}), 502
 
+# ── The hail OVERLAY, from the radar archive ─────────────────────────────────
+#
+# The address lookup below reads MESH; this is the map beside it, which drew
+# NOAA spotter reports as `max(500, size * 800)`-metre circles — a damage
+# footprint that exists nowhere in the data, around points that are call-ins
+# rather than measurements. Two views of "where did it hail" that disagreed
+# about both the data and the geometry.
+#
+# `/api/hail` and `/api/hail/range` stay exactly as they were. They are the
+# fallback for an archive that has not been backfilled over the dates being
+# asked about, and the front end says which product answered — the same rule
+# the address lookup already follows.
+
+def _bbox_arg():
+    """(south, west, north, east) from the query string, or None.
+
+    All four or none: three sides of a box is not a box, and guessing the
+    fourth would silently return the wrong ground.
+    """
+    vals = [request.args.get(k, type=float)
+            for k in ('south', 'west', 'north', 'east')]
+    if any(v is None for v in vals):
+        return None
+    south, west, north, east = vals
+    return (min(south, north), min(west, east), max(south, north), max(west, east))
+
+
+@app.route('/api/hail/storms')
+@login_required
+def hail_storms():
+    """Storm days the archive holds, newest first — what the picker offers."""
+    from hail import storms
+    try:
+        days = min(int(request.args.get('days', 1825)), MESH_MAX_DAYS)
+    except (TypeError, ValueError):
+        days = 1825
+    since = (datetime.utcnow() - timedelta(days=max(days, 1))).strftime('%Y-%m-%d')
+    try:
+        min_size = max(float(request.args.get('min_size', 0)), 0.0)
+    except (TypeError, ValueError):
+        min_size = 0.0
+    rows = storms.storm_days(since=since, min_size=min_size or None,
+                             source=MESH_SOURCE)
+    return jsonify({'source': MESH_SOURCE, 'storms': rows, 'count': len(rows)})
+
+
+@app.route('/api/hail/cells')
+@login_required
+def hail_cells():
+    """Radar cells for a date or a date range, for drawing on the map.
+
+    Rectangles at the data's own resolution rather than a radius, because the
+    cell is the only ground the radar actually made a claim about.
+
+    Bounded two ways, and honest about both: the caller passes the viewport as
+    south/west/north/east so the database returns the screen instead of the
+    state, and a cap past that keeps the BIGGEST hail rather than an arbitrary
+    slice — a rep zoomed out over a season must not have the cells that matter
+    hidden behind ones that do not.
+    """
+    from hail import storms
+    start = (request.args.get('start') or '').strip()
+    end   = (request.args.get('end') or '').strip() or start
+    if not start:
+        return jsonify({'error': 'start (YYYY-MM-DD) required'}), 400
+    if end < start:
+        start, end = end, start
+    try:
+        min_size = max(float(request.args.get('min_size', 0)), 0.0)
+    except (TypeError, ValueError):
+        min_size = 0.0
+    try:
+        limit = min(int(request.args.get('limit', HAIL_CELL_LIMIT)), HAIL_CELL_LIMIT_MAX)
+    except (TypeError, ValueError):
+        limit = HAIL_CELL_LIMIT
+
+    held = {d for d in storms.ingested_dates(MESH_SOURCE) if start <= d <= end}
+    rows, truncated = storms.cells_in(
+        bounds=_bbox_arg(), since=start, until=end,
+        min_size=min_size or None, limit=limit, source=MESH_SOURCE)
+    return jsonify({
+        'source': MESH_SOURCE,
+        # The same distinction the address lookup turns on: no cells with
+        # coverage means the radar looked and saw nothing, and no cells with
+        # NO coverage means nobody has ingested those days. Only one of them
+        # is a fact about the ground.
+        'days_held': len(held),
+        'cells': [{'s': round(s, 4), 'w': round(w, 4),
+                   'n': round(n, 4), 'e': round(e, 4),
+                   'size': round(size, 2)} for s, w, n, e, size in rows],
+        'count': len(rows), 'truncated': truncated,
+        'max_size': max((r[4] for r in rows), default=0),
+    })
+
+
 # ── Hail history at one address ───────────────────────────────────────────────
 #
 # MRMS MESH first; NOAA SPC only when the archive has nothing to say.
@@ -777,6 +878,12 @@ def reverse_geocode():
 # that wiring. The SPC path is kept rather than deleted: `/api/hail` and
 # `/api/hail/range` still draw the map overlay from it, and an empty archive
 # has to degrade to the old answer rather than to a blank screen.
+
+# A busy Colorado day is thousands of cells and a season is millions. The
+# viewport filter does most of the work; this is the backstop that keeps one
+# zoomed-out request from trying to draw the whole state.
+HAIL_CELL_LIMIT     = 6000
+HAIL_CELL_LIMIT_MAX = 20000
 
 MESH_SOURCE   = 'mrms_mesh'
 MESH_MAX_DAYS = 3650      # the archive starts 2020-10-14; asking past it is free

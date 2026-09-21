@@ -266,6 +266,56 @@ landscape makes iOS inflate font sizes per-block, and Android applies its
 accessibility text scaling the same way — either one overflows a fixed-width
 input or a KPI tile.
 
+### The company's clock (`portal/clock.py`, 2026-09-21)
+
+The office is in Colorado; the server runs in UTC. For the six hours between
+6pm Mountain and midnight, UTC has already rolled over — so for a quarter of
+every day the question "what day is it" had two answers and the four apps kept
+picking the wrong one.
+
+**Stored timestamps stay UTC, and that is correct.** Nothing here migrates a
+column. `created_at`, `signed_at`, `due_at` sort and compare across four apps,
+and a local-time column would contain, once every November, an hour that
+happens twice with no way to tell the two apart. What this module fixes is the
+other thing: a DECISION about a day — which month did this land in, is this due
+today, what does "the last 30 days" mean. **The boundary is Colorado's and the
+value is still UTC**, which is what lets `start_of_today_utc()` drop straight
+into `WHERE due_at >= ?` beside columns nobody is touching.
+
+It lives in `portal/` for the reason `geo.py` and `funnel.py` do: the four apps
+keep separate databases and anything genuinely shared needs a home belonging to
+none of them. It replaced two independent copies — `estimator._company_today`
+and `agents.events.company_today`, written weeks apart — which is how two
+answers to one question start to drift. Both are now aliases onto it.
+
+- **`month_of()` is the one that moves money.** A roof signed at 7pm Mountain
+  on 30 September is stored `2026-10-01T01:00:00Z`, and the analytics tab
+  bucketed it by slicing the first seven characters of that string: off
+  September's revenue, off that rep's September number, and onto a month they
+  had not started selling. Month end is exactly when reps push to close, so
+  this was not a rare row. The same slice ran in four places — the sent cohort,
+  signed revenue, and both margin-basis keys — and YTD had it too, where the
+  night it gets wrong is New Year's Eve.
+- **A fixed offset cannot do this job.** Colorado is UTC-6 on MDT and UTC-7 on
+  MST, so salescrm's `replace(hour=13)  # ~7am Denver` was right for eight
+  months a year and queued every winter storm's calls at 6am, before anyone is
+  up, on a board a rep checks once. `at_hour_utc(7)` asks the tz database.
+- **`end_of_today_utc()` is built as tomorrow minus a second**, never as
+  23:59:59 of today, so the two DST days a year — one 23 hours, one 25 — land
+  on the real end of the day.
+- **Every function falls back to UTC when the tz database is missing**, on
+  purpose: a slim image must not take the site down. That fallback is also
+  invisible, and it would make every fix listed here a silent no-op while the
+  whole suite stayed green — so `tzdata` is pinned in `requirements.txt` and
+  `portal/tests/test_clock.py` asserts `available()` rather than trusting it.
+  That one test is what guards the other twelve.
+- **Not everything with a date in it is the company's day.** The SPC daily
+  CSVs, the cache key that decides whether one is final, and the MESH archive's
+  `event_date` are NOAA's calendar, which is UTC by definition — converting
+  those would be the same category error in the other direction. They are left
+  alone deliberately. Durations (the 15-minute team-location liveness window)
+  are not day questions either.
+
 **Deploy:** ONE service. Root `Procfile` is
 `gunicorn portal.wsgi:application`; deploy the whole repo, not a subdirectory.
 
@@ -406,6 +456,38 @@ a weaker question slowly. `/api/hail/address` is that wiring.
   a stored `nomatch` from an address it has never seen.
 - Pinned by `canvasser/tests/test_hail_archive.py`.
 
+### The overlay draws radar cells, not invented circles (2026-09-20)
+
+The address lookup read MESH and the map beside it still drew SPC spotter
+reports as `max(500, size * 800)`-metre circles — a damage footprint that
+exists nowhere in the data, around points that are call-ins rather than
+measurements. Two views of "where did it hail" on one screen, disagreeing
+about both the data and the geometry.
+
+`GET /api/hail/storms` lists the archive's own storm days (the picker, so a
+rep chooses a storm instead of already having to know when it was) and
+`GET /api/hail/cells` serves `hail.storms.cells_in()`.
+
+- **Rectangles at the data's own resolution.** A cell is the only ground the
+  radar made a claim about; a radius is a footprint somebody invented.
+- **A cell hit on more than one day takes the MAXIMUM**, never a sum or a
+  mean. MESH is already a maximum over its own window, and a mean shaves the
+  peak off every multi-day range — the number that decides whether a street is
+  worth knocking.
+- **The viewport is filtered in SQL on the cell INDICES.** `cell_index()` turns
+  the map bounds into an ri/ci range, so the database returns the screen rather
+  than the state. All four sides or none: three sides of a box is not a box,
+  and guessing the fourth returns the wrong ground.
+- **Truncation keeps the BIGGEST hail and says so.** An arbitrary slice would
+  hide the cells a rep most needs behind ones they do not. Same honesty rule as
+  `list_pins`.
+- **Three outcomes, never conflated**: cells drawn; no cells *with* coverage
+  (radar looked at this ground and saw nothing — a useful fact); and no
+  coverage at all, which falls through to the SPC reports, drawn as the circles
+  they have always been and labelled in the popup as a call-in near there
+  rather than a measurement of it.
+- Pinned by `canvasser/tests/test_hail_overlay.py`.
+
 ### An appointment knows when it is, and books itself (2026-09-20)
 
 Two gaps that were only worth closing together. An `appointment` pin mapped to
@@ -510,13 +592,9 @@ order they cost the business something.
 - **`no_soliciting` is only a pin colour.** Fort Collins, Loveland and Greeley
   all run solicitation permits and no-knock lists; nothing warns the next rep
   walking up to one.
-- **The map OVERLAY still draws NOAA SPC spotter reports**, even though the
-  address lookup beside it now reads radar. `/api/hail` and `/api/hail/range`
-  are the two routes left on the old product, and they draw
-  `max(400, size * 800)`-metre circles around each call-in — a damage footprint
-  that exists nowhere in the data. `Swath.cell_rects()` already returns the
-  real cells for drawing; what is missing is a route to serve them and a
-  rectangle layer to replace the circles.
+- ~~The map OVERLAY still draws NOAA SPC spotter reports.~~ **Fixed
+  2026-09-20** — see the overlay note above. The SPC routes remain as the
+  fallback for dates nobody has backfilled.
 - **Nothing comes back from the CRM.** A pin gets `crm_lead_id` and then goes
   stale forever, so a door that became a signed roof still reads "Interested".
   That loop is the motivational payload of the whole tool.
@@ -541,16 +619,17 @@ Hail is **not a canvasser feature**. It is the company's primary data product,
 so it lives in its own package with its own database (`HAIL_DATA_DIR/hail.db`,
 falling back to `PORTAL_DATA_DIR` — never to `DATA_DIR`, which is the
 estimator's volume). The canvasser looks addresses up in it
-(`/api/hail/address`), Nimbus joins against it, storm-scout reports it, the CRM
-segments on it.
+(`/api/hail/address`) and draws it (`/api/hail/cells`), Nimbus joins against
+it, storm-scout reports it, the CRM segments on it.
 
 ```bash
 cd hail && pytest          # grid quantization, units, re-ingest, the join
 ```
 
 **Why this exists at all: the canvasser's hail engine read the wrong data
-product.** (Half-fixed 2026-09-20 — `/api/hail/address` now reads this archive;
-the map overlay is the part still on SPC.) NOAA SPC filtered storm reports
+product.** (Fixed 2026-09-20, both halves — the address lookup and the map
+overlay now read this archive; the SPC routes stay as the fallback for dates
+nobody has backfilled.) NOAA SPC filtered storm reports
 (`canvasser/app.py`) are *human-called-in points* — a spotter phoned it in — so
 they are sparse and biased toward where people are. A subdivision can be shelled at 2am and produce
 zero reports. MRMS **MESH** (Maximum Estimated Size of Hail) is radar-derived
@@ -750,6 +829,48 @@ service is retired, so don't deploy to it. App-specific env: `SALESCRM_DATA_DIR`
 (set it explicitly — it falls back to the estimator's `DATA_DIR`), plus optional
 `ESTIMATOR_URL`, `SALESCRM_DAILY_TARGET`, `SALESCRM_COOLDOWN_DAYS`,
 `SALESCRM_STALL_DAYS`. `BASE44_TOKEN` and `SESSION_SECRET` are shared.
+
+### Networking events (`agents/events.py`, 2026-09-21)
+
+Which rooms are worth an evening. 🤝 Networking in Nimbus; one Perplexity
+search per configured city (`event_cities` in Nimbus Settings), on a weekly
+scheduled job.
+
+**A list of events near Fort Collins is a Google search.** What makes this
+worth running is the ranking: an event scores on whether the room is full of
+the partner segment the CRM is THIN on. The fortieth realtor coffee this year
+is not worth an evening and the second insurance agent is, and no search engine
+knows that. Proximity is a tiebreak; the partner gap is the score.
+
+- **Nimbus reads the counts through `GET /crm/api/partners/counts`**, never
+  `salescrm.db` — the boundary `agents/__init__.py` states. Every partner type
+  is reported including the zeros, because a type the caller cannot see is one
+  it would have to guess about. `score()` takes the counts as an ARGUMENT, the
+  same reason `commercial_fastening` takes its table, so it is testable with no
+  database at all.
+- **A segment absent from the counts is not scored as zero.** Absent is "no
+  evidence", and treating it as empty invents a gap and then says "you have 0"
+  about a number nobody supplied.
+- **A list of events DECAYS, so past ones are dropped at READ time.**
+  `upcoming()` is the only read path for that reason: the table outlives the
+  search that filled it, and Nimbus naming a meeting that happened last Tuesday
+  costs the page its credibility. `starts_at` is a LOCAL wall-clock date —
+  a 7am chamber breakfast in Fort Collins is at 7am in Fort Collins — and
+  `company_today()` falls back to UTC, which can only drop an event EARLY.
+- **An event with no date, or no URL, is dropped on the way in.** A row that
+  cannot go in a calendar cannot be acted on and can never expire; the citation
+  is the same non-negotiable defence against invention the B2B sources apply.
+- **A decision is STICKY.** A re-run refreshes venue, time and cost and never
+  touches `decision` — same rule, and the same reason, as `save_estimate()`
+  re-applying a customer's accepted upgrade.
+- **The scheduled run scores WITHOUT counts and says so.** It has no session,
+  so it cannot read the CRM; `gap_aware` is false on the page until someone
+  hits Re-rank, which is an explicit write rather than a GET that quietly
+  rewrites rows.
+- **Events cache for `CACHE_TTL_DAYS` (3), not the global 30.** A fortnight-old
+  answer has stale times, moved venues and events that already happened.
+- Guarded by `agents/tests/test_events.py` and
+  `salescrm/tests/test_partner_counts.py`.
 
 ### Partner prospecting (`prospector/` + the import path)
 

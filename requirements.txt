@@ -5,6 +5,14 @@ werkzeug>=3.0
 requests>=2.31
 gunicorn>=21.2
 
+# The company's clock (portal/clock.py). Slim Linux images ship no tz database,
+# and every function in that module falls back to UTC without one — silently,
+# because a missing package must not take the site down. That fallback is also
+# how a whole timezone fix becomes a no-op in production while every test still
+# passes locally, so the package is pinned here and `portal/tests/test_clock.py`
+# asserts `clock.available()` rather than trusting it.
+tzdata>=2024.1
+
 # Estimator: PDF generation (proposals, contracts) and parsing (RoofR
 # measurements, Xactimate carrier estimates).
 fpdf2>=2.7

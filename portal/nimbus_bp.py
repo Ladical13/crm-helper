@@ -64,6 +64,7 @@ def _shell():
 @nimbus_bp.route('/rep/<username>')
 @nimbus_bp.route('/marketing/topics')
 @nimbus_bp.route('/marketing/drafts')
+@nimbus_bp.route('/marketing/events')
 @nimbus_bp.route('/marketing/connections')
 @nimbus_bp.route('/marketing/seo')
 @nimbus_bp.route('/marketing/social')
@@ -290,6 +291,113 @@ def list_connections():
     probe = request.args.get('probe', '1') not in ('0', 'false', 'no')
     return jsonify({'connections': connections.status_all(probe=probe),
                     'summary': connections.summary()})
+
+
+# ── Networking events ────────────────────────────────────────────────────────
+#
+# Which rooms are worth an evening. The list is the easy half; the ranking is
+# the point — an event scores on whether it is full of the partner segment the
+# CRM is THIN on, which is the one thing a search engine cannot tell you.
+
+def _partner_counts():
+    """Active partners per type, read through the CRM's own API.
+
+    Nimbus reaches salescrm over HTTP with the caller's session and never
+    touches `salescrm.db` — the boundary `agents/__init__.py` states. A failed
+    read returns None rather than {}: an empty dict would score every event as
+    though the pipeline had no partners at all, which is exactly the flattering
+    direction, and `score()` already degrades honestly when it is given nothing.
+    """
+    from werkzeug.test import Client
+    from portal.wsgi import application
+
+    cookie = request.cookies.get('p1session')
+    if not cookie:
+        return None
+    try:
+        client = Client(application)
+        client.set_cookie('p1session', cookie, domain='localhost')
+        r = client.get('/crm/api/partners/counts')
+        if r.status_code != 200:
+            return None
+        body = r.get_json() or {}
+    except Exception:
+        return None
+    return {k: (v or {}).get('active', 0)
+            for k, v in (body.get('partner_counts') or {}).items()}
+
+
+@nimbus_bp.route('/api/events', methods=['GET'])
+def list_events():
+    """Upcoming events, best first. Reads the table; never spends anything."""
+    from agents import events
+    include_skipped = request.args.get('skipped', '0') in ('1', 'true', 'yes')
+    rows = events.upcoming(include_skipped=include_skipped,
+                           limit=int(request.args.get('limit') or 60))
+    counts = _partner_counts()
+    return jsonify({
+        'events': rows,
+        'count': len(rows),
+        # Said out loud: with no counts the ranking is still useful but it is
+        # not the gap-aware ranking the page promises, and a reader should be
+        # able to tell which one they are looking at.
+        'partner_counts': counts or {},
+        'gap_aware': bool(counts),
+    })
+
+
+@nimbus_bp.route('/api/events/run', methods=['POST'])
+def run_events():
+    """Search the configured cities and store what comes back."""
+    from agents import config, events
+
+    data = request.get_json(force=True, silent=True) or {}
+    settings = config.load_settings()
+    cities = data.get('cities') or settings.get('event_cities') or []
+    if not cities:
+        return jsonify({'error': 'no cities configured — set event_cities in '
+                                 'Nimbus Settings'}), 400
+    out = events.run(
+        cities,
+        partner_counts=_partner_counts(),
+        service_cities=settings.get('event_cities') or [],
+        limit_per_city=int(data.get('limit_per_city') or 12),
+        force_refresh=bool(data.get('force_refresh')),
+    )
+    out['events'] = events.upcoming(limit=60)
+    return jsonify(out)
+
+
+@nimbus_bp.route('/api/events/rescore', methods=['POST'])
+def rescore_events():
+    """Re-rank stored events against the pipeline as it stands today.
+
+    The scheduled run has no session and so cannot read the CRM; its scores are
+    audience-and-area only. This is what makes them gap-aware, and it is an
+    explicit button rather than a side effect of loading the page.
+    """
+    from agents import events
+    counts = _partner_counts()
+    if not counts:
+        return jsonify({'error': 'could not read partner counts from the CRM'}), 502
+    changed = events.rescore(counts)
+    return jsonify({'changed': changed, 'partner_counts': counts,
+                    'events': events.upcoming(limit=60), 'gap_aware': True})
+
+
+@nimbus_bp.route('/api/events/<int:event_id>', methods=['POST'])
+def decide_event(event_id):
+    """Mark an event going or skipped. Sticky across every later run."""
+    from agents import events
+    decision = ((request.get_json(force=True, silent=True) or {})
+                .get('decision') or '').strip()
+    try:
+        row = events.decide(event_id, decision, user=session.get('username', ''))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if row is None:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify({'event': row})
 
 
 # ── Territories ──────────────────────────────────────────────────────────────

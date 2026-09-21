@@ -17,7 +17,7 @@ import smtplib
 import zipfile
 import threading
 import html as _html
-from datetime import datetime, timedelta, date, timezone
+from datetime import datetime, timedelta, date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, Respo
 # this app works both mounted by portal/wsgi.py and run standalone (its test
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import clock as pclock       # noqa: E402
 from portal import demo as pdemo         # noqa: E402
 from portal import funnel as pfunnel     # noqa: E402
 from portal import session as psession   # noqa: E402
@@ -6207,8 +6208,16 @@ def get_analytics():
     top_cities   = {}   # city → signed revenue
     ytd_revenue  = 0.0
     all_dtc      = []   # company-wide days-to-close list
+    # UTC, and only ever subtracted from a stored UTC stamp to get a DURATION
+    # (pipeline aging, below). Every question about which day or month a job
+    # belongs to goes through `pclock` instead — do not reach for this one.
     now_dt       = datetime.utcnow()
-    ytd_cutoff   = now_dt.replace(month=1, day=1, hour=0, minute=0, second=0)
+    # YTD in Colorado, not in UTC. A roof signed at 7pm Mountain on New Year's
+    # Eve is 02:00Z on the 1st, and a UTC comparison banks it against the year
+    # that had not started yet — the single biggest night of the year to get
+    # wrong. Compared as a year STRING against the Colorado month below, so the
+    # cutoff and the bucket can never disagree about which year a job is in.
+    ytd_year    = '%04d' % pclock.company_today().year
 
     for est in est_iter():
         is_signed  = bool(est.get('signature'))
@@ -6265,7 +6274,7 @@ def get_analytics():
             by_type[est_type]['pipeline'] += est_total
 
         # ── Monthly: sent cohort ─────────────────────────────────────
-        sent_month = (est.get('sent_at') or '')[:7]
+        sent_month = pclock.month_of(est.get('sent_at'))
         if is_sent and _GOAL_MONTH_RE.match(sent_month):
             m = _mo(sent_month)
             m['sent']       += 1
@@ -6277,13 +6286,9 @@ def get_analytics():
         # ── YTD, city & monthly signed revenue ───────────────────────
         if is_signed:
             signed_dt_str = (est.get('signature') or {}).get('signed_at') or ''
-            try:
-                signed_dt = datetime.fromisoformat(signed_dt_str.replace('Z','').replace('+00:00',''))
-                if signed_dt >= ytd_cutoff:
-                    ytd_revenue += est_total
-            except Exception:
-                pass
-            signed_month = signed_dt_str[:7]
+            signed_month = pclock.month_of(signed_dt_str)
+            if signed_month[:4] == ytd_year:
+                ytd_revenue += est_total
             if _GOAL_MONTH_RE.match(signed_month):
                 m = _mo(signed_month)
                 m['revenue'] += est_total
@@ -6366,7 +6371,7 @@ def get_analytics():
                 by_rep[sp]['revenue']     += tsell
                 by_rep[sp]['cost']        += tcost
                 # Monthly margin basis — sell and cost from the same trade math.
-                month_key = ((est.get('signature') or {}).get('signed_at') or '')[:7]
+                month_key = pclock.month_of((est.get('signature') or {}).get('signed_at'))
                 if _GOAL_MONTH_RE.match(month_key):
                     m = _mo(month_key)
                     m['trade_revenue'] += tsell
@@ -6399,7 +6404,7 @@ def get_analytics():
                 d['job_count'] += 1
                 by_rep[sp]['revenue'] += icr['revenue']
                 by_rep[sp]['cost']    += icr['cost']
-                month_key = ((est.get('signature') or {}).get('signed_at') or '')[:7]
+                month_key = pclock.month_of((est.get('signature') or {}).get('signed_at'))
                 if _GOAL_MONTH_RE.match(month_key):
                     m = _mo(month_key)
                     m['trade_revenue'] += icr['revenue']
@@ -6422,7 +6427,7 @@ def get_analytics():
 
     # ── Monthly series vs goals ───────────────────────────────────────────
     goals     = _load_goals()
-    cur_month = now_dt.strftime('%Y-%m')
+    cur_month = pclock.company_month()
 
     def _month_add(key, delta):
         i = int(key[:4]) * 12 + int(key[5:7]) - 1 + delta
@@ -6476,8 +6481,15 @@ def get_analytics():
 
     # Current-month pace. Straight-line: a month is "on pace" when today's run
     # rate, extended to month end, clears the goal.
-    days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
-    days_elapsed  = now_dt.day
+    #
+    # Colorado's date, and it HAS to be the same clock `cur_month` above reads:
+    # a UTC day number against a Colorado month would, for the six hours after
+    # 6pm Mountain on the last of the month, report day 1 of a month that is
+    # ending — dividing the whole month's revenue by one day and projecting a
+    # figure thirty times the truth onto the screen the team judges itself by.
+    today_co     = pclock.company_today()
+    days_in_month = calendar.monthrange(today_co.year, today_co.month)[1]
+    days_elapsed  = today_co.day
     days_left     = max(0, days_in_month - days_elapsed)
     cur_row       = next((r for r in months_out if r['month'] == cur_month), None)
     cur_rev       = cur_row['revenue'] if cur_row else 0.0
@@ -7827,18 +7839,13 @@ def _est_valid_until(est):
 # hours of its own last day, showing the customer the expired card and 410ing
 # the signature they came to give. "Pricing held until the 14th" is a promise
 # about a business day, so it lapses when the date has passed IN COLORADO.
-_COMPANY_TZ = 'America/Denver'
-
-
-def _company_today():
-    try:
-        from zoneinfo import ZoneInfo
-        return datetime.now(timezone.utc).astimezone(ZoneInfo(_COMPANY_TZ)).date()
-    except Exception:
-        # No tz database in the image. UTC is never EARLIER than Denver, so this
-        # can only expire a quote early — which is what it did before this
-        # existed, and never the other way round.
-        return datetime.now(timezone.utc).date()
+#
+# This used to be its own copy of the zoneinfo lookup, and Nimbus grew a second
+# one days later. Both now read `portal/clock.py`, which is the only way two
+# answers to "what day is it" stay the same answer. The alias stays because a
+# few dozen call sites spell it this way and renaming them buys nothing.
+_COMPANY_TZ = pclock.COMPANY_TZ
+_company_today = pclock.company_today
 
 
 def _est_expired(est):
@@ -24273,7 +24280,7 @@ def download_backup():
     if not _is_admin(_current_user()):
         return _forbid()
     data = _build_backup_zip(include_uploads=True)
-    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    stamp = _company_today().isoformat()
     return send_file(io.BytesIO(data), mimetype='application/zip',
                      as_attachment=True,
                      download_name=f'p1_estimator_full_backup_{stamp}.zip')
@@ -24284,7 +24291,7 @@ def _send_nightly_backup():
     if not BACKUP_EMAIL:
         return
     data  = _build_backup_zip(include_uploads=False)
-    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    stamp = _company_today().isoformat()
     n_est = est_count()
     size_mb = len(data) / 1048576
 
@@ -24325,7 +24332,13 @@ def _send_nightly_backup():
 def _check_daily_backup():
     if not _email_configured():
         return
-    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    # Colorado's day, so "nightly" rolls at midnight here rather than at 6pm,
+    # which is when the UTC date used to change. Two consequences, both worth
+    # having: the lockfile lets tomorrow's backup run after midnight Mountain
+    # rather than after dinner, and the zip and the subject line are dated the
+    # day a person would date them. The same stamp names the file in
+    # `_send_nightly_backup()` and the one `/api/backup` hands an admin.
+    stamp = _company_today().isoformat()
     lock  = os.path.join(REMINDER_LOCKS_DIR, f'backup_{stamp}.lock')
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -24351,7 +24364,7 @@ def _check_daily_db_backup():
     """
     if not _email_configured():
         return
-    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    stamp = _company_today().isoformat()
     lock  = os.path.join(REMINDER_LOCKS_DIR, f'dbbackup_{stamp}.lock')
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)

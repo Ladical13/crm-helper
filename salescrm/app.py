@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify, send_from_directory, session
 # this app works both mounted by portal/wsgi.py and run standalone (its test
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import clock as pclock       # noqa: E402
 from portal import dbtune                # noqa: E402
 from portal import funnel as pfunnel     # noqa: E402
 from portal import session as psession   # noqa: E402
@@ -997,6 +998,41 @@ def list_leads():
                           params + [limit, offset]).fetchall()
     return jsonify([_lead_row(r) for r in rows])
 
+@app.route('/api/partners/counts')
+@login_required
+def partner_counts():
+    """How many partners of each type are in the pipeline, and how many are live.
+
+    Exists for Nimbus, which scores a networking event on whether the room is
+    full of the segment we are THIN on — the fortieth realtor contact is not
+    worth an evening and the second insurance agent is. Nimbus reaches the CRM
+    through this API and never through `salescrm.db`, so the number it scores
+    on has to be one this app is willing to publish.
+
+    Every partner type is reported, including the ones sitting at zero: a type
+    the caller cannot see is a type it would have to guess about, and a guess
+    of zero invents a gap that may not exist.
+    """
+    where, params = '', []
+    if not is_manager():
+        where, params = 'AND rep=?', [current_rep()]
+    with get_db() as db:
+        rows = db.execute(
+            f"SELECT lead_type, COUNT(*) AS total, "
+            f"  SUM(CASE WHEN stage NOT IN ('won','lost') THEN 1 ELSE 0 END) AS active "
+            f"FROM leads WHERE dnc = 0 {where} GROUP BY lead_type", params).fetchall()
+    found = {r['lead_type']: r for r in rows}
+    label = {t['key']: t['label'] for t in LEAD_TYPES}
+    out = {}
+    for key in PARTNER_TYPES:
+        r = found.get(key)
+        out[key] = {'label': label.get(key, key),
+                    'total':  (r['total'] if r else 0) or 0,
+                    'active': (r['active'] if r else 0) or 0}
+    return jsonify({'partner_counts': out,
+                    'scope': 'all' if is_manager() else current_rep()})
+
+
 @app.route('/api/pipeline/summary')
 @login_required
 def pipeline_summary():
@@ -1270,7 +1306,12 @@ def list_tasks():
     if rep:
         clauses.append('t.rep=?'); params.append(rep)
     if scope == 'today':
-        clauses.append('t.due_at <= ?'); params.append(_iso(_now_dt().replace(hour=23, minute=59, second=59)))
+        # The end of TODAY IN COLORADO, as a UTC value — `due_at` is UTC and
+        # stays UTC. From 6pm Mountain, `_now_dt()` is already tomorrow, so
+        # 23:59:59 of it was the end of tomorrow: My Day quietly grew a day's
+        # worth of extra tasks every evening, which is the hour a rep opens it
+        # to see what is left.
+        clauses.append('t.due_at <= ?'); params.append(pclock.end_of_today_utc())
     elif scope == 'overdue':
         clauses.append('t.due_at <= ?'); params.append(_now())
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
@@ -2409,7 +2450,11 @@ def storm_queue(event_id, min_size=STORM_MIN_IN):
         hits, skipped = hjoin.affected(swath, leads, resolve=_lead_point, min_size=min_size)
         done = {r['lead_id'] for r in db.execute(
             'SELECT lead_id FROM activities WHERE body LIKE ?', (f'%{marker}%',))}
-        start = _now_dt().replace(hour=13, minute=0, second=0, microsecond=0)  # ~7am Denver
+        # 7am in Denver, whatever the date. The comment on the line this
+        # replaced said "~7am Denver" and meant 13:00Z, which is 7am for the
+        # eight months of MDT and 6am for the four months of MST — so every
+        # winter storm queued its calls an hour before anyone was up.
+        start = pclock.parse_utc(pclock.at_hour_utc(7)).replace(tzinfo=None)
         queued, already = 0, 0
         by_tier = {}
         for h in hits:
@@ -3249,11 +3294,15 @@ DAILY_TARGET  = int(os.environ.get('SALESCRM_DAILY_TARGET', '40'))
 # the non-negotiable 7-day cooldown the outreach skills already enforce.
 COOLDOWN_DAYS = int(os.environ.get('SALESCRM_COOLDOWN_DAYS', '7'))
 
+# Today's boundaries in Colorado, as UTC values, because every stamp these are
+# compared against is UTC. Both used to `.replace()` the hours on a UTC now, so
+# from 6pm Mountain the queue was built against tomorrow — re-touches due
+# tomorrow shown as due today, and the cooldown window sliding a day early.
 def _end_of_today():
-    return _iso(_now_dt().replace(hour=23, minute=59, second=59))
+    return pclock.end_of_today_utc()
 
 def _start_of_today():
-    return _iso(_now_dt().replace(hour=0, minute=0, second=0))
+    return pclock.start_of_today_utc()
 
 @app.route('/api/queue/today')
 @login_required
@@ -3396,8 +3445,14 @@ def queue_assign():
 # ── Dashboard / scorecards / coaching ─────────────────────────────────────────
 
 def _date_bounds(days):
-    start = _iso((_now_dt() - timedelta(days=days)).replace(hour=0, minute=0, second=0))
-    return start
+    """The UTC instant the Colorado day `days` ago began.
+
+    "Last 30 days" is a claim about days, and a day is a thing that starts at
+    midnight here. Subtracting from a UTC now and zeroing the hours moved the
+    window six hours, which quietly pulled the oldest day's evening activity
+    into or out of every scorecard depending on the hour it was asked for.
+    """
+    return pclock.days_ago_utc(days)
 
 @app.route('/api/dashboard')
 @login_required
