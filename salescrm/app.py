@@ -997,6 +997,41 @@ def list_leads():
                           params + [limit, offset]).fetchall()
     return jsonify([_lead_row(r) for r in rows])
 
+@app.route('/api/partners/counts')
+@login_required
+def partner_counts():
+    """How many partners of each type are in the pipeline, and how many are live.
+
+    Exists for Nimbus, which scores a networking event on whether the room is
+    full of the segment we are THIN on — the fortieth realtor contact is not
+    worth an evening and the second insurance agent is. Nimbus reaches the CRM
+    through this API and never through `salescrm.db`, so the number it scores
+    on has to be one this app is willing to publish.
+
+    Every partner type is reported, including the ones sitting at zero: a type
+    the caller cannot see is a type it would have to guess about, and a guess
+    of zero invents a gap that may not exist.
+    """
+    where, params = '', []
+    if not is_manager():
+        where, params = 'AND rep=?', [current_rep()]
+    with get_db() as db:
+        rows = db.execute(
+            f"SELECT lead_type, COUNT(*) AS total, "
+            f"  SUM(CASE WHEN stage NOT IN ('won','lost') THEN 1 ELSE 0 END) AS active "
+            f"FROM leads WHERE dnc = 0 {where} GROUP BY lead_type", params).fetchall()
+    found = {r['lead_type']: r for r in rows}
+    label = {t['key']: t['label'] for t in LEAD_TYPES}
+    out = {}
+    for key in PARTNER_TYPES:
+        r = found.get(key)
+        out[key] = {'label': label.get(key, key),
+                    'total':  (r['total'] if r else 0) or 0,
+                    'active': (r['active'] if r else 0) or 0}
+    return jsonify({'partner_counts': out,
+                    'scope': 'all' if is_manager() else current_rep()})
+
+
 @app.route('/api/pipeline/summary')
 @login_required
 def pipeline_summary():

@@ -77,6 +77,11 @@ DEFAULT_SETTINGS = {
     # 30 days of caching kills most re-charge. Bump higher for slow-changing
     # research (org names, addresses) or lower for volatile topics (news).
     'cache_ttl_days': 30,
+    # Cities the networking-event finder searches, and the same list decides
+    # which events count as "in the service area". One search per city per run,
+    # so this is the cost knob as well as the coverage one.
+    'event_cities': ['Fort Collins', 'Loveland', 'Greeley', 'Windsor',
+                     'Longmont'],
     # Which counties fall inside our service area — used only for ICP scoring
     # boosts, not filtering. Every county the reps cover should appear here.
     'service_area_counties': [
@@ -256,6 +261,36 @@ def _init_cache_db(conn):
             cost_usd    REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS spend_month_idx ON spend_ledger(occurred_at);
+        -- Local networking events worth an evening (agents/events.py).
+        -- starts_at is a LOCAL wall-clock date, stored without a timezone: a
+        -- 7am chamber breakfast in Fort Collins is at 7am in Fort Collins.
+        -- event_key is name+date, so a monthly re-run refreshes the recurring
+        -- meeting rather than stacking a second copy of it.
+        CREATE TABLE IF NOT EXISTS networking_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_key   TEXT NOT NULL UNIQUE,
+            name        TEXT NOT NULL,
+            host        TEXT DEFAULT '',
+            starts_at   TEXT NOT NULL,
+            starts_time TEXT DEFAULT '',
+            city        TEXT DEFAULT '',
+            venue       TEXT DEFAULT '',
+            url         TEXT DEFAULT '',
+            cost        TEXT DEFAULT '',
+            audience    TEXT DEFAULT '[]',
+            summary     TEXT DEFAULT '',
+            in_service_area INTEGER DEFAULT 0,
+            score       REAL DEFAULT 0,
+            score_why   TEXT DEFAULT '',
+            -- '' | 'going' | 'skipped'. Never touched by a re-run: the facts
+            -- are ours to refresh, the choice is Luke's.
+            decision    TEXT DEFAULT '',
+            decided_by  TEXT DEFAULT '',
+            decided_at  TEXT DEFAULT '',
+            found_at    TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS events_date_idx ON networking_events(starts_at);
 
         CREATE TABLE IF NOT EXISTS agent_runs (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,

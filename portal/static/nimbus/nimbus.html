@@ -466,6 +466,7 @@
     <a href="/nimbus/marketing/drafts" data-route="/nimbus/marketing/drafts">📝 Content Drafts</a>
     <a href="/nimbus/marketing/seo" data-route="/nimbus/marketing/seo">🔍 Local SEO</a>
     <a href="/nimbus/marketing/social" data-route="/nimbus/marketing/social">📣 Marketing Studio</a>
+    <a href="/nimbus/marketing/events" data-route="/nimbus/marketing/events">🤝 Networking</a>
     <a href="/nimbus/marketing/connections" data-route="/nimbus/marketing/connections">🔌 Connections</a>
     <a href="/nimbus/settings" data-route="/nimbus/settings">⚙️ Settings</a>
   </nav>
@@ -496,6 +497,7 @@ function route() {
   if (path.startsWith('/nimbus/supervisor'))       return renderSupervisor();
   if (path.startsWith('/nimbus/marketing/topics')) return renderTopics();
   if (path.startsWith('/nimbus/marketing/drafts')) return renderDrafts();
+  if (path.startsWith('/nimbus/marketing/events')) return renderEvents();
   if (path.startsWith('/nimbus/marketing/connections')) return renderConnections();
   if (path.startsWith('/nimbus/marketing/seo')) return renderSeo();
   if (path.startsWith('/nimbus/marketing/social') || path.startsWith('/nimbus/marketing/studio')) return window.MarketingStudio.open();
@@ -1379,6 +1381,135 @@ const AUTH_LABEL = {
   none: 'no credential needed', unknown: 'not yet specified',
   api_key: 'app key + secret',
 };
+
+/* ── Networking events ──────────────────────────────────────────────────
+   Which rooms are worth an evening. The list is the easy half; the ranking is
+   the point — an event scores on whether it is full of the partner segment
+   the CRM is THIN on, which is what a search engine cannot tell you. */
+
+function eventDate(iso, time) {
+  const [y, m, d] = String(iso || '').split('-').map(Number);
+  if (!y) return iso || '';
+  const when = new Date(y, m - 1, d).toLocaleDateString(undefined,
+    { weekday: 'short', month: 'short', day: 'numeric' });
+  return time ? `${when} · ${time}` : when;
+}
+
+async function renderEvents() {
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="empty"><span class="spin"></span> loading events</div>';
+  let data;
+  try {
+    data = await fetch(`${BASE}/api/events`).then(r => r.json());
+  } catch (e) {
+    main.innerHTML = '<div class="empty">could not load events</div>';
+    return;
+  }
+  paintEvents(main, data);
+}
+
+function paintEvents(main, data) {
+  const rows = data.events || [];
+  // Said out loud rather than left as an absence: without pipeline counts this
+  // is still a useful list, but it is not the gap-aware ranking the page
+  // promises, and a reader should be able to tell which one they are seeing.
+  const gapNote = data.gap_aware
+    ? `<div class="ro-banner">🤝 <span><b>Ranked against your pipeline.</b>
+         An event full of a segment you already have forty of scores below one
+         full of a segment you have two of.</span></div>`
+    : `<div class="ro-banner" style="border-color:var(--warn)">
+         ⚠️ <span><b>Ranked on audience and area only.</b> The scheduled search
+         runs without a CRM session, so these scores do not know which partner
+         segments you are thin on yet. <b>Re-rank</b> fixes that.</span></div>`;
+
+  main.innerHTML = `
+    ${gapNote}
+    <div style="display:flex;align-items:center;gap:8px;margin:12px 0;flex-wrap:wrap">
+      <button id="ev-run" class="btn">🔎 Find events</button>
+      <button id="ev-rescore" class="btn">📊 Re-rank against pipeline</button>
+      <label style="margin-left:auto"><input type="checkbox" id="ev-skipped">
+        show skipped</label>
+    </div>
+    <div id="ev-status" class="detail"></div>
+    ${rows.length ? rows.map(evCard).join('') : `
+      <div class="empty">Nothing on the list yet — hit <b>Find events</b>.</div>`}
+  `;
+
+  document.getElementById('ev-run').onclick = () => evRun();
+  document.getElementById('ev-rescore').onclick = () => evRescore();
+  document.getElementById('ev-skipped').onchange = async (e) => {
+    const d = await fetch(`${BASE}/api/events?skipped=${e.target.checked ? 1 : 0}`)
+      .then(r => r.json());
+    paintEvents(main, d);
+    document.getElementById('ev-skipped').checked = e.target.checked;
+  };
+  main.querySelectorAll('[data-decide]').forEach(b => {
+    b.onclick = () => evDecide(b.dataset.id, b.dataset.decide);
+  });
+}
+
+function evCard(e) {
+  const tags = (e.audience || []).map(a =>
+    `<span class="pill">${escapeHtml(a.replace(/_/g, ' '))}</span>`).join(' ');
+  return `
+    <div class="conn" ${e.decision === 'skipped' ? 'style="opacity:.55"' : ''}>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+        <div>
+          <div style="font-weight:700">${escapeHtml(e.name)}</div>
+          <div class="detail">${escapeHtml(eventDate(e.starts_at, e.starts_time))}
+            ${e.city ? ' · ' + escapeHtml(e.city) : ''}
+            ${e.venue ? ' · ' + escapeHtml(e.venue) : ''}
+            ${e.cost ? ' · ' + escapeHtml(e.cost) : ''}</div>
+          ${e.host ? `<div class="detail">${escapeHtml(e.host)}</div>` : ''}
+        </div>
+        <div style="text-align:right;white-space:nowrap">
+          <div style="font-weight:800;font-size:18px">${Math.round(e.score)}</div>
+          <div class="detail">score</div>
+        </div>
+      </div>
+      ${e.score_why ? `<div class="detail" style="margin-top:6px">${escapeHtml(e.score_why)}</div>` : ''}
+      ${tags ? `<div style="margin-top:6px">${tags}</div>` : ''}
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <a class="btn" href="${escapeHtml(e.url)}" target="_blank" rel="noopener">Open listing ↗</a>
+        <button class="btn" data-decide="going"   data-id="${e.id}">${e.decision === 'going' ? '✓ Going' : 'Going'}</button>
+        <button class="btn" data-decide="skipped" data-id="${e.id}">Skip</button>
+        ${e.decision ? `<button class="btn" data-decide="" data-id="${e.id}">Clear</button>` : ''}
+      </div>
+    </div>`;
+}
+
+async function evRun() {
+  const st = document.getElementById('ev-status');
+  st.innerHTML = '<span class="spin"></span> searching — one lookup per city';
+  try {
+    const d = await fetch(`${BASE}/api/events/run`, { method: 'POST' }).then(r => r.json());
+    if (d.error) { st.textContent = d.error; return; }
+    st.textContent = `${d.added} new, ${d.updated} refreshed`
+      + (d.stopped_early ? ` — stopped: ${d.stopped_early}` : '')
+      + ((d.errors || []).length ? ` — ${d.errors.length} city(ies) failed` : '');
+    paintEvents(document.getElementById('main'), d);
+    document.getElementById('ev-status').textContent = st.textContent;
+  } catch (e) { st.textContent = 'search failed'; }
+}
+
+async function evRescore() {
+  const st = document.getElementById('ev-status');
+  st.innerHTML = '<span class="spin"></span> re-ranking';
+  try {
+    const d = await fetch(`${BASE}/api/events/rescore`, { method: 'POST' }).then(r => r.json());
+    if (d.error) { st.textContent = d.error; return; }
+    paintEvents(document.getElementById('main'), d);
+    document.getElementById('ev-status').textContent = `${d.changed} re-ranked`;
+  } catch (e) { st.textContent = 're-rank failed'; }
+}
+
+async function evDecide(id, decision) {
+  await fetch(`${BASE}/api/events/${id}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision }),
+  });
+  renderEvents();
+}
 
 async function renderConnections(probe) {
   const main = document.getElementById('main');

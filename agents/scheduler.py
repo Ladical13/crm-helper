@@ -29,6 +29,9 @@ DEFAULT_JOBS = [
     ('seo_weekly',    0, 6),    # Monday 06:00 UTC — report ready before the day
     ('content_listen', 0, 5),   # an hour earlier, so the SEO run sees its topics
     ('social_weekly', 1, 6),    # Tuesday, after a human has read Monday's queue
+    # Thursday, so next week's events are on the list while there is still
+    # time to register for them. One Perplexity search per configured city.
+    ('events_weekly', 3, 7),
 ]
 
 _thread = None
@@ -140,10 +143,36 @@ def _job_social_weekly():
     return note
 
 
+def _job_events_weekly():
+    """Find next month's networking events.
+
+    Deliberately scores WITHOUT partner counts: the scheduler has no session,
+    and Nimbus reads the CRM over HTTP with the caller's cookie rather than
+    reaching into salescrm.db. The dashboard's Re-rank makes them gap-aware
+    once a human is there with a session. Finding them is the part that has to
+    happen on a schedule; ranking them is the part that can wait for a reader.
+    """
+    from . import config, events
+    settings = config.load_settings()
+    cities = settings.get('event_cities') or []
+    if not cities:
+        return 'no event_cities configured — nothing searched'
+    out = events.run(cities, service_cities=cities)
+    events.purge_past()
+    note = (f'{out["added"]} new, {out["updated"]} refreshed '
+            f'across {len(out["cities"])} city(ies)')
+    if out.get('stopped_early'):
+        note += f' — stopped early: {out["stopped_early"]}'
+    if out.get('errors'):
+        note += f' — {len(out["errors"])} city(ies) failed'
+    return note
+
+
 JOBS = {
     'seo_weekly':     _job_seo_weekly,
     'content_listen': _job_content_listen,
     'social_weekly':  _job_social_weekly,
+    'events_weekly':  _job_events_weekly,
 }
 
 
