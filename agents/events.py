@@ -32,7 +32,9 @@ accepted upgrade: the fact is ours to update, the choice is not.
 """
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime
+
+from portal import clock
 
 from . import config
 from . import perplexity
@@ -47,7 +49,11 @@ CACHE_TTL_DAYS = 3
 # answers drift into "the chamber usually does something in spring".
 HORIZON_DAYS = 45
 
-COMPANY_TZ = 'America/Denver'
+# One clock for the company, shared with the other three apps. This module had
+# its own zoneinfo lookup for about a day; the estimator's was written weeks
+# earlier and said the same thing in slightly different words, which is how two
+# answers to "what day is it" start to drift.
+COMPANY_TZ = clock.COMPANY_TZ
 
 # The CRM partner types an event audience can be expressed in. Kept as a plain
 # tuple rather than imported from salescrm: `agents` talks to the CRM through
@@ -72,20 +78,13 @@ _AUDIENCE_WORDS = {
 }
 
 
-def company_today():
-    """Today in Colorado, not in UTC.
-
-    The server runs in UTC, which from 6pm Mountain is already tomorrow there.
-    With no tz database this falls back to UTC, which can only drop an event
-    EARLY — Luke loses tonight's mixer from the list a few hours before it
-    starts. That is the right direction to fail: a missed event costs an
-    evening, and a past event shown as upcoming costs the page its credibility.
-    """
-    try:
-        from zoneinfo import ZoneInfo
-        return datetime.now(timezone.utc).astimezone(ZoneInfo(COMPANY_TZ)).date()
-    except Exception:
-        return datetime.now(timezone.utc).date()
+# Today in Colorado, not in UTC — the server runs in UTC, which from 6pm
+# Mountain is already tomorrow there. With no tz database `clock` falls back to
+# UTC, which can only drop an event EARLY: Luke loses tonight's mixer from the
+# list a few hours before it starts. That is the right direction to fail here,
+# because a missed event costs an evening and a past event shown as upcoming
+# costs the page its credibility.
+company_today = clock.company_today
 
 
 _DATE_RE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})')

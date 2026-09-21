@@ -18,6 +18,7 @@ from flask import Flask, request, jsonify, send_from_directory, session
 # The portal package lives one directory up. Put the repo root on the path so
 # this app works both mounted by portal/wsgi.py and run standalone.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import clock as pclock       # noqa: E402
 from portal import dbtune                # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
@@ -329,8 +330,10 @@ def list_pins():
     if ptype:
         clauses.append('pin_type=?'); params.append(ptype)
     if days > 0:
-        since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
-        clauses.append('created_at >= ?'); params.append(since)
+        # Whole Colorado days, not a rolling N×24 hours from whenever the
+        # request landed. "The last 7 days" on a map a rep opens all day should
+        # not quietly drop this time last Tuesday as the afternoon goes on.
+        clauses.append('created_at >= ?'); params.append(pclock.days_ago_utc(days))
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
 
     with get_db() as db:
@@ -514,7 +517,10 @@ def leaderboard():
         days = max(1, min(int(request.args.get('days', LEADERBOARD_DAYS)), 365))
     except (TypeError, ValueError):
         days = LEADERBOARD_DAYS
-    since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    # Whole Colorado days. This one is the leaderboard reps are paid on, so a
+    # window whose far edge slides through the day is a rank that changes for
+    # reasons nobody standing on a doorstep can see.
+    since = pclock.days_ago_utc(days)
     with get_db() as db:
         rows = db.execute("""
             SELECT rep,

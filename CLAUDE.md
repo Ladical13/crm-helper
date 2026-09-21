@@ -266,6 +266,56 @@ landscape makes iOS inflate font sizes per-block, and Android applies its
 accessibility text scaling the same way — either one overflows a fixed-width
 input or a KPI tile.
 
+### The company's clock (`portal/clock.py`, 2026-09-21)
+
+The office is in Colorado; the server runs in UTC. For the six hours between
+6pm Mountain and midnight, UTC has already rolled over — so for a quarter of
+every day the question "what day is it" had two answers and the four apps kept
+picking the wrong one.
+
+**Stored timestamps stay UTC, and that is correct.** Nothing here migrates a
+column. `created_at`, `signed_at`, `due_at` sort and compare across four apps,
+and a local-time column would contain, once every November, an hour that
+happens twice with no way to tell the two apart. What this module fixes is the
+other thing: a DECISION about a day — which month did this land in, is this due
+today, what does "the last 30 days" mean. **The boundary is Colorado's and the
+value is still UTC**, which is what lets `start_of_today_utc()` drop straight
+into `WHERE due_at >= ?` beside columns nobody is touching.
+
+It lives in `portal/` for the reason `geo.py` and `funnel.py` do: the four apps
+keep separate databases and anything genuinely shared needs a home belonging to
+none of them. It replaced two independent copies — `estimator._company_today`
+and `agents.events.company_today`, written weeks apart — which is how two
+answers to one question start to drift. Both are now aliases onto it.
+
+- **`month_of()` is the one that moves money.** A roof signed at 7pm Mountain
+  on 30 September is stored `2026-10-01T01:00:00Z`, and the analytics tab
+  bucketed it by slicing the first seven characters of that string: off
+  September's revenue, off that rep's September number, and onto a month they
+  had not started selling. Month end is exactly when reps push to close, so
+  this was not a rare row. The same slice ran in four places — the sent cohort,
+  signed revenue, and both margin-basis keys — and YTD had it too, where the
+  night it gets wrong is New Year's Eve.
+- **A fixed offset cannot do this job.** Colorado is UTC-6 on MDT and UTC-7 on
+  MST, so salescrm's `replace(hour=13)  # ~7am Denver` was right for eight
+  months a year and queued every winter storm's calls at 6am, before anyone is
+  up, on a board a rep checks once. `at_hour_utc(7)` asks the tz database.
+- **`end_of_today_utc()` is built as tomorrow minus a second**, never as
+  23:59:59 of today, so the two DST days a year — one 23 hours, one 25 — land
+  on the real end of the day.
+- **Every function falls back to UTC when the tz database is missing**, on
+  purpose: a slim image must not take the site down. That fallback is also
+  invisible, and it would make every fix listed here a silent no-op while the
+  whole suite stayed green — so `tzdata` is pinned in `requirements.txt` and
+  `portal/tests/test_clock.py` asserts `available()` rather than trusting it.
+  That one test is what guards the other twelve.
+- **Not everything with a date in it is the company's day.** The SPC daily
+  CSVs, the cache key that decides whether one is final, and the MESH archive's
+  `event_date` are NOAA's calendar, which is UTC by definition — converting
+  those would be the same category error in the other direction. They are left
+  alone deliberately. Durations (the 15-minute team-location liveness window)
+  are not day questions either.
+
 **Deploy:** ONE service. Root `Procfile` is
 `gunicorn portal.wsgi:application`; deploy the whole repo, not a subdirectory.
 
