@@ -376,6 +376,13 @@ answers to one question start to drift. Both are now aliases onto it.
   alone deliberately. Durations (the 15-minute team-location liveness window)
   are not day questions either.
 
+**Background jobs run in a thread, not a cron.** `agents/scheduler.py` is the
+only scheduler in the repo — the Procfile runs ONE Railway service and adding a
+second to run a cron would break that. It is **off unless `NIMBUS_SCHEDULER=1`**,
+which is easy to miss: the jobs exist, the page lists them, and none of them
+ever fire. A job whose weekday is `DAILY` runs every day; everything else runs
+on its one weekday. `hail_daily` is what fills the storm archive.
+
 **Deploy:** ONE service. Root `Procfile` is
 `gunicorn portal.wsgi:application`; deploy the whole repo, not a subdirectory.
 

@@ -352,3 +352,115 @@ def test_without_bing_the_sections_stay_blocked_and_point_at_it(fake_web,
     md = seo.run(dry_run=True)['report_markdown']
     assert 'Search Console winners and decliners' in md
     assert 'Bing Webmaster Tools would fill part of this' in md
+
+
+# ── the nightly storm ingest ───────────────────────────────────────────
+
+class _FakeSwath(list):
+    """A swath is truthy when it holds cells and falsy when the day was quiet.
+    Both are recorded — that is what tells "no hail" from "never ingested"."""
+    max_size = 2.0
+
+
+def _fake_hail(monkeypatch, *, held=(), fails=()):
+    """Stand in for hail.ingest / hail.storms. No network, no database."""
+    import datetime as dt
+
+    from hail import ingest, storms
+    recorded = {}
+
+    def swath_for(d, **kw):
+        if d.isoformat() in fails:
+            raise RuntimeError('NOAA said no')
+        return _FakeSwath(['cell']) if d.day % 2 else _FakeSwath()
+
+    monkeypatch.setattr(ingest, 'swath_for', swath_for)
+    monkeypatch.setattr(ingest, 'EARLIEST', dt.date(2020, 10, 14))
+    monkeypatch.setattr(storms, 'ingested_dates', lambda *a, **k: set(held))
+    monkeypatch.setattr(storms, 'record',
+                        lambda date, swath, **k: recorded.__setitem__(date, swath))
+    return recorded
+
+
+def test_the_nightly_ingest_fills_a_gap_a_missed_night_left(monkeypatch):
+    """A deploy, a restart or a NOAA hiccup must not leave a permanent hole.
+
+    Once a gap is old it is indistinguishable from a quiet day — which is
+    exactly why `storms.record` writes days with no hail at all — so the
+    window looks back rather than fetching only yesterday.
+    """
+    from agents import scheduler
+    recorded = _fake_hail(monkeypatch, held=())
+    note = scheduler._job_hail_daily()
+    assert len(recorded) == scheduler.HAIL_WINDOW_DAYS, note
+
+
+def test_a_day_already_held_is_not_refetched(monkeypatch):
+    """Skipping held days is what makes the job cheap enough to run nightly."""
+    import datetime as dt
+
+    from agents import scheduler
+    every_day = {(dt.date.today() - dt.timedelta(days=i)).isoformat()
+                 for i in range(scheduler.HAIL_WINDOW_DAYS)}
+    recorded = _fake_hail(monkeypatch, held=every_day)
+    scheduler._job_hail_daily()
+    assert len(recorded) == scheduler.HAIL_REFETCH_DAYS, (
+        'only the days still settling should be pulled again')
+
+
+def test_the_most_recent_days_are_refetched_even_when_held(monkeypatch):
+    """`MESH_Max_1440min` is a ROLLING 24-hour maximum, so a file read early
+    is still moving. `storms.record` REPLACES a date's cells rather than
+    merging them, which is what makes the re-fetch safe rather than additive."""
+    import datetime as dt
+
+    from agents import scheduler
+    today = dt.date.today()
+    recorded = _fake_hail(monkeypatch, held={today.isoformat()})
+    scheduler._job_hail_daily()
+    assert today.isoformat() in recorded
+
+
+def test_one_bad_day_does_not_cost_the_others(monkeypatch):
+    import datetime as dt
+
+    from agents import scheduler
+    bad = (dt.date.today() - dt.timedelta(days=3)).isoformat()
+    recorded = _fake_hail(monkeypatch, fails={bad})
+    note = scheduler._job_hail_daily()
+    assert bad not in recorded, 'a failed day must stay unrecorded and be retried'
+    assert len(recorded) == scheduler.HAIL_WINDOW_DAYS - 1
+    assert 'will retry' in note
+
+
+def test_a_run_that_fetched_nothing_is_not_reported_as_success(monkeypatch):
+    """A job that quietly succeeds while ingesting nothing is how an archive
+    goes stale with a green status beside it."""
+    import datetime as dt
+
+    from agents import scheduler
+    everything = {(dt.date.today() - dt.timedelta(days=i)).isoformat()
+                  for i in range(scheduler.HAIL_WINDOW_DAYS)}
+    _fake_hail(monkeypatch, fails=everything)
+    with pytest.raises(RuntimeError):
+        scheduler._job_hail_daily()
+
+
+def test_a_daily_job_is_due_every_day_not_one_weekday():
+    """The scheduler was weekly-only. MESH is published daily, so a weekly
+    pull would leave six days of roofs unrecorded between runs."""
+    from agents import scheduler
+    scheduler.ensure_jobs()
+    job = next(j for j in scheduler.list_jobs() if j['name'] == 'hail_daily')
+    assert int(job['weekday']) == scheduler.DAILY
+    for day in range(1, 8):                      # a whole week, at its hour
+        when = datetime(2026, 6, day, int(job['hour_utc']))
+        assert scheduler._due(job, when) is True, when.strftime('%A')
+    assert scheduler._due(job, datetime(2026, 6, 1, 0)) is False, 'ran before its hour'
+
+
+def test_every_scheduled_job_has_a_body():
+    """A job seeded with no entry in JOBS is claimed, runs nothing, and stamps
+    itself successful — a silent no-op with a green status."""
+    from agents import scheduler
+    assert sorted(scheduler.JOBS) == sorted(n for n, _, _ in scheduler.DEFAULT_JOBS)

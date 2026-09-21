@@ -16,6 +16,33 @@ it, storm-scout reports it, the CRM segments on it.
 cd hail && pytest          # grid quantization, units, re-ingest, the join
 ```
 
+**The archive is filled by `hail_daily` in `agents/scheduler.py`**, every day at
+09:00 UTC — 3am Mountain, by which time the previous day's MESH file has
+settled. It looks back `HAIL_WINDOW_DAYS` so a missed night leaves no permanent
+hole, and re-fetches the most recent `HAIL_REFETCH_DAYS` even when held, because
+`MESH_Max_1440min` is a rolling maximum that is still moving. **The scheduler is
+off unless `NIMBUS_SCHEDULER=1`** — without it the archive stays empty and every
+hail lookup silently falls through to the weaker SPC spotter reports.
+
+*Nothing ran the ingest until 2026-09-21. `backfill.py` had said "what a nightly
+cron runs" in its docstring since it was written and no cron ran it, so the
+archive the canvasser, the CRM and storm-scout all read was empty in production
+the whole time.*
+
+**History is a one-off `python -m hail.backfill --season <year>`**, which is not
+on any schedule and should not be: 202 days took 167 seconds, so it is a command
+somebody runs once per year they want, not a job. The nightly job only ever
+keeps up.
+
+⚠️ **MESH reports sizes above the largest hailstone ever recorded.** The 2026
+Colorado season holds 37 cells at or above 4.00 inches and two at 8.85 and 8.56,
+against a US record of 8.0 (Vivian, South Dakota, 2010). MESH is a radar
+*estimate* of maximum expected size, not a measurement, and it is known to run
+high. Nothing currently flags this, so a rep can be shown — and can repeat to a
+homeowner — a number that is not physically credible. That is the overclaim this
+package exists to prevent, arriving from the other direction. Decide what to do
+about it before the hail tools reach a rep.
+
 **Why this exists at all: the canvasser's hail engine read the wrong data
 product.** (Fixed 2026-09-20, both halves — the address lookup and the map
 overlay now read this archive; the SPC routes stay as the fallback for dates
