@@ -1,4 +1,4 @@
-# Runs all six test suites on every push and pull request.
+# Runs every test suite on every push and pull request.
 #
 # The seven suites must run as SEPARATE pytest invocations. Each app has its own
 # tests/conftest.py, and pytest imports them by bare module name, so collecting

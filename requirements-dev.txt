@@ -1,8 +1,13 @@
 # Test-only. Railway installs requirements.txt, never this.
 #
 #   pip install -r requirements-dev.txt
-#   cd estimator && pytest      # 220 — pricing parity, cache-buster, bundles
-#   cd salescrm  && pytest      #  18 — stages, cadences, per-rep visibility
-#   cd portal    && pytest      #  28 — one login across all three, migration
+#   python run_tests.py         # every suite, the way CI runs them
+#
+# This block used to name three of the suites with their test counts beside
+# them — 220, 18 and 28. They were 2008, 256 and 228 by the time anyone
+# checked, and it listed three of seven. CLAUDE.md had the same habit and a
+# test now forbids it there; the same numbers were sitting here, wrong by an
+# order of magnitude, because that test only ever read CLAUDE.md. It reads
+# this file too now. Say what a suite guards, in CLAUDE.md, not how big it is.
 -r requirements.txt
 pytest>=8.0
