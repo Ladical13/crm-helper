@@ -29,10 +29,22 @@ cron runs" in its docstring since it was written and no cron ran it, so the
 archive the canvasser, the CRM and storm-scout all read was empty in production
 the whole time.*
 
-**History is a one-off `python -m hail.backfill --season <year>`**, which is not
-on any schedule and should not be: 202 days took 167 seconds, so it is a command
-somebody runs once per year they want, not a job. The nightly job only ever
-keeps up.
+**History is filled by `POST /api/hail/backfill`** (`?season=<year>` or
+`?days=<n>`, manager-up), not by the CLI. It has to run ON the server: the
+archive lives on the Railway volume and `railway run` executes against local
+disk, so the command fills a database nobody reads. 202 days take about 170
+seconds, which is well past gunicorn's 60s worker timeout — hence a background
+thread and a polled `GET`, with the job row in SQLite rather than memory
+because the poll can land on the other worker. Days already held are skipped,
+so the button is safe to press twice. `hail/backfill.py`'s `run()` is the one
+implementation the CLI and the endpoint share.
+
+*The cost of the archive being empty was not theoretical. MESH holds a 1.91"
+storm over Loveland on 2024-07-21, and the address lookup answered "no hail in
+five years" about a roof inside that swath — because it fell through to the SPC
+spotter reports, which had no call-in within ten miles. The tool behaved
+exactly as designed and told a homeowner something false, because the database
+it asked had never been filled.*
 
 ⚠️ **MESH reports sizes above the largest hailstone ever recorded.** The 2026
 Colorado season holds 37 cells at or above 4.00 inches and two at 8.85 and 8.56,

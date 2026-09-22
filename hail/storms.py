@@ -82,6 +82,23 @@ def _init(path):
                 PRIMARY KEY (event_id, ri, ci)
             );
             CREATE INDEX IF NOT EXISTS storm_cell_event_idx ON storm_cells(event_id);
+            -- One row, id 1. A backfill takes minutes and gunicorn kills a
+            -- worker at 60 seconds, so the admin endpoint runs it on a thread
+            -- and the browser polls. The poll can land on the OTHER worker, so
+            -- the state cannot live in process memory — same trap, and the
+            -- same answer, as the estimator's carrier scan.
+            CREATE TABLE IF NOT EXISTS backfill_job (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                status      TEXT NOT NULL,
+                label       TEXT NOT NULL DEFAULT '',
+                started_by  TEXT NOT NULL DEFAULT '',
+                started_at  TEXT NOT NULL DEFAULT '',
+                done        INTEGER NOT NULL DEFAULT 0,
+                total       INTEGER NOT NULL DEFAULT 0,
+                storm_days  INTEGER NOT NULL DEFAULT 0,
+                failures    INTEGER NOT NULL DEFAULT 0,
+                note        TEXT NOT NULL DEFAULT ''
+            );
         ''')
         conn.commit()
     finally:
@@ -285,3 +302,62 @@ def cells_in(bounds=None, since=None, until=None, min_size=None,
     # future ingest at a different resolution still draws in the right place.
     return ([hgrid.cell_bounds(r['ri'], r['ci'], r['cell_deg']) + (r['size_in'],)
              for r in rows], truncated)
+
+
+# ── The admin backfill's job row ────────────────────────────────────────────
+#
+# Filling history is a one-off that has to run ON the server, because the
+# archive lives on the Railway volume and `railway run` executes against local
+# disk. So it is a background thread plus a polled status row, and the row is
+# in SQLite rather than memory because the two gunicorn workers do not share
+# memory and the poll may land on either one.
+
+def backfill_claim(label, username, total):
+    """Take the backfill slot. False when one is already running.
+
+    A conditional INSERT OR REPLACE guarded by the current status, so two
+    workers racing produce one runner and one refusal — the same shape as the
+    Nimbus scheduler's claim, and for the same reason.
+    """
+    with get_db() as db:
+        cur = db.execute(
+            "INSERT INTO backfill_job (id, status, label, started_by, "
+            "started_at, done, total, storm_days, failures, note) "
+            "SELECT 1, 'running', ?, ?, ?, 0, ?, 0, 0, '' "
+            "WHERE NOT EXISTS (SELECT 1 FROM backfill_job "
+            "                  WHERE id = 1 AND status = 'running')",
+            (label, username, _now(), int(total)))
+        if not cur.rowcount:
+            db.commit()
+            return False
+        db.execute("DELETE FROM backfill_job WHERE rowid != (SELECT MAX(rowid) "
+                   "FROM backfill_job)")
+        db.commit()
+        return True
+
+
+def backfill_progress(done, storm_days, failures):
+    with get_db() as db:
+        db.execute('UPDATE backfill_job SET done = ?, storm_days = ?, '
+                   'failures = ? WHERE id = 1',
+                   (int(done), int(storm_days), int(failures)))
+        db.commit()
+
+
+def backfill_finish(status, note=''):
+    with get_db() as db:
+        db.execute('UPDATE backfill_job SET status = ?, note = ? WHERE id = 1',
+                   (status, str(note)[:400]))
+        db.commit()
+
+
+def backfill_state():
+    """The job row, plus how much of the archive exists. None if never run."""
+    with get_db() as db:
+        row = db.execute('SELECT * FROM backfill_job WHERE id = 1').fetchone()
+    held = ingested_dates()
+    state = dict(row) if row else None
+    return {'job': state,
+            'archive': {'days_held': len(held),
+                        'first': min(held) if held else '',
+                        'last': max(held) if held else ''}}

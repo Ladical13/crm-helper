@@ -52,6 +52,50 @@ def dates_for(args):
     return out
 
 
+def _print_day(d, swath, exc, i, total, elapsed):
+    if exc is not None:
+        print(f'  {d}  FAILED {type(exc).__name__}: {exc}')
+    elif swath:
+        print(f'  {d}  {len(swath):5d} cells  max {swath.max_size:.2f}in')
+    if i % 50 == 0:
+        print(f'  ... {i}/{total}  ({elapsed:.0f}s)')
+
+
+def run(dates, threshold=None, on_day=None):
+    """Fetch and record each date. Returns a summary; never raises for one day.
+
+    Extracted from `main` so the CLI and the admin endpoint that fills a live
+    volume share ONE implementation. The endpoint cannot shell out to `main` —
+    it is argparse and prints — and a second copy of this loop is a second
+    place for the re-fetch and skip rules to drift.
+
+    `on_day` is how a caller reports progress: the CLI prints, the endpoint
+    writes it where a poll on the other gunicorn worker can read it.
+    """
+    threshold = hgrid.DEFAULT_THRESHOLD_IN if threshold is None else threshold
+    started, storm_days, failures = time.time(), 0, 0
+    dates = list(dates)
+    for i, d in enumerate(dates, 1):
+        swath, exc = None, None
+        try:
+            swath = ingest.swath_for(d, threshold_in=threshold)
+        except Exception as e:                       # noqa: BLE001
+            # One bad day must not end a six-year backfill. It is NOT recorded,
+            # so the next run picks it up rather than treating it as a quiet
+            # day — the distinction `storms.record` exists to preserve.
+            exc, failures = e, failures + 1
+        else:
+            storms.record(d.isoformat(), swath)
+            if swath:
+                storm_days += 1
+        if on_day:
+            on_day(d, swath, exc, i, len(dates), time.time() - started)
+    return {'fetched': len(dates) - failures, 'requested': len(dates),
+            'storm_days': storm_days, 'failures': failures,
+            'seconds': round(time.time() - started),
+            'held': len(storms.ingested_dates())}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     span = ap.add_mutually_exclusive_group(required=True)
@@ -82,29 +126,13 @@ def main(argv=None):
         print('\ndry run — nothing fetched. Re-run without --dry-run.')
         return 0
 
-    started, storms_found, failures = time.time(), 0, 0
-    for i, d in enumerate(todo, 1):
-        try:
-            swath = ingest.swath_for(d, threshold_in=args.threshold)
-        except Exception as exc:
-            # One bad day must not end a six-year backfill. It is not recorded,
-            # so the next run picks it up rather than treating it as a quiet day.
-            failures += 1
-            print(f'  {d}  FAILED {type(exc).__name__}: {exc}')
-            continue
-        storms.record(d.isoformat(), swath)
-        if swath:
-            storms_found += 1
-            print(f'  {d}  {len(swath):5d} cells  max {swath.max_size:.2f}in')
-        if i % 50 == 0:
-            print(f'  ... {i}/{len(todo)}  ({time.time()-started:.0f}s)')
-
-    print(f'\nfetched {len(todo)} days in {time.time()-started:.0f}s')
-    print(f'  days with qualifying hail: {storms_found}')
-    if failures:
-        print(f'  failed (will retry next run): {failures}')
-    print(f'  archive now holds: {len(storms.ingested_dates())} days')
-    return 1 if failures else 0
+    out = run(todo, threshold=args.threshold, on_day=_print_day)
+    print(f'\nfetched {out["fetched"]} days in {out["seconds"]}s')
+    print(f'  days with qualifying hail: {out["storm_days"]}')
+    if out['failures']:
+        print(f'  failed (will retry next run): {out["failures"]}')
+    print(f'  archive now holds: {out["held"]} days')
+    return 1 if out['failures'] else 0
 
 
 if __name__ == '__main__':
