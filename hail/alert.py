@@ -295,6 +295,15 @@ def brief_html(events, base_url=''):
                 if ev['cells'] else 'nothing in the service area')
         parts.append(
             f'<h2 style="margin:20px 0 2px">{_esc(ev["event_date"])} &mdash; {head}</h2>')
+        # The biggest number in this mail is the one somebody repeats. MESH
+        # runs high and the archive holds cells above the largest hailstone
+        # ever recorded, so the caveat rides with the figure.
+        note = hgrid.size_note(max(ev['max_size'], ev.get('away_max') or 0))
+        if note:
+            parts.append(
+                f'<div style="margin:4px 0 8px;padding:8px 10px;border-radius:6px;'
+                f'background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;'
+                f'font-size:13px">{_esc(note)}</div>')
         if ev['cells']:
             parts.append(_section(
                 'In the service area', ev['rects'],

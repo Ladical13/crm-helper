@@ -10,18 +10,18 @@ const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
 // Bump on any change to a SHELL asset. The ?v= numbers must match
 // static/index.html — tests/test_assets.py in salescrm has the equivalent
 // guard; canvasser/tests/test_assets.py holds this one.
-const CACHE = 'p1canvasser-v9';
+const CACHE = 'p1canvasser-v10';
 const SHELL = [
   BASE + '/',
-  BASE + '/static/style.css?v=9',
-  BASE + '/static/app.js?v=9',
+  BASE + '/static/style.css?v=10',
+  BASE + '/static/app.js?v=10',
   // Vendored Leaflet. The whole point of pulling these off unpkg was that a
   // rep on one bar in a driveway could not be left staring at a blank screen
   // waiting for a CDN — precaching them is the other half of that fix.
-  BASE + '/static/vendor/leaflet.css?v=9',
-  BASE + '/static/vendor/leaflet.js?v=9',
-  BASE + '/static/vendor/MarkerCluster.css?v=9',
-  BASE + '/static/vendor/leaflet.markercluster.js?v=9',
+  BASE + '/static/vendor/leaflet.css?v=10',
+  BASE + '/static/vendor/leaflet.js?v=10',
+  BASE + '/static/vendor/MarkerCluster.css?v=10',
+  BASE + '/static/vendor/leaflet.markercluster.js?v=10',
   BASE + '/static/vendor/images/marker-icon.png',
   BASE + '/static/vendor/images/marker-icon-2x.png',
   BASE + '/static/vendor/images/marker-shadow.png',

@@ -105,6 +105,62 @@ def mm_to_inches(mm):
     return mm / MM_PER_INCH
 
 
+# ── How far a MESH number can be repeated ───────────────────────────────────
+#
+# MESH is the Maximum Estimated Size of Hail: what the radar computes a storm
+# COULD have produced aloft, not a measurement of what landed. It is known to
+# run high, and the archive proves it — the 2026 Colorado season holds 37 cells
+# at or above 4 inches and two at 8.85 and 8.56.
+#
+# The largest hailstone ever recovered in the United States measured 8.0 inches
+# (Vivian, South Dakota, 23 July 2010). A radar cell reading 8.85 is therefore
+# not a big hailstone; it is a number with no physical referent, and a rep who
+# repeats it to a homeowner has said something that cannot be true.
+#
+# Nothing here changes a stored value. Capping would state something false in
+# the other direction — claiming the radar said 4 when it said 8.85 — and the
+# archive would then disagree with NOAA's own product. The value survives; what
+# changes is that anything a human reads carries what it is safe to say.
+US_RECORD_IN = 8.0
+
+# Above this, MESH and ground truth part company often enough that the number
+# is a reason to go and look rather than a figure to quote. Softball is 4.5;
+# 4 inches is already a once-in-years stone for a given town.
+VERIFY_ABOVE_IN = 4.0
+
+
+def size_caveat(size_in):
+    """'', 'verify' or 'impossible' for a MESH reading.
+
+    Three tiers because they support three different sentences. Below the first
+    the estimate is ordinary and needs no hedge. Between them it is real but
+    worth confirming on the ground before anybody quotes it. Above the US
+    record it cannot be repeated at all.
+    """
+    try:
+        size = float(size_in)
+    except (TypeError, ValueError):
+        return ''
+    if size > US_RECORD_IN:
+        return 'impossible'
+    if size >= VERIFY_ABOVE_IN:
+        return 'verify'
+    return ''
+
+
+def size_note(size_in):
+    """The sentence that goes beside the number, or '' when none is needed."""
+    caveat = size_caveat(size_in)
+    if caveat == 'impossible':
+        return (f'Radar estimate exceeds {US_RECORD_IN:g}", the largest hailstone '
+                f'ever recorded in the US. Treat as "very large" — do not quote '
+                f'this figure.')
+    if caveat == 'verify':
+        return ('Radar estimate. Hail this size is rare enough to confirm on '
+                'the ground before quoting it.')
+    return ''
+
+
 class Swath:
     """The cells of one storm that exceeded the threshold.
 

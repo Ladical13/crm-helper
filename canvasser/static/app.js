@@ -1432,6 +1432,12 @@ function renderMeshHistory(data) {
   // has to be that storm's date rather than the newest one, or the big number
   // and the line under it describe two different days.
   const worst = data.storms.find(s => s.size === data.max_size) || data.storms[0];
+  // A number a rep will read to a homeowner. MESH runs high and the archive
+  // holds cells above the largest hailstone ever recorded, so the caveat
+  // travels with the figure rather than living in a doc nobody opens.
+  const note = data.max_note
+    ? `<div class="hail-caveat ${data.max_caveat === 'impossible' ? 'is-impossible' : ''}">${escHtml(data.max_note)}</div>`
+    : '';
   $('hail-address-results').innerHTML = `
     <div class="hail-summary">
       <div class="hail-summary-big is-headline" style="color:${hailColorHex(data.max_size)}">${data.max_size}"</div>
@@ -1439,6 +1445,7 @@ function renderMeshHistory(data) {
         radar-estimated over this roof &middot; ${escHtml(prettyDate(worst.date))}<br>${where}
       </div>
     </div>
+    ${note}
     <div class="hail-day-list">
       ${data.storms.map(s => `
         <div class="hail-report-row">

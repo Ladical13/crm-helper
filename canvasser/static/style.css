@@ -691,3 +691,15 @@ html, body {
 
 /* A thin-archive answer must not look like a confident negative. */
 .hail-summary-big.is-thin { color: var(--warn); font-size: 22px; }
+
+/* MESH runs high. A figure a rep might read to a homeowner carries what is
+   safe to say about it, beside the number rather than in a doc nobody opens. */
+.hail-caveat {
+  font-size: 12px; line-height: 1.45; color: var(--warn);
+  background: rgba(245,158,11,.10); border: 1px solid rgba(245,158,11,.30);
+  border-radius: 8px; padding: 8px 10px; margin: 10px 0;
+}
+.hail-caveat.is-impossible {
+  color: var(--danger);
+  background: rgba(239,68,68,.10); border-color: rgba(239,68,68,.35);
+}

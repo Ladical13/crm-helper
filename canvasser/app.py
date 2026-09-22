@@ -941,14 +941,24 @@ def _mesh_history(lat, lng, days, min_size=0.0):
     held = sorted(d for d in storms.ingested_dates(MESH_SOURCE) if d >= since)
     if not held:
         return None
+    from hail import grid as hgrid
     hits = [h for h in storms.history_at(lat, lng, since=since, source=MESH_SOURCE)
             if (h.get('size_in') or 0) >= min_size]
     rows = [{'date': h['event_date'], 'size': round(h['size_in'], 2),
-             'event_id': h['event_id']} for h in hits]
+             'event_id': h['event_id'],
+             # MESH is what a storm COULD have produced aloft, not what landed.
+             # It runs high, and the archive holds cells above the largest
+             # hailstone ever recorded in the US. The number is passed through
+             # unchanged — capping it would misreport NOAA's own product — but
+             # it travels with what is safe to say about it.
+             'caveat': hgrid.size_caveat(h['size_in'])} for h in hits]
+    biggest = max((r['size'] for r in rows), default=0)
     return {
         'storms':      rows,
         'storm_count': len(rows),
-        'max_size':    max((r['size'] for r in rows), default=0),
+        'max_size':    biggest,
+        'max_caveat':  hgrid.size_caveat(biggest),
+        'max_note':    hgrid.size_note(biggest),
         'coverage': {'days_held': len(held), 'first': held[0], 'last': held[-1]},
     }
 
