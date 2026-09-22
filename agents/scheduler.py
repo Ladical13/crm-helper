@@ -24,6 +24,19 @@ from . import config
 # needs to be finer than an hour, since jobs are scheduled to the hour.
 TICK_SECONDS = 600
 
+# A job whose weekday is this runs EVERY day. `_claim` already refuses a second
+# run on a date it has already stamped, so daily needed no new bookkeeping —
+# only for `_due` to stop insisting on one weekday.
+#
+# Nothing uses it today. The storm ingest was going to, until `_check_hail_nightly`
+# turned up in the estimator's hourly loop already doing that job — and that
+# loop runs unconditionally, where this scheduler is off unless
+# `NIMBUS_SCHEDULER=1`. Two nightly ingests would have re-fetched the same days
+# twice. Kept because `_due` supports it and a test pins it, so the next daily
+# job is a one-line schedule rather than a change to the runner.
+DAILY = -1
+
+
 DEFAULT_JOBS = [
     # name,           weekday (0=Mon), hour UTC
     ('seo_weekly',    0, 6),    # Monday 06:00 UTC — report ready before the day
@@ -75,7 +88,10 @@ def _due(job, now):
     """True when this job should run and has not already run this cycle."""
     if not job['enabled']:
         return False
-    if now.weekday() != int(job['weekday']) or now.hour < int(job['hour_utc']):
+    weekday = int(job['weekday'])
+    if weekday != DAILY and now.weekday() != weekday:
+        return False
+    if now.hour < int(job['hour_utc']):
         return False
     last = job['last_run_at'] or ''
     if not last:
@@ -166,6 +182,8 @@ def _job_events_weekly():
     if out.get('errors'):
         note += f' — {len(out["errors"])} city(ies) failed'
     return note
+
+
 
 
 JOBS = {

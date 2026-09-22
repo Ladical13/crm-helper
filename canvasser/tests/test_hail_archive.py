@@ -22,6 +22,20 @@ from hail import grid as hgrid      # noqa: E402
 from hail import storms             # noqa: E402
 from portal import geo as pgeo      # noqa: E402
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+APP_JS = open(os.path.join(HERE, '..', 'static', 'app.js'), encoding='utf-8').read()
+
+
+def _code(src):
+    """The source with `//` line comments stripped.
+
+    A test that requires a phrase must not be satisfied by the comment
+    explaining it — and these comments quote the very sentences under test.
+    """
+    import re as _re
+    return '\n'.join(_re.sub(r'(^|\s)//.*$', '', ln) for ln in src.splitlines())
+
+
 # A house in Fort Collins, and a point far enough away to land in another cell.
 LAT, LNG = 40.5853, -105.0844
 
@@ -230,3 +244,44 @@ def test_a_junk_lookback_falls_back_rather_than_500ing(client, monkeypatch):
     r = c.get(f'/api/hail/address?lat={LAT}&lng={LNG}&days=abc&min_size=xyz')
     assert r.status_code == 200
     assert r.get_json()['source'] == 'mrms_mesh'
+
+
+# ── A thin archive must not answer as a confident negative ─────────────
+#
+# The bug that sent this whole investigation: a five-year lookup on a real
+# Loveland address returned "No hail on record" in headline type, off two days
+# of coverage, with the caveat in a grey footnote. MESH holds a 1.91" storm
+# over that town on 2024-07-21. The tool was not wrong about the data — it had
+# almost none, and said so in the one place nobody reads.
+
+_MESH_RENDER = APP_JS[APP_JS.index('function renderMeshHistory'):
+                      APP_JS.index('function renderSpcReports')]
+
+
+def test_the_empty_answer_is_gated_on_how_much_archive_there_is():
+    """"No hail on record" is only honest when the record covers the question.
+
+    The server returns this shape when the archive holds SOME day in the
+    window, which is not the same as holding the window.
+    """
+    code = _code(_MESH_RENDER)
+    assert 'lookback_days' in code, (
+        'renderMeshHistory does not look at how much was ASKED for, so it '
+        'cannot tell a covered window from an almost-empty one')
+    assert 'days_held' in code
+    assert 'is-thin' in code, 'no distinct treatment for a thin archive'
+
+
+def test_the_thin_answer_does_not_claim_the_roof_was_never_hit():
+    thin = _MESH_RENDER[_MESH_RENDER.index('is-thin'):]
+    thin = thin[:thin.index('`  :  `') if '`  :  `' in thin else len(thin)]
+    assert 'Not enough radar history' in _MESH_RENDER
+    assert 'not the same as' in _MESH_RENDER, (
+        'the thin branch must say what it is NOT claiming')
+
+
+def test_the_coverage_is_still_shown_when_the_archive_is_good():
+    """The honest negative stays available — this is not "never say no hail".
+    A five-year archive that saw nothing is a real and useful answer."""
+    assert 'No hail on record' in _MESH_RENDER
+    assert 'Radar checked this roof directly' in _MESH_RENDER

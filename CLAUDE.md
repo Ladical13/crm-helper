@@ -376,6 +376,22 @@ answers to one question start to drift. Both are now aliases onto it.
   alone deliberately. Durations (the 15-minute team-location liveness window)
   are not day questions either.
 
+**Background work runs in threads, not crons** — the Procfile runs ONE Railway
+service and a second one to hold a cron would break that. There are **two**
+runners and confusing them wastes a day:
+
+- **The estimator's hourly loop** (`_reminder_loop`) runs unconditionally and is
+  where anything daily belongs: both backups, the CRM digest, and
+  `_check_hail_nightly()`. Each job takes its own `O_EXCL` lockfile so two
+  workers cannot both run it.
+- **`agents/scheduler.py`** is Nimbus's weekly runner and is **off unless
+  `NIMBUS_SCHEDULER=1`**, which is easy to miss: the jobs exist, the page lists
+  them, and none of them ever fire. It also supports `DAILY`, currently unused.
+
+A second nightly hail ingest was nearly added to the scheduler because
+`_check_hail_nightly` imports `hail.backfill` under an alias and a grep missed
+it. **Look in both places before adding a scheduled job.**
+
 **Deploy:** ONE service. Root `Procfile` is
 `gunicorn portal.wsgi:application`; deploy the whole repo, not a subdirectory.
 

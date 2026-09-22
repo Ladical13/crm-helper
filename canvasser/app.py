@@ -10,7 +10,8 @@ import csv
 import uuid
 import sqlite3
 import io
-from datetime import datetime, timedelta
+import threading
+from datetime import date, datetime, timedelta
 from functools import wraps
 
 from flask import Flask, request, jsonify, send_from_directory, session
@@ -1051,6 +1052,104 @@ def hail_at_address():
             **mesh,
         })
     return _spc_at_point(lat, lng, q, resolved_name, days)
+
+
+# ── Filling the archive ──────────────────────────────────────────────────────
+#
+# The archive is the company's primary data product and it shipped EMPTY:
+# `hail/backfill.py` said "what a nightly cron runs" in its docstring and no
+# cron ran it, so every address lookup fell through to the SPC spotter reports
+# — call-ins, not measurements. A real 1.91" storm over Loveland on 2024-07-21
+# is in MESH and was invisible to the tool, which answered "no hail" about a
+# roof that had been hit.
+#
+# The nightly job (`hail_daily` in agents/scheduler.py) keeps it current from
+# now on. This is the other half: history, which nothing else can supply.
+# It has to run ON the server, because the archive is on the Railway volume and
+# `railway run` executes against local disk.
+
+BACKFILL_MAX_DAYS = 3650
+
+
+@app.route('/api/hail/backfill', methods=['GET'])
+@admin_required
+def hail_backfill_state():
+    """Progress, plus what the archive already holds. Safe to poll."""
+    from hail import storms
+    return jsonify(storms.backfill_state())
+
+
+@app.route('/api/hail/backfill', methods=['POST'])
+@admin_required
+def hail_backfill_start():
+    """Fill history. `season=<year>` or `days=<n>`; skips days already held.
+
+    Manager-up rather than strict admin, matching every other hail route here:
+    this writes no customer data and reads a public NOAA bucket, and a manager
+    who can see the map is the person who notices the archive is thin.
+    """
+    from hail import backfill as hbackfill, ingest, storms
+
+    season = request.args.get('season', type=int)
+    days = request.args.get('days', type=int)
+    # Colorado's today, not UTC's. From 6pm Mountain a UTC date is already
+    # tomorrow, which would ask NOAA for a day whose file does not exist
+    # yet and bank the failure. See the clock note in the root CLAUDE.md.
+    today = pclock.company_today()
+    if season:
+        dates = [d for d in (date(season, 1, 1) + timedelta(days=i)
+                             for i in range(366))
+                 if d.year == season and d.month in hbackfill.SEASON_MONTHS
+                 and d <= today]
+        label = f'season {season}'
+    else:
+        days = max(1, min(days or 30, BACKFILL_MAX_DAYS))
+        dates = [today - timedelta(days=i) for i in range(days)][::-1]
+        label = f'last {days} days'
+    dates = [d for d in dates if d >= ingest.EARLIEST]
+    if not dates:
+        return jsonify({'error': f'Nothing in range. The archive starts '
+                                 f'{ingest.EARLIEST.isoformat()}.'}), 400
+
+    # Days already held are skipped, which is what makes this re-runnable and
+    # what lets an admin hit the button again after a failure without paying
+    # for the days that already landed.
+    held = storms.ingested_dates()
+    todo = [d for d in dates if d.isoformat() not in held]
+    if not todo:
+        return jsonify({'status': 'nothing_to_do', 'label': label,
+                        **storms.backfill_state()})
+
+    if not storms.backfill_claim(label, session.get('username', ''), len(todo)):
+        return jsonify({'error': 'A backfill is already running.',
+                        **storms.backfill_state()}), 409
+
+    def _go():
+        state = {'storm_days': 0, 'failures': 0}
+
+        def on_day(d, swath, exc, i, total, elapsed):
+            if exc is not None:
+                state['failures'] += 1
+            elif swath:
+                state['storm_days'] += 1
+            # Every day, not every tenth: the whole point is that a job running
+            # for minutes is visibly moving rather than apparently hung.
+            storms.backfill_progress(i, state['storm_days'], state['failures'])
+
+        try:
+            out = hbackfill.run(todo, on_day=on_day)
+        except Exception as exc:                     # noqa: BLE001
+            storms.backfill_finish('failed', f'{type(exc).__name__}: {exc}')
+            return
+        storms.backfill_finish(
+            'done' if not out['failures'] else 'done_with_failures',
+            f'{out["fetched"]} day(s) ingested, {out["storm_days"]} with hail'
+            + (f', {out["failures"]} failed and will be retried'
+               if out['failures'] else ''))
+
+    threading.Thread(target=_go, daemon=True).start()
+    return jsonify({'status': 'started', 'label': label, 'days': len(todo),
+                    'skipped_already_held': len(dates) - len(todo)}), 202
 
 
 # ── Pipeline handoff ──────────────────────────────────────────────────────────
