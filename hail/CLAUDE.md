@@ -16,18 +16,21 @@ it, storm-scout reports it, the CRM segments on it.
 cd hail && pytest          # grid quantization, units, re-ingest, the join
 ```
 
-**The archive is filled by `hail_daily` in `agents/scheduler.py`**, every day at
-09:00 UTC — 3am Mountain, by which time the previous day's MESH file has
-settled. It looks back `HAIL_WINDOW_DAYS` so a missed night leaves no permanent
-hole, and re-fetches the most recent `HAIL_REFETCH_DAYS` even when held, because
-`MESH_Max_1440min` is a rolling maximum that is still moving. **The scheduler is
-off unless `NIMBUS_SCHEDULER=1`** — without it the archive stays empty and every
-hail lookup silently falls through to the weaker SPC spotter reports.
+**The archive is kept current by `_check_hail_nightly()`** in the estimator's
+hourly loop — the same loop as the backups, which runs unconditionally and needs
+no env var. Three steps, each independent: ingest, then the CRM books follow-ups
+for leads under a 1"+ storm (`storm_nightly`), then `_send_storm_alert()` mails a
+brief. It looks back `HAIL_WINDOW_DAYS` (7) so a missed night leaves no permanent
+hole, and re-fetches the most recent `HAIL_REFETCH_DAYS` (2) even when held,
+because `MESH_Max_1440min` is a rolling maximum still moving when read early.
+`HAIL_NIGHTLY=0` switches it off.
 
-*Nothing ran the ingest until 2026-09-21. `backfill.py` had said "what a nightly
-cron runs" in its docstring since it was written and no cron ran it, so the
-archive the canvasser, the CRM and storm-scout all read was empty in production
-the whole time.*
+*It used to pull two days and only two, which keeps up and can never catch up: a
+night it did not run left a hole nothing would fill, and an old hole is
+indistinguishable from a quiet day. A second nightly ingest was nearly added to
+`agents/scheduler.py` before this one was found — it is easy to miss, because it
+imports `backfill` under an alias. `agents/scheduler.DAILY` is what remains of
+that, unused and tested, for the next daily job.*
 
 **History is filled by `POST /api/hail/backfill`** (`?season=<year>` or
 `?days=<n>`, manager-up), not by the CLI. It has to run ON the server: the
@@ -148,3 +151,44 @@ megabyte fixture. `test_the_live_product_still_decodes` is marked `live` and
 **deselected by default** (`addopts = -m "not live"`) so the suite stays
 offline; run it deliberately with `pytest -m live` to catch the day NOAA
 changes the packing, the grid or the units.
+
+
+## The alert (`hail/alert.py`) — nobody reads a database
+
+A storm at 2am is worth knowing about at 6am, not whenever someone next opens
+the map and thinks to check. `send_new()` mails a brief; the estimator's
+`_send_storm_alert()` calls it.
+
+- **It alerts on the SERVICE AREA, not on our leads.** The CRM already joins a
+  storm to the leads under it and books follow-ups from that — working the book
+  we have. This is the other question, and for a roofer the bigger one: did hail
+  fall on ground we could be knocking. A street with no lead on it is *more*
+  interesting, not less, because nobody has been there yet. `SERVICE_AREA` is a
+  box, overridable with `HAIL_ALERT_BOUNDS`; a malformed value falls back rather
+  than silently switching the alerts off.
+- **`send_email` is INJECTED**, the same as `portal/backup.py` and
+  `portal/crm_digest.py`. The sender lives in the estimator with the SMTP and
+  SendGrid config, and importing it here would drag 24,000 lines into the storm
+  archive to send one message.
+- **Sent once per storm, and only on a send that reported success.** The nightly
+  re-fetches settling days, so without `storm_alerts` the same storm would mail
+  every night; and marking a failed send as sent is the one failure nobody
+  would notice.
+- **The window has both ends.** `storm_days(since=...)` has no ceiling of its
+  own, so a floor alone is the whole archive from that date onward — which is
+  how a first version would have mailed three years of history the moment
+  someone backfilled a season. `ALERT_WINDOW_DAYS` is 3.
+- **A cell belongs to its NEAREST town only**, or a swath between two of them
+  counts into both and reads as twice the storm. Hail further than
+  `NEAR_MILES` from any of them still gets a bearing — "open county (nearest
+  Ault, 14 mi)" — because "open county" alone is true and useless.
+- Guarded by `hail/tests/test_alert.py`.
+
+**A thin archive must not answer as a confident negative.** `renderMeshHistory`
+printed "No hail on record" in headline type whenever the server returned a MESH
+answer with no storms — and the server returns that shape when the archive holds
+*some* day in the window, which is not the same as holding the window. A
+five-year lookup on a real Loveland address answered "No hail on record" off two
+days of coverage, with the caveat in a grey footnote, while MESH held a 1.91"
+storm over that town on 2024-07-21. The headline now states the coverage when
+the coverage is thin. Pinned by `canvasser/tests/test_hail_archive.py`.

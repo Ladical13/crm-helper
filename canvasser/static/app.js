@@ -1084,9 +1084,116 @@ $('hail-overlay-btn').addEventListener('click', async () => {
   $('hail-status').textContent = '';
   show('hail-modal');
   await loadStormPicker();
+  await loadArchiveState();
 });
 
 $('close-hail-modal').addEventListener('click', () => hide('hail-modal'));
+
+// ── The archive, and filling it ──────────────────────────────────────────────
+//
+// The archive shipped EMPTY and nothing said so: every address lookup fell
+// through to the NOAA spotter reports and answered "no hail" about roofs that
+// had been hit. A real 1.91" storm sat over Loveland on 2024-07-21 and the tool
+// could not see it. So the coverage is on screen whether or not it is good
+// news, and a manager can fix it without a shell.
+
+let backfillPoll = null;
+
+function prettyCoverage(a) {
+  if (!a || !a.days_held) {
+    return 'Radar archive is EMPTY — hail lookups are falling back to NOAA ' +
+           'spotter call-ins, which say nothing about a specific roof.';
+  }
+  return `Radar archive: ${a.days_held.toLocaleString()} day${a.days_held === 1 ? '' : 's'}, ` +
+         `${prettyDate(a.first)} → ${prettyDate(a.last)}.`;
+}
+
+// Seasons the archive can hold. MRMS on AWS starts 2020-10-14, so anything
+// earlier is not a gap somebody can fill — offering it would be a button that
+// always fails.
+const ARCHIVE_FIRST_YEAR = 2020;
+
+function seasonOptions() {
+  const now = new Date().getFullYear();
+  const out = [];
+  for (let y = now; y >= ARCHIVE_FIRST_YEAR; y--) out.push(y);
+  return out;
+}
+
+async function loadArchiveState() {
+  const box = $('hail-archive-coverage');
+  let st;
+  try {
+    st = await api('/api/hail/backfill');
+  } catch (e) {
+    // A rep gets 403 here, which is not an error worth showing them — the
+    // coverage line is the manager's tool. Fall back to what the picker knows.
+    box.textContent = archiveStorms.length
+      ? `Radar archive holds ${archiveStorms.length} storm day(s).`
+      : 'Radar archive is empty for this period.';
+    return;
+  }
+  show('hail-archive-admin');
+  const sel = $('hail-backfill-season');
+  if (!sel.options.length) {
+    sel.innerHTML = seasonOptions().map(y => `<option value="${y}">${y} season</option>`).join('');
+  }
+  renderBackfill(st);
+}
+
+function renderBackfill(st) {
+  $('hail-archive-coverage').textContent = prettyCoverage(st.archive);
+  const job = st.job;
+  const out = $('hail-backfill-status');
+  if (!job) { out.textContent = ''; return; }
+  if (job.status === 'running') {
+    const pct = job.total ? Math.round(job.done / job.total * 100) : 0;
+    out.textContent = `Filling ${job.label} — ${job.done}/${job.total} days (${pct}%), ` +
+                      `${job.storm_days} with hail.`;
+    $('hail-backfill-btn').disabled = true;
+    if (!backfillPoll) backfillPoll = setInterval(pollBackfill, 2000);
+    return;
+  }
+  $('hail-backfill-btn').disabled = false;
+  if (backfillPoll) { clearInterval(backfillPoll); backfillPoll = null; }
+  out.textContent = job.note ? `${job.label}: ${job.note}` : '';
+}
+
+async function pollBackfill() {
+  try {
+    const st = await api('/api/hail/backfill');
+    renderBackfill(st);
+    // A finished run means new storm days, so the picker beside it is stale.
+    if ((st.job || {}).status !== 'running') await loadStormPicker();
+  } catch (e) {
+    clearInterval(backfillPoll); backfillPoll = null;
+  }
+}
+
+$('hail-backfill-btn').addEventListener('click', async () => {
+  const year = $('hail-backfill-season').value;
+  const out = $('hail-backfill-status');
+  $('hail-backfill-btn').disabled = true;
+  out.textContent = 'Starting…';
+  try {
+    const r = await api(`/api/hail/backfill?season=${encodeURIComponent(year)}`, 'POST');
+    if (r.status === 'nothing_to_do') {
+      out.textContent = `${year} is already in the archive.`;
+      $('hail-backfill-btn').disabled = false;
+      renderBackfill(r);
+      return;
+    }
+    // Minutes, not seconds — say so, or it reads as hung.
+    out.textContent = `Filling ${year}: ${r.days} day(s) to fetch` +
+      (r.skipped_already_held ? `, ${r.skipped_already_held} already held` : '') +
+      '. This takes a few minutes; you can close this.';
+    if (!backfillPoll) backfillPoll = setInterval(pollBackfill, 2000);
+  } catch (e) {
+    out.textContent = e.message || 'Could not start the backfill.';
+    $('hail-backfill-btn').disabled = false;
+  }
+});
+
 
 // The archive's own storm days, so a rep picks a storm instead of guessing a
 // date. Without this the only way to find a storm is to already know when it
@@ -1286,10 +1393,32 @@ function renderMeshHistory(data) {
     : '';
 
   if (!data.storm_count) {
-    // Not the same sentence as "we have no data" — the server already refused
-    // to return this shape unless the archive actually covered the window.
+    // "No hail on record" is only honest when the record covers the question.
+    // The server refuses this shape unless the archive holds SOME day in the
+    // window, which is not the same as holding the window: an archive with two
+    // days in it answered a five-year lookup with a confident "No hail on
+    // record" and a footnote nobody reads. A rep repeated it on a doorstep.
+    //
+    // So the headline states the coverage when the coverage is thin, and
+    // "asked for five years, hold two days" is a different sentence from "we
+    // looked at five years and this roof was never hit".
+    const asked = data.lookback_days || 0;
+    const held  = cov.days_held || 0;
+    // Season only — hail is a Mar-Oct product here, so a full year of days is
+    // never expected and holding most of the severe season is full coverage.
+    const expected = Math.round(asked * (8 / 12));
+    const thin = !held || held < expected * 0.6;
     st.textContent = '';
-    $('hail-address-results').innerHTML = `
+    $('hail-address-results').innerHTML = thin ? `
+      <div class="hail-summary">
+        <div class="hail-summary-big is-thin">Not enough radar history</div>
+        <div class="hail-summary-sub">over ${where}</div>
+      </div>
+      <div class="hail-coverage">You asked for ${asked} days. The archive holds
+      ${held} radar day${held === 1 ? '' : 's'}${covLine ? ` (${escHtml(covLine.split(', ').slice(1).join(', '))})` : ''},
+      and saw no hail on ${held === 1 ? 'it' : 'those'}. That is not the same as
+      this roof never being hit &mdash; fill the archive from the Hail Overlay
+      screen to answer the question you asked.</div>` : `
       <div class="hail-summary">
         <div class="hail-summary-big">No hail on record</div>
         <div class="hail-summary-sub">over ${where}</div>

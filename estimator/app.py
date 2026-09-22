@@ -24399,29 +24399,58 @@ def _check_crm_digest():
         print(f'[crm-digest] failed: {exc}')
 
 
-def _check_hail_nightly():
-    """Pull the last two days of radar hail and queue follow-ups for any storm.
+# How far back the nightly ingest looks. It used to be two days, which is
+# enough to keep up and cannot ever catch up: a night the job did not run — a
+# deploy, a restart, a NOAA hiccup — left a hole that nothing would ever fill,
+# and once a gap is old it is indistinguishable from a quiet day. That is
+# exactly why `storms.record` writes days with no hail at all. A day already
+# held is skipped without a fetch, so the wider window costs nothing.
+HAIL_WINDOW_DAYS  = 7
+# The most recent days are re-fetched even when held: MESH_Max_1440min is a
+# ROLLING 24-hour maximum, so a file read early is still moving. Re-ingesting a
+# date REPLACES its cells rather than merging them, which is what makes that
+# safe rather than additive.
+HAIL_REFETCH_DAYS = 2
 
-    Once per UTC date, after 12:00 UTC: NOAA's day file is a rolling 24-hour
-    maximum stamped 23:30, so yesterday is final by then. `--refetch` re-pulls
-    both days because today's read is still partial and re-ingesting a date
-    REPLACES its cells (hail/storms.py). Then the CRM books a follow-up for
-    every open lead under a storm of 1"+ (salescrm storm_nightly). Its own
-    O_EXCL lockfile, like the backups, so two workers cannot both run it."""
+
+def _check_hail_nightly():
+    """Pull recent radar hail, queue CRM follow-ups, and mail a storm brief.
+
+    Once per Colorado date, after 12:00 UTC: NOAA's day file is a rolling
+    24-hour maximum stamped 23:30, so yesterday is final by then. Its own
+    O_EXCL lockfile, like the backups, so two workers cannot both run it.
+
+    Three steps, each independent of the next: ingest, then the CRM books a
+    follow-up for every open lead under a 1"+ storm (salescrm `storm_nightly`),
+    then anyone watching gets told a storm landed on the service area. A
+    failure in one must not cost the others — the ingest is the one that cannot
+    be redone later, since the rolling file moves on.
+    """
     now = datetime.utcnow()
     if now.hour < 12 or os.environ.get('HAIL_NIGHTLY', '1').strip() in ('0', 'false', 'no'):
         return
-    lock = os.path.join(REMINDER_LOCKS_DIR, f'hail_{now.strftime("%Y-%m-%d")}.lock')
+    # Colorado's date, so "once a night" rolls at midnight here rather than at
+    # 6pm, which is when the UTC date used to change.
+    lock = os.path.join(REMINDER_LOCKS_DIR, f'hail_{_company_today().isoformat()}.lock')
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
     except (FileExistsError, OSError):
         return
     try:
-        from hail import backfill as hbackfill
-        hbackfill.main(['--days', '2', '--refetch'])
-    except SystemExit:
-        pass
+        from hail import backfill as hbackfill, ingest as hingest, storms as hstorms
+        today = _company_today()
+        window = [today - timedelta(days=i) for i in range(HAIL_WINDOW_DAYS)]
+        window = [d for d in window if d >= hingest.EARLIEST]
+        held = hstorms.ingested_dates()
+        fresh = {(today - timedelta(days=i)).isoformat()
+                 for i in range(HAIL_REFETCH_DAYS)}
+        todo = sorted(d for d in window
+                      if d.isoformat() not in held or d.isoformat() in fresh)
+        # `run()` rather than `main()`: main is argparse and prints, and it
+        # exits via SystemExit, which is why this used to catch it.
+        if todo:
+            print(f'[hail] nightly ingest: {hbackfill.run(todo)}')
     except Exception as exc:
         print(f'[hail] nightly ingest failed: {exc}')
     crm = sys.modules.get('p1_crm_app')
@@ -24430,6 +24459,31 @@ def _check_hail_nightly():
             print(f'[hail] storm follow-ups: {crm.storm_nightly()}')
         except Exception as exc:
             print(f'[hail] storm follow-ups failed: {exc}')
+    try:
+        _send_storm_alert()
+    except Exception as exc:
+        print(f'[hail] storm alert failed: {exc}')
+
+
+def _send_storm_alert():
+    """Mail a brief when hail lands on the service area.
+
+    `send_email` is injected into `hail/alert.py` rather than imported there,
+    the same as `portal/backup.py` and `portal/crm_digest.py`: the sender lives
+    here with the SMTP and SendGrid config, and dragging this module into the
+    storm archive to send one message is the wrong dependency.
+
+    Goes to `HAIL_ALERT_EMAIL`, falling back to `BACKUP_EMAIL`. Nothing is
+    mailed twice — `alert.send_new` records what went out, so the nightly
+    re-fetch of a still-settling day does not re-send its storm every night.
+    """
+    if not _email_configured():
+        return
+    to_addr = (os.environ.get('HAIL_ALERT_EMAIL', '').strip() or BACKUP_EMAIL)
+    from hail import alert as halert
+    out = halert.send_new(_send_email, to_addr, base_url=_base_url())
+    if out.get('sent'):
+        print(f'[hail] storm alert sent: {out}')
 
 
 def _check_research_nightly():

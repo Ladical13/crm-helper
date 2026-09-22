@@ -27,9 +27,9 @@
        thing between a canvasser and a working map. Local also means the
        service worker can precache it. Upgrading is a deliberate re-download:
        see the vendor pinning note in CLAUDE.md. -->
-  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=8">
-  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=8">
-  <link rel="stylesheet" href="/canvass/static/style.css?v=8">
+  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=9">
+  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=9">
+  <link rel="stylesheet" href="/canvass/static/style.css?v=9">
   <!-- The portal's manifest: one "Project One" icon for all three tools. -->
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -193,6 +193,25 @@
           <button class="btn-secondary" id="clear-hail-btn">Clear Overlay</button>
         </div>
         <div id="hail-status" class="status-msg"></div>
+
+        <!-- The archive's coverage, always. "No hail here" and "nobody ever
+             ingested that period" are different answers and only the first is
+             safe to repeat on a doorstep, so the screen says which one it is
+             rather than leaving a rep to assume. -->
+        <div id="hail-archive-box" class="hail-archive-box">
+          <div id="hail-archive-coverage" class="hail-archive-coverage">Checking the archive…</div>
+          <!-- Manager-up. A rep seeing this could not act on it, and the
+               question it answers — "is there enough in here to trust it" — is
+               the manager's. -->
+          <div id="hail-archive-admin" class="hidden">
+            <div class="field-group">
+              <label>Fill the archive <span class="optional">(radar history, one season at a time)</span></label>
+              <select id="hail-backfill-season"></select>
+            </div>
+            <button class="btn-secondary" id="hail-backfill-btn">Fill this season</button>
+            <div id="hail-backfill-status" class="status-msg"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -311,10 +330,10 @@
 
 </div>
 
-<script src="/canvass/static/vendor/leaflet.js?v=8"></script>
-<script src="/canvass/static/vendor/leaflet.markercluster.js?v=8"></script>
+<script src="/canvass/static/vendor/leaflet.js?v=9"></script>
+<script src="/canvass/static/vendor/leaflet.markercluster.js?v=9"></script>
 <script src="/shell.js"></script>
-<script src="/canvass/static/app.js?v=8"></script>
+<script src="/canvass/static/app.js?v=9"></script>
 <script>
   // Registered from the page rather than app.js so a JS error in the app still
   // leaves the offline shell installed.

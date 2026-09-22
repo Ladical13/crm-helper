@@ -24,11 +24,16 @@ from . import config
 # needs to be finer than an hour, since jobs are scheduled to the hour.
 TICK_SECONDS = 600
 
-# A job whose weekday is this runs EVERY day. `_claim` already refuses a
-# second run on a date it has already stamped, so daily needed no new
-# bookkeeping — only for `_due` to stop insisting on one weekday. The storm
-# ingest is the reason: MESH is published daily and a weekly pull would leave
-# six days of roofs unrecorded between runs.
+# A job whose weekday is this runs EVERY day. `_claim` already refuses a second
+# run on a date it has already stamped, so daily needed no new bookkeeping —
+# only for `_due` to stop insisting on one weekday.
+#
+# Nothing uses it today. The storm ingest was going to, until `_check_hail_nightly`
+# turned up in the estimator's hourly loop already doing that job — and that
+# loop runs unconditionally, where this scheduler is off unless
+# `NIMBUS_SCHEDULER=1`. Two nightly ingests would have re-fetched the same days
+# twice. Kept because `_due` supports it and a test pins it, so the next daily
+# job is a one-line schedule rather than a change to the runner.
 DAILY = -1
 
 
@@ -40,12 +45,6 @@ DEFAULT_JOBS = [
     # Thursday, so next week's events are on the list while there is still
     # time to register for them. One Perplexity search per configured city.
     ('events_weekly', 3, 7),
-    # Every day at 09:00 UTC — 3am Mountain, by which time the previous day's
-    # MESH file has settled. The archive is the company's primary data product
-    # and nothing had ever filled it: `hail/backfill.py` says "what a nightly
-    # cron runs" in its own docstring and no cron ran it, so every hail lookup
-    # a rep made fell through to the weaker SPC spotter reports.
-    ('hail_daily', DAILY, 9),
 ]
 
 _thread = None
@@ -185,69 +184,6 @@ def _job_events_weekly():
     return note
 
 
-# How far back a nightly run looks. A missed night — a deploy, a restart, a
-# NOAA hiccup — must not leave a permanent hole in the archive, and a gap is
-# indistinguishable from a quiet day once it is old (that is exactly why
-# `storms.record` writes days with no hail at all). Seven days is cheap: a day
-# already held is skipped without a fetch.
-HAIL_WINDOW_DAYS = 7
-
-# The most recent days are re-fetched even when already held. MESH_Max_1440min
-# is a ROLLING 24-hour maximum, so the file for today — and for yesterday, read
-# early — is still moving. `storms.record` replaces a date's cells rather than
-# merging them, which is what makes a re-fetch safe rather than additive.
-HAIL_REFETCH_DAYS = 2
-
-
-def _job_hail_daily():
-    """Pull yesterday's MESH into the storm archive.
-
-    `hail/backfill.py` has said "what a nightly cron runs" in its own docstring
-    since it was written, and no cron ever ran it. The archive is the company's
-    primary data product — the canvasser looks addresses up in it, the CRM
-    segments on it, storm-scout reports it — and an empty one falls through to
-    NOAA's SPC spotter reports, which are human call-ins: sparse, biased toward
-    where people are, and unable to say anything about a roof nobody phoned in
-    about. A rep on a doorstep got the weaker answer every time.
-
-    It calls the ingest directly rather than shelling out to `backfill.main`,
-    which is argparse and prints. The dedupe and re-fetch rules are the ones
-    that module documents, applied to a window instead of a range.
-    """
-    import datetime as _dt
-
-    from hail import ingest, storms
-
-    today = _dt.date.today()
-    window = [today - _dt.timedelta(days=i) for i in range(HAIL_WINDOW_DAYS)]
-    window = [d for d in window if d >= ingest.EARLIEST]
-    held = storms.ingested_dates()
-    fresh = {(today - _dt.timedelta(days=i)).isoformat()
-             for i in range(HAIL_REFETCH_DAYS)}
-    todo = sorted(d for d in window
-                  if d.isoformat() not in held or d.isoformat() in fresh)
-    if not todo:
-        return 'nothing to fetch'
-
-    got, hail_days, failed = 0, 0, []
-    for d in todo:
-        try:
-            swath = ingest.swath_for(d)
-        except Exception as exc:
-            # One bad day must not lose the others, and an unrecorded day is
-            # picked up by tomorrow's run rather than read as a quiet one.
-            failed.append(f'{d} ({type(exc).__name__})')
-            continue
-        storms.record(d.isoformat(), swath)
-        got += 1
-        if swath:
-            hail_days += 1
-    note = f'{got} day(s) ingested, {hail_days} with hail'
-    if failed:
-        note += f' — failed, will retry: {", ".join(failed[:3])}'
-    if got == 0:
-        raise RuntimeError(note)     # a run that fetched nothing is not a success
-    return note
 
 
 JOBS = {
@@ -255,7 +191,6 @@ JOBS = {
     'content_listen': _job_content_listen,
     'social_weekly':  _job_social_weekly,
     'events_weekly':  _job_events_weekly,
-    'hail_daily':     _job_hail_daily,
 }
 
 
