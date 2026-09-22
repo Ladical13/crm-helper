@@ -28,6 +28,9 @@ estimator/carrier_samples/
 # ...and the importer's own copies of PDFs that did not read cleanly. On
 # Railway these land on the volume; locally DATA_DIR is estimator/ itself.
 estimator/carrier_import_failures/
+# Once-a-day job locks (reminders, the hail nightly). Runtime state, not code —
+# on Railway they sit on the volume, locally in DATA_DIR, which is estimator/.
+estimator/reminder_locks/
 
 # SQLite — the portal user store (password hashes), the CRM, the canvasser, and
 # Nimbus's cache. Globbed rather than named one by one because WAL mode (see

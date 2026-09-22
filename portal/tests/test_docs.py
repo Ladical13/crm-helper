@@ -51,6 +51,10 @@ SKIP_DIRS = {
     '.git', '.github', '__pycache__', '.pytest_cache', 'node_modules',
     '.venv', 'venv', 'env', 'estimates', 'uploads', 'inbox',
     'reminder_locks', 'vendor', '.claude', 'scratchpad',
+    # Gitignored scratch (see .gitignore). Old release copies land here and
+    # their CLAUDE.md files are stale by definition — CI never sees them, so a
+    # laptop should not fail on them either.
+    'tmp', 'output',
 }
 
 # Symbols CLAUDE.md names deliberately even though they are gone. Each needs a
