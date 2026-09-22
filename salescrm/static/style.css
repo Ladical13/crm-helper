@@ -531,3 +531,34 @@ details.dsec[open] summary{margin-bottom:14px}#lead-details{scroll-margin-top:16
 .cmp-via button.on{background:var(--bg3);color:var(--txt);border-color:var(--brand)}
 .om-for{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px}
 @media (pointer: coarse){ .cmp-via button{min-height:44px} }
+
+/* Keep overlays below the shared switcher and fit forms to the visible screen. */
+.p1-has-shell .drawer,.p1-has-shell .modal{top:var(--p1-shell-h)}
+.p1-has-shell .topbar{padding-top:10px}
+.modal-box{min-width:0;max-height:100%}
+.modal-actions{position:sticky;bottom:-20px;background:var(--bg2);padding:12px 0;z-index:1}
+.field,.field input,.field select,.field textarea{min-width:0}
+.topbar-title{min-width:0;overflow-wrap:anywhere}
+.topbar-actions{flex-shrink:0}
+.dash-controls{flex-wrap:wrap}
+.dash-controls .mini-select{flex:1 1 140px;min-width:0;max-width:100%}
+.dh-name,.oq-name,.oq-sub,.oq-script,.tl-txt{overflow-wrap:anywhere}
+@media(max-width:679px){
+  .stat-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}
+  .stat-chip{min-width:0}
+  .tabbar{overflow-x:auto;overscroll-behavior-x:contain;padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}
+  .tab{flex:1 0 44px;min-height:56px}
+  .modal{padding:10px max(10px,env(safe-area-inset-right,0px)) max(10px,env(safe-area-inset-bottom,0px)) max(10px,env(safe-area-inset-left,0px));align-items:start}
+  .modal-box{padding:16px;max-height:calc(100dvh - var(--p1-shell-h,0px) - 20px - env(safe-area-inset-bottom,0px))}
+  .modal-actions{bottom:-16px}
+  .oq-actions,.oq-skips,.oq-tabs,.contact-actions,.cmp-foot,.os-set{flex-wrap:wrap}
+  .oq-actions>a,.oq-actions>button,.contact-actions>a{flex:1 1 100px}
+  .oq-skips button{flex:1 1 110px}
+  .field-row .field{flex:1 1 130px;min-width:0}
+  #views{padding-left:max(14px,env(safe-area-inset-left,0px));padding-right:max(14px,env(safe-area-inset-right,0px))}
+}
+@media(pointer:coarse){
+  .btn-ghost,.btn-brand,.btn-danger,.view-toggle button,.oq-tabs button,.oq-skips button,.dh-close{min-height:44px}
+  .dh-close{width:44px}
+  input,select,textarea{font-size:16px!important}
+}

@@ -703,3 +703,20 @@ html, body {
   color: var(--danger);
   background: rgba(239,68,68,.10); border-color: rgba(239,68,68,.35);
 }
+
+/* The portal already clears the notch; reserve the bottom inset separately. */
+.p1-has-shell #header{height:var(--header-h);padding-top:0}
+:root{--bottom-h:calc(96px + env(safe-area-inset-bottom,0px))}
+#header,#bottom-bar,.panel-header,.panel-body,.modal-header,.modal-body{
+  padding-left:max(12px,env(safe-area-inset-left,0px));
+  padding-right:max(12px,env(safe-area-inset-right,0px));
+}
+.panel-body,.modal-body{min-height:0;overscroll-behavior:contain}
+.overlay-panel{padding-bottom:var(--safe-bot)}
+.modal-card{max-height:100%;max-height:min(90dvh,100%)}
+.field-group{min-width:0}
+.field-group input,.field-group select,.field-group textarea{min-width:0;max-width:100%}
+@media(pointer:coarse){
+  .quick-pin-btn,.rep-chip{min-height:44px}
+  .leaflet-touch .leaflet-bar a{width:44px;height:44px;line-height:44px}
+}
