@@ -512,7 +512,29 @@ def _init_cache_db(conn):
             id INTEGER PRIMARY KEY AUTOINCREMENT, draft_id INTEGER NOT NULL,
             saved_at TEXT NOT NULL, username TEXT NOT NULL, snapshot TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS marketing_media (
+            id TEXT PRIMARY KEY, filename TEXT NOT NULL, title TEXT NOT NULL,
+            kind TEXT NOT NULL, origin TEXT NOT NULL, alt TEXT DEFAULT '',
+            service TEXT DEFAULT '', city TEXT DEFAULT '', project TEXT DEFAULT '',
+            phase TEXT DEFAULT '', rights TEXT DEFAULT '', cleared INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL, created_by TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS marketing_pages (
+            id TEXT PRIMARY KEY, campaign_id INTEGER NOT NULL,
+            slug TEXT NOT NULL UNIQUE, detail TEXT NOT NULL,
+            published INTEGER DEFAULT 0, revision INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS marketing_visits (
+            page_id TEXT NOT NULL, day TEXT NOT NULL, source TEXT NOT NULL,
+            draft_id INTEGER NOT NULL DEFAULT 0, views INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(page_id, day, source, draft_id)
+        );
+        CREATE TABLE IF NOT EXISTS marketing_rate_limits (
+            bucket TEXT PRIMARY KEY, started INTEGER NOT NULL, count INTEGER NOT NULL
+        );
     ''')
+    _add_column_if_missing(conn, 'marketing_posts', 'media_ids', "TEXT DEFAULT '[]'")
     _add_column_if_missing(conn, 'content_drafts', 'creative_json', "TEXT DEFAULT '{}'")
     _add_column_if_missing(conn, 'content_drafts', 'package_id', "TEXT DEFAULT ''")
     _add_column_if_missing(conn, 'content_drafts', 'source', "TEXT DEFAULT ''")
