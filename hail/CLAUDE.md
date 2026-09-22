@@ -159,13 +159,29 @@ A storm at 2am is worth knowing about at 6am, not whenever someone next opens
 the map and thinks to check. `send_new()` mails a brief; the estimator's
 `_send_storm_alert()` calls it.
 
-- **It alerts on the SERVICE AREA, not on our leads.** The CRM already joins a
-  storm to the leads under it and books follow-ups from that — working the book
-  we have. This is the other question, and for a roofer the bigger one: did hail
-  fall on ground we could be knocking. A street with no lead on it is *more*
-  interesting, not less, because nobody has been there yet. `SERVICE_AREA` is a
-  box, overridable with `HAIL_ALERT_BOUNDS`; a malformed value falls back rather
-  than silently switching the alerts off.
+- **It alerts on GROUND, not on our leads.** The CRM already joins a storm to
+  the leads under it and books follow-ups from that — working the book we have.
+  This is the other question, and for a roofer the bigger one: did hail fall
+  somewhere we could be knocking. A street with no lead on it is *more*
+  interesting, not less, because nobody has been there yet.
+- **All of Colorado, in two sections, and the order is the point.**
+  `SERVICE_AREA` (Northern Colorado, overridable with `HAIL_ALERT_BOUNDS`)
+  leads the brief and sets the subject; `STATEWIDE` is the rest, under it. A
+  storm two counties over is where the next crew goes, so it is reported — but
+  mixing the two would bury six cells over Platteville that a crew can be on by
+  breakfast beneath three hundred on the eastern plains nobody is driving to.
+  When nothing hit the service area the subject says *not our area*, so the
+  answer to "did it hit us" is on a phone screen without opening anything.
+  `HAIL_ALERT_AREA_ONLY=1` drops the statewide half. A malformed
+  `HAIL_ALERT_BOUNDS` falls back rather than silently switching alerts off.
+- **`max_size` is what landed on US**, never the state's worst. Letting one
+  leak into the other overstates our own storm by whatever fell three counties
+  away — and that number is what decides whether anyone gets deployed.
+- **`places()` buckets by TOWN, and the distance is shown rather than grouped
+  on.** Keying on the distance put 1,348 cells across the plains into forty
+  near-identical "open county" rows. A section caps at `SECTION_ROWS`, worst
+  first, and says how many it dropped — the same honesty rule `cells_in`
+  follows when it truncates a viewport.
 - **`send_email` is INJECTED**, the same as `portal/backup.py` and
   `portal/crm_digest.py`. The sender lives in the estimator with the SMTP and
   SendGrid config, and importing it here would drag 24,000 lines into the storm

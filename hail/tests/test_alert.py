@@ -50,23 +50,58 @@ def test_a_storm_over_the_service_area_alerts():
     assert 'Loveland' in m.sent[0]['html']
 
 
-def test_a_storm_across_the_state_does_not():
-    """Colorado gets 1-inch hail somewhere most days of the season. An alert
-    that fires on all of them is one nobody reads by July."""
+def test_a_storm_elsewhere_in_colorado_still_alerts_but_says_so():
+    """Luke asked for all of Colorado: a storm two counties over is where the
+    next crew goes, so it is reported. The SUBJECT is what stops it reading as
+    though it landed on the ground the crews work today."""
     _record('2026-06-10', [FAR_AWAY])
     m = _Mailer()
     out = alert.send_new(m, 'luke@example.com', today=dt.date(2026, 6, 11))
-    assert out['sent'] == 0
-    assert not m.sent
+    assert out['sent'] == 1
+    assert 'not our area' in m.sent[0]['subject']
+    assert 'Elsewhere in Colorado' in m.sent[0]['html']
+    assert 'In the service area' not in m.sent[0]['html']
 
 
-def test_the_brief_reports_only_the_cells_inside_the_area():
-    """A statewide maximum is useless to a rep who works one county — and
-    quoting it would overstate what landed here."""
+def test_the_service_area_leads_the_subject_when_it_was_hit():
+    """A brief that mixed them would bury six cells a crew can be on by
+    breakfast beneath three hundred nobody is driving to."""
+    _record('2026-06-10', [IN_AREA, FAR_AWAY])
+    m = _Mailer()
+    alert.send_new(m, 'luke@example.com', today=dt.date(2026, 6, 11))
+    subject, html = m.sent[0]['subject'], m.sent[0]['html']
+    assert 'in the service area' in subject
+    assert '1.75' in subject, 'the subject quotes OUR worst, not the state\'s'
+    assert html.index('In the service area') < html.index('Elsewhere in Colorado')
+
+
+def test_the_statewide_half_can_be_switched_off(monkeypatch):
+    monkeypatch.setenv('HAIL_ALERT_AREA_ONLY', '1')
+    _record('2026-06-10', [FAR_AWAY])
+    assert alert.send_new(_Mailer(), 'luke@example.com',
+                          today=dt.date(2026, 6, 11))['sent'] == 0
+
+
+def test_the_service_area_figures_never_include_cells_from_outside_it():
+    """`max_size` is what landed on US. Letting the state's worst leak into it
+    would overstate our own storm by whatever fell three counties away."""
     _record('2026-06-10', [IN_AREA, FAR_AWAY])
     evs = alert.pending(today=dt.date(2026, 6, 11))
     assert len(evs) == 1
     assert evs[0]['max_size'] == pytest.approx(1.75, abs=0.01)
+    assert evs[0]['cells'] == 1
+    assert evs[0]['away_max'] == pytest.approx(3.20, abs=0.01)
+    assert evs[0]['away_cells'] == 1
+
+
+def test_a_statewide_town_gets_named_so_the_brief_can_say_where():
+    """Reporting the whole state is only useful if it can say where. A town
+    list that stopped at the service area would answer every out-of-area storm
+    with "open county, nearest Ault, 140 mi"."""
+    rows = alert.places([(39.26, -102.97, 39.27, -102.96, 2.0)])
+    assert rows[0][0] == 'Burlington' or rows[0][0].startswith('open county')
+    assert alert.places([(38.83, -104.83, 38.84, -104.82, 2.0)])[0][0] == 'Colorado Springs'
+    assert alert.places([(39.06, -108.56, 39.07, -108.55, 2.0)])[0][0] == 'Grand Junction' 
 
 
 def test_small_hail_does_not_wake_anyone():
@@ -139,7 +174,7 @@ def test_hail_far_from_any_town_still_gets_a_bearing():
     """"open county" is true and useless. The nearest town and a distance is
     something a rep can drive to."""
     rows = alert.places([(39.26, -102.97, 39.27, -102.96, 2.0)])
-    assert rows[0][0].startswith('open county (nearest ')
+    assert rows[0][0].startswith('open county near ')
     assert ' mi)' in rows[0][0]
 
 
@@ -165,3 +200,41 @@ def test_a_malformed_service_area_falls_back_rather_than_going_silent(monkeypatc
     """A typo in a variable must not switch the alerts off with no sign."""
     monkeypatch.setenv('HAIL_ALERT_BOUNDS', 'not,a,box')
     assert alert.bounds() == alert.SERVICE_AREA
+
+
+# ── the brief has to be readable ───────────────────────────────────────
+
+def test_open_county_groups_by_town_not_by_distance():
+    """Keying the bucket on the distance put 1,348 cells on the eastern plains
+    into forty near-identical rows. The distance is something a row SHOWS,
+    never something it is grouped by."""
+    # Four cells, all well outside any town, at four different distances.
+    rects = [(38.30 + i * 0.05, -102.80, 38.31 + i * 0.05, -102.79, 1.5 + i * 0.1)
+             for i in range(4)]
+    rows = alert.places(rects)
+    assert len(rows) == 1, rows
+    where, cells, mx = rows[0]
+    assert cells == 4
+    assert where.startswith('open county near ')
+    assert 'mi)' in where
+
+
+def test_a_section_caps_its_rows_and_says_it_did():
+    """A statewide day is thousands of cells. The brief is a decision aid, not
+    a dump — and a silent truncation is the thing `cells_in` already refuses."""
+    rects = []
+    for i, (town, (la, ln)) in enumerate(list(alert.TOWNS.items())[:12]):
+        rects.append((la, ln, la + 0.01, ln + 0.01, 1.0 + i * 0.1))
+    html = alert._section('Test', rects, limit=4)
+    assert html.count('<tr>') == 4
+    assert 'more place(s)' in html
+
+
+def test_the_capped_rows_are_the_biggest_hail():
+    """Dropping the tail is only honest if the tail is the small stuff."""
+    rects = []
+    for i, (town, (la, ln)) in enumerate(list(alert.TOWNS.items())[:6]):
+        rects.append((la, ln, la + 0.01, ln + 0.01, 1.0 + i))
+    html = alert._section('Test', rects, limit=2)
+    assert '6.00' in html and '5.00' in html
+    assert '1.00' not in html
