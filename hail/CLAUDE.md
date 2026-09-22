@@ -49,14 +49,30 @@ spotter reports, which had no call-in within ten miles. The tool behaved
 exactly as designed and told a homeowner something false, because the database
 it asked had never been filled.*
 
-⚠️ **MESH reports sizes above the largest hailstone ever recorded.** The 2026
-Colorado season holds 37 cells at or above 4.00 inches and two at 8.85 and 8.56,
-against a US record of 8.0 (Vivian, South Dakota, 2010). MESH is a radar
-*estimate* of maximum expected size, not a measurement, and it is known to run
-high. Nothing currently flags this, so a rep can be shown — and can repeat to a
-homeowner — a number that is not physically credible. That is the overclaim this
-package exists to prevent, arriving from the other direction. Decide what to do
-about it before the hail tools reach a rep.
+**MESH reports sizes above the largest hailstone ever recorded, and the number
+now travels with what is safe to say about it.** The 2026 Colorado season holds
+37 cells at or above 4 inches and two at 8.85 and 8.56, against a US record of
+8.0 (Vivian, South Dakota, 2010). MESH is the maximum size a storm COULD have
+produced aloft, not a measurement of what landed, and it is known to run high.
+
+`size_caveat()` returns `''`, `'verify'` or `'impossible'`, and `size_note()`
+the sentence beside it. Three tiers because they support three different
+sentences: ordinary hail needs no hedge, and hedging all of it is a warning
+nobody reads by the second week; above `VERIFY_ABOVE_IN` (4) the stone is real
+but rare enough to confirm on the ground first; above `US_RECORD_IN` (8) it
+cannot be repeated at all.
+
+- **Nothing clamps.** Capping would misreport NOAA's own product — claiming the
+  radar said 4 when it said 8.85 — and the archive would then disagree with the
+  source it was built from. The value passes through; only what is said about it
+  changes. A test reads the source and fails if either function acquires a
+  `min()` or a `max()`.
+- **It has to reach the REP, not a doc.** `/api/hail/address` carries
+  `max_caveat`, `max_note` and a per-storm `caveat`, the screen prints it beside
+  the figure, and the alert brief carries it above the table. A test that only
+  checked the note was BUILT stayed green while the one interpolation that put
+  it on screen was deleted — so it now checks the markup, after the number it
+  qualifies.
 
 **Why this exists at all: the canvasser's hail engine read the wrong data
 product.** (Fixed 2026-09-20, both halves — the address lookup and the map

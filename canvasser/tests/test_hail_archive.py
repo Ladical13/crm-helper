@@ -285,3 +285,48 @@ def test_the_coverage_is_still_shown_when_the_archive_is_good():
     A five-year archive that saw nothing is a real and useful answer."""
     assert 'No hail on record' in _MESH_RENDER
     assert 'Radar checked this roof directly' in _MESH_RENDER
+
+
+# ── A number a rep reads out loud ──────────────────────────────────────
+
+def test_an_impossible_reading_reaches_the_rep_with_its_caveat(client, monkeypatch):
+    """MESH is what a storm could have produced aloft, not what landed. The
+    archive holds cells above the largest hailstone ever recorded in the US,
+    and the rep holding the phone is the last person who can catch that."""
+    c, mod = client
+    _no_network(mod, monkeypatch)
+    _record(_days_ago(5), {(LAT, LNG): 8.85})
+
+    data = c.get(f'/api/hail/address?lat={LAT}&lng={LNG}').get_json()
+    assert data['source'] == 'mrms_mesh'
+    assert data['max_size'] == pytest.approx(8.85, abs=0.01), 'the value is passed through'
+    assert data['max_caveat'] == 'impossible'
+    assert 'do not quote' in data['max_note']
+    assert data['storms'][0]['caveat'] == 'impossible'
+
+
+def test_ordinary_hail_carries_no_caveat_to_the_rep(client, monkeypatch):
+    c, mod = client
+    _no_network(mod, monkeypatch)
+    _record(_days_ago(5), {(LAT, LNG): 1.75})
+    data = c.get(f'/api/hail/address?lat={LAT}&lng={LNG}').get_json()
+    assert data['max_caveat'] == ''
+    assert data['max_note'] == ''
+
+
+def test_the_screen_shows_the_caveat_beside_the_number():
+    """In a doc nobody opens is not showing it.
+
+    Checking that the note is BUILT is not enough — deleting the one
+    interpolation that puts it on screen left this passing while the caveat
+    rendered nowhere. It has to appear inside the template that becomes
+    innerHTML, after the number it qualifies.
+    """
+    code = _code(_MESH_RENDER)
+    assert 'max_note' in code, 'the note is never built'
+    assert 'hail-caveat' in code, 'no styled element for it'
+    body = code[code.index('is-headline'):]
+    assert '${note}' in body, (
+        'the caveat is computed and then never interpolated into the markup')
+    assert body.index('hail-summary-sub') < body.index('${note}'), (
+        'the caveat must sit with the figure it qualifies')

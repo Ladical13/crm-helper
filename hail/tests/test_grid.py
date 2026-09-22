@@ -170,3 +170,47 @@ def test_clip_keeps_only_points_in_the_box():
                   noco)
     assert len(kept) == 1
     assert kept[0][0] == 40.5
+
+
+# ── How far a MESH number can be repeated ──────────────────────────────
+
+def test_a_reading_above_the_us_record_is_called_impossible():
+    """The 2026 Colorado season holds two cells at 8.85 and 8.56 inches. The
+    largest hailstone ever recovered in the US was 8.0 (Vivian, SD, 2010), so
+    a rep repeating 8.85 to a homeowner has said something that cannot be true
+    — and that is the overclaim this whole package exists to prevent, arriving
+    from the other direction."""
+    assert g.size_caveat(8.85) == 'impossible'
+    assert g.size_caveat(8.56) == 'impossible'
+    assert 'do not quote' in g.size_note(8.85)
+
+
+def test_rare_but_real_hail_is_flagged_to_verify_not_refused():
+    """4 inches is a once-in-years stone for a town, not a physical
+    impossibility. Calling it impossible would cry wolf on the storms that
+    matter most."""
+    assert g.size_caveat(4.0) == 'verify'
+    assert g.size_caveat(5.0) == 'verify'
+    assert 'confirm on' in g.size_note(4.0)
+
+
+def test_ordinary_hail_carries_no_hedge():
+    """Almost every storm is here. A caveat on all of them is one nobody
+    reads by the second week."""
+    for size in (0.75, 1.0, 1.75, 2.5, 3.99):
+        assert g.size_caveat(size) == ''
+        assert g.size_note(size) == ''
+
+
+def test_the_caveat_never_changes_the_value():
+    """Capping would misreport NOAA's own product — claiming the radar said 4
+    when it said 8.85 — and the archive would then disagree with the source it
+    was built from. The number survives; only what is said about it changes."""
+    import inspect
+    src = inspect.getsource(g.size_caveat) + inspect.getsource(g.size_note)
+    assert 'min(' not in src and 'max(' not in src, 'this must not clamp'
+
+
+def test_a_missing_or_unparseable_size_is_not_an_alarm():
+    for bad in (None, '', 'x', object()):
+        assert g.size_caveat(bad) == ''
