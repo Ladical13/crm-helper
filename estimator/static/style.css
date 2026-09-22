@@ -2022,10 +2022,6 @@ body.is-home #nav-toggle       { display: none; }
 
 /* Dashboard */
 .btn-dashboard { background: rgba(255,255,255,.18) !important; font-weight: 700; }
-.dash-modal-box { width: min(860px, 94vw);
-  max-height: 86vh; max-height: 86dvh;
-  display: flex; flex-direction: column; }
-.dashboard-body { overflow-y: auto; padding: 16px 20px 24px; }
 .dash-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
 .dash-backup-link {
   font-size: 12px; font-weight: 600; color: #1a3a5c; text-decoration: none;
@@ -2913,8 +2909,6 @@ a.jx-contact:hover { text-decoration: underline; }
   .dash-followup-banner > strong { font-size: 12px; }
   .analytics-sort-btn  { font-size: 11px; padding: 5px 9px; white-space: nowrap; }
   .analytics-refresh-btn { font-size: 11px; }
-  /* Dashboard modal content */
-  .dash-modal-box .a-card { padding: 10px 12px; }
 }
 @media (max-width: 700px) { .analytics-cards { grid-template-columns: repeat(2,1fr); } }
 
@@ -3740,7 +3734,7 @@ a.jx-contact:hover { text-decoration: underline; }
 /* Keep customer actions on laptops, and move the duplicate utility actions
    into More. Narrow tablets use More for the full set; Save stays visible. */
 @media (max-width: 1599px) {
-  .header-desktop-btns button:not(.btn-present):not(.btn-share):not(.btn-print):not(.btn-invoice) { display: none; }
+  .header-desktop-btns button:not(.btn-present):not(.btn-share):not(.btn-print):not(.btn-invoice):not(.btn-dashboard) { display: none; }
 }
 @media (max-width: 1023px) {
   .header-desktop-btns { display: none; }
@@ -3949,7 +3943,6 @@ a.jx-contact:hover { text-decoration: underline; }
   .modal            { align-items: flex-start; padding-top: max(10px, env(safe-area-inset-top, 10px)); }
   .modal-box        { width: 96vw !important; max-height: 92vh; max-height: 90dvh; }
   .pb-modal-box     { width: 98vw !important; }
-  .dash-modal-box   { max-height: 92vh; max-height: 90dvh; }
   .ann-modal-box    { width: 98vw !important; }
   .roofr-modal-box  { width: 96vw !important; }
 
@@ -5348,7 +5341,273 @@ body.is-client #nav-toggle      { display: none; }
 .vz-realistic-comparison figcaption { margin-bottom: 8px; font-weight: 600; }
 .vz-realistic-comparison img { width: 100%; max-height: 650px; object-fit: contain; background: #e0e8f0; }
 @media(max-width:600px) { .vz-realistic-comparison { grid-template-columns: 1fr; } }
+
+/* Overlays share the space below the portal bar, including on short screens. */
+.p1-has-shell .modal{top:var(--p1-shell-h)}
+#main-content,.page,.modal-box,.modal-header h2{min-width:0}
+.modal-header{flex-shrink:0;gap:8px}
+.modal-close{flex-shrink:0}
+@media screen and (max-width:767px){
+  .modal{padding:8px max(8px,env(safe-area-inset-right,0px)) max(8px,env(safe-area-inset-bottom,0px)) max(8px,env(safe-area-inset-left,0px))}
+  .modal .modal-box{width:100%!important;max-width:100%;max-height:calc(100dvh - var(--p1-shell-h,0px) - 16px - env(safe-area-inset-bottom,0px))}
+  .modal-header{padding:8px 12px;flex-wrap:wrap}
+  .modal-header h2{flex:1;overflow-wrap:anywhere}
+  .modal-header-actions{flex-wrap:wrap}
+  .page{padding-left:max(10px,env(safe-area-inset-left,0px));padding-right:max(10px,env(safe-area-inset-right,0px))}
+  .pm-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .pm-grid>*,.pm-search{min-width:0}
+}
 .vz-material-badge { font-size: .72em; font-weight: 500; color: var(--muted, #64748b); }
 .vz-material-row { display: grid; gap: 7px; padding: 12px 0; border-top: 1px solid var(--border, #dbe2ea); }
 .vz-material-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .vz-materials { border-left: 3px solid #0f766e; }
+
+/* ── Job Board & Analytics — full-screen pages ─────────────────────────
+   Both used to live in one 860px modal. They are pages now, and the rule
+   that makes them worth having is that NOTHING here caps the width: no
+   max-width on .page-board, .board-body or .an-body. The laptop header keeps
+   its two buttons too (see the 1599px rule below), since that is the width
+   most of this gets used at. */
+body.is-board #sidebar          { display: none !important; }
+body.is-board #page-nav         { display: none; }
+body.is-board #print-pages-bar  { display: none; }
+body.is-board #save-btn         { display: none; }
+body.is-board #nav-toggle       { display: none; }
+body.is-board #estimate-number,
+body.is-board #estimate-label-badge,
+body.is-board #est-status-badge { display: none !important; }
+/* Estimate actions have nothing to act on from here. */
+body.is-board .btn-present, body.is-board .btn-share,
+body.is-board .btn-print,   body.is-board .btn-invoice { display: none; }
+
+.page-board { background: var(--bg); padding: 14px 16px; gap: 12px; }
+.board-body, .an-body { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; min-width: 0; }
+.board-loading { padding: 48px; text-align: center; color: var(--text-light); }
+
+.board-toolbar, .an-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+/* Only the columns give up height; the bars above them never squash. */
+.board-toolbar, .board-summary, .board-pills { flex-shrink: 0; }
+.board-title { font-size: 19px; color: var(--primary); margin-right: 6px; white-space: nowrap; }
+.board-search {
+  flex: 1 1 240px; max-width: 420px; padding: 8px 12px; font-size: 14px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+}
+.board-filter {
+  width: auto; flex: 0 0 auto; padding: 7px 10px; font-size: 13px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--surface); color: var(--text);
+}
+.board-toolbar-end { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.board-tool-btn {
+  padding: 7px 12px; font-size: 13px; font-weight: 600; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--primary); cursor: pointer;
+}
+.board-tool-btn:hover { background: #eef2f7; }
+
+/* Summary strip */
+.board-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.board-stat {
+  background: var(--surface); border: 1px solid var(--border-light); border-radius: 10px;
+  padding: 10px 14px; cursor: default; box-shadow: var(--shadow);
+}
+.board-stat[onclick] { cursor: pointer; }
+.board-stat-val { font-size: 22px; font-weight: 800; color: var(--primary); line-height: 1.1; }
+.board-stat-lbl { font-size: 12px; font-weight: 700; color: var(--text); margin-top: 2px; }
+.board-stat-sub { font-size: 11px; color: var(--text-light); }
+.board-stat.is-warn { border-color: #fdba74; background: #fff7ed; }
+.board-stat.is-warn .board-stat-val { color: #c2410c; }
+.board-stat.is-won  { border-color: #86efac; background: #f0fdf4; }
+.board-stat.is-won  .board-stat-val { color: #15803d; }
+
+/* Columns: a sideways strip that fills the rest of the screen. Each column
+   scrolls on its own, and contains its scroll so flicking past the end of
+   one does not drag the page. */
+.board-pills { display: none; }
+.board-cols {
+  flex: 1; min-height: 320px; display: flex; gap: 12px;
+  overflow-x: auto; overflow-y: hidden; padding-bottom: 6px;
+  overscroll-behavior-x: contain;
+}
+.board-col {
+  flex: 1 0 260px; max-width: 360px; min-height: 0;
+  display: flex; flex-direction: column;
+  background: #e8edf3; border-radius: 12px; border-top: 4px solid #94a3b8;
+  transition: box-shadow .12s, background .12s;
+}
+.board-col-sales { border-top-color: #64748b; }
+.board-col-hot   { border-top-color: #2563a8; }
+.board-col-warn  { border-top-color: #ea580c; background: #fdf1e7; }
+.board-col-won   { border-top-color: #16a34a; }
+.board-col-done  { border-top-color: #15803d; background: #e7f5ec; }
+.board-col-lost  { border-top-color: #dc2626; }
+.board-col.is-collapsed { flex: 0 0 150px; }
+.board-col-hd {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  padding: 10px 12px 8px; font-size: 13px;
+}
+.board-col-title { font-weight: 800; color: var(--text); }
+.board-col-count {
+  background: rgba(15, 23, 42, .1); border-radius: 999px; padding: 0 8px;
+  font-size: 12px; font-weight: 700; color: var(--text);
+}
+.board-col-sum { margin-left: auto; font-weight: 700; color: var(--text-light); font-size: 12px; }
+.board-col-toggle {
+  font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--surface); cursor: pointer;
+}
+.board-col-body {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 0 8px 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.board-empty { color: var(--text-light); font-size: 12px; text-align: center; padding: 18px 6px; }
+.board-empty-all { flex: 0 0 100%; font-size: 14px; }
+
+body.board-dragging .board-col:not(.is-droppable) { opacity: .55; }
+.board-col.is-droppable { box-shadow: inset 0 0 0 2px #93c5fd; }
+.board-col.is-over { box-shadow: inset 0 0 0 3px #2563a8; background: #dbeafe; }
+
+/* Cards */
+.board-card {
+  background: var(--surface); border-radius: 9px; padding: 10px 11px 8px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .12); cursor: pointer;
+  border-left: 3px solid transparent; display: flex; flex-direction: column; gap: 3px;
+}
+.board-card:hover { box-shadow: 0 3px 10px rgba(15, 23, 42, .16); }
+.board-card[draggable="true"]:active { cursor: grabbing; }
+.board-card-viewed { border-left-color: #2563a8; }
+.board-card-signed { border-left-color: #16a34a; }
+.board-card-lost   { opacity: .8; }
+.board-card-top { display: flex; align-items: center; gap: 6px; }
+.board-card-name {
+  font-weight: 700; font-size: 14px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.board-card-total { margin-left: auto; font-weight: 800; font-size: 14px; color: var(--primary); white-space: nowrap; }
+.board-card-meta, .board-card-activity { font-size: 11.5px; color: var(--text-light); }
+.board-card-label { font-size: 12px; color: var(--text); font-style: italic; }
+.board-card-actions {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border-light);
+}
+.board-move {
+  font-size: 12px; padding: 3px 6px; border-radius: 6px; max-width: 150px;
+  border: 1px solid var(--border); background: #f8fafc; color: var(--text);
+}
+.board-card-btns { margin-left: auto; display: flex; gap: 2px; }
+.board-card-btns button {
+  border: none; background: none; cursor: pointer; font-size: 14px;
+  padding: 3px 5px; border-radius: 5px; opacity: .55;
+}
+.board-card-btns button:hover { opacity: 1; background: #f1f5f9; }
+
+/* Home: the two ways in */
+.home-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.home-tile {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 14px; font-size: 15px; font-weight: 700; color: var(--primary);
+  background: var(--surface); border: 1px solid var(--border-light); border-radius: 12px;
+  box-shadow: var(--shadow); cursor: pointer;
+}
+.home-tile span { font-size: 20px; }
+
+/* ── Analytics page ─────────────────────────────────────────────────── */
+.page-analytics { overflow-y: auto; }
+body.an-loading .an-grid, body.an-loading .an-kpis { opacity: .55; transition: opacity .15s; }
+.an-presets { display: flex; flex-wrap: wrap; gap: 4px; background: var(--surface);
+  border: 1px solid var(--border-light); border-radius: 10px; padding: 3px; }
+.an-preset {
+  border: none; background: none; padding: 6px 10px; font-size: 13px; font-weight: 600;
+  border-radius: 7px; cursor: pointer; color: var(--text-light);
+}
+.an-preset.active { background: var(--primary); color: #fff; }
+.an-custom { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.an-custom input { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.an-context { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-light); flex-wrap: wrap; }
+.an-rep-chip {
+  display: inline-flex; align-items: center; gap: 8px; background: #dbeafe; color: #1e40af;
+  font-weight: 700; padding: 4px 6px 4px 12px; border-radius: 999px;
+}
+.an-rep-chip button {
+  border: none; background: #fff; color: #1e40af; border-radius: 999px; padding: 3px 10px;
+  font-size: 12px; font-weight: 700; cursor: pointer;
+}
+
+.an-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.an-kpi {
+  background: var(--surface); border: 1px solid var(--border-light); border-radius: 12px;
+  padding: 12px 14px; box-shadow: var(--shadow);
+}
+.an-kpi-val { font-size: 24px; font-weight: 800; color: var(--primary); line-height: 1.1; }
+.an-kpi-lbl { font-size: 12px; font-weight: 700; color: var(--text); margin-top: 3px; }
+.an-kpi-sub { font-size: 11px; color: var(--text-light); }
+.an-kpi.is-rev { background: #f0fdf4; border-color: #bbf7d0; }
+.an-kpi.is-rev .an-kpi-val { color: #15803d; }
+.an-kpi.a-good .an-kpi-val { color: #15803d; }
+.an-kpi.a-warn .an-kpi-val { color: #b45309; }
+.an-kpi.a-bad  .an-kpi-val { color: #dc2626; }
+
+.an-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; align-items: start; }
+.an-wide { grid-column: 1 / -1; min-width: 0; }
+.an-wide > .analytics-section { margin: 0; }
+.an-card {
+  background: var(--surface); border: 1px solid var(--border-light); border-radius: 12px;
+  padding: 14px 16px; box-shadow: var(--shadow); min-width: 0;
+}
+.an-card.analytics-unassigned { background: #fffbeb; border-color: #fcd34d; }
+.an-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 16px; align-items: start; }
+.an-minis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.an-minis .an-kpi { box-shadow: none; padding: 8px 10px; background: #f8fafc; }
+.an-minis .an-kpi-val { font-size: 18px; }
+.an-legend { flex-wrap: wrap; gap: 12px; }
+.an-legend strong { margin-left: 2px; }
+.an-rep-row { cursor: pointer; }
+.an-rep-row:hover td { background: #eff6ff; }
+.mon-key-rate { width: 14px; border-top: 2px solid #0f172a; display: inline-block; }
+
+/* Charts. Drawn at the card's real width after layout, so none of this
+   scales text down on a phone. */
+.an-chart { width: 100%; overflow: hidden; }
+.an-svg { display: block; max-width: 100%; font-family: inherit; }
+.an-svg .ch-grid { stroke: #e2e8f0; stroke-width: 1; }
+.an-svg .ch-ax   { fill: #64748b; font-size: 11px; }
+.an-svg .ch-lbl  { fill: var(--text); font-size: 12px; font-weight: 600; }
+.an-svg .ch-in   { fill: #fff; font-size: 12px; font-weight: 700; }
+.an-svg .ch-bar  { fill: var(--g-color, #94a3b8); }
+.an-svg .ch-goal { stroke: #0f172a; stroke-width: 2; stroke-dasharray: 4 3; opacity: .55; }
+.an-svg .ch-rate { fill: none; stroke: #0f172a; stroke-width: 2; }
+.an-svg .ch-rate-dot { fill: #0f172a; }
+
+@media (max-width: 900px) {
+  .an-split { grid-template-columns: 1fr; }
+}
+@media (max-width: 767px) {
+  .page-board { padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  .board-title { font-size: 17px; }
+  .board-toolbar-end { margin-left: 0; }
+  /* One sideways row, so the columns keep the height on a phone. */
+  .board-summary { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 2px; }
+  .board-stat { flex: 0 0 136px; padding: 8px 10px; }
+  .board-stat-val { font-size: 18px; }
+  /* Phones get one column at a time, snapped, with pills to jump. */
+  .board-pills { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+  .board-pill {
+    flex: 0 0 auto; border: 1px solid var(--border); background: var(--surface);
+    border-radius: 999px; padding: 5px 11px; font-size: 13px; font-weight: 700;
+  }
+  .board-cols { scroll-snap-type: x mandatory; gap: 10px; }
+  .board-col { flex: 0 0 85vw; max-width: none; scroll-snap-align: start; }
+  .board-col.is-collapsed { flex: 0 0 85vw; }
+  .an-grid { grid-template-columns: minmax(0, 1fr); }
+  .an-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* A finger, at any width. Drag-and-drop is unreliable on iOS, so on touch the
+   Move-to picker is THE way to move a card: it gets a real touch target, and
+   every control here is 16px so focusing one never zooms the page. */
+@media (pointer: coarse) {
+  .board-card[draggable="true"] { -webkit-user-drag: none; }
+  .board-move, .board-filter, .board-search, .an-custom input { font-size: 16px; min-height: 40px; }
+  .board-move { max-width: 190px; }
+  .board-card-btns button { min-width: 40px; min-height: 40px; font-size: 16px; }
+  .board-tool-btn, .an-preset, .board-pill, .board-col-toggle { min-height: 40px; }
+}
