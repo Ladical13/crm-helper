@@ -299,3 +299,35 @@ def test_invoice_is_reachable_from_the_header_and_the_more_menu():
     # The laptop breakpoint hides every header button not named here, so the
     # invoice button has to be on the keep list or it vanishes below 1600px.
     assert ':not(.btn-invoice)' in css
+
+
+def test_the_pdf_can_be_saved_and_not_only_previewed():
+    """`?download=1` sets Content-Disposition: attachment, and had done since
+    the endpoint was written — with nothing in the UI ever passing it.
+
+    Preview opens the PDF inline. On a laptop the browser's own save button
+    covers the gap; on the phone a rep is holding in a driveway it is a dead
+    end, and handing a GC a document is most of what this panel is for.
+    """
+    import os
+    js = open(os.path.join(os.path.dirname(A.__file__), 'static', 'app.js'),
+              encoding='utf-8').read()
+    assert 'onclick="invDownload()"' in js, 'no button calls it'
+    assert 'function invDownload' in js
+    body = js[js.index('async function invDownload'):]
+    body = body[:body.index('async function invFile')]
+    assert 'download=1' in body, (
+        'invDownload opens the same inline preview — the flag is what makes it '
+        'a save')
+
+
+def test_the_download_flag_actually_changes_the_disposition(client):
+    """The button is only worth having if the flag does something."""
+    A.est_save(_est('inv-dl'))
+    inline = client.get('/api/estimates/inv-dl/invoice.pdf')
+    attach = client.get('/api/estimates/inv-dl/invoice.pdf?download=1')
+    assert inline.status_code == attach.status_code == 200
+    assert inline.data[:5] == attach.data[:5] == b'%PDF-'
+    assert 'attachment' not in (inline.headers.get('Content-Disposition') or '')
+    assert 'attachment' in attach.headers.get('Content-Disposition', '')
+    assert '.pdf' in attach.headers['Content-Disposition']

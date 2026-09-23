@@ -17293,6 +17293,7 @@ function renderInvoiceForm() {
 
     <div class="rc-btns">
       <button class="doc-crm-push" onclick="invPreview()">👁 Preview PDF</button>
+      <button class="doc-crm-push" onclick="invDownload()">⬇ Download PDF</button>
       <button class="doc-crm-push" onclick="invFile()">📎 ${filed ? 'Update in Files' : 'Save to Files'}</button>
       <button class="btn-primary rc-issue" onclick="invEmail()">✉️ Email ${isInv ? 'Invoice' : 'Quote'}</button>
       <span class="rc-saved" id="inv-saved"></span>
@@ -17387,6 +17388,20 @@ async function invPreview() {
   if (!saved) { if (w) w.close(); return; }
   const url = `${BASE}/api/estimates/${S.estimate_id}/invoice.pdf`;
   if (w) w.location = url; else window.open(url, '_blank');
+}
+
+// Preview opens the PDF inline; this saves it. The endpoint has taken
+// `?download=1` since it was written — it sets Content-Disposition: attachment
+// — and nothing ever passed it, so the only way to get a file was to preview it
+// and then use the browser's own save button. That works on a laptop and is a
+// dead end on the phone a rep is standing on a driveway holding.
+async function invDownload() {
+  const saved = await saveInvoiceFields(true, true);
+  if (!saved) return;
+  // A real navigation rather than fetch+blob: the browser handles the save
+  // dialog, iOS hands it to the share sheet, and nothing has to be held in
+  // memory. Same reason the signed-contract download is a plain link.
+  window.location = `${BASE}/api/estimates/${S.estimate_id}/invoice.pdf?download=1`;
 }
 
 async function invFile() {
