@@ -527,3 +527,230 @@ def test_modal_says_nothing_about_measurements_for_xactimate(tmp_path):
     payload = {'format': 'xactimate', 'meta': {}, 'address': {}, 'warnings': [],
                'summary': {}, 'sections': [{'name': 'Roof', 'items': []}]}
     assert 'Roof measurements in this PDF' not in _render(payload, tmp_path)['modal']
+
+
+# ── Liberty Mutual's variant ───────────────────────────────────────────────
+# Same nine columns as Safeco, different everything around them, taken off a
+# real Liberty Mutual export (figures kept, the homeowner replaced):
+#   - a plan nests AREAS ("General Items", "Windows", "Roof"), each with its own
+#     subtotal, and the estimate closes on the PLAN's subtotal -- there is no
+#     bare "Subtotal" row, so there was no checksum at all;
+#   - a numbered line (11) that is a note with no figures;
+#   - "Conversion: 0.03 SQ per LF" hung under a line, shaped like a measurement;
+#   - the tax itemised per authority, and every claim-totals label reworded.
+
+LM_ITEMS_1 = [
+    row(*HEADER),
+    at((X_HEAD, 'ESTIMATE: Structure'), (140, 'Claim #555000111, Sam Fixture')),
+    at((X_HEAD, 'ROOFPLAN: Hover XML 1 - 23788523')),
+    at((X_HEAD, 'General Items')),
+    at((X_CONT, 'Debris Removal')),
+    row('1  Dumpster, 10 Yard', '1', '$476.78', 'EA',
+        '$0.00', '$37.95', '$514.73', '$0.00', '$514.73'),
+    row('General Items - Subtotal (1 item)', None, None, None,
+        '$0.00', '$37.95', '$514.73', '$0.00', '$514.73'),
+    at((X_HEAD, 'Windows')),
+    row('2  Remove - Window Screen,', '3', '$5.42', 'EA',
+        '$0.00', '$0.00', '$16.26', '$0.00', '$16.26'),
+    at((X_CONT, 'Aluminum, 3-5 SF')),
+    row('3  Replace - Window Screen,', '3', '$30.55', 'EA',
+        '$0.00', '$3.61', '$95.26', '$44.45', '$50.81'),
+    at((X_CONT, 'Aluminum, 3-5 SF')),
+    row('Windows - Subtotal (2 items)', None, None, None,
+        '$0.00', '$3.61', '$111.52', '$44.45', '$67.07'),
+    at((X_HEAD, 'Roof')),
+    at((16, 'Roof area:  2,263.80 SF     Squares:  22.6 SQ     Soffit:  0.00 SF')),
+    at((16, 'Eaves:  210.53 LF     Ridge:  35.33 LF')),
+    at((X_HEAD, 'SHINGLES')),
+    row('4  ITEL, Shingles,', '19.81', '$117.28', 'SQ',
+        '$0.00', '$0.00', '$2,323.32', '$0.00', '$2,323.32'),
+    at((X_CONT, 'Laminated/Architectural, Tear Out')),
+    row('5  ITEL, Shingles,', '21.39 (21.67)', '$139.55', 'SQ',
+        '$0.00', '$240.71', '$3,264.76', '$761.67', '$2,503.09'),
+    at((X_CONT, 'Laminated/Architectural, Good, Supply')),
+    at((X_NOTE, 'Includes 8% waste on quantity.')),
+    at((X_NOTE, 'Materials quantity bundle rounding applied.')),
+    row('6  ITEL, Shingles,', '21.39', '$280.26', 'SQ',
+        '$0.00', '$4.34', '$5,999.10', '$1,399.59', '$4,599.51'),
+    at((X_CONT, 'Laminated/Architectural, Good, Install')),
+    at((X_NOTE, 'Includes 8% waste on quantity.')),
+    row('7  Replace - Shingles, Starter', '198.39', '$3.53', 'LF',
+        '$0.00', '$9.00', '$709.31', '$248.26', '$461.05'),
+    at((X_CONT, 'Row, Eave, Continuous')),
+    row('8  Replace - Ridge Cap Shingles', '131.92', '$8.45', 'LF',
+        '$0.00', '$11.96', '$1,126.69', '$394.34', '$732.35'),
+    at((X_HEAD, 'UNDERLAYMENTS')),
+    row('9  Replace - Felt, Single', '17.15', '$60.73', 'SQ',
+        '$0.00', '$12.47', '$1,053.99', '$368.89', '$685.10'),
+    at((X_CONT, 'Layer, 15 lb.')),
+]
+
+LM_ITEMS_2 = [
+    row(*HEADER),
+    at((X_HEAD, 'ESTIMATE: Structure'), (140, 'Claim #555000111, Sam Fixture')),
+    row('10  Replace - Ice/Water Shield,', '196.52', '$5.64', 'LF',
+        '$0.00', '$26.43', '$1,134.80', '$317.74', '$817.06'),
+    at((X_CONT, 'Single Row, LF')),
+    at((X_NOTE, 'Includes 5% waste on quantity.')),
+    at((X_NOTE, 'Conversion: 0.03 SQ per LF')),
+    at((X_HEAD, '11  The quantity of felt has been reduced by the amount of ice '
+                'and water shield used.')),
+    at((X_HEAD, 'VENTS AND FLASHINGS')),
+    row('12  Replace - Drip Edge, Rake,', '220.50', '$4.07', 'LF',
+        '$0.00', '$29.83', '$927.27', '$324.53', '$602.74'),
+    at((X_CONT, 'Aluminum, Pre-Finished Color')),
+    row('13  Rem/Reset - Roof Vent,', '2', '$105.04', 'EA',
+        '$0.00', '$0.01', '$210.09', '$0.00', '$210.09'),
+    at((X_CONT, 'Static, Box/Turtle, Aluminum')),
+    row('14  Rem/Reset - Flashing,', '6', '$86.62', 'EA',
+        '$0.00', '$0.68', '$520.40', '$0.00', '$520.40'),
+    at((X_CONT, 'Pipe Jack, Aluminum')),
+    at((X_HEAD, 'GUTTERS / DOWNSPOUTS / FASCIA')),
+    row('15  Remove - Gutter, K-Style,', '210.53', '$3.12', 'LF',
+        '$0.00', '$0.00', '$656.85', '$0.00', '$656.85'),
+    at((X_CONT, 'Aluminum, 5"')),
+    row('16  Replace - Gutter, K-Style,', '221.06', '$15.18', 'LF',
+        '$0.00', '$64.76', '$3,420.45', '$1,330.21', '$2,090.24'),
+    at((X_CONT, 'Aluminum, 5"')),
+    row('17  Remove - Downspout,', '24.00', '$3.12', 'LF',
+        '$0.00', '$0.00', '$74.88', '$0.00', '$74.88'),
+    at((X_CONT, 'Aluminum, 2"x3"')),
+    row('18  Replace - Downspout,', '25.20', '$12.89', 'LF',
+        '$0.00', '$6.74', '$331.57', '$116.04', '$215.53'),
+    at((X_CONT, 'Aluminum, 2"x3"')),
+    row('Roof - Subtotal (19 items)', None, None, None,
+        '$0.00', '$406.93', '$21,753.48', '$5,261.27', '$16,492.21'),
+    row('Hover XML 1 - 23788523 - Subtotal (22 items)', None, None, None,
+        '$0.00', '$448.49', '$22,379.73', '$5,305.72', '$17,074.01'),
+]
+
+LM_TOTALS = [
+    at((X_HEAD, 'ESTIMATE: Structure')),
+    at((X_HEAD, 'Total Materials:'), (150, '$5,634.80')),
+    at((X_HEAD, 'Total Labor:'), (150, '$16,296.44')),
+    at((X_HEAD, 'Subtotal:'), (150, '$21,931.24')),
+    at((X_HEAD, 'State 2.900% (applies to materials only):'), (150, '$163.41')),
+    at((X_HEAD, 'City 3.460% (applies to materials only):'), (150, '$194.97')),
+    at((X_HEAD, 'County 0.500% (applies to materials only):'), (150, '$28.16')),
+    at((X_HEAD, 'Special 1.100% (applies to materials only):'), (150, '$61.95')),
+    at((X_HEAD, 'Replacement Cost Value:'), (150, '$22,379.73')),
+    at((X_HEAD, 'Replacement Cost on Coverage Building ($566,000.00 limit):'),
+       (150, '$22,379.73')),
+    at((X_HEAD, 'Less Debris Removal'), (150, '$(514.73)')),
+    at((X_HEAD, 'Less Recoverable Depreciation:'), (150, '$(5,305.72)')),
+    at((X_HEAD, 'Net Actual Cash Value on Coverage Building:'), (150, '$16,559.28')),
+    at((X_HEAD, 'Recoverable Depreciation:'), (150, '$5,305.72')),
+    at((X_HEAD, 'Paid When Incurred: Debris Removal'), (150, '$514.73')),
+    at((X_HEAD, 'Deductible ($5,000.00):'), (150, '$(5,000.00)')),
+    at((X_HEAD, 'Net Estimate:'), (150, '$11,559.28')),
+    at((X_HEAD, 'Total Net Recoverable Depreciation and Costs Incurred:'),
+       (150, '$5,820.45')),
+    at((X_HEAD, 'Net Estimate if Depreciation Is Recovered and Costs Are Incurred:'),
+       (150, '$17,379.73')),
+]
+
+
+def lm_parsed():
+    import app as A
+    return A._parse_symbility_pdf(_pdf([PAGE_META, LM_ITEMS_1, LM_ITEMS_2, LM_TOTALS]))
+
+
+def test_liberty_mutual_reads_every_line_and_skips_the_numbered_note():
+    d = lm_parsed()
+    items = [i for s in d['sections'] for i in s['items']]
+    assert [i['line_no'] for i in items] == [n for n in range(1, 19) if n != 11]
+    assert not d['warnings'], d['warnings']
+    assert [s['name'] for s in d['sections']] == ['Hover XML 1 - 23788523']
+
+
+def test_liberty_mutual_plan_subtotal_is_the_checksum():
+    """No bare Subtotal row: the plan's own subtotal has to stand in, or the
+    import can never reconcile and every Liberty Mutual claim reads as red."""
+    import app as A
+    d = lm_parsed()
+    s = d['summary']
+    assert (s['line_items_rcv'], s['line_items_depreciation'],
+            s['line_items_acv']) == (22379.73, 5305.72, 17074.01)
+    rec = A._carrier_reconcile(d)
+    assert rec['ok'], rec
+
+
+def test_area_subtotals_inside_a_plan_are_not_mistaken_for_the_plan():
+    sec = lm_parsed()['sections'][0]
+    assert sec['totals'] == {'rcv': 22379.73, 'dep': 5305.72, 'acv': 17074.01}
+
+
+def test_plan_subtotal_is_not_a_checksum_when_a_plan_printed_none():
+    """A missing plan subtotal must leave the estimate unverified rather than
+    let the plans that did print one pose as the whole claim."""
+    import app as A
+    page = [row(*HEADER),
+            at((X_HEAD, 'ROOFPLAN: MAIN')),
+            row('1  Roof Vent, Static,', '6', '$70.11', 'EA',
+                '$0.00', '$0.05', '$420.71', '$0.00', '$420.71'),
+            row('MAIN - Subtotal (1 item)', None, None, None,
+                '$0.00', '$0.05', '$420.71', '$0.00', '$420.71'),
+            at((X_HEAD, 'ROOFPLAN: GARAGE')),
+            row('2  Roof Vent, Static,', '2', '$70.11', 'EA',
+                '$0.00', '$0.02', '$140.24', '$0.00', '$140.24')]
+    summary = A._parse_symbility_pdf(_pdf([PAGE_META, page]))['summary']
+    assert 'line_items_rcv' not in summary
+
+
+def test_liberty_mutual_conversion_note_is_not_a_measurement():
+    d = lm_parsed()
+    assert 'Conversion' not in d['sections'][0]['measurements']
+    assert d['measurements'] == {'roof_squares': 22.6, 'eave_lf': 210.53,
+                                 'ridge_lf': 35.33}
+
+
+def test_liberty_mutual_claim_totals_are_read_under_their_own_wording():
+    s = lm_parsed()['summary']
+    assert s['line_item_total'] == 21931.24
+    assert s['material_sales_tax'] == 448.49          # four itemised authorities
+    assert s['rcv_total'] == 22379.73
+    assert s['recoverable_depreciation'] == 5305.72
+    assert s['paid_when_incurred'] == 514.73
+    assert s['deductible'] == 5000.00
+    assert s['net_claim'] == 11559.28
+    assert s['net_claim_if_recovered'] == 17379.73
+    # "Net Actual Cash Value on Coverage Building" also nets out the debris
+    # removal, so it is not the figure acv_total means.
+    assert 'acv_total' not in s
+
+
+# ── scans ──────────────────────────────────────────────────────────────────
+
+def _scanned_pdf():
+    import io as _io
+    import app as A
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.new('RGB', (200, 260), 'white').save(buf, format='PNG')
+    buf.seek(0)
+    pdf = A.FPDF(format='letter')
+    pdf.add_page()
+    pdf.image(buf, x=0, y=0, w=215)
+    return bytes(pdf.output())
+
+
+def test_a_scanned_estimate_says_it_is_a_scan_and_is_not_kept(client, monkeypatch):
+    """A printed estimate run through a scanner has no text for any parser.
+    On a server that cannot read scans (no ANTHROPIC_API_KEY), the rep needs
+    to be told to get the emailed PDF -- not that the layout is unknown -- and
+    an admin has nothing to teach from a picture. test_carrier_scan.py covers
+    a server that can."""
+    import io as _io
+    import app as A
+    import carrier_scan
+    monkeypatch.setattr(carrier_scan, 'available', lambda: False)
+    before = A._carrier_failure_names()
+    r = client.post('/api/parse-xactimate',
+                    data={'file': (_io.BytesIO(_scanned_pdf()), 'scan.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 422
+    body = r.get_json()
+    assert body['scanned'] is True
+    assert 'scan' in body['error']
+    assert A._carrier_failure_names() == before
+

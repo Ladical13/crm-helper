@@ -430,7 +430,38 @@
     font-family: inherit;
   }
   .sup-starter:hover { color: var(--accent); border-color: var(--accent); }
+  /* Header, forms and status cards must fit a phone without page zoom. */
+  .grid > *, .sup > *, section.panel, .settings .row > * { min-width: 0; }
+  input, select, textarea { max-width: 100%; min-width: 0; }
+  .rep .head, .rep .stats, .rep .row { flex-wrap: wrap; gap: 8px; }
+  .rep .terr, .topic, .sup-msg, .kv, .conn, .conn code { overflow-wrap: anywhere; }
+  .flash:empty { display: none; }
+  .flash:not(.show) { visibility: hidden; pointer-events: none; }
+  @media (max-width: 760px) {
+    header { position: static; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 12px 16px; }
+    header .brand { min-width: 0; }
+    header .glyph { flex-shrink: 0; }
+    header .cost { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; justify-content: center; }
+    header .badge { width: fit-content; max-width: 100%; }
+    header .exit { grid-column: 2; grid-row: 1; min-height: 44px; display: flex; align-items: center; }
+    nav { padding: 8px 12px; }
+    nav a { min-height: 44px; display: flex; align-items: center; }
+    main { padding: 16px max(12px,env(safe-area-inset-right,0px)) calc(32px + env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px)); }
+    .grid { grid-template-columns: minmax(0,1fr); }
+    section.panel { padding: 14px; }
+    section.panel h2 { flex-wrap: wrap; }
+    section.panel h2 > span { min-width: 0; max-width: 100%; }
+    #fun-series { width: 100%; margin: 0 0 8px !important; }
+    .settings .row { grid-template-columns: minmax(0,1fr) !important; }
+    .stage-row { grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; }
+    .flash { left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom,0px)); overflow-wrap: anywhere; }
+  }
+  @media (pointer: coarse) {
+    input,select,textarea { font-size: 16px !important; }
+    button,.rep .btn,.sup-starter { min-height: 44px; }
+  }
 </style>
+<link rel="stylesheet" href="/nimbus/assets/studio.css?v=1">
 </head>
 <body>
 
@@ -464,7 +495,8 @@
     <a href="/nimbus/marketing/topics" data-route="/nimbus/marketing/topics">📈 Trending Topics</a>
     <a href="/nimbus/marketing/drafts" data-route="/nimbus/marketing/drafts">📝 Content Drafts</a>
     <a href="/nimbus/marketing/seo" data-route="/nimbus/marketing/seo">🔍 Local SEO</a>
-    <a href="/nimbus/marketing/social" data-route="/nimbus/marketing/social">📣 Social &amp; GBP</a>
+    <a href="/nimbus/marketing/social" data-route="/nimbus/marketing/social">📣 Marketing Studio</a>
+    <a href="/nimbus/marketing/events" data-route="/nimbus/marketing/events">🤝 Networking</a>
     <a href="/nimbus/marketing/connections" data-route="/nimbus/marketing/connections">🔌 Connections</a>
     <a href="/nimbus/settings" data-route="/nimbus/settings">⚙️ Settings</a>
   </nav>
@@ -473,6 +505,7 @@
 
   <div id="flash" class="flash"></div>
 
+<script src="/nimbus/assets/studio.js?v=1"></script>
 <script>
 'use strict';
 
@@ -482,6 +515,11 @@ const state = { settings: {}, territories: [], runs: {}, activeTimers: {} };
 /* ── router ────────────────────────────────────────────────────────────── */
 
 function route() {
+  if (window.MarketingStudio) window.MarketingStudio.leave();
+  clearInterval(seoPoll);
+  clearInterval(socialPoll);
+  seoPoll = socialPoll = null;
+  clearSupPoll();
   const path = location.pathname.replace(/\/$/, '') || '/nimbus';
   document.querySelectorAll('#nav a').forEach(a => {
     a.classList.toggle('on', a.dataset.route.replace(/\/$/, '') === path);
@@ -489,9 +527,10 @@ function route() {
   if (path.startsWith('/nimbus/supervisor'))       return renderSupervisor();
   if (path.startsWith('/nimbus/marketing/topics')) return renderTopics();
   if (path.startsWith('/nimbus/marketing/drafts')) return renderDrafts();
+  if (path.startsWith('/nimbus/marketing/events')) return renderEvents();
   if (path.startsWith('/nimbus/marketing/connections')) return renderConnections();
   if (path.startsWith('/nimbus/marketing/seo')) return renderSeo();
-  if (path.startsWith('/nimbus/marketing/social')) return renderSocial();
+  if (path.startsWith('/nimbus/marketing/social') || path.startsWith('/nimbus/marketing/studio')) return window.MarketingStudio.open();
   if (path.startsWith('/nimbus/settings'))          return renderSettings();
   if (path.startsWith('/nimbus/rep/'))              return renderRep(path.split('/').pop());
   return renderDashboard();
@@ -655,8 +694,8 @@ async function loadPipeline() {
   box.innerHTML = `
     <div class="stages">${rows}</div>
     <div class="kv"><span class="k">$ open pipeline</span><span class="v">$${Number(pl.open_value).toLocaleString(undefined,{maximumFractionDigits:0})}</span></div>
-    <div class="kv"><span class="k">$ won</span><span class="v hot">$${Number(pl.won_value).toLocaleString(undefined,{maximumFractionDigits:0})}</span></div>
-    <div class="kv"><span class="k">won deals</span><span class="v">${pl.won_this_period}</span></div>
+    <div class="kv"><span class="k">$ won · all time</span><span class="v hot">$${Number(pl.won_value).toLocaleString(undefined,{maximumFractionDigits:0})}</span></div>
+    <div class="kv"><span class="k">won deals · all time</span><span class="v">${pl.won_this_period}</span></div>
   `;
 }
 
@@ -724,9 +763,10 @@ async function renderTopics() {
 
 async function draftTopic(id) {
   try {
-    await fetch(`${BASE}/api/content/topics/${id}/draft`, {
+    const response = await fetch(`${BASE}/api/content/topics/${id}/draft`, {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
     });
+    if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Unable to start drafting'); }
     flash('Drafting posts... check the Drafts tab in ~30s');
   } catch (e) { flash(e.message, true); }
 }
@@ -738,6 +778,8 @@ async function renderDrafts() {
     <section class="panel">
       <h2>Content drafts
         <span>
+          <select id="fun-series" style="font-family:inherit;font-size:12px;padding:5px;border-radius:7px;margin-right:6px"></select>
+          <button class="btn" onclick="makeFunPost()" style="padding:6px 12px;border-radius:7px;background:var(--gradient);color:#001;border:none;font-weight:700;font-family:inherit;font-size:12px;cursor:pointer;margin-right:12px">🎉 Make a fun post</button>
           <label style="color:var(--dim);font-size:11px;margin-right:8px">
             <input type="radio" name="fs" value="" checked onchange="filterDrafts('')"> all
           </label>
@@ -756,6 +798,23 @@ async function renderDrafts() {
     </section>
   `;
   filterDrafts('');
+  fetch(`${BASE}/api/content/fun`).then(r => r.json()).then(list => {
+    const sel = document.getElementById('fun-series');
+    if (sel) sel.innerHTML = list.map(s => `<option value="${escapeHtml(s.key)}">${escapeHtml(s.name)} (${escapeHtml(s.day)})</option>`).join('');
+  }).catch(() => {});
+}
+
+// Fun series (agents/content/fun.py): drafted for Facebook + Instagram, into
+// this same review queue. Nothing posts until someone approves it.
+async function makeFunPost() {
+  const series = (document.getElementById('fun-series') || {}).value;
+  if (!series) return;
+  const r = await fetch(`${BASE}/api/content/fun`, {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({series})});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { flash(d.error || 'Could not start'); return; }
+  flash('Writing it - it will show up here in a minute');
+  setTimeout(() => filterDrafts(''), 45000);
 }
 
 async function filterDrafts(status) {
@@ -774,9 +833,11 @@ async function filterDrafts(status) {
       <div class="cite-row">${(d.citations || []).map(c => `<a href="${escapeHtml(c)}" target="_blank" rel="noopener">${escapeHtml(hostname(c))}</a>`).join('')}</div>
       <div class="actions">
         <button class="btn" onclick="copyDraft(this)">📋 Copy</button>
+        ${d.source === 'studio' ? `<a class="btn" href="/nimbus/marketing/social" data-route="/nimbus/marketing/social">Open Marketing Studio to review</a>` : `
         <button class="btn primary" onclick="setDraftStatus(${d.id}, 'approved')">✓ Approve</button>
         <button class="btn" onclick="setDraftStatus(${d.id}, 'posted')">Posted</button>
         <button class="btn" onclick="setDraftStatus(${d.id}, 'rejected')">✕ Reject</button>
+        `}
       </div>
     </div>
   `).join('');
@@ -869,9 +930,10 @@ const PLAT = {
 async function renderSocial() {
   const main = document.getElementById('main');
   main.innerHTML = '<div class="empty"><span class="spin"></span> loading</div>';
-  const [drafts, sched] = await Promise.all([
+  const [drafts, sched, active] = await Promise.all([
     fetch(`${BASE}/api/social/drafts?status=draft`).then(r => r.json()).catch(() => []),
     fetch(`${BASE}/api/schedule`).then(r => r.json()).catch(() => ({jobs: [], enabled: false})),
+    fetch(`${BASE}/api/seo/result`).then(r => r.json()).catch(() => null),
   ]);
 
   const byPkg = {};
@@ -888,8 +950,8 @@ async function renderSocial() {
     </div>
 
     <div class="seo-bar">
-      <button onclick="startSocial(false)">Write this week's posts</button>
-      <button class="ghost" onclick="startSocial(true)">Dry run</button>
+      <button onclick="startSocial(false)" ${active?.running ? 'disabled' : ''}>Write this week's posts</button>
+      <button class="ghost" onclick="startSocial(true)" ${active?.running ? 'disabled' : ''}>Dry run</button>
       <span style="color:var(--dim2);font-size:12px">
         ${social ? `scheduled: ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][social.weekday]}
           ${String(social.hour_utc).padStart(2,'0')}:00 UTC ·
@@ -916,6 +978,10 @@ async function renderSocial() {
         : '<div class="empty">No drafts yet. Write this week\'s posts to fill the queue.</div>'}
     </section>
   `;
+  if (active?.running) {
+    document.getElementById('social-live').textContent = 'A marketing run is in progress…';
+    pollSocial(active.job_id, active.dry_run);
+  }
 }
 
 function postCard(d) {
@@ -935,7 +1001,7 @@ function postCard(d) {
         d.citations.slice(0,4).map(u => `<a href="${escapeHtml(u)}" target="_blank"
           rel="noopener noreferrer">${escapeHtml(hostname(u))}</a>`).join('')}</div>` : ''}
       <div class="acts">
-        <button onclick="copyDraft(${d.id})">Copy text</button>
+        <button onclick="copySocialDraft(${d.id})">Copy text</button>
         ${d.platform_link ? `<button onclick="window.open('${escapeHtml(d.platform_link)}','_blank','noopener')">Open ${escapeHtml(p.label)}</button>` : ''}
         <button class="ok" onclick="reviewDraft(${d.id}, 'approved')">Approve</button>
         <button class="no" onclick="reviewDraft(${d.id}, 'rejected')">Reject</button>
@@ -944,7 +1010,7 @@ function postCard(d) {
     </div>`;
 }
 
-function copyDraft(id) {
+function copySocialDraft(id) {
   const el = document.querySelector(`.rec[data-draft="${id}"] .body`);
   if (!el) return;
   navigator.clipboard.writeText(el.innerText)
@@ -963,21 +1029,32 @@ async function reviewDraft(id, status) {
   flash(status === 'posted' ? 'Marked as posted' : `Marked ${status}`);
 }
 
+let socialPoll = null;
 async function startSocial(dryRun) {
   const r = await fetch(`${BASE}/api/social/run`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({dry_run: !!dryRun}),
   });
   if (r.status === 409) { flash('A run is already in progress', true); return; }
-  flash(dryRun ? 'Dry run started — nothing saved' : 'Writing posts…');
+  if (!r.ok) { flash('Could not start the run', true); return; }
+  const started = await r.json();
+  flash(dryRun ? 'Preview started — no drafts will be saved' : 'Writing posts…');
   document.getElementById('social-live').innerHTML =
     '<div class="conn"><div class="detail"><span class="spin"></span> writing…</div></div>';
+  pollSocial(started.job_id, dryRun);
+}
+
+function pollSocial(jobId, dryRun) {
+  clearInterval(socialPoll);
   const poll = setInterval(async () => {
-    const s = await fetch(`${BASE}/api/seo/result`).then(x => x.json()).catch(() => null);
+    const s = await fetch(`${BASE}/api/seo/result?job_id=${jobId}`).then(x => x.ok ? x.json() : null).catch(() => null);
+    if (socialPoll !== poll) return;
+    if (!document.getElementById('social-live')) { clearInterval(socialPoll); return; }
     if (!s || s.running) return;
-    clearInterval(poll);
+    clearInterval(socialPoll);
     const m = s.manifest || {};
     if (!m.ok) {
+      document.querySelectorAll('.seo-bar button').forEach(b => b.disabled = false);
       document.getElementById('social-live').innerHTML =
         `<div class="conn" style="border-color:var(--danger)"><div class="detail"
           style="color:var(--danger)">${escapeHtml(m.error || 'run failed')}</div></div>`;
@@ -990,8 +1067,10 @@ async function startSocial(dryRun) {
           honesty check: ${escapeHtml(rejected.map(x => x.platform + ' — ' + x.reason).join(' · '))}</div></div>`
       : '';
     flash(m.note || 'Done');
+    document.querySelectorAll('.seo-bar button').forEach(b => b.disabled = false);
     if (!dryRun) renderSocial();
   }, 2000);
+  socialPoll = poll;
 }
 
 /* ── local SEO strategist ──────────────────────────────────────────────── */
@@ -1091,7 +1170,9 @@ async function renderSeo() {
         : '<div class="empty">No report saved yet.</div>'}
     </section>
   `;
-  if (busy) pollSeo();
+  if (busy || (runs.active?.dry_run && runs.active.kind === 'seo')) {
+    pollSeo(runs.active.dry_run, runs.active.job_id);
+  }
   loadFieldNotes();
   loadCrmQuestions();
 }
@@ -1225,23 +1306,29 @@ async function startSeo(dryRun) {
   });
   if (r.status === 409) { flash('A run is already in progress', true); return; }
   if (!r.ok) { flash('Could not start the run', true); return; }
-  flash(dryRun ? 'Dry run started — nothing will be saved' : 'Analysis started');
+  const started = await r.json();
+  flash(dryRun ? 'Preview started — no recommendations will be saved' : 'Analysis started');
   document.getElementById('seo-run').disabled = true;
   document.getElementById('seo-live').innerHTML =
     '<div class="conn"><div class="detail"><span class="spin"></span> '
-    + (dryRun ? 'Dry run in progress — crawling, no writes' : 'Crawling and researching…')
+    + (dryRun ? 'Preview in progress — crawling and checking pages' : 'Crawling and researching…')
     + '</div></div>';
-  pollSeo(dryRun);
+  pollSeo(dryRun, started.job_id);
 }
 
-function pollSeo(dryRun) {
+function pollSeo(dryRun, jobId) {
   clearInterval(seoPoll);
-  seoPoll = setInterval(async () => {
-    const s = await fetch(`${BASE}/api/seo/result`).then(r => r.json()).catch(() => null);
+  const poll = setInterval(async () => {
+    const s = await fetch(`${BASE}/api/seo/result?job_id=${jobId}`).then(r => r.ok ? r.json() : null).catch(() => null);
+    if (seoPoll !== poll) return;
+    if (!document.getElementById('seo-live')) { clearInterval(seoPoll); return; }
     if (!s || s.running) return;
     clearInterval(seoPoll);
+    document.querySelectorAll('.seo-bar button').forEach(b => b.disabled = false);
+    if (s.kind !== 'seo') { renderSeo(); return; }
     const m = s.manifest || {};
     if (!m.ok) {
+      document.getElementById('seo-run').disabled = false;
       document.getElementById('seo-live').innerHTML =
         `<div class="conn" style="border-color:var(--danger)">
            <div class="detail" style="color:var(--danger)">Run failed: ${escapeHtml(m.error || 'unknown error')}</div>
@@ -1250,10 +1337,10 @@ function pollSeo(dryRun) {
       return;
     }
     if (dryRun) {
-      // A dry run saves nothing, so this in-memory manifest is the only copy.
+      // Only job progress is retained; preview content is not saved as drafts.
       document.getElementById('seo-live').innerHTML = `
         <section class="panel" style="margin-bottom:18px;border-color:var(--violet)">
-          <h2>Dry run — nothing was saved
+          <h2>Preview — no recommendations were saved
             <span class="count">${(m.recommendations || []).length} would be created</span></h2>
           <div style="color:var(--dim);font-size:13px;margin-bottom:12px">
             ${m.pages_crawled} pages crawled · ${m.skipped_by_robots} skipped by robots.txt ·
@@ -1264,12 +1351,13 @@ function pollSeo(dryRun) {
             ${m.dropped.length} dropped by the honesty checks:
             ${m.dropped.slice(0, 5).map(d => escapeHtml(d.reason)).join(' · ')}</div>` : ''}
         </section>`;
-      flash('Dry run complete — nothing saved');
+      flash('Preview complete — no recommendations saved');
     } else {
       flash('Analysis complete');
       renderSeo();
     }
   }, 2000);
+  seoPoll = poll;
 }
 
 async function makeBrief(id) {
@@ -1323,6 +1411,135 @@ const AUTH_LABEL = {
   none: 'no credential needed', unknown: 'not yet specified',
   api_key: 'app key + secret',
 };
+
+/* ── Networking events ──────────────────────────────────────────────────
+   Which rooms are worth an evening. The list is the easy half; the ranking is
+   the point — an event scores on whether it is full of the partner segment
+   the CRM is THIN on, which is what a search engine cannot tell you. */
+
+function eventDate(iso, time) {
+  const [y, m, d] = String(iso || '').split('-').map(Number);
+  if (!y) return iso || '';
+  const when = new Date(y, m - 1, d).toLocaleDateString(undefined,
+    { weekday: 'short', month: 'short', day: 'numeric' });
+  return time ? `${when} · ${time}` : when;
+}
+
+async function renderEvents() {
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="empty"><span class="spin"></span> loading events</div>';
+  let data;
+  try {
+    data = await fetch(`${BASE}/api/events`).then(r => r.json());
+  } catch (e) {
+    main.innerHTML = '<div class="empty">could not load events</div>';
+    return;
+  }
+  paintEvents(main, data);
+}
+
+function paintEvents(main, data) {
+  const rows = data.events || [];
+  // Said out loud rather than left as an absence: without pipeline counts this
+  // is still a useful list, but it is not the gap-aware ranking the page
+  // promises, and a reader should be able to tell which one they are seeing.
+  const gapNote = data.gap_aware
+    ? `<div class="ro-banner">🤝 <span><b>Ranked against your pipeline.</b>
+         An event full of a segment you already have forty of scores below one
+         full of a segment you have two of.</span></div>`
+    : `<div class="ro-banner" style="border-color:var(--warn)">
+         ⚠️ <span><b>Ranked on audience and area only.</b> The scheduled search
+         runs without a CRM session, so these scores do not know which partner
+         segments you are thin on yet. <b>Re-rank</b> fixes that.</span></div>`;
+
+  main.innerHTML = `
+    ${gapNote}
+    <div style="display:flex;align-items:center;gap:8px;margin:12px 0;flex-wrap:wrap">
+      <button id="ev-run" class="btn">🔎 Find events</button>
+      <button id="ev-rescore" class="btn">📊 Re-rank against pipeline</button>
+      <label style="margin-left:auto"><input type="checkbox" id="ev-skipped">
+        show skipped</label>
+    </div>
+    <div id="ev-status" class="detail"></div>
+    ${rows.length ? rows.map(evCard).join('') : `
+      <div class="empty">Nothing on the list yet — hit <b>Find events</b>.</div>`}
+  `;
+
+  document.getElementById('ev-run').onclick = () => evRun();
+  document.getElementById('ev-rescore').onclick = () => evRescore();
+  document.getElementById('ev-skipped').onchange = async (e) => {
+    const d = await fetch(`${BASE}/api/events?skipped=${e.target.checked ? 1 : 0}`)
+      .then(r => r.json());
+    paintEvents(main, d);
+    document.getElementById('ev-skipped').checked = e.target.checked;
+  };
+  main.querySelectorAll('[data-decide]').forEach(b => {
+    b.onclick = () => evDecide(b.dataset.id, b.dataset.decide);
+  });
+}
+
+function evCard(e) {
+  const tags = (e.audience || []).map(a =>
+    `<span class="pill">${escapeHtml(a.replace(/_/g, ' '))}</span>`).join(' ');
+  return `
+    <div class="conn" ${e.decision === 'skipped' ? 'style="opacity:.55"' : ''}>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+        <div>
+          <div style="font-weight:700">${escapeHtml(e.name)}</div>
+          <div class="detail">${escapeHtml(eventDate(e.starts_at, e.starts_time))}
+            ${e.city ? ' · ' + escapeHtml(e.city) : ''}
+            ${e.venue ? ' · ' + escapeHtml(e.venue) : ''}
+            ${e.cost ? ' · ' + escapeHtml(e.cost) : ''}</div>
+          ${e.host ? `<div class="detail">${escapeHtml(e.host)}</div>` : ''}
+        </div>
+        <div style="text-align:right;white-space:nowrap">
+          <div style="font-weight:800;font-size:18px">${Math.round(e.score)}</div>
+          <div class="detail">score</div>
+        </div>
+      </div>
+      ${e.score_why ? `<div class="detail" style="margin-top:6px">${escapeHtml(e.score_why)}</div>` : ''}
+      ${tags ? `<div style="margin-top:6px">${tags}</div>` : ''}
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <a class="btn" href="${escapeHtml(e.url)}" target="_blank" rel="noopener">Open listing ↗</a>
+        <button class="btn" data-decide="going"   data-id="${e.id}">${e.decision === 'going' ? '✓ Going' : 'Going'}</button>
+        <button class="btn" data-decide="skipped" data-id="${e.id}">Skip</button>
+        ${e.decision ? `<button class="btn" data-decide="" data-id="${e.id}">Clear</button>` : ''}
+      </div>
+    </div>`;
+}
+
+async function evRun() {
+  const st = document.getElementById('ev-status');
+  st.innerHTML = '<span class="spin"></span> searching — one lookup per city';
+  try {
+    const d = await fetch(`${BASE}/api/events/run`, { method: 'POST' }).then(r => r.json());
+    if (d.error) { st.textContent = d.error; return; }
+    st.textContent = `${d.added} new, ${d.updated} refreshed`
+      + (d.stopped_early ? ` — stopped: ${d.stopped_early}` : '')
+      + ((d.errors || []).length ? ` — ${d.errors.length} city(ies) failed` : '');
+    paintEvents(document.getElementById('main'), d);
+    document.getElementById('ev-status').textContent = st.textContent;
+  } catch (e) { st.textContent = 'search failed'; }
+}
+
+async function evRescore() {
+  const st = document.getElementById('ev-status');
+  st.innerHTML = '<span class="spin"></span> re-ranking';
+  try {
+    const d = await fetch(`${BASE}/api/events/rescore`, { method: 'POST' }).then(r => r.json());
+    if (d.error) { st.textContent = d.error; return; }
+    paintEvents(document.getElementById('main'), d);
+    document.getElementById('ev-status').textContent = `${d.changed} re-ranked`;
+  } catch (e) { st.textContent = 're-rank failed'; }
+}
+
+async function evDecide(id, decision) {
+  await fetch(`${BASE}/api/events/${id}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision }),
+  });
+  renderEvents();
+}
 
 async function renderConnections(probe) {
   const main = document.getElementById('main');

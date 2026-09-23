@@ -1,0 +1,401 @@
+<title>Storm to Contract</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&display=swap">
+<style>
+  :root {
+    /* Neutrals carry a cool bias — storm sky, not office grey. */
+    --paper:      #F6F7F9;
+    --surface:    #FFFFFF;
+    --surface-2:  #EDEFF3;
+    --ink:        #131920;
+    --ink-2:      #3F4A59;
+    --ink-3:      #6B7889;
+    --rule:       #D8DDE5;
+    --rule-hard:  #B9C2CE;
+    --accent:     #1B4B73;   /* NEXRAD console blue */
+    --accent-ink: #FFFFFF;
+
+    /* The hail ramp is lifted from canvasser/static/app.js hailColor() —
+       the same thresholds the reps already see on the map. */
+    --hail-sm:  #65A30D;
+    --hail-075: #CA8A04;
+    --hail-100: #D97706;
+    --hail-150: #EA580C;
+    --hail-200: #DC2626;
+
+    --ok:   #15803D;
+    --warn: #B45309;
+
+    --measure: 68ch;
+    --step--1: 0.8125rem;
+    --step-0:  1.0625rem;
+    --step-1:  1.375rem;
+    --step-2:  1.875rem;
+    --step-3:  2.625rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #0E1218;
+      --surface:   #161C25;
+      --surface-2: #1E2630;
+      --ink:       #E8ECF2;
+      --ink-2:     #B3BDCB;
+      --ink-3:     #7F8B9C;
+      --rule:      #2A3340;
+      --rule-hard: #3C4757;
+      --accent:    #6FA8D6;
+      --accent-ink:#0E1218;
+      --hail-sm:  #8FCB2F;
+      --hail-075: #E3B428;
+      --hail-100: #F0932B;
+      --hail-150: #FB7A3C;
+      --hail-200: #F2564F;
+      --ok:   #4ADE80;
+      --warn: #FBBF24;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:     #0E1218;
+    --surface:   #161C25;
+    --surface-2: #1E2630;
+    --ink:       #E8ECF2;
+    --ink-2:     #B3BDCB;
+    --ink-3:     #7F8B9C;
+    --rule:      #2A3340;
+    --rule-hard: #3C4757;
+    --accent:    #6FA8D6;
+    --accent-ink:#0E1218;
+    --hail-sm:  #8FCB2F;
+    --hail-075: #E3B428;
+    --hail-100: #F0932B;
+    --hail-150: #FB7A3C;
+    --hail-200: #F2564F;
+    --ok:   #4ADE80;
+    --warn: #FBBF24;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+    font-size: var(--step-0);
+    line-height: 1.62;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 5rem; }
+
+  h1, h2, h3, .ui {
+    font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+    text-wrap: balance;
+  }
+  h1 { font-size: var(--step-3); font-weight: 700; letter-spacing: -0.022em; line-height: 1.08; margin: 0 0 .6rem; }
+  h2 { font-size: var(--step-2); font-weight: 600; letter-spacing: -0.017em; line-height: 1.15; margin: 0 0 .5rem; }
+  h3 { font-size: var(--step-1); font-weight: 600; letter-spacing: -0.01em; margin: 0 0 .35rem; }
+  p  { max-width: var(--measure); margin: 0 0 1rem; }
+  a  { color: var(--accent); }
+
+  .label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.6875rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .1em;
+    color: var(--ink-3);
+  }
+  code, .mono {
+    font-family: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+    font-size: 0.875em;
+  }
+  code {
+    background: var(--surface-2); padding: .1em .38em;
+    border-radius: 3px; color: var(--ink-2);
+  }
+  em { font-style: italic; }
+  strong { font-weight: 500; color: var(--ink); }
+
+  header.masthead { border-bottom: 3px solid var(--ink); padding-bottom: 1.5rem; margin-bottom: 2.5rem; }
+  .masthead .kicker { display: flex; gap: .75rem; align-items: baseline; margin-bottom: 1rem; flex-wrap: wrap; }
+  .lede { font-size: var(--step-1); line-height: 1.45; color: var(--ink-2); max-width: 46ch; margin: 0; }
+
+  section { margin: 0 0 3.25rem; }
+  .sec-head { display: flex; align-items: baseline; gap: .9rem; border-bottom: 1px solid var(--rule-hard); padding-bottom: .5rem; margin-bottom: 1.5rem; }
+  .sec-head .num { font-family: "IBM Plex Mono", monospace; font-size: .8125rem; font-weight: 600; color: var(--accent); }
+
+  /* ── The comparison diagram ── */
+  .compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1.5rem; margin: 1.75rem 0; }
+  .panel { border: 1px solid var(--rule); background: var(--surface); padding: 1.1rem; }
+  .panel svg { display: block; width: 100%; height: auto; margin-bottom: .8rem; }
+  .panel h3 { font-size: 1.0625rem; margin-bottom: .2rem; }
+  .panel p { font-size: var(--step--1); color: var(--ink-2); margin: 0; line-height: 1.5; }
+  .verdict {
+    border-left: 3px solid var(--accent);
+    padding: .35rem 0 .35rem 1.1rem; margin: 1.5rem 0;
+    font-size: var(--step-1); line-height: 1.45;
+  }
+
+  /* ── Phase timeline ── */
+  .phases { display: grid; gap: 0; }
+  .phase {
+    display: grid; grid-template-columns: 8.5rem 1fr; gap: 1.5rem;
+    padding: 1.35rem 0; border-top: 1px solid var(--rule);
+  }
+  .phase:last-child { border-bottom: 1px solid var(--rule); }
+  .phase-when { position: relative; }
+  .phase-n {
+    font-family: "IBM Plex Mono", monospace; font-size: 1.5rem; font-weight: 600;
+    line-height: 1; color: var(--ink); display: block;
+  }
+  .phase-t { font-family: "IBM Plex Mono", monospace; font-size: .75rem; color: var(--ink-3); display: block; margin-top: .3rem; letter-spacing: .02em; }
+  .phase-body h3 { margin-bottom: .3rem; }
+  .phase-body p { font-size: 0.9375rem; margin-bottom: .5rem; }
+  .phase-body p:last-child { margin-bottom: 0; }
+  .owner {
+    display: inline-block; font-family: "IBM Plex Mono", monospace;
+    font-size: .6875rem; letter-spacing: .04em;
+    border: 1px solid var(--rule-hard); color: var(--ink-3);
+    padding: .1rem .4rem; margin-left: .4rem; vertical-align: 1px;
+  }
+  .money { border-left: 3px solid var(--hail-150); padding-left: 1rem; }
+
+  /* ── Ramp legend ── */
+  .ramp { display: flex; flex-wrap: wrap; gap: 0; margin: 1.25rem 0; border: 1px solid var(--rule); }
+  .ramp div { flex: 1 1 5.5rem; padding: .5rem .6rem; font-family: "IBM Plex Mono", monospace; font-size: .6875rem; color: #fff; }
+  .ramp .t { display: block; font-weight: 600; font-size: .875rem; }
+
+  /* ── Table ── */
+  .tw { overflow-x: auto; margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 40rem; font-family: "IBM Plex Sans", sans-serif; font-size: 0.875rem; }
+  th, td { text-align: left; padding: .65rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-size: .6875rem; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); border-bottom: 1px solid var(--rule-hard); font-weight: 600; }
+  td:first-child { font-family: "IBM Plex Mono", monospace; color: var(--ink-3); width: 2.5rem; }
+  .st { font-family: "IBM Plex Mono", monospace; font-size: .6875rem; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+  .st.done { color: var(--ok); }
+  .st.next { color: var(--warn); }
+  .st.wait { color: var(--ink-3); }
+
+  ul { max-width: var(--measure); padding-left: 1.1rem; margin: 0 0 1rem; }
+  li { margin-bottom: .45rem; }
+
+  .risk { border: 1px solid var(--rule); border-left: 3px solid var(--hail-200); background: var(--surface); padding: 1rem 1.15rem; margin-bottom: .9rem; }
+  .risk p { margin: 0; font-size: 0.9375rem; }
+  .risk .label { display: block; margin-bottom: .3rem; color: var(--hail-200); }
+
+  footer { border-top: 1px solid var(--rule-hard); margin-top: 3rem; padding-top: 1.25rem; color: var(--ink-3); font-size: var(--step--1); }
+
+  @media (max-width: 40rem) {
+    .phase { grid-template-columns: 1fr; gap: .5rem; }
+    .phase-when { display: flex; align-items: baseline; gap: .6rem; }
+    .phase-t { margin-top: 0; }
+  }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <div class="kicker">
+    <span class="label">Project One Roofing</span>
+    <span class="label" style="color:var(--accent)">Build Plan · Rev 1 · Sept 2026</span>
+  </div>
+  <h1>Storm to Contract</h1>
+  <p class="lede">Replacing HailTrace is the small half. The half that matters is the join it can never do — the swath against <em>our</em> customer list.</p>
+</header>
+
+<section>
+  <div class="sec-head"><span class="num">01</span><h2>The data decision</h2></div>
+
+  <p>The canvasser's hail engine cannot replace HailTrace, and no amount of polish changes that. It is built on the wrong data product.</p>
+
+  <div class="compare">
+    <div class="panel">
+      <svg viewBox="0 0 300 150" role="img" aria-label="Sparse scattered points over a neighbourhood grid">
+        <rect x="0" y="0" width="300" height="150" fill="var(--surface-2)"/>
+        <g stroke="var(--rule-hard)" stroke-width="1" fill="none">
+          <path d="M0 38h300M0 75h300M0 112h300M60 0v150M120 0v150M180 0v150M240 0v150"/>
+        </g>
+        <circle cx="72" cy="47" r="6" fill="var(--hail-100)"/>
+        <circle cx="196" cy="98" r="6" fill="var(--hail-075)"/>
+        <circle cx="241" cy="34" r="6" fill="var(--hail-150)"/>
+        <text x="150" y="140" text-anchor="middle" fill="var(--ink-3)"
+              font-family="IBM Plex Mono, monospace" font-size="10">3 reports · 1 county · overnight</text>
+      </svg>
+      <h3>What we have</h3>
+      <p><strong>NOAA SPC storm reports.</strong> Human-called-in points. A spotter or homeowner saw hail and phoned it in. Sparse, and biased toward where people are and who bothered. A subdivision can get shelled at 2am and produce zero reports.</p>
+    </div>
+    <div class="panel">
+      <svg viewBox="0 0 300 150" role="img" aria-label="A continuous hail swath covering the same grid">
+        <rect x="0" y="0" width="300" height="150" fill="var(--surface-2)"/>
+        <g stroke="var(--rule-hard)" stroke-width="1" fill="none">
+          <path d="M0 38h300M0 75h300M0 112h300M60 0v150M120 0v150M180 0v150M240 0v150"/>
+        </g>
+        <path d="M4 96 C 60 82, 96 44, 152 40 C 210 36, 250 20, 296 16 L296 52 C250 56, 212 72, 156 76 C 100 80, 62 116, 6 128 Z" fill="var(--hail-075)" opacity="0.85"/>
+        <path d="M18 92 C 68 80, 100 50, 152 47 C 206 44, 246 30, 292 26 L292 44 C248 48, 212 64, 158 68 C 104 72, 70 104, 20 114 Z" fill="var(--hail-150)" opacity="0.9"/>
+        <path d="M52 82 C 88 72, 116 56, 152 53 C 190 50, 224 42, 258 38 L258 46 C226 50, 194 60, 156 63 C 118 66, 88 88, 54 96 Z" fill="var(--hail-200)"/>
+        <text x="150" y="140" text-anchor="middle" fill="var(--ink-3)"
+              font-family="IBM Plex Mono, monospace" font-size="10">every parcel · 1&#8202;km grid · every 2 min</text>
+      </svg>
+      <h3>What HailTrace has</h3>
+      <p><strong>MRMS MESH.</strong> NOAA merges the whole NEXRAD network with satellite, surface obs and lightning into one continuous grid and estimates max hail size at <em>every cell</em> — whether or not a human was standing there.</p>
+    </div>
+  </div>
+
+  <div class="verdict">
+    SPC answers <em>“did anybody report hail near this address?”</em><br>
+    MESH answers <em>“what size hail did radar estimate over this roof, on this date.”</em><br>
+    Only the second one closes a homeowner.
+  </div>
+
+  <p><strong>MESH is free public NOAA data.</strong> Real-time at <code>mrms.ncep.noaa.gov/2D/MESH_Max_1440min/</code> as GRIB2; archived back to <strong>October 2014</strong> on Iowa State's MTArchive, and on AWS Open Data since 2020. That archive depth is exactly the hail history a roofer wants, and it is the same product our paid vendor resells.</p>
+
+  <div class="ramp" role="img" aria-label="Hail size thresholds and what each means">
+    <div style="background:var(--hail-sm)"><span class="t">&lt;0.75&#8243;</span>no roof damage</div>
+    <div style="background:var(--hail-075)"><span class="t">0.75&#8243;</span>cosmetic at most</div>
+    <div style="background:var(--hail-100)"><span class="t">1.00&#8243;</span>functional damage — <strong>our floor</strong></div>
+    <div style="background:var(--hail-150)"><span class="t">1.50&#8243;</span>strong claim</div>
+    <div style="background:var(--hail-200)"><span class="t">2.00&#8243;+</span>full deploy</div>
+  </div>
+  <p class="label" style="margin-top:-.5rem">Thresholds match <code>hailColor()</code> in the canvasser, so the map and this plan agree.</p>
+</section>
+
+<section>
+  <div class="sec-head"><span class="num">02</span><h2>Don't build it to save the subscription</h2></div>
+  <p>Replacing a vendor to cut a bill is the weakest reason to build anything, and we will not beat a weather company at weather. Keep paying them through a full season.</p>
+  <p>Build it because <strong>HailTrace cannot do the join.</strong> It cannot say which of <em>our</em> Roof Care Plan subscribers, past customers, open estimates and dead 2023 leads sit inside last night's swath. It cannot hand a canvasser a route, fire storm-response, or write a lead. That join needs our CRM, which is exactly why it is unbuyable — and why it is the moat.</p>
+  <p><strong>Architecturally that means hail stops being a canvasser feature.</strong> Today the whole pipeline lives at <code>canvasser/app.py:354-523</code> and Nimbus reaches in by pulling a module out of <code>sys.modules</code> by name. A company's primary data product cannot live inside the door-knocking app. It becomes <code>hail/</code>, and all four tools read it.</p>
+</section>
+
+<section>
+  <div class="sec-head"><span class="num">03</span><h2>The workflow</h2></div>
+
+  <div class="phases">
+
+    <div class="phase">
+      <div class="phase-when"><span class="phase-n">0</span><span class="phase-t">ALWAYS ON</span></div>
+      <div class="phase-body">
+        <h3>Quiet-weather ingest <span class="owner">hail/</span></h3>
+        <p>MESH ingest runs nightly whether or not anything happened, maintaining the Colorado swath archive back to 2014. Every address we own carries a current hail-exposure score.</p>
+        <p>This is what makes Phase 2 instant instead of the 60-second CSV scan reps wait through today.</p>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-when"><span class="phase-n">1</span><span class="phase-t">T+0 → T+6h</span></div>
+      <div class="phase-body">
+        <h3>Detection, with nobody watching <span class="owner">hail/</span> <span class="owner">storm-scout</span></h3>
+        <p>Polls <code>MESH_Max_1440min</code> through severe season. Any cell in the service area over <strong>1.0&#8243;</strong> opens a <code>storm_event</code>: date, polygonized swath, max size, area. Storm-scout fires itself.</p>
+        <p><strong>Nobody has to notice the storm.</strong> That is the whole edge over every competitor who finds out from the news.</p>
+      </div>
+    </div>
+
+    <div class="phase money">
+      <div class="phase-when"><span class="phase-n">2</span><span class="phase-t">T+MINUTES</span></div>
+      <div class="phase-body">
+        <h3>The join — this is the money <span class="owner">portal/geo</span> <span class="owner">salescrm</span></h3>
+        <p>Point-in-polygon the swath against everything we own, producing five ranked lists:</p>
+        <ul>
+          <li><strong>Roof Care Plan subscribers</strong> — contractual obligation, contacted first, always</li>
+          <li><strong>Past customers</strong> — warranty posture, goodwill, the referral ask</li>
+          <li><strong>Open pipeline leads</strong> — the storm just changed their conversation</li>
+          <li><strong>Lost estimates from prior years</strong> — the reason they said no may have expired</li>
+          <li><strong>Cold addresses inside the polygon</strong> — canvassing territory</li>
+        </ul>
+        <p>HailTrace stops before line one.</p>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-when"><span class="phase-n">3</span><span class="phase-t">T+6h → T+24h</span></div>
+      <div class="phase-body">
+        <h3>Mobilization <span class="owner">storm-response</span></h3>
+        <p>The polygon divides into rep zones by address density and drive time. Drafts generate per list, plus GBP and social. Zones push to each rep's canvasser.</p>
+        <p><strong>Luke approves. Nothing auto-sends.</strong></p>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-when"><span class="phase-n">4</span><span class="phase-t">T+24h → 2 WEEKS</span></div>
+      <div class="phase-body">
+        <h3>The door <span class="owner">canvasser</span></h3>
+        <p>The rep opens to their zone, swath rendered underneath, addresses colour-coded by relationship — RCP member, past customer, open lead, cold. Two things become possible that aren't today:</p>
+        <ul>
+          <li><strong>Instant hail history for that exact address</strong>, from the local archive</li>
+          <li><strong>The rep texts the homeowner their storm report from the porch</strong> — our first customer-facing artifact at the door, and the strongest opener we own</li>
+        </ul>
+        <p>Pin type auto-creates the CRM lead with its cadence. No second button to forget.</p>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-when"><span class="phase-n">5</span><span class="phase-t">DAYS</span></div>
+      <div class="phase-body">
+        <h3>Inspection → estimate <span class="owner">salescrm</span> <span class="owner">estimator</span></h3>
+        <p>Photos attach to the <strong>customer</strong>, not the estimate — the photo exists before an estimate does, and must survive one being marked lost. The estimate carries the <code>storm_event_id</code> and the proposal cites it.</p>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-when"><span class="phase-n">6</span><span class="phase-t">AT SIGNATURE</span></div>
+      <div class="phase-body">
+        <h3>Close the loop <span class="owner">portal/funnel</span></h3>
+        <p>Signature pushes to The Den — already built. What's missing: <strong>the pin on the map turns gold.</strong> The rep watches the door they knocked in June become a contract.</p>
+        <p>That loop is the motivational engine of the whole tool and it does not exist today.</p>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-when"><span class="phase-n">7</span><span class="phase-t">SEASONS</span></div>
+      <div class="phase-body">
+        <h3>The compounding asset <span class="owner">unit-economics</span></h3>
+        <p>Every storm gets an outcome record: doors → leads → contracts → revenue. After two seasons we know which hail size actually converts, how many days after a storm the window closes, which zips convert, and true cost per contract by storm.</p>
+        <p><strong>HailTrace can never build this</strong>, because they don't have our outcomes.</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="num">04</span><h2>Build order</h2></div>
+  <p>Ordered by dependency, not by appeal. Item 1 is the one most likely to get skipped in favour of the fun part, and it blocks Phase 2 completely.</p>
+  <div class="tw">
+  <table>
+    <thead><tr><th></th><th>Work</th><th>Why here</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>Canvasser boot fix</td><td>The tool was a blank screen for three weeks — a dead reference threw before <code>boot()</code> ran</td><td class="st done">Shipped</td></tr>
+      <tr><td>1</td><td>One customer id + geocode backfill</td><td>Phase 2 is point-in-polygon and cannot run on free-text addresses. US Census bulk geocoder — free, no key, 10k per batch</td><td class="st done">Layer built</td></tr>
+      <tr><td>2</td><td><code>hail/</code> service — fetch, decode, clip, threshold, polygonize, point lookup</td><td>Longest pole. Starts first, finishes last</td><td class="st next">Next</td></tr>
+      <tr><td>3</td><td>Repoint <code>storm_join.py</code> and hail-by-address; delete the SPC scan</td><td>Nimbus, storm-scout and storm-response all sharpen for free</td><td class="st wait">Blocked on 2</td></tr>
+      <tr><td>4</td><td>Canvasser: swath layer, zones, auto-lead, offline queue, voice notes</td><td>Offline is non-negotiable — this was built for one bar of signal and currently drops the save</td><td class="st wait">Blocked on 2</td></tr>
+      <tr><td>5</td><td>Texted storm report</td><td>First customer-facing artifact at the door</td><td class="st wait">Blocked on 2</td></tr>
+      <tr><td>6</td><td>Loop-back + storm outcome analytics</td><td>Phases 6 and 7</td><td class="st wait">Blocked on 4</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="num">05</span><h2>What could make this wrong</h2></div>
+
+  <div class="risk">
+    <span class="label">Representation risk</span>
+    <p>MESH is an <em>estimate</em> and is known to run high and low. The moment we show a homeowner “your roof took 1.75&#8243;,” that is a representation we are making. It needs a source note travelling with it — the same discipline the estimator's fastening table already carries.</p>
+  </div>
+
+  <div class="risk">
+    <span class="label">Claim window vs. lookback</span>
+    <p>Our current default lookback is 1,825 days. Colorado gives a homeowner <strong>one year</strong> from date of loss to notify the carrier (CRS 10-4-110.8). Most of what the tool proudly returns is not claimable — it is retail sales evidence, and the tool does not distinguish. A rep citing 2022 hail is walking into a bad adjuster conversation.</p>
+  </div>
+
+  <div class="risk">
+    <span class="label">Unverified from here</span>
+    <p>The dev sandbox proxy blocks both <code>mrms.ncep.noaa.gov</code> and <code>mtarchive.geol.iastate.edu</code>, so file cadence, size and retention are <strong>unmeasured</strong>. A 10-minute spike from a box with open egress must happen before anyone commits to a timeline for item 2.</p>
+  </div>
+
+  <div class="risk">
+    <span class="label">Parallel-run discipline</span>
+    <p>Run HailTrace alongside for one full season and compare our swaths to theirs on the same storms. It is the only way to trust our own map enough to put it in front of a homeowner — and cheap next to being wrong in a driveway.</p>
+  </div>
+</section>
+
+<footer>
+  <p><strong>Sources.</strong> NOAA NSSL MRMS product tables · Iowa Environmental Mesonet MTArchive · US Census Bureau batch geocoder · CRS 10-4-110.8. Thresholds mirror <code>canvasser/static/app.js</code>.</p>
+</footer>
+
+</div>

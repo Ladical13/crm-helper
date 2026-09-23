@@ -1025,3 +1025,17 @@ def test_epdm_fully_adhered_is_now_a_sellable_package(client):
     assert 'ca_epdm_adhesive' in bundle['product_ids']
     assert 'ca_epdm_seam' in bundle['product_ids']
     assert 'ca_adhesive' not in bundle['product_ids']
+
+
+def test_the_bare_polyiso_name_is_renamed_to_its_thickness_but_a_managers_is_kept(A):
+    """The default polyiso shipped as "Polyiso Insulation", which reads as
+    nothing beside the 1.0"-4.0" it swaps between. Rename only the untouched
+    default."""
+    def book(name):
+        return {'commercial_catalog': [{'id': 'ca_iso', 'name': name, 'unit': 'SQ', 'cost': 130}],
+                'commercial_bundles': [dict(b) for b in A.COMMERCIAL_BUNDLES_SEED],
+                'commercial_tier_defaults': dict(A.COMMERCIAL_TIER_DEFAULTS_SEED)}
+    def iso(pb):
+        return next(p for p in A._ensure_bundle_catalogs(pb)['commercial_catalog'] if p['id'] == 'ca_iso')
+    assert iso(book('Polyiso Insulation'))['name'] == '2.6" Polyiso Insulation (~R-15)'
+    assert iso(book('Carlisle 2.6" ISO'))['name'] == 'Carlisle 2.6" ISO'

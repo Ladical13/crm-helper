@@ -29,10 +29,53 @@ from flask import Flask, request, jsonify, send_from_directory, send_file, Respo
 # this app works both mounted by portal/wsgi.py and run standalone (its test
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import clock as pclock       # noqa: E402
+from portal import demo as pdemo         # noqa: E402
 from portal import funnel as pfunnel     # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import throttle as pthrottle  # noqa: E402
 from portal import users as pusers       # noqa: E402
+
+# Demo mode. Two halves for one reason: portal/demo.py owns the guest IDENTITY
+# because the cookie and the app-switcher bar are the portal's, and this module
+# owns what that identity may reach and on what data. Imported both ways for
+# the same reason permit_coords is — this app is imported as `estimator.app`
+# under the portal mount and as bare `app` by its own test suite.
+try:
+    from . import demo_store as demo     # noqa: E402
+except ImportError:
+    import demo_store as demo            # noqa: E402
+
+# Scanned carrier estimates (no text layer) are read off the page images.
+try:
+    from . import carrier_scan           # noqa: E402
+except ImportError:
+    import carrier_scan                  # noqa: E402
+
+# A second reader for the price book's material/labor split. Proposals only —
+# it never writes, and it is never in the request path.
+try:
+    from . import cost_class_review      # noqa: E402
+except ImportError:
+    import cost_class_review             # noqa: E402
+
+# A second estimator reading a job before it is sent. Informs, never blocks.
+try:
+    from . import estimate_review        # noqa: E402
+except ImportError:
+    import estimate_review               # noqa: E402
+
+# The work order, in Spanish beside the English, for the crew on the roof.
+try:
+    from . import crew_spanish           # noqa: E402
+except ImportError:
+    import crew_spanish                  # noqa: E402
+
+# The homeowner's own claim, explained back to them in plain English.
+try:
+    from . import claim_explainer        # noqa: E402
+except ImportError:
+    import claim_explainer               # noqa: E402
 
 try:
     import requests as http
@@ -103,12 +146,22 @@ def save_team(team):
 
 def _get_role(username):
     """Return 'admin', 'manager', or 'rep' for the given username."""
+    # 'demo' is not an account in the portal store and never will be — nothing
+    # authenticates as it. Its role comes from P1_DEMO_ROLE, capped at manager.
+    if username == pdemo.USERNAME and demo.active():
+        return pdemo.role()
     return pusers.role_of(username)
 
 def _is_admin(username):
     return pusers.is_admin(username)
 
 def _current_user():
+    # A demo guest has no session['user'] on purpose — that key is what the
+    # canvasser, the CRM and the portal read, and a guest must stay anonymous
+    # to all three. They still need a non-empty name here so the demo
+    # estimates have an owner and _can_touch_estimate resolves.
+    if demo.active():
+        return pdemo.USERNAME
     return session.get('user', '')
 
 def _is_manager_up(username=None):
@@ -136,12 +189,27 @@ def _safe_path_id(s):
 # data APIs leak — a route added without the decorator was silently public).
 PUBLIC_ENDPOINTS = {
     'customer_sign',     # /sign/<token> — public, protected by the 192-bit token
+    # /sign/<token>/download.pdf — the "save a copy before you decide" card on
+    # every /sign variant links here. It was NOT on this list, so the button a
+    # customer sees bounced them to a login page: same token, same estimate,
+    # same 404 on a revoked token, and no way through for the person it is for.
+    'customer_download_pdf',
+    # /sign/<token>/tier-interest — the package-card beacon. Writes only to
+    # tier_interest, never to view counts, status or the funnel.
+    'record_tier_interest',
     'customer_design',   # /design/<token> — public design review/approval token
     'sign_change_order', # /sign-co/<token> — same token protection as /sign
+    'sign_invoice',      # /sign-inv/<token> — a GC approving the amount. Same
+                         # token protection; deliberately NOT the estimate's
+                         # signing path, which files a job in The Den.
     'serve_upload',      # /uploads/<file> — cover photos shown on the customer view
     'static',            # JS/CSS for the login + app shell (non-sensitive client code)
     'pwa_manifest',      # /manifest.json — needed for PWA install before login
     'service_worker',    # /sw.js — service worker scope must be public
+    # /demo/<token> — the demo link itself. "Public" only in the sense that it
+    # takes no cookie: it authenticates on the token in the URL and 404s unless
+    # P1_DEMO_TOKEN is set. See portal/demo.py and demo_store.py.
+    'enter_demo',
 }
 
 DISABLE_AUTH = os.environ.get('DISABLE_AUTH', '').strip().lower() in ('1', 'true', 'yes')
@@ -162,6 +230,14 @@ if DISABLE_AUTH and os.environ.get('RAILWAY_ENVIRONMENT'):
 def _require_login():
     if DISABLE_AUTH or request.endpoint in PUBLIC_ENDPOINTS or session.get('user'):
         return
+    # A demo guest gets in, but only as far as demo_store.ALLOWED_ENDPOINTS
+    # reaches. Default-deny for exactly the reason the outer guard is: a route
+    # added tomorrow must be closed to a guest until somebody opens it on
+    # purpose, rather than open until somebody notices.
+    if demo.active():
+        if demo.endpoint_allowed(request.endpoint):
+            return
+        return jsonify(demo.DENIED), 403
     # Unauthenticated: JSON 401 for API calls (the SPA redirects), else to login.
     if request.path.startswith('/api/'):
         return jsonify({'error': 'authentication required'}), 401
@@ -425,8 +501,41 @@ def _est_path(est_id):
     return os.path.join(ESTIMATES_DIR, f"{est_id}.json")
 
 
+# ── Demo isolation ─────────────────────────────────────────────────────────
+# Every helper below asks `demo.active()` first. This is THE choke point: 98
+# routes read and write estimates through these nine functions, so one check
+# here fences the whole app off from the real store for a demo guest, and a
+# route added tomorrow inherits it without anybody remembering to. The
+# alternative — auditing each route for what it touches — is the bookkeeping
+# that let the data APIs leak before PUBLIC_ENDPOINTS replaced it.
+#
+# The demo store is a plain dict in demo_store.py. Docs are returned by
+# reference exactly as the file/Postgres paths return fresh objects that
+# callers then mutate and save back, so a caller that mutates without saving
+# leaves the change in place; harmless on throwaway data, and est_update()
+# still behaves correctly.
+#
+# TWO conditions, not one, and the difference is load-bearing:
+#
+#   demo.active()   — this request belongs to a demo guest. Routes the LIST
+#                     operations, which have no id to go on: a guest's home
+#                     screen must show demo estimates only, and a rep's must
+#                     never show them at all.
+#   demo.owns(id)   — this id lives in the demo store. Routes the BY-ID
+#                     operations, because the customer signing a demo estimate
+#                     and the thread that runs afterwards hold the id but carry
+#                     no demo session (see demo_store.owns).
+
+
+def _demo_est(est_id):
+    """True when this estimate read/write should go to the demo store."""
+    return demo.active() or demo.owns(est_id)
+
+
 def est_load(est_id):
     """Return the estimate doc, or None when missing/unreadable."""
+    if _demo_est(est_id):
+        return demo.store().get(str(est_id))
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('SELECT doc FROM estimates WHERE id = %s', (str(est_id),))
@@ -444,6 +553,13 @@ def est_save(doc):
     est_id = doc.get('estimate_id')
     if not est_id:
         raise ValueError('estimate doc missing estimate_id')
+    if _demo_est(est_id):
+        # Stamped on the way in, so anything a guest creates is recognisable as
+        # demo data by is_demo_doc() later — including on the public /sign
+        # path, where there is no session to ask.
+        doc['demo'] = True
+        demo.store()[str(est_id)] = doc
+        return
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('INSERT INTO estimates (id, doc) VALUES (%s, %s) '
@@ -455,6 +571,8 @@ def est_save(doc):
 
 
 def est_exists(est_id):
+    if _demo_est(est_id):
+        return str(est_id) in demo.store()
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('SELECT 1 FROM estimates WHERE id = %s', (str(est_id),))
@@ -463,6 +581,9 @@ def est_exists(est_id):
 
 
 def est_delete(est_id):
+    if _demo_est(est_id):
+        demo.store().pop(str(est_id), None)
+        return
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('DELETE FROM estimates WHERE id = %s', (str(est_id),))
@@ -475,6 +596,8 @@ def est_delete(est_id):
 
 def est_ids():
     """All estimate ids, ascending."""
+    if demo.active():
+        return sorted(demo.store())
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('SELECT id FROM estimates ORDER BY id')
@@ -487,6 +610,8 @@ def est_ids():
 
 
 def est_count():
+    if demo.active():
+        return len(demo.store())
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('SELECT count(*) FROM estimates')
@@ -496,6 +621,12 @@ def est_count():
 
 def est_iter(reverse=False):
     """Yield every readable estimate doc; unreadable files are skipped."""
+    if demo.active():
+        for est_id in sorted(demo.store(), reverse=reverse):
+            doc = demo.store().get(est_id)
+            if doc is not None:
+                yield doc
+        return
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute(f"SELECT doc FROM estimates ORDER BY id {'DESC' if reverse else 'ASC'}")
@@ -512,16 +643,24 @@ def est_find_by_token(token):
     """Return the estimate doc matching share_token, or None."""
     if not token:
         return None
-    if DATABASE_URL:
-        with _db_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT doc FROM estimates WHERE doc->>'share_token' = %s "
-                        'LIMIT 1', (str(token),))
-            row = cur.fetchone()
-            return row[0] if row else None
-    for doc in est_iter():
-        if doc.get('share_token') == token:
-            return doc
-    return None
+    # Checked for EVERY caller, not just demo sessions: the point of generating
+    # a customer link inside the demo is that it opens, and it gets opened in
+    # another tab, on a phone, by whoever the guest forwarded it to — none of
+    # which carry the demo cookie. Real estimates are searched first, and demo
+    # tokens are 128-bit like any other, so this cannot shadow a live link.
+    if not demo.active():
+        if DATABASE_URL:
+            with _db_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT doc FROM estimates WHERE doc->>'share_token' = %s "
+                            'LIMIT 1', (str(token),))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+        else:
+            for doc in est_iter():
+                if doc.get('share_token') == token:
+                    return doc
+    return demo.find_by('share_token', token)
 
 
 def est_find_by_design_token(token):
@@ -532,16 +671,21 @@ def est_find_by_design_token(token):
     """
     if not token:
         return None
-    if DATABASE_URL:
-        with _db_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT doc FROM estimates WHERE doc->>'design_share_token' = %s "
-                        'LIMIT 1', (str(token),))
-            row = cur.fetchone()
-            return row[0] if row else None
-    for doc in est_iter():
-        if doc.get('design_share_token') == token:
-            return doc
-    return None
+    # Demo fallback for the same reason as est_find_by_token above: a design
+    # review link is given to somebody without a session.
+    if not demo.active():
+        if DATABASE_URL:
+            with _db_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT doc FROM estimates WHERE doc->>'design_share_token' = %s "
+                            'LIMIT 1', (str(token),))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+        else:
+            for doc in est_iter():
+                if doc.get('design_share_token') == token:
+                    return doc
+    return demo.find_by('design_share_token', token)
 
 
 def est_update(est_id, mutator):
@@ -552,6 +696,14 @@ def est_update(est_id, mutator):
     writers (2 gunicorn workers: sign POST vs rep save vs CRM write-back)
     serialize instead of losing updates. File mode is plain load-mutate-save —
     fine for single-user local dev."""
+    if _demo_est(est_id):
+        # One process, one dict, and the GIL between them — the serialization
+        # the DB branch needs is not a concern here.
+        doc = mutator(est_load(est_id))
+        if doc is None:
+            return None
+        est_save(doc)
+        return doc
     if DATABASE_URL:
         with _db_conn() as conn, conn.cursor() as cur:
             cur.execute('SELECT doc FROM estimates WHERE id = %s FOR UPDATE',
@@ -805,8 +957,95 @@ def index():
 # read and write portal.users instead of users.json, so there is exactly one
 # user store even though two apps expose an editor for it.
 
+@app.route('/demo/<token>')
+def enter_demo(token):
+    """Turn this browser into a demo guest. THE link Luke hands out.
+
+    Takes no cookie and creates no account: the token in the URL is the whole
+    protection, exactly like /sign/<token>. 404 (not 403) when demo mode is off
+    or the token is wrong, so a wrong guess cannot tell you whether the feature
+    exists at all.
+
+    `?reset=1` puts the seeded estimates back — the demo is shown more than
+    once, and the second audience should not open it onto whatever the first
+    one left half-edited.
+    """
+    if not pdemo.matches(token):
+        return jsonify({'error': 'Not found'}), 404
+    pdemo.activate(session)
+    if request.args.get('reset'):
+        demo.reset()
+    # script_root is '/estimate' under the portal mount and '' standalone.
+    return redirect((request.script_root or '') + '/')
+
+
+# ── The demo link, as an admin control ─────────────────────────────────────
+# These live on the estimator because ⚙ Settings is where an admin actually
+# is when they want the link, which is the same reason the Team Logins panel
+# is here and writes portal.users — one store, two apps able to edit it.
+#
+# ADMIN ONLY, not manager-up. Handing out this link is a decision about what
+# leaves the company, and a demo session created from it can be capped at
+# manager (P1_DEMO_ROLE) — a manager minting one could raise their own
+# audience's reach past their own.
+#
+# Deliberately absent from demo_store.ALLOWED_ENDPOINTS: a guest reading this
+# would hold the key to their own session and could rotate it out from under
+# the person who invited them.
+
+@app.route('/api/demo-link', methods=['GET'])
+def get_demo_link():
+    if not _is_admin(_current_user()):
+        return _forbid()
+    return jsonify({
+        'enabled': pdemo.enabled(),
+        'url': pdemo.link(_base_url()),
+        # The UI has to distinguish "no link yet" from "a link exists that this
+        # button cannot revoke", or Revoke silently does nothing.
+        'env_override': pdemo.env_override(),
+        'role': pdemo.role(),
+    })
+
+
+@app.route('/api/demo-link', methods=['POST'])
+def create_demo_link():
+    """Create the link, or rotate it. Rotating invalidates the old URL at once."""
+    if not _is_admin(_current_user()):
+        return _forbid()
+    if pdemo.env_override():
+        return jsonify({'error': 'P1_DEMO_TOKEN is set in the environment and '
+                                 'overrides any link created here. Clear it first.'}), 409
+    pdemo.create()
+    return jsonify({'enabled': True, 'url': pdemo.link(_base_url()),
+                    'env_override': False, 'role': pdemo.role()})
+
+
+@app.route('/api/demo-link', methods=['DELETE'])
+def revoke_demo_link():
+    if not _is_admin(_current_user()):
+        return _forbid()
+    if not pdemo.revoke():
+        return jsonify({'error': 'P1_DEMO_TOKEN is set in the environment — '
+                                 'clear that variable to switch the demo off.'}), 409
+    return jsonify({'enabled': False, 'url': '', 'env_override': False})
+
+
 @app.route('/api/me')
 def me():
+    if demo.active():
+        return jsonify({
+            'username': pdemo.USERNAME,
+            'display_name': pdemo.DISPLAY_NAME,
+            'email': '',
+            'is_admin': False,
+            'role': pdemo.role(),
+            'must_change': False,
+            # Drives the DEMO banner in the header. The guest must be able to
+            # tell at a glance that these customers are invented and these
+            # prices are not ours — an unlabelled demo of a real-looking tool
+            # is how a fictional number ends up quoted back at us.
+            'demo': True,
+        })
     user = session.get('user', '')
     rec  = pusers.get(user) if user else None
     return jsonify({
@@ -979,6 +1218,40 @@ def remove_team_member(username):
     return jsonify({'ok': True, 'removed': username})
 
 
+def _roster():
+    """Everyone an estimate can be assigned to: the team.json roster plus any
+    portal account it has not heard of (a rep enrolled by invite is a real
+    login without necessarily being on the roster). Usernames lowercase, since
+    `_can_touch_estimate` compares the salesperson to the session user exactly."""
+    seen, out = set(), []
+    for m in load_team():
+        u = (m.get('username') or '').strip().lower()
+        if u and u not in seen:
+            seen.add(u)
+            out.append({'username': u,
+                        'display_name': m.get('display_name') or _display_name(u)})
+    try:
+        accounts = pusers.all_users()
+    except Exception as exc:
+        print(f'[team] portal accounts unreadable, roster is team.json only: {exc}')
+        accounts = []
+    for a in accounts:
+        u = (a.get('username') or '').strip().lower()
+        if u and u not in seen:
+            seen.add(u)
+            out.append({'username': u, 'display_name': _display_name(u)})
+    return out
+
+
+@app.route('/api/team', methods=['GET'])
+def team_roster():
+    """Any signed-in user: who can be picked as a salesperson. Names only — the
+    phone/email overrides and enrollment state stay behind admin-only
+    /api/users. The front end used to hardcode this list, so a rep added in
+    Team Logins could never be picked."""
+    return jsonify(_roster())
+
+
 @app.route('/api/account/password', methods=['POST'])
 def change_own_password():
     """Any signed-in user sets/replaces their own password."""
@@ -1047,15 +1320,26 @@ def _is_lost(est):
     return (est.get('status') or '') in LOST_STATUSES
 
 
+def _insurance_rcv_total(est):
+    """The carrier's own number: RCV (= ACV + depreciation) across every
+    section. This is the CLAIM, so nothing the homeowner elects out of pocket
+    belongs in it — see _estimate_total, which adds those on top."""
+    ins_td   = est.get('trades', {}).get('insurance', {})
+    sections = ins_td.get('sections') or (
+        [{'items': ins_td.get('line_items', [])}] if ins_td.get('line_items') else [])
+    return sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
+               for sec in sections for i in sec.get('items', []))
+
+
 def _estimate_total(est):
-    """Grand total for any estimate type (insurance sections-aware)."""
+    """Grand total for any estimate type (insurance sections-aware).
+
+    Elected optional upgrades ride on top of every type: they are part of the
+    contract the homeowner signed, so they are part of what the job is worth
+    to the funnel, the leaderboard and the analytics tab. Nothing is elected
+    until a customer ticks it, so this moves no unsigned estimate."""
     if est.get('estimate_type') == 'insurance':
-        ins_td   = est.get('trades', {}).get('insurance', {})
-        sections = ins_td.get('sections') or (
-            [{'items': ins_td.get('line_items', [])}] if ins_td.get('line_items') else [])
-        # RCV (price) = ACV + Depreciation
-        return sum(float(i.get('acv') or 0) + float(i.get('depreciation') or 0)
-                   for sec in sections for i in sec.get('items', []))
+        return _insurance_rcv_total(est) + upgrades_total(est)
     # A condition report with nothing priced behind it IS the bid — see
     # _is_report_only. This is the one place the price does not come from
     # line items, and everything downstream (list, funnel, Den push, sign
@@ -1074,6 +1358,12 @@ def _funnel_record(est, state, at=''):
     it started at. Best-effort on purpose: a customer signing a contract must
     never fail because a reporting table was locked.
     """
+    # A demo estimate is not a deal. Recording one would put a fictional
+    # customer and a fictional dollar value into portal.db's funnel table,
+    # which the CRM drains on every board read — so it would show up in the
+    # pipeline, in close rates, and on a leaderboard.
+    if demo.is_demo_doc(est):
+        return
     try:
         c = est.get('customer', {}) or {}
         pfunnel.record(
@@ -1094,6 +1384,25 @@ def _funnel_record(est, state, at=''):
               f'{est.get("estimate_id", "?")}: {exc}')
 
 
+def _est_owner_visible(d, only_own, user):
+    """Whether this raw estimate doc is visible to `user`. The estimate list
+    and the customer-documents list ask the same question, so they must not be
+    able to disagree about who owns a record — least of all an unreadable one.
+
+    Fails closed: an unreadable salesperson means "not yours", never a raised
+    exception and never "everyone's"."""
+    if not only_own:
+        return True
+    sp = d.get('salesperson')
+    if sp is None:
+        owner = ''                      # unassigned — any rep may claim it
+    elif isinstance(sp, str):
+        owner = sp.strip()
+    else:
+        owner = None                    # unreadable — nobody owns it
+    return owner in ('', user)
+
+
 @app.route('/api/estimates', methods=['GET'])
 def list_estimates():
     result = []
@@ -1110,14 +1419,7 @@ def list_estimates():
         if not isinstance(d, dict):
             print(f'[list] skipping non-object estimate document: {type(d).__name__}')
             continue
-        sp = d.get('salesperson')
-        if sp is None:
-            owner = ''                      # unassigned — any rep may claim it
-        elif isinstance(sp, str):
-            owner = sp.strip()
-        else:
-            owner = None                    # unreadable — nobody owns it
-        if only_own and owner not in ('', user):
+        if not _est_owner_visible(d, only_own, user):
             continue
         try:
             c = d.get('customer', {})
@@ -1154,6 +1456,12 @@ def list_estimates():
                 'co_pending':      sum(1 for x in d.get('change_orders') or []
                                        if x.get('status') in ('draft', 'sent')),
                 'co_total':        round(_accepted_co_total(d), 2),
+                # Where a signed job stands, for the Job Board's post-signature
+                # columns. Empty on anything unsigned, and on a signed job
+                # nobody has scheduled yet.
+                'job_stage':       _job_stage(d),
+                'job_stage_at':    _job_stage_at(d),
+                'upgrades_total':  round(upgrades_total(d), 2),
             })
         except Exception as e:
             # A malformed estimate must never silently vanish from a rep's
@@ -1207,8 +1515,21 @@ def save_estimate(est_id):
     if not _safe_path_id(est_id):
         return jsonify({'error': 'invalid estimate id'}), 400
     data = request.get_json(force=True)
+    bad = _invalid_rates(data.get('pricing'))
+    if bad:
+        return jsonify({'error': 'A margin of 100% or more prices every line at $0. '
+                                 'Lower it below 100, or switch to markup mode if you '
+                                 'meant to add 100% on top of cost.',
+                        'fields': bad}), 400
     data['estimate_id'] = est_id
     data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+    # Every optional-upgrade row needs a stable id: it is the /sign form's
+    # field name, so a row without one can never be ticked — and it fails
+    # silently, as a priced offer sitting there that the customer cannot
+    # select. Backfilled here so a row from any client gets one.
+    for _u in ((data.get('upgrades') or {}).get('items') or []):
+        if isinstance(_u, dict) and not str(_u.get('id') or '').strip():
+            _u['id'] = 'u_' + uuid.uuid4().hex[:8]
     # Permission check outside the write lock (cheap read; verdict can't change)
     existing_pre = est_load(est_id)
     if existing_pre and not _can_touch_estimate(existing_pre):
@@ -1219,6 +1540,47 @@ def save_estimate(est_id):
             for field in SERVER_MANAGED_FIELDS:
                 if not data.get(field) and existing.get(field):
                     data[field] = existing[field]
+            # Who owns an estimate moves ONLY through PATCH .../salesperson.
+            # A whole-doc save is a snapshot from whenever the tab loaded, so
+            # a rep's open tab autosaving a minute after a manager reassigned
+            # the job would hand it straight back, with nothing on screen to
+            # say so. An unassigned estimate may still be claimed by a save.
+            # `accepted` on an optional upgrade is the CUSTOMER'S tick, not a
+            # field a rep's tab may carry. SERVER_MANAGED_FIELDS cannot cover
+            # it — that rule restores a key only when the save omits it, and a
+            # rep editing the upgrades panel always sends one — so it is
+            # re-applied by id. Without this a rep who had the estimate open
+            # before the signature landed would autosave the election straight
+            # back off the contract, and the total with it. Adding, editing and
+            # deleting rows still works; only the tick is not theirs to set.
+            _prev_acc = {str(u.get('id') or ''): u.get('accepted')
+                         for u in ((existing.get('upgrades') or {}).get('items') or [])
+                         if isinstance(u, dict)}
+            for _u in ((data.get('upgrades') or {}).get('items') or []):
+                if not isinstance(_u, dict):
+                    continue
+                if _prev_acc.get(str(_u.get('id') or '')) is True:
+                    _u['accepted'] = True
+                else:
+                    _u.pop('accepted', None)
+            prev_sp = existing.get('salesperson')
+            if isinstance(prev_sp, str) and prev_sp.strip():
+                data['salesperson'] = prev_sp
+            if existing.get('assignment_history'):
+                data['assignment_history'] = existing['assignment_history']
+            else:
+                data.pop('assignment_history', None)
+            # Where a signed job stands moves ONLY through PATCH .../job-stage,
+            # for the same reason as the owner: a tab opened before the office
+            # marked the job Scheduled would otherwise autosave it back to
+            # "awaiting scheduling" and the card would jump columns on its own.
+            # SERVER_MANAGED_FIELDS cannot express this — it restores a key
+            # only when the save omits it, and a stale tab carries the old one.
+            for _f in ('job_stage', 'job_stage_history'):
+                if existing.get(_f):
+                    data[_f] = existing[_f]
+                else:
+                    data.pop(_f, None)
             # A signed estimate stays accepted even if a stale tab says draft
             if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
                 data['status'] = existing.get('status', 'accepted')
@@ -1234,6 +1596,18 @@ def save_estimate(est_id):
         data.pop('change_orders', None)
         if existing and existing.get('change_orders'):
             data['change_orders'] = existing['change_orders']
+        # The GC invoice/quote is saved through its own endpoint too — it holds
+        # payments received, and a stale tab must not roll a balance back.
+        data.pop('invoice', None)
+        if existing and existing.get('invoice'):
+            data['invoice'] = existing['invoice']
+        # The Design Studio writes through its focused asset/state endpoints.
+        # Once that server document exists, a whole-estimate save is only a
+        # potentially stale snapshot and must not roll back newer masks,
+        # selections, elevation metadata, or saved-render pointers. An estimate
+        # with no visualizer yet may still create its initial document here.
+        if existing and isinstance(existing.get('visualizer'), dict):
+            data['visualizer'] = copy.deepcopy(existing['visualizer'])
         # Paid inference throttling is server-owned, even on a full-doc save.
         data.pop('_visualizer_detection_attempts', None)
         if existing and existing.get('_visualizer_detection_attempts'):
@@ -1261,6 +1635,7 @@ def duplicate_estimate(est_id):
     est['last_viewed_at'] = None
     est['view_count'] = 0
     est.pop('change_orders', None)   # signed legal docs — never copied
+    est.pop('invoice', None)         # its number and payments belong to the original
     est['created_at'] = datetime.utcnow().isoformat() + 'Z'
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     # The copy stays in the SAME customer's file. This used to rename the
@@ -1306,6 +1681,12 @@ def _cust_key(name):
 
 
 def _read_customer_notes():
+    # Demo-scoped rather than blocked: the customer screen has a notes box on
+    # it, and a guest typing in one that silently refuses to save reads as a
+    # broken tool. These are also real notes about real people, so a guest
+    # must not be able to read them by guessing a name.
+    if demo.active():
+        return demo.notes()
     try:
         if os.path.exists(CUSTOMER_NOTES_FILE):
             with open(CUSTOMER_NOTES_FILE, 'r', encoding='utf-8') as f:
@@ -1341,9 +1722,67 @@ def set_customer_notes(name):
     legacy = (name or '').lower().strip()
     if legacy != key:
         notes.pop(legacy, None)
+    # _read_customer_notes() handed back the demo dict itself, so the two lines
+    # above have already stored the note; the file must not be touched.
+    if demo.active():
+        return jsonify({'ok': True})
     with open(CUSTOMER_NOTES_FILE, 'w', encoding='utf-8') as f:
         json.dump(notes, f, indent=2)
     return jsonify({'ok': True})
+
+
+@app.route('/api/customer-documents/<path:name>', methods=['GET'])
+def get_customer_documents(name):
+    """Every document on every estimate this customer has, grouped by estimate.
+
+    The customer screen's Files panel used to render the OPEN estimate's
+    attachments under the customer's name, so a customer with three estimates
+    had their documents on three screens and the panel said otherwise. This is
+    the other half of that list; the browser splices the open estimate's live
+    attachments in ahead of it (customerDocumentRows), because a document made
+    seconds ago — or on an estimate never saved — is not in here yet.
+
+    Groups on _cust_key, the same key the file, the notes and the create button
+    use, and filters through _est_owner_visible, the same rule as the estimate
+    list. Deliberately thin: no totals, no change-order math.
+
+    Closed to demo guests (not in demo_store.ALLOWED_ENDPOINTS): it reads the
+    real store, and a guest must not list real customers' files by guessing a
+    name. The screen shows no other estimates for them, which is true."""
+    key = _cust_key(name)
+    if not key:
+        return jsonify([])
+    only_own = not _is_manager_up()
+    user = _current_user()
+    out = []
+    for d in est_iter(reverse=True):
+        if not isinstance(d, dict) or not _est_owner_visible(d, only_own, user):
+            continue
+        try:
+            c = d.get('customer') or {}
+            if _cust_key(c.get('name')) != key:
+                continue
+            docs = [{'id': x.get('id'), 'filename': x.get('filename'),
+                     'label': x.get('label') or x.get('original_name') or 'Document',
+                     'doc_type': x.get('doc_type') or '',
+                     'server_generated': bool(x.get('server_generated')),
+                     'generated_at': x.get('generated_at') or '',
+                     'crm_document_id': x.get('crm_document_id') or ''}
+                    for x in (d.get('attachments') or [])
+                    if isinstance(x, dict) and x.get('filename')]
+            out.append({
+                'estimate_id':    d.get('estimate_id', ''),
+                'estimate_label': d.get('estimate_label', ''),
+                'estimate_type':  d.get('estimate_type', 'retail'),
+                'estimate_number': _est_number(d),
+                'signed':         bool(d.get('signature')),
+                'updated_at':     d.get('updated_at', ''),
+                'crm_project_id': (c.get('crm_project_id') or d.get('crm_project_id') or ''),
+                'documents':      docs,
+            })
+        except Exception as e:
+            print(f'[customer-docs] skipping {d.get("estimate_id")}: {e!r}')
+    return jsonify(out)
 
 
 @app.route('/api/estimates/<est_id>/label', methods=['PATCH'])
@@ -1361,12 +1800,81 @@ def update_estimate_label(est_id):
     return jsonify({'ok': True, 'label': label})
 
 
+@app.route('/api/estimates/<est_id>/salesperson', methods=['PATCH'])
+def reassign_estimate(est_id):
+    """Hand an estimate to another rep — the only path that changes its owner.
+
+    Manager-up, because ownership is visibility: reps see only their own
+    estimates, so this moves a job off one rep's dashboard and onto another's.
+    A rep may do exactly one thing here, which a save could already do: claim
+    an unassigned estimate for themselves. `""` unassigns (manager-up)."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    raw = (request.get_json(force=True, silent=True) or {}).get('salesperson')
+    if not isinstance(raw, str):
+        return jsonify({'error': 'salesperson required'}), 400
+    target = raw.strip().lower()
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    user = _current_user()
+    prev_raw = est.get('salesperson')
+    if not _is_manager_up():
+        # An unreadable owner is not "unassigned" — fails closed, like the list.
+        unassigned = prev_raw is None or (isinstance(prev_raw, str) and not prev_raw.strip())
+        if not (unassigned and target and target == user):
+            return _forbid()
+    if target and target not in {m['username'] for m in _roster()}:
+        return jsonify({'error': f'{raw.strip()} is not on the team roster.'}), 400
+    prev = prev_raw.strip() if isinstance(prev_raw, str) else ''
+    if target == prev and isinstance(prev_raw, str):
+        return jsonify({'ok': True, 'salesperson': target, 'changed': False})
+    now = datetime.utcnow().isoformat() + 'Z'
+    hist = est.get('assignment_history')
+    hist = hist if isinstance(hist, list) else []
+    hist.append({'from': prev, 'to': target, 'by': user, 'at': now})
+    est['assignment_history'] = hist[-50:]
+    est['salesperson'] = target
+    est['updated_at'] = now
+    est_save(est)
+    # The funnel row carries the rep too. Left alone, the CRM keeps attributing
+    # this estimate to whoever handed it off. Only an EXISTING row is updated —
+    # record() would otherwise create one for an estimate no lead ever linked.
+    if not demo.is_demo_doc(est):
+        try:
+            if pfunnel.get(est_id):
+                pfunnel.record(est_id, 'draft', rep=target)
+        except Exception as exc:
+            print(f'[funnel] reassignment not recorded for {est_id}: {exc}')
+    return jsonify({'ok': True, 'salesperson': target, 'changed': True})
+
+
+# Why we lost, captured at the moment a rep marks an estimate lost. Without it
+# the analytics tab could report a close rate to the decimal and never say what
+# to change: price, timing, a competitor and an insurance denial are four
+# different companies' problems and the tool could not tell them apart.
+LOST_REASONS = {
+    'price':        'Price — we were too expensive',
+    'competitor':   'Went with another contractor',
+    'timing':       'Not doing it now / postponed',
+    'insurance':    'Insurance denied or underpaid the claim',
+    'unresponsive': 'Went quiet — never got an answer',
+    'scope':        'Changed their mind on the work',
+    'other':        'Other',
+}
+
+
 @app.route('/api/estimates/<est_id>/status', methods=['PATCH'])
 def update_estimate_status(est_id):
     VALID = {'draft', 'sent', 'accepted', 'lost', 'declined'}
-    status = (request.json or {}).get('status')
+    body   = request.json or {}
+    status = body.get('status')
     if status not in VALID:
         return jsonify({'error': 'Invalid status'}), 400
+    reason = (body.get('lost_reason') or '').strip()
+    if reason and reason not in LOST_REASONS:
+        return jsonify({'error': 'Unknown loss reason'}), 400
+    reason_note = (body.get('lost_note') or '').strip()[:500]
     status = _norm_est_status(status)          # `declined` in, `lost` stored
     est = est_load(est_id)
     if est is None:
@@ -1378,6 +1886,19 @@ def update_estimate_status(est_id):
     if est.get('signature') and status != 'accepted':
         return jsonify({'error': 'A signed estimate cannot change status.'}), 400
     est['status'] = status
+    if status in LOST_STATUSES:
+        # Recorded only on the way INTO lost. Moving back out clears them, so a
+        # re-quoted job does not carry a stale "went with someone else" into the
+        # month it actually closes.
+        if reason:
+            est['lost_reason'] = reason
+        if reason_note:
+            est['lost_note'] = reason_note
+        est['lost_at'] = datetime.utcnow().isoformat() + 'Z'
+    else:
+        est.pop('lost_reason', None)
+        est.pop('lost_note', None)
+        est.pop('lost_at', None)
     est['updated_at'] = datetime.utcnow().isoformat() + 'Z'
     est_save(est)
     # Tell the CRM. Marking an estimate lost does NOT lose the lead — plenty
@@ -1385,7 +1906,105 @@ def update_estimate_status(est_id):
     # the pipeline should say so on the timeline.
     if status == 'lost':
         _funnel_record(est, 'lost')
-    return jsonify({'ok': True, 'status': status})
+    return jsonify({'ok': True, 'status': status,
+                    'lost_reason': est.get('lost_reason', '')})
+
+
+@app.route('/api/lost-reasons', methods=['GET'])
+def get_lost_reasons():
+    """The picker's options, served rather than mirrored, so the list cannot
+    drift between the dropdown and the validator that accepts its value."""
+    return jsonify(LOST_REASONS)
+
+
+# Where a SIGNED job stands. The estimator's own knowledge of a job ends at the
+# signature — everything after it belongs to The Den — but the Job Board needs
+# to show a rep which of their signed jobs are still waiting on a date, and
+# nothing else in this app could say so. Set by hand, never pushed anywhere.
+# '' is a real stage: signed, awaiting scheduling. Ordered, because the board's
+# columns and the analytics tab both read this order.
+JOB_STAGES = {
+    '':              'Signed — awaiting scheduling',
+    'scheduled':     'Scheduled',
+    'in_production': 'In production',
+    'complete':      'Complete',
+}
+
+
+def _is_won(est):
+    """Signed, or marked accepted by hand (a customer who agreed on paper).
+    The same rule as estStatusOf() in app.js, which puts both on the board's
+    signed side — so both have to be schedulable."""
+    return bool(est.get('signature')) or est.get('status') == 'accepted'
+
+
+def _job_stage(est):
+    """The stored stage, or '' for anything not won or unrecognised. A stage
+    on an open estimate is meaningless (the PATCH refuses to write one), so a
+    stray value is read as nothing rather than trusted."""
+    if not _is_won(est):
+        return ''
+    st = est.get('job_stage') or ''
+    return st if st in JOB_STAGES else ''
+
+
+def _job_stage_at(est):
+    hist = est.get('job_stage_history')
+    if isinstance(hist, list) and hist and isinstance(hist[-1], dict):
+        return hist[-1].get('at') or ''
+    return ''
+
+
+@app.route('/api/job-stages', methods=['GET'])
+def get_job_stages():
+    """Served rather than mirrored, like the loss reasons: the board's columns
+    and the validator below cannot disagree about what a stage is."""
+    return jsonify([{'key': k, 'label': v} for k, v in JOB_STAGES.items()])
+
+
+@app.route('/api/estimates/<est_id>/job-stage', methods=['PATCH'])
+def update_job_stage(est_id):
+    """Move a signed job between Awaiting scheduling / Scheduled / In
+    production / Complete. Either direction — jobs get rescheduled — and every
+    move is kept in `job_stage_history`, which is what the cycle-time figures
+    on the analytics tab are measured from."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    raw = (request.get_json(force=True, silent=True) or {}).get('job_stage')
+    if not isinstance(raw, str) or raw not in JOB_STAGES:
+        return jsonify({'error': 'Unknown job stage'}), 400
+    pre = est_load(est_id)
+    if pre is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(pre):
+        return _forbid()
+    if not _is_won(pre):
+        return jsonify({'error': 'Only a signed job can be scheduled.'}), 409
+    user = _current_user()
+    now  = datetime.utcnow().isoformat() + 'Z'
+    changed = {'v': False}
+
+    def _mut(doc):
+        if doc is None or not _is_won(doc):
+            return None
+        if (doc.get('job_stage') or '') == raw:
+            return None
+        hist = doc.get('job_stage_history')
+        hist = hist if isinstance(hist, list) else []
+        hist.append({'stage': raw, 'from': doc.get('job_stage') or '',
+                     'at': now, 'by': user})
+        doc['job_stage_history'] = hist[-100:]
+        if raw:
+            doc['job_stage'] = raw
+        else:
+            doc.pop('job_stage', None)
+        doc['updated_at'] = now
+        changed['v'] = True
+        return doc
+
+    est_update(est_id, _mut)
+    return jsonify({'ok': True, 'job_stage': raw, 'changed': changed['v'],
+                    'job_stage_at': now if changed['v'] else _job_stage_at(pre)})
 
 
 # ── Photo uploads ──────────────────────────────────────────────────────────
@@ -1509,8 +2128,8 @@ def delete_photo(est_id, filename):
 # siding, trim/fascia, soffit, and door masks, then produce a Good/Better/Best
 # rendering with colors picked
 # from the actual estimate bundles. State lives entirely under `est.visualizer`
-# — a top-level key the server does not whitelist, so it round-trips through
-# the normal PUT unchanged (see SERVER_MANAGED_FIELDS and _merge).
+# — focused endpoints own updates once it exists; normal estimate saves
+# preserve the latest server copy so an autosave cannot undo design edits.
 #
 # Two endpoints:
 #  - POST .../visualizer/asset stores an image blob (base image, mask, or tier
@@ -1903,10 +2522,12 @@ def _decode_product_cutout(data, max_side=2048):
         with Image.open(io.BytesIO(data)) as source:
             if source.format not in ('PNG', 'JPEG', 'WEBP'):
                 raise ValueError('Use a PNG, JPG, or WebP product image.')
-            source.load()
             if min(source.size) < 1 or max(source.size) > 6000:
                 raise ValueError(
                     'Product image dimensions must be between 1 and 6000 pixels.')
+            if source.width * source.height > 20_000_000:
+                raise ValueError('Product images must not exceed 20 megapixels.')
+            source.load()
             image = ImageOps.exif_transpose(source).copy()
         if max(image.size) > max_side:
             ratio = max_side / max(image.size)
@@ -1922,6 +2543,32 @@ def _decode_product_cutout(data, max_side=2048):
         raise
     except Exception:
         raise ValueError('That product image could not be decoded.')
+
+
+def _decode_visualizer_image(data, ext):
+    """Store only decoded, bounded images in the customer-rendering path."""
+    from PIL import Image, ImageOps
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            if source.format not in ('PNG', 'JPEG', 'WEBP'):
+                raise ValueError('Use a PNG, JPG, or WebP image.')
+            if (min(source.size) < 1 or max(source.size) > 6000 or
+                    source.width * source.height > 20_000_000):
+                raise ValueError('Images must not exceed 6000 pixels per side or 20 megapixels.')
+            source.load()
+            image = ImageOps.exif_transpose(source).convert(
+                'RGB' if ext in ('jpg', 'jpeg') else 'RGBA')
+        # Re-encoding also strips camera metadata and makes the stored format
+        # match its extension, even if an older client mislabeled the upload.
+        image.info.clear()
+        encoded = io.BytesIO()
+        image.save(encoded, {'jpg': 'JPEG', 'jpeg': 'JPEG', 'png': 'PNG',
+                             'webp': 'WEBP'}[ext], quality=95)
+        if encoded.tell() > _VISUALIZER_MAX_BYTES:
+            raise ValueError('The decoded image is too large to save.')
+        return encoded.getvalue()
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError('That image could not be decoded.') from exc
 
 
 @app.route('/api/estimates/<est_id>/visualizer/asset', methods=['POST'])
@@ -1943,6 +2590,11 @@ def visualizer_asset(est_id):
         return _forbid()
 
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({'error': 'image upload must be an object'}), 400
+    if any(not isinstance(body.get(key, ''), str) for key in
+           ('kind', 'ext', 'content_b64', 'tier', 'role')):
+        return jsonify({'error': 'image upload fields must be text'}), 400
     kind = (body.get('kind') or '').strip()
     ext  = (body.get('ext') or '').strip().lower().lstrip('.')
     b64  = body.get('content_b64') or ''
@@ -1990,6 +2642,11 @@ def visualizer_asset(est_id):
         except ValueError as exc:
             return jsonify({'error': str(exc)}), 400
         ext = 'png'
+    else:
+        try:
+            data = _decode_visualizer_image(data, ext)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
 
     if ext == 'jpeg':
         ext = 'jpg'
@@ -2017,6 +2674,13 @@ def visualizer_asset(est_id):
             # the one asset immutable and let visualizer/state own references.
             vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
             return doc
+        if kind == 'provia':
+            # A configured door belongs to a concept, not an elevation. In
+            # particular, uploading it from Rear must not rename/select Front.
+            vz.setdefault('provia_specs', {}).setdefault(tier, {})[
+                'configured_image'] = stored_ref
+            vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            return doc
         elevations = _visualizer_elevations(vz)
         elevation = elevations.setdefault(elevation_id, {
             'id': elevation_id, 'name': elevation_name,
@@ -2034,15 +2698,17 @@ def visualizer_asset(est_id):
             elevation['base_image'] = stored_ref
             elevation['masks'] = {}
             elevation['tier_renders'] = {}
+            elevation.pop('material_layers', None)
             elevation['placements'] = _empty_visualizer_placements()
             elevation['texture_projection'] = _empty_texture_projection()
         elif kind == 'mask':
             elevation['masks'][role] = stored_ref
+            # A replaced selection changes every concept on this elevation.
+            # If the following render upload fails, customer links must not
+            # continue showing composites built with the previous selection.
+            elevation['tier_renders'] = {}
         elif kind == 'render':
             elevation['tier_renders'][tier] = stored_ref
-        else:
-            vz.setdefault('provia_specs', {}).setdefault(tier, {})[
-                'configured_image'] = stored_ref
         _visualizer_mirror_front(vz)
         vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
         return doc
@@ -2128,6 +2794,7 @@ def visualizer_state(est_id):
         if not delete_elevation_id:
             return jsonify({'error': 'invalid elevation to remove'}), 400
     invalidate_other_renders = body.get('invalidate_other_renders') is True
+    invalidate_current_renders = body.get('invalidate_current_renders') is True
 
     existing_vz = (est or {}).get('visualizer')
     existing_vz = existing_vz if isinstance(existing_vz, dict) else {}
@@ -2229,15 +2896,22 @@ def visualizer_state(est_id):
                 normalized_texture_projection)
         if delete_elevation_id in elevations and len(elevations) > 1:
             elevations.pop(delete_elevation_id, None)
+            if delete_elevation_id == 'front':
+                # Legacy mirrors are import sources during normalization.
+                # Clear them before normalizing or Front is resurrected.
+                for field in ('base_image', 'tier_renders') + tuple(
+                        f'{role}_mask' for role in _VISUALIZER_ROLES):
+                    vz.pop(field, None)
         if elevation_order is not None:
             vz['elevation_order'] = [eid for eid in elevation_order if eid in elevations]
         _visualizer_elevations(vz)
         if active_elevation_id in elevations:
             vz['active_elevation_id'] = active_elevation_id
-        if invalidate_other_renders:
+        if invalidate_other_renders or invalidate_current_renders:
             keep_id = active_elevation_id if active_elevation_id in elevations else vz.get('active_elevation_id')
             for eid, elevation in elevations.items():
-                if eid != keep_id:
+                if ((eid != keep_id and invalidate_other_renders) or
+                        (eid == keep_id and invalidate_current_renders)):
                     elevation['tier_renders'] = {}
         _visualizer_mirror_front(vz)
         vz['updated_at'] = datetime.utcnow().isoformat() + 'Z'
@@ -2316,7 +2990,8 @@ def visualizer_detection(est_id):
             result.update(role=ticket['role'], photo_key=ticket['photo_key'])
             return jsonify(result)
         body = request.get_json(silent=True)
-        if not isinstance(body, dict) or body.get('role') not in detection.PROMPTS:
+        if (not isinstance(body, dict) or not isinstance(body.get('role'), str)
+                or body.get('role') not in detection.PROMPTS):
             return jsonify(
                 {'error': 'Choose a supported exterior surface.'}), 400
         role = body['role']
@@ -2715,15 +3390,26 @@ def visualizer_operations():
 
 # ── RoofR PDF import ───────────────────────────────────────────────────────
 
-def _parse_roofr_lf(s):
-    """Convert RoofR linear-foot string ('358ft 4in') to decimal feet."""
-    m = re.match(r'(\d+)ft\s+(\d+)in', s.strip())
-    if m:
-        return round(int(m.group(1)) + int(m.group(2)) / 12, 2)
-    m = re.match(r'(\d[\d,]*)ft', s.replace(',', ''))
-    return float(m.group(1)) if m else 0.0
+# One linear-foot value as RoofR prints it. Thousands separators are real —
+# Roofr commas any four-digit figure, so eaves on a big or multi-structure
+# property arrive as "1,204ft 3in" — and the inches half is optional. Both
+# halves matter to the CALLER's regex too, which is why find_lf() below shares
+# this pattern instead of spelling its own: it used to demand `\d+ft\s+\d+in`,
+# so "1,204ft 3in" matched nothing at all and the key was dropped, quietly
+# pricing zero eaves, zero gutters and zero valleys on the largest jobs we bid.
+# A bare-feet branch existed here but was unreachable for the same reason.
+_ROOFR_LF_RE = r'\d[\d,]*\s*ft(?:\s+\d+\s*in)?'
 
-def _parse_roofr_pitches(full_text):
+
+def _parse_roofr_lf(s):
+    """Convert RoofR linear-foot string ('358ft 4in', '1,204ft 3in', '421ft')
+    to decimal feet. Inches are optional; a missing inches half is 0."""
+    m = re.match(r'(\d+)\s*ft(?:\s+(\d+)\s*in)?', s.replace(',', '').strip())
+    if not m:
+        return 0.0
+    return round(int(m.group(1)) + int(m.group(2) or 0) / 12, 2)
+
+def _parse_roofr_pitches(full_text, prefer_first=False):
     """Extract (rise, area_sqft) pairs from RoofR's pitch table.
 
     Real RoofR exports print a columnar block, not a row per pitch:
@@ -2731,9 +3417,19 @@ def _parse_roofr_pitches(full_text):
         Area (sqft) 514 106 4,675
         Squares 5.2 1.1 46.8
     Multi-structure properties (garage, shed, addition) repeat this block once
-    per structure, then once more for the whole-property 'Report summary' —
-    the LAST such block in the document is that total, so it wins. Flat
-    facets are already folded into the low-rise buckets here (0/12 area plus
+    per structure, plus once for the whole-property 'Report summary'. Which
+    copy is the total depends on where that summary sits, so the CALLER says:
+    `prefer_first` when the text has already been scoped to a Report summary
+    (the first block in that window belongs to the summary itself), and the
+    LAST block otherwise. The two coincide on a report whose summary comes
+    last, the layout this was verified against — but with the summary FIRST,
+    taking the last block read the pitches off the final structure while every
+    other measurement came from the whole property. A detached garage then
+    decided the low-slope, steep-charge and predominant-pitch numbers for the
+    whole house: rolled roofing billed for area that isn't flat, steep charge
+    dropped for area that is.
+
+    Flat facets are already folded into the low-rise buckets here (0/12 area plus
     2/12 area lines up with the report's separately-stated flat-area total,
     within rounding) — nothing needs adding back on top.
 
@@ -2745,7 +3441,7 @@ def _parse_roofr_pitches(full_text):
         re.I | re.M)
     matches = list(table_re.finditer(full_text))
     if matches:
-        m     = matches[-1]
+        m     = matches[0] if prefer_first else matches[-1]
         rises = [int(r) for r in re.findall(r'(\d{1,2})\s*/\s*12', m.group(1))]
         areas = [float(a.replace(',', '')) for a in re.findall(r'[\d,]+(?:\.\d+)?', m.group(2))]
         if rises and len(rises) == len(areas):
@@ -2912,8 +3608,10 @@ def _parse_roofr_pdf(file_bytes):
     search_text = full_text[rs_matches[0].start():] if rs_matches else full_text
 
     def find_lf(label):
-        # [\s:]+ handles both "Label 358ft 4in" and "Label: 358ft 4in" formats
-        m = re.search(rf'{re.escape(label)}[\s:]+(\d+ft\s+\d+in)', search_text)
+        # [\s:]+ handles both "Label 358ft 4in" and "Label: 358ft 4in" formats.
+        # The value pattern is shared with _parse_roofr_lf so the two can't
+        # drift: a figure this can't match is a measurement silently dropped.
+        m = re.search(rf'{re.escape(label)}[\s:]+({_ROOFR_LF_RE})', search_text)
         return _parse_roofr_lf(m.group(1)) if m else None
 
     # Prefer the whole-property "Total roof area <N> sqft" over a bare
@@ -2928,7 +3626,7 @@ def _parse_roofr_pdf(file_bytes):
         squares = float(sq.group(1)) if sq else None
 
     # "Hips + ridges" is the precomputed combined value in the Report Summary
-    ridge_hip_m = re.search(r'Hips\s*\+\s*ridges[\s:]+(\d+ft\s+\d+in)', search_text)
+    ridge_hip_m = re.search(rf'Hips\s*\+\s*ridges[\s:]+({_ROOFR_LF_RE})', search_text)
     ridge_hip = _parse_roofr_lf(ridge_hip_m.group(1)) if ridge_hip_m else None
     if ridge_hip is None:
         h = find_lf('Total hips') or 0
@@ -2944,13 +3642,28 @@ def _parse_roofr_pdf(file_bytes):
     valley = find_lf('Total valleys')
     rake   = find_lf('Total rakes')
     step   = find_lf('Total step flashing')
+    # Roofr reports these three on every report and we read past all of them
+    # until 2026-09-09, which is why a standing seam bid priced its headwall
+    # and its transitions at nothing and the rep had to know to add them.
+    # Shingle roofs never needed them, so nothing complained.
+    #
+    # "Unspecified" is Roofr's bucket for edges its classifier could not name.
+    # It is carried as its own field and folded into the headwall measure (see
+    # MEASURE_DEFS in app.js) rather than being silently added to wall
+    # flashing here — a rep who finds it is really rake can zero it without
+    # having to reverse-engineer where the number went.
+    wall_flash  = find_lf('Total wall flashing')
+    transition  = find_lf('Total transitions')
+    unspecified = find_lf('Total unspecified')
 
     # Pitch breakdown → low-slope (≤2/12, rolled roofing) and steep (≥7/12,
     # steep charge) areas in squares. Set explicitly (even 0) whenever the
     # report has a pitch table so a re-import clears stale values; omitted
     # entirely when it doesn't, leaving manual entries alone.
     low_slope_sq = steep_sq = None
-    pitch_rows = _parse_roofr_pitches(search_text)
+    # search_text is scoped to the Report summary whenever the report has one,
+    # so the summary's own pitch table is the FIRST in that window.
+    pitch_rows = _parse_roofr_pitches(search_text, prefer_first=bool(rs_matches))
     if pitch_rows:
         low_slope_sq = round(sum(a for p, a in pitch_rows if p <= 2) / 100, 1)
         steep_sq     = round(sum(a for p, a in pitch_rows if p >= 7) / 100, 1)
@@ -2992,6 +3705,9 @@ def _parse_roofr_pdf(file_bytes):
         'valley_lf':     valley,
         'rake_lf':       rake,
         'step_flash_lf': step,
+        'wall_flash_lf':  wall_flash,
+        'transition_lf':  transition,
+        'unspecified_lf': unspecified,
         'gutter_lf':     eave,
         'low_slope_squares': low_slope_sq,
         'steep_squares':     steep_sq,
@@ -3009,17 +3725,84 @@ def _parse_roofr_pdf(file_bytes):
 
     return {'measurements': meas, 'address': addr}
 
+def _read_pdf_upload(f):
+    """`(bytes, None)` for an uploaded PDF, or `(None, message)`.
+
+    The filename is a HINT and must never be the gate. Both PDF importers used
+    to reject on `not f.filename.lower().endswith('.pdf')`, which is a claim
+    about what iOS chose to call the file rather than about the file: a report
+    picked out of iCloud Drive or handed over by a share sheet does not
+    reliably arrive with its extension, and the rep gets "Please upload a PDF
+    file" while holding an obviously valid PDF.
+
+    `%PDF-` is the thing that is actually true about it. An empty upload gets
+    its own message because that one is not the rep's fault either -- it is
+    what a released iOS file handle looks like on this end, and "could not read
+    PDF: EOF" sends whoever reads it hunting through the parser instead.
+    """
+    if f is None:
+        return None, 'Please choose a PDF file.'
+    raw = f.read()
+    if not raw:
+        return None, ('That file arrived empty. Pick it again — if it keeps '
+                      'happening, open the PDF once in Files first.')
+    if not raw[:1024].lstrip().startswith(b'%PDF-'):
+        name = (f.filename or '').strip()
+        return None, (f'“{name}” is not a PDF.' if name else 'That file is not a PDF.')
+    return raw, None
+
+
+def _and_list(items):
+    """'eaves', 'roof area and eaves', 'roof area, eaves and valleys'."""
+    items = [str(i) for i in items]
+    if len(items) <= 1:
+        return items[0] if items else ''
+    return ', '.join(items[:-1]) + ' and ' + items[-1]
+
+
+# Measurements a roof cannot actually be missing. Absent (or zero) means the
+# PARSE failed, not that the building has none of it — so the import refuses
+# rather than handing back a payload whose gaps apply as silent zeros.
+_ROOFR_REQUIRED = [('roof_squares', 'roof area'), ('eave_lf', 'eaves')]
+
+# Measurements a real roof genuinely might not have — a simple gable has no
+# valleys and no hips. Reported to the rep as unread when the label was absent
+# ENTIRELY (`is None`); an explicit "0ft 0in" in the report is an answer, not a
+# gap, and must not cry wolf.
+_ROOFR_EXPECTED = [
+    ('valley_lf',     'valleys'),
+    ('rake_lf',       'rakes'),
+    ('ridge_hip_lf',  'ridges + hips'),
+    ('step_flash_lf', 'step flashing'),
+]
+
+
 @app.route('/api/parse-roofr', methods=['POST'])
 def parse_roofr():
-    f = request.files.get('file')
-    if not f or not f.filename.lower().endswith('.pdf'):
-        return jsonify({'error': 'Please upload a PDF file.'}), 400
+    raw, err = _read_pdf_upload(request.files.get('file'))
+    if err:
+        return jsonify({'error': err}), 400
     try:
-        data = _parse_roofr_pdf(f.read())
+        data = _parse_roofr_pdf(raw)
     except Exception as e:
         return jsonify({'error': f'Could not read PDF: {e}'}), 400
-    if not data['measurements'].get('roof_squares'):
-        return jsonify({'error': "Couldn’t find RoofR measurements in this PDF. Make sure it’s a RoofR report."}), 422
+
+    # applyRoofrImport Object.assigns only the keys present, so anything the
+    # parser failed to read keeps whatever the estimate already held — zero on
+    # a fresh one — and a zero prices, prints and signs exactly as legitimately
+    # as a measured number. Refuse rather than apply a gap.
+    meas = data['measurements']
+    missing = [label for key, label in _ROOFR_REQUIRED if not meas.get(key)]
+    if missing:
+        return jsonify({'error':
+            'Couldn’t read the ' + _and_list(missing) + ' from this PDF. '
+            'Nothing was applied — an import that lands with gaps prices them as zero. '
+            'Check it’s the RoofR report (not the invoice or a scan), or enter the '
+            'measurements by hand.'}), 422
+
+    # Everything else the report didn't yield, named so the rep can eyeball it
+    # against the PDF before applying instead of hunting for a blank field.
+    data['unread'] = [label for key, label in _ROOFR_EXPECTED if meas.get(key) is None]
     return jsonify(data)
 
 
@@ -3037,25 +3820,174 @@ def _xact_num(s):
 # Verified shapes: "28.74 SQ 75.56 2,171.59 23/30 yrs Avg. NA (0.00) 2,171.59",
 # "... 76.67% (7,397.88) ...", "... 90% [M] (97.65) ...", "0/NA Avg.",
 # "Abv. Avg.", and guide-style glued qty+unit ("685.47SF").
+#
+# The columns are the ADJUSTER's choice in Xactimate, not a fixed layout.
+# Allstate prints the shape above; Auto-Owners prints "QTY UNIT PRICE TAX RCV
+# (DEPREC) ACV" with no age, condition or dep% at all, and a pattern written
+# for one matched zero lines of the other. So the layout is READ rather than
+# assumed: every export prints its column header, `_xact_columns` turns that
+# row into a column list and `_xact_item_rx` into the pattern its lines must
+# match. This tolerant pattern is only the fallback -- for lines before any
+# header, or under a header naming a column nobody has taught it yet.
+_XACT_MONEY = r'[\d,]+\.\d{2}'
 _XACT_ITEM_RE = re.compile(
     r'^(?P<no>\d{1,3})\.\s+(?P<desc>.+?)\s+'
     r'(?P<qty>[\d,]+\.\d{2})\s*(?P<unit>[A-Z]{2,3})\s+'
-    r'(?P<price>[\d,]+\.\d{2})\s+(?P<rcv>[\d,]+\.\d{2})\s+'
-    r'(?P<age>\d+/(?:\d+|NA))\s*(?:yrs)?\s+'
+    r'(?P<price>[\d,]+\.\d{2})\s+(?:[\d,]+\.\d{2}\s+){0,2}(?P<rcv>[\d,]+\.\d{2})\s+'
+    r'(?:(?P<age>\d+/(?:\d+|NA))\s*(?:yrs)?\s+'
     r'(?P<cond>New|Avg\.|Abv\.\s*Avg\.|Bel\.\s*Avg\.)\s+'
-    r'(?P<dep_pct>NA|<?[\d.]+\s*%)\s*(?:\[[A-Z%]\])?\s*'
-    r'\((?P<deprec>[\d,]+\.\d{2})\)\s+(?P<acv>[\d,]+\.\d{2})\s*$')
+    r'(?P<dep_pct>NA|<?[\d.]+\s*%)\s*(?:\[[A-Z%]\])?\s*)?'
+    r'(?P<dep_open>[(<])(?P<deprec>[\d,]+\.\d{2})[)>]\s+(?P<acv>[\d,]+\.\d{2})\s*$')
+
+# Header words -> column key. Within one entry the longer spelling comes first
+# (UNIT PRICE before UNIT, RCV before RC).
+_XACT_COLUMN_WORDS = (
+    ('qty',     r'QUANTITY|QTY'),
+    ('price',   r'UNIT\s*(?:PRICE|COST)|UNIT|PRICE'),
+    ('remove',  r'REMOVE'),
+    ('replace', r'REPLACE'),
+    ('tax',     r'TAX'),
+    ('op',      r'O\s*&\s*P'),
+    ('rcv',     r'RCV|TOTAL|RC'),
+    ('age',     r'AGE\s*/\s*LIFE'),
+    ('cond',    r'COND\.?'),
+    ('dep_pct', r'DEP\s*%'),
+    ('deprec',  r'DEPREC\.?|DEPRECIATION'),
+    ('acv',     r'ACV'),
+)
+
+# The cell each column prints. Depreciation in <angle brackets> is Xactimate's
+# mark for NON-recoverable depreciation (the homeowner never gets it back);
+# (parentheses) is recoverable. Both come off ACV the same way.
+_XACT_CELLS = {
+    'qty':     r'(?P<qty>[\d,]+\.\d{2})\s*(?P<unit>[A-Z]{2,3})',
+    'price':   rf'(?P<price>{_XACT_MONEY})',
+    'remove':  rf'(?P<remove>{_XACT_MONEY})',
+    'replace': rf'(?P<replace>{_XACT_MONEY})',
+    'tax':     rf'(?P<tax>{_XACT_MONEY})',
+    'op':      rf'(?P<op>{_XACT_MONEY})',
+    'rcv':     rf'(?P<rcv>{_XACT_MONEY})',
+    'age':     r'(?P<age>\d+/(?:\d+|NA))(?:\s*yrs)?',
+    'cond':    r'(?P<cond>New|Avg\.|Abv\.\s*Avg\.|Bel\.\s*Avg\.)',
+    'dep_pct': r'(?P<dep_pct>NA|<?[\d.]+\s*%)(?:\s*\[[A-Z%]\])?',
+    'deprec':  rf'(?P<dep_open>[(<])(?P<deprec>{_XACT_MONEY})[)>]',
+    'acv':     rf'(?P<acv>{_XACT_MONEY})',
+}
+# The columns a Totals / Line Item Totals row prints: the ones that add up.
+_XACT_SUMMED = ('tax', 'op', 'rcv', 'deprec', 'acv')
 
 _XACT_ITEM_START_RE = re.compile(r'^\d{1,3}\.\s+\S')
-_XACT_HEADER_RE     = re.compile(r'^DESCRIPTION\s+QUANTITY\s+UNIT\s+RCV', re.I)
+_XACT_HEADER_RE     = re.compile(
+    r'^DESCRIPTION\s+(?:QUANTITY|QTY)\b.*\b(?:RCV|ACV|TOTAL)\b', re.I | re.M)
+# Totals rows print a run of figures whose meaning comes from the header
+# (`_xact_totals`), so the patterns only find the run.
 _XACT_TOTALS_RE     = re.compile(
-    r'^Totals?:\s+(?P<name>.+?)\s+(?P<rcv>[\d,]+\.\d{2})\s+'
-    r'(?P<dep>[\d,]+\.\d{2})\s+(?P<acv>[\d,]+\.\d{2})\s*$')
+    r'^Totals?:\s+(?P<name>.+?)\s+(?P<nums>(?:[(<]?[\d,]+\.\d{2}[)>]?\s*)+)$')
 _XACT_GRAND_RE      = re.compile(
-    r'Line Item Totals:\s*\S+\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})')
+    r'Line Item Totals:[ \t]*(?P<name>.+?)[ \t]+'
+    r'(?P<nums>(?:[(<]?[\d,]+\.\d{2}[)>]?[ \t]*)+)$', re.M)
+
+
+def _xact_columns(header):
+    """Column keys for a line-item header row, or None.
+
+    None when the row names a column this parser has not been taught, and that
+    is deliberate: guessing at an unknown column is exactly how a TAX figure
+    gets read as an RCV. Lines under it still get the tolerant fallback, and
+    the import is flagged so the PDF is kept for whoever teaches it.
+    """
+    m = re.match(r'\s*DESCRIPTION\s+', header, re.I)
+    if not m:
+        return None
+    rest, cols = header[m.end():].strip(), []
+    while rest:
+        for key, words in _XACT_COLUMN_WORDS:
+            wm = re.match(rf'(?:{words})(?=\s|$)', rest, re.I)
+            if wm:
+                cols.append(key)
+                rest = rest[wm.end():].lstrip()
+                break
+        else:
+            return None
+    if (len(set(cols)) != len(cols) or 'qty' not in cols
+            or not {'rcv', 'acv'} & set(cols)):
+        return None
+    return cols
+
+
+def _xact_item_rx(cols):
+    parts = [r'^(?P<no>\d{1,3})\.\s+(?P<desc>.+?)\s+']
+    for i, col in enumerate(cols):
+        if i:
+            # A bracket is its own delimiter; every other cell needs a gap.
+            parts.append(r'\s*' if col == 'deprec' else r'\s+')
+        parts.append(_XACT_CELLS[col])
+    parts.append(r'\s*$')
+    return re.compile(''.join(parts))
+
+
+def _xact_item(m):
+    """Item dict from a match of either pattern.
+
+    The shape the review modal and applyXactImport read is unchanged; `tax`,
+    `op` and `nonrecoverable` are extra. A layout with no RCV column derives
+    it, one with no ACV derives that, and one with no depreciation has none.
+    """
+    g = m.groupdict()
+
+    def num(key):
+        return _xact_num(g[key]) if g.get(key) else None
+
+    price = num('price')
+    if price is None:
+        price = (num('remove') or 0.0) + (num('replace') or 0.0)
+    dep = num('deprec') or 0.0
+    rcv, acv = num('rcv'), num('acv')
+    if rcv is None:
+        rcv = round((acv or 0.0) + dep, 2)
+    if acv is None:
+        acv = round(rcv - dep, 2)
+    return {
+        'line_no':      int(g['no']),
+        'description':  re.sub(r'\s+', ' ', g['desc']).strip(),
+        'qty':          _xact_num(g['qty']),
+        'unit':         g['unit'],
+        'unit_price':   round(price, 2),
+        'rcv':          rcv,
+        'age_life':     g.get('age') or '',
+        'dep_pct':      (g.get('dep_pct') or '').replace(' ', ''),
+        'depreciation': dep,
+        'acv':          acv,
+        'tax':          num('tax') or 0.0,
+        'op':           num('op') or 0.0,
+        'nonrecoverable': g.get('dep_open') == '<',
+    }
+
+
+def _xact_totals(nums, cols):
+    """(rcv, dep, acv) from the run of figures on a Totals row, or None.
+
+    Those rows print only the columns that add up, in header order, so the
+    header says which figure is which. Read right-aligned: Auto-Owners'
+    "211.00 24,436.17 2,525.45 21,910.72" is TAX RCV DEP ACV, and reading the
+    first three put the tax in the RCV. With no known header the last three
+    are RCV DEP ACV, which is what every export seen so far has printed.
+    """
+    figures = [_xact_num(n) for n in re.findall(_XACT_MONEY, nums)]
+    summed = [c for c in (cols or ()) if c in _XACT_SUMMED] or ['rcv', 'deprec', 'acv']
+    vals = dict(zip(reversed(summed), reversed(figures)))
+    rcv, acv, dep = vals.get('rcv'), vals.get('acv'), vals.get('deprec', 0.0)
+    if rcv is None and acv is None:
+        return None
+    if rcv is None:
+        rcv = round(acv + dep, 2)
+    if acv is None:
+        acv = round(rcv - dep, 2)
+    return rcv, dep, acv
 _XACT_NOISE_RES = [re.compile(p, re.I) for p in (
     r'^Options?:', r'^Auto Calculated Waste', r'^This line item include',
     r'^The above line item', r'^Bundle Rounding', r'^CONTINUED\s*-',
+    r'^Pricing from\b',
     r'^Page:\s*\d+\s*$', r'Page:\s*\d+\s*$',
     r'^\d+\s*$', r'^P\.?O\.? Box', r'^Fax:', r'^www\.', r'^Exposure\b',
     r'^[A-Za-z .]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\s*$',  # carrier address line
@@ -3083,28 +4015,30 @@ def _xact_is_noise(line, extra_noise=()):
     return any(rx.search(line) for rx in _XACT_NOISE_RES)
 
 
-def _parse_xactimate_items(lines, extra_noise=()):
-    """State machine over the document's lines → flat [(line_no, section, item)]."""
+def _parse_xactimate_items(lines, extra_noise=(), headers=None):
+    """State machine over the document's lines → flat [(line_no, section, item)].
+
+    `headers`, when given, collects (header row, column list or None) for
+    every column header seen, so the caller can say which layout it read.
+    """
     out = []
     current_section = None
     recent = []          # raw non-item lines, for section-name lookback
     pending = None       # buffered numbered line whose numeric tail wrapped
     pending_count = 0
     open_item = None     # last emitted item, may take ONE description continuation
+    item_rx = _XACT_ITEM_RE   # replaced by each column header's own layout
+
+    def match(s):
+        # The header's pattern first; the tolerant one only when that misses,
+        # so one oddly printed line cannot sink an otherwise known layout.
+        m = item_rx.match(s)
+        if m is None and item_rx is not _XACT_ITEM_RE:
+            m = _XACT_ITEM_RE.match(s)
+        return m
 
     def emit(m):
-        item = {
-            'line_no':     int(m.group('no')),
-            'description': re.sub(r'\s+', ' ', m.group('desc')).strip(),
-            'qty':         _xact_num(m.group('qty')),
-            'unit':        m.group('unit'),
-            'unit_price':  _xact_num(m.group('price')),
-            'rcv':         _xact_num(m.group('rcv')),
-            'age_life':    m.group('age'),
-            'dep_pct':     m.group('dep_pct').replace(' ', ''),
-            'depreciation': _xact_num(m.group('deprec')),
-            'acv':         _xact_num(m.group('acv')),
-        }
+        item = _xact_item(m)
         out.append([item['line_no'], current_section, item])
 
     for raw in lines:
@@ -3119,6 +4053,11 @@ def _parse_xactimate_items(lines, extra_noise=()):
             continue
 
         if _XACT_HEADER_RE.search(line):
+            # The layout can change at any header, so each one is re-read.
+            cols = _xact_columns(line)
+            item_rx = _xact_item_rx(cols) if cols else _XACT_ITEM_RE
+            if headers is not None:
+                headers.append((line, cols))
             # Section name = nearest preceding line that isn't noise, isn't a
             # measurement row ("270.38 Total Perimeter Length" starts with a
             # digit), and isn't itself an item.
@@ -3143,7 +4082,7 @@ def _parse_xactimate_items(lines, extra_noise=()):
             open_item = pending = None
             continue
 
-        m = _XACT_ITEM_RE.match(line)
+        m = match(line)
         if m:
             emit(m)
             open_item = out[-1][2]
@@ -3156,7 +4095,7 @@ def _parse_xactimate_items(lines, extra_noise=()):
 
         if pending is not None:
             joined = pending + ' ' + line
-            m = _XACT_ITEM_RE.match(joined)
+            m = match(joined)
             if m:
                 emit(m)
                 open_item = out[-1][2]
@@ -3200,7 +4139,10 @@ def _parse_xactimate_pdf(file_bytes):
     if not real_pages:
         real_pages = pages
     text = '\n'.join(real_pages)
-    page1 = real_pages[0]
+    # The cover page carries the claim block but not always the running
+    # header: Auto-Owners starts "Page: N" on page 2, so taking the first
+    # header-bearing page lost the claim number, insured and address.
+    page1 = next((t for t in real_pages + pages if 'Claim Number:' in t), real_pages[0])
 
     # ── metadata (page 1) ──
     meta = {}
@@ -3238,7 +4180,21 @@ def _parse_xactimate_pdf(file_bytes):
     # (name + address) are filtered as noise so they can't pose as sections.
     warnings = []
     extra_noise = {meta['carrier']} if meta.get('carrier') else set()
-    flat = _parse_xactimate_items(text.split('\n'), extra_noise)
+    # Everything above a page's "Page: N" line is the carrier's letterhead.
+    # Auto-Owners' runs five company names deep, and any of them could pose
+    # as a section name for a header that follows a page break.
+    for t in real_pages:
+        top = []
+        for ln in t.split('\n'):
+            if re.search(r'Page:\s*\d+', ln):
+                extra_noise.update(s for s in top if s)
+                break
+            top.append(ln.strip())
+    headers = []
+    flat = _parse_xactimate_items(text.split('\n'), extra_noise, headers)
+    # The document's layout, for reading its Totals rows. The first header the
+    # parser recognised; an unrecognised one leaves the last-three fallback.
+    doc_cols = next((c for _, c in headers if c), None)
 
     # Split into runs of strictly-increasing line numbers, then pick the run
     # whose RCV sum matches the document's "Line Item Totals" checksum. Any
@@ -3253,7 +4209,7 @@ def _parse_xactimate_pdf(file_bytes):
     grand = None
     gm = list(_XACT_GRAND_RE.finditer(text))
     if gm:
-        grand = tuple(_xact_num(g) for g in gm[-1].groups())
+        grand = _xact_totals(gm[-1].group('nums'), doc_cols)
     chosen = None
     if grand is not None:
         for run in runs:
@@ -3284,11 +4240,10 @@ def _parse_xactimate_pdf(file_bytes):
     for ln in text.split('\n'):
         tm = _XACT_TOTALS_RE.match(ln.strip())
         if tm and tm.group('name').strip() in by_name:
-            by_name[tm.group('name').strip()]['totals'] = {
-                'rcv': _xact_num(tm.group('rcv')),
-                'dep': _xact_num(tm.group('dep')),
-                'acv': _xact_num(tm.group('acv')),
-            }
+            t = _xact_totals(tm.group('nums'), doc_cols)
+            if t:
+                by_name[tm.group('name').strip()]['totals'] = {
+                    'rcv': t[0], 'dep': t[1], 'acv': t[2]}
 
     # ── claim summary: sum each label across the per-coverage blocks ──
     summary = {}
@@ -3315,8 +4270,13 @@ def _parse_xactimate_pdf(file_bytes):
         summary['line_items_depreciation'] = grand[1]
         summary['line_items_acv'] = grand[2]
 
+    layout = {
+        'header':  headers[0][0] if headers else '',
+        'columns': doc_cols or [],
+        'unknown_headers': sorted({h for h, c in headers if c is None}),
+    }
     return {'meta': meta, 'address': addr, 'sections': sections,
-            'summary': summary, 'warnings': warnings}
+            'summary': summary, 'warnings': warnings, 'layout': layout}
 
 
 # ── Symbility (insurance carrier estimate) PDF import ──────────────────────
@@ -3382,25 +4342,39 @@ _SYM_NOISE_RES = [re.compile(p, re.I) for p in (
     r'^For more information', r'^verified by ITEL',
     r'^ESTIMATE:', r'^Completed$', r'^Description\s+Quantity',
     r'^Claim\s+\S+\s+Page', r'^Page\s+\d+', r'^P\.?O\.? Box', r'^Fax:',
+    # Liberty Mutual hangs a unit conversion under a line ("Conversion: 0.03 SQ
+    # per LF"), which otherwise reads as a plan measurement called Conversion.
+    r'^Conversion:',
     r'^www\.', r'^[A-Za-z .]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\s*$',
 )]
 
 # Claim-totals labels (last page). One occurrence each and unambiguous — unlike
-# Xactimate these need no per-coverage summing.
+# Xactimate these need no per-coverage summing. Carriers word the same figure
+# differently, so a key may carry one spelling per carrier seen (Safeco first,
+# then Liberty Mutual). Add a spelling here; never a second key for one figure.
 _SYM_SUMMARY_LABELS = {
     'line_item_total':          r'^Subtotal:',
     'material_sales_tax':       r'^Total taxes:',
     'rcv_total':                r'^Replacement cost value:',
-    'paid_when_incurred':       r'^Less costs payable when incurred:',
+    'paid_when_incurred':       r'^Less costs payable when incurred:|^Paid When Incurred\b',
+    # Liberty Mutual prints no plain ACV line. Its "Net Actual Cash Value on
+    # Coverage Building" also takes out the paid-when-incurred costs, which
+    # Safeco's "Actual cash value" does not, so it is deliberately not mapped.
     'acv_total':                r'^Actual cash value:',
-    'deductible':               r'^Applied deductible:',
-    'net_claim':                r'^Net actual cash value:',
+    # "Deductible ($5,000.00):" -- anchored on the bracket, because page 1's
+    # "Deductible:" is the policy's figure, not the one applied to this claim.
+    'deductible':               r'^Applied deductible:|^Deductible\s*\(',
+    'net_claim':                r'^Net actual cash value:|^Net Estimate:',
     # These two run long enough that a carrier's page width can wrap the label
     # onto a second line, stranding the colon away from the figure, so neither
     # is anchored on one.
     'recoverable_depreciation': r'^Less Recoverable depreciation',
-    'net_claim_if_recovered':   r'^Amount payable if depreciation is recovered',
+    'net_claim_if_recovered':   (r'^Amount payable if depreciation is recovered'
+                                 r'|^Net Estimate if Depreciation Is Recovered'),
 }
+# Liberty Mutual itemises the tax instead of printing "Total taxes:" —
+# "State 2.900% (applies to materials only):  $163.41", one row per authority.
+_SYM_TAX_RATE_RE = re.compile(r'^[A-Za-z][\w ]*?\s[\d.]+%\s*\(applies to', re.I)
 # Carrier accounting writes money coming off the claim as negatives; the
 # estimate's claim card wants magnitudes, matching the Xactimate importer.
 _SYM_ABS_KEYS = {'deductible', 'recoverable_depreciation', 'paid_when_incurred'}
@@ -3649,6 +4623,17 @@ def _parse_symbility_items(layout_pages):
                 f"{sum(i['rcv'] for i in sec['items']):,.2f} but the section subtotal "
                 f"says {t['rcv']:,.2f} — review carefully.")
 
+    # Safeco closes the estimate with a bare "Subtotal" row. Liberty Mutual
+    # prints none: it nests areas inside a plan ("General Items", "Windows",
+    # "Roof", each with its own subtotal) and closes on the PLAN's subtotal.
+    # Those plan rows are already each section's totals, so together they are
+    # the checksum -- but only when every plan with work printed one, or a
+    # missing plan would make a short read look like a match.
+    priced = [s for s in sections if s['items']]
+    if grand is None and priced and all(s['totals'] for s in priced):
+        grand = tuple(round(sum(s['totals'][k] for s in priced), 2)
+                      for k in ('rcv', 'dep', 'acv'))
+
     total_rcv = sum(i['rcv'] for s in sections for i in s['items'])
     if grand is not None and abs(total_rcv - grand[0]) > 0.05:
         warnings.append(
@@ -3671,6 +4656,11 @@ def _parse_symbility_summary(flat_text, grand):
                 v = _sym_num(nums[-1])
                 summary[key] = round(abs(v) if key in _SYM_ABS_KEYS else v, 2)
                 break
+    if 'material_sales_tax' not in summary:
+        rates = [re.findall(r'\$\(?-?[\d,]+\.\d{2}\)?', ln.strip())
+                 for ln in flat_text.split('\n') if _SYM_TAX_RATE_RE.match(ln.strip())]
+        if rates and all(rates):
+            summary['material_sales_tax'] = round(sum(_sym_num(r[-1]) for r in rates), 2)
     if 'recoverable_depreciation' in summary:
         summary.setdefault('depreciation_total', summary['recoverable_depreciation'])
     if grand is not None:
@@ -3728,6 +4718,128 @@ def _parse_symbility_pdf(file_bytes):
             'measurements': _symbility_measurements(sections)}
 
 
+def _pdf_has_text(file_bytes):
+    """False for a PDF with no text layer at all -- a scan or a phone photo of
+    the printed estimate. Reps get these when a homeowner hands over the paper
+    copy, and every parser reads text, so the honest answer is to say so
+    rather than report a layout nobody can teach."""
+    if _pypdf is None:
+        raise RuntimeError('pypdf not installed')
+    reader = _pypdf.PdfReader(io.BytesIO(file_bytes))
+    return any((p.extract_text() or '').strip() for p in reader.pages)
+
+
+# Only shown when this server cannot read scans (no ANTHROPIC_API_KEY).
+_CARRIER_SCAN_MSG = ('This PDF is a scan — pictures of the pages, with no text in it '
+                     'to read. Ask the adjuster or the homeowner for the estimate '
+                     'PDF the carrier emailed (or download it from the carrier’s '
+                     'portal), and import that instead.')
+
+# A scan is read in a background thread and the browser polls for it: a
+# vision read of a few pages runs past gunicorn's 60s worker timeout, which
+# would kill the worker mid-request. Jobs live on the volume, not in memory,
+# because the poll can land on the other worker. Each job file holds a
+# homeowner's claim, so it is deleted the moment its result is collected, and
+# a job nobody collects is swept.
+CARRIER_SCAN_DIR = os.path.join(DATA_DIR, 'carrier_scan_jobs')
+CARRIER_SCAN_STALE_S = 15 * 60
+
+
+def _scan_job_path(job_id):
+    return os.path.join(CARRIER_SCAN_DIR, job_id + '.json')
+
+
+def _write_scan_job(job_id, doc):
+    os.makedirs(CARRIER_SCAN_DIR, exist_ok=True)
+    tmp = _scan_job_path(job_id) + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(doc, f, default=str)
+    os.replace(tmp, _scan_job_path(job_id))
+
+
+def _sweep_scan_jobs():
+    try:
+        names = os.listdir(CARRIER_SCAN_DIR)
+    except OSError:
+        return
+    cutoff = time.time() - CARRIER_SCAN_STALE_S
+    for fn in names:
+        p = os.path.join(CARRIER_SCAN_DIR, fn)
+        try:
+            if os.path.getmtime(p) < cutoff:
+                os.remove(p)
+        except OSError:
+            pass
+
+
+def _spawn(target, *args):
+    """Seam for tests, which run the scan inline instead of on a thread."""
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _run_carrier_scan(job_id, raw, filename, user):
+    """The background half of a scanned import. Always leaves the job file in
+    a finished state, whatever happens, so the browser's poll ends."""
+    started = time.time()
+    try:
+        data = carrier_scan.read(raw)
+        if not any(s.get('items') for s in data['sections']):
+            _keep_failed_carrier_pdf(raw, 'scan_no_items', filename,
+                                     _carrier_failure_detail(data), user=user)
+            doc = {'status': 'error', 'error':
+                   'No line items could be read off this scan. Enter the lines by hand.'}
+        else:
+            rec = _carrier_reconcile(data)
+            if not rec['ok']:
+                rec['kept'] = bool(_keep_failed_carrier_pdf(
+                    raw, 'scan_' + rec['status'], filename,
+                    _carrier_failure_detail(data, rec), user=user))
+            data['reconcile'] = rec
+            doc = {'status': 'done', 'data': data}
+    except carrier_scan.ScanError as e:
+        doc = {'status': 'error', 'error': str(e)}
+    except Exception as e:
+        print(f'[carrier-scan] job {job_id} failed: {e!r}')
+        _keep_failed_carrier_pdf(raw, 'scan_error', filename, {'error': str(e)}, user=user)
+        doc = {'status': 'error', 'error': _CARRIER_KEPT_MSG}
+    doc.update({'user': user, 'seconds': round(time.time() - started, 1)})
+    try:
+        _write_scan_job(job_id, doc)
+    except OSError as e:
+        print(f'[carrier-scan] could not record job {job_id}: {e}')
+
+
+@app.route('/api/parse-xactimate/scan/<job_id>')
+def carrier_scan_job(job_id):
+    """Poll a scanned import. 202 while it reads; the result exactly once."""
+    if not re.fullmatch(r'[A-Za-z0-9_-]{16,64}', job_id or ''):
+        return jsonify({'error': 'not found'}), 404
+    path = _scan_job_path(job_id)
+    try:
+        with open(path, encoding='utf-8') as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return jsonify({'error': 'This scan read has expired. Import the PDF again.'}), 404
+    # The job is the rep's claim document: only whoever started it may collect it.
+    if doc.get('user') != _current_user():
+        return jsonify({'error': 'not found'}), 404
+    if doc.get('status') == 'running':
+        if time.time() - float(doc.get('started') or 0) > CARRIER_SCAN_STALE_S:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return jsonify({'error': 'Reading this scan took too long. Try the import again.'}), 504
+        return jsonify({'status': 'running'}), 202
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    if doc.get('status') == 'done':
+        return jsonify(doc['data'])
+    return jsonify({'error': doc.get('error') or 'Could not read this scan.'}), 422
+
+
 def _detect_carrier_format(file_bytes):
     """'symbility' or 'xactimate'. Neither product stamps its own name on the
     export, so this goes by the column header, which differs completely."""
@@ -3736,7 +4848,10 @@ def _detect_carrier_format(file_bytes):
     reader = _pypdf.PdfReader(io.BytesIO(file_bytes))
     for p in reader.pages:
         flat = p.extract_text() or ''
-        if _SYM_HEADER_FLAT_RE.search(flat):
+        # Symbility's header in reading order also satisfies the (wider)
+        # Xactimate header test — it has a Quantity and an ACV — so it must
+        # be ruled out first, not after.
+        if _SYM_HEADER_FLAT_RE.search(flat) or _SYM_HEADER_RE.search(flat):
             return 'symbility'
         if _XACT_HEADER_RE.search(flat):
             return 'xactimate'
@@ -3756,23 +4871,217 @@ def parse_xactimate():
     sniffed and dispatched. Both parsers return the same shape, so the review
     modal renders either one; the route stays parse-only and persists nothing.
     The path keeps its original name because the browser posts here.
+
+    Every response that parsed carries `reconcile`, and anything that did not
+    read cleanly keeps a copy of the PDF for an admin. Carriers keep printing
+    layouts nobody has seen yet; the copy is what turns "the import errored"
+    into the file needed to fix it.
     """
-    f = request.files.get('file')
-    if not f or not f.filename.lower().endswith('.pdf'):
-        return jsonify({'error': 'Please upload a PDF file.'}), 400
-    raw = f.read()
+    upload = request.files.get('file')
+    raw, err = _read_pdf_upload(upload)
+    if err:
+        return jsonify({'error': err}), 400
+    filename = (upload.filename or '') if upload else ''
     try:
+        if not _pdf_has_text(raw):
+            if not carrier_scan.available():
+                return jsonify({'error': _CARRIER_SCAN_MSG, 'scanned': True}), 422
+            _sweep_scan_jobs()
+            job_id = secrets.token_urlsafe(18)
+            user = _current_user()
+            _write_scan_job(job_id, {'status': 'running', 'user': user,
+                                     'started': time.time()})
+            _spawn(_run_carrier_scan, job_id, raw, filename, user)
+            return jsonify({'scan_job': job_id, 'scanned': True}), 202
         fmt = _detect_carrier_format(raw)
         data = (_parse_symbility_pdf if fmt == 'symbility'
                 else _parse_xactimate_pdf)(raw)
     except Exception as e:
-        return jsonify({'error': f'Could not read PDF: {e}'}), 400
+        kept = _keep_failed_carrier_pdf(raw, 'error', filename, {'error': str(e)})
+        return jsonify({'error': _CARRIER_KEPT_MSG if kept
+                        else f'Could not read PDF: {e}'}), 400
     data.setdefault('format', 'xactimate')
     if not any(s.get('items') for s in data['sections']):
         label = 'Symbility' if data['format'] == 'symbility' else 'Xactimate'
-        return jsonify({'error': f"Couldn’t find {label} line items in this PDF. "
-                                 "Make sure it’s the carrier’s estimate export."}), 422
+        kept = _keep_failed_carrier_pdf(raw, 'no_items', filename,
+                                        _carrier_failure_detail(data))
+        return jsonify({'error': _CARRIER_KEPT_MSG if kept else
+                        f"Couldn’t find {label} line items in this PDF. "
+                        "Make sure it’s the carrier’s estimate export."}), 422
+    rec = _carrier_reconcile(data)
+    if not rec['ok']:
+        rec['kept'] = bool(_keep_failed_carrier_pdf(
+            raw, rec['status'], filename, _carrier_failure_detail(data, rec)))
+    data['reconcile'] = rec
     return jsonify(data)
+
+
+_CARRIER_KEPT_MSG = ('Couldn’t read this as a carrier estimate. If it is one, a copy '
+                     'was saved for an admin to teach the importer its layout — '
+                     'enter the lines by hand for now.')
+
+
+def _carrier_reconcile(data):
+    """Whether the parsed lines ARE the carrier's lines, as one verdict.
+
+    A carrier prints its own arithmetic -- RCV = ACV + depreciation on every
+    line, and a document total -- so a correct read can be PROVEN against the
+    PDF rather than eyeballed. `ok` needs the document total and every line to
+    agree. Section subtotals are reported to say WHERE a miss is, but do not
+    decide it: two rooms sharing a name ("Roof" on two elevations) merge into
+    one section here, and would read as wrong while being right.
+
+    An unrecognised column header is its own status even when the total
+    agrees, because the figures that do not reach the total (unit price, tax)
+    may still have been read as the wrong column.
+    """
+    sections = data.get('sections') or []
+    items = [it for s in sections for it in (s.get('items') or [])]
+    parsed = round(sum(it.get('rcv') or 0 for it in items), 2)
+    carrier = (data.get('summary') or {}).get('line_items_rcv')
+    # `math_off` is set only by the scan reader: a line whose quantity x unit
+    # price does not reach its RCV, which is how a misread digit shows up.
+    lines_off = [it.get('line_no') for it in items
+                 if it.get('math_off')
+                 or abs((it.get('rcv') or 0)
+                        - ((it.get('acv') or 0) + (it.get('depreciation') or 0))) > 0.02]
+    sections_off = []
+    for s in sections:
+        want = (s.get('totals') or {}).get('rcv')
+        if want is None:
+            continue
+        got = round(sum(it.get('rcv') or 0 for it in (s.get('items') or [])), 2)
+        if abs(got - want) > 0.05:
+            sections_off.append({'name': s.get('name') or '', 'carrier_rcv': want,
+                                 'parsed_rcv': got})
+    unknown = (data.get('layout') or {}).get('unknown_headers') or []
+    total_matches = carrier is not None and abs(parsed - carrier) <= 0.05
+    if unknown:
+        status = 'unknown_layout'
+    elif carrier is None:
+        status = 'unverified'
+    elif not total_matches or lines_off:
+        status = 'mismatch'
+    else:
+        status = 'ok'
+    return {'ok': status == 'ok', 'status': status, 'total_matches': total_matches,
+            'carrier_rcv': carrier, 'parsed_rcv': parsed, 'lines_off': lines_off,
+            'sections_off': sections_off, 'unknown_headers': unknown, 'kept': False}
+
+
+def _carrier_failure_detail(data, rec=None):
+    layout = data.get('layout') or {}
+    detail = {'format': data.get('format', ''),
+              'carrier': (data.get('meta') or {}).get('carrier', ''),
+              'header': layout.get('header', '')}
+    if rec:
+        detail.update({k: rec[k] for k in ('carrier_rcv', 'parsed_rcv', 'lines_off',
+                                           'sections_off', 'unknown_headers')})
+    return detail
+
+
+# Carrier PDFs that did not read cleanly. On the volume beside the estimates,
+# admin-only, and capped, because each one is a homeowner's name, address and
+# claim number.
+CARRIER_FAILURES_DIR  = os.path.join(DATA_DIR, 'carrier_import_failures')
+CARRIER_FAILURES_KEEP = 50
+
+
+def _carrier_failure_names():
+    try:
+        return sorted(fn[:-4] for fn in os.listdir(CARRIER_FAILURES_DIR)
+                      if fn.endswith('.pdf'))
+    except OSError:
+        return []
+
+
+def _keep_failed_carrier_pdf(raw, reason, filename='', detail=None, user=None):
+    """Save a carrier PDF that did not read cleanly; the saved name, or None.
+
+    Never raises -- a full disk must not turn a parse warning into a 500. The
+    same bytes are kept once, however many times a rep retries them. Names
+    lead with a strictly increasing number so the newest sort last and the
+    cap removes the oldest, even for two uploads inside one clock tick.
+
+    `user` is passed by the scan thread, which has no request to read the
+    session from; a demo guest never reaches that thread.
+    """
+    if user is None:
+        if demo.active():
+            return None
+        user = _current_user()
+    try:
+        os.makedirs(CARRIER_FAILURES_DIR, exist_ok=True)
+        digest = hashlib.sha256(raw).hexdigest()[:12]
+        names = _carrier_failure_names()
+        for existing in names:
+            if existing.endswith('_' + digest):
+                return existing
+        seq = int(datetime.utcnow().strftime('%Y%m%d%H%M%S%f'))
+        if names:
+            seq = max(seq, int(names[-1].split('_')[0]) + 1)
+        name = f'{seq}_{digest}'
+        base = os.path.join(CARRIER_FAILURES_DIR, name)
+        with open(base + '.pdf', 'wb') as f:
+            f.write(raw)
+        with open(base + '.json', 'w', encoding='utf-8') as f:
+            json.dump({'name': name, 'reason': reason, 'filename': filename,
+                       'user': user,
+                       'at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+                       'detail': detail or {}}, f, indent=2, default=str)
+        for old in _carrier_failure_names()[:-CARRIER_FAILURES_KEEP]:
+            for ext in ('.pdf', '.json'):
+                try:
+                    os.remove(os.path.join(CARRIER_FAILURES_DIR, old + ext))
+                except OSError:
+                    pass
+        return name
+    except Exception as e:
+        print(f'[carrier-import] could not keep a failed PDF: {e}')
+        return None
+
+
+@app.route('/api/carrier-import-failures')
+def list_carrier_import_failures():
+    """Admin-only, not manager-up: every row is a homeowner's claim."""
+    if not _is_admin(_current_user()):
+        return _forbid()
+    rows = []
+    for name in reversed(_carrier_failure_names()):
+        try:
+            with open(os.path.join(CARRIER_FAILURES_DIR, name + '.json'),
+                      encoding='utf-8') as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            meta = {}
+        detail = meta.get('detail') or {}
+        rows.append({
+            'name': name, 'reason': meta.get('reason', ''),
+            'filename': meta.get('filename', ''), 'user': meta.get('user', ''),
+            'at': meta.get('at', ''), 'carrier': detail.get('carrier', ''),
+            'header': detail.get('header', ''), 'error': detail.get('error', ''),
+            'carrier_rcv': detail.get('carrier_rcv'),
+            'parsed_rcv': detail.get('parsed_rcv'),
+        })
+    return jsonify(rows)
+
+
+@app.route('/api/carrier-import-failures/<name>', methods=['GET', 'DELETE'])
+def carrier_import_failure(name):
+    if not _is_admin(_current_user()):
+        return _forbid()
+    base = os.path.join(CARRIER_FAILURES_DIR, name)
+    if not _safe_path_id(name) or not os.path.isfile(base + '.pdf'):
+        return jsonify({'error': 'not found'}), 404
+    if request.method == 'DELETE':
+        for ext in ('.pdf', '.json'):
+            try:
+                os.remove(base + ext)
+            except OSError:
+                pass
+        return jsonify({'ok': True})
+    return send_file(base + '.pdf', mimetype='application/pdf', as_attachment=True,
+                     download_name=f'carrier_import_{name}.pdf')
 
 
 # ── CRM proxy ──────────────────────────────────────────────────────────────
@@ -3934,6 +5243,35 @@ def _tier_rate(pricing, trade, tier):
     return DEFAULT_RATE
 
 
+def _invalid_rates(pricing):
+    """Every rate in `pricing` that is >= 100, as ['tier_rates.good', ...].
+
+    A margin of 100% or more has no sell price — _sell_price returns 0.0 rather
+    than dividing by zero — so the failure mode of a fat-fingered `100` is a
+    FREE line item that looks completely normal on screen. The client caps its
+    inputs at 99; this is the check for everything that does not come through
+    them. Markup has no such limit: a 150% markup is perfectly ordinary.
+    """
+    if (pricing or {}).get('mode', 'margin') != 'margin':
+        return []
+    bad = []
+
+    def _check(label, v):
+        r = _rate_value(v)
+        if r is not None and r >= 100:
+            bad.append(label)
+
+    _check('global_rate', (pricing or {}).get('global_rate'))
+    for tier, v in ((pricing or {}).get('tier_rates') or {}).items():
+        _check(f'tier_rates.{tier}', v)
+    for trade, v in ((pricing or {}).get('per_trade_overrides') or {}).items():
+        _check(f'per_trade_overrides.{trade}', v)
+    for trade, tiers in ((pricing or {}).get('trade_rates') or {}).items():
+        for tier, v in (tiers or {}).items():
+            _check(f'trade_rates.{trade}.{tier}', v)
+    return bad
+
+
 def _sell_price(cost, rate, mode):
     """Unit sell price from unit cost. Margin ≥100% is invalid → 0 (matches app.js)."""
     if mode == 'margin':
@@ -3955,6 +5293,53 @@ def _line_sell_total(item, tier, rate, mode):
     return _sell_price(cost, rate, mode) * qty
 
 
+def _is_supplement_item(td, item):
+    """Does this line live in a Supplements section?
+
+    A section whose name says "supplement" holds the "if needed" work (extra
+    decking by the sheet, a second layer) that sits at quantity 0 until the
+    roof is open. Those lines are priced in their own block with their own
+    subtotal and kept OUT of the package total, cost and margin — the customer
+    has not bought them. A tag naming a section the trade no longer lists is
+    General, same as the grouping. MUST mirror isSupplementItem (app.js)."""
+    s = (item.get('section') or '').strip()
+    return (bool(s) and 'supplement' in s.lower()
+            and s in (td.get('sections') or []))
+
+
+def trade_supplements(est, trade, tier):
+    """([(item, qty, line_total, desc), ...], total) for one trade's supplements.
+
+    A blank quantity prices as ONE unit so the customer sees what a sheet or a
+    foot costs; `qty` is returned as stored (0 = "if needed"). Tier exclusions
+    and a locked price_override are honoured like any other line.
+    MUST mirror supplementItems / supplementLineTotal (app.js)."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    if not td.get('enabled'):
+        return [], 0.0
+    pricing = est.get('pricing', {})
+    mode = pricing.get('mode', 'margin')
+    simple = _trade_mode(trade, td) == 'simple'
+    r = _tier_rate(pricing, trade, tier)
+    rows = []
+    for item in td.get('line_items') or []:
+        if not _is_supplement_item(td, item):
+            continue
+        qty = float(item.get('quantity') or 0)
+        priced_qty = qty if qty > 0 else 1.0
+        if simple:
+            line = float(item.get('unit_price') or 0) * priced_qty
+            desc = (item.get('description') or '').strip()
+        else:
+            t = (item.get('tiers') or {}).get(tier) or {}
+            if t.get('included') is False:
+                continue
+            line = _line_sell_total(dict(item, quantity=priced_qty), tier, r, mode)
+            desc = (t.get('description') or '').strip()
+        rows.append((item, qty, line, desc))
+    return rows, sum(line for _i, _q, line, _d in rows)
+
+
 def _trade_subtotal(est, trade, tier):
     """Sell subtotal for one trade at one tier (simple trades ignore the tier)."""
     pricing = est.get('pricing', {})
@@ -3966,6 +5351,9 @@ def _trade_subtotal(est, trade, tier):
     r     = _tier_rate(pricing, trade, tier)
     total = 0.0
     for item in td.get('line_items', []):
+        # Supplements are priced in their own block, never in the package.
+        if _is_supplement_item(td, item):
+            continue
         # Zero-qty items are "not in scope" — never priced, even when a
         # price_override is set (the customer view and signed PDF already
         # hide them; the total must agree). MUST mirror tradeTotal (app.js).
@@ -3979,6 +5367,537 @@ def _trade_subtotal(est, trade, tier):
                 continue  # item excluded from this package tier
             total += _line_sell_total(item, tier, r, mode)
     return total
+
+
+# ── Price book audit ───────────────────────────────────────────────────────
+#
+# Everything this tool says about money is derived from the price book: retail
+# quotes (in margin mode sell is derived FROM cost), the margin floors, the
+# insurance job margin, and every margin figure on the analytics tab. A wrong
+# cost is not one wrong number, it is four — and the more the tool is trusted,
+# the more confidently wrong it gets.
+#
+# Two real faults found by hand in the first bundle anyone looked at:
+#   * Tear-Off Labor and Install Labor at $0, so a roof "cost" only its shingles
+#   * a_ice_water priced per SQ but driven by `eave_valley`, which returns
+#     LINEAR FEET, with no bundle_lf conversion — 220 LF billed as 220 × $46.46
+#
+# Both are mechanically detectable, which is what this is. It finds the shape of
+# the error, never the right number: what a bundle of shingles costs is between
+# the manager and the supplier invoice.
+#
+# MEASURE_DIMENSIONS mirrors what each MEASURE_DEF in app.js RETURNS, taken from
+# its own label ("Eave + Valley LF" is linear feet). It is not pricing math and
+# is not mirrored back — but a measure missing here would silently escape the
+# audit, so tests/test_pricebook_audit.py parses app.js and fails if one is.
+MEASURE_DIMENSIONS = {
+    'squares': 'SQ',
+    'attic_sqft': 'SF',
+    'ridge_vent_code': 'LF',
+    'intake_vent_code': 'LF',
+    'squares_waste': 'SQ',
+    'low_slope': 'SQ',
+    'low_slope_waste': 'SQ',
+    'steep': 'SQ',
+    'steep_waste': 'SQ',
+    'ridge_hip': 'LF',
+    'ridge_lf': 'LF',
+    'valley': 'LF',
+    'eave': 'LF',
+    'rake': 'LF',
+    'eave_rake': 'LF',
+    'eave_valley': 'LF',
+    'step': 'LF',
+    'headwall': 'LF',
+    'transition': 'LF',
+    'ridge_valley_2x': 'LF',
+    'ridge_2x_headwall': 'LF',
+    'pipe_boots': 'EA',
+    'skylights': 'EA',
+    'turtle_vents': 'EA',
+    'broan_4in': 'EA',
+    'broan_8in': 'EA',
+    'gutter': 'LF',
+    'downspout': 'LF',
+    'siding_squares': 'SQ',
+    'siding_squares_waste': 'SQ',
+    'siding_sq': 'SQ',
+    'siding_sq_waste': 'SQ',
+    'corners_out': 'LF',
+    'corners_in': 'LF',
+    'j_channel': 'LF',
+    'siding_trim_sloped': 'LF',
+    'siding_trim_vertical': 'LF',
+    'siding_trim': 'LF',
+    'siding_starter': 'LF',
+    'siding_fascia_eaves': 'LF',
+    'siding_fascia_rakes': 'LF',
+    'siding_fascia': 'LF',
+    'siding_frieze_eaves': 'LF',
+    'siding_frieze_level': 'LF',
+    'siding_frieze': 'LF',
+    'siding_openings': 'EA',
+    'siding_soffit': 'LF',
+    'siding_soffit_vented': 'LF',
+    'siding_soffit_solid': 'LF',
+    'siding_soffit_sf': 'SF',
+    'siding_soffit_sq': 'SQ',
+    'siding_zflash': 'EA',
+    'windows': 'EA',
+    'doors': 'EA',
+    'comm_sq': 'SQ',
+    'comm_sq_waste': 'SQ',
+    'comm_perimeter': 'LF',
+    'comm_parapet': 'LF',
+    'comm_penetrations': 'EA',
+    'comm_drains': 'EA',
+    'comm_curbs': 'EA',
+    'comm_pitch_pans': 'EA',
+    'comm_walkway_pads': 'EA',
+    'comm_labor_reroof': 'SQ',
+    'comm_labor_new': 'SQ',
+    'comm_fast_insul': 'EA',
+    'comm_fast_seam': 'EA',
+}
+
+# Units that legitimately satisfy a dimension. LF→unit conversion is expressed
+# by `bundle_lf` (a stick, a roll, a box) and is checked separately.
+_UNIT_OK = {
+    'SQ': {'SQ', 'SF'},
+    'SF': {'SF', 'SQ'},
+    'LF': {'LF', 'FT'},
+    'EA': {'EA', 'EACH', 'PC', 'PCS'},
+}
+
+
+# Commercial ships $0 material costs on purpose — its pricing comes off a
+# per-job supplier quote, and unpricedBundleLines already warns per bid. Listing
+# 40 intentional placeholders here would bury the faults that ARE faults.
+_AUDIT_UNPRICED_EXEMPT_TRADES = ('commercial',)
+
+
+def _audit_product(p, in_bundle, trade):
+    """Findings for one catalog product. `in_bundle` says whether anything
+    actually sells it — an unpriced product nobody uses is not a problem."""
+    issues = []
+    unit    = str(p.get('unit') or '').strip().upper()
+    measure = p.get('measure') or ''
+    blf     = p.get('bundle_lf')
+    try:
+        cost = float(p.get('cost') or 0)
+    except (TypeError, ValueError):
+        cost = 0.0
+
+    if cost <= 0 and in_bundle and trade not in _AUDIT_UNPRICED_EXEMPT_TRADES:
+        issues.append({
+            'code': 'unpriced', 'severity': 'high',
+            'what': 'Sold by a bundle with no cost, so every job carrying it is '
+                    'costed as if this line were free.',
+        })
+
+    # `bundle_lf` is a DIVISOR — measuredQty returns ceil(raw / bundle_lf), so the
+    # quantity is a count of packs and `cost` has to be the price of ONE pack. Type
+    # the per-foot price into that box and the line bills pennies: a_ice_water went
+    # live at 1.55 with bundle_lf 66.67, which is $1.55 a roll where a roll is ~$95
+    # — 400 LF of eave+valley costed at $9.30 instead of $570.
+    #
+    # The test is a SHAPE, never a value: cost < bundle_lf says the implied rate is
+    # under a dollar per foot, which is what a raw per-measure price looks like
+    # sitting in a pack-priced field. What a roll actually costs stays between the
+    # manager and the supplier invoice.
+    #
+    # cost > 0 keeps a $0 pack from being reported twice for one root cause (it is
+    # already `unpriced`), and incidentally exempts commercial's deliberately
+    # unpriced catalog without needing a second exempt list. bundle_lf > 1 skips a
+    # no-op conversion, where the test degenerates. There is deliberately no
+    # in_bundle gate — a wrong pack price is wrong whether or not anything sells it
+    # yet, and only about a dozen products carry a bundle_lf at all.
+    blf_n = _mnum(blf)
+    if cost > 0 and blf_n > 1 and cost < blf_n:
+        issues.append({
+            'code': 'pack_cost_unconverted', 'severity': 'high',
+            'what': (f'Bought in {p.get("bundle_unit") or "packs"} of {blf_n:g} '
+                     f'{unit or "units"}, so the cost should be the price of one '
+                     f'pack. At ${cost:,.2f} that works out to under a dollar per '
+                     f'{unit or "unit"} — the shape of a per-{unit or "unit"} price '
+                     f'typed into a pack-priced line.'),
+        })
+
+    dim = MEASURE_DIMENSIONS.get(measure) if measure else None
+    if dim and unit:
+        ok = _UNIT_OK.get(dim, set())
+        # bundle_lf IS the LF→unit conversion, so a linear measure feeding a
+        # boxed product is correct exactly when it is present.
+        if dim == 'LF' and blf:
+            pass
+        elif unit not in ok:
+            issues.append({
+                'code': 'unit_mismatch', 'severity': 'high',
+                'what': (f'Priced per {unit}, but its quantity comes from '
+                         f'"{measure}", which returns {dim}. '
+                         + ('Needs a bundle_lf conversion.' if dim == 'LF'
+                            else 'The unit or the measure is wrong.')),
+            })
+
+    if blf and not p.get('bundle_unit'):
+        issues.append({'code': 'conversion_unlabelled', 'severity': 'low',
+                       'what': 'Converts to a pack size with no name for it.'})
+    return issues
+
+
+def pricebook_audit(pb):
+    """Every catalog product with something mechanically wrong, per trade.
+
+    Reports the shape of the error only. What a square of shingles costs is
+    between the manager and the supplier invoice.
+    """
+    out, totals = [], {'high': 0, 'low': 0, 'products': 0, 'orphans': 0}
+    for key in sorted(k for k in pb if k.endswith('_catalog')):
+        trade   = key[:-len('_catalog')]
+        catalog = pb.get(key) or []
+        bundles = pb.get(f'{trade}_bundles') or []
+        used = {}
+        for b in bundles:
+            for pid in (b.get('product_ids') or []):
+                used.setdefault(pid, []).append(b.get('name') or b.get('id') or '')
+        by_id = {p.get('id'): p for p in catalog}
+
+        for pid, names in sorted(used.items()):
+            if pid not in by_id:
+                out.append({'trade': trade, 'product_id': pid, 'name': '(missing)',
+                            'unit': '', 'cost': None, 'measure': '',
+                            'bundles': names,
+                            'issues': [{'code': 'orphan', 'severity': 'high',
+                                        'what': 'Sold by a bundle but not in the '
+                                                'catalog, so the line never appears.'}]})
+                totals['high'] += 1
+                totals['orphans'] += 1
+
+        for p in catalog:
+            pid = p.get('id')
+            issues = _audit_product(p, pid in used, trade)
+            if not issues:
+                continue
+            totals['products'] += 1
+            for i in issues:
+                totals[i['severity']] = totals.get(i['severity'], 0) + 1
+            out.append({
+                'trade': trade, 'product_id': pid, 'name': p.get('name') or pid,
+                'unit': p.get('unit') or '', 'cost': p.get('cost'),
+                'measure': p.get('measure') or '', 'bundle_lf': p.get('bundle_lf'),
+                'bundles': used.get(pid, []), 'issues': issues,
+            })
+    # Worst first, then by trade, so the list is a work queue.
+    out.sort(key=lambda r: (0 if any(i['severity'] == 'high' for i in r['issues'])
+                            else 1, r['trade'], r['name']))
+    return {'findings': out, 'totals': totals}
+
+
+# ── Margin floor ───────────────────────────────────────────────────────────
+#
+# Realized margin is (sell - cost) / sell, computed from the same inclusion
+# rules _trade_subtotal uses. Deliberately NOT the pricing.mode rate: a 30%
+# markup is a 23% margin, so comparing a markup number against a margin floor
+# would wave through jobs that are actually under it.
+#
+# Two thresholds live in app_settings.json, both optional:
+#   margin_floor_warn   amber banner on the pricing tab   (default 30)
+#   margin_floor_block  sending needs a manager           (default 20)
+#
+# Enforced at SEND, never at save. A rep may draft anything; nothing reaches a
+# customer under the floor without a manager, and a half-built draft must never
+# be un-saveable. Set either to 0 to switch that threshold off.
+
+# Luke's numbers, 2026-09-05: warn at 35, hard floor at 30. The warn threshold
+# is deliberately the same as DEFAULT_RATE — a rep who never touches the margin
+# box is sitting exactly on target, so the banner only ever appears because
+# someone moved it down.
+MARGIN_FLOOR_WARN_DEFAULT  = 35.0
+MARGIN_FLOOR_BLOCK_DEFAULT = 30.0
+
+
+def _app_settings():
+    """app_settings.json as a dict; {} when absent or unreadable."""
+    try:
+        with open(APP_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _design_studio_customer_on(est):
+    """Does THIS estimate show its Design Studio renderings to the customer?
+
+    A section toggle like any other — `page_visibility.design`, the 🎨 Design
+    Studio chip in the estimate's Print Pages bar — except that it defaults OFF
+    where the others default on: the studio is still being built, and a
+    half-finished rendering on a signing link is a promise about how a real
+    house will look. Only a literal True turns it on, so every existing
+    estimate starts hidden. It gates every place a customer can meet a
+    rendering — the /sign block, the signed PDF page, the /design review link
+    and minting that link — and nothing a rep uses: the studio tab, saving
+    renders and the production packet are untouched, and switching the chip on
+    brings every saved rendering straight back."""
+    pv = (est or {}).get('page_visibility') or {}
+    return isinstance(pv, dict) and pv.get('design') is True
+
+
+def _margin_floors():
+    """(warn, block) percentages. A value outside 0-99 is junk rather than a
+    floor of its own, so it falls back to the default — a fat-fingered 500 in
+    Settings must not block every send in the company."""
+    s = _app_settings()
+
+    def _pct(key, dflt):
+        v = s.get(key)
+        if v is None or v == '':
+            return dflt
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return dflt
+        return f if 0 <= f < 100 else dflt
+
+    return (_pct('margin_floor_warn',  MARGIN_FLOOR_WARN_DEFAULT),
+            _pct('margin_floor_block', MARGIN_FLOOR_BLOCK_DEFAULT))
+
+
+def _trade_cost_subtotal(est, trade, tier):
+    """Cost subtotal for one trade at one tier. MUST mirror _trade_subtotal's
+    inclusion rules line for line — a cost that counts a line the sell total
+    skipped reports a margin the customer is never actually offered."""
+    td = (est.get('trades') or {}).get(trade, {})
+    if not td.get('enabled'):
+        return 0.0
+    trade_mode = _trade_mode(trade, td)
+    total = 0.0
+    for item in td.get('line_items', []):
+        if _is_supplement_item(td, item):
+            continue
+        qty = float(item.get('quantity') or 0)
+        if qty <= 0:
+            continue
+        if trade_mode == 'simple':
+            total += float(item.get('unit_cost') or 0) * qty
+        else:
+            t = (item.get('tiers') or {}).get(tier, {})
+            if t.get('included') is False:
+                continue
+            total += (float(t.get('material_unit_cost') or 0)
+                      + float(t.get('labor_unit_cost') or 0)) * qty
+    return total
+
+
+def estimate_margin_report(est):
+    """Realized margin for every package this estimate actually offers.
+
+    {'tiers': [{'tier','sell','cost','margin_pct'}, ...],
+     'lowest': <the worst entry with a known margin, or None>}
+
+    margin_pct is None when a tier prices at 0 or carries no cost at all. The
+    commercial catalog ships $0 placeholder costs on purpose, so calling those
+    a 100% margin would hand a clean bill of health to exactly the bids that
+    have no pricing yet — unpricedBundleLines already shouts about those.
+    Insurance is excluded throughout: the carrier sets that price, so a margin
+    floor is not a meaningful question to ask of it.
+    """
+    tiers = _enabled_tiers(est)
+    if _all_trades_simple(est):
+        tiers = tiers[:1]          # simple pricing ignores the tier entirely
+    # Elected optional upgrades are contract dollars with a cost of their own,
+    # so they belong in the realized margin — but only when every one of them
+    # HAS a cost. An uncosted upgrade would add its whole price to sell and
+    # nothing to cost, raising the reported margin in exactly the flattering
+    # direction this function exists to refuse. When one shows up the upgrades
+    # sit out of the math altogether and are named instead.
+    u_sell = upgrades_total(est)
+    u_cost, u_uncosted = upgrades_cost_total(est)
+    if u_uncosted:
+        u_sell = u_cost = 0.0
+
+    out = []
+    for t in tiers:
+        sell = sum(_trade_subtotal(est, tk, t) for tk in GBB_TRADES) + u_sell
+        cost = sum(_trade_cost_subtotal(est, tk, t) for tk in GBB_TRADES) + u_cost
+        out.append({
+            'tier': t,
+            'sell': round(sell, 2),
+            'cost': round(cost, 2),
+            'margin_pct': (round((sell - cost) / sell * 100, 1)
+                           if sell > 0 and cost > 0 else None),
+        })
+    known = [d for d in out if d['margin_pct'] is not None]
+    return {'tiers': out,
+            'lowest': min(known, key=lambda d: d['margin_pct']) if known else None,
+            'upgrades_sell': round(u_sell, 2),
+            'upgrades_cost': round(u_cost, 2),
+            'upgrades_uncosted': [(u.get('name') or '').strip() for u in u_uncosted]}
+
+
+# ── Insurance job margin ───────────────────────────────────────────────────
+#
+# On a retail job the rep sets the price and the margin follows. On an
+# insurance job the carrier sets the price and the margin is whatever is left
+# after we build the roof — which the tool could not see at all: insurance line
+# items carry the carrier's unit_price, never our cost, so an insurance
+# estimate reported no margin and was excluded from every margin figure on the
+# analytics tab.
+#
+# The cost side is DERIVED, not typed. The measurement report (RoofR/EagleView)
+# already parses into est['measurements'], and the price book already carries
+# our real material and labor costs per unit, so picking the system actually
+# being installed is enough to cost the job. A carrier export runs 30-80 lines;
+# nobody was ever going to cost them by hand.
+#
+# Shape on the estimate:
+#   insurance_cost = {
+#     'bundle_id':   <roofing bundle actually being installed>,
+#     'items':       [{'name','unit','quantity','unit_cost'}, ...],  # derived
+#     'adders':      {'dumpster','permit','subs','other'},           # typed
+#     'supplements': <approved supplement dollars, adds to revenue>,
+#   }
+#
+# These items are COST ONLY and deliberately live outside `trades`, so nothing
+# that builds a customer-facing document can ever pick them up and print them.
+
+INSURANCE_ADDERS = ('dumpster', 'permit', 'subs', 'other')
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+NON_ROOF_SCOPE_CLASSES = ('gutter', 'siding', 'interior', 'detach')
+
+
+def _roof_only_rcv(est):
+    """(roof RCV, non-roof RCV) from the stored per-line scope classification.
+
+    A line with no `scope_class` counts as roof, which is exactly what the tool
+    did before any of this existed — so an estimate nobody has classified
+    reports the same number it always did rather than quietly dropping to zero.
+    """
+    ins = (est.get('trades') or {}).get('insurance') or {}
+    sections = ins.get('sections') or (
+        [{'items': ins.get('line_items', [])}] if ins.get('line_items') else [])
+    roof = other = 0.0
+    for sec in sections:
+        for it in sec.get('items', []):
+            rcv = _num(it.get('acv')) + _num(it.get('depreciation'))
+            if it.get('scope_class') in NON_ROOF_SCOPE_CLASSES:
+                other += rcv
+            else:
+                roof += rcv
+    return roof, other
+
+
+def insurance_cost_report(est):
+    """Revenue, cost and realized margin for an insurance job.
+
+    Revenue is the carrier's RCV (what the estimate already totals) plus any
+    approved supplements. Cost is the derived build cost plus the adders a
+    measurement report cannot know about.
+
+    margin_pct is None when there is no revenue, or when no cost has been
+    entered yet — a job with no cost recorded has an UNKNOWN margin, not a
+    100% one, and reporting the latter would put every un-costed claim at the
+    top of the profitability table. MUST mirror insuranceCostReport (app.js).
+    """
+    ic       = est.get('insurance_cost') or {}
+    # Lines that are in the job but carry no cost. A freshly seeded roofing
+    # bundle ships Tear-Off Labor, Install Labor, drip edge, ridge cap and
+    # starter at $0, so an uncorrected price book reports a roof that costs
+    # only its shingles and the margin lands 20-30 points high — in the
+    # direction that makes a bad job look good. MUST mirror
+    # unpricedInsuranceCostLines (app.js).
+    unpriced = [str(i.get('name') or '') for i in (ic.get('items') or [])
+                if _num(i.get('quantity')) > 0 and _num(i.get('unit_cost')) <= 0]
+    # Roof-only revenue where the scope has been classified, the whole claim
+    # where it has not. Adjusters file gutters, fascia and interior work under
+    # a roof plan, and those dollars have no matching cost on our side — every
+    # one of them would read as pure profit. The classification is a stored
+    # DECISION (the browser's keyword guess, or the rep's correction), never
+    # re-derived here: a second classifier would be a second thing to drift.
+    roof_rcv, non_roof = _roof_only_rcv(est)
+    # Non-covered upgrades the homeowner elected out of pocket are revenue on
+    # this job like any other, and they are the one line on an insurance
+    # estimate whose price we set rather than the carrier. An uncosted one
+    # joins `unpriced` for the same reason a $0 bundle line does.
+    up_sell  = upgrades_total(est)
+    up_cost, up_uncosted = upgrades_cost_total(est)
+    unpriced = unpriced + [str(u.get('name') or '') for u in up_uncosted]
+    revenue  = roof_rcv + _num(ic.get('supplements')) + up_sell
+    build    = sum(_num(i.get('quantity')) * _num(i.get('unit_cost'))
+                   for i in (ic.get('items') or []))
+    adders   = {k: _num((ic.get('adders') or {}).get(k)) for k in INSURANCE_ADDERS}
+    cost     = build + sum(adders.values()) + up_cost
+    profit   = revenue - cost
+    return {
+        'revenue':      round(revenue, 2),
+        'upgrades':     round(up_sell, 2),
+        'upgrades_cost': round(up_cost, 2),
+        'supplements':  round(_num(ic.get('supplements')), 2),
+        'build_cost':   round(build, 2),
+        'adders':       {k: round(v, 2) for k, v in adders.items()},
+        'adders_total': round(sum(adders.values()), 2),
+        'cost':         round(cost, 2),
+        'gross_profit': round(profit, 2),
+        'margin_pct':   (round(profit / revenue * 100, 1)
+                         if revenue > 0 and cost > 0 else None),
+        'costed':       cost > 0,
+        'unpriced':     unpriced,
+        # The CLAIM, not the contract: what the carrier approved, with nothing
+        # the homeowner elected out of pocket folded into it.
+        'claim_total':  round(_insurance_rcv_total(est), 2),
+        'non_roof':     round(non_roof, 2),
+    }
+
+
+def _is_insurance(est):
+    return (est.get('estimate_type') == 'insurance'
+            or bool((est.get('trades') or {}).get('insurance', {}).get('enabled')))
+
+
+def _margin_floor_exempt(est):
+    """Estimate types the floor does not apply to.
+
+    Insurance: the carrier sets the price, so a margin floor is not a
+    meaningful question to ask of it.
+
+    Commercial: residential-only by decision (2026-09-05). Commercial pricing
+    comes off a per-job supplier quote and the catalog ships $0 placeholder
+    costs, so a floor read against it would be measuring the placeholders, not
+    the job. `unpricedBundleLines` is what guards a commercial bid.
+    """
+    et = est.get('estimate_type')
+    trades = est.get('trades') or {}
+    return (et in ('insurance', 'commercial')
+            or bool((trades.get('insurance') or {}).get('enabled')))
+
+
+def _margin_floor_block(est):
+    """(message, worst) when this estimate may not be sent, else (None, None).
+
+    The customer picks the package, so the number that matters is the WORST
+    margin on offer, not the one the rep is looking at.
+    """
+    if _margin_floor_exempt(est):
+        return None, None
+    _warn, block = _margin_floors()
+    if block <= 0:
+        return None, None
+    worst = estimate_margin_report(est).get('lowest')
+    if worst is None or worst['margin_pct'] >= block:
+        return None, None
+    if _is_manager_up():
+        return None, worst          # a manager may send it; the caller logs it
+    return (f"This estimate prices the {worst['tier'].title()} package at "
+            f"{worst['margin_pct']}% margin, below the {block:g}% company floor. "
+            f"A manager has to send it, or raise the margin first."), worst
 
 
 def calc_tier_total(est, tier):
@@ -4003,10 +5922,133 @@ def _trade_tier(est, trade):
     return t if t in ('good', 'better', 'best') else 'better'
 
 
+# ── Optional upgrades — the homeowner's own add-ons ────────────────────────
+#
+# A spot for the things a rep offers but does not include in the package:
+# gutter guards, an impact-rated shingle, a second run of ice & water, a
+# skylight. The homeowner ticks the ones they want on the /sign page and they
+# become part of the contract they sign. The insurance T&C has promised this
+# for as long as it has existed - "plus the cost of any non-covered upgrades
+# elected by the Homeowner" - with nowhere in the tool to record one.
+#
+# Shape on the estimate:
+#   upgrades = {
+#     'enabled': True,                    # offer the block at all
+#     'items': [{
+#        'id':          'u_ab12cd34',     # stable; the POST field name
+#        'name':        'Gutter Guards',
+#        'description': 'Micro-mesh, full perimeter',
+#        'price':       1450.0,           # what the customer sees and buys
+#        'cost':        820.0,            # ours; '' or 0 = nobody entered one
+#        'unit': 'LF', 'quantity': 214,   # provenance only, never re-priced
+#        'product_id':  'a_gutter_guard', # where it came from, or ''
+#        'trade':       'roofing',
+#        'accepted':    False,            # written ONLY by the signature POST
+#     }, ...]
+#   }
+#
+# Three rules carry the weight:
+#
+# * THE PRICE IS STORED, NEVER DERIVED. A price-book pick prices the upgrade
+#   once, through the same margin chain as any other line, and writes the
+#   number down. Deriving it on every read would tie an upgrade's price to
+#   whichever package the customer happens to be looking at, so a homeowner
+#   who ticked $1,450 of gutter guards and then tapped Good would watch the
+#   number move under them - and next week's price book would silently reprice
+#   a contract somebody already holds a link to. Same rule, and the same
+#   reason, as a bundle pick COPYING its tagline onto the estimate.
+#
+# * NOTHING COUNTS UNTIL THE CUSTOMER TICKS IT. `accepted` is written by the
+#   /sign POST and by nothing else, so an offered upgrade is worth $0 in every
+#   total, in the margin floor and in the funnel until a homeowner elects it.
+#   That is what keeps an upgrade a genuine option rather than a quiet price
+#   rise, and it is why adding upgrades to the grand total below moves not one
+#   unsigned estimate.
+#
+# * AN ELECTED UPGRADE WITH NO COST REPORTS AN UNKNOWN MARGIN, NOT A PERFECT
+#   ONE. Same house rule as the commercial $0 placeholders and the insurance
+#   cost sheet: $1,450 of revenue against a cost of nothing lands as 100%
+#   margin and flatters exactly the upgrades nobody has costed.
+
+
+def upgrade_items(est):
+    """Offered upgrades, in the rep's order. A row with no name is a
+    half-typed line, not an offer. MUST mirror upgradeItems (app.js)."""
+    up = est.get('upgrades') or {}
+    return [u for u in (up.get('items') or [])
+            if isinstance(u, dict) and (u.get('name') or '').strip()]
+
+
+def upgrade_price(u):
+    """An upgrade's stored sell price. MUST mirror upgradePrice (app.js)."""
+    return _num((u or {}).get('price'))
+
+
+def upgrade_cost(u):
+    """Our cost for one upgrade, or None when nobody has entered one.
+
+    A blank and a 0 both mean "not costed" here. That is deliberate and it is
+    the opposite of the rate chain's rule, where an explicit 0 is a real
+    choice a rep can make: selling a roof at cost is a decision, whereas an
+    upgrade whose cost box reads 0 has simply never been filled in - and
+    treating it as free is what produces a 100% margin nobody earned.
+    MUST mirror upgradeCost (app.js)."""
+    v = (u or {}).get('cost')
+    if v is None or v == '':
+        return None
+    try:
+        c = float(v)
+    except (TypeError, ValueError):
+        return None
+    return c if c > 0 else None
+
+
+def upgrades_offered(est):
+    """The upgrades a customer is actually shown: the block is on and the line
+    carries a price. An unpriced offer is not an offer - it would render as a
+    tickable $0.00. MUST mirror upgradesOffered (app.js)."""
+    if (est.get('upgrades') or {}).get('enabled') is False:
+        return []
+    return [u for u in upgrade_items(est) if upgrade_price(u) > 0]
+
+
+def accepted_upgrades(est):
+    """The upgrades the homeowner elected. Set by the signature POST only.
+
+    Read from the offered list rather than the raw one, so a rep who switched
+    the block off or blanked a price after signing cannot leave an accepted
+    flag behind on a line the customer can no longer be shown.
+    MUST mirror acceptedUpgrades (app.js)."""
+    return [u for u in upgrades_offered(est) if u.get('accepted') is True]
+
+
+def upgrades_total(est):
+    """Sell total of the ELECTED upgrades. MUST mirror upgradesTotal (app.js)."""
+    return sum(upgrade_price(u) for u in accepted_upgrades(est))
+
+
+def upgrades_cost_total(est):
+    """(cost, uncosted) for the elected upgrades.
+
+    `uncosted` is the elected upgrades with no cost entered - the reason a
+    margin including them is OVERSTATED rather than merely imprecise, which is
+    what callers have to say out loud. MUST mirror upgradesCostTotal (app.js)."""
+    cost, uncosted = 0.0, []
+    for u in accepted_upgrades(est):
+        c = upgrade_cost(u)
+        if c is None:
+            uncosted.append(u)
+        else:
+            cost += c
+    return cost, uncosted
+
+
 def calc_selected_total(est):
-    """Grand sell total honoring each trade's own selected tier (mix-and-match).
+    """Grand sell total honoring each trade's own selected tier (mix-and-match),
+    plus whatever optional upgrades the customer elected.
     MUST mirror selectedTotal in app.js."""
-    return sum(_trade_subtotal(est, tk, _trade_tier(est, tk)) for tk in GBB_TRADES)
+    return (sum(_trade_subtotal(est, tk, _trade_tier(est, tk)) for tk in GBB_TRADES)
+            + upgrades_total(est))
 
 
 def _gbb_trade_keys(est):
@@ -4088,17 +6130,61 @@ def _tier_bullets_are_stale(pb, est, trade, tier):
     return True
 
 
+def _tier_tagline_edited(est, trade, tier):
+    """Did the rep type this tier's tagline on the estimate itself?
+
+    A bundle pick writes tier_descriptions too, and that copy goes stale with
+    the bundle. A tagline the rep typed on the Pricing tab does not: it is a
+    statement about THIS package, so the staleness rule must not throw it away
+    — that is what made the card impossible to correct on a Custom tier.
+    MUST mirror tierTaglineEdited in app.js."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    return ((td.get('tier_tagline_edited') or {}).get(tier)) is True
+
+
+def _tier_features_edited(est, trade, tier):
+    """Did the rep write this card's bullets themselves?
+
+    Same flag shape and the same reason as _tier_tagline_edited: bundle copy
+    goes stale with its bundle, the rep's own wording does not.
+    MUST mirror tierFeaturesEdited in app.js."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    return ((td.get('tier_features_edited') or {}).get(tier)) is True
+
+
+# A package card is a PROMISE list, not a parts list. A roofing bundle carries
+# ~11 products, and a card that ran "· item · item … + 11 more items" was
+# reading as an inventory to a homeowner comparing two bids. An untouched card
+# shows the first few bullets of whatever built it; the rep rewrites the list in
+# the Pricing tab's box, and from then on the card shows exactly what they left,
+# however many that is. Nothing is truncated with a "+ N more" line anywhere —
+# the bullets past the default are not hidden, they are simply not the promise.
+_CARD_BULLET_DEFAULT = 6
+
+
+def _card_bullets(feats, edited):
+    """The bullets a card prints: all of them once the rep has curated the
+    list, the default few while it is still whatever a bundle pick copied in."""
+    out = [str(f).strip() for f in (feats or []) if str(f).strip()]
+    return out if edited else out[:_CARD_BULLET_DEFAULT]
+
+
 def _tier_card_content(pb, est, trade, tier, tfeat, tdesc):
     """(bullets, tagline) for one package card — the stored pair when it still
     matches the tier's line items, the autofill built from those line items
     when it doesn't. One helper so the customer page, the presentation and the
     AI feed can never disagree about what a package includes."""
-    if _tier_bullets_are_stale(pb, est, trade, tier):
-        return _autofill_tier_features(est, trade, tier), ''
+    tagline = (tdesc.get(tier) or '').strip()
+    edited  = _tier_features_edited(est, trade, tier)
+    stale   = _tier_bullets_are_stale(pb, est, trade, tier)
+    if stale and not _tier_tagline_edited(est, trade, tier):
+        tagline = ''
     feats = [str(f).strip() for f in (tfeat.get(tier) or []) if str(f).strip()]
-    if not feats:
-        feats = _autofill_tier_features(est, trade, tier)
-    return feats, (tdesc.get(tier) or '').strip()
+    # Bundle copy on a tier that no longer sells that bundle is thrown away; the
+    # rep's own bullets are not, exactly as the tagline rule works.
+    if feats and (edited or not stale):
+        return _card_bullets(feats, edited), tagline
+    return _card_bullets(_autofill_tier_features(est, trade, tier), False), tagline
 
 
 def _enabled_tiers(est):
@@ -4154,6 +6240,8 @@ def _autofill_tier_features(est, trade, tier):
     for item in td.get('line_items', []) or []:
         if item.get('customer_visible') is False:
             continue
+        if _is_supplement_item(td, item):
+            continue  # "if needed" work is not what the package includes
         name = (item.get('name') or '').strip()
         if not name:
             continue
@@ -4190,8 +6278,53 @@ def _tier_package_names(est, trade):
 
 @app.route('/api/analytics')
 def get_analytics():
-    """Per-trade and per-rep revenue, cost, and margin across all estimates."""
+    """Per-trade and per-rep revenue, cost, and margin across all estimates.
+
+    Optional `from`/`to` (YYYY-MM-DD, inclusive) and `rep` narrow it. Each
+    figure is filtered on the date that makes it true: revenue on the
+    signature, the sent cohort on the send, the funnel on creation. The month
+    series, the current-month pace and the benchmarks ignore the range —
+    goals are per month, and a month cut in half is not a month — but they do
+    honour `rep`. Pipeline aging and open pipeline are snapshots of NOW and
+    ignore the range too. With no parameters the answer is what it always was.
+
+    A rep asking gets `rep` forced to themselves. This endpoint used to hand
+    any rep every other rep's revenue, margin and close rate."""
     TRADE_NAMES = list(GBB_TRADES)
+    q = request.args
+    rng_from = (q.get('from') or '').strip()
+    rng_to   = (q.get('to') or '').strip()
+    for _d in (rng_from, rng_to):
+        if _d and not re.match(r'^\d{4}-\d{2}-\d{2}$', _d):
+            return jsonify({'error': 'Dates are YYYY-MM-DD.'}), 400
+    rep_f = (q.get('rep') or '').strip().lower()
+    if not _is_manager_up():
+        # Fails closed: a non-manager with no name must match nobody, never
+        # fall through to the empty filter, which means everyone.
+        rep_f = (_current_user() or '').strip().lower() or '\x00'
+    has_range = bool(rng_from or rng_to)
+
+    def _in(dstr):
+        """Whether an ISO timestamp falls inside the requested range. With no
+        range everything is in, which is what keeps the old answer intact."""
+        if not has_range:
+            return True
+        # Colorado days, like the month series: a roof signed at 7pm on the
+        # 31st belongs to the 31st. A bare date (estimate_date) is already one.
+        d = dstr if len(dstr or '') == 10 else pclock.day_of(dstr)
+        if not d:
+            return False
+        return (not rng_from or d >= rng_from) and (not rng_to or d <= rng_to)
+
+    # Depth added with the full-screen analytics page. All of it is counted
+    # over signed jobs whose signature falls in the range.
+    by_tier   = {}   # trade -> {good|better|best|flat: {count, revenue}}
+    upgrades  = {'jobs': 0, 'offered': 0, 'elected': 0, 'revenue': 0.0}
+    cos       = {'count': 0, 'value': 0.0}
+    job_stage_counts = {k: {'count': 0, 'value': 0.0} for k in JOB_STAGES}
+    to_sched, to_done = [], []    # days from signature, per job
+    kpi = {'revenue': 0.0, 'jobs': 0, 'sent': 0, 'sent_won': 0,
+           'pipeline': 0.0, 'pipeline_count': 0, 'dtc': []}
     by_trade = {}
     by_rep   = {}
 
@@ -4215,6 +6348,13 @@ def get_analytics():
 
     # ── New aggregations ──────────────────────────────────────────────
     funnel = {'total': 0, 'sent': 0, 'viewed': 0, 'signed': 0, 'lost': 0}
+    # Estimates with no salesperson, excluded from everything below. Reported
+    # so "our numbers are complete" is a claim the tab can actually support.
+    unassigned  = {'count': 0, 'value': 0.0, 'signed_value': 0.0}
+    # Why we lost, counted for the estimates that carry a reason. Estimates
+    # marked lost before the picker existed have none and land in 'unrecorded',
+    # so the denominator stays honest while the history fills in.
+    lost_reasons = {}
     pipeline_aging = {
         'fresh':  {'count': 0, 'value': 0.0},   # 0–3 days
         'active': {'count': 0, 'value': 0.0},   # 4–14 days
@@ -4229,22 +6369,55 @@ def get_analytics():
     top_cities   = {}   # city → signed revenue
     ytd_revenue  = 0.0
     all_dtc      = []   # company-wide days-to-close list
+    # UTC, and only ever subtracted from a stored UTC stamp to get a DURATION
+    # (pipeline aging, below). Every question about which day or month a job
+    # belongs to goes through `pclock` instead — do not reach for this one.
     now_dt       = datetime.utcnow()
-    ytd_cutoff   = now_dt.replace(month=1, day=1, hour=0, minute=0, second=0)
+    # YTD in Colorado, not in UTC. A roof signed at 7pm Mountain on New Year's
+    # Eve is 02:00Z on the 1st, and a UTC comparison banks it against the year
+    # that had not started yet — the single biggest night of the year to get
+    # wrong. Compared as a year STRING against the Colorado month below, so the
+    # cutoff and the bucket can never disagree about which year a job is in.
+    ytd_year    = '%04d' % pclock.company_today().year
 
     for est in est_iter():
         is_signed  = bool(est.get('signature'))
         is_sent    = bool(est.get('share_token'))
         sp         = (est.get('salesperson') or '').strip()
+        if rep_f and sp.lower() != rep_f:
+            continue
+        signed_at_s = (est.get('signature') or {}).get('signed_at') or ''
+        in_signed  = is_signed and _in(signed_at_s)
+        in_sent    = is_sent and _in(est.get('sent_at') or '')
+        in_created = _in(est.get('created_at') or est.get('estimate_date')
+                         or est.get('updated_at') or '')
         if not sp:
-            continue  # skip unassigned estimates
+            # Still skipped from the per-rep and company aggregates below —
+            # by_rep[sp] is threaded through a dozen sites and a synthetic
+            # "(unassigned)" rep would rank in the leaderboard as if it were a
+            # person. But it is COUNTED now: this used to drop the estimate
+            # from the funnel, revenue, aging, cities and YTD with nothing
+            # anywhere saying how many rows had gone, so the numbers were
+            # incomplete by an unknown amount. A visible number is fixable.
+            if in_created:
+                unassigned['count'] += 1
+                unassigned['value'] += _estimate_total(est)
+                if is_signed:
+                    unassigned['signed_value'] += _estimate_total(est)
+            continue
 
         # ── Funnel counting ───────────────────────────────────────────
-        funnel['total'] += 1
-        if is_sent:   funnel['sent']    += 1
-        if est.get('first_viewed_at'): funnel['viewed'] += 1
-        if is_signed: funnel['signed']  += 1
-        if _is_lost(est): funnel['lost'] += 1
+        if in_created:
+            funnel['total'] += 1
+        if in_created and is_sent:   funnel['sent']    += 1
+        if in_created and est.get('first_viewed_at'): funnel['viewed'] += 1
+        if in_created and is_signed: funnel['signed']  += 1
+        if in_created and _is_lost(est):
+            funnel['lost'] += 1
+            lr = (est.get('lost_reason') or '').strip() or 'unrecorded'
+            d  = lost_reasons.setdefault(lr, {'count': 0, 'value': 0.0})
+            d['count'] += 1
+            d['value'] += _estimate_total(est)
 
         # ── Pipeline aging (open, sent estimates only) ────────────────
         if is_sent and not is_signed and not _is_lost(est):
@@ -4258,6 +6431,8 @@ def get_analytics():
                 pipeline_aging[bucket]['value'] += est_total
             except Exception:
                 pass
+            kpi['pipeline']       += est_total
+            kpi['pipeline_count'] += 1
 
         # ── Revenue by type ───────────────────────────────────────────
         est_type = est.get('estimate_type', 'retail') or 'retail'
@@ -4265,13 +6440,64 @@ def get_analytics():
             by_type[est_type] = {'revenue': 0.0, 'count': 0, 'pipeline': 0.0}
         est_total = _estimate_total(est)
         if is_signed:
-            by_type[est_type]['revenue'] += est_total
-            by_type[est_type]['count']   += 1
+            if in_signed:
+                by_type[est_type]['revenue'] += est_total
+                by_type[est_type]['count']   += 1
         elif is_sent:
             by_type[est_type]['pipeline'] += est_total
 
+        # ── Headline figures for the range ────────────────────────────
+        if in_sent:
+            kpi['sent'] += 1
+            if is_signed:
+                kpi['sent_won'] += 1
+        if in_signed:
+            kpi['revenue'] += est_total
+            kpi['jobs']    += 1
+            if est.get('sent_at'):
+                try:
+                    d1 = datetime.fromisoformat(est['sent_at'].replace('Z', '').replace('+00:00', ''))
+                    d2 = datetime.fromisoformat(signed_at_s.replace('Z', '').replace('+00:00', ''))
+                    kpi['dtc'].append(max(0, (d2 - d1).days))
+                except Exception:
+                    pass
+            # Upgrades: of the signed jobs that OFFERED any, how many took one.
+            # Read through accepted_upgrades(), the customer's own tick, so an
+            # offer nobody elected is worth nothing here either.
+            upgrades['jobs'] += 1
+            if upgrades_offered(est):
+                upgrades['offered'] += 1
+                if accepted_upgrades(est):
+                    upgrades['elected'] += 1
+                    upgrades['revenue'] += upgrades_total(est)
+            co_ok = [c for c in est.get('change_orders') or []
+                     if c.get('status') == 'accepted']
+            cos['count'] += len(co_ok)
+            cos['value'] += _accepted_co_total(est)
+            jst = _job_stage(est)
+            job_stage_counts[jst]['count'] += 1
+            job_stage_counts[jst]['value'] += est_total
+            try:
+                d0 = datetime.fromisoformat(signed_at_s.replace('Z', '').replace('+00:00', ''))
+                first = {}
+                for h in est.get('job_stage_history') or []:
+                    if isinstance(h, dict) and h.get('stage') and h.get('at'):
+                        first.setdefault(h['stage'], h['at'])
+                # "Scheduled" is the first move to ANY later stage — a job
+                # marked straight to In production was still scheduled.
+                s_at = min((first[k] for k in ('scheduled', 'in_production', 'complete')
+                            if k in first), default='')
+                if s_at:
+                    to_sched.append(max(0, (datetime.fromisoformat(
+                        s_at.replace('Z', '').replace('+00:00', '')) - d0).days))
+                if first.get('complete'):
+                    to_done.append(max(0, (datetime.fromisoformat(
+                        first['complete'].replace('Z', '').replace('+00:00', '')) - d0).days))
+            except Exception:
+                pass
+
         # ── Monthly: sent cohort ─────────────────────────────────────
-        sent_month = (est.get('sent_at') or '')[:7]
+        sent_month = pclock.month_of(est.get('sent_at'))
         if is_sent and _GOAL_MONTH_RE.match(sent_month):
             m = _mo(sent_month)
             m['sent']       += 1
@@ -4283,13 +6509,9 @@ def get_analytics():
         # ── YTD, city & monthly signed revenue ───────────────────────
         if is_signed:
             signed_dt_str = (est.get('signature') or {}).get('signed_at') or ''
-            try:
-                signed_dt = datetime.fromisoformat(signed_dt_str.replace('Z','').replace('+00:00',''))
-                if signed_dt >= ytd_cutoff:
-                    ytd_revenue += est_total
-            except Exception:
-                pass
-            signed_month = signed_dt_str[:7]
+            signed_month = pclock.month_of(signed_dt_str)
+            if signed_month[:4] == ytd_year:
+                ytd_revenue += est_total
             if _GOAL_MONTH_RE.match(signed_month):
                 m = _mo(signed_month)
                 m['revenue'] += est_total
@@ -4297,7 +6519,7 @@ def get_analytics():
                 m[est_type if est_type in ('retail', 'insurance', 'commercial') else 'retail'] += est_total
                 m['by_rep'][sp] = m['by_rep'].get(sp, 0.0) + est_total
             city = (est.get('customer') or {}).get('address', {}).get('city', '').strip()
-            if city:
+            if city and in_signed:
                 top_cities[city] = top_cities.get(city, 0.0) + est_total
 
         pricing    = est.get('pricing', {})
@@ -4311,8 +6533,9 @@ def get_analytics():
                 'stale': 0,           # sent 3+ days, not signed
                 'deals': [],          # individual deal totals for distribution
             }
-        if is_sent:
+        if in_sent:
             by_rep[sp]['sent'] += 1
+        if is_sent:
             # Stale = sent 3+ days and not signed
             sent_at = est.get('sent_at') or ''
             if sent_at and not is_signed:
@@ -4322,7 +6545,7 @@ def get_analytics():
                         by_rep[sp]['stale'] += 1
                 except Exception:
                     pass
-        if is_signed:
+        if in_signed:
             by_rep[sp]['signed'] += 1
             # Days to close
             sent_at   = est.get('sent_at') or ''
@@ -4346,6 +6569,8 @@ def get_analytics():
             tcost = 0.0
 
             for item in td['line_items']:
+                if _is_supplement_item(td, item):
+                    continue  # not part of what was sold
                 qty = float(item.get('quantity') or 0)
                 if qty <= 0:
                     continue
@@ -4364,24 +6589,60 @@ def get_analytics():
                 by_trade[tk] = {'revenue':0,'cost':0,'pipeline':0,'job_count':0,'pipeline_count':0}
 
             if is_signed:
-                by_trade[tk]['revenue']   += tsell
-                by_trade[tk]['cost']      += tcost
-                by_trade[tk]['job_count'] += 1
-                by_rep[sp]['revenue']     += tsell
-                by_rep[sp]['cost']        += tcost
+                if in_signed:
+                    by_trade[tk]['revenue']   += tsell
+                    by_trade[tk]['cost']      += tcost
+                    by_trade[tk]['job_count'] += 1
+                    by_rep[sp]['revenue']     += tsell
+                    by_rep[sp]['cost']        += tcost
+                    by_rep[sp]['deals'].append(tsell)
+                    all_dtc.extend(by_rep[sp].get('days_to_close', [])[-1:])  # company wide
+                    # Which package the customer bought, per trade. A trade in
+                    # simple mode sold one flat price, and calling that "better"
+                    # would invent a choice nobody was offered.
+                    tkey = 'flat' if tmode == 'simple' else tier
+                    bt = by_tier.setdefault(tk, {}).setdefault(tkey, {'count': 0, 'revenue': 0.0})
+                    bt['count']   += 1
+                    bt['revenue'] += tsell
                 # Monthly margin basis — sell and cost from the same trade math.
-                month_key = ((est.get('signature') or {}).get('signed_at') or '')[:7]
+                # Not range-gated: the month series ignores the range.
+                month_key = pclock.month_of((est.get('signature') or {}).get('signed_at'))
                 if _GOAL_MONTH_RE.match(month_key):
                     m = _mo(month_key)
                     m['trade_revenue'] += tsell
                     m['trade_cost']    += tcost
-                by_rep[sp]['deals'].append(tsell)
-                all_dtc.extend(by_rep[sp].get('days_to_close', [])[-1:])  # company wide
             elif is_sent:
                 by_trade[tk]['pipeline']       += tsell
                 by_trade[tk]['pipeline_count'] += 1
                 by_rep[sp]['pipeline']         += tsell
                 by_rep[sp]['pipeline_count']   += 1
+
+        # Insurance sits outside GBB_TRADES, so it contributed revenue to
+        # by_type and nothing at all to any margin — the carrier sets the price
+        # and the tool had nowhere to record what the job cost us. It does now.
+        # Counted ONLY when a cost has actually been entered: a claim nobody
+        # costed would otherwise arrive as pure profit and drag every margin
+        # figure on this tab upward.
+        if _is_insurance(est) and is_signed:
+            icr = insurance_cost_report(est)
+            # An overstated margin is worse than none: it would pull the
+            # company average up and make insurance work look like the thing
+            # to chase. Costed-but-unpriced jobs stay out until the book is fixed.
+            if icr['costed'] and not icr['unpriced']:
+                if in_signed:
+                    d = by_trade.setdefault('insurance', {
+                        'revenue': 0, 'cost': 0, 'pipeline': 0,
+                        'job_count': 0, 'pipeline_count': 0})
+                    d['revenue']   += icr['revenue']
+                    d['cost']      += icr['cost']
+                    d['job_count'] += 1
+                    by_rep[sp]['revenue'] += icr['revenue']
+                    by_rep[sp]['cost']    += icr['cost']
+                month_key = pclock.month_of((est.get('signature') or {}).get('signed_at'))
+                if _GOAL_MONTH_RE.match(month_key):
+                    m = _mo(month_key)
+                    m['trade_revenue'] += icr['revenue']
+                    m['trade_cost']    += icr['cost']
 
     def _margin(rev, cost):
         return round((rev - cost) / rev * 100, 1) if rev > 0 and cost > 0 else None
@@ -4400,7 +6661,7 @@ def get_analytics():
 
     # ── Monthly series vs goals ───────────────────────────────────────────
     goals     = _load_goals()
-    cur_month = now_dt.strftime('%Y-%m')
+    cur_month = pclock.company_month()
 
     def _month_add(key, delta):
         i = int(key[:4]) * 12 + int(key[5:7]) - 1 + delta
@@ -4424,7 +6685,7 @@ def get_analytics():
     months_out = []
     for key in series_keys:
         m    = monthly.get(key, blank)
-        g    = _goal_for(goals, key)
+        g    = _goal_for(goals, key, rep_f or None)
         rev  = round(m['revenue'], 2)
         prev = months_out[-1]['revenue'] if months_out else None
         ly   = rev_by_month.get(_month_add(key, -12))
@@ -4454,12 +6715,19 @@ def get_analytics():
 
     # Current-month pace. Straight-line: a month is "on pace" when today's run
     # rate, extended to month end, clears the goal.
-    days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
-    days_elapsed  = now_dt.day
+    #
+    # Colorado's date, and it HAS to be the same clock `cur_month` above reads:
+    # a UTC day number against a Colorado month would, for the six hours after
+    # 6pm Mountain on the last of the month, report day 1 of a month that is
+    # ending — dividing the whole month's revenue by one day and projecting a
+    # figure thirty times the truth onto the screen the team judges itself by.
+    today_co     = pclock.company_today()
+    days_in_month = calendar.monthrange(today_co.year, today_co.month)[1]
+    days_elapsed  = today_co.day
     days_left     = max(0, days_in_month - days_elapsed)
     cur_row       = next((r for r in months_out if r['month'] == cur_month), None)
     cur_rev       = cur_row['revenue'] if cur_row else 0.0
-    cur_goal      = _goal_for(goals, cur_month)
+    cur_goal      = _goal_for(goals, cur_month, rep_f or None)
     projected     = round(cur_rev / days_elapsed * days_in_month, 2) if days_elapsed else 0.0
     gap           = round(max(0.0, cur_goal['revenue'] - cur_rev), 2)
     current_month = {
@@ -4489,6 +6757,8 @@ def get_analytics():
     rep_month = []
     for name in ({r.strip().lower() for r in by_rep} | set(cur_by_rep)
                  | set(goals.get('reps') or {})):
+        if rep_f and name != rep_f:
+            continue
         g   = _goal_for(goals, cur_month, name)
         rev = round(cur_by_rep.get(name, 0.0), 2)
         if g['revenue'] <= 0 and rev <= 0:
@@ -4523,7 +6793,54 @@ def get_analytics():
     if dtc_all:
         avg_dtc_all = round(sum(dtc_all) / len(dtc_all), 1)
 
+    def _avg_list(xs):
+        return round(sum(xs) / len(xs), 1) if xs else None
+
+    tr_rev  = sum(d['revenue'] for d in by_trade.values())
+    tr_cost = sum(d['cost'] for d in by_trade.values())
+    kpis = {
+        'revenue':           round(kpi['revenue'], 2),
+        'jobs':              kpi['jobs'],
+        'avg_deal':          round(kpi['revenue'] / kpi['jobs']) if kpi['jobs'] else 0,
+        # A sent cohort, like the month series: of what went out in the range,
+        # how much has closed. None rather than 0% when nothing was sent.
+        'sent':              kpi['sent'],
+        'close_rate':        round(kpi['sent_won'] / kpi['sent'] * 100) if kpi['sent'] else None,
+        'avg_days_to_close': _avg_list(kpi['dtc']),
+        'pipeline':          round(kpi['pipeline'], 2),
+        'pipeline_count':    kpi['pipeline_count'],
+        'margin_pct':        _margin(tr_rev, tr_cost),
+        'upgrade_attach':    round(upgrades['elected'] / upgrades['offered'] * 100)
+                             if upgrades['offered'] else None,
+    }
+    for d in by_tier.values():
+        for t in d.values():
+            t['revenue'] = round(t['revenue'], 2)
+    upgrades['revenue'] = round(upgrades['revenue'], 2)
+    change_orders = {
+        'count': cos['count'],
+        'value': round(cos['value'], 2),
+        'share_pct': round(cos['value'] / (kpi['revenue'] + cos['value']) * 100, 1)
+                     if cos['value'] > 0 else None,
+    }
+    avg_ticket_by_type = {t: (round(d['revenue'] / d['count']) if d['count'] else None)
+                          for t, d in by_type.items()}
+    job_stages = {
+        'stages': [{'key': k, 'label': JOB_STAGES[k],
+                    'count': job_stage_counts[k]['count'],
+                    'value': round(job_stage_counts[k]['value'], 2)} for k in JOB_STAGES],
+        'avg_days_to_schedule': _avg_list(to_sched),
+        'avg_days_to_complete': _avg_list(to_done),
+    }
+
     return jsonify({
+        'range':          {'from': rng_from, 'to': rng_to, 'rep': rep_f.strip('\x00')},
+        'kpis':           kpis,
+        'by_tier':        by_tier,
+        'upgrades':       upgrades,
+        'change_orders':  change_orders,
+        'avg_ticket_by_type': avg_ticket_by_type,
+        'job_stages':     job_stages,
         'by_trade':       by_trade,
         'by_rep':         by_rep,
         'monthly':        months_out,
@@ -4532,6 +6849,9 @@ def get_analytics():
         'benchmarks':     benchmarks,
         'goals':          goals,
         'funnel':         funnel,
+        'unassigned':     unassigned,
+        'lost_reasons':   lost_reasons,
+        'lost_reason_labels': LOST_REASONS,
         'pipeline_aging': pipeline_aging,
         'by_type':        by_type,
         'top_cities':     top_cities_list,
@@ -4624,6 +6944,76 @@ def _with_section(item, name):
     return f'{name} [{s}]' if s else name
 
 
+def _supplements_cv_table(est, trade, tier, label):
+    """One trade's Supplements block for the customer page, or '' if none.
+
+    Always prints a price column whatever the Line Prices chip says: an "if
+    needed" line with no price tells the customer nothing. The subtotal is
+    labelled as outside the total because it is — the grand total above it
+    never includes these."""
+    rows, total = trade_supplements(est, trade, tier)
+    shown = [(it, q, line, d) for it, q, line, d in rows
+             if it.get('customer_visible', True) and (it.get('name') or '').strip()]
+    if not shown:
+        return ''
+    # A line with no price is a notice ("decking may need replacing"), not a
+    # $0.00 charge — and a block that is ALL notice says so instead of
+    # printing a $0.00 subtotal.
+    body = ''.join(f'''<tr>
+              <td class="cvn">{he(it.get("name", ""))}
+                {'<div class="cvd">' + he(d) + '</div>' if d else ''}</td>
+              <td class="cvc" data-l="Qty">{f"{q:g}" if q > 0 else "If needed"}</td>
+              <td class="cvc">{he(it.get("unit", ""))}</td>
+              <td class="cvr" data-l="Price">{fc(line) if line else "Quoted if needed"}</td></tr>''' for it, q, line, d in shown)
+    foot = (f'<td colspan="3" class="cvsub-l">Supplements Subtotal &mdash; not included in the total</td>'
+            f'<td class="cvr cvsub">{fc(total)}</td>') if total else (
+            '<td colspan="4" class="cvsub-l">Supplements may be needed once work begins. '
+            'They are not included in the total.</td>')
+    return f'''<div class="cvtrade cvtrade-supp">
+          <div class="cvtrade-hd">{label} Supplements</div>
+          <table class="cvt"><thead><tr>
+            <th>Description</th><th scope="col" class="cvth-c">Qty</th>
+            <th scope="col" class="cvth-c">Unit</th><th scope="col" class="cvth-r">Price</th></tr></thead>
+          <tbody>{body}</tbody>
+          <tfoot><tr>{foot}</tr></tfoot>
+          </table></div>'''
+
+
+def _upgrades_cv_table(est, elected_only=True):
+    """Optional-upgrades table for a customer-facing page, or ''.
+
+    `elected_only` is the signed view: what the homeowner actually bought.
+    Pass False to print the menu as offered (an unsigned estimate's PDF), where
+    the subtotal is meaningless and is replaced by a line saying these are
+    chosen at signing."""
+    ups = accepted_upgrades(est) if elected_only else upgrades_offered(est)
+    ups = [u for u in ups if (u.get('name') or '').strip()]
+    if not ups:
+        return ''
+    body = ''
+    for u in ups:
+        desc = (u.get('description') or '').strip()
+        body += (f'<tr><td class="cvn">{he(u.get("name", ""))}'
+                 + (f'<div class="cvd">{he(desc)}</div>' if desc else '')
+                 + f'</td><td class="cvr" data-l="Price">{fc(upgrade_price(u))}</td></tr>')
+    if elected_only:
+        total = sum(upgrade_price(u) for u in ups)
+        foot = ('<td class="cvsub-l">Upgrades Subtotal &mdash; included in your total</td>'
+                f'<td class="cvr cvsub">{fc(total)}</td>')
+        head = 'Optional Upgrades You Selected'
+    else:
+        foot = ('<td colspan="2" class="cvsub-l">Optional &mdash; choose any of these '
+                'when you sign. Nothing here is in the total above.</td>')
+        head = 'Optional Upgrades Available'
+    return f'''<div class="cvtrade cvtrade-supp">
+          <div class="cvtrade-hd">{head}</div>
+          <table class="cvt"><thead><tr>
+            <th>Description</th><th scope="col" class="cvth-r">Price</th></tr></thead>
+          <tbody>{body}</tbody>
+          <tfoot><tr>{foot}</tr></tfoot>
+          </table></div>'''
+
+
 def render_line_items(est, tier=None, only_trades=None):
     """Build trade line-item tables for customer view. Returns (html, grand_total).
     tier=None prices each trade at its own selected tier (mix-and-match; legacy
@@ -4656,6 +7046,8 @@ def render_line_items(est, tier=None, only_trades=None):
         # section (structures / roof areas; mirrors groupedTradeItems in app.js)
         priced = []
         for item in td['line_items']:
+            if _is_supplement_item(td, item):
+                continue  # priced in the Supplements block below, not the package
             qty  = float(item.get('quantity') or 0)
             if qty <= 0:
                 continue  # zero-quantity items are hidden from the customer
@@ -4711,12 +7103,14 @@ def render_line_items(est, tier=None, only_trades=None):
                             f'<td class="cvr">{fc(sec_tot)}</td></tr>')
         if hidden_count:
             rows.append(f'<tr><td colspan="{ncols}" class="cvhidden-note">Additional materials &amp; supplies included in total</td></tr>')
-        if not rows:
+        lbl = labels.get(tk, tk.title())
+        supp_html = _supplements_cv_table(est, tk, t_tier, lbl)
+        if not rows and not supp_html:
             continue  # nothing priced to show the customer for this trade
         gtotal += sub
-        lbl = labels.get(tk, tk.title())
-        lp_ths = '<th scope="col" class="cvth-r">Unit Price</th><th scope="col" class="cvth-r">Total</th>' if show_lp else ''
-        parts.append(f'''<div class="cvtrade">
+        if rows:
+            lp_ths = '<th scope="col" class="cvth-r">Unit Price</th><th scope="col" class="cvth-r">Total</th>' if show_lp else ''
+            parts.append(f'''<div class="cvtrade">
           <div class="cvtrade-hd">{lbl}</div>
           <table class="cvt"><thead><tr>
             <th>Description</th><th scope="col" class="cvth-c">Qty</th>
@@ -4725,6 +7119,8 @@ def render_line_items(est, tier=None, only_trades=None):
           <tfoot><tr><td colspan="{ncols - 1}" class="cvsub-l">{lbl} Subtotal</td>
             <td class="cvr cvsub">{fc(sub)}</td></tr></tfoot>
           </table></div>''')
+        if supp_html:
+            parts.append(supp_html)
 
     return '\n'.join(parts), gtotal
 
@@ -4895,8 +7291,6 @@ white-space:nowrap}
 font-size:var(--fz-fine);color:var(--mut);line-height:1.6}
 .cv-tier-feats li{position:relative;padding:3px 0 3px 16px}
 .cv-tier-feats li::before{content:'';position:absolute;left:0;top:11px;width:5px;height:1px;background:var(--faint)}
-.cv-tier-feats .cv-tier-more{color:var(--faint);font-style:italic}
-.cv-tier-feats .cv-tier-more::before{content:none}
 .cv-tier-check{font-size:var(--fz-fine);font-weight:600;color:var(--mut);border:1px solid var(--line);border-radius:999px;
 padding:8px 18px;display:inline-block;margin-top:var(--sp-3);transition:all .15s;background:#fff;letter-spacing:.3px}
 .cv-tier-selected .cv-tier-check{background:var(--navy);border-color:var(--navy);color:#fff}
@@ -4982,6 +7376,14 @@ transition:background .15s,transform .15s}
 .cvbtn:hover{background:var(--navy3)}
 .cvbtn:active{transform:scale(.99)}
 .cvlegal{font-size:var(--fz-micro);color:var(--faint);text-align:center;line-height:1.7}
+/* Stands where the signature form would be on an estimate whose held pricing
+   has lapsed. Warm, not a dead end: they came back to look, which is a lead. */
+.cvexpired{background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;padding:var(--sp-3)}
+.cvexpired h2{margin:0 0 var(--sp-2);font-size:var(--fz-h2);color:#78350f}
+.cvexpired p{margin:0 0 var(--sp-2);color:#78350f;line-height:1.65}
+.cvexpired .cvbtn{margin-top:var(--sp-2);margin-bottom:0;background:#b45309;
+display:block;text-align:center;text-decoration:none;box-sizing:border-box}
+.cvexpired .cvbtn:hover{background:#92400e}
 .cv-shingle,.cv-siding,.cv-initials{background:#fff;border:1px solid var(--line);border-radius:8px;padding:var(--sp-3);margin-bottom:var(--sp-3)}
 .cv-shingle-label,.cv-siding-label,.cv-initials-title{font-size:var(--fz-micro);font-weight:600;color:var(--faint);
 text-transform:uppercase;letter-spacing:1.2px;margin-bottom:var(--sp-2)}
@@ -4993,6 +7395,27 @@ text-transform:uppercase;letter-spacing:1.2px;margin-bottom:var(--sp-2)}
 .cv-initial-box{width:82px;flex-shrink:0;border:2px solid var(--navy);border-radius:9px;padding:10px 8px;font-size:16px;
 font-weight:800;text-align:center;text-transform:uppercase;outline:none;color:var(--navy);background:#fff;font-family:inherit}
 .cv-initial-box:focus{box-shadow:0 0 0 4px rgba(26,58,92,.14)}
+
+/* Optional upgrades. Rows are finger-sized unconditionally rather than behind
+   a pointer query: a 44px tick row costs a desktop nothing, and the one thing
+   a width query cannot express is "this is a finger". */
+.cv-upg{background:#fff;border:1px solid var(--line);border-radius:8px;
+padding:var(--sp-3);margin-bottom:var(--sp-3)}
+.cv-upg.cv-upg-on{border-color:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.10)}
+.cv-upg-title{font-size:var(--fz-micro);font-weight:600;color:var(--faint);
+text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px}
+.cv-upg-sub{font-size:12.5px;color:var(--faint);line-height:1.55;margin-bottom:var(--sp-2)}
+.cv-upg-row{display:flex;align-items:center;gap:12px;min-height:44px;
+padding:var(--sp-2) 0;border-top:1px solid var(--line);cursor:pointer}
+.cv-upg-box{width:22px;height:22px;flex-shrink:0;accent-color:#16a34a;margin:0}
+.cv-upg-n{flex:1;font-size:14px;font-weight:600;color:var(--navy);line-height:1.45}
+.cv-upg-d{display:block;font-size:12.5px;font-weight:400;color:var(--faint);
+line-height:1.5;margin-top:2px}
+.cv-upg-p{flex-shrink:0;font-size:14px;font-weight:700;color:#15803d;white-space:nowrap}
+.cv-upg-foot{display:flex;justify-content:space-between;align-items:center;
+margin-top:var(--sp-2);padding-top:var(--sp-2);border-top:2px solid var(--line);
+font-size:13px;font-weight:600;color:var(--navy)}
+.cv-upg-sum{font-size:15px;font-weight:800;color:#15803d}
 
 /* ── what happens next ── */
 .cvnext-list{list-style:none;margin:2px 0 0;padding:0}
@@ -5729,11 +8152,169 @@ def _mount_path(path):
         return path
 
 
+# ── Estimate expiry ────────────────────────────────────────────────────────
+#
+# valid_until defaults to 30 days out and prints on the customer page, the PDF
+# and the signed contract as "Pricing held until <date>". Nothing used to check
+# it: customer_sign validated the name, the initials, the shingle colour, the
+# siding colour and whether a package was still offered, and never looked at
+# the date. A homeowner could open a link from six months ago and sign at six-
+# month-old shingle and OSB pricing, and the tool would file the contract,
+# build the packet and hand the job to production as a normal win.
+#
+# The estimate itself still renders when it expires — they came to look at it,
+# and an expired link is a warm lead, not a dead one. Only the signature block
+# is withdrawn, and the rep gets told someone just tried.
+
+def _est_valid_until(est):
+    """valid_until as a date, or None when it is unset or unparseable.
+    Unparseable is deliberately "no expiry": a typo in that box must not lock a
+    customer out of signing a perfectly good estimate."""
+    raw = (est.get('valid_until') or '').strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw[:10], '%Y-%m-%d').date()
+    except (ValueError, TypeError):
+        return None
+
+
+# The office is in Colorado; the server runs in UTC. From 6pm Mountain, UTC is
+# already tomorrow — so an estimate held until today expired for the last six
+# hours of its own last day, showing the customer the expired card and 410ing
+# the signature they came to give. "Pricing held until the 14th" is a promise
+# about a business day, so it lapses when the date has passed IN COLORADO.
+#
+# This used to be its own copy of the zoneinfo lookup, and Nimbus grew a second
+# one days later. Both now read `portal/clock.py`, which is the only way two
+# answers to "what day is it" stay the same answer. The alias stays because a
+# few dozen call sites spell it this way and renaming them buys nothing.
+_COMPANY_TZ = pclock.COMPANY_TZ
+_company_today = pclock.company_today
+
+
+def _est_expired(est):
+    """True when this estimate's held pricing has lapsed. A signed estimate is
+    never expired — the price was locked by the signature, not by the date."""
+    if est.get('signature'):
+        return False
+    d = _est_valid_until(est)
+    return bool(d and d < _company_today())
+
+
+def _vent_nfa_report(est):
+    """What the scope actually INSTALLS against what code asks for.
+
+    The ridge sizing shipped wrong for two months and every test agreed with it,
+    because the tests were written from the code. A number a human reads on
+    every job fails in front of someone; a test only fails when it is run. Same
+    reason the backup email prints its row counts.
+
+    Box vents count only while they stay on the roof: the Vent Plug line means
+    they are being decked over. A ridge line carries its pack size, so its
+    quantity is sticks — the NFA is per FOOT, so the pack has to come off first.
+    MUST mirror ventNfaReport() in app.js."""
+    m0 = est.get('measurements') or {}
+    v  = attic_ventilation(m0)
+    items = ((est.get('trades') or {}).get('roofing') or {}).get('line_items') or []
+
+    def _lf(it):
+        qty  = _mnum(it.get('quantity'))
+        pack = _mnum(it.get('bundle_lf'))
+        return qty * (pack if pack > 0 else 1)
+
+    def _is(it, role, pid):
+        return it.get('vent_role') == role or it.get('catalog_id') == pid
+
+    ridge_lf  = sum(_lf(it) for it in items if _is(it, 'ridge', 'a_ridge_vent'))
+    intake_lf = sum(_lf(it) for it in items if _is(it, 'intake', 'a_intake_vent'))
+    plugged   = any(_is(it, 'plugs', 'a_vent_plug') for it in items)
+    turtles   = 0.0 if plugged else _mnum(m0.get('turtle_vents'))
+
+    exhaust = ridge_lf * NFA_RIDGE_SQIN_LF + turtles * NFA_TURTLE_SQIN
+    intake  = intake_lf * NFA_INTAKE_SQIN_LF
+    return {
+        'ridge_lf': ridge_lf, 'intake_lf': intake_lf,
+        'turtles_kept': turtles, 'plugged': plugged,
+        'exhaust_installed': exhaust, 'exhaust_required': v['required_exhaust'],
+        'intake_installed': intake,  'intake_required':  v['required_intake'],
+        'exhaust_short': max(v['required_exhaust'] - exhaust, 0),
+        'intake_short':  max(v['required_intake'] - intake, 0),
+    }
+
+
+def _cv_expired_block(est):
+    """What the customer sees where the signature form used to be."""
+    d = _est_valid_until(est)
+    when = d.strftime('%B %d, %Y') if d else 'a while ago'
+    return f'''<div class="cvexpired">
+  <h2>This pricing has expired</h2>
+  <p>The quote below was held until <strong>{he(when)}</strong>. Roofing material
+  prices move, so we would rather re-check the numbers than hold you to a figure
+  we can no longer stand behind.</p>
+  <p><strong>Nothing is lost.</strong> Everything here is still on file — call or
+  text us and we will refresh the pricing on this exact scope, usually the same day.</p>
+  <a class="cvbtn" href="tel:{COMPANY_PHONE_DIGITS}">&#128222; Call {COMPANY_PHONE_DISPLAY}</a>
+</div>'''
+
+
+def _notify_expired_view(est):
+    """Tell the rep a customer just opened an expired estimate. Once per
+    estimate — a customer refreshing five times is one lead, not five."""
+    # Same reason as send_signature_notification: reached from the public /sign
+    # GET, so the document is the only thing that knows this is a demo.
+    if demo.is_demo_doc(est):
+        return
+    to_addr = _salesperson_email(est)
+    if not to_addr:
+        return
+    c     = est.get('customer', {})
+    cname = c.get('name', 'A customer')
+    enum  = _est_number(est)
+    total = _estimate_total(est)
+    d     = _est_valid_until(est)
+    when  = d.strftime('%b %d, %Y') if d else 'an earlier date'
+    phone = (c.get('phone') or '').strip()
+    email = (c.get('email') or '').strip()
+    reach = ' &middot; '.join(filter(None, [he(phone), he(email)])) or 'no contact details on file'
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#d97706;padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:22px;font-weight:800">&#128293; Expired estimate just opened</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">{he(cname)} came back to a quote that has lapsed.</p>
+  </div>
+  <div style="padding:22px 26px">
+    <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">
+      They could not sign it &mdash; the pricing expired on {he(when)} and the
+      signature block is withdrawn. Someone opening an expired quote is telling
+      you they are still shopping. Re-price it and call them today.</p>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Customer</td><td style="padding:5px 0;font-size:13px;font-weight:700">{he(cname)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Reach them</td><td style="padding:5px 0;font-size:13px">{reach}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Estimate</td><td style="padding:5px 0;font-size:13px">{he(enum)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Was worth</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#d97706">{fc(total)}</td></tr>
+    </table>
+  </div>
+</div>
+</body></html>'''
+    _send_email(f'🔥 {cname} opened an expired estimate ({enum})', html_body, to_addr)
+
+
 def _cv_sig_form(action, hidden='', extra_blocks='', agree_text='',
-                 btn_text='&#10003; Accept &mdash; Sign Electronically', btn_id=''):
+                 btn_text='&#10003; Accept &mdash; Sign Electronically', btn_id='',
+                 est=None):
     """Shared sign form: labeled fields, live script-font signature preview
     (wired up by the shared JS), agreement checkbox, and the E-SIGN notice.
-    Field names are part of the POST contract — do not rename."""
+    Field names are part of the POST contract — do not rename.
+
+    Pass `est` for an ESTIMATE signing page and an expired one withdraws the
+    form here, at the single choke point all three estimate layouts share.
+    Change orders pass nothing and are unaffected: they carry their own dates
+    and a customer approving an add-on is not re-buying the original job."""
+    if est is not None and _est_expired(est):
+        return _cv_expired_block(est)
     bid = f' id="{btn_id}"' if btn_id else ''
     return f'''<form method="POST" action="{action}">
     {hidden}
@@ -5741,7 +8322,7 @@ def _cv_sig_form(action, hidden='', extra_blocks='', agree_text='',
     <label class="cvfield"><span>Full Legal Name *</span>
       <input class="cvinput" name="sig_name" placeholder="Type your full name" required
         autocomplete="name" autocapitalize="words"></label>
-    <label class="cvfield"><span>Email Address <em>&mdash; optional, for your records</em></span>
+    <label class="cvfield"><span>Email Address <em>&mdash; we email your signed contract here</em></span>
       <input class="cvinput" name="sig_email" placeholder="you@example.com" type="email"
         autocomplete="email" inputmode="email"></label>
     <div class="cv-sigpad" aria-hidden="true"><div id="cv-sig-script">&nbsp;</div>
@@ -5918,6 +8499,8 @@ def _cv_visualizer_block(est):
     strip. Silent no-op when no renders are saved yet. Inline CSS lives
     with the rest of the customer view — the customer page shell does NOT
     load static/style.css."""
+    if not _design_studio_customer_on(est):
+        return ''
     vz = est.get('visualizer') or {}
     elevations = _visualizer_render_elevations(vz)
     if not elevations:
@@ -6083,21 +8666,22 @@ def _pc_repair_lines(est):
 def _pc_repair_totals(est):
     """(immediate, soon, monitor, total, any_range) over the report.
 
-    Same low-end parse and same '+' rule the condition block already prints —
-    a legacy range totals its low end and keeps the suffix."""
-    imm = soon = mon = 0.0
-    any_range = False
-    for ln in _pc_repair_lines(est):
-        amt = ln['amount']
-        if amt and ln['is_range']:
-            any_range = True
-        if ln['priority'] == 'immediate':
-            imm += amt
-        elif ln['priority'] == 'soon':
-            soon += amt
-        else:
-            mon += amt
-    return imm, soon, mon, imm + soon + mon, any_range
+    Derived from condition_report_view rather than re-summed here. Both layers
+    arrived at the same arithmetic independently — the low-end parse of each
+    legacy range and the '+' that stays honest only while one survives — and
+    two implementations of the number a homeowner owes is exactly the split
+    that lets the report and the bid quietly disagree. The report's renderers
+    already decide it once; this reads that decision.
+
+    Returns zeros when there is no printable report, which is what the callers
+    already treat as "nothing quoted" rather than a missing answer."""
+    view = condition_report_view(est)
+    if not view:
+        return 0.0, 0.0, 0.0, 0.0, False
+    costs   = view['costs']
+    buckets = costs['buckets']
+    return (buckets['immediate'], buckets['soon'], buckets['monitor'],
+            costs['total'], bool(costs['plus']))
 
 
 def _pc_finding_photo_ids(est):
@@ -6181,6 +8765,113 @@ def _is_report_only(est):
     if est.get('estimate_type') == 'report':
         return True
     return _pc_repair_totals(est)[3] > 0
+
+
+def condition_report_view(est):
+    """Everything the condition report's renderers need decided ONCE.
+
+    Three surfaces print this report — the /sign page (_cv_condition_block),
+    the standalone PDF (build_condition_report_pdf) and the rep's browser
+    print (_printConditionHTML in app.js) — and the ARITHMETIC is the part
+    that has already been wrong. Totals sum the LOW end of each legacy range,
+    so the '+' suffix is honest only while some line still holds one; deciding
+    that in three places is how two of them end up disagreeing about what a
+    homeowner owes.
+
+    Returns None when there is nothing to print — no report at all, or no
+    section both enabled and graded. That is what keeps an empty report off
+    the customer's page, out of the presentation deck, and out of the document
+    list, all from one rule.
+
+    Raw values only: no HTML escaping and no currency formatting, because one
+    caller builds a PDF and neither belongs there.
+
+    page_visibility.report is deliberately NOT applied here. That chip means
+    "include this in the proposal", and a rep who unticks it must still be
+    able to issue the standalone report; _cv_condition_block applies it
+    itself, before calling.
+
+    Mirrored in app.js by _printConditionHTML, which computes the same totals
+    inline. No parity runner binds the two — change them together.
+    """
+    pc = _cv_condition_pc(est)
+    if not pc:
+        return None
+    raw = pc.get('sections') or {}
+    # One enabled+graded list, used for BOTH the rendered sections and the
+    # totals. The totals deliberately walk every recommendation in an enabled
+    # section, including one with no description that never prints a row — it
+    # still carries a price the homeowner is being quoted.
+    enabled = [(key, label, icon, raw.get(key) or {})
+               for key, label, icon in _PC_SECTIONS
+               if (raw.get(key) or {}).get('enabled') and (raw.get(key) or {}).get('grade')]
+    if not enabled:
+        return None
+
+    sections = []
+    for key, label, icon, sec in enabled:
+        word, color, bg = _PC_GRADES.get(sec.get('grade'), ('—', '#333', '#f5f5f5'))
+        meta = []
+        if key == 'roof':
+            if sec.get('material_type'):
+                meta.append(('Material', str(sec['material_type'])))
+            if sec.get('age_years'):
+                meta.append(('Est. Age', f'{sec["age_years"]} years'))
+            if sec.get('pitch'):
+                meta.append(('Pitch', str(sec['pitch'])))
+        findings = []
+        for f_ in (sec.get('findings') or []):
+            if not (f_.get('description') or f_.get('area')):
+                continue
+            sev_lbl, sev_c = _RH_SEV.get(f_.get('severity'), (f_.get('severity') or '', '#666'))
+            findings.append({'area': f_.get('area') or '—', 'severity': sev_lbl,
+                             'severity_color': sev_c,
+                             'description': f_.get('description') or ''})
+        recs = []
+        for rec in (sec.get('recommendations') or []):
+            if not rec.get('description'):
+                continue
+            recs.append({'priority': _RH_PRI.get(rec.get('priority'),
+                                                 rec.get('priority') or ''),
+                         'description': rec.get('description') or '',
+                         'cost': rec.get('cost_range') or '—'})
+        sections.append({'key': key, 'label': label, 'icon': icon,
+                         'grade': sec.get('grade') or '', 'grade_word': word,
+                         'color': color, 'bg': bg,
+                         'summary': (sec.get('summary') or '').strip(),
+                         'meta': meta, 'findings': findings,
+                         'recommendations': recs})
+
+    buckets = {'immediate': 0.0, 'soon': 0.0, 'monitor': 0.0}
+    any_range = False
+    for _key, _label, _icon, sec in enabled:
+        for rec in (sec.get('recommendations') or []):
+            lo = _pc_cost_lo(rec)
+            if lo and _pc_is_range(rec):
+                any_range = True
+            pri = rec.get('priority')
+            buckets['immediate' if pri == 'immediate'
+                    else 'soon' if pri == 'soon' else 'monitor'] += lo
+    rows = [(lbl, buckets[k]) for k, lbl in
+            (('immediate', 'Immediate repairs (D/F)'),
+             ('soon', 'Short-term (C grades)'),
+             ('monitor', 'Maintenance (B grades)')) if buckets[k] > 0]
+
+    is_hoa = pc.get('audience') == 'hoa'
+    return {
+        'pc':               pc,
+        'is_hoa':           is_hoa,
+        'title':            'Property Condition Report' if is_hoa else 'Home Condition Report',
+        'investment_label': ('Estimated Repair Investment' if is_hoa
+                             else 'Estimated Repair Costs'),
+        'inspection_date':  (pc.get('inspection_date') or '').strip(),
+        'property_name':    (pc.get('property_name') or '').strip(),
+        'executive_notes':  (pc.get('executive_notes') or '').strip(),
+        'sections':         sections,
+        'costs':            {'buckets': buckets, 'rows': rows,
+                             'total': sum(buckets.values()),
+                             'plus': '+' if any_range else ''},
+    }
 
 
 def _cv_condition_block(est):
@@ -6334,8 +9025,6 @@ def _cv_condition_block(est):
   {ann_js}
   <div class="cvcond-foot">This {w_title} was prepared by Project One Roofing following a visual inspection. Pricing is valid for 30 days from the inspection date. Concealed damage discovered once work begins may require a change order.</div>
 </div>'''
-
-
 def _visible_initials(est):
     """Initial statements with non-empty text, in order."""
     return [i for i in (est.get('contract_initials') or []) if (i.get('text') or '').strip()]
@@ -6401,10 +9090,10 @@ def _material_product_for_bundle(pb, trade, bundle_id):
     return None
 
 
-def _bundle_colors_for_tier(pb, est, trade, tier):
-    """Color names carried by the material product in est's chosen bundle,
-    for trade+tier. Empty when the bundle has no material with colors[]."""
-    mat = _material_product_for_bundle(pb, trade, _bundle_id_for_tier(pb, est, trade, tier))
+def _color_names(mat):
+    """Color names off one catalog product, accepting both shapes the price
+    book carries: {"name","hex"} dicts (what the seeds ship) and bare strings
+    (what a manager typing into an older book leaves behind)."""
     if not mat:
         return []
     out = []
@@ -6418,15 +9107,89 @@ def _bundle_colors_for_tier(pb, est, trade, tier):
     return out
 
 
+def _bundle_colors_for_tier(pb, est, trade, tier):
+    """Color names carried by the material product in est's chosen bundle,
+    for trade+tier. Empty when the bundle has no material with colors[]."""
+    return _color_names(
+        _material_product_for_bundle(pb, trade, _bundle_id_for_tier(pb, est, trade, tier)))
+
+
+def _settings_color_list(trade):
+    """The company-wide color list from ⚙ Settings, if one is saved.
+
+    Roofing only — the Settings modal has no siding equivalent. Read straight
+    off disk because this is one small file on a customer-page render, and the
+    alternative is threading app settings through six call sites."""
+    if trade != 'roofing':
+        return []
+    try:
+        with open(APP_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    return [str(c).strip() for c in (data.get('shingle_colors') or []) if str(c).strip()]
+
+
+def _options_are_autoseeded(seq, trade):
+    """True when ss['options'] is the list the BROWSER filled in, not one a rep
+    typed.
+
+    Every new estimate has its options pre-filled from _globalShingleColors()
+    in app.js — the ⚙ Settings list, or DEFAULT_SHINGLE_COLORS. Those are
+    manufacturer-agnostic names ("Barkwood", "Hunter Green"), so appending them
+    to a CertainTeed dropdown would offer the customer colors CertainTeed does
+    not make. Matching the whole list exactly is the signature of a default
+    nobody touched — the same test _PRODUCT_COST_MIGRATIONS uses on prices.
+    Newer estimates leave options empty, so this only matters for the ones
+    already saved on the volume."""
+    if not seq:
+        return False
+    norm = [s.casefold() for s in seq]
+    for cand in (DEFAULT_SHINGLE_COLORS if trade == 'roofing' else DEFAULT_SIDING_COLORS,
+                 _settings_color_list(trade)):
+        if cand and norm == [str(c).strip().casefold() for c in cand]:
+            return True
+    return False
+
+
 def _customer_color_options(pb, est, trade, tier, ss):
     """Ordered color names to offer the customer for trade+tier.
-    Bundle colors → rep-typed ss.options → manufacturer-agnostic fallback."""
-    seq = _bundle_colors_for_tier(pb, est, trade, tier)
+
+    Rep-pinned material → the tier's bundle → PLUS any colors the rep typed
+    → manufacturer-agnostic fallback.
+
+    The pin (ss['material_bundle_id'], set on the Contract tab) names the
+    system actually being installed and bypasses the tier lookup entirely, so
+    the palette holds across every package — and works on an insurance claim,
+    where no tier is being sold and the tier lookup would otherwise hand back
+    whatever the 'better' retail default happens to be.
+
+    The rep's list APPENDS rather than losing to the bundle. It used to be a
+    fallback that only fired when the bundle had no colors, which for roofing
+    is never — so the "Extra color options" field on the Contract tab silently
+    did nothing and the customer saw only the short preview palette."""
+    pinned = (ss.get('material_bundle_id') or '').strip()
+    if pinned:
+        seq = _color_names(_material_product_for_bundle(pb, trade, pinned))
+    else:
+        seq = _bundle_colors_for_tier(pb, est, trade, tier)
+
+    typed = [str(o).strip() for o in (ss.get('options') or []) if str(o).strip()]
+    extras = [] if _options_are_autoseeded(typed, trade) else list(typed)
+
     if seq:
+        seen = {c.casefold() for c in seq}
+        for e in extras:
+            if e.casefold() not in seen:
+                seen.add(e.casefold())
+                seq.append(e)
         return seq
-    seq = [str(o).strip() for o in (ss.get('options') or []) if str(o).strip()]
-    if seq:
-        return seq
+    if extras:
+        return extras
+    # No palette and nothing deliberate. The auto-seeded list is still the
+    # company's own list of colors, and it beats an empty <select>.
+    if typed:
+        return typed
     return list(DEFAULT_SHINGLE_COLORS if trade == 'roofing' else DEFAULT_SIDING_COLORS)
 
 
@@ -6565,6 +9328,97 @@ def _cv_initials_block(est):
       <div class="cv-initials-title">Please initial each item below:</div>
       {rows}
     </div>'''
+
+
+def _cv_upgrades_block(est, base_total=None, claim_label=False):
+    """The optional-upgrades step of the sign form, or '' when none is offered.
+
+    A tick list the homeowner works before they sign, sitting with the color
+    picker and the initials because that is where the total has to be right.
+    Each row carries the price the page showed in a hidden field: the POST
+    compares it and refuses a signature against a price the rep has since
+    changed, the same way a stale package pick is refused. Without it a
+    homeowner could tick $1,450 of gutter guards and sign an $1,850 contract.
+
+    `base_total` is the package total this page is showing, so a layout with no
+    live package recalc can still add the ticked upgrades to the number in the
+    sticky bar. Pass nothing to leave that number alone: the G/B/B layout
+    already owns it, and on an insurance page the figure beside it is the
+    CARRIER'S CLAIM - folding a homeowner's own upgrade into it would misstate
+    what the carrier approved, which is the one number on that page a customer
+    may well repeat to their adjuster. `claim_label` says so in words."""
+    ups = upgrades_offered(est)
+    if not ups:
+        return ''
+    rows = ''
+    for u in ups:
+        uid = (u.get('id') or '').strip()
+        if not uid:
+            continue
+        price = upgrade_price(u)
+        desc  = (u.get('description') or '').strip()
+        desc_html = f'<span class="cv-upg-d">{he(desc)}</span>' if desc else ''
+        rows += f'''<label class="cv-upg-row">
+          <input class="cv-upg-box" type="checkbox" name="upgrade_{he(uid)}" value="1"
+            data-price="{price:.2f}" onchange="_cvUpgChange()">
+          <input type="hidden" name="upgrade_price_{he(uid)}" value="{price:.2f}">
+          <span class="cv-upg-n">{he(u.get("name", ""))}{desc_html}</span>
+          <span class="cv-upg-p">+{fc(price)}</span>
+        </label>'''
+    if not rows:
+        return ''
+    sub = ('These upgrades are yours to choose and are not part of the insurance '
+           'claim. Tick any you would like added &mdash; leave them unticked and '
+           'nothing changes.'
+           if claim_label else
+           'Tick any you would like added to your project. Leave them unticked and '
+           'your total stays exactly as quoted above.')
+    base_attr = '' if base_total is None else f' data-base="{base_total:.2f}"'
+    return f'''<div class="cv-upg" id="cv-upg"{base_attr}>
+      <div class="cv-upg-title">&#10024; Optional Upgrades</div>
+      <div class="cv-upg-sub">{sub}</div>
+      {rows}
+      <div class="cv-upg-foot"><span>Upgrades selected</span>
+        <span class="cv-upg-sum" id="cv-upg-sum">{fc(0)}</span></div>
+    </div>'''
+
+
+# The ticked upgrades are added to whatever total the page is already showing.
+# On the G/B/B layout _cvRefreshTotal owns that number (and has to relabel the
+# bar besides), so this hands off to it rather than fighting it for the same two
+# spans; on the single-price and insurance layouts nothing else recalculates, so
+# it rewrites them itself off `data-base`. Emitted only when there is a block.
+# Raw string: the thousands-separator regex below is JS, not Python escapes.
+_CV_UPGRADES_JS = r"""<script>
+function _cvUpgTotal(){
+  var n=0;
+  document.querySelectorAll('.cv-upg-box').forEach(function(b){
+    if(b.checked)n+=parseFloat(b.dataset.price||'0')||0;
+  });
+  return n;
+}
+function _cvUpgChange(){
+  var n=_cvUpgTotal();
+  var f=function(v){return'$'+Math.abs(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',');};
+  var el=document.getElementById('cv-upg-sum');
+  if(el)el.textContent=f(n);
+  var box=document.getElementById('cv-upg');
+  if(box)box.classList.toggle('cv-upg-on',n>0);
+  if(typeof _cvRefreshTotal==='function'){_cvRefreshTotal();return;}
+  // No data-base means this page's headline number is not ours to move.
+  if(!box||box.dataset.base===undefined)return;
+  var base=parseFloat(box.dataset.base)||0;
+  var amt=document.getElementById('cv-grand-amt');
+  var st=document.getElementById('cvstick-amt');
+  if(amt)amt.textContent=f(base+n);
+  if(st)st.textContent=f(base+n);
+}
+</script>"""
+
+
+def _cv_upgrades_script(est):
+    """Emit the upgrades JS only when the page actually offers upgrades."""
+    return _CV_UPGRADES_JS if upgrades_offered(est) else ''
 
 
 def _cv_attachments_block(est):
@@ -7026,6 +9880,8 @@ def _build_estimate_manifest(est):
                 for it in (td.get('line_items') or []):
                     if it.get('customer_visible') is False:
                         continue
+                    if _is_supplement_item(td, it):
+                        continue
                     if float(it.get('quantity') or 0) <= 0:
                         continue
                     nm = (it.get('name') or '').strip()
@@ -7070,13 +9926,13 @@ def _build_estimate_manifest(est):
                             or ('' if stale_by_tier[t]
                                 else (bundle_rec.get('name') if bundle_rec else ''))
                             or '')
-                # A hand-built tier gets no tagline at all — neither the stored
-                # one nor the bundle's, since the bundle is no longer what this
-                # package sells.
-                tagline  = '' if stale_by_tier[t] else (
-                    tag_stored
-                    or (bundle_rec.get('description') if bundle_rec else '')
-                    or '')
+                # A hand-built tier gets no BUNDLE tagline — neither the stored
+                # copy the bundle wrote nor the book's, since the bundle is no
+                # longer what this package sells. A tagline the rep typed on
+                # the estimate survives; _tier_card_content already decided.
+                tagline  = tag_stored or ('' if stale_by_tier[t] else (
+                    (bundle_rec.get('description') if bundle_rec else '')
+                    or ''))
                 tiers_info.append({
                     'tier':          t,
                     'tier_label':    dict(good='Good', better='Better', best='Best')[t],
@@ -7267,7 +10123,17 @@ def _build_estimate_manifest(est):
         'trades':          trades_out,
         'code':            code,
         'ventilation':     vent,
-        'warranty_by_tier': dict(_WARRANTY_BY_TIER_COMMERCIAL if is_comm else _WARRANTY_BY_TIER),
+        # EMPTY ON INSURANCE, deliberately. A claim sells the one scope the
+        # carrier approved — there is no Good/Better/Best to choose between, so
+        # a three-package warranty table on that page describes a decision the
+        # customer was never offered. Every consumer guards on truthiness, so
+        # emptying it here is what removes the table from the /sign details
+        # block AND "Workmanship Warranty by Package" from the signed PDF, and
+        # what drops the glance block's "Backed by" row back to warranty_body
+        # (the admin-edited Settings copy). Do not "restore" this for symmetry.
+        'warranty_by_tier': ({} if is_ins else
+                             dict(_WARRANTY_BY_TIER_COMMERCIAL if is_comm
+                                  else _WARRANTY_BY_TIER)),
         'warranty_body':   warranty_body,
         'company': {
             'name':          'Project One Roofing',
@@ -7655,12 +10521,15 @@ def _build_insurance_cv(est, token):
   {_cv_sig_form(_mount_path(f'/sign/{he(token)}'),
                 hidden='<input type="hidden" name="selected_tier" value="insurance">',
                 extra_blocks=(_cv_shingle_block(est) + _cv_siding_block(est)
+                              + _cv_upgrades_block(est, claim_label=True)
                               + _cv_initials_block(est)),
-                agree_text='I have read this insurance estimate and I agree to all terms &amp; conditions.')}
+                agree_text='I have read this insurance estimate and I agree to all terms &amp; conditions.',
+                est=est)}
 </div>
 </main>
 
 {_cv_sticky_bar('Insurance Claim Total', fc(ins_total))}
+{_cv_upgrades_script(est)}
 ''' + _cv_footer()
 
 
@@ -7736,7 +10605,7 @@ def _build_simple_retail_cv(est, token):
 
 <div class="cvgrand">
   <span class="cvgrand-lbl">Total</span>
-  <span class="cvgrand-amt">{fc(grand_total)}</span>
+  <span class="cvgrand-amt" id="cv-grand-amt">{fc(grand_total)}</span>
 </div>
 
 {notes_html}
@@ -7756,12 +10625,15 @@ def _build_simple_retail_cv(est, token):
                 hidden=f'<input type="hidden" name="selected_tier" value="{he(tier)}">',
                 extra_blocks=(_cv_shingle_block(est, chosen_tier=tier)
                               + _cv_siding_block(est, chosen_tier=tier)
+                              + _cv_upgrades_block(est, grand_total)
                               + _cv_initials_block(est)),
-                agree_text='I have read this estimate and I agree to all terms &amp; conditions.')}
+                agree_text='I have read this estimate and I agree to all terms &amp; conditions.',
+                est=est)}
 </div>
 </main>
 
 {_cv_sticky_bar('Your Estimate Total', fc(grand_total))}
+{_cv_upgrades_script(est)}
 ''' + _cv_footer()
 
 
@@ -7989,8 +10861,7 @@ def build_customer_view(est, token):
             feats_el = ''
             if feats:
                 feats_el = ('<ul class="cv-tier-feats">'
-                            + ''.join(f'<li>{he(f)}</li>' for f in feats[:8])
-                            + (f'<li class="cv-tier-more">+ {len(feats) - 8} more included</li>' if len(feats) > 8 else '')
+                            + ''.join(f'<li>{he(f)}</li>' for f in feats)
                             + '</ul>')
             cards_html += f'''<div class="cv-tier-card {'cv-tier-selected' if is_sel else ''}"
               data-trade="{tk}" data-tier="{t}"
@@ -8096,9 +10967,10 @@ def build_customer_view(est, token):
                                   for tk in gbb_tks)),
                 extra_blocks=(_cv_shingle_block(est, pb=pb, chosen_tier=default_tier)
                               + _cv_siding_block(est, pb=pb, chosen_tier=default_tier)
+                              + _cv_upgrades_block(est)
                               + _cv_initials_block(est)),
                 agree_text='I have read this estimate, selected my package, and I agree to all terms &amp; conditions.',
-                btn_id='cv-sign-btn')}
+                btn_id='cv-sign-btn', est=est)}
 </div>
 </main>
 
@@ -8117,7 +10989,22 @@ var _tier_lbls   = {{good:'Good',better:'Better',best:'Best'}};
 function _fmt(n){{return'$'+Math.abs(n).toFixed(2).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,',');}}
 function selectCvTier(trade,tier){{
   var g=_cv_gbb[trade]; if(!g)return;
+  var changed = g.cur !== tier;
   g.cur=tier;
+  // Buying signal, fire-and-forget. sendBeacon so a slow network can never make
+  // the card feel laggy, and so a tap right before the tab closes still lands.
+  if(changed){{
+    try{{
+      var _b=JSON.stringify({{trade:trade,tier:tier}});
+      var _u='{_mount_path(f'/sign/{he(token)}/tier-interest')}';
+      if(navigator.sendBeacon){{
+        navigator.sendBeacon(_u,new Blob([_b],{{type:'application/json'}}));
+      }}else{{
+        fetch(_u,{{method:'POST',headers:{{'Content-Type':'application/json'}},
+                 body:_b,keepalive:true}}).catch(function(){{}});
+      }}
+    }}catch(e){{}}
+  }}
   _cv_tiers.forEach(function(t){{
     var card=document.querySelector('[data-trade="'+trade+'"][data-tier="'+t+'"]');
     var chk=document.getElementById('cv-check-'+trade+'-'+t);
@@ -8138,7 +11025,10 @@ function selectCvTier(trade,tier){{
   _cvRefreshTotal();
 }}
 function _cvRefreshTotal(){{
-  var sum=_cv_simple_total, parts=[], first=null;
+  // Elected upgrades sit on top of the package, not inside it — a customer can
+  // switch Good/Better/Best all day and keep the gutter guards they ticked.
+  var sum=_cv_simple_total+(typeof _cvUpgTotal==='function'?_cvUpgTotal():0);
+  var parts=[], first=null;
   _cv_trades.forEach(function(tr){{
     var g=_cv_gbb[tr];
     sum+=(g.totals[g.cur]||0);
@@ -8168,6 +11058,7 @@ function _cvRefreshTotal(){{
   }});
 }})();
 </script>
+{_cv_upgrades_script(est)}
 {_cv_tier_color_script(est, pb=pb)}
 ''' + _cv_footer()
 
@@ -8209,7 +11100,9 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:#0e2440;
 .pd button{width:9px;height:9px;border-radius:9px;background:rgba(255,255,255,.2);
   border:none;cursor:pointer;padding:0;transition:all .2s}
 .pd button.act{background:#0ea5e9;width:24px}
-.pctr{color:rgba(255,255,255,.45);font-size:12px;margin:0 10px}
+.pctr{color:rgba(255,255,255,.45);font-size:12px;margin:0 10px;white-space:nowrap}
+@media(max-width:600px){.pn{padding:10px 12px}.pn-b{min-width:80px;padding:10px 14px}.pctr{margin:0 6px}}
+@media(max-width:380px){.pd{display:none}}
 /* hero */
 .ps-hero{text-align:center;padding:48px 32px}
 .ps-hero-cover{width:100%;max-height:320px;object-fit:cover;border-radius:12px;margin-bottom:28px}
@@ -8330,11 +11223,24 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:#0e2440;
 .ps-steps li span{font-size:12px;color:#64748b}
 /* condition */
 .ps-cond h2{font-size:22px;font-weight:800;color:#0e2440;margin-bottom:16px}
-.ps-cond-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
-.ps-cond-it{background:#f8fafc;padding:14px;border-radius:10px}
-.ps-cond-it label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;display:block;margin-bottom:2px}
-.ps-cond-it strong{font-size:14px;color:#1e293b}
-.ps-cond-notes{margin-top:14px;font-size:13px;color:#475569;line-height:1.6;white-space:pre-wrap}
+.ps-cond{min-width:0;overflow-wrap:anywhere}
+.ps-cond .cvcond-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:12px;margin:16px 0}
+.ps-cond .cvcond-cell{background:#f8fafc;padding:14px;border-radius:10px;text-align:center}
+.ps-cond .cvcond-cell-lbl{font-size:12px;font-weight:700}
+.ps-cond .cvcond-letter{font-size:28px;font-weight:800;border-radius:8px;margin:8px auto;padding:6px;max-width:64px}
+.ps-cond .cvcond-word,.ps-cond .cvcond-badge{font-size:12px;font-weight:700}
+.ps-cond .cvcond-exec,.ps-cond .cvcond-summary{font-size:14px;line-height:1.6;white-space:pre-wrap;margin:12px 0}
+.ps-cond .cvcond-meta,.ps-cond .cvcond-foot{font-size:12px;color:#64748b;line-height:1.6;margin:12px 0}
+.ps-cond .cvcond-sec{margin-top:24px;padding-top:18px;border-top:1px solid #e2e8f0}
+.ps-cond .cvcond-sec-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.ps-cond .cvcond-sec-hd h4{font-size:16px;color:#0e2440}
+.ps-cond .cvcond-badge{padding:5px 10px;border-radius:8px}
+.ps-cond .cvcond-sh{font-size:14px;font-weight:700;margin:18px 0 8px}
+.ps-cond .cvcond-tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}
+.ps-cond .cvcond-tbl th,.ps-cond .cvcond-tbl td{padding:10px 6px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top;white-space:normal!important}
+.ps-cond .cvcond-tbl th{background:#f8fafc;font-size:11px;color:#64748b}
+.ps-cond .cvcond-tbl .cvr{text-align:right}
+.ps-cond .cvcond-cost-total{font-weight:700;background:#f0fdf4}
 """
 
 
@@ -8404,20 +11310,12 @@ def build_presentation_view(est, token):
         </div>{_CV_ANN_JS}'''))
 
     # ── Slide: Property Condition ──────────────────────────────────────
-    cond = est.get('property_condition') or est.get('roof_health') or {}
-    cond_items = [(k.replace('_', ' ').title(), str(v).strip())
-                  for k, v in cond.items()
-                  if k != 'notes' and str(v).strip() and str(v).strip().lower() != 'n/a']
-    cond_notes = (cond.get('notes') or '').strip()
-    if cond_items:
-        ci_html = ''.join(f'<div class="ps-cond-it"><label>{he(l)}</label><strong>{he(v)}</strong></div>'
-                          for l, v in cond_items)
-        notes_h = f'<div class="ps-cond-notes">{he(cond_notes)}</div>' if cond_notes else ''
-        slides.append(('Condition', f'''<div class="ps-cond">
-          <h2>Property Condition Report</h2>
-          <div class="ps-cond-grid">{ci_html}</div>
-          {notes_h}
-        </div>'''))
+    # Use the customer report renderer so empty reports stay out, the report
+    # visibility setting is respected, and structured fields never print as
+    # Python lists/dicts or expose internal photo IDs to the customer.
+    condition_html = _cv_condition_block(est)
+    if condition_html:
+        slides.append(('Condition', f'<div class="ps-cond">{condition_html}</div>'))
 
     # ── Slide: Package Selection (GBB, interactive) ────────────────────
     is_insurance = (est.get('estimate_type') == 'insurance') or \
@@ -8837,6 +11735,18 @@ def build_signed_confirmation(est):
   <span class="cvgrand-amt">{fc(gtotal)}</span>
 </div>'''
 
+    # Elected upgrades print after the package and are then totalled WITH it.
+    # The package bar above keeps saying what the package cost — a homeowner
+    # comparing this against the estimate they were sent has to be able to find
+    # that number — and the contract total is the one they owe.
+    upg_html = _upgrades_cv_table(est)
+    upg_tot  = upgrades_total(est)
+    if upg_tot:
+        total_bar += f'''<div class="cvgrand" style="margin-top:10px">
+  <span class="cvgrand-lbl">Contract Total &mdash; incl. upgrades</span>
+  <span class="cvgrand-amt">{fc(gtotal + upg_tot)}</span>
+</div>'''
+
     notes  = (est.get('notes_customer') or '').strip()
     ctext  = (est.get('contract_text') or '').strip()
     notes_html = f'<div class="cvnotes"><h2 data-eyebrow="Additional">Notes</h2><p>{he(notes)}</p></div>' if notes else ''
@@ -8894,6 +11804,8 @@ def build_signed_confirmation(est):
 {_cv_products_block(est)}
 
 {li_html}
+
+{upg_html}
 
 {total_bar}
 
@@ -9156,7 +12068,9 @@ def _design_review_page(est, token, notice=''):
                       'alt="Configured ProVia door">' if spec.get('configured_image') else '')
         checked = ' checked' if current_is_live and current.get('tier') == tier else ''
         preferred = ' <span class="preferred">Project One preferred</span>' if favorite == tier else ''
+        snapshot_hash = _design_snapshot_hash(_design_tier_snapshot(vz, tier))
         concept_html += f'''<section class="concept">
+  <input type="hidden" name="design_hash_{tier}" value="{snapshot_hash}">
   <div class="concept-title"><label><input type="radio" name="approved_tier" value="{tier}"{checked} required>
     <span>{he(names[tier])}</span></label>{preferred}</div>
   <div class="elevations">{cards}</div>
@@ -9192,7 +12106,7 @@ def _design_review_page(est, token, notice=''):
 header{{background:#142f4f;color:white;padding:28px max(20px,calc((100% - 1120px)/2))}}header h1{{margin:0 0 4px;font-size:clamp(24px,4vw,38px)}}header p{{margin:3px 0;color:#dce7f2}}
 main{{max-width:1120px;margin:auto;padding:24px 18px 56px}}.approved,.notice,.empty{{padding:14px 16px;border-radius:10px;margin-bottom:18px}}.approved{{background:#e8f6ee;border:1px solid #93c9a7}}.notice{{background:#fff6dc;border:1px solid #e1c26a}}.empty{{background:white;border:1px solid #d4dbe3}}
 .concept{{background:white;border:1px solid #d4dbe3;border-radius:14px;margin:0 0 20px;overflow:hidden;box-shadow:0 4px 14px #17304c12}}.concept-title{{display:flex;align-items:center;gap:10px;padding:15px 18px;border-bottom:1px solid #e3e7ec;font-size:20px;font-weight:750}}.concept-title label{{display:flex;align-items:center;gap:10px;cursor:pointer}}.concept-title input{{width:20px;height:20px}}.preferred{{font-size:12px;background:#e9f2ff;color:#174e87;padding:3px 8px;border-radius:999px}}
-.elevations{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;padding:15px}}figure{{margin:0}}.elevation img{{display:block;width:100%;aspect-ratio:5/3;object-fit:cover;border-radius:9px;background:#e8edf2}}figcaption{{padding:6px 2px 0;font-weight:650}}.specs{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:15px;padding:0 18px 18px}}.specs ul{{margin:0;padding-left:18px}}.provia{{background:#f5f8fb;padding:12px;border-radius:9px}}.provia h3{{margin:0 0 7px;font-size:15px}}.door-config{{max-width:220px;max-height:240px;object-fit:contain;border-radius:7px;margin-top:8px}}
+    .elevations{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;padding:15px}}figure{{margin:0}}.elevation img{{display:block;width:100%;height:auto;object-fit:contain;border-radius:9px;background:#e8edf2}}figcaption{{padding:6px 2px 0;font-weight:650}}.specs{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:15px;padding:0 18px 18px}}.specs ul{{margin:0;padding-left:18px}}.provia{{background:#f5f8fb;padding:12px;border-radius:9px}}.provia h3{{margin:0 0 7px;font-size:15px}}.door-config{{max-width:220px;max-height:240px;object-fit:contain;border-radius:7px;margin-top:8px}}
 .approval-form{{background:white;border:1px solid #cbd4de;border-radius:14px;padding:20px;display:grid;gap:15px}}.approval-form>label:first-child{{font-weight:700}}input[type=text],input[name=approver_name]{{display:block;width:100%;max-width:500px;padding:11px;margin-top:5px;border:1px solid #9daab8;border-radius:7px;font:inherit}}.agree{{display:flex;align-items:flex-start;gap:9px}}.agree input{{width:19px;height:19px;flex:none}}button{{justify-self:start;border:0;border-radius:8px;background:#e87524;color:white;padding:12px 20px;font:700 16px inherit;cursor:pointer}}footer{{text-align:center;color:#657284;padding:25px}}
 </style></head><body><header><h1>Exterior Design Review</h1><p>{he(customer.get('name') or 'Project One Roofing customer')}</p>{f'<p>{he(address)}</p>' if address else ''}</header>
 <main>{notice_html}{approved_html}<p>Select one complete concept below. Each concept stays synchronized across every saved elevation.</p>{form}</main>
@@ -9206,6 +12120,9 @@ def create_visualizer_share_link(est_id):
         return jsonify({'error': 'Not found'}), 404
     if not _can_touch_estimate(est):
         return _forbid()
+    if not _design_studio_customer_on(est):
+        return jsonify({'error': 'This estimate\'s 🎨 Design Studio section is off. Turn it '
+                                 'on in the Print Pages bar and save, then share.'}), 403
     vz = est.get('visualizer') if isinstance(est.get('visualizer'), dict) else {}
     if not _visualizer_render_elevations(vz):
         return jsonify({'error': 'Save at least one design rendering before sharing.'}), 400
@@ -9219,6 +12136,12 @@ def create_visualizer_share_link(est_id):
 @app.route('/design/<token>', methods=['GET', 'POST'])
 def customer_design(token):
     est = est_find_by_design_token(token)
+    # While this estimate's Design Studio section is off, a link already in the
+    # customer's inbox answers 404 like one that never existed.
+    if est is not None and not _design_studio_customer_on(est):
+        return ('<h2 style="font-family:sans-serif;padding:40px">This design review is '
+                'not available right now. Please contact your Project One '
+                'representative.</h2>', 404)
     if est is None:
         return '<h2 style="font-family:sans-serif;padding:40px">Design link not found or expired.</h2>', 404
     if request.method == 'GET':
@@ -9251,6 +12174,13 @@ def customer_design(token):
             rejected[0] = True
             return None
         snapshot = _design_tier_snapshot(vz, tier)
+        # Bind approval to the images and materials the customer actually saw.
+        # A rep may save a revision while this browser tab remains open.
+        viewed_hash = request.form.get(f'design_hash_{tier}', '')
+        if (not re.fullmatch(r'[0-9a-f]{64}', viewed_hash) or
+                not secrets.compare_digest(viewed_hash, _design_snapshot_hash(snapshot))):
+            rejected[0] = True
+            return None
         approval = {
             **snapshot, 'approver_name': approver, 'approved_at': now,
             'ip_address': client_ip, 'user_agent': client_ua, 'token': token,
@@ -9267,7 +12197,7 @@ def customer_design(token):
     stored = est_update(est.get('estimate_id'), _approve)
     if stored is None or rejected[0]:
         fresh = est_find_by_design_token(token) or est
-        return Response(_design_review_page(fresh, token, 'That concept is no longer available. Ask your representative to resend the design.'), status=409, mimetype='text/html')
+        return Response(_design_review_page(fresh, token, 'This design has changed or needs to be refreshed. Review the current images and selections below before approving.'), status=409, mimetype='text/html')
     return Response(_design_review_page(stored, token, 'Thank you — your design approval was recorded.'), mimetype='text/html')
 
 
@@ -9278,6 +12208,12 @@ def create_share_link(est_id):
         return jsonify({'error': 'Not found'}), 404
     if not _can_touch_estimate(est):
         return _forbid()
+    blocked, worst = _margin_floor_block(est)
+    if blocked:
+        return jsonify({'error': blocked, 'margin_floor': worst}), 403
+    if worst:
+        print(f'[margin-floor] {est_id} shared by a manager at '
+              f"{worst['margin_pct']}% ({worst['tier']})")
     token = _ensure_share_token(est)
     base = _base_url()
     return jsonify({'token': token, 'url': f'/sign/{token}', 'full_url': f'{base}/sign/{token}'})
@@ -9292,6 +12228,12 @@ def email_estimate_link(est_id):
         return jsonify({'error': 'Not found'}), 404
     if not _can_touch_estimate(est):
         return _forbid()
+    blocked, worst = _margin_floor_block(est)
+    if blocked:
+        return jsonify({'error': blocked, 'margin_floor': worst}), 403
+    if worst:
+        print(f'[margin-floor] {est_id} emailed by a manager at '
+              f"{worst['margin_pct']}% ({worst['tier']})")
 
     body    = request.get_json(silent=True) or {}
     to_addr = (body.get('email') or est.get('customer', {}).get('email') or '').strip()
@@ -9361,6 +12303,17 @@ def _send_email(subject, html_body, to_addr, cc=None, attachments=None, bcc=None
     no API key is available. Logs errors, never raises.
     attachments: list of (filename, bytes) tuples."""
     if not to_addr:
+        return False
+
+    # Backstop for demo mode. demo_store.ALLOWED_ENDPOINTS already keeps a
+    # guest off every route that sends mail, so nothing should reach here — but
+    # "should" is doing a lot of work in a function that puts the company's
+    # name on a message to a stranger, and this is the single place all of
+    # them funnel through. The doc-driven paths (signature notification,
+    # customer copy) are guarded separately at their callers, because those run
+    # from the customer's browser where there is no demo session to read.
+    if demo.active():
+        print(f'[demo] email suppressed: {subject!r} -> {to_addr}')
         return False
 
     # Don't BCC the primary recipient — SendGrid would silently drop the duplicate,
@@ -9523,6 +12476,13 @@ def send_view_notification(est):
 
 def send_signature_notification(est):
     """Email the salesperson when a customer signs."""
+    # Runs in a background thread off the PUBLIC /sign POST, so there is no
+    # demo session to read — the document is what says this is a demo. Without
+    # this, signing the demo estimate mails demo@projectoneroofing.com, which
+    # is nobody, from an address that has a sending reputation to protect.
+    if demo.is_demo_doc(est):
+        print('[demo] signature notification suppressed')
+        return
     notify_cc = os.environ.get('NOTIFY_CC', '').strip()  # optional extra CC
 
     sp = (est.get('salesperson') or '').strip()
@@ -9579,6 +12539,18 @@ def send_signature_notification(est):
     email_row = (f'<tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Customer Email</td>'
                  f'<td style="padding:5px 0;font-size:13px">{he(semail)}</td></tr>') if semail else ''
 
+    # Which optional upgrades they took. The dollars are already inside Total,
+    # but WHICH ones is what the rep has to hand the crew and the supplier —
+    # and an upgrade nobody reads about is an upgrade nobody installs.
+    _elected = accepted_upgrades(est)
+    upg_row  = ''
+    if _elected:
+        _names = ', '.join((u.get('name') or '').strip() for u in _elected)
+        _utot  = sum(upgrade_price(u) for u in _elected)
+        upg_row = ('<tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">'
+                   'Upgrades</td><td style="padding:5px 0;font-size:13px">'
+                   f'{he(_names)} &mdash; <strong>{fc(_utot)}</strong></td></tr>')
+
     html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
 <body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
 <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
@@ -9594,6 +12566,7 @@ def send_signature_notification(est):
       {email_row}
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Address</td><td style="padding:5px 0;font-size:13px">{he(addr_str or "—")}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Package</td><td style="padding:5px 0;font-size:13px">{he(tlbl)}</td></tr>
+      {upg_row}
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Total</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#16a34a">{fc(total)}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Signed By</td><td style="padding:5px 0;font-size:13px">{he(sname)}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Signed At</td><td style="padding:5px 0;font-size:13px">{he(stime_fmt)}</td></tr>
@@ -9733,6 +12706,37 @@ _VISUALIZER_TIERS_ORDER = ('good', 'better', 'best')
 _VISUALIZER_TIER_LABELS = {'good': 'Good', 'better': 'Better', 'best': 'Best'}
 
 
+def _pdf_contain_image(pdf, path, x, y, box_w, box_h):
+    """Draw an image centered inside a fixed PDF box without cropping it.
+
+    Visualizer photos can be portrait, 4:3, or wide phone-camera crops. Passing
+    both the box width and height straight to fpdf stretches every non-matching
+    aspect ratio. The neutral box is drawn first so any unused area becomes an
+    intentional letterbox rather than transparent page space. Returns False
+    for a missing/corrupt image so the caller can add its usual placeholder.
+    """
+    pdf.set_draw_color(200, 200, 200)
+    pdf.set_fill_color(245, 246, 248)
+    pdf.rect(x, y, box_w, box_h, style='DF')
+    if not path or not os.path.isfile(path) or box_w <= 0 or box_h <= 0:
+        return False
+    try:
+        from PIL import Image
+        with Image.open(path) as source:
+            image_w, image_h = source.size
+        if image_w <= 0 or image_h <= 0:
+            return False
+        scale = min(box_w / image_w, box_h / image_h)
+        draw_w, draw_h = image_w * scale, image_h * scale
+        draw_x = x + (box_w - draw_w) / 2
+        draw_y = y + (box_h - draw_h) / 2
+        pdf.image(path, x=draw_x, y=draw_y, w=draw_w, h=draw_h)
+        return True
+    except Exception:
+        # A corrupt JPEG should not take the whole signed PDF down.
+        return False
+
+
 def _emit_visualizer_pdf_page(pdf, est, LM, W):
     """Draw the Good/Better/Best visualizer renderings on a fresh PDF page.
 
@@ -9740,8 +12744,11 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
     no-op when no renders exist — the tool is optional. Draws whichever
     tiers actually have a file; missing tiers get an empty slot with the
     label rather than a broken layout, so a partial save (rep only rendered
-    Better) still reads clearly.
+    Better) still reads clearly. Skipped entirely while customers are not
+    shown the Design Studio — the signed PDF is the customer's copy.
     """
+    if not _design_studio_customer_on(est):
+        return
     vz = est.get('visualizer') or {}
     elevations = _visualizer_render_elevations(vz)
     if not elevations:
@@ -9761,9 +12768,18 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
              new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
     pdf.set_font(_S(pdf), '', 8)
+    # An insurance job has no Good/Better/Best to select, so naming packages
+    # here would promise a choice the claim never offered. The renders
+    # themselves are the rep's design concepts either way.
+    _is_ins = (est.get('estimate_type') == 'insurance'
+               or bool((est.get('trades', {}).get('insurance') or {}).get('enabled')))
+    _lead = ('These renderings show the design options blended onto your home photo. '
+             if _is_ins else
+             'These renderings show the selected Good/Better/Best package '
+             'options blended onto your home photo. ')
     pdf.multi_cell(W, 4.2, _pdf_rich(
-        'These renderings show the selected Good/Better/Best package '
-        'options blended onto your home photo. Colors are indicative and '
+        _lead
+        + 'Colors are indicative and '
         'may vary from the manufacturer swatch. Door previews show finish only; '
         'confirm the exact panel, glass and hardware separately.'))
     pdf.ln(3)
@@ -9790,18 +12806,8 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
         img_y = y_top + 5.5
         ref = renders.get(tier)
         path = os.path.join(UPLOADS_DIR, ref) if ref else None
-        drew = False
-        if path and os.path.isfile(path):
-            try:
-                pdf.image(path, x=x, y=img_y, w=thumb_w, h=thumb_h)
-                drew = True
-            except Exception:
-                # A corrupt JPEG shouldn't take the whole PDF down.
-                drew = False
+        drew = _pdf_contain_image(pdf, path, x, img_y, thumb_w, thumb_h)
         if not drew:
-            pdf.set_draw_color(200, 200, 200)
-            pdf.set_fill_color(245, 246, 248)
-            pdf.rect(x, img_y, thumb_w, thumb_h, style='DF')
             pdf.set_xy(x, img_y + thumb_h / 2 - 2)
             pdf.set_font(_S(pdf), 'I', 8)
             pdf.set_text_color(140, 140, 140)
@@ -9866,15 +12872,8 @@ def _emit_visualizer_pdf_page(pdf, est, LM, W):
             img_y = y_top + 5.5
             ref = renders.get(tier)
             path = os.path.join(UPLOADS_DIR, ref) if ref else None
-            if path and os.path.isfile(path):
-                try:
-                    pdf.image(path, x=x, y=img_y, w=thumb_w, h=thumb_h)
-                    continue
-                except Exception:
-                    pass
-            pdf.set_draw_color(200, 200, 200)
-            pdf.set_fill_color(245, 246, 248)
-            pdf.rect(x, img_y, thumb_w, thumb_h, style='DF')
+            if _pdf_contain_image(pdf, path, x, img_y, thumb_w, thumb_h):
+                continue
         pdf.set_y(y_top + 5.5 + thumb_h + 8)
 
 
@@ -10068,7 +13067,6 @@ _CMP_TIER_LABELS = {'good': 'Good', 'better': 'Better', 'best': 'Best'}
 _CMP_TRADE_LABELS = dict(roofing='Roofing', siding='Siding', windows='Windows',
                          gutters='Gutters', commercial='Commercial',
                          other='Other / Misc')
-_CMP_MAX_BULLETS = 7
 
 
 def _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head):
@@ -10119,11 +13117,9 @@ def _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head):
                 h += len(pdf.multi_cell(inner, 3.4, _pdf_rich(desc),
                                         dry_run=True, output='LINES')) * 3.4 + 1.5
             pdf.set_font(SANS, '', 7)
-            for f in feats[:_CMP_MAX_BULLETS]:
+            for f in feats:
                 h += len(pdf.multi_cell(inner - 2.6, 3.4, _pdf_rich(f),
                                         dry_run=True, output='LINES')) * 3.4 + 1.0
-            if len(feats) > _CMP_MAX_BULLETS:
-                h += 4.4
             return h + PAD
 
         H = max(_col_h(t) for t in tiers)
@@ -10165,7 +13161,7 @@ def _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head):
                 pdf.multi_cell(inner, 3.4, _pdf_rich(desc), align='C')
                 y = pdf.get_y() + 1.5
             pdf.set_font(SANS, '', 7)
-            for f in feats[:_CMP_MAX_BULLETS]:
+            for f in feats:
                 pdf.set_xy(x + PAD, y)
                 pdf.set_text_color(*_PDF_STYLE['teal'])
                 pdf.cell(2.6, 3.4, '+')
@@ -10173,12 +13169,6 @@ def _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head):
                 pdf.set_xy(x + PAD + 2.6, y)
                 pdf.multi_cell(inner - 2.6, 3.4, _pdf_rich(f), align='L')
                 y = pdf.get_y() + 1.0
-            extra = len(feats) - _CMP_MAX_BULLETS
-            if extra > 0:
-                pdf.set_xy(x + PAD + 2.6, y)
-                pdf.set_font(SANS, 'I', 7)
-                pdf.set_text_color(*_PDF_STYLE['faint'])
-                pdf.cell(inner - 2.6, 3.4, _pdf_rich(f'+ {extra} more included'))
         pdf.set_y(y0 + H)
         pdf.ln(6)
 
@@ -10599,11 +13589,48 @@ def build_signed_pdf(est, signed=None):
             trade_mode = _trade_mode(tk, td)
             t_tier = _trade_tier(est, tk)
             r = _tier_rate(pricing, tk, t_tier)
+
+            # "If needed" lines in their own table, AFTER the trade subtotal and
+            # never added to `grand` — the signature covers the package only.
+            def _supplements_block(tk=tk, t_tier=t_tier):
+                s_rows, s_tot = trade_supplements(est, tk, t_tier)
+                s_rows = [x for x in s_rows if x[0].get('customer_visible', True)
+                          and (x[0].get('name') or '').strip()]
+                if not s_rows:
+                    return
+                section_head('If needed', labels.get(tk, tk.title()) + ' Supplements')
+                with open_table(widths, aligns) as table:
+                    head = table.row()
+                    for h in ('Description', 'Qty', 'Unit', 'Unit Price', 'Total'):
+                        head.cell(h)
+                    for it, q, line, desc in s_rows:
+                        name = it.get('name', '')
+                        if desc:
+                            name = f'{name} — {_pdf_oneline_rich(desc)}'
+                        row = table.row()
+                        row.cell(_pdf_rich(name))
+                        row.cell(f'{q:g}' if q > 0 else 'If needed')
+                        row.cell(_pdf_rich(it.get('unit', '')))
+                        # No price = a notice, never a $0.00 charge.
+                        row.cell(fc(line / q if q > 0 else line) if line else '')
+                        row.cell(fc(line) if line else 'Quoted if needed')
+                if s_tot:
+                    subtotal_row('Supplements Subtotal (not included in total)', s_tot, 28)
+                else:
+                    pdf.set_font(SANS, 'I', 7.5)
+                    pdf.set_text_color(*_PDF_STYLE['faint'])
+                    pdf.cell(W, 5.5, _pdf_rich('Supplements may be needed once work begins. '
+                                               'They are not included in the total.'),
+                             align='L', new_x='LMARGIN', new_y='NEXT')
+                    pdf.set_text_color(*_PDF_STYLE['ink'])
+
             if not any(
+                    not _is_supplement_item(td, it) and
                     float(it.get('quantity') or 0) > 0 and
                     (trade_mode == 'simple'
                      or (it.get('tiers') or {}).get(t_tier, {}).get('included') is not False)
                     for it in td['line_items']):
+                _supplements_block()
                 continue
             _pkg = dict(good='Good', better='Better', best='Best').get(t_tier, '')
             section_head(f'{_pkg} package' if _pkg and trade_mode != 'simple' else 'Scope',
@@ -10656,6 +13683,46 @@ def build_signed_pdf(est, signed=None):
         total_label = (f'Total — {_sum}' if _sum
                        else 'Total — ' + dict(good='Good', better='Better',
                                               best='Best').get(tier, tier.title()) + ' Package')
+
+    # Optional upgrades. On a signed contract these are what the homeowner
+    # elected, and they are IN the grand total below — the total has to be the
+    # number they owe. On an unsigned download the same block is the menu, so
+    # it prints with no subtotal and adds nothing: a customer comparing bids
+    # must not read an optional extra as part of the price.
+    _ups = accepted_upgrades(est) if signed else upgrades_offered(est)
+    _ups = [u for u in _ups if (u.get('name') or '').strip()]
+    if _ups:
+        _uw = (W - 34, 34)
+        section_head('Optional', 'Upgrades You Selected' if signed
+                                 else 'Optional Upgrades Available')
+        with open_table(_uw, ('LEFT', 'RIGHT')) as _ut:
+            _uh = _ut.row()
+            for h in ('Description', 'Price'):
+                _uh.cell(h)
+            for u in _ups:
+                nm = (u.get('name') or '').strip()
+                d  = (u.get('description') or '').strip()
+                if d:
+                    nm = f'{nm} — {_pdf_oneline_rich(d)}'
+                _ur = _ut.row()
+                _ur.cell(_pdf_rich(nm))
+                _ur.cell(fc(upgrade_price(u)))
+        if signed:
+            _utot = sum(upgrade_price(u) for u in _ups)
+            subtotal_row('Upgrades Subtotal', _utot, 34)
+            grand += _utot
+            if is_ins:
+                # The bar below can no longer be called the claim: it now also
+                # carries what the homeowner elected out of their own pocket.
+                total_label = 'Contract Total — Claim + Upgrades'
+        else:
+            pdf.set_font(SANS, 'I', 7.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(W, 5.5, _pdf_rich('Optional — choose any of these when you sign. '
+                                       'Not included in the total below.'),
+                     align='L', new_x='LMARGIN', new_y='NEXT')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.ln(4)
 
     # Grand total — the one filled element in the document, which is why
     # everything above it stopped being filled.
@@ -10821,7 +13888,11 @@ MEASURE_LABELS = [
               ('ridge_lf', 'Ridges', 'LF'),
               ('valley_lf', 'Valley', 'LF'),
               ('eave_lf', 'Eaves', 'LF'), ('rake_lf', 'Rakes', 'LF'),
-              ('step_flash_lf', 'Step Flashing', 'LF'), ('pipe_boots', 'Pipe Boots', 'EA'),
+              ('step_flash_lf', 'Step Flashing', 'LF'),
+              ('wall_flash_lf', 'Wall Flashing', 'LF'),
+              ('transition_lf', 'Transitions', 'LF'),
+              ('unspecified_lf', 'Unspecified', 'LF'),
+              ('pipe_boots', 'Pipe Boots', 'EA'),
               ('turtle_vents', 'Turtle Vents', 'EA'), ('broan_4in', '4" Broan Vent', 'EA'),
               ('broan_8in', '8" Broan Vent', 'EA')]),
     ('Gutters', [('gutter_lf', 'Gutter', 'LF'), ('downspout_lf', 'Downspouts', 'LF')]),
@@ -10903,9 +13974,21 @@ def attic_ventilation(m):
     deficit_exhaust  = max(required_exhaust - provided_exhaust, 0)
     needs_ridge  = deficit_exhaust > 0
     needs_intake = needs_ridge
-    ridge_lf_required   = deficit_exhaust / NFA_RIDGE_SQIN_LF if needs_ridge else 0
+    # Sized for the FULL code exhaust, never the shortfall. Ticking Install
+    # Ridge Vent also decks over every existing box vent (injectVentItem adds
+    # the Vent Plug line), so that NFA leaves the roof with them — crediting it
+    # AND removing it counted the same vents twice. A 30 SQ attic with six
+    # turtles was ordered 6 sticks, 432 sq in against 720 required: 40% short,
+    # and the more vents the house already had the shorter it came out.
+    # needs_ridge stays the DEFICIT question — is this roof short as it stands.
+    ridge_lf_required   = required_exhaust / NFA_RIDGE_SQIN_LF
     ridge_sticks        = math.ceil(ridge_lf_required / 4)
     intake_lf_suggested = math.ceil(required_intake / NFA_INTAKE_SQIN_LF) if needs_intake else 0
+    # Raw intake footage the 1/300 rule calls for, NOT gated on needs_ridge:
+    # turtle vents covering the exhaust say nothing about the intake side, and a
+    # rep who installs intake installs the code amount. intake_vent_code caps it
+    # at the eaves.
+    intake_lf_required  = required_intake / NFA_INTAKE_SQIN_LF
     return {
         'attic_sqft': attic, 'required_total': required_total,
         'required_exhaust': required_exhaust, 'required_intake': required_intake,
@@ -10913,6 +13996,7 @@ def attic_ventilation(m):
         'needs_ridge': needs_ridge, 'needs_intake': needs_intake,
         'ridge_lf_required': ridge_lf_required, 'ridge_sticks': ridge_sticks,
         'intake_lf_suggested': intake_lf_suggested,
+        'intake_lf_required': intake_lf_required,
     }
 
 
@@ -11120,66 +14204,220 @@ def commercial_fastening(m, table):
 # Matching is on a lowercase substring of the line-item name, first hit wins,
 # so put the specific keys above the general ones.
 _ORDER_PACK = [
-    # (name fragment, from-unit, per, order-unit, note)
+    # (name fragment, from-unit, per, order-unit, note, waste %)
     # Ridge VENT before ridge CAP: a line named "ridge vent" must not be
     # caught by the shingle rule and ordered in bundles.
-    ('ridge vent',             'LF', 4.0,   'sticks',  '4 ft sticks'),
-    ('intake vent',            'LF', 4.0,   'sticks',  '4 ft sticks'),
-    ('ridge cap',              'LF', 25.0,  'bundles', 'ridge + hip'),
-    ('ridge shingle',          'LF', 25.0,  'bundles', 'ridge + hip'),
-    ('hip / ridge',            'LF', 25.0,  'bundles', 'ridge + hip'),
-    ('starter strip',          'LF', 105.0, 'bundles', '105 LF / bundle'),
-    ('starter',                'LF', 105.0, 'bundles', '105 LF / bundle'),
+    ('ridge vent',             'LF', 4.0,   'sticks',  '4 ft sticks', 0),
+    ('intake vent',            'LF', 4.0,   'sticks',  '4 ft sticks', 0),
+    # Hip & ridge by BRAND - confirmed with the supplier by Luke, 2026-09-15.
+    # Brands sit above the generic rows because "IKO Hip & Ridge Cap" also
+    # contains "ridge cap", and the generic 25 would order IKO ~40% heavy.
+    # 10% covers hip ends, ridge-vent overlap and breakage.
+    ('shadow ridge',           'LF', 30.0,  'bundles', 'CertainTeed', 10),
+    ('oc flex',                'LF', 33.0,  'bundles', 'Owens Corning', 10),
+    ('iko hip',                'LF', 36.0,  'bundles', 'IKO', 10),
+    # Unbranded hip & ridge. 25 is NOT confirmed for anything we sell - name
+    # the brand in the product (or set its Order pack) to get a real number.
+    # The sheet prints these rows as UNCONFIRMED.
+    ('ridge cap',              'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    ('ridge shingle',          'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    ('hip / ridge',            'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    ('hip & ridge',            'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    ('hip and ridge',          'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    ('starter strip',          'LF', 105.0, 'bundles', '105 LF / bundle', 0),
+    ('starter',                'LF', 105.0, 'bundles', '105 LF / bundle', 0),
     # Drip edge and gutter apron come in 10 ft sticks but are lapped, so the
     # usable run is 9 ft — order against that, not the nominal length.
-    ('drip edge',              'LF', 9.0,   'sticks',  '9 ft usable per stick'),
-    ('gutter apron',           'LF', 9.0,   'sticks',  '9 ft usable per stick'),
-    ('downspout',              'LF', 10.0,  'sticks',  '10 ft sticks'),
-    ('ice & water',            'SQ', 2.0,   'rolls',   '36 in x 66.7 ft'),
-    ('ice and water',          'SQ', 2.0,   'rolls',   '36 in x 66.7 ft'),
-    ('synthetic underlayment', 'SQ', 10.0,  'rolls',   '10 SQ rolls'),
-    ('underlayment',           'SQ', 10.0,  'rolls',   '10 SQ rolls'),
+    ('drip edge',              'LF', 9.0,   'sticks',  '9 ft usable per stick', 0),
+    ('gutter apron',           'LF', 9.0,   'sticks',  '9 ft usable per stick', 0),
+    ('downspout',              'LF', 10.0,  'sticks',  '10 ft sticks', 0),
+    # Ice & water by the FOOT: a 36" x 66.7 ft roll (2 SQ), confirmed
+    # 2026-09-15. 10% covers the 6" end laps and valley cut-offs, and it goes
+    # on the footage - see _order_measured.
+    ('ice & water',            'LF', 66.67, 'rolls',   '36 in x 66.7 ft', 10),
+    ('ice and water',          'LF', 66.67, 'rolls',   '36 in x 66.7 ft', 10),
+    # By the SQUARE (full-deck high-temp under metal) the quantity comes off
+    # squares_waste, which already carries the roof's waste. 10% more would
+    # count it twice.
+    ('ice & water',            'SQ', 2.0,   'rolls',   '36 in x 66.7 ft', 0),
+    ('ice and water',          'SQ', 2.0,   'rolls',   '36 in x 66.7 ft', 0),
+    ('synthetic underlayment', 'SQ', 10.0,  'rolls',   '10 SQ rolls', 0),
+    ('underlayment',           'SQ', 10.0,  'rolls',   '10 SQ rolls', 0),
     # Asphalt shingles: 3 bundles to the square on every architectural and
     # impact-resistant line in the catalog. Metal, steel and rubber are sold by
     # the square or the panel and are deliberately absent — they fall through
     # to "order as measured" rather than being converted into a bundle count
     # that does not exist.
-    ('landmark',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
-    ('northgate',              'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
-    ('nordic',                 'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
-    ('shingles',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ'),
+    ('landmark',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ', 0),
+    ('northgate',              'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ', 0),
+    ('nordic',                 'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ', 0),
+    ('shingles',               'SQ', 1 / 3.0, 'bundles', '3 bundles / SQ', 0),
 ]
 
 # Named so the material order can print the list it actually used.
-_ORDER_PACK_NOTE = ('Pack sizes are industry defaults, not supplier-verified. '
-                    'Each converted row shows its arithmetic - check it against '
-                    'your branch before ordering.')
+_ORDER_PACK_NOTE = ('Pack sizes are defaults unless set on the product in the '
+                    'Price Book (Order pack). Each converted row shows its '
+                    'arithmetic - check it against your branch before ordering.')
+
+# The note on a pack size nobody has confirmed. Printed as a prefix, not a note.
+_ORDER_UNCONFIRMED = 'unconfirmed'
 
 
-def _order_pack_for(name, unit):
-    """Pack rule for a line item, or None to order as measured."""
-    n = ' '.join(str(name or '').lower().split())
-    u = str(unit or '').strip().upper()
-    for frag, from_unit, per, order_unit, note in _ORDER_PACK:
-        if frag in n and from_unit == u:
-            return {'per': per, 'order_unit': order_unit, 'note': note,
-                    'from_unit': from_unit}
-    return None
+def _order_num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
 
 
-def material_order_rows(est):
+def _order_rule_for(item, product=None):
+    """How one line is bought - {per, from_unit, order_unit, note, waste} - or
+    None to order it as measured.
+
+    Three sources, most specific first:
+      1. The catalog product's own Order pack (Price Book): `order_pack`,
+         `order_unit`, `order_waste_pct`. What a manager dials in beats every
+         default. An explicit 0% waste is a choice and is kept.
+      2. The line's PRICING pack, `bundle_lf`/`bundle_unit`. measuredQty has
+         already divided the footage by it, so the stored quantity is a count
+         of those - it is the only pack size that cannot double-convert. That
+         is why it outranks the name table: "Metal Ridge Cap - 3pc" is priced
+         in 10 ft sticks, and matching "ridge cap" printed 6 sticks as
+         "1 bundles". The name table still supplies the waste, but only when it
+         agrees about the unit (ice & water: rolls and rolls).
+      3. _ORDER_PACK by name.
+
+    Never read by pricing - this decides what is ordered, not what is charged.
+    """
+    name = ' '.join(str(item.get('name') or '').lower().split())
+    unit = str(item.get('unit') or '').strip().upper()
+    blf = _order_num(item.get('bundle_lf')) or 0.0
+    bunit = str(item.get('bundle_unit') or '').strip()
+    base = 'LF' if blf > 0 else unit
+
+    rule = None
+    for frag, from_unit, per, order_unit, note, waste in _ORDER_PACK:
+        if frag in name and from_unit == base:
+            rule = {'per': per, 'from_unit': base, 'order_unit': order_unit,
+                    'note': note, 'waste': float(waste)}
+            break
+    if blf > 0:
+        agrees = bool(rule) and rule['order_unit'] == bunit.lower()
+        rule = {'per': blf, 'from_unit': 'LF',
+                'order_unit': bunit or (rule['order_unit'] if rule else 'units'),
+                'note': rule['note'] if agrees else '',
+                'waste': rule['waste'] if agrees else 0.0}
+
+    p = product or {}
+    pack = _order_num(p.get('order_pack'))
+    if pack and pack > 0:
+        rule = {'per': pack, 'from_unit': base,
+                'order_unit': (str(p.get('order_unit') or '').strip()
+                               or (rule['order_unit'] if rule else 'units')),
+                'note': 'Price Book',
+                'waste': rule['waste'] if rule else 0.0}
+    waste = _order_num(p.get('order_waste_pct'))
+    if rule and waste is not None and waste >= 0:
+        rule['waste'] = waste
+    return rule
+
+
+# Mirrors the LINEAR-FOOT entries of MEASURE_DEFS in app.js, and only those a
+# pack-sold product is sized by. The browser never stores the raw footage, so
+# this is the one place the server recomputes it. Held to the real JS by
+# tests/test_material_order.py under node.
+def _order_mnum(m, key):
+    try:
+        v = float(m.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if math.isfinite(v) else 0.0
+
+
+_ORDER_MEASURES = {
+    'ridge_hip':       lambda m: _order_mnum(m, 'ridge_hip_lf'),
+    'ridge_lf':        lambda m: _order_mnum(m, 'ridge_lf'),
+    'valley':          lambda m: _order_mnum(m, 'valley_lf'),
+    'eave':            lambda m: _order_mnum(m, 'eave_lf'),
+    'rake':            lambda m: _order_mnum(m, 'rake_lf'),
+    'eave_rake':       lambda m: _order_mnum(m, 'eave_lf') + _order_mnum(m, 'rake_lf'),
+    'eave_valley':     lambda m: (_order_mnum(m, 'eave_lf')
+                                  * (2 if _order_mnum(m, 'iw_second_row') else 1)
+                                  + _order_mnum(m, 'valley_lf')),
+    'step':            lambda m: _order_mnum(m, 'step_flash_lf'),
+    'headwall':        lambda m: _order_mnum(m, 'wall_flash_lf') + _order_mnum(m, 'unspecified_lf'),
+    'transition':      lambda m: _order_mnum(m, 'transition_lf'),
+    'ridge_valley_2x': lambda m: 2 * (_order_mnum(m, 'ridge_hip_lf') + _order_mnum(m, 'valley_lf')),
+}
+
+
+def _order_item_measurements(est, item):
+    """itemMeasurements() in app.js: the named building's set, else the
+    estimate's. A building whose dict exists but is empty stays empty, as in JS."""
+    sec = str(item.get('section') or '').strip()
+    if sec:
+        for st in _est_structures(est):
+            if str(st.get('name') or '').strip() == sec:
+                if isinstance(st.get('measurements'), dict):
+                    return st['measurements']
+                break
+    return est.get('measurements') or {}
+
+
+def _order_measured(est, item, qty, blf):
+    """(amount measured in the rule's base unit, backed_out_of_count).
+
+    A line sold by pack stores the COUNT - 6 rolls - and waste has to go on
+    the footage, not the count. Backing footage out of the count (6 x 66.67 =
+    400 LF) overstates every roof that did not land on a whole roll, and 10%
+    then compounds it: 340 LF of ice & water needs 6 rolls with waste, but
+    "6 rolls + 10%" orders 7. So the footage is recomputed from measurements,
+    and trusted only while it still rounds to the stored count. A rep who typed
+    9 rolls meant 9 rolls, and gets 9 rolls' worth of footage."""
+    if blf <= 0:
+        return qty, False
+    calc = _ORDER_MEASURES.get(item.get('measure') or '')
+    if calc and not item.get('formula'):
+        raw = calc(_order_item_measurements(est, item))
+        if raw > 0 and math.ceil(raw / blf - 1e-9) == math.ceil(qty - 1e-9):
+            return raw, False
+    return qty * blf, True
+
+
+def _order_catalogs():
+    """trade -> {product id: product} from the live Price Book. Read at build
+    time, so an Order pack a manager sets reaches the next sheet without anyone
+    re-saving an estimate. {} if the book cannot be read: a price book problem
+    must never stop a material order printing, and every row keeps its default."""
+    try:
+        pb = _ensure_bundle_catalogs(_load_price_book())
+    except Exception:
+        return {}
+    out = {}
+    for tk in GBB_TRADES:
+        rows = pb.get(f'{tk}_catalog')
+        if isinstance(rows, list):
+            out[tk] = {p['id']: p for p in rows if isinstance(p, dict) and p.get('id')}
+    return out
+
+
+def material_order_rows(est, catalogs=None):
     """What to actually buy, per line item, across every enabled trade.
 
     Returns a list of dicts:
-      trade, name, qty, unit           - as the estimate measures it
+      trade, name, qty, unit           - as measured, before pack rounding
       order_qty, order_unit            - what you place the order in
       math                             - the arithmetic, for checking
 
     Rows with no pack rule come back with order_qty None and are ordered as
     measured. Labor lines and anything with no quantity are dropped: this is a
-    purchase order, not a scope list.
+    purchase order, not a scope list. `catalogs` (trade -> {id: product}) is
+    for tests; None reads the live Price Book.
     """
     import math as _math
+    if catalogs is None:
+        catalogs = _order_catalogs()
     trades = est.get('trades') or {}
     labels = _PRODUCT_TRADE_LABELS if '_PRODUCT_TRADE_LABELS' in globals() else {}
     out = []
@@ -11204,6 +14442,13 @@ def material_order_rows(est):
             # Labor, fees and REMOVAL lines are not ordered. "Remove existing
             # gutters & downspouts" is 168 LF of tear-off, not 17 sticks of
             # downspout to buy — the word match alone would have ordered it.
+            #
+            # NOT the same list as _guess_cost_class's, and they must not be
+            # merged. This one answers "is this ordered from a supplier", so it
+            # correctly drops permits and dumpsters; cost_class answers "which
+            # side of the internal split", where those are material. They have
+            # to agree about the word LABOR and nothing else, which
+            # test_cost_class.py pins.
             _n = name.lower()
             if any(w in _n for w in
                    ('labor', 'permit', 'inspection', 'cleanup', 'site protection',
@@ -11211,23 +14456,44 @@ def material_order_rows(est):
                     'remove', 'removal', 'detach', 'dispose', 'disposal', 'haul')):
                 continue
             unit = (it.get('unit') or '').strip().upper()
-            rule = _order_pack_for(name, unit)
+            product = (catalogs.get(tk) or {}).get(it.get('catalog_id') or '')
+            rule = _order_rule_for(it, product)
             row = {'trade': labels.get(tk, tk.title()), 'name': name,
                    'qty': qty, 'unit': unit,
                    'order_qty': None, 'order_unit': '', 'math': ''}
             if rule:
-                per = rule['per']
-                if rule['order_unit'] == 'bundles' and per < 1:
+                blf = _order_num(it.get('bundle_lf')) or 0.0
+                measured, from_count = _order_measured(est, it, qty, blf)
+                per, waste, base = rule['per'], rule['waste'], rule['from_unit']
+                need = measured * (1 + waste / 100.0)
+                n_units = _math.ceil(need / per - 1e-9)
+                ou = rule['order_unit']
+                if per < 1:
                     # squares -> bundles: 3 per square
-                    n_units = _math.ceil(qty / per - 1e-9)
-                    row['math'] = f'{qty:g} {unit} x {round(1 / per)}/{unit}'
+                    math_s = f'{measured:g} {base} x {round(1 / per)}/{base}'
                 else:
-                    n_units = _math.ceil(qty / per - 1e-9)
-                    row['math'] = f'{qty:g} {unit} / {per:g} per {rule["order_unit"][:-1]}'
+                    one = ou[:-1] if ou.endswith('s') else ou
+                    math_s = f'{round(measured, 1):g} {base}'
+                    if waste:
+                        math_s += f' + {waste:g}% = {round(need, 1):g}'
+                    math_s += f' / {per:g} per {one}'
+                if from_count:
+                    # The count was set by hand, so this footage is inferred.
+                    math_s = '~' + math_s
+                note = 'count set by hand' if from_count else rule['note']
+                if note == _ORDER_UNCONFIRMED:
+                    # A guessed pack size must survive the column width, so it
+                    # goes FIRST - truncation eats the tail, never the warning.
+                    math_s = f'UNCONFIRMED: {math_s}'
+                # The PDF column holds ~52 characters; the arithmetic wins over
+                # an informational note.
+                elif note and len(math_s) + len(note) + 4 <= 52:
+                    math_s += f'  ({note})'
+                row['qty'] = round(measured, 2)
+                row['unit'] = base
                 row['order_qty'] = n_units
-                row['order_unit'] = rule['order_unit']
-                if rule['note']:
-                    row['math'] += f'  ({rule["note"]})'
+                row['order_unit'] = ou
+                row['math'] = math_s
             out.append(row)
     return out
 
@@ -11450,7 +14716,7 @@ def siding_material_takeoff(est, tier):
     return rows
 
 
-def _new_internal_pdf(eyebrow):
+def _new_internal_pdf(eyebrow, footer='Project One Roofing  ·  Internal document'):
     """An internal document (work order, material order, permit sheet) with the
     same chrome as the customer PDF.
 
@@ -11465,8 +14731,17 @@ def _new_internal_pdf(eyebrow):
     _W = 215.9 - LM - RM
 
     class _IntPDF(FPDF):
+        def _past_chrome(self):
+            # A document can hand its last pages to a renderer that draws its
+            # own letterhead (the roof certificate appended to the condition
+            # report). A flag flipped around add_page() cannot do that: fpdf2
+            # runs the PREVIOUS page's footer inside add_page(), so the flag
+            # would strip it too. A page threshold closes exactly the pages
+            # after it and no others.
+            return self.page_no() > getattr(self, '_chrome_until', 10 ** 9)
+
         def header(self):
-            if getattr(self, '_no_chrome', False):
+            if getattr(self, '_no_chrome', False) or self._past_chrome():
                 return
             y = 11
             if os.path.exists(_LOGO):
@@ -11486,7 +14761,7 @@ def _new_internal_pdf(eyebrow):
             self.set_y(y + 15)
 
         def footer(self):
-            if getattr(self, '_no_chrome', False):
+            if getattr(self, '_no_chrome', False) or self._past_chrome():
                 return
             self.set_y(-12)
             self.set_draw_color(*_PDF_STYLE['rule'])
@@ -11495,7 +14770,7 @@ def _new_internal_pdf(eyebrow):
             self.ln(2.5)
             self.set_font(self._sans, '', 6.5)
             self.set_text_color(*_PDF_STYLE['faint'])
-            self.cell(0, 4, _pdf_rich('Project One Roofing  ·  Internal document'), align='L')
+            self.cell(0, 4, _pdf_rich(self._footer), align='L')
             self.cell(0, 4, f'Page {self.page_no()} of {{nb}}',
                       align='R', new_x='LMARGIN', new_y='NEXT')
             self.set_text_color(*_PDF_STYLE['ink'])
@@ -11503,6 +14778,7 @@ def _new_internal_pdf(eyebrow):
     pdf = _IntPDF(orientation='P', unit='mm', format='Letter')
     SANS, SERIF = _pdf_fonts(pdf)
     pdf._sans, pdf._serif, pdf._eyebrow = SANS, SERIF, eyebrow
+    pdf._footer = footer
     pdf.alias_nb_pages()
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.set_margins(LM, 26, RM)
@@ -11546,6 +14822,77 @@ def _int_styles(pdf, SANS, SERIF, W):
     return section, kv
 
 
+# Mirrors mnum(m.comm_waste_pct, 10) in app.js MEASURES.comm_sq_waste: a
+# commercial roof measured with no waste entered is priced at 10%, so the
+# packet has to report the same 10% the material was bought at.
+COMM_DEFAULT_WASTE_PCT = 10.0
+
+
+def installed_squares_rows(est):
+    """(area label, squares, how that was worked out) for the roof area actually
+    going on — the first number a crew, a supplier and a permit clerk all ask
+    for.
+
+    Walks every measurement namespace rather than reading `roof_squares` and
+    calling it done. Steep-slope and commercial keep separate `comm_*`
+    measurements on purpose (a flat roof must never inherit a steep-slope
+    number), and a commercial complex carries one set per building — so a
+    flat-roof job printed NO squares line at all, silently, on all three
+    internal documents. Buildings are labelled because seven roofs need seven
+    numbers, not the first roof's printed once.
+
+    Returns [] when nothing has been measured, so callers print a fill-in blank
+    rather than a confident 0.0 SQ.
+    """
+    def _n(src, key, dflt=0.0):
+        v = (src or {}).get(key)
+        if v in (None, ''):
+            return dflt
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return dflt
+
+    rows = []
+    m = est.get('measurements') or {}
+
+    roof_sq = _n(m, 'roof_squares')
+    if roof_sq > 0:
+        low_slope = _n(m, 'low_slope_squares')
+        waste_pct = _n(m, 'waste_pct')
+        detail = f'roof {roof_sq:g} SQ'
+        if low_slope:
+            detail += f', minus {low_slope:g} SQ low-slope'
+        detail += f', + {waste_pct:g}% waste'
+        rows.append(('Roof', max(roof_sq - low_slope, 0.0) * (1 + waste_pct / 100.0),
+                     detail))
+
+    for bld, bm in _measurement_sets(est):
+        comm_sq = _n(bm, 'comm_squares')
+        if comm_sq <= 0:
+            continue
+        waste = _n(bm, 'comm_waste_pct', COMM_DEFAULT_WASTE_PCT)
+        rows.append((bld or 'Flat roof', comm_sq * (1 + waste / 100.0),
+                     f'roof {comm_sq:g} SQ, + {waste:g}% waste'))
+    return rows
+
+
+def installed_squares_kv(est, blank='____________ SQ (measure on site)'):
+    """installed_squares_rows() as (label, value) pairs ready for a key/value
+    block. Always returns at least one row — an unmeasured job gets a line to
+    write the number on rather than no line at all."""
+    rows = installed_squares_rows(est)
+    if not rows:
+        return [('Squares to Install', blank)]
+    if len(rows) == 1:
+        _lbl, sq, detail = rows[0]
+        return [('Squares to Install', f'{sq:.1f} SQ ({detail})')]
+    out = [(f'Squares - {lbl}', f'{sq:.1f} SQ ({detail})') for lbl, sq, detail in rows]
+    out.append(('Squares to Install',
+                f'{sum(r[1] for r in rows):.1f} SQ total'))
+    return out
+
+
 def _tier_items(td, trade_mode, t_tier):
     """Line items in scope for one trade at one package tier.
 
@@ -11563,6 +14910,58 @@ def _tier_items(td, trade_mode, t_tier):
             yield it, qty, t
         else:
             yield it, qty, {}
+
+
+def _bilingual_work_order():
+    """Whether the work order prints Spanish beside the English.
+
+    On by default. The English is unchanged and still first, so the worst a
+    bad translation can do is add a confusing line next to a correct one — and
+    the crew that cannot read the correct one is the reason this exists.
+    `work_order_bilingual: false` in Settings turns it off.
+    """
+    v = _app_settings().get('work_order_bilingual')
+    return True if v is None or v == '' else bool(v)
+
+
+# Translating the same crew note twice for one job would spend twice and, worse,
+# could print two different Spanish paragraphs on two copies of one work order.
+# Keyed on the note itself, so an edited note re-translates and an unchanged one
+# never does. Process-local and bounded: this is a cache, not a store, and
+# losing it costs one call.
+_WO_NOTES_ES = {}
+_WO_NOTES_ES_MAX = 200
+
+
+def _work_order_notes_es(text):
+    """Spanish for the rep's crew notes, or '' if it could not be produced.
+
+    Returns '' on every failure — no key, no network, a refusal, an empty
+    answer — because the English has already printed and a work order that
+    refuses to build over a translation is a crew on a roof with no sheet.
+
+    The one automated check: every figure in the English has to appear in the
+    Spanish. Nobody in this office reads Spanish well enough to catch a
+    changed quantity, and a changed quantity is what the crew would build to.
+    """
+    text = (text or '').strip()
+    if not text:
+        return ''
+    if text in _WO_NOTES_ES:
+        return _WO_NOTES_ES[text]
+    try:
+        out = crew_spanish.translate_notes(text)
+    except crew_spanish.TranslateError as e:
+        print(f'[crew-es] notes not translated: {e}')
+        return ''
+    if not crew_spanish.numbers_survived(text, out):
+        print('[crew-es] REFUSED: a figure changed in translation — '
+              'printing English only')
+        return ''
+    if len(_WO_NOTES_ES) >= _WO_NOTES_ES_MAX:
+        _WO_NOTES_ES.clear()
+    _WO_NOTES_ES[text] = out
+    return out
 
 
 def build_work_order_pdf(est):
@@ -11629,8 +15028,49 @@ def build_work_order_pdf(est):
         s = _pdf_oneline_rich(s)
         return s if len(s) <= n else s[:n - 1] + '...'
 
+    # ── Spanish, beside the English ───────────────────────────────────────
+    #
+    # The crews that build these roofs are substantially Spanish-speaking and
+    # this sheet has always been English-only. That matters most at the one
+    # place the document is designed to catch an error: the ventilation block
+    # prints installed square inches against required and says SHORT by N
+    # precisely so a wrong calculation fails in front of whoever is on the
+    # roof. In a language the crew does not read, it fails silently anyway.
+    #
+    # English stays FIRST and stays the authority — it is what the contract,
+    # the inspector and the office speak, and a translation nobody in the
+    # office can check is one nobody should trust. Printed side by side, a bad
+    # line is visible to anyone who glances at the sheet.
+    es_on = _bilingual_work_order()
+
+    def L(txt):
+        """A fixed label, bilingual. Static table — no model, no network."""
+        return crew_spanish.label(txt) if es_on else txt
+
+    def SL(txt):
+        """A generated verdict ('SHORT by 420 sq in'), whose number is carried
+        across by formatting rather than by translation."""
+        return crew_spanish.state_line(txt) if es_on else txt
+
+    def sub_es(txt, w=40):
+        """The Spanish half of a key/value label, on its own line.
+
+        Two lines rather than one: the label column is 40mm and
+        'Dirección del Trabajo' does not fit beside its English.
+        """
+        if not es_on:
+            return
+        es = crew_spanish.LABELS.get(txt)
+        if not es:
+            return
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(w, 4, _pdf_rich(es))
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.ln()
+
     # ── Page 1: Work Order ──
-    title_bar('Work Order')
+    title_bar(L('Work Order'))
 
     signed_at = sig.get('signed_at', '')
     try:
@@ -11665,6 +15105,7 @@ def build_work_order_pdf(est):
         pdf.cell(40, 5.5, _pdf_rich(label))
         pdf.set_font(SANS, '', 9)
         pdf.cell(0, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT')
+        sub_es(label)
     pdf.ln(3)
 
     # ── Job Details block ─────────────────────────────────────────────
@@ -11682,17 +15123,25 @@ def build_work_order_pdf(est):
         except (TypeError, ValueError):
             return 0.0
 
-    roof_sq_total   = _mnum0('roof_squares')
-    low_slope_sq    = _mnum0('low_slope_squares')
-    waste_pct       = _mnum0('waste_pct')
     steep_sq        = _mnum0('steep_squares')
     pitch_num       = _mnum0('predominant_pitch')
-    # Match squares_waste in app.js/app.py: (roof_sq - low_slope) × (1 + waste)
-    installed_sq    = max(roof_sq_total - low_slope_sq, 0.0) * (1 + waste_pct / 100.0)
     roofing_td      = trades.get('roofing') or {}
     _vent_roles     = {it.get('vent_role') for it in (roofing_td.get('line_items') or [])}
     has_ridge_vent  = 'ridge' in _vent_roles
-    has_intake_vent = 'intake' in _vent_roles
+
+    def _qty(it):
+        try:
+            return float(it.get('quantity') or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    # Landmark and IKO Nordic carry Intake Vent inside the bundle itself, with
+    # no vent_role, so the checkbox is not the only way intake reaches a job.
+    # The checkbox row wins when both exist, or the footage would count twice.
+    _intake_items   = ([it for it in (roofing_td.get('line_items') or [])
+                        if it.get('vent_role') == 'intake']
+                       or [it for it in (roofing_td.get('line_items') or [])
+                           if it.get('catalog_id') == 'a_intake_vent' and _qty(it) > 0])
+    has_intake_vent = bool(_intake_items)
     vent_cutin0     = est.get('vent_cutin') or {}
 
     # Blank-line fallback so an unfilled sheet still gives the crew somewhere
@@ -11702,12 +15151,10 @@ def build_work_order_pdf(est):
         v = str(v).strip() if v is not None else ''
         return v or blank
 
-    detail_rows = []
-    if roof_sq_total > 0:
-        detail_rows.append(('Squares to Install',
-                            f'{installed_sq:.1f} SQ (roof {roof_sq_total:g} SQ + {waste_pct:g}% waste'
-                            + (f', minus {low_slope_sq:g} SQ low-slope' if low_slope_sq else '')
-                            + ')'))
+    # Squares first, and unconditionally: it is the number the crew reads off
+    # this sheet before anything else, and it used to vanish whenever the job
+    # was measured in the comm_* namespace or never measured at all.
+    detail_rows = list(installed_squares_kv(est))
     detail_rows.append(('Scheduled Date',
                         _wo('scheduled_date', '____________ (TBD)')))
     detail_rows.append(('Tear-off Layers',
@@ -11733,13 +15180,17 @@ def build_work_order_pdf(est):
     detail_rows.append(('Satellite Dish',
                         _wo('satellite_dish', '____________ (confirm w/ HO)')))
 
-    section_title('Job Details')
+    section_title(L('Job Details'))
     pdf.set_font(SANS, '', 9)
     for label, val in detail_rows:
         pdf.set_font(SANS, 'B', 9)
         pdf.cell(40, 5.5, _pdf_rich(label))
         pdf.set_font(SANS, '', 9)
-        pdf.multi_cell(W - 40, 5.5, _pdf_rich(val), new_x='LMARGIN', new_y='NEXT', align='L')
+        # A value that is itself a fixed word (YES / NO / NOT on this job)
+        # translates; a name, a date or a figure passes straight through.
+        pdf.multi_cell(W - 40, 5.5, _pdf_rich(L(val) if crew_spanish.has_label(val) else val),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+        sub_es(label)
     pdf.ln(2)
 
     # No Product Selection or Scope of Work here. The colours the crew needs
@@ -11747,23 +15198,32 @@ def build_work_order_pdf(est):
     # signature), and the item list is the material order's document — this
     # sheet is the job card.
 
-    # One Notes section with two labelled blocks rather than two headings. Two
-    # separate section titles cost ~20mm of the sheet between them, which was
-    # enough to push a two-line crew note onto a page of its own.
-    notes = (est.get('notes_customer') or '').strip()
-    crew  = (est.get('notes_internal') or '').strip()
-    if notes or crew:
-        section_title('Notes')
-        for lbl, body in (('From the estimate', notes), ('Crew only - internal', crew)):
-            if not body:
-                continue
-            pdf.set_font(SANS, '', 6.5)
-            pdf.set_text_color(*_PDF_STYLE['faint'])
-            pdf.cell(0, 4.4, _pdf_rich(lbl.upper()), new_x='LMARGIN', new_y='NEXT')
+    # Crew notes ONLY. The estimate's customer-facing notes (notes_customer)
+    # deliberately do NOT print here: they are sales copy written for the
+    # homeowner, and on the job card they read as instructions to the crew.
+    # notes_internal is the field a rep writes FOR the crew — that is the one
+    # this sheet carries.
+    crew = (est.get('notes_internal') or '').strip()
+    if crew:
+        section_title(L('Notes'))
+        pdf.set_font(SANS, '', 6.5)
+        pdf.set_text_color(*_PDF_STYLE['faint'])
+        pdf.cell(0, 4.4, _pdf_rich(L('CREW ONLY - INTERNAL')), new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font(SANS, '', 8.5)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.multi_cell(W, 4.6, _pdf_rich(crew), new_x='LMARGIN', new_y='NEXT', align='L')
+        # The one part of this sheet a table cannot cover: what the rep typed.
+        # Never fatal — a work order that refused to build over a translation
+        # is a crew on a roof with no sheet at all.
+        crew_es = _work_order_notes_es(crew) if es_on else ''
+        if crew_es:
+            pdf.ln(1)
             pdf.set_font(SANS, '', 8.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.multi_cell(W, 4.6, _pdf_rich(crew_es),
+                           new_x='LMARGIN', new_y='NEXT', align='L')
             pdf.set_text_color(*_PDF_STYLE['ink'])
-            pdf.multi_cell(W, 4.6, _pdf_rich(body), new_x='LMARGIN', new_y='NEXT', align='L')
-            pdf.ln(2)
+        pdf.ln(2)
 
     # Ridge-vent cut-in is now printed inline under Job Details on page 1,
     # right next to the "Ridge Vent: YES" row — the crew doesn't have to
@@ -11778,14 +15238,14 @@ def build_work_order_pdf(est):
         ridge_lf = float(m0.get('ridge_lf') or 0)
     except (TypeError, ValueError):
         ridge_lf = 0.0
-    try:
-        eave_lf = float(m0.get('eave_lf') or 0)
-    except (TypeError, ValueError):
-        eave_lf = 0.0
     img_fn = vent_cutin0.get('image_filename')
     img_path = os.path.join(UPLOADS_DIR, *str(img_fn).split('/')) if img_fn else ''
+    # The intake map, marked in the same editor's intake mode (S.vent_intake).
+    intake_img_fn = (est.get('vent_intake') or {}).get('image_filename')
+    intake_img_path = (os.path.join(UPLOADS_DIR, *str(intake_img_fn).split('/'))
+                       if intake_img_fn else '')
 
-    if has_ridge_vent or has_intake_vent or img_fn:
+    if has_ridge_vent or has_intake_vent or img_fn or intake_img_fn:
         pdf.add_page()
         title_bar('Ventilation Layout')
 
@@ -11806,12 +15266,32 @@ def build_work_order_pdf(est):
         else:
             vrows.append(('Ridge vent', 'NOT on this job'))
         if has_intake_vent:
-            intake_sticks = math.ceil(eave_lf / 4) if eave_lf > 0 else 0
+            # The footage that was PRICED, not the eave run. This used to print
+            # every foot of eave while the attic needed a fraction of it.
+            intake_lf = sum(_qty(it) for it in _intake_items)
+            intake_sticks = math.ceil(intake_lf / 4 - 1e-9) if intake_lf > 0 else 0
             vrows.append(('Intake vent',
-                          (f'{eave_lf:g} LF at the eaves, {intake_sticks} stick(s)'
-                           if eave_lf > 0 else 'At the eaves')))
+                          (f'{intake_lf:g} LF at the eaves, {intake_sticks} stick(s)'
+                           if intake_lf > 0 else 'At the eaves')))
+            vrows.append(('Intake for code',
+                          f'~{math.ceil(vinfo["intake_lf_required"] - 1e-9)} LF '
+                          f'({vinfo["required_intake"]:.0f} sq in at '
+                          f'{NFA_INTAKE_SQIN_LF} sq in per LF)'))
         else:
-            vrows.append(('Intake vent', 'NOT on this job'))
+            vrows.append((L('Intake Vent'), L('NOT on this job')))
+        # What this roof ends up with, against what code asks for. Printed for
+        # the crew because a wrong calculation that nobody reads stays wrong.
+        nfa = _vent_nfa_report(est)
+        for lbl, got, want, short in (
+                ('Exhaust NFA', nfa['exhaust_installed'], nfa['exhaust_required'],
+                 nfa['exhaust_short']),
+                ('Intake NFA', nfa['intake_installed'], nfa['intake_required'],
+                 nfa['intake_short'])):
+            # The most important sentence on the sheet, so it is the one that
+            # most needs to be readable by the person standing on the roof.
+            state = f'SHORT by {short:.0f} sq in' if short > 0.5 else 'meets code'
+            vrows.append((L(lbl), f'{got:.0f} sq in installed / {want:.0f} required'
+                                  f'  -  {SL(state)}'))
         kv(vrows, label_w=42)
 
         note = (vent_cutin0.get('notes') or '').strip()
@@ -11824,7 +15304,7 @@ def build_work_order_pdf(est):
         pdf.ln(3)
         pdf.set_font(SANS, '', 6.5)
         pdf.set_text_color(*_PDF_STYLE['faint'])
-        pdf.cell(0, 5, _pdf_rich('AS INSTALLED - FILL IN ON SITE'),
+        pdf.cell(0, 5, _pdf_rich(L('AS INSTALLED - FILL IN ON SITE')),
                  new_x='LMARGIN', new_y='NEXT')
         pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.set_font(SANS, '', 9.5)
@@ -11834,23 +15314,32 @@ def build_work_order_pdf(est):
             pdf.cell(88, 6, _pdf_rich(lbl + '   ____________ LF'))
         pdf.set_y(y0 + 12)
 
-        if img_path and os.path.exists(img_path):
+        # Two maps, one per vent, each marked in its own editor mode. The intake
+        # map gets a fresh page when the ridge map already filled this one — a
+        # full-width roof diagram does not fit twice on a sheet.
+        maps = [(p, caption) for p, caption in (
+            (img_path, 'MARKED CUT-IN MAP - HIGHLIGHTED RUNS ARE CUT OPEN FOR VENTILATION'),
+            (intake_img_path, 'MARKED INTAKE MAP - HIGHLIGHTED EAVES GET INTAKE VENT'),
+        ) if p and os.path.exists(p)]
+        for n, (path, caption) in enumerate(maps):
             try:
+                if n:
+                    pdf.add_page()
+                    title_bar('Ventilation Layout - Intake')
                 pdf.set_font(SANS, '', 6.5)
                 pdf.set_text_color(*_PDF_STYLE['faint'])
-                pdf.cell(0, 5, _pdf_rich(
-                    'MARKED CUT-IN MAP - HIGHLIGHTED RUNS ARE CUT OPEN FOR VENTILATION'),
-                         new_x='LMARGIN', new_y='NEXT')
+                pdf.cell(0, 5, _pdf_rich(caption), new_x='LMARGIN', new_y='NEXT')
                 pdf.set_text_color(*_PDF_STYLE['ink'])
-                pdf.image(img_path, w=W)
+                pdf.image(path, w=W)
             except Exception:
                 pass
-        else:
+        if not maps:
             pdf.set_font(SANS, '', 8)
             pdf.set_text_color(*_PDF_STYLE['mute'])
             pdf.multi_cell(W, 4.6, _pdf_rich(
                 'No roof diagram marked for this job. Import the RoofR report, then use '
-                '"Mark cut-in on roof" on the Scope tab to put the overhead here.'),
+                '"Mark cut-in on roof" or "Mark intake on roof" on the Scope tab to put '
+                'the overhead here.'),
                 new_x='LMARGIN', new_y='NEXT', align='L')
             pdf.set_text_color(*_PDF_STYLE['ink'])
 
@@ -11917,10 +15406,14 @@ def build_material_order_pdf(est):
 
     addr_str = ', '.join(filter(None, [a.get('street'), a.get('city'),
                                        a.get('state'), a.get('zip')]))
+    # Squares ride on the header alongside the package: the ordering desk
+    # sizes a delivery off it, and the Measurements table further down carries
+    # raw roof area, never the installed figure with waste in it.
     kv([('Customer', c.get('name', '')),
         ('Job Address', addr_str),
         ('Estimate #', enum),
-        ('Package', _pick_summary_label(est) or tier.title())])
+        ('Package', _pick_summary_label(est) or tier.title())]
+       + installed_squares_kv(est))
     pdf.ln(2)
 
     # ── What to order ──────────────────────────────────────────────────────
@@ -12422,15 +15915,27 @@ def push_document_to_crm(est_id):
     return jsonify({'crm_document_id': doc_id})
 
 
-def generate_production_packet(est_id, push_to_crm=False):
-    """Build the production-packet PDF for a signed estimate and store it as a
-    server-generated attachment (replacing any previous packet). By default it
-    does NOT file to the CRM — the packet contains post-signing fields (crew
-    schedule, dish, tear-off layers) that the rep fills in later, so pushing
-    at signing time would ship an unfinished doc. The rep clicks "↗ Push to
-    Den" on the Documents tab when the packet is finalized. Returns the
-    attachment dict. Raises on failure — callers decide whether that's fatal
-    (endpoint) or logged (pipeline)."""
+def generate_production_packet(est_id, push_to_crm=False, push_material=False):
+    """Build the two production PDFs for a signed estimate and store them as
+    server-generated attachments (replacing any previous pair). Returns the
+    WORK ORDER attachment dict. Raises on failure — callers decide whether
+    that's fatal (endpoint) or logged (pipeline).
+
+    The two documents file to the Den on different schedules, and that split is
+    the point:
+
+    - `push_to_crm` pushes the WORK ORDER and defaults to False. The work order
+      carries post-signing fields (crew schedule, dish, tear-off layers) the rep
+      fills in later, so filing it at signing ships an unfinished doc. It stays
+      behind until the rep clicks "↗ Push to Den" on the Documents tab.
+    - `push_material` pushes the MATERIAL ORDER. It is derived entirely from the
+      signed contract — nothing on it waits on the rep — so the post-sign
+      pipeline passes True and the buy list reaches whoever orders without
+      anyone remembering to send it. Same rule the permit packet already runs
+      on. Before this it had no push path at all, in either direction: no
+      button on the Documents tab and no automatic file, so the one document
+      the supplier needs was the one that never left the estimator.
+    """
     est = est_load(est_id)
     if est is None:
         raise ValueError('estimate not found')
@@ -12473,8 +15978,6 @@ def generate_production_packet(est_id, push_to_crm=False):
             'generated_at':     datetime.utcnow().isoformat() + 'Z',
         })
     att, mat_att = built
-    pdf_bytes = None   # set below for the CRM push (work order)
-    fname = built[0]['filename'].split('/')[-1]
 
     # Replace any previous packet (and clean up its files). Both packet
     # doc_types — other server-generated docs (signed change orders) stay put.
@@ -12498,67 +16001,183 @@ def generate_production_packet(est_id, push_to_crm=False):
 
     est = est_update(est_id, _swap_packet) or est
 
-    if not push_to_crm:
-        return att
-
-    # Explicit push (manual "↗ Push to Den" button from the Documents tab)
     c     = est.get('customer', {})
     cname = (c.get('name') or 'Customer').strip()
     enum  = _est_number(est)
-    with open(os.path.join(dest_dir, fname), 'rb') as f:
-        pdf_bytes = f.read()
-    doc_id, err = _crm_file_document(
-        est, pdf_bytes, upload_name=f'Work_Order_{enum}.pdf',
-        hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
-        doc_name=f'Work Order - {cname} ({enum})', doc_type='work_order',
-        description='Work order generated from the signed contract. The material '
-                    'order is a separate document.')
-    if doc_id:
-        def _mark_pushed(doc):
-            if doc is None:
-                return None
-            for x in doc.get('attachments', []):
-                if x.get('id') == att['id']:
-                    x['crm_document_id'] = doc_id
-            return doc
-        est_update(est_id, _mark_pushed)
-        att['crm_document_id'] = doc_id
-    elif err and err != 'not_linked':
-        print(f'[packet] CRM push failed for {est_id}: {err}')
+
+    def _file(target, upload_name, doc_name, doc_type, description):
+        """File one of the pair on the Den job and record the id back on its
+        attachment. Never raises — a Base44 outage must not lose the PDFs that
+        are already saved locally."""
+        local = target['filename'].split('/')[-1]
+        try:
+            with open(os.path.join(dest_dir, local), 'rb') as f:
+                body = f.read()
+            doc_id, err = _crm_file_document(
+                est, body, upload_name=upload_name,
+                hosted_url=f'{_base_url()}/uploads/{est_id}/{local}',
+                doc_name=doc_name, doc_type=doc_type, description=description)
+        except Exception as exc:
+            print(f'[packet] CRM push raised for {est_id}: {exc}')
+            return
+        if doc_id:
+            def _mark_pushed(doc):
+                if doc is None:
+                    return None
+                for x in doc.get('attachments', []):
+                    if x.get('id') == target['id']:
+                        x['crm_document_id'] = doc_id
+                return doc
+            est_update(est_id, _mark_pushed)
+            target['crm_document_id'] = doc_id
+        elif err and err != 'not_linked':
+            print(f'[packet] CRM push failed for {est_id}: {err}')
+
+    # Material order first: it files automatically at signing, so it is the one
+    # that must not be skipped when the work-order push is off.
+    if push_material:
+        _file(mat_att, f'Material_Order_{enum}.pdf',
+              f'Material Order - {cname} ({enum})', 'material_order',
+              'Material order generated from the signed contract. The crew work '
+              'order is a separate document.')
+
+    # Explicit push (manual "↗ Push to Den" button from the Documents tab)
+    if push_to_crm:
+        _file(att, f'Work_Order_{enum}.pdf',
+              f'Work Order - {cname} ({enum})', 'work_order',
+              'Work order generated from the signed contract. The material '
+              'order is a separate document.')
     return att
 
 
-def _cost_split_by_trade(est):
+def _catalog_class_by_name(pb, trade):
+    """name -> cost_class, for line items that predate `catalog_id`. About half
+    of the older estimates on the volume have none, and template-built lines
+    carry the exact seed names, so this recovers nearly all of them.
+
+    MUST mirror _catalogClassByName (app.js)."""
+    out = {}
+    for p in (pb.get(trade + '_catalog') or []):
+        if not isinstance(p, dict):
+            continue
+        k = str(p.get('name') or '').strip().lower()
+        if k and k not in out:
+            out[k] = _norm_cost_class(p.get('cost_class'))
+    return out
+
+
+def _cost_class_of(pb, trade, item, by_name=None):
+    """Which side of the split one line item lands on. Four tiers of linkage,
+    strongest first; giving up lands on 'material', which is exactly what this
+    reported before cost_class existed — so an unclassifiable line is the
+    status quo rather than a regression.
+
+    MUST mirror costClassOf (app.js)."""
+    if not isinstance(item, dict):
+        return 'material'
+    if 'cost_class' in item:
+        return _norm_cost_class(item.get('cost_class'))
+    cid = item.get('catalog_id')
+    if cid:
+        for p in (pb.get(trade + '_catalog') or []):
+            if isinstance(p, dict) and p.get('id') == cid:
+                return _norm_cost_class(p.get('cost_class'))
+    if by_name is None:
+        by_name = _catalog_class_by_name(pb, trade)
+    return by_name.get(str(item.get('name') or '').strip().lower(), 'material')
+
+
+def _line_cost_split(pb, trade, item, cell, qty, by_name=None):
+    """(material, labor) for one line, where material + labor is EXACTLY the
+    cost already stored. A whole-line bucket assignment, never a ratio — that
+    is what makes the total invariant by construction rather than by rounding.
+
+    `cell` is the tier cell in GBB mode. MUST mirror lineCostSplit (app.js)."""
+    mat = _mnum((cell or {}).get('material_unit_cost')) * qty
+    lab = _mnum((cell or {}).get('labor_unit_cost')) * qty
+    if lab > 0:
+        return mat, lab          # an explicit split always wins
+    if _cost_class_of(pb, trade, item, by_name) == 'labor':
+        return 0.0, mat
+    return mat, 0.0
+
+
+def _simple_cost_split(pb, trade, item, qty, by_name=None):
+    """Same, for a simple-mode line: one flat unit_cost, no tier dimension.
+
+    MUST mirror simpleCostSplit (app.js)."""
+    c = _mnum(item.get('unit_cost')) * qty
+    if _cost_class_of(pb, trade, item, by_name) == 'labor':
+        return 0.0, c
+    return c, 0.0
+
+
+def _cost_split_by_trade(est, pb=None):
     """(materials_cost, labor_cost, sell_total) per enabled non-insurance trade
     at its selected tier, for the permit packet's cost-breakdown table. Skips
-    excluded lines and zero-qty items — same rules the priced totals use."""
+    excluded lines and zero-qty items — same rules the priced totals use.
+
+    Which side of the split a line lands on comes from its catalog product's
+    `cost_class`, resolved at read time. materials_cost + labor_cost is
+    unchanged by that, so the packet's Cost Total and TOTAL columns are
+    identical to what they printed before — only the two columns beside them
+    stop being a lie."""
     rows = []
     trades = est.get('trades') or {}
+    if pb is None:
+        pb = _ensure_bundle_catalogs(_load_price_book())
     for tk in GBB_TRADES:
         td = trades.get(tk) or {}
         if not td.get('enabled'):
             continue
         tier = _trade_tier(est, tk)
         trade_mode = _trade_mode(tk, td)
+        by_name = _catalog_class_by_name(pb, tk)
         mat_cost = lab_cost = 0.0
         for item in td.get('line_items') or []:
+            if _is_supplement_item(td, item):
+                continue  # mirrors _trade_subtotal: not in the sell either
             qty = float(item.get('quantity') or 0)
             if qty <= 0:
                 continue
             if trade_mode == 'simple':
-                mat_cost += float(item.get('unit_cost') or 0) * qty
-                # simple-mode carries no labor line — the material_cost/unit_cost
-                # is already the all-in cost basis. Nothing to add to lab_cost.
+                # Simple mode stores one flat unit_cost, so the split comes
+                # entirely from the product's class.
+                m, l = _simple_cost_split(pb, tk, item, qty, by_name)
             else:
                 t = (item.get('tiers') or {}).get(tier) or {}
                 if t.get('included') is False:
                     continue
-                mat_cost += float(t.get('material_unit_cost') or 0) * qty
-                lab_cost += float(t.get('labor_unit_cost') or 0) * qty
+                m, l = _line_cost_split(pb, tk, item, t, qty, by_name)
+            mat_cost += m
+            lab_cost += l
         sell = _trade_subtotal(est, tk, tier)
         if mat_cost > 0 or lab_cost > 0 or sell > 0:
             rows.append({'trade': tk, 'materials_cost': mat_cost,
                          'labor_cost': lab_cost, 'sell': sell})
+    return rows
+
+
+def _packet_cost_rows(est, pb=None):
+    """The packet's cost table: one row per trade, plus the elected optional
+    upgrades.
+
+    The upgrades row exists because without it the table's rows stopped adding
+    up to its own TOTAL line — Contract Value there is _estimate_total, which
+    includes what the homeowner elected. Their cost files as MATERIAL, for the
+    same reason job extras do: the packet prints Cost Total = materials +
+    labor, so a third bucket either drops out of that column or gets folded
+    back into it anyway.
+
+    Kept separate from _cost_split_by_trade, which is about trades and whose
+    every row is walked back into est['trades'] by tests/test_cost_split.py."""
+    rows   = _cost_split_by_trade(est, pb)
+    u_sell = upgrades_total(est)
+    u_cost, _uncosted = upgrades_cost_total(est)
+    if u_sell > 0 or u_cost > 0:
+        rows = rows + [{'trade': 'upgrades', 'label': 'Optional Upgrades',
+                        'materials_cost': u_cost, 'labor_cost': 0.0,
+                        'sell': u_sell}]
     return rows
 
 
@@ -12594,6 +16213,18 @@ def _selected_permit_jurisdiction(est):
     }
 
 
+def _packet_upgrade_note(est):
+    """A sentence for the packet's cost footnote when an elected upgrade has no
+    cost entered. Without it the valuation is quietly light by whatever that
+    upgrade costs, and a fee schedule that reads Cost Total is fee'd light too."""
+    _c, uncosted = upgrades_cost_total(est)
+    if not uncosted:
+        return ''
+    names = ', '.join((u.get('name') or '').strip() for u in uncosted)
+    return (' Note: the elected upgrade(s) ' + names + ' carry no cost in the '
+            'price book, so the Cost Total above excludes them.')
+
+
 def build_permit_packet_pdf(est):
     """Permit-application prep sheet. Everything an office admin needs to pull
     a permit at any Colorado jurisdiction: where to apply, the job address,
@@ -12617,11 +16248,6 @@ def build_permit_packet_pdf(est):
             return float(m.get(k) or 0)
         except (TypeError, ValueError):
             return 0.0
-
-    roof_sq   = _mnum('roof_squares')
-    low_slope = _mnum('low_slope_squares')
-    waste_pct = _mnum('waste_pct')
-    installed = max(roof_sq - low_slope, 0.0) * (1 + waste_pct / 100.0)
 
     pdf, SANS, SERIF, W = _new_internal_pdf(f'Permit packet  ·  {enum}')
     section, kv = _int_styles(pdf, SANS, SERIF, W)
@@ -12710,18 +16336,28 @@ def build_permit_packet_pdf(est):
         kv_row('Contract Signed', signed_fmt)
     pdf.ln(3)
 
-    # Squares installed
+    # Squares installed. Always prints — a permit application that leaves the
+    # area blank comes straight back from the counter, so an unmeasured job
+    # gets a line to write it on rather than no line.
     section_title('Roofing Scope')
-    if roof_sq > 0:
-        detail = (f'{installed:.1f} SQ (roof {roof_sq:g} SQ + {waste_pct:g}% waste'
-                  + (f', minus {low_slope:g} SQ low-slope' if low_slope else '') + ')')
-        kv_row('Squares to Install', detail)
-    steep = _mnum('steep_squares')
+    for _lbl, _val in installed_squares_kv(est):
+        kv_row(_lbl, _val)
+    # Pitch gets its OWN row. The clerk asks for slope before almost anything
+    # else — it is what the ice-barrier and underlayment questions on the
+    # application turn on — and it printed here only as a suffix on the Steep
+    # Area row: a walkable roof carried no pitch at all, and a steep one filed
+    # it under a label nobody reads for pitch. Always prints, for the same
+    # reason the squares line above it does — an unmeasured job gets a line to
+    # write it on rather than no line, and never a confident 0/12.
     pitch = _mnum('predominant_pitch')
-    if steep > 0 or pitch > 0:
-        pitch_txt = f' at {int(pitch)}/12' if pitch > 0 else ''
-        kv_row('Steep Area', (f'{steep:g} SQ steep{pitch_txt}' if steep > 0
-                              else f'Predominant pitch {int(pitch)}/12'))
+    kv_row('Roof Pitch', f'{pitch:g}/12' if pitch > 0
+                         else '______ / 12  (measure on site)')
+    # Steep is the charge question, not the slope question, so it stays its own
+    # row and no longer restates the pitch — two places for one number is how
+    # they end up disagreeing.
+    steep = _mnum('steep_squares')
+    if steep > 0:
+        kv_row('Steep Area', f'{steep:g} SQ steep')
     # The material actually going on the roof — the permit clerk needs the
     # covering, not just its color. Pulled from the signed tier's bundle so it
     # names the product ("CertainTeed Northgate"), which is what the roofing
@@ -12782,7 +16418,7 @@ def build_permit_packet_pdf(est):
 
     # Cost breakdown
     section_title('Cost Breakdown')
-    rows = _cost_split_by_trade(est)
+    rows = _packet_cost_rows(est)
     total_mat = sum(r['materials_cost'] for r in rows)
     total_lab = sum(r['labor_cost']     for r in rows)
     total_sell = _estimate_total(est)
@@ -12797,7 +16433,9 @@ def build_permit_packet_pdf(est):
                   ('Contract Value', cw[4], 'R')])
     pdf.set_font(SANS, '', 8.5)
     for r in rows:
-        pdf.cell(cw[0], 7, _pdf_rich(_PRODUCT_TRADE_LABELS.get(r['trade'], r['trade'].title())),
+        pdf.cell(cw[0], 7, _pdf_rich(r.get('label')
+                                     or _PRODUCT_TRADE_LABELS.get(r['trade'],
+                                                                  r['trade'].title())),
                  border='B')
         pdf.cell(cw[1], 7, f'${r["materials_cost"]:,.2f}', border='B', align='R')
         pdf.cell(cw[2], 7, f'${r["labor_cost"]:,.2f}',     border='B', align='R')
@@ -12825,7 +16463,8 @@ def build_permit_packet_pdf(est):
         'Cost Total is materials plus labor at Project One Roofing cost basis, with '
         'no margin added — this is the job valuation most fee schedules ask for. '
         'Contract Value is the customer-facing price and matches the signed contract; '
-        'some jurisdictions fee on that instead.'), new_x='LMARGIN', new_y='NEXT', align='L')
+        'some jurisdictions fee on that instead.'
+        + _packet_upgrade_note(est)), new_x='LMARGIN', new_y='NEXT', align='L')
     pdf.set_text_color(*_PDF_STYLE['ink'])
 
     # No trailing "internal document" line — the running footer already says it
@@ -12961,9 +16600,133 @@ def save_signed_contract_attachment(est_id, pdf_bytes):
 POST_SIGN_THREAD = 'post-sign-pipeline'
 
 
+CUSTOMER_COPY_MAX_MB = 15   # above this, link instead of attaching
+
+
+def send_customer_signed_copy(est, pdf_bytes=None):
+    """Email the homeowner their own signed contract.
+
+    Until this existed, sig_email was collected on the signing form, written
+    into the signature certificate, repeated in the rep's notification, and
+    never used to send the customer anything. They signed, saw a confirmation
+    screen, closed the tab and had nothing — a bad first hour of a $30,000
+    relationship, and short of the E-SIGN practice of delivering a copy to the
+    signer, which is what matters the one time a job is disputed.
+
+    Best-effort and never raises: it runs on the post-sign thread, by which
+    point the signature is stored and the funnel already notified.
+    """
+    sig     = est.get('signature') or {}
+    c       = est.get('customer', {})
+    to_addr = (sig.get('email') or c.get('email') or '').strip()
+    if not to_addr or '@' not in to_addr:
+        print('[customer-copy] no customer email on the signature or record — skipping')
+        return False
+
+    enum  = _est_number(est)
+    fname = (sig.get('name') or c.get('name') or '').split(' ')[0] or 'there'
+    total = _estimate_total(est)
+    rep   = _display_name(est.get('salesperson')) if est.get('salesperson') else 'your project manager'
+    base  = _base_url()
+    tok   = est.get('share_token') or ''
+    link  = f'{base}/sign/{tok}' if (base and tok) else ''
+
+    try:
+        stime = datetime.fromisoformat(
+            (sig.get('signed_at') or '').replace('Z', '+00:00')
+        ).strftime('%B %d, %Y')
+    except Exception:
+        stime = (sig.get('signed_at') or '')[:10]
+
+    # A signed PDF carrying photos can run large. Over the cap the mail links to
+    # the signing page (which serves the signed copy) rather than bouncing off
+    # the recipient's attachment limit and delivering nothing at all.
+    attachments = None
+    too_big     = False
+    if pdf_bytes:
+        if len(pdf_bytes) <= CUSTOMER_COPY_MAX_MB * 1024 * 1024:
+            attachments = [(f'{enum}-signed-contract.pdf', pdf_bytes)]
+        else:
+            too_big = True
+
+    if attachments:
+        copy_line = 'Your signed contract is attached to this email as a PDF.'
+    elif link:
+        copy_line = ('Your signed contract is'
+                     + (' too large to attach, so it is ' if too_big else ' ')
+                     + 'available at the link below — it will stay there.')
+    else:
+        copy_line = 'Ask us any time for a copy of your signed contract.'
+
+    link_btn = (f'<a href="{he(link)}" style="display:block;text-align:center;'
+                'background:#1a3a5c;color:#fff;text-decoration:none;padding:13px 24px;'
+                'border-radius:6px;font-weight:700;font-size:14px;margin-bottom:18px">'
+                'View Your Signed Contract &rarr;</a>') if link else ''
+
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:#16a34a;padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:22px;font-weight:800">Thank you, {he(fname)}!</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">We have your signed contract &mdash; here is your copy.</p>
+  </div>
+  <div style="padding:22px 26px">
+    <p style="font-size:14px;color:#374151;line-height:1.6;margin:0 0 18px">{he(copy_line)}</p>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Contract</td><td style="padding:5px 0;font-size:13px;font-weight:700">{he(enum)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Signed</td><td style="padding:5px 0;font-size:13px">{he(stime)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Total</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#16a34a">{fc(total)}</td></tr>
+    </table>
+    {link_btn}
+    <div style="border-top:1px solid #e5e7eb;padding-top:16px">
+      <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 10px"><strong>What happens next</strong></p>
+      <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 16px">
+        {he(rep)} will reach out to schedule your project and walk you through
+        materials, timing and what to expect on install day. We handle the
+        permit and the manufacturer paperwork.</p>
+      <p style="font-size:13px;color:#374151;line-height:1.6;margin:0">
+        Questions before then? Call or text
+        <a href="tel:{COMPANY_PHONE_DIGITS}" style="color:#1a3a5c;font-weight:700">{COMPANY_PHONE_DISPLAY}</a>
+        &mdash; a real person answers.</p>
+    </div>
+  </div>
+  <div style="background:#f9fafb;padding:14px 26px;border-top:1px solid #e5e7eb">
+    <p style="font-size:11px;color:#9ca3af;margin:0;line-height:1.5">
+      Project One Roofing &middot; {COMPANY_PHONE_DISPLAY} &middot; projectoneroofingcolorado.com<br>
+      You are receiving this because you signed contract {he(enum)} with us.</p>
+  </div>
+</div>
+</body></html>'''
+
+    try:
+        ok = _send_email(f'Your signed contract — {enum}', html_body, to_addr,
+                         attachments=attachments,
+                         cc=_salesperson_email(est) or None)
+        print(f'[customer-copy] {"sent" if ok else "failed"} to {to_addr} for {enum}')
+        return ok
+    except Exception as exc:
+        print(f'[customer-copy] send failed for {enum}: {exc}')
+        return False
+
+
 def _post_sign_pipeline(est_id):
     """Post-signature background work, run sequentially in ONE thread so two
     writers never read-modify-write the same estimate concurrently."""
+    # Everything below this line has a side effect outside the estimate
+    # document: it writes a PDF into UPLOADS_DIR, mails the customer, creates a
+    # Contact and a Project in The Den, and files packets against them. A demo
+    # signature must do none of it. The whole pipeline is skipped rather than
+    # each step guarded, because a step added later would otherwise arrive
+    # unguarded — and this thread starts from the PUBLIC /sign POST, so there
+    # is no demo session here to fall back on.
+    #
+    # The customer still sees the signed confirmation page: that is rendered by
+    # the request, not by this thread, and it is the part worth demonstrating.
+    if demo.is_demo_doc(est_load(est_id)):
+        print(f'[demo] post-sign pipeline skipped for {est_id}')
+        return
+
     # Build the signed PDF once, then reuse it for the local Documents-tab
     # attachment and the CRM push.
     pdf_bytes = None
@@ -12982,9 +16745,22 @@ def _post_sign_pipeline(est_id):
         except Exception as exc:
             print(f'[signed] attachment save failed for {est_id}: {exc}')
 
-    push_contract_to_crm(est_id, pdf_bytes=pdf_bytes)
+    # The customer's own copy goes out BEFORE the CRM push and the packets:
+    # those talk to Base44 and can be slow or down, and the homeowner waiting
+    # on the receipt for what they just signed should never be behind a
+    # back-office integration in the queue.
     try:
-        att = generate_production_packet(est_id)
+        if est is not None:
+            send_customer_signed_copy(est, pdf_bytes=pdf_bytes)
+    except Exception as exc:
+        print(f'[customer-copy] unexpected failure for {est_id}: {exc}')
+
+    push_contract_to_crm(est_id, pdf_bytes=pdf_bytes)
+    # Both internal docs are built here; only the material order files itself.
+    # The work order waits for the rep's post-sign fields and its "↗ Push to
+    # Den" button — see generate_production_packet.
+    try:
+        att = generate_production_packet(est_id, push_material=True)
         print(f"[packet] generated {att['filename']} for {est_id}")
     except Exception as exc:
         print(f'[packet] generation failed for {est_id}: {exc}')
@@ -13042,12 +16818,26 @@ def regenerate_production_packet(est_id):
                                  'contract — this estimate has not been signed yet.'}), 400
     payload = request.get_json(silent=True) or {}
     push = bool(payload.get('push_to_crm'))
+    # Both pushes are OPT-IN on the manual path even though the material order
+    # files itself at signing. Base44 has no upsert — _crm_file_document creates
+    # a new Document every call — and the rep regenerates repeatedly while
+    # filling in the work-order form, so defaulting this on would leave the job
+    # holding six material orders and no way to tell which one the branch has.
+    push_mat = bool(payload.get('push_material'))
     try:
-        att = generate_production_packet(est_id, push_to_crm=push)
+        att = generate_production_packet(est_id, push_to_crm=push,
+                                         push_material=push_mat)
     except Exception as exc:
         print(f'[packet] manual generation failed for {est_id}: {exc}')
         return jsonify({'error': f'Packet generation failed: {exc}'}), 500
-    return jsonify({'attachment': att})
+    # Both rows, not just the work order: the caller replaces its whole packet
+    # pair in local state, and returning one of the two silently dropped the
+    # material order off the Documents tab until the next reload.
+    fresh = est_load(est_id) or {}
+    packet = [x for x in (fresh.get('attachments') or [])
+              if x.get('server_generated')
+              and x.get('doc_type') in ('work_order', 'material_order')]
+    return jsonify({'attachment': att, 'attachments': packet or [att]})
 
 
 # Fields the rep fills in on the Documents tab AFTER signing — the scheduling
@@ -13222,6 +17012,20 @@ def _sanitize_roof_cert(payload):
     return out
 
 
+def _roof_cert_invalid(est):
+    """Why this estimate's certificate cannot be issued, or None.
+
+    Both the certificate's own POST and the condition report's (when the
+    certificate rides along as its last page) ask this, so the two can never
+    disagree about what a valid certificate is."""
+    cert = est.get('roof_certificate') or {}
+    if not (cert.get('inspection_date') or '').strip():
+        return 'Set the inspection date first — the warranty term runs from it.'
+    if cert.get('term_months') not in _ROOF_CERT_TERMS:
+        return 'Choose a warranty term (6, 12, or 24 months).'
+    return None
+
+
 def build_roof_certificate_pdf(est):
     """One-page roof certification + limited labor warranty, signed by the
     inspecting rep. Written to be handed to a realtor and dropped straight into
@@ -13230,7 +17034,22 @@ def build_roof_certificate_pdf(est):
     expires) is on the single page."""
     if FPDF is None:
         raise RuntimeError('fpdf2 not installed')
+    pdf = FPDF(orientation='P', unit='mm', format='Letter')
+    _roof_cert_render(pdf, est)
+    out = pdf.output()
+    return bytes(out) if not isinstance(out, bytes) else out
 
+
+def _roof_cert_render(pdf, est):
+    """Draw the certificate onto `pdf`, starting a NEW page.
+
+    The one spelling of the certificate: the standalone PDF and the condition
+    report's optional last page both come through here, so the cert number,
+    the term and the warranty language cannot differ between them.
+
+    Contract: sets its own margins and page-break and does NOT restore them,
+    because it is always the LAST thing drawn. Letter portrait only — the
+    signature block's page-break guard is an absolute y in mm."""
     c    = est.get('customer', {})
     a    = c.get('address', {})
     cert = est.get('roof_certificate') or {}
@@ -13241,7 +17060,6 @@ def build_roof_certificate_pdf(est):
     def _fmt(d):
         return d.strftime('%B %d, %Y') if d else '________________'
 
-    pdf = FPDF(orientation='P', unit='mm', format='Letter')
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.set_margins(14, 14, 14)
     pdf.add_page()
@@ -13454,8 +17272,6 @@ def build_roof_certificate_pdf(est):
              new_x='LMARGIN', new_y='NEXT')
     pdf.set_text_color(0, 0, 0)
 
-    out = pdf.output()
-    return bytes(out) if not isinstance(out, bytes) else out
 
 
 def generate_roof_certificate(est_id, push_to_crm=True):
@@ -13579,12 +17395,9 @@ def regenerate_roof_certificate(est_id):
         return jsonify({'error': 'Not found'}), 404
     if not _can_touch_estimate(est):
         return _forbid()
-    cert = est.get('roof_certificate') or {}
-    if not (cert.get('inspection_date') or '').strip():
-        return jsonify({'error': 'Set the inspection date first — the warranty '
-                                 'term runs from it.'}), 400
-    if cert.get('term_months') not in _ROOF_CERT_TERMS:
-        return jsonify({'error': 'Choose a warranty term (6, 12, or 24 months).'}), 400
+    msg = _roof_cert_invalid(est)
+    if msg:
+        return jsonify({'error': msg}), 400
     push = bool((request.get_json(silent=True) or {}).get('push_to_crm'))
     try:
         att = generate_roof_certificate(est_id, push_to_crm=push)
@@ -13593,6 +17406,1790 @@ def regenerate_roof_certificate(est_id):
         return jsonify({'error': f'Certificate generation failed: {exc}'}), 500
     return jsonify({'attachment': att})
 
+
+# ── Roof health report (the condition report as its own document) ───────────
+# The report has always existed as a PAGE of the proposal, gated by the Roof
+# Health print chip. That is the wrong altitude for what reps actually do with
+# it: hand it to a realtor, or to a homeowner who booked an inspection and is
+# not buying a roof today. Neither of those people should have to be sent an
+# estimate to receive a report.
+#
+# So it files like every other server-generated document — its own PDF, its own
+# row in Files, its own push to the Den — while the BODY stays exactly where it
+# was, on est['property_condition'], edited on the Report page and saved by the
+# whole-doc save. est['condition_report'] holds only what is true of the
+# DOCUMENT rather than of the inspection: who it is being prepared for, and the
+# covering note.
+#
+# Two rules it shares with the roof certificate, for the same reasons:
+#   * No signature gate. There is no contract here; the inspection is the
+#     product.
+#   * PUT saves the fields and POST builds the PDF, so a half-filled report is
+#     never the thing that reaches a realtor.
+_COND_REPORT_STR_FIELDS = ('prepared_for', 'cover_note', 'inspected_by')
+
+
+def _sanitize_condition_report(payload):
+    """Same cap discipline as _sanitize_roof_cert: the note is a paragraph,
+    the rest are one-liners."""
+    out = {}
+    for k in _COND_REPORT_STR_FIELDS:
+        v = payload.get(k)
+        if v is None:
+            continue
+        out[k] = str(v).strip()[:4000 if k == 'cover_note' else 300]
+    # Appending the certificate staples a LEGAL WARRANTY PROMISE to a document
+    # the rep may have generated for a different reason, so it is on only when
+    # somebody said so: a literal True, never a truthy string or a 1.
+    if 'include_certificate' in payload:
+        out['include_certificate'] = payload.get('include_certificate') is True
+    return out
+
+
+def _report_findings_text(est):
+    """The report's findings as plain sentences, for the certificate's
+    free-text findings box. Offered by a button, never synced: once the rep
+    has the text in the certificate it is theirs, and the certificate is what
+    gets signed. Sentences rather than bullets, because the certificate prints
+    Findings as one paragraph and a list's dashes read as stray hyphens."""
+    v = condition_report_view(est)
+    if not v:
+        return ''
+
+    def _sentence(t):
+        t = ' '.join(str(t).split())
+        return t if t.endswith(('.', '!', '?')) else t + '.'
+
+    parts = []
+    for s in v['sections']:
+        if s['summary']:
+            parts.append(_sentence(f"{s['label']} (grade {s['grade']}, {s['grade_word']}): {s['summary']}"))
+        for f in s['findings']:
+            parts.append(_sentence(f"{f['area']}: {f['description']}".rstrip(': ')))
+        for r in s['recommendations']:
+            if r['priority'] in ('Immediate', '1–2 Years'):
+                parts.append(_sentence(f"Recommended ({r['priority']}): {r['description']}"))
+    return ' '.join(parts)
+
+
+def build_claim_explainer_pdf(est):
+    """"Your Insurance Claim, Explained" — one page, for the homeowner.
+
+    Every figure on it is the carrier's own, copied across. The only
+    arithmetic shown is the carrier's own identity (ACV + depreciation = RCV),
+    and it is CHECKED rather than performed: when their numbers do not tie out
+    — legitimately, for non-recoverable depreciation or pay-when-incurred lines
+    — the sheet says so instead of printing a subtraction a homeowner can catch
+    being wrong.
+
+    Nothing about our pricing, our margin or what the job costs to build
+    appears here. This page is about their claim.
+    """
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+    facts = claim_explainer.claim_facts(est)
+    if not claim_explainer.has_enough(facts):
+        raise ValueError('No carrier figures on this estimate yet — import the '
+                         "carrier's estimate PDF first.")
+
+    c = est.get('customer', {}) or {}
+    a = c.get('address', {}) or {}
+    pdf, SANS, SERIF, W = _new_internal_pdf(
+        'Your Insurance Claim, Explained',
+        footer='Project One Roofing  ·  projectoneroofingcolorado.com')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+
+    pdf.set_font(SERIF, 'B', 22)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W, 11, _pdf_rich('Your Insurance Claim, Explained'),
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+    pdf.ln(5)
+
+    head = [('Prepared for', (c.get('name') or '').strip()),
+            ('Property', ', '.join(filter(None, [a.get('street'), a.get('city'),
+                                                 a.get('state')]))),
+            ('Insurance carrier', facts['carrier']),
+            ('Claim number', facts['claim_number']),
+            ('Date of loss', facts['date_of_loss'])]
+    kv([(k, v) for k, v in head if v], label_w=42)
+    pdf.ln(4)
+
+    section_rows = [
+        ('What your carrier approved in total', facts['rcv_total']),
+        ('Held back until the work is done', facts['depreciation']),
+        ('Your first payment', facts['acv_total']),
+        ('Your deductible', facts['deductible']),
+        ('Paid when the work is incurred', facts['paid_when_incurred']),
+    ]
+    section('The numbers', "Your carrier's figures")
+    for label, val in section_rows:
+        if val is None:
+            continue
+        pdf.set_font(SANS, '', 9.5)
+        pdf.cell(W - 38, 6.4, _pdf_rich(label))
+        pdf.set_font(SANS, 'B', 10.5)
+        pdf.cell(38, 6.4, _pdf_rich(f'${val:,.2f}'), align='R',
+                 new_x='LMARGIN', new_y='NEXT')
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+        pdf.ln(1.2)
+    pdf.ln(2)
+
+    ties = claim_explainer.reconciles(facts)
+    pdf.set_font(SANS, '', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['faint'])
+    if ties:
+        pdf.multi_cell(W, 4.2, _pdf_rich(
+            'Your first payment plus the amount held back equals the approved '
+            'total. Every figure above is copied from your own claim documents.'),
+            new_x='LMARGIN', new_y='NEXT')
+    else:
+        # A homeowner who checks the subtraction and finds it wrong stops
+        # believing the rest of the page. Say it first.
+        pdf.multi_cell(W, 4.2, _pdf_rich(
+            'These figures are copied from your own claim documents. Some '
+            'carriers list amounts that sit outside this subtotal, so the '
+            'figures above may not subtract evenly — ask us and we will walk '
+            'through it with you.'), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.ln(4)
+
+    text, _source = claim_explainer.explanation(facts)
+    section('What it means', 'In plain English')
+    pdf.set_font(SANS, '', 10)
+    for para in [p for p in text.split('\n') if p.strip()]:
+        pdf.multi_cell(W, 5.2, _pdf_rich(para.strip()),
+                       new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.ln(2.2)
+
+    pdf.ln(2)
+    pdf.set_font(SANS, '', 7.5)
+    pdf.set_text_color(*_PDF_STYLE['faint'])
+    pdf.multi_cell(W, 4.2, _pdf_rich(
+        'This page explains figures your insurance carrier produced. It is not '
+        'legal, tax or insurance advice, and it does not change your policy or '
+        'what your carrier has agreed to pay. Your own claim documents are the '
+        'authority — if anything here does not match them, tell us.'),
+        new_x='LMARGIN', new_y='NEXT')
+    return bytes(pdf.output())
+
+
+@app.route('/api/estimates/<est_id>/claim-explainer', methods=['POST'])
+def post_claim_explainer(est_id):
+    """Build the homeowner's claim explainer and hand it back as a PDF."""
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    try:
+        raw = build_claim_explainer_pdf(est)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    cname = (est.get('customer', {}).get('name') or 'Customer').strip()
+    return Response(raw, mimetype='application/pdf', headers={
+        'Content-Disposition':
+            f'inline; filename="Claim Explained - {cname}.pdf"'})
+
+
+def build_condition_report_pdf(est):
+    """The roof health report as a standalone PDF.
+
+    Renders condition_report_view(est) — the same decisions the /sign block
+    lays out, so the document a realtor holds and the page a homeowner reads
+    cannot disagree about a grade or a total.
+
+    Raises when there is nothing to report. A PDF with no graded section is an
+    empty promise with a logo on it, and the caller turns that into a message
+    the rep can act on.
+
+    Deliberately no section ICONS: _PC_SECTIONS carries emoji for the screen,
+    and the vendored Inter/serif faces have no glyphs for them — they would
+    render as tofu on the one document that has to look considered.
+    """
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+    v = condition_report_view(est)
+    if not v:
+        raise ValueError('This estimate has no graded condition report yet — '
+                         'fill in the Roof Health page first.')
+
+    from fpdf.fonts import FontFace
+    from fpdf.enums import TableCellFillMode
+
+    c   = est.get('customer', {}) or {}
+    a   = c.get('address', {}) or {}
+    doc = est.get('condition_report') or {}
+
+    pdf, SANS, SERIF, W = _new_internal_pdf(
+        v['title'], footer='Project One Roofing  ·  projectoneroofingcolorado.com')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+    TW = min(W, pdf.epw)      # W can exceed epw by a float hair, which fpdf rejects
+
+    def para(text, size=9, gap=2.0):
+        if not (text or '').strip():
+            return
+        pdf.set_font(SANS, '', size)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.multi_cell(TW, 4.6, _pdf_rich(text), new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(gap)
+
+    def head_face():
+        return FontFace(family=SANS, size_pt=6.5,
+                        color=_PDF_STYLE['faint'], fill_color=None)
+
+    def table(headings, rows, widths, aligns):
+        if not rows:
+            return
+        pdf.set_font(SANS, '', 8)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
+        with pdf.table(col_widths=widths, text_align=aligns, width=TW,
+                       borders_layout='HORIZONTAL_LINES', headings_style=head_face(),
+                       cell_fill_mode=TableCellFillMode.NONE, line_height=5,
+                       padding=(2.4, 2, 2.4, 0), v_align='T') as t:
+            h = t.row()
+            for x in headings:
+                h.cell(x)
+            for cells in rows:
+                r = t.row()
+                for x in cells:
+                    r.cell(_pdf_rich(str(x)))
+        pdf.ln(2)
+
+    street = (a.get('street') or '').strip()
+    csz = ' '.join(x for x in [(a.get('city') or '').strip(),
+                               (a.get('state') or '').strip(),
+                               (a.get('zip') or '').strip()] if x).strip()
+    prop = ', '.join(x for x in (street, csz) if x)
+
+    section('Inspection', v['title'])
+    kv([
+        ('Property name', v['property_name']),
+        ('Property',   prop),
+        ('Prepared for', (doc.get('prepared_for') or '').strip() or (c.get('name') or '')),
+        ('Inspection date', v['inspection_date']),
+        ('Inspected by', ((doc.get('inspected_by') or '').strip()
+                          or (_display_name(est.get('salesperson'))
+                              if est.get('salesperson') else ''))),
+        ('Report #', _est_number(est)),
+    ])
+    para((doc.get('cover_note') or '').strip())
+
+    # Condition snapshot — the grades, which is the first and often only thing
+    # a realtor reads.
+    table(('Area', 'Grade', 'Condition'),
+          [(s['label'], s['grade'], s['grade_word']) for s in v['sections']],
+          (TW - 26 - 44, 26, 44), ('LEFT', 'CENTER', 'LEFT'))
+
+    if v['executive_notes']:
+        section('Summary', 'Overall Assessment')
+        para(v['executive_notes'])
+
+    costs = v['costs']
+    if costs['total'] > 0:
+        plus = costs['plus']
+        section('Outlook', v['investment_label'])
+        table(('', 'Estimated'),
+              [(lbl, fc(val) + plus) for lbl, val in costs['rows']]
+              + [('Estimated Total', fc(costs['total']) + plus)],
+              (TW - 40, 40), ('LEFT', 'RIGHT'))
+
+    for s in v['sections']:
+        section(s['label'], f'Grade {s["grade"]} — {s["grade_word"]}')
+        if s['meta']:
+            kv([(lbl, val) for lbl, val in s['meta']])
+        para(s['summary'])
+        if s['findings']:
+            table(('Area', 'Severity', 'Description'),
+                  [(f['area'], f['severity'], f['description']) for f in s['findings']],
+                  (44, 24, TW - 68), ('LEFT', 'LEFT', 'LEFT'))
+        if s['recommendations']:
+            table(('Priority', 'Recommendation', 'Est. Cost'),
+                  [(r['priority'], r['description'], r['cost'])
+                   for r in s['recommendations']],
+                  (26, TW - 26 - 30, 30), ('LEFT', 'LEFT', 'RIGHT'))
+
+    pdf.ln(2)
+    pdf.set_font(SANS, '', 7)
+    pdf.set_text_color(*_PDF_STYLE['mute'])
+    pdf.multi_cell(TW, 3.8, _pdf_rich(
+        f'This {v["title"]} was prepared by Project One Roofing following a visual '
+        'inspection. Pricing is valid for 30 days from the inspection date. '
+        'Concealed damage discovered once work begins may require a change order.'),
+        new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+
+    if doc.get('include_certificate') is True:
+        # The certificate draws its own letterhead; stop the report's header
+        # and footer after the page we are on. Same renderer as the standalone
+        # certificate, so the number, the term and the exclusions are one
+        # spelling — and the term still runs from the inspection date, so
+        # re-issuing the report can never extend coverage.
+        pdf._chrome_until = pdf.page_no()
+        _roof_cert_render(pdf, est)
+
+    return bytes(pdf.output())
+
+
+def generate_condition_report(est_id, push_to_crm=True):
+    """Build the report PDF, file it as a server-generated attachment (swapping
+    any prior one), and optionally push it to the linked CRM job. Returns the
+    attachment dict. No signature gate — see the note above."""
+    est = est_load(est_id)
+    if est is None:
+        raise ValueError('estimate not found')
+
+    pdf_bytes = build_condition_report_pdf(est)
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'condrpt_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+
+    c     = est.get('customer', {})
+    cname = (c.get('name') or 'Customer').strip()
+    title = (condition_report_view(est) or {}).get('title', 'Condition Report')
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            f'{title} - {cname}',
+        'doc_type':         'condition_report',
+        # A deliverable in its own right, not a proposal insert — the report
+        # already prints inside the estimate under its own print chip, and
+        # attaching it there too would print it twice.
+        'show_in_estimate': False,
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+    }
+
+    def _is_report(x):
+        return x.get('server_generated') and x.get('doc_type') == 'condition_report'
+
+    def _swap(doc):
+        if doc is None:
+            return None
+        for old in filter(_is_report, doc.get('attachments') or []):
+            parts = (old.get('filename') or '').split('/')
+            if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+                try:
+                    os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+                except OSError:
+                    pass
+        doc['attachments'] = [x for x in (doc.get('attachments') or [])
+                              if not _is_report(x)] + [att]
+        return doc
+
+    est_update(est_id, _swap)
+
+    if push_to_crm:
+        doc_id, err = _crm_file_document(
+            est, pdf_bytes, f'{title}-{cname}.pdf'.replace(' ', ''),
+            hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
+            doc_name=att['label'], doc_type='other',
+            description=f'{title} prepared following a visual inspection.')
+        if doc_id:
+            def _mark(doc):
+                if doc is None:
+                    return None
+                for x in doc.get('attachments', []):
+                    if x.get('id') == att['id']:
+                        x['crm_document_id'] = doc_id
+                return doc
+            est_update(est_id, _mark)
+            att['crm_document_id'] = doc_id
+        elif err and err != 'not_linked':
+            print(f'[condreport] CRM push failed for {est_id}: {err}')
+    return att
+
+
+def _condition_report_est_or_error(est_id):
+    if not _safe_path_id(est_id):
+        return None, (jsonify({'error': 'invalid estimate id'}), 400)
+    est = est_load(est_id)
+    if est is None:
+        return None, (jsonify({'error': 'Not found'}), 404)
+    if not _can_touch_estimate(est):
+        return None, _forbid()
+    return est, None
+
+
+@app.route('/api/estimates/<est_id>/condition-report', methods=['GET'])
+def get_condition_report(est_id):
+    """The document fields, plus a summary of what the PDF would contain — the
+    form shows that rather than re-editing the body, which lives on the Roof
+    Health page and must not be editable in two places."""
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    v = condition_report_view(est)
+    summary = None
+    if v:
+        summary = {
+            'title':    v['title'],
+            'sections': [{'label': s['label'], 'grade': s['grade'],
+                          'grade_word': s['grade_word'],
+                          'findings': len(s['findings']),
+                          'recommendations': len(s['recommendations'])}
+                         for s in v['sections']],
+            'inspection_date': v['inspection_date'],
+            'cost_total':      v['costs']['total'],
+            'cost_plus':       v['costs']['plus'],
+        }
+    return jsonify({'condition_report': est.get('condition_report') or {},
+                    'summary': summary,
+                    'findings_text': _report_findings_text(est),
+                    'certificate_problem': _roof_cert_invalid(est),
+                    'certificate_number': _roof_cert_number(est)})
+
+
+@app.route('/api/estimates/<est_id>/condition-report', methods=['PUT'])
+def save_condition_report_fields(est_id):
+    """Save the document fields. Never builds a PDF."""
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    cleaned = _sanitize_condition_report(request.get_json(silent=True) or {})
+
+    def _apply(doc):
+        if doc is None:
+            return None
+        cr = dict(doc.get('condition_report') or {})
+        cr.update(cleaned)
+        cr['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        doc['condition_report'] = cr
+        return doc
+
+    est_update(est_id, _apply)
+    return jsonify({'condition_report': cleaned})
+
+
+@app.route('/api/estimates/<est_id>/condition-report', methods=['POST'])
+def regenerate_condition_report(est_id):
+    """(Re)generate the report PDF. Optional {"push_to_crm": true}; defaults to
+    false so the rep can eyeball the PDF before it lands in the job file."""
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    if not condition_report_view(est):
+        return jsonify({'error': 'Nothing to report yet — grade at least one '
+                                 'area on the Roof Health page first.'}), 400
+    if (est.get('condition_report') or {}).get('include_certificate') is True:
+        msg = _roof_cert_invalid(est)
+        if msg:
+            return jsonify({'error': 'The roof certificate is switched on for this '
+                                     'report but cannot be issued yet. ' + msg}), 400
+    push = bool((request.get_json(silent=True) or {}).get('push_to_crm'))
+    try:
+        att = generate_condition_report(est_id, push_to_crm=push)
+    except Exception as exc:
+        print(f'[condreport] generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Report generation failed: {exc}'}), 500
+    return jsonify({'attachment': att})
+
+
+# ── Warranty certificate (after the job) ────────────────────────────────────
+# What the homeowner keeps once the roof is on: the system installed, when,
+# and the workmanship warranty that backs it. It certifies completed work, so
+# it is gated on a signature like the production and permit packets.
+#
+# The workmanship term is already written in five places and
+# tests/test_warranty_consistency.py holds them together — disagreement between
+# them "is an actual customer complaint, not a docs nit." This document must
+# not be a sixth spelling, so it never states a term of its own:
+#   * retail / commercial read warranty_by_tier off _build_estimate_manifest(),
+#     at the tier _trade_tier() says was signed — the same promise the /sign
+#     page made;
+#   * insurance reads WARRANTY_INSURANCE_FLAT, because a claim sells the one
+#     scope the carrier approved and warranty_by_tier is deliberately EMPTY
+#     there ("Do not 'restore' this for symmetry");
+#   * anything else is 'unknown', and the POST refuses rather than print a
+#     warranty certificate with a blank warranty on it.
+#
+# Two things are the rep's, never a default:
+#   * The COMPLETION date. The term runs from completion, and the contract date
+#     is weeks earlier on essentially every job — a plausible wrong default is
+#     worse than an empty box. The form offers the work order's scheduled date
+#     and the contract date as one-tap fills.
+#   * The PRODUCT. On retail it is prefilled from the signed package. On
+#     insurance nothing customer-facing may read est['insurance_cost'] — that
+#     structure lives outside `trades` precisely so no document can print our
+#     costs — so the rep types it.
+
+# The insurance workmanship term. DEFAULT_INSURANCE_CONTRACT in static/app.js
+# is the customer-facing spelling of the same promise ("5 years from the date
+# of project completion"); test_warranty_consistency.py holds the two together.
+WARRANTY_INSURANCE_FLAT = '5-year Project One workmanship warranty'
+
+_WARRANTY_CERT_STR_FIELDS = ('completion_date', 'product_installed', 'color',
+                             'manufacturer_warranty', 'registration_number',
+                             'crew_lead', 'notes')
+
+WARRANTY_CERT_TERMS = (
+    'Project One Roofing warrants the workmanship of the installation described '
+    'above against defects for the term shown, beginning on the completion date. '
+    'Coverage is subject to the terms and exclusions of the signed contract for '
+    'this job, which govern.\n\n'
+    'This certificate does not itself grant a manufacturer warranty. Manufacturer '
+    'coverage is as registered with the manufacturer and subject to its own terms; '
+    'any registration number shown is provided for the owner\'s records.\n\n'
+    'To make a claim, contact Project One Roofing and give us reasonable access to '
+    'inspect and repair. Keep this certificate with the property records — it is '
+    'useful to a future buyer.'
+)
+
+
+def _warranty_cert_number(est):
+    """Stable across regenerations, like _roof_cert_number."""
+    eid = est.get('estimate_id', '')
+    return 'WC-' + eid.split('-')[0].upper() if eid else 'WC-DRAFT'
+
+
+def _warranty_manifest(est):
+    """(term, product_suggestion, basis) for the job that was SOLD.
+
+    basis is 'tier' | 'insurance' | 'unknown'. 'unknown' means the tool cannot
+    tell what was promised, and the caller must say so rather than print a
+    certificate with an empty term. Never raises: a manifest failure is
+    'unknown', which refuses loudly, not a bare except that prints nothing."""
+    try:
+        m = _build_estimate_manifest(est)
+    except Exception as exc:
+        print(f'[warranty] manifest failed: {exc!r}')
+        return '', '', 'unknown'
+    wbt = m.get('warranty_by_tier') or {}
+    is_ins = ((est.get('estimate_type') == 'insurance')
+              or (((est.get('trades') or {}).get('insurance') or {}).get('enabled')))
+    if is_ins:
+        return WARRANTY_INSURANCE_FLAT, '', 'insurance'
+    trades = m.get('trades') or []
+    if not (wbt and trades):
+        return '', '', 'unknown'
+    # The roof is what this certificate is about; the first trade otherwise.
+    trade = next((t for t in trades if t.get('key') in ('roofing', 'commercial')),
+                 trades[0])
+    term = wbt.get(_trade_tier(est, trade.get('key')), '')
+    product = ''
+    for ti in (trade.get('tiers') or []):
+        if ti.get('is_selected'):
+            product = (ti.get('material_name') or ti.get('package_name') or '').strip()
+            break
+    return term, product, ('tier' if term else 'unknown')
+
+
+def _warranty_cert_expiry(term, completed):
+    """(expiry_date | None, lifetime: bool) from the term's own wording, so the
+    certificate cannot hold a number the term does not say. 'Lifetime' has no
+    expiry date to print; a term with no 'N-year' in it prints none either
+    rather than a guess."""
+    if 'lifetime' in (term or '').lower():
+        return None, True
+    mt = re.search(r'(\d+)\s*-?\s*year', term or '', re.I)
+    if not (mt and completed):
+        return None, False
+    return _add_months(completed, int(mt.group(1)) * 12), False
+
+
+def _sanitize_warranty_cert(payload):
+    out = {}
+    for k in _WARRANTY_CERT_STR_FIELDS:
+        v = payload.get(k)
+        if v is None:
+            continue
+        out[k] = str(v).strip()[:2000 if k == 'notes' else 300]
+    return out
+
+
+def _warranty_cert_problem(est):
+    """Why the warranty certificate cannot be issued, or None."""
+    if not est.get('signature'):
+        return 'The warranty certificate is issued for signed work only.'
+    wc = est.get('warranty_certificate') or {}
+    term, _product, basis = _warranty_manifest(est)
+    if basis == 'unknown' or not term:
+        return ('Could not tell which warranty this job was sold with — '
+                'check the signed package on the Pricing tab.')
+    raw = (wc.get('completion_date') or '').strip()
+    try:
+        date.fromisoformat(raw[:10])
+    except ValueError:
+        return 'Set the completion date — the warranty term runs from it.'
+    if not (wc.get('product_installed') or '').strip():
+        return 'Name the product installed.'
+    return None
+
+
+def build_warranty_certificate_pdf(est):
+    """One page the homeowner keeps: what went on the roof, when, and what
+    backs it."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+    problem = _warranty_cert_problem(est)
+    if problem:
+        raise ValueError(problem)
+
+    c  = est.get('customer', {}) or {}
+    a  = c.get('address', {}) or {}
+    wc = est.get('warranty_certificate') or {}
+    term, _p, basis = _warranty_manifest(est)
+    completed = date.fromisoformat(wc['completion_date'][:10])
+    expiry, lifetime = _warranty_cert_expiry(term, completed)
+
+    def _fmt(d):
+        return d.strftime('%B %d, %Y') if d else ''
+
+    pdf, SANS, SERIF, W = _new_internal_pdf(
+        'Certificate of Completion',
+        footer=f'Project One Roofing  ·  Certificate {_warranty_cert_number(est)}')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+    TW = min(W, pdf.epw)
+
+    street = (a.get('street') or '').strip()
+    csz = ' '.join(x for x in [(a.get('city') or '').strip(),
+                               (a.get('state') or '').strip(),
+                               (a.get('zip') or '').strip()] if x).strip()
+
+    section('Certificate of completion', 'Workmanship Warranty')
+    kv([
+        ('Certificate #', _warranty_cert_number(est)),
+        ('Owner',         c.get('name') or ''),
+        ('Property',      ', '.join(x for x in (street, csz) if x)),
+        ('Completed',     _fmt(completed)),
+    ])
+
+    section('Installed', 'The system on this roof')
+    kv([
+        ('Product',       wc.get('product_installed')),
+        ('Color',         wc.get('color')),
+        ('Crew lead',     wc.get('crew_lead')),
+    ])
+
+    section('Coverage', 'What backs it')
+    if lifetime:
+        through = ('For as long as you own the building' if 'building' in term.lower()
+                   else 'For as long as you own the home')
+    elif expiry:
+        through = _fmt(expiry)
+    else:
+        through = ''
+    kv([
+        ('Workmanship',   term),
+        ('Covered through', through),
+        ('Manufacturer',  wc.get('manufacturer_warranty')),
+        ('Registration #', wc.get('registration_number')),
+    ])
+    if (wc.get('notes') or '').strip():
+        pdf.set_font(SANS, '', 9)
+        pdf.multi_cell(TW, 4.6, _pdf_rich(wc['notes']), new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(2)
+
+    section('Terms', 'Warranty terms')
+    pdf.set_font(SANS, '', 8)
+    pdf.set_text_color(*_PDF_STYLE['mute'])
+    pdf.multi_cell(TW, 4.2, _pdf_rich(WARRANTY_CERT_TERMS), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+
+    pdf.ln(8)
+    pdf.set_font(SANS, '', 9)
+    pdf.cell(TW / 2, 6, _pdf_rich('Project One Roofing'))
+    pdf.cell(TW / 2, 6, _pdf_rich(_fmt(completed)), new_x='LMARGIN', new_y='NEXT')
+    y = pdf.get_y()
+    pdf.set_draw_color(*_PDF_STYLE['rule'])
+    pdf.line(pdf.l_margin, y, pdf.l_margin + TW / 2 - 6, y)
+    pdf.line(pdf.l_margin + TW / 2, y, pdf.l_margin + TW, y)
+    pdf.set_font(SANS, '', 6.5)
+    pdf.set_text_color(*_PDF_STYLE['faint'])
+    pdf.cell(TW / 2, 4, 'AUTHORIZED, PROJECT ONE ROOFING')
+    pdf.cell(TW / 2, 4, 'COMPLETION DATE', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    return bytes(pdf.output())
+
+
+def generate_warranty_certificate(est_id, push_to_crm=True):
+    """Build, file (swapping any prior copy) and optionally push to the Den."""
+    est = est_load(est_id)
+    if est is None:
+        raise ValueError('estimate not found')
+    pdf_bytes = build_warranty_certificate_pdf(est)
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'warranty_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+
+    cname = ((est.get('customer') or {}).get('name') or 'Customer').strip()
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            f'Warranty Certificate - {cname}',
+        'doc_type':         'warranty_certificate',
+        'show_in_estimate': False,
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+    }
+
+    def _is_wc(x):
+        return x.get('server_generated') and x.get('doc_type') == 'warranty_certificate'
+
+    def _swap(doc):
+        if doc is None:
+            return None
+        for old in filter(_is_wc, doc.get('attachments') or []):
+            parts = (old.get('filename') or '').split('/')
+            if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+                try:
+                    os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+                except OSError:
+                    pass
+        doc['attachments'] = [x for x in (doc.get('attachments') or [])
+                              if not _is_wc(x)] + [att]
+        return doc
+
+    est_update(est_id, _swap)
+
+    if push_to_crm:
+        doc_id, err = _crm_file_document(
+            est, pdf_bytes, f'WarrantyCertificate-{cname}.pdf'.replace(' ', ''),
+            hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
+            doc_name=att['label'], doc_type='other',
+            description='Certificate of completion and workmanship warranty.')
+        if doc_id:
+            def _mark(doc):
+                if doc is None:
+                    return None
+                for x in doc.get('attachments', []):
+                    if x.get('id') == att['id']:
+                        x['crm_document_id'] = doc_id
+                return doc
+            est_update(est_id, _mark)
+            att['crm_document_id'] = doc_id
+        elif err and err != 'not_linked':
+            print(f'[warranty] CRM push failed for {est_id}: {err}')
+    return att
+
+
+@app.route('/api/estimates/<est_id>/warranty-certificate', methods=['GET'])
+def get_warranty_certificate(est_id):
+    """The fields, plus what the tool derives (term, product suggestion) and
+    the fills the form offers for the completion date."""
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    term, product, basis = _warranty_manifest(est)
+    wc = est.get('warranty_certificate') or {}
+    sig = est.get('signature') or {}
+    return jsonify({
+        'warranty_certificate': wc,
+        'term':      term,
+        'basis':     basis,
+        'suggested': {
+            'product_installed': product,
+            'color': (sig.get('shingle_color') or '').strip(),
+            'scheduled_date': ((est.get('work_order') or {}).get('scheduled_date') or '').strip(),
+            'contract_date': (sig.get('signed_at') or '')[:10],
+        },
+        'number':    _warranty_cert_number(est),
+        'problem':   _warranty_cert_problem(est),
+    })
+
+
+@app.route('/api/estimates/<est_id>/warranty-certificate', methods=['PUT'])
+def save_warranty_certificate_fields(est_id):
+    """Save the fields. Never builds a PDF."""
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    cleaned = _sanitize_warranty_cert(request.get_json(silent=True) or {})
+
+    def _apply(doc):
+        if doc is None:
+            return None
+        wc = dict(doc.get('warranty_certificate') or {})
+        wc.update(cleaned)
+        wc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        doc['warranty_certificate'] = wc
+        return doc
+
+    est_update(est_id, _apply)
+    return jsonify({'warranty_certificate': cleaned})
+
+
+@app.route('/api/estimates/<est_id>/warranty-certificate', methods=['POST'])
+def regenerate_warranty_certificate(est_id):
+    est, err = _condition_report_est_or_error(est_id)
+    if err:
+        return err
+    problem = _warranty_cert_problem(est)
+    if problem:
+        return jsonify({'error': problem}), 400
+    push = bool((request.get_json(silent=True) or {}).get('push_to_crm'))
+    try:
+        att = generate_warranty_certificate(est_id, push_to_crm=push)
+    except Exception as exc:
+        print(f'[warranty] generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Certificate generation failed: {exc}'}), 500
+    return jsonify({'attachment': att})
+
+
+# ── Invoice / quote ─────────────────────────────────────────────────────────
+# A plain, itemized document: numbers and nothing else. No cover, no package
+# cards, no warranty pages and no /sign link. Built for general contractors
+# first and used for homeowners too. The rep picks whether it goes out as a
+# QUOTE (before the work) or an INVOICE (after).
+#
+# Three rules keep it honest:
+#
+# * invoice_rows() walks the SAME rows _trade_subtotal prices, so its subtotal
+#   equals _estimate_total to the cent. It is not a second pricing engine. It
+#   is a listing of the first one, and tests/test_invoice.py pins the equality.
+# * By default it lists EVERY billed line, including customer_visible:false
+#   ones the homeowner proposal folds into the total. A GC checks the bill line
+#   by line, and a total the lines don't add up to is the first thing they
+#   query. Unticking "List every line" (`itemize: False`, for a homeowner)
+#   folds those rows back into the total the way the proposal does. That
+#   changes which rows PRINT, never what the subtotal is.
+# * Supplements are listed and never totalled, the same as on every other
+#   document. Only ACCEPTED change orders bill.
+#
+# Stored as est['invoice'] and written only through its own endpoint, because
+# it holds payments received. The whole-doc save carries the stored copy
+# forward, so a stale tab cannot roll a balance back.
+_INVOICE_KINDS = ('invoice', 'quote')
+_INVOICE_TRADE_LABELS = dict(roofing='Roofing', siding='Siding', windows='Windows',
+                             gutters='Gutters', commercial='Commercial Roofing',
+                             other='Other / Misc')
+
+
+def _invoice_date(v):
+    """An ISO date string, '' for blank, or None for junk. None drops the
+    field, so a typo never overwrites a good date."""
+    s = str(v or '').strip()[:10]
+    if not s:
+        return ''
+    try:
+        return date.fromisoformat(s).isoformat()
+    except ValueError:
+        return None
+
+
+def _sanitize_invoice(payload):
+    out = {}
+    kind = payload.get('kind')
+    if kind in _INVOICE_KINDS:
+        out['kind'] = kind
+    if isinstance(payload.get('itemize'), bool):
+        out['itemize'] = payload['itemize']
+    for k, cap in (('number', 40), ('po_ref', 100), ('notes', 2000)):
+        if k in payload and payload[k] is not None:
+            out[k] = str(payload[k]).strip()[:cap]
+    for k in ('issue_date', 'due_date', 'valid_until'):
+        if k in payload:
+            d = _invoice_date(payload[k])
+            if d is not None:
+                out[k] = d
+    if isinstance(payload.get('payments'), list):
+        pays = []
+        for p in payload['payments'][:50]:
+            if not isinstance(p, dict):
+                continue
+            amt = _f(p.get('amount'))
+            if not math.isfinite(amt) or amt == 0 or abs(amt) > 10_000_000:
+                continue
+            pays.append({'date': _invoice_date(p.get('date')) or '',
+                         'amount': round(amt, 2),
+                         'note': str(p.get('note') or '').strip()[:200]})
+        out['payments'] = pays
+    return out
+
+
+def invoice_fields(est):
+    """The stored invoice with defaults filled in. The defaults are derived and
+    never written, so the number stays the same across rebuilds without anyone
+    saving first."""
+    inv = dict(est.get('invoice') or {})
+    kind = inv.get('kind') if inv.get('kind') in _INVOICE_KINDS else 'invoice'
+    inv['kind'] = kind
+    if not (inv.get('number') or '').strip():
+        base = _est_number(est)
+        base = base[4:] if base.startswith('EST-') else base
+        inv['number'] = ('INV-' if kind == 'invoice' else 'Q-') + base
+    if not inv.get('issue_date'):
+        inv['issue_date'] = _company_today().isoformat()
+    if not inv.get('valid_until'):
+        inv['valid_until'] = str(est.get('valid_until') or '')[:10]
+    inv['itemize'] = inv.get('itemize') is not False
+    inv.setdefault('due_date', '')
+    inv.setdefault('po_ref', '')
+    inv.setdefault('notes', '')
+    inv['payments'] = list(inv.get('payments') or [])
+    return inv
+
+
+def _invoice_line_name(name, desc):
+    name = str(name or '').strip()
+    desc = str(desc or '').strip()
+    if desc and desc != name:
+        return f'{name} — {desc}' if name else desc
+    return name or 'Item'
+
+
+def invoice_rows(est):
+    """Everything the invoice bills, as data. The single source for the PDF and
+    for the summary the rep sees. Each row is (name, qty, unit, unit_price, line)."""
+    inv = invoice_fields(est)
+    itemize = inv['itemize']
+    sections, supplements = [], []
+    if est.get('estimate_type') == 'insurance':
+        ins_td = (est.get('trades') or {}).get('insurance') or {}
+        secs = ins_td.get('sections') or (
+            [{'name': '', 'items': ins_td.get('line_items', [])}]
+            if ins_td.get('line_items') else [])
+        for sec in secs:
+            rows = []
+            for it in sec.get('items') or []:
+                line = float(it.get('acv') or 0) + float(it.get('depreciation') or 0)
+                qty = _f(it.get('quantity'))
+                name = _invoice_line_name(it.get('name'), it.get('description'))
+                rows.append((name, qty, str(it.get('unit') or ''),
+                             line / qty if qty > 0 else line, line))
+            if rows:
+                sections.append({'title': sec.get('name') or 'Insurance Scope',
+                                 'rows': rows,
+                                 'subtotal': sum(r[4] for r in rows)})
+    else:
+        pricing = est.get('pricing') or {}
+        mode = pricing.get('mode', 'margin')
+        for tk in GBB_TRADES:
+            td = (est.get('trades') or {}).get(tk) or {}
+            if not td.get('enabled'):
+                continue
+            trade_mode = _trade_mode(tk, td)
+            tier = _trade_tier(est, tk)
+            r = _tier_rate(pricing, tk, tier)
+            label = _INVOICE_TRADE_LABELS.get(tk, tk.title())
+            rows, subtotal, folded = [], 0.0, 0
+            for it in td.get('line_items') or []:
+                # The exact skip rules of _trade_subtotal, and nothing more:
+                # customer_visible is deliberately NOT a skip here.
+                if _is_supplement_item(td, it):
+                    continue
+                qty = float(it.get('quantity') or 0)
+                if qty <= 0:
+                    continue
+                if trade_mode == 'simple':
+                    unit_price = float(it.get('unit_price') or 0)
+                    line = unit_price * qty
+                    desc = it.get('description')
+                else:
+                    t = (it.get('tiers') or {}).get(tier) or {}
+                    if t.get('included') is False:
+                        continue
+                    line = _line_sell_total(it, tier, r, mode)
+                    unit_price = line / qty
+                    desc = t.get('description')
+                name = _invoice_line_name(_with_section(it, it.get('name', '')), desc)
+                subtotal += line
+                if not itemize and it.get('customer_visible') is False:
+                    folded += 1         # still billed, just not broken out
+                    continue
+                rows.append((name, qty, str(it.get('unit') or ''), unit_price, line))
+            if rows or folded:
+                sections.append({'title': label, 'rows': rows, 'subtotal': subtotal,
+                                 'folded': folded})
+            s_rows, _s_tot = trade_supplements(est, tk, tier)
+            for it, q, line, desc in s_rows:
+                if not (it.get('name') or '').strip():
+                    continue
+                if not itemize and it.get('customer_visible') is False:
+                    continue
+                supplements.append((f"{label}: {_invoice_line_name(it.get('name'), desc)}",
+                                    q, str(it.get('unit') or ''),
+                                    line / q if q > 0 else line, line))
+
+    # Elected optional upgrades bill as their own section. They are part of the
+    # contract, so they are inside `subtotal` — not bolted on beside it like a
+    # change order, which is a separate agreement signed separately.
+    _elected = [u for u in accepted_upgrades(est) if (u.get('name') or '').strip()]
+    if _elected:
+        _rows = [(_invoice_line_name(u.get('name'), u.get('description')),
+                  1.0, '', upgrade_price(u), upgrade_price(u)) for u in _elected]
+        sections.append({'title': 'Optional Upgrades',
+                         'rows': _rows,
+                         'subtotal': sum(r[4] for r in _rows)})
+
+    change_orders = []
+    for co in est.get('change_orders') or []:
+        if co.get('status') != 'accepted':
+            continue
+        pricing = co.get('pricing') or {}
+        rows = []
+        for it in co.get('line_items') or []:
+            line = _co_line_total(it, pricing)
+            qty = _f(it.get('quantity'))
+            rows.append((_invoice_line_name(it.get('name'), it.get('description')),
+                         qty, str(it.get('unit') or ''),
+                         line / qty if qty else line, line))
+        change_orders.append({'title': co.get('title') or 'Change Order',
+                              'rows': rows, 'subtotal': _co_total(co)})
+
+    subtotal = sum(s['subtotal'] for s in sections)
+    co_total = sum(c['subtotal'] for c in change_orders)
+    total = subtotal + co_total
+    payments_total = sum(_f(p.get('amount')) for p in inv['payments'])
+    return {
+        'sections': sections, 'supplements': supplements,
+        'change_orders': change_orders, 'payments': inv['payments'],
+        'subtotal': round(subtotal, 2), 'co_total': round(co_total, 2),
+        'total': round(total, 2), 'payments_total': round(payments_total, 2),
+        'balance_due': round(total - payments_total, 2),
+    }
+
+
+def _invoice_fmt_date(iso):
+    try:
+        return date.fromisoformat(str(iso)[:10]).strftime('%b %d, %Y')
+    except ValueError:
+        return ''
+
+
+def build_invoice_pdf(est):
+    """The GC invoice/quote PDF. See the block comment above."""
+    if FPDF is None:
+        raise RuntimeError('fpdf2 not installed')
+    from fpdf.fonts import FontFace
+    from fpdf.enums import TableCellFillMode
+
+    inv  = invoice_fields(est)
+    data = invoice_rows(est)
+    is_inv = inv['kind'] == 'invoice'
+    kind_label = 'Invoice' if is_inv else 'Quote'
+    pdf, SANS, SERIF, W = _new_internal_pdf(
+        f'{kind_label}  ·  {inv["number"]}',
+        footer=f'Project One Roofing  ·  {COMPANY_PHONE_DISPLAY}  ·  '
+               f'{kind_label} {inv["number"]}')
+    section, kv = _int_styles(pdf, SANS, SERIF, W)
+    LM = pdf.l_margin
+
+    # Title row: the document kind large on the left, the number on the right.
+    pdf.set_font(SERIF, 'B', 24)
+    pdf.set_text_color(*_PDF_STYLE['navy'])
+    pdf.cell(W / 2, 11, kind_label.upper())
+    pdf.set_font(SANS, 'B', 11)
+    pdf.set_text_color(*_PDF_STYLE['ink'])
+    pdf.cell(W / 2, 11, _pdf_rich(inv['number']), align='R',
+             new_x='LMARGIN', new_y='NEXT')
+    pdf.ln(2)
+
+    c = est.get('customer') or {}
+    a = c.get('address') or {}
+    state_zip = ' '.join(y for y in (a.get('state'), a.get('zip')) if y)
+    city_line = ', '.join(x for x in (a.get('city'), state_zip) if x)
+    bill_addr = '\n'.join(x for x in (a.get('street'), city_line) if x)
+    site = (est.get('project_address') or '').strip()
+    if site and (a.get('street') or '').strip().lower() in site.lower() and a.get('street'):
+        site = ''                       # same place as the bill-to — don't repeat it
+    rep = _display_name(est.get('salesperson')) if est.get('salesperson') else ''
+
+    kv([
+        ('Date', _invoice_fmt_date(inv['issue_date'])),
+        ('Due date' if is_inv else 'Valid until',
+         _invoice_fmt_date(inv['due_date'] if is_inv else inv['valid_until'])),
+        ('PO / Reference', inv['po_ref']),
+        ('Estimate #', _est_number(est)),
+    ])
+    section('Bill to', c.get('name') or 'Customer')
+    kv([
+        ('Address', bill_addr),
+        ('Job site', site),
+        ('Phone', c.get('phone')),
+        ('Email', c.get('email')),
+    ])
+
+    head_face = FontFace(family=SANS, size_pt=6.5,
+                         color=_PDF_STYLE['faint'], fill_color=None)
+    TW = min(W, pdf.epw)      # W can exceed epw by a float hair, which fpdf rejects
+    widths = (TW - 16 - 14 - 28 - 28, 16, 14, 28, 28)
+    aligns = ('LEFT', 'RIGHT', 'CENTER', 'RIGHT', 'RIGHT')
+
+    def table(rows, blank_total='', blank_qty=''):
+        pdf.set_font(SANS, '', 8)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.set_line_width(0.2)
+        with pdf.table(col_widths=widths, text_align=aligns, width=TW,
+                       borders_layout='HORIZONTAL_LINES', headings_style=head_face,
+                       cell_fill_mode=TableCellFillMode.NONE, line_height=5,
+                       padding=(2.4, 2, 2.4, 0), v_align='T') as t:
+            h = t.row()
+            for x in ('Description', 'Qty', 'Unit', 'Unit Price', 'Total'):
+                h.cell(x)
+            for name, qty, unit, unit_price, line in rows:
+                row = t.row()
+                row.cell(_pdf_rich(name))
+                row.cell(f'{qty:g}' if qty else blank_qty)
+                row.cell(_pdf_rich(unit))
+                row.cell(fc(unit_price) if line else '')
+                row.cell(fc(line) if line else blank_total)
+
+    def money_row(label, amount, bold=False, rule=False):
+        if rule:
+            pdf.set_draw_color(*_PDF_STYLE['navy'])
+            pdf.set_line_width(0.3)
+            pdf.line(LM + W - 90, pdf.get_y(), LM + W, pdf.get_y())
+            pdf.set_line_width(0.2)
+        pdf.set_font(SANS, 'B' if bold else '', 10 if bold else 9)
+        pdf.set_text_color(*(_PDF_STYLE['navy'] if bold else _PDF_STYLE['ink']))
+        pdf.cell(W - 32, 7, _pdf_rich(label), align='R')
+        money = ('-' + fc(-amount)) if amount < 0 else fc(amount)
+        pdf.cell(32, 7, money, align='R', new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+
+    if not data['sections']:
+        section('Scope', 'No billable line items')
+    for sec in data['sections']:
+        section('Scope', sec['title'])
+        if sec['rows']:
+            table(sec['rows'])
+        if sec.get('folded'):
+            pdf.set_font(SANS, 'I', 7.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(W, 5.5, _pdf_rich('Additional materials, supplies & labor included in subtotal'),
+                     align='L', new_x='LMARGIN', new_y='NEXT')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+        money_row(f"{sec['title']} Subtotal", sec['subtotal'])
+
+    for co in data['change_orders']:
+        section('Change order', co['title'])
+        table(co['rows'])
+        money_row('Change Order Subtotal', co['subtotal'])
+
+    section('Summary', f'{kind_label} Total')
+    if data['change_orders']:
+        money_row('Original scope', data['subtotal'])
+        money_row('Change orders', data['co_total'])
+    money_row('Total', data['total'], bold=True, rule=True)
+    if data['payments']:
+        for p in data['payments']:
+            label = 'Payment received'
+            if p.get('date'):
+                label += f" {_invoice_fmt_date(p['date'])}"
+            if p.get('note'):
+                label += f" ({p['note']})"
+            money_row(label, -_f(p.get('amount')))
+        money_row('Balance Due', data['balance_due'], bold=True, rule=True)
+    elif is_inv:
+        money_row('Balance Due', data['balance_due'], bold=True)
+
+    if data['supplements']:
+        section('If needed', 'Supplements - not included in the total')
+        table(data['supplements'], blank_total='Quoted if needed', blank_qty='If needed')
+
+    if inv['notes']:
+        section('Notes', 'Notes & terms')
+        pdf.set_font(SANS, '', 9)
+        pdf.multi_cell(W, 5, _pdf_rich(inv['notes']), new_x='LMARGIN', new_y='NEXT')
+
+    pdf.ln(4)
+    pdf.set_font(SANS, '', 8)
+    pdf.set_text_color(*_PDF_STYLE['mute'])
+    contact = f'Questions? Call {COMPANY_PHONE_DISPLAY}'
+    if rep:
+        contact += f' or contact {rep} at {_salesperson_email(est)}'
+    pdf.multi_cell(W, 4.5, _pdf_rich(contact + '.'), new_x='LMARGIN', new_y='NEXT')
+    return bytes(pdf.output())
+
+
+def _invoice_filename(est):
+    inv = invoice_fields(est)
+    kind = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    num = re.sub(r'[^A-Za-z0-9_.-]+', '-', inv['number']).strip('-') or 'draft'
+    return f'ProjectOneRoofing-{kind}-{num}.pdf'
+
+
+def generate_invoice(est_id, push_to_crm=False):
+    """Build the PDF, file it as a server-generated attachment (replacing any
+    previous one), and optionally file it on the CRM job. Returns
+    (attachment, pdf_bytes)."""
+    est = est_load(est_id)
+    if est is None:
+        raise ValueError('estimate not found')
+    pdf_bytes = build_invoice_pdf(est)
+    dest_dir = os.path.join(UPLOADS_DIR, est_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f'invoice_{uuid.uuid4().hex[:8]}.pdf'
+    with open(os.path.join(dest_dir, fname), 'wb') as f:
+        f.write(pdf_bytes)
+
+    inv = invoice_fields(est)
+    kind_label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    cname = ((est.get('customer') or {}).get('name') or 'Customer').strip()
+    att = {
+        'id':               uuid.uuid4().hex[:12],
+        'filename':         f'{est_id}/{fname}',
+        'label':            f'{kind_label} {inv["number"]} - {cname}',
+        'doc_type':         'invoice',
+        'show_in_estimate': False,
+        'server_generated': True,
+        'generated_at':     datetime.utcnow().isoformat() + 'Z',
+    }
+
+    def _is_inv(x):
+        return x.get('server_generated') and x.get('doc_type') == 'invoice'
+
+    def _swap(doc):
+        if doc is None:
+            return None
+        for old in filter(_is_inv, doc.get('attachments') or []):
+            parts = (old.get('filename') or '').split('/')
+            if len(parts) == 2 and parts[0] == est_id and _safe_path_id(parts[1]):
+                try:
+                    os.remove(os.path.join(UPLOADS_DIR, parts[0], parts[1]))
+                except OSError:
+                    pass
+        doc['attachments'] = [x for x in doc.get('attachments') or []
+                              if not _is_inv(x)] + [att]
+        return doc
+
+    est = est_update(est_id, _swap) or est
+    if push_to_crm:
+        doc_id, err = _crm_file_document(
+            est, pdf_bytes, upload_name=_invoice_filename(est),
+            hosted_url=f'{_base_url()}/uploads/{est_id}/{fname}',
+            doc_name=att['label'], doc_type='other',
+            description=f'{kind_label} for this job.')
+        if doc_id:
+            def _mark(doc):
+                if doc is None:
+                    return None
+                for x in doc.get('attachments', []):
+                    if x.get('id') == att['id']:
+                        x['crm_document_id'] = doc_id
+                return doc
+            est_update(est_id, _mark)
+            att['crm_document_id'] = doc_id
+        elif err and err != 'not_linked':
+            print(f'[invoice] CRM push failed for {est_id}: {err}')
+    return att, pdf_bytes
+
+
+def _invoice_est_or_error(est_id):
+    if not _safe_path_id(est_id):
+        return None, (jsonify({'error': 'invalid estimate id'}), 400)
+    est = est_load(est_id)
+    if est is None:
+        return None, (jsonify({'error': 'Not found'}), 404)
+    if not _can_touch_estimate(est):
+        return None, _forbid()
+    return est, None
+
+
+def _invoice_payload(est):
+    return {'invoice': invoice_fields(est), 'totals': invoice_rows(est)}
+
+
+@app.route('/api/estimates/<est_id>/invoice', methods=['GET'])
+def get_invoice(est_id):
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    return jsonify(_invoice_payload(est))
+
+
+@app.route('/api/estimates/<est_id>/invoice', methods=['PUT'])
+def save_invoice_fields(est_id):
+    """Save the fields. Never builds a PDF."""
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    if _invoice_signed(est):
+        # The signature covers a hash of these figures. Editing them afterwards
+        # would leave a record attesting to an amount the document no longer
+        # shows — the same reason a signed estimate cannot change status.
+        return jsonify({'error': 'This invoice has been signed and can no longer '
+                                 'be edited.'}), 409
+    cleaned = _sanitize_invoice(request.get_json(silent=True) or {})
+
+    def _apply(doc):
+        if doc is None:
+            return None
+        inv = dict(doc.get('invoice') or {})
+        inv.update(cleaned)
+        # Store only a number the rep actually chose. The derived INV-/Q-
+        # default is recomputed on read, so switching Quote <-> Invoice flips
+        # the prefix, and a number the rep typed survives the switch.
+        defaults = {invoice_fields(dict(doc, invoice={'kind': k}))['number']
+                    for k in _INVOICE_KINDS}
+        if (inv.get('number') or '') in defaults | {''}:
+            inv.pop('number', None)
+        inv['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        doc['invoice'] = inv
+        return doc
+
+    est = est_update(est_id, _apply) or est
+    return jsonify(_invoice_payload(est))
+
+
+@app.route('/api/estimates/<est_id>/invoice.pdf', methods=['GET'])
+def download_invoice_pdf(est_id):
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    try:
+        pdf_bytes = build_invoice_pdf(est)
+    except Exception as exc:
+        print(f'[invoice] PDF build failed for {est_id}: {exc}')
+        return jsonify({'error': f'Invoice PDF failed: {exc}'}), 500
+    return send_file(io.BytesIO(pdf_bytes), mimetype='application/pdf',
+                     as_attachment=request.args.get('download') == '1',
+                     download_name=_invoice_filename(est))
+
+
+@app.route('/api/estimates/<est_id>/invoice', methods=['POST'])
+def file_invoice(est_id):
+    """Build the PDF and save it to the customer's Files."""
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    push = bool((request.get_json(silent=True) or {}).get('push_to_crm'))
+    try:
+        att, _pdf = generate_invoice(est_id, push_to_crm=push)
+    except Exception as exc:
+        print(f'[invoice] generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Invoice generation failed: {exc}'}), 500
+    return jsonify({'attachment': att})
+
+
+@app.route('/api/estimates/<est_id>/invoice/send-email', methods=['POST'])
+def email_invoice(est_id):
+    """Email the invoice/quote PDF as an attachment. A QUOTE is a price going
+    out, so it goes through the margin floor like any other send. An INVOICE
+    bills a price that was already agreed, and blocking it would stop the
+    company from collecting on work it has done."""
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    if demo.is_demo_doc(est):
+        return jsonify({'error': 'Demo estimates cannot be emailed.'}), 403
+    inv = invoice_fields(est)
+    if inv['kind'] == 'quote':
+        blocked, worst = _margin_floor_block(est)
+        if blocked:
+            return jsonify({'error': blocked, 'margin_floor': worst}), 403
+    body = request.get_json(silent=True) or {}
+    to_addr = (body.get('email') or (est.get('customer') or {}).get('email') or '').strip()
+    if not to_addr or '@' not in to_addr:
+        return jsonify({'error': 'No email address to send to.'}), 400
+
+    totals = invoice_rows(est)
+    kind_label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    rep = _display_name(est.get('salesperson')) if est.get('salesperson') else 'Project One Roofing'
+    cname = ((est.get('customer') or {}).get('name') or '').strip()
+    if inv['kind'] == 'invoice' or totals['payments']:
+        amount_line = f'Balance due: <strong>{fc(totals["balance_due"])}</strong>'
+    else:
+        amount_line = f'Total: <strong>{fc(totals["total"])}</strong>'
+    extra = ''
+    if inv['kind'] == 'invoice' and inv['due_date']:
+        extra = f' &middot; Due {he(_invoice_fmt_date(inv["due_date"]))}'
+    elif inv['kind'] == 'quote' and inv['valid_until']:
+        extra = f' &middot; Valid until {he(_invoice_fmt_date(inv["valid_until"]))}'
+    po = f' &middot; PO {he(inv["po_ref"])}' if inv['po_ref'] else ''
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;padding:22px 26px">
+  <div style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#6b7280">Project One Roofing</div>
+  <h1 style="margin:6px 0 4px;font-size:20px;color:#082878">{kind_label} {he(inv["number"])}</h1>
+  <p style="margin:0 0 14px;font-size:13px;color:#374151">{he(cname)}{po}</p>
+  <p style="margin:0 0 14px;font-size:15px;color:#111827">{amount_line}{extra}</p>
+  <p style="margin:0 0 14px;font-size:13px;color:#374151;line-height:1.6">The itemized {kind_label.lower()} is attached as a PDF.</p>
+  <p style="margin:0;font-size:12px;color:#6b7280;line-height:1.6">Questions? Reply to this email or call {COMPANY_PHONE_DISPLAY}.<br>— {he(rep)}, Project One Roofing</p>
+</div></body></html>'''
+
+    try:
+        att, pdf_bytes = generate_invoice(est_id)
+    except Exception as exc:
+        print(f'[invoice] generation failed for {est_id}: {exc}')
+        return jsonify({'error': f'Invoice generation failed: {exc}'}), 500
+    ok = _send_email(f'{kind_label} {inv["number"]} from Project One Roofing',
+                     html_body, to_addr, cc=_salesperson_email(est) or None,
+                     attachments=[(_invoice_filename(est), pdf_bytes)])
+    if not ok:
+        return jsonify({'error': 'Email could not be sent — check the email settings.'}), 502
+
+    def _mark(doc):
+        if doc is None:
+            return None
+        doc_inv = dict(doc.get('invoice') or {})
+        doc_inv['sent_at'] = datetime.utcnow().isoformat() + 'Z'
+        doc_inv['sent_to'] = to_addr[:200]
+        doc['invoice'] = doc_inv
+        return doc
+    est_update(est_id, _mark)
+    return jsonify({'ok': True, 'sent_to': to_addr, 'attachment': att})
+
+
+# ── Signing an invoice ───────────────────────────────────────────────────────
+#
+# A GC or a homeowner signing off the amount before they pay it. Deliberately
+# NOT the estimate's signing path: `/sign/<token>` runs `_post_sign_pipeline`,
+# which files a Contact and a Project in The Den and drives the CRM funnel to
+# `won`. An invoice bills work that was already sold, so running it through
+# there would push the job to the back office a second time and re-win a lead
+# that was won months ago — silently, because both are background threads.
+#
+# `/sign-co/` is the narrow path that does neither, and this is modelled on it:
+# capture the signature, tell the rep, file the PDF, stop.
+#
+# The token is the whole protection, exactly as it is for /sign and /sign-co.
+
+def _invoice_signed(est):
+    return bool(((est or {}).get('invoice') or {}).get('signature'))
+
+
+def find_by_invoice_token(token):
+    """(est) for the invoice matching sign_token, or None. Full scan, like
+    `est_find_by_token` and `find_by_co_token` — fine at this dataset size."""
+    if not token:
+        return None
+    for est in est_iter():
+        if ((est.get('invoice') or {}).get('sign_token') or '') == token:
+            return est
+    return None
+
+
+def _invoice_sign_email_subject(est):
+    inv = invoice_fields(est)
+    label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    return f'{label} {inv.get("number", "")} to review and approve — Project One Roofing'
+
+
+def _invoice_sign_email_html(est, sign_url):
+    inv   = invoice_fields(est)
+    label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    first = ((est.get('customer') or {}).get('name') or 'there').split(' ')[0]
+    rep   = _display_name(est.get('salesperson')) if est.get('salesperson') else 'Project One Roofing'
+    return (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8"></head>'
+        '<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">'
+        '<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">'
+        '<div style="background:#1a3a5c;padding:22px 26px;color:#fff">'
+        '<div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>'
+        f'<h1 style="margin:0;font-size:22px;font-weight:800">{he(label)} {he(inv.get("number", ""))}</h1>'
+        f'<p style="margin:7px 0 0;opacity:.9;font-size:13px">Hi {he(first)} &mdash; your '
+        f'{he(label.lower())} is ready to review and approve online.</p></div>'
+        '<div style="padding:22px 26px">'
+        '<p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">'
+        'Open the link below to see the itemized amount and approve it electronically. '
+        'This confirms the figure &mdash; it does not change your contract or authorise '
+        'any new work.</p>'
+        f'<a href="{he(sign_url)}" style="display:block;text-align:center;background:#1a3a5c;'
+        'color:#fff;text-decoration:none;padding:14px 24px;border-radius:6px;font-weight:700;'
+        'font-size:15px;margin-bottom:18px">Review &amp; Approve &rarr;</a>'
+        '<p style="font-size:12px;color:#6b7280;line-height:1.6;margin:0">'
+        'Questions? Just reply to this email or call us at 970-776-0945.<br>'
+        f'&mdash; {he(rep)}, Project One Roofing</p></div></div></body></html>')
+
+
+def build_invoice_sign_page(est, token):
+    """The customer's page. Unsigned: the figures plus a sign form. Signed: the
+    confirmation and the audit trail.
+
+    Inline CSS, because style.css sits behind the login and this page does not
+    — the same reason every other customer-facing page here is built this way.
+    """
+    inv    = invoice_fields(est)
+    data   = invoice_rows(est)
+    sig    = inv.get('signature') or {}
+    c      = est.get('customer') or {}
+    is_inv = inv['kind'] == 'invoice'
+    label  = 'Invoice' if is_inv else 'Quote'
+    rep    = _display_name(est.get('salesperson')) if est.get('salesperson') else ''
+
+    # The row shape is the PDF's own: [name, qty, unit, unit_price, amount].
+    # A GC approving a figure wants the quantities behind it, which is the whole
+    # reason the itemized invoice exists. `{qty:g}` matches how the PDF prints.
+    rows = []
+    for sec in (data.get('sections') or []):
+        if sec.get('title'):
+            rows.append(
+                '<tr><td colspan="2" style="padding:16px 0 4px;font-weight:700;font-size:12px;'
+                'letter-spacing:.06em;text-transform:uppercase;color:#64748b">'
+                f'{he(sec["title"])}</td></tr>')
+        for name, qty, unit, unit_price, amount in (sec.get('rows') or []):
+            detail = ''
+            if qty:
+                detail = (f'<div style="color:#94a3b8;font-size:12px">{qty:g} '
+                          f'{he(unit or "")} @ {he(fc(unit_price))}</div>')
+            rows.append(
+                f'<tr><td style="padding:7px 0;border-bottom:1px solid #eef2f7">{he(name)}'
+                f'{detail}</td>'
+                '<td style="padding:7px 0;border-bottom:1px solid #eef2f7;text-align:right;'
+                f'white-space:nowrap;vertical-align:top">{he(fc(amount))}</td></tr>')
+        if sec.get('folded'):
+            # The homeowner view folds hidden lines into the subtotal. Saying so
+            # is what stops the rows looking like they do not add up.
+            rows.append(
+                '<tr><td colspan="2" style="padding:4px 0;color:#94a3b8;font-size:12px">'
+                f'Plus {int(sec["folded"])} further line(s) included in the subtotal.'
+                '</td></tr>')
+
+    money = [('Subtotal', data.get('subtotal') or 0)]
+    if data.get('co_total'):
+        money.append(('Approved change orders', data.get('co_total') or 0))
+    if data.get('payments_total'):
+        money.append(('Payments received', -(data.get('payments_total') or 0)))
+    show_balance = is_inv or data.get('payments_total')
+    money.append(('Balance due' if show_balance else 'Total',
+                  (data.get('balance_due') if show_balance else data.get('total')) or 0))
+    money_html = ''
+    for i, (lbl, val) in enumerate(money):
+        strong = 'font-weight:800;font-size:17px' if i == len(money) - 1 else 'color:#475569'
+        money_html += (f'<tr><td style="padding:6px 0;{strong}">{he(lbl)}</td>'
+                       f'<td style="padding:6px 0;text-align:right;white-space:nowrap;'
+                       f'{strong}">{he(fc(val))}</td></tr>')
+
+    if sig:
+        when = str(sig.get('signed_at') or '')[:19].replace('T', ' ')
+        block = (
+            '<div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:10px;padding:18px 20px">'
+            '<div style="font-weight:800;color:#065f46;font-size:17px;margin-bottom:6px">'
+            'Signed &mdash; thank you</div>'
+            '<div style="color:#065f46;font-size:14px;line-height:1.7">Approved by '
+            f'<strong>{he(sig.get("name", ""))}</strong><br>{he(when)} UTC</div></div>'
+            '<p style="color:#94a3b8;font-size:11px;line-height:1.6;margin:16px 0 0">'
+            f'Electronic signature record &middot; {he(sig.get("ip_address") or "")} '
+            f'&middot; document hash {he((sig.get("document_hash") or "")[:16])}&hellip;</p>')
+    else:
+        block = (
+            '<form method="POST" style="margin:0">'
+            f'<div style="font-weight:800;font-size:16px;margin-bottom:4px">Approve this {he(label.lower())}</div>'
+            '<p style="color:#64748b;font-size:13px;line-height:1.6;margin:0 0 16px">'
+            'Typing your name below is your electronic signature approving the amount '
+            'shown. It does not change your contract or authorise any new work.</p>'
+            '<label style="display:block;font-size:12px;font-weight:700;color:#475569;margin-bottom:5px">Full name</label>'
+            '<input name="sig_name" required autocomplete="name" style="width:100%;box-sizing:border-box;'
+            'padding:13px 14px;font-size:16px;border:1px solid #cbd5e1;border-radius:8px;margin-bottom:14px">'
+            '<label style="display:block;font-size:12px;font-weight:700;color:#475569;margin-bottom:5px">'
+            'Email <span style="font-weight:400;color:#94a3b8">(for your copy)</span></label>'
+            f'<input name="sig_email" type="email" autocomplete="email" value="{he(c.get("email") or "")}" '
+            'style="width:100%;box-sizing:border-box;padding:13px 14px;font-size:16px;'
+            'border:1px solid #cbd5e1;border-radius:8px;margin-bottom:18px">'
+            '<button type="submit" style="width:100%;padding:15px;font-size:16px;font-weight:800;'
+            'color:#fff;background:#1a3a5c;border:0;border-radius:8px;cursor:pointer">'
+            'Sign &amp; Approve</button></form>')
+
+    notes = ''
+    if (inv.get('notes') or '').strip():
+        notes = ('<p style="color:#475569;font-size:13px;line-height:1.7;margin:18px 0 0;'
+                 f'white-space:pre-wrap">{he(inv.get("notes"))}</p>')
+    rep_line = f'<br>&mdash; {he(rep)}, Project One Roofing' if rep else ''
+
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f'<title>{he(label)} {he(inv.get("number", ""))} &middot; Project One Roofing</title></head>'
+        '<body style="margin:0;background:#f1f5f9;font-family:system-ui,-apple-system,'
+        "'Segoe UI',sans-serif;color:#0f172a\">"
+        '<div style="max-width:620px;margin:0 auto;padding:22px 16px 48px">'
+        '<div style="background:#1a3a5c;color:#fff;border-radius:12px 12px 0 0;padding:22px 24px">'
+        '<div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;'
+        'opacity:.8">Project One Roofing</div>'
+        f'<h1 style="margin:8px 0 0;font-size:21px;font-weight:800">{he(label)} {he(inv.get("number", ""))}</h1>'
+        f'<div style="opacity:.9;font-size:13px;margin-top:5px">{he(c.get("name") or "")}</div></div>'
+        '<div style="background:#fff;padding:22px 24px;border-radius:0 0 12px 12px;'
+        'box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+        f'<table style="width:100%;border-collapse:collapse;font-size:14px">{"".join(rows)}</table>'
+        '<table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:14px;'
+        f'border-top:2px solid #0f172a">{money_html}</table>{notes}'
+        f'<div style="margin-top:24px">{block}</div>'
+        '<p style="color:#94a3b8;font-size:12px;line-height:1.6;margin:22px 0 0;'
+        'border-top:1px solid #eef2f7;padding-top:14px">'
+        'Questions? Reply to the email this came from or call 970-776-0945.'
+        f'{rep_line}</p></div></div></body></html>')
+
+def send_invoice_signature_notification(est):
+    """Tell the rep their invoice was approved.
+
+    The one thing the customer cannot do for them: the signature lands in a
+    background thread on a public route, so without this the rep finds out by
+    opening the estimate and noticing.
+    """
+    to_addr = _salesperson_email(est) or BACKUP_EMAIL
+    if not to_addr:
+        return False
+    inv   = invoice_fields(est)
+    sig   = inv.get('signature') or {}
+    data  = invoice_rows(est)
+    label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    c     = est.get('customer') or {}
+    amount = data.get('balance_due') if inv['kind'] == 'invoice' else data.get('total')
+    when   = str(sig.get('signed_at') or '')[:19].replace('T', ' ')
+    return _send_email(
+        f'✍️ {label} {inv.get("number", "")} signed — {c.get("name") or "customer"}',
+        '<div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px">'
+        f'<h2 style="margin:0 0 6px">{he(label)} {he(inv.get("number", ""))} was signed</h2>'
+        '<p style="color:#475569;font-size:14px;line-height:1.7;margin:0 0 14px">'
+        f'<strong>{he(sig.get("name", ""))}</strong> approved {he(fc(amount or 0))} for '
+        f'{he(c.get("name") or "this job")}.<br>{he(when)} UTC &middot; '
+        f'{he(sig.get("email") or "no email given")}</p>'
+        '<p style="color:#94a3b8;font-size:12px;margin:0">This is an approval of the '
+        'amount. Nothing has been pushed to The Den and nothing in the pipeline has '
+        'moved.</p></div>', to_addr)
+
+def _post_invoice_sign_pipeline(est_id):
+    """After an invoice signature: tell the rep, file the signed PDF.
+
+    Deliberately short. It does NOT push to The Den and does NOT touch the
+    funnel — see the note above this section. A demo signature does none of it,
+    for the same reason the estimate pipeline is skipped wholesale: this thread
+    starts from the PUBLIC route, so there is no demo session to read here.
+    """
+    if demo.is_demo_doc(est_load(est_id)):
+        print(f'[demo] invoice-sign pipeline skipped for {est_id}')
+        return
+    try:
+        est = est_load(est_id)
+        if est is not None:
+            send_invoice_signature_notification(est)
+    except Exception as exc:
+        print(f'[invoice-sign] rep notification failed for {est_id}: {exc}')
+    try:
+        generate_invoice(est_id)
+    except Exception as exc:
+        print(f'[invoice-sign] filing the signed PDF failed for {est_id}: {exc}')
+
+
+@app.route('/api/estimates/<est_id>/invoice/send-signature', methods=['POST'])
+def send_invoice_for_signature(est_id):
+    """Mint the signing link and email it. Returns the URL either way, so a rep
+    with no mail configured can still copy it."""
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    if _invoice_signed(est):
+        return jsonify({'error': 'This invoice is already signed.'}), 409
+    base = get_public_url()
+    if not base:
+        return jsonify({'error': 'No public URL configured — the emailed link would '
+                                 'not be reachable.'}), 400
+    body    = request.get_json(silent=True) or {}
+    to_addr = (body.get('email') or (est.get('customer') or {}).get('email') or '').strip()
+
+    def _mint(doc):
+        if doc is None or _invoice_signed(doc):
+            return None
+        inv = dict(doc.get('invoice') or {})
+        if not inv.get('sign_token'):
+            inv['sign_token'] = secrets.token_urlsafe(24)
+        inv['sign_sent_at'] = datetime.utcnow().isoformat() + 'Z'
+        if to_addr:
+            inv['sign_sent_to'] = to_addr[:200]
+        doc['invoice'] = inv
+        return doc
+
+    stored = est_update(est_id, _mint)
+    if stored is None:
+        return jsonify({'error': 'This invoice is already signed.'}), 409
+    token    = (stored.get('invoice') or {}).get('sign_token')
+    sign_url = f'{base}/sign-inv/{token}'
+
+    if not to_addr or '@' not in to_addr:
+        # The link exists and works; only the mail is missing. Refusing outright
+        # would throw away a token the rep can paste into their own message.
+        return jsonify({'ok': True, 'full_url': sign_url, 'sent_to': '',
+                        'note': 'No email address — copy the link instead.'})
+
+    ok = _send_email(_invoice_sign_email_subject(stored),
+                     _invoice_sign_email_html(stored, sign_url), to_addr,
+                     cc=_salesperson_email(stored) or None)
+    if not ok:
+        return jsonify({'ok': True, 'full_url': sign_url, 'sent_to': '',
+                        'note': 'Link created, but the email could not be sent — '
+                                'copy the link instead.'})
+    return jsonify({'ok': True, 'full_url': sign_url, 'sent_to': to_addr})
+
+
+@app.route('/sign-inv/<token>', methods=['GET', 'POST'])
+def sign_invoice(token):
+    est = find_by_invoice_token(token)
+    if not est:
+        return ('<h2 style="font-family:sans-serif;padding:40px">Link not found or '
+                'expired.</h2>', 404)
+    est_id = est.get('estimate_id')
+
+    if request.method == 'POST':
+        if _invoice_signed(est):
+            return build_invoice_sign_page(est, token)
+        sig_name  = (request.form.get('sig_name') or '').strip()
+        sig_email = (request.form.get('sig_email') or '').strip()
+        if not sig_name:
+            return 'Full name is required.', 400
+        client_ip = request.remote_addr
+        client_ua = request.headers.get('User-Agent', '')
+
+        def _apply(doc):
+            if doc is None:
+                return None
+            inv = dict(doc.get('invoice') or {})
+            # Gone, already signed, or the rep pulled the link back.
+            if inv.get('signature') or inv.get('sign_token') != token:
+                return None
+            # Hash the figures BEFORE attaching the signature, so the record
+            # covers exactly what was approved — same rule as customer_sign and
+            # the change order. `invoice_rows` rather than the stored fields:
+            # the amount is DERIVED from the estimate's line items, so hashing
+            # the invoice block alone would attest to a total it does not hold.
+            content = json.dumps(
+                {'estimate_id': est_id, 'invoice': inv, 'totals': invoice_rows(doc)},
+                sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')
+            inv['signature'] = {
+                'name':          sig_name,
+                'email':         sig_email,
+                'signed_at':     datetime.utcnow().isoformat() + 'Z',
+                'ip_address':    client_ip,
+                'user_agent':    client_ua,
+                'document_hash': hashlib.sha256(content).hexdigest(),
+                'token':         token,
+            }
+            doc['invoice'] = inv
+            doc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            return doc
+
+        stored = est_update(est_id, _apply)
+        if stored is None:
+            again = find_by_invoice_token(token)
+            if not again:
+                return ('<h2 style="font-family:sans-serif;padding:40px">This '
+                        'invoice is no longer available for signing.</h2>', 409)
+            return build_invoice_sign_page(again, token)
+        threading.Thread(target=_post_invoice_sign_pipeline,
+                         args=(est_id,), daemon=True).start()
+        return build_invoice_sign_page(stored, token)
+
+    if not _invoice_signed(est):
+        try:
+            now_iso = datetime.utcnow().isoformat() + 'Z'
+
+            def _track(doc):
+                if doc is None:
+                    return None
+                inv = dict(doc.get('invoice') or {})
+                if not inv.get('sign_viewed_at'):
+                    inv['sign_viewed_at'] = now_iso
+                inv['sign_view_count'] = int(inv.get('sign_view_count') or 0) + 1
+                doc['invoice'] = inv
+                return doc
+
+            stored = est_update(est_id, _track)
+            if stored is not None:
+                est = stored
+        except Exception as exc:
+            print(f'[invoice-sign-view] failed: {exc}')
+    return build_invoice_sign_page(est, token)
 
 # ── Change orders ────────────────────────────────────────────────────────────
 # Signed addendums on an accepted estimate. Stored inside the estimate doc but
@@ -14438,6 +20035,13 @@ def customer_sign(token):
         selected_tier = (request.form.get('selected_tier') or '').strip()
         shingle_color = (request.form.get('shingle_color') or '').strip()
         siding_color  = (request.form.get('siding_color')  or '').strip()
+        # Held pricing has lapsed. The rendered page already withdrew the form,
+        # so getting here means a tab that was open before it expired, or a
+        # replayed POST — either way this must not become a contract at last
+        # season's material prices.
+        if _est_expired(est):
+            return ('This pricing has expired — please call us at '
+                    f'{COMPANY_PHONE_DISPLAY} for an updated quote on this scope.'), 410
         if not sig_name:
             return 'Full name is required.', 400
 
@@ -14472,6 +20076,34 @@ def customer_sign(token):
                 v = selected_tier if selected_tier in ('good', 'better', 'best') else ''
             if v:
                 tier_picks[tk] = v
+
+        # Optional upgrades the customer ticked. Read from the FORM's own keys
+        # rather than from the estimate, so an upgrade the rep has since pulled
+        # is still visible here as something the customer believed they were
+        # buying — and earns a "refresh and choose again" instead of a silent
+        # drop off the contract they are about to sign.
+        upg_ticked = {k[len('upgrade_'):] for k, v in request.form.items()
+                      if k.startswith('upgrade_')
+                      and not k.startswith('upgrade_price_')
+                      and (v or '').strip()}
+        upg_shown  = {k[len('upgrade_price_'):]: _num(v)
+                      for k, v in request.form.items()
+                      if k.startswith('upgrade_price_')}
+        offered_now = {(u.get('id') or '').strip(): u for u in upgrades_offered(est)}
+        upg_stale = []
+        for uid in sorted(upg_ticked):
+            u = offered_now.get(uid)
+            if u is None:
+                upg_stale.append(uid)          # withdrawn, or the block went off
+                continue
+            # A signature is a price agreement. An upgrade whose price moved
+            # after this page rendered — or one that echoes back no price at
+            # all — must never quietly become the new number on the contract.
+            if uid not in upg_shown or abs(upg_shown[uid] - upgrade_price(u)) >= 0.01:
+                upg_stale.append(uid)
+        if upg_stale:
+            return ('An optional upgrade you selected has changed price or is no '
+                    'longer offered — please refresh the page and choose again.'), 409
 
         # A stale sign page can submit a package the rep has since toggled
         # off — make the customer refresh and choose from what's offered now.
@@ -14509,6 +20141,25 @@ def customer_sign(token):
             elif (selected_tier in ('good', 'better', 'best')
                     and te_doc.get(selected_tier, True) is not False):
                 doc['selected_tier'] = selected_tier
+            # The election lands on the items themselves, so every total, PDF
+            # and invoice reads it from one place. Re-resolved against the
+            # FRESH doc, because a rep saving between the page load and this
+            # POST is the one race the pre-check above cannot close. A price
+            # that moved inside that window declines to be charged rather than
+            # charging the new number: the customer gets the job without the
+            # upgrade, which a change order can fix, where overcharging them
+            # cannot be.
+            elected = []
+            for u in upgrades_offered(doc):
+                uid = (u.get('id') or '').strip()
+                ok  = (uid and uid in upg_ticked and uid in upg_shown
+                       and abs(upg_shown[uid] - upgrade_price(u)) < 0.01)
+                u['accepted'] = bool(ok)
+                if ok:
+                    elected.append({'id': uid,
+                                    'name': (u.get('name') or '').strip(),
+                                    'price': upgrade_price(u)})
+
             # Chosen shingle color becomes part of the hashed document
             if shingle_color:
                 doc.setdefault('shingle_selection', {})['chosen'] = shingle_color
@@ -14538,6 +20189,10 @@ def customer_sign(token):
                 'shingle_color': shingle_color or (ss.get('chosen') or '').strip(),
                 'siding_color':  siding_color  or (sds.get('chosen') or '').strip(),
                 'initials':      initials_captured,
+                # What they elected, at the price they were shown, so the
+                # certificate describes the contract without re-deriving it.
+                'upgrades':       elected,
+                'upgrades_total': round(sum(e['price'] for e in elected), 2),
             }
             doc['status']     = 'accepted'
             doc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
@@ -14594,14 +20249,117 @@ def customer_sign(token):
             doc['view_count']     = int(doc.get('view_count') or 0) + 1
             return doc
 
+        expired_now = [False]
+
+        def _track_expiry(doc):
+            if doc is None:
+                return None
+            # Once per estimate: a customer refreshing five times is one lead.
+            if _est_expired(doc) and not doc.get('expired_notified_at'):
+                doc['expired_notified_at'] = now_iso
+                expired_now[0] = True
+                return doc
+            return None   # nothing to write
+
         est = est_update(est.get('estimate_id'), _track) or est
+        if _est_expired(est):
+            est = est_update(est.get('estimate_id'), _track_expiry) or est
         if first_view[0]:
             _funnel_record(est, 'viewed', at=now_iso)
-            threading.Thread(target=send_view_notification, args=(est,), daemon=True).start()
+            # The expired notice carries the same facts plus what the rep has to
+            # do about them, so it stands in for the generic first-view email
+            # rather than arriving alongside it.
+            if not expired_now[0]:
+                threading.Thread(target=send_view_notification,
+                                 args=(est,), daemon=True).start()
+        if expired_now[0]:
+            threading.Thread(target=_notify_expired_view, args=(est,), daemon=True).start()
     except Exception as exc:
         print(f'[view-track] failed: {exc}')
 
     return build_customer_view(est, token)
+
+
+# ── Buying-signal telemetry ────────────────────────────────────────────────
+#
+# The customer page already tracked view_count / first_viewed_at, but
+# selectCvTier — the handler that fires every time a homeowner taps a package
+# card — was pure DOM: it swapped a highlight and a line-item block and
+# reported nothing. "Opened four times and kept coming back to Best" and
+# "opened once, never touched a card" are two completely different sales
+# calls, and the page that knows the difference was throwing it away.
+#
+# Deliberately cheap: a sendBeacon, capped, no response the page waits on, and
+# it never touches view counts, status or the funnel. A logged-in team member
+# previewing the link is ignored for the same reason view tracking ignores
+# them — the rep's own tapping is not a buying signal.
+
+TIER_INTEREST_CAP = 60   # per estimate; oldest fall off
+
+
+@app.route('/sign/<token>/tier-interest', methods=['POST'])
+def record_tier_interest(token):
+    est = est_find_by_token(token)
+    if est is None or est.get('signature'):
+        return ('', 204)
+    if session.get('user'):
+        return ('', 204)          # a rep previewing their own estimate
+    body  = request.get_json(silent=True) or {}
+    trade = str(body.get('trade') or '').strip()[:32]
+    tier  = str(body.get('tier') or '').strip()
+    if tier not in ('good', 'better', 'best') or not trade:
+        return ('', 204)
+
+    now_iso = datetime.utcnow().isoformat() + 'Z'
+
+    def _record(doc):
+        if doc is None or doc.get('signature'):
+            return None
+        hist = doc.get('tier_interest')
+        if not isinstance(hist, list):
+            hist = []
+        # A card tapped twice in a row is one thought, not two.
+        if hist and hist[-1].get('trade') == trade and hist[-1].get('tier') == tier:
+            return None
+        hist.append({'trade': trade, 'tier': tier, 'at': now_iso})
+        doc['tier_interest'] = hist[-TIER_INTEREST_CAP:]
+        return doc
+
+    try:
+        est_update(est.get('estimate_id'), _record)
+    except Exception as exc:
+        print(f'[tier-interest] record failed: {exc}')
+    return ('', 204)
+
+
+def _tier_interest_summary(est):
+    """One plain-English line about what the customer kept going back to, or ''.
+
+    Reads the last pick per trade plus the tap counts, because the two answer
+    different questions: what they landed on, and how hard they thought about
+    it.
+    """
+    hist = est.get('tier_interest')
+    if not isinstance(hist, list) or not hist:
+        return ''
+    labels = {'good': 'Good', 'better': 'Better', 'best': 'Best'}
+    trade_lbls = {'roofing': 'Roofing', 'siding': 'Siding', 'windows': 'Windows',
+                  'gutters': 'Gutters', 'commercial': 'Commercial', 'other': 'Other'}
+    last, counts = {}, {}
+    for h in hist:
+        tk, tr = h.get('trade'), h.get('tier')
+        if tr not in labels:
+            continue
+        last[tk] = tr
+        counts[tk] = counts.get(tk, 0) + 1
+    if not last:
+        return ''
+    parts = []
+    for tk, tr in last.items():
+        n = counts.get(tk, 0)
+        parts.append(f'{trade_lbls.get(tk, tk.title())}: landed on {labels[tr]}'
+                     + (f' after {n} taps' if n > 1 else ''))
+    return ' · '.join(parts)
 
 
 @app.route('/sign/<token>/download.pdf')
@@ -14770,7 +20528,7 @@ TEMPLATES = {
          "notes_good":   "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
          "notes_better": "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings.",
          "notes_best":   "Existing turtle/box vents are removed and the deck patched and shingled over so the new ridge vent draws evenly instead of short-circuiting through the old openings."},
-        {"name": "Intake Vent", "unit": "LF", "measure": "eave",
+        {"name": "Intake Vent", "unit": "LF", "measure": "intake_vent_code",
          "is_default": False,
          "desc_good":   "Continuous Soffit Intake Vent",
          "desc_better": "Vented Soffit + Baffles",
@@ -14983,13 +20741,68 @@ _ROOF_METAL_COLORS = [
     {"name": "Hemlock Green", "hex": "#2e3a2a"},
     {"name": "Bone White",    "hex": "#e6ded0"},
 ]
+# EDCO ArrowLine(R) Shake, read off EDCO's own product page (edcoproducts.com
+# /products/steel-roofing/roofing-arrowline-shake.html, fetched 2026-09-04):
+# twelve solid colors plus six "Enhanced" multi-tone blends. This REPLACES a
+# palette of invented names — Regal Blue, Copper Penny, Bone White, Burgundy
+# and Hemlock Green are not EDCO colors, and a customer was able to sign a
+# contract for one. EDCO's other roofing profile, ArrowLine Slate, carries a
+# SHORTER list (adds Stone, drops Pewter/Sandtone/Cedar/Copper/Classic Blue);
+# if Project One installs Slate rather than Shake, swap this list, do not merge
+# them. Hexes are approximate previews for the visualizer, not colorimetry.
+_EDCO_ROOF_COLORS = [
+    {"name": "Charcoal Gray",           "hex": "#3f4143"},
+    {"name": "Charcoal Gray Enhanced",  "hex": "#45484a"},
+    {"name": "Pewter",                  "hex": "#8b8d8c"},
+    {"name": "Sandtone",                "hex": "#c2b49a"},
+    {"name": "Royal Brown",             "hex": "#4a3428"},
+    {"name": "Royal Brown Enhanced",    "hex": "#523a2c"},
+    {"name": "Statuary Bronze",         "hex": "#4b453c"},
+    {"name": "Statuary Bronze Enhanced","hex": "#524b41"},
+    {"name": "Black",                   "hex": "#1f1f1f"},
+    {"name": "Cedar",                   "hex": "#8a5f3c"},
+    {"name": "Copper",                  "hex": "#a2643a"},
+    {"name": "T-Tone",                  "hex": "#6f6455"},
+    {"name": "T-Tone Enhanced",         "hex": "#776c5c"},
+    {"name": "Classic Blue",            "hex": "#2c3c52"},
+    {"name": "Classic Red",             "hex": "#7a2a26"},
+    {"name": "Classic Red Enhanced",    "hex": "#82322c"},
+    {"name": "Hartford Green",          "hex": "#2b3a2c"},
+    {"name": "Hartford Green Enhanced", "hex": "#324233"},
+]
+# The invented list _EDCO_ROOF_COLORS replaced. Kept ONLY so
+# _migrate_edco_euroshield_visuals can recognise a live book that still holds
+# it — delete once live books have saved past that migration.
+_EDCO_ROOF_COLORS_V1 = [
+    {"name": "Charcoal Gray", "hex": "#2f2d2b"},
+    {"name": "Matte Black",   "hex": "#191919"},
+    {"name": "Regal Blue",    "hex": "#1a3252"},
+    {"name": "Slate Gray",    "hex": "#4a4d4f"},
+    {"name": "Copper Penny",  "hex": "#a65f2a"},
+    {"name": "Burgundy",      "hex": "#5c1f26"},
+    {"name": "Hemlock Green", "hex": "#2e3a2a"},
+    {"name": "Bone White",    "hex": "#e6ded0"},
+]
 _ROOF_STONE_COLORS = [
     {"name": "Charcoal Shake",  "hex": "#2f2d2b"},
     {"name": "Weathered Timber","hex": "#5c4a35"},
     {"name": "Terracotta",      "hex": "#8a3f22"},
     {"name": "Slate Blend",     "hex": "#3c4046"},
 ]
+# Euroshield Beaumont Shake, per euroshieldroofing.com (fetched 2026-09-04):
+# four colors, of which Driftwood is a premium colour at additional cost.
+# The list this replaced named PROFILES, not colors — "Rundle Slate" is a
+# separate product line and "Beaumont Cedar"/"Beaumont Charcoal" were the
+# profile with a colour glued on. Rundle Slate publishes no colour list we
+# could source; if a job is quoted on Slate, confirm with the distributor.
 _ROOF_RUBBER_COLORS = [
+    {"name": "Black",     "hex": "#2a2826"},
+    {"name": "Grey",      "hex": "#4f5153"},
+    {"name": "Brown",     "hex": "#5c4530"},
+    {"name": "Driftwood", "hex": "#8a8175"},   # premium colour, upcharge
+]
+# The pre-2026-09 list, kept only for the migration's equality check.
+_ROOF_RUBBER_COLORS_V1 = [
     {"name": "Beaumont Cedar",   "hex": "#5c4530"},
     {"name": "Beaumont Charcoal","hex": "#2a2826"},
     {"name": "Rundle Slate",     "hex": "#3c4046"},
@@ -15006,11 +20819,14 @@ ROOFING_CATALOG_SEED = [
      "colors": _IKO_NORDIC_COLORS},
     {"id": "m_edco", "name": "EDCO Steel Shingle", "unit": "SQ", "cost": 300, "measure": "squares_waste",
      "bullets": ["EDCO steel shingles — architectural shingle look in real steel", "Class 4 impact rating, will not crack or lose granules to hail", "Limited lifetime warranty with hail damage coverage", "Baked-on finish that will not chip, peel, or fade"],
-     "colors": _ROOF_METAL_COLORS},
+     # EDCO publishes its own colors; standing seam below keeps the generic
+     # metal palette because its color comes off whichever coil the supplier
+     # runs for the job, not off a shingle color card.
+     "colors": _EDCO_ROOF_COLORS},
     {"id": "m_stone", "name": "Stone-Coated Steel", "unit": "SQ", "cost": 330, "measure": "squares_waste",
      "bullets": ["Stone-coated steel panels with a textured shake/shingle profile", "Class 4 impact rating and 120+ mph wind rating", "Steel strength at a fraction of the weight of tile", "50-year limited manufacturer warranty"],
      "colors": _ROOF_STONE_COLORS},
-    {"id": "m_standing_seam", "name": "Standing Seam Metal (24ga)", "unit": "SQ", "cost": 320.25, "measure": "squares_waste",
+    {"id": "m_standing_seam", "name": "Standing Seam Metal (24ga)", "unit": "SQ", "cost": 325.21, "measure": "squares_waste",
      "bullets": ["24ga standing seam metal panels with concealed fasteners", "No exposed screws to back out or leak over time", "50+ year service life — the last roof this house needs", "Class 4 impact rating and Kynar 500 finish warranty", "Clean modern lines in your choice of color"],
      "colors": _ROOF_METAL_COLORS},
     {"id": "m_euroshield", "name": "Euroshield (Rubber)", "unit": "SQ", "cost": 360, "measure": "squares_waste",
@@ -15018,7 +20834,15 @@ ROOFING_CATALOG_SEED = [
      "colors": _ROOF_RUBBER_COLORS},
     {"id": "a_underlayment", "name": "Synthetic Underlayment", "unit": "SQ", "cost": 9.1, "measure": "squares_waste",
      "bullets": ["Synthetic underlayment over the full roof deck"]},
-    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "SQ", "cost": 46.46, "measure": "eave_valley",
+    # Priced by the LINEAR FOOT off `eave_valley` (which already doubles the
+    # eave run when iw_second_row is on). A 2-SQ roll is 200 SF of 36"-wide
+    # membrane = 66.67 LF, so $95 a roll is $1.43 a foot. Per foot rather than
+    # per roll (2026-09-15) so the price follows the roof instead of jumping $95
+    # at every roll boundary; the material order sheet buys the rolls, with
+    # waste (_ORDER_PACK). History: priced per SQ with no conversion, this once
+    # billed 400 LF as 400 squares - a 33x overcharge.
+    {"id": "a_ice_water", "name": "Ice & Water Shield", "unit": "LF", "cost": 1.43,
+     "measure": "eave_valley",
      "bullets": ["Ice & water shield at eaves and valleys"]},
     {"id": "a_drip_edge", "name": "Drip Edge", "unit": "LF", "cost": 0, "measure": "eave_rake",
      "bullets": ["New drip edge at eaves and rakes"]},
@@ -15036,66 +20860,154 @@ ROOFING_CATALOG_SEED = [
      "bullets": ["Damaged decking replaced sheet for sheet"]},
     {"id": "a_ridge_vent", "name": "Ridge Vent", "unit": "LF", "cost": 34, "measure": "ridge_vent_code", "bundle_lf": 4, "bundle_unit": "sticks",
      "bullets": ["Continuous ridge vent cut in along the ridge"]},
-    {"id": "a_intake_vent", "name": "Intake Vent", "unit": "LF", "cost": 4.5, "measure": "eave",
+    # Sized by the 1/300 code rule and capped at the eaves (intake_vent_code),
+    # never the whole eave run.
+    {"id": "a_intake_vent", "name": "Intake Vent", "unit": "LF", "cost": 4.5, "measure": "intake_vent_code",
      "bullets": ["Intake venting at the eaves to balance the attic"]},
     {"id": "a_vent_plug", "name": "Vent Plug", "unit": "EA", "cost": 25, "measure": "turtle_vents",
      "bullets": ["Old turtle vents removed and decked over"]},
     # --- Standing seam metal trim -------------------------------------------
     # Costs decoded from the Architectural Sheet Metals & Panels quote
-    # EFC31095 (27866 Cragmont, Evergreen, 09/25/2024) — a real 26 SQ job.
+    # EFC38421 (195 J J Kelly Rd, Lyons, 09/09/2026) - a real 49.45 SQ,
+    # 13-facet job, checked line for line against its Roofr report. It
+    # supersedes EFC31095 (09/2024), which quoted a MECHANICAL SEAM system;
+    # we sell snap-lock (SS450), and the clip and panel prices differ by
+    # system, not only by date.
     #
     # THE LOAD-BEARING CONVERSION: the panel is quoted per LINEAL FOOT off a
-    # 20" coil ("(20 LIN)"), and a 1.5" mechanical seam eats ~4" of that in the
-    # two seam legs, so NET COVERAGE IS 16", not 20". $4.27/LF ÷ (16/12 ft) =
-    # $320.25/SQ. Reading it as 20" coverage instead gives $256/SQ and
-    # under-sells the panel by 25%. The quote settles it: 89 panels at 16"
-    # cover 118.7 ft of eave, which is the 13 Style D sticks that were actually
-    # ordered; at 20" they would cover 148 ft and need 15. Re-derive this ratio
-    # from the coil width whenever the supplier sheet changes — don't nudge the
-    # $/SQ.
+    # 20" coil ("(20 LIN)"), and a 1.5" seam eats ~4" of that in the two seam
+    # legs, so NET COVERAGE IS 16", not 20". $4.13/LF / (16/12 ft) =
+    # $309.75/SQ. Reading it as 20" coverage instead gives $247.80/SQ and
+    # under-sells the panel by 25%. Re-derive this ratio from the coil width
+    # whenever the supplier sheet changes - don't nudge the $/SQ.
+    #
+    # COSTS ARE STORED DELIVERED, not at the supplier's pre-tax unit price.
+    # _SS_PRETAX below holds what the sheet actually says, and the reason.
     #
     # Trim is quoted per 10-ft stick, so it carries bundle_lf:10 and prices per
-    # STICK (cost is the stick, not the foot) — same shape as a_ridge_vent.
-    {"id": "a_ss_clips", "name": "Seam Clips + Pancake Screws (1.5\" Mechanical)", "unit": "SQ", "cost": 23.85, "measure": "squares_waste",
-     # 910 FG-158-24 clips @ $0.42 + 2000 pancake screws @ $0.12 over 26.08 SQ.
-     # Clips run ~24" o.c. along every seam, so this scales with panel area.
-     "bullets": ["Concealed clips and fasteners — no screws through the panel"]},
-    {"id": "a_ss_drip_d", "name": "Metal Drip Edge — Style D (24ga)", "unit": "LF", "cost": 33.82, "measure": "eave", "bundle_lf": 10, "bundle_unit": "sticks",
+    # STICK (cost is the stick, not the foot) - same shape as a_ridge_vent.
+    {"id": "a_ss_clips", "name": "Seam Clips + Pancake Screws (1.5\" Snap-Lock)", "unit": "SQ", "cost": 14.87, "measure": "squares_waste",
+     # 1750 SG-114-24 clips @ $0.27 + 3500 pancake screws @ $0.07 over the
+     # job's 50.7 SQ of panel. Clips run ~26" o.c. along every seam, so this
+     # scales with panel area - and that spacing is the supplier's standard,
+     # unchanged from EFC31095 (910 clips over 1,956 LF is the same 26").
+     "bullets": ["Concealed clips and fasteners - no screws through the panel"]},
+    {"id": "a_ss_drip_d", "name": "Metal Drip Edge - Style D (24ga)", "unit": "LF", "cost": 24.88, "measure": "eave", "bundle_lf": 10, "bundle_unit": "sticks",
      "bullets": ["Style D metal drip edge at every eave"]},
-    {"id": "a_ss_rake", "name": "Metal Rake — 2pc System (24ga)", "unit": "LF", "cost": 23.38, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
+    {"id": "a_ss_rake", "name": "Metal Rake Cap - 2pc System (24ga)", "unit": "LF", "cost": 34.44, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
+     # Pairs 1:1 with a_ss_rake_recv. EFC38421 ordered the 28 receivers for its
+     # 275 LF of rake and NO cap - the half of a 2pc assembly that actually
+     # sheds water. Priced at the $32.80 the other 2pc caps carry.
      "bullets": ["Two-piece metal rake trim at every gable end"]},
-    {"id": "a_ss_rake_recv", "name": "Metal Rake Receiver (24ga)", "unit": "LF", "cost": 17.16, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
-     # Pairs 1:1 with a_ss_rake — the quote ordered 13 of each.
+    {"id": "a_ss_rake_recv", "name": "Metal Rake Receiver (24ga)", "unit": "LF", "cost": 18.27, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
      "bullets": []},
-    {"id": "a_ss_sidewall", "name": "Metal Sidewall — 2pc System (24ga)", "unit": "LF", "cost": 32.32, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
+    {"id": "a_ss_sidewall", "name": "Metal Sidewall - 2pc System (24ga)", "unit": "LF", "cost": 34.44, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
      "bullets": ["Two-piece metal sidewall flashing where the roof meets wall"]},
-    {"id": "a_ss_sidewall_recv", "name": "Metal Sidewall Receiver (24ga)", "unit": "LF", "cost": 17.16, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
+    {"id": "a_ss_sidewall_recv", "name": "Metal Sidewall Receiver (24ga)", "unit": "LF", "cost": 18.27, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
      "bullets": []},
-    {"id": "a_ss_ridge", "name": "Metal Ridge Cap — 3pc (24ga)", "unit": "LF", "cost": 33.32, "measure": "ridge_hip", "bundle_lf": 10, "bundle_unit": "sticks",
+    {"id": "a_ss_headwall", "name": "Metal Headwall w/ Z-Closure (24ga)", "unit": "LF", "cost": 34.44, "measure": "headwall", "bundle_lf": 10, "bundle_unit": "sticks",
+     # Roofr reports this as "Wall flashing" and the parser used to drop it, so
+     # a metal roof's headwall priced at nothing. The measure folds in Roofr's
+     # "Unspecified" bucket - see the MEASURE_DEFS comment in app.js.
+     "bullets": ["Metal headwall flashing with Z-closure where the roof meets a wall"]},
+    {"id": "a_ss_ridge", "name": "Metal Ridge Cap - 3pc (24ga)", "unit": "LF", "cost": 35.49, "measure": "ridge_hip", "bundle_lf": 10, "bundle_unit": "sticks",
      "bullets": ["Three-piece vented metal ridge cap"]},
-    {"id": "a_ss_zeecee", "name": "Zee-Cee Ridge Closure (24ga)", "unit": "LF", "cost": 32.82, "measure": "ridge_hip", "bundle_lf": 5, "bundle_unit": "sticks",
-     # bundle_lf 5, not 10: a Zee-Cee runs BOTH sides of the ridge, so it takes
-     # two 10-ft sticks per 10 ft of ridge. The quote's 6 ridge / 12 Zee-Cee
-     # over 60 LF is exactly this.
-     "bullets": []},
-    {"id": "a_ss_pipe_boot", "name": "MasterFlash Pipe Boot (EPDM)", "unit": "EA", "cost": 12.70, "measure": "pipe_boots",
-     # #2 gray EPDM, the common size. #1 is $11.12 and #3 $14.70; a high-temp
-     # silicone (#7) is $91.59 and needs pricing by hand on a flue.
+    {"id": "a_ss_zeecee", "name": "Z-Flash Ridge & Valley Closure (24ga)", "unit": "LF", "cost": 11.65, "measure": "ridge_valley_2x", "bundle_lf": 10, "bundle_unit": "sticks",
+     # Runs both sides of every ridge/hip AND both sides of every valley -
+     # Z-Flash IS our valley detail on snap-lock, so no separate valley pan is
+     # ordered. The old (ridge_hip, bundle_lf 5) spelling expressed "two sticks
+     # per 10 ft of ridge" and could not reach the valley at all, which left
+     # 93.83 LF of valley on this roof buying nothing.
+     "bullets": ["Z-closure at every ridge, hip and valley"]},
+    {"id": "a_ss_transition", "name": "Metal Transition Flashing (24ga)", "unit": "LF", "cost": 51.13, "measure": "transition", "bundle_lf": 10, "bundle_unit": "sticks",
+     # Roofr reports "Transitions" (a change of pitch) and the parser used to
+     # drop it, the same way it dropped the headwall above.
+     "bullets": ["Transition flashing at every change of pitch"]},
+    {"id": "a_ss_pipe_boot", "name": "MasterFlash Pipe Boot (EPDM)", "unit": "EA", "cost": 13.33, "measure": "pipe_boots",
+     # #2 gray EPDM, the common size. The pre-tax price is still EFC31095's
+     # $12.70 - this part is not on EFC38421 and the boot is the same on either
+     # system. A high-temp silicone (#7) needs pricing by hand on a flue.
      "bullets": ["MasterFlash boots on every penetration"]},
-    {"id": "a_ss_sealants", "name": "Butyl Tape, Sealant & Rivets", "unit": "SQ", "cost": 9.6, "measure": "squares_waste",
-     # Butyl tape + Nova Flex + pop rivets + wood screws, $250.24 over 26.08 SQ.
+    {"id": "a_ss_sealants", "name": "Butyl Tape, Sealant & Rivets", "unit": "SQ", "cost": 10.08, "measure": "squares_waste",
+     # Butyl tape + Nova Flex + pop rivets + wood screws, $250.24 over 26.08 SQ
+     # on EFC31095. Not on EFC38421 - bought elsewhere - so the pre-tax rate is
+     # still the older quote's.
      "bullets": ["Butyl tape and sealant at every seam and transition"]},
-    {"id": "a_ss_custom_flash", "name": "Custom Flashing (24ga, 4\"x10')", "unit": "LF", "cost": 20.88, "bundle_lf": 10, "bundle_unit": "sticks",
-     # Manual qty on purpose — custom bends are per-roof. The same quote also
-     # carried two large bends at $127.78 each; price those by hand.
+    {"id": "a_ss_custom_flash", "name": "Custom Flashing (24ga, 4\"x10')", "unit": "LF", "cost": 21.92, "bundle_lf": 10, "bundle_unit": "sticks",
+     # Manual qty on purpose - custom bends are per-roof. EFC31095 also carried
+     # two large bends at $127.78 each; price those by hand.
      "bullets": ["Custom-bent flashing fabricated for this roof"]},
-    {"id": "x_ss_delivery", "name": "Metal Delivery & Rollformer Set-Up", "unit": "LS", "cost": 500,
-     # $350 delivery + $150 machine set-up. Per JOB, not per square — the
-     # supplier charges it once to run the panels for this roof.
+    {"id": "x_ss_delivery", "name": "Metal Delivery & Rollformer Set-Up", "unit": "LS", "cost": 368.65,
+     # $215 delivery + $150 machine set-up on EFC38421. Per JOB, not per square
+     # - the supplier charges it once to run the panels for this roof. The
+     # quote does NOT tax delivery or set-up, so this line carries the buffer
+     # only and not _SS_TAX.
      "bullets": ["Panels roll-formed to length for this roof and delivered"]},
-    {"id": "l_tearoff", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
+    # --- Exposed fastener metal (PBR) ----------------------------------------
+    # Architectural Sheet Metals & Panels quote EFC38429 — the SAME roof as
+    # EFC38421 above (195 J J Kelly Rd, Lyons, 09/10/2026), quoted as 26ga PBR,
+    # so the two metal systems are priced off one Roofr report. Every trim
+    # count on it is ceil(Roofr footage / 10) exactly, which is what confirms
+    # each measure below. Pre-tax prices and the reasoning are in _PBR_PRETAX.
+    #
+    # THE LOAD-BEARING CONVERSION: "(36 LIN)" is the panel's NET COVERAGE, so
+    # one lineal foot covers 3 SF and $5.15/LF / 3 = $171.67/SQ. The quote
+    # proves it: 1667 LF x 3 ft = 50.01 SQ over a 49.45 SQ roof. Read 36" as
+    # the coil width instead (the way standing seam's "20 LIN" reads) and
+    # 1667 LF would not cover the roof at all.
+    {"id": "m_pbr", "name": "PBR Exposed Fastener Metal (26ga)", "unit": "SQ", "cost": 180.24, "measure": "squares_waste",
+     "bullets": ["26ga PBR steel panels with exposed fasteners", "Painted steel that will not crack, curl or shed granules", "Clean ribbed profile in your choice of color"],
+     "colors": _ROOF_METAL_COLORS},
+    {"id": "a_pbr_fasteners", "name": "PBR Wood Screws + Stitch Screws", "unit": "SQ", "cost": 18.37, "measure": "squares_waste",
+     # 5000 1.5" wood screws @ $.10 + 2500 7/8" stitch screws @ $.15 over the
+     # job's 50.01 SQ of panel — the supplier's 100 + 50 per square. Scales
+     # with panel area, same shape as a_ss_clips.
+     "bullets": ["Color-matched fasteners throughout"]},
+    {"id": "a_pbr_drip", "name": "PBR Drip Edge w/ Hem (26ga)", "unit": "LF", "cost": 13.35, "measure": "eave", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Metal drip edge at every eave"]},
+    {"id": "a_pbr_rake", "name": "PBR Rake Trim (26ga)", "unit": "LF", "cost": 27.23, "measure": "rake", "bundle_lf": 10, "bundle_unit": "sticks",
+     # One piece on PBR — no receiver, unlike standing seam's 2pc rake.
+     "bullets": ["Metal rake trim at every gable end"]},
+    {"id": "a_pbr_sidewall", "name": "PBR Sidewall Flashing (26ga)", "unit": "LF", "cost": 25.66, "measure": "step", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Metal sidewall flashing where the roof runs along a wall"]},
+    {"id": "a_pbr_headwall", "name": "PBR Headwall Flashing (26ga)", "unit": "LF", "cost": 24.61, "measure": "headwall", "bundle_lf": 10, "bundle_unit": "sticks",
+     # 14 sticks for 29'6" wall + 106'1" unspecified — the second supplier
+     # quote to confirm that `headwall` folds Unspecified in.
+     "bullets": ["Metal headwall flashing where the roof meets a wall"]},
+    {"id": "a_pbr_ridge", "name": "PBR Hip/Ridge Cover (26ga)", "unit": "LF", "cost": 25.66, "measure": "ridge_hip", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Metal ridge cap over every ridge and hip"]},
+    {"id": "a_pbr_valley", "name": "PBR W-Valley (26ga)", "unit": "LF", "cost": 48.17, "measure": "valley", "bundle_lf": 10, "bundle_unit": "sticks",
+     # A real valley pan, one per valley run. Standing seam has none because
+     # its Z-Flash doubles as the valley detail; PBR has no Z-Flash.
+     "bullets": ["W-profile metal valley in every valley"]},
+    {"id": "a_pbr_transition", "name": "PBR Transition Flashing (26ga)", "unit": "LF", "cost": 36.39, "measure": "transition", "bundle_lf": 10, "bundle_unit": "sticks",
+     "bullets": ["Transition flashing at every change of pitch"]},
+    # Closures are quoted per 3-ft piece but priced here per LINEAL FOOT, with
+    # no bundle_lf. At $1.77 and $2.32 a piece they are genuinely under a dollar
+    # a foot, and pricebook_audit reads "pack cost under a dollar a foot" as a
+    # per-foot price typed into a pack line — a finding that fires on correct
+    # data is the one that gets the whole audit ignored. Per-LF also skips the
+    # piece rounding: the supplier's counts (77 and 160) run ~4-5% over the
+    # raw footage, which is ~$24 on this roof and inside _SS_BUFFER.
+    {"id": "a_pbr_closure_in", "name": "PBR Inside Foam Closure", "unit": "LF", "cost": 0.62, "measure": "eave",
+     # Under the panel at the eave.
+     "bullets": ["Foam closures sealing the panel ribs at every eave, ridge and wall"]},
+    {"id": "a_pbr_closure_out", "name": "PBR Outside Foam Closure (Glued)", "unit": "LF", "cost": 0.81, "measure": "ridge_2x_headwall",
+     # Both sides of every ridge and under every headwall — see the measure.
+     "bullets": []},
+    {"id": "a_pbr_sealants", "name": "PBR Butyl Tape & Sealant", "unit": "SQ", "cost": 10.14, "measure": "squares_waste",
+     # 67 rolls of 7/8" butyl @ $6.47 + 5 tubes Nova Flex @ $9.90 over 50.01
+     # SQ. $9.66/SQ pre-tax, against the $9.60 EFC31095 gave standing seam's
+     # sealant line — two systems, two years apart, landing on the same rate.
+     "bullets": ["Butyl tape and sealant at every lap and flashing"]},
+    {"id": "x_pbr_delivery", "name": "PBR Metal Delivery", "unit": "LS", "cost": 217.15,
+     # $215 delivery, and NO machine set-up — EFC38429 charges $0 for it where
+     # EFC38421 charges $150 to set the snap-lock rollformer. Untaxed, so it
+     # carries _SS_BUFFER only, like x_ss_delivery.
+     "bullets": ["Panels roll-formed to length for this roof and delivered"]},
+    {"id": "l_tearoff", "cost_class": "labor", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
      "bullets": ["Complete tear-off of existing roofing down to the deck"]},
-    {"id": "l_install", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
+    {"id": "l_install", "cost_class": "labor", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
     {"id": "x_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
      "bullets": ["Dumpster and full magnetic nail sweep"]},
@@ -15112,27 +21024,126 @@ _RS_EXTRA = ["5-year Project One workmanship warranty"]
 # a_starter/a_step_flash are shingle SKUs sitting at $0, and a_starter has no
 # metal equivalent at all (panels start at the drip edge). Leaving them on
 # b_standing_seam is what let a metal bid price its entire edge detail at zero.
+# Standing seam costs are stored DELIVERED: the supplier's pre-tax unit price
+# times _SS_UPLIFT. Two separate reasons, both worth keeping.
+#
+# The tax is a real cost the book had no line for anywhere. On EFC38421 that is
+# $764 on a $19.4k order — money the margin never saw.
+#
+# The small cushion is deliberate. An Architectural Sheet Metals quote is
+# "valid for 15 days from the date stated" and we sign jobs well after that.
+# Putting the cushion HERE — one factor, on every line — keeps it identical on
+# a simple gable and on a wall-heavy addition. It used to fall out of whichever
+# unit prices happened to be stale, which made it swing from +5.3% to -3.6%
+# with roof geometry: that is not a buffer, it is noise that happened to point
+# the right way on the roofs anybody checked.
+#
+# To change the cushion, move _SS_BUFFER and run tests/test_standing_seam.py —
+# it fails with the corrected literal for every product.
+_SS_TAX    = 1.0395   # material sales tax on EFC38421 (3.95%)
+_SS_BUFFER = 1.01     # deliberate cushion; supplier quotes are valid 15 days
+_SS_UPLIFT = round(_SS_TAX * _SS_BUFFER, 4)
+
+# What the supplier sheet actually says, in its own units. The catalog stores
+# these times _SS_UPLIFT, and tests/test_standing_seam.py holds the two in
+# agreement so a hand-edited literal cannot drift away from its source. Keep
+# this table honest: it is the only record of what was really quoted.
+_SS_PRETAX = {
+    'm_standing_seam':    309.75,  # $4.13/LF off a 20" coil at 16" net coverage
+    'a_ss_clips':          14.16,  # 1750 clips @ $.27 + 3500 screws @ $.07 / 50.7 SQ
+    'a_ss_drip_d':         23.70,
+    'a_ss_rake':           32.80,  # not on EFC38421; the rate its other 2pc caps carry
+    'a_ss_rake_recv':      17.40,
+    'a_ss_sidewall':       32.80,
+    'a_ss_sidewall_recv':  17.40,
+    'a_ss_headwall':       32.80,
+    'a_ss_ridge':          33.80,
+    'a_ss_zeecee':         11.10,
+    'a_ss_transition':     48.70,
+    'a_ss_pipe_boot':      12.70,  # EFC31095 — same part on either seam system
+    'a_ss_sealants':        9.60,  # EFC31095
+    'a_ss_custom_flash':   20.88,  # EFC31095
+}
+# Delivery and machine set-up are NOT taxed on the quote, so this one takes
+# _SS_BUFFER alone. Keeping it in its own table is what stops a later reader
+# "fixing" the inconsistency by taxing a line the supplier does not tax.
+_SS_PRETAX_UNTAXED = {'x_ss_delivery': 365.00}   # $215 delivery + $150 set-up
+
+# PBR exposed fastener, off EFC38429 — same supplier, same 3.95% tax, same
+# 15-day validity as EFC38421, so it takes the same _SS_UPLIFT rather than a
+# second pair of factors that could drift apart for no reason. Held to the
+# catalog by tests/test_pbr_metal.py exactly as _SS_PRETAX is.
+_PBR_PANEL_SQ = 50.01   # 1667 LF x 3 ft of coverage / 100 — what the per-SQ lines divide by
+_PBR_PRETAX = {
+    'm_pbr':             171.67,  # $5.15/LF at 36" net coverage
+    'a_pbr_fasteners':    17.50,  # 5000 wood @ $.10 + 2500 stitch @ $.15 / 50.01 SQ
+    'a_pbr_drip':         12.72,
+    'a_pbr_rake':         25.94,
+    'a_pbr_sidewall':     24.44,
+    'a_pbr_headwall':     23.44,
+    'a_pbr_ridge':        24.44,
+    'a_pbr_valley':       45.88,
+    'a_pbr_transition':   34.66,
+    'a_pbr_closure_in':    0.59,  # $1.77 per 3-ft piece
+    'a_pbr_closure_out':   0.7733,  # $2.32 per 3-ft piece
+    'a_pbr_sealants':      9.66,  # 67 butyl @ $6.47 + 5 Nova Flex @ $9.90 / 50.01 SQ
+}
+_PBR_PRETAX_UNTAXED = {'x_pbr_delivery': 215.00}  # delivery; set-up is $0 on PBR
+
 _SS_METAL = ["a_underlayment", "a_ice_water", "a_ss_clips", "a_ss_drip_d",
              "a_ss_rake", "a_ss_rake_recv", "a_ss_sidewall", "a_ss_sidewall_recv",
-             "a_ss_ridge", "a_ss_zeecee", "a_ss_pipe_boot", "a_ss_sealants",
+             "a_ss_headwall", "a_ss_ridge", "a_ss_zeecee", "a_ss_transition",
+             "a_ss_pipe_boot", "a_ss_sealants",
              "a_decking", "l_tearoff", "l_install", "x_ss_delivery",
              "x_dumpster", "x_permit"]
+# PBR runs its own trim for the same reason standing seam does, and shares only
+# the pipe boot: a MasterFlash boot is the same part on either metal system.
+_PBR_METAL = ["a_underlayment", "a_ice_water", "a_pbr_fasteners", "a_pbr_drip",
+              "a_pbr_rake", "a_pbr_sidewall", "a_pbr_headwall", "a_pbr_ridge",
+              "a_pbr_valley", "a_pbr_transition", "a_pbr_closure_in",
+              "a_pbr_closure_out", "a_pbr_sealants", "a_ss_pipe_boot",
+              "a_decking", "l_tearoff", "l_install", "x_pbr_delivery",
+              "x_dumpster", "x_permit"]
+# Taglines are ONE short, basic line — the bullets under them carry the detail.
+# The old sentence-long ones wrapped to four lines on a phone and restated the
+# bullets, and one (Landmark's "Class 3") outlived the product it described.
+# Changing a line here needs its old wording in _BUNDLE_DESCRIPTION_MIGRATIONS,
+# or it reaches no live book.
 ROOFING_BUNDLES_SEED = [
-    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Dual-layer architectural shingle with Class 3 impact resistance, StreakFighter protection, and a lifetime limited residential warranty.",
+    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Architectural shingle with a lifetime limited warranty.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle — hail-country durability, may qualify for an insurance discount.",
+    {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Polymer-modified Class 4 impact-resistant shingle with ArmourZone reinforcement and a 130 mph limited wind warranty.",
+    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Class 4 impact-resistant shingle with a 130 mph wind warranty.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "EDCO steel shingles — the look of architectural shingles in Class 4 impact-rated steel.",
+    {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "Class 4 impact-rated steel shingles.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_stone", "name": "Stone-Coated Steel", "product_ids": ["m_stone"] + _RS, "description": "Stone-coated steel panels — steel strength with a textured shake/shingle look, wind-rated 120+ mph.",
+    {"id": "b_stone", "name": "Stone-Coated Steel", "product_ids": ["m_stone"] + _RS, "description": "Stone-coated steel with a shake or shingle look.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _SS_METAL, "description": "24ga standing seam metal with concealed fasteners — the premium 50+ year system.",
+    {"id": "b_pbr", "name": "Exposed Fastener Metal (PBR)", "product_ids": ["m_pbr"] + _PBR_METAL, "description": "Ribbed steel panels — a durable metal roof for less.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_euroshield", "name": "Euroshield", "product_ids": ["m_euroshield"] + _RS, "description": "Recycled-rubber roofing with the look of slate/shake — Class 4 impact, freeze-thaw resistant.",
+    {"id": "b_standing_seam", "name": "Standing Seam", "product_ids": ["m_standing_seam"] + _SS_METAL, "description": "Premium standing seam metal with hidden fasteners.",
+     "extra_features": _RS_EXTRA},
+    {"id": "b_euroshield", "name": "Euroshield", "product_ids": ["m_euroshield"] + _RS, "description": "Recycled-rubber roofing with a slate or shake look, Class 4 impact rated.",
      "extra_features": _RS_EXTRA},
 ]
+
+# A bundle's tagline is a copy field, which the server only fills while it is
+# ABSENT — so shortening a seed line reaches nobody whose book already has one.
+# Rewrite it only while the live wording is still an earlier SEED's, exactly
+# like _PRODUCT_COST_MIGRATIONS: a line a manager typed is never touched.
+_BUNDLE_DESCRIPTION_MIGRATIONS = {
+    'roofing': {
+        'b_landmark': ("Dual-layer architectural shingle with Class 3 impact resistance, StreakFighter protection, and a lifetime limited residential warranty.",),
+        'b_northgate': ("Class 4 impact-resistant SBS shingle — hail-country durability, may qualify for an insurance discount.",),
+        'b_iko_nordic': ("Polymer-modified Class 4 impact-resistant shingle with ArmourZone reinforcement and a 130 mph limited wind warranty.",),
+        'b_edco': ("EDCO steel shingles — the look of architectural shingles in Class 4 impact-rated steel.",),
+        'b_stone': ("Stone-coated steel panels — steel strength with a textured shake/shingle look, wind-rated 120+ mph.",),
+        'b_pbr': ("26ga PBR ribbed steel panels with exposed fasteners — a durable metal roof at a lower price point.",),
+        'b_standing_seam': ("24ga standing seam metal with concealed fasteners — the premium 50+ year system.",),
+        'b_euroshield': ("Recycled-rubber roofing with the look of slate/shake — Class 4 impact, freeze-thaw resistant.",),
+    },
+}
 ROOFING_TIER_DEFAULTS_SEED = {"good": "b_landmark", "better": "b_northgate", "best": "b_standing_seam"}
 
 # Siding catalog: one price per product, accessories named to MATCH the old
@@ -15165,7 +21176,41 @@ _SIDING_NEUTRAL_COLORS = [
     {"name": "Sail Cloth",    "hex": "#d4cdbf"},
     {"name": "Deep Ocean",    "hex": "#2a2f33"},
 ]
+# EDCO's ENTEX(R) steel siding palette for the lap / dutchlap / board-and-batten
+# profiles, read off edcoproducts.com/products/steel-siding.html (fetched
+# 2026-09-04). Both siding SKUs we sell (D4" TimberGrain, 8" Enduragrain) are
+# lap profiles, so this is their list. It replaces six invented names — Musket
+# Brown, Coastal Sage, Silver Gray and Regal Red are not EDCO colors.
+# EDCO's shiplap profile has a DIFFERENT, shorter list (Hickory, Walnut, Washed
+# Maple, ...); do not merge the two. Hexes are approximate previews.
 _SIDING_STEEL_COLORS = [
+    {"name": "Colonial White", "hex": "#efece2"},
+    {"name": "Glacier White",  "hex": "#e8e8e4"},
+    {"name": "Sand Beige",     "hex": "#d8cbb0"},
+    {"name": "Sandtone",       "hex": "#c9bda4"},
+    {"name": "Desert Tone",    "hex": "#c8b393"},
+    {"name": "Wickertone",     "hex": "#b7a184"},
+    {"name": "Claytone",       "hex": "#a99479"},
+    {"name": "Driftwood Gray", "hex": "#9b998f"},
+    {"name": "Still Harbor",   "hex": "#8e9aa0"},
+    {"name": "Cool Atlantic",  "hex": "#7d8f9c"},
+    {"name": "Sage",           "hex": "#8b9179"},
+    {"name": "Willow",         "hex": "#6f7a5f"},
+    {"name": "Timber",         "hex": "#8a7256"},
+    {"name": "Cedarwood",      "hex": "#8a6141"},
+    {"name": "T-Tone",         "hex": "#6f6455"},
+    {"name": "Rustic Brown",   "hex": "#5b4636"},
+    {"name": "Canyon",         "hex": "#7a4a34"},
+    {"name": "Mahogany",       "hex": "#5d3128"},
+    {"name": "Classic Red",    "hex": "#7a2a26"},
+    {"name": "Classic Blue",   "hex": "#2c3c52"},
+    {"name": "Deep Ocean",     "hex": "#2a3a44"},
+    {"name": "Iron Gray",      "hex": "#4a4d4f"},
+    {"name": "Charcoal Gray",  "hex": "#3f4143"},
+    {"name": "Midnight",       "hex": "#22242a"},
+]
+# The pre-2026-09 invented list, kept only for the migration's equality check.
+_SIDING_STEEL_COLORS_V1 = [
     {"name": "Charcoal",     "hex": "#2f2d2b"},
     {"name": "Silver Gray",  "hex": "#8a8c8d"},
     {"name": "Musket Brown", "hex": "#4a3527"},
@@ -15404,10 +21449,10 @@ SIDING_CATALOG_SEED = [
     # number that is really the crew, while the bullets keep promising the work.
     # `customer_visible: False` hides the ROW, not the promise — see
     # bundleFeatures() in app.js.
-    {"id": "sl_tearoff", "name": "Tear-Off Labor", "group": "Labor & Misc", "unit": "SQ", "cost": 0, "measure": "siding_squares",
+    {"id": "sl_tearoff", "cost_class": "labor", "name": "Tear-Off Labor", "group": "Labor & Misc", "unit": "SQ", "cost": 0, "measure": "siding_squares",
      "customer_visible": False,
      "bullets": ["Complete tear-off of existing siding"]},
-    {"id": "sl_install", "name": "Install Labor", "group": "Labor & Misc", "unit": "SQ", "cost": 0, "measure": "siding_squares",
+    {"id": "sl_install", "cost_class": "labor", "name": "Install Labor", "group": "Labor & Misc", "unit": "SQ", "cost": 0, "measure": "siding_squares",
      "customer_visible": False,
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
     {"id": "sx_dumpster", "name": "Dumpster", "group": "Labor & Misc", "unit": "LS", "cost": 0,
@@ -15871,35 +21916,35 @@ COMMERCIAL_CATALOG_SEED = [
     # is the status quo rather than a new guess. The four LAYOVER lines are 0
     # and MUST be filled in before a layover is quoted; see the seeded-cost
     # test, which names them explicitly so the list shrinks as they land.
-    {"id": "cl_tpo_to_mf", "name": "Tear-Off, Disposal & Install Labor - TPO Mechanically Fastened", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+    {"id": "cl_tpo_to_mf", "cost_class": "labor", "name": "Tear-Off, Disposal & Install Labor - TPO Mechanically Fastened", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
-    {"id": "cl_tpo_to_fa", "name": "Tear-Off, Disposal & Install Labor - TPO Fully Adhered", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+    {"id": "cl_tpo_to_fa", "cost_class": "labor", "name": "Tear-Off, Disposal & Install Labor - TPO Fully Adhered", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
-    {"id": "cl_epdm_to_mf", "name": "Tear-Off, Disposal & Install Labor - EPDM Mechanically Fastened", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+    {"id": "cl_epdm_to_mf", "cost_class": "labor", "name": "Tear-Off, Disposal & Install Labor - EPDM Mechanically Fastened", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
-    {"id": "cl_epdm_to_fa", "name": "Tear-Off, Disposal & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+    {"id": "cl_epdm_to_fa", "cost_class": "labor", "name": "Tear-Off, Disposal & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
-    {"id": "cl_tpo_lo_mf", "name": "Layover Prep & Install Labor - TPO Mechanically Fastened", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+    {"id": "cl_tpo_lo_mf", "cost_class": "labor", "name": "Layover Prep & Install Labor - TPO Mechanically Fastened", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
-    {"id": "cl_tpo_lo_fa", "name": "Layover Prep & Install Labor - TPO Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+    {"id": "cl_tpo_lo_fa", "cost_class": "labor", "name": "Layover Prep & Install Labor - TPO Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
-    {"id": "cl_epdm_lo_mf", "name": "Layover Prep & Install Labor - EPDM Mechanically Fastened", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+    {"id": "cl_epdm_lo_mf", "cost_class": "labor", "name": "Layover Prep & Install Labor - EPDM Mechanically Fastened", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
-    {"id": "cl_epdm_lo_fa", "name": "Layover Prep & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+    {"id": "cl_epdm_lo_fa", "cost_class": "labor", "name": "Layover Prep & Install Labor - EPDM Fully Adhered", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof prepped and cut to manufacturer requirement, then the new system installed by Project One crews"]},
     # Coating is its own job again: nothing comes off, nothing is laid over.
     # The crew washes, tests adhesion, reinforces every detail with fabric and
     # base coat, then sprays to a verified mil thickness. Priced 0 until a
     # number lands — see the seeded-cost test, which names it.
-    {"id": "cl_coating", "name": "Coating Prep & Application Labor", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
+    {"id": "cl_coating", "cost_class": "labor", "name": "Coating Prep & Application Labor", "unit": "SQ", "cost": 0, "measure": "comm_labor_reroof",
      "bullets": ["Existing roof cleaned, seams and details reinforced, then the silicone system applied at the specified mil thickness by Project One crews"]},
     # The original single re-roof rate. Kept so estimates written against it
     # still load and still price; new bids use the per-package lines above.
-    {"id": "cl_labor_reroof", "name": "Tear-Off, Disposal & Install Labor (Re-Roof)", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
+    {"id": "cl_labor_reroof", "cost_class": "labor", "name": "Tear-Off, Disposal & Install Labor (Re-Roof)", "unit": "SQ", "cost": 400, "measure": "comm_labor_reroof",
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
     # New construction rides in the tear-off packages only — there is nothing
     # to lay over on a building that has never been roofed.
-    {"id": "cl_labor_new", "name": "Install Labor (New Construction)", "unit": "SQ", "cost": 250, "measure": "comm_labor_new",
+    {"id": "cl_labor_new", "cost_class": "labor", "name": "Install Labor (New Construction)", "unit": "SQ", "cost": 250, "measure": "comm_labor_new",
      "bullets": []},
 
     # ── Misc — manual quantities, job-specific, so they stay unpriced.
@@ -16090,10 +22135,10 @@ WINDOWS_CATALOG_SEED = [
      "bullets": ["Full insect screens on every operable window"]},
     # Labor prices into the package but is NOT broken out for the customer,
     # same rule as siding labor — the ROW is hidden but the promise is not.
-    {"id": "wl_removal", "name": "Removal & Disposal Labor", "unit": "EA", "cost": 0, "measure": "windows",
+    {"id": "wl_removal", "cost_class": "labor", "name": "Removal & Disposal Labor", "unit": "EA", "cost": 0, "measure": "windows",
      "customer_visible": False,
      "bullets": ["Careful removal and disposal of the existing windows"]},
-    {"id": "wl_install", "name": "Install Labor", "unit": "EA", "cost": 0, "measure": "windows",
+    {"id": "wl_install", "cost_class": "labor", "name": "Install Labor", "unit": "EA", "cost": 0, "measure": "windows",
      "customer_visible": False,
      "bullets": ["Installed level, plumb, and square with full foam insulation and air sealing per manufacturer spec"]},
     {"id": "wx_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
@@ -16212,8 +22257,86 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 # product predates the measurement and should adopt the seed's. Without it the
 # live Fascia product — seeded long before a fascia measurement existed — keeps
 # no measure and the Scope field it was added for silently fills nothing.
+# `bundle_lf`/`bundle_unit` are here because a live book saved before a product
+# gained its pack conversion prices the raw measure instead — a_ice_water billed
+# linear feet at a per-roll price until it got one. Absence is still the test, so
+# a manager who set their own pack size keeps it.
 _PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure',
-                            'group', 'colors', 'styles')
+                            'group', 'colors', 'styles', 'bundle_lf', 'bundle_unit',
+                            'cost_class')
+
+# ── Material vs labor ─────────────────────────────────────────────────────
+#
+# A catalog product carries ONE `cost`, and until this existed every seeding
+# path dropped the whole of it into `material_unit_cost` — so the rep-only Cost
+# & Profit panel reported Labor $0.00 on every estimate ever written, while
+# l_install sat in the book at $145/SQ being counted as material.
+#
+# `cost_class` says which side of that split a product lands on. Two values,
+# 'material' and 'labor', and ABSENCE MEANS MATERIAL — which is exactly what
+# the tool did before this field existed, so an unclassified product moves no
+# number anywhere.
+#
+# The load-bearing rule, and the reason this is safe to apply to estimates
+# written months ago: `cost_class` may only ever influence the SPLIT. Never a
+# total, never a sell price, never a customer-visible gate, never a margin
+# floor, never a quantity. Material + labor always equals the cost that was
+# already there. If that ever stops being true, a manager reclassifying a
+# product retroactively changes what a customer was charged.
+#
+# Job extras (dumpster, permit, delivery, freight) are deliberately MATERIAL
+# rather than a third bucket. The permit packet prints
+# `Cost Total = materials + labor`, so a third bucket either drops out of that
+# column or gets folded back into materials anyway — and the panel has two rows
+# and a total that has to reconcile. Two values is the decision, not an
+# oversight.
+
+_COST_CLASS_NEVER_LABOR = (
+    'delivery', 'set-up', 'setup', 'freight', 'crane', 'dumpster', 'permit',
+    'inspection', 'survey', 'allowance', 'moisture',
+)
+_COST_CLASS_LABOR_WORDS = (
+    'labor', 'install', 'tear-off', 'tear off', 'removal', 'remove', 'detach',
+    'demolition', 'haul-off',
+    # 'crew' is NOT here on purpose: a_ss_clips is "Seam Clips + Pancake
+    # ScREWs". It is the obvious word to reach for and it matches hardware.
+)
+_COST_CLASS_LABOR_PREFIXES = ('l_', 'sl_', 'wl_', 'cl_')
+_COST_CLASS_EXTRA_PREFIXES = ('x_', 'sx_', 'wx_', 'cx_')
+
+
+def _guess_cost_class(pid, name):
+    """Best guess at whether a product is material or labor, from its id and
+    name. MUST mirror guessCostClass() in app.js.
+
+    Only ever used to WRITE a class — at seed time, at backfill time, and in
+    the Price Book editor. Nothing that reads a split calls this: the read path
+    takes `cost_class` off the catalog and stops, so there is exactly one
+    classifier and nothing to drift. Same contract as classifyCarrierItem on
+    the insurance side, where the guess is a starting point and the stored
+    decision is the answer.
+
+    The exclusion list runs FIRST, and that ordering is the whole trick:
+    x_ss_delivery is "Metal Delivery & Rollformer Set-Up", a $368 supplier
+    charge that a keyword match on "Set-Up" would file as crew time.
+    """
+    pid  = str(pid or '').strip().lower()
+    name = str(name or '').strip().lower()
+    if any(w in name for w in _COST_CLASS_NEVER_LABOR):
+        return 'material'
+    if pid.startswith(_COST_CLASS_LABOR_PREFIXES):
+        return 'labor'
+    if pid.startswith(_COST_CLASS_EXTRA_PREFIXES):
+        return 'material'
+    if any(w in name for w in _COST_CLASS_LABOR_WORDS):
+        return 'labor'
+    return 'material'
+
+
+def _norm_cost_class(v):
+    """The canonical name for a stored cost class. Absence, junk and anything
+    that is not exactly 'labor' all read as material — today's behaviour."""
+    return 'labor' if str(v or '').strip().lower() == 'labor' else 'material'
 
 # Trades whose seeded costs are allowed to fill a live book's ZERO cost. See the
 # backfill in _ensure_bundle_catalogs for why this is narrow and one-directional.
@@ -16282,8 +22405,70 @@ _TIER_DEFAULT_MIGRATIONS = {
 # cover the whole metal roof. The real panel is $320.25/SQ (Architectural Sheet
 # Metals EFC31095 — $4.27/LF off a 20" coil at 16" net coverage) and its trim is
 # now priced as its own catalog lines, so leaving $400 double-bills the trim.
+#
+# 2026-09-08: a_ice_water was priced $46.46 per SQUARE while its quantity came
+# from a measure returning LINEAR FEET, so it billed 400 LF as 400 squares. The
+# unit is now the roll it is actually bought in ($95, confirmed off a supplier
+# invoice) and bundle_lf does the conversion. The cost MUST move with the unit:
+# a live book that gained only the conversion would price 6 rolls at $46.46 and
+# be wrong by half in the other direction.
+#
+# 2026-09-09: the whole standing seam trim was decoded from EFC31095, a
+# MECHANICAL SEAM quote. We sell snap-lock, and the clip in particular is a
+# different part at a different price ($0.42 -> $0.27), not two years of
+# drift. Repriced off EFC38421 and stored delivered — see _SS_PRETAX.
+#
+# The value is a LIST of steps because one product can need more than one:
+# m_standing_seam has to reach the same place from the original $400
+# placeholder AND from EFC31095's $320.25. The first matching step wins and
+# stops, so a chain can never apply twice in one pass.
 _PRODUCT_COST_MIGRATIONS = {
-    'roofing': {'m_standing_seam': (400, 320.25)},
+    'roofing': {'m_standing_seam':    [(400, 325.21), (320.25, 325.21)],
+                # 46.46/SQ -> 95/roll -> 1.43/LF (2026-09-15, see
+                # _PER_FOOT_CONVERSIONS for the pack size that leaves with it).
+                'a_ice_water':        [(46.46, 1.43), (95.0, 1.43)],
+                'a_ss_clips':         [(23.85, 14.87)],
+                'a_ss_drip_d':        [(33.82, 24.88)],
+                'a_ss_rake':          [(23.38, 34.44)],
+                'a_ss_rake_recv':     [(17.16, 18.27)],
+                'a_ss_sidewall':      [(32.32, 34.44)],
+                'a_ss_sidewall_recv': [(17.16, 18.27)],
+                'a_ss_ridge':         [(33.32, 35.49)],
+                'a_ss_zeecee':        [(32.82, 11.65)],
+                'a_ss_pipe_boot':     [(12.70, 13.33)],
+                'a_ss_sealants':      [(9.6, 10.08)],
+                'a_ss_custom_flash':  [(20.88, 21.92)],
+                'x_ss_delivery':      [(500, 368.65)]},
+}
+
+# The same equality test, for the non-cost fields _PRODUCT_BACKFILL_FIELDS can
+# only fill when they are ABSENT. Every live book already has a measure for
+# a_ss_zeecee, so correcting the seed alone reaches nobody — and the correction
+# is the entire point: (ridge_hip, bundle_lf 5) spelled "two sticks per 10 ft of
+# ridge" and could not see a valley at all, so on a roof with 93 LF of valley
+# the Z-Flash line bought nothing for it. Rewrites only while the live value is
+# still the previous seed's, exactly like a cost migration.
+_PRODUCT_FIELD_MIGRATIONS = {
+    'roofing': {'a_ss_zeecee': {'measure':   ('ridge_hip', 'ridge_valley_2x'),
+                                'bundle_lf': (5, 10)},
+                # 2026-09-15: intake is sized by the 1/300 code rule, capped at
+                # the eaves - not the whole eave run.
+                'a_intake_vent': {'measure': ('eave', 'intake_vent_code')}},
+    # 2026-09-16: the default polyiso shipped as a bare "Polyiso Insulation",
+    # which says nothing next to the 1.0"-4.0" it now swaps between on a row.
+    'commercial': {'ca_iso': {'name': ('Polyiso Insulation',
+                                       '2.6" Polyiso Insulation (~R-15)')}},
+}
+
+# Products that moved from priced-per-PACK to priced-per-FOOT. Dropping the pack
+# size cannot be a plain field migration, because the cost has to be a per-foot
+# number when it goes: a manager who repriced the roll at $98 and then lost
+# bundle_lf would bill $98 a foot, 69x the membrane. So the pack size is removed
+# only while it is still the seed's AND the cost already reads as per-foot
+# (under the pack size - the audit's own test). An untouched $95 default gets
+# there first, through _PRODUCT_COST_MIGRATIONS, which runs before this.
+_PER_FOOT_CONVERSIONS = {
+    'roofing': {'a_ice_water': 66.67},
 }
 
 # Seed bundles that shipped AFTER their trade already had saved price books, so
@@ -16303,7 +22488,10 @@ _LATE_BUNDLE_IDS = {'b_lp_standard', 'b_lp_expert', 'b_hardie_primed',
                     # old cl_labor_reroof, and appending cl_tpo_to_mf next to it
                     # would bill the tear-off twice.
                     'cb_tpo_lo_mf', 'cb_tpo_lo_fa',
-                    'cb_epdm_mf', 'cb_epdm_lo_mf', 'cb_epdm_lo_fa'}
+                    'cb_epdm_mf', 'cb_epdm_lo_mf', 'cb_epdm_lo_fa',
+                    # 2026-09-11: PBR exposed fastener metal, off EFC38429.
+                    # Roofing has had live books for months.
+                    'b_pbr'}
 
 # Product ids added to a SEEDED bundle after the trade already had live books.
 # Same trap as _LATE_BUNDLE_IDS but one level down: _BUNDLE_COPY_FIELDS does
@@ -16333,9 +22521,13 @@ _LATE_BUNDLE_PRODUCTS = {
     # trim it shipped with. All of it is required — a standing seam roof with
     # no rake, ridge, sidewall or clips is not a roof — which is what this list
     # is for. The matching removals are in _BUNDLE_PRODUCT_SUPERSEDED.
+    # 2026-09-09: a_ss_headwall and a_ss_transition joined them. Roofr has
+    # always reported the footage for both and the parser dropped it, so every
+    # metal bid priced its headwall and its transitions at nothing.
     'b_standing_seam':    ['a_ss_clips', 'a_ss_drip_d', 'a_ss_rake', 'a_ss_rake_recv',
-                           'a_ss_sidewall', 'a_ss_sidewall_recv', 'a_ss_ridge',
-                           'a_ss_zeecee', 'a_ss_pipe_boot', 'a_ss_sealants',
+                           'a_ss_sidewall', 'a_ss_sidewall_recv', 'a_ss_headwall',
+                           'a_ss_ridge', 'a_ss_zeecee', 'a_ss_transition',
+                           'a_ss_pipe_boot', 'a_ss_sealants',
                            'x_ss_delivery'],
 }
 
@@ -16404,6 +22596,7 @@ _LANDMARK_LEGACY_DESCRIPTION = (
 _IKO_NORDIC_EXTERIOR_MIGRATION = 'iko-nordic-mr9l350-2026'
 _IKO_NORDIC_LEGACY_DESCRIPTION = (
     'Class 4 impact-resistant shingle built for extreme cold and hail.')
+_EDCO_EUROSHIELD_EXTERIOR_MIGRATION = 'edco-arrowline-entex-euroshield-2026-09'
 _OFFICIAL_EXTERIOR_TEXTURES_MIGRATION = 'official-exterior-textures-2026-09'
 
 
@@ -17073,6 +23266,66 @@ def _migrate_iko_nordic_visuals(pb):
     pb['exterior_catalog_seed_versions'] = versions
 
 
+# ── EDCO + Euroshield: replacing invented colors with published ones ────────
+#
+# Three palettes shipped with names nobody at EDCO or Euroshield would
+# recognise — "Copper Penny" on a steel roof, "Musket Brown" on steel siding,
+# "Rundle Slate" (a product line) offered as a colour. Unlike a short palette,
+# which merely under-sells, an invented one puts a colour on a signed contract
+# that cannot be ordered. Same shape as the Landmark/Nordic migrations: swap a
+# live product's colors ONLY while they still equal the shipped placeholder, so
+# a manager who curated their own list keeps it.
+_EDCO_EUROSHIELD_COLOR_SWAPS = (
+    ('roofing', 'm_edco',       '_EDCO_ROOF_COLORS_V1',     '_EDCO_ROOF_COLORS'),
+    ('siding',  's_edco_d4',    '_SIDING_STEEL_COLORS_V1',  '_SIDING_STEEL_COLORS'),
+    ('siding',  's_edco_8',     '_SIDING_STEEL_COLORS_V1',  '_SIDING_STEEL_COLORS'),
+    ('roofing', 'm_euroshield', '_ROOF_RUBBER_COLORS_V1',   '_ROOF_RUBBER_COLORS'),
+)
+_EDCO_EUROSHIELD_BUNDLES = {
+    'b_edco':      ('roof',   'EDCO',       'EDCO'),
+    'b_edco_d4':   ('siding', 'EDCO Steel', 'EDCO D4" TimberGrain'),
+    'b_edco_8':    ('siding', 'EDCO Steel', 'EDCO 8" Enduragrain'),
+    'b_euroshield': ('roof',  'Euroshield', 'Euroshield'),
+}
+
+
+def _migrate_edco_euroshield_visuals(pb):
+    """Swap the invented EDCO/Euroshield palettes for the published ones."""
+    versions = pb.get('exterior_catalog_seed_versions')
+    if not isinstance(versions, list):
+        versions = []
+    if _EDCO_EUROSHIELD_EXTERIOR_MIGRATION in versions:
+        return
+
+    retired = set()
+    for trade, pid, old_name, new_name in _EDCO_EUROSHIELD_COLOR_SWAPS:
+        old_colors = globals()[old_name]
+        new_colors = globals()[new_name]
+        retired.update(c['name'].casefold() for c in old_colors)
+        live = next((p for p in pb.get(trade + '_catalog') or []
+                     if isinstance(p, dict) and p.get('id') == pid), None)
+        if live is not None and live.get('colors') == old_colors:
+            live['colors'] = copy.deepcopy(new_colors)
+
+    # Drop the exterior-catalog rows built from the retired names, then let the
+    # legacy flattener rebuild this trade's rows from the corrected products.
+    kept = []
+    for row in _normalize_exterior_catalog(pb.get('exterior_catalog') or []):
+        if (row['price_book_bundle'] in _EDCO_EUROSHIELD_BUNDLES
+                and row['color'].casefold() in retired):
+            continue
+        kept.append(row)
+    have = {(r['category'], r['product'].casefold(), r['style'].casefold(),
+             r['color'].casefold(), r['price_book_bundle']) for r in kept}
+    fresh = [r for r in _legacy_exterior_catalog(pb)
+             if r['price_book_bundle'] in _EDCO_EUROSHIELD_BUNDLES
+             and (r['category'], r['product'].casefold(), r['style'].casefold(),
+                  r['color'].casefold(), r['price_book_bundle']) not in have]
+    pb['exterior_catalog'] = _normalize_exterior_catalog(kept + fresh)
+    versions.append(_EDCO_EUROSHIELD_EXTERIOR_MIGRATION)
+    pb['exterior_catalog_seed_versions'] = versions
+
+
 _OFFICIAL_TEXTURE_TARGETS = {
     'iko_nordic': {
         ('roof', 'iko', 'iko nordic', 'b_iko_nordic'),
@@ -17274,6 +23527,12 @@ def _ensure_bundle_catalogs(pb):
                     if field not in live and field in seed:
                         val = seed[field]
                         live[field] = copy.deepcopy(val) if isinstance(val, list) else val
+                # ...and a tagline still worded as an EARLIER seed follows the
+                # seed forward. Equality with a known old seed is the only
+                # test; a manager's own wording never matches one.
+                old = _BUNDLE_DESCRIPTION_MIGRATIONS.get(trade, {}).get(seed['id'])
+                if old and live.get('description') in old:
+                    live['description'] = seed.get('description', '')
 
             # ...but "absent" also covers a bundle the book has NEVER seen, and
             # the loop above cannot tell that apart from a deletion, so it skips
@@ -17374,11 +23633,51 @@ def _ensure_bundle_catalogs(pb):
             # Same one-directional shape for a corrected seed COST. See
             # _PRODUCT_COST_MIGRATIONS — the equality test against the previous
             # seed number is what keeps a manager's own price safe.
-            for pid, (old_cost, new_cost) in _PRODUCT_COST_MIGRATIONS.get(trade, {}).items():
+            for pid, steps in _PRODUCT_COST_MIGRATIONS.get(trade, {}).items():
                 p_live = next((p for p in live_cat
                                if isinstance(p, dict) and p.get('id') == pid), None)
-                if p_live is not None and _mnum(p_live.get('cost')) == old_cost:
-                    p_live['cost'] = new_cost
+                if p_live is None:
+                    continue
+                for old_cost, new_cost in steps:
+                    if _mnum(p_live.get('cost')) == old_cost:
+                        p_live['cost'] = new_cost
+                        break   # a chain must never apply twice in one pass
+
+            for pid, fields in _PRODUCT_FIELD_MIGRATIONS.get(trade, {}).items():
+                p_live = next((p for p in live_cat
+                               if isinstance(p, dict) and p.get('id') == pid), None)
+                if p_live is None:
+                    continue
+                for field, (old_val, new_val) in fields.items():
+                    if p_live.get(field) == old_val:
+                        p_live[field] = new_val
+
+            for pid, pack in _PER_FOOT_CONVERSIONS.get(trade, {}).items():
+                p_live = next((p for p in live_cat
+                               if isinstance(p, dict) and p.get('id') == pid), None)
+                if (p_live is not None and p_live.get('bundle_lf') == pack
+                        and _mnum(p_live.get('cost')) < pack):
+                    p_live.pop('bundle_lf', None)
+                    p_live.pop('bundle_unit', None)
+
+            # Every live product with no cost_class gets the guess — seed or
+            # not. _PRODUCT_BACKFILL_FIELDS above only walks SEED ids, so it
+            # cannot reach a product the manager made, and six of the labor
+            # products actually being sold on production are exactly that
+            # ("Standing Seam Install Labor", "Install Labor Hardie Painted"
+            # and friends). Without this loop those six stay filed as material
+            # and the panel keeps under-reporting labor on the metal and
+            # painted-siding jobs.
+            #
+            # This is a read-time default, not a migration: _ensure_bundle_catalogs
+            # mutates the response only. It becomes the manager's stored decision
+            # the first time they save the Price Book, and the dropdown there
+            # overrides it either way. Absence stays the test, so a class they
+            # set is never touched.
+            for p_live in live_cat:
+                if isinstance(p_live, dict) and 'cost_class' not in p_live:
+                    p_live['cost_class'] = _guess_cost_class(p_live.get('id'),
+                                                             p_live.get('name'))
 
             # The ladder itself. pb.setdefault above cannot deliver a new one to
             # a book that already has the key — which is every live book — so
@@ -17412,6 +23711,7 @@ def _ensure_bundle_catalogs(pb):
     _migrate_lp_expertfinish_naturals(pb)
     _migrate_landmark_visuals(pb)
     _migrate_iko_nordic_visuals(pb)
+    _migrate_edco_euroshield_visuals(pb)
     _migrate_official_exterior_textures(pb)
     return pb
 
@@ -17489,6 +23789,177 @@ def get_templates():
     return jsonify(result)
 
 
+def _review_facts(est):
+    """Everything the review reads, computed by the functions that own it.
+
+    Nothing in here is worked out for the first time. The ventilation numbers
+    come from `_vent_nfa_report`, the margin from `estimate_margin_report`, the
+    expiry from `_est_expired` — the same functions the Scope panel, the
+    analytics tab and the /sign page read. A review that re-derived any of them
+    would be a third implementation of money math in a codebase that keeps
+    exactly two and holds them to the cent.
+    """
+    m    = est.get('measurements') or {}
+    etype = est.get('estimate_type') or 'retail'
+    report = estimate_margin_report(est)
+    warn, _block = _margin_floors()
+    valid = _est_valid_until(est)
+    days_left = (valid - _company_today()).days if valid else None
+
+    unknown = [t['tier'] for t in (report.get('tiers') or [])
+               if t.get('margin_pct') is None]
+    _ucost, uncosted = upgrades_cost_total(est)
+    ic = est.get('insurance_cost') or {}
+    review_lines = sum(
+        1 for it in (est.get('carrier_items') or est.get('insurance_items') or [])
+        if str((it or {}).get('scope_class') or '').lower() == 'review')
+
+    facts = {
+        'estimate_type': etype,
+        'customer_city': ((est.get('customer') or {}).get('address') or {}).get('city', ''),
+        'customer_email': bool((est.get('customer') or {}).get('email')),
+        'valid_until': est.get('valid_until') or '',
+        'expired': bool(_est_expired(est)),
+        'days_to_expiry': days_left,
+        'has_measurements': bool(m.get('roof_squares') or m.get('comm_sqft')),
+        'measurements': {k: v for k, v in m.items() if v not in ('', None)},
+        'margin_worst': report.get('lowest'),
+        'margin_tiers': report.get('tiers') or [],
+        'margin_unknown_tiers': unknown,
+        'margin_warn_floor': warn,
+        'margin_exempt': bool(_margin_floor_exempt(est)),
+        'upgrades_uncosted': uncosted,
+        'carrier_review_lines': review_lines,
+        'supplements': _num(ic.get('supplements')) if ic else 0,
+        'company_content_missing': bool(_company_content_missing()),
+        'jurisdiction': _selected_permit_jurisdiction(est) or {},
+        'trades': _review_trade_summary(est),
+    }
+    if etype != 'commercial':
+        vent = _vent_nfa_report(est)
+        vent['attic_area_assumed'] = not _mnum(m.get('attic_sqft'))
+        facts['vent'] = vent
+    return facts
+
+
+def _review_trade_summary(est):
+    """Line names and quantities per enabled trade — no costs, no prices.
+
+    The reader is asked what is MISSING from a scope and whether the quantities
+    fit the house, which needs the names. It is never asked whether a price is
+    right, so it is not given one: what a roof should sell for is between this
+    company and its market, and a number that is not in the payload cannot end
+    up in a finding.
+    """
+    out = {}
+    for tk, td in (est.get('trades') or {}).items():
+        if not (td or {}).get('enabled'):
+            continue
+        rows = []
+        for it in (td.get('line_items') or [])[:120]:
+            name = str(it.get('name') or '').strip()
+            if not name:
+                continue
+            rows.append({'name': name,
+                         'qty': _mnum(it.get('quantity')),
+                         'unit': str(it.get('unit') or ''),
+                         'tier': str(it.get('tier') or '')})
+        if rows:
+            out[tk] = rows
+    return out
+
+
+@app.route('/api/estimates/<est_id>/review', methods=['POST'])
+def post_estimate_review(est_id):
+    """What a second estimator would say about this job before it goes out.
+
+    Rep-level on purpose — it is their estimate and their send — and it is the
+    rep who fixes what it finds. Deliberately NOT a gate: `_margin_floor_block`
+    is the one thing in this system that stops an estimate leaving, it has its
+    own settings and its own tests, and a second gate that disagreed with the
+    first is how a rep ends up unable to send a job neither of them can
+    explain. This informs; the rep decides.
+    """
+    est = est_load(est_id)
+    if est is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(est):
+        return _forbid()
+    out = estimate_review.run(_review_facts(est))
+    out['reviewer_available'] = estimate_review.available()
+    return jsonify(out)
+
+
+@app.route('/api/pricebook/cost-class-review', methods=['POST'])
+def post_cost_class_review():
+    """Ask a second reader to check the material/labor split. Proposals only.
+
+    Manager-up, like the audit beside it, and for the same reason: it exposes
+    cost structure and it is the manager who acts on what it finds.
+
+    Nothing is written here. The response is a diff — current class, proposed
+    class, and a sentence of reasoning per row — and a manager approves rows
+    one at a time through `/api/pricebook/cost-class-apply`. That split is the
+    whole safety model, and it is the same one the jurisdiction verifier uses:
+    a model may find the thing, a human decides it.
+    """
+    if not _is_manager_up():
+        return _forbid()
+    if not cost_class_review.available():
+        return jsonify({'error': 'Cost-class review needs ANTHROPIC_API_KEY.',
+                        'available': False}), 503
+    pb = _ensure_bundle_catalogs(_load_price_book())
+    # The product's OWN stored class. `_cost_class_of` resolves a line ITEM
+    # through four tiers of linkage and is a different question entirely.
+    rows = cost_class_review.products_for_review(
+        pb, lambda p: _norm_cost_class(p.get('cost_class')))
+    try:
+        proposals = cost_class_review.review(rows)
+    except cost_class_review.ReviewError as e:
+        return jsonify({'error': str(e)}), 502
+    return jsonify({'reviewed': len(rows), 'proposals': proposals})
+
+
+@app.route('/api/pricebook/cost-class-apply', methods=['POST'])
+def post_cost_class_apply():
+    """Write the classes a manager ticked. Takes ids, never a whole review.
+
+    Deliberately not "apply the last review": the request carries the exact
+    rows approved, so a manager who reviewed forty and ticked three writes
+    three. There is nothing stored between the two calls that could go stale
+    or be replayed.
+
+    This can only ever move a cost between the two internal columns. It cannot
+    change a total, a sell price, a margin floor or a quantity — that is the
+    contract `tests/test_cost_split.py` holds down — so it is safe in the one
+    way that matters: no customer's price moves.
+    """
+    if not _is_manager_up():
+        return _forbid()
+    data = request.get_json(force=True) or {}
+    pb = _load_price_book()
+    changed = cost_class_review.apply(pb, data.get('approved'))
+    if changed:
+        _save_price_book(pb)
+        print(f'[cost-class] {len(changed)} product(s) reclassified by '
+              f'{session.get("user", "?")}')
+    return jsonify({'changed': changed, 'count': len(changed)})
+
+
+@app.route('/api/pricebook/audit', methods=['GET'])
+def get_pricebook_audit():
+    """Mechanically detectable faults in the live price book.
+
+    Manager-up: it exposes cost structure, and it is the manager who fixes what
+    it finds. Reads the SAME book estimates price against — the seeds backfilled
+    into whatever is on the volume — so it reports the book in use, not the one
+    in the repo.
+    """
+    if not _is_manager_up():
+        return _forbid()
+    return jsonify(pricebook_audit(_ensure_bundle_catalogs(_load_price_book())))
+
+
 @app.route('/api/pricebook', methods=['GET'])
 def get_pricebook():
     pb = _load_price_book()
@@ -17496,6 +23967,11 @@ def get_pricebook():
     pb.setdefault('materials', {})
     pb.setdefault('presets', {})   # brand preset bundles, keyed by trade
     _ensure_bundle_catalogs(pb)    # roofing/siding product catalogs + bundles (seed if absent)
+    if demo.active():
+        # The one genuinely competitive thing in this app. Structure, products
+        # and margins are real so the tool prices a real-looking job; the
+        # per-square numbers underneath are shifted. See demo_store.scrub_costs.
+        pb = demo.scrub_costs(pb)
     return jsonify(pb)
 
 
@@ -17840,9 +24316,31 @@ def put_sales_goals():
 # ── Company trust content (About Us / Warranty / Certifications / Reviews) ──
 # Rendered onto every customer proposal by _cv_trust_blocks(). Admin-edited.
 
+def _company_content_missing():
+    """True when the trust blocks would render EMPTY on a customer proposal.
+
+    company_content.json is gitignored under "Estimator — user data" next to
+    config.json and users.json, which really are sensitive — this is marketing
+    copy that got swept in by proximity. _seed_data_dir() copies it only
+    `if os.path.exists(src)`, so a rebuilt Railway volume comes up with no
+    About Us, no Warranty, no Certifications and no Reviews: the four blocks
+    that exist to justify not being the cheapest bid. The failure is completely
+    silent today — proposals just go out thinner, and nobody finds out until a
+    customer mentions it. Until the real file is tracked, this at least makes
+    the gap say so out loud.
+    """
+    return not any((_load_company_content() or {}).values())
+
+
 @app.route('/api/company-content', methods=['GET'])
 def get_company_content():
-    return jsonify(_load_company_content())
+    content = _load_company_content()
+    if not any(content.values()):
+        print('[company-content] EMPTY — About Us / Warranty / Certifications / '
+              'Reviews will be blank on every customer proposal. An admin needs '
+              'to re-enter them in Settings (this is what a rebuilt volume looks '
+              'like).')
+    return jsonify(content)
 
 
 @app.route('/api/company-content', methods=['PUT'])
@@ -18751,6 +25249,11 @@ def send_followup_reminder(est, days_out):
         except Exception:
             view_line = f'Opened {views} time{"s" if views != 1 else ""}.'
         hint = 'They’ve looked but haven’t signed — a quick call could close this.'
+        # What they actually reached for beats how many times they opened it.
+        picked = _tier_interest_summary(est)
+        if picked:
+            hint = (f'They kept coming back to — {picked}. '
+                    'Lead the call with that package, not with the price.')
     else:
         view_line = 'Never opened.'
         hint = 'They haven’t even opened it yet — worth re-sending the link or following up by phone.'
@@ -18769,6 +25272,7 @@ def send_followup_reminder(est, days_out):
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Estimate</td><td style="padding:5px 0;font-size:13px">{he(enum)}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Value</td><td style="padding:5px 0;font-size:15px;font-weight:800;color:#d97706">{fc(total)}</td></tr>
       <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Activity</td><td style="padding:5px 0;font-size:13px">{he(view_line)}</td></tr>
+      {f'<tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px">Interested in</td><td style="padding:5px 0;font-size:13px;font-weight:700">{he(_tier_interest_summary(est))}</td></tr>' if _tier_interest_summary(est) else ''}
     </table>
     <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">{he(hint)}</p>
     <a href="{he(sign_url)}" style="display:block;text-align:center;background:#1a3a5c;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:700;font-size:14px">
@@ -18970,7 +25474,7 @@ def download_backup():
     if not _is_admin(_current_user()):
         return _forbid()
     data = _build_backup_zip(include_uploads=True)
-    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    stamp = _company_today().isoformat()
     return send_file(io.BytesIO(data), mimetype='application/zip',
                      as_attachment=True,
                      download_name=f'p1_estimator_full_backup_{stamp}.zip')
@@ -18981,7 +25485,7 @@ def _send_nightly_backup():
     if not BACKUP_EMAIL:
         return
     data  = _build_backup_zip(include_uploads=False)
-    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    stamp = _company_today().isoformat()
     n_est = est_count()
     size_mb = len(data) / 1048576
 
@@ -19022,7 +25526,13 @@ def _send_nightly_backup():
 def _check_daily_backup():
     if not _email_configured():
         return
-    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    # Colorado's day, so "nightly" rolls at midnight here rather than at 6pm,
+    # which is when the UTC date used to change. Two consequences, both worth
+    # having: the lockfile lets tomorrow's backup run after midnight Mountain
+    # rather than after dinner, and the zip and the subject line are dated the
+    # day a person would date them. The same stamp names the file in
+    # `_send_nightly_backup()` and the one `/api/backup` hands an admin.
+    stamp = _company_today().isoformat()
     lock  = os.path.join(REMINDER_LOCKS_DIR, f'backup_{stamp}.lock')
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -19048,7 +25558,7 @@ def _check_daily_db_backup():
     """
     if not _email_configured():
         return
-    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    stamp = _company_today().isoformat()
     lock  = os.path.join(REMINDER_LOCKS_DIR, f'dbbackup_{stamp}.lock')
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -19060,6 +25570,155 @@ def _check_daily_db_backup():
         pbackup.nightly_email(_send_email, BACKUP_EMAIL, _base_url())
     except Exception as exc:
         print(f'[backup] nightly database backup failed: {exc}')
+
+
+def _check_crm_digest():
+    """Each rep's morning follow-up email (portal/crm_digest.py). Once per
+    Colorado day, after 7am, never Sunday; an O_EXCL lockfile like the backups
+    so two gunicorn workers cannot both send it."""
+    from portal import crm_digest
+    if not (_email_configured() and crm_digest.enabled() and crm_digest.due_now()):
+        return
+    stamp = crm_digest.local_now().strftime('%Y-%m-%d')
+    lock = os.path.join(REMINDER_LOCKS_DIR, f'crmdigest_{stamp}.lock')
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except (FileExistsError, OSError):
+        return
+    try:
+        n = crm_digest.send_all(_send_email, _base_url())
+        print(f'[crm-digest] sent {n} morning email(s)')
+    except Exception as exc:
+        print(f'[crm-digest] failed: {exc}')
+
+
+# How far back the nightly ingest looks. It used to be two days, which is
+# enough to keep up and cannot ever catch up: a night the job did not run — a
+# deploy, a restart, a NOAA hiccup — left a hole that nothing would ever fill,
+# and once a gap is old it is indistinguishable from a quiet day. That is
+# exactly why `storms.record` writes days with no hail at all. A day already
+# held is skipped without a fetch, so the wider window costs nothing.
+HAIL_WINDOW_DAYS  = 7
+# The most recent days are re-fetched even when held: MESH_Max_1440min is a
+# ROLLING 24-hour maximum, so a file read early is still moving. Re-ingesting a
+# date REPLACES its cells rather than merging them, which is what makes that
+# safe rather than additive.
+HAIL_REFETCH_DAYS = 2
+
+
+def _check_hail_nightly():
+    """Pull recent radar hail, queue CRM follow-ups, and mail a storm brief.
+
+    Once per Colorado date, after 12:00 UTC: NOAA's day file is a rolling
+    24-hour maximum stamped 23:30, so yesterday is final by then. Its own
+    O_EXCL lockfile, like the backups, so two workers cannot both run it.
+
+    Three steps, each independent of the next: ingest, then the CRM books a
+    follow-up for every open lead under a 1"+ storm (salescrm `storm_nightly`),
+    then anyone watching gets told a storm landed on the service area. A
+    failure in one must not cost the others — the ingest is the one that cannot
+    be redone later, since the rolling file moves on.
+    """
+    now = datetime.utcnow()
+    if now.hour < 12 or os.environ.get('HAIL_NIGHTLY', '1').strip() in ('0', 'false', 'no'):
+        return
+    # Colorado's date, so "once a night" rolls at midnight here rather than at
+    # 6pm, which is when the UTC date used to change.
+    lock = os.path.join(REMINDER_LOCKS_DIR, f'hail_{_company_today().isoformat()}.lock')
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except (FileExistsError, OSError):
+        return
+    try:
+        from hail import backfill as hbackfill, ingest as hingest, storms as hstorms
+        today = _company_today()
+        window = [today - timedelta(days=i) for i in range(HAIL_WINDOW_DAYS)]
+        window = [d for d in window if d >= hingest.EARLIEST]
+        held = hstorms.ingested_dates()
+        fresh = {(today - timedelta(days=i)).isoformat()
+                 for i in range(HAIL_REFETCH_DAYS)}
+        todo = sorted(d for d in window
+                      if d.isoformat() not in held or d.isoformat() in fresh)
+        # `run()` rather than `main()`: main is argparse and prints, and it
+        # exits via SystemExit, which is why this used to catch it.
+        if todo:
+            print(f'[hail] nightly ingest: {hbackfill.run(todo)}')
+    except Exception as exc:
+        print(f'[hail] nightly ingest failed: {exc}')
+    crm = sys.modules.get('p1_crm_app')
+    if crm is not None and hasattr(crm, 'storm_nightly'):
+        try:
+            print(f'[hail] storm follow-ups: {crm.storm_nightly()}')
+        except Exception as exc:
+            print(f'[hail] storm follow-ups failed: {exc}')
+    try:
+        _send_storm_alert()
+    except Exception as exc:
+        print(f'[hail] storm alert failed: {exc}')
+
+
+def _send_storm_alert():
+    """Mail a brief when hail lands on the service area.
+
+    `send_email` is injected into `hail/alert.py` rather than imported there,
+    the same as `portal/backup.py` and `portal/crm_digest.py`: the sender lives
+    here with the SMTP and SendGrid config, and dragging this module into the
+    storm archive to send one message is the wrong dependency.
+
+    Goes to `HAIL_ALERT_EMAIL`, falling back to `BACKUP_EMAIL`. Nothing is
+    mailed twice — `alert.send_new` records what went out, so the nightly
+    re-fetch of a still-settling day does not re-send its storm every night.
+    """
+    if not _email_configured():
+        return
+    to_addr = (os.environ.get('HAIL_ALERT_EMAIL', '').strip() or BACKUP_EMAIL)
+    from hail import alert as halert
+    out = halert.send_new(_send_email, to_addr, base_url=_base_url())
+    if out.get('sent'):
+        print(f'[hail] storm alert sent: {out}')
+
+
+def _check_research_nightly():
+    """Research new CRM prospects every night, refresh old research, read the
+    websites research found (agents.b2b.site_contacts) and name LLCs from the
+    Secretary of State (agents.b2b.sos_backfill).
+
+    The Nimbus importer only researches its top picks, so every other imported
+    row arrived as a front desk with no name. Up to RESEARCH_NIGHTLY_LIMIT
+    (default 100) a night, after 13:00 UTC, under the Perplexity spend cap.
+    Runs in its own thread - a hundred searches take minutes and must not hold
+    up the backups and reminders on this loop. RESEARCH_NIGHTLY=0 to stop."""
+    if os.environ.get('RESEARCH_NIGHTLY', '1').strip() in ('0', 'false', 'no'):
+        return
+    if not os.environ.get('PERPLEXITY_API_KEY') or datetime.utcnow().hour < 13:
+        return
+    lock = os.path.join(REMINDER_LOCKS_DIR, f'research_{datetime.utcnow().strftime("%Y-%m-%d")}.lock')
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except (FileExistsError, OSError):
+        return
+    crm = sys.modules.get('p1_crm_app')
+    if crm is None:
+        return
+
+    def _go():
+        # Each step on its own: a failure in one must never stop the others.
+        from agents.b2b import reenrich, site_contacts, sos_backfill
+        limit = int(os.environ.get('RESEARCH_NIGHTLY_LIMIT', '100') or 100)
+        quiet = lambda *_: None
+        for name, step in (
+                ('new', lambda: reenrich.run(crm, limit=limit, log=quiet)),
+                ('stale', lambda: reenrich.run(crm, limit=max(10, limit // 5), log=quiet, mode='stale')),
+                ('websites', lambda: site_contacts.run(crm, limit=limit * 2, log=quiet)),
+                ('sos', lambda: sos_backfill.run(crm, log=quiet))):
+            try:
+                print(f'[research] nightly {name}: {step()}')
+            except Exception as exc:
+                print(f'[research] nightly {name} failed: {exc}')
+    threading.Thread(target=_go, daemon=True).start()
 
 
 def _reminder_loop():
@@ -19074,6 +25733,18 @@ def _reminder_loop():
         except Exception as exc:
             print(f'[backup] check failed: {exc}')
         try:
+            _check_research_nightly()
+        except Exception as exc:
+            print(f'[research] check failed: {exc}')
+        try:
+            _check_hail_nightly()
+        except Exception as exc:
+            print(f'[hail] check failed: {exc}')
+        try:
+            _check_crm_digest()
+        except Exception as exc:
+            print(f'[crm-digest] check failed: {exc}')
+        try:
             _check_daily_db_backup()
         except Exception as exc:
             print(f'[backup] database check failed: {exc}')
@@ -19084,6 +25755,10 @@ threading.Thread(target=_reminder_loop, daemon=True).start()
 
 
 # ── Launch ─────────────────────────────────────────────────────────────────
+
+# Isolated, opt-in image-editing workflow. Existing instant previews stay intact.
+from estimator.exterior_rendering import register as _register_realistic_previews
+_register_realistic_previews(sys.modules[__name__])
 
 if __name__ == '__main__':
     import threading, webbrowser

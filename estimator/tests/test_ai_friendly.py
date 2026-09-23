@@ -122,6 +122,51 @@ def test_insurance_view_still_has_json_ld(A):
     assert '<script type="application/ld+json">' in html
 
 
+def _insurance_estimate():
+    est = _retail_estimate()
+    est['estimate_type'] = 'insurance'
+    est['trades']['insurance'] = {'enabled': True, 'carrier': 'State Farm',
+                                  'claim_number': 'X-1',
+                                  'sections': [{'name': 'Roof',
+                                                'items': [{'name': 'Shingles',
+                                                           'acv': 8000,
+                                                           'depreciation': 2000}]}]}
+    return est
+
+
+def test_insurance_view_shows_no_package_warranty_table(A):
+    """A claim sells the one scope the carrier approved. The three-package
+    workmanship table described a choice the customer was never offered, and
+    it sat on the page next to a claim summary with no packages in it."""
+    html = A.build_customer_view(_insurance_estimate(), token='tok-3')
+    assert 'Workmanship Warranty' not in html
+    for pkg in ('Good Package', 'Better Package', 'Best Package'):
+        assert pkg not in html
+
+
+def test_insurance_glance_row_falls_back_to_company_warranty_copy(A):
+    """With no tiered promise to quote, the 'Backed by' line takes the
+    admin-edited warranty body from Settings rather than disappearing."""
+    est = _insurance_estimate()
+    est['selected_tier'] = 'better'      # a leftover from an earlier retail draft
+    html = A.build_customer_view(est, token='tok-3')
+    m = A._build_estimate_manifest(est)
+    body = (m.get('warranty_body') or '').strip()
+    if not body:
+        return                            # nothing configured; nothing to assert
+    assert 'Backed by' in html
+    # The row must NOT be one of the per-tier promises.
+    for promise in A._WARRANTY_BY_TIER.values():
+        assert promise not in html
+
+
+def test_retail_view_keeps_the_package_warranty_table(A):
+    """The insurance carve-out must not take retail with it."""
+    html = A.build_customer_view(_retail_estimate(), token='tok-1')
+    assert 'Workmanship Warranty' in html
+    assert 'Best Package' in html
+
+
 # ── Signed PDF ───────────────────────────────────────────────────────────
 
 def _pdf_text(bytes_):

@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=201">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=248">
 </head>
 <body>
 
@@ -41,38 +41,53 @@
     <span id="save-indicator" class="save-indicator"></span>
     <div class="header-desktop-btns">
       <button onclick="switchPage('home')" class="btn-home" title="Home">🏠</button>
-      <button onclick="openDashboard()" class="btn-dashboard">📊 Dashboard</button>
+      <button onclick="openDashboard()" class="btn-dashboard">📊 Job Board</button>
+      <button onclick="openAnalytics()" class="btn-dashboard btn-analytics">📈 Analytics</button>
       <button onclick="newEstimateAction()">New</button>
       <button onclick="openEstimate()">Open</button>
       <button onclick="openPriceBook()" class="btn-pricebook">📋 Price Book</button>
       <button id="present-btn" onclick="presentEstimate()" class="btn-present">📊 Present</button>
+      <button id="review-btn" onclick="openEstimateReview()" class="btn-secondary"
+              data-demo-hide title="A second estimator reads this job before it goes out">🔍 Review</button>
       <button id="share-btn" onclick="shareEstimate()" class="btn-share">Send / Sign</button>
       <button onclick="doPrint()" class="btn-print">Print / PDF</button>
+      <button onclick="openInvoice()" class="btn-invoice" data-demo-hide title="Plain itemized invoice or quote">🧾 Invoice</button>
       <button onclick="openSettings()" class="btn-settings" title="Settings">⚙</button>
     </div>
-    <button id="save-btn" onclick="saveEstimate()">Save</button>
+    <button id="save-btn" onclick="saveCurrentWork()">Save</button>
     <button id="more-menu-btn" class="more-menu-btn" onclick="toggleMoreMenu()">⋮</button>
     <div class="user-badge" id="user-badge" style="display:none">
+      <!-- Shown only for a demo guest (portal/demo.py). Not decoration: the
+           customers in a demo are invented and the costs are shifted, and an
+           unlabelled demo of a real-looking tool is how a made-up number gets
+           quoted back at us as if it were a real one. -->
+      <span id="demo-badge" class="demo-badge" style="display:none" title="Sample data — invented customers, shifted costs">DEMO</span>
       <span id="user-display-name" class="user-name"></span>
-      <button class="btn-logins" onclick="openLoginsModal()" title="Passwords & team logins">🔑</button>
+      <button class="btn-logins" data-demo-hide onclick="openLoginsModal()" title="Passwords & team logins">🔑</button>
       <!-- Sign Out lives in the portal's switcher bar now (portal/static/shell.js),
            so it is not duplicated here. -->
     </div>
   </div>
   <div id="header-overflow-menu" class="header-overflow-menu">
     <button onclick="switchPage('home');closeMoreMenu()">🏠 Home</button>
-    <button onclick="openDashboard();closeMoreMenu()">📊 Dashboard</button>
+    <button onclick="openDashboard();closeMoreMenu()">📊 Job Board</button>
+    <button onclick="openAnalytics();closeMoreMenu()">📈 Analytics</button>
     <button onclick="switchPage('home');closeMoreMenu();setTimeout(()=>document.getElementById('home-cust-search')?.focus(),200)">📁 Customer Search</button>
     <button onclick="newEstimateAction();closeMoreMenu()">New Estimate</button>
     <button onclick="openEstimate();closeMoreMenu()">Open</button>
+    <button onclick="closeMoreMenu();offerDraftRecovery()">Recover Unsaved Work</button>
     <button id="mm-pricebook" onclick="openPriceBook();closeMoreMenu()">📋 Price Book</button>
     <button onclick="presentEstimate();closeMoreMenu()">📊 Present on Tablet</button>
     <button onclick="shareEstimate();closeMoreMenu()">Send / Sign</button>
     <button onclick="doPrint();closeMoreMenu()">Print / PDF</button>
+    <button data-demo-hide onclick="openInvoice();closeMoreMenu()">🧾 Invoice / Quote</button>
     <button id="mm-settings" onclick="openSettings();closeMoreMenu()">⚙ Settings</button>
-    <button onclick="openLoginsModal();closeMoreMenu()">🔑 Passwords &amp; Logins</button>
-    <button onclick="document.getElementById('roofr-pdf-input').click();closeMoreMenu()">📐 RoofR Import</button>
-    <button onclick="document.getElementById('xact-pdf-input').click();closeMoreMenu()">🏛 Insurance PDF Import</button>
+    <!-- data-demo-hide: reaches an endpoint a demo guest is refused (the team
+         list, the two import parsers). Hidden rather than left to fail, so the
+         guest never clicks something that looks broken. -->
+    <button data-demo-hide onclick="openLoginsModal();closeMoreMenu()">🔑 Passwords &amp; Logins</button>
+    <button data-demo-hide onclick="document.getElementById('roofr-pdf-input').click();closeMoreMenu()">📐 RoofR Import</button>
+    <button data-demo-hide onclick="document.getElementById('xact-pdf-input').click();closeMoreMenu()">🏛 Insurance PDF Import</button>
     <button onclick="openOrderSheet();closeMoreMenu()">📋 Order Sheet</button>
   </div>
 </header>
@@ -276,6 +291,17 @@
       <div id="home-content"></div>
     </div>
 
+    <!-- ── Job Board and Analytics: full-screen pages, not modals ──── -->
+    <!-- They were one 860px modal, which meant a closed estimate list and a
+         chart squeezed into a popup. body.is-board hides the sidebar and the
+         estimate tab strip for both. -->
+    <div id="page-dashboard" class="page page-board" style="display:none">
+      <div id="dashboard-body" class="board-body"></div>
+    </div>
+    <div id="page-analytics" class="page page-board page-analytics" style="display:none">
+      <div id="analytics-body" class="an-body"></div>
+    </div>
+
     <!-- ── Customer hub (per-client landing: estimate or documents) ── -->
     <!-- The customer screen. Identity, notes, every estimate they have, and
          their files, on one page. Documents used to be a second page behind a
@@ -320,10 +346,19 @@
 
     <!-- ── Page 8: Pricing (per-trade line items) ────────────────── -->
     <div id="page-pricing" class="page" style="display:none">
+      <!-- Job-level margin check. Lives ABOVE the tab bar on purpose: the
+           number is for the whole estimate, not the trade tab you happen to
+           have open, and the customer picks the package so the figure shown
+           is the WORST one on offer. Rendered by renderMarginBanner(). -->
+      <div id="margin-floor-banner"></div>
       <div id="trade-tabs">
         <div class="tab-bar" id="tab-bar"></div>
         <div id="trade-content"></div>
       </div>
+      <!-- Optional upgrades the homeowner elects at signing. Job-level like
+           the margin banner above, so it sits outside the trade tabs: an
+           upgrade belongs to the job, not to one trade's tab. -->
+      <div id="upgrades-panel"></div>
       <div id="cost-profit-panel"></div>
     </div>
 
@@ -418,21 +453,36 @@
       <h2>⚙ Settings</h2>
       <button onclick="closeSettings()" class="modal-close">×</button>
     </div>
+    <!-- Settings was one long scroll of eight unrelated editors. Tabs, built by
+         renderSettingsTabs() from whichever panes this user's role actually
+         permits — which is also what finally makes the role gating real: the
+         `hidden` class these panes carried matched no rule in style.css, so
+         every MANAGER had been seeing the admin-only contract and proposal
+         editors. (Reps never reach here — applyRoleGates hides the Settings
+         button from them outright.) -->
+    <div class="settings-tabs" id="settings-tabs"></div>
     <div class="settings-body">
-      <div class="field-group">
-        <label>Shingle Color Options <span class="note-tag">one per line — shown to customers at signing</span></label>
-        <textarea id="settings-colors" rows="12" spellcheck="false"></textarea>
+      <!-- FALLBACK list, not the master list. A customer signing normally sees
+           the colors of the material actually being installed (the Contract
+           tab's "Material being installed" picker, or the selected package's
+           bundle). This list only fills in when that material carries no
+           palette of its own. See _customer_color_options in app.py. -->
+      <div id="settings-general" class="settings-pane">
+        <div class="field-group">
+          <label>Shingle Color Options <span class="note-tag">one per line — fallback only, for materials with no colors of their own</span></label>
+          <textarea id="settings-colors" rows="12" spellcheck="false"></textarea>
+        </div>
+        <div class="field-group" style="max-width:220px">
+          <label>Default Waste % <span class="note-tag">applied to new estimates</span></label>
+          <input type="number" id="settings-waste" min="0" max="50" step="1">
+        </div>
       </div>
-      <div class="field-group" style="max-width:220px">
-        <label>Default Waste % <span class="note-tag">applied to new estimates</span></label>
-        <input type="number" id="settings-waste" min="0" max="50" step="1">
-      </div>
-      <div id="settings-gbb" class="field-group hidden">
+      <div id="settings-gbb" class="field-group settings-pane hidden">
         <label>📦 Good / Better / Best Package Content <span class="note-tag">per product — pre-fills the Options tab whenever a product is offered as G/B/B</span></label>
         <div class="gbb-set-tabs" id="gbb-set-tabs"></div>
         <div id="gbb-set-body"></div>
       </div>
-      <div id="settings-jurisdictions" class="field-group hidden">
+      <div id="settings-jurisdictions" class="field-group settings-pane hidden">
         <label>🏛 Permit Jurisdictions &amp; Code <span class="note-tag">manager only — powers the Scope-page jurisdiction panel (statewide Colorado)</span></label>
         <label class="jxset-sub">Colorado code baseline <span class="note-tag">shown for every jurisdiction — one code point per line</span></label>
         <textarea id="jxset-baseline-points" rows="6" spellcheck="true"></textarea>
@@ -457,7 +507,7 @@
           <div class="field-group"><label>Extra scope-gap items <span class="note-tag">same format as the baseline checklist — reusing a baseline label overrides it here</span></label><textarea id="jxset-items" rows="4" spellcheck="false"></textarea></div>
         </div>
       </div>
-      <div id="settings-fastening" class="field-group hidden">
+      <div id="settings-fastening" class="field-group settings-pane hidden">
         <label>🔩 Commercial Fastening Table <span class="note-tag">manager only — drives the fastener counts on every commercial estimate</span></label>
         <div class="jxset-help" id="fastenset-note"></div>
         <div class="field-row">
@@ -487,8 +537,17 @@
         <textarea id="fastenset-rows" rows="8" spellcheck="false"
           placeholder="90 | FM 1-90 | 5,8,12 | 8,12 | 5,12 | 5,6"></textarea>
       </div>
-      <div id="settings-company" class="field-group hidden">
+      <div id="settings-company" class="field-group settings-pane hidden">
         <label>Customer Proposal — Company Content <span class="note-tag">admin only — shown on every customer signing page</span></label>
+        <!-- company_content.json lives on the volume and is NOT in the repo, so
+             a rebuilt volume comes up with all four blocks blank and every
+             proposal quietly ships without them. Shown only when that has
+             actually happened. -->
+        <div id="cc-empty-warn" class="cc-empty-warn" style="display:none">
+          ⚠️ <strong>Nothing is set here.</strong> Every customer proposal is going
+          out with no About Us, Warranty, Certifications or Reviews — the sections
+          that justify the price. Fill these in below and save.
+        </div>
         <div class="cc-block">
           <label class="cc-toggle"><input type="checkbox" id="cc-about-on"> 🏠 About Us</label>
           <input type="text" id="cc-about-title" class="cc-title" placeholder="Section title (default: About Us)">
@@ -510,7 +569,32 @@
           <textarea id="cc-reviews-items" rows="5" spellcheck="true" placeholder="One review per line:  stars | name | review text&#10;5 | Sarah M. | Fast, clean, and the roof looks amazing."></textarea>
         </div>
       </div>
-      <div id="settings-contract" class="field-group hidden">
+      <div id="settings-crew" class="field-group settings-pane hidden">
+        <label>Crew Documents <span class="note-tag">manager only — what the work order prints for the crew on the roof</span></label>
+        <div class="cc-block">
+          <label class="cc-toggle">
+            <input type="checkbox" id="set-wo-bilingual">
+            🇲🇽 Spanish beside the English on the work order
+          </label>
+          <div class="note-tag">English stays first and stays the authority — it is what the
+          contract, the inspector and the office speak. Printing both means a bad line is
+          visible to anyone who glances at the sheet. Labels come from a fixed table; only
+          the rep's crew notes are translated, and a translation that changed a figure is
+          refused and prints English only.</div>
+        </div>
+      </div>
+      <div id="settings-margin" class="field-group settings-pane hidden">
+        <label>Margin Floors <span class="note-tag">manager only — checked against realized margin, (sell − cost) ÷ sell, on the LOWEST-margin package the customer is offered</span></label>
+        <div class="cc-block">
+          <label class="cc-toggle">⚠️ Warning threshold <span class="note-tag">amber banner on the Pricing tab; the estimate still sends</span></label>
+          <input type="number" id="set-margin-warn" min="0" max="99" step="1" placeholder="35">
+        </div>
+        <div class="cc-block">
+          <label class="cc-toggle">⛔ Hard floor <span class="note-tag">below this, only a manager can send or email the estimate. 0 turns it off. Residential only — insurance and commercial are exempt.</span></label>
+          <input type="number" id="set-margin-block" min="0" max="99" step="1" placeholder="30">
+        </div>
+      </div>
+      <div id="settings-contract" class="field-group settings-pane hidden">
         <label>Contract &amp; Customer Initials <span class="note-tag">admin only — applied to every NEW estimate anyone creates (existing estimates keep their own text)</span></label>
         <div class="cc-block">
           <label class="cc-toggle">📜 Retail Contract — Terms &amp; Conditions</label>
@@ -537,6 +621,36 @@
           <textarea id="set-initials-comm" rows="4" spellcheck="true"></textarea>
         </div>
       </div>
+      <!-- Acts immediately on its own buttons — nothing here waits for
+           ✓ Save Settings, because creating a link that only exists after a
+           second click somewhere else is how you hand out a dead URL. -->
+      <div id="settings-demo" class="field-group settings-pane hidden">
+        <label>Demo Link <span class="note-tag">admin only — one link that opens this tool with sample data for someone outside the company</span></label>
+        <div class="cc-block">
+          <p class="note-tag" style="margin:0 0 8px">
+            Sample customers, sample estimates, and material costs shifted off
+            the real book. No customer, team or account data is reachable, and
+            nothing the guest does sends email or reaches the CRM. Anyone with
+            the link can open it — treat it like a signing link.
+          </p>
+          <div id="demo-link-state"></div>
+          <div class="cc-block" style="margin-top:10px">
+            <button type="button" class="btn-secondary" id="demo-link-create"
+              onclick="createDemoLink()">🔗 Create demo link</button>
+            <button type="button" class="btn-secondary" id="demo-link-copy"
+              onclick="copyDemoLink()" style="display:none">📋 Copy</button>
+            <button type="button" class="btn-secondary" id="demo-link-revoke"
+              onclick="revokeDemoLink()" style="display:none">⛔ Revoke</button>
+          </div>
+        </div>
+      </div>
+      <div id="settings-import-failures" class="field-group settings-pane hidden">
+        <label>📥 Carrier Import Failures <span class="note-tag">admin only — carrier PDFs that would not parse or did not add up to the carrier's own total; the newest 50 are kept</span></label>
+        <div class="jxset-help">Each one is a column layout the importer still has to learn. Download it,
+          add it to the local <code>carrier_samples</code> folder, fix the importer until
+          <code>scripts/check_carrier_pdfs.py</code> passes, then delete it here.</div>
+        <div id="cif-list"></div>
+      </div>
     </div>
     <div class="settings-footer">
       <button id="test-notif-btn" class="btn-secondary" onclick="testSignatureNotification()" style="margin-right:auto">📧 Test Email Notification</button>
@@ -546,18 +660,7 @@
   </div>
 </div>
 
-<!-- ── Dashboard modal ──────────────────────────────────────────────── -->
-<div id="dashboard-modal" class="modal hidden" onclick="maybeCloseDashboard(event)">
-  <div class="modal-box dash-modal-box">
-    <div class="modal-header">
-      <h2>📊 Estimate Dashboard</h2>
-      <button onclick="closeDashboard()" class="modal-close">×</button>
-    </div>
-    <div id="dashboard-body" class="dashboard-body"></div>
-  </div>
-</div>
-
-<!-- ── Sales goals modal (manager+, opened from the analytics tab) ───── -->
+<!-- ── Sales goals modal (manager+, opened from the analytics page) ──── -->
 <div id="goals-modal" class="modal hidden" onclick="maybeCloseGoals(event)">
   <div class="modal-box goals-modal-box">
     <div class="modal-header">
@@ -568,6 +671,71 @@
     <div class="settings-footer">
       <button class="btn-secondary" onclick="closeGoalEditor()">Cancel</button>
       <button class="btn-primary" onclick="saveGoals()">✓ Save Goals</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Price book audit ─────────────────────────────────────────────── -->
+<!-- Everything the tool says about money is derived from the price book, so a
+     wrong cost is not one wrong number. This finds the SHAPE of an error (no
+     cost, a unit that disagrees with its measure) and never the right value —
+     what a square of shingles costs is between the manager and the invoice. -->
+<!-- ── Estimate review ──────────────────────────────────────────────────
+     Informs, never blocks. `_margin_floor_block` is the one thing that stops
+     an estimate leaving; a second gate that disagreed with the first is how a
+     rep ends up unable to send a job neither of them can explain. -->
+<div id="review-modal" class="modal hidden" onclick="maybeCloseReview(event)">
+  <div class="modal-box pbaudit-modal-box">
+    <div class="modal-header">
+      <h2>🔍 Review Before Sending</h2>
+      <div class="modal-header-actions">
+        <button class="btn-secondary" onclick="window.print()">🖨 Print</button>
+        <button onclick="closeEstimateReview()" class="modal-close">×</button>
+      </div>
+    </div>
+    <div id="review-body" class="settings-body"></div>
+  </div>
+</div>
+
+<div id="pbaudit-modal" class="modal hidden" onclick="maybeClosePbAudit(event)">
+  <div class="modal-box pbaudit-modal-box">
+    <div class="modal-header">
+      <h2>🔍 Price Book Audit</h2>
+      <div class="modal-header-actions">
+        <button class="btn-secondary" onclick="reviewCostClasses()"
+                id="ccr-btn" title="Check which costs are filed as materials and which as labor">⚖️ Check Material/Labor</button>
+        <button class="btn-secondary" onclick="window.print()">🖨 Print</button>
+        <button onclick="closePbAudit()" class="modal-close">×</button>
+      </div>
+    </div>
+    <div id="ccr-body"></div>
+    <div id="pbaudit-body" class="settings-body"></div>
+  </div>
+</div>
+
+<!-- ── Lost-reason modal ────────────────────────────────────────────── -->
+<!-- Asked once, when a rep marks an estimate lost. Options are rendered from
+     /api/lost-reasons so the picker cannot drift from the validator that
+     accepts its value. Cancelling leaves the outcome unchanged. -->
+<div id="lost-modal" class="modal hidden" onclick="maybeCloseLostModal(event)">
+  <div class="modal-box lost-modal-box">
+    <div class="modal-header">
+      <h2>Why did we lose this one?</h2>
+      <button onclick="closeLostModal()" class="modal-close">×</button>
+    </div>
+    <div class="settings-body">
+      <p class="lost-lede">Thirty seconds here is the difference between knowing
+        our close rate and knowing what to do about it.</p>
+      <div id="lost-reason-list" class="lost-reason-list"></div>
+      <div class="field-group">
+        <label>Anything worth remembering? <span class="note-tag">optional — who we lost to, how far apart we were</span></label>
+        <textarea id="lost-note" rows="3" spellcheck="true"
+          placeholder="Beat us by $2,400 on a 24sq tear-off…"></textarea>
+      </div>
+    </div>
+    <div class="settings-footer">
+      <button class="btn-secondary" onclick="closeLostModal()">Cancel</button>
+      <button class="btn-primary" id="lost-save-btn" onclick="confirmLostReason()" disabled>Mark Lost</button>
     </div>
   </div>
 </div>
@@ -630,10 +798,12 @@
 <div id="vent-cutin-modal" class="modal hidden" onclick="maybeCloseVentCutin(event)">
   <div class="modal-box ann-modal-box">
     <div class="modal-header">
-      <h2>🖍️ Mark Ridge-Vent Cut-In</h2>
+      <!-- One editor, two maps: openVentCutinEditor('ridge'|'intake') rewrites
+           the title, help and save label from VENT_MAP_MODES. -->
+      <h2 id="vent-cutin-title">🖍️ Mark Ridge-Vent Cut-In</h2>
       <button onclick="closeVentCutinEditor()" class="modal-close">×</button>
     </div>
-    <p class="vent-cutin-help">Highlight the ridge segments the crew cuts open for ventilation, then stamp the linear footage. Ridge vent still runs the full ridge — this marks only what gets cut in.</p>
+    <p class="vent-cutin-help" id="vent-cutin-help">Highlight the ridge segments the crew cuts open for ventilation, then stamp the linear footage. Ridge vent still runs the full ridge — this marks only what gets cut in.</p>
     <div class="ann-toolbar">
       <div class="ann-tool-group">
         <button class="ann-tool-btn active" id="vent-tool-line"  onclick="setVentTool('line')"  title="Highlighter">🖍️ Highlight</button>
@@ -660,7 +830,7 @@
     </div>
     <div class="ann-modal-footer">
       <button class="btn-secondary" onclick="closeVentCutinEditor()">Cancel</button>
-      <button class="btn-primary"   onclick="saveVentCutin()">✓ Save Cut-In Map</button>
+      <button class="btn-primary"   onclick="saveVentCutin()" id="vent-cutin-save">✓ Save Cut-In Map</button>
     </div>
   </div>
 </div>
@@ -671,6 +841,7 @@
     <div class="modal-header">
       <h2>📋 Price Book</h2>
       <div class="modal-header-actions">
+        <button class="btn-secondary" onclick="openPriceBookAudit()">🔍 Audit</button>
         <button class="btn-secondary" onclick="openExteriorCatalog()">🎨 Exterior Catalog</button>
         <button onclick="closePriceBook()" class="modal-close">×</button>
       </div>
@@ -732,7 +903,7 @@
 <input type="file" id="cover-photo-input" accept="image/*" style="display:none">
 
 <!-- hidden input for RoofR PDF import -->
-<input type="file" id="roofr-pdf-input" accept=".pdf" style="display:none" onchange="importRoofrPdf(this)">
+<input type="file" id="roofr-pdf-input" accept="application/pdf,.pdf" style="display:none" onchange="importRoofrPdf(this)">
 
 <!-- ── RoofR Import preview modal ────────────────────────────────────── -->
 <div id="roofr-modal" class="modal hidden" onclick="maybeCloseRoofrModal(event)">
@@ -746,7 +917,7 @@
 </div>
 
 <!-- hidden input for insurance (Xactimate / Symbility) PDF import -->
-<input type="file" id="xact-pdf-input" accept=".pdf" style="display:none" onchange="importXactPdf(this)">
+<input type="file" id="xact-pdf-input" accept="application/pdf,.pdf" style="display:none" onchange="importXactPdf(this)">
 
 <!-- ── Insurance estimate import review modal ────────────────────────── -->
 <div id="xact-modal" class="modal hidden" onclick="maybeCloseXactModal(event)">
@@ -762,6 +933,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=201"></script>
+<script src="/estimate/static/app.js?v=248"></script>
 </body>
 </html>

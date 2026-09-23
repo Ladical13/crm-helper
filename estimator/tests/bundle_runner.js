@@ -89,16 +89,25 @@ function grabConst(name) {
 }
 
 const CONSTS = ['TIERS', 'BUNDLE_TRADES', 'SIMPLE_MODE_TRADES', 'MODE_DEFAULT_FLIPPED', 'DEFAULT_RATE',
-                'SIDING_PROFILE_FACTORS', 'SIDING_BUNDLE_PROFILES', 'SIDING_PROFILE_LABELS'];
+                'SIDING_PROFILE_FACTORS', 'SIDING_BUNDLE_PROFILES', 'SIDING_PROFILE_LABELS',
+                'CATALOG_RANK_LAST', 'PRODUCT_VARIANTS'];
 const NAMES = ['isBundleTrade', 'effectiveTradeMode', '_tradeCatalog', '_tradeBundles',
-               '_tradeBundle', 'bundleFeatures', 'bundleDescription', '_rateValue', '_resolveRate', 'tradeRate', 'tierRate',
+               '_tradeBundle', 'featuresFromCatalog', 'bundleFeatures', 'bundleDescription', '_rateValue', '_resolveRate', 'tradeRate', 'tierRate',
                'tradeTier', 'simpleApplyMargin', 'applyBundleToTier', 'seedTradeBundles',
                'defaultSimpleBundle', 'buildSimpleItemsFromBundle', 'applyBundleToSimple',
                'buildBundleDefaults', '_carryItemIdentity', 'setTradeMode',
                '_commBundleId', '_commAttachProfileForBundle',
                '_commAttachProfile', '_syncCommAttachment',
                // Buildings on a complex — applyBundleToSimple rebuilds per building.
-               'estStructures', 'tradeStructures', 'itemSection'];
+               'estStructures', 'tradeStructures', 'itemSection',
+               // Standard order: a bundle row lands in its price-book position.
+               'tradeSections', 'catalogRank', '_itemGroupName',
+               'insertByCatalogOrder', 'sortTradeItemsStandard',
+               // Moving a section moves its block of line items with it.
+               'groupedTradeItems', 'structureNamed',
+               'canMoveTradeSection', 'moveTradeSection',
+               // Swappable products (polyiso thickness) — survive a system swap.
+               'variantSlot', 'variantRowFor', 'liSwapVariant'];
 
 const scenario = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 
@@ -117,7 +126,9 @@ const harness = `
   // for _commAttachProfile to fall through to the product attach tags.
   // (No backticks in this harness string - it is itself a template literal.)
   let _fastenTable = null;
+  function rerender() {}
   function renderTabBar() {}
+  function renderScopePage() {}
   function seedTradeFromDefaults() {}
   function _syncLegacyTier() {}
   function tradeTierContent(trade) {
@@ -137,6 +148,13 @@ const body = `
     else if (o.op === 'buildDefaults') buildBundleDefaults(o.trade);
     else if (o.op === 'applySimpleBundle') applyBundleToSimple(o.trade, o.id);
     else if (o.op === 'setMode') setTradeMode(o.trade, o.mode);
+    else if (o.op === 'swapVariant') liSwapVariant(o.trade, o.item, o.pid);
+    else if (o.op === 'sortStandard') sortTradeItemsStandard(o.trade);
+    else if (o.op === 'moveSection') moveTradeSection(o.trade, o.idx, o.dir);
+    // Whether the arrow should be live at all, for asserting on the ends.
+    else if (o.op === 'canMoveSection') S._probe = canMoveTradeSection(o.trade, o.idx, o.dir);
+    // The What's Included list a bundle builds, for asserting on the rule.
+    else if (o.op === 'features') S._probe = bundleFeatures(o.trade, _tradeBundle(o.trade, o.id));
     // Resolves which system the estimate is actually selling and writes the
     // answer into S.measurements, so a test can assert on it.
     else if (o.op === 'syncAttach') {

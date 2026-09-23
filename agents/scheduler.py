@@ -24,11 +24,27 @@ from . import config
 # needs to be finer than an hour, since jobs are scheduled to the hour.
 TICK_SECONDS = 600
 
+# A job whose weekday is this runs EVERY day. `_claim` already refuses a second
+# run on a date it has already stamped, so daily needed no new bookkeeping —
+# only for `_due` to stop insisting on one weekday.
+#
+# Nothing uses it today. The storm ingest was going to, until `_check_hail_nightly`
+# turned up in the estimator's hourly loop already doing that job — and that
+# loop runs unconditionally, where this scheduler is off unless
+# `NIMBUS_SCHEDULER=1`. Two nightly ingests would have re-fetched the same days
+# twice. Kept because `_due` supports it and a test pins it, so the next daily
+# job is a one-line schedule rather than a change to the runner.
+DAILY = -1
+
+
 DEFAULT_JOBS = [
     # name,           weekday (0=Mon), hour UTC
     ('seo_weekly',    0, 6),    # Monday 06:00 UTC — report ready before the day
     ('content_listen', 0, 5),   # an hour earlier, so the SEO run sees its topics
     ('social_weekly', 1, 6),    # Tuesday, after a human has read Monday's queue
+    # Thursday, so next week's events are on the list while there is still
+    # time to register for them. One Perplexity search per configured city.
+    ('events_weekly', 3, 7),
 ]
 
 _thread = None
@@ -72,7 +88,10 @@ def _due(job, now):
     """True when this job should run and has not already run this cycle."""
     if not job['enabled']:
         return False
-    if now.weekday() != int(job['weekday']) or now.hour < int(job['hour_utc']):
+    weekday = int(job['weekday'])
+    if weekday != DAILY and now.weekday() != weekday:
+        return False
+    if now.hour < int(job['hour_utc']):
         return False
     last = job['last_run_at'] or ''
     if not last:
@@ -129,15 +148,49 @@ def _job_content_listen():
 
 
 def _job_social_weekly():
-    from .content import posts
+    from .content import posts, fun
     out = posts.weekly_run()
-    return out.get('note', '')
+    note = out.get('note', '')
+    try:
+        # The fun lineup rides along: Friday Funnies plus one rotating series.
+        note += ' · ' + fun.weekly_run().get('note', '')
+    except Exception as e:                       # fun must never sink the real posts
+        note += f' · fun posts failed: {e}'
+    return note
+
+
+def _job_events_weekly():
+    """Find next month's networking events.
+
+    Deliberately scores WITHOUT partner counts: the scheduler has no session,
+    and Nimbus reads the CRM over HTTP with the caller's cookie rather than
+    reaching into salescrm.db. The dashboard's Re-rank makes them gap-aware
+    once a human is there with a session. Finding them is the part that has to
+    happen on a schedule; ranking them is the part that can wait for a reader.
+    """
+    from . import config, events
+    settings = config.load_settings()
+    cities = settings.get('event_cities') or []
+    if not cities:
+        return 'no event_cities configured — nothing searched'
+    out = events.run(cities, service_cities=cities)
+    events.purge_past()
+    note = (f'{out["added"]} new, {out["updated"]} refreshed '
+            f'across {len(out["cities"])} city(ies)')
+    if out.get('stopped_early'):
+        note += f' — stopped early: {out["stopped_early"]}'
+    if out.get('errors'):
+        note += f' — {len(out["errors"])} city(ies) failed'
+    return note
+
+
 
 
 JOBS = {
     'seo_weekly':     _job_seo_weekly,
     'content_listen': _job_content_listen,
     'social_weekly':  _job_social_weekly,
+    'events_weekly':  _job_events_weekly,
 }
 
 
@@ -150,10 +203,25 @@ def run_due(now=None):
         name = job['name']
         if name not in JOBS or not _due(job, now):
             continue
+        from . import jobs as progress
+        job_id = None
+        if name in ('seo_weekly', 'social_weekly'):
+            try:
+                job_id = progress.claim('seo' if name == 'seo_weekly' else 'social')
+            except progress.Busy:
+                continue  # retry on the next tick; do not consume this week's run
         if not _claim(name, now):
+            if job_id is not None:
+                progress.finish(job_id, {'ok': True, 'note': 'Schedule already handled.'})
             continue        # another worker got there first
         try:
-            summary = JOBS[name]()
+            if job_id is None:
+                summary = JOBS[name]()
+            else:
+                result = progress.execute(job_id, JOBS[name])
+                if not result.get('ok'):
+                    raise RuntimeError(result.get('error', 'Job failed'))
+                summary = result.get('note', '')
             _finish(name, 'ok', summary)
             ran.append(name)
         except Exception as e:                                   # noqa: BLE001

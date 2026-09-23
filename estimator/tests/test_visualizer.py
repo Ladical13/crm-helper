@@ -672,7 +672,8 @@ def test_landmark_migrates_legacy_visuals_without_touching_price_or_custom_rows(
     assert live['colors'] == A._LANDMARK_COLORS
     assert live['bullets'] == A._LANDMARK_BULLETS
     bundle = next(b for b in pb['roofing_bundles'] if b['id'] == 'b_landmark')
-    assert 'Class 3 impact resistance' in bundle['description']
+    assert bundle['description'] == next(
+        b['description'] for b in A.ROOFING_BUNDLES_SEED if b['id'] == 'b_landmark')
     official = [r for r in pb['exterior_catalog']
                 if r['product'] == 'Landmark'
                 and r['style'] == 'Architectural Shingle']
@@ -762,7 +763,8 @@ def test_iko_nordic_migrates_legacy_visuals_without_touching_price_or_custom_row
     assert live['colors'] == A._IKO_NORDIC_COLORS
     assert live['bullets'] == A._IKO_NORDIC_BULLETS
     bundle = next(b for b in pb['roofing_bundles'] if b['id'] == 'b_iko_nordic')
-    assert 'ArmourZone' in bundle['description']
+    assert bundle['description'] == next(
+        b['description'] for b in A.ROOFING_BUNDLES_SEED if b['id'] == 'b_iko_nordic')
     official = [r for r in pb['exterior_catalog']
                 if r['product'] == 'IKO Nordic'
                 and r['style'] == 'Performance Shingle']
@@ -933,10 +935,30 @@ def test_detection_converts_binary_masks_to_alpha_and_rejects_low_confidence(det
         detector.combine_masks({'masks': [{'url': 'https://untrusted.invalid/image.png'}]}, (3, 2))
 
 
+def test_detection_feathers_only_the_mask_boundary_and_keeps_thin_surfaces(detector):
+    from PIL import Image
+    mask = Image.new('L', (16, 16), 0)
+    # A solid surface plus a one-pixel component exercises both smooth edges
+    # and the fascia/gutter case that must not disappear during cleanup.
+    for y in range(5, 11):
+        for x in range(5, 11):
+            mask.putpixel((x, y), 255)
+    mask.putpixel((2, 8), 255)
+    result = detector.combine_masks(
+        {'masks': [{'url': _image_uri(mask)}], 'scores': [0.95]}, (16, 16))
+    alpha = detector.decode_image(result['mask']).getchannel('A')
+    assert alpha.getpixel((8, 8)) == 255
+    assert alpha.getpixel((2, 8)) == 255
+    assert alpha.getpixel((0, 0)) == 0
+    assert 0 < alpha.getpixel((4, 8)) < 255
+
+
 @pytest.mark.parametrize(('role', 'prompt'), [
     ('roof', 'roof'),
     ('siding', 'exterior wall siding'),
-    ('trim', 'fascia boards, window trim, door trim, corner trim'),
+    ('trim', ('exterior trim boards including fascia at roof eaves, sloped '
+              'gable rake boards and bargeboards, window trim, door trim, '
+              'and corner trim')),
     ('soffit', 'soffit under roof eaves'),
     ('door', 'entry door'),
 ])
@@ -1179,6 +1201,7 @@ const context = vm.createContext({
   fetch: async () => ({ok:true, json:async()=>({})}),
   Image: function Image(){},
   S: {estimate_id:'estimate-a', trades:{}},
+  _estimateSaveFlight: null,
   priceBook: {exterior_catalog:[], exterior_doors:[]},
   TIERS:['good','better','best'],
   setDirty(){},
@@ -1259,6 +1282,148 @@ assert.equal(projectedCalls.length,0);
 """)
 
 
+def test_visualizer_uses_separate_high_resolution_output_and_preserves_texture_aspect_in_node():
+    _run_visualizer_ui_node(r"""
+assert.deepEqual(_vzFitSize(4032,3024,_VZ_SOURCE_MAX_SIDE,_VZ_SOURCE_MAX_PIXELS),
+  {width:2048,height:1536});
+const square=_vzFitSize(4000,4000,_VZ_SOURCE_MAX_SIDE,_VZ_SOURCE_MAX_PIXELS);
+assert.ok(square.width < _VZ_SOURCE_MAX_SIDE);
+assert.ok(square.width*square.height <= _VZ_SOURCE_MAX_PIXELS+4000);
+const footprint=_vzTextureFootprint({naturalWidth:512,naturalHeight:442},96,0);
+assert.equal(footprint.width,96);
+assert.ok(Math.abs(footprint.height-82.875)<0.001);
+const rotated=_vzTextureFootprint({naturalWidth:512,naturalHeight:442},96,1);
+assert.ok(Math.abs(rotated.width-82.875)<0.001);
+assert.equal(rotated.height,96);
+""")
+
+
+def test_visualizer_picker_exposes_real_manufacturer_texture_swatches_in_node():
+    _run_visualizer_ui_node(r"""
+const texture='_catalog/et_'+'c'.repeat(32)+'.png';
+priceBook.exterior_catalog=[
+  {category:'roof',active:true,product_id:'iko-nordic',brand:'IKO',product:'Nordic',
+   style:'Performance laminate',color:'Granite Black',hex:'#343536',
+   texture_ref:texture,texture_scale:96}
+];
+S={estimate_id:'estimate-a',trades:{},visualizer:{scope:['roof'],selections:{},
+  elevations:{front:{id:'front',name:'Front',base_image:null,masks:{},tier_renders:{}}},
+  elevation_order:['front'],active_elevation_id:'front'}};
+_vzResetState();vzState.activeTier='better';
+_vzRenderPicker();
+const html=document.getElementById('vz-picker-body').innerHTML;
+assert.match(html,/class="vz-swatch active"/);
+assert.match(html,/aria-pressed="true"/);
+assert.match(html,/loading="lazy"/);
+assert.match(html,/uploads\/_catalog\/et_/);
+assert.match(html,/<optgroup label="IKO">/);
+assert.match(html,/Color list/);
+assert.match(html,/data-vz-picker="roofing" open/);
+""")
+
+
+def test_photo_upload_waits_for_explicit_detection_and_keeps_2048_source_in_node():
+    _run_visualizer_ui_node(r"""
+S={estimate_id:'estimate-a',trades:{},visualizer:{}};
+_vzResetState();vzCapabilities={auto_detect:true};
+globalThis.FileReader=function(){
+  this.readAsDataURL=()=>{this.result='data:image/jpeg;base64,AAAA';this.onload();};
+};
+_vzReadImage=async()=>({naturalWidth:4032,naturalHeight:3024});
+let made=[],detectCalls=0;
+_vzMakeMaskCanvas=(width,height)=>{
+  made.push([width,height]);
+  return {width,height,getContext:()=>({drawImage(){}}),
+    toDataURL:()=> 'data:image/jpeg;base64,AAAA'};
+};
+renderVisualizerPage=async()=>{};
+_vzAutoDetect=async()=>{detectCalls++;};
+await _vzHandleFile({size:100,type:'image/jpeg'});
+assert.deepEqual(made[0],[2048,1536]);
+assert.equal(detectCalls,0,'fal detection must wait for the rep to click Detect');
+assert.ok(vzState.pendingBaseDataUrl);
+const tabs=_vzElevationTabsHtml();
+assert.match(tabs,/ready to save/);
+assert.doesNotMatch(tabs,/needs photo/);
+""")
+
+
+def test_visualizer_can_save_a_photo_before_surface_detection_in_node():
+    _run_visualizer_ui_node(r"""
+S={estimate_id:'estimate-a',trades:{},visualizer:{scope:['roof'],selections:{},
+  elevations:{front:{id:'front',name:'Front',base_image:null,masks:{},tier_renders:{},
+    placements:{version:1,slots:{},concepts:{good:{},better:{},best:{}}}}},
+  elevation_order:['front'],active_elevation_id:'front'}};
+_vzResetState();
+vzState.photoImg={naturalWidth:1600,naturalHeight:900};
+vzState.pendingBaseDataUrl='data:image/jpeg;base64,AAAA';
+vzState.pendingBaseExt='jpg';
+vzState.dirty=true;
+const assets=[];
+_vzPostAsset=async(eid,body)=>{assets.push(body);return {filename:eid+'/base.jpg'};};
+const saved=await _vzSaveAll();
+assert.equal(saved,true);
+assert.deepEqual(assets.map(asset=>asset.kind),['base']);
+assert.equal(vzState.pendingBaseDataUrl,null);
+assert.equal(vzState.dirty,false);
+assert.equal(_vzElevation().base_image,'estimate-a/base.jpg');
+""")
+
+
+def _squash(source):
+    """app.js with every run of whitespace collapsed to one space.
+
+    These assertions pin WIRING — which guard sits in front of which save —
+    and they used to match the source line for line. That made them fail on
+    a reformat: adding `_vzMetaPending(S)` to the navigation guard wrapped
+    the condition across two lines and the test reported the guard missing
+    when it had just been strengthened. A line break is not a regression;
+    match on the squashed text so only a real change to the condition can
+    fail these."""
+    return re.sub(r'\s+', ' ', source)
+
+
+def test_visualizer_save_guards_are_wired_to_header_navigation_and_autosave():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    source = (root / 'static' / 'app.js').read_text(encoding='utf-8')
+    index = (root / 'static' / 'index.html').read_text(encoding='utf-8')
+    flat = _squash(source)
+
+    # The header's Save is the one button that must flush canvas pixels too.
+    assert 'onclick="saveCurrentWork()"' in index
+
+    # Leaving the Studio waits for the dedicated save. Canvas pixels are not
+    # in S yet, and a pending-or-failed meta save is unsaved work just the
+    # same, so both hold navigation.
+    assert ("activePage === 'visualizer' && page !== activePage && "
+            "(_vzHasUnsavedCanvasWork() || _vzMetaPending(S))") in flat
+
+    # Save-on-navigate must not stand in for the visualizer's own save. The
+    # guard above only covers leaving the Studio; this covers navigating
+    # anywhere while a canvas or meta save is still in flight.
+    assert ('if (dirty && S.estimate_id && page !== activePage && '
+            '!_vzBlocksGenericSave()) saveEstimate();') in flat
+
+    # Autosave routes through saveCurrentWork(), which re-checks the block,
+    # and stands down entirely while a canvas operation is running.
+    assert ('if (dirty && S.estimate_id && !_vzHasUnsavedCanvasWork() && '
+            '!(_vzCurrentStateOwnsEstimate() && (vzState.saving || '
+            'vzState.detecting || vzState.proviaUploading))) { '
+            'saveCurrentWork(); }') in flat
+
+    # Only the newest queued save may clear Unsaved, and never while the
+    # visualizer still holds work a generic PUT does not carry.
+    assert ('if (_estimateSaveFlight === flight && S === owner && '
+            '_estimateRevision === revision && !_vzBlocksGenericSave()) '
+            'setClean();') in flat
+    assert 'const snapshot = JSON.stringify(owner);' in source
+    assert '_estimateSaveFlight === flight' in source
+    assert 'if (_estimateSaveFlight?.owner === owner) return' not in source
+    assert "if (!(await saveEstimate()) || state !== vzState" in source
+
+
 def test_exact_placement_scope_controls_rendering_and_save_validity_in_node():
     _run_visualizer_ui_node(r"""
 const cutout = '_catalog/ep_' + 'a'.repeat(32) + '.png';
@@ -1319,11 +1484,13 @@ const emptySlotAlert=alerts.at(-1)||'';
 
 assert.deepEqual({outsideScopeWarps,insideScopeWarps,outOfScopeSaved,outOfScopePosts,
   emptySlotSaved,emptySlotPosts}, {
-  outsideScopeWarps:0,insideScopeWarps:1,outOfScopeSaved:false,outOfScopePosts:0,
-  emptySlotSaved:false,emptySlotPosts:0
+  outsideScopeWarps:0,insideScopeWarps:1,outOfScopeSaved:true,outOfScopePosts:0,
+  emptySlotSaved:true,emptySlotPosts:0
 });
-assert.match(outOfScopeAlert,/No project surfaces or exact products/i);
-assert.match(emptySlotAlert,/No project surfaces or exact products/i);
+// The photo/metadata can be saved, but out-of-scope and unassigned openings
+// must not produce rendered assets or block leaving this elevation.
+assert.equal(outOfScopeAlert,'');
+assert.equal(emptySlotAlert,'');
 """)
 
 
@@ -1737,7 +1904,7 @@ def test_manager_product_cutout_upload_round_trips_through_catalog(client, A):
         assert client.put('/api/exterior-catalog', json={'entries': original}).status_code == 200
 
 
-def test_design_share_is_price_free_and_approval_is_server_managed(client, anon):
+def test_design_share_is_price_free_and_approval_is_server_managed(client, anon, design_studio_on):
     eid = client.post('/api/estimates', json={
         'customer': {'name': 'Ada Lovelace', 'address': '1 Design Way'},
         'status': 'draft',
@@ -1773,7 +1940,9 @@ def test_design_share_is_price_free_and_approval_is_server_managed(client, anon)
         assert '$' not in html and 'Approve selected design' in html
 
         approved = anon.post(f'/design/{token}', data={
-            'approved_tier': 'better', 'approver_name': 'Ada Lovelace', 'agree': 'yes'})
+            'approved_tier': 'better', 'approver_name': 'Ada Lovelace', 'agree': 'yes',
+            'design_hash_better': re.search(
+                r'name="design_hash_better" value="([0-9a-f]+)"', html).group(1)})
         assert approved.status_code == 200
         stored = client.get(f'/api/estimates/{eid}').get_json()
         assert stored['design_approval']['concept_name'] == 'Modern Farmhouse'
@@ -1804,7 +1973,7 @@ def test_design_share_is_price_free_and_approval_is_server_managed(client, anon)
         client.delete(f'/api/estimates/{eid}')
 
 
-def test_design_approval_snapshots_exact_product_placement(client, anon):
+def test_design_approval_snapshots_exact_product_placement(client, anon, design_studio_on):
     eid = client.post('/api/estimates', json={
         'customer': {'name': 'Ada Lovelace'},
     }).get_json()['estimate_id']
@@ -1833,6 +2002,8 @@ def test_design_approval_snapshots_exact_product_placement(client, anon):
         approved = anon.post(f'/design/{token}', data={
             'approved_tier': 'better', 'approver_name': 'Ada Lovelace',
             'agree': 'yes',
+            'design_hash_better': re.search(
+                r'name="design_hash_better" value="([0-9a-f]+)"', review).group(1),
         })
         assert approved.status_code == 200
         stored = client.get(f'/api/estimates/{eid}').get_json()
@@ -1926,7 +2097,7 @@ def _minimal_signed_estimate(eid):
     }
 
 
-def test_signed_pdf_embeds_the_render_when_present(client, A):
+def test_signed_pdf_embeds_the_render_when_present(client, A, design_studio_on):
     """A tier render on the estimate must add a page to the signed PDF —
     the whole point of the feature is that it prints on the contract."""
     eid = client.post('/api/estimates', json={}).get_json()['estimate_id']
@@ -1966,7 +2137,7 @@ def test_signed_pdf_skips_visualizer_page_when_no_renders(A):
 
 # ── /sign page integration ─────────────────────────────────────────────
 
-def test_sign_page_shows_visualizer_img_when_renders_are_saved(client, A):
+def test_sign_page_shows_visualizer_img_when_renders_are_saved(client, A, design_studio_on):
     """When the estimate carries tier_renders, the customer's /sign page
     embeds an <img> tag pointing at /uploads/... so the customer sees the
     rendering before signing."""

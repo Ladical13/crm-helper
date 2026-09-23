@@ -174,17 +174,117 @@ def test_the_ridge_migration_is_guarded_against_modern_estimates():
 
 def test_attic_ventilation_cutin_deficit(A):
     # attic 3000 sf -> required total 1440 sq in, exhaust 720; no turtle vents
-    # -> deficit 720 sq in -> cut-in 720/18 = 40 LF of ridge vent.
+    # -> cut-in 720/18 = 40 LF of ridge vent, 10 four-foot sticks at 72 each.
     v = A.attic_ventilation({'roof_squares': 30, 'turtle_vents': 0})
     assert v['needs_ridge'] is True
     assert round(v['ridge_lf_required'], 2) == 40.0
+    assert v['ridge_sticks'] == 10
 
 
-def test_attic_ventilation_meets_code_with_turtles(A):
-    # Enough turtle vents to cover exhaust -> nothing to cut in.
+def test_existing_box_vents_do_not_shrink_the_ridge(A):
+    """The bug this replaced. Ticking Install Ridge Vent ALSO decks over every
+    turtle vent on the roof, and the ridge was sized on what was left after
+    crediting those same vents: six turtles on a 30 SQ attic ordered 6 sticks —
+    432 sq in against 720 required, 40% short — and ten turtles ordered 288.
+    The vents being removed cannot pay for the ones being installed."""
+    for turtles in (0, 6, 10):
+        v = A.attic_ventilation({'roof_squares': 30, 'turtle_vents': turtles})
+        assert round(v['ridge_lf_required'], 2) == 40.0, turtles
+        assert v['ridge_sticks'] * 72 >= v['required_exhaust'], turtles
+
+
+def _vent_est(items, **meas):
+    m = {'roof_squares': 30, 'turtle_vents': 6, 'ridge_lf': 60, 'eave_lf': 250}
+    m.update(meas)
+    return {'estimate_id': 'nfa-test', 'estimate_type': 'retail',
+            'selected_tier': 'better',
+            'customer': {'name': 'Nina NFA', 'phone': '555-0000',
+                         'address': {'street': '1 A St', 'city': 'Loveland',
+                                     'state': 'CO', 'zip': '80537'}},
+            'signature': {'signed_at': '2026-09-16T00:00:00Z', 'selected_tier': 'better'},
+            'measurements': m,
+            'trades': {'roofing': {'enabled': True, 'mode': 'simple',
+                                   'line_items': items}}}
+
+
+_RIDGE = {'name': 'Ridge Vent', 'unit': 'LF', 'quantity': 10, 'bundle_lf': 4,
+          'bundle_unit': 'sticks', 'vent_role': 'ridge'}
+_PLUGS = {'name': 'Vent Plug', 'unit': 'EA', 'quantity': 6, 'vent_role': 'plugs'}
+_INTAKE = {'name': 'Intake Vent', 'unit': 'LF', 'quantity': 80, 'vent_role': 'intake'}
+
+
+# ── the readout: what this roof ends up with ──────────────────────────────
+
+def test_the_readout_counts_sticks_as_footage(A):
+    """The ridge line is a count of 4-ft STICKS and the NFA is per foot: 10
+    sticks is 40 LF is 720 sq in. Reading the quantity raw would report 180."""
+    n = A._vent_nfa_report(_vent_est([_RIDGE, _PLUGS, _INTAKE]))
+    assert n['ridge_lf'] == 40
+    assert n['exhaust_installed'] == 720
+    assert n['exhaust_required'] == 720
+    assert n['exhaust_short'] == 0
+    assert n['intake_installed'] == 720   # 80 LF x 9
+
+
+def test_plugged_box_vents_do_not_count_toward_exhaust(A):
+    """The Vent Plug line IS the roof losing them — the whole bug in one rule."""
+    plugged = A._vent_nfa_report(_vent_est([_RIDGE, _PLUGS]))
+    kept    = A._vent_nfa_report(_vent_est([_RIDGE]))
+    assert plugged['exhaust_installed'] == 720
+    assert kept['exhaust_installed'] == 720 + 6 * A.NFA_TURTLE_SQIN
+    assert kept['turtles_kept'] == 6
+
+
+def test_the_readout_names_a_shortfall(A):
+    short = A._vent_nfa_report(_vent_est([dict(_RIDGE, quantity=4), _PLUGS]))
+    assert short['exhaust_installed'] == 288      # what the old sizing ordered
+    assert short['exhaust_short'] == 432
+
+
+def test_the_work_order_prints_installed_against_required(A):
+    """A test only fails when someone runs it. This figure fails in front of
+    whoever is standing on the roof."""
+    text = _pdf_text(A.build_production_packet_pdf(
+        _vent_est([_RIDGE, _PLUGS, _INTAKE])))
+    assert 'EXHAUST NFA' in text.upper()
+    assert '720 sq in installed' in text
+    assert 'meets code' in text
+
+
+def test_the_work_order_says_short_when_it_is(A):
+    text = _pdf_text(A.build_production_packet_pdf(
+        _vent_est([dict(_RIDGE, quantity=4), _PLUGS])))
+    assert 'SHORT by 432 sq in' in text
+
+
+def test_the_panel_shows_the_same_figure():
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, '..', 'static', 'app.js'), encoding='utf-8') as fh:
+        js = fh.read()
+    assert 'function ventNfaReport()' in js
+    assert 'ventNfaReport();' in js, 'the Scope panel does not render the readout'
+    assert 'vent-nfa' in js
+
+
+def _pdf_text(raw):
+    import io
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        import pytest as _pt
+        _pt.skip('pypdf not installed')
+    return '\n'.join(p.extract_text() or '' for p in PdfReader(io.BytesIO(raw)).pages)
+
+
+def test_meeting_code_today_is_still_reported(A):
+    """needs_ridge answers a different question — is the roof short AS IT
+    STANDS — and the banner reads it. Sizing is what changed, not that."""
     v = A.attic_ventilation({'roof_squares': 6, 'turtle_vents': 10})
     assert v['needs_ridge'] is False
-    assert v['ridge_lf_required'] == 0
+    # 600 sf -> 288 sq in total, 144 exhaust -> 8 LF if ridge vent is added
+    # anyway, because those ten turtles would be decked over.
+    assert round(v['ridge_lf_required'], 2) == 8.0
 
 
 # ── Workstream E: production packet cut-in section ─────────────────────
@@ -235,3 +335,137 @@ def test_packet_survives_missing_cutin_image(A):
     est = _signed_est(vent_cutin={'image_filename': 'vent-test/nope.jpg', 'notes': ''})
     out = A.build_production_packet_pdf(est)
     assert isinstance(out, bytes) and len(out) > 500
+
+
+# ── The shapes a real report prints that the parser missed ────────────────
+# Found by feeding the parser report shapes it had not been tried against.
+# All fail the same way — silently, with a plausible number or none at all, on
+# an estimate that otherwise looks finished.
+
+def test_roofr_reads_linear_feet_past_a_thousand(A):
+    """Roofr commas any four-digit figure, so a big or multi-structure property
+    prints "1,204ft 3in". The finder demanded `\\d+ft\\s+\\d+in`, which matches
+    nothing in that string, so the key was DROPPED — and because apply does an
+    Object.assign of only the keys present, the estimate kept its zeros. Eaves,
+    valleys, rakes and gutters all priced at 0 LF on exactly the largest jobs
+    we bid, with no error anywhere."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Report summary',
+        'Total roof area 12,480 sqft',
+        'Total eaves 1,204ft 3in',
+        'Total valleys 1,032ft 0in',
+        'Hips + ridges 1,110ft 6in',
+    ]))['measurements']
+    assert meas['eave_lf'] == 1204.25
+    assert meas['valley_lf'] == 1032.0
+    assert meas['ridge_hip_lf'] == 1110.5
+    # Gutters are ordered off the eave run, so they inherit the same fix.
+    assert meas['gutter_lf'] == 1204.25
+
+
+def test_roofr_reads_a_bare_feet_value(A):
+    """Inches are optional. _parse_roofr_lf always carried a bare-feet branch,
+    but the finder's regex could never produce a string that reached it, so a
+    "Total eaves 210ft" line parsed as nothing at all."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Report summary', 'Total roof area 2500 sqft',
+        'Total eaves 210ft', 'Total valleys 60ft',
+    ]))['measurements']
+    assert meas['eave_lf'] == 210.0
+    assert meas['valley_lf'] == 60.0
+
+
+def test_roofr_pitches_come_from_the_summary_not_the_last_structure(A):
+    """Every other measurement is read from the first match at or after the
+    "Report summary" heading; the pitch table was independently read from the
+    LAST table in that same text. Those two rules cannot both be right, and on
+    a report whose summary leads the structure detail they disagree — the
+    detached garage decided low-slope, steep and predominant pitch for the whole
+    house. Here the property is 4,000 sqft (3,000 at 4/12 + 1,000 at 8/12) and
+    the garage is 600 sqft of 2/12: taking the last table billed 6 SQ of rolled
+    roofing that isn't flat and dropped the 10 SQ steep charge entirely."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Report summary',
+        'Total roof area 4,000 sqft',
+        'Total eaves 400ft 0in',
+        'Pitch 4/12 8/12',
+        'Area (sqft) 3000 1000',
+        'Structure 2 - Detached garage',
+        'Total roof area 600 sqft',
+        'Pitch 2/12',
+        'Area (sqft) 600',
+    ]))['measurements']
+    assert meas['roof_squares'] == 40.0        # whole property, as before
+    assert meas['steep_squares'] == 10.0       # the 8/12 area, not the garage's 0
+    assert meas['low_slope_squares'] == 0.0    # the garage's 2/12 is not the house
+    assert meas['predominant_pitch'] == 4      # largest area on the summary table
+
+
+def test_roofr_pitches_still_take_the_last_table_without_a_summary(A):
+    """With no "Report summary" to scope to there is no first-block rule to
+    apply, so the older last-table behaviour has to stay exactly as it was."""
+    meas = A._parse_roofr_pdf(_roofr_pdf([
+        'Total roof area 4,000 sqft',
+        'Pitch 2/12',
+        'Area (sqft) 600',
+        'Pitch 4/12 8/12',
+        'Area (sqft) 3000 1000',
+    ]))['measurements']
+    assert meas['steep_squares'] == 10.0
+    assert meas['low_slope_squares'] == 0.0
+
+
+# ── The import refuses rather than applying gaps as zeros ─────────────────
+
+def test_import_refuses_when_a_core_measurement_did_not_parse(A, client):
+    """A roof always has eaves. Coming back without them means the PARSE failed,
+    and applying that leaves the estimate's eaves — and its gutters, drip edge
+    and starter, all ordered off the eave run — at zero, priced and printed as
+    if measured. Refuse, and say which figure is missing."""
+    import io as _io
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total valleys 60ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 422
+    err = r.get_json()['error']
+    assert 'eaves' in err and 'Nothing was applied' in err
+
+
+def test_import_names_the_measurements_the_report_did_not_carry(A, client):
+    """Non-core gaps don't block — a simple gable really has no valleys — but
+    they are named, because the alternative is a quiet '—' on a preview a rep
+    is scanning for numbers, not for absences."""
+    import io as _io
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total eaves 200ft 0in', 'Total rakes 90ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 200
+    unread = r.get_json()['unread']
+    assert 'valleys' in unread and 'step flashing' in unread
+    assert 'rakes' not in unread            # present in the report
+    assert 'roof area' not in unread        # required keys never land here
+
+
+def test_a_measured_zero_is_an_answer_not_a_gap(A, client):
+    """A report that explicitly states 0ft 0in of valleys has ANSWERED the
+    question. Flagging that as unread trains reps to ignore the banner."""
+    import io as _io
+    pdf = _roofr_pdf(['Report summary', 'Total roof area 3000 sqft',
+                      'Total eaves 200ft 0in', 'Total valleys 0ft 0in'])
+    r = client.post('/api/parse-roofr',
+                    data={'file': (_io.BytesIO(pdf), 'report.pdf')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 200
+    assert r.get_json()['measurements']['valley_lf'] == 0.0
+    assert 'valleys' not in r.get_json()['unread']
+
+
+def test_and_list_reads_like_a_sentence(A):
+    assert A._and_list([]) == ''
+    assert A._and_list(['eaves']) == 'eaves'
+    assert A._and_list(['roof area', 'eaves']) == 'roof area and eaves'
+    assert A._and_list(['roof area', 'eaves', 'valleys']) == 'roof area, eaves and valleys'

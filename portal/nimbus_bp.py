@@ -64,9 +64,11 @@ def _shell():
 @nimbus_bp.route('/rep/<username>')
 @nimbus_bp.route('/marketing/topics')
 @nimbus_bp.route('/marketing/drafts')
+@nimbus_bp.route('/marketing/events')
 @nimbus_bp.route('/marketing/connections')
 @nimbus_bp.route('/marketing/seo')
 @nimbus_bp.route('/marketing/social')
+@nimbus_bp.route('/marketing/studio')
 @nimbus_bp.route('/settings')
 def shell(**_kw):
     return _shell()
@@ -74,8 +76,18 @@ def shell(**_kw):
 
 # ── Local SEO strategist (public research only, read-only) ───────────────────
 
-_seo_lock = threading.Lock()
-_seo_active = {'running': False, 'stage': '', 'manifest': None}
+def _marketing_state(job_id=None):
+    from agents import jobs
+    return jobs.get(job_id) or {'running': False, 'stage': '', 'manifest': None}
+
+
+def _start_marketing(kind, work, dry_run):
+    from agents import jobs
+    try:
+        job_id = jobs.start(kind, work, dry_run)
+    except jobs.Busy as exc:
+        return jsonify({'error': str(exc)}), 409
+    return jsonify({'started': True, 'dry_run': dry_run, 'job_id': job_id}), 202
 
 
 @nimbus_bp.route('/api/seo/runs', methods=['GET'])
@@ -90,46 +102,33 @@ def seo_runs():
             'SELECT id, started_at, finished_at, status, mode, pages_crawled, '
             'recs_created, cost_usd, error, summary FROM seo_runs '
             'ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
-    with _seo_lock:
-        active = dict(_seo_active)
+    active = _marketing_state()
     return jsonify({'runs': [dict(r) for r in rows], 'active': active})
 
 
 @nimbus_bp.route('/api/seo/run', methods=['POST'])
 def seo_run():
-    """Kick off a strategist pass. ``dry_run`` writes nothing at all."""
+    """Kick off a strategist pass; previews save only job progress/results."""
     data = request.get_json(force=True, silent=True) or {}
     dry_run = bool(data.get('dry_run'))
     max_pages = int(data.get('max_pages') or 40)
 
-    with _seo_lock:
-        if _seo_active['running']:
-            return jsonify({'error': 'a run is already in progress'}), 409
-        _seo_active.update({'running': True, 'stage': 'crawling', 'manifest': None})
-
     def worker():
         from agents.seo import run as seo
-        try:
-            manifest = seo.run(dry_run=dry_run, max_pages=max_pages)
-        except Exception as e:                                   # noqa: BLE001
-            manifest = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
-        with _seo_lock:
-            _seo_active.update({'running': False, 'stage': 'done',
-                                'manifest': manifest})
+        return seo.run(dry_run=dry_run, max_pages=max_pages)
 
-    threading.Thread(target=worker, daemon=True).start()
-    return jsonify({'started': True, 'dry_run': dry_run}), 202
+    return _start_marketing('seo', worker, dry_run)
 
 
 @nimbus_bp.route('/api/seo/result', methods=['GET'])
 def seo_result():
-    """The last finished run's manifest — how a dry run is read back.
-
-    A dry run persists nothing, so this in-process handoff is the only place
-    its output exists.
-    """
-    with _seo_lock:
-        return jsonify(dict(_seo_active))
+    """Shared run progress. An ID keeps polls tied to the requested job."""
+    job_id = request.args.get('job_id', type=int)
+    from agents import jobs
+    state = jobs.get(job_id)
+    if job_id is not None and state is None:
+        return jsonify({'error': 'run not found'}), 404
+    return jsonify(state or _marketing_state())
 
 
 @nimbus_bp.route('/api/seo/report', methods=['GET'])
@@ -292,6 +291,113 @@ def list_connections():
     probe = request.args.get('probe', '1') not in ('0', 'false', 'no')
     return jsonify({'connections': connections.status_all(probe=probe),
                     'summary': connections.summary()})
+
+
+# ── Networking events ────────────────────────────────────────────────────────
+#
+# Which rooms are worth an evening. The list is the easy half; the ranking is
+# the point — an event scores on whether it is full of the partner segment the
+# CRM is THIN on, which is the one thing a search engine cannot tell you.
+
+def _partner_counts():
+    """Active partners per type, read through the CRM's own API.
+
+    Nimbus reaches salescrm over HTTP with the caller's session and never
+    touches `salescrm.db` — the boundary `agents/__init__.py` states. A failed
+    read returns None rather than {}: an empty dict would score every event as
+    though the pipeline had no partners at all, which is exactly the flattering
+    direction, and `score()` already degrades honestly when it is given nothing.
+    """
+    from werkzeug.test import Client
+    from portal.wsgi import application
+
+    cookie = request.cookies.get('p1session')
+    if not cookie:
+        return None
+    try:
+        client = Client(application)
+        client.set_cookie('p1session', cookie, domain='localhost')
+        r = client.get('/crm/api/partners/counts')
+        if r.status_code != 200:
+            return None
+        body = r.get_json() or {}
+    except Exception:
+        return None
+    return {k: (v or {}).get('active', 0)
+            for k, v in (body.get('partner_counts') or {}).items()}
+
+
+@nimbus_bp.route('/api/events', methods=['GET'])
+def list_events():
+    """Upcoming events, best first. Reads the table; never spends anything."""
+    from agents import events
+    include_skipped = request.args.get('skipped', '0') in ('1', 'true', 'yes')
+    rows = events.upcoming(include_skipped=include_skipped,
+                           limit=int(request.args.get('limit') or 60))
+    counts = _partner_counts()
+    return jsonify({
+        'events': rows,
+        'count': len(rows),
+        # Said out loud: with no counts the ranking is still useful but it is
+        # not the gap-aware ranking the page promises, and a reader should be
+        # able to tell which one they are looking at.
+        'partner_counts': counts or {},
+        'gap_aware': bool(counts),
+    })
+
+
+@nimbus_bp.route('/api/events/run', methods=['POST'])
+def run_events():
+    """Search the configured cities and store what comes back."""
+    from agents import config, events
+
+    data = request.get_json(force=True, silent=True) or {}
+    settings = config.load_settings()
+    cities = data.get('cities') or settings.get('event_cities') or []
+    if not cities:
+        return jsonify({'error': 'no cities configured — set event_cities in '
+                                 'Nimbus Settings'}), 400
+    out = events.run(
+        cities,
+        partner_counts=_partner_counts(),
+        service_cities=settings.get('event_cities') or [],
+        limit_per_city=int(data.get('limit_per_city') or 12),
+        force_refresh=bool(data.get('force_refresh')),
+    )
+    out['events'] = events.upcoming(limit=60)
+    return jsonify(out)
+
+
+@nimbus_bp.route('/api/events/rescore', methods=['POST'])
+def rescore_events():
+    """Re-rank stored events against the pipeline as it stands today.
+
+    The scheduled run has no session and so cannot read the CRM; its scores are
+    audience-and-area only. This is what makes them gap-aware, and it is an
+    explicit button rather than a side effect of loading the page.
+    """
+    from agents import events
+    counts = _partner_counts()
+    if not counts:
+        return jsonify({'error': 'could not read partner counts from the CRM'}), 502
+    changed = events.rescore(counts)
+    return jsonify({'changed': changed, 'partner_counts': counts,
+                    'events': events.upcoming(limit=60), 'gap_aware': True})
+
+
+@nimbus_bp.route('/api/events/<int:event_id>', methods=['POST'])
+def decide_event(event_id):
+    """Mark an event going or skipped. Sticky across every later run."""
+    from agents import events
+    decision = ((request.get_json(force=True, silent=True) or {})
+                .get('decision') or '').strip()
+    try:
+        row = events.decide(event_id, decision, user=session.get('username', ''))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if row is None:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify({'event': row})
 
 
 # ── Territories ──────────────────────────────────────────────────────────────
@@ -550,24 +656,11 @@ def social_run():
     dry_run = bool(data.get('dry_run'))
     max_topics = int(data.get('max_topics') or 2)
 
-    with _seo_lock:
-        if _seo_active['running']:
-            return jsonify({'error': 'a run is already in progress'}), 409
-        _seo_active.update({'running': True, 'stage': 'writing posts',
-                            'manifest': None})
-
     def worker():
         from agents.content import posts
-        try:
-            out = posts.weekly_run(max_topics=max_topics, dry_run=dry_run)
-            out['ok'] = True
-        except Exception as e:                                   # noqa: BLE001
-            out = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
-        with _seo_lock:
-            _seo_active.update({'running': False, 'stage': 'done', 'manifest': out})
+        return posts.weekly_run(max_topics=max_topics, dry_run=dry_run)
 
-    threading.Thread(target=worker, daemon=True).start()
-    return jsonify({'started': True, 'dry_run': dry_run}), 202
+    return _start_marketing('social', worker, dry_run)
 
 
 @nimbus_bp.route('/api/social/drafts/<int:draft_id>', methods=['POST'])
@@ -576,6 +669,9 @@ def social_review(draft_id):
     posted it — nothing here publishes anything."""
     from agents import config
     data = request.get_json(force=True, silent=True) or {}
+    from agents.content import studio
+    if studio.is_studio_post(draft_id):
+        return jsonify({'error': 'Review this post in Marketing Studio so its revision and assets are checked.'}), 409
     status = data.get('status')
     if status not in ('draft', 'approved', 'rejected', 'posted'):
         return jsonify({'error': 'unknown status'}), 400
@@ -627,7 +723,7 @@ def list_drafts():
     with config.get_cache_db() as db:
         rows = db.execute(
             f'SELECT id, created_at, platform, topic, draft_text, citations, '
-            f'status, approved_by, approved_at, posted_at '
+            f'status, approved_by, approved_at, posted_at, source '
             f'FROM content_drafts {where} ORDER BY id DESC LIMIT 100',
             params).fetchall()
     out = []
@@ -646,6 +742,9 @@ def update_draft(draft_id):
     """Approve, mark posted, reject, or edit."""
     from agents import config
     data = request.get_json(force=True, silent=True) or {}
+    from agents.content import studio
+    if studio.is_studio_post(draft_id):
+        return jsonify({'error': 'Review this post in Marketing Studio so its revision and assets are checked.'}), 409
     status = data.get('status')
     if status not in ('draft', 'approved', 'posted', 'rejected'):
         return jsonify({'error': 'unknown status'}), 400
@@ -668,12 +767,32 @@ def update_draft(draft_id):
     return jsonify({'ok': True})
 
 
+@nimbus_bp.route('/api/content/fun', methods=['GET'])
+def fun_series():
+    from agents.content import fun
+    return jsonify([{'key': k, 'name': s['name'], 'day': s['day'], 'needs_photo': s['needs_photo']}
+                    for k, s in fun.SERIES.items()])
+
+
+@nimbus_bp.route('/api/content/fun', methods=['POST'])
+def draft_fun():
+    """Draft one fun series post now (Facebook + Instagram), for review."""
+    from agents.content import fun
+    key = (request.get_json(force=True, silent=True) or {}).get('series', '')
+    if key not in fun.SERIES:
+        return jsonify({'error': 'Choose a series'}), 400
+    return _start_marketing('fun-post', lambda: fun.build(key), False)
+
+
 @nimbus_bp.route('/api/content/topics/<int:topic_id>/draft', methods=['POST'])
 def draft_from_topic(topic_id):
     """Draft posts for one saved topic."""
     from agents import config
     data = request.get_json(force=True, silent=True) or {}
-    platforms = data.get('platforms') or ['facebook', 'instagram', 'linkedin']
+    from agents.content import posts
+    platforms = data.get('platforms') or list(posts.DEFAULT_PLATFORMS)
+    if not isinstance(platforms, list) or len(platforms) > len(posts.PLATFORMS) or any(p not in posts.PLATFORMS for p in platforms):
+        return jsonify({'error': 'Choose supported platforms'}), 400
 
     with config.get_cache_db() as db:
         row = db.execute('SELECT * FROM trending_topics WHERE id = ?',
@@ -685,13 +804,9 @@ def draft_from_topic(topic_id):
 
     def wrapped():
         from agents.content import draft
-        try:
-            draft.draft_topic(topic, platforms=tuple(platforms))
-        except Exception:                                            # noqa: BLE001
-            pass
+        return draft.draft_topic(topic, platforms=tuple(dict.fromkeys(platforms)))
 
-    threading.Thread(target=wrapped, daemon=True).start()
-    return jsonify({'started': True}), 202
+    return _start_marketing('topic-drafts', wrapped, False)
 
 
 # ── Supervisor ───────────────────────────────────────────────────────────────
@@ -766,7 +881,10 @@ def supervisor_message(thread_id):
     if ctx is None:
         return jsonify({'error': 'no session cookie to forward'}), 400
 
-    chat.start_turn(thread_id, text, ctx)
+    try:
+        chat.start_turn(thread_id, text, ctx)
+    except chat.Busy as exc:
+        return jsonify({'error': str(exc)}), 409
     return jsonify({'started': True, 'thread_id': thread_id}), 202
 
 
@@ -795,7 +913,7 @@ def supervisor_status():
 
 @nimbus_bp.route('/api/pipeline')
 def pipeline_pulse():
-    """Aggregate open-pipeline + this-week-signed for the dashboard center panel.
+    """All-time pipeline totals for the dashboard center panel.
 
     Calls salescrm's own endpoints via the in-process test client so this
     stays a thin adapter — no duplicated stage/revenue math.
@@ -807,25 +925,11 @@ def pipeline_pulse():
         return jsonify({'error': 'no session cookie'}), 400
     c = Client(application)
     c.set_cookie('p1session', caller_cookie, domain='localhost')
-    r = c.get('/crm/api/leads')
+    r = c.get('/crm/api/pipeline/summary')
     if r.status_code != 200:
-        # Surface an empty pulse rather than a red 500 in the corner of the
-        # dashboard — the CRM might just be empty in a fresh dev environment.
-        return jsonify({'stage_counts': {}, 'open_leads': 0,
-                        'won_this_period': 0, 'won_value': 0, 'open_value': 0})
-    leads = r.get_json() or []
-    stage_counts = {}
-    for l in leads:
-        stage_counts[l.get('stage', 'new')] = stage_counts.get(l.get('stage', 'new'), 0) + 1
-    total_open = sum(v for k, v in stage_counts.items() if k not in ('won', 'lost'))
-    won_leads  = [l for l in leads if l.get('stage') == 'won']
-    won_value  = sum(float(l.get('est_value') or 0) for l in won_leads)
-    open_value = sum(float(l.get('est_value') or 0) for l in leads
-                     if l.get('stage') not in ('won', 'lost'))
-    return jsonify({
-        'stage_counts': stage_counts,
-        'open_leads':   total_open,
-        'won_this_period': len(won_leads),
-        'won_value':    won_value,
-        'open_value':   open_value,
-    })
+        return jsonify({'error': 'Pipeline data is temporarily unavailable'}), 502
+    return jsonify(r.get_json())
+
+
+from portal.studio_routes import register as _register_studio
+_register_studio(nimbus_bp, _start_marketing)

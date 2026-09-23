@@ -78,7 +78,8 @@ def test_instagram_posts_ask_for_a_real_photograph(monkeypatch):
     from agents.content import posts
     _fake_perplexity(monkeypatch)
     pkg = posts.build_package(TOPIC, platforms=('instagram',), dry_run=True)
-    assert 'Photo to shoot' in pkg['posts'][0]['draft_text']
+    assert 'Photo to shoot' not in pkg['posts'][0]['draft_text']
+    assert pkg['posts'][0]['creative']['image_prompt'] == 'A finished roof at dusk'
     assert 'not stock' in pkg['posts'][0]['review_notes']
 
 
@@ -351,3 +352,34 @@ def test_without_bing_the_sections_stay_blocked_and_point_at_it(fake_web,
     md = seo.run(dry_run=True)['report_markdown']
     assert 'Search Console winners and decliners' in md
     assert 'Bing Webmaster Tools would fill part of this' in md
+
+
+def test_a_daily_job_is_due_every_day_not_one_weekday():
+    """`_due` was weekly-only: weekday plus hour, no way to say "every day".
+
+    Nothing is scheduled DAILY today — the storm ingest that needed it turned
+    out to already exist in the estimator's hourly loop. The mechanism stays
+    because it is one line away from being needed again, and an untested
+    branch is one that breaks the first time somebody uses it.
+    """
+    from agents import scheduler
+    job = {'enabled': 1, 'weekday': scheduler.DAILY, 'hour_utc': 9,
+           'last_run_at': ''}
+    for day in range(1, 8):                      # a whole week, at its hour
+        assert scheduler._due(job, datetime(2026, 6, day, 9)) is True
+    assert scheduler._due(job, datetime(2026, 6, 1, 8)) is False, 'ran before its hour'
+
+
+def test_a_weekly_job_is_still_only_due_on_its_day():
+    """The DAILY escape hatch must not have made every job daily."""
+    from agents import scheduler
+    job = {'enabled': 1, 'weekday': 0, 'hour_utc': 6, 'last_run_at': ''}
+    assert scheduler._due(job, datetime(2026, 6, 1, 6)) is True    # Monday
+    assert scheduler._due(job, datetime(2026, 6, 2, 6)) is False   # Tuesday
+
+
+def test_every_scheduled_job_has_a_body():
+    """A job seeded with no entry in JOBS is claimed, runs nothing, and stamps
+    itself successful — a silent no-op with a green status."""
+    from agents import scheduler
+    assert sorted(scheduler.JOBS) == sorted(n for n, _, _ in scheduler.DEFAULT_JOBS)

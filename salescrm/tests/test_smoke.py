@@ -177,21 +177,21 @@ def test_invalid_stage_and_type_rejected(client):
 def test_service_lines(client):
     signup(client)
     roof = new_lead(client, first_name='Roof', est_value=15000)          # defaults to roofing
-    wc = new_lead(client, first_name='Windows', service='window_cleaning', est_value=400)
+    wc = new_lead(client, first_name='Windows', service='gutter_cleaning', est_value=400)
     assert roof['service'] == 'roofing' and roof['service_icon'] == '🏠'
-    assert wc['service'] == 'window_cleaning' and wc['service_label'] == 'Window Cleaning'
+    assert wc['service'] == 'gutter_cleaning' and wc['service_label'] == 'Gutter cleaning'
     # filter
-    only_wc = client.get('/api/leads?service=window_cleaning').get_json()
+    only_wc = client.get('/api/leads?service=gutter_cleaning').get_json()
     assert [l['id'] for l in only_wc] == [wc['id']]
     # dashboard split
     client.patch(f"/api/leads/{wc['id']}/stage", json={'stage': 'won'})
     d = client.get('/api/dashboard').get_json()
     assert d['by_service']['roofing']['open'] == 1
-    assert d['by_service']['window_cleaning']['won'] == 1
-    assert d['by_service']['window_cleaning']['won_value'] == 400
+    assert d['by_service']['gutter_cleaning']['won'] == 1
+    assert d['by_service']['gutter_cleaning']['won_value'] == 400
     # Den project payload carries the service name
     dry = client.post(f"/api/leads/{wc['id']}/convert?dry_run=1").get_json()
-    assert dry['project']['name'].startswith('Window Cleaning - ')
+    assert dry['project']['name'].startswith('Gutter cleaning - ')
 
 
 def test_plans_and_mrr(client):

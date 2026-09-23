@@ -262,15 +262,29 @@ def _text_of(content_blocks):
                        if b.get('type') == 'text' and b.get('text'))
 
 
-def run_turn(thread_id, user_text, ctx):
+class Busy(RuntimeError):
+    pass
+
+
+def _claim_turn(thread_id):
+    with config.get_cache_db() as db:
+        cur = db.execute(
+            "UPDATE supervisor_threads SET status='running', error='', updated_at=? "
+            "WHERE id=? AND status!='running'", (config.now_iso(), thread_id))
+        if not cur.rowcount:
+            raise Busy('That conversation is already working on a message or no longer exists.')
+
+
+def run_turn(thread_id, user_text, ctx, _claimed=False):
     """Run one full turn to completion. Blocking — callers use a thread."""
-    _set_title_if_blank(thread_id, user_text)
-    _append(thread_id, 'user', [{'type': 'text', 'text': user_text}],
-            display=user_text)
-    _set_status(thread_id, 'running')
+    if not _claimed:
+        _claim_turn(thread_id)
 
     turn_cost = 0.0
     try:
+        _set_title_if_blank(thread_id, user_text)
+        _append(thread_id, 'user', [{'type': 'text', 'text': user_text}],
+                display=user_text)
         sup_client.check_cap()
 
         for _ in range(MAX_ITERATIONS):
@@ -354,7 +368,13 @@ def start_turn(thread_id, user_text, ctx):
     of the portal. The UI polls ``get_thread`` instead, which is the same
     shape as every other long job in Nimbus.
     """
+    _claim_turn(thread_id)
     thread = threading.Thread(target=run_turn,
-                              args=(thread_id, user_text, ctx), daemon=True)
-    thread.start()
+                              args=(thread_id, user_text, ctx),
+                              kwargs={'_claimed': True}, daemon=True)
+    try:
+        thread.start()
+    except Exception as exc:
+        _set_status(thread_id, 'error', f'Could not start the message: {exc}')
+        raise
     return thread

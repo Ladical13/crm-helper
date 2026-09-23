@@ -9,6 +9,7 @@ os.environ.setdefault('SALESCRM_DATA_DIR', _TMP)
 # Accounts live in the portal's shared store now, not salescrm.db.
 os.environ.setdefault('PORTAL_DATA_DIR', _TMP)
 os.environ.pop('BASE44_TOKEN', None)   # ensure Den calls degrade gracefully
+os.environ.setdefault('SALESCRM_GEOCODE_ON_EDIT', '0')   # no Census calls from tests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as appmod  # noqa: E402
@@ -22,13 +23,18 @@ from portal import users as pusers      # noqa: E402
 # Every table the app writes. The temp DB is created once per session, not per
 # test, so a table missing here leaks state between tests.
 TABLES = ['leads', 'activities', 'tasks', 'cadence_enrollments',
-          'coaching_notes', 'goals', 'documents', 'suppressions']
+          'coaching_notes', 'goals', 'documents', 'suppressions', 'templates',
+          'dnc_registry', 'offers']
 
 
 def _wipe():
     with appmod.get_db() as db:
         for t in TABLES:
             db.execute(f'DELETE FROM {t}')
+    # The template library is seeded, not written by tests — put the starter
+    # set back so every test sees what a fresh install has.
+    appmod.seed_templates()
+    appmod.seed_offers()
     # Identity lives in the portal store, so it has to be reset here too or
     # the "first user bootstraps as admin" rule leaks across tests.
     with pusers.get_db() as db:

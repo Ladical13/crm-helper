@@ -71,10 +71,10 @@ def test_bundle_colors_switch_manufacturers_across_siding(A):
     edco   = A._bundle_colors_for_tier(pb, est, 'siding', 'best')
 
     assert lp and hardie and edco
-    # EDCO ships the steel-only palette — a name unique to that seed
+    # EDCO ships its own published ENTEX palette — a name unique to that seed
     # is the honest proof that the trade + tier picked its palette.
-    assert 'Musket Brown' in edco
-    assert 'Musket Brown' not in lp
+    assert 'Wickertone' in edco
+    assert 'Wickertone' not in lp
 
 
 def test_bundle_colors_falls_back_to_price_book_default(A):
@@ -89,17 +89,67 @@ def test_bundle_colors_falls_back_to_price_book_default(A):
 
 # ── the customer-facing composition chain ───────────────────────────────
 
-def test_customer_color_options_prefers_bundle_over_reps_typed_list(A):
-    """Bundle colors win. The rep's manual options list becomes a
-    fallback that only fires when the bundle has nothing to say."""
+def test_customer_color_options_appends_the_reps_typed_list(A):
+    """The rep's list ADDS to the material's colors. It used to be a
+    fallback that only fired when the bundle had nothing to say — which
+    for roofing is never, so the Contract tab's field silently did
+    nothing and the customer saw only the short preview palette."""
     pb = _pb(A)
     est = _est(roofing_bundle_ids={'good': 'b_landmark',
                                    'better': 'b_landmark',
                                    'best':  'b_landmark'})
     ss  = {'enabled': True, 'options': ['Custom A', 'Custom B']}
     opts = A._customer_color_options(pb, est, 'roofing', 'better', ss)
+    assert 'Weathered Wood' in opts          # the bundle's own palette
+    assert 'Custom A' in opts and 'Custom B' in opts
+    # Manufacturer colors lead; the rep's additions follow.
+    assert opts.index('Weathered Wood') < opts.index('Custom A')
+
+
+def test_customer_color_options_dedupes_against_the_bundle(A):
+    """A rep re-typing a color the material already offers must not make
+    it appear twice in the customer's dropdown."""
+    pb = _pb(A)
+    est = _est(roofing_bundle_ids={'good': 'b_landmark',
+                                   'better': 'b_landmark',
+                                   'best':  'b_landmark'})
+    ss  = {'enabled': True, 'options': ['weathered wood', 'Custom A']}
+    opts = A._customer_color_options(pb, est, 'roofing', 'better', ss)
+    lower = [o.casefold() for o in opts]
+    assert lower.count('weathered wood') == 1
+    assert 'Custom A' in opts
+
+
+def test_autoseeded_option_list_is_not_appended(A):
+    """Every estimate saved before this carries options pre-filled by the
+    browser from DEFAULT_SHINGLE_COLORS. Appending those to a CertainTeed
+    dropdown would offer the customer colors CertainTeed does not make, so
+    an exact match against the seed is treated as 'nobody typed this'."""
+    pb = _pb(A)
+    est = _est(roofing_bundle_ids={'good': 'b_landmark',
+                                   'better': 'b_landmark',
+                                   'best':  'b_landmark'})
+    ss  = {'enabled': True, 'options': list(A.DEFAULT_SHINGLE_COLORS)}
+    opts = A._customer_color_options(pb, est, 'roofing', 'better', ss)
     assert 'Weathered Wood' in opts
-    assert 'Custom A' not in opts
+    assert 'Hunter Green' not in opts     # generic seed name, not a Landmark color
+    assert 'Barkwood' not in opts
+
+
+def test_pinned_material_beats_the_tier_bundle_on_every_tier(A):
+    """The Contract tab's 'Material being installed' picker names what is
+    actually going on the roof. It bypasses the tier lookup entirely, so
+    the palette holds across all three packages — and works on an
+    insurance claim, where no tier is being sold at all."""
+    pb = _pb(A)
+    est = _est(roofing_bundle_ids={'good': 'b_landmark',
+                                   'better': 'b_landmark',
+                                   'best':  'b_landmark'})
+    ss  = {'enabled': True, 'options': [], 'material_bundle_id': 'b_iko_nordic'}
+    for tier in ('good', 'better', 'best'):
+        opts = A._customer_color_options(pb, est, 'roofing', tier, ss)
+        assert 'Summit Grey' in opts          # IKO Nordic
+        assert 'Weathered Wood' not in opts   # the Landmark palette is not consulted
 
 
 def test_customer_color_options_falls_back_to_reps_typed_list(A):
@@ -252,3 +302,79 @@ def test_default_color_lists_exist_and_are_populated(A):
     without them a missing bundle + missing rep list = empty menu."""
     assert isinstance(A.DEFAULT_SHINGLE_COLORS, list) and A.DEFAULT_SHINGLE_COLORS
     assert isinstance(A.DEFAULT_SIDING_COLORS,  list) and A.DEFAULT_SIDING_COLORS
+
+
+# ── published manufacturer palettes ─────────────────────────────────────
+
+def test_edco_and_euroshield_ship_published_colors_not_invented_ones(A):
+    """These three palettes shipped with names nobody at EDCO or Euroshield
+    would recognise. A SHORT palette only under-sells; an INVENTED one puts a
+    color on a signed contract that cannot be ordered."""
+    pb = _pb(A)
+    est = _est(roofing_bundle_ids={'good': 'b_edco', 'better': 'b_edco',
+                                   'best': 'b_edco'},
+               siding_bundle_ids={'good': 'b_edco_d4', 'better': 'b_edco_d4',
+                                  'best': 'b_edco_d4'})
+    roof = A._bundle_colors_for_tier(pb, est, 'roofing', 'better')
+    side = A._bundle_colors_for_tier(pb, est, 'siding', 'better')
+
+    # Real EDCO names (edcoproducts.com, 2026-09-04)
+    assert {'Statuary Bronze', 'Hartford Green', 'T-Tone'} <= set(roof)
+    assert {'Wickertone', 'Claytone', 'Driftwood Gray'} <= set(side)
+    # The invented ones are gone
+    for gone in ('Copper Penny', 'Bone White', 'Regal Blue', 'Burgundy'):
+        assert gone not in roof
+    for gone in ('Musket Brown', 'Coastal Sage', 'Silver Gray', 'Regal Red'):
+        assert gone not in side
+
+
+def test_euroshield_offers_colors_not_product_lines(A):
+    """'Rundle Slate' is a separate Euroshield product, not a color of the
+    one being sold — it had no business in a color dropdown."""
+    pb = _pb(A)
+    est = _est(roofing_bundle_ids={'good': 'b_euroshield',
+                                   'better': 'b_euroshield',
+                                   'best': 'b_euroshield'})
+    colors = A._bundle_colors_for_tier(pb, est, 'roofing', 'better')
+    assert {'Black', 'Grey', 'Brown', 'Driftwood'} == set(colors)
+
+
+def test_standing_seam_keeps_the_generic_metal_palette(A):
+    """Its color comes off whichever coil the supplier runs for the job, so
+    it must NOT inherit EDCO's shingle color card."""
+    pb = _pb(A)
+    est = _est(roofing_bundle_ids={'good': 'b_standing_seam',
+                                   'better': 'b_standing_seam',
+                                   'best': 'b_standing_seam'})
+    colors = A._bundle_colors_for_tier(pb, est, 'roofing', 'better')
+    assert 'Statuary Bronze' not in colors
+    assert colors == [c['name'] for c in A._ROOF_METAL_COLORS]
+
+
+def test_migration_upgrades_a_live_book_but_spares_a_curated_one(A):
+    """Same contract every other seed migration keeps: swap the shipped
+    placeholder, never a manager's own list."""
+    import copy
+    shipped = {'roofing_catalog': [{'id': 'm_edco',
+                                    'colors': copy.deepcopy(A._EDCO_ROOF_COLORS_V1)}],
+               'siding_catalog': [], 'roofing_bundles': [], 'siding_bundles': [],
+               'exterior_catalog': []}
+    A._migrate_edco_euroshield_visuals(shipped)
+    assert shipped['roofing_catalog'][0]['colors'] == A._EDCO_ROOF_COLORS
+
+    mine = [{'name': 'Shop Special', 'hex': '#123456'}]
+    curated = {'roofing_catalog': [{'id': 'm_edco', 'colors': copy.deepcopy(mine)}],
+               'siding_catalog': [], 'roofing_bundles': [], 'siding_bundles': [],
+               'exterior_catalog': []}
+    A._migrate_edco_euroshield_visuals(curated)
+    assert curated['roofing_catalog'][0]['colors'] == mine
+
+
+def test_migration_is_idempotent(A):
+    """It runs on every price-book GET, so a second pass must change nothing."""
+    import copy
+    pb = _pb(A)
+    once = copy.deepcopy(pb)
+    A._migrate_edco_euroshield_visuals(pb)
+    assert pb['exterior_catalog'] == once['exterior_catalog']
+    assert pb['exterior_catalog_seed_versions'] == once['exterior_catalog_seed_versions']

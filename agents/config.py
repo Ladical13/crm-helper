@@ -77,6 +77,11 @@ DEFAULT_SETTINGS = {
     # 30 days of caching kills most re-charge. Bump higher for slow-changing
     # research (org names, addresses) or lower for volatile topics (news).
     'cache_ttl_days': 30,
+    # Cities the networking-event finder searches, and the same list decides
+    # which events count as "in the service area". One search per city per run,
+    # so this is the cost knob as well as the coverage one.
+    'event_cities': ['Fort Collins', 'Loveland', 'Greeley', 'Windsor',
+                     'Longmont'],
     # Which counties fall inside our service area — used only for ICP scoring
     # boosts, not filtering. Every county the reps cover should appear here.
     'service_area_counties': [
@@ -256,6 +261,36 @@ def _init_cache_db(conn):
             cost_usd    REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS spend_month_idx ON spend_ledger(occurred_at);
+        -- Local networking events worth an evening (agents/events.py).
+        -- starts_at is a LOCAL wall-clock date, stored without a timezone: a
+        -- 7am chamber breakfast in Fort Collins is at 7am in Fort Collins.
+        -- event_key is name+date, so a monthly re-run refreshes the recurring
+        -- meeting rather than stacking a second copy of it.
+        CREATE TABLE IF NOT EXISTS networking_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_key   TEXT NOT NULL UNIQUE,
+            name        TEXT NOT NULL,
+            host        TEXT DEFAULT '',
+            starts_at   TEXT NOT NULL,
+            starts_time TEXT DEFAULT '',
+            city        TEXT DEFAULT '',
+            venue       TEXT DEFAULT '',
+            url         TEXT DEFAULT '',
+            cost        TEXT DEFAULT '',
+            audience    TEXT DEFAULT '[]',
+            summary     TEXT DEFAULT '',
+            in_service_area INTEGER DEFAULT 0,
+            score       REAL DEFAULT 0,
+            score_why   TEXT DEFAULT '',
+            -- '' | 'going' | 'skipped'. Never touched by a re-run: the facts
+            -- are ours to refresh, the choice is Luke's.
+            decision    TEXT DEFAULT '',
+            decided_by  TEXT DEFAULT '',
+            decided_at  TEXT DEFAULT '',
+            found_at    TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS events_date_idx ON networking_events(starts_at);
 
         CREATE TABLE IF NOT EXISTS agent_runs (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,6 +307,21 @@ def _init_cache_db(conn):
             summary       TEXT DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS runs_rep_idx ON agent_runs(rep, started_at DESC);
+
+        -- Shared progress and leases for manual and scheduled marketing jobs.
+        -- Preview results are kept here too, without saving generated content.
+        CREATE TABLE IF NOT EXISTS background_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            dry_run INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            finished_at TEXT DEFAULT '',
+            manifest TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS one_marketing_job
+            ON background_jobs(status) WHERE status = 'running';
 
         CREATE TABLE IF NOT EXISTS content_drafts (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -438,6 +488,54 @@ def _init_cache_db(conn):
     ''')
     # Columns added after the tables shipped. Live volumes already have the
     # tables, so these are the only way the new fields arrive.
+    conn.executescript('''
+        CREATE TABLE IF NOT EXISTS marketing_campaigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL, brief TEXT NOT NULL,
+            research_note TEXT DEFAULT '', researched_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS marketing_ideas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_id INTEGER NOT NULL, fingerprint TEXT NOT NULL,
+            detail TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'idea',
+            UNIQUE(campaign_id, fingerprint)
+        );
+        CREATE TABLE IF NOT EXISTS marketing_posts (
+            draft_id INTEGER PRIMARY KEY, campaign_id INTEGER NOT NULL,
+            idea_id INTEGER NOT NULL, planned_date TEXT DEFAULT '',
+            owner TEXT DEFAULT '', asset_url TEXT DEFAULT '',
+            asset_ready INTEGER DEFAULT 0, posted_url TEXT DEFAULT '',
+            metrics TEXT DEFAULT '{}', revision INTEGER DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS marketing_posts_campaign ON marketing_posts(campaign_id);
+        CREATE TABLE IF NOT EXISTS marketing_post_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, draft_id INTEGER NOT NULL,
+            saved_at TEXT NOT NULL, username TEXT NOT NULL, snapshot TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS marketing_media (
+            id TEXT PRIMARY KEY, filename TEXT NOT NULL, title TEXT NOT NULL,
+            kind TEXT NOT NULL, origin TEXT NOT NULL, alt TEXT DEFAULT '',
+            service TEXT DEFAULT '', city TEXT DEFAULT '', project TEXT DEFAULT '',
+            phase TEXT DEFAULT '', rights TEXT DEFAULT '', cleared INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL, created_by TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS marketing_pages (
+            id TEXT PRIMARY KEY, campaign_id INTEGER NOT NULL,
+            slug TEXT NOT NULL UNIQUE, detail TEXT NOT NULL,
+            published INTEGER DEFAULT 0, revision INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS marketing_visits (
+            page_id TEXT NOT NULL, day TEXT NOT NULL, source TEXT NOT NULL,
+            draft_id INTEGER NOT NULL DEFAULT 0, views INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(page_id, day, source, draft_id)
+        );
+        CREATE TABLE IF NOT EXISTS marketing_rate_limits (
+            bucket TEXT PRIMARY KEY, started INTEGER NOT NULL, count INTEGER NOT NULL
+        );
+    ''')
+    _add_column_if_missing(conn, 'marketing_posts', 'media_ids', "TEXT DEFAULT '[]'")
+    _add_column_if_missing(conn, 'content_drafts', 'creative_json', "TEXT DEFAULT '{}'")
     _add_column_if_missing(conn, 'content_drafts', 'package_id', "TEXT DEFAULT ''")
     _add_column_if_missing(conn, 'content_drafts', 'source', "TEXT DEFAULT ''")
     _add_column_if_missing(conn, 'content_drafts', 'review_notes', "TEXT DEFAULT ''")

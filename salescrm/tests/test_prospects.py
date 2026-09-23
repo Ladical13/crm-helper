@@ -246,7 +246,7 @@ def test_cross_sell_still_creates_a_second_lead(client):
     new_lead(client, first_name='Jane', last_name='Doe',
              phone='970-555-0100', service='roofing')
     new_lead(client, first_name='Jane', last_name='Doe',
-             phone='970-555-0100', service='window_cleaning')
+             phone='970-555-0100', service='gutter_cleaning')
     leads = client.get('/api/leads').get_json()
     assert len(leads) == 2
-    assert {l['service'] for l in leads} == {'roofing', 'window_cleaning'}
+    assert {l['service'] for l in leads} == {'roofing', 'gutter_cleaning'}

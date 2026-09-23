@@ -64,6 +64,12 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 /* Remove iOS gray tap flash on every touch */
 * { -webkit-tap-highlight-color: rgba(0,0,0,0); }
+/* Hold text at the size we asked for. Rotating an iPhone to landscape makes
+   Safari "helpfully" inflate font sizes on a per-block basis, which pushes the
+   line-item numbers out of their fixed-width inputs and reflows the tier
+   columns — a rep turning the phone sideways to see more of the table got
+   less of it. Android Chrome does the same under Accessibility > text scaling. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* Let our own styles control inputs — prevents iOS rounding/padding overrides.
    Checkboxes/radios are excluded: appearance:none on them removes the native
    box with no replacement drawn in, making every plain checkbox in the app
@@ -90,13 +96,17 @@ button { cursor: pointer; font-family: inherit; }
   padding: 0 16px; z-index: 200;
   box-shadow: 0 2px 8px rgba(0,0,0,.25);
 }
-.header-left { display: flex; align-items: center; gap: 14px; }
+.header-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .header-logo {
   height: 38px; width: auto;
+  flex-shrink: 0;
   background: #fff; padding: 3px 8px; border-radius: 5px;
 }
-.estimate-number { font-size: 11px; opacity: .6; font-family: monospace; }
-.header-right { display: flex; align-items: center; gap: 8px; }
+.estimate-number {
+  font-size: 11px; opacity: .6; font-family: monospace;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .save-indicator {
   font-size: 11px; padding: 3px 9px; border-radius: 10px; min-width: 64px; text-align: center;
 }
@@ -106,6 +116,7 @@ button { cursor: pointer; font-family: inherit; }
   padding: 6px 14px; border: 1px solid rgba(255,255,255,.25); border-radius: 4px;
   background: rgba(255,255,255,.1); color: #fff; font-size: 12px; font-weight: 500;
   transition: background .15s;
+  white-space: nowrap;
 }
 .header-right button:hover { background: rgba(255,255,255,.2); }
 .header-right .btn-print { background: var(--orange); border-color: transparent; }
@@ -119,7 +130,17 @@ button { cursor: pointer; font-family: inherit; }
   padding: 4px 10px; background: rgba(255,255,255,.12);
   border-radius: 6px; border: 1px solid rgba(255,255,255,.2);
 }
-.user-name { font-size: 13px; font-weight: 600; color: #fff; white-space: nowrap; }
+.user-name {
+  font-size: 13px; font-weight: 600; color: #fff; white-space: nowrap;
+  max-width: 120px; overflow: hidden; text-overflow: ellipsis;
+}
+/* Demo-session marker. Loud on purpose — it has to survive being glanced past
+   on a phone in a meeting, because everything behind it is invented. */
+.demo-badge {
+  font-size: 10px; font-weight: 800; letter-spacing: .08em;
+  color: #7a2e00; background: #ffb84d; border-radius: 4px;
+  padding: 2px 6px; white-space: nowrap;
+}
 .btn-signout {
   font-size: 11px; font-weight: 600; color: rgba(255,255,255,.75);
   text-decoration: none; padding: 2px 8px; border-radius: 4px;
@@ -369,7 +390,10 @@ input[type="range"] { padding: 0; border: none; background: none; height: 20px; 
   padding: 10px 16px 0;
   background: var(--bg);
   flex-shrink: 0;
+  min-width: 0; max-width: 100%; overflow-x: auto;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch;
 }
+#page-nav::-webkit-scrollbar { display: none; }
 .page-btn {
   display: flex; align-items: center; gap: 6px;
   padding: 8px 14px; border: 1px solid var(--border);
@@ -377,8 +401,9 @@ input[type="range"] { padding: 0; border: none; background: none; height: 20px; 
   font-size: 12px; font-weight: 600; color: var(--text-light);
   border-bottom: none; transition: all .12s;
   margin-bottom: -1px; position: relative;
-  z-index: 1;
+  z-index: 1; flex-shrink: 0; white-space: nowrap;
 }
+.pg-sep { flex-shrink: 0; }
 .page-btn:hover { color: var(--primary); background: #f8fafc; }
 .page-btn { position: relative; }
 .page-btn.pg-done::after {
@@ -849,12 +874,24 @@ input.scope-qty-input {
   border: 1px solid #c6d8ec; background: #eef4fb; color: #1a3a5c;
   font-size: 11.5px; font-weight: 700;
 }
-.est-section-edit, .est-section-del {
+.est-section-edit, .est-section-del, .est-section-move {
   border: none; background: transparent; cursor: pointer; padding: 2px 4px;
   font-size: 11px; color: #64748b; border-radius: 4px; line-height: 1;
 }
 .est-section-edit:hover { color: var(--primary); background: #dbeafe; }
 .est-section-del:hover  { color: #dc2626; background: #fee2e2; }
+.est-section-move:hover:not(:disabled) { color: var(--primary); background: #dbeafe; }
+.est-section-move:disabled { opacity: .3; cursor: default; }
+/* A finger cannot hit an 11px chip button. Gated on the POINTER, never on a
+   width: the pricing tab is worked on the iPad as much as on a phone, and a
+   width query cannot express "this is a finger". */
+@media (pointer: coarse) {
+  .est-section-edit, .est-section-del, .est-section-move {
+    min-width: 30px; min-height: 30px; font-size: 14px; padding: 4px 6px;
+  }
+  .est-section-chip { padding: 2px 4px 2px 12px; }
+}
+
 .est-section-add {
   border: 1px dashed var(--border); background: #fff; color: var(--text-light);
   border-radius: 20px; padding: 5px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer;
@@ -899,6 +936,9 @@ input.scope-qty-input {
 .col-better .tier-col-header { background: var(--better-bg); color: var(--better); }
 .col-best   .tier-col-header { background: var(--best-bg);   color: var(--best); }
 .tier-col-total { font-size: 14px; }
+/* Supplements priced beside, not inside, the package total */
+.tier-col-supp { font-size: 11px; font-weight: 500; color: #6b7280; margin-top: 2px; }
+.tier-col-supp strong { color: #374151; font-weight: 600; }
 .tier-items { flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 7px; }
 .empty-items {
   padding: 28px; text-align: center; color: var(--text-light);
@@ -1198,12 +1238,70 @@ input.other-price-input { width: 110px; text-align: right; font-size: 12px; }
 .cpp-neg { color: #f87171; }
 .cpp-margin td { color: #38bdf8; font-weight: 700; }
 .cpp-simple-note, .cpp-bytrade { margin-top: 10px; font-size: 11px; color: #94a3b8; }
+/* A trade priced flat that still carries three packages. Named rather than
+   silently rendered as three identical columns — see simpleTradeTierConflicts. */
+.cpp-conflict { margin: 0 0 10px; padding: 8px 10px; border-radius: 6px;
+  background: #78350f; color: #fde68a; font-size: 12px; line-height: 1.5; }
+.cpp-conflict strong { color: #fff; }
+.cpp-conflict-btn { margin-left: 8px; padding: 3px 9px; border-radius: 5px;
+  border: 1px solid #fbbf24; background: transparent; color: #fde68a;
+  font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.cpp-conflict-btn:hover { background: #92400e; }
+.cpp-flat-note { margin: 0 0 10px; font-size: 11px; color: #94a3b8; }
 .cpp-bytrade summary { cursor: pointer; color: #cbd5e1; font-size: 12px; padding: 4px 0; }
 .cpp-trade-wrap { overflow-x: auto; }
 .cpp-table-trade { margin-top: 8px; font-size: 11px; }
 .cpp-table-trade thead th { white-space: nowrap; }
 .cpp-trade-simple td { color: #94a3b8; font-style: italic; }
 @media print { .internal-margin, .cost-profit-panel { display: none !important; } }
+
+/* ── Optional upgrades panel (Pricing page) ──────────────────────────
+   Light, not the Cost & Profit panel's dark internal treatment: these lines
+   are CUSTOMER-FACING, and a rep should never confuse the two. */
+.upg-panel {
+  margin-top: 18px; padding: 14px 16px;
+  background: #fff; border: 1px solid var(--border, #e2e8f0); border-radius: 8px;
+}
+.upg-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.upg-head h3 { margin: 0; font-size: 14px; }
+.upg-toggle { margin-left: auto; font-size: 12px; white-space: nowrap; }
+.upg-sub { margin: 6px 0 10px; font-size: 11.5px; color: #64748b; line-height: 1.55; }
+.upg-empty { padding: 10px 0; font-size: 12px; color: #94a3b8; font-style: italic; }
+.upg-wrap { overflow-x: auto; }
+.upg-table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 620px; }
+.upg-table thead th {
+  padding: 5px 8px; text-align: left; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .4px; color: #64748b; border-bottom: 1px solid #e2e8f0;
+}
+.upg-table thead th.upg-num-h { text-align: right; }
+.upg-table td { padding: 4px 6px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+.upg-in { width: 100%; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 5px;
+  font: inherit; font-size: 12px; background: #fff; }
+.upg-in:focus { outline: none; border-color: #0ea5e9; box-shadow: 0 0 0 3px rgba(14,165,233,.12); }
+.upg-num { text-align: right; max-width: 110px; }
+.upg-m { text-align: right; font-weight: 700; color: #15803d; white-space: nowrap; }
+.upg-warn { color: #b45309; font-weight: 600; font-size: 11px; }
+.upg-el { text-align: center; }
+.upg-yes { color: #15803d; font-weight: 800; }
+.upg-x { border: none; background: transparent; color: #94a3b8; cursor: pointer;
+  font-size: 13px; padding: 4px 6px; border-radius: 5px; }
+.upg-x:hover { background: #fee2e2; color: #b91c1c; }
+.upg-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.upg-add { padding: 7px 12px; border-radius: 6px; border: 1px solid #cbd5e1;
+  background: #f8fafc; font-size: 12px; font-weight: 600; cursor: pointer; }
+.upg-add:hover { background: #f1f5f9; }
+.upg-pb { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.upg-pb-sel { padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px;
+  font: inherit; font-size: 12px; max-width: 260px; background: #fff; }
+.upg-foot { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid #e2e8f0;
+  font-size: 12px; color: #475569; }
+.upg-foot-r { margin-left: auto; }
+.upg-note { flex-basis: 100%; margin-top: 6px; font-size: 11.5px;
+  color: #64748b; line-height: 1.55; }
+.upg-note-warn { padding: 7px 10px; border-radius: 6px;
+  background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; }
+@media print { .upg-panel { display: none !important; } }
 
 /* ── Product Selection page ──────────────────────────────────────────
    Brand/model/color per trade, in one place — shingle color, drip edge,
@@ -1283,7 +1381,19 @@ input.other-price-input { width: 110px; text-align: right; font-size: 12px; }
 /* ── Modal ─────────────────────────────────────────────────────────── */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 300; display: flex; align-items: center; justify-content: center; }
 .modal.hidden { display: none; }
-.modal-box { background: #fff; border-radius: var(--radius); width: 580px; max-width: 95vw; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 24px 60px rgba(0,0,0,.25); }
+/* Every modal container in this file sizes with a vh/dvh PAIR, dvh second so it
+   wins where supported. The Safari toolbar overlaps the bottom of vh, and the
+   bottom of a modal is where its Save/Confirm button lives.
+
+   The pair used to exist only inside @media (max-width: 767px) — a width query.
+   So a phone was covered and the iPad was not, which is the same trap the
+   pointer-vs-width rule in CLAUDE.md documents twice: an iPad is a touch device
+   with a dynamic toolbar and it is where estimates get written. dvh is a plain
+   improvement everywhere (on a desktop it simply equals vh), so it belongs on
+   the base rule, not behind a breakpoint. */
+.modal-box { background: #fff; border-radius: var(--radius); width: 580px; max-width: 95vw;
+  max-height: 80vh; max-height: 80dvh;
+  display: flex; flex-direction: column; box-shadow: 0 24px 60px rgba(0,0,0,.25); }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border); }
 .modal-header h2 { font-size: 16px; }
 .modal-close { background: none; border: none; font-size: 26px; color: var(--text-light); line-height: 1; padding: 0 4px; }
@@ -1312,13 +1422,17 @@ input.other-price-input { width: 110px; text-align: right; font-size: 12px; }
 
 /* ── Price Book modal ───────────────────────────────────────────────── */
 .pb-modal-box {
-  width: min(98vw, 1240px) !important; max-height: 88vh; display: flex; flex-direction: column;
+  width: min(98vw, 1240px) !important;
+  max-height: 88vh; max-height: 88dvh;
+  display: flex; flex-direction: column;
 }
 .modal-header-actions { display:flex; align-items:center; gap:8px; }
 
 /* Manager-maintained Design Studio catalog. One row is one installed
    product/color combination, which keeps spreadsheet imports predictable. */
-.ex-modal-box { width:min(1240px, 97vw) !important; height:min(900px, 95vh); display:flex; flex-direction:column; }
+.ex-modal-box { width:min(1240px, 97vw) !important;
+  height:min(900px, 95vh); height:min(900px, 95dvh);
+  display:flex; flex-direction:column; }
 .ex-modal-sub { margin:3px 0 0; color:var(--text-light); font-size:12px; }
 .ex-modal-body { overflow:auto; flex:1; padding:16px 20px 20px; }
 .ex-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
@@ -1899,21 +2013,24 @@ body.is-home #nav-toggle       { display: none; }
 }
 .home-est-row {
   display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
   padding: 12px 16px; border-bottom: 1px solid #f1f5f9;
   cursor: pointer; transition: background .1s;
 }
 .home-est-row:last-child { border-bottom: none; }
 .home-est-row:hover      { background: #f8fafc; }
+.home-est-main { flex: 1; min-width: 0; }
 .home-est-main strong { display: block; font-size: 14px; font-weight: 600; }
-.home-est-main small  { font-size: 11px; color: var(--text-light); margin-top: 1px; }
+.home-est-main small {
+  display: block; font-size: 11px; color: var(--text-light); margin-top: 1px;
+  overflow-wrap: anywhere;
+}
 .home-est-side { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .home-est-total { font-size: 13px; font-weight: 700; color: #1a3a5c; }
 .home-empty { padding: 28px 16px; text-align: center; color: var(--text-light); font-size: 13px; }
 
 /* Dashboard */
 .btn-dashboard { background: rgba(255,255,255,.18) !important; font-weight: 700; }
-.dash-modal-box { width: min(860px, 94vw); max-height: 86vh; display: flex; flex-direction: column; }
-.dashboard-body { overflow-y: auto; padding: 16px 20px 24px; }
 .dash-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
 .dash-backup-link {
   font-size: 12px; font-weight: 600; color: #1a3a5c; text-decoration: none;
@@ -2801,8 +2918,6 @@ a.jx-contact:hover { text-decoration: underline; }
   .dash-followup-banner > strong { font-size: 12px; }
   .analytics-sort-btn  { font-size: 11px; padding: 5px 9px; white-space: nowrap; }
   .analytics-refresh-btn { font-size: 11px; }
-  /* Dashboard modal content */
-  .dash-modal-box .a-card { padding: 10px 12px; }
 }
 @media (max-width: 700px) { .analytics-cards { grid-template-columns: repeat(2,1fr); } }
 
@@ -2958,7 +3073,7 @@ a.jx-contact:hover { text-decoration: underline; }
 /* ── Annotation modal ────────────────────────────────────────────────── */
 .ann-modal-box {
   width: min(96vw, 900px) !important;
-  max-height: 94vh !important;
+  max-height: 94vh !important; max-height: 94dvh !important;
   display: flex; flex-direction: column;
 }
 .ann-toolbar {
@@ -3202,12 +3317,23 @@ a.jx-contact:hover { text-decoration: underline; }
 .pb-bullet-silence { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-light); margin: 6px 0 6px; cursor: pointer; }
 .pb-bullet-silence input { margin: 0; }
 .pb-variant-field-label small { font-weight: 500; text-transform: none; letter-spacing: 0; margin-left: 5px; }
-/* Read-only: the bullets are built from the bundle's products, so this shows
-   the finished card rather than offering a box to type a different story into. */
+/* "Customer sees": the finished card, read-only — the wording itself is edited
+   per product in .pb-wording-list above it. No max-height: same trap as
+   .pb-bundle-picker — a scroll box inside the scrolling modal body clipped the
+   last bullets out of sight. */
 .pb-bundle-feat-preview { margin: 0 0 8px; padding: 8px 10px 8px 26px; list-style: disc;
-  background: #f8fafc; border: 1px solid var(--border); border-radius: 6px;
-  max-height: 30vh; overflow-y: auto; }
+  background: #f8fafc; border: 1px solid var(--border); border-radius: 6px; }
 .pb-bundle-feat-preview li { font-size: 12.5px; line-height: 1.5; color: var(--text); }
+/* Per-product wording editors in the bundle editor. */
+.pb-wording-list { display: flex; flex-direction: column; gap: 6px; margin: 0 0 8px; }
+.pb-wording-row { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: #fff; }
+.pb-wording-row.is-silent { background: #f8fafc; }
+.pb-wording-row.is-silent .pb-wording-hd strong { color: var(--text-light); font-weight: 600; }
+.pb-wording-hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.pb-wording-hd strong { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-wording-hd .pb-bullet-silence { margin: 0; flex: none; }
+.pb-wording-ta { display: block; margin-top: 4px; resize: vertical; }
+.pb-card-label { margin-top: 10px; }
 .pb-cat-actions { text-align: center; white-space: nowrap; }
 .pb-cat-actions .pb-order-btn.on { background: #f0f9ff; border-color: #7dd3fc; }
 .pb-bullets-row > td { padding: 0 8px 10px; background: #f8fafc; }
@@ -3217,11 +3343,13 @@ a.jx-contact:hover { text-decoration: underline; }
 .pb-bullets-ta:focus { outline: none; border-color: var(--primary-light); }
 .pb-bundle-pick-hd { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--text); margin-bottom: 8px; }
 .pb-bundle-pick-hd small { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--text-light); margin-left: 6px; }
-/* Self-contained, always-scrollable list of EVERY catalog product, so the full
-   product set is reachable no matter how many products exist or the screen size
-   (the modal body scroll alone hid products below the fold on phones). */
+/* Full height, NO scroll of its own — #pb-modal-body is the one scroller.
+   This used to be capped at 46vh with its own overflow, a scroll box inside a
+   scroll box: on a tall monitor the cap came out a row short, the last row sat
+   clipped under a box that looked finished, the thumb was nearly full length
+   and the wheel scrolled the modal instead — so products were unreachable. */
 .pb-bundle-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px;
-  max-height: 46vh; overflow-y: auto; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; }
+  padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; }
 .pb-bundle-chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; background: #fff; cursor: pointer; transition: border-color .12s, background .12s; }
 .pb-bundle-chip:hover { border-color: var(--primary-light); }
 .pb-bundle-chip.on { border-color: var(--primary, #0284c7); background: #f0f9ff; }
@@ -3246,6 +3374,27 @@ a.jx-contact:hover { text-decoration: underline; }
 /* Only a Custom package needs naming — a bundle tier is named by its bundle. */
 .tier-hero-name { width: 100%; box-sizing: border-box; margin-top: 6px; font-size: 13px; font-weight: 600; color: var(--text); border: 1px dashed var(--border); border-radius: 7px; padding: 8px 10px; background: #fff; }
 .tier-hero-name:focus { outline: none; border-style: solid; border-color: var(--primary-light); }
+/* The one line under the price on the customer's package card. */
+.tier-tagline { margin: 6px 10px 2px; }
+.tier-tagline-row { display: flex; gap: 4px; align-items: center; }
+.tier-tagline-input { flex: 1; min-width: 0; box-sizing: border-box; font-size: 12px; color: var(--text); border: 1px dashed var(--border); border-radius: 7px; padding: 6px 8px; background: #fff; }
+.tier-tagline-input:focus { outline: none; border-style: solid; border-color: var(--primary-light); }
+.tier-tagline-reset { flex: none; border: 1px solid var(--border); background: #fff; border-radius: 6px; font-size: 11px; padding: 5px 7px; cursor: pointer; color: var(--primary, #0284c7); white-space: nowrap; }
+.tier-tagline-hint { font-size: 10.5px; color: var(--text-muted, #64748b); margin-top: 2px; line-height: 1.3; }
+/* Installed-vs-required ventilation NFA, on the Scope panel. */
+.vent-nfa { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 6px; display: grid; gap: 4px; }
+.vent-nfa-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; }
+.vent-nfa-lbl { font-weight: 600; color: var(--text-light, #64748b); min-width: 118px; }
+.vent-nfa-val { font-variant-numeric: tabular-nums; font-weight: 600; }
+.vent-nfa-row.ok .vent-nfa-note { color: var(--good, #16a34a); }
+.vent-nfa-row.short .vent-nfa-note { color: #b91c1c; font-weight: 600; }
+.vent-nfa-note { font-size: 11.5px; color: var(--text-muted, #64748b); }
+
+.tier-bullets { margin: 4px 10px 2px; }
+.tier-bullets-head { display: flex; gap: 4px; align-items: center; justify-content: space-between; margin-bottom: 3px; }
+.tier-bullets-lbl { font-size: 11px; font-weight: 600; color: var(--text-light, #64748b); text-transform: uppercase; letter-spacing: .4px; }
+.tier-bullets-input { width: 100%; box-sizing: border-box; font-size: 12px; font-family: inherit; color: var(--text); border: 1px dashed var(--border); border-radius: 7px; padding: 6px 8px; background: #fff; resize: vertical; line-height: 1.45; }
+.tier-bullets-input:focus { outline: none; border-style: solid; border-color: var(--primary-light); }
 .tier-details-toggle { width: calc(100% - 20px); margin: 6px 10px 4px; border: none; background: none; color: var(--primary, #0284c7); font-size: 12px; font-weight: 600; text-align: left; padding: 4px 2px; cursor: pointer; }
 .tier-details-toggle:hover { text-decoration: underline; }
 .tier-items-collapsible { border-top: 1px dashed var(--border); }
@@ -3347,6 +3496,12 @@ a.jx-contact:hover { text-decoration: underline; }
 .pb-subtab.pb-subtab-best.active   .pb-subtab-count { background: var(--best); }
 
 .pb-th-basecost { width: 92px; text-align: right !important; }
+/* Which side of the internal Cost & Profit split a product's price lands on.
+   Rep/manager-facing only — nothing here ever reaches a customer document. */
+.pb-th-costclass { width: 88px; text-align: center !important; }
+.pb-costclass-select { width: 82px; border: 1px solid var(--border); border-radius: 3px;
+  font-size: 12px; padding: 2px 4px; background: #fff; color: var(--text); }
+.pb-costclass-select:focus { outline: none; border-color: var(--primary-light); }
 .pb-th-mem { width: 132px; text-align: center !important; }
 .pb-th-hint { font-weight: 400; color: var(--text-light); font-size: 10px; }
 .pb-mem-cell { white-space: nowrap; text-align: center; }
@@ -3428,7 +3583,7 @@ a.jx-contact:hover { text-decoration: underline; }
   color: #fff; font-size: 13px; line-height: 1; padding: 4px 8px; border-radius: 4px;
 }
 .btn-logins:hover { background: rgba(255,255,255,.22); }
-.logins-modal-box { width: 560px; max-width: 95vw; max-height: 88vh; }
+.logins-modal-box { width: 560px; max-width: 95vw; max-height: 88vh; max-height: 88dvh; }
 .logins-body { overflow-y: auto; padding: 18px 20px 22px; display: flex; flex-direction: column; gap: 20px; }
 .logins-forced-banner {
   background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
@@ -3597,6 +3752,19 @@ a.jx-contact:hover { text-decoration: underline; }
 /* Header desktop-button group */
 .header-desktop-btns { display: flex; align-items: center; gap: 8px; }
 
+/* Keep customer actions on laptops, and move the duplicate utility actions
+   into More. Narrow tablets use More for the full set; Save stays visible. */
+@media (max-width: 1599px) {
+  .header-desktop-btns button:not(.btn-present):not(.btn-share):not(.btn-print):not(.btn-invoice):not(.btn-dashboard) { display: none; }
+}
+@media (max-width: 1023px) {
+  .header-desktop-btns { display: none; }
+}
+@media (min-width: 768px) {
+  .header-left { flex: 1; margin-right: 12px; }
+  .estimate-label-badge { min-width: 0; }
+}
+
 /* More-menu button — shown at EVERY width.
    It used to be phone-only, which quietly made the menu's four exclusive
    entries unreachable on a laptop: Order Sheet had no other caller anywhere
@@ -3613,8 +3781,12 @@ a.jx-contact:hover { text-decoration: underline; }
 
 /* Overflow menu */
 .header-overflow-menu {
+  --menu-top: var(--header-h);
   display: none; position: fixed;
-  top: var(--header-h); right: 8px;
+  top: var(--menu-top); right: 8px;
+  max-height: calc(100vh - var(--menu-top) - env(safe-area-inset-bottom, 0px) - 8px);
+  max-height: calc(100dvh - var(--menu-top) - env(safe-area-inset-bottom, 0px) - 8px);
+  overflow-y: auto; overscroll-behavior: contain;
   background: var(--primary); border-radius: 0 0 8px 8px;
   box-shadow: 0 8px 24px rgba(0,0,0,.35);
   z-index: 500; flex-direction: column; min-width: 210px;
@@ -3622,6 +3794,7 @@ a.jx-contact:hover { text-decoration: underline; }
 }
 .header-overflow-menu.open { display: flex; }
 .header-overflow-menu button {
+  flex-shrink: 0;
   padding: 13px 18px; border: none; border-radius: 0;
   background: none; color: #fff; font-size: 14px; font-weight: 500;
   text-align: left; border-bottom: 1px solid rgba(255,255,255,.1);
@@ -3697,10 +3870,8 @@ a.jx-contact:hover { text-decoration: underline; }
     box-shadow: 4px 0 20px rgba(0,0,0,.22);
   }
 
-  /* iOS auto-zoom prevention — Safari zooms any input with font-size < 16px on focus */
-  input[type="text"], input[type="email"], input[type="number"],
-  input[type="tel"], input[type="date"], input[type="password"],
-  textarea, select { font-size: 16px !important; }
+  /* iOS focus-zoom prevention lives in the `pointer: coarse` block further
+     down, NOT here — a width query misses the iPad entirely. */
 
   /* Sidebar toggle buttons: bigger touch targets */
   .toggle-btn { min-height: 40px; padding: 8px 12px; font-size: 13px; }
@@ -3793,7 +3964,6 @@ a.jx-contact:hover { text-decoration: underline; }
   .modal            { align-items: flex-start; padding-top: max(10px, env(safe-area-inset-top, 10px)); }
   .modal-box        { width: 96vw !important; max-height: 92vh; max-height: 90dvh; }
   .pb-modal-box     { width: 98vw !important; }
-  .dash-modal-box   { max-height: 92vh; max-height: 90dvh; }
   .ann-modal-box    { width: 98vw !important; }
   .roofr-modal-box  { width: 96vw !important; }
 
@@ -3901,25 +4071,31 @@ a.jx-contact:hover { text-decoration: underline; }
    layout stays intact — only input sizing changes.
    `input.*` prefix beats the global `input[type=…] { width:100% }` rule. */
 @media (min-width: 768px) and (max-width: 1366px) and (pointer: coarse) {
+  /* No font-size here, or on the money inputs and unit selects below: the
+     coarse-pointer block forces 16px on every control with !important, so a
+     size stated here has no effect and only misleads the next reader about
+     what these widths are sized for. */
   input.li-row-qty-input,
   input.li-qty-input,
   input.other-qty-input,
   input.scope-qty-input {
     min-height: 40px; padding: 6px 4px;
-    font-size: 14px; text-align: center; font-weight: 700;
+    text-align: center; font-weight: 700;
   }
-  input.li-row-qty-input { width: 68px; }
-  input.li-qty-input     { width: 60px; }
-  input.other-qty-input  { width: 70px; }
-  input.scope-qty-input  { width: 74px; }
+  input.li-row-qty-input { width: 76px; }
+  input.li-qty-input     { width: 68px; }
+  input.other-qty-input  { width: 78px; }
+  input.scope-qty-input  { width: 82px; }
 
-  /* Price / cost / total: bigger boxes so five figures don't get clipped */
-  input.li-row-cost-input   { width: 96px;  min-height: 40px; font-size: 14px; padding: 6px 8px; }
-  input.li-row-total-input  { width: 104px; min-height: 40px; font-size: 14px; padding: 6px 8px; }
-  input.other-price-input   { width: 132px; min-height: 40px; font-size: 14px; padding: 6px 8px; }
+  /* Price / cost / total: bigger boxes so five figures don't get clipped.
+     Sized for the 16px the coarse-pointer block below forces on every control
+     — at the 14px these used to carry, $148,500.00 lost its last two digits. */
+  input.li-row-cost-input   { width: 108px; min-height: 40px; padding: 6px 8px; }
+  input.li-row-total-input  { width: 116px; min-height: 40px; padding: 6px 8px; }
+  input.other-price-input   { width: 146px; min-height: 40px; padding: 6px 8px; }
 
   select.li-row-unit-select, select.li-unit-select, select.other-unit-select {
-    min-height: 40px; font-size: 13px; padding: 6px 4px; width: 68px;
+    min-height: 40px; padding: 6px 4px; width: 76px;
   }
   .li-row-numbers { gap: 8px; font-size: 13px; row-gap: 8px; }
   .li-row-total   { font-size: 13px; }
@@ -3935,16 +4111,43 @@ a.jx-contact:hover { text-decoration: underline; }
   input.other-qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
   /* Give the "Other" price column enough header width to match the wider input */
-  .other-th-num   { width: 82px; }
-  .other-th-price { width: 148px; }
+  .other-th-num   { width: 90px; }
+  .other-th-price { width: 162px; }
 
   /* Scope table qty column matches the new input width */
-  .scope-table thead th.th-qty { width: 84px; }
+  .scope-table thead th.th-qty { width: 92px; }
 
   /* Delete button, reorder arrows, include checkbox — touch targets */
   .li-row-del { min-height: 36px; min-width: 36px; display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; }
   .li-move-btn { width: 32px; height: 36px; font-size: 14px; }
   .li-row-include input[type="checkbox"] { width: 16px; height: 16px; }
+}
+
+/* ── iOS focus zoom ──────────────────────────────────────────────────
+ * Mobile Safari zooms the page in whenever a focused control has a font-size
+ * under 16px, and does NOT zoom back out on blur. `maximum-scale=1` does not
+ * prevent it; iOS has ignored that since iOS 10, and this app's viewport does
+ * not set it anyway.
+ *
+ * This is gated on the POINTER, not on width. It lived inside
+ * `@media (max-width: 767px)` for a long time, which covered phones and missed
+ * the iPad entirely — and the iPad is where estimates actually get written, in
+ * a driveway, on a table full of 13px numeric inputs. Tapping any of them
+ * zoomed the estimate to ~115% and left it there for the rest of the
+ * appointment.
+ *
+ * `pointer: coarse` is the same gate the canvasser uses. It catches every
+ * touch device at any width and leaves desktop alone, so the dense
+ * spreadsheet-style layout is unchanged on the machines it was designed for.
+ *
+ * !important because the per-control rules above are the same specificity
+ * (element+class ties element+attribute) and several of them come later in the
+ * file. The tablet block's input widths are sized for the 16px this forces. */
+@media (pointer: coarse) {
+  input[type="text"], input[type="email"], input[type="number"],
+  input[type="tel"], input[type="date"], input[type="password"],
+  input[type="search"], input[type="url"], input:not([type]),
+  textarea, select { font-size: 16px !important; }
 }
 
 /* ── PWA / iPhone safe area (Dynamic Island, notch, home indicator) ── */
@@ -4130,7 +4333,9 @@ a.jx-contact:hover { text-decoration: underline; }
 .p-cond-total-amt{ font-family: var(--doc-serif); font-size: 20pt; font-weight: 600; color: var(--doc-navy); text-transform: none; letter-spacing: 0; }
 
 /* ── Customer File ────────────────────────────────────────────────────── */
-.cf-modal-box { width: min(640px, 96vw); max-height: 88vh; display: flex; flex-direction: column; }
+.cf-modal-box { width: min(640px, 96vw);
+  max-height: 88vh; max-height: 88dvh;
+  display: flex; flex-direction: column; }
 .cf-body { overflow-y: auto; padding: 16px 20px 24px; flex: 1; }
 .cf-header { margin-bottom: 14px; }
 .cf-name   { font-size: 20px; font-weight: 800; color: #1a3a5c; }
@@ -4270,11 +4475,19 @@ a.jx-contact:hover { text-decoration: underline; }
   border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; grid-column: 1 / -1;
 }
 .roofr-modal-footer { display: flex; justify-content: flex-end; gap: 10px; }
+/* The gaps banner. Same red as the unpriced-bundle warning on the pricing tab,
+   and for the same reason: a measurement the report didn't carry applies as a
+   zero, and a zero prices as legitimately as any other number. */
+.roofr-unread {
+  background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px;
+  padding: 10px 12px; font-size: 12px; line-height: 1.45; color: #991b1b;
+}
+.roofr-missing { color: #b91c1c; font-weight: 600; }
 
 /* ── Insurance (Xactimate) carrier-estimate import modal ───────────── */
 .xact-modal-box { width: min(760px, 96vw); }
 .xact-modal-body { padding: 18px 22px 22px; display: flex; flex-direction: column; gap: 14px;
-  max-height: 76vh; overflow-y: auto; }
+  max-height: 76vh; max-height: 76dvh; overflow-y: auto; }
 .xact-meta-card {
   display: grid; grid-template-columns: auto 1fr; gap: 4px 14px;
   background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
@@ -4285,6 +4498,12 @@ a.jx-contact:hover { text-decoration: underline; }
   background: #fef3c7; border: 1px solid #f59e0b; color: #92400e;
   border-radius: 8px; padding: 10px 12px; font-size: 12px;
 }
+/* Carrier import reconcile verdict — see xactReconcileBanner in app.js */
+.xact-reconcile-ok {
+  background: #dcfce7; border: 1px solid #16a34a; color: #166534;
+  border-radius: 8px; padding: 10px 12px; font-size: 12px; font-weight: 600;
+}
+.xact-warn.xact-reconcile-bad { background: #fee2e2; border-color: #dc2626; color: #991b1b; }
 .xact-hint { font-size: 13px; color: var(--text-light); margin: 0; }
 .xact-section-hd { display: flex; align-items: center; gap: 8px; margin: 6px 0 6px; }
 .xact-section-hd input[type="checkbox"] { width: 16px; height: 16px; flex: none; }
@@ -4538,7 +4757,14 @@ body.is-client #nav-toggle      { display: none; }
 .vz-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
 .vz-header h2 { margin:0 0 4px; color:#1a3a5c; font-size:22px; }
 .vz-sub { margin:0; color:#64748b; font-size:14px; max-width:640px; }
-.vz-header-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.vz-header-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.vz-wrap .btn { min-height:38px; padding:8px 13px; border:1px solid #b8c5d3; border-radius:8px; background:#fff; color:#1a3a5c; font-size:12px; font-weight:750; line-height:1.2; cursor:pointer; transition:background .12s ease,border-color .12s ease,box-shadow .12s ease,transform .12s ease; }
+.vz-wrap .btn:hover:not(:disabled) { border-color:#7d9dbc; background:#eef4fa; box-shadow:0 2px 7px rgba(15,23,42,.08); transform:translateY(-1px); }
+.vz-wrap .btn:disabled { cursor:not-allowed; opacity:.52; background:#f1f5f9; color:#64748b; }
+.vz-wrap .btn.small { min-height:34px; padding:7px 10px; font-size:11px; }
+.vz-wrap .btn.danger { border-color:#fecaca; color:#b91c1c; }
+.vz-wrap .btn.danger:hover:not(:disabled) { border-color:#f87171; background:#fef2f2; }
+.vz-wrap .btn-primary { min-height:38px; border-radius:8px; box-shadow:0 2px 6px rgba(15,23,42,.16); }
 .vz-elevation-bar { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:10px; border:1px solid #dbe3ec; border-radius:10px; background:#f8fafc; }
 .vz-elevation-tabs,.vz-elevation-actions { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
 .vz-elevation-tab { display:flex; flex-direction:column; align-items:flex-start; gap:1px; min-width:92px; padding:8px 11px; border:1px solid #cbd5e1; border-radius:8px; background:#fff; color:#334155; font-weight:750; cursor:pointer; }
@@ -4548,7 +4774,7 @@ body.is-client #nav-toggle      { display: none; }
 .vz-approval-status { background:#e8f6ee; border:1px solid #a7d7b7; color:#166534; }
 .vz-share-status:not(:empty) { background:#eff6ff; border:1px solid #bdd1e6; color:#1e3a5f; }
 .vz-share-status a { color:#1d4ed8; }
-.vz-detection-panel { display:flex; align-items:center; justify-content:space-between; gap:12px; background:#eff6ff; border:1px solid #bdd1e6; border-radius:10px; padding:12px; }
+.vz-detection-panel { display:flex; align-items:center; justify-content:space-between; gap:12px; background:linear-gradient(135deg,#eff6ff,#f8fbff); border:1px solid #bdd1e6; border-radius:10px; padding:12px; }
 .vz-detection-panel strong { font-size:13px; color:#1a3a5c; }
 .vz-detection-panel p { margin:5px 0 0; font-size:12px; line-height:1.5; color:#475569; overflow-wrap:anywhere; }
 .vz-detection-panel button { flex-shrink:0; }
@@ -4556,7 +4782,7 @@ body.is-client #nav-toggle      { display: none; }
 .vz-scope>strong { display:block; color:#1a3a5c; font-size:13px; }
 .vz-scope>span { display:block; color:#64748b; font-size:11px; margin:2px 0 8px; }
 .vz-scope-grid { display:flex; flex-wrap:wrap; gap:6px; }
-.vz-scope-grid label { display:flex; align-items:center; gap:5px; padding:6px 8px; border:1px solid #d7dee7; border-radius:999px; color:#64748b; font-size:11px; cursor:pointer; }
+.vz-scope-grid label { display:flex; align-items:center; gap:6px; min-height:40px; padding:8px 11px; border:1px solid #d7dee7; border-radius:999px; color:#64748b; font-size:12px; cursor:pointer; user-select:none; }
 .vz-scope-grid label.active { background:#e8f0f8; border-color:#7d9dbc; color:#1a3a5c; font-weight:700; }
 .vz-scope-grid input { margin:0; }
 .vz-preview-actions { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; font-size:12px; color:#64748b; }
@@ -4601,8 +4827,10 @@ body.is-client #nav-toggle      { display: none; }
 .vz-place-key { display:flex; gap:7px; flex-wrap:wrap; margin-top:9px; }
 .vz-place-key span { padding:4px 7px; border:1px solid #86c99a; border-radius:999px; background:#fff; color:#14532d; font-size:10px; font-weight:700; }
 .vz-provia-link { display:inline-block; color:#1a3a5c; font-size:12px; line-height:1.5; }
-.vz-provia-spec { margin-top:12px; padding:11px; border:1px solid #cbd5e1; border-radius:9px; background:#f8fafc; }
-.vz-provia-spec h4 { margin:0 0 7px; color:#1a3a5c; font-size:13px; }
+.vz-provia-spec { margin-top:12px; padding:0 11px; border:1px solid #cbd5e1; border-radius:9px; background:#f8fafc; }
+.vz-provia-spec>summary { padding:11px 0; cursor:pointer; color:#1a3a5c; font-size:12px; font-weight:800; }
+.vz-provia-spec>summary span { margin-left:5px; color:#64748b; font-size:10px; font-weight:500; }
+.vz-provia-spec-body { padding:0 0 11px; }
 .vz-provia-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 8px; }
 .vz-provia-preview { display:block; max-width:180px; max-height:220px; object-fit:contain; margin:9px 0; border:1px solid #cbd5e1; border-radius:7px; background:#fff; }
 .vz-provia-preview.stale { opacity:.42; filter:grayscale(.8); border-color:#dc2626; }
@@ -4625,11 +4853,10 @@ body.is-client #nav-toggle      { display: none; }
 .vz-big-btn { padding:16px 28px; font-size:16px; border-radius:10px; }
 .vz-empty-tip { margin:0; color:#94a3b8; font-size:13px; text-align:center; max-width:520px; }
 
-.vz-body { display:grid; grid-template-columns: 2fr 1fr; gap:16px; align-items:start; }
-@media (max-width:1024px) { .vz-body { grid-template-columns: 1fr; } }
+.vz-body { display:grid; grid-template-columns:minmax(0,1.7fr) minmax(320px,.85fr); gap:16px; align-items:start; }
 
 .vz-canvas-col { display:flex; flex-direction:column; gap:10px; min-width:0; }
-.vz-canvas-wrap { position:relative; background:#0f172a; border-radius:12px; padding:8px; overflow:hidden; touch-action:pan-y; }
+.vz-canvas-wrap { position:relative; background:#0f172a; border-radius:12px; padding:8px; overflow:hidden; touch-action:pan-y; box-shadow:0 10px 26px rgba(15,23,42,.16); }
 .vz-canvas { width:100%; height:auto; display:block; border-radius:6px; touch-action:pan-y; cursor:crosshair; background:#1e293b; }
 .vz-canvas.vz-editing { touch-action:none; }
 .vz-canvas-legend { margin-top:6px; color:#cbd5e1; font-size:12px; text-align:center; }
@@ -4646,32 +4873,45 @@ body.is-client #nav-toggle      { display: none; }
 .vz-magic input { margin:0; }
 .vz-tools .btn.small { padding:6px 10px; font-size:12px; }
 
-.vz-picker-col { min-width:0; background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:12px; }
+.vz-picker-col { min-width:0; background:#fff; border:1px solid #dbe3ec; border-radius:12px; padding:12px; box-shadow:0 3px 12px rgba(15,23,42,.05); }
 .vz-tier-tabs { display:flex; gap:6px; margin-bottom:10px; }
 .vz-tier-tab { flex:1; padding:10px 12px; border:1px solid #e5e7eb; border-radius:8px; background:#f8fafc; font-weight:700; color:#475569; cursor:pointer; }
 .vz-tier-tab.active { background:#1a3a5c; color:#fff; border-color:#1a3a5c; }
 .vz-concept-controls { display:flex; align-items:end; gap:8px; padding:8px; border-radius:8px; background:#f5f8fb; }
 .vz-concept-controls label { flex:1; color:#475569; font-size:11px; font-weight:700; }
 .vz-concept-controls input { display:block; width:100%; margin-top:3px; padding:7px; border:1px solid #cbd5e1; border-radius:6px; }
-.vz-picker-section { margin:12px 0; }
+.vz-picker-section { margin:10px 0; padding:11px; border:1px solid #e2e8f0; border-radius:10px; background:#fbfdff; }
+.vz-picker-section>summary { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:-11px; padding:12px; cursor:pointer; list-style:none; }
+.vz-picker-section>summary::-webkit-details-marker { display:none; }
+.vz-picker-section>summary::after { content:'+'; flex:none; color:#64748b; font-size:20px; font-weight:500; line-height:1; }
+.vz-picker-section[open]>summary::after { content:'−'; }
+.vz-picker-summary { min-width:0; }
+.vz-picker-summary strong { display:block; color:#1a3a5c; font-size:14px; }
+.vz-picker-summary small { display:block; margin-top:2px; color:#64748b; font-size:10px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vz-picker-section[open]>.vz-picker-content { margin-top:13px; padding-top:2px; border-top:1px solid #edf1f5; }
 .vz-picker-hd { margin-bottom:8px; }
 .vz-picker-title { font-weight:700; color:#1a3a5c; font-size:14px; }
 .vz-picker-sublabel { margin-top:8px; margin-bottom:4px; font-size:12px; color:#64748b; text-transform:uppercase; letter-spacing:0.05em; }
 .vz-picker-help { margin:4px 0 8px; color:#64748b; font-size:11px; line-height:1.45; }
-.vz-component-section { border-top:1px solid #e5e7eb; padding-top:12px; }
+.vz-component-section { background:#f8fafc; }
 .vz-component { margin-top:10px; padding:10px; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; }
 .vz-component h4 { margin:0 0 4px; color:#334155; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
 .vz-component .vz-field { margin:8px 0; }
 
-.vz-swatch-row { display:grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap:6px; }
-.vz-swatch { position:relative; height:56px; border:2px solid transparent; border-radius:8px; padding:0; cursor:pointer; overflow:hidden; }
+.vz-color-picker { margin-top:10px; }
+.vz-color-picker>.vz-field { margin-bottom:7px; }
+.vz-swatch-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:8px; }
+.vz-swatch { position:relative; display:flex; align-items:flex-end; min-width:0; height:72px; border:2px solid transparent; border-radius:9px; padding:0; cursor:pointer; overflow:hidden; background:#fff; box-shadow:inset 0 0 0 1px rgba(15,23,42,.14); transition:transform .12s ease,box-shadow .12s ease; }
+.vz-swatch:hover { transform:translateY(-1px); box-shadow:0 4px 10px rgba(15,23,42,.13),inset 0 0 0 1px rgba(15,23,42,.12); }
 .vz-swatch.active { border-color:#f59e0b; box-shadow:0 0 0 2px #fde68a; }
-.vz-swatch span { position:absolute; bottom:2px; left:2px; right:2px; font-size:10px; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.75); padding:2px 4px; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vz-swatch img,.vz-swatch-color { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.vz-swatch span:not(.vz-swatch-color) { position:relative; z-index:2; width:100%; font-size:10px; color:#fff; background:linear-gradient(transparent,rgba(15,23,42,.88)); text-shadow:0 1px 2px rgba(0,0,0,.8); padding:18px 5px 5px; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vz-swatch-check { position:absolute; z-index:3; top:5px; right:5px; display:grid; place-items:center; width:20px; height:20px; border-radius:999px; background:#f59e0b; color:#fff; font-size:12px; font-style:normal; box-shadow:0 1px 3px rgba(15,23,42,.35); }
 
 .vz-style-row { display:flex; gap:6px; flex-wrap:wrap; }
 .vz-style-btn { padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px; background:#f8fafc; cursor:pointer; font-size:13px; color:#334155; }
 .vz-style-btn.active { background:#1a3a5c; color:#fff; border-color:#1a3a5c; }
-.vz-door-section { border-top:1px solid #e5e7eb; padding-top:12px; }
+.vz-door-section { border-top:1px solid #e2e8f0; }
 .vz-door-options { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
 .vz-door-option { display:flex; align-items:center; gap:7px; min-height:48px; padding:7px; text-align:left; border:1px solid #cbd5e1; border-radius:7px; background:#f8fafc; cursor:pointer; color:#334155; font-size:11px; font-weight:700; }
 .vz-door-option:hover { border-color:#5b7a9b; background:#eef4fb; }
@@ -4682,14 +4922,18 @@ body.is-client #nav-toggle      { display: none; }
 
 .vz-triptych { background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:12px; }
 .vz-triptych h3 { margin:0 0 10px; font-size:15px; color:#1a3a5c; }
+.vz-triptych-compact { margin:10px 0; padding:9px; background:#f8fafc; }
+.vz-triptych-compact h3 { margin-bottom:7px; font-size:12px; }
 .vz-triptych-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
 @media (max-width:768px) { .vz-triptych-grid { grid-template-columns:1fr; } }
 @media (max-width:480px) { .vz-door-options { grid-template-columns:1fr; } .vz-workflow span { font-size:10px; } }
 @media (max-width:600px) { .vz-provia-grid { grid-template-columns:1fr; } .vz-elevation-actions { width:100%; } .vz-before-slider { width:100%; } }
-.vz-triptych-tile { display:flex; flex-direction:column; gap:6px; }
+.vz-triptych-tile { display:flex; flex-direction:column; gap:6px; min-width:0; padding:8px; border:2px solid transparent; border-radius:10px; background:#f8fafc; color:inherit; text-align:left; font:inherit; cursor:pointer; }
+.vz-triptych-tile:hover { border-color:#bdd1e6; }
+.vz-triptych-tile.active { border-color:#1a3a5c; background:#eef4fa; }
 .vz-triptych-lbl { font-weight:700; color:#1a3a5c; text-transform:uppercase; letter-spacing:0.05em; font-size:11px; }
 .vz-triptych-canvas { width:100%; height:auto; display:block; border-radius:6px; background:#e5e7eb; }
-.vz-triptych-cap { font-size:11px; color:#475569; min-height:14px; }
+.vz-triptych-cap { display:-webkit-box; min-height:14px; overflow:hidden; color:#475569; font-size:10px; line-height:1.35; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
 
 /* iPad-touch tablet block — big finger-friendly hits for the visualizer. */
 @media (min-width: 768px) and (max-width: 1366px) and (pointer: coarse) {
@@ -4699,9 +4943,35 @@ body.is-client #nav-toggle      { display: none; }
   .vz-brush input { width:220px; }
 }
 
+@media (min-width:1025px) {
+  .vz-canvas-wrap { position:sticky; top:72px; z-index:3; max-height:calc(100vh - 88px); }
+  .vz-canvas { width:auto; max-width:100%; max-height:calc(100vh - 126px); margin:0 auto; }
+}
+@media (max-width:1024px) {
+  .vz-body { display:flex; flex-direction:column; }
+  .vz-canvas-col { display:contents; }
+  .vz-workflow { order:1; }
+  .vz-scope { order:2; }
+  .vz-detection-panel { order:3; }
+  .vz-preview-actions { order:4; }
+  .vz-canvas-wrap { order:5; }
+  .vz-canvas { width:auto; max-width:100%; max-height:46dvh; margin:0 auto; }
+  .vz-picker-col { order:6; width:100%; }
+  .vz-refine,.vz-align,.vz-place { order:7; }
+}
+@media (max-width:768px) {
+  .vz-wrap { padding:12px; gap:12px; }
+  .vz-header-actions { width:100%; }
+  .vz-header-actions .btn,.vz-header-actions .btn-primary { min-height:44px; flex:1 1 auto; }
+  .vz-scope-grid label { min-height:44px; }
+  .vz-triptych-grid { display:flex; overflow-x:auto; scroll-snap-type:x mandatory; padding:2px 1px 8px; }
+  .vz-triptych-tile { flex:0 0:min(82vw,360px); scroll-snap-align:start; }
+}
+.vz-wrap button:focus-visible,.vz-wrap input:focus-visible,.vz-wrap select:focus-visible,.vz-wrap textarea:focus-visible,.vz-wrap summary:focus-visible { outline:3px solid rgba(37,99,235,.4); outline-offset:2px; }
+
 /* Manager-only Design Studio request/storage dashboard. Read-only by
  * design: candidates are displayed as internal references, never links. */
-.vz-ops-modal-box { width:min(1180px,96vw); max-height:94vh; }
+.vz-ops-modal-box { width:min(1180px,96vw); max-height:94vh; max-height:94dvh; }
 .vz-ops-body { flex:1; overflow:auto; padding:16px 20px 24px; background:#f8fafc; }
 .vz-ops-toolbar { display:flex; align-items:flex-end; justify-content:flex-end; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
 .vz-ops-toolbar label { display:flex; flex-direction:column; gap:4px; color:#475569; font-size:11px; font-weight:800; }
@@ -4744,7 +5014,7 @@ body.is-client #nav-toggle      { display: none; }
  * Every offset below already keyed off --header-h; this only adds the bar. */
 .p1-has-shell #app-header { top: var(--p1-shell-h); }
 .p1-has-shell #app-layout { padding-top: calc(var(--header-h) + var(--p1-shell-h)); }
-.p1-has-shell .header-overflow-menu { top: calc(var(--header-h) + var(--p1-shell-h)); }
+.p1-has-shell .header-overflow-menu { --menu-top: calc(var(--header-h) + var(--p1-shell-h)); }
 
 /* Matches the drawer breakpoint above, where #sidebar becomes a fixed overlay. */
 @media (max-width: 767px) {
@@ -4818,8 +5088,44 @@ body.is-client #nav-toggle      { display: none; }
 .rc-issue { font-weight: 700; }
 .rc-saved { font-size: 12px; font-weight: 700; color: #16a34a; }
 
+/* Roof Health Report + warranty certificate: the read-only summary of what the
+   document will say, and the certificate switch. */
+.cr-summary {
+  font-size: 12.5px; color: #384b63; background: #f8fafc;
+  border: 1px solid var(--border-light); border-radius: 6px; padding: 8px 10px;
+}
+.cr-summary ul { margin: 4px 0; padding-left: 18px; }
+.cr-toggle { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 600; }
+.cr-warn { color: #b45309; font-weight: 600; }
+
+/* Files on this customer's OTHER estimates: view + CRM only. */
+.doc-group-hd {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; font-weight: 700; color: #1a3a5c;
+  border-bottom: 1px solid var(--border-light); padding: 6px 0 4px; margin-top: 6px;
+}
+.doc-open-est {
+  font-size: 11px; font-weight: 600; color: var(--primary-light);
+  background: none; border: none; text-decoration: underline; padding: 0;
+}
+.att-label-ro { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+
+/* Invoice / quote: the itemize switch, payment rows and the what-it-bills summary. */
+.inv-itemize {
+  display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: #384b63;
+  background: #f8fafc; border: 1px solid var(--border-light); border-radius: 6px; padding: 8px 10px;
+}
+.inv-itemize input { margin-top: 2px; width: 18px; height: 18px; flex: none; }
+.inv-pay-row { grid-template-columns: 150px 130px 1fr auto; align-items: end; margin-bottom: 6px; }
+.inv-summary {
+  display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #1a2740;
+  background: #f8fafc; border: 1px solid var(--border-light); border-radius: 6px; padding: 8px 10px;
+}
+.inv-balance { font-size: 14px; color: var(--primary); }
+
 @media (max-width: 640px) {
   .rc-grid { grid-template-columns: 1fr; }
+  .inv-pay-row { grid-template-columns: 1fr 1fr; }
   .rc-term-btns { width: 100%; }
   .rc-term-btn { flex: 1; min-height: 42px; padding: 8px 6px; }
   .rc-price { max-width: none; width: 100%; }
@@ -4843,3 +5149,559 @@ body.is-client #nav-toggle      { display: none; }
   .more-menu-btn    { padding: 0 7px; }
   .nav-toggle-btn   { padding: 2px 7px 4px; }
 }
+
+/* ── Margin floor banner (pricing page) ─────────────────────────────────
+   Job-level, above the tab bar. Two states: warn is advisory, block means
+   the server will refuse the send for anyone below manager. Colors are the
+   estimate's existing amber/red, not new ones. */
+.margin-banner{
+  border-radius:6px;padding:11px 14px;margin:0 0 12px;
+  font-size:14px;line-height:1.5;
+}
+.margin-banner strong{display:block;margin-bottom:2px;font-size:15px}
+.margin-banner-warn{
+  background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
+}
+.margin-banner-block{
+  background:#fee2e2;border:1px solid #dc2626;color:#7f1d1d;
+}
+@media (pointer: coarse){
+  /* Same reason every other control here is bumped: this one carries a number
+     a rep has to read in a driveway, not on a laptop. */
+  .margin-banner{font-size:15px;padding:13px 15px}
+}
+
+/* Estimates with no salesperson are excluded from every analytics figure.
+   This says so on the tab, because the count used to vanish silently. */
+.analytics-unassigned{
+  background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
+  font-size:13px;line-height:1.55;margin-bottom:12px;
+}
+
+/* Shown in Settings only when the customer-proposal trust blocks are actually
+   empty — the signature of a rebuilt volume, which is otherwise silent. */
+.cc-empty-warn{
+  background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
+  border-radius:6px;padding:11px 14px;margin-bottom:10px;
+  font-size:13px;line-height:1.55;
+}
+
+/* ── Lost-reason modal ──────────────────────────────────────────────────
+   Replaces a stack of browser prompt() dialogs. One screen: pick a reason,
+   optional note, done. */
+.lost-modal-box {
+  width: min(460px, 92vw);
+  /* Same pair as .modal-box, restated because this box narrows the width and
+     the two belong together. A rep marks a job lost standing in a driveway. */
+  max-height: 80vh;
+  max-height: 80dvh;
+}
+.lost-lede { margin: 0; font-size: 13px; color: var(--text-light); line-height: 1.55; }
+.lost-reason-list { display: flex; flex-direction: column; gap: 7px; }
+.lost-reason {
+  text-align: left; padding: 12px 14px; font-size: 14px; font-family: inherit;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: #fff; cursor: pointer; color: var(--text);
+  transition: background .12s, border-color .12s;
+}
+.lost-reason:hover { background: var(--bg); }
+.lost-reason.selected {
+  border-color: #dc2626; background: #fee2e2; color: #7f1d1d; font-weight: 600;
+}
+.lost-reason:focus-visible { outline: 2px solid #0284c7; outline-offset: 2px; }
+@media (pointer: coarse) {
+  /* A rep marks a job lost standing in a driveway, not at a desk. */
+  .lost-reason { padding: 14px; font-size: 15px; }
+}
+
+/* ── Settings tabs ──────────────────────────────────────────────────────
+   Panes are shown only when BOTH conditions hold: this is the active tab,
+   AND the role gating did not mark the pane hidden. The second half is not
+   belt-and-braces — it is the whole gate. `.field-group.hidden` matched no
+   rule in this stylesheet (see the note at .gap-note.hidden), so every rep
+   had been seeing the admin-only contract editor. */
+.settings-pane { display: none; }
+/* No `gap` here on purpose: the gated panes are also .field-group and carry its
+   3px label-to-control spacing. Setting a gap on this higher-specificity
+   selector would silently re-space the inside of every one of them. */
+.settings-pane.is-active:not(.hidden) { display: flex; flex-direction: column; }
+/* #settings-general is the exception — it holds two unrelated field groups
+   rather than one label and its control, so it wants section spacing. */
+#settings-general.settings-pane.is-active { gap: 14px; }
+
+.settings-tabs {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  padding: 12px 22px 0; border-bottom: 1px solid var(--border);
+  /* .modal-box is a flex column with a max-height; without this the strip is
+     a shrinkable child and seven wrapped tabs get squeezed instead of the
+     body scrolling. */
+  flex-shrink: 0;
+}
+.settings-tab {
+  padding: 7px 13px; font-size: 12px; font-weight: 600; font-family: inherit;
+  border: 1px solid transparent; border-bottom: none;
+  border-radius: 6px 6px 0 0; margin-bottom: -1px;
+  background: none; cursor: pointer; color: var(--text-light);
+  white-space: nowrap; transition: background .12s, color .12s;
+}
+.settings-tab:hover { background: var(--bg); color: var(--text); }
+.settings-tab.active {
+  background: #fff; color: var(--primary);
+  border-color: var(--border); border-bottom-color: #fff;
+}
+.settings-tab:focus-visible { outline: 2px solid #0284c7; outline-offset: -2px; }
+@media (pointer: coarse) {
+  /* Same rule as everywhere else in this app: a finger, not a width. */
+  .settings-tab { padding: 10px 14px; font-size: 13px; }
+}
+
+/* ── Insurance job margin panel ─────────────────────────────────────────
+   Rep-facing only. Never printed, never on the customer page — it answers
+   "what does this claim actually pay us", which is nobody's business but
+   ours. Deliberately plain: this is a worksheet, not a sales surface. */
+.ins-margin-panel{
+  margin-top:18px;padding:16px;border:1px solid var(--border);
+  border-radius:var(--radius);background:#f8fafc;
+}
+.ins-mg-hint{margin:0 0 12px;font-size:12.5px;color:var(--text-light);line-height:1.55;max-width:70ch}
+.ins-mg-warn{
+  background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
+  border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;line-height:1.5;
+}
+.ins-mg-meas{font-size:12.5px;color:var(--text-light);margin-bottom:12px}
+.ins-mg-bundle{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-width:420px}
+.ins-mg-bundle>span{font-size:10px;font-weight:600;color:var(--text-light);text-transform:uppercase;letter-spacing:.04em}
+
+.ins-mg-table{width:100%;border-collapse:collapse;margin-bottom:14px;background:#fff}
+.ins-mg-table th{
+  text-align:left;font-size:10px;font-weight:600;color:var(--text-light);
+  text-transform:uppercase;letter-spacing:.05em;padding:7px 8px;
+  border-bottom:1px solid var(--border);
+}
+.ins-mg-table td{padding:5px 8px;border-bottom:1px solid #eef1f5;font-size:12.5px;vertical-align:middle}
+.ins-mg-table input{width:100%;max-width:110px}
+.ins-mg-table tfoot td{font-weight:700;border-top:1px solid var(--border);border-bottom:none}
+.ins-mg-money{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ins-mg-unit{color:var(--text-light);font-size:11.5px}
+
+.ins-mg-adders{margin-bottom:14px}
+.ins-mg-adders-title{font-size:10px;font-weight:600;color:var(--text-light);
+  text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.ins-mg-adder{display:inline-flex;flex-direction:column;gap:3px;margin:0 12px 8px 0;width:130px}
+.ins-mg-adder>span{font-size:11.5px;color:var(--text)}
+.ins-mg-supp{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;max-width:320px}
+.ins-mg-supp>span{font-size:11.5px;color:var(--text)}
+
+.ins-mg-empty{font-size:12.5px;color:var(--text-light);font-style:italic;
+  padding:12px;background:#fff;border:1px dashed var(--border);border-radius:6px}
+.ins-mg-result{background:#fff;border:1px solid var(--border);border-radius:6px;padding:12px 14px}
+.ins-mg-result>div{display:flex;justify-content:space-between;align-items:baseline;
+  padding:4px 0;font-size:13px}
+.ins-mg-result>div>span{color:var(--text-light)}
+.ins-mg-result>div>strong{font-variant-numeric:tabular-nums}
+.ins-mg-profit{border-top:1px solid var(--border);margin-top:4px;padding-top:8px!important}
+.ins-mg-pct>strong{font-size:20px;color:#16a34a}
+.ins-mg-result.is-thin .ins-mg-pct>strong{color:#b45309}
+@media (pointer: coarse){
+  /* An office manager costs these on an iPad as often as at a desk. */
+  .ins-mg-table input,.ins-mg-adder input,.ins-mg-supp input{font-size:16px}
+  .ins-mg-table td{padding:8px}
+}
+/* A cost line with no price in the book. Same weight as the commercial
+   unpriced-bundle banner, and for the same reason: it is the only thing
+   between a placeholder book and a margin that looks legitimate. */
+.ins-mg-unpriced{
+  background:#fee2e2;border:1px solid #dc2626;color:#7f1d1d;
+  border-radius:6px;padding:11px 13px;margin-bottom:12px;font-size:12.5px;line-height:1.55;
+}
+.ins-mg-unpriced strong{display:block;margin-bottom:2px}
+.ins-mg-pct em{font-style:normal;color:#b45309;font-size:11px}
+
+/* ── Claim check (insurance scope + supplement finder) ──────────────────
+   Adjusters file gutters and interior work under a roof plan. Costing our
+   roof against that whole total reports profit we are not earning. */
+.ins-scope-flag{
+  background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
+  border-radius:6px;padding:11px 13px;margin-bottom:12px;font-size:12.5px;line-height:1.55;
+}
+.ins-scope-flag strong{display:block;margin-bottom:4px}
+.ins-scope-grp{display:flex;gap:10px;align-items:baseline;margin-top:5px;font-size:12px}
+.ins-scope-grp>span{font-weight:600;white-space:nowrap}
+.ins-scope-grp>em{flex:1;font-style:normal;opacity:.85;overflow-wrap:anywhere}
+.ins-scope-grp>b{font-variant-numeric:tabular-nums;white-space:nowrap}
+.ins-scope-review{margin-bottom:12px}
+.ins-scope-review-title{font-size:12.5px;color:var(--text-light);margin-bottom:6px;line-height:1.5}
+.ins-cmp-title{font-size:10px;font-weight:600;color:var(--text-light);
+  text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px}
+.ins-cmp-table tr.is-short td{background:#fff7ed}
+.ins-cmp-supp{background:#e0f2fe;border:1px solid #0284c7;color:#075985;
+  border-radius:6px;padding:10px 12px;font-size:12.5px;line-height:1.55}
+.ins-cmp-supp strong{display:block;margin-bottom:2px}
+.ins-cmp-ok{font-size:12.5px;color:#15803d}
+.ins-mg-excl>strong{color:#b45309}
+.ins-mg-result>div>span>em{font-style:normal;color:#b45309;font-size:11px}
+
+/* ── Price book audit ───────────────────────────────────────────────────
+   A work queue worked through against supplier invoices, often on paper. */
+.pbaudit-modal-box{width:min(900px,96vw);max-height:88vh;max-height:88dvh;
+  display:flex;flex-direction:column}
+.pbaudit-lede{background:#fef3c7;border:1px solid #f59e0b;color:#78350f;
+  border-radius:6px;padding:12px 14px;font-size:13px;line-height:1.55;margin-bottom:14px}
+.pbaudit-lede strong{font-size:14px}
+/* The RoofR button once the report is in. Reads as done rather than as
+   another thing to do — "do I still need this?" is the only question a rep
+   has when they look at it. */
+.roofr-loaded {
+  color: #047857;
+  border-color: #A7F3D0;
+  background: #ECFDF5;
+}
+
+/* Estimate review findings. One card per finding, colour-keyed by severity,
+   because a rep reads this in a truck with the engine running and the only
+   question they have is which of these stops the send. */
+.rev-item {
+  margin: 0 0 10px;
+  padding: 11px 13px;
+  border-radius: 0 8px 8px 0;
+  border: 1px solid var(--border, #d8dee4);
+  border-left-width: 4px;
+  background: var(--surface2, #f6f8fa);
+}
+.rev-item.rev-high   { border-left-color: #DC2626; }
+.rev-item.rev-medium { border-left-color: #F59E0B; }
+.rev-item.rev-low    { border-left-color: #6B7280; }
+.rev-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 4px;
+}
+.rev-sev {
+  font-size: 11px; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.rev-high .rev-sev   { color: #DC2626; }
+.rev-medium .rev-sev { color: #B45309; }
+.rev-low .rev-sev    { color: #6B7280; }
+.rev-what { font-size: 14px; font-weight: 600; line-height: 1.4; }
+.rev-fix  { font-size: 13px; margin-top: 4px; line-height: 1.45; opacity: .82; }
+
+/* The material/labor review panel. Sits above the audit's own findings in the
+   same modal: both answer "what is wrong with the price book", and a manager
+   working through one is the person who should see the other. */
+.ccr-panel {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border, #d8dee4);
+  border-left: 3px solid #8B5CF6;
+  border-radius: 0 8px 8px 0;
+  background: var(--surface2, #f6f8fa);
+}
+.ccr-panel table { margin-top: 10px; }
+.ccr-tick { width: 18px; height: 18px; }
+
+.pbaudit-hint{margin:6px 0 0;font-size:12px;opacity:.85;line-height:1.5}
+.pbaudit-clean{background:#dcfce7;border:1px solid #16a34a;color:#14532d;
+  border-radius:6px;padding:14px;font-size:13.5px;line-height:1.55}
+.pbaudit-trade{margin-bottom:18px}
+.pbaudit-trade h4{font-size:13px;text-transform:capitalize;margin:0 0 6px}
+.pbaudit-table{width:100%;border-collapse:collapse;background:#fff}
+.pbaudit-table th{text-align:left;font-size:10px;font-weight:600;color:var(--text-light);
+  text-transform:uppercase;letter-spacing:.05em;padding:7px 8px;
+  border-bottom:1px solid var(--border)}
+.pbaudit-table td{padding:7px 8px;border-bottom:1px solid #eef1f5;font-size:12.5px;
+  vertical-align:top}
+.pbaudit-table tr.is-high{background:#fffbfa}
+.pbaudit-name{font-weight:600}
+.pbaudit-bundles{font-size:11px;color:var(--text-light);margin-top:2px}
+.pbaudit-unit{color:var(--text-light);font-size:11.5px;white-space:nowrap}
+.pbaudit-issue{line-height:1.45;margin-bottom:3px}
+.pbaudit-issue b{color:#b42318}
+@media print{
+  /* The whole point is working through it away from the screen. */
+  #pbaudit-modal{position:static;background:none}
+  .pbaudit-modal-box{max-height:none;width:100%;box-shadow:none}
+  .modal-header-actions,.modal-close{display:none}
+}
+/* Reviewed AI concepts are deliberately separate from the instant canvas. */
+.vz-realistic { margin: 18px 0; padding: 18px; border: 1px solid #8ca6c5; border-radius: 12px; background: #f3f7fc; color: #19324e; }
+.vz-realistic h3 { margin-top: 0; }
+.vz-realistic p { line-height: 1.5; }
+.vz-realistic label { display: block; margin: 12px 0; }
+.vz-realistic-comparison { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin: 16px 0; }
+.vz-realistic-comparison figure { margin: 0; }
+.vz-realistic-comparison figcaption { margin-bottom: 8px; font-weight: 600; }
+.vz-realistic-comparison img { width: 100%; max-height: 650px; object-fit: contain; background: #e0e8f0; }
+@media(max-width:600px) { .vz-realistic-comparison { grid-template-columns: 1fr; } }
+
+/* Overlays share the space below the portal bar, including on short screens. */
+.p1-has-shell .modal{top:var(--p1-shell-h)}
+#main-content,.page,.modal-box,.modal-header h2{min-width:0}
+.modal-header{flex-shrink:0;gap:8px}
+.modal-close{flex-shrink:0}
+@media screen and (max-width:767px){
+  .modal{padding:8px max(8px,env(safe-area-inset-right,0px)) max(8px,env(safe-area-inset-bottom,0px)) max(8px,env(safe-area-inset-left,0px))}
+  .modal .modal-box{width:100%!important;max-width:100%;max-height:calc(100dvh - var(--p1-shell-h,0px) - 16px - env(safe-area-inset-bottom,0px))}
+  .modal-header{padding:8px 12px;flex-wrap:wrap}
+  .modal-header h2{flex:1;overflow-wrap:anywhere}
+  .modal-header-actions{flex-wrap:wrap}
+  .page{padding-left:max(10px,env(safe-area-inset-left,0px));padding-right:max(10px,env(safe-area-inset-right,0px))}
+  .pm-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .pm-grid>*,.pm-search{min-width:0}
+}
+.vz-material-badge { font-size: .72em; font-weight: 500; color: var(--muted, #64748b); }
+.vz-material-row { display: grid; gap: 7px; padding: 12px 0; border-top: 1px solid var(--border, #dbe2ea); }
+.vz-material-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.vz-materials { border-left: 3px solid #0f766e; }
+
+/* ── Job Board & Analytics — full-screen pages ─────────────────────────
+   Both used to live in one 860px modal. They are pages now, and the rule
+   that makes them worth having is that NOTHING here caps the width: no
+   max-width on .page-board, .board-body or .an-body. The laptop header keeps
+   its two buttons too (see the 1599px rule below), since that is the width
+   most of this gets used at. */
+body.is-board #sidebar          { display: none !important; }
+body.is-board #page-nav         { display: none; }
+body.is-board #print-pages-bar  { display: none; }
+body.is-board #save-btn         { display: none; }
+body.is-board #nav-toggle       { display: none; }
+body.is-board #estimate-number,
+body.is-board #estimate-label-badge,
+body.is-board #est-status-badge { display: none !important; }
+/* Estimate actions have nothing to act on from here. */
+body.is-board .btn-present, body.is-board .btn-share,
+body.is-board .btn-print,   body.is-board .btn-invoice { display: none; }
+
+.page-board { background: var(--bg); padding: 14px 16px; gap: 12px; }
+.board-body, .an-body { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; min-width: 0; }
+.board-loading { padding: 48px; text-align: center; color: var(--text-light); }
+
+.board-toolbar, .an-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+/* Only the columns give up height; the bars above them never squash. */
+.board-toolbar, .board-summary, .board-pills { flex-shrink: 0; }
+.board-title { font-size: 19px; color: var(--primary); margin-right: 6px; white-space: nowrap; }
+.board-search {
+  flex: 1 1 240px; max-width: 420px; padding: 8px 12px; font-size: 14px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+}
+.board-filter {
+  width: auto; flex: 0 0 auto; padding: 7px 10px; font-size: 13px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--surface); color: var(--text);
+}
+.board-toolbar-end { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.board-tool-btn {
+  padding: 7px 12px; font-size: 13px; font-weight: 600; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--primary); cursor: pointer;
+}
+.board-tool-btn:hover { background: #eef2f7; }
+
+/* Summary strip */
+.board-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.board-stat {
+  background: var(--surface); border: 1px solid var(--border-light); border-radius: 10px;
+  padding: 10px 14px; cursor: default; box-shadow: var(--shadow);
+}
+.board-stat[onclick] { cursor: pointer; }
+.board-stat-val { font-size: 22px; font-weight: 800; color: var(--primary); line-height: 1.1; }
+.board-stat-lbl { font-size: 12px; font-weight: 700; color: var(--text); margin-top: 2px; }
+.board-stat-sub { font-size: 11px; color: var(--text-light); }
+.board-stat.is-warn { border-color: #fdba74; background: #fff7ed; }
+.board-stat.is-warn .board-stat-val { color: #c2410c; }
+.board-stat.is-won  { border-color: #86efac; background: #f0fdf4; }
+.board-stat.is-won  .board-stat-val { color: #15803d; }
+
+/* Columns: a sideways strip that fills the rest of the screen. Each column
+   scrolls on its own, and contains its scroll so flicking past the end of
+   one does not drag the page. */
+.board-pills { display: none; }
+.board-cols {
+  flex: 1; min-height: 320px; display: flex; gap: 12px;
+  overflow-x: auto; overflow-y: hidden; padding-bottom: 6px;
+  overscroll-behavior-x: contain;
+}
+.board-col {
+  flex: 1 0 260px; max-width: 360px; min-height: 0;
+  display: flex; flex-direction: column;
+  background: #e8edf3; border-radius: 12px; border-top: 4px solid #94a3b8;
+  transition: box-shadow .12s, background .12s;
+}
+.board-col-sales { border-top-color: #64748b; }
+.board-col-hot   { border-top-color: #2563a8; }
+.board-col-warn  { border-top-color: #ea580c; background: #fdf1e7; }
+.board-col-won   { border-top-color: #16a34a; }
+.board-col-done  { border-top-color: #15803d; background: #e7f5ec; }
+.board-col-lost  { border-top-color: #dc2626; }
+.board-col.is-collapsed { flex: 0 0 150px; }
+.board-col-hd {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  padding: 10px 12px 8px; font-size: 13px;
+}
+.board-col-title { font-weight: 800; color: var(--text); }
+.board-col-count {
+  background: rgba(15, 23, 42, .1); border-radius: 999px; padding: 0 8px;
+  font-size: 12px; font-weight: 700; color: var(--text);
+}
+.board-col-sum { margin-left: auto; font-weight: 700; color: var(--text-light); font-size: 12px; }
+.board-col-toggle {
+  font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--surface); cursor: pointer;
+}
+.board-col-body {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 0 8px 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.board-empty { color: var(--text-light); font-size: 12px; text-align: center; padding: 18px 6px; }
+.board-empty-all { flex: 0 0 100%; font-size: 14px; }
+
+body.board-dragging .board-col:not(.is-droppable) { opacity: .55; }
+.board-col.is-droppable { box-shadow: inset 0 0 0 2px #93c5fd; }
+.board-col.is-over { box-shadow: inset 0 0 0 3px #2563a8; background: #dbeafe; }
+
+/* Cards */
+.board-card {
+  background: var(--surface); border-radius: 9px; padding: 10px 11px 8px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .12); cursor: pointer;
+  border-left: 3px solid transparent; display: flex; flex-direction: column; gap: 3px;
+}
+.board-card:hover { box-shadow: 0 3px 10px rgba(15, 23, 42, .16); }
+.board-card[draggable="true"]:active { cursor: grabbing; }
+.board-card-viewed { border-left-color: #2563a8; }
+.board-card-signed { border-left-color: #16a34a; }
+.board-card-lost   { opacity: .8; }
+.board-card-top { display: flex; align-items: center; gap: 6px; }
+.board-card-name {
+  font-weight: 700; font-size: 14px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.board-card-total { margin-left: auto; font-weight: 800; font-size: 14px; color: var(--primary); white-space: nowrap; }
+.board-card-meta, .board-card-activity { font-size: 11.5px; color: var(--text-light); }
+.board-card-label { font-size: 12px; color: var(--text); font-style: italic; }
+.board-card-actions {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border-light);
+}
+.board-move {
+  font-size: 12px; padding: 3px 6px; border-radius: 6px; max-width: 150px;
+  border: 1px solid var(--border); background: #f8fafc; color: var(--text);
+}
+.board-card-btns { margin-left: auto; display: flex; gap: 2px; }
+.board-card-btns button {
+  border: none; background: none; cursor: pointer; font-size: 14px;
+  padding: 3px 5px; border-radius: 5px; opacity: .55;
+}
+.board-card-btns button:hover { opacity: 1; background: #f1f5f9; }
+
+/* Home: the two ways in */
+.home-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.home-tile {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 14px; font-size: 15px; font-weight: 700; color: var(--primary);
+  background: var(--surface); border: 1px solid var(--border-light); border-radius: 12px;
+  box-shadow: var(--shadow); cursor: pointer;
+}
+.home-tile span { font-size: 20px; }
+
+/* ── Analytics page ─────────────────────────────────────────────────── */
+.page-analytics { overflow-y: auto; }
+body.an-loading .an-grid, body.an-loading .an-kpis { opacity: .55; transition: opacity .15s; }
+.an-presets { display: flex; flex-wrap: wrap; gap: 4px; background: var(--surface);
+  border: 1px solid var(--border-light); border-radius: 10px; padding: 3px; }
+.an-preset {
+  border: none; background: none; padding: 6px 10px; font-size: 13px; font-weight: 600;
+  border-radius: 7px; cursor: pointer; color: var(--text-light);
+}
+.an-preset.active { background: var(--primary); color: #fff; }
+.an-custom { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.an-custom input { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.an-context { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-light); flex-wrap: wrap; }
+.an-rep-chip {
+  display: inline-flex; align-items: center; gap: 8px; background: #dbeafe; color: #1e40af;
+  font-weight: 700; padding: 4px 6px 4px 12px; border-radius: 999px;
+}
+.an-rep-chip button {
+  border: none; background: #fff; color: #1e40af; border-radius: 999px; padding: 3px 10px;
+  font-size: 12px; font-weight: 700; cursor: pointer;
+}
+
+.an-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.an-kpi {
+  background: var(--surface); border: 1px solid var(--border-light); border-radius: 12px;
+  padding: 12px 14px; box-shadow: var(--shadow);
+}
+.an-kpi-val { font-size: 24px; font-weight: 800; color: var(--primary); line-height: 1.1; }
+.an-kpi-lbl { font-size: 12px; font-weight: 700; color: var(--text); margin-top: 3px; }
+.an-kpi-sub { font-size: 11px; color: var(--text-light); }
+.an-kpi.is-rev { background: #f0fdf4; border-color: #bbf7d0; }
+.an-kpi.is-rev .an-kpi-val { color: #15803d; }
+.an-kpi.a-good .an-kpi-val { color: #15803d; }
+.an-kpi.a-warn .an-kpi-val { color: #b45309; }
+.an-kpi.a-bad  .an-kpi-val { color: #dc2626; }
+
+.an-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; align-items: start; }
+.an-wide { grid-column: 1 / -1; min-width: 0; }
+.an-wide > .analytics-section { margin: 0; }
+.an-card {
+  background: var(--surface); border: 1px solid var(--border-light); border-radius: 12px;
+  padding: 14px 16px; box-shadow: var(--shadow); min-width: 0;
+}
+.an-card.analytics-unassigned { background: #fffbeb; border-color: #fcd34d; }
+.an-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 16px; align-items: start; }
+.an-minis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.an-minis .an-kpi { box-shadow: none; padding: 8px 10px; background: #f8fafc; }
+.an-minis .an-kpi-val { font-size: 18px; }
+.an-legend { flex-wrap: wrap; gap: 12px; }
+.an-legend strong { margin-left: 2px; }
+.an-rep-row { cursor: pointer; }
+.an-rep-row:hover td { background: #eff6ff; }
+.mon-key-rate { width: 14px; border-top: 2px solid #0f172a; display: inline-block; }
+
+/* Charts. Drawn at the card's real width after layout, so none of this
+   scales text down on a phone. */
+.an-chart { width: 100%; overflow: hidden; }
+.an-svg { display: block; max-width: 100%; font-family: inherit; }
+.an-svg .ch-grid { stroke: #e2e8f0; stroke-width: 1; }
+.an-svg .ch-ax   { fill: #64748b; font-size: 11px; }
+.an-svg .ch-lbl  { fill: var(--text); font-size: 12px; font-weight: 600; }
+.an-svg .ch-in   { fill: #fff; font-size: 12px; font-weight: 700; }
+.an-svg .ch-bar  { fill: var(--g-color, #94a3b8); }
+.an-svg .ch-goal { stroke: #0f172a; stroke-width: 2; stroke-dasharray: 4 3; opacity: .55; }
+.an-svg .ch-rate { fill: none; stroke: #0f172a; stroke-width: 2; }
+.an-svg .ch-rate-dot { fill: #0f172a; }
+
+@media (max-width: 900px) {
+  .an-split { grid-template-columns: 1fr; }
+}
+@media (max-width: 767px) {
+  .page-board { padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  .board-title { font-size: 17px; }
+  .board-toolbar-end { margin-left: 0; }
+  /* One sideways row, so the columns keep the height on a phone. */
+  .board-summary { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 2px; }
+  .board-stat { flex: 0 0 136px; padding: 8px 10px; }
+  .board-stat-val { font-size: 18px; }
+  /* Phones get one column at a time, snapped, with pills to jump. */
+  .board-pills { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+  .board-pill {
+    flex: 0 0 auto; border: 1px solid var(--border); background: var(--surface);
+    border-radius: 999px; padding: 5px 11px; font-size: 13px; font-weight: 700;
+  }
+  .board-cols { scroll-snap-type: x mandatory; gap: 10px; }
+  .board-col { flex: 0 0 85vw; max-width: none; scroll-snap-align: start; }
+  .board-col.is-collapsed { flex: 0 0 85vw; }
+  .an-grid { grid-template-columns: minmax(0, 1fr); }
+  .an-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* A finger, at any width. Drag-and-drop is unreliable on iOS, so on touch the
+   Move-to picker is THE way to move a card: it gets a real touch target, and
+   every control here is 16px so focusing one never zooms the page. */
+@media (pointer: coarse) {
+  .board-card[draggable="true"] { -webkit-user-drag: none; }
+  .board-move, .board-filter, .board-search, .an-custom input { font-size: 16px; min-height: 40px; }
+  .board-move { max-width: 190px; }
+  .board-card-btns button { min-width: 40px; min-height: 40px; font-size: 16px; }
+  .board-tool-btn, .an-preset, .board-pill, .board-col-toggle { min-height: 40px; }
+}
+
+/* A signed invoice is frozen — the chip should not read like "sent". */
+.rc-signed-chip { background: #065f46; color: #ecfdf5; }

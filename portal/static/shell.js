@@ -61,13 +61,22 @@
     var apps = baseApps.concat((me && me.admin_apps) || []);
     var current = activeKey(apps);
 
+    // A demo guest (portal/demo.py) has no account, so every destination in
+    // this bar except the app they are already in signs them out: the launcher
+    // and the other two apps all require a real session. `me.apps` already
+    // comes back holding the estimator alone; the home link has to be dropped
+    // here because it is built from a constant, not from that list.
+    var isDemo = !!(me && me.demo);
+
     var bar = el('div');
     bar.id = 'p1-shell';
 
-    var home = el('a', 'p1-home', 'P1');
-    home.href = '/';
-    home.title = 'All tools';
-    bar.appendChild(home);
+    if (!isDemo) {
+      var home = el('a', 'p1-home', 'P1');
+      home.href = '/';
+      home.title = 'All tools';
+      bar.appendChild(home);
+    }
 
     var list = el('div', 'p1-apps');
     apps.forEach(function (a) {
@@ -84,7 +93,9 @@
     if (me && me.username) {
       right.appendChild(el('span', 'p1-who', me.full_name || me.username));
     }
-    var out = el('a', 'p1-out', 'Sign out');
+    // "End demo" rather than "Sign out": /logout clears the session either way,
+    // but a guest was never signed in and the word would read as an error.
+    var out = el('a', 'p1-out', isDemo ? 'End demo' : 'Sign out');
     out.href = '/logout';
     right.appendChild(out);
     bar.appendChild(right);

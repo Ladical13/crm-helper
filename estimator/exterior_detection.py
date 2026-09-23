@@ -14,7 +14,7 @@ import re
 from urllib.parse import urlsplit
 
 import requests
-from PIL import Image, ImageChops, ImageOps
+from PIL import Image, ImageChops, ImageFilter, ImageOps
 
 MODEL_URL = 'https://queue.fal.run/fal-ai/sam-3/image'
 # SAM 3 returns one mask per detected object and ``combine_masks`` unions them
@@ -25,7 +25,12 @@ MODEL_URL = 'https://queue.fal.run/fal-ai/sam-3/image'
 PROMPTS = {
     'roof': 'roof',
     'siding': 'exterior wall siding',
-    'trim': 'fascia boards, window trim, door trim, corner trim',
+    # Spell out the sloped gable edge. "Fascia" alone is commonly understood
+    # by segmentation models as the horizontal eave board, which can leave the
+    # highly visible front rake/bargeboard untouched.
+    'trim': ('exterior trim boards including fascia at roof eaves, sloped '
+             'gable rake boards and bargeboards, window trim, door trim, '
+             'and corner trim'),
     'soffit': 'soffit under roof eaves',
     'door': 'entry door',
     'gutter': 'rain gutters and downspouts',
@@ -173,6 +178,14 @@ def combine_masks(result, size):
             count += 1
     if not count:
         return {'status': 'not_found', 'count': 0}
+    # SAM returns hard black/white silhouettes. A one-pixel soft exterior edge
+    # keeps rooflines, fascia, gutters, and window frames from looking jagged
+    # once a material is composited over the photograph. Keep the original
+    # foreground fully opaque (important for narrow components) and only add
+    # the blurred fringe; do not erode or discard small connected regions.
+    if min(size) >= 8:
+        feathered = combined.filter(ImageFilter.GaussianBlur(radius=0.75))
+        combined = ImageChops.lighter(combined, feathered)
     rgba = Image.new('RGBA', size, 'white')
     rgba.putalpha(combined)
     buf = io.BytesIO()

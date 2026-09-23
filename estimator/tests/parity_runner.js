@@ -59,7 +59,12 @@ function grabConst(name) {
 const CONSTS = ['DEFAULT_RATE', 'RETAIL_TRADE_KEYS', 'SIMPLE_MODE_TRADES', 'MODE_DEFAULT_FLIPPED'];
 const NAMES = ['_rateValue', '_resolveRate', 'tierRate', 'tradeRate', 'lineTotal',
                'lineTotalEffective', 'effectiveTradeMode', 'tradeTotal', 'grandTotal',
-               'selectedTotal', 'tradeTier'];
+               'selectedTotal', 'tradeTier', 'isSupplementSectionName', 'isSupplementItem',
+               'supplementLineTotal', 'supplementItems', 'supplementsTotal',
+               // selectedTotal adds the elected optional upgrades, so the
+               // upgrade helpers are part of the money math it prices with.
+               'upgradeItems', 'upgradePrice', 'upgradeCost', 'upgradesOffered',
+               'acceptedUpgrades', 'upgradesTotal', 'upgradesCostTotal'];
 
 // Globals the extracted functions close over in the real bundle.
 // RETAIL_TRADE_KEYS is lifted from app.js (see CONSTS) rather than redefined,
@@ -74,7 +79,13 @@ const out = fixtures.map((f) => {
   S = f.state;
   const row = { name: f.name };
   for (const t of TIERS) row[t] = grandTotal(t);
+  row.supplements = {};
+  for (const t of TIERS)
+    // RETAIL_TRADE_KEYS lives inside the eval; the fixture's own trades are
+    // the same set here (insurance carries no G/B/B sections).
+    row.supplements[t] = Object.keys(S.trades || {}).reduce((s, tr) => s + supplementsTotal(tr, t), 0);
   row.selected = selectedTotal();
+  row.upgrades = upgradesTotal();
   if (f.rate_probe) {
     row.rate = tierRate(f.rate_probe.trade, f.rate_probe.tier);
   }

@@ -7,11 +7,10 @@ is only part-way through.
 """
 import json
 import os
-from datetime import datetime
-
 import pytest
 
 from conftest import TEST_DATA_DIR
+from portal import clock
 
 
 GOALS_FILE = os.path.join(TEST_DATA_DIR, 'sales_goals.json')
@@ -57,8 +56,15 @@ def _seed(A, eid, *, signed_at=None, sent_at=None, total=10000.0, rep='luke',
 
 
 def _month(n=0):
-    """'YYYY-MM', n months from now — tests must not break when the year rolls."""
-    now = datetime.utcnow()
+    """'YYYY-MM', n months from now — tests must not break when the year rolls.
+
+    Anchored on the COMPANY's clock, because that is what `/api/analytics` now
+    buckets by. A UTC `now` here would agree with it for eighteen hours a day
+    and disagree for the six after 6pm Mountain on the last of the month —
+    a test that fails one evening a month and passes if you run it again is
+    worse than no test.
+    """
+    now = clock.company_today()
     i = now.year * 12 + now.month - 1 + n
     return '%04d-%02d' % (i // 12, i % 12 + 1)
 
@@ -234,7 +240,9 @@ def test_an_unknown_estimate_type_still_lands_in_the_split(client, A):
 
 def test_current_month_pace(client, A):
     import calendar
-    now = datetime.utcnow()
+    # The company's clock, the same one `cur_month` and the pace read. A UTC
+    # `now` here would ask for day 1 of a month that is ending.
+    now = clock.company_today()
     dim = calendar.monthrange(now.year, now.month)[1]
     _seed(A, 'a1', signed_at=_month() + '-01T12:00:00', total=50000.0)
     client.put('/api/goals', json={'company': {'default': {'revenue': 100000}}})
@@ -309,3 +317,191 @@ def test_trailing_averages_exclude_the_partial_current_month(client, A):
 def test_best_month_is_none_with_no_revenue(client, A):
     _seed(A, 'a1', sent_at=_month() + '-01T12:00:00')
     assert client.get('/api/analytics').get_json()['benchmarks']['best_month'] is None
+
+
+# ── The month a roof was sold in ───────────────────────────────────────
+
+def test_a_roof_signed_after_6pm_mountain_counts_for_the_month_it_was_sold(client):
+    """The fix `portal/clock.py` exists for, in the place it costs money.
+
+    01:00Z on the 1st is 7pm Mountain on the last day of the month before —
+    6pm in winter, either way the previous month here and the current one by
+    the string. Bucketing on the first seven characters of that stamp moved the
+    job, that month's revenue and the rep's number into a month they had not
+    started selling. Month end is exactly when reps push to close, so this was
+    never a rare row.
+    """
+    import app as A
+    _seed(A, 'lastminute', signed_at=_month() + '-01T01:00:00Z', total=80000.0)
+    p = client.get('/api/analytics').get_json()
+
+    sold_in = _row(p, _month(-1))
+    filed_in = _row(p, _month())
+    assert sold_in and sold_in['revenue'] == 80000.0, 'left the month it sold in'
+    assert sold_in['jobs'] == 1
+    assert not filed_in or filed_in['revenue'] == 0.0
+
+
+def test_new_years_eve_revenue_counts_for_the_year_it_was_signed(client):
+    """Same boundary, one night a year, and the one night it is worst.
+
+    A roof signed at 7pm Mountain on 31 December is stored in the next year.
+    YTD compared that stored value against 1 January and banked the job against
+    a year that had not started — so January opened having already booked
+    December's last evening, and the year that earned it closed short.
+    """
+    import app as A
+    year = clock.company_today().year
+    # 01:00Z on 1 January is 6pm Mountain on 31 December of the year before.
+    _seed(A, 'nye', signed_at=f'{year}-01-01T01:00:00Z', total=90000.0)
+    p = client.get('/api/analytics').get_json()
+    assert p['ytd_revenue'] == 0.0, 'last year\'s job landed in this year\'s YTD'
+
+    _seed(A, 'thisyear', signed_at=f'{year}-06-15T18:00:00Z', total=10000.0)
+    p = client.get('/api/analytics').get_json()
+    assert p['ytd_revenue'] == 10000.0
+# ── date range, rep filter, and the depth the full-screen page reads ──
+
+def _rep_client(app, name):
+    from portal import users as pusers
+    if not pusers.get(name):
+        pusers.create(name, password='test-only-password', role='rep')
+    c = app.test_client()
+    with c.session_transaction() as s:
+        s['user'] = name
+    return c
+
+
+def test_a_range_filters_revenue_on_the_signature_date(client, A):
+    inm, outm = _month(-1), _month(-3)
+    _seed(A, 'in', sent_at=inm + '-01T12:00:00', signed_at=inm + '-10T12:00:00', total=50000.0)
+    _seed(A, 'out', sent_at=outm + '-01T12:00:00', signed_at=outm + '-10T12:00:00', total=70000.0)
+    ad = client.get(f'/api/analytics?from={inm}-01&to={inm}-28').get_json()
+    assert ad['kpis']['revenue'] == 50000.0
+    assert ad['kpis']['jobs'] == 1
+    assert ad['by_trade']['roofing']['revenue'] == 50000.0
+    assert ad['by_rep']['luke']['signed'] == 1
+    # The month series ignores the range: goals are per month, and a month
+    # cut in half is not a month.
+    assert _row(ad, outm)['revenue'] == 70000.0
+
+
+def test_the_range_close_rate_is_a_sent_cohort(client, A):
+    _seed(A, 'won', sent_at='2026-04-02T12:00:00', signed_at='2026-05-20T12:00:00')
+    _seed(A, 'open', sent_at='2026-04-03T12:00:00')
+    _seed(A, 'before', sent_at='2026-02-03T12:00:00')
+    k = client.get('/api/analytics?from=2026-04-01&to=2026-04-30').get_json()['kpis']
+    # Of the two sent in April, one has closed — even though it closed in May.
+    assert k['sent'] == 2
+    assert k['close_rate'] == 50
+
+
+def test_close_rate_is_none_when_nothing_was_sent(client, A):
+    k = client.get('/api/analytics?from=2020-01-01&to=2020-01-31').get_json()['kpis']
+    assert k['close_rate'] is None
+
+
+def test_bad_dates_are_refused(client):
+    assert client.get('/api/analytics?from=March').status_code == 400
+
+
+def test_the_rep_filter_narrows_everything(client, A):
+    _seed(A, 'l', signed_at=_month() + '-02T12:00:00', total=10000.0, rep='luke')
+    _seed(A, 'b', signed_at=_month() + '-02T12:00:00', total=30000.0, rep='bryan')
+    ad = client.get('/api/analytics?rep=Bryan').get_json()
+    assert list(ad['by_rep']) == ['bryan']
+    assert ad['kpis']['revenue'] == 30000.0
+    assert _row(ad, _month())['revenue'] == 30000.0
+    assert ad['range']['rep'] == 'bryan'
+
+
+def test_a_rep_only_ever_sees_their_own_numbers(app, A):
+    """This endpoint used to hand any rep every other rep's revenue, margin
+    and close rate. A rep asking for someone else gets themselves."""
+    _seed(A, 'mine', signed_at=_month() + '-02T12:00:00', total=10000.0, rep='rep-an')
+    _seed(A, 'theirs', signed_at=_month() + '-02T12:00:00', total=90000.0, rep='luke')
+    c = _rep_client(app, 'rep-an')
+    for url in ('/api/analytics', '/api/analytics?rep=luke'):
+        ad = c.get(url).get_json()
+        assert list(ad['by_rep']) == ['rep-an']
+        assert ad['kpis']['revenue'] == 10000.0
+        assert all(r['rep'] == 'rep-an' for r in ad['rep_month'])
+
+
+def test_rep_month_goals_come_from_the_rep_when_filtered(client, A):
+    _seed(A, 'b', signed_at=_month() + '-02T12:00:00', total=30000.0, rep='bryan')
+    client.put('/api/goals', json={'company': {'default': {'revenue': 500000}},
+                                   'reps': {'bryan': {'default': {'revenue': 60000}}}})
+    ad = client.get('/api/analytics?rep=bryan').get_json()
+    assert ad['current_month']['goal'] == 60000.0
+    assert _row(ad, _month())['goal'] == 60000.0
+
+
+def test_package_mix_is_counted_per_trade(client, A):
+    doc = _seed(A, 't1', signed_at=_month() + '-02T12:00:00')
+    doc['trades']['siding'] = {
+        'enabled': True, 'selected_tier': 'best',
+        'line_items': [{'name': 'Siding', 'quantity': 1, 'tiers': {
+            'best': {'material_unit_cost': 5000, 'labor_unit_cost': 0}}}]}
+    A.est_save(doc)
+    bt = client.get('/api/analytics').get_json()['by_tier']
+    # A simple-mode trade sold one flat price — not a "better" nobody chose.
+    assert bt['roofing'] == {'flat': {'count': 1, 'revenue': 10000.0}}
+    assert bt['siding']['best']['count'] == 1
+
+
+def test_only_elected_upgrades_count(client, A):
+    offered = _seed(A, 'o', signed_at=_month() + '-02T12:00:00')
+    offered['upgrades'] = {'enabled': True, 'items': [
+        {'id': 'u1', 'name': 'Guards', 'price': 1450}]}
+    A.est_save(offered)
+    elected = _seed(A, 'e', signed_at=_month() + '-02T12:00:00')
+    elected['upgrades'] = {'enabled': True, 'items': [
+        {'id': 'u1', 'name': 'Guards', 'price': 1450, 'accepted': True}]}
+    A.est_save(elected)
+    _seed(A, 'none', signed_at=_month() + '-02T12:00:00')
+    ad = client.get('/api/analytics').get_json()
+    assert ad['upgrades'] == {'jobs': 3, 'offered': 2, 'elected': 1, 'revenue': 1450.0}
+    assert ad['kpis']['upgrade_attach'] == 50
+
+
+def test_signed_change_orders_are_counted(client, A):
+    doc = _seed(A, 'c', signed_at=_month() + '-02T12:00:00', total=10000.0)
+    doc['change_orders'] = [
+        {'id': 'co1', 'status': 'accepted', 'line_items': [{'description': 'Deck', 'quantity': 1, 'price_override': 2500}]},
+        {'id': 'co2', 'status': 'sent', 'line_items': [{'description': 'More', 'quantity': 1, 'price_override': 900}]},
+    ]
+    A.est_save(doc)
+    co = client.get('/api/analytics').get_json()['change_orders']
+    # Only the signed one: an unsigned change order is not revenue yet.
+    assert co['count'] == 1
+    assert co['value'] == 2500.0
+    assert co['share_pct'] == 20.0     # 2,500 on top of a 10,000 contract
+
+
+def test_job_stages_and_cycle_time(client, A):
+    doc = _seed(A, 'j', signed_at='2026-06-01T12:00:00')
+    doc['job_stage'] = 'complete'
+    doc['job_stage_history'] = [
+        {'stage': 'in_production', 'at': '2026-06-11T12:00:00'},
+        {'stage': 'complete', 'at': '2026-06-21T12:00:00'},
+    ]
+    A.est_save(doc)
+    _seed(A, 'w', signed_at='2026-06-02T12:00:00')
+    js = client.get('/api/analytics').get_json()['job_stages']
+    counts = {s['key']: s['count'] for s in js['stages']}
+    assert counts == {'': 1, 'scheduled': 0, 'in_production': 0, 'complete': 1}
+    # Straight to In production still counts as scheduled on that day.
+    assert js['avg_days_to_schedule'] == 10.0
+    assert js['avg_days_to_complete'] == 20.0
+
+
+def test_the_range_is_colorado_days(client, A):
+    """01:00Z on the 16th is the evening of the 15th in Colorado. A range that
+    ends on the 15th has to include it, the same way the month series does."""
+    m = _month(-1)
+    _seed(A, 'eve', signed_at=m + '-16T01:00:00Z', total=25000.0)
+    k = client.get(f'/api/analytics?from={m}-15&to={m}-15').get_json()['kpis']
+    assert k['revenue'] == 25000.0
+    k = client.get(f'/api/analytics?from={m}-16&to={m}-16').get_json()['kpis']
+    assert k['revenue'] == 0.0

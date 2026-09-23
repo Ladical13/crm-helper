@@ -10,7 +10,8 @@ import csv
 import uuid
 import sqlite3
 import io
-from datetime import datetime, timedelta
+import threading
+from datetime import date, datetime, timedelta
 from functools import wraps
 
 from flask import Flask, request, jsonify, send_from_directory, session
@@ -18,9 +19,11 @@ from flask import Flask, request, jsonify, send_from_directory, session
 # The portal package lives one directory up. Put the repo root on the path so
 # this app works both mounted by portal/wsgi.py and run standalone.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import clock as pclock       # noqa: E402
 from portal import dbtune                # noqa: E402
 from portal import session as psession   # noqa: E402
 from portal import users as pusers       # noqa: E402
+from portal import geo as pgeo          # noqa: E402
 
 try:
     import requests as http
@@ -44,6 +47,10 @@ DATA_DIR     = os.environ.get('CANVASSER_DATA_DIR',
                os.environ.get('DATA_DIR', HERE))
 DB_PATH      = os.path.join(DATA_DIR, 'canvasser.db')
 
+# Nominatim asks every caller to identify itself. One spelling, because three
+# copies of a contact string is three things to forget when it changes.
+NOMINATIM_UA = 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'
+
 PIN_TYPES = {
     'not_home':      {'label': 'Not Home',       'color': '#6B7280'},
     'come_back':     {'label': 'Come Back',       'color': '#F59E0B'},
@@ -54,6 +61,30 @@ PIN_TYPES = {
     'closed':        {'label': 'Deal Closed',     'color': '#10B981'},
     'no_soliciting': {'label': 'No Soliciting',   'color': '#1F2937'},
 }
+
+def _clean_appointment_at(v):
+    """A local wall-clock appointment as 'YYYY-MM-DDTHH:MM', or ''.
+
+    Stored WITHOUT a timezone and deliberately so. This is a time a rep agreed
+    with a homeowner standing on their porch — "Thursday at six" means six
+    o'clock in that driveway. Everything that reads it (the rep's task list,
+    the reminder) is in the same market, and converting to UTC on the way in
+    is how "6pm Thursday" becomes "Friday" for the six hours a day that
+    `_company_today` already exists to handle on the estimator side.
+
+    Anything unparseable returns '' rather than raising: a mistyped time must
+    not cost the rep the door they just knocked.
+    """
+    v = str(v or '').strip()
+    if not v:
+        return ''
+    v = v.replace(' ', 'T')[:16]
+    try:
+        datetime.strptime(v, '%Y-%m-%dT%H:%M')
+    except ValueError:
+        return ''
+    return v
+
 
 # Which Pipeline stage a knocked door becomes.
 #
@@ -70,7 +101,22 @@ PIN_STAGE = {
     'interested':  'contacted',
     'appointment': 'appt_set',
     'inspected':   'inspected',
-    'closed':      'won',
+    # `closed` deliberately does NOT map to `won`.
+    #
+    # Everywhere else in this system `won` means a customer signed: the
+    # estimator's funnel sets it on signature, and CLAUDE.md records that a
+    # signature outranks even a manual `lost`. A rep tapping "Deal Closed" on a
+    # doorstep has agreed to move forward with somebody — real, and worth
+    # recording — but there is no contract, no price and nothing signed. Let it
+    # write `won` and a tap on a phone lands in the same bucket as a signed
+    # $28k roof: close rate, revenue forecast and the leaderboard all inflate,
+    # and nobody can tell the two apart afterwards.
+    #
+    # `inspected` is the honest ceiling from the door. The funnel promotes it
+    # to `won` by itself the moment an estimate is actually signed, so nothing
+    # is lost — the win just has to be earned by a signature rather than
+    # asserted by a tap.
+    'closed':      'inspected',
 }
 
 # ── Database ─────────────────────────────────────────────────────────────────
@@ -104,6 +150,8 @@ def init_db():
                 crm_contact_id TEXT DEFAULT '',
                 crm_project_id TEXT DEFAULT '',
                 crm_lead_id   TEXT DEFAULT '',
+                client_id     TEXT DEFAULT '',
+                appointment_at TEXT DEFAULT '',
                 created_at    TEXT NOT NULL,
                 updated_at    TEXT NOT NULL
             );
@@ -138,6 +186,18 @@ def init_db():
         cols = [r['name'] for r in db.execute('PRAGMA table_info(pins)')]
         if 'crm_lead_id' not in cols:
             db.execute("ALTER TABLE pins ADD COLUMN crm_lead_id TEXT DEFAULT ''")
+        if 'client_id' not in cols:
+            db.execute("ALTER TABLE pins ADD COLUMN client_id TEXT DEFAULT ''")
+        if 'appointment_at' not in cols:
+            db.execute("ALTER TABLE pins ADD COLUMN appointment_at TEXT DEFAULT ''")
+        # The offline outbox retries a pin it could not confirm, so the same
+        # save can arrive twice — and a duplicated door is worse than a lost
+        # one, because two reps then work a street each believing the other
+        # knocked it. The index is PARTIAL so that every pin written before
+        # this existed, and every pin from a client that sends no id, keeps
+        # its empty string without colliding with all the others.
+        db.execute('CREATE UNIQUE INDEX IF NOT EXISTS pins_client_id_idx '
+                   "ON pins(rep, client_id) WHERE client_id != ''")
 
 init_db()
 
@@ -229,36 +289,103 @@ def _row_to_pin(row):
     d['pin_meta'] = PIN_TYPES.get(d['pin_type'], {'label': d['pin_type'], 'color': '#6B7280'})
     return d
 
+# How much history the map shows by default. A door knocked two years ago
+# tells a rep nothing about today's street, and every pin past this window is
+# weight on a phone that has to draw them all.
+PIN_WINDOW_DAYS = 180
+PIN_LIMIT = 2000
+PIN_LIMIT_MAX = 5000
+
 @app.route('/api/pins', methods=['GET'])
 @login_required
 def list_pins():
-    rep    = request.args.get('rep')
-    ptype  = request.args.get('type')
-    limit  = min(int(request.args.get('limit', 2000)), 5000)
+    """Pins for the map, windowed by date and honest about hitting the cap.
+
+    This used to take the most recent 2000 pins with no date filter and return
+    a bare array. Past 2000 the map silently showed a subset — so a street that
+    was worked hard last month came back looking unknocked, and a rep would
+    knock it again. Nothing in the response said anything had been left out.
+    That is the same silent-truncation shape the CRM's pipeline search already
+    hit, and it is worse here because the missing rows look like an opportunity
+    rather than like an error.
+
+    Two changes. A date window means the cap is now very hard to reach at all.
+    And when it IS reached the response says so, so the front end can tell the
+    rep the map is partial instead of quietly lying to them.
+    """
+    rep   = request.args.get('rep')
+    ptype = request.args.get('type')
+    try:
+        limit = min(int(request.args.get('limit', PIN_LIMIT)), PIN_LIMIT_MAX)
+    except (TypeError, ValueError):
+        limit = PIN_LIMIT
+    # days=0 is an explicit "everything", for an admin auditing the archive.
+    try:
+        days = int(request.args.get('days', PIN_WINDOW_DAYS))
+    except (TypeError, ValueError):
+        days = PIN_WINDOW_DAYS
+
     clauses, params = [], []
     if rep:
         clauses.append('rep=?'); params.append(rep)
     if ptype:
         clauses.append('pin_type=?'); params.append(ptype)
+    if days > 0:
+        # Whole Colorado days, not a rolling N×24 hours from whenever the
+        # request landed. "The last 7 days" on a map a rep opens all day should
+        # not quietly drop this time last Tuesday as the afternoon goes on.
+        clauses.append('created_at >= ?'); params.append(pclock.days_ago_utc(days))
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+
     with get_db() as db:
+        # One row past the limit, purely to learn whether there are more. Cheaper
+        # than a second COUNT(*) over the same window.
         rows = db.execute(
             f'SELECT * FROM pins {where} ORDER BY created_at DESC LIMIT ?',
-            params + [limit]
+            params + [limit + 1]
         ).fetchall()
-    return jsonify([_row_to_pin(r) for r in rows])
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    return jsonify({
+        'pins': [_row_to_pin(r) for r in rows],
+        'truncated': truncated,
+        'window_days': days,
+        'limit': limit,
+    })
 
 @app.route('/api/pins', methods=['POST'])
 @login_required
 def create_pin():
+    """Create a pin. Idempotent when the client supplies a `client_id`.
+
+    A rep knocks doors in a driveway on one bar of signal, so the browser
+    queues a save it could not complete and retries it later — and a retry
+    whose first attempt actually landed (the row was written, the response was
+    lost on the way back) must not write a second door. The client stamps each
+    save with a UUID it keeps in its outbox; a replay of that id returns the
+    pin already stored, with 200 rather than 201 so the caller can tell the
+    difference, and the outbox drops the entry either way.
+
+    A duplicate is worse than a failure here: a lost pin is a door nobody
+    recorded, but a duplicated one is a door two reps each believe the other
+    knocked, and it inflates every count on the leaderboard that pays them.
+    """
     data = request.get_json(force=True)
     lat  = data.get('lat')
     lng  = data.get('lng')
     pin_type = data.get('pin_type', 'not_home')
+    client_id = str(data.get('client_id') or '').strip()[:64]
+    appointment_at = _clean_appointment_at(data.get('appointment_at'))
     if lat is None or lng is None:
         return jsonify({'error': 'lat/lng required'}), 400
     if pin_type not in PIN_TYPES:
         return jsonify({'error': 'Invalid pin type'}), 400
+    if client_id:
+        with get_db() as db:
+            seen = db.execute('SELECT * FROM pins WHERE rep=? AND client_id=?',
+                              (session['username'], client_id)).fetchone()
+        if seen:
+            return jsonify(_row_to_pin(seen)), 200
     pin = {
         'id':            str(uuid.uuid4()),
         'lat':           float(lat),
@@ -273,18 +400,33 @@ def create_pin():
         'crm_contact_id': '',
         'crm_project_id': '',
         'crm_lead_id':   '',
+        'client_id':     client_id,
+        'appointment_at': appointment_at if pin_type == 'appointment' else '',
         'created_at':    _now(),
         'updated_at':    _now(),
     }
-    with get_db() as db:
-        db.execute('''INSERT INTO pins
-            (id,lat,lng,address,pin_type,rep,notes,contact_name,contact_phone,
-             contact_email,crm_contact_id,crm_project_id,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (pin['id'], pin['lat'], pin['lng'], pin['address'], pin['pin_type'],
-             pin['rep'], pin['notes'], pin['contact_name'], pin['contact_phone'],
-             pin['contact_email'], '', '', pin['created_at'], pin['updated_at'])
-        )
+    try:
+        with get_db() as db:
+            db.execute('''INSERT INTO pins
+                (id,lat,lng,address,pin_type,rep,notes,contact_name,contact_phone,
+                 contact_email,crm_contact_id,crm_project_id,client_id,
+                 appointment_at,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (pin['id'], pin['lat'], pin['lng'], pin['address'], pin['pin_type'],
+                 pin['rep'], pin['notes'], pin['contact_name'], pin['contact_phone'],
+                 pin['contact_email'], '', '', pin['client_id'],
+                 pin['appointment_at'], pin['created_at'], pin['updated_at'])
+            )
+    except sqlite3.IntegrityError:
+        # Two retries of the same queued pin raced each other. The unique index
+        # is the authority rather than the SELECT above, which cannot hold a
+        # lock across the gap; whichever lost reads back the winner's row.
+        with get_db() as db:
+            seen = db.execute('SELECT * FROM pins WHERE rep=? AND client_id=?',
+                              (session['username'], client_id)).fetchone()
+        if seen:
+            return jsonify(_row_to_pin(seen)), 200
+        raise
     pin['pin_meta'] = PIN_TYPES[pin_type]
     return jsonify(pin), 201
 
@@ -308,14 +450,21 @@ def update_pin(pin_id):
     if row['rep'] != session['username'] and not session.get('is_admin'):
         return jsonify({'error': 'Forbidden'}), 403
     data = request.get_json(force=True)
-    allowed = ['pin_type', 'address', 'notes', 'contact_name', 'contact_phone', 'contact_email']
+    allowed = ['pin_type', 'address', 'notes', 'contact_name', 'contact_phone',
+               'contact_email', 'appointment_at']
     sets, params = [], []
     for field in allowed:
         if field in data:
             if field == 'pin_type' and data[field] not in PIN_TYPES:
                 return jsonify({'error': 'Invalid pin type'}), 400
+            value = data[field]
+            if field == 'appointment_at':
+                # A rescheduled door is the common edit here, so this has to be
+                # editable — but it is cleaned on the way in exactly as it is on
+                # create, or the two paths disagree about what a time is.
+                value = _clean_appointment_at(value)
             sets.append(f'{field}=?')
-            params.append(data[field])
+            params.append(value)
     if not sets:
         return jsonify({'error': 'Nothing to update'}), 400
     sets.append('updated_at=?')
@@ -341,23 +490,66 @@ def delete_pin(pin_id):
 
 # ── Leaderboard ───────────────────────────────────────────────────────────────
 
+# How far back the leaderboard looks by default. A week is short enough that
+# this season's effort is what shows and long enough to survive a rained-out
+# Tuesday.
+LEADERBOARD_DAYS = 7
+
 @app.route('/api/leaderboard')
 @login_required
 def leaderboard():
+    """Who is setting appointments, over a window that can actually be won.
+
+    Two things were wrong with the all-time version, and both changed rep
+    behaviour in the wrong direction.
+
+    It had no date filter, so whoever knocked most last season was permanently
+    first and a new hire could never move. A leaderboard nobody can win stops
+    being a leaderboard in about three weeks.
+
+    And it ranked on `total_doors`, which is the single easiest number in the
+    company to game: a rep can tap "Not Home" fifteen times walking down a
+    sidewalk and top the board without speaking to anyone. Doors are the
+    denominator of the job, not the score. Ranking runs on appointments set,
+    then inspections, and doors ride along as the volume the rates are built
+    from — so the board rewards the conversation, not the tapping.
+    """
+    try:
+        days = max(1, min(int(request.args.get('days', LEADERBOARD_DAYS)), 365))
+    except (TypeError, ValueError):
+        days = LEADERBOARD_DAYS
+    # Whole Colorado days. This one is the leaderboard reps are paid on, so a
+    # window whose far edge slides through the day is a rank that changes for
+    # reasons nobody standing on a doorstep can see.
+    since = pclock.days_ago_utc(days)
     with get_db() as db:
-        rows = db.execute('''
+        rows = db.execute("""
             SELECT rep,
                    COUNT(*) as total_doors,
                    SUM(CASE WHEN pin_type='appointment'   THEN 1 ELSE 0 END) as appointments,
                    SUM(CASE WHEN pin_type='inspected'     THEN 1 ELSE 0 END) as inspections,
                    SUM(CASE WHEN pin_type='closed'        THEN 1 ELSE 0 END) as closed,
                    SUM(CASE WHEN pin_type='interested'    THEN 1 ELSE 0 END) as interested,
+                   SUM(CASE WHEN pin_type='not_home'      THEN 1 ELSE 0 END) as not_home,
                    MAX(created_at) as last_activity
             FROM pins
+            WHERE created_at >= ?
             GROUP BY rep
-            ORDER BY total_doors DESC
-        ''').fetchall()
-    return jsonify([dict(r) for r in rows])
+            ORDER BY appointments DESC, inspections DESC, total_doors DESC
+        """, (since,)).fetchall()
+
+    out = []
+    for r in rows:
+        d = dict(r)
+        doors = d['total_doors'] or 0
+        # Contacts, not doors: a "Not Home" is a walk, not a conversation, and
+        # dividing by it makes a rep who knocks empty streets look efficient.
+        contacts = doors - (d.pop('not_home') or 0)
+        d['contacts'] = contacts
+        d['contact_rate'] = round(contacts / doors, 3) if doors else 0.0
+        d['set_rate'] = round(d['appointments'] / contacts, 3) if contacts else 0.0
+        out.append(d)
+    return jsonify({'days': days, 'since': since, 'reps': out})
 
 # ── Live team locations ───────────────────────────────────────────────────────
 
@@ -376,6 +568,21 @@ def update_location():
                         heading=excluded.heading, updated_at=excluded.updated_at''',
                    (session['username'], float(lat), float(lng),
                     float(data.get('accuracy') or 0), float(data.get('heading') or -1), _now()))
+    return jsonify({'ok': True})
+
+@app.route('/api/location', methods=['DELETE'])
+@login_required
+def clear_location():
+    """Stop appearing on the team map, now rather than in fifteen minutes.
+
+    The front end's "Team Locations: Off" toggle used to gate only the *pull*,
+    so a rep who switched it off kept broadcasting. Both halves are fixed: the
+    browser stops pushing, and this drops the position already stored so it
+    does not linger on everyone else's map for the rest of the live window.
+    """
+    with get_db() as db:
+        db.execute('DELETE FROM rep_locations WHERE username=?',
+                   (session['username'],))
     return jsonify({'ok': True})
 
 @app.route('/api/team-locations')
@@ -520,7 +727,7 @@ def geocode():
     try:
         r = http.get('https://nominatim.openstreetmap.org/search',
                      params={'q': q, 'format': 'json', 'limit': 3, 'countrycodes': 'us'},
-                     headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'},
+                     headers={'User-Agent': NOMINATIM_UA},
                      timeout=10)
         r.raise_for_status()
         results = [{'display_name': x['display_name'],
@@ -542,7 +749,7 @@ def reverse_geocode():
     try:
         r = http.get('https://nominatim.openstreetmap.org/reverse',
                      params={'lat': lat, 'lon': lng, 'format': 'json', 'zoom': 18},
-                     headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'},
+                     headers={'User-Agent': NOMINATIM_UA},
                      timeout=10)
         r.raise_for_status()
         data = r.json()
@@ -558,43 +765,217 @@ def reverse_geocode():
     except Exception as e:
         return jsonify({'error': str(e)}), 502
 
-@app.route('/api/hail/address')
-@login_required
-def hail_at_address():
-    """Hail history near an address (or lat/lng) over a lookback window.
+# ── The hail OVERLAY, from the radar archive ─────────────────────────────────
+#
+# The address lookup below reads MESH; this is the map beside it, which drew
+# NOAA spotter reports as `max(500, size * 800)`-metre circles — a damage
+# footprint that exists nowhere in the data, around points that are call-ins
+# rather than measurements. Two views of "where did it hail" that disagreed
+# about both the data and the geometry.
+#
+# `/api/hail` and `/api/hail/range` stay exactly as they were. They are the
+# fallback for an archive that has not been backfilled over the dates being
+# asked about, and the front end says which product answered — the same rule
+# the address lookup already follows.
 
-    Params: q=<address> OR lat=&lng=, days=<lookback, default 1825, max 1825>,
-            radius=<miles, default 10>
-    Scans NOAA SPC daily CSVs; to keep it fast we only fetch days, so we cap
-    the scan by sampling: full scan for <=90 days, else the monthly summaries.
+def _bbox_arg():
+    """(south, west, north, east) from the query string, or None.
+
+    All four or none: three sides of a box is not a box, and guessing the
+    fourth would silently return the wrong ground.
     """
+    vals = [request.args.get(k, type=float)
+            for k in ('south', 'west', 'north', 'east')]
+    if any(v is None for v in vals):
+        return None
+    south, west, north, east = vals
+    return (min(south, north), min(west, east), max(south, north), max(west, east))
+
+
+@app.route('/api/hail/storms')
+@login_required
+def hail_storms():
+    """Storm days the archive holds, newest first — what the picker offers."""
+    from hail import storms
+    try:
+        days = min(int(request.args.get('days', 1825)), MESH_MAX_DAYS)
+    except (TypeError, ValueError):
+        days = 1825
+    since = (datetime.utcnow() - timedelta(days=max(days, 1))).strftime('%Y-%m-%d')
+    try:
+        min_size = max(float(request.args.get('min_size', 0)), 0.0)
+    except (TypeError, ValueError):
+        min_size = 0.0
+    rows = storms.storm_days(since=since, min_size=min_size or None,
+                             source=MESH_SOURCE)
+    return jsonify({'source': MESH_SOURCE, 'storms': rows, 'count': len(rows)})
+
+
+@app.route('/api/hail/cells')
+@login_required
+def hail_cells():
+    """Radar cells for a date or a date range, for drawing on the map.
+
+    Rectangles at the data's own resolution rather than a radius, because the
+    cell is the only ground the radar actually made a claim about.
+
+    Bounded two ways, and honest about both: the caller passes the viewport as
+    south/west/north/east so the database returns the screen instead of the
+    state, and a cap past that keeps the BIGGEST hail rather than an arbitrary
+    slice — a rep zoomed out over a season must not have the cells that matter
+    hidden behind ones that do not.
+    """
+    from hail import storms
+    start = (request.args.get('start') or '').strip()
+    end   = (request.args.get('end') or '').strip() or start
+    if not start:
+        return jsonify({'error': 'start (YYYY-MM-DD) required'}), 400
+    if end < start:
+        start, end = end, start
+    try:
+        min_size = max(float(request.args.get('min_size', 0)), 0.0)
+    except (TypeError, ValueError):
+        min_size = 0.0
+    try:
+        limit = min(int(request.args.get('limit', HAIL_CELL_LIMIT)), HAIL_CELL_LIMIT_MAX)
+    except (TypeError, ValueError):
+        limit = HAIL_CELL_LIMIT
+
+    held = {d for d in storms.ingested_dates(MESH_SOURCE) if start <= d <= end}
+    rows, truncated = storms.cells_in(
+        bounds=_bbox_arg(), since=start, until=end,
+        min_size=min_size or None, limit=limit, source=MESH_SOURCE)
+    return jsonify({
+        'source': MESH_SOURCE,
+        # The same distinction the address lookup turns on: no cells with
+        # coverage means the radar looked and saw nothing, and no cells with
+        # NO coverage means nobody has ingested those days. Only one of them
+        # is a fact about the ground.
+        'days_held': len(held),
+        'cells': [{'s': round(s, 4), 'w': round(w, 4),
+                   'n': round(n, 4), 'e': round(e, 4),
+                   'size': round(size, 2)} for s, w, n, e, size in rows],
+        'count': len(rows), 'truncated': truncated,
+        'max_size': max((r[4] for r in rows), default=0),
+    })
+
+
+# ── Hail history at one address ───────────────────────────────────────────────
+#
+# MRMS MESH first; NOAA SPC only when the archive has nothing to say.
+#
+# The two data products answer different questions and only one of them closes
+# a homeowner. SPC filtered reports are human call-ins — a spotter phoned it in
+# — so they are sparse, biased toward where somebody happened to be standing,
+# and the most they can support is "a spotter reported 1.75 inch hail four
+# miles from here". A subdivision can be shelled at 2am and produce no reports
+# at all. MESH is radar-derived over a continuous ~1km grid, every cell,
+# whether or not anyone was outside: it answers "what size hail did radar
+# estimate over THIS roof, on this date".
+#
+# `hail/storms.py` was built to replace this endpoint — `history_at`'s own
+# docstring says so — and then nothing ever pointed at it, so the archive sat
+# full while the reps' tool went on scanning five years of daily CSVs. This is
+# that wiring. The SPC path is kept rather than deleted: `/api/hail` and
+# `/api/hail/range` still draw the map overlay from it, and an empty archive
+# has to degrade to the old answer rather than to a blank screen.
+
+# A busy Colorado day is thousands of cells and a season is millions. The
+# viewport filter does most of the work; this is the backstop that keeps one
+# zoomed-out request from trying to draw the whole state.
+HAIL_CELL_LIMIT     = 6000
+HAIL_CELL_LIMIT_MAX = 20000
+
+MESH_SOURCE   = 'mrms_mesh'
+MESH_MAX_DAYS = 3650      # the archive starts 2020-10-14; asking past it is free
+SPC_MAX_DAYS  = 1825      # a full SPC scan is ~1200 CSVs, so this stays capped
+
+
+def _geocode_one(q):
+    """(lat, lng, display_name) for free text, or None. Cache before network.
+
+    Every pin drop and every hail search in this app geocodes, all from one
+    Railway IP, against a service whose stated policy is one request a second
+    and no bulk use. `portal.geo` is read first and written back after, so the
+    second rep to look up the same street never leaves the box. A miss still
+    falls through to Nominatim — one interactive lookup for one rep is exactly
+    what that policy allows.
+
+    Only hits are cached. `pgeo.lookup()` returns None for a stored `nomatch`
+    as well as for an address it has never seen, so caching a miss here would
+    save nothing; telling those two apart is the geocode backfill's job.
+    """
+    hit = pgeo.lookup(q)
+    if hit:
+        return hit['lat'], hit['lng'], (hit.get('matched') or q)
     if not http:
-        return jsonify({'error': 'requests library not available'}), 500
-    q = (request.args.get('q') or '').strip()
-    lat = request.args.get('lat', type=float)
-    lng = request.args.get('lng', type=float)
-    resolved_name = ''
-    if lat is None or lng is None:
-        if not q:
-            return jsonify({'error': 'q (address) or lat/lng required'}), 400
-        try:
-            r = http.get('https://nominatim.openstreetmap.org/search',
-                         params={'q': q, 'format': 'json', 'limit': 1, 'countrycodes': 'us'},
-                         headers={'User-Agent': 'P1Canvasser/1.0 (projectoneroofingcolorado.com)'},
-                         timeout=10)
-            r.raise_for_status()
-            hits = r.json()
-        except Exception as e:
-            return jsonify({'error': f'Geocoding failed: {e}'}), 502
-        if not hits:
-            return jsonify({'error': 'Address not found'}), 404
-        lat, lng = float(hits[0]['lat']), float(hits[0]['lon'])
-        resolved_name = hits[0]['display_name']
+        return None
+    r = http.get('https://nominatim.openstreetmap.org/search',
+                 params={'q': q, 'format': 'json', 'limit': 1, 'countrycodes': 'us'},
+                 headers={'User-Agent': NOMINATIM_UA}, timeout=10)
+    r.raise_for_status()
+    found = r.json()
+    if not found:
+        return None
+    lat, lng = float(found[0]['lat']), float(found[0]['lon'])
+    display = found[0].get('display_name', '')
+    pgeo.put(q, lat=lat, lng=lng, matched=display, source='nominatim')
+    return lat, lng, display
 
-    radius = min(float(request.args.get('radius', 10)), 50)
-    days   = min(int(request.args.get('days', 1825)), 1825)
 
-    # Severe-weather season heuristic: scan Mar–Oct days plus the last 45 days
+def _mesh_history(lat, lng, days, min_size=0.0):
+    """Radar-estimated hail over one point, newest first — or None.
+
+    None means the archive holds NO day inside the window, which is "nobody has
+    ingested that period", not "no hail fell there". Those two must stay
+    distinguishable or the tool tells a homeowner their roof is clean on the
+    strength of a database nobody ever filled — and a rep repeats it on a
+    doorstep. `record()` stores a day with zero cells for this same reason, and
+    `ingested_dates()` is the question's other half.
+
+    An empty `storms` list with coverage attached is therefore a real and
+    useful answer: radar looked at this roof on N days and it was never hit.
+    """
+    from hail import storms
+    since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
+    held = sorted(d for d in storms.ingested_dates(MESH_SOURCE) if d >= since)
+    if not held:
+        return None
+    from hail import grid as hgrid
+    hits = [h for h in storms.history_at(lat, lng, since=since, source=MESH_SOURCE)
+            if (h.get('size_in') or 0) >= min_size]
+    rows = [{'date': h['event_date'], 'size': round(h['size_in'], 2),
+             'event_id': h['event_id'],
+             # MESH is what a storm COULD have produced aloft, not what landed.
+             # It runs high, and the archive holds cells above the largest
+             # hailstone ever recorded in the US. The number is passed through
+             # unchanged — capping it would misreport NOAA's own product — but
+             # it travels with what is safe to say about it.
+             'caveat': hgrid.size_caveat(h['size_in'])} for h in hits]
+    biggest = max((r['size'] for r in rows), default=0)
+    return {
+        'storms':      rows,
+        'storm_count': len(rows),
+        'max_size':    biggest,
+        'max_caveat':  hgrid.size_caveat(biggest),
+        'max_note':    hgrid.size_note(biggest),
+        'coverage': {'days_held': len(held), 'first': held[0], 'last': held[-1]},
+    }
+
+
+def _spc_at_point(lat, lng, q, resolved_name, days):
+    """The old answer: spotter call-ins within a radius. Fallback only."""
+    if not http:
+        return jsonify({'error': 'No hail archive for this period, and the '
+                                 'requests library is unavailable for the '
+                                 'NOAA fallback.'}), 503
+    try:
+        radius = min(float(request.args.get('radius', 10)), 50)
+    except (TypeError, ValueError):
+        radius = 10.0
+    days = min(days, SPC_MAX_DAYS)
+
+    # Severe-weather season heuristic: scan Mar-Oct days plus the last 45 days
     # fully; deep-winter hail in CO/TX is rare enough to skip. NOAA has no free
     # point-history API, so we scan daily CSVs (cached + parallel).
     now = datetime.utcnow()
@@ -621,11 +1002,165 @@ def hail_at_address():
     reports.sort(key=lambda r: (r['date'], -r['size']), reverse=True)
     max_size = max((r['size'] for r in reports), default=0)
     return jsonify({
+        'source': 'noaa_spc', 'archive_empty': True,
         'query': q, 'resolved': resolved_name, 'lat': lat, 'lng': lng,
         'radius_miles': radius, 'lookback_days': days, 'days_scanned': scanned,
         'report_count': len(reports), 'max_size': max_size,
         'reports': reports[:100],
     })
+
+
+@app.route('/api/hail/address')
+@login_required
+def hail_at_address():
+    """Hail history at one address (or lat/lng), newest first.
+
+    Params: q=<address> OR lat=&lng=, days=<lookback, default 1825>,
+            min_size=<inches, default 0>, radius=<miles, SPC fallback only>.
+
+    The response always names its `source`, and the front end branches on that
+    rather than guessing. On `mrms_mesh` every number is about the roof itself
+    and `radius` means nothing at all; on `noaa_spc` they are call-ins some
+    distance away. Showing a spotter report four miles off as though it were
+    this house is the overclaim the archive exists to stop, so the two shapes
+    are never blended into one.
+
+    A lat/lng lookup on the MESH path touches no third-party service — no
+    geocoder, no NOAA — which is what makes "Hail here" answer instantly on the
+    tapped structure instead of after a minute of CSV scanning.
+    """
+    q = (request.args.get('q') or '').strip()
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+    resolved_name = ''
+    if lat is None or lng is None:
+        if not q:
+            return jsonify({'error': 'q (address) or lat/lng required'}), 400
+        try:
+            found = _geocode_one(q)
+        except Exception as e:
+            return jsonify({'error': f'Geocoding failed: {e}'}), 502
+        if not found:
+            return jsonify({'error': 'Address not found'}), 404
+        lat, lng, resolved_name = found
+
+    try:
+        days = min(int(request.args.get('days', 1825)), MESH_MAX_DAYS)
+    except (TypeError, ValueError):
+        days = 1825
+    days = max(days, 1)
+    try:
+        min_size = max(float(request.args.get('min_size', 0)), 0.0)
+    except (TypeError, ValueError):
+        min_size = 0.0
+
+    mesh = _mesh_history(lat, lng, days, min_size)
+    if mesh is not None:
+        return jsonify({
+            'source': MESH_SOURCE, 'query': q, 'resolved': resolved_name,
+            'lat': lat, 'lng': lng, 'lookback_days': days, 'min_size': min_size,
+            **mesh,
+        })
+    return _spc_at_point(lat, lng, q, resolved_name, days)
+
+
+# ── Filling the archive ──────────────────────────────────────────────────────
+#
+# The archive is the company's primary data product and it shipped EMPTY:
+# `hail/backfill.py` said "what a nightly cron runs" in its docstring and no
+# cron ran it, so every address lookup fell through to the SPC spotter reports
+# — call-ins, not measurements. A real 1.91" storm over Loveland on 2024-07-21
+# is in MESH and was invisible to the tool, which answered "no hail" about a
+# roof that had been hit.
+#
+# The nightly job (`hail_daily` in agents/scheduler.py) keeps it current from
+# now on. This is the other half: history, which nothing else can supply.
+# It has to run ON the server, because the archive is on the Railway volume and
+# `railway run` executes against local disk.
+
+BACKFILL_MAX_DAYS = 3650
+
+
+@app.route('/api/hail/backfill', methods=['GET'])
+@admin_required
+def hail_backfill_state():
+    """Progress, plus what the archive already holds. Safe to poll."""
+    from hail import storms
+    return jsonify(storms.backfill_state())
+
+
+@app.route('/api/hail/backfill', methods=['POST'])
+@admin_required
+def hail_backfill_start():
+    """Fill history. `season=<year>` or `days=<n>`; skips days already held.
+
+    Manager-up rather than strict admin, matching every other hail route here:
+    this writes no customer data and reads a public NOAA bucket, and a manager
+    who can see the map is the person who notices the archive is thin.
+    """
+    from hail import backfill as hbackfill, ingest, storms
+
+    season = request.args.get('season', type=int)
+    days = request.args.get('days', type=int)
+    # Colorado's today, not UTC's. From 6pm Mountain a UTC date is already
+    # tomorrow, which would ask NOAA for a day whose file does not exist
+    # yet and bank the failure. See the clock note in the root CLAUDE.md.
+    today = pclock.company_today()
+    if season:
+        dates = [d for d in (date(season, 1, 1) + timedelta(days=i)
+                             for i in range(366))
+                 if d.year == season and d.month in hbackfill.SEASON_MONTHS
+                 and d <= today]
+        label = f'season {season}'
+    else:
+        days = max(1, min(days or 30, BACKFILL_MAX_DAYS))
+        dates = [today - timedelta(days=i) for i in range(days)][::-1]
+        label = f'last {days} days'
+    dates = [d for d in dates if d >= ingest.EARLIEST]
+    if not dates:
+        return jsonify({'error': f'Nothing in range. The archive starts '
+                                 f'{ingest.EARLIEST.isoformat()}.'}), 400
+
+    # Days already held are skipped, which is what makes this re-runnable and
+    # what lets an admin hit the button again after a failure without paying
+    # for the days that already landed.
+    held = storms.ingested_dates()
+    todo = [d for d in dates if d.isoformat() not in held]
+    if not todo:
+        return jsonify({'status': 'nothing_to_do', 'label': label,
+                        **storms.backfill_state()})
+
+    if not storms.backfill_claim(label, session.get('username', ''), len(todo)):
+        return jsonify({'error': 'A backfill is already running.',
+                        **storms.backfill_state()}), 409
+
+    def _go():
+        state = {'storm_days': 0, 'failures': 0}
+
+        def on_day(d, swath, exc, i, total, elapsed):
+            if exc is not None:
+                state['failures'] += 1
+            elif swath:
+                state['storm_days'] += 1
+            # Every day, not every tenth: the whole point is that a job running
+            # for minutes is visibly moving rather than apparently hung.
+            storms.backfill_progress(i, state['storm_days'], state['failures'])
+
+        try:
+            out = hbackfill.run(todo, on_day=on_day)
+        except Exception as exc:                     # noqa: BLE001
+            storms.backfill_finish('failed', f'{type(exc).__name__}: {exc}')
+            return
+        storms.backfill_finish(
+            'done' if not out['failures'] else 'done_with_failures',
+            f'{out["fetched"]} day(s) ingested, {out["storm_days"]} with hail'
+            + (f', {out["failures"]} failed and will be retried'
+               if out['failures'] else ''))
+
+    threading.Thread(target=_go, daemon=True).start()
+    return jsonify({'status': 'started', 'label': label, 'days': len(todo),
+                    'skipped_already_held': len(dates) - len(todo)}), 202
+
 
 # ── Pipeline handoff ──────────────────────────────────────────────────────────
 #

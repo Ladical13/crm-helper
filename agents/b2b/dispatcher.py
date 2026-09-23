@@ -214,18 +214,21 @@ def run(rep, *, segments=None, cities=None, per_city_limit=10,
                 # 6. Annotate. Match the API response's "details" list back
                 # onto the rows we just pushed to know each lead_id (both
                 # freshly inserted AND deduped-onto-existing).
-                lead_ids = _lead_ids_from_response(client, batch=f'{batch_stub}:{segment}',
-                                                   rep=rep)
                 updates = []
-                for enriched_row in rows[:len(lead_ids)]:
+                for match in res.get('matches', []):
+                    enriched_row = rows[match['row']]
+                    # Unenriched rows and failed lookups must not erase earlier research.
+                    if not any(enriched_row.get(k) for k in
+                               ('research_notes', 'research_citations', 'recent_storm')):
+                        continue
                     updates.append({
-                        'lead_id': lead_ids[rows.index(enriched_row)],
+                        'lead_id': match['lead_id'],
                         'research_notes': enriched_row.get('research_notes', ''),
                         'research_citations': enriched_row.get('research_citations', []),
                         'recent_storm': enriched_row.get('recent_storm', ''),
                     })
                 # In-process annotate via the loaded salescrm module.
-                salescrm_mod = sys.modules.get('p1_salescrm_app')
+                salescrm_mod = sys.modules.get('p1_crm_app')
                 if salescrm_mod is not None and updates and not dry_run:
                     try:
                         ingest_mod.annotate_leads(salescrm_mod, updates)
@@ -297,14 +300,3 @@ def _strip_nimbus_fields(row):
     drop = {'_segment', 'research_notes', 'research_citations', 'recent_storm',
             'enrichment_cost'}
     return {k: v for k, v in row.items() if k not in drop}
-
-
-def _lead_ids_from_response(client, batch, rep):
-    """Fetch the freshly-imported lead ids for annotation."""
-    r = client.get(f'/crm/api/leads?rep={rep}&batch={batch}&limit=500')
-    if r.status_code != 200:
-        # Batch filter isn't a public param — fall back to listing rep leads
-        # and matching import_batch server-side is out of scope here.
-        return []
-    data = r.get_json() or []
-    return [x.get('id') for x in data if x.get('id')]

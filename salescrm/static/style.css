@@ -1,7 +1,7 @@
 /* Project One — Pipeline. Mobile-first dark theme (matches canvasser/estimator). */
 :root{
   --bg:#0d1117; --bg2:#161b22; --bg3:#1c232d; --line:#2d333b;
-  --txt:#e6edf3; --txt2:#9aa4b2; --txt3:#6b7480;
+  --txt:#e6edf3; --txt2:#abb5c3; --txt3:#929dab;
   --brand:#f97316; --brand2:#fb923c;
   --blue:#3b82f6; --green:#10b981; --amber:#f59e0b; --red:#ef4444; --purple:#8b5cf6; --yellow:#eab308;
   --radius:14px; --shadow:0 6px 24px rgba(0,0,0,.4);
@@ -9,6 +9,10 @@
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%}
+/* Rotating to landscape makes iOS Safari inflate font sizes per-block, which
+   breaks the kanban card ellipsis and overflows the KPI tiles. Android Chrome
+   does the same under Accessibility > text scaling. */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   background:var(--bg);color:var(--txt);font-size:15px;line-height:1.4;overscroll-behavior-y:none}
 .hidden{display:none!important}
@@ -266,8 +270,15 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .drawer{position:fixed;inset:0;z-index:50;display:none}
 .drawer.open{display:block}
 .drawer-scrim{position:absolute;inset:0;background:rgba(0,0,0,.55)}
+/* overscroll-behavior:contain stops the scroll chaining to the board behind:
+   flicking past the end of a lead's timeline used to scroll the pipeline
+   underneath, so closing the drawer landed the rep somewhere else entirely.
+   The bottom padding clears the home indicator — the last thing in here is
+   the Convert / Delete button pair, which sat under it on a notched iPhone. */
 .drawer-panel{position:absolute;top:0;right:0;bottom:0;width:100%;max-width:460px;background:var(--bg);
-  border-left:1px solid var(--line);overflow-y:auto;animation:slidein .22s ease;padding-bottom:40px}
+  border-left:1px solid var(--line);overflow-y:auto;overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;animation:slidein .22s ease;
+  padding-bottom:calc(40px + var(--safe-b))}
 @keyframes slidein{from{transform:translateX(100%)}to{transform:translateX(0)}}
 .dh{position:sticky;top:0;background:var(--bg2);border-bottom:1px solid var(--line);
   padding:calc(env(safe-area-inset-top,0px) + 14px) 16px 14px;z-index:2}
@@ -339,7 +350,10 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .modal{position:fixed;inset:0;z-index:60;display:none;place-items:center;padding:18px}
 .modal.open{display:grid}
 .modal-scrim{position:absolute;inset:0;background:rgba(0,0,0,.6)}
-.modal-box{position:relative;width:100%;max-width:440px;max-height:88vh;overflow-y:auto;
+/* dvh, not vh: with the Safari toolbar showing, 88vh is taller than what the
+   rep can actually see, so the modal's buttons sat below the fold. */
+.modal-box{position:relative;width:100%;max-width:440px;max-height:88vh;max-height:88dvh;
+  overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
   background:var(--bg2);border:1px solid var(--line);border-radius:16px;padding:20px}
 .modal-box h3{margin:0 0 14px}
 .modal-actions{display:flex;gap:8px;margin-top:16px}
@@ -352,11 +366,18 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.err{border-color:var(--red);color:#fca5a5}
 
-/* ── iPad / touch tablet polish ─────────────────────────────────────────
- * Bumps sub-44px touch targets that are fine on desktop but too small
- * for reliable finger-tapping. Coarse-pointer gate so laptop widths in
- * this range don't inherit tablet padding. */
-@media (min-width: 768px) and (max-width: 1366px) and (pointer: coarse) {
+/* ── Touch targets ──────────────────────────────────────────────────────
+ * Bumps sub-44px targets that are fine under a mouse but too small for
+ * reliable finger-tapping.
+ *
+ * Gated on the POINTER ALONE. This used to also carry
+ * `(min-width: 768px) and (max-width: 1366px)`, which meant the tablet got
+ * the comfortable sizes and the PHONE — the device reps actually work the
+ * queue on all day — kept the desktop ones. The width bounds are gone; a
+ * coarse pointer is a finger at any width, and the phone needs this more
+ * than the iPad does, not less. Laptops keep the compact layout because
+ * they report `pointer: fine`. */
+@media (pointer: coarse) {
   .icon-btn { width: 44px; height: 44px; font-size: 22px; }
   .tab { padding: 10px 2px 8px; }
   .tab .tab-ico { font-size: 22px; }
@@ -366,6 +387,24 @@ input,select,textarea{font-family:inherit;font-size:16px}
   .contact-actions a { min-height: 48px; }
   .task-check { width: 28px; height: 28px; }
   .log-btn, .stage-select, .field input, .field select { min-height: 44px; }
+
+  /* The script/draft toggle on an outreach card. At 5px padding on an 11.5px
+     label this was a ~27px target that a rep hits ~40 times a day. The pill
+     stays visually small; the tap area is grown with a transparent ::after,
+     the same trick the portal shell bar uses. */
+  .oq-tabs button { position: relative; }
+  .oq-tabs button::after {
+    content:""; position:absolute; left:0; right:0; top:50%;
+    height:44px; transform:translateY(-50%);
+  }
+  .oq-skips button { min-height: 44px; }
+
+  /* Destructive and tiny is the worst pairing: this deletes a customer
+     document and was a bare 15px glyph with no box at all. */
+  .doc-del { min-width: 44px; min-height: 44px; display: grid; place-items: center; }
+
+  .dh-close { width: 44px; height: 44px; }
+  .mini-search, .mini-select { min-height: 44px; }
 }
 
 /* ── Portal shell offset ───────────────────────────────────────────────
@@ -380,4 +419,146 @@ input,select,textarea{font-family:inherit;font-size:16px}
     top: var(--p1-shell-h);
     height: calc(100dvh - var(--p1-shell-h));
   }
+}
+
+/* Daily work, searchable lists, and a consistent lead drawer. */
+.day-start{display:flex;align-items:center;justify-content:space-between;gap:20px;background:linear-gradient(115deg,rgba(249,115,22,.15),var(--bg2));border:1px solid rgba(249,115,22,.35);border-radius:14px;padding:20px;margin:16px 0}
+.day-start h2{font-size:20px;margin:0 0 5px}.day-start p{margin:0;color:var(--txt2);max-width:620px}
+.day-start button{flex-shrink:0;min-height:44px}
+.stat-chip{color:var(--txt);text-align:left}.stat-chip span{display:block}
+.section-more{margin-left:auto;text-transform:none;letter-spacing:normal;white-space:nowrap}
+.view-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px 0;flex-wrap:wrap}
+.view-toggle{display:flex;gap:4px;border:1px solid var(--line);border-radius:11px;padding:4px;background:var(--bg2)}
+.view-toggle button{background:none;border:0;border-radius:7px;color:var(--txt2);padding:9px 14px;font-weight:600;min-height:40px}
+.view-toggle button[aria-pressed=true]{background:var(--bg3);color:var(--brand2);box-shadow:inset 0 0 0 1px var(--brand)}
+.pipeline-toolbar{flex-wrap:wrap}.pipeline-toolbar .mini-select{flex:1 1 180px;min-width:0}.pipeline-toolbar .mini-search{flex:2 1 260px;min-width:0}
+.lead-list{display:flex;flex-direction:column;gap:7px}.lead-list-row{display:grid;grid-template-columns:1.5fr 1fr 1.25fr 1fr;gap:16px;align-items:center;width:100%;padding:16px;background:var(--bg2);color:var(--txt);border:1px solid var(--line);border-radius:11px;text-align:left;font-size:13px}
+.lead-list-row>span{min-width:0;overflow-wrap:anywhere}.lead-list-row b{font-size:15px}.lead-list-row:hover{border-color:var(--brand)}
+.lead-context{display:block;font-size:12px;color:var(--txt2);margin:5px 0;overflow-wrap:anywhere}
+#pipeline-more{margin-top:14px}.kcol-body{max-height:62dvh;overflow-y:auto;overscroll-behavior:contain}
+.drawer-panel{max-width:650px}.drawer-panel .dh{padding-right:64px}.drawer-panel .contact-actions{margin-top:12px}
+.lead-back{margin-bottom:14px;min-height:44px}
+.lead-page #lead-panel{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--bg2)}
+.lead-page .dh{position:static;padding:24px}
+.lead-page .dh-name{font-size:28px;margin:0;overflow-wrap:anywhere}
+.lead-address{margin:18px 0;padding:16px;background:var(--bg3);border:1px solid var(--line);border-radius:10px}
+.lead-address-label{display:block;color:var(--txt2);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.lead-address-text{font-size:19px;font-weight:600;margin:5px 0 12px;overflow-wrap:anywhere}
+.lead-address-actions{display:flex;gap:8px;flex-wrap:wrap}
+.lead-address-actions a{text-decoration:none;display:inline-flex;align-items:center}
+.lead-page .contact-actions{margin-top:12px}
+.lead-page .dgrid>.dsec{min-width:0;overflow-wrap:anywhere}
+.lead-page #lead-details{scroll-margin-top:110px}
+@media(min-width:1000px){
+  .lead-page .dgrid{display:grid;grid-template-columns:1fr 1fr;align-items:start}
+  .lead-page .dsec-wide{grid-column:1/-1}
+}
+@media(max-width:679px){.lead-page .dh{padding:16px}.lead-page .dh-name{font-size:24px}}
+.contact-actions .disabled{opacity:.5;cursor:default}.oq-actions button:disabled{color:var(--txt3);cursor:default}
+.research-notice{background:rgba(245,158,11,.09);border-left:3px solid var(--amber);padding:12px;color:var(--txt)}
+details.dsec summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--txt2);padding:3px 0}
+details.dsec[open] summary{margin-bottom:14px}#lead-details{scroll-margin-top:160px}
+.research-link{display:inline-block;color:var(--brand2);font-size:13px;padding:10px}.research-notes{margin-top:12px;color:var(--txt2);font-size:13px}.research-notes summary{cursor:pointer}
+#add-partner{margin:0 0 16px}button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--brand2);outline-offset:3px}
+@media(max-width:679px){.day-start{align-items:stretch;flex-direction:column}.lead-list-row{grid-template-columns:1fr 1fr;gap:10px}.section-h{flex-wrap:wrap}.field-row{flex-wrap:wrap}.field-row .field{min-width:100px}.view-toggle button{padding:9px 10px}.drawer-panel .dh-name{font-size:19px}}
+
+/* ── Cold outreach: status chips, composer, outcome buttons, templates ── */
+.chip.os{background:color-mix(in srgb,var(--c) 18%,transparent);border-color:var(--c);color:var(--txt)}
+.os-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.os-board{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.os-chip{display:flex;align-items:baseline;gap:6px;padding:7px 11px;border-radius:20px;
+  background:var(--bg2);border:1px solid var(--line);border-left:4px solid var(--c);
+  color:var(--txt2);font-size:12.5px;font-weight:600;cursor:pointer}
+.os-chip .n{color:var(--txt);font-weight:800;font-size:14px}
+.os-chip .due{color:var(--brand2);font-size:11px;font-weight:700}
+.cmp{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+.cmp-pick{width:100%}
+.cmp-subj,.cmp-body{width:100%;padding:9px 10px;border-radius:10px;background:var(--bg3);
+  border:1px solid var(--line);color:var(--txt);font-size:14px;line-height:1.45}
+.cmp-body{resize:vertical;min-height:84px}
+.cmp-foot{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.cmp-count{font-size:11.5px;color:var(--txt3);font-weight:700}
+.cmp-count.over{color:var(--red)}
+.cmp-hint{font-size:11.5px;color:var(--txt3)}
+.cmp-hint code{font-size:11px;background:var(--bg3);padding:1px 4px;border-radius:4px}
+.oq-actions a.text{color:#93c5fd;border-color:rgba(59,130,246,.4)}
+.oc-h{margin:12px 0 6px;font-size:12px;color:var(--txt3);text-transform:uppercase;letter-spacing:.04em}
+.oc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:6px;margin-bottom:8px}
+.oc-btn{padding:9px 8px;border-radius:10px;background:var(--bg3);border:1px solid var(--line);
+  color:var(--txt);font-size:13px;font-weight:600;text-align:left;cursor:pointer}
+.oc-btn.hint{border-color:var(--brand);box-shadow:0 0 0 1px var(--brand) inset}
+.oc-btn.neg{color:#fca5a5}
+.oc-date{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;font-size:13px;color:var(--txt2)}
+.oc-date input{margin-left:6px;padding:6px 8px;border-radius:8px;background:var(--bg3);border:1px solid var(--line);color:var(--txt)}
+.os-set{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--txt3);margin-top:6px}
+.tpl-filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center}
+.tpl-subj{font-weight:700;font-size:13px;margin:4px 0}
+.tpl-body{white-space:pre-wrap}
+.tm-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.tm-preview{margin-top:8px}
+.tm-preview .oq-script{white-space:pre-wrap;margin-top:6px}
+.tm-problems{color:#fca5a5;font-size:12.5px;margin-top:6px}
+@media (max-width:520px){ .tm-row{grid-template-columns:1fr} }
+@media (pointer: coarse) {
+  /* iOS zooms any focused control under 16px and never zooms back out. */
+  .cmp-pick,.cmp-subj,.cmp-body,.oc-date input,.os-set select,.tpl-filters select{font-size:16px}
+  .oc-btn,.os-chip{min-height:44px}
+}
+.dnc-notice{font-size:12.5px;color:var(--txt2);background:var(--bg2);border:1px solid var(--line);
+  border-radius:10px;padding:8px 10px;margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.dnc-notice.warn{border-color:rgba(239,68,68,.5);color:#fca5a5}
+.dnc-banner{background:rgba(239,68,68,.12);border-color:var(--red);color:#fca5a5}
+.storm-panel{background:var(--bg2);border:1px solid var(--line);border-left:4px solid #8b5cf6;
+  border-radius:10px;padding:8px 10px;margin-bottom:10px;font-size:12.5px;color:var(--txt2)}
+.storm-h{font-weight:700;color:var(--txt);margin-bottom:6px}
+.storm-row{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:4px 0;border-top:1px solid var(--line)}
+
+/* Contact quality + research panel */
+.chip.cq{border-color:var(--line)}
+.chip.cq-3{background:rgba(16,185,129,.18);border-color:#10b981;color:#a7f3d0}
+.chip.cq-2{background:rgba(59,130,246,.16);border-color:#3b82f6;color:#bfdbfe}
+.chip.cq-1{background:rgba(245,158,11,.14);border-color:#f59e0b;color:#fde68a}
+.chip.cq-0{background:rgba(239,68,68,.12);border-color:#ef4444;color:#fecaca}
+.ask-for{font-size:13px;color:var(--txt2);margin:2px 0 6px}
+.ask-for b{color:var(--txt)}
+.rs-row{font-size:13px;margin:4px 0;line-height:1.45}
+.rs-cites a{color:var(--brand2)}
+.rs-ok{color:#86efac;font-weight:600}
+.rs-btns{margin-top:8px}
+.linkish{background:none;border:none;padding:0;color:var(--brand2);text-decoration:underline;font:inherit;cursor:pointer}
+.cmp-via{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.cmp-via button{padding:5px 11px;border-radius:20px;background:transparent;border:1px solid var(--line);color:var(--txt2);font-size:12px}
+.cmp-via button.on{background:var(--bg3);color:var(--txt);border-color:var(--brand)}
+.om-for{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px}
+@media (pointer: coarse){ .cmp-via button{min-height:44px} }
+
+/* Keep overlays below the shared switcher and fit forms to the visible screen. */
+.p1-has-shell .drawer,.p1-has-shell .modal{top:var(--p1-shell-h)}
+.p1-has-shell .topbar{padding-top:10px}
+.modal-box{min-width:0;max-height:100%}
+.modal-actions{position:sticky;bottom:-20px;background:var(--bg2);padding:12px 0;z-index:1}
+.field,.field input,.field select,.field textarea{min-width:0}
+.topbar-title{min-width:0;overflow-wrap:anywhere}
+.topbar-actions{flex-shrink:0}
+.dash-controls{flex-wrap:wrap}
+.dash-controls .mini-select{flex:1 1 140px;min-width:0;max-width:100%}
+.dh-name,.oq-name,.oq-sub,.oq-script,.tl-txt{overflow-wrap:anywhere}
+@media(max-width:679px){
+  .stat-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}
+  .stat-chip{min-width:0}
+  .tabbar{overflow-x:auto;overscroll-behavior-x:contain;padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}
+  .tab{flex:1 0 44px;min-height:56px}
+  .modal{padding:10px max(10px,env(safe-area-inset-right,0px)) max(10px,env(safe-area-inset-bottom,0px)) max(10px,env(safe-area-inset-left,0px));align-items:start}
+  .modal-box{padding:16px;max-height:calc(100dvh - var(--p1-shell-h,0px) - 20px - env(safe-area-inset-bottom,0px))}
+  .modal-actions{bottom:-16px}
+  .oq-actions,.oq-skips,.oq-tabs,.contact-actions,.cmp-foot,.os-set{flex-wrap:wrap}
+  .oq-actions>a,.oq-actions>button,.contact-actions>a{flex:1 1 100px}
+  .oq-skips button{flex:1 1 110px}
+  .field-row .field{flex:1 1 130px;min-width:0}
+  #views{padding-left:max(14px,env(safe-area-inset-left,0px));padding-right:max(14px,env(safe-area-inset-right,0px))}
+}
+@media(pointer:coarse){
+  .btn-ghost,.btn-brand,.btn-danger,.view-toggle button,.oq-tabs button,.oq-skips button,.dh-close{min-height:44px}
+  .dh-close{width:44px}
+  input,select,textarea{font-size:16px!important}
 }

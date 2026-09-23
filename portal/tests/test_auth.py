@@ -217,3 +217,53 @@ def test_only_the_portal_answers_login(client):
     assert client.get('/login').status_code == 200
     for path in ('/estimate/login', '/crm/api/login', '/canvass/api/login'):
         assert client.get(path).status_code != 200, path
+
+
+# ── The login page on a phone ────────────────────────────────────────────────
+#
+# This page is server-rendered from portal/app.py, so it has no stylesheet a
+# CSS test could read and nothing else covers it. It is also the first thing
+# every rep sees each morning, and the one page in the whole product that a
+# locked-out rep is staring at on a doorstep.
+
+def test_login_page_measures_the_visible_viewport(client):
+    """The card is vertically centred in the viewport. Measured in vh it
+    centres inside the area the Safari toolbar overlaps, so on a phone the
+    Sign in button drifted under the toolbar; dvh centres it in what the rep
+    can actually see. The vh line stays as the fallback for browsers without
+    dvh — order matters, dvh must come second to win."""
+    html = client.get('/login').get_data(as_text=True)
+    assert 'min-height:100dvh' in html, 'the login card sizes itself in vh only'
+    assert html.index('min-height:100vh') < html.index('min-height:100dvh'), \
+        'the vh fallback must come first or it overrides dvh'
+
+
+def test_login_page_pins_the_text_size(client):
+    """iOS inflates font sizes in landscape and Android applies its
+    accessibility text scaling, either of which overflows this fixed-width
+    card."""
+    html = client.get('/login').get_data(as_text=True)
+    assert '-webkit-text-size-adjust:100%' in html
+    assert 'text-size-adjust:100%' in html
+
+
+def test_login_page_keeps_the_card_out_of_the_safe_area(client):
+    """viewport-fit=cover is already set, which means the page paints under
+    the notch and the home indicator unless it pads for them. The keyboard
+    shrinks the viewport around the card, which is when this bites."""
+    html = client.get('/login').get_data(as_text=True)
+    assert 'env(safe-area-inset-top)' in html
+    assert 'env(safe-area-inset-bottom)' in html
+
+
+def test_login_inputs_clear_the_ios_focus_zoom_threshold(client):
+    """Mobile Safari zooms in on focus for any control under 16px and does not
+    zoom back out. Zooming the login page is survivable; this is here so a
+    later restyle of these inputs cannot quietly drop below the threshold."""
+    html = client.get('/login').get_data(as_text=True)
+    import re as _re
+    m = _re.search(r'\binput \{\{?([^}]*)\}', html) or _re.search(r'\binput \{([^}]*)\}', html)
+    assert m, 'the login page input rule was renamed'
+    size = _re.search(r'font-size:(\d+)px', m.group(1))
+    assert size and int(size.group(1)) >= 16, \
+        f'login inputs are {size and size.group(1)}px — iOS will zoom and stay zoomed'

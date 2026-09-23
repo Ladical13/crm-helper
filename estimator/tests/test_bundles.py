@@ -662,3 +662,88 @@ def test_setting_the_mode_a_trade_is_already_in_is_a_no_op(tmp_path):
     tpo = next(i for i in td['line_items'] if i['name'] == 'TPO Membrane')
     assert tpo['unit_price'] == pytest.approx(140.85)
     assert 'tiers' not in tpo
+
+
+# ── Swappable products: polyiso thickness ──────────────────────────────
+# A package names ONE polyiso slot (ca_iso, 2.6"); the spec decides the
+# thickness. The row swaps between the catalog's thicknesses, and the choice is
+# the building's — so a system swap must keep it rather than reset to 2.6".
+
+ISO_BOOK = json.loads(json.dumps(COMM_BOOK))
+ISO_BOOK['commercial_catalog'] += [
+    {'id': 'ca_iso_10', 'name': '1.0" Polyiso', 'unit': 'SQ', 'cost': 65.34, 'measure': 'comm_sq_waste'},
+    {'id': 'ca_iso_40', 'name': '4.0" Polyiso', 'unit': 'SQ', 'cost': 197.73, 'measure': 'comm_sq_waste'},
+]
+
+
+def _run_iso(tmp_path, estimate, ops):
+    scenario = tmp_path / 'scenario.json'
+    out = tmp_path / 'out.json'
+    scenario.write_text(json.dumps({'priceBook': ISO_BOOK, 'estimate': estimate, 'ops': ops}),
+                        encoding='utf-8')
+    r = subprocess.run(['node', RUNNER, str(scenario), str(out)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return json.loads(out.read_text(encoding='utf-8'))['trades']['commercial']
+
+
+def _iso_rows(td):
+    return [i for i in td['line_items'] if 'Polyiso' in i['name']]
+
+
+def test_swapping_thickness_reprices_the_row_and_releases_a_locked_price(tmp_path):
+    td = _run_iso(tmp_path, _comm(), [
+        {'op': 'applySimpleBundle', 'trade': 'commercial', 'id': 'cb_tpo'}])
+    iso = _iso_rows(td)[0]
+    iso['quantity'] = 120
+    iso['unit_price'] = 999
+    iso['price_locked'] = True
+    td = _run_iso(tmp_path, {**_comm(), 'trades': {'commercial': td}}, [
+        {'op': 'swapVariant', 'trade': 'commercial', 'item': iso['id'], 'pid': 'ca_iso_40'}])
+    [row] = _iso_rows(td)
+    assert row['catalog_id'] == 'ca_iso_40' and row['name'] == '4.0" Polyiso'
+    assert row['unit_cost'] == 197.73
+    assert not row.get('price_locked'), 'a price typed for 2.6" is not a price for 4"'
+    assert row['unit_price'] == pytest.approx(197.73 / 0.71, abs=0.01)
+    assert row['quantity'] == 120
+
+
+def test_a_swap_refuses_a_product_from_another_slot(tmp_path):
+    td = _run_iso(tmp_path, _comm(), [
+        {'op': 'applySimpleBundle', 'trade': 'commercial', 'id': 'cb_tpo'}])
+    iso = _iso_rows(td)[0]
+    td = _run_iso(tmp_path, {**_comm(), 'trades': {'commercial': td}}, [
+        {'op': 'swapVariant', 'trade': 'commercial', 'item': iso['id'], 'pid': 'cm_epdm'}])
+    assert _iso_rows(td)[0]['catalog_id'] == 'ca_iso'
+
+
+def test_the_chosen_thickness_survives_a_simple_system_swap(tmp_path):
+    td = _run_iso(tmp_path, _comm(), [
+        {'op': 'applySimpleBundle', 'trade': 'commercial', 'id': 'cb_tpo'}])
+    iso = _iso_rows(td)[0]
+    iso['quantity'] = 88
+    td = _run_iso(tmp_path, {**_comm(), 'trades': {'commercial': td}}, [
+        {'op': 'swapVariant', 'trade': 'commercial', 'item': iso['id'], 'pid': 'ca_iso_40'},
+        {'op': 'applySimpleBundle', 'trade': 'commercial', 'id': 'cb_epdm'},
+        {'op': 'applySimpleBundle', 'trade': 'commercial', 'id': 'cb_epdm'}])
+    rows = _iso_rows(td)
+    assert len(rows) == 1, 'the 2.6" default came back beside the chosen thickness'
+    assert rows[0]['catalog_id'] == 'ca_iso_40'
+    assert rows[0]['unit_cost'] == 197.73 and rows[0]['quantity'] == 88
+
+
+def test_the_chosen_thickness_survives_a_gbb_package_pick(tmp_path):
+    est = _comm(mode='gbb')
+    td = _run_iso(tmp_path, est, [
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'good', 'id': 'cb_tpo'},
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'better', 'id': 'cb_tpo'}])
+    iso = _iso_rows(td)[0]
+    td = _run_iso(tmp_path, {**est, 'trades': {'commercial': td}}, [
+        {'op': 'swapVariant', 'trade': 'commercial', 'item': iso['id'], 'pid': 'ca_iso_10'},
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'better', 'id': 'cb_epdm'},
+        {'op': 'applyBundle', 'trade': 'commercial', 'tier': 'best', 'id': 'cb_tpo'}])
+    [row] = _iso_rows(td)
+    assert row['catalog_id'] == 'ca_iso_10'
+    for tier in ('good', 'better', 'best'):
+        cell = row['tiers'][tier]
+        assert cell['included'] is not False, f'{tier} lost its insulation'
+        assert cell['material_unit_cost'] == 65.34

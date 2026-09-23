@@ -260,6 +260,180 @@ function tierBulletsAreStale(trade, tier) {
     (parseFloat(it.quantity) || 0) > 0 &&
     ((it.tiers || {})[tier] || {}).included !== false);
 }
+
+/* ── The package tagline — the one line under the price on the card ──────
+   A bundle pick copies the price book's tagline INTO the estimate, so editing
+   the book later never reaches an estimate that already picked it, and with
+   the Options tab retired there was nowhere to change it per estimate. The
+   Pricing tab now has a box per package column.
+
+   What the rep types there is flagged in td.tier_tagline_edited, and that flag
+   is the difference between the two kinds of copy: bundle copy goes stale with
+   the bundle (tierBulletsAreStale), the rep's own line does not — it is what
+   they want THIS package to say, Custom tier included. Re-picking a bundle
+   clears the flag, same as it always replaced the copy.
+   MUST mirror _tier_tagline_edited / _tier_card_content in app.py. */
+function tierTaglineEdited(trade, tier) {
+  return ((S.trades[trade] || {}).tier_tagline_edited || {})[tier] === true;
+}
+function tierTagline(trade, tier) {
+  const d = String((tradeTierContent(trade).descriptions || {})[tier] || '').trim();
+  return (tierBulletsAreStale(trade, tier) && !tierTaglineEdited(trade, tier)) ? '' : d;
+}
+// What the price book would put on this tier today — '' for Custom/no bundle.
+function priceBookTagline(trade, tier) {
+  if (!isBundleTrade(trade)) return '';
+  const bid = ((S.trades[trade] || {}).tier_bundles || {})[tier];
+  if (!bid || bid === '__custom__') return '';
+  return String(bundleDescription(trade, _tradeBundle(trade, bid)) || '').trim();
+}
+function setTierTagline(trade, tier, v) {
+  const td = S.trades[trade]; if (!td) return;
+  const text = String(v || '').trim();
+  tradeTierContent(trade).descriptions[tier] = text;
+  td.tier_tagline_edited = td.tier_tagline_edited || {};
+  // Blank is "no tagline", and a blank line is nothing worth protecting.
+  td.tier_tagline_edited[tier] = !!text;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function resetTierTagline(trade, tier) {
+  const td = S.trades[trade]; if (!td) return;
+  tradeTierContent(trade).descriptions[tier] = priceBookTagline(trade, tier);
+  if (td.tier_tagline_edited) td.tier_tagline_edited[tier] = false;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function tierTaglineEditorHtml(trade, tier) {
+  if (!packageTrades().includes(trade)) return '';
+  const cur  = tierTagline(trade, tier);
+  const book = priceBookTagline(trade, tier);
+  const differs = book && cur !== book;
+  return `
+      <div class="tier-tagline">
+        <div class="tier-tagline-row">
+          <input class="tier-tagline-input" type="text" maxlength="90"
+            value="${esc(cur)}" placeholder="Tagline — one short line (optional)"
+            title="Shown under the price on the customer's ${esc(TIER_LABELS[tier])} package card"
+            onchange="setTierTagline('${trade}','${tier}',this.value)">
+          ${differs ? `<button type="button" class="tier-tagline-reset"
+            title="Use the price book's tagline: ${esc(book)}"
+            onclick="resetTierTagline('${trade}','${tier}')">↺ Price book</button>` : ''}
+        </div>
+        ${differs && !tierTaglineEdited(trade, tier) ? `<div class="tier-tagline-hint">Price book now says: “${esc(book)}”</div>` : ''}
+      </div>`;
+}
+
+/* ── What's Included: the bullets on a package card ─────────────────────
+   Same shape as the tagline above and for the same reason — a bundle pick
+   copies the price book's bullets into the estimate, so editing the book later
+   never reaches an estimate that already picked it.
+
+   A card is a PROMISE list, not a parts list. A roofing bundle carries ~11
+   products, and the card used to print the first ten and then "+ 11 more
+   items", which reads as an inventory to a homeowner holding two bids side by
+   side. An untouched card now shows the first CARD_BULLET_DEFAULT; the rep
+   rewrites the list in the box on the Pricing tab and from then on the card
+   shows exactly what they left, however many that is. Nothing is truncated
+   with a "+ N more" line anywhere.
+   MUST mirror _card_bullets / _tier_features_edited / _tier_card_content in
+   app.py — the browser prints the PDF and the server renders /sign. */
+const CARD_BULLET_DEFAULT = 6;
+function cardBullets(list, edited) {
+  const out = (list || []).map(s => String(s == null ? '' : s).trim()).filter(Boolean);
+  return edited ? out : out.slice(0, CARD_BULLET_DEFAULT);
+}
+function tierFeaturesEdited(trade, tier) {
+  return ((S.trades[trade] || {}).tier_features_edited || {})[tier] === true;
+}
+/* Bullets built from the tier's own priced, customer-visible line items — what
+   a card falls back to when its stored copy describes a package this tier no
+   longer sells. MUST mirror _autofill_tier_features in app.py. */
+function autofillTierBullets(trade, tier) {
+  const td = S.trades[trade] || {};
+  if (!td.enabled) return [];
+  const mode = effectiveTradeMode(trade, td);
+  const out = [], seen = new Set();
+  (td.line_items || []).forEach(item => {
+    if (item.customer_visible === false) return;
+    if (isSupplementItem(td, item)) return;   // "if needed", not the package
+    const name = String(item.name || '').trim();
+    if (!name) return;
+    const qty = parseFloat(item.quantity) || 0;
+    let desc = '';
+    if (mode === 'simple') {
+      if (qty <= 0 && (parseFloat(item.unit_price) || 0) <= 0) return;
+      desc = String(item.description || '').trim();
+    } else {
+      const ti = (item.tiers || {})[tier] || {};
+      if (ti.included === false) return;
+      const cost = (parseFloat(ti.material_unit_cost) || 0) + (parseFloat(ti.labor_unit_cost) || 0);
+      if (qty <= 0 && cost <= 0) return;
+      desc = String(ti.description || '').trim();
+    }
+    const line = (desc && desc !== name) ? `${name} — ${desc}` : name;
+    if (!seen.has(line)) { seen.add(line); out.push(line); }
+  });
+  return out;
+}
+// The bullets this tier's card shows today. MUST mirror _tier_card_content.
+function tierCardBullets(trade, tier) {
+  const edited = tierFeaturesEdited(trade, tier);
+  const stored = (tradeTierContent(trade).features || {})[tier] || [];
+  if (stored.length && (edited || !tierBulletsAreStale(trade, tier))) {
+    return cardBullets(stored, edited);
+  }
+  return cardBullets(autofillTierBullets(trade, tier), false);
+}
+// What the price book would put on this tier today — [] for Custom/no bundle.
+function priceBookBullets(trade, tier) {
+  if (!isBundleTrade(trade)) return [];
+  const bid = ((S.trades[trade] || {}).tier_bundles || {})[tier];
+  if (!bid || bid === '__custom__') return [];
+  return bundleFeatures(trade, _tradeBundle(trade, bid)) || [];
+}
+function setTierBullets(trade, tier, text) {
+  const td = S.trades[trade]; if (!td) return;
+  const lines = String(text || '').split('\n').map(s => s.trim()).filter(Boolean);
+  tradeTierContent(trade).features[tier] = lines;
+  td.tier_features_edited = td.tier_features_edited || {};
+  // Emptying the box is "go back to the default", not "promise nothing" — an
+  // empty card is never what a rep meant, and the autofill still has the
+  // tier's own line items to fall back on.
+  td.tier_features_edited[tier] = lines.length > 0;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function resetTierBullets(trade, tier) {
+  const td = S.trades[trade]; if (!td) return;
+  tradeTierContent(trade).features[tier] = priceBookBullets(trade, tier);
+  if (td.tier_features_edited) td.tier_features_edited[tier] = false;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function tierBulletsEditorHtml(trade, tier) {
+  if (!packageTrades().includes(trade)) return '';
+  const edited = tierFeaturesEdited(trade, tier);
+  const shown  = tierCardBullets(trade, tier);
+  const book   = priceBookBullets(trade, tier);
+  const differs = book.length && book.join('\n') !== shown.join('\n');
+  return `
+      <div class="tier-bullets">
+        <div class="tier-bullets-head">
+          <span class="tier-bullets-lbl">What's Included</span>
+          ${differs ? `<button type="button" class="tier-tagline-reset"
+            title="Use the price book's bullets for this package"
+            onclick="resetTierBullets('${trade}','${tier}')">↺ Price book</button>` : ''}
+        </div>
+        <textarea class="tier-bullets-input" rows="${Math.min(Math.max(shown.length, 3), 8)}"
+          placeholder="One bullet per line — what this package promises"
+          title="These are the lines under the price on the customer's ${esc(TIER_LABELS[tier])} card"
+          onchange="setTierBullets('${trade}','${tier}',this.value)">${esc(shown.join('\n'))}</textarea>
+        <div class="tier-tagline-hint">${edited
+          ? 'Your wording — shown exactly as written.'
+          : `Default: the first ${CARD_BULLET_DEFAULT} from the package. Edit to say it your way.`}</div>
+      </div>`;
+}
 /* Trades that print as a Good/Better/Best package choice. `other` is a G/B/B
    trade by data shape only: its tab shows one tier at a time and writes cost
    and description to ALL THREE (otherSetUnitCost / otherSetDesc), so offering
@@ -287,6 +461,115 @@ function groupedTradeItems(trade, items) {
   const groups = [{ name: '', items: items.filter(i => !known.has(itemSection(i))) }];
   sections.forEach(name => groups.push({ name, items: items.filter(i => itemSection(i) === name) }));
   return groups;
+}
+
+/* ── Standard order ──────────────────────────────────────────────────────
+   All three packages share ONE line_items array, and a bundle pick used to
+   APPEND whatever products it added. Pick Landmark for Good and standing seam
+   for Best and the metal panel lands after Good's drip edge — so the Best card
+   led with shingle accessories and named its own roof last, and no two
+   estimates matched, because the order was really "which package did the rep
+   pick first".
+
+   The order is the PRICE BOOK's: a product sorts to where the manager put it
+   in the catalog (arranged with ↑↓ there), which runs materials, accessories,
+   then labor and extras. A hand-added row has no catalog_id and keeps its
+   place at the end of its section — nobody else knows where it belongs.
+   Sorting happens WITHIN a section so a building's block stays its own block,
+   the same rule liMove already follows.
+
+   This is the STORED order, not a display filter: ↑↓ still moves a row and it
+   stays moved. New rows simply arrive in the right place. */
+const CATALOG_RANK_LAST = Number.MAX_SAFE_INTEGER;
+function catalogRank(trade, item) {
+  const cid = item && item.catalog_id;
+  if (!cid) return CATALOG_RANK_LAST;
+  const i = _tradeCatalog(trade).findIndex(p => p.id === cid);
+  return i < 0 ? CATALOG_RANK_LAST : i;
+}
+function _itemGroupName(trade, item) {
+  const known = new Set(tradeSections(trade));
+  return known.has(itemSection(item)) ? itemSection(item) : '';
+}
+// Where a new bundle row belongs: after the last row of its own section that
+// the price book puts at or before it. Appending is what shuffled the cards.
+function insertByCatalogOrder(trade, items, item) {
+  const rank = catalogRank(trade, item);
+  const grp = _itemGroupName(trade, item);
+  let at = -1;
+  items.forEach((x, i) => {
+    if (_itemGroupName(trade, x) !== grp) return;
+    if (catalogRank(trade, x) <= rank) at = i;
+  });
+  items.splice(at + 1, 0, item);
+  return item;
+}
+// One click to tidy an estimate whose rows predate this (or that has been
+// shuffled). Stable: equal ranks keep their relative order, so hand-added rows
+// stay in the order the rep added them, at the end of their section.
+function sortTradeItemsStandard(trade) {
+  const td = S.trades[trade];
+  if (!td || !(td.line_items || []).length) return;
+  const groups = [];
+  const seen = new Map();
+  td.line_items.forEach((it, i) => {
+    const g = _itemGroupName(trade, it);
+    if (!seen.has(g)) { seen.set(g, groups.length); groups.push([]); }
+    groups[seen.get(g)].push({ it, i });
+  });
+  const out = [];
+  groups.forEach(rows => {
+    rows.sort((a, b) => {
+      const ra = catalogRank(trade, a.it), rb = catalogRank(trade, b.it);
+      return ra === rb ? a.i - b.i : (ra < rb ? -1 : 1);
+    });
+    rows.forEach(r => out.push(r.it));
+  });
+  td.line_items = out;
+  setDirty(); renderTotals();
+  if (activePage === 'pricing') renderTradeContent();
+  if (activePage === 'scope') renderScopePage();
+}
+/* ── Supplements ──────────────────────────────────────────────────────────
+   A section whose name says "supplement" holds the "if needed" work — extra
+   decking by the sheet, a second layer, rotted fascia — that nobody can
+   measure until the roof is open. Those lines sit at quantity 0, and a
+   zero-qty line is "not in scope" everywhere, so they priced at nothing and
+   never reached the customer at all.
+
+   They are their own block now: kept OUT of the package total, the cost and
+   the margin (the customer has not bought them), and printed separately with
+   their own subtotal. A blank quantity prices as one unit, so the customer
+   sees what a sheet or a foot costs. Membership follows groupedTradeItems — a
+   tag naming a section the trade no longer lists is General, not a supplement.
+   MUST mirror _is_supplement_item / trade_supplements in app.py. */
+function isSupplementSectionName(name) {
+  return /supplement/i.test(String(name || ''));
+}
+function isSupplementItem(td, item) {
+  const s = String((item && item.section) || '').trim();
+  return !!s && isSupplementSectionName(s) && ((td && td.sections) || []).includes(s);
+}
+function supplementLineTotal(trade, item, tier) {
+  const td = S.trades[trade] || {};
+  const q = parseFloat(item.quantity) || 0;
+  const qty = q > 0 ? q : 1;
+  if (effectiveTradeMode(trade, td) === 'simple') return qty * (parseFloat(item.unit_price) || 0);
+  const t = (item.tiers && item.tiers[tier]) || {};
+  if (t.price_override !== undefined && t.price_override !== null && t.price_override !== '') {
+    return parseFloat(t.price_override) || 0;
+  }
+  return lineTotal(qty, t.material_unit_cost, t.labor_unit_cost, trade, tier);
+}
+function supplementItems(trade, tier) {
+  const td = S.trades[trade];
+  if (!td || !td.enabled) return [];
+  const simple = effectiveTradeMode(trade, td) === 'simple';
+  return (td.line_items || []).filter(i =>
+    isSupplementItem(td, i) && (simple || ((i.tiers || {})[tier] || {}).included !== false));
+}
+function supplementsTotal(trade, tier) {
+  return supplementItems(trade, tier).reduce((s, i) => s + supplementLineTotal(trade, i, tier), 0);
 }
 function addTradeSection(trade) {
   const name = (prompt('Section name (e.g. Main House, Detached Garage, South Slope):') || '').trim();
@@ -347,6 +630,55 @@ function liCanMove(trade, item, dir) {
   while (j >= 0 && j < items.length && groupOf(items[j]) !== groupOf(items[i])) j += dir;
   return j >= 0 && j < items.length;
 }
+/* ── Moving a section ─────────────────────────────────────────────
+   Sections could be added, renamed and deleted but never moved, so the order a
+   customer reads was the order the rep happened to think of the buildings in.
+   Fixing it meant deleting and re-adding, which drops every item onto General.
+
+   A move carries THREE things, because three arrays describe one section and
+   only the first of them is grouped:
+
+   - td.sections, the name list. The chips, both pricing grids, the browser's
+     print HTML and the server's render_line_items all group through it, so
+     they follow a swap on their own.
+   - td.line_items, which the signed contract PDF and the invoice print FLAT in
+     stored array order with the section name suffixed (_with_section in
+     app.py). Swap only the names and those two keep describing the old order —
+     one job, two answers. Reflowing through groupedTradeItems, the same
+     grouper the screen uses, is what stops the stored order and the shown
+     order drifting apart.
+   - S.structures, which the Scope page's building cards render from. A section
+     that names a building IS that building — rename and delete both hand off
+     to renameStructure / removeStructure for exactly that reason — so the card
+     has to move with the chip or the two screens disagree. */
+function canMoveTradeSection(trade, idx, dir) {
+  const j = idx + dir;
+  return j >= 0 && j < tradeSections(trade).length;
+}
+function moveTradeSection(trade, idx, dir) {
+  const td = S.trades[trade];
+  if (!td || !canMoveTradeSection(trade, idx, dir)) return;
+  const shown = tradeSections(trade);
+  const a = shown[idx], b = shown[idx + dir];
+  // Indexed by NAME, not position: the chips render the FILTERED list, so a
+  // position in it is not a position in td.sections once a blank has ever
+  // crept in.
+  const names = td.sections || [];
+  const ia = names.indexOf(a), ib = names.indexOf(b);
+  if (ia < 0 || ib < 0) return;
+  names[ia] = b; names[ib] = a;
+  td.line_items = groupedTradeItems(trade, td.line_items || [])
+    .reduce((out, g) => out.concat(g.items), []);
+  const sa = structureNamed(a), sb = structureNamed(b);
+  // estStructures() hands back a filtered COPY, so the swap has to land on
+  // S.structures itself.
+  if (sa && sb && Array.isArray(S.structures)) {
+    const pa = S.structures.indexOf(sa), pb = S.structures.indexOf(sb);
+    if (pa >= 0 && pb >= 0) { S.structures[pa] = sb; S.structures[pb] = sa; }
+  }
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
+}
 /* Section chips + add button, shown above GBB grids and simple tables. */
 function sectionManagerBar(trade) {
   const sections = tradeSections(trade);
@@ -354,11 +686,47 @@ function sectionManagerBar(trade) {
     <span class="est-sections-lbl" title="Group items by structure or roof area — sections show as headers with their own subtotals on the estimate">Sections:</span>
     ${sections.map((name, i) => `<span class="est-section-chip">
       ${esc(name)}
+      <button class="est-section-move" onclick="moveTradeSection('${trade}',${i},-1)"
+        ${canMoveTradeSection(trade, i, -1) ? '' : 'disabled'} title="Move section earlier">◀</button>
+      <button class="est-section-move" onclick="moveTradeSection('${trade}',${i},1)"
+        ${canMoveTradeSection(trade, i, 1) ? '' : 'disabled'} title="Move section later">▶</button>
       <button class="est-section-edit" onclick="renameTradeSection('${trade}',${i})" title="Rename section">✏</button>
       <button class="est-section-del" onclick="deleteTradeSection('${trade}',${i})" title="Remove section (items stay)">×</button>
     </span>`).join('')}
     <button class="est-section-add" onclick="addTradeSection('${trade}')">+ Add Section</button>
+    <button class="est-section-add" onclick="sortTradeItemsStandard('${trade}')"
+      title="Put every line back in price book order — materials, then accessories, labor and extras. Changes the order only, never a price or a quantity.">↕ Standard order</button>
+    ${sections.some(isSupplementSectionName) ? '' : `<button class="est-section-add"
+      onclick="addSupplementsSection('${trade}')"
+      title="Add a Supplements section with a starter line. It prints after the total as work that may be needed. Leave the price blank for a plain notice, or price lines to show what they would cost.">+ Supplements</button>`}
   </div>`;
+}
+/* One click to "there may be supplements": the section plus a starter line
+   with no price, which prints as a notice rather than a $0.00 charge. The
+   rep edits the wording or prices the line; nothing here touches the total. */
+function addSupplementsSection(trade) {
+  const td = S.trades[trade];
+  td.sections = td.sections || [];
+  if (td.sections.some(isSupplementSectionName)) return;
+  const name = 'Supplements';
+  td.sections.push(name);
+  const line = {
+    id: uid(), name: 'Possible supplements', unit: 'EA', quantity: 0, section: name,
+    customer_visible: true,
+  };
+  const desc = 'Additional work, such as damaged decking, may be found once the old roof is removed. It is not included in the total above.';
+  if (effectiveTradeMode(trade, td) === 'simple') {
+    Object.assign(line, { description: desc, unit_cost: 0, unit_price: 0 });
+  } else {
+    line.tiers = {};
+    TIERS.forEach(t => {
+      line.tiers[t] = { material_unit_cost: 0, labor_unit_cost: 0, description: desc, notes: '', included: true };
+    });
+  }
+  td.line_items = td.line_items || [];
+  td.line_items.push(line);
+  setDirty(); rerender();
+  if (activePage === 'pricing') renderTradeContent();
 }
 /* ── Buildings (structures) ───────────────────────────────────
    An apartment complex is seven roofs on one contract, each with its own square
@@ -424,6 +792,7 @@ function structureTotal(st) {
   const name = String(st.name || '').trim();
   return (td.line_items || []).reduce((sum, i) => {
     if (itemSection(i) !== name) return sum;
+    if (isSupplementItem(td, i)) return sum;
     if ((parseFloat(i.quantity) || 0) <= 0) return sum;
     if (mode === 'simple') return sum + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0);
     const t = (i.tiers || {})[tier] || {};
@@ -553,7 +922,10 @@ function syncStructureSections(trade) {
   });
 }
 
-const TEAM = ['avery','bryan','derik','luke','phil'];
+// Starts hardcoded so the salesperson picker is never empty offline, then is
+// replaced by the server roster (loadTeamRoster) — team.json plus portal
+// accounts — so a rep added in Team Logins can actually be picked.
+let TEAM = ['avery','bryan','derik','luke','phil'];
 const TRADE_COLOR_FIELDS = {
   roofing: [{key:'shingle_color',label:'Shingle Color'},{key:'manufacturer',label:'Manufacturer'},{key:'product_line',label:'Product Line'},
             {key:'drip_edge_color',label:'Drip Edge Color'},{key:'ridge_cap_color',label:'Ridge Cap Color'}],
@@ -601,6 +973,12 @@ Homeowner has the right to cancel this contract without penalty within 3 busines
 DISPUTE RESOLUTION
 Any dispute arising from this agreement shall first be subject to good-faith mediation. If unsuccessful, disputes shall be resolved by binding arbitration in the county where the project is located.`;
 
+/* Its WARRANTY clause states a FLAT 5-year term, unlike DEFAULT_CONTRACT's
+   tiered one. A claim sells the one scope the carrier approved, so the old
+   "lifetime … when the Best package is selected" named a choice the customer
+   was never offered — and the /sign page no longer shows packages on insurance
+   either (see warranty_by_tier in app.py's _build_estimate_manifest). Upgrades
+   still buy longer coverage; they just are not a package name. */
 const DEFAULT_INSURANCE_CONTRACT = `TERMS AND CONDITIONS — PROJECT ONE ROOFING (INSURANCE CLAIM)
 
 ASSIGNMENT OF BENEFITS / AUTHORIZATION
@@ -622,7 +1000,7 @@ MATERIALS
 All materials remain the property of Project One Roofing until paid in full. Contractor reserves the right to substitute materials of equal or greater quality if specified materials are unavailable, with prior notification to Homeowner.
 
 WARRANTY
-Project One Roofing warrants all workmanship against defects for 5 years from the date of project completion on standard scopes, and for the lifetime of the homeowner's ownership of the home when the Best package is selected. Manufacturer warranties will be registered in the homeowner's name upon receipt of final payment.
+Project One Roofing warrants all workmanship against defects for 5 years from the date of project completion. Extended workmanship coverage, including a lifetime workmanship warranty, is available on elected upgrades. Manufacturer warranties will be registered in the homeowner's name upon receipt of final payment.
 
 INSURANCE & LICENSING
 Project One Roofing carries general liability insurance ($1,000,000 per occurrence / $2,000,000 aggregate) and maintains workers' compensation coverage for all employees and subcontractors. Certificates of insurance available upon request.
@@ -682,6 +1060,9 @@ const MEASURE_FIELDS = [
     {key:'eave_lf',       label:'Eaves',          unit:'LF'},
     {key:'rake_lf',       label:'Rakes',          unit:'LF'},
     {key:'step_flash_lf', label:'Step Flashing',  unit:'LF'},
+    {key:'wall_flash_lf', label:'Wall Flashing',  unit:'LF'},
+    {key:'transition_lf', label:'Transitions',    unit:'LF'},
+    {key:'unspecified_lf', label:'Unspecified',   unit:'LF'},
     {key:'pipe_boots',    label:'Pipe Boots',     unit:'EA'},
     {key:'turtle_vents',  label:'Turtle Vents',   unit:'EA'},
     {key:'broan_4in',     label:'4" Broan Vent',  unit:'EA'},
@@ -766,7 +1147,14 @@ const MEASURE_DEFS = {
   // Ridge vent quantity is CODE-driven (the exhaust shortfall ÷ NFA per LF),
   // NOT the physical ridge length. bundle_lf:4 on the item then rounds this raw
   // LF up to whole 4-ft ridge-vent sticks. Returns 0 when venting already meets code.
-  ridge_vent_code:      { label:'Ridge Vent — code required', calc:m => { const v = atticVentilation(m); return v.needs_ridge ? v.ridge_lf_required : 0; } },
+  // Not gated on needs_ridge: a rep only gets this line by adding ridge vent,
+  // and adding it plugs the box vents that were meeting code. Gated, a roof
+  // whose turtles already satisfied exhaust ordered 0 LF and then lost them.
+  ridge_vent_code:      { label:'Ridge Vent — code required', calc:m => atticVentilation(m).ridge_lf_required },
+  // Intake is CODE-driven too: half the 1/300 area ÷ NFA per LF — capped at the
+  // eave run, since you cannot install more eave intake than there is eave. It
+  // used to be the whole eave, which billed 150 LF where the attic needed ~50.
+  intake_vent_code:     { label:'Intake Vent LF — code required', calc:m => { const v = atticVentilation(m); const e = mnum(m.eave_lf); return e > 0 ? Math.min(v.intake_lf_required, e) : v.intake_lf_required; } },
   // Low-slope area is covered by rolled roofing, not shingles — the shingle/
   // underlayment quantity excludes it so the two lines never double-count.
   squares_waste:        { label:'Roof SQ + Waste (excl. low-slope)', calc:m => Math.max(mnum(m.roof_squares) - mnum(m.low_slope_squares), 0) * (1 + mnum(m.waste_pct, 10)/100) },
@@ -785,6 +1173,30 @@ const MEASURE_DEFS = {
   // barrier at the eaves where code requires it. Valleys are unaffected.
   eave_valley:          { label:'Eave + Valley LF',   calc:m => mnum(m.eave_lf) * (mnum(m.iw_second_row) ? 2 : 1) + mnum(m.valley_lf) },
   step:                 { label:'Step Flashing LF',   calc:m => mnum(m.step_flash_lf) },
+  // --- Standing seam trim -------------------------------------------------
+  // Roofr reports Wall flashing, Transitions and Unspecified on every report
+  // and the shingle catalog never needed any of them, so the parser dropped
+  // all three. A metal bid then priced its headwall and transition at nothing
+  // and the rep had to know from experience to add them by hand.
+  //
+  // headwall folds Unspecified in with wall flashing: on this company's metal
+  // work that footage IS headwall in practice. Confirmed against Architectural
+  // Sheet Metals EFC38421 (195 J J Kelly Rd) — 29'6" wall + 106'1" unspecified
+  // is exactly the 14 sticks ordered. Both fields stay separately editable, so
+  // a rep can split them when a report classifies its edges differently.
+  headwall:             { label:'Headwall + Unspecified LF', calc:m => mnum(m.wall_flash_lf) + mnum(m.unspecified_lf) },
+  transition:           { label:'Transition LF',     calc:m => mnum(m.transition_lf) },
+  // The Z-closure runs BOTH sides of every ridge and hip AND both sides of
+  // every valley — Z-Flash is our valley detail on snap-lock, so there is no
+  // separate valley pan to order. 2x(160 ridge) + 2x(93.83 valley) = 507.67 LF
+  // is the 51 sticks EFC38421 ordered, exactly.
+  ridge_valley_2x:      { label:'Ridge + Valley LF, both sides', calc:m => 2 * (mnum(m.ridge_hip_lf) + mnum(m.valley_lf)) },
+  // PBR outside foam closures: both sides of every ridge and hip, plus under
+  // every headwall (with Unspecified folded in, as `headwall` does). No valley
+  // and no transition — Architectural Sheet Metals EFC38429 ordered 160
+  // closures for 2x160 ridge + 135.58 headwall = 455.58 LF (152 pieces plus
+  // their usual ~5%); adding the 42 LF of transition would put them SHORT.
+  ridge_2x_headwall:    { label:'Ridge both sides + Headwall LF', calc:m => 2 * mnum(m.ridge_hip_lf) + mnum(m.wall_flash_lf) + mnum(m.unspecified_lf) },
   pipe_boots:           { label:'# Pipe Boots',       calc:m => mnum(m.pipe_boots) },
   skylights:            { label:'# Skylights',        calc:m => mnum(m.skylights) },
   turtle_vents:         { label:'# Turtle Vents',     calc:m => mnum(m.turtle_vents) },
@@ -880,12 +1292,48 @@ function atticVentilation(m) {
   const deficit_exhaust  = Math.max(required_exhaust - provided_exhaust, 0);
   const needs_ridge  = deficit_exhaust > 0;
   const needs_intake = needs_ridge; // balanced rule: add intake whenever adding exhaust
-  const ridge_lf_required   = needs_ridge  ? deficit_exhaust / NFA_RIDGE_SQIN_LF : 0; // raw LF
+  // FULL code exhaust, never the shortfall: adding ridge vent decks over every
+  // existing box vent (injectVentItem adds the Vent Plug line), so crediting
+  // their NFA and then removing it counted the same vents twice — a 30 SQ attic
+  // with six turtles ordered 432 sq in against 720 required. needs_ridge stays
+  // the deficit question: is the roof short as it stands today.
+  const ridge_lf_required   = required_exhaust / NFA_RIDGE_SQIN_LF;                    // raw LF
   const ridge_sticks        = Math.ceil(ridge_lf_required / 4);                        // 4-ft sticks
   const intake_lf_suggested = needs_intake ? Math.ceil(required_intake / NFA_INTAKE_SQIN_LF) : 0;
+  // Raw intake footage the rule calls for, NOT gated on needs_ridge: turtle
+  // vents covering exhaust say nothing about intake. intake_vent_code caps it
+  // at the eaves.
+  const intake_lf_required  = required_intake / NFA_INTAKE_SQIN_LF;
   return { attic_sqft:attic, required_total, required_exhaust, required_intake,
            provided_exhaust, deficit_exhaust, needs_ridge, needs_intake,
-           ridge_lf_required, ridge_sticks, intake_lf_suggested };
+           ridge_lf_required, ridge_sticks, intake_lf_suggested, intake_lf_required };
+}
+
+/* What the scope actually INSTALLS against what code asks for. The ridge
+   sizing shipped wrong for two months with every test agreeing, because the
+   tests were written from the code — so the panel and the work order print the
+   number a human can check. Box vents count only while they stay on the roof;
+   a Vent Plug line means they are decked over. A ridge line's quantity is
+   STICKS (it carries a pack size) and the NFA is per foot, so the pack comes
+   off first. MUST mirror _vent_nfa_report() in app.py. */
+function ventNfaReport() {
+  const m = S.measurements || {};
+  const v = atticVentilation(m);
+  const items = ((S.trades.roofing || {}).line_items) || [];
+  const lf = it => (parseFloat(it.quantity) || 0) * ((parseFloat(it.bundle_lf) || 0) > 0 ? parseFloat(it.bundle_lf) : 1);
+  const is = (it, role, pid) => it.vent_role === role || it.catalog_id === pid;
+  const sum = (role, pid) => items.filter(it => is(it, role, pid)).reduce((n, it) => n + lf(it), 0);
+  const ridgeLf  = sum('ridge', 'a_ridge_vent');
+  const intakeLf = sum('intake', 'a_intake_vent');
+  const plugged  = items.some(it => is(it, 'plugs', 'a_vent_plug'));
+  const turtles  = plugged ? 0 : mnum(m.turtle_vents);
+  const exhaust  = ridgeLf * NFA_RIDGE_SQIN_LF + turtles * NFA_TURTLE_SQIN;
+  const intake   = intakeLf * NFA_INTAKE_SQIN_LF;
+  return { ridgeLf, intakeLf, turtlesKept: turtles, plugged,
+           exhaustInstalled: exhaust, exhaustRequired: v.required_exhaust,
+           intakeInstalled: intake,   intakeRequired:  v.required_intake,
+           exhaustShort: Math.max(v.required_exhaust - exhaust, 0),
+           intakeShort:  Math.max(v.required_intake - intake, 0) };
 }
 
 /* ── Commercial fastener calculator ─────────────────────────────────────
@@ -1309,7 +1757,23 @@ function displayUnit(item) {
   return (item.bundle_lf && item.bundle_unit) ? item.bundle_unit : (item.unit || '');
 }
 function applyMeasurements() {
+  // An insurance job's cost lines are sized from the same measurements, and a
+  // measurement report is imported after the system is picked as often as
+  // before it — so they have to re-size here too or the margin silently
+  // reports the cost of a zero-square roof.
+  try { refreshInsuranceCostQuantities(); } catch {}
+  // Ice & water moved from priced-per-roll to priced-per-FOOT (2026-09-15), but
+  // a line built before that still carries bundle_lf 66.67 and keeps dividing
+  // the footage into rolls - a 200 LF roof read "3 LF" at a per-foot price.
+  // Follow the Price Book: once the product has no pack size, neither does the
+  // line, so re-importing the Roofr heals the estimate. Ice & water only; a
+  // pack size a rep's line carries for any other product is left alone.
+  const iw = (_tradeCatalog('roofing') || []).find(p => p.id === 'a_ice_water');
   const applyTrade = td => (td && td.line_items || []).forEach(item => {
+    if (iw && !iw.bundle_lf && item.catalog_id === 'a_ice_water' && item.bundle_lf) {
+      delete item.bundle_lf;
+      delete item.bundle_unit;
+    }
     const q = measuredQty(item);
     if (q !== null) item.quantity = q;
   });
@@ -1489,11 +1953,12 @@ function commComplexityMarkup() {
               code-required footage (ridge_vent_code / atticVentilation) is cut in
               for ventilation, and that "cut-in" figure rides the work order.
      plugs  → qty = turtle vent count (measure turtle_vents)
-     intake → qty = eave LF (measure eave) */
+     intake → qty = code-required intake LF, capped at the eaves (measure
+              intake_vent_code). It used to be the whole eave run. */
 const VENT_SPECS = {
   ridge:  { name:'Ridge Vent',  measure:'ridge_lf', bundle_lf:4, bundle_unit:'sticks' },
   plugs:  { name:'Vent Plug',   measure:'turtle_vents' },
-  intake: { name:'Intake Vent', measure:'eave' },
+  intake: { name:'Intake Vent', measure:'intake_vent_code' },
 };
 function roofHasVentRole(role) {
   return ((S.trades.roofing && S.trades.roofing.line_items) || []).some(i => i.vent_role === role);
@@ -1515,12 +1980,16 @@ function ventPanelMarkup() {
   const rawCutin   = Math.ceil(vent.ridge_lf_required);
   const fullCut    = ridgeLF > 0 && rawCutin >= ridgeLF;   // deficit needs the whole ridge
   const cutinLF    = ridgeLF > 0 ? Math.min(rawCutin, ridgeLF) : rawCutin;
+  // Intake is sized to code as well (intake_vent_code), capped at the eaves.
+  const eaveLF       = mnum(m.eave_lf);
+  const codeIntake   = Math.ceil(vent.intake_lf_required - 1e-9);
+  const intakeCapped = eaveLF > 0 && codeIntake > eaveLF;
   // Three states: meets code / short & ridge added / short & no ridge (loud CTA).
   const statusClass = !vent.needs_ridge ? 'ok' : (hasRidge ? 'ok' : 'below');
   const statusHtml = !vent.needs_ridge
     ? `✅ Meets code`
     : (hasRidge
-        ? `✅ Ridge Vent added — covers the ${ventRound(vent.deficit_exhaust)} sq in exhaust shortfall`
+        ? `✅ Ridge Vent added — sized for the full ${ventRound(vent.required_exhaust)} sq in of exhaust${turtleN ? `, since your ${turtleN} box vent(s) get decked over` : ''}`
         : `⚠️ Below code — <strong>add Ridge Vent</strong> to bring this roof to code <span class="vent-status-sub">(short ${ventRound(vent.deficit_exhaust)} sq in of exhaust)</span>`);
   const ridgeHint = ridgeLF > 0
     ? `— orders <strong>${fullSticks} stick(s)</strong> for the full ridge (${ventRound(ridgeLF)} LF) · cuts in <strong>~${ventRound(cutinLF)} LF</strong> for code${fullCut ? ' (full ridge cut)' : ''}; also plugs your ${turtleN} turtle vent(s)`
@@ -1539,6 +2008,24 @@ function ventPanelMarkup() {
           <div><span class="vf-label">Intake needed</span><span class="vf-val">${ventRound(vent.required_intake)} sq in</span></div>
           <div><span class="vf-label">Exhaust provided</span><span class="vf-val">${ventRound(vent.provided_exhaust)} sq in <span class="vf-sub">(${turtleN} turtle × ${NFA_TURTLE_SQIN})</span></span></div>
         </div>
+        ${(() => {
+          // What this estimate INSTALLS, checkable against the line above it.
+          const n = ventNfaReport();
+          if (!n.exhaustInstalled && !n.intakeInstalled) return '';
+          const row = (lbl, got, want, short, detail) => `
+            <div class="vent-nfa-row ${short > 0.5 ? 'short' : 'ok'}">
+              <span class="vent-nfa-lbl">${lbl}</span>
+              <span class="vent-nfa-val">${ventRound(got)} / ${ventRound(want)} sq in</span>
+              <span class="vent-nfa-note">${short > 0.5
+                ? `⚠ short ${ventRound(short)} sq in` : '✅ meets code'}${detail ? ' · ' + detail : ''}</span>
+            </div>`;
+          return `<div class="vent-nfa">
+            ${row('Exhaust installed', n.exhaustInstalled, n.exhaustRequired, n.exhaustShort,
+                  `${ventRound(n.ridgeLf)} LF ridge × ${NFA_RIDGE_SQIN_LF}${n.turtlesKept ? ` + ${n.turtlesKept} box vent(s) kept` : ''}`)}
+            ${row('Intake installed', n.intakeInstalled, n.intakeRequired, n.intakeShort,
+                  `${ventRound(n.intakeLf)} LF × ${NFA_INTAKE_SQIN_LF}`)}
+          </div>`;
+        })()}
         <div class="vent-actions">
           <label class="iw-second-row-toggle ${hasRidge ? 'enabled' : ''}">
             <input type="checkbox" ${hasRidge ? 'checked' : ''}
@@ -1548,17 +2035,21 @@ function ventPanelMarkup() {
           <label class="iw-second-row-toggle ${roofHasVentRole('intake') ? 'enabled' : ''}">
             <input type="checkbox" ${roofHasVentRole('intake') ? 'checked' : ''}
               onchange="setVentRole('intake', this.checked)">
-            ✔️ Install Intake Vent <span class="iw-toggle-hint">— continuous soffit intake along the eaves</span>
+            ✔️ Install Intake Vent <span class="iw-toggle-hint">— sized to code: <strong>~${ventRound(intakeCapped ? eaveLF : codeIntake)} LF</strong> (${ventRound(vent.required_intake)} sq in ÷ ${NFA_INTAKE_SQIN_LF} sq in per LF)</span>
           </label>
         </div>
         ${hasRidge ? `
-          <button type="button" class="vent-cutin-btn" onclick="openVentCutinEditor()">🖍️ Mark cut-in on roof <span class="vent-cutin-sub">${(S.vent_cutin && S.vent_cutin.image_filename) ? 'edit map' : '~' + ventRound(cutinLF) + ' LF to cut'}</span></button>` : ''}
+          <button type="button" class="vent-cutin-btn" onclick="openVentCutinEditor('ridge')">🖍️ Mark cut-in on roof <span class="vent-cutin-sub">${(S.vent_cutin && S.vent_cutin.image_filename) ? 'edit map' : '~' + ventRound(cutinLF) + ' LF to cut'}</span></button>` : ''}
+        ${roofHasVentRole('intake') ? `
+          <button type="button" class="vent-cutin-btn" onclick="openVentCutinEditor('intake')">🖍️ Mark intake on roof <span class="vent-cutin-sub">${(S.vent_intake && S.vent_intake.image_filename) ? 'edit map' : '~' + ventRound(_ventIntakeLF()) + ' LF of eave'}</span></button>` : ''}
         ${hasRidge && ridgeLF === 0 ? `
           <div class="vent-warn">⚠️ Ridge Vent added but <strong>Ridges (LF)</strong> is 0 — enter ridge footage above so it orders.</div>` : ''}
         ${hasRidge && fullCut && ridgeLF > 0 ? `
           <div class="vent-warn">⚠️ Code needs ~${ventRound(rawCutin)} LF of exhaust but the ridge is only ${ventRound(ridgeLF)} LF — cutting the full ridge; add box vents to cover the gap.</div>` : ''}
-        ${roofHasVentRole('intake') && mnum(m.eave_lf) === 0 ? `
-          <div class="vent-warn">⚠️ Intake Vent added but Eave LF is 0 — enter eave footage so it prices.</div>` : ''}
+        ${roofHasVentRole('intake') && intakeCapped ? `
+          <div class="vent-warn">⚠️ Code needs ~${ventRound(codeIntake)} LF of intake but the eaves are only ${ventRound(eaveLF)} LF — intake is capped at the eaves; add soffit vents to cover the gap.</div>` : ''}
+        ${roofHasVentRole('intake') && eaveLF === 0 ? `
+          <div class="vent-warn">⚠️ Eave LF is 0 — intake is priced at the code figure; enter eave footage to confirm it fits.</div>` : ''}
       ` : `
         <div class="measure-hint" style="padding:6px 0">Enter Roof Area above to calculate required ventilation.</div>`}
     </div>`;
@@ -1731,6 +2222,11 @@ Project One Roofing — Northern Colorado` },
 
 let S = blankEstimate();
 let dirty = false;
+let _estimateRevision = 0;
+let _estimateLoadGeneration = 0;
+let _estimateSaveFlight = null;
+let _vzNavigationSave = null;
+let _vzNavigationTarget = '';
 let activePage = 'cover';
 let activeTrade = 'roofing';
 let templates    = null;
@@ -1788,7 +2284,15 @@ function blankEstimate() {
     estimate_type: 'retail',
     print_contract: true, contract_text: globalContract('retail'),
     contract_initials: defaultInitials('retail'),
-    shingle_selection: { enabled: true, options: _globalShingleColors(), chosen: '' },
+    // options starts EMPTY: it is the rep's list of colors to ADD to whatever
+    // the installed material already offers, not a replacement for it. It used
+    // to be pre-filled from ⚙ Settings, which made the Contract tab's field
+    // look meaningful while the server threw it away. See _customer_color_options.
+    shingle_selection: { enabled: true, options: [], chosen: '', material_bundle_id: '' },
+    // Optional upgrades the customer elects at signing. `enabled` gates the
+    // block on the /sign page; the rep's Upgrades panel is the one control for
+    // it, so there is deliberately no Print Pages chip competing with it.
+    upgrades: { enabled: true, items: [] },
     measurements: { waste_pct: _globalWastePct() },
     structures: [],            // buildings on a complex; empty = one roof, measured above
     intro_text: '',
@@ -1950,9 +2454,12 @@ function tradeTotal(trade, tier) {
   const effectiveMode = effectiveTradeMode(trade, td);
   if (effectiveMode === 'simple') {
     return (td.line_items || []).reduce((sum, item) =>
-      sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0), 0);
+      isSupplementItem(td, item) ? sum
+        : sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0), 0);
   }
   return td.line_items.reduce((sum, item) => {
+    // Supplements price in their own block, never in the package.
+    if (isSupplementItem(td, item)) return sum;
     // Zero-qty items are "not in scope" (the grid parks them in a chip row and
     // the customer page hides them) — they must not price, even with a locked
     // price_override. MUST mirror calc_tier_total in app.py.
@@ -1965,12 +2472,397 @@ function tradeTotal(trade, tier) {
 function grandTotal(tier) {
   return RETAIL_TRADE_KEYS.reduce((s,tr)=>s+tradeTotal(tr,tier),0);
 }
+// ── Margin floor ─────────────────────────────────────────────────────────
+// Realized margin, (sell - cost) / sell, NOT the pricing.mode rate: a 30%
+// markup is a 23% margin, so reading the rate straight off the box would call
+// jobs safe that are under the floor. MUST mirror _trade_cost_subtotal and
+// estimate_margin_report (app.py) — the banner and the server's send block
+// have to be talking about the same number.
+function tradeCostTotal(trade, tier) {
+  if (trade === 'insurance') return 0;
+  const td = S.trades[trade];
+  if (!td || !td.enabled) return 0;
+  const effectiveMode = effectiveTradeMode(trade, td);
+  if (effectiveMode === 'simple') {
+    return (td.line_items || []).reduce((sum, item) =>
+      isSupplementItem(td, item) ? sum
+        : sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_cost)||0), 0);
+  }
+  return (td.line_items || []).reduce((sum, item) => {
+    if (isSupplementItem(td, item)) return sum;               // priced separately
+    if ((parseFloat(item.quantity) || 0) <= 0) return sum;   // not in scope
+    const t = (item.tiers && item.tiers[tier]) || {};
+    if (t.included === false) return sum;                     // not in this package
+    return sum + ((parseFloat(t.material_unit_cost)||0)
+                + (parseFloat(t.labor_unit_cost)||0)) * (parseFloat(item.quantity)||0);
+  }, 0);
+}
+// Every package the customer is actually offered. margin_pct is null when a
+// tier has no cost at all — the commercial catalog ships $0 placeholder costs
+// on purpose, and reporting those as a 100% margin would hand a clean bill of
+// health to exactly the bids that have no supplier pricing yet.
+function marginReport() {
+  const allSimple = RETAIL_TRADE_KEYS.every(tr =>
+    !S.trades[tr]?.enabled || effectiveTradeMode(tr, S.trades[tr]) === 'simple');
+  const tiers = allSimple ? enabledTiers().slice(0, 1) : enabledTiers();
+  const rows = tiers.map(t => {
+    const sell = RETAIL_TRADE_KEYS.reduce((a,tr)=>a+tradeTotal(tr,t),0);
+    const cost = RETAIL_TRADE_KEYS.reduce((a,tr)=>a+tradeCostTotal(tr,t),0);
+    return { tier:t, sell, cost,
+             margin_pct: (sell > 0 && cost > 0) ? (sell-cost)/sell*100 : null };
+  });
+  const known = rows.filter(r => r.margin_pct !== null);
+  return { tiers: rows,
+           lowest: known.length ? known.reduce((a,b)=>b.margin_pct<a.margin_pct?b:a) : null };
+}
+function marginFloors() {
+  const pct = (v, dflt) => {
+    if (v === null || v === undefined || v === '') return dflt;
+    const n = parseFloat(v);
+    return (isNaN(n) || n < 0 || n >= 100) ? dflt : n;
+  };
+  // MUST mirror MARGIN_FLOOR_*_DEFAULT (app.py). Warn matches DEFAULT_RATE, so
+  // a rep who never touches the margin box sits exactly on target.
+  return { warn:  pct(appSettings.margin_floor_warn,  35),
+           block: pct(appSettings.margin_floor_block, 30) };
+}
+// Residential only. Insurance is exempt because the carrier sets that price;
+// commercial because its pricing comes off a per-job supplier quote and the
+// catalog ships $0 placeholder costs, so a floor would be measuring the
+// placeholders. MUST mirror _margin_floor_exempt (app.py).
+function marginFloorExempt() {
+  return S.estimate_type === 'insurance'
+      || S.estimate_type === 'commercial'
+      || !!S.trades?.insurance?.enabled;
+}
+function renderMarginBanner() {
+  const el = document.getElementById('margin-floor-banner');
+  if (!el) return;
+  if (marginFloorExempt()) { el.innerHTML = ''; return; }
+  const { warn, block } = marginFloors();
+  const worst = marginReport().lowest;
+  if (!worst || (warn <= 0 && block <= 0)) { el.innerHTML = ''; return; }
+  const m = worst.margin_pct;
+  if (block > 0 && m < block) {
+    el.innerHTML = `<div class="margin-banner margin-banner-block">
+      <strong>⛔ ${m.toFixed(1)}% margin — below the ${block}% floor.</strong>
+      The ${TIER_LABELS[worst.tier] || worst.tier} package sells at
+      ${fmtCur(worst.sell)} on ${fmtCur(worst.cost)} of cost. A manager has to
+      send this, or the margin needs to come up first.</div>`;
+  } else if (warn > 0 && m < warn) {
+    el.innerHTML = `<div class="margin-banner margin-banner-warn">
+      <strong>⚠️ ${m.toFixed(1)}% margin on the ${TIER_LABELS[worst.tier] || worst.tier} package</strong>
+      — under the ${warn}% target. ${fmtCur(worst.sell)} sell on
+      ${fmtCur(worst.cost)} cost. Still sendable.</div>`;
+  } else {
+    el.innerHTML = '';
+  }
+}
 // Mix-and-match total: every trade priced at ITS OWN selected tier.
 // MUST mirror calc_selected_total in app.py.
+/* ── Optional upgrades — the homeowner's own add-ons ───────────────────────
+   Priced extras the rep offers but does not include: gutter guards, an
+   impact-rated shingle, a second run of ice & water. The homeowner ticks the
+   ones they want on the /sign page and they join the contract they sign.
+
+   The three rules that carry this live in app.py above upgrade_items(), and
+   the two that matter most here are: the PRICE IS STORED, never re-derived
+   from the price book (so it cannot move under a customer who already ticked
+   it), and NOTHING COUNTS UNTIL THE CUSTOMER TICKS IT — `accepted` is written
+   by the /sign POST and by nothing else, which is why adding upgradesTotal()
+   to selectedTotal() moves no unsigned estimate.
+
+   MUST mirror upgrade_items / upgrade_price / upgrade_cost / upgrades_offered
+   / accepted_upgrades / upgrades_total / upgrades_cost_total (app.py). */
+function upgradeItems() {
+  return (((S.upgrades || {}).items) || [])
+    .filter(u => u && String(u.name || '').trim());
+}
+function upgradePrice(u) { return parseFloat((u || {}).price) || 0; }
+/* A blank AND a 0 both mean "not costed", which is the opposite of the rate
+   chain's rule where an explicit 0 is a real choice. Selling a roof at cost is
+   a decision; an upgrade whose cost box reads 0 has simply never been filled
+   in, and treating that as free reports a 100% margin nobody earned. */
+function upgradeCost(u) {
+  const v = (u || {}).cost;
+  if (v === undefined || v === null || v === '') return null;
+  const c = parseFloat(v);
+  return (isFinite(c) && c > 0) ? c : null;
+}
+function upgradesOffered() {
+  if ((S.upgrades || {}).enabled === false) return [];
+  return upgradeItems().filter(u => upgradePrice(u) > 0);
+}
+function acceptedUpgrades() {
+  return upgradesOffered().filter(u => u.accepted === true);
+}
+function upgradesTotal() {
+  return acceptedUpgrades().reduce((s, u) => s + upgradePrice(u), 0);
+}
+function upgradesCostTotal() {
+  let cost = 0;
+  const uncosted = [];
+  acceptedUpgrades().forEach(u => {
+    const c = upgradeCost(u);
+    if (c === null) uncosted.push(u); else cost += c;
+  });
+  return { cost, uncosted };
+}
 function selectedTotal() {
   return RETAIL_TRADE_KEYS
-    .reduce((s,tr)=>s+tradeTotal(tr, tradeTier(tr)),0);
+    .reduce((s,tr)=>s+tradeTotal(tr, tradeTier(tr)),0) + upgradesTotal();
 }
+/* ── Insurance job margin ─────────────────────────────────────────────────
+   On a retail job the rep sets the price and the margin follows. On an
+   insurance job the carrier sets the price and the margin is whatever is left
+   after we build the roof — which this tool could not see at all, because
+   insurance line items carry the carrier's unit_price and never our cost.
+
+   The cost side is DERIVED from the measurement report plus the price book,
+   not typed: a carrier export runs 30-80 lines and nobody was ever going to
+   cost them by hand. Cost items live outside S.trades on purpose, so nothing
+   that builds a customer-facing document can pick them up and print them.
+   MUST mirror insurance_cost_report (app.py). */
+const INSURANCE_ADDERS = ['dumpster', 'permit', 'subs', 'other'];
+
+function insCost() {
+  if (!S.insurance_cost) S.insurance_cost = {};
+  const ic = S.insurance_cost;
+  if (!ic.items)  ic.items  = [];
+  if (!ic.adders) ic.adders = {};
+  return ic;
+}
+/* Cost lines that are IN the job but carry no cost in the price book.
+
+   This is the difference between a margin and a fiction. A freshly seeded
+   roofing bundle ships Tear-Off Labor, Install Labor, drip edge, ridge cap and
+   starter at $0 — so an uncorrected book reports a roof that costs only its
+   shingles, and the margin comes out 20-30 points high in the direction that
+   makes a bad job look good. Same trap, and the same answer, as
+   unpricedBundleLines() on the commercial side. */
+function unpricedInsuranceCostLines() {
+  return (insCost().items || []).filter(
+    i => (parseFloat(i.quantity) || 0) > 0 && (parseFloat(i.unit_cost) || 0) <= 0);
+}
+
+function insuranceCostReport() {
+  const ic = insCost();
+  const n = v => { const f = parseFloat(v); return isNaN(f) ? 0 : f; };
+  // Roof-only revenue, not the whole claim. Non-roof lines the adjuster filed
+  // under the roof plan (gutters is the usual one) have no matching cost on
+  // our side, so counting them would read as pure profit.
+  const scope = carrierScopeReport();
+  // Non-covered upgrades the homeowner elected out of pocket are revenue on
+  // this job like any other, and they are the one line on an insurance
+  // estimate whose price we set rather than the carrier's.
+  const upSell = upgradesTotal();
+  const upCost = upgradesCostTotal();
+  const revenue = scope.roof_rcv + n(ic.supplements) + upSell;
+  const build = (ic.items || []).reduce(
+    (a, i) => a + n(i.quantity) * n(i.unit_cost), 0);
+  const adders = {};
+  INSURANCE_ADDERS.forEach(k => { adders[k] = n((ic.adders || {})[k]); });
+  const addTot = INSURANCE_ADDERS.reduce((a, k) => a + adders[k], 0);
+  const cost = build + addTot + upCost.cost;
+  const profit = revenue - cost;
+  return {
+    revenue, supplements: n(ic.supplements), build_cost: build,
+    upgrades: upSell, upgrades_cost: upCost.cost,
+    adders, adders_total: addTot, cost, gross_profit: profit,
+    // No cost entered yet means the margin is UNKNOWN, never 100% — otherwise
+    // every un-costed claim sorts to the top of the profitability table.
+    claim_total: insuranceTotal(),
+    non_roof: scope.other_rcv,
+    review_count: scope.review_count,
+    margin_pct: (revenue > 0 && cost > 0) ? (profit / revenue * 100) : null,
+    costed: cost > 0,
+    // The margin is only as honest as the price book behind it — and an
+    // elected upgrade with no cost is the same fault arriving by hand.
+    unpriced: unpricedInsuranceCostLines().map(i => i.name)
+      .concat(upCost.uncosted.map(u => String(u.name || ''))),
+  };
+}
+
+/* ── What in the carrier's "roof" section is actually roofing ─────────────
+   Adjusters file whatever they inspected under a roof plan, so a Dwelling
+   Roof section routinely carries gutters, downspouts, fascia wrap, even
+   interior drywall from the leak. Costing our roof against that whole total
+   reports a margin we are not earning — the non-roof dollars have no matching
+   cost on our side, so every one of them reads as pure profit.
+
+   Deliberately three-way, not two: `roof` and a named non-roof class are the
+   confident answers, and everything else is `review`. A classifier that
+   guessed on the unfamiliar line would be wrong silently, which is the whole
+   failure this exists to prevent. `review` lines count as roof (today's
+   behaviour) but are listed for the rep to confirm. */
+const CARRIER_SCOPE_RULES = [
+  ['gutter',   /\b(gutter|downspout|leader|splash\s*block|gutter\s*guard)\b/i],
+  ['siding',   /\b(siding|soffit|fascia|house\s*wrap|shutter|corner\s*post)\b/i],
+  ['interior', /\b(drywall|ceiling|paint|texture|carpet|baseboard|insulation\s*-\s*batt)\b/i],
+  ['detach',   /\b(detach|reset|satellite|solar\s*panel|a\/?c\s*unit|swamp\s*cooler)\b/i],
+  ['roof',     /\b(shingle|felt|underlayment|ice\s*&?\s*water|ice\s*and\s*water|drip\s*edge|ridge|hip\b|starter|valley|step\s*flash|pipe\s*(jack|boot)|roof\s*vent|turtle|turbine|sheathing|decking|osb|tear\s*-?\s*off|roofing|flashing|counterflash|chimney\s*flash|skylight\s*flash)\b/i],
+];
+
+function classifyCarrierItem(desc) {
+  const d = String(desc || '');
+  for (const [cls, re] of CARRIER_SCOPE_RULES) if (re.test(d)) return cls;
+  return 'review';
+}
+
+/* Every carrier line split by what it actually is. A rep override
+   (`scope_class` set by hand) always wins over the keyword guess — the rules
+   are a starting point, not a verdict, and the one line they get wrong must
+   be correctable in place. */
+function carrierScopeReport() {
+  const td = (S.trades || {}).insurance || {};
+  const sections = td.sections || (td.line_items ? [{ items: td.line_items }] : []);
+  const groups = { roof: [], gutter: [], siding: [], interior: [], detach: [], review: [] };
+  let roofRcv = 0, otherRcv = 0, reviewRcv = 0;
+  sections.forEach(sec => (sec.items || []).forEach(it => {
+    const rcv = (parseFloat(it.acv) || 0) + (parseFloat(it.depreciation) || 0);
+    const cls = it.scope_class || classifyCarrierItem(it.description);
+    (groups[cls] || groups.review).push({ item: it, rcv, cls, section: sec.name || '' });
+    // `review` counts as roof so the total never silently shrinks; it is
+    // reported separately so the rep knows the number is provisional.
+    if (cls === 'roof') roofRcv += rcv;
+    else if (cls === 'review') { roofRcv += rcv; reviewRcv += rcv; }
+    else otherRcv += rcv;
+  }));
+  return { groups, roof_rcv: roofRcv, other_rcv: otherRcv, review_rcv: reviewRcv,
+           review_count: groups.review.length };
+}
+
+function setCarrierItemScope(secIdx, itemIdx, cls) {
+  const td = (S.trades || {}).insurance || {};
+  const sections = td.sections || [];
+  const it = ((sections[secIdx] || {}).items || [])[itemIdx];
+  if (!it) return;
+  it.scope_class = cls;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+
+/* ── RoofR against what the carrier approved ─────────────────────────────
+   The supplement finder. RoofR is the source of truth for what is on the
+   house; the carrier's quantities are a claim about it. Where the carrier is
+   short, that gap is a supplement — and it is the only lever on an insurance
+   job's margin, so it is worth naming in dollars rather than leaving the rep
+   to eyeball two documents side by side. */
+const CARRIER_MEASURE_CHECKS = [
+  { key:'roof_squares', label:'Roof area',      unit:'SQ',
+    re:/\b(shingle|roofing|tear\s*-?\s*off|felt|underlayment)\b/i },
+  { key:'ridge_hip_lf', label:'Ridge & hip',    unit:'LF', re:/\b(ridge|hip)\b/i },
+  { key:'eave_lf',      label:'Eaves',          unit:'LF', re:/\b(drip\s*edge|starter|eave)\b/i },
+  { key:'valley_lf',    label:'Valleys',        unit:'LF', re:/\bvalley\b/i },
+  { key:'step_flash_lf',label:'Step flashing',  unit:'LF', re:/\bstep\s*flash/i },
+];
+
+function carrierMeasureComparison() {
+  const m = S.measurements || {};
+  const rep = carrierScopeReport();
+  const roofLines = rep.groups.roof.concat(rep.groups.review);
+  return CARRIER_MEASURE_CHECKS.map(chk => {
+    const ours = parseFloat(m[chk.key]) || 0;
+    // The carrier's figure for a measure is the LARGEST matching line, not the
+    // sum: a tear-off and an install of the same roof are two lines describing
+    // one surface, and adding them would report double the roof and invent a
+    // supplement that isn't there.
+    let carrier = 0, matched = 0;
+    roofLines.forEach(({ item }) => {
+      if ((item.unit || '').toUpperCase() !== chk.unit) return;
+      if (!chk.re.test(String(item.description || ''))) return;
+      matched++;
+      carrier = Math.max(carrier, parseFloat(item.qty) || 0);
+    });
+    const short = ours > 0 && carrier > 0 && carrier < ours;
+    return { ...chk, ours, carrier, matched,
+             delta: carrier - ours,
+             short,
+             // No matching line at all is a different problem from a short one:
+             // the carrier may simply not have paid for it.
+             missing: ours > 0 && matched === 0 };
+  });
+}
+
+/* Build the cost side from the roofing system actually being installed.
+
+   Every product in the bundle carries our real cost and, usually, an auto-qty
+   link (`measure`) or formula — the same two fields the retail side uses — so
+   the measurement report is what sizes the job. Items with no measure land at
+   quantity 0 for the rep to fill in rather than being dropped, because a
+   silently missing cost line reads as a better margin than the job has.
+
+   Rebuilt wholesale on every bundle change: these are derived figures, and a
+   merge would leave last system's accessories costed into this one. */
+function buildInsuranceCostItems(bundleId) {
+  const bundle = _tradeBundle('roofing', bundleId);
+  if (!bundle) return [];
+  const catalog = _tradeCatalog('roofing');
+  const out = [];
+  (bundle.product_ids || []).forEach(pid => {
+    const p = catalog.find(x => x.id === pid);
+    if (!p) return;
+    const item = {
+      catalog_id: pid, name: p.name, unit: p.unit || 'EA',
+      measure: p.measure || undefined, formula: p.formula || undefined,
+      bundle_lf: p.bundle_lf || undefined, bundle_unit: p.bundle_unit || undefined,
+      unit_cost: parseFloat(p.cost) || 0,
+      quantity: 0,
+    };
+    const q = measuredQty(item);
+    item.quantity = (q === null) ? 0 : q;
+    out.push(item);
+  });
+  return out;
+}
+
+function setInsuranceBundle(bundleId) {
+  const ic = insCost();
+  ic.bundle_id = bundleId || '';
+  ic.items = bundleId ? buildInsuranceCostItems(bundleId) : [];
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+
+/* Re-size the derived cost lines after the measurements move — importing a
+   measurement report is the whole point, and it lands AFTER the system was
+   picked as often as before it. Hand-edited quantities and unit costs are the
+   rep's, so only auto-qty rows are recomputed. */
+function refreshInsuranceCostQuantities() {
+  const ic = insCost();
+  (ic.items || []).forEach(item => {
+    if (item.qty_locked) return;
+    const q = measuredQty(item);
+    if (q !== null) item.quantity = q;
+  });
+}
+
+function setInsuranceAdder(key, v) {
+  const ic = insCost();
+  ic.adders = ic.adders || {};
+  ic.adders[key] = (v === '' ? 0 : parseFloat(v) || 0);
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function setInsuranceSupplements(v) {
+  insCost().supplements = (v === '' ? 0 : parseFloat(v) || 0);
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function setInsuranceCostQty(idx, v) {
+  const it = (insCost().items || [])[idx]; if (!it) return;
+  it.quantity = parseFloat(v) || 0;
+  it.qty_locked = true;   // the rep's number now; stop auto-resizing it
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+function setInsuranceCostUnit(idx, v) {
+  const it = (insCost().items || [])[idx]; if (!it) return;
+  it.unit_cost = parseFloat(v) || 0;
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+}
+
 function insuranceTotal() {
   const td = S.trades.insurance;
   if (!td || !td.enabled) return 0;
@@ -1984,14 +2876,140 @@ function insuranceTotal() {
 
 function setDirty() {
   dirty = true;
+  _estimateRevision += 1;
   const el = document.getElementById('save-indicator');
   el.textContent = '● Unsaved'; el.className = 'save-indicator unsaved';
+  // Every edit in the app funnels through here, which makes it the one honest
+  // place to hang recovery off. Both are debounced timers, not writes.
+  scheduleDraftSave();
+  scheduleAutosave();
 }
 function setClean() {
   dirty = false;
   const el = document.getElementById('save-indicator');
   el.textContent = '✓ Saved'; el.className = 'save-indicator saved';
+  // On the server now, so the local copy is only a chance to restore something
+  // older than what is stored.
+  clearLocalDraft();
 }
+
+/* ── Crash recovery ──────────────────────────────────────────────────────
+   setDirty used to change a label and nothing else — no unload guard, no
+   local copy, no autosave. An iPad on a kitchen table, an hour of takeoff in
+   memory, the rep switches apps to answer a text and iOS reclaims the tab:
+   the estimate was gone with no warning and nothing to restore from, and the
+   rep re-keyed it assuming they had done something wrong.
+
+   Three independent layers, deliberately not chained — each one still works
+   when the other two fail:
+     1. beforeunload  the browser asks before a close or reload discards work
+     2. local draft   a copy in localStorage, recoverable from the More menu
+     3. autosave      a real PUT, but only for estimates the server already
+                      knows about: autosaving a brand-new one would put
+                      half-built records in everyone's Open list.
+*/
+const DRAFT_KEY_PREFIX = 'p1est:draft:';
+const DRAFT_SAVE_MS    = 15000;
+const AUTOSAVE_MS      = 45000;
+let _draftTimer = null;
+let _autosaveTimer = null;
+
+function _draftKey(id) { return DRAFT_KEY_PREFIX + (id || 'new'); }
+
+function _draftPayload() {
+  // The visualizer's masks and renders run to megabytes and are server-owned
+  // anyway — they write through their own endpoints and a whole-doc save is
+  // explicitly told to leave them alone. Storing them would spend the whole
+  // quota protecting the one part of the document that is not at risk.
+  const { visualizer, ...rest } = S;
+  return JSON.stringify({ saved_at: new Date().toISOString(),
+                          customer: (S.customer || {}).name || '',
+                          estimate: rest });
+}
+
+function saveDraftLocally() {
+  if (!dirty) return;
+  try {
+    localStorage.setItem(_draftKey(S.estimate_id), _draftPayload());
+  } catch (e) {
+    // Quota exceeded, private mode, or site data blocked. Never throw — the
+    // unload guard and autosave are separate layers and both still stand.
+    console.warn('[draft] local snapshot failed:', e && e.name);
+  }
+}
+
+function clearLocalDraft(id) {
+  try { localStorage.removeItem(_draftKey(id === undefined ? S.estimate_id : id)); }
+  catch {}
+}
+
+function _listLocalDrafts() {
+  const out = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(DRAFT_KEY_PREFIX)) continue;
+      try {
+        const d = JSON.parse(localStorage.getItem(k));
+        if (d && d.estimate) out.push({ key: k, ...d });
+      } catch { try { localStorage.removeItem(k); } catch {} }
+    }
+  } catch {}
+  return out.sort((a, b) => String(b.saved_at).localeCompare(String(a.saved_at)));
+}
+
+// Recovery is an explicit More-menu action, never a startup interruption.
+async function offerDraftRecovery() {
+  const drafts = _listLocalDrafts();
+  if (!drafts.length) { toast('No unsaved work to recover on this device.'); return; }
+  const d = drafts[0];
+  let when = d.saved_at;
+  try { when = new Date(d.saved_at).toLocaleString('en-US',
+              { dateStyle: 'medium', timeStyle: 'short' }); } catch {}
+  const who = d.customer ? `for ${d.customer}` : 'with no customer name yet';
+  const go = confirm(
+    `Unsaved work found.\n\nAn estimate ${who} was open and unsaved on this ` +
+    `device as of ${when}.\n\nRestore it?\n\n` +
+    `(Cancel leaves it saved on this device.)`);
+  if (!go) return;
+  if (!(await _prepareEstimateChange())) return;
+  try { localStorage.removeItem(d.key); } catch {}
+  S = d.estimate;
+  renderAll();
+  switchPage('client');
+  setDirty();   // it is still not on the server
+}
+
+function scheduleDraftSave() {
+  clearTimeout(_draftTimer);
+  _draftTimer = setTimeout(saveDraftLocally, DRAFT_SAVE_MS);
+}
+
+function scheduleAutosave() {
+  clearTimeout(_autosaveTimer);
+  _autosaveTimer = setTimeout(() => {
+    // Only estimates the server already has, never a signed one (its document
+    // hash covers exactly what is stored), and never over a save in flight or
+    // while the Design Studio owns the document.
+    if (!dirty || !S.estimate_id || S.signature) return;
+    if (_estimateSaveFlight || _vzBlocksGenericSave()) return;
+    saveEstimate();
+  }, AUTOSAVE_MS);
+}
+
+window.addEventListener('beforeunload', e => {
+  if (!dirty) return;
+  saveDraftLocally();   // last chance, synchronous, before the tab goes
+  e.preventDefault();
+  e.returnValue = '';   // Safari and older Chrome still want this
+});
+
+// iOS never fires beforeunload when the system reclaims a backgrounded tab —
+// which is the exact case this whole section exists for. visibilitychange is
+// the last event that reliably arrives.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') saveDraftLocally();
+});
 
 /* ── Full render ───────────────────────────────────────────────────── */
 
@@ -2031,15 +3049,47 @@ function switchPage(page) {
   // chased through every caller: the header badge, the client hub, deep links
   // and muscle memory all still say 'documents'.
   if (page === 'documents') page = 'client';
+  // Canvas pixels do not live in S until the dedicated visualizer save has
+  // uploaded them. Keep the Studio visible while that save completes; a
+  // generic whole-estimate PUT cannot safely stand in for it.
+  if (activePage === 'visualizer' && page !== activePage &&
+      (_vzHasUnsavedCanvasWork() || _vzMetaPending(S))) {
+    _vzNavigationTarget = page;
+    if (!_vzNavigationSave) {
+      const state = vzState;
+      _vzNavigationSave = saveCurrentWork().then(saved => {
+        const target = _vzNavigationTarget;
+        _vzNavigationSave = null;
+        _vzNavigationTarget = '';
+        if (saved && state === vzState && state.owner === S) switchPage(target);
+      }).catch(error => {
+        _vzNavigationSave = null;
+        _vzNavigationTarget = '';
+        console.warn('Visualizer navigation save failed:', error);
+      });
+    }
+    return;
+  }
   // Save-on-navigate: switching pages is a natural checkpoint, so unsaved work
   // survives a closed tab / dead battery without waiting for the 60s autosave.
-  if (dirty && S.estimate_id && page !== activePage) saveEstimate();
+  // Still gated on _vzBlocksGenericSave(): the early return above only covers
+  // leaving the Studio itself, so a navigation elsewhere while a canvas save
+  // or a meta save is in flight would otherwise PUT an S that does not have
+  // that work in it yet. Nothing is lost by skipping — dirty stays set and
+  // the next saveCurrentWork() picks it up.
+  if (dirty && S.estimate_id && page !== activePage && !_vzBlocksGenericSave())
+    saveEstimate();
   activePage = page;
   document.querySelectorAll('.page').forEach(el => el.style.display = 'none');
   const target = document.getElementById('page-' + page);
   if (target) target.style.display = 'flex';
   // Home page hides sidebar/nav; all other pages restore them
   document.body.classList.toggle('is-home', page === 'home');
+  // The Job Board and Analytics are full-screen: no sidebar, no estimate tab
+  // strip, and no max-width — the whole point is to show more at once.
+  document.body.classList.toggle('is-board', page === 'dashboard' || page === 'analytics');
+  if (page !== 'analytics' && (location.hash || '').startsWith('#analytics'))
+    try { history.replaceState(null, '', location.pathname + location.search); } catch {}
   // The customer screen is "client mode": no estimate tab strip or sidebar.
   // It carries the customer's details, notes, estimates and files; the tab
   // strip belongs to the estimate flow only.
@@ -2048,6 +3098,8 @@ function switchPage(page) {
   const activeBtn = document.querySelector('.page-btn.active');
   if (activeBtn) activeBtn.scrollIntoView({block:'nearest',inline:'center',behavior:'smooth'});
   if (page === 'home')    { renderHomePage(); return; }
+  if (page === 'dashboard') { refreshBoard(); return; }
+  if (page === 'analytics') { loadAnalytics(); return; }
   if (page === 'pricing') { renderTabBar(); renderTradeContent(); }
   if (page === 'intro')   renderIntroPage();
   if (page === 'scope')    renderScopePage();
@@ -2113,7 +3165,7 @@ function renderSidebar() {
   setVal('project-address', S.project_address);
   setVal('estimate-date',   S.estimate_date);
   setVal('valid-until',     S.valid_until);
-  setVal('salesperson',     S.salesperson);
+  syncSalespersonSelect();
   setVal('est-status',      S.status);
   renderTierRates();
   renderPricingModeUI();
@@ -2350,7 +3402,7 @@ function renderTradeOverrides() {
       const ov = S.pricing.per_trade_overrides[trade];
       return `<div class="override-row">
         <label>${TRADE_LABELS[trade]}</label>
-        <input type="number" min="0" max="100" step="0.5" placeholder="Global"
+        <input type="number" min="0" max="99" step="0.5" placeholder="Global"
           value="${esc(ov !== null && ov !== undefined ? ov : '')}"
           onchange="setTradeOverride('${trade}',this.value)">
         <span style="font-size:10px;color:var(--text-light)">%</span>
@@ -2379,6 +3431,72 @@ function renderTotals() {
   renderCostProfitPanel();
 }
 
+/* ── The material / labor split ──────────────────────────────────
+   Derived at RENDER time, never stored. Nothing rewrites a saved estimate, so
+   every estimate ever written reports a real split the moment it is opened and
+   not one price can move — which is the only reason this could be applied
+   retroactively at all.
+
+   The split is a WHOLE-LINE bucket assignment, never a ratio. That is the
+   load-bearing property: material + labor equals the stored cost by
+   construction, not by arithmetic that happens to round well. Total Cost, Sell
+   Price, the margin floors and every customer-facing number read the SUM, and
+   the sum cannot move.
+
+   MUST mirror _line_cost_split / _cost_class_of (app.py). Held to it by
+   tests/cost_split_runner.js. */
+
+// name -> cost_class, for the ~half of older estimates whose line items predate
+// catalog_id. Template-built lines carry the exact seed names ('Install Labor',
+// 'Tear-Off Labor'), so this recovers nearly all of them.
+//
+// Built fresh every call on purpose: pbSave() mutates priceBook in place, so a
+// memo goes stale silently, and ~150 string compares per renderTotals() is
+// invisible next to the DOM work that follows it.
+function _catalogClassByName(trade) {
+  const out = {};
+  _tradeCatalog(trade).forEach(p => {
+    const k = String(p && p.name || '').trim().toLowerCase();
+    if (k && !(k in out)) out[k] = normCostClass(p.cost_class);
+  });
+  return out;
+}
+
+// Four tiers of linkage, strongest first. Giving up lands on 'material', which
+// is exactly what the tool reported before any of this existed — so a line
+// this cannot classify is not a regression, it is the status quo.
+function costClassOf(trade, item, byName) {
+  if (!item) return 'material';
+  if (item.cost_class !== undefined) return normCostClass(item.cost_class);
+  if (item.catalog_id) {
+    const p = _tradeCatalog(trade).find(x => x && x.id === item.catalog_id);
+    if (p) return normCostClass(p.cost_class);
+  }
+  const k = String(item.name || '').trim().toLowerCase();
+  const hit = (byName || _catalogClassByName(trade))[k];
+  return hit === undefined ? 'material' : hit;
+}
+
+// {material, labor} for one line, where material + labor === the cost already
+// stored. `cell` is the tier cell in GBB mode and the item itself in simple.
+function lineCostSplit(trade, item, cell, qty, byName) {
+  const mat = (parseFloat(cell && cell.material_unit_cost) || 0) * qty;
+  const lab = (parseFloat(cell && cell.labor_unit_cost) || 0) * qty;
+  // An explicit split always wins — same idiom as effectiveTradeMode's
+  // `if (mode) return mode`. Nothing writes this today; change-order items
+  // carry the shape, and this is what would honour it.
+  if (lab > 0) return {material: mat, labor: lab};
+  if (costClassOf(trade, item, byName) === 'labor') return {material: 0, labor: mat};
+  return {material: mat, labor: 0};
+}
+
+// Same, for a simple-mode line: one flat unit_cost with no tier dimension.
+function simpleCostSplit(trade, item, qty, byName) {
+  const c = (parseFloat(item.unit_cost) || 0) * qty;
+  if (costClassOf(trade, item, byName) === 'labor') return {material: 0, labor: c};
+  return {material: c, labor: 0};
+}
+
 /* ── Internal cost / profit (rep-only — never shown to the customer) ────
    GBB trades track material + labor cost, so profit is computed from them.
    Simple-mode trades (e.g. gutters) store a sell price with no cost split,
@@ -2390,46 +3508,59 @@ function tierProfit(tier) {
     const td = S.trades[trade];
     if (!td || !td.enabled) return;
     const mode = effectiveTradeMode(trade, td);
+    const byName = _catalogClassByName(trade);
     if (mode === 'simple') {
-      let s = 0, c = 0;
+      // Simple pricing has no tier dimension, so this trade costs the same in
+      // every package. tier_blind is what lets the panel say so out loud
+      // rather than printing three identical columns.
+      let s = 0, sm = 0, sl = 0;
       (td.line_items||[]).forEach(item => {
+        if (isSupplementItem(td, item)) return;
         const qty = parseFloat(item.quantity)||0; if (qty <= 0) return;
         s += qty * (parseFloat(item.unit_price)||0);
-        c += qty * (parseFloat(item.unit_cost)||0);
+        const sp = simpleCostSplit(trade, item, qty, byName);
+        sm += sp.material; sl += sp.labor;
       });
+      const c = sm + sl;
       if (s === 0 && c === 0) return;
       if (c > 0) {
         // Cost is tracked — include in profit calculation
-        material += c; gbbSell += s;
-        perTrade.push({trade, mode, material:c, labor:0, cost:c, sell:s, profit:s-c});
+        material += sm; labor += sl; gbbSell += s;
+        perTrade.push({trade, mode, tier_blind:true,
+                       material:sm, labor:sl, cost:c, sell:s, profit:s-c});
       } else {
         simpleSell += s;
-        perTrade.push({trade, mode, sell:s});
+        perTrade.push({trade, mode, tier_blind:true, sell:s});
       }
       return;
     }
     let m = 0, l = 0;
     (td.line_items||[]).forEach(item => {
+      if (isSupplementItem(td, item)) return;
       const qty = parseFloat(item.quantity)||0; if (qty <= 0) return;
       const t = (item.tiers||{})[tier] || {};
       if (t.included === false) return;
-      m += (parseFloat(t.material_unit_cost)||0) * qty;
-      l += (parseFloat(t.labor_unit_cost)||0) * qty;
+      const sp = lineCostSplit(trade, item, t, qty, byName);
+      m += sp.material; l += sp.labor;
     });
     const sell = tradeTotal(trade, tier);
     if (m === 0 && l === 0 && sell === 0) return;
     material += m; labor += l; gbbSell += sell;
-    perTrade.push({trade, mode, material:m, labor:l, cost:m+l, sell, profit:sell-(m+l)});
+    perTrade.push({trade, mode, tier_blind:false,
+                   material:m, labor:l, cost:m+l, sell, profit:sell-(m+l)});
   });
   const cost = material + labor;
   const totalSell = gbbSell + simpleSell;
   const profit = gbbSell - cost;
   const franchise = Math.round(totalSell * FRANCHISE_RATE * 100) / 100;
   const netProfit = profit - franchise;
+  // Every trade priced flat means the three package columns are three copies
+  // of one number. Same test marginReport() already uses.
+  const allTierBlind = perTrade.length > 0 && perTrade.every(x => x.tier_blind);
   return {material, labor, cost, sell:gbbSell, profit, franchise, netProfit,
           margin:    gbbSell   > 0 ? (profit   / gbbSell   * 100) : 0,
           netMargin: totalSell > 0 ? (netProfit / totalSell * 100) : 0,
-          simpleSell, perTrade};
+          simpleSell, perTrade, allTierBlind};
 }
 
 const FRANCHISE_RATE = 0.08; // 8% of contract price taken off profit
@@ -2453,8 +3584,33 @@ function renderInternalMargin() {
     <div class="im-row im-franchise"><span>Franchise (${Math.round(FRANCHISE_RATE*100)}%)</span><strong>−${fmtCur(p.franchise)}</strong></div>
     <div class="im-row ${netClass} im-net"><span>Net Profit</span><strong>${fmtCur(p.netProfit)}</strong></div>
     <div class="im-row im-margin"><span>Net Margin</span><strong>${_pct(p.netMargin)}</strong></div>
+    ${p.allTierBlind?`<div class="im-note">Priced flat — same for every package</div>`:''}
     ${p.simpleSell>0?`<div class="im-note">+${fmtCur(p.simpleSell)} simple-priced included in franchise fee</div>`:''}
     ${(()=>{const sq=parseFloat((S.measurements||{}).roof_squares)||0;const tot=p.sell+p.simpleSell;return sq>0&&tot>0?`<div class="im-note im-persq">${fmtCur(Math.round(tot/sq))} / SQ</div>`:''})()}`;
+}
+
+/* A trade priced FLAT that still carries three different packages is a
+   contradiction the rep cannot see: the customer is being shown Good/Better/Best
+   while every package costs and sells the same. It happens because setTradeMode
+   GBB->Simple folds the three tiers into one flat unit_cost but leaves
+   tier_bundles pointing at whatever three bundles were picked.
+
+   The per-tier costs are genuinely gone once that happens — nothing can recover
+   them — so this names the contradiction and offers the one action that fixes
+   it going forward, rather than pretending to three numbers it does not have. */
+function simpleTradeTierConflicts() {
+  const out = [];
+  RETAIL_TRADE_KEYS.forEach(trade => {
+    const td = S.trades[trade];
+    if (!td || !td.enabled) return;
+    if (effectiveTradeMode(trade, td) !== 'simple') return;
+    const ids = [...new Set(Object.values(td.tier_bundles || {})
+                                  .filter(id => id && id !== '__custom__'))];
+    if (ids.length > 1) {
+      out.push({trade, names: ids.map(id => (_tradeBundle(trade, id) || {}).name || id)});
+    }
+  });
+  return out;
 }
 
 // Full all-tiers breakdown panel on the Pricing page (rep-only).
@@ -2465,9 +3621,18 @@ function renderCostProfitPanel() {
   const anything = TIERS.some(t => data[t].sell !== 0 || data[t].cost !== 0 || data[t].simpleSell !== 0);
   if (!anything) { el.innerHTML = ''; return; }
   const selTier = S.selected_tier;
+  // Every trade priced flat means the three columns are three copies of one
+  // number. Printing them anyway reads as three findings and hides the fact
+  // that the packages are not actually priced apart. Same test marginReport()
+  // already uses. enabledTiers() rather than TIERS, so a rep who turned Best
+  // off stops seeing a Best column here when they see it nowhere else.
+  const flat = data[selTier].allTierBlind;
+  const cols = flat ? [selTier] : enabledTiers();
+  const colLabel = t => flat ? 'Flat priced' : TIER_LABELS[t];
   const row = (label, fn, cls='') => `<tr class="${cls}"><td>${label}</td>${
-    TIERS.map(t=>`<td>${fn(data[t])}</td>`).join('')}</tr>`;
+    cols.map(t=>`<td>${fn(data[t])}</td>`).join('')}</tr>`;
   const moneyRow = (label, key, cls='') => row(label, d=>fmtCur(d[key]), cls);
+  const conflicts = simpleTradeTierConflicts();
   // Split by whether cost is actually tracked, not by mode — a Simple-mode
   // trade with unit costs entered IS in the profit math and belongs in the
   // per-trade table, not the "cost not tracked" bucket.
@@ -2481,8 +3646,16 @@ function renderCostProfitPanel() {
         <h3>Cost &amp; Profit</h3>
         <span class="cpp-note">Never shown to the customer</span>
       </div>
+      ${conflicts.map(c=>`
+        <div class="cpp-conflict">⚠️ <strong>${esc(TRADE_LABELS[c.trade])}</strong> is priced flat
+          but still carries ${c.names.length} different packages
+          (${c.names.map(n=>esc(n)).join(' / ')}). Every package costs the same below.
+          <button class="cpp-conflict-btn" onclick="setTradeMode('${c.trade}','gbb')">Switch to Good / Better / Best</button>
+        </div>`).join('')}
+      ${flat?`<div class="cpp-flat-note">Priced flat, so every package costs the same.
+        Switch a trade to Good/Better/Best to price the packages apart.</div>`:''}
       <table class="cpp-table">
-        <thead><tr><th></th>${TIERS.map(t=>`<th class="${t===selTier?'cpp-sel':''}">${TIER_LABELS[t]}</th>`).join('')}</tr></thead>
+        <thead><tr><th></th>${cols.map(t=>`<th class="${(!flat && t===selTier)?'cpp-sel':''}">${colLabel(t)}</th>`).join('')}</tr></thead>
         <tbody>
           ${moneyRow('Material','material')}
           ${moneyRow('Labor','labor')}
@@ -2495,6 +3668,18 @@ function renderCostProfitPanel() {
         </tbody>
       </table>
       ${data[selTier].simpleSell>0?`<div class="cpp-simple-note">Simple-priced trades (e.g. Gutters): ${fmtCur(data[selTier].simpleSell)} sell — cost not tracked, excluded from profit above.</div>`:''}
+      ${/* Elected upgrades are contract dollars in every column's total but in
+            none of the package costs above, which are per-package and per-trade.
+            Stated separately rather than folded in, so material + labor keeps
+            equalling Total Cost — the permit packet fees on that sum. */
+        (()=>{
+        const el=acceptedUpgrades(); if(!el.length) return '';
+        const sell=upgradesTotal(), uc=upgradesCostTotal();
+        const known=uc.uncosted.length===0&&sell>0;
+        return `<div class="cpp-simple-note">Elected upgrades: ${fmtCur(sell)} sell${
+          known?` · ${fmtCur(uc.cost)} cost · ${_pct((sell-uc.cost)/sell*100)} margin`
+               :` · no cost entered on ${uc.uncosted.length}, so the margin on them is unknown`
+        } — on top of whichever package above the customer picked.</div>`;})()}
       ${pt.length?`
       <details class="cpp-bytrade">
         <summary>Per-trade breakdown — ${TIER_LABELS[selTier]}</summary>
@@ -2519,6 +3704,239 @@ function renderCostProfitPanel() {
           </tbody>
         </table></div>
       </details>`:''}
+    </div>`;
+}
+
+
+/* Optional upgrades on the printed estimate. Two different documents share
+   this: an unsigned proposal prints the MENU, with no subtotal and a line
+   saying it is not in the total — a customer laying two bids side by side must
+   not read an optional extra as part of the price. A signed one prints what
+   they elected, with a subtotal, because selectedTotal() now includes it. */
+function _printUpgradesHtml() {
+  const signed = !!S.signature;
+  const ups = (signed ? acceptedUpgrades() : upgradesOffered())
+    .filter(u => String(u.name || '').trim());
+  if (!ups.length) return '';
+  const body = ups.map(u => `<tr>
+      <td>${esc(u.name)}${u.description ? `<div style="font-size:8.5pt;color:#555">${esc(u.description)}</div>` : ''}</td>
+      <td class="p-right">${fmtCur(upgradePrice(u))}</td>
+    </tr>`).join('');
+  const foot = signed
+    ? `<tr><td>Upgrades Subtotal</td><td class="p-right">${fmtCur(upgradesTotal())}</td></tr>`
+    : `<tr><td colspan="2">Optional &mdash; choose any of these when you sign. Not included in the total below.</td></tr>`;
+  return `<div class="p-trade">
+      <div class="p-trade-title">${signed ? 'Optional Upgrades You Selected' : 'Optional Upgrades Available'}</div>
+      <table class="p-table"><thead><tr><th>Description</th><th class="p-right">Price</th></tr></thead>
+        <tbody>${body}</tbody><tfoot>${foot}</tfoot></table>
+    </div>`;
+}
+
+/* ── Optional upgrades panel (Pricing page) ───────────────────────────────
+   Where a rep builds the tick list the homeowner works at signing. Job-level
+   like the margin banner, not per-trade, so it sits below the tab strip
+   rather than inside one tab: an upgrade is not owned by a trade, and a rep
+   should not have to guess which tab is hiding it.
+
+   The `Offer to customer` switch is the ONE control for whether the block
+   appears on the /sign page. There is deliberately no Print Pages chip beside
+   it — two controls for one field is how they end up disagreeing, which the
+   estimate status bar already learned the hard way. */
+
+function upgradesState() {
+  if (!S.upgrades || typeof S.upgrades !== 'object') S.upgrades = { enabled: true, items: [] };
+  if (!Array.isArray(S.upgrades.items)) S.upgrades.items = [];
+  return S.upgrades;
+}
+
+function _newUpgradeId() {
+  return 'u_' + Math.random().toString(16).slice(2, 10);
+}
+
+function addUpgrade(seed) {
+  const u = Object.assign({ id: _newUpgradeId(), name: '', description: '',
+                            price: '', cost: '' }, seed || {});
+  if (!u.id) u.id = _newUpgradeId();
+  upgradesState().items.push(u);
+  setDirty();
+  renderUpgradesPanel();
+}
+
+function setUpgradeField(id, field, value) {
+  const u = upgradesState().items.find(x => x && x.id === id);
+  if (!u) return;
+  u[field] = value;
+  setDirty();
+  _refreshUpgradeDerived();
+}
+
+function removeUpgrade(id) {
+  const st = upgradesState();
+  const u = st.items.find(x => x && x.id === id);
+  // An elected upgrade is part of a signed contract. Deleting the row does not
+  // un-sign it — the document hash on the certificate simply stops matching —
+  // so this says so rather than quietly dropping a line the customer bought.
+  if (u && u.accepted === true &&
+      !confirm('The customer elected this upgrade when they signed. Removing it takes it '
+               + 'off the contract total and off the work order. Remove it anyway?')) {
+    return;
+  }
+  st.items = st.items.filter(x => x && x.id !== id);
+  setDirty();
+  renderUpgradesPanel();
+}
+
+function toggleUpgradesOffered(on) {
+  upgradesState().enabled = !!on;
+  setDirty();
+  renderUpgradesPanel();
+}
+
+/* A price-book pick prices the upgrade ONCE and writes the number down — the
+   same margin chain as any other line, resolved against the package currently
+   selected. From then on the number is the rep's: editing the book later must
+   never reprice an upgrade a customer has already been shown. */
+function addUpgradeFromPriceBook() {
+  const sel = document.getElementById('upg-pb-pick');
+  if (!sel || !sel.value) { alert('Pick a product first.'); return; }
+  const parts = sel.value.split('|');
+  const trade = parts[0], pid = parts[1];
+  const p = _tradeCatalog(trade).find(x => x && x.id === pid);
+  if (!p) { alert('That product is no longer in the price book.'); return; }
+  // Sized off the measurement report when the product knows how, exactly as a
+  // bundle line would; 1 when it does not, which the rep can then edit.
+  const q = measuredQty({ measure: p.measure, unit: p.unit,
+                          bundle_lf: p.bundle_lf, formula: p.formula }) || 1;
+  const unitCost = parseFloat(p.cost) || 0;
+  const cost  = unitCost * q;
+  const price = lineTotal(q, unitCost, 0, trade, S.selected_tier);
+  addUpgrade({
+    name: p.name || 'Upgrade',
+    description: String(p.description || '').trim(),
+    price: Math.round(price * 100) / 100,
+    cost:  cost > 0 ? Math.round(cost * 100) / 100 : '',
+    unit: displayUnit(p) || (p.unit || ''),
+    quantity: q,
+    product_id: p.id,
+    trade: trade,
+  });
+  sel.value = '';
+}
+
+function _upgradeRowMargin(u) {
+  const price = upgradePrice(u);
+  const cost  = upgradeCost(u);
+  if (price <= 0) return '—';
+  if (cost === null) return '<span class="upg-warn">no cost</span>';
+  return _pct((price - cost) / price * 100);
+}
+
+/* Rewrites only the derived cells, never the inputs — a full re-render on
+   every keystroke takes the cursor out of the box being typed into. */
+function _refreshUpgradeDerived() {
+  upgradesState().items.forEach(u => {
+    if (!u || !u.id) return;
+    const cell = document.getElementById('upg-m-' + u.id);
+    if (cell) cell.innerHTML = _upgradeRowMargin(u);
+  });
+  const foot = document.getElementById('upg-foot');
+  if (foot) foot.innerHTML = _upgradeFootHtml();
+}
+
+function _upgradeFootHtml() {
+  const offered  = upgradesOffered();
+  const elected  = acceptedUpgrades();
+  const offTot   = offered.reduce((s, u) => s + upgradePrice(u), 0);
+  const unpriced = upgradeItems().filter(u => upgradePrice(u) <= 0).length;
+  const uc       = upgradesCostTotal();
+  let html = '<span class="upg-foot-l">' + offered.length + ' offered · '
+           + fmtCur(offTot) + ' on the table</span>';
+  if (elected.length) {
+    const sell = upgradesTotal();
+    const margin = (uc.uncosted.length === 0 && sell > 0)
+      ? ' · ' + _pct((sell - uc.cost) / sell * 100) + ' margin' : '';
+    html += '<span class="upg-foot-r">✓ ' + elected.length + ' elected · <strong>'
+          + fmtCur(sell) + '</strong>' + margin + ' — in the contract total</span>';
+  } else {
+    html += '<span class="upg-foot-r">Nothing elected yet — none of this is in the total</span>';
+  }
+  if (unpriced) {
+    html += '<div class="upg-note upg-note-warn">' + unpriced + ' upgrade'
+          + (unpriced > 1 ? 's carry' : ' carries') + ' no price, so '
+          + (unpriced > 1 ? 'they are' : 'it is') + ' not shown to the customer at all — '
+          + 'an unpriced offer would render as a tickable $0.00.</div>';
+  }
+  if (uc.uncosted.length) {
+    html += '<div class="upg-note upg-note-warn">No cost entered on '
+          + uc.uncosted.map(u => esc(u.name)).join(', ')
+          + '. The margin on those is unknown, not 100% — they are left out of the '
+          + 'margin figures rather than flattering them.</div>';
+  }
+  return html;
+}
+
+function renderUpgradesPanel() {
+  const el = document.getElementById('upgrades-panel');
+  if (!el) return;
+  const st = upgradesState();
+  const items = st.items.filter(Boolean);
+  const on = st.enabled !== false;
+
+  const pbOpts = BUNDLE_TRADES.map(trade => {
+    const prods = _tradeCatalog(trade)
+      .filter(p => p && p.name)
+      .map(p => `<option value="${esc(trade)}|${esc(p.id)}">${esc(p.name)}</option>`)
+      .join('');
+    return prods ? `<optgroup label="${esc(TRADE_LABELS[trade] || trade)}">${prods}</optgroup>` : '';
+  }).join('');
+
+  const rows = items.map(u => `<tr>
+      <td><input class="upg-in" value="${esc(u.name || '')}" placeholder="Gutter guards"
+        oninput="setUpgradeField('${u.id}','name',this.value)"></td>
+      <td><input class="upg-in" value="${esc(u.description || '')}" placeholder="Micro-mesh, full perimeter"
+        oninput="setUpgradeField('${u.id}','description',this.value)"></td>
+      <td><input class="upg-in upg-num" type="number" step="0.01" min="0"
+        value="${esc(u.price === 0 ? '0' : (u.price || ''))}" placeholder="0.00"
+        oninput="setUpgradeField('${u.id}','price',this.value)"></td>
+      <td><input class="upg-in upg-num" type="number" step="0.01" min="0"
+        value="${esc(u.cost === 0 ? '0' : (u.cost || ''))}" placeholder="—"
+        oninput="setUpgradeField('${u.id}','cost',this.value)"></td>
+      <td class="upg-m" id="upg-m-${u.id}">${_upgradeRowMargin(u)}</td>
+      <td class="upg-el">${u.accepted === true
+        ? '<span class="upg-yes" title="Elected by the customer at signing">✓</span>' : ''}</td>
+      <td><button class="upg-x" onclick="removeUpgrade('${u.id}')" title="Remove">✕</button></td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div class="upg-panel">
+      <div class="upg-head">
+        <h3>🎁 Optional Upgrades</h3>
+        <label class="checkbox-label upg-toggle">
+          <input type="checkbox" ${on ? 'checked' : ''}
+            onchange="toggleUpgradesOffered(this.checked)"> Offer to customer
+        </label>
+      </div>
+      <div class="upg-sub">Priced extras the homeowner ticks on the signing page. Nothing here is in
+        any total until they do &mdash; and the price they are shown is the price they get, so editing
+        the price book later never moves it.</div>
+      ${!on ? `<div class="upg-note">Switched off &mdash; the signing page shows no upgrades block.</div>` : ''}
+      ${items.length ? `
+      <div class="upg-wrap"><table class="upg-table">
+        <thead><tr><th>Upgrade</th><th>Description</th><th class="upg-num-h">Price</th>
+          <th class="upg-num-h">Our cost</th><th>Margin</th>
+          <th title="Elected by the customer">&#10003;</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>` : `<div class="upg-empty">No upgrades offered yet.</div>`}
+      <div class="upg-actions">
+        <button class="upg-add" onclick="addUpgrade()">+ Add upgrade</button>
+        ${pbOpts ? `<span class="upg-pb">
+          <select id="upg-pb-pick" class="upg-pb-sel">
+            <option value="">From the price book&hellip;</option>${pbOpts}
+          </select>
+          <button class="upg-add upg-add-2" onclick="addUpgradeFromPriceBook()">+ Add priced</button>
+        </span>` : ''}
+      </div>
+      <div class="upg-foot" id="upg-foot">${_upgradeFootHtml()}</div>
     </div>`;
 }
 
@@ -2729,6 +4147,259 @@ async function deleteIntroTemplate(id) {
 /* ── Price Book ─────────────────────────────────────────────────────── */
 
 const PB_TRADES = TRADES.filter(t => t !== 'insurance');
+
+/* ── Price book audit ────────────────────────────────────────────────────
+   A work queue, not a dashboard. Every row is one thing to check against a
+   supplier invoice, grouped by trade so a manager and an installer can go
+   through it in one sitting. It reports the shape of an error and never the
+   right number — what a square of shingles costs is not something a tool can
+   know. Printable on purpose: this gets worked through on paper. */
+async function openPriceBookAudit() {
+  const body = document.getElementById('pbaudit-body');
+  document.getElementById('pbaudit-modal').classList.remove('hidden');
+  body.innerHTML = '<p class="pbaudit-hint">Reading the price book…</p>';
+  let data;
+  try {
+    const r = await fetch(`${BASE}/api/pricebook/audit`, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(r.status === 403
+      ? 'Managers and admins only.' : 'Could not read the price book.');
+    data = await r.json();
+  } catch (e) {
+    body.innerHTML = `<p class="pbaudit-hint">${esc(e.message)}</p>`;
+    return;
+  }
+  body.innerHTML = renderPbAudit(data);
+}
+
+/* ── Estimate review ──────────────────────────────────────────────────────
+   A second estimator reading the job before it goes to a homeowner. Two
+   layers: rules over numbers the tool already computed, which need no API key
+   and are the ones worth acting on, and a reader for the combinations no rule
+   expresses. Deliberately not a gate — the margin floor is the only thing that
+   stops a send, and a second gate disagreeing with the first is how a rep ends
+   up unable to ship a job neither of them can explain. */
+const REVIEW_SEV = {
+  high:   { label: 'Fix before sending', cls: 'rev-high'   },
+  medium: { label: 'Worth fixing',       cls: 'rev-medium' },
+  low:    { label: 'Worth knowing',      cls: 'rev-low'    },
+};
+
+async function openEstimateReview() {
+  if (!S.estimate_id) {
+    alert('Save the estimate first — the review reads what is on the server.');
+    return;
+  }
+  const box = document.getElementById('review-body');
+  document.getElementById('review-modal').classList.remove('hidden');
+  box.innerHTML = '<p class="pbaudit-hint">Reading the job…</p>';
+  try {
+    const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/review`,
+                          { method: 'POST', credentials: 'same-origin' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not run the review.');
+    box.innerHTML = renderEstimateReview(data);
+  } catch (e) {
+    box.innerHTML = `<p class="pbaudit-hint">${esc(e.message)}</p>`;
+  }
+}
+
+function closeEstimateReview() {
+  document.getElementById('review-modal').classList.add('hidden');
+}
+function maybeCloseReview(ev) {
+  if (ev.target === document.getElementById('review-modal')) closeEstimateReview();
+}
+
+function renderEstimateReview(data) {
+  const rows = data.findings || [];
+  // Said out loud rather than left as an absence: a review that quietly
+  // half-ran reads exactly like a clean estimate.
+  const note = data.reviewer_error
+    ? `<p class="pbaudit-hint">The second reader could not run
+       (${esc(data.reviewer_error)}). The checks below still ran.</p>`
+    : (!data.reviewer_available
+        ? `<p class="pbaudit-hint">Rule checks only — the second reader needs
+           ANTHROPIC_API_KEY configured.</p>` : '');
+
+  if (!rows.length) {
+    return `<div class="pbaudit-clean">✓ Nothing found.
+      <p class="pbaudit-hint">This checks the scope, the code numbers, the
+      margin and the dates against each other. It does not say the price is
+      right — that is still yours.</p></div>${note}`;
+  }
+  const high = rows.filter(r => r.severity === 'high').length;
+  return `
+    <div class="pbaudit-lede">
+      <strong>${rows.length} thing${rows.length === 1 ? '' : 's'} to look at</strong>${
+        high ? `, ${high} before this goes out` : ''}.
+      <p class="pbaudit-hint">Nothing here blocks the send. It is a second pair
+      of eyes on the job, not a gate.</p>
+    </div>
+    ${note}
+    ${rows.map(r => {
+      const sev = REVIEW_SEV[r.severity] || REVIEW_SEV.low;
+      return `
+      <div class="rev-item ${sev.cls}">
+        <div class="rev-head">
+          <span class="rev-sev">${sev.label}</span>
+          ${r.source === 'reviewer' ? '<span class="note-tag">reader</span>' : ''}
+        </div>
+        <div class="rev-what">${esc(r.what)}</div>
+        ${r.fix ? `<div class="rev-fix">${esc(r.fix)}</div>` : ''}
+      </div>`;
+    }).join('')}`;
+}
+
+/* ── Material vs labor review ─────────────────────────────────────────────
+   Every product carries one cost, and nothing in the data says whether that
+   money buys a thing or buys an hour. `_guess_cost_class` writes the first
+   draft from the product name, and keyword matching is wrong in specific
+   ways — "Pancake ScREWs" contains "crew", "Metal Delivery & Rollformer
+   Set-Up" reads like crew time and is a supplier invoice.
+
+   This is a second reader over that draft. It PROPOSES; the manager ticks
+   what they agree with and nothing else is written. A reclassification can
+   only ever move which of two internal columns a cost is reported in — it
+   cannot move a total, a sell price, a margin floor or a quantity — so the
+   worst an approved mistake does is misreport the split it was fixing. */
+let _ccrProposals = [];
+
+async function reviewCostClasses() {
+  const box = document.getElementById('ccr-body');
+  const btn = document.getElementById('ccr-btn');
+  if (btn) btn.disabled = true;
+  box.innerHTML = '<div class="ccr-panel"><p class="pbaudit-hint">Reading every ' +
+                  'product name…</p></div>';
+  try {
+    const r = await fetch(`${BASE}/api/pricebook/cost-class-review`,
+                          { method: 'POST', credentials: 'same-origin' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not run the review.');
+    _ccrProposals = data.proposals || [];
+    box.innerHTML = renderCostClassReview(data);
+  } catch (e) {
+    box.innerHTML = `<div class="ccr-panel"><p class="pbaudit-hint">${esc(e.message)}</p></div>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderCostClassReview(data) {
+  const rows = _ccrProposals;
+  if (!rows.length) {
+    return `<div class="ccr-panel"><strong>✓ Nothing looks mis-filed.</strong>
+      <p class="pbaudit-hint">${data.reviewed || 0} products read. This checks
+      which SIDE of the internal split a cost sits on — it says nothing about
+      whether the cost itself is right.</p></div>`;
+  }
+  return `
+    <div class="ccr-panel">
+      <strong>${rows.length} product${rows.length === 1 ? '' : 's'} may be filed on the wrong side.</strong>
+      <p class="pbaudit-hint">Every line is a suggestion. Tick the ones you
+      agree with — nothing is saved until you do. This moves a cost between the
+      Material and Labor columns on the internal cost sheet and the permit
+      packet; it cannot change a total, a price or a margin.</p>
+      <table class="pbaudit-table">
+        <thead><tr><th></th><th>Product</th><th>Now</th><th>Suggested</th><th>Why</th></tr></thead>
+        <tbody>${rows.map((r, i) => `
+          <tr>
+            <td><input type="checkbox" class="ccr-tick" data-i="${i}"></td>
+            <td><div class="pbaudit-name">${esc(r.name)}</div>
+                <div class="note-tag">${esc(r.trade)} · ${esc(r.product_id)}</div></td>
+            <td>${esc(r.current)}</td>
+            <td><b>${esc(r.proposed)}</b></td>
+            <td>${esc(r.reason)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <button class="btn-primary" onclick="applyCostClasses()">Apply ticked</button>
+    </div>`;
+}
+
+async function applyCostClasses() {
+  const approved = [...document.querySelectorAll('.ccr-tick')]
+    .filter(el => el.checked)
+    .map(el => _ccrProposals[Number(el.dataset.i)])
+    .filter(Boolean)
+    .map(r => ({ product_id: r.product_id, cost_class: r.proposed }));
+  if (!approved.length) { alert('Tick the ones you agree with first.'); return; }
+  try {
+    const r = await fetch(`${BASE}/api/pricebook/cost-class-apply`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not save.');
+    document.getElementById('ccr-body').innerHTML =
+      `<div class="ccr-panel"><strong>✓ ${data.count} product${data.count === 1 ? '' : 's'} reclassified.</strong>
+       <p class="pbaudit-hint">Estimates pick this up on the next open — the
+       split is worked out at read time, so nothing already saved was rewritten
+       and no price moved.</p></div>`;
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function renderPbAudit(data) {
+  const t = data.totals || {};
+  const rows = data.findings || [];
+  if (!rows.length) {
+    return `<div class="pbaudit-clean">✓ Nothing mechanically wrong in the price
+      book. Every product a bundle sells has a cost, and every unit agrees with
+      the measure driving it.
+      <p class="pbaudit-hint">This does not say the costs are <em>right</em> —
+      only that none of them are structurally broken. Comparing them to supplier
+      invoices is still a human job.</p></div>`;
+  }
+  const byTrade = {};
+  rows.forEach(r => (byTrade[r.trade] = byTrade[r.trade] || []).push(r));
+
+  const CODE_LABEL = {
+    unpriced: 'No cost',
+    unit_mismatch: 'Unit disagrees with its measure',
+    orphan: 'Missing from the catalog',
+    conversion_unlabelled: 'Unnamed pack size',
+    pack_cost_unconverted: 'Pack price looks like the per-foot price',
+  };
+
+  return `
+    <div class="pbaudit-lede">
+      <strong>${t.high || 0} thing${(t.high || 0) === 1 ? '' : 's'} to fix</strong>
+      across ${Object.keys(byTrade).length} trade${Object.keys(byTrade).length === 1 ? '' : 's'}.
+      Everything this tool says about money comes from these numbers — retail
+      quotes, the margin floors, insurance job margin, and the analytics tab —
+      so a wrong cost here is wrong in four places at once.
+      <p class="pbaudit-hint">Commercial is excluded from the no-cost check: its
+      pricing comes off a per-job supplier quote and the $0 placeholders are
+      deliberate. Each bid warns on its own.</p>
+    </div>
+    ${Object.keys(byTrade).sort().map(trade => `
+      <div class="pbaudit-trade">
+        <h4>${esc(trade)} <span class="note-tag">${byTrade[trade].length} product${byTrade[trade].length === 1 ? '' : 's'}</span></h4>
+        <table class="pbaudit-table">
+          <thead><tr><th>Product</th><th>Unit</th><th>Cost</th><th>Sized by</th><th>What's wrong</th></tr></thead>
+          <tbody>${byTrade[trade].map(r => `
+            <tr class="${r.issues.some(i => i.severity === 'high') ? 'is-high' : ''}">
+              <td>
+                <div class="pbaudit-name">${esc(r.name)}</div>
+                ${r.bundles.length ? `<div class="pbaudit-bundles">in ${esc(r.bundles.join(', '))}</div>` : ''}
+              </td>
+              <td class="pbaudit-unit">${esc(r.unit || '—')}</td>
+              <td class="ins-mg-money">${r.cost === null || r.cost === undefined
+                  ? '—' : (parseFloat(r.cost) > 0 ? fmtCur(parseFloat(r.cost)) : '$0')}</td>
+              <td class="pbaudit-unit">${esc(r.measure || 'manual')}</td>
+              <td>${r.issues.map(i => `<div class="pbaudit-issue">
+                    <b>${esc(CODE_LABEL[i.code] || i.code)}</b> ${esc(i.what)}</div>`).join('')}</td>
+            </tr>`).join('')}</tbody>
+        </table>
+      </div>`).join('')}`;
+}
+
+function closePbAudit() { document.getElementById('pbaudit-modal').classList.add('hidden'); }
+function maybeClosePbAudit(e) {
+  if (e.target === document.getElementById('pbaudit-modal')) closePbAudit();
+}
 
 function openPriceBook() {
   // Seed the editor from /api/templates: when a price book is saved it is the
@@ -3316,6 +4987,7 @@ function pbRenderRoofCatalog() {
         <th class="pb-th-unit">Unit</th>
         <th class="pb-th-auto">Auto Qty From</th>
         <th class="pb-th-basecost">Price</th>
+        <th class="pb-th-costclass" title="Which side of the internal Cost &amp; Profit split this price lands on. Never shown to the customer.">Cost is</th>
         <th class="pb-th-vis" title="Show on the customer estimate">Show</th>
         <th></th>
       </tr></thead>
@@ -3335,7 +5007,7 @@ function pbRenderRoofCatalog() {
             const prevGrp = visI > 0 ? ((items[visI - 1].group || '').trim()) : '__none__';
             const headerRow = anyGrouped && grp !== prevGrp ? `
               <tr class="pb-group-hd">
-                <td colspan="7">${esc(grp || 'Ungrouped')}</td>
+                <td colspan="8">${esc(grp || 'Ungrouped')}</td>
               </tr>` : '';
             const rawLen = rawItems.length;
             return headerRow + `
@@ -3349,19 +5021,26 @@ function pbRenderRoofCatalog() {
               <td class="pb-auto-cell"><select class="pb-measure-select" onchange="pbRoofCatSet(${i},'measure',this.value)">${measOpts(it.measure||'')}</select></td>
               <td><div class="pb-tier-cost-wrap"><span class="pb-tier-dollar">$</span>
                 <input class="pb-tier-cost" type="number" min="0" step="0.01" value="${it.cost!==undefined&&it.cost!==''?it.cost:''}" placeholder="0.00" onchange="pbRoofCatSet(${i},'cost',this.value)"></div></td>
+              <td><select class="pb-costclass-select" onchange="pbRoofCatSet(${i},'cost_class',this.value)"
+                    title="Material or crew time. Only ever changes the internal split — never a price.">
+                <option value="material" ${normCostClass(it.cost_class)!=='labor'?'selected':''}>Material</option>
+                <option value="labor" ${normCostClass(it.cost_class)==='labor'?'selected':''}>Labor</option>
+              </select></td>
               <td style="text-align:center"><input type="checkbox" ${it.customer_visible!==false?'checked':''} onchange="pbRoofCatSet(${i},'customer_visible',this.checked)"></td>
               <td class="pb-cat-actions">
+                <button class="pb-order-btn ${_pbOrderOpen[it.id]?'on':''}" onclick="pbToggleOrder('${it.id}')"
+                  title="Order pack — how the material order sheet buys this product">📦</button>
                 <button class="pb-order-btn ${_pbBulletsOpen[it.id]?'on':''}" onclick="pbToggleBullets('${it.id}')"
                   title="What this product says on the Good/Better/Best card">💬</button>
                 <button class="pb-del-btn" onclick="pbRoofCatDel(${i})" title="Delete product">✕</button>
               </td>
             </tr>
             ${_pbBulletsOpen[it.id] ? `
-            <tr class="pb-bullets-row"><td></td><td colspan="6">
+            <tr class="pb-bullets-row"><td></td><td colspan="7">
               <label class="pb-variant-field-label">Tagline <small>one line under the package price when this product is the primary material — overrides the bundle's default</small></label>
               <input class="pb-bullets-ta" type="text"
                 value="${esc(it.desc||'')}"
-                placeholder="Short customer-facing tagline for this product"
+                maxlength="90" placeholder="Short customer-facing tagline for this product"
                 onchange="pbRoofCatSetDesc(${i},this.value)">
               <label class="pb-variant-field-label" style="margin-top:10px">Customer wording <small>one bullet per line</small></label>
               <textarea class="pb-bullets-ta" rows="3"
@@ -3381,9 +5060,29 @@ function pbRenderRoofCatalog() {
                 : (it.customer_visible === false)
                   ? 'Not set, and Show is off — this product says nothing on the card. Write the wording above to promise the work without showing its price.'
                   : `Not set — the card falls back to the product name, “${esc(it.name||'')}”.`}</div>
+            </td></tr>` : ''}
+            ${_pbOrderOpen[it.id] ? `
+            <tr class="pb-bullets-row"><td></td><td colspan="7">
+              <label class="pb-variant-field-label">Order pack <small>material order sheet only — never changes a price</small></label>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <span>1</span>
+                <input class="pb-input-unit" type="text" value="${esc(it.order_unit||'')}"
+                  placeholder="${esc(it.bundle_unit||'bundle')}"
+                  onchange="pbRoofCatSetOrder(${i},'order_unit',this.value)">
+                <span>covers</span>
+                <input class="pb-tier-cost" type="number" min="0" step="0.01"
+                  value="${it.order_pack!==undefined?it.order_pack:''}" placeholder="${it.bundle_lf||'default'}"
+                  onchange="pbRoofCatSetOrder(${i},'order_pack',this.value)">
+                <span>${esc(it.bundle_lf ? 'LF' : (it.unit||''))}, plus</span>
+                <input class="pb-tier-cost" type="number" min="0" step="1"
+                  value="${it.order_waste_pct!==undefined?it.order_waste_pct:''}" placeholder="default"
+                  onchange="pbRoofCatSetOrder(${i},'order_waste_pct',this.value)">
+                <span>% waste</span>
+              </div>
+              <div class="pb-bundle-copy-hint">Blank uses the sheet's default for this product name (Shadow Ridge 30 LF, OC Flex 33, IKO 36, ice &amp; water 66.7 LF rolls — all +10%). Every row on the sheet prints the math it used.</div>
             </td></tr>` : ''}`;
           }).join('');
-        })() : `<tr><td colspan="7" class="pb-empty">No products yet — add your first below.</td></tr>`}
+        })() : `<tr><td colspan="8" class="pb-empty">No products yet — add your first below.</td></tr>`}
       </tbody>
     </table>
     </div>
@@ -3392,6 +5091,21 @@ function pbRenderRoofCatalog() {
 // Which products have their customer-wording editor expanded, by product id.
 let _pbBulletsOpen = {};
 function pbToggleBullets(pid) { _pbBulletsOpen[pid] = !_pbBulletsOpen[pid]; renderPBModal(); }
+// Which products have their Order pack editor expanded, by product id.
+let _pbOrderOpen = {};
+function pbToggleOrder(pid) { _pbOrderOpen[pid] = !_pbOrderOpen[pid]; renderPBModal(); }
+/* Order pack: how the material order sheet buys this product (see
+   _order_rule_for in app.py). Blank DELETES the key so the sheet falls back to
+   its default for the name; an explicit 0% waste is a real choice and is kept.
+   Pricing never reads these three fields. */
+function pbRoofCatSetOrder(i, field, val) {
+  const it = pbCat()[i]; if (!it) return;
+  const s = String(val == null ? '' : val).trim();
+  if (field === 'order_unit') { if (s) it.order_unit = s; else delete it.order_unit; return; }
+  const n = parseFloat(s);
+  const ok = field === 'order_pack' ? n > 0 : n >= 0;
+  if (s !== '' && isFinite(n) && ok) it[field] = n; else delete it[field];
+}
 /* Empty box DELETES the key rather than saving [] — absence means "fall back to
    the product name", which is what a manager who never touched this wants.
    Deliberate silence is the checkbox below (an explicit []), NOT the Show
@@ -3417,12 +5131,60 @@ function pbRoofCatSilence(i, on) {
   if (on) it.bullets = []; else delete it.bullets;
   renderPBModal();
 }
+/* ── Material vs labor ──────────────────────────────────────────────────
+   A catalog product carries ONE `cost`, and every seeding path used to drop
+   all of it into material_unit_cost — which is why the Cost & Profit panel
+   reported Labor $0.00 forever while l_install sat in the book at $145/SQ.
+
+   `cost_class` is 'material' or 'labor', and ABSENCE MEANS MATERIAL: exactly
+   what the tool did before the field existed, so an unclassified product
+   moves no number. It may only ever influence the SPLIT — never a total, a
+   sell price, a customer-visible gate or a margin floor. See _guess_cost_class
+   in app.py, which this mirrors. */
+const COST_CLASS_NEVER_LABOR = ['delivery','set-up','setup','freight','crane',
+  'dumpster','permit','inspection','survey','allowance','moisture'];
+const COST_CLASS_LABOR_WORDS = ['labor','install','tear-off','tear off','removal',
+  'remove','detach','demolition','haul-off'];
+// 'crew' is NOT here: a_ss_clips is "Seam Clips + Pancake ScREWs".
+const COST_CLASS_LABOR_PREFIXES = ['l_','sl_','wl_','cl_'];
+const COST_CLASS_EXTRA_PREFIXES = ['x_','sx_','wx_','cx_'];
+
+// MUST mirror _guess_cost_class (app.py). Only ever used to WRITE a class —
+// the read path takes cost_class off the catalog and never guesses, so there
+// is one classifier and nothing to drift.
+function guessCostClass(pid, name) {
+  const id = String(pid || '').trim().toLowerCase();
+  const nm = String(name || '').trim().toLowerCase();
+  // The exclusion list runs FIRST: x_ss_delivery is "Metal Delivery &
+  // Rollformer Set-Up", a supplier charge a match on "Set-Up" would call crew.
+  if (COST_CLASS_NEVER_LABOR.some(w => nm.includes(w))) return 'material';
+  if (COST_CLASS_LABOR_PREFIXES.some(x => id.startsWith(x))) return 'labor';
+  if (COST_CLASS_EXTRA_PREFIXES.some(x => id.startsWith(x))) return 'material';
+  if (COST_CLASS_LABOR_WORDS.some(w => nm.includes(w))) return 'labor';
+  return 'material';
+}
+// Anything that is not exactly 'labor' reads as material — today's behavior.
+function normCostClass(v) {
+  return String(v || '').trim().toLowerCase() === 'labor' ? 'labor' : 'material';
+}
+
 function pbRoofCatSet(i, field, val) {
   const it = pbCat()[i]; if (!it) return;
   if (field === 'cost') it.cost = val === '' ? 0 : (parseFloat(val)||0);
   else if (field === 'customer_visible') it.customer_visible = val;
   else if (field === 'measure') { if (val) it.measure = val; else delete it.measure; }
-  else it[field] = val;
+  // An explicit 'material' is the manager CHOOSING, and it has to be sticky —
+  // otherwise a later improvement to the guess would silently overrule them.
+  else if (field === 'cost_class') it.cost_class = normCostClass(val);
+  else {
+    it[field] = val;
+    // Snap the dropdown as they type a name, but only while nobody has set the
+    // class. The moment they touch the control it stops guessing, for good.
+    if (field === 'name' && it.cost_class === undefined) {
+      const g = guessCostClass(it.id, val);
+      if (g === 'labor') it.cost_class = 'labor';
+    }
+  }
 }
 function pbRoofCatAdd() {
   pbCat().push({ id: 'p_'+uid(), name:'', unit:'SQ', cost:0 });
@@ -3487,9 +5249,17 @@ function pbRenderBundleEditor(b) {
         placeholder="Bundle name (e.g. ${pbActiveTrade==='siding'?'James Hardie - Cedarmill Lap':'IKO Nordic'})" oninput="pbSetBundleField('${b.id}','name',this.value)">
     </div>
     <div class="pb-bundle-copy">
-      <label class="pb-variant-field-label">Customer tagline</label>
-      <textarea class="pb-bundle-desc" rows="2" placeholder="One line under the price on the Good/Better/Best card…"
-        onchange="pbSetBundleField('${b.id}','description',this.value)">${esc(b.description||'')}</textarea>
+      <label class="pb-variant-field-label">Customer tagline <small>one short line under the price — reaches an estimate when this bundle is picked; an estimate already using it keeps its own until the rep taps ↺ Price book</small></label>
+      <input class="pb-bundle-desc" type="text" maxlength="90" value="${esc(b.description||'')}"
+        placeholder="e.g. Class 4 impact-resistant shingle"
+        onchange="pbSetBundleField('${b.id}','description',this.value.trim());renderPBModal()">
+      ${(() => {
+        // bundleDescription() lets the first product with its own tagline beat
+        // this box, so a manager editing here would see nothing change.
+        const winner = (b.product_ids || []).map(pid => catalog.find(x => x.id === pid))
+          .find(p => p && typeof p.desc === 'string' && p.desc.trim());
+        return winner ? `<div class="pb-bundle-copy-hint">⚠ Estimates show <strong>${esc(winner.name || 'a product')}</strong>'s own tagline instead: “${esc(winner.desc.trim())}”. Clear it on that product (💬) to use this line.</div>` : '';
+      })()}
       <label class="pb-variant-field-label">Closing bullets <small>things no product covers</small></label>
       <textarea class="pb-bundle-feats" rows="2"
         placeholder="One per line, added after the product bullets…
@@ -3507,41 +5277,79 @@ e.g. 5-year Project One workmanship warranty"
         </label>`).join('') : '<div class="pb-empty">Add products in the Products tab first.</div>'}
     </div>`;
 }
-/* The exact card the customer will see, built the same way an estimate builds
-   it. It reads off the WORKING copies (pbCat/pbBundles), so ticking a product
-   chip updates the preview — which is the whole point: the manager can see
-   that dropping soffit drops the soffit bullet. */
+/* What's Included, EDITABLE where the manager is looking at it. The bullets
+   belong to each product (bundleFeatures), and they used to be editable only on
+   the Products tab behind a 💬 per row — so fixing one line on this card meant
+   leaving the bundle, hunting the product out of ~50 and coming back. Each
+   product in the bundle now gets its own wording box here, writing the same
+   `bullets` field the Products tab does, followed by the finished card. It all
+   reads the WORKING copies (pbCat/pbBundles), so ticking a chip updates it. */
 function pbRenderBundleFeaturePreview(b) {
-  const feats = pbBundleFeatures(b);
-  const silent = (b.product_ids || []).filter(pid => {
-    const p = pbCat().find(x => x.id === pid);
-    return p && (p.customer_visible === false ||
-                 (Array.isArray(p.bullets) && !p.bullets.length));
-  }).length;
-  return `
-    <label class="pb-variant-field-label">What's Included <small>built from the products below</small></label>
-    ${feats.length ? `<ul class="pb-bundle-feat-preview">${feats.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`
-      : `<div class="pb-empty">No bullets yet — add products, or give them customer wording in the Products tab.</div>`}
-    <div class="pb-bundle-copy-hint">Edit this wording on each <strong>product</strong> (Products tab → 💬). Picking this
-      bundle on an estimate replaces that package's tagline and bullets with what you see here${
-      silent ? `; ${silent} product${silent===1?' is':'s are'} set to say nothing` : ''}.</div>`;
-}
-// Same rule as bundleFeatures(), against the Price Book's unsaved working copies.
-function pbBundleFeatures(b) {
   const cat = pbCat();
-  const out = [], seen = new Set();
-  const push = s => {
-    const t = String(s == null ? '' : s).trim();
-    if (t && !seen.has(t)) { seen.add(t); out.push(t); }
-  };
-  (b.product_ids || []).forEach(pid => {
-    const p = cat.find(x => x.id === pid);
-    if (!p || p.customer_visible === false) return;
-    if (Array.isArray(p.bullets)) p.bullets.forEach(push);
-    else push(p.name);
-  });
-  (b.extra_features || []).forEach(push);
-  return out;
+  const rows = (b.product_ids || []).map(pid => cat.find(x => x.id === pid)).filter(Boolean);
+  return `
+    <label class="pb-variant-field-label">What's Included <small>each product's customer wording — one bullet per line, edit it right here</small></label>
+    ${rows.length ? `<div class="pb-wording-list">${rows.map(p => pbRenderWordingRow(b, p)).join('')}</div>`
+      : `<div class="pb-empty">No products yet — tick products below and their wording appears here.</div>`}
+    <div id="pb-bundle-card-box">${pbRenderBundleCard(b)}</div>`;
+}
+/* One product's wording. The three states are the bundleFeatures() contract:
+   lines typed -> exactly those; box left empty -> the product's name (or
+   nothing, if Show is off), which is what the placeholder says; "Say nothing"
+   -> an explicit []. Wording lives on the PRODUCT, so the row says when the
+   edit will also change other bundles. */
+function pbRenderWordingRow(b, p) {
+  const silent = Array.isArray(p.bullets) && !p.bullets.length;
+  const lines = Array.isArray(p.bullets) ? p.bullets : [];
+  const others = pbBundles().filter(x => x.id !== b.id && (x.product_ids || []).includes(p.id)).length;
+  const fallback = p.customer_visible === false
+    ? 'Says nothing (Show is off) — type a line to promise this work'
+    : `Shows as “${p.name || ''}” — type to reword`;
+  return `
+    <div class="pb-wording-row${silent ? ' is-silent' : ''}">
+      <div class="pb-wording-hd">
+        <strong>${esc(p.name || '(unnamed)')}</strong>
+        <label class="pb-bullet-silence"><input type="checkbox" ${silent ? 'checked' : ''}
+          onchange="pbSetProductSilence('${b.id}','${p.id}',this.checked)"> Say nothing</label>
+      </div>
+      ${silent ? '' : `<textarea class="pb-bullets-ta pb-wording-ta" rows="${Math.max(1, lines.length)}"
+        placeholder="${esc(fallback)}"
+        oninput="this.rows=Math.max(1,this.value.split('\\n').length)"
+        onchange="pbSetProductBullets('${b.id}','${p.id}',this.value)">${esc(lines.join('\n'))}</textarea>`}
+      ${others ? `<div class="pb-bundle-copy-hint">Also in ${others} other bundle${others === 1 ? '' : 's'} — this wording changes there too.</div>` : ''}
+    </div>`;
+}
+// The finished card, duplicates removed — exactly what an estimate will print.
+function pbRenderBundleCard(b) {
+  const feats = pbBundleFeatures(b);
+  return `
+    <label class="pb-variant-field-label pb-card-label">Customer sees <small>the finished list, duplicates removed</small></label>
+    ${feats.length ? `<ul class="pb-bundle-feat-preview">${feats.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`
+      : `<div class="pb-empty">Nothing on the card yet — type wording above, or add closing bullets.</div>`}
+    <div class="pb-bundle-copy-hint">Picking this bundle on an estimate replaces that package's tagline and bullets with this list.</div>`;
+}
+/* The SAME rule the estimate uses (featuresFromCatalog), against the Price
+   Book's unsaved working copies. This used to be a restatement, and it had
+   drifted: it dropped every hidden product, so a labor line's "Installed by
+   Project One crews" promise was on the customer's card and missing here. */
+function pbBundleFeatures(b) {
+  return featuresFromCatalog(pbCat(), b);
+}
+// Same semantics as pbRoofCatSetBullets: an emptied box DELETES the key (fall
+// back to the name); silence is the explicit []. Only the card repaints — the
+// wording boxes stay put, so tabbing to the next product keeps focus.
+function pbSetProductBullets(bid, pid, text) {
+  const p = pbCat().find(x => x.id === pid); if (!p) return;
+  const lines = String(text || '').split('\n').map(s => s.trim()).filter(Boolean);
+  if (lines.length) p.bullets = lines; else delete p.bullets;
+  const b = pbBundles().find(x => x.id === bid);
+  const box = document.getElementById('pb-bundle-card-box');
+  if (box && b) box.innerHTML = pbRenderBundleCard(b);
+}
+function pbSetProductSilence(bid, pid, on) {
+  const p = pbCat().find(x => x.id === pid); if (!p) return;
+  if (on) p.bullets = []; else delete p.bullets;
+  pbRefreshBundlePreview(pbBundles().find(x => x.id === bid));
 }
 function pbRoofSetDefault(tier, val) { pbDefs()[tier] = val; }
 function pbOpenBundle(id) { pbEditBundleId = id; renderPBModal(); }
@@ -4216,6 +6024,9 @@ function renderPrintPagesBar() {
     { id:'allPackages', label:'All Packages', on: pv.allPackages !== false,     always: false },
     { id:'contract', label:'Contract',     on: S.print_contract !== false,     always: false },
     { id:'report',   label:'Roof Health',  on: pv.report  !== false,           always: false },
+    // Default OFF, unlike the rest: the studio is still being built, so an
+    // estimate shows its renderings to the customer only once this is on.
+    { id:'design',   label:'🎨 Design Studio', on: pv.design === true,       always: false },
   ];
   // Trust blocks (content set in ⚙ Settings) now appear on BOTH the online
   // signing link and the printed credibility page, so these chips gate the two
@@ -4246,11 +6057,16 @@ function renderPrintPagesBar() {
       </button>`).join('');
 }
 
+// Chips whose ABSENT key means off. The default-on flip below reads a missing
+// key as on and writes false, so one of these needed two taps to turn on.
+const PAGE_DEFAULT_OFF = ['linePrices', 'design'];
 function togglePagePrint(page) {
   if (page === 'cover') return;
   if (!S.page_visibility) S.page_visibility = {};
   if (page === 'contract') {
     S.print_contract = !(S.print_contract !== false);
+  } else if (PAGE_DEFAULT_OFF.includes(page)) {
+    S.page_visibility[page] = S.page_visibility[page] !== true;
   } else {
     S.page_visibility[page] = !(S.page_visibility[page] !== false);
   }
@@ -5176,6 +6992,7 @@ async function saveTierDefaults(trade) {
 /* ── Page 4: Pricing (trade tabs + GBB) ────────────────────────────── */
 
 function renderPricingPage() {
+  renderMarginBanner();
   renderTabBar();
   renderTradeContent();
 }
@@ -5198,6 +7015,12 @@ function switchTrade(trade) {
 }
 
 function renderTradeContent() {
+  // A margin edit re-renders only the trade tab, so the job-level banner has to
+  // be refreshed from here too or it reports the margin from before the edit.
+  renderMarginBanner();
+  // Same reason: the upgrades panel prints a margin per row off the current
+  // rate chain, so a rate edit in a trade tab has to reach it.
+  renderUpgradesPanel();
   const td    = S.trades[activeTrade];
   const trade = activeTrade;
   const isInsurance = trade === 'insurance';
@@ -5244,11 +7067,63 @@ function renderTradeContent() {
                <p class="ins-tab-empty-title">Insurance Claim Estimate</p>
                <p class="ins-tab-empty-body">Import the carrier's estimate PDF to load the line items automatically, or enable this trade to enter them by hand.</p>
                <button class="btn-primary ins-tab-import-btn" onclick="document.getElementById('xact-pdf-input').click()">📥 Import Carrier Estimate PDF</button>
-               <p class="ins-tab-empty-hint">Importing turns on Insurance mode for you.</p>
+               ${roofrImportBtn('btn-secondary ins-tab-import-btn')}
+               <p class="ins-tab-empty-hint">Importing turns on Insurance mode for you.
+               An insurance job needs both: the carrier's estimate is the claim,
+               the RoofR report is what the roof actually measures.</p>
              </div>`
           : `<div class="trade-disabled">Enable this trade to add line items.</div>`)}`;
   // Every tab's description boxes are sized after the markup lands — see autoGrow.
   autoGrowAll(host);
+}
+
+/* ── The homeowner's claim, explained ────────────────────────────────────
+   We parse every line of their carrier's estimate and have never told them any
+   of it. "Why is the check smaller than the estimate?" is the question every
+   insurance customer asks, the answer is recoverable depreciation, and a
+   homeowner who does not understand it concludes either that their carrier is
+   cheating them or that we are. Opens in a tab so the rep can read it before
+   anyone else does. */
+async function openClaimExplainer() {
+  if (!S.estimate_id) {
+    alert('Save the estimate first — the sheet is built from what is on the server.');
+    return;
+  }
+  try {
+    const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/claim-explainer`,
+                          { method: 'POST', credentials: 'same-origin' });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(data.error || 'Could not build the sheet.');
+    }
+    const url = URL.createObjectURL(await r.blob());
+    window.open(url, '_blank');
+    // Revoked on a timer rather than immediately: the new tab has to finish
+    // fetching from the object URL before it stops existing.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+/* ── RoofR, beside the carrier import ────────────────────────────────────
+   An insurance job needs BOTH documents and they were in different places:
+   the carrier PDF had a button on the Insurance tab, and the measurement
+   report was three levels into the ⋮ menu. They are two halves of one task —
+   the carrier's estimate is a claim ABOUT a roof, and RoofR is what that roof
+   actually measures. Without the measurements the cost side is sized off
+   nothing, the margin is unknowable, and the Claim Check that finds a
+   supplement has nothing to compare against. Xactimate exports carry no
+   measurements at all, and Xactimate is most of this company's volume.
+
+   The button says whether the report is already in, because "do I still need
+   to do this?" is the only question a rep has when they look at it. */
+function roofrImportBtn(cls) {
+  const sq = Number((S.measurements || {}).roof_squares || 0);
+  return sq > 0
+    ? `<button class="${cls} roofr-loaded" onclick="document.getElementById('roofr-pdf-input').click()"
+         title="Import a different measurement report">✓ ${sq.toLocaleString(undefined,{maximumFractionDigits:1})} SQ measured — replace</button>`
+    : `<button class="${cls}" onclick="document.getElementById('roofr-pdf-input').click()">📐 Import RoofR Measurements</button>`;
 }
 
 /* ── The $0 guard ───────────────────────────────────────────────────────
@@ -5602,7 +7477,9 @@ function renderSimpleFreeform(trade) {
     const qty   = parseFloat(item.quantity)   || 0;
     const cost  = parseFloat(item.unit_cost)  || 0;
     const price = parseFloat(item.unit_price) || 0;
-    const total = qty * price;
+    // A supplement prices outside the subtotal, a blank quantity as one unit.
+    const isSupp = isSupplementItem(td, item);
+    const total = isSupp ? supplementLineTotal(trade, item, S.selected_tier) : qty * price;
     const descLines = descRows(item.description);
     const sectionSel = sections.length ? `
       <select class="li-section-select" title="Which section this item belongs to"
@@ -5619,6 +7496,7 @@ function renderSimpleFreeform(trade) {
         <input class="other-name-input" type="text" value="${esc(item.name||'')}" list="pb-list-${trade}"
           placeholder="Type to search price book…"
           onchange="liSetNameSmart('${trade}','${item.id}',this.value)">
+        ${variantPicker(trade, item)}
         <textarea class="simple-item-desc desc-ta" rows="${descLines}"
           placeholder="Description (optional — prints on PDF, Enter for new line)"
           oninput="autoGrow(this);simpleSetField('${trade}','${item.id}','description',this.value)"
@@ -5710,7 +7588,14 @@ function renderSimpleFreeform(trade) {
             <td colspan="6" style="text-align:right;padding-right:12px;font-weight:600">${TRADE_LABELS[trade]} Subtotal</td>
             <td class="other-total-cell" id="simple-grand-${trade}" style="font-weight:700;font-size:14px">${fmtCur(grandTot)}</td>
             <td></td>
-          </tr></tfoot>
+          </tr>
+          ${supplementItems(trade, S.selected_tier).length ? `<tr class="simple-supp-foot">
+            <td colspan="6" style="text-align:right;padding-right:12px;color:#6b7280"
+              title="Supplement lines print in their own block after the subtotal. They are never added to it, and a blank quantity prices as one unit.">
+              + Supplements <span style="font-weight:400">(not in total)</span></td>
+            <td class="other-total-cell" id="simple-supp-${trade}" style="color:#6b7280">${fmtCur(supplementsTotal(trade, S.selected_tier))}</td>
+            <td></td>
+          </tr>` : ''}</tfoot>
         </table>
       </div>` : `<div class="scope-empty"><p>No items yet. Click <strong>+ Add Item</strong> below.</p></div>`}
     ${pbDatalist(trade)}
@@ -5847,13 +7732,18 @@ function simpleSetCost(trade, id, cost) {
   else renderTotals();
 }
 function simpleUpdateTotals(trade) {
-  (S.trades[trade].line_items || []).forEach(item => {
-    const total = (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
+  const td = S.trades[trade];
+  (td.line_items || []).forEach(item => {
+    const total = isSupplementItem(td, item)
+      ? supplementLineTotal(trade, item, S.selected_tier)
+      : (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
     const cell  = document.querySelector(`.simple-line-total[data-strade="${trade}"][data-sid="${item.id}"]`);
     if (cell) cell.textContent = fmtCur(total);
   });
   const gt = document.getElementById(`simple-grand-${trade}`);
   if (gt) gt.textContent = fmtCur(tradeTotal(trade, S.selected_tier));
+  const st = document.getElementById(`simple-supp-${trade}`);
+  if (st) st.textContent = fmtCur(supplementsTotal(trade, S.selected_tier));
   renderTotals();
 }
 function simpleAddItem(trade) {
@@ -5968,8 +7858,11 @@ function renderInsuranceFreeform() {
           placeholder="e.g. CLM-2026-12345"
           oninput="S.trades.insurance.claim_number=this.value;setDirty()">
       </div>
-      <div class="field-group" style="align-self:flex-end">
+      <div class="field-group" style="align-self:flex-end;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn-secondary" onclick="document.getElementById('xact-pdf-input').click()">📥 Import Carrier PDF</button>
+        ${roofrImportBtn('btn-secondary')}
+        ${S.insurance_claim ? `<button class="btn-secondary" onclick="openClaimExplainer()"
+          title="A one-page plain-English explanation of this claim, for the homeowner">📄 Explain This Claim</button>` : ''}
       </div>
     </div>
     ${_insClaimCard()}
@@ -5995,6 +7888,205 @@ function renderInsuranceFreeform() {
         oninput="S.trades.insurance.scope_notes=this.value;setDirty()"
         placeholder="E.g. Complete tear-off and replacement of existing roofing system per insurance claim…"
       >${esc(td.scope_notes||'')}</textarea>
+    </div>
+    ${insuranceScopeMarkup()}
+    ${insuranceMarginMarkup()}`;
+}
+
+/* Scope check + supplement finder, above the cost sheet: is the carrier
+   paying for the right work, and for enough of it. */
+function insuranceScopeMarkup() {
+  const rep = carrierScopeReport();
+  const CLS = { gutter:'Gutters', siding:'Siding / soffit / fascia',
+                interior:'Interior', detach:'Detach & reset' };
+  const nonRoof = Object.keys(CLS)
+    .map(k => ({ k, rows: rep.groups[k] }))
+    .filter(g => g.rows.length);
+
+  const nonRoofBlock = nonRoof.length ? `
+    <div class="ins-scope-flag">
+      <strong>⚠️ ${fmtCur(rep.other_rcv)} in this claim is not roofing.</strong>
+      Excluded from the margin below, because our roof cost does not cover it.
+      ${nonRoof.map(g => `<div class="ins-scope-grp"><span>${CLS[g.k]}</span>
+        <em>${g.rows.map(r => esc(r.item.description || '')).join(' · ')}</em>
+        <b>${fmtCur(g.rows.reduce((a, r) => a + r.rcv, 0))}</b></div>`).join('')}
+    </div>` : '';
+
+  // Anything the keyword rules could not place. Counted as roof so the total
+  // never silently shrinks, but named so the rep decides rather than the
+  // classifier guessing.
+  const reviewRows = rep.groups.review.map(r => {
+    const td = (S.trades || {}).insurance || {};
+    const secs = td.sections || [];
+    let si = -1, ii = -1;
+    secs.forEach((sec, a) => (sec.items || []).forEach((it, b) => {
+      if (it === r.item) { si = a; ii = b; }
+    }));
+    return `<tr>
+      <td>${esc(r.item.description || '')}</td>
+      <td class="ins-mg-money">${fmtCur(r.rcv)}</td>
+      <td><select onchange="setCarrierItemScope(${si},${ii},this.value)">
+        <option value="roof">Roofing — count it</option>
+        <option value="gutter">Gutters</option>
+        <option value="siding">Siding / soffit / fascia</option>
+        <option value="interior">Interior</option>
+        <option value="detach">Detach &amp; reset</option>
+      </select></td></tr>`;
+  }).join('');
+
+  const reviewBlock = rep.review_count ? `
+    <div class="ins-scope-review">
+      <div class="ins-scope-review-title">
+        ${rep.review_count} line${rep.review_count > 1 ? 's' : ''} worth
+        ${fmtCur(rep.review_rcv)} could not be classified — counted as roofing
+        for now. Confirm each:
+      </div>
+      <table class="ins-mg-table"><tbody>${reviewRows}</tbody></table>
+    </div>` : '';
+
+  // RoofR against what the carrier approved. Short quantities are supplements.
+  const cmp = carrierMeasureComparison().filter(c => c.ours > 0);
+  const shorts = cmp.filter(c => c.short || c.missing);
+  const cmpBlock = cmp.length ? `
+    <table class="ins-mg-table ins-cmp-table">
+      <thead><tr><th>Measure</th><th>RoofR</th><th>Carrier approved</th><th>Difference</th></tr></thead>
+      <tbody>${cmp.map(c => `
+        <tr class="${c.short || c.missing ? 'is-short' : ''}">
+          <td>${c.label}</td>
+          <td class="ins-mg-money">${c.ours} ${c.unit}</td>
+          <td class="ins-mg-money">${c.missing ? '<em>not in claim</em>'
+                                     : c.carrier + ' ' + c.unit}</td>
+          <td class="ins-mg-money">${c.missing ? '—'
+              : (c.delta === 0 ? 'matches'
+                 : (c.delta > 0 ? '+' : '') + c.delta.toFixed(1) + ' ' + c.unit)}</td>
+        </tr>`).join('')}</tbody>
+    </table>
+    ${shorts.length ? `<div class="ins-cmp-supp">
+      <strong>📄 Supplement candidate.</strong> RoofR measures more than the carrier
+      approved on: ${esc(shorts.map(c => c.label).join(', '))}. Worth documenting
+      before production — a supplement is the only way this claim's margin moves.
+    </div>` : `<div class="ins-cmp-ok">✓ Carrier quantities match the RoofR report.</div>`}` : `
+    <div class="ins-mg-empty">Import the RoofR measurement report to check the
+      carrier's quantities against what is actually on the house.</div>`;
+
+  return `
+    <div class="ins-margin-panel">
+      <div class="panel-header">
+        <h3>Claim Check <span class="note-tag">internal only — never shown to the customer</span></h3>
+      </div>
+      <p class="ins-mg-hint">RoofR is the source of truth for what is on the house.
+        The carrier's numbers are a claim about it — this is where the two get compared.</p>
+      ${nonRoofBlock}
+      ${reviewBlock}
+      <div class="ins-cmp-title">RoofR vs. carrier quantities</div>
+      ${cmpBlock}
+    </div>`;
+}
+
+/* ── Job Margin panel (insurance only, rep-facing) ───────────────────────
+   Never printed and never on the customer page: it is the answer to "what
+   does this claim actually pay us", which is nobody's business but ours.
+   The cost side is derived from the measurement report + the price book, so
+   the rep picks the system and the numbers follow. */
+function insuranceMarginMarkup() {
+  const ic  = insCost();
+  const rep = insuranceCostReport();
+  const m   = S.measurements || {};
+  const sq  = parseFloat(m.roof_squares) || 0;
+  const bundles = _tradeBundles('roofing');
+
+  const noMeasure = sq <= 0;
+  const bundleOpts = ['<option value="">— pick the system being installed —</option>']
+    .concat(bundles.map(b =>
+      `<option value="${esc(b.id)}" ${ic.bundle_id === b.id ? 'selected' : ''}>${esc(b.name)}</option>`))
+    .join('');
+
+  const rows = (ic.items || []).map((it, i) => `
+    <tr>
+      <td>${esc(it.name)}${it.qty_locked ? ' <span class="note-tag">edited</span>' : ''}</td>
+      <td><input type="number" step="0.1" min="0" value="${it.quantity}"
+            onchange="setInsuranceCostQty(${i}, this.value)"></td>
+      <td class="ins-mg-unit">${esc(displayUnit(it) || it.unit || '')}</td>
+      <td><input type="number" step="0.01" min="0" value="${it.unit_cost}"
+            onchange="setInsuranceCostUnit(${i}, this.value)"></td>
+      <td class="ins-mg-money">${fmtCur((parseFloat(it.quantity)||0) * (parseFloat(it.unit_cost)||0))}</td>
+    </tr>`).join('');
+
+  const adderLabels = { dumpster:'Dumpster', permit:'Permit', subs:'Subcontractor', other:'Other' };
+  const adderRows = INSURANCE_ADDERS.map(k => `
+    <label class="ins-mg-adder">
+      <span>${adderLabels[k]}</span>
+      <input type="number" step="0.01" min="0" value="${(ic.adders||{})[k] || ''}"
+        placeholder="0.00" onchange="setInsuranceAdder('${k}', this.value)">
+    </label>`).join('');
+
+  // A price book with $0 on the labor lines reports a roof that costs only its
+  // shingles. Naming the lines is what makes it fixable — the manager fills
+  // them in the price book, or the rep types the cost straight into the table.
+  const unpricedWarn = rep.unpriced.length ? `
+    <div class="ins-mg-unpriced">
+      <strong>⛔ ${rep.unpriced.length} cost line${rep.unpriced.length > 1 ? 's have' : ' has'} no price.</strong>
+      This margin is overstated until ${rep.unpriced.length > 1 ? 'they are' : 'it is'} filled in:
+      ${esc(rep.unpriced.join(', '))}.
+      Fix the cost in the Price Book, or type it in the table above.
+    </div>` : '';
+
+  // A margin nobody has costed is UNKNOWN, not 100%. Say which it is.
+  const verdict = rep.margin_pct === null
+    ? `<div class="ins-mg-empty">Pick the system above (and import a measurement
+         report if you have not) to see this claim's margin.</div>`
+    : `<div class="ins-mg-result ${rep.margin_pct < 25 ? 'is-thin' : ''}">
+         ${rep.non_roof ? `<div><span>Claim total</span><strong>${fmtCur(rep.claim_total)}</strong></div>
+         <div class="ins-mg-excl"><span>Less non-roof work</span><strong>−${fmtCur(rep.non_roof)}</strong></div>` : ''}
+         <div><span>Roof RCV${rep.review_count ? ' <em>(incl. unconfirmed)</em>' : ''}</span><strong>${fmtCur(rep.revenue - rep.supplements)}</strong></div>
+         ${rep.supplements ? `<div><span>Supplements</span><strong>${fmtCur(rep.supplements)}</strong></div>` : ''}
+         <div><span>Our cost</span><strong>${fmtCur(rep.cost)}</strong></div>
+         <div class="ins-mg-profit"><span>Gross profit</span><strong>${fmtCur(rep.gross_profit)}</strong></div>
+         <div class="ins-mg-pct">
+           <span>Margin${rep.unpriced.length ? ' <em>(overstated)</em>' : ''}</span>
+           <strong>${rep.margin_pct.toFixed(1)}%</strong></div>
+       </div>`;
+
+  return `
+    <div class="ins-margin-panel">
+      <div class="panel-header">
+        <h3>Job Margin <span class="note-tag">internal only — never shown to the customer</span></h3>
+      </div>
+      <p class="ins-mg-hint">The carrier sets the price, so the margin is whatever is
+        left after we build it. Pick the system going on the house and the cost is
+        derived from your measurements and the price book.</p>
+
+      ${noMeasure ? `<div class="ins-mg-warn">
+        No roof measurements on this estimate yet, so quantities will come out at zero.
+        Import the measurement report (⋮ → 📐 RoofR Import) or type the squares on Scope.
+      </div>` : `<div class="ins-mg-meas">Sized from <strong>${sq} squares</strong> of roof.</div>`}
+
+      <label class="ins-mg-bundle">
+        <span>Roofing system being installed</span>
+        <select onchange="setInsuranceBundle(this.value)">${bundleOpts}</select>
+      </label>
+
+      ${(ic.items || []).length ? `
+        <table class="ins-mg-table">
+          <thead><tr><th>Cost line</th><th>Qty</th><th>Unit</th><th>Unit cost</th><th>Cost</th></tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr><td colspan="4">Build cost</td>
+            <td class="ins-mg-money">${fmtCur(rep.build_cost)}</td></tr></tfoot>
+        </table>` : ''}
+
+      <div class="ins-mg-adders">
+        <div class="ins-mg-adders-title">Costs the measurements can't know</div>
+        ${adderRows}
+      </div>
+
+      <label class="ins-mg-supp">
+        <span>Approved supplements <span class="note-tag">adds to what the carrier pays</span></span>
+        <input type="number" step="0.01" value="${ic.supplements || ''}" placeholder="0.00"
+          onchange="setInsuranceSupplements(this.value)">
+      </label>
+
+      ${unpricedWarn}
+      ${verdict}
     </div>`;
 }
 
@@ -6206,7 +8298,7 @@ function setTradeColor(trade, key, v) {
   // Keep them in sync so setting it here also locks it for the customer —
   // otherwise the sign page would still prompt for a color already specified.
   if (trade === 'roofing' && key === 'shingle_color') {
-    if (!S.shingle_selection) S.shingle_selection = { enabled: true, options: _globalShingleColors() };
+    if (!S.shingle_selection) S.shingle_selection = { enabled: true, options: [] };
     S.shingle_selection.chosen = (v || '').trim();
   }
   setDirty();
@@ -6304,6 +8396,92 @@ function _tradeCatalog(trade) { return (priceBook && priceBook[trade + '_catalog
 function _tradeBundles(trade) { return (priceBook && priceBook[trade + '_bundles']) || []; }
 function _tradeBundle(trade, id) { return _tradeBundles(trade).find(b => b.id === id) || null; }
 
+/* ── Swappable products: one bundle slot, several interchangeable products ──
+   A package lists ONE polyiso line (ca_iso, 2.6"), but the spec decides the
+   thickness, so the row offers every thickness the catalog carries. The key is
+   the id the bundles name; the list is what may stand in for it.
+
+   The choice is the BUILDING's, not the package's, so it survives a system
+   swap: re-picking TPO -> EPDM keeps the 4" the rep chose. Both builders find
+   the slot's row through variantRowFor() and price it from the product the row
+   actually carries. Re-picking the same system does not reset it either — the
+   dropdown is the only thing that changes it. */
+const PRODUCT_VARIANTS = {
+  ca_iso: ['ca_iso_10', 'ca_iso_15', 'ca_iso_20', 'ca_iso_22', 'ca_iso_30', 'ca_iso_40'],
+};
+// The bundle slot a product fills: itself, or the id it stands in for.
+function variantSlot(pid) {
+  if (!pid) return '';
+  if (PRODUCT_VARIANTS[pid]) return pid;
+  for (const base in PRODUCT_VARIANTS) {
+    if (PRODUCT_VARIANTS[base].includes(pid)) return base;
+  }
+  return pid;
+}
+// A row already filling bundle slot `pid` with a stand-in product.
+function variantRowFor(items, pid) {
+  if (!PRODUCT_VARIANTS[pid]) return null;
+  return (items || []).find(li => li.catalog_id && li.catalog_id !== pid
+    && variantSlot(li.catalog_id) === pid) || null;
+}
+// Catalog products this row may switch between, thinnest first. Empty when the
+// row has nothing to swap to, which is what hides the picker.
+function variantChoices(trade, pid) {
+  const base = variantSlot(pid);
+  if (!PRODUCT_VARIANTS[base]) return [];
+  const cat = _tradeCatalog(trade);
+  const out = [base, ...PRODUCT_VARIANTS[base]]
+    .map(id => cat.find(p => p && p.id === id)).filter(Boolean);
+  const size = p => { const n = parseFloat(p.name); return isNaN(n) ? Infinity : n; };
+  out.sort((a, b) => size(a) - size(b));
+  return out.length > 1 ? out : [];
+}
+function variantPicker(trade, item, cls) {
+  const opts = variantChoices(trade, item.catalog_id);
+  if (!opts.length) return '';
+  return `<div class="li-row-variant-row">
+      <select class="li-row-variant-select ${cls || ''}" title="Which product this line quotes"
+        onchange="liSwapVariant('${trade}','${item.id}',this.value)">
+        ${opts.map(p => `<option value="${esc(p.id)}" ${p.id === item.catalog_id ? 'selected' : ''}>${esc(p.name)} — ${fmtCur(parseFloat(p.cost) || 0)}/${esc(p.unit || '')}</option>`).join('')}
+      </select>
+    </div>`;
+}
+/* Swap the row to another product in its slot. Cost follows the product, and a
+   locked sell price is released — a price typed for 2.6" is not a price for 4".
+   Descriptions the rep wrote are kept; one that just echoed the old product's
+   name follows the new one. */
+function liSwapVariant(trade, id, pid) {
+  const td = S.trades[trade];
+  const item = (td.line_items || []).find(it => it.id === id);
+  const p = _tradeCatalog(trade).find(x => x && x.id === pid);
+  if (!item || !p || variantSlot(pid) !== variantSlot(item.catalog_id)) return;
+  const oldName = item.name;
+  const cost = parseFloat(p.cost) || 0;
+  item.catalog_id = pid;
+  item.name = p.name;
+  item.unit = p.unit || item.unit;
+  if (item.measure === undefined && !item.formula && p.measure) item.measure = p.measure;
+  const follow = d => (!d || d === oldName) ? p.name : d;
+  if (item.tiers) {
+    Object.values(item.tiers).forEach(cell => {
+      if (!cell) return;
+      cell.material_unit_cost = cost;
+      cell.labor_unit_cost = 0;
+      cell.description = follow(cell.description);
+      delete cell.price_override;
+    });
+  } else {
+    item.unit_cost = cost;
+    item.description = follow(item.description);
+    delete item._gbb_tiers;
+    delete item.price_locked;
+    simpleApplyMargin(trade, item);
+  }
+  setDirty();
+  if (activePage === 'pricing') renderTradeContent();
+  else renderTotals();
+}
+
 /* ── A package card describes the products actually in the bundle ─────────
    The What's Included bullets are BUILT from the bundle's product_ids, not
    stored as a blob on the bundle. The blob was one list per bundle, so every
@@ -6330,8 +8508,13 @@ function _tradeBundle(trade, id) { return _tradeBundles(trade).find(b => b.id ==
    `bundle.extra_features` closes the list with the bullets no product owns —
    the workmanship warranty. Order follows product_ids so the material leads. */
 function bundleFeatures(trade, bundle) {
+  return featuresFromCatalog(_tradeCatalog(trade), bundle);
+}
+// The rule itself, catalog passed in — so the Price Book's bundle editor runs it
+// against its unsaved working copies instead of keeping a second copy of it.
+function featuresFromCatalog(catalog, bundle) {
   if (!bundle) return [];
-  const catalog = _tradeCatalog(trade);
+  catalog = catalog || [];
   const out = [];
   const seen = new Set();
   const push = s => {
@@ -6385,6 +8568,9 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
         if (item.tiers && item.tiers[tier]) item.tiers[tier].included = false;
       });
       td.tier_bundles[tier] = '__custom__';
+      // A tagline typed for the bundle this tier just left describes THAT
+      // bundle; it must not ride onto the hand-built package as the rep's own.
+      if (td.tier_tagline_edited) td.tier_tagline_edited[tier] = false;
     }
     if (autoOpen) _tierDetailsOpen[trade + ':' + tier] = true;
     setDirty();
@@ -6401,9 +8587,16 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   const norm = s => String(s || '').trim().toLowerCase();
 
   (bundle.product_ids || []).forEach(pid => {
-    const p = catalog.find(x => x.id === pid);
+    let p = catalog.find(x => x.id === pid);
     if (!p) return;
     let item = td.line_items.find(li => li.catalog_id === pid);
+    // The slot is already filled by a stand-in (a 4" in the 2.6" slot): keep
+    // the rep's product and price the tier from it.
+    if (!item) {
+      const swapped = variantRowFor(td.line_items, pid);
+      const sp = swapped && catalog.find(x => x.id === swapped.catalog_id);
+      if (sp) { item = swapped; p = sp; }
+    }
     // Adopt a legacy same-named item (built before this trade moved to bundles,
     // so it has no catalog_id) instead of adding a duplicate beside it.
     if (!item) {
@@ -6423,7 +8616,8 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
           best:   { material_unit_cost:0, labor_unit_cost:0, description:'', notes:'', included:false },
         },
       };
-      td.line_items.push(item);
+      // Into its price-book position, not onto the end — see catalogRank.
+      insertByCatalogOrder(trade, td.line_items, item);
     } else if (item.measure === undefined && !item.formula && p.measure) {
       // Adopted item that never had an Auto-Qty link: inherit the catalog's.
       // An explicit '' (Manual) is left alone — see the manual-measure contract.
@@ -6443,7 +8637,8 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   // for other tiers that include them). Hand-added items are left untouched.
   td.line_items.forEach(item => {
     if (!item.catalog_id) return;
-    if (!wantIds.has(item.catalog_id) && item.tiers && item.tiers[tier]) {
+    if (!wantIds.has(item.catalog_id) && !wantIds.has(variantSlot(item.catalog_id))
+        && item.tiers && item.tiers[tier]) {
       item.tiers[tier].included = false;
     }
   });
@@ -6474,8 +8669,16 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   const desc  = bundleDescription(trade, bundle);
   if (desc || feats.length) {
     const content = tradeTierContent(trade);
-    if (desc) content.descriptions[tier] = desc;
-    if (feats.length) content.features[tier] = feats;
+    if (desc) {
+      content.descriptions[tier] = desc;
+      if (td.tier_tagline_edited) td.tier_tagline_edited[tier] = false;
+    }
+    if (feats.length) {
+      content.features[tier] = feats;
+      // The bundle's bullets are not the rep's, so the card goes back to
+      // showing the default few — same reset the tagline gets above.
+      if (td.tier_features_edited) td.tier_features_edited[tier] = false;
+    }
   }
 
   // When the rep explicitly picks a bundle, open this tier's details so the
@@ -6570,12 +8773,19 @@ function buildSimpleItemsFromBundle(trade, bundleId, sectionName) {
 
   const items = [];
   (bundle.product_ids || []).forEach(pid => {
-    const p = catalog.find(x => x.id === pid);
+    let p = catalog.find(x => x.id === pid);
     if (!p) return;
-    const old = prev.get(pid);
+    let old = prev.get(pid);
+    // A stand-in already fills this slot (a 4" in the 2.6" slot) — carry the
+    // rep's product through the system swap, priced as itself.
+    if (!old && PRODUCT_VARIANTS[pid]) {
+      const swapped = variantRowFor([...prev.values()], pid);
+      const sp = swapped && catalog.find(x => x.id === swapped.catalog_id);
+      if (sp) { old = swapped; p = sp; }
+    }
     items.push({
       id: old ? old.id : uid(),
-      catalog_id: pid,
+      catalog_id: p.id,
       name: p.name,
       unit: p.unit || 'EA',
       quantity: old ? old.quantity : 0,
@@ -6856,6 +9066,9 @@ function renderGBBGrid(trade) {
     <div class="tier-column col-${t} ${t===tier?'selected-tier':''}">
       <div class="tier-col-header">
         ${TIER_LABELS[t]} <span class="tier-col-total">${fmtCur(tradeTotal(trade,t))}</span>
+        ${supplementItems(trade, t).length ? `<div class="tier-col-supp"
+          title="Supplement lines print in their own block with their own subtotal. They are not in the package total, and a blank quantity prices as one unit.">
+          + Supplements <strong>${fmtCur(supplementsTotal(trade, t))}</strong> (not in total)</div>` : ''}
       </div>
       <div class="tier-col-rate" title="${rateLbl} for ${TRADE_LABELS[trade]} · ${TIER_LABELS[t]}. Blank uses the ${dflt}% default set in the sidebar.">
         <span class="tier-col-rate-lbl">${rateLbl}</span>
@@ -6866,6 +9079,8 @@ function renderGBBGrid(trade) {
         ${hasTradeRate ? `<span class="tier-col-rate-ovr" title="Custom ${rateLbl.toLowerCase()} for this trade — clear to fall back to the ${dflt}% default">custom</span>` : ''}
       </div>
       ${heroSel}
+      ${tierTaglineEditorHtml(trade, t)}
+      ${tierBulletsEditorHtml(trade, t)}
       ${bodyBlock}
     </div>`;
   }).join('');
@@ -6966,6 +9181,7 @@ function renderLiRow(trade, tier, item) {
     </div>
     ${sectionSel}
     ${variantSel}
+    ${ownsMaster ? variantPicker(trade, item) : ''}
     <div class="li-row-desc-row">
       <textarea class="li-row-desc-input desc-ta" rows="${descRows(t.description)}"
         placeholder="${tier==='good'?'e.g. 3-Tab':tier==='better'?'e.g. Architectural':'e.g. Designer'}"
@@ -7633,6 +9849,54 @@ async function saveContractDefaults() {
   } catch (e) { alert('Could not save the company default: ' + e.message); }
 }
 
+/* The named systems a rep can pin as "what we're installing" on the Contract
+   tab. Pinning one locks the customer's color dropdown to that manufacturer's
+   palette on every package — and is the only way to get a sensible palette on
+   an insurance claim, where no G/B/B tier is being sold. Blank keeps the old
+   behavior: follow whatever bundle the selected tier resolves to. Mirrored
+   server-side by _customer_color_options / ss['material_bundle_id']. */
+function _materialBundleChoices(trade) {
+  const bundles = (priceBook && priceBook[trade + '_bundles']) || [];
+  return bundles
+    .filter(b => b && b.id && b.name && _vzPalette(_vzMaterialForBundle(trade, b)).length)
+    .map(b => ({id: b.id, name: b.name}));
+}
+
+/* Colors the customer will actually be offered, as this panel understands it:
+   the pinned system's palette, else the better-tier bundle's. Used for the
+   "Color already chosen?" datalist so the rep picks from the real list rather
+   than from the generic company-wide one. */
+function _signingPalette(trade, sel) {
+  const pinned = (sel.material_bundle_id || '').trim();
+  const bundles = (priceBook && priceBook[trade + '_bundles']) || [];
+  const bundle = pinned ? bundles.find(b => b && b.id === pinned)
+                        : _vzBundleFor(trade, 'better');
+  const names = _vzPalette(_vzMaterialForBundle(trade, bundle)).map(c => c.name);
+  const seen = new Set(names.map(n => n.toLowerCase()));
+  for (const o of (sel.options || [])) {
+    const v = String(o).trim();
+    if (v && !seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); names.push(v); }
+  }
+  return names;
+}
+
+function _materialPickerHTML(trade, sel, setter) {
+  const choices = _materialBundleChoices(trade);
+  if (!choices.length) return '';
+  const cur = (sel.material_bundle_id || '').trim();
+  const opts = choices.map(c =>
+    `<option value="${esc(c.id)}"${c.id === cur ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  return `
+        <div class="field-group">
+          <label>Material being installed
+            <span class="sr-hint">sets the colors the customer can pick from</span></label>
+          <select class="sr-material-select" onchange="${setter}(this.value)">
+            <option value=""${cur ? '' : ' selected'}>Follow the package the customer selects</option>
+            ${opts}
+          </select>
+        </div>`;
+}
+
 function renderSigningRequirements() {
   const ss  = S.shingle_selection || {enabled:true, options:[], chosen:''};
   const sds = S.siding_selection  || {enabled:false, options:[], chosen:''};
@@ -7660,18 +9924,19 @@ function renderSigningRequirements() {
         <span>Ask the customer to confirm a <strong>siding color</strong> at signing</span>
       </label>
       <div class="sr-siding-body" style="${sds.enabled ? '' : 'display:none'}">
+        ${_materialPickerHTML('siding', sds, 'setSidingMaterial')}
         <div class="field-group">
           <label>Color already chosen? <span class="sr-hint">leave blank to let the customer pick</span></label>
           <input type="text" list="siding-color-list" class="sr-chosen-input"
             value="${esc(sds.chosen || '')}" placeholder="e.g. Iron Gray — or leave blank"
             onchange="setSidingChosen(this.value)">
           <datalist id="siding-color-list">
-            ${(sds.options || []).map(o => `<option value="${esc(o)}">`).join('')}
+            ${_signingPalette('siding', sds).map(o => `<option value="${esc(o)}">`).join('')}
           </datalist>
         </div>
         <div class="field-group">
-          <label>Extra siding color options
-            <span class="sr-hint">optional — leave blank to use the picked bundle's colors</span></label>
+          <label>Additional siding colors
+            <span class="sr-hint">optional — added to the material's own colors, not instead of them</span></label>
           <textarea class="sr-options-input" rows="2"
             onchange="setSidingOptions(this.value)"
             placeholder="Arctic White, Iron Gray, Musket Brown…">${esc(sdsOptText)}</textarea>
@@ -7692,18 +9957,19 @@ function renderSigningRequirements() {
         <span>Ask the customer to confirm a <strong>shingle color</strong> at signing</span>
       </label>
       <div class="sr-shingle-body" style="${ss.enabled !== false ? '' : 'display:none'}">
+        ${_materialPickerHTML('roofing', ss, 'setShingleMaterial')}
         <div class="field-group">
           <label>Color already chosen? <span class="sr-hint">leave blank to let the customer pick</span></label>
           <input type="text" list="shingle-color-list" class="sr-chosen-input"
             value="${esc(ss.chosen || '')}" placeholder="e.g. Weathered Wood — or leave blank"
             onchange="setShingleChosen(this.value)">
           <datalist id="shingle-color-list">
-            ${(ss.options || []).map(o => `<option value="${esc(o)}">`).join('')}
+            ${_signingPalette('roofing', ss).map(o => `<option value="${esc(o)}">`).join('')}
           </datalist>
         </div>
         <div class="field-group">
-          <label>Extra shingle color options
-            <span class="sr-hint">optional — leave blank to use the picked bundle's colors (IKO Nordic → IKO, CertainTeed → CertainTeed…)</span></label>
+          <label>Additional shingle colors
+            <span class="sr-hint">optional — added to the material's own colors, not instead of them</span></label>
           <textarea class="sr-options-input" rows="2"
             onchange="setShingleOptions(this.value)"
             placeholder="Charcoal, Weathered Wood, Driftwood…">${esc(ssOptText)}</textarea>
@@ -7736,9 +10002,16 @@ function setShingleChosen(v) {
 }
 function setShingleOptions(v) {
   if (!S.shingle_selection) S.shingle_selection = {enabled:true, chosen:''};
-  // Empty = use bundle colors (IKO/CertainTeed/…); non-empty = rep override
+  // These ADD to the material's own colors — they no longer replace them, so
+  // leaving this blank is the normal case. See _customer_color_options in app.py.
   S.shingle_selection.options = v.split(',').map(s => s.trim()).filter(Boolean);
   setDirty();
+}
+function setShingleMaterial(v) {
+  if (!S.shingle_selection) S.shingle_selection = {enabled:true, options:[], chosen:''};
+  S.shingle_selection.material_bundle_id = (v || '').trim();
+  setDirty();
+  renderContractPage();
 }
 function setSidingEnabled(v) {
   if (!S.siding_selection) S.siding_selection = {options:[], chosen:''};
@@ -7755,6 +10028,12 @@ function setSidingOptions(v) {
   if (!S.siding_selection) S.siding_selection = {enabled:true, chosen:''};
   S.siding_selection.options = v.split(',').map(s => s.trim()).filter(Boolean);
   setDirty();
+}
+function setSidingMaterial(v) {
+  if (!S.siding_selection) S.siding_selection = {enabled:true, options:[], chosen:''};
+  S.siding_selection.material_bundle_id = (v || '').trim();
+  setDirty();
+  renderContractPage();
 }
 function addInitial() {
   if (!Array.isArray(S.contract_initials)) S.contract_initials = [];
@@ -8112,10 +10391,41 @@ function getPhotoDataUrl(photo) {
    renderer; strokes persist on S.vent_cutin (re-editable) and a flattened JPG
    is uploaded for the production packet. */
 const vc = {
+  kind: 'ridge',
   pages: [], pageIdx: 0, img: null, canvas: null, ctx: null,
   tool: 'line', color: '#dc2626', sw: 6,
   annotations: [], drawing: false, sx: 0, sy: 0, preview: null, history: [],
 };
+/* The same editor marks two different things. The ridge map (S.vent_cutin)
+   shows which runs get CUT OPEN; the intake map (S.vent_intake) shows which
+   eaves get intake vent, since code intake is usually a fraction of the eave
+   run and the crew has to know which fraction. Separate keys, separate images:
+   one flattened JPG per map, so re-marking one never repaints the other. */
+const VENT_MAP_MODES = {
+  ridge: {
+    key: 'vent_cutin', lfKey: 'cutin_lf', color: '#dc2626', file: 'vent-cutin.jpg',
+    title: '🖍️ Mark Ridge-Vent Cut-In', save: '✓ Save Cut-In Map',
+    help: 'Highlight the ridge segments the crew cuts open for ventilation, then stamp the linear footage. Ridge vent still runs the full ridge — this marks only what gets cut in.',
+    label: lf => `~${lf} LF cut-in`, stamp: lf => `Cut in ~${lf} LF ridge vent`,
+    lf: () => _ventCutinLF(),
+  },
+  intake: {
+    key: 'vent_intake', lfKey: 'intake_lf', color: '#2563eb', file: 'vent-intake.jpg',
+    title: '🖍️ Mark Intake Vent', save: '✓ Save Intake Map',
+    help: 'Highlight the eaves that get intake vent, then stamp the linear footage. Code intake is usually less than the whole eave run — this marks where the crew installs it.',
+    label: lf => `~${lf} LF intake`, stamp: lf => `Intake ~${lf} LF at the eaves`,
+    lf: () => _ventIntakeLF(),
+  },
+};
+function _ventMode() { return VENT_MAP_MODES[vc.kind] || VENT_MAP_MODES.ridge; }
+// The intake footage that is PRICED: the code figure, capped at the eaves.
+// Same rule as intake_vent_code and the Scope panel's hint.
+function _ventIntakeLF() {
+  const m = S.measurements || {};
+  const code = Math.ceil(atticVentilation(m).intake_lf_required - 1e-9);
+  const eaveLF = mnum(m.eave_lf);
+  return eaveLF > 0 ? Math.min(code, eaveLF) : code;
+}
 // The RoofR report's rasterized page images, in page order (or [] if none).
 function _roofrPageImages() {
   const atts = S.attachments || [];
@@ -8130,21 +10440,28 @@ function _ventCutinLF() {
   const raw = Math.ceil(vent.ridge_lf_required);
   return ridgeLF > 0 ? Math.min(raw, ridgeLF) : raw;
 }
-function openVentCutinEditor() {
+function openVentCutinEditor(kind) {
   const pages = _roofrPageImages();
   if (!pages.length) {
     alert('Import the RoofR PDF first so there is a roof diagram to mark up.');
     return;
   }
+  vc.kind = VENT_MAP_MODES[kind] ? kind : 'ridge';
+  const mode = _ventMode();
   vc.pages = pages;
-  const saved = S.vent_cutin || {};
+  const saved = S[mode.key] || {};
   vc.annotations = (saved.strokes || []).map(a => Object.assign({}, a));
   vc.history = []; vc.drawing = false; vc.preview = null;
   // Reopen on the saved page, else default to page 2 (the overview) when present.
   let idx = saved.source_page ? pages.indexOf(saved.source_page) : -1;
   if (idx < 0) idx = pages.length > 1 ? 1 : 0;
   vc.pageIdx = idx;
-  setVentTool(vc.tool); setVentColor(vc.color);
+  const setText = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+  setText('vent-cutin-title', mode.title);
+  setText('vent-cutin-help', mode.help);
+  setText('vent-cutin-save', mode.save);
+  // Red for cuts, blue for intake, so the two maps never read alike on paper.
+  setVentTool(vc.tool); setVentColor(mode.color);
   document.getElementById('vent-cutin-modal').classList.remove('hidden');
   _ventLoadPage();
 }
@@ -8216,7 +10533,7 @@ function _ventBindCanvas(canvas) {
   const onStart = (e) => {
     if (vc.tool === 'text') {
       const { x, y } = pct(e);
-      const txt = prompt('Label text:', `~${_ventCutinLF()} LF cut-in`);
+      const txt = prompt('Label text:', _ventMode().label(_ventMode().lf()));
       if (txt && txt.trim()) {
         vc.history.push(vc.annotations.map(a => Object.assign({}, a)));
         vc.annotations.push({ id: 'vc_' + Date.now().toString(36), type: 'text',
@@ -8273,23 +10590,25 @@ function ventCutinClear() {
   _ventRedraw();
 }
 function ventCutinStampLF() {
+  const mode = _ventMode();
   vc.history.push(vc.annotations.map(a => Object.assign({}, a)));
   vc.annotations.push({ id: 'vc_' + Date.now().toString(36), type: 'text',
                         color: vc.color, sw: 5, x: 4, y: 5,
-                        text: `Cut in ~${_ventCutinLF()} LF ridge vent` });
+                        text: mode.stamp(mode.lf()) });
   _ventRedraw();
 }
 async function saveVentCutin() {
   if (!vc.canvas) { closeVentCutinEditor(); return; }
+  const mode = _ventMode();
   // Need a saved estimate to hang the upload + attachment on.
   if (!S.estimate_id) { await saveEstimate(); }
-  if (!S.estimate_id) { alert('Save the estimate first, then mark the cut-in map.'); return; }
-  const prev = (S.vent_cutin || {}).image_filename;
+  if (!S.estimate_id) { alert('Save the estimate first, then mark the map.'); return; }
+  const prev = (S[mode.key] || {}).image_filename;
   const blob = await new Promise(res => vc.canvas.toBlob(res, 'image/jpeg', 0.9));
   let image_filename = prev;
   if (blob) {
     const fd = new FormData();
-    fd.append('file', new File([blob], 'vent-cutin.jpg', { type: 'image/jpeg' }));
+    fd.append('file', new File([blob], mode.file, { type: 'image/jpeg' }));
     try {
       const r = await fetch(`/api/uploads/${S.estimate_id}`, { method: 'POST', body: fd });
       if (r.ok) {
@@ -8302,11 +10621,11 @@ async function saveVentCutin() {
       }
     } catch { /* keep strokes even if the image upload fails */ }
   }
-  S.vent_cutin = {
+  S[mode.key] = {
     source_page: vc.pages[vc.pageIdx],
     strokes: vc.annotations.map(a => Object.assign({}, a)),
-    cutin_lf: _ventCutinLF(),
-    notes: (S.vent_cutin || {}).notes || '',
+    [mode.lfKey]: mode.lf(),
+    notes: (S[mode.key] || {}).notes || '',
     image_filename,
   };
   setDirty();
@@ -8665,7 +10984,10 @@ function bindSidebarEvents() {
   bind('project-address', v=>S.project_address=v);
   bind('estimate-date',   v=>S.estimate_date=v,           'change', ()=>renderCoverPage());
   bind('valid-until',     v=>S.valid_until=v);
-  bind('salesperson',     v=>S.salesperson=v,             'change', ()=>renderCoverPage());
+  // Not bind(): on a saved estimate this is a reassignment, which goes through
+  // its own PATCH — a whole-doc save no longer moves ownership at all.
+  document.getElementById('salesperson')
+    ?.addEventListener('change', e => onSalespersonChange(e.target.value));
   bind('est-status',      v=>S.status=v);
   bind('notes-internal',  v=>S.notes_internal=v, 'input');
   bind('notes-customer',  v=>S.notes_customer=v, 'input');
@@ -8709,7 +11031,14 @@ function renderTierRates() {
 }
 function setTierRate(tier, v) {
   if (!S.pricing.tier_rates) S.pricing.tier_rates = { good:35, better:35, best:35 };
-  S.pricing.tier_rates[tier] = parseFloat(v) || 0;
+  // Blank means INHERIT (fall through to global_rate, then DEFAULT_RATE) — never 0.
+  // This was `parseFloat(v) || 0`, which turned a cleared box into a real 0 that
+  // _resolveRate then honoured exactly as designed: the roof priced at cost, the
+  // screen looked normal, and parity passed because both sides agreed. That is the
+  // trap _resolveRate's own comment warns about. setTradeOverride and
+  // setTradeTierRate have always mapped blank -> null; this is the third setter
+  // finally agreeing with them.
+  S.pricing.tier_rates[tier] = _rateValue(v);
   recalcSimpleItems();
   setDirty();
   renderTierRates();   // keep the sidebar inputs in sync with the grid inputs
@@ -8741,15 +11070,14 @@ function setTier(tier) {
   if(activePage==='pricing')renderTradeContent();
   if(activePage==='options')renderOptionsPage();
 }
-function setTradeOverride(trade,v) { S.pricing.per_trade_overrides[trade]=v===''?null:parseFloat(v); setDirty(); rerender(); if(activePage==='pricing')renderTradeContent(); }
+function setTradeOverride(trade,v) { S.pricing.per_trade_overrides[trade]=_rateValue(v); setDirty(); rerender(); if(activePage==='pricing')renderTradeContent(); }
 // Per-trade, per-tier margin. tier is 'good'|'better'|'best' (GBB tabs) or
 // 'simple' (a simple-mode trade's single margin). Blank clears the override so
 // the trade falls back to the sidebar default.
 function setTradeTierRate(trade, tier, v) {
   if (!S.pricing.trade_rates) S.pricing.trade_rates = {};
   if (!S.pricing.trade_rates[trade]) S.pricing.trade_rates[trade] = {};
-  const n = parseFloat(v);
-  S.pricing.trade_rates[trade][tier] = (v === '' || v === null || isNaN(n)) ? null : n;
+  S.pricing.trade_rates[trade][tier] = _rateValue(v);
   if (tier === 'simple') recalcSimpleItems();  // re-bake simple sell prices
   setDirty();
   rerender();
@@ -8819,7 +11147,9 @@ function selectJob(p) {
   // Prefer the job's assigned salesperson when it's a known team member
   if(p.assigned_salesperson){
     const u=p.assigned_salesperson.split('@')[0].toLowerCase();
-    if(TEAM.includes(u)){S.salesperson=u;setVal('salesperson',u);}
+    // Only where a save can still set it; a saved, owned estimate is
+    // reassigned deliberately, not by picking a contact.
+    if(TEAM.includes(u) && (!S.estimate_id || !S.salesperson)){S.salesperson=u;syncSalespersonSelect();}
   }
   document.getElementById('crm-search').value='';
   closeCrm(); setDirty(); renderSidebar(); renderCoverPage(); renderCrmLinkBadge();
@@ -8867,22 +11197,106 @@ function renderEstStatusBar() {
     <select id="est-status-select" onchange="setEstStatus(this.value)">
       ${opts.map(([v, l]) => `<option value="${v}" ${st === v ? 'selected' : ''}>${l}</option>`).join('')}
     </select>
-    ${st === 'lost' ? '<span class="est-status-note">Out of Outstanding and follow-ups. The lead stays open in the Pipeline.</span>' : ''}`;
+    ${st === 'lost' ? `<span class="est-status-note">${
+      S.lost_reason && _lostReasons && _lostReasons[S.lost_reason]
+        ? esc(_lostReasons[S.lost_reason]) + ' — '
+        : ''}Out of Outstanding and follow-ups. The lead stays open in the Pipeline.</span>` : ''}`;
   el.style.display = 'flex';
+}
+
+// Served by the API rather than mirrored here, so the dropdown and the
+// validator that accepts its value cannot drift apart.
+let _lostReasons = null;
+async function _loadLostReasons() {
+  if (_lostReasons) return _lostReasons;
+  try {
+    const r = await fetch(`${BASE}/api/lost-reasons`, { credentials: 'same-origin' });
+    _lostReasons = await r.json();
+  } catch { _lostReasons = {}; }
+  return _lostReasons;
+}
+
+/* ── Lost-reason modal ───────────────────────────────────────────────────
+   Marking an estimate lost is the one moment the rep knows why, so it is the
+   only moment worth asking. Kept to one screen: pick a reason, optional note,
+   done. Cancelling leaves the outcome unchanged rather than recording a loss
+   with no reason — the dropdown springs back to what it was. */
+let _lostPick = '';
+
+async function openLostModal() {
+  const reasons = await _loadLostReasons();
+  const keys = Object.keys(reasons);
+  if (!keys.length) return false;   // API unreachable — caller falls through
+  _lostPick = '';
+  document.getElementById('lost-note').value = '';
+  document.getElementById('lost-save-btn').disabled = true;
+  document.getElementById('lost-reason-list').innerHTML = keys.map(k => `
+    <button type="button" class="lost-reason" data-reason="${esc(k)}"
+      onclick="pickLostReason('${jsq(k)}')">${esc(reasons[k])}</button>`).join('');
+  document.getElementById('lost-modal').classList.remove('hidden');
+  return true;
+}
+
+function pickLostReason(key) {
+  _lostPick = key;
+  document.querySelectorAll('#lost-reason-list .lost-reason').forEach(b => {
+    b.classList.toggle('selected', b.dataset.reason === key);
+  });
+  document.getElementById('lost-save-btn').disabled = false;
+}
+
+function closeLostModal() {
+  document.getElementById('lost-modal').classList.add('hidden');
+  _lostPick = '';
+  // Cancelled from the Job Board: the card never moved, so redraw puts the
+  // Move-to picker back rather than leaving it reading "Mark lost".
+  if (_lostBoardId) { _lostBoardId = null; renderBoardColumns(); }
+  // The select still shows 'lost' from the click that opened this. Put it back.
+  renderEstStatusBar();
+}
+
+function maybeCloseLostModal(e) {
+  if (e.target === document.getElementById('lost-modal')) closeLostModal();
+}
+
+function confirmLostReason() {
+  if (!_lostPick) return;
+  const reason = _lostPick;
+  const note = (document.getElementById('lost-note').value || '').trim();
+  document.getElementById('lost-modal').classList.add('hidden');
+  _lostPick = '';
+  if (_lostBoardId) {
+    const id = _lostBoardId;
+    _lostBoardId = null;
+    dashUpdateStatus(id, 'lost', reason, note);
+    return;
+  }
+  _patchEstStatus('lost', reason, note);
 }
 
 async function setEstStatus(status) {
   if (!S.estimate_id) return;
+  if (status === 'lost') {
+    // The modal drives the PATCH itself once a reason is picked. If the
+    // options cannot be loaded, fall through and record the loss anyway — the
+    // reason must never become a reason not to record the outcome.
+    if (await openLostModal()) return;
+  }
+  return _patchEstStatus(status, '', '');
+}
+
+async function _patchEstStatus(status, lost_reason, lost_note) {
   try {
     const r = await fetch(`${BASE}/api/estimates/${S.estimate_id}/status`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, lost_reason, lost_note }),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || 'Could not update the outcome.');
     S.status = j.status;
+    S.lost_reason = j.lost_reason || '';
   } catch (e) {
     alert(e.message);
   }
@@ -9006,10 +11420,6 @@ async function photoDelete(id) {
 
 let _dashData      = [];
 let _dashRep       = null; // null until first open; then '' = all reps
-let _dashView      = 'estimates'; // 'estimates' | 'analytics'
-let _dashFilter    = null; // null = all | 'outstanding' | 'viewed' | 'sent' | 'signed' | 'draft'
-let _analyticsData = null; // cached result from /api/analytics
-let _analyticsSort = 'revenue'; // 'revenue' | 'margin' | 'jobs'
 
 function daysAgoLabel(iso) {
   if (!iso) return '';
@@ -9031,24 +11441,139 @@ function estStatusOf(e) {
   return 'draft';
 }
 
-async function openDashboard() {
+/* ── Job Board ───────────────────────────────────────────────────────
+   The dashboard is a full-screen page, one column per place a job can be:
+   the four sales columns the customer link drives, the post-signature stages
+   the office sets by hand, and Lost. Every estimate sits in EXACTLY one
+   column — the old modal listed a sent estimate under both Outstanding and
+   Sent, so the same dollars showed twice.
+
+   Draft / Sent / Viewed are derived from what the customer did and cannot be
+   set by dragging. What a rep CAN do by hand: mark a job lost (through the
+   reason picker — the old status dropdown bypassed it), mark it accepted,
+   reopen a lost one, and move a signed job through the stages the server
+   serves from /api/job-stages. */
+
+let _boardQ        = '';     // search text
+let _boardType     = '';     // '' | retail | insurance | commercial
+let _boardLostOpen = false;  // Lost is collapsed until asked for
+let _boardDragId   = null;
+let _lostBoardId   = null;   // set while the lost-reason modal is for a board card
+let _jobStages     = null;   // [{key,label}] from /api/job-stages
+
+const _BOARD_ICONS = { draft: '📝', sent: '📤', viewed: '👀', followup: '⚠',
+  'job:': '✅', 'job:scheduled': '📅', 'job:in_production': '🔨',
+  'job:complete': '🏁', lost: '✗' };
+
+async function _loadJobStages() {
+  if (_jobStages) return _jobStages;
+  try {
+    const r = await fetch('/api/job-stages');
+    const j = await r.json();
+    if (Array.isArray(j) && j.length) _jobStages = j;
+  } catch {}
+  // Unreachable: one signed column rather than a guess at the stage list.
+  return _jobStages || [{ key: '', label: 'Signed' }];
+}
+
+/* Sent 3+ days and never opened, or viewed 2+ days and not signed. The Home
+   alert, the board's Follow Up column and the leaderboard's Stale count all
+   ask this one question, so they share one answer. */
+function estGoingCold(e, now = Date.now()) {
+  const st = estStatusOf(e);
+  if (st === 'sent' && e.sent_at)
+    return (now - new Date(e.sent_at).getTime()) / 86400000 >= 3;
+  if (st === 'viewed' && e.last_viewed_at)
+    return (now - new Date(e.last_viewed_at).getTime()) / 86400000 >= 2;
+  return false;
+}
+
+function boardColumnOf(e) {
+  const st = estStatusOf(e);
+  if (st === 'signed') {
+    const k = 'job:' + (e.job_stage || '');
+    return (_jobStages || []).some(s => 'job:' + s.key === k) ? k : 'job:';
+  }
+  if (st === 'lost') return 'lost';
+  if (estGoingCold(e)) return 'followup';
+  return st;
+}
+
+function boardColumns() {
+  return [
+    { key: 'draft',    label: 'Drafts',              cls: 'sales' },
+    { key: 'sent',     label: 'Sent — not opened',   cls: 'sales' },
+    { key: 'viewed',   label: 'Viewed',              cls: 'hot' },
+    { key: 'followup', label: 'Follow up',           cls: 'warn' },
+    ...(_jobStages || [{ key: '', label: 'Signed' }]).map(s => ({
+      key: 'job:' + s.key, label: s.label, cls: s.key === 'complete' ? 'done' : 'won' })),
+    { key: 'lost',     label: 'Lost',                cls: 'lost' },
+  ];
+}
+
+// Newest activity first, except the two queues a rep works oldest-first.
+function _boardSort(key, arr) {
+  const by = f => (a, b) => (f(b) || '').localeCompare(f(a) || '');
+  const asc = f => (a, b) => (f(a) || '').localeCompare(f(b) || '');
+  if (key === 'sent') return arr.sort(asc(e => e.sent_at));
+  if (key === 'followup') return arr.sort(asc(e => e.last_viewed_at || e.sent_at));
+  if (key === 'viewed') return arr.sort(by(e => e.last_viewed_at));
+  if (key.startsWith('job:')) return arr.sort(by(e => e.job_stage_at || e.signed_at || e.updated_at));
+  return arr.sort(by(e => e.updated_at));
+}
+
+/* Where a card may go from here, as [target, label]. The server is the
+   authority on every one of these; this only avoids offering a move that is
+   certain to be refused. */
+function boardTargets(e) {
+  const st = estStatusOf(e), here = boardColumnOf(e);
+  if (st === 'signed') {
+    return (_jobStages || []).map(s => ['job:' + s.key, s.label])
+      .filter(([k]) => k !== here);
+  }
+  if (st === 'lost') return [['reopen', '↩ Reopen']];
+  return [['lost', '✗ Mark lost…'], ['job:', '✓ Mark accepted (no e-signature)']];
+}
+
+async function openDashboard() { switchPage('dashboard'); }
+// The dashboard used to be a modal that every route away from it had to
+// close. It is a page now — navigating is enough — so this is kept only so
+// the callers that still say it (and muscle memory) stay harmless.
+function closeDashboard() {}
+
+async function refreshBoard() {
+  const body = document.getElementById('dashboard-body');
+  if (body && !_dashData.length) body.innerHTML = '<div class="board-loading">Loading jobs…</div>';
+  await _loadJobStages();
   try {
     const r = await fetch('/api/estimates');
     _dashData = await r.json();
-  } catch { _dashData = []; }
+  } catch { _dashData = _dashData || []; }
   rebuildCustCounts();
-  if (_dashRep === null) _dashRep = _loggedInUser || '';
+  if (_dashRep === null) _dashRep = _meCanViewAll() ? '' : (_loggedInUser || '');
   renderDashboard();
-  document.getElementById('dashboard-modal').classList.remove('hidden');
 }
-function closeDashboard() { document.getElementById('dashboard-modal').classList.add('hidden'); }
-function maybeCloseDashboard(e) { if (e.target.id === 'dashboard-modal') closeDashboard(); }
-function dashSetRep(v) { _dashRep = v; renderDashboard(); }
+
+function dashSetRep(v) { _dashRep = v; renderBoardColumns(); }
+function boardSetType(v) { _boardType = v; renderBoardColumns(); }
+let _boardQTimer = null;
+function boardSearch(v) {
+  clearTimeout(_boardQTimer);
+  _boardQTimer = setTimeout(() => { _boardQ = v.trim(); renderBoardColumns(); }, 120);
+}
+function boardToggleLost() { _boardLostOpen = !_boardLostOpen; renderBoardColumns(); }
+function boardJump(key) {
+  // Scroll the strip itself: scrollIntoView also moves every scrollable
+  // ancestor, and fights the phone's scroll-snap half-way there.
+  const strip = document.getElementById('board-cols');
+  const col = strip && strip.querySelector(`.board-col[data-col="${CSS.escape(key)}"]`);
+  if (col) strip.scrollTo({ left: col.offsetLeft - strip.offsetLeft, behavior: 'smooth' });
+}
+
 async function dashDuplicate(id) {
   const r = await fetch(`/api/estimates/${id}/duplicate`, { method: 'POST' });
   if (!r.ok) { alert('Could not duplicate.'); return; }
   const d = await r.json();
-  closeDashboard();
   doLoadEstimate(d.estimate_id);
 }
 async function dashShare(id) {
@@ -9087,39 +11612,113 @@ async function dashDeleteEstimate(id, name) {
   if (!r.ok) { alert('Could not delete estimate.'); return; }
   _dashData = _dashData.filter(e => e.estimate_id !== id);
   rebuildCustCounts();
-  renderDashboard();
+  renderBoardColumns();
 }
-async function dashUpdateStatus(id, status, selectEl) {
+async function dashUpdateStatus(id, status, lost_reason = '', lost_note = '') {
   const r = await fetch(`/api/estimates/${id}/status`, {
     method: 'PATCH',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({status}),
+    body: JSON.stringify({ status, lost_reason, lost_note }),
   });
   if (!r.ok) {
     const msg = await r.json().catch(() => ({}));
     alert(msg.error || 'Could not update status.');
-    return renderDashboard();
+    return renderBoardColumns();
   }
   const est = _dashData.find(e => e.estimate_id === id);
   if (est) est.status = status;
-  // Re-render, so the row actually moves to its new section. Without this the
-  // status changed on the server and the dashboard carried on showing the
-  // estimate exactly where it was, which made marking one lost feel broken.
-  renderDashboard();
+  if (id === S.estimate_id) { S.status = status; renderEstStatusBar(); }
+  renderBoardColumns();
+}
+async function boardSetJobStage(id, stage) {
+  const est = _dashData.find(e => e.estimate_id === id);
+  const prev = est ? [est.job_stage, est.job_stage_at] : null;
+  if (est) { est.job_stage = stage; est.job_stage_at = new Date().toISOString(); }
+  renderBoardColumns();                         // move it now; undo on refusal
+  let msg = '';
+  try {
+    const r = await fetch(`/api/estimates/${id}/job-stage`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ job_stage: stage }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) { if (est) est.job_stage_at = j.job_stage_at || est.job_stage_at; return; }
+    msg = j.error || '';
+  } catch {}
+  if (est && prev) [est.job_stage, est.job_stage_at] = prev;
+  alert(msg || 'Could not move this job.');
+  renderBoardColumns();
+}
+
+async function boardMove(id, target) {
+  const e = _dashData.find(x => x.estimate_id === id);
+  if (!e || !target || target === boardColumnOf(e)) return renderBoardColumns();
+  const st = estStatusOf(e);
+  if (st === 'signed') {
+    if (!target.startsWith('job:')) {
+      toast('A signed job can only move between the job stages.');
+      return renderBoardColumns();
+    }
+    return boardSetJobStage(id, target.slice(4));
+  }
+  if (target === 'lost') {
+    // Same reason picker the estimate screen uses. If the reasons cannot be
+    // loaded, record the loss anyway — see setEstStatus.
+    _lostBoardId = id;
+    if (await openLostModal()) return;
+    _lostBoardId = null;
+    return dashUpdateStatus(id, 'lost');
+  }
+  if (target.startsWith('job:')) {
+    if (!confirm(`Mark ${e.customer_name || 'this estimate'} accepted without an e-signature?`))
+      return renderBoardColumns();
+    await dashUpdateStatus(id, 'accepted');
+    if (target !== 'job:') await boardSetJobStage(id, target.slice(4));
+    return;
+  }
+  if (st === 'lost' && (target === 'reopen' || ['draft', 'sent', 'viewed', 'followup'].includes(target)))
+    return dashUpdateStatus(id, e.sent ? 'sent' : 'draft');
+  toast('Draft, Sent and Viewed follow the customer link — they move on their own.');
+  renderBoardColumns();
+}
+
+function boardDragStart(ev, id) {
+  _boardDragId = id;
+  try { ev.dataTransfer.setData('text/plain', id); ev.dataTransfer.effectAllowed = 'move'; } catch {}
+  const e = _dashData.find(x => x.estimate_id === id);
+  const ok = new Set(e ? boardTargets(e).map(([k]) => k === 'reopen' ? (e.sent ? 'sent' : 'draft') : k) : []);
+  document.querySelectorAll('.board-col').forEach(c =>
+    c.classList.toggle('is-droppable', ok.has(c.dataset.col)));
+  document.body.classList.add('board-dragging');
+}
+function boardDragEnd() {
+  _boardDragId = null;
+  document.body.classList.remove('board-dragging');
+  document.querySelectorAll('.board-col').forEach(c => c.classList.remove('is-droppable', 'is-over'));
+}
+function boardDragOver(ev) {
+  const col = ev.currentTarget;
+  if (!_boardDragId || !col.classList.contains('is-droppable')) return;
+  ev.preventDefault();
+  col.classList.add('is-over');
+}
+function boardDragLeave(ev) { ev.currentTarget.classList.remove('is-over'); }
+function boardDrop(ev, key) {
+  ev.preventDefault();
+  const id = _boardDragId || (ev.dataTransfer && ev.dataTransfer.getData('text/plain'));
+  const droppable = ev.currentTarget.classList.contains('is-droppable');
+  boardDragEnd();
+  if (id && droppable) boardMove(id, key === 'draft' || key === 'sent' ? 'reopen' : key);
 }
 
 function dashRow(e) {
   const st    = estStatusOf(e);
   const enum_ = e.estimate_id ? 'EST-' + e.estimate_id.split('-')[0].toUpperCase() : '';
-  const chips = {
-    signed: '<span class="dash-chip dash-chip-signed">✓ Signed</span>',
-    viewed: '<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
-    sent:   '<span class="dash-chip dash-chip-sent">📤 Sent</span>',
-    draft:  '<span class="dash-chip dash-chip-draft">Draft</span>',
-    lost:   '<span class="dash-chip dash-chip-lost">✗ Lost</span>',
-  };
+  const col   = boardColumnOf(e);
   let activity = '';
-  if (st === 'signed')      activity = `${e.signed ? 'Signed' : 'Accepted'} ${daysAgoLabel(e.signed_at || e.updated_at)}`;
+  if (col.startsWith('job:') && e.job_stage_at)
+                            activity = `Moved ${daysAgoLabel(e.job_stage_at)} · signed ${daysAgoLabel(e.signed_at || e.updated_at)}`;
+  else if (st === 'signed') activity = `${e.signed ? 'Signed' : 'Accepted'} ${daysAgoLabel(e.signed_at || e.updated_at)}`;
   else if (st === 'viewed') activity = `Viewed ${daysAgoLabel(e.last_viewed_at)}${e.view_count > 1 ? ` (${e.view_count}×)` : ''}`;
   else if (st === 'sent')   activity = `Sent ${daysAgoLabel(e.sent_at)} — not opened yet`;
   else if (st === 'lost')   activity = `Marked lost ${daysAgoLabel(e.updated_at)}`;
@@ -9127,188 +11726,232 @@ function dashRow(e) {
   const typeLbl = e.estimate_type === 'commercial' ? '🏢 Commercial'
                 : e.estimate_type === 'insurance' ? '🏛 Insurance'
     : (e.selected_tier ? e.selected_tier[0].toUpperCase() + e.selected_tier.slice(1) : 'Retail');
-  const isSigned = st === 'signed';
-  const statusSelect = isSigned ? chips[st] : `
-    <select class="dash-status-select" title="Update status"
-      onclick="event.stopPropagation()"
-      onchange="dashUpdateStatus('${esc(e.estimate_id)}',this.value,this)">
-      <option value="draft"    ${e.status==='draft'?'selected':''}>Draft</option>
-      <option value="sent"     ${e.status==='sent'?'selected':''}>Sent</option>
-      <option value="accepted" ${e.status==='accepted'?'selected':''}>Accepted ✓</option>
-      <option value="lost"     ${st==='lost'?'selected':''}>Lost ✗</option>
+  const id = esc(e.estimate_id);
+  const moveSel = `<select class="board-move" title="Move this job"
+      onchange="boardMove('${id}',this.value)">
+      <option value="" selected disabled>Move to…</option>
+      ${boardTargets(e).map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join('')}
     </select>`;
-  // The customer file was reachable only from a home-screen search box and a
-  // sidebar button that appears after a name is typed — so the rep looking at
-  // a list of estimates had no way to see that three of them are one customer.
+  // Managers reassign straight from the board. Reps get nothing here: the
+  // server refuses them anyway, and a control that always errors reads broken.
+  const sp = typeof e.salesperson === 'string' ? e.salesperson : '';
+  const repSelect = _meCanViewAll() ? `
+    <select class="board-move board-rep" title="Reassign to another rep"
+      onchange="reassignEstimate('${id}',this.value)">
+      <option value="">Unassigned</option>
+      ${_teamWith(sp).map(m => `<option value="${esc(m)}" ${m === sp ? 'selected' : ''}>${esc(cap(m))}</option>`).join('')}
+    </select>` : '';
+  // A card is one estimate, but the rep needs to see that three cards are one
+  // customer — the 📁 badge opens their whole file.
   const nEst = custEstimateCount(e.customer_name);
   const cfBadge = nEst > 1 ? `<button class="dash-cf-btn"
       title="${nEst} estimates for this customer — open their file"
-      onclick="event.stopPropagation();closeDashboard();openCustomer('${jsq(e.customer_name)}')">📁 ${nEst}</button>` : '';
-  return `<div class="dash-row${st==='viewed'?' dash-row-viewed':''}" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
-    <div class="dash-row-main">
-      <span class="dash-row-name"><strong>${esc(e.customer_name || '(no customer)')}</strong>${cfBadge}</span>
-      <small>${esc(enum_)}${e.city ? ' · ' + esc(e.city) : ''} · ${esc(typeLbl)}${e.salesperson ? ' · ' + esc(cap(e.salesperson)) : ''}</small>
+      onclick="event.stopPropagation();openCustomer('${jsq(e.customer_name)}')">📁 ${nEst}</button>` : '';
+  const co = e.co_count ? `<span class="dash-chip dash-chip-co" title="${e.co_count} change order${e.co_count!==1?'s':''}${e.co_pending ? ` (${e.co_pending} awaiting signature)` : ''}${e.co_total ? ` — ${fmtCur(e.co_total)} signed` : ''}">±${e.co_count} CO${e.co_pending ? ' ⏳' : ''}</span>` : '';
+  return `<article class="board-card board-card-${st}" draggable="true"
+      ondragstart="boardDragStart(event,'${id}')" ondragend="boardDragEnd()"
+      onclick="doLoadEstimate('${id}')">
+    <div class="board-card-top">
+      <span class="board-card-name">${esc(e.customer_name || '(no customer)')}</span>${cfBadge}
+      <span class="board-card-total">${fmtCur((e.total || 0) + (e.co_total || 0))}</span>
     </div>
-    <div class="dash-row-side">
-      <span class="dash-total">${fmtCur((e.total || 0) + (e.co_total || 0))}</span>
-      ${e.co_count ? `<span class="dash-chip dash-chip-co" title="${e.co_count} change order${e.co_count!==1?'s':''}${e.co_pending ? ` (${e.co_pending} awaiting signature)` : ''}${e.co_total ? ` — ${fmtCur(e.co_total)} signed` : ''}">±${e.co_count} CO${e.co_pending ? ' ⏳' : ''}</span>` : ''}
-      ${statusSelect}
-      <small class="dash-activity">${esc(activity)}</small>
-      ${e.share_token ? `<button class="dash-send-btn" title="Resend customer link"
-        onclick="event.stopPropagation();dashShare('${esc(e.estimate_id)}')">📤</button>` : ''}
-      <button class="dash-dup-btn" title="Duplicate estimate"
-        onclick="event.stopPropagation();dashDuplicate('${esc(e.estimate_id)}')">⎘</button>
-      <button class="dash-delete-btn" title="Delete estimate"
-        onclick="event.stopPropagation();dashDeleteEstimate('${esc(e.estimate_id)}','${esc(e.customer_name||'this estimate')}')">🗑</button>
+    <div class="board-card-meta">${[enum_, e.city, typeLbl, e.salesperson ? cap(e.salesperson) : '']
+      .filter(Boolean).map(esc).join(' · ')}</div>
+    ${e.estimate_label ? `<div class="board-card-label">${esc(e.estimate_label)}</div>` : ''}
+    <div class="board-card-activity">${esc(activity)} ${co}</div>
+    <div class="board-card-actions" onclick="event.stopPropagation()">
+      ${moveSel}${repSelect}
+      <span class="board-card-btns">
+        ${e.share_token ? `<button title="Resend customer link" onclick="dashShare('${id}')">📤</button>` : ''}
+        <button title="Duplicate estimate" onclick="dashDuplicate('${id}')">⎘</button>
+        <button title="Delete estimate" onclick="dashDeleteEstimate('${id}','${jsq(e.customer_name || 'this estimate')}')">🗑</button>
+      </span>
     </div>
-  </div>`;
+  </article>`;
 }
 
+function _boardList() {
+  let list = _dashData;
+  if (_dashRep) list = list.filter(e => (e.salesperson || '') === _dashRep);
+  if (_boardType) list = list.filter(e => (e.estimate_type || 'retail') === _boardType);
+  if (_boardQ) {
+    const q = _boardQ.toLowerCase();
+    list = list.filter(e => [e.customer_name, e.city, e.estimate_label]
+      .some(v => String(v || '').toLowerCase().includes(q)));
+  }
+  return list;
+}
+
+/* The toolbar is drawn once and the columns under it separately, so typing in
+   the search box never re-renders the box being typed in. */
 function renderDashboard() {
   const body = document.getElementById('dashboard-body');
   if (!body) return;
-  let list = _dashData;
-  if (_dashRep) list = list.filter(e => (e.salesperson || '') === _dashRep);
-
-  const viewed  = list.filter(e => estStatusOf(e) === 'viewed')
-                      .sort((a, b) => (b.last_viewed_at || '').localeCompare(a.last_viewed_at || ''));
-  const sent    = list.filter(e => estStatusOf(e) === 'sent')
-                      .sort((a, b) => (a.sent_at || '').localeCompare(b.sent_at || ''));
-  const drafts  = list.filter(e => estStatusOf(e) === 'draft')
-                      .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
-  const signed  = list.filter(e => estStatusOf(e) === 'signed')
-                      .sort((a, b) => (b.signed_at || '').localeCompare(a.signed_at || ''));
-  const lost    = list.filter(e => estStatusOf(e) === 'lost')
-                      .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
-
-  const outstanding   = [...viewed, ...sent];
-  const outstandingSum = outstanding.reduce((s, e) => s + (e.total || 0), 0);
-  const cutoff30   = Date.now() - 30 * 86400000;
-  const signed30   = signed.filter(e => e.signed_at && new Date(e.signed_at).getTime() >= cutoff30);
-  const signed30Sum = signed30.reduce((s, e) => s + (e.total || 0) + (e.co_total || 0), 0);
-
   const repOpts = ['<option value="">All reps</option>']
-    .concat(TEAM.map(m => `<option value="${m}" ${m === _dashRep ? 'selected' : ''}>${cap(m)}</option>`))
+    .concat(TEAM.map(m => `<option value="${esc(m)}" ${m === _dashRep ? 'selected' : ''}>${esc(cap(m))}</option>`))
     .join('');
-
-  const section = (title, arr, cls) => arr.length
-    ? `<div class="dash-section"><h4 class="${cls || ''}">${title} <span class="dash-count">${arr.length}</span></h4>
-       ${arr.map(dashRow).join('')}</div>`
-    : '';
-
-  // Follow-up alerts: sent 3+ days without view, or viewed 2+ days without signing
-  const now = Date.now();
-  const needsFollowUp = list.filter(e => {
-    const st = estStatusOf(e);
-    if (st === 'sent' && e.sent_at) {
-      const daysSent = (now - new Date(e.sent_at).getTime()) / 86400000;
-      return daysSent >= 3;
-    }
-    if (st === 'viewed' && e.last_viewed_at) {
-      const daysViewed = (now - new Date(e.last_viewed_at).getTime()) / 86400000;
-      return daysViewed >= 2;
-    }
-    return false;
-  }).sort((a, b) => (a.sent_at || a.last_viewed_at || '').localeCompare(b.sent_at || b.last_viewed_at || ''));
-
+  const types = [['', 'All types'], ['retail', '🏠 Retail'], ['insurance', '🏛 Insurance'], ['commercial', '🏢 Commercial']];
   body.innerHTML = `
-    <div class="dash-toolbar">
-      <div class="dash-view-tabs">
-        <button class="dash-view-tab ${_dashView==='estimates'?'active':''}" onclick="dashSetView('estimates')">Estimates</button>
-        <button class="dash-view-tab ${_dashView==='analytics'?'active':''}" onclick="dashSetView('analytics')">📊 Sales Analytics</button>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
+    <div class="board-toolbar">
+      <h2 class="board-title">📊 Job Board</h2>
+      <input type="search" class="board-search" placeholder="🔍 Customer, city or estimate name"
+        value="${esc(_boardQ)}" oninput="boardSearch(this.value)">
+      <select class="board-filter" onchange="boardSetType(this.value)">${types.map(([v, l]) =>
+        `<option value="${v}" ${v === _boardType ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      ${_meCanViewAll() ? `<select onchange="dashSetRep(this.value)" class="board-filter">${repOpts}</select>` : ''}
+      <span class="board-toolbar-end">
+        <button class="board-tool-btn" onclick="openAnalytics()">📈 Analytics</button>
+        <button class="board-tool-btn" onclick="refreshBoard()" title="Reload">↺</button>
         ${_meIsAdmin() ? `<a href="${BASE}/api/backup" class="dash-backup-link" title="Download a zip of all estimates, photos, and settings">💾 Backup</a>` : ''}
-        ${_meCanViewAll() ? `<select onchange="dashSetRep(this.value)" class="dash-rep-select">${repOpts}</select>` : ''}
-      </div>
+      </span>
     </div>
-    ${_dashView === 'analytics' ? renderDashboardAnalytics(list, _dashData) : `
-    ${needsFollowUp.length ? `
-    <div class="dash-followup-banner">
-      <strong>⚠ Follow Up Needed (${needsFollowUp.length})</strong>
-      <span class="dash-followup-sub">Estimates going cold — act now</span>
-      <div class="dash-followup-list">
-        ${needsFollowUp.map(e => {
-          const st = estStatusOf(e);
-          const dayLabel = st === 'sent'
-            ? `Sent ${daysAgoLabel(e.sent_at)} — never opened`
-            : `Viewed ${daysAgoLabel(e.last_viewed_at)} — not signed`;
-          return `<div class="dash-followup-row" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
-            <div class="dash-followup-main">
-              <strong>${esc(e.customer_name||'(no customer)')}</strong>
-              <small>${esc(dayLabel)}</small>
-            </div>
-            <div style="display:flex;gap:6px;align-items:center">
-              <span class="dash-total">${fmtCur(e.total||0)}</span>
-              ${e.share_token ? `<button class="dash-send-btn" title="Resend link" style="opacity:1"
-                onclick="event.stopPropagation();dashShare('${esc(e.estimate_id)}')">📤</button>` : ''}
-            </div>
-          </div>`;
-        }).join('')}
-      </div>
-    </div>` : ''}
-    <div class="dash-cards">
-      <div class="dash-card ${_dashFilter==='outstanding'?'dash-card-active':''}"
-        onclick="dashSetFilter('outstanding')" title="Click to filter">
-        <div class="dash-card-num">${outstanding.length}</div>
-        <div class="dash-card-lbl">Outstanding</div>
-        <div class="dash-card-sub">${viewed.length ? `<span class="dash-card-hot-count">🔥 ${viewed.length} viewed</span>` : fmtCur(outstandingSum)}</div>
-      </div>
-      <div class="dash-card ${_dashFilter==='sent'?'dash-card-active':''}"
-        onclick="dashSetFilter('sent')" title="Click to filter">
-        <div class="dash-card-num">${sent.length}</div>
-        <div class="dash-card-lbl">Sent — never opened</div>
-        <div class="dash-card-sub">re-send or call</div>
-      </div>
-      <div class="dash-card dash-card-won ${_dashFilter==='signed'?'dash-card-active':''}"
-        onclick="dashSetFilter('signed')" title="Click to filter">
-        <div class="dash-card-num">${signed30.length}</div>
-        <div class="dash-card-lbl">Signed (30 days)</div>
-        <div class="dash-card-sub">${fmtCur(signed30Sum)}</div>
-      </div>
-      <div class="dash-card ${_dashFilter==='draft'?'dash-card-active':''}"
-        onclick="dashSetFilter('draft')" title="Click to filter">
-        <div class="dash-card-num">${drafts.length}</div>
-        <div class="dash-card-lbl">Drafts</div>
-        <div class="dash-card-sub">not yet sent</div>
-      </div>
-    </div>
-    ${_dashFilter ? `<div class="dash-filter-bar">
-      Showing: <strong>${{outstanding:'Outstanding',sent:'Sent',signed:'Signed',draft:'Drafts',lost:'Lost'}[_dashFilter]||_dashFilter}</strong>
-      <button class="dash-filter-clear" onclick="dashSetFilter(null)">× Show all</button>
-    </div>` : ''}
-    ${(!_dashFilter || _dashFilter==='outstanding') && (viewed.length||sent.length) ?
-        section('🔥 Outstanding', [...viewed,...sent].sort((a,b)=>(b.last_viewed_at||b.sent_at||'').localeCompare(a.last_viewed_at||a.sent_at||'')), '') : ''}
-    ${(!_dashFilter || _dashFilter==='sent') ?
-        section('📤 Sent — not yet opened', sent) : ''}
-    ${(!_dashFilter || _dashFilter==='draft') ?
-        section('📝 Drafts', drafts) : ''}
-    ${(!_dashFilter || _dashFilter==='signed') ?
-        section('✅ Signed', _dashFilter==='signed' ? signed : signed.slice(0,15), 'dash-h-won') : ''}
-    ${lost.length && (!_dashFilter || _dashFilter==='lost') ?
-        section('✗ Lost', _dashFilter==='lost' ? lost : lost.slice(0,10), 'dash-h-lost') : ''}
-    ${!list.length ? '<div class="dash-empty">No estimates yet for this rep.</div>' : ''}
-    `}`;
+    <div id="board-summary" class="board-summary"></div>
+    <div id="board-pills" class="board-pills"></div>
+    <div id="board-cols" class="board-cols"></div>`;
+  renderBoardColumns();
 }
 
-function dashSetFilter(f) {
-  _dashFilter = (_dashFilter === f) ? null : f;
-  renderDashboard();
+function renderBoardColumns() {
+  const colsEl = document.getElementById('board-cols');
+  if (!colsEl) return;
+  const list = _boardList();
+  const cols = boardColumns();
+  const by = Object.fromEntries(cols.map(c => [c.key, []]));
+  list.forEach(e => (by[boardColumnOf(e)] || by.draft).push(e));
+  const sum = arr => arr.reduce((s, e) => s + (e.total || 0) + (e.co_total || 0), 0);
+
+  // ── Summary strip ────────────────────────────────────────────────
+  const open = [...by.sent, ...by.viewed, ...by.followup];
+  const month = new Date().toISOString().slice(0, 7);
+  const signedMo = list.filter(e => estStatusOf(e) === 'signed' && (e.signed_at || '').startsWith(month));
+  const waiting = by['job:'] || [];
+  const stat = (val, lbl, sub, cls = '', jump = '') => `
+    <div class="board-stat ${cls}" ${jump ? `onclick="boardJump('${jump}')"` : ''}>
+      <div class="board-stat-val">${val}</div>
+      <div class="board-stat-lbl">${lbl}</div>
+      <div class="board-stat-sub">${sub}</div>
+    </div>`;
+  document.getElementById('board-summary').innerHTML =
+    stat(_fmtK(sum(open)), 'Open pipeline', `${open.length} out with customers`, '', 'viewed') +
+    stat(by.followup.length, 'Need follow-up', by.followup.length ? _fmtK(sum(by.followup)) + ' going cold' : 'nothing going cold',
+         by.followup.length ? 'is-warn' : '', 'followup') +
+    stat(_fmtK(sum(signedMo)), 'Signed this month', `${signedMo.length} job${signedMo.length === 1 ? '' : 's'}`, 'is-won') +
+    stat(waiting.length, 'Awaiting scheduling', waiting.length ? _fmtK(sum(waiting)) : 'all scheduled', waiting.length ? 'is-warn' : '', 'job:') +
+    stat(by.draft.length, 'Drafts', 'not sent yet', '', 'draft');
+
+  // ── Phone: jump pills (the columns scroll-snap sideways) ─────────
+  document.getElementById('board-pills').innerHTML = cols.map(c =>
+    `<button class="board-pill board-pill-${c.cls}" onclick="boardJump('${esc(c.key)}')">${
+      _BOARD_ICONS[c.key] || '•'} ${by[c.key].length}</button>`).join('');
+
+  // ── Columns ──────────────────────────────────────────────────────
+  colsEl.innerHTML = cols.map(c => {
+    const arr = _boardSort(c.key, by[c.key]);
+    const collapsed = c.key === 'lost' && !_boardLostOpen;
+    const hd = `<header class="board-col-hd">
+        <span class="board-col-title">${_BOARD_ICONS[c.key] || ''} ${esc(c.label)}</span>
+        <span class="board-col-count">${arr.length}</span>
+        <span class="board-col-sum">${_fmtK(sum(arr))}</span>
+        ${c.key === 'lost' ? `<button class="board-col-toggle" onclick="boardToggleLost()">${collapsed ? 'Show' : 'Hide'}</button>` : ''}
+      </header>`;
+    return `<section class="board-col board-col-${c.cls}${collapsed ? ' is-collapsed' : ''}" data-col="${esc(c.key)}"
+        ondragover="boardDragOver(event)" ondragleave="boardDragLeave(event)"
+        ondrop="boardDrop(event,'${esc(c.key)}')">
+      ${hd}
+      <div class="board-col-body">${collapsed ? '' : (arr.map(dashRow).join('') ||
+        '<div class="board-empty">Nothing here</div>')}</div>
+    </section>`;
+  }).join('');
+  if (!_dashData.length) colsEl.insertAdjacentHTML('afterbegin',
+    '<div class="board-empty board-empty-all">No estimates yet.</div>');
 }
-async function dashSetView(v) {
-  _dashView = v;
-  if (v === 'analytics' && !_analyticsData) {
-    document.getElementById('dashboard-body').innerHTML =
-      '<div style="text-align:center;padding:40px;color:var(--text-light)">Loading analytics…</div>';
-    try {
-      const r = await fetch('/api/analytics');
-      _analyticsData = await r.json();
-    } catch(e) {
-      _analyticsData = { by_trade:{}, by_rep:{} };
-    }
+
+/* ── Analytics page ──────────────────────────────────────────────────
+   Full screen, and every number on it comes from /api/analytics for the
+   chosen range and rep — this only formats. The rep leaderboard IS the
+   drill-down: clicking a rep re-asks the server for that rep, so the whole
+   page is theirs, with nothing separate to keep in step. */
+
+let _analyticsData = null;       // the payload currently on screen
+let _analyticsSort = 'revenue';  // leaderboard sort
+let _anPreset = 'ytd';
+let _anFrom = '', _anTo = '', _anRep = '';
+const _anCache = {};
+const _AN_PRESETS = [['month', 'This month'], ['last_month', 'Last month'], ['quarter', 'This quarter'],
+  ['ytd', 'Year to date'], ['12m', 'Last 12 mo'], ['all', 'All time'], ['custom', 'Custom']];
+
+function _isoDay(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function _anRangeDates() {
+  const t = new Date(), y = t.getFullYear(), m = t.getMonth();
+  switch (_anPreset) {
+    case 'month':      return [_isoDay(new Date(y, m, 1)), _isoDay(t)];
+    case 'last_month': return [_isoDay(new Date(y, m - 1, 1)), _isoDay(new Date(y, m, 0))];
+    case 'quarter':    return [_isoDay(new Date(y, m - m % 3, 1)), _isoDay(t)];
+    case 'ytd':        return [_isoDay(new Date(y, 0, 1)), _isoDay(t)];
+    case '12m':        return [_isoDay(new Date(y - 1, m, t.getDate() + 1)), _isoDay(t)];
+    case 'custom':     return [_anFrom, _anTo];
+    default:           return ['', ''];
   }
-  renderDashboard();
 }
+function _anQuery() {
+  const [from, to] = _anRangeDates();
+  const p = new URLSearchParams();
+  if (from) p.set('from', from);
+  if (to) p.set('to', to);
+  if (_anRep) p.set('rep', _anRep);
+  return p.toString();
+}
+// The view is kept in the URL so a manager can send "Q3, Bryan" as a link.
+function _anWriteHash() {
+  const p = new URLSearchParams({ p: _anPreset });
+  if (_anPreset === 'custom') { p.set('from', _anFrom); p.set('to', _anTo); }
+  if (_anRep) p.set('rep', _anRep);
+  try { history.replaceState(null, '', '#analytics?' + p.toString()); } catch {}
+}
+function _anReadHash() {
+  const h = location.hash || '';
+  if (!h.startsWith('#analytics')) return;
+  const p = new URLSearchParams(h.split('?')[1] || '');
+  if (_AN_PRESETS.some(([k]) => k === p.get('p'))) _anPreset = p.get('p');
+  _anFrom = p.get('from') || ''; _anTo = p.get('to') || '';
+  if (_meCanViewAll()) _anRep = p.get('rep') || '';
+}
+
+function openAnalytics() { _anReadHash(); switchPage('analytics'); }
+
+async function loadAnalytics(force) {
+  const qs = _anQuery();
+  _anWriteHash();
+  if (!force && _anCache[qs]) { _analyticsData = _anCache[qs]; return renderAnalyticsPage(); }
+  if (force) Object.keys(_anCache).forEach(k => delete _anCache[k]);
+  const body = document.getElementById('analytics-body');
+  if (body && !_analyticsData) body.innerHTML = '<div class="board-loading">Loading analytics…</div>';
+  document.body.classList.add('an-loading');
+  try {
+    const r = await fetch('/api/analytics' + (qs ? '?' + qs : ''));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Could not load analytics.');
+    _anCache[qs] = _analyticsData = j;
+  } catch (e) {
+    if (body) body.innerHTML = `<div class="board-empty">${esc(e.message || 'Could not load analytics.')}</div>`;
+    return;
+  } finally {
+    document.body.classList.remove('an-loading');
+  }
+  // The answer to an older question must not paint over a newer one.
+  if (qs === _anQuery()) renderAnalyticsPage();
+}
+
+function anSetPreset(k) { _anPreset = k; if (k !== 'custom') loadAnalytics(); else renderAnalyticsPage(); }
+function anSetCustom(which, v) {
+  if (which === 'from') _anFrom = v; else _anTo = v;
+  if (_anFrom || _anTo) loadAnalytics();
+}
+function anSetRep(v) { _anRep = v; loadAnalytics(); window.scrollTo?.(0, 0); }
+function anSetSort(k) { _analyticsSort = k; renderAnalyticsPage(); }
+function anSetMonRange(n) { _monRange = n; renderAnalyticsPage(); }
 
 function _pbar(val, max, cls='') {
   const pct = max > 0 ? Math.min(100, Math.round(val/max*100)) : 0;
@@ -9318,235 +11961,394 @@ function _clr(rate) {
   return rate >= 50 ? 'a-good' : rate >= 30 ? 'a-warn' : 'a-bad';
 }
 
-function renderDashboardAnalytics(filteredList, allData) {
-  const ad  = _analyticsData || { by_trade:{}, by_rep:{}, monthly:[], funnel:{total:0,sent:0,viewed:0,signed:0,lost:0}, pipeline_aging:{}, by_type:{}, top_cities:[], ytd_revenue:0, avg_days_to_close:null };
-  const now = Date.now();
-  const ms30 = 30*86400000;
+/* ── SVG charts ──────────────────────────────────────────────────────
+   Hand-drawn rather than a library: this is an offline-first PWA that
+   vendors what it needs, and four chart shapes do not justify a bundle and
+   its service-worker entries. Each chart is drawn AFTER layout at the width
+   its card actually has, so text stays 11px on a phone instead of scaling
+   down with a viewBox. */
 
-  // ── Core metrics ─────────────────────────────────────────────────────
-  const allSigned  = allData.filter(e => estStatusOf(e) === 'signed');
-  const allSent    = allData.filter(e => e.share_token);
-  const s30        = allSigned.filter(e=>e.signed_at && now-new Date(e.signed_at)<ms30);
-  const totalRev   = allSigned.reduce((s,e)=>s+(e.total||0),0);
-  const rev30      = s30.reduce((s,e)=>s+(e.total||0),0);
-  const closeRate  = allSent.length ? Math.round(allSigned.length/allSent.length*100) : 0;
-  const avgDeal    = allSigned.length ? Math.round(totalRev/allSigned.length) : 0;
-  const ytdRev     = ad.ytd_revenue || 0;
-  const avgDTC     = ad.avg_days_to_close;
-  const staleAll   = allData.filter(e=>{
-    const st=estStatusOf(e);
-    if(st==='sent'&&e.sent_at)         return (now-new Date(e.sent_at).getTime())/86400000>=3;
-    if(st==='viewed'&&e.last_viewed_at) return (now-new Date(e.last_viewed_at).getTime())/86400000>=2;
-    return false;
+const _CH = ['#2563a8', '#00a8b5', '#8b5cf6', '#e88400', '#16a34a', '#dc2626', '#64748b'];
+let _anCharts = [];   // [{id, draw(width) -> svg}]
+
+function _chartSlot(draw, h = 220) {
+  const id = 'ch-' + (_anCharts.length + 1);
+  _anCharts.push({ id, draw });
+  return `<div class="an-chart" id="${id}" style="min-height:${h}px"></div>`;
+}
+function _drawCharts() {
+  _anCharts.forEach(c => {
+    const el = document.getElementById(c.id);
+    if (el) el.innerHTML = c.draw(Math.max(260, el.clientWidth || 320));
   });
-  const pipeline   = allData.filter(e=>estStatusOf(e)!=='signed'&&estStatusOf(e)!=='draft'&&e.share_token);
-  const pipelineVal= pipeline.reduce((s,e)=>s+(e.total||0),0);
-  const repEntries = Object.entries(ad.by_rep).filter(([,d])=>d.sent>0||d.revenue>0);
+}
+let _anResizeT = null;
+window.addEventListener('resize', () => {
+  if (activePage !== 'analytics') return;
+  clearTimeout(_anResizeT);
+  _anResizeT = setTimeout(_drawCharts, 150);
+});
 
-  // ── Conversion funnel ────────────────────────────────────────────────
-  const fn = ad.funnel||{total:0,sent:0,viewed:0,signed:0,lost:0};
-  const funnelSteps = [
-    {label:'Created', val:fn.total, pct:100},
-    {label:'Sent',    val:fn.sent,    pct:fn.total?Math.round(fn.sent/fn.total*100):0},
-    {label:'Viewed',  val:fn.viewed,  pct:fn.sent?Math.round(fn.viewed/fn.sent*100):0},
-    {label:'Signed',  val:fn.signed,  pct:fn.viewed?Math.round(fn.signed/fn.viewed*100):0},
-  ];
-  const funnelHtml = funnelSteps.map(s=>`
-    <div class="funnel-step">
-      <div class="funnel-bar-wrap">
-        <div class="funnel-bar" style="width:${s.pct}%"></div>
-      </div>
-      <div class="funnel-labels">
-        <span class="funnel-name">${s.label}</span>
-        <span class="funnel-val">${s.val}</span>
-        <span class="funnel-pct">${s.pct}%</span>
-      </div>
-    </div>`).join('');
-  const lostHtml = fn.lost ? `<div class="funnel-declined">✗ ${fn.lost} lost</div>` : '';
+function _niceMax(v) {
+  if (v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 4 ? 4 : n <= 6 ? 6 : n <= 8 ? 8 : 10) * p;   // quarters stay round
+}
+const _svgT = (x, y, s, attrs = '') =>
+  `<text x="${x}" y="${y}" ${attrs}>${esc(String(s))}</text>`;
 
-  // ── Pipeline aging ───────────────────────────────────────────────────
-  const pa = ad.pipeline_aging||{};
-  const agingBuckets = [
-    {key:'fresh',  label:'Fresh (0–3d)',   color:'#16a34a'},
-    {key:'active', label:'Active (4–14d)', color:'#0284c7'},
-    {key:'stale',  label:'Stale (15–30d)', color:'#ea580c'},
-    {key:'cold',   label:'Cold (30+d)',    color:'#dc2626'},
-  ];
-  const agingTotal = agingBuckets.reduce((s,b)=>s+(pa[b.key]?.value||0),0);
-  const agingHtml = agingBuckets.map(b=>{
-    const d=pa[b.key]||{count:0,value:0};
-    const pct=agingTotal>0?Math.round(d.value/agingTotal*100):0;
-    return `<div class="aging-row">
-      <span class="aging-dot" style="background:${b.color}"></span>
-      <span class="aging-label">${b.label}</span>
-      <span class="aging-count">${d.count} deal${d.count!==1?'s':''}</span>
-      <div class="aging-bar-wrap"><div class="aging-bar" style="width:${pct}%;background:${b.color}"></div></div>
-      <span class="aging-val">${fmtCur(d.value)}</span>
-    </div>`;
+/* Monthly revenue as bars, the month's goal as a step line, and the sent
+   cohort's close rate on a second axis. */
+function svgTrend(rows, W) {
+  const H = 240, L = 48, R = 36, T = 14, B = 34;
+  const iw = W - L - R, ih = H - T - B;
+  const n = rows.length || 1;
+  const max = _niceMax(Math.max(1000, ...rows.map(r => Math.max(r.revenue || 0, r.goal || 0))));
+  const x = i => L + (i + 0.5) * iw / n;
+  const y = v => T + ih - (v / max) * ih;
+  const yr = p => T + ih - (p / 100) * ih;
+  const bw = Math.max(4, Math.min(34, iw / n * 0.62));
+  const every = Math.ceil(n / Math.max(1, Math.floor(iw / 46)));
+  let g = '';
+  for (let k = 0; k <= 4; k++) {
+    const v = max * k / 4, yy = y(v);
+    g += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" class="ch-grid"/>`
+      + _svgT(L - 6, yy + 4, _fmtK(v), 'text-anchor="end" class="ch-ax"')
+      + _svgT(W - R + 6, yr(k * 25) + 4, (k * 25) + '%', 'class="ch-ax"');
+  }
+  const bars = rows.map((r, i) => {
+    const h = Math.max(0, ih - (y(r.revenue || 0) - T));
+    const cls = r.goal > 0 ? _goalCls(r.pct_to_goal) : 'g-none';
+    return `<rect x="${x(i) - bw / 2}" y="${y(r.revenue || 0)}" width="${bw}" height="${h}" rx="3" class="ch-bar ${cls}">
+      <title>${_monLabel(r.month, true)}: ${fmtCur(r.revenue)}${r.goal > 0 ? ` of ${fmtCur(r.goal)} goal` : ''}${
+        r.close_rate != null ? ` · close ${r.close_rate}%` : ''}</title></rect>`
+      + (i % every === 0 || i === n - 1 ? _svgT(x(i), H - B + 16, _monLabel(r.month, i === 0 || r.month.endsWith('-01')), 'text-anchor="middle" class="ch-ax"') : '');
   }).join('');
-
-  // ── Retail vs Insurance ──────────────────────────────────────────────
-  const bt = ad.by_type||{};
-  const typeTotal = Object.values(bt).reduce((s,d)=>s+(d.revenue||0),0);
-  const typeHtml = Object.entries(bt).map(([type,d])=>{
-    const pct = typeTotal>0?Math.round(d.revenue/typeTotal*100):0;
-    return `<div class="type-row">
-      <span class="type-label">${type==='insurance'?'🏛 Insurance':'🏠 Retail'}</span>
-      <span class="type-count">${d.count} jobs</span>
-      <div class="aging-bar-wrap"><div class="aging-bar" style="width:${pct}%;background:${type==='insurance'?'#6366f1':'#0284c7'}"></div></div>
-      <span class="aging-val">${fmtCur(d.revenue)}</span>
-    </div>`;
-  }).join('');
-
-  // ── Top cities ───────────────────────────────────────────────────────
-  const cities = ad.top_cities||[];
-  const maxCity = Math.max(1,...cities.map(([,v])=>v));
-  const cityRows = cities.map(([city,rev])=>`
-    <div class="city-row">
-      <span class="city-name">${esc(city)}</span>
-      <div class="aging-bar-wrap"><div class="aging-bar" style="width:${Math.round(rev/maxCity*100)}%;background:#8b5cf6"></div></div>
-      <span class="aging-val">${fmtCur(rev)}</span>
-    </div>`).join('');
-
-  // ── Sort controls ────────────────────────────────────────────────────
-  const sortBtns = ['revenue','close_rate','margin'].map(k =>
-    `<button class="analytics-sort-btn ${_analyticsSort===k?'active':''}"
-      onclick="_analyticsSort='${k}';renderDashboard()">${
-        {revenue:'Revenue',close_rate:'Close %',margin:'Margin'}[k]}</button>`).join('');
-
-  // ── Rep leaderboard ──────────────────────────────────────────────────
-  const maxRevRep = Math.max(1,...repEntries.map(([,d])=>d.revenue));
-  const sorted = [...repEntries].sort((a,b)=>{
-    if(_analyticsSort==='close_rate') return (b[1].close_rate??0)-(a[1].close_rate??0);
-    if(_analyticsSort==='margin')     return (b[1].margin_pct??-1)-(a[1].margin_pct??-1);
-    return b[1].revenue-a[1].revenue;
+  let goal = '';
+  rows.forEach((r, i) => {
+    if (r.goal > 0) goal += `<line x1="${x(i) - iw / n / 2 + 2}" x2="${x(i) + iw / n / 2 - 2}" y1="${y(r.goal)}" y2="${y(r.goal)}" class="ch-goal"/>`;
   });
-  const repRows = sorted.map(([name,d],idx)=>{
-    const medal   = idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':`#${idx+1}`;
-    const crCls   = _clr(d.close_rate||0);
-    const stC     = staleAll.filter(e=>(e.salesperson||'')===name).length;
-    const stCell  = stC ? `<span class="analytics-stale-badge">${stC}</span>` : '—';
-    const m       = d.margin_pct!=null ? `<span class="analytics-margin-badge">${d.margin_pct}%</span>` : '—';
-    const dtc     = d.avg_days_to_close!=null ? `${d.avg_days_to_close}d` : '—';
-    return `<tr>
+  const pts = rows.map((r, i) => r.close_rate != null ? [x(i), yr(r.close_rate)] : null);
+  let path = '', open = false;
+  pts.forEach(p => { if (!p) { open = false; return; } path += (open ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1); open = true; });
+  const dots = pts.map(p => p ? `<circle cx="${p[0]}" cy="${p[1]}" r="2.5" class="ch-rate-dot"/>` : '').join('');
+  return `<svg class="an-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">
+    <title>Signed revenue by month, against goal, with close rate</title>
+    ${g}${bars}${goal}<path d="${path}" class="ch-rate"/>${dots}</svg>`;
+}
+
+/* Stacked bars per month — retail / insurance / commercial. */
+function svgStacked(rows, keys, W) {
+  const H = 200, L = 48, R = 8, T = 10, B = 30;
+  const iw = W - L - R, ih = H - T - B, n = rows.length || 1;
+  const max = _niceMax(Math.max(1000, ...rows.map(r => keys.reduce((s, [k]) => s + (r[k] || 0), 0))));
+  const bw = Math.max(4, Math.min(30, iw / n * 0.62));
+  const every = Math.ceil(n / Math.max(1, Math.floor(iw / 46)));
+  let out = '';
+  for (let k = 0; k <= 4; k++) {
+    const v = max * k / 4, yy = T + ih - v / max * ih;
+    out += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" class="ch-grid"/>` + _svgT(L - 6, yy + 4, _fmtK(v), 'text-anchor="end" class="ch-ax"');
+  }
+  rows.forEach((r, i) => {
+    const cx = L + (i + 0.5) * iw / n;
+    let base = T + ih;
+    keys.forEach(([k, label], j) => {
+      const h = (r[k] || 0) / max * ih;
+      if (h > 0) out += `<rect x="${cx - bw / 2}" y="${base - h}" width="${bw}" height="${h}" style="fill:${_CH[j]}"><title>${_monLabel(r.month, true)} ${label}: ${fmtCur(r[k])}</title></rect>`;
+      base -= h;
+    });
+    if (i % every === 0 || i === n - 1) out += _svgT(cx, H - B + 16, _monLabel(r.month, i === 0 || r.month.endsWith('-01')), 'text-anchor="middle" class="ch-ax"');
+  });
+  return `<svg class="an-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"><title>Signed revenue by estimate type</title>${out}</svg>`;
+}
+
+/* Funnel: each stage's bar is its share of Created, labelled with the step
+   conversion from the stage before it — the number a rep can act on. */
+function svgFunnel(steps, W) {
+  const rowH = 38, H = steps.length * rowH + 4, top = steps[0]?.val || 0;
+  const lw = 70, iw = W - lw - 90;
+  const out = steps.map((s, i) => {
+    const w = top ? Math.max(2, s.val / top * iw) : 2;
+    const x = lw + (iw - w) / 2, y = i * rowH + 4;
+    const prev = i ? steps[i - 1].val : null;
+    const conv = prev ? Math.round(s.val / prev * 100) + '%' : '';
+    return `<rect x="${x}" y="${y}" width="${w}" height="${rowH - 10}" rx="4" style="fill:${_CH[i]}"><title>${s.label}: ${s.val}</title></rect>`
+      + _svgT(lw - 8, y + rowH / 2, s.label, 'text-anchor="end" class="ch-lbl"')
+      + _svgT(lw + iw / 2, y + rowH / 2, s.val, 'text-anchor="middle" class="ch-in"')
+      + (conv ? _svgT(lw + iw + 10, y + rowH / 2, conv + ' of prev', 'class="ch-ax"') : '');
+  }).join('');
+  return `<svg class="an-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"><title>Conversion funnel</title>${out}</svg>`;
+}
+
+/* Horizontal bars: [{label, val, text, color?}] */
+function svgHBars(items, W, { fmt = _fmtK } = {}) {
+  const rowH = 26, H = Math.max(rowH, items.length * rowH), vw = 80;
+  // Label column sized to the longest label (~6.6px a character at 12px),
+  // never more than 45% of the chart, so a long reason is not cut off.
+  const lw = Math.min(W * 0.45, Math.max(60, ...items.map(it => String(it.label).length * 6.6 + 12)));
+  const iw = W - lw - vw - 8;
+  const max = Math.max(1, ...items.map(it => Math.abs(it.val || 0)));
+  const out = items.map((it, i) => {
+    const y = i * rowH, w = Math.max(0, Math.abs(it.val || 0) / max * iw);
+    const fit = Math.max(4, Math.floor((lw - 12) / 6.6));
+    const lbl = String(it.label).length > fit ? String(it.label).slice(0, fit - 1) + '…' : it.label;
+    return _svgT(lw - 8, y + rowH / 2 + 4, lbl, 'text-anchor="end" class="ch-lbl"')
+      + `<rect x="${lw}" y="${y + 5}" width="${w}" height="${rowH - 10}" rx="3" style="fill:${it.color || _CH[0]}"><title>${esc(it.label)}: ${esc(it.text ?? fmt(it.val))}</title></rect>`
+      + _svgT(lw + w + 6, y + rowH / 2 + 4, it.text ?? fmt(it.val), 'class="ch-ax"');
+  }).join('');
+  return `<svg class="an-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">${out}</svg>`;
+}
+
+/* 100% bars: one row per trade, segments per tier. */
+function svgMix(rows, W) {
+  const rowH = 30, H = Math.max(rowH, rows.length * rowH), lw = Math.min(110, W * 0.3), iw = W - lw - 8;
+  const TC = { good: _CH[1], better: _CH[0], best: _CH[2], flat: _CH[6] };
+  const out = rows.map((r, i) => {
+    const y = i * rowH, tot = r.segs.reduce((s, x) => s + x.count, 0) || 1;
+    let x = lw, segs = '';
+    r.segs.forEach(sg => {
+      const w = sg.count / tot * iw;
+      const pct = Math.round(sg.count / tot * 100);
+      segs += `<rect x="${x}" y="${y + 5}" width="${w}" height="${rowH - 10}" style="fill:${TC[sg.tier] || _CH[3]}"><title>${esc(r.label)} — ${cap(sg.tier)}: ${sg.count} job${sg.count === 1 ? '' : 's'} (${pct}%), ${fmtCur(sg.revenue)}</title></rect>`
+        + (w > 34 ? _svgT(x + w / 2, y + rowH / 2 + 4, `${cap(sg.tier)[0]} ${pct}%`, 'text-anchor="middle" class="ch-in"') : '');
+      x += w;
+    });
+    return _svgT(lw - 8, y + rowH / 2 + 4, r.label, 'text-anchor="end" class="ch-lbl"') + segs;
+  }).join('');
+  return `<svg class="an-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"><title>Package mix by trade</title>${out}</svg>`;
+}
+
+const _TRADE_LBL = {roofing:'🏠 Roofing',siding:'🏗 Siding',windows:'🪟 Windows',gutters:'🌧 Gutters',
+  commercial:'🏢 Commercial',other:'📦 Other',insurance:'🏛 Insurance'};
+
+function renderAnalyticsPage() {
+  const body = document.getElementById('analytics-body');
+  if (!body) return;
+  const ad = _analyticsData;
+  if (!ad) { loadAnalytics(); return; }
+  _anCharts = [];
+  const k   = ad.kpis || {};
+  const canAll = _meCanViewAll();
+  const [from, to] = _anRangeDates();
+  const fmtDay = d => d ? new Date(d + 'T12:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  const rangeLbl = from || to ? `${fmtDay(from) || 'the start'} – ${fmtDay(to) || 'today'}` : 'All time';
+
+  // ── Toolbar ────────────────────────────────────────────────────────
+  const presets = _AN_PRESETS.map(([key, l]) =>
+    `<button class="an-preset ${_anPreset === key ? 'active' : ''}" onclick="anSetPreset('${key}')">${l}</button>`).join('');
+  const repOpts = ['<option value="">All reps</option>']
+    .concat(_teamWith(_anRep).map(m => `<option value="${esc(m)}" ${m === _anRep ? 'selected' : ''}>${esc(cap(m))}</option>`)).join('');
+  const toolbar = `
+    <div class="an-toolbar">
+      <h2 class="board-title">📈 Sales Analytics</h2>
+      <div class="an-presets">${presets}</div>
+      ${_anPreset === 'custom' ? `<span class="an-custom">
+        <input type="date" value="${esc(_anFrom)}" onchange="anSetCustom('from',this.value)" aria-label="From">
+        <span>to</span>
+        <input type="date" value="${esc(_anTo)}" onchange="anSetCustom('to',this.value)" aria-label="To"></span>` : ''}
+      ${canAll ? `<select class="board-filter" onchange="anSetRep(this.value)">${repOpts}</select>` : ''}
+      <span class="board-toolbar-end">
+        <button class="board-tool-btn" onclick="openDashboard()">📊 Job Board</button>
+        <button class="board-tool-btn" onclick="loadAnalytics(true)" title="Refresh data">↺</button>
+      </span>
+    </div>
+    <div class="an-context">
+      <span>${esc(rangeLbl)}</span>
+      ${_anRep ? `<span class="an-rep-chip">👤 ${esc(cap(_anRep))}${canAll
+        ? ` <button onclick="anSetRep('')" title="Back to the whole team">← All reps</button>` : ''}</span>` : ''}
+      ${!canAll ? '<span class="mon-dim">Your own numbers</span>' : ''}
+    </div>`;
+
+  // ── KPI tiles ──────────────────────────────────────────────────────
+  const tile = (val, lbl, sub, cls = '') => `<div class="an-kpi ${cls}">
+      <div class="an-kpi-val">${val}</div><div class="an-kpi-lbl">${lbl}</div><div class="an-kpi-sub">${sub}</div></div>`;
+  const kpis = `<div class="an-kpis">
+    ${tile(_fmtK(k.revenue || 0), 'Signed revenue', `${k.jobs || 0} job${k.jobs === 1 ? '' : 's'}`, 'is-rev')}
+    ${tile(fmtCur(k.avg_deal || 0), 'Avg deal', 'per signed job')}
+    ${tile(k.close_rate != null ? k.close_rate + '%' : '—', 'Close rate', `of ${k.sent || 0} sent in range`,
+           k.close_rate != null ? _clr(k.close_rate) : '')}
+    ${tile(k.avg_days_to_close != null ? k.avg_days_to_close + 'd' : '—', 'Days to close', 'sent → signed')}
+    ${tile(k.margin_pct != null ? k.margin_pct + '%' : '—', 'Margin', 'on costed jobs')}
+    ${tile(k.upgrade_attach != null ? k.upgrade_attach + '%' : '—', 'Upgrade attach',
+           `${(ad.upgrades || {}).elected || 0} of ${(ad.upgrades || {}).offered || 0} offered`)}
+    ${tile(_fmtK(k.pipeline || 0), 'Open pipeline', `${k.pipeline_count || 0} out now`)}
+    ${tile(_fmtK(ad.ytd_revenue || 0), 'Year to date', String(new Date().getFullYear()))}
+  </div>`;
+
+  const un = ad.unassigned || {count:0, value:0};
+  const unassignedHtml = un.count ? `
+    <div class="an-card an-wide analytics-unassigned">
+      ⚠️ <strong>${un.count} estimate${un.count!==1?'s':''} worth ${fmtCur(un.value)}</strong>
+      ${un.count!==1?'are':'is'} missing a salesperson and ${un.count!==1?'are':'is'}
+      excluded from everything on this page. Assign ${un.count!==1?'them':'it'} and these
+      numbers get more accurate.
+    </div>` : '';
+
+  // ── Funnel + why we lost ───────────────────────────────────────────
+  const fn = ad.funnel || {total:0,sent:0,viewed:0,signed:0,lost:0};
+  const steps = [{label:'Created',val:fn.total},{label:'Sent',val:fn.sent},{label:'Viewed',val:fn.viewed},{label:'Signed',val:fn.signed}];
+  // 'unrecorded' is shown rather than hidden: estimates marked lost before the
+  // picker existed have no reason, and dropping them would quietly inflate the
+  // share of every reason that IS recorded.
+  const lrLabels = ad.lost_reason_labels || {};
+  const lrRows = Object.entries(ad.lost_reasons || {}).sort((a,b) => b[1].count - a[1].count);
+  const funnelCard = `<div class="an-card">
+      <h4 class="analytics-h">Conversion funnel</h4>
+      ${fn.total ? _chartSlot(W => svgFunnel(steps, W), 160) : '<p class="mon-dim">No estimates in this range.</p>'}
+      ${fn.lost ? `<div class="funnel-declined">✗ ${fn.lost} lost</div>` : ''}
+      ${lrRows.length ? `<h4 class="analytics-h" style="margin-top:14px">Why we lost</h4>
+        ${_chartSlot(W => svgHBars(lrRows.map(([key, d]) => ({
+          label: key === 'unrecorded' ? 'No reason' : (lrLabels[key] || key).split(' — ')[0],
+          val: d.count, text: `${d.count} · ${_fmtK(d.value)}`, color: '#dc2626' })), W), lrRows.length * 26)}` : ''}
+    </div>`;
+
+  // ── Pipeline aging (a snapshot of now) ─────────────────────────────
+  const pa = ad.pipeline_aging || {};
+  const aging = [['fresh','Fresh 0–3d','#16a34a'],['active','Active 4–14d','#0284c7'],
+                 ['stale','Stale 15–30d','#ea580c'],['cold','Cold 30+d','#dc2626']];
+  const agingCard = `<div class="an-card">
+      <h4 class="analytics-h">Open pipeline by age <span class="analytics-pct">${fmtCur(k.pipeline || 0)} · right now</span></h4>
+      ${_chartSlot(W => svgHBars(aging.map(([key, l, c]) => ({ label: l, val: (pa[key] || {}).value || 0,
+        text: `${(pa[key] || {}).count || 0} · ${_fmtK((pa[key] || {}).value || 0)}`, color: c })), W), 110)}
+    </div>`;
+
+  // ── Mix: type by month, package by trade ───────────────────────────
+  const monthly = (ad.monthly || []).slice(-_monRange);
+  const typeKeys = [['retail','Retail'],['insurance','Insurance'],['commercial','Commercial']];
+  const bt = ad.by_type || {}, avgT = ad.avg_ticket_by_type || {};
+  const typeLegend = typeKeys.map(([key, l], j) => `<span><i class="mon-key" style="background:${_CH[j]}"></i>${l}
+      <strong>${_fmtK((bt[key] || {}).revenue || 0)}</strong>
+      <span class="mon-dim">${(bt[key] || {}).count || 0} jobs · avg ${avgT[key] != null ? _fmtK(avgT[key]) : '—'}</span></span>`).join('');
+  const mixCard = `<div class="an-card">
+      <h4 class="analytics-h">Revenue by type <span class="analytics-pct">by month signed</span></h4>
+      ${_chartSlot(W => svgStacked(monthly, typeKeys, W), 200)}
+      <div class="mon-legend an-legend">${typeLegend}</div>
+    </div>`;
+  const tierRows = Object.entries(ad.by_tier || {}).map(([tk, tiers]) => ({
+    label: (_TRADE_LBL[tk] || tk).replace(/^\S+\s/, ''),
+    segs: ['good', 'better', 'best', 'flat'].filter(t => tiers[t]).map(t => ({ tier: t, ...tiers[t] })),
+  })).filter(r => r.segs.length);
+  const tierCard = `<div class="an-card">
+      <h4 class="analytics-h">Package mix <span class="analytics-pct">which tier customers bought</span></h4>
+      ${tierRows.length ? _chartSlot(W => svgMix(tierRows, W), tierRows.length * 30) : '<p class="mon-dim">No signed jobs in this range.</p>'}
+      <div class="mon-legend an-legend">
+        <span><i class="mon-key" style="background:${_CH[1]}"></i>Good</span>
+        <span><i class="mon-key" style="background:${_CH[0]}"></i>Better</span>
+        <span><i class="mon-key" style="background:${_CH[2]}"></i>Best</span>
+        <span><i class="mon-key" style="background:${_CH[6]}"></i>Flat price</span>
+      </div>
+    </div>`;
+
+  // ── Margin by trade ────────────────────────────────────────────────
+  const trades = Object.entries(ad.by_trade || {}).sort((a,b) => b[1].revenue - a[1].revenue);
+  const tRev = trades.reduce((s, [, d]) => s + d.revenue, 0);
+  const tradeRows = trades.map(([tk, d]) => `<tr>
+      <td><strong>${_TRADE_LBL[tk] || esc(tk)}</strong></td>
+      <td class="analytics-num">${d.job_count}</td>
+      <td class="analytics-num analytics-rev">${fmtCur(d.revenue)} <span class="analytics-pct">${tRev ? Math.round(d.revenue / tRev * 100) : 0}%</span></td>
+      <td class="analytics-num">${d.margin_pct != null ? `<span class="analytics-margin-badge">${d.margin_pct}%</span>` : '—'}</td>
+      <td class="analytics-num analytics-pipe">${fmtCur(d.pipeline)} <span class="mon-dim">(${d.pipeline_count})</span></td>
+    </tr>`).join('');
+  const marginItems = trades.filter(([, d]) => d.margin_pct != null)
+    .map(([tk, d]) => ({ label: (_TRADE_LBL[tk] || tk).replace(/^\S+\s/, ''), val: d.margin_pct,
+      text: d.margin_pct + '%', color: d.margin_pct >= 35 ? '#16a34a' : d.margin_pct >= 30 ? '#e88400' : '#dc2626' }));
+  const tradeCard = `<div class="an-card an-wide">
+      <h4 class="analytics-h">Trades — revenue &amp; margin</h4>
+      <div class="an-split">
+        <div>${marginItems.length ? _chartSlot(W => svgHBars(marginItems, W), marginItems.length * 26)
+          : '<p class="mon-dim">No costed jobs in this range.</p>'}</div>
+        <div class="analytics-table-wrap"><table class="analytics-table">
+          <thead><tr><th>Trade</th><th>Jobs</th><th>Revenue</th><th>Margin</th><th>Pipeline</th></tr></thead>
+          <tbody>${tradeRows || '<tr><td colspan="5" class="mon-dim" style="text-align:center;padding:16px">No data yet</td></tr>'}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+
+  // ── Upgrades & change orders ───────────────────────────────────────
+  const up = ad.upgrades || {}, co = ad.change_orders || {};
+  const extrasCard = `<div class="an-card">
+      <h4 class="analytics-h">Upgrades &amp; change orders</h4>
+      <div class="an-minis">
+        ${tile(up.offered ? Math.round(up.elected / up.offered * 100) + '%' : '—', 'Upgrade attach', `${up.elected || 0} of ${up.offered || 0} jobs offered one`)}
+        ${tile(_fmtK(up.revenue || 0), 'Upgrade revenue', 'elected by customers')}
+        ${tile(co.count || 0, 'Change orders', 'signed in range')}
+        ${tile(_fmtK(co.value || 0), 'CO revenue', co.share_pct != null ? `${co.share_pct}% on top of contracts` : 'none yet')}
+      </div>
+    </div>`;
+
+  // ── Job stages after signature ─────────────────────────────────────
+  const js = ad.job_stages || { stages: [] };
+  const stageColors = ['#e88400', '#2563a8', '#8b5cf6', '#16a34a'];
+  const jobsCard = `<div class="an-card">
+      <h4 class="analytics-h">Signed jobs by stage</h4>
+      ${js.stages.some(s => s.count) ? _chartSlot(W => svgHBars(js.stages.map((s, i) => ({
+          label: s.label.split(' — ')[0], val: s.count, text: `${s.count} · ${_fmtK(s.value)}`,
+          color: stageColors[i % stageColors.length] })), W), js.stages.length * 26)
+        : '<p class="mon-dim">No signed jobs in this range.</p>'}
+      <div class="an-minis">
+        ${tile(js.avg_days_to_schedule != null ? js.avg_days_to_schedule + 'd' : '—', 'Signed → scheduled', 'average')}
+        ${tile(js.avg_days_to_complete != null ? js.avg_days_to_complete + 'd' : '—', 'Signed → complete', 'average')}
+      </div>
+    </div>`;
+
+  // ── Rep leaderboard — click a rep to drill in ──────────────────────
+  const repEntries = Object.entries(ad.by_rep || {}).filter(([,d]) => d.sent > 0 || d.revenue > 0);
+  const maxRevRep = Math.max(1, ...repEntries.map(([,d]) => d.revenue));
+  const sorted = [...repEntries].sort((a,b) => {
+    if (_analyticsSort === 'close_rate') return (b[1].close_rate ?? 0) - (a[1].close_rate ?? 0);
+    if (_analyticsSort === 'margin')     return (b[1].margin_pct ?? -1) - (a[1].margin_pct ?? -1);
+    return b[1].revenue - a[1].revenue;
+  });
+  const sortBtns = ['revenue','close_rate','margin'].map(s =>
+    `<button class="analytics-sort-btn ${_analyticsSort===s?'active':''}" onclick="anSetSort('${s}')">${
+      {revenue:'Revenue',close_rate:'Close %',margin:'Margin'}[s]}</button>`).join('');
+  const repRows = sorted.map(([name,d],idx) => {
+    const medal = idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':`#${idx+1}`;
+    return `<tr class="${canAll ? 'an-rep-row' : ''}" ${canAll ? `onclick="anSetRep('${jsq(name)}')" title="Drill into ${esc(cap(name))}"` : ''}>
       <td><span class="rep-rank">${medal}</span> <strong>${esc(cap(name))}</strong></td>
       <td class="analytics-num">${d.sent}</td>
       <td class="analytics-num">${d.signed}</td>
-      <td class="analytics-num"><span class="a-rate-badge ${crCls}">${d.close_rate??0}%</span></td>
-      <td class="analytics-num analytics-rev">${fmtCur(d.revenue)}
-        ${_pbar(d.revenue,maxRevRep,'a-bar-rev')}</td>
+      <td class="analytics-num"><span class="a-rate-badge ${_clr(d.close_rate||0)}">${d.close_rate??0}%</span></td>
+      <td class="analytics-num analytics-rev">${fmtCur(d.revenue)} ${_pbar(d.revenue,maxRevRep,'a-bar-rev')}</td>
       <td class="analytics-num">${fmtCur(d.avg_deal||0)}</td>
-      <td class="analytics-num">${dtc}</td>
-      <td class="analytics-num">${m}</td>
+      <td class="analytics-num">${d.avg_days_to_close!=null ? d.avg_days_to_close+'d' : '—'}</td>
+      <td class="analytics-num">${d.margin_pct!=null ? `<span class="analytics-margin-badge">${d.margin_pct}%</span>` : '—'}</td>
       <td class="analytics-num analytics-pipe">${fmtCur(d.pipeline)}</td>
-      <td class="analytics-num">${stCell}</td>
+      <td class="analytics-num">${d.stale ? `<span class="analytics-stale-badge">${d.stale}</span>` : '—'}</td>
     </tr>`;
   }).join('');
-
-  // ── Trade breakdown ──────────────────────────────────────────────────
-  const tl = {roofing:'🏠 Roofing',siding:'🏗 Siding',windows:'🪟 Windows',gutters:'🌧 Gutters',commercial:'🏢 Commercial',other:'📦 Other'};
-  const maxTrade = Math.max(1,...Object.values(ad.by_trade).map(d=>d.revenue));
-  const tradeRows = Object.entries(ad.by_trade).sort((a,b)=>b[1].revenue-a[1].revenue).map(([tk,d])=>{
-    const m = d.margin_pct!=null?`<span class="analytics-margin-badge">${d.margin_pct}%</span>`:'—';
-    const pct = totalRev>0?Math.round(d.revenue/totalRev*100):0;
-    return `<tr>
-      <td><strong>${tl[tk]||tk}</strong></td>
-      <td class="analytics-num">${d.job_count}</td>
-      <td class="analytics-num analytics-rev">${fmtCur(d.revenue)}
-        <span class="analytics-pct">${pct}%</span>
-        ${_pbar(d.revenue,maxTrade,'a-bar-rev')}</td>
-      <td class="analytics-num">${m}</td>
-      <td class="analytics-num analytics-pipe">${fmtCur(d.pipeline)} <span style="font-size:10px;color:#94a3b8">(${d.pipeline_count})</span></td>
-    </tr>`;
-  }).join('');
-
-  const nd = (n)=>`<tr><td colspan="${n}" style="text-align:center;color:#94a3b8;padding:16px">No data yet</td></tr>`;
-
-  return `
-    <!-- ── KPI Cards ──────────────────────────────────────── -->
-    <div class="analytics-cards a-cards-6">
-      <div class="analytics-card analytics-card-rev">
-        <div class="analytics-card-val">${fmtCur(totalRev)}</div>
-        <div class="analytics-card-lbl">Total Revenue</div>
-        <div class="analytics-card-sub">${allSigned.length} jobs closed</div>
-      </div>
-      <div class="analytics-card analytics-card-month">
-        <div class="analytics-card-val">${fmtCur(ytdRev)}</div>
-        <div class="analytics-card-lbl">YTD Revenue</div>
-        <div class="analytics-card-sub">${new Date().getFullYear()}</div>
-      </div>
-      <div class="analytics-card" style="background:#eff6ff;border-color:#bfdbfe">
-        <div class="analytics-card-val">${fmtCur(rev30)}</div>
-        <div class="analytics-card-lbl">Last 30 Days</div>
-        <div class="analytics-card-sub">${s30.length} jobs</div>
-      </div>
-      <div class="analytics-card analytics-card-q">
-        <div class="analytics-card-val">${fmtCur(avgDeal)}</div>
-        <div class="analytics-card-lbl">Avg Deal Size</div>
-        <div class="analytics-card-sub">per signed job</div>
-      </div>
-      <div class="analytics-card analytics-card-rate">
-        <div class="analytics-card-val">${closeRate}%</div>
-        <div class="analytics-card-lbl">Close Rate</div>
-        <div class="analytics-card-sub">${allSigned.length} of ${allSent.length} sent</div>
-      </div>
-      <div class="analytics-card" style="background:#f5f3ff;border-color:#ddd6fe">
-        <div class="analytics-card-val" style="color:#7c3aed">${avgDTC!=null?avgDTC+'d':'—'}</div>
-        <div class="analytics-card-lbl">Avg Days to Close</div>
-        <div class="analytics-card-sub">sent → signed</div>
-      </div>
-    </div>
-
-    <!-- ── Row 2: Funnel + Pipeline + Type ───────────────── -->
-    <div class="a-row-3">
-      <div class="analytics-section a-card">
-        <h4 class="analytics-h">Conversion Funnel</h4>
-        ${funnelHtml}
-        ${lostHtml}
-      </div>
-      <div class="analytics-section a-card">
-        <h4 class="analytics-h">Pipeline Health <span class="analytics-pct">${fmtCur(pipelineVal)}</span></h4>
-        ${agingHtml || '<p style="color:#94a3b8;font-size:12px;padding:8px 0">No open pipeline</p>'}
-      </div>
-      <div class="analytics-section a-card">
-        <h4 class="analytics-h">Retail vs Insurance</h4>
-        ${typeHtml || '<p style="color:#94a3b8;font-size:12px;padding:8px 0">No data</p>'}
-        ${cities.length ? `<h4 class="analytics-h" style="margin-top:14px">Top Markets</h4>${cityRows}` : ''}
-      </div>
-    </div>
-
-    <!-- ── Monthly Trends & Goals ─────────────────────────── -->
-    ${renderMonthlyTrends(ad)}
-
-    <!-- ── Rep Leaderboard ────────────────────────────────── -->
-    <div class="analytics-section a-card">
+  const repCard = _anRep && !canAll ? '' : `<div class="an-card an-wide">
       <div class="analytics-sort-bar" style="margin-bottom:10px">
-        <h4 class="analytics-h" style="margin:0">Rep Leaderboard</h4>
+        <h4 class="analytics-h" style="margin:0">Rep leaderboard ${canAll && !_anRep ? '<span class="mon-dim">— click a rep to drill in</span>' : ''}</h4>
         <span class="analytics-sort-lbl" style="margin-left:auto">Sort:</span>${sortBtns}
-        <button class="analytics-refresh-btn" onclick="_analyticsData=null;dashSetView('analytics')" title="Refresh data">↺</button>
       </div>
-      <div class="analytics-table-wrap">
-      <table class="analytics-table">
-        <thead><tr>
-          <th>Rep</th><th>Sent</th><th>Signed</th><th>Close %</th>
-          <th>Revenue</th><th>Avg Deal</th><th>Avg Close</th>
-          <th>Margin</th><th>Pipeline</th><th title="Cold estimates">Stale</th>
-        </tr></thead>
-        <tbody>${repRows || nd(10)}</tbody>
-      </table>
-      </div>
-    </div>
-
-    <!-- ── Revenue by Trade ───────────────────────────────── -->
-    <div class="analytics-section a-card">
-      <h4 class="analytics-h">Revenue by Trade</h4>
-      <div class="analytics-table-wrap">
-      <table class="analytics-table">
-        <thead><tr><th>Trade</th><th>Jobs</th><th>Revenue</th><th>Avg Margin</th><th>Pipeline</th></tr></thead>
-        <tbody>${tradeRows || nd(5)}</tbody>
-      </table>
-      </div>
+      <div class="analytics-table-wrap"><table class="analytics-table">
+        <thead><tr><th>Rep</th><th>Sent</th><th>Signed</th><th>Close %</th><th>Revenue</th><th>Avg Deal</th>
+          <th>Avg Close</th><th>Margin</th><th>Pipeline</th><th title="Sent 3+ days, not signed">Stale</th></tr></thead>
+        <tbody>${repRows || '<tr><td colspan="10" class="mon-dim" style="text-align:center;padding:16px">No data yet</td></tr>'}</tbody>
+      </table></div>
     </div>`;
+
+  // ── Top markets ────────────────────────────────────────────────────
+  const cities = ad.top_cities || [];
+  const cityCard = cities.length ? `<div class="an-card">
+      <h4 class="analytics-h">Top markets</h4>
+      ${_chartSlot(W => svgHBars(cities.map(([c, v]) => ({ label: c, val: v, color: '#8b5cf6' })), W), cities.length * 26)}
+    </div>` : '';
+
+  body.innerHTML = `${toolbar}
+    ${kpis}
+    <div class="an-grid">
+      ${unassignedHtml}
+      <div class="an-wide">${renderMonthlyTrends(ad)}</div>
+      ${funnelCard}${agingCard}${jobsCard}
+      ${mixCard}${tierCard}${extrasCard}
+      ${tradeCard}
+      ${repCard}
+      ${cityCard}
+    </div>`;
+  requestAnimationFrame(_drawCharts);
 }
 
 /* ── Monthly trends & sales goals ─────────────────────────────────────
@@ -9589,7 +12391,7 @@ function renderMonthlyTrends(ad) {
 
   const rangeBtns = [6, 12, 24].map(n =>
     `<button class="analytics-sort-btn ${_monRange === n ? 'active' : ''}"
-      onclick="_monRange=${n};renderDashboard()">${n}m</button>`).join('');
+      onclick="anSetMonRange(${n})">${n}m</button>`).join('');
 
   // ── Current month vs goal ──────────────────────────────────────────
   const hasGoal = (cm.goal || 0) > 0;
@@ -9645,32 +12447,6 @@ function renderMonthlyTrends(ad) {
         </div>
       </div>`}
     </div>`;
-
-  // ── Bars: revenue against that month's goal line ───────────────────
-  const scale = Math.max(1, ...rows.map(r => Math.max(r.revenue, r.goal || 0)));
-  const bars = rows.map((r, i) => {
-    const h    = Math.round(r.revenue / scale * 100);
-    const gh   = r.goal > 0 ? Math.min(100, Math.round(r.goal / scale * 100)) : null;
-    const cls  = _goalCls(r.pct_to_goal);
-    const isCur = r.month === cm.month;
-    return `<div class="mon-bar-wrap" title="${_monLabel(r.month, true)} — ${fmtCur(r.revenue)}${
-        r.goal > 0 ? ` of ${fmtCur(r.goal)} goal (${r.pct_to_goal}%)` : ''}">
-      <div class="mon-bar-track">
-        <div class="mon-bar-fill ${cls} ${isCur ? 'is-current' : ''}" style="height:${h}%"></div>
-        ${gh != null ? `<div class="mon-goal-line" style="bottom:${gh}%"></div>` : ''}
-      </div>
-      <!-- Year on the first bar and every January, so a 24-month view doesn't
-           show two unlabelled "Apr"s. -->
-      <div class="mon-bar-lbl ${isCur ? 'is-current' : ''}">${
-        _monLabel(r.month, i === 0 || r.month.endsWith('-01'))}</div>
-      <div class="mon-bar-val">${_fmtK(r.revenue)}</div>
-      ${r.pct_to_goal != null
-        ? `<div class="mon-bar-growth ${r.pct_to_goal >= 100 ? 'pos' : 'neg'}">${r.pct_to_goal}%</div>`
-        : r.mom_pct != null
-        ? `<div class="mon-bar-growth ${r.mom_pct >= 0 ? 'pos' : 'neg'}">${r.mom_pct >= 0 ? '+' : ''}${r.mom_pct}%</div>`
-        : '<div class="mon-bar-growth">&nbsp;</div>'}
-    </div>`;
-  }).join('');
 
   // ── Detail table ───────────────────────────────────────────────────
   const dlt = (v, suffix = '%') => v == null ? '<span class="mon-dim">—</span>'
@@ -9731,12 +12507,14 @@ function renderMonthlyTrends(ad) {
         ${canEdit ? `<button class="btn-goal-edit" onclick="openGoalEditor()">🎯 Set Goals</button>` : ''}
       </div>
       ${hero}
-      ${rows.length ? `<div class="mon-bars mon-bars-lg mon-bars-goal">${bars}</div>
+      ${rows.length ? `${_chartSlot(W => svgTrend(rows, W), 240)}
       <div class="mon-legend">
         <span><i class="mon-key g-hit"></i>goal met</span>
         <span><i class="mon-key g-near"></i>80–99%</span>
         <span><i class="mon-key g-miss"></i>under 80%</span>
+        <span><i class="mon-key g-none"></i>no goal</span>
         <span><i class="mon-key-line"></i>month's goal</span>
+        <span><i class="mon-key-rate"></i>close rate (right axis)</span>
       </div>` : '<p class="mon-dim" style="padding:8px 0">No signed estimates yet.</p>'}
       ${benchLine}
       <div class="analytics-table-wrap" style="margin-top:12px">
@@ -9900,8 +12678,7 @@ async function saveGoals() {
     });
     if (!r.ok) throw new Error(r.status === 403 ? 'Managers only' : 'Save failed');
     closeGoalEditor();
-    _analyticsData = null;      // goals change every % on the panel — refetch
-    await dashSetView('analytics');
+    await loadAnalytics(true);  // goals change every % on the page — refetch
     toast('🎯 Goals saved');
   } catch (e) {
     alert('Could not save goals: ' + e.message);
@@ -10246,7 +13023,8 @@ async function newEstimateForCustomer(name, label, type) {
   const existing = _dashData
     .filter(e=>custKey(e.customer_name)===custKey(name))
     .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''))[0];
-  newEstimateAction();
+  if (!(await newEstimateAction())) return;
+  const owner = S;
   S.customer.name  = name;
   S.estimate_label = label || '';
   if (type) setEstimateType(type);
@@ -10254,8 +13032,9 @@ async function newEstimateForCustomer(name, label, type) {
   if (existing) {
     try {
       const r = await fetch(`/api/estimates/${existing.estimate_id}`);
-      if (r.ok) {
+      if (r.ok && S === owner) {
         const full = await r.json();
+        if (S !== owner) return;
         const c = full.customer || {};
         if(c.phone)  { S.customer.phone=c.phone; }
         if(c.email)  { S.customer.email=c.email; }
@@ -10269,11 +13048,63 @@ async function newEstimateForCustomer(name, label, type) {
       }
     } catch {}
   }
+  if (S !== owner) return;
   setVal('cust-name', name);
   setDirty(); renderSidebar(); renderCoverPage();
 }
 
 /* ── Settings ───────────────────────────────────────────────────────── */
+
+/* Settings was one long scroll of eight unrelated editors — shingle colours
+   above permit jurisdictions above ASCE fastener densities above the contract
+   text. Tabs, in the order a person actually reaches for them.
+
+   This is also what makes the role gating real. Each gated pane carried a
+   `hidden` class, but style.css has no global `.hidden` utility (it says so at
+   line 2397 — every use there is scoped to a specific component), so
+   `.field-group.hidden` matched nothing and every rep had been looking at the
+   admin-only contract editor. Panes are now shown by an explicit rule that
+   requires BOTH the active tab and the absence of `hidden`. */
+const SETTINGS_TABS = [
+  ['settings-general',       '🎨 General'],
+  ['settings-margin',        '💰 Margin'],
+  ['settings-crew',          '👷 Crew Docs'],
+  ['settings-gbb',           '📦 Packages'],
+  ['settings-company',       '🏠 Proposal'],
+  ['settings-contract',      '📜 Contract'],
+  ['settings-jurisdictions', '🏛 Permits'],
+  ['settings-fastening',     '🔩 Fastening'],
+  ['settings-demo',          '🎬 Demo Link'],
+  ['settings-import-failures', '📥 Import Failures'],
+];
+
+function renderSettingsTabs() {
+  const strip = document.getElementById('settings-tabs');
+  if (!strip) return;
+  // Role gating has already run and removed `hidden` from what this user may
+  // see, so the panes still carrying it are the ones with no tab.
+  const shown = SETTINGS_TABS.filter(([id]) => {
+    const el = document.getElementById(id);
+    return el && !el.classList.contains('hidden');
+  });
+  strip.innerHTML = shown.map(([id, label]) =>
+    `<button type="button" class="settings-tab" data-pane="${id}"
+       onclick="showSettingsTab('${id}')">${label}</button>`).join('');
+  strip.style.display = shown.length > 1 ? '' : 'none';
+  if (shown.length) showSettingsTab(shown[0][0]);
+}
+
+function showSettingsTab(paneId) {
+  SETTINGS_TABS.forEach(([id]) => {
+    document.getElementById(id)?.classList.toggle('is-active', id === paneId);
+  });
+  document.querySelectorAll('#settings-tabs .settings-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.pane === paneId);
+  });
+  // A tab switch is a new screen, not a scroll position on the old one.
+  const body = document.querySelector('#settings-modal .settings-body');
+  if (body) body.scrollTop = 0;
+}
 
 async function openSettings() {
   try {
@@ -10283,6 +13114,19 @@ async function openSettings() {
   document.getElementById('settings-colors').value = _globalShingleColors().join('\n');
   document.getElementById('settings-waste').value  = _globalWastePct();
   if (_meCanViewAll()) {
+    // Margin floors are manager-up, matching PUT /api/settings' own gate — a
+    // rep must not be able to lower the floor that constrains them.
+    document.getElementById('settings-margin').classList.remove('hidden');
+    document.getElementById('settings-crew').classList.remove('hidden');
+    // Absent means ON: the crew that cannot read the English sheet is the
+    // reason this exists, so it has to be the default rather than something
+    // somebody remembers to switch on.
+    document.getElementById('set-wo-bilingual').checked =
+      appSettings.work_order_bilingual !== false;
+    document.getElementById('set-margin-warn').value =
+      appSettings.margin_floor_warn ?? '';
+    document.getElementById('set-margin-block').value =
+      appSettings.margin_floor_block ?? '';
     document.getElementById('settings-gbb').classList.remove('hidden');
     try {
       const r = await fetch('/api/tier-defaults');
@@ -10297,7 +13141,13 @@ async function openSettings() {
     document.getElementById('settings-company').classList.remove('hidden');
     try {
       const r = await fetch('/api/company-content');
-      _fillCompanyContent(await r.json() || {});
+      const cc = await r.json() || {};
+      _fillCompanyContent(cc);
+      // A rebuilt volume comes up with these empty and nothing says so — the
+      // proposals just go out thinner. Say so, here, where it gets fixed.
+      const warn = document.getElementById('cc-empty-warn');
+      if (warn) warn.style.display =
+        Object.values(cc).some(v => v && Object.keys(v).length) ? 'none' : 'block';
     } catch { _fillCompanyContent({}); }
     // Contract & initials defaults — prefill with the effective text (saved
     // global default or, before one exists, the built-in stock text) so the
@@ -10311,8 +13161,104 @@ async function openSettings() {
     // leave it blank when nothing is, so "blank = use retail" stays honest.
     document.getElementById('set-contract-comm').value   = appSettings.contract_commercial || '';
     document.getElementById('set-initials-comm').value   = (appSettings.initials_commercial || []).join('\n');
+    document.getElementById('settings-demo').classList.remove('hidden');
+    await refreshDemoLink();
+    // Admin, not manager-up: every kept PDF is a homeowner's claim.
+    document.getElementById('settings-import-failures').classList.remove('hidden');
+    await refreshCarrierFailures();
   }
+  // Last: the strip is built from whichever panes the gating above unhid.
+  renderSettingsTabs();
   document.getElementById('settings-modal').classList.remove('hidden');
+}
+
+/* ── Demo link (⚙ Settings → 🎬 Demo Link, admin only) ──────────────────
+   The link that opens this tool with sample data for someone outside the
+   company. See portal/demo.py and estimator/demo_store.py.
+
+   Every button here acts immediately against /api/demo-link rather than
+   staging into appSettings for ✓ Save Settings: a Create that only takes
+   effect after a second click somewhere else is how you copy a URL that does
+   not work yet, and a Revoke that waits is worse — the whole reason to press
+   it is that the link is already somewhere it should not be. */
+let _demoLinkUrl = '';
+
+function _renderDemoLink(d) {
+  _demoLinkUrl = (d && d.url) || '';
+  const state  = document.getElementById('demo-link-state');
+  const create = document.getElementById('demo-link-create');
+  const copy   = document.getElementById('demo-link-copy');
+  const revoke = document.getElementById('demo-link-revoke');
+  if (!state) return;
+
+  if (!d || !d.enabled) {
+    state.innerHTML = '<span class="note-tag">No demo link yet — nobody can '
+      + 'open the demo.</span>';
+    create.textContent = '🔗 Create demo link';
+    create.style.display = '';
+    copy.style.display = revoke.style.display = 'none';
+    return;
+  }
+  // The URL is shown in full and selectable: the point of this pane is to get
+  // it into a text message, and Copy can fail outright on a non-secure origin.
+  state.innerHTML =
+    `<input type="text" readonly id="demo-link-url" value="${esc(_demoLinkUrl)}"
+       onclick="this.select()" style="width:100%;font-family:monospace;font-size:12px">
+     <span class="note-tag">Live now, opens as a ${esc(d.role || 'rep')}. `
+    + (d.env_override
+        ? 'Set by the P1_DEMO_TOKEN environment variable — Revoke cannot clear it.'
+        : 'Creating a new one immediately kills this URL.')
+    + '</span>';
+  create.textContent = '♻ Rotate link';
+  create.style.display = d.env_override ? 'none' : '';
+  copy.style.display = '';
+  revoke.style.display = d.env_override ? 'none' : '';
+}
+
+async function refreshDemoLink() {
+  try {
+    const r = await fetch('/api/demo-link');
+    _renderDemoLink(r.ok ? await r.json() : null);
+  } catch { _renderDemoLink(null); }
+}
+
+async function createDemoLink() {
+  // Rotating is destructive to a URL that may already be in somebody's inbox,
+  // so it asks; creating the first one is not.
+  if (_demoLinkUrl &&
+      !confirm('Create a new demo link?\n\nThe current one stops working immediately, '
+               + 'including for anyone you have already sent it to.')) return;
+  try {
+    const r = await fetch('/api/demo-link', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not create the link');
+    _renderDemoLink(d);
+    toast('✓ Demo link ready — copy it below');
+  } catch (e) { alert(e.message); }
+}
+
+async function revokeDemoLink() {
+  if (!confirm('Switch the demo off?\n\nThe link stops working for everyone.')) return;
+  try {
+    const r = await fetch('/api/demo-link', { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not revoke the link');
+    _renderDemoLink(d);
+    toast('✓ Demo switched off');
+  } catch (e) { alert(e.message); }
+}
+
+async function copyDemoLink() {
+  const input = document.getElementById('demo-link-url');
+  try {
+    await navigator.clipboard.writeText(_demoLinkUrl);
+    toast('✓ Link copied');
+  } catch {
+    // clipboard is unavailable on http:// origins and in some in-app browsers —
+    // select it so the admin can copy by hand rather than getting nothing.
+    if (input) { input.focus(); input.select(); }
+    toast('Select the link above and copy it');
+  }
 }
 
 /* Global G/B/B package content editor (⚙ Settings, manager+). Edits a working
@@ -10608,6 +13554,20 @@ async function saveSettings() {
     shingle_colors: colors,
     default_waste_pct: isNaN(waste) ? 10 : waste,
   };
+  if (_meCanViewAll()) {
+    // Blank means "use the built-in default" (30 / 20), which is why these are
+    // stored as null rather than 0 — 0 is a real value meaning "switched off".
+    const floor = id => {
+      const raw = (document.getElementById(id).value || '').trim();
+      if (raw === '') return null;
+      const n = parseFloat(raw);
+      return (isNaN(n) || n < 0 || n >= 100) ? null : n;
+    };
+    appSettings.margin_floor_warn  = floor('set-margin-warn');
+    appSettings.margin_floor_block = floor('set-margin-block');
+    appSettings.work_order_bilingual =
+      document.getElementById('set-wo-bilingual').checked;
+  }
   if (_meIsAdmin()) {
     const lines = id => document.getElementById(id).value.split('\n').map(s => s.trim()).filter(Boolean);
     appSettings.contract_retail    = document.getElementById('set-contract-retail').value.trim();
@@ -10664,14 +13624,12 @@ async function saveSettings() {
       });
       if (!r2.ok) throw new Error('Company content save failed');
     }
-    // Refresh the current estimate's color options if untouched from defaults
-    if (S.shingle_selection && !S.signature) {
-      S.shingle_selection.options = _globalShingleColors();
-      setDirty();
-      if (activePage === 'contract') renderContractPage();
-    }
+    // The Settings color list is a FALLBACK for materials that carry no palette
+    // of their own — it is not copied onto the estimate any more, so there is
+    // nothing here to refresh. Just redraw, in case the panel is on screen.
+    if (activePage === 'contract') renderContractPage();
     closeSettings();
-    alert('✓ Settings saved! New estimates will use these colors.');
+    alert('✓ Settings saved!');
   } catch (e) { alert('Could not save settings: ' + e.message); }
 }
 
@@ -10704,6 +13662,15 @@ async function shareEstimate() {
 
   try {
     const r = await fetch(`/api/estimates/${S.estimate_id}/share`, { method: 'POST' });
+    if (r.status === 403) {
+      // Margin floor. Say the actual number and what to do about it — a bare
+      // "forbidden" on the Send button is the kind of thing a rep works around
+      // by texting the customer a screenshot instead.
+      const d = await r.json().catch(() => ({}));
+      alert(d.error || 'You do not have permission to send this estimate.');
+      switchPage('pricing');
+      return;
+    }
     if (!r.ok) throw new Error('Could not generate share link');
     const data = await r.json();
     S.share_token = data.token;
@@ -10754,6 +13721,9 @@ function showShareModal(fullUrl, relUrl) {
       onclick="emailEstimateLink()">
       ✉️ Email link to ${esc(custEmail)}
     </button>` : ''}
+    ${!sig ? `
+    <button class="share-preview-link" style="border:0;background:none;cursor:pointer;text-align:left;padding:0"
+      onclick="openInvoice()">🧾 Need a plain invoice or quote instead? →</button>` : ''}
     ${navigator.share ? `
     <button class="share-native-btn" onclick="doNativeShare('${esc(fullUrl)}','${esc((S.customer&&S.customer.name)||'')}')">
       📤 Send Link — Text, Email, AirDrop…
@@ -10906,26 +13876,88 @@ function maybeCloseShareModal(e) { if (e.target === document.getElementById('sha
 /* ── Save / Load ───────────────────────────────────────────────────── */
 
 async function saveEstimate() {
-  if(!S.estimate_id){S.estimate_id=uid();S.created_at=new Date().toISOString();}
-  try{
-    const r=await fetch(`/api/estimates/${S.estimate_id}`,{
-      method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(S),
-    });
-    if(!r.ok)throw new Error('Save failed');
-    setClean(); renderEstNum();
-  }catch(e){alert('Save failed: '+e.message);}
+  const owner = S;
+  if(!owner.estimate_id){owner.estimate_id=uid();owner.created_at=new Date().toISOString();}
+  const snapshot = JSON.stringify(owner);
+  const revision = _estimateRevision;
+  const previous = _estimateSaveFlight?.promise;
+  let flight;
+  const promise = (async () => {
+    if (previous) await previous.catch(() => false);
+    try{
+      const r=await fetch(`/api/estimates/${owner.estimate_id}`,{
+        method:'PUT',headers:{'Content-Type':'application/json'},body:snapshot,
+      });
+      if(!r.ok)throw new Error('Save failed');
+      // A second click may have queued a newer snapshot while this request was
+      // in flight. Only the newest queued save is allowed to clear Unsaved.
+      if (_estimateSaveFlight === flight && S === owner &&
+          _estimateRevision === revision && !_vzBlocksGenericSave()) setClean();
+      if (S === owner) renderEstNum();
+      return true;
+    }catch(e){
+      if (S === owner) alert('Save failed: '+e.message);
+      return false;
+    }
+  })();
+  flight = {owner, promise};
+  _estimateSaveFlight = flight;
+  try { return await promise; }
+  finally { if (_estimateSaveFlight === flight) _estimateSaveFlight = null; }
+}
+
+async function saveCurrentWork() {
+  const owner = S;
+  if (_vzHasUnsavedCanvasWork()) {
+    if (!(await _vzSaveAll())) return false;
+  }
+  if (S !== owner) return false;
+  if (_vzMetaPending(owner)) {
+    try { await _vzPersistMeta(); }
+    catch (error) { _vzReportMetaFailure(error); return false; }
+  }
+  if (S !== owner) return false;
+  if (_vzBlocksGenericSave()) return false;
+  return saveEstimate();
+}
+
+async function _prepareEstimateChange() {
+  const owner = S;
+  if (_vzCurrentStateOwnsEstimate() &&
+      (vzState.saving || vzState.detecting || vzState.proviaUploading)) {
+    alert('Please wait for the current design operation to finish before changing estimates.');
+    return false;
+  }
+  if (dirty || _vzHasUnsavedCanvasWork() || _vzMetaPending(owner)) {
+    if (!(await saveCurrentWork()) || S !== owner) return false;
+    // Edits made while a save was in flight are still local. Keep them on
+    // screen instead of replacing the estimate with an older saved snapshot.
+    if (dirty || _vzMetaPending(owner)) return false;
+  }
+  if (_estimateSaveFlight?.owner === owner) await _estimateSaveFlight.promise;
+  return S === owner && !dirty && !_vzMetaPending(owner);
 }
 
 async function newEstimateAction() {
-  if(dirty&&!confirm('You have unsaved changes. Start a new estimate anyway?'))return;
+  // _prepareEstimateChange() supersedes the old discard-confirm: it SAVES the
+  // estimate being left — canvas pixels and design meta included — and refuses
+  // to move if that save cannot land, so nothing is abandoned to confirm about.
+  if (!(await _prepareEstimateChange())) return false;
+  // Captured after that save and before blankEstimate(): the local
+  // crash-recovery draft is redundant once the work is on the server, and must
+  // not outlive it and appear as recoverable work later.
+  const _abandoned = S.estimate_id;
   S=blankEstimate();
   applyTierDefaults(S); // pre-fill from global admin defaults
   applyCrmHandoff(S);   // carry the CRM's contact id onto this estimate
   seedTradeBundles('roofing', false); // load the default roofing bundles into the tiers
   activeTrade='roofing'; dirty=false;
+  clearTimeout(_draftTimer); clearTimeout(_autosaveTimer);
+  clearLocalDraft(_abandoned); clearLocalDraft(undefined);
   document.getElementById('save-indicator').textContent='';
   document.getElementById('save-indicator').className='save-indicator';
   renderAll(); switchPage('client');
+  return true;
 }
 
 async function openEstimate() {
@@ -10950,10 +13982,16 @@ function showOpenModal(list) {
   document.getElementById('open-modal').classList.remove('hidden');
 }
 async function doLoadEstimate(id) {
+  const generation = ++_estimateLoadGeneration;
+  if (!(await _prepareEstimateChange()) || generation !== _estimateLoadGeneration) return;
+  const owner = S;
   try{
     const r=await fetch(`/api/estimates/${id}`);
     if(!r.ok)throw new Error('Not found');
-    S=await r.json();
+    const loaded = await r.json();
+    if (generation !== _estimateLoadGeneration || S !== owner) return;
+    if (!(await _prepareEstimateChange()) || generation !== _estimateLoadGeneration || S !== owner) return;
+    S=loaded;
     if(!S.tier_descriptions) S.tier_descriptions={good:'',better:'',best:''};
     if(S.print_contract===undefined) S.print_contract=true;
     if(!S.contract_text) S.contract_text=globalContract(_ctype(S.estimate_type));
@@ -11006,9 +14044,12 @@ async function doLoadEstimate(id) {
     if(!S.estimate_type) S.estimate_type='retail';
     if(!Array.isArray(S.contract_initials)) S.contract_initials=defaultInitials(S.estimate_type);
     if(!S.shingle_selection||typeof S.shingle_selection!=='object')
-      S.shingle_selection={enabled:true,options:DEFAULT_SHINGLE_COLORS.slice(),chosen:''};
-    if(!Array.isArray(S.shingle_selection.options)||!S.shingle_selection.options.length)
-      S.shingle_selection.options=DEFAULT_SHINGLE_COLORS.slice();
+      S.shingle_selection={enabled:true,options:[],chosen:'',material_bundle_id:''};
+    // An empty options list is now the normal, meaningful state — it means "no
+    // extra colors beyond what the material offers". Refilling it with the
+    // generic defaults, as this used to, put names like Barkwood and Hunter
+    // Green in front of a customer buying CertainTeed.
+    if(!Array.isArray(S.shingle_selection.options)) S.shingle_selection.options=[];
     if(!Array.isArray(S.attachments)) S.attachments=[];
     // Buildings. An estimate written before this has none, and every path falls
     // back to S.measurements for it — that is the whole compatibility story.
@@ -11254,6 +14295,7 @@ function printTradeBody(trade, tier, o) {
   const td = S.trades[trade] || {};
   const { showLP, tradeMode } = o;
   const inTier = (td.line_items || []).filter(item => {
+    if (isSupplementItem(td, item)) return false;   // printed in its own block
     if ((parseFloat(item.quantity) || 0) <= 0) return false;
     if (tradeMode === 'simple') return true;
     return (item.tiers?.[tier]?.included) !== false;
@@ -11469,10 +14511,12 @@ function buildPrintContent() {
     const out={};
     TIERS.forEach(t=>{
       const f=(content.features||{})[t];
-      if(f&&f.length&&!tierBulletsAreStale(trade,t)){out[t]=f;return;}
+      const fEdited=tierFeaturesEdited(trade,t);
+      if(f&&f.length&&(fEdited||!tierBulletsAreStale(trade,t))){out[t]=cardBullets(f,fEdited);return;}
       const items=[];
       const tradeMode=effectiveTradeMode(trade, td);
       (td.line_items||[]).forEach(item=>{
+        if(isSupplementItem(td,item))return;  // "if needed", not in the package
         if((parseFloat(item.quantity)||0)<=0)return;
         if(tradeMode==='simple'){
           items.push(item.description?`${item.name} — ${item.description}`:item.name);
@@ -11526,13 +14570,13 @@ function buildPrintContent() {
           const tot=tradeTotal(gt,t);
           // The tagline goes stale with the bullets it sits above — it names a
           // system ("Architectural laminate shingle system"), so printing it
-          // over a hand-built package is the same lie in one line.
-          const desc=tierBulletsAreStale(gt,t)?'':((content.descriptions||{})[t]||'');
+          // over a hand-built package is the same lie in one line. Unless the
+          // rep typed it for this package: tierTagline holds both rules.
+          const desc=tierTagline(gt,t);
           return `<td>
             <span class="p-pkg-price">${fmtCur(tot)}</span>
             ${desc?`<span class="p-pkg-desc">${esc(desc)}</span>`:''}
-            ${disp[t].slice(0,10).map(i=>`<span class="p-pkg-item">· ${esc(i)}</span>`).join('')}
-            ${disp[t].length>10?`<span class="p-pkg-item" style="color:#aaa">+ ${disp[t].length-10} more…</span>`:''}
+            ${disp[t].map(i=>`<span class="p-pkg-item">· ${esc(i)}</span>`).join('')}
           </td>`;
         }).join('')}
       </tr></tbody></table>
@@ -11568,7 +14612,33 @@ function buildPrintContent() {
 
       const built=tiers.map(t=>Object.assign({tier:t},
         printTradeBody(trade,t,{showLP,tradeMode}))).filter(b=>b.body);
-      if(!built.length)return;
+      // Supplements print after the package table(s) at the SELECTED package,
+      // with a price column whatever the Line Prices chip says — an "if needed"
+      // line without its price tells the customer nothing.
+      const supp=supplementItems(trade,selTier)
+        .filter(i=>i.customer_visible!==false&&String(i.name||'').trim());
+      const suppHtml=supp.length?`<div class="p-trade p-trade-supp">
+        <div class="p-trade-title">${esc(TRADE_LABELS[trade])} Supplements</div>
+        <table class="p-table"><thead><tr>
+          <th>Description</th><th class="p-right">Qty</th><th>Unit</th><th class="p-right">Price</th>
+        </tr></thead><tbody>${supp.map(i=>{
+          const desc=(tradeMode==='simple'?(i.description||''):(((i.tiers||{})[selTier]||{}).description||'')).trim();
+          const q=parseFloat(i.quantity)||0;
+          return `<tr>
+            <td>${esc(i.name)}${desc?`<div class="p-desc-sub">${esc(desc).replace(/\n/g,'<br>')}</div>`:''}</td>
+            <td class="p-right">${q>0?q:'If needed'}</td>
+            <td>${esc(displayUnit(i))}</td>
+            <td class="p-right">${(()=>{const v=supplementLineTotal(trade,i,selTier);return v?fmtCur(v):'Quoted if needed';})()}</td>
+          </tr>`;
+        }).join('')}</tbody><tfoot><tr>${(()=>{
+          // No price anywhere = a notice, never a $0.00 subtotal.
+          const st=supplementsTotal(trade,selTier);
+          return st
+            ? `<td colspan="3">Supplements Subtotal — not included in the total</td><td class="p-right">${fmtCur(st)}</td>`
+            : `<td colspan="4">Supplements may be needed once work begins. They are not included in the total.</td>`;
+        })()}</tr></tfoot></table>
+      </div>`:'';
+      if(!built.length){ ph+=suppHtml; return; }
       // Collapse packages whose scope AND pricing are identical — three copies
       // of one table is not a comparison, it is three pages of noise.
       const groups=[];
@@ -11604,6 +14674,7 @@ function buildPrintContent() {
         </tr></tfoot></table>
       </div>`;
       });
+      ph+=suppHtml;
     });
     // With several packages laid out, an unqualified "Project Total" beside a
     // Best subtotal reads as arithmetic that doesn't add up. Name the package
@@ -11613,6 +14684,7 @@ function buildPrintContent() {
           ? packageTrades().map(gt=>`${TRADE_LABELS[gt]} ${TIER_LABELS[tradeTier(gt)]}`).join(' · ')
           : TIER_LABELS[tradeTier(packageTrades()[0]||'roofing')]+' Package')
       : 'Project Total';
+    ph+=_printUpgradesHtml();
     ph+=`<div class="p-grand-total"><span>${esc(totalLbl)}</span><span>${fmtCur(selectedTotal())}</span></div>`;
   } else {
     const insTd=S.trades.insurance;
@@ -11647,6 +14719,10 @@ function buildPrintContent() {
         </tr></tfoot></table></div>`;
       });
       if(activeSections.length)
+        ph+=_printUpgradesHtml();
+        // The claim stays the claim: elected upgrades are the homeowner's own
+        // out-of-pocket and are totalled separately, never folded into a
+        // number a customer may repeat to their adjuster.
         ph+=`<div class="p-grand-total"><span>Insurance Claim Total</span><span>${fmtCur(insuranceTotal())}</span></div>`;
     }
     if(insTd?.scope_notes?.trim())
@@ -12104,12 +15180,7 @@ async function renderHomePage() {
     .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''))
     .slice(0, 8);
   const now = Date.now();
-  const stale = myData.filter(e=>{
-    const st=estStatusOf(e);
-    if(st==='sent'&&e.sent_at)          return (now-new Date(e.sent_at).getTime())/86400000>=3;
-    if(st==='viewed'&&e.last_viewed_at) return (now-new Date(e.last_viewed_at).getTime())/86400000>=2;
-    return false;
-  });
+  const stale = myData.filter(e => estGoingCold(e, now));
   const h = new Date().getHours();
   const name = cap(_loggedInUser||'there');
   const greeting = h<12 ? `Good morning, ${name}` : h<17 ? `Good afternoon, ${name}` : `Good evening, ${name}`;
@@ -12126,6 +15197,10 @@ async function renderHomePage() {
     ${stale.length ? `<div class="home-followup-alert" onclick="openDashboard()">
       ⚠ ${stale.length} estimate${stale.length!==1?'s':''} need${stale.length===1?'s':''} follow-up</div>` : ''}
     <button class="home-new-btn" onclick="newEstimateAction()">📝 New Estimate</button>
+    <div class="home-tiles">
+      <button class="home-tile" onclick="openDashboard()"><span>📊</span>Job Board</button>
+      <button class="home-tile" onclick="openAnalytics()"><span>📈</span>Analytics</button>
+    </div>
     <div class="home-search-wrap">
       <input type="text" class="home-search-input" id="home-cust-search"
         placeholder="🔍 Search customer by name or address…"
@@ -12135,12 +15210,12 @@ async function renderHomePage() {
     <div class="home-recents">
       <div class="home-recents-hd">
         <span>Recent Estimates</span>
-        <button class="home-dash-link" onclick="openDashboard()">📊 Full Dashboard →</button>
+        <button class="home-dash-link" onclick="openDashboard()">📊 Job Board →</button>
       </div>
       ${recent.length ? recent.map(e=>{
         const st=estStatusOf(e);
         const nEst = custEstimateCount(e.customer_name);
-        return `<div class="home-est-row" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
+        return `<div class="home-est-row" onclick="doLoadEstimate('${esc(e.estimate_id)}')">
           <div class="home-est-main">
             <span class="dash-row-name"><strong>${esc(e.customer_name||'(no customer)')}</strong>${
               nEst > 1 ? `<button class="dash-cf-btn"
@@ -12160,11 +15235,82 @@ async function renderHomePage() {
 /* ── Init ──────────────────────────────────────────────────────────── */
 
 function populateSalespersonDropdown() {
-  const sel=document.getElementById('salesperson');
-  TEAM.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=cap(m);sel.appendChild(o);});
+  syncSalespersonSelect();
 }
 
-setInterval(()=>{if(dirty&&S.estimate_id)saveEstimate();},60000);
+async function loadTeamRoster() {
+  try {
+    const r = await fetch('/api/team');
+    if (!r.ok) return;                    // demo guests, offline: keep the fallback
+    const rows = await r.json();
+    const names = (Array.isArray(rows) ? rows : []).map(m => m && m.username).filter(Boolean);
+    if (!names.length) return;
+    TEAM = names;
+  } catch { return; }
+  syncSalespersonSelect();
+  if (activePage === 'dashboard') renderDashboard();
+}
+
+// A former rep who is off the roster must still show as the owner rather than
+// the select silently reading "Select…".
+function _teamWith(current) {
+  return current && !TEAM.includes(current) ? [...TEAM, current] : TEAM;
+}
+
+// Reps may pick on an unsaved or unassigned estimate; once one is saved with
+// an owner only a manager can move it. The server enforces this — the lock
+// just stops a rep making a change that is about to be refused.
+function salespersonLocked() {
+  return !!S.estimate_id && !!S.salesperson && !_meCanViewAll();
+}
+
+function syncSalespersonSelect() {
+  const sel = document.getElementById('salesperson');
+  if (!sel) return;
+  const cur = typeof S.salesperson === 'string' ? S.salesperson : '';
+  sel.innerHTML = '<option value="">Select…</option>' +
+    _teamWith(cur).map(m => `<option value="${esc(m)}">${esc(cap(m))}</option>`).join('');
+  sel.value = cur;
+  sel.disabled = salespersonLocked();
+  sel.title = sel.disabled ? 'Ask a manager to reassign this estimate' : '';
+}
+
+async function onSalespersonChange(v) {
+  if (!S.estimate_id) {                   // nothing on the server yet — rides the first save
+    S.salesperson = v; setDirty(); renderCoverPage();
+    return;
+  }
+  await reassignEstimate(S.estimate_id, v);
+}
+
+async function reassignEstimate(id, rep) {
+  const row = _dashData.find(e => e.estimate_id === id);
+  let ok = false, msg = '';
+  try {
+    const r = await fetch(`/api/estimates/${id}/salesperson`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({salesperson: rep}),
+    });
+    ok = r.ok;
+    if (!ok) msg = (await r.json().catch(() => ({}))).error || '';
+  } catch {}
+  if (!ok) {
+    alert(msg || 'Could not reassign this estimate.');
+  } else {
+    if (row) row.salesperson = rep;
+    if (id === S.estimate_id) { S.salesperson = rep; renderCoverPage(); }
+  }
+  if (id === S.estimate_id) syncSalespersonSelect();   // also reverts it on failure
+  if (activePage === 'dashboard') renderBoardColumns();
+}
+
+function _autoSaveTick() {
+  if (dirty && S.estimate_id && !_vzHasUnsavedCanvasWork() &&
+      !(_vzCurrentStateOwnsEstimate() && (vzState.saving || vzState.detecting || vzState.proviaUploading))) {
+    saveCurrentWork();
+  }
+}
+setInterval(_autoSaveTick,60000);
 
 document.addEventListener('click', e=>{
   if(!e.target.closest('.crm-search-wrap'))closeCrm();
@@ -12180,6 +15326,15 @@ function _meCanViewAll() { return _meRole() !== 'rep'; }
 
 function applyRoleGates() {
   const isRep = _meRole() === 'rep';
+  // Demo guests (portal/demo.py). Two jobs: label the session so nobody mistakes
+  // invented customers and shifted costs for the real book, and hide the
+  // controls whose endpoints the demo allowlist refuses — a button that always
+  // errors reads as a broken tool, which is the opposite of the point.
+  if (_meInfo && _meInfo.demo) {
+    const badge = document.getElementById('demo-badge');
+    if (badge) badge.style.display = '';
+    document.querySelectorAll('[data-demo-hide]').forEach(el => el.style.display = 'none');
+  }
   // Hide Price Book and app Settings from reps — they just scope and quote
   document.querySelectorAll('.btn-pricebook').forEach(b => b.style.display = isRep ? 'none' : '');
   document.querySelectorAll('.btn-settings').forEach(b => b.style.display = isRep ? 'none' : '');
@@ -12205,7 +15360,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     // Apply global settings to the fresh blank estimate (it was created
     // before /api/settings resolved, so re-seed the settings-driven fields)
     if (!S.estimate_id) {
-      if (S.shingle_selection) S.shingle_selection.options = _globalShingleColors();
       if (S.measurements) S.measurements.waste_pct = _globalWastePct();
       S.contract_text     = globalContract('retail');
       S.contract_initials = defaultInitials('retail');
@@ -12230,6 +15384,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       // Admin set a temporary password — force them to choose their own now.
       if (me.must_change) openLoginsModal(true);
       applyRoleGates();
+      syncSalespersonSelect();   // the lock depends on the role just learned
+      loadTeamRoster();          // not awaited: the fallback list covers boot
     }
   } catch {}
   // Apply any saved defaults to the initial blank estimate
@@ -12241,7 +15397,16 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   // silently lost — and a missing link is indistinguishable from a job that
   // never came from the CRM.
   applyCrmHandoff(S);
-  switchPage('home');   // home screen first — rep must choose New or open existing
+  // Loading default bundles is setup, not a user edit. Don't turn the blank
+  // startup state into another unnamed recovery file or an unload warning.
+  dirty = false;
+  clearTimeout(_draftTimer); clearTimeout(_autosaveTimer);
+  const saveIndicator = document.getElementById('save-indicator');
+  saveIndicator.textContent = ''; saveIndicator.className = 'save-indicator';
+  // A shared analytics link (#analytics?p=…&rep=…) opens onto that view;
+  // everything else starts on Home, where the rep chooses New or Open.
+  if ((location.hash || '').startsWith('#analytics')) openAnalytics();
+  else switchPage('home');
 });
 
 /* ── CRM handoff ────────────────────────────────────────────────────────
@@ -12532,18 +15697,48 @@ async function adminUnlockUser(u) {
   if (r.ok) renderTeamLogins();
 }
 
+/* ── Picking a PDF on iOS ─────────────────────────────────────────────────
+   Both PDF importers used to do `_file = input.files[0]; input.value = '';`
+   and then hold that File until the rep taps Apply — a minute later, across a
+   saveEstimate() round-trip — to upload it as the attachment the customer
+   file keeps.
+
+   On a desktop browser a File carries its own backing store and that is fine.
+   On iOS the File is a handle into WebKit's temp storage that clearing the
+   input is allowed to release, so the later read comes back empty: the parse
+   appears to work and the report silently never lands as an attachment — and
+   the rasterized pages the ridge-vent markup tool reads come with it.
+
+   Reading the bytes here removes the question. The input can then be cleared
+   immediately (which is what lets a rep re-pick the SAME file after a failed
+   parse — the `change` event does not fire twice for one value), and what the
+   caller holds is a Blob we own rather than a handle iOS can take back. */
+async function snapshotPickedFile(input) {
+  const f = input && input.files && input.files[0];
+  if (!f) return null;
+  const name = f.name || 'report.pdf';
+  const type = f.type || 'application/pdf';
+  try {
+    const buf = await f.arrayBuffer();
+    input.value = '';
+    return { blob: new Blob([buf], { type }), name };
+  } catch {
+    input.value = '';
+    return null;
+  }
+}
+
 // ── RoofR PDF import ─────────────────────────────────────────────────────
 
 let _roofrData = null;
 let _roofrFile = null;  // keep reference so we can save it as an attachment on apply
 
 async function importRoofrPdf(input) {
-  const file = input.files[0];
-  if (!file) return;
-  _roofrFile = file;
-  input.value = '';
+  const picked = await snapshotPickedFile(input);
+  if (!picked) return;
+  _roofrFile = picked;
   const fd = new FormData();
-  fd.append('file', file);
+  fd.append('file', picked.blob, picked.name);
   let data;
   try {
     const r = await fetch('/api/parse-roofr', { method: 'POST', body: fd });
@@ -12556,13 +15751,23 @@ async function importRoofrPdf(input) {
 function openRoofrModal(data) {
   _roofrData = data;
   const m = data.measurements;
-  const fmt = (v, unit) => v !== undefined ? `${v} ${unit}` : '—';
+  const fmt = (v, unit) => v !== undefined ? `${v} ${unit}` : '<span class="roofr-missing">not found</span>';
   const addrLine = data.address?.street
     ? `${data.address.street}, ${data.address.city}, ${data.address.state} ${data.address.zip}`
     : null;
 
+  // Anything the report didn't yield, named up front. A missing measurement
+  // applies as zero and prices as zero — a rep scanning for a blank row will
+  // not catch that, so the gaps get stated rather than shown as a quiet '—'.
+  const unread = (data.unread || []);
+  const unreadHtml = unread.length ? `
+    <div class="roofr-unread">⚠ Not found in this report: <strong>${esc(unread.join(', '))}</strong>.
+    Applying leaves ${unread.length > 1 ? 'these' : 'this'} at zero — check the PDF and enter
+    ${unread.length > 1 ? 'them' : 'it'} by hand if the roof has ${unread.length > 1 ? 'them' : 'it'}.</div>` : '';
+
   document.getElementById('roofr-modal-body').innerHTML = `
     <p style="font-size:13px;color:var(--text-light);margin:0">Review the extracted measurements, then click <strong>Apply</strong> to fill the estimate.</p>
+    ${unreadHtml}
     <div class="roofr-preview">
       <span class="roofr-preview-label">Roof Squares</span>
       <span class="roofr-preview-value">${fmt(m.roof_squares, 'SQ')}</span>
@@ -12645,6 +15850,9 @@ async function applyRoofrImport() {
 
   // Save the RoofR PDF as an attachment so it lives in the customer file.
   // We save the estimate first (gets an ID), then upload the PDF.
+  // It goes in hidden: the report is a rep/production document, and nobody
+  // chose to show it — an auto-import must not decide what the customer
+  // reads. The rep flips "Show" on the attachment row when they want it.
   if (_roofrFile) {
     const file = _roofrFile;
     _roofrFile = null;
@@ -12652,14 +15860,14 @@ async function applyRoofrImport() {
       await saveEstimate();
       if (S.estimate_id) {
         const ufd = new FormData();
-        ufd.append('file', file);
+        ufd.append('file', file.blob, file.name);
         const ur = await fetch(`/api/uploads/${S.estimate_id}`, { method: 'POST', body: ufd });
         if (ur.ok) {
           const ures = await ur.json();
           if (!Array.isArray(S.attachments)) S.attachments = [];
           S.attachments.push({
             id: uid(), filename: ures.filename, original_name: file.name,
-            label: 'RoofR Measurement Report', show_in_estimate: true,
+            label: 'RoofR Measurement Report', show_in_estimate: false,
             pages: ures.pages || undefined,
           });
           setDirty();
@@ -12681,19 +15889,126 @@ let _xactFile = null;      // saved as an attachment on apply
 let _xactExcluded = new Set();   // "si:ii" keys of excluded lines
 
 async function importXactPdf(input) {
-  const file = input.files[0];
-  if (!file) return;
-  _xactFile = file;
-  input.value = '';
+  const picked = await snapshotPickedFile(input);
+  if (!picked) return;
+  _xactFile = picked;
   const fd = new FormData();
-  fd.append('file', file);
+  fd.append('file', picked.blob, picked.name);
   let data;
   try {
     const r = await fetch('/api/parse-xactimate', { method: 'POST', body: fd });
     data = await r.json();
     if (!r.ok) { alert(data.error || 'Could not parse PDF.'); return; }
-  } catch { alert('Network error — could not reach server.'); return; }
+    // 202 = a scanned PDF, read off its page images in the background.
+    if (r.status === 202 && data.scan_job) {
+      data = await waitForCarrierScan(data.scan_job);
+      if (!data) return;
+    }
+  } catch { hideToast(); alert('Network error — could not reach server.'); return; }
   openXactModal(data);
+}
+
+/* A scan takes a minute or two to read, longer than one request may run, so
+   the server hands back a job and this polls it. The result arrives exactly
+   once (the server deletes it on collection), then the ordinary review modal
+   opens on it. */
+async function waitForCarrierScan(jobId) {
+  toast('📄 This PDF is a scan — reading it page by page. This can take a minute or two…', 0);
+  const deadline = Date.now() + 16 * 60 * 1000;
+  try {
+    while (Date.now() < deadline) {
+      await new Promise(res => setTimeout(res, 4000));
+      let r;
+      try {
+        r = await fetch(`/api/parse-xactimate/scan/${encodeURIComponent(jobId)}`);
+      } catch { continue; }   // one dropped poll on bad signal is not a failure
+      if (r.status === 202) continue;
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(body.error || 'Could not read this scan.'); return null; }
+      return body;
+    }
+    alert('Reading this scan took too long. Try the import again.');
+    return null;
+  } finally {
+    hideToast();
+  }
+}
+
+/* Whether the parsed lines ARE the carrier's lines. Decided server-side
+   (_carrier_reconcile) so this banner and the copy an admin is sent agree.
+   A miss never blocks Load: the rep may need to fix one line by hand, but it
+   must not look like a clean import while they do — a carrier line read as
+   the wrong column is money on a contract. */
+function xactReconcileBanner(rec) {
+  if (!rec) return '';
+  if (rec.ok) {
+    return `<div class="xact-reconcile-ok">✓ Every line adds up to the carrier's own total — RCV ${fmtCur(rec.carrier_rcv)}</div>`;
+  }
+  const kept = rec.kept ? ' A copy of this PDF was saved for an admin.' : '';
+  if (rec.status === 'unverified') {
+    return `<div class="xact-warn">⚠ This PDF has no carrier total to check the lines against (${fmtCur(rec.parsed_rcv)} read). Compare them with the PDF before loading.${kept}</div>`;
+  }
+  const where = (rec.sections_off || []).map(s =>
+    `${esc(s.name)}: read ${fmtCur(s.parsed_rcv)} of ${fmtCur(s.carrier_rcv)}`).join('<br>');
+  const lines = (rec.lines_off || []).length
+    ? `<br>Lines where RCV ≠ ACV + depreciation: ${rec.lines_off.map(esc).join(', ')}` : '';
+  const head = rec.status === 'unknown_layout'
+    ? `✗ This carrier prints columns the importer hasn't been taught (${esc((rec.unknown_headers || []).join(' / '))}). ${
+        rec.total_matches ? 'The total adds up, but' : 'The total does not add up, and'} every line needs checking against the PDF.`
+    : `✗ Read ${fmtCur(rec.parsed_rcv)} of the carrier's ${fmtCur(rec.carrier_rcv)} — lines may be missing or misread. Check them against the PDF before loading.`;
+  return `<div class="xact-warn xact-reconcile-bad">${head}${kept}${where ? '<br>' + where : ''}${lines}</div>`;
+}
+
+/* ── Carrier import failures (⚙ Settings, admin) ──────────────────────────
+   Carrier PDFs that would not parse or did not reconcile. Each row is a layout
+   the importer still has to learn: download it, add it to the local sample
+   folder and a synthetic fixture, fix, then delete it here. */
+const CARRIER_FAILURE_REASONS = {
+  error: 'Could not open', no_items: 'No line items found',
+  unknown_layout: 'Unknown columns', mismatch: "Didn't add up",
+  unverified: 'No carrier total',
+};
+
+async function refreshCarrierFailures() {
+  const box = document.getElementById('cif-list');
+  if (!box) return;
+  let rows;
+  try {
+    const r = await fetch('/api/carrier-import-failures');
+    rows = r.ok ? await r.json() : null;
+  } catch { rows = null; }
+  // A failed load must not read as "nothing failed" — that is the one wrong
+  // answer this list exists to prevent.
+  if (rows === null) {
+    box.innerHTML = '<div class="xact-warn">Couldn’t load the saved carrier PDFs — reopen Settings to try again.</div>';
+    return;
+  }
+  if (!rows.length) {
+    box.innerHTML = '<div class="jxset-help">None kept — every carrier PDF uploaded since the last clear-out read cleanly.</div>';
+    return;
+  }
+  const sub = s => `<div class="note-tag">${s}</div>`;
+  box.innerHTML = `<div class="other-table-wrap"><table class="other-table">
+    <thead><tr><th>When</th><th>Rep</th><th>File</th><th>Problem</th><th></th></tr></thead>
+    <tbody>${rows.map(f => `<tr>
+      <td>${esc((f.at || '').replace('T', ' ').slice(0, 16))}</td>
+      <td>${esc(f.user || '')}</td>
+      <td>${esc(f.filename || f.name)}${f.carrier ? sub(esc(f.carrier)) : ''}</td>
+      <td>${esc(CARRIER_FAILURE_REASONS[f.reason] || f.reason)}${
+        f.carrier_rcv != null ? sub(`read ${fmtCur(f.parsed_rcv)} of ${fmtCur(f.carrier_rcv)}`) : ''}${
+        f.header ? sub(esc(f.header)) : ''}${f.error ? sub(esc(f.error)) : ''}</td>
+      <td style="white-space:nowrap">
+        <a class="btn-secondary" href="${BASE}/api/carrier-import-failures/${encodeURIComponent(f.name)}">⬇ PDF</a>
+        <button type="button" class="btn-secondary" onclick="deleteCarrierFailure('${jsq(f.name)}')">🗑</button>
+      </td></tr>`).join('')}</tbody></table></div>`;
+}
+
+async function deleteCarrierFailure(name) {
+  if (!confirm('Delete this saved carrier PDF?')) return;
+  try {
+    await fetch(`/api/carrier-import-failures/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  } catch { /* the refresh below shows whether it went */ }
+  refreshCarrierFailures();
 }
 
 function openXactModal(data) {
@@ -12766,6 +16081,7 @@ function openXactModal(data) {
       ${metaRow('Adjuster', meta.adjuster)}
       ${metaRow(isSym ? 'Pricing Database' : 'Price List', meta.price_list)}
     </div>
+    ${xactReconcileBanner(data.reconcile)}
     ${(data.warnings || []).length ? `<div class="xact-warn">⚠ ${data.warnings.map(esc).join('<br>')}</div>` : ''}
     ${measBits ? `<div class="xact-claim-note">📐 Roof measurements in this PDF: ${esc(measBits)} — ${
       measHeld
@@ -12932,7 +16248,7 @@ async function applyXactImport() {
       await saveEstimate();
       if (S.estimate_id) {
         const ufd = new FormData();
-        ufd.append('file', file);
+        ufd.append('file', file.blob, file.name);
         const ur = await fetch(`/api/uploads/${S.estimate_id}`, { method: 'POST', body: ufd });
         if (ur.ok) {
           const ures = await ur.json();
@@ -13101,7 +16417,9 @@ function renderClientPage() {
    it. Work orders and material order sheets slot in here later as new
    cards — add a card + a form renderer, nothing else changes. */
 
-let _docGenerator = null;   // which generator form is open: 'permit' | null
+// Which generator form is open. 'condition' is the Roof Health Report
+// DOCUMENT — not 'report', which is already the editor page's nav id.
+let _docGenerator = null;   // 'permit' | 'roofcert' | 'condition' | 'warranty' | 'invoice' | null
 
 // ── Documents door as the customer's estimate hub ───────────────────────
 // Every estimate for the customer currently loaded, plus the create form
@@ -13175,15 +16493,110 @@ function docEstimateListHtml() {
 // sites (upload a file, delete one, generate a document) that must not pay
 // for a network round-trip just to redraw the attachments panel.
 async function refreshDocCustData() {
-  try {
-    const r = await fetch('/api/estimates');
-    _dashData = await r.json();
-  } catch { return; }
+  _invFor = null;   // the invoice totals track the saved estimate
+  _crFor = null;    // so do the report summary and the warranty derivation
+  _wcFor = null;
+  const name = (S.customer || {}).name || '';
+  // Both lists in parallel — one navigation, one wait.
+  const [est, docs] = await Promise.all([
+    fetch('/api/estimates').then(r => r.json()).catch(() => null),
+    name ? fetch('/api/customer-documents/' + encodeURIComponent(name))
+             .then(r => r.ok ? r.json() : []).catch(() => [])
+         : Promise.resolve([]),
+  ]);
+  if (name && Array.isArray(docs)) _docCustDocs = {key: custKey(name), rows: docs};
+  if (!est) return;
+  _dashData = est;
   rebuildCustCounts();
   if (activePage === 'client') {
     const el = document.getElementById('doc-est-list');
     if (el) el.innerHTML = docEstimateListHtml();
+    renderDocumentsPage();
   }
+}
+
+/* ── The customer's files, across every estimate they have ──────────────
+   The Files panel is headed with the customer's name and used to list only
+   the OPEN estimate's attachments, so a certificate filed on the spring roof
+   was invisible from the autumn siding quote. customerDocumentRows() is the
+   ONE builder, the same way customerEstimateRows() is for estimates:
+
+   * The open estimate's group is built from S.attachments, never from the
+     fetched rows. A document generated seconds ago — or one on an estimate
+     that has never been saved and has no id — is not in the fetch yet.
+   * The fetched copy of the open estimate is dropped so nothing lists twice.
+   * The cache is keyed on custKey(); a stale key renders nothing rather than
+     another customer's files for one frame (same guard as _custNotes). */
+let _docCustDocs = {key: '', rows: []};
+
+function customerDocumentRows(name) {
+  const groups = [{
+    current: true,
+    estimate_id: S.estimate_id || '',
+    label: S.estimate_label || EST_TYPE_LABEL[S.estimate_type] || 'This estimate',
+    crm_project_id: (S.customer || {}).crm_project_id || '',
+    documents: S.attachments || [],
+  }];
+  if (name && _docCustDocs.key === custKey(name)) {
+    for (const r of _docCustDocs.rows || []) {
+      if (r.estimate_id && r.estimate_id === S.estimate_id) continue;
+      if (!(r.documents || []).length) continue;
+      groups.push({
+        current: false,
+        estimate_id: r.estimate_id,
+        label: r.estimate_label || EST_TYPE_LABEL[r.estimate_type] || r.estimate_number,
+        number: r.estimate_number,
+        crm_project_id: r.crm_project_id || '',
+        documents: r.documents,
+      });
+    }
+  }
+  return groups;
+}
+
+function docTypeIcon(att) {
+  return att.doc_type === 'signed_contract'      ? '🖊'
+       : att.doc_type === 'permit_packet'        ? '🏛'
+       : att.doc_type === 'roof_certificate'     ? '🏅'
+       : att.doc_type === 'condition_report'     ? '🩺'
+       : att.doc_type === 'warranty_certificate' ? '🛡'
+       : att.doc_type === 'invoice'              ? '🧾'
+       : att.server_generated                    ? '🛠'
+                                                 : '📄';
+}
+
+/* A document owned by ANOTHER estimate of this customer: View and CRM only.
+   Renaming or deleting it would have to write through that estimate, from a
+   screen that is about this one — a surprise nobody asked for. */
+function foreignDocRowHtml(att, g) {
+  return `
+      <div class="att-row att-row-foreign">
+        <span class="att-icon">${docTypeIcon(att)}</span>
+        <span class="att-label att-label-ro">${esc(att.label || 'Document')}</span>
+        ${att.crm_document_id
+          ? '<span class="doc-crm-chip" title="Filed in the CRM under that job">✓ CRM</span>'
+          : (g.crm_project_id
+              ? `<button class="doc-crm-push" onclick="pushDocToCrm('${esc(att.id)}',{estId:'${esc(g.estimate_id)}'})"
+                   title="File this PDF in the CRM under that estimate's job">↗ CRM</button>`
+              : '')}
+        <a class="att-view" href="${BASE}/uploads/${esc(att.filename)}" target="_blank" rel="noopener">View</a>
+      </div>`;
+}
+
+function otherEstimateDocsHtml(name) {
+  const others = customerDocumentRows(name).filter(g => !g.current);
+  if (!others.length) return '';
+  return `
+    <div class="panel">
+      <div class="panel-header"><h3>📂 Other estimates for ${esc(name)}</h3></div>
+      ${others.map(g => `
+        <div class="doc-group-hd">
+          <span>${esc(g.label || '')}${g.number ? ` <span class="note-tag">${esc(g.number)}</span>` : ''}</span>
+          <button class="doc-open-est" onclick="doLoadEstimate('${esc(g.estimate_id)}')">Open →</button>
+        </div>
+        ${g.documents.map(att => foreignDocRowHtml(att, g)).join('')}
+        ${g.crm_project_id ? '' : '<p class="pm-hint">Not linked to a CRM job — these stay local.</p>'}`).join('')}
+    </div>`;
 }
 
 function renderDocumentsPage() {
@@ -13194,22 +16607,19 @@ function renderDocumentsPage() {
   el.innerHTML = `
   <div class="pm-wrap">
     <div class="panel">
-      <div class="panel-header"><h3>📎 Files — ${esc(custName || 'this job')}</h3>
+      <div class="panel-header"><h3>📎 Files — ${esc(S.estimate_label || EST_TYPE_LABEL[S.estimate_type] || 'this estimate')}${custName ? ` <span class="note-tag">${esc(custName)}</span>` : ''}</h3>
         <button class="doc-upload-btn" onclick="document.getElementById('doc-pdf-input').click()">📎 Upload PDF</button>
         <input type="file" id="doc-pdf-input" accept="application/pdf,.pdf" multiple style="display:none"
           onchange="docUploadPdf(this.files)">
       </div>
       ${atts.length ? atts.map(att => {
-        const icon = att.doc_type === 'signed_contract'  ? '🖊'
-                   : att.doc_type === 'permit_packet'    ? '🏛'
-                   : att.doc_type === 'roof_certificate' ? '🏅'
-                   : att.server_generated                ? '🛠'
-                                                         : '📄';
-        // Work orders don't auto-push — the rep fills in scheduled date /
-        // dish / tear-off layers first, then clicks "↗ Push to Den".
-        // Two internal packet docs now: the crew's work order carries the
-        // fill-in form and the Push-to-Den button; the material order is just
-        // a file to open.
+        const icon = docTypeIcon(att);
+        // Two internal packet docs, filed on different schedules. The MATERIAL
+        // order files itself at signing — it is derived wholly from the signed
+        // contract — so it usually already carries the ✓ CRM chip; its button
+        // is there to re-file after a rebuild. The WORK order never auto-pushes:
+        // the rep fills in scheduled date / dish / tear-off layers first, then
+        // clicks ↗ Push to Den.
         const isWO = att.doc_type === 'work_order';
         const isMO = att.doc_type === 'material_order';
         return `
@@ -13223,7 +16633,8 @@ function renderDocumentsPage() {
               ? `<button class="doc-crm-push" onclick="pushWorkOrderToCrm()"
                    title="Regenerate with the latest job details and file in Den">↗ Push to Den</button>`
               : isMO
-                ? ''
+                ? `<button class="doc-crm-push" onclick="pushMaterialOrderToCrm()"
+                   title="Rebuild the buy list and re-file it in Den">↗ Push to Den</button>`
                 : `<button class="doc-crm-push" onclick="pushDocToCrm('${att.id}')"
                    title="File this PDF in the CRM under the linked job">↗ CRM</button>`)}
         <label class="att-show" title="Show this document to the customer on their estimate">
@@ -13257,12 +16668,26 @@ function renderDocumentsPage() {
             ? 'Issued — reopen to edit and re-issue'
             : 'Realtor certification + short labor-only warranty'}</span>
         </button>
+        <button class="doc-card ${_docGenerator==='condition'?'doc-card-active':''}" onclick="docToggleGenerator('condition')">
+          <span class="doc-card-icon">🩺</span>
+          <span class="doc-card-name">Roof Health Report</span>
+          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'condition_report')
+            ? 'Issued — reopen to edit and re-issue'
+            : 'The condition report as its own PDF, certificate optional'}</span>
+        </button>
+        <button class="doc-card ${_docGenerator==='invoice'?'doc-card-active':''}" onclick="docToggleGenerator('invoice')">
+          <span class="doc-card-icon">🧾</span>
+          <span class="doc-card-name">Invoice / Quote</span>
+          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'invoice')
+            ? 'Saved — reopen to edit, re-save or email'
+            : 'Plain itemized numbers for a GC or homeowner'}</span>
+        </button>
         ${S.signature ? `
         <button class="doc-card" onclick="generateProductionPacket(this)">
           <span class="doc-card-icon">🛠</span>
           <span class="doc-card-name">Work Order + Material Order</span>
           <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'work_order')
-            ? 'Regenerate both (does not push to Den — use ↗ Push to Den)'
+            ? 'Regenerate both (neither pushes to Den — use ↗ Push to Den)'
             : 'Two documents: the crew work order and the buy list'}</span>
         </button>
         <button class="doc-card" onclick="generatePermitPacket(this)">
@@ -13271,6 +16696,13 @@ function renderDocumentsPage() {
           <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'permit_packet')
             ? 'Regenerate + push to Den'
             : 'Jurisdiction + squares + materials + cost split'}</span>
+        </button>
+        <button class="doc-card ${_docGenerator==='warranty'?'doc-card-active':''}" onclick="docToggleGenerator('warranty')">
+          <span class="doc-card-icon">🛡</span>
+          <span class="doc-card-name">Warranty Certificate</span>
+          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'warranty_certificate')
+            ? 'Issued — reopen to edit and re-issue'
+            : 'After the job: product, completion date, warranty'}</span>
         </button>` : `
         <div class="doc-card doc-card-soon" title="Generated from the signed contract once the customer signs">
           <span class="doc-card-icon">🛠</span>
@@ -13281,6 +16713,11 @@ function renderDocumentsPage() {
           <span class="doc-card-icon">🏛</span>
           <span class="doc-card-name">Permit Application Packet</span>
           <span class="doc-card-sub">Available after signing</span>
+        </div>
+        <div class="doc-card doc-card-soon" title="Certifies completed work, so it waits for a signature">
+          <span class="doc-card-icon">🛡</span>
+          <span class="doc-card-name">Warranty Certificate</span>
+          <span class="doc-card-sub">Available after signing</span>
         </div>`}
       </div>
     </div>
@@ -13289,9 +16726,17 @@ function renderDocumentsPage() {
 
     <div id="permit-form-container"></div>
     <div id="roofcert-form-container"></div>
+    <div id="condition-form-container"></div>
+    <div id="warranty-form-container"></div>
+    <div id="invoice-form-container"></div>
+
+    ${otherEstimateDocsHtml(custName)}
   </div>`;
-  if (_docGenerator === 'permit')   renderPermitForm();
-  if (_docGenerator === 'roofcert') renderRoofCertForm();
+  if (_docGenerator === 'permit')    renderPermitForm();
+  if (_docGenerator === 'roofcert')  renderRoofCertForm();
+  if (_docGenerator === 'condition') renderConditionReportForm();
+  if (_docGenerator === 'warranty')  renderWarrantyCertForm();
+  if (_docGenerator === 'invoice')   renderInvoiceForm();
   if (S.signature && S.estimate_id) loadChangeOrders();
 }
 
@@ -13542,7 +16987,9 @@ async function generateProductionPacket(btn) {
     if (!Array.isArray(S.attachments)) S.attachments = [];
     S.attachments = S.attachments.filter(a => !(a.server_generated
       && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
-    S.attachments.push(d.attachment);
+    // Both rows. The endpoint used to hand back only the work order, so every
+    // regenerate dropped the Material Order off the tab until a reload.
+    S.attachments.push(...(d.attachments || [d.attachment]));
   } catch (e) {
     alert('Could not generate the production packet: ' + e.message);
   }
@@ -13662,9 +17109,36 @@ async function regenerateWorkOrder() {
     if (!Array.isArray(S.attachments)) S.attachments = [];
     S.attachments = S.attachments.filter(a => !(a.server_generated
       && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
-    S.attachments.push(d.attachment);
+    // Both rows. The endpoint used to hand back only the work order, so every
+    // regenerate dropped the Material Order off the tab until a reload.
+    S.attachments.push(...(d.attachments || [d.attachment]));
   } catch (e) {
     alert('Could not regenerate the work order: ' + e.message);
+  }
+  renderDocumentsPage();
+}
+
+async function pushMaterialOrderToCrm() {
+  if (!S.estimate_id) return;
+  if (!((S.customer||{}).crm_project_id)) {
+    alert('This estimate is not linked to a CRM job yet — use the customer search to link it, then try again.');
+    return;
+  }
+  // Rebuilds both PDFs and files only the material order. The work order is
+  // rebuilt alongside it (same endpoint) but deliberately stays local.
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/production-packet`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({push_material: true}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Push failed');
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(a => !(a.server_generated
+      && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
+    S.attachments.push(...(d.attachments || [d.attachment]));
+  } catch (e) {
+    alert('Could not push the material order to Den: ' + e.message);
   }
   renderDocumentsPage();
 }
@@ -13687,7 +17161,9 @@ async function pushWorkOrderToCrm() {
     if (!Array.isArray(S.attachments)) S.attachments = [];
     S.attachments = S.attachments.filter(a => !(a.server_generated
       && (a.doc_type === 'work_order' || a.doc_type === 'material_order')));
-    S.attachments.push(d.attachment);
+    // Both rows. The endpoint used to hand back only the work order, so every
+    // regenerate dropped the Material Order off the tab until a reload.
+    S.attachments.push(...(d.attachments || [d.attachment]));
   } catch (e) {
     alert('Could not push the work order to Den: ' + e.message);
   }
@@ -13931,8 +17407,692 @@ async function issueRoofCert(pushToCrm) {
   renderDocumentsPage();
 }
 
+/* ── Roof Health Report (the condition report as its own document) ─────
+   The report BODY is S.property_condition, edited on the Roof Health page and
+   saved with the estimate — this form never re-edits it, because a body that
+   is editable in two places is two bodies. What lives here is what is true of
+   the DOCUMENT: who it is prepared for, the covering note, and whether the
+   roof certificate rides along as its last page.
+
+   Everything the form shows about the report (sections, grades, total) comes
+   from the server's condition_report_view(), so the summary cannot disagree
+   with the PDF. Save writes the fields; Issue builds the PDF. */
+let _crData = null;   // GET /condition-report for the open estimate
+let _crFor  = null;   // which estimate _crData belongs to
+
+async function loadConditionReport() {
+  _crFor = S.estimate_id;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/condition-report`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    _crData = d;
+  } catch (e) {
+    _crData = {error: e.message};
+  }
+  if (_docGenerator === 'condition') renderConditionReportForm();
+}
+
+function renderConditionReportForm() {
+  const el = document.getElementById('condition-form-container');
+  if (!el) return;
+  const c = S.customer || {};
+  if (!S.estimate_id) {
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🩺 Roof Health Report</h3></div>
+      <p class="pm-hint">Save the estimate first — the report files against it.</p>
+      <div class="rc-btns"><button class="btn-primary" onclick="saveEstimate().then(renderDocumentsPage)">💾 Save estimate</button></div></div>`;
+    return;
+  }
+  if (_crFor !== S.estimate_id) {
+    el.innerHTML = '<div class="panel rc-panel"><p class="pm-hint">Loading…</p></div>';
+    loadConditionReport();
+    return;
+  }
+  if (!_crData || _crData.error) {
+    el.innerHTML = `<div class="panel rc-panel"><p class="pm-hint">Could not load the report: ${esc((_crData||{}).error || '')}</p>
+      <button class="doc-crm-push" onclick="_crFor=null;renderConditionReportForm()">Retry</button></div>`;
+    return;
+  }
+  const cr  = Object.assign({}, _crData.condition_report || {}, S.condition_report || {});
+  const sum = _crData.summary;
+  const issued = (S.attachments || []).some(a => a.server_generated && a.doc_type === 'condition_report');
+  const lab = (text, note) =>
+    `<span class="rc-lab">${text}${note ? ` <span class="note-tag">${note}</span>` : ''}</span>`;
+  const certOn  = cr.include_certificate === true;
+  const certBad = _crData.certificate_problem;
+
+  const summaryHtml = sum ? `
+    <div class="cr-summary">
+      <strong>${esc(sum.title)}</strong>${sum.inspection_date ? ` · inspected ${esc(sum.inspection_date)}` : ''}
+      <ul>${sum.sections.map(s => `<li>${esc(s.label)} — grade <strong>${esc(s.grade)}</strong> (${esc(s.grade_word)}) ·
+        ${s.findings} finding${s.findings === 1 ? '' : 's'} · ${s.recommendations} recommendation${s.recommendations === 1 ? '' : 's'}</li>`).join('')}</ul>
+      ${sum.cost_total > 0 ? `<div>Estimated repairs: <strong>${fmtCur(sum.cost_total)}${esc(sum.cost_plus)}</strong></div>` : ''}
+    </div>`
+    : `<p class="pm-hint">⚠ Nothing to report yet — grade at least one area on the Roof Health page.</p>`;
+
+  el.innerHTML = `
+  <div class="panel rc-panel">
+    <div class="panel-header">
+      <h3>🩺 Roof Health Report — ${esc(c.name || 'this property')}</h3>
+      ${issued ? '<span class="rc-issued-chip">Issued</span>' : ''}
+    </div>
+    <p class="pm-hint rc-lede">The condition report from the Roof Health page, as a PDF of its
+      own — for a realtor, or a homeowner who booked an inspection and is not buying a roof today.</p>
+    ${summaryHtml}
+    <button class="rc-load-std" type="button" onclick="switchPage('report')">✎ Edit the report on the Roof Health page</button>
+
+    <div class="rc-sec">Document</div>
+    <div class="rc-grid">
+      <label class="rc-f">${lab('Prepared For', 'blank = the customer')}
+        <input type="text" id="cr-prepared" value="${esc(cr.prepared_for || '')}" placeholder="e.g. Sandy Ruiz, Coldwell Banker">
+      </label>
+      <label class="rc-f">${lab('Inspected By')}
+        <input type="text" id="cr-inspector" value="${esc(cr.inspected_by || '')}" placeholder="${esc(cap(S.salesperson || _loggedInUser || ''))}">
+      </label>
+    </div>
+    <label class="rc-f rc-wide">${lab('Cover Note', 'optional')}
+      <textarea id="cr-note" rows="3" placeholder="A line or two above the grades">${esc(cr.cover_note || '')}</textarea>
+    </label>
+
+    <div class="rc-sec">Roof Certificate</div>
+    <label class="cr-toggle">
+      <input type="checkbox" id="cr-cert" ${certOn ? 'checked' : ''} onchange="crToggleCert(this.checked)">
+      Include the roof certificate as the last page <span class="note-tag">${esc(_crData.certificate_number || '')}</span>
+    </label>
+    <p class="pm-hint">Off by default: it adds a labor-only leak warranty to the report. It is the same
+      certificate the 🏅 card issues — same number, same term, running from its inspection date.</p>
+    ${certOn && certBad ? `<p class="pm-hint cr-warn">⚠ ${esc(certBad)} Fill it in on the 🏅 Roof Certificate card, or the report cannot be issued.</p>` : ''}
+    <div class="rc-btns">
+      <button class="doc-crm-push" onclick="crPullFindings()" ${_crData.findings_text ? '' : 'disabled'}
+        title="Copy this report's findings into the certificate's Findings box">↙ Pull report findings into the certificate</button>
+      <button class="doc-crm-push" onclick="docToggleGenerator('roofcert')">🏅 Open the certificate</button>
+    </div>
+
+    <div class="rc-btns">
+      <button class="doc-crm-push" onclick="saveConditionReportFields()">💾 Save</button>
+      <button class="btn-primary rc-issue" onclick="issueConditionReport()" ${sum ? '' : 'disabled'}>
+        🩺 ${issued ? 'Save + Re-issue' : 'Save + Issue Report'}</button>
+      ${issued ? `<button class="doc-crm-push" onclick="issueConditionReport(true)">↗ Issue + File in Den</button>` : ''}
+      <span class="rc-saved" id="cr-saved"></span>
+    </div>
+  </div>`;
+}
+
+function _readConditionReportForm() {
+  const v = id => (document.getElementById(id) || {}).value;
+  const out = {prepared_for: v('cr-prepared') || '', inspected_by: v('cr-inspector') || '',
+               cover_note: v('cr-note') || ''};
+  const cb = document.getElementById('cr-cert');
+  if (cb) out.include_certificate = cb.checked === true;
+  return out;
+}
+
+async function saveConditionReportFields(quiet) {
+  if (!S.estimate_id) await saveEstimate();
+  if (!S.estimate_id) return null;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/condition-report`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_readConditionReportForm()),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    // Keep S in step so the next whole-estimate save carries the new fields
+    // rather than the ones this tab loaded with.
+    S.condition_report = Object.assign({}, S.condition_report || {}, d.condition_report || {});
+    const flag = document.getElementById('cr-saved');
+    if (flag && !quiet) {
+      flag.textContent = '✓ Saved';
+      setTimeout(() => { if (flag.textContent === '✓ Saved') flag.textContent = ''; }, 2500);
+    }
+    return d.condition_report;
+  } catch (e) {
+    alert('Could not save the report: ' + e.message);
+    return null;
+  }
+}
+
+async function crToggleCert(on) {
+  await saveConditionReportFields(true);
+  _crFor = null;             // re-read whether the certificate can be issued
+  renderConditionReportForm();
+}
+
+/* One-way copy into the certificate's free-text Findings — a button, never a
+   sync. Once it is in the certificate it is the rep's text, and the
+   certificate is what gets signed. */
+async function crPullFindings() {
+  const text = (_crData || {}).findings_text || '';
+  if (!text) return;
+  const cur = ((S.roof_certificate || {}).findings || '').trim();
+  if (cur && !confirm('Replace the certificate\'s current Findings with this report\'s?')) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/roof-certificate`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({findings: text}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    S.roof_certificate = Object.assign({}, S.roof_certificate || {}, d.roof_certificate || {});
+    const flag = document.getElementById('cr-saved');
+    if (flag) flag.textContent = '✓ Copied into the certificate';
+  } catch (e) {
+    alert('Could not copy the findings: ' + e.message);
+  }
+}
+
+async function issueConditionReport(pushToCrm) {
+  const saved = await saveConditionReportFields(true);
+  if (saved === null) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/condition-report`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({push_to_crm: !!pushToCrm}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not issue the report');
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(
+      a => !(a.server_generated && a.doc_type === 'condition_report'));
+    S.attachments.push(d.attachment);
+  } catch (e) {
+    alert(e.message);
+  }
+  renderDocumentsPage();
+}
+
+/* ── Warranty certificate (after the job) ────────────────────────────────
+   Server-only by design: the workmanship term is already written in five
+   places, so this form never states one — it shows what the server derived
+   from the signed package (or the flat insurance term) and refuses to issue
+   when it cannot tell. The COMPLETION date is never defaulted: the contract
+   date is weeks early on nearly every job, so the scheduled and contract
+   dates are offered as one-tap fills, not stored answers. */
+let _wcData = null;
+let _wcFor  = null;
+
+async function loadWarrantyCert() {
+  _wcFor = S.estimate_id;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/warranty-certificate`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    _wcData = d;
+  } catch (e) {
+    _wcData = {error: e.message};
+  }
+  if (_docGenerator === 'warranty') renderWarrantyCertForm();
+}
+
+function renderWarrantyCertForm() {
+  const el = document.getElementById('warranty-form-container');
+  if (!el) return;
+  if (!S.estimate_id || !S.signature) {
+    el.innerHTML = '<div class="panel rc-panel"><p class="pm-hint">The warranty certificate is issued for signed work only.</p></div>';
+    return;
+  }
+  if (_wcFor !== S.estimate_id) {
+    el.innerHTML = '<div class="panel rc-panel"><p class="pm-hint">Loading…</p></div>';
+    loadWarrantyCert();
+    return;
+  }
+  if (!_wcData || _wcData.error) {
+    el.innerHTML = `<div class="panel rc-panel"><p class="pm-hint">Could not load: ${esc((_wcData||{}).error || '')}</p>
+      <button class="doc-crm-push" onclick="_wcFor=null;renderWarrantyCertForm()">Retry</button></div>`;
+    return;
+  }
+  const wc  = Object.assign({}, _wcData.warranty_certificate || {}, S.warranty_certificate || {});
+  const sug = _wcData.suggested || {};
+  const issued = (S.attachments || []).some(a => a.server_generated && a.doc_type === 'warranty_certificate');
+  const lab = (text, note) =>
+    `<span class="rc-lab">${text}${note ? ` <span class="note-tag">${note}</span>` : ''}</span>`;
+  const t = (id, label, val, ph, note) => `
+    <label class="rc-f">${lab(label, note)}
+      <input type="text" id="${id}" value="${esc(val || '')}" placeholder="${esc(ph || '')}">
+    </label>`;
+  const fill = (d, label) => d
+    ? `<button type="button" class="rc-load-std" onclick="document.getElementById('wc-date').value='${esc(d.slice(0,10))}'">${label} (${esc(d.slice(0,10))})</button>`
+    : '';
+  const basisNote = _wcData.basis === 'insurance'
+    ? 'Insurance claim — the flat term from the insurance contract, no package named.'
+    : _wcData.basis === 'tier' ? 'From the package the customer signed.'
+    : 'Could not tell which warranty this job was sold with.';
+
+  el.innerHTML = `
+  <div class="panel rc-panel">
+    <div class="panel-header">
+      <h3>🛡 Warranty Certificate — ${esc((S.customer || {}).name || 'this property')}</h3>
+      ${issued ? '<span class="rc-issued-chip">Issued</span>' : ''}
+    </div>
+    <p class="pm-hint rc-lede">What the homeowner keeps once the roof is on: the system installed,
+      when, and the workmanship warranty behind it. <span class="note-tag">${esc(_wcData.number || '')}</span></p>
+
+    <div class="rc-sec">Warranty</div>
+    <div class="cr-summary">
+      <strong>${esc(_wcData.term || '—')}</strong>
+      <div class="pm-hint">${esc(basisNote)}</div>
+    </div>
+
+    <div class="rc-sec">Completed Work</div>
+    <div class="rc-grid">
+      <label class="rc-f">${lab('Completion Date', 'term starts here')}
+        <input type="date" id="wc-date" value="${esc((wc.completion_date || '').slice(0,10))}">
+      </label>
+      ${t('wc-product', 'Product Installed', wc.product_installed || sug.product_installed,
+          'e.g. CertainTeed Landmark Pro', sug.product_installed && !wc.product_installed ? 'from the signed package' : '')}
+      ${t('wc-color', 'Color', wc.color || sug.color, '')}
+      ${t('wc-crew', 'Crew Lead', wc.crew_lead, 'optional')}
+    </div>
+    <div class="rc-btns">${fill(sug.scheduled_date, 'Use the scheduled date')}${fill(sug.contract_date, 'Use the contract date')}</div>
+
+    <div class="rc-sec">Manufacturer <span class="note-tag">optional</span></div>
+    <div class="rc-grid">
+      ${t('wc-mfr', 'Manufacturer Warranty', wc.manufacturer_warranty, 'e.g. GAF System Plus — 50-yr limited')}
+      ${t('wc-reg', 'Registration #', wc.registration_number, '')}
+    </div>
+    <label class="rc-f rc-wide">${lab('Notes', 'prints on the certificate')}
+      <textarea id="wc-notes" rows="2">${esc(wc.notes || '')}</textarea>
+    </label>
+
+    <div class="rc-btns">
+      <button class="doc-crm-push" onclick="saveWarrantyCertFields()">💾 Save</button>
+      <button class="btn-primary rc-issue" onclick="issueWarrantyCert()">
+        🛡 ${issued ? 'Save + Re-issue' : 'Save + Issue Certificate'}</button>
+      ${issued ? `<button class="doc-crm-push" onclick="issueWarrantyCert(true)">↗ Issue + File in Den</button>` : ''}
+      <span class="rc-saved" id="wc-saved"></span>
+    </div>
+  </div>`;
+}
+
+function _readWarrantyCertForm() {
+  const v = id => ((document.getElementById(id) || {}).value || '').trim();
+  return {completion_date: v('wc-date'), product_installed: v('wc-product'), color: v('wc-color'),
+          crew_lead: v('wc-crew'), manufacturer_warranty: v('wc-mfr'),
+          registration_number: v('wc-reg'), notes: v('wc-notes')};
+}
+
+async function saveWarrantyCertFields(quiet) {
+  if (!S.estimate_id) return null;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/warranty-certificate`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_readWarrantyCertForm()),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    S.warranty_certificate = Object.assign({}, S.warranty_certificate || {}, d.warranty_certificate || {});
+    const flag = document.getElementById('wc-saved');
+    if (flag && !quiet) {
+      flag.textContent = '✓ Saved';
+      setTimeout(() => { if (flag.textContent === '✓ Saved') flag.textContent = ''; }, 2500);
+    }
+    return d.warranty_certificate;
+  } catch (e) {
+    alert('Could not save the certificate: ' + e.message);
+    return null;
+  }
+}
+
+async function issueWarrantyCert(pushToCrm) {
+  const saved = await saveWarrantyCertFields(true);
+  if (saved === null) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/warranty-certificate`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({push_to_crm: !!pushToCrm}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not issue the certificate');
+    if (!Array.isArray(S.attachments)) S.attachments = [];
+    S.attachments = S.attachments.filter(
+      a => !(a.server_generated && a.doc_type === 'warranty_certificate'));
+    S.attachments.push(d.attachment);
+  } catch (e) {
+    alert(e.message);
+  }
+  renderDocumentsPage();
+}
+
+/* ── Invoice / quote ────────────────────────────────────────────────────
+   A plain, itemized PDF for a GC or a homeowner. It has no signing link and no
+   proposal pages. Reached from the customer screen's Create a document cards,
+   the 🧾 Invoice header button, the ⋯ menu and the Send modal (openInvoice). All the money comes from the SERVER (GET/PUT return
+   invoice_rows totals), so no pricing math is mirrored here. The form only
+   collects the fields and shows what the server says the document will bill.
+   See the "GC invoice / quote" block in app.py. */
+
+let _invData = null;   // {invoice, totals} from the server, for the open estimate
+let _invFor  = null;   // estimate id _invData belongs to
+
+async function loadInvoice() {
+  if (!S.estimate_id) { _invData = null; _invFor = null; return; }
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/invoice`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Load failed');
+    _invData = await r.json();
+    _invFor = S.estimate_id;
+  } catch (e) {
+    _invData = {error: e.message};
+    _invFor = S.estimate_id;
+  }
+  renderInvoiceForm();
+}
+
+function renderInvoiceForm() {
+  const el = document.getElementById('invoice-form-container');
+  if (!el) return;
+  if (!S.estimate_id) {
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 Invoice / Quote</h3></div>
+      <p class="pm-hint">Save the estimate first. The invoice lists what the saved estimate bills.</p>
+      <div class="rc-btns"><button class="btn-primary" onclick="saveEstimate().then(loadInvoice)">💾 Save estimate</button></div></div>`;
+    return;
+  }
+  if (_invData && _invData.error && _invFor === S.estimate_id) {
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 Invoice / Quote</h3></div>
+      <p class="pm-hint">⚠ Could not load: ${esc(_invData.error)}</p>
+      <div class="rc-btns"><button class="doc-crm-push" onclick="loadInvoice()">↻ Retry</button></div></div>`;
+    return;
+  }
+  if (!_invData || _invFor !== S.estimate_id) {
+    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 Invoice / Quote</h3></div>
+      <p class="pm-hint">Loading…</p></div>`;
+    if (_invFor !== S.estimate_id) { _invFor = S.estimate_id; loadInvoice(); }
+    return;
+  }
+  const inv = _invData.invoice || {};
+  const tot = _invData.totals || {};
+  const isInv = inv.kind !== 'quote';
+  const c = S.customer || {};
+  const filed = (S.attachments || []).some(a => a.server_generated && a.doc_type === 'invoice');
+  const lab = (text, note) =>
+    `<span class="rc-lab">${text}${note ? ` <span class="note-tag">${note}</span>` : ''}</span>`;
+  const pays = inv.payments || [];
+  const nLines = (tot.sections || []).reduce((n, s) => n + (s.rows || []).length, 0);
+
+  el.innerHTML = `
+  <div class="panel rc-panel">
+    <div class="panel-header">
+      <h3>🧾 ${isInv ? 'Invoice' : 'Quote'} — ${esc(c.name || 'this job')}</h3>
+      ${inv.signature ? `<span class="rc-issued-chip rc-signed-chip" title="${esc(inv.signature.name || '')}">✍️ Signed ${esc(String(inv.signature.signed_at || '').slice(0, 10))}</span>`
+        : inv.sent_at ? `<span class="rc-issued-chip" title="${esc(inv.sent_to || '')}">Sent ${esc(String(inv.sent_at).slice(0, 10))}</span>` : ''}
+    </div>
+    <p class="pm-hint rc-lede">A plain, itemized document for a GC or a homeowner.
+      It has no signing link and no proposal pages. Change the line items on the
+      estimate itself.</p>
+
+    <div class="rc-term-row">
+      <div class="rc-term-btns">
+        <button type="button" class="rc-term-btn ${!isInv ? 'active' : ''}" onclick="invSetKind('quote')">Quote</button>
+        <button type="button" class="rc-term-btn ${isInv ? 'active' : ''}" onclick="invSetKind('invoice')">Invoice</button>
+      </div>
+    </div>
+
+    <div class="rc-grid">
+      <label class="rc-f">${lab(isInv ? 'Invoice #' : 'Quote #')}
+        <input type="text" id="inv-number" value="${esc(inv.number || '')}">
+      </label>
+      <label class="rc-f">${lab('Date')}
+        <input type="date" id="inv-issue" value="${esc(inv.issue_date || '')}">
+      </label>
+      ${isInv
+        ? `<label class="rc-f">${lab('Due Date', 'optional')}
+             <input type="date" id="inv-due" value="${esc(inv.due_date || '')}"></label>`
+        : `<label class="rc-f">${lab('Valid Until', 'optional')}
+             <input type="date" id="inv-valid" value="${esc(inv.valid_until || '')}"></label>`}
+      <label class="rc-f">${lab('PO / Reference', 'optional')}
+        <input type="text" id="inv-po" value="${esc(inv.po_ref || '')}" placeholder="GC's PO or job number">
+      </label>
+    </div>
+
+    <label class="inv-itemize">
+      <input type="checkbox" id="inv-itemize" ${inv.itemize !== false ? 'checked' : ''}>
+      <span><strong>List every line</strong> with its own price. Untick for a homeowner:
+        lines the proposal hides (like install labor) fold into the subtotal instead.
+        The total is the same either way.</span>
+    </label>
+
+    <div class="rc-sec">Payments received <span class="note-tag">deposits, progress payments</span></div>
+    <div id="inv-payments">
+      ${pays.map((p, i) => `
+      <div class="rc-grid inv-pay-row" data-i="${i}">
+        <label class="rc-f">${lab('Date')}<input type="date" class="inv-pay-date" value="${esc(p.date || '')}"></label>
+        <label class="rc-f">${lab('Amount')}<input type="number" step="0.01" class="inv-pay-amt" value="${esc(String(p.amount ?? ''))}"></label>
+        <label class="rc-f">${lab('Note')}<input type="text" class="inv-pay-note" value="${esc(p.note || '')}" placeholder="e.g. Check #1042"></label>
+        <button type="button" class="att-del" onclick="invRemovePayment(${i})" title="Remove">×</button>
+      </div>`).join('')}
+    </div>
+    <button class="rc-load-std" type="button" onclick="invAddPayment()">＋ Add a payment</button>
+
+    <label class="rc-f rc-wide">${lab('Notes', 'prints at the bottom')}
+      <textarea id="inv-notes" rows="2" placeholder="Payment terms, remit-to, lien waiver note…">${esc(inv.notes || '')}</textarea>
+    </label>
+
+    <div class="rc-sec">What it will bill</div>
+    <div class="inv-summary">
+      <div>${nLines} line item${nLines === 1 ? '' : 's'}${(tot.sections || []).reduce((n, s) => n + (s.folded || 0), 0) ? ` listed (+${(tot.sections || []).reduce((n, s) => n + (s.folded || 0), 0)} folded into subtotals)` : ''}${(tot.sections || []).length ? ` across ${(tot.sections || []).map(s => esc(s.title)).join(', ')}` : ''}</div>
+      ${(tot.change_orders || []).length ? `<div>Original scope <strong>${fmtCur(tot.subtotal)}</strong> · Change orders <strong>${fmtCur(tot.co_total)}</strong></div>` : ''}
+      <div>Total <strong>${fmtCur(tot.total)}</strong>${tot.payments_total ? ` · Payments <strong>−${fmtCur(tot.payments_total)}</strong>` : ''}</div>
+      ${isInv || tot.payments_total ? `<div class="inv-balance">Balance due <strong>${fmtCur(tot.balance_due)}</strong></div>` : ''}
+      ${(tot.supplements || []).length ? `<div class="pm-hint">${tot.supplements.length} supplement line(s) listed separately, not in the total.</div>` : ''}
+      ${!nLines ? '<div class="pm-hint">⚠ No billable line items. Save the estimate after adding them.</div>' : ''}
+    </div>
+
+    <label class="rc-f rc-wide">${lab('Email to')}
+      <input type="email" id="inv-email" value="${esc(c.email || '')}" placeholder="name@example.com">
+    </label>
+
+    <div class="rc-btns">
+      <button class="doc-crm-push" onclick="invPreview()">👁 Preview PDF</button>
+      <button class="doc-crm-push" onclick="invDownload()">⬇ Download PDF</button>
+      <button class="doc-crm-push" onclick="invFile()">📎 ${filed ? 'Update in Files' : 'Save to Files'}</button>
+      <button class="doc-crm-push" onclick="invSendForSignature()">✍️ Send for Signature</button>
+      <button class="btn-primary rc-issue" onclick="invEmail()">✉️ Email ${isInv ? 'Invoice' : 'Quote'}</button>
+      <span class="rc-saved" id="inv-saved"></span>
+    </div>
+    ${inv.signature ? `<p class="pm-hint">Signed by <strong>${esc(inv.signature.name || '')}</strong>
+      — the figures are locked. Reopen it as a change order if the amount needs to move.</p>` : ''}
+  </div>`;
+  ['inv-issue', 'inv-due', 'inv-valid', 'inv-po', 'inv-number', 'inv-notes', 'inv-itemize'].forEach(id => {
+    const x = document.getElementById(id);
+    if (x) x.onchange = () => saveInvoiceFields(true, true);
+  });
+  document.querySelectorAll('#inv-payments input').forEach(x => {
+    x.onchange = () => saveInvoiceFields(true, true);
+  });
+}
+
+function _readInvoiceForm() {
+  const v = id => { const x = document.getElementById(id); return x ? x.value.trim() : undefined; };
+  const out = { kind: (_invData && _invData.invoice && _invData.invoice.kind) || 'invoice' };
+  const itemize = document.getElementById('inv-itemize');
+  if (itemize) out.itemize = itemize.checked;
+  const map = {number: 'inv-number', issue_date: 'inv-issue', due_date: 'inv-due',
+               valid_until: 'inv-valid', po_ref: 'inv-po', notes: 'inv-notes'};
+  for (const [k, id] of Object.entries(map)) {
+    const val = v(id);
+    if (val !== undefined) out[k] = val;
+  }
+  out.payments = Array.from(document.querySelectorAll('#inv-payments .inv-pay-row')).map(row => ({
+    date:   row.querySelector('.inv-pay-date').value,
+    amount: row.querySelector('.inv-pay-amt').value,
+    note:   row.querySelector('.inv-pay-note').value,
+  }));
+  return out;
+}
+
+async function saveInvoiceFields(quiet, rerender, overrides) {
+  if (!S.estimate_id) await saveEstimate();
+  if (!S.estimate_id) return null;
+  // The invoice lists the SAVED estimate, so unsaved line-item edits go first.
+  if (dirty) await saveEstimate();
+  const payload = Object.assign(_readInvoiceForm(), overrides || {});
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/invoice`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Save failed');
+    _invData = d; _invFor = S.estimate_id;
+    S.invoice = d.invoice;
+    if (rerender) renderInvoiceForm();
+    const flag = document.getElementById('inv-saved');
+    if (flag && !quiet) {
+      flag.textContent = '✓ Saved';
+      setTimeout(() => { if (flag.textContent === '✓ Saved') flag.textContent = ''; }, 2500);
+    }
+    return d;
+  } catch (e) {
+    alert('Could not save the invoice: ' + e.message);
+    return null;
+  }
+}
+
+function invSetKind(kind) {
+  // The server drops a number that is just the INV-/Q- default, so the prefix
+  // follows the kind; a number the rep typed is kept.
+  saveInvoiceFields(true, true, {kind});
+}
+
+function invAddPayment() {
+  const form = _readInvoiceForm();
+  const today = fmtDate(new Date());
+  const d = Object.assign({}, _invData);
+  d.invoice = Object.assign({}, d.invoice, form, {
+    payments: form.payments.concat([{date: today, amount: '', note: ''}])});
+  _invData = d;
+  renderInvoiceForm();
+  // Not saved yet: an empty amount would be dropped. Saving happens on change.
+  const rows = document.querySelectorAll('#inv-payments .inv-pay-amt');
+  if (rows.length) rows[rows.length - 1].focus();
+}
+
+function invRemovePayment(i) {
+  const form = _readInvoiceForm();
+  form.payments.splice(i, 1);
+  saveInvoiceFields(true, true, {payments: form.payments});
+}
+
+async function invPreview() {
+  // Open the window synchronously so a popup blocker lets it through, then
+  // point it at the PDF once the fields are saved.
+  const w = window.open('', '_blank');
+  const saved = await saveInvoiceFields(true, true);
+  if (!saved) { if (w) w.close(); return; }
+  const url = `${BASE}/api/estimates/${S.estimate_id}/invoice.pdf`;
+  if (w) w.location = url; else window.open(url, '_blank');
+}
+
+// Preview opens the PDF inline; this saves it. The endpoint has taken
+// `?download=1` since it was written — it sets Content-Disposition: attachment
+// — and nothing ever passed it, so the only way to get a file was to preview it
+// and then use the browser's own save button. That works on a laptop and is a
+// dead end on the phone a rep is standing on a driveway holding.
+async function invDownload() {
+  const saved = await saveInvoiceFields(true, true);
+  if (!saved) return;
+  // A real navigation rather than fetch+blob: the browser handles the save
+  // dialog, iOS hands it to the share sheet, and nothing has to be held in
+  // memory. Same reason the signed-contract download is a plain link.
+  window.location = `${BASE}/api/estimates/${S.estimate_id}/invoice.pdf?download=1`;
+}
+
+// A GC or homeowner approving the amount before they pay it. Deliberately NOT
+// the estimate's signing link: that one files a job in The Den and drives the
+// CRM funnel to won, and this bills work that was already sold.
+async function invSendForSignature() {
+  const saved = await saveInvoiceFields(true, false);
+  if (!saved) return;
+  const email = (document.getElementById('inv-email') || {}).value || '';
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/invoice/send-signature`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim() }),
+    });
+    const j = await r.json();
+    if (!r.ok) { toast('⚠ ' + (j.error || 'Could not create the signing link.')); return; }
+    // The link is worth having even when the mail did not go — a rep can paste
+    // it into their own message, which is what they do when a GC wants it in a
+    // thread they are already on.
+    if (j.sent_to) toast(`✓ Sent to ${j.sent_to} for signature`);
+    else {
+      await navigator.clipboard.writeText(j.full_url).catch(() => {});
+      toast('✓ ' + (j.note || 'Signing link copied'));
+    }
+    loadInvoice();
+  } catch (e) {
+    toast('⚠ Could not create the signing link.');
+  }
+}
+
+async function invFile() {
+  const saved = await saveInvoiceFields(true, false);
+  if (!saved) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/invoice`, {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Could not save the invoice PDF');
+    _invAttach(d.attachment);
+  } catch (e) {
+    alert(e.message);
+  }
+  renderDocumentsPage();
+}
+
+async function invEmail() {
+  const to = ((document.getElementById('inv-email') || {}).value || '').trim();
+  if (!to || !to.includes('@')) { alert('Enter the email address to send it to.'); return; }
+  const saved = await saveInvoiceFields(true, false);
+  if (!saved) return;
+  const inv = saved.invoice, tot = saved.totals;
+  const kind = inv.kind === 'quote' ? 'quote' : 'invoice';
+  const amt = kind === 'invoice' || tot.payments_total ? `balance due ${fmtCur(tot.balance_due)}` : `total ${fmtCur(tot.total)}`;
+  if (!confirm(`Email ${kind} ${inv.number} (${amt}) to ${to}?`)) return;
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/invoice/send-email`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email: to}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'Email could not be sent');
+    if (d.attachment) _invAttach(d.attachment);
+    alert(`✓ Sent to ${d.sent_to}`);
+  } catch (e) {
+    alert(e.message);
+  }
+  _invFor = null;   // reload so the Sent chip shows
+  renderDocumentsPage();
+}
+
+function _invAttach(att) {
+  if (!att) return;
+  if (!Array.isArray(S.attachments)) S.attachments = [];
+  S.attachments = S.attachments.filter(a => !(a.server_generated && a.doc_type === 'invoice'));
+  S.attachments.push(att);
+}
+
+/* Straight to the invoice panel from anywhere: the 🧾 Invoice header button,
+   the ⋯ menu and the Send modal. Always opens it (never toggles it shut) and
+   always refetches, since the estimate may have changed since last time. */
+function openInvoice() {
+  const m = document.getElementById('share-modal');
+  if (m) m.classList.add('hidden');
+  _docGenerator = 'invoice';
+  _invFor = null;
+  switchPage('client');
+  renderDocumentsPage();
+  const el = document.getElementById('invoice-form-container');
+  if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
 function docToggleGenerator(which) {
   _docGenerator = (_docGenerator === which) ? null : which;
+  // Totals come from the saved estimate, which may have changed since the last
+  // open, so the invoice always refetches.
+  if (_docGenerator === 'invoice') _invFor = null;
+  if (_docGenerator === 'condition') _crFor = null;
+  if (_docGenerator === 'warranty') _wcFor = null;
   if (_docGenerator === 'permit') {
     // Fresh open on a job: prefill from the estimate once per estimate
     if (!PermitState || PermitState.linked_estimate !== (S.estimate_id || '__none__')) {
@@ -13968,11 +18128,19 @@ async function docUploadPdf(files) {
    on the linked job. Auto-runs on upload/generation (silent — skips when
    the estimate isn't CRM-linked); the ↗ CRM button retries manually. */
 async function pushDocToCrm(attId, opts = {}) {
-  const att = (S.attachments || []).find(a => a.id === attId);
-  if (!att || att.crm_document_id || !S.estimate_id) return;
+  // opts.estId: a document on ANOTHER of this customer's estimates. Filed
+  // against that estimate, and it must NOT setDirty() this one — that would
+  // start the autosave on an estimate nobody touched.
+  const foreign = !!(opts.estId && opts.estId !== S.estimate_id);
+  const estId = foreign ? opts.estId : S.estimate_id;
+  const att = foreign
+    ? ((_docCustDocs.rows || []).find(r => r.estimate_id === estId)?.documents || [])
+        .find(a => a.id === attId)
+    : (S.attachments || []).find(a => a.id === attId);
+  if (!att || att.crm_document_id || !estId) return;
   const docType = att.doc_type || (/permit/i.test(att.label || '') ? 'permit' : 'other');
   try {
-    const r = await fetch(`/api/estimates/${S.estimate_id}/push-document`, {
+    const r = await fetch(`/api/estimates/${estId}/push-document`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({filename: att.filename, label: att.label || att.original_name, doc_type: docType}),
     });
@@ -13983,6 +18151,7 @@ async function pushDocToCrm(attId, opts = {}) {
       return;
     }
     att.crm_document_id = res.crm_document_id;
+    if (foreign) { renderDocumentsPage(); return; }
     setDirty();
     if (activePage === 'documents') renderDocumentsPage();
   } catch(e) {
@@ -14381,7 +18550,7 @@ const _VZ_DEFAULT_SCOPE = ['roof', 'siding', 'trim', 'soffit', 'door'];
 const _VZ_ROLE_META = {
   roof:{label:'Roof',icon:'🏠',trade:'roofing',color:'rgba(220,50,50,0.38)'},
   siding:{label:'Siding',icon:'🏗',trade:'siding',color:'rgba(50,120,220,0.38)'},
-  trim:{label:'Trim / Fascia',icon:'▦',trade:'trim',color:'rgba(168,85,247,0.42)'},
+  trim:{label:'Trim / Fascia / Rakes',icon:'▦',trade:'trim',color:'rgba(168,85,247,0.42)'},
   soffit:{label:'Soffit',icon:'⌂',trade:'soffit',color:'rgba(20,184,166,0.42)'},
   door:{label:'Doors',icon:'🚪',trade:'doors',color:'rgba(234,135,25,0.42)'},
   gutter:{label:'Gutters',icon:'🌧',trade:'gutter',color:'rgba(59,130,246,0.45)'},
@@ -14394,12 +18563,33 @@ const _VZ_COMPOSE_ORDER = ['roof','siding','stucco','soffit','trim','window','sh
 const _VZ_PROJECTABLE_ROLES = ['roof','siding','stucco','metal','soffit'];
 const _VZ_PLACEMENT_ROLES = ['door','window','shutter'];
 const _VZ_MAX_PLANES = 16;
+const _VZ_SOURCE_MAX_SIDE = 2048;
+const _VZ_SOURCE_MAX_PIXELS = 3200000;
+const _VZ_EDITOR_MAX_SIDE = 1400;
+const _VZ_DETECTION_MAX_SIDE = 1200;
+const _VZ_JPEG_QUALITY = 0.94;
 const _vzPatternImg = {};   // pattern_id -> HTMLImageElement (once loaded)
 const _vzTextureImg = {};   // uploaded catalog texture ref -> HTMLImageElement
 const _vzPlacementImg = {}; // catalog/job product cutout ref -> HTMLImageElement
 const _vzPlacementSheetCache = new Map();
 const _vzPlacementLayerCache = new Map();
 const _vzProjectionCache = new Map(); // geometry + material -> unmasked warped layer
+let _vzUploadGeneration = 0;
+
+function _vzFitSize(width,height,maxSide,maxPixels=Infinity) {
+  const w=Math.max(1,Number(width)||1),h=Math.max(1,Number(height)||1);
+  const sideLimit=Math.max(1,Number(maxSide)||Math.max(w,h));
+  const pixelLimit=Number(maxPixels)>0?Number(maxPixels):Infinity;
+  const scale=Math.min(1,sideLimit/Math.max(w,h),Math.sqrt(pixelLimit/(w*h)));
+  return {width:Math.max(1,Math.round(w*scale)),height:Math.max(1,Math.round(h*scale))};
+}
+function _vzHighQuality(ctx) {
+  if (ctx) {
+    ctx.imageSmoothingEnabled=true;
+    try { ctx.imageSmoothingQuality='high'; } catch (_) {}
+  }
+  return ctx;
+}
 
 function _vzCacheCanvas(cache,key,canvas,maxBytes) {
   if (cache.has(key)) cache.delete(key);
@@ -14410,6 +18600,9 @@ function _vzCacheCanvas(cache,key,canvas,maxBytes) {
     const oldest=cache.keys().next().value,removed=cache.get(oldest);
     cache.delete(oldest);
     total-=(removed?.width||0)*(removed?.height||0)*4;
+    // Explicitly release the backing store; Safari otherwise tends to keep
+    // evicted GPU canvases resident until the whole tab is reloaded.
+    if (removed) { removed.width=0; removed.height=0; }
   }
   return canvas;
 }
@@ -14420,14 +18613,15 @@ function _vzCachedCanvas(cache,key) {
   return value;
 }
 function _vzImageReady(img) {
-  if (!img) return Promise.resolve();
+  if (!img) return Promise.reject(new Error('A selected design image is unavailable. Choose the product again before saving.'));
   if (img.complete) return img.naturalWidth
     ? Promise.resolve(img)
     : Promise.reject(new Error('A design image could not be loaded.'));
   return new Promise((resolve,reject) => {
-    let settled=false;
+    let settled=false, timer;
     const finish=(error) => {
       if(settled)return;settled=true;
+      clearTimeout(timer);
       img.removeEventListener?.('load',onLoad);img.removeEventListener?.('error',onError);
       error?reject(error):resolve(img);
     };
@@ -14435,6 +18629,7 @@ function _vzImageReady(img) {
     const onError=()=>finish(new Error('A design image could not be loaded.'));
     img.addEventListener?.('load',onLoad,{once:true});
     img.addEventListener?.('error',onError,{once:true});
+    timer=setTimeout(()=>finish(new Error('A design image timed out. Check your connection and retry Save.')),20000);
     if(typeof img.decode==='function')img.decode().then(onLoad).catch(()=>{});
   });
 }
@@ -14467,6 +18662,10 @@ function _vzGetTextureImg(ref) {
     _vzProjectionCache.clear();
     if (activePage === 'visualizer') _vzRedrawAll();
   };
+  img.onerror = () => {
+    if (_vzTextureImg[ref] === img) delete _vzTextureImg[ref];
+    _vzProjectionCache.clear();
+  };
   return img;
 }
 
@@ -14484,11 +18683,26 @@ function _vzGetPlacementImg(ref) {
     _vzPlacementLayerCache.clear();
     if (activePage === 'visualizer') _vzRedrawAll();
   };
+  img.onerror = () => {
+    if (_vzPlacementImg[ref] === img) delete _vzPlacementImg[ref];
+    _vzPlacementLayerCache.clear();
+  };
   return img;
 }
 
 let vzState = null;
 let vzCapabilities = null;
+
+function _vzCurrentStateOwnsEstimate() {
+  return !!(vzState && vzState.owner === S);
+}
+function _vzHasUnsavedCanvasWork() {
+  return _vzCurrentStateOwnsEstimate() && !!(vzState.dirty && vzState.photoImg);
+}
+function _vzBlocksGenericSave() {
+  return _vzMetaPending(S) || (_vzCurrentStateOwnsEstimate() && !!(
+    _vzHasUnsavedCanvasWork() || vzState.saving || vzState.detecting || vzState.proviaUploading));
+}
 
 function _vzResetState() {
   _vzProjectionCache.clear();
@@ -14506,13 +18720,14 @@ function _vzResetState() {
     photoW: 0, photoH: 0,    // native pixel dimensions
     roofMask: null,          // OffscreenCanvas-like <canvas> matching photo size
     sidingMask: null,        // same
-    trimMask: null,          // fascia + window/door/corner trim
+    trimMask: null,          // fascia + rake/bargeboard + window/door/corner trim
     soffitMask: null,        // eave underside, independent finish
     doorMask: null,          // entry/garage door regions — independent layer
     canvas: null,            // visible canvas element
     ctx: null,
     activeTool: 'roof',      // one of _VZ_ROLES | 'erase'
     activeTier: 'better',    // 'good' | 'better' | 'best'
+    openPickerTrade: '',
     brushSize: 30,
     magicWand: false,
     painting: false,
@@ -14737,6 +18952,243 @@ function _bundleColorsForTradeTier(trade, tier) {
     .filter(c => (c.name || '').trim());
 }
 
+// Reusable material layers: image/style work once, color work only in the browser.
+// Keep identity fields in sync with exterior_rendering.MATERIAL_FIELDS.
+const _VZ_MATERIAL_FIELDS = ['exterior_product_id','product_name','bundle_id','bundle_name','style_id','style_name','pattern_id'];
+const _vzMaterialImages = new Map();
+const _vzMaterialColors = new Map();
+const _vzLinearRGB = Array.from({length:256},(_,v)=>v<=10?v/255/12.92:((v/255+.055)/1.055)**2.4);
+let _vzMaterialEnabled = false;
+function _vzMaterialIdentity(row) {
+  return Object.fromEntries(_VZ_MATERIAL_FIELDS.map(key=>[key,String(row?.[key]||'').slice(0,200)]));
+}
+function _vzMaterialEligible(role, row) {
+  const name=Object.values(_vzMaterialIdentity(row)).join(' ');
+  return /^#[0-9a-f]{6}$/i.test(row?.color_hex||'') && name.trim() &&
+    (role==='roof' ? /standing[\s_-]*seam/i.test(name) : role==='siding' && !/\b(stain|stained|unpainted|natural wood)\b/i.test(name));
+}
+function _vzMaterialFor(role,tier) {
+  const ev=_vzElevation(),row=_vzGet().selections?.[_VZ_ROLE_META[role].trade]?.[tier];
+  if (vzState.pendingBaseDataUrl || !_vzMaterialEligible(role,row)) return null;
+  const identity=_vzMaterialIdentity(row);
+  return (ev.material_layers||[]).find(layer=>layer.version===1 && layer.role===role && layer.base_image===ev.base_image &&
+    _VZ_MATERIAL_FIELDS.every(key=>layer.identity?.[key]===identity[key])) || null;
+}
+function _vzMaterialImage(layer) {
+  if (!layer || typeof layer.image_ref!=='string' || !layer.image_ref.startsWith(S.estimate_id+'/') ||
+      !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\.(png|jpe?g|webp)$/.test(layer.image_ref)) return null;
+  if (_vzMaterialImages.has(layer.image_ref)) return _vzMaterialImages.get(layer.image_ref);
+  const img=new Image();
+  _vzMaterialImages.set(layer.image_ref,img);
+  while (_vzMaterialImages.size>16) _vzMaterialImages.delete(_vzMaterialImages.keys().next().value);
+  img.onload=img.onerror=()=>{if(activePage==='visualizer')_vzRedrawAll();};
+  img.src=BASE+'/uploads/'+layer.image_ref;
+  return img;
+}
+function _vzProtectedMaterialMask(role,W,H) {
+  const mask=vzState[role+'Mask'];
+  if (!mask) return null;
+  const protectedRoles=role==='roof'?['trim','soffit','gutter','window','door']:
+    role==='siding'?['trim','soffit','gutter','window','door','shutter']:[];
+  if (!protectedRoles.length) return mask;
+  const clipped=_vzMakeMaskCanvas(W,H),ctx=clipped.getContext('2d');
+  ctx.drawImage(mask,0,0,W,H);
+  ctx.globalCompositeOperation='destination-out';
+  for (const other of protectedRoles) if(vzState[other+'Mask'])ctx.drawImage(vzState[other+'Mask'],0,0,W,H);
+  return clipped;
+}
+function _vzRecolorMaterialPixels(pixels,hex,referenceLuma) {
+  if (!/^#[0-9a-f]{6}$/i.test(hex) || !Number.isFinite(referenceLuma) || referenceLuma<=0) return false;
+  const rgb=[1,3,5].map(offset=>_vzLinearRGB[parseInt(hex.slice(offset,offset+2),16)]);
+  for (let i=0;i<pixels.length;i+=4) {
+    const lum=.2126*_vzLinearRGB[pixels[i]]+.7152*_vzLinearRGB[pixels[i+1]]+.0722*_vzLinearRGB[pixels[i+2]];
+    const light=Math.min(4,lum/referenceLuma);
+    // Preserve small neutral highlights instead of tinting every reflection.
+    const highlight=Math.max(0,lum-referenceLuma)*.08;
+    for(let c=0;c<3;c++) {
+      const linear=Math.max(0,Math.min(1,rgb[c]*light+highlight));
+      pixels[i+c]=Math.round(255*(linear<=.0031308?12.92*linear:1.055*linear**(1/2.4)-.055));
+    }
+  }
+  return true;
+}
+function _vzCompositeMaterial(ctx,W,H,mask,role,tier,hex) {
+  const layer=_vzMaterialFor(role,tier);
+  if (!layer) return false;
+  const img=_vzMaterialImage(layer);
+  // Never silently substitute flat swatches for a prepared layer that failed
+  // to load. The panel explains it and Save waits/fails explicitly.
+  if (!img?.complete || !img.naturalWidth) return true;
+  const key=JSON.stringify([layer.image_ref,layer.reference_luma,hex,W,H]);
+  let colored=_vzCachedCanvas(_vzMaterialColors,key);
+  if (!colored) {
+    colored=_vzMakeMaskCanvas(W,H);
+    const cc=colored.getContext('2d');
+    _vzHighQuality(cc).drawImage(img,0,0,W,H);
+    const data=cc.getImageData(0,0,W,H);
+    if (!_vzRecolorMaterialPixels(data.data,hex,Number(layer.reference_luma))) return true;
+    cc.putImageData(data,0,0);
+    _vzCacheCanvas(_vzMaterialColors,key,colored,48*1024*1024);
+  }
+  const clipped=_vzMakeMaskCanvas(W,H),cc=clipped.getContext('2d');
+  cc.drawImage(colored,0,0);cc.globalCompositeOperation='destination-in';cc.drawImage(mask,0,0,W,H);
+  ctx.save();ctx.globalCompositeOperation='source-over';ctx.drawImage(clipped,0,0);ctx.restore();
+  clipped.width=0;clipped.height=0;
+  return true;
+}
+function _vzMaterialPanelUpdate() {
+  const panel=document.getElementById('vz-materials');
+  if (!panel || !vzState) return;
+  const tier=vzState.activeTier,scope=_vzScopeRoles();
+  const html=`<h3>Instant color comparison <span class="vz-material-badge">Reusable layers · beta</span></h3>
+    <p>Prepare a material style once, then click its colors without another AI image charge. Shadows, seams and texture come from the same saved image.</p>
+    ${['roof','siding'].filter(role=>scope.includes(role)).map(role=>{
+      const row=_vzGet().selections?.[_VZ_ROLE_META[role].trade]?.[tier]||{},layer=_vzMaterialFor(role,tier);
+      const eligible=_vzMaterialEligible(role,row),img=layer?_vzMaterialImage(layer):null;
+      const status=layer?(img?.complete?(img.naturalWidth?'Ready — color changes run locally':'Image unavailable — reload or remove this layer'):'Loading prepared material…'):
+        eligible?'Not prepared for this product/style':'Choose standing-seam metal or solid-color siding to use this prototype';
+      return `<div class="vz-material-row"><strong>${esc(_VZ_ROLE_META[role].label)}</strong><span role="status">${esc(status)}</span>
+        <div class="vz-material-actions"><button class="btn small" onclick="_vzMaterialUseOriginal('${role}')" ${!eligible||_vzRealisticBusy?'disabled':''}>Use existing photo style · no AI charge</button>
+        <button class="btn small" onclick="_vzRealisticGenerate('${role}')" ${!eligible||!_vzMaterialEnabled||_vzRealisticBusy?'disabled':''}>Prepare new style · paid AI</button>
+        ${(_vzElevation().material_layers||[]).some(l=>l.role===role)?`<button class="btn small" onclick="_vzMaterialUseOriginal('${role}',true)" ${_vzRealisticBusy?'disabled':''}>Remove reusable ${role} layers</button>`:''}</div></div>`;
+    }).join('')}
+    <p class="vz-picker-help">Review the surface selection first. Detected trim/fascia, soffits, gutters and openings are protected even when unchecked. Missing or incorrect boundaries still need correction under Refine selection. “Existing photo style” cannot turn shingles into metal or change siding layout.</p>
+    <p class="vz-picker-help">Solid painted finishes only; blended shingle colors still use individual product textures. Colors are approximate, not calibrated manufacturer matches. Confirm physical samples. New AI styles require OpenAI setup; fal is used only for surface detection.</p>`;
+  if (panel.innerHTML!==html) panel.innerHTML=html;
+}
+function _vzAdoptMaterialLayers(saved) {
+  const current=_vzElevation();
+  current.material_layers=saved.material_layers||[];
+  current.tier_renders={};
+  if(current.id==='front')_vzGet().tier_renders={};
+  vzState.dirty=true;setDirty();_vzRedrawAll();
+}
+async function _vzMaterialUseOriginal(role,remove=false) {
+  if (_vzRealisticBusy || _vzVisualizerEditLocked()) return;
+  const owner=S,state=vzState,elevation=_vzElevation().id,tier=state.activeTier;
+  if (!confirm(remove?'Remove reusable layers for this surface? Saved previews will need to be saved again.':
+    'Use the existing '+role+' style in this photograph? Confirm it ALREADY matches the selected material/style and that the surface selection excludes fascia, trim and openings. This only changes color, not material shape. No AI call will be made.')) return;
+  _vzRealisticBusy=true;_vzMaterialPanelUpdate();
+  try {
+    // Removing a broken/missing layer must remain possible even when Save
+    // Renderings refuses to export it. This action preserves all unsaved masks.
+    if (!remove && !(await saveCurrentWork())) throw new Error('Save your design first.');
+    if (S!==owner||vzState!==state||_vzElevation().id!==elevation||state.activeTier!==tier) return;
+    if(!remove&&(dirty||_vzHasUnsavedCanvasWork()||_vzMetaPending(owner)))throw new Error('The design changed during saving. Save and try again.');
+    state.saving=true;
+    const result=await _vzRealisticApi(`/api/estimates/${encodeURIComponent(owner.estimate_id)}/material-layers`,
+      {role,tier,elevation,action:remove?'remove':'original',reviewed:true});
+    if(S===owner&&vzState===state)_vzAdoptMaterialLayers(result.visualizer.elevations[elevation]);
+  } catch(error) {alert(error.message);}
+  finally {state.saving=false;_vzRealisticBusy=false;_vzMaterialPanelUpdate();}
+}
+
+// Realistic edits are separate from the instant canvas. Generation is explicit,
+// candidates are private, and only a reviewed candidate becomes a saved render.
+const _vzRealisticRequests = new Map();
+let _vzRealisticTimer = null;
+let _vzRealisticBusy = false;
+function _vzRealisticSelectionSummary(tier) {
+  return _vzScopeRoles().map(role=>{
+    const meta=_VZ_ROLE_META[role], row=_vzGet().selections?.[meta.trade]?.[tier] || {};
+    return `${meta.label}: ${[row.product_name||row.bundle_name||row.option_name,row.style_name,row.color_name||row.color_hex].filter(Boolean).join(' · ') || 'no product selected'}`;
+  }).join('\n');
+}
+async function _vzRealisticApi(path, body) {
+  const response = await fetch(path, body === undefined ? {} : {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'The preview request could not be completed.');
+  return data;
+}
+async function _vzRealisticRefresh() {
+  clearTimeout(_vzRealisticTimer);
+  const owner=S, state=vzState, panel=document.getElementById('vz-realistic');
+  if (!panel || !state || state.owner!==owner) return;
+  const eid=owner.estimate_id, elevation=_vzElevation().id, tier=state.activeTier;
+  try {
+    const [cap, result] = await Promise.all([
+      _vzRealisticApi('/api/visualizer/realistic-capabilities'),
+      eid ? _vzRealisticApi(`/api/estimates/${encodeURIComponent(eid)}/realistic-previews`) : Promise.resolve({jobs:[]})
+    ]);
+    if (S!==owner || vzState!==state || document.getElementById('vz-realistic')!==panel || _vzElevation().id!==elevation || state.activeTier!==tier) return;
+    _vzMaterialEnabled=cap.enabled;_vzMaterialPanelUpdate();
+    const job=result.jobs.find(j=>j.elevation===elevation && j.tier===tier);
+    const running=result.jobs.some(j=>j.status==='running');
+    const accepted=job && (job.material_role?(_vzElevation().material_layers||[]).some(layer=>layer.job_id===job.id):_vzElevation().tier_renders?.[tier]===`${eid}/vr_ai_${job.id}.png`);
+    const key=`${eid}:${elevation}:${tier}`, retry=_vzRealisticRequests.has(key);
+    panel.innerHTML=`<h3>${job?.material_role?'Reusable '+esc(job.material_role)+' layer review':'Optional final AI preview'} · ${esc(_vzConceptName(tier))}</h3>
+      ${job?.material_role?'<p>The neutral-gray candidate is a material base. After review, its colors can be changed instantly in the canvas above. Check that seams and edges align with the original; reject any shifted geometry.</p>':''}
+      <p>Uses the original photo and selected product references—not the painted surface masks. Roof requests exclude fascia, rake boards, soffits and gutters unless separately selected.</p>
+      <p>AI can alter details or approximate a manufacturer’s color. Review the result and confirm physical samples before presenting it.</p>
+      <p><strong>Selected surfaces</strong><br>${esc(_vzRealisticSelectionSummary(tier)).replace(/\n/g,'<br>')}<br>For a roof-only edit, uncheck the other surfaces above.</p>
+      ${!cap.enabled?'<p>Setup needed: a manager must configure OpenAI API access and enable realistic previews on Railway.</p>':''}
+      <button class="btn-primary" onclick="_vzRealisticGenerate()" ${!cap.enabled||running||_vzRealisticBusy?'disabled':''}>${retry?'Check previous request':'Generate realistic preview'}</button>
+      <span> One paid image · up to ${cap.user_daily_limit} attempts per rep per day</span>
+      ${running && job?.status!=='running'?'<p>A different concept or elevation is generating. Wait for it to finish before starting another.</p>':''}
+      ${job?`<p role="status">${accepted?'Reviewed preview saved for this concept.':job.status==='running'?'Generating… You can leave this page and return later.':job.status==='failed'?esc(job.error):'Ready for review.'} ${job.stale?'Photo or product choices have changed; this result cannot be applied.':''}</p>`:''}
+      ${job?.status==='ready'?`<div class="vz-realistic-comparison">
+        <figure><figcaption>Original</figcaption><img src="${BASE}/uploads/${esc(_vzElevation().base_image)}" alt="Original house photograph"></figure>
+        <figure><figcaption>AI concept—not a guaranteed product match</figcaption><img src="${BASE}/api/estimates/${encodeURIComponent(eid)}/realistic-previews/${job.id}/image" alt="Generated renovation concept"></figure>
+      </div>${!accepted?`<label><input id="vz-realistic-reviewed" type="checkbox"> I checked the roof geometry, fascia/rake, unchanged surfaces and product appearance.</label>
+      <button class="btn" onclick="_vzRealisticAccept('${job.id}')" ${job.stale||_vzRealisticBusy?'disabled':''}>${job.material_role?'Use reusable material layer':'Use reviewed preview'}</button>`:''}`:''}
+      <p class="vz-picker-help">The canvas above remains the instant preview. Only “Use reviewed preview” puts the AI image in the saved concept. Saving new instant renderings replaces it; rejected candidates need not be used.</p>`;
+    if (running) _vzRealisticTimer=setTimeout(_vzRealisticRefresh,4000);
+  } catch (error) {
+    if (S===owner && document.getElementById('vz-realistic')===panel)
+      panel.innerHTML=`<p>${esc(error.message)}</p><button class="btn" onclick="_vzRealisticRefresh()">Refresh preview status</button>`;
+  }
+}
+async function _vzRealisticGenerate(materialRole=null) {
+  if (_vzRealisticBusy || _vzVisualizerEditLocked()) return;
+  const owner=S, state=vzState, elevation=_vzElevation().id, tier=state.activeTier;
+  if (!confirm(materialRole?
+    `Prepare one paid reusable ${materialRole} style? Review the surface boundaries first. The original photo and selected material/style will be sent to OpenAI. You can reuse an accepted layer for this style’s colors; retries or new styles cost extra. Review alignment before using it.`:
+    'Generate one paid AI image? The original house photo and selected product references will be sent to OpenAI. Review the result before using it. This does not publish anything to the customer.\n\n'+_vzRealisticSelectionSummary(tier))) return;
+  _vzRealisticBusy=true;
+  try {
+    if (!(await saveCurrentWork())) throw new Error('Save the design successfully before generating.');
+    if (S!==owner || vzState!==state || _vzElevation().id!==elevation || state.activeTier!==tier) return;
+    if (dirty || _vzHasUnsavedCanvasWork() || _vzMetaPending(owner)) throw new Error('The design changed while saving. Save again before generating.');
+    const eid=owner.estimate_id, key=`${eid}:${elevation}:${tier}${materialRole?':'+materialRole:''}`;
+    let nonce=_vzRealisticRequests.get(key);
+    if (!nonce) { nonce=crypto.randomUUID(); _vzRealisticRequests.set(key,nonce); }
+    await _vzRealisticApi(`/api/estimates/${encodeURIComponent(eid)}/realistic-previews`,{confirm:true,elevation,tier,nonce,...(materialRole?{material_role:materialRole}:{})});
+    _vzRealisticRequests.delete(key);
+    if(materialRole)document.getElementById('vz-realistic')?.scrollIntoView({behavior:'smooth',block:'start'});
+  } catch (error) {
+    alert(error.message+' If the connection failed, check preview status before generating again.');
+  } finally { _vzRealisticBusy=false; _vzRealisticRefresh(); }
+}
+async function _vzRealisticAccept(jid) {
+  if (_vzRealisticBusy) return;
+  if (!document.getElementById('vz-realistic-reviewed')?.checked) {
+    alert('Review the result and check the confirmation box first.'); return;
+  }
+  const owner=S, state=vzState, elevation=_vzElevation().id, tier=state.activeTier;
+  _vzRealisticBusy=true;
+  try {
+    if (!(await saveCurrentWork())) throw new Error('Save your current design before accepting a preview.');
+    if (S!==owner || vzState!==state || _vzElevation().id!==elevation || state.activeTier!==tier) return;
+    if (dirty || _vzHasUnsavedCanvasWork() || _vzMetaPending(owner)) throw new Error('The design changed while saving. Save again before accepting.');
+    state.saving=true;
+    const result=await _vzRealisticApi(`/api/estimates/${encodeURIComponent(owner.estimate_id)}/realistic-previews/${jid}/accept`,{reviewed:true});
+    if (S===owner && vzState===state) {
+      const saved=result.visualizer.elevations[elevation], current=_vzElevation();
+      if (saved.material_layers?.some(layer=>layer.job_id===jid)) {
+        _vzAdoptMaterialLayers(saved);
+        return;
+      }
+      current.tier_renders[tier]=saved.tier_renders[tier];
+      current.realistic_previews=saved.realistic_previews;
+      if (elevation==='front') _vzGet().tier_renders={...current.tier_renders};
+      setDirty();
+    }
+  } catch (error) { alert(error.message); }
+  finally { state.saving=false; _vzRealisticBusy=false; _vzRealisticRefresh(); }
+}
+
 async function renderVisualizerPage() {
   const container = document.getElementById('visualizer-content');
   if (!container) return;
@@ -14754,6 +19206,7 @@ async function renderVisualizerPage() {
   const hasPhoto = !!(_vzElevation().base_image || vzState.pendingBaseDataUrl);
   container.innerHTML = _vzShellHtml(hasPhoto);
   _vzWireInputs();
+  if (hasPhoto) _vzRealisticRefresh();
   if (hasPhoto) {
     await _vzLoadWorkspacePhoto();
     _vzRenderPicker();
@@ -14792,8 +19245,10 @@ function _vzShellHtml(hasPhoto) {
       </div>
       <div class="vz-header-actions">
         ${_meCanViewAll() ? '<button class="btn" onclick="openVisualizerOperations()">📊 Usage & storage</button>' : ''}
-        <button class="btn" onclick="_vzTriggerUpload()">Replace this photo</button>
-        <button class="btn" onclick="_vzShareDesign()" id="vz-share-btn">🔗 Share for approval</button>
+        <button class="btn" onclick="_vzTriggerUpload()">📷 Replace photo</button>
+        <button class="btn" onclick="document.getElementById('vz-realistic')?.scrollIntoView({behavior:'smooth',block:'start'})">Realistic AI preview</button>
+        <button class="btn" onclick="toggleDesignForCustomer()" title="The 🎨 Design Studio section of THIS estimate — off keeps the renderings off the signing page, the signed PDF and approval links">${(S.page_visibility || {}).design === true ? '👁 Shown to customer' : '🙈 Hidden from customer'}</button>
+        ${(S.page_visibility || {}).design === true ? '<button class="btn" onclick="_vzShareDesign()" id="vz-share-btn">🔗 Share for approval</button>' : ''}
         <button class="btn-primary" onclick="_vzSaveAll()" id="vz-save-btn">💾 Save Renderings</button>
       </div>
     </div>
@@ -14802,21 +19257,23 @@ function _vzShellHtml(hasPhoto) {
     <div id="vz-share-status" class="vz-share-status"></div>
     <div class="vz-body">
       <div class="vz-canvas-col">
-        <div class="vz-workflow"><span>1 · Upload photo</span><span class="active">2 · Choose a look</span><span>3 · Save previews</span></div>
+        <div class="vz-workflow" aria-label="Design workflow"><span>✓ Photo</span><span class="active">2 · Choose surfaces</span><span>3 · Choose products</span><span>4 · Save & share</span></div>
+        ${_vzScopeHtml()}
         <div class="vz-detection-panel">
           <div><strong>Automatic surface selection</strong><p id="vz-detection-message" role="status" aria-live="polite"></p></div>
           <button class="btn" id="vz-detect-btn" onclick="_vzAutoDetect()" ${vzCapabilities?.auto_detect ? '' : 'disabled'}>Detect surfaces</button>
         </div>
-        ${_vzScopeHtml()}
         <div class="vz-preview-actions">
           <label><input type="checkbox" ${vzState.original?'checked':''} onchange="vzState.original=this.checked;_vzRedrawAll()"> Show original photo</label>
           <label class="vz-before-slider">Before / after <input type="range" min="0" max="100" value="${vzState.beforeSplit}" oninput="_vzSetBeforeSplit(this.value)"></label>
           <span>Approximate preview · confirm physical samples</span>
         </div>
         <div class="vz-canvas-wrap" id="vz-canvas-wrap">
-          <canvas id="vz-canvas" class="vz-canvas"></canvas>
+          <canvas id="vz-canvas" class="vz-canvas" role="img" aria-label="Exterior design preview for the active elevation and concept"></canvas>
           <div class="vz-canvas-legend" id="vz-canvas-legend"></div>
         </div>
+        <section id="vz-materials" class="vz-realistic vz-materials" aria-label="Reusable material colors"></section>
+        <section id="vz-realistic" class="vz-realistic" aria-live="polite">Loading realistic preview options…</section>
         <details class="vz-refine" ${vzState.refine?'open':''} ontoggle="_vzSetRefine(this.open)">
         <summary>Refine selection <span>Optional edge touch-ups</span></summary>
         <div class="vz-tools">
@@ -14838,26 +19295,26 @@ function _vzShellHtml(hasPhoto) {
         ${_vzPlacementEditorHtml()}
       </div>
       <div class="vz-picker-col">
-        <div class="vz-tier-tabs">
+        <div class="vz-tier-tabs" role="tablist" aria-label="Design concepts">
           ${['good','better','best'].map(t => `
-            <button class="vz-tier-tab ${t===tier?'active':''}" data-tier="${t}" onclick="_vzSelectTier('${t}')">${_vzGet().favorite_tier===t?'★ ':''}${esc(_vzConceptName(t))}</button>
+            <button class="vz-tier-tab ${t===tier?'active':''}" role="tab" aria-selected="${t===tier?'true':'false'}" tabindex="${t===tier?'0':'-1'}" data-tier="${t}" onclick="_vzSelectTier('${t}')" onkeydown="_vzTierKey(event,'${t}')">${_vzGet().favorite_tier===t?'★ ':''}${esc(_vzConceptName(t))}</button>
           `).join('')}
         </div>
         <div class="vz-concept-controls"><label>Concept name<input maxlength="40" value="${esc(_vzConceptName(tier))}" onchange="_vzRenameConcept('${tier}',this.value)"></label>
           <button class="btn small" onclick="_vzSetFavorite('${tier}')">${_vzGet().favorite_tier===tier?'★ Preferred':'☆ Mark preferred'}</button></div>
-        <div id="vz-picker-body"></div>
-      </div>
-    </div>
-    <div class="vz-triptych">
-      <h3>Design concepts — side-by-side</h3>
-      <div class="vz-triptych-grid" id="vz-triptych-grid">
-        ${['good','better','best'].map(t => `
-          <div class="vz-triptych-tile">
-            <div class="vz-triptych-lbl">${_vzGet().favorite_tier===t?'★ ':''}${esc(_vzConceptName(t))}</div>
-            <canvas class="vz-triptych-canvas" id="vz-thumb-${t}"></canvas>
-            <div class="vz-triptych-cap" id="vz-thumb-cap-${t}"></div>
+        <div class="vz-triptych vz-triptych-compact">
+          <h3>Compare concepts</h3>
+          <div class="vz-triptych-grid" id="vz-triptych-grid">
+            ${['good','better','best'].map(t => `
+              <button type="button" class="vz-triptych-tile ${t===tier?'active':''}" onclick="_vzSelectTier('${t}')" aria-label="Open ${esc(_vzConceptName(t))} concept" aria-pressed="${t===tier?'true':'false'}">
+                <span class="vz-triptych-lbl">${_vzGet().favorite_tier===t?'★ ':''}${esc(_vzConceptName(t))}</span>
+                <canvas class="vz-triptych-canvas" id="vz-thumb-${t}" aria-hidden="true"></canvas>
+                <span class="vz-triptych-cap" id="vz-thumb-cap-${t}"></span>
+              </button>
+            `).join('')}
           </div>
-        `).join('')}
+        </div>
+        <div id="vz-picker-body"></div>
       </div>
     </div>
   </div>`;
@@ -14888,12 +19345,42 @@ function _vzElevationMetaPayload(extra) {
       ? JSON.parse(JSON.stringify(elevation.texture_projection)) : null
   }, extra || {});
 }
+const _vzMetaSaves = new WeakMap();
+function _vzMetaPending(owner) {
+  const meta = owner && _vzMetaSaves.get(owner);
+  return !!(meta && (meta.pending || meta.failed));
+}
+function _vzReportMetaFailure(error) {
+  alert((error?.message || 'Could not save design settings.') + ' Your changes are still here. Use Save to retry before leaving.');
+}
 async function _vzPersistMeta(extra) {
-  if (!S.estimate_id) return;
-  const res = await fetch('/api/estimates/' + encodeURIComponent(S.estimate_id) + '/visualizer/state', {
-    method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(_vzElevationMetaPayload(extra))
-  });
-  if (!res.ok) throw new Error((await res.json().catch(()=>({}))).error || 'Could not save design settings.');
+  const owner = S;
+  const body = JSON.stringify(_vzElevationMetaPayload(extra));
+  let meta = _vzMetaSaves.get(owner);
+  if (!meta) { meta = {tail:Promise.resolve(), pending:0, failed:false}; _vzMetaSaves.set(owner,meta); }
+  meta.pending += 1;
+  const previous = meta.tail;
+  const promise = (async () => {
+    // Each request captures its own estimate and payload. A slow earlier
+    // response must never overwrite a later concept name or preference.
+    await previous.catch(() => {});
+    if (!owner.estimate_id) {
+      if (S !== owner || !(await saveEstimate())) throw new Error('Could not create the estimate for these design settings.');
+    }
+    const res = await fetch('/api/estimates/' + encodeURIComponent(owner.estimate_id) + '/visualizer/state', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body
+    });
+    if (!res.ok) throw new Error((await res.json().catch(()=>({}))).error || 'Could not save design settings.');
+    meta.failed = false;
+    return true;
+  })();
+  meta.tail = promise;
+  try { return await promise; }
+  catch (error) {
+    meta.failed = true;
+    if (S === owner) setDirty();
+    throw error;
+  } finally { meta.pending -= 1; }
 }
 function _vzInvalidateRenders() {
   const vz = _vzGet();
@@ -14915,17 +19402,17 @@ function _vzToggleScope(role, enabled) {
   renderVisualizerPage();
 }
 function _vzRenameConcept(tier, value) {
-  if (!TIERS.includes(tier)) return;
+  if (!TIERS.includes(tier) || _vzVisualizerEditLocked()) return;
   _vzGet().concept_names[tier] = String(value || '').trim().slice(0,40) || TIER_LABELS[tier];
   setDirty(); renderVisualizerPage();
-  _vzPersistMeta().catch(error => console.warn(error.message));
+  _vzPersistMeta().catch(_vzReportMetaFailure);
 }
 function _vzSetFavorite(tier) {
-  if (!TIERS.includes(tier)) return;
+  if (!TIERS.includes(tier) || _vzVisualizerEditLocked()) return;
   const vz = _vzGet();
   vz.favorite_tier = vz.favorite_tier === tier ? '' : tier;
   setDirty(); renderVisualizerPage();
-  _vzPersistMeta().catch(error => console.warn(error.message));
+  _vzPersistMeta().catch(_vzReportMetaFailure);
 }
 function _vzSetBeforeSplit(value) {
   vzState.beforeSplit = Math.max(0, Math.min(100, parseInt(value,10) || 0));
@@ -14940,15 +19427,18 @@ function _vzNewElevationId(name) {
   return id;
 }
 async function _vzSwitchElevation(id) {
+  if (_vzVisualizerEditLocked()) return;
   const vz = _vzGet();
   if (!vz.elevations[id] || id === vz.active_elevation_id) return;
   if (vzState.dirty) { alert('Save the current elevation renderings before switching.'); return; }
   vz.active_elevation_id = id;
+  setDirty();
   _vzResetState();
   await renderVisualizerPage();
-  _vzPersistMeta().catch(error => console.warn(error.message));
+  _vzPersistMeta().catch(_vzReportMetaFailure);
 }
 async function _vzAddElevation() {
+  if (_vzVisualizerEditLocked()) return;
   if (vzState.dirty) { alert('Save the current elevation renderings before adding another view.'); return; }
   if (_vzGet().elevation_order.length >= 12) { alert('A design project can contain up to 12 elevations.'); return; }
   const name = prompt('Name this view (for example Rear, Left side, or Garage):', 'Rear');
@@ -14959,19 +19449,22 @@ async function _vzAddElevation() {
   vz.elevation_order.push(id); vz.active_elevation_id = id;
   _vzResetState();
   setDirty();
-  await _vzPersistMeta().catch(error => console.warn(error.message));
+  try { await _vzPersistMeta(); }
+  catch (error) { _vzReportMetaFailure(error); await renderVisualizerPage(); return; }
   await renderVisualizerPage();
   _vzTriggerUpload();
 }
 function _vzRenameElevation() {
+  if (_vzVisualizerEditLocked()) return;
   const ev = _vzElevation();
   const name = prompt('Elevation name:', ev.name);
   if (!name || !name.trim()) return;
   ev.name = name.trim().slice(0,60);
   setDirty(); renderVisualizerPage();
-  _vzPersistMeta().catch(error => console.warn(error.message));
+  _vzPersistMeta().catch(_vzReportMetaFailure);
 }
 async function _vzDeleteElevation() {
+  if (_vzVisualizerEditLocked()) return;
   const vz = _vzGet(), ev = _vzElevation();
   if (vz.elevation_order.length < 2 || vzState.dirty) {
     if (vzState.dirty) alert('Save the current elevation before removing a view.');
@@ -14979,16 +19472,39 @@ async function _vzDeleteElevation() {
   }
   if (!confirm('Remove ' + ev.name + ' from this design? Saved files remain on the server, but this view will no longer be shown.')) return;
   const removed = ev.id;
+  const previousOrder = [...vz.elevation_order];
+  const legacyFields = ['base_image','tier_renders',..._VZ_ROLES.map(role=>role+'_mask')];
+  const previousLegacy = Object.fromEntries(legacyFields.map(key=>[key,vz[key]]));
+  if (removed === 'front') for (const key of legacyFields) delete vz[key];
   delete vz.elevations[removed];
   vz.elevation_order = vz.elevation_order.filter(id => id !== removed);
   vz.active_elevation_id = vz.elevation_order[0];
   _vzResetState();
-  await _vzPersistMeta({delete_elevation_id:removed});
+  setDirty();
+  try { await _vzPersistMeta({delete_elevation_id:removed}); }
+  catch (error) {
+    // The deletion is an explicit server operation, so restore its local view
+    // on failure instead of making a later ordinary metadata save hide it.
+    vz.elevations[removed] = ev;
+    vz.elevation_order = previousOrder;
+    vz.active_elevation_id = removed;
+    if (removed === 'front') Object.assign(vz,previousLegacy);
+    _vzResetState();
+    _vzReportMetaFailure(error);
+  }
   await renderVisualizerPage();
+}
+/* The Design Studio header's one-tap version of the 🎨 Design Studio chip. */
+function toggleDesignForCustomer() {
+  togglePagePrint('design');
+  if (activePage === 'visualizer') renderVisualizerPage();
 }
 async function _vzShareDesign() {
   if (vzState?.dirty && !(await _vzSaveAll())) return;
   if (!S.estimate_id) { alert('Save the estimate and its design renderings first.'); return; }
+  // The server checks the SAVED page_visibility.design, so a toggle flipped a
+  // moment ago has to reach it before a link can be minted.
+  if (dirty && !(await saveCurrentWork())) return;
   const button = document.getElementById('vz-share-btn');
   if (button) { button.disabled = true; button.textContent = 'Preparing link…'; }
   try {
@@ -15016,6 +19532,7 @@ async function _vzHandleFile(file) {
   if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { alert('Choose a JPG, PNG, or WebP photo. Convert HEIC photos to JPG first.'); return; }
   if ((previous.pendingBaseDataUrl || currentElevation.base_image) &&
       !confirm('Replace the ' + currentElevation.name + ' photo? Its surface selections and saved previews will be cleared.')) return;
+  const uploadGeneration = ++_vzUploadGeneration;
   try {
     const source = await new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -15024,12 +19541,13 @@ async function _vzHandleFile(file) {
       reader.readAsDataURL(file);
     });
     const img = await _vzReadImage(source);
-    if (S !== owner || vzState !== previous) return;
-    const scale = Math.min(1, 1200 / Math.max(img.naturalWidth, img.naturalHeight));
-    const photo = _vzMakeMaskCanvas(Math.max(1, Math.round(img.naturalWidth * scale)), Math.max(1, Math.round(img.naturalHeight * scale)));
-    photo.getContext('2d').drawImage(img, 0, 0, photo.width, photo.height);
+    if (S !== owner || vzState !== previous || uploadGeneration !== _vzUploadGeneration) return;
+    const size = _vzFitSize(img.naturalWidth,img.naturalHeight,
+      _VZ_SOURCE_MAX_SIDE,_VZ_SOURCE_MAX_PIXELS);
+    const photo = _vzMakeMaskCanvas(size.width,size.height);
+    _vzHighQuality(photo.getContext('2d')).drawImage(img, 0, 0, photo.width, photo.height);
     _vzResetState(); // invalidates any detection still running for the old photo
-    vzState.pendingBaseDataUrl = photo.toDataURL('image/jpeg', 0.92);
+    vzState.pendingBaseDataUrl = photo.toDataURL('image/jpeg', _VZ_JPEG_QUALITY);
     vzState.pendingBaseExt = 'jpg';
     vzState.photoKey = _vzGet().active_elevation_id + '_' + Date.now() + '_' + Math.random().toString(36).slice(2);
     const vz = _vzGet();
@@ -15045,7 +19563,8 @@ async function _vzHandleFile(file) {
     vzState.dirty = true;
     setDirty();
     await renderVisualizerPage();
-    if (S === owner && vzCapabilities?.auto_detect) await _vzAutoDetect(true);
+    // Detection is deliberately explicit: the rep chooses which project
+    // surfaces apply before any paid fal requests leave the app.
   } catch (error) { alert(error.message || 'This photo could not be opened.'); }
 }
 
@@ -15076,15 +19595,22 @@ function _vzDetectionUI() {
   if (message) message.textContent = statuses.length ? statuses.join(' · ')
     : !vzCapabilities?.auto_detect
     ? 'Not connected. A manager must configure EXTERIOR_AUTO_DETECT and FAL_KEY. No photo is sent until enabled.'
-    : 'Detect ' + _vzScopeRoles().length + ' checked surface' + (_vzScopeRoles().length===1?'':'s') +
+    : 'Ready when you are. Detect ' + _vzScopeRoles().length + ' checked surface' + (_vzScopeRoles().length===1?'':'s') +
       ' using fal / SAM 3: ' + _vzScopeRoles().map(role => _VZ_ROLE_META[role].label).join(', ') + '. The photo is shared with fal once per checked surface; usage charges apply. Review the result before saving.';
   const button = document.getElementById('vz-detect-btn');
   if (button) {
     button.disabled = !vzCapabilities?.auto_detect || vzState.detecting || vzState.saving || vzState.proviaUploading || !vzState.photoImg;
-    button.textContent = vzState.detecting ? 'Finding surfaces…' : 'Detect surfaces';
+    const count = _vzScopeRoles().length;
+    button.textContent = vzState.detecting ? 'Finding surfaces…' :
+      `Detect ${count} surface${count===1?'':'s'}`;
   }
   const save = document.getElementById('vz-save-btn');
-  if (save) save.disabled = vzState.detecting || vzState.saving || vzState.proviaUploading || !vzState.photoImg;
+  if (save) {
+    save.disabled = vzState.detecting || vzState.saving || vzState.proviaUploading || !vzState.photoImg;
+    const hasRender = Object.values(_vzElevation().tier_renders || {}).some(Boolean);
+    save.textContent = vzState.saving ? 'Saving…' : vzState.dirty ? '💾 Save renderings' :
+      hasRender ? '✓ Renderings saved' : '✓ Photo saved';
+  }
 }
 
 async function _vzAutoDetect(initialUpload = false) {
@@ -15092,13 +19618,14 @@ async function _vzAutoDetect(initialUpload = false) {
   const state = vzState;
   if (!state.photoKey) state.photoKey = 'photo_' + Date.now() + '_' + Math.random().toString(36).slice(2);
   const photoKey = state.photoKey;
-  if (state.dirty && !initialUpload && !confirm('Detect again and replace any successfully detected surface selections?')) return;
+  const roles = _vzScopeRoles();
+  const hasExistingMask = roles.some(role => _vzMaskHasContent(state[role + 'Mask']));
+  if (hasExistingMask && !initialUpload && !confirm('Detect again and replace any successfully detected surface selections?')) return;
   state.detecting = true;
   state.refine = false;
   const refinePanel = document.querySelector('.vz-refine');
   if (refinePanel) refinePanel.open = false;
   state.painting = false;
-  const roles = _vzScopeRoles();
   state.detectionStatus = Object.fromEntries(roles.map(role => [role, 'waiting']));
   _vzDetectionUI();
   _vzRedrawAll();
@@ -15107,8 +19634,10 @@ async function _vzAutoDetect(initialUpload = false) {
     if (!_vzIsCurrent(state, photoKey)) return;
     if (!S.estimate_id) throw new Error('Save the estimate before detecting surfaces.');
     const eid = S.estimate_id;
-    const photo = _vzMakeMaskCanvas(state.canvas.width, state.canvas.height);
-    photo.getContext('2d').drawImage(state.photoImg, 0, 0, photo.width, photo.height);
+    const detectionSize = _vzFitSize(state.photoImg.naturalWidth,state.photoImg.naturalHeight,
+      _VZ_DETECTION_MAX_SIDE,_VZ_DETECTION_MAX_SIDE*_VZ_DETECTION_MAX_SIDE);
+    const photo = _vzMakeMaskCanvas(detectionSize.width,detectionSize.height);
+    _vzHighQuality(photo.getContext('2d')).drawImage(state.photoImg, 0, 0, photo.width, photo.height);
     const data = photo.toDataURL('image/jpeg', 0.9);
     await Promise.all(roles.map(async role => {
       try {
@@ -15174,9 +19703,9 @@ async function _vzLoadWorkspacePhoto() {
   try {
     const img = state.photoImg || await _vzReadImage(state.pendingBaseDataUrl || (BASE + '/uploads/' + elevation.base_image));
     if (state !== vzState || state.owner !== S) return;
-    const scale = Math.min(1, 1200 / Math.max(img.naturalWidth, img.naturalHeight));
-    const w = Math.max(1, Math.round(img.naturalWidth * scale));
-    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const editorSize = _vzFitSize(img.naturalWidth,img.naturalHeight,
+      _VZ_EDITOR_MAX_SIDE,2000000);
+    const w = editorSize.width, h = editorSize.height;
     const masks = await Promise.all(_VZ_ROLES.map(role =>
       state[role + 'Mask'] || _vzLoadMask((elevation.masks || {})[role] ||
         (elevation.id === 'front' ? vz[role + '_mask'] : null), w, h)));
@@ -15200,7 +19729,7 @@ async function _vzLoadMask(ref, w, h) {
   const canvas = _vzMakeMaskCanvas(w, h);
   if (ref) {
     const img = await _vzReadImage(BASE + '/uploads/' + ref);
-    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+    _vzHighQuality(canvas.getContext('2d')).drawImage(img, 0, 0, w, h);
   }
   return canvas;
 }
@@ -15209,6 +19738,13 @@ function _vzMakeMaskCanvas(w, h) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   return c;
+}
+
+function _vzMaskHasContent(mask) {
+  if (!mask) return false;
+  const pixels = mask.getContext('2d').getImageData(0,0,mask.width,mask.height).data;
+  for (let i=3;i<pixels.length;i+=4) if (pixels[i]) return true;
+  return false;
 }
 
 function _vzActiveMaskCanvas() {
@@ -15482,8 +20018,17 @@ function _vzClearMask(role) {
   _vzRedrawAll();
 }
 function _vzSelectTier(t) {
+  if (!TIERS.includes(t)) return;
   vzState.activeTier = t;
   renderVisualizerPage();
+}
+function _vzTierKey(event,tier) {
+  if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+  event.preventDefault();
+  const index=TIERS.indexOf(tier);
+  const next=event.key==='Home'?TIERS[0]:event.key==='End'?TIERS[TIERS.length-1]:
+    TIERS[(index+(event.key==='ArrowRight'?1:-1)+TIERS.length)%TIERS.length];
+  _vzSelectTier(next);
 }
 
 function _vzPalette(product) {
@@ -15606,13 +20151,24 @@ function _vzElevationTabsHtml() {
   const vz = _vzGet();
   const tabs = vz.elevation_order.map(id => {
     const ev = vz.elevations[id];
-    return `<button class="vz-elevation-tab ${id===vz.active_elevation_id?'active':''}" onclick="_vzSwitchElevation('${id}')">
-      <span>${esc(ev.name)}</span>${ev.base_image?'<small>saved</small>':'<small>needs photo</small>'}</button>`;
+    const status = ev.base_image ? 'saved'
+      : (id === vz.active_elevation_id && vzState?.pendingBaseDataUrl) ? 'ready to save'
+      : 'needs photo';
+    return `<button class="vz-elevation-tab ${id===vz.active_elevation_id?'active':''}" role="tab" aria-selected="${id===vz.active_elevation_id?'true':'false'}" tabindex="${id===vz.active_elevation_id?'0':'-1'}" onclick="_vzSwitchElevation('${id}')" onkeydown="_vzElevationKey(event,'${id}')">
+      <span>${esc(ev.name)}</span><small id="vz-elevation-status-${id}">${status}</small></button>`;
   }).join('');
-  return `<div class="vz-elevation-bar"><div class="vz-elevation-tabs">${tabs}</div>
+  return `<div class="vz-elevation-bar"><div class="vz-elevation-tabs" role="tablist" aria-label="Exterior elevations">${tabs}</div>
     <div class="vz-elevation-actions"><button class="btn small" onclick="_vzRenameElevation()">Rename</button>
     <button class="btn small" onclick="_vzAddElevation()">+ Elevation</button>
     ${vz.elevation_order.length>1?'<button class="btn small danger" onclick="_vzDeleteElevation()">Remove</button>':''}</div></div>`;
+}
+function _vzElevationKey(event,id) {
+  if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+  event.preventDefault();
+  const order=_vzGet().elevation_order,index=order.indexOf(id);
+  const next=event.key==='Home'?order[0]:event.key==='End'?order[order.length-1]:
+    order[(index+(event.key==='ArrowRight'?1:-1)+order.length)%order.length];
+  if (next) _vzSwitchElevation(next);
 }
 function _vzScopeHtml() {
   const selected = new Set(_vzScopeRoles());
@@ -16084,19 +20640,63 @@ function _vzRenderPicker() {
   if (!host) return;
   for (const tier of TIERS) _vzEnsureTier(tier);
   const tier = vzState.activeTier, vz = _vzGet(), scope = new Set(_vzScopeRoles());
+  const scopedPanelKeys = _vzScopeRoles().map(role => {
+    if (role === 'trim' || role === 'soffit') return 'details';
+    return _VZ_ROLE_META[role].trade;
+  });
+  if (!scopedPanelKeys.includes(vzState.openPickerTrade)) vzState.openPickerTrade=scopedPanelKeys[0] || '';
   const option = (value, label, selected) => '<option value="' + esc(value) + '"' +
     (selected ? ' selected' : '') + '>' + esc(label) + '</option>';
+  const productOptions = (choices,selectedId,placeholder,includePlaceholder=true) => {
+    let html = includePlaceholder && !choices.some(p => p.id === selectedId)
+      ? option('',placeholder || 'Choose a product',true) : '';
+    const groups = new Map();
+    for (const product of choices) {
+      const brand=(product.brand || 'Other products').trim() || 'Other products';
+      if (!groups.has(brand)) groups.set(brand,[]);
+      groups.get(brand).push(product);
+    }
+    for (const [brand,products] of groups) {
+      html += '<optgroup label="' + esc(brand) + '">' +
+        products.map(p => option(p.id,p.name,p.id === selectedId)).join('') + '</optgroup>';
+    }
+    return html;
+  };
+  const textureSrc = ref => /^_catalog\/et_[0-9a-f]{32}\.png$/.test(ref || '')
+    ? (typeof BASE === 'string' ? BASE : '') + '/uploads/' + ref : '';
   const colors = trade => {
     const palette = _vzPalette(_vzSelectedProduct(trade));
     const selected = vz.selections[trade][tier] || {};
     const found = palette.some(c => c.name === selected.color_name && c.hex === selected.color_hex);
     const options = (!found ? option('', selected.color_name || 'Choose a color', true) : '') +
       palette.map((c, i) => option(String(i), c.name, c.name === selected.color_name && c.hex === selected.color_hex)).join('');
-    return '<label class="vz-field">Color <select onchange="_vzChooseColor(\'' + trade + '\', this.value)">' +
-      options + '</select></label>' +
-      '<div class="vz-selected-color"><span style="background:' +
-      (/^#[0-9a-f]{6}$/i.test(selected.color_hex || '') ? selected.color_hex : '#fff') +
-      '"></span>' + esc(selected.color_name || 'No color chosen') + '</div>';
+    const swatches = palette.map((color,index) => {
+      const active=color.name === selected.color_name && color.hex === selected.color_hex;
+      const src=textureSrc(color.texture_ref);
+      return '<button type="button" class="vz-swatch' + (active?' active':'') + '"' +
+        ' aria-pressed="' + (active?'true':'false') + '" aria-label="Choose ' + esc(color.name) +
+        '" title="' + esc(color.name) + '" onclick="_vzChooseColor(\'' + trade + '\',\'' + index + '\')">' +
+        '<span class="vz-swatch-color" style="background:' + color.hex + '"></span>' +
+        (src ? '<img loading="lazy" decoding="async" src="' + esc(src) + '" alt="">' : '') +
+        '<span>' + esc(color.name) + '</span>' + (active?'<i class="vz-swatch-check" aria-hidden="true">✓</i>':'') +
+        '</button>';
+    }).join('');
+    return '<div class="vz-color-picker"><label class="vz-field">Color list <select onchange="_vzChooseColor(\'' + trade + '\', this.value)">' +
+      options + '</select></label><div class="vz-swatch-row" role="group" aria-label="Manufacturer colors">' +
+      swatches + '</div></div>';
+  };
+  const panel = (key,title,body,extraClass='') => {
+    const selectedRows=key==='details'
+      ? ['trim','soffit'].map(trade=>(vz.selections[trade]||{})[tier]||{})
+      : [(vz.selections[key] || {})[tier] || {}];
+    const summary=selectedRows.flatMap(selected => [
+      selected.product_name || selected.option_name || selected.bundle_name,
+      selected.style_name,selected.color_name]).filter(Boolean).join(' · ') || 'Choose product and color';
+    const open=vzState.openPickerTrade === key;
+    return '<details class="vz-picker-section ' + extraClass + '" data-vz-picker="' + esc(key) + '" ' +
+      (open?'open ':'') + 'ontoggle="_vzSetPickerOpen(\'' + key + '\',this.open)">' +
+      '<summary><span class="vz-picker-summary"><strong>' + title + '</strong><small>' + esc(summary) +
+      '</small></span></summary><div class="vz-picker-content">' + body + '</div></details>';
   };
   const tradePanel = trade => {
     const bundle = _vzBundleFor(trade, tier);
@@ -16114,12 +20714,10 @@ function _vzRenderPicker() {
       ? '<label class="vz-field">Siding style<select onchange="_vzChooseStyle(this.value)">' +
         (!styles.some(s => s.id === selected.style_id) ? option('', selected.style_name || 'Choose style', true) : '') +
         styles.map(s => option(s.id, s.name, s.id === selected.style_id)).join('') + '</select></label>' : '';
-    return '<section class="vz-picker-section"><h3 class="vz-picker-title">' +
-      (trade === 'roofing' ? 'Roof' : 'Siding') + '</h3>' +
-      '<label class="vz-field">Product<select onchange="_vzChooseProduct(\'' + trade + '\', this.value)">' +
-      (!choices.some(p => p.id === selectedId) ? option('', 'Choose a product', true) : '') +
-      choices.map(p => option(p.id, p.name, p.id === selectedId)).join('') +
-      '</select></label>' + stylePicker + colors(trade) + '</section>';
+    const title=trade === 'roofing' ? '🏠 Roof' : '🏗 Siding';
+    const body='<label class="vz-field">Product<select onchange="_vzChooseProduct(\'' + trade + '\', this.value)">' +
+      productOptions(choices,selectedId,'Choose a product') + '</select></label>' + stylePicker + colors(trade);
+    return panel(trade,title,body);
   };
   const componentPanel = (trade, title) => {
     const choices = _vzComponentProducts(trade, tier);
@@ -16131,22 +20729,20 @@ function _vzRenderPicker() {
     const selectedId = selected.exterior_product_id || '';
     return '<div class="vz-component"><h4>' + esc(title) + '</h4>' +
       '<label class="vz-field">Product / profile<select onchange="_vzChooseProduct(\'' + trade + '\', this.value)">' +
-      (!choices.some(p => p.id === selectedId) ? option('', 'Choose a product', true) : '') +
-      choices.map(p => option(p.id, p.name, p.id === selectedId)).join('') +
+      productOptions(choices,selectedId,'Choose a product') +
       '</select></label>' + colors(trade) + '</div>';
   };
   const genericPanel = role => {
     const meta = _VZ_ROLE_META[role], trade = meta.trade;
     const choices = _vzExteriorGroups(trade);
     const selected = vz.selections[trade][tier] || {};
-    if (!choices.length) return '<section class="vz-picker-section"><h3 class="vz-picker-title">' +
-      meta.icon + ' ' + esc(meta.label) + '</h3><p class="vz-picker-help">No installed ' +
-      esc(meta.label.toLowerCase()) + ' products are in the Exterior Catalog yet. A manager can add them without changing pricing.</p></section>';
+    if (!choices.length) return panel(trade,meta.icon + ' ' + esc(meta.label),
+      '<p class="vz-picker-help">No installed ' + esc(meta.label.toLowerCase()) +
+      ' products are in the Exterior Catalog yet. A manager can add them without changing pricing.</p>');
     const selectedId = selected.exterior_product_id || '';
-    return '<section class="vz-picker-section"><h3 class="vz-picker-title">' + meta.icon + ' ' + esc(meta.label) + '</h3>' +
-      '<label class="vz-field">Installed product<select onchange="_vzChooseProduct(\'' + trade + '\',this.value)">' +
-      (!choices.some(p => p.id === selectedId) ? option('', selected.product_name || 'Choose a product', true) : '') +
-      choices.map(p => option(p.id,p.name,p.id === selectedId)).join('') + '</select></label>' + colors(trade) + '</section>';
+    const body='<label class="vz-field">Installed product<select onchange="_vzChooseProduct(\'' + trade + '\',this.value)">' +
+      productOptions(choices,selectedId,selected.product_name || 'Choose a product') + '</select></label>' + colors(trade);
+    return panel(trade,meta.icon + ' ' + esc(meta.label),body);
   };
   const exteriorDoors = _vzExteriorGroups('doors');
   const doorOptions = Array.isArray((priceBook || {}).exterior_catalog)
@@ -16158,13 +20754,13 @@ function _vzRenderPicker() {
     (!provia.configured_for || provia.configured_for === _vzDoorConfigurationFingerprint(ds,provia));
   const pf = (field,label,placeholder) => '<label class="vz-field">' + label + '<input value="' +
     esc(provia[field] || '') + '" placeholder="' + esc(placeholder || '') + '" onchange="_vzSetProVia(\'' + field + '\',this.value)"></label>';
-  const doorPanel = '<section class="vz-picker-section vz-door-section"><h3 class="vz-picker-title">Entry door</h3>' +
+  const doorBody =
     '<label class="vz-field">Door series<select onchange="_vzPickDoorOption(this.value)">' +
     option('', 'Keep existing door', !selectedDoorId) +
     (selectedDoorId && !doorOptions.some(d => d.id === selectedDoorId) ? option(selectedDoorId, ds.option_name + ' (saved selection)', true) : '') +
-    doorOptions.map(d => option(d.id, d.name, d.id === selectedDoorId)).join('') + '</select></label>' +
+    productOptions(doorOptions,selectedDoorId,'Choose a door',false) + '</select></label>' +
     (selectedDoorId ? colors('doors') : '') +
-    '<div class="vz-provia-spec"><h4>Exact ProVia specification handoff</h4><div class="vz-provia-grid">' +
+    '<details class="vz-provia-spec"><summary>Exact ProVia specification handoff <span>Optional details</span></summary><div class="vz-provia-spec-body"><div class="vz-provia-grid">' +
       pf('access_code','Envision access code','Paste the ProVia design code') + pf('series','Series','Signet, Embarq, Heritage…') +
       pf('model','Model / style','Door model or style number') + pf('glass','Glass','Glass family / privacy') +
       pf('hardware','Hardware','Finish and handleset') + pf('swing','Swing / handing','Inswing, handing') +
@@ -16172,15 +20768,25 @@ function _vzRenderPicker() {
     (provia.configured_image ? '<img class="vz-provia-preview' + (proviaImageCurrent?'':' stale') + '" src="' + BASE + '/uploads/' + esc(provia.configured_image) + '" alt="Saved ProVia configuration">' +
       (proviaImageCurrent?'':'<p class="vz-provia-stale">This image belongs to the previous door configuration. Re-upload the current ProVia image before placing it.</p>') : '') +
     '<div class="vz-provia-actions"><a class="vz-provia-link" href="https://www.provia.com/design-center/envision/" target="_blank" rel="noopener noreferrer">Open ProVia Envision ↗</a>' +
-    '<label class="btn small">Upload configured door image<input type="file" accept="image/png,image/jpeg,image/webp" hidden onchange="_vzUploadProViaImage(this)"></label></div></div></section>';
+    '<label class="btn small" tabindex="0">Upload configured door image<input type="file" accept="image/png,image/jpeg,image/webp" hidden onchange="_vzUploadProViaImage(this)"></label></div></div></details>';
+  const doorPanel = panel('doors','🚪 Entry door',doorBody,'vz-door-section');
   const primary = (scope.has('roof') ? tradePanel('roofing') : '') + (scope.has('siding') ? tradePanel('siding') : '');
   const details = (scope.has('trim') || scope.has('soffit'))
-    ? '<section class="vz-picker-section vz-component-section"><h3 class="vz-picker-title">Siding details</h3>' +
-      (scope.has('trim') ? componentPanel('trim','Trim & fascia') : '') +
-      (scope.has('soffit') ? componentPanel('soffit','Soffit') : '') + '</section>' : '';
+    ? panel('details','▦ Siding details',
+      (scope.has('trim') ? componentPanel('trim','Trim, fascia & rakes') : '') +
+      (scope.has('soffit') ? componentPanel('soffit','Soffit') : ''),'vz-component-section') : '';
   const additions = ['gutter','window','metal','shutter','stucco'].filter(role => scope.has(role)).map(genericPanel).join('');
   host.innerHTML = '<p class="vz-picker-help">Design choices only. Update Products / Pricing separately to quote this look. Uploaded textures and screen colors are approximate; verify manufacturer availability and physical samples.</p>' +
     primary + details + additions + (scope.has('door') ? doorPanel : '');
+}
+function _vzSetPickerOpen(key,open) {
+  if (!vzState || vzState.owner !== S) return;
+  if (open) {
+    vzState.openPickerTrade=key;
+    document.querySelectorAll('#vz-picker-body details[data-vz-picker]').forEach(details => {
+      if (details.dataset.vzPicker !== key) details.open=false;
+    });
+  } else if (vzState.openPickerTrade === key) vzState.openPickerTrade='';
 }
 function _vzChanged() {
   _vzInvalidateRenders();
@@ -16362,7 +20968,7 @@ function _vzDrawWarpTriangle(ctx,sheet,source,destination) {
   const matrix=_vzAffineTriangle(source,destination);
   if (!matrix) return;
   const clip=_vzExpandTriangle(destination);
-  ctx.save();
+  _vzHighQuality(ctx);ctx.save();
   ctx.beginPath();ctx.moveTo(clip[0].x,clip[0].y);ctx.lineTo(clip[1].x,clip[1].y);ctx.lineTo(clip[2].x,clip[2].y);ctx.closePath();ctx.clip();
   ctx.transform(...matrix);ctx.drawImage(sheet,0,0);ctx.restore();
 }
@@ -16371,13 +20977,21 @@ function _vzRotatedTile(image,quarterTurns) {
   if (!turns) return image;
   const swap=turns%2===1;
   const tile=_vzMakeMaskCanvas(swap?image.naturalHeight:image.naturalWidth,swap?image.naturalWidth:image.naturalHeight);
-  const ctx=tile.getContext('2d');
+  const ctx=_vzHighQuality(tile.getContext('2d'));
   ctx.translate(tile.width/2,tile.height/2);ctx.rotate(turns*Math.PI/2);
   ctx.drawImage(image,-image.naturalWidth/2,-image.naturalHeight/2);
   return tile;
 }
+function _vzTextureFootprint(image,tileWidth,quarterTurns=0) {
+  const sourceW=Math.max(1,Number(image?.naturalWidth || image?.width)||1);
+  const sourceH=Math.max(1,Number(image?.naturalHeight || image?.height)||1);
+  const width=Math.max(1,Number(tileWidth)||1);
+  const height=Math.max(1,width*(sourceH/sourceW));
+  const turns=((quarterTurns||0)%4+4)%4;
+  return turns%2 ? {width:height,height:width} : {width,height};
+}
 function _vzRepeatedSheet(image,repeatX,repeatY,quarterTurns) {
-  const sheet=_vzMakeMaskCanvas(512,512),ctx=sheet.getContext('2d');
+  const sheet=_vzMakeMaskCanvas(512,512),ctx=_vzHighQuality(sheet.getContext('2d'));
   const tile=_vzRotatedTile(image,quarterTurns);
   if (!tile.width || !tile.height) return sheet;
   const pattern=ctx.createPattern(tile,'repeat');
@@ -16413,9 +21027,9 @@ function _vzPlacementSheet(ref,image,assignment) {
   const cached=_vzCachedCanvas(_vzPlacementSheetCache,key);if(cached)return cached;
   const sourceW=Math.max(1,Math.round(image.naturalWidth*crop.w));
   const sourceH=Math.max(1,Math.round(image.naturalHeight*crop.h));
-  const scale=Math.min(1,720/Math.max(sourceW,sourceH));
+  const scale=Math.min(1,1200/Math.max(sourceW,sourceH));
   const sheet=_vzMakeMaskCanvas(Math.max(1,Math.round(sourceW*scale)),Math.max(1,Math.round(sourceH*scale)));
-  const ctx=sheet.getContext('2d');
+  const ctx=_vzHighQuality(sheet.getContext('2d'));
   if(assignment.mirror_x){ctx.translate(sheet.width,0);ctx.scale(-1,1);}
   ctx.drawImage(image,image.naturalWidth*crop.x,image.naturalHeight*crop.y,sourceW,sourceH,0,0,sheet.width,sheet.height);
   return _vzCacheCanvas(_vzPlacementSheetCache,key,sheet,24*1024*1024);
@@ -16433,7 +21047,7 @@ function _vzCompositePlacements(ctx,W,H,tier) {
     const cached=_vzCachedCanvas(_vzPlacementLayerCache,key);
     if(cached){ctx.save();ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;ctx.drawImage(cached,0,0);ctx.restore();return;}
   }
-  const layer=_vzMakeMaskCanvas(W,H),layerCtx=layer.getContext('2d');
+  const layer=_vzMakeMaskCanvas(W,H),layerCtx=_vzHighQuality(layer.getContext('2d'));
   for(const slot of slots){
     const assignment=assignments[slot.id];if(!assignment)continue;
     const image=_vzGetPlacementImg(assignment.asset_ref);
@@ -16454,7 +21068,7 @@ function _vzProjectedLayer(role,tier,image,tileSize,cacheId,width,height) {
   const signature=stablePlanes.map(plane => [plane.id,plane.quad.map(point => point.map(v => Math.round(v*10000)/10000)),plane.scale,plane.quarter_turns]);
   const key=JSON.stringify([_vzElevation().id,role,tier,cacheId,Number(tileSize)||0,width,height,grid,signature]);
   const cached=_vzCachedCanvas(_vzProjectionCache,key);if(cached)return cached;
-  const layer=_vzMakeMaskCanvas(width,height),ctx=layer.getContext('2d');
+  const layer=_vzMakeMaskCanvas(width,height),ctx=_vzHighQuality(layer.getContext('2d'));
   const canonicalWidth=vzState.canvas?.width||width,canonicalHeight=vzState.canvas?.height||height;
   let drawn=false;
   for (const plane of stablePlanes) {
@@ -16462,8 +21076,9 @@ function _vzProjectedLayer(role,tier,image,tileSize,cacheId,width,height) {
     const averageWidth=(Math.hypot(q[1].x-q[0].x,q[1].y-q[0].y)+Math.hypot(q[2].x-q[3].x,q[2].y-q[3].y))/2;
     const averageHeight=(Math.hypot(q[3].x-q[0].x,q[3].y-q[0].y)+Math.hypot(q[2].x-q[1].x,q[2].y-q[1].y))/2;
     const base=Math.max(16,Math.min(512,Number(tileSize)||96))*Math.max(0.25,Math.min(4,Number(plane.scale)||1));
-    const repeatX=Math.max(0.5,Math.min(64,averageWidth/base));
-    const repeatY=Math.max(0.5,Math.min(64,averageHeight/base));
+    const footprint=_vzTextureFootprint(image,base,plane.quarter_turns);
+    const repeatX=Math.max(0.5,Math.min(64,averageWidth/footprint.width));
+    const repeatY=Math.max(0.5,Math.min(64,averageHeight/footprint.height));
     const sheet=_vzRepeatedSheet(image,repeatX,repeatY,plane.quarter_turns);
     drawn=_vzWarpSheetToQuad(ctx,sheet,plane.quad,width,height,grid)||drawn;
   }
@@ -16474,10 +21089,13 @@ function _vzFillCanonicalFlat(ctx,W,H,image,tileSize,mode) {
   const canonicalW=Math.max(1,vzState.canvas?.width||W),canonicalH=Math.max(1,vzState.canvas?.height||H);
   const targetScale=Math.max(0.01,Math.min(W/canonicalW,H/canonicalH));
   const baseSize=Math.max(16,Math.min(512,Number(tileSize)||96));
-  const tileW=Math.max(1,Math.round((mode==='native'?image.naturalWidth:baseSize)*targetScale));
-  const tileH=Math.max(1,Math.round((mode==='native'?image.naturalHeight:baseSize)*targetScale));
+  const footprint=mode==='native'
+    ? {width:image.naturalWidth,height:image.naturalHeight}
+    : _vzTextureFootprint(image,baseSize);
+  const tileW=Math.max(1,Math.round(footprint.width*targetScale));
+  const tileH=Math.max(1,Math.round(footprint.height*targetScale));
   const tile=_vzMakeMaskCanvas(tileW,tileH);
-  tile.getContext('2d').drawImage(image,0,0,tileW,tileH);
+  _vzHighQuality(tile.getContext('2d')).drawImage(image,0,0,tileW,tileH);
   const pattern=ctx.createPattern(tile,'repeat');if(!pattern)return false;
   ctx.fillStyle=pattern;ctx.fillRect(0,0,W,H);return true;
 }
@@ -16498,7 +21116,7 @@ function _vzCompositeProjected(ctx,W,H,mask,role,tier,image,tileSize,cacheId,alp
 function _vzComposeInto(target, tier, opts) {
   const showMaskOverlay = !!(opts && opts.showMaskOverlay);
   if (!vzState || !vzState.photoImg) return;
-  const ctx = target.getContext('2d');
+  const ctx = _vzHighQuality(target.getContext('2d'));
   const W = target.width, H = target.height;
   ctx.clearRect(0, 0, W, H);
   ctx.drawImage(vzState.photoImg, 0, 0, W, H);
@@ -16507,10 +21125,11 @@ function _vzComposeInto(target, tier, opts) {
   const scope = new Set(vz.scope || []);
   for (const role of _VZ_COMPOSE_ORDER) {
     if (!scope.has(role)) continue;
-    const meta = _VZ_ROLE_META[role], mask = vzState[role + 'Mask'];
+    const meta = _VZ_ROLE_META[role], mask = _vzProtectedMaterialMask(role,W,H);
     const selected = _vzEffectiveExteriorSelection(meta.trade,
       (vz.selections[meta.trade] || {})[tier] || {});
     if (!mask || !selected.color_hex) continue;
+    if (_vzCompositeMaterial(ctx,W,H,mask,role,tier,selected.color_hex)) continue;
     const texture = selected.texture_ref ? _vzGetTextureImg(selected.texture_ref) : null;
     const textureReady = !!(texture && texture.complete && texture.naturalWidth);
     // Manufacturer swatches already carry the product's color. Applying the
@@ -16550,26 +21169,29 @@ function _vzComposeInto(target, tier, opts) {
 }
 
 function _vzCompositeColor(ctx, W, H, mask, hex) {
-  // Off-screen: color-fill clipped to the mask.
+  // Start with the requested finish, retaining some original-photo lighting.
+  // Multiplying against the previous composite could never lighten dark rake
+  // boards, and let siding textures bleed through overlapping trim masks.
   const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
-  const octx = oc.getContext('2d');
-  octx.drawImage(mask, 0, 0, W, H);
-  octx.globalCompositeOperation = 'source-in';
+  const octx = _vzHighQuality(oc.getContext('2d'));
   octx.fillStyle = hex;
   octx.fillRect(0, 0, W, H);
+  octx.globalCompositeOperation = 'luminosity';
+  octx.globalAlpha = 0.24;
+  octx.drawImage(vzState.photoImg, 0, 0, W, H);
+  octx.globalAlpha = 1;
+  octx.globalCompositeOperation = 'destination-in';
+  octx.drawImage(mask, 0, 0, W, H);
   ctx.save();
-  ctx.globalCompositeOperation = 'multiply';
+  ctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(oc, 0, 0);
   ctx.restore();
 }
 
 function _vzCompositePattern(ctx, W, H, mask, patImg) {
   const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
-  const octx = oc.getContext('2d');
-  const pat = octx.createPattern(patImg, 'repeat');
-  if (!pat) return;
-  octx.fillStyle = pat;
-  octx.fillRect(0, 0, W, H);
+  const octx = _vzHighQuality(oc.getContext('2d'));
+  if (!_vzFillCanonicalFlat(octx,W,H,patImg,patImg.naturalWidth,'native')) return;
   // Clip to mask.
   octx.globalCompositeOperation = 'destination-in';
   octx.drawImage(mask, 0, 0, W, H);
@@ -16582,13 +21204,8 @@ function _vzCompositePattern(ctx, W, H, mask, patImg) {
 
 function _vzCompositeTexture(ctx, W, H, mask, texture, tileSize) {
   const oc = document.createElement('canvas'); oc.width = W; oc.height = H;
-  const octx = oc.getContext('2d');
-  const size = Math.max(16, Math.min(512, tileSize || 96));
-  const tile = document.createElement('canvas'); tile.width = size; tile.height = size;
-  tile.getContext('2d').drawImage(texture, 0, 0, size, size);
-  const pattern = octx.createPattern(tile, 'repeat');
-  if (!pattern) return;
-  octx.fillStyle = pattern; octx.fillRect(0,0,W,H);
+  const octx = _vzHighQuality(oc.getContext('2d'));
+  if (!_vzFillCanonicalFlat(octx,W,H,texture,tileSize,'square')) return;
   octx.globalCompositeOperation = 'destination-in'; octx.drawImage(mask,0,0,W,H);
   ctx.save(); ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 0.82;
   ctx.drawImage(oc,0,0); ctx.restore();
@@ -16654,6 +21271,7 @@ function _vzQueueAlignmentRedraw() {
 
 function _vzRedrawAll(mainOnly = false) {
   if (!vzState || !vzState.canvas) return;
+  if (!mainOnly) _vzMaterialPanelUpdate();
   vzState.canvas.classList.toggle('vz-editing',!!(vzState.placementOpen||vzState.alignmentOpen||
     (vzState.refine&&!vzState.original&&!vzState.detecting)));
   if (vzState.original && vzState.photoImg) {
@@ -16680,9 +21298,12 @@ function _vzRedrawAll(mainOnly = false) {
     const tc = document.getElementById('vz-thumb-' + t);
     if (!tc || !vzState.photoImg) continue;
     const wrap = tc.parentElement;
-    const cw = Math.max(220, wrap.clientWidth || 260);
-    tc.width = cw;
-    tc.height = Math.round(cw * (vzState.photoH / vzState.photoW || 0.6));
+    const cw = Math.max(96, wrap.clientWidth || 220);
+    const dpr = Math.max(1,Math.min(2,typeof window === 'object' ? (window.devicePixelRatio||1) : 1));
+    const backingW=Math.round(cw*dpr);
+    const backingH=Math.round(cw*(vzState.photoH/vzState.photoW||0.6)*dpr);
+    if (tc.width !== backingW) tc.width=backingW;
+    if (tc.height !== backingH) tc.height=backingH;
     _vzComposeInto(tc, t, { showMaskOverlay: false });
     const capEl = document.getElementById('vz-thumb-cap-' + t);
     if (capEl) {
@@ -16738,21 +21359,26 @@ function _vzFinalizeVisualizerInteraction() {
 async function _vzSaveAll() {
   if (!vzState?.photoImg || vzState.owner !== S || vzState.detecting || vzState.saving || vzState.proviaUploading) return false;
   _vzFinalizeVisualizerInteraction();
+  const state = vzState, vz = _vzGet(), elevation = _vzElevation();
   const roles = _vzScopeRoles();
-  const hasSurface = roles.some(role => {
-    const mask = vzState[role + 'Mask'];
-    if (!mask) return false;
-    const pixels = mask.getContext('2d').getImageData(0, 0, mask.width, mask.height).data;
-    for (let i = 3; i < pixels.length; i += 4) if (pixels[i]) return true;
-    return false;
-  });
+  // Exclusion masks are useful even for surfaces not being renovated. Persist
+  // them too, otherwise unchecked fascia protection disappears after reload.
+  const protectiveRoles=roles.some(role=>role==='roof'||role==='siding')
+    ? ['trim','soffit','gutter','window','door',...(roles.includes('siding')?['shutter']:[])] : [];
+  const maskRoles=[...new Set([...roles,...protectiveRoles.filter(role=>
+    elevation.masks?.[role] || _vzMaskHasContent(state[role+'Mask']))])];
+  const hasSurface = roles.some(role => _vzMaskHasContent(vzState[role + 'Mask']));
   const placementDoc=_vzPlacementDoc(),scopeSet=new Set(roles);
   const hasPlacement=Object.values(placementDoc.slots).some(slot=>scopeSet.has(slot.role)&&
     TIERS.some(tier=>!!placementDoc.concepts[tier]?.[slot.id]));
-  if (!hasSurface && !hasPlacement) { alert('No project surfaces or exact products are selected yet. Run automatic selection, use Refine selection, or place a product before saving.'); return false; }
-  const eid = S.estimate_id;
-  if (!eid) { alert('Save the estimate first so this design has a customer file.'); return false; }
-  const state = vzState, vz = _vzGet(), elevation = _vzElevation();
+  // A photo is useful project data by itself. Let reps save or leave after an
+  // upload even when fal is disabled or they plan to select surfaces later.
+  // Blank masks and three identical renderings are intentionally not stored.
+  // An already-uploaded photo must remain saveable after a failed metadata
+  // request, or after the rep clears every selection to start over.
+  const baseOnly = !hasSurface && !hasPlacement;
+  let eid = S.estimate_id;
+  const pendingGenericSave = _estimateSaveFlight?.promise;
   const btn = document.getElementById('vz-save-btn');
   let succeeded = false;
   state.saving = true;
@@ -16760,48 +21386,87 @@ async function _vzSaveAll() {
   _vzDetectionUI();
   if (btn) btn.textContent = 'Saving…';
   try {
+    // A brand-new estimate has no server folder yet. Create its record first,
+    // then continue the same click into the focused visualizer transaction.
+    if (!eid) {
+      if (!(await saveEstimate()) || state !== vzState || state.owner !== S || !S.estimate_id) {
+        throw new Error('The estimate could not be created for this design.');
+      }
+      eid = S.estimate_id;
+    }
+    // A whole-estimate save that began first must finish before the focused
+    // asset/state transaction starts. While state.saving is true, navigation,
+    // header save, and autosave cannot start a new generic PUT behind it.
+    if (pendingGenericSave) await pendingGenericSave;
+    if (state !== vzState || state.owner !== S) throw new Error('Estimate changed before saving the design. Return to it and save again.');
     for (const tier of TIERS) _vzEnsureTier(tier);
     const selections = JSON.parse(JSON.stringify(vz.selections));
-    const selectedRows = Object.entries(selections).flatMap(([trade, tiers]) =>
-      Object.values(tiers || {}).map(selected =>
+    const scopedTrades = new Set(roles.map(role => _VZ_ROLE_META[role].trade));
+    const selectedRows = Object.entries(selections).filter(([trade]) => scopedTrades.has(trade)).flatMap(([trade, tiers]) =>
+      Object.entries(tiers || {}).filter(([tier])=>!_vzMaterialFor(_VZ_ROLES.find(role=>_VZ_ROLE_META[role].trade===trade),tier)).map(([,selected]) =>
         _vzEffectiveExteriorSelection(trade, selected)));
     const patterns = new Set(selectedRows.map(s => s.pattern_id).filter(Boolean));
     const textures = new Set(selectedRows.map(s => s.texture_ref).filter(Boolean));
-    await Promise.all([...patterns].map(pid => _vzImageReady(_vzGetPatternImg(pid))));
-    await Promise.all([...textures].map(ref => _vzImageReady(_vzGetTextureImg(ref))));
-    const placementRefs=new Set();
-    for(const assignments of Object.values(_vzPlacementDoc().concepts||{}))for(const assignment of Object.values(assignments||{}))if(assignment.asset_ref)placementRefs.add(assignment.asset_ref);
-    await Promise.all([...placementRefs].map(ref=>_vzImageReady(_vzGetPlacementImg(ref))));
-    if (state !== vzState || state.owner !== S) throw new Error('Estimate changed before saving the design. Return to it and save again.');
-    // Snapshot all pixels before the first upload so another estimate/tier
-    // cannot slip into a save while network requests are in flight.
-    const uploads = [];
-    const elevationMeta = {elevation_id:elevation.id,elevation_name:elevation.name};
-    if (state.pendingBaseDataUrl) uploads.push({body: {kind: 'base', ext: state.pendingBaseExt,
-      content_b64: state.pendingBaseDataUrl.split(',')[1], ...elevationMeta}, key: 'base_image'});
-    for (const role of roles) uploads.push({body: {kind: 'mask', role, ext: 'png',
-      content_b64: state[role + 'Mask'].toDataURL('image/png').split(',')[1], ...elevationMeta}, role});
-    for (const tier of TIERS) {
-      const off = _vzMakeMaskCanvas(state.canvas.width, state.canvas.height);
-      _vzComposeInto(off, tier, {showMaskOverlay: false});
-      uploads.push({body: {kind: 'render', tier, ext: 'jpg', content_b64: off.toDataURL('image/jpeg', 0.9).split(',')[1], ...elevationMeta}, tier});
+    if (!baseOnly) {
+      await Promise.all(roles.flatMap(role=>TIERS.map(tier=>_vzMaterialFor(role,tier))).filter(Boolean)
+        .map(layer=>_vzImageReady(_vzMaterialImage(layer))));
+      await Promise.all([...patterns].map(pid => _vzImageReady(_vzGetPatternImg(pid))));
+      await Promise.all([...textures].map(ref => _vzImageReady(_vzGetTextureImg(ref))));
     }
-    for (const asset of uploads) {
+    const placementRefs=new Set();
+    const scopedSlotIds=new Set(Object.values(placementDoc.slots).filter(slot=>scopeSet.has(slot.role)).map(slot=>slot.id));
+    for(const assignments of Object.values(placementDoc.concepts||{}))for(const [slotId,assignment] of Object.entries(assignments||{}))if(scopedSlotIds.has(slotId)&&assignment.asset_ref)placementRefs.add(assignment.asset_ref);
+    if (!baseOnly) await Promise.all([...placementRefs].map(ref=>_vzImageReady(_vzGetPlacementImg(ref))));
+    if (state !== vzState || state.owner !== S) throw new Error('Estimate changed before saving the design. Return to it and save again.');
+    const elevationMeta = {elevation_id:elevation.id,elevation_name:elevation.name};
+    const storeAsset = async asset => {
       const result = await _vzPostAsset(eid, asset.body);
       if (asset.tier) elevation.tier_renders[asset.tier] = result.filename;
-      else if (asset.role) elevation.masks[asset.role] = result.filename;
-      else if (asset.key === 'base_image') { elevation.base_image = result.filename; state.pendingBaseDataUrl = null; }
+      else if (asset.role) {
+        elevation.masks[asset.role] = result.filename;
+        elevation.tier_renders = {};
+      }
+      else if (asset.key === 'base_image') {
+        elevation.base_image = result.filename;
+        elevation.masks = {};
+        elevation.tier_renders = {};
+        state.pendingBaseDataUrl = null;
+        const status = document.getElementById('vz-elevation-status-' + elevation.id);
+        if (status) status.textContent = 'saved';
+      }
       if (elevation.id === 'front') {
         vz.base_image = elevation.base_image;
         vz.tier_renders = Object.assign({},elevation.tier_renders);
         if (asset.role) vz[asset.role + '_mask'] = result.filename;
       }
+    };
+    if (state.pendingBaseDataUrl) await storeAsset({body:{kind:'base',ext:state.pendingBaseExt,
+      content_b64:state.pendingBaseDataUrl.split(',')[1],...elevationMeta},key:'base_image'});
+    if (!baseOnly || maskRoles.some(role=>elevation.masks[role])) {
+      for (const role of maskRoles) {
+        await storeAsset({body:{kind:'mask',role,ext:'png',
+          content_b64:state[role + 'Mask'].toDataURL('image/png').split(',')[1],...elevationMeta},role});
+      }
     }
-    const response = await fetch('/api/estimates/' + encodeURIComponent(eid) + '/visualizer/state', {
-      method: 'PUT', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(_vzElevationMetaPayload({selections,
-        invalidate_other_renders:state.selectionsChanged}))});
-    if (!response.ok) throw new Error('Images uploaded, but design choices were not saved. Please retry Save Renderings.');
+    if (!baseOnly) {
+      const renderSize=_vzFitSize(state.photoImg.naturalWidth,state.photoImg.naturalHeight,
+        _VZ_SOURCE_MAX_SIDE,_VZ_SOURCE_MAX_PIXELS);
+      for (const tier of TIERS) {
+        const off=_vzMakeMaskCanvas(renderSize.width,renderSize.height);
+        try {
+          _vzComposeInto(off,tier,{showMaskOverlay:false});
+          await storeAsset({body:{kind:'render',tier,ext:'jpg',
+            content_b64:off.toDataURL('image/jpeg',_VZ_JPEG_QUALITY).split(',')[1],...elevationMeta},tier});
+        } finally { off.width=0;off.height=0; }
+      }
+    }
+    await _vzPersistMeta({selections,
+      invalidate_other_renders:state.selectionsChanged,
+      ...(baseOnly ? {invalidate_current_renders:true} : {})});
+    if (baseOnly) {
+      elevation.tier_renders = {};
+      if (elevation.id === 'front') vz.tier_renders = {};
+    }
     state.dirty = false;
     state.selectionsChanged = false;
     state.projectionChanged = false;
@@ -16810,7 +21475,7 @@ async function _vzSaveAll() {
     if (state === vzState && state.owner === S) {
       // The parent estimate can have unsaved work; don't mark the whole file clean.
       setDirty();
-      if (btn) btn.textContent = 'Saved renderings';
+      if (btn) btn.textContent = baseOnly ? 'Photo saved' : 'Saved renderings';
     }
   } catch (error) {
     if (state === vzState && state.owner === S) {

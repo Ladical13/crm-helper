@@ -230,6 +230,58 @@ FIXTURES = [
                     'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)})]},
         'gutters': {'enabled': True, 'mode': 'simple',
                     'line_items': [{'name': 'g', 'quantity': 100, 'unit_price': 9}]}}}),
+
+    # ── supplements ───────────────────────────────────────────────────
+    # A Supplements section prices in its own block: out of the package total
+    # on both sides, a blank quantity priced as one unit, exclusions and a
+    # locked override honoured, and a tag for an unlisted section is General.
+    ('supplements section', {'pricing': STD, 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb', 'sections': ['Main House', 'Supplements'],
+        'line_items': [
+            _gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)}, section='Main House'),
+            _gbb(0, {'good': (65, 0), 'better': (65, 0), 'best': (65, 0)}, section='Supplements'),
+            _gbb(4, {'good': (50, 10), 'better': (50, 10), 'best': (50, 10)}, section='Supplements'),
+            dict(_gbb(0, {'good': (0, 0), 'better': (0, 0), 'best': (0, 0)}, section='Supplements'),
+                 tiers={'good': {'included': False}, 'better': {'price_override': 450},
+                        'best': {'price_override': 500}}),
+            _gbb(2, {'good': (40, 0), 'better': (40, 0), 'best': (40, 0)}, section='Old Supplements')]}}}),
+
+    ('supplements in simple mode', {'pricing': STD, 'trades': {'gutters': {
+        'enabled': True, 'mode': 'simple', 'sections': ['Supplements'],
+        'line_items': [{'name': 'g', 'quantity': 100, 'unit_price': 9},
+                       {'name': 'downspout', 'quantity': 0, 'unit_price': 120, 'section': 'Supplements'}]}}}),
+
+    # ── optional upgrades ─────────────────────────────────────────────
+    # An OFFERED upgrade is worth nothing: the price only joins the total once
+    # the customer has ticked it. Both sides have to agree about that, or one
+    # of them quotes a roof the customer never agreed to buy.
+    ('upgrades offered, none elected', {'pricing': STD, 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)})]}},
+        'upgrades': {'enabled': True, 'items': [
+            {'id': 'u_a', 'name': 'Gutter guards', 'price': 1450, 'cost': 820},
+            {'id': 'u_b', 'name': 'Skylight', 'price': 2200, 'cost': 1400}]}}),
+
+    ('upgrades elected', {'pricing': STD, 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)})]}},
+        'upgrades': {'enabled': True, 'items': [
+            {'id': 'u_a', 'name': 'Gutter guards', 'price': 1450, 'cost': 820,
+             'accepted': True},
+            {'id': 'u_b', 'name': 'Skylight', 'price': 2200, 'cost': 1400},
+            # Elected but unpriced, and elected but nameless: neither is an
+            # offer, so neither may reach the total on either side.
+            {'id': 'u_c', 'name': 'Ridge vent', 'price': 0, 'accepted': True},
+            {'id': 'u_d', 'name': '', 'price': 900, 'accepted': True}]}}),
+
+    # The block switched off withdraws the offer, election and all — the same
+    # rule on both sides, so a rep un-offering upgrades cannot leave a total
+    # that only one half of the app agrees with.
+    ('upgrades elected but not offered', {'pricing': STD, 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)})]}},
+        'upgrades': {'enabled': False, 'items': [
+            {'id': 'u_a', 'name': 'Gutter guards', 'price': 1450, 'accepted': True}]}}),
 ]
 
 
@@ -265,11 +317,28 @@ def test_tier_total_matches_js(A, js_totals, name, est, tier):
 
 
 @pytest.mark.parametrize('name,est', FIXTURES, ids=[n for n, _ in FIXTURES])
+def test_upgrades_total_matches_js(A, js_totals, name, est):
+    py = A.upgrades_total(est)
+    js = js_totals[name]['upgrades']
+    assert py == pytest.approx(js, abs=0.01), (
+        f'{name} upgrades: app.py={py:.2f} but app.js={js:.2f}')
+
+
+@pytest.mark.parametrize('name,est', FIXTURES, ids=[n for n, _ in FIXTURES])
 def test_selected_total_matches_js(A, js_totals, name, est):
     py = A.calc_selected_total(est)
     js = js_totals[name]['selected']
     assert py == pytest.approx(js, abs=0.01), (
         f'{name} selected: app.py={py:.2f} but app.js={js:.2f}')
+
+
+@pytest.mark.parametrize('name,est', FIXTURES, ids=[n for n, _ in FIXTURES])
+@pytest.mark.parametrize('tier', ['good', 'better', 'best'])
+def test_supplements_total_matches_js(A, js_totals, name, est, tier):
+    py = sum(A.trade_supplements(est, tk, tier)[1] for tk in A.GBB_TRADES)
+    js = js_totals[name]['supplements'][tier]
+    assert py == pytest.approx(js, abs=0.01), (
+        f'{name} supplements @ {tier}: app.py={py:.2f} but app.js={js:.2f}')
 
 
 def test_runner_uses_the_real_bundle():

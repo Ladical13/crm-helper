@@ -1,0 +1,731 @@
+{
+  "_readme": [
+    "The STARTER set for the in-app template library (Playbook -> Templates).",
+    "Seeded into salescrm.db by seed_templates() on startup, one row per `key`,",
+    "and only when that key has never been seeded before. A manager's edit or",
+    "archive is therefore permanent: editing this file changes nothing for a",
+    "template that already exists in the database. A NEW key does arrive.",
+    "",
+    "outreach_templates.json's partner and commercial emails are seeded the same",
+    "way, keyed email:<lead_type>:<step>, so this file does not repeat them.",
+    "",
+    "channel:  email | text | voicemail | call  (call = a call script)",
+    "audience: homeowner | partner | commercial | past_customer",
+    "step:     first | followup | breakup | any  (which touch it is written for)",
+    "stage:    optional - 'won' or 'lost', for past-customer templates that only",
+    "          make sense to one of them (a review ask to someone who never bought).",
+    "lead_type: optional - a template written for ONE type (realtor, hoa, church...)",
+    "           beats the audience-wide one whenever that type is being worked.",
+    "",
+    "Slots: {greeting} {first_name} {company} {city} {hook} {storm_hook}",
+    "{research_hook} {rep_name} {rep_first}. Texts and voicemails use {greeting},",
+    "never a bare {first_name}: most cold lists have no first name, and",
+    "'Hi , this is' is the tell that a machine wrote it.",
+    "",
+    "Rules the test suite enforces: no banned phrase, only known slots, emails",
+    "under 100 words, texts under 320 characters (two SMS segments).",
+    "First-touch texts to people we have never spoken to end with the STOP line."
+  ],
+  "templates": [
+    {
+      "key": "text:homeowner:first",
+      "name": "Free hail inspection (first text)",
+      "channel": "text",
+      "audience": "homeowner",
+      "step": "first",
+      "body": "{greeting} this is {rep_first} with Project One Roofing. We're doing free hail inspections in {city} - about 20 minutes, and you get photos of anything we find. Want a spot this week? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:homeowner:after_vm",
+      "name": "After a voicemail",
+      "channel": "text",
+      "audience": "homeowner",
+      "step": "followup",
+      "body": "{greeting} {rep_first} from Project One Roofing - I just left you a voicemail. Short version: free roof check in {city}, 20 minutes, photos included, no obligation. Is there a day this week that works?"
+    },
+    {
+      "key": "text:homeowner:followup",
+      "name": "Damage you can't see from the ground",
+      "channel": "text",
+      "audience": "homeowner",
+      "step": "followup",
+      "body": "{greeting} {rep_first} with Project One again. Hail damage usually can't be seen from the driveway, and insurance claims have a filing window. I'll take a free look and tell you straight whether you have a claim. Worth a visit?"
+    },
+    {
+      "key": "text:homeowner:breakup",
+      "name": "Last text",
+      "channel": "text",
+      "audience": "homeowner",
+      "step": "breakup",
+      "body": "{greeting} last text from me - {rep_first} at Project One Roofing. If a storm ever has you wondering about the roof, save this number and I'll come take a look for free. Take care."
+    },
+    {
+      "key": "text:homeowner:appt_confirm",
+      "name": "Appointment confirmation",
+      "channel": "text",
+      "audience": "homeowner",
+      "step": "any",
+      "body": "{greeting} {rep_first} from Project One Roofing confirming your roof inspection. I'll text when I'm on the way. You don't need to be on the roof or in the attic - just make sure the gate's open if there is one."
+    },
+    {
+      "key": "voicemail:homeowner:first",
+      "name": "First call voicemail",
+      "channel": "voicemail",
+      "audience": "homeowner",
+      "step": "first",
+      "body": "{greeting} this is {rep_first} with Project One Roofing, here in Northern Colorado. We're doing free hail inspections in {city} this week and I have openings near you. It takes about 20 minutes, you get photos of anything we find, and there's no obligation. Call me back at this number, or I'll send you a quick text. Thanks."
+    },
+    {
+      "key": "voicemail:homeowner:followup",
+      "name": "Second call voicemail",
+      "channel": "voicemail",
+      "audience": "homeowner",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again from Project One Roofing. I'm calling back about a free roof inspection. Most hail damage can't be seen from the ground, so a 20-minute look is the only way to know. Call or text me back at this number whenever it's convenient."
+    },
+    {
+      "key": "email:homeowner:first",
+      "name": "Free inspection offer",
+      "channel": "email",
+      "audience": "homeowner",
+      "step": "first",
+      "subject": "Free roof inspection in {city}",
+      "body": "{greeting}\n\nI'm {rep_first} with Project One Roofing, a local roofer here in Northern Colorado. We're doing free roof inspections in {city} this month.\n\n{storm_hook}\n\nIt takes about 20 minutes. You get photos of anything we find and a straight answer on whether there's damage worth an insurance claim - or whether the roof is fine.\n\nWould a day this week work for a quick look?"
+    },
+    {
+      "key": "email:homeowner:followup",
+      "name": "Follow-up: what we look for",
+      "channel": "email",
+      "audience": "homeowner",
+      "step": "followup",
+      "subject": "Re: Free roof inspection in {city}",
+      "body": "{greeting}\n\nA quick follow-up on the free inspection. Hail usually bruises shingles and dents vents and gutters in ways you can't see from the ground, and insurance claims have a filing window.\n\nIf you'd like a look, reply with a day that works and I'll confirm a time. If now's not the time, no problem at all."
+    },
+    {
+      "key": "email:homeowner:breakup",
+      "name": "Closing the loop",
+      "channel": "email",
+      "audience": "homeowner",
+      "step": "breakup",
+      "subject": "Closing the loop",
+      "body": "{greeting}\n\nI won't keep emailing. If a storm ever has you wondering about your roof, reply to this email or call and I'll come take a look - there's never a charge for an inspection.\n\nTake care."
+    },
+    {
+      "key": "text:partner:first",
+      "name": "Intro to a partner (first text)",
+      "channel": "text",
+      "audience": "partner",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing in Loveland. When a roof question comes up on one of your properties, I can get out within a few days and give you a written answer - repair, replace, or it's fine. OK if I send you my info? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:partner:followup",
+      "name": "Anything on your plate?",
+      "channel": "text",
+      "audience": "partner",
+      "step": "followup",
+      "body": "{greeting} {rep_first} from Project One again. Anything on your plate right now where the roof is a question mark? Happy to take a look and put it in writing, usually within the week."
+    },
+    {
+      "key": "text:partner:after_meeting",
+      "name": "After meeting in person",
+      "channel": "text",
+      "audience": "partner",
+      "step": "any",
+      "body": "{greeting} {rep_first} from Project One Roofing - good to meet you today. This is my cell. Next time a roof comes up on an inspection or a claim, text me and I'll make it easy."
+    },
+    {
+      "key": "text:partner:breakup",
+      "name": "Last text",
+      "channel": "text",
+      "audience": "partner",
+      "step": "breakup",
+      "body": "{greeting} last one from me - {rep_first} at Project One Roofing. Save this number for the next roof that holds up a deal or a claim, and I'll get out there fast."
+    },
+    {
+      "key": "voicemail:partner:first",
+      "name": "First call voicemail",
+      "channel": "voicemail",
+      "audience": "partner",
+      "step": "first",
+      "body": "{greeting} this is {rep_first} with Project One Roofing in Loveland. I work with people like you when a roof comes up as a problem - an inspection flag, a claim, a board asking questions. I can usually get out within a few days and give you a written answer. I'll send a quick text with my info. Call me back at this number when you get a minute."
+    },
+    {
+      "key": "voicemail:partner:followup",
+      "name": "Second call voicemail",
+      "channel": "voicemail",
+      "audience": "partner",
+      "step": "followup",
+      "body": "{greeting} {rep_first} from Project One Roofing again. I'd like to be the roofer you call when a roof is slowing something down. Five minutes on the phone is all I'm after. You can reach me at this number."
+    },
+    {
+      "key": "text:commercial:first",
+      "name": "Facilities intro (first text)",
+      "channel": "text",
+      "audience": "commercial",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. We do free roof condition assessments for {city} buildings - photos and a written remaining-life estimate you can budget from. Who's the right person to talk to about the roof? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:commercial:followup",
+      "name": "Budget season follow-up",
+      "channel": "text",
+      "audience": "commercial",
+      "step": "followup",
+      "body": "{greeting} {rep_first} from Project One again. If a roof is anywhere on next year's budget, a free condition report now gives you real numbers to plan with. Can I set up a walk-through?"
+    },
+    {
+      "key": "voicemail:commercial:first",
+      "name": "First call voicemail",
+      "channel": "voicemail",
+      "audience": "commercial",
+      "step": "first",
+      "body": "Hi, this is {rep_first} with Project One Roofing. I'm trying to reach whoever looks after the building and the roof at {company}. We do free roof condition assessments for facilities in {city} - a written report with photos and a remaining-life estimate, which is useful for budgeting. Please call me back at this number. Thanks."
+    },
+    {
+      "key": "voicemail:commercial:followup",
+      "name": "Second call voicemail",
+      "channel": "voicemail",
+      "audience": "commercial",
+      "step": "followup",
+      "body": "Hi, {rep_first} from Project One Roofing again, for whoever handles the roof at {company}. I'd like to offer a free condition assessment before budget season. If you're not the right person, a name would help a lot. My number is the one I'm calling from."
+    },
+    {
+      "key": "text:past_customer:review",
+      "name": "Review request",
+      "channel": "text",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "won",
+      "body": "{greeting} {rep_first} from Project One Roofing. Hope the new roof is treating you well! If you were happy with the work, would you leave us a quick Google review? It helps a local company more than you'd think."
+    },
+    {
+      "key": "text:past_customer:referral",
+      "name": "Referral ask",
+      "channel": "text",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "won",
+      "body": "{greeting} {rep_first} at Project One Roofing. Quick favor - if a neighbor or friend mentions roof trouble, would you pass along my number? I'll take care of them the way we took care of you."
+    },
+    {
+      "key": "text:past_customer:storm_check",
+      "name": "Storm check for a past customer",
+      "channel": "text",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "won",
+      "body": "{greeting} {rep_first} from Project One Roofing. With the recent storm in {city}, want us to swing by and check your roof? It's free for our customers, and it's easier to catch something early."
+    },
+    {
+      "key": "text:past_customer:requote",
+      "name": "Refresh an old estimate",
+      "channel": "text",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "lost",
+      "body": "{greeting} {rep_first} from Project One Roofing. We put together a roof estimate for you a while back. Prices and schedules have moved since - want me to refresh the numbers so you have a current option? No pressure either way."
+    },
+    {
+      "key": "voicemail:past_customer:requote",
+      "name": "Refresh an old estimate",
+      "channel": "voicemail",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "lost",
+      "body": "{greeting} this is {rep_first} with Project One Roofing. We gave you a roof estimate a while back and I wanted to see whether the project is still on your mind. Pricing and our schedule have both moved, so I'm happy to refresh the numbers at no charge. Call or text me at this number."
+    },
+    {
+      "key": "email:past_customer:requote",
+      "name": "Refresh an old estimate",
+      "channel": "email",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "lost",
+      "subject": "An updated number on your roof",
+      "body": "{greeting}\n\nWe put together a roof estimate for you a while back. Material prices and our schedule have both moved since, so the number you have may not reflect today.\n\nIf the project is still on your mind, I'm happy to refresh it at no charge - usually a short visit or a phone call is enough.\n\nWould that be useful?"
+    },
+    {
+      "key": "email:past_customer:review",
+      "name": "Review and referral ask",
+      "channel": "email",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "won",
+      "subject": "How's the new roof?",
+      "body": "{greeting}\n\nIt's been a little while since we finished your roof, and I hope it's been trouble-free.\n\nIf you were happy with the work, a quick Google review would mean a lot - most of our work comes from neighbors reading them.\n\nAnd if anyone you know mentions roof trouble, I'd be glad to help them the same way."
+    },
+    {
+      "key": "email:past_customer:storm_check",
+      "name": "Storm check for a past customer",
+      "channel": "email",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "won",
+      "subject": "Checking on your roof after the storm",
+      "body": "{greeting}\n\nWith the recent storm in {city}, I wanted to offer a free check on your roof. It takes about 20 minutes, and catching damage early keeps a small repair from turning into a bigger one.\n\nReply with a day that works and I'll confirm a time."
+    },
+    {
+      "key": "text:type:realtor:first",
+      "name": "Realtor - first text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "realtor",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. When an inspection flags a roof, I can usually get out within 48 hours with a written answer - and a roof certification if the lender wants one. Want my number for the next deal? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:realtor:followup",
+      "name": "Realtor - follow-up text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "realtor",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. Any listings or pending deals where the roof is a question mark right now? I'll look this week and put it in writing so it doesn't hold up closing."
+    },
+    {
+      "key": "voicemail:type:realtor:any",
+      "name": "Realtor - voicemail",
+      "channel": "voicemail",
+      "audience": "partner",
+      "lead_type": "realtor",
+      "step": "any",
+      "body": "{greeting} this is {rep_first} with Project One Roofing. I help agents when a roof shows up on an inspection report. I can usually get out within 48 hours, give you a straight answer in writing, and issue a roof certification when the lender or buyer needs one. I'll text you my number - call me back whenever it's easy."
+    },
+    {
+      "key": "call:type:realtor:any",
+      "name": "Realtor - call script",
+      "channel": "call",
+      "audience": "partner",
+      "lead_type": "realtor",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing - do you have 30 seconds?\n\nWHY: I work with agents when a roof comes up on an inspection. A written answer fast, repair or replace pricing the same week, and a roof certification for the closing file when the lender asks for one.\n\nASK: When a roof question comes up on one of your deals, who do you call today?\n\nIF THEY HAVE SOMEONE: Good - keep them. Can I be your backup for the week they can't get out before closing?\n\nIF IT'S A BAD TIME: Totally fine. I'll text you my number so you have it for the next one.\n\nCLOSE: Can I drop a card by your office this week?"
+    },
+    {
+      "key": "text:type:hoa:first",
+      "name": "HOA - first text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "hoa",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. We do free roof condition reports for HOA boards - every building photographed, with a remaining-life estimate for your reserve study. Who handles roofs for {company}? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:hoa:followup",
+      "name": "HOA - follow-up text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "hoa",
+      "step": "followup",
+      "body": "{greeting} {rep_first} from Project One again. If the board is heading into budget or reserve season, a free condition report gives you real numbers instead of guesses. Can I walk the property?"
+    },
+    {
+      "key": "voicemail:type:hoa:any",
+      "name": "HOA - voicemail",
+      "channel": "voicemail",
+      "audience": "partner",
+      "lead_type": "hoa",
+      "step": "any",
+      "body": "Hi, this is {rep_first} with Project One Roofing. I'm trying to reach whoever handles the roofs for {company}. We do free condition reports for HOA boards - every roof photographed, with a remaining-life estimate that drops straight into a reserve study, and one point of contact if the community ever has a hail claim. Please call me back at this number."
+    },
+    {
+      "key": "call:type:hoa:any",
+      "name": "HOA - call script",
+      "channel": "call",
+      "audience": "partner",
+      "lead_type": "hoa",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing. Am I speaking with someone on the board, or with the management company for {company}?\n\nWHY: We do free roof condition reports for associations - every building photographed, a remaining-life estimate per roof, written so a board can budget from it.\n\nASK: When were the roofs last looked at by someone who wasn't trying to sell a replacement?\n\nIF A MANAGEMENT COMPANY HANDLES IT: Who's the manager there? I'll reach out and mention we spoke.\n\nIF THEY JUST DID A RESERVE STUDY: Great - our report shows whether the roof line in it still holds after this year's storms.\n\nCLOSE: Can I walk the property this month and send the report to the board?"
+    },
+    {
+      "key": "text:type:insurance_agent:first",
+      "name": "Insurance agent - first text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "insurance_agent",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. When your clients get hail damage, we document it properly, meet the adjuster, and never push a claim that isn't there. Worth having a local roofer you trust to refer? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:insurance_agent:followup",
+      "name": "Insurance agent - follow-up text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "insurance_agent",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. We also write roof condition certificates - handy when a carrier asks about roof age or condition at renewal. Can I send you a sample?"
+    },
+    {
+      "key": "voicemail:type:insurance_agent:any",
+      "name": "Insurance agent - voicemail",
+      "channel": "voicemail",
+      "audience": "partner",
+      "lead_type": "insurance_agent",
+      "step": "any",
+      "body": "{greeting} this is {rep_first} with Project One Roofing. I work with agents whose clients get hit by hail. We inspect honestly, document everything the adjuster needs, and tell a homeowner straight when there's no claim. We also do roof condition certificates for renewals. I'll text you my number - call me back when you have a minute."
+    },
+    {
+      "key": "call:type:insurance_agent:any",
+      "name": "Insurance agent - call script",
+      "channel": "call",
+      "audience": "partner",
+      "lead_type": "insurance_agent",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing - do you have a quick minute?\n\nWHY: When a client calls you after a storm, the roofer they pick decides whether that claim goes smoothly or turns into a fight. We document it properly, meet the adjuster, and tell people when there's no claim.\n\nASK: Who do you point clients to today after a storm?\n\nIF THEY DON'T REFER: Understood. Do you ever need proof of roof condition at renewal? We issue a written roof certificate after an inspection.\n\nIF THEY'RE WARY OF STORM CHASERS: That's fair - we're local, in Loveland, and the first thing we'll tell a client is when they don't have a claim.\n\nCLOSE: Can I send you a sample inspection report and certificate?"
+    },
+    {
+      "key": "text:type:property_manager:first",
+      "name": "Property manager - first text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "property_manager",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. For managers with a lot of doors: one call for leaks, photo reports your owners can read, and invoices that make sense. Who handles roofing for {company}? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:property_manager:followup",
+      "name": "Property manager - follow-up text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "property_manager",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. Next time a tenant reports a leak, text me the address - I'll get it looked at fast and send you photos before any work starts."
+    },
+    {
+      "key": "voicemail:type:property_manager:any",
+      "name": "Property manager - voicemail",
+      "channel": "voicemail",
+      "audience": "partner",
+      "lead_type": "property_manager",
+      "step": "any",
+      "body": "{greeting} this is {rep_first} with Project One Roofing. I work with property managers who need one reliable roofer across a lot of properties - fast leak response, photos before and after, and invoices your owners won't question. If you have a leak list right now, I'd like to help. Call me back at this number."
+    },
+    {
+      "key": "call:type:property_manager:any",
+      "name": "Property manager - call script",
+      "channel": "call",
+      "audience": "partner",
+      "lead_type": "property_manager",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing. Are you the right person for maintenance at {company}?\n\nWHY: We work with managers who need one roofer they can hand a leak to and forget about - fast response, photos before any work, invoices owners can read.\n\nASK: How many properties are you looking after, and who handles roof leaks today?\n\nIF A HANDYMAN DOES LEAKS: That works for a lot of them. For the ones that keep coming back, I'll tell you straight whether it's a repair or a roof.\n\nCLOSE: Send me the address of your worst roof and I'll look at it this week, no charge."
+    },
+    {
+      "key": "text:type:adjuster:first",
+      "name": "Adjuster - first text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "adjuster",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing in Northern Colorado. We write scopes that match the roof, meet on site when you want us there, and don't pad claims. Glad to be a name you can trust on your files. Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:adjuster:followup",
+      "name": "Adjuster - follow-up text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "adjuster",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. If you're working files in {city} after this storm, I'm glad to meet you on any roof where we're the contractor - measured, photographed, no games."
+    },
+    {
+      "key": "voicemail:type:adjuster:any",
+      "name": "Adjuster - voicemail",
+      "channel": "voicemail",
+      "audience": "partner",
+      "lead_type": "adjuster",
+      "step": "any",
+      "body": "{greeting} this is {rep_first} with Project One Roofing. I wanted to introduce myself to the adjusters working Northern Colorado. We measure every roof, photograph it properly, write scopes that match what's up there, and we're easy to meet on site. I'll text you my number. Thanks."
+    },
+    {
+      "key": "call:type:adjuster:any",
+      "name": "Adjuster - call script",
+      "channel": "call",
+      "audience": "partner",
+      "lead_type": "adjuster",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing - is now an OK time for 30 seconds?\n\nWHY: I'd like to be one of the contractors you're glad to see on a file: measured roofs, clean photos, a scope that matches the roof, and no padding.\n\nASK: What makes a contractor easy to work with from your side?\n\nLISTEN, THEN: That's how we run it. When we're on one of your files, I'll make the meeting easy to schedule.\n\nCLOSE: Can I text you my number so you have it when our name shows up?"
+    },
+    {
+      "key": "text:type:referral_partner:first",
+      "name": "Referral partner - first text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "referral_partner",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. We refer our customers to good local trades all the time and I'd like to know who you are. If you see a roof problem on a job, send them my way and I'll return the favor. Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:referral_partner:followup",
+      "name": "Referral partner - follow-up text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "referral_partner",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. Had a couple of customers this month asking who we'd recommend for your kind of work - mind if I pass your number along?"
+    },
+    {
+      "key": "voicemail:type:referral_partner:any",
+      "name": "Referral partner - voicemail",
+      "channel": "voicemail",
+      "audience": "partner",
+      "lead_type": "referral_partner",
+      "step": "any",
+      "body": "{greeting} this is {rep_first} with Project One Roofing. We work in a lot of homes around {city} and customers are always asking who we trust for other work. I'd like to swap referrals - you send roof problems our way, we send work yours. Call me back at this number."
+    },
+    {
+      "key": "call:type:referral_partner:any",
+      "name": "Referral partner - call script",
+      "channel": "call",
+      "audience": "partner",
+      "lead_type": "referral_partner",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing - do you have a minute?\n\nWHY: We're in homes all over {city}, and customers constantly ask who we'd trust for other work. I'd like to know who you are so I can send people your way.\n\nASK: What kind of jobs are you looking for more of right now?\n\nTHEN: And when you're on a job and see a roof problem, who do you send them to?\n\nCLOSE: Let's swap numbers - I'll send you the next one that fits."
+    },
+    {
+      "key": "text:type:gc:first",
+      "name": "General contractor - first text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "gc",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. We sub roofing for contractors - residential and commercial, insured, on schedule, with bids back in days. Can I get on your list for the next job? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:gc:followup",
+      "name": "General contractor - follow-up text",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "gc",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. Any projects bidding right now with a roof in the scope? Send the plans and I'll turn a number around this week."
+    },
+    {
+      "key": "voicemail:type:gc:any",
+      "name": "General contractor - voicemail",
+      "channel": "voicemail",
+      "audience": "partner",
+      "lead_type": "gc",
+      "step": "any",
+      "body": "{greeting} this is {rep_first} with Project One Roofing. We sub roofing for general contractors around Northern Colorado - residential and commercial, fully insured, and we show up when the schedule says. I'd like to get on your bid list. Call me back at this number."
+    },
+    {
+      "key": "call:type:gc:any",
+      "name": "General contractor - call script",
+      "channel": "call",
+      "audience": "partner",
+      "lead_type": "gc",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing. Are you the right person for subcontractor bids at {company}?\n\nWHY: We sub roofing for GCs - residential and commercial, insured, and on schedule, with bids back in days.\n\nASK: Who's roofing your jobs today, and where do they let you down?\n\nIF THEY'RE HAPPY: Good. Can we bid the next one so you have a second number?\n\nCLOSE: What's the best email for bid invites?"
+    },
+    {
+      "key": "text:type:church:first",
+      "name": "Church - first text",
+      "channel": "text",
+      "audience": "commercial",
+      "lead_type": "church",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. We do free roof assessments for churches - photos and a plain-English report on how much life is left, so the board can plan instead of react. Who looks after the building at {company}? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:church:followup",
+      "name": "Church - follow-up text",
+      "channel": "text",
+      "audience": "commercial",
+      "lead_type": "church",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. A free assessment now can keep a small repair from turning into a building-fund campaign. Could I stop by one weekday this month?"
+    },
+    {
+      "key": "voicemail:type:church:any",
+      "name": "Church - voicemail",
+      "channel": "voicemail",
+      "audience": "commercial",
+      "lead_type": "church",
+      "step": "any",
+      "body": "Hi, this is {rep_first} with Project One Roofing. I'm trying to reach whoever looks after the building at {company}. We do free roof assessments for churches - a written report with photos and an honest remaining-life estimate, so the board can plan and budget. There's no sales pitch attached. Please call me back at this number."
+    },
+    {
+      "key": "call:type:church:any",
+      "name": "Church - call script",
+      "channel": "call",
+      "audience": "commercial",
+      "lead_type": "church",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing. Who looks after the building and grounds there?\n\nWHY: We do free roof assessments for churches. You're spending donated money, so you deserve an honest answer on whether a roof needs a repair, a few more years of maintenance, or a plan for replacement.\n\nASK: When did someone last get up on the roof?\n\nIF THERE'S NO BUDGET: Understood - the report is free, and knowing what you have lets you plan the next few years instead of reacting to a leak.\n\nIF A MEMBER DOES THE ROOFING: That's great. Our report can help them know where to look.\n\nCLOSE: Could I stop by one weekday this month and send the report to whoever decides?"
+    },
+    {
+      "key": "text:type:school:first",
+      "name": "School - first text",
+      "channel": "text",
+      "audience": "commercial",
+      "lead_type": "school",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. We do free roof condition reports for school buildings, and schedule any work around the school year. Is the roof at {company} handled by the school or the district? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:school:followup",
+      "name": "School - follow-up text",
+      "channel": "text",
+      "audience": "commercial",
+      "lead_type": "school",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. If the district handles the roof, a name in facilities would help me a lot - I'll mention you pointed me their way."
+    },
+    {
+      "key": "voicemail:type:school:any",
+      "name": "School - voicemail",
+      "channel": "voicemail",
+      "audience": "commercial",
+      "lead_type": "school",
+      "step": "any",
+      "body": "Hi, this is {rep_first} with Project One Roofing. I'm trying to find out who handles the roof at {company} - the school or the district facilities office. We do free condition reports that help with capital planning, and we schedule work around the school year. A name and number would be a big help. Thank you."
+    },
+    {
+      "key": "call:type:school:any",
+      "name": "School - call script",
+      "channel": "call",
+      "audience": "commercial",
+      "lead_type": "school",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing. I have a quick question about the building.\n\nASK: Is the roof handled by the school, or through the district's facilities office?\n\nIF THE DISTRICT: Who's the facilities contact there? I'll mention you pointed me their way.\n\nIF THE SCHOOL: We do free roof condition reports for schools, with photos and a remaining-life estimate, and we schedule work for summer break.\n\nCLOSE: Thanks - that saves me a lot of calls."
+    },
+    {
+      "key": "text:type:school_district:first",
+      "name": "School district - first text",
+      "channel": "text",
+      "audience": "commercial",
+      "lead_type": "school_district",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. We do roof condition assessments across a district's buildings - photos and remaining life per roof, for capital planning. Who's the right facilities contact at {company}? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:school_district:followup",
+      "name": "School district - follow-up text",
+      "channel": "text",
+      "audience": "commercial",
+      "lead_type": "school_district",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. Happy to start with one or two buildings you're worried about, free, so you can judge the report before anything else. Also glad to get on your bid list."
+    },
+    {
+      "key": "voicemail:type:school_district:any",
+      "name": "School district - voicemail",
+      "channel": "voicemail",
+      "audience": "commercial",
+      "lead_type": "school_district",
+      "step": "any",
+      "body": "Hi, this is {rep_first} with Project One Roofing, calling for facilities at {company}. We assess roofs across a district's buildings - photos and a remaining-life estimate per roof, in one report you can plan capital spending from - and we schedule work around the school year. I'd also like to get on your bid list. Please call me back at this number."
+    },
+    {
+      "key": "call:type:school_district:any",
+      "name": "School district - call script",
+      "channel": "call",
+      "audience": "commercial",
+      "lead_type": "school_district",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing. Am I speaking with facilities or maintenance for {company}?\n\nWHY: We assess roofs across a district's buildings - one report, a remaining-life estimate per roof, for capital planning - and we schedule work for summer break.\n\nASK: How are roofs handled today - a capital plan, or as leaks come up?\n\nIF THEY BID EVERYTHING: Understood. How do we get on the vendor list for roofing bids?\n\nCLOSE: Could we start with one or two buildings you're worried about, free, so you can judge the report?"
+    },
+    {
+      "key": "text:type:commercial:first",
+      "name": "Commercial - first text",
+      "channel": "text",
+      "audience": "commercial",
+      "lead_type": "commercial",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. We do free roof checks for {city} businesses - photos, a leak-risk read, and options like a coating that can add years before a replacement. Who handles the building at {company}? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:commercial:followup",
+      "name": "Commercial - follow-up text",
+      "channel": "text",
+      "audience": "commercial",
+      "lead_type": "commercial",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. A leak over inventory or a work area costs more than the repair. Can I take a free look at the roof this month?"
+    },
+    {
+      "key": "voicemail:type:commercial:any",
+      "name": "Commercial - voicemail",
+      "channel": "voicemail",
+      "audience": "commercial",
+      "lead_type": "commercial",
+      "step": "any",
+      "body": "Hi, this is {rep_first} with Project One Roofing. I'm trying to reach whoever handles the building at {company}. We do free roof checks for businesses in {city} - photos, a straight read on leak risk, and options like a coating that can buy years before a full replacement. Please call me back at this number."
+    },
+    {
+      "key": "call:type:commercial:any",
+      "name": "Commercial - call script",
+      "channel": "call",
+      "audience": "commercial",
+      "lead_type": "commercial",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing. Who handles the building there - is it owned or leased?\n\nIF LEASED: Is the landlord or property manager responsible for the roof? Who should I talk to?\n\nWHY: We do free roof checks for businesses - photos, a straight read on leak risk, and options like a coating that can add years before a full replacement.\n\nASK: Any leaks or ceiling stains in the last year?\n\nCLOSE: Can I take a free look this month and send you the photos?"
+    },
+    {
+      "key": "call:homeowner:first",
+      "name": "Storm inspection call",
+      "channel": "call",
+      "audience": "homeowner",
+      "step": "first",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing - is this the homeowner?\n\nWHY: We're doing free hail inspections in {city} after the recent storms. Most damage can't be seen from the ground.\n\nASK: Has anyone been up on your roof since the last storm?\n\nIF 'I DON'T THINK WE HAD DAMAGE': That's the most common answer - and why it's worth 20 minutes. If there's nothing, you'll have photos saying so.\n\nIF 'NOT INTERESTED': No problem. Mind if I text you my number in case a storm changes that?\n\nCLOSE: I have openings [day] and [day] - which works better?"
+    },
+    {
+      "key": "call:partner:first",
+      "name": "Partner intro call",
+      "channel": "call",
+      "audience": "partner",
+      "step": "first",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing - do you have 30 seconds?\n\nWHY: When a roof comes up as a problem for the people you work with, I'd like to be the roofer you call - fast, honest, and in writing.\n\nASK: When a roof question comes up today, who do you call?\n\nCLOSE: Can I text you my number so you have it for the next one?"
+    },
+    {
+      "key": "call:commercial:first",
+      "name": "Facilities intro call",
+      "channel": "call",
+      "audience": "commercial",
+      "step": "first",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing. Who looks after the building and the roof there?\n\nWHY: We do free roof condition assessments - photos and a remaining-life estimate you can budget from.\n\nASK: When was the roof last looked at?\n\nCLOSE: Can I set up a walk-through this month?"
+    },
+    {
+      "key": "call:past_customer:won",
+      "name": "Check in with a customer",
+      "channel": "call",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "won",
+      "body": "OPEN: Hi, it's {rep_first} from Project One Roofing - we did your roof. Is everything still looking good?\n\nIF ANY ISSUE: Let's get it looked at - I'll set it up today.\n\nASK: If you were happy with the work, would you leave us a quick Google review? I'll text you the link.\n\nTHEN: And if a neighbor or friend mentions roof trouble, would you pass my number along?\n\nCLOSE: Thanks - and call me any time after a storm, the check is free for you."
+    },
+    {
+      "key": "call:past_customer:lost",
+      "name": "Refresh an old estimate",
+      "channel": "call",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "lost",
+      "body": "OPEN: Hi, it's {rep_first} from Project One Roofing. We gave you a roof estimate a while back - is the project still on your mind?\n\nIF YES: Pricing and our schedule have both moved, so let me refresh the numbers at no charge.\n\nIF THEY WENT WITH SOMEONE ELSE: Totally fair - how did it go? If you ever need anything, you have my number.\n\nIF NOT NOW: No problem. Would it help if I checked back after the next storm season?\n\nCLOSE: Can I come by for 20 minutes this week to update it?"
+    },
+    {
+      "key": "text:homeowner:storm",
+      "name": "After a storm (uses the hail line)",
+      "channel": "text",
+      "audience": "homeowner",
+      "step": "any",
+      "body": "{greeting} {rep_first} with Project One Roofing. {storm_hook} Want a free 20-minute inspection this week so you know where you stand? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:commercial:storm",
+      "name": "After a storm (uses the hail line)",
+      "channel": "text",
+      "audience": "commercial",
+      "step": "any",
+      "body": "{greeting} {rep_first} with Project One Roofing. {storm_hook} Worth a free roof check for {company} before a leak finds it first? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:partner:storm",
+      "name": "After a storm in their area",
+      "channel": "text",
+      "audience": "partner",
+      "step": "any",
+      "body": "{greeting} {rep_first} with Project One Roofing. After this week's hail around {city}, if any of your clients or properties were in it, send them my way - I'll get out fast and put it in writing."
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+.studio {max-width:1200px;margin:auto}
+.studio h1 {font-size:30px;letter-spacing:-.6px;margin:0 0 10px}
+.studio h2 {font-size:21px;margin:0 0 12px}
+.studio h3 {font-size:17px;margin:8px 0 12px}
+.studio p {line-height:1.6}
+.studio .muted {color:#a6b8d1;font-size:13px}
+.studio .studio-hero {padding:28px;border:1px solid var(--border);border-radius:16px;background:linear-gradient(120deg,#10253c,#092927);margin-bottom:20px}
+.studio .studio-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.studio .studio-card {border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:20px;margin-bottom:14px;min-width:0}
+.studio .studio-row {display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
+.studio label {display:block;font-size:13px;color:#b6c8df;margin:10px 0}
+.studio label:has(input[type=checkbox]) {display:inline-flex;gap:7px;align-items:center;margin:5px 12px 5px 0}
+.studio input:not([type=checkbox]),.studio select,.studio textarea {width:100%;border:1px solid var(--border-2);padding:10px;border-radius:6px;background:var(--bg);color:var(--text);font:inherit;box-sizing:border-box}
+.studio textarea {min-height:130px;resize:vertical;line-height:1.6}
+.studio button,.studio .studio-link {padding:9px 13px;border:1px solid var(--border-2);border-radius:7px;background:var(--panel);color:var(--text);font:inherit;font-size:13px;cursor:pointer;text-decoration:none}
+.studio button:hover,.studio .studio-link:hover {border-color:var(--accent)}
+.studio button.primary {background:#146658;color:white;border-color:#258975}
+.studio button:disabled {opacity:.45;cursor:wait}
+.studio button.active {border-color:#52ddba;color:#7deaca}
+.studio .studio-tabs {margin:20px 0;display:flex;gap:8px;flex-wrap:wrap}
+.studio .studio-tag {display:inline-block;font-size:11px;padding:4px 8px;border-radius:5px;background:#173448;color:#aee3ff;margin:3px 5px 3px 0}
+.studio .studio-evidence {border-left:2px solid #32655d;padding-left:12px;margin:16px 0;font-size:13px}
+.studio a {color:#7cddcf;overflow-wrap:anywhere}
+.studio details {margin:12px 0}
+.studio summary {cursor:pointer;color:#9acec2}
+.studio .studio-status {position:sticky;top:10px;z-index:3;border-radius:8px;background:#133c3b;padding:12px;margin-bottom:15px;white-space:pre-wrap}
+.studio .studio-status:empty {display:none}
+.studio .studio-error {background:#512a30}
+.studio .studio-metrics {display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.studio .studio-count {font-size:28px;font-weight:600}
+.studio .studio-creative {white-space:pre-wrap;font-size:13px;color:#b6c8df;line-height:1.6}
+.studio fieldset {border:0;padding:0;margin:10px 0}
+.studio legend {font-size:13px;color:#b6c8df}
+.studio dialog {max-width:720px;width:85%;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:14px;max-height:80vh;overflow:auto}
+.studio dialog::backdrop {background:#000a}
+@media(max-width:750px){.studio .studio-grid{grid-template-columns:1fr}.studio .studio-metrics{grid-template-columns:repeat(2,1fr)}.studio .studio-hero{padding:20px}.studio h1{font-size:25px}}

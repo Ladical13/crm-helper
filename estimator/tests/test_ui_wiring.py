@@ -207,3 +207,81 @@ def test_the_signed_contract_is_linked_from_somewhere_a_rep_looks():
     assert 'function renderSignedContractPanel' in js
     assert 'renderSignedContractPanel()' in js, 'the panel is defined but never rendered'
     assert 'estStatusBadgeClick' in _read(INDEX), 'the header badge is not wired'
+
+
+# ── mobile / touch ─────────────────────────────────────────────────────
+
+def test_ios_focus_zoom_guard_is_gated_on_the_pointer_not_the_width():
+    """Mobile Safari zooms in on focus for any control under 16px and does not
+    zoom back out on blur.
+
+    The guard used to live inside `@media (max-width: 767px)`, which covers
+    phones and misses the iPad entirely — and the iPad is where estimates
+    actually get written, on a table full of 13px numeric inputs. Tapping any
+    of them zoomed the estimate to ~115% and left it there.
+
+    A width query cannot express "this is a finger". `pointer: coarse` can, and
+    it is the gate the canvasser already uses. This test fails if the rule
+    migrates back into a width-bounded block."""
+    css = _read(CSS)
+    block = _media_block_with(css, '@media (pointer: coarse)', 'font-size: 16px')
+    for kind in ('text', 'number', 'tel', 'email'):
+        assert f'input[type="{kind}"]' in block, \
+            f'input[type={kind}] is not covered by the coarse-pointer zoom guard'
+    assert 'textarea' in block and 'select' in block
+    assert re.search(r'font-size:\s*16px\s*!important', block), (
+        'the 16px needs !important — the per-control rules are the same '
+        'specificity (element+class ties element+attribute) and several of '
+        'them come later in the file'
+    )
+
+
+def test_the_tablet_number_inputs_are_sized_for_sixteen_px():
+    """The coarse-pointer guard above forces 16px onto controls the tablet
+    block deliberately sizes by hand. Those widths were picked when the text
+    was 14px; at 16px the money columns clip, which is the failure mode where
+    a rep reads $14,850 as $14,85. Keep them in step."""
+    tablet = _media_block_with(
+        _read(CSS),
+        '@media (min-width: 768px) and (max-width: 1366px) and (pointer: coarse)',
+        'li-row-total-input')
+    for sel, floor in (('li-row-cost-input', 104),
+                       ('li-row-total-input', 112),
+                       ('other-price-input', 140)):
+        m = re.search(rf'input\.{sel}\s*\{{[^}}]*width:\s*(\d+)px', tablet)
+        assert m, f'{sel} lost its explicit tablet width'
+        assert int(m.group(1)) >= floor, (
+            f'input.{sel} is {m.group(1)}px — too narrow for 16px digits; '
+            f'needs at least {floor}px'
+        )
+
+
+def test_text_size_adjust_is_pinned():
+    """Rotating an iPhone to landscape makes Safari inflate font sizes on a
+    per-block basis, which pushes the line-item numbers out of their
+    fixed-width inputs and reflows the tier columns — turning the phone
+    sideways to see MORE of the table showed less of it. Android Chrome does
+    the same under its accessibility text scaling."""
+    css = _read(CSS)
+    assert re.search(r'html\s*\{[^}]*-webkit-text-size-adjust:\s*100%', css), \
+        'the -webkit-text-size-adjust guard on html is gone'
+    assert re.search(r'html\s*\{[^}]*[^-]text-size-adjust:\s*100%', css), \
+        'the unprefixed text-size-adjust (Android/Chrome) is gone'
+
+
+def test_the_roofr_report_is_not_shown_to_the_customer_automatically():
+    """Importing a RoofR PDF files it on the estimate as an attachment. That
+    attachment must go in HIDDEN: the measurement report is a rep/production
+    document — pitch tables, waste ladders, per-facet areas — and nobody
+    chose to publish it. `show_in_estimate: true` put it straight onto the
+    customer's estimate and into the printed PDF the moment the rep imported
+    measurements, which is not a decision an auto-import gets to make. The
+    rep flips "Show" on the attachment row when they want the customer to
+    see it, exactly like the carrier's Xactimate estimate beside it."""
+    js = _read(APPJS)
+    m = re.search(r"label:\s*'RoofR Measurement Report',\s*show_in_estimate:\s*(\w+)", js)
+    assert m, 'the RoofR attachment no longer sets show_in_estimate explicitly'
+    assert m.group(1) == 'false', (
+        'the RoofR measurement report is being attached visible to the '
+        'customer on import'
+    )

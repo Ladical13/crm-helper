@@ -86,7 +86,7 @@ let _xactExcluded = new Set();
 
 const body = [
   grab('esc'), grab('fmtCur'), grab('mnum'),
-  grab('xactUpdateTotals'), grab('openXactModal'),
+  grab('xactUpdateTotals'), grab('xactReconcileBanner'), grab('openXactModal'),
   'openXactModal(PAYLOAD);',
   'return { modal: els["xact-modal-body"].innerHTML,'
   + ' totals: els["xact-footer-totals"].innerHTML };',
