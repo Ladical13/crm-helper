@@ -27,9 +27,9 @@
        thing between a canvasser and a working map. Local also means the
        service worker can precache it. Upgrading is a deliberate re-download:
        see the vendor pinning note in CLAUDE.md. -->
-  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=11">
-  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=11">
-  <link rel="stylesheet" href="/canvass/static/style.css?v=11">
+  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=12">
+  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=12">
+  <link rel="stylesheet" href="/canvass/static/style.css?v=12">
   <!-- The portal's manifest: one "Project One" icon for all three tools. -->
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -56,7 +56,7 @@
   </div>
 
   <!-- Map -->
-  <div id="map"></div>
+  <div id="map"></div><div id="hail-map-status" class="hidden" role="status"></div>
   <div id="map-notice" class="map-notice hidden"></div>
   <div id="outbox-badge" class="hidden"></div>
 
@@ -157,7 +157,7 @@
           <label>Notes <span class="optional">(optional)</span></label>
           <textarea id="pin-notes" placeholder="Any notes..." rows="2"></textarea>
         </div>
-        <button class="btn-primary" id="save-pin-btn">Save Pin</button>
+        <div id="pin-nearby-warning" class="hail-coverage hidden" role="status"></div><button class="btn-primary" id="save-pin-btn">Save Pin</button>
         <button class="btn-secondary" id="hail-here-btn">🌩️ Hail History at This Spot</button>
       </div>
     </div>
@@ -251,7 +251,7 @@
         <button class="icon-btn" id="close-hail-address-modal">✕</button>
       </div>
       <div class="modal-body">
-        <p class="modal-hint">Look up hail history near any address — great for showing a homeowner proof their roof got hit.</p>
+        <p class="modal-hint">Look up hail history near any address — use radar estimates to plan an inspection. This is not proof of roof damage.</p>
         <div class="field-group">
           <label>Address</label>
           <input type="text" id="hail-address-input" placeholder="123 Oak St, Fort Collins CO">
@@ -330,10 +330,10 @@
 
 </div>
 
-<script src="/canvass/static/vendor/leaflet.js?v=11"></script>
-<script src="/canvass/static/vendor/leaflet.markercluster.js?v=11"></script>
+<script src="/canvass/static/vendor/leaflet.js?v=12"></script>
+<script src="/canvass/static/vendor/leaflet.markercluster.js?v=12"></script>
 <script src="/shell.js"></script>
-<script src="/canvass/static/app.js?v=11"></script>
+<script src="/canvass/static/app.js?v=12"></script>
 <script>
   // Registered from the page rather than app.js so a JS error in the app still
   // leaves the offline shell installed.

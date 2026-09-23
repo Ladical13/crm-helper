@@ -5,11 +5,11 @@
 // /estimate/ and nothing else.
 const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
 
-const CACHE = 'po-v248';
+const CACHE = 'po-v249';
 const SHELL = [
   BASE + '/',
-  BASE + '/static/style.css?v=248',
-  BASE + '/static/app.js?v=248',
+  BASE + '/static/style.css?v=249',
+  BASE + '/static/app.js?v=249',
   BASE + '/static/logo.png',
   BASE + '/static/icon-192.png',
   // Document typefaces. Precached deliberately: a rep printing an estimate in
@@ -27,7 +27,7 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(keys => Promise.all(keys.filter(k => k.startsWith('po-') && k !== CACHE).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });

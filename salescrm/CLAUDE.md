@@ -199,3 +199,11 @@ Per `lead_type`, three steps chosen by prior outreach count (0 → `first`,
 - **`banned_phrases` is enforced by a test.** Add a template that opens with
   "just checking in" and the suite fails.
 - Templates load at import — **editing the file needs a process restart**.
+
+## Canvasser source handoff
+
+`salescrm/canvass.py` owns the pin-specific handoff transaction. `canvass_links`
+maps a pin to one lead and one appointment, preserves the last source values
+and retains exact door coordinates for storm matching. Add it to the test reset
+list whenever refactoring the schema. General lead creation remains duplicate
+friendly; source idempotency must not break cross-sell deals.

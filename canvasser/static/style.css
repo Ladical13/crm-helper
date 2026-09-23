@@ -720,3 +720,6 @@ html, body {
   .quick-pin-btn,.rep-chip{min-height:44px}
   .leaflet-touch .leaflet-bar a{width:44px;height:44px;line-height:44px}
 }
+
+#hail-map-status { position:absolute; z-index:450; left:12px; right:12px; bottom:calc(100px + env(safe-area-inset-bottom)); padding:8px 12px; border-radius:8px; background:rgba(15,23,42,.94); color:#fff; font-size:11px; pointer-events:none; }
+#pin-nearby-warning { color:#fbbf24; padding:10px; border:1px solid #b45309; }

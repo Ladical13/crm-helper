@@ -21,7 +21,9 @@ and a contending statement should wait rather than raise.
 """
 import os
 import sqlite3
-from datetime import datetime
+import json
+import zlib
+from datetime import datetime, timedelta
 
 from portal import dbtune
 
@@ -59,9 +61,15 @@ def _init(path):
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
+    from portal.migration_backup import before_upgrade
+    before_upgrade(path, 'hail-coverage-v1')
     conn = dbtune.tune(sqlite3.connect(path))
     try:
         conn.executescript('''
+            CREATE TABLE IF NOT EXISTS storm_coverage (
+                event_id TEXT PRIMARY KEY,
+                metadata BLOB NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS storm_events (
                 event_id     TEXT PRIMARY KEY,
                 event_date   TEXT NOT NULL,
@@ -100,6 +108,8 @@ def _init(path):
                 note        TEXT NOT NULL DEFAULT ''
             );
         ''')
+        if 'heartbeat_at' not in {r[1] for r in conn.execute('PRAGMA table_info(backfill_job)')}:
+            conn.execute("ALTER TABLE backfill_job ADD COLUMN heartbeat_at TEXT NOT NULL DEFAULT ''")
         conn.commit()
     finally:
         conn.close()
@@ -132,6 +142,11 @@ def record(event_date, swath, source='mrms_mesh'):
     box = swath.bbox() or (None, None, None, None)
     with get_db() as db:
         db.execute('DELETE FROM storm_cells WHERE event_id=?', (eid,))
+        db.execute('DELETE FROM storm_coverage WHERE event_id=?', (eid,))
+        coverage = getattr(swath, 'coverage', None)
+        if coverage is not None:
+            db.execute('INSERT INTO storm_coverage VALUES (?, ?)',
+                       (eid, zlib.compress(json.dumps(coverage).encode())))
         db.execute('''INSERT INTO storm_events
                         (event_id, event_date, source, threshold_in, cell_deg,
                          max_size_in, cell_count, south, west, north, east, ingested_at)
@@ -320,6 +335,12 @@ def backfill_claim(label, username, total):
     Nimbus scheduler's claim, and for the same reason.
     """
     with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        cutoff = (datetime.utcnow() - timedelta(minutes=10)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        row = db.execute('SELECT * FROM backfill_job WHERE id=1').fetchone()
+        if row and row['status'] == 'running' and (row['heartbeat_at'] or row['started_at']) > cutoff:
+            return False
+        db.execute('DELETE FROM backfill_job WHERE id=1')
         cur = db.execute(
             "INSERT INTO backfill_job (id, status, label, started_by, "
             "started_at, done, total, storm_days, failures, note) "
@@ -330,8 +351,7 @@ def backfill_claim(label, username, total):
         if not cur.rowcount:
             db.commit()
             return False
-        db.execute("DELETE FROM backfill_job WHERE rowid != (SELECT MAX(rowid) "
-                   "FROM backfill_job)")
+        db.execute('UPDATE backfill_job SET heartbeat_at=? WHERE id=1', (_now(),))
         db.commit()
         return True
 
@@ -339,8 +359,8 @@ def backfill_claim(label, username, total):
 def backfill_progress(done, storm_days, failures):
     with get_db() as db:
         db.execute('UPDATE backfill_job SET done = ?, storm_days = ?, '
-                   'failures = ? WHERE id = 1',
-                   (int(done), int(storm_days), int(failures)))
+                   'failures = ?, heartbeat_at=? WHERE id = 1',
+                   (int(done), int(storm_days), int(failures), _now()))
         db.commit()
 
 
@@ -357,7 +377,54 @@ def backfill_state():
         row = db.execute('SELECT * FROM backfill_job WHERE id = 1').fetchone()
     held = ingested_dates()
     state = dict(row) if row else None
+    if state and state['status'] == 'running':
+        cutoff = (datetime.utcnow() - timedelta(minutes=10)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        if (state['heartbeat_at'] or state['started_at']) < cutoff:
+            state['status'] = 'interrupted'
+            state['note'] = 'Worker stopped responding. Run the backfill again to resume.'
     return {'job': state,
             'archive': {'days_held': len(held),
                         'first': min(held) if held else '',
-                        'last': max(held) if held else ''}}
+                        'last': max(held) if held else '',
+                        'unverified_days': len(held - verified_dates())}}
+
+
+def verified_dates():
+    """Dates decoded with coverage metadata, excluding legacy ambiguous zeros."""
+    with get_db() as db:
+        return {r[0] for r in db.execute('SELECT e.event_date FROM storm_events e '
+                'JOIN storm_coverage c USING(event_id) WHERE e.source=?', ('mrms_mesh',))}
+
+
+def coverage(since, until, lat=None, lng=None):
+    """Availability is separate from hail. A legacy day never proves a negative."""
+    with get_db() as db:
+        rows = db.execute('SELECT e.event_date,e.threshold_in,c.metadata FROM storm_events e '
+                          'LEFT JOIN storm_coverage c USING(event_id) '
+                          'WHERE e.source=? AND e.event_date BETWEEN ? AND ? '
+                          'ORDER BY e.event_date', ('mrms_mesh', since, until)).fetchall()
+    point = hgrid.cell_index(lat, lng) if lat is not None else None
+    valid, thresholds, verified = [], [], 0
+    for row in rows:
+        thresholds.append(row['threshold_in'])
+        if not row['metadata']:
+            continue
+        meta = json.loads(zlib.decompress(row['metadata']))
+        verified += 1
+        if point is None or any(r == point[0] and a <= point[1] <= b
+                                for r, a, b in meta['valid_runs']):
+            valid.append(row['event_date'])
+    from hail.ingest import COLORADO
+    outside = lat is not None and not (COLORADO[0] <= lat <= COLORADO[2]
+                                       and COLORADO[1] <= lng <= COLORADO[3])
+    requested = max(0, (datetime.fromisoformat(until) - datetime.fromisoformat(since)).days + 1)
+    return {'days_held': len(rows), 'days_verified': len(valid),
+            'point_checked': point is not None,
+            'days_requested': requested, 'days_missing': max(0, requested - len(valid)),
+            'unverified_days': len(rows) - verified,
+            'first': rows[0]['event_date'] if rows else '',
+            'last': rows[-1]['event_date'] if rows else '',
+            'threshold_in': max(thresholds, default=hgrid.DEFAULT_THRESHOLD_IN),
+            'bounds': list(COLORADO), 'outside_area': outside,
+            'status': 'outside_area' if outside else ('complete' if len(valid) == requested and requested else 'partial'),
+            'window_note': 'Each date labels a rolling 24-hour radar window ending at 23:30 UTC; local storm dates may differ.'}

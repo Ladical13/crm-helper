@@ -47,6 +47,10 @@ def client(tmp_path, monkeypatch):
         del sys.modules[mod]
     import app as canvasser_app
     canvasser_app.app.config['TESTING'] = True
+    from portal import users as pusers
+    for username in ('aaron', 'bryan'):
+        if not pusers.get(username):
+            pusers.create(username, password='test-only', role='rep')
     with canvasser_app.app.test_client() as c:
         with c.session_transaction() as sess:
             sess['username'] = 'luke'
@@ -124,9 +128,9 @@ def test_days_already_held_are_skipped(client, as_manager, monkeypatch):
     # The COMPANY's today, because that is what the endpoint counts back from.
     # A UTC `date.today()` here agrees for eighteen hours a day and disagrees
     # for the six after 6pm Mountain — a test that passes if you run it again.
-    today = clock.company_today()
+    today = clock.company_today() - timedelta(days=1)
     held = {(today - timedelta(days=i)).isoformat() for i in range(3)}
-    monkeypatch.setattr(storms, 'ingested_dates', lambda *a, **k: held)
+    monkeypatch.setattr(storms, 'verified_dates', lambda *a, **k: held)
 
     r = c.post('/api/hail/backfill?days=3')
     assert r.get_json()['status'] == 'nothing_to_do'
@@ -148,7 +152,7 @@ def test_one_bad_day_does_not_lose_the_rest(client, as_manager, monkeypatch):
     being written as a quiet day — the distinction the archive rests on."""
     c, _ = client
     from hail import ingest
-    today = clock.company_today()
+    today = clock.company_today() - timedelta(days=1)
     bad = today - timedelta(days=2)
 
     def swath_for(d, **kw):

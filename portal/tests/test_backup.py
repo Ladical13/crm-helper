@@ -68,7 +68,7 @@ def test_zip_carries_portal_db_and_a_manifest(admin):
 
 def test_manifest_accounts_for_all_three_databases(admin):
     m = _manifest_of(_zip_of(admin.get('/api/backup/databases')))
-    assert set(m['databases']) == {'portal.db', 'salescrm.db', 'canvasser.db'}
+    assert set(m['databases']) == {'portal.db', 'salescrm.db', 'canvasser.db', 'hail.db'}
     assert m['created_utc']
     for name, info in m['databases'].items():
         # Either it shipped, or the manifest says why not — never silence.

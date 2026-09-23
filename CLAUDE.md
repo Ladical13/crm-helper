@@ -133,7 +133,7 @@ to confuse:
   estimate nightly to `BACKUP_EMAIL` (defaults to Luke), and admins can pull
   `/api/backup` for estimates + photos + config on demand. The nightly job takes
   an `O_EXCL` lockfile so two gunicorn workers can't both send it.
-- *The three SQLite databases* — `salescrm.db` (leads, activities, prospecting
+- *The four SQLite databases* — `hail.db` (radar archive), `salescrm.db` (leads, activities, prospecting
   history, documents), `canvasser.db` (pins, GPS) and `portal.db` (every
   password hash and invite) — are zipped by `portal/backup.py`.
   `_check_daily_db_backup()` mails that zip nightly and `/api/backup/databases`

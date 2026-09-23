@@ -11,6 +11,9 @@ import uuid
 import sqlite3
 import io
 import threading
+import hashlib
+import math
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import date, datetime, timedelta
 from functools import wraps
 
@@ -128,6 +131,8 @@ def get_db():
 
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
+    from portal.migration_backup import before_upgrade
+    before_upgrade(DB_PATH, 'canvass-reliability-v1')
     with get_db() as db:
         db.executescript('''
             CREATE TABLE IF NOT EXISTS users (
@@ -190,6 +195,9 @@ def init_db():
             db.execute("ALTER TABLE pins ADD COLUMN client_id TEXT DEFAULT ''")
         if 'appointment_at' not in cols:
             db.execute("ALTER TABLE pins ADD COLUMN appointment_at TEXT DEFAULT ''")
+        for field, default in (('appointment_tz', 'America/Denver'), ('crm_synced_hash', '')):
+            if field not in cols:
+                db.execute(f"ALTER TABLE pins ADD COLUMN {field} TEXT NOT NULL DEFAULT '{default}'")
         # The offline outbox retries a pin it could not confirm, so the same
         # save can arrive twice — and a duplicated door is worse than a lost
         # one, because two reps then work a street each believing the other
@@ -206,7 +214,8 @@ init_db()
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
-        if 'username' not in session:
+        if 'username' not in session or not pusers.get(session['username']):
+            session.clear()
             return jsonify({'error': 'Unauthorized'}), 401
         return f(*args, **kwargs)
     return wrapper
@@ -287,7 +296,48 @@ def _now():
 def _row_to_pin(row):
     d = dict(row)
     d['pin_meta'] = PIN_TYPES.get(d['pin_type'], {'label': d['pin_type'], 'color': '#6B7280'})
+    d['pipeline_pending'] = bool(_eligible_pin(d) and d.get('crm_synced_hash') != _pin_fingerprint(d))
     return d
+
+
+def _eligible_pin(pin):
+    return bool((pin['pin_type'] in PIN_STAGE or pin.get('crm_lead_id'))
+                and (pin.get('contact_name') or '').strip())
+
+
+def _pin_fingerprint(pin):
+    fields = ('pin_type', 'rep', 'lat', 'lng', 'address', 'contact_name',
+              'contact_phone', 'contact_email', 'notes', 'appointment_at', 'appointment_tz')
+    return hashlib.sha256(json.dumps({k: pin.get(k, '') for k in fields}, sort_keys=True).encode()).hexdigest()
+
+
+def _sync_pin(pin):
+    crm = sys.modules.get('p1_crm_app')
+    if crm is None:
+        raise RuntimeError('Pipeline unavailable. The saved door will retry when it is available.')
+    from salescrm.canvass import sync_pin
+    result = sync_pin(crm, pin, PIN_STAGE.get(pin['pin_type'], 'contacted'))
+    with get_db() as db:
+        db.execute('UPDATE pins SET crm_lead_id=?,crm_synced_hash=? WHERE id=?',
+                   (result['id'], _pin_fingerprint(pin), pin['id']))
+    return result
+
+
+def _try_sync_pin(pin):
+    if _eligible_pin(pin):
+        try:
+            _sync_pin(pin)
+        except Exception:
+            app.logger.warning('Pipeline sync pending for saved pin %s', pin['id'])
+
+
+def _clean_timezone(value):
+    value = str(value or 'America/Denver')
+    try:
+        ZoneInfo(value)
+    except (ValueError, ZoneInfoNotFoundError):
+        return 'America/Denver'
+    return value
 
 # How much history the map shows by default. A door knocked two years ago
 # tells a rep nothing about today's street, and every pin past this window is
@@ -371,6 +421,8 @@ def create_pin():
     knocked, and it inflates every count on the leaderboard that pays them.
     """
     data = request.get_json(force=True)
+    if data.get('owner') and data['owner'] != session['username']:
+        return jsonify({'error': 'This saved door belongs to a different account. Sign in as its owner.'}), 403
     lat  = data.get('lat')
     lng  = data.get('lng')
     pin_type = data.get('pin_type', 'not_home')
@@ -380,6 +432,12 @@ def create_pin():
         return jsonify({'error': 'lat/lng required'}), 400
     if pin_type not in PIN_TYPES:
         return jsonify({'error': 'Invalid pin type'}), 400
+    try:
+        lat, lng = float(lat), float(lng)
+        if not (math.isfinite(lat) and math.isfinite(lng) and -90 <= lat <= 90 and -180 <= lng <= 180):
+            raise ValueError()
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Valid latitude and longitude required'}), 400
     if client_id:
         with get_db() as db:
             seen = db.execute('SELECT * FROM pins WHERE rep=? AND client_id=?',
@@ -427,8 +485,14 @@ def create_pin():
         if seen:
             return jsonify(_row_to_pin(seen)), 200
         raise
-    pin['pin_meta'] = PIN_TYPES[pin_type]
-    return jsonify(pin), 201
+    with get_db() as db:
+        db.execute('UPDATE pins SET appointment_tz=? WHERE id=?',
+                   (_clean_timezone(data.get('appointment_tz')), pin['id']))
+        pin = dict(db.execute('SELECT * FROM pins WHERE id=?', (pin['id'],)).fetchone())
+    _try_sync_pin(pin)
+    with get_db() as db:
+        pin = db.execute('SELECT * FROM pins WHERE id=?', (pin['id'],)).fetchone()
+    return jsonify(_row_to_pin(pin)), 201
 
 @app.route('/api/pins/<pin_id>', methods=['GET'])
 @login_required
@@ -447,11 +511,11 @@ def update_pin(pin_id):
     if not row:
         return jsonify({'error': 'Not found'}), 404
     # Only the rep who created it or an admin can edit
-    if row['rep'] != session['username'] and not session.get('is_admin'):
+    if row['rep'] != session['username'] and not pusers.is_manager_up(session['username']):
         return jsonify({'error': 'Forbidden'}), 403
     data = request.get_json(force=True)
     allowed = ['pin_type', 'address', 'notes', 'contact_name', 'contact_phone',
-               'contact_email', 'appointment_at']
+               'contact_email', 'appointment_at', 'appointment_tz']
     sets, params = [], []
     for field in allowed:
         if field in data:
@@ -463,6 +527,8 @@ def update_pin(pin_id):
                 # editable — but it is cleaned on the way in exactly as it is on
                 # create, or the two paths disagree about what a time is.
                 value = _clean_appointment_at(value)
+            if field == 'appointment_tz':
+                value = _clean_timezone(value)
             sets.append(f'{field}=?')
             params.append(value)
     if not sets:
@@ -473,6 +539,9 @@ def update_pin(pin_id):
     with get_db() as db:
         db.execute(f'UPDATE pins SET {", ".join(sets)} WHERE id=?', params)
         row = db.execute('SELECT * FROM pins WHERE id=?', (pin_id,)).fetchone()
+    _try_sync_pin(dict(row))
+    with get_db() as db:
+        row = db.execute('SELECT * FROM pins WHERE id=?', (pin_id,)).fetchone()
     return jsonify(_row_to_pin(row))
 
 @app.route('/api/pins/<pin_id>', methods=['DELETE'])
@@ -482,7 +551,7 @@ def delete_pin(pin_id):
         row = db.execute('SELECT * FROM pins WHERE id=?', (pin_id,)).fetchone()
     if not row:
         return jsonify({'error': 'Not found'}), 404
-    if row['rep'] != session['username'] and not session.get('is_admin'):
+    if row['rep'] != session['username'] and not pusers.is_manager_up(session['username']):
         return jsonify({'error': 'Forbidden'}), 403
     with get_db() as db:
         db.execute('DELETE FROM pins WHERE id=?', (pin_id,))
@@ -662,13 +731,18 @@ def _fetch_hail_days(date_strs):
     from concurrent.futures import ThreadPoolExecutor
     def one(ds):
         try:
-            return ds, _fetch_hail_cached(ds)
+            return ds, _fetch_hail_cached(ds), False
         except Exception:
-            return ds, []
+            return ds, [], True
     # 16 workers keeps a 5-year first-cold scan (~1200 severe-season days)
     # inside gunicorn's 60s worker timeout; every day is then cached forever.
     with ThreadPoolExecutor(max_workers=16) as ex:
-        return dict(ex.map(one, date_strs))
+        rows = list(ex.map(one, date_strs))
+    class FetchResults(dict):
+        pass
+    result = FetchResults((ds, features) for ds, features, _ in rows)
+    result.failed_dates = [ds for ds, _, failed in rows if failed]
+    return result
 
 @app.route('/api/hail')
 @login_required
@@ -681,7 +755,7 @@ def hail_data():
     except ValueError:
         return jsonify({'error': 'Invalid date format, use YYYYMMDD'}), 400
     except Exception as e:
-        return jsonify({'error': str(e), 'features': []}), 200
+        return jsonify({'error': 'NOAA reports could not be retrieved. Coverage is unknown.'}), 502
     return jsonify({'type': 'FeatureCollection', 'features': features, 'count': len(features)})
 
 @app.route('/api/hail/range')
@@ -705,7 +779,9 @@ def hail_range():
     features = [f for feats in results.values() for f in feats]
     days_with_hail = sum(1 for feats in results.values() if feats)
     return jsonify({'type': 'FeatureCollection', 'features': features,
-                    'count': len(features), 'days_with_hail': days_with_hail})
+                    'count': len(features), 'days_with_hail': days_with_hail,
+                    'partial': bool(getattr(results, 'failed_dates', [])),
+                    'days_failed': len(getattr(results, 'failed_dates', []))})
 
 def _haversine_miles(lat1, lon1, lat2, lon2):
     import math
@@ -725,13 +801,10 @@ def geocode():
     if not http:
         return jsonify({'error': 'requests library not available'}), 500
     try:
-        r = http.get('https://nominatim.openstreetmap.org/search',
-                     params={'q': q, 'format': 'json', 'limit': 3, 'countrycodes': 'us'},
-                     headers={'User-Agent': NOMINATIM_UA},
-                     timeout=10)
-        r.raise_for_status()
+        from portal.interactive_geo import request as geo_request
+        data = geo_request(http, 'search', {'q': q, 'format': 'json', 'limit': 3, 'countrycodes': 'us'}, NOMINATIM_UA)
         results = [{'display_name': x['display_name'],
-                    'lat': float(x['lat']), 'lng': float(x['lon'])} for x in r.json()]
+                    'lat': float(x['lat']), 'lng': float(x['lon'])} for x in data]
         return jsonify(results)
     except Exception as e:
         return jsonify({'error': str(e)}), 502
@@ -747,12 +820,8 @@ def reverse_geocode():
     if not http:
         return jsonify({'error': 'requests library not available'}), 500
     try:
-        r = http.get('https://nominatim.openstreetmap.org/reverse',
-                     params={'lat': lat, 'lon': lng, 'format': 'json', 'zoom': 18},
-                     headers={'User-Agent': NOMINATIM_UA},
-                     timeout=10)
-        r.raise_for_status()
-        data = r.json()
+        from portal.interactive_geo import request as geo_request
+        data = geo_request(http, 'reverse', {'lat': round(lat, 5), 'lon': round(lng, 5), 'format': 'json', 'zoom': 18}, NOMINATIM_UA)
         addr = data.get('address', {})
         street = ' '.join(x for x in [addr.get('house_number'), addr.get('road')] if x)
         return jsonify({
@@ -830,6 +899,11 @@ def hail_cells():
     end   = (request.args.get('end') or '').strip() or start
     if not start:
         return jsonify({'error': 'start (YYYY-MM-DD) required'}), 400
+    try:
+        date.fromisoformat(start)
+        date.fromisoformat(end)
+    except ValueError:
+        return jsonify({'error': 'Use valid YYYY-MM-DD dates'}), 400
     if end < start:
         start, end = end, start
     try:
@@ -837,11 +911,18 @@ def hail_cells():
     except (TypeError, ValueError):
         min_size = 0.0
     try:
-        limit = min(int(request.args.get('limit', HAIL_CELL_LIMIT)), HAIL_CELL_LIMIT_MAX)
+        limit = max(1, min(int(request.args.get('limit', HAIL_CELL_LIMIT)), HAIL_CELL_LIMIT_MAX))
     except (TypeError, ValueError):
         limit = HAIL_CELL_LIMIT
 
     held = {d for d in storms.ingested_dates(MESH_SOURCE) if start <= d <= end}
+    cov = storms.coverage(start, end)
+    box = _bbox_arg()
+    if box:
+        from hail.ingest import COLORADO
+        cov['outside_area'] = box[2] < COLORADO[0] or box[0] > COLORADO[2] or box[3] < COLORADO[1] or box[1] > COLORADO[3]
+        cov['area_partial'] = not (COLORADO[0] <= box[0] <= box[2] <= COLORADO[2] and
+                                   COLORADO[1] <= box[1] <= box[3] <= COLORADO[3])
     rows, truncated = storms.cells_in(
         bounds=_bbox_arg(), since=start, until=end,
         min_size=min_size or None, limit=limit, source=MESH_SOURCE)
@@ -852,9 +933,11 @@ def hail_cells():
         # NO coverage means nobody has ingested those days. Only one of them
         # is a fact about the ground.
         'days_held': len(held),
+        'coverage': cov,
         'cells': [{'s': round(s, 4), 'w': round(w, 4),
                    'n': round(n, 4), 'e': round(e, 4),
-                   'size': round(size, 2)} for s, w, n, e, size in rows],
+                   'size': round(size, 2),
+                   'note': __import__('hail.grid', fromlist=['size_note']).size_note(size)} for s, w, n, e, size in rows],
         'count': len(rows), 'truncated': truncated,
         'max_size': max((r[4] for r in rows), default=0),
     })
@@ -910,11 +993,8 @@ def _geocode_one(q):
         return hit['lat'], hit['lng'], (hit.get('matched') or q)
     if not http:
         return None
-    r = http.get('https://nominatim.openstreetmap.org/search',
-                 params={'q': q, 'format': 'json', 'limit': 1, 'countrycodes': 'us'},
-                 headers={'User-Agent': NOMINATIM_UA}, timeout=10)
-    r.raise_for_status()
-    found = r.json()
+    from portal.interactive_geo import request as geo_request
+    found = geo_request(http, 'search', {'q': q, 'format': 'json', 'limit': 1, 'countrycodes': 'us'}, NOMINATIM_UA)
     if not found:
         return None
     lat, lng = float(found[0]['lat']), float(found[0]['lon'])
@@ -939,6 +1019,8 @@ def _mesh_history(lat, lng, days, min_size=0.0):
     from hail import storms
     since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
     held = sorted(d for d in storms.ingested_dates(MESH_SOURCE) if d >= since)
+    until = datetime.utcnow().strftime('%Y-%m-%d')
+    cov = storms.coverage(since, until, lat, lng)
     if not held:
         return None
     from hail import grid as hgrid
@@ -959,7 +1041,7 @@ def _mesh_history(lat, lng, days, min_size=0.0):
         'max_size':    biggest,
         'max_caveat':  hgrid.size_caveat(biggest),
         'max_note':    hgrid.size_note(biggest),
-        'coverage': {'days_held': len(held), 'first': held[0], 'last': held[-1]},
+        'coverage': cov,
     }
 
 
@@ -985,7 +1067,8 @@ def _spc_at_point(lat, lng, q, resolved_name, days):
         if d.month in (3, 4, 5, 6, 7, 8, 9, 10) or i <= 45:
             date_strs.append(d.strftime('%Y%m%d'))
     results = _fetch_hail_days(date_strs)
-    reports, scanned = [], len(date_strs)
+    failed = getattr(results, 'failed_dates', [])
+    reports, scanned = [], len(date_strs) - len(failed)
     for ds, feats in results.items():
         for f in feats:
             flat, flon = f['geometry']['coordinates'][1], f['geometry']['coordinates'][0]
@@ -1005,6 +1088,7 @@ def _spc_at_point(lat, lng, q, resolved_name, days):
         'source': 'noaa_spc', 'archive_empty': True,
         'query': q, 'resolved': resolved_name, 'lat': lat, 'lng': lng,
         'radius_miles': radius, 'lookback_days': days, 'days_scanned': scanned,
+        'days_failed': len(failed), 'partial': bool(failed),
         'report_count': len(reports), 'max_size': max_size,
         'reports': reports[:100],
     })
@@ -1043,6 +1127,8 @@ def hail_at_address():
         if not found:
             return jsonify({'error': 'Address not found'}), 404
         lat, lng, resolved_name = found
+    if not (math.isfinite(lat) and math.isfinite(lng) and -90 <= lat <= 90 and -180 <= lng <= 180):
+        return jsonify({'error': 'Valid latitude and longitude required'}), 400
 
     try:
         days = min(int(request.args.get('days', 1825)), MESH_MAX_DAYS)
@@ -1105,7 +1191,7 @@ def hail_backfill_start():
     # Colorado's today, not UTC's. From 6pm Mountain a UTC date is already
     # tomorrow, which would ask NOAA for a day whose file does not exist
     # yet and bank the failure. See the clock note in the root CLAUDE.md.
-    today = pclock.company_today()
+    today = pclock.company_today() - timedelta(days=1)
     if season:
         dates = [d for d in (date(season, 1, 1) + timedelta(days=i)
                              for i in range(366))
@@ -1124,7 +1210,7 @@ def hail_backfill_start():
     # Days already held are skipped, which is what makes this re-runnable and
     # what lets an admin hit the button again after a failure without paying
     # for the days that already landed.
-    held = storms.ingested_dates()
+    held = storms.verified_dates()
     todo = [d for d in dates if d.isoformat() not in held]
     if not todo:
         return jsonify({'status': 'nothing_to_do', 'label': label,
@@ -1195,6 +1281,26 @@ def link_pin_to_lead(pin_id):
         db.execute('UPDATE pins SET crm_lead_id=?, updated_at=? WHERE id=?',
                    (lead_id, _now(), pin_id))
     return jsonify({'ok': True, 'crm_lead_id': lead_id})
+
+
+@app.route('/api/pins/<pin_id>/handoff', methods=['POST'])
+@login_required
+def handoff_pin(pin_id):
+    with get_db() as db:
+        row = db.execute('SELECT * FROM pins WHERE id=?', (pin_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Pin not found'}), 404
+    pin = dict(row)
+    if pin['rep'] != session['username'] and not pusers.is_manager_up(session['username']):
+        return jsonify({'error': 'Forbidden'}), 403
+    if not _eligible_pin(pin):
+        return jsonify({'error': 'A follow-up needs a name and an eligible door outcome.'}), 400
+    try:
+        result = _sync_pin(pin)
+    except Exception:
+        app.logger.exception('Pipeline handoff failed for %s', pin_id)
+        return jsonify({'error': 'Door saved. Pipeline sync is pending and will retry.'}), 503
+    return jsonify(result)
 
 # ── Config endpoint (pin types) ───────────────────────────────────────────────
 

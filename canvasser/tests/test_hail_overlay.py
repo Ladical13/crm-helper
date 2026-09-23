@@ -50,6 +50,10 @@ def client(tmp_path, monkeypatch):
         del sys.modules[mod]
     import app as canvasser_app
     canvasser_app.app.config['TESTING'] = True
+    from portal import users as pusers
+    for username in ('aaron', 'bryan'):
+        if not pusers.get(username):
+            pusers.create(username, password='test-only', role='rep')
     with canvasser_app.app.test_client() as c:
         with c.session_transaction() as sess:
             sess['username'] = 'aaron'
@@ -102,7 +106,7 @@ def test_cells_come_back_as_rectangles_not_a_radius(client):
     d = _days_ago(20)
     _record(d, {(LAT, LNG): 1.75})
     cell = c.get(f'/api/hail/cells?start={d}&{BOX}').get_json()['cells'][0]
-    assert set(cell) == {'s', 'w', 'n', 'e', 'size'}
+    assert set(cell) == {'s', 'w', 'n', 'e', 'size', 'note'}
     assert cell['n'] > cell['s'] and cell['e'] > cell['w']
     assert cell['s'] <= LAT <= cell['n'] and cell['w'] <= LNG <= cell['e']
 

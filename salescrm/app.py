@@ -366,6 +366,8 @@ def get_db():
 
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
+    from salescrm.canvass import initialize
+    initialize(DB_PATH)
     with get_db() as db:
         db.executescript('''
             CREATE TABLE IF NOT EXISTS users (
@@ -2419,6 +2421,11 @@ def _storm_tier(lead):
 
 
 def _lead_point(lead):
+    with get_db() as db:
+        pin = db.execute('SELECT lat,lng FROM canvass_links WHERE lead_id=?',
+                         (lead.get('id', ''),)).fetchone()
+    if pin and pin['lat'] is not None and pin['lng'] is not None:
+        return pin['lat'], pin['lng']
     from portal import geo
     hit = geo.lookup(lead.get('address', ''), lead.get('city', ''),
                      lead.get('state', ''), lead.get('zip', ''))

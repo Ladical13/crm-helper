@@ -85,12 +85,7 @@ def day_url(date, stamp=DAY_STAMP, product=PRODUCT):
 
 
 def fetch_day(date, stamp=DAY_STAMP, get=None):
-    """Download one day's gzipped GRIB2. Returns bytes, or None if absent.
-
-    A missing file is None rather than an exception: the bucket has genuine
-    gaps, and a backfill has to be able to record "looked, nothing there" and
-    move on. `storms.record()` stores an empty swath for exactly that reason.
-    """
+    """Download one day's GRIB2. Missing files are unknown coverage and raise."""
     if date < EARLIEST:
         raise IngestError(
             f'{date} is before the archive starts ({EARLIEST}). '
@@ -100,7 +95,7 @@ def fetch_day(date, stamp=DAY_STAMP, get=None):
     url = day_url(date, stamp)
     status, body = get(url)
     if status == 404:
-        return None
+        raise IngestError(f'{date}: radar file is not available; coverage is unknown')
     if status != 200:
         raise IngestError(f'{url} returned HTTP {status}')
     return body
@@ -233,13 +228,22 @@ def points_in(data, bounds=COLORADO):
 
 def swath_for(date, bounds=COLORADO, threshold_in=hgrid.DEFAULT_THRESHOLD_IN,
               get=None):
-    """Fetch one day and return its Swath. An absent file yields an empty one.
-
-    Empty is a real answer — `storms.record()` keeps it so that "no qualifying
-    hail" and "the ingest never ran" stay distinguishable.
-    """
+    """Return a decoded swath with valid-cell coverage, or raise without recording."""
     body = fetch_day(date, get=get)
-    if body is None:
-        return hgrid.Swath({}, threshold_in=threshold_in)
-    return hgrid.swath_from_points(points_in(body, bounds),
-                                   threshold_in=threshold_in, units='mm')
+    points = points_in(body, bounds)
+    swath = hgrid.swath_from_points(points, threshold_in=threshold_in, units='mm')
+    # Preserve valid zero cells separately from missing/no-coverage flags.
+    # Row runs compress a full state's coverage to a few hundred ranges.
+    valid = sorted({hgrid.cell_index(lat, lng) for lat, lng, value in points
+                    if value >= 0 and bounds[0] <= lat <= bounds[2]
+                    and bounds[1] <= lng <= bounds[3]})
+    runs = []
+    for ri, ci in valid:
+        if runs and runs[-1][0] == ri and runs[-1][2] + 1 == ci:
+            runs[-1][2] = ci
+        else:
+            runs.append([ri, ci, ci])
+    swath.coverage = {'bounds': list(bounds), 'valid_runs': runs,
+                      'window_end_utc': f'{date.isoformat()}T23:30:00Z',
+                      'window_hours': 24}
+    return swath

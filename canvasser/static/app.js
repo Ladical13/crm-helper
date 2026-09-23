@@ -11,6 +11,7 @@ const PIN_STAGE = {};  // pin type → Pipeline stage, same source
 let map, currentUser, markers = {}, hailLayer = null, pinLayer = null;
 let teamMarkers = {}, teamTimer = null, locationTimer = null, teamEnabled = true;
 let hailResultLayer = null;
+let activeHailQuery = null, hailMoveTimer = null, hailRequestId = 0;
 let archiveStorms = [];   // the radar archive's own storm days, for the picker
 let pendingLatLng = null;   // where the next pin will land
 let selectedPinType = 'not_home';
@@ -21,20 +22,37 @@ let allPins = [];
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────
 
+const OFFLINE_SESSION = 'p1canvass.offlineSession';
+let offlineMode = false;
 async function boot() {
-  // Load pin type config
+  let cached;
+  try { cached = JSON.parse(localStorage.getItem(OFFLINE_SESSION) || 'null'); } catch(e) {}
   try {
+    const me = await api('/api/me');
+    if (!me.authenticated) {
+      try { localStorage.removeItem(OFFLINE_SESSION); } catch(e) {}
+      window.location = '/login'; return;
+    }
+    currentUser = me;
     const cfg = await api('/api/config');
     Object.assign(PIN_TYPES, cfg.pin_types);
     Object.assign(PIN_STAGE, cfg.pin_stage || {});
-  } catch(e) { /* use defaults */ }
-
-  // No sign-in screen here any more — the portal owns login. api() bounces to
-  // /login on a 401, so reaching this point means the session is good.
-  const me = await api('/api/me');
-  if (!me.authenticated) { window.location = '/login'; return; }
-  currentUser = me;
+    try { localStorage.setItem(OFFLINE_SESSION, JSON.stringify({me, cfg, saved:Date.now()})); } catch(e) {}
+  } catch(e) {
+    if (!cached || Date.now() - cached.saved > 14 * 86400000 || e.message === 'Unauthorized') {
+      const notice = document.createElement('p');
+      notice.style.cssText = 'padding:32px;color:#eee;text-align:center';
+      notice.textContent = 'Connect to the internet and reload to sign in before capturing doors offline.';
+      document.body.appendChild(notice);
+      return;
+    }
+    currentUser = cached.me;
+    Object.assign(PIN_TYPES, cached.cfg.pin_types);
+    Object.assign(PIN_STAGE, cached.cfg.pin_stage || {});
+    offlineMode = true;
+  }
   showApp();
+  if (offlineMode) showMapNotice('Offline capture for ' + currentUser.username + '. Map tiles and team data need a connection.');
 }
 
 // ── App init ───────────────────────────────────────────────────────────────
@@ -46,6 +64,7 @@ function showApp() {
   buildRepFilters();
   initMap();
   loadPins().then(restorePendingPins).then(flushOutbox);
+  setInterval(refreshFieldData, 30000);
   loadTeamPref();
   startTeamTracking();
   if (currentUser.is_admin) show('team-admin-btn');
@@ -73,7 +92,7 @@ function initMap() {
   if (map) return;  // logout → login reuses the same map container
   // Default to Fort Collins, CO (northern CO market)
   map = L.map('map', {
-    zoomControl: false, attributionControl: false,
+    zoomControl: false, attributionControl: true,
     preferCanvas: true,   // hail circles render on canvas instead of SVG DOM nodes
     maxZoom: 20,
   }).setView([40.5853, -105.0844], 14);
@@ -92,6 +111,7 @@ function initMap() {
   // Road/place labels — CARTO's retina-aware label tiles are far sharper than
   // Esri's dated Boundaries_and_Places raster layer
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
     subdomains: 'abcd', maxNativeZoom: 19, maxZoom: 20,
     keepBuffer: 4, updateWhenZooming: false, opacity: .95,
   }).addTo(map);
@@ -110,6 +130,12 @@ function initMap() {
     // Don't open modal if a marker was clicked
     if (e.originalEvent._markerClick) return;
     openDropPinModal(e.latlng, selectedPinType);
+  });
+
+  map.on('moveend', () => {
+    hailRequestId++;
+    clearTimeout(hailMoveTimer);
+    if (activeHailQuery) hailMoveTimer = setTimeout(refreshHailOverlay, 350);
   });
 
   // Locate me button
@@ -140,7 +166,8 @@ async function loadPins() {
     // array, because a map that has quietly dropped pins looks exactly like a
     // street nobody has knocked.
     const res = await api('/api/pins');
-    allPins = res.pins || [];
+    const pending = allPins.filter(p => p.pending && !(res.pins || []).some(r => r.client_id === p.client_id && r.rep === p.rep));
+    allPins = [...pending, ...(res.pins || [])];
     renderPins();
     updateRepFilters();
     if (res.truncated) {
@@ -180,12 +207,12 @@ function buildPinMarker(pin, animate = false) {
 
   const icon = L.divIcon({
     className: '',
-    html: `<div class="pin-marker${animate ? ' drop' : ''}${pin.pending ? ' pending' : ''}" title="${pin.pending ? 'Waiting to sync — ' : ''}${meta.label} — ${displayName(pin.rep)}">
+    html: `<div class="pin-marker${animate ? ' drop' : ''}${pin.pending ? ' pending' : ''}" title="${pin.pending ? 'Waiting to sync — ' : ''}${meta.label} — ${escHtml(displayName(pin.rep))}">
       <svg viewBox="0 0 30 40" width="30" height="40">
         <path d="M15 39C15 39 27 22.5 27 13.5 27 6.6 21.6 1.5 15 1.5 8.4 1.5 3 6.6 3 13.5 3 22.5 15 39 15 39Z"
               fill="${meta.color}" stroke="rgba(255,255,255,.95)" stroke-width="1.8"/>
       </svg>
-      <span class="pin-initials">${initials}</span>
+      <span class="pin-initials">${escHtml(initials)}</span>
     </div>`,
     iconSize:   [30, 40],
     iconAnchor: [15, 38],
@@ -277,13 +304,13 @@ function renderTeamMarkers(team) {
     const initials = t.username.substring(0, 2).toUpperCase();
     const icon = L.divIcon({
       className: '',
-      html: `<div class="team-marker ${isMe ? 'me' : ''}" title="${displayName(t.username)} — ${timeAgo(t.updated_at)}">
-               <div class="team-pulse"></div><span>${initials}</span>
+      html: `<div class="team-marker ${isMe ? 'me' : ''}" title="${escHtml(displayName(t.username))} — ${timeAgo(t.updated_at)}">
+               <div class="team-pulse"></div><span>${escHtml(initials)}</span>
              </div>`,
       iconSize: [34, 34], iconAnchor: [17, 17],
     });
     teamMarkers[t.username] = L.marker([t.lat, t.lng], { icon, zIndexOffset: 900 })
-      .bindPopup(`<b>${displayName(t.username)}</b><br>Active ${timeAgo(t.updated_at)}`)
+      .bindPopup(`<b>${escHtml(displayName(t.username))}</b><br>Active ${timeAgo(t.updated_at)}`)
       .addTo(map);
   });
 }
@@ -334,6 +361,12 @@ function openDropPinModal(latlng, defaultType) {
   });
 
   show('drop-pin-modal');
+  const nearbyBox = $('pin-nearby-warning');
+  if (nearbyBox) {
+    const nearby = latlng ? allPins.filter(p => Math.hypot((p.lat-latlng.lat)*111000, (p.lng-latlng.lng)*85000) < 35) : [];
+    nearbyBox.textContent = nearby.map(p => `${PIN_TYPES[p.pin_type]?.label || p.pin_type} — ${displayName(p.rep)}, ${timeAgo(p.created_at)}`).join(' · ');
+    nearbyBox.classList.toggle('hidden', !nearby.length);
+  }
 
   // Auto-fill the address from the tapped location (best-effort)
   if (latlng) {
@@ -347,7 +380,7 @@ function openDropPinModal(latlng, defaultType) {
 }
 
 function updateContactFieldsVisibility() {
-  const contactTypes = ['interested','appointment','inspected','closed'];
+  const contactTypes = ['come_back','interested','appointment','inspected','closed'];
   $('contact-fields').style.display = contactTypes.includes(selectedPinType) ? 'block' : 'none';
 
   // An appointment pin is the only one that has a time, and it is the whole
@@ -451,6 +484,7 @@ $('save-pin-btn').addEventListener('click', async () => {
     contact_name:  $v('pin-contact-name'),
     contact_phone: $v('pin-contact-phone'),
     contact_email: $v('pin-contact-email'),
+    appointment_tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
     appointment_at: selectedPinType === 'appointment' ? $v('pin-appointment-at') : '',
   };
 
@@ -542,9 +576,9 @@ function idbDo(mode, fn) {
   return idbOpen().then(db => new Promise((resolve, reject) => {
     const tx = db.transaction(OUTBOX_STORE, mode);
     const req = fn(tx.objectStore(OUTBOX_STORE));
-    tx.oncomplete = () => resolve(req ? req.result : undefined);
-    tx.onerror    = () => reject(tx.error);
-    tx.onabort    = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(req ? req.result : undefined); };
+    tx.onerror    = () => { db.close(); reject(tx.error); };
+    tx.onabort    = () => { db.close(); reject(tx.error); };
   }));
 }
 
@@ -552,7 +586,7 @@ function idbDo(mode, fn) {
 // here. A rep losing the queue is bad; a rep unable to drop a pin at all
 // because the queue would not open is worse, so every caller degrades.
 const outboxAll    = () => idbDo('readonly',  st => st.getAll()).catch(() => []);
-const outboxPut    = e  => idbDo('readwrite', st => st.put(e)).catch(() => null);
+const outboxPut    = e  => idbDo('readwrite', st => st.put(e));
 const outboxDelete = id => idbDo('readwrite', st => st.delete(id)).catch(() => null);
 
 function newClientId() {
@@ -580,7 +614,7 @@ function pendingPinFrom(payload) {
   return {
     ...payload,
     id:         'pending:' + payload.client_id,
-    rep:        (currentUser && currentUser.username) || '',
+    rep:        payload.owner || '',
     created_at: new Date().toISOString(),
     pending:    true,
   };
@@ -590,22 +624,27 @@ function pendingPinFrom(payload) {
 // their door either way; `queued` says whether the server has it yet.
 async function savePinThroughOutbox(payload) {
   payload.client_id = payload.client_id || newClientId();
+  payload.owner = currentUser.username;
+  const entry = {...payload, queued_at:Date.now()};
+  let durable = false;
+  try { await outboxPut(entry); durable = true; } catch(e) {}
   let out;
-  try {
-    out = await postPinRaw(payload);
-  } catch(e) {
-    await outboxPut({ ...payload, queued_at: Date.now() });
+  try { out = await postPinRaw(payload); }
+  catch(e) {
+    if (!durable) throw new Error('Not saved: no connection and phone storage is unavailable. Keep this form open and reconnect.');
     updateOutboxBadge();
-    return { pin: pendingPinFrom(payload), queued: true };
+    return {pin:pendingPinFrom(payload), queued:true};
   }
-  if (out.ok) return { pin: out.json, queued: false };
-  if (out.status === 401) { window.location = '/login'; throw new Error('Unauthorized'); }
-  if (out.status >= 500) {
-    // The server is up but broken. That is temporary in a way a 400 is not.
-    await outboxPut({ ...payload, queued_at: Date.now() });
+  if (out.ok) {
+    if (durable) await outboxDelete(payload.client_id);
+    return {pin:out.json, queued:false};
+  }
+  if (out.status >= 500 || out.status === 401 || out.status === 403) {
+    if (!durable) throw new Error('Not saved: phone storage is unavailable. Keep this form open and retry.');
     updateOutboxBadge();
-    return { pin: pendingPinFrom(payload), queued: true };
+    return {pin:pendingPinFrom(payload), queued:true};
   }
+  if (durable) await outboxPut({...entry, failed:(out.json && out.json.error) || `HTTP ${out.status}`});
   throw new Error((out.json && out.json.error) || `HTTP ${out.status}`);
 }
 
@@ -616,14 +655,15 @@ async function flushOutbox() {
   try {
     const queued = await outboxAll();
     for (const entry of queued) {
-      const { queued_at, ...payload } = entry;
+      if (entry.owner !== currentUser.username || entry.failed) continue;
+      const { queued_at, failed, ...payload } = entry;
       let out;
       try {
         out = await postPinRaw(payload);
       } catch(e) {
         break;   // still offline; leave this and everything after it queued
       }
-      if (out.status === 401) break;              // session expired: it waits
+      if (out.status === 401 || out.status === 403) break;              // session expired: it waits
       if (out.ok) {
         await outboxDelete(entry.client_id);
         replacePendingPin(entry.client_id, out.json);
@@ -634,13 +674,9 @@ async function flushOutbox() {
         await autoHandoff(out.json);
         landed++;
       } else if (out.status < 500) {
-        // The server understood it and said no — a bad pin type, a malformed
-        // address. Retrying that forever is an invisible queue that never
-        // drains, so it comes out and the rep is told once.
-        await outboxDelete(entry.client_id);
-        dropPendingPin(entry.client_id);
-        showMapNotice('A saved door could not be synced and was removed: ' +
-                      ((out.json && out.json.error) || `HTTP ${out.status}`));
+        const reason = (out.json && out.json.error) || `HTTP ${out.status}`;
+        await outboxPut({...entry, failed:reason});
+        showMapNotice('A door needs attention and remains on this phone: ' + reason);
       } else {
         break;   // 5xx: the server is having a bad time, try again later
       }
@@ -668,8 +704,9 @@ function dropPendingPin(clientId) {
 async function updateOutboxBadge() {
   const el = $('outbox-badge');
   if (!el) return;
-  const n = (await outboxAll()).length;
-  el.textContent = `${n} waiting to sync`;
+  const entries = await outboxAll();
+  const n = entries.filter(e => !e.owner || e.owner === currentUser?.username).length;
+  el.textContent = `${n} saved on phone · tap to review`;
   el.classList.toggle('hidden', n === 0);
 }
 
@@ -679,8 +716,8 @@ async function updateOutboxBadge() {
 async function restorePendingPins() {
   const queued = await outboxAll();
   if (!queued.length) return;
-  queued.forEach(e => {
-    const { queued_at, ...payload } = e;
+  queued.filter(e => e.owner === currentUser.username).forEach(e => {
+    const { queued_at, failed, ...payload } = e;
     if (!allPins.some(p => p.id === 'pending:' + payload.client_id)) {
       allPins.unshift(pendingPinFrom(payload));
     }
@@ -688,12 +725,46 @@ async function restorePendingPins() {
   renderPins();
 }
 
-window.addEventListener('online', flushOutbox);
+window.addEventListener('online', refreshFieldData);
 // The one that actually fires on iOS. `online` is unreliable when the app was
 // backgrounded through the change of signal, which is the normal case here:
 // phone in pocket between streets.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') flushOutbox();
+  if (document.visibilityState === 'visible') refreshFieldData();
+});
+
+let fieldRefreshing = false;
+async function refreshFieldData() {
+  if (fieldRefreshing || !currentUser || !navigator.onLine || document.visibilityState === 'hidden') return;
+  fieldRefreshing = true;
+  try {
+    const me = await api('/api/me');
+    if (!me.authenticated || me.username !== currentUser.username) { window.location.reload(); return; }
+    offlineMode = false;
+    await flushOutbox();
+    await loadPins();
+    await restorePendingPins();
+    for (const pin of allPins.filter(p => p.rep === currentUser.username && canHandoff(p)).slice(0, 20)) {
+      try { await handoffToPipeline(pin); } catch(e) { break; }
+    }
+  } catch(e) {} finally { fieldRefreshing = false; }
+}
+
+$('outbox-badge')?.addEventListener('click', async () => {
+  let entries = await outboxAll();
+  const legacy = entries.filter(e => !e.owner);
+  if (legacy.length && confirm(`${legacy.length} older saved doors have no recorded owner. Confirm these are YOUR doors before syncing them as ${currentUser.username}:\n` + legacy.map(e => e.address || 'Address not entered').join('\n'))) {
+    for (const entry of legacy) await outboxPut({...entry, owner:currentUser.username});
+  }
+  entries = (await outboxAll()).filter(e => e.owner === currentUser.username);
+  const failed = entries.filter(e => e.failed);
+  if (failed.length) alert('These doors remain on your phone and need correction:\n' + failed.map(e => `${e.address || 'Door'}: ${e.failed}`).join('\n'));
+  if (entries.length && confirm('Download a backup of your saved doors before retrying?')) {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(entries, null, 2)], {type:'application/json'}));
+    const link = document.createElement('a'); link.href = url; link.download = 'saved-doors.json'; link.click(); URL.revokeObjectURL(url);
+  }
+  await restorePendingPins();
+  await refreshFieldData();
 });
 
 async function getGPS() {
@@ -724,16 +795,16 @@ function showPinDetail(pin) {
   const alreadyInPipeline = !!pin.crm_lead_id;
 
   const rows = [
-    ['Rep',    displayName(pin.rep)],
-    pin.address       ? ['Address', pin.address] : null,
-    pin.contact_name  ? ['Contact', pin.contact_name] : null,
-    pin.contact_phone ? ['Phone',   `<a href="tel:${pin.contact_phone}" style="color:#10B981">${pin.contact_phone}</a>`] : null,
-    pin.contact_email ? ['Email',   pin.contact_email] : null,
+    ['Rep',    escHtml(displayName(pin.rep))],
+    pin.address       ? ['Address', escHtml(pin.address)] : null,
+    pin.contact_name  ? ['Contact', escHtml(pin.contact_name)] : null,
+    pin.contact_phone ? ['Phone',   `<a href="tel:${escHtml(pin.contact_phone)}" style="color:#10B981">${escHtml(pin.contact_phone)}</a>`] : null,
+    pin.contact_email ? ['Email',   escHtml(pin.contact_email)] : null,
     // Above the notes on purpose: this is the only row on the panel that is a
     // commitment the rep has to keep, rather than a record of what happened.
     pin.appointment_at ? ['Appointment',
       `<b style="color:#8B5CF6">${escHtml(prettyAppt(pin.appointment_at))}</b>`] : null,
-    pin.notes         ? ['Notes',   pin.notes] : null,
+    pin.notes         ? ['Notes',   escHtml(pin.notes)] : null,
     ['When',   timeAgo(pin.created_at)],
   ].filter(Boolean);
 
@@ -750,7 +821,7 @@ function showPinDetail(pin) {
   `;
 
   if (isOwner) {
-    html += `<button class="pin-action-btn" onclick="openEditPin('${pin.id}')">✏️ Edit</button>`;
+    html += `<button class="pin-action-btn" onclick="openEditPin('${escHtml(pin.id)}')">✏️ Edit</button>`;
   }
   if (canPipeline && pin.contact_name && !alreadyInPipeline && isOwner) {
     html += `<button class="pin-action-btn crm-btn" onclick="addToPipeline('${pin.id}')">📋 Add to Pipeline</button>`;
@@ -803,52 +874,16 @@ async function crmPost(path, body) {
 // handoff on save and by the manual button, so the two can never drift into
 // producing different leads from the same door.
 async function handoffToPipeline(pin) {
-  const stage = PIN_STAGE[pin.pin_type];
-  if (!stage) return null;
-  const parts = (pin.contact_name || '').trim().split(/\s+/);
-
-  const lead = await crmPost('/api/leads', {
-    first_name: parts[0] || '',
-    last_name:  parts.slice(1).join(' '),
-    phone:   pin.contact_phone || '',
-    email:   pin.contact_email || '',
-    address: pin.address || '',
-    source:  'door_knock',
-    stage,
-    lead_type: 'homeowner',
-  });
-
-  // Leads have no notes column, so what the rep wrote at the door goes on the
-  // timeline instead of being quietly dropped.
-  if (pin.notes) {
-    await crmPost(`/api/leads/${lead.id}/activities`,
-                  { kind: 'note', body: `At the door: ${pin.notes}` }).catch(() => {});
-  }
-
-  // The appointment itself, as a task the rep will actually see. This is the
-  // point of the whole change: the pin used to map to `appt_set` carrying no
-  // date, so the stage said an appointment existed and nothing anywhere knew
-  // when — which is how a door-set appointment becomes a no-show.
-  const dueUtc = apptToUtc(pin.appointment_at);
-  if (dueUtc) {
-    await crmPost(`/api/leads/${lead.id}/tasks`, {
-      kind: 'meeting',
-      title: `Appointment${pin.address ? ' — ' + pin.address : ''}`,
-      due_at: dueUtc,
-    }).catch(() => {});
-    await crmPost(`/api/leads/${lead.id}/activities`, {
-      kind: 'note', body: `Appointment set at the door for ${prettyAppt(pin.appointment_at)}`,
-    }).catch(() => {});
-  }
-
-  await api(`/api/pins/${pin.id}/lead`, 'POST', { lead_id: lead.id });
-  pin.crm_lead_id = lead.id;
-  return lead;
+  const result = await api(`/api/pins/${encodeURIComponent(pin.id)}/handoff`, 'POST', {});
+  pin.crm_lead_id = result.id;
+  pin.pipeline_pending = false;
+  return result;
 }
 
 function canHandoff(pin) {
-  return !!(pin && !pin.pending && pin.id && PIN_STAGE[pin.pin_type]
-            && (pin.contact_name || '').trim() && !pin.crm_lead_id);
+  return !!(pin && !pin.pending && pin.id && (PIN_STAGE[pin.pin_type] || pin.crm_lead_id)
+            && (pin.contact_name || '').trim() && (!pin.crm_lead_id || pin.pipeline_pending)
+            && (pin.rep === currentUser.username || currentUser.is_admin));
 }
 
 // Fires by itself when a pin that should become a lead is saved. Never fatal:
@@ -864,7 +899,7 @@ async function autoHandoff(pin) {
       : '✓ In the Pipeline. The first follow-up is already on your list.');
   } catch(e) {
     showMapNotice('Saved. Could not add to the Pipeline yet — use the pin\'s ' +
-                  'Add to Pipeline button: ' + e.message);
+                  'Add to Pipeline button, or leave the app open to retry: ' + e.message);
   }
 }
 
@@ -926,6 +961,7 @@ $('update-pin-btn').addEventListener('click', async () => {
     contact_phone: $('edit-contact-phone').value,
     contact_email: $('edit-contact-email').value,
     notes:         $('edit-notes').value,
+    appointment_tz: allPins.find(p => p.id === editingPinId)?.appointment_tz || Intl.DateTimeFormat().resolvedOptions().timeZone,
     appointment_at: selectedType === 'appointment'
       ? $('edit-appointment-at').value : '',
   };
@@ -1105,7 +1141,7 @@ function prettyCoverage(a) {
            'spotter call-ins, which say nothing about a specific roof.';
   }
   return `Radar archive: ${a.days_held.toLocaleString()} day${a.days_held === 1 ? '' : 's'}, ` +
-         `${prettyDate(a.first)} → ${prettyDate(a.last)}.`;
+         `${prettyDate(a.first)} → ${prettyDate(a.last)}. ${a.unverified_days || 0} older day(s) need verification; Fill this season will repair them.`;
 }
 
 // Seasons the archive can hold. MRMS on AWS starts 2020-10-14, so anything
@@ -1231,34 +1267,51 @@ async function loadStormPicker() {
 }
 
 $('load-hail-btn').addEventListener('click', async () => {
-  const startVal = $v('hail-date');
-  const endVal   = $v('hail-date-end') || startVal;
-  const minSize  = $v('hail-min-size');
-  if (!startVal) { $('hail-status').textContent = 'Pick a storm or a date first.'; return; }
-  $('hail-status').textContent = 'Reading the radar archive…';
-  try {
-    // The viewport, so the server returns the screen rather than the state.
-    const b = map.getBounds();
-    const box = `south=${b.getSouth()}&west=${b.getWest()}` +
-                `&north=${b.getNorth()}&east=${b.getEast()}`;
-    const data = await api(`/api/hail/cells?start=${startVal}&end=${endVal}` +
-                           `&${box}${minSize ? `&min_size=${minSize}` : ''}`);
-    if (data.count) { drawHailCells(data, startVal, endVal); return; }
-    if (data.days_held) {
-      // The distinction the whole feature turns on: radar looked here and saw
-      // nothing, which is a fact about this ground and a useful one.
-      clearHailLayer();
-      $('hail-status').textContent =
-        `Radar covered ${data.days_held} day${data.days_held > 1 ? 's' : ''} in that ` +
-        `range and found no hail over the area on screen.`;
-      return;
-    }
-    // Nothing ingested for those dates — not the same answer at all.
-    await loadSpcReports(startVal, endVal);
-  } catch(e) {
-    $('hail-status').textContent = 'Failed to load: ' + e.message;
-  }
+  const start = $v('hail-date');
+  const end = $v('hail-date-end') || start;
+  if (!start) { $('hail-status').textContent = 'Pick a date first.'; return; }
+  activeHailQuery = {start: start < end ? start : end, end:start < end ? end : start, min:$v('hail-min-size')};
+  await refreshHailOverlay();
 });
+
+function hailCoverageText(cov) {
+  if (!cov) return 'Coverage has not been verified.';
+  if (cov.outside_area) return 'Outside the Colorado radar archive. No conclusion about hail is available here.';
+  return `${cov.days_verified || 0} ${cov.point_checked ? 'radar-covered days at this point' : 'decoded archive days (coverage varies by cell)'} of ${cov.days_requested || 0}; ` +
+    `${cov.days_missing || 0} day(s) missing or unchecked. Archive threshold: ${cov.threshold_in || 1} inches.`;
+}
+
+async function refreshHailOverlay() {
+  if (!activeHailQuery) return;
+  const query = {...activeHailQuery}, requestId = ++hailRequestId;
+  $('hail-status').textContent = 'Reading radar history…';
+  try {
+    const b = map.getBounds();
+    const box = `south=${b.getSouth()}&west=${b.getWest()}&north=${b.getNorth()}&east=${b.getEast()}`;
+    const data = await api(`/api/hail/cells?start=${query.start}&end=${query.end}&${box}&min_size=${query.min || 0}`);
+    if (requestId !== hailRequestId) return;
+    if (data.coverage?.outside_area) {
+      clearHailLayer();
+      $('hail-status').textContent = hailCoverageText(data.coverage);
+    } else if (data.count) {
+      drawHailCells(data, query.start, query.end);
+    } else if (data.days_held) {
+      clearHailLayer();
+      $('hail-status').textContent = `No archived radar cells meet this filter in the area on screen. ` + hailCoverageText(data.coverage);
+    } else {
+      await loadSpcReports(query.start, query.end, requestId);
+    }
+    if (requestId === hailRequestId && $('hail-map-status')) {
+      $('hail-map-status').textContent = $('hail-status').textContent;
+      show('hail-map-status');
+    }
+  } catch(e) {
+    if (requestId !== hailRequestId) return;
+    clearHailLayer();
+    $('hail-status').textContent = 'Radar layer unavailable: ' + e.message;
+    if ($('hail-map-status')) { $('hail-map-status').textContent = $('hail-status').textContent; show('hail-map-status'); }
+  }
+}
 
 function drawHailCells(data, startVal, endVal) {
   clearHailLayer();
@@ -1271,7 +1324,7 @@ function drawHailCells(data, startVal, endVal) {
     // the ground the radar estimated over.
     L.rectangle([[c.s, c.w], [c.n, c.e]], {
       color, fillColor: color, fillOpacity: .45, weight: 0, stroke: false,
-    }).bindPopup(`<b>${c.size}" hail</b><br>Radar-estimated over this cell`)
+    }).bindPopup(`<b>${c.size}" hail</b><br>Radar estimate in this cell, not verified roof damage.<br>${escHtml(c.note || '')}`)
       .addTo(hailLayer);
   });
   hailLayer.addTo(map);
@@ -1283,18 +1336,24 @@ function drawHailCells(data, startVal, endVal) {
     ? ` Showing the ${data.count} largest on screen — zoom in for the rest.`
     : '';
   $('hail-status').textContent =
-    `✓ ${span} · up to ${data.max_size}" · ${data.count} radar cells.${cut}`;
+    `✓ ${span} · up to ${Number(data.max_size).toFixed(2)}" · ${data.count} radar cells.${cut} ` +
+    hailCoverageText(data.coverage) + ' Rolling 24-hour windows ending 23:30 UTC.';
 }
 
 // The old behaviour, kept: NOAA spotter reports, drawn as the circles they
 // have always been drawn as, and labelled as call-ins rather than
 // measurements so the two views cannot be confused for each other.
-async function loadSpcReports(startVal, endVal) {
+async function loadSpcReports(startVal, endVal, requestId = hailRequestId) {
   const url = (endVal && endVal !== startVal)
     ? `/api/hail/range?start=${startVal.replace(/-/g,'')}&end=${endVal.replace(/-/g,'')}`
     : `/api/hail?date=${startVal.replace(/-/g,'')}`;
   const data = await api(url);
+  if (requestId !== hailRequestId) return;
   clearHailLayer();
+  if (data.partial) {
+    $('hail-status').textContent = 'Some NOAA report dates could not be retrieved; coverage is incomplete.';
+    if (!data.features?.length) return;
+  }
   if (!data.features || !data.features.length) {
     $('hail-status').textContent =
       'No radar archive for those dates, and no NOAA spotter reports either.';
@@ -1320,7 +1379,9 @@ async function loadSpcReports(startVal, endVal) {
 }
 
 $('clear-hail-btn').addEventListener('click', () => {
+  activeHailQuery = null; hailRequestId++; clearTimeout(hailMoveTimer);
   clearHailLayer();
+  hide('hail-map-status');
   $('hail-status').textContent = 'Hail overlay cleared.';
 });
 
@@ -1393,37 +1454,16 @@ function renderMeshHistory(data) {
     : '';
 
   if (!data.storm_count) {
-    // "No hail on record" is only honest when the record covers the question.
-    // The server refuses this shape unless the archive holds SOME day in the
-    // window, which is not the same as holding the window: an archive with two
-    // days in it answered a five-year lookup with a confident "No hail on
-    // record" and a footnote nobody reads. A rep repeated it on a doorstep.
-    //
-    // So the headline states the coverage when the coverage is thin, and
-    // "asked for five years, hold two days" is a different sentence from "we
-    // looked at five years and this roof was never hit".
-    const asked = data.lookback_days || 0;
-    const held  = cov.days_held || 0;
-    // Season only — hail is a Mar-Oct product here, so a full year of days is
-    // never expected and holding most of the severe season is full coverage.
-    const expected = Math.round(asked * (8 / 12));
-    const thin = !held || held < expected * 0.6;
+    const thin = cov.status !== 'complete';
     st.textContent = '';
-    $('hail-address-results').innerHTML = thin ? `
-      <div class="hail-summary">
-        <div class="hail-summary-big is-thin">Not enough radar history</div>
-        <div class="hail-summary-sub">over ${where}</div>
-      </div>
-      <div class="hail-coverage">You asked for ${asked} days. The archive holds
-      ${held} radar day${held === 1 ? '' : 's'}${covLine ? ` (${escHtml(covLine.split(', ').slice(1).join(', '))})` : ''},
-      and saw no hail on ${held === 1 ? 'it' : 'those'}. That is not the same as
-      this roof never being hit &mdash; fill the archive from the Hail Overlay
-      screen to answer the question you asked.</div>` : `
-      <div class="hail-summary">
-        <div class="hail-summary-big">No hail on record</div>
-        <div class="hail-summary-sub">over ${where}</div>
-      </div>
-      <div class="hail-coverage">Radar checked this roof directly. ${escHtml(covLine)}.</div>`;
+    const headline = cov.outside_area ? 'Outside radar archive' :
+      (thin ? 'Not enough radar history' : `No archived hail ≥${cov.threshold_in || 1} inches`);
+    $('hail-address-results').innerHTML = `
+      <div class="hail-summary"><div class="hail-summary-big is-thin">${escHtml(headline)}</div>
+      <div class="hail-summary-sub">${where}</div></div>
+      <div class="hail-coverage">${escHtml(hailCoverageText(cov))}
+      An empty result does not establish that this roof was never hit or damaged.
+      ${escHtml(cov.window_note || '')}</div>`;
     return;
   }
 
@@ -1453,7 +1493,7 @@ function renderMeshHistory(data) {
           <span class="hail-report-loc">${escHtml(prettyDate(s.date))}</span>
         </div>`).join('')}
     </div>
-    <div class="hail-coverage">${escHtml(covLine)}.</div>
+    <div class="hail-coverage">${escHtml(covLine)}. ${escHtml(hailCoverageText(cov))}<br>${escHtml(cov.window_note || '')} Radar estimates describe the surrounding cell, not verified roof damage.</div>
     <button class="btn-secondary" id="hail-show-on-map-btn">Show on Map</button>
   `;
 
@@ -1483,7 +1523,7 @@ function renderSpcReports(data) {
     NOAA spotter reports near the address, not measurements of this roof.</div>`;
 
   if (!data.report_count) {
-    st.textContent = `No hail reports within ${data.radius_miles} mi in the last ${data.lookback_days} days.`;
+    st.textContent = data.partial ? `NOAA reports are incomplete: ${data.days_failed} dates failed. No reliable negative result is available.` : `No reports found within ${data.radius_miles} mi on ${data.days_scanned} checked days. This does not mean no hail occurred.`;
     $('hail-address-results').innerHTML = fallbackNote;
     return;
   }
@@ -1662,6 +1702,7 @@ $('menu-btn').addEventListener('click', () => {
 // the way out is not a location push.
 $('logout-btn').addEventListener('click', () => {
   stopTeamTracking();
+  try { localStorage.removeItem(OFFLINE_SESSION); } catch(e) {}
   window.location = '/logout';
 });
 

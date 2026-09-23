@@ -52,6 +52,10 @@ def client(tmp_path, monkeypatch):
         del sys.modules[mod]
     import app as canvasser_app
     canvasser_app.app.config['TESTING'] = True
+    from portal import users as pusers
+    for username in ('aaron', 'bryan'):
+        if not pusers.get(username):
+            pusers.create(username, password='test-only', role='rep')
     with canvasser_app.app.test_client() as c:
         with c.session_transaction() as sess:
             sess['username'] = 'aaron'
@@ -265,10 +269,10 @@ def test_the_empty_answer_is_gated_on_how_much_archive_there_is():
     window, which is not the same as holding the window.
     """
     code = _code(_MESH_RENDER)
-    assert 'lookback_days' in code, (
+    assert 'cov.status' in code, (
         'renderMeshHistory does not look at how much was ASKED for, so it '
         'cannot tell a covered window from an almost-empty one')
-    assert 'days_held' in code
+    assert 'coverage' in code
     assert 'is-thin' in code, 'no distinct treatment for a thin archive'
 
 
@@ -276,15 +280,15 @@ def test_the_thin_answer_does_not_claim_the_roof_was_never_hit():
     thin = _MESH_RENDER[_MESH_RENDER.index('is-thin'):]
     thin = thin[:thin.index('`  :  `') if '`  :  `' in thin else len(thin)]
     assert 'Not enough radar history' in _MESH_RENDER
-    assert 'not the same as' in _MESH_RENDER, (
+    assert 'does not establish' in _MESH_RENDER, (
         'the thin branch must say what it is NOT claiming')
 
 
 def test_the_coverage_is_still_shown_when_the_archive_is_good():
     """The honest negative stays available — this is not "never say no hail".
     A five-year archive that saw nothing is a real and useful answer."""
-    assert 'No hail on record' in _MESH_RENDER
-    assert 'Radar checked this roof directly' in _MESH_RENDER
+    assert 'No archived hail' in _MESH_RENDER
+    assert 'hailCoverageText(cov)' in _MESH_RENDER
 
 
 # ── A number a rep reads out loud ──────────────────────────────────────

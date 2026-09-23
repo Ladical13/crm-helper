@@ -31,7 +31,7 @@ SEASON_MONTHS = (3, 4, 5, 6, 7, 8, 9, 10)
 
 
 def dates_for(args):
-    today = dt.date.today()
+    today = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=1)
     if args.days:
         return [today - dt.timedelta(days=i) for i in range(args.days)][::-1]
     if args.season:
@@ -99,7 +99,7 @@ def run(dates, threshold=None, on_day=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     span = ap.add_mutually_exclusive_group(required=True)
-    span.add_argument('--days', type=int, help='the last N days, ending today')
+    span.add_argument('--days', type=int, help='the last N completed days, ending yesterday')
     span.add_argument('--season', type=int, metavar='YEAR',
                       help='March-October of one year')
     span.add_argument('--from', dest='start', help='YYYY-MM-DD (needs --to)')
@@ -116,9 +116,12 @@ def main(argv=None):
         ap.error('--from needs --to')
 
     dates = [d for d in dates_for(args) if d >= ingest.EARLIEST]
-    held = set() if args.refetch else storms.ingested_dates()
+    held = set() if args.refetch else storms.verified_dates()
     todo = [d for d in dates if d.isoformat() not in held]
 
+    if not dates:
+        print('No completed radar days in this range.')
+        return 0
     print(f'range      : {dates[0]} .. {dates[-1]}  ({len(dates)} days)')
     print(f'already held: {len(dates) - len(todo)}')
     print(f'to fetch   : {len(todo)}')

@@ -97,6 +97,7 @@
     // but a guest was never signed in and the word would read as an error.
     var out = el('a', 'p1-out', isDemo ? 'End demo' : 'Sign out');
     out.href = '/logout';
+    out.addEventListener('click', function () { try { localStorage.removeItem('p1canvass.offlineSession'); } catch (e) {} });
     right.appendChild(out);
     bar.appendChild(right);
 

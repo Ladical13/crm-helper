@@ -25634,11 +25634,11 @@ def _check_hail_nightly():
     try:
         from hail import backfill as hbackfill, ingest as hingest, storms as hstorms
         today = _company_today()
-        window = [today - timedelta(days=i) for i in range(HAIL_WINDOW_DAYS)]
+        window = [today - timedelta(days=i) for i in range(1, HAIL_WINDOW_DAYS + 1)]
         window = [d for d in window if d >= hingest.EARLIEST]
-        held = hstorms.ingested_dates()
+        held = hstorms.verified_dates()
         fresh = {(today - timedelta(days=i)).isoformat()
-                 for i in range(HAIL_REFETCH_DAYS)}
+                 for i in range(1, HAIL_REFETCH_DAYS + 1)}
         todo = sorted(d for d in window
                       if d.isoformat() not in held or d.isoformat() in fresh)
         # `run()` rather than `main()`: main is argparse and prints, and it

@@ -49,7 +49,8 @@ def database_paths():
     salescrm_dir  = os.environ.get('SALESCRM_DATA_DIR')  or data_dir
     canvasser_dir = os.environ.get('CANVASSER_DATA_DIR') or data_dir
 
-    paths = {'portal.db': users.db_path()}
+    from hail import storms
+    paths = {'portal.db': users.db_path(), 'hail.db': storms.db_path()}
     if salescrm_dir:
         paths['salescrm.db'] = os.path.join(salescrm_dir, 'salescrm.db')
     if canvasser_dir:
@@ -239,7 +240,7 @@ def nightly_email(send_email, to_addr, base_url=''):
   </div>
   <div style="padding:20px 26px">
     <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 12px">
-      Attached is tonight&rsquo;s snapshot of the CRM, the canvasser and the
+      Attached is tonight&rsquo;s snapshot of the CRM, the canvasser, the hail archive and the
       account store ({size_mb:.1f} MB zipped).</p>
     <table style="border-collapse:collapse;margin:0 0 12px">{_summary_rows(manifest)}</table>
     {extra}

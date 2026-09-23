@@ -7,7 +7,7 @@
 // CRM workers both claimed scope '/' with different cache names and whichever
 // registered last won. Passing everything else straight through is what keeps
 // them from fighting again.
-const CACHE = 'p1portal-v4';
+const CACHE = 'p1portal-v5';
 const SHELL = [
   '/',
   '/shell.css',
@@ -37,7 +37,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('p1portal-') && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });

@@ -31,15 +31,7 @@ plausible output. Every quantization here goes through `math.floor`.
 """
 import math
 
-# MRMS ships MESH in millimetres.
-#
-# ⚠️ UNVERIFIED against a real GRIB2 file — the dev sandbox proxy blocks both
-# mrms.ncep.noaa.gov and the Iowa State archive, so this is from the product
-# documentation rather than from a message we have actually decoded. It is the
-# single assumption most likely to be silently wrong, and being wrong by 25.4x
-# would put every storm either far above or far below the 1" threshold. Confirm
-# it on the first real ingest before anyone trusts a number in front of a
-# customer.
+# Verified against the NOAA GRIB2 product and guarded by the live ingest test.
 MM_PER_INCH = 25.4
 
 # MRMS CONUS is a 0.01° lattice. Cells are anchored to the GLOBAL lattice
@@ -152,8 +144,8 @@ def size_note(size_in):
     """The sentence that goes beside the number, or '' when none is needed."""
     caveat = size_caveat(size_in)
     if caveat == 'impossible':
-        return (f'Radar estimate exceeds {US_RECORD_IN:g}", the largest hailstone '
-                f'ever recorded in the US. Treat as "very large" — do not quote '
+        return (f'Radar estimate exceeds {US_RECORD_IN:g}", the historical US hailstone '
+                f'record used for screening estimates. Verify independently — do not quote '
                 f'this figure.')
     if caveat == 'verify':
         return ('Radar estimate. Hail this size is rare enough to confirm on '

@@ -26,6 +26,10 @@ def client(tmp_path, monkeypatch):
         del sys.modules[mod]
     import app as canvasser_app
     canvasser_app.app.config['TESTING'] = True
+    from portal import users as pusers
+    for username in ('aaron', 'bryan'):
+        if not pusers.get(username):
+            pusers.create(username, password='test-only', role='rep')
     with canvasser_app.app.test_client() as c:
         with c.session_transaction() as sess:
             sess['username'] = 'aaron'

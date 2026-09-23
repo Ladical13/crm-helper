@@ -171,10 +171,11 @@ def test_the_url_matches_the_bucket_layout():
                    'MRMS_MESH_Max_1440min_00.50_20260612-233000.grib2.gz')
 
 
-def test_a_missing_day_is_none_rather_than_an_exception():
+def test_a_missing_day_reports_unknown_coverage():
     """The bucket has genuine gaps, and a backfill has to record 'looked,
     nothing there' and keep going."""
-    assert ingest.fetch_day(dt.date(2026, 6, 12), get=lambda u: (404, b'')) is None
+    with pytest.raises(ingest.IngestError, match='coverage is unknown'):
+        ingest.fetch_day(dt.date(2026, 6, 12), get=lambda u: (404, b''))
 
 
 def test_a_server_error_is_not_mistaken_for_an_empty_day():
@@ -189,9 +190,9 @@ def test_a_date_before_the_archive_says_so_plainly():
     assert '2020-10-14' in str(e.value)
 
 
-def test_a_missing_day_yields_an_empty_swath_not_a_crash():
-    swath = ingest.swath_for(dt.date(2026, 6, 12), get=lambda u: (404, b''))
-    assert not swath and len(swath) == 0
+def test_a_missing_day_cannot_yield_a_valid_empty_swath():
+    with pytest.raises(ingest.IngestError):
+        ingest.swath_for(dt.date(2026, 6, 12), get=lambda u: (404, b''))
 
 
 # ── Against the real bucket ─────────────────────────────────────────────────

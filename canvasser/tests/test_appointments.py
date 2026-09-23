@@ -44,6 +44,10 @@ def client(tmp_path, monkeypatch):
         del sys.modules[mod]
     import app as canvasser_app
     canvasser_app.app.config['TESTING'] = True
+    from portal import users as pusers
+    for username in ('aaron', 'bryan'):
+        if not pusers.get(username):
+            pusers.create(username, password='test-only', role='rep')
     with canvasser_app.app.test_client() as c:
         with c.session_transaction() as sess:
             sess['username'] = 'aaron'
@@ -169,9 +173,8 @@ def test_a_failed_handoff_never_costs_the_pin():
 def test_the_appointment_becomes_a_task_the_rep_will_see():
     hand = APP_JS[APP_JS.index('async function handoffToPipeline'):]
     hand = hand[:hand.index('function canHandoff')]
-    assert "kind: 'meeting'" in hand
-    assert 'due_at' in hand
-    assert 'apptToUtc' in hand, 'the CRM compares due_at as UTC text'
+    assert "/handoff" in hand
+    assert "crmPost" not in hand, "the server must commit the entire handoff atomically"
 
 
 def test_the_task_due_date_matches_the_crms_own_spelling():
