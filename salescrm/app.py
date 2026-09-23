@@ -939,17 +939,19 @@ def _refresh_next_action(db, lead_id):
 
 # ── Leads ─────────────────────────────────────────────────────────────────────
 
-@app.route('/api/leads', methods=['GET'])
-@login_required
-def list_leads():
-    _reconcile_funnel()
-    rep     = request.args.get('rep')
-    stage   = request.args.get('stage')
-    ltype   = request.args.get('type')
-    service = request.args.get('service')
-    q       = (request.args.get('q') or '').strip().lower()
-    limit   = max(1, min(request.args.get('limit', 1000, type=int), 5000))
-    offset  = max(0, request.args.get('offset', 0, type=int))
+def _lead_filters(args, with_type=True):
+    """The Pipeline's filters as SQL, shared by the list and its category counts.
+
+    One builder for both so a category tab's count can never disagree with the
+    rows that tab shows. ``with_type=False`` leaves the category out: the tabs
+    count every category under the OTHER filters, or picking one would zero the
+    rest.
+    """
+    rep     = args.get('rep')
+    stage   = args.get('stage')
+    ltype   = args.get('type') if with_type else None
+    service = args.get('service')
+    q       = (args.get('q') or '').strip().lower()
 
     clauses, params = [], []
     if not is_manager():
@@ -962,16 +964,16 @@ def list_leads():
         clauses.append('lead_type=?'); params.append(ltype)
     if service:
         clauses.append('service=?'); params.append(service)
-    cq = request.args.get('contact_quality')
+    cq = args.get('contact_quality')
     if cq in ('0', '1', '2', '3'):
         clauses.append('contact_quality=?'); params.append(int(cq))
-    outreach = request.args.get('outreach')
+    outreach = args.get('outreach')
     if outreach in OUTREACH_STATUS_KEYS:
         clauses.append('outreach_status=?'); params.append(outreach)
-    contact = request.args.get('contact')
+    contact = args.get('contact')
     if contact in ('ready', 'research'):
         clauses.append(_contact_clause(contact))
-    attention = request.args.get('attention')
+    attention = args.get('attention')
     if attention in ('hot', 'needs_step'):
         clauses.append("stage NOT IN ('won','lost') AND dnc=0")
         if attention == 'hot':
@@ -991,12 +993,49 @@ def list_leads():
             "      COALESCE(address,'')    || ' ' || COALESCE(company,'') || ' ' || COALESCE(city,''))"
             " LIKE ? ESCAPE '\\'")
         params.append(f'%{esc}%')
-    where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+    return (('WHERE ' + ' AND '.join(clauses)) if clauses else ''), params
+
+
+# Category order for the grouped list: LEAD_TYPES order, unknown types last.
+# Built from the constant (never from input), so it is safe to interpolate.
+_TYPE_ORDER = ('CASE lead_type ' + ' '.join(
+    f"WHEN '{k}' THEN {i}" for i, k in enumerate(LEAD_TYPE_KEYS)) +
+    f' ELSE {len(LEAD_TYPE_KEYS)} END')
+
+
+@app.route('/api/leads', methods=['GET'])
+@login_required
+def list_leads():
+    _reconcile_funnel()
+    limit   = max(1, min(request.args.get('limit', 1000, type=int), 5000))
+    offset  = max(0, request.args.get('offset', 0, type=int))
+    where, params = _lead_filters(request.args)
+    attention = request.args.get('attention') in ('hot', 'needs_step')
     with get_db() as db:
         order = "CASE temperature WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END, last_activity_at, id" if attention else 'updated_at DESC, id'
+        # Grouped by category, the ORDER must be the server's: paging 100 at a
+        # time sorted by recency would scatter a category across every page and
+        # the list would regroup each time "Show more" ran.
+        if request.args.get('sort') == 'type':
+            order = f'{_TYPE_ORDER}, lead_type, {order}'
         rows = db.execute(f'SELECT * FROM leads {where} ORDER BY {order} LIMIT ? OFFSET ?',
                           params + [limit, offset]).fetchall()
     return jsonify([_lead_row(r) for r in rows])
+
+
+@app.route('/api/leads/type-counts')
+@login_required
+def lead_type_counts():
+    """Leads per category under the Pipeline's other filters.
+
+    Feeds the category tabs and the grouped list's headings, which must show
+    the real total — the list itself only ever holds one page of it.
+    """
+    where, params = _lead_filters(request.args, with_type=False)
+    with get_db() as db:
+        rows = db.execute(f'SELECT lead_type, COUNT(*) AS n FROM leads {where} '
+                          f'GROUP BY lead_type', params).fetchall()
+    return jsonify({r['lead_type']: r['n'] for r in rows})
 
 @app.route('/api/partners/counts')
 @login_required

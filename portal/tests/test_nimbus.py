@@ -509,3 +509,38 @@ def test_spend_cap_stops_a_turn_with_a_sentence(admin, tmp_path_factory,
     assert 'used up' in thread['error']
     # The question is still in the transcript — it was not silently dropped.
     assert [m for m in thread['messages'] if m['display'] == 'hello']
+
+
+def test_segment_catalog_marks_what_nimbus_can_search(admin, tmp_path_factory, monkeypatch):
+    """The picker's labels, and which categories a run can actually find."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    cat = {s['key']: s for s in admin.get('/nimbus/api/segments').get_json()}
+    assert cat['church']['searches'] and cat['church']['label'] == 'Churches'
+    # Realtors come from the offline prospector; a Nimbus run finds none.
+    assert cat['realtor']['searches'] is False
+    # Every offered key must be a CRM lead type, or its import is rejected.
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location(
+        '_crm_types', pathlib.Path(__file__).resolve().parents[2] / 'salescrm' / 'app.py')
+    src = spec.loader.get_source('_crm_types')
+    for key in cat:
+        assert f"'key': '{key}'" in src, key
+
+
+def test_territory_segments_reject_unknown_keys(admin, tmp_path_factory, monkeypatch):
+    """A typo used to save silently and then import nothing."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    r = admin.put('/nimbus/api/territories/avery', json={'segments': ['church', 'chruch']})
+    assert r.status_code == 400
+    assert admin.put('/nimbus/api/territories/avery',
+                     json={'segments': 'church'}).status_code == 400
+    r = admin.put('/nimbus/api/territories/avery', json={'segments': ['church', 'school']})
+    assert r.status_code == 200 and r.get_json()['segments'] == ['church', 'school']
+
+
+def test_b2b_run_validates_the_picked_categories(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    assert admin.post('/nimbus/api/b2b/run',
+                      json={'rep': 'avery', 'segments': ['nope']}).status_code == 400
+    r = admin.post('/nimbus/api/b2b/run', json={'rep': 'avery', 'segments': []})
+    assert r.status_code == 400 and 'at least one' in r.get_json()['error']

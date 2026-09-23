@@ -141,6 +141,15 @@
   .rep .btn.ghost:hover { color: var(--accent); border-color: var(--accent); }
   .rep .btn:disabled { opacity: .5; cursor: default; filter: none; }
   .rep .row { display: flex; gap: 6px; align-items: center; }
+  /* Category picker beside RUN, and the segment checkboxes on a rep's page. */
+  .seg-pick { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 10px; }
+  .seg-pick label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
+    color: var(--text); background: var(--panel-2); border: 1px solid var(--border-2);
+    border-radius: 999px; padding: 4px 10px 4px 8px; cursor: pointer; }
+  .seg-pick label.nosearch { color: var(--dim); border-style: dashed; cursor: default; }
+  .seg-pick input { accent-color: var(--accent); margin: 0; }
+  .seg-note { color: var(--dim2); font-size: 11px; margin: -4px 0 10px; }
+  @media (pointer: coarse) { .seg-pick label { min-height: 44px; padding: 0 14px 0 12px; } }
 
   /* Pipeline */
   .stages { display: grid; gap: 6px; margin: 8px 0 14px; }
@@ -510,7 +519,18 @@
 'use strict';
 
 const BASE = '/nimbus';
-const state = { settings: {}, territories: [], runs: {}, activeTimers: {} };
+const state = { settings: {}, territories: [], runs: {}, activeTimers: {}, segments: [] };
+
+// The segment catalog, from the server — labels, and whether Nimbus has a
+// search for that segment at all. Fetched once; it only changes on deploy.
+async function loadSegments() {
+  if (!state.segments.length)
+    state.segments = await fetch(`${BASE}/api/segments`).then(r => r.json());
+  return state.segments;
+}
+function segMeta(key) {
+  return state.segments.find(s => s.key === key) || { key, label: key, searches: false };
+}
 
 /* ── router ────────────────────────────────────────────────────────────── */
 
@@ -601,7 +621,7 @@ async function renderDashboard() {
 }
 
 async function loadReps() {
-  const list = await fetch(`${BASE}/api/territories`).then(r => r.json());
+  const [list] = await Promise.all([fetch(`${BASE}/api/territories`).then(r => r.json()), loadSegments()]);
   state.territories = list;
   document.getElementById('rep-count').textContent = list.length + ' territories';
   const box = document.getElementById('rep-list');
@@ -618,9 +638,10 @@ async function loadReps() {
         <span class="stat"><b>${rep.monthly_lead_cap}</b> cap</span>
       </div>
       <div class="cap"><div style="width: 0%"></div></div>
+      ${repPicker(rep)}
       <div class="row">
-        <button class="btn run-b2b" data-rep="${rep.username}">▶ RUN</button>
-        <button class="btn ghost dry-b2b" data-rep="${rep.username}">Dry run</button>
+        <button class="btn run-b2b" data-rep="${rep.username}" ${rep.segments.some(k => segMeta(k).searches) ? '' : 'disabled'}>▶ RUN</button>
+        <button class="btn ghost dry-b2b" data-rep="${rep.username}" ${rep.segments.some(k => segMeta(k).searches) ? '' : 'disabled'}>Dry run</button>
         <a class="btn ghost" style="text-decoration:none;padding-top:5px" href="${BASE}/rep/${rep.username}" data-route="${BASE}/rep/${rep.username}">Configure</a>
       </div>
       <div class="row" data-status="${rep.username}" style="margin-top: 8px; color: var(--dim); font-size: 11px;"></div>
@@ -628,7 +649,33 @@ async function loadReps() {
   `).join('');
 
   box.querySelectorAll('.run-b2b').forEach(b => b.addEventListener('click', () => startRun(b.dataset.rep, false)));
+  // RUN is only live while at least one category is ticked.
+  box.querySelectorAll('.seg-pick[data-rep]').forEach(p => p.addEventListener('change', () => {
+    const none = !pickedSegments(p.dataset.rep).length;
+    document.querySelectorAll(`.rep[data-rep="${p.dataset.rep}"] .run-b2b, .rep[data-rep="${p.dataset.rep}"] .dry-b2b`)
+      .forEach(b => { b.disabled = none; });
+  }));
   box.querySelectorAll('.dry-b2b').forEach(b => b.addEventListener('click', () => startRun(b.dataset.rep, true)));
+}
+
+// Which of this rep's categories the next RUN covers. Every searchable one
+// starts ticked, so RUN does what it always did until someone narrows it.
+// A segment Nimbus has no search for is shown, but cannot be ticked: a run
+// over it finds nothing, and those partners come from the prospector.
+function repPicker(rep) {
+  if (!rep.segments.length) return '<div class="seg-note">No categories set — use Configure.</div>';
+  const chips = rep.segments.map(k => {
+    const m = segMeta(k);
+    return m.searches
+      ? `<label><input type="checkbox" value="${escapeHtml(k)}" checked>${escapeHtml(m.label)}</label>`
+      : `<label class="nosearch" title="Nimbus has no search for this — the prospector finds these"><input type="checkbox" disabled>${escapeHtml(m.label)}</label>`;
+  }).join('');
+  const note = rep.segments.some(k => !segMeta(k).searches)
+    ? '<div class="seg-note">Dashed categories are not searched by Nimbus — the prospector finds those.</div>' : '';
+  return `<div class="seg-pick" data-rep="${rep.username}" aria-label="Categories to search">${chips}</div>${note}`;
+}
+function pickedSegments(rep) {
+  return [...document.querySelectorAll(`.seg-pick[data-rep="${rep}"] input:checked`)].map(i => i.value);
 }
 
 async function startRun(rep, dryRun) {
@@ -639,7 +686,7 @@ async function startRun(rep, dryRun) {
   try {
     const r = await fetch(`${BASE}/api/b2b/run`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ rep: rep, dry_run: dryRun })
+      body: JSON.stringify({ rep: rep, dry_run: dryRun, segments: pickedSegments(rep) })
     });
     if (!r.ok) throw new Error((await r.json()).error || 'run failed');
     const data = await r.json();
@@ -1662,7 +1709,7 @@ async function recheckConnections() {
 /* ── rep detail page ───────────────────────────────────────────────────── */
 
 async function renderRep(username) {
-  const list = await fetch(`${BASE}/api/territories`).then(r => r.json());
+  const [list, catalog] = await Promise.all([fetch(`${BASE}/api/territories`).then(r => r.json()), loadSegments()]);
   const rep = list.find(x => x.username === username);
   if (!rep) { document.getElementById('main').innerHTML = '<div class="empty">unknown rep</div>'; return; }
   const runs = await fetch(`${BASE}/api/runs?rep=${username}&limit=15`).then(r => r.json());
@@ -1681,9 +1728,12 @@ async function renderRep(username) {
           </div>
         </div>
         <div>
-          <label>Segments (comma-separated)</label>
-          <input id="c-segments" value="${escapeHtml((rep.segments||[]).join(', '))}">
-          <small style="color:var(--dim2);font-size:11px">Known: realtor, insurance_agent, hoa, property_manager, church, school, gc, commercial</small>
+          <label>Categories Nimbus searches for this rep</label>
+          <div class="seg-pick" id="c-segments">${catalog.map(m => `
+            <label class="${m.searches ? '' : 'nosearch'}" ${m.searches ? '' : 'title="Nimbus has no search for this — the prospector finds these"'}>
+              <input type="checkbox" value="${escapeHtml(m.key)}" ${(rep.segments||[]).includes(m.key) ? 'checked' : ''}>${escapeHtml(m.label)}</label>`).join('')}
+          </div>
+          <div class="seg-note">Dashed categories can be kept on a rep's list, but Nimbus doesn't search for them — the prospector finds those.</div>
         </div>
         <div class="row">
           <div>
@@ -1720,7 +1770,7 @@ async function saveRep(username) {
   const patch = {
     cities:            document.getElementById('c-cities').value.split(',').map(s => s.trim()).filter(Boolean),
     counties:          document.getElementById('c-counties').value.split(',').map(s => s.trim()).filter(Boolean),
-    segments:          document.getElementById('c-segments').value.split(',').map(s => s.trim()).filter(Boolean),
+    segments:          [...document.querySelectorAll('#c-segments input:checked')].map(i => i.value),
     monthly_lead_cap:  Number(document.getElementById('c-cap').value || 0),
     enrich_top_n:      Number(document.getElementById('c-top').value || 0),
   };

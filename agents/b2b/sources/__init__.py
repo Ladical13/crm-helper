@@ -45,3 +45,32 @@ def pullers_for(segment):
     the model returns nothing and we log it.
     """
     return SEGMENT_SOURCES.get(segment) or [perplexity_gap.pull]
+
+
+# What a person picks from in Nimbus: the segment checkboxes on a rep's page
+# and the category picker beside RUN. Every key here is also a salescrm lead
+# type — the import rejects any other, which is why 'brokerage' (a prospector
+# segment with no lead type of its own) is not offered.
+SEGMENT_LABELS = {
+    'church':           'Churches',
+    'school':           'Schools',
+    'school_district':  'School districts',
+    'gc':               'General contractors',
+    'commercial':       'Commercial buildings',
+    'realtor':          'Realtors',
+    'insurance_agent':  'Insurance agents',
+    'hoa':              'HOAs',
+    'property_manager': 'Property managers',
+}
+
+
+def segment_catalog():
+    """[{key, label, searches}] in display order.
+
+    ``searches`` is False for a segment with no puller: a run over it finds
+    nothing new, because those partners arrive through the offline prospector.
+    The page says so next to the checkbox rather than letting a run come back
+    empty with no explanation.
+    """
+    return [{'key': k, 'label': v, 'searches': bool(SEGMENT_SOURCES.get(k))}
+            for k, v in SEGMENT_LABELS.items()]

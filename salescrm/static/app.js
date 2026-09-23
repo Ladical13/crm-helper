@@ -777,36 +777,64 @@ function buildPipelineFilters(){
 for(const key of ['type','contact','attention','stage','outreach','contact_quality']) $('#pipeline-'+key).onchange=()=>renderPipeline();
 $('#pipeline-reset').onclick=()=>pipelineFocus();
 $('#pipe-list').onclick=()=>{pipeMode='list';renderPipeline();};
+$('#pipe-grouped').onclick=()=>{pipeMode='grouped';renderPipeline();};
 $('#pipe-board').onclick=()=>{pipeMode='board';renderPipeline();};
+// Category tabs drive the same #pipeline-type select the filters read, so
+// pipelineFocus() and "Clear filters" keep working through one value.
+$('#pipeline-type-tabs').onclick=e=>{
+  const b=e.target.closest('.type-tab'); if(!b) return;
+  $('#pipeline-type').value=b.dataset.type; renderPipeline();
+};
+function renderTypeTabs(counts){
+  const cur=$('#pipeline-type').value;
+  const total=Object.values(counts).reduce((a,n)=>a+n,0);
+  // Empty categories are left off so the row stays short on a phone, except
+  // the selected one: a tab that vanished while picked could not be seen.
+  const tabs=S.cfg.lead_types.filter(t=>counts[t.key]||t.key===cur)
+    .map(t=>[t.key,t.label,counts[t.key]||0]);
+  $('#pipeline-type-tabs').innerHTML=[['','All',total],...tabs].map(([key,label,n])=>
+    `<button class="type-tab" data-type="${esc(key)}" aria-pressed="${key===cur}">${esc(label)}<span class="n">${n.toLocaleString()}</span></button>`).join('');
+}
 $('#pipeline-more').onclick=()=>renderPipeline(true);
 async function renderPipeline(more=false){
   buildPipelineFilters();
   const offset=more===true?pipeRows.length:0;
-  const qs=[];
+  const filters=[];
   for(const key of ['rep','service','type','contact','attention','stage','outreach','contact_quality']){
     const value=$('#pipeline-'+key).value;
-    if(value&&(key!=='rep'||S.me.is_manager)) qs.push(key+'='+encodeURIComponent(value));
+    if(value&&(key!=='rep'||S.me.is_manager)) filters.push(key+'='+encodeURIComponent(value));
   }
-  if(pipeSearch) qs.push('q='+encodeURIComponent(pipeSearch));
-  qs.push('limit=101&offset='+offset);
+  if(pipeSearch) filters.push('q='+encodeURIComponent(pipeSearch));
+  const qs=[...filters,'limit=101&offset='+offset];
+  // Grouped, the server orders by category so paging continues within a group.
+  if(pipeMode==='grouped') qs.push('sort=type');
   const token=++pipeReq;
-  const [page,summary]=await Promise.all([api('/leads?'+qs.join('&')),api('/pipeline/summary')]);
+  const [page,summary,typeCounts]=await Promise.all([api('/leads?'+qs.join('&')),api('/pipeline/summary'),
+    api('/leads/type-counts?'+filters.join('&'))]);
   if(token!==pipeReq) return;
   const leads=offset?pipeRows.concat(page.slice(0,100)):page.slice(0,100);
   pipeRows=leads;
   S.summary=summary;
+  renderTypeTabs(typeCounts);
   // A filtered page must never replace the unfiltered cache used by referrals.
-  if(qs.length===1) S.leadCache=leads;
+  if(!filters.length) S.leadCache=leads;
   const list=$('#pipeline-list'), board=$('#kanban');
   list.innerHTML=''; board.innerHTML='';
-  list.classList.toggle('hidden',pipeMode!=='list');
+  list.classList.toggle('hidden',pipeMode==='board');
   board.classList.toggle('hidden',pipeMode!=='board');
-  $('#pipe-list').setAttribute('aria-pressed',pipeMode==='list');
-  $('#pipe-board').setAttribute('aria-pressed',pipeMode==='board');
+  for(const m of ['list','grouped','board']) $('#pipe-'+m).setAttribute('aria-pressed',pipeMode===m);
   $('#pipeline-count').textContent=leads.length?`Showing ${leads.length} leads${page.length>100?' · show more to continue':''}. Sidebar totals include the whole pipeline.`:'No leads match these filters.';
   $('#pipeline-more').classList.toggle('hidden',page.length<=100);
-  if(pipeMode==='list'){
+  if(pipeMode!=='board'){
+    let group=null;
     leads.forEach(l=>{
+      if(pipeMode==='grouped'&&l.lead_type!==group){
+        group=l.lead_type;
+        // The count is the category's real total; the list holds one page of it.
+        const h=el('h3','type-group-h');
+        h.innerHTML=`${esc((S.cfg.lead_types.find(t=>t.key===group)||{}).label||group)}<span class="n">${(typeCounts[group]||0).toLocaleString()}</span>`;
+        list.appendChild(h);
+      }
       const row=el('button','lead-list-row'); row.dataset.id=l.id;
       row.innerHTML=`<span><b>${esc(l.name)}</b><span class="lead-context">${esc([l.company!==l.name?l.company:'',l.city].filter(Boolean).join(' · '))}</span></span>
         <span>${esc(l.stage_label)}<span class="lead-context"><span class="os-dot" style="background:${l.outreach_color}"></span>${esc(l.outreach_label)} · ${esc((S.cfg.lead_types.find(t=>t.key===l.lead_type)||{}).label||l.lead_type)}</span></span>

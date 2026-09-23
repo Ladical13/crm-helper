@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <title>Project One — Pipeline</title>
-  <link rel="stylesheet" href="/crm/static/style.css?v=29">
+  <link rel="stylesheet" href="/crm/static/style.css?v=31">
 </head>
 <body>
 
@@ -87,18 +87,19 @@
 
     <!-- Pipeline -->
     <section class="view" id="view-pipeline">
+      <div class="type-tabs" id="pipeline-type-tabs" role="toolbar" aria-label="Lead category"></div>
       <div class="pipeline-toolbar">
         <select id="pipeline-service" class="mini-select" aria-label="Service"></select>
         <select id="pipeline-rep" class="mini-select hidden"></select>
         <input id="pipeline-search" class="mini-search" aria-label="Search leads" placeholder="Search name, company, city…">
-        <select id="pipeline-type" class="mini-select" aria-label="Lead type"></select>
+        <select id="pipeline-type" class="mini-select hidden" aria-label="Lead type"></select>
         <select id="pipeline-contact" class="mini-select" aria-label="Contact information"><option value="">Any contact information</option><option value="ready">Has phone or email</option><option value="research">Needs phone or email</option></select>
         <select id="pipeline-attention" class="mini-select" aria-label="Priority"><option value="">All priorities</option><option value="hot">Hot leads</option><option value="needs_step">Needs next step</option></select>
         <select id="pipeline-stage" class="mini-select" aria-label="Stage"></select>
         <select id="pipeline-outreach" class="mini-select" aria-label="Outreach status"></select>
         <select id="pipeline-contact_quality" class="mini-select" aria-label="Contact quality"></select>
       </div>
-      <div class="view-actions"><div class="view-toggle" aria-label="Pipeline view"><button id="pipe-list" aria-pressed="true">List</button><button id="pipe-board" aria-pressed="false">Board</button></div><button class="btn-ghost small" id="pipeline-reset">Clear filters</button></div>
+      <div class="view-actions"><div class="view-toggle" aria-label="Pipeline view"><button id="pipe-list" aria-pressed="true">List</button><button id="pipe-grouped" aria-pressed="false">By category</button><button id="pipe-board" aria-pressed="false">Board</button></div><button class="btn-ghost small" id="pipeline-reset">Clear filters</button></div>
       <p class="view-intro" id="pipeline-count" aria-live="polite"></p>
       <div id="pipeline-list" class="lead-list"></div>
       <div id="kanban" class="kanban"></div>
@@ -202,6 +203,6 @@
 <div id="toast" class="toast"></div>
 
 <script src="/shell.js"></script>
-<script src="/crm/static/app.js?v=29"></script>
+<script src="/crm/static/app.js?v=31"></script>
 </body>
 </html>

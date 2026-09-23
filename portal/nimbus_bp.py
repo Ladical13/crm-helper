@@ -424,10 +424,31 @@ def get_territories():
     return jsonify(out)
 
 
+@nimbus_bp.route('/api/segments', methods=['GET'])
+def get_segments():
+    from agents.b2b import sources
+    return jsonify(sources.segment_catalog())
+
+
+def _bad_segments(segments):
+    """Keys outside the catalog, or None when the value is not a list at all."""
+    from agents.b2b import sources
+    if not isinstance(segments, list):
+        return None
+    return [s for s in segments if s not in sources.SEGMENT_LABELS]
+
+
 @nimbus_bp.route('/api/territories/<username>', methods=['PUT'])
 def set_territory(username):
     from agents import config
     data = request.get_json(force=True, silent=True) or {}
+    # A typo here used to save silently and then import nothing, since the CRM
+    # rejects a lead type it does not know.
+    if 'segments' in data:
+        bad = _bad_segments(data['segments'])
+        if bad is None or bad:
+            return jsonify({'error': f'unknown segment(s): {bad}' if bad
+                            else 'segments must be a list'}), 400
     territories = config.load_territories()
     cfg = territories.get(username) or {}
     for key in ('display_name', 'counties', 'cities', 'segments'):
@@ -517,7 +538,18 @@ def start_b2b_run():
     rep = (data.get('rep') or '').strip()
     if not rep:
         return jsonify({'error': 'rep is required'}), 400
-    segment = data.get('segment')
+    # `segments` is the category picker beside RUN; `segment` is the older
+    # single-segment form, kept for the CLI's --segment and any saved call.
+    segments = data.get('segments')
+    if segments is not None:
+        bad = _bad_segments(segments)
+        if bad is None or bad:
+            return jsonify({'error': f'unknown segment(s): {bad}' if bad
+                            else 'segments must be a list'}), 400
+        if not segments:
+            return jsonify({'error': 'pick at least one category'}), 400
+    elif data.get('segment'):
+        segments = [data['segment']]
     city = data.get('city')
     dry_run = bool(data.get('dry_run'))
     per_city_limit = int(data.get('per_city_limit') or 10)
@@ -539,7 +571,7 @@ def start_b2b_run():
         try:
             manifest = dispatcher.run(
                 rep,
-                segments=[segment] if segment else None,
+                segments=segments or None,
                 cities=[city] if city else None,
                 per_city_limit=per_city_limit,
                 dry_run=dry_run,
@@ -562,7 +594,7 @@ def start_b2b_run():
             client.set_cookie('p1session', caller_cookie, domain='localhost')
             manifest = dispatcher.run(
                 rep,
-                segments=[segment] if segment else None,
+                segments=segments or None,
                 cities=[city] if city else None,
                 per_city_limit=per_city_limit,
                 dry_run=dry_run,
