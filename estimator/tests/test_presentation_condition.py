@@ -1,4 +1,6 @@
 """Customer presentations must show a report, never serialized form data."""
+import re
+
 import pytest
 
 
@@ -35,9 +37,19 @@ def _report():
 def test_structured_condition_report_is_readable_and_escaped(A):
     html = _render(A, property_condition=_report())
     assert '<div class="ps-cond">' in html
-    for text in ('Property Condition Report', 'Grade D', 'Poor', 'North edge',
-                 'High', 'Repair flashing', '$1,500', 'Estimated Total'):
+    for text in ('Property Condition Report', 'Poor', 'North edge',
+                 'High', 'Repair flashing', '$1,500'):
         assert text in html
+    # The grade is a MARK on the section header, not a 'Grade D — Poor'
+    # caption: the letter carries the colour and the word sits beside it.
+    assert re.search(r'class="cvcond-grade"[^>]*>D</span>', html)
+    assert re.search(r'class="cvcond-sec-word"[^>]*>Poor</span>', html)
+    # A report-only estimate does NOT close the report with its own total —
+    # the presentation's own bar states it, and the same figure twice inches
+    # apart is how a customer starts wondering which one they owe. Assert the
+    # money still reaches them, which is what the total was here to prove.
+    assert 'Estimated Repair Total' in html
+    assert '$1,500.00' in html
     assert '&lt;script&gt;alert(1)&lt;/script&gt; &amp; lifting' in html
     assert '<script>alert(1)</script>' not in html
     assert 'private-photo-id' not in html
@@ -57,6 +69,6 @@ def test_legacy_roof_report_uses_the_same_readable_format(A):
         'recommendations': [], 'report_photo_ids': ['private-photo-id'],
     })
     assert '<div class="ps-cond">' in html
-    assert 'Grade D' in html
+    assert re.search(r'class="cvcond-grade"[^>]*>D</span>', html)
     assert 'Missing caps' in html
     assert 'private-photo-id' not in html
