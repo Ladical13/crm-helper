@@ -5352,3 +5352,6 @@ body.is-client #nav-toggle      { display: none; }
 .vz-material-row { display: grid; gap: 7px; padding: 12px 0; border-top: 1px solid var(--border, #dbe2ea); }
 .vz-material-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .vz-materials { border-left: 3px solid #0f766e; }
+
+/* A signed invoice is frozen — the chip should not read like "sent". */
+.rc-signed-chip { background: #065f46; color: #ecfdf5; }

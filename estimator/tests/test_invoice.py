@@ -244,11 +244,117 @@ def test_a_rep_cannot_reach_another_reps_invoice(app):
 
 
 def test_no_invoice_route_is_open_to_a_demo_guest():
-    for ep in ('get_invoice', 'save_invoice_fields', 'download_invoice_pdf',
-               'file_invoice', 'email_invoice'):
-        assert ep in A.app.view_functions
-        assert ep not in demo_store.ALLOWED_ENDPOINTS
-        assert ep not in A.PUBLIC_ENDPOINTS
+    """Walks the URL map rather than naming the routes.
+
+    The list used to be five hand-written endpoint names, so a route added
+    later arrived unchecked — and `send_invoice_for_signature` mails a real
+    address and mints a public token, which is exactly the shape of thing a
+    guest must not reach. Derive the set, and a new invoice route is covered
+    the moment it exists.
+    """
+    eps = {r.endpoint for r in A.app.url_map.iter_rules()
+           if str(r).startswith('/api/estimates/') and '/invoice' in str(r)}
+    assert len(eps) >= 6, f'the rule scan stopped matching: {eps}'
+    for ep in eps:
+        assert ep not in demo_store.ALLOWED_ENDPOINTS, ep
+        assert ep not in A.PUBLIC_ENDPOINTS, ep
+
+
+# ── signing it ─────────────────────────────────────────────────────────────
+
+def _signable(client, eid='inv-sign', **over):
+    """An estimate with a minted signing token, ready for the public page."""
+    A.est_save(_est(eid, **over))
+    est = A.est_load(eid)
+    inv = dict(est.get('invoice') or {})
+    inv['sign_token'] = 'tok-' + eid
+    est['invoice'] = inv
+    A.est_save(est)
+    return eid, inv['sign_token']
+
+
+def test_the_public_page_renders_the_figures_and_a_form():
+    eid, tok = _signable(None)
+    c = A.app.test_client()
+    r = c.get(f'/sign-inv/{tok}')
+    assert r.status_code == 200
+    html = r.data.decode()
+    assert 'Sign &amp; Approve' in html
+    assert 'Summit Builders' in html
+    # The amount on the page is the estimate's own total, not a figure the
+    # invoice block stores separately.
+    assert A.fc(A.invoice_rows(A.est_load(eid))['subtotal']) in html
+
+
+def test_a_bad_token_is_a_404_not_a_login_redirect():
+    assert A.app.test_client().get('/sign-inv/nope').status_code == 404
+
+
+def test_signing_stores_the_signature_and_hashes_the_figures():
+    eid, tok = _signable(None)
+    c = A.app.test_client()
+    r = c.post(f'/sign-inv/{tok}', data={'sig_name': 'Dana Ruiz',
+                                         'sig_email': 'dana@summit.example'})
+    assert r.status_code == 200
+    sig = A.est_load(eid)['invoice']['signature']
+    assert sig['name'] == 'Dana Ruiz'
+    assert len(sig['document_hash']) == 64
+    assert sig['token'] == tok
+
+
+def test_a_nameless_signature_is_refused():
+    _eid, tok = _signable(None)
+    assert A.app.test_client().post(f'/sign-inv/{tok}',
+                                    data={'sig_name': '  '}).status_code == 400
+
+
+def test_signing_twice_does_not_overwrite_the_first_signature():
+    eid, tok = _signable(None)
+    c = A.app.test_client()
+    c.post(f'/sign-inv/{tok}', data={'sig_name': 'First Signer'})
+    c.post(f'/sign-inv/{tok}', data={'sig_name': 'Second Signer'})
+    assert A.est_load(eid)['invoice']['signature']['name'] == 'First Signer'
+
+
+def test_a_signed_invoice_can_no_longer_be_edited(client):
+    """The signature covers a hash of these figures. Letting them move
+    afterwards leaves a record attesting to an amount the document no longer
+    shows — the same reason a signed estimate cannot change status."""
+    eid, tok = _signable(None)
+    A.app.test_client().post(f'/sign-inv/{tok}', data={'sig_name': 'Dana Ruiz'})
+    r = client.put(f'/api/estimates/{eid}/invoice', json={'po_ref': 'changed'})
+    assert r.status_code == 409
+    assert 'signed' in r.get_json()['error'].lower()
+    assert (A.est_load(eid)['invoice'].get('po_ref') or '') != 'changed'
+
+
+def test_signing_an_invoice_does_not_push_a_job_to_the_den_or_move_the_funnel():
+    """THE reason this is not the estimate's signing path.
+
+    `/sign/<token>` runs `_post_sign_pipeline`: a Contact and a Project into
+    The Den, packets filed against them, and the CRM funnel driven to `won`.
+    An invoice bills work that was already sold, so reusing it would push the
+    job to the back office a second time and re-win a lead won months ago —
+    silently, because both are background threads.
+    """
+    import inspect
+    src = inspect.getsource(A._post_invoice_sign_pipeline)
+    for forbidden in ('_push_to_den', '_funnel_record', '_post_sign_pipeline',
+                      'push_to_crm=True'):
+        assert forbidden not in src, f'{forbidden} reached the invoice pipeline'
+
+
+def test_the_signing_token_is_never_settable_by_a_client():
+    """A client that could name the token could sign on the customer's behalf."""
+    for field in ('sign_token', 'signature', 'sign_sent_at'):
+        assert field not in A._sanitize_invoice({field: 'x'})
+
+
+def test_a_whole_doc_save_cannot_strip_a_signature(client):
+    eid, tok = _signable(None)
+    A.app.test_client().post(f'/sign-inv/{tok}', data={'sig_name': 'Dana Ruiz'})
+    client.put(f'/api/estimates/{eid}', json=_est(eid))
+    assert A.est_load(eid)['invoice'].get('signature'), 'the signature was rolled back'
 
 
 # ── homeowner mode: "List every line" unticked ─────────────────────────────
@@ -331,3 +437,48 @@ def test_the_download_flag_actually_changes_the_disposition(client):
     assert 'attachment' not in (inline.headers.get('Content-Disposition') or '')
     assert 'attachment' in attach.headers.get('Content-Disposition', '')
     assert '.pdf' in attach.headers['Content-Disposition']
+
+
+def test_the_rep_is_told_when_it_is_signed(monkeypatch):
+    """The signature lands in a background thread on a public route, so
+    without this the rep finds out by opening the estimate and noticing.
+
+    This caught a real one: the notification was referenced by the pipeline and
+    never defined, and because the call sits in a try/except the only sign was
+    a line in a log nobody reads.
+    """
+    sent = []
+    monkeypatch.setattr(A, '_send_email',
+                        lambda subj, html, to, **kw: sent.append((subj, html, to)) or True)
+    eid, tok = _signable(None)
+    A.app.test_client().post(f'/sign-inv/{tok}', data={'sig_name': 'Dana Ruiz'})
+    assert A.send_invoice_signature_notification(A.est_load(eid)) is True
+    subj, html, _to = sent[-1]
+    assert 'signed' in subj.lower()
+    assert 'Dana Ruiz' in html
+    assert 'nothing in the pipeline has' in html, (
+        'the rep should be told explicitly that this did NOT move the job')
+
+
+def test_the_pipeline_calls_a_notification_that_actually_exists():
+    """A name resolved at call time, inside a try/except, is a silent no-op."""
+    import inspect
+    src = inspect.getsource(A._post_invoice_sign_pipeline)
+    for name in ('send_invoice_signature_notification', 'generate_invoice'):
+        assert name in src
+        assert hasattr(A, name), f'{name} is called by the pipeline and does not exist'
+
+
+def test_the_panel_offers_the_signing_link_and_shows_when_it_is_signed():
+    import os
+    js = open(os.path.join(os.path.dirname(A.__file__), 'static', 'app.js'),
+              encoding='utf-8').read()
+    assert 'onclick="invSendForSignature()"' in js
+    assert 'function invSendForSignature' in js
+    body = js[js.index('async function invSendForSignature'):]
+    body = body[:body.index('async function invFile')]
+    assert 'invoice/send-signature' in body
+    # A link that exists but was not emailed is still worth having — a rep
+    # pastes it into the thread the GC is already on.
+    assert 'clipboard' in body, 'no fallback when the mail does not go'
+    assert 'rc-signed-chip' in js, 'nothing shows that it came back signed'
