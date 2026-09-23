@@ -442,6 +442,27 @@ estimator's parity and fastening tests `skipif` it is missing and would
 otherwise go green without checking pricing at all; a final step fails the run
 if any suite reported a skip.
 
+**The Python version is pinned in `.python-version`, and it has to stay equal
+to CI's.** This repo is **3.12-only** — `estimator/app.py` uses PEP 701
+f-strings, which an older interpreter cannot *parse* — so a builder that picks
+3.11 does not fail a test, it fails at import with all seven suites green.
+Nothing pinned it until this file existed: Railway's builder chose production's
+interpreter, CI chose its own in the workflow, and the two agreeing was a
+coincidence nobody checked. `portal/tests/test_runtime_pin.py` now holds the
+pin, the workflow and the floor the source actually needs to the same answer.
+
+Two things about it are worth knowing before debugging a version problem:
+
+- **A `NIXPACKS_PYTHON_VERSION` Railway variable OUTRANKS the file.** Nixpacks
+  reads the environment variable first, so a stale one makes the pin inert
+  while every test above still passes. If production disagrees with
+  `.python-version`, look there before anything else.
+- **One pin file, deliberately.** Nixpacks also honours `runtime.txt`,
+  `Pipfile` and `.tool-versions`, in that order after `.python-version`.
+  Adding a second is two answers to one question with a precedence rule
+  between them that nobody remembers — the same trap `portal/clock.py` exists
+  to close.
+
 ## Base44 CRM API
 
 ### Base URL
