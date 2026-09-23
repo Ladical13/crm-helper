@@ -430,6 +430,36 @@
     font-family: inherit;
   }
   .sup-starter:hover { color: var(--accent); border-color: var(--accent); }
+  /* Header, forms and status cards must fit a phone without page zoom. */
+  .grid > *, .sup > *, section.panel, .settings .row > * { min-width: 0; }
+  input, select, textarea { max-width: 100%; min-width: 0; }
+  .rep .head, .rep .stats, .rep .row { flex-wrap: wrap; gap: 8px; }
+  .rep .terr, .topic, .sup-msg, .kv, .conn, .conn code { overflow-wrap: anywhere; }
+  .flash:empty { display: none; }
+  .flash:not(.show) { visibility: hidden; pointer-events: none; }
+  @media (max-width: 760px) {
+    header { position: static; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 12px 16px; }
+    header .brand { min-width: 0; }
+    header .glyph { flex-shrink: 0; }
+    header .cost { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; justify-content: center; }
+    header .badge { width: fit-content; max-width: 100%; }
+    header .exit { grid-column: 2; grid-row: 1; min-height: 44px; display: flex; align-items: center; }
+    nav { padding: 8px 12px; }
+    nav a { min-height: 44px; display: flex; align-items: center; }
+    main { padding: 16px max(12px,env(safe-area-inset-right,0px)) calc(32px + env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px)); }
+    .grid { grid-template-columns: minmax(0,1fr); }
+    section.panel { padding: 14px; }
+    section.panel h2 { flex-wrap: wrap; }
+    section.panel h2 > span { min-width: 0; max-width: 100%; }
+    #fun-series { width: 100%; margin: 0 0 8px !important; }
+    .settings .row { grid-template-columns: minmax(0,1fr) !important; }
+    .stage-row { grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; }
+    .flash { left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom,0px)); overflow-wrap: anywhere; }
+  }
+  @media (pointer: coarse) {
+    input,select,textarea { font-size: 16px !important; }
+    button,.rep .btn,.sup-starter { min-height: 44px; }
+  }
 </style>
 <link rel="stylesheet" href="/nimbus/assets/studio.css?v=1">
 </head>

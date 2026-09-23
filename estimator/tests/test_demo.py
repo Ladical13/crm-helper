@@ -469,6 +469,11 @@ def test_a_guest_cannot_read_or_rotate_its_own_key(guest, method):
     assert getattr(guest, method)('/api/demo-link').status_code == 403
 
 
+# Windows has no Unix permission bits — os.chmod(0o600) only toggles read-only,
+# so st_mode reads 666 whatever the code does. Production and CI are Linux,
+# where this runs (and where the workflow fails the build on ANY skip), so the
+# guard is unchanged; it just stops failing every run on the office laptop.
+@pytest.mark.skipif(os.name == 'nt', reason='no Unix file modes on Windows')
 def test_the_stored_token_is_not_world_readable(client, monkeypatch):
     monkeypatch.delenv('P1_DEMO_TOKEN', raising=False)
     client.post('/api/demo-link')

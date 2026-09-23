@@ -1450,6 +1450,12 @@ def list_estimates():
                 'co_pending':      sum(1 for x in d.get('change_orders') or []
                                        if x.get('status') in ('draft', 'sent')),
                 'co_total':        round(_accepted_co_total(d), 2),
+                # Where a signed job stands, for the Job Board's post-signature
+                # columns. Empty on anything unsigned, and on a signed job
+                # nobody has scheduled yet.
+                'job_stage':       _job_stage(d),
+                'job_stage_at':    _job_stage_at(d),
+                'upgrades_total':  round(upgrades_total(d), 2),
             })
         except Exception as e:
             # A malformed estimate must never silently vanish from a rep's
@@ -1558,6 +1564,17 @@ def save_estimate(est_id):
                 data['assignment_history'] = existing['assignment_history']
             else:
                 data.pop('assignment_history', None)
+            # Where a signed job stands moves ONLY through PATCH .../job-stage,
+            # for the same reason as the owner: a tab opened before the office
+            # marked the job Scheduled would otherwise autosave it back to
+            # "awaiting scheduling" and the card would jump columns on its own.
+            # SERVER_MANAGED_FIELDS cannot express this — it restores a key
+            # only when the save omits it, and a stale tab carries the old one.
+            for _f in ('job_stage', 'job_stage_history'):
+                if existing.get(_f):
+                    data[_f] = existing[_f]
+                else:
+                    data.pop(_f, None)
             # A signed estimate stays accepted even if a stale tab says draft
             if existing.get('signature') and data.get('status') in (None, 'draft', 'sent'):
                 data['status'] = existing.get('status', 'accepted')
@@ -1892,6 +1909,96 @@ def get_lost_reasons():
     """The picker's options, served rather than mirrored, so the list cannot
     drift between the dropdown and the validator that accepts its value."""
     return jsonify(LOST_REASONS)
+
+
+# Where a SIGNED job stands. The estimator's own knowledge of a job ends at the
+# signature — everything after it belongs to The Den — but the Job Board needs
+# to show a rep which of their signed jobs are still waiting on a date, and
+# nothing else in this app could say so. Set by hand, never pushed anywhere.
+# '' is a real stage: signed, awaiting scheduling. Ordered, because the board's
+# columns and the analytics tab both read this order.
+JOB_STAGES = {
+    '':              'Signed — awaiting scheduling',
+    'scheduled':     'Scheduled',
+    'in_production': 'In production',
+    'complete':      'Complete',
+}
+
+
+def _is_won(est):
+    """Signed, or marked accepted by hand (a customer who agreed on paper).
+    The same rule as estStatusOf() in app.js, which puts both on the board's
+    signed side — so both have to be schedulable."""
+    return bool(est.get('signature')) or est.get('status') == 'accepted'
+
+
+def _job_stage(est):
+    """The stored stage, or '' for anything not won or unrecognised. A stage
+    on an open estimate is meaningless (the PATCH refuses to write one), so a
+    stray value is read as nothing rather than trusted."""
+    if not _is_won(est):
+        return ''
+    st = est.get('job_stage') or ''
+    return st if st in JOB_STAGES else ''
+
+
+def _job_stage_at(est):
+    hist = est.get('job_stage_history')
+    if isinstance(hist, list) and hist and isinstance(hist[-1], dict):
+        return hist[-1].get('at') or ''
+    return ''
+
+
+@app.route('/api/job-stages', methods=['GET'])
+def get_job_stages():
+    """Served rather than mirrored, like the loss reasons: the board's columns
+    and the validator below cannot disagree about what a stage is."""
+    return jsonify([{'key': k, 'label': v} for k, v in JOB_STAGES.items()])
+
+
+@app.route('/api/estimates/<est_id>/job-stage', methods=['PATCH'])
+def update_job_stage(est_id):
+    """Move a signed job between Awaiting scheduling / Scheduled / In
+    production / Complete. Either direction — jobs get rescheduled — and every
+    move is kept in `job_stage_history`, which is what the cycle-time figures
+    on the analytics tab are measured from."""
+    if not _safe_path_id(est_id):
+        return jsonify({'error': 'invalid estimate id'}), 400
+    raw = (request.get_json(force=True, silent=True) or {}).get('job_stage')
+    if not isinstance(raw, str) or raw not in JOB_STAGES:
+        return jsonify({'error': 'Unknown job stage'}), 400
+    pre = est_load(est_id)
+    if pre is None:
+        return jsonify({'error': 'Not found'}), 404
+    if not _can_touch_estimate(pre):
+        return _forbid()
+    if not _is_won(pre):
+        return jsonify({'error': 'Only a signed job can be scheduled.'}), 409
+    user = _current_user()
+    now  = datetime.utcnow().isoformat() + 'Z'
+    changed = {'v': False}
+
+    def _mut(doc):
+        if doc is None or not _is_won(doc):
+            return None
+        if (doc.get('job_stage') or '') == raw:
+            return None
+        hist = doc.get('job_stage_history')
+        hist = hist if isinstance(hist, list) else []
+        hist.append({'stage': raw, 'from': doc.get('job_stage') or '',
+                     'at': now, 'by': user})
+        doc['job_stage_history'] = hist[-100:]
+        if raw:
+            doc['job_stage'] = raw
+        else:
+            doc.pop('job_stage', None)
+        doc['updated_at'] = now
+        changed['v'] = True
+        return doc
+
+    est_update(est_id, _mut)
+    return jsonify({'ok': True, 'job_stage': raw, 'changed': changed['v'],
+                    'job_stage_at': now if changed['v'] else _job_stage_at(pre)})
 
 
 # ── Photo uploads ──────────────────────────────────────────────────────────
@@ -6165,8 +6272,53 @@ def _tier_package_names(est, trade):
 
 @app.route('/api/analytics')
 def get_analytics():
-    """Per-trade and per-rep revenue, cost, and margin across all estimates."""
+    """Per-trade and per-rep revenue, cost, and margin across all estimates.
+
+    Optional `from`/`to` (YYYY-MM-DD, inclusive) and `rep` narrow it. Each
+    figure is filtered on the date that makes it true: revenue on the
+    signature, the sent cohort on the send, the funnel on creation. The month
+    series, the current-month pace and the benchmarks ignore the range —
+    goals are per month, and a month cut in half is not a month — but they do
+    honour `rep`. Pipeline aging and open pipeline are snapshots of NOW and
+    ignore the range too. With no parameters the answer is what it always was.
+
+    A rep asking gets `rep` forced to themselves. This endpoint used to hand
+    any rep every other rep's revenue, margin and close rate."""
     TRADE_NAMES = list(GBB_TRADES)
+    q = request.args
+    rng_from = (q.get('from') or '').strip()
+    rng_to   = (q.get('to') or '').strip()
+    for _d in (rng_from, rng_to):
+        if _d and not re.match(r'^\d{4}-\d{2}-\d{2}$', _d):
+            return jsonify({'error': 'Dates are YYYY-MM-DD.'}), 400
+    rep_f = (q.get('rep') or '').strip().lower()
+    if not _is_manager_up():
+        # Fails closed: a non-manager with no name must match nobody, never
+        # fall through to the empty filter, which means everyone.
+        rep_f = (_current_user() or '').strip().lower() or '\x00'
+    has_range = bool(rng_from or rng_to)
+
+    def _in(dstr):
+        """Whether an ISO timestamp falls inside the requested range. With no
+        range everything is in, which is what keeps the old answer intact."""
+        if not has_range:
+            return True
+        # Colorado days, like the month series: a roof signed at 7pm on the
+        # 31st belongs to the 31st. A bare date (estimate_date) is already one.
+        d = dstr if len(dstr or '') == 10 else pclock.day_of(dstr)
+        if not d:
+            return False
+        return (not rng_from or d >= rng_from) and (not rng_to or d <= rng_to)
+
+    # Depth added with the full-screen analytics page. All of it is counted
+    # over signed jobs whose signature falls in the range.
+    by_tier   = {}   # trade -> {good|better|best|flat: {count, revenue}}
+    upgrades  = {'jobs': 0, 'offered': 0, 'elected': 0, 'revenue': 0.0}
+    cos       = {'count': 0, 'value': 0.0}
+    job_stage_counts = {k: {'count': 0, 'value': 0.0} for k in JOB_STAGES}
+    to_sched, to_done = [], []    # days from signature, per job
+    kpi = {'revenue': 0.0, 'jobs': 0, 'sent': 0, 'sent_won': 0,
+           'pipeline': 0.0, 'pipeline_count': 0, 'dtc': []}
     by_trade = {}
     by_rep   = {}
 
@@ -6226,6 +6378,13 @@ def get_analytics():
         is_signed  = bool(est.get('signature'))
         is_sent    = bool(est.get('share_token'))
         sp         = (est.get('salesperson') or '').strip()
+        if rep_f and sp.lower() != rep_f:
+            continue
+        signed_at_s = (est.get('signature') or {}).get('signed_at') or ''
+        in_signed  = is_signed and _in(signed_at_s)
+        in_sent    = is_sent and _in(est.get('sent_at') or '')
+        in_created = _in(est.get('created_at') or est.get('estimate_date')
+                         or est.get('updated_at') or '')
         if not sp:
             # Still skipped from the per-rep and company aggregates below —
             # by_rep[sp] is threaded through a dozen sites and a synthetic
@@ -6234,18 +6393,20 @@ def get_analytics():
             # from the funnel, revenue, aging, cities and YTD with nothing
             # anywhere saying how many rows had gone, so the numbers were
             # incomplete by an unknown amount. A visible number is fixable.
-            unassigned['count'] += 1
-            unassigned['value'] += _estimate_total(est)
-            if is_signed:
-                unassigned['signed_value'] += _estimate_total(est)
+            if in_created:
+                unassigned['count'] += 1
+                unassigned['value'] += _estimate_total(est)
+                if is_signed:
+                    unassigned['signed_value'] += _estimate_total(est)
             continue
 
         # ── Funnel counting ───────────────────────────────────────────
-        funnel['total'] += 1
-        if is_sent:   funnel['sent']    += 1
-        if est.get('first_viewed_at'): funnel['viewed'] += 1
-        if is_signed: funnel['signed']  += 1
-        if _is_lost(est):
+        if in_created:
+            funnel['total'] += 1
+        if in_created and is_sent:   funnel['sent']    += 1
+        if in_created and est.get('first_viewed_at'): funnel['viewed'] += 1
+        if in_created and is_signed: funnel['signed']  += 1
+        if in_created and _is_lost(est):
             funnel['lost'] += 1
             lr = (est.get('lost_reason') or '').strip() or 'unrecorded'
             d  = lost_reasons.setdefault(lr, {'count': 0, 'value': 0.0})
@@ -6264,6 +6425,8 @@ def get_analytics():
                 pipeline_aging[bucket]['value'] += est_total
             except Exception:
                 pass
+            kpi['pipeline']       += est_total
+            kpi['pipeline_count'] += 1
 
         # ── Revenue by type ───────────────────────────────────────────
         est_type = est.get('estimate_type', 'retail') or 'retail'
@@ -6271,10 +6434,61 @@ def get_analytics():
             by_type[est_type] = {'revenue': 0.0, 'count': 0, 'pipeline': 0.0}
         est_total = _estimate_total(est)
         if is_signed:
-            by_type[est_type]['revenue'] += est_total
-            by_type[est_type]['count']   += 1
+            if in_signed:
+                by_type[est_type]['revenue'] += est_total
+                by_type[est_type]['count']   += 1
         elif is_sent:
             by_type[est_type]['pipeline'] += est_total
+
+        # ── Headline figures for the range ────────────────────────────
+        if in_sent:
+            kpi['sent'] += 1
+            if is_signed:
+                kpi['sent_won'] += 1
+        if in_signed:
+            kpi['revenue'] += est_total
+            kpi['jobs']    += 1
+            if est.get('sent_at'):
+                try:
+                    d1 = datetime.fromisoformat(est['sent_at'].replace('Z', '').replace('+00:00', ''))
+                    d2 = datetime.fromisoformat(signed_at_s.replace('Z', '').replace('+00:00', ''))
+                    kpi['dtc'].append(max(0, (d2 - d1).days))
+                except Exception:
+                    pass
+            # Upgrades: of the signed jobs that OFFERED any, how many took one.
+            # Read through accepted_upgrades(), the customer's own tick, so an
+            # offer nobody elected is worth nothing here either.
+            upgrades['jobs'] += 1
+            if upgrades_offered(est):
+                upgrades['offered'] += 1
+                if accepted_upgrades(est):
+                    upgrades['elected'] += 1
+                    upgrades['revenue'] += upgrades_total(est)
+            co_ok = [c for c in est.get('change_orders') or []
+                     if c.get('status') == 'accepted']
+            cos['count'] += len(co_ok)
+            cos['value'] += _accepted_co_total(est)
+            jst = _job_stage(est)
+            job_stage_counts[jst]['count'] += 1
+            job_stage_counts[jst]['value'] += est_total
+            try:
+                d0 = datetime.fromisoformat(signed_at_s.replace('Z', '').replace('+00:00', ''))
+                first = {}
+                for h in est.get('job_stage_history') or []:
+                    if isinstance(h, dict) and h.get('stage') and h.get('at'):
+                        first.setdefault(h['stage'], h['at'])
+                # "Scheduled" is the first move to ANY later stage — a job
+                # marked straight to In production was still scheduled.
+                s_at = min((first[k] for k in ('scheduled', 'in_production', 'complete')
+                            if k in first), default='')
+                if s_at:
+                    to_sched.append(max(0, (datetime.fromisoformat(
+                        s_at.replace('Z', '').replace('+00:00', '')) - d0).days))
+                if first.get('complete'):
+                    to_done.append(max(0, (datetime.fromisoformat(
+                        first['complete'].replace('Z', '').replace('+00:00', '')) - d0).days))
+            except Exception:
+                pass
 
         # ── Monthly: sent cohort ─────────────────────────────────────
         sent_month = pclock.month_of(est.get('sent_at'))
@@ -6299,7 +6513,7 @@ def get_analytics():
                 m[est_type if est_type in ('retail', 'insurance', 'commercial') else 'retail'] += est_total
                 m['by_rep'][sp] = m['by_rep'].get(sp, 0.0) + est_total
             city = (est.get('customer') or {}).get('address', {}).get('city', '').strip()
-            if city:
+            if city and in_signed:
                 top_cities[city] = top_cities.get(city, 0.0) + est_total
 
         pricing    = est.get('pricing', {})
@@ -6313,8 +6527,9 @@ def get_analytics():
                 'stale': 0,           # sent 3+ days, not signed
                 'deals': [],          # individual deal totals for distribution
             }
-        if is_sent:
+        if in_sent:
             by_rep[sp]['sent'] += 1
+        if is_sent:
             # Stale = sent 3+ days and not signed
             sent_at = est.get('sent_at') or ''
             if sent_at and not is_signed:
@@ -6324,7 +6539,7 @@ def get_analytics():
                         by_rep[sp]['stale'] += 1
                 except Exception:
                     pass
-        if is_signed:
+        if in_signed:
             by_rep[sp]['signed'] += 1
             # Days to close
             sent_at   = est.get('sent_at') or ''
@@ -6368,19 +6583,28 @@ def get_analytics():
                 by_trade[tk] = {'revenue':0,'cost':0,'pipeline':0,'job_count':0,'pipeline_count':0}
 
             if is_signed:
-                by_trade[tk]['revenue']   += tsell
-                by_trade[tk]['cost']      += tcost
-                by_trade[tk]['job_count'] += 1
-                by_rep[sp]['revenue']     += tsell
-                by_rep[sp]['cost']        += tcost
+                if in_signed:
+                    by_trade[tk]['revenue']   += tsell
+                    by_trade[tk]['cost']      += tcost
+                    by_trade[tk]['job_count'] += 1
+                    by_rep[sp]['revenue']     += tsell
+                    by_rep[sp]['cost']        += tcost
+                    by_rep[sp]['deals'].append(tsell)
+                    all_dtc.extend(by_rep[sp].get('days_to_close', [])[-1:])  # company wide
+                    # Which package the customer bought, per trade. A trade in
+                    # simple mode sold one flat price, and calling that "better"
+                    # would invent a choice nobody was offered.
+                    tkey = 'flat' if tmode == 'simple' else tier
+                    bt = by_tier.setdefault(tk, {}).setdefault(tkey, {'count': 0, 'revenue': 0.0})
+                    bt['count']   += 1
+                    bt['revenue'] += tsell
                 # Monthly margin basis — sell and cost from the same trade math.
+                # Not range-gated: the month series ignores the range.
                 month_key = pclock.month_of((est.get('signature') or {}).get('signed_at'))
                 if _GOAL_MONTH_RE.match(month_key):
                     m = _mo(month_key)
                     m['trade_revenue'] += tsell
                     m['trade_cost']    += tcost
-                by_rep[sp]['deals'].append(tsell)
-                all_dtc.extend(by_rep[sp].get('days_to_close', [])[-1:])  # company wide
             elif is_sent:
                 by_trade[tk]['pipeline']       += tsell
                 by_trade[tk]['pipeline_count'] += 1
@@ -6399,14 +6623,15 @@ def get_analytics():
             # company average up and make insurance work look like the thing
             # to chase. Costed-but-unpriced jobs stay out until the book is fixed.
             if icr['costed'] and not icr['unpriced']:
-                d = by_trade.setdefault('insurance', {
-                    'revenue': 0, 'cost': 0, 'pipeline': 0,
-                    'job_count': 0, 'pipeline_count': 0})
-                d['revenue']   += icr['revenue']
-                d['cost']      += icr['cost']
-                d['job_count'] += 1
-                by_rep[sp]['revenue'] += icr['revenue']
-                by_rep[sp]['cost']    += icr['cost']
+                if in_signed:
+                    d = by_trade.setdefault('insurance', {
+                        'revenue': 0, 'cost': 0, 'pipeline': 0,
+                        'job_count': 0, 'pipeline_count': 0})
+                    d['revenue']   += icr['revenue']
+                    d['cost']      += icr['cost']
+                    d['job_count'] += 1
+                    by_rep[sp]['revenue'] += icr['revenue']
+                    by_rep[sp]['cost']    += icr['cost']
                 month_key = pclock.month_of((est.get('signature') or {}).get('signed_at'))
                 if _GOAL_MONTH_RE.match(month_key):
                     m = _mo(month_key)
@@ -6454,7 +6679,7 @@ def get_analytics():
     months_out = []
     for key in series_keys:
         m    = monthly.get(key, blank)
-        g    = _goal_for(goals, key)
+        g    = _goal_for(goals, key, rep_f or None)
         rev  = round(m['revenue'], 2)
         prev = months_out[-1]['revenue'] if months_out else None
         ly   = rev_by_month.get(_month_add(key, -12))
@@ -6496,7 +6721,7 @@ def get_analytics():
     days_left     = max(0, days_in_month - days_elapsed)
     cur_row       = next((r for r in months_out if r['month'] == cur_month), None)
     cur_rev       = cur_row['revenue'] if cur_row else 0.0
-    cur_goal      = _goal_for(goals, cur_month)
+    cur_goal      = _goal_for(goals, cur_month, rep_f or None)
     projected     = round(cur_rev / days_elapsed * days_in_month, 2) if days_elapsed else 0.0
     gap           = round(max(0.0, cur_goal['revenue'] - cur_rev), 2)
     current_month = {
@@ -6526,6 +6751,8 @@ def get_analytics():
     rep_month = []
     for name in ({r.strip().lower() for r in by_rep} | set(cur_by_rep)
                  | set(goals.get('reps') or {})):
+        if rep_f and name != rep_f:
+            continue
         g   = _goal_for(goals, cur_month, name)
         rev = round(cur_by_rep.get(name, 0.0), 2)
         if g['revenue'] <= 0 and rev <= 0:
@@ -6560,7 +6787,54 @@ def get_analytics():
     if dtc_all:
         avg_dtc_all = round(sum(dtc_all) / len(dtc_all), 1)
 
+    def _avg_list(xs):
+        return round(sum(xs) / len(xs), 1) if xs else None
+
+    tr_rev  = sum(d['revenue'] for d in by_trade.values())
+    tr_cost = sum(d['cost'] for d in by_trade.values())
+    kpis = {
+        'revenue':           round(kpi['revenue'], 2),
+        'jobs':              kpi['jobs'],
+        'avg_deal':          round(kpi['revenue'] / kpi['jobs']) if kpi['jobs'] else 0,
+        # A sent cohort, like the month series: of what went out in the range,
+        # how much has closed. None rather than 0% when nothing was sent.
+        'sent':              kpi['sent'],
+        'close_rate':        round(kpi['sent_won'] / kpi['sent'] * 100) if kpi['sent'] else None,
+        'avg_days_to_close': _avg_list(kpi['dtc']),
+        'pipeline':          round(kpi['pipeline'], 2),
+        'pipeline_count':    kpi['pipeline_count'],
+        'margin_pct':        _margin(tr_rev, tr_cost),
+        'upgrade_attach':    round(upgrades['elected'] / upgrades['offered'] * 100)
+                             if upgrades['offered'] else None,
+    }
+    for d in by_tier.values():
+        for t in d.values():
+            t['revenue'] = round(t['revenue'], 2)
+    upgrades['revenue'] = round(upgrades['revenue'], 2)
+    change_orders = {
+        'count': cos['count'],
+        'value': round(cos['value'], 2),
+        'share_pct': round(cos['value'] / (kpi['revenue'] + cos['value']) * 100, 1)
+                     if cos['value'] > 0 else None,
+    }
+    avg_ticket_by_type = {t: (round(d['revenue'] / d['count']) if d['count'] else None)
+                          for t, d in by_type.items()}
+    job_stages = {
+        'stages': [{'key': k, 'label': JOB_STAGES[k],
+                    'count': job_stage_counts[k]['count'],
+                    'value': round(job_stage_counts[k]['value'], 2)} for k in JOB_STAGES],
+        'avg_days_to_schedule': _avg_list(to_sched),
+        'avg_days_to_complete': _avg_list(to_done),
+    }
+
     return jsonify({
+        'range':          {'from': rng_from, 'to': rng_to, 'rep': rep_f.strip('\x00')},
+        'kpis':           kpis,
+        'by_tier':        by_tier,
+        'upgrades':       upgrades,
+        'change_orders':  change_orders,
+        'avg_ticket_by_type': avg_ticket_by_type,
+        'job_stages':     job_stages,
         'by_trade':       by_trade,
         'by_rep':         by_rep,
         'monthly':        months_out,

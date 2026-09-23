@@ -79,6 +79,9 @@ ALLOWED_ENDPOINTS = frozenset({
     'list_estimates', 'create_estimate', 'get_estimate', 'save_estimate',
     'duplicate_estimate', 'delete_estimate', 'update_estimate_label',
     'update_estimate_status', 'get_customer_notes', 'set_customer_notes',
+    # The Job Board's post-signature columns. Writes the estimate doc and
+    # nothing else — same reach as update_estimate_status above.
+    'get_job_stages', 'update_job_stage',
 
     # The selling flow: build the customer link, open it, watch it come back
     # signed. `create_share_link` only mints a token — `email_estimate_link`

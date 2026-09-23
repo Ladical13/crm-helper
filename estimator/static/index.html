@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=246">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=247">
 </head>
 <body>
 
@@ -41,7 +41,8 @@
     <span id="save-indicator" class="save-indicator"></span>
     <div class="header-desktop-btns">
       <button onclick="switchPage('home')" class="btn-home" title="Home">🏠</button>
-      <button onclick="openDashboard()" class="btn-dashboard">📊 Dashboard</button>
+      <button onclick="openDashboard()" class="btn-dashboard">📊 Job Board</button>
+      <button onclick="openAnalytics()" class="btn-dashboard btn-analytics">📈 Analytics</button>
       <button onclick="newEstimateAction()">New</button>
       <button onclick="openEstimate()">Open</button>
       <button onclick="openPriceBook()" class="btn-pricebook">📋 Price Book</button>
@@ -69,7 +70,8 @@
   </div>
   <div id="header-overflow-menu" class="header-overflow-menu">
     <button onclick="switchPage('home');closeMoreMenu()">🏠 Home</button>
-    <button onclick="openDashboard();closeMoreMenu()">📊 Dashboard</button>
+    <button onclick="openDashboard();closeMoreMenu()">📊 Job Board</button>
+    <button onclick="openAnalytics();closeMoreMenu()">📈 Analytics</button>
     <button onclick="switchPage('home');closeMoreMenu();setTimeout(()=>document.getElementById('home-cust-search')?.focus(),200)">📁 Customer Search</button>
     <button onclick="newEstimateAction();closeMoreMenu()">New Estimate</button>
     <button onclick="openEstimate();closeMoreMenu()">Open</button>
@@ -275,6 +277,17 @@
     <!-- ── Home screen ───────────────────────────────────────────── -->
     <div id="page-home" class="page page-home" style="display:none">
       <div id="home-content"></div>
+    </div>
+
+    <!-- ── Job Board and Analytics: full-screen pages, not modals ──── -->
+    <!-- They were one 860px modal, which meant a closed estimate list and a
+         chart squeezed into a popup. body.is-board hides the sidebar and the
+         estimate tab strip for both. -->
+    <div id="page-dashboard" class="page page-board" style="display:none">
+      <div id="dashboard-body" class="board-body"></div>
+    </div>
+    <div id="page-analytics" class="page page-board page-analytics" style="display:none">
+      <div id="analytics-body" class="an-body"></div>
     </div>
 
     <!-- ── Customer hub (per-client landing: estimate or documents) ── -->
@@ -635,18 +648,7 @@
   </div>
 </div>
 
-<!-- ── Dashboard modal ──────────────────────────────────────────────── -->
-<div id="dashboard-modal" class="modal hidden" onclick="maybeCloseDashboard(event)">
-  <div class="modal-box dash-modal-box">
-    <div class="modal-header">
-      <h2>📊 Estimate Dashboard</h2>
-      <button onclick="closeDashboard()" class="modal-close">×</button>
-    </div>
-    <div id="dashboard-body" class="dashboard-body"></div>
-  </div>
-</div>
-
-<!-- ── Sales goals modal (manager+, opened from the analytics tab) ───── -->
+<!-- ── Sales goals modal (manager+, opened from the analytics page) ──── -->
 <div id="goals-modal" class="modal hidden" onclick="maybeCloseGoals(event)">
   <div class="modal-box goals-modal-box">
     <div class="modal-header">
@@ -919,6 +921,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=246"></script>
+<script src="/estimate/static/app.js?v=247"></script>
 </body>
 </html>

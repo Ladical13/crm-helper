@@ -1324,3 +1324,44 @@ same shape per rep. Rules the tests in `tests/test_analytics.py` hold down:
 - **Trailing averages exclude the current month**, which is still partial and
   would drag every benchmark down.
 - The series is gap-filled and always reaches the current month, capped at 24.
+
+## The Job Board and the Analytics page
+
+Both used to be one 860px modal. They are full-screen pages now
+(`switchPage('dashboard')` / `switchPage('analytics')`, `body.is-board`), and
+**nothing on either page carries a `max-width`** — showing more at once is the
+whole reason they exist. Pinned by `tests/test_job_board.py`.
+
+- **Every estimate sits in exactly one column**, decided by `boardColumnOf()`.
+  The modal listed a sent estimate under both Outstanding and Sent, so the
+  same dollars showed twice. "Going cold" is `estGoingCold()`, shared with the
+  Home alert — one rule, not three restatements.
+- **Draft / Sent / Viewed cannot be set by hand**; they follow the customer
+  link. Marking lost from the board goes through `openLostModal()` — the old
+  dashboard dropdown PATCHed `lost` directly, so every loss recorded there had
+  no reason.
+- **`job_stage` is where a SIGNED job stands** (awaiting scheduling →
+  scheduled → in production → complete). It moves only through
+  `update_job_stage()` (`PATCH /api/estimates/<id>/job-stage`), which refuses
+  anything `_is_won()` says is not signed or accepted, and appends to
+  `job_stage_history` — the cycle times on the analytics page come from it.
+  `save_estimate()` always restores the stored stage, because
+  `SERVER_MANAGED_FIELDS` only restores a value a save *omits*, and a stale
+  tab carries the old one. It is the estimator's own record and is **never
+  pushed to The Den**. Stages are served by `/api/job-stages`, not mirrored.
+  Pinned by `tests/test_job_stage.py`.
+- **`/api/analytics` takes `from`, `to` and `rep`** (Colorado days, via
+  `portal/clock.py`), and filters each figure on the date that makes it true (revenue on the signature, the sent cohort on
+  the send, the funnel on creation). The month series, pace and benchmarks
+  ignore the range — goals are per month — and pipeline aging is a snapshot of
+  now. With no parameters the answer is unchanged.
+- **A rep asking `/api/analytics` gets `rep` forced to themselves**, and a
+  non-manager with no name matches nobody (fail closed). Until 2026-09-22 this
+  endpoint handed every rep the whole team's revenue, margin and close rate.
+- **The KPI tiles come from the server's `kpis`**, not from `/api/estimates` in
+  the browser — the browser version could not honour a date range.
+- Charts are hand-drawn SVG (`svgTrend()`, `svgFunnel()`, `svgHBars()`,
+  `svgStacked()`, `svgMix()`), drawn after layout at the card's real width by
+  `_drawCharts()` so text does not shrink with a viewBox on a phone. No chart
+  library: this is an offline-first PWA and it would need vendoring plus
+  service-worker entries.

@@ -3085,6 +3085,11 @@ function switchPage(page) {
   if (target) target.style.display = 'flex';
   // Home page hides sidebar/nav; all other pages restore them
   document.body.classList.toggle('is-home', page === 'home');
+  // The Job Board and Analytics are full-screen: no sidebar, no estimate tab
+  // strip, and no max-width — the whole point is to show more at once.
+  document.body.classList.toggle('is-board', page === 'dashboard' || page === 'analytics');
+  if (page !== 'analytics' && (location.hash || '').startsWith('#analytics'))
+    try { history.replaceState(null, '', location.pathname + location.search); } catch {}
   // The customer screen is "client mode": no estimate tab strip or sidebar.
   // It carries the customer's details, notes, estimates and files; the tab
   // strip belongs to the estimate flow only.
@@ -3093,6 +3098,8 @@ function switchPage(page) {
   const activeBtn = document.querySelector('.page-btn.active');
   if (activeBtn) activeBtn.scrollIntoView({block:'nearest',inline:'center',behavior:'smooth'});
   if (page === 'home')    { renderHomePage(); return; }
+  if (page === 'dashboard') { refreshBoard(); return; }
+  if (page === 'analytics') { loadAnalytics(); return; }
   if (page === 'pricing') { renderTabBar(); renderTradeContent(); }
   if (page === 'intro')   renderIntroPage();
   if (page === 'scope')    renderScopePage();
@@ -11030,6 +11037,9 @@ function pickLostReason(key) {
 function closeLostModal() {
   document.getElementById('lost-modal').classList.add('hidden');
   _lostPick = '';
+  // Cancelled from the Job Board: the card never moved, so redraw puts the
+  // Move-to picker back rather than leaving it reading "Mark lost".
+  if (_lostBoardId) { _lostBoardId = null; renderBoardColumns(); }
   // The select still shows 'lost' from the click that opened this. Put it back.
   renderEstStatusBar();
 }
@@ -11044,6 +11054,12 @@ function confirmLostReason() {
   const note = (document.getElementById('lost-note').value || '').trim();
   document.getElementById('lost-modal').classList.add('hidden');
   _lostPick = '';
+  if (_lostBoardId) {
+    const id = _lostBoardId;
+    _lostBoardId = null;
+    dashUpdateStatus(id, 'lost', reason, note);
+    return;
+  }
   _patchEstStatus('lost', reason, note);
 }
 
@@ -11193,10 +11209,6 @@ async function photoDelete(id) {
 
 let _dashData      = [];
 let _dashRep       = null; // null until first open; then '' = all reps
-let _dashView      = 'estimates'; // 'estimates' | 'analytics'
-let _dashFilter    = null; // null = all | 'outstanding' | 'viewed' | 'sent' | 'signed' | 'draft'
-let _analyticsData = null; // cached result from /api/analytics
-let _analyticsSort = 'revenue'; // 'revenue' | 'margin' | 'jobs'
 
 function daysAgoLabel(iso) {
   if (!iso) return '';
@@ -11218,24 +11230,139 @@ function estStatusOf(e) {
   return 'draft';
 }
 
-async function openDashboard() {
+/* ── Job Board ───────────────────────────────────────────────────────
+   The dashboard is a full-screen page, one column per place a job can be:
+   the four sales columns the customer link drives, the post-signature stages
+   the office sets by hand, and Lost. Every estimate sits in EXACTLY one
+   column — the old modal listed a sent estimate under both Outstanding and
+   Sent, so the same dollars showed twice.
+
+   Draft / Sent / Viewed are derived from what the customer did and cannot be
+   set by dragging. What a rep CAN do by hand: mark a job lost (through the
+   reason picker — the old status dropdown bypassed it), mark it accepted,
+   reopen a lost one, and move a signed job through the stages the server
+   serves from /api/job-stages. */
+
+let _boardQ        = '';     // search text
+let _boardType     = '';     // '' | retail | insurance | commercial
+let _boardLostOpen = false;  // Lost is collapsed until asked for
+let _boardDragId   = null;
+let _lostBoardId   = null;   // set while the lost-reason modal is for a board card
+let _jobStages     = null;   // [{key,label}] from /api/job-stages
+
+const _BOARD_ICONS = { draft: '📝', sent: '📤', viewed: '👀', followup: '⚠',
+  'job:': '✅', 'job:scheduled': '📅', 'job:in_production': '🔨',
+  'job:complete': '🏁', lost: '✗' };
+
+async function _loadJobStages() {
+  if (_jobStages) return _jobStages;
+  try {
+    const r = await fetch('/api/job-stages');
+    const j = await r.json();
+    if (Array.isArray(j) && j.length) _jobStages = j;
+  } catch {}
+  // Unreachable: one signed column rather than a guess at the stage list.
+  return _jobStages || [{ key: '', label: 'Signed' }];
+}
+
+/* Sent 3+ days and never opened, or viewed 2+ days and not signed. The Home
+   alert, the board's Follow Up column and the leaderboard's Stale count all
+   ask this one question, so they share one answer. */
+function estGoingCold(e, now = Date.now()) {
+  const st = estStatusOf(e);
+  if (st === 'sent' && e.sent_at)
+    return (now - new Date(e.sent_at).getTime()) / 86400000 >= 3;
+  if (st === 'viewed' && e.last_viewed_at)
+    return (now - new Date(e.last_viewed_at).getTime()) / 86400000 >= 2;
+  return false;
+}
+
+function boardColumnOf(e) {
+  const st = estStatusOf(e);
+  if (st === 'signed') {
+    const k = 'job:' + (e.job_stage || '');
+    return (_jobStages || []).some(s => 'job:' + s.key === k) ? k : 'job:';
+  }
+  if (st === 'lost') return 'lost';
+  if (estGoingCold(e)) return 'followup';
+  return st;
+}
+
+function boardColumns() {
+  return [
+    { key: 'draft',    label: 'Drafts',              cls: 'sales' },
+    { key: 'sent',     label: 'Sent — not opened',   cls: 'sales' },
+    { key: 'viewed',   label: 'Viewed',              cls: 'hot' },
+    { key: 'followup', label: 'Follow up',           cls: 'warn' },
+    ...(_jobStages || [{ key: '', label: 'Signed' }]).map(s => ({
+      key: 'job:' + s.key, label: s.label, cls: s.key === 'complete' ? 'done' : 'won' })),
+    { key: 'lost',     label: 'Lost',                cls: 'lost' },
+  ];
+}
+
+// Newest activity first, except the two queues a rep works oldest-first.
+function _boardSort(key, arr) {
+  const by = f => (a, b) => (f(b) || '').localeCompare(f(a) || '');
+  const asc = f => (a, b) => (f(a) || '').localeCompare(f(b) || '');
+  if (key === 'sent') return arr.sort(asc(e => e.sent_at));
+  if (key === 'followup') return arr.sort(asc(e => e.last_viewed_at || e.sent_at));
+  if (key === 'viewed') return arr.sort(by(e => e.last_viewed_at));
+  if (key.startsWith('job:')) return arr.sort(by(e => e.job_stage_at || e.signed_at || e.updated_at));
+  return arr.sort(by(e => e.updated_at));
+}
+
+/* Where a card may go from here, as [target, label]. The server is the
+   authority on every one of these; this only avoids offering a move that is
+   certain to be refused. */
+function boardTargets(e) {
+  const st = estStatusOf(e), here = boardColumnOf(e);
+  if (st === 'signed') {
+    return (_jobStages || []).map(s => ['job:' + s.key, s.label])
+      .filter(([k]) => k !== here);
+  }
+  if (st === 'lost') return [['reopen', '↩ Reopen']];
+  return [['lost', '✗ Mark lost…'], ['job:', '✓ Mark accepted (no e-signature)']];
+}
+
+async function openDashboard() { switchPage('dashboard'); }
+// The dashboard used to be a modal that every route away from it had to
+// close. It is a page now — navigating is enough — so this is kept only so
+// the callers that still say it (and muscle memory) stay harmless.
+function closeDashboard() {}
+
+async function refreshBoard() {
+  const body = document.getElementById('dashboard-body');
+  if (body && !_dashData.length) body.innerHTML = '<div class="board-loading">Loading jobs…</div>';
+  await _loadJobStages();
   try {
     const r = await fetch('/api/estimates');
     _dashData = await r.json();
-  } catch { _dashData = []; }
+  } catch { _dashData = _dashData || []; }
   rebuildCustCounts();
-  if (_dashRep === null) _dashRep = _loggedInUser || '';
+  if (_dashRep === null) _dashRep = _meCanViewAll() ? '' : (_loggedInUser || '');
   renderDashboard();
-  document.getElementById('dashboard-modal').classList.remove('hidden');
 }
-function closeDashboard() { document.getElementById('dashboard-modal').classList.add('hidden'); }
-function maybeCloseDashboard(e) { if (e.target.id === 'dashboard-modal') closeDashboard(); }
-function dashSetRep(v) { _dashRep = v; renderDashboard(); }
+
+function dashSetRep(v) { _dashRep = v; renderBoardColumns(); }
+function boardSetType(v) { _boardType = v; renderBoardColumns(); }
+let _boardQTimer = null;
+function boardSearch(v) {
+  clearTimeout(_boardQTimer);
+  _boardQTimer = setTimeout(() => { _boardQ = v.trim(); renderBoardColumns(); }, 120);
+}
+function boardToggleLost() { _boardLostOpen = !_boardLostOpen; renderBoardColumns(); }
+function boardJump(key) {
+  // Scroll the strip itself: scrollIntoView also moves every scrollable
+  // ancestor, and fights the phone's scroll-snap half-way there.
+  const strip = document.getElementById('board-cols');
+  const col = strip && strip.querySelector(`.board-col[data-col="${CSS.escape(key)}"]`);
+  if (col) strip.scrollTo({ left: col.offsetLeft - strip.offsetLeft, behavior: 'smooth' });
+}
+
 async function dashDuplicate(id) {
   const r = await fetch(`/api/estimates/${id}/duplicate`, { method: 'POST' });
   if (!r.ok) { alert('Could not duplicate.'); return; }
   const d = await r.json();
-  closeDashboard();
   doLoadEstimate(d.estimate_id);
 }
 async function dashShare(id) {
@@ -11274,39 +11401,113 @@ async function dashDeleteEstimate(id, name) {
   if (!r.ok) { alert('Could not delete estimate.'); return; }
   _dashData = _dashData.filter(e => e.estimate_id !== id);
   rebuildCustCounts();
-  renderDashboard();
+  renderBoardColumns();
 }
-async function dashUpdateStatus(id, status, selectEl) {
+async function dashUpdateStatus(id, status, lost_reason = '', lost_note = '') {
   const r = await fetch(`/api/estimates/${id}/status`, {
     method: 'PATCH',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({status}),
+    body: JSON.stringify({ status, lost_reason, lost_note }),
   });
   if (!r.ok) {
     const msg = await r.json().catch(() => ({}));
     alert(msg.error || 'Could not update status.');
-    return renderDashboard();
+    return renderBoardColumns();
   }
   const est = _dashData.find(e => e.estimate_id === id);
   if (est) est.status = status;
-  // Re-render, so the row actually moves to its new section. Without this the
-  // status changed on the server and the dashboard carried on showing the
-  // estimate exactly where it was, which made marking one lost feel broken.
-  renderDashboard();
+  if (id === S.estimate_id) { S.status = status; renderEstStatusBar(); }
+  renderBoardColumns();
+}
+async function boardSetJobStage(id, stage) {
+  const est = _dashData.find(e => e.estimate_id === id);
+  const prev = est ? [est.job_stage, est.job_stage_at] : null;
+  if (est) { est.job_stage = stage; est.job_stage_at = new Date().toISOString(); }
+  renderBoardColumns();                         // move it now; undo on refusal
+  let msg = '';
+  try {
+    const r = await fetch(`/api/estimates/${id}/job-stage`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ job_stage: stage }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) { if (est) est.job_stage_at = j.job_stage_at || est.job_stage_at; return; }
+    msg = j.error || '';
+  } catch {}
+  if (est && prev) [est.job_stage, est.job_stage_at] = prev;
+  alert(msg || 'Could not move this job.');
+  renderBoardColumns();
+}
+
+async function boardMove(id, target) {
+  const e = _dashData.find(x => x.estimate_id === id);
+  if (!e || !target || target === boardColumnOf(e)) return renderBoardColumns();
+  const st = estStatusOf(e);
+  if (st === 'signed') {
+    if (!target.startsWith('job:')) {
+      toast('A signed job can only move between the job stages.');
+      return renderBoardColumns();
+    }
+    return boardSetJobStage(id, target.slice(4));
+  }
+  if (target === 'lost') {
+    // Same reason picker the estimate screen uses. If the reasons cannot be
+    // loaded, record the loss anyway — see setEstStatus.
+    _lostBoardId = id;
+    if (await openLostModal()) return;
+    _lostBoardId = null;
+    return dashUpdateStatus(id, 'lost');
+  }
+  if (target.startsWith('job:')) {
+    if (!confirm(`Mark ${e.customer_name || 'this estimate'} accepted without an e-signature?`))
+      return renderBoardColumns();
+    await dashUpdateStatus(id, 'accepted');
+    if (target !== 'job:') await boardSetJobStage(id, target.slice(4));
+    return;
+  }
+  if (st === 'lost' && (target === 'reopen' || ['draft', 'sent', 'viewed', 'followup'].includes(target)))
+    return dashUpdateStatus(id, e.sent ? 'sent' : 'draft');
+  toast('Draft, Sent and Viewed follow the customer link — they move on their own.');
+  renderBoardColumns();
+}
+
+function boardDragStart(ev, id) {
+  _boardDragId = id;
+  try { ev.dataTransfer.setData('text/plain', id); ev.dataTransfer.effectAllowed = 'move'; } catch {}
+  const e = _dashData.find(x => x.estimate_id === id);
+  const ok = new Set(e ? boardTargets(e).map(([k]) => k === 'reopen' ? (e.sent ? 'sent' : 'draft') : k) : []);
+  document.querySelectorAll('.board-col').forEach(c =>
+    c.classList.toggle('is-droppable', ok.has(c.dataset.col)));
+  document.body.classList.add('board-dragging');
+}
+function boardDragEnd() {
+  _boardDragId = null;
+  document.body.classList.remove('board-dragging');
+  document.querySelectorAll('.board-col').forEach(c => c.classList.remove('is-droppable', 'is-over'));
+}
+function boardDragOver(ev) {
+  const col = ev.currentTarget;
+  if (!_boardDragId || !col.classList.contains('is-droppable')) return;
+  ev.preventDefault();
+  col.classList.add('is-over');
+}
+function boardDragLeave(ev) { ev.currentTarget.classList.remove('is-over'); }
+function boardDrop(ev, key) {
+  ev.preventDefault();
+  const id = _boardDragId || (ev.dataTransfer && ev.dataTransfer.getData('text/plain'));
+  const droppable = ev.currentTarget.classList.contains('is-droppable');
+  boardDragEnd();
+  if (id && droppable) boardMove(id, key === 'draft' || key === 'sent' ? 'reopen' : key);
 }
 
 function dashRow(e) {
   const st    = estStatusOf(e);
   const enum_ = e.estimate_id ? 'EST-' + e.estimate_id.split('-')[0].toUpperCase() : '';
-  const chips = {
-    signed: '<span class="dash-chip dash-chip-signed">✓ Signed</span>',
-    viewed: '<span class="dash-chip dash-chip-viewed">👀 Viewed</span>',
-    sent:   '<span class="dash-chip dash-chip-sent">📤 Sent</span>',
-    draft:  '<span class="dash-chip dash-chip-draft">Draft</span>',
-    lost:   '<span class="dash-chip dash-chip-lost">✗ Lost</span>',
-  };
+  const col   = boardColumnOf(e);
   let activity = '';
-  if (st === 'signed')      activity = `${e.signed ? 'Signed' : 'Accepted'} ${daysAgoLabel(e.signed_at || e.updated_at)}`;
+  if (col.startsWith('job:') && e.job_stage_at)
+                            activity = `Moved ${daysAgoLabel(e.job_stage_at)} · signed ${daysAgoLabel(e.signed_at || e.updated_at)}`;
+  else if (st === 'signed') activity = `${e.signed ? 'Signed' : 'Accepted'} ${daysAgoLabel(e.signed_at || e.updated_at)}`;
   else if (st === 'viewed') activity = `Viewed ${daysAgoLabel(e.last_viewed_at)}${e.view_count > 1 ? ` (${e.view_count}×)` : ''}`;
   else if (st === 'sent')   activity = `Sent ${daysAgoLabel(e.sent_at)} — not opened yet`;
   else if (st === 'lost')   activity = `Marked lost ${daysAgoLabel(e.updated_at)}`;
@@ -11314,199 +11515,232 @@ function dashRow(e) {
   const typeLbl = e.estimate_type === 'commercial' ? '🏢 Commercial'
                 : e.estimate_type === 'insurance' ? '🏛 Insurance'
     : (e.selected_tier ? e.selected_tier[0].toUpperCase() + e.selected_tier.slice(1) : 'Retail');
-  const isSigned = st === 'signed';
-  const statusSelect = isSigned ? chips[st] : `
-    <select class="dash-status-select" title="Update status"
-      onclick="event.stopPropagation()"
-      onchange="dashUpdateStatus('${esc(e.estimate_id)}',this.value,this)">
-      <option value="draft"    ${e.status==='draft'?'selected':''}>Draft</option>
-      <option value="sent"     ${e.status==='sent'?'selected':''}>Sent</option>
-      <option value="accepted" ${e.status==='accepted'?'selected':''}>Accepted ✓</option>
-      <option value="lost"     ${st==='lost'?'selected':''}>Lost ✗</option>
+  const id = esc(e.estimate_id);
+  const moveSel = `<select class="board-move" title="Move this job"
+      onchange="boardMove('${id}',this.value)">
+      <option value="" selected disabled>Move to…</option>
+      ${boardTargets(e).map(([k, l]) => `<option value="${esc(k)}">${esc(l)}</option>`).join('')}
     </select>`;
-  // Managers reassign straight from the list. Reps get nothing here: the
+  // Managers reassign straight from the board. Reps get nothing here: the
   // server refuses them anyway, and a control that always errors reads broken.
   const sp = typeof e.salesperson === 'string' ? e.salesperson : '';
   const repSelect = _meCanViewAll() ? `
-    <select class="dash-status-select dash-rep-select" title="Reassign to another rep"
-      onclick="event.stopPropagation()"
-      onchange="reassignEstimate('${esc(e.estimate_id)}',this.value)">
+    <select class="board-move board-rep" title="Reassign to another rep"
+      onchange="reassignEstimate('${id}',this.value)">
       <option value="">Unassigned</option>
       ${_teamWith(sp).map(m => `<option value="${esc(m)}" ${m === sp ? 'selected' : ''}>${esc(cap(m))}</option>`).join('')}
     </select>` : '';
-  // The customer file was reachable only from a home-screen search box and a
-  // sidebar button that appears after a name is typed — so the rep looking at
-  // a list of estimates had no way to see that three of them are one customer.
+  // A card is one estimate, but the rep needs to see that three cards are one
+  // customer — the 📁 badge opens their whole file.
   const nEst = custEstimateCount(e.customer_name);
   const cfBadge = nEst > 1 ? `<button class="dash-cf-btn"
       title="${nEst} estimates for this customer — open their file"
-      onclick="event.stopPropagation();closeDashboard();openCustomer('${jsq(e.customer_name)}')">📁 ${nEst}</button>` : '';
-  return `<div class="dash-row${st==='viewed'?' dash-row-viewed':''}" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
-    <div class="dash-row-main">
-      <span class="dash-row-name"><strong>${esc(e.customer_name || '(no customer)')}</strong>${cfBadge}</span>
-      <small>${esc(enum_)}${e.city ? ' · ' + esc(e.city) : ''} · ${esc(typeLbl)}${e.salesperson ? ' · ' + esc(cap(e.salesperson)) : ''}</small>
+      onclick="event.stopPropagation();openCustomer('${jsq(e.customer_name)}')">📁 ${nEst}</button>` : '';
+  const co = e.co_count ? `<span class="dash-chip dash-chip-co" title="${e.co_count} change order${e.co_count!==1?'s':''}${e.co_pending ? ` (${e.co_pending} awaiting signature)` : ''}${e.co_total ? ` — ${fmtCur(e.co_total)} signed` : ''}">±${e.co_count} CO${e.co_pending ? ' ⏳' : ''}</span>` : '';
+  return `<article class="board-card board-card-${st}" draggable="true"
+      ondragstart="boardDragStart(event,'${id}')" ondragend="boardDragEnd()"
+      onclick="doLoadEstimate('${id}')">
+    <div class="board-card-top">
+      <span class="board-card-name">${esc(e.customer_name || '(no customer)')}</span>${cfBadge}
+      <span class="board-card-total">${fmtCur((e.total || 0) + (e.co_total || 0))}</span>
     </div>
-    <div class="dash-row-side">
-      <span class="dash-total">${fmtCur((e.total || 0) + (e.co_total || 0))}</span>
-      ${e.co_count ? `<span class="dash-chip dash-chip-co" title="${e.co_count} change order${e.co_count!==1?'s':''}${e.co_pending ? ` (${e.co_pending} awaiting signature)` : ''}${e.co_total ? ` — ${fmtCur(e.co_total)} signed` : ''}">±${e.co_count} CO${e.co_pending ? ' ⏳' : ''}</span>` : ''}
-      ${repSelect}
-      ${statusSelect}
-      <small class="dash-activity">${esc(activity)}</small>
-      ${e.share_token ? `<button class="dash-send-btn" title="Resend customer link"
-        onclick="event.stopPropagation();dashShare('${esc(e.estimate_id)}')">📤</button>` : ''}
-      <button class="dash-dup-btn" title="Duplicate estimate"
-        onclick="event.stopPropagation();dashDuplicate('${esc(e.estimate_id)}')">⎘</button>
-      <button class="dash-delete-btn" title="Delete estimate"
-        onclick="event.stopPropagation();dashDeleteEstimate('${esc(e.estimate_id)}','${esc(e.customer_name||'this estimate')}')">🗑</button>
+    <div class="board-card-meta">${[enum_, e.city, typeLbl, e.salesperson ? cap(e.salesperson) : '']
+      .filter(Boolean).map(esc).join(' · ')}</div>
+    ${e.estimate_label ? `<div class="board-card-label">${esc(e.estimate_label)}</div>` : ''}
+    <div class="board-card-activity">${esc(activity)} ${co}</div>
+    <div class="board-card-actions" onclick="event.stopPropagation()">
+      ${moveSel}${repSelect}
+      <span class="board-card-btns">
+        ${e.share_token ? `<button title="Resend customer link" onclick="dashShare('${id}')">📤</button>` : ''}
+        <button title="Duplicate estimate" onclick="dashDuplicate('${id}')">⎘</button>
+        <button title="Delete estimate" onclick="dashDeleteEstimate('${id}','${jsq(e.customer_name || 'this estimate')}')">🗑</button>
+      </span>
     </div>
-  </div>`;
+  </article>`;
 }
 
+function _boardList() {
+  let list = _dashData;
+  if (_dashRep) list = list.filter(e => (e.salesperson || '') === _dashRep);
+  if (_boardType) list = list.filter(e => (e.estimate_type || 'retail') === _boardType);
+  if (_boardQ) {
+    const q = _boardQ.toLowerCase();
+    list = list.filter(e => [e.customer_name, e.city, e.estimate_label]
+      .some(v => String(v || '').toLowerCase().includes(q)));
+  }
+  return list;
+}
+
+/* The toolbar is drawn once and the columns under it separately, so typing in
+   the search box never re-renders the box being typed in. */
 function renderDashboard() {
   const body = document.getElementById('dashboard-body');
   if (!body) return;
-  let list = _dashData;
-  if (_dashRep) list = list.filter(e => (e.salesperson || '') === _dashRep);
-
-  const viewed  = list.filter(e => estStatusOf(e) === 'viewed')
-                      .sort((a, b) => (b.last_viewed_at || '').localeCompare(a.last_viewed_at || ''));
-  const sent    = list.filter(e => estStatusOf(e) === 'sent')
-                      .sort((a, b) => (a.sent_at || '').localeCompare(b.sent_at || ''));
-  const drafts  = list.filter(e => estStatusOf(e) === 'draft')
-                      .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
-  const signed  = list.filter(e => estStatusOf(e) === 'signed')
-                      .sort((a, b) => (b.signed_at || '').localeCompare(a.signed_at || ''));
-  const lost    = list.filter(e => estStatusOf(e) === 'lost')
-                      .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
-
-  const outstanding   = [...viewed, ...sent];
-  const outstandingSum = outstanding.reduce((s, e) => s + (e.total || 0), 0);
-  const cutoff30   = Date.now() - 30 * 86400000;
-  const signed30   = signed.filter(e => e.signed_at && new Date(e.signed_at).getTime() >= cutoff30);
-  const signed30Sum = signed30.reduce((s, e) => s + (e.total || 0) + (e.co_total || 0), 0);
-
   const repOpts = ['<option value="">All reps</option>']
-    .concat(TEAM.map(m => `<option value="${m}" ${m === _dashRep ? 'selected' : ''}>${cap(m)}</option>`))
+    .concat(TEAM.map(m => `<option value="${esc(m)}" ${m === _dashRep ? 'selected' : ''}>${esc(cap(m))}</option>`))
     .join('');
-
-  const section = (title, arr, cls) => arr.length
-    ? `<div class="dash-section"><h4 class="${cls || ''}">${title} <span class="dash-count">${arr.length}</span></h4>
-       ${arr.map(dashRow).join('')}</div>`
-    : '';
-
-  // Follow-up alerts: sent 3+ days without view, or viewed 2+ days without signing
-  const now = Date.now();
-  const needsFollowUp = list.filter(e => {
-    const st = estStatusOf(e);
-    if (st === 'sent' && e.sent_at) {
-      const daysSent = (now - new Date(e.sent_at).getTime()) / 86400000;
-      return daysSent >= 3;
-    }
-    if (st === 'viewed' && e.last_viewed_at) {
-      const daysViewed = (now - new Date(e.last_viewed_at).getTime()) / 86400000;
-      return daysViewed >= 2;
-    }
-    return false;
-  }).sort((a, b) => (a.sent_at || a.last_viewed_at || '').localeCompare(b.sent_at || b.last_viewed_at || ''));
-
+  const types = [['', 'All types'], ['retail', '🏠 Retail'], ['insurance', '🏛 Insurance'], ['commercial', '🏢 Commercial']];
   body.innerHTML = `
-    <div class="dash-toolbar">
-      <div class="dash-view-tabs">
-        <button class="dash-view-tab ${_dashView==='estimates'?'active':''}" onclick="dashSetView('estimates')">Estimates</button>
-        <button class="dash-view-tab ${_dashView==='analytics'?'active':''}" onclick="dashSetView('analytics')">📊 Sales Analytics</button>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
+    <div class="board-toolbar">
+      <h2 class="board-title">📊 Job Board</h2>
+      <input type="search" class="board-search" placeholder="🔍 Customer, city or estimate name"
+        value="${esc(_boardQ)}" oninput="boardSearch(this.value)">
+      <select class="board-filter" onchange="boardSetType(this.value)">${types.map(([v, l]) =>
+        `<option value="${v}" ${v === _boardType ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      ${_meCanViewAll() ? `<select onchange="dashSetRep(this.value)" class="board-filter">${repOpts}</select>` : ''}
+      <span class="board-toolbar-end">
+        <button class="board-tool-btn" onclick="openAnalytics()">📈 Analytics</button>
+        <button class="board-tool-btn" onclick="refreshBoard()" title="Reload">↺</button>
         ${_meIsAdmin() ? `<a href="${BASE}/api/backup" class="dash-backup-link" title="Download a zip of all estimates, photos, and settings">💾 Backup</a>` : ''}
-        ${_meCanViewAll() ? `<select onchange="dashSetRep(this.value)" class="dash-rep-select">${repOpts}</select>` : ''}
-      </div>
+      </span>
     </div>
-    ${_dashView === 'analytics' ? renderDashboardAnalytics(list, _dashData) : `
-    ${needsFollowUp.length ? `
-    <div class="dash-followup-banner">
-      <strong>⚠ Follow Up Needed (${needsFollowUp.length})</strong>
-      <span class="dash-followup-sub">Estimates going cold — act now</span>
-      <div class="dash-followup-list">
-        ${needsFollowUp.map(e => {
-          const st = estStatusOf(e);
-          const dayLabel = st === 'sent'
-            ? `Sent ${daysAgoLabel(e.sent_at)} — never opened`
-            : `Viewed ${daysAgoLabel(e.last_viewed_at)} — not signed`;
-          return `<div class="dash-followup-row" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
-            <div class="dash-followup-main">
-              <strong>${esc(e.customer_name||'(no customer)')}</strong>
-              <small>${esc(dayLabel)}</small>
-            </div>
-            <div style="display:flex;gap:6px;align-items:center">
-              <span class="dash-total">${fmtCur(e.total||0)}</span>
-              ${e.share_token ? `<button class="dash-send-btn" title="Resend link" style="opacity:1"
-                onclick="event.stopPropagation();dashShare('${esc(e.estimate_id)}')">📤</button>` : ''}
-            </div>
-          </div>`;
-        }).join('')}
-      </div>
-    </div>` : ''}
-    <div class="dash-cards">
-      <div class="dash-card ${_dashFilter==='outstanding'?'dash-card-active':''}"
-        onclick="dashSetFilter('outstanding')" title="Click to filter">
-        <div class="dash-card-num">${outstanding.length}</div>
-        <div class="dash-card-lbl">Outstanding</div>
-        <div class="dash-card-sub">${viewed.length ? `<span class="dash-card-hot-count">🔥 ${viewed.length} viewed</span>` : fmtCur(outstandingSum)}</div>
-      </div>
-      <div class="dash-card ${_dashFilter==='sent'?'dash-card-active':''}"
-        onclick="dashSetFilter('sent')" title="Click to filter">
-        <div class="dash-card-num">${sent.length}</div>
-        <div class="dash-card-lbl">Sent — never opened</div>
-        <div class="dash-card-sub">re-send or call</div>
-      </div>
-      <div class="dash-card dash-card-won ${_dashFilter==='signed'?'dash-card-active':''}"
-        onclick="dashSetFilter('signed')" title="Click to filter">
-        <div class="dash-card-num">${signed30.length}</div>
-        <div class="dash-card-lbl">Signed (30 days)</div>
-        <div class="dash-card-sub">${fmtCur(signed30Sum)}</div>
-      </div>
-      <div class="dash-card ${_dashFilter==='draft'?'dash-card-active':''}"
-        onclick="dashSetFilter('draft')" title="Click to filter">
-        <div class="dash-card-num">${drafts.length}</div>
-        <div class="dash-card-lbl">Drafts</div>
-        <div class="dash-card-sub">not yet sent</div>
-      </div>
-    </div>
-    ${_dashFilter ? `<div class="dash-filter-bar">
-      Showing: <strong>${{outstanding:'Outstanding',sent:'Sent',signed:'Signed',draft:'Drafts',lost:'Lost'}[_dashFilter]||_dashFilter}</strong>
-      <button class="dash-filter-clear" onclick="dashSetFilter(null)">× Show all</button>
-    </div>` : ''}
-    ${(!_dashFilter || _dashFilter==='outstanding') && (viewed.length||sent.length) ?
-        section('🔥 Outstanding', [...viewed,...sent].sort((a,b)=>(b.last_viewed_at||b.sent_at||'').localeCompare(a.last_viewed_at||a.sent_at||'')), '') : ''}
-    ${(!_dashFilter || _dashFilter==='sent') ?
-        section('📤 Sent — not yet opened', sent) : ''}
-    ${(!_dashFilter || _dashFilter==='draft') ?
-        section('📝 Drafts', drafts) : ''}
-    ${(!_dashFilter || _dashFilter==='signed') ?
-        section('✅ Signed', _dashFilter==='signed' ? signed : signed.slice(0,15), 'dash-h-won') : ''}
-    ${lost.length && (!_dashFilter || _dashFilter==='lost') ?
-        section('✗ Lost', _dashFilter==='lost' ? lost : lost.slice(0,10), 'dash-h-lost') : ''}
-    ${!list.length ? '<div class="dash-empty">No estimates yet for this rep.</div>' : ''}
-    `}`;
+    <div id="board-summary" class="board-summary"></div>
+    <div id="board-pills" class="board-pills"></div>
+    <div id="board-cols" class="board-cols"></div>`;
+  renderBoardColumns();
 }
 
-function dashSetFilter(f) {
-  _dashFilter = (_dashFilter === f) ? null : f;
-  renderDashboard();
+function renderBoardColumns() {
+  const colsEl = document.getElementById('board-cols');
+  if (!colsEl) return;
+  const list = _boardList();
+  const cols = boardColumns();
+  const by = Object.fromEntries(cols.map(c => [c.key, []]));
+  list.forEach(e => (by[boardColumnOf(e)] || by.draft).push(e));
+  const sum = arr => arr.reduce((s, e) => s + (e.total || 0) + (e.co_total || 0), 0);
+
+  // ── Summary strip ────────────────────────────────────────────────
+  const open = [...by.sent, ...by.viewed, ...by.followup];
+  const month = new Date().toISOString().slice(0, 7);
+  const signedMo = list.filter(e => estStatusOf(e) === 'signed' && (e.signed_at || '').startsWith(month));
+  const waiting = by['job:'] || [];
+  const stat = (val, lbl, sub, cls = '', jump = '') => `
+    <div class="board-stat ${cls}" ${jump ? `onclick="boardJump('${jump}')"` : ''}>
+      <div class="board-stat-val">${val}</div>
+      <div class="board-stat-lbl">${lbl}</div>
+      <div class="board-stat-sub">${sub}</div>
+    </div>`;
+  document.getElementById('board-summary').innerHTML =
+    stat(_fmtK(sum(open)), 'Open pipeline', `${open.length} out with customers`, '', 'viewed') +
+    stat(by.followup.length, 'Need follow-up', by.followup.length ? _fmtK(sum(by.followup)) + ' going cold' : 'nothing going cold',
+         by.followup.length ? 'is-warn' : '', 'followup') +
+    stat(_fmtK(sum(signedMo)), 'Signed this month', `${signedMo.length} job${signedMo.length === 1 ? '' : 's'}`, 'is-won') +
+    stat(waiting.length, 'Awaiting scheduling', waiting.length ? _fmtK(sum(waiting)) : 'all scheduled', waiting.length ? 'is-warn' : '', 'job:') +
+    stat(by.draft.length, 'Drafts', 'not sent yet', '', 'draft');
+
+  // ── Phone: jump pills (the columns scroll-snap sideways) ─────────
+  document.getElementById('board-pills').innerHTML = cols.map(c =>
+    `<button class="board-pill board-pill-${c.cls}" onclick="boardJump('${esc(c.key)}')">${
+      _BOARD_ICONS[c.key] || '•'} ${by[c.key].length}</button>`).join('');
+
+  // ── Columns ──────────────────────────────────────────────────────
+  colsEl.innerHTML = cols.map(c => {
+    const arr = _boardSort(c.key, by[c.key]);
+    const collapsed = c.key === 'lost' && !_boardLostOpen;
+    const hd = `<header class="board-col-hd">
+        <span class="board-col-title">${_BOARD_ICONS[c.key] || ''} ${esc(c.label)}</span>
+        <span class="board-col-count">${arr.length}</span>
+        <span class="board-col-sum">${_fmtK(sum(arr))}</span>
+        ${c.key === 'lost' ? `<button class="board-col-toggle" onclick="boardToggleLost()">${collapsed ? 'Show' : 'Hide'}</button>` : ''}
+      </header>`;
+    return `<section class="board-col board-col-${c.cls}${collapsed ? ' is-collapsed' : ''}" data-col="${esc(c.key)}"
+        ondragover="boardDragOver(event)" ondragleave="boardDragLeave(event)"
+        ondrop="boardDrop(event,'${esc(c.key)}')">
+      ${hd}
+      <div class="board-col-body">${collapsed ? '' : (arr.map(dashRow).join('') ||
+        '<div class="board-empty">Nothing here</div>')}</div>
+    </section>`;
+  }).join('');
+  if (!_dashData.length) colsEl.insertAdjacentHTML('afterbegin',
+    '<div class="board-empty board-empty-all">No estimates yet.</div>');
 }
-async function dashSetView(v) {
-  _dashView = v;
-  if (v === 'analytics' && !_analyticsData) {
-    document.getElementById('dashboard-body').innerHTML =
-      '<div style="text-align:center;padding:40px;color:var(--text-light)">Loading analytics…</div>';
-    try {
-      const r = await fetch('/api/analytics');
-      _analyticsData = await r.json();
-    } catch(e) {
-      _analyticsData = { by_trade:{}, by_rep:{} };
-    }
+
+/* ── Analytics page ──────────────────────────────────────────────────
+   Full screen, and every number on it comes from /api/analytics for the
+   chosen range and rep — this only formats. The rep leaderboard IS the
+   drill-down: clicking a rep re-asks the server for that rep, so the whole
+   page is theirs, with nothing separate to keep in step. */
+
+let _analyticsData = null;       // the payload currently on screen
+let _analyticsSort = 'revenue';  // leaderboard sort
+let _anPreset = 'ytd';
+let _anFrom = '', _anTo = '', _anRep = '';
+const _anCache = {};
+const _AN_PRESETS = [['month', 'This month'], ['last_month', 'Last month'], ['quarter', 'This quarter'],
+  ['ytd', 'Year to date'], ['12m', 'Last 12 mo'], ['all', 'All time'], ['custom', 'Custom']];
+
+function _isoDay(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function _anRangeDates() {
+  const t = new Date(), y = t.getFullYear(), m = t.getMonth();
+  switch (_anPreset) {
+    case 'month':      return [_isoDay(new Date(y, m, 1)), _isoDay(t)];
+    case 'last_month': return [_isoDay(new Date(y, m - 1, 1)), _isoDay(new Date(y, m, 0))];
+    case 'quarter':    return [_isoDay(new Date(y, m - m % 3, 1)), _isoDay(t)];
+    case 'ytd':        return [_isoDay(new Date(y, 0, 1)), _isoDay(t)];
+    case '12m':        return [_isoDay(new Date(y - 1, m, t.getDate() + 1)), _isoDay(t)];
+    case 'custom':     return [_anFrom, _anTo];
+    default:           return ['', ''];
   }
-  renderDashboard();
 }
+function _anQuery() {
+  const [from, to] = _anRangeDates();
+  const p = new URLSearchParams();
+  if (from) p.set('from', from);
+  if (to) p.set('to', to);
+  if (_anRep) p.set('rep', _anRep);
+  return p.toString();
+}
+// The view is kept in the URL so a manager can send "Q3, Bryan" as a link.
+function _anWriteHash() {
+  const p = new URLSearchParams({ p: _anPreset });
+  if (_anPreset === 'custom') { p.set('from', _anFrom); p.set('to', _anTo); }
+  if (_anRep) p.set('rep', _anRep);
+  try { history.replaceState(null, '', '#analytics?' + p.toString()); } catch {}
+}
+function _anReadHash() {
+  const h = location.hash || '';
+  if (!h.startsWith('#analytics')) return;
+  const p = new URLSearchParams(h.split('?')[1] || '');
+  if (_AN_PRESETS.some(([k]) => k === p.get('p'))) _anPreset = p.get('p');
+  _anFrom = p.get('from') || ''; _anTo = p.get('to') || '';
+  if (_meCanViewAll()) _anRep = p.get('rep') || '';
+}
+
+function openAnalytics() { _anReadHash(); switchPage('analytics'); }
+
+async function loadAnalytics(force) {
+  const qs = _anQuery();
+  _anWriteHash();
+  if (!force && _anCache[qs]) { _analyticsData = _anCache[qs]; return renderAnalyticsPage(); }
+  if (force) Object.keys(_anCache).forEach(k => delete _anCache[k]);
+  const body = document.getElementById('analytics-body');
+  if (body && !_analyticsData) body.innerHTML = '<div class="board-loading">Loading analytics…</div>';
+  document.body.classList.add('an-loading');
+  try {
+    const r = await fetch('/api/analytics' + (qs ? '?' + qs : ''));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Could not load analytics.');
+    _anCache[qs] = _analyticsData = j;
+  } catch (e) {
+    if (body) body.innerHTML = `<div class="board-empty">${esc(e.message || 'Could not load analytics.')}</div>`;
+    return;
+  } finally {
+    document.body.classList.remove('an-loading');
+  }
+  // The answer to an older question must not paint over a newer one.
+  if (qs === _anQuery()) renderAnalyticsPage();
+}
+
+function anSetPreset(k) { _anPreset = k; if (k !== 'custom') loadAnalytics(); else renderAnalyticsPage(); }
+function anSetCustom(which, v) {
+  if (which === 'from') _anFrom = v; else _anTo = v;
+  if (_anFrom || _anTo) loadAnalytics();
+}
+function anSetRep(v) { _anRep = v; loadAnalytics(); window.scrollTo?.(0, 0); }
+function anSetSort(k) { _analyticsSort = k; renderAnalyticsPage(); }
+function anSetMonRange(n) { _monRange = n; renderAnalyticsPage(); }
 
 function _pbar(val, max, cls='') {
   const pct = max > 0 ? Math.min(100, Math.round(val/max*100)) : 0;
@@ -11516,271 +11750,394 @@ function _clr(rate) {
   return rate >= 50 ? 'a-good' : rate >= 30 ? 'a-warn' : 'a-bad';
 }
 
-function renderDashboardAnalytics(filteredList, allData) {
-  const ad  = _analyticsData || { by_trade:{}, by_rep:{}, monthly:[], funnel:{total:0,sent:0,viewed:0,signed:0,lost:0}, pipeline_aging:{}, by_type:{}, top_cities:[], ytd_revenue:0, avg_days_to_close:null };
-  const now = Date.now();
-  const ms30 = 30*86400000;
+/* ── SVG charts ──────────────────────────────────────────────────────
+   Hand-drawn rather than a library: this is an offline-first PWA that
+   vendors what it needs, and four chart shapes do not justify a bundle and
+   its service-worker entries. Each chart is drawn AFTER layout at the width
+   its card actually has, so text stays 11px on a phone instead of scaling
+   down with a viewBox. */
 
-  // ── Core metrics ─────────────────────────────────────────────────────
-  const allSigned  = allData.filter(e => estStatusOf(e) === 'signed');
-  const allSent    = allData.filter(e => e.share_token);
-  const s30        = allSigned.filter(e=>e.signed_at && now-new Date(e.signed_at)<ms30);
-  const totalRev   = allSigned.reduce((s,e)=>s+(e.total||0),0);
-  const rev30      = s30.reduce((s,e)=>s+(e.total||0),0);
-  const closeRate  = allSent.length ? Math.round(allSigned.length/allSent.length*100) : 0;
-  const avgDeal    = allSigned.length ? Math.round(totalRev/allSigned.length) : 0;
-  const ytdRev     = ad.ytd_revenue || 0;
-  const avgDTC     = ad.avg_days_to_close;
-  const staleAll   = allData.filter(e=>{
-    const st=estStatusOf(e);
-    if(st==='sent'&&e.sent_at)         return (now-new Date(e.sent_at).getTime())/86400000>=3;
-    if(st==='viewed'&&e.last_viewed_at) return (now-new Date(e.last_viewed_at).getTime())/86400000>=2;
-    return false;
+const _CH = ['#2563a8', '#00a8b5', '#8b5cf6', '#e88400', '#16a34a', '#dc2626', '#64748b'];
+let _anCharts = [];   // [{id, draw(width) -> svg}]
+
+function _chartSlot(draw, h = 220) {
+  const id = 'ch-' + (_anCharts.length + 1);
+  _anCharts.push({ id, draw });
+  return `<div class="an-chart" id="${id}" style="min-height:${h}px"></div>`;
+}
+function _drawCharts() {
+  _anCharts.forEach(c => {
+    const el = document.getElementById(c.id);
+    if (el) el.innerHTML = c.draw(Math.max(260, el.clientWidth || 320));
   });
-  const pipeline   = allData.filter(e=>estStatusOf(e)!=='signed'&&estStatusOf(e)!=='draft'&&e.share_token);
-  const pipelineVal= pipeline.reduce((s,e)=>s+(e.total||0),0);
-  const repEntries = Object.entries(ad.by_rep).filter(([,d])=>d.sent>0||d.revenue>0);
+}
+let _anResizeT = null;
+window.addEventListener('resize', () => {
+  if (activePage !== 'analytics') return;
+  clearTimeout(_anResizeT);
+  _anResizeT = setTimeout(_drawCharts, 150);
+});
 
-  // ── Conversion funnel ────────────────────────────────────────────────
-  const fn = ad.funnel||{total:0,sent:0,viewed:0,signed:0,lost:0};
-  const funnelSteps = [
-    {label:'Created', val:fn.total, pct:100},
-    {label:'Sent',    val:fn.sent,    pct:fn.total?Math.round(fn.sent/fn.total*100):0},
-    {label:'Viewed',  val:fn.viewed,  pct:fn.sent?Math.round(fn.viewed/fn.sent*100):0},
-    {label:'Signed',  val:fn.signed,  pct:fn.viewed?Math.round(fn.signed/fn.viewed*100):0},
-  ];
-  const funnelHtml = funnelSteps.map(s=>`
-    <div class="funnel-step">
-      <div class="funnel-bar-wrap">
-        <div class="funnel-bar" style="width:${s.pct}%"></div>
-      </div>
-      <div class="funnel-labels">
-        <span class="funnel-name">${s.label}</span>
-        <span class="funnel-val">${s.val}</span>
-        <span class="funnel-pct">${s.pct}%</span>
-      </div>
-    </div>`).join('');
-  const lostHtml = fn.lost ? `<div class="funnel-declined">✗ ${fn.lost} lost</div>` : '';
+function _niceMax(v) {
+  if (v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 4 ? 4 : n <= 6 ? 6 : n <= 8 ? 8 : 10) * p;   // quarters stay round
+}
+const _svgT = (x, y, s, attrs = '') =>
+  `<text x="${x}" y="${y}" ${attrs}>${esc(String(s))}</text>`;
 
-  // ── Why we lost ──────────────────────────────────────────────────────
-  // A close rate with no loss reasons is a thermometer with no thermostat.
+/* Monthly revenue as bars, the month's goal as a step line, and the sent
+   cohort's close rate on a second axis. */
+function svgTrend(rows, W) {
+  const H = 240, L = 48, R = 36, T = 14, B = 34;
+  const iw = W - L - R, ih = H - T - B;
+  const n = rows.length || 1;
+  const max = _niceMax(Math.max(1000, ...rows.map(r => Math.max(r.revenue || 0, r.goal || 0))));
+  const x = i => L + (i + 0.5) * iw / n;
+  const y = v => T + ih - (v / max) * ih;
+  const yr = p => T + ih - (p / 100) * ih;
+  const bw = Math.max(4, Math.min(34, iw / n * 0.62));
+  const every = Math.ceil(n / Math.max(1, Math.floor(iw / 46)));
+  let g = '';
+  for (let k = 0; k <= 4; k++) {
+    const v = max * k / 4, yy = y(v);
+    g += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" class="ch-grid"/>`
+      + _svgT(L - 6, yy + 4, _fmtK(v), 'text-anchor="end" class="ch-ax"')
+      + _svgT(W - R + 6, yr(k * 25) + 4, (k * 25) + '%', 'class="ch-ax"');
+  }
+  const bars = rows.map((r, i) => {
+    const h = Math.max(0, ih - (y(r.revenue || 0) - T));
+    const cls = r.goal > 0 ? _goalCls(r.pct_to_goal) : 'g-none';
+    return `<rect x="${x(i) - bw / 2}" y="${y(r.revenue || 0)}" width="${bw}" height="${h}" rx="3" class="ch-bar ${cls}">
+      <title>${_monLabel(r.month, true)}: ${fmtCur(r.revenue)}${r.goal > 0 ? ` of ${fmtCur(r.goal)} goal` : ''}${
+        r.close_rate != null ? ` · close ${r.close_rate}%` : ''}</title></rect>`
+      + (i % every === 0 || i === n - 1 ? _svgT(x(i), H - B + 16, _monLabel(r.month, i === 0 || r.month.endsWith('-01')), 'text-anchor="middle" class="ch-ax"') : '');
+  }).join('');
+  let goal = '';
+  rows.forEach((r, i) => {
+    if (r.goal > 0) goal += `<line x1="${x(i) - iw / n / 2 + 2}" x2="${x(i) + iw / n / 2 - 2}" y1="${y(r.goal)}" y2="${y(r.goal)}" class="ch-goal"/>`;
+  });
+  const pts = rows.map((r, i) => r.close_rate != null ? [x(i), yr(r.close_rate)] : null);
+  let path = '', open = false;
+  pts.forEach(p => { if (!p) { open = false; return; } path += (open ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1); open = true; });
+  const dots = pts.map(p => p ? `<circle cx="${p[0]}" cy="${p[1]}" r="2.5" class="ch-rate-dot"/>` : '').join('');
+  return `<svg class="an-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">
+    <title>Signed revenue by month, against goal, with close rate</title>
+    ${g}${bars}${goal}<path d="${path}" class="ch-rate"/>${dots}</svg>`;
+}
+
+/* Stacked bars per month — retail / insurance / commercial. */
+function svgStacked(rows, keys, W) {
+  const H = 200, L = 48, R = 8, T = 10, B = 30;
+  const iw = W - L - R, ih = H - T - B, n = rows.length || 1;
+  const max = _niceMax(Math.max(1000, ...rows.map(r => keys.reduce((s, [k]) => s + (r[k] || 0), 0))));
+  const bw = Math.max(4, Math.min(30, iw / n * 0.62));
+  const every = Math.ceil(n / Math.max(1, Math.floor(iw / 46)));
+  let out = '';
+  for (let k = 0; k <= 4; k++) {
+    const v = max * k / 4, yy = T + ih - v / max * ih;
+    out += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" class="ch-grid"/>` + _svgT(L - 6, yy + 4, _fmtK(v), 'text-anchor="end" class="ch-ax"');
+  }
+  rows.forEach((r, i) => {
+    const cx = L + (i + 0.5) * iw / n;
+    let base = T + ih;
+    keys.forEach(([k, label], j) => {
+      const h = (r[k] || 0) / max * ih;
+      if (h > 0) out += `<rect x="${cx - bw / 2}" y="${base - h}" width="${bw}" height="${h}" style="fill:${_CH[j]}"><title>${_monLabel(r.month, true)} ${label}: ${fmtCur(r[k])}</title></rect>`;
+      base -= h;
+    });
+    if (i % every === 0 || i === n - 1) out += _svgT(cx, H - B + 16, _monLabel(r.month, i === 0 || r.month.endsWith('-01')), 'text-anchor="middle" class="ch-ax"');
+  });
+  return `<svg class="an-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"><title>Signed revenue by estimate type</title>${out}</svg>`;
+}
+
+/* Funnel: each stage's bar is its share of Created, labelled with the step
+   conversion from the stage before it — the number a rep can act on. */
+function svgFunnel(steps, W) {
+  const rowH = 38, H = steps.length * rowH + 4, top = steps[0]?.val || 0;
+  const lw = 70, iw = W - lw - 90;
+  const out = steps.map((s, i) => {
+    const w = top ? Math.max(2, s.val / top * iw) : 2;
+    const x = lw + (iw - w) / 2, y = i * rowH + 4;
+    const prev = i ? steps[i - 1].val : null;
+    const conv = prev ? Math.round(s.val / prev * 100) + '%' : '';
+    return `<rect x="${x}" y="${y}" width="${w}" height="${rowH - 10}" rx="4" style="fill:${_CH[i]}"><title>${s.label}: ${s.val}</title></rect>`
+      + _svgT(lw - 8, y + rowH / 2, s.label, 'text-anchor="end" class="ch-lbl"')
+      + _svgT(lw + iw / 2, y + rowH / 2, s.val, 'text-anchor="middle" class="ch-in"')
+      + (conv ? _svgT(lw + iw + 10, y + rowH / 2, conv + ' of prev', 'class="ch-ax"') : '');
+  }).join('');
+  return `<svg class="an-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"><title>Conversion funnel</title>${out}</svg>`;
+}
+
+/* Horizontal bars: [{label, val, text, color?}] */
+function svgHBars(items, W, { fmt = _fmtK } = {}) {
+  const rowH = 26, H = Math.max(rowH, items.length * rowH), vw = 80;
+  // Label column sized to the longest label (~6.6px a character at 12px),
+  // never more than 45% of the chart, so a long reason is not cut off.
+  const lw = Math.min(W * 0.45, Math.max(60, ...items.map(it => String(it.label).length * 6.6 + 12)));
+  const iw = W - lw - vw - 8;
+  const max = Math.max(1, ...items.map(it => Math.abs(it.val || 0)));
+  const out = items.map((it, i) => {
+    const y = i * rowH, w = Math.max(0, Math.abs(it.val || 0) / max * iw);
+    const fit = Math.max(4, Math.floor((lw - 12) / 6.6));
+    const lbl = String(it.label).length > fit ? String(it.label).slice(0, fit - 1) + '…' : it.label;
+    return _svgT(lw - 8, y + rowH / 2 + 4, lbl, 'text-anchor="end" class="ch-lbl"')
+      + `<rect x="${lw}" y="${y + 5}" width="${w}" height="${rowH - 10}" rx="3" style="fill:${it.color || _CH[0]}"><title>${esc(it.label)}: ${esc(it.text ?? fmt(it.val))}</title></rect>`
+      + _svgT(lw + w + 6, y + rowH / 2 + 4, it.text ?? fmt(it.val), 'class="ch-ax"');
+  }).join('');
+  return `<svg class="an-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">${out}</svg>`;
+}
+
+/* 100% bars: one row per trade, segments per tier. */
+function svgMix(rows, W) {
+  const rowH = 30, H = Math.max(rowH, rows.length * rowH), lw = Math.min(110, W * 0.3), iw = W - lw - 8;
+  const TC = { good: _CH[1], better: _CH[0], best: _CH[2], flat: _CH[6] };
+  const out = rows.map((r, i) => {
+    const y = i * rowH, tot = r.segs.reduce((s, x) => s + x.count, 0) || 1;
+    let x = lw, segs = '';
+    r.segs.forEach(sg => {
+      const w = sg.count / tot * iw;
+      const pct = Math.round(sg.count / tot * 100);
+      segs += `<rect x="${x}" y="${y + 5}" width="${w}" height="${rowH - 10}" style="fill:${TC[sg.tier] || _CH[3]}"><title>${esc(r.label)} — ${cap(sg.tier)}: ${sg.count} job${sg.count === 1 ? '' : 's'} (${pct}%), ${fmtCur(sg.revenue)}</title></rect>`
+        + (w > 34 ? _svgT(x + w / 2, y + rowH / 2 + 4, `${cap(sg.tier)[0]} ${pct}%`, 'text-anchor="middle" class="ch-in"') : '');
+      x += w;
+    });
+    return _svgT(lw - 8, y + rowH / 2 + 4, r.label, 'text-anchor="end" class="ch-lbl"') + segs;
+  }).join('');
+  return `<svg class="an-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img"><title>Package mix by trade</title>${out}</svg>`;
+}
+
+const _TRADE_LBL = {roofing:'🏠 Roofing',siding:'🏗 Siding',windows:'🪟 Windows',gutters:'🌧 Gutters',
+  commercial:'🏢 Commercial',other:'📦 Other',insurance:'🏛 Insurance'};
+
+function renderAnalyticsPage() {
+  const body = document.getElementById('analytics-body');
+  if (!body) return;
+  const ad = _analyticsData;
+  if (!ad) { loadAnalytics(); return; }
+  _anCharts = [];
+  const k   = ad.kpis || {};
+  const canAll = _meCanViewAll();
+  const [from, to] = _anRangeDates();
+  const fmtDay = d => d ? new Date(d + 'T12:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  const rangeLbl = from || to ? `${fmtDay(from) || 'the start'} – ${fmtDay(to) || 'today'}` : 'All time';
+
+  // ── Toolbar ────────────────────────────────────────────────────────
+  const presets = _AN_PRESETS.map(([key, l]) =>
+    `<button class="an-preset ${_anPreset === key ? 'active' : ''}" onclick="anSetPreset('${key}')">${l}</button>`).join('');
+  const repOpts = ['<option value="">All reps</option>']
+    .concat(_teamWith(_anRep).map(m => `<option value="${esc(m)}" ${m === _anRep ? 'selected' : ''}>${esc(cap(m))}</option>`)).join('');
+  const toolbar = `
+    <div class="an-toolbar">
+      <h2 class="board-title">📈 Sales Analytics</h2>
+      <div class="an-presets">${presets}</div>
+      ${_anPreset === 'custom' ? `<span class="an-custom">
+        <input type="date" value="${esc(_anFrom)}" onchange="anSetCustom('from',this.value)" aria-label="From">
+        <span>to</span>
+        <input type="date" value="${esc(_anTo)}" onchange="anSetCustom('to',this.value)" aria-label="To"></span>` : ''}
+      ${canAll ? `<select class="board-filter" onchange="anSetRep(this.value)">${repOpts}</select>` : ''}
+      <span class="board-toolbar-end">
+        <button class="board-tool-btn" onclick="openDashboard()">📊 Job Board</button>
+        <button class="board-tool-btn" onclick="loadAnalytics(true)" title="Refresh data">↺</button>
+      </span>
+    </div>
+    <div class="an-context">
+      <span>${esc(rangeLbl)}</span>
+      ${_anRep ? `<span class="an-rep-chip">👤 ${esc(cap(_anRep))}${canAll
+        ? ` <button onclick="anSetRep('')" title="Back to the whole team">← All reps</button>` : ''}</span>` : ''}
+      ${!canAll ? '<span class="mon-dim">Your own numbers</span>' : ''}
+    </div>`;
+
+  // ── KPI tiles ──────────────────────────────────────────────────────
+  const tile = (val, lbl, sub, cls = '') => `<div class="an-kpi ${cls}">
+      <div class="an-kpi-val">${val}</div><div class="an-kpi-lbl">${lbl}</div><div class="an-kpi-sub">${sub}</div></div>`;
+  const kpis = `<div class="an-kpis">
+    ${tile(_fmtK(k.revenue || 0), 'Signed revenue', `${k.jobs || 0} job${k.jobs === 1 ? '' : 's'}`, 'is-rev')}
+    ${tile(fmtCur(k.avg_deal || 0), 'Avg deal', 'per signed job')}
+    ${tile(k.close_rate != null ? k.close_rate + '%' : '—', 'Close rate', `of ${k.sent || 0} sent in range`,
+           k.close_rate != null ? _clr(k.close_rate) : '')}
+    ${tile(k.avg_days_to_close != null ? k.avg_days_to_close + 'd' : '—', 'Days to close', 'sent → signed')}
+    ${tile(k.margin_pct != null ? k.margin_pct + '%' : '—', 'Margin', 'on costed jobs')}
+    ${tile(k.upgrade_attach != null ? k.upgrade_attach + '%' : '—', 'Upgrade attach',
+           `${(ad.upgrades || {}).elected || 0} of ${(ad.upgrades || {}).offered || 0} offered`)}
+    ${tile(_fmtK(k.pipeline || 0), 'Open pipeline', `${k.pipeline_count || 0} out now`)}
+    ${tile(_fmtK(ad.ytd_revenue || 0), 'Year to date', String(new Date().getFullYear()))}
+  </div>`;
+
+  const un = ad.unassigned || {count:0, value:0};
+  const unassignedHtml = un.count ? `
+    <div class="an-card an-wide analytics-unassigned">
+      ⚠️ <strong>${un.count} estimate${un.count!==1?'s':''} worth ${fmtCur(un.value)}</strong>
+      ${un.count!==1?'are':'is'} missing a salesperson and ${un.count!==1?'are':'is'}
+      excluded from everything on this page. Assign ${un.count!==1?'them':'it'} and these
+      numbers get more accurate.
+    </div>` : '';
+
+  // ── Funnel + why we lost ───────────────────────────────────────────
+  const fn = ad.funnel || {total:0,sent:0,viewed:0,signed:0,lost:0};
+  const steps = [{label:'Created',val:fn.total},{label:'Sent',val:fn.sent},{label:'Viewed',val:fn.viewed},{label:'Signed',val:fn.signed}];
   // 'unrecorded' is shown rather than hidden: estimates marked lost before the
   // picker existed have no reason, and dropping them would quietly inflate the
   // share of every reason that IS recorded.
   const lrLabels = ad.lost_reason_labels || {};
-  const lrRows = Object.entries(ad.lost_reasons || {})
-    .sort((a,b) => b[1].count - a[1].count);
-  const lrTotal = lrRows.reduce((s,[,d]) => s + d.count, 0);
-  const lostReasonHtml = lrRows.length ? `
-      <h4 class="analytics-h" style="margin-top:14px">Why We Lost</h4>
-      ${lrRows.map(([k,d]) => {
-        const pct = lrTotal > 0 ? Math.round(d.count / lrTotal * 100) : 0;
-        const label = k === 'unrecorded' ? 'No reason recorded' : (lrLabels[k] || k);
-        return `<div class="aging-row">
-          <span class="aging-label">${esc(label)}</span>
-          <span class="aging-count">${d.count}</span>
-          <div class="aging-bar-wrap"><div class="aging-bar" style="width:${pct}%;background:#dc2626"></div></div>
-          <span class="aging-val">${fmtCur(d.value)}</span>
-        </div>`;
-      }).join('')}` : '';
-
-  // Estimates with no salesperson are excluded from every number on this tab.
-  // Saying so is the whole point — the figure used to vanish silently.
-  const un = ad.unassigned || {count:0, value:0};
-  const unassignedHtml = un.count ? `
-    <div class="analytics-section a-card analytics-unassigned">
-      ⚠️ <strong>${un.count} estimate${un.count!==1?'s':''} worth ${fmtCur(un.value)}</strong>
-      ${un.count!==1?'are':'is'} missing a salesperson and ${un.count!==1?'are':'is'}
-      excluded from everything on this tab. Assign ${un.count!==1?'them':'it'} and these
-      numbers get more accurate.
-    </div>` : '';
-
-  // ── Pipeline aging ───────────────────────────────────────────────────
-  const pa = ad.pipeline_aging||{};
-  const agingBuckets = [
-    {key:'fresh',  label:'Fresh (0–3d)',   color:'#16a34a'},
-    {key:'active', label:'Active (4–14d)', color:'#0284c7'},
-    {key:'stale',  label:'Stale (15–30d)', color:'#ea580c'},
-    {key:'cold',   label:'Cold (30+d)',    color:'#dc2626'},
-  ];
-  const agingTotal = agingBuckets.reduce((s,b)=>s+(pa[b.key]?.value||0),0);
-  const agingHtml = agingBuckets.map(b=>{
-    const d=pa[b.key]||{count:0,value:0};
-    const pct=agingTotal>0?Math.round(d.value/agingTotal*100):0;
-    return `<div class="aging-row">
-      <span class="aging-dot" style="background:${b.color}"></span>
-      <span class="aging-label">${b.label}</span>
-      <span class="aging-count">${d.count} deal${d.count!==1?'s':''}</span>
-      <div class="aging-bar-wrap"><div class="aging-bar" style="width:${pct}%;background:${b.color}"></div></div>
-      <span class="aging-val">${fmtCur(d.value)}</span>
+  const lrRows = Object.entries(ad.lost_reasons || {}).sort((a,b) => b[1].count - a[1].count);
+  const funnelCard = `<div class="an-card">
+      <h4 class="analytics-h">Conversion funnel</h4>
+      ${fn.total ? _chartSlot(W => svgFunnel(steps, W), 160) : '<p class="mon-dim">No estimates in this range.</p>'}
+      ${fn.lost ? `<div class="funnel-declined">✗ ${fn.lost} lost</div>` : ''}
+      ${lrRows.length ? `<h4 class="analytics-h" style="margin-top:14px">Why we lost</h4>
+        ${_chartSlot(W => svgHBars(lrRows.map(([key, d]) => ({
+          label: key === 'unrecorded' ? 'No reason' : (lrLabels[key] || key).split(' — ')[0],
+          val: d.count, text: `${d.count} · ${_fmtK(d.value)}`, color: '#dc2626' })), W), lrRows.length * 26)}` : ''}
     </div>`;
-  }).join('');
 
-  // ── Retail vs Insurance ──────────────────────────────────────────────
-  const bt = ad.by_type||{};
-  const typeTotal = Object.values(bt).reduce((s,d)=>s+(d.revenue||0),0);
-  const typeHtml = Object.entries(bt).map(([type,d])=>{
-    const pct = typeTotal>0?Math.round(d.revenue/typeTotal*100):0;
-    return `<div class="type-row">
-      <span class="type-label">${type==='insurance'?'🏛 Insurance':'🏠 Retail'}</span>
-      <span class="type-count">${d.count} jobs</span>
-      <div class="aging-bar-wrap"><div class="aging-bar" style="width:${pct}%;background:${type==='insurance'?'#6366f1':'#0284c7'}"></div></div>
-      <span class="aging-val">${fmtCur(d.revenue)}</span>
+  // ── Pipeline aging (a snapshot of now) ─────────────────────────────
+  const pa = ad.pipeline_aging || {};
+  const aging = [['fresh','Fresh 0–3d','#16a34a'],['active','Active 4–14d','#0284c7'],
+                 ['stale','Stale 15–30d','#ea580c'],['cold','Cold 30+d','#dc2626']];
+  const agingCard = `<div class="an-card">
+      <h4 class="analytics-h">Open pipeline by age <span class="analytics-pct">${fmtCur(k.pipeline || 0)} · right now</span></h4>
+      ${_chartSlot(W => svgHBars(aging.map(([key, l, c]) => ({ label: l, val: (pa[key] || {}).value || 0,
+        text: `${(pa[key] || {}).count || 0} · ${_fmtK((pa[key] || {}).value || 0)}`, color: c })), W), 110)}
     </div>`;
-  }).join('');
 
-  // ── Top cities ───────────────────────────────────────────────────────
-  const cities = ad.top_cities||[];
-  const maxCity = Math.max(1,...cities.map(([,v])=>v));
-  const cityRows = cities.map(([city,rev])=>`
-    <div class="city-row">
-      <span class="city-name">${esc(city)}</span>
-      <div class="aging-bar-wrap"><div class="aging-bar" style="width:${Math.round(rev/maxCity*100)}%;background:#8b5cf6"></div></div>
-      <span class="aging-val">${fmtCur(rev)}</span>
-    </div>`).join('');
+  // ── Mix: type by month, package by trade ───────────────────────────
+  const monthly = (ad.monthly || []).slice(-_monRange);
+  const typeKeys = [['retail','Retail'],['insurance','Insurance'],['commercial','Commercial']];
+  const bt = ad.by_type || {}, avgT = ad.avg_ticket_by_type || {};
+  const typeLegend = typeKeys.map(([key, l], j) => `<span><i class="mon-key" style="background:${_CH[j]}"></i>${l}
+      <strong>${_fmtK((bt[key] || {}).revenue || 0)}</strong>
+      <span class="mon-dim">${(bt[key] || {}).count || 0} jobs · avg ${avgT[key] != null ? _fmtK(avgT[key]) : '—'}</span></span>`).join('');
+  const mixCard = `<div class="an-card">
+      <h4 class="analytics-h">Revenue by type <span class="analytics-pct">by month signed</span></h4>
+      ${_chartSlot(W => svgStacked(monthly, typeKeys, W), 200)}
+      <div class="mon-legend an-legend">${typeLegend}</div>
+    </div>`;
+  const tierRows = Object.entries(ad.by_tier || {}).map(([tk, tiers]) => ({
+    label: (_TRADE_LBL[tk] || tk).replace(/^\S+\s/, ''),
+    segs: ['good', 'better', 'best', 'flat'].filter(t => tiers[t]).map(t => ({ tier: t, ...tiers[t] })),
+  })).filter(r => r.segs.length);
+  const tierCard = `<div class="an-card">
+      <h4 class="analytics-h">Package mix <span class="analytics-pct">which tier customers bought</span></h4>
+      ${tierRows.length ? _chartSlot(W => svgMix(tierRows, W), tierRows.length * 30) : '<p class="mon-dim">No signed jobs in this range.</p>'}
+      <div class="mon-legend an-legend">
+        <span><i class="mon-key" style="background:${_CH[1]}"></i>Good</span>
+        <span><i class="mon-key" style="background:${_CH[0]}"></i>Better</span>
+        <span><i class="mon-key" style="background:${_CH[2]}"></i>Best</span>
+        <span><i class="mon-key" style="background:${_CH[6]}"></i>Flat price</span>
+      </div>
+    </div>`;
 
-  // ── Sort controls ────────────────────────────────────────────────────
-  const sortBtns = ['revenue','close_rate','margin'].map(k =>
-    `<button class="analytics-sort-btn ${_analyticsSort===k?'active':''}"
-      onclick="_analyticsSort='${k}';renderDashboard()">${
-        {revenue:'Revenue',close_rate:'Close %',margin:'Margin'}[k]}</button>`).join('');
+  // ── Margin by trade ────────────────────────────────────────────────
+  const trades = Object.entries(ad.by_trade || {}).sort((a,b) => b[1].revenue - a[1].revenue);
+  const tRev = trades.reduce((s, [, d]) => s + d.revenue, 0);
+  const tradeRows = trades.map(([tk, d]) => `<tr>
+      <td><strong>${_TRADE_LBL[tk] || esc(tk)}</strong></td>
+      <td class="analytics-num">${d.job_count}</td>
+      <td class="analytics-num analytics-rev">${fmtCur(d.revenue)} <span class="analytics-pct">${tRev ? Math.round(d.revenue / tRev * 100) : 0}%</span></td>
+      <td class="analytics-num">${d.margin_pct != null ? `<span class="analytics-margin-badge">${d.margin_pct}%</span>` : '—'}</td>
+      <td class="analytics-num analytics-pipe">${fmtCur(d.pipeline)} <span class="mon-dim">(${d.pipeline_count})</span></td>
+    </tr>`).join('');
+  const marginItems = trades.filter(([, d]) => d.margin_pct != null)
+    .map(([tk, d]) => ({ label: (_TRADE_LBL[tk] || tk).replace(/^\S+\s/, ''), val: d.margin_pct,
+      text: d.margin_pct + '%', color: d.margin_pct >= 35 ? '#16a34a' : d.margin_pct >= 30 ? '#e88400' : '#dc2626' }));
+  const tradeCard = `<div class="an-card an-wide">
+      <h4 class="analytics-h">Trades — revenue &amp; margin</h4>
+      <div class="an-split">
+        <div>${marginItems.length ? _chartSlot(W => svgHBars(marginItems, W), marginItems.length * 26)
+          : '<p class="mon-dim">No costed jobs in this range.</p>'}</div>
+        <div class="analytics-table-wrap"><table class="analytics-table">
+          <thead><tr><th>Trade</th><th>Jobs</th><th>Revenue</th><th>Margin</th><th>Pipeline</th></tr></thead>
+          <tbody>${tradeRows || '<tr><td colspan="5" class="mon-dim" style="text-align:center;padding:16px">No data yet</td></tr>'}</tbody>
+        </table></div>
+      </div>
+    </div>`;
 
-  // ── Rep leaderboard ──────────────────────────────────────────────────
-  const maxRevRep = Math.max(1,...repEntries.map(([,d])=>d.revenue));
-  const sorted = [...repEntries].sort((a,b)=>{
-    if(_analyticsSort==='close_rate') return (b[1].close_rate??0)-(a[1].close_rate??0);
-    if(_analyticsSort==='margin')     return (b[1].margin_pct??-1)-(a[1].margin_pct??-1);
-    return b[1].revenue-a[1].revenue;
+  // ── Upgrades & change orders ───────────────────────────────────────
+  const up = ad.upgrades || {}, co = ad.change_orders || {};
+  const extrasCard = `<div class="an-card">
+      <h4 class="analytics-h">Upgrades &amp; change orders</h4>
+      <div class="an-minis">
+        ${tile(up.offered ? Math.round(up.elected / up.offered * 100) + '%' : '—', 'Upgrade attach', `${up.elected || 0} of ${up.offered || 0} jobs offered one`)}
+        ${tile(_fmtK(up.revenue || 0), 'Upgrade revenue', 'elected by customers')}
+        ${tile(co.count || 0, 'Change orders', 'signed in range')}
+        ${tile(_fmtK(co.value || 0), 'CO revenue', co.share_pct != null ? `${co.share_pct}% on top of contracts` : 'none yet')}
+      </div>
+    </div>`;
+
+  // ── Job stages after signature ─────────────────────────────────────
+  const js = ad.job_stages || { stages: [] };
+  const stageColors = ['#e88400', '#2563a8', '#8b5cf6', '#16a34a'];
+  const jobsCard = `<div class="an-card">
+      <h4 class="analytics-h">Signed jobs by stage</h4>
+      ${js.stages.some(s => s.count) ? _chartSlot(W => svgHBars(js.stages.map((s, i) => ({
+          label: s.label.split(' — ')[0], val: s.count, text: `${s.count} · ${_fmtK(s.value)}`,
+          color: stageColors[i % stageColors.length] })), W), js.stages.length * 26)
+        : '<p class="mon-dim">No signed jobs in this range.</p>'}
+      <div class="an-minis">
+        ${tile(js.avg_days_to_schedule != null ? js.avg_days_to_schedule + 'd' : '—', 'Signed → scheduled', 'average')}
+        ${tile(js.avg_days_to_complete != null ? js.avg_days_to_complete + 'd' : '—', 'Signed → complete', 'average')}
+      </div>
+    </div>`;
+
+  // ── Rep leaderboard — click a rep to drill in ──────────────────────
+  const repEntries = Object.entries(ad.by_rep || {}).filter(([,d]) => d.sent > 0 || d.revenue > 0);
+  const maxRevRep = Math.max(1, ...repEntries.map(([,d]) => d.revenue));
+  const sorted = [...repEntries].sort((a,b) => {
+    if (_analyticsSort === 'close_rate') return (b[1].close_rate ?? 0) - (a[1].close_rate ?? 0);
+    if (_analyticsSort === 'margin')     return (b[1].margin_pct ?? -1) - (a[1].margin_pct ?? -1);
+    return b[1].revenue - a[1].revenue;
   });
-  const repRows = sorted.map(([name,d],idx)=>{
-    const medal   = idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':`#${idx+1}`;
-    const crCls   = _clr(d.close_rate||0);
-    const stC     = staleAll.filter(e=>(e.salesperson||'')===name).length;
-    const stCell  = stC ? `<span class="analytics-stale-badge">${stC}</span>` : '—';
-    const m       = d.margin_pct!=null ? `<span class="analytics-margin-badge">${d.margin_pct}%</span>` : '—';
-    const dtc     = d.avg_days_to_close!=null ? `${d.avg_days_to_close}d` : '—';
-    return `<tr>
+  const sortBtns = ['revenue','close_rate','margin'].map(s =>
+    `<button class="analytics-sort-btn ${_analyticsSort===s?'active':''}" onclick="anSetSort('${s}')">${
+      {revenue:'Revenue',close_rate:'Close %',margin:'Margin'}[s]}</button>`).join('');
+  const repRows = sorted.map(([name,d],idx) => {
+    const medal = idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':`#${idx+1}`;
+    return `<tr class="${canAll ? 'an-rep-row' : ''}" ${canAll ? `onclick="anSetRep('${jsq(name)}')" title="Drill into ${esc(cap(name))}"` : ''}>
       <td><span class="rep-rank">${medal}</span> <strong>${esc(cap(name))}</strong></td>
       <td class="analytics-num">${d.sent}</td>
       <td class="analytics-num">${d.signed}</td>
-      <td class="analytics-num"><span class="a-rate-badge ${crCls}">${d.close_rate??0}%</span></td>
-      <td class="analytics-num analytics-rev">${fmtCur(d.revenue)}
-        ${_pbar(d.revenue,maxRevRep,'a-bar-rev')}</td>
+      <td class="analytics-num"><span class="a-rate-badge ${_clr(d.close_rate||0)}">${d.close_rate??0}%</span></td>
+      <td class="analytics-num analytics-rev">${fmtCur(d.revenue)} ${_pbar(d.revenue,maxRevRep,'a-bar-rev')}</td>
       <td class="analytics-num">${fmtCur(d.avg_deal||0)}</td>
-      <td class="analytics-num">${dtc}</td>
-      <td class="analytics-num">${m}</td>
+      <td class="analytics-num">${d.avg_days_to_close!=null ? d.avg_days_to_close+'d' : '—'}</td>
+      <td class="analytics-num">${d.margin_pct!=null ? `<span class="analytics-margin-badge">${d.margin_pct}%</span>` : '—'}</td>
       <td class="analytics-num analytics-pipe">${fmtCur(d.pipeline)}</td>
-      <td class="analytics-num">${stCell}</td>
+      <td class="analytics-num">${d.stale ? `<span class="analytics-stale-badge">${d.stale}</span>` : '—'}</td>
     </tr>`;
   }).join('');
-
-  // ── Trade breakdown ──────────────────────────────────────────────────
-  const tl = {roofing:'🏠 Roofing',siding:'🏗 Siding',windows:'🪟 Windows',gutters:'🌧 Gutters',commercial:'🏢 Commercial',other:'📦 Other'};
-  const maxTrade = Math.max(1,...Object.values(ad.by_trade).map(d=>d.revenue));
-  const tradeRows = Object.entries(ad.by_trade).sort((a,b)=>b[1].revenue-a[1].revenue).map(([tk,d])=>{
-    const m = d.margin_pct!=null?`<span class="analytics-margin-badge">${d.margin_pct}%</span>`:'—';
-    const pct = totalRev>0?Math.round(d.revenue/totalRev*100):0;
-    return `<tr>
-      <td><strong>${tl[tk]||tk}</strong></td>
-      <td class="analytics-num">${d.job_count}</td>
-      <td class="analytics-num analytics-rev">${fmtCur(d.revenue)}
-        <span class="analytics-pct">${pct}%</span>
-        ${_pbar(d.revenue,maxTrade,'a-bar-rev')}</td>
-      <td class="analytics-num">${m}</td>
-      <td class="analytics-num analytics-pipe">${fmtCur(d.pipeline)} <span style="font-size:10px;color:#94a3b8">(${d.pipeline_count})</span></td>
-    </tr>`;
-  }).join('');
-
-  const nd = (n)=>`<tr><td colspan="${n}" style="text-align:center;color:#94a3b8;padding:16px">No data yet</td></tr>`;
-
-  return `
-    <!-- ── KPI Cards ──────────────────────────────────────── -->
-    <div class="analytics-cards a-cards-6">
-      <div class="analytics-card analytics-card-rev">
-        <div class="analytics-card-val">${fmtCur(totalRev)}</div>
-        <div class="analytics-card-lbl">Total Revenue</div>
-        <div class="analytics-card-sub">${allSigned.length} jobs closed</div>
-      </div>
-      <div class="analytics-card analytics-card-month">
-        <div class="analytics-card-val">${fmtCur(ytdRev)}</div>
-        <div class="analytics-card-lbl">YTD Revenue</div>
-        <div class="analytics-card-sub">${new Date().getFullYear()}</div>
-      </div>
-      <div class="analytics-card" style="background:#eff6ff;border-color:#bfdbfe">
-        <div class="analytics-card-val">${fmtCur(rev30)}</div>
-        <div class="analytics-card-lbl">Last 30 Days</div>
-        <div class="analytics-card-sub">${s30.length} jobs</div>
-      </div>
-      <div class="analytics-card analytics-card-q">
-        <div class="analytics-card-val">${fmtCur(avgDeal)}</div>
-        <div class="analytics-card-lbl">Avg Deal Size</div>
-        <div class="analytics-card-sub">per signed job</div>
-      </div>
-      <div class="analytics-card analytics-card-rate">
-        <div class="analytics-card-val">${closeRate}%</div>
-        <div class="analytics-card-lbl">Close Rate</div>
-        <div class="analytics-card-sub">${allSigned.length} of ${allSent.length} sent</div>
-      </div>
-      <div class="analytics-card" style="background:#f5f3ff;border-color:#ddd6fe">
-        <div class="analytics-card-val" style="color:#7c3aed">${avgDTC!=null?avgDTC+'d':'—'}</div>
-        <div class="analytics-card-lbl">Avg Days to Close</div>
-        <div class="analytics-card-sub">sent → signed</div>
-      </div>
-    </div>
-
-    ${unassignedHtml}
-
-    <!-- ── Row 2: Funnel + Pipeline + Type ───────────────── -->
-    <div class="a-row-3">
-      <div class="analytics-section a-card">
-        <h4 class="analytics-h">Conversion Funnel</h4>
-        ${funnelHtml}
-        ${lostHtml}
-        ${lostReasonHtml}
-      </div>
-      <div class="analytics-section a-card">
-        <h4 class="analytics-h">Pipeline Health <span class="analytics-pct">${fmtCur(pipelineVal)}</span></h4>
-        ${agingHtml || '<p style="color:#94a3b8;font-size:12px;padding:8px 0">No open pipeline</p>'}
-      </div>
-      <div class="analytics-section a-card">
-        <h4 class="analytics-h">Retail vs Insurance</h4>
-        ${typeHtml || '<p style="color:#94a3b8;font-size:12px;padding:8px 0">No data</p>'}
-        ${cities.length ? `<h4 class="analytics-h" style="margin-top:14px">Top Markets</h4>${cityRows}` : ''}
-      </div>
-    </div>
-
-    <!-- ── Monthly Trends & Goals ─────────────────────────── -->
-    ${renderMonthlyTrends(ad)}
-
-    <!-- ── Rep Leaderboard ────────────────────────────────── -->
-    <div class="analytics-section a-card">
+  const repCard = _anRep && !canAll ? '' : `<div class="an-card an-wide">
       <div class="analytics-sort-bar" style="margin-bottom:10px">
-        <h4 class="analytics-h" style="margin:0">Rep Leaderboard</h4>
+        <h4 class="analytics-h" style="margin:0">Rep leaderboard ${canAll && !_anRep ? '<span class="mon-dim">— click a rep to drill in</span>' : ''}</h4>
         <span class="analytics-sort-lbl" style="margin-left:auto">Sort:</span>${sortBtns}
-        <button class="analytics-refresh-btn" onclick="_analyticsData=null;dashSetView('analytics')" title="Refresh data">↺</button>
       </div>
-      <div class="analytics-table-wrap">
-      <table class="analytics-table">
-        <thead><tr>
-          <th>Rep</th><th>Sent</th><th>Signed</th><th>Close %</th>
-          <th>Revenue</th><th>Avg Deal</th><th>Avg Close</th>
-          <th>Margin</th><th>Pipeline</th><th title="Cold estimates">Stale</th>
-        </tr></thead>
-        <tbody>${repRows || nd(10)}</tbody>
-      </table>
-      </div>
-    </div>
-
-    <!-- ── Revenue by Trade ───────────────────────────────── -->
-    <div class="analytics-section a-card">
-      <h4 class="analytics-h">Revenue by Trade</h4>
-      <div class="analytics-table-wrap">
-      <table class="analytics-table">
-        <thead><tr><th>Trade</th><th>Jobs</th><th>Revenue</th><th>Avg Margin</th><th>Pipeline</th></tr></thead>
-        <tbody>${tradeRows || nd(5)}</tbody>
-      </table>
-      </div>
+      <div class="analytics-table-wrap"><table class="analytics-table">
+        <thead><tr><th>Rep</th><th>Sent</th><th>Signed</th><th>Close %</th><th>Revenue</th><th>Avg Deal</th>
+          <th>Avg Close</th><th>Margin</th><th>Pipeline</th><th title="Sent 3+ days, not signed">Stale</th></tr></thead>
+        <tbody>${repRows || '<tr><td colspan="10" class="mon-dim" style="text-align:center;padding:16px">No data yet</td></tr>'}</tbody>
+      </table></div>
     </div>`;
+
+  // ── Top markets ────────────────────────────────────────────────────
+  const cities = ad.top_cities || [];
+  const cityCard = cities.length ? `<div class="an-card">
+      <h4 class="analytics-h">Top markets</h4>
+      ${_chartSlot(W => svgHBars(cities.map(([c, v]) => ({ label: c, val: v, color: '#8b5cf6' })), W), cities.length * 26)}
+    </div>` : '';
+
+  body.innerHTML = `${toolbar}
+    ${kpis}
+    <div class="an-grid">
+      ${unassignedHtml}
+      <div class="an-wide">${renderMonthlyTrends(ad)}</div>
+      ${funnelCard}${agingCard}${jobsCard}
+      ${mixCard}${tierCard}${extrasCard}
+      ${tradeCard}
+      ${repCard}
+      ${cityCard}
+    </div>`;
+  requestAnimationFrame(_drawCharts);
 }
 
 /* ── Monthly trends & sales goals ─────────────────────────────────────
@@ -11823,7 +12180,7 @@ function renderMonthlyTrends(ad) {
 
   const rangeBtns = [6, 12, 24].map(n =>
     `<button class="analytics-sort-btn ${_monRange === n ? 'active' : ''}"
-      onclick="_monRange=${n};renderDashboard()">${n}m</button>`).join('');
+      onclick="anSetMonRange(${n})">${n}m</button>`).join('');
 
   // ── Current month vs goal ──────────────────────────────────────────
   const hasGoal = (cm.goal || 0) > 0;
@@ -11879,32 +12236,6 @@ function renderMonthlyTrends(ad) {
         </div>
       </div>`}
     </div>`;
-
-  // ── Bars: revenue against that month's goal line ───────────────────
-  const scale = Math.max(1, ...rows.map(r => Math.max(r.revenue, r.goal || 0)));
-  const bars = rows.map((r, i) => {
-    const h    = Math.round(r.revenue / scale * 100);
-    const gh   = r.goal > 0 ? Math.min(100, Math.round(r.goal / scale * 100)) : null;
-    const cls  = _goalCls(r.pct_to_goal);
-    const isCur = r.month === cm.month;
-    return `<div class="mon-bar-wrap" title="${_monLabel(r.month, true)} — ${fmtCur(r.revenue)}${
-        r.goal > 0 ? ` of ${fmtCur(r.goal)} goal (${r.pct_to_goal}%)` : ''}">
-      <div class="mon-bar-track">
-        <div class="mon-bar-fill ${cls} ${isCur ? 'is-current' : ''}" style="height:${h}%"></div>
-        ${gh != null ? `<div class="mon-goal-line" style="bottom:${gh}%"></div>` : ''}
-      </div>
-      <!-- Year on the first bar and every January, so a 24-month view doesn't
-           show two unlabelled "Apr"s. -->
-      <div class="mon-bar-lbl ${isCur ? 'is-current' : ''}">${
-        _monLabel(r.month, i === 0 || r.month.endsWith('-01'))}</div>
-      <div class="mon-bar-val">${_fmtK(r.revenue)}</div>
-      ${r.pct_to_goal != null
-        ? `<div class="mon-bar-growth ${r.pct_to_goal >= 100 ? 'pos' : 'neg'}">${r.pct_to_goal}%</div>`
-        : r.mom_pct != null
-        ? `<div class="mon-bar-growth ${r.mom_pct >= 0 ? 'pos' : 'neg'}">${r.mom_pct >= 0 ? '+' : ''}${r.mom_pct}%</div>`
-        : '<div class="mon-bar-growth">&nbsp;</div>'}
-    </div>`;
-  }).join('');
 
   // ── Detail table ───────────────────────────────────────────────────
   const dlt = (v, suffix = '%') => v == null ? '<span class="mon-dim">—</span>'
@@ -11965,12 +12296,14 @@ function renderMonthlyTrends(ad) {
         ${canEdit ? `<button class="btn-goal-edit" onclick="openGoalEditor()">🎯 Set Goals</button>` : ''}
       </div>
       ${hero}
-      ${rows.length ? `<div class="mon-bars mon-bars-lg mon-bars-goal">${bars}</div>
+      ${rows.length ? `${_chartSlot(W => svgTrend(rows, W), 240)}
       <div class="mon-legend">
         <span><i class="mon-key g-hit"></i>goal met</span>
         <span><i class="mon-key g-near"></i>80–99%</span>
         <span><i class="mon-key g-miss"></i>under 80%</span>
+        <span><i class="mon-key g-none"></i>no goal</span>
         <span><i class="mon-key-line"></i>month's goal</span>
+        <span><i class="mon-key-rate"></i>close rate (right axis)</span>
       </div>` : '<p class="mon-dim" style="padding:8px 0">No signed estimates yet.</p>'}
       ${benchLine}
       <div class="analytics-table-wrap" style="margin-top:12px">
@@ -12134,8 +12467,7 @@ async function saveGoals() {
     });
     if (!r.ok) throw new Error(r.status === 403 ? 'Managers only' : 'Save failed');
     closeGoalEditor();
-    _analyticsData = null;      // goals change every % on the panel — refetch
-    await dashSetView('analytics');
+    await loadAnalytics(true);  // goals change every % on the page — refetch
     toast('🎯 Goals saved');
   } catch (e) {
     alert('Could not save goals: ' + e.message);
@@ -14592,12 +14924,7 @@ async function renderHomePage() {
     .sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''))
     .slice(0, 8);
   const now = Date.now();
-  const stale = myData.filter(e=>{
-    const st=estStatusOf(e);
-    if(st==='sent'&&e.sent_at)          return (now-new Date(e.sent_at).getTime())/86400000>=3;
-    if(st==='viewed'&&e.last_viewed_at) return (now-new Date(e.last_viewed_at).getTime())/86400000>=2;
-    return false;
-  });
+  const stale = myData.filter(e => estGoingCold(e, now));
   const h = new Date().getHours();
   const name = cap(_loggedInUser||'there');
   const greeting = h<12 ? `Good morning, ${name}` : h<17 ? `Good afternoon, ${name}` : `Good evening, ${name}`;
@@ -14614,6 +14941,10 @@ async function renderHomePage() {
     ${stale.length ? `<div class="home-followup-alert" onclick="openDashboard()">
       ⚠ ${stale.length} estimate${stale.length!==1?'s':''} need${stale.length===1?'s':''} follow-up</div>` : ''}
     <button class="home-new-btn" onclick="newEstimateAction()">📝 New Estimate</button>
+    <div class="home-tiles">
+      <button class="home-tile" onclick="openDashboard()"><span>📊</span>Job Board</button>
+      <button class="home-tile" onclick="openAnalytics()"><span>📈</span>Analytics</button>
+    </div>
     <div class="home-search-wrap">
       <input type="text" class="home-search-input" id="home-cust-search"
         placeholder="🔍 Search customer by name or address…"
@@ -14623,12 +14954,12 @@ async function renderHomePage() {
     <div class="home-recents">
       <div class="home-recents-hd">
         <span>Recent Estimates</span>
-        <button class="home-dash-link" onclick="openDashboard()">📊 Full Dashboard →</button>
+        <button class="home-dash-link" onclick="openDashboard()">📊 Job Board →</button>
       </div>
       ${recent.length ? recent.map(e=>{
         const st=estStatusOf(e);
         const nEst = custEstimateCount(e.customer_name);
-        return `<div class="home-est-row" onclick="doLoadEstimate('${esc(e.estimate_id)}');closeDashboard()">
+        return `<div class="home-est-row" onclick="doLoadEstimate('${esc(e.estimate_id)}')">
           <div class="home-est-main">
             <span class="dash-row-name"><strong>${esc(e.customer_name||'(no customer)')}</strong>${
               nEst > 1 ? `<button class="dash-cf-btn"
@@ -14661,8 +14992,7 @@ async function loadTeamRoster() {
     TEAM = names;
   } catch { return; }
   syncSalespersonSelect();
-  const dash = document.getElementById('dashboard-modal');
-  if (dash && !dash.classList.contains('hidden')) renderDashboard();
+  if (activePage === 'dashboard') renderDashboard();
 }
 
 // A former rep who is off the roster must still show as the owner rather than
@@ -14715,8 +15045,7 @@ async function reassignEstimate(id, rep) {
     if (id === S.estimate_id) { S.salesperson = rep; renderCoverPage(); }
   }
   if (id === S.estimate_id) syncSalespersonSelect();   // also reverts it on failure
-  const dash = document.getElementById('dashboard-modal');
-  if (dash && !dash.classList.contains('hidden')) renderDashboard();
+  if (activePage === 'dashboard') renderBoardColumns();
 }
 
 function _autoSaveTick() {
@@ -14818,7 +15147,10 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   clearTimeout(_draftTimer); clearTimeout(_autosaveTimer);
   const saveIndicator = document.getElementById('save-indicator');
   saveIndicator.textContent = ''; saveIndicator.className = 'save-indicator';
-  switchPage('home');   // home screen first — rep must choose New or open existing
+  // A shared analytics link (#analytics?p=…&rep=…) opens onto that view;
+  // everything else starts on Home, where the rep chooses New or Open.
+  if ((location.hash || '').startsWith('#analytics')) openAnalytics();
+  else switchPage('home');
 });
 
 /* ── CRM handoff ────────────────────────────────────────────────────────

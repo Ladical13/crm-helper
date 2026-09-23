@@ -41,7 +41,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 10px;
+  padding: 0 max(10px, env(safe-area-inset-right, 0px)) 0 max(10px, env(safe-area-inset-left, 0px));
   padding-top: env(safe-area-inset-top, 0px);
   box-sizing: content-box;
   background: var(--p1-shell-bg);
@@ -89,6 +89,8 @@
 
 #p1-shell .p1-apps {
   display: flex;
+  align-items: center;
+  height: 44px;
   gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
@@ -102,6 +104,8 @@
   align-items: center;
   gap: 5px;
   flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
   padding: 6px 11px;
   border-radius: 999px;
   color: var(--p1-shell-dim);
@@ -146,6 +150,8 @@
 
 /* Phones: the label text goes, the emoji and accent dot stay. */
 @media (max-width: 560px) {
+  #p1-shell { gap: 6px; }
+  #p1-shell .p1-out { padding-inline: 8px; }
   #p1-shell .p1-app .p1-label { display: none; }
   #p1-shell .p1-who { display: none; }
   #p1-shell .p1-app { padding: 6px 9px; }
