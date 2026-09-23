@@ -17556,7 +17556,8 @@ function renderInvoiceForm() {
   <div class="panel rc-panel">
     <div class="panel-header">
       <h3>🧾 ${isInv ? 'Invoice' : 'Quote'} — ${esc(c.name || 'this job')}</h3>
-      ${inv.sent_at ? `<span class="rc-issued-chip" title="${esc(inv.sent_to || '')}">Sent ${esc(String(inv.sent_at).slice(0, 10))}</span>` : ''}
+      ${inv.signature ? `<span class="rc-issued-chip rc-signed-chip" title="${esc(inv.signature.name || '')}">✍️ Signed ${esc(String(inv.signature.signed_at || '').slice(0, 10))}</span>`
+        : inv.sent_at ? `<span class="rc-issued-chip" title="${esc(inv.sent_to || '')}">Sent ${esc(String(inv.sent_at).slice(0, 10))}</span>` : ''}
     </div>
     <p class="pm-hint rc-lede">A plain, itemized document for a GC or a homeowner.
       It has no signing link and no proposal pages. Change the line items on the
@@ -17625,10 +17626,14 @@ function renderInvoiceForm() {
 
     <div class="rc-btns">
       <button class="doc-crm-push" onclick="invPreview()">👁 Preview PDF</button>
+      <button class="doc-crm-push" onclick="invDownload()">⬇ Download PDF</button>
       <button class="doc-crm-push" onclick="invFile()">📎 ${filed ? 'Update in Files' : 'Save to Files'}</button>
+      <button class="doc-crm-push" onclick="invSendForSignature()">✍️ Send for Signature</button>
       <button class="btn-primary rc-issue" onclick="invEmail()">✉️ Email ${isInv ? 'Invoice' : 'Quote'}</button>
       <span class="rc-saved" id="inv-saved"></span>
     </div>
+    ${inv.signature ? `<p class="pm-hint">Signed by <strong>${esc(inv.signature.name || '')}</strong>
+      — the figures are locked. Reopen it as a change order if the amount needs to move.</p>` : ''}
   </div>`;
   ['inv-issue', 'inv-due', 'inv-valid', 'inv-po', 'inv-number', 'inv-notes', 'inv-itemize'].forEach(id => {
     const x = document.getElementById(id);
@@ -17719,6 +17724,49 @@ async function invPreview() {
   if (!saved) { if (w) w.close(); return; }
   const url = `${BASE}/api/estimates/${S.estimate_id}/invoice.pdf`;
   if (w) w.location = url; else window.open(url, '_blank');
+}
+
+// Preview opens the PDF inline; this saves it. The endpoint has taken
+// `?download=1` since it was written — it sets Content-Disposition: attachment
+// — and nothing ever passed it, so the only way to get a file was to preview it
+// and then use the browser's own save button. That works on a laptop and is a
+// dead end on the phone a rep is standing on a driveway holding.
+async function invDownload() {
+  const saved = await saveInvoiceFields(true, true);
+  if (!saved) return;
+  // A real navigation rather than fetch+blob: the browser handles the save
+  // dialog, iOS hands it to the share sheet, and nothing has to be held in
+  // memory. Same reason the signed-contract download is a plain link.
+  window.location = `${BASE}/api/estimates/${S.estimate_id}/invoice.pdf?download=1`;
+}
+
+// A GC or homeowner approving the amount before they pay it. Deliberately NOT
+// the estimate's signing link: that one files a job in The Den and drives the
+// CRM funnel to won, and this bills work that was already sold.
+async function invSendForSignature() {
+  const saved = await saveInvoiceFields(true, false);
+  if (!saved) return;
+  const email = (document.getElementById('inv-email') || {}).value || '';
+  try {
+    const r = await fetch(`/api/estimates/${S.estimate_id}/invoice/send-signature`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim() }),
+    });
+    const j = await r.json();
+    if (!r.ok) { toast('⚠ ' + (j.error || 'Could not create the signing link.')); return; }
+    // The link is worth having even when the mail did not go — a rep can paste
+    // it into their own message, which is what they do when a GC wants it in a
+    // thread they are already on.
+    if (j.sent_to) toast(`✓ Sent to ${j.sent_to} for signature`);
+    else {
+      await navigator.clipboard.writeText(j.full_url).catch(() => {});
+      toast('✓ ' + (j.note || 'Signing link copied'));
+    }
+    loadInvoice();
+  } catch (e) {
+    toast('⚠ Could not create the signing link.');
+  }
 }
 
 async function invFile() {

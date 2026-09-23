@@ -199,6 +199,9 @@ PUBLIC_ENDPOINTS = {
     'record_tier_interest',
     'customer_design',   # /design/<token> — public design review/approval token
     'sign_change_order', # /sign-co/<token> — same token protection as /sign
+    'sign_invoice',      # /sign-inv/<token> — a GC approving the amount. Same
+                         # token protection; deliberately NOT the estimate's
+                         # signing path, which files a job in The Den.
     'serve_upload',      # /uploads/<file> — cover photos shown on the customer view
     'static',            # JS/CSS for the login + app shell (non-sensitive client code)
     'pwa_manifest',      # /manifest.json — needed for PWA install before login
@@ -18150,6 +18153,12 @@ def save_invoice_fields(est_id):
     est, err = _invoice_est_or_error(est_id)
     if err:
         return err
+    if _invoice_signed(est):
+        # The signature covers a hash of these figures. Editing them afterwards
+        # would leave a record attesting to an amount the document no longer
+        # shows — the same reason a signed estimate cannot change status.
+        return jsonify({'error': 'This invoice has been signed and can no longer '
+                                 'be edited.'}), 409
     cleaned = _sanitize_invoice(request.get_json(silent=True) or {})
 
     def _apply(doc):
@@ -18270,6 +18279,365 @@ def email_invoice(est_id):
     est_update(est_id, _mark)
     return jsonify({'ok': True, 'sent_to': to_addr, 'attachment': att})
 
+
+# ── Signing an invoice ───────────────────────────────────────────────────────
+#
+# A GC or a homeowner signing off the amount before they pay it. Deliberately
+# NOT the estimate's signing path: `/sign/<token>` runs `_post_sign_pipeline`,
+# which files a Contact and a Project in The Den and drives the CRM funnel to
+# `won`. An invoice bills work that was already sold, so running it through
+# there would push the job to the back office a second time and re-win a lead
+# that was won months ago — silently, because both are background threads.
+#
+# `/sign-co/` is the narrow path that does neither, and this is modelled on it:
+# capture the signature, tell the rep, file the PDF, stop.
+#
+# The token is the whole protection, exactly as it is for /sign and /sign-co.
+
+def _invoice_signed(est):
+    return bool(((est or {}).get('invoice') or {}).get('signature'))
+
+
+def find_by_invoice_token(token):
+    """(est) for the invoice matching sign_token, or None. Full scan, like
+    `est_find_by_token` and `find_by_co_token` — fine at this dataset size."""
+    if not token:
+        return None
+    for est in est_iter():
+        if ((est.get('invoice') or {}).get('sign_token') or '') == token:
+            return est
+    return None
+
+
+def _invoice_sign_email_subject(est):
+    inv = invoice_fields(est)
+    label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    return f'{label} {inv.get("number", "")} to review and approve — Project One Roofing'
+
+
+def _invoice_sign_email_html(est, sign_url):
+    inv   = invoice_fields(est)
+    label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    first = ((est.get('customer') or {}).get('name') or 'there').split(' ')[0]
+    rep   = _display_name(est.get('salesperson')) if est.get('salesperson') else 'Project One Roofing'
+    return (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8"></head>'
+        '<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">'
+        '<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">'
+        '<div style="background:#1a3a5c;padding:22px 26px;color:#fff">'
+        '<div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>'
+        f'<h1 style="margin:0;font-size:22px;font-weight:800">{he(label)} {he(inv.get("number", ""))}</h1>'
+        f'<p style="margin:7px 0 0;opacity:.9;font-size:13px">Hi {he(first)} &mdash; your '
+        f'{he(label.lower())} is ready to review and approve online.</p></div>'
+        '<div style="padding:22px 26px">'
+        '<p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 18px">'
+        'Open the link below to see the itemized amount and approve it electronically. '
+        'This confirms the figure &mdash; it does not change your contract or authorise '
+        'any new work.</p>'
+        f'<a href="{he(sign_url)}" style="display:block;text-align:center;background:#1a3a5c;'
+        'color:#fff;text-decoration:none;padding:14px 24px;border-radius:6px;font-weight:700;'
+        'font-size:15px;margin-bottom:18px">Review &amp; Approve &rarr;</a>'
+        '<p style="font-size:12px;color:#6b7280;line-height:1.6;margin:0">'
+        'Questions? Just reply to this email or call us at 970-776-0945.<br>'
+        f'&mdash; {he(rep)}, Project One Roofing</p></div></div></body></html>')
+
+
+def build_invoice_sign_page(est, token):
+    """The customer's page. Unsigned: the figures plus a sign form. Signed: the
+    confirmation and the audit trail.
+
+    Inline CSS, because style.css sits behind the login and this page does not
+    — the same reason every other customer-facing page here is built this way.
+    """
+    inv    = invoice_fields(est)
+    data   = invoice_rows(est)
+    sig    = inv.get('signature') or {}
+    c      = est.get('customer') or {}
+    is_inv = inv['kind'] == 'invoice'
+    label  = 'Invoice' if is_inv else 'Quote'
+    rep    = _display_name(est.get('salesperson')) if est.get('salesperson') else ''
+
+    # The row shape is the PDF's own: [name, qty, unit, unit_price, amount].
+    # A GC approving a figure wants the quantities behind it, which is the whole
+    # reason the itemized invoice exists. `{qty:g}` matches how the PDF prints.
+    rows = []
+    for sec in (data.get('sections') or []):
+        if sec.get('title'):
+            rows.append(
+                '<tr><td colspan="2" style="padding:16px 0 4px;font-weight:700;font-size:12px;'
+                'letter-spacing:.06em;text-transform:uppercase;color:#64748b">'
+                f'{he(sec["title"])}</td></tr>')
+        for name, qty, unit, unit_price, amount in (sec.get('rows') or []):
+            detail = ''
+            if qty:
+                detail = (f'<div style="color:#94a3b8;font-size:12px">{qty:g} '
+                          f'{he(unit or "")} @ {he(fc(unit_price))}</div>')
+            rows.append(
+                f'<tr><td style="padding:7px 0;border-bottom:1px solid #eef2f7">{he(name)}'
+                f'{detail}</td>'
+                '<td style="padding:7px 0;border-bottom:1px solid #eef2f7;text-align:right;'
+                f'white-space:nowrap;vertical-align:top">{he(fc(amount))}</td></tr>')
+        if sec.get('folded'):
+            # The homeowner view folds hidden lines into the subtotal. Saying so
+            # is what stops the rows looking like they do not add up.
+            rows.append(
+                '<tr><td colspan="2" style="padding:4px 0;color:#94a3b8;font-size:12px">'
+                f'Plus {int(sec["folded"])} further line(s) included in the subtotal.'
+                '</td></tr>')
+
+    money = [('Subtotal', data.get('subtotal') or 0)]
+    if data.get('co_total'):
+        money.append(('Approved change orders', data.get('co_total') or 0))
+    if data.get('payments_total'):
+        money.append(('Payments received', -(data.get('payments_total') or 0)))
+    show_balance = is_inv or data.get('payments_total')
+    money.append(('Balance due' if show_balance else 'Total',
+                  (data.get('balance_due') if show_balance else data.get('total')) or 0))
+    money_html = ''
+    for i, (lbl, val) in enumerate(money):
+        strong = 'font-weight:800;font-size:17px' if i == len(money) - 1 else 'color:#475569'
+        money_html += (f'<tr><td style="padding:6px 0;{strong}">{he(lbl)}</td>'
+                       f'<td style="padding:6px 0;text-align:right;white-space:nowrap;'
+                       f'{strong}">{he(fc(val))}</td></tr>')
+
+    if sig:
+        when = str(sig.get('signed_at') or '')[:19].replace('T', ' ')
+        block = (
+            '<div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:10px;padding:18px 20px">'
+            '<div style="font-weight:800;color:#065f46;font-size:17px;margin-bottom:6px">'
+            'Signed &mdash; thank you</div>'
+            '<div style="color:#065f46;font-size:14px;line-height:1.7">Approved by '
+            f'<strong>{he(sig.get("name", ""))}</strong><br>{he(when)} UTC</div></div>'
+            '<p style="color:#94a3b8;font-size:11px;line-height:1.6;margin:16px 0 0">'
+            f'Electronic signature record &middot; {he(sig.get("ip_address") or "")} '
+            f'&middot; document hash {he((sig.get("document_hash") or "")[:16])}&hellip;</p>')
+    else:
+        block = (
+            '<form method="POST" style="margin:0">'
+            f'<div style="font-weight:800;font-size:16px;margin-bottom:4px">Approve this {he(label.lower())}</div>'
+            '<p style="color:#64748b;font-size:13px;line-height:1.6;margin:0 0 16px">'
+            'Typing your name below is your electronic signature approving the amount '
+            'shown. It does not change your contract or authorise any new work.</p>'
+            '<label style="display:block;font-size:12px;font-weight:700;color:#475569;margin-bottom:5px">Full name</label>'
+            '<input name="sig_name" required autocomplete="name" style="width:100%;box-sizing:border-box;'
+            'padding:13px 14px;font-size:16px;border:1px solid #cbd5e1;border-radius:8px;margin-bottom:14px">'
+            '<label style="display:block;font-size:12px;font-weight:700;color:#475569;margin-bottom:5px">'
+            'Email <span style="font-weight:400;color:#94a3b8">(for your copy)</span></label>'
+            f'<input name="sig_email" type="email" autocomplete="email" value="{he(c.get("email") or "")}" '
+            'style="width:100%;box-sizing:border-box;padding:13px 14px;font-size:16px;'
+            'border:1px solid #cbd5e1;border-radius:8px;margin-bottom:18px">'
+            '<button type="submit" style="width:100%;padding:15px;font-size:16px;font-weight:800;'
+            'color:#fff;background:#1a3a5c;border:0;border-radius:8px;cursor:pointer">'
+            'Sign &amp; Approve</button></form>')
+
+    notes = ''
+    if (inv.get('notes') or '').strip():
+        notes = ('<p style="color:#475569;font-size:13px;line-height:1.7;margin:18px 0 0;'
+                 f'white-space:pre-wrap">{he(inv.get("notes"))}</p>')
+    rep_line = f'<br>&mdash; {he(rep)}, Project One Roofing' if rep else ''
+
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f'<title>{he(label)} {he(inv.get("number", ""))} &middot; Project One Roofing</title></head>'
+        '<body style="margin:0;background:#f1f5f9;font-family:system-ui,-apple-system,'
+        "'Segoe UI',sans-serif;color:#0f172a\">"
+        '<div style="max-width:620px;margin:0 auto;padding:22px 16px 48px">'
+        '<div style="background:#1a3a5c;color:#fff;border-radius:12px 12px 0 0;padding:22px 24px">'
+        '<div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;'
+        'opacity:.8">Project One Roofing</div>'
+        f'<h1 style="margin:8px 0 0;font-size:21px;font-weight:800">{he(label)} {he(inv.get("number", ""))}</h1>'
+        f'<div style="opacity:.9;font-size:13px;margin-top:5px">{he(c.get("name") or "")}</div></div>'
+        '<div style="background:#fff;padding:22px 24px;border-radius:0 0 12px 12px;'
+        'box-shadow:0 1px 3px rgba(0,0,0,.08)">'
+        f'<table style="width:100%;border-collapse:collapse;font-size:14px">{"".join(rows)}</table>'
+        '<table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:14px;'
+        f'border-top:2px solid #0f172a">{money_html}</table>{notes}'
+        f'<div style="margin-top:24px">{block}</div>'
+        '<p style="color:#94a3b8;font-size:12px;line-height:1.6;margin:22px 0 0;'
+        'border-top:1px solid #eef2f7;padding-top:14px">'
+        'Questions? Reply to the email this came from or call 970-776-0945.'
+        f'{rep_line}</p></div></div></body></html>')
+
+def send_invoice_signature_notification(est):
+    """Tell the rep their invoice was approved.
+
+    The one thing the customer cannot do for them: the signature lands in a
+    background thread on a public route, so without this the rep finds out by
+    opening the estimate and noticing.
+    """
+    to_addr = _salesperson_email(est) or BACKUP_EMAIL
+    if not to_addr:
+        return False
+    inv   = invoice_fields(est)
+    sig   = inv.get('signature') or {}
+    data  = invoice_rows(est)
+    label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    c     = est.get('customer') or {}
+    amount = data.get('balance_due') if inv['kind'] == 'invoice' else data.get('total')
+    when   = str(sig.get('signed_at') or '')[:19].replace('T', ' ')
+    return _send_email(
+        f'✍️ {label} {inv.get("number", "")} signed — {c.get("name") or "customer"}',
+        '<div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px">'
+        f'<h2 style="margin:0 0 6px">{he(label)} {he(inv.get("number", ""))} was signed</h2>'
+        '<p style="color:#475569;font-size:14px;line-height:1.7;margin:0 0 14px">'
+        f'<strong>{he(sig.get("name", ""))}</strong> approved {he(fc(amount or 0))} for '
+        f'{he(c.get("name") or "this job")}.<br>{he(when)} UTC &middot; '
+        f'{he(sig.get("email") or "no email given")}</p>'
+        '<p style="color:#94a3b8;font-size:12px;margin:0">This is an approval of the '
+        'amount. Nothing has been pushed to The Den and nothing in the pipeline has '
+        'moved.</p></div>', to_addr)
+
+def _post_invoice_sign_pipeline(est_id):
+    """After an invoice signature: tell the rep, file the signed PDF.
+
+    Deliberately short. It does NOT push to The Den and does NOT touch the
+    funnel — see the note above this section. A demo signature does none of it,
+    for the same reason the estimate pipeline is skipped wholesale: this thread
+    starts from the PUBLIC route, so there is no demo session to read here.
+    """
+    if demo.is_demo_doc(est_load(est_id)):
+        print(f'[demo] invoice-sign pipeline skipped for {est_id}')
+        return
+    try:
+        est = est_load(est_id)
+        if est is not None:
+            send_invoice_signature_notification(est)
+    except Exception as exc:
+        print(f'[invoice-sign] rep notification failed for {est_id}: {exc}')
+    try:
+        generate_invoice(est_id)
+    except Exception as exc:
+        print(f'[invoice-sign] filing the signed PDF failed for {est_id}: {exc}')
+
+
+@app.route('/api/estimates/<est_id>/invoice/send-signature', methods=['POST'])
+def send_invoice_for_signature(est_id):
+    """Mint the signing link and email it. Returns the URL either way, so a rep
+    with no mail configured can still copy it."""
+    est, err = _invoice_est_or_error(est_id)
+    if err:
+        return err
+    if _invoice_signed(est):
+        return jsonify({'error': 'This invoice is already signed.'}), 409
+    base = get_public_url()
+    if not base:
+        return jsonify({'error': 'No public URL configured — the emailed link would '
+                                 'not be reachable.'}), 400
+    body    = request.get_json(silent=True) or {}
+    to_addr = (body.get('email') or (est.get('customer') or {}).get('email') or '').strip()
+
+    def _mint(doc):
+        if doc is None or _invoice_signed(doc):
+            return None
+        inv = dict(doc.get('invoice') or {})
+        if not inv.get('sign_token'):
+            inv['sign_token'] = secrets.token_urlsafe(24)
+        inv['sign_sent_at'] = datetime.utcnow().isoformat() + 'Z'
+        if to_addr:
+            inv['sign_sent_to'] = to_addr[:200]
+        doc['invoice'] = inv
+        return doc
+
+    stored = est_update(est_id, _mint)
+    if stored is None:
+        return jsonify({'error': 'This invoice is already signed.'}), 409
+    token    = (stored.get('invoice') or {}).get('sign_token')
+    sign_url = f'{base}/sign-inv/{token}'
+
+    if not to_addr or '@' not in to_addr:
+        # The link exists and works; only the mail is missing. Refusing outright
+        # would throw away a token the rep can paste into their own message.
+        return jsonify({'ok': True, 'full_url': sign_url, 'sent_to': '',
+                        'note': 'No email address — copy the link instead.'})
+
+    ok = _send_email(_invoice_sign_email_subject(stored),
+                     _invoice_sign_email_html(stored, sign_url), to_addr,
+                     cc=_salesperson_email(stored) or None)
+    if not ok:
+        return jsonify({'ok': True, 'full_url': sign_url, 'sent_to': '',
+                        'note': 'Link created, but the email could not be sent — '
+                                'copy the link instead.'})
+    return jsonify({'ok': True, 'full_url': sign_url, 'sent_to': to_addr})
+
+
+@app.route('/sign-inv/<token>', methods=['GET', 'POST'])
+def sign_invoice(token):
+    est = find_by_invoice_token(token)
+    if not est:
+        return ('<h2 style="font-family:sans-serif;padding:40px">Link not found or '
+                'expired.</h2>', 404)
+    est_id = est.get('estimate_id')
+
+    if request.method == 'POST':
+        if _invoice_signed(est):
+            return build_invoice_sign_page(est, token)
+        sig_name  = (request.form.get('sig_name') or '').strip()
+        sig_email = (request.form.get('sig_email') or '').strip()
+        if not sig_name:
+            return 'Full name is required.', 400
+        client_ip = request.remote_addr
+        client_ua = request.headers.get('User-Agent', '')
+
+        def _apply(doc):
+            if doc is None:
+                return None
+            inv = dict(doc.get('invoice') or {})
+            # Gone, already signed, or the rep pulled the link back.
+            if inv.get('signature') or inv.get('sign_token') != token:
+                return None
+            # Hash the figures BEFORE attaching the signature, so the record
+            # covers exactly what was approved — same rule as customer_sign and
+            # the change order. `invoice_rows` rather than the stored fields:
+            # the amount is DERIVED from the estimate's line items, so hashing
+            # the invoice block alone would attest to a total it does not hold.
+            content = json.dumps(
+                {'estimate_id': est_id, 'invoice': inv, 'totals': invoice_rows(doc)},
+                sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')
+            inv['signature'] = {
+                'name':          sig_name,
+                'email':         sig_email,
+                'signed_at':     datetime.utcnow().isoformat() + 'Z',
+                'ip_address':    client_ip,
+                'user_agent':    client_ua,
+                'document_hash': hashlib.sha256(content).hexdigest(),
+                'token':         token,
+            }
+            doc['invoice'] = inv
+            doc['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            return doc
+
+        stored = est_update(est_id, _apply)
+        if stored is None:
+            again = find_by_invoice_token(token)
+            if not again:
+                return ('<h2 style="font-family:sans-serif;padding:40px">This '
+                        'invoice is no longer available for signing.</h2>', 409)
+            return build_invoice_sign_page(again, token)
+        threading.Thread(target=_post_invoice_sign_pipeline,
+                         args=(est_id,), daemon=True).start()
+        return build_invoice_sign_page(stored, token)
+
+    if not _invoice_signed(est):
+        try:
+            now_iso = datetime.utcnow().isoformat() + 'Z'
+
+            def _track(doc):
+                if doc is None:
+                    return None
+                inv = dict(doc.get('invoice') or {})
+                if not inv.get('sign_viewed_at'):
+                    inv['sign_viewed_at'] = now_iso
+                inv['sign_view_count'] = int(inv.get('sign_view_count') or 0) + 1
+                doc['invoice'] = inv
+                return doc
+
+            stored = est_update(est_id, _track)
+            if stored is not None:
+                est = stored
+        except Exception as exc:
+            print(f'[invoice-sign-view] failed: {exc}')
+    return build_invoice_sign_page(est, token)
 
 # ── Change orders ────────────────────────────────────────────────────────────
 # Signed addendums on an accepted estimate. Stored inside the estimate doc but

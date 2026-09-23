@@ -637,6 +637,53 @@ carrier's own `SQ` lines: RoofR is the source of truth by decision, and the
 Claim Check exists precisely to catch the carrier being short. Importing the
 RoofR report is the step that makes an insurance job costable.
 
+## Signing an invoice — approval, not contract formation
+
+`POST /api/estimates/<id>/invoice/send-signature` mints the link and mails it;
+`/sign-inv/<token>` is the customer's page. A GC or homeowner approving the
+amount before they pay it.
+
+**It is deliberately NOT the estimate's signing path, and that is the whole
+point.** `/sign/<token>` runs `_post_sign_pipeline`: a Contact and a Project
+filed in The Den, packets filed against them, and the CRM funnel driven to
+`won`. An invoice bills work that was already sold, so reusing that path would
+push the job to the back office a second time and re-win a lead won months ago
+— silently, because both are background threads. `/sign-co/` is the narrow path
+that does neither, and this is modelled on it: capture the signature, tell the
+rep, file the PDF, stop. `tests/test_invoice.py` reads the pipeline's source
+and fails if `_push_to_den`, `_funnel_record` or `_post_sign_pipeline` appears
+in it.
+
+- **The hash covers the FIGURES, not the invoice block.** The amount is derived
+  from the estimate's line items, so hashing `est['invoice']` alone would
+  attest to a total it does not contain. `invoice_rows(doc)` goes into the
+  hash, taken before the signature is attached — the same rule as
+  `customer_sign` and the change order.
+- **A signed invoice is frozen.** `save_invoice_fields` 409s, because a
+  signature covering a hash of figures that then move is a record attesting to
+  an amount the document no longer shows. Same reason a signed estimate cannot
+  change status. Reopen it as a change order if the amount has to move.
+- **First signer wins**, guarded twice — once on the POST and once inside the
+  `est_update` mutator, which is what holds under two concurrent posts. A test
+  removes both to prove it is not vacuous.
+- **The token is the whole protection**, as it is for `/sign` and `/sign-co`,
+  and it is server-minted: `_sanitize_invoice` whitelists, so a client cannot
+  name its own `sign_token` or write its own `signature`.
+- **A link with no email is still returned.** Refusing outright would throw
+  away a token the rep can paste into the thread the GC is already on.
+- **`?download=1` on `invoice.pdf`** sets `Content-Disposition: attachment`. It
+  had done since the endpoint was written with nothing passing it, so the only
+  way to get a file was Preview plus the browser's own save button — fine on a
+  laptop, a dead end on the phone a rep is holding in a driveway.
+- **`send_invoice_signature_notification` is called by name from a background
+  thread inside a `try/except`.** It was referenced before it existed and the
+  only sign was a line in a log nobody reads, so a test asserts every name that
+  pipeline calls resolves.
+- The demo-guest test walks the URL map rather than naming routes, so an
+  invoice route added later is covered the moment it exists. It used to be five
+  hand-written names, which is how `send_invoice_for_signature` — a route that
+  mails a real address and mints a public token — would have arrived unchecked.
+
 ## Commercial estimates (third estimate type)
 
 `🏠 Retail | 🏛 Insurance | 🏢 Commercial` in the sidebar. Commercial mode turns

@@ -5611,3 +5611,6 @@ body.an-loading .an-grid, body.an-loading .an-kpis { opacity: .55; transition: o
   .board-card-btns button { min-width: 40px; min-height: 40px; font-size: 16px; }
   .board-tool-btn, .an-preset, .board-pill, .board-col-toggle { min-height: 40px; }
 }
+
+/* A signed invoice is frozen — the chip should not read like "sent". */
+.rc-signed-chip { background: #065f46; color: #ecfdf5; }
