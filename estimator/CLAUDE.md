@@ -536,6 +536,15 @@ the exhaust side: turtle vents say nothing about intake. Mirrored as
 `intake_lf_required` in both `atticVentilation` copies; the work order prints the
 priced footage. Pinned by `tests/test_intake_vent.py`.
 
+**Intake is optional, and the checkbox owns ALL of it** (2026-09-28). A
+bundle's Intake Vent row has no `vent_role`, so the box read unchecked while
+that row was priced and on the work order, and unchecking could only remove
+the row the box itself had added. The box now counts either kind of row, and
+unchecking deletes both and sets `roofing.intake_off`, which stops a bundle
+re-pick or a RoofR rebuild from quietly putting intake back. Server-side,
+`_roof_intake_items()` is the one answer to "is intake on this job" for the
+work order and the customer page's ventilation copy.
+
 **The PDF import did not work on an iPhone** (fixed 2026-09-08). Three separate
 things in that path were true of a desktop browser and not of iOS, none of them
 errored, and together they meant a rep tapped their RoofR report and nothing

@@ -8228,6 +8228,19 @@ def _est_expired(est):
     return bool(d and d < _company_today())
 
 
+def _roof_intake_items(est):
+    """The roofing rows that put intake vent on this job. Landmark and IKO
+    Nordic carry Intake Vent inside the bundle itself, with no vent_role, so the
+    checkbox is not the only way intake reaches a job. The checkbox row wins
+    when both exist, or the footage would count twice. Unchecking the box in
+    the estimator removes both kinds, so an empty list means NO intake.
+    Same test as _isIntakeRow() in app.js."""
+    items = (((est.get('trades') or {}).get('roofing') or {}).get('line_items') or [])
+    return ([it for it in items if it.get('vent_role') == 'intake']
+            or [it for it in items
+                if it.get('catalog_id') == 'a_intake_vent' and _mnum(it.get('quantity')) > 0])
+
+
 def _vent_nfa_report(est):
     """What the scope actually INSTALLS against what code asks for.
 
@@ -10145,6 +10158,9 @@ def _build_estimate_manifest(est):
                     'deficit_exhaust_sqin':  round(float(v['deficit_exhaust']), 1),
                     'ridge_lf_required':   round(float(v['ridge_lf_required']), 1),
                     'intake_lf_suggested': int(v['intake_lf_suggested']),
+                    # Intake is optional per job; the page must not promise
+                    # footage the rep turned off.
+                    'has_intake':          bool(_roof_intake_items(est)),
                     'code_basis':          'IRC R806 (balanced 1/300 rule)',
                 }
 
@@ -10389,10 +10405,11 @@ def _cv_estimate_details_block(manifest, est=None):
                      f'({vent["required_intake_sqin"]:.0f} intake / '
                      f'{vent["required_exhaust_sqin"]:.0f} exhaust).')
         if vent.get('deficit_exhaust_sqin', 0) > 0:
+            intake = (' and adds <strong>'
+                      f'{vent["intake_lf_suggested"]} LF</strong> of intake venting at the eaves'
+                      if vent.get('has_intake', True) else '')
             parts.append(f' This estimate cuts in <strong>{vent["ridge_lf_required"]:.0f} LF</strong> '
-                         'of ridge vent and adds <strong>'
-                         f'{vent["intake_lf_suggested"]} LF</strong> of intake venting at the eaves '
-                         'to bring the attic to code.')
+                         f'of ridge vent{intake} to bring the attic to code.')
         else:
             parts.append(' Existing exhaust already meets code — no ridge vent required.')
         vent_html = ('<section><h4>Attic Ventilation Calculation</h4>'
@@ -13109,8 +13126,10 @@ def _render_estimate_details_page(pdf, est, manifest, LM, W):
             f'{v["required_exhaust_sqin"]:.0f} exhaust).',
         ]
         if v.get('deficit_exhaust_sqin', 0) > 0:
-            parts.append(f'This scope cuts in {v["ridge_lf_required"]:.0f} LF of ridge vent '
-                         f'and {v["intake_lf_suggested"]} LF of intake venting to reach code.')
+            intake = (f' and {v["intake_lf_suggested"]} LF of intake venting'
+                      if v.get('has_intake', True) else '')
+            parts.append(f'This scope cuts in {v["ridge_lf_required"]:.0f} LF of ridge vent'
+                         f'{intake} to reach code.')
         else:
             parts.append('Existing exhaust already meets code — no additional ridge vent required.')
         _p(' '.join(parts))
@@ -15237,13 +15256,7 @@ def build_work_order_pdf(est):
             return float(it.get('quantity') or 0)
         except (TypeError, ValueError):
             return 0.0
-    # Landmark and IKO Nordic carry Intake Vent inside the bundle itself, with
-    # no vent_role, so the checkbox is not the only way intake reaches a job.
-    # The checkbox row wins when both exist, or the footage would count twice.
-    _intake_items   = ([it for it in (roofing_td.get('line_items') or [])
-                        if it.get('vent_role') == 'intake']
-                       or [it for it in (roofing_td.get('line_items') or [])
-                           if it.get('catalog_id') == 'a_intake_vent' and _qty(it) > 0])
+    _intake_items   = _roof_intake_items(est)
     has_intake_vent = bool(_intake_items)
     vent_cutin0     = est.get('vent_cutin') or {}
 

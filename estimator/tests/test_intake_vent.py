@@ -210,3 +210,71 @@ def test_bundle_intake_reaches_the_work_order(A):
         {'name': 'Intake Vent', 'unit': 'LF', 'quantity': 80,
          'catalog_id': 'a_intake_vent', 'measure': 'intake_vent_code'})))
     assert '80 LF at the eaves' in text
+
+
+# ── intake is optional: the checkbox turns ALL of it off ──────────────────
+# A bundle's Intake Vent row (no vent_role) used to leave the box unchecked
+# while it was priced and on the work order, and unchecking could not remove
+# it. The box now reads and removes both kinds of row.
+
+_TOGGLE_RUNNER = r"""
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+function grab(h) {
+  const i = src.indexOf(h);
+  if (i < 0) throw new Error('not found in app.js: ' + h);
+  return src.slice(i, src.indexOf('\n}', i) + 2);
+}
+const code = ['function _isIntakeRow(it) {', 'function roofHasIntake() {',
+              'function removeVentRole(role) {'].map(grab).join('\n')
+  + '\nreturn { roofHasIntake, removeVentRole };';
+const S = { trades: { roofing: { enabled: true, line_items: [
+  { name: 'Shingles', catalog_id: 'm_landmark' },
+  { name: 'Intake Vent', catalog_id: 'a_intake_vent', quantity: 80 },
+] } } };
+const f = new Function('S', code)(S);
+const out = { before: f.roofHasIntake() };
+f.removeVentRole('intake');
+out.after = f.roofHasIntake();
+out.names = S.trades.roofing.line_items.map(i => i.name);
+out.off = !!S.trades.roofing.intake_off;
+console.log(JSON.stringify(out));
+"""
+
+
+def test_the_checkbox_sees_and_removes_bundle_intake(tmp_path):
+    if shutil.which('node') is None:
+        pytest.skip('node not installed')
+    runner = tmp_path / 'toggle.js'
+    runner.write_text(_TOGGLE_RUNNER, encoding='utf-8')
+    proc = subprocess.run(['node', str(runner), APP_JS], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out['before'] is True, 'a bundle intake row must show the box checked'
+    assert out['after'] is False and out['names'] == ['Shingles']
+    assert out['off'] is True, 'the opt-out must be remembered'
+
+
+def test_a_bundle_does_not_put_unchecked_intake_back():
+    js = open(APP_JS, encoding='utf-8').read()
+    assert "if (pid === 'a_intake_vent' && trade === 'roofing' && td.intake_off) return;" in js
+    assert "if (role === 'intake') delete rd.intake_off;" in js
+
+
+def test_no_intake_prints_not_on_this_job(A):
+    est = _signed({'name': 'Shingles', 'unit': 'SQ', 'quantity': 30})
+    text = _pdf_text(A.build_production_packet_pdf(est)).upper()
+    assert 'INTAKE VENT NO' in text
+    assert 'AT THE EAVES' not in text
+
+
+def test_the_customer_copy_only_promises_intake_that_is_on_the_job(A):
+    m = {'roof_squares': 30, 'turtle_vents': 0}
+    def vent(items):
+        est = {'estimate_type': 'retail', 'measurements': m,
+               'trades': {'roofing': {'enabled': True, 'line_items': items}}}
+        return bool(A._roof_intake_items(est))
+    assert vent([{'catalog_id': 'a_intake_vent', 'quantity': 80}]) is True
+    assert vent([{'vent_role': 'intake', 'quantity': 0}]) is True
+    assert vent([{'catalog_id': 'a_intake_vent', 'quantity': 0}]) is False
+    assert vent([]) is False

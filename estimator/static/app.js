@@ -1963,6 +1963,17 @@ const VENT_SPECS = {
 function roofHasVentRole(role) {
   return ((S.trades.roofing && S.trades.roofing.line_items) || []).some(i => i.vent_role === role);
 }
+/* Intake reaches a job two ways: the checkbox's own row (vent_role) and the
+   Intake Vent product a bundle carries (catalog_id, no vent_role). The box has
+   to read BOTH, or it sits unchecked while the bundle's row is priced and on
+   the work order, and unchecking it can't take that row off. Same test as
+   ventNfaReport() and _roof_intake_items() in app.py. */
+function _isIntakeRow(it) {
+  return it.vent_role === 'intake' || it.catalog_id === 'a_intake_vent';
+}
+function roofHasIntake() {
+  return ((S.trades.roofing && S.trades.roofing.line_items) || []).some(_isIntakeRow);
+}
 // Full markup for the ventilation panel — used by renderScopePage and by the
 // live in-place refresh in setMeasurement (so the badge/figures update as the
 // rep types roof area / turtle vents without re-rendering the whole page).
@@ -1973,6 +1984,7 @@ function ventPanelMarkup() {
   const ventRound = n => Math.round(n).toLocaleString();
   const turtleN  = mnum(m.turtle_vents);
   const hasRidge = roofHasVentRole('ridge');
+  const hasIntake = roofHasIntake();
   // Ordering vs cut-in: we run ridge vent the FULL ridge length (for looks) but
   // only cut the deck open for the code-required footage.
   const ridgeLF    = mnum(m.ridge_lf);
@@ -2032,23 +2044,23 @@ function ventPanelMarkup() {
               onchange="setVentRole('ridge', this.checked)">
             ✔️ Install Ridge Vent <span class="iw-toggle-hint">${ridgeHint}</span>
           </label>
-          <label class="iw-second-row-toggle ${roofHasVentRole('intake') ? 'enabled' : ''}">
-            <input type="checkbox" ${roofHasVentRole('intake') ? 'checked' : ''}
+          <label class="iw-second-row-toggle ${hasIntake ? 'enabled' : ''}">
+            <input type="checkbox" ${hasIntake ? 'checked' : ''}
               onchange="setVentRole('intake', this.checked)">
             ✔️ Install Intake Vent <span class="iw-toggle-hint">— sized to code: <strong>~${ventRound(intakeCapped ? eaveLF : codeIntake)} LF</strong> (${ventRound(vent.required_intake)} sq in ÷ ${NFA_INTAKE_SQIN_LF} sq in per LF)</span>
           </label>
         </div>
         ${hasRidge ? `
           <button type="button" class="vent-cutin-btn" onclick="openVentCutinEditor('ridge')">🖍️ Mark cut-in on roof <span class="vent-cutin-sub">${(S.vent_cutin && S.vent_cutin.image_filename) ? 'edit map' : '~' + ventRound(cutinLF) + ' LF to cut'}</span></button>` : ''}
-        ${roofHasVentRole('intake') ? `
+        ${hasIntake ? `
           <button type="button" class="vent-cutin-btn" onclick="openVentCutinEditor('intake')">🖍️ Mark intake on roof <span class="vent-cutin-sub">${(S.vent_intake && S.vent_intake.image_filename) ? 'edit map' : '~' + ventRound(_ventIntakeLF()) + ' LF of eave'}</span></button>` : ''}
         ${hasRidge && ridgeLF === 0 ? `
           <div class="vent-warn">⚠️ Ridge Vent added but <strong>Ridges (LF)</strong> is 0 — enter ridge footage above so it orders.</div>` : ''}
         ${hasRidge && fullCut && ridgeLF > 0 ? `
           <div class="vent-warn">⚠️ Code needs ~${ventRound(rawCutin)} LF of exhaust but the ridge is only ${ventRound(ridgeLF)} LF — cutting the full ridge; add box vents to cover the gap.</div>` : ''}
-        ${roofHasVentRole('intake') && intakeCapped ? `
+        ${hasIntake && intakeCapped ? `
           <div class="vent-warn">⚠️ Code needs ~${ventRound(codeIntake)} LF of intake but the eaves are only ${ventRound(eaveLF)} LF — intake is capped at the eaves; add soffit vents to cover the gap.</div>` : ''}
-        ${roofHasVentRole('intake') && eaveLF === 0 ? `
+        ${hasIntake && eaveLF === 0 ? `
           <div class="vent-warn">⚠️ Eave LF is 0 — intake is priced at the code figure; enter eave footage to confirm it fits.</div>` : ''}
       ` : `
         <div class="measure-hint" style="padding:6px 0">Enter Roof Area above to calculate required ventilation.</div>`}
@@ -2088,6 +2100,7 @@ function injectVentItem(role) {
     it.bundle_unit = spec.bundle_unit || undefined;
   };
   add(role);
+  if (role === 'intake') delete rd.intake_off;
   // Installing ridge vent means decking over the existing turtle vents so the
   // ridge draws evenly — auto-add the plugs (qty auto-fills to turtle count).
   if (role === 'ridge') add('plugs');
@@ -2095,6 +2108,16 @@ function injectVentItem(role) {
 function removeVentRole(role) {
   const rd = S.trades.roofing;
   if (!rd || !rd.line_items) return;
+  // Unchecking intake means NO intake on this job — including the row a bundle
+  // (Landmark, IKO Nordic) brought in, which the restore-and-keep path below
+  // would leave priced. intake_off keeps it off through a bundle re-pick or a
+  // RoofR rebuild; checking the box again clears it. Mirrored nowhere: the
+  // server only ever sees whether an intake row exists.
+  if (role === 'intake') {
+    rd.line_items = rd.line_items.filter(it => !_isIntakeRow(it));
+    rd.intake_off = true;
+    return;
+  }
   const roles = role === 'ridge' ? ['ridge', 'plugs'] : [role];
   rd.line_items = rd.line_items.filter(it => {
     if (!roles.includes(it.vent_role)) return true;
@@ -8594,6 +8617,8 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
   const norm = s => String(s || '').trim().toLowerCase();
 
   (bundle.product_ids || []).forEach(pid => {
+    // The rep unchecked Install Intake Vent — a bundle must not put it back.
+    if (pid === 'a_intake_vent' && trade === 'roofing' && td.intake_off) return;
     let p = catalog.find(x => x.id === pid);
     if (!p) return;
     let item = td.line_items.find(li => li.catalog_id === pid);
