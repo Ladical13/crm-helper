@@ -637,6 +637,69 @@ carrier's own `SQ` lines: RoofR is the source of truth by decision, and the
 Claim Check exists precisely to catch the carrier being short. Importing the
 RoofR report is the step that makes an insurance job costable.
 
+## The invoice and the basic estimate
+
+Three documents a customer can be handed, and they answer three questions:
+
+| Document | For | Built by |
+|---|---|---|
+| Customer estimate — the detailed proposal | homeowners, before | the `/sign` page, the browser print, `build_signed_pdf` |
+| **Basic estimate** — every line, qty × unit price | GCs, HOAs, before | `build_invoice_pdf()`, `kind: 'quote'` |
+| **Invoice** — one price per trade, add-ons, what was installed, payments, balance | every client, after | `build_invoice_pdf()`, `kind: 'invoice'` |
+
+The last two share the 🧾 Invoice tab and the stored `est['invoice']` block.
+The stored kind stays `'quote'` and its `Q-` prefix stays: renaming the value
+would renumber documents already sent to GCs. `_invoice_kind_label()` is where
+"Estimate" is spelled.
+
+- **The invoice is a SUMMARY by default** (`detail`), because the customer
+  asked what they are paying for, not how we cost it. `invoice_summary()`
+  regroups `invoice_rows()` — a trade's one price is its section subtotal, an
+  add-on is an elected upgrade, an accepted change order or an adjustment — and
+  prices nothing. The PDF, the signing page and the rep's on-screen preview all
+  render that one structure. `itemized` is the full table for a client who asks.
+- **What was installed is NAMES, never prices** (`invoice_materials()`): the
+  selected tier's customer-visible lines, plus `_material_selection_rows()` —
+  the brand/color picks, one builder shared with the permit packet. A package
+  is named only when THIS estimate names one: the manifest falls back to the
+  price book's default bundle, and an invoice naming a roof that was not
+  installed is the worst thing this document could say. Insurance jobs never
+  read `insurance_cost` — it is our crew rate.
+- **Adjustments are invoice-only** (a credit, a fee; `_sanitize_invoice`
+  whitelists them) and sit BELOW the subtotal, which stays the estimate's own
+  total to the cent. A basic estimate ignores them: it is a price going out,
+  the margin floor gates it off the estimate's numbers, and a credit the floor
+  cannot see would walk straight past it.
+- **The preview computes nothing.** `invPreviewHtml()` formats what the server
+  returned; a test fails if it calls a pricing function. Text fields repaint
+  the preview as the rep types; a save repaints only the preview, never the
+  form, so the field they tabbed into keeps its focus.
+- **The page budget is two sheets** — pinned by a three-trade test. The
+  dates print as one row, and a notes label never sits alone at a page foot.
+- `completed_date` defaults to the warranty certificate's completion date, else
+  the day the job was moved to Complete, as a Colorado day.
+- Guarded by `tests/test_invoice.py`.
+
+## Labor is hidden on everything the customer sees
+
+"Install Labor — $9,400" invites a negotiation over the one number that is
+really the crew, so labor is marked `customer_visible: false` and folds into its
+trade's price. The rule is the same on every customer document, and totals
+never move — only which rows print:
+
+- **Customer estimate:** the **Labor** chip in the Print Pages bar
+  (`page_visibility.labor`, `_show_labor_lines()`, in `PAGE_DEFAULT_OFF`) lists
+  hidden lines; **Line Prices** shows per-line prices. `build_signed_pdf` used
+  to print Unit Price and Total on every line whatever that chip said — the one
+  document a customer keeps was the one with the full breakdown.
+- **Invoice and basic estimate:** "Show labor lines" (`itemize`), default OFF.
+  A signature taken before that default flipped renders the way it was signed.
+- **A labor product a manager forgot to hide is REPORTED, never hidden by
+  inference.** `pricebook_audit()` raises `labor_visible`; cost_class may only
+  ever move the internal cost split, so the fix is the manager unticking
+  Customer.
+- Guarded by `tests/test_labor_visibility.py`.
+
 ## Signing an invoice — approval, not contract formation
 
 `POST /api/estimates/<id>/invoice/send-signature` mints the link and mails it;
@@ -969,6 +1032,9 @@ invoice. 🔍 Audit in the Price Book modal, manager-up. What it looks for:
   previous seed, and a live `1.55` is a manager-typed value, so the audit is
   the only honest mechanism for it.
 - **`orphan`** — a bundle selling a product id the catalog does not have.
+- **`labor_visible`** — a labor product still shown to customers. Low
+  severity: no money is wrong, a row is on show that should fold into the
+  package price. See *Labor is hidden on everything the customer sees*.
 
 **Commercial is exempt from the no-cost check.** Its $0 material costs are
 deliberate — pricing comes off a per-job supplier quote and
@@ -1199,10 +1265,25 @@ and the funnel row's rep is moved with it. Guarded by `tests/test_reassign.py`.
 
 A homeowner is rarely one estimate: the roof in spring, the siding in autumn,
 the re-quote after the adjuster comes back. **`renderClientPage` is where all
-of it lives** — one page carrying their details, their notes, every estimate
-they have (including the one on screen that has never been saved), the create
-form, their files and the document generators. The estimate tab strip sits
-behind a single **📝 Open Estimate →** button on it.
+of it lives** — their details, their notes, every estimate they have (including
+the one on screen that has never been saved), the create form, their files and
+the document generators. The estimate tab strip sits behind a single
+**📝 Open Estimate →** button on it.
+
+**It opens like a CRM record, in tabs** (`CLIENT_TABS`, `showClientTab()`): a
+header that never scrolls away, then Details · Estimates · Notes · Documents ·
+Invoice · Roof Health. As one long scroll, the invoice a rep had just asked for
+opened three screens below where they were looking. Two rules keep the tabs
+cheap and the old callers working:
+
+- **Only the active pane draws.** `renderClientPage` draws the header, the strip
+  and the Details / Estimates / Notes panes; `renderDocumentsPage()` draws the
+  Documents / Invoice / Roof Health pane — or nothing. A tab nobody opened
+  costs no fetch.
+- **A tab id is not a page id.** `'report'` is the Condition editor's nav id,
+  so Roof Health is `'roofhealth'`. The invoice and the report are tabs, not
+  cards on Documents — one way in each; `docToggleGenerator()` redirects their
+  old generator names to the tabs.
 
 `openCustomer(name)` is how you get there, from the home search box, the ⋯
 menu, the sidebar's 👤 button, or a `📁 N` badge on any dashboard/home row

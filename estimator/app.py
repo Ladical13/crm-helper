@@ -5542,6 +5542,20 @@ def _audit_product(p, in_bundle, trade):
     if blf and not p.get('bundle_unit'):
         issues.append({'code': 'conversion_unlabelled', 'severity': 'low',
                        'what': 'Converts to a pack size with no name for it.'})
+
+    # Labor folds into the package price on every customer document — that is
+    # what customer_visible:false does, and the seeded labor products carry it.
+    # A labor product a manager added later usually does not, so its line (and,
+    # with Line Prices on, its price) is broken out for the homeowner. Reported
+    # here rather than hidden automatically: cost_class may only ever move the
+    # internal cost split, never what a customer sees, so the fix is the
+    # manager unticking Customer — a stored decision, not an inference.
+    if (_norm_cost_class(p.get('cost_class')) == 'labor'
+            and p.get('customer_visible') is not False):
+        issues.append({'code': 'labor_visible', 'severity': 'low',
+                       'what': 'Classified as labor but shown to customers, so it '
+                               'is broken out as its own line on the proposal. '
+                               'Untick Customer to fold it into the package price.'})
     return issues
 
 
@@ -7014,6 +7028,17 @@ def _upgrades_cv_table(est, elected_only=True):
           </table></div>'''
 
 
+def _show_labor_lines(est):
+    """The estimate's "Labor" print chip. Lines marked customer_visible:false —
+    which is how labor is marked — fold into their trade's subtotal on every
+    customer document unless the rep turns this on. Default OFF: only a literal
+    True shows them. It changes which rows print, never a total.
+
+    MUST agree with the `labor` entry in PAGE_DEFAULT_OFF (app.js), which is
+    what the browser-built print reads."""
+    return (est.get('page_visibility') or {}).get('labor') is True
+
+
 def render_line_items(est, tier=None, only_trades=None):
     """Build trade line-item tables for customer view. Returns (html, grand_total).
     tier=None prices each trade at its own selected tier (mix-and-match; legacy
@@ -7023,6 +7048,7 @@ def render_line_items(est, tier=None, only_trades=None):
     # Mirror the PDF's "Line Prices" chip: unit price + line total columns
     # appear online exactly when they appear in print.
     show_lp  = (est.get('page_visibility') or {}).get('linePrices') is True
+    show_lab = _show_labor_lines(est)
     ncols    = 5 if show_lp else 3
 
     labels  = dict(roofing='Roofing', siding='Siding', windows='Windows', gutters='Gutters',
@@ -7079,7 +7105,7 @@ def render_line_items(est, tier=None, only_trades=None):
                 continue
             grows = []
             for item, qty, line, desc in entries:
-                if not item.get('customer_visible', True):
+                if not item.get('customer_visible', True) and not show_lab:
                     hidden_count += 1
                     continue
                 lp_cells = ''
@@ -13582,6 +13608,18 @@ def build_signed_pdf(est, signed=None):
                        gutters='Gutters', other='Other / Misc')
         widths = (W - 14 - 14 - 28 - 28, 14, 14, 28, 28)
         aligns = ('LEFT', 'RIGHT', 'CENTER', 'RIGHT', 'RIGHT')
+        # The package table obeys the same two Print Pages chips as the web
+        # page and the browser print. It used to print Unit Price and Total on
+        # every line whatever "Line Prices" said, so the one PDF a customer
+        # keeps was the one place they got the full breakdown. Supplements keep
+        # their price column regardless (an "if needed" line without its price
+        # tells the customer nothing), so they keep `widths`.
+        show_lp  = (est.get('page_visibility') or {}).get('linePrices') is True
+        show_lab = _show_labor_lines(est)
+        scope_widths = widths if show_lp else (W - 22 - 20, 22, 20)
+        scope_aligns = aligns if show_lp else ('LEFT', 'RIGHT', 'CENTER')
+        scope_heads  = (('Description', 'Qty', 'Unit', 'Unit Price', 'Total') if show_lp
+                        else ('Description', 'Qty', 'Unit'))
         for tk in GBB_TRADES:
             td = est.get('trades', {}).get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
@@ -13637,9 +13675,9 @@ def build_signed_pdf(est, signed=None):
                          labels.get(tk, tk.title()))
             sub = 0.0
             hidden = 0
-            with open_table(widths, aligns) as table:
+            with open_table(scope_widths, scope_aligns) as table:
                 head = table.row()
-                for h in ('Description', 'Qty', 'Unit', 'Unit Price', 'Total'):
+                for h in scope_heads:
                     head.cell(h)
                 for it in td['line_items']:
                     qty = float(it.get('quantity') or 0)
@@ -13657,7 +13695,7 @@ def build_signed_pdf(est, signed=None):
                         sp_  = line / qty
                         desc = t.get('description', '')
                     sub += line
-                    if not it.get('customer_visible', True):
+                    if not it.get('customer_visible', True) and not show_lab:
                         hidden += 1
                         continue
                     name = _with_section(it, it.get('name', ''))
@@ -13669,8 +13707,9 @@ def build_signed_pdf(est, signed=None):
                     row.cell(_pdf_rich(name))
                     row.cell(f'{qty:g}')
                     row.cell(_pdf_rich(it.get('unit', '')))
-                    row.cell(fc(sp_))
-                    row.cell(fc(line))
+                    if show_lp:
+                        row.cell(fc(sp_))
+                        row.cell(fc(line))
             if hidden:
                 pdf.set_font(SANS, 'I', 7)
                 pdf.set_text_color(*_PDF_STYLE['faint'])
@@ -16382,25 +16421,10 @@ def build_permit_packet_pdf(est):
         pass
     pdf.ln(2)
 
-    # Material brand/color per trade
-    prod_rows = []
-    for trade, fields in TRADE_COLOR_FIELDS.items():
-        td = trades.get(trade) or {}
-        if not td.get('enabled'):
-            continue
-        colors = td.get('colors') or {}
-        for key, label in fields:
-            v = (colors.get(key) or '').strip()
-            if v:
-                prod_rows.append((_PRODUCT_TRADE_LABELS.get(trade, trade.title()), label, v))
-    # Shingle color/siding color from the signed record — falls back to the
-    # trade's colors dict when the customer didn't pick during signing
-    ss_pick = (sig.get('shingle_color') or '').strip()
-    if ss_pick and not any(r[1] == 'Shingle Color' for r in prod_rows):
-        prod_rows.insert(0, ('Roofing', 'Shingle Color', ss_pick))
-    sd_pick = (sig.get('siding_color') or '').strip()
-    if sd_pick and not any(r[1] == 'Siding Color' for r in prod_rows):
-        prod_rows.append(('Siding', 'Siding Color', sd_pick))
+    # Material brand/color per trade — the same rows the invoice lists, from one
+    # builder, so the permit clerk and the homeowner are told the same thing.
+    prod_rows = [(_PRODUCT_TRADE_LABELS.get(t, t.title()), label, v)
+                 for t, label, v in _material_selection_rows(est)]
     if prod_rows:
         section_title('Material Selection')
         pdf.set_fill_color(*_PDF_STYLE['paper'])
@@ -18235,30 +18259,47 @@ def regenerate_warranty_certificate(est_id):
     return jsonify({'attachment': att})
 
 
-# ── Invoice / quote ─────────────────────────────────────────────────────────
-# A plain, itemized document: numbers and nothing else. No cover, no package
-# cards, no warranty pages and no /sign link. Built for general contractors
-# first and used for homeowners too. The rep picks whether it goes out as a
-# QUOTE (before the work) or an INVOICE (after).
+# ── Invoice / Basic Estimate ────────────────────────────────────────────────
+# Two of the three documents a customer can be handed (the third is the
+# detailed proposal, which lives elsewhere). One stored block, est['invoice'],
+# and `kind` picks which:
 #
-# Three rules keep it honest:
+# * INVOICE (`kind: 'invoice'`) — every client, after the work. By default a
+#   `summary`: one price per trade, the add-ons (elected upgrades, accepted
+#   change orders, invoice-only adjustments), what was installed, the payments
+#   received and the balance. Names, never line prices — a homeowner does not
+#   need the breakdown, and "Install Labor — $9,400" invites a negotiation over
+#   the one number that is really the crew. `detail: 'itemized'` prints the
+#   full table for a client who asks for it.
+# * BASIC ESTIMATE (`kind: 'quote'`, stored name kept so nothing already sent
+#   is renumbered) — GCs and HOAs, before the work. Always itemized: qty × unit
+#   price, line by line.
+#
+# Rules that keep it honest:
 #
 # * invoice_rows() walks the SAME rows _trade_subtotal prices, so its subtotal
 #   equals _estimate_total to the cent. It is not a second pricing engine. It
 #   is a listing of the first one, and tests/test_invoice.py pins the equality.
-# * By default it lists EVERY billed line, including customer_visible:false
-#   ones the homeowner proposal folds into the total. A GC checks the bill line
-#   by line, and a total the lines don't add up to is the first thing they
-#   query. Unticking "List every line" (`itemize: False`, for a homeowner)
-#   folds those rows back into the total the way the proposal does. That
-#   changes which rows PRINT, never what the subtotal is.
+#   The summary layout regroups those figures; it never recomputes one.
+# * Labor is hidden unless asked for. A customer_visible:false line (how labor
+#   is marked) folds into its trade's subtotal unless `itemize` ("Show labor
+#   lines") is on. That changes which rows PRINT, never what the subtotal is.
+#   It defaults OFF; a signed invoice that predates the flag keeps rendering the
+#   way it was signed.
 # * Supplements are listed and never totalled, the same as on every other
 #   document. Only ACCEPTED change orders bill.
+# * Adjustments (a credit, a fee) are INVOICE-only and sit below the subtotal.
+#   A basic estimate ignores them: it is a price going out, the margin floor
+#   gates it off the estimate's own numbers, and a credit the floor cannot see
+#   would walk straight past it. A discount on unagreed work goes on the
+#   estimate.
 #
 # Stored as est['invoice'] and written only through its own endpoint, because
 # it holds payments received. The whole-doc save carries the stored copy
 # forward, so a stale tab cannot roll a balance back.
 _INVOICE_KINDS = ('invoice', 'quote')
+_INVOICE_DETAILS = ('summary', 'itemized')
+_INVOICE_ADJ_MAX = 20
 _INVOICE_TRADE_LABELS = dict(roofing='Roofing', siding='Siding', windows='Windows',
                              gutters='Gutters', commercial='Commercial Roofing',
                              other='Other / Misc')
@@ -18283,14 +18324,27 @@ def _sanitize_invoice(payload):
         out['kind'] = kind
     if isinstance(payload.get('itemize'), bool):
         out['itemize'] = payload['itemize']
+    if payload.get('detail') in _INVOICE_DETAILS:
+        out['detail'] = payload['detail']
     for k, cap in (('number', 40), ('po_ref', 100), ('notes', 2000)):
         if k in payload and payload[k] is not None:
             out[k] = str(payload[k]).strip()[:cap]
-    for k in ('issue_date', 'due_date', 'valid_until'):
+    for k in ('issue_date', 'due_date', 'valid_until', 'completed_date'):
         if k in payload:
             d = _invoice_date(payload[k])
             if d is not None:
                 out[k] = d
+    if isinstance(payload.get('adjustments'), list):
+        adjs = []
+        for a in payload['adjustments'][:_INVOICE_ADJ_MAX]:
+            if not isinstance(a, dict):
+                continue
+            amt = _f(a.get('amount'))
+            if not math.isfinite(amt) or amt == 0 or abs(amt) > 10_000_000:
+                continue
+            adjs.append({'label': str(a.get('label') or '').strip()[:200] or 'Adjustment',
+                         'amount': round(amt, 2)})
+        out['adjustments'] = adjs
     if isinstance(payload.get('payments'), list):
         pays = []
         for p in payload['payments'][:50]:
@@ -18321,12 +18375,44 @@ def invoice_fields(est):
         inv['issue_date'] = _company_today().isoformat()
     if not inv.get('valid_until'):
         inv['valid_until'] = str(est.get('valid_until') or '')[:10]
-    inv['itemize'] = inv.get('itemize') is not False
+    if not inv.get('completed_date'):
+        inv['completed_date'] = _invoice_completed_default(est)
+    # "Show labor lines". Off unless the rep turned it on — labor is not the
+    # customer's business. A signature that predates the flag was taken over
+    # the old default (every line listed), so that invoice keeps rendering the
+    # way it was signed rather than changing shape under the person who signed.
+    if isinstance(inv.get('itemize'), bool):
+        pass
+    else:
+        inv['itemize'] = bool(inv.get('signature'))
+    # A basic estimate is itemized by definition. An invoice is a summary
+    # unless the rep asked for the breakdown — or it was signed before the
+    # summary existed, in which case it keeps the itemized shape it was signed in.
+    if kind == 'quote':
+        inv['detail'] = 'itemized'
+    elif inv.get('detail') not in _INVOICE_DETAILS:
+        inv['detail'] = 'itemized' if inv.get('signature') else 'summary'
     inv.setdefault('due_date', '')
     inv.setdefault('po_ref', '')
     inv.setdefault('notes', '')
     inv['payments'] = list(inv.get('payments') or [])
+    inv['adjustments'] = list(inv.get('adjustments') or [])
     return inv
+
+
+def _invoice_completed_default(est):
+    """The day the job was finished, if the tool already knows it: the warranty
+    certificate's completion date, else the day the job was last moved to
+    Complete on the board — as a Colorado day, not a UTC one. '' when neither
+    exists; a guessed completion date on a bill is worse than a blank one."""
+    wc = (est.get('warranty_certificate') or {}).get('completion_date') or ''
+    d = _invoice_date(wc)
+    if d:
+        return d
+    for h in reversed(est.get('job_stage_history') or []):
+        if isinstance(h, dict) and h.get('stage') == 'complete':
+            return pclock.day_of(h.get('at'))
+    return ''
 
 
 def _invoice_line_name(name, desc):
@@ -18357,7 +18443,8 @@ def invoice_rows(est):
                 rows.append((name, qty, str(it.get('unit') or ''),
                              line / qty if qty > 0 else line, line))
             if rows:
-                sections.append({'title': sec.get('name') or 'Insurance Scope',
+                sections.append({'key': 'insurance',
+                                 'title': sec.get('name') or 'Insurance Scope',
                                  'rows': rows,
                                  'subtotal': sum(r[4] for r in rows)})
     else:
@@ -18398,8 +18485,8 @@ def invoice_rows(est):
                     continue
                 rows.append((name, qty, str(it.get('unit') or ''), unit_price, line))
             if rows or folded:
-                sections.append({'title': label, 'rows': rows, 'subtotal': subtotal,
-                                 'folded': folded})
+                sections.append({'key': tk, 'title': label, 'rows': rows,
+                                 'subtotal': subtotal, 'folded': folded})
             s_rows, _s_tot = trade_supplements(est, tk, tier)
             for it, q, line, desc in s_rows:
                 if not (it.get('name') or '').strip():
@@ -18417,7 +18504,7 @@ def invoice_rows(est):
     if _elected:
         _rows = [(_invoice_line_name(u.get('name'), u.get('description')),
                   1.0, '', upgrade_price(u), upgrade_price(u)) for u in _elected]
-        sections.append({'title': 'Optional Upgrades',
+        sections.append({'key': 'upgrades', 'title': 'Optional Upgrades',
                          'rows': _rows,
                          'subtotal': sum(r[4] for r in _rows)})
 
@@ -18436,17 +18523,226 @@ def invoice_rows(est):
         change_orders.append({'title': co.get('title') or 'Change Order',
                               'rows': rows, 'subtotal': _co_total(co)})
 
+    # Invoice-only: see the block comment. A basic estimate keeps whatever is
+    # stored (switching back restores it) but bills none of it.
+    adjustments = ([(a.get('label') or 'Adjustment', _f(a.get('amount')))
+                    for a in inv['adjustments']]
+                   if inv['kind'] == 'invoice' else [])
+
     subtotal = sum(s['subtotal'] for s in sections)
     co_total = sum(c['subtotal'] for c in change_orders)
-    total = subtotal + co_total
+    adj_total = sum(amt for _lbl, amt in adjustments)
+    total = subtotal + co_total + adj_total
     payments_total = sum(_f(p.get('amount')) for p in inv['payments'])
     return {
         'sections': sections, 'supplements': supplements,
         'change_orders': change_orders, 'payments': inv['payments'],
+        'adjustments': adjustments,
         'subtotal': round(subtotal, 2), 'co_total': round(co_total, 2),
+        'adj_total': round(adj_total, 2),
         'total': round(total, 2), 'payments_total': round(payments_total, 2),
         'balance_due': round(total - payments_total, 2),
     }
+
+
+def _material_selection_rows(est):
+    """(trade key, label, selection) for every brand/color choice on the job:
+    each enabled trade's Product Selection fields, plus the colors the customer
+    picked while signing when the rep's own fields left them blank.
+
+    One builder for the permit packet and the invoice, so the two documents
+    cannot disagree about what went on the house."""
+    trades = est.get('trades') or {}
+    sig = est.get('signature') or {}
+    rows = []
+    for trade, fields in TRADE_COLOR_FIELDS.items():
+        td = trades.get(trade) or {}
+        if not td.get('enabled'):
+            continue
+        colors = td.get('colors') or {}
+        for key, label in fields:
+            v = str(colors.get(key) or '').strip()
+            if v:
+                rows.append((trade, label, v))
+    ss_pick = str(sig.get('shingle_color') or '').strip()
+    if ss_pick and not any(r[1] == 'Shingle Color' for r in rows):
+        rows.insert(0, ('roofing', 'Shingle Color', ss_pick))
+    sd_pick = str(sig.get('siding_color') or '').strip()
+    if sd_pick and not any(r[1] == 'Siding Color' for r in rows):
+        rows.append(('siding', 'Siding Color', sd_pick))
+    return rows
+
+
+# A tier's description is often the product ("GAF Timberline HDZ") and worth
+# printing beside the line name; past this it is a sentence, and a sentence per
+# material is how a one-page invoice becomes three.
+_INVOICE_MATERIAL_DESC_MAX = 60
+
+
+def invoice_materials(est):
+    """What went on the house, for the summary invoice.
+
+    {'trades': {trade_key: {'package', 'selections': [(label, value)],
+                            'installed': [name], 'warranty'}},
+     'squares': '32.4 SQ' or ''}
+
+    NAMES, never prices, and never a line the customer is not shown. Labor is
+    marked customer_visible:false and stays off unless "Show labor lines" is on
+    — that flag is the gate, NOT the Material/Labor cost class, which may only
+    ever move the internal cost split (see _cost_class_of). Insurance jobs get
+    the selections and the squares only: `insurance_cost` is our internal cost
+    sheet, and nothing customer-facing may reach it."""
+    inv = invoice_fields(est)
+    show_hidden = inv['itemize']
+    trades = est.get('trades') or {}
+    out = {}
+
+    def slot(tk):
+        return out.setdefault(tk, {'package': '', 'selections': [],
+                                   'installed': [], 'warranty': ''})
+
+    for tk, label, v in _material_selection_rows(est):
+        slot(tk)['selections'].append((label, v))
+
+    if est.get('estimate_type') != 'insurance':
+        picked = {}
+        try:
+            for t in (_build_estimate_manifest(est).get('trades') or []):
+                for ti in (t.get('tiers') or []):
+                    if ti.get('is_selected'):
+                        picked[t.get('key')] = ti
+        except Exception as exc:        # a missing package name must not cost the bill
+            print(f'[invoice] manifest failed: {exc!r}')
+        for tk in GBB_TRADES:
+            td = trades.get(tk) or {}
+            if not td.get('enabled'):
+                continue
+            mode = _trade_mode(tk, td)
+            seen, names = set(), []
+            for it, _qty, cell in _tier_items(td, mode, _trade_tier(est, tk)):
+                if _is_supplement_item(td, it):
+                    continue
+                if it.get('customer_visible') is False and not show_hidden:
+                    continue
+                desc = str((it.get('description') if mode == 'simple'
+                            else (cell or {}).get('description')) or '').strip()
+                if len(desc) > _INVOICE_MATERIAL_DESC_MAX:
+                    desc = ''
+                name = str(it.get('name') or '').strip()
+                if not (name or desc):
+                    continue
+                shown = _invoice_line_name(name, desc)
+                if shown.lower() not in seen:
+                    seen.add(shown.lower())
+                    names.append(shown)
+            ti = picked.get(tk) or {}
+            s = slot(tk)
+            s['installed'] = names
+            # Name a package only when THIS estimate names one: the rep's own
+            # name for it, or a bundle they picked. The manifest falls back to
+            # the price book's default bundle for a tier the estimate never
+            # chose, and an invoice that says "CertainTeed Northgate" over a
+            # Landmark Pro roof is a bill for something that was not installed.
+            tier = _trade_tier(est, tk)
+            tb = td.get('tier_bundles') if isinstance(td.get('tier_bundles'), dict) else {}
+            picked_bundle = str(tb.get(tier) or '').strip()
+            own_name = str(_tier_package_names(est, tk).get(tier) or '').strip()
+            if own_name or (picked_bundle and picked_bundle != '__custom__'):
+                s['package'] = str(ti.get('package_name') or '').strip()
+            s['warranty'] = str(ti.get('workmanship') or '').strip()
+
+    sq = installed_squares_rows(est)
+    return {'trades': out,
+            'squares': f'{sum(r[1] for r in sq):.1f} SQ' if sq else ''}
+
+
+def _invoice_header(est):
+    """Who the document is to and about. One builder for the PDF, the signing
+    page and the rep's on-screen preview, so none of them can print a
+    different bill-to."""
+    c = est.get('customer') or {}
+    a = c.get('address') or {}
+    state_zip = ' '.join(y for y in (a.get('state'), a.get('zip')) if y)
+    city_line = ', '.join(x for x in (a.get('city'), state_zip) if x)
+    site = (est.get('project_address') or '').strip()
+    if site and (a.get('street') or '').strip().lower() in site.lower() and a.get('street'):
+        site = ''                       # same place as the bill-to — don't repeat it
+    rep = _display_name(est.get('salesperson')) if est.get('salesperson') else ''
+    return {
+        'name': c.get('name') or 'Customer',
+        'address': '\n'.join(x for x in (a.get('street'), city_line) if x),
+        'site': site,
+        'phone': c.get('phone') or '',
+        'email': c.get('email') or '',
+        'estimate_number': _est_number(est),
+        'rep': rep,
+        'rep_email': (_salesperson_email(est) or '') if rep else '',
+        'company_phone': COMPANY_PHONE_DISPLAY,
+    }
+
+
+def _invoice_kind_label(inv):
+    """'Invoice', or 'Estimate' for the GC / HOA basic estimate. The stored kind
+    stays 'quote' — renaming the value would renumber documents already sent."""
+    return 'Invoice' if inv.get('kind') == 'invoice' else 'Estimate'
+
+
+# Sections whose materials line carries the roof area, in the order they are
+# looked for — the first one present gets it, once.
+_INVOICE_ROOF_KEYS = ('roofing', 'commercial', 'insurance')
+
+
+def invoice_summary(est, data=None, mats=None):
+    """The summary invoice as data — one price per trade, then the add-ons.
+
+    {'work':   [{'key', 'title', 'amount', 'details': [(label, text)]}],
+     'addons': [{'title', 'amount'}]}
+
+    Every amount is one invoice_rows() already produced: a trade's price is its
+    section subtotal, an add-on is an elected upgrade, an accepted change order
+    or an adjustment. Nothing here prices anything. The PDF, the signing page
+    and the rep's on-screen preview all render this one structure, so they
+    cannot describe the same bill three ways."""
+    data = data if data is not None else invoice_rows(est)
+    mats = mats if mats is not None else invoice_materials(est)
+    per = mats.get('trades') or {}
+    work, addons = [], []
+    squares_done = False
+    roof_sec = next((s for k in _INVOICE_ROOF_KEYS for s in data['sections']
+                     if s.get('key') == k), None)
+    ins_first = True
+    for sec in data['sections']:
+        key = sec.get('key')
+        if key == 'upgrades':
+            for name, _q, _u, _p, line in sec['rows']:
+                addons.append({'title': f'{name} (upgrade you selected)', 'amount': line})
+            continue
+        m = per.get(key) or {}
+        # The carrier's scope has no Product Selection of its own; the roof's
+        # colors and brand ride on the first insurance section, once.
+        if key == 'insurance':
+            m = (per.get('roofing') or {}) if ins_first else {}
+            ins_first = False
+        title = sec['title']
+        if m.get('package') and key != 'insurance':
+            title = f"{title} — {m['package']}"
+        details = []
+        if m.get('selections'):
+            details.append(('Selections', ' · '.join(f'{lbl}: {v}' for lbl, v in m['selections'])))
+        if sec is roof_sec and mats.get('squares') and not squares_done:
+            details.append(('Roof area', mats['squares']))
+            squares_done = True
+        if m.get('installed') and key != 'insurance':
+            details.append(('Installed', ', '.join(m['installed'])))
+        if m.get('warranty') and key != 'insurance':
+            details.append(('Warranty', m['warranty']))
+        work.append({'key': key, 'title': title, 'amount': sec['subtotal'],
+                     'details': details})
+    for co in data['change_orders']:
+        addons.append({'title': f"Change order: {co['title']}", 'amount': co['subtotal']})
+    for label, amt in data.get('adjustments') or []:
+        addons.append({'title': label, 'amount': amt})
+    return {'work': work, 'addons': addons}
 
 
 def _invoice_fmt_date(iso):
@@ -18457,7 +18753,7 @@ def _invoice_fmt_date(iso):
 
 
 def build_invoice_pdf(est):
-    """The GC invoice/quote PDF. See the block comment above."""
+    """The invoice / basic estimate PDF. See the block comment above."""
     if FPDF is None:
         raise RuntimeError('fpdf2 not installed')
     from fpdf.fonts import FontFace
@@ -18465,8 +18761,10 @@ def build_invoice_pdf(est):
 
     inv  = invoice_fields(est)
     data = invoice_rows(est)
+    head = _invoice_header(est)
     is_inv = inv['kind'] == 'invoice'
-    kind_label = 'Invoice' if is_inv else 'Quote'
+    summary = is_inv and inv['detail'] == 'summary'
+    kind_label = _invoice_kind_label(inv)
     pdf, SANS, SERIF, W = _new_internal_pdf(
         f'{kind_label}  ·  {inv["number"]}',
         footer=f'Project One Roofing  ·  {COMPANY_PHONE_DISPLAY}  ·  '
@@ -18484,29 +18782,41 @@ def build_invoice_pdf(est):
              new_x='LMARGIN', new_y='NEXT')
     pdf.ln(2)
 
-    c = est.get('customer') or {}
-    a = c.get('address') or {}
-    state_zip = ' '.join(y for y in (a.get('state'), a.get('zip')) if y)
-    city_line = ', '.join(x for x in (a.get('city'), state_zip) if x)
-    bill_addr = '\n'.join(x for x in (a.get('street'), city_line) if x)
-    site = (est.get('project_address') or '').strip()
-    if site and (a.get('street') or '').strip().lower() in site.lower() and a.get('street'):
-        site = ''                       # same place as the bill-to — don't repeat it
-    rep = _display_name(est.get('salesperson')) if est.get('salesperson') else ''
-
-    kv([
+    # The dates and references as ONE row of label-over-value cells rather than
+    # a row each: four hairline rows were a fifth of the page before the bill
+    # said what it was for, and the invoice has to fit on one page.
+    meta = [(k, v) for k, v in (
         ('Date', _invoice_fmt_date(inv['issue_date'])),
         ('Due date' if is_inv else 'Valid until',
          _invoice_fmt_date(inv['due_date'] if is_inv else inv['valid_until'])),
+        ('Work completed', _invoice_fmt_date(inv['completed_date']) if is_inv else ''),
         ('PO / Reference', inv['po_ref']),
-        ('Estimate #', _est_number(est)),
-    ])
-    section('Bill to', c.get('name') or 'Customer')
+        # On a basic estimate the document's own number IS the estimate
+        # number; printing EST-… under a Q-… title reads as two estimates.
+        ('Estimate #', head['estimate_number'] if is_inv else ''),
+    ) if v]
+    if meta:
+        cw = W / len(meta)
+        y0 = pdf.get_y()
+        for i, (k, _v) in enumerate(meta):
+            pdf.set_xy(LM + i * cw, y0)
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['faint'])
+            pdf.cell(cw - 2, 4, _pdf_rich(k.upper()))
+        for i, (_k, v) in enumerate(meta):
+            pdf.set_xy(LM + i * cw, y0 + 4.2)
+            pdf.set_font(SANS, '', 9.5)
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+            pdf.cell(cw - 2, 5.6, _pdf_rich(str(v)))
+        pdf.set_xy(LM, y0 + 11)
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
+        pdf.ln(1.6)
+    section('Bill to', head['name'])
     kv([
-        ('Address', bill_addr),
-        ('Job site', site),
-        ('Phone', c.get('phone')),
-        ('Email', c.get('email')),
+        ('Address', head['address']),
+        ('Job site', head['site']),
+        ('Contact', ' · '.join(x for x in (head['phone'], head['email']) if x)),
     ])
 
     head_face = FontFace(family=SANS, size_pt=6.5,
@@ -18548,29 +18858,79 @@ def build_invoice_pdf(est):
         pdf.cell(32, 7, money, align='R', new_x='LMARGIN', new_y='NEXT')
         pdf.set_text_color(*_PDF_STYLE['ink'])
 
-    if not data['sections']:
-        section('Scope', 'No billable line items')
-    for sec in data['sections']:
-        section('Scope', sec['title'])
-        if sec['rows']:
-            table(sec['rows'])
-        if sec.get('folded'):
-            pdf.set_font(SANS, 'I', 7.5)
-            pdf.set_text_color(*_PDF_STYLE['faint'])
-            pdf.cell(W, 5.5, _pdf_rich('Additional materials, supplies & labor included in subtotal'),
-                     align='L', new_x='LMARGIN', new_y='NEXT')
-            pdf.set_text_color(*_PDF_STYLE['ink'])
-        money_row(f"{sec['title']} Subtotal", sec['subtotal'])
+    def priced_line(title, amount, bold=True):
+        """A wrapping title on the left, its amount on the right, top-aligned."""
+        if pdf.get_y() > pdf.h - 34:
+            pdf.add_page()
+        y0 = pdf.get_y()
+        pdf.set_font(SANS, 'B' if bold else '', 10 if bold else 9)
+        pdf.set_text_color(*_PDF_STYLE['ink'])
+        pdf.multi_cell(W - 36, 6, _pdf_rich(title), new_x='LMARGIN', new_y='NEXT')
+        y1 = pdf.get_y()
+        pdf.set_xy(LM + W - 36, y0)
+        money = ('-' + fc(-amount)) if amount < 0 else fc(amount)
+        pdf.cell(36, 6, money, align='R')
+        pdf.set_xy(LM, max(y1, y0 + 6))
 
-    for co in data['change_orders']:
-        section('Change order', co['title'])
-        table(co['rows'])
-        money_row('Change Order Subtotal', co['subtotal'])
+    def detail_line(label, text):
+        pdf.set_x(LM + 4)
+        pdf.set_font(SANS, '', 8)
+        pdf.set_text_color(*_PDF_STYLE['mute'])
+        pdf.multi_cell(W - 44, 4.4, _pdf_rich(f'{label}: {text}'),
+                       new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
 
-    section('Summary', f'{kind_label} Total')
-    if data['change_orders']:
-        money_row('Original scope', data['subtotal'])
-        money_row('Change orders', data['co_total'])
+    def hairline():
+        pdf.ln(1.2)
+        pdf.set_draw_color(*_PDF_STYLE['rule'])
+        pdf.line(LM, pdf.get_y(), LM + W, pdf.get_y())
+        pdf.ln(1.6)
+
+    if summary:
+        # One price per trade and what went on the house — no line prices, no
+        # labor. The client asked what they are paying for, not how we cost it.
+        s = invoice_summary(est, data)
+        section('Work completed', 'Project summary')
+        if not s['work']:
+            priced_line('No billable work', 0.0)
+        for w in s['work']:
+            priced_line(w['title'], w['amount'])
+            for label, text in w['details']:
+                detail_line(label, text)
+            hairline()
+        if s['addons']:
+            section('Add-ons', 'Upgrades, changes & adjustments')
+            for a in s['addons']:
+                priced_line(a['title'], a['amount'], bold=False)
+            hairline()
+        section('Summary', f'{kind_label} Total')
+    else:
+        if not data['sections']:
+            section('Scope', 'No billable line items')
+        for sec in data['sections']:
+            section('Scope', sec['title'])
+            if sec['rows']:
+                table(sec['rows'])
+            if sec.get('folded'):
+                pdf.set_font(SANS, 'I', 7.5)
+                pdf.set_text_color(*_PDF_STYLE['faint'])
+                pdf.cell(W, 5.5, _pdf_rich('Additional materials, supplies & labor included in subtotal'),
+                         align='L', new_x='LMARGIN', new_y='NEXT')
+                pdf.set_text_color(*_PDF_STYLE['ink'])
+            money_row(f"{sec['title']} Subtotal", sec['subtotal'])
+
+        for co in data['change_orders']:
+            section('Change order', co['title'])
+            table(co['rows'])
+            money_row('Change Order Subtotal', co['subtotal'])
+
+        section('Summary', f'{kind_label} Total')
+        if data['change_orders'] or data['adjustments']:
+            money_row('Original scope', data['subtotal'])
+        if data['change_orders']:
+            money_row('Change orders', data['co_total'])
+        for label, amt in data['adjustments']:
+            money_row(label, amt)
     money_row('Total', data['total'], bold=True, rule=True)
     if data['payments']:
         for p in data['payments']:
@@ -18584,12 +18944,30 @@ def build_invoice_pdf(est):
     elif is_inv:
         money_row('Balance Due', data['balance_due'], bold=True)
 
-    if data['supplements']:
+    # "If needed" lines belong to a price going out. On a summary invoice the
+    # work is done: a supplement that was used came back as a change order.
+    if data['supplements'] and not summary:
         section('If needed', 'Supplements - not included in the total')
         table(data['supplements'], blank_total='Quoted if needed', blank_qty='If needed')
 
     if inv['notes']:
-        section('Notes', 'Notes & terms')
+        if summary:
+            # A small label rather than a section heading: section() starts a
+            # new page when less than a quarter of one is left, and a one-line
+            # "Net 30" is not worth a second sheet of paper. The label travels
+            # with its text — never alone at the foot of a page.
+            pdf.set_font(SANS, '', 9)
+            need = 8 + len(pdf.multi_cell(W, 5, _pdf_rich(inv['notes']),
+                                          dry_run=True, output='LINES')) * 5
+            if pdf.get_y() + need > pdf.page_break_trigger:
+                pdf.add_page()
+            pdf.ln(4)
+            pdf.set_font(SANS, '', 6.5)
+            pdf.set_text_color(*_PDF_STYLE['teal'])
+            pdf.cell(0, 4, 'NOTES & TERMS', new_x='LMARGIN', new_y='NEXT')
+            pdf.set_text_color(*_PDF_STYLE['ink'])
+        else:
+            section('Notes', 'Notes & terms')
         pdf.set_font(SANS, '', 9)
         pdf.multi_cell(W, 5, _pdf_rich(inv['notes']), new_x='LMARGIN', new_y='NEXT')
 
@@ -18597,15 +18975,15 @@ def build_invoice_pdf(est):
     pdf.set_font(SANS, '', 8)
     pdf.set_text_color(*_PDF_STYLE['mute'])
     contact = f'Questions? Call {COMPANY_PHONE_DISPLAY}'
-    if rep:
-        contact += f' or contact {rep} at {_salesperson_email(est)}'
+    if head['rep']:
+        contact += f" or contact {head['rep']} at {head['rep_email']}"
     pdf.multi_cell(W, 4.5, _pdf_rich(contact + '.'), new_x='LMARGIN', new_y='NEXT')
     return bytes(pdf.output())
 
 
 def _invoice_filename(est):
     inv = invoice_fields(est)
-    kind = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    kind = _invoice_kind_label(inv)
     num = re.sub(r'[^A-Za-z0-9_.-]+', '-', inv['number']).strip('-') or 'draft'
     return f'ProjectOneRoofing-{kind}-{num}.pdf'
 
@@ -18625,7 +19003,7 @@ def generate_invoice(est_id, push_to_crm=False):
         f.write(pdf_bytes)
 
     inv = invoice_fields(est)
-    kind_label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    kind_label = _invoice_kind_label(inv)
     cname = ((est.get('customer') or {}).get('name') or 'Customer').strip()
     att = {
         'id':               uuid.uuid4().hex[:12],
@@ -18688,7 +19066,11 @@ def _invoice_est_or_error(est_id):
 
 
 def _invoice_payload(est):
-    return {'invoice': invoice_fields(est), 'totals': invoice_rows(est)}
+    """Everything the rep's on-screen preview needs, from the same builders the
+    PDF uses — the preview formats these and computes nothing."""
+    data = invoice_rows(est)
+    return {'invoice': invoice_fields(est), 'totals': data,
+            'header': _invoice_header(est), 'summary': invoice_summary(est, data)}
 
 
 @app.route('/api/estimates/<est_id>/invoice', methods=['GET'])
@@ -18785,7 +19167,7 @@ def email_invoice(est_id):
         return jsonify({'error': 'No email address to send to.'}), 400
 
     totals = invoice_rows(est)
-    kind_label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    kind_label = _invoice_kind_label(inv)
     rep = _display_name(est.get('salesperson')) if est.get('salesperson') else 'Project One Roofing'
     cname = ((est.get('customer') or {}).get('name') or '').strip()
     if inv['kind'] == 'invoice' or totals['payments']:
@@ -18863,13 +19245,13 @@ def find_by_invoice_token(token):
 
 def _invoice_sign_email_subject(est):
     inv = invoice_fields(est)
-    label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    label = _invoice_kind_label(inv)
     return f'{label} {inv.get("number", "")} to review and approve — Project One Roofing'
 
 
 def _invoice_sign_email_html(est, sign_url):
     inv   = invoice_fields(est)
-    label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    label = _invoice_kind_label(inv)
     first = ((est.get('customer') or {}).get('name') or 'there').split(' ')[0]
     rep   = _display_name(est.get('salesperson')) if est.get('salesperson') else 'Project One Roofing'
     return (
@@ -18906,14 +19288,41 @@ def build_invoice_sign_page(est, token):
     sig    = inv.get('signature') or {}
     c      = est.get('customer') or {}
     is_inv = inv['kind'] == 'invoice'
-    label  = 'Invoice' if is_inv else 'Quote'
+    label  = _invoice_kind_label(inv)
     rep    = _display_name(est.get('salesperson')) if est.get('salesperson') else ''
+
+    def fcs(n):                         # -$500.00, never $-500.00
+        return ('-' + fc(-n)) if n < 0 else fc(n)
+
+    summary = is_inv and inv['detail'] == 'summary'
+    rows = []
+    if summary:
+        # The same summary the PDF prints: one price per trade, what was
+        # installed, then the add-ons. No line prices, no labor.
+        s = invoice_summary(est, data)
+        for w in s['work']:
+            detail = ''.join(
+                f'<div style="color:#94a3b8;font-size:12px;line-height:1.5">'
+                f'{he(lbl)}: {he(txt)}</div>' for lbl, txt in w['details'])
+            rows.append(
+                '<tr><td style="padding:10px 0;border-bottom:1px solid #eef2f7">'
+                f'<div style="font-weight:700">{he(w["title"])}</div>{detail}</td>'
+                '<td style="padding:10px 0;border-bottom:1px solid #eef2f7;text-align:right;'
+                f'white-space:nowrap;vertical-align:top;font-weight:700">{he(fcs(w["amount"]))}</td></tr>')
+        if s['addons']:
+            rows.append(
+                '<tr><td colspan="2" style="padding:16px 0 4px;font-weight:700;font-size:12px;'
+                'letter-spacing:.06em;text-transform:uppercase;color:#64748b">Add-ons</td></tr>')
+            for a in s['addons']:
+                rows.append(
+                    f'<tr><td style="padding:7px 0;border-bottom:1px solid #eef2f7">{he(a["title"])}</td>'
+                    '<td style="padding:7px 0;border-bottom:1px solid #eef2f7;text-align:right;'
+                    f'white-space:nowrap;vertical-align:top">{he(fcs(a["amount"]))}</td></tr>')
 
     # The row shape is the PDF's own: [name, qty, unit, unit_price, amount].
     # A GC approving a figure wants the quantities behind it, which is the whole
     # reason the itemized invoice exists. `{qty:g}` matches how the PDF prints.
-    rows = []
-    for sec in (data.get('sections') or []):
+    for sec in ([] if summary else (data.get('sections') or [])):
         if sec.get('title'):
             rows.append(
                 '<tr><td colspan="2" style="padding:16px 0 4px;font-weight:700;font-size:12px;'
@@ -18937,9 +19346,15 @@ def build_invoice_sign_page(est, token):
                 f'Plus {int(sec["folded"])} further line(s) included in the subtotal.'
                 '</td></tr>')
 
-    money = [('Subtotal', data.get('subtotal') or 0)]
-    if data.get('co_total'):
-        money.append(('Approved change orders', data.get('co_total') or 0))
+    if summary:
+        # Add-ons are already listed above with their prices.
+        money = [('Total', data.get('total') or 0)]
+    else:
+        money = [('Subtotal', data.get('subtotal') or 0)]
+        if data.get('co_total'):
+            money.append(('Approved change orders', data.get('co_total') or 0))
+        for lbl, amt in data.get('adjustments') or []:
+            money.append((lbl, amt))
     if data.get('payments_total'):
         money.append(('Payments received', -(data.get('payments_total') or 0)))
     show_balance = is_inv or data.get('payments_total')
@@ -18950,7 +19365,7 @@ def build_invoice_sign_page(est, token):
         strong = 'font-weight:800;font-size:17px' if i == len(money) - 1 else 'color:#475569'
         money_html += (f'<tr><td style="padding:6px 0;{strong}">{he(lbl)}</td>'
                        f'<td style="padding:6px 0;text-align:right;white-space:nowrap;'
-                       f'{strong}">{he(fc(val))}</td></tr>')
+                       f'{strong}">{he(fcs(val))}</td></tr>')
 
     if sig:
         when = str(sig.get('signed_at') or '')[:19].replace('T', ' ')
@@ -19024,7 +19439,7 @@ def send_invoice_signature_notification(est):
     inv   = invoice_fields(est)
     sig   = inv.get('signature') or {}
     data  = invoice_rows(est)
-    label = 'Invoice' if inv['kind'] == 'invoice' else 'Quote'
+    label = _invoice_kind_label(inv)
     c     = est.get('customer') or {}
     amount = data.get('balance_due') if inv['kind'] == 'invoice' else data.get('total')
     when   = str(sig.get('signed_at') or '')[:19].replace('T', ' ')

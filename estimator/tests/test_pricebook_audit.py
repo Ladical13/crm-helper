@@ -144,7 +144,7 @@ def test_every_audit_code_has_a_label_in_app_js():
     """Without one the modal prints the raw snake_case code at a manager, which
     reads like a bug in the report rather than a fault in the book."""
     codes = {'unpriced', 'unit_mismatch', 'orphan', 'conversion_unlabelled',
-             'pack_cost_unconverted'}
+             'pack_cost_unconverted', 'labor_visible'}
     assert codes <= _code_labels(), f'unlabelled: {sorted(codes - _code_labels())}'
 
 

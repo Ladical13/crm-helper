@@ -5110,20 +5110,135 @@ body.is-client #nav-toggle      { display: none; }
 }
 .att-label-ro { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
 
-/* Invoice / quote: the itemize switch, payment rows and the what-it-bills summary. */
+/* Invoice / basic estimate (the 🧾 Invoice tab): the form beside a live preview
+   of the document. The preview is laid out like the PDF, on paper, because the
+   whole complaint was "I can't see the invoice until it prints". */
+.inv-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+/* Layout, not touch: side by side wherever there is room for both. */
+@media (min-width: 1100px) {
+  .inv-layout { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); }
+}
+.inv-kind-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.inv-kind-switch .rc-term-btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  text-align: left; padding: 10px 12px;
+}
+.inv-kind-switch .rc-term-btn small { font-size: 11px; font-weight: 600; opacity: .8; }
+.inv-kind-switch .rc-term-btn:disabled { cursor: not-allowed; opacity: .6; }
+.inv-fields { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.inv-locked { color: #065f46; font-weight: 600; }
 .inv-itemize {
   display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: #384b63;
   background: #f8fafc; border: 1px solid var(--border-light); border-radius: 6px; padding: 8px 10px;
 }
 .inv-itemize input { margin-top: 2px; width: 18px; height: 18px; flex: none; }
 .inv-pay-row { grid-template-columns: 150px 130px 1fr auto; align-items: end; margin-bottom: 6px; }
-.inv-summary {
-  display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #1a2740;
-  background: #f8fafc; border: 1px solid var(--border-light); border-radius: 6px; padding: 8px 10px;
+.inv-adj-row { grid-template-columns: 1fr 130px 120px auto; align-items: end; margin-bottom: 6px; }
+
+.inv-preview-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.inv-preview-hd {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  flex-wrap: wrap; font-size: 13px; color: #384b63;
 }
-.inv-balance { font-size: 14px; color: var(--primary); }
+.inv-paper {
+  background: #fff; border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 28px -18px rgba(12, 24, 48, .45);
+  padding: 26px 28px; overflow-x: auto;
+}
+/* Colors are the PDF's own (_PDF_STYLE), so the preview reads like the page. */
+.invp { font-size: 12.5px; color: #0c1830; line-height: 1.45; }
+.invp-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.invp-kind {
+  font-family: Georgia, 'Times New Roman', serif; font-weight: 800; font-size: 26px;
+  color: #082878; letter-spacing: .02em;
+}
+.invp-num { font-weight: 800; font-size: 13px; overflow-wrap: anywhere; text-align: right; }
+.invp-meta {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px;
+  padding: 2px 0 8px; border-bottom: 1px solid #e3e0da;
+}
+.invp-meta span { display: block; overflow-wrap: anywhere; }
+.invp-meta span:first-child {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: #8b93a4;
+}
+.invp-kv {
+  display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px;
+  padding: 4px 0; border-bottom: 1px solid #e3e0da;
+}
+.invp-kv span:first-child {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: #8b93a4; padding-top: 2px;
+}
+.invp-kv span:last-child { overflow-wrap: anywhere; }
+.invp-sec { margin: 16px 0 6px; }
+.invp-eyebrow { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #00a8b8; }
+.invp-title { font-family: Georgia, 'Times New Roman', serif; font-weight: 800; font-size: 16px; color: #082878; }
+.invp-line { padding: 8px 0; border-bottom: 1px solid #e3e0da; }
+.invp-line-hd { display: flex; justify-content: space-between; gap: 12px; }
+.invp-line-hd > :first-child { min-width: 0; overflow-wrap: anywhere; }
+.invp-line-hd > :last-child { white-space: nowrap; }
+.invp-detail { font-size: 11.5px; color: #5a6478; margin: 2px 0 0 10px; overflow-wrap: anywhere; }
+.invp-money { display: flex; justify-content: flex-end; gap: 18px; padding: 4px 0; text-align: right; }
+.invp-money span:last-child { min-width: 96px; white-space: nowrap; }
+.invp-strong {
+  font-weight: 800; font-size: 14px; color: #082878;
+  border-top: 1.5px solid #082878; margin-top: 4px; padding-top: 6px;
+}
+.invp-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.invp-table th {
+  font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+  color: #8b93a4; text-align: right; padding: 4px 6px; border-bottom: 1px solid #e3e0da;
+}
+.invp-table td { padding: 5px 6px; border-bottom: 1px solid #eef0f3; text-align: right; vertical-align: top; }
+.invp-table th:first-child, .invp-table td:first-child { text-align: left; padding-left: 0; }
+.invp-table th:nth-child(3), .invp-table td:nth-child(3) { text-align: center; }
+.invp-table td:nth-child(n+4) { white-space: nowrap; }
+.invp-folded, .invp-empty { font-size: 11px; font-style: italic; color: #8b93a4; margin: 4px 0; }
+.invp-contact { margin-top: 18px; font-size: 11px; color: #5a6478; }
+
+/* ── Customer screen tabs ───────────────────────────────────────────────
+   One strip, scrolled sideways rather than wrapped, so six tabs never push
+   the pane off a 375px phone. The Invoice tab widens the page for its
+   form + preview pair (renderClientPage toggles .client-wide). */
+.client-hub-id { flex: 1; min-width: 0; }
+.client-hub-contact { font-size: 13px; color: #384b63; margin-top: 1px; overflow-wrap: anywhere; }
+.client-tabs {
+  display: flex; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  border-bottom: 1px solid var(--border);
+}
+.client-tabs::-webkit-scrollbar { display: none; }
+.client-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  padding: 9px 14px; font-size: 13px; font-weight: 700; font-family: inherit;
+  color: var(--text-light); background: none;
+  border: 1px solid transparent; border-bottom: none;
+  border-radius: 8px 8px 0 0; margin-bottom: -1px;
+  cursor: pointer; white-space: nowrap; transition: background .12s, color .12s;
+}
+.client-tab:hover { color: var(--text); background: #f8fafc; }
+.client-tab.active {
+  color: var(--primary); background: #fff;
+  border-color: var(--border); border-bottom-color: #fff;
+}
+.client-tab:focus-visible { outline: 2px solid #0284c7; outline-offset: -2px; }
+.client-tab-n {
+  font-size: 11px; font-weight: 800; color: var(--primary); background: #eef4fb;
+  border-radius: 9px; padding: 0 7px; line-height: 18px;
+}
+.client-tab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary-light); }
+@media (pointer: coarse) {
+  /* A finger, not a width — same rule as .settings-tab. */
+  .client-tab { min-height: 44px; padding: 10px 14px; font-size: 14px; }
+}
+#page-client.client-wide .client-hub,
+#page-client.client-wide .pm-wrap { max-width: 1240px; }
+.cf-notes-tall { min-height: 240px; }
 
 @media (max-width: 640px) {
+  .inv-paper { padding: 16px 14px; }
+  .invp-kv { grid-template-columns: 96px minmax(0, 1fr); }
+  .inv-adj-row { grid-template-columns: 1fr 1fr; }
+  .inv-kind-switch { grid-template-columns: 1fr; }
   .rc-grid { grid-template-columns: 1fr; }
   .inv-pay-row { grid-template-columns: 1fr 1fr; }
   .rc-term-btns { width: 100%; }

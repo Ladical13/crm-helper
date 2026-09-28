@@ -1,20 +1,28 @@
-"""GC invoice / quote: the plain, itemized document for general contractors.
+"""The invoice and the basic estimate — two of the three documents a customer
+can be handed (the third is the detailed proposal).
 
 What is worth a test rather than a read-through:
 
 1. **The subtotal is the estimate's own total, to the cent.** invoice_rows()
    lists the rows _trade_subtotal prices. If the two ever disagree, a GC gets
    an invoice whose lines do not add up to the number the rep quoted.
-2. **Every billed line is listed**, including customer_visible:false ones the
-   homeowner PDF folds into the total. That was the whole ask: a GC checks the
-   bill line by line.
+2. **Labor is hidden unless asked for.** customer_visible:false lines fold into
+   their trade's subtotal; "Show labor lines" (`itemize`) lists them, which is
+   how a GC who checks the bill line by line still gets every line.
 3. **Supplements are listed and never totalled; only ACCEPTED change orders
    bill; payments reduce the balance.**
-4. **A quote is a send; an invoice is a bill.** The margin floor gates the
-   first and not the second.
+4. **A basic estimate is a send; an invoice is a bill.** The margin floor
+   gates the first and not the second — and an adjustment, which could walk a
+   price past that floor, applies to the invoice only.
 5. **est['invoice'] is server-owned.** It holds payments received, so a stale
    whole-doc save must not roll it back.
+6. **The invoice every client gets is a summary:** one price per trade, the
+   add-ons, what was installed by NAME, the payments and the balance — on no
+   more than two pages, and with no price the server did not produce.
 """
+import io
+import os
+
 import pytest
 
 import app as A
@@ -97,8 +105,11 @@ def test_insurance_bills_rcv_and_matches_the_claim_total():
     assert rows['sections'][0]['rows'][0][3] == pytest.approx(50.0)   # 1500 / 30
 
 
-def test_hidden_lines_are_listed_with_their_price():
-    names = [r[0] for s in A.invoice_rows(_est())['sections'] for r in s['rows']]
+def test_hidden_lines_are_listed_with_their_price_when_labor_is_shown():
+    """"Show labor lines" is how a GC who wants every line gets it — on, the
+    labor a homeowner never sees is listed with its own price."""
+    names = [r[0] for s in A.invoice_rows(_est(invoice={'itemize': True}))['sections']
+             for r in s['rows']]
     assert 'Install Labor' in names
 
 
@@ -357,10 +368,10 @@ def test_a_whole_doc_save_cannot_strip_a_signature(client):
     assert A.est_load(eid)['invoice'].get('signature'), 'the signature was rolled back'
 
 
-# ── homeowner mode: "List every line" unticked ─────────────────────────────
+# ── labor hidden unless asked for ("Show labor lines") ─────────────────────
 
-def test_unticking_list_every_line_folds_hidden_rows_but_not_the_money():
-    itemized = A.invoice_rows(_est())
+def test_hiding_labor_folds_hidden_rows_but_not_the_money():
+    itemized = A.invoice_rows(_est(invoice={'itemize': True}))
     folded = A.invoice_rows(_est(invoice={'itemize': False}))
     names = [r[0] for s in folded['sections'] for r in s['rows']]
     assert 'Install Labor' not in names and 'Shingles' in names
@@ -380,10 +391,26 @@ def test_a_trade_whose_every_line_is_hidden_still_bills():
     assert rows['subtotal'] == pytest.approx(A._estimate_total(est), abs=0.005)
 
 
-def test_itemize_defaults_on_and_only_takes_a_real_boolean():
-    assert A.invoice_fields(_est())['itemize'] is True
+def test_labor_is_hidden_by_default_and_the_flag_only_takes_a_real_boolean():
+    """Labor is not the customer's business — "Install Labor — $9,400" invites
+    a negotiation over the one number that is really the crew. Off unless the
+    rep turns it on."""
+    assert A.invoice_fields(_est())['itemize'] is False
     assert 'itemize' not in A._sanitize_invoice({'itemize': 'no'})
     assert A._sanitize_invoice({'itemize': False}) == {'itemize': False}
+    names = [r[0] for s in A.invoice_rows(_est())['sections'] for r in s['rows']]
+    assert 'Install Labor' not in names
+
+
+def test_a_signature_taken_before_the_flag_keeps_its_shape():
+    """It was signed over the old default — every line listed, itemized. It
+    must not change shape under the person who signed it."""
+    inv = A.invoice_fields(_est(invoice={'signature': {'name': 'Dana'}}))
+    assert inv['itemize'] is True and inv['detail'] == 'itemized'
+    # A signed invoice whose rep did make a choice keeps that choice.
+    inv = A.invoice_fields(_est(invoice={'signature': {'name': 'Dana'}, 'itemize': False,
+                                         'detail': 'summary'}))
+    assert inv['itemize'] is False and inv['detail'] == 'summary'
 
 
 def test_the_folded_pdf_renders(client):
@@ -482,3 +509,236 @@ def test_the_panel_offers_the_signing_link_and_shows_when_it_is_signed():
     # pastes it into the thread the GC is already on.
     assert 'clipboard' in body, 'no fallback when the mail does not go'
     assert 'rc-signed-chip' in js, 'nothing shows that it came back signed'
+
+
+# ── 6. the invoice every client gets ───────────────────────────────────────
+
+def _pdf_text(raw):
+    from pypdf import PdfReader
+    return '\n'.join(p.extract_text() or '' for p in PdfReader(io.BytesIO(raw)).pages)
+
+
+def _pages(raw):
+    from pypdf import PdfReader
+    return len(PdfReader(io.BytesIO(raw)).pages)
+
+
+def test_the_summary_prices_each_trade_at_its_own_subtotal():
+    """A trade's one price is its invoice_rows section subtotal — regrouped,
+    never recomputed — so the prices on the page add up to the contract."""
+    est = _est()
+    data = A.invoice_rows(est)
+    work = {w['key']: w['amount'] for w in A.invoice_summary(est, data)['work']}
+    for sec in data['sections']:
+        assert work[sec['key']] == sec['subtotal']
+    assert sum(work.values()) == pytest.approx(A._estimate_total(est), abs=0.005)
+
+
+def test_an_invoice_is_a_summary_with_no_line_prices_and_no_labor():
+    est = _est()
+    est['trades']['roofing']['colors'] = {'shingle_color': 'Weathered Wood'}
+    assert A.invoice_fields(est)['detail'] == 'summary'
+    txt = _pdf_text(A.build_invoice_pdf(est))
+    assert 'Unit Price' not in txt, 'the client does not need the breakdown'
+    assert 'Install Labor' not in txt
+    assert 'Shingles' in txt, 'what was installed, by name'
+    assert 'Weathered Wood' in txt
+    assert A.fc(A.invoice_rows(est)['total']) in txt
+
+
+def test_what_was_installed_is_names_only_and_skips_hidden_lines():
+    mats = A.invoice_materials(_est())
+    roof = mats['trades']['roofing']['installed']
+    assert roof == ['Shingles']
+    assert 'Install Labor' not in roof and 'Skipped' not in roof
+    assert not any('$' in n for t in mats['trades'].values() for n in t['installed'])
+    # "Show labor lines" lists labor by NAME on the summary — still no price.
+    shown = A.invoice_materials(_est(invoice={'itemize': True}))
+    assert 'Install Labor' in shown['trades']['roofing']['installed']
+    assert 'Unit Price' not in _pdf_text(A.build_invoice_pdf(_est(invoice={'itemize': True})))
+
+
+def test_the_add_ons_are_listed_each_with_its_price():
+    co = {'id': 'c', 'title': 'Replace 6 sheets', 'status': 'accepted', 'pricing': PRICING,
+          'line_items': [{'name': 'Decking', 'quantity': 6, 'price_override': 90}]}
+    est = _est(change_orders=[co],
+               invoice={'adjustments': [{'label': 'Loyalty credit', 'amount': -500}]})
+    addons = A.invoice_summary(est)['addons']
+    assert [a['title'] for a in addons] == ['Change order: Replace 6 sheets', 'Loyalty credit']
+    assert addons[-1]['amount'] == -500
+
+
+def test_insurance_never_reads_the_internal_cost_sheet():
+    """insurance_cost is our labor rate and our margin. Nothing a customer is
+    handed may reach it."""
+    est = _est(estimate_type='insurance',
+               trades={'insurance': {'sections': [{'name': 'Roof', 'items': [
+                   {'name': 'Tear off', 'quantity': 30, 'unit': 'SQ',
+                    'acv': 1200, 'depreciation': 300}]}]}},
+               insurance_cost={'items': [{'name': 'SECRET-CREW-RATE', 'quantity': 30,
+                                          'unit_cost': 145}]})
+    assert 'SECRET' not in repr(A.invoice_summary(est))
+    assert 'SECRET' not in _pdf_text(A.build_invoice_pdf(est))
+    assert A.invoice_summary(est)['work'][0]['amount'] == 1500
+
+
+def test_a_three_trade_invoice_fits_on_two_pages():
+    est = _est(invoice={'payments': [{'amount': 5000, 'date': '2026-09-01', 'note': 'Deposit'},
+                                     {'amount': 2500, 'date': '2026-09-20', 'note': 'Progress'}],
+                        'adjustments': [{'label': 'Loyalty credit', 'amount': -500}],
+                        'notes': 'Net 30. Thank you for your business.'})
+    est['trades']['roofing']['line_items'] += [_item(f'Roof component {i}', 5, 20)
+                                               for i in range(25)]
+    est['trades']['siding'] = {'enabled': True, 'mode': 'gbb', 'line_items': [
+        _item(f'Siding material {i}', 10, 50) for i in range(25)]}
+    assert _pages(A.build_invoice_pdf(est)) <= 2
+
+
+def test_the_itemized_invoice_is_still_there_for_a_client_who_asks():
+    txt = _pdf_text(A.build_invoice_pdf(_est(invoice={'detail': 'itemized'})))
+    assert 'Unit Price' in txt
+
+
+def test_the_basic_estimate_is_itemized_titled_estimate_and_folds_labor():
+    est = _est(invoice={'kind': 'quote'})
+    assert A.invoice_fields(est)['detail'] == 'itemized'
+    txt = _pdf_text(A.build_invoice_pdf(est))
+    assert 'ESTIMATE' in txt and 'Unit Price' in txt
+    assert 'Install Labor' not in txt
+    assert A._invoice_filename(est).startswith('ProjectOneRoofing-Estimate-')
+    # The stored kind stays 'quote': renaming it would renumber what was sent.
+    assert A.invoice_fields(est)['number'].startswith('Q-')
+
+
+def test_the_summary_signing_page_matches_the_pdf():
+    eid, tok = _signable(None, eid='inv-sum-sign',
+                         invoice={'adjustments': [{'label': 'Loyalty credit', 'amount': -500}]})
+    html = A.app.test_client().get(f'/sign-inv/{tok}').data.decode()
+    assert 'Loyalty credit' in html and '-$500.00' in html
+    assert 'Install Labor' not in html
+    assert A.fc(A.invoice_rows(A.est_load(eid))['balance_due']) in html
+
+
+# ── adjustments ────────────────────────────────────────────────────────────
+
+def test_adjustments_are_sanitized():
+    out = A._sanitize_invoice({'adjustments': [
+        {'label': 'Loyalty credit', 'amount': '-500'}, {'label': '  ', 'amount': 75.5},
+        {'label': 'zero', 'amount': 0}, {'label': 'junk', 'amount': 'abc'},
+        {'label': 'huge', 'amount': 1e9}, 'not a dict']})
+    assert out['adjustments'] == [{'label': 'Loyalty credit', 'amount': -500.0},
+                                  {'label': 'Adjustment', 'amount': 75.5}]
+    many = A._sanitize_invoice({'adjustments': [{'amount': 1}] * 50})['adjustments']
+    assert len(many) == A._INVOICE_ADJ_MAX
+
+
+def test_adjustments_move_the_total_and_balance_but_never_the_subtotal():
+    base = A.invoice_rows(_est())
+    rows = A.invoice_rows(_est(invoice={
+        'adjustments': [{'label': 'Credit', 'amount': -500}, {'label': 'Permit fee', 'amount': 120}],
+        'payments': [{'amount': 1000}]}))
+    assert rows['subtotal'] == base['subtotal'] == pytest.approx(
+        A._estimate_total(_est()), abs=0.005)
+    assert rows['adj_total'] == -380
+    assert rows['total'] == pytest.approx(base['total'] - 380)
+    assert rows['balance_due'] == pytest.approx(base['total'] - 380 - 1000)
+
+
+def test_a_basic_estimate_bills_no_adjustment():
+    """It is a price going out, gated by the margin floor off the estimate's
+    own numbers. A credit here would walk straight past that floor."""
+    rows = A.invoice_rows(_est(invoice={'kind': 'quote', 'adjustments': [
+        {'label': 'Credit', 'amount': -5000}]}))
+    assert rows['adjustments'] == [] and rows['adj_total'] == 0
+    assert rows['total'] == pytest.approx(A._estimate_total(_est()), abs=0.005)
+
+
+def test_the_signature_covers_the_adjustments():
+    eid, tok = _signable(None, eid='inv-adj-sign',
+                         invoice={'adjustments': [{'label': 'Credit', 'amount': -500}]})
+    A.app.test_client().post(f'/sign-inv/{tok}', data={'sig_name': 'Dana Ruiz'})
+    c = A.app.test_client()
+    with c.session_transaction() as s:
+        s['user'] = 'luke'
+    r = c.put(f'/api/estimates/{eid}/invoice', json={'adjustments': []})
+    assert r.status_code == 409
+    assert A.est_load(eid)['invoice']['adjustments'] == [{'label': 'Credit', 'amount': -500}]
+
+
+def test_a_whole_doc_save_cannot_strip_adjustments(client):
+    A.est_save(_est('inv-adj-stale'))
+    client.put('/api/estimates/inv-adj-stale/invoice',
+               json={'adjustments': [{'label': 'Credit', 'amount': -250}]})
+    stale = client.get('/api/estimates/inv-adj-stale').get_json()
+    stale['invoice'] = {}
+    client.put('/api/estimates/inv-adj-stale', json=stale)
+    assert A.est_load('inv-adj-stale')['invoice']['adjustments'][0]['amount'] == -250
+
+
+# ── the completed date ─────────────────────────────────────────────────────
+
+def test_the_completed_date_defaults_from_what_the_tool_already_knows():
+    assert A.invoice_fields(_est())['completed_date'] == ''
+    wc = _est(warranty_certificate={'completion_date': '2026-08-14'})
+    assert A.invoice_fields(wc)['completed_date'] == '2026-08-14'
+    # Moved to Complete at 7pm Mountain on 30 September is 01:00 UTC on
+    # 1 October. The bill says the day it happened in Colorado.
+    est = _est(job_stage_history=[{'stage': 'complete', 'at': '2026-10-01T01:00:00Z'}])
+    assert A.invoice_fields(est)['completed_date'] == '2026-09-30'
+    assert A._sanitize_invoice({'completed_date': 'soon'}) == {}
+
+
+# ── the rep's on-screen preview ────────────────────────────────────────────
+
+def _js():
+    with open(os.path.join(os.path.dirname(A.__file__), 'static', 'app.js'),
+              encoding='utf-8') as f:
+        return f.read()
+
+
+def _js_fn(src, name):
+    i = src.index('function %s(' % name)
+    return src[i:src.index('\n}', i) + 2]
+
+
+def test_the_payload_carries_what_the_preview_draws(client):
+    A.est_save(_est('inv-payload'))
+    d = client.get('/api/estimates/inv-payload/invoice').get_json()
+    assert d['header']['name'] == 'Summit Builders'
+    assert d['header']['estimate_number'] and d['header']['company_phone']
+    assert [w['amount'] for w in d['summary']['work']] == [
+        s['subtotal'] for s in d['totals']['sections'] if s['key'] != 'upgrades']
+
+
+def test_the_preview_formats_server_figures_and_computes_none():
+    """Money is implemented twice in this repo, on purpose, and held to the
+    cent. A preview that priced anything would be a third copy."""
+    src = _js()
+    body = _js_fn(src, 'invPreviewHtml')
+    for fn in ('selectedTotal', 'tradeTotal', 'grandTotal', 'tierRate',
+               'lineTotalEffective', 'insuranceTotal', 'upgradesTotal'):
+        assert fn + '(' not in body, f'the preview priced something with {fn}'
+    assert 'invPreviewHtml(' in _js_fn(src, 'renderInvoicePreview')
+    assert 'renderInvoicePreview()' in _js_fn(src, 'renderInvoiceForm')
+
+
+def test_typing_does_not_throw_away_the_field_being_typed_in():
+    """Every change used to repaint the whole form, which dropped the field the
+    rep had just tabbed into. Text follows the keys; a save repaints only the
+    preview."""
+    body = _js_fn(_js(), 'renderInvoiceForm')
+    assert 'x.oninput = renderInvoicePreview' in body
+    assert 'x.onchange = () => saveInvoiceFields(true, false)' in body
+    save = _js_fn(_js(), 'saveInvoiceFields')
+    assert 'else renderInvoicePreview()' in save
+
+
+def test_a_package_is_named_only_when_the_estimate_names_one():
+    """The manifest falls back to the price book's DEFAULT bundle for a tier the
+    estimate never picked. On an invoice that is a bill naming a roof that was
+    not installed — so the name comes from the estimate or not at all."""
+    est = _est()
+    assert A.invoice_materials(est)['trades']['roofing']['package'] == ''
+    est['trades']['roofing']['tier_bundle_names'] = {'better': 'Summit Special'}
+    est['trades']['roofing']['tier_bundles'] = {'better': '__custom__'}
+    assert A.invoice_materials(est)['trades']['roofing']['package'] == 'Summit Special'

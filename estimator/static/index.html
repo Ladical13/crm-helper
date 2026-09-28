@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=249">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=250">
 </head>
 <body>
 
@@ -51,7 +51,7 @@
               data-demo-hide title="A second estimator reads this job before it goes out">🔍 Review</button>
       <button id="share-btn" onclick="shareEstimate()" class="btn-share">Send / Sign</button>
       <button onclick="doPrint()" class="btn-print">Print / PDF</button>
-      <button onclick="openInvoice()" class="btn-invoice" data-demo-hide title="Plain itemized invoice or quote">🧾 Invoice</button>
+      <button onclick="openInvoice()" class="btn-invoice" data-demo-hide title="Invoice, or a basic line-by-line estimate for a GC or HOA">🧾 Invoice</button>
       <button onclick="openSettings()" class="btn-settings" title="Settings">⚙</button>
     </div>
     <button id="save-btn" onclick="saveCurrentWork()">Save</button>
@@ -80,7 +80,7 @@
     <button onclick="presentEstimate();closeMoreMenu()">📊 Present on Tablet</button>
     <button onclick="shareEstimate();closeMoreMenu()">Send / Sign</button>
     <button onclick="doPrint();closeMoreMenu()">Print / PDF</button>
-    <button data-demo-hide onclick="openInvoice();closeMoreMenu()">🧾 Invoice / Quote</button>
+    <button data-demo-hide onclick="openInvoice();closeMoreMenu()">🧾 Invoice / Basic Estimate</button>
     <button id="mm-settings" onclick="openSettings();closeMoreMenu()">⚙ Settings</button>
     <!-- data-demo-hide: reaches an endpoint a demo guest is refused (the team
          list, the two import parsers). Hidden rather than left to fail, so the
@@ -933,6 +933,6 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=249"></script>
+<script src="/estimate/static/app.js?v=250"></script>
 </body>
 </html>
