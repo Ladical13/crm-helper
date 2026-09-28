@@ -9104,16 +9104,80 @@ def _material_product_for_bundle(pb, trade, bundle_id):
     catalog = pb.get(trade + '_catalog') or []
     by_id = {p.get('id'): p for p in catalog if isinstance(p, dict)}
     for pid in bundle.get('product_ids') or []:
-        s = str(pid or '')
-        if trade == 'roofing' and s.startswith('m_'):
-            p = by_id.get(pid)
-            if p:
-                return p
-        if trade == 'siding' and s.startswith('s_') and not s.startswith(('sa_', 'sl_', 'sx_')):
+        if _is_material_sku(trade, pid):
             p = by_id.get(pid)
             if p:
                 return p
     return None
+
+
+def _is_material_sku(trade, pid):
+    """Is this catalog id the trade's covering — the shingle, the panel, the
+    siding itself? roofing: `m_*`; siding: `s_*` that isn't sa_/sl_/sx_."""
+    s = str(pid or '')
+    if trade == 'roofing':
+        return s.startswith('m_')
+    if trade == 'siding':
+        return s.startswith('s_') and not s.startswith(('sa_', 'sl_', 'sx_'))
+    return False
+
+
+def _installed_product_name(est, trade, tier=None, pb=None):
+    """The product actually going on for one trade at its sold tier, named
+    from THIS estimate — never from the price book's defaults. '' when the
+    estimate does not say; the caller prints nothing rather than a guess.
+
+    Not the manifest's material_name, which comes from _bundle_id_for_tier: that
+    falls back to the price book's DEFAULT bundle for a tier the estimate never
+    picked, and keeps naming a bundle's shingle after the rep has hand-built the
+    tier into something else. The permit packet then filed "CertainTeed
+    Northgate" as the roof covering over a Landmark roof, or over rolled roofing
+    — on the one document where the covering is what the Class-4 question and
+    the roofing affidavit turn on. In order:
+
+      1. the bundle the estimate picked for this tier, while it still describes
+         the tier (not Custom, not stale): its material product, else its name;
+      2. the covering actually priced in the tier — a line built from the
+         trade's material SKU (see _is_material_sku);
+      3. the rep's Product Selection: manufacturer + product line;
+      4. the rep's own name for the package."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    if not td.get('enabled'):
+        return ''
+    tier = tier or _trade_tier(est, trade)
+    if pb is None:
+        pb = _ensure_bundle_catalogs(_load_price_book())
+
+    tb = td.get('tier_bundles') if isinstance(td.get('tier_bundles'), dict) else {}
+    picked = str(tb.get(tier) or '').strip()
+    if picked and picked != '__custom__' and not _tier_bullets_are_stale(pb, est, trade, tier):
+        mat = _material_product_for_bundle(pb, trade, picked) or {}
+        if str(mat.get('name') or '').strip():
+            return str(mat['name']).strip()
+        bundle = next((b for b in (pb.get(trade + '_bundles') or [])
+                       if isinstance(b, dict) and b.get('id') == picked), None) or {}
+        if str(bundle.get('name') or '').strip():
+            return str(bundle['name']).strip()
+
+    by_id = {p.get('id'): p for p in (pb.get(trade + '_catalog') or []) if isinstance(p, dict)}
+    for it, _qty, _cell in _tier_items(td, _trade_mode(trade, td), tier):
+        if _is_supplement_item(td, it) or not _is_material_sku(trade, it.get('catalog_id')):
+            continue
+        name = str((by_id.get(it.get('catalog_id')) or {}).get('name')
+                   or it.get('name') or '').strip()
+        if name:
+            return name
+
+    colors = td.get('colors') or {}
+    maker = str(colors.get('manufacturer') or '').strip()
+    line = str(colors.get('product_line') or '').strip()
+    if maker and line.lower().startswith(maker.lower()):
+        maker = ''                      # "CertainTeed" + "CertainTeed Landmark"
+    sel = ' '.join(x for x in (maker, line) if x)
+    if sel:
+        return sel
+
+    return str(_tier_package_names(est, trade).get(tier) or '').strip()
 
 
 def _color_names(mat):
@@ -16398,27 +16462,28 @@ def build_permit_packet_pdf(est):
     if steep > 0:
         kv_row('Steep Area', f'{steep:g} SQ steep')
     # The material actually going on the roof — the permit clerk needs the
-    # covering, not just its color. Pulled from the signed tier's bundle so it
-    # names the product ("CertainTeed Northgate"), which is what the roofing
-    # affidavit and the Class-4 question both turn on.
+    # covering, not just its color, because the roofing affidavit and the
+    # Class-4 question both turn on it. Named from what THIS estimate sold
+    # (_installed_product_name), never from the price book's default bundle:
+    # that fallback filed "CertainTeed Northgate" over roofs that were not
+    # Northgate. A simple-mode roof gets the line too — the manifest carries no
+    # tiers for one, so the old loop printed no covering there at all.
+    # Insurance stays out, as before: its scope is the carrier's, not a trade.
     try:
         _mf = _build_estimate_manifest(est)
-        for _t in (_mf.get('trades') or []):
-            if _t.get('key') != 'roofing':
-                continue
-            for _ti in (_t.get('tiers') or []):
-                if not _ti.get('is_selected'):
-                    continue
-                _name = (_ti.get('material_name') or _ti.get('package_name') or '').strip()
-                if _name:
-                    kv_row('Roof Covering', _name)
-                _wm = (_ti.get('workmanship') or '').strip()
-                if _wm:
-                    kv_row('Workmanship', _wm)
-                break
-            break
-    except Exception:
-        pass
+        _roof = next((t for t in (_mf.get('trades') or [])
+                      if t.get('key') == 'roofing'), None)
+        _sel = next((ti for ti in ((_roof or {}).get('tiers') or [])
+                     if ti.get('is_selected')), {})
+        if _roof is not None:
+            _name = _installed_product_name(est, 'roofing', _sel.get('tier'))
+            if _name:
+                kv_row('Roof Covering', _name)
+        _wm = (_sel.get('workmanship') or '').strip()
+        if _wm:
+            kv_row('Workmanship', _wm)
+    except Exception as exc:        # a missing covering must not cost the packet
+        print(f'[permit] roof covering lookup failed: {exc!r}')
     pdf.ln(2)
 
     # Material brand/color per trade — the same rows the invoice lists, from one
@@ -17997,10 +18062,13 @@ def _warranty_manifest(est):
     trade = next((t for t in trades if t.get('key') in ('roofing', 'commercial')),
                  trades[0])
     term = wbt.get(_trade_tier(est, trade.get('key')), '')
+    # The suggestion comes from what the estimate sold, never the price book's
+    # default bundle — see _installed_product_name. A certificate naming a
+    # shingle that was not installed is a warranty on the wrong roof.
     product = ''
     for ti in (trade.get('tiers') or []):
         if ti.get('is_selected'):
-            product = (ti.get('material_name') or ti.get('package_name') or '').strip()
+            product = _installed_product_name(est, trade.get('key'), ti.get('tier'))
             break
     return term, product, ('tier' if term else 'unknown')
 
