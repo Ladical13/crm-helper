@@ -4361,6 +4361,7 @@ function renderPbAudit(data) {
     orphan: 'Missing from the catalog',
     conversion_unlabelled: 'Unnamed pack size',
     pack_cost_unconverted: 'Pack price looks like the per-foot price',
+    labor_visible: 'Labor shown to customers',
   };
 
   return `
@@ -6019,6 +6020,10 @@ function renderPrintPagesBar() {
     { id:'products', label:'Products',     on: pv.products !== false,          always: false },
     { id:'pricing',    label:'Pricing',      on: pv.pricing    !== false,        always: false },
     { id:'linePrices', label:'Line Prices', on: pv.linePrices === true,         always: false },
+    // Default OFF: labor (and any other line marked hidden from the customer)
+    // folds into the package price on every customer document — the web page,
+    // this print and the signed PDF. On lists those lines. Never moves a total.
+    { id:'labor',      label:'Labor',       on: pv.labor === true,              always: false },
     { id:'options',    label:'Options',     on: pv.options    !== false,        always: false },
     // Off = the old behavior, detail tables for the selected package only.
     { id:'allPackages', label:'All Packages', on: pv.allPackages !== false,     always: false },
@@ -6059,7 +6064,8 @@ function renderPrintPagesBar() {
 
 // Chips whose ABSENT key means off. The default-on flip below reads a missing
 // key as on and writes false, so one of these needed two taps to turn on.
-const PAGE_DEFAULT_OFF = ['linePrices', 'design'];
+// `labor` must agree with _show_labor_lines (app.py): only a literal true shows.
+const PAGE_DEFAULT_OFF = ['linePrices', 'design', 'labor'];
 function togglePagePrint(page) {
   if (page === 'cover') return;
   if (!S.page_visibility) S.page_visibility = {};
@@ -6414,6 +6420,7 @@ function _jxVerifyMarkup() {
 // Jump from the Scope panel straight into the Documents permit generator.
 function openPermitDoc() {
   _docGenerator = null;            // ensure docToggleGenerator opens (doesn't toggle off)
+  _clientTab = 'documents';
   switchPage('documents');
   docToggleGenerator('permit');
 }
@@ -12837,6 +12844,8 @@ async function openCustomer(name) {
   if (!_dashData.length) {
     try{ const r=await fetch('/api/estimates'); _dashData=await r.json(); rebuildCustCounts(); } catch{}
   }
+  // Opening a customer is "show me this customer" — their estimates first.
+  _clientTab = 'estimates';
   if (custKey((S.customer || {}).name) === custKey(name)) { switchPage('client'); return; }
   if (dirty && !S.estimate_id &&
       !confirm('You have an unsaved estimate. Open ' + name + ' anyway?')) return;
@@ -13723,7 +13732,7 @@ function showShareModal(fullUrl, relUrl) {
     </button>` : ''}
     ${!sig ? `
     <button class="share-preview-link" style="border:0;background:none;cursor:pointer;text-align:left;padding:0"
-      onclick="openInvoice()">🧾 Need a plain invoice or quote instead? →</button>` : ''}
+      onclick="openInvoice()">🧾 Need an invoice or a basic estimate for a GC instead? →</button>` : ''}
     ${navigator.share ? `
     <button class="share-native-btn" onclick="doNativeShare('${esc(fullUrl)}','${esc((S.customer&&S.customer.name)||'')}')">
       📤 Send Link — Text, Email, AirDrop…
@@ -14293,7 +14302,7 @@ window.addEventListener('afterprint',  ()=>{document.getElementById('print-conte
    the printed unit prices once drifted from the printed subtotal. */
 function printTradeBody(trade, tier, o) {
   const td = S.trades[trade] || {};
-  const { showLP, tradeMode } = o;
+  const { showLP, showLab, tradeMode } = o;
   const inTier = (td.line_items || []).filter(item => {
     if (isSupplementItem(td, item)) return false;   // printed in its own block
     if ((parseFloat(item.quantity) || 0) <= 0) return false;
@@ -14330,7 +14339,9 @@ function printTradeBody(trade, tier, o) {
   const hasSections = tradeSections(trade).length > 0;
   const cols = showLP ? 5 : 3;
   const body = groupedTradeItems(trade, inTier).map(g => {
-    const rows = g.items.filter(i => i.customer_visible !== false).map(rowFor).join('');
+    // Hidden lines (labor) fold into the subtotal unless the Labor chip is on —
+    // the same rule as _show_labor_lines on the server's web page and PDF.
+    const rows = g.items.filter(i => showLab || i.customer_visible !== false).map(rowFor).join('');
     if (!g.items.length || (!rows && !hasSections)) return '';
     const hd = hasSections?`<tr class="p-section-row"><td colspan="${cols}">${esc(g.name||'General')}</td></tr>`:'';
     // Per-section subtotal (sections only) — includes customer-hidden items so
@@ -14597,6 +14608,7 @@ function buildPrintContent() {
        the TPO roof but never what it included. Turn it off with the "All
        Packages" print chip to go back to selected-only. */
     const showLP  = pv.linePrices === true;
+    const showLab = pv.labor === true;
     const allPkgs = pv.allPackages !== false;
     let multiPkgPrinted = false;
     TRADES.filter(t=>t!=='insurance').forEach(trade=>{
@@ -14611,7 +14623,7 @@ function buildPrintContent() {
       const tiers=(tradeMode==='simple'||!allPkgs)?[selTier]:enabledTiers();
 
       const built=tiers.map(t=>Object.assign({tier:t},
-        printTradeBody(trade,t,{showLP,tradeMode}))).filter(b=>b.body);
+        printTradeBody(trade,t,{showLP,showLab,tradeMode}))).filter(b=>b.body);
       // Supplements print after the package table(s) at the SELECTED package,
       // with a price column whatever the Line Prices chip says — an "if needed"
       // line without its price tells the customer nothing.
@@ -16321,6 +16333,55 @@ function clientCrmSearch(q) {
   }, 300);
 }
 
+/* ── The customer screen, as tabs ──────────────────────────────────────
+   A customer opens the way a record opens in a CRM: who they are in a header
+   that never scrolls away, and one tab per thing a rep does for them. It was
+   one long scroll — details, estimates, notes, files, then every document
+   generator opening at the very bottom — so the invoice a rep had just asked
+   for landed three screens below where they were looking.
+
+   Two containers, deliberately. #client-content (the header, the strip and the
+   Details / Estimates / Notes panes) is drawn here; #documents-content (the
+   Documents, Invoice and Roof Health panes) is drawn by renderDocumentsPage(),
+   which stays synchronous because a dozen refresh-after-an-action callers lean
+   on it. Each draws ONLY the active pane, so a tab nobody opened costs no
+   fetch. A tab id is not a page id: 'report' is the Condition editor's nav id,
+   which is why Roof Health is 'roofhealth'. */
+const CLIENT_TABS = [
+  ['details',    '👤', 'Details'],
+  ['estimates',  '📋', 'Estimates'],
+  ['notes',      '🗒', 'Notes'],
+  ['documents',  '📎', 'Documents'],
+  ['invoice',    '🧾', 'Invoice'],
+  ['roofhealth', '🩺', 'Roof Health'],
+];
+const CLIENT_DOC_TABS = ['documents', 'invoice', 'roofhealth'];
+let _clientTab = 'estimates';
+
+// Estimates and Notes are about a NAMED customer. With no name yet the only
+// useful place to be is Details, where the name gets typed.
+function clientTabNow() {
+  const named = !!String((S.customer || {}).name || '').trim();
+  if (!named && (_clientTab === 'estimates' || _clientTab === 'notes')) return 'details';
+  return CLIENT_TABS.some(([id]) => id === _clientTab) ? _clientTab : 'estimates';
+}
+
+function showClientTab(id) {
+  if (!CLIENT_TABS.some(([t]) => t === id)) return;
+  _clientTab = id;
+  // Both track the SAVED estimate, which may have moved since the tab was
+  // last open: refetch on the way in rather than show a stale total.
+  if (id === 'invoice') _invFor = null;
+  if (id === 'roofhealth') _crFor = null;
+  if (activePage !== 'client') switchPage('client');
+  else renderClientPage();
+  const strip = document.getElementById('client-tabs');
+  if (strip) {
+    strip.querySelector('.client-tab.active')?.scrollIntoView({block: 'nearest', inline: 'center'});
+    if (strip.getBoundingClientRect().top < 0) strip.scrollIntoView({block: 'start'});
+  }
+}
+
 function renderClientPage() {
   const el = document.getElementById('client-content');
   if (!el) return;
@@ -16334,12 +16395,26 @@ function renderClientPage() {
   const totalSigned = rows.filter(r => estStatusOf(r.e) === 'signed')
                           .reduce((s, r) => s + (r.e.total || 0), 0);
   const notes = _custNotes.key === custKey(c.name) ? _custNotes.text : '';
+  const nDocs = customerDocumentRows(c.name).reduce((n, g) => n + (g.documents || []).length, 0);
+  const inv = S.invoice || {};
+  const tab = clientTabNow();
+  const badge = id =>
+      id === 'estimates' && rows.length ? `<span class="client-tab-n">${rows.length}</span>`
+    : id === 'documents' && nDocs       ? `<span class="client-tab-n">${nDocs}</span>`
+    : id === 'notes' && notes.trim()    ? '<span class="client-tab-dot" title="Has notes"></span>'
+    : id === 'invoice' && inv.signature ? '<span class="client-tab-n" title="Signed">✍️</span>'
+    : id === 'invoice' && inv.sent_at   ? '<span class="client-tab-n" title="Sent">✓</span>'
+    : '';
+  const contact = [c.phone, c.email, a.city].filter(Boolean).join(' · ');
+  // The invoice's form + preview pair needs more width than the rest.
+  document.getElementById('page-client')?.classList.toggle('client-wide', tab === 'invoice');
   el.innerHTML = `
   <div class="client-hub">
     <div class="client-hub-head">
       <div class="client-hub-avatar">👤</div>
-      <div>
+      <div class="client-hub-id">
         <div class="client-hub-name" id="client-hub-name">${esc(c.name || 'New Customer')}</div>
+        ${contact ? `<div class="client-hub-contact">${esc(contact)}</div>` : ''}
         <div class="client-hub-sub">${rows.length
           ? esc(rows.length + ' estimate' + (rows.length !== 1 ? 's' : '')) +
             (totalSigned > 0 ? ' · ' + fmtCur(totalSigned) + ' signed' : '')
@@ -16350,6 +16425,14 @@ function renderClientPage() {
       </button>
     </div>
 
+    <div class="client-tabs" id="client-tabs" role="tablist">
+      ${CLIENT_TABS.map(([id, icon, label]) => `
+      <button type="button" role="tab" class="client-tab ${id === tab ? 'active' : ''}"
+        aria-selected="${id === tab}" onclick="showClientTab('${id}')">
+        <span class="client-tab-ic" aria-hidden="true">${icon}</span>${label}${badge(id)}</button>`).join('')}
+    </div>
+
+    ${tab === 'details' ? `
     <div class="panel">
       <div class="pm-lookup">
         <input type="text" id="client-crm-q" placeholder="🔍 Search CRM jobs — name / job # / address…"
@@ -16366,15 +16449,15 @@ function renderClientPage() {
         <div class="field-group pm-state"><label>State</label>${inp('state', a.state, 'CO', 'maxlength="2"')}</div>
         <div class="field-group"><label>Zip</label>${inp('zip', a.zip, '80537', 'maxlength="10"')}</div>
       </div>
-    </div>
+    </div>` : ''}
 
-    ${c.name ? `
+    ${tab === 'estimates' && c.name ? `
     <div class="panel">
       <div class="panel-header"><h3>📋 Estimates</h3>
         <button class="doc-upload-btn" onclick="docToggleCreate()">＋ New Estimate</button>
       </div>
       <div id="doc-est-list">${docEstimateListHtml()}</div>
-      <div id="doc-create-body" class="cf-create-body" style="display:none">
+      <div id="doc-create-body" class="cf-create-body" style="display:${_docCreateOpen ? '' : 'none'}">
         <div class="cf-create-fields">
           <div class="field-group">
             <label>Estimate Label <span style="color:var(--danger)">*</span></label>
@@ -16393,18 +16476,20 @@ function renderClientPage() {
         </div>
         <button class="btn-primary" onclick="docCreateEstimate()">Create Estimate</button>
       </div>
-    </div>
+    </div>` : ''}
 
+    ${tab === 'notes' && c.name ? `
     <div class="panel">
       <div class="panel-header"><h3>🗒 Notes on ${esc(c.name)}</h3>
         <span id="cf-notes-flash" class="cf-notes-flash"></span>
       </div>
-      <textarea id="cf-notes-ta" class="cf-notes-area"
+      <textarea id="cf-notes-ta" class="cf-notes-area cf-notes-tall"
         placeholder="Budget, preferences, HOA contact, follow-up reminders — anything true of the customer rather than one estimate."
         onblur="saveCustomerNotes('${jsq(c.name)}',this.value)">${esc(notes)}</textarea>
     </div>` : ''}
   </div>`;
-  // Files, document generators and change orders render into the sibling
+  if (tab === 'estimates' && _docCreateOpen) docSetType(_docCreateType);
+  // Documents, Invoice and Roof Health render into the sibling
   // #documents-content on this same page.
   renderDocumentsPage();
 }
@@ -16417,9 +16502,9 @@ function renderClientPage() {
    it. Work orders and material order sheets slot in here later as new
    cards — add a card + a form renderer, nothing else changes. */
 
-// Which generator form is open. 'condition' is the Roof Health Report
-// DOCUMENT — not 'report', which is already the editor page's nav id.
-let _docGenerator = null;   // 'permit' | 'roofcert' | 'condition' | 'warranty' | 'invoice' | null
+// Which generator form is open on the Documents tab. The invoice and the Roof
+// Health Report are tabs of their own (CLIENT_TABS), not generators here.
+let _docGenerator = null;   // 'permit' | 'roofcert' | 'warranty' | null
 
 // ── Documents door as the customer's estimate hub ───────────────────────
 // Every estimate for the customer currently loaded, plus the create form
@@ -16602,12 +16687,27 @@ function otherEstimateDocsHtml(name) {
 function renderDocumentsPage() {
   const el = document.getElementById('documents-content');
   if (!el) return;
+  // Only the active customer tab draws — see CLIENT_TABS. Invoice and Roof
+  // Health are tabs of their own, so each gets the whole width instead of
+  // opening under a card grid at the bottom of the page.
+  const tab = clientTabNow();
+  if (tab === 'invoice') {
+    el.innerHTML = '<div class="pm-wrap client-doc-pane"><div id="invoice-form-container"></div></div>';
+    renderInvoiceForm();
+    return;
+  }
+  if (tab === 'roofhealth') {
+    el.innerHTML = '<div class="pm-wrap client-doc-pane"><div id="condition-form-container"></div></div>';
+    renderConditionReportForm();
+    return;
+  }
+  if (tab !== 'documents') { el.innerHTML = ''; return; }
   const atts = S.attachments || [];
   const custName = (S.customer||{}).name || '';
   el.innerHTML = `
   <div class="pm-wrap">
     <div class="panel">
-      <div class="panel-header"><h3>📎 Files — ${esc(S.estimate_label || EST_TYPE_LABEL[S.estimate_type] || 'this estimate')}${custName ? ` <span class="note-tag">${esc(custName)}</span>` : ''}</h3>
+      <div class="panel-header"><h3>📎 Files —${esc(S.estimate_label || EST_TYPE_LABEL[S.estimate_type] || 'this estimate')}${custName ? ` <span class="note-tag">${esc(custName)}</span>` : ''}</h3>
         <button class="doc-upload-btn" onclick="document.getElementById('doc-pdf-input').click()">📎 Upload PDF</button>
         <input type="file" id="doc-pdf-input" accept="application/pdf,.pdf" multiple style="display:none"
           onchange="docUploadPdf(this.files)">
@@ -16668,20 +16768,6 @@ function renderDocumentsPage() {
             ? 'Issued — reopen to edit and re-issue'
             : 'Realtor certification + short labor-only warranty'}</span>
         </button>
-        <button class="doc-card ${_docGenerator==='condition'?'doc-card-active':''}" onclick="docToggleGenerator('condition')">
-          <span class="doc-card-icon">🩺</span>
-          <span class="doc-card-name">Roof Health Report</span>
-          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'condition_report')
-            ? 'Issued — reopen to edit and re-issue'
-            : 'The condition report as its own PDF, certificate optional'}</span>
-        </button>
-        <button class="doc-card ${_docGenerator==='invoice'?'doc-card-active':''}" onclick="docToggleGenerator('invoice')">
-          <span class="doc-card-icon">🧾</span>
-          <span class="doc-card-name">Invoice / Quote</span>
-          <span class="doc-card-sub">${atts.some(a => a.server_generated && a.doc_type === 'invoice')
-            ? 'Saved — reopen to edit, re-save or email'
-            : 'Plain itemized numbers for a GC or homeowner'}</span>
-        </button>
         ${S.signature ? `
         <button class="doc-card" onclick="generateProductionPacket(this)">
           <span class="doc-card-icon">🛠</span>
@@ -16726,17 +16812,13 @@ function renderDocumentsPage() {
 
     <div id="permit-form-container"></div>
     <div id="roofcert-form-container"></div>
-    <div id="condition-form-container"></div>
     <div id="warranty-form-container"></div>
-    <div id="invoice-form-container"></div>
 
     ${otherEstimateDocsHtml(custName)}
   </div>`;
   if (_docGenerator === 'permit')    renderPermitForm();
   if (_docGenerator === 'roofcert')  renderRoofCertForm();
-  if (_docGenerator === 'condition') renderConditionReportForm();
   if (_docGenerator === 'warranty')  renderWarrantyCertForm();
-  if (_docGenerator === 'invoice')   renderInvoiceForm();
   if (S.signature && S.estimate_id) loadChangeOrders();
 }
 
@@ -17753,15 +17835,24 @@ async function issueWarrantyCert(pushToCrm) {
   renderDocumentsPage();
 }
 
-/* ── Invoice / quote ────────────────────────────────────────────────────
-   A plain, itemized PDF for a GC or a homeowner. It has no signing link and no
-   proposal pages. Reached from the customer screen's Create a document cards,
-   the 🧾 Invoice header button, the ⋯ menu and the Send modal (openInvoice). All the money comes from the SERVER (GET/PUT return
-   invoice_rows totals), so no pricing math is mirrored here. The form only
-   collects the fields and shows what the server says the document will bill.
-   See the "GC invoice / quote" block in app.py. */
+/* ── Invoice / Basic Estimate (the 🧾 Invoice tab) ─────────────────────
+   Two of the three documents a customer can be handed; the third, the
+   detailed proposal, is the estimate itself. One switch picks which:
 
-let _invData = null;   // {invoice, totals} from the server, for the open estimate
+   * INVOICE — every client, after the work. One price per trade plus the
+     add-ons, what was installed, the payments and the balance. No line
+     prices, no labor, unless the rep turns them on.
+   * BASIC ESTIMATE — a GC or an HOA, before the work. Every line, qty × unit
+     price. (Stored as kind 'quote' so nothing already sent is renumbered.)
+
+   The form sits beside a live preview of the document. ALL the money comes
+   from the SERVER — GET/PUT return invoice_rows totals, the summary lines and
+   the header — so the preview formats figures and computes none, and nothing
+   here joins the pricing parity pair. See the "Invoice / Basic Estimate" block
+   in app.py. Reached from the 🧾 Invoice header button, the ⋯ menu and the
+   Send modal (openInvoice → showClientTab('invoice')). */
+
+let _invData = null;   // {invoice, totals, header, summary} from the server
 let _invFor  = null;   // estimate id _invData belongs to
 
 async function loadInvoice() {
@@ -17778,57 +17869,172 @@ async function loadInvoice() {
   renderInvoiceForm();
 }
 
+function invFmtDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+  if (!m) return '';
+  return new Date(+m[1], +m[2] - 1, +m[3])
+    .toLocaleDateString('en-US', {month: 'short', day: '2-digit', year: 'numeric'});
+}
+
+/* The document as the customer will get it, built from what the server
+   returned: the same builders the PDF prints from (invoice_rows,
+   invoice_summary, _invoice_header). Formatting only — every figure here is
+   one the server produced. `inv` may carry the rep's unsaved text edits so the
+   preview follows their typing; money never comes from the form. */
+function invPreviewHtml(inv, tot, head, summary) {
+  const isInv = inv.kind !== 'quote';
+  const isSummary = isInv && inv.detail !== 'itemized';
+  const kind = isInv ? 'Invoice' : 'Estimate';
+  const kv = pairs => pairs.filter(([, v]) => v).map(([k, v]) =>
+    `<div class="invp-kv"><span>${esc(k)}</span><span>${esc(v).replace(/\n/g, '<br>')}</span></div>`).join('');
+  const sec = (eyebrow, title) =>
+    `<div class="invp-sec"><div class="invp-eyebrow">${esc(eyebrow)}</div><div class="invp-title">${esc(title)}</div></div>`;
+  const money = (label, amount, cls = '') =>
+    `<div class="invp-money ${cls}"><span>${esc(label)}</span><span>${fmtCur(amount)}</span></div>`;
+  const table = (rows, suppl) => `<table class="invp-table"><thead><tr>
+      <th>Description</th><th>Qty</th><th>Unit</th><th>Unit Price</th><th>Total</th></tr></thead><tbody>
+      ${rows.map(([name, qty, unit, unitPrice, line]) => `<tr>
+        <td>${esc(name)}</td>
+        <td>${qty ? esc(String(qty)) : (suppl ? 'If needed' : '')}</td>
+        <td>${esc(unit || '')}</td>
+        <td>${line ? fmtCur(unitPrice) : ''}</td>
+        <td>${line ? fmtCur(line) : (suppl ? 'Quoted if needed' : '')}</td></tr>`).join('')}
+      </tbody></table>`;
+
+  let body = '';
+  if (isSummary) {
+    body += sec('Work completed', 'Project summary');
+    const work = (summary && summary.work) || [];
+    if (!work.length) body += '<p class="invp-empty">No billable work yet — add line items on the estimate.</p>';
+    body += work.map(w => `<div class="invp-line">
+        <div class="invp-line-hd"><strong>${esc(w.title)}</strong><strong>${fmtCur(w.amount)}</strong></div>
+        ${(w.details || []).map(([l, t]) => `<div class="invp-detail">${esc(l)}: ${esc(t)}</div>`).join('')}
+      </div>`).join('');
+    const addons = (summary && summary.addons) || [];
+    if (addons.length) {
+      body += sec('Add-ons', 'Upgrades, changes & adjustments');
+      body += addons.map(a => `<div class="invp-line invp-addon">
+          <div class="invp-line-hd"><span>${esc(a.title)}</span><span>${fmtCur(a.amount)}</span></div></div>`).join('');
+    }
+    body += sec('Summary', `${kind} Total`);
+  } else {
+    if (!(tot.sections || []).length) body += sec('Scope', 'No billable line items');
+    for (const s of tot.sections || []) {
+      body += sec('Scope', s.title);
+      if ((s.rows || []).length) body += table(s.rows);
+      if (s.folded) body += '<p class="invp-folded">Additional materials, supplies &amp; labor included in subtotal</p>';
+      body += money(`${s.title} Subtotal`, s.subtotal);
+    }
+    for (const co of tot.change_orders || []) {
+      body += sec('Change order', co.title) + table(co.rows || []) + money('Change Order Subtotal', co.subtotal);
+    }
+    body += sec('Summary', `${kind} Total`);
+    if ((tot.change_orders || []).length || (tot.adjustments || []).length) body += money('Original scope', tot.subtotal);
+    if ((tot.change_orders || []).length) body += money('Change orders', tot.co_total);
+    for (const [label, amt] of tot.adjustments || []) body += money(label, amt);
+  }
+  body += money('Total', tot.total, 'invp-strong');
+  const pays = tot.payments || [];
+  for (const p of pays) {
+    let label = 'Payment received';
+    if (p.date) label += ' ' + invFmtDate(p.date);
+    if (p.note) label += ` (${p.note})`;
+    body += money(label, -(parseFloat(p.amount) || 0));
+  }
+  if (pays.length || isInv) body += money('Balance Due', tot.balance_due, 'invp-strong');
+  if (!isSummary && (tot.supplements || []).length) {
+    body += sec('If needed', 'Supplements - not included in the total') + table(tot.supplements, true);
+  }
+  if ((inv.notes || '').trim()) {
+    body += sec('Notes', 'Notes & terms') + `<p class="invp-notes">${esc(inv.notes).replace(/\n/g, '<br>')}</p>`;
+  }
+  body += `<p class="invp-contact">Questions? Call ${esc(head.company_phone || '')}${head.rep
+    ? ` or contact ${esc(head.rep)} at ${esc(head.rep_email || '')}` : ''}.</p>`;
+
+  // The dates as one row of label-over-value cells, the way the PDF prints them.
+  const meta = [['Date', invFmtDate(inv.issue_date)],
+                [isInv ? 'Due date' : 'Valid until', invFmtDate(isInv ? inv.due_date : inv.valid_until)],
+                ['Work completed', isInv ? invFmtDate(inv.completed_date) : ''],
+                ['PO / Reference', inv.po_ref],
+                ['Estimate #', isInv ? head.estimate_number : '']].filter(([, v]) => v);
+  return `<div class="invp">
+    <div class="invp-top"><div class="invp-kind">${kind.toUpperCase()}</div><div class="invp-num">${esc(inv.number || '')}</div></div>
+    <div class="invp-meta">${meta.map(([k, v]) =>
+      `<div><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join('')}</div>
+    ${sec('Bill to', head.name || 'Customer')}
+    ${kv([['Address', head.address], ['Job site', head.site],
+          ['Contact', [head.phone, head.email].filter(Boolean).join(' · ')]])}
+    ${body}
+  </div>`;
+}
+
+// Repaint just the document. Text the rep is typing (number, dates, PO,
+// notes) is laid over the last saved copy so the preview follows the keys;
+// every amount still comes from the server's last answer.
+function renderInvoicePreview() {
+  const box = document.getElementById('inv-preview');
+  if (!box || !_invData || !_invData.invoice) return;
+  const typed = _readInvoiceForm();
+  delete typed.payments;
+  delete typed.adjustments;
+  const inv = Object.assign({}, _invData.invoice, typed);
+  box.innerHTML = invPreviewHtml(inv, _invData.totals || {}, _invData.header || {}, _invData.summary || {});
+}
+
 function renderInvoiceForm() {
   const el = document.getElementById('invoice-form-container');
   if (!el) return;
+  const shell = inner => `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 Invoice</h3></div>${inner}</div>`;
   if (!S.estimate_id) {
-    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 Invoice / Quote</h3></div>
-      <p class="pm-hint">Save the estimate first. The invoice lists what the saved estimate bills.</p>
-      <div class="rc-btns"><button class="btn-primary" onclick="saveEstimate().then(loadInvoice)">💾 Save estimate</button></div></div>`;
+    el.innerHTML = shell(`<p class="pm-hint">Save the estimate first. The invoice lists what the saved estimate bills.</p>
+      <div class="rc-btns"><button class="btn-primary" onclick="saveEstimate().then(loadInvoice)">💾 Save estimate</button></div>`);
     return;
   }
   if (_invData && _invData.error && _invFor === S.estimate_id) {
-    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 Invoice / Quote</h3></div>
-      <p class="pm-hint">⚠ Could not load: ${esc(_invData.error)}</p>
-      <div class="rc-btns"><button class="doc-crm-push" onclick="loadInvoice()">↻ Retry</button></div></div>`;
+    el.innerHTML = shell(`<p class="pm-hint">⚠ Could not load: ${esc(_invData.error)}</p>
+      <div class="rc-btns"><button class="doc-crm-push" onclick="loadInvoice()">↻ Retry</button></div>`);
     return;
   }
   if (!_invData || _invFor !== S.estimate_id) {
-    el.innerHTML = `<div class="panel rc-panel"><div class="panel-header"><h3>🧾 Invoice / Quote</h3></div>
-      <p class="pm-hint">Loading…</p></div>`;
+    el.innerHTML = shell('<p class="pm-hint">Loading…</p>');
     if (_invFor !== S.estimate_id) { _invFor = S.estimate_id; loadInvoice(); }
     return;
   }
   const inv = _invData.invoice || {};
-  const tot = _invData.totals || {};
   const isInv = inv.kind !== 'quote';
+  const signed = !!inv.signature;
   const c = S.customer || {};
   const filed = (S.attachments || []).some(a => a.server_generated && a.doc_type === 'invoice');
   const lab = (text, note) =>
     `<span class="rc-lab">${text}${note ? ` <span class="note-tag">${note}</span>` : ''}</span>`;
   const pays = inv.payments || [];
-  const nLines = (tot.sections || []).reduce((n, s) => n + (s.rows || []).length, 0);
+  const adjs = inv.adjustments || [];
+  const kind = isInv ? 'Invoice' : 'Basic Estimate';
 
   el.innerHTML = `
-  <div class="panel rc-panel">
+  <div class="inv-layout">
+  <div class="panel rc-panel inv-form">
     <div class="panel-header">
-      <h3>🧾 ${isInv ? 'Invoice' : 'Quote'} — ${esc(c.name || 'this job')}</h3>
+      <h3>🧾 ${kind} — ${esc(c.name || 'this job')}</h3>
       ${inv.signature ? `<span class="rc-issued-chip rc-signed-chip" title="${esc(inv.signature.name || '')}">✍️ Signed ${esc(String(inv.signature.signed_at || '').slice(0, 10))}</span>`
         : inv.sent_at ? `<span class="rc-issued-chip" title="${esc(inv.sent_to || '')}">Sent ${esc(String(inv.sent_at).slice(0, 10))}</span>` : ''}
     </div>
-    <p class="pm-hint rc-lede">A plain, itemized document for a GC or a homeowner.
-      It has no signing link and no proposal pages. Change the line items on the
-      estimate itself.</p>
 
-    <div class="rc-term-row">
-      <div class="rc-term-btns">
-        <button type="button" class="rc-term-btn ${!isInv ? 'active' : ''}" onclick="invSetKind('quote')">Quote</button>
-        <button type="button" class="rc-term-btn ${isInv ? 'active' : ''}" onclick="invSetKind('invoice')">Invoice</button>
-      </div>
+    <div class="inv-kind-switch" role="group" aria-label="Which document">
+      <button type="button" class="rc-term-btn ${isInv ? 'active' : ''}" onclick="invSetKind('invoice')" ${signed ? 'disabled' : ''}>
+        🧾 Invoice<small>Every client · after the work</small></button>
+      <button type="button" class="rc-term-btn ${!isInv ? 'active' : ''}" onclick="invSetKind('quote')" ${signed ? 'disabled' : ''}>
+        📄 Basic Estimate<small>GC or HOA · line by line</small></button>
     </div>
+    <p class="pm-hint rc-lede">${isInv
+      ? 'One price per trade plus any add-ons, what was installed, the payments received and the balance. No line prices or labor unless you turn them on.'
+      : 'Every line with its quantity and unit price, for a GC or an HOA. Labor folds into each trade\'s subtotal unless you show it. The detailed homeowner proposal is the estimate itself.'}</p>
+    ${signed ? `<p class="pm-hint inv-locked">🔒 Signed by <strong>${esc(inv.signature.name || '')}</strong>
+      — the figures are locked. Reopen it as a change order if the amount needs to move.</p>` : ''}
 
+    <fieldset class="inv-fields" ${signed ? 'disabled' : ''}>
     <div class="rc-grid">
-      <label class="rc-f">${lab(isInv ? 'Invoice #' : 'Quote #')}
+      <label class="rc-f">${lab(isInv ? 'Invoice #' : 'Estimate #')}
         <input type="text" id="inv-number" value="${esc(inv.number || '')}">
       </label>
       <label class="rc-f">${lab('Date')}
@@ -17836,7 +18042,9 @@ function renderInvoiceForm() {
       </label>
       ${isInv
         ? `<label class="rc-f">${lab('Due Date', 'optional')}
-             <input type="date" id="inv-due" value="${esc(inv.due_date || '')}"></label>`
+             <input type="date" id="inv-due" value="${esc(inv.due_date || '')}"></label>
+           <label class="rc-f">${lab('Work Completed', 'optional')}
+             <input type="date" id="inv-completed" value="${esc(inv.completed_date || '')}"></label>`
         : `<label class="rc-f">${lab('Valid Until', 'optional')}
              <input type="date" id="inv-valid" value="${esc(inv.valid_until || '')}"></label>`}
       <label class="rc-f">${lab('PO / Reference', 'optional')}
@@ -17844,11 +18052,20 @@ function renderInvoiceForm() {
       </label>
     </div>
 
+    ${isInv ? `
+    <div class="rc-term-row">
+      <span class="rc-lab">Layout</span>
+      <div class="rc-term-btns">
+        <button type="button" class="rc-term-btn ${inv.detail !== 'itemized' ? 'active' : ''}" onclick="invSetDetail('summary')">Summary</button>
+        <button type="button" class="rc-term-btn ${inv.detail === 'itemized' ? 'active' : ''}" onclick="invSetDetail('itemized')">Itemized with prices</button>
+      </div>
+    </div>` : ''}
+
     <label class="inv-itemize">
-      <input type="checkbox" id="inv-itemize" ${inv.itemize !== false ? 'checked' : ''}>
-      <span><strong>List every line</strong> with its own price. Untick for a homeowner:
-        lines the proposal hides (like install labor) fold into the subtotal instead.
-        The total is the same either way.</span>
+      <input type="checkbox" id="inv-itemize" ${inv.itemize === true ? 'checked' : ''}>
+      <span><strong>Show labor lines.</strong> Off: labor and anything else hidden from the
+        customer folds into its trade's price. On: those lines are listed too. The total is
+        the same either way.</span>
     </label>
 
     <div class="rc-sec">Payments received <span class="note-tag">deposits, progress payments</span></div>
@@ -17856,26 +18073,37 @@ function renderInvoiceForm() {
       ${pays.map((p, i) => `
       <div class="rc-grid inv-pay-row" data-i="${i}">
         <label class="rc-f">${lab('Date')}<input type="date" class="inv-pay-date" value="${esc(p.date || '')}"></label>
-        <label class="rc-f">${lab('Amount')}<input type="number" step="0.01" class="inv-pay-amt" value="${esc(String(p.amount ?? ''))}"></label>
+        <label class="rc-f">${lab('Amount')}<input type="number" step="0.01" inputmode="decimal" class="inv-pay-amt" value="${esc(String(p.amount ?? ''))}"></label>
         <label class="rc-f">${lab('Note')}<input type="text" class="inv-pay-note" value="${esc(p.note || '')}" placeholder="e.g. Check #1042"></label>
         <button type="button" class="att-del" onclick="invRemovePayment(${i})" title="Remove">×</button>
       </div>`).join('')}
     </div>
     <button class="rc-load-std" type="button" onclick="invAddPayment()">＋ Add a payment</button>
 
+    ${isInv ? `
+    <div class="rc-sec">Adjustments <span class="note-tag">invoice only — discount, credit, fee</span></div>
+    <div id="inv-adjustments">
+      ${adjs.map((a, i) => `
+      <div class="rc-grid inv-adj-row" data-i="${i}">
+        <label class="rc-f">${lab('Description')}<input type="text" class="inv-adj-label" value="${esc(a.label || '')}" placeholder="e.g. Loyalty discount"></label>
+        <label class="rc-f">${lab('Type')}<select class="inv-adj-sign">
+          <option value="credit" ${(parseFloat(a.amount) || 0) < 0 ? 'selected' : ''}>Credit (−)</option>
+          <option value="charge" ${(parseFloat(a.amount) || 0) >= 0 && a.amount !== '' ? 'selected' : ''}>Charge (+)</option>
+        </select></label>
+        <label class="rc-f">${lab('Amount')}<input type="number" step="0.01" min="0" inputmode="decimal" class="inv-adj-amt"
+          value="${a.amount === '' || a.amount == null ? '' : esc(String(Math.abs(parseFloat(a.amount) || 0)))}"></label>
+        <button type="button" class="att-del" onclick="invRemoveAdjustment(${i})" title="Remove">×</button>
+      </div>`).join('')}
+    </div>
+    <button class="rc-load-std" type="button" onclick="invAddAdjustment()">＋ Add an adjustment</button>`
+    : adjs.length ? `<p class="pm-hint">${adjs.length} adjustment${adjs.length === 1 ? '' : 's'} saved on the
+        invoice. They apply to the invoice only — a basic estimate is a price going out, so a
+        discount there belongs on the estimate itself.</p>` : ''}
+
     <label class="rc-f rc-wide">${lab('Notes', 'prints at the bottom')}
       <textarea id="inv-notes" rows="2" placeholder="Payment terms, remit-to, lien waiver note…">${esc(inv.notes || '')}</textarea>
     </label>
-
-    <div class="rc-sec">What it will bill</div>
-    <div class="inv-summary">
-      <div>${nLines} line item${nLines === 1 ? '' : 's'}${(tot.sections || []).reduce((n, s) => n + (s.folded || 0), 0) ? ` listed (+${(tot.sections || []).reduce((n, s) => n + (s.folded || 0), 0)} folded into subtotals)` : ''}${(tot.sections || []).length ? ` across ${(tot.sections || []).map(s => esc(s.title)).join(', ')}` : ''}</div>
-      ${(tot.change_orders || []).length ? `<div>Original scope <strong>${fmtCur(tot.subtotal)}</strong> · Change orders <strong>${fmtCur(tot.co_total)}</strong></div>` : ''}
-      <div>Total <strong>${fmtCur(tot.total)}</strong>${tot.payments_total ? ` · Payments <strong>−${fmtCur(tot.payments_total)}</strong>` : ''}</div>
-      ${isInv || tot.payments_total ? `<div class="inv-balance">Balance due <strong>${fmtCur(tot.balance_due)}</strong></div>` : ''}
-      ${(tot.supplements || []).length ? `<div class="pm-hint">${tot.supplements.length} supplement line(s) listed separately, not in the total.</div>` : ''}
-      ${!nLines ? '<div class="pm-hint">⚠ No billable line items. Save the estimate after adding them.</div>' : ''}
-    </div>
+    </fieldset>
 
     <label class="rc-f rc-wide">${lab('Email to')}
       <input type="email" id="inv-email" value="${esc(c.email || '')}" placeholder="name@example.com">
@@ -17886,18 +18114,35 @@ function renderInvoiceForm() {
       <button class="doc-crm-push" onclick="invDownload()">⬇ Download PDF</button>
       <button class="doc-crm-push" onclick="invFile()">📎 ${filed ? 'Update in Files' : 'Save to Files'}</button>
       <button class="doc-crm-push" onclick="invSendForSignature()">✍️ Send for Signature</button>
-      <button class="btn-primary rc-issue" onclick="invEmail()">✉️ Email ${isInv ? 'Invoice' : 'Quote'}</button>
+      <button class="btn-primary rc-issue" onclick="invEmail()">✉️ Email ${isInv ? 'Invoice' : 'Estimate'}</button>
       <span class="rc-saved" id="inv-saved"></span>
     </div>
-    ${inv.signature ? `<p class="pm-hint">Signed by <strong>${esc(inv.signature.name || '')}</strong>
-      — the figures are locked. Reopen it as a change order if the amount needs to move.</p>` : ''}
+  </div>
+
+  <div class="inv-preview-wrap">
+    <div class="inv-preview-hd">
+      <span><strong>Preview</strong> <span class="note-tag">what the customer gets</span></span>
+      <button type="button" class="doc-crm-push" onclick="switchPage('pricing')"
+        title="Line items and materials come from the estimate">✏️ Edit line items</button>
+    </div>
+    <div id="inv-preview" class="inv-paper"></div>
+  </div>
   </div>`;
-  ['inv-issue', 'inv-due', 'inv-valid', 'inv-po', 'inv-number', 'inv-notes', 'inv-itemize'].forEach(id => {
+  renderInvoicePreview();
+  // Typing moves the preview at once; leaving a field saves it. Only what
+  // changes the money (payments, adjustments) waits on the server for the new
+  // balance — and even then only the preview repaints, so the field the rep
+  // tabbed into keeps its focus.
+  ['inv-issue', 'inv-due', 'inv-completed', 'inv-valid', 'inv-po', 'inv-number', 'inv-notes'].forEach(id => {
     const x = document.getElementById(id);
-    if (x) x.onchange = () => saveInvoiceFields(true, true);
+    if (!x) return;
+    x.oninput = renderInvoicePreview;
+    x.onchange = () => saveInvoiceFields(true, false);
   });
-  document.querySelectorAll('#inv-payments input').forEach(x => {
-    x.onchange = () => saveInvoiceFields(true, true);
+  const itemize = document.getElementById('inv-itemize');
+  if (itemize) itemize.onchange = () => saveInvoiceFields(true, true);
+  document.querySelectorAll('#inv-payments input, #inv-adjustments input, #inv-adjustments select').forEach(x => {
+    x.onchange = () => saveInvoiceFields(true, false);
   });
 }
 
@@ -17907,7 +18152,8 @@ function _readInvoiceForm() {
   const itemize = document.getElementById('inv-itemize');
   if (itemize) out.itemize = itemize.checked;
   const map = {number: 'inv-number', issue_date: 'inv-issue', due_date: 'inv-due',
-               valid_until: 'inv-valid', po_ref: 'inv-po', notes: 'inv-notes'};
+               valid_until: 'inv-valid', completed_date: 'inv-completed',
+               po_ref: 'inv-po', notes: 'inv-notes'};
   for (const [k, id] of Object.entries(map)) {
     const val = v(id);
     if (val !== undefined) out[k] = val;
@@ -17917,6 +18163,20 @@ function _readInvoiceForm() {
     amount: row.querySelector('.inv-pay-amt').value,
     note:   row.querySelector('.inv-pay-note').value,
   }));
+  // Only an invoice shows the adjustments editor. A basic estimate sends none,
+  // which leaves the stored ones alone for when it is switched back.
+  if (document.getElementById('inv-adjustments')) {
+    out.adjustments = Array.from(document.querySelectorAll('#inv-adjustments .inv-adj-row')).map(row => {
+      const raw = row.querySelector('.inv-adj-amt').value.trim();
+      const n = Math.abs(parseFloat(raw));
+      return {
+        label:  row.querySelector('.inv-adj-label').value,
+        // Typed positive, stored signed: a credit is a negative amount.
+        amount: raw === '' || !isFinite(n) ? '' :
+                (row.querySelector('.inv-adj-sign').value === 'credit' ? -n : n),
+      };
+    });
+  }
   return out;
 }
 
@@ -17936,6 +18196,7 @@ async function saveInvoiceFields(quiet, rerender, overrides) {
     _invData = d; _invFor = S.estimate_id;
     S.invoice = d.invoice;
     if (rerender) renderInvoiceForm();
+    else renderInvoicePreview();
     const flag = document.getElementById('inv-saved');
     if (flag && !quiet) {
       flag.textContent = '✓ Saved';
@@ -17954,23 +18215,41 @@ function invSetKind(kind) {
   saveInvoiceFields(true, true, {kind});
 }
 
-function invAddPayment() {
+function invSetDetail(detail) {
+  saveInvoiceFields(true, true, {detail});
+}
+
+// Rows are added locally and saved once they hold an amount: the server drops
+// an empty one, and saving it now would make the row vanish under the cursor.
+function _invAddRow(field, row) {
   const form = _readInvoiceForm();
-  const today = fmtDate(new Date());
   const d = Object.assign({}, _invData);
-  d.invoice = Object.assign({}, d.invoice, form, {
-    payments: form.payments.concat([{date: today, amount: '', note: ''}])});
+  d.invoice = Object.assign({}, d.invoice, form, {[field]: (form[field] || []).concat([row])});
   _invData = d;
   renderInvoiceForm();
-  // Not saved yet: an empty amount would be dropped. Saving happens on change.
-  const rows = document.querySelectorAll('#inv-payments .inv-pay-amt');
+  const sel = field === 'payments' ? '#inv-payments .inv-pay-amt' : '#inv-adjustments .inv-adj-label';
+  const rows = document.querySelectorAll(sel);
   if (rows.length) rows[rows.length - 1].focus();
+}
+
+function invAddPayment() {
+  _invAddRow('payments', {date: fmtDate(new Date()), amount: '', note: ''});
 }
 
 function invRemovePayment(i) {
   const form = _readInvoiceForm();
   form.payments.splice(i, 1);
   saveInvoiceFields(true, true, {payments: form.payments});
+}
+
+function invAddAdjustment() {
+  _invAddRow('adjustments', {label: '', amount: ''});
+}
+
+function invRemoveAdjustment(i) {
+  const form = _readInvoiceForm();
+  (form.adjustments || []).splice(i, 1);
+  saveInvoiceFields(true, true, {adjustments: form.adjustments || []});
 }
 
 async function invPreview() {
@@ -18046,7 +18325,7 @@ async function invEmail() {
   const saved = await saveInvoiceFields(true, false);
   if (!saved) return;
   const inv = saved.invoice, tot = saved.totals;
-  const kind = inv.kind === 'quote' ? 'quote' : 'invoice';
+  const kind = inv.kind === 'quote' ? 'estimate' : 'invoice';
   const amt = kind === 'invoice' || tot.payments_total ? `balance due ${fmtCur(tot.balance_due)}` : `total ${fmtCur(tot.total)}`;
   if (!confirm(`Email ${kind} ${inv.number} (${amt}) to ${to}?`)) return;
   try {
@@ -18072,26 +18351,28 @@ function _invAttach(att) {
   S.attachments.push(att);
 }
 
-/* Straight to the invoice panel from anywhere: the 🧾 Invoice header button,
-   the ⋯ menu and the Send modal. Always opens it (never toggles it shut) and
-   always refetches, since the estimate may have changed since last time. */
+/* Straight to the Invoice tab from anywhere: the 🧾 Invoice header button,
+   the ⋯ menu and the Send modal. showClientTab refetches on the way in, since
+   the estimate may have changed since last time. */
 function openInvoice() {
   const m = document.getElementById('share-modal');
   if (m) m.classList.add('hidden');
-  _docGenerator = 'invoice';
-  _invFor = null;
-  switchPage('client');
-  renderDocumentsPage();
-  const el = document.getElementById('invoice-form-container');
-  if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+  showClientTab('invoice');
 }
 
 function docToggleGenerator(which) {
-  _docGenerator = (_docGenerator === which) ? null : which;
-  // Totals come from the saved estimate, which may have changed since the last
-  // open, so the invoice always refetches.
-  if (_docGenerator === 'invoice') _invFor = null;
-  if (_docGenerator === 'condition') _crFor = null;
+  // The invoice and the Roof Health Report are tabs now. Anything still
+  // asking for them by their old generator names lands on the tab.
+  if (which === 'invoice')   { showClientTab('invoice'); return; }
+  if (which === 'condition') { showClientTab('roofhealth'); return; }
+  // A generator opened from another tab (the Roof Health form's "Open the
+  // certificate") opens rather than toggling shut something not on screen.
+  const onDocs = activePage === 'client' && clientTabNow() === 'documents';
+  _docGenerator = (_docGenerator === which && onDocs) ? null : which;
+  if (!onDocs) {
+    _clientTab = 'documents';
+    if (activePage !== 'client') switchPage('client'); else renderClientPage();
+  }
   if (_docGenerator === 'warranty') _wcFor = null;
   if (_docGenerator === 'permit') {
     // Fresh open on a job: prefill from the estimate once per estimate

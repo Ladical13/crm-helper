@@ -30,7 +30,10 @@ went entirely: it and the Documents page were two views of one question
 
 There is now ONE customer screen — details, notes, every estimate including
 the unsaved one on screen, and the files — and the estimate tab strip behind
-a single button on it.
+a single button on it. It opens like a CRM record: a header that never scrolls
+away and one tab per job (Details, Estimates, Notes, Documents, Invoice, Roof
+Health), because as one long scroll the invoice a rep asked for opened three
+screens below where they were looking.
 """
 import json
 import os
@@ -235,7 +238,7 @@ def test_the_customer_file_modal_is_gone():
 
 
 def test_the_customer_screen_holds_everything_about_the_customer():
-    """Details, notes, every estimate, and the files — one page, one scroll."""
+    """Details, notes, every estimate, and the files — one screen, in tabs."""
     body = _fn_body(_appjs(), 'renderClientPage', code_only=True)
     assert 'docEstimateListHtml()' in body, 'their estimates'
     assert 'cf-notes-ta' in body and 'saveCustomerNotes' in body, 'their notes'
@@ -611,12 +614,82 @@ def test_the_files_panel_is_fed_by_the_customer_documents_endpoint():
     assert 'otherEstimateDocsHtml(' in _fn_body(src, 'renderDocumentsPage', code_only=True)
 
 
-def test_the_report_document_does_not_reuse_the_editor_page_id():
-    """'report' is the Roof Health editor page's nav id; the document's
-    generator key is 'condition', or the two would fight."""
-    body = _fn_body(_appjs(), 'renderDocumentsPage', code_only=True)
-    assert "docToggleGenerator('condition')" in body
+def test_the_roof_health_tab_does_not_reuse_the_editor_page_id():
+    """'report' is the Condition editor page's nav id; the Roof Health tab is
+    'roofhealth', or the two would fight."""
+    src = _appjs()
+    assert _client_tab_ids(src)[-1] == 'roofhealth'
+    assert 'report' not in _client_tab_ids(src)
+    body = _fn_body(src, 'renderDocumentsPage', code_only=True)
+    assert "tab === 'roofhealth'" in body and 'renderConditionReportForm()' in body
     assert "docToggleGenerator('report')" not in body
+
+
+# ── the tabs ─────────────────────────────────────────────────────────────
+
+def _client_tab_ids(src):
+    i = src.index('const CLIENT_TABS = [')
+    block = src[i:src.index('];', i)]
+    return re.findall(r"\[\s*'([a-z]+)'", block)
+
+
+def test_the_customer_screen_is_tabbed():
+    src = _appjs()
+    assert _client_tab_ids(src) == ['details', 'estimates', 'notes',
+                                    'documents', 'invoice', 'roofhealth']
+    body = _fn_body(src, 'renderClientPage', code_only=True)
+    assert 'CLIENT_TABS.map(' in body and "showClientTab('${id}')" in body
+    assert 'id="client-tabs"' in body
+
+
+def test_an_inactive_tab_draws_nothing():
+    """Each pane renders only when its tab is open, so a tab nobody opened
+    costs no fetch — the invoice and the report both load on the way in."""
+    body = _fn_body(_appjs(), 'renderDocumentsPage', code_only=True)
+    assert "if (tab !== 'documents') { el.innerHTML = ''; return; }" in body
+    assert body.index("tab === 'invoice'") < body.index("tab !== 'documents'")
+
+
+def test_invoice_and_roof_health_are_tabs_not_cards():
+    """One control per thing. A card on the Documents tab that opened the same
+    form as a tab of its own is two ways in that can disagree."""
+    body = _fn_body(_appjs(), 'renderDocumentsPage', code_only=True)
+    assert "docToggleGenerator('invoice')" not in body
+    assert "docToggleGenerator('condition')" not in body
+    assert "tab === 'invoice'" in body and 'renderInvoiceForm()' in body
+
+
+def test_the_invoice_button_lands_on_the_invoice_tab():
+    src = _appjs()
+    assert "showClientTab('invoice')" in _fn_body(src, 'openInvoice', code_only=True)
+    # Anything still asking for the old generator names lands on the tab.
+    gen = _fn_body(src, 'docToggleGenerator', code_only=True)
+    assert "if (which === 'invoice')   { showClientTab('invoice'); return; }" in gen
+    assert "if (which === 'condition') { showClientTab('roofhealth'); return; }" in gen
+
+
+def test_opening_a_customer_lands_on_their_estimates():
+    body = _fn_body(_appjs(), 'openCustomer', code_only=True)
+    assert body.index("_clientTab = 'estimates'") < body.index('switchPage(')
+
+
+def test_a_nameless_customer_opens_on_details():
+    """Estimates and Notes are about a named customer; with no name the only
+    useful place to be is where the name gets typed."""
+    body = _fn_body(_appjs(), 'clientTabNow', code_only=True)
+    assert "return 'details'" in body
+
+
+def test_the_tab_strip_is_sized_for_a_finger_not_a_width():
+    """Same rule as every other touch target in this app: gate on the pointer."""
+    with open(os.path.join(EST, 'static', 'style.css'), encoding='utf-8') as f:
+        css = f.read()
+    blocks = re.findall(r'@media \(pointer: coarse\)\s*\{(.*?)\n\}', css, re.S)
+    assert any('.client-tab' in b and 'min-height: 44px' in b for b in blocks)
+    # Scrolls sideways rather than wrapping six tabs over a phone's pane.
+    rule = css[css.index('.client-tabs {'):]
+    rule = rule[:rule.index('}')]
+    assert 'overflow-x: auto' in rule and 'overscroll-behavior-x: contain' in rule
 
 
 def test_the_warranty_certificate_waits_for_a_signature():
