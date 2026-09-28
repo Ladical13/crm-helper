@@ -665,6 +665,13 @@ would renumber documents already sent to GCs. `_invoice_kind_label()` is where
   price book's default bundle, and an invoice naming a roof that was not
   installed is the worst thing this document could say. Insurance jobs never
   read `insurance_cost` — it is our crew rate.
+- **The permit packet's Roof Covering and the warranty certificate's product
+  go through `_installed_product_name()`**, never the manifest's
+  `material_name`: picked bundle (if it still describes the tier) → the
+  covering priced in the tier → Product Selection → the rep's package name →
+  nothing. Both used to file "CertainTeed Northgate" — the seeded Better
+  default — over roofs that were not Northgate. Guarded by
+  `tests/test_installed_product.py`.
 - **Adjustments are invoice-only** (a credit, a fee; `_sanitize_invoice`
   whitelists them) and sit BELOW the subtotal, which stays the estimate's own
   total to the cent. A basic estimate ignores them: it is a price going out,
