@@ -103,6 +103,8 @@ LEAD_TYPES = [
     # and one of them can be responsible for forty buildings. Rolling schools
     # up to their district turned 116 cold cards into 7 real accounts.
     {'key': 'school_district',   'label': 'School District',   'partner': False},
+    # Self-storage: rows of low-slope roofs behind one owner's signature.
+    {'key': 'storage',           'label': 'Storage Facility',  'partner': False},
 ]
 LEAD_TYPE_KEYS = [t['key'] for t in LEAD_TYPES]
 PARTNER_TYPES  = [t['key'] for t in LEAD_TYPES if t['partner']]
@@ -156,7 +158,7 @@ AUDIENCES = [
     {'key': 'past_customer', 'label': 'Past customers & old leads'},
 ]
 AUDIENCE_KEYS = [a['key'] for a in AUDIENCES]
-COMMERCIAL_TYPES = ('commercial', 'church', 'school', 'school_district')
+COMMERCIAL_TYPES = ('commercial', 'church', 'school', 'school_district', 'storage')
 # 'call' is a call script: read live, so no length rule and no signature.
 TEMPLATE_CHANNELS = ('email', 'text', 'voicemail', 'call')
 TEMPLATE_STEPS = ('first', 'followup', 'breakup', 'any')

@@ -49,6 +49,13 @@ _PROMPTS = {
         'phone, website, and source_url. Skip entries you can\'t find on a '
         'real website — this must be real ownership, not a listing agent.'
     ),
+    'storage': (
+        'Find {limit} self-storage, mini-storage, or RV and boat storage '
+        'facilities in {city}, {state} (county: {county}). '
+        'For EACH, return: name, street address of the facility, phone, '
+        'website, owner or operating company if published, and source_url. '
+        'Skip entries you can\'t find on a real website — do not fabricate.'
+    ),
 }
 
 _DEFAULT_PROMPT = (
@@ -92,7 +99,7 @@ def _extract_list(data):
         return [r for r in data if isinstance(r, dict)]
     if isinstance(data, dict):
         for k in ('results', 'items', 'rows', 'data', 'orgs', 'churches',
-                  'schools', 'contractors', 'businesses'):
+                  'schools', 'contractors', 'businesses', 'facilities'):
             v = data.get(k)
             if isinstance(v, list):
                 return [r for r in v if isinstance(r, dict)]

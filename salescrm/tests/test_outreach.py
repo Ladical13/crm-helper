@@ -371,7 +371,8 @@ def test_the_backfill_tells_the_truth_about_existing_leads(client):
 # ── Every partner and commercial type gets its own outreach ──────────────────
 
 TYPED = ('realtor', 'hoa', 'insurance_agent', 'property_manager', 'adjuster',
-         'referral_partner', 'gc', 'church', 'school', 'school_district', 'commercial')
+         'referral_partner', 'gc', 'church', 'school', 'school_district', 'commercial',
+         'storage')
 
 
 @pytest.mark.parametrize('lead_type', TYPED)

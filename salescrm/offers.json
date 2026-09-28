@@ -94,6 +94,7 @@
         "church",
         "school",
         "school_district",
+        "storage",
         "gc"
       ],
       "status": "live",

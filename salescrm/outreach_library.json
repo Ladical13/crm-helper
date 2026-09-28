@@ -626,6 +626,42 @@
       "body": "OPEN: Hi, this is {rep_first} with Project One Roofing. Am I speaking with facilities or maintenance for {company}?\n\nWHY: We assess roofs across a district's buildings - one report, a remaining-life estimate per roof, for capital planning - and we schedule work for summer break.\n\nASK: How are roofs handled today - a capital plan, or as leaks come up?\n\nIF THEY BID EVERYTHING: Understood. How do we get on the vendor list for roofing bids?\n\nCLOSE: Could we start with one or two buildings you're worried about, free, so you can judge the report?"
     },
     {
+      "key": "text:type:storage:first",
+      "name": "Storage Facility - first text",
+      "channel": "text",
+      "audience": "commercial",
+      "lead_type": "storage",
+      "step": "first",
+      "body": "{greeting} {rep_first} with Project One Roofing. We do free roof checks for storage facilities in {city} - every building photographed, seams and fasteners checked, a remaining-life estimate you can budget from. Who handles the roofs at {company}? Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:type:storage:followup",
+      "name": "Storage Facility - follow-up text",
+      "channel": "text",
+      "audience": "commercial",
+      "lead_type": "storage",
+      "step": "followup",
+      "body": "{greeting} {rep_first} again. One leak into a rented unit costs a tenant, a claim and a bad review. Can I walk the roofs at {company} this month? No charge."
+    },
+    {
+      "key": "voicemail:type:storage:any",
+      "name": "Storage Facility - voicemail",
+      "channel": "voicemail",
+      "audience": "commercial",
+      "lead_type": "storage",
+      "step": "any",
+      "body": "Hi, this is {rep_first} with Project One Roofing. I'm trying to reach whoever handles the buildings at {company}. We do free roof checks for storage facilities in {city} - we walk every building, photograph the seams and fasteners, and leave you a written remaining-life estimate. Please call me back at this number."
+    },
+    {
+      "key": "call:type:storage:any",
+      "name": "Storage Facility - call script",
+      "channel": "call",
+      "audience": "commercial",
+      "lead_type": "storage",
+      "step": "any",
+      "body": "OPEN: Hi, this is {rep_first} with Project One Roofing. Is this the owner, or does a management company run the facility?\n\nIF MANAGED: Who at the management company handles the roofs? What's the best way to reach them?\n\nWHY: We do free roof checks for storage facilities - every building walked, photos of the seams, fasteners and flashing, and a remaining-life estimate per building.\n\nASK: Any tenants reporting water in a unit, or buildings you already know are due?\n\nCLOSE: Can I walk the roofs this month and send you the report?"
+    },
+    {
       "key": "text:type:commercial:first",
       "name": "Commercial - first text",
       "channel": "text",

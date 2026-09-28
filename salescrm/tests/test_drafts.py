@@ -193,7 +193,8 @@ def test_every_nimbus_segment_has_its_own_template():
         tpls = json.load(f)['templates']
 
     # Everything Nimbus can put in a queue needs its own voice.
-    for segment in ('church', 'school', 'school_district', 'commercial', 'gc'):
+    for segment in ('church', 'school', 'school_district', 'commercial', 'gc',
+                    'storage'):
         assert segment in tpls, f'{segment} would fall back to referral_partner'
         for step in ('first', 'followup', 'breakup'):
             assert tpls[segment][step]['subject'].strip()
@@ -213,7 +214,8 @@ def test_open_data_segments_never_paste_their_hook_into_an_email():
     with open(os.path.join(here, 'outreach_templates.json'), encoding='utf-8') as f:
         tpls = json.load(f)['templates']
 
-    for segment in ('church', 'school', 'school_district', 'commercial', 'gc'):
+    for segment in ('church', 'school', 'school_district', 'commercial', 'gc',
+                    'storage'):
         for step, tpl in tpls[segment].items():
             assert '{hook}' not in tpl['body'], \
                 f'{segment}.{step} would paste a data string into an email'

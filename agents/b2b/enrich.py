@@ -52,6 +52,7 @@ def _kind_for(segment):
         'school': 'school or district',
         'gc':     'general contractor',
         'commercial': 'commercial building owner',
+        'storage': 'self-storage facility owner or operator',
         'hoa':    'HOA or property management company',
     }.get(segment, 'organization')
 

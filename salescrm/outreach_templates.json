@@ -181,6 +181,20 @@
         "subject": "Closing the loop - {company}",
         "body": "{greeting}\n\nI'll stop emailing. If a roof opens up mid-winter and you need someone who can be there the same day, my number's below.\n\nGood luck with the year."
       }
+    },
+    "storage": {
+      "first": {
+        "subject": "The roofs at {company}",
+        "body": "{greeting}\n\nI'm trying to reach whoever owns or manages the facility.\n\n{storm_hook}\n\nStorage roofs are easy to forget until a tenant finds water in their unit. We'll walk every building, photograph the seams, fasteners and flashing, and give you a written remaining-life estimate per building - free, and yours to keep whether or not you hire us.\n\nWorth a walk this month?"
+      },
+      "followup": {
+        "subject": "Re: The roofs at {company}",
+        "body": "{greeting}\n\nI wrote about a free roof condition report for the facility. If an owner or management company handles the buildings, point me at them and I'll go that way instead.\n\nIf the roofs were done recently, tell me when and I'll stop asking."
+      },
+      "breakup": {
+        "subject": "Closing the loop - {company}",
+        "body": "{greeting}\n\nI'll stop emailing. When a tenant calls about a wet unit, my number's below - we can usually be there the same week.\n\nAll the best."
+      }
     }
   }
 }

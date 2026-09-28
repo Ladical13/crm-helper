@@ -35,6 +35,9 @@ SEGMENT_SOURCES = {
     # counties we work. Perplexity stays as the fallback for a city neither
     # county covers.
     'commercial': [assessor.commercial, perplexity_gap.pull],
+    # Self-storage: acres of low-slope roof behind one owner's signature. The
+    # same assessor files, narrowed to storage; Perplexity for anywhere else.
+    'storage':    [assessor.storage, perplexity_gap.pull],
 }
 
 
@@ -57,6 +60,7 @@ SEGMENT_LABELS = {
     'school_district':  'School districts',
     'gc':               'General contractors',
     'commercial':       'Commercial buildings',
+    'storage':          'Storage facilities',
     'realtor':          'Realtors',
     'insurance_agent':  'Insurance agents',
     'hoa':              'HOAs',

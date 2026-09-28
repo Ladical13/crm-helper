@@ -235,6 +235,88 @@ def test_the_commercial_segment_now_tries_the_assessor_before_paying():
     assert pullers[-1].__module__.endswith('perplexity_gap')
 
 
+# ── Storage facilities ───────────────────────────────────────────────────────
+
+@pytest.fixture
+def storage_larimer(monkeypatch, tmp_path):
+    from agents.b2b.sources import _common, assessor
+
+    imp = tmp_path / 'imp.csv'
+    imp.write_text('\n'.join([
+        _IMP_HEADER,
+        # One facility, three buildings on one account.
+        _imp('S001', occ='Mini Warehouse', sf='12000', year='1998'),
+        _imp('S001', occ='Mini Warehouse', sf='9000'),
+        _imp('S001', occ='Office Building', sf='800'),
+        _imp('S002', occ='RV Storage *Code', sf='20000'),
+        # A general warehouse is the commercial segment's, not storage's.
+        _imp('S003', occ='Storage Warehouse', sf='80000'),
+    ]), encoding='utf-8')
+    own = tmp_path / 'own.csv'
+    own.write_text('\n'.join([
+        _OWN_HEADER,
+        _own('S001', 'LOCK IT UP LLC', '1 UNIT RD'),
+        _own('S002', 'RV PARK HOLDINGS LLC', '2 CAMPER WAY'),
+        _own('S003', 'DISTRIBUTION CO', '3 DOCK ST'),
+    ]), encoding='utf-8')
+    paths = {'larimer_improvement.csv': str(imp),
+             'larimer_owner_location.csv': str(own)}
+    monkeypatch.setattr(_common, 'fetch_cached_path',
+                        lambda name, url, **k: paths.get(name))
+    monkeypatch.setattr(_common, 'fetch_cached', lambda *a, **k: None)
+    return assessor
+
+
+def test_storage_is_mini_warehouses_not_every_warehouse(storage_larimer):
+    names = {r['company'] for r in storage_larimer.storage(city='Fort Collins')}
+    assert names == {'Lock It Up Llc', 'Rv Park Holdings Llc'}
+
+
+def test_a_storage_facility_counts_every_building_on_the_account(storage_larimer):
+    """A facility is a dozen low buildings; the job is all of them. The
+    office on the same account is not storage roof and is not counted."""
+    row = next(r for r in storage_larimer.storage(city='Fort Collins')
+               if r['company'] == 'Lock It Up Llc')
+    assert '21,000 sq ft across 2 buildings' in row['hook']
+
+
+def test_the_commercial_segment_is_unchanged_by_the_storage_filter(storage_larimer):
+    rows = {r['company']: r for r in storage_larimer.commercial(city='Fort Collins')}
+    assert 'Distribution Co' in rows
+    assert '12,000 sq ft' in rows['Lock It Up Llc']['hook']
+    assert 'across' not in rows['Lock It Up Llc']['hook']
+
+
+def test_weld_storage_is_found_by_name_because_weld_has_no_occupancy(monkeypatch):
+    from agents.b2b.sources import _common, assessor
+    body = {'features': _WELD['features'] + [
+        {'attributes': {'ACCOUNTNO': 'W300', 'NAME': 'AGDG LLC',
+                        'BUSINESSNAME': 'EZ STORAGE', 'STREETNO': '9',
+                        'STREETNAME': '18TH', 'STREETSUF': 'ST',
+                        'LOCCITY': 'GREELEY', 'SQFT': 26340,
+                        'ACCTTYPE': 'Commercial'}},
+        # A refrigerated warehouse rents no units.
+        {'attributes': {'ACCOUNTNO': 'W400', 'NAME': '1120 ICEHOUSE LLC',
+                        'BUSINESSNAME': 'FRONT RANGE COLD STORAGE',
+                        'STREETNO': '1', 'STREETNAME': 'ICE', 'STREETSUF': 'RD',
+                        'LOCCITY': 'GREELEY', 'SQFT': 28240,
+                        'ACCTTYPE': 'Commercial'}},
+    ]}
+    monkeypatch.setattr(_common, 'fetch_cached_path', lambda *a, **k: None)
+    monkeypatch.setattr(_common, 'fetch_cached', lambda *a, **k: json.dumps(body))
+    names = [r['company'] for r in assessor.storage(city='Greeley')]
+    assert names == ['Agdg Llc']
+
+
+def test_the_storage_segment_tries_the_assessor_before_paying():
+    from agents.b2b import sources
+    pullers = sources.pullers_for('storage')
+    assert pullers[0].__name__ == 'storage'
+    assert pullers[-1].__module__.endswith('perplexity_gap')
+    assert {'key': 'storage', 'label': 'Storage facilities',
+            'searches': True} in sources.segment_catalog()
+
+
 # ── Secretary of State: putting a name to the LLC ────────────────────────────
 
 _SOS = [

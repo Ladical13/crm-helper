@@ -1,4 +1,5 @@
-"""County assessor records — the free source for the `commercial` segment.
+"""County assessor records — the free source for the `commercial` and
+`storage` segments.
 
 Who owns a building is a matter of public record, and both counties we work
 publish it. This replaces asking a model to guess at "commercial building
@@ -55,6 +56,28 @@ _NOT_A_PROSPECT = re.compile(
     r'^(unknown|none|n/?a|to be determined|tbd)$', re.I)
 
 
+# Self-storage, told apart from every other warehouse. Larimer says so in the
+# occupancy code: "Mini Warehouse" is the assessor's name for a self-storage
+# building (665 of them on 2026-09-25) and RV storage is the same business with
+# taller doors. "Storage Warehouse" is deliberately NOT here — it is 1,273
+# general warehouses and distribution buildings, which the `commercial` segment
+# already covers and which would bury the actual storage facilities.
+_STORAGE_OCC = re.compile(r'mini warehouse|rv storage|self.?storage', re.I)
+
+# Weld publishes no occupancy at all, only the owner and the business name, so
+# the name is the only signal there is. Cold storage is a refrigerated
+# warehouse and file storage is a records room — neither rents units.
+_STORAGE_NAME = re.compile(
+    r'storage|mini.?stor|store it|stuff it|u-?haul|cubesmart|extra space|'
+    r'securcare', re.I)
+_NOT_STORAGE_NAME = re.compile(r'cold storage|file storage', re.I)
+
+
+def _is_storage_name(*names):
+    text = ' '.join(n for n in names if n)
+    return bool(_STORAGE_NAME.search(text)) and not _NOT_STORAGE_NAME.search(text)
+
+
 def _flat_roof(rooftype):
     return 'flat' in (rooftype or '').lower()
 
@@ -93,14 +116,20 @@ def _int(v):
         return 0
 
 
-def _larimer_commercial_index(path, want_city):
+def _larimer_commercial_index(path, want_city, occ=None):
     """ACCOUNTNO -> the biggest commercial improvement on that account.
 
     An account can carry several improvements (a warehouse plus its office).
     The largest is the one that decides the job, and pushing one lead per
     building would put the same owner in the queue five times.
+
+    With ``occ`` (a regex on the occupancy description) only matching
+    improvements count, and their square footage is SUMMED: a storage
+    facility is a dozen one-storey buildings on one account, and the roof job
+    is all of them, not the biggest row. Roof shape and year still come from
+    the largest building.
     """
-    index = {}
+    index, total, count = {}, {}, {}
     with open(path, encoding='utf-8', errors='replace', newline='') as f:
         for row in csv.DictReader(f):
             if (row.get('PROPERTYTYPE') or '').strip() != 'Commercial':
@@ -108,22 +137,30 @@ def _larimer_commercial_index(path, want_city):
             acct = (row.get('ACCOUNTNO') or '').strip()
             if not acct:
                 continue
+            occ_desc = _common.clean(row.get('OCCDESCRIPTION'))
+            if occ is not None and not occ.search(occ_desc):
+                continue
             sf = _int(row.get('SF'))
+            total[acct] = total.get(acct, 0) + sf
+            count[acct] = count.get(acct, 0) + 1
             prev = index.get(acct)
             if prev and prev['sf'] >= sf:
                 continue
             index[acct] = {
                 'sf': sf,
-                'occ': _common.clean(row.get('OCCDESCRIPTION')),
+                'occ': occ_desc,
                 'year': _int(row.get('BLTASYEARBUILT')),
                 'rooftype': _common.clean(row.get('ROOFTYPE')),
                 'roofcover': _common.clean(row.get('ROOFCOVER')),
                 'condition': _common.clean(row.get('IMPCONDITIONTYPE')),
             }
+    if occ is not None:
+        for acct, hit in index.items():
+            hit['sf'], hit['buildings'] = total[acct], count[acct]
     return index
 
 
-def _larimer(city, limit):
+def _larimer(city, limit, occ=None):
     imp_path = _common.fetch_cached_path('larimer_improvement.csv',
                                          _LC_IMPROVEMENT)
     own_path = _common.fetch_cached_path('larimer_owner_location.csv',
@@ -131,7 +168,7 @@ def _larimer(city, limit):
     if not imp_path or not own_path:
         return []
 
-    index = _larimer_commercial_index(imp_path, city)
+    index = _larimer_commercial_index(imp_path, city, occ)
     if not index:
         return []
 
@@ -169,7 +206,7 @@ def _larimer(city, limit):
     return rows
 
 
-def _weld(city, limit):
+def _weld(city, limit, storage_only=False):
     if not city:
         return []
     # Escape the quote the ArcGIS WHERE clause is built with. A city name has
@@ -194,6 +231,9 @@ def _weld(city, limit):
         a = feat.get('attributes') or {}
         owner = _common.clean(a.get('NAME'))
         if not owner or _NOT_A_PROSPECT.match(owner):
+            continue
+        if storage_only and not _is_storage_name(
+                owner, _common.clean(a.get('BUSINESSNAME'))):
             continue
         address = ' '.join(x for x in (
             _common.clean(a.get('STREETNO')), _common.clean(a.get('STREETDIR')),
@@ -222,7 +262,7 @@ def _weld(city, limit):
 
 def _build(*, owner, address, city, zip_code, mail, mail_city, mail_state,
            mail_zip, source_ref, account, county, sf, occ, year, rooftype,
-           roofcover, condition):
+           roofcover, condition, buildings=1):
     # The owner's mailing address has to ride in the hook: the salescrm
     # importer accepts a fixed field list (PROSPECT_TEXT_FIELDS) and silently
     # ignores anything else, so a `mailing_address` key would vanish without a
@@ -233,7 +273,8 @@ def _build(*, owner, address, city, zip_code, mail, mail_city, mail_state,
         (mail_state or '').upper(), (mail_zip or '')[:5]) if x)
     bits = [b for b in (
         occ,
-        f'{sf:,} sq ft' if sf else '',
+        (f'{sf:,} sq ft across {buildings} buildings' if sf and buildings > 1
+         else f'{sf:,} sq ft' if sf else ''),
         f'built {year}' if year else '',
         f'{rooftype} roof' if rooftype else '',
         roofcover,
@@ -269,12 +310,32 @@ def commercial(city='', county='', state='CO', limit=None):
     Returns ``[]`` on any failure so the dispatcher falls through to
     Perplexity, per the contract in ``sources/__init__``.
     """
+    return _owners(city, state, limit,
+                   lambda: _larimer(city, limit), lambda: _weld(city, limit))
+
+
+def storage(city='', county='', state='CO', limit=None):
+    """Self-storage facility owners for a city, most roof first.
+
+    The same two county files as ``commercial``, narrowed to storage: by
+    occupancy code in Larimer, by owner or business name in Weld (which
+    publishes no occupancy). A storage facility is acres of low-slope metal or
+    membrane roof owned by one entity — a single signature for a very large
+    job — which is why it is its own segment rather than lost in the
+    commercial list.
+    """
+    return _owners(city, state, limit,
+                   lambda: _larimer(city, limit, occ=_STORAGE_OCC),
+                   lambda: _weld(city, limit, storage_only=True))
+
+
+def _owners(city, state, limit, *pulls):
     if (state or 'CO').upper()[:2] != 'CO':
         return []
     rows = []
-    for fn in (_larimer, _weld):
+    for fn in pulls:
         try:
-            rows.extend(fn(city, limit))
+            rows.extend(fn())
         except Exception:                                        # noqa: BLE001
             continue          # one county failing must not lose the other
 
