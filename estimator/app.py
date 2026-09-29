@@ -12540,8 +12540,19 @@ def _est_number(est):
 
 
 def _salesperson_email(est):
-    sp = (est.get('salesperson') or '').strip()
-    return f'{sp}@projectoneroofing.com' if sp else ''
+    sp = (est.get('salesperson') or '').strip().lower()
+    # A legacy free-typed name ("Luke Durnell") is not a mailbox, and SendGrid
+    # rejects the WHOLE request over one bad address — owner copy included.
+    if not sp or any(ch.isspace() for ch in sp):
+        return ''
+    return sp if '@' in sp else f'{sp}@projectoneroofing.com'
+
+
+def _owner_notify_email():
+    """Who hears about EVERY signature, whoever sold it (bcc). Defaults to the
+    same person BACKUP_EMAIL does; set OWNER_NOTIFY_EMAIL to change it, or to
+    an empty string to switch it off."""
+    return os.environ.get('OWNER_NOTIFY_EMAIL', 'luke@projectoneroofing.com').strip()
 
 
 def send_view_notification(est):
@@ -12592,11 +12603,13 @@ def send_signature_notification(est):
         return
     notify_cc = os.environ.get('NOTIFY_CC', '').strip()  # optional extra CC
 
-    sp = (est.get('salesperson') or '').strip()
-    if not sp:
-        print('[notify] No salesperson on estimate — skipping notification')
+    # No rep on the estimate used to mean nobody heard about the signature at
+    # all; the owner gets it instead.
+    owner   = _owner_notify_email()
+    to_addr = _salesperson_email(est) or owner
+    if not to_addr:
+        print('[notify] No salesperson and no owner address — skipping notification')
         return
-    to_addr = f'{sp}@projectoneroofing.com'
 
     # Diagnostic: log what credentials are available so failures are visible in Railway logs
     _api_key = os.environ.get('SENDGRID_API_KEY', '').strip()
@@ -12682,7 +12695,7 @@ def send_signature_notification(est):
       \U0001f4c4 View &amp; Download Signed Contract →
     </a>
     <p style="font-size:11px;color:#9ca3af;text-align:center;margin:0">
-      Sent to {he(to_addr)} &mdash; you are the assigned salesperson on this estimate.
+      Sent to {he(to_addr)} &mdash; {"you are the assigned salesperson on this estimate." if _salesperson_email(est) else "this estimate has no salesperson assigned."}
     </p>
   </div>
 </div>
@@ -12690,7 +12703,7 @@ def send_signature_notification(est):
 
     _send_email(subject, html_body, to_addr,
                 cc=notify_cc or None,
-                bcc=os.environ.get('OWNER_NOTIFY_EMAIL', '').strip() or None)
+                bcc=owner or None)
 
 
 # ── Signed-contract PDF + CRM push ──────────────────────────────────────────
@@ -19534,7 +19547,7 @@ def send_invoice_signature_notification(est):
         f'{he(sig.get("email") or "no email given")}</p>'
         '<p style="color:#94a3b8;font-size:12px;margin:0">This is an approval of the '
         'amount. Nothing has been pushed to The Den and nothing in the pipeline has '
-        'moved.</p></div>', to_addr)
+        'moved.</p></div>', to_addr, bcc=_owner_notify_email() or None)
 
 def _post_invoice_sign_pipeline(est_id):
     """After an invoice signature: tell the rep, file the signed PDF.
@@ -20381,9 +20394,10 @@ def build_co_pdf(est, co):
 
 def send_co_signature_notification(est, co):
     """Email the rep when a customer signs a change order."""
-    to_addr = _salesperson_email(est)
+    owner   = _owner_notify_email()
+    to_addr = _salesperson_email(est) or owner
     if not to_addr:
-        print('[co-notify] No salesperson on estimate — skipping notification')
+        print('[co-notify] No salesperson and no owner address — skipping notification')
         return
     c     = est.get('customer', {})
     cname = c.get('name', 'Customer')
@@ -20416,7 +20430,7 @@ def send_co_signature_notification(est, co):
 </body></html>'''
     _send_email(f"✅ {co.get('number', 'CO')} signed — {cname} ({_fcs(total)})",
                 html_body, to_addr,
-                bcc=os.environ.get('OWNER_NOTIFY_EMAIL', '').strip() or None)
+                bcc=owner or None)
 
 
 def push_co_to_crm(est_id, co_id):
