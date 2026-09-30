@@ -1172,7 +1172,7 @@ async function loadArchiveState() {
   show('hail-archive-admin');
   const sel = $('hail-backfill-season');
   if (!sel.options.length) {
-    sel.innerHTML = seasonOptions().map(y => `<option value="${y}">${y} season</option>`).join('');
+    sel.innerHTML = '<option value="five-years">Past 5 years (all months)</option>' + seasonOptions().map(y => `<option value="${y}">${y} season</option>`).join('');
   }
   renderBackfill(st);
 }
@@ -1212,7 +1212,7 @@ $('hail-backfill-btn').addEventListener('click', async () => {
   $('hail-backfill-btn').disabled = true;
   out.textContent = 'Starting…';
   try {
-    const r = await api(`/api/hail/backfill?season=${encodeURIComponent(year)}`, 'POST');
+    const r = await api(year === 'five-years' ? '/api/hail/backfill?days=1825' : `/api/hail/backfill?season=${encodeURIComponent(year)}`, 'POST');
     if (r.status === 'nothing_to_do') {
       out.textContent = `${year} is already in the archive.`;
       $('hail-backfill-btn').disabled = false;
@@ -1407,20 +1407,7 @@ $('hail-address-btn').addEventListener('click', () => {
 });
 $('close-hail-address-modal').addEventListener('click', () => hide('hail-address-modal'));
 
-$('hail-address-search-btn').addEventListener('click', async () => {
-  const q = $v('hail-address-input');
-  if (!q) { $('hail-address-status').textContent = 'Enter an address first.'; return; }
-  const days   = $v('hail-address-days');
-  const radius = $v('hail-address-radius');
-  $('hail-address-status').textContent = 'Checking radar hail history...';
-  $('hail-address-results').innerHTML = '';
-  try {
-    const data = await api(`/api/hail/address?q=${encodeURIComponent(q)}&days=${days}&radius=${radius}`);
-    renderHailAddressResults(data);
-  } catch(e) {
-    $('hail-address-status').textContent = 'Search failed: ' + e.message;
-  }
-});
+$('hail-address-search-btn').addEventListener('click', () => searchHailProperty());
 
 function escHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g,

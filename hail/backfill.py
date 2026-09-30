@@ -6,8 +6,8 @@
     python -m hail.backfill --days 1               # what a nightly cron runs
 
 Roughly one second and one megabyte per day, so a full six-year backfill is
-minutes rather than hours — but only severe season is worth pulling, which
-`--season` does.
+minutes rather than hours. Use --days 1825 for continuous five-year property
+reports; --season deliberately omits winter and cannot establish full coverage.
 
 **Days already held are skipped**, including days recorded with no qualifying
 hail, because `storms.record()` writes those too. That is what makes this
@@ -17,6 +17,8 @@ matters: today's file is a rolling maximum that is still moving, so the last
 day or two are worth pulling again once they have settled.
 """
 import argparse
+import os
+import shutil
 import datetime as dt
 import sys
 import time
@@ -76,6 +78,10 @@ def run(dates, threshold=None, on_day=None):
     started, storm_days, failures = time.time(), 0, 0
     dates = list(dates)
     for i, d in enumerate(dates, 1):
+        # Stop before exhausting the shared production volume; completed days
+        # remain available and a later run resumes from missing dates.
+        if shutil.disk_usage(os.path.dirname(storms.db_path())).free < 25 * 1024 * 1024:
+            raise RuntimeError('Hail import paused: fewer than 25 MB free on the data volume.')
         swath, exc = None, None
         try:
             swath = ingest.swath_for(d, threshold_in=threshold)

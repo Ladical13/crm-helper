@@ -1482,7 +1482,14 @@ def list_estimates():
 @app.route('/api/estimates', methods=['POST'])
 def create_estimate():
     data = request.get_json(force=True)
+    from estimator.hail_reports import preserve_evidence
     est_id = data.get('estimate_id') or str(uuid.uuid4())
+    if not _safe_path_id(est_id):
+        return jsonify(error='invalid estimate id'), 400
+    existing = est_load(est_id)
+    if existing and not _can_touch_estimate(existing):
+        return _forbid()
+    preserve_evidence(data, existing)
     data['estimate_id'] = est_id
     now = datetime.utcnow().isoformat() + 'Z'
     data.setdefault('created_at', now)
@@ -1536,6 +1543,8 @@ def save_estimate(est_id):
         return _forbid()
 
     def _merge(existing):
+        from estimator.hail_reports import preserve_evidence
+        preserve_evidence(data, existing)
         if existing:
             for field in SERVER_MANAGED_FIELDS:
                 if not data.get(field) and existing.get(field):
@@ -13331,6 +13340,8 @@ def _render_tier_comparison(pdf, est, LM, W, SANS, SERIF, section_head):
     pdf.ln(6)
 
 
+from estimator.hail_reports import append_to_pdf as _append_hail_pdf
+
 def build_signed_pdf(est, signed=None):
     """Render the estimate as a PDF (bytes).
 
@@ -13974,7 +13985,7 @@ def build_signed_pdf(est, signed=None):
         pdf.set_text_color(*_PDF_STYLE['ink'])
         pdf.set_draw_color(*_PDF_STYLE['rule'])
         pdf.set_line_width(0.2)
-        return bytes(pdf.output())
+        return _append_hail_pdf(bytes(pdf.output()), est)
 
     # Signature block
     if pdf.get_y() > pdf.h - 70:
@@ -14006,7 +14017,7 @@ def build_signed_pdf(est, signed=None):
         pdf.set_x(LM + 6)
     pdf.set_draw_color(*_PDF_STYLE['rule'])
 
-    return bytes(pdf.output())
+    return _append_hail_pdf(bytes(pdf.output()), est)
 
 
 # Mirrors MEASURE_FIELDS in app.js (Scope page) — keep the two in sync.
@@ -17848,7 +17859,7 @@ def build_condition_report_pdf(est):
         pdf._chrome_until = pdf.page_no()
         _roof_cert_render(pdf, est)
 
-    return bytes(pdf.output())
+    return _append_hail_pdf(bytes(pdf.output()), est)
 
 
 def generate_condition_report(est_id, push_to_crm=True):
@@ -26269,6 +26280,8 @@ threading.Thread(target=_reminder_loop, daemon=True).start()
 # Isolated, opt-in image-editing workflow. Existing instant previews stay intact.
 from estimator.exterior_rendering import register as _register_realistic_previews
 _register_realistic_previews(sys.modules[__name__])
+from estimator.hail_reports import register as _register_hail_reports
+_register_hail_reports(sys.modules[__name__])
 
 if __name__ == '__main__':
     import threading, webbrowser

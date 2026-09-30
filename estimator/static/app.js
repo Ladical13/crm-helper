@@ -16833,6 +16833,7 @@ function renderDocumentsPage() {
       </div>
     </div>
 
+    <div id="hail-report-panel"></div>
     <div id="co-panel"></div>
 
     <div id="permit-form-container"></div>
@@ -16841,6 +16842,7 @@ function renderDocumentsPage() {
 
     ${otherEstimateDocsHtml(custName)}
   </div>`;
+  if (typeof renderHailReportPanel === 'function') renderHailReportPanel();
   if (_docGenerator === 'permit')    renderPermitForm();
   if (_docGenerator === 'roofcert')  renderRoofCertForm();
   if (_docGenerator === 'warranty')  renderWarrantyCertForm();
