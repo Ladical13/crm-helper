@@ -667,6 +667,11 @@ would renumber documents already sent to GCs. `_invoice_kind_label()` is where
   add-on is an elected upgrade, an accepted change order or an adjustment — and
   prices nothing. The PDF, the signing page and the rep's on-screen preview all
   render that one structure. `itemized` is the full table for a client who asks.
+- **Itemized, a trade with sections prints one header, table and subtotal per
+  structure / roof area** (`groups` on each `invoice_rows()` section), then
+  the trade subtotal; a basic estimate closes on **Project Total**. Group
+  subtotals are taken before labor folds, so they always add up to the trade.
+  The flat `rows` keep the `[Section]` suffix for anything without headers.
 - **What was installed is NAMES, never prices** (`invoice_materials()`): the
   selected tier's customer-visible lines, plus `_material_selection_rows()` —
   the brand/color picks, one builder shared with the permit packet. A package

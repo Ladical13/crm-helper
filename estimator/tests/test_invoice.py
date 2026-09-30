@@ -748,3 +748,41 @@ def test_a_package_is_named_only_when_the_estimate_names_one():
     est['trades']['roofing']['tier_bundle_names'] = {'better': 'Summit Special'}
     est['trades']['roofing']['tier_bundles'] = {'better': '__custom__'}
     assert A.invoice_materials(est)['trades']['roofing']['package'] == 'Summit Special'
+
+
+# ── sections on the basic estimate: a header and a subtotal each ───────────
+
+def _sectioned():
+    est = _est(invoice={'kind': 'quote'})
+    est['trades']['roofing']['sections'] = ['House', 'Detached Garage', 'Supplements']
+    est['trades']['roofing']['line_items'] = [
+        _item('Shingles', 30, 100, 'House', catalog_id='m_landmark'),
+        _item('Install Labor', 30, 145, 'House', customer_visible=False),
+        _item('Shingles', 8, 100, 'Detached Garage', catalog_id='m_landmark'),
+        _item('Install Labor', 8, 145, 'Detached Garage', customer_visible=False),
+        _item('Dumpster', 1, 400),
+    ]
+    return est
+
+
+def test_the_basic_estimate_groups_lines_under_their_section():
+    """It printed "Shingles [Detached Garage]" on every line; now each structure
+    has its own header and subtotal, the subtotals add up to the trade's, and
+    each section's labor folds into that section's own shingles."""
+    est = _sectioned()
+    roof = next(s for s in A.invoice_rows(est)['sections'] if s['key'] == 'roofing')
+    assert [g['name'] for g in roof['groups']] == ['General', 'House', 'Detached Garage']
+    house = roof['groups'][1]
+    assert [r[0] for r in house['rows']] == ['Shingles'], 'no [Section] suffix inside a group'
+    assert house['subtotal'] == pytest.approx((100 + 145) / 0.65 * 30)
+    assert house['rows'][0][4] == pytest.approx(house['subtotal'])
+    assert sum(g['subtotal'] for g in roof['groups']) == pytest.approx(roof['subtotal'])
+    txt = _pdf_text(A.build_invoice_pdf(est))
+    assert 'Detached Garage Subtotal' in txt and 'House Subtotal' in txt
+    assert '[Detached Garage]' not in txt
+    assert 'Project Total' in txt
+
+
+def test_a_trade_without_sections_is_one_plain_table():
+    roof = next(s for s in A.invoice_rows(_est())['sections'] if s['key'] == 'roofing')
+    assert roof['groups'] == []

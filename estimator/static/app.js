@@ -18021,7 +18021,15 @@ function invPreviewHtml(inv, tot, head, summary) {
     if (!(tot.sections || []).length) body += sec('Scope', 'No billable line items');
     for (const s of tot.sections || []) {
       body += sec('Scope', s.title);
-      if ((s.rows || []).length) body += table(s.rows);
+      // A header, table and subtotal per structure / roof area — the same
+      // `groups` the PDF prints from.
+      if ((s.groups || []).length) {
+        for (const g of s.groups) {
+          body += `<div class="invp-group">${esc(g.name)}</div>`;
+          if ((g.rows || []).length) body += table(g.rows);
+          body += money(`${g.name} Subtotal`, g.subtotal);
+        }
+      } else if ((s.rows || []).length) body += table(s.rows);
       if (s.folded) body += '<p class="invp-folded">Additional materials, supplies &amp; labor included in subtotal</p>';
       body += money(`${s.title} Subtotal`, s.subtotal);
     }
@@ -18033,7 +18041,7 @@ function invPreviewHtml(inv, tot, head, summary) {
     if ((tot.change_orders || []).length) body += money('Change orders', tot.co_total);
     for (const [label, amt] of tot.adjustments || []) body += money(label, amt);
   }
-  body += money('Total', tot.total, 'invp-strong');
+  body += money(isInv ? 'Total' : 'Project Total', tot.total, 'invp-strong');
   const pays = tot.payments || [];
   for (const p of pays) {
     let label = 'Payment received';

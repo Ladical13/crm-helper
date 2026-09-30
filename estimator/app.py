@@ -18702,18 +18702,26 @@ def invoice_rows(est):
                         continue
                     line = _line_sell_total(it, tier, r, mode)
                     desc = t.get('description')
-                name = _invoice_line_name(_with_section(it, it.get('name', '')), desc)
+                name = _invoice_line_name(it.get('name', ''), desc)
                 subtotal += line
                 priced.append((it, qty, line, name))
+            known = [x for x in (td.get('sections') or []) if x]
+
+            def _sec_of(it, known=known):
+                sec = (it.get('section') or '').strip()
+                return sec if sec in known else ''
+            # Section subtotals come from the rows BEFORE folding, so they
+            # include every billed line and add up to the trade's subtotal.
+            sec_totals = {}
+            for e in priced:
+                sec_totals[_sec_of(e[0])] = sec_totals.get(_sec_of(e[0]), 0.0) + e[2]
             if not itemize:
                 # Hidden lines (base labor) are still billed: they fold into
                 # their section's covering, so the rows add up to the subtotal.
                 # A signed invoice that predates folding keeps its old shape.
-                known = set(x for x in (td.get('sections') or []) if x)
                 groups = {}
                 for e in priced:
-                    sec = (e[0].get('section') or '').strip()
-                    groups.setdefault(sec if sec in known else '', []).append(e)
+                    groups.setdefault(_sec_of(e[0]), []).append(e)
                 keep = {}
                 for g in groups.values():
                     if inv['fold']:
@@ -18725,10 +18733,27 @@ def invoice_rows(est):
                     keep.update({id(e[0]): e[2] for e in vis})
                 priced = [(e[0], e[1], keep[id(e[0])], e[3])
                           for e in priced if id(e[0]) in keep]
+            # Flat `rows` keep the "[Section]" suffix for anything that lists
+            # them without headers; `groups` is the same rows under a header
+            # per structure / roof area, each with its own subtotal — what the
+            # basic estimate and the itemized invoice print. Order mirrors
+            # render_line_items: General first, then the trade's sections.
+            by_sec = {}
             for it, qty, line, name in priced:
-                rows.append((name, qty, str(it.get('unit') or ''), line / qty, line))
+                row = (name, qty, str(it.get('unit') or ''), line / qty, line)
+                sec = _sec_of(it)
+                by_sec.setdefault(sec, []).append(row)
+                rows.append((f'{name} [{sec}]' if sec else name,) + row[1:])
+            grouped = []
+            if known and any(sec_totals.get(n) is not None for n in known):
+                for n in [''] + known:
+                    if n in sec_totals:
+                        grouped.append({'name': n or 'General',
+                                        'rows': by_sec.get(n, []),
+                                        'subtotal': sec_totals[n]})
             if rows or folded:
                 sections.append({'key': tk, 'title': label, 'rows': rows,
+                                 'groups': grouped,
                                  'subtotal': subtotal, 'folded': folded})
             s_rows, _s_tot = trade_supplements(est, tk, tier)
             for it, q, line, desc in s_rows:
@@ -19158,7 +19183,19 @@ def build_invoice_pdf(est):
             section('Scope', 'No billable line items')
         for sec in data['sections']:
             section('Scope', sec['title'])
-            if sec['rows']:
+            if sec.get('groups'):
+                # One header, table and subtotal per structure / roof area,
+                # rather than a "[Garage]" suffix on every line.
+                for g in sec['groups']:
+                    pdf.set_font(SANS, 'B', 9)
+                    pdf.set_text_color(*_PDF_STYLE['navy'])
+                    pdf.cell(W, 6.5, _pdf_rich(g['name']), align='L',
+                             new_x='LMARGIN', new_y='NEXT')
+                    pdf.set_text_color(*_PDF_STYLE['ink'])
+                    if g['rows']:
+                        table(g['rows'])
+                    money_row(f"{g['name']} Subtotal", g['subtotal'])
+            elif sec['rows']:
                 table(sec['rows'])
             if sec.get('folded'):
                 pdf.set_font(SANS, 'I', 7.5)
@@ -19180,7 +19217,8 @@ def build_invoice_pdf(est):
             money_row('Change orders', data['co_total'])
         for label, amt in data['adjustments']:
             money_row(label, amt)
-    money_row('Total', data['total'], bold=True, rule=True)
+    # A basic estimate closes on the number the client is being quoted.
+    money_row('Total' if is_inv else 'Project Total', data['total'], bold=True, rule=True)
     if data['payments']:
         for p in data['payments']:
             label = 'Payment received'
