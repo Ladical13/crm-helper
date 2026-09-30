@@ -7048,17 +7048,92 @@ def _show_labor_lines(est):
     return (est.get('page_visibility') or {}).get('labor') is True
 
 
+def _line_price_view(est):
+    """Which price columns a customer estimate prints, and whether hidden lines
+    fold into a host line. {'total', 'unit', 'fold'}.
+
+    Two chips, set per estimate: `lineTotals` (default ON — only a literal
+    false hides it) and `unitPrices` (default OFF — only a literal true shows
+    it). The sell price per unit is ours to show or not; the line total is
+    what the customer is buying.
+
+    A SIGNED estimate that predates both keys renders the way it was signed:
+    `linePrices` true showed both columns, anything else neither, and nothing
+    folded. A contract must not change shape under the person who signed it.
+
+    MUST mirror linePriceView() in app.js."""
+    pv = est.get('page_visibility') or {}
+    legacy_lp = pv.get('linePrices') is True
+    if est.get('signature') and 'lineTotals' not in pv and 'unitPrices' not in pv:
+        return {'total': legacy_lp, 'unit': legacy_lp, 'fold': False}
+    return {'total': pv.get('lineTotals') is not False,
+            'unit': pv.get('unitPrices') is True, 'fold': True}
+
+
+def _fold_host_sku(trade, pid):
+    """Is this catalog id a line base labor may fold INTO — the covering the
+    crew is installing? Roofing/siding use _is_material_sku; windows are `w_*`
+    (not wa_/wb_/wl_/wx_) and commercial membranes `cm_*`. MUST mirror
+    foldHostSku() in app.js."""
+    s = str(pid or '')
+    if trade == 'windows':
+        return s.startswith('w_')
+    if trade == 'commercial':
+        return s.startswith('cm_')
+    return _is_material_sku(trade, pid)
+
+
+def _fold_hidden_lines(trade, entries):
+    """Fold customer-hidden lines (base labor) into the line they belong to.
+
+    `entries` is one section group's priced rows, [(item, qty, line, desc)].
+    Returns (visible_rows, unfolded) — the visible rows with each host's line
+    total raised by its share of the hidden lines, and how many hidden lines
+    found no host (then they stay folded into the subtotal as before).
+
+    The host is the covering (_fold_host_sku); several coverings split the
+    hidden total pro-rata by their own totals, the last one taking the
+    remainder so the rows still add up exactly. No covering → the visible line
+    with the largest total. Nothing is repriced: the rows sum to the same
+    subtotal they always did. MUST mirror foldHiddenLines() in app.js."""
+    hidden = [e for e in entries if e[0].get('customer_visible') is False]
+    visible = [list(e) for e in entries if e[0].get('customer_visible') is not False]
+    if not hidden:
+        return [tuple(e) for e in visible], 0
+    if not visible:
+        return [], len(hidden)
+    folded = sum(e[2] for e in hidden)
+    hosts = [e for e in visible if _fold_host_sku(trade, e[0].get('catalog_id'))]
+    if not hosts:
+        best = visible[0]
+        for e in visible[1:]:
+            if e[2] > best[2]:
+                best = e
+        hosts = [best]
+    weight = sum(e[2] for e in hosts)
+    given = 0.0
+    for i, e in enumerate(hosts):
+        if i == len(hosts) - 1:
+            share = folded - given
+        else:
+            share = folded * (e[2] / weight if weight > 0 else 1 / len(hosts))
+            given += share
+        e[2] += share
+    return [tuple(e) for e in visible], 0
+
+
 def render_line_items(est, tier=None, only_trades=None):
     """Build trade line-item tables for customer view. Returns (html, grand_total).
     tier=None prices each trade at its own selected tier (mix-and-match; legacy
     docs resolve to the old single selected_tier). only_trades limits output."""
     pricing  = est.get('pricing', {})
     mode     = pricing.get('mode', 'margin')
-    # Mirror the PDF's "Line Prices" chip: unit price + line total columns
-    # appear online exactly when they appear in print.
-    show_lp  = (est.get('page_visibility') or {}).get('linePrices') is True
+    # Mirror the PDF's price chips: the unit price and line total columns
+    # appear online exactly when they appear in print (_line_price_view).
+    view     = _line_price_view(est)
+    show_tot, show_unit = view['total'], view['unit']
     show_lab = _show_labor_lines(est)
-    ncols    = 5 if show_lp else 3
+    ncols    = 3 + show_unit + show_tot
 
     labels  = dict(roofing='Roofing', siding='Siding', windows='Windows', gutters='Gutters',
                    commercial='Commercial Roofing', other='Other / Misc')
@@ -7113,15 +7188,22 @@ def render_line_items(est, tier=None, only_trades=None):
             if not entries:
                 continue
             grows = []
-            for item, qty, line, desc in entries:
-                if not item.get('customer_visible', True) and not show_lab:
-                    hidden_count += 1
-                    continue
+            shown = entries
+            if not show_lab:
+                if view['fold']:
+                    # Base labor rides inside the covering's price.
+                    shown, unfolded = _fold_hidden_lines(tk, entries)
+                else:
+                    shown = [e for e in entries if e[0].get('customer_visible', True)]
+                    unfolded = len(entries) - len(shown)
+                hidden_count += unfolded
+            for item, qty, line, desc in shown:
                 lp_cells = ''
-                if show_lp:
+                if show_unit:
                     unit_sell = (line / qty) if qty else 0.0
-                    lp_cells = (f'<td class="cvr" data-l="Each">{fc(unit_sell)}</td>'
-                                f'<td class="cvr" data-l="Total">{fc(line)}</td>')
+                    lp_cells += f'<td class="cvr" data-l="Each">{fc(unit_sell)}</td>'
+                if show_tot:
+                    lp_cells += f'<td class="cvr" data-l="Total">{fc(line)}</td>'
                 grows.append(f'''<tr>
               <td class="cvn">{he(item.get("name",""))}
                 {'<div class="cvd">'+he(desc)+'</div>' if desc else ''}</td>
@@ -7144,7 +7226,8 @@ def render_line_items(est, tier=None, only_trades=None):
             continue  # nothing priced to show the customer for this trade
         gtotal += sub
         if rows:
-            lp_ths = '<th scope="col" class="cvth-r">Unit Price</th><th scope="col" class="cvth-r">Total</th>' if show_lp else ''
+            lp_ths = (('<th scope="col" class="cvth-r">Unit Price</th>' if show_unit else '')
+                      + ('<th scope="col" class="cvth-r">Total</th>' if show_tot else ''))
             parts.append(f'''<div class="cvtrade">
           <div class="cvtrade-hd">{lbl}</div>
           <table class="cvt"><thead><tr>
@@ -13721,12 +13804,16 @@ def build_signed_pdf(est, signed=None):
         # keeps was the one place they got the full breakdown. Supplements keep
         # their price column regardless (an "if needed" line without its price
         # tells the customer nothing), so they keep `widths`.
-        show_lp  = (est.get('page_visibility') or {}).get('linePrices') is True
+        view     = _line_price_view(est)
+        show_tot, show_unit = view['total'], view['unit']
         show_lab = _show_labor_lines(est)
-        scope_widths = widths if show_lp else (W - 22 - 20, 22, 20)
-        scope_aligns = aligns if show_lp else ('LEFT', 'RIGHT', 'CENTER')
-        scope_heads  = (('Description', 'Qty', 'Unit', 'Unit Price', 'Total') if show_lp
-                        else ('Description', 'Qty', 'Unit'))
+        _money_w = 28 * (show_tot + show_unit)
+        scope_widths = ((W - 14 - 14 - _money_w, 14, 14) + (28,) * (show_tot + show_unit)
+                        if _money_w else (W - 22 - 20, 22, 20))
+        scope_aligns = ('LEFT', 'RIGHT', 'CENTER') + ('RIGHT',) * (show_tot + show_unit)
+        scope_heads  = (('Description', 'Qty', 'Unit')
+                        + (('Unit Price',) if show_unit else ())
+                        + (('Total',) if show_tot else ()))
         for tk in GBB_TRADES:
             td = est.get('trades', {}).get(tk, {})
             if not td.get('enabled') or not td.get('line_items'):
@@ -13782,29 +13869,47 @@ def build_signed_pdf(est, signed=None):
                          labels.get(tk, tk.title()))
             sub = 0.0
             hidden = 0
+            priced = []
+            for it in td['line_items']:
+                qty = float(it.get('quantity') or 0)
+                if qty <= 0:
+                    continue
+                if trade_mode == 'simple':
+                    line = float(it.get('unit_price') or 0) * qty
+                    desc = (it.get('description') or '').strip()
+                else:
+                    t    = (it.get('tiers') or {}).get(t_tier, {})
+                    if t.get('included') is False:
+                        continue
+                    line = _line_sell_total(it, t_tier, r, mode)
+                    desc = t.get('description', '')
+                sub += line
+                priced.append((it, qty, line, desc))
+            if not show_lab:
+                # Hidden lines (base labor) fold into their section's covering,
+                # or — on a contract signed before folding — just drop out.
+                _known = set(s for s in (td.get('sections') or []) if s)
+                _groups = {}
+                for e in priced:
+                    _s = (e[0].get('section') or '').strip()
+                    _groups.setdefault(_s if _s in _known else '', []).append(e)
+                _keep = {}
+                for _g in _groups.values():
+                    if view['fold']:
+                        _vis, _n = _fold_hidden_lines(tk, _g)
+                    else:
+                        _vis = [e for e in _g if e[0].get('customer_visible', True)]
+                        _n = len(_g) - len(_vis)
+                    hidden += _n
+                    _keep.update({id(e[0]): e[2] for e in _vis})
+                priced = [(e[0], e[1], _keep[id(e[0])], e[3])
+                          for e in priced if id(e[0]) in _keep]
             with open_table(scope_widths, scope_aligns) as table:
                 head = table.row()
                 for h in scope_heads:
                     head.cell(h)
-                for it in td['line_items']:
-                    qty = float(it.get('quantity') or 0)
-                    if qty <= 0:
-                        continue
-                    if trade_mode == 'simple':
-                        sp_  = float(it.get('unit_price') or 0)
-                        line = sp_ * qty
-                        desc = (it.get('description') or '').strip()
-                    else:
-                        t    = (it.get('tiers') or {}).get(t_tier, {})
-                        if t.get('included') is False:
-                            continue
-                        line = _line_sell_total(it, t_tier, r, mode)
-                        sp_  = line / qty
-                        desc = t.get('description', '')
-                    sub += line
-                    if not it.get('customer_visible', True) and not show_lab:
-                        hidden += 1
-                        continue
+                for it, qty, line, desc in priced:
+                    sp_ = line / qty
                     name = _with_section(it, it.get('name', ''))
                     # The description wraps under the name now instead of being
                     # clipped at 78 characters mid-word.
@@ -13814,8 +13919,9 @@ def build_signed_pdf(est, signed=None):
                     row.cell(_pdf_rich(name))
                     row.cell(f'{qty:g}')
                     row.cell(_pdf_rich(it.get('unit', '')))
-                    if show_lp:
+                    if show_unit:
                         row.cell(fc(sp_))
+                    if show_tot:
                         row.cell(fc(line))
             if hidden:
                 pdf.set_font(SANS, 'I', 7)
@@ -18429,6 +18535,8 @@ def _sanitize_invoice(payload):
         out['kind'] = kind
     if isinstance(payload.get('itemize'), bool):
         out['itemize'] = payload['itemize']
+    if isinstance(payload.get('unit_prices'), bool):
+        out['unit_prices'] = payload['unit_prices']
     if payload.get('detail') in _INVOICE_DETAILS:
         out['detail'] = payload['detail']
     for k, cap in (('number', 40), ('po_ref', 100), ('notes', 2000)):
@@ -18490,6 +18598,17 @@ def invoice_fields(est):
         pass
     else:
         inv['itemize'] = bool(inv.get('signature'))
+    # "Show unit prices". Off unless the rep turns it on — each row prints its
+    # total, but the per-unit sell price is ours to show. Base labor folds into
+    # the covering's row (_fold_hidden_lines), which a $/SQ figure would make
+    # look inflated. A signature that predates the flag was taken over the old
+    # shape (unit prices shown, nothing folded), and keeps it: `fold` is
+    # derived, never stored.
+    if isinstance(inv.get('unit_prices'), bool):
+        inv['fold'] = True
+    else:
+        inv['unit_prices'] = bool(inv.get('signature'))
+        inv['fold'] = not inv.get('signature')
     # A basic estimate is itemized by definition. An invoice is a summary
     # unless the rep asked for the breakdown — or it was signed before the
     # summary existed, in which case it keeps the itemized shape it was signed in.
@@ -18564,6 +18683,7 @@ def invoice_rows(est):
             r = _tier_rate(pricing, tk, tier)
             label = _INVOICE_TRADE_LABELS.get(tk, tk.title())
             rows, subtotal, folded = [], 0.0, 0
+            priced = []
             for it in td.get('line_items') or []:
                 # The exact skip rules of _trade_subtotal, and nothing more:
                 # customer_visible is deliberately NOT a skip here.
@@ -18581,14 +18701,32 @@ def invoice_rows(est):
                     if t.get('included') is False:
                         continue
                     line = _line_sell_total(it, tier, r, mode)
-                    unit_price = line / qty
                     desc = t.get('description')
                 name = _invoice_line_name(_with_section(it, it.get('name', '')), desc)
                 subtotal += line
-                if not itemize and it.get('customer_visible') is False:
-                    folded += 1         # still billed, just not broken out
-                    continue
-                rows.append((name, qty, str(it.get('unit') or ''), unit_price, line))
+                priced.append((it, qty, line, name))
+            if not itemize:
+                # Hidden lines (base labor) are still billed: they fold into
+                # their section's covering, so the rows add up to the subtotal.
+                # A signed invoice that predates folding keeps its old shape.
+                known = set(x for x in (td.get('sections') or []) if x)
+                groups = {}
+                for e in priced:
+                    sec = (e[0].get('section') or '').strip()
+                    groups.setdefault(sec if sec in known else '', []).append(e)
+                keep = {}
+                for g in groups.values():
+                    if inv['fold']:
+                        vis, n = _fold_hidden_lines(tk, g)
+                    else:
+                        vis = [e for e in g if e[0].get('customer_visible') is not False]
+                        n = len(g) - len(vis)
+                    folded += n
+                    keep.update({id(e[0]): e[2] for e in vis})
+                priced = [(e[0], e[1], keep[id(e[0])], e[3])
+                          for e in priced if id(e[0]) in keep]
+            for it, qty, line, name in priced:
+                rows.append((name, qty, str(it.get('unit') or ''), line / qty, line))
             if rows or folded:
                 sections.append({'key': tk, 'title': label, 'rows': rows,
                                  'subtotal': subtotal, 'folded': folded})
@@ -18927,8 +19065,13 @@ def build_invoice_pdf(est):
     head_face = FontFace(family=SANS, size_pt=6.5,
                          color=_PDF_STYLE['faint'], fill_color=None)
     TW = min(W, pdf.epw)      # W can exceed epw by a float hair, which fpdf rejects
-    widths = (TW - 16 - 14 - 28 - 28, 16, 14, 28, 28)
-    aligns = ('LEFT', 'RIGHT', 'CENTER', 'RIGHT', 'RIGHT')
+    show_unit = inv['unit_prices']
+    if show_unit:
+        widths = (TW - 16 - 14 - 28 - 28, 16, 14, 28, 28)
+        aligns = ('LEFT', 'RIGHT', 'CENTER', 'RIGHT', 'RIGHT')
+    else:
+        widths = (TW - 16 - 14 - 28, 16, 14, 28)
+        aligns = ('LEFT', 'RIGHT', 'CENTER', 'RIGHT')
 
     def table(rows, blank_total='', blank_qty=''):
         pdf.set_font(SANS, '', 8)
@@ -18940,14 +19083,15 @@ def build_invoice_pdf(est):
                        cell_fill_mode=TableCellFillMode.NONE, line_height=5,
                        padding=(2.4, 2, 2.4, 0), v_align='T') as t:
             h = t.row()
-            for x in ('Description', 'Qty', 'Unit', 'Unit Price', 'Total'):
+            for x in ('Description', 'Qty', 'Unit') + (('Unit Price',) if show_unit else ()) + ('Total',):
                 h.cell(x)
             for name, qty, unit, unit_price, line in rows:
                 row = t.row()
                 row.cell(_pdf_rich(name))
                 row.cell(f'{qty:g}' if qty else blank_qty)
                 row.cell(_pdf_rich(unit))
-                row.cell(fc(unit_price) if line else '')
+                if show_unit:
+                    row.cell(fc(unit_price) if line else '')
                 row.cell(fc(line) if line else blank_total)
 
     def money_row(label, amount, bold=False, rule=False):
@@ -21527,8 +21671,12 @@ ROOFING_CATALOG_SEED = [
      # carries _SS_BUFFER only, like x_ss_delivery.
      "bullets": ["Panels roll-formed to length for this roof and delivered"]},
     {"id": "l_tearoff", "cost_class": "labor", "name": "Tear-Off Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
+     "customer_visible": False,
      "bullets": ["Complete tear-off of existing roofing down to the deck"]},
     {"id": "l_install", "cost_class": "labor", "name": "Install Labor", "unit": "SQ", "cost": 0, "measure": "squares_waste",
+     # Base labor folds into the shingle line's price on customer documents
+     # (_fold_hidden_lines); steep / extra-layer / 2-story charges stay visible.
+     "customer_visible": False,
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
     {"id": "x_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
      "bullets": ["Dumpster and full magnetic nail sweep"]},

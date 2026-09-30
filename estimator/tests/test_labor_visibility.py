@@ -71,10 +71,11 @@ def test_the_web_page_folds_labor_unless_the_chip_is_on():
     assert shown_total == pytest.approx(total), 'showing a row must never move a total'
 
 
-def test_the_signed_pdf_obeys_the_line_prices_chip():
-    """It printed Unit Price and Total on every line whatever the chip said."""
+def test_the_signed_pdf_obeys_the_unit_prices_chip():
+    """It printed Unit Price and Total on every line whatever the chip said.
+    The unit price is opt-in now; the line total is on unless turned off."""
     assert 'Unit Price' not in _pdf_text(A.build_signed_pdf(_est(), signed=False))
-    assert 'Unit Price' in _pdf_text(A.build_signed_pdf(_est(linePrices=True), signed=False))
+    assert 'Unit Price' in _pdf_text(A.build_signed_pdf(_est(unitPrices=True), signed=False))
 
 
 def test_the_signed_pdf_obeys_the_labor_chip():
@@ -98,8 +99,8 @@ def test_the_browser_print_folds_labor_unless_the_chip_is_on():
     js = _appjs()
     i = js.index('function printTradeBody(')
     body = js[i:js.index('\n}', i)]
-    assert 'showLab || i.customer_visible !== false' in body
-    assert 'printTradeBody(trade,t,{showLP,showLab,tradeMode})' in js
+    assert 'showLab ? entries' in body and 'foldHiddenLines(trade, entries)' in body
+    assert 'printTradeBody(trade,t,{showTot,showUnit,fold,showLab,tradeMode})' in js
     assert 'const showLab = pv.labor === true;' in js
 
 

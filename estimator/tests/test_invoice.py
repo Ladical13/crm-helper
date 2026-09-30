@@ -376,7 +376,9 @@ def test_hiding_labor_folds_hidden_rows_but_not_the_money():
     names = [r[0] for s in folded['sections'] for r in s['rows']]
     assert 'Install Labor' not in names and 'Shingles' in names
     roof = next(s for s in folded['sections'] if s['title'] == 'Roofing')
-    assert roof['folded'] == 1
+    # The labor rides inside a visible row now, so the rows still add up.
+    assert roof['folded'] == 0
+    assert sum(r[4] for r in roof['rows']) == pytest.approx(roof['subtotal'], abs=0.005)
     assert folded['subtotal'] == itemized['subtotal'] == pytest.approx(
         A._estimate_total(_est()), abs=0.005)
 
@@ -595,7 +597,11 @@ def test_a_three_trade_invoice_fits_on_two_pages():
 
 
 def test_the_itemized_invoice_is_still_there_for_a_client_who_asks():
+    """Each row prints its total; the per-unit sell price only when asked."""
     txt = _pdf_text(A.build_invoice_pdf(_est(invoice={'detail': 'itemized'})))
+    assert 'Shingles' in txt and 'Unit Price' not in txt
+    txt = _pdf_text(A.build_invoice_pdf(_est(invoice={'detail': 'itemized',
+                                                      'unit_prices': True})))
     assert 'Unit Price' in txt
 
 
@@ -603,7 +609,7 @@ def test_the_basic_estimate_is_itemized_titled_estimate_and_folds_labor():
     est = _est(invoice={'kind': 'quote'})
     assert A.invoice_fields(est)['detail'] == 'itemized'
     txt = _pdf_text(A.build_invoice_pdf(est))
-    assert 'ESTIMATE' in txt and 'Unit Price' in txt
+    assert 'ESTIMATE' in txt and 'Total' in txt and 'Unit Price' not in txt
     assert 'Install Labor' not in txt
     assert A._invoice_filename(est).startswith('ProjectOneRoofing-Estimate-')
     # The stored kind stays 'quote': renaming it would renumber what was sent.

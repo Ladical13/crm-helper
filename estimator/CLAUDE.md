@@ -699,22 +699,44 @@ would renumber documents already sent to GCs. `_invoice_kind_label()` is where
 ## Labor is hidden on everything the customer sees
 
 "Install Labor — $9,400" invites a negotiation over the one number that is
-really the crew, so labor is marked `customer_visible: false` and folds into its
-trade's price. The rule is the same on every customer document, and totals
-never move — only which rows print:
+really the crew, so base labor is marked `customer_visible: false` and its price
+**rides inside the covering's row** — the shingle, the siding, the window.
+Internally nothing changes: the Cost & Profit panel, the permit packet and the
+work order read the raw lines, so labor stays its own number there. Extras a
+manager leaves visible (steep, an extra layer, two-story) print as their own
+rows. Totals never move — only which rows print and where a price sits:
 
+- **`_fold_hidden_lines()` / `foldHiddenLines()` are the mirrored pair**, run
+  per section group so a shed's labor lands on the shed's shingles. The host is
+  the covering (`_fold_host_sku()` / `foldHostSku()`); several split pro-rata
+  with the last taking the remainder, so the rows sum to the subtotal exactly;
+  no covering → the largest visible line. Only when nothing is visible does the
+  old "included in total" note appear. `tests/labor_fold_runner.js` holds the
+  two sides together.
+- **Price columns, per document: line Total ON, unit (sell) price OFF.**
+  Estimate: the **Line Totals** and **Unit Prices** chips (`lineTotals`,
+  `unitPrices`), resolved by `_line_price_view()` / `linePriceView()`. Invoice
+  and basic estimate: "Show unit prices" (`unit_prices`). With labor folded in,
+  a $/SQ figure reads inflated, which is half of why it is opt-in.
+- **A document signed before these existed keeps its shape.** No new keys and
+  a signature = the old rule (`linePrices` true showed both columns, else
+  none) and nothing folds, because the signed shingle price must not move.
+  Same rule for an invoice signed with no `unit_prices` key.
 - **Customer estimate:** the **Labor** chip in the Print Pages bar
   (`page_visibility.labor`, `_show_labor_lines()`, in `PAGE_DEFAULT_OFF`) lists
-  hidden lines; **Line Prices** shows per-line prices. `build_signed_pdf` used
-  to print Unit Price and Total on every line whatever that chip said — the one
-  document a customer keeps was the one with the full breakdown.
+  hidden lines at their own price instead of folding them.
 - **Invoice and basic estimate:** "Show labor lines" (`itemize`), default OFF.
   A signature taken before that default flipped renders the way it was signed.
+- **Roofing's seeded `l_install` / `l_tearoff` were not hidden** until
+  2026-09-30 (siding and windows were). `customer_visible` backfills on
+  absence only, and an estimate's lines carry the flag they were built with,
+  so an older estimate keeps a visible Install Labor row until it is unticked
+  or the package is re-picked.
 - **A labor product a manager forgot to hide is REPORTED, never hidden by
   inference.** `pricebook_audit()` raises `labor_visible`; cost_class may only
   ever move the internal cost split, so the fix is the manager unticking
   Customer.
-- Guarded by `tests/test_labor_visibility.py`.
+- Guarded by `tests/test_labor_visibility.py` and `tests/test_labor_fold.py`.
 
 ## Signing an invoice — approval, not contract formation
 

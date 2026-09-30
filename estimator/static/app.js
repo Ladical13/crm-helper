@@ -6042,7 +6042,11 @@ function renderPrintPagesBar() {
     { id:'intro',    label:'Introduction', on: pv.intro   !== false,           always: false },
     { id:'products', label:'Products',     on: pv.products !== false,          always: false },
     { id:'pricing',    label:'Pricing',      on: pv.pricing    !== false,        always: false },
-    { id:'linePrices', label:'Line Prices', on: pv.linePrices === true,         always: false },
+    // Line totals default ON; the per-unit sell price defaults OFF. Both are
+    // per estimate, and linePriceView() decides — a signed estimate from
+    // before these chips keeps the shape it was signed in.
+    { id:'lineTotals', label:'Line Totals', on: linePriceView(pv, !!S.signature).total, always: false },
+    { id:'unitPrices', label:'Unit Prices', on: linePriceView(pv, !!S.signature).unit,  always: false },
     // Default OFF: labor (and any other line marked hidden from the customer)
     // folds into the package price on every customer document — the web page,
     // this print and the signed PDF. On lists those lines. Never moves a total.
@@ -6088,10 +6092,20 @@ function renderPrintPagesBar() {
 // Chips whose ABSENT key means off. The default-on flip below reads a missing
 // key as on and writes false, so one of these needed two taps to turn on.
 // `labor` must agree with _show_labor_lines (app.py): only a literal true shows.
-const PAGE_DEFAULT_OFF = ['linePrices', 'design', 'labor'];
+const PAGE_DEFAULT_OFF = ['unitPrices', 'design', 'labor'];
 function togglePagePrint(page) {
   if (page === 'cover') return;
   if (!S.page_visibility) S.page_visibility = {};
+  if (page === 'lineTotals' || page === 'unitPrices') {
+    // Write BOTH keys from what is on screen, so touching one on a legacy
+    // signed estimate cannot silently flip the other's default.
+    const v = linePriceView(S.page_visibility, !!S.signature);
+    S.page_visibility.lineTotals = page === 'lineTotals' ? !v.total : v.total;
+    S.page_visibility.unitPrices = page === 'unitPrices' ? !v.unit  : v.unit;
+    setDirty();
+    renderPrintPagesBar();
+    return;
+  }
   if (page === 'contract') {
     S.print_contract = !(S.print_contract !== false);
   } else if (PAGE_DEFAULT_OFF.includes(page)) {
@@ -14325,9 +14339,61 @@ window.addEventListener('afterprint',  ()=>{document.getElementById('print-conte
    Pulled out of buildPrintContent so every offered package renders through the
    identical path — the selected tier having its own copy of this markup is how
    the printed unit prices once drifted from the printed subtotal. */
+/* Which price columns a customer estimate prints, and whether hidden lines
+   fold into a host line. Line totals default ON, unit (sell) prices OFF; a
+   signed estimate from before these chips renders the way it was signed
+   (linePrices true = both columns, else none, and nothing folds).
+   MUST mirror _line_price_view (app.py). */
+function linePriceView(pv, signed) {
+  pv = pv || {};
+  const legacy = pv.linePrices === true;
+  if (signed && !('lineTotals' in pv) && !('unitPrices' in pv))
+    return { total: legacy, unit: legacy, fold: false };
+  return { total: pv.lineTotals !== false, unit: pv.unitPrices === true, fold: true };
+}
+
+/* Is this catalog id a covering base labor may fold into? MUST mirror
+   _fold_host_sku (app.py). */
+function foldHostSku(trade, pid) {
+  const s = String(pid || '');
+  if (trade === 'roofing') return s.startsWith('m_');
+  if (trade === 'siding') return s.startsWith('s_') && !/^s[alx]_/.test(s);
+  if (trade === 'windows') return s.startsWith('w_');
+  if (trade === 'commercial') return s.startsWith('cm_');
+  return false;
+}
+
+/* Fold customer-hidden lines (base labor) into the covering's line, so the
+   rows a customer sees add up to the subtotal without a labor row. `entries`
+   is one section group's [{item, qty, line}]; returns {rows, unfolded}. Several
+   coverings split pro-rata (the last takes the remainder); none -> the largest
+   visible line. Nothing is repriced. MUST mirror _fold_hidden_lines (app.py). */
+function foldHiddenLines(trade, entries) {
+  const hidden = entries.filter(e => e.item.customer_visible === false);
+  const visible = entries.filter(e => e.item.customer_visible !== false).map(e => Object.assign({}, e));
+  if (!hidden.length) return { rows: visible, unfolded: 0 };
+  if (!visible.length) return { rows: [], unfolded: hidden.length };
+  const folded = hidden.reduce((a, e) => a + e.line, 0);
+  let hosts = visible.filter(e => foldHostSku(trade, e.item.catalog_id));
+  if (!hosts.length) {
+    let best = visible[0];
+    for (const e of visible.slice(1)) if (e.line > best.line) best = e;
+    hosts = [best];
+  }
+  const weight = hosts.reduce((a, e) => a + e.line, 0);
+  let given = 0;
+  hosts.forEach((e, i) => {
+    let share;
+    if (i === hosts.length - 1) share = folded - given;
+    else { share = folded * (weight > 0 ? e.line / weight : 1 / hosts.length); given += share; }
+    e.line += share;
+  });
+  return { rows: visible, unfolded: 0 };
+}
+
 function printTradeBody(trade, tier, o) {
   const td = S.trades[trade] || {};
-  const { showLP, showLab, tradeMode } = o;
+  const { showTot, showUnit, fold, showLab, tradeMode } = o;
   const inTier = (td.line_items || []).filter(item => {
     if (isSupplementItem(td, item)) return false;   // printed in its own block
     if ((parseFloat(item.quantity) || 0) <= 0) return false;
@@ -14345,12 +14411,13 @@ function printTradeBody(trade, tier, o) {
     const q = parseFloat(item.quantity) || 0;
     return q > 0 ? lineTotalEffective(item, tier, trade) / q : 0;
   };
-  const rowFor = item => {
+  const rowFor = ({ item, line }) => {
     let desc = '', notes = '';
     if (tradeMode === 'simple') { desc = (item.description || '').trim(); }
     else { const t = (item.tiers && item.tiers[tier]) || {}; desc = (t.description || '').trim(); notes = (t.notes || '').trim(); }
-    const sell = sellOf(item);
-    const tot  = sell * (parseFloat(item.quantity) || 0);
+    const q    = parseFloat(item.quantity) || 0;
+    const tot  = line;
+    const sell = q > 0 ? line / q : 0;
     return `<tr>
       <td>${esc(item.name)}
         ${desc?`<div class="p-desc-sub">${esc(desc).replace(/\n/g,'<br>')}</div>`:''}
@@ -14358,15 +14425,19 @@ function printTradeBody(trade, tier, o) {
       </td>
       <td class="p-right">${item.quantity||0}</td>
       <td>${esc(displayUnit(item))}</td>
-      ${showLP?`<td class="p-right">${fmtCur(sell)}</td><td class="p-right">${fmtCur(tot)}</td>`:''}
+      ${showUnit?`<td class="p-right">${fmtCur(sell)}</td>`:''}${showTot?`<td class="p-right">${fmtCur(tot)}</td>`:''}
     </tr>`;
   };
   const hasSections = tradeSections(trade).length > 0;
-  const cols = showLP ? 5 : 3;
+  const cols = 3 + (showUnit ? 1 : 0) + (showTot ? 1 : 0);
   const body = groupedTradeItems(trade, inTier).map(g => {
-    // Hidden lines (labor) fold into the subtotal unless the Labor chip is on —
-    // the same rule as _show_labor_lines on the server's web page and PDF.
-    const rows = g.items.filter(i => showLab || i.customer_visible !== false).map(rowFor).join('');
+    // Hidden lines (base labor) fold into the covering's line unless the Labor
+    // chip is on — the same rule as the server's web page and PDF.
+    const entries = g.items.map(item => ({ item, line: sellOf(item) * (parseFloat(item.quantity) || 0) }));
+    const shown = showLab ? entries
+      : fold ? foldHiddenLines(trade, entries).rows
+      : entries.filter(e => e.item.customer_visible !== false);
+    const rows = shown.map(rowFor).join('');
     if (!g.items.length || (!rows && !hasSections)) return '';
     const hd = hasSections?`<tr class="p-section-row"><td colspan="${cols}">${esc(g.name||'General')}</td></tr>`:'';
     // Per-section subtotal (sections only) — includes customer-hidden items so
@@ -14632,7 +14703,8 @@ function buildPrintContent() {
        its scope nowhere in the document — the customer could read the price of
        the TPO roof but never what it included. Turn it off with the "All
        Packages" print chip to go back to selected-only. */
-    const showLP  = pv.linePrices === true;
+    const _lpv    = linePriceView(pv, !!S.signature);
+    const showTot = _lpv.total, showUnit = _lpv.unit, fold = _lpv.fold;
     const showLab = pv.labor === true;
     const allPkgs = pv.allPackages !== false;
     let multiPkgPrinted = false;
@@ -14648,7 +14720,7 @@ function buildPrintContent() {
       const tiers=(tradeMode==='simple'||!allPkgs)?[selTier]:enabledTiers();
 
       const built=tiers.map(t=>Object.assign({tier:t},
-        printTradeBody(trade,t,{showLP,showLab,tradeMode}))).filter(b=>b.body);
+        printTradeBody(trade,t,{showTot,showUnit,fold,showLab,tradeMode}))).filter(b=>b.body);
       // Supplements print after the package table(s) at the SELECTED package,
       // with a price column whatever the Line Prices chip says — an "if needed"
       // line without its price tells the customer nothing.
@@ -14704,9 +14776,9 @@ function buildPrintContent() {
         </div>
         <table class="p-table"><thead><tr>
           <th>Description</th><th class="p-right">Qty</th><th>Unit</th>
-          ${showLP?`<th class="p-right">Unit Price</th><th class="p-right">Total</th>`:''}
+          ${showUnit?`<th class="p-right">Unit Price</th>`:''}${showTot?`<th class="p-right">Total</th>`:''}
         </tr></thead><tbody>${g.body}</tbody><tfoot><tr>
-          <td colspan="${showLP?4:2}">${esc(subLbl)}</td>
+          <td colspan="${2+(showUnit?1:0)+(showTot?1:0)}">${esc(subLbl)}</td>
           <td class="p-right">${fmtCur(g.subtotal)}</td>
         </tr></tfoot></table>
       </div>`;
@@ -17918,13 +17990,14 @@ function invPreviewHtml(inv, tot, head, summary) {
     `<div class="invp-sec"><div class="invp-eyebrow">${esc(eyebrow)}</div><div class="invp-title">${esc(title)}</div></div>`;
   const money = (label, amount, cls = '') =>
     `<div class="invp-money ${cls}"><span>${esc(label)}</span><span>${fmtCur(amount)}</span></div>`;
+  const showUnit = inv.unit_prices === true;
   const table = (rows, suppl) => `<table class="invp-table"><thead><tr>
-      <th>Description</th><th>Qty</th><th>Unit</th><th>Unit Price</th><th>Total</th></tr></thead><tbody>
+      <th>Description</th><th>Qty</th><th>Unit</th>${showUnit ? '<th>Unit Price</th>' : ''}<th>Total</th></tr></thead><tbody>
       ${rows.map(([name, qty, unit, unitPrice, line]) => `<tr>
         <td>${esc(name)}</td>
         <td>${qty ? esc(String(qty)) : (suppl ? 'If needed' : '')}</td>
         <td>${esc(unit || '')}</td>
-        <td>${line ? fmtCur(unitPrice) : ''}</td>
+        ${showUnit ? `<td>${line ? fmtCur(unitPrice) : ''}</td>` : ''}
         <td>${line ? fmtCur(line) : (suppl ? 'Quoted if needed' : '')}</td></tr>`).join('')}
       </tbody></table>`;
 
@@ -18091,8 +18164,14 @@ function renderInvoiceForm() {
     <label class="inv-itemize">
       <input type="checkbox" id="inv-itemize" ${inv.itemize === true ? 'checked' : ''}>
       <span><strong>Show labor lines.</strong> Off: labor and anything else hidden from the
-        customer folds into its trade's price. On: those lines are listed too. The total is
-        the same either way.</span>
+        customer folds into the main material line's price. On: those lines are listed too.
+        The total is the same either way.</span>
+    </label>
+
+    <label class="inv-itemize">
+      <input type="checkbox" id="inv-unit-prices" ${inv.unit_prices === true ? 'checked' : ''}>
+      <span><strong>Show unit prices.</strong> Off: each line shows its total only. On: the
+        per-unit price is listed beside it.</span>
     </label>
 
     <div class="rc-sec">Payments received <span class="note-tag">deposits, progress payments</span></div>
@@ -18168,6 +18247,8 @@ function renderInvoiceForm() {
   });
   const itemize = document.getElementById('inv-itemize');
   if (itemize) itemize.onchange = () => saveInvoiceFields(true, true);
+  const unitPrices = document.getElementById('inv-unit-prices');
+  if (unitPrices) unitPrices.onchange = () => saveInvoiceFields(true, true);
   document.querySelectorAll('#inv-payments input, #inv-adjustments input, #inv-adjustments select').forEach(x => {
     x.onchange = () => saveInvoiceFields(true, false);
   });
@@ -18178,6 +18259,8 @@ function _readInvoiceForm() {
   const out = { kind: (_invData && _invData.invoice && _invData.invoice.kind) || 'invoice' };
   const itemize = document.getElementById('inv-itemize');
   if (itemize) out.itemize = itemize.checked;
+  const unitPrices = document.getElementById('inv-unit-prices');
+  if (unitPrices) out.unit_prices = unitPrices.checked;
   const map = {number: 'inv-number', issue_date: 'inv-issue', due_date: 'inv-due',
                valid_until: 'inv-valid', completed_date: 'inv-completed',
                po_ref: 'inv-po', notes: 'inv-notes'};
