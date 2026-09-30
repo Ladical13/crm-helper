@@ -1312,5 +1312,8 @@ def config():
 def health():
     return jsonify({'status': 'ok', 'db': DB_PATH})
 
+from hail.property_routes import register as _register_property_hail
+_register_property_hail(app, http)
+
 if __name__ == '__main__':
     app.run(debug=True, port=5001)

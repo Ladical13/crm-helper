@@ -1,5 +1,7 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+.hail-property-actions, .hail-property-matches { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0; }
+.hail-property-matches button { text-align:left; width:100%; }
 :root {
   --bg:       #0b0f14;
   --surface:  #141a22;

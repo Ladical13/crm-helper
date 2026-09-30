@@ -33,7 +33,7 @@ def test_every_expected_spot_is_still_found():
     silently skip that spot. find_versions() raises instead — assert it finds
     exactly the five we expect."""
     versions = bump_version.find_versions()
-    assert len(versions) == len(bump_version.PATTERNS) == 5
+    assert len(versions) == len(bump_version.PATTERNS) == 7
 
 
 def test_check_mode_exits_zero_when_consistent():

@@ -23,6 +23,8 @@ SW_JS = os.path.join(BASE, 'static', 'sw.js')
 # (path, compiled pattern, human description). Each pattern captures the version
 # in group 1 and is rewritten via the group's span, so surrounding text is kept.
 PATTERNS = [
+    (INDEX_HTML, re.compile(r'hail-report\.js\?v=(\d+)'), 'index.html hail report script'),
+    (SW_JS, re.compile(r'hail-report\.js\?v=(\d+)'), 'sw.js hail report script'),
     (INDEX_HTML, re.compile(r'style\.css\?v=(\d+)'), 'index.html stylesheet link'),
     (INDEX_HTML, re.compile(r'app\.js\?v=(\d+)'), 'index.html script tag'),
     (SW_JS, re.compile(r"CACHE\s*=\s*'po-v(\d+)'"), 'sw.js CACHE name'),
