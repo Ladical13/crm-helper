@@ -106,6 +106,9 @@ const NAMES = ['isBundleTrade', 'effectiveTradeMode', '_tradeCatalog', '_tradeBu
                // Moving a section moves its block of line items with it.
                'groupedTradeItems', 'structureNamed',
                'canMoveTradeSection', 'moveTradeSection',
+               // ↑↓ on a row: from a G/B/B column it may only swap with a row
+               // that column shows.
+               'liShownInTier', '_liMovePartner', 'liCanMove', 'liMove',
                // Swappable products (polyiso thickness) — survive a system swap.
                'variantSlot', 'variantRowFor', 'liSwapVariant'];
 
@@ -153,6 +156,11 @@ const body = `
     else if (o.op === 'moveSection') moveTradeSection(o.trade, o.idx, o.dir);
     // Whether the arrow should be live at all, for asserting on the ends.
     else if (o.op === 'canMoveSection') S._probe = canMoveTradeSection(o.trade, o.idx, o.dir);
+    else if (o.op === 'moveItem') liMove(o.trade, o.id, o.dir, o.tier);
+    else if (o.op === 'canMoveItem') {
+      const it = S.trades[o.trade].line_items.find(x => x.id === o.id);
+      S._probe = liCanMove(o.trade, it, o.dir, o.tier);
+    }
     // The What's Included list a bundle builds, for asserting on the rule.
     else if (o.op === 'features') S._probe = bundleFeatures(o.trade, _tradeBundle(o.trade, o.id));
     // Resolves which system the estimate is actually selling and writes the

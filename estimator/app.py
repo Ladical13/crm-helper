@@ -18616,6 +18616,12 @@ def invoice_fields(est):
         inv['detail'] = 'itemized'
     elif inv.get('detail') not in _INVOICE_DETAILS:
         inv['detail'] = 'itemized' if inv.get('signature') else 'summary'
+    # Section headers name the picked Product (invoice_rows). The signing
+    # handler stamps this on, so a document signed before headers carried the
+    # product keeps the bare trade label it was signed under. Never settable
+    # by the rep — _sanitize_invoice does not accept it.
+    inv['product_titles'] = (inv.get('product_titles') is True
+                             or not inv.get('signature'))
     inv.setdefault('due_date', '')
     inv.setdefault('po_ref', '')
     inv.setdefault('notes', '')
@@ -18645,6 +18651,36 @@ def _invoice_line_name(name, desc):
     if desc and desc != name:
         return f'{name} — {desc}' if name else desc
     return name or 'Item'
+
+
+def _invoice_package_name(est, trade, pb=None):
+    """What the rep picked on the G/B/B Product dropdown for the tier this
+    trade sells: their own name for a Custom package, else the picked bundle's
+    name. '' when the estimate names nothing — never the price book's DEFAULT
+    bundle for a tier the rep never chose, which on an invoice is a bill naming
+    a roof that was not installed. Nor a bundle the rep has since hand-built
+    the tier away from (_tier_bullets_are_stale).
+
+    The one rule for both the summary invoice's line and the itemized
+    section header, so the two documents cannot name one roof two ways."""
+    td = (est.get('trades') or {}).get(trade) or {}
+    if not td.get('enabled') or _trade_mode(trade, td) != 'gbb':
+        return ''
+    tier = _trade_tier(est, trade)
+    own = str(_tier_package_names(est, trade).get(tier) or '').strip()
+    if own:
+        return own
+    tb = td.get('tier_bundles') if isinstance(td.get('tier_bundles'), dict) else {}
+    picked = str(tb.get(tier) or '').strip()
+    if not picked or picked == '__custom__':
+        return ''
+    if pb is None:
+        pb = _ensure_bundle_catalogs(_load_price_book())
+    if _tier_bullets_are_stale(pb, est, trade, tier):
+        return ''
+    bundle = next((b for b in (pb.get(trade + '_bundles') or [])
+                   if isinstance(b, dict) and b.get('id') == picked), None) or {}
+    return str(bundle.get('name') or '').strip()
 
 
 def invoice_rows(est):
@@ -18752,8 +18788,16 @@ def invoice_rows(est):
                                         'rows': by_sec.get(n, []),
                                         'subtotal': sec_totals[n]})
             if rows or folded:
-                sections.append({'key': tk, 'title': label, 'rows': rows,
-                                 'groups': grouped,
+                # The header names the Product picked for this package —
+                # "Commercial Roofing — TPO 60 mil MF" — so a GC reading the
+                # basic estimate sees WHICH system the lines build. The
+                # subtotal row keeps the bare trade label: the product name
+                # in front of "Subtotal" only made the figure harder to find.
+                pkg = _invoice_package_name(est, tk) if inv['product_titles'] else ''
+                sections.append({'key': tk, 'label': label,
+                                 'title': f'{label} — {pkg}' if pkg else label,
+                                 'subtotal_label': f'{label} Subtotal',
+                                 'rows': rows, 'groups': grouped,
                                  'subtotal': subtotal, 'folded': folded})
             s_rows, _s_tot = trade_supplements(est, tk, tier)
             for it, q, line, desc in s_rows:
@@ -18919,17 +18963,9 @@ def invoice_materials(est):
             ti = picked.get(tk) or {}
             s = slot(tk)
             s['installed'] = names
-            # Name a package only when THIS estimate names one: the rep's own
-            # name for it, or a bundle they picked. The manifest falls back to
-            # the price book's default bundle for a tier the estimate never
-            # chose, and an invoice that says "CertainTeed Northgate" over a
-            # Landmark Pro roof is a bill for something that was not installed.
-            tier = _trade_tier(est, tk)
-            tb = td.get('tier_bundles') if isinstance(td.get('tier_bundles'), dict) else {}
-            picked_bundle = str(tb.get(tier) or '').strip()
-            own_name = str(_tier_package_names(est, tk).get(tier) or '').strip()
-            if own_name or (picked_bundle and picked_bundle != '__custom__'):
-                s['package'] = str(ti.get('package_name') or '').strip()
+            # Not the manifest's package_name: that falls back to the price
+            # book's default bundle for a tier the estimate never chose.
+            s['package'] = _invoice_package_name(est, tk)
             s['warranty'] = str(ti.get('workmanship') or '').strip()
 
     sq = installed_squares_rows(est)
@@ -19004,7 +19040,9 @@ def invoice_summary(est, data=None, mats=None):
         if key == 'insurance':
             m = (per.get('roofing') or {}) if ins_first else {}
             ins_first = False
-        title = sec['title']
+        # From the bare trade label: an itemized header already carries the
+        # product, and this line must name it once.
+        title = sec.get('label') or sec['title']
         if m.get('package') and key != 'insurance':
             title = f"{title} — {m['package']}"
         details = []
@@ -19221,7 +19259,8 @@ def build_invoice_pdf(est):
                 pdf.set_text_color(*_PDF_STYLE['ink'])
             # Omitted when it would only repeat the Total — see invoice_rows.
             if sec.get('show_subtotal', True):
-                money_row(f"{sec['title']} Subtotal", sec['subtotal'])
+                money_row(sec.get('subtotal_label') or f"{sec['title']} Subtotal",
+                          sec['subtotal'])
 
         for co in data['change_orders']:
             section('Change order', co['title'])
@@ -19866,6 +19905,9 @@ def sign_invoice(token):
             # Gone, already signed, or the rep pulled the link back.
             if inv.get('signature') or inv.get('sign_token') != token:
                 return None
+            # What was signed had product-named headers; record that, so it
+            # keeps them (see invoice_fields).
+            inv['product_titles'] = True
             # Hash the figures BEFORE attaching the signature, so the record
             # covers exactly what was approved — same rule as customer_sign and
             # the change order. `invoice_rows` rather than the stored fields:

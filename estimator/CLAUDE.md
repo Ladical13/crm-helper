@@ -684,6 +684,14 @@ would renumber documents already sent to GCs. `_invoice_kind_label()` is where
   price book's default bundle, and an invoice naming a roof that was not
   installed is the worst thing this document could say. Insurance jobs never
   read `insurance_cost` — it is our crew rate.
+- **That package name heads the trade on every layout** — "Commercial Roofing
+  — TPO - Tear-Off, Mechanically Fastened" — from one rule,
+  `_invoice_package_name()`: the rep's Custom name, else the bundle picked on
+  the G/B/B Product dropdown, else nothing. It is set in `invoice_rows()`, so
+  the signature hash covers it; the subtotal row keeps the bare trade
+  (`subtotal_label`). A document signed before headers carried the product
+  keeps the header it was signed under: signing stamps `product_titles`,
+  which the rep cannot set.
 - **The permit packet's Roof Covering and the warranty certificate's product
   go through `_installed_product_name()`**, never the manifest's
   `material_name`: picked bundle (if it still describes the tier) → the
