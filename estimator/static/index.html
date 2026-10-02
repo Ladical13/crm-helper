@@ -14,7 +14,7 @@
        tools should put ONE "Project One" icon on the home screen that opens
        the launcher. estimator/static/manifest.json is kept for standalone runs. -->
   <link rel="manifest" href="/manifest.json">
-  <link rel="stylesheet" href="/estimate/static/style.css?v=257">
+  <link rel="stylesheet" href="/estimate/static/style.css?v=258">
 </head>
 <body>
 
@@ -122,7 +122,7 @@
       </div>
       <div class="field-group">
         <label>Phone</label>
-        <input type="text" id="cust-phone">
+        <input type="tel" id="cust-phone" autocomplete="tel">
       </div>
       <div class="field-group">
         <label>Email</label>
@@ -143,7 +143,7 @@
         </div>
         <div class="field-group" style="flex:1">
           <label>Zip</label>
-          <input type="text" id="cust-zip" maxlength="10">
+          <input type="text" id="cust-zip" maxlength="10" inputmode="numeric" autocomplete="postal-code">
         </div>
       </div>
     </section>
@@ -284,6 +284,7 @@
         <span class="pg-num">9</span>Contract
       </button>
     </nav>
+    <button id="print-pages-toggle" type="button" aria-expanded="false" aria-controls="print-pages-bar" onclick="togglePrintPagesPanel()">Proposal pages <span aria-hidden="true">▾</span></button>
     <div id="print-pages-bar"></div>
 
     <!-- ── Home screen ───────────────────────────────────────────── -->
@@ -933,7 +934,7 @@
 <div id="app-toast" role="status" aria-live="polite"></div>
 
 <script src="/shell.js"></script>
-<script src="/estimate/static/app.js?v=257"></script>
-<script src="/estimate/static/hail-report.js?v=257"></script>
+<script src="/estimate/static/app.js?v=258"></script>
+<script src="/estimate/static/hail-report.js?v=258"></script>
 </body>
 </html>
