@@ -22,12 +22,29 @@ What is worth a test rather than a read-through:
 """
 import io
 import os
+import threading
 
 import pytest
 
 import app as A
 import demo_store
 from portal import users as portal_users
+
+@pytest.fixture(autouse=True)
+def _finish_background_work():
+    """Wait for the threads a test started before the next one begins.
+
+    Signing an invoice hands the rep notification and the PDF filing to a
+    background thread, and several tests sign the same estimate id. Left
+    running, one test's thread wrote into the NEXT test's estimate between its
+    setup saves and rolled the signature back — a failure in whichever test
+    happened to be next, roughly one run in two."""
+    before = set(threading.enumerate())
+    yield
+    for t in threading.enumerate():
+        if t not in before and t is not threading.current_thread():
+            t.join(timeout=30)
+
 
 PRICING = {'mode': 'margin', 'rate': 35,
            'tier_rates': {'good': 35, 'better': 35, 'best': 35}}

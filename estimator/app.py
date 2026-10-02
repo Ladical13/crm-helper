@@ -566,8 +566,30 @@ def est_save(doc):
                         'ON CONFLICT (id) DO UPDATE SET doc = EXCLUDED.doc, '
                         'updated_at = now()', (str(est_id), _PgJson(doc)))
         return
-    with open(_est_path(est_id), 'w', encoding='utf-8') as f:
-        json.dump(doc, f, indent=2)
+    # Write beside the file and swap it in. A plain open('w') truncates first,
+    # and anything reading in that window — the background thread a signing
+    # starts, the other gunicorn worker — got an empty file, so est_load said
+    # the estimate did not exist and the next whole-doc save wrote it back
+    # without its stored invoice. os.replace is atomic: a reader sees the old
+    # doc or the new one, never half of either.
+    path = _est_path(est_id)
+    tmp = f'{path}.{os.getpid()}.{threading.get_ident()}.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(doc, f, indent=2)
+        for attempt in range(20):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                # Windows refuses to replace a file another thread has open
+                # for reading; the read takes milliseconds.
+                if attempt == 19:
+                    raise
+                time.sleep(0.01)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def est_exists(est_id):
@@ -694,8 +716,11 @@ def est_update(est_id, mutator):
 
     DB mode runs inside a SELECT ... FOR UPDATE transaction, so concurrent
     writers (2 gunicorn workers: sign POST vs rep save vs CRM write-back)
-    serialize instead of losing updates. File mode is plain load-mutate-save —
-    fine for single-user local dev."""
+    serialize instead of losing updates. File mode holds a per-estimate lock
+    for the same reason within one process: a signing starts a background
+    thread that writes the estimate, and without the lock it could load the
+    doc from before the signature and save it back over the signed one. It
+    does not serialize across processes — that is what the database is for."""
     if _demo_est(est_id):
         # One process, one dict, and the GIL between them — the serialization
         # the DB branch needs is not a concern here.
@@ -716,11 +741,23 @@ def est_update(est_id, mutator):
                         'ON CONFLICT (id) DO UPDATE SET doc = EXCLUDED.doc, '
                         'updated_at = now()', (str(est_id), _PgJson(doc)))
             return doc
-    doc = mutator(est_load(est_id))
-    if doc is None:
-        return None
-    est_save(doc)
-    return doc
+    with _est_file_lock(est_id):
+        doc = mutator(est_load(est_id))
+        if doc is None:
+            return None
+        est_save(doc)
+        return doc
+
+
+_EST_FILE_LOCKS = {}
+_EST_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _est_file_lock(est_id):
+    """One re-entrant lock per estimate id, so a mutator that itself calls
+    est_update on the same estimate does not deadlock."""
+    with _EST_FILE_LOCKS_GUARD:
+        return _EST_FILE_LOCKS.setdefault(str(est_id), threading.RLock())
 
 
 # ── Visualizer paid-usage ledger ──────────────────────────────────────────
