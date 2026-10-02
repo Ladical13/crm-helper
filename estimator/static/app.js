@@ -6033,6 +6033,14 @@ async function pbSave() {
   } catch(e) { alert('Could not save: ' + e.message); }
 }
 
+function togglePrintPagesPanel() {
+  const button = document.getElementById('print-pages-toggle');
+  const open = button.getAttribute('aria-expanded') !== 'true';
+  button.setAttribute('aria-expanded', String(open));
+  button.querySelector('span').textContent = open ? '▴' : '▾';
+  document.getElementById('print-pages-bar').classList.toggle('is-expanded', open);
+}
+
 /* ── Print pages bar ────────────────────────────────────────────────── */
 
 function renderPrintPagesBar() {
@@ -16540,13 +16548,13 @@ function renderClientPage() {
       </div>
       <div class="pm-grid client-grid">
         <div class="field-group pm-span2"><label>Name</label>${inp('name', c.name, 'Customer name')}</div>
-        <div class="field-group"><label>Phone</label>${inp('phone', c.phone, '970-555-1234')}</div>
-        <div class="field-group pm-span2"><label>Email</label>${inp('email', c.email, 'name@email.com')}</div>
+        <div class="field-group"><label>Phone</label>${inp('phone', c.phone, '970-555-1234', 'inputmode="tel" autocomplete="tel"')}</div>
+        <div class="field-group pm-span2"><label>Email</label>${inp('email', c.email, 'name@email.com', 'inputmode="email" autocomplete="email" autocapitalize="none"')}</div>
         <div class="field-group"></div>
         <div class="field-group pm-span2"><label>Street</label>${inp('street', a.street, '123 Main St')}</div>
         <div class="field-group"><label>City</label>${inp('city', a.city, 'Loveland')}</div>
         <div class="field-group pm-state"><label>State</label>${inp('state', a.state, 'CO', 'maxlength="2"')}</div>
-        <div class="field-group"><label>Zip</label>${inp('zip', a.zip, '80537', 'maxlength="10"')}</div>
+        <div class="field-group"><label>Zip</label>${inp('zip', a.zip, '80537', 'maxlength="10" inputmode="numeric" autocomplete="postal-code"')}</div>
       </div>
     </div>` : ''}
 
@@ -17604,17 +17612,22 @@ async function issueRoofCert(pushToCrm) {
 let _crData = null;   // GET /condition-report for the open estimate
 let _crFor  = null;   // which estimate _crData belongs to
 
+let _crLoadGeneration = 0;
 async function loadConditionReport() {
-  _crFor = S.estimate_id;
+  const owner = S, id = owner.estimate_id, generation = ++_crLoadGeneration;
+  _crFor = id;
+  let data;
   try {
-    const r = await fetch(`/api/estimates/${S.estimate_id}/condition-report`);
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || r.statusText);
-    _crData = d;
+    const r = await fetch(`/api/estimates/${id}/condition-report`);
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
   } catch (e) {
-    _crData = {error: e.message};
+    data = {error: e.message};
   }
-  if (_docGenerator === 'condition') renderConditionReportForm();
+  // A slow response must not replace a different estimate's report.
+  if (S !== owner || S.estimate_id !== id || generation !== _crLoadGeneration) return;
+  _crData = data; _crFor = id;
+  if (activePage === 'client' && clientTabNow() === 'roofhealth') renderConditionReportForm();
 }
 
 function renderConditionReportForm() {
