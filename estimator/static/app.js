@@ -18030,11 +18030,13 @@ function invPreviewHtml(inv, tot, head, summary) {
         for (const g of s.groups) {
           body += `<div class="invp-group">${esc(g.name)}</div>`;
           if ((g.rows || []).length) body += table(g.rows);
-          body += money(`${g.name} Subtotal`, g.subtotal);
+          if (g.show_subtotal !== false) body += money(`${g.name} Subtotal`, g.subtotal);
         }
       } else if ((s.rows || []).length) body += table(s.rows);
-      if (s.folded) body += '<p class="invp-folded">Additional materials, supplies &amp; labor included in subtotal</p>';
-      body += money(`${s.title} Subtotal`, s.subtotal);
+      if (s.folded) body += '<p class="invp-folded">Additional materials, supplies &amp; labor included in '
+        + (s.show_subtotal !== false ? 'subtotal' : 'the total') + '</p>';
+      // Omitted when it would only repeat the Total — invoice_rows decides.
+      if (s.show_subtotal !== false) body += money(`${s.title} Subtotal`, s.subtotal);
     }
     for (const co of tot.change_orders || []) {
       body += sec('Change order', co.title) + table(co.rows || []) + money('Change Order Subtotal', co.subtotal);

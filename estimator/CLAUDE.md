@@ -671,6 +671,11 @@ would renumber documents already sent to GCs. `_invoice_kind_label()` is where
   structure / roof area** (`groups` on each `invoice_rows()` section), then
   the trade subtotal; a basic estimate closes on **Project Total**. Group
   subtotals are taken before labor folds, so they always add up to the trade.
+  **No subtotal that only repeats the next figure** (`show_subtotal`, set in
+  `invoice_rows()` so every renderer agrees): a trade's is left off when it is
+  the only thing billed — it IS the total — and a group's when it is its
+  trade's only group. "Commercial Roofing Subtotal $36,614.62" over "Project
+  Total $36,614.62" read as a second charge.
   The flat `rows` keep the `[Section]` suffix for anything without headers.
 - **What was installed is NAMES, never prices** (`invoice_materials()`): the
   selected tier's customer-visible lines, plus `_material_selection_rows()` —
