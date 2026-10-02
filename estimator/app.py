@@ -18802,6 +18802,19 @@ def invoice_rows(est):
     adj_total = sum(amt for _lbl, amt in adjustments)
     total = subtotal + co_total + adj_total
     payments_total = sum(_f(p.get('amount')) for p in inv['payments'])
+
+    # A subtotal that only repeats the next figure on the page is noise, and on
+    # a bill it reads as a second charge. Decided HERE, once, so the PDF, the
+    # signing page and the rep's preview all print the same lines:
+    # * a trade's subtotal, when it is the only thing billed — no other trade,
+    #   no change order, no adjustment — is the Total, printed one line later;
+    # * a group's subtotal, when its trade has only one group, is the trade's.
+    lone = len(sections) == 1 and not change_orders and not adjustments
+    for s in sections:
+        s['show_subtotal'] = not lone
+        groups = s.get('groups') or []
+        for g in groups:
+            g['show_subtotal'] = len(groups) > 1
     return {
         'sections': sections, 'supplements': supplements,
         'change_orders': change_orders, 'payments': inv['payments'],
@@ -19194,16 +19207,21 @@ def build_invoice_pdf(est):
                     pdf.set_text_color(*_PDF_STYLE['ink'])
                     if g['rows']:
                         table(g['rows'])
-                    money_row(f"{g['name']} Subtotal", g['subtotal'])
+                    if g.get('show_subtotal', True):
+                        money_row(f"{g['name']} Subtotal", g['subtotal'])
             elif sec['rows']:
                 table(sec['rows'])
             if sec.get('folded'):
                 pdf.set_font(SANS, 'I', 7.5)
                 pdf.set_text_color(*_PDF_STYLE['faint'])
-                pdf.cell(W, 5.5, _pdf_rich('Additional materials, supplies & labor included in subtotal'),
+                pdf.cell(W, 5.5, _pdf_rich(
+                    'Additional materials, supplies & labor included in '
+                    + ('subtotal' if sec.get('show_subtotal', True) else 'the total')),
                          align='L', new_x='LMARGIN', new_y='NEXT')
                 pdf.set_text_color(*_PDF_STYLE['ink'])
-            money_row(f"{sec['title']} Subtotal", sec['subtotal'])
+            # Omitted when it would only repeat the Total — see invoice_rows.
+            if sec.get('show_subtotal', True):
+                money_row(f"{sec['title']} Subtotal", sec['subtotal'])
 
         for co in data['change_orders']:
             section('Change order', co['title'])
@@ -19637,11 +19655,19 @@ def build_invoice_sign_page(est, token):
         # Add-ons are already listed above with their prices.
         money = [('Total', data.get('total') or 0)]
     else:
-        money = [('Subtotal', data.get('subtotal') or 0)]
-        if data.get('co_total'):
-            money.append(('Approved change orders', data.get('co_total') or 0))
-        for lbl, amt in data.get('adjustments') or []:
-            money.append((lbl, amt))
+        # "Subtotal" only when something follows that changes it. Otherwise it
+        # is the Total printed twice — the same rule as invoice_rows'
+        # show_subtotal. With payments but nothing else, the first line is the
+        # Total, so "Total − payments = balance" still reads.
+        money = []
+        if data.get('co_total') or data.get('adjustments'):
+            money.append(('Subtotal', data.get('subtotal') or 0))
+            if data.get('co_total'):
+                money.append(('Approved change orders', data.get('co_total') or 0))
+            for lbl, amt in data.get('adjustments') or []:
+                money.append((lbl, amt))
+        elif data.get('payments_total'):
+            money.append(('Total', data.get('total') or 0))
     if data.get('payments_total'):
         money.append(('Payments received', -(data.get('payments_total') or 0)))
     show_balance = is_inv or data.get('payments_total')

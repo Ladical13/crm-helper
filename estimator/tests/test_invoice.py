@@ -786,3 +786,73 @@ def test_the_basic_estimate_groups_lines_under_their_section():
 def test_a_trade_without_sections_is_one_plain_table():
     roof = next(s for s in A.invoice_rows(_est())['sections'] if s['key'] == 'roofing')
     assert roof['groups'] == []
+
+
+# ── no subtotal that only repeats the next figure ─────────────────────────
+#
+# A one-trade basic estimate printed its group subtotals, then "Commercial
+# Roofing Subtotal $36,614.62", then "Project Total $36,614.62" — the same
+# number twice, which on a bill reads as a second charge. invoice_rows()
+# decides which subtotals earn a line, so every renderer prints the same ones.
+
+def _lone_sectioned():
+    est = _sectioned()
+    est['trades'].pop('gutters')
+    return est
+
+
+def test_a_lone_trade_does_not_repeat_its_subtotal_as_the_total():
+    est = _lone_sectioned()
+    data = A.invoice_rows(est)
+    roof = data['sections'][0]
+    assert len(data['sections']) == 1 and roof['show_subtotal'] is False
+    txt = _pdf_text(A.build_invoice_pdf(est))
+    assert 'Roofing Subtotal' not in txt
+    assert 'House Subtotal' in txt and 'Detached Garage Subtotal' in txt, \
+        'the breakdown by section stays — only the repeat goes'
+    assert 'Project Total' in txt
+    assert txt.count(A.fc(data['total'])) == 1, 'the total is printed once'
+
+
+def test_a_second_trade_brings_the_trade_subtotals_back():
+    """With two trades each subtotal is a real figure — neither is the total."""
+    data = A.invoice_rows(_est(invoice={'kind': 'quote'}))
+    assert [s['show_subtotal'] for s in data['sections']] == [True, True]
+    txt = _pdf_text(A.build_invoice_pdf(_est(invoice={'kind': 'quote'})))
+    assert 'Roofing Subtotal' in txt and 'Gutters Subtotal' in txt
+
+
+def test_a_change_order_brings_the_trade_subtotal_back():
+    est = _lone_sectioned()
+    est['invoice'] = {'kind': 'invoice', 'detail': 'itemized'}
+    est['change_orders'] = [{'id': 'c', 'title': 'Add vents', 'status': 'accepted',
+                             'pricing': PRICING, 'line_items': [
+                                 {'name': 'Vent', 'quantity': 2, 'price_override': 90}]}]
+    assert A.invoice_rows(est)['sections'][0]['show_subtotal'] is True
+
+
+def test_a_single_section_does_not_repeat_its_trade_subtotal():
+    """One group under a trade: its subtotal IS the trade's."""
+    est = _sectioned()
+    for it in est['trades']['roofing']['line_items']:
+        it['section'] = 'House'
+    roof = next(s for s in A.invoice_rows(est)['sections'] if s['key'] == 'roofing')
+    assert [g['name'] for g in roof['groups']] == ['House']
+    assert roof['groups'][0]['show_subtotal'] is False
+    txt = _pdf_text(A.build_invoice_pdf(est))
+    assert 'House Subtotal' not in txt and 'Roofing Subtotal' in txt
+
+
+def test_the_signing_page_does_not_print_subtotal_and_total_as_one_number():
+    _eid, tok = _signable(None, eid='inv-lone-sign', invoice={'kind': 'quote'})
+    est = A.est_load('inv-lone-sign')
+    est['trades'].pop('gutters')
+    A.est_save(est)
+    html = A.app.test_client().get(f'/sign-inv/{tok}').data.decode()
+    assert '>Subtotal<' not in html
+    assert A.fc(A.invoice_rows(A.est_load('inv-lone-sign'))['total']) in html
+
+
+def test_the_preview_follows_the_same_flags():
+    body = _js_fn(_js(), 'invPreviewHtml')
+    assert 's.show_subtotal !== false' in body and 'g.show_subtotal !== false' in body
