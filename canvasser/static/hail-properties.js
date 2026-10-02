@@ -2,9 +2,18 @@
 let hailCandidate = null, hailConfirmMap = null, hailConfirmMarker = null;
 let propertySearchGeneration = 0;
 
+function scrollHailResults() {
+  const body = $('hail-address-modal').querySelector('.modal-body');
+  const results = $('hail-address-results');
+  body.scrollTop += results.getBoundingClientRect().top - body.getBoundingClientRect().top - 12;
+}
+
+
 async function searchHailProperty() {
   const generation = ++propertySearchGeneration;
   const q = $v('hail-address-input');
+  $('hail-address-input').blur();
+  $('hail-property-mapbar')?.remove();
   hailCandidate = null;
   if (hailConfirmMap) { hailConfirmMap.remove(); hailConfirmMap = null; }
   $('hail-address-results').innerHTML = '';
@@ -21,20 +30,24 @@ async function searchHailProperty() {
       list.appendChild(button);
     }
     $('hail-address-results').appendChild(list);
+    if (data.candidates.length) scrollHailResults();
   } catch(e) { if (generation === propertySearchGeneration) $('hail-address-status').textContent = e.message; }
 }
 
 function selectHailProperty(candidate) {
   hailCandidate = candidate;
   if (hailConfirmMap) { hailConfirmMap.remove(); hailConfirmMap = null; }
-  $('hail-address-results').innerHTML = `<div class="hail-coverage">${escHtml(candidate.label)}<br>Confirm the building below. Drag the pin to correct its location.</div>
-    <div id="hail-confirm-map" style="height:260px;border-radius:12px;margin:12px 0"></div>
+  $('hail-address-results').innerHTML = `<div class="hail-coverage">${escHtml(candidate.label)}<br>Confirm the building below. Tap the roof or drag the pin to correct it.</div>
+    <div id="hail-confirm-map" aria-label="Confirm property location on the map"></div>
     <button class="btn-primary" id="hail-confirm-property">Confirm property &amp; create report</button>`;
   hailConfirmMap = L.map('hail-confirm-map').setView([candidate.lat, candidate.lng], 18);
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     {maxZoom:20, maxNativeZoom:19, attribution:'Tiles &copy; Esri'}).addTo(hailConfirmMap);
   hailConfirmMarker = L.marker([candidate.lat, candidate.lng], {draggable:true}).addTo(hailConfirmMap);
+  hailConfirmMap.on('click', e => hailConfirmMarker.setLatLng(e.latlng));
   $('hail-confirm-property').onclick = createHailPropertyReport;
+  scrollHailResults();
+  requestAnimationFrame(() => hailConfirmMap?.invalidateSize());
 }
 
 async function createHailPropertyReport() {
@@ -62,6 +75,12 @@ function showPropertyStorm(report, date) {
   $('hail-min-size').value = 1;
   activeHailQuery = {start:date, end:date, min:1};
   refreshHailOverlay();
+  $('hail-property-mapbar')?.remove();
+  const bar = document.createElement('div'); bar.id = 'hail-property-mapbar';
+  const label = document.createElement('span'); label.textContent = 'Radar window: ' + prettyDate(date);
+  const back = document.createElement('button'); back.className = 'btn-secondary'; back.textContent = 'Back to report';
+  back.onclick = () => { show('hail-address-modal'); scrollHailResults(); };
+  bar.append(label, back); $('app').appendChild(bar);
 }
 
 function renderPropertyHailReport(report) {
@@ -70,9 +89,9 @@ function renderPropertyHailReport(report) {
   const container = $('hail-address-results');
   const toolbar = document.createElement('div'); toolbar.className = 'hail-property-actions';
   const pdf = document.createElement('a'); pdf.className = 'btn-primary'; pdf.target = '_blank'; pdf.rel = 'noopener';
-  pdf.textContent = 'View / print property report'; pdf.href = BASE + '/api/hail/reports/' + encodeURIComponent(report.id) + '/pdf';
+  pdf.textContent = 'Open / print PDF'; pdf.href = BASE + '/api/hail/reports/' + encodeURIComponent(report.id) + '/pdf';
   const estimate = document.createElement('a'); estimate.className = 'btn-secondary';
-  estimate.textContent = 'Use report in an estimate'; estimate.href = '/estimate/?hail_report=' + encodeURIComponent(report.id);
+  estimate.textContent = 'Use in estimate'; estimate.href = '/estimate/?hail_report=' + encodeURIComponent(report.id);
   const estimateId = new URLSearchParams(location.search).get('estimate_id');
   if (estimateId) estimate.href += '&hail_estimate=' + encodeURIComponent(estimateId);
   toolbar.append(pdf, estimate); container.prepend(toolbar);
@@ -81,7 +100,11 @@ function renderPropertyHailReport(report) {
     const event = report.storms[i]; if (!event) return;
     const button = document.createElement('button'); button.className = 'btn-secondary'; button.textContent = 'View storm';
     button.onclick = () => showPropertyStorm(report, event.date);
-    row.appendChild(button); row.title = event.local_window;
+    row.classList.add('hail-property-storm');
+    const window = document.createElement('small'); window.className = 'hail-storm-window';
+    window.textContent = event.local_window;
+    button.setAttribute('aria-label', 'View storm window ' + prettyDate(event.date));
+    row.append(button, window);
   });
   const oldMap = $('hail-show-on-map-btn');
   if (oldMap) {
@@ -95,6 +118,7 @@ function renderPropertyHailReport(report) {
     const text = document.createElement('p'); text.textContent = missing.join(', ');
     detail.append(summary, text); container.appendChild(detail);
   }
+  scrollHailResults();
 }
 
 $('hail-address-input').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); searchHailProperty(); } });
@@ -104,3 +128,5 @@ if (hailIncoming.get('address')) {
   $('hail-address-input').value = hailIncoming.get('address');
   show('hail-address-modal');
 }
+
+$('hail-address-btn').addEventListener('click', () => $('hail-property-mapbar')?.remove());

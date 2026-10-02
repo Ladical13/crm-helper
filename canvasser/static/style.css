@@ -725,3 +725,28 @@ html, body {
 
 #hail-map-status { position:absolute; z-index:450; left:12px; right:12px; bottom:calc(100px + env(safe-area-inset-bottom)); padding:8px 12px; border-radius:8px; background:rgba(15,23,42,.94); color:#fff; font-size:11px; pointer-events:none; }
 #pin-nearby-warning { color:#fbbf24; padding:10px; border:1px solid #b45309; }
+
+/* Property hail flow: readable reports and a usable confirmation map on phones. */
+#hail-address-modal .modal-card { max-width:720px; margin-inline:auto; }
+#hail-address-modal .modal-body { scroll-padding:12px; }
+#hail-address-results { min-width:0; overflow-wrap:anywhere; }
+#hail-confirm-map { height:260px; height:clamp(180px,40dvh,320px); border-radius:12px; margin:12px 0; }
+.hail-property-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+.hail-property-actions a { display:flex; align-items:center; justify-content:center; text-align:center; text-decoration:none; margin:0; min-width:0; }
+.hail-property-storm { display:grid; grid-template-columns:auto minmax(0,1fr) auto; border-bottom:1px solid var(--border); padding:12px 0; }
+.hail-property-storm .btn-secondary { width:auto; margin:0; padding:10px 12px; }
+.hail-storm-window { grid-column:1/-1; color:var(--muted); line-height:1.5; font-size:12px; }
+#hail-address-results details { margin-top:16px; line-height:1.5; }
+#hail-address-results summary { padding:12px 0; cursor:pointer; }
+#hail-address-results details p { max-height:180px; overflow:auto; overscroll-behavior:contain; padding:8px 0; }
+#hail-property-mapbar { position:absolute; top:calc(var(--header-h) + 8px); left:64px; right:12px; z-index:1600; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px; padding:8px 10px; border:1px solid var(--border); border-radius:12px; background:var(--surface); box-shadow:var(--shadow-1); font-size:12px; }
+#hail-property-mapbar .btn-secondary { width:auto; margin:0; padding:8px 12px; }
+@media (pointer:coarse) {
+  #hail-address-modal button, .hail-property-actions a, #hail-property-mapbar button { min-height:44px; touch-action:manipulation; }
+}
+@media (max-width:600px) {
+  #hail-address-modal .modal-card { max-height:100%; height:100%; }
+  #hail-address-modal .modal-header { padding-top:8px; padding-bottom:8px; }
+  .hail-property-actions { gap:8px; }
+  .hail-property-actions a { font-size:14px; padding:12px 8px; }
+}

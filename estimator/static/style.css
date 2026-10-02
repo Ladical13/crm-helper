@@ -5822,3 +5822,35 @@ body.an-loading .an-grid, body.an-loading .an-kpis { opacity: .55; transition: o
 
 /* A signed invoice is frozen — the chip should not read like "sent". */
 .rc-signed-chip { background: #065f46; color: #ecfdf5; }
+
+/* Hail evidence remains readable and reachable in the phone Documents tab. */
+#hail-report-panel { min-width:0; scroll-margin-top:16px; }
+.hail-estimate-panel { overflow-wrap:anywhere; }
+.hail-estimate-panel p { margin:12px 0; line-height:1.5; }
+.hail-estimate-panel .panel-header h3 { min-width:0; }
+#hail-import-preview { margin-top:16px; padding-top:12px; border-top:1px solid var(--border); }
+.hail-property-confirm { display:flex; gap:10px; align-items:center; padding:12px; margin:12px 0; border:1px solid var(--border); border-radius:8px; background:#f1f7f8; cursor:pointer; }
+.hail-property-confirm input { width:22px; height:22px; flex:0 0 22px; }
+.hail-import-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.hail-import-actions .btn { white-space:normal; height:auto; }
+.hail-handoff-banner { position:fixed; bottom:max(16px,env(safe-area-inset-bottom,0px)); left:max(12px,env(safe-area-inset-left,0px)); right:max(12px,env(safe-area-inset-right,0px)); z-index:900; padding:14px; background:#173e48; color:white; border-radius:12px; box-shadow:0 3px 15px #0004; display:flex; flex-wrap:wrap; align-items:center; gap:10px; max-height:45vh; max-height:45dvh; overflow:auto; overscroll-behavior:contain; }
+.hail-handoff-banner .btn { background:#fff; color:#173e48; height:auto; white-space:normal; }
+.hail-handoff-banner .hail-handoff-dismiss { background:transparent; color:#fff; border:1px solid #9ebabe; }
+@media (pointer:coarse) {
+  .hail-estimate-panel .btn, .hail-handoff-banner .btn, .att-row button, .att-show, .att-view { min-height:44px; }
+  .att-view { display:inline-flex; align-items:center; min-width:44px; justify-content:center; }
+  .att-row button { min-width:44px; }
+}
+@media (max-width:600px) {
+  .hail-estimate-panel .btn { width:100%; justify-content:center; white-space:normal; height:auto; }
+  .hail-import-actions { display:grid; grid-template-columns:minmax(0,1fr); }
+  .att-row { flex-wrap:wrap; gap:8px; }
+  .att-row .att-label { flex:1 1 calc(100% - 44px); width:0; }
+  .att-row .att-show { white-space:normal; }
+}
+@media print { .hail-handoff-banner { display:none; } }
+
+.hail-estimate-panel .btn, .hail-handoff-banner .btn { font:inherit; font-size:14px; font-weight:600; line-height:1.35; border:1px solid #b8cbd3; border-radius:8px; padding:12px 14px; cursor:pointer; }
+.hail-estimate-panel .btn { background:#f1f7f8; color:#173e48; }
+.hail-import-actions .btn:first-child { background:#173e48; color:#fff; border-color:#173e48; }
+.hail-handoff-banner .btn:disabled { opacity:.65; cursor:wait; }
