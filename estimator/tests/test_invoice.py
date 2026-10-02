@@ -856,3 +856,87 @@ def test_the_signing_page_does_not_print_subtotal_and_total_as_one_number():
 def test_the_preview_follows_the_same_flags():
     body = _js_fn(_js(), 'invPreviewHtml')
     assert 's.show_subtotal !== false' in body and 'g.show_subtotal !== false' in body
+
+
+# ── a trade's header names the Product picked for it ──────────────────────
+#
+# The basic estimate headed every block with the bare trade — "Commercial
+# Roofing" — over lines that never say which system they build. The header now
+# names what the rep picked on the G/B/B Product dropdown, by the same rule the
+# summary invoice's line already used (_invoice_package_name).
+
+def _picked(bundle='b_landmark', **over):
+    est = _est(invoice={'kind': 'quote'}, **over)
+    roof = est['trades']['roofing']
+    roof['tier_bundles'] = {'better': bundle}
+    roof['line_items'][0]['catalog_id'] = 'm_landmark'   # the bundle built this
+    return est
+
+
+def _roof(est):
+    return next(s for s in A.invoice_rows(est)['sections'] if s['key'] == 'roofing')
+
+
+def test_the_header_names_the_product_picked():
+    roof = _roof(_picked())
+    assert roof['title'] == 'Roofing — CertainTeed Landmark'
+    txt = _pdf_text(A.build_invoice_pdf(_picked()))
+    assert 'CertainTeed Landmark' in txt
+
+
+def test_the_subtotal_keeps_the_bare_trade_label():
+    """Two trades, so the subtotal prints — as "Roofing Subtotal", not with a
+    product name in front of it."""
+    assert _roof(_picked())['subtotal_label'] == 'Roofing Subtotal'
+    txt = _pdf_text(A.build_invoice_pdf(_picked()))
+    assert 'Roofing Subtotal' in txt and 'Landmark Subtotal' not in txt
+
+
+def test_a_custom_package_is_headed_with_the_reps_own_name():
+    est = _picked('__custom__')
+    est['trades']['roofing']['tier_bundle_names'] = {'better': 'Summit Special'}
+    assert _roof(est)['title'] == 'Roofing — Summit Special'
+
+
+@pytest.mark.parametrize('bundle', ['', '__custom__'])
+def test_no_pick_means_no_name_never_the_price_books_default(bundle):
+    assert _roof(_picked(bundle))['title'] == 'Roofing'
+
+
+def test_a_bundle_the_rep_built_the_tier_away_from_is_not_named():
+    est = _picked()
+    est['trades']['roofing']['line_items'][0].pop('catalog_id')
+    est['trades']['roofing']['line_items'][1]['catalog_id'] = 'l_something_else'
+    assert _roof(est)['title'] == 'Roofing'
+
+
+def test_the_summary_invoice_names_the_product_once():
+    est = _picked()
+    est['invoice'] = {'kind': 'invoice'}
+    work = A.invoice_summary(est)['work']
+    assert work[0]['title'] == 'Roofing — CertainTeed Landmark'
+
+
+def test_a_document_signed_before_product_headers_keeps_its_old_header():
+    est = _picked()
+    est['invoice']['signature'] = {'name': 'Dana Ruiz'}
+    assert _roof(est)['title'] == 'Roofing'
+    assert A.invoice_fields(est)['product_titles'] is False
+
+
+def test_signing_records_the_product_headers_it_was_signed_under():
+    _eid, tok = _signable(None, eid='inv-pt', invoice={'kind': 'quote'},
+                          trades=_picked()['trades'])
+    A.app.test_client().post(f'/sign-inv/{tok}', data={'sig_name': 'Dana Ruiz'})
+    est = A.est_load('inv-pt')
+    assert est['invoice']['signature']
+    assert _roof(est)['title'] == 'Roofing — CertainTeed Landmark'
+
+
+def test_the_rep_cannot_set_the_header_flag():
+    assert 'product_titles' not in A._sanitize_invoice({'product_titles': False})
+
+
+def test_the_preview_prints_the_same_subtotal_label():
+    body = _js_fn(_js(), 'invPreviewHtml')
+    assert 's.subtotal_label' in body
