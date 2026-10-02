@@ -15516,6 +15516,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   // everything else starts on Home, where the rep chooses New or Open.
   if ((location.hash || '').startsWith('#analytics')) openAnalytics();
   else switchPage('home');
+  window._estimatorReady = true;
+  document.dispatchEvent(new Event('estimator:ready'));
 });
 
 /* ── CRM handoff ────────────────────────────────────────────────────────
@@ -16850,6 +16852,8 @@ function renderDocumentsPage() {
         ? '<p class="pm-hint">⚠ Not linked to a CRM job — documents stay local only. Link via the customer search to file them in the CRM.</p>' : ''}
     </div>
 
+    <div id="hail-report-panel"></div>
+
     <div class="panel">
       <div class="panel-header"><h3>➕ Create a document</h3></div>
       <div class="doc-cards">
@@ -16905,7 +16909,6 @@ function renderDocumentsPage() {
       </div>
     </div>
 
-    <div id="hail-report-panel"></div>
     <div id="co-panel"></div>
 
     <div id="permit-form-container"></div>

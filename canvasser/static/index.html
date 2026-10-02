@@ -27,9 +27,9 @@
        thing between a canvasser and a working map. Local also means the
        service worker can precache it. Upgrading is a deliberate re-download:
        see the vendor pinning note in CLAUDE.md. -->
-  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=13">
-  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=13">
-  <link rel="stylesheet" href="/canvass/static/style.css?v=13">
+  <link rel="stylesheet" href="/canvass/static/vendor/leaflet.css?v=14">
+  <link rel="stylesheet" href="/canvass/static/vendor/MarkerCluster.css?v=14">
+  <link rel="stylesheet" href="/canvass/static/style.css?v=14">
   <!-- The portal's manifest: one "Project One" icon for all three tools. -->
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -244,21 +244,21 @@
   </div>
 
   <!-- ── Hail by Address Modal ── -->
-  <div id="hail-address-modal" class="modal hidden">
+  <div id="hail-address-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="hail-address-title">
     <div class="modal-card">
       <div class="modal-header">
-        <span>🔍 Hail by Address</span>
-        <button class="icon-btn" id="close-hail-address-modal">✕</button>
+        <span id="hail-address-title">🔍 Hail by Address</span>
+        <button class="icon-btn" id="close-hail-address-modal" aria-label="Close hail search">✕</button>
       </div>
       <div class="modal-body">
-        <p class="modal-hint">Look up hail history near any address — use radar estimates to plan an inspection. This is not proof of roof damage.</p>
+        <p class="modal-hint">Search a Colorado property, confirm its pin, then view its hail history. Radar estimates help plan an inspection; they do not prove roof damage.</p>
         <div class="field-group">
-          <label>Address</label>
-          <input type="text" id="hail-address-input" placeholder="123 Oak St, Fort Collins CO">
+          <label for="hail-address-input">Colorado address</label>
+          <input type="search" id="hail-address-input" placeholder="Street, city and ZIP" enterkeyhint="search" autocomplete="street-address">
         </div>
         <div class="btn-row">
           <div class="field-group" style="flex:1">
-            <label>Lookback</label>
+            <label for="hail-address-days">Lookback</label>
             <select id="hail-address-days">
               <option value="90">90 days</option>
               <option value="180">6 months</option>
@@ -278,7 +278,7 @@
           </div>
         </div>
         <button class="btn-primary" id="hail-address-search-btn">Search Hail History</button>
-        <div id="hail-address-status" class="status-msg"></div>
+        <div id="hail-address-status" class="status-msg" role="status" aria-live="polite"></div>
         <div id="hail-address-results"></div>
       </div>
     </div>
@@ -330,11 +330,11 @@
 
 </div>
 
-<script src="/canvass/static/vendor/leaflet.js?v=13"></script>
-<script src="/canvass/static/vendor/leaflet.markercluster.js?v=13"></script>
+<script src="/canvass/static/vendor/leaflet.js?v=14"></script>
+<script src="/canvass/static/vendor/leaflet.markercluster.js?v=14"></script>
 <script src="/shell.js"></script>
-<script src="/canvass/static/app.js?v=13"></script>
-<script src="/canvass/static/hail-properties.js?v=13"></script>
+<script src="/canvass/static/app.js?v=14"></script>
+<script src="/canvass/static/hail-properties.js?v=14"></script>
 <script>
   // Registered from the page rather than app.js so a JS error in the app still
   // leaves the offline shell installed.
