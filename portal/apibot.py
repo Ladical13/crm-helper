@@ -63,6 +63,16 @@ ALLOWLIST = (
     '/nimbus/api/',
 )
 
+# Entries that match themselves only, never a path beneath them. Without this,
+# '/crm/api/leads' also opened '/crm/api/leads/<id>' (a lead's full contact
+# record and activity log) and '/crm/api/leads/<id>/documents' (signed
+# contracts) — exactly what the paragraph above rules out. The list itself
+# still carries contact columns, so salescrm strips them for apibot; see its
+# `_redact_for_apibot()`.
+EXACT = frozenset({
+    '/crm/api/leads',
+})
+
 
 class Disabled(RuntimeError):
     """P1_READONLY_TOKEN is not set, so the bridge does not exist."""
@@ -95,7 +105,10 @@ def path_allowed(full_path):
     """
     path = (full_path or '').split('?', 1)[0]
     for allowed in ALLOWLIST:
-        if allowed.endswith('/'):
+        if allowed in EXACT:
+            if path == allowed:
+                return True
+        elif allowed.endswith('/'):
             if path.startswith(allowed):
                 return True
         elif path == allowed or path.startswith(allowed + '/'):

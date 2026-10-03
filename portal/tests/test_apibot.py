@@ -172,3 +172,14 @@ def test_allowlist_does_not_match_by_substring():
     from portal import apibot
     assert not apibot.path_allowed('/evil/estimate/api/analytics')
     assert not apibot.path_allowed('/crm/api/leadsX/../../secret')
+
+
+def test_leads_list_does_not_open_the_records_beneath_it():
+    """'/crm/api/leads' is the pipeline list. A prefix match also opened a
+    lead's full contact record and its documents (signed contracts)."""
+    from portal import apibot
+    assert apibot.path_allowed('/crm/api/leads')
+    assert apibot.path_allowed('/crm/api/leads?stage=new')
+    for path in ('/crm/api/leads/abc', '/crm/api/leads/abc/documents',
+                 '/crm/api/leads/abc/messages', '/crm/api/leads/unplaced'):
+        assert not apibot.path_allowed(path), path
