@@ -11,7 +11,7 @@ sources, and the daily plan blends both:
 | **The CRM queue** (`/crm`) | Partners and prospects: realtors, HOAs, insurance agents, property managers, new homeowner leads | The CRM: cadence re-touches first, then fresh partners to top up | The CRM's activity log (7 days) |
 | **The Den** (Base44) | Existing clients: people we've quoted or roofed | Jarvis, using the rules below | Brain `outreach.contacts_reached_7d` (14 days) |
 
-**Order of work every run:** log what was sent → build the plan → draft →
+**Order of work every run:** log what was sent → read the replies → build the plan → draft →
 report.
 
 ---
@@ -79,6 +79,35 @@ from us. If a log call fails, say so. Never report it as done.
 
 ---
 
+## 2b. Read the replies (every run, right after logging)
+
+Sending 100 a day only matters if you know what came back. Search the inbox
+for replies on threads Jarvis drafted in the last 21 days (keep the Gmail
+thread id in `pending_sent` and in `outreach.sent_threads`). Classify each
+reply and record it:
+
+| The reply says | CRM partner: `PATCH /crm/api/leads/<id>/outreach-status` | Den client | Tell Luke |
+|---|---|---|---|
+| Interested, wants to talk, sent a referral | `interested` | note on Contact | **Right away, at the top of the next answer.** Draft the reply too. A warm reply that waits a day goes cold. |
+| "Call me", "next week" | `callback` | note | In the brief, with the time they asked for |
+| Talked by phone (Luke says so) | `connected` | note | — |
+| "Not right now", "maybe in spring" | `nurture` | note | — |
+| "Not interested" | `not_interested` | note | — |
+| Bounced, wrong person, left the company | `bad_contact` | note | — |
+| "Stop", "unsubscribe", "remove me" | **`dnc`** | note + add to `outreach.do_not_contact` | Once, so they know |
+
+- **Opt-outs are not optional.** Record them on the same run you see them.
+  `dnc` takes the partner out of fresh cards and cadence re-touches alike.
+- **Jarvis can't set `appt_set`.** Booking happens on a calendar, by a
+  person. When a reply asks for a time, draft the response with
+  `suggest_time` from Google Calendar and leave the booking to Luke.
+- **Keep score by template.** Count replies by `type` and draft step
+  (first / follow-up / breakup) in `outreach.reply_stats`. When one source has
+  fewer than 2 replies per 100 sends over two weeks, say so in the weekly
+  wrap-up: that's a message problem, not a volume problem.
+
+---
+
 ## 3. Build today's plan
 
 Split the target using `memory["outreach"]["daily_plan"]`, for example
@@ -99,8 +128,16 @@ cards = q["due"] + q["new"]     # due = re-touches, new = fresh partners
   you also get cards that need research first.
 - The CRM has already applied Do Not Call, opt-outs and the cooldown. **Don't
   re-filter it, and never add partners from Base44 or Clay to make up the
-  number.** If the queue runs short, say so; that's a sourcing problem for
-  `lead-refresh`.
+  number.**
+- **Queue running short?** Refill it through Nimbus, which imports into the
+  CRM with dedupe and suppression applied:
+  ```python
+  s.post(f"{PORTAL}/nimbus/api/b2b/run", json={
+      "rep": rep, "segments": ["realtor", "hoa"], "dry_run": True})
+  ```
+  Always do a dry run first and show Luke the counts. Run it for real only
+  after he says go. A refill always names the rep; a run without one is
+  refused.
 
 ### 3b. Existing clients: the Den
 

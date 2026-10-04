@@ -204,17 +204,32 @@ def _crm_db():
     return sys.modules['p1_crm_app'].get_db()
 
 
-def test_nimbus_is_readable_but_not_writable(client, bridge):
+def test_nimbus_can_be_read_and_run_but_not_its_spend_cap(client, bridge):
     """Nimbus gates on is_admin; apibot is a manager, so it used to be shut out
-    of a path the allowlist named. Reads now pass; writes still don't."""
+    of a path the allowlist named. Jarvis may now run Nimbus — it drafts and
+    researches, never publishes — but the settings holding the monthly spend
+    cap stay with a person, by every method."""
     _exchange(client)
     assert client.get('/nimbus/api/settings').status_code == 200
-    assert client.post('/nimbus/api/settings', json={}).status_code == 403
+    for call in (client.post, client.put, client.patch, client.delete):
+        assert call('/nimbus/api/settings', json={'monthly_spend_cap_usd': 9999}).status_code == 403
+    r = client.post('/nimbus/api/schedule/seo_weekly', json={'enabled': False})
+    assert r.status_code == 200, r.get_data(as_text=True)
 
 
-def test_the_outreach_log_is_the_only_write(client, bridge):
+def test_prefix_writes_refuse_paths_that_could_resolve_elsewhere():
+    from portal import apibot
+    assert not apibot.write_allowed('POST', '/nimbus/api/../../api/users')
+    assert not apibot.write_allowed('POST', '/nimbus/api//settings')
+
+
+def test_crm_writes_are_named_routes_only(client, bridge):
     from portal import apibot
     assert apibot.write_allowed('POST', '/crm/api/queue/log')
+    assert apibot.write_allowed('PATCH', '/crm/api/leads/abc/outreach-status')
+    assert not apibot.write_allowed('POST', '/crm/api/leads/abc/outreach-status')
+    assert not apibot.write_allowed('PATCH', '/crm/api/leads/abc')
+    assert not apibot.write_allowed('PATCH', '/crm/api/leads/abc/stage')
     assert not apibot.write_allowed('GET', '/crm/api/queue/log')
     assert not apibot.write_allowed('POST', '/crm/api/queue/assign')
     assert not apibot.write_allowed('POST', '/crm/api/leads')
@@ -289,3 +304,31 @@ def test_a_human_is_unaffected_by_the_redaction(admin, bridge):
     lead_id = _lead_for(admin)
     leads = admin.get('/crm/api/leads').get_json()
     assert next(l for l in leads if l['id'] == lead_id)['phone'] == '970-555-1212'
+
+
+def test_jarvis_records_a_reply_but_cannot_book_an_appointment(admin, bridge):
+    lead_id = _lead_for(admin)
+    _exchange(admin)
+    url = f'/crm/api/leads/{lead_id}/outreach-status'
+    r = admin.patch(url, json={'status': 'interested'})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert r.get_json()['outreach_status'] == 'interested'
+    assert admin.patch(url, json={'status': 'dnc'}).status_code == 200   # opt-outs must land
+    assert admin.patch(url, json={'status': 'appt_set'}).status_code == 403
+
+
+def test_nimbus_prospecting_can_land_leads_but_only_with_a_named_rep(admin, bridge):
+    """A Nimbus b2b run forwards the caller's session into the CRM importer, so
+    apibot needs that one route — and must never become the assignee."""
+    from portal import users
+    users.create('bryan', password='knockknock', role='rep')
+    _exchange(admin)
+    row = {'company': 'Front Range HOA Mgmt', 'license_no': 'L-1', 'city': 'Loveland',
+           'source_ref': 'test:1'}
+    body = {'rows': [row], 'lead_type': 'hoa', 'source': 'nimbus'}
+    assert admin.post('/crm/api/prospects/import', json=body).status_code == 400
+    assert admin.post('/crm/api/prospects/import',
+                      json=dict(body, assign='apibot')).status_code == 400
+    r = admin.post('/crm/api/prospects/import', json=dict(body, assign='bryan'))
+    assert r.status_code in (200, 201), r.get_data(as_text=True)
+    assert admin.get('/crm/api/partners/counts').status_code == 200

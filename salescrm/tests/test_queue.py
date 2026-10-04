@@ -278,3 +278,17 @@ def test_queue_log_hides_other_reps_leads_from_a_rep(client):
     signup(client, 'bryan')                     # a rep, now signed in
     r = client.post('/api/queue/log', json={'lead_id': lead['id'], 'kind': 'call'})
     assert r.status_code == 404
+
+
+def test_a_partner_marked_do_not_contact_drops_out_of_re_touches(client):
+    """The opt-out status kept cadence tasks alive, so someone who said "stop"
+    reappeared in the due list. The column-level dnc flag already excluded them;
+    the outreach status now does too."""
+    signup(client)
+    lead = new_lead(client)
+    with appmod.get_db() as db:
+        db.execute("UPDATE tasks SET due_at=? WHERE lead_id=?", (_ago(1), lead['id']))
+    due_ids = lambda: [d['lead_id'] for d in client.get('/api/queue/today').get_json()['due']]
+    assert lead['id'] in due_ids()
+    client.patch(f"/api/leads/{lead['id']}/outreach-status", json={'status': 'dnc'})
+    assert lead['id'] not in due_ids()

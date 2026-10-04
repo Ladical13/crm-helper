@@ -1,4 +1,4 @@
-"""API access for the executive team and Jarvis: reads, plus one write.
+"""API access for the executive team and Jarvis: reads, plus named writes.
 
 The AI executive team (`Projects/p1r-exec-team`) and Jarvis need to read this
 repo's numbers — the estimator's margins, the CRM's pipeline, the canvasser's
@@ -14,14 +14,26 @@ This adds exactly one way in, and makes it as narrow as it can usefully be:
      user named ``apibot``.
   2. From then on ``apibot`` is treated as any signed-in manager would be —
      except that ``guard()`` refuses every GET outside ``ALLOWLIST`` and every
-     other request outside ``WRITES``.
+     other request that ``write_allowed()`` does not name.
 
-``WRITES`` holds one route: ``POST /crm/api/queue/log``, which records that an
-outreach touch went out. It exists because the 7-day cooldown and the
-leaderboard both key off the activity log: a touch Jarvis drafted that nobody
-logs is a touch the queue serves again tomorrow, so the partner gets contacted
-twice. That endpoint accepts outreach kinds only and credits the touch to the
-rep who owns the lead, never to apibot. Approved by Luke 2026-10-04.
+The writes, each approved by Luke on 2026-10-04:
+
+  * ``POST /crm/api/queue/log`` — record that an outreach touch went out. The
+    7-day cooldown and the leaderboard both key off the activity log, so a
+    touch nobody logs is served again tomorrow. Outreach kinds only, credited
+    to the rep who owns the lead.
+  * ``PATCH /crm/api/leads/<id>/outreach-status`` — record how a partner
+    replied (interested, not now, opt-out, bounced). salescrm limits apibot to
+    the reply outcomes in ``_APIBOT_OUTREACH_STATUSES``; booking an
+    appointment stays a person's job.
+  * ``POST /crm/api/prospects/import`` — how a Nimbus prospecting run lands
+    its partners in a rep's queue (Nimbus forwards the caller's session). The
+    importer dedupes and re-checks suppression; for apibot it also insists on
+    a named rep, so nothing is ever assigned to apibot.
+  * Everything under ``/nimbus/api/`` except ``/nimbus/api/settings`` —
+    Nimbus drafts and researches but never publishes, so its actions are safe
+    to hand over. Settings holds the monthly research spend cap, which is the
+    one guard on what those actions cost; it stays with a human.
 
 Reusing the real session stack rather than bolting on a second auth path is
 deliberate: there is one login mechanism in this codebase, one cookie, one set
@@ -35,6 +47,7 @@ Not enabled unless ``P1_READONLY_TOKEN`` is set. Absent, the exchange endpoint
 404s and the guard is inert.
 """
 import hmac
+import re
 import os
 import secrets
 
@@ -68,6 +81,7 @@ ALLOWLIST = (
     '/crm/api/tasks',
     '/crm/api/queue/today',
     '/crm/api/outreach/summary',
+    '/crm/api/partners/counts',       # aggregates; Nimbus reads it in-process
     # Canvasser — the hail cache the storm work already depends on.
     '/canvass/api/hail',
     # Nimbus — marketing state. Its gate admits apibot for GETs only.
@@ -85,6 +99,21 @@ EXACT = frozenset({
 # The only non-GET requests apibot may make: (method, full path).
 WRITES = frozenset({
     ('POST', '/crm/api/queue/log'),
+    ('POST', '/crm/api/prospects/import'),
+})
+
+# Non-GET requests matched by pattern, for routes that carry an id.
+WRITE_PATTERNS = (
+    ('PATCH', re.compile(r'^/crm/api/leads/[^/]+/outreach-status$')),
+)
+
+# Nimbus: every write beneath this prefix, except those in WRITE_DENY.
+WRITE_SUBTREES = ('/nimbus/api/',)
+
+# Never written, by any method, even inside a write subtree. Settings holds
+# the research spend cap.
+WRITE_DENY = frozenset({
+    '/nimbus/api/settings',
 })
 
 
@@ -137,7 +166,18 @@ def path_allowed(full_path):
 
 
 def write_allowed(method, full_path):
-    return (method, (full_path or '').split('?', 1)[0]) in WRITES
+    path = (full_path or '').split('?', 1)[0]
+    if '..' in path or '//' in path:
+        # Only prefix rules below; never let a prefix vouch for a path that
+        # might resolve somewhere else.
+        return False
+    if path in WRITE_DENY:
+        return False
+    if (method, path) in WRITES:
+        return True
+    if any(m == method and rx.match(path) for m, rx in WRITE_PATTERNS):
+        return True
+    return any(path.startswith(prefix) for prefix in WRITE_SUBTREES)
 
 
 def ensure_user():
@@ -148,7 +188,7 @@ def ensure_user():
     somebody could flip. Role is `manager` because several reporting endpoints
     gate on manager-or-above (the CRM's leaderboard, goals and other reps'
     queues do); `guard()` is what stops that role being used for anything but
-    reading and the one logging write.
+    reading and the writes `write_allowed()` names.
     """
     existing = users.get(USERNAME)
     if existing:
@@ -214,6 +254,8 @@ def register(app):
             'ok': True,
             'username': USERNAME,
             # Kept for existing callers: true for everything except `writes`.
+            # `writes` lists exact routes; patterns and subtrees are in
+            # portal/apibot.py.
             'read_only': True,
             'allowlist': list(ALLOWLIST),
             'writes': sorted(f'{m} {p}' for m, p in WRITES),
