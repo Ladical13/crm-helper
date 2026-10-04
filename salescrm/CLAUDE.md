@@ -189,6 +189,14 @@ round-robin.
   bulk `/api/leads` list strips contact columns for apibot
   (`_redact_for_apibot()`) — the queue is where contacts legitimately arrive,
   one day's work at a time.
+  Jarvis also records **how a partner replied** through `PATCH
+  /api/leads/<id>/outreach-status`, limited to the outcomes in
+  `_APIBOT_OUTREACH_STATUSES`. `appt_set` is deliberately not one of them: an
+  appointment is booked by a person.
+- **`dnc` as an outreach status drops a lead out of cadence re-touches**, not
+  just out of the fresh top-up. It used to stop only new cards, so a partner
+  who said "stop" kept coming back as a due task. Guarded by
+  `test_a_partner_marked_do_not_contact_drops_out_of_re_touches`.
 - **`leads_queue_idx` (`rep, stage, icp_score DESC, created_at`) is what keeps
   the net-new top-up cheap.** Without it SQLite picks `leads_stage_idx` and
   scans every `new` lead — and in a prospecting DB almost everything is `new`,

@@ -1039,6 +1039,12 @@ def list_leads():
 _APIBOT_REDACTED = ('phone', 'email', 'address', 'phone_norm', 'email_norm',
                     'research_notes', 'research_citations')
 
+# What a reply can tell Jarvis. `appt_set` is deliberately absent: an
+# appointment is booked by a person on a calendar, and a status saying one
+# exists when none does is worse than no status.
+_APIBOT_OUTREACH_STATUSES = ('connected', 'callback', 'interested', 'nurture',
+                             'not_interested', 'bad_contact', 'dnc')
+
 def _redact_for_apibot(d):
     for k in _APIBOT_REDACTED:
         if k in d:
@@ -2040,6 +2046,10 @@ def import_prospects():
     rows = data.get('rows')
     if not isinstance(rows, list):
         return jsonify({'error': 'rows must be a list'}), 400
+    if papibot.is_apibot() and (data.get('assign') or '').strip() in ('', papibot.USERNAME):
+        # An omitted `assign` means "the caller", and nobody works apibot's
+        # queue: the batch would vanish into a rep that does not exist.
+        return jsonify({'error': 'name the rep to assign these to'}), 400
     if len(rows) > 5000:
         return jsonify({'error': 'Batch too large (max 5000 rows)'}), 400
 
@@ -3315,10 +3325,15 @@ def research_lead(lead_id):
 @app.route('/api/leads/<lead_id>/outreach-status', methods=['PATCH'])
 @login_required
 def set_outreach_status(lead_id):
-    """Manual correction from the lead drawer. Books nothing — outcomes do that."""
+    """Manual correction from the lead drawer. Books nothing — outcomes do that.
+
+    Jarvis (apibot) calls this too, to record how a partner replied to a queue
+    email, but only with the reply outcomes in `_APIBOT_OUTREACH_STATUSES`."""
     status = (request.get_json(force=True) or {}).get('status')
     if status not in OUTREACH_STATUS_KEYS:
         return jsonify({'error': 'Unknown status'}), 400
+    if papibot.is_apibot() and status not in _APIBOT_OUTREACH_STATUSES:
+        return jsonify({'error': f'apibot may only set {", ".join(_APIBOT_OUTREACH_STATUSES)}'}), 403
     with get_db() as db:
         row = _lead_visible(db, lead_id)
         if not row:
@@ -3407,7 +3422,8 @@ def queue_today():
             '       l.website, l.address, l.city, l.stage, l.lead_type, l.icp_score, l.hook, '
             '       l.source, l.outreach_status, l.research_notes, l.contact_quality '
             'FROM tasks t JOIN leads l ON l.id = t.lead_id '
-            'WHERE t.rep = ? AND t.done = 0 AND t.due_at <= ? AND l.dnc = 0 '
+            "WHERE t.rep = ? AND t.done = 0 AND t.due_at <= ? AND l.dnc = 0 "
+            "AND COALESCE(l.outreach_status, '') != 'dnc' "
             f'AND NOT {dnc_l} '
             'ORDER BY t.due_at', [rep, _end_of_today()] + dnc_lp).fetchall()]
         due = [d for d in due if not _suppressed_by(
