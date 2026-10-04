@@ -1,102 +1,182 @@
-## Daily Outreach — working the CRM queue (paste into the Jarvis skill)
+<!-- Source of truth for the Jarvis skill file references/daily-outreach.md.
+     Upload changes via claude.ai → Customize → Skills; keep this copy in step. -->
 
-**Triggers:** "run outreach", "outreach for today", "get me to 100", "work the
-queue", "log what I sent", "how many touches today", "who do I call".
+# Mode G — Daily Outreach
 
-The CRM (`/crm`) already decides *who* is due today: cadence re-touches first,
-then fresh partners to top up to the target. It also handles Do Not Call,
-opt-outs and the 7-day cooldown. **Never build an outreach list yourself from
-Base44 or Clay for this. Work the queue.** Base44 is for jobs and customers;
-partner outreach lives in the CRM.
+The target is about 100 touches a day across the team. They come from two
+sources, and the daily plan blends both:
 
-### Connect (once per run)
+| Source | Who | Who decides who's due | Cooldown lives in |
+|---|---|---|---|
+| **The CRM queue** (`/crm`) | Partners and prospects: realtors, HOAs, insurance agents, property managers, new homeowner leads | The CRM: cadence re-touches first, then fresh partners to top up | The CRM's activity log (7 days) |
+| **The Den** (Base44) | Existing clients: people we've quoted or roofed | Jarvis, using the rules below | Brain `outreach.contacts_reached_7d` (14 days) |
 
-Needs `P1_READONLY_TOKEN` in the environment and the portal host on the
-network allowlist.
+**Order of work every run:** log what was sent → build the plan → draft →
+report.
+
+---
+
+## 1. Connect
 
 ```python
 import os, requests
-BASE = "https://project-one-estimator-production.up.railway.app"
+PORTAL = "https://project-one-estimator-production.up.railway.app"
+DEN = "https://base44.app/api/apps/69320ef0c647fee442697971"
+CO = "6984bb86d86d9c92d6827a17"          # Colorado location_id
+
 s = requests.Session()
-r = s.post(f"{BASE}/api/apibot/session",
-           headers={"X-P1-Token": os.environ["P1_READONLY_TOKEN"]})
-r.raise_for_status()   # 401 = wrong token, 404 = token not set on Railway
+s.post(f"{PORTAL}/api/apibot/session",
+       headers={"X-P1-Token": os.environ["P1_READONLY_TOKEN"]}).raise_for_status()
+den = {"Authorization": f"Bearer {os.environ['BASE44_TOKEN']}"}
 ```
 
-The session can read pipeline, analytics, hail and Nimbus, and can make exactly
-one write: logging a touch. Anything else returns 403. That's by design, so
-don't work around it.
+- **Portal 401** means the token is wrong. **404** means `P1_READONLY_TOKEN`
+  isn't set on Railway.
+- **Den 401** means `BASE44_TOKEN` has expired. Tell Luke to rotate it.
+- **A connection refused by the proxy** means that host isn't on the
+  environment's network allowlist. Say which host.
 
-### 1. Pull today's queue, per rep
+The portal session can read pipeline, analytics, hail and Nimbus, and can make
+exactly one write: logging a touch. **Anything else returns 403. That's
+deliberate. Report it and never work around it.**
+
+---
+
+## 2. Log what was sent (every run, first)
+
+Drafts become touches only once they're in **Sent**. For each entry in
+`memory["outreach"]["pending_sent"]`:
+
+1. Search Gmail Sent for that subject sent to that recipient since `drafted_at`.
+2. **Found:**
+   - **CRM card:**
+     ```python
+     s.post(f"{PORTAL}/crm/api/queue/log", json={
+         "lead_id": e["lead_id"], "kind": "email",
+         "task_id": e.get("task_id"),     # re-touch cards only
+         "ref": gmail_message_id,         # idempotent: safe to re-run
+     }).raise_for_status()
+     ```
+     The CRM credits the rep who owns the lead, completes the cadence task
+     and starts the 7-day cooldown.
+   - **Den client:** add a dated line to the Contact's `notes` (`PATCH
+     /entities/Contact/<id>`, appending, never overwriting), for example
+     `2026-10-04 · review request emailed (Jarvis)`. Then append `{email,
+     name, date, type, source: "den"}` to `outreach.contacts_reached_7d`.
+     **Never change a Project's status from outreach.**
+3. **Not found after 2 days:** drop it from `pending_sent` and mention it once
+   ("12 drafts from Tuesday were never sent").
+
+When Luke says "called Karen at Greystar", "texted the Parkers" or "met
+with…", log it the same way, with `kind` set to `call`, `text` or `meeting`
+and a short `body`. To find a CRM lead not on today's cards, use `GET
+/crm/api/leads?q=<name>`. That list blanks phone and email for this login;
+names and ids are there.
+
+**Log only what was sent, never what was drafted.** A drafted touch logged as
+done inflates the number and starts a cooldown on someone who never heard
+from us. If a log call fails, say so. Never report it as done.
+
+---
+
+## 3. Build today's plan
+
+Split the target using `memory["outreach"]["daily_plan"]`, for example
+`{"luke": {"partners": 35, "clients": 15}, "bryan": {"partners": 50}}`. If it's
+missing, ask Luke once who is working outreach today and how to split it, then
+save the answer. **Don't put 100 on one person.** One person reviewing and
+sending about 40 good drafts a day is realistic; 100 is not.
+
+### 3a. Partners: the CRM queue
 
 ```python
-q = s.get(f"{BASE}/crm/api/queue/today",
-          params={"rep": "luke", "target": 100, "contact": "ready"}).json()
-cards = q["due"] + q["new"]          # due = re-touches, new = fresh partners
-# q["done_today"], q["remaining"] = the scoreboard
+q = s.get(f"{PORTAL}/crm/api/queue/today",
+          params={"rep": rep, "target": n, "contact": "ready"}).json()
+cards = q["due"] + q["new"]     # due = re-touches, new = fresh partners
 ```
 
-- **Split the target across the reps doing outreach.** Don't put 100 on one
-  person. Ask Luke who is working the queue today if memory doesn't say.
 - `contact=ready` returns only cards with usable contact details. Without it,
   you also get cards that need research first.
-- Each card carries a server-rendered `draft` (`subject`, `body`), chosen by
-  how many times the partner has been touched (first / follow-up / breakup).
-  **Start from that draft.** Personalise with the card's `hook`,
-  `research_notes` and `recent_storm`, but don't rewrite the voice and don't
-  add banned openers ("just checking in").
+- The CRM has already applied Do Not Call, opt-outs and the cooldown. **Don't
+  re-filter it, and never add partners from Base44 or Clay to make up the
+  number.** If the queue runs short, say so; that's a sourcing problem for
+  `lead-refresh`.
 
-### 2. Draft, never send
-
-- **Card has an email:** create a Gmail draft (`gmail_create_draft`) in the
-  rep's own account. Record `lead_id`, `task_id` (due cards only) and the
-  draft's subject in brain memory under `outreach.pending_sent`.
-- **Card has only a phone:** put it on a call/text list for the rep, with the
-  `name`, `company`, `phone` and one line on why now. Calls and texts count
-  toward the target the same as email.
-- **Mix the channels: roughly 40% email, 60% calls and texts.** One inbox
-  sending 100 cold emails a day risks the projectoneroofing.com domain landing
-  in spam, and that would take estimate and contract emails down with it.
-
-### 3. Log what actually went out
-
-Run this on "log what I sent", at the start of every outreach run, and in the
-morning brief.
-
-1. For each entry in `outreach.pending_sent`, search Gmail **Sent** for the
-   subject sent to that recipient.
-2. Found → log it, using the Gmail message id as `ref`:
+### 3b. Existing clients: the Den
 
 ```python
-s.post(f"{BASE}/crm/api/queue/log", json={
-    "lead_id": lead_id, "kind": "email",
-    "task_id": task_id,            # only for due cards; omit otherwise
-    "ref": gmail_message_id,       # makes it safe to re-run
-}).raise_for_status()
+import json, urllib.parse as u
+f = u.quote(json.dumps({"location_id": CO}))
+projects = requests.get(f"{DEN}/entities/Project?q={f}", headers=den).json()
+contacts = {c["id"]: c for c in
+            requests.get(f"{DEN}/entities/Contact?q={f}", headers=den).json()}
 ```
 
-3. Not found after 2 days → drop it from pending and mention it once ("12
-   drafts from Tuesday were never sent").
-4. When Luke says "called Karen at Greystar" or "texted the Parkers", log it
-   with `kind: "call"` or `"text"` and a short `body`. Use the queue card's
-   `lead_id`. For anyone else, find the lead with
-   `GET /crm/api/leads?q=<name>`. That list has phone and email blanked for
-   this login; names and ids are there.
+Join with `project["contact_id"]`. Use `updated_date` as the date the project
+reached its current status; the Den has no separate close date.
 
-**Log only what was sent, never what was drafted.** A draft logged as a touch
-inflates the number and starts a 7-day cooldown on someone who never heard
-from us. If logging fails, say so. Don't report the touch as done.
+**Leave a client out if any of these is true:**
+- They have any project in `contracted`, `ready_for_production`,
+  `roof_complete` or `collect_final_payment`. A job in production belongs to
+  `customer-comms`, and a sales touch in the middle of an install feels
+  tone-deaf.
+- `is_red_flag_customer` is true.
+- Their email is in `contacts_reached_7d` with a date in the last **14 days**.
+  Clients are relationships; 14 days, not 7.
+- A CRM lead with this `crm_contact_id` was touched in the last 7 days (the
+  lead's `last_activity_at` on `GET /crm/api/leads?q=<name>`).
+- There's no email and no phone.
 
-The touch is credited to the rep who owns the lead, so the CRM leaderboard
-counts it with no extra step.
+**Pick one touch per client, the first that applies, in this order:**
 
-### 4. Report the number
+| # | Touch | When | Voice and template |
+|---|---|---|---|
+| 1 | **Storm check** | A past client (any `paid_and_closed` project) whose ZIP is in `memory["storm"]["canvassing_targets"]` | "Hail came through [area] on [date]. Want us to take a free look?" This is the highest-value touch. On a storm day it goes first and can take most of the client allocation. |
+| 2 | **Review request** | `paid_and_closed` 3–30 days ago, and no `review` touch for them in memory | `review-request` |
+| 3 | **Roof Care Plan offer** | `paid_and_closed`, not an RCP subscriber, no `rcp` touch in 90 days | `roof-care-plan` ("every completed job gets an RCP offer") |
+| 4 | **Referral ask** | `paid_and_closed` 30–120 days ago, never asked before | Short and personal: "who else on your street should we look at?" |
+| 5 | **Stalled estimate** | `inspected` / `ready_to_close`, 14+ days since `updated_date` | `estimate-followup` |
+
+Record the touch type as `storm`, `review`, `rcp`, `referral` or `estimate`.
+It drives the rules above and the brief.
+
+---
+
+## 4. Draft (never send)
+
+- **Email available:** create a Gmail draft (`gmail_create_draft`) in the
+  sending rep's account.
+  - **CRM card:** start from the card's server-rendered `draft` (`subject`,
+    `body`). Personalise it with `hook`, `research_notes` and `recent_storm`,
+    but keep the voice and never add banned openers ("just checking in").
+  - **Den client:** write it in the matching specialist skill's voice.
+- **Phone only:** put it on the rep's **call and text list** with name,
+  company, phone and one line on why now. Calls and texts count the same as
+  email.
+- **Aim for about 40% email and 60% calls and texts.** One inbox sending 100
+  cold emails a day risks the projectoneroofing.com domain landing in spam,
+  and estimate and contract emails go down with it. Client touches (storm,
+  referral) are often better as a call anyway.
+- For every draft, append to `outreach.pending_sent`: `{source: "crm"|"den",
+  lead_id | contact_id, task_id, rep, type, subject, recipient, drafted_at}`.
+
+---
+
+## 5. Report
 
 ```python
-s.get(f"{BASE}/crm/api/outreach/summary", params={"rep": "luke"}).json()
-s.get(f"{BASE}/crm/api/leaderboard").json()
+s.get(f"{PORTAL}/crm/api/outreach/summary", params={"rep": rep}).json()
+s.get(f"{PORTAL}/crm/api/leaderboard").json()
 ```
 
-In a brief, one line per rep: `Luke 37/50 · Bryan 22/50 → 59 of 100 today`.
-Then name the single biggest gap ("41 drafts waiting in Gmail since 9am").
-Don't just recite the counts.
+Den touches don't appear on the CRM leaderboard. Count them from
+`contacts_reached_7d` (today's `source: "den"` entries).
+
+The brief gets one line, then the single biggest gap:
+
+```
+OUTREACH  Partners 61 · Clients 24 → 85/100   (Luke 37/50 · Bryan 48/50)
+→ 41 drafts sitting in Gmail since 9am. Send those and we clear 100.
+```
+
+Don't recite counts without saying what to do about them.
