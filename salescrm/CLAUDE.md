@@ -177,6 +177,18 @@ round-robin.
 - **Every card action logs through `POST /api/leads/<id>/activities`**, so the
   leaderboard counts the day with no new reporting code. A *skip* deliberately
   logs nothing.
+- **Jarvis works the same queue through `portal/apibot.py`.** It reads
+  `/api/queue/today?rep=<u>&target=N` (apibot gets a 400 without `rep` — it owns
+  no leads, so its own queue would look like a quiet day) and drafts in Gmail.
+  Once a draft is in Sent it calls `POST /api/queue/log`
+  (`queue_log()`), the **one write** apibot is allowed. That endpoint takes
+  outreach kinds only, credits the lead's owner (never apibot), completes the
+  card's task through `_complete_task()` so the cadence advances exactly as from
+  the card, and dedupes on `ref` (the Gmail id) so re-scanning Sent is safe.
+  Skip that call and the cooldown never starts: tomorrow re-serves today. The
+  bulk `/api/leads` list strips contact columns for apibot
+  (`_redact_for_apibot()`) — the queue is where contacts legitimately arrive,
+  one day's work at a time.
 - **`leads_queue_idx` (`rep, stage, icp_score DESC, created_at`) is what keeps
   the net-new top-up cheap.** Without it SQLite picks `leads_stage_idx` and
   scans every `new` lead — and in a prospecting DB almost everything is `new`,

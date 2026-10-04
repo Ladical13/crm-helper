@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify, send_from_directory, session
 # this app works both mounted by portal/wsgi.py and run standalone (its test
 # suite imports app.py directly with the repo root nowhere in sight).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from portal import apibot as papibot     # noqa: E402
 from portal import clock as pclock       # noqa: E402
 from portal import dbtune                # noqa: E402
 from portal import funnel as pfunnel     # noqa: E402
@@ -1024,7 +1025,26 @@ def list_leads():
             order = f'{_TYPE_ORDER}, lead_type, {order}'
         rows = db.execute(f'SELECT * FROM leads {where} ORDER BY {order} LIMIT ? OFFSET ?',
                           params + [limit, offset]).fetchall()
-    return jsonify([_lead_row(r) for r in rows])
+    out = [_lead_row(r) for r in rows]
+    if papibot.is_apibot():
+        out = [_redact_for_apibot(d) for d in out]
+    return jsonify(out)
+
+
+# What the API principal (Jarvis / the exec team) never gets from the bulk
+# list. It reasons about the pipeline — stages, values, reps, ages — and a
+# token that can page out 5,000 phone numbers at a time is a customer list
+# waiting to leak. The contact details it genuinely needs arrive one day's
+# work at a time through /api/queue/today.
+_APIBOT_REDACTED = ('phone', 'email', 'address', 'phone_norm', 'email_norm',
+                    'research_notes', 'research_citations')
+
+def _redact_for_apibot(d):
+    for k in _APIBOT_REDACTED:
+        if k in d:
+            # Keep each column's type so a consumer parsing it doesn't break.
+            d[k] = '[]' if k == 'research_citations' else ''
+    return d
 
 
 @app.route('/api/leads/type-counts')
@@ -1399,19 +1419,25 @@ def update_task(task_id):
         if not is_manager() and t['rep'] != current_rep():
             return jsonify({'error': 'Forbidden'}), 403
         if 'done' in data:
-            done = 1 if data['done'] else 0
-            db.execute('UPDATE tasks SET done=?, done_at=? WHERE id=?',
-                       (done, _now() if done else '', task_id))
-            if done:
-                # Completing a task logs it and advances any cadence it belongs to.
-                _log_activity(db, t['lead_id'], 'note',
-                              body=f'✓ Completed: {t["title"] or t["kind"]}', rep=t['rep'])
-                if t['enrollment_id']:
-                    _advance_cadence(db, t['enrollment_id'])
+            if data['done']:
+                _complete_task(db, t)
+            else:
+                db.execute("UPDATE tasks SET done=0, done_at='' WHERE id=?", (task_id,))
         if 'due_at' in data:
             db.execute('UPDATE tasks SET due_at=? WHERE id=?', (data['due_at'], task_id))
         _refresh_next_action(db, t['lead_id'])
     return jsonify({'ok': True})
+
+def _complete_task(db, t):
+    """Mark a task done, log it, and advance any cadence it belongs to.
+
+    Shared by the task PATCH and the outreach log so a re-touch completed from
+    either place moves its cadence on identically."""
+    db.execute('UPDATE tasks SET done=1, done_at=? WHERE id=?', (_now(), t['id']))
+    _log_activity(db, t['lead_id'], 'note',
+                  body=f'✓ Completed: {t["title"] or t["kind"]}', rep=t['rep'])
+    if t['enrollment_id']:
+        _advance_cadence(db, t['enrollment_id'])
 
 # ── Cadences ──────────────────────────────────────────────────────────────────
 
@@ -3356,6 +3382,10 @@ def _start_of_today():
 @login_required
 def queue_today():
     """Today's touch list for one rep, capped at the daily target."""
+    if papibot.is_apibot() and not request.args.get('rep'):
+        # apibot owns no leads, so its own queue is always empty — which reads
+        # as "nothing to do today" rather than as a mistake. Say so instead.
+        return jsonify({'error': 'pass ?rep=<username>: apibot has no queue of its own'}), 400
     rep = request.args.get('rep') or current_rep()
     if rep != current_rep() and not is_manager():
         return jsonify({'error': 'Forbidden'}), 403
@@ -3445,6 +3475,70 @@ def queue_today():
         'due': due, 'new': fresh,
         'remaining': max(0, target - done_today),
     })
+
+
+@app.route('/api/queue/log', methods=['POST'])
+@login_required
+def queue_log():
+    """Record that one outreach touch went out — what a queue card's action
+    does, in one call: log the activity and, for a re-touch, complete its task
+    so the cadence moves on.
+
+    This is the one write the API principal may make (portal/apibot.py
+    WRITES). Jarvis drafts the day's queue in Gmail; once a draft shows up in
+    Sent it calls this. Without it the cooldown never starts, so tomorrow's
+    queue serves the same partners again.
+
+    - Outreach kinds only (`OUTREACH_KINDS`): nothing here edits a lead.
+    - The touch is credited to the rep who OWNS the lead, never to apibot, so
+      the leaderboard and `done_today` count the person who sent it. A human
+      caller is credited as themselves, exactly like the card.
+    - `ref` (e.g. the Gmail message id) makes it idempotent: a second call with
+      the same ref for the same lead logs nothing, so re-scanning Sent is safe.
+    """
+    data = request.get_json(silent=True) or {}
+    lead_id = str(data.get('lead_id') or '')
+    kind = data.get('kind')
+    if kind not in OUTREACH_KINDS:
+        return jsonify({'error': f'kind must be one of {", ".join(OUTREACH_KINDS)}'}), 400
+    ref = str(data.get('ref') or '').strip()[:200]
+    bot = papibot.is_apibot()
+    with get_db() as db:
+        lead = _lead_visible(db, lead_id)
+        if not lead:
+            return jsonify({'error': 'Not found'}), 404
+        rep = lead['rep'] if bot else current_rep()
+        if not rep:
+            return jsonify({'error': 'lead has no rep to credit; assign it first'}), 409
+
+        marker = f'[ref:{ref}]' if ref else ''
+        if marker and db.execute(
+                'SELECT 1 FROM activities WHERE lead_id=? AND instr(body, ?) > 0',
+                (lead_id, marker)).fetchone():
+            return jsonify({'ok': True, 'logged': False, 'duplicate': True, 'rep': rep})
+
+        task = None
+        if data.get('task_id'):
+            task = db.execute('SELECT * FROM tasks WHERE id=? AND lead_id=?',
+                              (str(data['task_id']), lead_id)).fetchone()
+            if not task:
+                return jsonify({'error': 'task does not belong to this lead'}), 400
+
+        body = ' '.join(p for p in (
+            'via Jarvis' if bot else '',
+            str(data.get('body') or '').strip()[:2000],
+            marker) if p)
+        _log_activity(db, lead_id, kind, body=body,
+                      outcome=str(data.get('outcome') or '')[:200], rep=rep)
+        if task and not task['done']:
+            _complete_task(db, task)
+        _refresh_next_action(db, lead_id)
+        done_today = db.execute(
+            'SELECT COUNT(*) c FROM activities WHERE rep = ? AND created_at >= ? '
+            'AND kind IN (%s)' % ','.join('?' * len(OUTREACH_KINDS)),
+            [rep, _start_of_today()] + list(OUTREACH_KINDS)).fetchone()['c']
+    return jsonify({'ok': True, 'logged': True, 'rep': rep, 'done_today': done_today}), 201
+
 
 @app.route('/api/queue/assign', methods=['POST'])
 @admin_required

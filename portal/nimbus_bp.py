@@ -40,6 +40,12 @@ def _admin_only():
 def _gate():
     # portal/app.py already blocks anonymous requests via its default-deny
     # before_request hook. Layer role on top: even a signed-in rep gets 403.
+    # The one exception is the API principal (Jarvis / the exec team), which
+    # may READ marketing state. apibot.guard() has already refused anything it
+    # sends here that isn't a GET.
+    from portal import apibot
+    if apibot.is_apibot() and request.method == 'GET':
+        return None
     denied = _admin_only()
     if denied is not None:
         return denied
