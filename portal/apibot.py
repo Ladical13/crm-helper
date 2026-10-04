@@ -1,8 +1,9 @@
-"""Read-only API access for the executive team.
+"""API access for the executive team and Jarvis: reads, plus one write.
 
-The AI executive team (`Projects/p1r-exec-team`) needs to read this repo's
-numbers — the estimator's margins, the CRM's pipeline, the canvasser's hail
-cache. Every endpoint here sits behind ``portal/app.py``'s default-deny
+The AI executive team (`Projects/p1r-exec-team`) and Jarvis need to read this
+repo's numbers — the estimator's margins, the CRM's pipeline, the canvasser's
+hail cache, Nimbus's marketing state — and Jarvis works the daily outreach
+queue. Every endpoint here sits behind ``portal/app.py``'s default-deny
 ``_require_login()``, which accepts a session cookie and nothing else, so an
 outside process had no way in.
 
@@ -12,13 +13,19 @@ This adds exactly one way in, and makes it as narrow as it can usefully be:
      shared secret for an ordinary session cookie belonging to a real portal
      user named ``apibot``.
   2. From then on ``apibot`` is treated as any signed-in manager would be —
-     except that ``guard()`` refuses **every non-GET request** it makes, and
-     every GET outside ``ALLOWLIST``.
+     except that ``guard()`` refuses every GET outside ``ALLOWLIST`` and every
+     other request outside ``WRITES``.
+
+``WRITES`` holds one route: ``POST /crm/api/queue/log``, which records that an
+outreach touch went out. It exists because the 7-day cooldown and the
+leaderboard both key off the activity log: a touch Jarvis drafted that nobody
+logs is a touch the queue serves again tomorrow, so the partner gets contacted
+twice. That endpoint accepts outreach kinds only and credits the touch to the
+rep who owns the lead, never to apibot. Approved by Luke 2026-10-04.
 
 Reusing the real session stack rather than bolting on a second auth path is
 deliberate: there is one login mechanism in this codebase, one cookie, one set
-of role checks, and this does not become the exception. What it adds is a
-principal that can only ever read.
+of role checks, and this does not become the exception.
 
 ``apibot`` cannot log in through the form — it is created with a random
 password nobody holds — so the token is the only route to it, and revoking the
@@ -38,39 +45,46 @@ from portal import throttle, users
 
 USERNAME = 'apibot'
 
-# GET-only, and only these. Prefix match against the FULL path including the
-# mount prefix — DispatcherMiddleware strips it before the sub-app sees the
-# request, so `request.path` inside the estimator is '/api/analytics', not
+# GETs allowed. Prefix match against the FULL path including the mount prefix —
+# DispatcherMiddleware strips it before the sub-app sees the request, so
+# `request.path` inside the estimator is '/api/analytics', not
 # '/estimate/api/analytics'. See _full_path().
 #
-# Every entry here is a reporting endpoint. Nothing that returns a customer's
-# contact details, a document, or a photo belongs in this list: the exec team
-# reasons about aggregates, and a reporting credential that can also read
-# personal data is a bigger thing to lose.
+# Every entry is reporting, with one deliberate exception: the outreach queue,
+# which carries the contact details of the people due a touch TODAY, because
+# drafting to them is the job. That is a day's work list, not the database.
+# Nothing that returns a document or a photo belongs here, and the bulk lead
+# list has its contact columns stripped for apibot (salescrm's
+# `_redact_for_apibot()`), so a lost token is not a lost customer list.
 ALLOWLIST = (
     # Estimator — the money. Revenue, margin by trade, close-rate cohorts,
     # funnel, pipeline aging, per-rep, monthly trend.
     '/estimate/api/analytics',
     '/estimate/api/goals',
-    # Sales CRM — the pipeline.
+    # Sales CRM — the pipeline, and today's outreach.
     '/crm/api/leads',
     '/crm/api/leaderboard',
     '/crm/api/goals',
     '/crm/api/tasks',
+    '/crm/api/queue/today',
+    '/crm/api/outreach/summary',
     # Canvasser — the hail cache the storm work already depends on.
     '/canvass/api/hail',
-    # Nimbus — marketing state. Its own blueprint already gates on is_admin.
+    # Nimbus — marketing state. Its gate admits apibot for GETs only.
     '/nimbus/api/',
 )
 
 # Entries that match themselves only, never a path beneath them. Without this,
 # '/crm/api/leads' also opened '/crm/api/leads/<id>' (a lead's full contact
 # record and activity log) and '/crm/api/leads/<id>/documents' (signed
-# contracts) — exactly what the paragraph above rules out. The list itself
-# still carries contact columns, so salescrm strips them for apibot; see its
-# `_redact_for_apibot()`.
+# contracts).
 EXACT = frozenset({
     '/crm/api/leads',
+})
+
+# The only non-GET requests apibot may make: (method, full path).
+WRITES = frozenset({
+    ('POST', '/crm/api/queue/log'),
 })
 
 
@@ -84,6 +98,11 @@ def configured_token():
 
 def enabled():
     return bool(configured_token())
+
+
+def is_apibot(username=None):
+    """True when the current session (or `username`) is the API principal."""
+    return (username if username is not None else session.get('username')) == USERNAME
 
 
 def _full_path():
@@ -100,8 +119,9 @@ def path_allowed(full_path):
 
     A bare ``startswith`` would let ``/crm/api/leadsX`` through on the strength
     of ``/crm/api/leads`` — a different route, sharing a prefix by accident.
-    An entry ending in ``/`` is an explicit subtree (``/nimbus/api/``); anything
-    else must match exactly or be followed by ``/``.
+    An entry ending in ``/`` is an explicit subtree (``/nimbus/api/``); an
+    entry in ``EXACT`` matches itself only; anything else must match exactly
+    or be followed by ``/``.
     """
     path = (full_path or '').split('?', 1)[0]
     for allowed in ALLOWLIST:
@@ -116,14 +136,19 @@ def path_allowed(full_path):
     return False
 
 
+def write_allowed(method, full_path):
+    return (method, (full_path or '').split('?', 1)[0]) in WRITES
+
+
 def ensure_user():
     """Create the apibot principal if it doesn't exist yet. Idempotent.
 
     The password is random and immediately discarded, so the account is
     unreachable through the login form by construction rather than by a flag
     somebody could flip. Role is `manager` because several reporting endpoints
-    gate on manager-or-above (the CRM's leaderboard and goals do); `guard()` is
-    what stops that role being used for anything but reading.
+    gate on manager-or-above (the CRM's leaderboard, goals and other reps'
+    queues do); `guard()` is what stops that role being used for anything but
+    reading and the one logging write.
     """
     existing = users.get(USERNAME)
     if existing:
@@ -132,7 +157,7 @@ def ensure_user():
         USERNAME,
         password=secrets.token_urlsafe(64),
         role='manager',
-        full_name='Executive team (read-only)',
+        full_name='Jarvis / executive team (API)',
     )
 
 
@@ -142,15 +167,17 @@ def guard():
     Returns None for everybody who isn't apibot, so the cost on a normal
     request is one dict lookup.
     """
-    if session.get('username') != USERNAME:
+    if not is_apibot():
         return None
-    # Re-authenticating is the one POST apibot may make. Without this exemption
-    # a client holding an expiring cookie cannot refresh it — the guard refuses
-    # the exchange because the caller is already apibot — and the only way out
-    # is to clear cookies. The endpoint still checks the token itself.
+    # Re-authenticating is always allowed. Without this exemption a client
+    # holding an expiring cookie cannot refresh it — the guard refuses the
+    # exchange because the caller is already apibot — and the only way out is
+    # to clear cookies. The endpoint still checks the token itself.
     if request.endpoint == 'apibot_session':
         return None
     if request.method != 'GET':
+        if write_allowed(request.method, _full_path()):
+            return None
         return jsonify({'error': 'apibot is read-only'}), 403
     if not path_allowed(_full_path()):
         return jsonify({'error': 'path not available to apibot'}), 403
@@ -186,8 +213,10 @@ def register(app):
         return jsonify({
             'ok': True,
             'username': USERNAME,
+            # Kept for existing callers: true for everything except `writes`.
             'read_only': True,
             'allowlist': list(ALLOWLIST),
+            'writes': sorted(f'{m} {p}' for m, p in WRITES),
         })
 
     return app

@@ -239,3 +239,42 @@ def test_assign_is_manager_only(client):
     signup(client, 'luke')
     signup(client, 'bryan')
     assert client.post('/api/queue/assign', json={}).status_code == 403
+
+
+# ── POST /api/queue/log ──────────────────────────────────────────────────────
+
+def test_queue_log_completes_the_task_and_moves_the_cadence_on(client):
+    signup(client)
+    lead = new_lead(client)                    # homeowners enrol in a cadence
+    with appmod.get_db() as db:
+        task = db.execute('SELECT * FROM tasks WHERE lead_id=? AND done=0',
+                          (lead['id'],)).fetchone()
+    assert task, 'expected the cadence to have created a first task'
+    r = client.post('/api/queue/log', json={'lead_id': lead['id'], 'kind': 'call',
+                                            'task_id': task['id']})
+    assert r.status_code == 201
+    assert r.get_json()['rep'] == 'luke'       # a human is credited as themselves
+    assert r.get_json()['done_today'] == 1
+    with appmod.get_db() as db:
+        assert db.execute('SELECT done FROM tasks WHERE id=?', (task['id'],)).fetchone()[0] == 1
+        # The cadence materialised its next step.
+        assert db.execute('SELECT COUNT(*) FROM tasks WHERE lead_id=? AND done=0',
+                          (lead['id'],)).fetchone()[0] >= 1
+
+
+def test_queue_log_refuses_a_task_from_another_lead(client):
+    signup(client)
+    a, b = new_lead(client), new_lead(client)
+    with appmod.get_db() as db:
+        tb = db.execute('SELECT id FROM tasks WHERE lead_id=?', (b['id'],)).fetchone()
+    r = client.post('/api/queue/log', json={'lead_id': a['id'], 'kind': 'call',
+                                            'task_id': tb['id']})
+    assert r.status_code == 400
+
+
+def test_queue_log_hides_other_reps_leads_from_a_rep(client):
+    signup(client)                              # luke, admin
+    lead = new_lead(client)
+    signup(client, 'bryan')                     # a rep, now signed in
+    r = client.post('/api/queue/log', json={'lead_id': lead['id'], 'kind': 'call'})
+    assert r.status_code == 404

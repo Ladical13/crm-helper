@@ -183,3 +183,109 @@ def test_leads_list_does_not_open_the_records_beneath_it():
     for path in ('/crm/api/leads/abc', '/crm/api/leads/abc/documents',
                  '/crm/api/leads/abc/messages', '/crm/api/leads/unplaced'):
         assert not apibot.path_allowed(path), path
+
+
+# ── Jarvis: the outreach queue, Nimbus, and the one write ────────────────────
+
+def _lead_for(admin, rep='bryan'):
+    """A lead owned by `rep`, created the way a manager would."""
+    from portal import users
+    if not users.get(rep):
+        users.create(rep, password='knockknock', role='rep')
+    r = admin.post('/crm/api/leads', json={
+        'first_name': 'Pat', 'last_name': 'Agent', 'lead_type': 'realtor',
+        'phone': '970-555-1212', 'email': 'pat@example.com', 'rep': rep})
+    assert r.status_code in (200, 201), r.get_data(as_text=True)
+    return r.get_json()['id']
+
+
+def _crm_db():
+    import sys
+    return sys.modules['p1_crm_app'].get_db()
+
+
+def test_nimbus_is_readable_but_not_writable(client, bridge):
+    """Nimbus gates on is_admin; apibot is a manager, so it used to be shut out
+    of a path the allowlist named. Reads now pass; writes still don't."""
+    _exchange(client)
+    assert client.get('/nimbus/api/settings').status_code == 200
+    assert client.post('/nimbus/api/settings', json={}).status_code == 403
+
+
+def test_the_outreach_log_is_the_only_write(client, bridge):
+    from portal import apibot
+    assert apibot.write_allowed('POST', '/crm/api/queue/log')
+    assert not apibot.write_allowed('GET', '/crm/api/queue/log')
+    assert not apibot.write_allowed('POST', '/crm/api/queue/assign')
+    assert not apibot.write_allowed('POST', '/crm/api/leads')
+    assert not apibot.write_allowed('POST', '/crm/api/queue/log/x')
+    _exchange(client)
+    for path in ('/crm/api/leads', '/crm/api/queue/assign', '/crm/api/goals'):
+        assert client.post(path, json={}).status_code == 403, path
+
+
+def test_a_logged_touch_is_credited_to_the_lead_owner(admin, bridge):
+    lead_id = _lead_for(admin)
+    _exchange(admin)
+    r = admin.post('/crm/api/queue/log', json={
+        'lead_id': lead_id, 'kind': 'email', 'ref': 'gmail-123'})
+    assert r.status_code == 201, r.get_data(as_text=True)
+    body = r.get_json()
+    assert body['rep'] == 'bryan' and body['logged'] is True
+    with _crm_db() as db:
+        acts = db.execute("SELECT * FROM activities WHERE lead_id=? AND kind='email'",
+                          (lead_id,)).fetchall()
+        assert len(acts) == 1
+        assert acts[0]['rep'] == 'bryan'
+        assert 'via Jarvis' in acts[0]['body']
+        # The cooldown keys off this; without it tomorrow's queue repeats today.
+        assert db.execute('SELECT last_activity_at FROM leads WHERE id=?',
+                          (lead_id,)).fetchone()[0]
+
+
+def test_the_same_ref_logs_once(admin, bridge):
+    """Jarvis re-scans Sent; a second pass must not double the day's count."""
+    lead_id = _lead_for(admin)
+    _exchange(admin)
+    payload = {'lead_id': lead_id, 'kind': 'email', 'ref': 'gmail-dup'}
+    assert admin.post('/crm/api/queue/log', json=payload).status_code == 201
+    second = admin.post('/crm/api/queue/log', json=payload)
+    assert second.status_code == 200 and second.get_json()['duplicate'] is True
+    with _crm_db() as db:
+        n = db.execute("SELECT COUNT(*) FROM activities WHERE lead_id=? AND kind='email'",
+                       (lead_id,)).fetchone()[0]
+    assert n == 1
+
+
+def test_the_log_accepts_outreach_kinds_only(admin, bridge):
+    lead_id = _lead_for(admin)
+    _exchange(admin)
+    for kind in ('note', 'system', '', None):
+        r = admin.post('/crm/api/queue/log', json={'lead_id': lead_id, 'kind': kind})
+        assert r.status_code == 400, kind
+
+
+def test_bulk_lead_list_hides_contact_details_from_apibot(admin, bridge):
+    lead_id = _lead_for(admin)
+    _exchange(admin)
+    leads = admin.get('/crm/api/leads').get_json()
+    mine = next(l for l in leads if l['id'] == lead_id)
+    assert mine['phone'] == '' and mine['email'] == ''
+    assert mine['first_name'] == 'Pat'           # names stay: "the Smith deal"
+
+
+def test_queue_needs_a_rep_and_carries_contacts(admin, bridge):
+    """The day's work list is where contact details legitimately arrive."""
+    _lead_for(admin)
+    _exchange(admin)
+    assert admin.get('/crm/api/queue/today').status_code == 400
+    q = admin.get('/crm/api/queue/today?rep=bryan&target=100').get_json()
+    assert q['rep'] == 'bryan' and q['target'] == 100
+    cards = q['due'] + q['new']
+    assert any(c.get('email') == 'pat@example.com' for c in cards)
+
+
+def test_a_human_is_unaffected_by_the_redaction(admin, bridge):
+    lead_id = _lead_for(admin)
+    leads = admin.get('/crm/api/leads').get_json()
+    assert next(l for l in leads if l['id'] == lead_id)['phone'] == '970-555-1212'
