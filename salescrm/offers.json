@@ -15,7 +15,11 @@
     "(\"Premium\", \"500+ roofs\", \"A+ BBB\", \"10+ years\"), \"guaranteed\" response",
     "became \"within 24 hours, weather permitting\", and the unattributed",
     "property-manager testimonial was dropped. Credentials are only those in the",
-    "marketing profile. New offers (insurance agents, past clients) start as drafts."
+    "marketing profile. New offers (insurance agents, past clients) start as drafts.",
+    "",
+    "Amounts on the three past-customer offers were set by Luke on 2026-10-05",
+    "($250 referral thank-you, $250 off the next project, two months of Home",
+    "Shield). They stay drafts until he reads each one and makes it live."
   ],
   "offers": [
     {
@@ -185,18 +189,18 @@
       ],
       "status": "draft",
       "headline": "Keep your new roof looking after itself.",
-      "intro": "You invested in a new roof. Home Shield keeps it - and the rest of the exterior - on a maintenance schedule, and our roof customers get [AMOUNT] when they join.",
+      "intro": "You invested in a new roof. Home Shield keeps it - and the rest of the exterior - on a maintenance schedule, and our roof customers get their first two months free when they join.",
       "bullets": [
         "An annual roof inspection with a photo report, to keep small issues small.",
         "Priority storm response - front of the line after hail.",
         "A discount on any repair work while you're on the plan.",
-        "Joining perk for our roof customers: [AMOUNT]."
+        "Joining perk for our roof customers: the first two months free."
       ],
       "fine_print": "For homes where Project One installed the roof. Plan price, services and discount are set out in the plan agreement. The joining perk applies once per home.",
       "cta": "Join Home Shield",
       "email_subject": "Keep your new roof looking after itself",
-      "email_body": "{greeting}\n\nNow that your roof is done, Home Shield keeps it - and the rest of the exterior - on a schedule: an annual inspection with photos, priority response after hail, and savings on repairs. As a roof customer you also get [AMOUNT] when you join.\n\nThe details: {offer_link}\n\nWant me to set it up?",
-      "text_body": "{greeting} {rep_first} from Project One Roofing. Home Shield keeps your new roof maintained - and roof customers get [AMOUNT] to join: {offer_link}"
+      "email_body": "{greeting}\n\nNow that your roof is done, Home Shield keeps it - and the rest of the exterior - on a schedule: an annual inspection with photos, priority response after hail, and savings on repairs. As a roof customer you also get your first two months free when you join.\n\nThe details: {offer_link}\n\nWant me to set it up?",
+      "text_body": "{greeting} {rep_first} from Project One Roofing. Home Shield keeps your new roof maintained - and roof customers get the first two months free: {offer_link}"
     },
     {
       "key": "past_referral",
@@ -206,17 +210,17 @@
       ],
       "status": "draft",
       "headline": "Know someone who needs a roofer? We'll say thank you.",
-      "intro": "Most of our work comes from neighbors and friends of customers like you. When someone you refer signs with us, we'll send you [AMOUNT] as a thank-you.",
+      "intro": "Most of our work comes from neighbors and friends of customers like you. When someone you refer signs with us, we'll send you $250 as a thank-you.",
       "bullets": [
         "Send them our way, or send us their name and number and we'll reach out.",
         "They get the same honest inspection and written estimate you did.",
-        "When their project is signed, you get [AMOUNT] as a thank-you."
+        "When their project is signed, you get $250 as a thank-you."
       ],
       "fine_print": "Paid once per referred household, after the referred project is signed and completed. The thank-you is not a payment, waiver or rebate of any insurance deductible and is not conditioned on any insurance claim. Referrals must be new customers. Program terms may change.",
       "cta": "Refer a neighbor",
       "email_subject": "A thank-you for sending neighbors our way",
-      "email_body": "{greeting}\n\nMost of our work comes from customers like you telling a neighbor. If you know someone with roof trouble, send them our way - and when their project is signed, we'll send you [AMOUNT] as a thank-you.\n\nThe details: {offer_link}\n\nThanks for trusting us with your home.",
-      "text_body": "{greeting} {rep_first} from Project One Roofing. Know someone who needs a roofer? When they sign, we'll send you [AMOUNT] as a thank-you: {offer_link}"
+      "email_body": "{greeting}\n\nMost of our work comes from customers like you telling a neighbor. If you know someone with roof trouble, send them our way - and when their project is signed, we'll send you $250 as a thank-you.\n\nThe details: {offer_link}\n\nThanks for trusting us with your home.",
+      "text_body": "{greeting} {rep_first} from Project One Roofing. Know someone who needs a roofer? When they sign, we'll send you $250 as a thank-you: {offer_link}"
     },
     {
       "key": "past_next_project",
@@ -226,17 +230,38 @@
       ],
       "status": "draft",
       "headline": "You trusted us with your roof. Let's talk about the rest of the exterior.",
-      "intro": "We also do siding, windows, paint, decks and gutters - and as a past customer you get [AMOUNT] on your next project with us.",
+      "intro": "We also do siding, windows, paint, decks and gutters - and as a past customer you get $250 off your next project with us.",
       "bullets": [
         "Siding, windows, exterior paint, decks and gutters, from the same crew you already know.",
         "The same written, itemized estimate you got for your roof.",
-        "Past-customer savings: [AMOUNT] on your next project."
+        "Past-customer savings: $250 off your next project."
       ],
       "fine_print": "For homes where Project One has completed work. One use per home, on a project signed within the offer period. Not combinable with other offers.",
       "cta": "Get an estimate for your next project",
       "email_subject": "The rest of your home's exterior",
-      "email_body": "{greeting}\n\nThanks again for trusting us with your roof. We also do siding, windows, paint, decks and gutters, and as a past customer you get [AMOUNT] on your next project.\n\nThe details: {offer_link}\n\nAnything on your list this year?",
-      "text_body": "{greeting} {rep_first} from Project One Roofing. We also do siding, windows, paint, decks and gutters - past customers get [AMOUNT] on the next project: {offer_link}"
+      "email_body": "{greeting}\n\nThanks again for trusting us with your roof. We also do siding, windows, paint, decks and gutters, and as a past customer you get $250 off your next project.\n\nThe details: {offer_link}\n\nAnything on your list this year?",
+      "text_body": "{greeting} {rep_first} from Project One Roofing. We also do siding, windows, paint, decks and gutters - past customers get $250 off the next project: {offer_link}"
+    },
+    {
+      "key": "past_winter_check",
+      "name": "Free Winter Roof Check",
+      "for": [
+        "past_customer"
+      ],
+      "status": "draft",
+      "headline": "A free look at your roof before winter settles in.",
+      "intro": "Hail damage rarely shows from the ground, and many insurance policies set a deadline to report it - often about a year from the storm. We'll check, photograph what we find, and tell you plainly whether anything needs attention.",
+      "bullets": [
+        "A free roof check, about 20 minutes, with photos of anything we find.",
+        "A straight answer: it is fine, it needs a repair, or it is worth a call to your insurer.",
+        "If you already have an estimate from us, we refresh the numbers at no charge.",
+        "If the roof is fine, we say so, and you keep the photos for your records."
+      ],
+      "fine_print": "A check is a visual inspection; any repair is quoted separately. Your policy sets its own reporting deadline - check it or ask your agent. We don't promise any claim outcome, which is your insurer's decision, and we never waive, pay or rebate an insurance deductible.",
+      "cta": "Book a free winter roof check",
+      "email_subject": "A free look at your roof before winter",
+      "email_body": "{greeting}\n\n{storm_hook}\n\nHail damage rarely shows from the ground, and many policies set a deadline to report it - often about a year from the storm. A free check takes about 20 minutes and you get photos either way.\n\nThe details: {offer_link}\n\nIs there a day this week that works?",
+      "text_body": "{greeting} {rep_first} from Project One Roofing. Free winter roof check - about 20 minutes, photos either way, and a straight answer on whether anything needs attention: {offer_link}"
     }
   ]
 }

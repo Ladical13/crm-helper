@@ -42,10 +42,7 @@ def _prompt(row, hint=''):
     kind = _kind_for(row.get('lead_type') or '')
     return (
         f'Research this {kind} for a first call from a local roofing contractor. '
-        f'Find the person who handles the building, facilities or maintenance '
-        f'(for a church: business administrator, facilities or trustees chair, '
-        f'else the senior pastor; for a school district: facilities director; '
-        f'for an HOA: the management company contact or board president).\n'
+        f'{_who_for(row.get("lead_type") or "")}\n'
         f'Report:\n'
         f'- decision_maker: {{name, title, email, phone}} — email and phone only '
         f'if published on a public page; otherwise "unknown"\n'
@@ -65,6 +62,31 @@ def _prompt(row, hint=''):
         + f'Return JSON with exactly these keys: '
         f'decision_maker, org_email, org_phone, website, news, summary, citations'
     )
+
+
+# Who a roofer wants at each kind of organisation. A partner is not a building:
+# asking a brokerage for "the person who handles facilities" finds the office
+# manager, when the person worth a call is the broker whose listings have roofs.
+_BUILDING = ('Find the person who handles the building, facilities or maintenance '
+             '(for a church: business administrator, facilities or trustees chair, '
+             'else the senior pastor; for a school district: facilities director; '
+             'for an HOA: the management company contact or board president).')
+_WHO = {
+    'realtor': ('Find the person who lists or sells homes there: the managing broker, '
+                'the owner, or a named agent with their own published contact details.'),
+    'property_manager': ('Find the person who hires contractors for the properties they '
+                         'manage: the owner, a property manager, or the maintenance coordinator.'),
+    'insurance_agent': ('Find the agent whose name is on the agency: the owner or principal '
+                        'agent who handles home and property policies.'),
+    'adjuster': 'Find the named adjuster or the owner of the firm.',
+    'gc': ('Find the person who hires subcontractors: the owner, a project manager '
+           'or the estimator.'),
+    'referral_partner': 'Find the owner or the person who deals with customers.',
+}
+
+
+def _who_for(lead_type):
+    return _WHO.get(lead_type, _BUILDING)
 
 
 def _known(v):
@@ -236,7 +258,7 @@ def candidates(crm, limit, lead_type=None, mode='new'):
 def run(crm, limit=50, lead_type=None, dry_run=False, log=print, mode='new'):
     rows = candidates(crm, limit, lead_type, mode=mode)
     log(f'{len(rows)} leads ({mode}); month spend so far ${perplexity.month_spend_usd():.2f}')
-    names = emails = phones = sites = spent = 0
+    names = emails = phones = sites = reachable = spent = 0
     for i, lead in enumerate(rows, 1):
         try:
             data, cites, cost = research(lead)
@@ -252,12 +274,15 @@ def run(crm, limit=50, lead_type=None, dry_run=False, log=print, mode='new'):
         emails += 'email' in fill
         phones += 'phone' in fill
         sites += 'website' in fill
+        reachable += bool('email' in fill or 'phone' in fill)
         log(f'  [{i}/{len(rows)}] {lead.get("company")}: '
             + (', '.join(f'{k}={v}' for k, v in fill.items()) or 'no contact found'))
     log(f'Done: {names} names, {emails} emails, {phones} phones, {sites} websites filled; '
         f'${spent:.2f} this run' + (' (dry run - nothing written)' if dry_run else ''))
+    # `reachable` is the number that matters to the queue: leads that came
+    # back with a phone or an email, i.e. cards that can now be worked.
     return {'names': names, 'emails': emails, 'phones': phones, 'websites': sites,
-            'spent': spent, 'seen': len(rows)}
+            'reachable': reachable, 'spent': spent, 'seen': len(rows)}
 
 
 def main(argv=None):

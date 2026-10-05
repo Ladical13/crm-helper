@@ -12,8 +12,9 @@
     "channel:  email | text | voicemail | call  (call = a call script)",
     "audience: homeowner | partner | commercial | past_customer",
     "step:     first | followup | breakup | any  (which touch it is written for)",
-    "stage:    optional - 'won' or 'lost', for past-customer templates that only",
+    "stage:    optional - 'won', 'lost' or 'follow_up', for past-customer templates that only",
     "          make sense to one of them (a review ask to someone who never bought).",
+    "          'follow_up' is the open job: inspected or quoted, never decided.",
     "lead_type: optional - a template written for ONE type (realtor, hoa, church...)",
     "           beats the audience-wide one whenever that type is being worked.",
     "",
@@ -762,6 +763,88 @@
       "audience": "partner",
       "step": "any",
       "body": "{greeting} {rep_first} with Project One Roofing. After this week's hail around {city}, if any of your clients or properties were in it, send them my way - I'll get out fast and put it in writing."
+    },
+    {
+      "key": "text:past_customer:open_job",
+      "name": "Open job - where did it land?",
+      "channel": "text",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "follow_up",
+      "body": "{greeting} {rep_first} from Project One Roofing. We talked about your roof a while back and I never heard where it landed. Is it still on your list, or has it been taken care of? Either answer helps me."
+    },
+    {
+      "key": "email:past_customer:open_job",
+      "name": "Open job - where did it land?",
+      "channel": "email",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "follow_up",
+      "subject": "Your roof - still on the list?",
+      "body": "{greeting}\n\nWe looked at your roof a while back and I never heard how you wanted to handle it.\n\n{storm_hook}\n\nIf it is still on your list, I can update the numbers and get you on the schedule ahead of spring. If you went another way, or it can wait, tell me and I'll close the file.\n\nWhich is it?"
+    },
+    {
+      "key": "voicemail:past_customer:open_job",
+      "name": "Open job - where did it land?",
+      "channel": "voicemail",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "follow_up",
+      "body": "{greeting} this is {rep_first} with Project One Roofing. We talked about your roof a while back and I wanted to see where it landed. If it is still on your list I can update the numbers, and if it's handled, tell me and I'll close the file. Call or text me at this number."
+    },
+    {
+      "key": "call:past_customer:open_job",
+      "name": "Open job - where did it land?",
+      "channel": "call",
+      "audience": "past_customer",
+      "step": "any",
+      "stage": "follow_up",
+      "body": "OPEN: Hi, it's {rep_first} from Project One Roofing. We talked about your roof a while back - have you given up on getting it done this year?\n\nIF STILL OPEN: What held it up - the price, the timing, or the insurance side?\n\nIF PRICE: Let me refresh the numbers; materials and our schedule have both moved.\n\nIF TIMING: Would it help to pick a spring date now so it is off your mind?\n\nIF HANDLED: Glad it's done. If anything comes up after a storm, you have my number.\n\nCLOSE: Can I come by for 20 minutes this week to update it?"
+    },
+    {
+      "key": "text:past_customer:checkin",
+      "name": "Check-in (first text)",
+      "channel": "text",
+      "audience": "past_customer",
+      "step": "first",
+      "stage": "won",
+      "body": "{greeting} {rep_first} from Project One Roofing. Checking that the roof we did for you is holding up. If you ever see anything after wind, hail or snow, text me and I'll come look, no charge. Reply STOP and I won't text again."
+    },
+    {
+      "key": "text:realtor:winter",
+      "name": "Realtor - spring listing prep",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "realtor",
+      "step": "followup",
+      "body": "{greeting} {rep_first} with Project One Roofing. Before your spring listings go live, I'll check the roof and put it in writing, free, so it is never the surprise in the inspection. Any listings coming up?"
+    },
+    {
+      "key": "text:hoa:winter",
+      "name": "HOA - budget season",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "hoa",
+      "step": "followup",
+      "body": "{greeting} {rep_first} with Project One Roofing. If the board is setting next year's budget, a free roof condition report gives you real numbers: every building photographed, remaining life estimated. Want one before your next meeting?"
+    },
+    {
+      "key": "text:property_manager:winter",
+      "name": "Property manager - winter leaks",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "property_manager",
+      "step": "followup",
+      "body": "{greeting} {rep_first} with Project One Roofing. Winter wind and ice find the weak spots. When a leak call comes in on one of your properties, I can have someone out within 24 hours, weather permitting, with photos for the owner. Want my direct line on file?"
+    },
+    {
+      "key": "text:insurance_agent:winter",
+      "name": "Insurance agent - roof condition at renewal",
+      "channel": "text",
+      "audience": "partner",
+      "lead_type": "insurance_agent",
+      "step": "followup",
+      "body": "{greeting} {rep_first} with Project One Roofing. When a carrier asks about a roof's age or condition at renewal, I can inspect it and write it up for your client. Useful to have a local roofer for those?"
     }
   ]
 }

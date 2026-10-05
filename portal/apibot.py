@@ -81,6 +81,7 @@ ALLOWLIST = (
     '/crm/api/tasks',
     '/crm/api/queue/today',
     '/crm/api/outreach/summary',
+    '/crm/api/offers',                # what Luke has put live, to link in a draft
     '/crm/api/partners/counts',       # aggregates; Nimbus reads it in-process
     # Canvasser — the hail cache the storm work already depends on.
     '/canvass/api/hail',
@@ -94,6 +95,7 @@ ALLOWLIST = (
 # contracts).
 EXACT = frozenset({
     '/crm/api/leads',
+    '/crm/api/offers',
 })
 
 # The only non-GET requests apibot may make: (method, full path).

@@ -163,6 +163,10 @@ COMMERCIAL_TYPES = ('commercial', 'church', 'school', 'school_district', 'storag
 # 'call' is a call script: read live, so no length rule and no signature.
 TEMPLATE_CHANNELS = ('email', 'text', 'voicemail', 'call')
 TEMPLATE_STEPS = ('first', 'followup', 'breakup', 'any')
+# A past-customer template may be written for one stage only. 'follow_up' is
+# the open job: someone we inspected or quoted who has not decided. They are
+# neither a customer to ask for a review nor a lost deal to requote.
+TEMPLATE_STAGES = ('won', 'lost', 'follow_up')
 # Slots the renderer fills. A template naming anything else is refused on save:
 # an unknown slot would reach a customer as a literal "{rep_phone}".
 TEMPLATE_SLOTS = ('greeting', 'first_name', 'company', 'city', 'hook',
@@ -1044,6 +1048,10 @@ _APIBOT_REDACTED = ('phone', 'email', 'address', 'phone_norm', 'email_norm',
 # exists when none does is worse than no status.
 _APIBOT_OUTREACH_STATUSES = ('connected', 'callback', 'interested', 'nurture',
                              'not_interested', 'bad_contact', 'dnc')
+# The outcomes it may log through /api/queue/log. Same line, same reason:
+# everything a touch can come to except an appointment.
+_APIBOT_OUTCOMES = ('no_answer', 'left_vm', 'texted', 'emailed', 'dropped_by', 'talked',
+                    'callback', 'interested', 'not_now', 'not_interested', 'wrong_number')
 
 def _redact_for_apibot(d):
     for k in _APIBOT_REDACTED:
@@ -1464,13 +1472,17 @@ def _create_step_task(db, lead_id, rep, enrollment_id, started_at, step):
                (str(uuid.uuid4()), lead_id, rep, step.get('kind', 'call'),
                 step.get('title', ''), due, enrollment_id, _now()))
 
-def _enroll(db, lead_id, rep, cadence_id):
+def _enroll(db, lead_id, rep, cadence_id, started=None):
     """Start a cadence and materialize its first task. Returns the enrollment
     id, or '' if the cadence is unknown or the lead is already in it.
 
     Shared by the manual Enroll button and the automatic enrollment that fires
     on a stage change. One active enrollment per cadence per lead, which is
     what makes the automatic path safe to re-run.
+
+    `started` dates the cadence in the future. A warm import uses it to spread
+    a batch's first touches over several days instead of making all of them
+    due the morning after the import.
     """
     cad = CADENCE_BY_ID.get(cadence_id)
     if not cad:
@@ -1481,7 +1493,7 @@ def _enroll(db, lead_id, rep, cadence_id):
     if exists:
         return ''
     eid = str(uuid.uuid4())
-    started = _now()
+    started = started or _now()
     db.execute('INSERT INTO cadence_enrollments (id, lead_id, cadence_id, step_idx, started_at, active) '
                'VALUES (?,?,?,0,?,1)', (eid, lead_id, cadence_id, started))
     if cad['steps']:
@@ -1976,6 +1988,41 @@ PROSPECT_TEXT_FIELDS = ['first_name', 'last_name', 'company', 'phone', 'email',
 # would duplicate it.
 _DEDUPE_KEYS = ('phone_norm', 'email_norm', 'license_no', 'source_ref')
 
+# ── Warm imports ──────────────────────────────────────────────────────────────
+# The importer was built for cold open data, and says so on every row it
+# writes: source 'prospecting', temperature 'cold', stage 'new'. The Den's
+# finished customers, open jobs and existing referral partners are none of
+# those, and landing them as cold prospects hands a homeowner whose roof we
+# replaced in March the "free hail inspection" opener.
+#
+# Naming one of these as `lead_source` switches a batch to warm: rows may then
+# carry their real stage, the date they bought and the date we met them, and
+# the batch may start a cadence. Dated truthfully, a customer from last spring
+# stays out of this month's close rate and this month's leaderboard, and
+# `won_at` is what lets the Do Not Call exemption recognise them.
+WARM_SOURCES = ('existing_customer', 'referral')
+# A cadence puts a task on every row. Fine for the hundred people who already
+# know us; never for an open-data pull, which is why cold imports enrol nobody.
+IMPORT_CADENCE_MAX_ROWS = 500
+
+
+def _parse_stamp(s):
+    """A date or timestamp from another system, as this app stores them
+    ('2026-03-09T17:00:00Z'). '' when it cannot be read."""
+    s = str(s or '').strip()
+    if not s:
+        return ''
+    try:
+        dt = datetime.fromisoformat(s.replace('Z', '+00:00'))
+    except ValueError:
+        try:
+            dt = datetime.strptime(s[:10], '%Y-%m-%d')
+        except ValueError:
+            return ''
+    if dt.tzinfo is not None:
+        dt = (dt - dt.utcoffset()).replace(tzinfo=None)
+    return _iso(dt)
+
 def _host_of(url):
     """Bare hostname from a URL or domain, lowercased, no scheme and no www."""
     s = (url or '').strip().lower()
@@ -2041,6 +2088,12 @@ def import_prospects():
     Body: {rows[], lead_type, source, assign, dry_run}
       assign  — 'round_robin', a username, or omitted (assigns to the caller)
       dry_run — classify every row and write nothing
+
+    A warm batch (see WARM_SOURCES) adds:
+      lead_source     — 'existing_customer' or 'referral'
+      cadence         — a cadence id to start on every inserted row
+      stagger_per_day — start that many cadences a day rather than all at once
+      and per row: stage, won_at, created_at, lead_type
     """
     data = request.get_json(force=True)
     rows = data.get('rows')
@@ -2067,6 +2120,24 @@ def import_prospects():
     dry_run = bool(data.get('dry_run'))
     source  = (data.get('source') or 'prospecting').strip()
     batch   = (data.get('batch') or f'{source}-{_now()}').strip()
+
+    lead_source = (data.get('lead_source') or 'prospecting').strip()
+    if lead_source != 'prospecting' and lead_source not in WARM_SOURCES:
+        return jsonify({'error': f'lead_source must be one of {", ".join(WARM_SOURCES)}'}), 400
+    warm = lead_source in WARM_SOURCES
+    cadence_id = (data.get('cadence') or '').strip()
+    if cadence_id:
+        if not warm:
+            return jsonify({'error': 'Only a warm import (lead_source) may start a cadence'}), 400
+        if cadence_id not in CADENCE_BY_ID:
+            return jsonify({'error': 'Unknown cadence'}), 400
+        if len(rows) > IMPORT_CADENCE_MAX_ROWS:
+            return jsonify({'error': f'A cadence import is capped at {IMPORT_CADENCE_MAX_ROWS} '
+                                     'rows: every one of them gets a task'}), 400
+    try:
+        per_day = max(0, int(data.get('stagger_per_day') or 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'stagger_per_day must be a number'}), 400
 
     counts  = {'inserted': 0, 'duplicate': 0, 'suppressed': 0, 'invalid': 0}
     details = []
@@ -2118,12 +2189,20 @@ def import_prospects():
             fields = dict(row)
             fields.update({
                 'id': lid, 'lead_type': lead_type, 'service': service,
-                'source': 'prospecting', 'temperature': 'cold', 'stage': 'new',
+                'source': lead_source, 'temperature': 'warm' if warm else 'cold',
+                'stage': 'new',
                 'rep': rep, 'import_batch': batch,
                 'est_value': float(raw.get('est_value') or 0),
                 'icp_score': int(raw.get('icp_score') or 0),
                 'created_at': _now(), 'updated_at': _now(),
             })
+            if warm:
+                if raw.get('lead_type') in LEAD_TYPE_KEYS:
+                    fields['lead_type'] = raw['lead_type']
+                if raw.get('stage') in STAGE_KEYS:
+                    fields['stage'] = raw['stage']
+                fields['won_at'] = _parse_stamp(raw.get('won_at'))
+                fields['created_at'] = _parse_stamp(raw.get('created_at')) or fields['created_at']
             if not dry_run:
                 cols = ','.join(fields.keys())
                 ph   = ','.join('?' * len(fields))
@@ -2131,6 +2210,10 @@ def import_prospects():
                 _refresh_contact_quality(db, lid)
                 _log_activity(db, lid, 'system', rep=rep,
                               body=f'Imported from {source} (batch {batch})')
+                if cadence_id:
+                    day = counts['inserted'] // per_day if per_day else 0
+                    _enroll(db, lid, rep, cadence_id,
+                            started=_iso(_now_dt() + timedelta(days=day)))
             # Index it either way, so a dry run reports intra-batch duplicates
             # exactly as the real run would.
             for k in _DEDUPE_KEYS:
@@ -2960,7 +3043,7 @@ def _template_payload(data, existing=None):
             base[k] = str(data.get(k) or '').strip() if k != 'body' else str(data.get(k) or '').strip('\n ')
     base.setdefault('lead_type', ''); base.setdefault('stage', '')
     base.setdefault('step', 'any'); base.setdefault('subject', '')
-    if base.get('stage') not in ('', 'won', 'lost'):
+    if base.get('stage') not in ('',) + TEMPLATE_STAGES:
         base['stage'] = ''
     return base
 
@@ -3096,6 +3179,108 @@ def lead_messages(lead_id):
 
 # ── Outcomes: what happened on a touch, and what that books next ─────────────
 
+def _callback_at(raw):
+    """When someone asked to be called back, as a stored stamp; '' if unreadable.
+    A bare date means mid-afternoon."""
+    raw = str(raw or '').strip()
+    try:
+        return _iso(datetime.strptime(raw[:16], '%Y-%m-%dT%H:%M'))
+    except ValueError:
+        try:
+            return _iso(datetime.strptime(raw[:10], '%Y-%m-%d').replace(hour=15))
+        except ValueError:
+            return ''
+
+
+def _apply_outcome(db, lead, o, *, kind, body='', task_id=None, follow_at=None,
+                   template_id='', rep=None):
+    """Everything a logged outcome does to a lead: the activity, the task it
+    finishes, the outreach status, the follow-up it books (or the cadence it
+    moves on), and the pipeline stage it proves. Returns the new task's id, or
+    None when the outcome books nothing.
+
+    Shared by the outreach card (`log_outcome`) and Jarvis's `queue_log`, so an
+    email Jarvis logs as sent books "call in three days" exactly as a rep
+    tapping Emailed does. When the two disagreed, a card worked through Gmail
+    never came back: nothing was booked, and seven days later the lead was
+    served again as if it had never been written to.
+
+    `rep` is who the touch is credited to; None means the signed-in rep.
+    """
+    lead_id = lead['id']
+    now = _now()
+    _log_activity(db, lead_id, kind, body=body, outcome=o['key'], rep=rep,
+                  template_id=template_id)
+
+    # The task being worked (from the queue card) is done. Completing it the
+    # normal way advances its cadence, whose next step may be the follow-up.
+    advanced = False
+    if task_id:
+        t = db.execute('SELECT * FROM tasks WHERE id=? AND lead_id=? AND done=0',
+                       (task_id, lead_id)).fetchone()
+        if t:
+            db.execute('UPDATE tasks SET done=1, done_at=? WHERE id=?', (now, task_id))
+            if t['enrollment_id'] and o.get('cadence') and not o.get('stop'):
+                _advance_cadence(db, t['enrollment_id'])
+                advanced = True
+
+    if o.get('stop'):
+        db.execute('UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0',
+                   (now, lead_id))
+        db.execute('UPDATE cadence_enrollments SET active=0 WHERE lead_id=? AND active=1',
+                   (lead_id,))
+
+    status = o['status']
+    follow = o.get('follow')
+    if o['key'] == 'no_answer':
+        misses = db.execute(
+            "SELECT outcome FROM activities WHERE lead_id=? AND outcome != '' "
+            "ORDER BY created_at DESC LIMIT ?", (lead_id, NO_ANSWER_PARK_AFTER)).fetchall()
+        if (len(misses) >= NO_ANSWER_PARK_AFTER
+                and all(m['outcome'] == 'no_answer' for m in misses)):
+            status = 'nurture'
+            follow = (NO_ANSWER_PARK_DAYS, 'call',
+                      f'Try again - {NO_ANSWER_PARK_AFTER} unanswered in a row')
+            db.execute('UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0',
+                       (now, lead_id))
+            db.execute('UPDATE cadence_enrollments SET active=0 WHERE lead_id=? AND active=1',
+                       (lead_id,))
+            advanced = False
+
+    db.execute('UPDATE leads SET outreach_status=?, outreach_status_at=?, updated_at=? '
+               'WHERE id=?', (status, now, now, lead_id))
+
+    # A running cadence's next step already IS the follow-up. Booking a
+    # second task would put the lead in front of the rep twice.
+    in_cadence = db.execute('SELECT 1 FROM cadence_enrollments WHERE lead_id=? AND active=1',
+                            (lead_id,)).fetchone()
+    new_task = None
+    if follow and not (advanced or (o.get('cadence') and in_cadence
+                                    and status != 'nurture')):
+        days, tkind, title = follow
+        due = follow_at or _iso(_now_dt() + timedelta(days=days))
+        new_task = str(uuid.uuid4())
+        db.execute('INSERT INTO tasks (id, lead_id, rep, kind, title, due_at, created_at) '
+                   'VALUES (?,?,?,?,?,?,?)',
+                   (new_task, lead_id, lead['rep'], tkind, title, due, now))
+
+    # The pipeline stage this outcome proves — forward only; the rep is
+    # always allowed to be ahead. 'Not interested' closes a cold lead.
+    target = o.get('stage')
+    if target and lead['stage'] not in TERMINAL_STAGES \
+            and _stage_rank(target) > _stage_rank(lead['stage']):
+        db.execute('UPDATE leads SET stage=?, updated_at=? WHERE id=?', (target, now, lead_id))
+        _log_activity(db, lead_id, 'stage_change', rep=rep,
+                      body=f'{STAGE_META[lead["stage"]]["label"]} → {STAGE_META[target]["label"]}')
+    if o.get('lose') and lead['stage'] not in TERMINAL_STAGES:
+        db.execute("UPDATE leads SET stage='lost', lost_reason=?, updated_at=? WHERE id=?",
+                   (o['lose'], now, lead_id))
+        _log_activity(db, lead_id, 'stage_change', rep=rep,
+                      body=f'{STAGE_META[lead["stage"]]["label"]} → Lost ({o["lose"]})')
+    _refresh_next_action(db, lead_id)
+    return new_task
+
+
 @app.route('/api/leads/<lead_id>/outcome', methods=['POST'])
 @login_required
 def log_outcome(lead_id):
@@ -3113,20 +3298,14 @@ def log_outcome(lead_id):
     kind = data.get('kind') if data.get('kind') in OUTREACH_KINDS else o['kind']
     follow_at = None
     if o.get('ask_date'):
-        raw = (data.get('follow_up_at') or '').strip()
-        try:
-            follow_at = _iso(datetime.strptime(raw[:16], '%Y-%m-%dT%H:%M'))
-        except ValueError:
-            try:
-                follow_at = _iso(datetime.strptime(raw[:10], '%Y-%m-%d').replace(hour=15))
-            except ValueError:
-                return jsonify({'error': 'Pick the day they asked you to call back.'}), 400
+        follow_at = _callback_at(data.get('follow_up_at'))
+        if not follow_at:
+            return jsonify({'error': 'Pick the day they asked you to call back.'}), 400
     with get_db() as db:
         row = _lead_visible(db, lead_id)
         if not row:
             return jsonify({'error': 'Not found'}), 404
         lead = dict(row)
-        now = _now()
         offer_key = (data.get('offer') or '').strip()
         if offer_key and db.execute("SELECT 1 FROM offers WHERE key=? AND status='live'",
                                     (offer_key,)).fetchone():
@@ -3136,76 +3315,10 @@ def log_outcome(lead_id):
         tpl = (data.get('template_id') or '').strip()
         if tpl and not db.execute('SELECT 1 FROM templates WHERE id=?', (tpl,)).fetchone():
             tpl = ''
-        _log_activity(db, lead_id, kind, body=(data.get('body') or '').strip(),
-                      outcome=o['key'], template_id=tpl)
-
-        # The task being worked (from the queue card) is done. Completing it the
-        # normal way advances its cadence, whose next step may be the follow-up.
-        task_id = data.get('task_id')
-        advanced = False
-        if task_id:
-            t = db.execute('SELECT * FROM tasks WHERE id=? AND lead_id=? AND done=0',
-                           (task_id, lead_id)).fetchone()
-            if t:
-                db.execute('UPDATE tasks SET done=1, done_at=? WHERE id=?', (now, task_id))
-                if t['enrollment_id'] and o.get('cadence') and not o.get('stop'):
-                    _advance_cadence(db, t['enrollment_id'])
-                    advanced = True
-
-        if o.get('stop'):
-            db.execute('UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0',
-                       (now, lead_id))
-            db.execute('UPDATE cadence_enrollments SET active=0 WHERE lead_id=? AND active=1',
-                       (lead_id,))
-
-        status = o['status']
-        follow = o.get('follow')
-        if o['key'] == 'no_answer':
-            misses = db.execute(
-                "SELECT outcome FROM activities WHERE lead_id=? AND outcome != '' "
-                "ORDER BY created_at DESC LIMIT ?", (lead_id, NO_ANSWER_PARK_AFTER)).fetchall()
-            if (len(misses) >= NO_ANSWER_PARK_AFTER
-                    and all(m['outcome'] == 'no_answer' for m in misses)):
-                status = 'nurture'
-                follow = (NO_ANSWER_PARK_DAYS, 'call',
-                          f'Try again - {NO_ANSWER_PARK_AFTER} unanswered in a row')
-                db.execute('UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0',
-                           (now, lead_id))
-                db.execute('UPDATE cadence_enrollments SET active=0 WHERE lead_id=? AND active=1',
-                           (lead_id,))
-                advanced = False
-
-        db.execute('UPDATE leads SET outreach_status=?, outreach_status_at=?, updated_at=? '
-                   'WHERE id=?', (status, now, now, lead_id))
-
-        # A running cadence's next step already IS the follow-up. Booking a
-        # second task would put the lead in front of the rep twice.
-        in_cadence = db.execute('SELECT 1 FROM cadence_enrollments WHERE lead_id=? AND active=1',
-                                (lead_id,)).fetchone()
-        new_task = None
-        if follow and not (advanced or (o.get('cadence') and in_cadence
-                                        and status != 'nurture')):
-            days, tkind, title = follow
-            due = follow_at or _iso(_now_dt() + timedelta(days=days))
-            new_task = str(uuid.uuid4())
-            db.execute('INSERT INTO tasks (id, lead_id, rep, kind, title, due_at, created_at) '
-                       'VALUES (?,?,?,?,?,?,?)',
-                       (new_task, lead_id, lead['rep'], tkind, title, due, now))
-
-        # The pipeline stage this outcome proves — forward only; the rep is
-        # always allowed to be ahead. 'Not interested' closes a cold lead.
-        target = o.get('stage')
-        if target and lead['stage'] not in TERMINAL_STAGES \
-                and _stage_rank(target) > _stage_rank(lead['stage']):
-            db.execute('UPDATE leads SET stage=?, updated_at=? WHERE id=?', (target, now, lead_id))
-            _log_activity(db, lead_id, 'stage_change',
-                          body=f'{STAGE_META[lead["stage"]]["label"]} → {STAGE_META[target]["label"]}')
-        if o.get('lose') and lead['stage'] not in TERMINAL_STAGES:
-            db.execute("UPDATE leads SET stage='lost', lost_reason=?, updated_at=? WHERE id=?",
-                       (o['lose'], now, lead_id))
-            _log_activity(db, lead_id, 'stage_change',
-                          body=f'{STAGE_META[lead["stage"]]["label"]} → Lost ({o["lose"]})')
-        _refresh_next_action(db, lead_id)
+        new_task = _apply_outcome(db, lead, o, kind=kind,
+                                  body=(data.get('body') or '').strip(),
+                                  task_id=data.get('task_id'), follow_at=follow_at,
+                                  template_id=tpl)
         row = db.execute('SELECT * FROM leads WHERE id=?', (lead_id,)).fetchone()
         task = (dict(db.execute('SELECT * FROM tasks WHERE id=?', (new_task,)).fetchone())
                 if new_task else None)
@@ -3383,6 +3496,55 @@ DAILY_TARGET  = int(os.environ.get('SALESCRM_DAILY_TARGET', '40'))
 # the non-negotiable 7-day cooldown the outreach skills already enforce.
 COOLDOWN_DAYS = int(os.environ.get('SALESCRM_COOLDOWN_DAYS', '7'))
 
+# ── Two places a day's work happens ──────────────────────────────────────────
+#
+# A rep working alone at a hundred touches a day does not write forty emails:
+# Jarvis drafts them in the rep's Gmail from this queue and the rep presses
+# send. Calls and texts stay on the Outreach tab. The moment both read the same
+# queue, the same partner is drafted to in Gmail at seven and dialled from the
+# card at nine. So a card has exactly one CHANNEL on any given day, decided
+# here and nowhere else:
+#
+#   a scheduled task  -> its kind ('email' is email, everything else is phone)
+#   a net-new card    -> email when we have an address, otherwise phone
+#
+# Email first for a cold card is deliberate. It costs the rep one click, and
+# its follow-up is the call that lands on the phone side three days later.
+QUEUE_CHANNELS = ('email', 'phone')
+PHONE_KINDS = tuple(k for k in OUTREACH_KINDS if k != 'email')
+JARVIS_EMAIL_DEFAULT = 40
+
+
+def _parse_email_reps(raw):
+    """'luke:40, bryan' -> {'luke': 40, 'bryan': 40}: whose emails Jarvis
+    drafts, and how many of the day's touches those are."""
+    out = {}
+    for part in (raw or '').split(','):
+        name, _, n = part.strip().partition(':')
+        name = name.strip().lower()
+        if not name:
+            continue
+        try:
+            out[name] = max(1, int(n)) if n.strip() else JARVIS_EMAIL_DEFAULT
+        except ValueError:
+            out[name] = JARVIS_EMAIL_DEFAULT
+    return out
+
+
+# Unset, nothing changes for anyone: the queue is one list, as it always was.
+JARVIS_EMAIL_REPS = _parse_email_reps(os.environ.get('SALESCRM_JARVIS_EMAIL_REPS', ''))
+
+
+def _card_channel(kind, email, phone):
+    """Which side of the day a scheduled card belongs to. A channel we cannot
+    use falls to the one we can: an email step for someone with no address is
+    a call, and a call to someone with no number is an email."""
+    has_email, has_phone = bool((email or '').strip()), bool((phone or '').strip())
+    if kind == 'email':
+        return 'email' if has_email else 'phone'
+    return 'phone' if has_phone or not has_email else 'email'
+
+
 # Today's boundaries in Colorado, as UTC values, because every stamp these are
 # compared against is UTC. Both used to `.replace()` the hours on a UTC now, so
 # from 6pm Mountain the queue was built against tomorrow — re-touches due
@@ -3408,6 +3570,24 @@ def queue_today():
     contact = request.args.get('contact', '')
     cooldown = _iso(_now_dt() - timedelta(days=COOLDOWN_DAYS))
 
+    # channel=email|phone asks for one side of the day; 'all' (or nothing, for
+    # a rep Jarvis does not draft for) is the whole queue. A rep whose emails
+    # Jarvis drafts gets the phone side by default, so the Outreach tab never
+    # shows a card that is already sitting in their Gmail drafts.
+    channel = (request.args.get('channel') or '').strip().lower()
+    if channel not in ('', 'all') + QUEUE_CHANNELS:
+        return jsonify({'error': 'channel must be email, phone or all'}), 400
+    share = JARVIS_EMAIL_REPS.get(rep, 0)
+    if not channel and share and not papibot.is_apibot() and contact != 'research':
+        channel = 'phone'
+    if channel == 'all':
+        channel = ''
+    day_target = target
+    if channel and share and not request.args.get('target'):
+        # The day's number is one number; each side is asked for its part.
+        target = min(share, day_target) if channel == 'email' else max(1, day_target - share)
+    kinds = {'email': ('email',), 'phone': PHONE_KINDS}.get(channel, OUTREACH_KINDS)
+
     # Homeowners on the Do Not Call Registry never reach a cold-call queue.
     dnc_l, dnc_lp = _dnc_clause('l')
     dnc_f, dnc_fp = _dnc_clause()
@@ -3427,17 +3607,21 @@ def queue_today():
             f'AND NOT {dnc_l} '
             'ORDER BY t.due_at', [rep, _end_of_today()] + dnc_lp).fetchall()]
         due = [d for d in due if not _suppressed_by(
-            supp, _norm_phone(d['phone']), _norm_email(d['email']), d['website'])][:target]
+            supp, _norm_phone(d['phone']), _norm_email(d['email']), d['website'])]
+        if channel:
+            due = [d for d in due if _card_channel(d['kind'], d['email'], d['phone']) == channel]
+        due = due[:target]
         if contact == 'research':
             due = []  # scheduled commitments remain in the daily outreach view
         for d in due:
             d['name'] = (f"{d['first_name']} {d['last_name']}").strip() or d['company']
             d['overdue'] = d['due_at'] < _now()
 
-        done_today = db.execute(
-            'SELECT COUNT(*) c FROM activities WHERE rep = ? AND created_at >= ? '
-            'AND kind IN (%s)' % ','.join('?' * len(OUTREACH_KINDS)),
-            [rep, _start_of_today()] + list(OUTREACH_KINDS)).fetchone()['c']
+        by_kind = {r['kind']: r['c'] for r in db.execute(
+            'SELECT kind, COUNT(*) c FROM activities WHERE rep = ? AND created_at >= ? '
+            'AND kind IN (%s) GROUP BY kind' % ','.join('?' * len(OUTREACH_KINDS)),
+            [rep, _start_of_today()] + list(OUTREACH_KINDS))}
+        done_today = sum(by_kind.get(k, 0) for k in kinds)
 
         # Top up with net-new. Anything with an open task is already in `due`,
         # and anything touched inside the cooldown is deliberately left alone.
@@ -3445,6 +3629,9 @@ def queue_today():
         fresh = []
         if room:
             contact_sql = ' AND ' + _contact_clause(contact) if contact in ('ready', 'research') else ''
+            if channel and contact != 'research':
+                has_email = "TRIM(COALESCE(email,'')) != ''"
+                contact_sql += ' AND ' + (has_email if channel == 'email' else 'NOT ' + has_email)
             rows = db.execute(
                 "SELECT * FROM leads "
                 "WHERE rep = ? AND stage = 'new' AND dnc = 0 "
@@ -3485,12 +3672,20 @@ def queue_today():
             item['outreach_label'] = ometa['label']
             item['outreach_color'] = ometa['color']
 
-    return jsonify({
+    out = {
         'rep': rep, 'target': target, 'done_today': done_today,
         'cooldown_days': COOLDOWN_DAYS,
         'due': due, 'new': fresh,
         'remaining': max(0, target - done_today),
-    })
+        'channel': channel or 'all',
+    }
+    if share:
+        # The whole day, so the phone side can show the emails Jarvis drafted
+        # without having to ask for them.
+        out['day'] = {'target': day_target, 'done': sum(by_kind.values()),
+                      'email_target': min(share, day_target),
+                      'email_done': by_kind.get('email', 0)}
+    return jsonify(out)
 
 
 @app.route('/api/queue/log', methods=['POST'])
@@ -3511,6 +3706,11 @@ def queue_log():
       caller is credited as themselves, exactly like the card.
     - `ref` (e.g. the Gmail message id) makes it idempotent: a second call with
       the same ref for the same lead logs nothing, so re-scanning Sent is safe.
+    - `outcome`, when it names one of OUTCOMES ('emailed', 'left_vm', ...), is
+      applied through `_apply_outcome()` exactly as the card applies it: the
+      status moves and the follow-up is booked. Left out, the touch is logged
+      and books nothing, which is right only for a card that already has a
+      cadence task to complete.
     """
     data = request.get_json(silent=True) or {}
     lead_id = str(data.get('lead_id') or '')
@@ -3519,6 +3719,14 @@ def queue_log():
         return jsonify({'error': f'kind must be one of {", ".join(OUTREACH_KINDS)}'}), 400
     ref = str(data.get('ref') or '').strip()[:200]
     bot = papibot.is_apibot()
+    outcome = OUTCOME_BY_KEY.get(str(data.get('outcome') or ''))
+    if outcome and bot and outcome['key'] not in _APIBOT_OUTCOMES:
+        return jsonify({'error': f'apibot may not log {outcome["key"]}'}), 403
+    follow_at = None
+    if outcome and outcome.get('ask_date'):
+        follow_at = _callback_at(data.get('follow_up_at'))
+        if not follow_at:
+            return jsonify({'error': 'follow_up_at: the day they asked to be called back'}), 400
     with get_db() as db:
         lead = _lead_visible(db, lead_id)
         if not lead:
@@ -3544,11 +3752,16 @@ def queue_log():
             'via Jarvis' if bot else '',
             str(data.get('body') or '').strip()[:2000],
             marker) if p)
-        _log_activity(db, lead_id, kind, body=body,
-                      outcome=str(data.get('outcome') or '')[:200], rep=rep)
-        if task and not task['done']:
-            _complete_task(db, task)
-        _refresh_next_action(db, lead_id)
+        if outcome:
+            _apply_outcome(db, dict(lead), outcome, kind=kind, body=body,
+                           task_id=task['id'] if task else None,
+                           follow_at=follow_at, rep=rep)
+        else:
+            _log_activity(db, lead_id, kind, body=body,
+                          outcome=str(data.get('outcome') or '')[:200], rep=rep)
+            if task and not task['done']:
+                _complete_task(db, task)
+            _refresh_next_action(db, lead_id)
         done_today = db.execute(
             'SELECT COUNT(*) c FROM activities WHERE rep = ? AND created_at >= ? '
             'AND kind IN (%s)' % ','.join('?' * len(OUTREACH_KINDS)),

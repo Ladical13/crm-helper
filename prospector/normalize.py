@@ -21,6 +21,28 @@ CORE_CITIES = {
     'boulder', 'broomfield', 'brighton', 'thornton', 'westminster', 'arvada',
 }
 
+# Larimer and Weld counties, plus Longmont on their edge: where one person
+# working alone can actually show up. `pull --cities noco` keeps a statewide
+# registry down to it.
+NOCO_CITIES = {
+    'fort collins', 'loveland', 'greeley', 'windsor', 'berthoud', 'timnath',
+    'wellington', 'johnstown', 'milliken', 'severance', 'eaton', 'evans',
+    'estes park', 'laporte', 'ault', 'pierce', 'nunn', 'kersey', 'la salle',
+    'platteville', 'gilcrest', 'fort lupton', 'firestone', 'frederick', 'dacono',
+    'mead', 'longmont',
+}
+
+
+def city_filter(spec):
+    """'noco' or 'Fort Collins, Loveland' -> a lowercase set; None for no filter."""
+    spec = (spec or '').strip()
+    if not spec:
+        return None
+    if spec.lower() == 'noco':
+        return set(NOCO_CITIES)
+    return {c.strip().lower() for c in spec.split(',') if c.strip()}
+
+
 FIELDS = ['first_name', 'last_name', 'company', 'phone', 'email', 'address',
           'city', 'state', 'zip', 'website', 'license_no', 'source_ref']
 

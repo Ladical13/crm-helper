@@ -11,6 +11,36 @@ python -m prospector push prospector/inbox/hoa.json \
 python -m pytest prospector/tests                          # 27 tests, offline
 ```
 
+## Warm lists: the Den
+
+`den:customers`, `den:open_jobs` and `den:partners` read the people who already
+know us out of the Den (Colorado only) instead of open data. They need
+`BASE44_TOKEN`, so run them where it lives, and they import as WARM leads with
+a cadence - the pull file records how, and `push` forwards it.
+
+```bash
+railway run --service project-one-estimator -- \
+    python -m prospector pull den:customers --out prospector/inbox/den-customers.json
+python -m prospector push prospector/inbox/den-customers.json \
+    --base-url https://project-one-estimator-production.up.railway.app \
+    --user luke --assign luke --dry-run
+```
+
+Push `den:customers` before `den:open_jobs`. `sources/den.py` leaves out anyone
+with a job in production, red-flag customers, and any open job touched in the
+last two weeks. `--token-env P1_READONLY_TOKEN` signs in with the API token
+instead of a password (the importer then insists on `--assign`).
+
+## Keeping a statewide list local
+
+```bash
+python -m prospector pull cdos:realty --cities noco --out prospector/inbox/realty.json
+```
+
+`--cities noco` keeps Larimer and Weld counties; a comma list works too. These
+rows have no phone or email, so they land in "Needs research". Nimbus fills
+them in: `POST /nimbus/api/b2b/reenrich` with a `lead_type` and a `limit`.
+
 ## Segments
 
 Counts are live as of 2026-07-28, filtered to Colorado and Active / Good Standing.

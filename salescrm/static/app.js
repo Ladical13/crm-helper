@@ -425,8 +425,13 @@ async function renderOutreach(){
   $('#queue-research').setAttribute('aria-pressed',Q.mode==='research');
   $('#queue-intro').textContent=Q.mode==='research'
     ? 'Find and save a phone or email, or plan an in-person visit. Research does not count as a sales touch.'
+    : q.channel==='phone'
+    ? 'Calls and texts. Jarvis drafts your emails in Gmail - send those from Drafts. Scheduled follow-ups first, then new prospects.'
     : 'Scheduled follow-ups first, then new prospects with a phone or email. Open a lead to log a visit or schedule the next step.';
   Q.target=q.target; Q.done=q.done_today; Q.idx=0;
+  // A rep whose emails Jarvis drafts is handed the phone side of the day only
+  // (the server decides; see _card_channel). `day` is the whole day's count.
+  Q.channel=q.channel||'all'; Q.day=q.day||null;
   // Re-touches lead. A partner who already knows you converts better than a
   // cold name, so they must never sit behind thirty fresh cards.
   Q.items=[
@@ -544,8 +549,10 @@ function drawQueue(){
   const fill=$('#oq-fill');
   fill.style.width=pct+'%';
   fill.classList.toggle('done',Q.done>=Q.target);
-  $('#oq-label').textContent=Q.mode==='research' ? `${Q.items.length} prospects to research` : `${Q.done} of ${Q.target} touches today`+
-    (Q.done>=Q.target?' — target hit 🎉':'');
+  const phoneSide=Q.channel==='phone'&&Q.day;
+  $('#oq-label').textContent=Q.mode==='research' ? `${Q.items.length} prospects to research` : `${Q.done} of ${Q.target} ${phoneSide?'calls & texts':'touches'} today`+
+    (Q.done>=Q.target?' — target hit 🎉':'')+
+    (phoneSide?` · emails ${Q.day.email_done} of ${Q.day.email_target} (in Gmail) · day ${Q.day.done} of ${Q.day.target}`:'');
   const badge=$('#side-queue-badge');
   if(badge){ const left=Q.items.length-Q.idx;
     badge.textContent=left; badge.classList.toggle('hidden',!left); }
@@ -613,11 +620,12 @@ function drawQueue(){
       b.dataset.outcome==={text:'texted',email:'emailed'}[kind]));
   };
   card.querySelectorAll('.oq-actions [data-touch="call"]').forEach(a=>a.addEventListener('click',()=>touched('call')));
-  wireOutcomes(card, it.lead_id, ()=>({kind:it.touched, task_id:it.task_id, cmp:it.cmp}), ()=>{ Q.done++; qNext(); renderStatusBoard(); });
+  wireOutcomes(card, it.lead_id, ()=>({kind:it.touched, task_id:it.task_id, cmp:it.cmp}), ()=>{ Q.done++; if(Q.day) Q.day.done++; qNext(); renderStatusBoard(); });
   if(it.msgs){ wireComposer(card, it, it.msgs, script, it.cmp, touched); return; }
   const idx=Q.idx;
   api('/leads/'+it.lead_id+'/messages').then(m=>{
-    it.msgs=m; it.cmp=it.cmp||{tab:tel?(m.call.templates.length?'call':'voicemail'):(m.email.templates.length?'email':'text')};
+    // A step scheduled as a text opens on the text, not on the call script.
+    it.msgs=m; it.cmp=it.cmp||{tab:(it.kind==='text'&&tel&&m.text.templates.length)?'text':tel?(m.call.templates.length?'call':'voicemail'):(m.email.templates.length?'email':'text')};
     if(Q.idx===idx) drawQueue();
   }).catch(()=>{ it.msgs={voicemail:{templates:[]},text:{templates:[]},email:{templates:[]}}; it.cmp={}; if(Q.idx===idx) drawQueue(); });
 }
@@ -635,7 +643,7 @@ async function qLog(kind){
   try{
     await api('/leads/'+it.lead_id+'/activities',{method:'POST',body:{kind}});
     if(it.task_id) await api('/tasks/'+it.task_id,{method:'PATCH',body:{done:true}});
-    Q.done++; toast('Logged ✓');
+    Q.done++; if(Q.day) Q.day.done++; toast('Logged ✓');
   }catch(e){ toast(e.message,true); return; }
   qNext();
 }
