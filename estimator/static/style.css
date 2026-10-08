@@ -3256,6 +3256,11 @@ a.jx-contact:hover { text-decoration: underline; }
 .pb-tier-cell.pb-tier-better .pb-tier-inc { color: var(--better); }
 .pb-tier-cell.pb-tier-best   .pb-tier-inc { color: var(--best); }
 .pb-tier-cost-wrap { display: flex; align-items: center; gap: 1px; justify-content: center; }
+/* Under the Price box of a product priced by the pack: "per roll · $1.51/LF". */
+.pb-pack-hint { font-size: 10.5px; color: var(--text-light); text-align: center; margin-top: 2px; white-space: nowrap; }
+/* The Bought-as boxes. The global input rule sets width:100% at a higher
+   specificity than a lone class, which stacked these one per line. */
+.pb-bullets-row input.pb-pack-box { width: 84px; flex: none; border: 1px solid var(--border); border-radius: 3px; background: #fff; text-align: center; }
 .pb-tier-dollar { font-size: 11px; color: var(--text-light); }
 .pb-tier-cost { width: 60px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; padding: 2px 4px; text-align: right; background: #fff; }
 .pb-tier-cost:focus { outline: none; border-color: var(--primary-light); }

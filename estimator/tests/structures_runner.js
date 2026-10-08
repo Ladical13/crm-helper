@@ -97,6 +97,7 @@ const NAMES = ['mnum', 'itemSection', 'tradeSections', 'effectiveTradeMode', 'tr
                'addStructure', 'duplicateStructure', 'renameStructure', 'removeStructure',
                '_asceZoneWidth', 'commercialFastening', 'atticVentilation',
                'measuredQty', 'displayUnit', '_tradeCatalog', 'applyMeasurements',
+               'packCover', 'packWaste', 'packCount', '_packCostsReadPerUnit',
                // Moving a section moves the building it names.
                'groupedTradeItems', 'canMoveTradeSection', 'moveTradeSection'];
 

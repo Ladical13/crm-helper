@@ -107,7 +107,10 @@ const NAMES = ['isBundleTrade', 'effectiveTradeMode', '_tradeCatalog', '_tradeBu
                'groupedTradeItems', 'structureNamed',
                'canMoveTradeSection', 'moveTradeSection',
                // Swappable products (polyiso thickness) — survive a system swap.
-               'variantSlot', 'variantRowFor', 'liSwapVariant'];
+               'variantSlot', 'variantRowFor', 'liSwapVariant',
+               // Pack pricing: a row re-priced from a product takes its pack with the cost.
+               'packCover', 'packWaste', 'packCount', 'packOf', 'packRebaseQty',
+               'packRebaseCost', 'syncLinePack'];
 
 const scenario = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 

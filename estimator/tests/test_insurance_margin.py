@@ -352,8 +352,16 @@ def test_the_derived_cost_carries_every_field_that_decides_a_quantity():
     src = open(APP_JS_PATH, encoding='utf-8').read()
     i = src.index('function buildInsuranceCostItems')
     body = src[i:src.index('\n}\n', i)]
-    for field in ('measure', 'formula', 'bundle_lf', 'bundle_unit', 'unit', 'cost'):
+    for field in ('measure', 'formula', 'unit', 'cost'):
         assert field in body, (
             f'{field} is not carried onto the derived cost line, so insurance '
             f'quantities will diverge from what retail computes for the same bundle')
+    # The pack travels as ONE unit now - size, name and waste - through the
+    # helper every line builder shares, so a new pack field cannot reach retail
+    # and miss the insurance cost sheet.
+    assert '...packOf(p)' in body, 'the pack (bundle_lf and friends) is not carried'
+    pack = src[src.index('function packOf(p) {'):]
+    pack = pack[:pack.index('\n}\n')]
+    for field in ('bundle_lf', 'bundle_unit', 'bundle_waste_pct'):
+        assert field in pack, field
     assert 'measuredQty(' in body, 'quantities must come from the shared resolver'

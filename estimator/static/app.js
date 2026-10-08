@@ -1746,15 +1746,126 @@ function measuredQty(item) {
     raw = def.calc(m);
   }
   if (!raw) return 0;
-  // bundle_lf: convert raw LF to bundles/sticks — ceil(LF / LF-per-unit).
-  const bl = item.bundle_lf;
-  if (bl && bl > 0) return Math.ceil(raw / bl - 1e-9);
+  // Bought by the pack: the quantity is the COUNT of packs being ordered, waste
+  // included, rounded up - which is what the supplier invoices. See packCount.
+  const cover = packCover(item);
+  if (cover) return packCount(raw, cover, packWaste(item));
   // Squares keep one decimal (rounded up); linear feet and counts round up whole.
   // The 1e-9 guards against float noise (28 × 1.1 = 30.800000000000004).
   return (item.unit === 'SQ') ? Math.ceil(raw * 10 - 1e-9) / 10 : Math.ceil(raw - 1e-9);
 }
 function displayUnit(item) {
   return (item.bundle_lf && item.bundle_unit) ? item.bundle_unit : (item.unit || '');
+}
+
+/* ── Pack pricing: estimate for what is actually ordered ──────────────────
+   A product bought by the pack says so in three fields, on the Price Book
+   product and copied onto every line built from it:
+
+     bundle_lf         what ONE pack covers, in the product's own unit - 29.5 LF
+                       of ridge to a bundle, 66.67 LF to a roll, 1/3 SQ to a
+                       bundle of shingles. Named for the feet it started with.
+     bundle_unit       what a pack is called: bundles, rolls, sticks.
+     bundle_waste_pct  waste added to the measurement BEFORE rounding up.
+
+   Its cost is then the price of ONE PACK - the number on the supplier invoice -
+   and a line's quantity is a COUNT of packs. So the estimate, the material
+   order and the invoice all say "4 bundles", and a 137 LF eave is costed as the
+   3 rolls that get bought instead of 2.05 rolls nobody can buy.
+
+   The pack, the cost and the quantity ALWAYS move together. A roll size on a
+   per-foot price is the $9.30 ice & water line; a per-roll price on a per-foot
+   quantity is a $13,000 one. syncLinePack is the only way a line changes basis.
+   The server never recomputes a quantity, so none of this has a Python twin;
+   app.py reads the same three fields to print the unit and the order sheet. */
+function packCover(o) {
+  const n = parseFloat(o && o.bundle_lf);
+  return (isFinite(n) && n > 0) ? n : 0;
+}
+function packWaste(o) {
+  const n = parseFloat(o && o.bundle_waste_pct);
+  return (isFinite(n) && n > 0) ? n : 0;
+}
+/* Whole packs to cover `raw`, waste included. 1e-9 is the float guard: 42
+   bundles is 14 SQ / (1/3), which lands a hair over 42. */
+function packCount(raw, cover, wastePct) {
+  return Math.ceil(raw * (1 + (wastePct || 0) / 100) / cover - 1e-9);
+}
+/* The pack fields a line takes from its product - spread these wherever a line
+   is built, never the three keys by hand. bundle_waste_pct rides only with a
+   pack that has the key: its PRESENCE is what says the pack was set in the
+   Price Book's Bought-as editor, where the cost moved with it. */
+function packOf(p) {
+  const cover = packCover(p);
+  return {
+    bundle_lf: cover || undefined,
+    bundle_unit: (cover && p.bundle_unit) || undefined,
+    bundle_waste_pct: (cover && p.bundle_waste_pct !== undefined && p.bundle_waste_pct !== null)
+      ? packWaste(p) : undefined,
+  };
+}
+/* A quantity counted on `from`'s basis, recounted on `to`'s. Feet into packs
+   takes the waste and rounds up; packs back into feet keeps what the packs
+   cover, so the line's dollars do not move on the way out. */
+function packRebaseQty(qty, from, to) {
+  const a = packCover(from), b = packCover(to);
+  if (a === b) return qty;
+  const q = parseFloat(qty) || 0;
+  const covered = a ? q * a : q;
+  if (!b) return covered;
+  return covered > 0 ? packCount(covered, b, a ? 0 : packWaste(to)) : 0;
+}
+/* The same move for a cost or a locked unit price: per foot <-> per pack. A
+   blank or a zero stays exactly what it was. */
+function packRebaseCost(v, from, to) {
+  const a = packCover(from), b = packCover(to);
+  const n = parseFloat(v);
+  if (a === b || !isFinite(n) || !n) return v;
+  return Math.round(n * (b || 1) / (a || 1) * 10000) / 10000;
+}
+/* Put a line on its product's pack. When the basis changes, every cost on the
+   line is converted with it (per foot <-> per pack) and so is the quantity -
+   this is what makes re-picking a package on an estimate written before the
+   product was priced by the pack come out right, instead of billing the old
+   footage at the new per-pack price. Ventilation rows are left alone: the
+   ventilation panel owns their pack (see VENT_SPECS). */
+function syncLinePack(item, p) {
+  if (!item || !p || item.vent_role) return;
+  if (packCover(item) !== packCover(p)) {
+    const conv = v => packRebaseCost(v, item, p);
+    Object.values(item.tiers || {}).forEach(cell => {
+      if (!cell) return;
+      cell.material_unit_cost = conv(cell.material_unit_cost);
+      cell.labor_unit_cost = conv(cell.labor_unit_cost);
+      (cell.variants || []).forEach(v => { if (v) v.cost = conv(v.cost); });
+    });
+    if (item.unit_cost !== undefined) item.unit_cost = conv(item.unit_cost);
+    if (item.unit_price !== undefined) item.unit_price = conv(item.unit_price);
+    item.quantity = packRebaseQty(item.quantity, item, p);
+  }
+  const f = packOf(p);
+  ['bundle_lf', 'bundle_unit', 'bundle_waste_pct'].forEach(key => {
+    if (f[key] === undefined) delete item[key]; else item[key] = f[key];
+  });
+}
+function _lineHasCost(item) {
+  if (parseFloat(item.unit_cost) || parseFloat(item.unit_price)) return true;
+  return Object.values(item.tiers || {}).some(c => c &&
+    (parseFloat(c.material_unit_cost) || parseFloat(c.labor_unit_cost)));
+}
+/* True when every cost on a pack line is smaller than the pack itself - a
+   per-foot price sitting on a roll, which is the broken state the ice & water
+   heal below exists for. A line genuinely priced per roll costs more than that. */
+function _packCostsReadPerUnit(item) {
+  const cover = packCover(item);
+  if (!cover) return false;
+  const costs = [];
+  Object.values(item.tiers || {}).forEach(cell => {
+    if (cell) costs.push(parseFloat(cell.material_unit_cost) || 0, parseFloat(cell.labor_unit_cost) || 0);
+  });
+  costs.push(parseFloat(item.unit_cost) || 0);
+  const set = costs.filter(c => c > 0);
+  return set.every(c => c < cover);
 }
 function applyMeasurements() {
   // An insurance job's cost lines are sized from the same measurements, and a
@@ -1768,11 +1879,19 @@ function applyMeasurements() {
   // Follow the Price Book: once the product has no pack size, neither does the
   // line, so re-importing the Roofr heals the estimate. Ice & water only; a
   // pack size a rep's line carries for any other product is left alone.
+  //
+  // Only while the line's cost still reads per-FOOT. A manager can price the
+  // roll again (Bought as, in the Price Book) and later change their mind; a
+  // line built in between holds a real per-roll price, and stripping its roll
+  // would bill $100 a foot. That line keeps its pack until the package is
+  // re-picked, where syncLinePack converts the cost and the quantity together.
   const iw = (_tradeCatalog('roofing') || []).find(p => p.id === 'a_ice_water');
   const applyTrade = td => (td && td.line_items || []).forEach(item => {
-    if (iw && !iw.bundle_lf && item.catalog_id === 'a_ice_water' && item.bundle_lf) {
+    if (iw && !iw.bundle_lf && item.catalog_id === 'a_ice_water' && item.bundle_lf
+        && _packCostsReadPerUnit(item)) {
       delete item.bundle_lf;
       delete item.bundle_unit;
+      delete item.bundle_waste_pct;
     }
     const q = measuredQty(item);
     if (q !== null) item.quantity = q;
@@ -2828,7 +2947,7 @@ function buildInsuranceCostItems(bundleId) {
     const item = {
       catalog_id: pid, name: p.name, unit: p.unit || 'EA',
       measure: p.measure || undefined, formula: p.formula || undefined,
-      bundle_lf: p.bundle_lf || undefined, bundle_unit: p.bundle_unit || undefined,
+      ...packOf(p),
       unit_cost: parseFloat(p.cost) || 0,
       quantity: 0,
     };
@@ -3829,7 +3948,7 @@ function addUpgradeFromPriceBook() {
   // Sized off the measurement report when the product knows how, exactly as a
   // bundle line would; 1 when it does not, which the rep can then edit.
   const q = measuredQty({ measure: p.measure, unit: p.unit,
-                          bundle_lf: p.bundle_lf, formula: p.formula }) || 1;
+                          ...packOf(p), formula: p.formula }) || 1;
   const unitCost = parseFloat(p.cost) || 0;
   const cost  = unitCost * q;
   const price = lineTotal(q, unitCost, 0, trade, S.selected_tier);
@@ -4468,6 +4587,7 @@ function openPriceBook() {
   pbEditPresetId = null;
   renderPBModal();
   document.getElementById('pricebook-modal').classList.remove('hidden');
+  pbLoadPackSuggestions();
 }
 
 function closePriceBook() {
@@ -5044,7 +5164,8 @@ function pbRenderRoofCatalog() {
               <td><input class="pb-input-unit" type="text" value="${esc(it.unit||'')}" oninput="pbRoofCatSet(${i},'unit',this.value)" placeholder="Unit"></td>
               <td class="pb-auto-cell"><select class="pb-measure-select" onchange="pbRoofCatSet(${i},'measure',this.value)">${measOpts(it.measure||'')}</select></td>
               <td><div class="pb-tier-cost-wrap"><span class="pb-tier-dollar">$</span>
-                <input class="pb-tier-cost" type="number" min="0" step="0.01" value="${it.cost!==undefined&&it.cost!==''?it.cost:''}" placeholder="0.00" onchange="pbRoofCatSet(${i},'cost',this.value)"></div></td>
+                <input class="pb-tier-cost" type="number" min="0" step="0.01" value="${it.cost!==undefined&&it.cost!==''?it.cost:''}" placeholder="0.00" onchange="pbRoofCatSet(${i},'cost',this.value);pbRefreshPackHint(${i},this)"></div>
+                ${pbPackPriceHint(it)}</td>
               <td><select class="pb-costclass-select" onchange="pbRoofCatSet(${i},'cost_class',this.value)"
                     title="Material or crew time. Only ever changes the internal split — never a price.">
                 <option value="material" ${normCostClass(it.cost_class)!=='labor'?'selected':''}>Material</option>
@@ -5053,7 +5174,7 @@ function pbRenderRoofCatalog() {
               <td style="text-align:center"><input type="checkbox" ${it.customer_visible!==false?'checked':''} onchange="pbRoofCatSet(${i},'customer_visible',this.checked)"></td>
               <td class="pb-cat-actions">
                 <button class="pb-order-btn ${_pbOrderOpen[it.id]?'on':''}" onclick="pbToggleOrder('${it.id}')"
-                  title="Order pack — how the material order sheet buys this product">📦</button>
+                  title="Bought as — the pack this product is priced and ordered in">📦</button>
                 <button class="pb-order-btn ${_pbBulletsOpen[it.id]?'on':''}" onclick="pbToggleBullets('${it.id}')"
                   title="What this product says on the Good/Better/Best card">💬</button>
                 <button class="pb-del-btn" onclick="pbRoofCatDel(${i})" title="Delete product">✕</button>
@@ -5085,26 +5206,43 @@ function pbRenderRoofCatalog() {
                   ? 'Not set, and Show is off — this product says nothing on the card. Write the wording above to promise the work without showing its price.'
                   : `Not set — the card falls back to the product name, “${esc(it.name||'')}”.`}</div>
             </td></tr>` : ''}
-            ${_pbOrderOpen[it.id] ? `
+            ${_pbOrderOpen[it.id] ? (() => {
+              const packed = packCover(it) > 0;
+              const sug = pbPackSuggestion(it) || {};
+              const base = it.unit || 'unit';
+              const one = pbPackOne(packed ? it.bundle_unit : (it.order_unit || sug.unit));
+              const coverVal = packed ? it.bundle_lf : it.order_pack;
+              const wasteVal = packed ? packWaste(it) : it.order_waste_pct;
+              return `
             <tr class="pb-bullets-row"><td></td><td colspan="7">
-              <label class="pb-variant-field-label">Order pack <small>material order sheet only — never changes a price</small></label>
+              <label class="pb-variant-field-label">Bought as <small>${packed
+                ? 'priced AND ordered by the ' + esc(one)
+                : 'material order sheet only — the price stays per ' + esc(base)}</small></label>
               <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
                 <span>1</span>
-                <input class="pb-input-unit" type="text" value="${esc(it.order_unit||'')}"
-                  placeholder="${esc(it.bundle_unit||'bundle')}"
+                <input class="pb-input-unit pb-pack-box" type="text" value="${esc(packed ? (it.bundle_unit||'') : (it.order_unit||''))}"
+                  placeholder="${esc(sug.unit||'bundle')}"
                   onchange="pbRoofCatSetOrder(${i},'order_unit',this.value)">
                 <span>covers</span>
-                <input class="pb-tier-cost" type="number" min="0" step="0.01"
-                  value="${it.order_pack!==undefined?it.order_pack:''}" placeholder="${it.bundle_lf||'default'}"
+                <input class="pb-tier-cost pb-pack-box" type="text" inputmode="decimal"
+                  value="${esc(pbPackCoverText(coverVal))}" placeholder="${esc(sug.cover ? pbPackCoverText(sug.cover) : 'default')}"
+                  title="What one pack covers. A fraction is fine: 1/3 is three bundles to the square."
                   onchange="pbRoofCatSetOrder(${i},'order_pack',this.value)">
-                <span>${esc(it.bundle_lf ? 'LF' : (it.unit||''))}, plus</span>
-                <input class="pb-tier-cost" type="number" min="0" step="1"
-                  value="${it.order_waste_pct!==undefined?it.order_waste_pct:''}" placeholder="default"
+                <span>${esc(base)}, plus</span>
+                <input class="pb-tier-cost pb-pack-box" type="number" min="0" step="1"
+                  value="${wasteVal!==undefined&&wasteVal!==null?wasteVal:''}" placeholder="${sug.waste_pct!==undefined?sug.waste_pct:'default'}"
                   onchange="pbRoofCatSetOrder(${i},'order_waste_pct',this.value)">
                 <span>% waste</span>
               </div>
-              <div class="pb-bundle-copy-hint">Blank uses the sheet's default for this product name (Shadow Ridge 30 LF, OC Flex 33, IKO 36, ice &amp; water 66.7 LF rolls — all +10%). Every row on the sheet prints the math it used.</div>
-            </td></tr>` : ''}`;
+              <label class="pb-bullet-silence">
+                <input type="checkbox" ${packed?'checked':''}
+                  onchange="pbRoofCatSetPackPriced(${i},this.checked)">
+                Price by the ${esc(one)} — estimates charge for the whole ${esc(pbPackMany(one))} that get ordered, and Price is the cost of ONE ${esc(one)}
+              </label>
+              <div class="pb-bundle-copy-hint">${packed
+                ? `Type the ${esc(one)} price straight off the supplier invoice. Estimates round up to whole ${esc(pbPackMany(one))}, waste included, and the material order prints the same count. Estimates already written keep their numbers until the package is re-picked.`
+                : `Blank uses the sheet's default for this product name${sug.cover ? ` (${esc(pbPackCoverText(sug.cover))} ${esc(base)} to the ${esc(pbPackOne(sug.unit))}, +${sug.waste_pct||0}%)` : ''}. Tick the box to price it this way too — the Price converts with it, so nothing is ever a roll size on a per-foot price.`}</div>
+            </td></tr>`; })() : ''}`;
           }).join('');
         })() : `<tr><td colspan="8" class="pb-empty">No products yet — add your first below.</td></tr>`}
       </tbody>
@@ -5118,17 +5256,142 @@ function pbToggleBullets(pid) { _pbBulletsOpen[pid] = !_pbBulletsOpen[pid]; rend
 // Which products have their Order pack editor expanded, by product id.
 let _pbOrderOpen = {};
 function pbToggleOrder(pid) { _pbOrderOpen[pid] = !_pbOrderOpen[pid]; renderPBModal(); }
-/* Order pack: how the material order sheet buys this product (see
-   _order_rule_for in app.py). Blank DELETES the key so the sheet falls back to
-   its default for the name; an explicit 0% waste is a real choice and is kept.
-   Pricing never reads these three fields. */
+/* Bought as: the pack a product is ordered in and, once "Price by the pack" is
+   ticked, priced in too. Two states, one set of boxes:
+
+     not ticked   order_unit / order_pack / order_waste_pct - read ONLY by the
+                  material order sheet (_order_rule_for in app.py). Blank
+                  DELETES the key so the sheet falls back to its default for
+                  the name; an explicit 0% waste is a real choice and is kept.
+     ticked       bundle_unit / bundle_lf / bundle_waste_pct - the pricing pack
+                  (see packOf). measuredQty counts whole packs, and the cost is
+                  the price of one.
+
+   Ticking, unticking and changing what a pack covers all CONVERT the cost in
+   the same action. That is the whole safety of this editor: a roll size never
+   sits on a per-foot price, not even for the moment between two saves. */
 function pbRoofCatSetOrder(i, field, val) {
   const it = pbCat()[i]; if (!it) return;
   const s = String(val == null ? '' : val).trim();
-  if (field === 'order_unit') { if (s) it.order_unit = s; else delete it.order_unit; return; }
-  const n = parseFloat(s);
+  const packed = packCover(it) > 0;
+  if (field === 'order_unit') {
+    if (packed) { it.bundle_unit = s || 'packs'; renderPBModal(); }
+    else if (s) it.order_unit = s; else delete it.order_unit;
+    return;
+  }
+  const n = field === 'order_pack' ? pbParsePackCover(s) : parseFloat(s);
   const ok = field === 'order_pack' ? n > 0 : n >= 0;
-  if (s !== '' && isFinite(n) && ok) it[field] = n; else delete it[field];
+  const good = s !== '' && isFinite(n) && ok;
+  if (!packed) {
+    if (good) it[field] = n; else delete it[field];
+  } else if (field === 'order_pack') {
+    // A priced pack cannot be blank - untick the box to stop pricing by it.
+    if (good) {
+      it.cost = pbRoundCost(packRebaseCost(it.cost, it, { bundle_lf: n }));
+      it.bundle_lf = n;
+    }
+    renderPBModal();     // the Price box just changed with it
+  } else {
+    it.bundle_waste_pct = good ? n : 0;
+  }
+}
+function pbRoofCatSetPackPriced(i, on) {
+  const it = pbCat()[i]; if (!it) return;
+  if (on) {
+    if (packCover(it)) return;
+    const sug = pbPackSuggestion(it) || {};
+    const cover = parseFloat(it.order_pack) > 0 ? parseFloat(it.order_pack) : (parseFloat(sug.cover) || 0);
+    if (!(cover > 0)) {
+      alert('Enter what one pack covers first, then tick this.');
+      renderPBModal();
+      return;
+    }
+    const waste = it.order_waste_pct !== undefined ? it.order_waste_pct : sug.waste_pct;
+    it.cost = pbRoundCost(packRebaseCost(it.cost, it, { bundle_lf: cover }));
+    it.bundle_lf = cover;
+    it.bundle_unit = String(it.order_unit || sug.unit || 'packs').trim();
+    it.bundle_waste_pct = parseFloat(waste) > 0 ? parseFloat(waste) : 0;
+    delete it.order_pack; delete it.order_unit; delete it.order_waste_pct;
+  } else {
+    const cover = packCover(it);
+    if (!cover) return;
+    it.cost = pbRoundCost(packRebaseCost(it.cost, it, {}));
+    it.order_pack = cover;
+    if (it.bundle_unit) it.order_unit = it.bundle_unit;
+    if (it.bundle_waste_pct !== undefined) it.order_waste_pct = packWaste(it);
+    // Explicit, never deleted: the server backfills a seed product's pack onto
+    // any book where the key is ABSENT, and that would put the roll back on
+    // the per-foot price this just produced.
+    it.bundle_lf = 0;
+    it.bundle_unit = '';
+    delete it.bundle_waste_pct;
+  }
+  renderPBModal();
+}
+/* "1/3" is three bundles to the square, and typing 0.33 instead would order 43
+   bundles for a 14 SQ roof that needs 42. Stored at full precision either way. */
+function pbParsePackCover(s) {
+  const m = /^\s*([0-9.]+)\s*\/\s*([0-9.]+)\s*$/.exec(String(s || ''));
+  if (m) {
+    const a = parseFloat(m[1]), b = parseFloat(m[2]);
+    return (b > 0) ? a / b : NaN;
+  }
+  return parseFloat(s);
+}
+function pbPackCoverText(v) {
+  const n = parseFloat(v);
+  if (!isFinite(n) || n <= 0) return '';
+  if (n < 1) {
+    const per = 1 / n;
+    if (Math.abs(per - Math.round(per)) < 1e-6) return '1/' + Math.round(per);
+  }
+  return String(Math.round(n * 10000) / 10000);
+}
+function pbPackOne(unit) {
+  const u = String(unit || '').trim() || 'pack';
+  return /[^s]s$/i.test(u) ? u.slice(0, -1) : u;
+}
+function pbPackMany(one) {
+  const u = String(one || 'pack');
+  return /s$/i.test(u) ? u : u + 's';
+}
+/* Dollars and cents for anything over a dollar; a per-foot price under that
+   keeps a third decimal so $0.605 a foot does not round to a different roof. */
+function pbRoundCost(v) {
+  const n = parseFloat(v);
+  if (!isFinite(n)) return v;
+  return Math.abs(n) < 1 ? Math.round(n * 1000) / 1000 : Math.round(n * 100) / 100;
+}
+/* Under the Price box of a pack-priced product: what the price is the price
+   of, and what that works out to per foot - the figure a manager can sanity
+   check against the last invoice without dividing anything. */
+function pbPackPriceHint(it) {
+  const cover = packCover(it);
+  if (!cover) return '';
+  const cost = parseFloat(it.cost) || 0;
+  const one = pbPackOne(it.bundle_unit);
+  const per = cost > 0 ? ` · ${fmtCur(cost / cover)}/${esc(it.unit || 'unit')}` : '';
+  return `<div class="pb-pack-hint">per ${esc(one)}${per}</div>`;
+}
+function pbRefreshPackHint(i, el) {
+  const td = el && el.closest && el.closest('td');
+  const hint = td && td.querySelector('.pb-pack-hint');
+  if (hint) hint.outerHTML = pbPackPriceHint(pbCat()[i] || {});
+}
+/* The server's default pack for a product name (the same table the material
+   order has always used), fetched when the Price Book opens. Suggestions only:
+   nothing here is applied until a manager ticks the box. */
+let _pbPackSug = {};
+function pbPackSuggestion(it) {
+  return ((_pbPackSug || {})[pbActiveTrade] || {})[it && it.id] || null;
+}
+async function pbLoadPackSuggestions() {
+  try {
+    const r = await fetch(`${BASE}/api/pricebook/pack-suggestions`, { credentials: 'same-origin' });
+    _pbPackSug = r.ok ? await r.json() : {};
+  } catch { _pbPackSug = {}; }
+  const modal = document.getElementById('pricebook-modal');
+  if (modal && !modal.classList.contains('hidden')) renderPBModal();
 }
 /* Empty box DELETES the key rather than saving [] — absence means "fall back to
    the product name", which is what a manager who never touched this wants.
@@ -5469,8 +5732,7 @@ function pbSeedPresetFromDefaults(id) {
     name: t.name, unit: t.unit,
     cost: t.cost_good !== undefined ? parseFloat(t.cost_good)||0 : (t.cost !== undefined ? parseFloat(t.cost)||0 : 0),
     measure: t.measure || undefined,
-    bundle_lf: t.bundle_lf || undefined,
-    bundle_unit: t.bundle_unit || undefined,
+    ...packOf(t),
     customer_visible: t.customer_visible !== false,
   }));
   renderPBModal();
@@ -5580,7 +5842,7 @@ function loadPreset(trade, id) {
     return {
       id: uid(), name: it.name, unit: it.unit, quantity: 0, description: '',
       unit_cost: cost, unit_price: unitPrice,
-      measure: it.measure || undefined, bundle_lf: it.bundle_lf || undefined, bundle_unit: it.bundle_unit || undefined,
+      measure: it.measure || undefined, ...packOf(it),
       customer_visible: it.customer_visible !== false,
     };
   });
@@ -5801,7 +6063,7 @@ function pbRenderTier(tier) {
           const {val: tc, from} = inheritedCost(it, tier);
           const explicitlySet = it['cost_'+tier] !== undefined;
           const measureLabel = it.measure ? (MEASURE_DEFS[it.measure]?.label || it.measure) : (it.formula ? 'Custom formula' : '—  Manual');
-          const bundleHint = it.bundle_lf ? ` (${it.bundle_lf} LF/unit)` : '';
+          const bundleHint = packCover(it) ? ` (${pbPackCoverText(it.bundle_lf)} ${it.unit||'LF'}/${pbPackOne(it.bundle_unit)})` : '';
           return `<tr class="pb-item-row">
             <td class="pb-tier-prod"><strong>${esc(it.name||'(unnamed)')}</strong></td>
             <td class="pb-tier-unit">${esc(it.unit||'')}</td>
@@ -6000,7 +6262,7 @@ function pbApplyToEstimate() {
       customer_visible: t.customer_visible !== false,
       measure: t.measure || undefined,
       formula: t.formula || undefined,
-      bundle_lf: t.bundle_lf || undefined, bundle_unit: t.bundle_unit || undefined,
+      ...packOf(t),
       tiers
     };
   });
@@ -7658,7 +7920,7 @@ function renderSimpleFreeform(trade) {
      formula     - a custom auto-quantity expression.
      vent_role   - the ventilation checkboxes infer their state from it. */
 function _carryItemIdentity(src, dst) {
-  ['catalog_id', 'bundle_lf', 'bundle_unit', 'formula', 'vent_role'].forEach(k => {
+  ['catalog_id', 'bundle_lf', 'bundle_unit', 'bundle_waste_pct', 'formula', 'vent_role'].forEach(k => {
     if (src[k] !== undefined) dst[k] = src[k];
   });
   return dst;
@@ -8373,10 +8635,10 @@ function liSetNameSmart(trade, id, v) {
     item.unit = t.unit || item.unit;
     if (!item.measure && !item.formula && t.measure) item.measure = t.measure;
     if (!item.measure && !item.formula && t.formula) item.formula = t.formula;
-    if (item.bundle_lf === undefined && t.bundle_lf) {
-      item.bundle_lf   = t.bundle_lf;
-      item.bundle_unit = t.bundle_unit || undefined;
-    }
+    // The pack comes across only WITH the price book's cost (filled below, and
+    // only into a row that has none). A row that already carries a cost is on
+    // its own basis, and a roll size dropped onto a per-foot cost bills pennies.
+    if (!_lineHasCost(item)) syncLinePack(item, t);
     // Per-tier cost inherits UPWARD when unset: good→base, better→good, best→better.
     const baseCost   = t.cost !== undefined ? parseFloat(t.cost)||0 : 0;
     const costGood   = t.cost_good   !== undefined ? parseFloat(t.cost_good)||0   : baseCost;
@@ -8504,6 +8766,7 @@ function liSwapVariant(trade, id, pid) {
   item.catalog_id = pid;
   item.name = p.name;
   item.unit = p.unit || item.unit;
+  syncLinePack(item, p);
   if (item.measure === undefined && !item.formula && p.measure) item.measure = p.measure;
   const follow = d => (!d || d === oldName) ? p.name : d;
   if (item.tiers) {
@@ -8654,7 +8917,7 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
         id: uid(), catalog_id: pid, name: p.name, unit: p.unit || 'EA',
         quantity: 0, scope_note: '',
         measure: p.measure || undefined,
-        bundle_lf: p.bundle_lf || undefined, bundle_unit: p.bundle_unit || undefined,
+        ...packOf(p),
         customer_visible: p.customer_visible !== false,
         tiers: {
           good:   { material_unit_cost:0, labor_unit_cost:0, description:'', notes:'', included:false },
@@ -8669,6 +8932,10 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
       // An explicit '' (Manual) is left alone — see the manual-measure contract.
       item.measure = p.measure;
     }
+    // The pack moves WITH the cost. A row built before this product was priced
+    // by the pack still counts feet; writing the per-pack cost below onto that
+    // would bill 160 LF of starter at the price of 160 bundles.
+    syncLinePack(item, p);
     const cell = item.tiers[tier] || (item.tiers[tier] = {material_unit_cost:0,labor_unit_cost:0,description:'',notes:'',included:false});
     cell.included = true;
     cell.material_unit_cost = parseFloat(p.cost) || 0;
@@ -8834,17 +9101,19 @@ function buildSimpleItemsFromBundle(trade, bundleId, sectionName) {
       catalog_id: p.id,
       name: p.name,
       unit: p.unit || 'EA',
-      quantity: old ? old.quantity : 0,
+      // Recounted when the product is bought differently from the row it
+      // replaces (feet -> rolls), so a typed quantity survives a system swap
+      // as the same amount of material rather than the same number.
+      quantity: old ? packRebaseQty(old.quantity, old, p) : 0,
       scope_note: old ? (old.scope_note || '') : '',
       description: (old && old.description) || p.name || '',
       // An explicit '' (Manual) on the existing item is preserved — same
       // manual-measure contract the GBB path honors.
       measure: (old && old.measure !== undefined) ? old.measure : (p.measure || undefined),
-      bundle_lf: p.bundle_lf || undefined,
-      bundle_unit: p.bundle_unit || undefined,
+      ...packOf(p),
       customer_visible: p.customer_visible !== false,
       unit_cost: parseFloat(p.cost) || 0,
-      unit_price: (old && old.price_locked) ? old.unit_price : 0,
+      unit_price: (old && old.price_locked) ? packRebaseCost(old.unit_price, old, p) : 0,
       price_locked: (old && old.price_locked) || undefined,
       section: sectionName || undefined,
     });
@@ -10912,8 +11181,7 @@ function buildTradeDefaults(trade) {
         unit_price: unitPrice,
         measure: t.measure || undefined,
         formula: t.formula || undefined,
-        bundle_lf: t.bundle_lf || undefined,
-        bundle_unit: t.bundle_unit || undefined,
+        ...packOf(t),
         customer_visible: t.customer_visible !== false,
       };
     });
@@ -10944,8 +11212,7 @@ function buildItemFromTemplate(trade, t) {
     id:uid(), name:t.name, unit:t.unit, quantity:0, scope_note:'',
     measure: t.measure || undefined,
     formula: t.formula || undefined,
-    bundle_lf: t.bundle_lf || undefined,
-    bundle_unit: t.bundle_unit || undefined,
+    ...packOf(t),
     customer_visible: t.customer_visible !== false,
     tiers
   };

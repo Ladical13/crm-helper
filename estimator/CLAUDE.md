@@ -485,7 +485,9 @@ too. It was first fixed as $95 a roll (`bundle_lf: 66.67`); **since 2026-09-15
 it is priced per LINEAR FOOT** — `unit: 'LF'`, no pack size, `cost: 1.43`
 ($95 ÷ 66.67) — so the price follows the roof instead of jumping $95 at every
 roll boundary. Whole rolls, with waste, are the material order sheet's job
-(`_ORDER_PACK`), not the price's. Two things are load-bearing:
+(`_ORDER_PACK`), not the price's — **unless a manager prices the roll again**,
+which any product can now be: see *Pack pricing* below. Two things are
+load-bearing:
 
 - **The unit and the cost always move together.** Per-SQ cost on LF footage was
   the 33× overcharge; the live book then carried the roll size with a per-FOOT
@@ -645,6 +647,76 @@ the majority of this company's volume. Deliberately NOT fixed by deriving square
 carrier's own `SQ` lines: RoofR is the source of truth by decision, and the
 Claim Check exists precisely to catch the carrier being short. Importing the
 RoofR report is the step that makes an insurance job costable.
+
+## Pack pricing — estimate for what is actually ordered
+
+The book priced by the foot and the square; a supplier sells by the bundle,
+the roll and the stick. On a 12.57 SQ roof (CO-10059) that was $372 of
+material on eight lines: 137 LF of eave bought three 66.7 LF rolls of ice &
+water, 16 LF of step flashing bought a bundle. So a product can be **bought
+as** a pack, and from then on a line's quantity is the COUNT of packs being
+ordered and its cost is the price of ONE, typed straight off the invoice.
+
+Three fields, on the Price Book product and copied onto every line built from
+it: `bundle_lf` (what one pack covers, in the product's own unit — 29.5 LF, or
+1/3 SQ for a bundle of shingles; the name predates squares), `bundle_unit`
+(what a pack is called) and `bundle_waste_pct` (waste added BEFORE rounding
+up). `measuredQty()` counts whole packs through `packCount()`. Nothing about
+it is mirrored: the browser stores the quantity and the server prices
+`quantity × cost` exactly as it always did, so `tests/test_parity.py` is
+untouched and the pack never appears in a pricing function — pinned.
+
+- **The pack, the cost and the quantity always move together.** A roll size on
+  a per-foot price is the $9.30 ice & water line; the mirror image is a
+  per-roll price on a per-foot quantity — 160 LF of starter billed as 160
+  bundles. `syncLinePack()` is the only way an existing row changes basis: it
+  converts every cost on the row and recounts the quantity (`packRebaseQty()`),
+  and it runs wherever a row is re-priced from a product (`applyBundleToTier`,
+  `liSwapVariant`; `buildSimpleItemsFromBundle` does the same inline). That is
+  what makes re-picking a package on an estimate written before the product
+  was converted come out right. Better and Best share the row, so their costs
+  are converted too — same dollars per foot, now per pack.
+- **Every line builder takes the pack through `packOf()`.** Ten places build a
+  line from a product; one that copies `bundle_lf` by hand forgets the waste,
+  and one that forgets `bundle_lf` prices a roll as a foot. A test fails on a
+  hand copy.
+- **A manager turns it on, per product, in the Price Book** (📦 Bought as →
+  *Price by the pack*, `pbRoofCatSetPackPriced()`). Ticking, unticking and
+  changing what a pack covers all CONVERT the cost in the same action, so the
+  book never holds a roll on a per-foot price even between two clicks.
+  Unticked, the same three boxes are the order-sheet-only `order_pack` /
+  `order_unit` / `order_waste_pct` they always were.
+- **Do NOT add `bundle_lf` to an existing seed product to "roll this out".**
+  `_PRODUCT_BACKFILL_FIELDS` fills it onto every live book where the key is
+  absent, the live cost stays per-foot, and that is the ice & water bug on
+  every shingle job at once. For the same reason unticking writes an explicit
+  `bundle_lf: 0` rather than deleting the key — an absent key is what lets the
+  seed's pack back in.
+- **`bundle_waste_pct` PRESENT is how a pack set in the editor is recognised**,
+  and three things read it that way: the audit's `pack_cost_unconverted`
+  exemption, `_PER_FOOT_CONVERSIONS` (which must not strip a roll the manager
+  priced), and the material order. A seeded stick product has no such key and
+  behaves exactly as before.
+- **The material order orders the count that was priced.** `_order_rule_for()`
+  answers a priced line first and nothing on the product or in `_ORDER_PACK`
+  gets a second opinion — the sheet's default for IKO hip & ridge is 36 LF and
+  the invoice says 29.5, which would order 4 bundles against an estimate
+  priced at 5. A line with no `bundle_waste_pct` keeps the old rules, so every
+  estimate already written orders as it did. `pack_suggestions()` offers that
+  same name table to the editor as a starting point, never as a default.
+- **A quantity prints in the unit it is counted in** (`_display_unit()`,
+  mirroring `displayUnit()`): 4 bundles of ridge cap read "4 LF" on every
+  server-built document, and 43 bundles of shingles would have read "43 SQ" on
+  a 14 square roof.
+- **Three bundles to the square is typed `1/3`**, stored at full precision.
+  0.33 orders 43 bundles for a roof that needs exactly 42.
+- Existing estimates keep their numbers. A line carries the pack it was built
+  with, and only re-picking its package moves it.
+
+Guarded by `tests/test_pack_pricing.py`, which replays the La Touche roof both
+ways — $2,918.89 off the per-foot book, to the cent, and $3,305.92 off the
+invoice's packs against $3,291.08 actually billed — under node through
+`tests/pack_runner.js`.
 
 ## The invoice and the basic estimate
 
@@ -1078,7 +1150,10 @@ invoice. 🔍 Audit in the Price Book modal, manager-up. What it looks for:
   implied rate is under a dollar a foot": a SHAPE, never a value. Nothing
   rewrites the number — `_PRODUCT_COST_MIGRATIONS` fires only on the exact
   previous seed, and a live `1.55` is a manager-typed value, so the audit is
-  the only honest mechanism for it.
+  the only honest mechanism for it. A pack set in the Bought-as editor
+  (`bundle_waste_pct` present) is exempt: that editor converts the cost in the
+  same action, and $63 for a 105 LF bundle of starter is genuinely under a
+  dollar a foot.
 - **`orphan`** — a bundle selling a product id the catalog does not have.
 - **`labor_visible`** — a labor product still shown to customers. Low
   severity: no money is wrong, a row is on show that should fold into the

@@ -5558,8 +5558,16 @@ def _audit_product(p, in_bundle, trade):
     # no-op conversion, where the test degenerates. There is deliberately no
     # in_bundle gate — a wrong pack price is wrong whether or not anything sells it
     # yet, and only about a dozen products carry a bundle_lf at all.
+    #
+    # A pack set in the Bought-as editor is exempt, and `bundle_waste_pct` is
+    # how one is recognised - that editor writes it on every pack it sets and
+    # converts the cost in the same action, so the unit and the cost cannot
+    # have come apart. Starter is the reason this matters: $63 for a 105 LF
+    # bundle is genuinely under a dollar a foot, and a finding that fires on
+    # correct data is the one that gets the whole audit ignored.
     blf_n = _mnum(blf)
-    if cost > 0 and blf_n > 1 and cost < blf_n:
+    if (cost > 0 and blf_n > 1 and cost < blf_n
+            and p.get('bundle_waste_pct') is None):
         issues.append({
             'code': 'pack_cost_unconverted', 'severity': 'high',
             'what': (f'Bought in {p.get("bundle_unit") or "packs"} of {blf_n:g} '
@@ -7004,6 +7012,21 @@ def _with_section(item, name):
     return f'{name} [{s}]' if s else name
 
 
+def _display_unit(item):
+    """The unit a line's quantity is COUNTED in - displayUnit() in app.js.
+
+    A product bought by the pack stores a count of packs (see packOf in
+    app.js), so its own `unit` - the feet or squares ONE pack covers - is the
+    wrong word to print beside the number: 4 bundles of ridge cap read "4 LF",
+    and 43 bundles of shingles would read "43 SQ" on a 14 square roof. Every
+    document that prints a quantity goes through here."""
+    if _mnum(item.get('bundle_lf')) > 0:
+        pack = str(item.get('bundle_unit') or '').strip()
+        if pack:
+            return pack
+    return str(item.get('unit') or '')
+
+
 def _supplements_cv_table(est, trade, tier, label):
     """One trade's Supplements block for the customer page, or '' if none.
 
@@ -7023,7 +7046,7 @@ def _supplements_cv_table(est, trade, tier, label):
               <td class="cvn">{he(it.get("name", ""))}
                 {'<div class="cvd">' + he(d) + '</div>' if d else ''}</td>
               <td class="cvc" data-l="Qty">{f"{q:g}" if q > 0 else "If needed"}</td>
-              <td class="cvc">{he(it.get("unit", ""))}</td>
+              <td class="cvc">{he(_display_unit(it))}</td>
               <td class="cvr" data-l="Price">{fc(line) if line else "Quoted if needed"}</td></tr>''' for it, q, line, d in shown)
     foot = (f'<td colspan="3" class="cvsub-l">Supplements Subtotal &mdash; not included in the total</td>'
             f'<td class="cvr cvsub">{fc(total)}</td>') if total else (
@@ -7245,7 +7268,7 @@ def render_line_items(est, tier=None, only_trades=None):
               <td class="cvn">{he(item.get("name",""))}
                 {'<div class="cvd">'+he(desc)+'</div>' if desc else ''}</td>
               <td class="cvc" data-l="Qty">{qty:g}</td>
-              <td class="cvc">{he(item.get("unit",""))}</td>{lp_cells}</tr>''')
+              <td class="cvc">{he(_display_unit(item))}</td>{lp_cells}</tr>''')
             if sections:
                 rows.append(f'<tr class="cv-section-row"><td colspan="{ncols}">{he(gname or "General")}</td></tr>')
             rows.extend(grows)
@@ -13879,7 +13902,7 @@ def build_signed_pdf(est, signed=None):
                         row = table.row()
                         row.cell(_pdf_rich(name))
                         row.cell(f'{q:g}' if q > 0 else 'If needed')
-                        row.cell(_pdf_rich(it.get('unit', '')))
+                        row.cell(_pdf_rich(_display_unit(it)))
                         # No price = a notice, never a $0.00 charge.
                         row.cell(fc(line / q if q > 0 else line) if line else '')
                         row.cell(fc(line) if line else 'Quoted if needed')
@@ -13955,7 +13978,7 @@ def build_signed_pdf(est, signed=None):
                     row = table.row()
                     row.cell(_pdf_rich(name))
                     row.cell(f'{qty:g}')
-                    row.cell(_pdf_rich(it.get('unit', '')))
+                    row.cell(_pdf_rich(_display_unit(it)))
                     if show_unit:
                         row.cell(fc(sp_))
                     if show_tot:
@@ -14513,6 +14536,11 @@ _ORDER_PACK = [
     ('hip / ridge',            'LF', 25.0,  'bundles', 'unconfirmed', 10),
     ('hip & ridge',            'LF', 25.0,  'bundles', 'unconfirmed', 10),
     ('hip and ridge',          'LF', 25.0,  'bundles', 'unconfirmed', 10),
+    # Step flashing is a bundle of 100 bent pieces, one per shingle course. At
+    # a 5-5/8" exposure that is 46.9 LF of wall; 46 leaves the odd piece for a
+    # corner. (Luke, 2026-10-08: 4"x4" pieces, 100 to the bundle.)
+    ('step / wall flashing',   'LF', 46.0,  'bundles', '100 pcs, 1 per course', 0),
+    ('step flashing',          'LF', 46.0,  'bundles', '100 pcs, 1 per course', 0),
     ('starter strip',          'LF', 105.0, 'bundles', '105 LF / bundle', 0),
     ('starter',                'LF', 105.0, 'bundles', '105 LF / bundle', 0),
     # Drip edge and gutter apron come in 10 ft sticks but are lapped, so the
@@ -14545,7 +14573,7 @@ _ORDER_PACK = [
 
 # Named so the material order can print the list it actually used.
 _ORDER_PACK_NOTE = ('Pack sizes are defaults unless set on the product in the '
-                    'Price Book (Order pack). Each converted row shows its '
+                    'Price Book (Bought as). Each converted row shows its '
                     'arithmetic - check it against your branch before ordering.')
 
 # The note on a pack size nobody has confirmed. Printed as a prefix, not a note.
@@ -14564,7 +14592,13 @@ def _order_rule_for(item, product=None):
     """How one line is bought - {per, from_unit, order_unit, note, waste} - or
     None to order it as measured.
 
-    Three sources, most specific first:
+    A line PRICED by the pack in the Price Book's Bought-as editor (it carries
+    `bundle_waste_pct` - see packOf in app.js) is the simple case and is
+    answered first: its stored count is what the customer was charged for, so
+    it is what gets ordered, in the line's own pack. Nothing on the product can
+    change that - an estimate priced at 4 bundles orders 4 bundles.
+
+    Everything else has three sources, most specific first:
       1. The catalog product's own Order pack (Price Book): `order_pack`,
          `order_unit`, `order_waste_pct`. What a manager dials in beats every
          default. An explicit 0% waste is a choice and is kept.
@@ -14583,6 +14617,11 @@ def _order_rule_for(item, product=None):
     unit = str(item.get('unit') or '').strip().upper()
     blf = _order_num(item.get('bundle_lf')) or 0.0
     bunit = str(item.get('bundle_unit') or '').strip()
+    if blf > 0 and item.get('bundle_waste_pct') is not None:
+        return {'per': blf, 'from_unit': unit or 'units',
+                'order_unit': bunit or 'packs', 'note': 'as priced',
+                'waste': max(_order_num(item.get('bundle_waste_pct')) or 0.0, 0.0),
+                'priced': True}
     base = 'LF' if blf > 0 else unit
 
     rule = None
@@ -14612,9 +14651,11 @@ def _order_rule_for(item, product=None):
     return rule
 
 
-# Mirrors the LINEAR-FOOT entries of MEASURE_DEFS in app.js, and only those a
-# pack-sold product is sized by. The browser never stores the raw footage, so
-# this is the one place the server recomputes it. Held to the real JS by
+# Mirrors the entries of MEASURE_DEFS in app.js that a pack-sold product is
+# sized by: the linear-foot runs, and the square measures shingles and
+# underlayment come off. The browser never stores the raw measurement, so this
+# is the one place the server recomputes it - only to EXPLAIN a count on the
+# order sheet, never to price one. Held to the real JS by
 # tests/test_material_order.py under node.
 def _order_mnum(m, key):
     try:
@@ -14622,6 +14663,18 @@ def _order_mnum(m, key):
     except (TypeError, ValueError):
         return 0.0
     return v if math.isfinite(v) else 0.0
+
+
+def _order_waste_factor(m):
+    """1 + waste_pct/100, where a BLANK waste means 10% - mnum(m.waste_pct, 10)
+    in app.js. An explicit 0 is a real choice and stays 0."""
+    try:
+        w = float(m.get('waste_pct'))
+    except (TypeError, ValueError):
+        w = 10.0
+    if not math.isfinite(w):
+        w = 10.0
+    return 1 + w / 100.0
 
 
 _ORDER_MEASURES = {
@@ -14638,6 +14691,14 @@ _ORDER_MEASURES = {
     'headwall':        lambda m: _order_mnum(m, 'wall_flash_lf') + _order_mnum(m, 'unspecified_lf'),
     'transition':      lambda m: _order_mnum(m, 'transition_lf'),
     'ridge_valley_2x': lambda m: 2 * (_order_mnum(m, 'ridge_hip_lf') + _order_mnum(m, 'valley_lf')),
+    'squares':         lambda m: _order_mnum(m, 'roof_squares'),
+    'squares_waste':   lambda m: (max(_order_mnum(m, 'roof_squares')
+                                      - _order_mnum(m, 'low_slope_squares'), 0.0)
+                                  * _order_waste_factor(m)),
+    'low_slope':       lambda m: _order_mnum(m, 'low_slope_squares'),
+    'low_slope_waste': lambda m: _order_mnum(m, 'low_slope_squares') * _order_waste_factor(m),
+    'steep':           lambda m: _order_mnum(m, 'steep_squares'),
+    'steep_waste':     lambda m: _order_mnum(m, 'steep_squares') * _order_waste_factor(m),
 }
 
 
@@ -14654,8 +14715,13 @@ def _order_item_measurements(est, item):
     return est.get('measurements') or {}
 
 
-def _order_measured(est, item, qty, blf):
+def _order_measured(est, item, qty, blf, waste=0.0):
     """(amount measured in the rule's base unit, backed_out_of_count).
+
+    `waste` is for a line PRICED by the pack, whose count already includes it:
+    the measurement is trusted while measurement + waste still rounds to the
+    stored count, and otherwise backed out of the count net of waste - so
+    either way the sheet lands on exactly the count that was priced.
 
     A line sold by pack stores the COUNT - 6 rolls - and waste has to go on
     the footage, not the count. Backing footage out of the count (6 x 66.67 =
@@ -14669,9 +14735,10 @@ def _order_measured(est, item, qty, blf):
     calc = _ORDER_MEASURES.get(item.get('measure') or '')
     if calc and not item.get('formula'):
         raw = calc(_order_item_measurements(est, item))
-        if raw > 0 and math.ceil(raw / blf - 1e-9) == math.ceil(qty - 1e-9):
+        grown = raw * (1 + waste / 100.0)
+        if raw > 0 and math.ceil(grown / blf - 1e-9) == math.ceil(qty - 1e-9):
             return raw, False
-    return qty * blf, True
+    return qty * blf / (1 + waste / 100.0), True
 
 
 def _order_catalogs():
@@ -14752,8 +14819,9 @@ def material_order_rows(est, catalogs=None):
                    'order_qty': None, 'order_unit': '', 'math': ''}
             if rule:
                 blf = _order_num(it.get('bundle_lf')) or 0.0
-                measured, from_count = _order_measured(est, it, qty, blf)
                 per, waste, base = rule['per'], rule['waste'], rule['from_unit']
+                measured, from_count = _order_measured(
+                    est, it, qty, blf, waste if rule.get('priced') else 0.0)
                 need = measured * (1 + waste / 100.0)
                 n_units = _math.ceil(need / per - 1e-9)
                 ou = rule['order_unit']
@@ -18777,7 +18845,7 @@ def invoice_rows(est):
             # render_line_items: General first, then the trade's sections.
             by_sec = {}
             for it, qty, line, name in priced:
-                row = (name, qty, str(it.get('unit') or ''), line / qty, line)
+                row = (name, qty, _display_unit(it), line / qty, line)
                 sec = _sec_of(it)
                 by_sec.setdefault(sec, []).append(row)
                 rows.append((f'{name} [{sec}]' if sec else name,) + row[1:])
@@ -18799,7 +18867,7 @@ def invoice_rows(est):
                 if not itemize and it.get('customer_visible') is False:
                     continue
                 supplements.append((f"{label}: {_invoice_line_name(it.get('name'), desc)}",
-                                    q, str(it.get('unit') or ''),
+                                    q, _display_unit(it),
                                     line / q if q > 0 else line, line))
 
     # Elected optional upgrades bill as their own section. They are part of the
@@ -24425,7 +24493,11 @@ def _ensure_bundle_catalogs(pb):
             for pid, pack in _PER_FOOT_CONVERSIONS.get(trade, {}).items():
                 p_live = next((p for p in live_cat
                                if isinstance(p, dict) and p.get('id') == pid), None)
+                # ...and never a pack the manager set themselves in the
+                # Bought-as editor (it carries bundle_waste_pct): that roll is
+                # priced as a roll, whatever the roll costs.
                 if (p_live is not None and p_live.get('bundle_lf') == pack
+                        and p_live.get('bundle_waste_pct') is None
                         and _mnum(p_live.get('cost')) < pack):
                     p_live.pop('bundle_lf', None)
                     p_live.pop('bundle_unit', None)
@@ -24632,7 +24704,7 @@ def _review_trade_summary(est):
                 continue
             rows.append({'name': name,
                          'qty': _mnum(it.get('quantity')),
-                         'unit': str(it.get('unit') or ''),
+                         'unit': _display_unit(it),
                          'tier': str(it.get('tier') or '')})
         if rows:
             out[tk] = rows
@@ -24728,6 +24800,42 @@ def get_pricebook_audit():
     if not _is_manager_up():
         return _forbid()
     return jsonify(pricebook_audit(_ensure_bundle_catalogs(_load_price_book())))
+
+
+def pack_suggestions(pb):
+    """trade -> {product id: {unit, cover, waste_pct, confirmed}} for every
+    product that is not priced by a pack yet and whose name the order sheet
+    already knows how to buy.
+
+    The same table the material order has always used (_ORDER_PACK), offered to
+    the Price Book's Bought-as editor so a manager confirms a pack instead of
+    typing one. A SUGGESTION and nothing more: no price moves until they tick
+    "Price by the pack" on a product, and the cost converts in that action."""
+    out = {}
+    for tk in BUNDLE_SEEDS:
+        for p in pb.get(tk + '_catalog') or []:
+            if not isinstance(p, dict) or not p.get('id'):
+                continue
+            if _mnum(p.get('bundle_lf')) > 0:
+                continue
+            rule = _order_rule_for({'name': p.get('name'), 'unit': p.get('unit')})
+            if not rule:
+                continue
+            out.setdefault(tk, {})[p['id']] = {
+                'unit': rule['order_unit'], 'cover': rule['per'],
+                'waste_pct': rule['waste'],
+                'confirmed': rule['note'] != _ORDER_UNCONFIRMED,
+            }
+    return out
+
+
+@app.route('/api/pricebook/pack-suggestions', methods=['GET'])
+def get_pack_suggestions():
+    """Manager-up, like the audit beside it: it is read only by the editor a
+    manager uses, and it walks the cost-bearing catalog to build its answer."""
+    if not _is_manager_up():
+        return _forbid()
+    return jsonify(pack_suggestions(_ensure_bundle_catalogs(_load_price_book())))
 
 
 @app.route('/api/pricebook', methods=['GET'])

@@ -225,7 +225,9 @@ def test_the_price_book_editor_writes_the_fields_the_sheet_reads(A):
 MEASURE_FIXTURE = {'eave_lf': 212.5, 'valley_lf': 48.25, 'ridge_hip_lf': 131,
                    'ridge_lf': 88, 'rake_lf': 97, 'step_flash_lf': 33,
                    'wall_flash_lf': 21, 'unspecified_lf': 14, 'transition_lf': 9,
-                   'iw_second_row': 1}
+                   'iw_second_row': 1,
+                   'roof_squares': 31.4, 'waste_pct': 14, 'low_slope_squares': 4.2,
+                   'steep_squares': 8.34}
 
 
 def test_order_measures_match_measure_defs(A, tmp_path):
