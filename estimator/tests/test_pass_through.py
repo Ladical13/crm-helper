@@ -250,15 +250,25 @@ def test_a_fee_the_manager_unticks_goes_back_to_carrying_margin(tmp_path):
 
 
 @needs_node
-def test_the_insurance_cost_sheet_counts_them_too(tmp_path):
-    """On an insurance job the carrier sets the price and the margin is what is
-    left after we build the roof. A delivery and a permit are part of building
-    it, so the derived cost sheet carries both."""
+def test_the_insurance_cost_sheet_leaves_them_blank(tmp_path):
+    """Luke: "insurance jobs can have them blank." The rows are on the derived
+    cost sheet at quantity 0 - the sheet's own rule for a line it cannot size,
+    because a row that silently is not there reads as a better margin than the
+    job has - with the usual cost beside them for a rep who counts one. And
+    they carry no measure, or the measurement report would count them anyway."""
     res = _run(tmp_path, [{'op': 'insuranceCostItems', 'id': 'b_iko_nordic'}],
                estimate=_good_only(), book=_book())
     by_id = {i['catalog_id']: i for i in res['probes'][0]}
-    assert (by_id['x_shingle_delivery']['quantity'], by_id['x_shingle_delivery']['unit_cost']) == (1, 225)
-    assert (by_id['x_permit']['quantity'], by_id['x_permit']['unit_cost']) == (1, 275)
+    for pid, cost in (('x_shingle_delivery', 225), ('x_permit', 275)):
+        row = by_id[pid]
+        assert (row['quantity'], row['unit_cost']) == (0, cost), pid
+        assert 'measure' not in row and 'formula' not in row, pid
+    # Everything that IS part of building the roof is still sized off the report.
+    assert by_id['m_iko_nordic']['quantity'] == 14.4
+    assert by_id['l_install']['quantity'] == 14.4
+    # A blank row is not an unpriced one: nothing calls this margin overstated.
+    cost_lines = [i for i in res['probes'][0] if i['quantity'] > 0 and not i['unit_cost']]
+    assert cost_lines == []
 
 
 def test_every_line_builder_carries_the_flag():

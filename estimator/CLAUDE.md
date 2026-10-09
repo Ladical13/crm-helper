@@ -771,8 +771,10 @@ carries it sells at `cost × qty` — in margin mode, in markup mode, at any rat
   The At cost box stores an explicit `false` when unticked for the same reason
   the Bought-as box stores an explicit 0: an absent key is what lets
   `_ensure_bundle_catalogs()` put the seed's value back.
-- **Insurance cost sheets carry both.** The carrier sets that price, and a
-  delivery and a permit are part of what the roof costs us to build.
+- **On an insurance job both are left blank.** `buildInsuranceCostItems` puts
+  the rows on the derived cost sheet at quantity 0 with no measure — the
+  sheet's own rule for a line it cannot size — so nothing counts them unless a
+  rep does, including when the measurement report lands afterwards.
 
 Guarded by `tests/test_pass_through.py`.
 

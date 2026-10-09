@@ -3003,9 +3003,17 @@ function buildInsuranceCostItems(bundleId) {
   (bundle.product_ids || []).forEach(pid => {
     const p = catalog.find(x => x.id === pid);
     if (!p) return;
+    // A fee charged at cost on a retail job (the delivery, the permit) is left
+    // BLANK on an insurance job (Luke, 2026-10-09). Same shape as any line
+    // with no measure, per the note above: the row is here at quantity 0 with
+    // its usual cost beside it, so a rep can count one on a claim that really
+    // carries it, but nothing sizes it automatically - not now, and not when
+    // the measurement report lands (refreshInsuranceCostQuantities).
+    const fee = p.no_margin === true;
     const item = {
       catalog_id: pid, name: p.name, unit: p.unit || 'EA',
-      measure: p.measure || undefined, formula: p.formula || undefined,
+      measure: fee ? undefined : (p.measure || undefined),
+      formula: fee ? undefined : (p.formula || undefined),
       ...packOf(p), ...marginOf(p),
       unit_cost: parseFloat(p.cost) || 0,
       quantity: 0,
