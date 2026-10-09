@@ -69,6 +69,18 @@ def month_spend_usd():
     return float(row['s'] or 0)
 
 
+def spend_since_usd(since_iso, reason=None):
+    """Logged Perplexity charges since a UTC instant; one `reason`'s, if named."""
+    sql = ('SELECT COALESCE(SUM(cost_usd), 0) AS s FROM spend_ledger '
+           "WHERE source = 'perplexity' AND occurred_at >= ?")
+    params = [since_iso]
+    if reason:
+        sql += ' AND reason = ?'
+        params.append(reason)
+    with config.get_cache_db() as db:
+        return float(db.execute(sql, params).fetchone()['s'] or 0)
+
+
 def _record_spend(cost, reason):
     with config.get_cache_db() as db:
         db.execute('INSERT INTO spend_ledger (occurred_at, source, reason, cost_usd) '

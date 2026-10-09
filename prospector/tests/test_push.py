@@ -140,3 +140,41 @@ def test_token_sign_in_sends_the_header_and_never_the_url(monkeypatch):
 def test_token_sign_in_refuses_an_empty_token():
     with pytest.raises(pushmod.PushError):
         pushmod.sign_in_token('http://x', '')
+
+
+# ── --owners: a rep keeps the customers the Den says are theirs ──────────────
+
+def _cli_push(monkeypatch, tmp_path, doc, *flags):
+    """Run `prospector push` against a pull file; returns (exit code, extra sent)."""
+    import json
+    from prospector import __main__ as cli
+    path = tmp_path / 'pull.json'
+    path.write_text(json.dumps(doc), encoding='utf-8')
+    sent = {}
+
+    def fake_push(rows, base_url, session, **kw):
+        sent.update(kw)
+        return {'counts': {'inserted': 0, 'duplicate': 0, 'suppressed': 0, 'invalid': 0},
+                'batches': ['b'], 'not_inserted': []}
+
+    monkeypatch.setattr(pushmod, 'sign_in_token', lambda base, token: object())
+    monkeypatch.setattr(pushmod, 'push', fake_push)
+    monkeypatch.setenv('TOK', 't')
+    code = cli.main(['push', str(path), '--token-env', 'TOK', '--assign', 'luke', *flags])
+    return code, sent.get('extra')
+
+
+def test_owners_are_forwarded_for_a_warm_segment(monkeypatch, tmp_path):
+    doc = {'rows': _rows(1), 'lead_type': 'homeowner', 'source': 'den:customers',
+           'import': {'lead_source': 'existing_customer', 'cadence': 'past_customer_winter'}}
+    code, extra = _cli_push(monkeypatch, tmp_path, doc, '--owners', 'Derik, bryan')
+    assert code == 0 and extra['owners'] == ['derik', 'bryan']
+    assert extra['lead_source'] == 'existing_customer'
+
+
+def test_owners_on_a_cold_pull_is_refused_before_anything_is_sent(monkeypatch, tmp_path):
+    """Open data has no salesperson. Sent anyway, the importer would refuse the
+    whole batch after the sign-in; say so first."""
+    doc = {'rows': _rows(1), 'lead_type': 'realtor', 'source': 'cdos:realty'}
+    code, extra = _cli_push(monkeypatch, tmp_path, doc, '--owners', 'derik')
+    assert code == 2 and extra is None

@@ -32,8 +32,22 @@ The writes, each approved by Luke on 2026-10-04:
     a named rep, so nothing is ever assigned to apibot.
   * Everything under ``/nimbus/api/`` except ``/nimbus/api/settings`` —
     Nimbus drafts and researches but never publishes, so its actions are safe
-    to hand over. Settings holds the monthly research spend cap, which is the
-    one guard on what those actions cost; it stays with a human.
+    to hand over. Settings holds the research spend caps, which are the one
+    guard on what those actions cost; it stays with a human.
+
+And two more, approved by Luke on 2026-10-09, when the bookkeeping moved out
+of Jarvis's own memory file and into the CRM:
+
+  * ``POST /crm/api/queue/drafts`` — reserve a lead before writing its draft
+    in Gmail. The reservation is the lock: a lead with a draft waiting is off
+    every queue, so no second run and no second rep writes to them.
+  * ``PATCH /crm/api/queue/drafts/<id>`` — fill in the Gmail ids, give a draft
+    up, or record the reply it got. It cannot mark a draft sent; only logging
+    the touch does that.
+
+``PUT /crm/api/outreach/plan/<rep>`` is deliberately NOT here. The plan holds
+how many emails a day leave a rep's inbox, and Jarvis recommending a higher
+number must not be the same act as setting one.
 
 Reusing the real session stack rather than bolting on a second auth path is
 deliberate: there is one login mechanism in this codebase, one cookie, one set
@@ -80,7 +94,10 @@ ALLOWLIST = (
     '/crm/api/goals',
     '/crm/api/tasks',
     '/crm/api/queue/today',
+    '/crm/api/queue/drafts',          # what is waiting in Gmail, and the sent threads
     '/crm/api/outreach/summary',
+    '/crm/api/outreach/scorecard',    # the day, the streak, replies, days of supply
+    '/crm/api/outreach/plan',         # the day's target and the email share
     '/crm/api/offers',                # what Luke has put live, to link in a draft
     '/crm/api/partners/counts',       # aggregates; Nimbus reads it in-process
     # Canvasser — the hail cache the storm work already depends on.
@@ -96,17 +113,21 @@ ALLOWLIST = (
 EXACT = frozenset({
     '/crm/api/leads',
     '/crm/api/offers',
+    '/crm/api/queue/drafts',
+    '/crm/api/outreach/plan',
 })
 
 # The only non-GET requests apibot may make: (method, full path).
 WRITES = frozenset({
     ('POST', '/crm/api/queue/log'),
+    ('POST', '/crm/api/queue/drafts'),
     ('POST', '/crm/api/prospects/import'),
 })
 
 # Non-GET requests matched by pattern, for routes that carry an id.
 WRITE_PATTERNS = (
     ('PATCH', re.compile(r'^/crm/api/leads/[^/]+/outreach-status$')),
+    ('PATCH', re.compile(r'^/crm/api/queue/drafts/[^/]+$')),
 )
 
 # Nimbus: every write beneath this prefix, except those in WRITE_DENY.

@@ -335,6 +335,35 @@ def test_an_unknown_lead_source_is_refused(client):
                  cadence='no_such_cadence').status_code == 400
 
 
+def test_a_customer_stays_with_the_rep_who_sold_the_job_only_when_named(client):
+    """The Den names a salesperson on every job, and most of those names are
+    another market's reps or people who have left. Honour every one and a
+    customer lands in a queue nobody opens."""
+    signup(client)
+    signup(client, 'derik')
+    signup(client, 'bryan')
+    login(client, 'luke')
+    rows = [{'first_name': 'Dee', 'phone': '970-555-0181', 'stage': 'won', 'owner': 'Derik'},
+            {'first_name': 'Bea', 'phone': '970-555-0182', 'stage': 'won', 'owner': 'bryan'},
+            {'first_name': 'Tex', 'phone': '970-555-0183', 'stage': 'won', 'owner': 'ted'},
+            {'first_name': 'Una', 'phone': '970-555-0184', 'stage': 'won'}]
+    body = _warm(client, rows, assign='luke', owners=['derik'],
+                 cadence='past_customer_winter').get_json()
+    assert [d['rep'] for d in body['details']] == ['derik', 'luke', 'luke', 'luke']
+    # The cadence a warm batch starts belongs to the same rep as the lead.
+    with appmod.get_db() as db:
+        mismatched = db.execute('SELECT COUNT(*) FROM tasks t JOIN leads l ON l.id = t.lead_id '
+                                'WHERE t.rep != l.rep').fetchone()[0]
+    assert mismatched == 0
+
+
+def test_keeping_an_owner_is_for_warm_imports_and_real_reps(client):
+    signup(client)
+    assert _import(client, _rows({'license_no': 'HOA-1'}), owners=['luke']).status_code == 400
+    assert _warm(client, [{'first_name': 'A', 'phone': '970-555-0185'}],
+                 owners=['nobody']).status_code == 400
+
+
 def test_parse_stamp_reads_what_the_den_writes():
     assert appmod._parse_stamp('2026-03-09') == '2026-03-09T00:00:00Z'
     assert appmod._parse_stamp('2026-03-09T17:04:05.123000') == '2026-03-09T17:04:05Z'

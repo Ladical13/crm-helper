@@ -530,7 +530,11 @@ details.dsec[open] summary{margin-bottom:14px}#lead-details{scroll-margin-top:16
 .cmp-via button{padding:5px 11px;border-radius:20px;background:transparent;border:1px solid var(--line);color:var(--txt2);font-size:12px}
 .cmp-via button.on{background:var(--bg3);color:var(--txt);border-color:var(--brand)}
 .om-for{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px}
-@media (pointer: coarse){ .cmp-via button{min-height:44px} }
+/* A tick box inside a .field is not a text input: undo the full-width box and
+   the small-caps label that every other field child gets. */
+.om-for label{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;color:var(--txt);text-transform:none;letter-spacing:0}
+.om-for input[type=checkbox]{width:auto;min-height:0;padding:0;margin:0}
+@media (pointer: coarse){ .cmp-via button,.om-for label{min-height:44px} }
 
 /* Keep overlays below the shared switcher and fit forms to the visible screen. */
 .p1-has-shell .drawer,.p1-has-shell .modal{top:var(--p1-shell-h)}

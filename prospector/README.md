@@ -31,6 +31,11 @@ with a job in production, red-flag customers, and any open job touched in the
 last two weeks. `--token-env P1_READONLY_TOKEN` signs in with the API token
 instead of a password (the importer then insists on `--assign`).
 
+Every Den row carries the job's salesperson as `owner`. `--owners derik` lets
+the reps you name keep the customers the Den says are theirs; everyone else's
+(another market's reps, people who have left, jobs with nobody on them) go to
+`--assign`. Without `--owners`, every row goes to `--assign`.
+
 ## Keeping a statewide list local
 
 ```bash

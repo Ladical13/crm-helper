@@ -32,6 +32,11 @@ import sys
 from .. import perplexity
 from .enrich import _SYSTEM, _kind_for, _looks_promising
 
+# How this module's lookups are named in the spend ledger, which is what lets
+# the weekly cap count research alone and not the events or SEO runs.
+REASON = 'b2b-reenrich'
+WEEK_DAYS = 7
+
 _EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 _HONORIFICS = {'rev', 'rev.', 'reverend', 'pastor', 'fr', 'fr.', 'father', 'dr', 'dr.',
                'mr', 'mr.', 'mrs', 'mrs.', 'ms', 'ms.', 'sister', 'brother', 'bishop',
@@ -163,7 +168,7 @@ def contact_fields(data, citations):
 def research(row, model=None, hint=''):
     """(data, citations, cost) for one lead. Raises SpendCapReached."""
     result = perplexity.search_json(_prompt(row, hint), system=_SYSTEM, model=model,
-                                    max_tokens=1500, reason='b2b-reenrich')
+                                    max_tokens=1500, reason=REASON)
     data = result.get('data') or {}
     citations = (data.get('citations') if isinstance(data, dict) else None) \
         or result.get('citations') or []
@@ -228,8 +233,18 @@ def apply(crm, lead, data, citations, dry_run=False):
 STALE_DAYS = 365
 
 
-def candidates(crm, limit, lead_type=None, mode='new'):
-    """Leads to research.
+def week_spend_usd():
+    """What research has cost over the last seven days. A rolling window, not
+    a calendar week, so a run on Friday and another on Monday are one week's
+    budget rather than two."""
+    from datetime import datetime, timedelta
+    since = (datetime.utcnow() - timedelta(days=WEEK_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return perplexity.spend_since_usd(since, reason=REASON)
+
+
+def candidates(crm, limit, lead_type=None, mode='new', rep=None):
+    """Leads to research. `rep` keeps it to one rep's list, so a refill can be
+    aimed at whoever is short rather than at whoever's leads score highest.
 
     new      never researched
     missing  researched, but still no website or no way to reach anyone -
@@ -250,16 +265,26 @@ def candidates(crm, limit, lead_type=None, mode='new'):
     if lead_type:
         q += ' AND lead_type = ?'
         params.append(lead_type)
+    if rep:
+        q += ' AND rep = ?'
+        params.append(rep)
     q += ' ORDER BY icp_score DESC, created_at LIMIT ?'
     with crm.get_db() as db:
         return [dict(r) for r in db.execute(q, params + [limit])]
 
 
-def run(crm, limit=50, lead_type=None, dry_run=False, log=print, mode='new'):
-    rows = candidates(crm, limit, lead_type, mode=mode)
+def run(crm, limit=50, lead_type=None, dry_run=False, log=print, mode='new', rep=None,
+        budget=None):
+    """`budget` is the most this run may spend, in dollars; None is no limit
+    beyond the monthly cap. Checked before each lead, so a run stops within one
+    lookup of its number."""
+    rows = candidates(crm, limit, lead_type, mode=mode, rep=rep)
     log(f'{len(rows)} leads ({mode}); month spend so far ${perplexity.month_spend_usd():.2f}')
     names = emails = phones = sites = reachable = spent = 0
     for i, lead in enumerate(rows, 1):
+        if budget is not None and spent >= budget:
+            log(f'Budget of ${budget:.2f} for this run reached - stopping at {i - 1} leads.')
+            break
         try:
             data, cites, cost = research(lead)
         except perplexity.SpendCapReached:

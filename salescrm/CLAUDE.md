@@ -196,10 +196,10 @@ round-robin.
   `/api/queue/today?rep=<u>&target=N` (apibot gets a 400 without `rep` — it owns
   no leads, so its own queue would look like a quiet day) and drafts in Gmail.
   Once a draft is in Sent it calls `POST /api/queue/log`
-  (`queue_log()`), the **one write** apibot is allowed. That endpoint takes
-  outreach kinds only, credits the lead's owner (never apibot), completes the
-  card's task through `_complete_task()` so the cadence advances exactly as from
-  the card, and dedupes on `ref` (the Gmail id) so re-scanning Sent is safe.
+  (`queue_log()`). That endpoint takes outreach kinds only, never credits
+  apibot (the rep the draft was written for, else the lead's owner), completes
+  the card's task through `_complete_task()` so the cadence advances exactly as
+  from the card, and dedupes on `ref` (the Gmail id) so re-scanning Sent is safe.
   Skip that call and the cooldown never starts: tomorrow re-serves today. The
   bulk `/api/leads` list strips contact columns for apibot
   (`_redact_for_apibot()`) — the queue is where contacts legitimately arrive,
@@ -219,9 +219,9 @@ round-robin.
   `_card_channel()` is that rule and the only place it lives: a scheduled task
   goes by its kind, a net-new card is `email` when the lead has an address and
   `phone` when it does not. `?channel=email|phone` asks for one side; a rep
-  named in `SALESCRM_JARVIS_EMAIL_REPS` (`luke:40`) gets the phone side by
-  default, with the day's whole count in `day`. Unset, the queue is one list
-  for everybody, as before. Guarded by
+  with an email share (their plan row, or `SALESCRM_JARVIS_EMAIL_REPS`,
+  `luke:40`) gets the phone side by default, with the day's whole count in
+  `day`. With no share the queue is one list, as before. Guarded by
   `test_no_card_is_on_both_sides_of_the_day`.
 - **A touch logged with an `outcome` books the next one.** `_apply_outcome()`
   is shared by the card's `log_outcome()` and Jarvis's `queue_log()`, so an
@@ -230,6 +230,56 @@ round-robin.
   carries a cadence task — and a fresh card worked through Gmail then comes
   back a week later as if nobody had written. apibot may log every outcome
   except `appt_set`.
+- **The CRM keeps the books, not Jarvis.** What is drafted, sent and answered
+  used to be a list in Jarvis's own memory file on Drive, and the morning that
+  file is lost the same people are drafted again. It is the `outreach_drafts`
+  table now, and it is a **lock as well as a record**: Jarvis reserves the lead
+  with `record_draft()` BEFORE writing the draft in Gmail, and a lead with a
+  draft waiting is off every queue (`_in_flight()`), so no second run and no
+  second rep can write to them. Two clocks a day apart: at `DRAFT_STALE_DAYS`
+  Jarvis gives up, deletes the Gmail draft and expires the row; at
+  `DRAFT_HOLD_DAYS` the queue stops waiting on its own, so a week of Jarvis not
+  running cannot park a lead for good. A draft becomes `sent` **only** through
+  `queue_log()` with its `draft_id`: `update_draft()` refuses to mark one sent,
+  because that would start no cooldown and book no follow-up.
+- **A reply does what the same answer does on the card.** `_apply_reply()`
+  routes it through `_apply_outcome()`, so "not interested" by email cancels the
+  call that email booked. It used to set a status and nothing else, and three
+  days later the rep rang someone who had already said no. It is logged as a
+  `system` line, never as a touch: the rep did nothing, so it must not count
+  toward the day or restart the cooldown. A "stop" also lands on the
+  suppression list (`_suppress()`), so the same address is refused at the next
+  import, whatever dataset it arrives in.
+- **A rep's day is a plan row, and the day is one number.** `outreach_plans`
+  holds `daily_target`, `email_share` (how many are emails Jarvis drafts) and
+  `covers`; `_plan_for()` falls back to the two environment variables for a rep
+  with no row. The phone side is always the remainder, so the share can ramp
+  without the day dropping below the target. A saved share of 0 means Jarvis
+  drafts nothing and the queue is one list. `set_outreach_plan()` is closed to
+  apibot twice over (here and in the portal's write list): Jarvis recommending
+  more email must not be the same act as sending more. `EMAIL_SHARE_MAX` is the
+  ceiling because all of it leaves one inbox on the domain estimates and
+  contracts are sent from.
+- **Covering another rep is a setting, never a transfer.** A manager whose
+  plan `covers` a rep is served that rep's cards in their own queue: signed and
+  credited as the manager, with every follow-up left on the lead's owner. No
+  lead is reassigned, so taking the name off puts the list back in its owner's
+  tab with the history intact. The role is re-read on every request, so a
+  demoted manager loses the list at once.
+- **The scorecard counts supply with the queue's own rule.** `_fresh_where()`
+  is the one definition of a servable card, used by `queue_today()` to serve
+  them and by `outreach_scorecard()` to count how many days are left. Two
+  definitions would read as a week of cards on a morning the queue came up
+  empty. The same endpoint carries the streak (`_streak()`: weekends neither
+  count nor break it, and today is not a miss until it is over) and what the
+  emails earned, and it carries no contact details: Jarvis used to pull two
+  hundred full cards just to count them.
+- **A warm import can let a rep keep their own customers.** The Den names a
+  salesperson on every job, and most of those names are another market's reps
+  or people who have left; honour them all and a customer lands in a queue
+  nobody opens. So `import_prospects()` keeps a row's `owner` only for the reps
+  named in `owners` (`prospector push --owners derik`), and only on a warm
+  batch. Everyone else's go to `assign`.
 - **`leads_queue_idx` (`rep, stage, icp_score DESC, created_at`) is what keeps
   the net-new top-up cheap.** Without it SQLite picks `leads_stage_idx` and
   scans every `new` lead — and in a prospecting DB almost everything is `new`,

@@ -62,6 +62,12 @@ DEFAULT_SETTINGS = {
     # further Perplexity calls until reset. Prevents a runaway from a bad
     # prompt or an infinite loop.
     'monthly_spend_cap_usd': 150.0,
+    # What the API principal (Jarvis) may spend researching contacts in any
+    # seven days. The monthly cap above stops a runaway; this is the weekly
+    # refill Luke authorises, held to its number in code so that a prompt
+    # which misreads its instructions still cannot spend past it. A person
+    # starting research from the Nimbus page answers only to the monthly cap.
+    'weekly_research_cap_usd': 15.0,
     # ── Supervisor ───────────────────────────────────────────────────────
     # The conversational layer over the other agents. Its spend is tracked in
     # the SAME ledger but under its own source and its own cap, because the

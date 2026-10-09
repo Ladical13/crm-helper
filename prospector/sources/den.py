@@ -12,10 +12,12 @@ Needs `BASE44_TOKEN`, which lives in Railway, so run it there:
     railway run --service project-one-estimator -- \
         python -m prospector pull den:customers --out prospector/inbox/den-customers.json
 
-Rows carry three keys the open-data sources never do — `stage`, `won_at`,
-`created_at` — and each segment names how it should be imported (`import`
-below). `prospector push` forwards both, and the CRM's importer honours them
-only on a warm batch (salescrm `WARM_SOURCES`).
+Rows carry four keys the open-data sources never do — `stage`, `won_at`,
+`created_at`, `owner` — and each segment names how it should be imported
+(`import` below). `prospector push` forwards both, and the CRM's importer
+honours them only on a warm batch (salescrm `WARM_SOURCES`). `owner` is the
+Den's salesperson; `push --owners derik` is what lets a rep keep their own
+customers, and without it every row goes to `--assign`.
 
 Three rules, each of which is a way to embarrass the company if it is missing:
 
@@ -169,6 +171,17 @@ def _people(fetch):
     return projects, by_key, keys_of, skip
 
 
+def _owner(*emails):
+    """'derik@projectoneroofing.com' -> 'derik'. The Den's salesperson, as a
+    portal username. Whether that person still works this market is not
+    decided here: the importer keeps an owner only for reps it is told to."""
+    for e in emails:
+        name = str(e or '').strip().lower().split('@')[0]
+        if name:
+            return name
+    return ''
+
+
 def _row(p, contact, stage):
     first, last = _split(p.get('client_name') or (contact or {}).get('name') or p.get('name'))
     c = contact or {}
@@ -184,6 +197,7 @@ def _row(p, contact, stage):
         icp_score=normalize.score(city=city, address=address, person=first),
     )
     out['stage'] = stage
+    out['owner'] = _owner(p.get('assigned_salesperson'), c.get('assigned_to'))
     out['created_at'] = _when(p, 'created_date')
     out['won_at'] = _when(p, 'roof_installation_completed_date', 'actual_end_date',
                           'updated_date') if stage == 'won' else ''
@@ -234,6 +248,7 @@ def _partners(fetch):
             icp_score=normalize.score(person=first),
         )
         out['lead_type'] = ptype if ptype in PARTNER_TYPES else 'referral_partner'
+        out['owner'] = _owner(r.get('assigned_to'), r.get('assigned_salesperson'))
         out['created_at'] = str(r.get('created_date') or '').strip()
         yield out
 

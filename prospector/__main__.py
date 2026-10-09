@@ -94,6 +94,13 @@ def cmd_push(args):
     if args.no_cadence:
         extra.pop('cadence', None)
         extra.pop('stagger_per_day', None)
+    owners = [o.strip().lower() for o in (args.owners or '').split(',') if o.strip()]
+    if owners:
+        if not extra.get('lead_source'):
+            print('error: --owners is for a warm segment (den:*); this file is a cold pull',
+                  file=sys.stderr)
+            return 2
+        extra['owners'] = owners
     who = args.user or f'the API token in ${args.token_env}'
     print(f'{len(rows):,} rows from {args.file}')
     print(f'  -> {args.base_url}  as {who}  lead_type={lead_type}'
@@ -160,6 +167,9 @@ def main(argv=None):
     s.add_argument('--lead-type', help='override the file')
     s.add_argument('--source', help='override the file')
     s.add_argument('--assign', default='', help="'round_robin', a username, or blank")
+    s.add_argument('--owners', default='',
+                   help='warm segments only: reps who keep the customers the Den says are '
+                        "theirs (a comma list); everyone else's go to --assign")
     s.add_argument('--batch', default='', help='batch id (default: source + timestamp)')
     s.add_argument('--dry-run', action='store_true', help='classify only, write nothing')
     s.set_defaults(func=cmd_push)

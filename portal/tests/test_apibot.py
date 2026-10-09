@@ -332,3 +332,55 @@ def test_nimbus_prospecting_can_land_leads_but_only_with_a_named_rep(admin, brid
     r = admin.post('/crm/api/prospects/import', json=dict(body, assign='bryan'))
     assert r.status_code in (200, 201), r.get_data(as_text=True)
     assert admin.get('/crm/api/partners/counts').status_code == 200
+
+
+# ── The draft ledger and the plan ────────────────────────────────────────────
+
+def test_jarvis_reserves_a_draft_and_closes_it_by_logging_the_send(admin, bridge):
+    """Reserve, write it in Gmail, come back with the id, log it once it is in
+    Sent. Each step is a named route; nothing else under /queue/drafts opens."""
+    from portal import apibot
+    lead_id = _lead_for(admin)
+    _exchange(admin)
+    d = admin.post('/crm/api/queue/drafts', json={'lead_id': lead_id, 'subject': 'Roof answers'})
+    assert d.status_code == 201, d.get_data(as_text=True)
+    draft = d.get_json()
+    assert draft['rep'] == 'bryan' and draft['recipient'] == 'pat@example.com'
+    url = f"/crm/api/queue/drafts/{draft['id']}"
+    assert admin.patch(url, json={'draft_ref': 'r-9'}).status_code == 200
+    assert admin.patch(url, json={'status': 'sent'}).status_code == 400     # only the log sends
+    pending = admin.get('/crm/api/queue/drafts?rep=bryan&status=pending').get_json()
+    assert [p['draft_ref'] for p in pending] == ['r-9']
+    assert admin.get('/crm/api/queue/drafts').status_code == 400            # must name the rep
+    r = admin.post('/crm/api/queue/log', json={
+        'lead_id': lead_id, 'kind': 'email', 'outcome': 'emailed',
+        'draft_id': draft['id'], 'ref': 'gmail-9'})
+    assert r.status_code == 201 and r.get_json()['rep'] == 'bryan'
+    sent = admin.get('/crm/api/queue/drafts?rep=bryan&status=sent').get_json()
+    assert [s['message_ref'] for s in sent] == ['gmail-9']
+    assert admin.patch(url, json={'reply': 'interested'}).status_code == 200
+    assert admin.patch(url, json={'reply': 'appt_set'}).status_code == 400  # booked by a person
+
+    assert apibot.write_allowed('PATCH', '/crm/api/queue/drafts/abc')
+    assert not apibot.write_allowed('PATCH', '/crm/api/queue/drafts')
+    assert not apibot.write_allowed('DELETE', '/crm/api/queue/drafts/abc')
+    assert not apibot.write_allowed('PATCH', '/crm/api/queue/drafts/abc/x')
+    assert not apibot.path_allowed('/crm/api/queue/drafts/abc')
+
+
+def test_jarvis_reads_the_plan_and_the_scorecard_but_cannot_move_the_ramp(admin, bridge):
+    """The plan holds how many emails a day leave a rep's inbox. Jarvis
+    recommending a higher number must not be the same act as setting one."""
+    from portal import apibot, users
+    users.create('bryan', password='knockknock', role='rep')
+    r = admin.put('/crm/api/outreach/plan/bryan', json={'daily_target': 100, 'email_share': 15})
+    assert r.status_code == 200, r.get_data(as_text=True)                   # the manager may
+    _exchange(admin)
+    assert admin.get('/crm/api/outreach/plan?rep=bryan').get_json()['email_share'] == 15
+    card = admin.get('/crm/api/outreach/scorecard?rep=bryan')
+    assert card.status_code == 200 and card.get_json()['today']['target'] == 100
+    assert admin.get('/crm/api/outreach/scorecard').status_code == 400      # must name the rep
+    assert admin.put('/crm/api/outreach/plan/bryan', json={'email_share': 40}).status_code == 403
+    assert not apibot.write_allowed('PUT', '/crm/api/outreach/plan/bryan')
+    assert not apibot.path_allowed('/crm/api/outreach/plan/bryan')
+    assert admin.get('/crm/api/outreach/plan?rep=bryan').get_json()['email_share'] == 15

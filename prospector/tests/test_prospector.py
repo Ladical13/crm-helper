@@ -266,6 +266,25 @@ def test_only_colorado_partners_and_each_keeps_its_own_type():
     assert rows[0]['source_ref'] == 'den:partner:r1'
 
 
+def test_a_den_row_says_who_sold_the_job():
+    """As a username, so the importer can let a rep keep their own customers.
+    The job's salesperson wins over whoever the contact was first assigned to."""
+    fetch = _den(
+        projects=[_job('p1', 'Pat Ng', 'paid_and_closed', 'pat@example.com',
+                       assigned_salesperson='Derik@ProjectOneRoofing.com'),
+                  _job('p2', 'Sam Lee', 'paid_and_closed', 'sam@example.com'),
+                  _job('p3', 'Ada Roy', 'paid_and_closed', 'ada@example.com')],
+        contacts=[{'id': 'c1', 'name': 'Pat Ng', 'email': 'pat@example.com',
+                   'assigned_to': 'luke@projectoneroofing.com'},
+                  {'id': 'c2', 'name': 'Sam Lee', 'email': 'sam@example.com',
+                   'assigned_to': 'luke@projectoneroofing.com'}],
+        partners=[{'id': 'r1', 'name': 'Kim Park', 'partner_type': 'realtor',
+                   'location_id': CO, 'assigned_to': 'derik@projectoneroofing.com'}])
+    owners = {r['first_name']: r['owner'] for r in den.pull('customers', fetch=fetch)}
+    assert owners == {'Pat': 'derik', 'Sam': 'luke', 'Ada': ''}
+    assert [r['owner'] for r in den.pull('partners', fetch=fetch)] == ['derik']
+
+
 def test_every_den_segment_says_how_it_must_be_imported():
     """Imported cold, a customer is offered a free hail inspection."""
     for name, meta in den.SEGMENTS.items():

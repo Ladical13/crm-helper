@@ -25,6 +25,19 @@ call a lead, about two cents, under the monthly spend cap.
 - **A partner is asked for the person who refers, not the one who fixes.**
   `_who_for()` picks the question by lead type; asking a brokerage for its
   facilities contact finds the office manager.
+- **Jarvis answers to a weekly number, and it is enforced here, not asked for
+  in a prompt.** `weekly_research_cap_usd` (Nimbus Settings, default 15) is
+  what the API principal may spend in any seven days. `start_reenrich()`
+  refuses apibot at the cap and hands a run only what is left as its `budget`,
+  which `run()` checks before every lead. The refusal is the same whether the
+  instructions were followed, misread or never loaded. `week_spend_usd()` is a
+  rolling window, so a Friday run and a Monday run are one week's money, and it
+  counts research alone (`REASON`), so an events search cannot use up the
+  refill. A person starting research from the Nimbus page answers only to the
+  monthly cap.
+- **`rep` in the request aims the research.** `candidates()` otherwise takes
+  the best-scoring leads whoever owns them, which starves a rep whose list
+  scores lower.
 
 ## Networking events (`agents/events.py`)
 

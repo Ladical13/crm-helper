@@ -640,6 +640,47 @@ def migrate_db():
                 loaded_at  TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS dnc_area_idx ON dnc_registry(area);
+
+            -- Every email Jarvis has written into a rep's Gmail, from the
+            -- moment it is drafted to the reply it gets. This used to be a
+            -- list in Jarvis's own memory file: lose that file once and the
+            -- next morning drafts the same people again. Here it is the lock
+            -- as well as the record - a lead with a pending row is off the
+            -- queue, so no second run and no second rep can write to them.
+            -- `rep` is who the draft was written FOR (whose Gmail it is in),
+            -- which is not always who owns the lead: see outreach_plans.
+            CREATE TABLE IF NOT EXISTS outreach_drafts (
+                id          TEXT PRIMARY KEY,
+                lead_id     TEXT NOT NULL,
+                task_id     TEXT DEFAULT '',
+                rep         TEXT NOT NULL,
+                recipient   TEXT DEFAULT '',
+                subject     TEXT DEFAULT '',
+                step        TEXT DEFAULT '',
+                template_id TEXT DEFAULT '',
+                draft_ref   TEXT DEFAULT '',
+                thread_ref  TEXT DEFAULT '',
+                message_ref TEXT DEFAULT '',
+                status      TEXT DEFAULT 'pending',
+                reply       TEXT DEFAULT '',
+                created_at  TEXT NOT NULL,
+                sent_at     TEXT DEFAULT '',
+                reply_at    TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS odraft_rep_idx  ON outreach_drafts(rep, status);
+            CREATE INDEX IF NOT EXISTS odraft_lead_idx ON outreach_drafts(lead_id, status);
+
+            -- One row per rep whose day differs from the defaults: how many
+            -- touches, how many of those are emails Jarvis drafts, and whose
+            -- list they also work. No row means the environment's defaults.
+            CREATE TABLE IF NOT EXISTS outreach_plans (
+                rep          TEXT PRIMARY KEY,
+                daily_target INTEGER DEFAULT 0,
+                email_share  INTEGER DEFAULT 0,
+                covers_json  TEXT DEFAULT '[]',
+                updated_by   TEXT DEFAULT '',
+                updated_at   TEXT NOT NULL
+            );
         ''')
         _backfill_norms(db)
 
@@ -2093,7 +2134,9 @@ def import_prospects():
       lead_source     — 'existing_customer' or 'referral'
       cadence         — a cadence id to start on every inserted row
       stagger_per_day — start that many cadences a day rather than all at once
-      and per row: stage, won_at, created_at, lead_type
+      owners          — reps whose rows stay theirs (a row's `owner`); the
+                        rest go to `assign`
+      and per row: stage, won_at, created_at, lead_type, owner
     """
     data = request.get_json(force=True)
     rows = data.get('rows')
@@ -2138,6 +2181,20 @@ def import_prospects():
         per_day = max(0, int(data.get('stagger_per_day') or 0))
     except (TypeError, ValueError):
         return jsonify({'error': 'stagger_per_day must be a number'}), 400
+    # Whose customers keep their own rep. The Den names a salesperson on every
+    # job, but most of those names are another market's reps or people who have
+    # left, and a customer assigned to one of them lands in a queue nobody
+    # opens. So a row's `owner` is honoured only for the reps listed here, and
+    # everyone else's go to `assign`.
+    owners = data.get('owners') or []
+    if not isinstance(owners, list):
+        return jsonify({'error': 'owners must be a list of usernames'}), 400
+    owners = {str(o).strip().lower() for o in owners if str(o).strip()}
+    if owners and not warm:
+        return jsonify({'error': 'Only a warm import (lead_source) may keep a row\'s owner'}), 400
+    unknown = sorted(o for o in owners if not pusers.get(o) or o == papibot.USERNAME)
+    if unknown:
+        return jsonify({'error': f'Unknown rep(s): {", ".join(unknown)}'}), 400
 
     counts  = {'inserted': 0, 'duplicate': 0, 'suppressed': 0, 'invalid': 0}
     details = []
@@ -2186,6 +2243,8 @@ def import_prospects():
 
             lid = str(uuid.uuid4())
             rep = pool[counts['inserted'] % len(pool)]
+            if str(raw.get('owner') or '').strip().lower() in owners:
+                rep = str(raw['owner']).strip().lower()
             fields = dict(row)
             fields.update({
                 'id': lid, 'lead_type': lead_type, 'service': service,
@@ -2276,28 +2335,32 @@ def add_suppression():
     value = _norm_suppression(kind, data.get('value'))
     if not value:
         return jsonify({'error': f'Not a usable {kind}'}), 400
-    sid = str(uuid.uuid4())
     with get_db() as db:
-        existing = db.execute('SELECT * FROM suppressions WHERE kind=? AND value=?',
-                              (kind, value)).fetchone()
-        if existing:
-            return jsonify(dict(existing)), 200      # already opted out; not an error
-        db.execute('INSERT INTO suppressions (id, kind, value, reason, created_by, created_at) '
-                   'VALUES (?,?,?,?,?,?)',
-                   (sid, kind, value, (data.get('reason') or '').strip(),
-                    current_rep(), _now()))
-        # Flag the matching leads so they drop out of any queue built from here
-        # on, not just out of future imports.
-        # The status says so too, so the follow-up board never lists someone
-        # who asked to be left alone as "no answer".
-        if kind == 'email':
-            db.execute("UPDATE leads SET dnc=1, outreach_status='dnc', outreach_status_at=?, "
-                       "updated_at=? WHERE email_norm=?", (_now(), _now(), value))
-        elif kind == 'phone':
-            db.execute("UPDATE leads SET dnc=1, outreach_status='dnc', outreach_status_at=?, "
-                       "updated_at=? WHERE phone_norm=?", (_now(), _now(), value))
-        row = db.execute('SELECT * FROM suppressions WHERE id=?', (sid,)).fetchone()
-    return jsonify(dict(row)), 201
+        row, created = _suppress(db, kind, value, (data.get('reason') or '').strip(),
+                                 current_rep())
+    return jsonify(row), 201 if created else 200     # already opted out is not an error
+
+
+def _suppress(db, kind, value, reason, by):
+    """Add one opt-out (already normalised). Returns (row, created)."""
+    existing = db.execute('SELECT * FROM suppressions WHERE kind=? AND value=?',
+                          (kind, value)).fetchone()
+    if existing:
+        return dict(existing), False
+    sid = str(uuid.uuid4())
+    db.execute('INSERT INTO suppressions (id, kind, value, reason, created_by, created_at) '
+               'VALUES (?,?,?,?,?,?)', (sid, kind, value, reason, by, _now()))
+    # Flag the matching leads so they drop out of any queue built from here
+    # on, not just out of future imports.
+    # The status says so too, so the follow-up board never lists someone
+    # who asked to be left alone as "no answer".
+    if kind == 'email':
+        db.execute("UPDATE leads SET dnc=1, outreach_status='dnc', outreach_status_at=?, "
+                   "updated_at=? WHERE email_norm=?", (_now(), _now(), value))
+    elif kind == 'phone':
+        db.execute("UPDATE leads SET dnc=1, outreach_status='dnc', outreach_status_at=?, "
+                   "updated_at=? WHERE phone_norm=?", (_now(), _now(), value))
+    return dict(db.execute('SELECT * FROM suppressions WHERE id=?', (sid,)).fetchone()), True
 
 @app.route('/api/suppressions/<sid>', methods=['DELETE'])
 @admin_required
@@ -3534,6 +3597,124 @@ def _parse_email_reps(raw):
 # Unset, nothing changes for anyone: the queue is one list, as it always was.
 JARVIS_EMAIL_REPS = _parse_email_reps(os.environ.get('SALESCRM_JARVIS_EMAIL_REPS', ''))
 
+# ── A rep's plan for the day ─────────────────────────────────────────────────
+#
+# The two variables above are one number for everybody and one line per rep,
+# and changing either is a redeploy. A plan row is the same three decisions
+# per rep, changed by a manager from the Outreach tab:
+#
+#   daily_target  how many touches make the day
+#   email_share   how many of them are emails Jarvis drafts. The phone side is
+#                 always the remainder, so the day never drops below the target
+#                 while the share ramps up. 0 = Jarvis drafts nothing for this
+#                 rep and their queue is one list.
+#   covers        whose list this rep ALSO works. Nothing is reassigned: the
+#                 covered rep's cards are served in this rep's queue, signed
+#                 and credited as this rep, and every follow-up stays on the
+#                 lead's owner. Take the name off and the list is back in its
+#                 owner's tab with the history intact.
+#
+# No row means the environment's answer, so a rep nobody has planned for sees
+# exactly what they saw before this table existed.
+#
+# The share is capped because all of it leaves one person's inbox on the
+# company's domain, which is also where estimates and contracts are sent from.
+EMAIL_SHARE_MAX = 40
+DAILY_TARGET_MAX = 300
+
+
+def _plan_for(db, rep):
+    """{'rep','daily_target','email_share','covers','saved'} for one rep."""
+    row = db.execute('SELECT * FROM outreach_plans WHERE rep=?', (rep,)).fetchone()
+    target, share, covers = DAILY_TARGET, JARVIS_EMAIL_REPS.get(rep, 0), []
+    if row:
+        target = row['daily_target'] or DAILY_TARGET
+        share = row['email_share'] or 0
+        try:
+            covers = [c for c in json.loads(row['covers_json'] or '[]') if c and c != rep]
+        except ValueError:
+            covers = []
+    # Covering is seeing someone else's leads, which only a manager may do.
+    # Read the role now rather than trusting the row, so a demotion takes the
+    # other rep's list away on the next request.
+    if covers and not pusers.is_manager_up(rep):
+        covers = []
+    return {'rep': rep, 'daily_target': target, 'email_share': max(0, min(share, target)),
+            'covers': covers, 'saved': bool(row)}
+
+
+def _queue_rep():
+    """(rep, error) for an endpoint that reads one rep's outreach: yourself,
+    or anyone when you are a manager. apibot has to name the rep - it owns no
+    leads, so its own answer is always empty and reads as a quiet day."""
+    if papibot.is_apibot() and not request.args.get('rep'):
+        return None, (jsonify({'error': 'pass ?rep=<username>: apibot has no queue of its own'}), 400)
+    rep = request.args.get('rep') or current_rep()
+    if rep != current_rep() and not is_manager():
+        return None, (jsonify({'error': 'Forbidden'}), 403)
+    return rep, None
+
+
+@app.route('/api/outreach/plan', methods=['GET'])
+@login_required
+def get_outreach_plan():
+    """One rep's plan, or with ?all=1 (managers) every rep's."""
+    if request.args.get('all'):
+        if not is_manager():
+            return jsonify({'error': 'Forbidden'}), 403
+        with get_db() as db:
+            return jsonify([dict(_plan_for(db, u['username']), full_name=u['full_name'],
+                                 role=u['role'])
+                            for u in pusers.all_users() if u['username'] != papibot.USERNAME])
+    rep, err = _queue_rep()
+    if err:
+        return err
+    with get_db() as db:
+        return jsonify(_plan_for(db, rep))
+
+
+@app.route('/api/outreach/plan/<rep>', methods=['PUT'])
+@admin_required
+def set_outreach_plan(rep):
+    """A manager sets a rep's day. Deliberately closed to apibot here as well
+    as in the portal's write list: Jarvis recommends moving the email ramp and
+    a person moves it."""
+    if papibot.is_apibot():
+        return jsonify({'error': 'apibot may not change a plan'}), 403
+    rep = (rep or '').strip().lower()
+    if not pusers.get(rep) or rep == papibot.USERNAME:
+        return jsonify({'error': f'Unknown rep "{rep}"'}), 404
+    data = request.get_json(force=True) or {}
+    with get_db() as db:
+        plan = _plan_for(db, rep)
+        try:
+            target = int(data.get('daily_target', plan['daily_target']))
+            share = int(data.get('email_share', plan['email_share']))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'daily_target and email_share must be numbers'}), 400
+        if not 1 <= target <= DAILY_TARGET_MAX:
+            return jsonify({'error': f'daily_target must be between 1 and {DAILY_TARGET_MAX}'}), 400
+        if not 0 <= share <= min(EMAIL_SHARE_MAX, target):
+            return jsonify({'error': f'email_share must be between 0 and '
+                                     f'{min(EMAIL_SHARE_MAX, target)}'}), 400
+        covers = data.get('covers', plan['covers'])
+        if not isinstance(covers, list):
+            return jsonify({'error': 'covers must be a list of usernames'}), 400
+        covers = sorted({str(c).strip().lower() for c in covers if str(c).strip()} - {rep})
+        unknown = [c for c in covers if not pusers.get(c) or c == papibot.USERNAME]
+        if unknown:
+            return jsonify({'error': f'Unknown rep(s): {", ".join(unknown)}'}), 400
+        if covers and not pusers.is_manager_up(rep):
+            return jsonify({'error': 'Only a manager can work another rep\'s list'}), 400
+        db.execute(
+            'INSERT INTO outreach_plans (rep, daily_target, email_share, covers_json, '
+            'updated_by, updated_at) VALUES (?,?,?,?,?,?) '
+            'ON CONFLICT(rep) DO UPDATE SET daily_target=excluded.daily_target, '
+            'email_share=excluded.email_share, covers_json=excluded.covers_json, '
+            'updated_by=excluded.updated_by, updated_at=excluded.updated_at',
+            (rep, target, share, json.dumps(covers), current_rep(), _now()))
+        return jsonify(_plan_for(db, rep))
+
 
 def _card_channel(kind, email, phone):
     """Which side of the day a scheduled card belongs to. A channel we cannot
@@ -3555,20 +3736,70 @@ def _end_of_today():
 def _start_of_today():
     return pclock.start_of_today_utc()
 
+# ── Drafts in flight ─────────────────────────────────────────────────────────
+#
+# A draft Jarvis wrote is somebody's work in progress until it is sent or given
+# up on. While it waits, its lead is off every queue: not re-drafted tomorrow,
+# not dialled from the card, not handed to another rep.
+#
+# Two clocks, deliberately a day apart. After DRAFT_STALE_DAYS Jarvis stops
+# looking for the draft in Sent, deletes it from Gmail and marks it expired.
+# After DRAFT_HOLD_DAYS the queue stops waiting whether or not Jarvis ever came
+# back, so a week of Jarvis not running cannot park a lead for good. The gap is
+# what keeps a lead from being re-drafted while its old draft is still sitting
+# in Gmail where it could be sent as well.
+DRAFT_STALE_DAYS = 2
+DRAFT_HOLD_DAYS = 3
+# What an email reply can come to, and the outcome that carries it out. A reply
+# goes through the same machinery as a tap on the card, because "not
+# interested" by email has to cancel the call that email booked.
+DRAFT_REPLIES = {'interested': 'interested', 'callback': 'callback', 'nurture': 'not_now',
+                 'not_interested': 'not_interested', 'bad_contact': 'wrong_number',
+                 'dnc': None}
+
+
+def _in_flight(db):
+    """Lead ids with a draft still waiting to be sent."""
+    hold = _iso(_now_dt() - timedelta(days=DRAFT_HOLD_DAYS))
+    return {r['lead_id'] for r in db.execute(
+        "SELECT lead_id FROM outreach_drafts WHERE status='pending' AND created_at >= ?",
+        (hold,))}
+
+
+def _fresh_where(reps, contact='', channel=''):
+    """(sql, params) selecting the net-new cards for these reps: never touched
+    or out of cooldown, no open task, not closed out, not on the registry.
+
+    One definition, used by the queue to serve cards and by the scorecard to
+    count how many days of them are left. When the two disagreed, supply would
+    read as a week of cards on a morning the queue came up empty."""
+    cooldown = _iso(_now_dt() - timedelta(days=COOLDOWN_DAYS))
+    dnc_f, dnc_fp = _dnc_clause()
+    sql = (f"rep IN ({','.join('?' * len(reps))}) AND stage = 'new' AND dnc = 0 "
+           "AND outreach_status NOT IN ('bad_contact','nurture','not_interested','dnc','appt_set') "
+           "AND (last_activity_at = '' OR last_activity_at < ?) "
+           "AND id NOT IN (SELECT lead_id FROM tasks WHERE done = 0) "
+           f"AND NOT {dnc_f}")
+    if contact in ('ready', 'research'):
+        sql += ' AND ' + _contact_clause(contact)
+    if channel and contact != 'research':
+        has_email = "TRIM(COALESCE(email,'')) != ''"
+        sql += ' AND ' + (has_email if channel == 'email' else 'NOT ' + has_email)
+    return sql, list(reps) + [cooldown] + dnc_fp
+
+
 @app.route('/api/queue/today')
 @login_required
 def queue_today():
     """Today's touch list for one rep, capped at the daily target."""
-    if papibot.is_apibot() and not request.args.get('rep'):
-        # apibot owns no leads, so its own queue is always empty — which reads
-        # as "nothing to do today" rather than as a mistake. Say so instead.
-        return jsonify({'error': 'pass ?rep=<username>: apibot has no queue of its own'}), 400
-    rep = request.args.get('rep') or current_rep()
-    if rep != current_rep() and not is_manager():
-        return jsonify({'error': 'Forbidden'}), 403
-    target = max(1, min(int(request.args.get('target') or DAILY_TARGET), 200))
+    rep, err = _queue_rep()
+    if err:
+        return err
+    with get_db() as db:
+        plan = _plan_for(db, rep)
+    reps = [rep] + plan['covers']
+    target = max(1, min(int(request.args.get('target') or plan['daily_target']), 200))
     contact = request.args.get('contact', '')
-    cooldown = _iso(_now_dt() - timedelta(days=COOLDOWN_DAYS))
 
     # channel=email|phone asks for one side of the day; 'all' (or nothing, for
     # a rep Jarvis does not draft for) is the whole queue. A rep whose emails
@@ -3577,7 +3808,7 @@ def queue_today():
     channel = (request.args.get('channel') or '').strip().lower()
     if channel not in ('', 'all') + QUEUE_CHANNELS:
         return jsonify({'error': 'channel must be email, phone or all'}), 400
-    share = JARVIS_EMAIL_REPS.get(rep, 0)
+    share = plan['email_share']
     if not channel and share and not papibot.is_apibot() and contact != 'research':
         channel = 'phone'
     if channel == 'all':
@@ -3590,23 +3821,24 @@ def queue_today():
 
     # Homeowners on the Do Not Call Registry never reach a cold-call queue.
     dnc_l, dnc_lp = _dnc_clause('l')
-    dnc_f, dnc_fp = _dnc_clause()
     with get_db() as db:
         supp = _suppression_index(db)
+        drafting = _in_flight(db)
 
         # Already-scheduled work: cadence steps and manual follow-ups due by
         # end of day. dnc=0 keeps opted-out partners out even mid-cadence.
+        # `owner` is whose lead it is, which under a cover is not `rep`.
         due = [dict(r) for r in db.execute(
-            'SELECT t.id, t.kind, t.title, t.due_at, t.lead_id, '
+            'SELECT t.id, t.kind, t.title, t.due_at, t.lead_id, l.rep AS owner, '
             '       l.first_name, l.last_name, l.company, l.phone, l.email, '
             '       l.website, l.address, l.city, l.stage, l.lead_type, l.icp_score, l.hook, '
             '       l.source, l.outreach_status, l.research_notes, l.contact_quality '
             'FROM tasks t JOIN leads l ON l.id = t.lead_id '
-            "WHERE t.rep = ? AND t.done = 0 AND t.due_at <= ? AND l.dnc = 0 "
-            "AND COALESCE(l.outreach_status, '') != 'dnc' "
+            f"WHERE t.rep IN ({','.join('?' * len(reps))}) AND t.done = 0 AND t.due_at <= ? "
+            "AND l.dnc = 0 AND COALESCE(l.outreach_status, '') != 'dnc' "
             f'AND NOT {dnc_l} '
-            'ORDER BY t.due_at', [rep, _end_of_today()] + dnc_lp).fetchall()]
-        due = [d for d in due if not _suppressed_by(
+            'ORDER BY t.due_at', reps + [_end_of_today()] + dnc_lp).fetchall()]
+        due = [d for d in due if d['lead_id'] not in drafting and not _suppressed_by(
             supp, _norm_phone(d['phone']), _norm_email(d['email']), d['website'])]
         if channel:
             due = [d for d in due if _card_channel(d['kind'], d['email'], d['phone']) == channel]
@@ -3628,25 +3860,17 @@ def queue_today():
         room = target if contact == 'research' else max(0, target - len(due) - done_today)
         fresh = []
         if room:
-            contact_sql = ' AND ' + _contact_clause(contact) if contact in ('ready', 'research') else ''
-            if channel and contact != 'research':
-                has_email = "TRIM(COALESCE(email,'')) != ''"
-                contact_sql += ' AND ' + (has_email if channel == 'email' else 'NOT ' + has_email)
+            where, params = _fresh_where(reps, contact, channel)
             rows = db.execute(
-                "SELECT * FROM leads "
-                "WHERE rep = ? AND stage = 'new' AND dnc = 0 "
-                "  AND outreach_status NOT IN ('bad_contact','nurture','not_interested','dnc','appt_set') "
-                "  AND (last_activity_at = '' OR last_activity_at < ?) "
-                "  AND id NOT IN (SELECT lead_id FROM tasks WHERE done = 0) "
-                f"  AND NOT {dnc_f} "
-                + contact_sql + " ORDER BY contact_quality DESC, icp_score DESC, created_at ASC",
-                [rep, cooldown] + dnc_fp)
+                f'SELECT * FROM leads WHERE {where} '
+                'ORDER BY contact_quality DESC, icp_score DESC, created_at ASC', params)
             for r in rows:
                 # Re-check suppression here, not just at import: a domain added
                 # to the list this morning has to drop rows imported last week.
-                if _suppressed_by(supp, r['phone_norm'], r['email_norm'], r['website']):
+                if r['id'] in drafting or _suppressed_by(
+                        supp, r['phone_norm'], r['email_norm'], r['website']):
                     continue
-                fresh.append(_lead_row(r))
+                fresh.append(dict(_lead_row(r), owner=r['rep']))
                 if len(fresh) >= room:
                     break
 
@@ -3678,6 +3902,7 @@ def queue_today():
         'due': due, 'new': fresh,
         'remaining': max(0, target - done_today),
         'channel': channel or 'all',
+        'covers': plan['covers'],
     }
     if share:
         # The whole day, so the phone side can show the emails Jarvis drafted
@@ -3695,15 +3920,16 @@ def queue_log():
     does, in one call: log the activity and, for a re-touch, complete its task
     so the cadence moves on.
 
-    This is the one write the API principal may make (portal/apibot.py
-    WRITES). Jarvis drafts the day's queue in Gmail; once a draft shows up in
-    Sent it calls this. Without it the cooldown never starts, so tomorrow's
-    queue serves the same partners again.
+    One of the writes the API principal may make (portal/apibot.py WRITES).
+    Jarvis drafts the day's queue in Gmail; once a draft shows up in Sent it
+    calls this. Without it the cooldown never starts, so tomorrow's queue
+    serves the same partners again.
 
     - Outreach kinds only (`OUTREACH_KINDS`): nothing here edits a lead.
-    - The touch is credited to the rep who OWNS the lead, never to apibot, so
-      the leaderboard and `done_today` count the person who sent it. A human
-      caller is credited as themselves, exactly like the card.
+    - The touch is never credited to apibot. With `draft_id` it goes to the
+      rep the draft was written for, and the draft is marked sent; without
+      one, to the rep who owns the lead. A human caller is credited as
+      themselves, exactly like the card.
     - `ref` (e.g. the Gmail message id) makes it idempotent: a second call with
       the same ref for the same lead logs nothing, so re-scanning Sent is safe.
     - `outcome`, when it names one of OUTCOMES ('emailed', 'left_vm', ...), is
@@ -3731,14 +3957,35 @@ def queue_log():
         lead = _lead_visible(db, lead_id)
         if not lead:
             return jsonify({'error': 'Not found'}), 404
-        rep = lead['rep'] if bot else current_rep()
+        # A touch that came from a draft is credited to whoever the draft was
+        # written for: under a cover that is the rep who pressed send, not the
+        # rep who owns the lead.
+        draft = None
+        if data.get('draft_id'):
+            draft = db.execute('SELECT * FROM outreach_drafts WHERE id=? AND lead_id=?',
+                               (str(data['draft_id']), lead_id)).fetchone()
+            if not draft:
+                return jsonify({'error': 'draft does not belong to this lead'}), 400
+            if draft['status'] == 'sent':
+                return jsonify({'ok': True, 'logged': False, 'duplicate': True,
+                                'rep': draft['rep']})
+        rep = (draft['rep'] if draft else lead['rep']) if bot else current_rep()
         if not rep:
             return jsonify({'error': 'lead has no rep to credit; assign it first'}), 409
+
+        def _mark_sent():
+            if draft:
+                thread = str(data.get('thread_ref') or '').strip()[:200] or draft['thread_ref']
+                db.execute("UPDATE outreach_drafts SET status='sent', sent_at=?, message_ref=?, "
+                           "thread_ref=? WHERE id=?", (_now(), ref, thread, draft['id']))
 
         marker = f'[ref:{ref}]' if ref else ''
         if marker and db.execute(
                 'SELECT 1 FROM activities WHERE lead_id=? AND instr(body, ?) > 0',
                 (lead_id, marker)).fetchone():
+            # Logged once already, perhaps before the ledger knew: the touch is
+            # not counted twice, but the draft must stop waiting.
+            _mark_sent()
             return jsonify({'ok': True, 'logged': False, 'duplicate': True, 'rep': rep})
 
         task = None
@@ -3762,11 +4009,311 @@ def queue_log():
             if task and not task['done']:
                 _complete_task(db, task)
             _refresh_next_action(db, lead_id)
+        _mark_sent()
         done_today = db.execute(
             'SELECT COUNT(*) c FROM activities WHERE rep = ? AND created_at >= ? '
             'AND kind IN (%s)' % ','.join('?' * len(OUTREACH_KINDS)),
             [rep, _start_of_today()] + list(OUTREACH_KINDS)).fetchone()['c']
     return jsonify({'ok': True, 'logged': True, 'rep': rep, 'done_today': done_today}), 201
+
+
+# ── The draft ledger ─────────────────────────────────────────────────────────
+#
+# The order Jarvis works in is the point: RESERVE the lead here, then write the
+# draft in Gmail, then come back with the Gmail id. Reserving first is what
+# makes this a lock rather than a diary - a second run that starts while the
+# first is still writing is refused, instead of both finding the lead free.
+
+DRAFT_STATUSES = ('pending', 'sent', 'expired')
+
+
+def _int_arg(name, default, lo, hi):
+    try:
+        return max(lo, min(int(request.args.get(name) or default), hi))
+    except ValueError:
+        return default
+
+
+def _draft_row(r):
+    d = dict(r)
+    d['stale'] = (d['status'] == 'pending' and
+                  d['created_at'] < _iso(_now_dt() - timedelta(days=DRAFT_STALE_DAYS)))
+    if 'first_name' in d:
+        d['name'] = (f"{d.pop('first_name')} {d.pop('last_name')}").strip() or d['company']
+    return d
+
+
+@app.route('/api/queue/drafts', methods=['GET'])
+@login_required
+def list_drafts():
+    """One rep's drafts. `status=pending` is what to look for in Sent (`stale`
+    marks the ones to give up on); `status=sent` is the threads to read replies
+    on. Oldest first, `days` back (default 21)."""
+    rep, err = _queue_rep()
+    if err:
+        return err
+    status = (request.args.get('status') or '').strip()
+    if status and status not in DRAFT_STATUSES:
+        return jsonify({'error': f'status must be one of {", ".join(DRAFT_STATUSES)}'}), 400
+    sql = ('SELECT d.*, l.first_name, l.last_name, l.company, l.lead_type, l.rep AS owner '
+           'FROM outreach_drafts d JOIN leads l ON l.id = d.lead_id '
+           'WHERE d.rep = ? AND d.created_at >= ?')
+    params = [rep, _iso(_now_dt() - timedelta(days=_int_arg('days', 21, 1, 90)))]
+    if status:
+        sql += ' AND d.status = ?'
+        params.append(status)
+    with get_db() as db:
+        return jsonify([_draft_row(r) for r in db.execute(sql + ' ORDER BY d.created_at', params)])
+
+
+@app.route('/api/queue/drafts', methods=['POST'])
+@login_required
+def record_draft():
+    """Reserve a lead for an email draft. Refused when the lead already has one
+    waiting, has opted out, or has no address - the three ways a second email
+    goes to someone who should not get it."""
+    data = request.get_json(silent=True) or {}
+    lead_id = str(data.get('lead_id') or '')
+    bot = papibot.is_apibot()
+    with get_db() as db:
+        lead = _lead_visible(db, lead_id)
+        if not lead:
+            return jsonify({'error': 'Not found'}), 404
+        rep = str(data.get('rep') or '').strip().lower() or (lead['rep'] if bot else current_rep())
+        if not bot and rep != current_rep() and not is_manager():
+            return jsonify({'error': 'Forbidden'}), 403
+        if not pusers.get(rep) or rep == papibot.USERNAME:
+            return jsonify({'error': f'Unknown rep "{rep}"'}), 400
+        if rep != lead['rep'] and lead['rep'] not in _plan_for(db, rep)['covers']:
+            return jsonify({'error': f'{rep} does not work {lead["rep"]}\'s list'}), 400
+        if lead['dnc'] or (lead['outreach_status'] or '') == 'dnc' or _suppressed_by(
+                _suppression_index(db), lead['phone_norm'], lead['email_norm'], lead['website']):
+            return jsonify({'error': 'This contact has opted out'}), 409
+        if not (lead['email'] or '').strip():
+            return jsonify({'error': 'This lead has no email address'}), 409
+        live = db.execute(
+            "SELECT * FROM outreach_drafts WHERE lead_id=? AND status='pending' AND created_at >= ?",
+            (lead_id, _iso(_now_dt() - timedelta(days=DRAFT_HOLD_DAYS)))).fetchone()
+        if live:
+            return jsonify({'error': 'This lead already has a draft waiting',
+                            'draft': _draft_row(live)}), 409
+        task_id = str(data.get('task_id') or '')
+        if task_id and not db.execute('SELECT 1 FROM tasks WHERE id=? AND lead_id=?',
+                                      (task_id, lead_id)).fetchone():
+            return jsonify({'error': 'task does not belong to this lead'}), 400
+        did = str(uuid.uuid4())
+        clip = lambda k, n=200: str(data.get(k) or '').strip()[:n]
+        db.execute(
+            'INSERT INTO outreach_drafts (id, lead_id, task_id, rep, recipient, subject, step, '
+            'template_id, draft_ref, thread_ref, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            (did, lead_id, task_id, rep, clip('recipient') or lead['email'], clip('subject', 300),
+             clip('step', 20), clip('template_id'), clip('draft_ref'), clip('thread_ref'), _now()))
+        row = db.execute('SELECT * FROM outreach_drafts WHERE id=?', (did,)).fetchone()
+    return jsonify(_draft_row(row)), 201
+
+
+def _apply_reply(db, lead, draft, reply, follow_up_at='', note=''):
+    """What an email reply does to the lead. Returns an error string, or ''.
+
+    Not logged as an outreach touch - the rep did not do anything - so it is a
+    'system' line on the timeline that neither counts toward the day nor
+    restarts the cooldown. Everything else is what the same answer does when a
+    rep taps it on the card."""
+    body = ' '.join(p for p in ('Replied by email:',
+                                OUTREACH_STATUS_META[reply]['label'] + '.', note[:500]) if p)
+    if reply == 'dnc':
+        now = _now()
+        db.execute('UPDATE tasks SET done=1, done_at=? WHERE lead_id=? AND done=0',
+                   (now, lead['id']))
+        db.execute('UPDATE cadence_enrollments SET active=0 WHERE lead_id=? AND active=1',
+                   (lead['id'],))
+        db.execute("UPDATE leads SET dnc=1, outreach_status='dnc', outreach_status_at=?, "
+                   "updated_at=? WHERE id=?", (now, now, lead['id']))
+        # On the suppression list as well as on the lead, so the same person
+        # arriving next month from a different dataset is stopped at import.
+        email = _norm_email(draft['recipient'] or lead['email'])
+        if email:
+            _suppress(db, 'email', email, 'Asked to stop, by email reply', draft['rep'])
+        _log_activity(db, lead['id'], 'system', body=body, rep=draft['rep'])
+        _refresh_next_action(db, lead['id'])
+        return ''
+    o = OUTCOME_BY_KEY[DRAFT_REPLIES[reply]]
+    follow_at = None
+    if o.get('ask_date'):
+        follow_at = _callback_at(follow_up_at)
+        if not follow_at:
+            return 'follow_up_at: the day they asked to be called back'
+    _apply_outcome(db, dict(lead), o, kind='system', body=body, follow_at=follow_at,
+                   rep=draft['rep'])
+    return ''
+
+
+@app.route('/api/queue/drafts/<draft_id>', methods=['PATCH'])
+@login_required
+def update_draft(draft_id):
+    """Fill in the Gmail ids, give a draft up, or record the reply it got.
+
+    A draft becomes `sent` only by logging the touch (`queue_log()` with
+    `draft_id`): marking it sent here would start no cooldown and book no
+    follow-up, which is the failure this table exists to end."""
+    data = request.get_json(silent=True) or {}
+    with get_db() as db:
+        d = db.execute('SELECT * FROM outreach_drafts WHERE id=?', (draft_id,)).fetchone()
+        lead = _lead_visible(db, d['lead_id']) if d else None
+        if not lead:
+            return jsonify({'error': 'Not found'}), 404
+        sets = {k: str(data[k] or '').strip()[:200] for k in ('draft_ref', 'thread_ref')
+                if k in data}
+        if 'status' in data:
+            if data['status'] != 'expired':
+                return jsonify({'error': 'status may only be set to expired; a draft is '
+                                         'sent by logging the touch'}), 400
+            if d['status'] != 'pending':
+                return jsonify({'error': f'This draft is already {d["status"]}'}), 409
+            sets['status'] = 'expired'
+        reply = data.get('reply')
+        if reply is not None:
+            if reply not in DRAFT_REPLIES:
+                return jsonify({'error': f'reply must be one of {", ".join(DRAFT_REPLIES)}'}), 400
+            if d['status'] != 'sent':
+                return jsonify({'error': 'Only a sent draft can have a reply'}), 409
+            if d['reply'] != reply:          # reading the same thread twice changes nothing
+                err = _apply_reply(db, lead, d, reply, data.get('follow_up_at'),
+                                   str(data.get('note') or '').strip())
+                if err:
+                    return jsonify({'error': err}), 400
+                sets.update(reply=reply, reply_at=_now())
+        if sets:
+            db.execute('UPDATE outreach_drafts SET ' + ', '.join(f'{k}=?' for k in sets)
+                       + ' WHERE id=?', list(sets.values()) + [draft_id])
+        row = db.execute('SELECT * FROM outreach_drafts WHERE id=?', (draft_id,)).fetchone()
+    return jsonify(_draft_row(row))
+
+
+# ── The scorecard ────────────────────────────────────────────────────────────
+#
+# Everything Jarvis used to keep in its own file and everything it used to
+# work out by pulling two hundred full contact cards just to count them: the
+# day against the target, the streak, what the emails are earning, and how
+# many days of cards are left. One read, no contact details in it.
+
+STREAK_LOOKBACK_DAYS = 90
+SUPPLY_HORIZON_DAYS = 7
+
+
+def _streak(days, target):
+    """Consecutive weekdays that hit the target, newest first in `days`.
+
+    Weekends neither count nor break it. Today counts once it is hit and is
+    simply not over yet until then - a streak must not read as broken at nine
+    in the morning."""
+    n = 0
+    for i, d in enumerate(days):
+        if not d['weekday']:
+            continue
+        if d['total'] >= target:
+            n += 1
+        elif i:
+            break
+    return n
+
+
+@app.route('/api/outreach/scorecard')
+@login_required
+def outreach_scorecard():
+    rep, err = _queue_rep()
+    if err:
+        return err
+    window = _int_arg('days', 14, 1, 60)
+    today = pclock.company_today()
+    with get_db() as db:
+        plan = _plan_for(db, rep)
+        reps = [rep] + plan['covers']
+        target, share = plan['daily_target'], plan['email_share']
+
+        # Touches by COLORADO day. The stamps are UTC, and an evening call
+        # belongs to the day it was made on, not to tomorrow.
+        by_day = {}
+        for r in db.execute(
+                'SELECT kind, created_at FROM activities WHERE rep = ? AND created_at >= ? '
+                'AND kind IN (%s)' % ','.join('?' * len(OUTREACH_KINDS)),
+                [rep, pclock.days_ago_utc(STREAK_LOOKBACK_DAYS)] + list(OUTREACH_KINDS)):
+            day = by_day.setdefault(pclock.day_of(r['created_at']), {'total': 0, 'email': 0})
+            day['total'] += 1
+            day['email'] += r['kind'] == 'email'
+        days = []
+        for i in range(STREAK_LOOKBACK_DAYS + 1):
+            d = today - timedelta(days=i)
+            got = by_day.get(d.isoformat(), {'total': 0, 'email': 0})
+            days.append({'date': d.isoformat(), 'weekday': d.weekday() < 5,
+                         'total': got['total'], 'email': got['email'],
+                         'phone': got['total'] - got['email'],
+                         'hit': got['total'] >= target})
+
+        # What the emails are earning, from the ledger.
+        email = {'sent': 0, 'replies': 0, 'positive': 0, 'bounces': 0, 'optouts': 0,
+                 'pending': 0, 'stale': 0, 'expired': 0, 'by_type': {}}
+        for r in db.execute(
+                'SELECT d.status, d.step, d.reply, d.created_at, l.lead_type '
+                'FROM outreach_drafts d JOIN leads l ON l.id = d.lead_id '
+                'WHERE d.rep = ? AND d.created_at >= ?', (rep, pclock.days_ago_utc(window))):
+            d = _draft_row(r)
+            if d['status'] != 'sent':
+                email[d['status']] += 1
+                email['stale'] += d['stale']
+                continue
+            cell = email['by_type'].setdefault(d['lead_type'], {}).setdefault(
+                d['step'] or 'first', {'sent': 0, 'replies': 0})
+            email['sent'] += 1
+            cell['sent'] += 1
+            if d['reply'] == 'bad_contact':
+                email['bounces'] += 1
+            elif d['reply']:
+                email['replies'] += 1
+                cell['replies'] += 1
+                email['optouts'] += d['reply'] == 'dnc'
+                email['positive'] += d['reply'] in ('interested', 'callback')
+
+        # Supply: the cards the queue would serve, counted with the queue's own
+        # rule, and the follow-ups already booked for the week ahead.
+        supp, drafting = _suppression_index(db), _in_flight(db)
+        fresh = {'email': {}, 'phone': {}, 'research': {}}
+        where, params = _fresh_where(reps)
+        for r in db.execute('SELECT id, lead_type, email, phone, phone_norm, email_norm, website '
+                            f'FROM leads WHERE {where}', params):
+            if r['id'] in drafting or _suppressed_by(supp, r['phone_norm'], r['email_norm'],
+                                                     r['website']):
+                continue
+            has_email, has_phone = bool((r['email'] or '').strip()), bool((r['phone'] or '').strip())
+            side = 'email' if has_email else 'phone' if has_phone else 'research'
+            fresh[side][r['lead_type']] = fresh[side].get(r['lead_type'], 0) + 1
+        booked = {'email': 0, 'phone': 0}
+        horizon = _iso(pclock.parse_utc(_end_of_today()).replace(tzinfo=None)
+                       + timedelta(days=SUPPLY_HORIZON_DAYS))
+        for r in db.execute(
+                'SELECT t.kind, l.email, l.phone FROM tasks t JOIN leads l ON l.id = t.lead_id '
+                f"WHERE t.rep IN ({','.join('?' * len(reps))}) AND t.done = 0 AND t.due_at <= ? "
+                "AND l.dnc = 0 AND COALESCE(l.outreach_status, '') != 'dnc'", reps + [horizon]):
+            booked[_card_channel(r['kind'], r['email'], r['phone'])] += 1
+
+    count = lambda side: sum(fresh[side].values())
+    if share:
+        # Each side has its own number to hit, so each has its own runway.
+        runway = {'email': round((count('email') + booked['email']) / share, 1),
+                  'phone': round((count('phone') + booked['phone']) / max(1, target - share), 1)}
+    else:
+        runway = {'all': round((count('email') + count('phone') + sum(booked.values()))
+                               / max(1, target), 1)}
+    return jsonify({
+        'rep': rep, 'plan': plan,
+        'today': {'done': days[0]['total'], 'target': target,
+                  'email_done': days[0]['email'], 'email_target': share},
+        'streak': _streak(days, target),
+        'days': days[:window],
+        'email': email,
+        'supply': {'fresh': {k: count(k) for k in fresh}, 'fresh_by_type': fresh,
+                   'booked_next_week': booked, 'days': runway},
+    })
 
 
 @app.route('/api/queue/assign', methods=['POST'])

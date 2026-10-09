@@ -480,8 +480,11 @@ def set_territory(username):
 @nimbus_bp.route('/api/settings', methods=['GET'])
 def get_settings():
     from agents import config, perplexity
+    from agents.b2b import reenrich
     settings = config.load_settings()
     settings['month_spend_usd'] = round(perplexity.month_spend_usd(), 4)
+    # What the weekly research cap has left, for whoever is about to ask for it.
+    settings['week_research_spend_usd'] = round(reenrich.week_spend_usd(), 4)
     settings['perplexity_key_set'] = bool(os.environ.get('PERPLEXITY_API_KEY'))
     return jsonify(settings)
 
@@ -490,8 +493,8 @@ def get_settings():
 def update_settings():
     from agents import config
     patch = request.get_json(force=True, silent=True) or {}
-    allowed = {'perplexity_model', 'monthly_spend_cap_usd', 'cache_ttl_days',
-               'service_area_counties'}
+    allowed = {'perplexity_model', 'monthly_spend_cap_usd', 'weekly_research_cap_usd',
+               'cache_ttl_days', 'service_area_counties'}
     cleaned = {k: v for k, v in patch.items() if k in allowed}
     saved = config.save_settings(cleaned)
     return jsonify(saved)
@@ -658,7 +661,7 @@ REENRICH_MAX = 200
 @nimbus_bp.route('/api/b2b/reenrich', methods=['POST'])
 def start_reenrich():
     """Research up to `limit` un-researched leads of one type and fill in the
-    contact that research can cite. Body: {lead_type, limit, mode, dry_run}.
+    contact that research can cite. Body: {lead_type, limit, mode, dry_run, rep}.
 
     Returns a run id at once; the work happens on a thread and the result
     lands in agent_runs, so GET /nimbus/api/runs/<id> answers from either
@@ -685,16 +688,39 @@ def start_reenrich():
     crm = sys.modules.get('p1_crm_app')
     if crm is None:
         return jsonify({'error': 'the CRM is not loaded in this process'}), 503
+    from agents import config
     from agents.b2b import dispatcher, reenrich
-    rep = (data.get('rep') or session.get('username') or '').strip()
-    summary = f'Research up to {limit} {lead_type or "any-type"} lead(s), {mode}'
-    run_id = dispatcher._open_run('b2b-reenrich', rep, summary=summary, dry_run=dry_run)
+    from portal import apibot
+    # A `rep` in the body aims the research at that rep's leads. Left out, it
+    # is everybody's, best score first, and the run is filed under the caller.
+    for_rep = (data.get('rep') or '').strip().lower()
+    if for_rep and not pusers.get(for_rep):
+        return jsonify({'error': f'unknown rep: {for_rep}'}), 400
+    rep = for_rep or (session.get('username') or '').strip()
+
+    # Jarvis answers to a weekly number as well as the monthly one. Enforced
+    # here rather than asked for in a prompt: the refusal is the same whether
+    # the instructions were followed, misread, or never loaded.
+    budget = None
+    if apibot.is_apibot():
+        cap = float(config.load_settings().get('weekly_research_cap_usd') or 0)
+        spent = reenrich.week_spend_usd()
+        if spent >= cap:
+            return jsonify({'error': f'weekly research cap of ${cap:.2f} reached '
+                                     f'(${spent:.2f} spent in the last {reenrich.WEEK_DAYS} days)',
+                            'week_spend_usd': round(spent, 4), 'weekly_cap_usd': cap}), 429
+        budget = cap - spent
+
+    summary = (f'Research up to {limit} {lead_type or "any-type"} lead(s), {mode}'
+               + (f', for {for_rep}' if for_rep else ''))
+    run_id = dispatcher._open_run(reenrich.REASON, rep, summary=summary, dry_run=dry_run)
 
     def work():
         lines = []
         try:
             res = reenrich.run(crm, limit=limit, lead_type=lead_type or None,
-                               dry_run=dry_run, log=lines.append, mode=mode)
+                               dry_run=dry_run, log=lines.append, mode=mode,
+                               rep=for_rep or None, budget=budget)
             dispatcher._close_run(
                 run_id, status='ok', found=res.get('seen', 0),
                 pushed=res.get('reachable', 0), cost=res.get('spent', 0.0),

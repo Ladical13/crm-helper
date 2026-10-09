@@ -3,30 +3,47 @@
 
 # Mode G — Daily Outreach
 
-Luke works outreach alone and the number is **100 touches a day**. The only way
-one person does that is if the list, the words and the bookkeeping are already
-done when he sits down. That is Jarvis's job. Luke's job is three things: press
-send, dial, and decide.
+The number is **100 touches a day, per rep**. The only way one person does that
+is if the list, the words and the bookkeeping are already done when they sit
+down. That is Jarvis's job. The rep's job is three things: press send, dial,
+and decide.
 
 **Read `outreach-playbook.md` before writing a single email.** This file is the
 mechanics; that one is how the words are chosen.
 
-## How the day is split
+## Who works how
 
-| Side | What | Where Luke does it | Who prepares it |
+| Rep | Emails | Calls and texts | Cold partners come from |
 |---|---|---|---|
-| **Email** (about 40) | Cold first touches to anyone with an address, plus the email steps of a cadence | Gmail → Drafts → send | **Jarvis** writes every one |
-| **Phone** (about 60) | Calls, voicemails and texts | CRM → ⚡ Outreach on his phone: script on screen, one tap to dial or open Messages, one tap for the outcome | The CRM. Jarvis reports what is waiting |
+| `luke` | **Jarvis drafts them** into his Gmail; he sends | CRM → ⚡ Outreach on his phone | Northern Colorado (`--cities noco`) |
+| `derik` | None drafted. He works every card on the Outreach tab himself, email included (one tap opens it in his own Gmail) | Same tab | Lakewood, Boulder, Broomfield, Golden, until Luke names others |
 
-**Everyone is in ONE queue: the CRM's.** Cold partners, commercial buildings,
-the Den's finished customers, its open jobs and its existing referral partners
-are all CRM leads. The CRM owns who is due, the 7-day cooldown, Do Not Call,
-opt-outs and the follow-up schedule. Jarvis keeps no parallel list and no
-cooldown of its own. The server also decides which side a card is on, so a
-card Jarvis drafts never shows up on Luke's phone the same day.
+Jarvis has **Luke's** Gmail and nobody else's. For Derik it keeps his queue
+stocked (the weekly refill) and reports his number. It never drafts in his
+name.
 
-**Order of work every run:** log what was sent → read the replies → check
-supply → draft today's emails → report.
+**If Luke is covering Derik's list**, the CRM already knows: Derik's cards
+arrive in Luke's queue, signed as Luke. Jarvis does nothing differently. It
+asks for `rep=luke` and works what it is given.
+
+## The rules that do not bend
+
+- **Everyone is in ONE queue: the CRM's.** Cold partners, commercial buildings,
+  the Den's customers, its open jobs and its partners are all CRM leads. The
+  CRM owns who is due, the 7-day cooldown, Do Not Call, opt-outs and the
+  follow-up schedule.
+- **The CRM keeps the books too.** What is drafted, what was sent, what came
+  back, the streak and the supply all live there. **Jarvis keeps no outreach
+  state of its own**: nothing in brain memory, nothing in Drive. Every run
+  starts by asking the CRM, so a run that fails loses nothing and a run that
+  repeats breaks nothing.
+- **Jarvis drafts. A person sends.** Always.
+- **Log only what was sent**, never what was drafted.
+- **A 403 or a 429 from the portal is an answer.** Report what was refused and
+  never look for another way in.
+
+**Order of work every run:** log what was sent → read the replies → draft
+today's emails → report.
 
 ---
 
@@ -35,7 +52,8 @@ supply → draft today's emails → report.
 ```python
 import os, requests
 PORTAL = "https://project-one-estimator-production.up.railway.app"
-REP = "luke"
+REP = "luke"                      # the rep this run is for
+REPS = ["luke", "derik"]          # everyone the report covers
 
 s = requests.Session()
 s.post(f"{PORTAL}/api/apibot/session",
@@ -46,37 +64,51 @@ s.post(f"{PORTAL}/api/apibot/session",
   on Railway.
 - **A connection refused by the proxy** means the host isn't on the
   environment's network allowlist. Say which host.
-- **403 on anything** is deliberate. This login reads reports, logs touches,
-  records replies, imports prospects for a named rep, and runs Nimbus. Nothing
-  else. Report what was refused and never look for another way in.
+- **`P1_READONLY_TOKEN` missing from this session:** say so in one line and
+  stop. Nothing else in this mode can run without it.
 
 ---
 
 ## 2. Log what was sent (every run, first)
 
-A draft becomes a touch only once it is in **Sent**. For each entry in
-`memory["outreach"]["pending_sent"]`:
+```python
+pending = s.get(f"{PORTAL}/crm/api/queue/drafts",
+                params={"rep": REP, "status": "pending"}).json()
+```
 
-1. Search Gmail Sent for that subject to that recipient since `drafted_at`.
-2. **Found:**
+Each row is a draft waiting in Gmail: `id`, `lead_id`, `task_id`, `recipient`,
+`subject`, `draft_ref` (the Gmail draft id), `created_at`, `stale`.
+
+For each one, search Gmail **Sent** for that subject to that recipient since
+`created_at`.
+
+1. **Found:**
    ```python
    s.post(f"{PORTAL}/crm/api/queue/log", json={
-       "lead_id": e["lead_id"], "kind": "email",
-       "outcome": "emailed",            # this is what books the follow-up
-       "task_id": e.get("task_id"),     # scheduled cards only
-       "ref": gmail_message_id,         # idempotent: safe to re-run
+       "lead_id": d["lead_id"], "kind": "email",
+       "outcome": "emailed",              # this is what books the follow-up
+       "draft_id": d["id"],               # closes the draft, credits the sender
+       "task_id": d["task_id"] or None,
+       "ref": gmail_message_id,           # idempotent: safe to re-run
+       "thread_ref": gmail_thread_id,     # how replies are found later
    }).raise_for_status()
    ```
-   The CRM credits Luke, starts the cooldown, and **books the next touch**: a
+   The CRM credits the rep, starts the cooldown and **books the next touch**: a
    call in three days, or the next step of the cadence the card belongs to.
-   **Always send `outcome`.** Without it the touch is logged and nothing is
-   booked, and that lead comes back a week later as if nobody had written.
-3. **Not found after 2 days:** drop it from `pending_sent` and say so once
-   ("12 drafts from Tuesday were never sent").
+   **Always send `outcome` and `draft_id`.**
+2. **Not found, and `stale` is true** (two days unsent): delete the draft from
+   Gmail (`delete_draft` with `draft_ref`), then
+   ```python
+   s.patch(f"{PORTAL}/crm/api/queue/drafts/{d['id']}", json={"status": "expired"})
+   ```
+   Delete first. An expired draft left in Gmail can still be sent, and its lead
+   will be drafted again. Count them and say so once ("12 drafts from Tuesday
+   were never sent").
+3. **Not found, not stale:** leave it. It is still waiting.
 
 **When Luke tells you about a touch** ("called Karen at Greystar, left a
 voicemail"), find the lead with `GET /crm/api/leads?q=<name>` (names and ids
-only; phone and email are blanked for this login) and log it the same way:
+only; phone and email are blanked for this login) and log it:
 
 | Luke says | `kind` | `outcome` |
 |---|---|---|
@@ -94,118 +126,130 @@ only; phone and email are blanked for this login) and log it the same way:
 **Jarvis cannot log an appointment** (the CRM returns 403). Booking is done by
 a person on a calendar: tell Luke to tap *Appointment set* on the card.
 
-**Log only what was sent, never what was drafted.** If a log call fails, say
-so. Never report it as done.
+If a log call fails, say so. Never report it as done.
 
 ---
 
 ## 2b. Read the replies (every run, right after logging)
 
-Search the inbox for replies on threads Jarvis drafted in the last 21 days
-(`outreach.sent_threads` holds the Gmail thread ids). Classify and record:
+```python
+sent = s.get(f"{PORTAL}/crm/api/queue/drafts",
+             params={"rep": REP, "status": "sent", "days": 21}).json()
+```
 
-| The reply says | `PATCH /crm/api/leads/<id>/outreach-status` | Tell Luke |
-|---|---|---|
-| Interested, wants to talk, sent a referral | `interested` | **At the top of the next answer, with the reply drafted.** A warm reply that waits a day goes cold. |
-| "Call me", "next week" | `callback` | In the brief, with the time they asked for |
-| Talked by phone (Luke says so) | `connected` | — |
-| "Not right now", "maybe in spring" | `nurture` | — |
-| "Not interested" | `not_interested` | — |
-| Bounced, wrong person, left the company | `bad_contact` | Count bounces in the report |
-| "Stop", "unsubscribe", "remove me" | **`dnc`** | Once, so he knows |
+For each row with an empty `reply`, open its Gmail thread (`thread_ref`). If
+someone other than the rep has written since `sent_at`, classify it and record
+it **on the draft**:
 
-- **Opt-outs are not optional.** Record them on the same run you see them.
+```python
+s.patch(f"{PORTAL}/crm/api/queue/drafts/{d['id']}",
+        json={"reply": "interested", "note": "Wants a look at the Windsor listing"})
+```
+
+| The reply says | `reply` | What the CRM does | Tell Luke |
+|---|---|---|---|
+| Interested, wants to talk, sent a referral | `interested` | Puts "Book the appointment" at the top of today's calls | **At the top of the next answer, with the reply drafted.** A warm reply that waits a day goes cold |
+| "Call me Tuesday" | `callback` + `follow_up_at` | Books the call for that day | In the brief, with the day |
+| "Not right now", "maybe in spring" | `nurture` | Stops the sequence, checks back in 90 days | — |
+| "Not interested" | `not_interested` | Cancels every follow-up and closes the lead | — |
+| Bounced, wrong person, left the company | `bad_contact` | Cancels follow-ups, books "find the right contact" | Count bounces in the report |
+| "Stop", "unsubscribe", "remove me" | **`dnc`** | Cancels everything and suppresses the address for good | Once, so he knows |
+
+- **One call does all of it.** Do not also set the outreach status; the reply
+  does. Recording the same reply twice changes nothing.
+- **An auto-reply or out-of-office is not a reply.** Record nothing.
+- **Opt-outs are not optional.** Record them on the run you see them.
+- **`callback` needs the day they asked for.** If they gave none, it is
+  `interested`.
 - **When a reply asks for a time**, draft the response using `suggest_time`
   from Google Calendar and leave the booking to Luke.
-- **Keep score.** In `outreach.reply_stats`, count sends and replies by lead
-  type and by step (first / followup / breakup).
-- **More than 2 bounces in a day:** stop drafting to that lead type and say
-  so. Bounces are what gets a domain flagged.
+- **More than 2 bounces in a day:** stop drafting to that lead type for the
+  day and say so. Bounces are what gets a domain flagged.
 
 ---
 
-## 3. Check supply
+## 3. The scorecard
 
 ```python
-email = s.get(f"{PORTAL}/crm/api/queue/today",
-              params={"rep": REP, "channel": "email", "contact": "ready", "target": 200}).json()
-phone = s.get(f"{PORTAL}/crm/api/queue/today",
-              params={"rep": REP, "channel": "phone", "contact": "ready", "target": 200}).json()
-need_research = s.get(f"{PORTAL}/crm/api/queue/today",
-                      params={"rep": REP, "contact": "research", "target": 200}).json()
+card = s.get(f"{PORTAL}/crm/api/outreach/scorecard", params={"rep": REP}).json()
 ```
 
-- `due` are scheduled touches (cadence steps and follow-ups). `new` are fresh
-  cards. In `due` rows **`id` is the task id and `lead_id` is the lead**; in
-  `new` rows `id` is the lead id.
-- **Supply is short when** the email side has fewer than three days of fresh
-  cards (under about 120), or the phone side has fewer than 60 cards in total.
-  Say so in the report, with the lead types that are thin.
+One read, with no contact details in it:
 
-**Refilling, in order of cost:**
+- `today`: `done`, `target`, `email_done`, `email_target`.
+- `streak`: consecutive weekdays that hit the target. Weekends are skipped and
+  today is not a miss until it is over.
+- `days`: the last fortnight, newest first.
+- `email`: `sent`, `replies`, `positive`, `bounces`, `optouts`, `pending`,
+  `stale`, and `by_type[lead_type][step]` with `sent` and `replies`.
+- `supply.fresh`: cards ready on the `email` side, the `phone` side, and how
+  many still need `research`. `supply.days`: how many days of cards are left
+  (`email` and `phone` for a rep with an email share; `all` for one without).
 
-1. **Research what is already imported** (`need_research` is not empty):
-   ```python
-   s.post(f"{PORTAL}/nimbus/api/b2b/reenrich",
-          json={"lead_type": "realtor", "limit": 75}).json()   # -> {"run_id": ...}
-   s.get(f"{PORTAL}/nimbus/api/runs/{run_id}").json()          # poll until status != "running"
-   ```
-   About two cents a lead. Roughly one in four comes back with a named person,
-   more with a general phone or email. Check `month_spend_usd` in
-   `GET /nimbus/api/settings` first and report it after. **Standing limit: 75
-   leads a day and $10 a week without asking. Above that, or once the month's
-   spend passes $100, ask Luke.** A `dry_run` costs the same as a real run.
-2. **New names** come from the repo's prospector, so only a session that has
-   the repo (the Monday routine, or Luke's laptop) can do it:
-   ```bash
-   python -m prospector pull cdos:realty --cities noco --out /tmp/realty.json
-   python -m prospector push /tmp/realty.json --base-url $PORTAL \
-       --token-env P1_READONLY_TOKEN --assign luke --dry-run
-   ```
-   Segments: `cdos:realty`, `cdos:property_manager`, `cdos:hoa_manager`,
-   `cdos:insurance_agent`, `dora:hoa`. **Always dry run first and show Luke the
-   counts. Run it for real only after he says go.**
-3. **The Den's customers, open jobs and partners** (`den:customers`,
-   `den:open_jobs`, `den:partners`) refresh the same way and need
-   `BASE44_TOKEN`. Re-running is safe: nobody is imported twice.
-
-**Never add anyone to make up the number from Clay, Apollo, Base44 or a web
-search.** If they are not in the CRM, they have not been through suppression.
+**Supply is short under 3 days on any side.** Say so in the report, with the
+lead types that are thin (`supply.fresh_by_type`). That is all a daily run
+does about it: **daily runs never import and never research.** Refilling is
+§ 7, once a week, on Luke's word.
 
 ---
 
 ## 4. Draft today's emails (never send)
 
 ```python
-target = memory["outreach"].get("daily_plan", {}).get("email_target", 15)
 q = s.get(f"{PORTAL}/crm/api/queue/today",
-          params={"rep": REP, "channel": "email", "contact": "ready", "target": target}).json()
+          params={"rep": REP, "channel": "email", "contact": "ready"}).json()
 cards = q["due"] + q["new"]
 ```
 
-1. **Skip any lead already in `pending_sent`.** It has a draft waiting.
-2. Start from the card's server-rendered `draft` (`subject`, `body`). The body
-   ends with the signature: Luke's name, the company, the postal address and
-   the opt-out line. **Keep that block exactly as it is.**
-3. Personalise the opening using `hook`, `research_notes`, `recent_storm`,
-   `company` and `city`, by the rules in `outreach-playbook.md`. If there is
-   nothing true and specific to say, send the template as written. A generic
-   line pretending to be personal is worse than none.
-4. **Offers.** `GET /crm/api/offers` lists them; use only `status: "live"`
-   ones whose `for` includes the lead's type (or `past_customer`). The link is
-   `{PORTAL}/crm/offer/<key>?r=luke`.
-   - **Never in a first cold email.** No links at all in a first touch.
-   - From the second touch, or in a reply, or for anyone who already knows us
-     (a `due` card for a customer or an existing partner): use the offer's own
-     `email_subject` and `email_body`, with the link filled in.
-5. Create the Gmail draft (`create_draft`) in Luke's account.
-6. Append to `outreach.pending_sent`: `{lead_id, task_id, lead_type, step,
-   subject, recipient, thread_id, drafted_at}`.
+**Do not pass `target`.** The CRM already knows the day's email share and what
+has been sent today, and hands back exactly the cards to draft. Asking for
+more is how a domain gets flagged. If the share is 0 the rep has no emails
+drafted for them: stop here.
 
-**The ramp protects the domain.** `daily_plan.email_target` starts at **15**,
-goes to **25** after a week with no bounces above 2 a day and no spam
-complaints, then **40**. Only Luke moves it ("raise email to 25"). Never draft
-more than the target, and never more than 40.
+In `due` rows **`id` is the task id and `lead_id` is the lead**; in `new` rows
+`id` is the lead id. A card whose `draft` is empty has no template for its
+lead type: skip it and name the type in the report. For each card, in this
+order:
+
+1. **Reserve it.**
+   ```python
+   r = s.post(f"{PORTAL}/crm/api/queue/drafts", json={
+       "lead_id": lead_id, "rep": REP,
+       "task_id": task_id,                       # due cards only
+       "subject": subject, "step": card["draft"]["step"],
+       "template_id": card["draft"]["template_id"]})
+   ```
+   **409 means skip this card**: it already has a draft waiting, or the contact
+   opted out since the queue was built. Never draft a card that was not
+   reserved.
+2. **Write it.** Start from the card's `draft` (`subject`, `body`). The body
+   ends with the signature: the rep's name, the company, the postal address
+   and the opt-out line. **Keep that block exactly as it is.** Personalise the
+   opening using `hook`, `research_notes`, `recent_storm`, `company` and
+   `city`, by the rules in `outreach-playbook.md`. If there is nothing true and
+   specific to say, send the template as written.
+3. **Create the Gmail draft**, then tell the CRM which one it is:
+   ```python
+   s.patch(f"{PORTAL}/crm/api/queue/drafts/{r.json()['id']}",
+           json={"draft_ref": gmail_draft_id, "thread_ref": gmail_thread_id})
+   ```
+   If Gmail refused the draft, release the card instead:
+   `json={"status": "expired"}`.
+
+**Offers.** `GET /crm/api/offers` lists them; use only `status: "live"` ones
+whose `for` includes the lead's type (or `past_customer`). The link is
+`{PORTAL}/crm/offer/<key>?r=<REP>`.
+
+- **Never in a first cold email.** No links at all in a first touch.
+- From the second touch, or in a reply, or for anyone who already knows us (a
+  `due` card for a customer or an existing partner): use the offer's own
+  `email_subject` and `email_body`, with the link filled in.
+
+**The ramp protects the domain.** The email share starts at **15**, goes to
+**25** after a week with no day over 2 bounces and no spam complaint, then
+**40**. The calls and texts are always the rest of the hundred, so the day is
+100 from the first morning. **Only Luke moves it**: CRM → Outreach → Daily
+plan. Jarvis recommends on Fridays and cannot change it (the CRM returns 403).
 
 ---
 
@@ -215,10 +259,10 @@ Jarvis does not write the texts or scripts: every card on the Outreach tab
 already has its call script, voicemail, text and offer, picked for that lead
 type and that touch. What Jarvis adds:
 
-- **The count**, from `phone` in § 3: how many scheduled, how many new, split
-  customers / partners / commercial.
-- **The three worth doing first**: anyone marked `interested` or `callback`,
-  then customers, then partners with a `recent_storm`.
+- **The count**, from `card["today"]`.
+- **The three worth doing first.** Ask for the top of the list
+  (`channel=phone`, `contact=ready`, `target=15`): anyone marked `interested`
+  or `callback`, then customers, then partners with a `recent_storm`.
 - **The link**: `{PORTAL}/crm/#outreach`.
 
 When Luke asks "who do I call", answer from this, briefly.
@@ -227,49 +271,100 @@ When Luke asks "who do I call", answer from this, briefly.
 
 ## 6. Report
 
-```python
-day = phone.get("day") or {}     # {"target": 100, "done": 37, "email_target": 40, "email_done": 12}
-```
-
-One line, then the single biggest gap:
+One line for the rep the run is for, one for every other rep in `REPS` (their
+own scorecard), then the single biggest gap:
 
 ```
-OUTREACH  37/100 today  ·  emails 12/15  ·  calls & texts 25/60  ·  streak 4 days
-→ 15 drafts in Gmail since 6:15. Send those, then 23 cards on the Outreach tab.
+OUTREACH  37/100 today  ·  emails 12/15  ·  calls & texts 25/85  ·  streak 4 days
+DERIK     22/100 today  ·  streak 1 day  ·  6 days of cards
+→ 15 drafts in Gmail since 6:15. Send those, then 60 cards on the Outreach tab.
 ```
 
-- **Streak** (`outreach.streak`): consecutive weekdays that hit the day's
-  target. A day under it resets the count; say so plainly, once.
+- **A streak that reset:** say so plainly, once.
 - **Fridays:** replies per 100 sends by lead type and step, from
-  `reply_stats`. Under 2 per 100 over two weeks is a message problem, not a
+  `email.by_type`. Under 2 per 100 over two weeks is a message problem, not a
   volume problem: propose a rewrite of that template, in the playbook's terms,
-  for Luke to paste into Playbook → Templates.
+  for Luke to paste into Playbook → Templates. Say whether the ramp should
+  move.
 - Don't recite counts without saying what to do about them.
+
+---
+
+## 7. The weekly refill (Mondays, and only on Luke's go)
+
+**One run a week. Research capped at $15. Nothing is imported and nothing is
+spent until Luke says go.** The $15 is enforced by the portal, not by this
+page: past it, `POST /nimbus/api/b2b/reenrich` returns **429** and that is the
+end of research for the week.
+
+It needs the repo (the prospector) and `BASE44_TOKEN`, so only the Monday
+routine or Luke's laptop can do it.
+
+**Step 1: the proposal. Dry runs only.**
+
+```bash
+# The Den: who already knows us. Derik keeps the jobs he sold; the rest are Luke's.
+for seg in den:customers den:open_jobs den:partners; do
+  python -m prospector pull $seg --out /tmp/$seg.json
+  python -m prospector push /tmp/$seg.json --base-url $PORTAL \
+      --token-env P1_READONLY_TOKEN --assign luke --owners derik --dry-run
+done
+
+# Cold partners, each rep's own cities.
+for seg in cdos:realty cdos:property_manager cdos:hoa_manager cdos:insurance_agent; do
+  python -m prospector pull $seg --cities noco --out /tmp/luke-$seg.json
+  python -m prospector push /tmp/luke-$seg.json --base-url $PORTAL \
+      --token-env P1_READONLY_TOKEN --assign luke --dry-run
+  python -m prospector pull $seg --cities "Lakewood,Boulder,Broomfield,Golden" --out /tmp/derik-$seg.json
+  python -m prospector push /tmp/derik-$seg.json --base-url $PORTAL \
+      --token-env P1_READONLY_TOKEN --assign derik --dry-run
+done
+```
+
+Push `den:customers` before `den:open_jobs`. `--owners` is for the Den
+segments only. In a dry run, "inserted" means new people not in the CRM yet.
+
+Then read each rep's `supply` (§ 3) and `GET /nimbus/api/settings`:
+`week_research_spend_usd`, `weekly_research_cap_usd`, `month_spend_usd`. What
+is left of the week, at about two cents a lead, is how many lookups it buys.
+
+Report, in one screen: days of supply per rep, what each import would add, how
+many leads the research money covers and who they should go to (the rep with
+fewer days of cards first). End with **"Reply GO to run it."** Then stop.
+
+**Step 2: on "go", and not before.**
+
+1. The same pushes without `--dry-run`. Den first.
+2. Research, aimed at whoever is short:
+   ```python
+   r = s.post(f"{PORTAL}/nimbus/api/b2b/reenrich",
+              json={"lead_type": "realtor", "limit": 200, "rep": "derik"})
+   run_id = r.json()["run_id"]                       # 429: the week's money is spent
+   s.get(f"{PORTAL}/nimbus/api/runs/{run_id}").json()  # poll until status != "running"
+   ```
+   200 leads a call at most. Roughly one in four comes back with a named
+   person, more with a general phone or email. Stop at the first 429.
+3. Report what landed: leads imported per rep, contacts found, what it cost,
+   and each rep's days of supply now.
+4. Delete the `/tmp` files. They hold customer contact details.
+
+**Never add anyone to make up the number from Clay, Apollo, Base44 or a web
+search.** If they are not in the CRM, they have not been through suppression.
 
 ---
 
 ## Memory this mode keeps
 
-```json
-"outreach": {
-  "daily_plan": {"email_target": 15, "started": "2026-10-06"},
-  "pending_sent": [{"lead_id": "...", "task_id": "...", "lead_type": "realtor",
-                    "step": "first", "subject": "...", "recipient": "...",
-                    "thread_id": "...", "drafted_at": "..."}],
-  "sent_threads": [{"thread_id": "...", "lead_id": "...", "sent_at": "..."}],
-  "reply_stats": {"realtor": {"first": {"sent": 0, "replies": 0}}},
-  "streak": {"days": 0, "last_hit": ""}
-}
-```
-
-`contacts_reached_7d` is retired. The CRM's activity log is the cooldown.
+None. The `outreach` block of brain memory (`pending_sent`, `sent_threads`,
+`reply_stats`, `streak`, `daily_plan`) is retired: the CRM holds all of it.
+Do not read it and do not write it.
 
 ## The scheduled runs
 
 | When (Denver, weekdays) | What |
 |---|---|
-| 6:15am | **Build the day:** §§ 2, 2b, 3, 4, then one push with § 6's line |
-| 12:30pm | **Reply sweep:** §§ 2, 2b only. Speak only if there is a reply that needs Luke |
+| 6:15am | **Build the day:** §§ 2, 2b, 3, 4, then one push with § 6's lines |
+| 12:30pm | **Reply sweep:** §§ 2, 2b only. Speak only if a reply needs Luke |
 | 4:49pm | **Close-out:** §§ 2, 2b, 6 |
 | Friday 3pm | **Scorecard:** the Friday part of § 6 |
-| Monday 5am | **Supply:** § 3 in a session with the repo. Dry runs and a report; nothing imported |
+| Monday 5am | **Refill proposal:** § 7 step 1, in a session with the repo. Step 2 only when Luke replies GO |

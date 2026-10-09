@@ -411,6 +411,40 @@ let queueReq=0;
 $('#queue-ready').onclick=()=>{Q.mode='ready';renderOutreach();};
 $('#queue-research').onclick=()=>{Q.mode='research';renderOutreach();};
 $('#queue-refresh').onclick=()=>renderOutreach();
+$('#queue-plan').onclick=()=>planModal();
+
+// Managers: each rep's day. How many touches, how many of those are emails
+// Jarvis drafts into their Gmail (the calls and texts are whatever is left, so
+// the day's number never moves), and whose list a manager also works. Covering
+// reassigns nothing: the other rep's cards are served here, signed and counted
+// as the manager's, and switching it off puts them back where they were.
+async function planModal(rep){
+  let plans; try{ plans=await api('/outreach/plan?all=1'); }catch(e){ toast(e.message,true); return; }
+  const p=plans.find(x=>x.rep===(rep||S.me.username))||plans[0];
+  const others=plans.filter(x=>x.rep!==p.rep);
+  const mgr=['admin','manager'].includes(p.role);
+  openModal('Daily outreach plan',`
+    <div class="field"><label>Rep</label><select id="pl-rep">${plans.map(x=>
+      `<option value="${esc(x.rep)}" ${x.rep===p.rep?'selected':''}>${esc(x.full_name||x.rep)}</option>`).join('')}</select></div>
+    <div class="field"><label>Touches a day</label><input id="pl-target" type="number" inputmode="numeric" min="1" max="300" value="${p.daily_target}"></div>
+    <div class="field"><label>Emails Jarvis drafts (0 = none, the rep works every card)</label>
+      <input id="pl-share" type="number" inputmode="numeric" min="0" max="40" value="${p.email_share}"></div>
+    <p class="lead-context" id="pl-split"></p>
+    ${mgr&&others.length?`<div class="field"><label>Also work this rep's list</label><div class="om-for">${others.map(x=>
+      `<label><input type="checkbox" data-cover="${esc(x.rep)}" ${p.covers.includes(x.rep)?'checked':''}> ${esc(x.full_name||x.rep)}</label>`).join('')}</div></div>`:''}`,
+  async()=>{
+    const covers=$$('#modal-box [data-cover]').filter(c=>c.checked).map(c=>c.dataset.cover);
+    try{ await api('/outreach/plan/'+encodeURIComponent(p.rep),{method:'PUT',body:{
+        daily_target:+$('#pl-target').value, email_share:+$('#pl-share').value, covers}});
+      toast('Plan saved'); renderOutreach();
+    }catch(e){ toast(e.message,true); throw e; }
+  });
+  const split=()=>{ const t=+$('#pl-target').value||0, s=Math.min(+$('#pl-share').value||0,t);
+    $('#pl-split').textContent=s?`${s} emails in Gmail and ${t-s} calls and texts on this tab.`
+      :`All ${t} on this tab: calls, texts and emails from the card.`; };
+  $('#pl-target').oninput=split; $('#pl-share').oninput=split; split();
+  $('#pl-rep').onchange=e=>planModal(e.target.value);
+}
 
 // Call scripts come from the template library, one per lead type. The old
 // SCRIPT_FOR map sent every partner type the playbook's referral ask - a
@@ -423,11 +457,13 @@ async function renderOutreach(){
   if(token!==queueReq) return;
   $('#queue-ready').setAttribute('aria-pressed',Q.mode==='ready');
   $('#queue-research').setAttribute('aria-pressed',Q.mode==='research');
-  $('#queue-intro').textContent=Q.mode==='research'
+  $('#queue-plan').classList.toggle('hidden',!S.me.is_manager);
+  $('#queue-intro').textContent=(Q.mode==='research'
     ? 'Find and save a phone or email, or plan an in-person visit. Research does not count as a sales touch.'
     : q.channel==='phone'
     ? 'Calls and texts. Jarvis drafts your emails in Gmail - send those from Drafts. Scheduled follow-ups first, then new prospects.'
-    : 'Scheduled follow-ups first, then new prospects with a phone or email. Open a lead to log a visit or schedule the next step.';
+    : 'Scheduled follow-ups first, then new prospects with a phone or email. Open a lead to log a visit or schedule the next step.')
+    +((q.covers||[]).length?` Also working ${q.covers.map(repName).join(' and ')}'s list.`:'');
   Q.target=q.target; Q.done=q.done_today; Q.idx=0;
   // A rep whose emails Jarvis drafts is handed the phone side of the day only
   // (the server decides; see _card_channel). `day` is the whole day's count.
@@ -435,14 +471,14 @@ async function renderOutreach(){
   // Re-touches lead. A partner who already knows you converts better than a
   // cold name, so they must never sit behind thirty fresh cards.
   Q.items=[
-    ...q.due.map(d=>({lead_id:d.lead_id,task_id:d.id,kind:d.kind||'call',retouch:true,
+    ...q.due.map(d=>({lead_id:d.lead_id,task_id:d.id,kind:d.kind||'call',retouch:true,owner:d.owner,
       why:d.title||'Follow-up due',name:d.name,company:d.company,phone:d.phone,
       email:d.email,city:d.city,lead_type:d.lead_type,overdue:d.overdue,
       draft:d.draft,hook:d.hook,address:d.address,website:d.website,
       touches:d.touches,outreach_label:d.outreach_label,outreach_color:d.outreach_color,
       first_name:d.first_name,last_name:d.last_name,research_notes:d.research_notes,
       contact_quality:d.contact_quality})),
-    ...q.new.map(l=>({lead_id:l.id,kind:'call',retouch:false,
+    ...q.new.map(l=>({lead_id:l.id,kind:'call',retouch:false,owner:l.owner,
       why:'New — first touch',name:l.name,company:l.company,phone:l.phone,
       email:l.email,city:l.city,lead_type:l.lead_type,score:l.icp_score,
       draft:l.draft,hook:l.hook,address:l.address,website:l.website,
@@ -587,6 +623,7 @@ function drawQueue(){
     ${askFor(it)}
     <div class="oq-meta">${cqChip(it)}<span class="chip os" style="--c:${it.outreach_color||'#6B7280'}">${esc(it.outreach_label||'Not contacted')}</span>
       ${it.touches?`<span class="chip">Touch ${it.touches+1}</span>`:''}
+      ${it.owner&&it.owner!==S.me.username?`<span class="chip">${esc(repName(it.owner))}'s list</span>`:''}
       <span class="chip">${esc(type)}</span>
       ${it.score?`<span class="chip" title="Higher scores are prioritized within this queue">Priority score ${it.score}</span>`:''}
       ${tel?'':'<span class="chip">no phone</span>'}

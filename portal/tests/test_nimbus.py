@@ -564,8 +564,10 @@ def test_reenrich_runs_in_the_background_and_records_what_it_found(
     from agents.b2b import reenrich
     seen = {}
 
-    def fake_run(crm, limit=50, lead_type=None, dry_run=False, log=print, mode='new'):
-        seen.update(limit=limit, lead_type=lead_type, dry_run=dry_run, mode=mode)
+    def fake_run(crm, limit=50, lead_type=None, dry_run=False, log=print, mode='new',
+                 rep=None, budget=None):
+        seen.update(limit=limit, lead_type=lead_type, dry_run=dry_run, mode=mode,
+                    rep=rep, budget=budget)
         log('Done: 3 names, 2 emails, 4 phones, 1 websites filled; $0.10 this run')
         return {'names': 3, 'emails': 2, 'phones': 4, 'websites': 1,
                 'reachable': 4, 'spent': 0.10, 'seen': 5}
@@ -575,7 +577,9 @@ def test_reenrich_runs_in_the_background_and_records_what_it_found(
                    json={'lead_type': 'realtor', 'limit': 5, 'dry_run': True})
     assert r.status_code == 202, r.get_json()
     run = _wait_for_run(admin, r.get_json()['run_id'])
-    assert seen == {'limit': 5, 'lead_type': 'realtor', 'dry_run': True, 'mode': 'new'}
+    # A person starting research answers to the monthly cap only: no budget.
+    assert seen == {'limit': 5, 'lead_type': 'realtor', 'dry_run': True, 'mode': 'new',
+                    'rep': None, 'budget': None}
     assert (run['status'], run['agent'], run['dry_run']) == ('ok', 'b2b-reenrich', 1)
     assert (run['leads_found'], run['leads_pushed']) == (5, 4)
     assert round(run['cost_usd'], 2) == 0.10 and run['summary'].startswith('Done: 3 names')
@@ -606,3 +610,67 @@ def test_a_failed_research_run_says_so(admin, tmp_path_factory, monkeypatch):
 def test_reps_cannot_start_research(rep, tmp_path_factory, monkeypatch):
     _fresh_agents_dir(tmp_path_factory, monkeypatch)
     assert rep.post('/nimbus/api/b2b/reenrich', json={'limit': 1}).status_code == 403
+
+
+def _as_jarvis(client, monkeypatch):
+    monkeypatch.setenv('P1_READONLY_TOKEN', 'test-token-do-not-use-in-production')
+    r = client.post('/api/apibot/session',
+                    headers={'X-P1-Token': 'test-token-do-not-use-in-production'})
+    assert r.status_code == 200
+
+
+def _spent_on_research(dollars):
+    from agents import config
+    from agents.b2b import reenrich
+    with config.get_cache_db() as db:
+        db.execute('INSERT INTO spend_ledger (occurred_at, source, reason, cost_usd) '
+                   "VALUES (?, 'perplexity', ?, ?)", (config.now_iso(), reenrich.REASON, dollars))
+        db.commit()
+
+
+def test_jarvis_researches_inside_the_weeks_number_and_no_further(
+        admin, tmp_path_factory, monkeypatch):
+    """The weekly refill is $15 because Luke said $15. Held to it here, in
+    code, the refusal is the same whether the prompt was followed, misread or
+    never loaded."""
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    from agents.b2b import reenrich
+    from portal import users
+    users.create('derik', password='knockknock', role='rep')
+    seen = {}
+
+    def fake_run(crm, **kw):
+        seen.update(kw)
+        return {'reachable': 0, 'spent': 0.0, 'seen': 0}
+
+    monkeypatch.setattr(reenrich, 'run', fake_run)
+    _spent_on_research(11.0)
+    _as_jarvis(admin, monkeypatch)
+    assert admin.get('/nimbus/api/settings').get_json()['week_research_spend_usd'] == 11.0
+
+    r = admin.post('/nimbus/api/b2b/reenrich', json={'limit': 200, 'rep': 'derik'})
+    assert r.status_code == 202, r.get_json()
+    _wait_for_run(admin, r.get_json()['run_id'])
+    # Aimed at derik's leads, and handed only what is left of the week.
+    assert seen['rep'] == 'derik' and seen['budget'] == 4.0
+
+    _spent_on_research(4.0)
+    r = admin.post('/nimbus/api/b2b/reenrich', json={'limit': 1})
+    assert r.status_code == 429 and 'weekly research cap' in r.get_json()['error']
+    assert r.get_json()['week_spend_usd'] == 15.0
+    # And Jarvis cannot raise its own number.
+    assert admin.post('/nimbus/api/settings',
+                      json={'weekly_research_cap_usd': 500}).status_code == 403
+
+
+def test_the_weekly_number_is_jarviss_not_a_persons(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    from agents.b2b import reenrich
+    monkeypatch.setattr(reenrich, 'run', lambda crm, **kw: {'reachable': 0, 'spent': 0.0, 'seen': 0})
+    _spent_on_research(40.0)
+    r = admin.post('/nimbus/api/b2b/reenrich', json={'limit': 1})
+    assert r.status_code == 202, r.get_json()
+    _wait_for_run(admin, r.get_json()['run_id'])
+    assert admin.post('/nimbus/api/b2b/reenrich', json={'limit': 1, 'rep': 'nobody'}).status_code == 400
+    saved = admin.post('/nimbus/api/settings', json={'weekly_research_cap_usd': 20})
+    assert saved.status_code == 200 and saved.get_json()['weekly_research_cap_usd'] == 20
