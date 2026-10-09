@@ -1816,11 +1816,21 @@ function packRebaseQty(qty, from, to) {
   return covered > 0 ? packCount(covered, b, a ? 0 : packWaste(to)) : 0;
 }
 /* The same move for a cost or a locked unit price: per foot <-> per pack. A
-   blank or a zero stays exactly what it was. */
+   blank or a zero stays exactly what it was.
+
+   One figure is deliberately NOT converted: a cost smaller than its own pack,
+   on a line whose pack did not come from the Bought-as editor (no
+   bundle_waste_pct). That is a per-foot price already sitting on a roll - ice
+   & water went out that way at $1.55 on a 66.67 LF roll - and dividing it by
+   the roll again would leave it at two cents a foot. It is already what it is
+   being converted to. A pack set in the editor is exempt for the reason the
+   audit exempts it: $63 for a 105 LF bundle of starter is a real pack price. */
 function packRebaseCost(v, from, to) {
   const a = packCover(from), b = packCover(to);
   const n = parseFloat(v);
   if (a === b || !isFinite(n) || !n) return v;
+  const trusted = from && from.bundle_waste_pct !== undefined && from.bundle_waste_pct !== null;
+  if (a && !trusted && Math.abs(n) < a) return v;
   return Math.round(n * (b || 1) / (a || 1) * 10000) / 10000;
 }
 /* Put a line on its product's pack. When the basis changes, every cost on the

@@ -676,6 +676,12 @@ untouched and the pack never appears in a pricing function — pinned.
   what makes re-picking a package on an estimate written before the product
   was converted come out right. Better and Best share the row, so their costs
   are converted too — same dollars per foot, now per pack.
+- **One cost is deliberately NOT converted** (`packRebaseCost()`): a figure
+  smaller than its own pack on a line whose pack did not come from the editor.
+  Production holds ice & water lines written while the book carried a 66.67 LF
+  roll on a $1.55 per-FOOT price; that cost is already per-foot, and dividing
+  it by the roll again leaves it at two cents. A line with `bundle_waste_pct`
+  is trusted and always converts — the audit's own rule, for the same reason.
 - **Every line builder takes the pack through `packOf()`.** Ten places build a
   line from a product; one that copies `bundle_lf` by hand forgets the waste,
   and one that forgets `bundle_lf` prices a roll as a foot. A test fails on a

@@ -318,6 +318,38 @@ def test_the_ice_and_water_heal_leaves_a_real_roll_price_alone(tmp_path):
     assert real['bundle_lf'] == 66.67 and real['quantity'] == 3
 
 
+@needs_node
+def test_repicking_does_not_divide_a_per_foot_price_that_was_already_on_a_roll(tmp_path):
+    """The state production actually holds: ice & water lines written while
+    the book carried a 66.67 LF roll on a $1.55 PER-FOOT price. Re-pick Good on
+    one of those and Better and Best must come out at $1.55 a foot - as they
+    did before - not $1.55 / 66.67 = two cents a foot. A line genuinely priced
+    per roll ($95) is converted, which is the case the old code got wrong the
+    other way."""
+    def run(better_cost):
+        est = _estimate()
+        est['trades']['roofing']['tier_bundles'] = {'good': 'b_iko_nordic',
+                                                    'better': 'b_iko_nordic', 'best': ''}
+        est['trades']['roofing']['line_items'] = [
+            {'id': 'x1', 'catalog_id': 'a_ice_water', 'name': 'Ice & Water Shield',
+             'unit': 'LF', 'quantity': 3, 'measure': 'eave_valley',
+             'bundle_lf': 66.67, 'bundle_unit': 'rolls',          # no waste key
+             'tiers': {'good':   {'material_unit_cost': 1.55, 'labor_unit_cost': 0, 'included': True},
+                       'better': {'material_unit_cost': better_cost, 'labor_unit_cost': 0, 'included': True},
+                       'best':   {'material_unit_cost': 0, 'labor_unit_cost': 0, 'included': False}}}]
+        res = _run(tmp_path, [{'op': 'applyBundle', 'trade': 'roofing', 'tier': 'good',
+                               'id': 'b_iko_nordic'}],
+                   estimate=est, book=_book(packed=False))
+        return _lines(res)['a_ice_water']
+    broken = run(1.55)
+    assert 'bundle_lf' not in broken and broken['quantity'] == 137
+    assert broken['tiers']['good']['material_unit_cost'] == 1.55
+    assert broken['tiers']['better']['material_unit_cost'] == 1.55
+    real = run(95.0)
+    assert 'bundle_lf' not in real and real['quantity'] == 137
+    assert real['tiers']['better']['material_unit_cost'] == pytest.approx(95 / 66.67, abs=1e-4)
+
+
 def test_every_line_builder_takes_the_pack_through_packOf():
     """Ten places build a line from a product. One that copies bundle_lf by
     hand and forgets the waste orders short; one that forgets bundle_lf prices
