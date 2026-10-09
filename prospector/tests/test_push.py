@@ -137,9 +137,25 @@ def test_token_sign_in_sends_the_header_and_never_the_url(monkeypatch):
     assert seen['headers'] == {'X-P1-Token': 'tok'}
 
 
-def test_token_sign_in_refuses_an_empty_token():
-    with pytest.raises(pushmod.PushError):
-        pushmod.sign_in_token('http://x', '')
+def test_an_empty_token_is_sent_as_no_header_and_a_refusal_says_why(monkeypatch):
+    """A Claude cloud environment adds the token on the way out, so having no
+    variable is not the error. Being refused with none is, and it says so."""
+    seen = {}
+
+    class S:
+        def __init__(self, status):
+            self.status = status
+
+        def post(self, url, headers=None, timeout=None, **kw):
+            seen['headers'] = headers
+            return FakeResponse(self.status, {'ok': True})
+
+    monkeypatch.setattr(pushmod.requests, 'Session', lambda: S(200))
+    pushmod.sign_in_token('http://x', '')
+    assert seen['headers'] == {}
+    monkeypatch.setattr(pushmod.requests, 'Session', lambda: S(401))
+    with pytest.raises(pushmod.PushError, match='empty or unset'):
+        pushmod.sign_in_token('http://x', '  ')
 
 
 # ── --owners: a rep keeps the customers the Den says are theirs ──────────────

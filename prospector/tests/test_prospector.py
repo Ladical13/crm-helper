@@ -292,9 +292,51 @@ def test_every_den_segment_says_how_it_must_be_imported():
         assert meta['import']['cadence'], name
 
 
+class _DenAnswer:
+    def __init__(self, status, rows=()):
+        self.status_code, self._rows = status, list(rows)
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._rows
+
+
+def _den_http(monkeypatch, answer):
+    """Stand in for the Den over HTTP; returns the headers each call sent."""
+    sent = []
+
+    def get(url, params=None, timeout=None, headers=None):
+        sent.append(headers)
+        return answer
+
+    monkeypatch.setattr(den.requests, 'get', get)
+    return sent
+
+
 def test_den_pull_needs_the_token(monkeypatch):
     monkeypatch.delenv('BASE44_TOKEN', raising=False)
-    with pytest.raises(KeyError):
+    _den_http(monkeypatch, _DenAnswer(403))
+    with pytest.raises(KeyError, match='not set'):
+        list(den.pull('customers'))
+
+
+def test_a_token_the_environment_adds_itself_is_not_sent_twice(monkeypatch):
+    """In a Claude cloud environment the token is a network secret: the header
+    is added on the way out and the session never holds it. So no variable is
+    not yet an error, and nothing is sent in its place."""
+    monkeypatch.delenv('BASE44_TOKEN', raising=False)
+    sent = _den_http(monkeypatch, _DenAnswer(200, [_job('p1', 'Pat Ng', 'paid_and_closed',
+                                                        'pat@example.com')]))
+    assert [r['first_name'] for r in den.pull('customers')] == ['Pat']
+    assert sent and all(h == {} for h in sent)
+
+
+def test_an_empty_den_with_no_token_sent_is_a_refusal_not_a_quiet_week(monkeypatch):
+    monkeypatch.delenv('BASE44_TOKEN', raising=False)
+    _den_http(monkeypatch, _DenAnswer(200, []))
+    with pytest.raises(KeyError, match='no token was sent'):
         list(den.pull('customers'))
 
 

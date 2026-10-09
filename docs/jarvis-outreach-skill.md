@@ -56,16 +56,25 @@ REP = "luke"                      # the rep this run is for
 REPS = ["luke", "derik"]          # everyone the report covers
 
 s = requests.Session()
+token = os.environ.get("P1_READONLY_TOKEN", "")
 s.post(f"{PORTAL}/api/apibot/session",
-       headers={"X-P1-Token": os.environ["P1_READONLY_TOKEN"]}).raise_for_status()
+       headers={"X-P1-Token": token} if token else {}).raise_for_status()
 ```
 
-- **401** means the token is wrong. **404** means `P1_READONLY_TOKEN` isn't set
-  on Railway.
+**Having no `P1_READONLY_TOKEN` variable is normal in the cloud.** There the
+token is a network secret: the environment adds it to every request to the
+portal on the way out, and the session never holds it. So send no header and
+let the portal's answer decide. Never look for the token, print it, or ask
+for it.
+
+- **200**: signed in.
+- **401** means no valid token reached the portal. In the cloud, the
+  environment's secret for this host is missing or wrong; on a laptop,
+  `P1_READONLY_TOKEN` is unset or wrong. **404** means it isn't set on Railway.
 - **A connection refused by the proxy** means the host isn't on the
   environment's network allowlist. Say which host.
-- **`P1_READONLY_TOKEN` missing from this session:** say so in one line and
-  stop. Nothing else in this mode can run without it.
+- **If the sign-in fails:** say which of these it was in one line and stop.
+  Nothing else in this mode can run without it.
 
 ---
 
@@ -297,8 +306,12 @@ spent until Luke says go.** The $15 is enforced by the portal, not by this
 page: past it, `POST /nimbus/api/b2b/reenrich` returns **429** and that is the
 end of research for the week.
 
-It needs the repo (the prospector) and `BASE44_TOKEN`, so only the Monday
-routine or Luke's laptop can do it.
+It needs the repo (the prospector) and access to the Den, so only the Monday
+routine or Luke's laptop can do it. In the cloud both tokens are network
+secrets, added to requests on the way out: `P1_READONLY_TOKEN` and
+`BASE44_TOKEN` will be unset there and the commands below still work as
+written. A push that fails to sign in, or a Den pull that is refused, means
+the environment's secret for that host is missing or wrong: say which and stop.
 
 **Step 1: the proposal. Dry runs only.**
 

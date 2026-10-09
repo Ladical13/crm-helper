@@ -45,14 +45,21 @@ def sign_in_token(base_url, token):
     For Jarvis and for scripts run under `railway run`, where there is a token
     in the environment and no person to type a password. The importer insists
     such a caller names the rep the rows are for.
+
+    An empty token is not refused here: it is sent as no header at all. In a
+    Claude cloud environment the token is a network secret, added to the
+    request on its way out so that the session never holds it, and from in
+    here that looks exactly like having no token. The portal's answer is what
+    tells them apart, so a refusal says which case it probably is.
     """
-    if not (token or '').strip():
-        raise PushError('No token: the environment variable is empty or unset')
+    token = (token or '').strip()
     sess = requests.Session()
     r = sess.post(f'{base_url.rstrip("/")}/api/apibot/session',
-                  headers={'X-P1-Token': token.strip()}, timeout=30)
+                  headers={'X-P1-Token': token} if token else {}, timeout=30)
     if r.status_code != 200:
-        raise PushError(f'Token sign-in failed (HTTP {r.status_code})')
+        why = '' if token else (': the environment variable is empty or unset, and '
+                                'nothing added the token on the way out')
+        raise PushError(f'Token sign-in failed (HTTP {r.status_code}){why}')
     return sess
 
 

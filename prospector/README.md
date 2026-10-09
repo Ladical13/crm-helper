@@ -31,6 +31,11 @@ with a job in production, red-flag customers, and any open job touched in the
 last two weeks. `--token-env P1_READONLY_TOKEN` signs in with the API token
 instead of a password (the importer then insists on `--assign`).
 
+In a Claude cloud environment neither token is a variable: both are network
+secrets, added to the request on its way out so the session never holds them.
+The same commands work there with `P1_READONLY_TOKEN` and `BASE44_TOKEN`
+unset; a refusal from the portal or the Den is what says a secret is missing.
+
 Every Den row carries the job's salesperson as `owner`. `--owners derik` lets
 the reps you name keep the customers the Den says are theirs; everyone else's
 (another market's reps, people who have left, jobs with nobody on them) go to

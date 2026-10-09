@@ -87,16 +87,25 @@ SEGMENTS = {
 
 def _fetch(entity, location=True):
     """Every record of one Den entity. The live call; tests replace it."""
+    # No token here is not yet an error. A Claude cloud environment holds it as
+    # a network secret and adds the Authorization header on the way out, so
+    # the session never sees it - which from in here looks like having none.
+    # The Den's answer decides, and an EMPTY answer with no token sent is
+    # treated as a refusal too: "0 customers" must never read as a quiet week.
     token = os.environ.get('BASE44_TOKEN', '').strip()
-    if not token:
-        raise KeyError('BASE44_TOKEN is not set - run this under `railway run`')
     params = {'q': '{"location_id": "%s"}' % CO_LOCATION_ID} if location else {}
     r = requests.get(f'{BASE}/entities/{entity}', params=params, timeout=120,
-                     headers={'Authorization': f'Bearer {token}'})
+                     headers={'Authorization': f'Bearer {token}'} if token else {})
     if r.status_code in (401, 403):
-        raise KeyError('The Den refused BASE44_TOKEN - it has probably expired')
+        raise KeyError('The Den refused BASE44_TOKEN - it has probably expired' if token else
+                       'BASE44_TOKEN is not set and nothing added it on the way out - '
+                       'run this under `railway run`')
     r.raise_for_status()
-    return r.json()
+    rows = r.json()
+    if not token and not rows:
+        raise KeyError(f'The Den returned no {entity} records and no token was sent - '
+                       'BASE44_TOKEN is not set')
+    return rows
 
 
 def _digits(phone):
