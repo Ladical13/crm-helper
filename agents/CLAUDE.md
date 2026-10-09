@@ -8,6 +8,24 @@ root `CLAUDE.md` can stay short enough to be read every session. The traps
 that cross all four apps — mobile, the clock, the session and mount rules,
 deploying — live there, and they apply here too.*
 
+## Researching leads already in the CRM (`agents/b2b/reenrich.py`)
+
+Realtors, HOAs, property managers and insurance agents never come from a
+Nimbus run: `SEGMENT_SOURCES` is empty for them, and they arrive from the
+offline prospector as a name and a city. `POST /nimbus/api/b2b/reenrich`
+(`start_reenrich()`) is how they get a phone and an email — one Perplexity
+call a lead, about two cents, under the monthly spend cap.
+
+- **It fills only what research can cite, and only empty fields.** A
+  fabricated email is worse than none: it bounces, or worse, lands.
+- **A dry run still pays for the research.** Only the write is skipped. Use a
+  small `limit` to see the hit rate before a batch.
+- **The run is recorded in `agent_runs`, not in process memory**, so
+  `GET /nimbus/api/runs/<id>` answers from either gunicorn worker.
+- **A partner is asked for the person who refers, not the one who fixes.**
+  `_who_for()` picks the question by lead type; asking a brokerage for its
+  facilities contact finds the office manager.
+
 ## Networking events (`agents/events.py`)
 
 Which rooms are worth an evening. 🤝 Networking in Nimbus; one Perplexity

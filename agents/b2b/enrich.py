@@ -54,6 +54,11 @@ def _kind_for(segment):
         'commercial': 'commercial building owner',
         'storage': 'self-storage facility owner or operator',
         'hoa':    'HOA or property management company',
+        'realtor': 'real estate brokerage or agent',
+        'property_manager': 'property management company',
+        'insurance_agent': 'insurance agency',
+        'adjuster': 'insurance adjusting firm',
+        'referral_partner': 'local business',
     }.get(segment, 'organization')
 
 

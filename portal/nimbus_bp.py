@@ -643,6 +643,70 @@ def _record_active(run_id, stage, manifest):
         _active_runs[run_id] = entry
 
 
+# ── Research leads already in the CRM ────────────────────────────────────────
+#
+# /api/b2b/run finds new organisations. It finds nothing for realtors, HOAs,
+# property managers or insurance agents: those arrive from the offline
+# prospector (agents/b2b/sources SEGMENT_SOURCES is empty for them) as a name
+# and a city, with no phone and no email, and sit in "Needs research" until a
+# person works them one at a time. This is the batch version of that button:
+# agents/b2b/reenrich.py, which was only ever reachable from a shell on the
+# server.
+REENRICH_MAX = 200
+
+
+@nimbus_bp.route('/api/b2b/reenrich', methods=['POST'])
+def start_reenrich():
+    """Research up to `limit` un-researched leads of one type and fill in the
+    contact that research can cite. Body: {lead_type, limit, mode, dry_run}.
+
+    Returns a run id at once; the work happens on a thread and the result
+    lands in agent_runs, so GET /nimbus/api/runs/<id> answers from either
+    worker. About two cents a lead, under the monthly spend cap.
+
+    A dry run still pays for the research: it is the write that is skipped.
+    Use it with a small `limit` to see the hit rate before a big batch.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    lead_type = (data.get('lead_type') or '').strip()
+    if lead_type and _bad_segments([lead_type]):
+        return jsonify({'error': f'unknown lead_type: {lead_type}'}), 400
+    mode = (data.get('mode') or 'new').strip()
+    if mode not in ('new', 'missing', 'stale'):
+        return jsonify({'error': 'mode must be new, missing or stale'}), 400
+    try:
+        limit = int(data.get('limit') or 50)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'limit must be a number'}), 400
+    if not 1 <= limit <= REENRICH_MAX:
+        return jsonify({'error': f'limit must be between 1 and {REENRICH_MAX}'}), 400
+    dry_run = bool(data.get('dry_run'))
+
+    crm = sys.modules.get('p1_crm_app')
+    if crm is None:
+        return jsonify({'error': 'the CRM is not loaded in this process'}), 503
+    from agents.b2b import dispatcher, reenrich
+    rep = (data.get('rep') or session.get('username') or '').strip()
+    summary = f'Research up to {limit} {lead_type or "any-type"} lead(s), {mode}'
+    run_id = dispatcher._open_run('b2b-reenrich', rep, summary=summary, dry_run=dry_run)
+
+    def work():
+        lines = []
+        try:
+            res = reenrich.run(crm, limit=limit, lead_type=lead_type or None,
+                               dry_run=dry_run, log=lines.append, mode=mode)
+            dispatcher._close_run(
+                run_id, status='ok', found=res.get('seen', 0),
+                pushed=res.get('reachable', 0), cost=res.get('spent', 0.0),
+                summary=(lines[-1] if lines else summary)[:500])
+        except Exception as e:                                       # noqa: BLE001
+            dispatcher._close_run(run_id, status='error', error=str(e)[:400], summary=summary)
+
+    threading.Thread(target=work, daemon=True).start()
+    return jsonify({'run_id': run_id, 'started': True, 'dry_run': dry_run,
+                    'poll': f'/nimbus/api/runs/{run_id}'}), 202
+
+
 # ── Content ──────────────────────────────────────────────────────────────────
 
 @nimbus_bp.route('/api/content/topics', methods=['GET'])

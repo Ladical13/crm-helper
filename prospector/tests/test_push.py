@@ -102,3 +102,41 @@ def test_sign_in_rejects_a_non_redirect(monkeypatch):
     monkeypatch.setattr(pushmod.requests, 'Session', lambda: S())
     with pytest.raises(pushmod.PushError, match='Login failed'):
         pushmod.sign_in('http://x', 'luke', password='nope')
+
+
+# ── Warm imports and the API token ───────────────────────────────────────────
+
+def test_push_forwards_a_warm_segments_import_options():
+    sess = FakeSession()
+    pushmod.push(_rows(2), 'http://x', sess, lead_type='homeowner', source='den:customers',
+                 assign='luke', extra={'lead_source': 'existing_customer',
+                                       'cadence': 'past_customer_winter', 'stagger_per_day': 6})
+    sent = sess.calls[0]
+    assert sent['lead_source'] == 'existing_customer' and sent['cadence'] == 'past_customer_winter'
+    assert sent['stagger_per_day'] == 6 and sent['assign'] == 'luke'
+
+
+def test_extra_cannot_replace_the_rows_or_the_dry_run_flag():
+    sess = FakeSession()
+    pushmod.push(_rows(1), 'http://x', sess, lead_type='hoa', source='s', dry_run=True,
+                 extra={'dry_run': False, 'rows': []})
+    assert sess.calls[0]['dry_run'] is True and len(sess.calls[0]['rows']) == 1
+
+
+def test_token_sign_in_sends_the_header_and_never_the_url(monkeypatch):
+    seen = {}
+
+    class S:
+        def post(self, url, headers=None, timeout=None, **kw):
+            seen.update(url=url, headers=headers)
+            return FakeResponse(200, {'ok': True})
+
+    monkeypatch.setattr(pushmod.requests, 'Session', S)
+    pushmod.sign_in_token('http://x/', ' tok ')
+    assert seen['url'] == 'http://x/api/apibot/session'
+    assert seen['headers'] == {'X-P1-Token': 'tok'}
+
+
+def test_token_sign_in_refuses_an_empty_token():
+    with pytest.raises(pushmod.PushError):
+        pushmod.sign_in_token('http://x', '')

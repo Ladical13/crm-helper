@@ -168,3 +168,118 @@ def test_cdos_pull_cleans_delinquent_names(monkeypatch):
                          'principalcity': 'Los Altos'}])
     assert list(cdos.pull('property_manager'))[0]['company'] == \
         'ARG PROPERTY MANAGEMENT CORPORATION'
+
+
+# ── The Den: people who already know us ──────────────────────────────────────
+
+from prospector.sources import den                          # noqa: E402
+
+CO = den.CO_LOCATION_ID
+_TODAY = __import__('datetime').datetime(2026, 6, 1, tzinfo=__import__('datetime').timezone.utc)
+
+
+def _den(projects=(), contacts=(), partners=()):
+    """A stand-in for the Den read, keyed by entity."""
+    data = {'Project': list(projects), 'Contact': list(contacts),
+            'ReferralPartner': list(partners)}
+    return lambda entity, location=True: data[entity]
+
+
+def _job(pid, name, status, email='', phone='', **kw):
+    return dict({'id': pid, 'client_name': name, 'status': status, 'client_email': email,
+                 'client_phone': phone, 'created_date': '2026-02-01T15:00:00.000000',
+                 'updated_date': '2026-03-09T17:00:00.000000'}, **kw)
+
+
+def test_a_finished_job_becomes_a_won_customer():
+    fetch = _den(
+        projects=[_job('p1', 'Pat Ng', 'paid_and_closed', 'Pat@Example.com', '(970) 555-0101',
+                       roof_installation_completed_date='2026-03-05')],
+        contacts=[{'id': 'c1', 'name': 'Pat Ng', 'email': 'pat@example.com',
+                   'city': 'loveland', 'street_address': '1 Elm St', 'zip_code': '80537-1234'}])
+    [row] = list(den.pull('customers', fetch=fetch))
+    assert (row['first_name'], row['last_name'], row['email']) == ('Pat', 'Ng', 'pat@example.com')
+    assert (row['stage'], row['won_at']) == ('won', '2026-03-05')
+    assert (row['city'], row['zip'], row['address']) == ('Loveland', '80537', '1 Elm St')
+    # Keyed on the contact, so a second job for Pat is the same lead.
+    assert row['source_ref'] == 'den:contact:c1'
+
+
+def test_nobody_with_a_job_in_production_is_contacted():
+    """A sales text in the middle of someone's install."""
+    fetch = _den(projects=[
+        _job('p1', 'Pat Ng', 'paid_and_closed', 'pat@example.com'),
+        _job('p2', 'Pat Ng', 'scheduled', 'pat@example.com'),
+        _job('p3', 'Sam Lee', 'follow_up', phone='970-555-0102'),
+        _job('p4', 'Sam Lee', 'collect_final_payment', phone='9705550102'),
+    ])
+    assert list(den.pull('customers', fetch=fetch)) == []
+    assert list(den.pull('open_jobs', fetch=fetch)) == []
+
+
+def test_red_flag_customers_are_left_out():
+    fetch = _den(projects=[_job('p1', 'Pat Ng', 'paid_and_closed', 'pat@example.com')],
+                 contacts=[{'id': 'c1', 'email': 'pat@example.com',
+                            'is_red_flag_customer': True}])
+    assert list(den.pull('customers', fetch=fetch)) == []
+
+
+def test_one_row_per_person_and_a_customer_is_never_an_open_job():
+    fetch = _den(projects=[
+        _job('p1', 'Pat Ng', 'paid_and_closed', 'pat@example.com'),
+        _job('p2', 'Pat Ng', 'paid_and_closed', 'pat@example.com'),
+        _job('p3', 'Pat Ng', 'ready_to_close', 'pat@example.com'),      # a second project
+        _job('p4', 'Sam Lee', 'holding', phone='970-555-0102'),
+        _job('p5', 'Lou Roe', 'lost_or_cancelled', 'lou@example.com'),  # not ours to nudge
+    ])
+    assert [r['first_name'] for r in den.pull('customers', fetch=fetch)] == ['Pat']
+    opens = list(den.pull('open_jobs', fetch=fetch, today=_TODAY))
+    assert [(r['first_name'], r['stage'], r['won_at']) for r in opens] == [('Sam', 'follow_up', '')]
+
+
+def test_a_job_somebody_touched_last_week_is_not_an_open_job_yet():
+    """Asked for an inspection on Friday; "I never heard where it landed" on Monday."""
+    fetch = _den(projects=[
+        _job('p1', 'New Lead', 'new_lead', 'new@example.com',
+             updated_date='2026-05-28T12:00:00.000000'),
+        _job('p2', 'Old Lead', 'ready_to_close', 'old@example.com',
+             updated_date='2026-05-01T12:00:00.000000'),
+        # Old estimate, but the same person called again this week.
+        _job('p3', 'Back Again', 'follow_up', 'back@example.com',
+             updated_date='2026-04-01T12:00:00.000000'),
+        _job('p4', 'Back Again', 'new_lead', 'back@example.com',
+             updated_date='2026-05-30T12:00:00.000000'),
+    ])
+    assert [r['first_name'] for r in den.pull('open_jobs', fetch=fetch, today=_TODAY)] == ['Old']
+
+
+def test_only_colorado_partners_and_each_keeps_its_own_type():
+    fetch = _den(partners=[
+        {'id': 'r1', 'name': 'Kim Park', 'company': 'Park Realty', 'partner_type': 'realtor',
+         'email': 'kim@parkrealty.com', 'location_id': CO, 'status': 'active'},
+        {'id': 'r2', 'name': 'Tex Ray', 'partner_type': 'realtor', 'location_id': 'texas'},
+        {'id': 'r3', 'name': 'Jo Fox', 'partner_type': 'plumber', 'location_id': CO},
+    ])
+    rows = list(den.pull('partners', fetch=fetch))
+    assert [(r['first_name'], r['lead_type']) for r in rows] == [
+        ('Kim', 'realtor'), ('Jo', 'referral_partner')]
+    assert rows[0]['source_ref'] == 'den:partner:r1'
+
+
+def test_every_den_segment_says_how_it_must_be_imported():
+    """Imported cold, a customer is offered a free hail inspection."""
+    for name, meta in den.SEGMENTS.items():
+        assert meta['import']['lead_source'] in ('existing_customer', 'referral'), name
+        assert meta['import']['cadence'], name
+
+
+def test_den_pull_needs_the_token(monkeypatch):
+    monkeypatch.delenv('BASE44_TOKEN', raising=False)
+    with pytest.raises(KeyError):
+        list(den.pull('customers'))
+
+
+def test_city_filter():
+    assert normalize.city_filter('') is None
+    assert normalize.city_filter('Fort Collins, loveland ') == {'fort collins', 'loveland'}
+    assert 'greeley' in normalize.city_filter('noco') and 'denver' not in normalize.city_filter('noco')

@@ -1,7 +1,7 @@
 """Prospect sources. Each exposes SEGMENTS, count(segment) and pull(segment)."""
-from . import cdos, dora
+from . import cdos, den, dora
 
-REGISTRY = {'dora': dora, 'cdos': cdos}
+REGISTRY = {'dora': dora, 'cdos': cdos, 'den': den}
 
 
 def resolve(name):

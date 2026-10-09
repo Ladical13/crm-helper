@@ -544,3 +544,65 @@ def test_b2b_run_validates_the_picked_categories(admin, tmp_path_factory, monkey
                       json={'rep': 'avery', 'segments': ['nope']}).status_code == 400
     r = admin.post('/nimbus/api/b2b/run', json={'rep': 'avery', 'segments': []})
     assert r.status_code == 400 and 'at least one' in r.get_json()['error']
+
+
+# ── Researching leads already in the CRM ─────────────────────────────────────
+
+def _wait_for_run(client, run_id):
+    import time
+    for _ in range(100):
+        run = client.get(f'/nimbus/api/runs/{run_id}').get_json()
+        if run['status'] != 'running':
+            return run
+        time.sleep(0.05)
+    raise AssertionError('the research run never finished')
+
+
+def test_reenrich_runs_in_the_background_and_records_what_it_found(
+        admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    from agents.b2b import reenrich
+    seen = {}
+
+    def fake_run(crm, limit=50, lead_type=None, dry_run=False, log=print, mode='new'):
+        seen.update(limit=limit, lead_type=lead_type, dry_run=dry_run, mode=mode)
+        log('Done: 3 names, 2 emails, 4 phones, 1 websites filled; $0.10 this run')
+        return {'names': 3, 'emails': 2, 'phones': 4, 'websites': 1,
+                'reachable': 4, 'spent': 0.10, 'seen': 5}
+
+    monkeypatch.setattr(reenrich, 'run', fake_run)
+    r = admin.post('/nimbus/api/b2b/reenrich',
+                   json={'lead_type': 'realtor', 'limit': 5, 'dry_run': True})
+    assert r.status_code == 202, r.get_json()
+    run = _wait_for_run(admin, r.get_json()['run_id'])
+    assert seen == {'limit': 5, 'lead_type': 'realtor', 'dry_run': True, 'mode': 'new'}
+    assert (run['status'], run['agent'], run['dry_run']) == ('ok', 'b2b-reenrich', 1)
+    assert (run['leads_found'], run['leads_pushed']) == (5, 4)
+    assert round(run['cost_usd'], 2) == 0.10 and run['summary'].startswith('Done: 3 names')
+
+
+def test_reenrich_refuses_a_batch_it_should_not_run(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    post = lambda body: admin.post('/nimbus/api/b2b/reenrich', json=body).status_code
+    assert post({'lead_type': 'plumber'}) == 400
+    assert post({'limit': 5000}) == 400          # the spend cap is not the only brake
+    assert post({'limit': 'lots'}) == 400
+    assert post({'mode': 'everything'}) == 400
+
+
+def test_a_failed_research_run_says_so(admin, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    from agents.b2b import reenrich
+
+    def boom(*a, **kw):
+        raise RuntimeError('perplexity is down')
+
+    monkeypatch.setattr(reenrich, 'run', boom)
+    r = admin.post('/nimbus/api/b2b/reenrich', json={'limit': 1})
+    run = _wait_for_run(admin, r.get_json()['run_id'])
+    assert run['status'] == 'error' and 'perplexity is down' in run['error']
+
+
+def test_reps_cannot_start_research(rep, tmp_path_factory, monkeypatch):
+    _fresh_agents_dir(tmp_path_factory, monkeypatch)
+    assert rep.post('/nimbus/api/b2b/reenrich', json={'limit': 1}).status_code == 403

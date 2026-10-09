@@ -111,7 +111,8 @@ else as the ONE service the root `CLAUDE.md` describes — the old standalone `p
 service is retired, so don't deploy to it. App-specific env: `SALESCRM_DATA_DIR`
 (set it explicitly — it falls back to the estimator's `DATA_DIR`), plus optional
 `ESTIMATOR_URL`, `SALESCRM_DAILY_TARGET`, `SALESCRM_COOLDOWN_DAYS`,
-`SALESCRM_STALL_DAYS`. `BASE44_TOKEN` and `SESSION_SECRET` are shared.
+`SALESCRM_STALL_DAYS`, `SALESCRM_JARVIS_EMAIL_REPS`. `BASE44_TOKEN` and
+`SESSION_SECRET` are shared.
 
 ## Partner prospecting (`prospector/` + the import path)
 
@@ -155,6 +156,20 @@ python -m pytest prospector/tests                      # offline, no network
   `dora:brokerage` — one office visit reaches every agent in it.
 - New table? **Add it to `tests/conftest.py TABLES`** or state leaks between
   tests (the temp DB is per-session, not per-test).
+- **A warm import is a different thing from a cold one, and the batch says
+  which.** The importer stamps every row `prospecting` / `cold` / `new`, which
+  is right for open data and wrong for the Den's customers: landed that way, a
+  homeowner whose roof we replaced is offered a free hail inspection. Naming a
+  `lead_source` from `WARM_SOURCES` switches a batch to warm, and only then may
+  a row carry its real `stage`, `won_at` and `created_at`, and the batch start
+  a cadence (`stagger_per_day` spreads the first touches so fifty customers are
+  not all due the next morning). On a cold batch those fields are ignored, so
+  an open-data pull can never invent a customer. Dating a customer truthfully
+  is what keeps a spring roof out of this month's close rate, and `won_at` is
+  what the Do Not Call exemption in `_dnc_clause()` reads.
+  `python -m prospector pull den:customers` (also `den:open_jobs`,
+  `den:partners`) produces these batches; `prospector/sources/den.py` holds
+  the rules for who is left out.
 
 ## The outreach queue (⚡ Outreach tab)
 
@@ -197,6 +212,24 @@ round-robin.
   just out of the fresh top-up. It used to stop only new cards, so a partner
   who said "stop" kept coming back as a due task. Guarded by
   `test_a_partner_marked_do_not_contact_drops_out_of_re_touches`.
+- **A card is on exactly one side of the day.** A rep working alone does not
+  write forty emails: Jarvis drafts them in Gmail and the rep presses send,
+  while calls and texts stay on the Outreach tab. Both read this queue, so
+  without a rule the same partner is drafted to at seven and dialled at nine.
+  `_card_channel()` is that rule and the only place it lives: a scheduled task
+  goes by its kind, a net-new card is `email` when the lead has an address and
+  `phone` when it does not. `?channel=email|phone` asks for one side; a rep
+  named in `SALESCRM_JARVIS_EMAIL_REPS` (`luke:40`) gets the phone side by
+  default, with the day's whole count in `day`. Unset, the queue is one list
+  for everybody, as before. Guarded by
+  `test_no_card_is_on_both_sides_of_the_day`.
+- **A touch logged with an `outcome` books the next one.** `_apply_outcome()`
+  is shared by the card's `log_outcome()` and Jarvis's `queue_log()`, so an
+  email logged as `emailed` books the call three days later either way. Logged
+  WITHOUT an outcome it books nothing — correct only for a card that already
+  carries a cadence task — and a fresh card worked through Gmail then comes
+  back a week later as if nobody had written. apibot may log every outcome
+  except `appt_set`.
 - **`leads_queue_idx` (`rep, stage, icp_score DESC, created_at`) is what keeps
   the net-new top-up cheap.** Without it SQLite picks `leads_stage_idx` and
   scans every `new` lead — and in a prospecting DB almost everything is `new`,
@@ -218,6 +251,14 @@ Per `lead_type`, three steps chosen by prior outreach count (0 → `first`,
   person, and "Hi ," on 8,500 emails is the kind of thing reps get blamed for.
 - **`banned_phrases` is enforced by a test.** Add a template that opens with
   "just checking in" and the suite fails.
+- **The signature carries the postal address and a way to make it stop.** It
+  is unsolicited business email; those two lines are what the law asks of it.
+  Guarded by `test_every_email_carries_a_postal_address_and_a_way_out`.
+- **A past-customer template may be for one stage only** (`TEMPLATE_STAGES`):
+  `won` gets the review and referral asks, `lost` the requote, and `follow_up`
+  — the Den's open job, inspected or quoted and never decided — its own
+  "where did it land?". A review ask to someone who never bought is worse than
+  no template.
 - Templates load at import — **editing the file needs a process restart**.
 
 ## Canvasser source handoff

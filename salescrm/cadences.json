@@ -44,5 +44,15 @@
       { "offset_days": 14, "kind": "meeting", "title": "Coffee / lunch — stay top of mind" },
       { "offset_days": 45, "kind": "email",   "title": "Email — recap referrals closed + thank you" }
     ]
+  },
+  {
+    "id": "past_customer_winter",
+    "name": "Past Customer — Winter Check-in",
+    "description": "People whose roof we already did. Give before asking: a check-in and the free storm check, then the referral thank-you, then a call. Three touches in three weeks, then leave them alone.",
+    "steps": [
+      { "offset_days": 0,  "kind": "text",  "title": "Text — check-in + free storm check" },
+      { "offset_days": 7,  "kind": "email", "title": "Email — referral thank-you / next project offer" },
+      { "offset_days": 21, "kind": "call",  "title": "Call — check in, review ask, Home Shield" }
+    ]
   }
 ]

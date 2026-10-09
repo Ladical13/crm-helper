@@ -39,9 +39,30 @@ def sign_in(base_url, username, password=None):
     return sess
 
 
+def sign_in_token(base_url, token):
+    """A session as the API principal (portal/apibot.py), from its token.
+
+    For Jarvis and for scripts run under `railway run`, where there is a token
+    in the environment and no person to type a password. The importer insists
+    such a caller names the rep the rows are for.
+    """
+    if not (token or '').strip():
+        raise PushError('No token: the environment variable is empty or unset')
+    sess = requests.Session()
+    r = sess.post(f'{base_url.rstrip("/")}/api/apibot/session',
+                  headers={'X-P1-Token': token.strip()}, timeout=30)
+    if r.status_code != 200:
+        raise PushError(f'Token sign-in failed (HTTP {r.status_code})')
+    return sess
+
+
 def push(rows, base_url, session, lead_type, source, assign='', batch='',
-         dry_run=False, service='roofing', on_chunk=None):
-    """POST rows in chunks. Returns the merged counts across every chunk."""
+         dry_run=False, service='roofing', on_chunk=None, extra=None):
+    """POST rows in chunks. Returns the merged counts across every chunk.
+
+    `extra` is merged into every request: a warm segment's import options
+    (lead_source, cadence, stagger_per_day), as the pull file recorded them.
+    """
     base = base_url.rstrip('/')
     url = f'{base}/crm/api/prospects/import'
     totals = {'inserted': 0, 'duplicate': 0, 'suppressed': 0, 'invalid': 0}
@@ -49,8 +70,9 @@ def push(rows, base_url, session, lead_type, source, assign='', batch='',
 
     for start in range(0, len(rows), CHUNK):
         chunk = rows[start:start + CHUNK]
-        payload = {'rows': chunk, 'lead_type': lead_type, 'source': source,
-                   'service': service, 'assign': assign, 'dry_run': dry_run}
+        payload = dict(extra or {})
+        payload.update({'rows': chunk, 'lead_type': lead_type, 'source': source,
+                        'service': service, 'assign': assign, 'dry_run': dry_run})
         if batch:
             payload['batch'] = batch
         r = session.post(url, json=payload, timeout=180)

@@ -250,3 +250,94 @@ def test_cross_sell_still_creates_a_second_lead(client):
     leads = client.get('/api/leads').get_json()
     assert len(leads) == 2
     assert {l['service'] for l in leads} == {'roofing', 'gutter_cleaning'}
+
+
+# ── Warm imports: people who already know us ─────────────────────────────────
+
+def _warm(client, rows, **kw):
+    body = {'lead_type': 'homeowner', 'source': 'den:customers',
+            'lead_source': 'existing_customer'}
+    body.update(kw)
+    return _import(client, rows, **body)
+
+
+def test_a_warm_import_lands_as_a_past_customer(client):
+    """A homeowner whose roof we replaced must not arrive as a cold prospect
+    and be offered a free hail inspection."""
+    signup(client)
+    r = _warm(client, [{'first_name': 'Pat', 'last_name': 'Ng', 'phone': '970-555-0101',
+                        'email': 'pat@example.com', 'stage': 'won',
+                        'won_at': '2026-03-09', 'created_at': '2026-02-01T15:00:00.000000',
+                        'source_ref': 'den:contact:1'}])
+    assert r.status_code == 201, r.get_json()
+    lead = client.get('/api/leads').get_json()[0]
+    assert (lead['source'], lead['stage'], lead['temperature']) == ('existing_customer', 'won', 'warm')
+    assert lead['won_at'] == '2026-03-09T00:00:00Z'
+    # Dated when we met them, so a spring customer is not in October's cohort.
+    assert lead['created_at'] == '2026-02-01T15:00:00Z'
+    m = client.get(f"/api/leads/{lead['id']}/messages").get_json()
+    assert m['audience'] == 'past_customer'
+    assert any('review' in t['name'].lower() for t in m['text']['templates'])
+
+
+def test_a_cold_import_ignores_the_warm_fields(client):
+    """`stage` on an open-data row must not let a pull invent a customer."""
+    signup(client)
+    _import(client, _rows({'license_no': 'HOA-9', 'stage': 'won', 'won_at': '2026-03-09'}))
+    lead = client.get('/api/leads').get_json()[0]
+    assert (lead['source'], lead['stage'], lead['won_at']) == ('prospecting', 'new', '')
+
+
+def test_an_open_job_gets_its_own_script_not_a_review_ask(client):
+    signup(client)
+    _warm(client, [{'first_name': 'Sam', 'last_name': 'Lee', 'phone': '970-555-0102',
+                    'stage': 'follow_up', 'source_ref': 'den:project:2'}])
+    lead = client.get('/api/leads').get_json()[0]
+    names = [t['name'] for t in
+             client.get(f"/api/leads/{lead['id']}/messages").get_json()['text']['templates']]
+    assert names and all('review' not in n.lower() for n in names), names
+
+
+def test_a_warm_import_spreads_its_first_touches_over_days(client):
+    """Fifty customers imported on Monday must not all be due on Monday."""
+    signup(client)
+    rows = [{'first_name': f'C{i}', 'last_name': 'X', 'phone': f'970-555-01{i:02d}',
+             'stage': 'won', 'source_ref': f'den:contact:{i}'} for i in range(5)]
+    r = _warm(client, rows, cadence='past_customer_winter', stagger_per_day=2)
+    assert r.status_code == 201, r.get_json()
+    with appmod.get_db() as db:
+        due = sorted(t['due_at'][:10] for t in db.execute('SELECT due_at FROM tasks WHERE done=0'))
+    assert len(due) == 5 and len(set(due)) == 3
+    assert [due.count(d) for d in sorted(set(due))] == [2, 2, 1]
+    assert len(client.get('/api/queue/today').get_json()['due']) == 2
+
+
+def test_a_dry_run_starts_no_cadence(client):
+    signup(client)
+    _warm(client, [{'first_name': 'A', 'last_name': 'B', 'phone': '970-555-0199', 'stage': 'won'}],
+          cadence='past_customer_winter', dry_run=True)
+    with appmod.get_db() as db:
+        assert db.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM leads').fetchone()[0] == 0
+
+
+def test_a_cold_import_cannot_start_a_cadence(client):
+    """36k open-data rows must not each grow a task."""
+    signup(client)
+    r = _import(client, _rows({'license_no': 'HOA-1'}), cadence='partner_nurture')
+    assert r.status_code == 400
+
+
+def test_an_unknown_lead_source_is_refused(client):
+    signup(client)
+    assert _import(client, _rows({'license_no': 'HOA-1'}), lead_source='website').status_code == 400
+    assert _warm(client, [{'company': 'X', 'phone': '970-555-0100'}],
+                 cadence='no_such_cadence').status_code == 400
+
+
+def test_parse_stamp_reads_what_the_den_writes():
+    assert appmod._parse_stamp('2026-03-09') == '2026-03-09T00:00:00Z'
+    assert appmod._parse_stamp('2026-03-09T17:04:05.123000') == '2026-03-09T17:04:05Z'
+    assert appmod._parse_stamp('2026-03-09T17:04:05Z') == '2026-03-09T17:04:05Z'
+    assert appmod._parse_stamp('2026-03-09T10:04:05-07:00') == '2026-03-09T17:04:05Z'
+    assert appmod._parse_stamp('') == '' and appmod._parse_stamp('last spring') == ''

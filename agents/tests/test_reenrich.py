@@ -128,3 +128,12 @@ def test_the_spend_cap_stops_the_run_cleanly(crm, monkeypatch):
     monkeypatch.setattr(perplexity, 'search_json', capped)
     out = reenrich.run(crm, limit=5, log=lambda *_: None)
     assert out['names'] == out['emails'] == 0
+
+
+def test_a_partner_is_asked_for_the_person_who_refers_not_the_one_who_fixes():
+    """A brokerage's facilities contact is its office manager."""
+    realtor = reenrich._prompt({'company': 'Park Realty', 'lead_type': 'realtor'})
+    assert 'managing broker' in realtor and 'facilities' not in realtor
+    assert 'real estate brokerage' in realtor
+    church = reenrich._prompt({'company': 'Grace Church', 'lead_type': 'church'})
+    assert 'facilities' in church and 'senior pastor' in church

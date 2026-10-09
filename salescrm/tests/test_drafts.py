@@ -235,3 +235,13 @@ def test_a_school_district_draft_renders_without_a_contact_name():
     assert 'Poudre School District R-1' in draft['subject']
     assert '24,963 students' not in draft['body']
     assert 'Hi ,' not in draft['body']
+
+
+def test_every_email_carries_a_postal_address_and_a_way_out(client):
+    """What makes an unsolicited business email lawful to send: who it is from,
+    where they are, and how to make it stop."""
+    signup(client)
+    lead = new_lead(client, first_name='A', company='A Co', lead_type='realtor')
+    body = client.get(f"/api/leads/{lead['id']}/draft").get_json()['body']
+    assert appmod.COMPANY_ADDRESS in body
+    assert 'stop' in body.lower().split('projectoneroofingcolorado.com')[-1]

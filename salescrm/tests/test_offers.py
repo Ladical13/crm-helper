@@ -38,13 +38,30 @@ def test_every_offer_links_to_itself():
 
 def test_an_offer_with_an_unset_amount_cannot_go_live(client):
     signup(client)
+    # The starter amounts are set now, so put a hole back the way a manager
+    # drafting a new promise would.
+    body = _offer(client, 'past_referral')
+    holed = {'intro': body['intro'].replace('$250', '[AMOUNT]')}
+    assert '[AMOUNT]' in holed['intro']
+    assert client.put('/api/offers/past_referral', json=holed).status_code == 200   # a draft may
     r = client.put('/api/offers/past_referral', json={'status': 'live'})
     assert r.status_code == 400 and '[AMOUNT]' in r.get_json()['error']
-    body = _offer(client, 'past_referral')
-    fixed = {k: (v.replace('[AMOUNT]', '$100') if isinstance(v, str) else v)
-             for k, v in body.items() if k in ('intro', 'email_body', 'text_body')}
-    fixed['bullets'] = [b.replace('[AMOUNT]', '$100') for b in body['bullets']]
-    assert client.put('/api/offers/past_referral', json=dict(fixed, status='live')).status_code == 200
+    fixed = {'intro': holed['intro'].replace('[AMOUNT]', '$100'), 'status': 'live'}
+    assert client.put('/api/offers/past_referral', json=fixed).status_code == 200
+
+
+def test_no_starter_offer_ships_with_a_hole_in_it():
+    """Every amount was decided on 2026-10-05; a new [PLACEHOLDER] in the
+    starter file is a promise nobody has priced."""
+    for o in _seed():
+        assert not appmod._PLACEHOLDER_RE.findall(json.dumps(o)), o['key']
+
+
+def test_every_starter_offer_would_pass_the_go_live_gate():
+    """Drafts included: Luke flips them live from the CRM, and the gate must
+    not be where he finds out the text is too long or makes a claim."""
+    for o in _seed():
+        assert appmod._offer_problems(dict(o, status='live'), going_live=True) == [], o['key']
 
 
 @pytest.mark.parametrize('claim', ['Guaranteed 24-hour response', "Colorado's best roofer",
