@@ -5325,8 +5325,18 @@ def _sell_price(cost, rate, mode):
     return cost * (1 + rate / 100)
 
 
+def _is_no_margin(item):
+    """A pass-through line: a charge handed on at exactly what it costs us - the
+    supplier's delivery fee, the city's permit. Strictly True, and read off the
+    LINE: the flag is copied from the Price Book product when the line is built,
+    so what a signed estimate charged never moves because a manager later ticks
+    a box. MUST mirror isNoMargin (app.js)."""
+    return item.get('no_margin') is True
+
+
 def _line_sell_total(item, tier, rate, mode):
-    """GBB line sell total, honoring a locked price_override (a line total)."""
+    """GBB line sell total, honoring a locked price_override (a line total).
+    A no-margin line sells at its cost, in either mode."""
     t = (item.get('tiers') or {}).get(tier) or {}
     po = t.get('price_override')
     if po is not None and po != '':
@@ -5336,6 +5346,8 @@ def _line_sell_total(item, tier, rate, mode):
             pass
     cost = float(t.get('material_unit_cost') or 0) + float(t.get('labor_unit_cost') or 0)
     qty  = float(item.get('quantity') or 0)
+    if _is_no_margin(item):
+        return cost * qty
     return _sell_price(cost, rate, mode) * qty
 
 
@@ -5458,6 +5470,7 @@ MEASURE_DIMENSIONS = {
     'transition': 'LF',
     'ridge_valley_2x': 'LF',
     'ridge_2x_headwall': 'LF',
+    'roof_job': 'EA',
     'pipe_boots': 'EA',
     'skylights': 'EA',
     'turtle_vents': 'EA',
@@ -5512,7 +5525,8 @@ _UNIT_OK = {
     'SQ': {'SQ', 'SF'},
     'SF': {'SF', 'SQ'},
     'LF': {'LF', 'FT'},
-    'EA': {'EA', 'EACH', 'PC', 'PCS'},
+    # LS: a lump sum charged once per job (a permit, a delivery) is a count.
+    'EA': {'EA', 'EACH', 'PC', 'PCS', 'LS'},
 }
 
 
@@ -5757,6 +5771,43 @@ def _trade_cost_subtotal(est, trade, tier):
     return total
 
 
+def _trade_pass_through(est, trade, tier):
+    """(sell, cost) of one trade's no-margin lines, by _trade_subtotal's own
+    inclusion rules.
+
+    They carry no margin by decision, so the realized-margin PERCENTAGE is
+    taken on what is left: a $225 delivery fee handed on at cost would
+    otherwise read as margin given away, and a job priced exactly on the 35%
+    target would trip the floor's warning for it. The dollars are untouched -
+    sell, cost and profit still include these lines.
+    MUST mirror tradePassThrough (app.js)."""
+    td = (est.get('trades') or {}).get(trade, {})
+    if not td.get('enabled'):
+        return 0.0, 0.0
+    pricing = est.get('pricing', {})
+    mode = pricing.get('mode', 'margin')
+    simple = _trade_mode(trade, td) == 'simple'
+    r = _tier_rate(pricing, trade, tier)
+    sell = cost = 0.0
+    for item in td.get('line_items', []):
+        if not _is_no_margin(item) or _is_supplement_item(td, item):
+            continue
+        qty = float(item.get('quantity') or 0)
+        if qty <= 0:
+            continue
+        if simple:
+            sell += float(item.get('unit_price') or 0) * qty
+            cost += float(item.get('unit_cost') or 0) * qty
+        else:
+            t = (item.get('tiers') or {}).get(tier, {})
+            if t.get('included') is False:
+                continue
+            sell += _line_sell_total(item, tier, r, mode)
+            cost += (float(t.get('material_unit_cost') or 0)
+                     + float(t.get('labor_unit_cost') or 0)) * qty
+    return sell, cost
+
+
 def estimate_margin_report(est):
     """Realized margin for every package this estimate actually offers.
 
@@ -5788,12 +5839,18 @@ def estimate_margin_report(est):
     for t in tiers:
         sell = sum(_trade_subtotal(est, tk, t) for tk in GBB_TRADES) + u_sell
         cost = sum(_trade_cost_subtotal(est, tk, t) for tk in GBB_TRADES) + u_cost
+        # No-margin lines (delivery, permit) are in the dollars above and out
+        # of the percentage below - see _trade_pass_through.
+        pt = [_trade_pass_through(est, tk, t) for tk in GBB_TRADES]
+        pt_sell, pt_cost = sum(p[0] for p in pt), sum(p[1] for p in pt)
+        ms, mc = sell - pt_sell, cost - pt_cost
         out.append({
             'tier': t,
             'sell': round(sell, 2),
             'cost': round(cost, 2),
-            'margin_pct': (round((sell - cost) / sell * 100, 1)
-                           if sell > 0 and cost > 0 else None),
+            'pass_through': round(pt_cost, 2),
+            'margin_pct': (round((ms - mc) / ms * 100, 1)
+                           if ms > 0 and mc > 0 else None),
         })
     known = [d for d in out if d['margin_pct'] is not None]
     return {'tiers': out,
@@ -6635,6 +6692,10 @@ def get_analytics():
             r     = _tier_rate(pricing, tk, tier)
             tsell = 0.0
             tcost = 0.0
+            # No-margin lines (delivery, permit): real revenue and real cost,
+            # so they stay in every dollar figure below, and out of every
+            # margin PERCENTAGE - the same basis estimate_margin_report uses.
+            pt_sell, pt_cost = _trade_pass_through(est, tk, tier)
 
             for item in td['line_items']:
                 if _is_supplement_item(td, item):
@@ -6663,6 +6724,9 @@ def get_analytics():
                     by_trade[tk]['job_count'] += 1
                     by_rep[sp]['revenue']     += tsell
                     by_rep[sp]['cost']        += tcost
+                    for _d in (by_trade[tk], by_rep[sp]):
+                        _d['_pt_sell'] = _d.get('_pt_sell', 0.0) + pt_sell
+                        _d['_pt_cost'] = _d.get('_pt_cost', 0.0) + pt_cost
                     by_rep[sp]['deals'].append(tsell)
                     all_dtc.extend(by_rep[sp].get('days_to_close', [])[-1:])  # company wide
                     # Which package the customer bought, per trade. A trade in
@@ -6677,8 +6741,8 @@ def get_analytics():
                 month_key = pclock.month_of((est.get('signature') or {}).get('signed_at'))
                 if _GOAL_MONTH_RE.match(month_key):
                     m = _mo(month_key)
-                    m['trade_revenue'] += tsell
-                    m['trade_cost']    += tcost
+                    m['trade_revenue'] += tsell - pt_sell
+                    m['trade_cost']    += tcost - pt_cost
             elif is_sent:
                 by_trade[tk]['pipeline']       += tsell
                 by_trade[tk]['pipeline_count'] += 1
@@ -6715,12 +6779,21 @@ def get_analytics():
     def _margin(rev, cost):
         return round((rev - cost) / rev * 100, 1) if rev > 0 and cost > 0 else None
 
+    # Margin basis = the dollars less the no-margin lines, on both sides. The
+    # two working keys never leave this function.
+    def _margin_basis(d):
+        return (d['revenue'] - d.pop('_pt_sell', 0.0), d['cost'] - d.pop('_pt_cost', 0.0))
+
+    tr_rev = tr_cost = 0.0
     for d in by_trade.values():
-        d['margin_pct'] = _margin(d['revenue'], d['cost'])
+        m_rev, m_cost = _margin_basis(d)
+        tr_rev  += m_rev
+        tr_cost += m_cost
+        d['margin_pct'] = _margin(m_rev, m_cost)
     for d in by_rep.values():
         dtc = d.pop('days_to_close')
         deals = d.pop('deals')
-        d['margin_pct']       = _margin(d['revenue'], d['cost'])
+        d['margin_pct']       = _margin(*_margin_basis(d))
         d['close_rate']       = round(d['signed'] / d['sent'] * 100) if d['sent'] > 0 else 0
         d['avg_days_to_close'] = round(sum(dtc) / len(dtc), 1) if dtc else None
         d['avg_deal']          = round(d['revenue'] / d['signed'], 0) if d['signed'] > 0 else 0
@@ -6864,8 +6937,6 @@ def get_analytics():
     def _avg_list(xs):
         return round(sum(xs) / len(xs), 1) if xs else None
 
-    tr_rev  = sum(d['revenue'] for d in by_trade.values())
-    tr_cost = sum(d['cost'] for d in by_trade.values())
     kpis = {
         'revenue':           round(kpi['revenue'], 2),
         'jobs':              kpi['jobs'],
@@ -21849,8 +21920,20 @@ ROOFING_CATALOG_SEED = [
      "bullets": ["Installed by Project One crews to manufacturer spec"]},
     {"id": "x_dumpster", "name": "Dumpster", "unit": "LS", "cost": 0,
      "bullets": ["Dumpster and full magnetic nail sweep"]},
-    {"id": "x_permit", "name": "Permit", "unit": "LS", "cost": 0,
+    # Charged at cost, once per roof. $275 is the average actually paid on
+    # Colorado RETAIL roofs - 14 jobs in The Den on 2026-10-09, mean $271.77,
+    # median $271.83, range $138-$452 - not a quote for any one city. Luke:
+    # "for retail jobs I just want to use an average cost", and no margin on it.
+    {"id": "x_permit", "name": "Permit", "unit": "LS", "cost": 275, "measure": "roof_job",
+     "no_margin": True,
      "bullets": ["Permit pulled and final inspection scheduled"]},
+    # The supplier's delivery charge on an asphalt shingle roof: a flat $225,
+    # handed on at cost and never shown to the customer (Luke, 2026-10-09), so
+    # its price rides inside the shingle row like labor's does. Explicitly
+    # silent on the package card - there is no promise to make about a truck.
+    # Metal has its own, larger delivery lines (x_ss_delivery, x_pbr_delivery).
+    {"id": "x_shingle_delivery", "name": "Shingle Delivery", "unit": "EA", "cost": 225,
+     "measure": "roof_job", "no_margin": True, "customer_visible": False, "bullets": []},
 ]
 _RS = ["a_underlayment", "a_ice_water", "a_drip_edge", "a_ridge_cap", "a_starter",
        "a_pipe_boots", "a_step_flash", "a_decking", "l_tearoff", "l_install", "x_dumpster", "x_permit"]
@@ -21948,11 +22031,11 @@ _PBR_METAL = ["a_underlayment", "a_ice_water", "a_pbr_fasteners", "a_pbr_drip",
 # Changing a line here needs its old wording in _BUNDLE_DESCRIPTION_MIGRATIONS,
 # or it reaches no live book.
 ROOFING_BUNDLES_SEED = [
-    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS, "description": "Architectural shingle with a lifetime limited warranty.",
+    {"id": "b_landmark", "name": "CertainTeed Landmark", "product_ids": ["m_landmark"] + _RS + ["x_shingle_delivery"], "description": "Architectural shingle with a lifetime limited warranty.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS, "description": "Class 4 impact-resistant SBS shingle.",
+    {"id": "b_northgate", "name": "CertainTeed Northgate", "product_ids": ["m_northgate"] + _RS + ["x_shingle_delivery"], "description": "Class 4 impact-resistant SBS shingle.",
      "extra_features": _RS_EXTRA},
-    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS, "description": "Class 4 impact-resistant shingle with a 130 mph wind warranty.",
+    {"id": "b_iko_nordic", "name": "IKO Nordic", "product_ids": ["m_iko_nordic"] + _RS + ["x_shingle_delivery"], "description": "Class 4 impact-resistant shingle with a 130 mph wind warranty.",
      "extra_features": _RS_EXTRA},
     {"id": "b_edco", "name": "EDCO", "product_ids": ["m_edco"] + _RS, "description": "Class 4 impact-rated steel shingles.",
      "extra_features": _RS_EXTRA},
@@ -23099,9 +23182,13 @@ _BUNDLE_COPY_FIELDS = ('description', 'extra_features')
 # gained its pack conversion prices the raw measure instead — a_ice_water billed
 # linear feet at a per-roll price until it got one. Absence is still the test, so
 # a manager who set their own pack size keeps it.
+# `no_margin` is here for the same reason: every live book has had x_permit
+# since before a fee could be charged at cost. Absence is the test, and the
+# Price Book's At cost box stores an explicit False when it is unticked, so a
+# manager who turns it off keeps it off.
 _PRODUCT_BACKFILL_FIELDS = ('attach', 'bullets', 'customer_visible', 'measure',
                             'group', 'colors', 'styles', 'bundle_lf', 'bundle_unit',
-                            'cost_class')
+                            'cost_class', 'no_margin')
 
 # ── Material vs labor ─────────────────────────────────────────────────────
 #
@@ -23265,6 +23352,10 @@ _PRODUCT_COST_MIGRATIONS = {
                 # 46.46/SQ -> 95/roll -> 1.43/LF (2026-09-15, see
                 # _PER_FOOT_CONVERSIONS for the pack size that leaves with it).
                 'a_ice_water':        [(46.46, 1.43), (95.0, 1.43)],
+                # 2026-10-09: the permit was a $0 placeholder in every book, so
+                # no job was ever charged for one. $0 is the previous seed, and
+                # nobody prices a permit at nothing on purpose.
+                'x_permit':           [(0, 275)],
                 'a_ss_clips':         [(23.85, 14.87)],
                 'a_ss_drip_d':        [(33.82, 24.88)],
                 'a_ss_rake':          [(23.38, 34.44)],
@@ -23366,7 +23457,22 @@ _LATE_BUNDLE_PRODUCTS = {
                            'a_ss_sidewall', 'a_ss_sidewall_recv', 'a_ss_headwall',
                            'a_ss_ridge', 'a_ss_zeecee', 'a_ss_transition',
                            'a_ss_pipe_boot', 'a_ss_sealants',
-                           'x_ss_delivery'],
+                           'x_ss_delivery', 'x_permit'],
+    # 2026-10-09: the permit on every roofing package and the supplier's
+    # delivery on the asphalt shingle ones, both at cost (see the two seed
+    # products). The live book had dropped the $0 Permit row from all nine
+    # packages, which is the "deliberately removed" case the rule above says to
+    # leave alone - it is overridden here on Luke's instruction, because a fee
+    # that is on no package is a fee no job is charged. The last id is the
+    # manager-created Owens Corning Duration Flex package on production.
+    'b_landmark':                 ['x_permit', 'x_shingle_delivery'],
+    'b_northgate':                ['x_permit', 'x_shingle_delivery'],
+    'b_iko_nordic':               ['x_permit', 'x_shingle_delivery'],
+    'b_4904-41ab-8d42-mrz5363f':  ['x_permit', 'x_shingle_delivery'],
+    'b_edco':                     ['x_permit'],
+    'b_stone':                    ['x_permit'],
+    'b_euroshield':               ['x_permit'],
+    'b_pbr':                      ['x_permit'],
 }
 
 # Visual-only exterior-door catalogue. It deliberately sits outside the

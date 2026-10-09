@@ -65,7 +65,7 @@ function grabConst(name) {
   return src.slice(open.index, i);
 }
 
-const CONSTS = ['TIERS', 'BUNDLE_TRADES', 'SIMPLE_MODE_TRADES', 'MODE_DEFAULT_FLIPPED',
+const CONSTS = ['TIERS', 'RETAIL_TRADE_KEYS', 'BUNDLE_TRADES', 'SIMPLE_MODE_TRADES', 'MODE_DEFAULT_FLIPPED',
                 'DEFAULT_RATE', 'SIDING_PROFILE_FACTORS', 'SIDING_BUNDLE_PROFILES',
                 'SIDING_PROFILE_LABELS', 'CATALOG_RANK_LAST', 'PRODUCT_VARIANTS',
                 'MEASURE_DEFS'];
@@ -84,6 +84,11 @@ const NAMES = ['mnum', 'evalFormula',
                'itemMeasurements', 'measuredQty', 'displayUnit', 'applyMeasurements',
                'packCover', 'packWaste', 'packCount', 'packOf', 'packRebaseQty',
                'packRebaseCost', 'syncLinePack', '_lineHasCost', '_packCostsReadPerUnit',
+               // A fee charged at cost (no margin), and the margin it sits out of.
+               'isNoMargin', 'marginOf', 'lineTotal', 'lineTotalEffective', 'tradeTotal',
+               'tradeCostTotal', 'tradePassThrough', 'marginReport', 'tierEnabled',
+               'enabledTiers', 'isSupplementSectionName', 'isSupplementItem',
+               'buildInsuranceCostItems', '_carryItemIdentity', 'setTradeMode',
                // The Price Book's Bought-as editor.
                'pbCat', 'pbRoofCatSetOrder', 'pbRoofCatSetPackPriced', 'pbParsePackCover',
                'pbPackCoverText', 'pbPackOne', 'pbPackMany', 'pbRoundCost',
@@ -102,6 +107,10 @@ const harness = `
   function renderTotals() {}
   function renderPBModal() {}
   function rerender() {}
+  function renderTabBar() {}
+  function renderScopePage() {}
+  function seedTradeFromDefaults() {}
+  function _syncLegacyTier() {}
   function alert(msg) { __alerts.push(String(msg)); }
   function confirm() { return true; }
   function esc(s) { return String(s == null ? '' : s); }
@@ -144,6 +153,11 @@ const body = `
     else if (o.op === 'parseCover') probes.push(pbParsePackCover(o.s));
     else if (o.op === 'coverText') probes.push(pbPackCoverText(o.v));
     else if (o.op === 'priceHint') probes.push(pbPackPriceHint(__catalog[o.i]));
+    else if (o.op === 'marginReport') probes.push(marginReport());
+    else if (o.op === 'insuranceCostItems') probes.push(buildInsuranceCostItems(o.id));
+    else if (o.op === 'setMode') setTradeMode(o.trade, o.mode);
+    else if (o.op === 'tierTotals') probes.push({ sell: tradeTotal(o.trade, o.tier), cost: tradeCostTotal(o.trade, o.tier) });
+    else if (o.op === 'lineSell') probes.push(lineTotalEffective(S.trades[o.trade].line_items.find(i => i.catalog_id === o.id), o.tier, o.trade));
     else throw new Error('unknown op: ' + o.op);
   }
   return { S, probes, catalog: __catalog, alerts: __alerts };

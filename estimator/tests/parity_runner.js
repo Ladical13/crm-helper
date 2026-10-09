@@ -58,7 +58,7 @@ function grabConst(name) {
 
 const CONSTS = ['DEFAULT_RATE', 'RETAIL_TRADE_KEYS', 'SIMPLE_MODE_TRADES', 'MODE_DEFAULT_FLIPPED'];
 const NAMES = ['_rateValue', '_resolveRate', 'tierRate', 'tradeRate', 'lineTotal',
-               'lineTotalEffective', 'effectiveTradeMode', 'tradeTotal', 'grandTotal',
+               'lineTotalEffective', 'isNoMargin', 'effectiveTradeMode', 'tradeTotal', 'grandTotal',
                'selectedTotal', 'tradeTier', 'isSupplementSectionName', 'isSupplementItem',
                'supplementLineTotal', 'supplementItems', 'supplementsTotal',
                // selectedTotal adds the elected optional upgrades, so the

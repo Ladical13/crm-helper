@@ -724,6 +724,58 @@ ways — $2,918.89 off the per-foot book, to the cent, and $3,305.92 off the
 invoice's packs against $3,291.08 actually billed — under node through
 `tests/pack_runner.js`.
 
+## Fees charged at cost — the delivery and the permit
+
+Two charges were on no estimate at all: the supplier's delivery fee and the
+city's permit both came straight out of the job's margin. Both are charged now,
+at exactly what they cost. `no_margin: true` on a Price Book product (the
+**At cost** column) is copied onto every line built from it, and a line that
+carries it sells at `cost × qty` — in margin mode, in markup mode, at any rate.
+
+- **This is pricing math, so it is in both files.** `lineTotal()` takes the
+  flag and `_line_sell_total()` mirrors it; `tests/test_parity.py` carries
+  no-margin fixtures. Simple mode stores its sell price, so
+  `simpleApplyMargin()` writes the cost there instead of deriving anything.
+  Only a literal `true` counts (`isNoMargin()` / `_is_no_margin()`), and a
+  locked line total still wins.
+- **The flag is read off the LINE, never the product.** Same rule as a bundle's
+  tagline and an upgrade's price: what a signed estimate charged must not move
+  because a manager later ticks a box. `marginOf()` rides beside `packOf()` in
+  every line builder, and re-picking a package re-reads it, both ways.
+- **The dollars include these lines; the margin PERCENTAGE does not.**
+  `tradePassThrough()` / `_trade_pass_through()` take them out of both sides of
+  `marginReport()` / `estimate_margin_report()` and of every margin figure on
+  the analytics tab. Without that a roof priced exactly on the 35% target reads
+  33% and trips the floor's warning on every estimate the company writes — for
+  a fee nobody was trying to make money on. Revenue, cost and profit are whole.
+- **Once per roof, and not before there is one.** The `roof_job` measure is 1
+  when Roof SQ is set and 0 otherwise. A flat 1 would put $500 on every blank
+  estimate, and "nothing priced" is how a report-only estimate is recognised.
+- **The delivery is hidden; the permit is not.** `x_shingle_delivery` is
+  `customer_visible: false` with explicitly empty bullets, so its $225 rides
+  inside the shingle row the way labor's does and the package card says nothing
+  about a truck. The permit keeps its own row at cost and its promise on the
+  card. Either is one checkbox in the Price Book.
+- **The permit is an average, not a lookup.** $275 is what Colorado retail
+  roofs actually paid in The Den when this shipped (14 jobs, mean $271.77,
+  range $138–$452). It is a price book cost like any other, and the manager's
+  number once they change it.
+- **Reaching the live book took three mechanisms**, because the Permit product
+  already existed there as a $0 placeholder on no package:
+  `_PRODUCT_COST_MIGRATIONS` (0 → 275, the previous seed), `no_margin` and
+  `measure` through `_PRODUCT_BACKFILL_FIELDS`, and `_LATE_BUNDLE_PRODUCTS` to
+  put the rows on the packages. That last one overrides a manager's removal on
+  every read, which its own comment says not to do — done here on the owner's
+  instruction. **Drop those entries once the live book has been saved past
+  them**, or nobody can take the permit off a package from the Price Book.
+  The At cost box stores an explicit `false` when unticked for the same reason
+  the Bought-as box stores an explicit 0: an absent key is what lets
+  `_ensure_bundle_catalogs()` put the seed's value back.
+- **Insurance cost sheets carry both.** The carrier sets that price, and a
+  delivery and a permit are part of what the roof costs us to build.
+
+Guarded by `tests/test_pass_through.py`.
+
 ## The invoice and the basic estimate
 
 Three documents a customer can be handed, and they answer three questions:

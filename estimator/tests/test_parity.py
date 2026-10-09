@@ -282,6 +282,53 @@ FIXTURES = [
         'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)})]}},
         'upgrades': {'enabled': False, 'items': [
             {'id': 'u_a', 'name': 'Gutter guards', 'price': 1450, 'accepted': True}]}}),
+
+    # ── fees charged at cost (no_margin) ────────────────────────────────────
+    # A delivery and a permit are handed on at exactly what they cost: the
+    # line sells at cost × qty at ANY rate, in either mode. One side marking
+    # them up is a customer page that disagrees with the rep's screen by
+    # $333 on a $500 pair of fees.
+    ('no-margin fees, margin mode', {'pricing': STD, 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb', 'selected_tier': 'good',
+        'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)}),
+                       _gbb(1, {'good': (225, 0), 'better': (225, 0), 'best': (225, 0)},
+                            no_margin=True),
+                       _gbb(1, {'good': (275, 0), 'better': (275, 0), 'best': (275, 0)},
+                            no_margin=True)]}}}),
+
+    ('no-margin fees, markup mode', {'pricing': dict(STD, mode='markup'), 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(10, {'good': (100, 0), 'better': (100, 0), 'best': (100, 0)}),
+                       _gbb(2, {'good': (225, 10), 'better': (225, 10), 'best': (225, 10)},
+                            no_margin=True)]}}}),
+
+    # At a 100% margin an ordinary line prices at 0; a fee at cost still costs.
+    ('no-margin fee at margin >= 100', {'pricing': _pricing(global_rate=100), 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb',
+        'line_items': [_gbb(10, {'good': (100, 0), 'better': (100, 0), 'best': (100, 0)}),
+                       _gbb(1, {'good': (275, 0), 'better': (275, 0), 'best': (275, 0)},
+                            no_margin=True)]}}}),
+
+    # Only a literal true counts, a locked line total still wins, a tier that
+    # excludes the fee does not charge it, and zero quantity is not in scope.
+    ('no-margin edge cases', {'pricing': STD, 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb',
+        'line_items': [
+            _gbb(1, {'good': (200, 0), 'better': (200, 0), 'best': (200, 0)}, no_margin='true'),
+            _gbb(1, {'good': (200, 0), 'better': (200, 0), 'best': (200, 0)}, no_margin=1),
+            _gbb(1, {'good': (200, 0), 'better': (200, 0), 'best': (200, 0)}, no_margin=False),
+            {'name': 'locked', 'quantity': 1, 'no_margin': True, 'tiers': {
+                'good': {'material_unit_cost': 200, 'labor_unit_cost': 0, 'price_override': 310},
+                'better': {'material_unit_cost': 200, 'labor_unit_cost': 0},
+                'best': {'material_unit_cost': 200, 'labor_unit_cost': 0, 'included': False}}},
+            _gbb(0, {'good': (225, 0), 'better': (225, 0), 'best': (225, 0)}, no_margin=True)]}}}),
+
+    # In a Supplements section the fee is priced there, at cost, per unit.
+    ('no-margin line in supplements', {'pricing': STD, 'trades': {'roofing': {
+        'enabled': True, 'mode': 'gbb', 'sections': ['Supplements'],
+        'line_items': [_gbb(30, {'good': (100, 50), 'better': (130, 55), 'best': (170, 60)}),
+                       _gbb(0, {'good': (275, 0), 'better': (275, 0), 'best': (275, 0)},
+                            no_margin=True, section='Supplements')]}}}),
 ]
 
 

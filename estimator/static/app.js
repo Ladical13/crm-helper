@@ -559,7 +559,7 @@ function supplementLineTotal(trade, item, tier) {
   if (t.price_override !== undefined && t.price_override !== null && t.price_override !== '') {
     return parseFloat(t.price_override) || 0;
   }
-  return lineTotal(qty, t.material_unit_cost, t.labor_unit_cost, trade, tier);
+  return lineTotal(qty, t.material_unit_cost, t.labor_unit_cost, trade, tier, isNoMargin(item));
 }
 function supplementItems(trade, tier) {
   const td = S.trades[trade];
@@ -1197,6 +1197,11 @@ const MEASURE_DEFS = {
   // closures for 2x160 ridge + 135.58 headwall = 455.58 LF (152 pieces plus
   // their usual ~5%); adding the 42 LF of transition would put them SHORT.
   ridge_2x_headwall:    { label:'Ridge both sides + Headwall LF', calc:m => 2 * mnum(m.ridge_hip_lf) + mnum(m.wall_flash_lf) + mnum(m.unspecified_lf) },
+  // A charge that is the same on every roof - a delivery, a permit. One when
+  // there is a roof to deliver to, none before then: a blank estimate must
+  // not total $500 of fees, and "no priced scope" is how a report-only
+  // estimate is recognised.
+  roof_job:             { label:'# One per roof job', calc:m => mnum(m.roof_squares) > 0 ? 1 : 0 },
   pipe_boots:           { label:'# Pipe Boots',       calc:m => mnum(m.pipe_boots) },
   skylights:            { label:'# Skylights',        calc:m => mnum(m.skylights) },
   turtle_vents:         { label:'# Turtle Vents',     calc:m => mnum(m.turtle_vents) },
@@ -2581,9 +2586,13 @@ function tradeRate(trade) {
                        (p.tier_rates || {}).good,
                        p.global_rate]);
 }
-function lineTotal(qty, mat, labor, trade, tier) {
+/* `noMargin` is a pass-through line: a charge we hand on at exactly what it
+   costs us - the supplier's delivery fee, the city's permit - with nothing
+   added in either mode. See isNoMargin. MUST mirror _line_sell_total (app.py). */
+function lineTotal(qty, mat, labor, trade, tier, noMargin) {
   const cost = (parseFloat(mat)||0) + (parseFloat(labor)||0);
   const q = parseFloat(qty) || 0;
+  if (noMargin === true) return cost * q;
   const r = tier ? tierRate(trade, tier) : tradeRate(trade);
   // Margin when mode is unset; any other value means markup. Mirrors app.py's
   // pricing.get('mode', 'margin') followed by an exact 'margin' test.
@@ -2597,8 +2606,16 @@ function lineTotalEffective(item, tier, trade) {
   if (t.price_override !== undefined && t.price_override !== null && t.price_override !== '') {
     return parseFloat(t.price_override) || 0;
   }
-  return lineTotal(item.quantity, t.material_unit_cost, t.labor_unit_cost, trade, tier);
+  return lineTotal(item.quantity, t.material_unit_cost, t.labor_unit_cost, trade, tier,
+                   isNoMargin(item));
 }
+/* A line sold at cost. Strictly `true`, on the line itself: the flag is copied
+   from the Price Book product when the line is built (marginOf), so what a
+   signed estimate charged never moves because a manager later ticks a box.
+   MUST mirror `item.get('no_margin') is True` in app.py. */
+function isNoMargin(item) { return !!item && item.no_margin === true; }
+/* The margin fields a line takes from its product - spread beside packOf(). */
+function marginOf(p) { return { no_margin: (p && p.no_margin === true) ? true : undefined }; }
 function tradeTotal(trade, tier) {
   if (trade === 'insurance') return 0; // insurance uses insuranceTotal()
   const td = S.trades[trade];
@@ -2649,6 +2666,35 @@ function tradeCostTotal(trade, tier) {
                 + (parseFloat(t.labor_unit_cost)||0)) * (parseFloat(item.quantity)||0);
   }, 0);
 }
+/* {sell, cost} of one trade's pass-through lines, by tradeTotal's own inclusion
+   rules. They carry no margin by decision, so the realized-margin PERCENTAGE
+   is taken on what is left: a $225 delivery fee handed on at cost would
+   otherwise read as margin given away, and a job priced exactly on the 35%
+   target would trip the floor's warning for it. The dollars are untouched -
+   sell, cost and profit all still include these lines.
+   MUST mirror _trade_pass_through (app.py). */
+function tradePassThrough(trade, tier) {
+  const none = { sell: 0, cost: 0 };
+  if (trade === 'insurance') return none;
+  const td = S.trades[trade];
+  if (!td || !td.enabled) return none;
+  const simple = effectiveTradeMode(trade, td) === 'simple';
+  return (td.line_items || []).reduce((acc, item) => {
+    if (!isNoMargin(item) || isSupplementItem(td, item)) return acc;
+    const q = parseFloat(item.quantity) || 0;
+    if (q <= 0) return acc;
+    if (simple) {
+      acc.sell += q * (parseFloat(item.unit_price) || 0);
+      acc.cost += q * (parseFloat(item.unit_cost) || 0);
+      return acc;
+    }
+    const t = (item.tiers && item.tiers[tier]) || {};
+    if (t.included === false) return acc;
+    acc.sell += lineTotalEffective(item, tier, trade);
+    acc.cost += ((parseFloat(t.material_unit_cost)||0) + (parseFloat(t.labor_unit_cost)||0)) * q;
+    return acc;
+  }, { sell: 0, cost: 0 });
+}
 // Every package the customer is actually offered. margin_pct is null when a
 // tier has no cost at all — the commercial catalog ships $0 placeholder costs
 // on purpose, and reporting those as a 100% margin would hand a clean bill of
@@ -2660,8 +2706,11 @@ function marginReport() {
   const rows = tiers.map(t => {
     const sell = RETAIL_TRADE_KEYS.reduce((a,tr)=>a+tradeTotal(tr,t),0);
     const cost = RETAIL_TRADE_KEYS.reduce((a,tr)=>a+tradeCostTotal(tr,t),0);
-    return { tier:t, sell, cost,
-             margin_pct: (sell > 0 && cost > 0) ? (sell-cost)/sell*100 : null };
+    const pt = RETAIL_TRADE_KEYS.reduce((a,tr)=>{ const p = tradePassThrough(tr,t);
+      a.sell += p.sell; a.cost += p.cost; return a; }, { sell: 0, cost: 0 });
+    const ms = sell - pt.sell, mc = cost - pt.cost;   // what the margin is taken on
+    return { tier:t, sell, cost, pass_through: pt.cost,
+             margin_pct: (ms > 0 && mc > 0) ? (ms-mc)/ms*100 : null };
   });
   const known = rows.filter(r => r.margin_pct !== null);
   return { tiers: rows,
@@ -2957,7 +3006,7 @@ function buildInsuranceCostItems(bundleId) {
     const item = {
       catalog_id: pid, name: p.name, unit: p.unit || 'EA',
       measure: p.measure || undefined, formula: p.formula || undefined,
-      ...packOf(p),
+      ...packOf(p), ...marginOf(p),
       unit_cost: parseFloat(p.cost) || 0,
       quantity: 0,
     };
@@ -3961,7 +4010,7 @@ function addUpgradeFromPriceBook() {
                           ...packOf(p), formula: p.formula }) || 1;
   const unitCost = parseFloat(p.cost) || 0;
   const cost  = unitCost * q;
-  const price = lineTotal(q, unitCost, 0, trade, S.selected_tier);
+  const price = lineTotal(q, unitCost, 0, trade, S.selected_tier, p.no_margin === true);
   addUpgrade({
     name: p.name || 'Upgrade',
     description: String(p.description || '').trim(),
@@ -5143,6 +5192,7 @@ function pbRenderRoofCatalog() {
         <th class="pb-th-basecost">Price</th>
         <th class="pb-th-costclass" title="Which side of the internal Cost &amp; Profit split this price lands on. Never shown to the customer.">Cost is</th>
         <th class="pb-th-vis" title="Show on the customer estimate">Show</th>
+        <th class="pb-th-vis" title="Charge this at exactly what it costs - no margin is added, and it sits out of the margin %. For fees you pass straight on: delivery, permits.">At cost</th>
         <th></th>
       </tr></thead>
       <tbody>
@@ -5161,7 +5211,7 @@ function pbRenderRoofCatalog() {
             const prevGrp = visI > 0 ? ((items[visI - 1].group || '').trim()) : '__none__';
             const headerRow = anyGrouped && grp !== prevGrp ? `
               <tr class="pb-group-hd">
-                <td colspan="8">${esc(grp || 'Ungrouped')}</td>
+                <td colspan="9">${esc(grp || 'Ungrouped')}</td>
               </tr>` : '';
             const rawLen = rawItems.length;
             return headerRow + `
@@ -5182,6 +5232,7 @@ function pbRenderRoofCatalog() {
                 <option value="labor" ${normCostClass(it.cost_class)==='labor'?'selected':''}>Labor</option>
               </select></td>
               <td style="text-align:center"><input type="checkbox" ${it.customer_visible!==false?'checked':''} onchange="pbRoofCatSet(${i},'customer_visible',this.checked)"></td>
+              <td style="text-align:center"><input type="checkbox" ${it.no_margin===true?'checked':''} title="Charge at cost - no margin" onchange="pbRoofCatSet(${i},'no_margin',this.checked)"></td>
               <td class="pb-cat-actions">
                 <button class="pb-order-btn ${_pbOrderOpen[it.id]?'on':''}" onclick="pbToggleOrder('${it.id}')"
                   title="Bought as — the pack this product is priced and ordered in">📦</button>
@@ -5191,7 +5242,7 @@ function pbRenderRoofCatalog() {
               </td>
             </tr>
             ${_pbBulletsOpen[it.id] ? `
-            <tr class="pb-bullets-row"><td></td><td colspan="7">
+            <tr class="pb-bullets-row"><td></td><td colspan="8">
               <label class="pb-variant-field-label">Tagline <small>one line under the package price when this product is the primary material — overrides the bundle's default</small></label>
               <input class="pb-bullets-ta" type="text"
                 value="${esc(it.desc||'')}"
@@ -5224,7 +5275,7 @@ function pbRenderRoofCatalog() {
               const coverVal = packed ? it.bundle_lf : it.order_pack;
               const wasteVal = packed ? packWaste(it) : it.order_waste_pct;
               return `
-            <tr class="pb-bullets-row"><td></td><td colspan="7">
+            <tr class="pb-bullets-row"><td></td><td colspan="8">
               <label class="pb-variant-field-label">Bought as <small>${packed
                 ? 'priced AND ordered by the ' + esc(one)
                 : 'material order sheet only — the price stays per ' + esc(base)}</small></label>
@@ -5254,7 +5305,7 @@ function pbRenderRoofCatalog() {
                 : `Blank uses the sheet's default for this product name${sug.cover ? ` (${esc(pbPackCoverText(sug.cover))} ${esc(base)} to the ${esc(pbPackOne(sug.unit))}, +${sug.waste_pct||0}%)` : ''}. Tick the box to price it this way too — the Price converts with it, so nothing is ever a roll size on a per-foot price.`}</div>
             </td></tr>`; })() : ''}`;
           }).join('');
-        })() : `<tr><td colspan="8" class="pb-empty">No products yet — add your first below.</td></tr>`}
+        })() : `<tr><td colspan="9" class="pb-empty">No products yet — add your first below.</td></tr>`}
       </tbody>
     </table>
     </div>
@@ -5469,6 +5520,9 @@ function pbRoofCatSet(i, field, val) {
   const it = pbCat()[i]; if (!it) return;
   if (field === 'cost') it.cost = val === '' ? 0 : (parseFloat(val)||0);
   else if (field === 'customer_visible') it.customer_visible = val;
+  // Always a stored boolean once touched. An absent key is what lets the
+  // server backfill the seed's value, so unticking a seeded fee has to SAY no.
+  else if (field === 'no_margin') it.no_margin = !!val;
   else if (field === 'measure') { if (val) it.measure = val; else delete it.measure; }
   // An explicit 'material' is the manager CHOOSING, and it has to be sticky —
   // otherwise a later improvement to the guess would silently overrule them.
@@ -5742,7 +5796,7 @@ function pbSeedPresetFromDefaults(id) {
     name: t.name, unit: t.unit,
     cost: t.cost_good !== undefined ? parseFloat(t.cost_good)||0 : (t.cost !== undefined ? parseFloat(t.cost)||0 : 0),
     measure: t.measure || undefined,
-    ...packOf(t),
+    ...packOf(t), ...marginOf(t),
     customer_visible: t.customer_visible !== false,
   }));
   renderPBModal();
@@ -5852,7 +5906,7 @@ function loadPreset(trade, id) {
     return {
       id: uid(), name: it.name, unit: it.unit, quantity: 0, description: '',
       unit_cost: cost, unit_price: unitPrice,
-      measure: it.measure || undefined, ...packOf(it),
+      measure: it.measure || undefined, ...packOf(it), ...marginOf(it),
       customer_visible: it.customer_visible !== false,
     };
   });
@@ -6272,7 +6326,7 @@ function pbApplyToEstimate() {
       customer_visible: t.customer_visible !== false,
       measure: t.measure || undefined,
       formula: t.formula || undefined,
-      ...packOf(t),
+      ...packOf(t), ...marginOf(t),
       tiers
     };
   });
@@ -7524,7 +7578,7 @@ function renderOtherFreeform() {
     const t    = (item.tiers && item.tiers[tier]) || {material_unit_cost:0,labor_unit_cost:0,notes:''};
     const qty  = parseFloat(item.quantity) || 0;
     const cost = (parseFloat(t.material_unit_cost)||0) + (parseFloat(t.labor_unit_cost)||0);
-    const calcTot  = lineTotal(item.quantity, t.material_unit_cost, t.labor_unit_cost, trade, tier);
+    const calcTot  = lineTotal(item.quantity, t.material_unit_cost, t.labor_unit_cost, trade, tier, isNoMargin(item));
     const override = (t.price_override !== undefined && t.price_override !== null && t.price_override !== '')
       ? parseFloat(t.price_override) : null;
     const tot = override !== null ? override : calcTot;
@@ -7762,7 +7816,7 @@ function otherApplyPrice(item, tier, value) {
   const v = parseFloat(value);
   if (!value || isNaN(v)) { delete cell.price_override; return; }
   const calc = lineTotal(item.quantity, cell.material_unit_cost || 0,
-                         cell.labor_unit_cost || 0, 'other', tier);
+                         cell.labor_unit_cost || 0, 'other', tier, isNoMargin(item));
   if (Math.abs(v - calc) < 0.01) delete cell.price_override;
   else cell.price_override = v;
 }
@@ -7930,7 +7984,7 @@ function renderSimpleFreeform(trade) {
      formula     - a custom auto-quantity expression.
      vent_role   - the ventilation checkboxes infer their state from it. */
 function _carryItemIdentity(src, dst) {
-  ['catalog_id', 'bundle_lf', 'bundle_unit', 'bundle_waste_pct', 'formula', 'vent_role'].forEach(k => {
+  ['catalog_id', 'bundle_lf', 'bundle_unit', 'bundle_waste_pct', 'no_margin', 'formula', 'vent_role'].forEach(k => {
     if (src[k] !== undefined) dst[k] = src[k];
   });
   return dst;
@@ -7954,6 +8008,7 @@ function setTradeMode(trade, mode) {
       const po   = (t.price_override !== undefined && t.price_override !== null && t.price_override !== '')
         ? parseFloat(t.price_override) : null;
       const sell = (po !== null && qty > 0) ? po / qty
+        : isNoMargin(it) ? cost
         : pricing.mode === 'markup' ? cost * (1 + rate/100)
         : (rate < 100 ? cost / (1 - rate/100) : 0);
       return _carryItemIdentity(it, {
@@ -8011,6 +8066,7 @@ function simpleApplyMargin(trade, item) {
   if (item.price_locked) return;  // rep typed a sell price — never clobber it
   const cost = parseFloat(item.unit_cost) || 0;
   if (!cost) return;
+  if (isNoMargin(item)) { item.unit_price = Math.round(cost * 100) / 100; return; }
   const r = tradeRate(trade);
   item.unit_price = S.pricing.mode === 'markup'
     ? Math.round(cost * (1 + r / 100) * 100) / 100
@@ -8777,6 +8833,7 @@ function liSwapVariant(trade, id, pid) {
   item.name = p.name;
   item.unit = p.unit || item.unit;
   syncLinePack(item, p);
+  if (p.no_margin === true) item.no_margin = true; else delete item.no_margin;
   if (item.measure === undefined && !item.formula && p.measure) item.measure = p.measure;
   const follow = d => (!d || d === oldName) ? p.name : d;
   if (item.tiers) {
@@ -8927,7 +8984,7 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
         id: uid(), catalog_id: pid, name: p.name, unit: p.unit || 'EA',
         quantity: 0, scope_note: '',
         measure: p.measure || undefined,
-        ...packOf(p),
+        ...packOf(p), ...marginOf(p),
         customer_visible: p.customer_visible !== false,
         tiers: {
           good:   { material_unit_cost:0, labor_unit_cost:0, description:'', notes:'', included:false },
@@ -8946,6 +9003,7 @@ function applyBundleToTier(trade, tier, bundleId, autoOpen) {
     // by the pack still counts feet; writing the per-pack cost below onto that
     // would bill 160 LF of starter at the price of 160 bundles.
     syncLinePack(item, p);
+    if (p.no_margin === true) item.no_margin = true; else delete item.no_margin;
     const cell = item.tiers[tier] || (item.tiers[tier] = {material_unit_cost:0,labor_unit_cost:0,description:'',notes:'',included:false});
     cell.included = true;
     cell.material_unit_cost = parseFloat(p.cost) || 0;
@@ -9120,7 +9178,7 @@ function buildSimpleItemsFromBundle(trade, bundleId, sectionName) {
       // An explicit '' (Manual) on the existing item is preserved — same
       // manual-measure contract the GBB path honors.
       measure: (old && old.measure !== undefined) ? old.measure : (p.measure || undefined),
-      ...packOf(p),
+      ...packOf(p), ...marginOf(p),
       customer_visible: p.customer_visible !== false,
       unit_cost: parseFloat(p.cost) || 0,
       unit_price: (old && old.price_locked) ? packRebaseCost(old.unit_price, old, p) : 0,
@@ -9455,7 +9513,7 @@ function renderLiRow(trade, tier, item) {
   const UNITS    = ['SQ','LF','EA','HR','LS','SF','BD'];
   const mat  = parseFloat(t.material_unit_cost) || 0;
   const lab  = parseFloat(t.labor_unit_cost)    || 0;
-  const calcTot = lineTotal(item.quantity, mat, lab, trade, tier);
+  const calcTot = lineTotal(item.quantity, mat, lab, trade, tier, isNoMargin(item));
   const override = (t.price_override !== undefined && t.price_override !== null && t.price_override !== '')
     ? parseFloat(t.price_override) : null;
   const tot  = override !== null ? override : calcTot;
@@ -11076,7 +11134,7 @@ function liSetPriceOverride(trade, id, tier, value) {
     delete item.tiers[tier].price_override;
   } else {
     const calc = lineTotal(item.quantity, item.tiers[tier].material_unit_cost || 0,
-                           item.tiers[tier].labor_unit_cost || 0, trade, tier);
+                           item.tiers[tier].labor_unit_cost || 0, trade, tier, isNoMargin(item));
     if (Math.abs(v - calc) < 0.01) {
       delete item.tiers[tier].price_override;
     } else {
@@ -11191,7 +11249,7 @@ function buildTradeDefaults(trade) {
         unit_price: unitPrice,
         measure: t.measure || undefined,
         formula: t.formula || undefined,
-        ...packOf(t),
+        ...packOf(t), ...marginOf(t),
         customer_visible: t.customer_visible !== false,
       };
     });
@@ -11222,7 +11280,7 @@ function buildItemFromTemplate(trade, t) {
     id:uid(), name:t.name, unit:t.unit, quantity:0, scope_note:'',
     measure: t.measure || undefined,
     formula: t.formula || undefined,
-    ...packOf(t),
+    ...packOf(t), ...marginOf(t),
     customer_visible: t.customer_visible !== false,
     tiers
   };

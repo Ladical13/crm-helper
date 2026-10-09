@@ -110,7 +110,9 @@ const NAMES = ['isBundleTrade', 'effectiveTradeMode', '_tradeCatalog', '_tradeBu
                'variantSlot', 'variantRowFor', 'liSwapVariant',
                // Pack pricing: a row re-priced from a product takes its pack with the cost.
                'packCover', 'packWaste', 'packCount', 'packOf', 'packRebaseQty',
-               'packRebaseCost', 'syncLinePack'];
+               'packRebaseCost', 'syncLinePack',
+               // A fee charged at cost (no margin) rides on the line.
+               'isNoMargin', 'marginOf'];
 
 const scenario = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 

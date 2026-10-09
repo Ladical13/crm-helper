@@ -63,7 +63,7 @@ const CONSTS = ['DEFAULT_RATE', 'RETAIL_TRADE_KEYS', 'SIMPLE_MODE_TRADES',
                 'COST_CLASS_NEVER_LABOR', 'COST_CLASS_LABOR_WORDS',
                 'COST_CLASS_LABOR_PREFIXES', 'COST_CLASS_EXTRA_PREFIXES'];
 const NAMES = ['_rateValue', '_resolveRate', 'tierRate', 'tradeRate', 'lineTotal',
-               'lineTotalEffective', 'effectiveTradeMode', 'tradeTotal', 'tradeTier',
+               'lineTotalEffective', 'isNoMargin', 'effectiveTradeMode', 'tradeTotal', 'tradeTier',
                'guessCostClass', 'normCostClass', '_tradeCatalog',
                '_catalogClassByName', 'costClassOf', 'lineCostSplit',
                'simpleCostSplit', 'tierProfit', 'isSupplementSectionName', 'isSupplementItem'];

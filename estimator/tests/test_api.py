@@ -244,7 +244,11 @@ def test_copy_backfills_onto_a_book_that_already_has_a_catalog(A):
     got = next(b for b in pb['roofing_bundles'] if b['id'] == seed['id'])
     assert got['extra_features'] == seed['extra_features']
     assert got['description'] == seed['description']
-    assert got['product_ids'] == ['m_landmark']    # the manager's product list, untouched
+    # The manager's product list is not a copy field and is left alone - except
+    # for the two at-cost fees _LATE_BUNDLE_PRODUCTS forces onto every asphalt
+    # shingle package (the permit and the supplier's delivery), appended after
+    # whatever the manager had.
+    assert got['product_ids'] == ['m_landmark', 'x_permit', 'x_shingle_delivery']
     landmark = next(p for p in pb['roofing_catalog'] if p['id'] == 'm_landmark')
     seed_p = next(p for p in A.ROOFING_CATALOG_SEED if p['id'] == 'm_landmark')
     assert landmark['bullets'] == seed_p['bullets']
