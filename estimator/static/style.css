@@ -2472,6 +2472,22 @@ a.jx-contact:hover { text-decoration: underline; }
 .jx-vp-btn-warn:hover:not(:disabled) { background: #fff7ed; }
 .jx-vp-hint     { margin-top: 8px; font-size: 11.5px; font-style: italic; color: #64748b; }
 
+/* Mid-roof inspection, remembered per jurisdiction (inspections.py) */
+.jx-insp-form { display: grid; gap: 9px; margin-top: 6px; }
+.jx-insp-form label { display: grid; gap: 3px; font-size: 11.5px; font-weight: 700; color: #334155; }
+.jx-insp-form input[type="text"], .jx-insp-form input[type="url"], .jx-insp-form select {
+  font-size: 13px; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px;
+  background: #fff; width: 100%; box-sizing: border-box; font-weight: 400;
+}
+.jx-insp-kinds { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: #334155; }
+.jx-insp-kinds > span { flex-basis: 100%; font-weight: 700; }
+.jx-insp-form .jx-insp-kind { display: inline-flex; align-items: center; gap: 5px; font-weight: 400; }
+/* A finger, not a width: the card is used on the phone and the iPad alike. */
+@media (pointer: coarse) {
+  .jx-insp .jx-vp-btn { min-height: 40px; padding: 8px 14px; font-size: 14px; }
+  .jx-insp-form .jx-insp-kind { min-height: 36px; }
+}
+
 /* Insurance scope-gap check — carrier scope vs. what code requires */
 .gap-panel {
   margin: 18px 0 4px; padding: 14px 16px; border-radius: 10px;

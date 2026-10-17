@@ -22,6 +22,7 @@ from reaching a customer:
 The verify pipeline uses these constants directly and mocks
 `agents.perplexity.search_json` in tests.
 """
+import json
 import re
 from urllib.parse import urlparse
 
@@ -63,6 +64,65 @@ PROMPT_TEMPLATE = (
     'search-result pages. If you cannot find the value from an authoritative '
     'source, use "unknown" — do not guess.'
 )
+
+
+# The mid-roof inspection question. A SEPARATE call from PROMPT_TEMPLATE, on
+# purpose: that prompt was tuned until it named one short code (loosen it and
+# sonar-pro returns 160-character sentences onto a customer's estimate), and a
+# second question bolted onto it would put that tuning at risk. Each call costs
+# about a cent and is made once per jurisdiction. The answer is remembered in
+# jurisdiction_inspections.json (see inspections.py), not just cached.
+#
+# The answer is internal-only (permit packet, work order, the rep's email), so
+# no customer sees it. The same citation allowlist still applies, and a lookup
+# with no authoritative citation is stored as "unknown" rather than believed.
+INSPECTION_PROMPT_TEMPLATE = (
+    'You are checking which inspections a specific Colorado permitting '
+    'authority requires on a RESIDENTIAL RE-ROOF (tear-off and replacement of '
+    'the roof covering on an existing house), so a roofing contractor can '
+    'schedule the crew around them.\n\n'
+    'Jurisdiction: {name}\n'
+    'Kind: {kind}\n'
+    'County: {county}\n'
+    'Known building-department page: {url}\n\n'
+    'The question is whether this authority requires a MID-ROOF inspection, '
+    'also called an in-progress, underlayment or dry-in inspection, made while '
+    'the roof is partly complete and before the final. If this jurisdiction '
+    'contracts its building inspections to another authority (a regional '
+    'building department or the county), answer for that authority.\n\n'
+    'Return a JSON object with these keys and nothing else:\n'
+    '{{\n'
+    '  "mid_roof": "required" (on every residential re-roof) | "conditional" '
+    '(only for some roof coverings) | "not_required" | "unknown",\n'
+    '  "applies_to": when "conditional", the coverings it applies to, chosen '
+    'ONLY from {vocab}; otherwise [],\n'
+    '  "timing": when it must happen, in as few words as possible, e.g. '
+    '"underlayment complete, 25-75% of roofing installed", or "unknown",\n'
+    '  "photos_accepted": true if photos are accepted in place of an in-person '
+    'mid-roof visit, false if not, "unknown" if not stated,\n'
+    '  "notes": one short sentence on anything else the crew must do for it '
+    '(e.g. "ladder must be on site"), or "",\n'
+    '  "source_url": the URL of the page that states the requirement, or "unknown"\n'
+    '}}\n\n'
+    'Answer "not_required" ONLY when an authoritative source says so, or lists '
+    'the required re-roof inspections without a mid-roof one. Every URL you '
+    'cite MUST be a real, current page on the authority\'s own site, its '
+    'published municipal code, or a .gov page. Do NOT cite blogs, contractor '
+    'sites, permit-service sites or search-result pages. If you cannot find '
+    'the answer from an authoritative source, use "unknown" — do not guess.'
+)
+
+
+def build_inspection_prompt(jurisdiction, roof_kinds):
+    """Format INSPECTION_PROMPT_TEMPLATE for one jurisdictions.json entry.
+    `roof_kinds` is the closed vocabulary `applies_to` may use."""
+    return INSPECTION_PROMPT_TEMPLATE.format(
+        name   = (jurisdiction.get('name')   or '').strip() or 'unknown',
+        kind   = (jurisdiction.get('kind')   or '').strip() or 'unknown',
+        county = (jurisdiction.get('county') or '').strip() or 'unknown',
+        url    = (jurisdiction.get('url')    or '').strip() or '(none on file)',
+        vocab  = json.dumps(list(roof_kinds)),
+    )
 
 
 ALLOWED_CITATION_HOSTS = (

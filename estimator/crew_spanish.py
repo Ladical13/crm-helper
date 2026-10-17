@@ -101,6 +101,15 @@ LABELS = {
     'Intake for code':       'Entrada según el Código',
     'Exhaust NFA':           'NFA de Salida',
     'Intake NFA':            'NFA de Entrada',
+    'Mid-roof Inspection':   'Inspección Intermedia del Techo',
+    'Inspection Timing':     'Momento de la Inspección',
+    'Photos Accepted':       'Se Aceptan Fotos',
+    'Inspection Notes':      'Notas de la Inspección',
+    'REQUIRED - call the office before finishing the roof':
+        'REQUERIDA - llamar a la oficina antes de terminar el techo',
+    'NOT CONFIRMED - ask the office before starting':
+        'SIN CONFIRMAR - preguntar a la oficina antes de empezar',
+    'Not required':          'No requerida',
 
     # Values and states
     'YES':                   'SÍ',

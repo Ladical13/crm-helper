@@ -71,6 +71,13 @@ try:
 except ImportError:
     import crew_spanish                  # noqa: E402
 
+# Mid-roof inspections: what each building department wants, remembered once
+# per jurisdiction so the AI is asked about a city only once.
+try:
+    from . import inspections as _insp   # noqa: E402
+except ImportError:
+    import inspections as _insp          # noqa: E402
+
 # The homeowner's own claim, explained back to them in plain English.
 try:
     from . import claim_explainer        # noqa: E402
@@ -281,6 +288,10 @@ PRICE_BOOK_FILE      = os.path.join(DATA_DIR, 'price_book.json')
 TIER_DEFAULTS_FILE   = os.path.join(DATA_DIR, 'tier_defaults.json')
 PERMIT_DEFAULTS_FILE = os.path.join(DATA_DIR, 'permit_defaults.json')
 JURISDICTIONS_FILE   = os.path.join(DATA_DIR, 'jurisdictions.json')
+# What each jurisdiction wants for a mid-roof inspection, learned once and kept
+# (inspections.py). Its own file so a ⚙ Settings save of jurisdictions.json,
+# which PUTs the whole document, can never overwrite what was learned.
+INSPECTIONS_FILE     = os.path.join(DATA_DIR, 'jurisdiction_inspections.json')
 CUSTOMER_NOTES_FILE  = os.path.join(DATA_DIR, 'customer_notes.json')
 TEAM_CONFIG_FILE     = os.path.join(DATA_DIR, 'team.json')
 COMPANY_CONTENT_FILE = os.path.join(DATA_DIR, 'company_content.json')
@@ -12929,6 +12940,91 @@ def send_signature_notification(est):
                 bcc=owner or None)
 
 
+def send_inspection_heads_up(est, mr=None):
+    """Tell the rep, with the owner bcc'd as on every signature, when a signed
+    job needs a mid-roof inspection or nobody yet knows whether it does.
+
+    Its own email rather than a row in the "Signed!" one: that mail is a
+    celebration people skim, and it goes out in a parallel thread before the
+    jurisdiction has been looked up. This one goes after the packets are
+    built, so it reports the same verdict they print. Nothing is sent when the
+    inspection is confirmed not required, so it only arrives when there is
+    something to do. Returns True when a mail went out."""
+    if demo.is_demo_doc(est) or not _mid_roof_applies(est):
+        return False
+    mr = mr or _mid_roof_for_estimate(est)
+    if mr['state'] == 'not_required':
+        return False
+    owner   = _owner_notify_email()
+    to_addr = _salesperson_email(est) or owner
+    if not to_addr:
+        return False
+    notify_cc = os.environ.get('NOTIFY_CC', '').strip()
+
+    c     = est.get('customer', {}) or {}
+    a     = c.get('address', {}) or {}
+    cname = (c.get('name') or 'Customer').strip()
+    addr  = ', '.join(filter(None, [a.get('street'), a.get('city'), a.get('state'), a.get('zip')]))
+    jur   = mr['jurisdiction'] if mr['jurisdiction_id'] else 'jurisdiction not picked'
+    if mr['state'] == 'required':
+        subject = f'🔎 Mid-roof inspection required — {cname} ({jur})'
+        head, color = 'Mid-roof Inspection Required', '#b45309'
+        action = (f'{jur} wants an inspector on this roof partway through. Tell the '
+                  'homeowner to expect it, and make sure the crew lead stops for it: '
+                  'shingling past the window means taking roofing back off to pass '
+                  'the final. It is printed on the work order and the permit packet.')
+    elif not mr['jurisdiction_id']:
+        subject = f'❓ Confirm mid-roof inspection — {cname}'
+        head, color = 'Mid-roof Inspection: Not Confirmed', '#b91c1c'
+        action = ('No permit jurisdiction was picked on this estimate, so nothing '
+                  'could be looked up. Pick it on the Scope page, then check the '
+                  'Permit Jurisdiction card.')
+    else:
+        subject = f'❓ Confirm mid-roof inspection — {cname} ({jur})'
+        head, color = 'Mid-roof Inspection: Not Confirmed', '#b91c1c'
+        action = (f'Nobody has confirmed yet whether {jur} wants a mid-roof '
+                  'inspection. Ask when the permit is pulled and have a manager '
+                  'record it on the estimate\'s Permit Jurisdiction card. Every '
+                  f'later job in {jur} will then know automatically.')
+
+    photos = {True: 'Accepted in place of a site visit',
+              False: 'Not accepted - the inspector visits'}.get(mr['photos_accepted'], '')
+    src = mr['source_url']
+    rows = [('Customer', he(cname)), ('Address', he(addr or '—')),
+            ('Estimate', he(_est_number(est))), ('Jurisdiction', he(jur)),
+            ('Roof', he(mr['covering'] or '—')),
+            ('Mid-roof', f'<strong>{he(mr["line"])}</strong>')]
+    if photos and mr['state'] == 'required':
+        rows.append(('Photos', he(photos)))
+    if mr['notes']:
+        rows.append(('Notes', he(mr['notes'])))
+    rows.append(('Based on', he(mr['basis'])))
+    if src:
+        rows.append(('Source', f'<a href="{he(src)}" style="color:#1a3a5c">{he(src)}</a>'))
+    trs = ''.join(
+        f'<tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:13px;vertical-align:top">{k}</td>'
+        f'<td style="padding:5px 0;font-size:13px">{v}</td></tr>' for k, v in rows)
+
+    html_body = f'''<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
+  <div style="background:{color};padding:22px 26px;color:#fff">
+    <div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;margin-bottom:8px">Project One Roofing</div>
+    <h1 style="margin:0;font-size:21px;font-weight:800">{he(head)}</h1>
+    <p style="margin:7px 0 0;opacity:.9;font-size:13px">{he(cname)} &middot; {he(_est_number(est))}</p>
+  </div>
+  <div style="padding:22px 26px">
+    <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 16px">{he(action)}</p>
+    <table style="width:100%;border-collapse:collapse">{trs}</table>
+    <p style="font-size:11px;color:#9ca3af;margin:16px 0 0">
+      Sent to {he(to_addr)} because this job was just signed.</p>
+  </div>
+</div>
+</body></html>'''
+    return bool(_send_email(subject, html_body, to_addr,
+                            cc=notify_cc or None, bcc=owner or None))
+
+
 # ── Signed-contract PDF + CRM push ──────────────────────────────────────────
 
 # ── Shared PDF design tokens ────────────────────────────────────────────────
@@ -15579,6 +15675,37 @@ def build_work_order_pdf(est):
     detail_rows = list(installed_squares_kv(est))
     detail_rows.append(('Scheduled Date',
                         _wo('scheduled_date', '____________ (TBD)')))
+    # Mid-roof inspection, right under the date it gets scheduled around. The
+    # crew is who shingles past the window, so the crew sheet says it, not
+    # just the permit packet. Same verdict as the packet and the rep's email.
+    # The verdict is a fixed phrase (static Spanish); the timing and notes are
+    # free text from the city's record, so they go through the same
+    # numbers-checked translation as the crew notes.
+    # A job with no roof on it, or a repair-only bid, is not a re-roof, so it
+    # gets no mid-roof line at all rather than a warning nobody can act on.
+    mr = _mid_roof_for_estimate(est) if _mid_roof_applies(est) else None
+
+    def _with_es(txt):
+        es = _work_order_notes_es(txt) if es_on else ''
+        return f'{txt}\n{es}' if es else txt
+
+    if mr is None:
+        pass
+    elif mr['state'] == 'required':
+        detail_rows.append(('Mid-roof Inspection',
+                            'REQUIRED - call the office before finishing the roof'))
+        if mr['timing']:
+            detail_rows.append(('Inspection Timing', _with_es(mr['timing'])))
+        if mr['photos_accepted'] is not None:
+            detail_rows.append(('Photos Accepted',
+                                'YES' if mr['photos_accepted'] else 'NO'))
+    elif mr['state'] == 'confirm':
+        detail_rows.append(('Mid-roof Inspection',
+                            'NOT CONFIRMED - ask the office before starting'))
+    else:
+        detail_rows.append(('Mid-roof Inspection', 'Not required'))
+    if mr and mr['notes'] and mr['state'] != 'not_required':
+        detail_rows.append(('Inspection Notes', _with_es(mr['notes'])))
     detail_rows.append(('Tear-off Layers',
                         (str(wo0.get('tear_off_layers')) + ' layer(s)')
                         if wo0.get('tear_off_layers') is not None
@@ -15604,14 +15731,20 @@ def build_work_order_pdf(est):
 
     section_title(L('Job Details'))
     pdf.set_font(SANS, '', 9)
+    # A mid-roof line that asks the crew to stop prints red, so it is not one
+    # more row in a list of eleven.
+    alert = {'Mid-roof Inspection'} if mr and mr['state'] != 'not_required' else set()
     for label, val in detail_rows:
         pdf.set_font(SANS, 'B', 9)
         pdf.cell(40, 5.5, _pdf_rich(label))
-        pdf.set_font(SANS, '', 9)
+        pdf.set_font(SANS, 'B' if label in alert else '', 9)
+        if label in alert:
+            pdf.set_text_color(170, 30, 30)
         # A value that is itself a fixed word (YES / NO / NOT on this job)
         # translates; a name, a date or a figure passes straight through.
         pdf.multi_cell(W - 40, 5.5, _pdf_rich(L(val) if crew_spanish.has_label(val) else val),
                        new_x='LMARGIN', new_y='NEXT', align='L')
+        pdf.set_text_color(*_PDF_STYLE['ink'])
         sub_es(label)
     pdf.ln(2)
 
@@ -16364,6 +16497,10 @@ def generate_production_packet(est_id, push_to_crm=False, push_material=False):
     if not est.get('signature'):
         raise ValueError('estimate is not signed')
 
+    # The work order prints the mid-roof inspection verdict; ask about this
+    # job's jurisdiction first if nobody has. Free after the first time.
+    _warm_inspection_memory(est)
+
     # Two documents, two audiences: the crew works from the work order, the
     # buy list goes to whoever places the supplier order. They used to be one
     # PDF, so the crew carried the ordering sheet and the buyer paged past the
@@ -16622,7 +16759,9 @@ def _selected_permit_jurisdiction(est):
     if not (vp.get('reviewed_at') or '').strip():
         vp = {}
     return {
+        'id':       (jur.get('id') if jur else '') or '',
         'name':     (jur.get('name') if jur else '') or 'Colorado (statewide baseline)',
+        'phone':    ((jur.get('phone') if jur else '') or '').strip(),
         'kind':     (jur.get('kind') if jur else ''),
         'county':   (jur.get('county') if jur else ''),
         'office':   (jur.get('office') if jur else ''),
@@ -16741,6 +16880,39 @@ def build_permit_packet_pdf(est):
             'confirm the correct AHJ before submitting.'), new_x='LMARGIN', new_y='NEXT', align='L')
         pdf.set_text_color(0, 0, 0)
     pdf.ln(3)
+
+    # Inspections. Whether the jurisdiction wants an inspector on the roof
+    # partway through has to be settled before the crew is scheduled: shingle
+    # past the window and the roof comes back off to pass the final. The
+    # answer is remembered per jurisdiction (inspections.py), so this fills
+    # itself after the first job there. Same verdict as the work order and
+    # the rep's email (_mid_roof_for_estimate).
+    # No roof on the job, or a repair-only bid: not a re-roof, no section.
+    mr = _mid_roof_for_estimate(est) if _mid_roof_applies(est) else None
+    if mr:
+        section_title('Inspections')
+        kv_row('Mid-roof Inspection', mr['line'])
+        if mr['state'] == 'required' and mr['photos_accepted'] is True:
+            kv_row('Mid-roof Photos', 'Accepted in place of a site visit')
+        elif mr['state'] == 'required' and mr['photos_accepted'] is False:
+            kv_row('Mid-roof Photos', 'Not accepted - the inspector visits')
+        kv_row('Inspection Notes', mr['notes'])
+        kv_row('Based On', mr['basis'])
+        kv_row('Source', mr['source_url'])
+        if mr['state'] == 'confirm':
+            pdf.ln(1)
+            pdf.set_font(SANS, 'I', 8)
+            pdf.set_text_color(170, 30, 30)
+            pdf.multi_cell(W, 4.4, _pdf_rich(
+                (f'Ask {mr["jurisdiction"]} whether it wants a mid-roof inspection '
+                 'when this permit is pulled, then record the answer on the '
+                 'estimate\'s Permit Jurisdiction card. Every later job there will '
+                 'print it here.')
+                if mr['jurisdiction_id'] else
+                'Pick the permit jurisdiction on the estimate so this can be looked up.'),
+                new_x='LMARGIN', new_y='NEXT', align='L')
+            pdf.set_text_color(0, 0, 0)
+        pdf.ln(3)
 
     # Job
     section_title('Job')
@@ -16892,6 +17064,7 @@ def generate_permit_packet(est_id, push_to_crm=True):
     if not est.get('signature'):
         raise ValueError('estimate is not signed')
 
+    _warm_inspection_memory(est)            # see generate_production_packet
     pdf_bytes = build_permit_packet_pdf(est)
     dest_dir = os.path.join(UPLOADS_DIR, est_id)
     os.makedirs(dest_dir, exist_ok=True)
@@ -17179,6 +17352,12 @@ def _post_sign_pipeline(est_id):
         print(f"[permit] generated {att['filename']} for {est_id}")
     except Exception as exc:
         print(f'[permit] generation failed for {est_id}: {exc}')
+    # After both packets, which have already looked the jurisdiction up, so
+    # the rep is told exactly what the packets print.
+    try:
+        send_inspection_heads_up(est_load(est_id))
+    except Exception as exc:
+        print(f'[inspections] heads-up failed for {est_id}: {exc}')
 
 
 @app.route('/api/estimates/<est_id>/permit-packet', methods=['POST'])
@@ -26080,6 +26259,207 @@ def reject_jurisdiction_profile(jid):
     return jsonify({'ok': True})
 
 
+# ── Mid-roof inspections: looked up once per jurisdiction, then remembered ───
+#
+# inspections.py holds the rules and the store. This is the lookup, the API
+# the estimate's Permit Jurisdiction card uses, and the per-job verdict that
+# the permit packet, the work order and the rep's email all print. They share
+# one verdict function so the three cannot disagree about one job.
+
+def _jx_inspection_lookup(j, force_refresh=False):
+    """Ask Perplexity once what this jurisdiction wants. Returns a record
+    ready to store, or None when no lookup ran (no key, spend cap, network).
+    None stores nothing, so the next signing in that city tries again.
+
+    An answer that cites nothing authoritative is stored as 'unknown': the AI
+    does not get to say "not required" on the strength of a contractor blog."""
+    if not os.environ.get('PERPLEXITY_API_KEY', '').strip():
+        return None
+    try:
+        from agents.perplexity import search_json
+    except ImportError as e:                       # pragma: no cover
+        print(f'[inspections] lookup unavailable: {e}')
+        return None
+    try:
+        result = search_json(_jp.build_inspection_prompt(j, _insp.ROOF_KINDS),
+                             reason=f'inspection lookup: {j.get("id") or j.get("name")}',
+                             max_tokens=800, model=_JX_MODEL,
+                             force_refresh=force_refresh)
+    except Exception as e:
+        print(f'[inspections] lookup failed for {j.get("id")}: {e}')
+        return None
+    data = result.get('data')
+    if not isinstance(data, dict) or 'raw' in data:
+        data = {}
+    hosts = _jp.jurisdiction_hosts(j)
+    cites = _jp.filter_allowed_citations(result.get('citations') or [], hosts)
+    if not cites:
+        data = {'mid_roof': 'unknown'}
+    rec = _insp.make_record(data, 'ai', 'ai')
+    # The model's own source_url counts only if it passes the same allowlist.
+    if rec['source_url'] and not _jp.citation_is_allowed(rec['source_url'], hosts):
+        rec['source_url'] = ''
+    if not rec['source_url'] and cites:
+        rec['source_url'] = cites[0]
+    rec['citations'] = cites[:4]
+    return rec
+
+
+def _ensure_inspection_memory(jid, force=False):
+    """The remembered record for one jurisdiction, asking the AI first only if
+    nobody has (see `inspections.needs_lookup`). Never raises: no document may
+    fail to build over this."""
+    jid = str(jid or '').strip()
+    if not jid:
+        return None
+    try:
+        rec = _insp.get(INSPECTIONS_FILE, jid)
+        if (not force and not _insp.needs_lookup(rec)) or demo.active():
+            return rec
+        j = _jx_find_by_id(_load_jurisdictions() or {}, jid)
+        if not j:
+            return rec
+        fresh = _jx_inspection_lookup(j, force_refresh=force)
+        if fresh is None:
+            return rec
+        return _insp.put(INSPECTIONS_FILE, jid, fresh)
+    except Exception as exc:
+        print(f'[inspections] memory failed for {jid}: {exc!r}')
+        return None
+
+
+def _job_roof_covering(est):
+    """(covering name, roof kind) for the roof this estimate sold. ('', '')
+    when it does not say: a conditional rule then asks rather than guesses."""
+    for trade in ('roofing', 'commercial'):
+        try:
+            name = _installed_product_name(est, trade)
+        except Exception:
+            name = ''
+        if name:
+            return name, _insp.roof_kind(name)
+    return '', ''
+
+
+def _mid_roof_for_estimate(est, lookup=False):
+    """The mid-roof verdict for THIS job: its jurisdiction's record matched
+    against the roof it sold. With `lookup`, the AI is asked first when nobody
+    has asked about that jurisdiction. Building a PDF never spends on its own;
+    the generate_* functions warm the memory first."""
+    jur = _selected_permit_jurisdiction(est)
+    jid = jur.get('id') or ''
+    rec = None
+    if jid:
+        rec = (_ensure_inspection_memory(jid) if lookup
+               else _insp.get(INSPECTIONS_FILE, jid))
+    covering, kind = _job_roof_covering(est)
+    out = _insp.resolve(rec, kind)
+    out.update({'jurisdiction': jur['name'], 'jurisdiction_id': jid,
+                'office': jur.get('office') or '', 'phone': jur.get('phone') or '',
+                'covering': covering})
+    if not jid:
+        out['basis'] = 'No permit jurisdiction picked on this estimate'
+    return out
+
+
+def _mid_roof_applies(est):
+    """A mid-roof inspection is a re-roof question. A siding-, gutter- or
+    window-only job, or a repair-only bid, gets no line, no email and no
+    lookup."""
+    if _is_report_only(est):
+        return False
+    if est.get('estimate_type') == 'insurance':
+        return True
+    trades = est.get('trades') or {}
+    return any((trades.get(t) or {}).get('enabled') for t in ('roofing', 'commercial'))
+
+
+def _warm_inspection_memory(est):
+    """Look the job's jurisdiction up if nobody has yet. Called before the
+    permit packet and the work order are built."""
+    if not _mid_roof_applies(est):
+        return
+    try:
+        _mid_roof_for_estimate(est, lookup=True)
+    except Exception as exc:
+        print(f'[inspections] warm failed: {exc!r}')
+
+
+def _insp_known_jurisdiction(jid):
+    return _jx_find_by_id(_load_jurisdictions() or {}, jid)
+
+
+@app.route('/api/jurisdictions/<jid>/inspections', methods=['GET'])
+def get_jurisdiction_inspections(jid):
+    if not _insp_known_jurisdiction(jid):
+        return jsonify({'ok': False, 'error': 'Unknown jurisdiction id.'}), 404
+    return jsonify({'ok': True, 'record': _insp.get(INSPECTIONS_FILE, jid),
+                    'roof_kinds': _insp.ROOF_KINDS})
+
+
+@app.route('/api/jurisdictions/<jid>/inspections/lookup', methods=['POST'])
+def lookup_jurisdiction_inspections(jid):
+    """Ask the AI now. Anyone signed in may ask about a jurisdiction nobody
+    has asked about: it costs about a cent, once per jurisdiction. Asking AGAIN
+    is manager-only, and even then a confirmed answer is never replaced."""
+    j = _insp_known_jurisdiction(jid)
+    if not j:
+        return jsonify({'ok': False, 'error': 'Unknown jurisdiction id.'}), 404
+    rec = _insp.get(INSPECTIONS_FILE, jid)
+    if rec and rec.get('status') == 'confirmed':
+        return jsonify({'ok': False, 'record': rec, 'error':
+                        f'Already confirmed by {rec.get("updated_by") or "the office"}. '
+                        'Edit it instead.'}), 409
+    force = bool((request.get_json(silent=True) or {}).get('force'))
+    if force and not _is_manager_up():
+        return _forbid()
+    if rec and not force and not _insp.needs_lookup(rec):
+        return jsonify({'ok': True, 'record': rec, 'remembered': True})
+    if demo.active():
+        return jsonify({'ok': False, 'error': 'Not available in the demo.'}), 403
+    if not os.environ.get('PERPLEXITY_API_KEY', '').strip():
+        return jsonify({'ok': False, 'error':
+                        'The AI lookup is not set up on the server '
+                        '(PERPLEXITY_API_KEY). A manager can enter it by hand.'}), 503
+    fresh = _jx_inspection_lookup(j, force_refresh=force)
+    if fresh is None:
+        return jsonify({'ok': False, 'error':
+                        'The lookup did not run (spend cap or network). '
+                        'Try again later, or have a manager enter it by hand.'}), 502
+    return jsonify({'ok': True, 'record': _insp.put(INSPECTIONS_FILE, jid, fresh)})
+
+
+@app.route('/api/jurisdictions/<jid>/inspections', methods=['PUT'])
+def put_jurisdiction_inspections(jid):
+    """A manager enters or confirms the answer. Stored as confirmed, so the AI
+    never replaces it and every later job in this jurisdiction trusts it."""
+    if not _is_manager_up():
+        return _forbid()
+    if not _insp_known_jurisdiction(jid):
+        return jsonify({'ok': False, 'error': 'Unknown jurisdiction id.'}), 404
+    rec = _insp.make_record(request.get_json(force=True, silent=True) or {},
+                            'confirmed', _current_user() or '')
+    # Confirming "nobody knows" would stop the AI ever asking again while
+    # telling every job nothing, so it is refused. Clear does that job.
+    if rec['mid_roof'] == 'unknown':
+        return jsonify({'ok': False, 'error':
+                        'Pick required, only for some roofs, or not required. '
+                        'To have the AI look again, clear it instead.'}), 400
+    if rec['mid_roof'] == 'conditional' and not rec['applies_to']:
+        return jsonify({'ok': False, 'error':
+                        'Tick which roof types need the mid-roof inspection.'}), 400
+    return jsonify({'ok': True, 'record': _insp.put(INSPECTIONS_FILE, jid, rec)})
+
+
+@app.route('/api/jurisdictions/<jid>/inspections', methods=['DELETE'])
+def delete_jurisdiction_inspections(jid):
+    """Forget the answer, so the next lookup or signing asks again."""
+    if not _is_manager_up():
+        return _forbid()
+    _insp.delete(INSPECTIONS_FILE, jid)
+    return jsonify({'ok': True})
+
+
 _PERMIT_CHAR_MAP = str.maketrans({
     '—': '-', '–': '-', '‘': "'", '’': "'",
     '“': '"', '”': '"', '…': '...', ' ': ' ',
@@ -26361,7 +26741,8 @@ def _build_backup_zip(include_uploads=True):
         # and unrecoverable. permit_defaults/jurisdictions were missing.
         for cfg in ('price_book.json', 'tier_defaults.json', 'config.json',
                     'sales_goals.json', 'permit_defaults.json',
-                    'jurisdictions.json', 'commercial_fastening.json'):
+                    'jurisdictions.json', 'jurisdiction_inspections.json',
+                    'commercial_fastening.json'):
             full = os.path.join(DATA_DIR, cfg)
             if os.path.exists(full):
                 try:
