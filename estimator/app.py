@@ -27086,6 +27086,79 @@ def _check_research_nightly():
     threading.Thread(target=_go, daemon=True).start()
 
 
+def _inspection_prefill_targets(limit):
+    """Jurisdictions the company actually works, busiest first, that nobody
+    has asked about yet. Taken from the permit jurisdiction on real estimates
+    with a roof on them, so nights are not spent on the 300 Colorado towns
+    nobody here has ever roofed in."""
+    counts = {}
+    for doc in est_iter():
+        try:
+            if not _mid_roof_applies(doc):
+                continue
+        except Exception:
+            continue
+        pj = doc.get('permit_jurisdiction') or {}
+        jid = str(pj.get('selected_id') or pj.get('auto_id') or '').strip()
+        if jid:
+            counts[jid] = counts.get(jid, 0) + 1
+    known = {j.get('id') for j in ((_load_jurisdictions() or {}).get('jurisdictions') or [])
+             if isinstance(j, dict)}
+    recs = _insp.load(INSPECTIONS_FILE)
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [jid for jid, _n in ranked
+            if jid in known and _insp.needs_lookup(recs.get(jid))][:limit]
+
+
+def _run_inspection_prefill(limit=None):
+    """Ask the AI about up to `limit` of those jurisdictions and remember each
+    answer. Stops at the first lookup that cannot run (no key, spend cap,
+    network), since every one after it would fail the same way."""
+    if limit is None:
+        try:
+            limit = int(os.environ.get('INSPECTION_PREFILL_LIMIT', '25') or 25)
+        except ValueError:
+            limit = 25
+    jx = _load_jurisdictions() or {}
+    asked = answered = 0
+    for jid in _inspection_prefill_targets(limit):
+        j = _jx_find_by_id(jx, jid)
+        fresh = _jx_inspection_lookup(j) if j else None
+        if fresh is None:
+            break
+        stored = _insp.put(INSPECTIONS_FILE, jid, fresh)
+        asked += 1
+        answered += stored.get('mid_roof') != 'unknown'
+    return {'asked': asked, 'answered': answered}
+
+
+def _check_inspection_prefill():
+    """Fill the mid-roof memory ahead of the jobs, so the first signing in a
+    jurisdiction is not the moment anyone finds out. Once per Colorado day, in
+    its own thread, at most INSPECTION_PREFILL_LIMIT (25) lookups of about a
+    cent each, under the Perplexity spend cap. A jurisdiction is asked about
+    once, so this goes quiet as soon as the jurisdictions in use are filled.
+    INSPECTION_PREFILL=0 to stop it."""
+    if os.environ.get('INSPECTION_PREFILL', '1').strip() in ('0', 'false', 'no'):
+        return
+    if not os.environ.get('PERPLEXITY_API_KEY', '').strip():
+        return
+    lock = os.path.join(REMINDER_LOCKS_DIR,
+                        f'inspections_{_company_today().isoformat()}.lock')
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except (FileExistsError, OSError):
+        return
+
+    def _go():
+        try:
+            print(f'[inspections] nightly prefill: {_run_inspection_prefill()}')
+        except Exception as exc:
+            print(f'[inspections] nightly prefill failed: {exc}')
+    threading.Thread(target=_go, daemon=True).start()
+
+
 def _reminder_loop():
     time.sleep(30)  # let the app finish booting
     while True:
@@ -27113,6 +27186,10 @@ def _reminder_loop():
             _check_daily_db_backup()
         except Exception as exc:
             print(f'[backup] database check failed: {exc}')
+        try:
+            _check_inspection_prefill()
+        except Exception as exc:
+            print(f'[inspections] prefill check failed: {exc}')
         time.sleep(3600)
 
 

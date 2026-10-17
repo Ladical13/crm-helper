@@ -393,3 +393,64 @@ def test_repairs_and_the_demo_send_nothing(outbox, monkeypatch):
 def test_the_prompt_template_formats():
     p = jp.build_inspection_prompt({'name': 'Loveland', 'kind': 'city'}, I.ROOF_KINDS)
     assert 'Jurisdiction: Loveland' in p and '"battens"' in p
+
+
+# ── Filled ahead of the jobs, each night ──────────────────────────────────
+
+def _doc(jid, roof=True, eid='x'):
+    trades = ({'roofing': {'enabled': True, 'mode': 'simple', 'line_items': []}}
+              if roof else {'gutters': {'enabled': True, 'mode': 'simple', 'line_items': []}})
+    return {'estimate_id': eid, 'estimate_type': 'retail', 'trades': trades,
+            'permit_jurisdiction': {'auto_id': jid}}
+
+
+def test_the_nightly_fill_asks_about_the_busiest_jurisdictions_first(memory_file, monkeypatch):
+    """Real estimates decide where the money goes: not the 300 Colorado towns
+    nobody here has roofed in, not a gutter job, and not a city already known."""
+    docs = ([_doc('fort-collins')] * 3 + [_doc('greeley')] * 2 + [_doc(JID)]
+            + [_doc('windsor', roof=False)] * 5 + [_doc('atlantis')])
+    monkeypatch.setattr(A, 'est_iter', lambda reverse=False: iter(docs))
+    _store(memory_file, 'ai', mid_roof='required')          # loveland is known
+    assert A._inspection_prefill_targets(10) == ['fort-collins', 'greeley']
+    assert A._inspection_prefill_targets(1) == ['fort-collins']
+
+
+def test_the_nightly_fill_remembers_each_answer(memory_file, monkeypatch):
+    monkeypatch.setenv('PERPLEXITY_API_KEY', 'test')
+    monkeypatch.setattr(A, 'est_iter',
+                        lambda reverse=False: iter([_doc('fort-collins'), _doc('greeley')]))
+    with patch('agents.perplexity.search_json',
+               return_value=_pplx({'mid_roof': 'required'},
+                                  citations=['https://building.colorado.gov/reroof'])):
+        assert A._run_inspection_prefill() == {'asked': 2, 'answered': 2}
+    assert set(I.load(memory_file)) == {'fort-collins', 'greeley'}
+    # Remembered: tomorrow night there is nothing left to ask.
+    assert A._inspection_prefill_targets(10) == []
+
+
+def test_the_nightly_fill_stops_when_lookups_cannot_run(memory_file, monkeypatch):
+    """A spend cap or an outage would fail every lookup after the first."""
+    monkeypatch.setenv('PERPLEXITY_API_KEY', 'test')
+    monkeypatch.setattr(A, 'est_iter',
+                        lambda reverse=False: iter([_doc('fort-collins'), _doc('greeley')]))
+    with patch('agents.perplexity.search_json', side_effect=RuntimeError('cap')) as call:
+        assert A._run_inspection_prefill() == {'asked': 0, 'answered': 0}
+    assert call.call_count == 1
+    assert I.load(memory_file) == {}
+
+
+def test_the_nightly_fill_needs_the_key_and_runs_once_a_day(monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(A, 'REMINDER_LOCKS_DIR', str(tmp_path))
+    monkeypatch.setattr(A.threading, 'Thread',
+                        lambda target, daemon=True: type('T', (), {'start': lambda s: started.append(1)})())
+    A._check_inspection_prefill()                    # no key: nothing
+    assert started == []
+    monkeypatch.setenv('PERPLEXITY_API_KEY', 'test')
+    A._check_inspection_prefill()
+    A._check_inspection_prefill()                    # same day: lockfile holds
+    assert started == [1]
+    monkeypatch.setenv('INSPECTION_PREFILL', '0')
+    monkeypatch.setattr(A, 'REMINDER_LOCKS_DIR', str(tmp_path / 'other'))
+    A._check_inspection_prefill()
+    assert started == [1]

@@ -1305,6 +1305,12 @@ matched against the roof the job sold. Guarded by `tests/test_mid_roof.py`.
   old. Both `generate_permit_packet()` and `generate_production_packet()` warm
   it first, so the first signing in a jurisdiction pays about a cent and every
   later job reads it for free. Building a PDF on its own never spends.
+  `_check_inspection_prefill()` also fills it ahead of the jobs, once per
+  Colorado day on the estimator's hourly loop: up to 25 jurisdictions
+  (`INSPECTION_PREFILL_LIMIT`), busiest first, taken from the permit
+  jurisdiction on real estimates. It stops at the first lookup that cannot
+  run (spend cap, outage) and goes quiet once those jurisdictions are known.
+  `INSPECTION_PREFILL=0` turns it off.
 - **A manager's answer is final.** It is stored as `confirmed`, and `put()`
   refuses to let an AI record replace a confirmed one, checked inside the file
   lock so a lookup already in flight cannot land on top of it.
